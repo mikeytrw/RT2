@@ -22,10 +22,9 @@ public:
 	void add(shared_ptr<Hittable> object) { objects.push_back(object); };
 
 	virtual bool hit(const Ray& r, double t_min, double t_max, HitRecord& rec) const override;
-
-private:
 	std::vector<shared_ptr<Hittable>> objects;
-
+private:
+	
 };
 
 bool HittableList::hit(const Ray& r, double t_min, double t_max, HitRecord& rec) const {

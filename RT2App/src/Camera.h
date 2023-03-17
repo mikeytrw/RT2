@@ -27,12 +27,13 @@ public:
 		viewport_width = viewport_height * aspect_ratio;
 		horizontal = vec3(viewport_width, 0.0, 0.0);
 		vertical = vec3(0.0, viewport_height, 0.0);
+		top_left_corner = origin - horizontal / 2.0 + vertical / 2.0 - vec3(0.0, 0.0, focal_length);
 	}
 
 	Ray get_ray(double u, double v) {
 		//lower_left_corner = origin - horizontal / 2.0 - vertical / 2.0 - vec3(0.0, 0.0, focal_length);
 		//return Ray(origin, lower_left_corner + u * horizontal + v * vertical - origin);
-		top_left_corner = origin - horizontal / 2.0 + vertical / 2.0 - vec3(0.0, 0.0, focal_length);
+		
 		return Ray(origin, top_left_corner + u * horizontal - v * vertical - origin);
 
 	}

@@ -8,6 +8,8 @@ struct HitRecord {
 	vec3 m_Normal = vec3(0.0, 0.0, 0.0);
 	double m_T=0.0;
 	bool m_FrontFace = false;
+	colour m_hitColour = colour(0.0, 0.0, 0.0); 
+	int m_Index = 0;
 
 	/*
 	inline void set_front_face(const ray& r, const vec3& outward_normal) {
@@ -27,7 +29,7 @@ class Hittable {
 public:
 
 	virtual bool hit(const Ray& r, double t_min, double t_max, HitRecord& rec) const = 0;
-
+	
 };
 
 
