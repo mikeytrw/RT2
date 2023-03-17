@@ -8,12 +8,15 @@
 class Sphere : public Hittable {
 public:
 	Sphere() {}
-	Sphere(point3 cen, double rad) : centre(cen), radius(rad) {};
+	Sphere(point3 cen, double rad,colour albedo,int index) : centre(cen), radius(rad), m_Albedo(albedo), m_Index(index) {};
 	virtual bool hit(const Ray& r, double t_min, double t_max, HitRecord& rec) const override;
 
 public:
 	point3 centre;
 	double radius;
+	colour m_Albedo;
+	int m_Index = 0;
+
 
 };
 
@@ -31,7 +34,7 @@ bool Sphere::hit(const Ray& r, double t_min, double t_max, HitRecord& rec) const
 		return false;
 	}
 
-	auto sqrtd = sqrt(discriminant);
+	auto sqrtd = glm::sqrt(discriminant);
 
 	auto root = (-h - sqrtd) / a;   //set root to be the -ve root
 
@@ -41,17 +44,13 @@ bool Sphere::hit(const Ray& r, double t_min, double t_max, HitRecord& rec) const
 			return false;
 	}
 
-	
 	rec.m_T = root;
 	rec.m_P = r.at(rec.m_T);
+	rec.m_hitColour = m_Albedo;
+	rec.m_Index = m_Index;
 
-	/*
-	rec.normal = unit_vector(rec.p) - centre;   //(rec.p - centre) / radius;					
-	rec.set_front_face(r);
-	*/
 	vec3 outward_normal = (rec.m_P - centre) / radius;
 	rec.SetFaceNormal(r, outward_normal);
-
 
 	return true;
 }

@@ -53,8 +53,6 @@ double length_squared(vec3 e){
 
 }
 
-
-
 inline vec3 random_in_unit_sphere() {
     while (true) {
         vec3 p = vec3(randomDouble(-1.0, 1.0), randomDouble(-1.0, 1.0), randomDouble(-1.0, 1.0));
@@ -63,8 +61,6 @@ inline vec3 random_in_unit_sphere() {
     }
 
 }
-
-
 
 //common headers
 #include "Ray.h"

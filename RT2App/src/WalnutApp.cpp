@@ -14,16 +14,43 @@ public:
 	ExampleLayer() {
 
 		m_Renderer = Renderer();
+		m_RenderOnUpdate = false;
 	}
 
 	virtual void OnUIRender() override
 	{
-		ImGui::Begin("Settings");
-		ImGui::Text("Last Render: %.3fms", m_LastRenderTime);
+		auto image = m_Renderer.GetFinalImage();
 
+		ImGui::Begin("Info");
+		ImGui::Text("Last Render: %.3fms", m_LastRenderTime);
+		ImGui::Text("Rays Cast: %d", m_Renderer.m_NumRaysCast);
+		ImGui::Text("FPS: %.1f",1000/m_LastRenderTime);
+
+		float raysPerSec = m_Renderer.m_NumRaysCast / (m_LastRenderTime / 1000);
+
+		ImGui::Text("Rays/Sec: %.1f", raysPerSec);
+		
+		if(image)
+			ImGui::Text("Render Res: %d x %d", image->GetWidth(), image->GetHeight());
+		ImGui::Separator();
+		
 		if (ImGui::Button("Render")) {
 			Render();
 		};
+
+		ImGui::Checkbox("Render on Update", &m_RenderOnUpdate);
+
+		
+		ImGui::Separator();
+		ImGui::Text("Samples Per Pixel");
+		ImGui::DragInt("SPP", & m_Renderer.m_SamplesPerPixel, 1.0f, 1, 1500);
+		ImGui::Text("Sample Depth");
+		ImGui::DragInt("Bounces", &m_Renderer.m_MaxBounceDepth, 1.0f, 2, 100);
+		if (ImGui::Button("Reset")) {
+			m_Renderer.m_SamplesPerPixel = 1;
+			m_Renderer.m_MaxBounceDepth = 2;
+		};
+
 		ImGui::End();
 
 		//ImGui::ShowDemoWindow();
@@ -34,14 +61,13 @@ public:
 		m_ViewportWidth = ImGui::GetContentRegionAvail().x;
 		m_ViewportHeight = ImGui::GetContentRegionAvail().y;
 
-		auto image = m_Renderer.GetFinalImage();
-
 		if(image)
 			ImGui::Image(image->GetDescriptorSet(), { (float)image->GetWidth(),(float)image->GetHeight() });
 
-
 		ImGui::End();
 		ImGui::PopStyleVar();
+
+		if (m_RenderOnUpdate) Render();
 	}
 private:
 
@@ -59,6 +85,7 @@ private:
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
 	uint32_t* m_ImageData = nullptr;
 	float m_LastRenderTime = 0.0f;
+	bool m_RenderOnUpdate;
 };
 
 Walnut::Application* Walnut::CreateApplication(int argc, char** argv)

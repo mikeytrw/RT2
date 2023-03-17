@@ -14,14 +14,20 @@ public:
 		//do stuff here 
 
 		//Image
-		m_SamplesPerPixel = 10;
-		m_MaxBounceDepth = 10;
+		m_SamplesPerPixel = 1;
+		m_MaxBounceDepth = 50;
+		m_NumRaysCast = 0;
 
 		//world
 		
-		world.add(make_shared<Sphere>(point3(0.0, 0.0, -1.0), 0.5));
-		world.add(make_shared<Sphere>(point3(0.0, -100.5, -1.0), 100.0));
-		//world.add(make_shared<sphere>(point3(0.0, 0.0, -1.01), 0.7));
+		m_World.add(make_shared<Sphere>(point3(0.0, 0.0, -1.0), 0.5, colour(1.0, 0.0, 0.0),0));
+		m_World.add(make_shared<Sphere>(point3(0.0, -100.5, -1.0), 100.0, colour(0.0, 0.0, 0.0),1));
+		m_World.add(make_shared<Sphere>(point3(1.0, 2.0, -1.0), 0.5, colour(0.0, 0.0, 40.0),2));   //blue light
+		//m_World.add(make_shared<Sphere>(point3(1.0, 2.0, -1.0), 0.5, colour(40.0, 0.0, 0.0),3));
+
+
+
+		//lightSphere
 
 		//Camera
 		m_Cam = Camera();
@@ -48,6 +54,8 @@ public:
 
 	inline void Render() {
 
+		m_NumRaysCast = 0;
+
 	//Render every pixel
 
 		int width = m_FinalImage->GetWidth();
@@ -63,22 +71,16 @@ public:
 					auto u = (double(i) + randomDouble()) / (width - 1);
 					auto v = (double(j) + randomDouble()) / (height - 1);
 					Ray r = m_Cam.get_ray(u, v);
-					pixel_colour += RayColor(r, world, depth);
+					pixel_colour += RayColor(r, m_World, depth);
 				}
 				//write_colour(charbuf, pixel_colour, buffer_position, samples_per_pixel);
 
 				double scale = 1.0 / m_SamplesPerPixel;
 
-
 				double r = sqrt(pixel_colour.x * scale);
 				double g = sqrt(pixel_colour.y * scale);
 				double b = sqrt(pixel_colour.z * scale);
-			
-/*
-				double r = pixel_colour.x * scale;
-				double g = pixel_colour.y * scale;
-				double b = pixel_colour.z * scale;
-*/	
+				
 
 				uint32_t ir = static_cast<uint32_t>(256 * clamp(r, 0.0, 0.999));
 				uint32_t ig = static_cast<uint32_t>(256 * clamp(g, 0.0, 0.999));
@@ -91,11 +93,6 @@ public:
 		}
 
 
-		/*
-		for (uint32_t i = 0; i < m_FinalImage->GetWidth() * m_FinalImage->GetHeight(); i++) {
-			m_ImageData[i] = 0xffff00ff; // ABGR
-		}
-		*/
 		m_FinalImage->SetData(m_ImageData);
 
 
@@ -108,6 +105,12 @@ public:
 
 	colour RayColor(const Ray& r, const Hittable& world, int depth) {
 
+		
+		auto dirLight = vec3(1.0, 1.0, 1.0);
+		auto dirLightColour = vec3(0.5, 0.0, 1.0);
+
+		m_NumRaysCast++;
+
 		HitRecord rec;
 
 		if (depth <= 0) {
@@ -116,41 +119,38 @@ public:
 
 		if (world.hit(r, 0.001, infinity, rec)) {
 
-		
+			//return rec.m_Normal;
 
-			//if (rec.m_FrontFace) return colour(1.0, 0.0, 0.0);
-			//return colour(0.1, 0.8, 0.1);
-			// 
-			
-			//return 0.5 * colour(rec.m_Normal.x + 1, rec.m_Normal.y + 1, rec.m_Normal.z + 1);
 			//point in unit sphere:
 			point3 unit_sphere_point = rec.m_P + rec.m_Normal + unit_vector(random_in_unit_sphere());
-			return 0.5 * RayColor(Ray(rec.m_P, unit_sphere_point - rec.m_P), world, --depth);
+			return 0.5 * RayColor(Ray(rec.m_P, unit_sphere_point - rec.m_P), world, --depth) + rec.m_hitColour;
 
 		}
 
-
-		//sky colour
 		return Miss(r, world, depth);
 	}
 
 
 	colour Miss(const Ray& r, const Hittable& world, int depth) {
-
 		//Sky colour
-		vec3 unit_direction = unit_vector(r.direction());
+
+		//return vec3(0.0, 0.0, 0.0);
+		vec3 unit_direction = glm::normalize(r.direction());
 		auto t = 0.5 * (unit_direction.y + 1.0);
 		return (1.0 - t) * colour(1.0, 1.0, 1.0) + t * colour(0.5, 0.7, 1.0);
 	}
 
+	uint32_t m_NumRaysCast;
+	int m_SamplesPerPixel;
+	int m_MaxBounceDepth;
 
 private:
 	std::shared_ptr<Walnut::Image> m_FinalImage;
 	uint32_t* m_ImageData = nullptr;
-	int m_SamplesPerPixel;
-	int m_MaxBounceDepth;
+
 	Camera m_Cam;
-	HittableList world;
+	HittableList m_World;
+	
 
 };
 
