@@ -44,7 +44,7 @@ inline double clamp(double x, double min, double max) {
 }
 
 inline vec3 unit_vector(vec3 v) {
-    return v / static_cast<double>(v.length());
+    return glm::normalize(v);
 }
 
 double length_squared(vec3 e){

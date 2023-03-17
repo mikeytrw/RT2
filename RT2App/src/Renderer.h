@@ -14,8 +14,8 @@ public:
 		//do stuff here 
 
 		//Image
-		m_SamplesPerPixel = 1;
-		m_MaxBounceDepth = 2;
+		m_SamplesPerPixel = 10;
+		m_MaxBounceDepth = 10;
 
 		//world
 		
@@ -69,16 +69,16 @@ public:
 
 				double scale = 1.0 / m_SamplesPerPixel;
 
-				/*
+
 				double r = sqrt(pixel_colour.x * scale);
 				double g = sqrt(pixel_colour.y * scale);
 				double b = sqrt(pixel_colour.z * scale);
-				*/
-
+			
+/*
 				double r = pixel_colour.x * scale;
 				double g = pixel_colour.y * scale;
 				double b = pixel_colour.z * scale;
-
+*/	
 
 				uint32_t ir = static_cast<uint32_t>(256 * clamp(r, 0.0, 0.999));
 				uint32_t ig = static_cast<uint32_t>(256 * clamp(g, 0.0, 0.999));
@@ -116,23 +116,33 @@ public:
 
 		if (world.hit(r, 0.001, infinity, rec)) {
 
-			//return rec.m_Normal;
+		
 
 			//if (rec.m_FrontFace) return colour(1.0, 0.0, 0.0);
 			//return colour(0.1, 0.8, 0.1);
+			// 
+			
+			//return 0.5 * colour(rec.m_Normal.x + 1, rec.m_Normal.y + 1, rec.m_Normal.z + 1);
 			//point in unit sphere:
 			point3 unit_sphere_point = rec.m_P + rec.m_Normal + unit_vector(random_in_unit_sphere());
 			return 0.5 * RayColor(Ray(rec.m_P, unit_sphere_point - rec.m_P), world, --depth);
-			//return 0.5 * ray_color(ray((rec.p+(rec.normal*0.0000001)), unit_sphere_point - rec.p), world, --depth);
 
 		}
 
 
 		//sky colour
+		return Miss(r, world, depth);
+	}
+
+
+	colour Miss(const Ray& r, const Hittable& world, int depth) {
+
+		//Sky colour
 		vec3 unit_direction = unit_vector(r.direction());
 		auto t = 0.5 * (unit_direction.y + 1.0);
 		return (1.0 - t) * colour(1.0, 1.0, 1.0) + t * colour(0.5, 0.7, 1.0);
 	}
+
 
 private:
 	std::shared_ptr<Walnut::Image> m_FinalImage;
