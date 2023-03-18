@@ -15,14 +15,22 @@ public:
 
 		//Image
 		m_SamplesPerPixel = 1;
-		m_MaxBounceDepth = 50;
+		m_MaxBounceDepth = 4;
 		m_NumRaysCast = 0;
 
 		//world
 		
-		m_World.add(make_shared<Sphere>(point3(0.0, 0.0, -1.0), 0.5, colour(1.0, 0.0, 0.0),0));
-		m_World.add(make_shared<Sphere>(point3(0.0, -100.5, -1.0), 100.0, colour(0.0, 0.0, 0.0),1));
-		m_World.add(make_shared<Sphere>(point3(1.0, 2.0, -1.0), 0.5, colour(0.0, 0.0, 40.0),2));   //blue light
+		m_World.add(make_shared<Sphere>(point3(0.0, 0.0, -1.0), 0.5,0));
+		m_World.objects[0]->mat.albedo = vec3(1.0, 0.0, 0.0);
+
+		//ground
+		m_World.add(make_shared<Sphere>(point3(0.0, -100.5, -1.0), 100.0,1));
+		m_World.objects[1]->mat.albedo = vec3(0.0, 0.0, 0.0);
+		m_World.objects[1]->mat.roughness = 1.0;
+		//blue light
+		m_World.add(make_shared<Sphere>(point3(1.0, 2.0, -1.0), 0.5,2));   //blue light
+		m_World.objects[2]->mat.albedo = vec3(0.0, 0.0, 40.0);
+
 		//m_World.add(make_shared<Sphere>(point3(1.0, 2.0, -1.0), 0.5, colour(40.0, 0.0, 0.0),3));
 
 
@@ -123,7 +131,12 @@ public:
 
 			//point in unit sphere:
 			point3 unit_sphere_point = rec.m_P + rec.m_Normal + unit_vector(random_in_unit_sphere());
-			return 0.5 * RayColor(Ray(rec.m_P, unit_sphere_point - rec.m_P), world, --depth) + rec.m_hitColour;
+			//return 0.5 * RayColor(Ray(rec.m_P, unit_sphere_point - rec.m_P), world, --depth) + rec.hitMaterial.albedo;
+			
+			vec3 diffuseDirection = unit_sphere_point - rec.m_P;
+			vec3 reflectionVector = glm::reflect(r.dir, rec.m_Normal);
+			vec3 reflectionRayDir = (1.0 - rec.hitMaterial.roughness) * reflectionVector + rec.hitMaterial.roughness* diffuseDirection;
+			return 0.5 * RayColor(Ray(rec.m_P, reflectionRayDir), world, --depth) + rec.hitMaterial.albedo;
 
 		}
 
@@ -147,6 +160,7 @@ public:
 private:
 	std::shared_ptr<Walnut::Image> m_FinalImage;
 	uint32_t* m_ImageData = nullptr;
+	uint32_t* m_PrevImageData = nullptr;
 
 	Camera m_Cam;
 	HittableList m_World;

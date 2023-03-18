@@ -64,11 +64,13 @@ inline vec3 random_in_unit_sphere() {
 
 //common headers
 #include "Ray.h"
+#include "Material.h"
 #include "Colour.h"
 #include "Hittable.h"
 #include "HittableList.h"
 #include "Sphere.h"
 #include "Camera.h"
+
 
 
 
