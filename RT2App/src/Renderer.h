@@ -4,7 +4,7 @@
 #define RENDERER_H
 
 #include "Utility.h"
-
+#include <execution>
 
 class Renderer {
 public:
@@ -55,21 +55,59 @@ public:
 
 		delete[] m_ImageData;
 		m_ImageData = new uint32_t[width * height];
+		
+		mImageVerticalIter.resize(height);
+		for (uint32_t i = 0; i < height; i++) {
+			mImageVerticalIter[i] = i;
+		}
 
 
 	}
 
 	inline void Render(Camera cam) {
-
+		mCam = cam;
 		m_NumRaysCast = 0;
 
 	//Render every pixel
 
-		int width = m_FinalImage->GetWidth();
-		int height = m_FinalImage->GetHeight();
+
 
 		//cam.SetWidthAndHeight(float(width), float(height));
-		
+
+		std::for_each(std::execution::par, mImageVerticalIter.begin(), mImageVerticalIter.end(),
+			[this](uint32_t y)
+			{
+					int width = m_FinalImage->GetWidth();
+					int height = m_FinalImage->GetHeight();
+				for (int x = 0; x < width; ++x) {
+					colour pixel_colour(0.0, 0.0, 0.0); // start with black then we add each sample and finally divide.
+					for (int s = 0; s < m_SamplesPerPixel; ++s) {
+						int depth = m_MaxBounceDepth;
+						auto u = (float(x) + randomDouble()) / (width - 1);
+						auto v = (float(y) + randomDouble()) / (height - 1);
+						Ray r = Ray(mCam.GetPosition(), mCam.getRayDirection(u, v));
+						pixel_colour += RayColor(r, m_World, depth);
+					}
+					//write_colour(charbuf, pixel_colour, buffer_position, samples_per_pixel);
+
+					float scale = 1.0f / m_SamplesPerPixel;
+
+					float r = sqrt(pixel_colour.x * scale);
+					float g = sqrt(pixel_colour.y * scale);
+					float b = sqrt(pixel_colour.z * scale);
+
+
+					uint32_t ir = static_cast<uint32_t>(256 * clamp(r, 0.0f, 0.999f));
+					uint32_t ig = static_cast<uint32_t>(256 * clamp(g, 0.0f, 0.999f));
+					uint32_t ib = static_cast<uint32_t>(256 * clamp(b, 0.0f, 0.999f));
+
+					uint32_t color = (static_cast<uint32_t>(255) << 24) | (ib << 16) | (ig << 8) | ir;
+
+					m_ImageData[x + y * width] = color;
+
+				}
+			});
+		/*
 		for (int y = 0; y < height; ++y) {
 			for (int x = 0; x < width; ++x) {
 				colour pixel_colour(0.0, 0.0, 0.0); // start with black then we add each sample and finally divide.
@@ -99,7 +137,7 @@ public:
 				
 			}
 		}
-
+*/
 
 		m_FinalImage->SetData(m_ImageData);
 
@@ -163,7 +201,9 @@ private:
 	uint32_t* m_PrevImageData = nullptr;
 
 	HittableList m_World;
-	
+	std::vector<uint32_t> mImageVerticalIter;
+
+	Camera mCam;
 
 };
 
