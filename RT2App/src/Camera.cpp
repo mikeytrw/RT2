@@ -27,6 +27,7 @@ bool Camera::OnUpdate(float ts)
 	if (!Input::IsMouseButtonDown(MouseButton::Right))
 	{
 		Input::SetCursorMode(CursorMode::Normal);
+		mHasMoved = false;
 		return false;
 	}
 
@@ -86,6 +87,7 @@ bool Camera::OnUpdate(float ts)
 
 	if (moved)
 	{
+		mHasMoved = true;
 		RecalculateView();
 		RecalculateRayDirections();
 	}

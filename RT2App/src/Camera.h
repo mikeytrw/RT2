@@ -23,6 +23,14 @@ public:
 
 	const std::vector<glm::vec3>& GetRayDirections() const { return m_RayDirections; }
 
+	const bool checkHasMoved() { 
+		if (mHasMoved) { 
+			mHasMoved = false; 
+			return true; 
+		} 
+		return false; 
+	};
+
 	glm::vec3& getRayDirection(float u, float v);
 	//glm::vec3& getRayDirection(uint32_t x, uint32_t y);
 
@@ -50,4 +58,6 @@ private:
 	glm::vec2 m_LastMousePosition{ 0.0f, 0.0f };
 
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
+
+	bool mHasMoved = false;
 };
