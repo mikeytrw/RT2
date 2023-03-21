@@ -26,7 +26,7 @@ public:
 		//ground
 		m_World.add(make_shared<Sphere>(vec3(0.0, -100.5, -1.0), 100.0,1));
 		m_World.objects[1]->mat.albedo = vec3(0.0, 0.0, 0.0);
-		m_World.objects[1]->mat.roughness = 0.15f;
+		m_World.objects[1]->mat.roughness = 1.0f;
 		//blue light
 		m_World.add(make_shared<Sphere>(vec3(1.0,2.0, -1.0), 0.5,2));   //blue light
 		m_World.objects[2]->mat.albedo = vec3(0.0, 0.0, 40.0);
@@ -70,13 +70,13 @@ public:
 
 		//cam.SetWidthAndHeight(float(width), float(height));
 		
-		for (int x = 0; x < height; ++x) {
-			for (int y = 0; y < width; ++y) {
+		for (int y = 0; y < height; ++y) {
+			for (int x = 0; x < width; ++x) {
 				colour pixel_colour(0.0, 0.0, 0.0); // start with black then we add each sample and finally divide.
 				for (int s = 0; s < m_SamplesPerPixel; ++s) {
 					int depth = m_MaxBounceDepth;
-					auto u = float(y) / (width - 1); //(float(i) + randomDouble()) / (width - 1);
-					auto v = float(x) / (height - 1); //(float(j) + randomDouble()) / (height - 1);
+					auto u = float(x) / (width - 1); //(float(i) + randomDouble()) / (width - 1);
+					auto v = float(y) / (height - 1); //(float(j) + randomDouble()) / (height - 1);
 					Ray r = Ray(cam.GetPosition(),cam.getRayDirection(u, v));
 					pixel_colour += RayColor(r, m_World, depth);
 				}
@@ -95,7 +95,7 @@ public:
 
 				uint32_t color = (static_cast<uint32_t>(255) << 24) | (ib << 16) | (ig << 8) | ir;
 
-				m_ImageData[y + x * width] = color;
+				m_ImageData[x + y * width] = color;
 				
 			}
 		}

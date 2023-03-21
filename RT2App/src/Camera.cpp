@@ -3,10 +3,12 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/quaternion.hpp>
-
 #include "Walnut/Input/Input.h"
 
+
+#include <iostream>
 using namespace Walnut;
+
 
 Camera::Camera(float verticalFOV, float nearClip, float farClip)
 	: m_VerticalFOV(verticalFOV), m_NearClip(nearClip), m_FarClip(farClip)
@@ -112,6 +114,10 @@ float Camera::GetRotationSpeed()
 /*
 glm::vec3& Camera::getRayDirection(uint32_t x, uint32_t y) {
 
+	//std::cerr << "\rwidth " << x << " height: " << y << std::flush;
+
+
+	
 	return m_RayDirections[x + y * m_ViewportWidth];
 
 }
