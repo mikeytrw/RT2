@@ -75,8 +75,8 @@ public:
 				colour pixel_colour(0.0, 0.0, 0.0); // start with black then we add each sample and finally divide.
 				for (int s = 0; s < m_SamplesPerPixel; ++s) {
 					int depth = m_MaxBounceDepth;
-					auto u = float(x) / (width - 1); //(float(i) + randomDouble()) / (width - 1);
-					auto v = float(y) / (height - 1); //(float(j) + randomDouble()) / (height - 1);
+					auto u = (float(x) + randomDouble()) / (width - 1);
+					auto v = (float(y) + randomDouble()) / (height - 1);
 					Ray r = Ray(cam.GetPosition(),cam.getRayDirection(u, v));
 					pixel_colour += RayColor(r, m_World, depth);
 				}
