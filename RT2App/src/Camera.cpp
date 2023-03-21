@@ -107,7 +107,7 @@ void Camera::OnResize(uint32_t width, uint32_t height)
 
 float Camera::GetRotationSpeed()
 {
-	return 0.3f;
+	return 1.0f;
 }
 
 
