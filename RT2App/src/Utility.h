@@ -15,29 +15,30 @@ using std::shared_ptr;
 using std::make_shared;
 using std::sqrt;
 
+using glm::vec3;
 
-using point3 = glm::dvec3;
-using vec3 = glm::dvec3;
-using colour = glm::dvec3;
+
+//using vec3 = glm::dvec3;
+using colour = vec3;
 
 //constants
 
-const double infinity = std::numeric_limits<double>::infinity();
-const double pi = 3.1415926535897932385;
+const float infinity = std::numeric_limits<float>::infinity();
+const float pi = 3.1415926535897932385f;
 
 //Utility functions
 
-inline double randomDouble() {
+inline float randomDouble() {
     // Returns a random real in [0,1).
-    return rand() / (RAND_MAX + 1.0);
+    return rand() / (RAND_MAX + 1.0f);
 }
 
-inline double randomDouble(double min, double max) {
+inline float randomDouble(float min, float max) {
     // Returns a random real in [min,max).
     return min + (max - min) * randomDouble();
 }
 
-inline double clamp(double x, double min, double max) {
+inline float clamp(float x, float min, float max) {
     if (x < min) return min;
     if (x > max) return max;
     return x;
@@ -60,6 +61,21 @@ inline vec3 random_in_unit_sphere() {
         return p;
     }
 
+}
+/*
+vec3 VCosineSampleHemisphere(float alpha)
+{
+    float cosTheta = pow(RandomUNorm(), 1 / (alpha + 1));
+    float sinTheta = sqrt(1 - cosTheta * cosTheta);
+    float phi = 2 * pi * RandomUNorm();
+    return vec3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+   
+}
+*/
+float VCosineSampleHemispherePDF(vec3 v, float alpha)
+{
+    float cosTheta = v.z;
+    return (cosTheta + alpha) * pow(cosTheta, alpha) / pi;
 }
 
 //common headers

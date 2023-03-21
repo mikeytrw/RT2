@@ -21,13 +21,13 @@ public:
 	void clear() { objects.clear(); };
 	void add(shared_ptr<Hittable> object) { objects.push_back(object); };
 
-	virtual bool hit(const Ray& r, double t_min, double t_max, HitRecord& rec) const override;
+	virtual bool hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const override;
 	std::vector<shared_ptr<Hittable>> objects;
 private:
 	
 };
 
-bool HittableList::hit(const Ray& r, double t_min, double t_max, HitRecord& rec) const {
+bool HittableList::hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const {
 
 	HitRecord temp_hit_record;
 	bool hit_anything = false;

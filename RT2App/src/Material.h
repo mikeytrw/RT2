@@ -4,9 +4,9 @@
 
 struct Material
 {
-	double roughness = 1.0;
+	float roughness = 1.0f;
 	vec3 albedo = vec3(0.0,0.0,0.0);
-	double metallic = 0.0;
+	float metallic = 0.0f;
 };
 
 
