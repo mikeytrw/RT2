@@ -72,7 +72,11 @@ public:
 		ImGui::PopStyleVar();
 
 		if (m_RenderOnUpdate) {
+			m_Renderer.setTemporalAccumulation(true);
 			Render();
+		}
+		else {
+			m_Renderer.setTemporalAccumulation(false);
 		}
 	}
 

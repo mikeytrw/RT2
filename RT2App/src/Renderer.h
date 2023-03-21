@@ -61,6 +61,15 @@ public:
 			mImageVerticalIter[i] = i;
 		}
 
+		if (mTemporalBuffer) {
+			delete[] mTemporalBuffer;
+		}
+			
+		mTemporalBuffer = new glm::vec3[width * height];
+			
+		mFrameIndex = 1;
+		
+
 
 	}
 
@@ -68,8 +77,15 @@ public:
 		mCam = cam;
 		m_NumRaysCast = 0;
 
-	//Render every pixel
+		if (cam.checkHasMoved()) {
+			mFrameIndex = 1;
+		}
 
+	//Render every pixel
+		if (mFrameIndex == 1) {
+
+			memset(mTemporalBuffer, 0, m_FinalImage->GetWidth() * m_FinalImage->GetHeight() * sizeof(glm::vec3));
+		}
 
 
 		//cam.SetWidthAndHeight(float(width), float(height));
@@ -88,13 +104,24 @@ public:
 						Ray r = Ray(mCam.GetPosition(), mCam.getRayDirection(u, v));
 						pixel_colour += RayColor(r, m_World, depth);
 					}
-					//write_colour(charbuf, pixel_colour, buffer_position, samples_per_pixel);
 
 					float scale = 1.0f / m_SamplesPerPixel;
 
 					float r = sqrt(pixel_colour.x * scale);
 					float g = sqrt(pixel_colour.y * scale);
 					float b = sqrt(pixel_colour.z * scale);
+
+					if (mTemporalAccumulation) {
+						mTemporalBuffer[x + y * width] += vec3(r,g,b);
+
+						glm::vec3 accumulatedColour = mTemporalBuffer[x + y * width];
+						accumulatedColour /= (float)mFrameIndex;
+						accumulatedColour = glm::clamp(accumulatedColour, vec3(0.0f), vec3(1.0f));
+						r = accumulatedColour.r;
+						g = accumulatedColour.g;
+						b = accumulatedColour.b;
+
+					}
 
 
 					uint32_t ir = static_cast<uint32_t>(256 * clamp(r, 0.0f, 0.999f));
@@ -141,7 +168,11 @@ public:
 
 		m_FinalImage->SetData(m_ImageData);
 
-
+		if (mTemporalAccumulation) {
+			mFrameIndex++;
+		}
+		else
+			mFrameIndex = 1;
 	
 	}
 
@@ -191,6 +222,11 @@ public:
 		return (1.0f - t) * colour(1.0, 1.0, 1.0) + t * colour(0.5, 0.7, 1.0);
 	}
 
+	void setTemporalAccumulation(bool enabled) {
+		if (!enabled) mFrameIndex = 1;
+		mTemporalAccumulation = enabled;
+	}
+
 	uint32_t m_NumRaysCast;
 	int m_SamplesPerPixel;
 	int m_MaxBounceDepth;
@@ -200,8 +236,14 @@ private:
 	uint32_t* m_ImageData = nullptr;
 	uint32_t* m_PrevImageData = nullptr;
 
+	uint32_t mFrameIndex = 1;
+
 	HittableList m_World;
 	std::vector<uint32_t> mImageVerticalIter;
+
+	glm::vec3* mTemporalBuffer = nullptr;
+
+	bool mTemporalAccumulation = false;
 
 	Camera mCam;
 
