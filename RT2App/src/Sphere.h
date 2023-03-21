@@ -8,12 +8,12 @@
 class Sphere : public Hittable {
 public:
 	Sphere() {}
-	Sphere(point3 cen, double rad,int index) : centre(cen), radius(rad), m_Index(index) {};
-	virtual bool hit(const Ray& r, double t_min, double t_max, HitRecord& rec) const override;
+	Sphere(vec3 cen, float rad,int index) : centre(cen), radius(rad), m_Index(index) {};
+	virtual bool hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const override;
 
 public:
-	point3 centre;
-	double radius;
+	vec3 centre = vec3(0.0f);
+	float radius = 0.0f;
 	int m_Index = 0;
 	
 
@@ -21,7 +21,7 @@ public:
 };
 
 
-bool Sphere::hit(const Ray& r, double t_min, double t_max, HitRecord& rec) const {
+bool Sphere::hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const {
 
 	vec3 oc = r.origin() - centre;
 	auto a = dot(r.direction(), r.direction());

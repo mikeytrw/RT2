@@ -11,10 +11,14 @@ class ExampleLayer : public Walnut::Layer
 {
 public:
 
-	ExampleLayer() {
+	ExampleLayer() 
+	{
 
+		m_Cam = Camera(45.0f, 0.1f, 100.0f);
 		m_Renderer = Renderer();
 		m_RenderOnUpdate = false;
+
+
 	}
 
 	virtual void OnUIRender() override
@@ -67,15 +71,24 @@ public:
 		ImGui::End();
 		ImGui::PopStyleVar();
 
-		if (m_RenderOnUpdate) Render();
+		if (m_RenderOnUpdate) {
+			Render();
+		}
 	}
+
+	virtual void OnUpdate(float ts) override
+	{
+		m_Cam.OnUpdate(ts);
+	}
+
 private:
 
 	void Render() {
 		Timer timer;
 
 		m_Renderer.OnResize(m_ViewportWidth, m_ViewportHeight);
-		m_Renderer.Render();
+		m_Cam.OnResize(m_ViewportWidth, m_ViewportHeight);
+		m_Renderer.Render(m_Cam);
 		m_LastRenderTime = timer.ElapsedMillis();
 
 		return;
@@ -86,6 +99,7 @@ private:
 	uint32_t* m_ImageData = nullptr;
 	float m_LastRenderTime = 0.0f;
 	bool m_RenderOnUpdate;
+	Camera m_Cam;
 };
 
 Walnut::Application* Walnut::CreateApplication(int argc, char** argv)

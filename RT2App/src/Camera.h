@@ -1,60 +1,53 @@
 #pragma once
-#ifndef CAMERA_H
-#define CAMERA_H
 
+#include <glm/glm.hpp>
+#include <vector>
 
 class Camera
 {
 public:
-	Camera() {
 
-		aspect_ratio = 16.0 / 9.0;
-		viewport_height = 2.0;
-		viewport_width = viewport_height * aspect_ratio;
-		focal_length = 1.0;
-		
+	Camera() {};
+	Camera(float verticalFOV, float nearClip, float farClip);
 
-		origin = point3(0.0, 0.0, 0.0);
-		horizontal = vec3(viewport_width, 0.0, 0.0);
-		vertical = vec3(0.0, viewport_height, 0.0);
-		
-	};
+	bool OnUpdate(float ts);
+	void OnResize(uint32_t width, uint32_t height);
 
-	~Camera();
+	const glm::mat4& GetProjection() const { return m_Projection; }
+	const glm::mat4& GetInverseProjection() const { return m_InverseProjection; }
+	const glm::mat4& GetView() const { return m_View; }
+	const glm::mat4& GetInverseView() const { return m_InverseView; }
 
-	void SetWidthAndHeight(double width, double height) {
-		aspect_ratio = width / height;
-		viewport_width = viewport_height * aspect_ratio;
-		horizontal = vec3(viewport_width, 0.0, 0.0);
-		vertical = vec3(0.0, viewport_height, 0.0);
-		top_left_corner = origin - horizontal / 2.0 + vertical / 2.0 - vec3(0.0, 0.0, focal_length);
-	}
+	const glm::vec3& GetPosition() const { return m_Position; }
+	const glm::vec3& GetDirection() const { return m_ForwardDirection; }
 
-	Ray get_ray(double u, double v) {
-		//lower_left_corner = origin - horizontal / 2.0 - vertical / 2.0 - vec3(0.0, 0.0, focal_length);
-		//return Ray(origin, lower_left_corner + u * horizontal + v * vertical - origin);
-		
-		return Ray(origin, top_left_corner + u * horizontal - v * vertical - origin);
+	const std::vector<glm::vec3>& GetRayDirections() const { return m_RayDirections; }
 
-	}
+	glm::vec3& getRayDirection(float u, float v);
+	//glm::vec3& getRayDirection(uint32_t x, uint32_t y);
 
-	double viewport_height;
-	double viewport_width;
-	double focal_length;
-	double aspect_ratio;
-
-	 
+	float GetRotationSpeed();
 private:
+	void RecalculateProjection();
+	void RecalculateView();
+	void RecalculateRayDirections();
+private:
+	glm::mat4 m_Projection{ 1.0f };
+	glm::mat4 m_View{ 1.0f };
+	glm::mat4 m_InverseProjection{ 1.0f };
+	glm::mat4 m_InverseView{ 1.0f };
 
-	point3 origin;
-	vec3 horizontal;
-	vec3 vertical;
-	point3 top_left_corner;
+	float m_VerticalFOV = 45.0f;
+	float m_NearClip = 0.1f;
+	float m_FarClip = 100.0f;
 
+	glm::vec3 m_Position{ 0.0f, 0.0f, 0.0f };
+	glm::vec3 m_ForwardDirection{ 0.0f, 0.0f, 0.0f };
+
+	// Cached ray directions
+	std::vector<glm::vec3> m_RayDirections;
+
+	glm::vec2 m_LastMousePosition{ 0.0f, 0.0f };
+
+	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
 };
-
-Camera::~Camera()
-{
-}
-
-#endif // !CAMERA_H

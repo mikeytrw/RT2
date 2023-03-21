@@ -4,9 +4,9 @@
 #define HITTABLE_H
 
 struct HitRecord {
-	point3 m_P = point3(0.0, 0.0, 0.0);
+	vec3 m_P = vec3(0.0, 0.0, 0.0);
 	vec3 m_Normal = vec3(0.0, 0.0, 0.0);
-	double m_T=0.0;
+	float m_T=0.0f;
 	bool m_FrontFace = false;
 	Material hitMaterial;
 	int m_Index = 0;
@@ -28,7 +28,7 @@ struct HitRecord {
 class Hittable {
 public:
 
-	virtual bool hit(const Ray& r, double t_min, double t_max, HitRecord& rec) const = 0;
+	virtual bool hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const = 0;
 	Material mat;
 };
 
