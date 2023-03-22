@@ -8,6 +8,7 @@
 #include <memory>
 #include <cstdlib>
 #include "glm/glm.hpp"
+#include "Walnut/Random.h"
 
 //Namespaces 
 
@@ -30,12 +31,17 @@ const float pi = 3.1415926535897932385f;
 
 inline float randomDouble() {
     // Returns a random real in [0,1).
-    return rand() / (RAND_MAX + 1.0f);
+    
+    //return rand() / (RAND_MAX + 1.0f);
+
+    return Walnut::Random::Float();
 }
 
 inline float randomDouble(float min, float max) {
     // Returns a random real in [min,max).
-    return min + (max - min) * randomDouble();
+   return min + (max - min) * randomDouble();
+
+    
 }
 
 inline float clamp(float x, float min, float max) {

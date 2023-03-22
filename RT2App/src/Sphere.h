@@ -34,9 +34,9 @@ bool Sphere::hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const {
 		return false;
 	}
 
-	auto sqrtd = glm::sqrt(discriminant);
+	float sqrtd = glm::sqrt(discriminant);
 
-	auto root = (-h - sqrtd) / a;   //set root to be the -ve root
+	float root = (-h - sqrtd) / a;   //set root to be the -ve root
 
 	if (root > t_max || root < t_min) {
 		root = (-h + sqrtd) / a;   //set root to be the +ve root
