@@ -183,10 +183,10 @@ public:
 	colour RayColor(const Ray& r, const Hittable& world, int depth) {
 
 		
-		auto dirLight = vec3(1.0, 1.0, 1.0);
-		auto dirLightColour = vec3(0.5, 0.0, 1.0);
+		//auto dirLight = vec3(1.0, 1.0, 1.0);
+		//auto dirLightColour = vec3(0.5, 0.0, 1.0);
 
-		m_NumRaysCast++;
+		//m_NumRaysCast++;
 
 		HitRecord rec;
 
