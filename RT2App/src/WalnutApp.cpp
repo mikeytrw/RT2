@@ -14,7 +14,7 @@ public:
 	ExampleLayer() 
 	{
 
-		m_Cam = Camera(45.0f, 0.1f, 100.0f);
+		m_Cam = Camera(45.0f, 0.1f, 100.0f,0.5f,3.0f);
 		m_Renderer = Renderer();
 		m_RenderOnUpdate = true;
 

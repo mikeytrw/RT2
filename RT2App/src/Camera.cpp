@@ -8,12 +8,13 @@
 #include "Walnut/Random.h"
 
 
+
 #include <iostream>
 using namespace Walnut;
 
 
-Camera::Camera(float verticalFOV, float nearClip, float farClip)
-	: m_VerticalFOV(verticalFOV), m_NearClip(nearClip), m_FarClip(farClip)
+Camera::Camera(float verticalFOV, float nearClip, float farClip, float apeture, float focalDistance)
+	: m_VerticalFOV(verticalFOV), m_NearClip(nearClip), m_FarClip(farClip), m_Aperture(apeture),m_FocusDistance(focalDistance)
 {
 	m_ForwardDirection = glm::vec3(0, 0, -1);
 	m_Position = glm::vec3(0, 0, 2);
@@ -115,34 +116,45 @@ float Camera::GetRotationSpeed()
 	return 1.0f;
 }
 
+glm::vec3 Camera::RandomInUnitDisk() const {
+	static thread_local std::mt19937 generator;
+	std::uniform_real_distribution<float> distribution(-1.0f, 1.0f);
 
-/*
-glm::vec3& Camera::getRayDirection(uint32_t x, uint32_t y) {
-
-	//std::cerr << "\rwidth " << x << " height: " << y << std::flush;
-
-
-	
-	return m_RayDirections[x + y * m_ViewportWidth];
-
+	glm::vec3 p;
+	do { 
+		p = glm::vec3(distribution(generator), distribution(generator), 0.0f);
+	} while (glm::dot(p, p) >= 1.0f);
+	return p;
 }
-*/
+
+std::pair<glm::vec3, glm::vec3> Camera::GetRayOriginAndDirection(float u, float v) const {
+	glm::vec2 coord = { u , v };
+	coord = coord * 2.0f - 1.0f; // -1 -> 1
+
+	glm::vec4 target = m_InverseProjection * glm::vec4(coord.x, coord.y, 1, 1);
+	glm::vec3 rayDirection = glm::vec3(m_InverseView * glm::vec4(glm::normalize(glm::vec3(target) / target.w), 0)); // World space
+
+	// Calculate lens offset for depth of field
+	glm::vec3 lensOffset = m_Aperture / 2.0f * RandomInUnitDisk();
+	glm::vec3 offset = m_RightDirection * lensOffset.x + glm::cross(m_ForwardDirection, m_RightDirection) * lensOffset.y;
+
+	// Calculate new ray origin and direction
+	glm::vec3 rayOrigin = m_Position + offset;
+	rayDirection = rayDirection * m_FocusDistance - offset;
+
+	return { rayOrigin, rayDirection };
+}
 
 glm::vec3& Camera::getRayDirection(float u, float v) {
-
 	
 	glm::vec2 coord = { u , v };
 	coord = coord * 2.0f - 1.0f; // -1 -> 1
 
 	glm::vec4 target = m_InverseProjection * glm::vec4(coord.x, coord.y, 1, 1);
-	glm::vec3 direction = glm::vec3(m_InverseView * glm::vec4(glm::normalize(glm::vec3(target) / target.w), 0)); // World space
-
-	glm::vec3 focalPoint = m_Position + m_FocusDistance * direction;
-	glm::vec2 offset = m_Aperture * glm::circularRand(Walnut::Random::Float());
-	glm::vec3 origin = m_Position + offset.x * m_RightDirection + offset.y * glm::vec3(0.0f,1.0f,0.0);
-	glm::vec3 rayDirection = glm::normalize(focalPoint - origin);
-
-	return rayDirection;// glm::vec3(0.0f);//rayDirection;
+	glm::vec3 rayDirection = glm::vec3(m_InverseView * glm::vec4(glm::normalize(glm::vec3(target) / target.w), 0)); // World space
+	
+	return rayDirection;
+	
 
 }
 
