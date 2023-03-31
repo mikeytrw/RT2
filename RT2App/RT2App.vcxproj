@@ -138,7 +138,23 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="src\Camera.cpp" />
+    <ClInclude Include="src\Camera.h" />
+    <ClInclude Include="src\Colour.h" />
+    <ClInclude Include="src\Hittable.h" />
+    <ClInclude Include="src\HittableList.h" />
+    <ClInclude Include="src\Material.h" />
+    <ClInclude Include="src\Ray.h" />
+    <ClInclude Include="src\Renderer.h" />
+    <ClInclude Include="src\Sphere.h" />
+    <ClInclude Include="src\Utility.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\Camera.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</ExcludedFromBuild>
+    </ClCompile>
     <ClCompile Include="src\WalnutApp.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -149,17 +165,6 @@
     <ProjectReference Include="..\Walnut\Walnut\Walnut.vcxproj">
       <Project>{C038E8D9-ACDA-12B0-9595-260481D69900}</Project>
     </ProjectReference>
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="src\Camera.h" />
-    <ClInclude Include="src\Colour.h" />
-    <ClInclude Include="src\Hittable.h" />
-    <ClInclude Include="src\HittableList.h" />
-    <ClInclude Include="src\Material.h" />
-    <ClInclude Include="src\Ray.h" />
-    <ClInclude Include="src\Renderer.h" />
-    <ClInclude Include="src\Sphere.h" />
-    <ClInclude Include="src\Utility.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -51,6 +51,7 @@ private:
 
 	glm::vec3 m_Position{ 0.0f, 0.0f, 0.0f };
 	glm::vec3 m_ForwardDirection{ 0.0f, 0.0f, 0.0f };
+	glm::vec3 m_RightDirection{ 1.0f,0.0f,0.0f };
 
 	// Cached ray directions
 	std::vector<glm::vec3> m_RayDirections;
@@ -60,4 +61,7 @@ private:
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
 
 	bool mHasMoved = false;
+
+	float m_Aperture = 0.0f;
+	float m_FocusDistance = 1.0f;
 };

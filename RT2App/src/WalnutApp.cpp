@@ -16,7 +16,7 @@ public:
 
 		m_Cam = Camera(45.0f, 0.1f, 100.0f);
 		m_Renderer = Renderer();
-		m_RenderOnUpdate = false;
+		m_RenderOnUpdate = true;
 
 
 	}
