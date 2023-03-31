@@ -4,17 +4,17 @@
 #define SPHERE_H
 
 
-
 class Sphere : public Hittable {
 public:
-	Sphere() {}
-	Sphere(vec3 cen, float rad,int index) : centre(cen), radius(rad), m_Index(index) {};
+
+	Sphere() {};
+	Sphere(vec3 cen, float rad,shared_ptr<Material>mat) : centre(cen), radius(rad), Hittable(mat){};
 	virtual bool hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const override;
 
 public:
 	vec3 centre = vec3(0.0f);
 	float radius = 0.0f;
-	int m_Index = 0;
+	
 	
 
 
@@ -24,11 +24,11 @@ public:
 bool Sphere::hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const {
 
 	vec3 oc = r.origin() - centre;
-	auto a = dot(r.direction(), r.direction());
-	auto h = dot(oc, r.direction());
-	auto c = dot(oc, oc) - radius * radius;
+	float a = glm::dot(r.direction(), r.direction());
+	float h = glm::dot(oc, r.direction());
+	float c = glm::dot(oc, oc) - radius * radius;
 
-	auto discriminant = h * h - a * c;
+	float discriminant = h * h - a * c;
 
 	if (discriminant < 0) {
 		return false;
@@ -46,8 +46,7 @@ bool Sphere::hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const {
 
 	rec.m_T = root;
 	rec.m_P = r.at(rec.m_T);
-	rec.hitMaterial = mat;
-	rec.m_Index = m_Index;
+	rec.matPtr = mMatPtr;
 
 	vec3 outward_normal = (rec.m_P - centre) / radius;
 	rec.SetFaceNormal(r, outward_normal);

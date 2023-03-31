@@ -15,23 +15,23 @@ public:
 
 		//Image
 		m_SamplesPerPixel = 1;
-		m_MaxBounceDepth = 4;
+		m_MaxBounceDepth = 40;
 		m_NumRaysCast = 0;
 
 		//world
 		
-		m_World.add(make_shared<Sphere>(vec3(0.0, 0.0, -1.0), 0.5,0));
-		m_World.objects[0]->mat.albedo = vec3(1.0, 0.0, 0.0);
+		m_World.add(make_shared<Sphere>(vec3(0.0, 0.0, -1.0), 0.5,make_shared<LambertianMaterial>(vec3(0.0f,0.0f,1.0f))));
+		m_World.add(make_shared<Sphere>(vec3(1.0, 0.0, -1.0), 0.5, make_shared<MetalMaterial>(vec3(0.8f, 0.6f, 0.2f),2.1f)));
+		m_World.add(make_shared<Sphere>(vec3(-1.0, 0.0, -1.0), 0.5, make_shared<MetalMaterial>(vec3(0.8f, 0.8f, 0.8f),0.01f)));
 
 		//ground
-		m_World.add(make_shared<Sphere>(vec3(0.0, -100.5, -1.0), 100.0,1));
-		m_World.objects[1]->mat.albedo = vec3(0.0, 0.0, 0.0);
-		m_World.objects[1]->mat.roughness = 1.0f;
-		//blue light
-		m_World.add(make_shared<Sphere>(vec3(1.0,2.0, -1.0), 0.5,2));   //blue light
-		m_World.objects[2]->mat.albedo = vec3(0.0, 0.0, 40.0);
+		m_World.add(make_shared<Sphere>(vec3(0.0, -500.5, -1.0), 500.0, make_shared<LambertianMaterial>(vec3(0.1f,0.3f,0.1f))));
 
-		//m_World.add(make_shared<Sphere>(point3(1.0, 2.0, -1.0), 0.5, colour(40.0, 0.0, 0.0),3));
+		//blue light
+		m_World.add(make_shared<Sphere>(vec3(-0.5,-0.25, -0.25), 0.25, make_shared<DieletricMaterial>(1.5f)));   //blue light
+
+
+
 
 
 
@@ -102,7 +102,7 @@ public:
 						auto u = (float(x) + randomDouble()) / (width - 1);
 						auto v = (float(y) + randomDouble()) / (height - 1);
 						Ray r = Ray(mCam.GetPosition(), mCam.getRayDirection(u, v));
-						pixel_colour += RayColor(r, m_World, depth);
+						pixel_colour += PerPixel(r, m_World, depth);
 					}
 
 					float scale = 1.0f / m_SamplesPerPixel;
@@ -134,37 +134,6 @@ public:
 
 				}
 			});
-		/*
-		for (int y = 0; y < height; ++y) {
-			for (int x = 0; x < width; ++x) {
-				colour pixel_colour(0.0, 0.0, 0.0); // start with black then we add each sample and finally divide.
-				for (int s = 0; s < m_SamplesPerPixel; ++s) {
-					int depth = m_MaxBounceDepth;
-					auto u = (float(x) + randomDouble()) / (width - 1);
-					auto v = (float(y) + randomDouble()) / (height - 1);
-					Ray r = Ray(cam.GetPosition(),cam.getRayDirection(u, v));
-					pixel_colour += RayColor(r, m_World, depth);
-				}
-				//write_colour(charbuf, pixel_colour, buffer_position, samples_per_pixel);
-
-				float scale = 1.0f / m_SamplesPerPixel;
-
-				float r = sqrt(pixel_colour.x * scale);
-				float g = sqrt(pixel_colour.y * scale);
-				float b = sqrt(pixel_colour.z * scale);
-				
-
-				uint32_t ir = static_cast<uint32_t>(256 * clamp(r, 0.0f, 0.999f));
-				uint32_t ig = static_cast<uint32_t>(256 * clamp(g, 0.0f, 0.999f));
-				uint32_t ib = static_cast<uint32_t>(256 * clamp(b, 0.0f, 0.999f));
-
-				uint32_t color = (static_cast<uint32_t>(255) << 24) | (ib << 16) | (ig << 8) | ir;
-
-				m_ImageData[x + y * width] = color;
-				
-			}
-		}
-*/
 
 		m_FinalImage->SetData(m_ImageData);
 
@@ -180,13 +149,9 @@ public:
 		return m_FinalImage;
 	}
 
-	colour RayColor(const Ray& r, const Hittable& world, int depth) {
+	colour PerPixel(const Ray& r, const Hittable& world, int depth) {
 
-		
-		//auto dirLight = vec3(1.0, 1.0, 1.0);
-		//auto dirLightColour = vec3(0.5, 0.0, 1.0);
-
-		//m_NumRaysCast++;
+		//m_NumRaysCast++;  //commented out for performance reasons
 
 		HitRecord rec;
 
@@ -195,17 +160,37 @@ public:
 		}
 
 		if (world.hit(r, 0.001f, infinity, rec)) {
-
-			//return rec.m_Normal;
-
-			//point in unit sphere:
+			/*    //The old code that looked sick and ran fast af
 			vec3 unit_sphere_point = rec.m_P + rec.m_Normal + unit_vector(random_in_unit_sphere());
-			//return 0.5 * RayColor(Ray(rec.m_P, unit_sphere_point - rec.m_P), world, --depth) + rec.hitMaterial.albedo;
-			
 			vec3 diffuseDirection = unit_sphere_point - rec.m_P;
 			vec3 reflectionVector = glm::reflect(r.dir, rec.m_Normal);
 			vec3 reflectionRayDir = (1.0f - rec.hitMaterial.roughness) * reflectionVector + rec.hitMaterial.roughness* diffuseDirection;
 			return 0.5f * RayColor(Ray(rec.m_P, reflectionRayDir), world, --depth) + rec.hitMaterial.albedo;
+			*/
+
+
+			 //hacked at old code to work with new Material system
+/*	
+			vec3 unit_sphere_point = rec.m_P + rec.m_Normal + unit_vector(random_in_unit_sphere());
+			vec3 diffuseDirection = unit_sphere_point - rec.m_P;
+			vec3 reflectionVector = glm::reflect(r.dir, rec.m_Normal);
+			//vec3 reflectionRayDir = (1.0f - rec.hitMaterial.roughness) * reflectionVector + rec.hitMaterial.roughness* diffuseDirection;
+			vec3 reflectionRayDir = diffuseDirection;
+			//return 0.5f * RayColor(Ray(rec.m_P, reflectionRayDir), world, --depth) + rec.matPtr->mAlbedo;
+			return 0.5f * RayColor(Ray(rec.m_P, reflectionRayDir), world, --depth);
+*/			
+
+			//new code
+			Ray scatterRay;
+			vec3 attenuation;
+
+			if (rec.matPtr->scatter(r, rec, attenuation, scatterRay)) {
+				//return 0.5f * PerPixel(scatterRay, world, depth - 1) + attenuation;
+				return attenuation * PerPixel(scatterRay, world, depth - 1);
+			}
+			return vec3(0.0f);
+			
+
 
 		}
 

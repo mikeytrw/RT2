@@ -10,6 +10,7 @@
 #include "glm/glm.hpp"
 #include "Walnut/Random.h"
 
+
 //Namespaces 
 
 using std::shared_ptr;
@@ -67,6 +68,21 @@ inline vec3 random_in_unit_sphere() {
         return p;
     }
 
+}
+
+inline vec3 randomInUnitdisk() {
+
+    while (true) {
+        vec3 p = vec3(randomDouble(-1.0, 1.0), randomDouble(-1.0, 1.0), 0.0f);
+        if (length_squared(p) >= 1) continue;
+        return p;
+    }
+}
+
+
+bool nearZero(const vec3& vector) {
+    const auto s = 1e-8;
+    return (vector.x < s) && (vector.y < s) && (vector.z < s);
 }
 /*
 vec3 VCosineSampleHemisphere(float alpha)
