@@ -1,5 +1,4 @@
 #pragma once
-
 #include <glm/glm.hpp>
 #include <vector>
 
@@ -8,7 +7,7 @@ class Camera
 public:
 
 	Camera() {};
-	Camera(float verticalFOV, float nearClip, float farClip);
+	Camera(float verticalFOV, float nearClip, float farClip, float apeture, float focalDistance);
 
 	bool OnUpdate(float ts);
 	void OnResize(uint32_t width, uint32_t height);
@@ -32,7 +31,9 @@ public:
 	};
 
 	glm::vec3& getRayDirection(float u, float v);
-	//glm::vec3& getRayDirection(uint32_t x, uint32_t y);
+	
+	glm::vec3 RandomInUnitDisk() const;
+	std::pair<glm::vec3, glm::vec3> GetRayOriginAndDirection(float u, float v) const;
 
 	float GetRotationSpeed();
 private:

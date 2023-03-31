@@ -101,7 +101,9 @@ public:
 						int depth = m_MaxBounceDepth;
 						auto u = (float(x) + randomDouble()) / (width - 1);
 						auto v = (float(y) + randomDouble()) / (height - 1);
-						Ray r = Ray(mCam.GetPosition(), mCam.getRayDirection(u, v));
+
+						std::pair<glm::vec3, glm::vec3> ray_origin_and_direction = mCam.GetRayOriginAndDirection(u, v);
+						Ray r = Ray(ray_origin_and_direction.first, ray_origin_and_direction.second);
 						pixel_colour += PerPixel(r, m_World, depth);
 					}
 
