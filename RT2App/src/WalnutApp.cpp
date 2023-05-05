@@ -14,9 +14,9 @@ public:
 	ExampleLayer() 
 	{
 
-		m_Cam = Camera(45.0f, 0.1f, 100.0f,0.5f,3.0f);
+		m_Cam = Camera(45.0f, 0.1f, 100.0f,0.005f,2.5f);
 		m_Renderer = Renderer();
-		m_RenderOnUpdate = true;
+		m_RenderOnUpdate = false; 
 
 
 	}
@@ -55,6 +55,11 @@ public:
 			m_Renderer.m_MaxBounceDepth = 2;
 		};
 
+		ImGui::Separator();
+		ImGui::Text("Apeture");
+		ImGui::DragFloat("camApeture", &m_Cam.m_Aperture, 0.001f, 0.0f, 5.0f);
+		ImGui::Text("Focal Distance");
+		ImGui::DragFloat("camFocalDistance", &m_Cam.m_FocusDistance, 0.1f, 0.1f, 50.0f);
 		ImGui::End();
 
 		//ImGui::ShowDemoWindow();

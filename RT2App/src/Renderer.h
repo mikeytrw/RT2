@@ -14,21 +14,69 @@ public:
 		//do stuff here 
 
 		//Image
-		m_SamplesPerPixel = 1;
-		m_MaxBounceDepth = 40;
+		m_SamplesPerPixel = 5;
+		m_MaxBounceDepth = 8;
 		m_NumRaysCast = 0;
 
 		//world
 		
-		m_World.add(make_shared<Sphere>(vec3(0.0, 0.0, -1.0), 0.5,make_shared<LambertianMaterial>(vec3(0.0f,0.0f,1.0f))));
-		m_World.add(make_shared<Sphere>(vec3(1.0, 0.0, -1.0), 0.5, make_shared<MetalMaterial>(vec3(0.8f, 0.6f, 0.2f),2.1f)));
-		m_World.add(make_shared<Sphere>(vec3(-1.0, 0.0, -1.0), 0.5, make_shared<MetalMaterial>(vec3(0.8f, 0.8f, 0.8f),0.01f)));
+		//m_World.add(make_shared<Sphere>(vec3(0.0, 0.0, -1.0), 0.5,make_shared<LambertianMaterial>(vec3(0.0f,0.0f,1.0f))));
+		//m_World.add(make_shared<Sphere>(vec3(1.0, -0.2, -1.0), 0.3, make_shared<MetalMaterial>(vec3(0.8f, 0.6f, 0.2f),2.1f)));
+		//m_World.add(make_shared<Sphere>(vec3(-1.0, 0.0, -1.0), 0.5, make_shared<MetalMaterial>(vec3(0.8f, 0.8f, 0.8f),0.01f)));
 
-		//ground
-		m_World.add(make_shared<Sphere>(vec3(0.0, -500.5, -1.0), 500.0, make_shared<LambertianMaterial>(vec3(0.1f,0.3f,0.1f))));
+		////ground
+		//m_World.add(make_shared<Sphere>(vec3(0.0, -500.5, -1.0), 500.0, make_shared<LambertianMaterial>(vec3(0.1f,0.3f,0.1f))));
 
-		//blue light
-		m_World.add(make_shared<Sphere>(vec3(-0.5,-0.25, -0.25), 0.25, make_shared<DieletricMaterial>(1.5f)));   //blue light
+		////blue light
+		//m_World.add(make_shared<Sphere>(vec3(-0.5,-0.25, -0.25), 0.25, make_shared<DieletricMaterial>(1.5f)));   //blue light
+
+
+		//m_World.add(make_shared<Sphere>(vec3(1.5, -0.35, -0.25), 0.15, make_shared<LambertianMaterial>(vec3(0.6f, 0.3f, 1.0f))));   
+		//m_World.add(make_shared<Sphere>(vec3(-1.0, -0.35, 0.0), 0.15, make_shared<LambertianMaterial>(vec3(0.2f, 0.6f, 0.3f))));  
+		//m_World.add(make_shared<Sphere>(vec3(-2.5, -0.35, -0.25), 0.15, make_shared<LambertianMaterial>(vec3(0.0f, 0.8f, 1.0f))));   
+		//m_World.add(make_shared<Sphere>(vec3(0.85, -0.35,0.25), 0.15, make_shared<DieletricMaterial>(1.5f)));  
+		//m_World.add(make_shared<Sphere>(vec3(3.5, -0.35, -2.25), 0.15, make_shared<MetalMaterial>(vec3(0.8f, 0.8f, 0.8f), 0.01f))); 
+		auto ground_material = make_shared<LambertianMaterial>(vec3(0.5, 0.5, 0.5));
+		m_World.add(make_shared<Sphere>(vec3(0, -1000, 0), 1000, ground_material));
+
+		for (int a = -11; a < 11; a++) {
+			for (int b = -11; b < 11; b++) {
+				auto choose_mat = randomDouble();
+				vec3 center(a + 0.9 * randomDouble(), 0.2, b + 0.9 * randomDouble());
+
+				if ((center - vec3(4, 0.2, 0)).length() > 0.9) {
+					shared_ptr<Material> sphere_material;
+
+					if (choose_mat < 0.8) {
+						// diffuse
+						auto albedo = vec3(randomDouble(), randomDouble(), randomDouble()) * vec3(randomDouble(), randomDouble(), randomDouble());
+						sphere_material = make_shared<LambertianMaterial>(albedo);
+						m_World.add(make_shared<Sphere>(center, 0.2, sphere_material));
+					}
+					else if (choose_mat < 0.95) {
+						// metal
+						auto albedo = vec3(randomDouble(0.5f,1.0f), randomDouble(0.5f, 1.0f), randomDouble(0.5f, 1.0f));
+						auto fuzz = randomDouble(0.0f, 0.5f);
+						sphere_material = make_shared<MetalMaterial>(albedo, fuzz);
+						m_World.add(make_shared<Sphere>(center, 0.2, sphere_material));
+					}
+					else {
+						// glass
+						sphere_material = make_shared<DieletricMaterial>(1.5);
+						m_World.add(make_shared<Sphere>(center, 0.2, sphere_material));
+					}
+				}
+			}
+		}
+
+		auto material1 = make_shared<DieletricMaterial>(1.5);
+		m_World.add(make_shared<Sphere>(vec3(0, 1, 0), 1.0, material1));
+
+		auto material2 = make_shared<LambertianMaterial>(vec3(0.4, 0.2, 0.1));
+		m_World.add(make_shared<Sphere>(vec3(-4, 1, 0), 1.0, material2));
+
+		auto material3 = make_shared<MetalMaterial>(vec3(0.7, 0.6, 0.5), 0.0);
+		m_World.add(make_shared<Sphere>(vec3(4, 1, 0), 1.0, material3));
 
 
 

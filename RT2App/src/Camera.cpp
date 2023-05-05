@@ -16,8 +16,8 @@ using namespace Walnut;
 Camera::Camera(float verticalFOV, float nearClip, float farClip, float apeture, float focalDistance)
 	: m_VerticalFOV(verticalFOV), m_NearClip(nearClip), m_FarClip(farClip), m_Aperture(apeture),m_FocusDistance(focalDistance)
 {
-	m_ForwardDirection = glm::vec3(0, 0, -1);
-	m_Position = glm::vec3(0, 0, 2);
+	m_ForwardDirection = glm::vec3(0,0, -1);
+	m_Position = glm::vec3(0, 1, 10);
 
 	m_Aperture = 0.05f;
 }

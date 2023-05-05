@@ -36,6 +36,9 @@ public:
 	std::pair<glm::vec3, glm::vec3> GetRayOriginAndDirection(float u, float v) const;
 
 	float GetRotationSpeed();
+
+	float m_Aperture = 0.0f;
+	float m_FocusDistance = 1.0f;
 private:
 	void RecalculateProjection();
 	void RecalculateView();
@@ -63,6 +66,5 @@ private:
 
 	bool mHasMoved = false;
 
-	float m_Aperture = 0.0f;
-	float m_FocusDistance = 1.0f;
+	
 };
