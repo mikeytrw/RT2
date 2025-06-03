@@ -20,8 +20,12 @@ project "RT2App"
 
    links
    {
-       "Walnut"
+       "Walnut",
+       "%{Library.ShaderC}",
+       "%{Library.SpirvCross}",
    }
+
+   defines { "VK_ENABLE_BETA_EXTENSIONS" }
 
    targetdir ("../bin/" .. outputdir .. "/%{prj.name}")
    objdir ("../bin-int/" .. outputdir .. "/%{prj.name}")

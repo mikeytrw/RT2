@@ -3,7 +3,7 @@
 
 #include "Walnut/Image.h"
 #include "Walnut/Timer.h"
-#include "Renderer.h"
+#include "GpuRenderer.h"
 
 using namespace Walnut;
  
@@ -14,8 +14,8 @@ public:
 	ExampleLayer() 
 	{
 
-		m_Cam = Camera(45.0f, 0.1f, 100.0f,0.005f,2.5f);
-		m_Renderer = Renderer();
+                m_Cam = Camera(45.0f, 0.1f, 100.0f,0.005f,2.5f);
+                m_Renderer = GpuRenderer();
 		m_RenderOnUpdate = false; 
 
 
@@ -26,13 +26,8 @@ public:
 		auto image = m_Renderer.GetFinalImage();
 
 		ImGui::Begin("Info");
-		ImGui::Text("Last Render: %.3fms", m_LastRenderTime);
-		ImGui::Text("Rays Cast: %d", m_Renderer.m_NumRaysCast);
-		ImGui::Text("FPS: %.1f",1000/m_LastRenderTime);
-
-		float raysPerSec = m_Renderer.m_NumRaysCast / (m_LastRenderTime / 1000);
-
-		ImGui::Text("Rays/Sec: %.1f", raysPerSec);
+                ImGui::Text("Last Render: %.3fms", m_LastRenderTime);
+                ImGui::Text("FPS: %.1f",1000/m_LastRenderTime);
 		
 		if(image)
 			ImGui::Text("Render Res: %d x %d", image->GetWidth(), image->GetHeight());
@@ -46,14 +41,6 @@ public:
 
 		
 		ImGui::Separator();
-		ImGui::Text("Samples Per Pixel");
-		ImGui::DragInt("SPP", & m_Renderer.m_SamplesPerPixel, 1.0f, 1, 1500);
-		ImGui::Text("Sample Depth");
-		ImGui::DragInt("Bounces", &m_Renderer.m_MaxBounceDepth, 1.0f, 2, 100);
-		if (ImGui::Button("Reset")) {
-			m_Renderer.m_SamplesPerPixel = 1;
-			m_Renderer.m_MaxBounceDepth = 2;
-		};
 
 		ImGui::Separator();
 		ImGui::Text("Apeture");
@@ -103,7 +90,7 @@ private:
 		return;
 	}
 	
-	Renderer m_Renderer;
+        GpuRenderer m_Renderer;
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
 	uint32_t* m_ImageData = nullptr;
 	float m_LastRenderTime = 0.0f;
