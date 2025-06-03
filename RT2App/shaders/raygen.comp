@@ -1,0 +1,10 @@
+#version 450
+layout(local_size_x=8, local_size_y=8, local_size_z=1) in;
+layout(binding=0) buffer Buf { uint data[]; } buf;
+layout(push_constant) uniform PushConsts { int width; int height; } pc;
+void main(){
+    uint idx = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * pc.width;
+    vec2 uv = vec2(gl_GlobalInvocationID.xy) / vec2(pc.width, pc.height);
+    vec3 color = vec3(uv,0.2);
+    buf.data[idx] = (255u << 24) | (uint(color.b*255.0) << 16) | (uint(color.g*255.0) << 8) | uint(color.r*255.0);
+}
