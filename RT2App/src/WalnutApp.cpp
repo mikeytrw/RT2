@@ -68,6 +68,8 @@ public:
 					if (m_RendererGPU.Init())
 					{
 						m_UseGPU = 1;
+						m_RendererGPU.m_SPP = m_Renderer.m_SamplesPerPixel;
+						m_RendererGPU.m_MaxBounces = m_Renderer.m_MaxBounceDepth;
 						if (m_Mesh.IsLoaded())
 							UploadMeshToGPU();
 					}
@@ -79,6 +81,8 @@ public:
 				else
 				{
 					m_UseGPU = 1;
+					m_RendererGPU.m_SPP = m_Renderer.m_SamplesPerPixel;
+					m_RendererGPU.m_MaxBounces = m_Renderer.m_MaxBounceDepth;
 					if (m_Mesh.IsLoaded())
 						UploadMeshToGPU();
 				}
@@ -91,21 +95,33 @@ public:
 				ImGui::CloseCurrentPopup();
 			ImGui::EndPopup();
 		}
-		ImGui::Separator();
-		ImGui::Text("Samples Per Pixel");
-		ImGui::DragInt("SPP", & m_Renderer.m_SamplesPerPixel, 1.0f, 1, 1500);
-		ImGui::Text("Sample Depth");
-		ImGui::DragInt("Bounces", &m_Renderer.m_MaxBounceDepth, 1.0f, 2, 100);
-		if (ImGui::Button("Reset")) {
-			m_Renderer.m_SamplesPerPixel = 1;
-			m_Renderer.m_MaxBounceDepth = 2;
-		};
+	ImGui::Separator();
+	ImGui::Text("Samples Per Pixel");
+	if (ImGui::DragInt("SPP", &m_Renderer.m_SamplesPerPixel, 1.0f, 1, 1500))
+	{
+		m_RendererGPU.m_SPP = m_Renderer.m_SamplesPerPixel;
+		m_RendererGPU.ResetAccumulation();
+	}
+	ImGui::Text("Sample Depth");
+	if (ImGui::DragInt("Bounces", &m_Renderer.m_MaxBounceDepth, 1.0f, 2, 100))
+	{
+		m_RendererGPU.m_MaxBounces = m_Renderer.m_MaxBounceDepth;
+		m_RendererGPU.ResetAccumulation();
+	}
+	if (ImGui::Button("Reset")) {
+		m_Renderer.m_SamplesPerPixel = 1;
+		m_Renderer.m_MaxBounceDepth = 2;
+		m_RendererGPU.m_SPP = 1;
+		m_RendererGPU.m_MaxBounces = 2;
+		m_RendererGPU.ResetAccumulation();
+	};
 
-		ImGui::Separator();
-		ImGui::Text("Apeture");
-		ImGui::DragFloat("camApeture", &m_Cam.m_Aperture, 0.001f, 0.0f, 5.0f);
-		ImGui::Text("Focal Distance");
-		ImGui::DragFloat("camFocalDistance", &m_Cam.m_FocusDistance, 0.1f, 0.1f, 50.0f);
+	ImGui::Separator();
+	ImGui::Text("Camera");
+	if (ImGui::DragFloat("Aperture", &m_Cam.m_Aperture, 0.001f, 0.0f, 5.0f))
+		m_RendererGPU.ResetAccumulation();
+	if (ImGui::DragFloat("Focus Distance", &m_Cam.m_FocusDistance, 0.1f, 0.1f, 50.0f))
+		m_RendererGPU.ResetAccumulation();
 		ImGui::End();
 
 		ImGui::Begin("Mesh");

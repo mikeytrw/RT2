@@ -91,63 +91,50 @@ vec3 skyColor(vec3 direction)
     return (1.0 - t) * vec3(1.0, 1.0, 1.0) + t * vec3(0.5, 0.7, 1.0);
 }
 
-vec3 tracePath(vec3 origin, vec3 direction, inout uint rngState)
+vec3 tracePath(vec3 origin, vec3 direction, inout uint rngState, int maxBounces)
 {
-    rayQueryEXT rayQuery;
-    rayQueryInitializeEXT(rayQuery,
-        topLevelAS,
-        gl_RayFlagsOpaqueEXT,
-        0xFF,
-        origin,
-        0.001,
-        direction,
-        1e9);
+    vec3 throughput = vec3(1.0);
+    vec3 radiance = vec3(0.0);
 
-    while (rayQueryProceedEXT(rayQuery)) {}
-
-    if (rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+    for (int bounce = 0; bounce < maxBounces; bounce++)
     {
-        return skyColor(direction);
+        rayQueryEXT rayQuery;
+        rayQueryInitializeEXT(rayQuery,
+            topLevelAS,
+            gl_RayFlagsOpaqueEXT,
+            0xFF,
+            origin,
+            0.001,
+            direction,
+            1e9);
+
+        while (rayQueryProceedEXT(rayQuery)) {}
+
+        if (rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+        {
+            radiance += throughput * skyColor(direction);
+            break;
+        }
+
+        float t = rayQueryGetIntersectionTEXT(rayQuery, true);
+        uint primitiveIndex = rayQueryGetIntersectionPrimitiveIndexEXT(rayQuery, true);
+
+        vec3 normal = triangleNormals[primitiveIndex].xyz;
+        vec3 hitPoint = origin + direction * t;
+
+        Material mat = materials[0];
+        throughput *= mat.albedo;
+
+        // Lambertian diffuse
+        vec3 newDir = normalize(normal + randomInUnitSphere(rngState));
+        if (length(newDir) < 0.001)
+            newDir = normal;
+
+        origin = hitPoint + normal * 0.001;
+        direction = newDir;
     }
 
-    float t = rayQueryGetIntersectionTEXT(rayQuery, true);
-    uint primitiveIndex = rayQueryGetIntersectionPrimitiveIndexEXT(rayQuery, true);
-
-    vec3 normal = triangleNormals[primitiveIndex].xyz;
-    vec3 hitPoint = origin + direction * t;
-
-    Material mat = materials[0];
-    vec3 albedo = mat.albedo;
-
-    // Lambertian diffuse
-    vec3 newDir = normalize(normal + randomInUnitSphere(rngState));
-    if (length(newDir) < 0.001)
-        newDir = normal;
-
-    // Simple recursive-ish bounce (just one bounce for now)
-    rayQueryEXT bounceQuery;
-    rayQueryInitializeEXT(bounceQuery,
-        topLevelAS,
-        gl_RayFlagsOpaqueEXT,
-        0xFF,
-        hitPoint + normal * 0.001,
-        0.001,
-        newDir,
-        1e9);
-
-    while (rayQueryProceedEXT(bounceQuery)) {}
-
-    vec3 bounceColor;
-    if (rayQueryGetIntersectionTypeEXT(bounceQuery, true) == gl_RayQueryCommittedIntersectionNoneEXT)
-    {
-        bounceColor = skyColor(newDir);
-    }
-    else
-    {
-        bounceColor = vec3(0.5); // simple shading for secondary hit
-    }
-
-    return albedo * bounceColor;
+    return radiance;
 }
 
 void main()
@@ -165,6 +152,7 @@ void main()
     rngState = rngState ^ (rngState >> 15);
 
     int spp = int(camera.viewportSPP.z);
+    int maxBounces = int(camera.viewportSPP.w);
     vec3 color = vec3(0.0);
 
     for (int s = 0; s < spp; s++)
@@ -182,7 +170,7 @@ void main()
         vec3 rayOrigin = camera.position.xyz + offset;
         rayDir = normalize(rayDir * camera.apertureFocal.y - offset);
 
-        color += tracePath(rayOrigin, rayDir, rngState);
+        color += tracePath(rayOrigin, rayDir, rngState, maxBounces);
     }
 
     color /= float(spp);

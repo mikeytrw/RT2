@@ -43,6 +43,10 @@ public:
 
 	bool Init();
 	void RebuildAccelerationStructures();
+	void ResetAccumulation();
+
+	int m_SPP = 5;
+	int m_MaxBounces = 8;
 
 private:
 	void CreateOutputImage();

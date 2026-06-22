@@ -442,6 +442,11 @@ void RendererGPU::CreateMaterialBuffer()
 	vkUnmapMemory(device, m_MaterialBufferMemory);
 }
 
+void RendererGPU::ResetAccumulation()
+{
+	m_FrameIndex = 1;
+}
+
 void RendererGPU::SetMesh(const GPUMeshData& meshData)
 {
 	m_CurrentMesh = meshData;
@@ -527,7 +532,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	glm::vec3 up = glm::cross(right, camera.GetDirection());
 	ubo.right = glm::vec4(right, 0.0f);
 	ubo.up = glm::vec4(up, 0.0f);
-	ubo.viewportSPP = glm::vec4((float)m_Width, (float)m_Height, 5.0f, 8.0f);
+	ubo.viewportSPP = glm::vec4((float)m_Width, (float)m_Height, (float)m_SPP, (float)m_MaxBounces);
 	ubo.apertureFocal = glm::vec4(camera.m_Aperture, camera.m_FocusDistance, 0.0f, 0.0f);
 	ubo.inverseProjection = camera.GetInverseProjection();
 	ubo.inverseView = camera.GetInverseView();
