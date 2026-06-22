@@ -10,18 +10,24 @@ public:
 	Sphere() {};
 	Sphere(vec3 cen, float rad,shared_ptr<Material>mat) : centre(cen), radius(rad), Hittable(mat){};
 	virtual bool hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const override;
+	virtual AABB boundingBox() const override;
 
 public:
 	vec3 centre = vec3(0.0f);
 	float radius = 0.0f;
-	
-	
+
 
 
 };
 
+inline AABB Sphere::boundingBox() const {
+	return AABB(
+		centre - vec3(radius, radius, radius),
+		centre + vec3(radius, radius, radius)
+	);
+}
 
-bool Sphere::hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const {
+inline bool Sphere::hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const {
 
 	vec3 oc = r.origin() - centre;
 	float a = glm::dot(r.direction(), r.direction());

@@ -8,7 +8,7 @@
 #include <string>
 
 
-void write_colour(char* out, colour pixel_colour, int& buffer_position, int samples_per_pixel) {
+inline void write_colour(char* out, colour pixel_colour, int& buffer_position, int samples_per_pixel) {
 
 	float scale = 1.0f / samples_per_pixel;
 

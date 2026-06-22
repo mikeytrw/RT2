@@ -22,12 +22,22 @@ public:
 	void add(shared_ptr<Hittable> object) { objects.push_back(object); };
 
 	virtual bool hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const override;
+	virtual AABB boundingBox() const override;
 	std::vector<shared_ptr<Hittable>> objects;
 private:
 	
 };
 
-bool HittableList::hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const {
+inline AABB HittableList::boundingBox() const {
+	if (objects.empty()) return AABB();
+	AABB box = objects[0]->boundingBox();
+	for (size_t i = 1; i < objects.size(); i++) {
+		box = AABB::surroundingBox(box, objects[i]->boundingBox());
+	}
+	return box;
+}
+
+inline bool HittableList::hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const {
 
 	HitRecord temp_hit_record;
 	bool hit_anything = false;

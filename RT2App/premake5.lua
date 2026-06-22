@@ -5,18 +5,19 @@ project "RT2App"
    targetdir "bin/%{cfg.buildcfg}"
    staticruntime "off"
 
-   files { "src/**.h", "src/**.cpp" }
+    files { "src/**.h", "src/**.cpp", "vendor/**.h", "vendor/**.cpp" }
 
-   includedirs
-   {
-      "../Walnut/vendor/imgui",
-      "../Walnut/vendor/glfw/include",
-      "../Walnut/vendor/glm",
+    includedirs
+    {
+       "vendor",
+       "../Walnut/vendor/imgui",
+       "../Walnut/vendor/glfw/include",
+       "../Walnut/vendor/glm",
 
-      "../Walnut/Walnut/src",
+       "../Walnut/Walnut/src",
 
-      "%{IncludeDir.VulkanSDK}",
-   }
+       "%{IncludeDir.VulkanSDK}",
+    }
 
    links
    {

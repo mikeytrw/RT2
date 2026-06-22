@@ -3,6 +3,8 @@
 #ifndef HITTABLE_H
 #define HITTABLE_H
 
+#include "AABB.h"
+
 class Material;
 
 struct HitRecord {
@@ -27,6 +29,7 @@ public:
 	Hittable(shared_ptr<Material> matPtr) : mMatPtr(matPtr) {};
 
 	virtual bool hit(const Ray& r, float t_min, float t_max, HitRecord& rec) const = 0;
+	virtual AABB boundingBox() const = 0;
 	shared_ptr<Material> mMatPtr;
 };
 

@@ -55,7 +55,7 @@ inline vec3 unit_vector(vec3 v) {
     return glm::normalize(v);
 }
 
-double length_squared(vec3 e){
+inline double length_squared(vec3 e){
 
     return e.x * e.x + e.y * e.y + e.z * e.z;
 
@@ -80,7 +80,7 @@ inline vec3 randomInUnitdisk() {
 }
 
 
-bool nearZero(const vec3& vector) {
+inline bool nearZero(const vec3& vector) {
     const auto s = 1e-8;
     return (vector.x < s) && (vector.y < s) && (vector.z < s);
 }
@@ -94,7 +94,7 @@ vec3 VCosineSampleHemisphere(float alpha)
    
 }
 */
-float VCosineSampleHemispherePDF(vec3 v, float alpha)
+inline float VCosineSampleHemispherePDF(vec3 v, float alpha)
 {
     float cosTheta = v.z;
     return (cosTheta + alpha) * pow(cosTheta, alpha) / pi;
