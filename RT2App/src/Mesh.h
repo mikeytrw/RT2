@@ -8,6 +8,8 @@
 #include "BVHNode.h"
 
 #include <string>
+#include <utility>
+#include <vector>
 
 class Mesh
 {
@@ -25,9 +27,13 @@ public:
 	size_t GetTriangleCount() const { return m_Triangles.objects.size(); }
 	shared_ptr<BVHNode> GetBvhNode() const { return std::dynamic_pointer_cast<BVHNode>(m_Bvh); }
 
+	std::pair<std::vector<float>, std::vector<uint32_t>> GetRawVertexData() const { return { m_RawVertices, m_RawIndices }; }
+
 private:
 	HittableList m_Triangles;
 	shared_ptr<Hittable> m_Bvh;
+	std::vector<float> m_RawVertices;
+	std::vector<uint32_t> m_RawIndices;
 };
 
 #endif // !MESH_H

@@ -37,6 +37,8 @@ bool Mesh::Load(const std::string& filepath, const vec3& position, const vec3& r
                 const shared_ptr<Material>& material)
 {
 	m_Triangles.clear();
+	m_RawVertices.clear();
+	m_RawIndices.clear();
 
 	tinyobj::ObjReader reader;
 	tinyobj::ObjReaderConfig reader_config;
@@ -81,6 +83,14 @@ bool Mesh::Load(const std::string& filepath, const vec3& position, const vec3& r
 				position, rotation, scale);
 
 			m_Triangles.add(make_shared<Triangle>(v0, v1, v2, material));
+
+			uint32_t baseIndex = static_cast<uint32_t>(m_RawVertices.size() / 3);
+			m_RawVertices.push_back(v0.x); m_RawVertices.push_back(v0.y); m_RawVertices.push_back(v0.z);
+			m_RawVertices.push_back(v1.x); m_RawVertices.push_back(v1.y); m_RawVertices.push_back(v1.z);
+			m_RawVertices.push_back(v2.x); m_RawVertices.push_back(v2.y); m_RawVertices.push_back(v2.z);
+			m_RawIndices.push_back(baseIndex);
+			m_RawIndices.push_back(baseIndex + 1);
+			m_RawIndices.push_back(baseIndex + 2);
 		}
 	}
 

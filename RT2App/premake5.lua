@@ -27,9 +27,10 @@ project "RT2App"
    targetdir ("../bin/" .. outputdir .. "/%{prj.name}")
    objdir ("../bin-int/" .. outputdir .. "/%{prj.name}")
 
-   filter "system:windows"
-      systemversion "latest"
-      defines { "WL_PLATFORM_WINDOWS" }
+    filter "system:windows"
+       systemversion "latest"
+       defines { "WL_PLATFORM_WINDOWS" }
+       postbuildcommands { "copy /Y \"%{wks.location}RT2App\\shaders\\pathtracer.spv\" \"%{cfg.targetdir}\"" }
 
    filter "configurations:Debug"
       defines { "WL_DEBUG" }

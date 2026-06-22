@@ -3,7 +3,8 @@
 #define RAY_H
 
 #include "glm/glm.hpp"
-#include "Utility.h"
+
+using glm::vec3;
 
 class Ray {
 
@@ -27,3 +28,20 @@ public:
 
 
 #endif // !RAY_H
+
+#include "AABB.h"
+
+inline bool AABB::hit(const Ray& r, float t_min, float t_max) const {
+    for (int a = 0; a < 3; a++) {
+        auto invD = 1.0f / r.direction()[a];
+        auto t0 = (minimum[a] - r.origin()[a]) * invD;
+        auto t1 = (maximum[a] - r.origin()[a]) * invD;
+        if (invD < 0.0f) std::swap(t0, t1);
+
+        t_min = t0 > t_min ? t0 : t_min;
+        t_max = t1 < t_max ? t1 : t_max;
+
+        if (t_max <= t_min) return false;
+    }
+    return true;
+}

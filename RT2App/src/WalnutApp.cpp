@@ -4,6 +4,7 @@
 #include "Walnut/Image.h"
 #include "Walnut/Timer.h"
 #include "Renderer.h"
+#include "RendererGPU.h"
 #include "Mesh.h"
 #include "FileDialog.h"
 
@@ -52,7 +53,44 @@ public:
 
 		ImGui::Checkbox("Render on Update", &m_RenderOnUpdate);
 
-		
+		ImGui::Separator();
+		ImGui::Text("Renderer");
+		bool rtSupported = Walnut::Application::IsRayTracingSupported();
+		ImGui::Text("RT Supported: %s", rtSupported ? "yes" : "no");
+		if (rtSupported)
+		{
+			if (ImGui::RadioButton("CPU", m_UseGPU == 0)) { m_UseGPU = 0; }
+			ImGui::SameLine();
+			if (ImGui::RadioButton("GPU (Vulkan RT)", m_UseGPU == 1))
+			{
+				if (!m_RendererGPU.IsAvailable())
+				{
+					if (m_RendererGPU.Init())
+					{
+						m_UseGPU = 1;
+						if (m_Mesh.IsLoaded())
+							UploadMeshToGPU();
+					}
+					else
+					{
+						ImGui::OpenPopup("GPU Init Failed");
+					}
+				}
+				else
+				{
+					m_UseGPU = 1;
+					if (m_Mesh.IsLoaded())
+						UploadMeshToGPU();
+				}
+			}
+		}
+		if (ImGui::BeginPopupModal("GPU Init Failed", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::Text("Failed to initialize GPU renderer.\nCheck that pathtracer.spv exists next to the executable.\nSee console for details.");
+			if (ImGui::Button("OK"))
+				ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+		}
 		ImGui::Separator();
 		ImGui::Text("Samples Per Pixel");
 		ImGui::DragInt("SPP", & m_Renderer.m_SamplesPerPixel, 1.0f, 1, 1500);
@@ -143,15 +181,27 @@ public:
 		m_ViewportWidth = ImGui::GetContentRegionAvail().x;
 		m_ViewportHeight = ImGui::GetContentRegionAvail().y;
 
-		if(image)
+		if (m_UseGPU && m_RendererGPU.HasOutput())
+			ImGui::Image((ImTextureID)m_RendererGPU.GetOutputDescriptorSet(),
+			             { (float)m_RendererGPU.GetWidth(), (float)m_RendererGPU.GetHeight() });
+		else if (image)
 			ImGui::Image(image->GetDescriptorSet(), { (float)image->GetWidth(),(float)image->GetHeight() });
 
 		ImGui::End();
 		ImGui::PopStyleVar();
 
 		if (m_RenderOnUpdate) {
-			m_Renderer.setTemporalAccumulation(true);
-			Render();
+			if (m_UseGPU)
+			{
+				m_RendererGPU.OnResize(m_ViewportWidth, m_ViewportHeight);
+				m_Cam.OnResize(m_ViewportWidth, m_ViewportHeight);
+				Render();
+			}
+			else
+			{
+				m_Renderer.setTemporalAccumulation(true);
+				Render();
+			}
 		}
 		else {
 			m_Renderer.setTemporalAccumulation(false);
@@ -168,12 +218,19 @@ private:
 	void Render() {
 		Timer timer;
 
-		m_Renderer.OnResize(m_ViewportWidth, m_ViewportHeight);
-		m_Cam.OnResize(m_ViewportWidth, m_ViewportHeight);
-		m_Renderer.Render(m_Cam);
+		if (m_UseGPU && m_RendererGPU.IsAvailable())
+		{
+			m_RendererGPU.OnResize(m_ViewportWidth, m_ViewportHeight);
+			m_Cam.OnResize(m_ViewportWidth, m_ViewportHeight);
+			m_RendererGPU.Render(m_Cam);
+		}
+		else
+		{
+			m_Renderer.OnResize(m_ViewportWidth, m_ViewportHeight);
+			m_Cam.OnResize(m_ViewportWidth, m_ViewportHeight);
+			m_Renderer.Render(m_Cam);
+		}
 		m_LastRenderTime = timer.ElapsedMillis();
-
-		return;
 	}
 
 	void RebuildMaterial()
@@ -200,9 +257,43 @@ private:
 			m_Renderer.m_BvhMaxDepth = 0;
 			if (auto bvh = m_Mesh.GetBvhNode())
 				bvh->GetStats(m_Renderer.m_BvhNodeCount, m_Renderer.m_BvhMaxDepth);
+
+			if (m_UseGPU && m_RendererGPU.IsAvailable())
+				UploadMeshToGPU();
 		}
 	}
+
+	void UploadMeshToGPU()
+	{
+		if (!m_Mesh.IsLoaded()) return;
+
+		GPUMeshData gpuData;
+		gpuData.materialType = m_MaterialType;
+		gpuData.albedo = m_MeshAlbedo;
+		gpuData.fuzz = m_MeshFuzz;
+		gpuData.ior = m_MeshIOR;
+		gpuData.position = m_MeshPosition;
+		gpuData.rotation = m_MeshRotation;
+		gpuData.scale = m_MeshScale;
+
+		// Extract vertex/index data from the loaded mesh's triangles
+		const auto& triangles = m_Mesh.GetBvhRoot();
+		// We need the raw triangle data - let's get it from the Mesh's HittableList
+		// Since we don't have direct access, we'll extract from the tinyobj data via Mesh
+		// For now, use a simpler approach: extract from Triangle objects
+		// We need to flatten the BVH leaves - but that's complex.
+		// Simpler: add a method to Mesh to get raw vertex/index data
+
+		// Let's get the data from Mesh directly
+		auto meshData = m_Mesh.GetRawVertexData();
+		gpuData.vertices = meshData.first;
+		gpuData.indices = meshData.second;
+
+		m_RendererGPU.SetMesh(gpuData);
+	}
 	Renderer m_Renderer;
+	RendererGPU m_RendererGPU;
+	int m_UseGPU = 0; // 0=CPU, 1=GPU
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
 	uint32_t* m_ImageData = nullptr;
 	float m_LastRenderTime = 0.0f;

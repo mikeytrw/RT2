@@ -1,0 +1,192 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform image2D outputImage;
+
+layout(set = 0, binding = 1, std140) uniform CameraData
+{
+    vec4 position;     // xyz = position, w = frameIndex
+    vec4 forward;      // xyz = forward, w = pad
+    vec4 right;        // xyz = right, w = pad
+    vec4 up;           // xyz = up, w = pad
+    vec4 viewportSPP;  // x = width, y = height, z = spp, w = maxBounces
+    vec4 apertureFocal;// x = aperture, y = focusDistance, z = pad, w = pad
+    mat4 inverseProjection;
+    mat4 inverseView;
+} camera;
+
+struct Material
+{
+    vec3 albedo;
+    int type;     // 0=lambertian, 1=metal, 2=dielectric
+    float fuzz;
+    float ior;
+    float _pad0;
+    float _pad1;
+};
+
+layout(set = 0, binding = 2, std430) readonly buffer MaterialBuffer
+{
+    Material materials[];
+};
+
+layout(set = 0, binding = 3, std430) readonly buffer NormalBuffer
+{
+    vec4 triangleNormals[]; // xyz = normal, w = unused (16-byte aligned)
+};
+
+layout(set = 0, binding = 4) uniform accelerationStructureEXT topLevelAS;
+
+float reflectance(float cosine, float refIdx)
+{
+    float r0 = (1.0 - refIdx) / (1.0 + refIdx);
+    r0 = r0 * r0;
+    return r0 + (1.0 - r0) * pow(1.0 - cosine, 5.0);
+}
+
+uint pcg(inout uint state)
+{
+    state = state * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+}
+
+float randomFloat(inout uint state)
+{
+    return float(pcg(state)) / 4294967295.0;
+}
+
+vec3 randomInUnitSphere(inout uint state)
+{
+    for (int i = 0; i < 10; i++)
+    {
+        vec3 p = vec3(randomFloat(state) * 2.0 - 1.0,
+                      randomFloat(state) * 2.0 - 1.0,
+                      randomFloat(state) * 2.0 - 1.0);
+        if (dot(p, p) < 1.0)
+            return p;
+    }
+    return vec3(0.0);
+}
+
+vec3 randomInUnitDisk(inout uint state)
+{
+    for (int i = 0; i < 10; i++)
+    {
+        vec3 p = vec3(randomFloat(state) * 2.0 - 1.0,
+                      randomFloat(state) * 2.0 - 1.0,
+                      0.0);
+        if (dot(p, p) < 1.0)
+            return p;
+    }
+    return vec3(0.0);
+}
+
+vec3 skyColor(vec3 direction)
+{
+    float t = 0.5 * (direction.y + 1.0);
+    return (1.0 - t) * vec3(1.0, 1.0, 1.0) + t * vec3(0.5, 0.7, 1.0);
+}
+
+vec3 tracePath(vec3 origin, vec3 direction, inout uint rngState)
+{
+    rayQueryEXT rayQuery;
+    rayQueryInitializeEXT(rayQuery,
+        topLevelAS,
+        gl_RayFlagsOpaqueEXT,
+        0xFF,
+        origin,
+        0.001,
+        direction,
+        1e9);
+
+    while (rayQueryProceedEXT(rayQuery)) {}
+
+    if (rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+    {
+        return skyColor(direction);
+    }
+
+    float t = rayQueryGetIntersectionTEXT(rayQuery, true);
+    uint primitiveIndex = rayQueryGetIntersectionPrimitiveIndexEXT(rayQuery, true);
+
+    vec3 normal = triangleNormals[primitiveIndex].xyz;
+    vec3 hitPoint = origin + direction * t;
+
+    Material mat = materials[0];
+    vec3 albedo = mat.albedo;
+
+    // Lambertian diffuse
+    vec3 newDir = normalize(normal + randomInUnitSphere(rngState));
+    if (length(newDir) < 0.001)
+        newDir = normal;
+
+    // Simple recursive-ish bounce (just one bounce for now)
+    rayQueryEXT bounceQuery;
+    rayQueryInitializeEXT(bounceQuery,
+        topLevelAS,
+        gl_RayFlagsOpaqueEXT,
+        0xFF,
+        hitPoint + normal * 0.001,
+        0.001,
+        newDir,
+        1e9);
+
+    while (rayQueryProceedEXT(bounceQuery)) {}
+
+    vec3 bounceColor;
+    if (rayQueryGetIntersectionTypeEXT(bounceQuery, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+    {
+        bounceColor = skyColor(newDir);
+    }
+    else
+    {
+        bounceColor = vec3(0.5); // simple shading for secondary hit
+    }
+
+    return albedo * bounceColor;
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    uint width = uint(camera.viewportSPP.x);
+    uint height = uint(camera.viewportSPP.y);
+
+    if (pixel.x >= int(width) || pixel.y >= int(height))
+        return;
+
+    uint rngState = (pixel.y * width + pixel.x) * 719393u + uint(camera.position.w) * 9277u;
+    rngState = rngState ^ (rngState >> 16);
+    rngState = rngState * 2246822519u + uint(camera.position.w);
+    rngState = rngState ^ (rngState >> 15);
+
+    int spp = int(camera.viewportSPP.z);
+    vec3 color = vec3(0.0);
+
+    for (int s = 0; s < spp; s++)
+    {
+        float u = (float(pixel.x) + randomFloat(rngState)) / float(width);
+        float v = (float(pixel.y) + randomFloat(rngState)) / float(height);
+
+        vec2 coord = vec2(u, v) * 2.0 - 1.0;
+        vec4 target = camera.inverseProjection * vec4(coord.x, coord.y, 1.0, 1.0);
+        vec3 rayDir = normalize(vec3(camera.inverseView * vec4(normalize(vec3(target) / target.w), 0.0)));
+
+        // Depth of field
+        vec3 lensOffset = (camera.apertureFocal.x * 0.5) * randomInUnitDisk(rngState);
+        vec3 offset = camera.right.xyz * lensOffset.x + camera.up.xyz * lensOffset.y;
+        vec3 rayOrigin = camera.position.xyz + offset;
+        rayDir = normalize(rayDir * camera.apertureFocal.y - offset);
+
+        color += tracePath(rayOrigin, rayDir, rngState);
+    }
+
+    color /= float(spp);
+    color = sqrt(color);
+
+    imageStore(outputImage, pixel, vec4(color, 1.0));
+}

@@ -3,9 +3,15 @@
 #ifndef HITTABLE_H
 #define HITTABLE_H
 
+#include "glm/glm.hpp"
+#include <memory>
+#include "Ray.h"
 #include "AABB.h"
 
 class Material;
+
+using std::shared_ptr;
+using glm::vec3;
 
 struct HitRecord {
 	vec3 m_P = vec3(0.0, 0.0, 0.0);

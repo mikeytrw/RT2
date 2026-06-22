@@ -3,6 +3,7 @@
 #define MATERIAL_H
 
 #include "Hittable.h"
+#include "Utility.h"
 #include "glm/glm.hpp"
 
 class Material
