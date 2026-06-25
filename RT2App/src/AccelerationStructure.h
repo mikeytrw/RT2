@@ -14,6 +14,14 @@ struct BLASInstance
 	VkTransformMatrixKHR transform;
 };
 
+// Geometry for a single BLAS build.
+struct BLASGeometry
+{
+	const std::vector<float>*    vertices;    // position.xyz, stride 3
+	const std::vector<uint32_t>* indices;     // triangle indices
+	uint32_t                     materialIndex;
+};
+
 class AccelerationStructure
 {
 public:
@@ -22,41 +30,57 @@ public:
 
 	void Destroy();
 
-	bool BuildBLAS(VkCommandBuffer cmdBuffer,
-	               const std::vector<float>& vertices,
-	               const std::vector<uint32_t>& indices,
-	               uint32_t materialIndex);
+	// Build one BLAS per mesh geometry. Each BLAS gets its own vertex/index/
+	// normal buffers. Returns true if all builds succeeded.
+	bool BuildBLASes(VkCommandBuffer cmdBuffer,
+	                 const std::vector<BLASGeometry>& meshes);
 
+	// Build TLAS over the previously-built BLASes. Each instance references
+	// a BLAS by index and carries a customIndex (material index).
 	bool BuildTLAS(VkCommandBuffer cmdBuffer,
 	               const std::vector<BLASInstance>& instances);
 
 	VkDeviceAddress GetTLASDeviceAddress() const { return m_TLASDeviceAddress; }
 	bool IsValid() const { return m_TLAS != VK_NULL_HANDLE; }
-	VkAccelerationStructureKHR GetBLAS() const { return m_BLAS; }
 	VkAccelerationStructureKHR GetTLAS() const { return m_TLAS; }
 
-	VkBuffer GetVertexBuffer() const { return m_VertexBuffer; }
-	VkBuffer GetIndexBuffer() const { return m_IndexBuffer; }
-	VkBuffer GetNormalBuffer() const { return m_NormalBuffer; }
-	uint32_t GetTriangleCount() const { return m_TriangleCount; }
+	uint32_t GetBLASCount() const { return static_cast<uint32_t>(m_BLASes.size()); }
+	VkDeviceAddress GetBLASAddress(uint32_t index) const;
+
+	VkBuffer GetNormalBuffer() const { return m_CombinedNormalBuffer; }
+	VkBuffer GetInstanceOffsetBuffer() const { return m_InstanceOffsetBuffer; }
+	uint32_t GetTriangleCount() const { return m_TotalTriangleCount; }
 
 private:
+	struct BLASData
+	{
+		VkBuffer vertexBuffer = VK_NULL_HANDLE;
+		VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
+		VkBuffer indexBuffer = VK_NULL_HANDLE;
+		VkDeviceMemory indexMemory = VK_NULL_HANDLE;
+		VkBuffer normalBuffer = VK_NULL_HANDLE;
+		VkDeviceMemory normalMemory = VK_NULL_HANDLE;
+		VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
+		VkBuffer blasBuffer = VK_NULL_HANDLE;
+		VkDeviceMemory blasMemory = VK_NULL_HANDLE;
+		VkBuffer scratchBuffer = VK_NULL_HANDLE;
+		VkDeviceMemory scratchMemory = VK_NULL_HANDLE;
+		VkDeviceAddress deviceAddress = 0;
+		uint32_t triangleCount = 0;
+	};
+
 	void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
 	                  VkBuffer& buffer, VkDeviceMemory& memory);
 	void DestroyBuffer(VkBuffer buffer, VkDeviceMemory memory);
 	VkDeviceAddress GetBufferDeviceAddress(VkBuffer buffer);
 
-	// BLAS
-	VkBuffer m_VertexBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_VertexMemory = VK_NULL_HANDLE;
-	VkBuffer m_IndexBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_IndexMemory = VK_NULL_HANDLE;
-	VkBuffer m_NormalBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_NormalMemory = VK_NULL_HANDLE;
+	std::vector<BLASData> m_BLASes;
 
-	VkAccelerationStructureKHR m_BLAS = VK_NULL_HANDLE;
-	VkBuffer m_BLASBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_BLASMemory = VK_NULL_HANDLE;
+	// Combined normal buffer (all triangles from all BLASes) + per-instance offsets
+	VkBuffer m_CombinedNormalBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_CombinedNormalMemory = VK_NULL_HANDLE;
+	VkBuffer m_InstanceOffsetBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_InstanceOffsetMemory = VK_NULL_HANDLE;
 
 	// TLAS
 	VkAccelerationStructureKHR m_TLAS = VK_NULL_HANDLE;
@@ -68,15 +92,15 @@ private:
 	VkBuffer m_InstanceBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_InstanceMemory = VK_NULL_HANDLE;
 
-	// Scratch buffers (kept alive until command buffer finishes)
-	VkBuffer m_BLASScratchBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_BLASScratchMemory = VK_NULL_HANDLE;
+	// TLAS scratch
 	VkBuffer m_TLASScratchBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_TLASScratchMemory = VK_NULL_HANDLE;
 
-	uint32_t m_TriangleCount = 0;
+	uint32_t m_TotalTriangleCount = 0;
 
 	uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
+
+	void BuildCombinedNormalBuffer();
 };
 
 #endif // !ACCELERATION_STRUCTURE_H

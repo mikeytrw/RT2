@@ -8,8 +8,9 @@ layout(location = 0) rayPayloadInEXT RayPayload payload;
 
 void main()
 {
-    // Miss = sky gradient
-    vec3 dir = gl_WorldRayDirectionEXT;
-    float t = 0.5 * (dir.y + 1.0);
-    payload.b.xyz = (1.0 - t) * vec3(1.0, 1.0, 1.0) + t * vec3(0.5, 0.7, 1.0);
+    // Miss = sky gradient. Add sky radiance * throughput to accumulated radiance.
+    vec3 dir = normalize(gl_WorldRayDirectionEXT);
+    vec3 sky = skyColor(dir);
+    payload.b.xyz += payload.a.xyz * sky;
+    payload.c.w = 1.0; // done
 }

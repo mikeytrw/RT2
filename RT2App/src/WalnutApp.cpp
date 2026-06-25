@@ -9,6 +9,7 @@
 #include "FileDialog.h"
 #include "Scene.h"
 #include "SceneLoader.h"
+#include "GPUSceneData.h"
 
 #include <cstdio>
 
@@ -244,6 +245,15 @@ public:
 		m_ViewportWidth = ImGui::GetContentRegionAvail().x;
 		m_ViewportHeight = ImGui::GetContentRegionAvail().y;
 
+		// Resize before ImGui::Image so the descriptor set is valid when
+		// ImGui records its draw. Calling after would free the descriptor
+		// that ImGui just used, causing device loss on submit.
+		if (m_UseGPU && m_RendererGPU.IsAvailable())
+		{
+			m_RendererGPU.OnResize(m_ViewportWidth, m_ViewportHeight);
+			m_Cam.OnResize(m_ViewportWidth, m_ViewportHeight);
+		}
+
 		if (m_UseGPU && m_RendererGPU.HasOutput())
 			ImGui::Image((ImTextureID)m_RendererGPU.GetOutputDescriptorSet(),
 			             { (float)m_RendererGPU.GetWidth(), (float)m_RendererGPU.GetHeight() });
@@ -256,8 +266,6 @@ public:
 		if (m_RenderOnUpdate) {
 			if (m_UseGPU)
 			{
-				m_RendererGPU.OnResize(m_ViewportWidth, m_ViewportHeight);
-				m_Cam.OnResize(m_ViewportWidth, m_ViewportHeight);
 				Render();
 			}
 			else
@@ -283,8 +291,6 @@ private:
 
 		if (m_UseGPU && m_RendererGPU.IsAvailable())
 		{
-			m_RendererGPU.OnResize(m_ViewportWidth, m_ViewportHeight);
-			m_Cam.OnResize(m_ViewportWidth, m_ViewportHeight);
 			m_RendererGPU.Render(m_Cam);
 		}
 		else
@@ -330,37 +336,32 @@ private:
 	{
 		if (m_SceneMeshes.empty() && !m_Mesh.IsLoaded()) return;
 
-		GPUMeshData gpuData;
-		gpuData.materialType = m_MaterialType;
-		gpuData.albedo = m_MeshAlbedo;
-		gpuData.fuzz = m_MeshFuzz;
-		gpuData.ior = m_MeshIOR;
-		gpuData.position = vec3(0.0f);
-		gpuData.rotation = vec3(0.0f);
-		gpuData.scale = 1.0f;
+		// Build GPUSceneData from the Scene (per-mesh materials from glTF)
+		GPUSceneData gpuData = BuildGPUSceneData(m_Scene);
 
-		// Concatenate all scene meshes into one vertex/index buffer
-		for (const auto& mesh : m_SceneMeshes)
-		{
-			auto [verts, indices] = mesh.GetRawVertexData();
-			uint32_t baseIndex = static_cast<uint32_t>(gpuData.vertices.size() / 3);
-			gpuData.vertices.insert(gpuData.vertices.end(), verts.begin(), verts.end());
-			for (uint32_t idx : indices)
-				gpuData.indices.push_back(idx + baseIndex);
-		}
-
-		// Fallback: if no scene meshes, use the single OBJ mesh
-		if (gpuData.vertices.empty() && m_Mesh.IsLoaded())
+		// Fallback: if no scene meshes from glTF, use the single OBJ mesh
+		if (gpuData.meshes.empty() && m_Mesh.IsLoaded())
 		{
 			auto [verts, indices] = m_Mesh.GetRawVertexData();
-			gpuData.vertices = verts;
-			gpuData.indices = indices;
+			GPUMeshGeometry geo;
+			geo.vertices = verts;
+			geo.indices = indices;
+			geo.materialIndex = 0;
+			gpuData.meshes.push_back(std::move(geo));
+
+			// Single default material from UI controls
+			SceneMaterial sm;
+			sm.baseColor = m_MeshAlbedo;
+			sm.metallic = (m_MaterialType == 1) ? 1.0f : 0.0f;
+			sm.roughness = m_MeshFuzz;
+			sm.ior = m_MeshIOR;
+			gpuData.materials.push_back(GPUMaterial::fromSceneMaterial(sm));
 		}
 
-		printf("[Scene] GPU upload: %d vertices, %d indices\n",
-		       (int)(gpuData.vertices.size() / 3), (int)gpuData.indices.size());
+		printf("[Scene] GPU upload: %d meshes, %d materials\n",
+		       (int)gpuData.meshes.size(), (int)gpuData.materials.size());
 
-		m_RendererGPU.SetMesh(gpuData);
+		m_RendererGPU.SetScene(gpuData);
 	}
 
 	void LoadScene(const std::string& filepath)

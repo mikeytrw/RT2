@@ -6,21 +6,8 @@
 #include "vulkan/vulkan.h"
 #include "AccelerationStructure.h"
 #include "Camera.h"
-#include "Material.h"
+#include "GPUSceneData.h"
 #include <memory>
-
-struct GPUMeshData
-{
-	std::vector<float> vertices;
-	std::vector<uint32_t> indices;
-	int materialType;
-	glm::vec3 albedo;
-	float fuzz;
-	float ior;
-	glm::vec3 position;
-	glm::vec3 rotation;
-	float scale;
-};
 
 class RendererGPU
 {
@@ -34,7 +21,7 @@ public:
 
 	void OnResize(uint32_t width, uint32_t height);
 	void Render(const Camera& camera);
-	void SetMesh(const GPUMeshData& meshData);
+	void SetScene(const GPUSceneData& sceneData);
 
 	VkDescriptorSet GetOutputDescriptorSet() const { return m_ImGuiDescriptorSet; }
 	bool HasOutput() const { return m_OutputImage != VK_NULL_HANDLE; }
@@ -82,7 +69,7 @@ private:
 	VkBuffer m_SBTBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_SBTMemory = VK_NULL_HANDLE;
 	VkDeviceSize m_SBTSize = 0;
-	VkDeviceSize m_SBTStride = 0;       // per-region stride (aligned handle size)
+	VkDeviceSize m_SBTStride = 0;
 	VkDeviceSize m_RgenRegionSize = 0;
 	VkDeviceSize m_MissRegionSize = 0;
 	VkDeviceSize m_HitRegionSize = 0;
@@ -93,15 +80,15 @@ private:
 
 	VkBuffer m_MaterialBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_MaterialBufferMemory = VK_NULL_HANDLE;
+	VkDeviceSize m_MaterialBufferSize = 0;
 
 	AccelerationStructure m_AS;
 
-	GPUMeshData m_CurrentMesh;
+	GPUSceneData m_CurrentScene;
 	bool m_NeedsASRebuild = false;
-	bool m_ASJustBuilt = false; // set in RebuildAS, consumed+cleared in Render
+	bool m_ASJustBuilt = false;
 
 	uint32_t m_FrameIndex = 1;
-	bool m_TemporalAccumulation = false;
 	VkImageLayout m_OutputImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 	void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,

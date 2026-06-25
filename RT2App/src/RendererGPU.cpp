@@ -121,16 +121,18 @@ void RendererGPU::CreatePipeline()
 		return;
 	}
 
-	// Descriptor set layout — all 5 bindings visible to all RT stages.
-	// glslc includes every global declaration from the shared header in each
-	// stage's SPIR-V entry point interface list, even if unused in that stage.
-	// If a binding's stageFlags doesn't include a stage that references it,
-	// traceRayEXT can silently fail to invoke that stage's shader.
+	// Descriptor set layout — 6 bindings:
+	//   0: storage image (output)
+	//   1: uniform buffer (camera)
+	//   2: storage buffer (materials)
+	//   3: storage buffer (combined normals)
+	//   4: acceleration structure (TLAS)
+	//   5: storage buffer (per-instance normal offsets)
 	const VkShaderStageFlags allRTFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR |
 	                                      VK_SHADER_STAGE_MISS_BIT_KHR |
 	                                      VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 
-	VkDescriptorSetLayoutBinding bindings[5] = {};
+	VkDescriptorSetLayoutBinding bindings[6] = {};
 
 	bindings[0] = {};
 	bindings[0].binding = 0;
@@ -162,9 +164,15 @@ void RendererGPU::CreatePipeline()
 	bindings[4].descriptorCount = 1;
 	bindings[4].stageFlags = allRTFlags;
 
+	bindings[5] = {};
+	bindings[5].binding = 5;
+	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bindings[5].descriptorCount = 1;
+	bindings[5].stageFlags = allRTFlags;
+
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 5;
+	layoutInfo.bindingCount = 6;
 	layoutInfo.pBindings = bindings;
 
 	vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_DescriptorSetLayout);
@@ -218,9 +226,10 @@ void RendererGPU::CreatePipeline()
 	groups[2].anyHitShader = VK_SHADER_UNUSED_KHR;
 	groups[2].intersectionShader = VK_SHADER_UNUSED_KHR;
 
-	// Recursion depth: one slot for the camera ray + maxBounces for scattered rays.
-	m_MaxRecursionDepth = static_cast<uint32_t>(
-		std::min<int>(m_MaxBounces + 1, static_cast<int>(rtProps.maxRayRecursionDepth)));
+	// Recursion depth: set to device maximum so the slider can change
+	// maxBounces without rebuilding the pipeline. The shader's
+	// depth >= maxBounces check prevents infinite recursion.
+	m_MaxRecursionDepth = rtProps.maxRayRecursionDepth;
 	if (m_MaxRecursionDepth < 2) m_MaxRecursionDepth = 2;
 
 	VkRayTracingPipelineCreateInfoKHR pipelineInfo = {};
@@ -404,6 +413,16 @@ void RendererGPU::CreateOutputImage()
 void RendererGPU::DestroyOutputImage()
 {
 	VkDevice device = Walnut::Application::GetDevice();
+
+	// Free the ImGui descriptor set before destroying the image view/sampler
+	// it references — otherwise the GPU may sample a destroyed resource.
+	if (m_ImGuiDescriptorSet)
+	{
+		vkFreeDescriptorSets(device, Walnut::Application::GetDescriptorPool(),
+		                     1, &m_ImGuiDescriptorSet);
+		m_ImGuiDescriptorSet = VK_NULL_HANDLE;
+	}
+
 	if (m_Sampler) vkDestroySampler(device, m_Sampler, nullptr);
 	if (m_OutputImageView) vkDestroyImageView(device, m_OutputImageView, nullptr);
 	if (m_OutputImage) vkDestroyImage(device, m_OutputImage, nullptr);
@@ -417,23 +436,30 @@ void RendererGPU::DestroyOutputImage()
 
 void RendererGPU::OnResize(uint32_t width, uint32_t height)
 {
+	if (width == 0 || height == 0)
+		return;
+
 	if (m_Width == width && m_Height == height && m_OutputImage != VK_NULL_HANDLE)
 		return;
 
 	VkDevice device = Walnut::Application::GetDevice();
 	vkDeviceWaitIdle(device);
 
+	// Free old descriptor set before allocating a new one
+	if (m_DescriptorSet)
+	{
+		vkFreeDescriptorSets(device, Walnut::Application::GetDescriptorPool(), 1, &m_DescriptorSet);
+		m_DescriptorSet = VK_NULL_HANDLE;
+	}
+
 	DestroyOutputImage();
 
 	m_Width = width;
 	m_Height = height;
 
-	if (width > 0 && height > 0)
-	{
-		CreateOutputImage();
-		CreateDescriptorSet();
-		UpdateDescriptorSet();
-	}
+	CreateOutputImage();
+	CreateDescriptorSet();
+	UpdateDescriptorSet();
 
 	m_FrameIndex = 1;
 }
@@ -490,6 +516,10 @@ void RendererGPU::UpdateDescriptorSet()
 	normalBufferInfo.buffer = m_AS.GetNormalBuffer();
 	normalBufferInfo.range = VK_WHOLE_SIZE;
 
+	VkDescriptorBufferInfo offsetBufferInfo = {};
+	offsetBufferInfo.buffer = m_AS.GetInstanceOffsetBuffer();
+	offsetBufferInfo.range = VK_WHOLE_SIZE;
+
 	VkWriteDescriptorSetAccelerationStructureKHR asInfo = {};
 	asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
 	asInfo.accelerationStructureCount = 1;
@@ -499,7 +529,7 @@ void RendererGPU::UpdateDescriptorSet()
 	std::cerr << "[RT2] UpdateDescriptorSet: TLAS=" << (void*)tlas
 	          << " descSet=" << m_DescriptorSet << "\n";
 
-	VkWriteDescriptorSet writes[5] = {};
+	VkWriteDescriptorSet writes[6] = {};
 
 	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[0].dstSet = m_DescriptorSet;
@@ -536,38 +566,34 @@ void RendererGPU::UpdateDescriptorSet()
 	writes[4].descriptorCount = 1;
 	writes[4].pNext = &asInfo;
 
-	vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
+	writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[5].dstSet = m_DescriptorSet;
+	writes[5].dstBinding = 5;
+	writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[5].descriptorCount = 1;
+	writes[5].pBufferInfo = &offsetBufferInfo;
+
+	vkUpdateDescriptorSets(device, 6, writes, 0, nullptr);
 }
 
 void RendererGPU::CreateMaterialBuffer()
 {
-	// Single material for now
-	struct GPUMaterial
-	{
-		glm::vec3 albedo;
-		int type;
-		float fuzz;
-		float ior;
-		float pad0;
-		float pad1;
-	};
-
-	GPUMaterial mat;
-	mat.albedo = m_CurrentMesh.albedo;
-	mat.type = m_CurrentMesh.materialType;
-	mat.fuzz = m_CurrentMesh.fuzz;
-	mat.ior = m_CurrentMesh.ior;
-
 	DestroyBuffer(m_MaterialBuffer, m_MaterialBufferMemory);
-	CreateBuffer(sizeof(GPUMaterial),
+
+	size_t matCount = m_CurrentScene.materials.size();
+	if (matCount == 0) matCount = 1; // always at least 1
+
+	m_MaterialBufferSize = matCount * sizeof(GPUMaterial);
+
+	CreateBuffer(m_MaterialBufferSize,
 	             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 	             m_MaterialBuffer, m_MaterialBufferMemory);
 
 	VkDevice device = Walnut::Application::GetDevice();
 	void* data;
-	vkMapMemory(device, m_MaterialBufferMemory, 0, sizeof(GPUMaterial), 0, &data);
-	memcpy(data, &mat, sizeof(GPUMaterial));
+	vkMapMemory(device, m_MaterialBufferMemory, 0, m_MaterialBufferSize, 0, &data);
+	memcpy(data, m_CurrentScene.materials.data(), m_MaterialBufferSize);
 	vkUnmapMemory(device, m_MaterialBufferMemory);
 }
 
@@ -576,9 +602,9 @@ void RendererGPU::ResetAccumulation()
 	m_FrameIndex = 1;
 }
 
-void RendererGPU::SetMesh(const GPUMeshData& meshData)
+void RendererGPU::SetScene(const GPUSceneData& sceneData)
 {
-	m_CurrentMesh = meshData;
+	m_CurrentScene = sceneData;
 	m_NeedsASRebuild = true;
 	m_FrameIndex = 1;
 }
@@ -587,9 +613,21 @@ void RendererGPU::RebuildAccelerationStructures()
 {
 	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
 
-	bool blasOK = m_AS.BuildBLAS(cmd, m_CurrentMesh.vertices, m_CurrentMesh.indices, 0);
+	// Build one BLAS per mesh geometry
+	std::vector<BLASGeometry> geometries;
+	geometries.reserve(m_CurrentScene.meshes.size());
+	for (const auto& mesh : m_CurrentScene.meshes)
+	{
+		BLASGeometry geo;
+		geo.vertices = &mesh.vertices;
+		geo.indices = &mesh.indices;
+		geo.materialIndex = mesh.materialIndex;
+		geometries.push_back(geo);
+	}
 
-	// Barrier: BLAS build must complete before TLAS build reads it
+	bool blasOK = m_AS.BuildBLASes(cmd, geometries);
+
+	// Barrier: BLAS builds must complete before TLAS build reads them
 	VkMemoryBarrier blasBarrier = {};
 	blasBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 	blasBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
@@ -600,34 +638,23 @@ void RendererGPU::RebuildAccelerationStructures()
 		VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
 		0, 1, &blasBarrier, 0, nullptr, 0, nullptr);
 
-	VkTransformMatrixKHR transform = {};
-	transform.matrix[0][0] = 1.0f;
-	transform.matrix[1][1] = 1.0f;
-	transform.matrix[2][2] = 1.0f;
-	// Translation in column 3: matrix[row][3]
-	transform.matrix[0][3] = 0.0f;
-	transform.matrix[1][3] = 0.0f;
-	transform.matrix[2][3] = 0.0f;
-
-	VkDeviceAddress blasAddress;
+	// Build TLAS instances — one per BLAS, with customIndex = material index
+	std::vector<BLASInstance> instances;
+	instances.reserve(m_CurrentScene.meshes.size());
+	for (size_t i = 0; i < m_CurrentScene.meshes.size(); i++)
 	{
-		VkAccelerationStructureDeviceAddressInfoKHR addressInfo = {};
-		addressInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
-		addressInfo.accelerationStructure = m_AS.GetBLAS();
+		VkTransformMatrixKHR transform = {};
+		transform.matrix[0][0] = 1.0f;
+		transform.matrix[1][1] = 1.0f;
+		transform.matrix[2][2] = 1.0f;
 
-		PFN_vkGetAccelerationStructureDeviceAddressKHR pvkGetAccelerationStructureDeviceAddressKHR =
-			(PFN_vkGetAccelerationStructureDeviceAddressKHR)vkGetInstanceProcAddr(
-				Walnut::Application::GetInstance(), "vkGetAccelerationStructureDeviceAddressKHR");
-
-		blasAddress = pvkGetAccelerationStructureDeviceAddressKHR(Walnut::Application::GetDevice(), &addressInfo);
+		BLASInstance inst = {};
+		inst.blasAddress = m_AS.GetBLASAddress(static_cast<uint32_t>(i));
+		inst.customIndex = m_CurrentScene.meshes[i].materialIndex;
+		inst.transform = transform;
+		instances.push_back(inst);
 	}
 
-	BLASInstance instance = {};
-	instance.blasAddress = blasAddress;
-	instance.customIndex = 0; // material index
-	instance.transform = transform;
-
-	std::vector<BLASInstance> instances = { instance };
 	bool tlasOK = m_AS.BuildTLAS(cmd, instances);
 
 	Walnut::Application::FlushCommandBuffer(cmd);

@@ -1,5 +1,5 @@
 // Shared declarations for the ray tracing path tracer stages.
-// Included by rgen.rgen, miss.rmiss, closesthit.rchit, anyhit.rahit.
+// Included by rgen.rgen, miss.rmiss, closesthit.rchit.
 
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_scalar_block_layout : require
@@ -20,14 +20,15 @@ layout(set = 0, binding = 1, std140) uniform CameraData
     mat4 inverseView;
 } camera;
 
+// PBR material — matches GPUMaterial in GPUSceneData.h (48 bytes, std430)
 struct Material
 {
-    vec3 albedo;
-    int type;     // 0=lambertian, 1=metal, 2=dielectric
-    float fuzz;
+    vec4 baseColor_metallic;   // xyz = base color, w = metallic factor
+    vec4 emissive_roughness;   // xyz = emissive * intensity, w = roughness
     float ior;
     float _pad0;
     float _pad1;
+    float _pad2;
 };
 
 layout(set = 0, binding = 2, std430) readonly buffer MaterialBuffer
@@ -38,6 +39,11 @@ layout(set = 0, binding = 2, std430) readonly buffer MaterialBuffer
 layout(set = 0, binding = 3, std430) readonly buffer NormalBuffer
 {
     vec4 triangleNormals[]; // xyz = normal, w = unused (16-byte aligned)
+};
+
+layout(set = 0, binding = 5, std430) readonly buffer InstanceNormalOffsets
+{
+    uint normalOffsets[]; // per-instance offset into triangleNormals
 };
 
 layout(set = 0, binding = 4) uniform accelerationStructureEXT topLevelAS;
