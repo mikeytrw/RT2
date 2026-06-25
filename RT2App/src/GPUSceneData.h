@@ -55,6 +55,7 @@ struct GPUSceneData
 {
     std::vector<GPUMeshGeometry> meshes;
     std::vector<GPUMaterial>     materials;
+    std::vector<SceneTexture>    textures;
 };
 
 // Convert a Scene into GPUSceneData: one GPUMeshGeometry per scene mesh

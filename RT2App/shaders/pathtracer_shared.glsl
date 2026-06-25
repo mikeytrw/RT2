@@ -46,6 +46,9 @@ layout(set = 0, binding = 5, std430) readonly buffer InstanceNormalOffsets
     uint normalOffsets[]; // per-instance offset into triangleNormals
 };
 
+// Bindless texture array (combined image samplers, variable count)
+layout(set = 0, binding = 6) uniform sampler2D textures[];
+
 layout(set = 0, binding = 4) uniform accelerationStructureEXT topLevelAS;
 
 // ---- Payload ----------------------------------------------------------------

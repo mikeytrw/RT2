@@ -96,6 +96,7 @@ void RendererGPU::Destroy()
 
 	DestroyPipeline();
 	DestroyOutputImage();
+	DestroyTextures();
 	DestroyBuffer(m_CameraUBO, m_CameraUBOMemory);
 	DestroyBuffer(m_MaterialBuffer, m_MaterialBufferMemory);
 	m_AS.Destroy();
@@ -121,18 +122,21 @@ void RendererGPU::CreatePipeline()
 		return;
 	}
 
-	// Descriptor set layout — 6 bindings:
+	// Descriptor set layout — 7 bindings:
 	//   0: storage image (output)
 	//   1: uniform buffer (camera)
 	//   2: storage buffer (materials)
 	//   3: storage buffer (combined normals)
 	//   4: acceleration structure (TLAS)
 	//   5: storage buffer (per-instance normal offsets)
+	//   6: combined image sampler array (textures, bindless, variable count)
 	const VkShaderStageFlags allRTFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR |
 	                                      VK_SHADER_STAGE_MISS_BIT_KHR |
 	                                      VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 
-	VkDescriptorSetLayoutBinding bindings[6] = {};
+	const uint32_t maxTextures = 1024;
+
+	VkDescriptorSetLayoutBinding bindings[7] = {};
 
 	bindings[0] = {};
 	bindings[0].binding = 0;
@@ -170,10 +174,27 @@ void RendererGPU::CreatePipeline()
 	bindings[5].descriptorCount = 1;
 	bindings[5].stageFlags = allRTFlags;
 
+	bindings[6] = {};
+	bindings[6].binding = 6;
+	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[6].descriptorCount = maxTextures;
+	bindings[6].stageFlags = allRTFlags;
+
+	// Binding flags: binding 6 is partially bound + variable descriptor count
+	VkDescriptorBindingFlagsEXT bindingFlags[7] = {};
+	bindingFlags[6] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT |
+	                  VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT;
+
+	VkDescriptorSetLayoutBindingFlagsCreateInfoEXT bindingFlagsInfo = {};
+	bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
+	bindingFlagsInfo.bindingCount = 7;
+	bindingFlagsInfo.pBindingFlags = bindingFlags;
+
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 6;
+	layoutInfo.bindingCount = 7;
 	layoutInfo.pBindings = bindings;
+	layoutInfo.pNext = &bindingFlagsInfo;
 
 	vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_DescriptorSetLayout);
 
@@ -468,11 +489,20 @@ void RendererGPU::CreateDescriptorSet()
 {
 	VkDevice device = Walnut::Application::GetDevice();
 
+	// Variable descriptor count for the texture array (binding 6)
+	uint32_t textureCount = std::max<uint32_t>(1, (uint32_t)m_Textures.size());
+
+	VkDescriptorSetVariableDescriptorCountAllocateInfoEXT varCountInfo = {};
+	varCountInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO_EXT;
+	varCountInfo.descriptorSetCount = 1;
+	varCountInfo.pDescriptorCounts = &textureCount;
+
 	VkDescriptorSetAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
 	allocInfo.descriptorPool = Walnut::Application::GetDescriptorPool();
 	allocInfo.descriptorSetCount = 1;
 	allocInfo.pSetLayouts = &m_DescriptorSetLayout;
+	allocInfo.pNext = &varCountInfo;
 
 	vkAllocateDescriptorSets(device, &allocInfo, &m_DescriptorSet);
 }
@@ -520,6 +550,17 @@ void RendererGPU::UpdateDescriptorSet()
 	offsetBufferInfo.buffer = m_AS.GetInstanceOffsetBuffer();
 	offsetBufferInfo.range = VK_WHOLE_SIZE;
 
+	// Texture array image infos
+	std::vector<VkDescriptorImageInfo> textureImageInfos;
+	for (const auto& gt : m_Textures)
+	{
+		VkDescriptorImageInfo imgInfo = {};
+		imgInfo.sampler = gt.sampler;
+		imgInfo.imageView = gt.view;
+		imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		textureImageInfos.push_back(imgInfo);
+	}
+
 	VkWriteDescriptorSetAccelerationStructureKHR asInfo = {};
 	asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
 	asInfo.accelerationStructureCount = 1;
@@ -529,7 +570,7 @@ void RendererGPU::UpdateDescriptorSet()
 	std::cerr << "[RT2] UpdateDescriptorSet: TLAS=" << (void*)tlas
 	          << " descSet=" << m_DescriptorSet << "\n";
 
-	VkWriteDescriptorSet writes[6] = {};
+	VkWriteDescriptorSet writes[7] = {};
 
 	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[0].dstSet = m_DescriptorSet;
@@ -573,7 +614,20 @@ void RendererGPU::UpdateDescriptorSet()
 	writes[5].descriptorCount = 1;
 	writes[5].pBufferInfo = &offsetBufferInfo;
 
-	vkUpdateDescriptorSets(device, 6, writes, 0, nullptr);
+	if (!textureImageInfos.empty())
+	{
+		writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[6].dstSet = m_DescriptorSet;
+		writes[6].dstBinding = 6;
+		writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		writes[6].descriptorCount = (uint32_t)textureImageInfos.size();
+		writes[6].pImageInfo = textureImageInfos.data();
+		vkUpdateDescriptorSets(device, 7, writes, 0, nullptr);
+	}
+	else
+	{
+		vkUpdateDescriptorSets(device, 6, writes, 0, nullptr);
+	}
 }
 
 void RendererGPU::CreateMaterialBuffer()
@@ -597,6 +651,158 @@ void RendererGPU::CreateMaterialBuffer()
 	vkUnmapMemory(device, m_MaterialBufferMemory);
 }
 
+void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
+{
+	VkDevice device = Walnut::Application::GetDevice();
+	DestroyTextures();
+
+	m_Textures.resize(textures.size());
+
+	for (size_t i = 0; i < textures.size(); i++)
+	{
+		const auto& tex = textures[i];
+		if (tex.pixels.empty() || tex.width <= 0 || tex.height <= 0)
+		{
+			std::cerr << "[RT2] Texture " << i << ": no pixel data, skipping\n";
+			continue;
+		}
+
+		GPUTexture& gt = m_Textures[i];
+		gt.width = tex.width;
+		gt.height = tex.height;
+
+		VkDeviceSize imageSize = (VkDeviceSize)(tex.width * tex.height * 4);
+
+		// Staging buffer
+		VkBuffer stagingBuffer;
+		VkDeviceMemory stagingMemory;
+		CreateBuffer(imageSize,
+		             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		             stagingBuffer, stagingMemory);
+
+		void* data;
+		vkMapMemory(device, stagingMemory, 0, imageSize, 0, &data);
+		memcpy(data, tex.pixels.data(), (size_t)imageSize);
+		vkUnmapMemory(device, stagingMemory);
+
+		// Create VkImage
+		VkImageCreateInfo imageInfo = {};
+		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+		imageInfo.imageType = VK_IMAGE_TYPE_2D;
+		imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+		imageInfo.extent.width = tex.width;
+		imageInfo.extent.height = tex.height;
+		imageInfo.extent.depth = 1;
+		imageInfo.mipLevels = 1;
+		imageInfo.arrayLayers = 1;
+		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+		imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+		imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+		vkCreateImage(device, &imageInfo, nullptr, &gt.image);
+
+		VkMemoryRequirements memReq;
+		vkGetImageMemoryRequirements(device, gt.image, &memReq);
+
+		VkMemoryAllocateInfo allocInfo = {};
+		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize = memReq.size;
+		allocInfo.memoryTypeIndex = FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		vkAllocateMemory(device, &allocInfo, nullptr, &gt.memory);
+		vkBindImageMemory(device, gt.image, gt.memory, 0);
+
+		// Transition + copy via command buffer
+		VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
+
+		VkImageMemoryBarrier barrier = {};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.srcAccessMask = 0;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = gt.image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+		VkBufferImageCopy region = {};
+		region.bufferOffset = 0;
+		region.bufferRowLength = 0;
+		region.bufferImageHeight = 0;
+		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.imageSubresource.mipLevel = 0;
+		region.imageSubresource.baseArrayLayer = 0;
+		region.imageSubresource.layerCount = 1;
+		region.imageOffset = {0, 0, 0};
+		region.imageExtent = {(uint32_t)tex.width, (uint32_t)tex.height, 1};
+
+		vkCmdCopyBufferToImage(cmd, stagingBuffer, gt.image,
+		                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+		// Transition to shader read optimal
+		VkImageMemoryBarrier shaderBarrier = barrier;
+		shaderBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		shaderBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		shaderBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		shaderBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &shaderBarrier);
+
+		Walnut::Application::FlushCommandBuffer(cmd);
+
+		DestroyBuffer(stagingBuffer, stagingMemory);
+
+		// Create image view
+		VkImageViewCreateInfo viewInfo = {};
+		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		viewInfo.image = gt.image;
+		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		viewInfo.subresourceRange.levelCount = 1;
+		viewInfo.subresourceRange.layerCount = 1;
+		vkCreateImageView(device, &viewInfo, nullptr, &gt.view);
+
+		// Create sampler
+		VkSamplerCreateInfo samplerInfo = {};
+		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+		samplerInfo.magFilter = VK_FILTER_LINEAR;
+		samplerInfo.minFilter = VK_FILTER_LINEAR;
+		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		samplerInfo.minLod = 0;
+		samplerInfo.maxLod = 0;
+		vkCreateSampler(device, &samplerInfo, nullptr, &gt.sampler);
+	}
+
+	std::cerr << "[RT2] Created " << m_Textures.size() << " GPU textures\n";
+}
+
+void RendererGPU::DestroyTextures()
+{
+	VkDevice device = Walnut::Application::GetDevice();
+	for (auto& gt : m_Textures)
+	{
+		if (gt.sampler) vkDestroySampler(device, gt.sampler, nullptr);
+		if (gt.view) vkDestroyImageView(device, gt.view, nullptr);
+		if (gt.image) vkDestroyImage(device, gt.image, nullptr);
+		if (gt.memory) vkFreeMemory(device, gt.memory, nullptr);
+	}
+	m_Textures.clear();
+}
+
 void RendererGPU::ResetAccumulation()
 {
 	m_FrameIndex = 1;
@@ -607,6 +813,8 @@ void RendererGPU::SetScene(const GPUSceneData& sceneData)
 	m_CurrentScene = sceneData;
 	m_NeedsASRebuild = true;
 	m_FrameIndex = 1;
+	DestroyTextures();
+	CreateTextures(m_CurrentScene.textures);
 }
 
 void RendererGPU::RebuildAccelerationStructures()

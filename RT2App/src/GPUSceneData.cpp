@@ -4,6 +4,9 @@ GPUSceneData BuildGPUSceneData(const Scene& scene)
 {
     GPUSceneData gpu;
 
+    // Copy all textures (decoded RGBA8 pixels)
+    gpu.textures = scene.GetTextures();
+
     // Convert all materials
     for (const auto& sm : scene.GetMaterials())
         gpu.materials.push_back(GPUMaterial::fromSceneMaterial(sm));

@@ -7,7 +7,19 @@
 #include "AccelerationStructure.h"
 #include "Camera.h"
 #include "GPUSceneData.h"
+#include "Scene.h"
 #include <memory>
+
+// A single GPU texture (VkImage + view + sampler + staging)
+struct GPUTexture
+{
+	VkImage image = VK_NULL_HANDLE;
+	VkDeviceMemory memory = VK_NULL_HANDLE;
+	VkImageView view = VK_NULL_HANDLE;
+	VkSampler sampler = VK_NULL_HANDLE;
+	int width = 0;
+	int height = 0;
+};
 
 class RendererGPU
 {
@@ -44,6 +56,8 @@ private:
 	void UpdateDescriptorSet();
 	void CreateMaterialBuffer();
 	void UpdateCameraUBO(const Camera& camera);
+	void CreateTextures(const std::vector<SceneTexture>& textures);
+	void DestroyTextures();
 
 	bool m_Initialized = false;
 
@@ -81,6 +95,11 @@ private:
 	VkBuffer m_MaterialBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_MaterialBufferMemory = VK_NULL_HANDLE;
 	VkDeviceSize m_MaterialBufferSize = 0;
+
+	// Textures (bindless array)
+	std::vector<GPUTexture> m_Textures;
+	VkDescriptorSetLayout m_TextureDescriptorSetLayout = VK_NULL_HANDLE;
+	VkDescriptorSet m_TextureDescriptorSet = VK_NULL_HANDLE;
 
 	AccelerationStructure m_AS;
 
