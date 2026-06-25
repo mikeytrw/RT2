@@ -14,6 +14,7 @@ project "RT2Tests"
        "vendor",
        "vendor/doctest",
        "../Walnut/vendor/glm",
+       "../Walnut/vendor/stb_image",
        "../RT2App/vendor",
        "../RT2App/vendor/tinygltf",
        "../RT2App/src",

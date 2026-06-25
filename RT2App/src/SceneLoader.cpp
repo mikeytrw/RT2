@@ -1,25 +1,40 @@
 #include "SceneLoader.h"
 
 // Disable stb_image/stb_image_write in tinygltf — we handle image data
-// separately in our Texture system. But we still need to provide a
-// LoadImageData stub so tinygltf can parse GLB files with embedded images.
+// ourselves via stb_image directly. But we still need to provide a
+// LoadImageData callback so tinygltf can parse GLB files with embedded images.
 #define TINYGLTF_IMPLEMENTATION
 #define TINYGLTF_NO_STB_IMAGE
 #define TINYGLTF_NO_STB_IMAGE_WRITE
 
 #include "tiny_gltf.h"
 
-// Stub image loader: stores raw bytes without decoding.
-// We only need geometry/material metadata, not pixel data.
-// tinygltf requires this callback to exist for GLB files with embedded images.
-bool StubLoadImageData(tinygltf::Image *image, const int image_idx,
-                       std::string *err, std::string *warn,
-                       int req_width, int req_height,
-                       const unsigned char *bytes, int size, void *user_data)
+// stb_image for decoding texture images (implementation provided by Walnut::Image.cpp)
+#include "stb_image.h"
+
+// Image loader: decodes raw image bytes (PNG/JPEG/etc) to RGBA8 using stb_image.
+// Stores decoded pixels in image->image as unsigned char vector.
+bool DecodeImageData(tinygltf::Image *image, const int image_idx,
+                     std::string *err, std::string *warn,
+                     int req_width, int req_height,
+                     const unsigned char *bytes, int size, void *user_data)
 {
-    // Store the raw image bytes and report the size.
-    // We don't decode the image — that will be done later by our Texture system.
-    image->image.assign(bytes, bytes + size);
+    (void)req_width; (void)req_height; (void)user_data;
+
+    int w, h, channels;
+    unsigned char *decoded = stbi_load_from_memory(bytes, size, &w, &h, &channels, 4);
+    if (!decoded)
+    {
+        if (err)
+            *err += "Failed to decode image " + std::to_string(image_idx) + "\n";
+        return false;
+    }
+
+    image->width = w;
+    image->height = h;
+    image->component = 4;
+    image->image.assign(decoded, decoded + (size_t)(w * h * 4));
+    stbi_image_free(decoded);
     return true;
 }
 
@@ -370,7 +385,7 @@ bool SceneLoader::Load(Scene& scene, const std::string& filepath)
 
     tinygltf::Model model;
     tinygltf::TinyGLTF loader;
-    loader.SetImageLoader(StubLoadImageData, nullptr);
+    loader.SetImageLoader(DecodeImageData, nullptr);
     std::string err, warn;
 
     fs::path fpath(filepath);
@@ -402,8 +417,21 @@ bool SceneLoader::Load(Scene& scene, const std::string& filepath)
         SceneTexture tex;
         if (gtext.source >= 0 && gtext.source < (int)model.images.size())
         {
-            tex.filepath = model.images[gtext.source].uri;
+            const auto& img = model.images[gtext.source];
+            tex.filepath = img.uri;
+
+            // Copy decoded RGBA8 pixel data from the tinygltf image
+            if (!img.image.empty() && img.width > 0 && img.height > 0)
+            {
+                tex.width = img.width;
+                tex.height = img.height;
+                tex.channels = 4;
+                tex.pixels.assign(img.image.begin(), img.image.end());
+            }
         }
+        printf("[SceneLoader] Texture %d: %dx%d RGBA8 (%zu bytes)\n",
+               (int)scene.GetTextures().size(), tex.width, tex.height,
+               tex.pixels.size());
         scene.AddTexture(tex);
     }
 

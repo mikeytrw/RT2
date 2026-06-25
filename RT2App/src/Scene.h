@@ -89,6 +89,13 @@ struct SceneLight
 struct SceneTexture
 {
     std::string filepath;
+
+    // Decoded RGBA8 pixel data (populated by SceneLoader via stb_image).
+    // Empty if the image failed to decode or no image data was available.
+    int width = 0;
+    int height = 0;
+    int channels = 4; // always RGBA8 after decode
+    std::vector<unsigned char> pixels;
 };
 
 struct SceneCamera
