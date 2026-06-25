@@ -8,3 +8,4 @@ outputdir = "%{cfg.buildcfg}-%{cfg.system}-%{cfg.architecture}"
 include "Walnut/WalnutExternal.lua"
 
 include "RT2App"
+include "RT2Tests"

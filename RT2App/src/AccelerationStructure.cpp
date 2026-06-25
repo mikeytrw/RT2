@@ -226,6 +226,15 @@ bool AccelerationStructure::BuildBLAS(VkCommandBuffer cmdBuffer,
 
 	pvkCmdBuildAccelerationStructuresKHR(cmdBuffer, 1, &buildInfo, &pBuildRangeInfos);
 
+	// Get BLAS device address
+	VkAccelerationStructureDeviceAddressInfoKHR blasAddrInfo = {};
+	blasAddrInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+	blasAddrInfo.accelerationStructure = m_BLAS;
+	PFN_vkGetAccelerationStructureDeviceAddressKHR pvkGetASAddr =
+		(PFN_vkGetAccelerationStructureDeviceAddressKHR)vkGetInstanceProcAddr(
+			Walnut::Application::GetInstance(), "vkGetAccelerationStructureDeviceAddressKHR");
+	VkDeviceAddress blasAddr = pvkGetASAddr(device, &blasAddrInfo);
+
 	return true;
 }
 

@@ -1,6 +1,7 @@
 #include "RendererGPU.h"
 #include "ShaderManager.h"
 #include "Walnut/Application.h"
+#include "Walnut/RTDispatch.h"
 #include "backends/imgui_impl_vulkan.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -60,6 +61,14 @@ void RendererGPU::DestroyBuffer(VkBuffer buffer, VkDeviceMemory memory)
 	if (memory) vkFreeMemory(device, memory, nullptr);
 }
 
+VkDeviceAddress RendererGPU::GetBufferDeviceAddress(VkBuffer buffer)
+{
+	VkBufferDeviceAddressInfo info = {};
+	info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+	info.buffer = buffer;
+	return vkGetBufferDeviceAddress(Walnut::Application::GetDevice(), &info);
+}
+
 bool RendererGPU::Init()
 {
 	if (m_Initialized) return true;
@@ -71,7 +80,7 @@ bool RendererGPU::Init()
 	}
 
 	CreatePipeline();
-	if (m_ComputePipeline == VK_NULL_HANDLE)
+	if (m_RTPipeline == VK_NULL_HANDLE)
 	{
 		std::cerr << "[RT2] GPU renderer initialization failed (shader or pipeline creation error)\n";
 		return false;
@@ -98,49 +107,60 @@ void RendererGPU::CreatePipeline()
 {
 	VkDevice device = Walnut::Application::GetDevice();
 
-	m_ShaderModule = ShaderManager::LoadShader("pathtracer.spv");
-	if (!m_ShaderModule)
+	// Load the three RT shader modules.
+	m_RgenShader   = ShaderManager::LoadShader("raygen.spv");
+	if (!m_RgenShader)   m_RgenShader   = ShaderManager::LoadShader("RT2App/shaders/raygen.spv");
+	m_MissShader    = ShaderManager::LoadShader("miss.spv");
+	if (!m_MissShader)    m_MissShader    = ShaderManager::LoadShader("RT2App/shaders/miss.spv");
+	m_ClosestShader = ShaderManager::LoadShader("closesthit.spv");
+	if (!m_ClosestShader) m_ClosestShader = ShaderManager::LoadShader("RT2App/shaders/closesthit.spv");
+
+	if (!m_RgenShader || !m_MissShader || !m_ClosestShader)
 	{
-		m_ShaderModule = ShaderManager::LoadShader("RT2App/shaders/pathtracer.spv");
-	}
-	if (!m_ShaderModule)
-	{
-		std::cerr << "[RT2] Failed to load path tracer shader\n";
+		std::cerr << "[RT2] Failed to load RT shaders\n";
 		return;
 	}
 
-	// Descriptor set layout
+	// Descriptor set layout — all 5 bindings visible to all RT stages.
+	// glslc includes every global declaration from the shared header in each
+	// stage's SPIR-V entry point interface list, even if unused in that stage.
+	// If a binding's stageFlags doesn't include a stage that references it,
+	// traceRayEXT can silently fail to invoke that stage's shader.
+	const VkShaderStageFlags allRTFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+	                                      VK_SHADER_STAGE_MISS_BIT_KHR |
+	                                      VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+
 	VkDescriptorSetLayoutBinding bindings[5] = {};
 
 	bindings[0] = {};
 	bindings[0].binding = 0;
 	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	bindings[0].descriptorCount = 1;
-	bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	bindings[0].stageFlags = allRTFlags;
 
 	bindings[1] = {};
 	bindings[1].binding = 1;
 	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	bindings[1].descriptorCount = 1;
-	bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	bindings[1].stageFlags = allRTFlags;
 
 	bindings[2] = {};
 	bindings[2].binding = 2;
 	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[2].descriptorCount = 1;
-	bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	bindings[2].stageFlags = allRTFlags;
 
 	bindings[3] = {};
 	bindings[3].binding = 3;
 	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[3].descriptorCount = 1;
-	bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	bindings[3].stageFlags = allRTFlags;
 
 	bindings[4] = {};
 	bindings[4].binding = 4;
 	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 	bindings[4].descriptorCount = 1;
-	bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	bindings[4].stageFlags = allRTFlags;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -157,35 +177,139 @@ void RendererGPU::CreatePipeline()
 
 	vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &m_PipelineLayout);
 
-	// Compute pipeline
-	VkComputePipelineCreateInfo pipelineInfo = {};
-	pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-	pipelineInfo.layout = m_PipelineLayout;
-	pipelineInfo.stage = {};
-	pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-	pipelineInfo.stage.module = m_ShaderModule;
-	pipelineInfo.stage.pName = "main";
+	// Ray tracing pipeline
+	const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& rtProps =
+		Walnut::Application::GetRayTracingPipelineProperties();
 
-	vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_ComputePipeline);
+	VkPipelineShaderStageCreateInfo stages[3] = {};
+	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[0].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+	stages[0].module = m_RgenShader;
+	stages[0].pName = "main";
+	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[1].stage = VK_SHADER_STAGE_MISS_BIT_KHR;
+	stages[1].module = m_MissShader;
+	stages[1].pName = "main";
+	stages[2].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[2].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+	stages[2].module = m_ClosestShader;
+	stages[2].pName = "main";
+
+	VkRayTracingShaderGroupCreateInfoKHR groups[3] = {};
+	// 0: raygen
+	groups[0].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+	groups[0].generalShader = 0;            // index into stages[]
+	groups[0].closestHitShader = VK_SHADER_UNUSED_KHR;
+	groups[0].anyHitShader = VK_SHADER_UNUSED_KHR;
+	groups[0].intersectionShader = VK_SHADER_UNUSED_KHR;
+	// 1: miss
+	groups[1].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+	groups[1].generalShader = 1;
+	groups[1].closestHitShader = VK_SHADER_UNUSED_KHR;
+	groups[1].anyHitShader = VK_SHADER_UNUSED_KHR;
+	groups[1].intersectionShader = VK_SHADER_UNUSED_KHR;
+	// 2: hit (triangles) — closest hit only, no any-hit
+	groups[2].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+	groups[2].generalShader = VK_SHADER_UNUSED_KHR;
+	groups[2].closestHitShader = 2;
+	groups[2].anyHitShader = VK_SHADER_UNUSED_KHR;
+	groups[2].intersectionShader = VK_SHADER_UNUSED_KHR;
+
+	// Recursion depth: one slot for the camera ray + maxBounces for scattered rays.
+	m_MaxRecursionDepth = static_cast<uint32_t>(
+		std::min<int>(m_MaxBounces + 1, static_cast<int>(rtProps.maxRayRecursionDepth)));
+	if (m_MaxRecursionDepth < 2) m_MaxRecursionDepth = 2;
+
+	VkRayTracingPipelineCreateInfoKHR pipelineInfo = {};
+	pipelineInfo.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
+	pipelineInfo.stageCount = 3;
+	pipelineInfo.pStages = stages;
+	pipelineInfo.groupCount = 3;
+	pipelineInfo.pGroups = groups;
+	pipelineInfo.maxPipelineRayRecursionDepth = m_MaxRecursionDepth;
+	pipelineInfo.layout = m_PipelineLayout;
+
+	VkResult err = g_RTDispatch.CreateRayTracingPipelinesKHR(
+		device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_RTPipeline);
+	if (err != VK_SUCCESS)
+	{
+		std::cerr << "[RT2] vkCreateRayTracingPipelinesKHR failed: " << err << "\n";
+		m_RTPipeline = VK_NULL_HANDLE;
+		return;
+	}
+
+	// ---- Shader Binding Table ----
+	// Layout: [rgen handle][pad to baseAlignment][miss][hit]
+	// One handle per group; each handle padded to baseAlignment.
+	const uint32_t handleSize  = rtProps.shaderGroupHandleSize;
+	const uint32_t baseAlign   = std::max<uint32_t>(rtProps.shaderGroupBaseAlignment, 1);
+	const uint32_t handleAlign = std::max<uint32_t>(rtProps.shaderGroupHandleAlignment, 1);
+
+	m_SBTStride       = baseAlign; // each region's stride (must be >= handleSize, aligned to base)
+	m_RgenRegionSize  = baseAlign;
+	m_MissRegionSize  = baseAlign;
+	m_HitRegionSize   = baseAlign;
+
+	VkDeviceSize sbtSize = m_RgenRegionSize + m_MissRegionSize + m_HitRegionSize;
+
+	CreateBuffer(sbtSize,
+	             VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR |
+	             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+	             m_SBTBuffer, m_SBTMemory);
+	m_SBTSize = sbtSize;
+
+	// Fetch all three group handles in one call.
+	std::vector<uint8_t> handles(3 * handleSize);
+	err = g_RTDispatch.GetRayTracingShaderGroupHandlesKHR(
+		device, m_RTPipeline, 0, 3, handles.size(), handles.data());
+	if (err != VK_SUCCESS)
+	{
+		std::cerr << "[RT2] vkGetRayTracingShaderGroupHandlesKHR failed: " << err << "\n";
+		return;
+	}
+
+	// Copy each handle into the SBT buffer at the right baseAlignment-aligned offset.
+	void* mapped = nullptr;
+	vkMapMemory(device, m_SBTMemory, 0, sbtSize, 0, &mapped);
+	std::memset(mapped, 0, (size_t)sbtSize);
+	uint8_t* dst = static_cast<uint8_t*>(mapped);
+	std::memcpy(dst + 0,                       handles.data() + 0 * handleSize, handleSize); // rgen
+	std::memcpy(dst + m_RgenRegionSize,        handles.data() + 1 * handleSize, handleSize); // miss
+	std::memcpy(dst + m_RgenRegionSize + m_MissRegionSize,
+	            handles.data() + 2 * handleSize, handleSize); // hit
+	vkUnmapMemory(device, m_SBTMemory);
+
+	// Print the SBT device address and region layout for verification.
+	VkDeviceAddress sbtAddr = GetBufferDeviceAddress(m_SBTBuffer);
+	std::cerr << "[RT2] SBT deviceAddress=0x" << std::hex << sbtAddr << std::dec
+	          << " stride=" << m_SBTStride << "\n";
 }
 
 void RendererGPU::DestroyPipeline()
 {
 	VkDevice device = Walnut::Application::GetDevice();
-	if (m_ComputePipeline) vkDestroyPipeline(device, m_ComputePipeline, nullptr);
+	if (m_RTPipeline) vkDestroyPipeline(device, m_RTPipeline, nullptr);
 	if (m_PipelineLayout) vkDestroyPipelineLayout(device, m_PipelineLayout, nullptr);
 	if (m_DescriptorSetLayout) vkDestroyDescriptorSetLayout(device, m_DescriptorSetLayout, nullptr);
-	if (m_ShaderModule) vkDestroyShaderModule(device, m_ShaderModule, nullptr);
-	m_ComputePipeline = VK_NULL_HANDLE;
+	if (m_RgenShader)   vkDestroyShaderModule(device, m_RgenShader, nullptr);
+	if (m_MissShader)    vkDestroyShaderModule(device, m_MissShader, nullptr);
+	if (m_ClosestShader) vkDestroyShaderModule(device, m_ClosestShader, nullptr);
+	DestroyBuffer(m_SBTBuffer, m_SBTMemory);
+	m_RTPipeline = VK_NULL_HANDLE;
 	m_PipelineLayout = VK_NULL_HANDLE;
 	m_DescriptorSetLayout = VK_NULL_HANDLE;
-	m_ShaderModule = VK_NULL_HANDLE;
+	m_RgenShader = m_MissShader = m_ClosestShader = VK_NULL_HANDLE;
+	m_SBTBuffer = VK_NULL_HANDLE;
+	m_SBTMemory = VK_NULL_HANDLE;
+	m_SBTSize = 0;
 }
 
 void RendererGPU::CreateOutputImage()
 {
-	std::cerr << "[RT2] Creating output image (" << m_Width << "x" << m_Height << ")\n";
 	VkDevice device = Walnut::Application::GetDevice();
 
 	VkImageCreateInfo imageInfo = {};
@@ -267,9 +391,11 @@ void RendererGPU::CreateOutputImage()
 	barrier.subresourceRange.levelCount = 1;
 	barrier.subresourceRange.layerCount = 1;
 
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
 	Walnut::Application::FlushCommandBuffer(cmd);
+
+	m_OutputImageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 	// Create ImGui descriptor set for display
 	m_ImGuiDescriptorSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(m_Sampler, m_OutputImageView, VK_IMAGE_LAYOUT_GENERAL);
@@ -286,6 +412,7 @@ void RendererGPU::DestroyOutputImage()
 	m_OutputImageView = VK_NULL_HANDLE;
 	m_OutputImage = VK_NULL_HANDLE;
 	m_OutputMemory = VK_NULL_HANDLE;
+	m_OutputImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
 void RendererGPU::OnResize(uint32_t width, uint32_t height)
@@ -293,7 +420,6 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	if (m_Width == width && m_Height == height && m_OutputImage != VK_NULL_HANDLE)
 		return;
 
-	std::cerr << "[RT2] GPU OnResize: " << width << "x" << height << "\n";
 	VkDevice device = Walnut::Application::GetDevice();
 	vkDeviceWaitIdle(device);
 
@@ -343,7 +469,7 @@ void RendererGPU::UpdateDescriptorSet()
 
 	if (!m_MaterialBuffer)
 	{
-		std::cerr << "[RT2] Warning: material buffer not created yet in UpdateDescriptorSet\n";
+		std::cerr << "[RT2] Warning: material buffer not created yet\n";
 		return;
 	}
 
@@ -369,6 +495,9 @@ void RendererGPU::UpdateDescriptorSet()
 	asInfo.accelerationStructureCount = 1;
 	VkAccelerationStructureKHR tlas = m_AS.GetTLAS();
 	asInfo.pAccelerationStructures = &tlas;
+
+	std::cerr << "[RT2] UpdateDescriptorSet: TLAS=" << (void*)tlas
+	          << " descSet=" << m_DescriptorSet << "\n";
 
 	VkWriteDescriptorSet writes[5] = {};
 
@@ -456,11 +585,9 @@ void RendererGPU::SetMesh(const GPUMeshData& meshData)
 
 void RendererGPU::RebuildAccelerationStructures()
 {
-	std::cerr << "[RT2] Building acceleration structures...\n";
-
 	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
 
-	m_AS.BuildBLAS(cmd, m_CurrentMesh.vertices, m_CurrentMesh.indices, 0);
+	bool blasOK = m_AS.BuildBLAS(cmd, m_CurrentMesh.vertices, m_CurrentMesh.indices, 0);
 
 	// Barrier: BLAS build must complete before TLAS build reads it
 	VkMemoryBarrier blasBarrier = {};
@@ -501,7 +628,7 @@ void RendererGPU::RebuildAccelerationStructures()
 	instance.transform = transform;
 
 	std::vector<BLASInstance> instances = { instance };
-	m_AS.BuildTLAS(cmd, instances);
+	bool tlasOK = m_AS.BuildTLAS(cmd, instances);
 
 	Walnut::Application::FlushCommandBuffer(cmd);
 
@@ -509,6 +636,7 @@ void RendererGPU::RebuildAccelerationStructures()
 	UpdateDescriptorSet();
 
 	m_NeedsASRebuild = false;
+	m_ASJustBuilt = true;
 }
 
 void RendererGPU::UpdateCameraUBO(const Camera& camera)
@@ -551,61 +679,129 @@ void RendererGPU::Render(const Camera& camera)
 	if (m_NeedsASRebuild)
 		RebuildAccelerationStructures();
 
-	if (!m_AS.IsValid()) return;
+	if (!m_AS.IsValid())
+	{
+		static bool warned = false;
+		if (!warned) { std::cerr << "[RT2] Render: TLAS not valid (no mesh loaded?)\n"; warned = true; }
+		return;
+	}
 
 	if (const_cast<Camera&>(camera).checkHasMoved())
 		m_FrameIndex = 1;
 
 	UpdateCameraUBO(camera);
 
-	if (!m_DescriptorSet || !m_ComputePipeline || !m_CameraUBO || !m_MaterialBuffer)
+	if (!m_DescriptorSet || !m_RTPipeline || !m_CameraUBO || !m_MaterialBuffer)
+	{
+		std::cerr << "[RT2] Render: missing resource (ds=" << m_DescriptorSet
+		          << " pipe=" << m_RTPipeline << " ubo=" << m_CameraUBO
+		          << " mat=" << m_MaterialBuffer << ")\n";
 		return;
+	}
 
 	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
 
-	// Transition to general layout for compute write
-	// First render: image is in GENERAL (from CreateOutputImage), not SHADER_READ_ONLY
-	VkImageLayout oldLayout = (m_FrameIndex == 1) ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	// If the AS was just rebuilt this frame, insert a barrier so the
+	// traceRayEXT sees the completed TLAS/BLAS writes (host-side flush
+	// of the build command buffer is not sufficient for device visibility
+	// across command buffers).
+	if (m_ASJustBuilt)
+	{
+		VkMemoryBarrier asBarrier = {};
+		asBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		asBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+		asBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+		vkCmdPipelineBarrier(cmd,
+			VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+			VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+			0, 1, &asBarrier, 0, nullptr, 0, nullptr);
+		m_ASJustBuilt = false;
+	}
 
-	VkImageMemoryBarrier toGeneral = {};
-	toGeneral.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-	toGeneral.oldLayout = oldLayout;
-	toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-	toGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	toGeneral.image = m_OutputImage;
-	toGeneral.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	toGeneral.subresourceRange.levelCount = 1;
-	toGeneral.subresourceRange.layerCount = 1;
+	// The output image stays in VK_IMAGE_LAYOUT_GENERAL for its entire lifetime:
+	// both the RT storage-image write and the ImGui sampled-image read (whose
+	// descriptor was registered with GENERAL in CreateOutputImage) are valid in
+	// GENERAL. The previous GENERAL<->SHADER_READ_ONLY dance desynced from the
+	// ImGui descriptor and produced validation errors + a black screen.
+	VkImageMemoryBarrier rtWriteBarrier = {};
+	rtWriteBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	rtWriteBarrier.srcAccessMask = 0;
+	rtWriteBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	rtWriteBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+	rtWriteBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+	rtWriteBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	rtWriteBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	rtWriteBarrier.image = m_OutputImage;
+	rtWriteBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	rtWriteBarrier.subresourceRange.levelCount = 1;
+	rtWriteBarrier.subresourceRange.layerCount = 1;
 
 	vkCmdPipelineBarrier(cmd,
-		(m_FrameIndex == 1) ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toGeneral);
+		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0, nullptr, 1, &rtWriteBarrier);
 
-	// Dispatch compute
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ComputePipeline);
-	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_PipelineLayout, 0, 1, &m_DescriptorSet, 0, nullptr);
+	// Trace rays
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_RTPipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_PipelineLayout, 0, 1, &m_DescriptorSet, 0, nullptr);
 
-	uint32_t groupX = (m_Width + 7) / 8;
-	uint32_t groupY = (m_Height + 7) / 8;
-	vkCmdDispatch(cmd, groupX, groupY, 1);
+	VkDeviceAddress sbtAddress = GetBufferDeviceAddress(m_SBTBuffer);
 
-	// Transition back to shader read for ImGui display
-	VkImageMemoryBarrier toRead = {};
-	toRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	toRead.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-	toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	toRead.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-	toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-	toRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	toRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	toRead.image = m_OutputImage;
-	toRead.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	toRead.subresourceRange.levelCount = 1;
-	toRead.subresourceRange.layerCount = 1;
+	// Barrier: ensure host writes to SBT (from CreatePipeline) are visible to
+	// the ray tracing pipeline. HOST_COHERENT should handle this, but some
+	// drivers need an explicit barrier for the SBT specifically.
+	VkBufferMemoryBarrier sbtBarrier = {};
+	sbtBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	sbtBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
+	sbtBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	sbtBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	sbtBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	sbtBarrier.buffer = m_SBTBuffer;
+	sbtBarrier.offset = 0;
+	sbtBarrier.size = m_SBTSize;
 
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toRead);
+	vkCmdPipelineBarrier(cmd,
+		VK_PIPELINE_STAGE_HOST_BIT,
+		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+		0, 0, nullptr, 1, &sbtBarrier, 0, nullptr);
+
+	VkStridedDeviceAddressRegionKHR rgenRegion = {};
+	rgenRegion.deviceAddress = sbtAddress + 0;
+	rgenRegion.stride        = m_SBTStride;
+	rgenRegion.size          = m_RgenRegionSize;
+
+	VkStridedDeviceAddressRegionKHR missRegion = {};
+	missRegion.deviceAddress = sbtAddress + m_RgenRegionSize;
+	missRegion.stride        = m_SBTStride;
+	missRegion.size          = m_MissRegionSize;
+
+	VkStridedDeviceAddressRegionKHR hitRegion = {};
+	hitRegion.deviceAddress = sbtAddress + m_RgenRegionSize + m_MissRegionSize;
+	hitRegion.stride        = m_SBTStride;
+	hitRegion.size          = m_HitRegionSize;
+
+	VkStridedDeviceAddressRegionKHR callableRegion = {}; // unused
+
+	g_RTDispatch.CmdTraceRaysKHR(cmd,
+		&rgenRegion, &missRegion, &hitRegion, &callableRegion,
+		m_Width, m_Height, 1);
+
+	if (!g_RTDispatch.CmdTraceRaysKHR)
+		std::cerr << "[RT2] ERROR: CmdTraceRaysKHR is NULL!\n";
+
+	VkImageMemoryBarrier rtReadBarrier = {};
+	rtReadBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	rtReadBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	rtReadBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	rtReadBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+	rtReadBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+	rtReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	rtReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	rtReadBarrier.image = m_OutputImage;
+	rtReadBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	rtReadBarrier.subresourceRange.levelCount = 1;
+	rtReadBarrier.subresourceRange.layerCount = 1;
+
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &rtReadBarrier);
 
 	Walnut::Application::FlushCommandBuffer(cmd);
 

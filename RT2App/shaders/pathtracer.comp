@@ -176,5 +176,14 @@ void main()
     color /= float(spp);
     color = sqrt(color);
 
+    // Temporal accumulation: blend with previous frame
+    float frameIndex = camera.position.w;
+    if (frameIndex > 1.0)
+    {
+        vec4 prev = imageLoad(outputImage, pixel);
+        float prevFrame = frameIndex - 1.0;
+        color = (prev.rgb * prevFrame + color) / frameIndex;
+    }
+
     imageStore(outputImage, pixel, vec4(color, 1.0));
 }

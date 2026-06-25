@@ -7,6 +7,10 @@
 #include "RendererGPU.h"
 #include "Mesh.h"
 #include "FileDialog.h"
+#include "Scene.h"
+#include "SceneLoader.h"
+
+#include <cstdio>
 
 using namespace Walnut;
  
@@ -27,8 +31,6 @@ public:
 
 	virtual void OnUIRender() override
 	{
-		auto image = m_Renderer.GetFinalImage();
-
 		ImGui::Begin("Info");
 		ImGui::Text("Last Render: %.3fms", m_LastRenderTime);
 		ImGui::Text("Rays Cast: %d", m_Renderer.m_NumRaysCast);
@@ -38,7 +40,7 @@ public:
 
 		ImGui::Text("Rays/Sec: %.1f", raysPerSec);
 		
-		if(image)
+		if (auto image = m_Renderer.GetFinalImage())
 			ImGui::Text("Render Res: %d x %d", image->GetWidth(), image->GetHeight());
 		ImGui::Separator();
 		ImGui::Text("Triangles: %u", m_Renderer.m_TriangleCount);
@@ -70,7 +72,7 @@ public:
 						m_UseGPU = 1;
 						m_RendererGPU.m_SPP = m_Renderer.m_SamplesPerPixel;
 						m_RendererGPU.m_MaxBounces = m_Renderer.m_MaxBounceDepth;
-						if (m_Mesh.IsLoaded())
+						if (!m_SceneMeshes.empty() || m_Mesh.IsLoaded())
 							UploadMeshToGPU();
 					}
 					else
@@ -83,14 +85,21 @@ public:
 					m_UseGPU = 1;
 					m_RendererGPU.m_SPP = m_Renderer.m_SamplesPerPixel;
 					m_RendererGPU.m_MaxBounces = m_Renderer.m_MaxBounceDepth;
-					if (m_Mesh.IsLoaded())
+					if (!m_SceneMeshes.empty() || m_Mesh.IsLoaded())
 						UploadMeshToGPU();
 				}
 			}
 		}
 		if (ImGui::BeginPopupModal("GPU Init Failed", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 		{
-			ImGui::Text("Failed to initialize GPU renderer.\nCheck that pathtracer.spv exists next to the executable.\nSee console for details.");
+			ImGui::Text("Failed to initialize GPU renderer.\nCheck that raygen.spv / miss.spv / closesthit.spv exist next to the executable.\nSee console for details.");
+			if (ImGui::Button("OK"))
+				ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+		}
+		if (ImGui::BeginPopupModal("Scene Load Failed", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::Text("Failed to load scene file.\nCheck the file path and format.\nSee console for details.");
 			if (ImGui::Button("OK"))
 				ImGui::CloseCurrentPopup();
 			ImGui::EndPopup();
@@ -189,7 +198,45 @@ public:
 
 		ImGui::End();
 
-		//ImGui::ShowDemoWindow();
+		ImGui::Begin("Scene");
+		ImGui::Text("Meshes: %d", (int)m_Scene.GetMeshes().size());
+		ImGui::Text("Materials: %d", (int)m_Scene.GetMaterials().size());
+		ImGui::Text("Lights: %d", (int)m_Scene.GetLights().size());
+		ImGui::Text("Textures: %d", (int)m_Scene.GetTextures().size());
+		ImGui::Separator();
+		if (ImGui::Button("Load Scene..."))
+		{
+			printf("[Scene] Open file dialog...\n");
+			std::string path = FileDialog::OpenFile("glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0");
+			printf("[Scene] Dialog returned: '%s'\n", path.c_str());
+			if (!path.empty())
+				LoadScene(path);
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Save Scene..."))
+		{
+			std::string path = FileDialog::SaveFile("glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0");
+			if (!path.empty())
+			{
+				BuildSceneFromCurrentState();
+				SceneLoader::Save(m_Scene, path);
+			}
+		}
+		ImGui::Separator();
+		if (!m_Scene.GetMeshes().empty())
+		{
+			ImGui::Text("Loaded meshes:");
+			for (int i = 0; i < (int)m_Scene.GetMeshes().size(); i++)
+			{
+				const auto& m = m_Scene.GetMesh(i);
+				if (m.HasGeometry())
+					ImGui::Text("  [%d] geometry (%d verts, %d tris)",
+					            i, (int)(m.vertices.size() / 3), (int)(m.indices.size() / 3));
+				else
+					ImGui::Text("  [%d] %s", i, m.filepath.c_str());
+			}
+		}
+		ImGui::End();
 
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 		ImGui::Begin("Viewport");
@@ -200,7 +247,7 @@ public:
 		if (m_UseGPU && m_RendererGPU.HasOutput())
 			ImGui::Image((ImTextureID)m_RendererGPU.GetOutputDescriptorSet(),
 			             { (float)m_RendererGPU.GetWidth(), (float)m_RendererGPU.GetHeight() });
-		else if (image)
+		else if (auto image = m_Renderer.GetFinalImage())
 			ImGui::Image(image->GetDescriptorSet(), { (float)image->GetWidth(),(float)image->GetHeight() });
 
 		ImGui::End();
@@ -281,31 +328,169 @@ private:
 
 	void UploadMeshToGPU()
 	{
-		if (!m_Mesh.IsLoaded()) return;
+		if (m_SceneMeshes.empty() && !m_Mesh.IsLoaded()) return;
 
 		GPUMeshData gpuData;
 		gpuData.materialType = m_MaterialType;
 		gpuData.albedo = m_MeshAlbedo;
 		gpuData.fuzz = m_MeshFuzz;
 		gpuData.ior = m_MeshIOR;
-		gpuData.position = m_MeshPosition;
-		gpuData.rotation = m_MeshRotation;
-		gpuData.scale = m_MeshScale;
+		gpuData.position = vec3(0.0f);
+		gpuData.rotation = vec3(0.0f);
+		gpuData.scale = 1.0f;
 
-		// Extract vertex/index data from the loaded mesh's triangles
-		const auto& triangles = m_Mesh.GetBvhRoot();
-		// We need the raw triangle data - let's get it from the Mesh's HittableList
-		// Since we don't have direct access, we'll extract from the tinyobj data via Mesh
-		// For now, use a simpler approach: extract from Triangle objects
-		// We need to flatten the BVH leaves - but that's complex.
-		// Simpler: add a method to Mesh to get raw vertex/index data
+		// Concatenate all scene meshes into one vertex/index buffer
+		for (const auto& mesh : m_SceneMeshes)
+		{
+			auto [verts, indices] = mesh.GetRawVertexData();
+			uint32_t baseIndex = static_cast<uint32_t>(gpuData.vertices.size() / 3);
+			gpuData.vertices.insert(gpuData.vertices.end(), verts.begin(), verts.end());
+			for (uint32_t idx : indices)
+				gpuData.indices.push_back(idx + baseIndex);
+		}
 
-		// Let's get the data from Mesh directly
-		auto meshData = m_Mesh.GetRawVertexData();
-		gpuData.vertices = meshData.first;
-		gpuData.indices = meshData.second;
+		// Fallback: if no scene meshes, use the single OBJ mesh
+		if (gpuData.vertices.empty() && m_Mesh.IsLoaded())
+		{
+			auto [verts, indices] = m_Mesh.GetRawVertexData();
+			gpuData.vertices = verts;
+			gpuData.indices = indices;
+		}
+
+		printf("[Scene] GPU upload: %d vertices, %d indices\n",
+		       (int)(gpuData.vertices.size() / 3), (int)gpuData.indices.size());
 
 		m_RendererGPU.SetMesh(gpuData);
+	}
+
+	void LoadScene(const std::string& filepath)
+	{
+		printf("[Scene] LoadScene: '%s'\n", filepath.c_str());
+		if (!SceneLoader::Load(m_Scene, filepath))
+		{
+			printf("[Scene] SceneLoader::Load failed!\n");
+			ImGui::OpenPopup("Scene Load Failed");
+			return;
+		}
+		printf("[Scene] SceneLoader::Load succeeded\n");
+
+		printf("[Scene] Loaded %d meshes, %d materials, %d lights, %d textures\n",
+		       (int)m_Scene.GetMeshes().size(), (int)m_Scene.GetMaterials().size(),
+		       (int)m_Scene.GetLights().size(), (int)m_Scene.GetTextures().size());
+
+		m_Renderer.ClearHittables();
+		m_Renderer.m_TriangleCount = 0;
+		m_Renderer.m_BvhNodeCount = 0;
+		m_Renderer.m_BvhMaxDepth = 0;
+		m_Mesh.Clear();
+		for (auto& m : m_SceneMeshes) m.Clear();
+		m_SceneMeshes.clear();
+
+		bool loadedAny = false;
+		int meshIdx = 0;
+
+		for (const auto& sceneMesh : m_Scene.GetMeshes())
+		{
+			// printf("[Scene] Mesh %d: hasGeometry=%d, filepath='%s', pos=(%.1f,%.1f,%.1f), scale=%.3f, verts=%d, indices=%d\n",
+			//        meshIdx, sceneMesh.HasGeometry(), sceneMesh.filepath.c_str(),
+			//        sceneMesh.position.x, sceneMesh.position.y, sceneMesh.position.z, sceneMesh.scale,
+			//        (int)(sceneMesh.vertices.size() / 3), (int)sceneMesh.indices.size());
+
+			Mesh mesh;
+			bool meshLoaded = false;
+
+			if (sceneMesh.HasGeometry())
+			{
+				auto material = make_shared<LambertianMaterial>(vec3(0.7f, 0.7f, 0.7f));
+				meshLoaded = mesh.LoadFromGeometry(sceneMesh.vertices, sceneMesh.normals,
+				                                   sceneMesh.indices, sceneMesh.position,
+				                                   sceneMesh.rotation, sceneMesh.scale, material);
+			}
+			else if (!sceneMesh.filepath.empty())
+			{
+				auto material = make_shared<LambertianMaterial>(vec3(0.7f, 0.7f, 0.7f));
+				meshLoaded = mesh.Load(sceneMesh.filepath, sceneMesh.position, sceneMesh.rotation,
+				                       sceneMesh.scale, material);
+			}
+
+			if (meshLoaded)
+			{
+				m_Renderer.AddHittable(mesh.GetBvhRoot());
+				m_Renderer.m_TriangleCount += static_cast<uint32_t>(mesh.GetTriangleCount());
+				if (auto bvh = mesh.GetBvhNode())
+					bvh->GetStats(m_Renderer.m_BvhNodeCount, m_Renderer.m_BvhMaxDepth);
+				loadedAny = true;
+				m_SceneMeshes.push_back(std::move(mesh));
+				// printf("[Scene]   Loaded: %d triangles\n", (int)m_SceneMeshes.back().GetTriangleCount());
+			}
+			else
+			{
+				printf("[Scene]   Failed to load\n");
+			}
+			meshIdx++;
+		}
+
+		// printf("[Scene] Total triangles: %d, BVH nodes: %d, BVH depth: %d\n",
+		//        m_Renderer.m_TriangleCount, m_Renderer.m_BvhNodeCount, m_Renderer.m_BvhMaxDepth);
+
+		if (loadedAny)
+		{
+			if (m_RendererGPU.IsAvailable())
+				UploadMeshToGPU();
+
+			const auto& cam = m_Scene.GetCamera();
+			printf("[Scene] Camera: pos=(%.1f,%.1f,%.1f), forward=(%.1f,%.1f,%.1f), fov=%.1f\n",
+			       cam.position.x, cam.position.y, cam.position.z,
+			       cam.forwardDirection.x, cam.forwardDirection.y, cam.forwardDirection.z,
+			       cam.verticalFOV);
+			m_Cam.SetPosition(cam.position);
+			m_Cam.SetForwardDirection(cam.forwardDirection);
+
+			m_Renderer.mFrameIndex = 1;
+		}
+		else
+		{
+			printf("[Scene] No meshes loaded!\n");
+		}
+	}
+
+	void BuildSceneFromCurrentState()
+	{
+		m_Scene.Clear();
+
+		SceneMesh mesh;
+		if (m_Mesh.IsLoaded())
+		{
+			auto meshData = m_Mesh.GetRawVertexData();
+			if (!m_MeshPath.empty())
+			{
+				mesh.filepath = m_MeshPath;
+			}
+			else
+			{
+				mesh.hasGeometry = true;
+				mesh.vertices = meshData.first;
+				mesh.indices = meshData.second;
+			}
+			mesh.position = m_MeshPosition;
+			mesh.rotation = m_MeshRotation;
+			mesh.scale = m_MeshScale;
+		}
+		m_Scene.AddMesh(mesh);
+
+		SceneMaterial mat;
+		mat.type = static_cast<MaterialType>(m_MaterialType);
+		mat.baseColor = m_MeshAlbedo;
+		mat.ior = m_MeshIOR;
+		m_Scene.AddMaterial(mat);
+
+		SceneCamera cam;
+		cam.position = m_Cam.GetPosition();
+		cam.forwardDirection = m_Cam.GetDirection();
+		cam.verticalFOV = 45.0f;
+		cam.aperture = m_Cam.m_Aperture;
+		cam.focusDistance = m_Cam.m_FocusDistance;
+		m_Scene.GetCamera() = cam;
 	}
 	Renderer m_Renderer;
 	RendererGPU m_RendererGPU;
@@ -317,6 +502,7 @@ private:
 	Camera m_Cam;
 
 	Mesh m_Mesh;
+	std::vector<Mesh> m_SceneMeshes;  // one per scene mesh when loaded via Scene panel
 	std::string m_MeshPath;
 	vec3 m_MeshPosition = vec3(0.0f, 0.0f, 0.0f);
 	vec3 m_MeshRotation = vec3(0.0f, 0.0f, 0.0f);
@@ -326,6 +512,8 @@ private:
 	vec3 m_MeshAlbedo = vec3(0.7f, 0.7f, 0.7f);
 	float m_MeshFuzz = 0.0f;
 	float m_MeshIOR = 1.5f;
+
+	Scene m_Scene;
 };
 
 Walnut::Application* Walnut::CreateApplication(int argc, char** argv)

@@ -19,6 +19,10 @@ public:
 	bool Load(const std::string& filepath, const vec3& position, const vec3& rotation, float scale,
 	          const shared_ptr<Material>& material);
 
+	bool LoadFromGeometry(const std::vector<float>& vertices, const std::vector<float>& normals,
+	                      const std::vector<uint32_t>& indices, const vec3& position,
+	                      const vec3& rotation, float scale, const shared_ptr<Material>& material);
+
 	void Clear() { m_Triangles.clear(); m_Bvh.reset(); }
 
 	bool IsLoaded() const { return !m_Triangles.objects.empty(); }

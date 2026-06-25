@@ -102,3 +102,69 @@ bool Mesh::Load(const std::string& filepath, const vec3& position, const vec3& r
 
 	return IsLoaded();
 }
+
+bool Mesh::LoadFromGeometry(const std::vector<float>& vertices, const std::vector<float>& normals,
+                            const std::vector<uint32_t>& indices, const vec3& position,
+                            const vec3& rotation, float scale, const shared_ptr<Material>& material)
+{
+	m_Triangles.clear();
+	m_RawVertices.clear();
+	m_RawIndices.clear();
+
+	if (vertices.empty() || indices.empty())
+		return false;
+
+	uint32_t degenerateCount = 0;
+	uint32_t triCount = 0;
+
+	for (size_t i = 0; i + 2 < indices.size(); i += 3)
+	{
+		uint32_t i0 = indices[i];
+		uint32_t i1 = indices[i + 1];
+		uint32_t i2 = indices[i + 2];
+
+		if (i0 * 3 + 2 >= vertices.size() || i1 * 3 + 2 >= vertices.size() || i2 * 3 + 2 >= vertices.size())
+			break;
+
+		vec3 v0 = TransformVertex(
+			vec3(vertices[i0 * 3], vertices[i0 * 3 + 1], vertices[i0 * 3 + 2]),
+			position, rotation, scale);
+		vec3 v1 = TransformVertex(
+			vec3(vertices[i1 * 3], vertices[i1 * 3 + 1], vertices[i1 * 3 + 2]),
+			position, rotation, scale);
+		vec3 v2 = TransformVertex(
+			vec3(vertices[i2 * 3], vertices[i2 * 3 + 1], vertices[i2 * 3 + 2]),
+			position, rotation, scale);
+
+		// Check for degenerate triangle
+		vec3 edge1 = v1 - v0;
+		vec3 edge2 = v2 - v0;
+		float area = glm::length(glm::cross(edge1, edge2));
+		if (area < 1e-8f)
+		{
+			degenerateCount++;
+			continue;
+		}
+		triCount++;
+
+		m_Triangles.add(make_shared<Triangle>(v0, v1, v2, material));
+
+		uint32_t baseIndex = static_cast<uint32_t>(m_RawVertices.size() / 3);
+		m_RawVertices.push_back(v0.x); m_RawVertices.push_back(v0.y); m_RawVertices.push_back(v0.z);
+		m_RawVertices.push_back(v1.x); m_RawVertices.push_back(v1.y); m_RawVertices.push_back(v1.z);
+		m_RawVertices.push_back(v2.x); m_RawVertices.push_back(v2.y); m_RawVertices.push_back(v2.z);
+		m_RawIndices.push_back(baseIndex);
+		m_RawIndices.push_back(baseIndex + 1);
+		m_RawIndices.push_back(baseIndex + 2);
+	}
+
+	if (IsLoaded())
+	{
+		// printf("[Mesh] LoadFromGeometry: %d tris, %d degenerate skipped, %d indices, %d verts\n",
+		//        triCount, degenerateCount, (int)indices.size(), (int)(vertices.size() / 3));
+		std::vector<shared_ptr<Hittable>> objects = m_Triangles.objects;
+		m_Bvh = make_shared<BVHNode>(objects, 0, objects.size());
+	}
+
+	return IsLoaded();
+}

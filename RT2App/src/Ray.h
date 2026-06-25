@@ -41,7 +41,7 @@ inline bool AABB::hit(const Ray& r, float t_min, float t_max) const {
         t_min = t0 > t_min ? t0 : t_min;
         t_max = t1 < t_max ? t1 : t_max;
 
-        if (t_max <= t_min) return false;
+        if (t_max < t_min) return false;
     }
     return true;
 }

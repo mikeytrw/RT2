@@ -44,7 +44,9 @@ public:
     AABB boundingBox() const override {
         vec3 min = glm::min(m_V0, glm::min(m_V1, m_V2));
         vec3 max = glm::max(m_V0, glm::max(m_V1, m_V2));
-        return AABB(min, max);
+        // Expand slightly to avoid floating-point precision issues in the slab test
+        vec3 eps(1e-4f);
+        return AABB(min - eps, max + eps);
     }
 
 private:

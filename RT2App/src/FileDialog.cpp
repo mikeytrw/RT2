@@ -32,4 +32,28 @@ std::string OpenFile(const char* filter)
 #endif
 }
 
+std::string SaveFile(const char* filter)
+{
+#ifdef WL_PLATFORM_WINDOWS
+	OPENFILENAMEA ofn;
+	ZeroMemory(&ofn, sizeof(ofn));
+	char szFile[260];
+	ZeroMemory(szFile, sizeof(szFile));
+
+	ofn.lStructSize = sizeof(ofn);
+	ofn.hwndOwner = nullptr;
+	ofn.lpstrFile = szFile;
+	ofn.nMaxFile = sizeof(szFile);
+	ofn.lpstrFilter = filter;
+	ofn.nFilterIndex = 1;
+	ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST;
+
+	if (GetSaveFileNameA(&ofn))
+		return std::string(ofn.lpstrFile);
+	return std::string();
+#else
+	return std::string();
+#endif
+}
+
 } // namespace FileDialog

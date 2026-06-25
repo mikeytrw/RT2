@@ -10,6 +10,9 @@ namespace FileDialog {
 // Returns empty string if user cancels.
 std::string OpenFile(const char* filter);
 
+// Returns empty string if user cancels.
+std::string SaveFile(const char* filter);
+
 }
 
 #endif // !FILE_DIALOG_H

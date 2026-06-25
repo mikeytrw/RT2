@@ -69,11 +69,24 @@ private:
 	VkSampler m_Sampler = VK_NULL_HANDLE;
 	VkDescriptorSet m_ImGuiDescriptorSet = VK_NULL_HANDLE;
 
-	VkPipeline m_ComputePipeline = VK_NULL_HANDLE;
+	// Ray tracing pipeline + SBT
+	VkPipeline m_RTPipeline = VK_NULL_HANDLE;
 	VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
 	VkDescriptorSetLayout m_DescriptorSetLayout = VK_NULL_HANDLE;
 	VkDescriptorSet m_DescriptorSet = VK_NULL_HANDLE;
-	VkShaderModule m_ShaderModule = VK_NULL_HANDLE;
+
+	VkShaderModule m_RgenShader   = VK_NULL_HANDLE;
+	VkShaderModule m_MissShader    = VK_NULL_HANDLE;
+	VkShaderModule m_ClosestShader = VK_NULL_HANDLE;
+
+	VkBuffer m_SBTBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_SBTMemory = VK_NULL_HANDLE;
+	VkDeviceSize m_SBTSize = 0;
+	VkDeviceSize m_SBTStride = 0;       // per-region stride (aligned handle size)
+	VkDeviceSize m_RgenRegionSize = 0;
+	VkDeviceSize m_MissRegionSize = 0;
+	VkDeviceSize m_HitRegionSize = 0;
+	uint32_t m_MaxRecursionDepth = 1;
 
 	VkBuffer m_CameraUBO = VK_NULL_HANDLE;
 	VkDeviceMemory m_CameraUBOMemory = VK_NULL_HANDLE;
@@ -85,13 +98,16 @@ private:
 
 	GPUMeshData m_CurrentMesh;
 	bool m_NeedsASRebuild = false;
+	bool m_ASJustBuilt = false; // set in RebuildAS, consumed+cleared in Render
 
 	uint32_t m_FrameIndex = 1;
 	bool m_TemporalAccumulation = false;
+	VkImageLayout m_OutputImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 	void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
 	                  VkBuffer& buffer, VkDeviceMemory& memory);
 	void DestroyBuffer(VkBuffer buffer, VkDeviceMemory memory);
+	VkDeviceAddress GetBufferDeviceAddress(VkBuffer buffer);
 	uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 };
 
