@@ -59,12 +59,30 @@ struct GPUMeshGeometry
     uint32_t               materialIndex = 0;
 };
 
+// A triangle light for Next-Event Estimation. 32 bytes (vec4 + uvec4).
+// The shader samples the emissive texture at the picked barycentric point
+// using (instanceID, primitiveID) to look up positions/UVs from existing
+// buffers. emission_area.xyz is the flat fallback (emissiveColor * intensity)
+// used when a material has no emissive texture.
+struct GPUTriangleLight
+{
+    glm::vec4  emission_area;  // xyz = emissiveColor*intensity (flat fallback), w = triangle area
+    glm::uvec4 ids;            // x = instanceID, y = primitiveID, z = materialIndex, w = emissiveTexIdx
+
+    GPUTriangleLight()
+        : emission_area(0.0f, 0.0f, 0.0f, 0.0f)
+        , ids(0, 0, 0, 0xFFFFFFFFu)
+    {}
+};
+
 // Full scene data ready for GPU upload.
 struct GPUSceneData
 {
-    std::vector<GPUMeshGeometry> meshes;
-    std::vector<GPUMaterial>     materials;
-    std::vector<SceneTexture>    textures;
+    std::vector<GPUMeshGeometry>  meshes;
+    std::vector<GPUMaterial>      materials;
+    std::vector<SceneTexture>     textures;
+    std::vector<GPUTriangleLight> lights;  // emissive triangles for NEE
+    float                         totalLightArea = 0.0f;  // sum of all light triangle areas
 };
 
 // Convert a Scene into GPUSceneData: one GPUMeshGeometry per scene mesh

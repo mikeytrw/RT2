@@ -17,6 +17,7 @@ GPUSceneData BuildGPUSceneData(const Scene& scene)
         gpu.materials.push_back(GPUMaterial());
 
     // Convert meshes that have inline geometry
+    uint32_t instanceID = 0;  // TLAS instance index = mesh index in gpu.meshes
     for (const auto& sceneMesh : scene.GetMeshes())
     {
         if (!sceneMesh.HasGeometry())
@@ -94,7 +95,40 @@ GPUSceneData BuildGPUSceneData(const Scene& scene)
             matIdx = static_cast<uint32_t>(sceneMesh.materialIndex);
         geo.materialIndex = matIdx;
 
+        // --- Build light list: one GPUTriangleLight per emissive triangle ---
+        // A material is emissive if emissiveColor * emissiveIntensity != 0.
+        const GPUMaterial& mat = gpu.materials[matIdx];
+        glm::vec3 emissive = glm::vec3(mat.emissive_roughness);  // pre-baked color*intensity
+        bool isEmissive = (emissive.x > 0.0f || emissive.y > 0.0f || emissive.z > 0.0f);
+
+        if (isEmissive)
+        {
+            int emissiveTexIdx = mat.textureIndices.z;
+            for (uint32_t t = 0; t < triCount; t++)
+            {
+                uint32_t vi0 = sceneMesh.indices[t * 3 + 0] * 3;
+                uint32_t vi1 = sceneMesh.indices[t * 3 + 1] * 3;
+                uint32_t vi2 = sceneMesh.indices[t * 3 + 2] * 3;
+
+                glm::vec3 v0(sceneMesh.vertices[vi0], sceneMesh.vertices[vi0 + 1], sceneMesh.vertices[vi0 + 2]);
+                glm::vec3 v1(sceneMesh.vertices[vi1], sceneMesh.vertices[vi1 + 1], sceneMesh.vertices[vi1 + 2]);
+                glm::vec3 v2(sceneMesh.vertices[vi2], sceneMesh.vertices[vi2 + 1], sceneMesh.vertices[vi2 + 2]);
+
+                glm::vec3 edge1 = v1 - v0;
+                glm::vec3 edge2 = v2 - v0;
+                float area = 0.5f * std::abs(glm::length(glm::cross(edge1, edge2)));
+
+                GPUTriangleLight light;
+                light.emission_area = glm::vec4(emissive, area);
+                light.ids = glm::uvec4(instanceID, t, matIdx,
+                                        emissiveTexIdx >= 0 ? static_cast<uint32_t>(emissiveTexIdx) : 0xFFFFFFFFu);
+                gpu.lights.push_back(light);
+                gpu.totalLightArea += area;
+            }
+        }
+
         gpu.meshes.push_back(std::move(geo));
+        ++instanceID;
     }
 
     return gpu;

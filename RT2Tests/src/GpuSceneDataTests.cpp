@@ -218,3 +218,204 @@ TEST_CASE("BuildGPUSceneData skips meshes without geometry")
 
     CHECK(gpu.meshes.size() == 1);
 }
+
+// ============================================================================
+// GPUTriangleLight struct layout tests
+// ============================================================================
+
+TEST_CASE("GPUTriangleLight is 32 bytes (vec4 + uvec4, std430)")
+{
+    CHECK(sizeof(GPUTriangleLight) == 32);
+}
+
+TEST_CASE("GPUTriangleLight default values")
+{
+    GPUTriangleLight light;
+    CHECK(light.emission_area == glm::vec4(0.0f));
+    CHECK(light.ids == glm::uvec4(0, 0, 0, 0xFFFFFFFFu));
+}
+
+// ============================================================================
+// Light list building tests (NEE Phase 1)
+// ============================================================================
+
+TEST_CASE("BuildGPUSceneData finds no lights when no emissive materials")
+{
+    Scene scene;
+
+    SceneMaterial mat;
+    mat.emissiveColor = {0.0f, 0.0f, 0.0f};
+    mat.emissiveIntensity = 0.0f;
+    scene.AddMaterial(mat);
+
+    SceneMesh mesh;
+    mesh.hasGeometry = true;
+    mesh.vertices = {0, 0, 0,  1, 0, 0,  0, 1, 0};
+    mesh.indices = {0, 1, 2};
+    mesh.materialIndex = 0;
+    scene.AddMesh(mesh);
+
+    GPUSceneData gpu = BuildGPUSceneData(scene);
+
+    CHECK(gpu.lights.empty());
+    CHECK(gpu.totalLightArea == 0.0f);
+}
+
+TEST_CASE("BuildGPUSceneData finds one light per emissive triangle")
+{
+    Scene scene;
+
+    SceneMaterial mat;
+    mat.emissiveColor = {1.0f, 0.8f, 0.4f};
+    mat.emissiveIntensity = 5.0f;
+    scene.AddMaterial(mat);
+
+    // 2 triangles (a quad split into 2 tris)
+    SceneMesh mesh;
+    mesh.hasGeometry = true;
+    mesh.vertices = {0, 0, 0,  1, 0, 0,  1, 1, 0,  0, 1, 0};
+    mesh.indices = {0, 1, 2,  0, 2, 3};
+    mesh.materialIndex = 0;
+    scene.AddMesh(mesh);
+
+    GPUSceneData gpu = BuildGPUSceneData(scene);
+
+    CHECK(gpu.lights.size() == 2);
+    CHECK(gpu.totalLightArea == doctest::Approx(1.0f).epsilon(0.001f));  // unit square = area 1
+}
+
+TEST_CASE("GPUTriangleLight stores correct ids and emission")
+{
+    Scene scene;
+
+    SceneMaterial mat;
+    mat.emissiveColor = {1.0f, 0.5f, 0.2f};
+    mat.emissiveIntensity = 3.0f;
+    scene.AddMaterial(mat);
+
+    SceneMesh mesh;
+    mesh.hasGeometry = true;
+    mesh.vertices = {0, 0, 0,  2, 0, 0,  0, 2, 0};
+    mesh.indices = {0, 1, 2};
+    mesh.materialIndex = 0;
+    scene.AddMesh(mesh);
+
+    GPUSceneData gpu = BuildGPUSceneData(scene);
+
+    REQUIRE(gpu.lights.size() == 1);
+    const auto& light = gpu.lights[0];
+
+    // Emission = emissiveColor * intensity
+    CHECK(light.emission_area.x == doctest::Approx(3.0f));
+    CHECK(light.emission_area.y == doctest::Approx(1.5f));
+    CHECK(light.emission_area.z == doctest::Approx(0.6f));
+
+    // Area = 0.5 * |edge1 x edge2| = 0.5 * |(2,0,0) x (0,2,0)| = 0.5 * |(0,0,4)| = 2
+    CHECK(light.emission_area.w == doctest::Approx(2.0f).epsilon(0.001f));
+
+    // ids: instanceID=0, primitiveID=0, materialIndex=0, emissiveTexIdx=0xFFFFFFFF (no texture)
+    CHECK(light.ids.x == 0);
+    CHECK(light.ids.y == 0);
+    CHECK(light.ids.z == 0);
+    CHECK(light.ids.w == 0xFFFFFFFFu);
+}
+
+TEST_CASE("BuildGPUSceneData light ids map to correct instanceID and primitiveID")
+{
+    Scene scene;
+
+    // Material 0: non-emissive, Material 1: emissive
+    SceneMaterial mat0;
+    scene.AddMaterial(mat0);
+
+    SceneMaterial mat1;
+    mat1.emissiveColor = {1.0f, 1.0f, 1.0f};
+    mat1.emissiveIntensity = 2.0f;
+    scene.AddMaterial(mat1);
+
+    // Mesh 0: non-emissive (instanceID 0)
+    SceneMesh mesh0;
+    mesh0.hasGeometry = true;
+    mesh0.vertices = {0, 0, 0,  1, 0, 0,  0, 1, 0};
+    mesh0.indices = {0, 1, 2};
+    mesh0.materialIndex = 0;
+    scene.AddMesh(mesh0);
+
+    // Mesh 1: emissive with 3 triangles (instanceID 1)
+    SceneMesh mesh1;
+    mesh1.hasGeometry = true;
+    mesh1.vertices = {0, 0, 0,  1, 0, 0,  0, 1, 0,
+                      1, 0, 0,  1, 1, 0,  0, 1, 0,
+                      0, 0, 0,  1, 0, 0,  1, 1, 0};
+    mesh1.indices = {0, 1, 2,  3, 4, 5,  6, 7, 8};
+    mesh1.materialIndex = 1;
+    scene.AddMesh(mesh1);
+
+    GPUSceneData gpu = BuildGPUSceneData(scene);
+
+    CHECK(gpu.lights.size() == 3);
+    CHECK(gpu.meshes.size() == 2);
+
+    // All lights should have instanceID=1 (second mesh), materialIndex=1
+    for (uint32_t i = 0; i < gpu.lights.size(); i++)
+    {
+        CHECK(gpu.lights[i].ids.x == 1);  // instanceID
+        CHECK(gpu.lights[i].ids.z == 1);  // materialIndex
+        CHECK(gpu.lights[i].ids.y == i);  // primitiveID = triangle index within BLAS
+    }
+}
+
+TEST_CASE("BuildGPUSceneData totalLightArea sums all light areas")
+{
+    Scene scene;
+
+    SceneMaterial mat;
+    mat.emissiveColor = {1.0f, 1.0f, 1.0f};
+    mat.emissiveIntensity = 1.0f;
+    scene.AddMaterial(mat);
+
+    // Two emissive meshes with different areas
+    // Mesh 0: area 2 (triangle (0,0,0),(2,0,0),(0,2,0))
+    SceneMesh mesh0;
+    mesh0.hasGeometry = true;
+    mesh0.vertices = {0, 0, 0,  2, 0, 0,  0, 2, 0};
+    mesh0.indices = {0, 1, 2};
+    mesh0.materialIndex = 0;
+    scene.AddMesh(mesh0);
+
+    // Mesh 1: area 0.5 (triangle (0,0,0),(1,0,0),(0,1,0))
+    SceneMesh mesh1;
+    mesh1.hasGeometry = true;
+    mesh1.vertices = {0, 0, 0,  1, 0, 0,  0, 1, 0};
+    mesh1.indices = {0, 1, 2};
+    mesh1.materialIndex = 0;
+    scene.AddMesh(mesh1);
+
+    GPUSceneData gpu = BuildGPUSceneData(scene);
+
+    CHECK(gpu.lights.size() == 2);
+    CHECK(gpu.totalLightArea == doctest::Approx(2.5f).epsilon(0.001f));
+}
+
+TEST_CASE("BuildGPUSceneData light stores emissiveTexIdx when material has emissive texture")
+{
+    Scene scene;
+
+    SceneMaterial mat;
+    mat.emissiveColor = {1.0f, 1.0f, 1.0f};
+    mat.emissiveIntensity = 2.0f;
+    mat.emissiveTextureIndex = 5;
+    scene.AddMaterial(mat);
+
+    SceneMesh mesh;
+    mesh.hasGeometry = true;
+    mesh.vertices = {0, 0, 0,  1, 0, 0,  0, 1, 0};
+    mesh.indices = {0, 1, 2};
+    mesh.materialIndex = 0;
+    scene.AddMesh(mesh);
+
+    GPUSceneData gpu = BuildGPUSceneData(scene);
+
+    REQUIRE(gpu.lights.size() == 1);
+    CHECK(gpu.lights[0].ids.w == 5u);  // emissiveTexIdx
+}

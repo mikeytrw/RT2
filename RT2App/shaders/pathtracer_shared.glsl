@@ -66,9 +66,28 @@ layout(set = 0, binding = 8, std430) readonly buffer PositionBuffer
     vec4 trianglePositions[]; // 3 per triangle: xyz = vertex pos, w = unused
 };
 
+// ---- Light buffer (NEE) -----------------------------------------------------
+// std430 buffer with a 16-byte header followed by a flat array of TriangleLight.
+// The shader picks a light ~ area, samples a point on its triangle, and traces
+// a shadow ray to test visibility.
+struct TriangleLight
+{
+    vec4  emission_area;  // xyz = emissiveColor*intensity (flat fallback), w = area
+    uvec4 ids;            // x = instanceID, y = primitiveID, z = materialIndex, w = emissiveTexIdx
+};
+
+layout(set = 0, binding = 9, std430) readonly buffer LightBuffer
+{
+    uint  lightCount;
+    float totalLightArea;
+    uint  _lightPad0;
+    uint  _lightPad1;
+    TriangleLight lights[];
+};
+
 // Bindless texture array (combined image samplers, variable count)
 // Must be the highest binding number for VARIABLE_DESCRIPTOR_COUNT.
-layout(set = 0, binding = 9) uniform sampler2D textures[];
+layout(set = 0, binding = 10) uniform sampler2D textures[];
 
 layout(set = 0, binding = 4) uniform accelerationStructureEXT topLevelAS;
 
@@ -124,6 +143,8 @@ vec3 randomInUnitDisk(inout uint state)
 }
 
 // ---- Helpers ----------------------------------------------------------------
+
+#define PI 3.14159265359
 
 vec3 skyColor(vec3 direction)
 {

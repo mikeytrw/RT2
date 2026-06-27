@@ -99,6 +99,7 @@ void RendererGPU::Destroy()
 	DestroyTextures();
 	DestroyBuffer(m_CameraUBO, m_CameraUBOMemory);
 	DestroyBuffer(m_MaterialBuffer, m_MaterialBufferMemory);
+	DestroyBuffer(m_LightBuffer, m_LightBufferMemory);
 	m_AS.Destroy();
 
 	m_Initialized = false;
@@ -108,21 +109,23 @@ void RendererGPU::CreatePipeline()
 {
 	VkDevice device = Walnut::Application::GetDevice();
 
-	// Load the three RT shader modules.
+	// Load the four RT shader modules.
 	m_RgenShader   = ShaderManager::LoadShader("raygen.spv");
 	if (!m_RgenShader)   m_RgenShader   = ShaderManager::LoadShader("RT2App/shaders/raygen.spv");
 	m_MissShader    = ShaderManager::LoadShader("miss.spv");
 	if (!m_MissShader)    m_MissShader    = ShaderManager::LoadShader("RT2App/shaders/miss.spv");
+	m_ShadowShader  = ShaderManager::LoadShader("shadow.spv");
+	if (!m_ShadowShader)  m_ShadowShader  = ShaderManager::LoadShader("RT2App/shaders/shadow.spv");
 	m_ClosestShader = ShaderManager::LoadShader("closesthit.spv");
 	if (!m_ClosestShader) m_ClosestShader = ShaderManager::LoadShader("RT2App/shaders/closesthit.spv");
 
-	if (!m_RgenShader || !m_MissShader || !m_ClosestShader)
+	if (!m_RgenShader || !m_MissShader || !m_ShadowShader || !m_ClosestShader)
 	{
 		std::cerr << "[RT2] Failed to load RT shaders\n";
 		return;
 	}
 
-	// Descriptor set layout — 10 bindings:
+	// Descriptor set layout — 11 bindings:
 	//   0: storage image (output)
 	//   1: uniform buffer (camera)
 	//   2: storage buffer (materials)
@@ -132,14 +135,15 @@ void RendererGPU::CreatePipeline()
 	//   6: storage buffer (combined tangents, 3 per triangle)
 	//   7: storage buffer (combined UVs, 3 per triangle)
 	//   8: storage buffer (combined positions, 3 per triangle)
-	//   9: combined image sampler array (textures, bindless, variable count) — MUST be last binding
+	//   9: storage buffer (lights for NEE, std430 with header)
+	//  10: combined image sampler array (textures, bindless, variable count) — MUST be last binding
 	const VkShaderStageFlags allRTFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR |
 	                                      VK_SHADER_STAGE_MISS_BIT_KHR |
 	                                      VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 
 	const uint32_t maxTextures = 1024;
 
-	VkDescriptorSetLayoutBinding bindings[10] = {};
+	VkDescriptorSetLayoutBinding bindings[11] = {};
 
 	bindings[0] = {};
 	bindings[0].binding = 0;
@@ -197,24 +201,30 @@ void RendererGPU::CreatePipeline()
 
 	bindings[9] = {};
 	bindings[9].binding = 9;
-	bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[9].descriptorCount = maxTextures;
+	bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bindings[9].descriptorCount = 1;
 	bindings[9].stageFlags = allRTFlags;
 
-	// Binding flags: binding 9 (texture array) is partially bound + variable descriptor count
+	bindings[10] = {};
+	bindings[10].binding = 10;
+	bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[10].descriptorCount = maxTextures;
+	bindings[10].stageFlags = allRTFlags;
+
+	// Binding flags: binding 10 (texture array) is partially bound + variable descriptor count
 	// Must be the highest-numbered binding per Vulkan spec.
-	VkDescriptorBindingFlagsEXT bindingFlags[10] = {};
-	bindingFlags[9] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT |
-	                  VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT;
+	VkDescriptorBindingFlagsEXT bindingFlags[11] = {};
+	bindingFlags[10] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT |
+	                   VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT;
 
 	VkDescriptorSetLayoutBindingFlagsCreateInfoEXT bindingFlagsInfo = {};
 	bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
-	bindingFlagsInfo.bindingCount = 10;
+	bindingFlagsInfo.bindingCount = 11;
 	bindingFlagsInfo.pBindingFlags = bindingFlags;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 10;
+	layoutInfo.bindingCount = 11;
 	layoutInfo.pBindings = bindings;
 	layoutInfo.pNext = &bindingFlagsInfo;
 
@@ -232,7 +242,7 @@ void RendererGPU::CreatePipeline()
 	const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& rtProps =
 		Walnut::Application::GetRayTracingPipelineProperties();
 
-	VkPipelineShaderStageCreateInfo stages[3] = {};
+	VkPipelineShaderStageCreateInfo stages[4] = {};
 	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	stages[0].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 	stages[0].module = m_RgenShader;
@@ -242,11 +252,15 @@ void RendererGPU::CreatePipeline()
 	stages[1].module = m_MissShader;
 	stages[1].pName = "main";
 	stages[2].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[2].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
-	stages[2].module = m_ClosestShader;
+	stages[2].stage = VK_SHADER_STAGE_MISS_BIT_KHR;
+	stages[2].module = m_ShadowShader;
 	stages[2].pName = "main";
+	stages[3].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[3].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+	stages[3].module = m_ClosestShader;
+	stages[3].pName = "main";
 
-	VkRayTracingShaderGroupCreateInfoKHR groups[3] = {};
+	VkRayTracingShaderGroupCreateInfoKHR groups[4] = {};
 	// 0: raygen
 	groups[0].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
 	groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
@@ -254,20 +268,27 @@ void RendererGPU::CreatePipeline()
 	groups[0].closestHitShader = VK_SHADER_UNUSED_KHR;
 	groups[0].anyHitShader = VK_SHADER_UNUSED_KHR;
 	groups[0].intersectionShader = VK_SHADER_UNUSED_KHR;
-	// 1: miss
+	// 1: miss (sky) — SBT miss index 0
 	groups[1].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
 	groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
 	groups[1].generalShader = 1;
 	groups[1].closestHitShader = VK_SHADER_UNUSED_KHR;
 	groups[1].anyHitShader = VK_SHADER_UNUSED_KHR;
 	groups[1].intersectionShader = VK_SHADER_UNUSED_KHR;
-	// 2: hit (triangles) — closest hit only, no any-hit
+	// 2: miss (shadow) — SBT miss index 1
 	groups[2].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
-	groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-	groups[2].generalShader = VK_SHADER_UNUSED_KHR;
-	groups[2].closestHitShader = 2;
+	groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+	groups[2].generalShader = 2;
+	groups[2].closestHitShader = VK_SHADER_UNUSED_KHR;
 	groups[2].anyHitShader = VK_SHADER_UNUSED_KHR;
 	groups[2].intersectionShader = VK_SHADER_UNUSED_KHR;
+	// 3: hit (triangles) — closest hit only, no any-hit
+	groups[3].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	groups[3].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+	groups[3].generalShader = VK_SHADER_UNUSED_KHR;
+	groups[3].closestHitShader = 3;
+	groups[3].anyHitShader = VK_SHADER_UNUSED_KHR;
+	groups[3].intersectionShader = VK_SHADER_UNUSED_KHR;
 
 	// Recursion depth: set to device maximum so the slider can change
 	// maxBounces without rebuilding the pipeline. The shader's
@@ -277,9 +298,9 @@ void RendererGPU::CreatePipeline()
 
 	VkRayTracingPipelineCreateInfoKHR pipelineInfo = {};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
-	pipelineInfo.stageCount = 3;
+	pipelineInfo.stageCount = 4;
 	pipelineInfo.pStages = stages;
-	pipelineInfo.groupCount = 3;
+	pipelineInfo.groupCount = 4;
 	pipelineInfo.pGroups = groups;
 	pipelineInfo.maxPipelineRayRecursionDepth = m_MaxRecursionDepth;
 	pipelineInfo.layout = m_PipelineLayout;
@@ -294,15 +315,16 @@ void RendererGPU::CreatePipeline()
 	}
 
 	// ---- Shader Binding Table ----
-	// Layout: [rgen handle][pad to baseAlignment][miss][hit]
-	// One handle per group; each handle padded to baseAlignment.
+	// Layout: [rgen][miss_sky][miss_shadow][hit]
+	// Each handle padded to baseAlignment. The miss region covers both
+	// miss entries (sky + shadow), so its size = 2 × baseAlign.
 	const uint32_t handleSize  = rtProps.shaderGroupHandleSize;
 	const uint32_t baseAlign   = std::max<uint32_t>(rtProps.shaderGroupBaseAlignment, 1);
 	const uint32_t handleAlign = std::max<uint32_t>(rtProps.shaderGroupHandleAlignment, 1);
 
 	m_SBTStride       = baseAlign; // each region's stride (must be >= handleSize, aligned to base)
 	m_RgenRegionSize  = baseAlign;
-	m_MissRegionSize  = baseAlign;
+	m_MissRegionSize  = baseAlign * 2;  // 2 miss entries: sky + shadow
 	m_HitRegionSize   = baseAlign;
 
 	VkDeviceSize sbtSize = m_RgenRegionSize + m_MissRegionSize + m_HitRegionSize;
@@ -314,10 +336,10 @@ void RendererGPU::CreatePipeline()
 	             m_SBTBuffer, m_SBTMemory);
 	m_SBTSize = sbtSize;
 
-	// Fetch all three group handles in one call.
-	std::vector<uint8_t> handles(3 * handleSize);
+	// Fetch all four group handles in one call.
+	std::vector<uint8_t> handles(4 * handleSize);
 	err = g_RTDispatch.GetRayTracingShaderGroupHandlesKHR(
-		device, m_RTPipeline, 0, 3, handles.size(), handles.data());
+		device, m_RTPipeline, 0, 4, handles.size(), handles.data());
 	if (err != VK_SUCCESS)
 	{
 		std::cerr << "[RT2] vkGetRayTracingShaderGroupHandlesKHR failed: " << err << "\n";
@@ -330,9 +352,11 @@ void RendererGPU::CreatePipeline()
 	std::memset(mapped, 0, (size_t)sbtSize);
 	uint8_t* dst = static_cast<uint8_t*>(mapped);
 	std::memcpy(dst + 0,                       handles.data() + 0 * handleSize, handleSize); // rgen
-	std::memcpy(dst + m_RgenRegionSize,        handles.data() + 1 * handleSize, handleSize); // miss
+	std::memcpy(dst + m_RgenRegionSize,        handles.data() + 1 * handleSize, handleSize); // miss_sky
+	std::memcpy(dst + m_RgenRegionSize + baseAlign,
+	            handles.data() + 2 * handleSize, handleSize);                                 // miss_shadow
 	std::memcpy(dst + m_RgenRegionSize + m_MissRegionSize,
-	            handles.data() + 2 * handleSize, handleSize); // hit
+	            handles.data() + 3 * handleSize, handleSize);                                 // hit
 	vkUnmapMemory(device, m_SBTMemory);
 
 	// Print the SBT device address and region layout for verification.
@@ -349,12 +373,13 @@ void RendererGPU::DestroyPipeline()
 	if (m_DescriptorSetLayout) vkDestroyDescriptorSetLayout(device, m_DescriptorSetLayout, nullptr);
 	if (m_RgenShader)   vkDestroyShaderModule(device, m_RgenShader, nullptr);
 	if (m_MissShader)    vkDestroyShaderModule(device, m_MissShader, nullptr);
+	if (m_ShadowShader)  vkDestroyShaderModule(device, m_ShadowShader, nullptr);
 	if (m_ClosestShader) vkDestroyShaderModule(device, m_ClosestShader, nullptr);
 	DestroyBuffer(m_SBTBuffer, m_SBTMemory);
 	m_RTPipeline = VK_NULL_HANDLE;
 	m_PipelineLayout = VK_NULL_HANDLE;
 	m_DescriptorSetLayout = VK_NULL_HANDLE;
-	m_RgenShader = m_MissShader = m_ClosestShader = VK_NULL_HANDLE;
+	m_RgenShader = m_MissShader = m_ShadowShader = m_ClosestShader = VK_NULL_HANDLE;
 	m_SBTBuffer = VK_NULL_HANDLE;
 	m_SBTMemory = VK_NULL_HANDLE;
 	m_SBTSize = 0;
@@ -557,6 +582,12 @@ void RendererGPU::UpdateDescriptorSet()
 		return;
 	}
 
+	if (!m_LightBuffer)
+	{
+		std::cerr << "[RT2] Warning: light buffer not created yet\n";
+		return;
+	}
+
 	VkDescriptorImageInfo imageInfo = {};
 	imageInfo.imageView = m_OutputImageView;
 	imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -590,7 +621,11 @@ void RendererGPU::UpdateDescriptorSet()
 	tangentBufferInfo.buffer = m_AS.GetTangentBuffer();
 	tangentBufferInfo.range = VK_WHOLE_SIZE;
 
-	// Texture array image infos (binding 9) — skip textures with null handles
+	VkDescriptorBufferInfo lightBufferInfo = {};
+	lightBufferInfo.buffer = m_LightBuffer;
+	lightBufferInfo.range = VK_WHOLE_SIZE;
+
+	// Texture array image infos (binding 10) — skip textures with null handles
 	std::vector<VkDescriptorImageInfo> textureImageInfos;
 	for (const auto& gt : m_Textures)
 	{
@@ -611,7 +646,7 @@ void RendererGPU::UpdateDescriptorSet()
 	std::cerr << "[RT2] UpdateDescriptorSet: TLAS=" << (void*)tlas
 	          << " descSet=" << m_DescriptorSet << "\n";
 
-	VkWriteDescriptorSet writes[10] = {};
+	VkWriteDescriptorSet writes[11] = {};
 
 	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[0].dstSet = m_DescriptorSet;
@@ -679,16 +714,24 @@ void RendererGPU::UpdateDescriptorSet()
 	writes[8].descriptorCount = 1;
 	writes[8].pBufferInfo = &positionBufferInfo;
 
-	uint32_t writeCount = 9; // bindings 0-8 always written
+	writes[9] = {};
+	writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[9].dstSet = m_DescriptorSet;
+	writes[9].dstBinding = 9;
+	writes[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[9].descriptorCount = 1;
+	writes[9].pBufferInfo = &lightBufferInfo;
+
+	uint32_t writeCount = 10; // bindings 0-9 always written
 	if (!textureImageInfos.empty())
 	{
-		writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[9].dstSet = m_DescriptorSet;
-		writes[9].dstBinding = 9;
-		writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		writes[9].descriptorCount = (uint32_t)textureImageInfos.size();
-		writes[9].pImageInfo = textureImageInfos.data();
-		writeCount = 10;
+		writes[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[10].dstSet = m_DescriptorSet;
+		writes[10].dstBinding = 10;
+		writes[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		writes[10].descriptorCount = (uint32_t)textureImageInfos.size();
+		writes[10].pImageInfo = textureImageInfos.data();
+		writeCount = 11;
 	}
 	vkUpdateDescriptorSets(device, writeCount, writes, 0, nullptr);
 }
@@ -712,6 +755,45 @@ void RendererGPU::CreateMaterialBuffer()
 	vkMapMemory(device, m_MaterialBufferMemory, 0, m_MaterialBufferSize, 0, &data);
 	memcpy(data, m_CurrentScene.materials.data(), m_MaterialBufferSize);
 	vkUnmapMemory(device, m_MaterialBufferMemory);
+}
+
+void RendererGPU::CreateLightBuffer()
+{
+	DestroyBuffer(m_LightBuffer, m_LightBufferMemory);
+
+	// Layout: 16-byte header + N * sizeof(GPUTriangleLight)
+	// Header: uint lightCount, float totalLightArea, uint pad, uint pad
+	size_t lightCount = m_CurrentScene.lights.size();
+	m_LightBufferSize = 16 + lightCount * sizeof(GPUTriangleLight);
+
+	// Always at least the header so the buffer is non-empty
+	if (m_LightBufferSize < 16) m_LightBufferSize = 16;
+
+	CreateBuffer(m_LightBufferSize,
+	             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+	             m_LightBuffer, m_LightBufferMemory);
+
+	// Build the buffer contents: header + lights
+	std::vector<uint8_t> bufData(m_LightBufferSize, 0);
+	uint32_t count = static_cast<uint32_t>(lightCount);
+	float totalArea = m_CurrentScene.totalLightArea;
+	memcpy(bufData.data() + 0,  &count,     sizeof(uint32_t));
+	memcpy(bufData.data() + 4,  &totalArea, sizeof(float));
+	// bytes 8-15: padding (already zeroed)
+	if (lightCount > 0)
+	{
+		memcpy(bufData.data() + 16, m_CurrentScene.lights.data(),
+		       lightCount * sizeof(GPUTriangleLight));
+	}
+
+	VkDevice device = Walnut::Application::GetDevice();
+	void* data;
+	vkMapMemory(device, m_LightBufferMemory, 0, m_LightBufferSize, 0, &data);
+	memcpy(data, bufData.data(), m_LightBufferSize);
+	vkUnmapMemory(device, m_LightBufferMemory);
+
+	std::cerr << "[RT2] Light buffer: " << lightCount << " lights, totalArea=" << totalArea << "\n";
 }
 
 void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
@@ -933,6 +1015,7 @@ void RendererGPU::RebuildAccelerationStructures()
 	Walnut::Application::FlushCommandBuffer(cmd);
 
 	CreateMaterialBuffer();
+	CreateLightBuffer();
 	UpdateDescriptorSet();
 
 	m_NeedsASRebuild = false;
@@ -961,7 +1044,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	ubo.right = glm::vec4(right, 0.0f);
 	ubo.up = glm::vec4(up, 0.0f);
 	ubo.viewportSPP = glm::vec4((float)m_Width, (float)m_Height, (float)m_SPP, (float)m_MaxBounces);
-	ubo.apertureFocal = glm::vec4(camera.m_Aperture, camera.m_FocusDistance, m_ShowBackground ? 1.0f : 0.0f, 0.0f);
+	ubo.apertureFocal = glm::vec4(camera.m_Aperture, camera.m_FocusDistance, m_ShowBackground ? 1.0f : 0.0f, m_NEEOnly ? 1.0f : 0.0f);
 	ubo.inverseProjection = camera.GetInverseProjection();
 	ubo.inverseView = camera.GetInverseView();
 

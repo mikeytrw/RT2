@@ -11,6 +11,8 @@ echo Compiling RT shaders...
 if %ERRORLEVEL% neq 0 goto :fail
 %GLSLC% %TARGET% -fshader-stage=rmiss "%SHADER_DIR%miss.rmiss"        -o "%SHADER_DIR%miss.spv"          -I "%SHADER_DIR%"
 if %ERRORLEVEL% neq 0 goto :fail
+%GLSLC% %TARGET% -fshader-stage=rmiss "%SHADER_DIR%shadow.rmiss"     -o "%SHADER_DIR%shadow.spv"        -I "%SHADER_DIR%"
+if %ERRORLEVEL% neq 0 goto :fail
 %GLSLC% %TARGET% -fshader-stage=rchit "%SHADER_DIR%closesthit.rchit"  -o "%SHADER_DIR%closesthit.spv"    -I "%SHADER_DIR%"
 if %ERRORLEVEL% neq 0 goto :fail
 

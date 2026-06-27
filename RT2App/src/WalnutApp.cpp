@@ -135,6 +135,8 @@ public:
 	ImGui::Separator();
 	if (ImGui::Checkbox("Show Background", &m_RendererGPU.m_ShowBackground))
 		m_RendererGPU.ResetAccumulation();
+	if (ImGui::Checkbox("NEE Only (debug)", &m_RendererGPU.m_NEEOnly))
+		m_RendererGPU.ResetAccumulation();
 	ImGui::End();
 
 		ImGui::Begin("Mesh");

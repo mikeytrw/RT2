@@ -47,6 +47,7 @@ public:
 	int m_SPP = 5;
 	int m_MaxBounces = 8;
 	bool m_ShowBackground = false;
+	bool m_NEEOnly = false;
 
 private:
 	void CreateOutputImage();
@@ -56,6 +57,7 @@ private:
 	void CreateDescriptorSet();
 	void UpdateDescriptorSet();
 	void CreateMaterialBuffer();
+	void CreateLightBuffer();
 	void UpdateCameraUBO(const Camera& camera);
 	void CreateTextures(const std::vector<SceneTexture>& textures);
 	void DestroyTextures();
@@ -79,6 +81,7 @@ private:
 
 	VkShaderModule m_RgenShader   = VK_NULL_HANDLE;
 	VkShaderModule m_MissShader    = VK_NULL_HANDLE;
+	VkShaderModule m_ShadowShader  = VK_NULL_HANDLE;
 	VkShaderModule m_ClosestShader = VK_NULL_HANDLE;
 
 	VkBuffer m_SBTBuffer = VK_NULL_HANDLE;
@@ -86,7 +89,7 @@ private:
 	VkDeviceSize m_SBTSize = 0;
 	VkDeviceSize m_SBTStride = 0;
 	VkDeviceSize m_RgenRegionSize = 0;
-	VkDeviceSize m_MissRegionSize = 0;
+	VkDeviceSize m_MissRegionSize = 0;  // covers both miss entries (sky + shadow)
 	VkDeviceSize m_HitRegionSize = 0;
 	uint32_t m_MaxRecursionDepth = 1;
 
@@ -96,6 +99,11 @@ private:
 	VkBuffer m_MaterialBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_MaterialBufferMemory = VK_NULL_HANDLE;
 	VkDeviceSize m_MaterialBufferSize = 0;
+
+	// Light buffer (NEE) — std430 with 16-byte header + TriangleLight[]
+	VkBuffer m_LightBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_LightBufferMemory = VK_NULL_HANDLE;
+	VkDeviceSize m_LightBufferSize = 0;
 
 	// Textures (bindless array)
 	std::vector<GPUTexture> m_Textures;
