@@ -8,9 +8,14 @@ layout(location = 0) rayPayloadInEXT RayPayload payload;
 
 void main()
 {
-    // Miss = sky gradient. Add sky radiance * throughput to accumulated radiance.
-    vec3 dir = normalize(gl_WorldRayDirectionEXT);
-    vec3 sky = skyColor(dir);
-    payload.b.xyz += payload.a.xyz * sky;
+    // Background: sky gradient if enabled, black if disabled.
+    float showBg = camera.apertureFocal.z;
+    if (showBg > 0.5)
+    {
+        vec3 dir = normalize(gl_WorldRayDirectionEXT);
+        vec3 sky = skyColor(dir);
+        payload.b.xyz += payload.a.xyz * sky;
+    }
+    // else: black background — add nothing
     payload.c.w = 1.0; // done
 }

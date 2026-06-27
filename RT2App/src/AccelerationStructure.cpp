@@ -116,16 +116,10 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		blas.triangleCount = triCount;
 		m_TotalTriangleCount += triCount;
 
-		std::cerr << "[RT2]   BLAS " << i << ": " << triCount << " tris, "
-		          << mesh.vertices->size() << " verts, "
-		          << "uvs=" << (mesh.vertexUVs ? mesh.vertexUVs->size() : 0)
-		          << " tans=" << (mesh.tangents ? mesh.tangents->size() : 0) << "\n";
-
 		// Store per-triangle positions, UVs, and tangents for later combined buffer build
 		blas.triPositions.resize(triCount * 9);
 		blas.triUVs.resize(triCount * 6);
 		blas.triTangents.resize(triCount * 9);
-		std::cerr << "[RT2]   BLAS " << i << ": tri data resized\n";
 		for (uint32_t t = 0; t < triCount; t++)
 		{
 			uint32_t vi0 = (*mesh.indices)[t * 3 + 0] * 3;
@@ -146,11 +140,6 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 			// UVs (6 floats)
 			if (mesh.vertexUVs && !mesh.vertexUVs->empty())
 			{
-				if (mesh.vertexUVs->size() < (size_t)(triCount * 6))
-				{
-					std::cerr << "[RT2]   BLAS " << i << ": ERROR vertexUVs size=" << mesh.vertexUVs->size()
-					          << " < triCount*6=" << (triCount * 6) << "\n";
-				}
 				blas.triUVs[t * 6 + 0] = (*mesh.vertexUVs)[t * 6 + 0];
 				blas.triUVs[t * 6 + 1] = (*mesh.vertexUVs)[t * 6 + 1];
 				blas.triUVs[t * 6 + 2] = (*mesh.vertexUVs)[t * 6 + 2];
@@ -162,11 +151,6 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 			// Tangents (9 floats = 3 tangents × xyz)
 			if (mesh.tangents && !mesh.tangents->empty())
 			{
-				if (mesh.tangents->size() < (size_t)(triCount * 9))
-				{
-					std::cerr << "[RT2]   BLAS " << i << ": ERROR tangents size=" << mesh.tangents->size()
-					          << " < triCount*9=" << (triCount * 9) << "\n";
-				}
 				for (int v = 0; v < 3; v++)
 				{
 					blas.triTangents[t * 9 + v * 3 + 0] = (*mesh.tangents)[t * 9 + v * 3 + 0];

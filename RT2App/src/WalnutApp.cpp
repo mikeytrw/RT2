@@ -132,7 +132,10 @@ public:
 		m_RendererGPU.ResetAccumulation();
 	if (ImGui::DragFloat("Focus Distance", &m_Cam.m_FocusDistance, 0.1f, 0.1f, 50.0f))
 		m_RendererGPU.ResetAccumulation();
-		ImGui::End();
+	ImGui::Separator();
+	if (ImGui::Checkbox("Show Background", &m_RendererGPU.m_ShowBackground))
+		m_RendererGPU.ResetAccumulation();
+	ImGui::End();
 
 		ImGui::Begin("Mesh");
 		ImGui::Text("Loaded: %s", m_Mesh.IsLoaded() ? "yes" : "no");

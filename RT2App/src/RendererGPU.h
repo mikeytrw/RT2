@@ -46,6 +46,7 @@ public:
 
 	int m_SPP = 5;
 	int m_MaxBounces = 8;
+	bool m_ShowBackground = false;
 
 private:
 	void CreateOutputImage();

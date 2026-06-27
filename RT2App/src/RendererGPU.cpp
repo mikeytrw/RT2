@@ -535,16 +535,10 @@ void RendererGPU::CreateDescriptorSet()
 
 void RendererGPU::UpdateDescriptorSet()
 {
-	if (!m_AS.IsValid()) { std::cerr << "[RT2] UpdateDS: AS not valid\n"; return; }
-	if (!m_DescriptorSet) { std::cerr << "[RT2] UpdateDS: no descriptor set\n"; return; }
-	if (!m_AS.GetNormalBuffer()) { std::cerr << "[RT2] UpdateDS: no normal buffer\n"; return; }
-	if (!m_MaterialBuffer) { std::cerr << "[RT2] UpdateDS: no material buffer\n"; return; }
-
-	std::cerr << "[RT2] UpdateDS: starting (textures=" << m_Textures.size()
-	          << " normalBuf=" << (void*)m_AS.GetNormalBuffer()
-	          << " uvBuf=" << (void*)m_AS.GetUVBuffer()
-	          << " posBuf=" << (void*)m_AS.GetPositionBuffer()
-	          << " tanBuf=" << (void*)m_AS.GetTangentBuffer() << ")\n";
+	if (!m_AS.IsValid()) return;
+	if (!m_DescriptorSet) return;
+	if (!m_AS.GetNormalBuffer()) return;
+	if (!m_MaterialBuffer) return;
 
 	VkDevice device = Walnut::Application::GetDevice();
 
@@ -696,11 +690,7 @@ void RendererGPU::UpdateDescriptorSet()
 		writes[9].pImageInfo = textureImageInfos.data();
 		writeCount = 10;
 	}
-
-	std::cerr << "[RT2] UpdateDS: writing " << writeCount << " descriptors"
-	          << " (textureInfos=" << textureImageInfos.size() << ")\n";
 	vkUpdateDescriptorSets(device, writeCount, writes, 0, nullptr);
-	std::cerr << "[RT2] UpdateDS: done\n";
 }
 
 void RendererGPU::CreateMaterialBuffer()
@@ -883,9 +873,6 @@ void RendererGPU::ResetAccumulation()
 
 void RendererGPU::SetScene(const GPUSceneData& sceneData)
 {
-	std::cerr << "[RT2] SetScene: " << sceneData.meshes.size() << " meshes, "
-	          << sceneData.materials.size() << " materials, "
-	          << sceneData.textures.size() << " textures\n";
 	m_CurrentScene = sceneData;
 	m_NeedsASRebuild = true;
 	m_FrameIndex = 1;
@@ -895,7 +882,6 @@ void RendererGPU::SetScene(const GPUSceneData& sceneData)
 
 void RendererGPU::RebuildAccelerationStructures()
 {
-	std::cerr << "[RT2] RebuildAS: starting (" << m_CurrentScene.meshes.size() << " meshes)\n";
 	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
 
 	// Build one BLAS per mesh geometry
@@ -912,9 +898,7 @@ void RendererGPU::RebuildAccelerationStructures()
 		geometries.push_back(geo);
 	}
 
-	std::cerr << "[RT2] RebuildAS: calling BuildBLASes\n";
 	bool blasOK = m_AS.BuildBLASes(cmd, geometries);
-	std::cerr << "[RT2] RebuildAS: BuildBLASes done\n";
 
 	// Barrier: BLAS builds must complete before TLAS build reads them
 	VkMemoryBarrier blasBarrier = {};
@@ -944,17 +928,12 @@ void RendererGPU::RebuildAccelerationStructures()
 		instances.push_back(inst);
 	}
 
-	std::cerr << "[RT2] RebuildAS: calling BuildTLAS\n";
 	bool tlasOK = m_AS.BuildTLAS(cmd, instances);
-	std::cerr << "[RT2] RebuildAS: BuildTLAS done\n";
 
 	Walnut::Application::FlushCommandBuffer(cmd);
-	std::cerr << "[RT2] RebuildAS: command buffer flushed\n";
 
 	CreateMaterialBuffer();
-	std::cerr << "[RT2] RebuildAS: material buffer created\n";
 	UpdateDescriptorSet();
-	std::cerr << "[RT2] RebuildAS: descriptor set updated\n";
 
 	m_NeedsASRebuild = false;
 	m_ASJustBuilt = true;
@@ -969,7 +948,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 		glm::vec4 right;        // xyz = right, w = pad
 		glm::vec4 up;           // xyz = up, w = pad
 		glm::vec4 viewportSPP;  // x = width, y = height, z = spp, w = maxBounces
-		glm::vec4 apertureFocal;// x = aperture, y = focusDistance, z = pad, w = pad
+		glm::vec4 apertureFocal;// x = aperture, y = focusDistance, z = showBackground, w = pad
 		glm::mat4 inverseProjection;
 		glm::mat4 inverseView;
 	};
@@ -982,7 +961,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	ubo.right = glm::vec4(right, 0.0f);
 	ubo.up = glm::vec4(up, 0.0f);
 	ubo.viewportSPP = glm::vec4((float)m_Width, (float)m_Height, (float)m_SPP, (float)m_MaxBounces);
-	ubo.apertureFocal = glm::vec4(camera.m_Aperture, camera.m_FocusDistance, 0.0f, 0.0f);
+	ubo.apertureFocal = glm::vec4(camera.m_Aperture, camera.m_FocusDistance, m_ShowBackground ? 1.0f : 0.0f, 0.0f);
 	ubo.inverseProjection = camera.GetInverseProjection();
 	ubo.inverseView = camera.GetInverseView();
 
