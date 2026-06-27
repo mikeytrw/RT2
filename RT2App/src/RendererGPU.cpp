@@ -122,23 +122,24 @@ void RendererGPU::CreatePipeline()
 		return;
 	}
 
-	// Descriptor set layout — 9 bindings:
+	// Descriptor set layout — 10 bindings:
 	//   0: storage image (output)
 	//   1: uniform buffer (camera)
 	//   2: storage buffer (materials)
 	//   3: storage buffer (combined normals)
 	//   4: acceleration structure (TLAS)
 	//   5: storage buffer (per-instance normal offsets)
-	//   6: combined image sampler array (textures, bindless, variable count)
+	//   6: storage buffer (combined tangents, 3 per triangle)
 	//   7: storage buffer (combined UVs, 3 per triangle)
 	//   8: storage buffer (combined positions, 3 per triangle)
+	//   9: combined image sampler array (textures, bindless, variable count) — MUST be last binding
 	const VkShaderStageFlags allRTFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR |
 	                                      VK_SHADER_STAGE_MISS_BIT_KHR |
 	                                      VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 
 	const uint32_t maxTextures = 1024;
 
-	VkDescriptorSetLayoutBinding bindings[9] = {};
+	VkDescriptorSetLayoutBinding bindings[10] = {};
 
 	bindings[0] = {};
 	bindings[0].binding = 0;
@@ -178,8 +179,8 @@ void RendererGPU::CreatePipeline()
 
 	bindings[6] = {};
 	bindings[6].binding = 6;
-	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[6].descriptorCount = maxTextures;
+	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bindings[6].descriptorCount = 1;
 	bindings[6].stageFlags = allRTFlags;
 
 	bindings[7] = {};
@@ -194,19 +195,26 @@ void RendererGPU::CreatePipeline()
 	bindings[8].descriptorCount = 1;
 	bindings[8].stageFlags = allRTFlags;
 
-	// Binding flags: binding 6 is partially bound + variable descriptor count
-	VkDescriptorBindingFlagsEXT bindingFlags[9] = {};
-	bindingFlags[6] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT |
+	bindings[9] = {};
+	bindings[9].binding = 9;
+	bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[9].descriptorCount = maxTextures;
+	bindings[9].stageFlags = allRTFlags;
+
+	// Binding flags: binding 9 (texture array) is partially bound + variable descriptor count
+	// Must be the highest-numbered binding per Vulkan spec.
+	VkDescriptorBindingFlagsEXT bindingFlags[10] = {};
+	bindingFlags[9] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT |
 	                  VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT;
 
 	VkDescriptorSetLayoutBindingFlagsCreateInfoEXT bindingFlagsInfo = {};
 	bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
-	bindingFlagsInfo.bindingCount = 9;
+	bindingFlagsInfo.bindingCount = 10;
 	bindingFlagsInfo.pBindingFlags = bindingFlags;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 9;
+	layoutInfo.bindingCount = 10;
 	layoutInfo.pBindings = bindings;
 	layoutInfo.pNext = &bindingFlagsInfo;
 
@@ -503,13 +511,17 @@ void RendererGPU::CreateDescriptorSet()
 {
 	VkDevice device = Walnut::Application::GetDevice();
 
-	// Variable descriptor count for the texture array (binding 6)
-	uint32_t textureCount = std::max<uint32_t>(1, (uint32_t)m_Textures.size());
+	// Allocate with fixed maxTextures count so the descriptor set is valid
+	// regardless of how many textures are currently loaded. The variable
+	// descriptor count feature allows us to specify the actual count at
+	// allocation time, but using the max avoids reallocation when textures
+	// are added/removed after a resize.
+	const uint32_t maxTextures = 1024;
 
 	VkDescriptorSetVariableDescriptorCountAllocateInfoEXT varCountInfo = {};
 	varCountInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO_EXT;
 	varCountInfo.descriptorSetCount = 1;
-	varCountInfo.pDescriptorCounts = &textureCount;
+	varCountInfo.pDescriptorCounts = &maxTextures;
 
 	VkDescriptorSetAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -523,8 +535,16 @@ void RendererGPU::CreateDescriptorSet()
 
 void RendererGPU::UpdateDescriptorSet()
 {
-	if (!m_AS.IsValid()) return;
-	if (!m_DescriptorSet) return;
+	if (!m_AS.IsValid()) { std::cerr << "[RT2] UpdateDS: AS not valid\n"; return; }
+	if (!m_DescriptorSet) { std::cerr << "[RT2] UpdateDS: no descriptor set\n"; return; }
+	if (!m_AS.GetNormalBuffer()) { std::cerr << "[RT2] UpdateDS: no normal buffer\n"; return; }
+	if (!m_MaterialBuffer) { std::cerr << "[RT2] UpdateDS: no material buffer\n"; return; }
+
+	std::cerr << "[RT2] UpdateDS: starting (textures=" << m_Textures.size()
+	          << " normalBuf=" << (void*)m_AS.GetNormalBuffer()
+	          << " uvBuf=" << (void*)m_AS.GetUVBuffer()
+	          << " posBuf=" << (void*)m_AS.GetPositionBuffer()
+	          << " tanBuf=" << (void*)m_AS.GetTangentBuffer() << ")\n";
 
 	VkDevice device = Walnut::Application::GetDevice();
 
@@ -572,10 +592,15 @@ void RendererGPU::UpdateDescriptorSet()
 	positionBufferInfo.buffer = m_AS.GetPositionBuffer();
 	positionBufferInfo.range = VK_WHOLE_SIZE;
 
-	// Texture array image infos
+	VkDescriptorBufferInfo tangentBufferInfo = {};
+	tangentBufferInfo.buffer = m_AS.GetTangentBuffer();
+	tangentBufferInfo.range = VK_WHOLE_SIZE;
+
+	// Texture array image infos (binding 9) — skip textures with null handles
 	std::vector<VkDescriptorImageInfo> textureImageInfos;
 	for (const auto& gt : m_Textures)
 	{
+		if (!gt.view || !gt.sampler) continue; // skip unloaded textures
 		VkDescriptorImageInfo imgInfo = {};
 		imgInfo.sampler = gt.sampler;
 		imgInfo.imageView = gt.view;
@@ -592,7 +617,7 @@ void RendererGPU::UpdateDescriptorSet()
 	std::cerr << "[RT2] UpdateDescriptorSet: TLAS=" << (void*)tlas
 	          << " descSet=" << m_DescriptorSet << "\n";
 
-	VkWriteDescriptorSet writes[9] = {};
+	VkWriteDescriptorSet writes[10] = {};
 
 	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[0].dstSet = m_DescriptorSet;
@@ -640,9 +665,9 @@ void RendererGPU::UpdateDescriptorSet()
 	writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[6].dstSet = m_DescriptorSet;
 	writes[6].dstBinding = 6;
-	writes[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	writes[6].descriptorCount = (uint32_t)textureImageInfos.size();
-	writes[6].pImageInfo = textureImageInfos.data();
+	writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[6].descriptorCount = 1;
+	writes[6].pBufferInfo = &tangentBufferInfo;
 
 	writes[7] = {};
 	writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -660,13 +685,22 @@ void RendererGPU::UpdateDescriptorSet()
 	writes[8].descriptorCount = 1;
 	writes[8].pBufferInfo = &positionBufferInfo;
 
-	uint32_t writeCount = 9;
-	if (textureImageInfos.empty())
+	uint32_t writeCount = 9; // bindings 0-8 always written
+	if (!textureImageInfos.empty())
 	{
-		writes[6].descriptorCount = 0;
-		writes[6].pImageInfo = nullptr;
+		writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[9].dstSet = m_DescriptorSet;
+		writes[9].dstBinding = 9;
+		writes[9].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		writes[9].descriptorCount = (uint32_t)textureImageInfos.size();
+		writes[9].pImageInfo = textureImageInfos.data();
+		writeCount = 10;
 	}
+
+	std::cerr << "[RT2] UpdateDS: writing " << writeCount << " descriptors"
+	          << " (textureInfos=" << textureImageInfos.size() << ")\n";
 	vkUpdateDescriptorSets(device, writeCount, writes, 0, nullptr);
+	std::cerr << "[RT2] UpdateDS: done\n";
 }
 
 void RendererGPU::CreateMaterialBuffer()
@@ -849,6 +883,9 @@ void RendererGPU::ResetAccumulation()
 
 void RendererGPU::SetScene(const GPUSceneData& sceneData)
 {
+	std::cerr << "[RT2] SetScene: " << sceneData.meshes.size() << " meshes, "
+	          << sceneData.materials.size() << " materials, "
+	          << sceneData.textures.size() << " textures\n";
 	m_CurrentScene = sceneData;
 	m_NeedsASRebuild = true;
 	m_FrameIndex = 1;
@@ -858,6 +895,7 @@ void RendererGPU::SetScene(const GPUSceneData& sceneData)
 
 void RendererGPU::RebuildAccelerationStructures()
 {
+	std::cerr << "[RT2] RebuildAS: starting (" << m_CurrentScene.meshes.size() << " meshes)\n";
 	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
 
 	// Build one BLAS per mesh geometry
@@ -869,11 +907,14 @@ void RendererGPU::RebuildAccelerationStructures()
 		geo.vertices = &mesh.vertices;
 		geo.indices = &mesh.indices;
 		geo.vertexUVs = &mesh.vertexUVs;
+		geo.tangents = &mesh.tangents;
 		geo.materialIndex = mesh.materialIndex;
 		geometries.push_back(geo);
 	}
 
+	std::cerr << "[RT2] RebuildAS: calling BuildBLASes\n";
 	bool blasOK = m_AS.BuildBLASes(cmd, geometries);
+	std::cerr << "[RT2] RebuildAS: BuildBLASes done\n";
 
 	// Barrier: BLAS builds must complete before TLAS build reads them
 	VkMemoryBarrier blasBarrier = {};
@@ -903,12 +944,17 @@ void RendererGPU::RebuildAccelerationStructures()
 		instances.push_back(inst);
 	}
 
+	std::cerr << "[RT2] RebuildAS: calling BuildTLAS\n";
 	bool tlasOK = m_AS.BuildTLAS(cmd, instances);
+	std::cerr << "[RT2] RebuildAS: BuildTLAS done\n";
 
 	Walnut::Application::FlushCommandBuffer(cmd);
+	std::cerr << "[RT2] RebuildAS: command buffer flushed\n";
 
 	CreateMaterialBuffer();
+	std::cerr << "[RT2] RebuildAS: material buffer created\n";
 	UpdateDescriptorSet();
+	std::cerr << "[RT2] RebuildAS: descriptor set updated\n";
 
 	m_NeedsASRebuild = false;
 	m_ASJustBuilt = true;

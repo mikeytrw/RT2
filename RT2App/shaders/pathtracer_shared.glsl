@@ -48,8 +48,11 @@ layout(set = 0, binding = 5, std430) readonly buffer InstanceNormalOffsets
     uint normalOffsets[]; // per-instance offset into triangleNormals
 };
 
-// Bindless texture array (combined image samplers, variable count)
-layout(set = 0, binding = 6) uniform sampler2D textures[];
+// Combined tangent buffer (3 vec4 per triangle, xyz = vertex tangent)
+layout(set = 0, binding = 6, std430) readonly buffer TangentBuffer
+{
+    vec4 triangleTangents[]; // 3 per triangle: xyz = tangent, w = unused
+};
 
 // Combined UV buffer (3 vec4 per triangle, xy = vertex UV)
 layout(set = 0, binding = 7, std430) readonly buffer UVBuffer
@@ -62,6 +65,10 @@ layout(set = 0, binding = 8, std430) readonly buffer PositionBuffer
 {
     vec4 trianglePositions[]; // 3 per triangle: xyz = vertex pos, w = unused
 };
+
+// Bindless texture array (combined image samplers, variable count)
+// Must be the highest binding number for VARIABLE_DESCRIPTOR_COUNT.
+layout(set = 0, binding = 9) uniform sampler2D textures[];
 
 layout(set = 0, binding = 4) uniform accelerationStructureEXT topLevelAS;
 

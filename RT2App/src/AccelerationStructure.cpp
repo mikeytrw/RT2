@@ -103,6 +103,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 	DestroyBuffer(m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
 	DestroyBuffer(m_CombinedUVBuffer, m_CombinedUVMemory);
 	DestroyBuffer(m_CombinedPositionBuffer, m_CombinedPositionMemory);
+	DestroyBuffer(m_CombinedTangentBuffer, m_CombinedTangentMemory);
 	m_BLASes.resize(meshes.size());
 	m_TotalTriangleCount = 0;
 
@@ -115,9 +116,16 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		blas.triangleCount = triCount;
 		m_TotalTriangleCount += triCount;
 
-		// Store per-triangle positions and UVs for later combined buffer build
+		std::cerr << "[RT2]   BLAS " << i << ": " << triCount << " tris, "
+		          << mesh.vertices->size() << " verts, "
+		          << "uvs=" << (mesh.vertexUVs ? mesh.vertexUVs->size() : 0)
+		          << " tans=" << (mesh.tangents ? mesh.tangents->size() : 0) << "\n";
+
+		// Store per-triangle positions, UVs, and tangents for later combined buffer build
 		blas.triPositions.resize(triCount * 9);
 		blas.triUVs.resize(triCount * 6);
+		blas.triTangents.resize(triCount * 9);
+		std::cerr << "[RT2]   BLAS " << i << ": tri data resized\n";
 		for (uint32_t t = 0; t < triCount; t++)
 		{
 			uint32_t vi0 = (*mesh.indices)[t * 3 + 0] * 3;
@@ -135,15 +143,36 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 			blas.triPositions[t * 9 + 7] = (*mesh.vertices)[vi2 + 1];
 			blas.triPositions[t * 9 + 8] = (*mesh.vertices)[vi2 + 2];
 
-			// UVs (6 floats) from vertexUVs if available
+			// UVs (6 floats)
 			if (mesh.vertexUVs && !mesh.vertexUVs->empty())
 			{
+				if (mesh.vertexUVs->size() < (size_t)(triCount * 6))
+				{
+					std::cerr << "[RT2]   BLAS " << i << ": ERROR vertexUVs size=" << mesh.vertexUVs->size()
+					          << " < triCount*6=" << (triCount * 6) << "\n";
+				}
 				blas.triUVs[t * 6 + 0] = (*mesh.vertexUVs)[t * 6 + 0];
 				blas.triUVs[t * 6 + 1] = (*mesh.vertexUVs)[t * 6 + 1];
 				blas.triUVs[t * 6 + 2] = (*mesh.vertexUVs)[t * 6 + 2];
 				blas.triUVs[t * 6 + 3] = (*mesh.vertexUVs)[t * 6 + 3];
 				blas.triUVs[t * 6 + 4] = (*mesh.vertexUVs)[t * 6 + 4];
 				blas.triUVs[t * 6 + 5] = (*mesh.vertexUVs)[t * 6 + 5];
+			}
+
+			// Tangents (9 floats = 3 tangents × xyz)
+			if (mesh.tangents && !mesh.tangents->empty())
+			{
+				if (mesh.tangents->size() < (size_t)(triCount * 9))
+				{
+					std::cerr << "[RT2]   BLAS " << i << ": ERROR tangents size=" << mesh.tangents->size()
+					          << " < triCount*9=" << (triCount * 9) << "\n";
+				}
+				for (int v = 0; v < 3; v++)
+				{
+					blas.triTangents[t * 9 + v * 3 + 0] = (*mesh.tangents)[t * 9 + v * 3 + 0];
+					blas.triTangents[t * 9 + v * 3 + 1] = (*mesh.tangents)[t * 9 + v * 3 + 1];
+					blas.triTangents[t * 9 + v * 3 + 2] = (*mesh.tangents)[t * 9 + v * 3 + 2];
+				}
 			}
 		}
 
@@ -262,19 +291,23 @@ void AccelerationStructure::BuildCombinedBuffers()
 	DestroyBuffer(m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
 	DestroyBuffer(m_CombinedUVBuffer, m_CombinedUVMemory);
 	DestroyBuffer(m_CombinedPositionBuffer, m_CombinedPositionMemory);
+	DestroyBuffer(m_CombinedTangentBuffer, m_CombinedTangentMemory);
 
-	// Collect all normals, positions, and UVs into combined buffers.
+	// Collect all normals, positions, UVs, and tangents into combined buffers.
 	// Per-triangle data layout (using vec4 arrays for std430 alignment):
 	//   normals:    1 × vec4 per triangle (xyz = face normal)
 	//   positions:  3 × vec4 per triangle (3 vertex positions)
 	//   UVs:        3 × vec4 per triangle (3 vertex UVs in xy, zw = pad)
+	//   tangents:   3 × vec4 per triangle (3 vertex tangents in xyz, w = pad)
 	std::vector<glm::vec4> allNormals;
 	std::vector<glm::vec4> allPositions;
 	std::vector<glm::vec4> allUVs;
+	std::vector<glm::vec4> allTangents;
 	std::vector<uint32_t> offsets;
 	allNormals.reserve(m_TotalTriangleCount);
 	allPositions.reserve(m_TotalTriangleCount * 3);
 	allUVs.reserve(m_TotalTriangleCount * 3);
+	allTangents.reserve(m_TotalTriangleCount * 3);
 	offsets.reserve(m_BLASes.size());
 
 	for (size_t b = 0; b < m_BLASes.size(); b++)
@@ -302,6 +335,11 @@ void AccelerationStructure::BuildCombinedBuffers()
 			allUVs.push_back(glm::vec4(blas.triUVs[t * 6 + 0], blas.triUVs[t * 6 + 1], 0.0f, 0.0f));
 			allUVs.push_back(glm::vec4(blas.triUVs[t * 6 + 2], blas.triUVs[t * 6 + 3], 0.0f, 0.0f));
 			allUVs.push_back(glm::vec4(blas.triUVs[t * 6 + 4], blas.triUVs[t * 6 + 5], 0.0f, 0.0f));
+
+			// Tangents from stored triTangents (9 floats per triangle = 3 × xyz)
+			allTangents.push_back(glm::vec4(blas.triTangents[t * 9 + 0], blas.triTangents[t * 9 + 1], blas.triTangents[t * 9 + 2], 0.0f));
+			allTangents.push_back(glm::vec4(blas.triTangents[t * 9 + 3], blas.triTangents[t * 9 + 4], blas.triTangents[t * 9 + 5], 0.0f));
+			allTangents.push_back(glm::vec4(blas.triTangents[t * 9 + 6], blas.triTangents[t * 9 + 7], blas.triTangents[t * 9 + 8], 0.0f));
 		}
 	}
 
@@ -325,6 +363,8 @@ void AccelerationStructure::BuildCombinedBuffers()
 	               allPositions.data(), allPositions.size() * sizeof(glm::vec4));
 	createCombined(m_CombinedUVBuffer, m_CombinedUVMemory,
 	               allUVs.data(), allUVs.size() * sizeof(glm::vec4));
+	createCombined(m_CombinedTangentBuffer, m_CombinedTangentMemory,
+	               allTangents.data(), allTangents.size() * sizeof(glm::vec4));
 	createCombined(m_InstanceOffsetBuffer, m_InstanceOffsetMemory,
 	               offsets.data(), offsets.size() * sizeof(uint32_t));
 }
@@ -470,6 +510,7 @@ void AccelerationStructure::Destroy()
 	DestroyBuffer(m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
 	DestroyBuffer(m_CombinedUVBuffer, m_CombinedUVMemory);
 	DestroyBuffer(m_CombinedPositionBuffer, m_CombinedPositionMemory);
+	DestroyBuffer(m_CombinedTangentBuffer, m_CombinedTangentMemory);
 
 	if (m_TLAS)
 	{
