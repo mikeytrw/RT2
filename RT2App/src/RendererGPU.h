@@ -84,6 +84,8 @@ private:
 	VkShaderModule m_MissShader    = VK_NULL_HANDLE;
 	VkShaderModule m_ShadowShader  = VK_NULL_HANDLE;
 	VkShaderModule m_ClosestShader = VK_NULL_HANDLE;
+	VkShaderModule m_AnyHitShader  = VK_NULL_HANDLE;
+	VkShaderModule m_ShadowHitShader = VK_NULL_HANDLE;
 
 	VkBuffer m_SBTBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_SBTMemory = VK_NULL_HANDLE;

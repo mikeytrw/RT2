@@ -47,6 +47,7 @@ bool DecodeImageData(tinygltf::Image *image, const int image_idx,
 #include <filesystem>
 #include <functional>
 #include <cstring>
+#include <algorithm>
 
 namespace fs = std::filesystem;
 
@@ -95,7 +96,7 @@ bool SceneLoader::Save(const Scene& scene, const std::string& filepath)
         tinygltf::Material gmat;
 
         gmat.pbrMetallicRoughness.baseColorFactor = {
-            mat.baseColor.r, mat.baseColor.g, mat.baseColor.b, 1.0
+            mat.baseColor.r, mat.baseColor.g, mat.baseColor.b, mat.baseAlpha
         };
         gmat.pbrMetallicRoughness.metallicFactor = mat.metallic;
         gmat.pbrMetallicRoughness.roughnessFactor = mat.roughness;
@@ -107,15 +108,47 @@ bool SceneLoader::Save(const Scene& scene, const std::string& filepath)
         }
 
         gmat.emissiveFactor = {
-            mat.emissiveColor.r * mat.emissiveIntensity,
-            mat.emissiveColor.g * mat.emissiveIntensity,
-            mat.emissiveColor.b * mat.emissiveIntensity
+            mat.emissiveIntensity > 0.0f ? mat.emissiveColor.r : 0.0f,
+            mat.emissiveIntensity > 0.0f ? mat.emissiveColor.g : 0.0f,
+            mat.emissiveIntensity > 0.0f ? mat.emissiveColor.b : 0.0f
         };
 
         if (mat.normalTextureIndex >= 0 && mat.normalTextureIndex < (int)model.textures.size())
         {
             gmat.normalTexture.index = mat.normalTextureIndex;
             gmat.normalTexture.texCoord = 0;
+        }
+
+        if (mat.emissiveTextureIndex >= 0 && mat.emissiveTextureIndex < (int)model.textures.size())
+        {
+            gmat.emissiveTexture.index = mat.emissiveTextureIndex;
+            gmat.emissiveTexture.texCoord = 0;
+        }
+
+        if (mat.emissiveIntensity > 0.0f)
+        {
+            tinygltf::Value::Object strengthExt;
+            strengthExt["emissiveStrength"] = tinygltf::Value(static_cast<double>(mat.emissiveIntensity));
+            gmat.extensions["KHR_materials_emissive_strength"] = tinygltf::Value(strengthExt);
+            if (std::find(model.extensionsUsed.begin(), model.extensionsUsed.end(),
+                          "KHR_materials_emissive_strength") == model.extensionsUsed.end())
+                model.extensionsUsed.push_back("KHR_materials_emissive_strength");
+        }
+
+        // glTF alpha mode and cutoff
+        gmat.alphaMode = mat.alphaMode;
+        gmat.alphaCutoff = mat.alphaCutoff;
+
+        // Export transmission as KHR_materials_transmission if baseAlpha < 1
+        if (mat.baseAlpha < 1.0f)
+        {
+            float transFactor = 1.0f - mat.baseAlpha;
+            tinygltf::Value::Object transExt;
+            transExt["transmissionFactor"] = tinygltf::Value(static_cast<double>(transFactor));
+            gmat.extensions["KHR_materials_transmission"] = tinygltf::Value(transExt);
+            if (std::find(model.extensionsUsed.begin(), model.extensionsUsed.end(),
+                          "KHR_materials_transmission") == model.extensionsUsed.end())
+                model.extensionsUsed.push_back("KHR_materials_transmission");
         }
 
         // Store custom material type, IOR, and texture indices in extras
@@ -440,7 +473,16 @@ bool SceneLoader::Load(Scene& scene, const std::string& filepath)
     {
         SceneMaterial mat;
 
-        if (gmat.pbrMetallicRoughness.baseColorFactor.size() >= 3)
+        if (gmat.pbrMetallicRoughness.baseColorFactor.size() >= 4)
+        {
+            mat.baseColor = {
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[0],
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[1],
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[2]
+            };
+            mat.baseAlpha = (float)gmat.pbrMetallicRoughness.baseColorFactor[3];
+        }
+        else if (gmat.pbrMetallicRoughness.baseColorFactor.size() >= 3)
         {
             mat.baseColor = {
                 (float)gmat.pbrMetallicRoughness.baseColorFactor[0],
@@ -458,6 +500,9 @@ bool SceneLoader::Load(Scene& scene, const std::string& filepath)
         if (gmat.normalTexture.index >= 0)
             mat.normalTextureIndex = gmat.normalTexture.index;
 
+        if (gmat.emissiveTexture.index >= 0)
+            mat.emissiveTextureIndex = gmat.emissiveTexture.index;
+
         if (gmat.emissiveFactor.size() >= 3)
         {
             float r = (float)gmat.emissiveFactor[0];
@@ -468,6 +513,37 @@ bool SceneLoader::Load(Scene& scene, const std::string& filepath)
             {
                 mat.emissiveColor = {r / maxComp, g / maxComp, b / maxComp};
                 mat.emissiveIntensity = maxComp;
+            }
+        }
+
+        auto emissiveStrengthIt = gmat.extensions.find("KHR_materials_emissive_strength");
+        if (emissiveStrengthIt != gmat.extensions.end() && emissiveStrengthIt->second.IsObject())
+        {
+            const tinygltf::Value& strengthExt = emissiveStrengthIt->second;
+            if (strengthExt.Has("emissiveStrength"))
+                mat.emissiveIntensity *= (float)strengthExt.Get("emissiveStrength").GetNumberAsDouble();
+        }
+
+        // glTF alpha mode and cutoff
+        mat.alphaMode = gmat.alphaMode;
+        mat.alphaCutoff = (float)gmat.alphaCutoff;
+
+        // KHR_materials_transmission: physical glass (transmissionFactor 0..1)
+        // Treat as BLEND with baseAlpha = 1 - transmissionFactor
+        auto transmissionIt = gmat.extensions.find("KHR_materials_transmission");
+        if (transmissionIt != gmat.extensions.end() && transmissionIt->second.IsObject())
+        {
+            const tinygltf::Value& transExt = transmissionIt->second;
+            if (transExt.Has("transmissionFactor"))
+            {
+                float transFactor = (float)transExt.Get("transmissionFactor").GetNumberAsDouble();
+                if (transFactor > 0.0f)
+                {
+                    mat.alphaMode = "BLEND";
+                    mat.baseAlpha = 1.0f - transFactor;
+                    if (mat.baseAlpha < 0.0f) mat.baseAlpha = 0.0f;
+                    if (mat.baseAlpha > 1.0f) mat.baseAlpha = 1.0f;
+                }
             }
         }
 
@@ -511,13 +587,15 @@ bool SceneLoader::Load(Scene& scene, const std::string& filepath)
 
         printf("[SceneLoader]   Material %d: baseColor=(%.2f,%.2f,%.2f) metallic=%.2f rough=%.2f ior=%.2f"
                " emissive=(%.2f,%.2f,%.2f)*%.2f"
-               " texIdx: baseColor=%d normal=%d emissive=%d\n",
+               " texIdx: baseColor=%d normal=%d emissive=%d"
+               " alpha=%s cutoff=%.2f\n",
                (int)scene.GetMaterials().size(),
                mat.baseColor.x, mat.baseColor.y, mat.baseColor.z,
                mat.metallic, mat.roughness, mat.ior,
                mat.emissiveColor.x, mat.emissiveColor.y, mat.emissiveColor.z,
                mat.emissiveIntensity,
-               mat.baseColorTextureIndex, mat.normalTextureIndex, mat.emissiveTextureIndex);
+               mat.baseColorTextureIndex, mat.normalTextureIndex, mat.emissiveTextureIndex,
+               mat.alphaMode.c_str(), mat.alphaCutoff);
 
         scene.AddMaterial(mat);
     }

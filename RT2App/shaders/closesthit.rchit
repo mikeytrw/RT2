@@ -150,12 +150,13 @@ NEEResult sampleNEE(vec3 diffuseAlbedo, vec3 throughput, vec3 P, vec3 N, inout u
     if (NdotL <= 0.0 || LNdotL <= 0.0)
         return result;
 
-    // Shadow ray
+    // Shadow ray: SBT hit offset 2 = shadow hit group.
+    // Instance adds 0 (opaque) or 1 (alpha) → shadow_opaque or shadow_alpha.
+    // TerminateOnFirstHit: first accepted hit = occluder.
     shadowVisible = 0.0;
     traceRayEXT(topLevelAS,
-                gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT |
-                gl_RayFlagsSkipClosestHitShaderEXT,
-                0xFF, 0, 0, 1,
+                gl_RayFlagsTerminateOnFirstHitEXT,
+                0xFF, 2, 1, 1,  // SBT hit offset=2, stride=1, miss index=1
                 P + N * 0.001, 0.001, L, dist - 0.002, 2);
 
     if (shadowVisible < 0.5)
@@ -356,7 +357,7 @@ void main()
     nextPayload.c = vec4(hitPoint + n * 0.001, 0.0);
     nextPayload.d = vec4(normalize(scatterDir), nextBsdfPdf);
 
-    traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0,
+    traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0,
                 nextPayload.c.xyz, 0.001, nextPayload.d.xyz, 1e9, 0);
 
     payload.b.xyz += nextPayload.b.xyz;

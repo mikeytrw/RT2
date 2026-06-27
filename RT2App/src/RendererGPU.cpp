@@ -109,7 +109,7 @@ void RendererGPU::CreatePipeline()
 {
 	VkDevice device = Walnut::Application::GetDevice();
 
-	// Load the four RT shader modules.
+	// Load the six RT shader modules.
 	m_RgenShader   = ShaderManager::LoadShader("raygen.spv");
 	if (!m_RgenShader)   m_RgenShader   = ShaderManager::LoadShader("RT2App/shaders/raygen.spv");
 	m_MissShader    = ShaderManager::LoadShader("miss.spv");
@@ -118,8 +118,13 @@ void RendererGPU::CreatePipeline()
 	if (!m_ShadowShader)  m_ShadowShader  = ShaderManager::LoadShader("RT2App/shaders/shadow.spv");
 	m_ClosestShader = ShaderManager::LoadShader("closesthit.spv");
 	if (!m_ClosestShader) m_ClosestShader = ShaderManager::LoadShader("RT2App/shaders/closesthit.spv");
+	m_AnyHitShader  = ShaderManager::LoadShader("anyhit.spv");
+	if (!m_AnyHitShader)  m_AnyHitShader  = ShaderManager::LoadShader("RT2App/shaders/anyhit.spv");
+	m_ShadowHitShader = ShaderManager::LoadShader("shadowhit.spv");
+	if (!m_ShadowHitShader) m_ShadowHitShader = ShaderManager::LoadShader("RT2App/shaders/shadowhit.spv");
 
-	if (!m_RgenShader || !m_MissShader || !m_ShadowShader || !m_ClosestShader)
+	if (!m_RgenShader || !m_MissShader || !m_ShadowShader || !m_ClosestShader ||
+	    !m_AnyHitShader || !m_ShadowHitShader)
 	{
 		std::cerr << "[RT2] Failed to load RT shaders\n";
 		return;
@@ -139,7 +144,8 @@ void RendererGPU::CreatePipeline()
 	//  10: combined image sampler array (textures, bindless, variable count) — MUST be last binding
 	const VkShaderStageFlags allRTFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR |
 	                                      VK_SHADER_STAGE_MISS_BIT_KHR |
-	                                      VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+	                                      VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+	                                      VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
 
 	const uint32_t maxTextures = 1024;
 
@@ -242,7 +248,8 @@ void RendererGPU::CreatePipeline()
 	const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& rtProps =
 		Walnut::Application::GetRayTracingPipelineProperties();
 
-	VkPipelineShaderStageCreateInfo stages[4] = {};
+	// 6 stages: rgen, miss_sky, miss_shadow, closesthit, anyhit, shadow_anyhit
+	VkPipelineShaderStageCreateInfo stages[6] = {};
 	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	stages[0].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 	stages[0].module = m_RgenShader;
@@ -259,12 +266,23 @@ void RendererGPU::CreatePipeline()
 	stages[3].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	stages[3].module = m_ClosestShader;
 	stages[3].pName = "main";
+	stages[4].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[4].stage = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+	stages[4].module = m_AnyHitShader;
+	stages[4].pName = "main";
+	stages[5].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[5].stage = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+	stages[5].module = m_ShadowHitShader;
+	stages[5].pName = "main";
 
-	VkRayTracingShaderGroupCreateInfoKHR groups[4] = {};
+	// 6 groups — SBT hit layout: [primary_opaque, primary_alpha, shadow_opaque, shadow_alpha]
+	//   Primary rays:  hit offset 0, instance adds 0 (opaque) or 1 (alpha)
+	//   Shadow rays:   hit offset 2, instance adds 0 (opaque) or 1 (alpha)
+	VkRayTracingShaderGroupCreateInfoKHR groups[6] = {};
 	// 0: raygen
 	groups[0].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
 	groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-	groups[0].generalShader = 0;            // index into stages[]
+	groups[0].generalShader = 0;
 	groups[0].closestHitShader = VK_SHADER_UNUSED_KHR;
 	groups[0].anyHitShader = VK_SHADER_UNUSED_KHR;
 	groups[0].intersectionShader = VK_SHADER_UNUSED_KHR;
@@ -282,13 +300,27 @@ void RendererGPU::CreatePipeline()
 	groups[2].closestHitShader = VK_SHADER_UNUSED_KHR;
 	groups[2].anyHitShader = VK_SHADER_UNUSED_KHR;
 	groups[2].intersectionShader = VK_SHADER_UNUSED_KHR;
-	// 3: hit (triangles) — closest hit only, no any-hit
+	// 3: hit_primary_opaque — closesthit only (SBT hit offset 0)
 	groups[3].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
 	groups[3].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
 	groups[3].generalShader = VK_SHADER_UNUSED_KHR;
 	groups[3].closestHitShader = 3;
 	groups[3].anyHitShader = VK_SHADER_UNUSED_KHR;
 	groups[3].intersectionShader = VK_SHADER_UNUSED_KHR;
+	// 4: hit_primary_alpha — closesthit + anyhit (SBT hit offset 0 + instance offset 1)
+	groups[4].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	groups[4].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+	groups[4].generalShader = VK_SHADER_UNUSED_KHR;
+	groups[4].closestHitShader = 3;
+	groups[4].anyHitShader = 4;
+	groups[4].intersectionShader = VK_SHADER_UNUSED_KHR;
+	// 5: hit_shadow — shadow anyhit only, no closesthit (SBT hit offset 2 + instance offset 0 or 1)
+	groups[5].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	groups[5].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
+	groups[5].generalShader = VK_SHADER_UNUSED_KHR;
+	groups[5].closestHitShader = VK_SHADER_UNUSED_KHR;
+	groups[5].anyHitShader = 5;
+	groups[5].intersectionShader = VK_SHADER_UNUSED_KHR;
 
 	// Recursion depth: set to device maximum so the slider can change
 	// maxBounces without rebuilding the pipeline. The shader's
@@ -298,9 +330,9 @@ void RendererGPU::CreatePipeline()
 
 	VkRayTracingPipelineCreateInfoKHR pipelineInfo = {};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
-	pipelineInfo.stageCount = 4;
+	pipelineInfo.stageCount = 6;
 	pipelineInfo.pStages = stages;
-	pipelineInfo.groupCount = 4;
+	pipelineInfo.groupCount = 6;
 	pipelineInfo.pGroups = groups;
 	pipelineInfo.maxPipelineRayRecursionDepth = m_MaxRecursionDepth;
 	pipelineInfo.layout = m_PipelineLayout;
@@ -315,17 +347,20 @@ void RendererGPU::CreatePipeline()
 	}
 
 	// ---- Shader Binding Table ----
-	// Layout: [rgen][miss_sky][miss_shadow][hit]
-	// Each handle padded to baseAlignment. The miss region covers both
-	// miss entries (sky + shadow), so its size = 2 × baseAlign.
+	// Layout: [rgen][miss_sky][miss_shadow][hit_primary_opaque][hit_primary_alpha][hit_shadow_opaque][hit_shadow_alpha]
+	// Each handle padded to baseAlignment.
+	// Miss region: 2 entries (sky + shadow) = 2 × baseAlign
+	// Hit region:  4 entries (primary_opaque, primary_alpha, shadow_opaque, shadow_alpha) = 4 × baseAlign
+	//   Primary rays: hit offset 0, instance adds 0 (opaque) or 1 (alpha)
+	//   Shadow rays:  hit offset 2, instance adds 0 (opaque) or 1 (alpha)
 	const uint32_t handleSize  = rtProps.shaderGroupHandleSize;
 	const uint32_t baseAlign   = std::max<uint32_t>(rtProps.shaderGroupBaseAlignment, 1);
 	const uint32_t handleAlign = std::max<uint32_t>(rtProps.shaderGroupHandleAlignment, 1);
 
-	m_SBTStride       = baseAlign; // each region's stride (must be >= handleSize, aligned to base)
+	m_SBTStride       = baseAlign;
 	m_RgenRegionSize  = baseAlign;
 	m_MissRegionSize  = baseAlign * 2;  // 2 miss entries: sky + shadow
-	m_HitRegionSize   = baseAlign;
+	m_HitRegionSize   = baseAlign * 4;  // 4 hit entries: primary_opaque, primary_alpha, shadow_opaque, shadow_alpha
 
 	VkDeviceSize sbtSize = m_RgenRegionSize + m_MissRegionSize + m_HitRegionSize;
 
@@ -336,17 +371,19 @@ void RendererGPU::CreatePipeline()
 	             m_SBTBuffer, m_SBTMemory);
 	m_SBTSize = sbtSize;
 
-	// Fetch all four group handles in one call.
-	std::vector<uint8_t> handles(4 * handleSize);
+	// Fetch all six group handles in one call.
+	std::vector<uint8_t> handles(6 * handleSize);
 	err = g_RTDispatch.GetRayTracingShaderGroupHandlesKHR(
-		device, m_RTPipeline, 0, 4, handles.size(), handles.data());
+		device, m_RTPipeline, 0, 6, handles.size(), handles.data());
 	if (err != VK_SUCCESS)
 	{
 		std::cerr << "[RT2] vkGetRayTracingShaderGroupHandlesKHR failed: " << err << "\n";
 		return;
 	}
 
-	// Copy each handle into the SBT buffer at the right baseAlignment-aligned offset.
+	// Copy handles into the SBT buffer at baseAlignment-aligned offsets.
+	// Hit region: [group3=primary_opaque, group4=primary_alpha, group5=shadow, group5=shadow]
+	// (shadow_opaque and shadow_alpha both point to the same group 5)
 	void* mapped = nullptr;
 	vkMapMemory(device, m_SBTMemory, 0, sbtSize, 0, &mapped);
 	std::memset(mapped, 0, (size_t)sbtSize);
@@ -355,8 +392,12 @@ void RendererGPU::CreatePipeline()
 	std::memcpy(dst + m_RgenRegionSize,        handles.data() + 1 * handleSize, handleSize); // miss_sky
 	std::memcpy(dst + m_RgenRegionSize + baseAlign,
 	            handles.data() + 2 * handleSize, handleSize);                                 // miss_shadow
-	std::memcpy(dst + m_RgenRegionSize + m_MissRegionSize,
-	            handles.data() + 3 * handleSize, handleSize);                                 // hit
+	// Hit region: 4 entries at baseAlign stride
+	VkDeviceSize hitBase = m_RgenRegionSize + m_MissRegionSize;
+	std::memcpy(dst + hitBase,                   handles.data() + 3 * handleSize, handleSize); // primary_opaque
+	std::memcpy(dst + hitBase + baseAlign,       handles.data() + 4 * handleSize, handleSize); // primary_alpha
+	std::memcpy(dst + hitBase + baseAlign * 2,   handles.data() + 5 * handleSize, handleSize); // shadow_opaque
+	std::memcpy(dst + hitBase + baseAlign * 3,   handles.data() + 5 * handleSize, handleSize); // shadow_alpha (same shader)
 	vkUnmapMemory(device, m_SBTMemory);
 
 	// Print the SBT device address and region layout for verification.
@@ -375,11 +416,14 @@ void RendererGPU::DestroyPipeline()
 	if (m_MissShader)    vkDestroyShaderModule(device, m_MissShader, nullptr);
 	if (m_ShadowShader)  vkDestroyShaderModule(device, m_ShadowShader, nullptr);
 	if (m_ClosestShader) vkDestroyShaderModule(device, m_ClosestShader, nullptr);
+	if (m_AnyHitShader)  vkDestroyShaderModule(device, m_AnyHitShader, nullptr);
+	if (m_ShadowHitShader) vkDestroyShaderModule(device, m_ShadowHitShader, nullptr);
 	DestroyBuffer(m_SBTBuffer, m_SBTMemory);
 	m_RTPipeline = VK_NULL_HANDLE;
 	m_PipelineLayout = VK_NULL_HANDLE;
 	m_DescriptorSetLayout = VK_NULL_HANDLE;
 	m_RgenShader = m_MissShader = m_ShadowShader = m_ClosestShader = VK_NULL_HANDLE;
+	m_AnyHitShader = m_ShadowHitShader = VK_NULL_HANDLE;
 	m_SBTBuffer = VK_NULL_HANDLE;
 	m_SBTMemory = VK_NULL_HANDLE;
 	m_SBTSize = 0;
@@ -977,6 +1021,15 @@ void RendererGPU::RebuildAccelerationStructures()
 		geo.vertexUVs = &mesh.vertexUVs;
 		geo.tangents = &mesh.tangents;
 		geo.materialIndex = mesh.materialIndex;
+
+		// Check if this mesh's material uses alpha blending/cutout
+		uint32_t matIdx = mesh.materialIndex;
+		if (matIdx < m_CurrentScene.materials.size())
+		{
+			float alphaMode = m_CurrentScene.materials[matIdx].alphaMode;
+			geo.isTransparent = (alphaMode > 0.5f);
+		}
+
 		geometries.push_back(geo);
 	}
 
@@ -994,6 +1047,7 @@ void RendererGPU::RebuildAccelerationStructures()
 		0, 1, &blasBarrier, 0, nullptr, 0, nullptr);
 
 	// Build TLAS instances — one per BLAS, with customIndex = material index
+	// sbtHitOffset: 0 = opaque hit group (no any-hit), 1 = alpha hit group (any-hit)
 	std::vector<BLASInstance> instances;
 	instances.reserve(m_CurrentScene.meshes.size());
 	for (size_t i = 0; i < m_CurrentScene.meshes.size(); i++)
@@ -1007,6 +1061,15 @@ void RendererGPU::RebuildAccelerationStructures()
 		inst.blasAddress = m_AS.GetBLASAddress(static_cast<uint32_t>(i));
 		inst.customIndex = m_CurrentScene.meshes[i].materialIndex;
 		inst.transform = transform;
+
+		// Check if this mesh's material uses alpha blending/cutout
+		uint32_t matIdx = m_CurrentScene.meshes[i].materialIndex;
+		if (matIdx < m_CurrentScene.materials.size())
+		{
+			float alphaMode = m_CurrentScene.materials[matIdx].alphaMode;
+			inst.sbtHitOffset = (alphaMode > 0.5f) ? 1u : 0u;  // 1 = alpha hit group
+		}
+
 		instances.push_back(inst);
 	}
 

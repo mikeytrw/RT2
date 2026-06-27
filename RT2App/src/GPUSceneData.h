@@ -18,9 +18,9 @@ struct GPUMaterial
     glm::vec4 baseColor_metallic;   // xyz = base color, w = metallic factor
     glm::vec4 emissive_roughness;   // xyz = emissive * intensity, w = roughness
     float     ior;                  // index of refraction (for dielectric)
-    float     _pad0;
-    float     _pad1;
-    float     _pad2;
+    float     alphaCutoff;          // alpha cutoff (MASK mode)
+    float     alphaMode;            // 0=OPAQUE, 1=MASK, 2=BLEND
+    float     baseAlpha;             // baseColorFactor.a (1.0 = fully opaque)
     glm::ivec4 textureIndices;      // x = baseColor, y = normal, z = emissive, w = unused (-1 = none)
 
     static GPUMaterial fromSceneMaterial(const SceneMaterial& sm)
@@ -30,9 +30,11 @@ struct GPUMaterial
         m.emissive_roughness = glm::vec4(
             sm.emissiveColor * sm.emissiveIntensity, sm.roughness);
         m.ior = sm.ior;
-        m._pad0 = 0.0f;
-        m._pad1 = 0.0f;
-        m._pad2 = 0.0f;
+        m.alphaCutoff = sm.alphaCutoff;
+        if (sm.alphaMode == "MASK")       m.alphaMode = 1.0f;
+        else if (sm.alphaMode == "BLEND") m.alphaMode = 2.0f;
+        else                              m.alphaMode = 0.0f;
+        m.baseAlpha = sm.baseAlpha;
         m.textureIndices = glm::ivec4(
             sm.baseColorTextureIndex,
             sm.normalTextureIndex,
@@ -44,7 +46,7 @@ struct GPUMaterial
     GPUMaterial()
         : baseColor_metallic(0.8f, 0.8f, 0.8f, 0.0f)
         , emissive_roughness(0.0f, 0.0f, 0.0f, 0.5f)
-        , ior(1.5f), _pad0(0), _pad1(0), _pad2(0)
+        , ior(1.5f), alphaCutoff(0.5f), alphaMode(0.0f), baseAlpha(1.0f)
         , textureIndices(-1, -1, -1, -1)
     {}
 };

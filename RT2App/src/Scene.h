@@ -62,6 +62,7 @@ struct SceneMaterial
     MaterialType type = MaterialType::Lambertian;
 
     glm::vec3 baseColor = {0.8f, 0.8f, 0.8f};
+    float baseAlpha = 1.0f;  // baseColorFactor.a (1.0 = fully opaque)
     float metallic = 0.0f;
     float roughness = 0.5f;
     float ior = 1.5f;
@@ -72,6 +73,10 @@ struct SceneMaterial
     int baseColorTextureIndex = -1;
     int normalTextureIndex = -1;
     int emissiveTextureIndex = -1;
+
+    // glTF alpha mode: "OPAQUE", "MASK", "BLEND"
+    std::string alphaMode = "OPAQUE";
+    float alphaCutoff = 0.5f;
 };
 
 struct SceneLight

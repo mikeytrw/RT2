@@ -26,10 +26,10 @@ struct Material
 {
     vec4 baseColor_metallic;   // xyz = base color, w = metallic factor
     vec4 emissive_roughness;   // xyz = emissive * intensity, w = roughness
-    float ior;
-    float _pad0;
-    float _pad1;
-    float _pad2;
+    float ior;                 // index of refraction (for dielectric)
+    float alphaCutoff;         // alpha cutoff (MASK mode)
+    float alphaMode;           // 0=OPAQUE, 1=MASK, 2=BLEND
+    float baseAlpha;            // baseColorFactor.a (1.0 = fully opaque)
     ivec4 textureIndices;      // x = baseColor, y = normal, z = emissive, w = unused (-1 = none)
 };
 

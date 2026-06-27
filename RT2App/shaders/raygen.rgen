@@ -12,6 +12,7 @@ void main()
     ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
     uint width  = uint(camera.viewportSPP.x);
     uint height = uint(camera.viewportSPP.y);
+    uint spp    = uint(camera.viewportSPP.z);
 
     if (pixel.x >= int(width) || pixel.y >= int(height))
         return;
@@ -22,40 +23,48 @@ void main()
 
     vec3 origin = camera.position.xyz;
 
-    // Depth-of-field: jitter ray origin within aperture
-    vec3 defocusJitter = vec3(0.0);
-    if (camera.apertureFocal.x > 0.0)
+    // Trace spp rays per pixel and average
+    vec3 color = vec3(0.0);
+    for (uint s = 0u; s < spp; s++)
     {
-        vec3 diskPoint = randomInUnitDisk(rngState) * camera.apertureFocal.x;
-        defocusJitter = camera.right.xyz * diskPoint.x + camera.up.xyz * diskPoint.y;
+        // Depth-of-field: jitter ray origin within aperture
+        vec3 defocusJitter = vec3(0.0);
+        if (camera.apertureFocal.x > 0.0)
+        {
+            vec3 diskPoint = randomInUnitDisk(rngState) * camera.apertureFocal.x;
+            defocusJitter = camera.right.xyz * diskPoint.x + camera.up.xyz * diskPoint.y;
+        }
+
+        float u = (float(pixel.x) + randomFloat(rngState)) / float(width);
+        float v = (float(pixel.y) + randomFloat(rngState)) / float(height);
+        vec2 coord = vec2(u, v) * 2.0 - 1.0;
+        vec4 target = camera.inverseProjection * vec4(coord.x, coord.y, 1.0, 1.0);
+        vec3 dir = normalize(vec3(camera.inverseView * vec4(normalize(vec3(target) / target.w), 0.0)));
+
+        // Depth of field: adjust focus
+        vec3 rayOrigin = origin;
+        if (camera.apertureFocal.x > 0.0)
+        {
+            vec3 focalPoint = rayOrigin + dir * camera.apertureFocal.y;
+            rayOrigin += defocusJitter;
+            dir = normalize(focalPoint - rayOrigin);
+        }
+
+        // Initialize payload for recursive path tracing
+        // d.w = bsdfPdf (solid-angle): -1.0 = camera ray (delta, full emission),
+        // >= 0 = diffuse bounce (MIS-weighted emission).
+        payload.a = vec4(vec3(1.0), rngState);   // throughput = 1, rngState in .w
+        payload.b = vec4(vec3(0.0), 0);           // radiance = 0, depth = 0
+        payload.c = vec4(rayOrigin, 0.0);          // ray origin, done = 0
+        payload.d = vec4(dir, -1.0);              // ray dir, bsdfPdf = -1 (camera)
+
+        traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0,
+                    rayOrigin, 0.001, dir, 1e9, 0);
+
+        color += payload.b.xyz;
+        rngState = floatBitsToUint(payload.a.w);
     }
-
-    float u = (float(pixel.x) + randomFloat(rngState)) / float(width);
-    float v = (float(pixel.y) + randomFloat(rngState)) / float(height);
-    vec2 coord = vec2(u, v) * 2.0 - 1.0;
-    vec4 target = camera.inverseProjection * vec4(coord.x, coord.y, 1.0, 1.0);
-    vec3 dir = normalize(vec3(camera.inverseView * vec4(normalize(vec3(target) / target.w), 0.0)));
-
-    // Depth of field: adjust focus
-    if (camera.apertureFocal.x > 0.0)
-    {
-        vec3 focalPoint = origin + dir * camera.apertureFocal.y;
-        origin += defocusJitter;
-        dir = normalize(focalPoint - origin);
-    }
-
-    // Initialize payload for recursive path tracing
-    // d.w = bsdfPdf (solid-angle): -1.0 = camera ray (delta, full emission),
-    // >= 0 = diffuse bounce (MIS-weighted emission).
-    payload.a = vec4(vec3(1.0), rngState);   // throughput = 1, rngState in .w
-    payload.b = vec4(vec3(0.0), 0);           // radiance = 0, depth = 0
-    payload.c = vec4(origin, 0.0);            // ray origin, done = 0
-    payload.d = vec4(dir, -1.0);              // ray dir, bsdfPdf = -1 (camera)
-
-    traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0,
-                origin, 0.001, dir, 1e9, 0);
-
-    vec3 color = payload.b.xyz;
+    color /= float(spp);
 
     // Temporal accumulation: blend with previous frame
     float frameIndex = camera.position.w;

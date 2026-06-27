@@ -19,6 +19,9 @@ TEST_CASE("GPUMaterial default values are sensible")
     CHECK(mat.baseColor_metallic == glm::vec4(0.8f, 0.8f, 0.8f, 0.0f));
     CHECK(mat.emissive_roughness == glm::vec4(0.0f, 0.0f, 0.0f, 0.5f));
     CHECK(mat.ior == 1.5f);
+    CHECK(mat.alphaCutoff == 0.5f);
+    CHECK(mat.alphaMode == 0.0f); // OPAQUE
+    CHECK(mat.baseAlpha == 1.0f);
     CHECK(mat.textureIndices.x == -1); // no baseColor texture
     CHECK(mat.textureIndices.y == -1); // no normal texture
     CHECK(mat.textureIndices.z == -1); // no emissive texture
@@ -418,4 +421,52 @@ TEST_CASE("BuildGPUSceneData light stores emissiveTexIdx when material has emiss
 
     REQUIRE(gpu.lights.size() == 1);
     CHECK(gpu.lights[0].ids.w == 5u);  // emissiveTexIdx
+}
+
+// ============================================================================
+// Alpha mode / translucency tests (M6 Phase 1)
+// ============================================================================
+
+TEST_CASE("GPUMaterial alphaMode defaults to OPAQUE (0.0)")
+{
+    GPUMaterial mat;
+    CHECK(mat.alphaMode == 0.0f);
+    CHECK(mat.alphaCutoff == 0.5f);
+}
+
+TEST_CASE("GPUMaterial fromSceneMaterial converts alphaMode MASK")
+{
+    SceneMaterial sm;
+    sm.alphaMode = "MASK";
+    sm.alphaCutoff = 0.3f;
+
+    GPUMaterial gm = GPUMaterial::fromSceneMaterial(sm);
+
+    CHECK(gm.alphaMode == 1.0f);
+    CHECK(gm.alphaCutoff == 0.3f);
+}
+
+TEST_CASE("GPUMaterial fromSceneMaterial converts alphaMode BLEND")
+{
+    SceneMaterial sm;
+    sm.alphaMode = "BLEND";
+
+    GPUMaterial gm = GPUMaterial::fromSceneMaterial(sm);
+
+    CHECK(gm.alphaMode == 2.0f);
+}
+
+TEST_CASE("GPUMaterial fromSceneMaterial converts alphaMode OPAQUE")
+{
+    SceneMaterial sm;
+    sm.alphaMode = "OPAQUE";
+
+    GPUMaterial gm = GPUMaterial::fromSceneMaterial(sm);
+
+    CHECK(gm.alphaMode == 0.0f);
+}
+
+TEST_CASE("GPUMaterial is still 64 bytes with alpha fields")
+{
+    CHECK(sizeof(GPUMaterial) == 64);
 }

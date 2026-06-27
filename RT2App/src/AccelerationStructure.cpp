@@ -190,7 +190,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		VkAccelerationStructureGeometryKHR geometry = {};
 		geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
 		geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-		geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+		geometry.flags = mesh.isTransparent ? 0 : VK_GEOMETRY_OPAQUE_BIT_KHR;
 
 		VkAccelerationStructureGeometryTrianglesDataKHR trianglesData = {};
 		trianglesData.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
@@ -390,7 +390,7 @@ bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,
 		vkInst.transform = inst.transform;
 		vkInst.instanceCustomIndex = inst.customIndex;
 		vkInst.mask = 0xFF;
-		vkInst.instanceShaderBindingTableRecordOffset = 0;
+		vkInst.instanceShaderBindingTableRecordOffset = inst.sbtHitOffset;
 		vkInst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
 		vkInst.accelerationStructureReference = inst.blasAddress;
 		vkInstances.push_back(vkInst);

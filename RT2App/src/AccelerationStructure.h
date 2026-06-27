@@ -12,6 +12,7 @@ struct BLASInstance
 	VkDeviceAddress blasAddress;
 	uint32_t customIndex; // material index
 	VkTransformMatrixKHR transform;
+	uint32_t sbtHitOffset = 0; // 0 = opaque hit group, 1 = alpha hit group
 };
 
 // Geometry for a single BLAS build.
@@ -22,6 +23,7 @@ struct BLASGeometry
 	const std::vector<float>*    vertexUVs;   // 6 floats per triangle (3 UVs × xy)
 	const std::vector<float>*    tangents;    // 12 floats per triangle (3 tangents × xyz)
 	uint32_t                     materialIndex;
+	bool                         isTransparent = false; // if true, clear VK_GEOMETRY_OPAQUE_BIT_KHR so any-hit runs
 };
 
 class AccelerationStructure
