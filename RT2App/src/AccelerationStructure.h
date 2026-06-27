@@ -19,7 +19,7 @@ struct BLASGeometry
 {
 	const std::vector<float>*    vertices;    // position.xyz, stride 3
 	const std::vector<uint32_t>* indices;     // triangle indices
-	const std::vector<float>*    centroidUVs; // 2 floats per triangle (u,v)
+	const std::vector<float>*    vertexUVs;   // 6 floats per triangle (3 UVs × xy)
 	uint32_t                     materialIndex;
 };
 
@@ -51,6 +51,7 @@ public:
 	VkBuffer GetNormalBuffer() const { return m_CombinedNormalBuffer; }
 	VkBuffer GetInstanceOffsetBuffer() const { return m_InstanceOffsetBuffer; }
 	VkBuffer GetUVBuffer() const { return m_CombinedUVBuffer; }
+	VkBuffer GetPositionBuffer() const { return m_CombinedPositionBuffer; }
 	uint32_t GetTriangleCount() const { return m_TotalTriangleCount; }
 
 private:
@@ -69,7 +70,8 @@ private:
 		VkDeviceMemory scratchMemory = VK_NULL_HANDLE;
 		VkDeviceAddress deviceAddress = 0;
 		uint32_t triangleCount = 0;
-		std::vector<float> centroidUVs; // 2 floats per triangle
+		std::vector<float> triPositions; // 9 floats per triangle (3 × xyz)
+		std::vector<float> triUVs;       // 6 floats per triangle (3 × uv)
 	};
 
 	void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
@@ -86,6 +88,8 @@ private:
 	VkDeviceMemory m_InstanceOffsetMemory = VK_NULL_HANDLE;
 	VkBuffer m_CombinedUVBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_CombinedUVMemory = VK_NULL_HANDLE;
+	VkBuffer m_CombinedPositionBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_CombinedPositionMemory = VK_NULL_HANDLE;
 
 	// TLAS
 	VkAccelerationStructureKHR m_TLAS = VK_NULL_HANDLE;

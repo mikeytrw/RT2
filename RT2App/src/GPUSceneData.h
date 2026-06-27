@@ -11,7 +11,7 @@
 // GPU-side data structures — plain-old-data, std430 compatible, no Vulkan deps
 // ============================================================================
 
-// PBR material packed into 32 bytes (two vec4s) for std430 storage buffer.
+// PBR material packed into 64 bytes (three vec4s + ivec4) for std430.
 // Matches the GLSL Material struct in pathtracer_shared.glsl.
 struct GPUMaterial
 {
@@ -21,6 +21,7 @@ struct GPUMaterial
     float     _pad0;
     float     _pad1;
     float     _pad2;
+    glm::ivec4 textureIndices;      // x = baseColor, y = normal, z = emissive, w = unused (-1 = none)
 
     static GPUMaterial fromSceneMaterial(const SceneMaterial& sm)
     {
@@ -32,6 +33,11 @@ struct GPUMaterial
         m._pad0 = 0.0f;
         m._pad1 = 0.0f;
         m._pad2 = 0.0f;
+        m.textureIndices = glm::ivec4(
+            sm.baseColorTextureIndex,
+            sm.normalTextureIndex,
+            sm.emissiveTextureIndex,
+            -1);
         return m;
     }
 
@@ -39,6 +45,7 @@ struct GPUMaterial
         : baseColor_metallic(0.8f, 0.8f, 0.8f, 0.0f)
         , emissive_roughness(0.0f, 0.0f, 0.0f, 0.5f)
         , ior(1.5f), _pad0(0), _pad1(0), _pad2(0)
+        , textureIndices(-1, -1, -1, -1)
     {}
 };
 
@@ -47,7 +54,7 @@ struct GPUMeshGeometry
 {
     std::vector<float>     vertices;    // position.xyz, stride 3
     std::vector<uint32_t>  indices;     // triangle indices
-    std::vector<float>     centroidUVs; // 2 floats per triangle (u,v), average of 3 vertex UVs
+    std::vector<float>     vertexUVs;   // 6 floats per triangle (3 UVs × xy), interleaved
     uint32_t               materialIndex = 0;
 };
 

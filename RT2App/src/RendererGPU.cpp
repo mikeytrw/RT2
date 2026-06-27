@@ -122,7 +122,7 @@ void RendererGPU::CreatePipeline()
 		return;
 	}
 
-	// Descriptor set layout — 8 bindings:
+	// Descriptor set layout — 9 bindings:
 	//   0: storage image (output)
 	//   1: uniform buffer (camera)
 	//   2: storage buffer (materials)
@@ -130,14 +130,15 @@ void RendererGPU::CreatePipeline()
 	//   4: acceleration structure (TLAS)
 	//   5: storage buffer (per-instance normal offsets)
 	//   6: combined image sampler array (textures, bindless, variable count)
-	//   7: storage buffer (combined UVs)
+	//   7: storage buffer (combined UVs, 3 per triangle)
+	//   8: storage buffer (combined positions, 3 per triangle)
 	const VkShaderStageFlags allRTFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR |
 	                                      VK_SHADER_STAGE_MISS_BIT_KHR |
 	                                      VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 
 	const uint32_t maxTextures = 1024;
 
-	VkDescriptorSetLayoutBinding bindings[8] = {};
+	VkDescriptorSetLayoutBinding bindings[9] = {};
 
 	bindings[0] = {};
 	bindings[0].binding = 0;
@@ -187,19 +188,25 @@ void RendererGPU::CreatePipeline()
 	bindings[7].descriptorCount = 1;
 	bindings[7].stageFlags = allRTFlags;
 
+	bindings[8] = {};
+	bindings[8].binding = 8;
+	bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bindings[8].descriptorCount = 1;
+	bindings[8].stageFlags = allRTFlags;
+
 	// Binding flags: binding 6 is partially bound + variable descriptor count
-	VkDescriptorBindingFlagsEXT bindingFlags[8] = {};
+	VkDescriptorBindingFlagsEXT bindingFlags[9] = {};
 	bindingFlags[6] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT |
 	                  VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT;
 
 	VkDescriptorSetLayoutBindingFlagsCreateInfoEXT bindingFlagsInfo = {};
 	bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
-	bindingFlagsInfo.bindingCount = 8;
+	bindingFlagsInfo.bindingCount = 9;
 	bindingFlagsInfo.pBindingFlags = bindingFlags;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 8;
+	layoutInfo.bindingCount = 9;
 	layoutInfo.pBindings = bindings;
 	layoutInfo.pNext = &bindingFlagsInfo;
 
@@ -561,6 +568,10 @@ void RendererGPU::UpdateDescriptorSet()
 	uvBufferInfo.buffer = m_AS.GetUVBuffer();
 	uvBufferInfo.range = VK_WHOLE_SIZE;
 
+	VkDescriptorBufferInfo positionBufferInfo = {};
+	positionBufferInfo.buffer = m_AS.GetPositionBuffer();
+	positionBufferInfo.range = VK_WHOLE_SIZE;
+
 	// Texture array image infos
 	std::vector<VkDescriptorImageInfo> textureImageInfos;
 	for (const auto& gt : m_Textures)
@@ -581,7 +592,7 @@ void RendererGPU::UpdateDescriptorSet()
 	std::cerr << "[RT2] UpdateDescriptorSet: TLAS=" << (void*)tlas
 	          << " descSet=" << m_DescriptorSet << "\n";
 
-	VkWriteDescriptorSet writes[8] = {};
+	VkWriteDescriptorSet writes[9] = {};
 
 	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[0].dstSet = m_DescriptorSet;
@@ -641,7 +652,15 @@ void RendererGPU::UpdateDescriptorSet()
 	writes[7].descriptorCount = 1;
 	writes[7].pBufferInfo = &uvBufferInfo;
 
-	uint32_t writeCount = 8;
+	writes[8] = {};
+	writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[8].dstSet = m_DescriptorSet;
+	writes[8].dstBinding = 8;
+	writes[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[8].descriptorCount = 1;
+	writes[8].pBufferInfo = &positionBufferInfo;
+
+	uint32_t writeCount = 9;
 	if (textureImageInfos.empty())
 	{
 		writes[6].descriptorCount = 0;
@@ -849,7 +868,7 @@ void RendererGPU::RebuildAccelerationStructures()
 		BLASGeometry geo;
 		geo.vertices = &mesh.vertices;
 		geo.indices = &mesh.indices;
-		geo.centroidUVs = &mesh.centroidUVs;
+		geo.vertexUVs = &mesh.vertexUVs;
 		geo.materialIndex = mesh.materialIndex;
 		geometries.push_back(geo);
 	}

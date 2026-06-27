@@ -3,6 +3,7 @@
 
 #extension GL_EXT_ray_tracing : require
 #extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_nonuniform_qualifier : require
 
 // ---- Bindings (set 0) -------------------------------------------------------
 
@@ -20,7 +21,7 @@ layout(set = 0, binding = 1, std140) uniform CameraData
     mat4 inverseView;
 } camera;
 
-// PBR material — matches GPUMaterial in GPUSceneData.h (48 bytes, std430)
+// PBR material — matches GPUMaterial in GPUSceneData.h (64 bytes, std430)
 struct Material
 {
     vec4 baseColor_metallic;   // xyz = base color, w = metallic factor
@@ -29,6 +30,7 @@ struct Material
     float _pad0;
     float _pad1;
     float _pad2;
+    ivec4 textureIndices;      // x = baseColor, y = normal, z = emissive, w = unused (-1 = none)
 };
 
 layout(set = 0, binding = 2, std430) readonly buffer MaterialBuffer
@@ -49,10 +51,16 @@ layout(set = 0, binding = 5, std430) readonly buffer InstanceNormalOffsets
 // Bindless texture array (combined image samplers, variable count)
 layout(set = 0, binding = 6) uniform sampler2D textures[];
 
-// Combined UV buffer (one vec4 per triangle, xy = centroid UV)
+// Combined UV buffer (3 vec4 per triangle, xy = vertex UV)
 layout(set = 0, binding = 7, std430) readonly buffer UVBuffer
 {
-    vec4 triangleUVs[]; // xy = centroid UV, zw = unused
+    vec4 triangleUVs[]; // 3 per triangle: xy = vertex UV, zw = unused
+};
+
+// Combined position buffer (3 vec4 per triangle, xyz = vertex position)
+layout(set = 0, binding = 8, std430) readonly buffer PositionBuffer
+{
+    vec4 trianglePositions[]; // 3 per triangle: xyz = vertex pos, w = unused
 };
 
 layout(set = 0, binding = 4) uniform accelerationStructureEXT topLevelAS;

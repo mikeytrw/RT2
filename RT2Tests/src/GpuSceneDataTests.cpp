@@ -8,9 +8,9 @@
 // GPUMaterial struct layout tests (std430 / 32-byte alignment)
 // ============================================================================
 
-TEST_CASE("GPUMaterial is 48 bytes (2 vec4 + 4 float, std430)")
+TEST_CASE("GPUMaterial is 64 bytes (3 vec4 + ivec4, std430)")
 {
-    CHECK(sizeof(GPUMaterial) == 48);
+    CHECK(sizeof(GPUMaterial) == 64);
 }
 
 TEST_CASE("GPUMaterial default values are sensible")
@@ -19,6 +19,23 @@ TEST_CASE("GPUMaterial default values are sensible")
     CHECK(mat.baseColor_metallic == glm::vec4(0.8f, 0.8f, 0.8f, 0.0f));
     CHECK(mat.emissive_roughness == glm::vec4(0.0f, 0.0f, 0.0f, 0.5f));
     CHECK(mat.ior == 1.5f);
+    CHECK(mat.textureIndices.x == -1); // no baseColor texture
+    CHECK(mat.textureIndices.y == -1); // no normal texture
+    CHECK(mat.textureIndices.z == -1); // no emissive texture
+}
+
+TEST_CASE("GPUMaterial from SceneMaterial preserves texture indices")
+{
+    SceneMaterial sm;
+    sm.baseColorTextureIndex = 3;
+    sm.normalTextureIndex = 7;
+    sm.emissiveTextureIndex = 12;
+
+    GPUMaterial gm = GPUMaterial::fromSceneMaterial(sm);
+
+    CHECK(gm.textureIndices.x == 3);
+    CHECK(gm.textureIndices.y == 7);
+    CHECK(gm.textureIndices.z == 12);
 }
 
 TEST_CASE("GPUMaterial from SceneMaterial preserves PBR fields")
