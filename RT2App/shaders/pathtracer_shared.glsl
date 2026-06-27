@@ -16,7 +16,7 @@ layout(set = 0, binding = 1, std140) uniform CameraData
     vec4 right;         // xyz = right, w = pad
     vec4 up;            // xyz = up, w = pad
     vec4 viewportSPP;   // x = width, y = height, z = spp, w = maxBounces
-    vec4 apertureFocal; // x = aperture, y = focusDistance, z = pad, w = pad
+    vec4 apertureFocal; // x = aperture, y = focusDistance, z = showBackground, w = emissiveBoost
     mat4 inverseProjection;
     mat4 inverseView;
 } camera;

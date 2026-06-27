@@ -45,12 +45,12 @@ void main()
     }
 
     // Initialize payload for recursive path tracing
-    // d.w = skipEmission flag: 0.0 = allow emission (camera/specular ray),
-    // 1.0 = skip emission (diffuse bounce, NEE handles direct lighting).
+    // d.w = bsdfPdf (solid-angle): -1.0 = camera ray (delta, full emission),
+    // >= 0 = diffuse bounce (MIS-weighted emission).
     payload.a = vec4(vec3(1.0), rngState);   // throughput = 1, rngState in .w
     payload.b = vec4(vec3(0.0), 0);           // radiance = 0, depth = 0
     payload.c = vec4(origin, 0.0);            // ray origin, done = 0
-    payload.d = vec4(dir, 0.0);               // ray dir, skipEmission = 0
+    payload.d = vec4(dir, -1.0);              // ray dir, bsdfPdf = -1 (camera)
 
     traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0,
                 origin, 0.001, dir, 1e9, 0);

@@ -135,7 +135,7 @@ public:
 	ImGui::Separator();
 	if (ImGui::Checkbox("Show Background", &m_RendererGPU.m_ShowBackground))
 		m_RendererGPU.ResetAccumulation();
-	if (ImGui::Checkbox("NEE Only (debug)", &m_RendererGPU.m_NEEOnly))
+	if (ImGui::SliderFloat("Emissive Boost", &m_RendererGPU.m_EmissiveBoost, 0.0f, 50.0f, "%.1f"))
 		m_RendererGPU.ResetAccumulation();
 	ImGui::End();
 

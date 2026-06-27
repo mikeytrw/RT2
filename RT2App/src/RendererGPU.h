@@ -48,6 +48,7 @@ public:
 	int m_MaxBounces = 8;
 	bool m_ShowBackground = false;
 	bool m_NEEOnly = false;
+	float m_EmissiveBoost = 1.0f;
 
 private:
 	void CreateOutputImage();
