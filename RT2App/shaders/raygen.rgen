@@ -15,10 +15,44 @@ void main()
     if (pixel.x >= int(width) || pixel.y >= int(height))
         return;
 
-    // DEBUG SHADER #1: Display textures[0] stretched across the screen.
-    // Proves GPU texture upload + bindless descriptor array works.
-    vec2 uv = vec2(float(pixel.x) / float(width), 1.0 - float(float(pixel.y) / float(height)));
-    vec3 color = texture(textures[0], uv).rgb;
+    // Initialize RNG from pixel coords + frame index
+    uint rngState = pixel.x * 1973u + pixel.y * 9277u + uint(camera.position.w) * 26699u;
+    pcg(rngState); // warm up
+
+    vec3 origin = camera.position.xyz;
+
+    // Depth-of-field: jitter ray origin within aperture
+    vec3 defocusJitter = vec3(0.0);
+    if (camera.apertureFocal.x > 0.0)
+    {
+        vec3 diskPoint = randomInUnitDisk(rngState) * camera.apertureFocal.x;
+        defocusJitter = camera.right.xyz * diskPoint.x + camera.up.xyz * diskPoint.y;
+    }
+
+    float u = (float(pixel.x) + randomFloat(rngState)) / float(width);
+    float v = (float(pixel.y) + randomFloat(rngState)) / float(height);
+    vec2 coord = vec2(u, v) * 2.0 - 1.0;
+    vec4 target = camera.inverseProjection * vec4(coord.x, coord.y, 1.0, 1.0);
+    vec3 dir = normalize(vec3(camera.inverseView * vec4(normalize(vec3(target) / target.w), 0.0)));
+
+    // Depth of field: adjust focus
+    if (camera.apertureFocal.x > 0.0)
+    {
+        vec3 focalPoint = origin + dir * camera.apertureFocal.y;
+        origin += defocusJitter;
+        dir = normalize(focalPoint - origin);
+    }
+
+    // Initialize payload for recursive path tracing
+    payload.a = vec4(vec3(1.0), rngState);   // throughput = 1, rngState in .w
+    payload.b = vec4(vec3(0.0), 0);           // radiance = 0, depth = 0
+    payload.c = vec4(origin, 0.0);            // ray origin, done = 0
+    payload.d = vec4(dir, 0.0);               // ray dir
+
+    traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF, 0, 0, 0,
+                origin, 0.001, dir, 1e9, 0);
+
+    vec3 color = payload.b.xyz;
 
     imageStore(outputImage, pixel, vec4(color, 1.0));
 }

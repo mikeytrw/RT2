@@ -47,6 +47,7 @@ struct GPUMeshGeometry
 {
     std::vector<float>     vertices;    // position.xyz, stride 3
     std::vector<uint32_t>  indices;     // triangle indices
+    std::vector<float>     centroidUVs; // 2 floats per triangle (u,v), average of 3 vertex UVs
     uint32_t               materialIndex = 0;
 };
 

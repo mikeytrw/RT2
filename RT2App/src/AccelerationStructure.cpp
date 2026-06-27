@@ -101,6 +101,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 
 	DestroyBuffer(m_CombinedNormalBuffer, m_CombinedNormalMemory);
 	DestroyBuffer(m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
+	DestroyBuffer(m_CombinedUVBuffer, m_CombinedUVMemory);
 	m_BLASes.resize(meshes.size());
 	m_TotalTriangleCount = 0;
 
@@ -112,6 +113,12 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		uint32_t triCount = static_cast<uint32_t>(mesh.indices->size() / 3);
 		blas.triangleCount = triCount;
 		m_TotalTriangleCount += triCount;
+
+		// Store centroid UVs for later combined buffer build
+		if (mesh.centroidUVs && !mesh.centroidUVs->empty())
+			blas.centroidUVs = *mesh.centroidUVs;
+		else
+			blas.centroidUVs.resize(triCount * 2, 0.0f);
 
 		// --- Vertex buffer ---
 		VkDeviceSize vertexBufferSize = mesh.vertices->size() * sizeof(float);
@@ -214,53 +221,50 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 	// Build combined normal buffer (all triangles from all BLASes) and
 	// per-instance offset buffer so the shader can index normals as
 	// normalOffsets[gl_InstanceID] + gl_PrimitiveID.
-	BuildCombinedNormalBuffer();
+	BuildCombinedBuffers();
 
 	return true;
 }
 
-void AccelerationStructure::BuildCombinedNormalBuffer()
+void AccelerationStructure::BuildCombinedBuffers()
 {
 	VkDevice device = Walnut::Application::GetDevice();
 
 	// Destroy previous combined buffers
 	DestroyBuffer(m_CombinedNormalBuffer, m_CombinedNormalMemory);
 	DestroyBuffer(m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
+	DestroyBuffer(m_CombinedUVBuffer, m_CombinedUVMemory);
 
-	// Collect all normals into one buffer, track per-BLAS offsets
+	// Collect all normals + UVs into one buffer, track per-BLAS offsets
 	std::vector<glm::vec4> allNormals;
+	std::vector<glm::vec4> allUVs; // vec4 for std430 alignment (xy = uv, zw = pad)
 	std::vector<uint32_t> offsets;
 	allNormals.reserve(m_TotalTriangleCount);
+	allUVs.reserve(m_TotalTriangleCount);
 	offsets.reserve(m_BLASes.size());
 
-	for (auto& blas : m_BLASes)
+	for (size_t b = 0; b < m_BLASes.size(); b++)
 	{
+		auto& blas = m_BLASes[b];
 		offsets.push_back(static_cast<uint32_t>(allNormals.size()));
 
 		uint32_t triCount = blas.triangleCount;
+
+		// Map vertex + index buffers once per BLAS (not per triangle)
+		VkMemoryRequirements vtxReq, idxReq;
+		vkGetBufferMemoryRequirements(device, blas.vertexBuffer, &vtxReq);
+		vkGetBufferMemoryRequirements(device, blas.indexBuffer, &idxReq);
+
+		void* vtxMapped = nullptr;
+		vkMapMemory(device, blas.vertexMemory, 0, vtxReq.size, 0, &vtxMapped);
+		const float* verts = static_cast<const float*>(vtxMapped);
+
+		void* idxMapped = nullptr;
+		vkMapMemory(device, blas.indexMemory, 0, idxReq.size, 0, &idxMapped);
+		const uint32_t* indices = static_cast<const uint32_t*>(idxMapped);
+
 		for (uint32_t t = 0; t < triCount; t++)
 		{
-		// Read vertices from the BLAS vertex buffer (host-visible)
-		void* vtxMapped = nullptr;
-		VkDeviceSize vtxSize = 0;
-			{
-				VkMemoryRequirements req;
-				vkGetBufferMemoryRequirements(device, blas.vertexBuffer, &req);
-				vtxSize = req.size;
-			}
-			vkMapMemory(device, blas.vertexMemory, 0, vtxSize, 0, &vtxMapped);
-			const float* verts = static_cast<const float*>(vtxMapped);
-
-			void* idxMapped = nullptr;
-			VkDeviceSize idxSize = 0;
-			{
-				VkMemoryRequirements req;
-				vkGetBufferMemoryRequirements(device, blas.indexBuffer, &req);
-				idxSize = req.size;
-			}
-			vkMapMemory(device, blas.indexMemory, 0, idxSize, 0, &idxMapped);
-			const uint32_t* indices = static_cast<const uint32_t*>(idxMapped);
-
 			uint32_t i0 = indices[t * 3 + 0] * 3;
 			uint32_t i1 = indices[t * 3 + 1] * 3;
 			uint32_t i2 = indices[t * 3 + 2] * 3;
@@ -271,9 +275,19 @@ void AccelerationStructure::BuildCombinedNormalBuffer()
 
 			glm::vec3 normal = glm::normalize(glm::cross(v1 - v0, v2 - v0));
 			allNormals.push_back(glm::vec4(normal, 0.0f));
+			allUVs.push_back(glm::vec4(0.0f)); // placeholder, filled below
+		}
 
-			vkUnmapMemory(device, blas.vertexMemory);
-			vkUnmapMemory(device, blas.indexMemory);
+		vkUnmapMemory(device, blas.vertexMemory);
+		vkUnmapMemory(device, blas.indexMemory);
+
+		// Fill UVs from stored centroidUVs (2 floats per triangle)
+		size_t uvBase = allUVs.size() - triCount;
+		for (uint32_t t = 0; t < triCount; t++)
+		{
+			float u = blas.centroidUVs[t * 2 + 0];
+			float v = blas.centroidUVs[t * 2 + 1];
+			allUVs[uvBase + t] = glm::vec4(u, v, 0.0f, 0.0f);
 		}
 	}
 
@@ -290,6 +304,21 @@ void AccelerationStructure::BuildCombinedNormalBuffer()
 		vkMapMemory(device, m_CombinedNormalMemory, 0, normalBufferSize, 0, &normalData);
 		memcpy(normalData, allNormals.data(), normalBufferSize);
 		vkUnmapMemory(device, m_CombinedNormalMemory);
+	}
+
+	// Create combined UV buffer
+	VkDeviceSize uvBufferSize = allUVs.size() * sizeof(glm::vec4);
+	if (uvBufferSize > 0)
+	{
+		CreateBuffer(uvBufferSize,
+		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		             m_CombinedUVBuffer, m_CombinedUVMemory);
+
+		void* uvData;
+		vkMapMemory(device, m_CombinedUVMemory, 0, uvBufferSize, 0, &uvData);
+		memcpy(uvData, allUVs.data(), uvBufferSize);
+		vkUnmapMemory(device, m_CombinedUVMemory);
 	}
 
 	// Create instance offset buffer
@@ -447,6 +476,7 @@ void AccelerationStructure::Destroy()
 
 	DestroyBuffer(m_CombinedNormalBuffer, m_CombinedNormalMemory);
 	DestroyBuffer(m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
+	DestroyBuffer(m_CombinedUVBuffer, m_CombinedUVMemory);
 
 	if (m_TLAS)
 	{

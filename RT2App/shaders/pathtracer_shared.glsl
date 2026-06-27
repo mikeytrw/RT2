@@ -49,6 +49,12 @@ layout(set = 0, binding = 5, std430) readonly buffer InstanceNormalOffsets
 // Bindless texture array (combined image samplers, variable count)
 layout(set = 0, binding = 6) uniform sampler2D textures[];
 
+// Combined UV buffer (one vec4 per triangle, xy = centroid UV)
+layout(set = 0, binding = 7, std430) readonly buffer UVBuffer
+{
+    vec4 triangleUVs[]; // xy = centroid UV, zw = unused
+};
+
 layout(set = 0, binding = 4) uniform accelerationStructureEXT topLevelAS;
 
 // ---- Payload ----------------------------------------------------------------
