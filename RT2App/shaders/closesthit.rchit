@@ -90,31 +90,21 @@ void main()
     uint matIdx = gl_InstanceCustomIndexEXT;
     Material mat = materials[matIdx];
 
-    vec3 geoN = hitNormal();
-    int normalTexIdx = mat.textureIndices.y;
-
-    // DEBUG SHADER #4: Show normal-mapped normals as colors.
-    // If material has a normal texture, sample it and transform to world space.
-    vec3 worldN;
-    if (normalTexIdx >= 0)
+    // DEBUG SHADER #5: Show emissive contribution.
+    // Textured emissive: sample at UV. Flat emissive: use material value.
+    int emissiveTexIdx = mat.textureIndices.z;
+    vec3 color;
+    if (emissiveTexIdx >= 0)
     {
         vec2 uv = hitUV();
-        vec3 tangentN = texture(textures[nonuniformEXT(normalTexIdx)], uv).rgb * 2.0 - 1.0;
-
-        // Build TBN matrix
-        vec3 T = hitTangent();
-        vec3 N = geoN;
-        // Orthogonalize tangent against normal
-        T = normalize(T - dot(T, N) * N);
-        vec3 B = cross(N, T);
-
-        worldN = normalize(mat3(T, B, N) * tangentN);
+        vec3 emissiveTex = texture(textures[nonuniformEXT(emissiveTexIdx)], uv).rgb;
+        color = emissiveTex * mat.emissive_roughness.xyz;
     }
     else
     {
-        worldN = geoN;
+        color = mat.emissive_roughness.xyz;
     }
 
-    payload.b.xyz = worldN * 0.5 + 0.5; // show normal as color
-    payload.c.w = 1.0; // done
+    payload.b.xyz = color;
+    payload.c.w = 1.0;
 }

@@ -509,6 +509,16 @@ bool SceneLoader::Load(Scene& scene, const std::string& filepath)
             mat.emissiveIntensity = (float)gmat.extras.Get("emissiveIntensity").GetNumberAsDouble();
         }
 
+        printf("[SceneLoader]   Material %d: baseColor=(%.2f,%.2f,%.2f) metallic=%.2f rough=%.2f ior=%.2f"
+               " emissive=(%.2f,%.2f,%.2f)*%.2f"
+               " texIdx: baseColor=%d normal=%d emissive=%d\n",
+               (int)scene.GetMaterials().size(),
+               mat.baseColor.x, mat.baseColor.y, mat.baseColor.z,
+               mat.metallic, mat.roughness, mat.ior,
+               mat.emissiveColor.x, mat.emissiveColor.y, mat.emissiveColor.z,
+               mat.emissiveIntensity,
+               mat.baseColorTextureIndex, mat.normalTextureIndex, mat.emissiveTextureIndex);
+
         scene.AddMaterial(mat);
     }
 
