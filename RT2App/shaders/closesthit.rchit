@@ -106,11 +106,16 @@ vec3 hitShadingNormal(Material mat, vec2 uv)
 // Returns pdfLightOmega = 0.0 if the sample is invalid (backface, occluded).
 struct NEEResult
 {
-    vec3  radiance;       // throughput * (albedo/pi) * Le * G * weight
+    vec3  radiance;       // throughput * BRDF(wo,L) * Le * G * wLight / pdfOmega
     float pdfLightOmega;  // solid-angle PDF, 0 if unusable
 };
 
-NEEResult sampleNEE(vec3 diffuseAlbedo, vec3 throughput, vec3 P, vec3 N, inout uint rngState)
+// NEE with full Cook-Torrance BRDF evaluation (M7).
+// P_s, P_d = lobe selection probabilities for MIS combined-PDF evaluation.
+NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
+                    vec3 baseColor, float metallic, float roughness,
+                    float P_s, float P_d,
+                    vec3 throughput, inout uint rngState)
 {
     NEEResult result;
     result.radiance = vec3(0.0);
@@ -151,12 +156,10 @@ NEEResult sampleNEE(vec3 diffuseAlbedo, vec3 throughput, vec3 P, vec3 N, inout u
         return result;
 
     // Shadow ray: SBT hit offset 2 = shadow hit group.
-    // Instance adds 0 (opaque) or 1 (alpha) → shadow_opaque or shadow_alpha.
-    // TerminateOnFirstHit: first accepted hit = occluder.
     shadowVisible = 0.0;
     traceRayEXT(topLevelAS,
                 gl_RayFlagsTerminateOnFirstHitEXT,
-                0xFF, 2, 1, 1,  // SBT hit offset=2, stride=1, miss index=1
+                0xFF, 2, 1, 1,
                 P + N * 0.001, 0.001, L, dist - 0.002, 2);
 
     if (shadowVisible < 0.5)
@@ -181,19 +184,23 @@ NEEResult sampleNEE(vec3 diffuseAlbedo, vec3 throughput, vec3 P, vec3 N, inout u
     float pdfA = (1.0 / float(lightCount)) * (1.0 / lightArea);
     float pdfOmega = pdfA * (dist * dist) / abs(LNdotL);
 
-    // MIS weight (balance heuristic): w_light = pdf_light / (pdf_light + pdf_bsdf)
-    // BSDF PDF for cosine-weighted Lambertian: pdf_bsdf = NdotL / pi
-    float pdfBsdf = NdotL / PI;
+    // NEE evaluates ONLY the diffuse BRDF term to avoid GGX specular fireflies.
+    // But the MIS weight MUST use the full combined BSDF PDF (diffuse + specular)
+    // so that w_light + w_bsdf = 1 at the emissive hit. If we use diffuse-only
+    // PDF here, the weights don't sum to 1 and we get double-counting fireflies
+    // when a BSDF-sampled specular ray happens to hit the light.
+    vec3 brdf = evalDiffuseBRDF(wo, L, N, baseColor, metallic);
+    float alpha = roughnessToAlpha(roughness);
+    float pdfBsdf = evalBSDFPdf(wo, L, N, P_s, P_d, alpha);  // full combined PDF
+
+    // MIS weight (balance heuristic)
     float wLight = pdfOmega / (pdfOmega + pdfBsdf);
 
-    // Radiance = (albedo / PI) * Le * G * wLight / pdfOmega
-    //   where G = NdotL * LNdotL / dist²
-    // Simplify: (albedo/PI) * Le * (NdotL*LNdotL/dist²) * wLight / pdfOmega
-    //   and pdfOmega = pdfA * dist² / LNdotL = dist² / (lightCount * area * LNdotL)
-    //   => (albedo/PI) * Le * NdotL * LNdotL * lightCount * area / dist²  (the old formula)
-    //   × wLight
-    float G = (NdotL * LNdotL) / (dist * dist);
-    vec3 direct = (diffuseAlbedo / PI) * Le * G * float(lightCount) * lightArea * wLight;
+    // Direct radiance (solid-angle form): BRDF(wo, L) * Le * NdotL * w_light / pdfOmega
+    // This is equivalent to BRDF * Le * G * lightCount * area * w_light (area form),
+    // since NdotL / pdfOmega = NdotL * lightCount * area * LNdotL / dist² = G * lightCount * area.
+    // DO NOT multiply by G AND divide by pdfOmega — that double-counts dist² and LNdotL.
+    vec3 direct = brdf * Le * NdotL * wLight / pdfOmega;
 
     result.radiance = throughput * direct;
     result.pdfLightOmega = pdfOmega;
@@ -274,55 +281,169 @@ void main()
 
     vec3 hitPoint = gl_WorldRayOriginEXT + gl_HitTEXT * rayDir;
 
-    // Simplified PBR scatter
+    // ---- Cook-Torrance GGX scatter (M7) ----
+    // Stochastic lobe pick: specular with prob P_s (Fresnel-weighted),
+    // diffuse with prob P_d = 1 - P_s. Metals have P_d = 0.
+    vec3 wo = -rayDir;  // outgoing direction (away from surface, towards viewer)
+    float NdotV = max(dot(n, wo), 0.0);
+
+    vec3 F0 = computeF0(baseColor, metallic);
+    vec3 F = F_Schlick(NdotV, F0);
+    float P_s = mix(luminance(F), 1.0, metallic);  // metals: specular only
+    float P_d = 1.0 - P_s;
+
+    float alpha = roughnessToAlpha(roughness);
+
     vec3 attenuation;
     vec3 scatterDir;
     bool doScatter = true;
-    bool isDiffuseBounce = false;
-    float nextBsdfPdf = -1.0;  // -1 = delta (specular), >= 0 = diffuse cosine PDF
+    bool isDelta = false;   // delta path: no NEE, full emission at next hit
+    float nextBsdfPdf = -1.0;  // -1 = delta (specular), >= 0 = combined PDF
 
-    float cosTheta = abs(dot(-rayDir, n));
-    float fresnel = reflectance(cosTheta, ior);
     float r = randomFloat(rngState);
 
-    if (metallic >= 0.999)
+    // ---- Dielectric transmission (M7 Phase 3) ----
+    // transmissionFactor > 0 with OPAQUE alpha mode = physical glass (KHR_materials_transmission).
+    // MASK/BLEND alpha materials use any-hit for opacity, NOT refraction here.
+    // Smooth (delta) refraction — rough glass uses delta too (M7.5 will add GGX BTDF).
+    float transmissionFactor = floatBitsToInt(mat.textureIndices.w);
+    if (mat.alphaMode < 0.5 && transmissionFactor > 0.0)
     {
-        vec3 reflected = reflect(rayDir, n);
-        scatterDir = normalize(reflected) + roughness * randomInUnitSphere(rngState);
-        if (dot(scatterDir, n) <= 0.0) doScatter = false;
-        attenuation = baseColor;
-    }
-    else if (metallic <= 0.001)
-    {
-        if (r < fresnel)
+        float transmission = transmissionFactor;
+        // Scalar dielectric Fresnel (F0 = 0.04 for non-metals)
+        float F0_scalar = mix(0.04, luminance(baseColor), metallic);
+        float F_scalar = F_Schlick(NdotV, vec3(F0_scalar)).r;
+        float P_reflect = F_scalar;
+        float P_refract  = (1.0 - F_scalar) * transmission;
+        float P_diffuse = (1.0 - F_scalar) * (1.0 - transmission) * (1.0 - metallic);
+
+        // Renormalize probabilities (should sum to ~1)
+        float Psum = P_reflect + P_refract + P_diffuse;
+        if (Psum > 1e-6)
         {
-            vec3 reflected = reflect(rayDir, n);
-            scatterDir = normalize(reflected) + roughness * randomInUnitSphere(rngState);
-            attenuation = vec3(1.0);
+            P_reflect /= Psum;
+            P_refract  /= Psum;
+            P_diffuse  /= Psum;
+        }
+
+        if (r < P_reflect)
+        {
+            // Reflect (delta for smooth, or GGX for rough)
+            if (roughness < 0.001)
+            {
+                scatterDir = reflect(rayDir, n);
+                attenuation = vec3(F_scalar);
+                isDelta = true;
+                nextBsdfPdf = -1.0;
+            }
+            else
+            {
+                vec3 h = sampleVNDF(wo, n, alpha, rngState);
+                scatterDir = reflect(rayDir, h);
+                if (dot(scatterDir, n) <= 0.0)
+                {
+                    doScatter = false;
+                }
+                else
+                {
+                    // Stochastic lobe pick: divide by P_reflect
+                    float NdotWi = max(dot(n, scatterDir), 0.0);
+                    attenuation = F * G1_Smith(NdotWi, alpha) / P_reflect;
+                    nextBsdfPdf = pdfVNDF(wo, scatterDir, n, alpha);
+                }
+            }
+        }
+        else if (r < P_reflect + P_refract)
+        {
+            // Refract via Snell's law (delta — smooth glass only, rough BTDF deferred to M7.5)
+            float eta = frontFace ? (1.0 / ior) : ior;
+            vec3 refracted = refract(rayDir, n, eta);
+            if (length(refracted) < 1e-4)
+            {
+                // Total internal reflection → reflect
+                scatterDir = reflect(rayDir, n);
+                attenuation = vec3(1.0);
+            }
+            else
+            {
+                scatterDir = normalize(refracted);
+                attenuation = vec3(1.0);  // dielectric transmits all colors equally
+            }
+            isDelta = true;
+            nextBsdfPdf = -1.0;
         }
         else
         {
-            isDiffuseBounce = true;
+            // Diffuse lobe (for non-metallic transmission materials with roughness)
+            // Must subtract Fresnel energy to match evalDiffuseBRDF in NEE.
             scatterDir = n + randomInUnitSphere(rngState);
-            if (dot(scatterDir, n) <= 0.0) scatterDir = n;
-            attenuation = baseColor;
+            if (dot(scatterDir, n) <= 0.0)
+                scatterDir = n;
+            scatterDir = normalize(scatterDir);
+            float VdotH_t = max(dot(wo, normalize(wo + scatterDir)), 0.0);
+            float F_t = F_Schlick(VdotH_t, vec3(F0_scalar)).r;
+            float specW_t = mix(F_t, 1.0, metallic);
+            attenuation = (1.0 - specW_t) * baseColor * (1.0 - metallic) / P_diffuse;
+            nextBsdfPdf = pdfDiffuse(scatterDir, n);
+        }
+    }
+    else if (roughness < 0.001 && metallic >= 0.5)
+    {
+        // Perfect mirror (smooth metal): delta reflection
+        scatterDir = reflect(rayDir, n);
+        attenuation = F;  // Fresnel-tinted
+        isDelta = true;
+        nextBsdfPdf = -1.0;
+    }
+    else if (r < P_s)
+    {
+        // Specular lobe: GGX VNDF sampling
+        if (roughness < 0.001)
+        {
+            // Smooth dielectric specular: delta reflection
+            scatterDir = reflect(rayDir, n);
+            attenuation = F;
+            isDelta = true;
+            nextBsdfPdf = -1.0;
+        }
+        else
+        {
+            // Rough specular: sample visible microfacet normal h, reflect around h
+            vec3 h = sampleVNDF(wo, n, alpha, rngState);
+            scatterDir = reflect(rayDir, h);
+            if (dot(scatterDir, n) <= 0.0)
+            {
+                doScatter = false;
+            }
+            else
+            {
+                // Importance sampling weight for stochastic lobe pick:
+                // BRDF_s * cos(wi) / (P_s * pdfVNDF) = F * G1(wi) / P_s
+                float NdotWi = max(dot(n, scatterDir), 0.0);
+                float G1_wi = G1_Smith(NdotWi, alpha);
+                attenuation = F * G1_wi / P_s;
+                nextBsdfPdf = pdfVNDF(wo, scatterDir, n, alpha);
+            }
         }
     }
     else
     {
-        if (r < metallic)
-        {
-            vec3 reflected = reflect(rayDir, n);
-            scatterDir = normalize(reflected) + roughness * randomInUnitSphere(rngState);
-            attenuation = baseColor;
-        }
-        else
-        {
-            isDiffuseBounce = true;
-            scatterDir = n + randomInUnitSphere(rngState);
-            if (dot(scatterDir, n) <= 0.0) scatterDir = n;
-            attenuation = baseColor * (1.0 - metallic);
-        }
+        // Diffuse lobe: cosine-weighted hemisphere sampling
+        // attenuation = BRDF_d(wo,wi) * cos(wi) / (P_d * pdfDiffuse(wi))
+        // BRDF_d = (1 - specWeight) * baseColor * (1-metallic) / PI
+        // cos(wi) = NdotWi, pdfDiffuse = NdotWi / PI
+        // => (1 - specWeight) * baseColor * (1-metallic) / P_d
+        // where specWeight = luminance(F(VdotH)) and VdotH = dot(wo, normalize(wo+wi))
+        // For cosine sampling, wi is random, so we compute F at the sample direction.
+        scatterDir = n + randomInUnitSphere(rngState);
+        if (dot(scatterDir, n) <= 0.0)
+            scatterDir = n;
+        scatterDir = normalize(scatterDir);
+        float VdotH_d = max(dot(wo, normalize(wo + scatterDir)), 0.0);
+        vec3 F_d = F_Schlick(VdotH_d, F0);
+        float specWeight_d = mix(luminance(F_d), 1.0, metallic);
+        attenuation = (1.0 - specWeight_d) * baseColor * (1.0 - metallic) / P_d;
+        nextBsdfPdf = pdfDiffuse(scatterDir, n);
     }
 
     if (!doScatter || depth >= maxBounces)
@@ -333,16 +454,37 @@ void main()
     }
 
     // ---- NEE + MIS: direct lighting from a random light ----
-    if (isDiffuseBounce)
+    // Fire for all non-delta bounces (diffuse AND rough specular paths).
+    // NEE evaluates only the diffuse BRDF — specular is handled by BSDF sampling.
+    if (!isDelta)
     {
-        // Cosine-weighted BSDF PDF for the scatter direction (computed later
-        // for the recursive ray, but needed here for NEE MIS weight)
-        NEEResult nee = sampleNEE(attenuation, payload.a.xyz, hitPoint, n, rngState);
+        // For transmission materials, recompute MIS probabilities for the diffuse path.
+        float nee_Ps = P_s;
+        float nee_Pd = P_d;
+        if (mat.alphaMode < 0.5 && transmissionFactor > 0.0)
+        {
+            // Transmission material diffuse path: only the diffuse lobe is non-delta.
+            float F0_scalar = mix(0.04, luminance(baseColor), metallic);
+            float F_scalar = F_Schlick(NdotV, vec3(F0_scalar)).r;
+            float P_diffuse_t = (1.0 - F_scalar) * (1.0 - transmissionFactor) * (1.0 - metallic);
+            nee_Ps = 0.0;
+            nee_Pd = P_diffuse_t;
+        }
+
+        NEEResult nee = sampleNEE(wo, n, hitPoint,
+                                  baseColor, metallic, roughness,
+                                  nee_Ps, nee_Pd,
+                                  payload.a.xyz, rngState);
         payload.b.xyz += nee.radiance;
 
-        // BSDF PDF for the scattered direction (cosine / pi)
-        float cosScatter = max(dot(normalize(scatterDir), n), 0.0);
-        nextBsdfPdf = cosScatter / PI;
+        // Combined BSDF PDF for the scattered direction (for next-hit MIS)
+        // pdf_combined = P_s * pdf_s(wi) + P_d * pdf_d(wi)
+        if (nextBsdfPdf >= 0.0)
+        {
+            float pdfS = pdfVNDF(wo, scatterDir, n, alpha);
+            float pdfD = pdfDiffuse(scatterDir, n);
+            nextBsdfPdf = nee_Ps * pdfS + nee_Pd * pdfD;
+        }
     }
 
     // Update throughput
@@ -352,9 +494,12 @@ void main()
 
     // Recursively trace the scattered ray.
     // d.w = bsdfPdf (solid-angle): -1.0 for specular/delta, cos(θ)/pi for diffuse.
+    // Offset origin along the shading normal's side of the scatter direction:
+    // refraction goes into the surface (dot < 0), so offset by -n; others by +n.
+    vec3 offsetN = dot(scatterDir, n) > 0.0 ? n : -n;
     nextPayload.a = payload.a;
     nextPayload.b = vec4(vec3(0.0), float(depth + 1));
-    nextPayload.c = vec4(hitPoint + n * 0.001, 0.0);
+    nextPayload.c = vec4(hitPoint + offsetN * 0.001, 0.0);
     nextPayload.d = vec4(normalize(scatterDir), nextBsdfPdf);
 
     traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0,

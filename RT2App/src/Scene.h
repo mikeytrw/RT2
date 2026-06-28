@@ -62,10 +62,11 @@ struct SceneMaterial
     MaterialType type = MaterialType::Lambertian;
 
     glm::vec3 baseColor = {0.8f, 0.8f, 0.8f};
-    float baseAlpha = 1.0f;  // baseColorFactor.a (1.0 = fully opaque)
+    float baseAlpha = 1.0f;  // baseColorFactor.a (1.0 = fully opaque, for alpha/cutoff/blend)
     float metallic = 0.0f;
     float roughness = 0.5f;
     float ior = 1.5f;
+    float transmissionFactor = 0.0f;  // KHR_materials_transmission (0=opaque, 1=fully transmissive)
 
     glm::vec3 emissiveColor = {0.0f, 0.0f, 0.0f};
     float emissiveIntensity = 0.0f;

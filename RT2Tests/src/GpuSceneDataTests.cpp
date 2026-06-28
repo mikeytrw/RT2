@@ -470,3 +470,61 @@ TEST_CASE("GPUMaterial is still 64 bytes with alpha fields")
 {
     CHECK(sizeof(GPUMaterial) == 64);
 }
+
+// ============================================================================
+// M7: Dielectric transmission — KHR_materials_transmission import tests
+// ============================================================================
+
+TEST_CASE("Transmission material stores transmissionFactor (not in baseAlpha)")
+{
+    // M7 fix: transmissionFactor is separate from baseAlpha (opacity).
+    SceneMaterial sm;
+    sm.alphaMode = "OPAQUE";
+    sm.transmissionFactor = 0.85f;
+    sm.baseAlpha = 1.0f;  // fully opaque (no alpha transparency)
+    sm.ior = 1.5f;
+
+    GPUMaterial gm = GPUMaterial::fromSceneMaterial(sm);
+
+    CHECK(gm.alphaMode == 0.0f);       // OPAQUE
+    CHECK(gm.baseAlpha == 1.0f);      // opacity unchanged
+    CHECK(gm.ior == 1.5f);
+    // transmissionFactor packed into textureIndices.w
+    CHECK(glm::intBitsToFloat(gm.textureIndices.w) == 0.85f);
+}
+
+TEST_CASE("Transmission material with transmissionFactor=1 is fully transmissive")
+{
+    SceneMaterial sm;
+    sm.transmissionFactor = 1.0f;  // 100% transmission
+    sm.baseAlpha = 1.0f;           // still opaque for alpha purposes
+    GPUMaterial gm = GPUMaterial::fromSceneMaterial(sm);
+    CHECK(glm::intBitsToFloat(gm.textureIndices.w) == 1.0f);
+    CHECK(gm.baseAlpha == 1.0f);  // opacity unchanged
+    CHECK(gm.alphaMode == 0.0f);  // OPAQUE
+}
+
+TEST_CASE("Opaque material with transmissionFactor=0 is not transmissive")
+{
+    SceneMaterial sm;
+    sm.transmissionFactor = 0.0f;
+    sm.baseAlpha = 1.0f;
+    GPUMaterial gm = GPUMaterial::fromSceneMaterial(sm);
+    CHECK(glm::intBitsToFloat(gm.textureIndices.w) == 0.0f);
+    CHECK(gm.baseAlpha == 1.0f);
+    CHECK(gm.alphaMode == 0.0f);
+}
+
+TEST_CASE("Alpha-blended material does NOT trigger transmission")
+{
+    // A BLEND alpha material (e.g. bottle) should NOT enter the refraction branch.
+    // baseAlpha < 1 here means partial opacity, NOT physical transmission.
+    SceneMaterial sm;
+    sm.alphaMode = "BLEND";
+    sm.baseAlpha = 0.5f;        // 50% transparent (alpha opacity)
+    sm.transmissionFactor = 0.0f;  // NOT physical glass
+    GPUMaterial gm = GPUMaterial::fromSceneMaterial(sm);
+    CHECK(gm.alphaMode == 2.0f);  // BLEND
+    CHECK(gm.baseAlpha == 0.5f); // opacity
+    CHECK(glm::intBitsToFloat(gm.textureIndices.w) == 0.0f);  // no transmission
+}

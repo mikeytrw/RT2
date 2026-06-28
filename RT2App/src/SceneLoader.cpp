@@ -139,12 +139,12 @@ bool SceneLoader::Save(const Scene& scene, const std::string& filepath)
         gmat.alphaMode = mat.alphaMode;
         gmat.alphaCutoff = mat.alphaCutoff;
 
-        // Export transmission as KHR_materials_transmission if baseAlpha < 1
-        if (mat.baseAlpha < 1.0f)
+        // Export KHR_materials_transmission only when transmissionFactor > 0.
+        // baseAlpha (opacity) is exported separately via baseColorFactor[3].
+        if (mat.transmissionFactor > 0.0f)
         {
-            float transFactor = 1.0f - mat.baseAlpha;
             tinygltf::Value::Object transExt;
-            transExt["transmissionFactor"] = tinygltf::Value(static_cast<double>(transFactor));
+            transExt["transmissionFactor"] = tinygltf::Value(static_cast<double>(mat.transmissionFactor));
             gmat.extensions["KHR_materials_transmission"] = tinygltf::Value(transExt);
             if (std::find(model.extensionsUsed.begin(), model.extensionsUsed.end(),
                           "KHR_materials_transmission") == model.extensionsUsed.end())
@@ -529,7 +529,10 @@ bool SceneLoader::Load(Scene& scene, const std::string& filepath)
         mat.alphaCutoff = (float)gmat.alphaCutoff;
 
         // KHR_materials_transmission: physical glass (transmissionFactor 0..1)
-        // Treat as BLEND with baseAlpha = 1 - transmissionFactor
+        // M7: transmissionFactor is stored separately from baseAlpha.
+        // baseAlpha = baseColorFactor.a (opacity, for any-hit MASK/BLEND).
+        // transmissionFactor = KHR_materials_transmission (for refraction in closesthit).
+        // The shader triggers refraction when alphaMode == OPAQUE && transmissionFactor > 0.
         auto transmissionIt = gmat.extensions.find("KHR_materials_transmission");
         if (transmissionIt != gmat.extensions.end() && transmissionIt->second.IsObject())
         {
@@ -539,10 +542,8 @@ bool SceneLoader::Load(Scene& scene, const std::string& filepath)
                 float transFactor = (float)transExt.Get("transmissionFactor").GetNumberAsDouble();
                 if (transFactor > 0.0f)
                 {
-                    mat.alphaMode = "BLEND";
-                    mat.baseAlpha = 1.0f - transFactor;
-                    if (mat.baseAlpha < 0.0f) mat.baseAlpha = 0.0f;
-                    if (mat.baseAlpha > 1.0f) mat.baseAlpha = 1.0f;
+                    mat.transmissionFactor = transFactor;
+                    if (mat.transmissionFactor > 1.0f) mat.transmissionFactor = 1.0f;
                 }
             }
         }

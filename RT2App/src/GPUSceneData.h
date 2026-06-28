@@ -13,6 +13,11 @@
 
 // PBR material packed into 64 bytes (three vec4s + ivec4) for std430.
 // Matches the GLSL Material struct in pathtracer_shared.glsl.
+//
+// baseAlpha and transmissionFactor are SEPARATE concerns:
+//   baseAlpha        = baseColorFactor.a, used by any-hit for alpha opacity (MASK/BLEND).
+//   transmissionFactor = KHR_materials_transmission, used by closesthit for refraction.
+// transmissionFactor is packed into textureIndices.w via floatBitsToInt.
 struct GPUMaterial
 {
     glm::vec4 baseColor_metallic;   // xyz = base color, w = metallic factor
@@ -20,8 +25,9 @@ struct GPUMaterial
     float     ior;                  // index of refraction (for dielectric)
     float     alphaCutoff;          // alpha cutoff (MASK mode)
     float     alphaMode;            // 0=OPAQUE, 1=MASK, 2=BLEND
-    float     baseAlpha;             // baseColorFactor.a (1.0 = fully opaque)
-    glm::ivec4 textureIndices;      // x = baseColor, y = normal, z = emissive, w = unused (-1 = none)
+    float     baseAlpha;             // baseColorFactor.a (1.0 = fully opaque, for any-hit)
+    glm::ivec4 textureIndices;      // x = baseColor, y = normal, z = emissive,
+                                    // w = floatBitsToInt(transmissionFactor)
 
     static GPUMaterial fromSceneMaterial(const SceneMaterial& sm)
     {
@@ -39,7 +45,7 @@ struct GPUMaterial
             sm.baseColorTextureIndex,
             sm.normalTextureIndex,
             sm.emissiveTextureIndex,
-            -1);
+            glm::floatBitsToInt(sm.transmissionFactor));
         return m;
     }
 
@@ -47,7 +53,7 @@ struct GPUMaterial
         : baseColor_metallic(0.8f, 0.8f, 0.8f, 0.0f)
         , emissive_roughness(0.0f, 0.0f, 0.0f, 0.5f)
         , ior(1.5f), alphaCutoff(0.5f), alphaMode(0.0f), baseAlpha(1.0f)
-        , textureIndices(-1, -1, -1, -1)
+        , textureIndices(-1, -1, -1, 0)  // w = floatBitsToInt(0.0f) = 0
     {}
 };
 
