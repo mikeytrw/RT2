@@ -340,3 +340,84 @@ float evalBSDFPdf(vec3 wo, vec3 wi, vec3 n,
     float pdf_d = pdfDiffuse(wi, n);
     return P_s * pdf_s + P_d * pdf_d;
 }
+
+// ---- Rough Dielectric BTDF (Walter et al. 2007, M7.5) -------------------------
+// For rough transmission: refract around a sampled microfacet normal h, not the
+// macro normal n. The half-vector for transmission differs from reflection.
+
+// Check if total internal reflection occurs at the microfacet level.
+// eta = eta_i / eta_o (incident medium IOR / transmitted medium IOR).
+// wo points away from surface (towards viewer).
+// h is the microfacet normal (oriented towards the upper hemisphere).
+bool checkTIR(vec3 wo, vec3 h, float eta)
+{
+    float cosTheta_o_h = max(dot(wo, h), 0.0);
+    float sin2Theta_o_h = max(1.0 - cosTheta_o_h * cosTheta_o_h, 0.0);
+    float sin2Theta_i_h = sin2Theta_o_h / (eta * eta);
+    return sin2Theta_i_h >= 1.0;
+}
+
+// Refract wo around microfacet normal h using Snell's law.
+// eta = eta_i / eta_o. Returns refracted wi (pointing into the other medium).
+// Caller must check TIR before calling this.
+vec3 refractAroundH(vec3 wo, vec3 h, float eta)
+{
+    float cosTheta_o_h = max(dot(wo, h), 0.0);
+    float sin2Theta_o_h = max(1.0 - cosTheta_o_h * cosTheta_o_h, 0.0);
+    float sin2Theta_i_h = sin2Theta_o_h / (eta * eta);
+    float cosTheta_i_h = sqrt(max(1.0 - sin2Theta_i_h, 0.0));
+    return -wo / eta + (cosTheta_o_h / eta - cosTheta_i_h) * h;
+}
+
+// Transmission half-vector: h = normalize(wo + eta * wi), face-forwarded to n.
+// For reflection, h = normalize(wo + wi); for transmission, eta weights wi.
+vec3 transmissionHalfVector(vec3 wo, vec3 wi, float eta, vec3 n)
+{
+    vec3 h = normalize(wo + eta * wi);
+    return dot(h, n) < 0.0 ? -h : h;
+}
+
+// Solid-angle PDF for the transmitted direction wi.
+// p(wi) = pdfVNDF(wo, h, n, alpha) * |wo·h| / (wi·h + wo·h/eta)²
+// where h = transmissionHalfVector(wo, wi, eta, n).
+float pdfBTDF(vec3 wo, vec3 wi, vec3 n, float eta, float alpha)
+{
+    float NdotL = max(-dot(wi, n), 0.0);  // wi is below surface for transmission
+    if (NdotL <= 0.0) return 0.0;
+
+    vec3 h = transmissionHalfVector(wo, wi, eta, n);
+    float NdotH = max(dot(n, h), 0.0);
+    if (NdotH <= 0.0) return 0.0;
+
+    float VdotH = max(dot(wo, h), 0.0);
+    float LdotH = max(dot(wi, h), 0.0);  // wi·h > 0 after face-forwarding
+    if (VdotH <= 0.0 || LdotH <= 0.0) return 0.0;
+
+    // Jacobian: dω_h/dω_i = |wo·h| / (wi·h + wo·h/eta)²
+    float denom = LdotH + VdotH / eta;
+    if (abs(denom) < 1e-8) return 0.0;
+
+    float pdf_h = pdfVNDF(wo, h, n, alpha);  // = D(h)*G1(wo)/(4*NdotV)
+    // Wait — pdfVNDF uses h = normalize(wo + wi), not the transmission h.
+    // We need the raw VNDF PDF: D(h)*G1(wo)/(4*NdotV) where h is our transmission h.
+    float NdotV = max(dot(wo, n), 1e-4);
+    float D = D_GGX(NdotH, alpha);
+    float G1 = G1_Smith(NdotV, alpha);
+    float pdf_h_vndf = D * G1 / (4.0 * NdotV);
+
+    float jacobian = abs(VdotH) / (denom * denom);
+    return pdf_h_vndf * jacobian;
+}
+
+// Combined BSDF PDF for transmission materials (3 lobes: reflect, refract, diffuse).
+// P_reflect, P_refract, P_diffuse = lobe selection probabilities.
+// eta = eta_i / eta_o for the transmission lobe.
+float evalTransmissionBSDFPdf(vec3 wo, vec3 wi, vec3 n,
+                               float P_reflect, float P_refract, float P_diffuse,
+                               float alpha, float eta)
+{
+    float pdf_r = pdfVNDF(wo, wi, n, alpha);       // reflection lobe
+    float pdf_t = pdfBTDF(wo, wi, n, eta, alpha);   // transmission lobe
+    float pdf_d = pdfDiffuse(wi, n);                // diffuse lobe
+    return P_reflect * pdf_r + P_refract * pdf_t + P_diffuse * pdf_d;
+}

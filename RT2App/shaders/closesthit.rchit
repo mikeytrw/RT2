@@ -110,12 +110,14 @@ struct NEEResult
     float pdfLightOmega;  // solid-angle PDF, 0 if unusable
 };
 
-// NEE with full Cook-Torrance BRDF evaluation (M7).
+// NEE with diffuse BRDF evaluation and full-combined-PDF MIS weighting.
 // P_s, P_d = lobe selection probabilities for MIS combined-PDF evaluation.
+// For transmission materials (hasTransmission=true), includes BTDF lobe.
 NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
                     vec3 baseColor, float metallic, float roughness,
                     float P_s, float P_d,
-                    vec3 throughput, inout uint rngState)
+                    vec3 throughput, inout uint rngState,
+                    bool hasTransmission, float P_refract, float eta)
 {
     NEEResult result;
     result.radiance = vec3(0.0);
@@ -185,21 +187,26 @@ NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
     float pdfOmega = pdfA * (dist * dist) / abs(LNdotL);
 
     // NEE evaluates ONLY the diffuse BRDF term to avoid GGX specular fireflies.
-    // But the MIS weight MUST use the full combined BSDF PDF (diffuse + specular)
-    // so that w_light + w_bsdf = 1 at the emissive hit. If we use diffuse-only
-    // PDF here, the weights don't sum to 1 and we get double-counting fireflies
-    // when a BSDF-sampled specular ray happens to hit the light.
+    // But the MIS weight MUST use the full combined BSDF PDF so that
+    // w_light + w_bsdf = 1 at the emissive hit.
     vec3 brdf = evalDiffuseBRDF(wo, L, N, baseColor, metallic);
     float alpha = roughnessToAlpha(roughness);
-    float pdfBsdf = evalBSDFPdf(wo, L, N, P_s, P_d, alpha);  // full combined PDF
+    float pdfBsdf;
+    if (hasTransmission)
+    {
+        // 3-lobe: reflect(VNDF) + refract(BTDF) + diffuse
+        pdfBsdf = evalTransmissionBSDFPdf(wo, L, N, P_s, P_refract, P_d, alpha, eta);
+    }
+    else
+    {
+        // 2-lobe: reflect(VNDF) + diffuse
+        pdfBsdf = evalBSDFPdf(wo, L, N, P_s, P_d, alpha);
+    }
 
     // MIS weight (balance heuristic)
     float wLight = pdfOmega / (pdfOmega + pdfBsdf);
 
     // Direct radiance (solid-angle form): BRDF(wo, L) * Le * NdotL * w_light / pdfOmega
-    // This is equivalent to BRDF * Le * G * lightCount * area * w_light (area form),
-    // since NdotL / pdfOmega = NdotL * lightCount * area * LNdotL / dist² = G * lightCount * area.
-    // DO NOT multiply by G AND divide by pdfOmega — that double-counts dist² and LNdotL.
     vec3 direct = brdf * Le * NdotL * wLight / pdfOmega;
 
     result.radiance = throughput * direct;
@@ -306,7 +313,7 @@ void main()
     // transmissionFactor > 0 with OPAQUE alpha mode = physical glass (KHR_materials_transmission).
     // MASK/BLEND alpha materials use any-hit for opacity, NOT refraction here.
     // Smooth (delta) refraction — rough glass uses delta too (M7.5 will add GGX BTDF).
-    float transmissionFactor = floatBitsToInt(mat.textureIndices.w);
+    float transmissionFactor = intBitsToFloat(mat.textureIndices.w);
     if (mat.alphaMode < 0.5 && transmissionFactor > 0.0)
     {
         float transmission = transmissionFactor;
@@ -355,22 +362,90 @@ void main()
         }
         else if (r < P_reflect + P_refract)
         {
-            // Refract via Snell's law (delta — smooth glass only, rough BTDF deferred to M7.5)
+            // Refract via Snell's law
+            // eta = eta_i / eta_o (incident medium IOR / transmitted medium IOR)
+            // frontFace=true: ray enters from air (1.0) into glass (ior), eta = 1.0/ior
+            // frontFace=false: ray exits from glass (ior) into air (1.0), eta = ior/1.0
             float eta = frontFace ? (1.0 / ior) : ior;
-            vec3 refracted = refract(rayDir, n, eta);
-            if (length(refracted) < 1e-4)
+
+            if (roughness < 0.001)
             {
-                // Total internal reflection → reflect
-                scatterDir = reflect(rayDir, n);
-                attenuation = vec3(1.0);
+                // SMOOTH delta refraction (M7): refract around macro normal n
+                // GLSL refract() uses eta = eta_i / eta_t (same convention)
+                vec3 refracted = refract(rayDir, n, eta);
+                if (length(refracted) < 1e-4)
+                {
+                    // Total internal reflection → reflect
+                    scatterDir = reflect(rayDir, n);
+                    attenuation = vec3(1.0);
+                }
+                else
+                {
+                    scatterDir = normalize(refracted);
+                    attenuation = vec3(1.0);  // dielectric transmits all colors equally
+                }
+                isDelta = true;
+                nextBsdfPdf = -1.0;
             }
             else
             {
-                scatterDir = normalize(refracted);
-                attenuation = vec3(1.0);  // dielectric transmits all colors equally
+                // ROUGH BTDF (M7.5): refract around sampled microfacet normal h
+                vec3 h = sampleVNDF(wo, n, alpha, rngState);
+
+                if (checkTIR(wo, h, eta))
+                {
+                    // TIR at microfacet level → rough reflect around h
+                    scatterDir = reflect(rayDir, h);
+                    if (dot(scatterDir, n) <= 0.0)
+                    {
+                        doScatter = false;
+                    }
+                    else
+                    {
+                        float VdotH = max(dot(wo, h), 0.0);
+                        float F_h = F_Schlick(VdotH, vec3(F0_scalar)).r;
+                        float NdotWi = max(dot(n, scatterDir), 0.0);
+                        attenuation = vec3(F_h) * G1_Smith(NdotWi, alpha) / P_refract;
+                        nextBsdfPdf = pdfVNDF(wo, scatterDir, n, alpha);
+                        // NOT delta — rough TIR reflection participates in NEE
+                    }
+                }
+                else
+                {
+                    // Refract around h
+                    vec3 refracted = refractAroundH(wo, h, eta);
+                    if (length(refracted) < 1e-4)
+                    {
+                        // Degenerate → treat as TIR reflect
+                        scatterDir = reflect(rayDir, h);
+                        if (dot(scatterDir, n) <= 0.0)
+                        {
+                            doScatter = false;
+                        }
+                        else
+                        {
+                            float VdotH = max(dot(wo, h), 0.0);
+                            float F_h = F_Schlick(VdotH, vec3(F0_scalar)).r;
+                            float NdotWi = max(dot(n, scatterDir), 0.0);
+                            attenuation = vec3(F_h) * G1_Smith(NdotWi, alpha) / P_refract;
+                            nextBsdfPdf = pdfVNDF(wo, scatterDir, n, alpha);
+                        }
+                    }
+                    else
+                    {
+                        scatterDir = normalize(refracted);
+                        float VdotH = max(dot(wo, h), 0.0);
+                        float F_h = F_Schlick(VdotH, vec3(F0_scalar)).r;
+                        float NdotWi = abs(dot(n, scatterDir));  // transmitted ray below surface
+                        float G1_wi = G1_Smith(NdotWi, alpha);
+                        // Attenuation: (1-F_h) * G1(wi) / P_refract
+                        // No color tint (non-absorbing dielectric)
+                        attenuation = vec3(1.0 - F_h) * G1_wi / P_refract;
+                        nextBsdfPdf = pdfBTDF(wo, scatterDir, n, eta, alpha);
+                        // NOT delta — rough refraction participates in NEE (diffuse only)
+                    }
+                }
             }
-            isDelta = true;
-            nextBsdfPdf = -1.0;
         }
         else
         {
@@ -454,36 +529,63 @@ void main()
     }
 
     // ---- NEE + MIS: direct lighting from a random light ----
-    // Fire for all non-delta bounces (diffuse AND rough specular paths).
-    // NEE evaluates only the diffuse BRDF — specular is handled by BSDF sampling.
+    // Fire for all non-delta bounces (diffuse AND rough specular/refraction paths).
+    // NEE evaluates only the diffuse BRDF — specular/BTDF is handled by BSDF sampling.
     if (!isDelta)
     {
         // For transmission materials, recompute MIS probabilities for the diffuse path.
         float nee_Ps = P_s;
         float nee_Pd = P_d;
-        if (mat.alphaMode < 0.5 && transmissionFactor > 0.0)
+        float nee_P_refract = 0.0;
+        float nee_eta = 1.0;
+        bool isTransmissionMat = (mat.alphaMode < 0.5 && transmissionFactor > 0.0);
+        if (isTransmissionMat)
         {
-            // Transmission material diffuse path: only the diffuse lobe is non-delta.
-            float F0_scalar = mix(0.04, luminance(baseColor), metallic);
-            float F_scalar = F_Schlick(NdotV, vec3(F0_scalar)).r;
-            float P_diffuse_t = (1.0 - F_scalar) * (1.0 - transmissionFactor) * (1.0 - metallic);
-            nee_Ps = 0.0;
+            // Transmission material: NEE evaluates diffuse only, but MIS weight
+            // uses the full 3-lobe combined PDF (reflect + refract + diffuse).
+            float F0_scalar_t = mix(0.04, luminance(baseColor), metallic);
+            float F_scalar_t = F_Schlick(NdotV, vec3(F0_scalar_t)).r;
+            float P_reflect_t = F_scalar_t;
+            float P_refract_t = (1.0 - F_scalar_t) * transmissionFactor;
+            float P_diffuse_t = (1.0 - F_scalar_t) * (1.0 - transmissionFactor) * (1.0 - metallic);
+            float Psum = P_reflect_t + P_refract_t + P_diffuse_t;
+            if (Psum > 1e-6)
+            {
+                P_reflect_t /= Psum;
+                P_refract_t /= Psum;
+                P_diffuse_t /= Psum;
+            }
+            nee_Ps = P_reflect_t;
             nee_Pd = P_diffuse_t;
+            nee_P_refract = P_refract_t;
+            nee_eta = frontFace ? (1.0 / ior) : ior;
         }
 
         NEEResult nee = sampleNEE(wo, n, hitPoint,
                                   baseColor, metallic, roughness,
                                   nee_Ps, nee_Pd,
-                                  payload.a.xyz, rngState);
+                                  payload.a.xyz, rngState,
+                                  isTransmissionMat, nee_P_refract, nee_eta);
         payload.b.xyz += nee.radiance;
 
-        // Combined BSDF PDF for the scattered direction (for next-hit MIS)
-        // pdf_combined = P_s * pdf_s(wi) + P_d * pdf_d(wi)
+        // Combined BSDF PDF for the scattered direction (for next-hit MIS).
+        // For transmission materials with rough refraction, include the BTDF lobe.
         if (nextBsdfPdf >= 0.0)
         {
-            float pdfS = pdfVNDF(wo, scatterDir, n, alpha);
-            float pdfD = pdfDiffuse(scatterDir, n);
-            nextBsdfPdf = nee_Ps * pdfS + nee_Pd * pdfD;
+            if (isTransmissionMat && roughness >= 0.001)
+            {
+                // 3-lobe combined PDF: reflect(VNDF) + refract(BTDF) + diffuse
+                nextBsdfPdf = evalTransmissionBSDFPdf(wo, scatterDir, n,
+                                                      nee_Ps, nee_P_refract, nee_Pd,
+                                                      alpha, nee_eta);
+            }
+            else
+            {
+                // 2-lobe combined PDF: reflect(VNDF) + diffuse
+                float pdfS = pdfVNDF(wo, scatterDir, n, alpha);
+                float pdfD = pdfDiffuse(scatterDir, n);
+                nextBsdfPdf = nee_Ps * pdfS + nee_Pd * pdfD;
+            }
         }
     }
 
