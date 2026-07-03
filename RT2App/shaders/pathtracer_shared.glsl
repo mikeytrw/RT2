@@ -17,6 +17,7 @@ layout(set = 0, binding = 1, std140) uniform CameraData
     vec4 up;            // xyz = up, w = pad
     vec4 viewportSPP;   // x = width, y = height, z = spp, w = maxBounces
     vec4 apertureFocal; // x = aperture, y = focusDistance, z = showBackground, w = emissiveBoost
+    vec4 envMap;        // x = envMapIndex (-1=none), y = envIntensity, z = marginalCDFIdx, w = conditionalCDFIdx
     mat4 inverseProjection;
     mat4 inverseView;
 } camera;
@@ -114,43 +115,191 @@ uint pcg(inout uint state)
 
 float randomFloat(inout uint state)
 {
-    return float(pcg(state)) / 4294967295.0;
-}
-
-vec3 randomInUnitSphere(inout uint state)
-{
-    for (int i = 0; i < 10; i++)
-    {
-        vec3 p = vec3(randomFloat(state) * 2.0 - 1.0,
-                      randomFloat(state) * 2.0 - 1.0,
-                      randomFloat(state) * 2.0 - 1.0);
-        if (dot(p, p) < 1.0)
-            return p;
-    }
-    return vec3(0.0);
-}
-
-vec3 randomInUnitDisk(inout uint state)
-{
-    for (int i = 0; i < 10; i++)
-    {
-        vec3 p = vec3(randomFloat(state) * 2.0 - 1.0,
-                      randomFloat(state) * 2.0 - 1.0,
-                      0.0);
-        if (dot(p, p) < 1.0)
-            return p;
-    }
-    return vec3(0.0);
+    // Use the top 24 bits so the result is exactly representable in float
+    // and strictly < 1.0 (safe for "r < P" lobe-selection comparisons).
+    return float(pcg(state) >> 8u) * (1.0 / 16777216.0);
 }
 
 // ---- Helpers ----------------------------------------------------------------
 
 #define PI 3.14159265359
 
+// Branchless-ish orthonormal basis around unit vector n (n = local z-axis).
+void buildONB(vec3 n, out vec3 T, out vec3 B)
+{
+    if (abs(n.z) > 0.999)
+    {
+        T = vec3(1.0, 0.0, 0.0);
+        B = vec3(0.0, 1.0, 0.0);
+    }
+    else
+    {
+        vec3 up = (abs(n.y) < 0.999) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        T = normalize(cross(up, n));
+        B = cross(n, T);
+    }
+}
+
+// Analytic cosine-weighted hemisphere sample around n.
+// pdf(wi) = dot(n, wi) / PI — matches pdfDiffuse() exactly.
+// (Replaces the old rejection-sampled n + randomInUnitSphere, which was
+// both slower — divergent loop, up to 30 RNG draws — and not exactly
+// cosine-distributed.)
+vec3 sampleCosineHemisphere(vec3 n, inout uint rngState)
+{
+    float r1 = randomFloat(rngState);
+    float r2 = randomFloat(rngState);
+    float phi = 2.0 * PI * r1;
+    float sr2 = sqrt(r2);
+    vec3 T, B;
+    buildONB(n, T, B);
+    vec3 local = vec3(cos(phi) * sr2, sin(phi) * sr2, sqrt(max(1.0 - r2, 0.0)));
+    return normalize(T * local.x + B * local.y + n * local.z);
+}
+
+// Analytic uniform sample on the unit disk (for depth of field).
+vec2 sampleUnitDisk(inout uint rngState)
+{
+    float r1 = randomFloat(rngState);
+    float r2 = randomFloat(rngState);
+    float r = sqrt(r1);
+    float phi = 2.0 * PI * r2;
+    return vec2(r * cos(phi), r * sin(phi));
+}
+
 vec3 skyColor(vec3 direction)
 {
     float t = 0.5 * (direction.y + 1.0);
     return (1.0 - t) * vec3(1.0, 1.0, 1.0) + t * vec3(0.5, 0.7, 1.0);
+}
+
+// ---- Environment map (M8) ---------------------------------------------------
+
+// Convert a direction to equirectangular UV coordinates
+vec2 directionToEnvUV(vec3 dir)
+{
+    float u = atan(dir.z, dir.x) * 0.15915494309;  // 1/(2π)
+    float v = asin(clamp(dir.y, -1.0, 1.0)) * 0.31830988618;  // 1/π
+    return vec2(u, 0.5 - v * 0.5);  // flip V for image convention
+}
+
+// Convert equirectangular UV to a direction
+vec3 envUVToDirection(vec2 uv)
+{
+    float theta = uv.x * 2.0 * PI;          // azimuth
+    float phi = (0.5 - uv.y) * PI;           // polar angle from horizon
+    float cosPhi = cos(phi);
+    return vec3(cos(theta) * cosPhi, sin(phi), sin(theta) * cosPhi);
+}
+
+// Sample the environment map radiance for a given direction.
+// Returns vec3(0) if no env map is loaded.
+vec3 envMapRadiance(vec3 dir)
+{
+    int envIdx = int(camera.envMap.x);
+    if (envIdx < 0)
+        return vec3(0.0);
+    vec2 uv = directionToEnvUV(dir);
+    vec3 radiance = texture(textures[nonuniformEXT(envIdx)], uv).rgb;
+    return radiance * camera.envMap.y;  // envIntensity
+}
+
+// Sample the environment map importance-sampled using CDFs.
+// Returns (direction, pdf) where pdf is the solid-angle PDF.
+// Uses marginal + conditional CDF textures for 2D inverse CDF sampling.
+struct EnvSample
+{
+    vec3  dir;
+    float pdf;
+    vec3  radiance;
+};
+
+EnvSample sampleEnvMap(inout uint rngState)
+{
+    EnvSample s;
+    s.dir = vec3(0.0);
+    s.pdf = 0.0;
+    s.radiance = vec3(0.0);
+
+    int envIdx = int(camera.envMap.x);
+    int marginalIdx = int(camera.envMap.z);
+    int conditionalIdx = int(camera.envMap.w);
+    if (envIdx < 0 || marginalIdx < 0 || conditionalIdx < 0)
+        return s;
+
+    // Inverse CDF sampling via binary search on the CDF textures.
+    // The CDFs are monotonically increasing, so binary search works.
+
+    // Sample marginal CDF (1D texture, height entries) — binary search
+    float xi1 = randomFloat(rngState);
+    ivec2 marginalSize = textureSize(textures[nonuniformEXT(marginalIdx)], 0);
+    int marginalLen = marginalSize.x;
+
+    int lo = 0;
+    int hi = marginalLen - 1;
+    while (lo < hi)
+    {
+        int mid = (lo + hi) / 2;
+        float cdfVal = texelFetch(textures[nonuniformEXT(marginalIdx)], ivec2(mid, 0), 0).r;
+        if (cdfVal < xi1)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    int vIdx = lo;
+
+    // Sample conditional CDF (2D texture, width×height) for row vIdx — binary search
+    float xi2 = randomFloat(rngState);
+    ivec2 condSize = textureSize(textures[nonuniformEXT(conditionalIdx)], 0);
+    int condW = condSize.x;
+
+    lo = 0;
+    hi = condW - 1;
+    while (lo < hi)
+    {
+        int mid = (lo + hi) / 2;
+        float cdfVal = texelFetch(textures[nonuniformEXT(conditionalIdx)], ivec2(mid, vIdx), 0).r;
+        if (cdfVal < xi2)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    int uIdx = lo;
+
+    // Convert pixel indices to UV
+    float u = (float(uIdx) + 0.5) / float(condW);
+    float v = (float(vIdx) + 0.5) / float(marginalLen);
+
+    // Convert UV to direction
+    s.dir = envUVToDirection(vec2(u, v));
+
+    // Compute PDF: p(u,v) = luminance(envMap(u,v)) / totalLuminance
+    // The CDF stores cumulative probability, so the PDF is:
+    // p(v) = marginalCDF[v] - marginalCDF[v-1]
+    // p(u|v) = conditionalCDF[u,v] - conditionalCDF[u-1,v]
+    // p(dir) = p(u,v) / (2π² * sin(θ))
+    // where θ is the polar angle and the Jacobian of the spherical mapping.
+    vec2 envSize = vec2(float(condW), float(marginalLen));
+    float sinTheta = sqrt(max(1.0 - s.dir.y * s.dir.y, 1e-6));
+
+    // Marginal PDF
+    float margPrev = (vIdx > 0) ? texelFetch(textures[nonuniformEXT(marginalIdx)], ivec2(vIdx - 1, 0), 0).r : 0.0;
+    float margCurr = texelFetch(textures[nonuniformEXT(marginalIdx)], ivec2(vIdx, 0), 0).r;
+    float pdfV = max(margCurr - margPrev, 1e-8);
+
+    // Conditional PDF
+    float condPrev = (uIdx > 0) ? texelFetch(textures[nonuniformEXT(conditionalIdx)], ivec2(uIdx - 1, vIdx), 0).r : 0.0;
+    float condCurr = texelFetch(textures[nonuniformEXT(conditionalIdx)], ivec2(uIdx, vIdx), 0).r;
+    float pdfU = max(condCurr - condPrev, 1e-8);
+
+    // Convert to solid-angle PDF: p(ω) = p(u,v) / (sinθ * 2π²)
+    // The area-to-solid-angle Jacobian for equirect mapping is sinθ * 2π²
+    s.pdf = (pdfV * pdfU) / (sinTheta * 2.0 * PI * PI);
+
+    // Sample radiance
+    s.radiance = envMapRadiance(s.dir);
+
+    return s;
 }
 
 float reflectance(float cosine, float refIdx)
@@ -215,17 +364,7 @@ vec3 sampleVNDF(vec3 wo, vec3 n, float alpha, inout uint rngState)
 {
     // Build orthonormal basis with n as z-axis
     vec3 T, B;
-    if (abs(n.z) > 0.999)
-    {
-        T = vec3(1.0, 0.0, 0.0);
-        B = vec3(0.0, 1.0, 0.0);
-    }
-    else
-    {
-        vec3 up = (abs(n.y) < 0.999) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-        T = normalize(cross(up, n));
-        B = cross(n, T);
-    }
+    buildONB(n, T, B);
 
     // Transform wo into the tangent frame (z along n)
     vec3 wo_t = vec3(dot(wo, T), dot(wo, B), dot(wo, n));
@@ -397,9 +536,9 @@ float pdfBTDF(vec3 wo, vec3 wi, vec3 n, float eta, float alpha)
     float denom = LdotH + VdotH / eta;
     if (abs(denom) < 1e-8) return 0.0;
 
-    float pdf_h = pdfVNDF(wo, h, n, alpha);  // = D(h)*G1(wo)/(4*NdotV)
-    // Wait — pdfVNDF uses h = normalize(wo + wi), not the transmission h.
-    // We need the raw VNDF PDF: D(h)*G1(wo)/(4*NdotV) where h is our transmission h.
+    // Raw VNDF PDF for the transmission half-vector h:
+    // D(h) * G1(wo) / (4 * NdotV). (Do NOT use pdfVNDF() here — it derives
+    // its own h = normalize(wo + wi), which is the reflection half-vector.)
     float NdotV = max(dot(wo, n), 1e-4);
     float D = D_GGX(NdotH, alpha);
     float G1 = G1_Smith(NdotV, alpha);

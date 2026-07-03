@@ -91,11 +91,26 @@ struct GPUSceneData
     std::vector<SceneTexture>     textures;
     std::vector<GPUTriangleLight> lights;  // emissive triangles for NEE
     float                         totalLightArea = 0.0f;  // sum of all light triangle areas
+
+    // Environment map (M8). When envMapIndex >= 0, the miss shader samples
+    // this texture from the bindless array instead of the sky gradient.
+    // CDF textures are used for importance-sampled NEE of the env map.
+    int  envMapIndex = -1;      // index into textures[] (or -1 if no env map)
+    float envIntensity = 1.0f;  // multiplier for env map radiance
+    // CDF data (uploaded as separate GPU textures via RendererGPU)
+    std::vector<float> marginalCDF;  // height entries, CDF over rows
+    std::vector<float> conditionalCDF; // width*height entries, CDF within each row
+    int cdfWidth = 0;
+    int cdfHeight = 0;
 };
 
 // Convert a Scene into GPUSceneData: one GPUMeshGeometry per scene mesh
 // with geometry, one GPUMaterial per scene material. Meshes without
 // geometry are skipped. Out-of-range material indices clamp to 0.
 GPUSceneData BuildGPUSceneData(const Scene& scene);
+
+// Build marginal and conditional CDFs for env map importance sampling (M8).
+void BuildEnvMapCDF(const std::vector<float>& floatPixels, int width, int height,
+                    std::vector<float>& marginalCDF, std::vector<float>& conditionalCDF);
 
 #endif // GPU_SCENE_DATA_H

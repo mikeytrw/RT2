@@ -81,7 +81,7 @@ private:
 
 	void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
 	                  VkBuffer& buffer, VkDeviceMemory& memory);
-	void DestroyBuffer(VkBuffer buffer, VkDeviceMemory memory);
+	void DestroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory);
 	VkDeviceAddress GetBufferDeviceAddress(VkBuffer buffer);
 
 	std::vector<BLASData> m_BLASes;

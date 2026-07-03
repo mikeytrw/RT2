@@ -1,5 +1,82 @@
 #include "GPUSceneData.h"
 #include <glm/glm.hpp>
+#include <cmath>
+
+// Build marginal and conditional CDFs for environment map importance sampling.
+// The env map is an equirectangular HDR image. We compute the luminance of each
+// pixel, weight by sin(theta) (solid-angle correction), and build:
+//   - conditionalCDF[row][col]: CDF over columns within each row
+//   - marginalCDF[row]: CDF over rows (using row sums)
+// Both CDFs are normalized to [0, 1].
+void BuildEnvMapCDF(const std::vector<float>& floatPixels, int width, int height,
+                    std::vector<float>& marginalCDF, std::vector<float>& conditionalCDF)
+{
+    if (width <= 0 || height <= 0 || floatPixels.empty())
+        return;
+
+    marginalCDF.resize(height);
+    conditionalCDF.resize(width * height);
+
+    std::vector<float> rowSums(height, 0.0f);
+
+    for (int y = 0; y < height; y++)
+    {
+        // Solid-angle weight: sin(theta) where theta = (0.5 - v) * PI
+        float v = (float(y) + 0.5f) / float(height);
+        float theta = (0.5f - v) * 3.14159265359f;
+        float sinTheta = std::sin(theta);
+        if (sinTheta < 1e-6f) sinTheta = 1e-6f;
+
+        float rowSum = 0.0f;
+        for (int x = 0; x < width; x++)
+        {
+            int idx = (y * width + x) * 4;
+            float r = floatPixels[idx + 0];
+            float g = floatPixels[idx + 1];
+            float b = floatPixels[idx + 2];
+            float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+            float weight = lum * sinTheta;
+            rowSum += weight;
+            conditionalCDF[y * width + x] = rowSum;
+            rowSums[y] = rowSum;
+        }
+
+        // Normalize conditional CDF for this row
+        if (rowSum > 1e-8f)
+        {
+            float invRowSum = 1.0f / rowSum;
+            for (int x = 0; x < width; x++)
+                conditionalCDF[y * width + x] *= invRowSum;
+        }
+        else
+        {
+            // Uniform fallback for zero-luminance rows
+            for (int x = 0; x < width; x++)
+                conditionalCDF[y * width + x] = float(x + 1) / float(width);
+        }
+    }
+
+    // Build marginal CDF from row sums
+    float totalSum = 0.0f;
+    for (int y = 0; y < height; y++)
+    {
+        totalSum += rowSums[y];
+        marginalCDF[y] = totalSum;
+    }
+
+    // Normalize marginal CDF
+    if (totalSum > 1e-8f)
+    {
+        float invTotal = 1.0f / totalSum;
+        for (int y = 0; y < height; y++)
+            marginalCDF[y] *= invTotal;
+    }
+    else
+    {
+        for (int y = 0; y < height; y++)
+            marginalCDF[y] = float(y + 1) / float(height);
+    }
+}
 
 GPUSceneData BuildGPUSceneData(const Scene& scene)
 {

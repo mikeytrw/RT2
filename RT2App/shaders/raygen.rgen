@@ -31,7 +31,7 @@ void main()
         vec3 defocusJitter = vec3(0.0);
         if (camera.apertureFocal.x > 0.0)
         {
-            vec3 diskPoint = randomInUnitDisk(rngState) * camera.apertureFocal.x;
+            vec2 diskPoint = sampleUnitDisk(rngState) * camera.apertureFocal.x;
             defocusJitter = camera.right.xyz * diskPoint.x + camera.up.xyz * diskPoint.y;
         }
 

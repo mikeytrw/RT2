@@ -9,6 +9,10 @@ layout(location = 0) rayPayloadInEXT RayPayload payload;
 layout(location = 1) rayPayloadEXT RayPayload nextPayload;
 layout(location = 2) rayPayloadEXT float shadowVisible;
 
+// Hardware-provided barycentric hit attributes (core GL_EXT_ray_tracing).
+// attribs = (v, w) weights for vertices 1 and 2; u = 1 - v - w.
+hitAttributeEXT vec2 attribs;
+
 // Get the 3 vertex positions of the current hit triangle
 void hitTriPositions(out vec3 p0, out vec3 p1, out vec3 p2)
 {
@@ -19,31 +23,10 @@ void hitTriPositions(out vec3 p0, out vec3 p1, out vec3 p2)
     p2 = trianglePositions[posIdx + 2u].xyz;
 }
 
-// Compute barycentric coordinates of the hit point
+// Barycentric coordinates of the hit point, straight from the hardware.
 vec3 hitBarycentric()
 {
-    vec3 p0, p1, p2;
-    hitTriPositions(p0, p1, p2);
-
-    vec3 rayDir = normalize(gl_WorldRayDirectionEXT);
-    vec3 hitPoint = gl_WorldRayOriginEXT + gl_HitTEXT * rayDir;
-
-    vec3 edge0 = p1 - p0;
-    vec3 edge1 = p2 - p0;
-    vec3 edge2 = hitPoint - p0;
-
-    float d00 = dot(edge0, edge0);
-    float d01 = dot(edge0, edge1);
-    float d11 = dot(edge1, edge1);
-    float d20 = dot(edge2, edge0);
-    float d21 = dot(edge2, edge1);
-    float denom = d00 * d11 - d01 * d01;
-
-    float v = (d11 * d20 - d01 * d21) / denom;
-    float w = (d00 * d21 - d01 * d20) / denom;
-    float u = 1.0 - v - w;
-
-    return vec3(u, v, w);
+    return vec3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);
 }
 
 vec3 hitFaceNormal()
@@ -98,17 +81,77 @@ vec3 hitShadingNormal(Material mat, vec2 uv)
     return geoN;
 }
 
+// ---- Next-Event Estimation result struct (M8) --------------------------------
+struct NEEResult
+{
+    vec3  radiance;       // throughput * BRDF(wo,L) * Le * G * wLight / pdfOmega
+    float pdfLightOmega;  // solid-angle PDF, 0 if unusable
+};
+
+// ---- Environment map NEE (M8) -----------------------------------------------
+// Sample the env map using importance sampling (CDF), trace a shadow ray,
+// and return (directRadiance, pdfOmega) for MIS weighting.
+NEEResult sampleEnvNEE(vec3 wo, vec3 N, vec3 P,
+                       vec3 baseColor, float metallic, float roughness,
+                       float P_s, float P_d,
+                       vec3 throughput, inout uint rngState,
+                       bool hasTransmission, float P_refract, float eta)
+{
+    NEEResult result;
+    result.radiance = vec3(0.0);
+    result.pdfLightOmega = 0.0;
+
+    EnvSample envS = sampleEnvMap(rngState);
+    if (envS.pdf <= 0.0)
+        return result;
+
+    vec3 L = envS.dir;
+    float NdotL = dot(N, L);
+    if (NdotL <= 0.0)
+        return result;
+
+    // Diffuse BRDF evaluation (same as triangle NEE — avoids specular fireflies).
+    // Evaluate BEFORE tracing the shadow ray: if the diffuse lobe is black
+    // (e.g. metals), the shadow ray is pure waste.
+    vec3 brdf = evalDiffuseBRDF(wo, L, N, baseColor, metallic);
+    if (dot(brdf, brdf) <= 0.0)
+        return result;
+
+    // Shadow ray to the sky (distance = large).
+    // SkipClosestHitShader: only the any-hit/miss decide visibility.
+    shadowVisible = 0.0;
+    traceRayEXT(topLevelAS,
+                gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
+                0xFF, 2, 1, 1,
+                P + N * 0.001, 0.001, L, 1e9, 2);
+
+    if (shadowVisible < 0.5)
+        return result;
+
+    vec3 Le = envS.radiance;
+    float pdfOmega = envS.pdf;
+
+    float alpha = roughnessToAlpha(roughness);
+    float pdfBsdf;
+    if (hasTransmission)
+        pdfBsdf = evalTransmissionBSDFPdf(wo, L, N, P_s, P_refract, P_d, alpha, eta);
+    else
+        pdfBsdf = evalBSDFPdf(wo, L, N, P_s, P_d, alpha);
+
+    float wLight = pdfOmega / (pdfOmega + pdfBsdf);
+    vec3 direct = brdf * Le * NdotL * wLight / pdfOmega;
+
+    result.radiance = throughput * direct;
+    result.pdfLightOmega = pdfOmega;
+    return result;
+}
+
 // ---- Next-Event Estimation with MIS -----------------------------------------
 // Pick a light uniformly, sample a point on its triangle, trace a shadow ray,
 // and return (directRadiance, pdfLightOmega) for MIS weighting.
 // directRadiance already includes throughput. pdfLightOmega is the solid-angle
 // PDF of the light-sampled direction, needed for the balance heuristic.
 // Returns pdfLightOmega = 0.0 if the sample is invalid (backface, occluded).
-struct NEEResult
-{
-    vec3  radiance;       // throughput * BRDF(wo,L) * Le * G * wLight / pdfOmega
-    float pdfLightOmega;  // solid-angle PDF, 0 if unusable
-};
 
 // NEE with diffuse BRDF evaluation and full-combined-PDF MIS weighting.
 // P_s, P_d = lobe selection probabilities for MIS combined-PDF evaluation.
@@ -157,10 +200,18 @@ NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
     if (NdotL <= 0.0 || LNdotL <= 0.0)
         return result;
 
+    // NEE evaluates ONLY the diffuse BRDF term to avoid GGX specular fireflies.
+    // Evaluate BEFORE the shadow ray: if the diffuse lobe is black (metals,
+    // black albedo), skip the shadow ray entirely.
+    vec3 brdf = evalDiffuseBRDF(wo, L, N, baseColor, metallic);
+    if (dot(brdf, brdf) <= 0.0)
+        return result;
+
     // Shadow ray: SBT hit offset 2 = shadow hit group.
+    // SkipClosestHitShader: only the any-hit/miss decide visibility.
     shadowVisible = 0.0;
     traceRayEXT(topLevelAS,
-                gl_RayFlagsTerminateOnFirstHitEXT,
+                gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
                 0xFF, 2, 1, 1,
                 P + N * 0.001, 0.001, L, dist - 0.002, 2);
 
@@ -186,10 +237,8 @@ NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
     float pdfA = (1.0 / float(lightCount)) * (1.0 / lightArea);
     float pdfOmega = pdfA * (dist * dist) / abs(LNdotL);
 
-    // NEE evaluates ONLY the diffuse BRDF term to avoid GGX specular fireflies.
-    // But the MIS weight MUST use the full combined BSDF PDF so that
+    // The MIS weight MUST use the full combined BSDF PDF so that
     // w_light + w_bsdf = 1 at the emissive hit.
-    vec3 brdf = evalDiffuseBRDF(wo, L, N, baseColor, metallic);
     float alpha = roughnessToAlpha(roughness);
     float pdfBsdf;
     if (hasTransmission)
@@ -258,7 +307,7 @@ void main()
             float lightArea = 0.5 * length(cross(p1 - p0, p2 - p0));
 
             vec3 origin = gl_WorldRayOriginEXT;
-            vec3 rayD = normalize(gl_WorldRayDirectionEXT);
+            vec3 rayD = gl_WorldRayDirectionEXT;  // always unit-length (normalized at trace)
             float hitDist = gl_HitTEXT;
             float LNdotL = abs(dot(lightN, -rayD));
 
@@ -278,7 +327,7 @@ void main()
     // Shading normal (normal-mapped or geometric)
     vec3 normal = hitShadingNormal(mat, uv);
 
-    vec3 rayDir = normalize(gl_WorldRayDirectionEXT);
+    vec3 rayDir = gl_WorldRayDirectionEXT;  // always unit-length (normalized at trace)
     bool frontFace = dot(rayDir, normal) < 0.0;
     vec3 n = frontFace ? normal : -normal;
 
@@ -451,10 +500,7 @@ void main()
         {
             // Diffuse lobe (for non-metallic transmission materials with roughness)
             // Must subtract Fresnel energy to match evalDiffuseBRDF in NEE.
-            scatterDir = n + randomInUnitSphere(rngState);
-            if (dot(scatterDir, n) <= 0.0)
-                scatterDir = n;
-            scatterDir = normalize(scatterDir);
+            scatterDir = sampleCosineHemisphere(n, rngState);
             float VdotH_t = max(dot(wo, normalize(wo + scatterDir)), 0.0);
             float F_t = F_Schlick(VdotH_t, vec3(F0_scalar)).r;
             float specW_t = mix(F_t, 1.0, metallic);
@@ -503,17 +549,13 @@ void main()
     }
     else
     {
-        // Diffuse lobe: cosine-weighted hemisphere sampling
+        // Diffuse lobe: analytic cosine-weighted hemisphere sampling
         // attenuation = BRDF_d(wo,wi) * cos(wi) / (P_d * pdfDiffuse(wi))
         // BRDF_d = (1 - specWeight) * baseColor * (1-metallic) / PI
         // cos(wi) = NdotWi, pdfDiffuse = NdotWi / PI
         // => (1 - specWeight) * baseColor * (1-metallic) / P_d
         // where specWeight = luminance(F(VdotH)) and VdotH = dot(wo, normalize(wo+wi))
-        // For cosine sampling, wi is random, so we compute F at the sample direction.
-        scatterDir = n + randomInUnitSphere(rngState);
-        if (dot(scatterDir, n) <= 0.0)
-            scatterDir = n;
-        scatterDir = normalize(scatterDir);
+        scatterDir = sampleCosineHemisphere(n, rngState);
         float VdotH_d = max(dot(wo, normalize(wo + scatterDir)), 0.0);
         vec3 F_d = F_Schlick(VdotH_d, F0);
         float specWeight_d = mix(luminance(F_d), 1.0, metallic);
@@ -561,18 +603,50 @@ void main()
             nee_eta = frontFace ? (1.0 / ior) : ior;
         }
 
-        NEEResult nee = sampleNEE(wo, n, hitPoint,
-                                  baseColor, metallic, roughness,
-                                  nee_Ps, nee_Pd,
-                                  payload.a.xyz, rngState,
-                                  isTransmissionMat, nee_P_refract, nee_eta);
-        payload.b.xyz += nee.radiance;
+        // NEE only ever evaluates the diffuse lobe, so if the material has no
+        // diffuse energy (metals, pure glass, black albedo) skip both shadow
+        // rays — they can only ever return zero. BSDF sampling then becomes
+        // the sole direct-light strategy, so the next emissive/env hit must
+        // use full weight (nextBsdfPdf = -1, same as delta paths).
+        float diffuseWeight = (1.0 - metallic)
+                            * max(baseColor.x, max(baseColor.y, baseColor.z))
+                            * (isTransmissionMat ? (1.0 - transmissionFactor) : 1.0);
+        bool neeUseful = diffuseWeight > 1e-4;
+
+        if (neeUseful)
+        {
+            NEEResult nee = sampleNEE(wo, n, hitPoint,
+                                      baseColor, metallic, roughness,
+                                      nee_Ps, nee_Pd,
+                                      payload.a.xyz, rngState,
+                                      isTransmissionMat, nee_P_refract, nee_eta);
+            payload.b.xyz += nee.radiance;
+
+            // Environment map NEE (M8): importance-sampled env map as infinite light.
+            // Fires alongside triangle NEE for non-delta bounces.
+            int envIdx = int(camera.envMap.x);
+            if (envIdx >= 0)
+            {
+                NEEResult envNee = sampleEnvNEE(wo, n, hitPoint,
+                                                baseColor, metallic, roughness,
+                                                nee_Ps, nee_Pd,
+                                                payload.a.xyz, rngState,
+                                                isTransmissionMat, nee_P_refract, nee_eta);
+                payload.b.xyz += envNee.radiance;
+            }
+        }
 
         // Combined BSDF PDF for the scattered direction (for next-hit MIS).
         // For transmission materials with rough refraction, include the BTDF lobe.
         if (nextBsdfPdf >= 0.0)
         {
-            if (isTransmissionMat && roughness >= 0.001)
+            if (!neeUseful)
+            {
+                // No NEE was performed — BSDF sampling is the only strategy,
+                // so the emissive hit must not be MIS-down-weighted.
+                nextBsdfPdf = -1.0;
+            }
+            else if (isTransmissionMat && roughness >= 0.001)
             {
                 // 3-lobe combined PDF: reflect(VNDF) + refract(BTDF) + diffuse
                 nextBsdfPdf = evalTransmissionBSDFPdf(wo, scatterDir, n,
@@ -590,7 +664,26 @@ void main()
     }
 
     // Update throughput
-    payload.a.xyz *= attenuation;
+    vec3 newThroughput = payload.a.xyz * attenuation;
+
+    // ---- Russian roulette path termination ----
+    // After a few bounces, probabilistically kill low-throughput paths and
+    // compensate the survivors. Unbiased, and drastically shortens paths in
+    // dark/absorbing scenes instead of always tracing to maxBounces.
+    if (depth >= 3u)
+    {
+        float pContinue = clamp(max(newThroughput.x, max(newThroughput.y, newThroughput.z)),
+                                0.05, 0.95);
+        if (randomFloat(rngState) >= pContinue)
+        {
+            payload.c.w = 1.0;
+            payload.a.w = uintBitsToFloat(rngState);
+            return;
+        }
+        newThroughput /= pContinue;
+    }
+
+    payload.a.xyz = newThroughput;
     payload.a.w = uintBitsToFloat(rngState);
     payload.b.w = float(depth + 1);
 

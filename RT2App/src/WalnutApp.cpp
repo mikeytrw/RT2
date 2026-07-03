@@ -10,6 +10,8 @@
 #include "Scene.h"
 #include "SceneLoader.h"
 #include "GPUSceneData.h"
+#include "stb_image.h"
+#include <tinyexr.h>
 
 #include <cstdio>
 
@@ -136,6 +138,29 @@ public:
 	if (ImGui::Checkbox("Show Background", &m_RendererGPU.m_ShowBackground))
 		m_RendererGPU.ResetAccumulation();
 	if (ImGui::SliderFloat("Emissive Boost", &m_RendererGPU.m_EmissiveBoost, 0.0f, 50.0f, "%.1f"))
+		m_RendererGPU.ResetAccumulation();
+	ImGui::Separator();
+	ImGui::Text("Environment Map");
+	if (ImGui::Button("Load HDR..."))
+	{
+		std::string path = FileDialog::OpenFile("HDR Files (*.hdr;*.exr)\0*.hdr;*.exr\0HDR (*.hdr)\0*.hdr\0All Files (*.*)\0*.*\0");
+		if (!path.empty())
+			LoadEnvMap(path);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Clear HDR"))
+	{
+		m_EnvMapPath.clear();
+		m_EnvMapFloatPixels.clear();
+		m_EnvMapWidth = 0;
+		m_EnvMapHeight = 0;
+		if (m_UseGPU && m_RendererGPU.IsAvailable() && (!m_SceneMeshes.empty() || m_Mesh.IsLoaded()))
+			UploadMeshToGPU();
+		m_RendererGPU.ResetAccumulation();
+	}
+	if (!m_EnvMapPath.empty())
+		ImGui::Text("Loaded: %s (%dx%d)", m_EnvMapPath.c_str(), m_EnvMapWidth, m_EnvMapHeight);
+	if (ImGui::SliderFloat("Env Intensity", &m_RendererGPU.m_EnvIntensity, 0.0f, 10.0f, "%.2f"))
 		m_RendererGPU.ResetAccumulation();
 	ImGui::End();
 
@@ -366,6 +391,28 @@ private:
 		printf("[Scene] GPU upload: %d meshes, %d materials\n",
 		       (int)gpuData.meshes.size(), (int)gpuData.materials.size());
 
+		// Add env map as an extra texture in the texture array (M8)
+		if (!m_EnvMapFloatPixels.empty() && m_EnvMapWidth > 0 && m_EnvMapHeight > 0)
+		{
+			SceneTexture envTex;
+			envTex.isHDR = true;
+			envTex.width = m_EnvMapWidth;
+			envTex.height = m_EnvMapHeight;
+			envTex.floatPixels = m_EnvMapFloatPixels;
+			gpuData.textures.push_back(envTex);
+			gpuData.envMapIndex = (int)gpuData.textures.size() - 1;
+			gpuData.envIntensity = m_RendererGPU.m_EnvIntensity;
+
+			// Build CDFs for importance sampling
+			BuildEnvMapCDF(m_EnvMapFloatPixels, m_EnvMapWidth, m_EnvMapHeight,
+			               gpuData.marginalCDF, gpuData.conditionalCDF);
+			gpuData.cdfWidth = m_EnvMapWidth;
+			gpuData.cdfHeight = m_EnvMapHeight;
+
+			printf("[Scene] Env map: idx=%d %dx%d, CDF built\n",
+			       gpuData.envMapIndex, m_EnvMapWidth, m_EnvMapHeight);
+		}
+
 		m_RendererGPU.SetScene(gpuData);
 	}
 
@@ -519,7 +566,67 @@ private:
 	float m_MeshFuzz = 0.0f;
 	float m_MeshIOR = 1.5f;
 
+	// Environment map (M8)
+	std::string m_EnvMapPath;
+	std::vector<float> m_EnvMapFloatPixels;
+	int m_EnvMapWidth = 0;
+	int m_EnvMapHeight = 0;
+
 	Scene m_Scene;
+
+	void LoadEnvMap(const std::string& filepath)
+	{
+		printf("[EnvMap] Loading '%s'\n", filepath.c_str());
+
+		// Determine format by extension: .exr uses tinyexr, .hdr uses stb_image
+		bool isEXR = filepath.size() >= 4 &&
+		             (filepath.compare(filepath.size() - 4, 4, ".exr") == 0 ||
+		              filepath.compare(filepath.size() - 4, 4, ".EXR") == 0);
+
+		int w = 0, h = 0;
+		std::vector<float> pixels;
+
+		if (isEXR)
+		{
+			// OpenEXR via tinyexr
+			float* outRGBA = nullptr;
+			const char* err = nullptr;
+			int ret = LoadEXR(&outRGBA, &w, &h, filepath.c_str(), &err);
+			if (ret != TINYEXR_SUCCESS || !outRGBA)
+			{
+				printf("[EnvMap] Failed to load EXR: %s\n", err ? err : "unknown");
+				if (err) free((void*)err);
+				return;
+			}
+			pixels.assign(outRGBA, outRGBA + (size_t)w * h * 4);
+			free(outRGBA);
+			if (err) free((void*)err);
+			printf("[EnvMap] Loaded %dx%d EXR\n", w, h);
+		}
+		else
+		{
+			// HDR (RGBE) via stb_image
+			int channels;
+			float* data = stbi_loadf(filepath.c_str(), &w, &h, &channels, 4);
+			if (!data)
+			{
+				printf("[EnvMap] Failed to load HDR file!\n");
+				return;
+			}
+			pixels.assign(data, data + (size_t)w * h * 4);
+			stbi_image_free(data);
+			printf("[EnvMap] Loaded %dx%d HDR\n", w, h);
+		}
+
+		m_EnvMapPath = filepath;
+		m_EnvMapWidth = w;
+		m_EnvMapHeight = h;
+		m_EnvMapFloatPixels = std::move(pixels);
+
+		if (m_UseGPU && m_RendererGPU.IsAvailable() && (!m_SceneMeshes.empty() || m_Mesh.IsLoaded()))
+			UploadMeshToGPU();
+		m_RendererGPU.ResetAccumulation();
+	}
 };
 
 Walnut::Application* Walnut::CreateApplication(int argc, char** argv)

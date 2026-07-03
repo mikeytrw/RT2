@@ -1,10 +1,12 @@
 #include "RendererGPU.h"
 #include "ShaderManager.h"
+#include "RTLog.h"
 #include "Walnut/Application.h"
 #include "Walnut/RTDispatch.h"
 #include "backends/imgui_impl_vulkan.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/packing.hpp>
 #include <iostream>
 #include <cstring>
 
@@ -97,6 +99,7 @@ void RendererGPU::Destroy()
 	DestroyPipeline();
 	DestroyOutputImage();
 	DestroyTextures();
+	DestroyEnvMapCDFTextures();
 	DestroyBuffer(m_CameraUBO, m_CameraUBOMemory);
 	DestroyBuffer(m_MaterialBuffer, m_MaterialBufferMemory);
 	DestroyBuffer(m_LightBuffer, m_LightBufferMemory);
@@ -322,10 +325,15 @@ void RendererGPU::CreatePipeline()
 	groups[5].anyHitShader = 5;
 	groups[5].intersectionShader = VK_SHADER_UNUSED_KHR;
 
-	// Recursion depth: set to device maximum so the slider can change
-	// maxBounces without rebuilding the pipeline. The shader's
-	// depth >= maxBounces check prevents infinite recursion.
-	m_MaxRecursionDepth = rtProps.maxRayRecursionDepth;
+	// Recursion depth: a path of maxBounces bounces needs maxBounces+1 levels
+	// (bounce chain + NEE shadow rays at the deepest shading level). Do NOT
+	// request the device maximum (31 on NVIDIA): the driver sizes the default
+	// ray stack proportionally to maxPipelineRayRecursionDepth, so an oversized
+	// value wastes stack memory and kills occupancy. The UBO maxBounces value
+	// is clamped to m_MaxRecursionDepth - 1 so the slider can never exceed it.
+	const uint32_t kRecursionCap = 16;
+	m_MaxRecursionDepth = rtProps.maxRayRecursionDepth < kRecursionCap
+	                    ? rtProps.maxRayRecursionDepth : kRecursionCap;
 	if (m_MaxRecursionDepth < 2) m_MaxRecursionDepth = 2;
 
 	VkRayTracingPipelineCreateInfoKHR pipelineInfo = {};
@@ -604,10 +612,13 @@ void RendererGPU::CreateDescriptorSet()
 
 void RendererGPU::UpdateDescriptorSet()
 {
-	if (!m_AS.IsValid()) return;
-	if (!m_DescriptorSet) return;
-	if (!m_AS.GetNormalBuffer()) return;
-	if (!m_MaterialBuffer) return;
+	if (!m_AS.IsValid()) { RT_LOG("[UpdateDS] skip: AS not valid"); return; }
+	if (!m_DescriptorSet) { RT_LOG("[UpdateDS] skip: no descriptor set"); return; }
+	if (!m_AS.GetNormalBuffer()) { RT_LOG("[UpdateDS] skip: no normal buffer"); return; }
+	if (!m_MaterialBuffer) { RT_LOG("[UpdateDS] skip: no material buffer"); return; }
+
+	RT_LOG("[UpdateDS] enter: textures=%d validTextures=%d",
+	       (int)m_Textures.size(), (int)[&]() { int c = 0; for (auto& t : m_Textures) if (t.view && t.sampler) c++; return c; }());
 
 	VkDevice device = Walnut::Application::GetDevice();
 
@@ -669,7 +680,7 @@ void RendererGPU::UpdateDescriptorSet()
 	lightBufferInfo.buffer = m_LightBuffer;
 	lightBufferInfo.range = VK_WHOLE_SIZE;
 
-	// Texture array image infos (binding 10) — skip textures with null handles
+	// Texture array image infos (binding 10) — write only valid textures
 	std::vector<VkDescriptorImageInfo> textureImageInfos;
 	for (const auto& gt : m_Textures)
 	{
@@ -777,7 +788,9 @@ void RendererGPU::UpdateDescriptorSet()
 		writes[10].pImageInfo = textureImageInfos.data();
 		writeCount = 11;
 	}
+	RT_LOG("[UpdateDS] writing %d descriptors (textureInfos=%d)", writeCount, (int)textureImageInfos.size());
 	vkUpdateDescriptorSets(device, writeCount, writes, 0, nullptr);
+	RT_LOG("[UpdateDS] done");
 }
 
 void RendererGPU::CreateMaterialBuffer()
@@ -850,7 +863,7 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 	for (size_t i = 0; i < textures.size(); i++)
 	{
 		const auto& tex = textures[i];
-		if (tex.pixels.empty() || tex.width <= 0 || tex.height <= 0)
+		if (tex.floatPixels.empty() && tex.pixels.empty())
 		{
 			std::cerr << "[RT2] Texture " << i << ": no pixel data, skipping\n";
 			continue;
@@ -860,7 +873,21 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 		gt.width = tex.width;
 		gt.height = tex.height;
 
-		VkDeviceSize imageSize = (VkDeviceSize)(tex.width * tex.height * 4);
+		bool isHDR = tex.isHDR && !tex.floatPixels.empty();
+		VkFormat format = isHDR ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+		gt.format = format;
+		VkDeviceSize imageSize = isHDR
+			? (VkDeviceSize)(tex.width * tex.height * 8)  // 4× half-float = 8 bytes
+			: (VkDeviceSize)(tex.width * tex.height * 4);  // 4× uint8 = 4 bytes
+
+		// For HDR, convert float pixels to half-float
+		std::vector<uint16_t> halfPixels;
+		if (isHDR)
+		{
+			halfPixels.resize(tex.width * tex.height * 4);
+			for (size_t p = 0; p < tex.floatPixels.size(); p++)
+				halfPixels[p] = glm::packHalf1x16(tex.floatPixels[p]);
+		}
 
 		// Staging buffer
 		VkBuffer stagingBuffer;
@@ -872,14 +899,17 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 
 		void* data;
 		vkMapMemory(device, stagingMemory, 0, imageSize, 0, &data);
-		memcpy(data, tex.pixels.data(), (size_t)imageSize);
+		if (isHDR)
+			memcpy(data, halfPixels.data(), (size_t)imageSize);
+		else
+			memcpy(data, tex.pixels.data(), (size_t)imageSize);
 		vkUnmapMemory(device, stagingMemory);
 
 		// Create VkImage
 		VkImageCreateInfo imageInfo = {};
 		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 		imageInfo.imageType = VK_IMAGE_TYPE_2D;
-		imageInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+		imageInfo.format = format;
 		imageInfo.extent.width = tex.width;
 		imageInfo.extent.height = tex.height;
 		imageInfo.extent.depth = 1;
@@ -956,7 +986,7 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
 		viewInfo.image = gt.image;
 		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+		viewInfo.format = format;
 		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		viewInfo.subresourceRange.levelCount = 1;
 		viewInfo.subresourceRange.layerCount = 1;
@@ -992,6 +1022,134 @@ void RendererGPU::DestroyTextures()
 	m_Textures.clear();
 }
 
+void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
+{
+	m_EnvMapIndex = sceneData.envMapIndex;
+	m_CDFWidth = sceneData.cdfWidth;
+	m_CDFHeight = sceneData.cdfHeight;
+	m_MarginalCDFIndex = -1;
+	m_ConditionalCDFIndex = -1;
+
+	if (sceneData.envMapIndex < 0 || sceneData.marginalCDF.empty() || sceneData.conditionalCDF.empty())
+		return;
+
+	VkDevice device = Walnut::Application::GetDevice();
+
+	// Helper: create a CDF texture and append to m_Textures
+	auto createCDFTexture = [&](const std::vector<float>& cdfData, int w, int h) -> int
+	{
+		GPUTexture gt;
+		gt.width = w;
+		gt.height = h;
+		gt.format = VK_FORMAT_R32_SFLOAT;
+		VkDeviceSize imageSize = (VkDeviceSize)(w * h * 4);
+
+		VkBuffer stagingBuffer;
+		VkDeviceMemory stagingMemory;
+		CreateBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		             stagingBuffer, stagingMemory);
+		void* data;
+		vkMapMemory(device, stagingMemory, 0, imageSize, 0, &data);
+		memcpy(data, cdfData.data(), (size_t)imageSize);
+		vkUnmapMemory(device, stagingMemory);
+
+		VkImageCreateInfo imageInfo = {};
+		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+		imageInfo.imageType = (h == 1) ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D;
+		imageInfo.format = VK_FORMAT_R32_SFLOAT;
+		imageInfo.extent.width = w;
+		imageInfo.extent.height = (h == 1) ? 1 : h;
+		imageInfo.extent.depth = 1;
+		imageInfo.mipLevels = 1;
+		imageInfo.arrayLayers = 1;
+		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+		imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+		imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		vkCreateImage(device, &imageInfo, nullptr, &gt.image);
+
+		VkMemoryRequirements memReq;
+		vkGetImageMemoryRequirements(device, gt.image, &memReq);
+		VkMemoryAllocateInfo allocInfo = {};
+		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize = memReq.size;
+		allocInfo.memoryTypeIndex = FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		vkAllocateMemory(device, &allocInfo, nullptr, &gt.memory);
+		vkBindImageMemory(device, gt.image, gt.memory, 0);
+
+		VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
+		VkImageMemoryBarrier barrier = {};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.image = gt.image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+		VkBufferImageCopy region = {};
+		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.imageSubresource.layerCount = 1;
+		region.imageExtent = {(uint32_t)w, (h == 1) ? 1u : (uint32_t)h, 1};
+		vkCmdCopyBufferToImage(cmd, stagingBuffer, gt.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+		VkImageMemoryBarrier shaderBarrier = barrier;
+		shaderBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		shaderBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		shaderBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		shaderBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &shaderBarrier);
+		Walnut::Application::FlushCommandBuffer(cmd);
+		DestroyBuffer(stagingBuffer, stagingMemory);
+
+		VkImageViewCreateInfo viewInfo = {};
+		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		viewInfo.image = gt.image;
+		viewInfo.viewType = (h == 1) ? VK_IMAGE_VIEW_TYPE_1D : VK_IMAGE_VIEW_TYPE_2D;
+		viewInfo.format = VK_FORMAT_R32_SFLOAT;
+		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		viewInfo.subresourceRange.levelCount = 1;
+		viewInfo.subresourceRange.layerCount = 1;
+		vkCreateImageView(device, &viewInfo, nullptr, &gt.view);
+
+		VkSamplerCreateInfo samplerInfo = {};
+		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+		samplerInfo.magFilter = VK_FILTER_LINEAR;
+		samplerInfo.minFilter = VK_FILTER_LINEAR;
+		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+		samplerInfo.minLod = 0;
+		samplerInfo.maxLod = 0;
+		vkCreateSampler(device, &samplerInfo, nullptr, &gt.sampler);
+
+		int idx = (int)m_Textures.size();
+		m_Textures.push_back(gt);
+		return idx;
+	};
+
+	m_MarginalCDFIndex = createCDFTexture(sceneData.marginalCDF, sceneData.cdfHeight, 1);
+	m_ConditionalCDFIndex = createCDFTexture(sceneData.conditionalCDF, sceneData.cdfWidth, sceneData.cdfHeight);
+
+	std::cerr << "[RT2] Env map CDF textures: marginal idx=" << m_MarginalCDFIndex
+	          << " conditional idx=" << m_ConditionalCDFIndex
+	          << " (" << sceneData.cdfWidth << "x" << sceneData.cdfHeight << ")\n";
+}
+
+void RendererGPU::DestroyEnvMapCDFTextures()
+{
+	// CDF textures are in m_Textures, destroyed by DestroyTextures()
+	m_EnvMapIndex = -1;
+	m_MarginalCDFIndex = -1;
+	m_ConditionalCDFIndex = -1;
+}
+
 void RendererGPU::ResetAccumulation()
 {
 	m_FrameIndex = 1;
@@ -999,16 +1157,47 @@ void RendererGPU::ResetAccumulation()
 
 void RendererGPU::SetScene(const GPUSceneData& sceneData)
 {
+	VkDevice device = Walnut::Application::GetDevice();
+	RT_LOG("[SetScene] enter: textures=%d, envMapIndex=%d, meshes=%d, materials=%d",
+	       (int)sceneData.textures.size(), sceneData.envMapIndex,
+	       (int)sceneData.meshes.size(), (int)sceneData.materials.size());
+	vkDeviceWaitIdle(device);  // Wait for GPU to finish before destroying textures
+
 	m_CurrentScene = sceneData;
 	m_NeedsASRebuild = true;
 	m_FrameIndex = 1;
+	RT_LOG("[SetScene] destroying old textures (count=%d)", (int)m_Textures.size());
 	DestroyTextures();
+	RT_LOG("[SetScene] creating new textures");
 	CreateTextures(m_CurrentScene.textures);
+	RT_LOG("[SetScene] destroying old CDF textures");
+	DestroyEnvMapCDFTextures();
+	RT_LOG("[SetScene] creating new CDF textures");
+	CreateEnvMapCDFTextures(m_CurrentScene);
+	RT_LOG("[SetScene] CDF indices: marginal=%d conditional=%d envMap=%d",
+	       m_MarginalCDFIndex, m_ConditionalCDFIndex, m_EnvMapIndex);
+
+	// Update descriptor set immediately so the new texture views are bound
+	// before the next render. But skip if AS needs rebuild — the old TLAS
+	// handle will be destroyed during rebuild, and UpdateDescriptorSet will
+	// be called again after the rebuild with the new TLAS handle.
+	if (m_AS.IsValid() && !m_NeedsASRebuild)
+	{
+		RT_LOG("[SetScene] updating descriptor set (AS valid, no rebuild needed)");
+		UpdateDescriptorSet();
+	}
+	else
+	{
+		RT_LOG("[SetScene] skipping descriptor update (AS needs rebuild or not valid)");
+	}
+	RT_LOG("[SetScene] done");
 }
 
 void RendererGPU::RebuildAccelerationStructures()
 {
+	RT_LOG("[RebuildAS] enter: meshes=%d", (int)m_CurrentScene.meshes.size());
 	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
+	RT_LOG("[RebuildAS] got command buffer");
 
 	// Build one BLAS per mesh geometry
 	std::vector<BLASGeometry> geometries;
@@ -1032,8 +1221,10 @@ void RendererGPU::RebuildAccelerationStructures()
 
 		geometries.push_back(geo);
 	}
+	RT_LOG("[RebuildAS] built %d geometry entries, calling BuildBLASes", (int)geometries.size());
 
 	bool blasOK = m_AS.BuildBLASes(cmd, geometries);
+	RT_LOG("[RebuildAS] BuildBLASes result=%d", blasOK);
 
 	// Barrier: BLAS builds must complete before TLAS build reads them
 	VkMemoryBarrier blasBarrier = {};
@@ -1074,11 +1265,15 @@ void RendererGPU::RebuildAccelerationStructures()
 	}
 
 	bool tlasOK = m_AS.BuildTLAS(cmd, instances);
+	RT_LOG("[RebuildAS] TLAS build result=%d instances=%d", tlasOK, (int)instances.size());
 
 	Walnut::Application::FlushCommandBuffer(cmd);
 
+	RT_LOG("[RebuildAS] creating material buffer");
 	CreateMaterialBuffer();
+	RT_LOG("[RebuildAS] creating light buffer");
 	CreateLightBuffer();
+	RT_LOG("[RebuildAS] updating descriptor set");
 	UpdateDescriptorSet();
 
 	m_NeedsASRebuild = false;
@@ -1094,7 +1289,8 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 		glm::vec4 right;        // xyz = right, w = pad
 		glm::vec4 up;           // xyz = up, w = pad
 		glm::vec4 viewportSPP;  // x = width, y = height, z = spp, w = maxBounces
-		glm::vec4 apertureFocal;// x = aperture, y = focusDistance, z = showBackground, w = pad
+		glm::vec4 apertureFocal;// x = aperture, y = focusDistance, z = showBackground, w = emissiveBoost
+		glm::vec4 envMap;       // x = envMapIndex (-1=none), y = envIntensity, z = marginalCDFIndex, w = conditionalCDFIndex
 		glm::mat4 inverseProjection;
 		glm::mat4 inverseView;
 	};
@@ -1106,8 +1302,16 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	glm::vec3 up = glm::cross(right, camera.GetDirection());
 	ubo.right = glm::vec4(right, 0.0f);
 	ubo.up = glm::vec4(up, 0.0f);
-	ubo.viewportSPP = glm::vec4((float)m_Width, (float)m_Height, (float)m_SPP, (float)m_MaxBounces);
+	// Clamp maxBounces to what the pipeline's recursion depth supports:
+	// a bounce chain of N needs N+1 recursion levels (see pipeline creation).
+	// Exceeding maxPipelineRayRecursionDepth at runtime is undefined behavior
+	// (device lost), so this clamp is a hard safety requirement, not cosmetic.
+	int maxBouncesClamped = m_MaxBounces;
+	const int bounceLimit = (int)m_MaxRecursionDepth - 1;
+	if (maxBouncesClamped > bounceLimit) maxBouncesClamped = bounceLimit;
+	ubo.viewportSPP = glm::vec4((float)m_Width, (float)m_Height, (float)m_SPP, (float)maxBouncesClamped);
 	ubo.apertureFocal = glm::vec4(camera.m_Aperture, camera.m_FocusDistance, m_ShowBackground ? 1.0f : 0.0f, m_EmissiveBoost);
+	ubo.envMap = glm::vec4((float)m_EnvMapIndex, m_EnvIntensity, (float)m_MarginalCDFIndex, (float)m_ConditionalCDFIndex);
 	ubo.inverseProjection = camera.GetInverseProjection();
 	ubo.inverseView = camera.GetInverseView();
 
@@ -1122,8 +1326,14 @@ void RendererGPU::Render(const Camera& camera)
 {
 	if (!m_Initialized || m_OutputImage == VK_NULL_HANDLE) return;
 
+	RT_LOG("[Render] frame=%d needsASRebuild=%d", m_FrameIndex, m_NeedsASRebuild);
+
 	if (m_NeedsASRebuild)
+	{
+		RT_LOG("[Render] rebuilding AS...");
 		RebuildAccelerationStructures();
+		RT_LOG("[Render] AS rebuild done, AS valid=%d", m_AS.IsValid());
+	}
 
 	if (!m_AS.IsValid())
 	{

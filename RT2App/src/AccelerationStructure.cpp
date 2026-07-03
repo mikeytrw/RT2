@@ -1,4 +1,5 @@
 #include "AccelerationStructure.h"
+#include "RTLog.h"
 #include "Walnut/Application.h"
 #include "Walnut/RTDispatch.h"
 #include <glm/glm.hpp>
@@ -66,11 +67,11 @@ void AccelerationStructure::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags u
 	vkBindBufferMemory(device, buffer, memory, 0);
 }
 
-void AccelerationStructure::DestroyBuffer(VkBuffer buffer, VkDeviceMemory memory)
+void AccelerationStructure::DestroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory)
 {
 	VkDevice device = Walnut::Application::GetDevice();
-	if (buffer) vkDestroyBuffer(device, buffer, nullptr);
-	if (memory) vkFreeMemory(device, memory, nullptr);
+	if (buffer) { vkDestroyBuffer(device, buffer, nullptr); buffer = VK_NULL_HANDLE; }
+	if (memory) { vkFreeMemory(device, memory, nullptr); memory = VK_NULL_HANDLE; }
 }
 
 VkDeviceAddress AccelerationStructure::GetBufferDeviceAddress(VkBuffer buffer)
@@ -85,10 +86,18 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
                                          const std::vector<BLASGeometry>& meshes)
 {
 	VkDevice device = Walnut::Application::GetDevice();
+	RT_LOG("[BuildBLASes] enter: meshes=%d prevBLASes=%d", (int)meshes.size(), (int)m_BLASes.size());
+
+	// Wait for GPU to finish before destroying old BLAS buffers
+	RT_LOG("[BuildBLASes] calling vkDeviceWaitIdle");
+	vkDeviceWaitIdle(device);
+	RT_LOG("[BuildBLASes] vkDeviceWaitIdle done");
 
 	// Destroy previous BLASes
-	for (auto& blas : m_BLASes)
+	for (size_t i = 0; i < m_BLASes.size(); i++)
 	{
+		auto& blas = m_BLASes[i];
+		RT_LOG("[BuildBLASes] destroying BLAS %d/%d", (int)i, (int)m_BLASes.size());
 		DestroyBuffer(blas.vertexBuffer, blas.vertexMemory);
 		DestroyBuffer(blas.indexBuffer, blas.indexMemory);
 		DestroyBuffer(blas.normalBuffer, blas.normalMemory);
@@ -98,12 +107,14 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 			g_RTDispatch.DestroyAccelerationStructureKHR(device, blas.handle, nullptr);
 	}
 	m_BLASes.clear();
+	RT_LOG("[BuildBLASes] old BLASes destroyed, destroying combined buffers");
 
 	DestroyBuffer(m_CombinedNormalBuffer, m_CombinedNormalMemory);
 	DestroyBuffer(m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
 	DestroyBuffer(m_CombinedUVBuffer, m_CombinedUVMemory);
 	DestroyBuffer(m_CombinedPositionBuffer, m_CombinedPositionMemory);
 	DestroyBuffer(m_CombinedTangentBuffer, m_CombinedTangentMemory);
+	RT_LOG("[BuildBLASes] combined buffers destroyed, resizing");
 	m_BLASes.resize(meshes.size());
 	m_TotalTriangleCount = 0;
 
@@ -111,6 +122,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 	{
 		const auto& mesh = meshes[i];
 		BLASData& blas = m_BLASes[i];
+		RT_LOG("[BuildBLASes] mesh %d: verts=%d indices=%d", (int)i, (int)mesh.vertices->size(), (int)mesh.indices->size());
 
 		uint32_t triCount = static_cast<uint32_t>(mesh.indices->size() / 3);
 		blas.triangleCount = triCount;
@@ -162,6 +174,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 
 		// --- Vertex buffer ---
 		VkDeviceSize vertexBufferSize = mesh.vertices->size() * sizeof(float);
+		RT_LOG("[BuildBLASes] mesh %d: creating vertex buffer (%zu bytes)", (int)i, (size_t)vertexBufferSize);
 		CreateBuffer(vertexBufferSize,
 		             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 		             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -175,6 +188,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 
 		// --- Index buffer ---
 		VkDeviceSize indexBufferSize = mesh.indices->size() * sizeof(uint32_t);
+		RT_LOG("[BuildBLASes] mesh %d: creating index buffer (%zu bytes)", (int)i, (size_t)indexBufferSize);
 		CreateBuffer(indexBufferSize,
 		             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 		             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -215,11 +229,13 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		sizeInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
 
 		uint32_t primitiveCount = triCount;
+		RT_LOG("[BuildBLASes] mesh %d: getting build sizes (prims=%d)", (int)i, primitiveCount);
 		g_RTDispatch.GetAccelerationStructureBuildSizesKHR(device,
 			VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
 			&buildInfo, &primitiveCount, &sizeInfo);
 
 		// --- BLAS buffer ---
+		RT_LOG("[BuildBLASes] mesh %d: creating BLAS buffer (%zu bytes)", (int)i, (size_t)sizeInfo.accelerationStructureSize);
 		CreateBuffer(sizeInfo.accelerationStructureSize,
 		             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
 		             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -231,9 +247,11 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		createInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
 		createInfo.buffer = blas.blasBuffer;
 		createInfo.size = sizeInfo.accelerationStructureSize;
+		RT_LOG("[BuildBLASes] mesh %d: creating AS handle", (int)i);
 		g_RTDispatch.CreateAccelerationStructureKHR(device, &createInfo, nullptr, &blas.handle);
 
 		// --- Scratch buffer ---
+		RT_LOG("[BuildBLASes] mesh %d: creating scratch buffer (%zu bytes)", (int)i, (size_t)sizeInfo.buildScratchSize);
 		CreateBuffer(sizeInfo.buildScratchSize,
 		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -249,6 +267,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		buildRangeInfo.transformOffset = 0;
 
 		VkAccelerationStructureBuildRangeInfoKHR* pBuildRangeInfos = &buildRangeInfo;
+		RT_LOG("[BuildBLASes] mesh %d: cmdBuildAS", (int)i);
 		g_RTDispatch.CmdBuildAccelerationStructuresKHR(cmdBuffer, 1, &buildInfo, &pBuildRangeInfos);
 
 		// --- Get BLAS device address ---
@@ -256,12 +275,12 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		addrInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
 		addrInfo.accelerationStructure = blas.handle;
 		blas.deviceAddress = g_RTDispatch.GetAccelerationStructureDeviceAddressKHR(device, &addrInfo);
+		RT_LOG("[BuildBLASes] mesh %d: done", (int)i);
 	}
 
-	// Build combined normal buffer (all triangles from all BLASes) and
-	// per-instance offset buffer so the shader can index normals as
-	// normalOffsets[gl_InstanceID] + gl_PrimitiveID.
+	RT_LOG("[BuildBLASes] all meshes built, calling BuildCombinedBuffers");
 	BuildCombinedBuffers();
+	RT_LOG("[BuildBLASes] BuildCombinedBuffers done, returning true");
 
 	return true;
 }
@@ -269,13 +288,15 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 void AccelerationStructure::BuildCombinedBuffers()
 {
 	VkDevice device = Walnut::Application::GetDevice();
+	RT_LOG("[BuildCombinedBuffers] enter: totalTris=%d blasCount=%d", (int)m_TotalTriangleCount, (int)m_BLASes.size());
 
-	// Destroy previous combined buffers
+	// Destroy previous combined buffers (already destroyed in BuildBLASes, but safe no-op)
 	DestroyBuffer(m_CombinedNormalBuffer, m_CombinedNormalMemory);
 	DestroyBuffer(m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
 	DestroyBuffer(m_CombinedUVBuffer, m_CombinedUVMemory);
 	DestroyBuffer(m_CombinedPositionBuffer, m_CombinedPositionMemory);
 	DestroyBuffer(m_CombinedTangentBuffer, m_CombinedTangentMemory);
+	RT_LOG("[BuildCombinedBuffers] old buffers destroyed (no-op if already done)");
 
 	// Collect all normals, positions, UVs, and tangents into combined buffers.
 	// Per-triangle data layout (using vec4 arrays for std430 alignment):
@@ -327,6 +348,9 @@ void AccelerationStructure::BuildCombinedBuffers()
 		}
 	}
 
+	RT_LOG("[BuildCombinedBuffers] collecting data: normals=%d positions=%d uvs=%d tangents=%d",
+	       (int)allNormals.size(), (int)allPositions.size(), (int)allUVs.size(), (int)allTangents.size());
+
 	auto createCombined = [&](VkBuffer& buf, VkDeviceMemory& mem,
 	                          const void* data, VkDeviceSize size)
 	{
@@ -341,16 +365,22 @@ void AccelerationStructure::BuildCombinedBuffers()
 		vkUnmapMemory(device, mem);
 	};
 
+	RT_LOG("[BuildCombinedBuffers] creating normal buffer (%zu bytes)", allNormals.size() * sizeof(glm::vec4));
 	createCombined(m_CombinedNormalBuffer, m_CombinedNormalMemory,
 	               allNormals.data(), allNormals.size() * sizeof(glm::vec4));
+	RT_LOG("[BuildCombinedBuffers] creating position buffer (%zu bytes)", allPositions.size() * sizeof(glm::vec4));
 	createCombined(m_CombinedPositionBuffer, m_CombinedPositionMemory,
 	               allPositions.data(), allPositions.size() * sizeof(glm::vec4));
+	RT_LOG("[BuildCombinedBuffers] creating UV buffer (%zu bytes)", allUVs.size() * sizeof(glm::vec4));
 	createCombined(m_CombinedUVBuffer, m_CombinedUVMemory,
 	               allUVs.data(), allUVs.size() * sizeof(glm::vec4));
+	RT_LOG("[BuildCombinedBuffers] creating tangent buffer (%zu bytes)", allTangents.size() * sizeof(glm::vec4));
 	createCombined(m_CombinedTangentBuffer, m_CombinedTangentMemory,
 	               allTangents.data(), allTangents.size() * sizeof(glm::vec4));
+	RT_LOG("[BuildCombinedBuffers] creating offset buffer (%zu bytes)", offsets.size() * sizeof(uint32_t));
 	createCombined(m_InstanceOffsetBuffer, m_InstanceOffsetMemory,
 	               offsets.data(), offsets.size() * sizeof(uint32_t));
+	RT_LOG("[BuildCombinedBuffers] done");
 }
 
 bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,

@@ -102,6 +102,11 @@ struct SceneTexture
     int height = 0;
     int channels = 4; // always RGBA8 after decode
     std::vector<unsigned char> pixels;
+
+    // HDR float pixel data (for environment maps). When isHDR is true,
+    // pixels is empty and floatPixels contains RGBA float data.
+    bool isHDR = false;
+    std::vector<float> floatPixels;
 };
 
 struct SceneCamera

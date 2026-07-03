@@ -19,6 +19,7 @@ struct GPUTexture
 	VkSampler sampler = VK_NULL_HANDLE;
 	int width = 0;
 	int height = 0;
+	VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
 };
 
 class RendererGPU
@@ -49,6 +50,7 @@ public:
 	bool m_ShowBackground = false;
 	bool m_NEEOnly = false;
 	float m_EmissiveBoost = 1.0f;
+	float m_EnvIntensity = 1.0f;
 
 private:
 	void CreateOutputImage();
@@ -62,6 +64,8 @@ private:
 	void UpdateCameraUBO(const Camera& camera);
 	void CreateTextures(const std::vector<SceneTexture>& textures);
 	void DestroyTextures();
+	void CreateEnvMapCDFTextures(const GPUSceneData& sceneData);
+	void DestroyEnvMapCDFTextures();
 
 	bool m_Initialized = false;
 
@@ -112,6 +116,13 @@ private:
 	std::vector<GPUTexture> m_Textures;
 	VkDescriptorSetLayout m_TextureDescriptorSetLayout = VK_NULL_HANDLE;
 	VkDescriptorSet m_TextureDescriptorSet = VK_NULL_HANDLE;
+
+	// Environment map CDF textures (M8) — appended to m_Textures array as extra entries
+	int m_MarginalCDFIndex = -1;    // index into m_Textures for marginal CDF
+	int m_ConditionalCDFIndex = -1; // index into m_Textures for conditional CDF
+	int m_EnvMapIndex = -1;
+	int m_CDFWidth = 0;
+	int m_CDFHeight = 0;
 
 	AccelerationStructure m_AS;
 
