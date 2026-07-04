@@ -6,7 +6,6 @@
 #include "pathtracer_shared.glsl"
 
 layout(location = 0) rayPayloadEXT RayPayload payload;
-layout(location = 3) rayPayloadEXT PrimaryHitInfo primaryHit;
 
 void main()
 {
@@ -60,18 +59,17 @@ void main()
             dir = normalize(focalPoint - rayOrigin);
         }
 
-        // Initialize primary-hit payload for NRD G-buffer capture
-        primaryHit.a = vec4(0.0);
-        primaryHit.b = vec4(0.0);
-        primaryHit.c = vec4(0.0);
-
         // Initialize payload for recursive path tracing
         // d.w = bsdfPdf (solid-angle): -1.0 = camera ray (delta, full emission),
         // >= 0 = diffuse bounce (MIS-weighted emission).
+        // e = NRD primary-hit info, filled by closesthit at depth 0;
+        //     e.w == 0 after the trace means the primary ray missed (or hit an
+        //     emitter, which returns before the G-buffer capture).
         payload.a = vec4(vec3(1.0), rngState);   // throughput = 1, rngState in .w
         payload.b = vec4(vec3(0.0), 0);           // radiance = 0, depth = 0
         payload.c = vec4(rayOrigin, 0.0);          // ray origin, done = 0
         payload.d = vec4(dir, -1.0);              // ray dir, bsdfPdf = -1 (camera)
+        payload.e = vec4(0.0);
 
         traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0,
                     rayOrigin, 0.001, dir, 1e9, 0);
@@ -82,16 +80,16 @@ void main()
         if (nrdMode)
         {
             // Route radiance to diffuse or specular based on primary hit lobe
-            float lobeType = primaryHit.b.z;
+            float lobeType = payload.e.z;
             if (lobeType < 0.5)
             {
                 diffRad += payload.b.xyz;
-                diffHitT = primaryHit.b.y;
+                diffHitT = payload.e.w;
             }
             else
             {
                 specRad += payload.b.xyz;
-                specHitT = primaryHit.b.y;
+                specHitT = payload.e.w;
             }
         }
     }
@@ -99,18 +97,21 @@ void main()
 
     if (nrdMode)
     {
-        // Write G-buffer images for NRD
-        // Demodulate: divide radiance by material factors
-        vec3 diffFactor = primaryHit.c.xyz;   // albedo for diffuse
-        float specFactor = primaryHit.c.w;     // F0 for specular
-        diffFactor = max(diffFactor, vec3(1e-4));
-        specFactor = max(specFactor, 1e-4);
+        // Primary miss (or emissive hit): closesthit wrote no G-buffer data,
+        // so write sane defaults here (NRD treats huge |viewZ| as sky).
+        if (payload.e.w == 0.0)
+        {
+            imageStore(gNormalRoughness, pixel, vec4(0.5, 0.5, 1.0, 1.0));
+            imageStore(gViewZ, pixel, vec4(1e6, 0.0, 0.0, 0.0));
+        }
+        // (gNormalRoughness / gViewZ for hits are written by closesthit.)
+
+        // Demodulate: divide radiance by material factors returned in payload.e
+        vec3 diffFactor = max(unpackUnorm4x8(floatBitsToUint(payload.e.x)).xyz, vec3(1e-4));
+        float specFactor = max(payload.e.y, 1e-4);
 
         vec3 demodDiff = diffRad / diffFactor;
         vec3 demodSpec = specRad / vec3(specFactor);
-
-        imageStore(gNormalRoughness, pixel, vec4(primaryHit.a.xyz, primaryHit.a.w));
-        imageStore(gViewZ, pixel, vec4(primaryHit.b.x, 0.0, 0.0, 0.0));
 
         // Motion vector: 2D screen-space (previous UV - current UV)
         // For static scenes, MV = camera reprojection delta

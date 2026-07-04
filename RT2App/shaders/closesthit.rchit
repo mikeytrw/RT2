@@ -8,7 +8,6 @@
 layout(location = 0) rayPayloadInEXT RayPayload payload;
 layout(location = 1) rayPayloadEXT RayPayload nextPayload;
 layout(location = 2) rayPayloadEXT float shadowVisible;
-layout(location = 3) rayPayloadInEXT PrimaryHitInfo primaryHit;
 
 // Hardware-provided barycentric hit attributes (core GL_EXT_ray_tracing).
 // attribs = (v, w) weights for vertices 1 and 2; u = 1 - v - w.
@@ -573,36 +572,39 @@ void main()
     }
 
     // ---- NRD G-buffer capture at primary hit (depth=0) ----
+    // Per-pixel data (normal/roughness, viewZ) is written straight to the
+    // G-buffer images here — this shader knows the pixel via gl_LaunchIDEXT.
+    // Data raygen needs for radiance routing/demodulation goes back through
+    // payload.e (the ONLY legal return channel — see RayPayload note).
     if (depth == 0u && nrdData.nrdEnabled != 0u)
     {
+        ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+
         // Determine lobe type: 0 = diffuse, 1 = specular (includes reflect/refract)
         bool isSpecularLobe = isDelta || (r < P_s) ||
                               (mat.alphaMode < 0.5 && transmissionFactor > 0.0 &&
                                r >= P_s); // transmission materials: refract = specular
         float lobeType = isSpecularLobe ? 1.0 : 0.0;
 
-        // World-space normal and roughness
-        primaryHit.a = vec4(n, roughness);
+        // World-space normal + roughness. gNormalRoughness is rgba8 UNORM, so
+        // the signed normal must be encoded to [0,1] (NRD RGBA8 unorm encoding).
+        imageStore(gNormalRoughness, pixel, vec4(n * 0.5 + 0.5, roughness));
 
         // View-space Z: transform world position to view space
         vec3 worldPos = gl_WorldRayOriginEXT + gl_HitTEXT * rayDir;
         vec4 viewPos = camera.worldToView * vec4(worldPos, 1.0);
-        float viewZ = viewPos.z;
-
-        // Hit distance for 1st bounce (will be updated after scatter ray is traced)
-        // Use the primary hit distance as a placeholder; the actual 1st-bounce
-        // hitT isn't known until the scattered ray returns. For NRD, using the
-        // primary hitT as a proxy is acceptable for the diffuse/specular hitdist.
-        float hitT = gl_HitTEXT;
-
-        primaryHit.b = vec4(viewZ, hitT, lobeType, 0.0);
+        imageStore(gViewZ, pixel, vec4(viewPos.z, 0.0, 0.0, 0.0));
 
         // Demodulation factors:
         // Diffuse: divide by albedo = baseColor * (1 - metallic)
         // Specular: divide by F0 (Schlick fresnel at normal incidence)
         vec3 diffFactor = max(baseColor * (1.0 - metallic), vec3(1e-4));
-        float f0Scalar = mix(0.04, luminance(baseColor), metallic);
-        primaryHit.c = vec4(diffFactor, max(f0Scalar, 1e-4));
+        float f0Scalar = max(mix(0.04, luminance(baseColor), metallic), 1e-4);
+
+        // Return routing/demod info to raygen through the payload.
+        // hitT = gl_HitTEXT (> 0); raygen treats e.w == 0 as "primary miss".
+        payload.e = vec4(uintBitsToFloat(packUnorm4x8(vec4(diffFactor, 0.0))),
+                         f0Scalar, lobeType, gl_HitTEXT);
     }
 
     if (!doScatter || depth >= maxBounces)

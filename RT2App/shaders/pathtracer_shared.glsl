@@ -130,21 +130,21 @@ layout(set = 1, binding = 5) uniform NRDUniform
 // ---- Payload ----------------------------------------------------------------
 // Packed into explicit vec4 rows to avoid cross-stage std430 alignment
 // ambiguity when mixing vec3/scalar fields in rayPayloadEXT.
+//
+// NOTE: a closest-hit shader may declare exactly ONE rayPayloadInEXT variable
+// (VUID-StandaloneSpirv-IncomingRayPayloadKHR-04700) and it aliases the payload
+// referenced by the caller's traceRayEXT. Any data the primary hit must return
+// to raygen therefore lives HERE (row e), not in a second payload.
 struct RayPayload
 {
     vec4 a; // xyz = throughput, w = rngState
     vec4 b; // xyz = radiance,   w = depth
     vec4 c; // xyz = ray origin, w = done (0/1)
     vec4 d; // xyz = ray dir,    w = bsdfPdf
-};
-
-// Primary-hit payload (location 3) — filled by closesthit at depth=0,
-// read by raygen to route radiance into diffuse/specular G-buffer images.
-struct PrimaryHitInfo
-{
-    vec4 a; // xyz = world normal, w = roughness
-    vec4 b; // x = viewZ, y = hitT (1st bounce), z = lobeType (0=diffuse, 1=spec), w = demodDiffuse (1=yes)
-    vec4 c; // xyz = demodulated diffuse color (albedo), w = F0 scalar
+    vec4 e; // NRD primary-hit info (written by closesthit at depth 0 only):
+            // x = uintBitsToFloat(packUnorm4x8(vec4(demodAlbedo, 0)))
+            // y = F0 scalar, z = lobeType (0=diffuse, 1=specular)
+            // w = primary hitT (0 = primary ray missed or hit an emitter)
 };
 
 // ---- RNG (PCG) --------------------------------------------------------------
