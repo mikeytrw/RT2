@@ -139,6 +139,8 @@ public:
 		m_RendererGPU.ResetAccumulation();
 	if (ImGui::SliderFloat("Emissive Boost", &m_RendererGPU.m_EmissiveBoost, 0.0f, 50.0f, "%.1f"))
 		m_RendererGPU.ResetAccumulation();
+	if (ImGui::Checkbox("NRD Denoiser", &m_RendererGPU.m_NRDEnabled))
+		m_RendererGPU.ResetAccumulation();
 	ImGui::Separator();
 	ImGui::Text("Environment Map");
 	if (ImGui::Button("Load HDR..."))

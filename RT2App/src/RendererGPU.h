@@ -7,6 +7,7 @@
 #include "AccelerationStructure.h"
 #include "Camera.h"
 #include "GPUSceneData.h"
+#include "NRDIntegration.h"
 #include "Scene.h"
 #include <memory>
 
@@ -51,6 +52,7 @@ public:
 	bool m_NEEOnly = false;
 	float m_EmissiveBoost = 1.0f;
 	float m_EnvIntensity = 1.0f;
+	bool m_NRDEnabled = false;  // NRD denoiser toggle
 
 private:
 	void CreateOutputImage();
@@ -66,6 +68,12 @@ private:
 	void DestroyTextures();
 	void CreateEnvMapCDFTextures(const GPUSceneData& sceneData);
 	void DestroyEnvMapCDFTextures();
+
+	// NRD G-buffer images (set 1)
+	void CreateGBufferImages();
+	void DestroyGBufferImages();
+	void CreateGBufferDescriptorSet();
+	void UpdateGBufferDescriptorSet();
 
 	bool m_Initialized = false;
 
@@ -133,9 +141,56 @@ private:
 	uint32_t m_FrameIndex = 1;
 	VkImageLayout m_OutputImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
+	// NRD G-buffer images (set 1, bindings 0-4)
+	VkImage m_GNormalRoughness = VK_NULL_HANDLE;
+	VkDeviceMemory m_GNormalRoughnessMem = VK_NULL_HANDLE;
+	VkImageView m_GNormalRoughnessView = VK_NULL_HANDLE;
+
+	VkImage m_GViewZ = VK_NULL_HANDLE;
+	VkDeviceMemory m_GViewZMem = VK_NULL_HANDLE;
+	VkImageView m_GViewZView = VK_NULL_HANDLE;
+
+	VkImage m_GMotion = VK_NULL_HANDLE;
+	VkDeviceMemory m_GMotionMem = VK_NULL_HANDLE;
+	VkImageView m_GMotionView = VK_NULL_HANDLE;
+
+	VkImage m_GDiffRadiance = VK_NULL_HANDLE;
+	VkDeviceMemory m_GDiffRadianceMem = VK_NULL_HANDLE;
+	VkImageView m_GDiffRadianceView = VK_NULL_HANDLE;
+
+	VkImage m_GSpecRadiance = VK_NULL_HANDLE;
+	VkDeviceMemory m_GSpecRadianceMem = VK_NULL_HANDLE;
+	VkImageView m_GSpecRadianceView = VK_NULL_HANDLE;
+
+	// NRD output images (denoised)
+	VkImage m_NRDDiffOut = VK_NULL_HANDLE;
+	VkDeviceMemory m_NRDDiffOutMem = VK_NULL_HANDLE;
+	VkImageView m_NRDDiffOutView = VK_NULL_HANDLE;
+
+	VkImage m_NRDSpecOut = VK_NULL_HANDLE;
+	VkDeviceMemory m_NRDSpecOutMem = VK_NULL_HANDLE;
+	VkImageView m_NRDSpecOutView = VK_NULL_HANDLE;
+
+	// NRD UBO (set 1, binding 5)
+	VkBuffer m_NRDUBO = VK_NULL_HANDLE;
+	VkDeviceMemory m_NRDUBOMemory = VK_NULL_HANDLE;
+
+	// Set 1 descriptor set layout + set
+	VkDescriptorSetLayout m_GBufferSetLayout = VK_NULL_HANDLE;
+	VkDescriptorSet m_GBufferSet = VK_NULL_HANDLE;
+	VkDescriptorPool m_GBufferPool = VK_NULL_HANDLE;
+
+	// NRD integration wrapper
+	NRDWrapper m_NRD;
+
+	// Previous frame matrices for motion vectors
+	glm::mat4 m_PrevViewToClip = glm::mat4(1.0f);
+	glm::mat4 m_PrevWorldToView = glm::mat4(1.0f);
+	bool m_HasPrevMatrices = false;
+
 	void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
 	                  VkBuffer& buffer, VkDeviceMemory& memory);
-	void DestroyBuffer(VkBuffer buffer, VkDeviceMemory memory);
+	void DestroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory);
 	VkDeviceAddress GetBufferDeviceAddress(VkBuffer buffer);
 	uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 };

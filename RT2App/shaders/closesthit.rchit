@@ -8,6 +8,7 @@
 layout(location = 0) rayPayloadInEXT RayPayload payload;
 layout(location = 1) rayPayloadEXT RayPayload nextPayload;
 layout(location = 2) rayPayloadEXT float shadowVisible;
+layout(location = 3) rayPayloadInEXT PrimaryHitInfo primaryHit;
 
 // Hardware-provided barycentric hit attributes (core GL_EXT_ray_tracing).
 // attribs = (v, w) weights for vertices 1 and 2; u = 1 - v - w.
@@ -569,6 +570,39 @@ void main()
         float specWeight_d = mix(luminance(F_d), 1.0, metallic);
         attenuation = (1.0 - specWeight_d) * baseColor * (1.0 - metallic) / P_d;
         nextBsdfPdf = pdfDiffuse(scatterDir, n);
+    }
+
+    // ---- NRD G-buffer capture at primary hit (depth=0) ----
+    if (depth == 0u && nrdData.nrdEnabled != 0u)
+    {
+        // Determine lobe type: 0 = diffuse, 1 = specular (includes reflect/refract)
+        bool isSpecularLobe = isDelta || (r < P_s) ||
+                              (mat.alphaMode < 0.5 && transmissionFactor > 0.0 &&
+                               r >= P_s); // transmission materials: refract = specular
+        float lobeType = isSpecularLobe ? 1.0 : 0.0;
+
+        // World-space normal and roughness
+        primaryHit.a = vec4(n, roughness);
+
+        // View-space Z: transform world position to view space
+        vec3 worldPos = gl_WorldRayOriginEXT + gl_HitTEXT * rayDir;
+        vec4 viewPos = camera.worldToView * vec4(worldPos, 1.0);
+        float viewZ = viewPos.z;
+
+        // Hit distance for 1st bounce (will be updated after scatter ray is traced)
+        // Use the primary hit distance as a placeholder; the actual 1st-bounce
+        // hitT isn't known until the scattered ray returns. For NRD, using the
+        // primary hitT as a proxy is acceptable for the diffuse/specular hitdist.
+        float hitT = gl_HitTEXT;
+
+        primaryHit.b = vec4(viewZ, hitT, lobeType, 0.0);
+
+        // Demodulation factors:
+        // Diffuse: divide by albedo = baseColor * (1 - metallic)
+        // Specular: divide by F0 (Schlick fresnel at normal incidence)
+        vec3 diffFactor = max(baseColor * (1.0 - metallic), vec3(1e-4));
+        float f0Scalar = mix(0.04, luminance(baseColor), metallic);
+        primaryHit.c = vec4(diffFactor, max(f0Scalar, 1e-4));
     }
 
     if (!doScatter || depth >= maxBounces)

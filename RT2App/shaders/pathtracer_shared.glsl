@@ -20,6 +20,11 @@ layout(set = 0, binding = 1, std140) uniform CameraData
     vec4 envMap;        // x = envMapIndex (-1=none), y = envIntensity, z = marginalCDFIdx, w = conditionalCDFIdx
     mat4 inverseProjection;
     mat4 inverseView;
+    // NRD G-buffer inputs (set 1, bindings 0-4):
+    mat4 viewToClip;        // current frame view-to-clip (for viewZ + motion)
+    mat4 viewToClipPrev;    // previous frame view-to-clip
+    mat4 worldToView;       // current world-to-view
+    mat4 worldToViewPrev;   // previous world-to-view
 } camera;
 
 // PBR material — matches GPUMaterial in GPUSceneData.h (64 bytes, std430)
@@ -104,6 +109,24 @@ layout(set = 0, binding = 10) uniform sampler2D textures[];
 
 layout(set = 0, binding = 4) uniform accelerationStructureEXT topLevelAS;
 
+// ---- NRD G-buffer outputs (set 1) -------------------------------------------
+// Storage images written by closesthit at the primary hit (depth=0) and
+// read by the NRD denoiser. When NRD is disabled, these are unused.
+layout(set = 1, binding = 0, rgba8) uniform image2D gNormalRoughness;  // xyz = world normal, w = roughness
+layout(set = 1, binding = 1, r16f)  uniform image2D gViewZ;            // view-space Z
+layout(set = 1, binding = 2, rg16f) uniform image2D gMotion;           // 2D screen-space motion vector
+layout(set = 1, binding = 3, rgba16f) uniform image2D gDiffRadianceHitDist; // rgb = diffuse radiance, a = hitT
+layout(set = 1, binding = 4, rgba16f) uniform image2D gSpecRadianceHitDist; // rgb = specular radiance, a = hitT
+
+// NRD enable flag (1 = NRD mode, 0 = normal temporal accumulation)
+layout(set = 1, binding = 5) uniform NRDUniform
+{
+    uint nrdEnabled;      // 1 = NRD mode (1 spp, no temporal accum, write G-buffer)
+    uint pad0;
+    uint pad1;
+    uint pad2;
+} nrdData;
+
 // ---- Payload ----------------------------------------------------------------
 // Packed into explicit vec4 rows to avoid cross-stage std430 alignment
 // ambiguity when mixing vec3/scalar fields in rayPayloadEXT.
@@ -112,7 +135,16 @@ struct RayPayload
     vec4 a; // xyz = throughput, w = rngState
     vec4 b; // xyz = radiance,   w = depth
     vec4 c; // xyz = ray origin, w = done (0/1)
-    vec4 d; // xyz = ray dir,    w = pad
+    vec4 d; // xyz = ray dir,    w = bsdfPdf
+};
+
+// Primary-hit payload (location 3) — filled by closesthit at depth=0,
+// read by raygen to route radiance into diffuse/specular G-buffer images.
+struct PrimaryHitInfo
+{
+    vec4 a; // xyz = world normal, w = roughness
+    vec4 b; // x = viewZ, y = hitT (1st bounce), z = lobeType (0=diffuse, 1=spec), w = demodDiffuse (1=yes)
+    vec4 c; // xyz = demodulated diffuse color (albedo), w = F0 scalar
 };
 
 // ---- RNG (PCG) --------------------------------------------------------------

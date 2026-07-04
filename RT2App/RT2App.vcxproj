@@ -121,7 +121,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Debug-windows-x86_6
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>NRD.lib;ShaderMakeBlob.lib;NRI.lib;NRI_VK.lib;NRI_Shared.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>NRD.lib;ShaderMakeBlob.lib;NRI.lib;NRI_VK.lib;NRI_Shared.lib;NRI_Validation.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>copy /Y "$(SolutionDir)RT2App\shaders\raygen.spv" "../bin/Release-windows-x86_64/RT2App"

@@ -59,15 +59,50 @@ bool NRDWrapper::Init(VkInstance instance, VkPhysicalDevice physicalDevice, VkDe
 	deviceDesc.vkBindingOffsets.tRegister = 0;
 	deviceDesc.vkBindingOffsets.bRegister = 0;
 	deviceDesc.vkBindingOffsets.uRegister = 0;
-	deviceDesc.vkExtensions.deviceExtensions = nullptr;
-	deviceDesc.vkExtensions.deviceExtensionNum = 0;
+	// NRI needs to know which extensions are enabled on our VkDevice
+	static const char* deviceExts[] = {
+		VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+		VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
+		VK_KHR_RAY_QUERY_EXTENSION_NAME,
+		VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
+		VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
+		VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
+		VK_KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION_NAME,
+		VK_KHR_SPIRV_1_4_EXTENSION_NAME,
+		VK_KHR_SHADER_FLOAT_CONTROLS_EXTENSION_NAME,
+		VK_KHR_SHADER_NON_SEMANTIC_INFO_EXTENSION_NAME,
+		VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
+		VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+		VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME,
+		VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
+		VK_KHR_RAY_TRACING_MAINTENANCE_1_EXTENSION_NAME,
+	};
+	deviceDesc.vkExtensions.deviceExtensions = deviceExts;
+	deviceDesc.vkExtensions.deviceExtensionNum = (uint32_t)(sizeof(deviceExts) / sizeof(deviceExts[0]));
 	deviceDesc.enableMemoryZeroInitialization = true;
 
-	if (nri::nriCreateDeviceFromVKDevice(deviceDesc, m_NRIDevice) != nri::Result::SUCCESS)
+	// Provide a callback that logs instead of DebugBreak()
+	nri::CallbackInterface callbacks = {};
+	callbacks.MessageCallback = [](nri::Message messageType, const char* file, uint32_t line, const char* message, void*) {
+		const char* typeStr = "INFO";
+		if (messageType == nri::Message::WARNING) typeStr = "WARNING";
+		else if (messageType == nri::Message::ERROR) typeStr = "ERROR";
+		RT_LOG("[NRD] NRI %s: %s:%u: %s", typeStr, file, line, message);
+	};
+	// Don't set AbortExecution — NRI default calls DebugBreak(), we want to
+	// just log errors and handle them via return codes instead.
+	callbacks.AbortExecution = [](void*) -> void { /* no-op: don't crash */ };
+	deviceDesc.callbackInterface = callbacks;
+
+	RT_LOG("[NRD] calling nriCreateDeviceFromVKDevice...");
+	nri::Result devResult = nri::nriCreateDeviceFromVKDevice(deviceDesc, m_NRIDevice);
+	RT_LOG("[NRD] nriCreateDeviceFromVKDevice returned %d", (int)devResult);
+	if (devResult != nri::Result::SUCCESS)
 	{
 		RT_LOG("[NRD] Failed to create NRI device from Vulkan device");
 		return false;
 	}
+	RT_LOG("[NRD] NRI device created successfully");
 
 	// Create NRD instance with REBLUR_DIFFUSE_SPECULAR
 	nrd::DenoiserDesc denoiserDesc = {};
@@ -87,7 +122,10 @@ bool NRDWrapper::Init(VkInstance instance, VkPhysicalDevice physicalDevice, VkDe
 	integrationDesc.enableWholeLifetimeDescriptorCaching = false;
 	integrationDesc.autoWaitForIdle = true;
 
-	if (g_NRD.RecreateVK(integrationDesc, instanceDesc, deviceDesc) != nrd::Result::SUCCESS)
+	RT_LOG("[NRD] calling RecreateVK...");
+	nrd::Result rr = g_NRD.RecreateVK(integrationDesc, instanceDesc, deviceDesc);
+	RT_LOG("[NRD] RecreateVK returned %d", (int)rr);
+	if (rr != nrd::Result::SUCCESS)
 	{
 		RT_LOG("[NRD] RecreateVK failed");
 		nri::nriDestroyDevice(m_NRIDevice);
@@ -200,13 +238,17 @@ void NRDWrapper::Denoise(VkCommandBuffer cmdBuffer,
 	if (!m_Initialized)
 		return;
 
+	// NRD output format is R11G11B10f (B10G11R11_UFLOAT_PACK32)
+	VkFormat outFmt = VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+
 	nrd::ResourceSnapshot snapshot = {};
 	snapshot.restoreInitialState = true;
 
-	// Common inputs (g-buffer)
+	// All images stay in GENERAL layout throughout — NRD restores to this
+	// state after denoising, so the next frame's raygen can imageStore.
 	nri::AccessLayoutStage initialState = {};
 	initialState.access = nri::AccessBits::SHADER_RESOURCE;
-	initialState.layout = nri::Layout::SHADER_RESOURCE;
+	initialState.layout = nri::Layout::GENERAL;
 	initialState.stages = nri::StageBits::COMPUTE_SHADER;
 
 	snapshot.SetResource(nrd::ResourceType::IN_NORMAL_ROUGHNESS,
@@ -222,16 +264,16 @@ void NRDWrapper::Denoise(VkCommandBuffer cmdBuffer,
 	snapshot.SetResource(nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST,
 		MakeNrdResource(inSpecRadianceHitDist, specFmt, initialState));
 
-	// Outputs (storage)
+	// Outputs
 	nri::AccessLayoutStage outputState = {};
-	outputState.access = nri::AccessBits::SHADER_RESOURCE;
-	outputState.layout = nri::Layout::SHADER_RESOURCE;
+	outputState.access = nri::AccessBits::SHADER_RESOURCE_STORAGE;
+	outputState.layout = nri::Layout::GENERAL;
 	outputState.stages = nri::StageBits::COMPUTE_SHADER;
 
 	snapshot.SetResource(nrd::ResourceType::OUT_DIFF_RADIANCE_HITDIST,
-		MakeNrdResource(outDiffRadianceHitDist, diffFmt, outputState));
+		MakeNrdResource(outDiffRadianceHitDist, outFmt, outputState));
 	snapshot.SetResource(nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST,
-		MakeNrdResource(outSpecRadianceHitDist, specFmt, outputState));
+		MakeNrdResource(outSpecRadianceHitDist, outFmt, outputState));
 
 	// Dispatch
 	nri::CommandBufferVKDesc cmdDesc = {};

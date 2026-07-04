@@ -7,6 +7,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/packing.hpp>
+#include <glm/gtc/type_ptr.hpp>
 #include <iostream>
 #include <cstring>
 
@@ -56,11 +57,11 @@ void RendererGPU::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
 	vkBindBufferMemory(device, buffer, memory, 0);
 }
 
-void RendererGPU::DestroyBuffer(VkBuffer buffer, VkDeviceMemory memory)
+void RendererGPU::DestroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory)
 {
 	VkDevice device = Walnut::Application::GetDevice();
-	if (buffer) vkDestroyBuffer(device, buffer, nullptr);
-	if (memory) vkFreeMemory(device, memory, nullptr);
+	if (buffer) { vkDestroyBuffer(device, buffer, nullptr); buffer = VK_NULL_HANDLE; }
+	if (memory) { vkFreeMemory(device, memory, nullptr);    memory = VK_NULL_HANDLE; }
 }
 
 VkDeviceAddress RendererGPU::GetBufferDeviceAddress(VkBuffer buffer)
@@ -96,14 +97,27 @@ void RendererGPU::Destroy()
 	VkDevice device = Walnut::Application::GetDevice();
 	vkDeviceWaitIdle(device);
 
+	m_NRD.Destroy();
 	DestroyPipeline();
 	DestroyOutputImage();
+	DestroyGBufferImages();
 	DestroyTextures();
 	DestroyEnvMapCDFTextures();
 	DestroyBuffer(m_CameraUBO, m_CameraUBOMemory);
 	DestroyBuffer(m_MaterialBuffer, m_MaterialBufferMemory);
 	DestroyBuffer(m_LightBuffer, m_LightBufferMemory);
-	m_AS.Destroy();
+	DestroyBuffer(m_NRDUBO, m_NRDUBOMemory);
+
+	if (m_GBufferPool)
+	{
+		vkDestroyDescriptorPool(device, m_GBufferPool, nullptr);
+		m_GBufferPool = VK_NULL_HANDLE;
+	}
+	if (m_GBufferSetLayout)
+	{
+		vkDestroyDescriptorSetLayout(device, m_GBufferSetLayout, nullptr);
+		m_GBufferSetLayout = VK_NULL_HANDLE;
+	}
 
 	m_Initialized = false;
 }
@@ -240,10 +254,15 @@ void RendererGPU::CreatePipeline()
 	vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_DescriptorSetLayout);
 
 	// Pipeline layout
+	// Create G-buffer descriptor set layout (set 1)
+	CreateGBufferDescriptorSet();
+
+	VkDescriptorSetLayout setLayouts[2] = { m_DescriptorSetLayout, m_GBufferSetLayout };
+
 	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
 	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipelineLayoutInfo.setLayoutCount = 1;
-	pipelineLayoutInfo.pSetLayouts = &m_DescriptorSetLayout;
+	pipelineLayoutInfo.setLayoutCount = 2;
+	pipelineLayoutInfo.pSetLayouts = setLayouts;
 
 	vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &m_PipelineLayout);
 
@@ -578,7 +597,24 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	m_Height = height;
 
 	CreateOutputImage();
+	CreateGBufferImages();
 	CreateDescriptorSet();
+	UpdateGBufferDescriptorSet();
+
+	// Initialize NRD if enabled
+	if (m_NRDEnabled && !m_NRD.IsAvailable())
+	{
+		m_NRD.Init(Walnut::Application::GetInstance(),
+		           Walnut::Application::GetPhysicalDevice(),
+		           Walnut::Application::GetDevice(),
+		           Walnut::Application::GetQueue(),
+		           Walnut::Application::GetQueueFamily(),
+		           m_Width, m_Height);
+	}
+	else if (m_NRDEnabled && m_NRD.IsAvailable())
+	{
+		m_NRD.OnResize(m_Width, m_Height);
+	}
 	UpdateDescriptorSet();
 
 	m_FrameIndex = 1;
@@ -625,7 +661,7 @@ void RendererGPU::UpdateDescriptorSet()
 	// Create camera UBO if needed
 	if (!m_CameraUBO)
 	{
-		CreateBuffer(256,
+		CreateBuffer(512,
 		             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             m_CameraUBO, m_CameraUBOMemory);
@@ -1293,6 +1329,10 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 		glm::vec4 envMap;       // x = envMapIndex (-1=none), y = envIntensity, z = marginalCDFIndex, w = conditionalCDFIndex
 		glm::mat4 inverseProjection;
 		glm::mat4 inverseView;
+		glm::mat4 viewToClip;       // current view-to-clip (projection)
+		glm::mat4 viewToClipPrev;   // previous frame projection
+		glm::mat4 worldToView;      // current world-to-view (view matrix)
+		glm::mat4 worldToViewPrev;  // previous frame view matrix
 	};
 
 	CameraUBO ubo = {};
@@ -1302,10 +1342,6 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	glm::vec3 up = glm::cross(right, camera.GetDirection());
 	ubo.right = glm::vec4(right, 0.0f);
 	ubo.up = glm::vec4(up, 0.0f);
-	// Clamp maxBounces to what the pipeline's recursion depth supports:
-	// a bounce chain of N needs N+1 recursion levels (see pipeline creation).
-	// Exceeding maxPipelineRayRecursionDepth at runtime is undefined behavior
-	// (device lost), so this clamp is a hard safety requirement, not cosmetic.
 	int maxBouncesClamped = m_MaxBounces;
 	const int bounceLimit = (int)m_MaxRecursionDepth - 1;
 	if (maxBouncesClamped > bounceLimit) maxBouncesClamped = bounceLimit;
@@ -1314,6 +1350,15 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	ubo.envMap = glm::vec4((float)m_EnvMapIndex, m_EnvIntensity, (float)m_MarginalCDFIndex, (float)m_ConditionalCDFIndex);
 	ubo.inverseProjection = camera.GetInverseProjection();
 	ubo.inverseView = camera.GetInverseView();
+	ubo.viewToClip = camera.GetProjection();
+	ubo.worldToView = camera.GetView();
+	ubo.viewToClipPrev = m_HasPrevMatrices ? m_PrevViewToClip : ubo.viewToClip;
+	ubo.worldToViewPrev = m_HasPrevMatrices ? m_PrevWorldToView : ubo.worldToView;
+
+	// Update previous frame matrices for next frame
+	m_PrevViewToClip = ubo.viewToClip;
+	m_PrevWorldToView = ubo.worldToView;
+	m_HasPrevMatrices = true;
 
 	VkDevice device = Walnut::Application::GetDevice();
 	void* data;
@@ -1344,6 +1389,18 @@ void RendererGPU::Render(const Camera& camera)
 
 	if (const_cast<Camera&>(camera).checkHasMoved())
 		m_FrameIndex = 1;
+
+	// Lazy-init NRD when toggled on
+	if (m_NRDEnabled && !m_NRD.IsAvailable() && m_Width > 0 && m_Height > 0)
+	{
+		RT_LOG("[Render] initializing NRD (%ux%u)", m_Width, m_Height);
+		m_NRD.Init(Walnut::Application::GetInstance(),
+		           Walnut::Application::GetPhysicalDevice(),
+		           Walnut::Application::GetDevice(),
+		           Walnut::Application::GetQueue(),
+		           Walnut::Application::GetQueueFamily(),
+		           m_Width, m_Height);
+	}
 
 	UpdateCameraUBO(camera);
 
@@ -1396,9 +1453,23 @@ void RendererGPU::Render(const Camera& camera)
 		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0, nullptr, 1, &rtWriteBarrier);
 
+	// Update NRD UBO
+	VkDevice device = Walnut::Application::GetDevice();
+	if (m_NRDUBO)
+	{
+		struct NRDUBOData { uint32_t enabled; uint32_t pad[3]; };
+		NRDUBOData nrdData = { m_NRDEnabled ? 1u : 0u, {0, 0, 0} };
+		void* nrdMapped;
+		vkMapMemory(device, m_NRDUBOMemory, 0, sizeof(NRDUBOData), 0, &nrdMapped);
+		memcpy(nrdMapped, &nrdData, sizeof(NRDUBOData));
+		vkUnmapMemory(device, m_NRDUBOMemory);
+	}
+
 	// Trace rays
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_RTPipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_PipelineLayout, 0, 1, &m_DescriptorSet, 0, nullptr);
+	if (m_GBufferSet)
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_PipelineLayout, 1, 1, &m_GBufferSet, 0, nullptr);
 
 	VkDeviceAddress sbtAddress = GetBufferDeviceAddress(m_SBTBuffer);
 
@@ -1444,6 +1515,63 @@ void RendererGPU::Render(const Camera& camera)
 	if (!g_RTDispatch.CmdTraceRaysKHR)
 		std::cerr << "[RT2] ERROR: CmdTraceRaysKHR is NULL!\n";
 
+	// NRD denoising pass
+	if (m_NRDEnabled && m_NRD.IsAvailable())
+	{
+		// Barrier: RT writes to G-buffer images must complete before NRD reads them
+		VkImage gbufferImgs[] = {
+			m_GNormalRoughness, m_GViewZ, m_GMotion,
+			m_GDiffRadiance, m_GSpecRadiance
+		};
+		for (auto img : gbufferImgs)
+		{
+			VkImageMemoryBarrier b = {};
+			b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.image = img;
+			b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			b.subresourceRange.levelCount = 1;
+			b.subresourceRange.layerCount = 1;
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+			                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+			                     0, nullptr, 0, nullptr, 1, &b);
+		}
+
+		m_NRD.NewFrame();
+
+		// Set common settings
+		const Camera& cam = camera;
+		glm::mat4 viewToClip = cam.GetProjection();
+		glm::mat4 worldToView = cam.GetView();
+		glm::mat4 prevViewToClip = m_HasPrevMatrices ? m_PrevViewToClip : viewToClip;
+		glm::mat4 prevWorldToView = m_HasPrevMatrices ? m_PrevWorldToView : worldToView;
+
+		bool reset = (m_FrameIndex == 1);
+		m_NRD.SetCommonSettings(
+			glm::value_ptr(viewToClip),
+			glm::value_ptr(prevViewToClip),
+			glm::value_ptr(worldToView),
+			glm::value_ptr(prevWorldToView),
+			0.0f, 0.0f, 0.0f, 0.0f, // jitter (TODO)
+			m_FrameIndex, reset);
+
+		m_NRD.Denoise(cmd,
+			m_GNormalRoughness, VK_FORMAT_R8G8B8A8_UNORM,
+			m_GViewZ, VK_FORMAT_R16_SFLOAT,
+			m_GMotion, VK_FORMAT_R16G16_SFLOAT,
+			m_GDiffRadiance, VK_FORMAT_R16G16B16A16_SFLOAT,
+			m_GSpecRadiance, VK_FORMAT_R16G16B16A16_SFLOAT,
+			m_NRDDiffOut, m_NRDSpecOut);
+
+		// NRD with restoreInitialState=true + GENERAL layout restores images
+		// to GENERAL after denoising, so no manual barriers needed.
+	}
+
 	VkImageMemoryBarrier rtReadBarrier = {};
 	rtReadBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 	rtReadBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -1462,4 +1590,208 @@ void RendererGPU::Render(const Camera& camera)
 	Walnut::Application::FlushCommandBuffer(cmd);
 
 	m_FrameIndex++;
+}
+
+// ---- NRD G-buffer images (set 1) -------------------------------------------
+
+void RendererGPU::CreateGBufferImages()
+{
+	DestroyGBufferImages();
+
+	VkDevice device = Walnut::Application::GetDevice();
+
+	struct GBufferImageSpec
+	{
+		VkFormat format;
+		VkImage& image;
+		VkDeviceMemory& mem;
+		VkImageView& view;
+	};
+
+	GBufferImageSpec specs[] = {
+		{ VK_FORMAT_R8G8B8A8_UNORM,     m_GNormalRoughness, m_GNormalRoughnessMem, m_GNormalRoughnessView },
+		{ VK_FORMAT_R16_SFLOAT,          m_GViewZ,           m_GViewZMem,           m_GViewZView },
+		{ VK_FORMAT_R16G16_SFLOAT,       m_GMotion,          m_GMotionMem,          m_GMotionView },
+		{ VK_FORMAT_R16G16B16A16_SFLOAT, m_GDiffRadiance,    m_GDiffRadianceMem,    m_GDiffRadianceView },
+		{ VK_FORMAT_R16G16B16A16_SFLOAT, m_GSpecRadiance,    m_GSpecRadianceMem,    m_GSpecRadianceView },
+		{ VK_FORMAT_B10G11R11_UFLOAT_PACK32, m_NRDDiffOut,       m_NRDDiffOutMem,       m_NRDDiffOutView },
+		{ VK_FORMAT_B10G11R11_UFLOAT_PACK32, m_NRDSpecOut,       m_NRDSpecOutMem,       m_NRDSpecOutView },
+	};
+
+	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
+
+	for (auto& s : specs)
+	{
+		VkImageCreateInfo imageInfo = {};
+		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+		imageInfo.imageType = VK_IMAGE_TYPE_2D;
+		imageInfo.format = s.format;
+		imageInfo.extent.width = m_Width;
+		imageInfo.extent.height = m_Height;
+		imageInfo.extent.depth = 1;
+		imageInfo.mipLevels = 1;
+		imageInfo.arrayLayers = 1;
+		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+		imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+		imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+		vkCreateImage(device, &imageInfo, nullptr, &s.image);
+
+		VkMemoryRequirements memReq;
+		vkGetImageMemoryRequirements(device, s.image, &memReq);
+
+		VkMemoryAllocateInfo allocInfo = {};
+		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize = memReq.size;
+		allocInfo.memoryTypeIndex = FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+		vkAllocateMemory(device, &allocInfo, nullptr, &s.mem);
+		vkBindImageMemory(device, s.image, s.mem, 0);
+
+		VkImageViewCreateInfo viewInfo = {};
+		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		viewInfo.image = s.image;
+		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		viewInfo.format = s.format;
+		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		viewInfo.subresourceRange.levelCount = 1;
+		viewInfo.subresourceRange.layerCount = 1;
+
+		vkCreateImageView(device, &viewInfo, nullptr, &s.view);
+
+		// Transition to GENERAL layout
+		VkImageMemoryBarrier barrier = {};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = s.image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	}
+
+	Walnut::Application::FlushCommandBuffer(cmd);
+}
+
+void RendererGPU::DestroyGBufferImages()
+{
+	VkDevice device = Walnut::Application::GetDevice();
+
+	struct ImgPair { VkImage& img; VkDeviceMemory& mem; VkImageView& view; };
+	ImgPair pairs[] = {
+		{ m_GNormalRoughness, m_GNormalRoughnessMem, m_GNormalRoughnessView },
+		{ m_GViewZ,           m_GViewZMem,           m_GViewZView },
+		{ m_GMotion,          m_GMotionMem,          m_GMotionView },
+		{ m_GDiffRadiance,    m_GDiffRadianceMem,    m_GDiffRadianceView },
+		{ m_GSpecRadiance,    m_GSpecRadianceMem,    m_GSpecRadianceView },
+		{ m_NRDDiffOut,       m_NRDDiffOutMem,       m_NRDDiffOutView },
+		{ m_NRDSpecOut,       m_NRDSpecOutMem,       m_NRDSpecOutView },
+	};
+
+	for (auto& p : pairs)
+	{
+		if (p.view) { vkDestroyImageView(device, p.view, nullptr); p.view = VK_NULL_HANDLE; }
+		if (p.img)  { vkDestroyImage(device, p.img, nullptr);      p.img  = VK_NULL_HANDLE; }
+		if (p.mem)  { vkFreeMemory(device, p.mem, nullptr);        p.mem  = VK_NULL_HANDLE; }
+	}
+}
+
+void RendererGPU::CreateGBufferDescriptorSet()
+{
+	VkDevice device = Walnut::Application::GetDevice();
+
+	// Set 1 layout: 5 storage images + 1 UBO
+	VkDescriptorSetLayoutBinding bindings[6] = {};
+	for (int i = 0; i < 5; i++)
+	{
+		bindings[i].binding = i;
+		bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		bindings[i].descriptorCount = 1;
+		bindings[i].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+	}
+	bindings[5].binding = 5;
+	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[5].descriptorCount = 1;
+	bindings[5].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = 6;
+	layoutInfo.pBindings = bindings;
+
+	vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_GBufferSetLayout);
+
+	// Create dedicated pool
+	VkDescriptorPoolSize poolSizes[2] = {};
+	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	poolSizes[0].descriptorCount = 5;
+	poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	poolSizes[1].descriptorCount = 1;
+
+	VkDescriptorPoolCreateInfo poolInfo = {};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.maxSets = 1;
+	poolInfo.poolSizeCount = 2;
+	poolInfo.pPoolSizes = poolSizes;
+
+	vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_GBufferPool);
+
+	VkDescriptorSetAllocateInfo allocInfo = {};
+	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	allocInfo.descriptorPool = m_GBufferPool;
+	allocInfo.descriptorSetCount = 1;
+	allocInfo.pSetLayouts = &m_GBufferSetLayout;
+
+	vkAllocateDescriptorSets(device, &allocInfo, &m_GBufferSet);
+
+	// Create NRD UBO
+	if (!m_NRDUBO)
+	{
+		CreateBuffer(16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		             m_NRDUBO, m_NRDUBOMemory);
+	}
+}
+
+void RendererGPU::UpdateGBufferDescriptorSet()
+{
+	VkDevice device = Walnut::Application::GetDevice();
+
+	VkDescriptorImageInfo imageInfos[5] = {};
+	VkImageView views[] = { m_GNormalRoughnessView, m_GViewZView, m_GMotionView, m_GDiffRadianceView, m_GSpecRadianceView };
+	for (int i = 0; i < 5; i++)
+	{
+		imageInfos[i].imageView = views[i];
+		imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	}
+
+	VkDescriptorBufferInfo uboInfo = {};
+	uboInfo.buffer = m_NRDUBO;
+	uboInfo.range = VK_WHOLE_SIZE;
+
+	VkWriteDescriptorSet writes[6] = {};
+	for (int i = 0; i < 5; i++)
+	{
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].dstSet = m_GBufferSet;
+		writes[i].dstBinding = i;
+		writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		writes[i].descriptorCount = 1;
+		writes[i].pImageInfo = &imageInfos[i];
+	}
+	writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[5].dstSet = m_GBufferSet;
+	writes[5].dstBinding = 5;
+	writes[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	writes[5].descriptorCount = 1;
+	writes[5].pBufferInfo = &uboInfo;
+
+	vkUpdateDescriptorSets(device, 6, writes, 0, nullptr);
 }

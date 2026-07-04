@@ -6,6 +6,7 @@
 #include "pathtracer_shared.glsl"
 
 layout(location = 0) rayPayloadEXT RayPayload payload;
+layout(location = 3) rayPayloadEXT PrimaryHitInfo primaryHit;
 
 void main()
 {
@@ -17,6 +18,10 @@ void main()
     if (pixel.x >= int(width) || pixel.y >= int(height))
         return;
 
+    bool nrdMode = (nrdData.nrdEnabled != 0u);
+    if (nrdMode)
+        spp = 1u; // NRD expects 1 spp
+
     // Initialize RNG from pixel coords + frame index
     uint rngState = pixel.x * 1973u + pixel.y * 9277u + uint(camera.position.w) * 26699u;
     pcg(rngState); // warm up
@@ -25,6 +30,11 @@ void main()
 
     // Trace spp rays per pixel and average
     vec3 color = vec3(0.0);
+    vec3 diffRad = vec3(0.0);  // NRD: diffuse radiance accumulator
+    vec3 specRad = vec3(0.0);  // NRD: specular radiance accumulator
+    float diffHitT = 0.0;
+    float specHitT = 0.0;
+
     for (uint s = 0u; s < spp; s++)
     {
         // Depth-of-field: jitter ray origin within aperture
@@ -50,6 +60,11 @@ void main()
             dir = normalize(focalPoint - rayOrigin);
         }
 
+        // Initialize primary-hit payload for NRD G-buffer capture
+        primaryHit.a = vec4(0.0);
+        primaryHit.b = vec4(0.0);
+        primaryHit.c = vec4(0.0);
+
         // Initialize payload for recursive path tracing
         // d.w = bsdfPdf (solid-angle): -1.0 = camera ray (delta, full emission),
         // >= 0 = diffuse bounce (MIS-weighted emission).
@@ -63,8 +78,52 @@ void main()
 
         color += payload.b.xyz;
         rngState = floatBitsToUint(payload.a.w);
+
+        if (nrdMode)
+        {
+            // Route radiance to diffuse or specular based on primary hit lobe
+            float lobeType = primaryHit.b.z;
+            if (lobeType < 0.5)
+            {
+                diffRad += payload.b.xyz;
+                diffHitT = primaryHit.b.y;
+            }
+            else
+            {
+                specRad += payload.b.xyz;
+                specHitT = primaryHit.b.y;
+            }
+        }
     }
     color /= float(spp);
+
+    if (nrdMode)
+    {
+        // Write G-buffer images for NRD
+        // Demodulate: divide radiance by material factors
+        vec3 diffFactor = primaryHit.c.xyz;   // albedo for diffuse
+        float specFactor = primaryHit.c.w;     // F0 for specular
+        diffFactor = max(diffFactor, vec3(1e-4));
+        specFactor = max(specFactor, 1e-4);
+
+        vec3 demodDiff = diffRad / diffFactor;
+        vec3 demodSpec = specRad / vec3(specFactor);
+
+        imageStore(gNormalRoughness, pixel, vec4(primaryHit.a.xyz, primaryHit.a.w));
+        imageStore(gViewZ, pixel, vec4(primaryHit.b.x, 0.0, 0.0, 0.0));
+
+        // Motion vector: 2D screen-space (previous UV - current UV)
+        // For static scenes, MV = camera reprojection delta
+        // TODO: compute proper MV from previous/current matrices
+        imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+
+        imageStore(gDiffRadianceHitDist, pixel, vec4(demodDiff, diffHitT));
+        imageStore(gSpecRadianceHitDist, pixel, vec4(demodSpec, specHitT));
+
+        // Write beauty output as the sum (will be replaced by NRD compose pass)
+        imageStore(outputImage, pixel, vec4(color, 1.0));
+        return;
+    }
 
     // Temporal accumulation: blend with previous frame
     float frameIndex = camera.position.w;
