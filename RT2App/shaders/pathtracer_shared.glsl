@@ -175,12 +175,13 @@ vec3 skyColor(vec3 direction)
 
 // ---- Environment map (M8) ---------------------------------------------------
 
-// Convert a direction to equirectangular UV coordinates
+// Convert a direction to equirectangular UV coordinates.
+// Exact inverse of envUVToDirection: u ∈ [-0.5, 0.5] (wraps), v ∈ [0, 1].
 vec2 directionToEnvUV(vec3 dir)
 {
     float u = atan(dir.z, dir.x) * 0.15915494309;  // 1/(2π)
-    float v = asin(clamp(dir.y, -1.0, 1.0)) * 0.31830988618;  // 1/π
-    return vec2(u, 0.5 - v * 0.5);  // flip V for image convention
+    float v = asin(clamp(dir.y, -1.0, 1.0)) * 0.31830988618;  // asin/π ∈ [-0.5, 0.5]
+    return vec2(u, 0.5 - v);  // flip V for image convention, spans [0, 1]
 }
 
 // Convert equirectangular UV to a direction
@@ -300,6 +301,45 @@ EnvSample sampleEnvMap(inout uint rngState)
     s.radiance = envMapRadiance(s.dir);
 
     return s;
+}
+
+// Compute the env map solid-angle PDF for an arbitrary direction.
+// This is the inverse of sampleEnvMap: given a direction, look up the
+// CDF density at its corresponding pixel and convert to solid-angle PDF.
+float envMapPdf(vec3 dir)
+{
+    int envIdx = int(camera.envMap.x);
+    int marginalIdx = int(camera.envMap.z);
+    int conditionalIdx = int(camera.envMap.w);
+    if (envIdx < 0 || marginalIdx < 0 || conditionalIdx < 0)
+        return 0.0;
+
+    ivec2 marginalSize = textureSize(textures[nonuniformEXT(marginalIdx)], 0);
+    int marginalLen = marginalSize.x;
+    ivec2 condSize = textureSize(textures[nonuniformEXT(conditionalIdx)], 0);
+    int condW = condSize.x;
+
+    vec2 uv = directionToEnvUV(dir);
+    // Convert UV to pixel indices (same quantization as sampleEnvMap).
+    // uv.x from atan() is in [-0.5, 0.5] — wrap to [0, 1) before quantizing
+    // (clamping would collapse half the sphere onto column 0).
+    float uWrapped = fract(uv.x);
+    int vIdx = int(clamp(uv.y * float(marginalLen), 0.0, float(marginalLen - 1)));
+    int uIdx = int(clamp(uWrapped * float(condW),   0.0, float(condW - 1)));
+
+    // Marginal PDF: p(v) = marginalCDF[v] - marginalCDF[v-1]
+    float margPrev = (vIdx > 0) ? texelFetch(textures[nonuniformEXT(marginalIdx)], ivec2(vIdx - 1, 0), 0).r : 0.0;
+    float margCurr = texelFetch(textures[nonuniformEXT(marginalIdx)], ivec2(vIdx, 0), 0).r;
+    float pdfV = max(margCurr - margPrev, 1e-8);
+
+    // Conditional PDF: p(u|v) = conditionalCDF[u,v] - conditionalCDF[u-1,v]
+    float condPrev = (uIdx > 0) ? texelFetch(textures[nonuniformEXT(conditionalIdx)], ivec2(uIdx - 1, vIdx), 0).r : 0.0;
+    float condCurr = texelFetch(textures[nonuniformEXT(conditionalIdx)], ivec2(uIdx, vIdx), 0).r;
+    float pdfU = max(condCurr - condPrev, 1e-8);
+
+    // Convert to solid-angle PDF: p(ω) = p(u,v) / (sinθ * 2π²)
+    float sinTheta = sqrt(max(1.0 - dir.y * dir.y, 1e-6));
+    return (pdfV * pdfU) / (sinTheta * 2.0 * PI * PI);
 }
 
 float reflectance(float cosine, float refIdx)
