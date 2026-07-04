@@ -87,6 +87,17 @@ layout(set = 0, binding = 9, std430) readonly buffer LightBuffer
     TriangleLight lights[];
 };
 
+// Probability of selecting triangle NEE (vs env NEE) in stochastic NEE.
+// Returns 1.0 if only triangle lights, 0.0 if only env, 0.5 if both.
+float computePTri()
+{
+    bool hasTri = (lightCount > 0u && totalLightArea > 0.0);
+    bool hasEnv = (int(camera.envMap.x) >= 0);
+    if (hasTri && hasEnv) return 0.5;
+    if (hasTri)            return 1.0;
+    return 0.0;
+}
+
 // Bindless texture array (combined image samplers, variable count)
 // Must be the highest binding number for VARIABLE_DESCRIPTOR_COUNT.
 layout(set = 0, binding = 10) uniform sampler2D textures[];

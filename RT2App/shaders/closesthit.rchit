@@ -290,6 +290,10 @@ void main()
     // payload.d.w = bsdfPdf (solid-angle PDF of the incoming ray).
     //   -1.0 = camera ray or delta/specular bounce → no MIS, full emission.
     //   >= 0  = diffuse bounce → weight by w_bsdf = bsdfPdf / (bsdfPdf + pdfLight)
+    // With stochastic NEE selection, the effective light-sampling PDF for a
+    // direction hitting a triangle is P_tri * pdfLight (env NEE can't sample
+    // this direction), so the MIS weight becomes:
+    //   w_bsdf = bsdfPdf / (bsdfPdf + P_tri * pdfLight)
     if (dot(emissive, emissive) > 0.0)
     {
         float boost = camera.apertureFocal.w;
@@ -317,7 +321,11 @@ void main()
                 pdfLight = (1.0 / float(lightCount)) * (1.0 / lightArea)
                          * (hitDist * hitDist) / LNdotL;
             }
-            weight = bsdfPdf / (bsdfPdf + pdfLight);
+            // Stochastic NEE: triangle NEE is selected with probability P_tri
+            // when both triangle and env NEE are available. Scale pdfLight
+            // by P_tri to get the effective combined NEE pdf for this direction.
+            float pTri = computePTri();
+            weight = bsdfPdf / (bsdfPdf + pTri * pdfLight);
         }
         payload.b.xyz += payload.a.xyz * emissive * weight * boost;
         payload.c.w = 1.0;
@@ -615,17 +623,50 @@ void main()
 
         if (neeUseful)
         {
-            NEEResult nee = sampleNEE(wo, n, hitPoint,
-                                      baseColor, metallic, roughness,
-                                      nee_Ps, nee_Pd,
-                                      payload.a.xyz, rngState,
-                                      isTransmissionMat, nee_P_refract, nee_eta);
-            payload.b.xyz += nee.radiance;
+            // Stochastic NEE selection: pick triangle OR env NEE per bounce.
+            // Only one shadow ray is traced instead of two. The selected
+            // NEE result is divided by its selection probability P to stay
+            // unbiased (it only fires P fraction of the time).
+            //
+            // The MIS weights at the emissive hit / env miss must also account
+            // for the selection probability: at a triangle hit, the effective
+            // NEE pdf is P_tri * pdfLight (env can't sample this direction);
+            // at env miss, it's (1-P_tri) * pdfEnv (tri can't sample a miss).
+            float pTri = computePTri();
+            bool hasTriNee = (pTri > 0.0);
+            bool hasEnvNee = (pTri < 1.0);
 
-            // Environment map NEE (M8): importance-sampled env map as infinite light.
-            // Fires alongside triangle NEE for non-delta bounces.
-            int envIdx = int(camera.envMap.x);
-            if (envIdx >= 0)
+            if (hasTriNee && hasEnvNee)
+            {
+                if (randomFloat(rngState) < pTri)
+                {
+                    NEEResult nee = sampleNEE(wo, n, hitPoint,
+                                              baseColor, metallic, roughness,
+                                              nee_Ps, nee_Pd,
+                                              payload.a.xyz, rngState,
+                                              isTransmissionMat, nee_P_refract, nee_eta);
+                    payload.b.xyz += nee.radiance / pTri;
+                }
+                else
+                {
+                    NEEResult envNee = sampleEnvNEE(wo, n, hitPoint,
+                                                    baseColor, metallic, roughness,
+                                                    nee_Ps, nee_Pd,
+                                                    payload.a.xyz, rngState,
+                                                    isTransmissionMat, nee_P_refract, nee_eta);
+                    payload.b.xyz += envNee.radiance / (1.0 - pTri);
+                }
+            }
+            else if (hasTriNee)
+            {
+                NEEResult nee = sampleNEE(wo, n, hitPoint,
+                                          baseColor, metallic, roughness,
+                                          nee_Ps, nee_Pd,
+                                          payload.a.xyz, rngState,
+                                          isTransmissionMat, nee_P_refract, nee_eta);
+                payload.b.xyz += nee.radiance;
+            }
+            else if (hasEnvNee)
             {
                 NEEResult envNee = sampleEnvNEE(wo, n, hitPoint,
                                                 baseColor, metallic, roughness,

@@ -20,8 +20,12 @@ void main()
         if (bsdfPdf >= 0.0)
         {
             // Non-delta bounce: MIS with env PDF.
+            // Stochastic NEE: env NEE is selected with probability (1-P_tri),
+            // so the effective combined NEE pdf for a direction that misses
+            // all geometry is (1-P_tri) * pdfEnv.
             float pdfEnv = envMapPdf(dir);
-            float weight = bsdfPdf / (bsdfPdf + pdfEnv);
+            float pTri = computePTri();
+            float weight = bsdfPdf / (bsdfPdf + (1.0 - pTri) * pdfEnv);
             payload.b.xyz += payload.a.xyz * env * weight;
         }
         else
