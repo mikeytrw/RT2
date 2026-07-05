@@ -4,6 +4,7 @@
 #define ACCELERATION_STRUCTURE_H
 
 #include "vulkan/vulkan.h"
+#include "GpuDevice.h"
 #include <vector>
 #include <string>
 
@@ -33,6 +34,7 @@ public:
 	~AccelerationStructure() { Destroy(); }
 
 	void Destroy();
+	void SetDevice(const GpuDevice& dev) { m_Device = dev; }
 
 	// Build one BLAS per mesh geometry. Each BLAS gets its own vertex/index/
 	// normal buffers. Returns true if all builds succeeded.
@@ -113,6 +115,8 @@ private:
 	VkDeviceMemory m_TLASScratchMemory = VK_NULL_HANDLE;
 
 	uint32_t m_TotalTriangleCount = 0;
+
+	GpuDevice m_Device;
 
 	uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 

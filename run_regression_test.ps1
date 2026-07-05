@@ -10,7 +10,8 @@ param(
     [string]$Baseline = "baseline_before_phase1.png",
     [int]$Frames = 10,
     [int]$Spp = 5,
-    [int]$Bounces = 4
+    [int]$Bounces = 4,
+    [switch]$NRD
 )
 
 $ErrorActionPreference = "Continue"
@@ -22,8 +23,11 @@ if (-not (Test-Path $Exe)) {
     exit 1
 }
 
-Write-Host "Regression: Rendering $Frames frames (spp=$Spp, bounces=$Bounces)..."
-$output_lines = & $Exe --headless --scene $Scene --env $Env --output $Output --frames $Frames --spp $Spp --bounces $Bounces 2>&1
+Write-Host "Regression: Rendering $Frames frames (spp=$Spp, bounces=$Bounces, NRD=$NRD)..."
+$nrdArg = if ($NRD) { "--nrd" } else { "" }
+$args = @("--headless", "--scene", $Scene, "--env", $Env, "--output", $Output, "--frames", $Frames, "--spp", $Spp, "--bounces", $Bounces)
+if ($NRD) { $args += "--nrd" }
+$output_lines = & $Exe @args 2>&1
 $output_lines | Select-String "Headless|saved"
 
 if (-not (Test-Path $Output)) {

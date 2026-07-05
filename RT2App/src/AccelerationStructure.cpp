@@ -1,6 +1,6 @@
 #include "AccelerationStructure.h"
 #include "RTLog.h"
-#include "Walnut/Application.h"
+#include "VulkanUtils.h"
 #include "Walnut/RTDispatch.h"
 #include <glm/glm.hpp>
 #include <iostream>
@@ -8,23 +8,13 @@
 
 uint32_t AccelerationStructure::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
 {
-	VkPhysicalDeviceMemoryProperties memProperties;
-	vkGetPhysicalDeviceMemoryProperties(Walnut::Application::GetPhysicalDevice(), &memProperties);
-
-	for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
-	{
-		if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
-			return i;
-	}
-
-	std::cerr << "[RT2] Failed to find suitable memory type!\n";
-	return 0;
+	return m_Device.FindMemoryType(typeFilter, properties);
 }
 
 void AccelerationStructure::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
                                           VkBuffer& buffer, VkDeviceMemory& memory)
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	VkBufferCreateInfo bufferInfo = {};
 	bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -69,7 +59,7 @@ void AccelerationStructure::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags u
 
 void AccelerationStructure::DestroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory)
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	if (buffer) { vkDestroyBuffer(device, buffer, nullptr); buffer = VK_NULL_HANDLE; }
 	if (memory) { vkFreeMemory(device, memory, nullptr); memory = VK_NULL_HANDLE; }
 }
@@ -79,13 +69,13 @@ VkDeviceAddress AccelerationStructure::GetBufferDeviceAddress(VkBuffer buffer)
 	VkBufferDeviceAddressInfo info = {};
 	info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
 	info.buffer = buffer;
-	return vkGetBufferDeviceAddress(Walnut::Application::GetDevice(), &info);
+	return vkGetBufferDeviceAddress(m_Device.device, &info);
 }
 
 bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
                                          const std::vector<BLASGeometry>& meshes)
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	RT_LOG("[BuildBLASes] enter: meshes=%d prevBLASes=%d", (int)meshes.size(), (int)m_BLASes.size());
 
 	// Wait for GPU to finish before destroying old BLAS buffers
@@ -287,7 +277,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 
 void AccelerationStructure::BuildCombinedBuffers()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	RT_LOG("[BuildCombinedBuffers] enter: totalTris=%d blasCount=%d", (int)m_TotalTriangleCount, (int)m_BLASes.size());
 
 	// Destroy previous combined buffers (already destroyed in BuildBLASes, but safe no-op)
@@ -386,7 +376,7 @@ void AccelerationStructure::BuildCombinedBuffers()
 bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,
                                        const std::vector<BLASInstance>& instances)
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	if (instances.empty())
 	{
@@ -506,7 +496,7 @@ VkDeviceAddress AccelerationStructure::GetBLASAddress(uint32_t index) const
 
 void AccelerationStructure::Destroy()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	for (auto& blas : m_BLASes)
 	{

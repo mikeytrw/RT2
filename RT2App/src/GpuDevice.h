@@ -19,6 +19,9 @@ struct GpuDevice
 	bool rayTracingSupported = false;
 	bool rayTracingPipelineSupported = false;
 
+	// Cached memory properties (avoids re-querying on every FindMemoryType call)
+	VkPhysicalDeviceMemoryProperties cachedMemProps = {};
+
 	// Initialize from Walnut::Application statics
 	void InitFromWalnut();
 

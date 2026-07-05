@@ -1,8 +1,14 @@
 #include "ShaderManager.h"
-#include "Walnut/Application.h"
 #include <fstream>
 #include <iostream>
 #include <windows.h>
+
+VkDevice ShaderManager::s_Device = VK_NULL_HANDLE;
+
+void ShaderManager::Init(VkDevice device)
+{
+	s_Device = device;
+}
 
 static std::string GetExeDirectory()
 {
@@ -40,7 +46,7 @@ VkShaderModule ShaderManager::LoadShader(const std::string& filepath)
 	createInfo.pCode = reinterpret_cast<const uint32_t*>(buffer.data());
 
 	VkShaderModule shaderModule;
-	VkResult err = vkCreateShaderModule(Walnut::Application::GetDevice(), &createInfo, nullptr, &shaderModule);
+	VkResult err = vkCreateShaderModule(s_Device, &createInfo, nullptr, &shaderModule);
 	if (err != VK_SUCCESS)
 	{
 		std::cerr << "[RT2] Failed to create shader module: " << err << "\n";

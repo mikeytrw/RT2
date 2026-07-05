@@ -10,7 +10,10 @@
 class ShaderManager
 {
 public:
+	static void Init(VkDevice device);
 	static VkShaderModule LoadShader(const std::string& filepath);
+private:
+	static VkDevice s_Device;
 };
 
 #endif // !SHADER_MANAGER_H

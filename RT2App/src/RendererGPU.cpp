@@ -2,6 +2,7 @@
 #include "ShaderManager.h"
 #include "RTLog.h"
 #include "VulkanUtils.h"
+#include "shader_interface.h"
 #include "Walnut/Application.h"
 #include "Walnut/RTDispatch.h"
 #include "backends/imgui_impl_vulkan.h"
@@ -78,6 +79,9 @@ bool RendererGPU::Init()
 		std::cerr << "[RT2] Ray tracing not supported, GPU renderer unavailable.\n";
 		return false;
 	}
+
+	m_AS.SetDevice(m_Device);
+	ShaderManager::Init(m_Device.device);
 
 	CreatePipeline();
 	if (m_RTPipeline == VK_NULL_HANDLE)
@@ -168,67 +172,67 @@ void RendererGPU::CreatePipeline()
 	VkDescriptorSetLayoutBinding bindings[11] = {};
 
 	bindings[0] = {};
-	bindings[0].binding = 0;
+	bindings[0].binding = SI_BINDING_OUTPUT_IMAGE;
 	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	bindings[0].descriptorCount = 1;
 	bindings[0].stageFlags = allRTFlags;
 
 	bindings[1] = {};
-	bindings[1].binding = 1;
+	bindings[1].binding = SI_BINDING_CAMERA_UBO;
 	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	bindings[1].descriptorCount = 1;
 	bindings[1].stageFlags = allRTFlags;
 
 	bindings[2] = {};
-	bindings[2].binding = 2;
+	bindings[2].binding = SI_BINDING_MATERIAL_BUFFER;
 	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[2].descriptorCount = 1;
 	bindings[2].stageFlags = allRTFlags;
 
 	bindings[3] = {};
-	bindings[3].binding = 3;
+	bindings[3].binding = SI_BINDING_NORMAL_BUFFER;
 	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[3].descriptorCount = 1;
 	bindings[3].stageFlags = allRTFlags;
 
 	bindings[4] = {};
-	bindings[4].binding = 4;
+	bindings[4].binding = SI_BINDING_TLAS;
 	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 	bindings[4].descriptorCount = 1;
 	bindings[4].stageFlags = allRTFlags;
 
 	bindings[5] = {};
-	bindings[5].binding = 5;
+	bindings[5].binding = SI_BINDING_INSTANCE_OFFSETS;
 	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[5].descriptorCount = 1;
 	bindings[5].stageFlags = allRTFlags;
 
 	bindings[6] = {};
-	bindings[6].binding = 6;
+	bindings[6].binding = SI_BINDING_TANGENT_BUFFER;
 	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[6].descriptorCount = 1;
 	bindings[6].stageFlags = allRTFlags;
 
 	bindings[7] = {};
-	bindings[7].binding = 7;
+	bindings[7].binding = SI_BINDING_UV_BUFFER;
 	bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[7].descriptorCount = 1;
 	bindings[7].stageFlags = allRTFlags;
 
 	bindings[8] = {};
-	bindings[8].binding = 8;
+	bindings[8].binding = SI_BINDING_POSITION_BUFFER;
 	bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[8].descriptorCount = 1;
 	bindings[8].stageFlags = allRTFlags;
 
 	bindings[9] = {};
-	bindings[9].binding = 9;
+	bindings[9].binding = SI_BINDING_LIGHT_BUFFER;
 	bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[9].descriptorCount = 1;
 	bindings[9].stageFlags = allRTFlags;
 
 	bindings[10] = {};
-	bindings[10].binding = 10;
+	bindings[10].binding = SI_BINDING_TEXTURE_ARRAY;
 	bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 	bindings[10].descriptorCount = maxTextures;
 	bindings[10].stageFlags = allRTFlags;
@@ -660,7 +664,7 @@ void RendererGPU::UpdateDescriptorSet()
 	// Create camera UBO if needed
 	if (!m_CameraUBO)
 	{
-		CreateBuffer(512,
+		CreateBuffer(sizeof(SICameraData),
 		             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             m_CameraUBO, m_CameraUBOMemory);
@@ -740,42 +744,42 @@ void RendererGPU::UpdateDescriptorSet()
 
 	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[0].dstSet = m_DescriptorSet;
-	writes[0].dstBinding = 0;
+	writes[0].dstBinding = SI_BINDING_OUTPUT_IMAGE;
 	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	writes[0].descriptorCount = 1;
 	writes[0].pImageInfo = &imageInfo;
 
 	writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[1].dstSet = m_DescriptorSet;
-	writes[1].dstBinding = 1;
+	writes[1].dstBinding = SI_BINDING_CAMERA_UBO;
 	writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	writes[1].descriptorCount = 1;
 	writes[1].pBufferInfo = &cameraBufferInfo;
 
 	writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[2].dstSet = m_DescriptorSet;
-	writes[2].dstBinding = 2;
+	writes[2].dstBinding = SI_BINDING_MATERIAL_BUFFER;
 	writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[2].descriptorCount = 1;
 	writes[2].pBufferInfo = &materialBufferInfo;
 
 	writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[3].dstSet = m_DescriptorSet;
-	writes[3].dstBinding = 3;
+	writes[3].dstBinding = SI_BINDING_NORMAL_BUFFER;
 	writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[3].descriptorCount = 1;
 	writes[3].pBufferInfo = &normalBufferInfo;
 
 	writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[4].dstSet = m_DescriptorSet;
-	writes[4].dstBinding = 4;
+	writes[4].dstBinding = SI_BINDING_TLAS;
 	writes[4].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
 	writes[4].descriptorCount = 1;
 	writes[4].pNext = &asInfo;
 
 	writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[5].dstSet = m_DescriptorSet;
-	writes[5].dstBinding = 5;
+	writes[5].dstBinding = SI_BINDING_INSTANCE_OFFSETS;
 	writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[5].descriptorCount = 1;
 	writes[5].pBufferInfo = &offsetBufferInfo;
@@ -783,7 +787,7 @@ void RendererGPU::UpdateDescriptorSet()
 	writes[6] = {};
 	writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[6].dstSet = m_DescriptorSet;
-	writes[6].dstBinding = 6;
+	writes[6].dstBinding = SI_BINDING_TANGENT_BUFFER;
 	writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[6].descriptorCount = 1;
 	writes[6].pBufferInfo = &tangentBufferInfo;
@@ -791,7 +795,7 @@ void RendererGPU::UpdateDescriptorSet()
 	writes[7] = {};
 	writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[7].dstSet = m_DescriptorSet;
-	writes[7].dstBinding = 7;
+	writes[7].dstBinding = SI_BINDING_UV_BUFFER;
 	writes[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[7].descriptorCount = 1;
 	writes[7].pBufferInfo = &uvBufferInfo;
@@ -799,7 +803,7 @@ void RendererGPU::UpdateDescriptorSet()
 	writes[8] = {};
 	writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[8].dstSet = m_DescriptorSet;
-	writes[8].dstBinding = 8;
+	writes[8].dstBinding = SI_BINDING_POSITION_BUFFER;
 	writes[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[8].descriptorCount = 1;
 	writes[8].pBufferInfo = &positionBufferInfo;
@@ -807,7 +811,7 @@ void RendererGPU::UpdateDescriptorSet()
 	writes[9] = {};
 	writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[9].dstSet = m_DescriptorSet;
-	writes[9].dstBinding = 9;
+	writes[9].dstBinding = SI_BINDING_LIGHT_BUFFER;
 	writes[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[9].descriptorCount = 1;
 	writes[9].pBufferInfo = &lightBufferInfo;
@@ -817,7 +821,7 @@ void RendererGPU::UpdateDescriptorSet()
 	{
 		writes[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[10].dstSet = m_DescriptorSet;
-		writes[10].dstBinding = 10;
+		writes[10].dstBinding = SI_BINDING_TEXTURE_ARRAY;
 		writes[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 		writes[10].descriptorCount = (uint32_t)textureImageInfos.size();
 		writes[10].pImageInfo = textureImageInfos.data();
@@ -1870,21 +1874,21 @@ void RendererGPU::CreateGBufferDescriptorSet()
 	// Bindings 0-5: storage images (gNormalRoughness, gViewZ, gMotion, gDiff, gSpec, gAlbedoF0)
 	for (int i = 0; i < 6; i++)
 	{
-		bindings[i].binding = i;
+		bindings[i].binding = i; // G-buffer bindings 0-5 match SI_BINDING_G_* 0-5
 		bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		bindings[i].descriptorCount = 1;
 		bindings[i].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	}
 	// Binding 6: UBO (nrdData)
-	bindings[6].binding = 6;
-	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	bindings[6].descriptorCount = 1;
-	bindings[6].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+	bindings[SI_BINDING_NRD_UBO].binding = SI_BINDING_NRD_UBO;
+	bindings[SI_BINDING_NRD_UBO].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[SI_BINDING_NRD_UBO].descriptorCount = 1;
+	bindings[SI_BINDING_NRD_UBO].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	// Binding 7: gDirectEmission storage image
-	bindings[7].binding = 7;
-	bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	bindings[7].descriptorCount = 1;
-	bindings[7].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+	bindings[SI_BINDING_G_DIRECT_EMISSION].binding = SI_BINDING_G_DIRECT_EMISSION;
+	bindings[SI_BINDING_G_DIRECT_EMISSION].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[SI_BINDING_G_DIRECT_EMISSION].descriptorCount = 1;
+	bindings[SI_BINDING_G_DIRECT_EMISSION].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1919,7 +1923,7 @@ void RendererGPU::CreateGBufferDescriptorSet()
 	// Create NRD UBO
 	if (!m_NRDUBO)
 	{
-		CreateBuffer(16, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+		CreateBuffer(sizeof(SINRDUniformData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             m_NRDUBO, m_NRDUBOMemory);
 	}
@@ -1947,25 +1951,25 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 	{
 		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[i].dstSet = m_GBufferSet;
-		writes[i].dstBinding = i;
+		writes[i].dstBinding = i; // G-buffer 0-5
 		writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		writes[i].descriptorCount = 1;
 		writes[i].pImageInfo = &imageInfos[i];
 	}
 	// UBO: binding 6
-	writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[6].dstSet = m_GBufferSet;
-	writes[6].dstBinding = 6;
-	writes[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	writes[6].descriptorCount = 1;
-	writes[6].pBufferInfo = &uboInfo;
+	writes[SI_BINDING_NRD_UBO].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[SI_BINDING_NRD_UBO].dstSet = m_GBufferSet;
+	writes[SI_BINDING_NRD_UBO].dstBinding = SI_BINDING_NRD_UBO;
+	writes[SI_BINDING_NRD_UBO].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	writes[SI_BINDING_NRD_UBO].descriptorCount = 1;
+	writes[SI_BINDING_NRD_UBO].pBufferInfo = &uboInfo;
 	// Direct emission: binding 7
-	writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[7].dstSet = m_GBufferSet;
-	writes[7].dstBinding = 7;
-	writes[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	writes[7].descriptorCount = 1;
-	writes[7].pImageInfo = &imageInfos[6];
+	writes[SI_BINDING_G_DIRECT_EMISSION].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[SI_BINDING_G_DIRECT_EMISSION].dstSet = m_GBufferSet;
+	writes[SI_BINDING_G_DIRECT_EMISSION].dstBinding = SI_BINDING_G_DIRECT_EMISSION;
+	writes[SI_BINDING_G_DIRECT_EMISSION].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	writes[SI_BINDING_G_DIRECT_EMISSION].descriptorCount = 1;
+	writes[SI_BINDING_G_DIRECT_EMISSION].pImageInfo = &imageInfos[6];
 
 	vkUpdateDescriptorSets(device, 8, writes, 0, nullptr);
 }

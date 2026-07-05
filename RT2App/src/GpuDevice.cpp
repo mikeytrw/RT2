@@ -14,16 +14,16 @@ void GpuDevice::InitFromWalnut()
 	rayTracingSupported       = Walnut::Application::IsRayTracingSupported();
 	rayTracingPipelineSupported = Walnut::Application::IsRayTracingPipelineSupported();
 	rtPipelineProps = Walnut::Application::GetRayTracingPipelineProperties();
+
+	// Cache memory properties once
+	vkGetPhysicalDeviceMemoryProperties(physicalDevice, &cachedMemProps);
 }
 
 uint32_t GpuDevice::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) const
 {
-	VkPhysicalDeviceMemoryProperties memProperties;
-	vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memProperties);
-
-	for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
+	for (uint32_t i = 0; i < cachedMemProps.memoryTypeCount; i++)
 	{
-		if ((typeFilter & (1u << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
+		if ((typeFilter & (1u << i)) && (cachedMemProps.memoryTypes[i].propertyFlags & properties) == properties)
 			return i;
 	}
 	RT_LOG("[GpuDevice] FindMemoryType FAILED: typeFilter=0x%X properties=0x%X", typeFilter, properties);
