@@ -14,12 +14,10 @@ using namespace Walnut;
 
 
 Camera::Camera(float verticalFOV, float nearClip, float farClip, float apeture, float focalDistance)
-	: m_VerticalFOV(verticalFOV), m_NearClip(nearClip), m_FarClip(farClip), m_Aperture(apeture),m_FocusDistance(focalDistance)
+	: m_VerticalFOV(verticalFOV), m_NearClip(nearClip), m_FarClip(farClip), m_Aperture(apeture), m_FocusDistance(focalDistance)
 {
-	m_ForwardDirection = glm::vec3(0,0, -1);
+	m_ForwardDirection = glm::vec3(0, 0, -1);
 	m_Position = glm::vec3(0, 1, 10);
-
-	m_Aperture = 0.0f;
 }
 
 bool Camera::OnUpdate(float ts)
@@ -93,7 +91,6 @@ bool Camera::OnUpdate(float ts)
 	{
 		mHasMoved = true;
 		RecalculateView();
-		RecalculateRayDirections();
 	}
 
 	return moved;
@@ -108,7 +105,6 @@ void Camera::OnResize(uint32_t width, uint32_t height)
 	m_ViewportHeight = height;
 
 	RecalculateProjection();
-	//RecalculateRayDirections();
 }
 
 float Camera::GetRotationSpeed()
@@ -145,19 +141,6 @@ std::pair<glm::vec3, glm::vec3> Camera::GetRayOriginAndDirection(float u, float 
 	return { rayOrigin, rayDirection };
 }
 
-glm::vec3& Camera::getRayDirection(float u, float v) {
-	
-	glm::vec2 coord = { u , v };
-	coord = coord * 2.0f - 1.0f; // -1 -> 1
-
-	glm::vec4 target = m_InverseProjection * glm::vec4(coord.x, coord.y, 1, 1);
-	glm::vec3 rayDirection = glm::vec3(m_InverseView * glm::vec4(glm::normalize(glm::vec3(target) / target.w), 0)); // World space
-	
-	return rayDirection;
-	
-
-}
-
 void Camera::RecalculateProjection()
 {
 	m_Projection = glm::perspectiveFov(glm::radians(m_VerticalFOV), (float)m_ViewportWidth, (float)m_ViewportHeight, m_NearClip, m_FarClip);
@@ -169,26 +152,4 @@ void Camera::RecalculateView()
 {
 	m_View = glm::lookAt(m_Position, m_Position + m_ForwardDirection, glm::vec3(0, 1, 0));
 	m_InverseView = glm::inverse(m_View);
-}
-
-void Camera::RecalculateRayDirections()
-{
-	return;
-
-	/*
-	m_RayDirections.resize(m_ViewportWidth * m_ViewportHeight);
-
-	for (uint32_t y = 0; y < m_ViewportHeight; y++)
-	{
-		for (uint32_t x = 0; x < m_ViewportWidth; x++)
-		{
-			glm::vec2 coord = { (float)x / (float)m_ViewportWidth, (float)y / (float)m_ViewportHeight };
-			coord = coord * 2.0f - 1.0f; // -1 -> 1
-
-			glm::vec4 target = m_InverseProjection * glm::vec4(coord.x, coord.y, 1, 1);
-			glm::vec3 rayDirection = glm::vec3(m_InverseView * glm::vec4(glm::normalize(glm::vec3(target) / target.w), 0)); // World space
-			m_RayDirections[x + y * m_ViewportWidth] = rayDirection;
-		}
-	}
-	*/
 }

@@ -1,6 +1,7 @@
 #pragma once
 #include <glm/glm.hpp>
-#include <vector>
+#include <cstdint>
+#include <utility>
 
 class Camera
 {
@@ -23,8 +24,6 @@ public:
 	void SetPosition(const glm::vec3& pos) { m_Position = pos; RecalculateView(); }
 	void SetForwardDirection(const glm::vec3& dir) { m_ForwardDirection = dir; RecalculateView(); }
 
-	const std::vector<glm::vec3>& GetRayDirections() const { return m_RayDirections; }
-
 	const bool checkHasMoved() { 
 		if (mHasMoved) { 
 			mHasMoved = false; 
@@ -33,8 +32,6 @@ public:
 		return false; 
 	};
 
-	glm::vec3& getRayDirection(float u, float v);
-	
 	glm::vec3 RandomInUnitDisk() const;
 	std::pair<glm::vec3, glm::vec3> GetRayOriginAndDirection(float u, float v) const;
 
@@ -45,7 +42,6 @@ public:
 private:
 	void RecalculateProjection();
 	void RecalculateView();
-	void RecalculateRayDirections();
 private:
 	glm::mat4 m_Projection{ 1.0f };
 	glm::mat4 m_View{ 1.0f };
@@ -58,10 +54,7 @@ private:
 
 	glm::vec3 m_Position{ 0.0f, 0.0f, 0.0f };
 	glm::vec3 m_ForwardDirection{ 0.0f, 0.0f, 0.0f };
-	glm::vec3 m_RightDirection{ 1.0f,0.0f,0.0f };
-
-	// Cached ray directions
-	std::vector<glm::vec3> m_RayDirections;
+	glm::vec3 m_RightDirection{ 1.0f, 0.0f, 0.0f };
 
 	glm::vec2 m_LastMousePosition{ 0.0f, 0.0f };
 
