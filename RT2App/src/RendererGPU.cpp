@@ -1664,6 +1664,112 @@ void RendererGPU::Render(const Camera& camera)
 	m_FrameIndex++;
 }
 
+// ---- Output readback for screenshots ---------------------------------------
+
+bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t& outWidth, uint32_t& outHeight)
+{
+	if (!m_Initialized || m_OutputImage == VK_NULL_HANDLE || m_Width == 0 || m_Height == 0)
+		return false;
+
+	VkDevice device = Walnut::Application::GetDevice();
+
+	// Create a host-visible staging buffer
+	VkBuffer stagingBuffer;
+	VkDeviceMemory stagingMemory;
+	VkDeviceSize imageSize = (VkDeviceSize)m_Width * m_Height * 16; // R32G32B32A32_SFLOAT = 16 bytes/pixel
+
+	CreateBuffer(imageSize,
+	             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+	             stagingBuffer, stagingMemory);
+
+	// Transition output image to TRANSFER_SRC layout, copy to buffer
+	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
+
+	VkImageMemoryBarrier toTransfer = {};
+	toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	toTransfer.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	toTransfer.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+	toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	toTransfer.image = m_OutputImage;
+	toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	toTransfer.subresourceRange.levelCount = 1;
+	toTransfer.subresourceRange.layerCount = 1;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+	                     0, nullptr, 0, nullptr, 1, &toTransfer);
+
+	VkBufferImageCopy region = {};
+	region.bufferOffset = 0;
+	region.bufferRowLength = 0;
+	region.bufferImageHeight = 0;
+	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.imageSubresource.mipLevel = 0;
+	region.imageSubresource.baseArrayLayer = 0;
+	region.imageSubresource.layerCount = 1;
+	region.imageOffset = { 0, 0, 0 };
+	region.imageExtent = { m_Width, m_Height, 1 };
+	vkCmdCopyImageToBuffer(cmd, m_OutputImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer, 1, &region);
+
+	// Transition back to GENERAL
+	VkImageMemoryBarrier toGeneral = toTransfer;
+	toGeneral.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+	toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	toGeneral.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+	toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, 0,
+	                     0, nullptr, 0, nullptr, 1, &toGeneral);
+
+	Walnut::Application::FlushCommandBuffer(cmd);
+
+	// Map and convert R32G32B32A32 float → RGBA8 (tonemap + sRGB)
+	void* mapped = nullptr;
+	VkResult err = vkMapMemory(device, stagingMemory, 0, imageSize, 0, &mapped);
+	if (err != VK_SUCCESS || !mapped)
+	{
+		fprintf(stderr, "[Readback] vkMapMemory failed: %d\n", err);
+		DestroyBuffer(stagingBuffer, stagingMemory);
+		return false;
+	}
+
+	const float* floatData = static_cast<const float*>(mapped);
+	outPixelsRGBA8.resize((size_t)m_Width * m_Height * 4);
+	for (size_t i = 0; i < (size_t)m_Width * m_Height; i++)
+	{
+		float r = floatData[i * 4 + 0];
+		float g = floatData[i * 4 + 1];
+		float b = floatData[i * 4 + 2];
+		float a = floatData[i * 4 + 3];
+
+		// Reinhard tonemap + clamp
+		r = r / (1.0f + r);
+		g = g / (1.0f + g);
+		b = b / (1.0f + b);
+		a = (a > 1.0f) ? 1.0f : (a < 0.0f ? 0.0f : a);
+
+		// sRGB encode (gamma 2.2 approx)
+		auto toSRGB = [](float c) -> uint8_t {
+			if (c <= 0.0031308f) return (uint8_t)(c * 12.92f * 255.0f + 0.5f);
+			return (uint8_t)((1.055f * powf(c, 1.0f / 2.4f) - 0.055f) * 255.0f + 0.5f);
+		};
+
+		outPixelsRGBA8[i * 4 + 0] = toSRGB(r);
+		outPixelsRGBA8[i * 4 + 1] = toSRGB(g);
+		outPixelsRGBA8[i * 4 + 2] = toSRGB(b);
+		outPixelsRGBA8[i * 4 + 3] = (uint8_t)(a * 255.0f + 0.5f);
+	}
+
+	vkUnmapMemory(device, stagingMemory);
+	DestroyBuffer(stagingBuffer, stagingMemory);
+
+	outWidth = m_Width;
+	outHeight = m_Height;
+	RT_LOG("[Readback] captured %ux%u → %zu bytes", m_Width, m_Height, outPixelsRGBA8.size());
+	return true;
+}
+
 // ---- NRD G-buffer images (set 1) -------------------------------------------
 
 void RendererGPU::CreateGBufferImages()

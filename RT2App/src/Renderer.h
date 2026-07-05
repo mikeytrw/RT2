@@ -127,6 +127,8 @@ public:
 		return m_FinalImage;
 	}
 
+	const uint32_t* GetImageData() const { return m_ImageData; }
+
 	void AddHittable(shared_ptr<Hittable> object) {
 		m_World.add(object);
 		mFrameIndex = 1;

@@ -1,0 +1,135 @@
+#pragma once
+
+#include <string>
+#include <vector>
+#include <cstring>
+
+struct CLIArgs
+{
+	std::string scenePath;
+	std::string envMapPath;
+	std::string outputPath;       // screenshot PNG path
+	std::string renderer = "gpu"; // "gpu" or "cpu"
+	int frames = 0;               // number of frames to render before screenshot (0 = no auto-screenshot)
+	int width = 1280;             // viewport width for headless mode
+	int height = 720;             // viewport height for headless mode
+	int spp = 0;                  // SPP override (0 = use default)
+	int bounces = 0;              // bounces override (0 = use default)
+	bool nrd = false;             // enable NRD
+	bool headless = false;        // render N frames, save screenshot, exit
+	bool listScenes = false;      // just print what would be loaded
+	bool verbose = false;
+
+	bool hasScene() const { return !scenePath.empty(); }
+	bool hasEnvMap() const { return !envMapPath.empty(); }
+	bool hasOutput() const { return !outputPath.empty(); }
+
+	static CLIArgs Parse(int argc, char** argv)
+	{
+		CLIArgs args;
+		for (int i = 1; i < argc; i++)
+		{
+			const char* a = argv[i];
+			auto next = [&]() -> const char* {
+				if (i + 1 < argc) return argv[++i];
+				return nullptr;
+			};
+
+			if (strcmp(a, "--scene") == 0 || strcmp(a, "-s") == 0)
+			{
+				if (const char* v = next()) args.scenePath = v;
+			}
+			else if (strcmp(a, "--env") == 0 || strcmp(a, "-e") == 0)
+			{
+				if (const char* v = next()) args.envMapPath = v;
+			}
+			else if (strcmp(a, "--output") == 0 || strcmp(a, "-o") == 0)
+			{
+				if (const char* v = next()) args.outputPath = v;
+			}
+			else if (strcmp(a, "--frames") == 0 || strcmp(a, "-f") == 0)
+			{
+				if (const char* v = next()) args.frames = std::max(1, std::atoi(v));
+			}
+			else if (strcmp(a, "--renderer") == 0 || strcmp(a, "-r") == 0)
+			{
+				if (const char* v = next()) args.renderer = v;
+			}
+			else if (strcmp(a, "--width") == 0 || strcmp(a, "-w") == 0)
+			{
+				if (const char* v = next()) args.width = std::max(1, std::atoi(v));
+			}
+			else if (strcmp(a, "--height") == 0 || strcmp(a, "-h") == 0)
+			{
+				if (const char* v = next()) args.height = std::max(1, std::atoi(v));
+			}
+			else if (strcmp(a, "--spp") == 0)
+			{
+				if (const char* v = next()) args.spp = std::max(1, std::atoi(v));
+			}
+			else if (strcmp(a, "--bounces") == 0)
+			{
+				if (const char* v = next()) args.bounces = std::max(1, std::atoi(v));
+			}
+			else if (strcmp(a, "--nrd") == 0)
+			{
+				args.nrd = true;
+			}
+			else if (strcmp(a, "--headless") == 0)
+			{
+				args.headless = true;
+			}
+			else if (strcmp(a, "--verbose") == 0 || strcmp(a, "-v") == 0)
+			{
+				args.verbose = true;
+			}
+			else if (strcmp(a, "--list") == 0 || strcmp(a, "--dry-run") == 0)
+			{
+				args.listScenes = true;
+			}
+			else if (strcmp(a, "--help") == 0 || strcmp(a, "-?") == 0)
+			{
+				printf("RT2 — path traced renderer\n");
+				printf("Usage: RT2App [options]\n");
+				printf("Options:\n");
+				printf("  --scene <path>       Load glTF scene (.glb/.gltf) on startup\n");
+				printf("  --env <path>         Load HDR env map (.hdr/.exr) on startup\n");
+				printf("  --output <path>      Save screenshot PNG after rendering\n");
+				printf("  --frames <N>         Render N frames before screenshot (default 1)\n");
+				printf("  --renderer <mode>    'gpu' (default) or 'cpu'\n");
+				printf("  --width <W>          Viewport width (default 1280)\n");
+				printf("  --height <H>         Viewport height (default 720)\n");
+				printf("  --spp <N>            Samples per pixel override\n");
+				printf("  --bounces <N>        Max bounces override\n");
+				printf("  --nrd                Enable NRD denoiser\n");
+				printf("  --headless           Render N frames, save screenshot, exit\n");
+				printf("  --list               Print what would be loaded, then exit\n");
+				printf("  --verbose            Verbose logging\n");
+				printf("  --help               Show this help\n");
+				exit(0);
+			}
+			else
+			{
+				fprintf(stderr, "[CLI] Unknown argument: %s (use --help)\n", a);
+			}
+		}
+
+		if (args.headless && !args.hasOutput())
+			args.outputPath = "screenshot.png";
+		if (args.headless && args.frames == 0)
+			args.frames = 1;
+
+		return args;
+	}
+
+	void Print() const
+	{
+		printf("[CLI] scene     = %s\n", scenePath.empty() ? "(none)" : scenePath.c_str());
+		printf("[CLI] env       = %s\n", envMapPath.empty() ? "(none)" : envMapPath.c_str());
+		printf("[CLI] output    = %s\n", outputPath.empty() ? "(none)" : outputPath.c_str());
+		printf("[CLI] renderer  = %s\n", renderer.c_str());
+		printf("[CLI] frames    = %d\n", frames);
+		printf("[CLI] %dx%d  spp=%d  bounces=%d  nrd=%d  headless=%d\n",
+		       width, height, spp, bounces, nrd, headless);
+	}
+};

@@ -79,7 +79,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;WL_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
@@ -89,6 +89,8 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>copy /Y "$(SolutionDir)RT2App\shaders\raygen.spv" "../bin/Debug-windows-x86_64/RT2App"
@@ -96,7 +98,8 @@ copy /Y "$(SolutionDir)RT2App\shaders\miss.spv" "../bin/Debug-windows-x86_64/RT2
 copy /Y "$(SolutionDir)RT2App\shaders\shadow.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Debug-windows-x86_64/RT2App"</Command>
+copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Debug-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -104,7 +107,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Debug-windows-x86_6
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;WL_RELEASE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -120,8 +123,8 @@ copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Debug-windows-x86_6
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>NRD.lib;ShaderMakeBlob.lib;NRI.lib;NRI_VK.lib;NRI_Shared.lib;NRI_Validation.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
       <Command>copy /Y "$(SolutionDir)RT2App\shaders\raygen.spv" "../bin/Release-windows-x86_64/RT2App"
@@ -129,7 +132,8 @@ copy /Y "$(SolutionDir)RT2App\shaders\miss.spv" "../bin/Release-windows-x86_64/R
 copy /Y "$(SolutionDir)RT2App\shaders\shadow.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Release-windows-x86_64/RT2App"</Command>
+copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Release-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Dist|x64'">
@@ -137,7 +141,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Release-windows-x86
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;WL_DIST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>None</DebugInformationFormat>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -153,6 +157,8 @@ copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Release-windows-x86
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>copy /Y "$(SolutionDir)RT2App\shaders\raygen.spv" "../bin/Dist-windows-x86_64/RT2App"
@@ -160,13 +166,15 @@ copy /Y "$(SolutionDir)RT2App\shaders\miss.spv" "../bin/Dist-windows-x86_64/RT2A
 copy /Y "$(SolutionDir)RT2App\shaders\shadow.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Dist-windows-x86_64/RT2App"</Command>
+copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="src\AABB.h" />
     <ClInclude Include="src\AccelerationStructure.h" />
     <ClInclude Include="src\BVHNode.h" />
+    <ClInclude Include="src\CLIArgs.h" />
     <ClInclude Include="src\Camera.h" />
     <ClInclude Include="src\Colour.h" />
     <ClInclude Include="src\FileDialog.h" />
@@ -175,6 +183,8 @@ copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Dist-windows-x86_64
     <ClInclude Include="src\HittableList.h" />
     <ClInclude Include="src\Material.h" />
     <ClInclude Include="src\Mesh.h" />
+    <ClInclude Include="src\NRDIntegration.h" />
+    <ClInclude Include="src\RTLog.h" />
     <ClInclude Include="src\Ray.h" />
     <ClInclude Include="src\Renderer.h" />
     <ClInclude Include="src\RendererGPU.h" />
@@ -184,6 +194,27 @@ copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Dist-windows-x86_64
     <ClInclude Include="src\Sphere.h" />
     <ClInclude Include="src\Triangle.h" />
     <ClInclude Include="src\Utility.h" />
+    <ClInclude Include="vendor\NRD\Include\NRD.h" />
+    <ClInclude Include="vendor\NRD\Include\NRDDescs.h" />
+    <ClInclude Include="vendor\NRD\Include\NRDSettings.h" />
+    <ClInclude Include="vendor\NRD\Integration\NRDIntegration.h" />
+    <ClInclude Include="vendor\NRI\Include\Extensions\NRIDeviceCreation.h" />
+    <ClInclude Include="vendor\NRI\Include\Extensions\NRIHelper.h" />
+    <ClInclude Include="vendor\NRI\Include\Extensions\NRIImgui.h" />
+    <ClInclude Include="vendor\NRI\Include\Extensions\NRILowLatency.h" />
+    <ClInclude Include="vendor\NRI\Include\Extensions\NRIMeshShader.h" />
+    <ClInclude Include="vendor\NRI\Include\Extensions\NRIRayTracing.h" />
+    <ClInclude Include="vendor\NRI\Include\Extensions\NRIStreamer.h" />
+    <ClInclude Include="vendor\NRI\Include\Extensions\NRISwapChain.h" />
+    <ClInclude Include="vendor\NRI\Include\Extensions\NRIUpscaler.h" />
+    <ClInclude Include="vendor\NRI\Include\Extensions\NRIWrapperD3D11.h" />
+    <ClInclude Include="vendor\NRI\Include\Extensions\NRIWrapperD3D12.h" />
+    <ClInclude Include="vendor\NRI\Include\Extensions\NRIWrapperVK.h" />
+    <ClInclude Include="vendor\NRI\Include\NRI.h" />
+    <ClInclude Include="vendor\NRI\Include\NRIDescs.h" />
+    <ClInclude Include="vendor\NRI\Include\NRIMacro.h" />
+    <ClInclude Include="vendor\stb\stb_image_write.h" />
+    <ClInclude Include="vendor\tinyexr.h" />
     <ClInclude Include="vendor\tinygltf\tiny_gltf.h" />
     <ClInclude Include="vendor\tinyobjloader\tiny_obj_loader.h" />
   </ItemGroup>
@@ -213,6 +244,11 @@ copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Dist-windows-x86_64
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\NRDIntegration.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\RendererGPU.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -233,20 +269,11 @@ copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Dist-windows-x86_64
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
-    <ClCompile Include="src\NRDIntegration.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
     <ClCompile Include="src\WalnutApp.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="vendor\tinyexr.h" />
-    <ClInclude Include="src\NRDIntegration.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Walnut\Walnut\Walnut.vcxproj">

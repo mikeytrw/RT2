@@ -10,24 +10,29 @@
 #include "Scene.h"
 #include "SceneLoader.h"
 #include "GPUSceneData.h"
+#include "CLIArgs.h"
 #include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 #include <tinyexr.h>
 #include "NRD.h"
 
 #include <cstdio>
 
 using namespace Walnut;
- 
+
+// Global CLI args (parsed in CreateApplication, consumed by ExampleLayer)
+static CLIArgs g_CLI;
+
 class ExampleLayer : public Walnut::Layer
 {
 public:
 
-		ExampleLayer() 
+		ExampleLayer()
 		{
-
 			m_Cam = Camera(45.0f, 0.1f, 100.0f,0.005f,2.5f);
 			m_Renderer = Renderer();
-			m_RenderOnUpdate = false; 
+			m_RenderOnUpdate = false;
 
 			m_MeshMaterial = make_shared<LambertianMaterial>(vec3(0.7f, 0.7f, 0.7f));
 
@@ -35,6 +40,13 @@ public:
 
 	virtual void OnUIRender() override
 	{
+		// First-frame: process CLI args (scene/env auto-load, headless mode)
+		if (!m_CLIProcessed)
+		{
+			ProcessCLIArgs();
+			m_CLIProcessed = true;
+		}
+
 		ImGui::Begin("Info");
 		ImGui::Text("Last Render: %.3fms", m_LastRenderTime);
 		ImGui::Text("Rays Cast: %d", m_Renderer.m_NumRaysCast);
@@ -340,6 +352,166 @@ public:
 
 private:
 
+	void ProcessCLIArgs()
+	{
+		if (g_CLI.verbose)
+			g_CLI.Print();
+
+		// --list: just print and exit
+		if (g_CLI.listScenes)
+		{
+			printf("[CLI] --list mode: would load scene='%s' env='%s'\n",
+			       g_CLI.scenePath.c_str(), g_CLI.envMapPath.c_str());
+			Walnut::Application::Get().Close();
+			return;
+		}
+
+		// Apply renderer selection
+		if (g_CLI.renderer == "cpu")
+			m_UseGPU = 0;
+		else
+			m_UseGPU = 1;
+
+		// Apply SPP/bounces overrides
+		if (g_CLI.spp > 0)
+		{
+			m_Renderer.m_SamplesPerPixel = g_CLI.spp;
+			m_RendererGPU.m_SPP = g_CLI.spp;
+		}
+		if (g_CLI.bounces > 0)
+		{
+			m_Renderer.m_MaxBounceDepth = g_CLI.bounces;
+			m_RendererGPU.m_MaxBounces = g_CLI.bounces;
+		}
+		if (g_CLI.nrd)
+			m_RendererGPU.m_NRDEnabled = true;
+
+		// Auto-init GPU renderer if needed
+		if (m_UseGPU == 1 && Walnut::Application::IsRayTracingSupported() && !m_RendererGPU.IsAvailable())
+		{
+			if (m_RendererGPU.Init())
+			{
+				m_RendererGPU.m_SPP = m_Renderer.m_SamplesPerPixel;
+				m_RendererGPU.m_MaxBounces = m_Renderer.m_MaxBounceDepth;
+			}
+			else
+			{
+				fprintf(stderr, "[CLI] GPU renderer init failed, falling back to CPU\n");
+				m_UseGPU = 0;
+			}
+		}
+
+		// Auto-load env map
+		if (g_CLI.hasEnvMap())
+			LoadEnvMap(g_CLI.envMapPath);
+
+		// Auto-load scene
+		if (g_CLI.hasScene())
+			LoadScene(g_CLI.scenePath);
+
+		// Headless mode: render N frames, screenshot, exit
+		if (g_CLI.headless)
+		{
+			RunHeadless();
+		}
+	}
+
+	void RunHeadless()
+	{
+		printf("[Headless] starting: %d frames at %dx%d\n", g_CLI.frames, g_CLI.width, g_CLI.height);
+
+		// Resize to requested dimensions
+		m_ViewportWidth = (uint32_t)g_CLI.width;
+		m_ViewportHeight = (uint32_t)g_CLI.height;
+		if (m_UseGPU && m_RendererGPU.IsAvailable())
+		{
+			m_RendererGPU.OnResize(m_ViewportWidth, m_ViewportHeight);
+			m_Cam.OnResize(m_ViewportWidth, m_ViewportHeight);
+		}
+		else
+		{
+			m_Renderer.OnResize(m_ViewportWidth, m_ViewportHeight);
+			m_Cam.OnResize(m_ViewportWidth, m_ViewportHeight);
+		}
+
+		// Render N frames
+		for (int i = 0; i < g_CLI.frames; i++)
+		{
+			Timer timer;
+			if (m_UseGPU && m_RendererGPU.IsAvailable())
+				m_RendererGPU.Render(m_Cam);
+			else
+				m_Renderer.Render(m_Cam);
+			float ms = timer.ElapsedMillis();
+			if (g_CLI.verbose || i == g_CLI.frames - 1)
+				printf("[Headless] frame %d/%d: %.1fms\n", i + 1, g_CLI.frames, ms);
+		}
+
+		// Screenshot
+		if (g_CLI.hasOutput() && m_UseGPU && m_RendererGPU.IsAvailable())
+		{
+			std::vector<uint8_t> pixels;
+			uint32_t w, h;
+			if (m_RendererGPU.ReadbackOutput(pixels, w, h))
+			{
+				// stbi_write_png expects bottom-up rows; Vulkan image is top-down
+				// Flip vertically by writing rows in reverse
+				std::vector<uint8_t> flipped(pixels.size());
+				for (uint32_t y = 0; y < h; y++)
+				{
+					memcpy(&flipped[(size_t)(h - 1 - y) * w * 4],
+					       &pixels[(size_t)y * w * 4],
+					       (size_t)w * 4);
+				}
+
+				if (stbi_write_png(g_CLI.outputPath.c_str(), w, h, 4, flipped.data(), w * 4))
+					printf("[Headless] saved screenshot: %s (%ux%u)\n", g_CLI.outputPath.c_str(), w, h);
+				else
+					fprintf(stderr, "[Headless] stbi_write_png failed for %s\n", g_CLI.outputPath.c_str());
+			}
+			else
+			{
+				fprintf(stderr, "[Headless] ReadbackOutput failed\n");
+			}
+		}
+		else if (g_CLI.hasOutput() && !m_UseGPU)
+		{
+			// CPU renderer: get final image and save
+			if (auto image = m_Renderer.GetFinalImage())
+			{
+				uint32_t w = image->GetWidth();
+				uint32_t h = image->GetHeight();
+				const uint32_t* data = m_Renderer.GetImageData();
+				if (data)
+				{
+					// CPU renderer packs as ABGR (BGRA in memory), convert to RGBA for PNG
+					std::vector<uint8_t> pixels(w * h * 4);
+					for (size_t i = 0; i < (size_t)w * h; i++)
+					{
+						uint32_t c = data[i];
+						pixels[i * 4 + 0] = (uint8_t)(c & 0xFF);         // R
+						pixels[i * 4 + 1] = (uint8_t)((c >> 8) & 0xFF);  // G
+						pixels[i * 4 + 2] = (uint8_t)((c >> 16) & 0xFF); // B
+						pixels[i * 4 + 3] = (uint8_t)((c >> 24) & 0xFF); // A
+					}
+					// Flip vertically for PNG
+					std::vector<uint8_t> flipped(pixels.size());
+					for (uint32_t y = 0; y < h; y++)
+					{
+						memcpy(&flipped[(size_t)(h - 1 - y) * w * 4],
+						       &pixels[(size_t)y * w * 4],
+						       (size_t)w * 4);
+					}
+					if (stbi_write_png(g_CLI.outputPath.c_str(), w, h, 4, flipped.data(), w * 4))
+						printf("[Headless] saved CPU screenshot: %s (%ux%u)\n", g_CLI.outputPath.c_str(), w, h);
+				}
+			}
+		}
+
+		printf("[Headless] done, exiting\n");
+		Walnut::Application::Get().Close();
+	}
+
 	void Render() {
 		Timer timer;
 
@@ -598,6 +770,8 @@ private:
 
 	Scene m_Scene;
 
+	bool m_CLIProcessed = false;
+
 	void LoadEnvMap(const std::string& filepath)
 	{
 		printf("[EnvMap] Loading '%s'\n", filepath.c_str());
@@ -655,6 +829,9 @@ private:
 
 Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 {
+	// Parse CLI args (stored in global g_CLI for ExampleLayer to consume)
+	g_CLI = CLIArgs::Parse(argc, argv);
+
 	Walnut::ApplicationSpecification spec;
 	spec.Name = "RT2";
 

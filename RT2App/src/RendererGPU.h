@@ -46,6 +46,9 @@ public:
 	void RebuildAccelerationStructures();
 	void ResetAccumulation();
 
+	// Read back the output image to CPU as RGBA8 (tonemapped+sRGB). Returns false on failure.
+	bool ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t& outWidth, uint32_t& outHeight);
+
 	int m_SPP = 5;
 	int m_MaxBounces = 8;
 	bool m_ShowBackground = false;

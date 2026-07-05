@@ -10,4 +10,4 @@ bin-int/
 *.sln
 
 # Exclude
-!vendor/bin
+!vendor/binimgui.ini

@@ -11,6 +11,10 @@ project "RT2App"
     {
        "vendor",
        "vendor/tinygltf",
+       "vendor/stb",
+       "vendor/NRD/Include",
+       "vendor/NRD/Integration",
+       "vendor/NRI/Include",
        "../Walnut/vendor/imgui",
        "../Walnut/vendor/glfw/include",
        "../Walnut/vendor/glm",
@@ -21,9 +25,21 @@ project "RT2App"
        "%{IncludeDir.VulkanSDK}",
     }
 
+   libdirs
+   {
+       "vendor/NRD/Lib",
+       "vendor/NRI/Lib",
+   }
+
    links
    {
-       "Walnut"
+       "Walnut",
+       "vendor/NRD/Lib/NRD.lib",
+       "vendor/NRD/Lib/ShaderMakeBlob.lib",
+       "vendor/NRI/Lib/NRI.lib",
+       "vendor/NRI/Lib/NRI_VK.lib",
+       "vendor/NRI/Lib/NRI_Shared.lib",
+       "vendor/NRI/Lib/NRI_Validation.lib",
    }
 
    targetdir ("../bin/" .. outputdir .. "/%{prj.name}")
