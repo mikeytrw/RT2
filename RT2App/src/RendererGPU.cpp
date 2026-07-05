@@ -1346,10 +1346,34 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 
 	CameraUBO ubo = {};
 	ubo.position = glm::vec4(camera.GetPosition(), (float)m_FrameIndex);
-	ubo.forward = glm::vec4(camera.GetDirection(), 0.0f);
+
+	// NRD camera jitter (Halton sequence, subpixel offset in [-0.5, 0.5])
+	m_NRDJitterPrev = m_NRDJitter;
+	if (m_NRDEnabled)
+	{
+		// Halton sequence (base 2, base 3) for low-discrepancy jitter
+		auto halton = [](int index, int base) -> float {
+			float f = 1.0f, r = 0.0f;
+			int i = index;
+			while (i > 0) {
+				f /= base;
+				r += f * (i % base);
+				i /= base;
+			}
+			return r;
+		};
+		int frame = (m_FrameIndex - 1) % 16 + 1; // cycle through 16 offsets
+		m_NRDJitter = glm::vec2(halton(frame, 2) - 0.5f, halton(frame, 3) - 0.5f);
+	}
+	else
+	{
+		m_NRDJitter = glm::vec2(0.0f);
+	}
+
+	ubo.forward = glm::vec4(camera.GetDirection(), m_NRDJitter.x);
 	glm::vec3 right = glm::cross(camera.GetDirection(), glm::vec3(0, 1, 0));
 	glm::vec3 up = glm::cross(right, camera.GetDirection());
-	ubo.right = glm::vec4(right, 0.0f);
+	ubo.right = glm::vec4(right, m_NRDJitter.y);
 	ubo.up = glm::vec4(up, 0.0f);
 	int maxBouncesClamped = m_MaxBounces;
 	const int bounceLimit = (int)m_MaxRecursionDepth - 1;
@@ -1566,7 +1590,8 @@ void RendererGPU::Render(const Camera& camera)
 			glm::value_ptr(prevViewToClip),
 			glm::value_ptr(worldToView),
 			glm::value_ptr(prevWorldToView),
-			0.0f, 0.0f, 0.0f, 0.0f, // jitter (TODO)
+			m_NRDJitter.x, m_NRDJitter.y,
+			m_NRDJitterPrev.x, m_NRDJitterPrev.y,
 			m_FrameIndex, reset, m_NRDSplitScreen);
 
 		m_NRD.SetReblurSettings(m_NRDMaxBlurRadius, (uint32_t)m_NRDMaxAccumFrames,

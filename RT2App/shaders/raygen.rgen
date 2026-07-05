@@ -45,8 +45,8 @@ void main()
             defocusJitter = camera.right.xyz * diskPoint.x + camera.up.xyz * diskPoint.y;
         }
 
-        float u = (float(pixel.x) + randomFloat(rngState)) / float(width);
-        float v = (float(pixel.y) + randomFloat(rngState)) / float(height);
+        float u = (float(pixel.x) + randomFloat(rngState) + camera.forward.w) / float(width);
+        float v = (float(pixel.y) + randomFloat(rngState) + camera.right.w) / float(height);
         vec2 coord = vec2(u, v) * 2.0 - 1.0;
         vec4 target = camera.inverseProjection * vec4(coord.x, coord.y, 1.0, 1.0);
         vec3 dir = normalize(vec3(camera.inverseView * vec4(normalize(vec3(target) / target.w), 0.0)));
@@ -142,6 +142,13 @@ void main()
 
             vec3 demodDiff = diffRad / diffFactor;
             vec3 demodSpec = specRad / vec3(specFactor);
+
+            // Clamp fireflies: NRD's anti-firefly works better when extreme
+            // outliers are clamped. The sun disk in env maps can produce
+            // radiance values >10000 which NRD can't handle during reprojection.
+            const float NRD_CLAMP = 100.0;
+            demodDiff = clamp(demodDiff, vec3(0.0), vec3(NRD_CLAMP));
+            demodSpec = clamp(demodSpec, vec3(0.0), vec3(NRD_CLAMP));
 
             // NRD hit distance normalization
             vec3 hitDistParams = vec3(3.0, 0.1, 20.0);

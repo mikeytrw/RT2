@@ -12,8 +12,8 @@ layout(set = 0, binding = 0, rgba32f) uniform image2D outputImage;
 layout(set = 0, binding = 1, std140) uniform CameraData
 {
     vec4 position;      // xyz = position, w = frameIndex
-    vec4 forward;       // xyz = forward, w = pad
-    vec4 right;         // xyz = right, w = pad
+    vec4 forward;       // xyz = forward, w = NRD jitter.x
+    vec4 right;         // xyz = right, w = NRD jitter.y
     vec4 up;            // xyz = up, w = pad
     vec4 viewportSPP;   // x = width, y = height, z = spp, w = maxBounces
     vec4 apertureFocal; // x = aperture, y = focusDistance, z = showBackground, w = emissiveBoost

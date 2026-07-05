@@ -60,6 +60,10 @@ public:
 	bool m_NRDAntiFirefly = true;
 	float m_NRDSplitScreen = 0.0f;
 
+	// Camera jitter for NRD temporal AA (Halton sequence)
+	glm::vec2 m_NRDJitter = glm::vec2(0.0f);
+	glm::vec2 m_NRDJitterPrev = glm::vec2(0.0f);
+
 private:
 	void CreateOutputImage();
 	void DestroyOutputImage();
