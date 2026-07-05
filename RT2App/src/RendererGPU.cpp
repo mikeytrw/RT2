@@ -1,6 +1,7 @@
 #include "RendererGPU.h"
 #include "ShaderManager.h"
 #include "RTLog.h"
+#include "VulkanUtils.h"
 #include "Walnut/Application.h"
 #include "Walnut/RTDispatch.h"
 #include "backends/imgui_impl_vulkan.h"
@@ -21,7 +22,8 @@ uint32_t RendererGPU::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags 
 		if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
 			return i;
 	}
-	return 0;
+	RT_LOG("[FindMemoryType] FAILED: typeFilter=0x%X properties=0x%X — no matching memory type", typeFilter, properties);
+	return 0xFFFFFFFF; // invalid — callers should check
 }
 
 void RendererGPU::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
@@ -35,7 +37,7 @@ void RendererGPU::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
 	bufferInfo.usage = usage;
 	bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-	vkCreateBuffer(device, &bufferInfo, nullptr, &buffer);
+	VK_CHECK(vkCreateBuffer(device, &bufferInfo, nullptr, &buffer));
 
 	VkMemoryRequirements memRequirements;
 	vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
@@ -44,6 +46,11 @@ void RendererGPU::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
 	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	allocInfo.allocationSize = memRequirements.size;
 	allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits, properties);
+	if (allocInfo.memoryTypeIndex == 0xFFFFFFFF)
+	{
+		RT_LOG("[CreateBuffer] no valid memory type for buffer size=%llu", (unsigned long long)size);
+		return;
+	}
 
 	VkMemoryAllocateFlagsInfo allocateFlagsInfo = {};
 	if (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
@@ -53,8 +60,8 @@ void RendererGPU::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
 		allocInfo.pNext = &allocateFlagsInfo;
 	}
 
-	vkAllocateMemory(device, &allocInfo, nullptr, &memory);
-	vkBindBufferMemory(device, buffer, memory, 0);
+	VK_CHECK(vkAllocateMemory(device, &allocInfo, nullptr, &memory));
+	VK_CHECK(vkBindBufferMemory(device, buffer, memory, 0));
 }
 
 void RendererGPU::DestroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory)
