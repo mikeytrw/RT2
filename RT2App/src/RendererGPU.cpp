@@ -1383,8 +1383,6 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 {
 	VkDevice device = m_Device.device;
 
-	RT_LOG("[UpdateGBufferDS] enter: GBufferSet=%p, NRDUBO=%p", (void*)m_GBufferSet, (void*)m_NRDUBO);
-
 	VkDescriptorImageInfo imageInfos[7] = {};
 	VkImageView views[] = { m_GNormalRoughnessView, m_GViewZView, m_GMotionView, m_GDiffRadianceView, m_GSpecRadianceView, m_GAlbedoF0View, m_GDirectEmissionView };
 	for (int i = 0; i < 7; i++)

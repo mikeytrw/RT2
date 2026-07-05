@@ -165,25 +165,30 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	stages[5].module = m_ShadowHitShader;
 	stages[5].pName = "main";
 
-	// 6 groups
-	VkRayTracingShaderGroupCreateInfoKHR groups[6] = {};
-	groups[0].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+	// 6 groups — must init ALL fields, VK_SHADER_UNUSED_KHR is ~0u not 0
+	VkRayTracingShaderGroupCreateInfoKHR groups[6];
+	for (int i = 0; i < 6; i++)
+	{
+		groups[i].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
+		groups[i].pNext = nullptr;
+		groups[i].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+		groups[i].generalShader      = VK_SHADER_UNUSED_KHR;
+		groups[i].closestHitShader   = VK_SHADER_UNUSED_KHR;
+		groups[i].anyHitShader       = VK_SHADER_UNUSED_KHR;
+		groups[i].intersectionShader = VK_SHADER_UNUSED_KHR;
+		groups[i].pShaderGroupCaptureReplayHandle = nullptr;
+	}
 	groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
 	groups[0].generalShader = 0;
-	groups[1].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
 	groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
 	groups[1].generalShader = 1;
-	groups[2].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
 	groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
 	groups[2].generalShader = 2;
-	groups[3].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
 	groups[3].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
 	groups[3].closestHitShader = 3;
-	groups[4].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
 	groups[4].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
 	groups[4].closestHitShader = 3;
 	groups[4].anyHitShader = 4;
-	groups[5].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
 	groups[5].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
 	groups[5].anyHitShader = 5;
 
@@ -509,10 +514,12 @@ void PathTracePass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 
 	VkStridedDeviceAddressRegionKHR callableRegion = {};
 
+	if (!g_RTDispatch.CmdTraceRaysKHR)
+	{
+		std::cerr << "[PathTracePass] ERROR: CmdTraceRaysKHR is NULL!\n";
+		return;
+	}
 	g_RTDispatch.CmdTraceRaysKHR(cmd,
 		&rgenRegion, &missRegion, &hitRegion, &callableRegion,
 		width, height, 1);
-
-	if (!g_RTDispatch.CmdTraceRaysKHR)
-		std::cerr << "[PathTracePass] ERROR: CmdTraceRaysKHR is NULL!\n";
 }
