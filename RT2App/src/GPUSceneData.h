@@ -7,6 +7,11 @@
 #include <glm/glm.hpp>
 #include <vector>
 
+// Include the shared shader interface header to keep C++/GLSL structs in sync.
+// The GPUMaterial and GPUTriangleLight structs below must match the Material
+// and TriangleLight structs defined in shader_interface.h.
+#include "../shaders/shader_interface.h"
+
 // ============================================================================
 // GPU-side data structures — plain-old-data, std430 compatible, no Vulkan deps
 // ============================================================================
@@ -118,5 +123,19 @@ GPUSceneData BuildGPUSceneData(const Scene& scene);
 // Build marginal and conditional CDFs for env map importance sampling (M8).
 void BuildEnvMapCDF(const std::vector<float>& floatPixels, int width, int height,
                     std::vector<float>& marginalCDF, std::vector<float>& conditionalCDF);
+
+// ============================================================================
+// Verify C++ structs match the shared shader_interface.h layouts
+// ============================================================================
+static_assert(sizeof(GPUMaterial) == sizeof(SIMaterial),
+    "GPUMaterial size mismatch with shader_interface.h SIMaterial");
+static_assert(sizeof(GPUTriangleLight) == sizeof(SITriangleLight),
+    "GPUTriangleLight size mismatch with shader_interface.h SITriangleLight");
+static_assert(offsetof(GPUMaterial, baseColor_metallic) == offsetof(SIMaterial, baseColor_metallic),
+    "GPUMaterial baseColor_metallic offset mismatch");
+static_assert(offsetof(GPUMaterial, textureIndices) == offsetof(SIMaterial, textureIndices),
+    "GPUMaterial textureIndices offset mismatch");
+static_assert(offsetof(GPUMaterial, metallicRoughnessTextureIndex) == offsetof(SIMaterial, extraIndices),
+    "GPUMaterial metallicRoughnessTextureIndex offset mismatch with SIMaterial.extraIndices.x");
 
 #endif // GPU_SCENE_DATA_H

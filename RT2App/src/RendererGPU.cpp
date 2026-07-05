@@ -1327,24 +1327,7 @@ void RendererGPU::RebuildAccelerationStructures()
 
 void RendererGPU::UpdateCameraUBO(const Camera& camera)
 {
-	struct CameraUBO
-	{
-		glm::vec4 position;     // xyz = position, w = frameIndex
-		glm::vec4 forward;      // xyz = forward, w = pad
-		glm::vec4 right;        // xyz = right, w = pad
-		glm::vec4 up;           // xyz = up, w = pad
-		glm::vec4 viewportSPP;  // x = width, y = height, z = spp, w = maxBounces
-		glm::vec4 apertureFocal;// x = aperture, y = focusDistance, z = showBackground, w = emissiveBoost
-		glm::vec4 envMap;       // x = envMapIndex (-1=none), y = envIntensity, z = marginalCDFIndex, w = conditionalCDFIndex
-		glm::mat4 inverseProjection;
-		glm::mat4 inverseView;
-		glm::mat4 viewToClip;       // current view-to-clip (projection)
-		glm::mat4 viewToClipPrev;   // previous frame projection
-		glm::mat4 worldToView;      // current world-to-view (view matrix)
-		glm::mat4 worldToViewPrev;  // previous frame view matrix
-	};
-
-	CameraUBO ubo = {};
+	SICameraData ubo = {};
 	ubo.position = glm::vec4(camera.GetPosition(), (float)m_FrameIndex);
 
 	// NRD camera jitter (Halton sequence, subpixel offset in [-0.5, 0.5])
@@ -1395,8 +1378,8 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 
 	VkDevice device = Walnut::Application::GetDevice();
 	void* data;
-	vkMapMemory(device, m_CameraUBOMemory, 0, sizeof(CameraUBO), 0, &data);
-	memcpy(data, &ubo, sizeof(CameraUBO));
+	vkMapMemory(device, m_CameraUBOMemory, 0, sizeof(SICameraData), 0, &data);
+	memcpy(data, &ubo, sizeof(SICameraData));
 	vkUnmapMemory(device, m_CameraUBOMemory);
 }
 
@@ -1490,11 +1473,10 @@ void RendererGPU::Render(const Camera& camera)
 	VkDevice device = Walnut::Application::GetDevice();
 	if (m_NRDUBO)
 	{
-		struct NRDUBOData { uint32_t enabled; uint32_t pad[3]; };
-		NRDUBOData nrdData = { m_NRDEnabled ? 1u : 0u, {0, 0, 0} };
+		SINRDUniformData nrdData = { m_NRDEnabled ? 1u : 0u, 0, 0, 0 };
 		void* nrdMapped;
-		vkMapMemory(device, m_NRDUBOMemory, 0, sizeof(NRDUBOData), 0, &nrdMapped);
-		memcpy(nrdMapped, &nrdData, sizeof(NRDUBOData));
+		vkMapMemory(device, m_NRDUBOMemory, 0, sizeof(SINRDUniformData), 0, &nrdMapped);
+		memcpy(nrdMapped, &nrdData, sizeof(SINRDUniformData));
 		vkUnmapMemory(device, m_NRDUBOMemory);
 	}
 

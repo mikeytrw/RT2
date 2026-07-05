@@ -5,11 +5,14 @@
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_nonuniform_qualifier : require
 
+// Include shared C++/GLSL interface header for binding #defines
+#include "shader_interface.h"
+
 // ---- Bindings (set 0) -------------------------------------------------------
 
-layout(set = 0, binding = 0, rgba32f) uniform image2D outputImage;
+layout(set = 0, binding = SI_BINDING_OUTPUT_IMAGE, rgba32f) uniform image2D outputImage;
 
-layout(set = 0, binding = 1, std140) uniform CameraData
+layout(set = 0, binding = SI_BINDING_CAMERA_UBO, std140) uniform CameraData
 {
     vec4 position;      // xyz = position, w = frameIndex
     vec4 forward;       // xyz = forward, w = NRD jitter.x
@@ -28,6 +31,8 @@ layout(set = 0, binding = 1, std140) uniform CameraData
 } camera;
 
 // PBR material — matches GPUMaterial in GPUSceneData.h (80 bytes, std430)
+// Struct layout is verified by static_asserts in GPUSceneData.h against
+// SIMaterial in shader_interface.h.
 struct Material
 {
     vec4 baseColor_metallic;   // xyz = base color, w = metallic factor
@@ -41,35 +46,35 @@ struct Material
     ivec4 extraIndices;        // x = metallicRoughness texture index, yzw = pad
 };
 
-layout(set = 0, binding = 2, std430) readonly buffer MaterialBuffer
+layout(set = 0, binding = SI_BINDING_MATERIAL_BUFFER, std430) readonly buffer MaterialBuffer
 {
     Material materials[];
 };
 
-layout(set = 0, binding = 3, std430) readonly buffer NormalBuffer
+layout(set = 0, binding = SI_BINDING_NORMAL_BUFFER, std430) readonly buffer NormalBuffer
 {
     vec4 triangleNormals[]; // xyz = normal, w = unused (16-byte aligned)
 };
 
-layout(set = 0, binding = 5, std430) readonly buffer InstanceNormalOffsets
+layout(set = 0, binding = SI_BINDING_INSTANCE_OFFSETS, std430) readonly buffer InstanceNormalOffsets
 {
     uint normalOffsets[]; // per-instance offset into triangleNormals
 };
 
 // Combined tangent buffer (3 vec4 per triangle, xyz = vertex tangent)
-layout(set = 0, binding = 6, std430) readonly buffer TangentBuffer
+layout(set = 0, binding = SI_BINDING_TANGENT_BUFFER, std430) readonly buffer TangentBuffer
 {
     vec4 triangleTangents[]; // 3 per triangle: xyz = tangent, w = unused
 };
 
 // Combined UV buffer (3 vec4 per triangle, xy = vertex UV)
-layout(set = 0, binding = 7, std430) readonly buffer UVBuffer
+layout(set = 0, binding = SI_BINDING_UV_BUFFER, std430) readonly buffer UVBuffer
 {
     vec4 triangleUVs[]; // 3 per triangle: xy = vertex UV, zw = unused
 };
 
 // Combined position buffer (3 vec4 per triangle, xyz = vertex position)
-layout(set = 0, binding = 8, std430) readonly buffer PositionBuffer
+layout(set = 0, binding = SI_BINDING_POSITION_BUFFER, std430) readonly buffer PositionBuffer
 {
     vec4 trianglePositions[]; // 3 per triangle: xyz = vertex pos, w = unused
 };
@@ -84,7 +89,7 @@ struct TriangleLight
     uvec4 ids;            // x = instanceID, y = primitiveID, z = materialIndex, w = emissiveTexIdx
 };
 
-layout(set = 0, binding = 9, std430) readonly buffer LightBuffer
+layout(set = 0, binding = SI_BINDING_LIGHT_BUFFER, std430) readonly buffer LightBuffer
 {
     uint  lightCount;
     float totalLightArea;
@@ -106,25 +111,25 @@ float computePTri()
 
 // Bindless texture array (combined image samplers, variable count)
 // Must be the highest binding number for VARIABLE_DESCRIPTOR_COUNT.
-layout(set = 0, binding = 10) uniform sampler2D textures[];
+layout(set = 0, binding = SI_BINDING_TEXTURE_ARRAY) uniform sampler2D textures[];
 
-layout(set = 0, binding = 4) uniform accelerationStructureEXT topLevelAS;
+layout(set = 0, binding = SI_BINDING_TLAS) uniform accelerationStructureEXT topLevelAS;
 
 // ---- NRD G-buffer outputs (set 1) -------------------------------------------
 // Storage images written by closesthit at the primary hit (depth=0) and
 // read by the NRD denoiser. When NRD is disabled, these are unused.
-layout(set = 1, binding = 0, rgba8) uniform image2D gNormalRoughness;  // xyz = world normal, w = roughness
-layout(set = 1, binding = 1, r16f)  uniform image2D gViewZ;            // view-space Z
-layout(set = 1, binding = 2, rg16f) uniform image2D gMotion;           // 2D screen-space motion vector
-layout(set = 1, binding = 3, rgba16f) uniform image2D gDiffRadianceHitDist; // rgb = diffuse radiance, a = hitT
-layout(set = 1, binding = 4, rgba16f) uniform image2D gSpecRadianceHitDist; // rgb = specular radiance, a = hitT
-layout(set = 1, binding = 5, rgba16f) uniform image2D gAlbedoF0;            // rgb = demod albedo, a = F0 scalar
+layout(set = 1, binding = SI_BINDING_G_NORMAL_ROUGHNESS, rgba8) uniform image2D gNormalRoughness;  // xyz = world normal, w = roughness
+layout(set = 1, binding = SI_BINDING_G_VIEWZ, r16f)  uniform image2D gViewZ;            // view-space Z
+layout(set = 1, binding = SI_BINDING_G_MOTION, rg16f) uniform image2D gMotion;           // 2D screen-space motion vector
+layout(set = 1, binding = SI_BINDING_G_DIFF_RADIANCE, rgba16f) uniform image2D gDiffRadianceHitDist; // rgb = diffuse radiance, a = hitT
+layout(set = 1, binding = SI_BINDING_G_SPEC_RADIANCE, rgba16f) uniform image2D gSpecRadianceHitDist; // rgb = specular radiance, a = hitT
+layout(set = 1, binding = SI_BINDING_G_ALBEDO_F0, rgba16f) uniform image2D gAlbedoF0;            // rgb = demod albedo, a = F0 scalar
 
 // Direct emission (emissive surfaces + sky) — bypasses NRD, added in compose
-layout(set = 1, binding = 7, rgba16f) uniform image2D gDirectEmission;
+layout(set = 1, binding = SI_BINDING_G_DIRECT_EMISSION, rgba16f) uniform image2D gDirectEmission;
 
 // NRD enable flag (1 = NRD mode, 0 = normal temporal accumulation)
-layout(set = 1, binding = 6) uniform NRDUniform
+layout(set = 1, binding = SI_BINDING_NRD_UBO) uniform NRDUniform
 {
     uint nrdEnabled;      // 1 = NRD mode (1 spp, no temporal accum, write G-buffer)
     uint pad0;
