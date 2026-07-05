@@ -178,6 +178,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/R
     <ClInclude Include="src\CLIArgs.h" />
     <ClInclude Include="src\Camera.h" />
     <ClInclude Include="src\Colour.h" />
+    <ClInclude Include="src\ComposePass.h" />
     <ClInclude Include="src\FileDialog.h" />
     <ClInclude Include="src\GPUSceneData.h" />
     <ClInclude Include="src\GpuDevice.h" />
@@ -229,6 +230,11 @@ copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/R
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\Camera.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\ComposePass.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

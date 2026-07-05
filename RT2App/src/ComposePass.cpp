@@ -1,0 +1,133 @@
+#include "ComposePass.h"
+#include "GpuDevice.h"
+#include "VulkanUtils.h"
+#include "ShaderManager.h"
+#include "RTLog.h"
+#include <iostream>
+
+bool ComposePass::Init(const GpuDevice& dev)
+{
+	if (m_Pipeline != VK_NULL_HANDLE) return true;
+
+	m_Device = dev.device; // cache for Destroy
+
+	m_Shader = ShaderManager::LoadShader("compose.spv");
+	if (!m_Shader)
+		m_Shader = ShaderManager::LoadShader("RT2App/shaders/compose.spv");
+	if (!m_Shader)
+	{
+		std::cerr << "[ComposePass] Failed to load compose.spv\n";
+		return false;
+	}
+
+	VkDescriptorSetLayoutBinding bindings[5] = {};
+	for (int i = 0; i < 5; i++)
+	{
+		bindings[i].binding = i;
+		bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		bindings[i].descriptorCount = 1;
+		bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	}
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = 5;
+	layoutInfo.pBindings = bindings;
+	VK_CHECK(vkCreateDescriptorSetLayout(dev.device, &layoutInfo, nullptr, &m_SetLayout));
+
+	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	pipelineLayoutInfo.setLayoutCount = 1;
+	pipelineLayoutInfo.pSetLayouts = &m_SetLayout;
+	VK_CHECK(vkCreatePipelineLayout(dev.device, &pipelineLayoutInfo, nullptr, &m_PipelineLayout));
+
+	VkComputePipelineCreateInfo pipelineInfo = {};
+	pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+	pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	pipelineInfo.stage.module = m_Shader;
+	pipelineInfo.stage.pName = "main";
+	pipelineInfo.layout = m_PipelineLayout;
+
+	VK_CHECK(vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_Pipeline));
+
+	// Create descriptor pool + set
+	VkDescriptorPoolSize poolSize = {};
+	poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	poolSize.descriptorCount = 5;
+
+	VkDescriptorPoolCreateInfo poolInfo = {};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.maxSets = 1;
+	poolInfo.poolSizeCount = 1;
+	poolInfo.pPoolSizes = &poolSize;
+	VK_CHECK(vkCreateDescriptorPool(dev.device, &poolInfo, nullptr, &m_Pool));
+
+	VkDescriptorSetAllocateInfo allocInfo = {};
+	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	allocInfo.descriptorPool = m_Pool;
+	allocInfo.descriptorSetCount = 1;
+	allocInfo.pSetLayouts = &m_SetLayout;
+	VK_CHECK(vkAllocateDescriptorSets(dev.device, &allocInfo, &m_DescriptorSet));
+
+	RT_LOG("[ComposePass] initialized");
+	return true;
+}
+
+void ComposePass::Destroy()
+{
+	if (!m_Pipeline) return;
+	VkDevice device = m_Device;
+	if (m_Pipeline)       { vkDestroyPipeline(device, m_Pipeline, nullptr);       m_Pipeline = VK_NULL_HANDLE; }
+	if (m_PipelineLayout) { vkDestroyPipelineLayout(device, m_PipelineLayout, nullptr); m_PipelineLayout = VK_NULL_HANDLE; }
+	if (m_SetLayout)      { vkDestroyDescriptorSetLayout(device, m_SetLayout, nullptr); m_SetLayout = VK_NULL_HANDLE; }
+	if (m_Pool)           { vkDestroyDescriptorPool(device, m_Pool, nullptr);     m_Pool = VK_NULL_HANDLE; }
+	if (m_Shader)         { vkDestroyShaderModule(device, m_Shader, nullptr);     m_Shader = VK_NULL_HANDLE; }
+	m_DescriptorSet = VK_NULL_HANDLE;
+}
+
+void ComposePass::OnResize(const GpuDevice& dev, uint32_t width, uint32_t height)
+{
+	(void)dev;
+	(void)width;
+	(void)height;
+	// Compose pass doesn't own images, no resize needed
+}
+
+void ComposePass::UpdateDescriptorSet(const GpuDevice& dev,
+                                      VkImageView outputView,
+                                      VkImageView nrdDiffOutView,
+                                      VkImageView nrdSpecOutView,
+                                      VkImageView albedoF0View,
+                                      VkImageView directEmissionView)
+{
+	VkDescriptorImageInfo imageInfos[5] = {};
+	VkImageView views[] = { outputView, nrdDiffOutView, nrdSpecOutView, albedoF0View, directEmissionView };
+	for (int i = 0; i < 5; i++)
+	{
+		imageInfos[i].imageView = views[i];
+		imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	}
+
+	VkWriteDescriptorSet writes[5] = {};
+	for (int i = 0; i < 5; i++)
+	{
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].dstSet = m_DescriptorSet;
+		writes[i].dstBinding = i;
+		writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		writes[i].descriptorCount = 1;
+		writes[i].pImageInfo = &imageInfos[i];
+	}
+
+	vkUpdateDescriptorSets(dev.device, 5, writes, 0, nullptr);
+}
+
+void ComposePass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height) const
+{
+	if (!m_Pipeline || !m_DescriptorSet) return;
+
+	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Pipeline);
+	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_PipelineLayout, 0, 1, &m_DescriptorSet, 0, nullptr);
+	vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
+}

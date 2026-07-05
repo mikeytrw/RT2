@@ -8,6 +8,7 @@
 #include "Camera.h"
 #include "GPUSceneData.h"
 #include "GpuDevice.h"
+#include "ComposePass.h"
 #include "NRDIntegration.h"
 #include "Scene.h"
 #include <memory>
@@ -88,12 +89,6 @@ private:
 	void DestroyGBufferImages();
 	void CreateGBufferDescriptorSet();
 	void UpdateGBufferDescriptorSet();
-
-	// Compose pass (compute shader)
-	void CreateComposePipeline();
-	void DestroyComposePipeline();
-	void CreateComposeDescriptorSet();
-	void UpdateComposeDescriptorSet();
 
 	bool m_Initialized = false;
 
@@ -213,12 +208,7 @@ private:
 	VkDescriptorPool m_GBufferPool = VK_NULL_HANDLE;
 
 	// Compose pass (compute shader: NRD outputs + albedo/F0 -> beauty)
-	VkPipeline m_ComposePipeline = VK_NULL_HANDLE;
-	VkPipelineLayout m_ComposePipelineLayout = VK_NULL_HANDLE;
-	VkDescriptorSetLayout m_ComposeSetLayout = VK_NULL_HANDLE;
-	VkDescriptorSet m_ComposeSet = VK_NULL_HANDLE;
-	VkDescriptorPool m_ComposePool = VK_NULL_HANDLE;
-	VkShaderModule m_ComposeShader = VK_NULL_HANDLE;
+	ComposePass m_ComposePass;
 
 	// NRD integration wrapper
 	NRDWrapper m_NRD;
