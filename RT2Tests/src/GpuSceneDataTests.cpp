@@ -5,12 +5,48 @@
 #include <glm/glm.hpp>
 
 // ============================================================================
+// shader_interface.h struct layout tests (shared C++/GLSL)
+// ============================================================================
+
+TEST_CASE("SICameraData is 496 bytes (7 vec4 + 6 mat4)")
+{
+    CHECK(sizeof(SICameraData) == 496);
+}
+
+TEST_CASE("SIMaterial is 80 bytes")
+{
+    CHECK(sizeof(SIMaterial) == 80);
+}
+
+TEST_CASE("SITriangleLight is 32 bytes")
+{
+    CHECK(sizeof(SITriangleLight) == 32);
+}
+
+TEST_CASE("SINRDUniformData is 16 bytes")
+{
+    CHECK(sizeof(SINRDUniformData) == 16);
+}
+
+TEST_CASE("GPUMaterial matches SIMaterial layout")
+{
+    CHECK(sizeof(GPUMaterial) == sizeof(SIMaterial));
+    CHECK(offsetof(GPUMaterial, baseColor_metallic) == offsetof(SIMaterial, baseColor_metallic));
+    CHECK(offsetof(GPUMaterial, textureIndices) == offsetof(SIMaterial, textureIndices));
+}
+
+TEST_CASE("GPUTriangleLight matches SITriangleLight layout")
+{
+    CHECK(sizeof(GPUTriangleLight) == sizeof(SITriangleLight));
+}
+
+// ============================================================================
 // GPUMaterial struct layout tests (std430 / 32-byte alignment)
 // ============================================================================
 
-TEST_CASE("GPUMaterial is 64 bytes (3 vec4 + ivec4, std430)")
+TEST_CASE("GPUMaterial is 80 bytes (2 vec4 + 4 float + 2 ivec4, std430)")
 {
-    CHECK(sizeof(GPUMaterial) == 64);
+    CHECK(sizeof(GPUMaterial) == 80);
 }
 
 TEST_CASE("GPUMaterial default values are sensible")
@@ -466,9 +502,9 @@ TEST_CASE("GPUMaterial fromSceneMaterial converts alphaMode OPAQUE")
     CHECK(gm.alphaMode == 0.0f);
 }
 
-TEST_CASE("GPUMaterial is still 64 bytes with alpha fields")
+TEST_CASE("GPUMaterial is 80 bytes with extraIndices for metallicRoughness")
 {
-    CHECK(sizeof(GPUMaterial) == 64);
+    CHECK(sizeof(GPUMaterial) == 80);
 }
 
 // ============================================================================
