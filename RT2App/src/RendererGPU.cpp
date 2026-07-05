@@ -14,22 +14,13 @@
 
 uint32_t RendererGPU::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
 {
-	VkPhysicalDeviceMemoryProperties memProperties;
-	vkGetPhysicalDeviceMemoryProperties(Walnut::Application::GetPhysicalDevice(), &memProperties);
-
-	for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
-	{
-		if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
-			return i;
-	}
-	RT_LOG("[FindMemoryType] FAILED: typeFilter=0x%X properties=0x%X — no matching memory type", typeFilter, properties);
-	return 0xFFFFFFFF; // invalid — callers should check
+	return m_Device.FindMemoryType(typeFilter, properties);
 }
 
 void RendererGPU::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
                                 VkBuffer& buffer, VkDeviceMemory& memory)
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	VkBufferCreateInfo bufferInfo = {};
 	bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -66,24 +57,23 @@ void RendererGPU::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMe
 
 void RendererGPU::DestroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory)
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	if (buffer) { vkDestroyBuffer(device, buffer, nullptr); buffer = VK_NULL_HANDLE; }
 	if (memory) { vkFreeMemory(device, memory, nullptr);    memory = VK_NULL_HANDLE; }
 }
 
 VkDeviceAddress RendererGPU::GetBufferDeviceAddress(VkBuffer buffer)
 {
-	VkBufferDeviceAddressInfo info = {};
-	info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-	info.buffer = buffer;
-	return vkGetBufferDeviceAddress(Walnut::Application::GetDevice(), &info);
+	return m_Device.GetBufferDeviceAddress(buffer);
 }
 
 bool RendererGPU::Init()
 {
 	if (m_Initialized) return true;
 
-	if (!Walnut::Application::IsRayTracingSupported())
+	m_Device.InitFromWalnut();
+
+	if (!m_Device.rayTracingSupported)
 	{
 		std::cerr << "[RT2] Ray tracing not supported, GPU renderer unavailable.\n";
 		return false;
@@ -102,7 +92,7 @@ bool RendererGPU::Init()
 
 void RendererGPU::Destroy()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	vkDeviceWaitIdle(device);
 
 	m_NRD.Destroy();
@@ -133,7 +123,7 @@ void RendererGPU::Destroy()
 
 void RendererGPU::CreatePipeline()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	// Load the six RT shader modules.
 	m_RgenShader   = ShaderManager::LoadShader("raygen.spv");
@@ -277,7 +267,7 @@ void RendererGPU::CreatePipeline()
 
 	// Ray tracing pipeline
 	const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& rtProps =
-		Walnut::Application::GetRayTracingPipelineProperties();
+		m_Device.rtPipelineProps;
 
 	// 6 stages: rgen, miss_sky, miss_shadow, closesthit, anyhit, shadow_anyhit
 	VkPipelineShaderStageCreateInfo stages[6] = {};
@@ -444,7 +434,7 @@ void RendererGPU::CreatePipeline()
 
 void RendererGPU::DestroyPipeline()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	if (m_RTPipeline) vkDestroyPipeline(device, m_RTPipeline, nullptr);
 	if (m_PipelineLayout) vkDestroyPipelineLayout(device, m_PipelineLayout, nullptr);
 	if (m_DescriptorSetLayout) vkDestroyDescriptorSetLayout(device, m_DescriptorSetLayout, nullptr);
@@ -467,7 +457,7 @@ void RendererGPU::DestroyPipeline()
 
 void RendererGPU::CreateOutputImage()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	VkImageCreateInfo imageInfo = {};
 	imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -560,13 +550,13 @@ void RendererGPU::CreateOutputImage()
 
 void RendererGPU::DestroyOutputImage()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	// Free the ImGui descriptor set before destroying the image view/sampler
 	// it references — otherwise the GPU may sample a destroyed resource.
 	if (m_ImGuiDescriptorSet)
 	{
-		vkFreeDescriptorSets(device, Walnut::Application::GetDescriptorPool(),
+		vkFreeDescriptorSets(device, m_Device.descriptorPool,
 		                     1, &m_ImGuiDescriptorSet);
 		m_ImGuiDescriptorSet = VK_NULL_HANDLE;
 	}
@@ -590,13 +580,13 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	if (m_Width == width && m_Height == height && m_OutputImage != VK_NULL_HANDLE)
 		return;
 
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	vkDeviceWaitIdle(device);
 
 	// Free old descriptor set before allocating a new one
 	if (m_DescriptorSet)
 	{
-		vkFreeDescriptorSets(device, Walnut::Application::GetDescriptorPool(), 1, &m_DescriptorSet);
+		vkFreeDescriptorSets(device, m_Device.descriptorPool, 1, &m_DescriptorSet);
 		m_DescriptorSet = VK_NULL_HANDLE;
 	}
 
@@ -619,11 +609,11 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	// Initialize NRD if enabled
 	if (m_NRDEnabled && !m_NRD.IsAvailable())
 	{
-		m_NRD.Init(Walnut::Application::GetInstance(),
-		           Walnut::Application::GetPhysicalDevice(),
-		           Walnut::Application::GetDevice(),
-		           Walnut::Application::GetQueue(),
-		           Walnut::Application::GetQueueFamily(),
+		m_NRD.Init(m_Device.instance,
+		           m_Device.physicalDevice,
+		           m_Device.device,
+		           m_Device.queue,
+		           m_Device.queueFamily,
 		           m_Width, m_Height);
 	}
 	else if (m_NRDEnabled && m_NRD.IsAvailable())
@@ -637,7 +627,7 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 
 void RendererGPU::CreateDescriptorSet()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	// Allocate with fixed maxTextures count so the descriptor set is valid
 	// regardless of how many textures are currently loaded. The variable
@@ -653,7 +643,7 @@ void RendererGPU::CreateDescriptorSet()
 
 	VkDescriptorSetAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	allocInfo.descriptorPool = Walnut::Application::GetDescriptorPool();
+	allocInfo.descriptorPool = m_Device.descriptorPool;
 	allocInfo.descriptorSetCount = 1;
 	allocInfo.pSetLayouts = &m_DescriptorSetLayout;
 	allocInfo.pNext = &varCountInfo;
@@ -671,7 +661,7 @@ void RendererGPU::UpdateDescriptorSet()
 	RT_LOG("[UpdateDS] enter: textures=%d validTextures=%d",
 	       (int)m_Textures.size(), (int)[&]() { int c = 0; for (auto& t : m_Textures) if (t.view && t.sampler) c++; return c; }());
 
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	// Create camera UBO if needed
 	if (!m_CameraUBO)
@@ -858,7 +848,7 @@ void RendererGPU::CreateMaterialBuffer()
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 	             m_MaterialBuffer, m_MaterialBufferMemory);
 
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	void* data;
 	vkMapMemory(device, m_MaterialBufferMemory, 0, m_MaterialBufferSize, 0, &data);
 	memcpy(data, m_CurrentScene.materials.data(), m_MaterialBufferSize);
@@ -895,7 +885,7 @@ void RendererGPU::CreateLightBuffer()
 		       lightCount * sizeof(GPUTriangleLight));
 	}
 
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	void* data;
 	vkMapMemory(device, m_LightBufferMemory, 0, m_LightBufferSize, 0, &data);
 	memcpy(data, bufData.data(), m_LightBufferSize);
@@ -906,7 +896,7 @@ void RendererGPU::CreateLightBuffer()
 
 void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	DestroyTextures();
 
 	m_Textures.resize(textures.size());
@@ -1062,7 +1052,7 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 
 void RendererGPU::DestroyTextures()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	for (auto& gt : m_Textures)
 	{
 		if (gt.sampler) vkDestroySampler(device, gt.sampler, nullptr);
@@ -1084,7 +1074,7 @@ void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
 	if (sceneData.envMapIndex < 0 || sceneData.marginalCDF.empty() || sceneData.conditionalCDF.empty())
 		return;
 
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	// Helper: create a CDF texture and append to m_Textures
 	auto createCDFTexture = [&](const std::vector<float>& cdfData, int w, int h) -> int
@@ -1209,7 +1199,7 @@ void RendererGPU::ResetAccumulation()
 
 void RendererGPU::SetScene(const GPUSceneData& sceneData)
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	RT_LOG("[SetScene] enter: textures=%d, envMapIndex=%d, meshes=%d, materials=%d",
 	       (int)sceneData.textures.size(), sceneData.envMapIndex,
 	       (int)sceneData.meshes.size(), (int)sceneData.materials.size());
@@ -1383,7 +1373,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	m_PrevWorldToView = ubo.worldToView;
 	m_HasPrevMatrices = true;
 
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	void* data;
 	vkMapMemory(device, m_CameraUBOMemory, 0, sizeof(SICameraData), 0, &data);
 	memcpy(data, &ubo, sizeof(SICameraData));
@@ -1417,11 +1407,11 @@ void RendererGPU::Render(const Camera& camera)
 	if (m_NRDEnabled && !m_NRD.IsAvailable() && m_Width > 0 && m_Height > 0)
 	{
 		RT_LOG("[Render] initializing NRD (%ux%u)", m_Width, m_Height);
-		m_NRD.Init(Walnut::Application::GetInstance(),
-		           Walnut::Application::GetPhysicalDevice(),
-		           Walnut::Application::GetDevice(),
-		           Walnut::Application::GetQueue(),
-		           Walnut::Application::GetQueueFamily(),
+		m_NRD.Init(m_Device.instance,
+		           m_Device.physicalDevice,
+		           m_Device.device,
+		           m_Device.queue,
+		           m_Device.queueFamily,
 		           m_Width, m_Height);
 	}
 
@@ -1477,7 +1467,7 @@ void RendererGPU::Render(const Camera& camera)
 		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0, nullptr, 1, &rtWriteBarrier);
 
 	// Update NRD UBO
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	if (m_NRDUBO)
 	{
 		SINRDUniformData nrdData = { m_NRDEnabled ? 1u : 0u, 0, 0, 0 };
@@ -1660,7 +1650,7 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 	if (!m_Initialized || m_OutputImage == VK_NULL_HANDLE || m_Width == 0 || m_Height == 0)
 		return false;
 
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	// Create a host-visible staging buffer
 	VkBuffer stagingBuffer;
@@ -1765,7 +1755,7 @@ void RendererGPU::CreateGBufferImages()
 {
 	DestroyGBufferImages();
 
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	struct GBufferImageSpec
 	{
@@ -1851,7 +1841,7 @@ void RendererGPU::CreateGBufferImages()
 
 void RendererGPU::DestroyGBufferImages()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	struct ImgPair { VkImage& img; VkDeviceMemory& mem; VkImageView& view; };
 	ImgPair pairs[] = {
@@ -1876,7 +1866,7 @@ void RendererGPU::DestroyGBufferImages()
 
 void RendererGPU::CreateGBufferDescriptorSet()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	// Set 1 layout: 7 storage images (0-5, 7) + 1 UBO (6)
 	VkDescriptorSetLayoutBinding bindings[8] = {};
@@ -1940,7 +1930,7 @@ void RendererGPU::CreateGBufferDescriptorSet()
 
 void RendererGPU::UpdateGBufferDescriptorSet()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	VkDescriptorImageInfo imageInfos[7] = {};
 	VkImageView views[] = { m_GNormalRoughnessView, m_GViewZView, m_GMotionView, m_GDiffRadianceView, m_GSpecRadianceView, m_GAlbedoF0View, m_GDirectEmissionView };
@@ -1987,7 +1977,7 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 
 void RendererGPU::CreateComposePipeline()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	m_ComposeShader = ShaderManager::LoadShader("compose.spv");
 	if (!m_ComposeShader)
@@ -2035,7 +2025,7 @@ void RendererGPU::CreateComposePipeline()
 
 void RendererGPU::DestroyComposePipeline()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 	if (m_ComposePipeline) { vkDestroyPipeline(device, m_ComposePipeline, nullptr); m_ComposePipeline = VK_NULL_HANDLE; }
 	if (m_ComposePipelineLayout) { vkDestroyPipelineLayout(device, m_ComposePipelineLayout, nullptr); m_ComposePipelineLayout = VK_NULL_HANDLE; }
 	if (m_ComposeSetLayout) { vkDestroyDescriptorSetLayout(device, m_ComposeSetLayout, nullptr); m_ComposeSetLayout = VK_NULL_HANDLE; }
@@ -2046,7 +2036,7 @@ void RendererGPU::DestroyComposePipeline()
 
 void RendererGPU::CreateComposeDescriptorSet()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	VkDescriptorPoolSize poolSize = {};
 	poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -2069,7 +2059,7 @@ void RendererGPU::CreateComposeDescriptorSet()
 
 void RendererGPU::UpdateComposeDescriptorSet()
 {
-	VkDevice device = Walnut::Application::GetDevice();
+	VkDevice device = m_Device.device;
 
 	VkDescriptorImageInfo imageInfos[5] = {};
 	VkImageView views[] = { m_OutputImageView, m_NRDDiffOutView, m_NRDSpecOutView, m_GAlbedoF0View, m_GDirectEmissionView };

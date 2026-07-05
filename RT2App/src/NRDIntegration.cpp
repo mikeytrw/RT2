@@ -1,6 +1,5 @@
 #include "NRDIntegration.h"
 #include "RTLog.h"
-#include "Walnut/Application.h"
 
 // Include NRI + NRD headers
 #include "NRI.h"
@@ -37,6 +36,13 @@ bool NRDWrapper::Init(VkInstance instance, VkPhysicalDevice physicalDevice, VkDe
                       VkQueue queue, uint32_t queueFamily, uint32_t width, uint32_t height)
 {
 	RT_LOG("[NRD] Init: w=%u h=%u queueFamily=%u", width, height, queueFamily);
+
+	// Cache device handles for OnResize
+	m_Instance       = instance;
+	m_PhysicalDevice = physicalDevice;
+	m_Device         = device;
+	m_Queue          = queue;
+	m_QueueFamily    = queueFamily;
 
 	// Create NRI device from existing Vulkan device
 	nri::QueueFamilyVKDesc queueFamilyDesc = {};
@@ -146,15 +152,9 @@ void NRDWrapper::OnResize(uint32_t width, uint32_t height)
 	if (!m_Initialized || (width == m_Width && height == m_Height))
 		return;
 
-	// NRD doesn't support resize — must destroy and recreate
-	VkInstance instance = Walnut::Application::GetInstance();
-	VkPhysicalDevice physicalDevice = Walnut::Application::GetPhysicalDevice();
-	VkDevice device = Walnut::Application::GetDevice();
-	VkQueue queue = Walnut::Application::GetQueue();
-	uint32_t queueFamily = Walnut::Application::GetQueueFamily();
-
+	// NRD doesn't support resize — must destroy and recreate using cached handles
 	Destroy();
-	Init(instance, physicalDevice, device, queue, queueFamily, width, height);
+	Init(m_Instance, m_PhysicalDevice, m_Device, m_Queue, m_QueueFamily, width, height);
 }
 
 void NRDWrapper::NewFrame()

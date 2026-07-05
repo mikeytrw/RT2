@@ -7,6 +7,7 @@
 #include "AccelerationStructure.h"
 #include "Camera.h"
 #include "GPUSceneData.h"
+#include "GpuDevice.h"
 #include "NRDIntegration.h"
 #include "Scene.h"
 #include <memory>
@@ -95,6 +96,8 @@ private:
 	void UpdateComposeDescriptorSet();
 
 	bool m_Initialized = false;
+
+	GpuDevice m_Device;
 
 	uint32_t m_Width = 0;
 	uint32_t m_Height = 0;

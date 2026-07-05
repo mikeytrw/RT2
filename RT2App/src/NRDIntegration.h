@@ -50,6 +50,13 @@ private:
 	uint32_t m_Width = 0;
 	uint32_t m_Height = 0;
 
+	// Cached device handles for OnResize
+	VkInstance      m_Instance       = VK_NULL_HANDLE;
+	VkPhysicalDevice m_PhysicalDevice = VK_NULL_HANDLE;
+	VkDevice        m_Device         = VK_NULL_HANDLE;
+	VkQueue         m_Queue          = VK_NULL_HANDLE;
+	uint32_t        m_QueueFamily    = 0;
+
 	nri::Device* m_NRIDevice = nullptr;
 	nrd::Identifier m_DenoiserID = 0;
 };
