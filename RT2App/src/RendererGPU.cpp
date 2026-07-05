@@ -88,6 +88,7 @@ bool RendererGPU::Init()
 		std::cerr << "[RT2] GPU renderer initialization failed (shader or pipeline creation error)\n";
 		return false;
 	}
+	CreateComposePipeline();
 	m_Initialized = true;
 	return true;
 }
@@ -99,6 +100,7 @@ void RendererGPU::Destroy()
 
 	m_NRD.Destroy();
 	DestroyPipeline();
+	DestroyComposePipeline();
 	DestroyOutputImage();
 	DestroyGBufferImages();
 	DestroyTextures();
@@ -600,6 +602,12 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	CreateGBufferImages();
 	CreateDescriptorSet();
 	UpdateGBufferDescriptorSet();
+
+	// Compose pass descriptor set (needs NRD output views + albedoF0 view)
+	if (m_ComposeSetLayout && !m_ComposeSet)
+		CreateComposeDescriptorSet();
+	if (m_ComposeSet)
+		UpdateComposeDescriptorSet();
 
 	// Initialize NRD if enabled
 	if (m_NRDEnabled && !m_NRD.IsAvailable())
@@ -1189,6 +1197,7 @@ void RendererGPU::DestroyEnvMapCDFTextures()
 void RendererGPU::ResetAccumulation()
 {
 	m_FrameIndex = 1;
+	m_HasPrevMatrices = false;
 }
 
 void RendererGPU::SetScene(const GPUSceneData& sceneData)
@@ -1558,7 +1567,10 @@ void RendererGPU::Render(const Camera& camera)
 			glm::value_ptr(worldToView),
 			glm::value_ptr(prevWorldToView),
 			0.0f, 0.0f, 0.0f, 0.0f, // jitter (TODO)
-			m_FrameIndex, reset);
+			m_FrameIndex, reset, m_NRDSplitScreen);
+
+		m_NRD.SetReblurSettings(m_NRDMaxBlurRadius, (uint32_t)m_NRDMaxAccumFrames,
+		                        m_NRDAntiFirefly, m_NRDSplitScreen);
 
 		m_NRD.Denoise(cmd,
 			m_GNormalRoughness, VK_FORMAT_R8G8B8A8_UNORM,
@@ -1570,6 +1582,35 @@ void RendererGPU::Render(const Camera& camera)
 
 		// NRD with restoreInitialState=true + GENERAL layout restores images
 		// to GENERAL after denoising, so no manual barriers needed.
+
+		// Compose pass: remodulate NRD outputs by albedo/F0, write to beauty
+		if (m_ComposePipeline && m_ComposeSet)
+		{
+			// Barrier: NRD outputs (compute writes) → compose (compute reads)
+			VkImage composeImgs[] = { m_NRDDiffOut, m_NRDSpecOut, m_GAlbedoF0 };
+			for (auto img : composeImgs)
+			{
+				VkImageMemoryBarrier b = {};
+				b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+				b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+				b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+				b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+				b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				b.image = img;
+				b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+				b.subresourceRange.levelCount = 1;
+				b.subresourceRange.layerCount = 1;
+				vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+				                     0, nullptr, 0, nullptr, 1, &b);
+			}
+
+			vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ComposePipeline);
+			vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_ComposePipelineLayout, 0, 1, &m_ComposeSet, 0, nullptr);
+			vkCmdDispatch(cmd, (m_Width + 15) / 16, (m_Height + 15) / 16, 1);
+		}
 	}
 
 	VkImageMemoryBarrier rtReadBarrier = {};
@@ -1585,7 +1626,13 @@ void RendererGPU::Render(const Camera& camera)
 	rtReadBarrier.subresourceRange.levelCount = 1;
 	rtReadBarrier.subresourceRange.layerCount = 1;
 
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &rtReadBarrier);
+	// If NRD+compose ran, the output image was written by compute (compose).
+	// Otherwise it was written by the ray tracing shader.
+	VkPipelineStageFlags srcStage = (m_NRDEnabled && m_NRD.IsAvailable() && m_ComposePipeline)
+		? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+		: VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
+
+	vkCmdPipelineBarrier(cmd, srcStage, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &rtReadBarrier);
 
 	Walnut::Application::FlushCommandBuffer(cmd);
 
@@ -1614,8 +1661,10 @@ void RendererGPU::CreateGBufferImages()
 		{ VK_FORMAT_R16G16_SFLOAT,       m_GMotion,          m_GMotionMem,          m_GMotionView },
 		{ VK_FORMAT_R16G16B16A16_SFLOAT, m_GDiffRadiance,    m_GDiffRadianceMem,    m_GDiffRadianceView },
 		{ VK_FORMAT_R16G16B16A16_SFLOAT, m_GSpecRadiance,    m_GSpecRadianceMem,    m_GSpecRadianceView },
-		{ VK_FORMAT_B10G11R11_UFLOAT_PACK32, m_NRDDiffOut,       m_NRDDiffOutMem,       m_NRDDiffOutView },
-		{ VK_FORMAT_B10G11R11_UFLOAT_PACK32, m_NRDSpecOut,       m_NRDSpecOutMem,       m_NRDSpecOutView },
+		{ VK_FORMAT_R16G16B16A16_SFLOAT, m_GAlbedoF0,        m_GAlbedoF0Mem,        m_GAlbedoF0View },
+		{ VK_FORMAT_R16G16B16A16_SFLOAT, m_GDirectEmission,  m_GDirectEmissionMem,  m_GDirectEmissionView },
+		{ VK_FORMAT_R16G16B16A16_SFLOAT, m_NRDDiffOut,       m_NRDDiffOutMem,       m_NRDDiffOutView },
+		{ VK_FORMAT_R16G16B16A16_SFLOAT, m_NRDSpecOut,       m_NRDSpecOutMem,       m_NRDSpecOutView },
 	};
 
 	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
@@ -1691,6 +1740,8 @@ void RendererGPU::DestroyGBufferImages()
 		{ m_GMotion,          m_GMotionMem,          m_GMotionView },
 		{ m_GDiffRadiance,    m_GDiffRadianceMem,    m_GDiffRadianceView },
 		{ m_GSpecRadiance,    m_GSpecRadianceMem,    m_GSpecRadianceView },
+		{ m_GAlbedoF0,        m_GAlbedoF0Mem,        m_GAlbedoF0View },
+		{ m_GDirectEmission,  m_GDirectEmissionMem,  m_GDirectEmissionView },
 		{ m_NRDDiffOut,       m_NRDDiffOutMem,       m_NRDDiffOutView },
 		{ m_NRDSpecOut,       m_NRDSpecOutMem,       m_NRDSpecOutView },
 	};
@@ -1707,23 +1758,30 @@ void RendererGPU::CreateGBufferDescriptorSet()
 {
 	VkDevice device = Walnut::Application::GetDevice();
 
-	// Set 1 layout: 5 storage images + 1 UBO
-	VkDescriptorSetLayoutBinding bindings[6] = {};
-	for (int i = 0; i < 5; i++)
+	// Set 1 layout: 7 storage images (0-5, 7) + 1 UBO (6)
+	VkDescriptorSetLayoutBinding bindings[8] = {};
+	// Bindings 0-5: storage images (gNormalRoughness, gViewZ, gMotion, gDiff, gSpec, gAlbedoF0)
+	for (int i = 0; i < 6; i++)
 	{
 		bindings[i].binding = i;
 		bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		bindings[i].descriptorCount = 1;
 		bindings[i].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 	}
-	bindings[5].binding = 5;
-	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	bindings[5].descriptorCount = 1;
-	bindings[5].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+	// Binding 6: UBO (nrdData)
+	bindings[6].binding = 6;
+	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[6].descriptorCount = 1;
+	bindings[6].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+	// Binding 7: gDirectEmission storage image
+	bindings[7].binding = 7;
+	bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[7].descriptorCount = 1;
+	bindings[7].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 6;
+	layoutInfo.bindingCount = 8;
 	layoutInfo.pBindings = bindings;
 
 	vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_GBufferSetLayout);
@@ -1731,7 +1789,7 @@ void RendererGPU::CreateGBufferDescriptorSet()
 	// Create dedicated pool
 	VkDescriptorPoolSize poolSizes[2] = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	poolSizes[0].descriptorCount = 5;
+	poolSizes[0].descriptorCount = 7;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSizes[1].descriptorCount = 1;
 
@@ -1764,9 +1822,9 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 {
 	VkDevice device = Walnut::Application::GetDevice();
 
-	VkDescriptorImageInfo imageInfos[5] = {};
-	VkImageView views[] = { m_GNormalRoughnessView, m_GViewZView, m_GMotionView, m_GDiffRadianceView, m_GSpecRadianceView };
-	for (int i = 0; i < 5; i++)
+	VkDescriptorImageInfo imageInfos[7] = {};
+	VkImageView views[] = { m_GNormalRoughnessView, m_GViewZView, m_GMotionView, m_GDiffRadianceView, m_GSpecRadianceView, m_GAlbedoF0View, m_GDirectEmissionView };
+	for (int i = 0; i < 7; i++)
 	{
 		imageInfos[i].imageView = views[i];
 		imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1776,8 +1834,9 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 	uboInfo.buffer = m_NRDUBO;
 	uboInfo.range = VK_WHOLE_SIZE;
 
-	VkWriteDescriptorSet writes[6] = {};
-	for (int i = 0; i < 5; i++)
+	VkWriteDescriptorSet writes[8] = {};
+	// Storage images: bindings 0-5 and 7
+	for (int i = 0; i < 6; i++)
 	{
 		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[i].dstSet = m_GBufferSet;
@@ -1786,12 +1845,130 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 		writes[i].descriptorCount = 1;
 		writes[i].pImageInfo = &imageInfos[i];
 	}
-	writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[5].dstSet = m_GBufferSet;
-	writes[5].dstBinding = 5;
-	writes[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	writes[5].descriptorCount = 1;
-	writes[5].pBufferInfo = &uboInfo;
+	// UBO: binding 6
+	writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[6].dstSet = m_GBufferSet;
+	writes[6].dstBinding = 6;
+	writes[6].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	writes[6].descriptorCount = 1;
+	writes[6].pBufferInfo = &uboInfo;
+	// Direct emission: binding 7
+	writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[7].dstSet = m_GBufferSet;
+	writes[7].dstBinding = 7;
+	writes[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	writes[7].descriptorCount = 1;
+	writes[7].pImageInfo = &imageInfos[6];
 
-	vkUpdateDescriptorSets(device, 6, writes, 0, nullptr);
+	vkUpdateDescriptorSets(device, 8, writes, 0, nullptr);
+}
+
+// ---- Compose pass (compute shader) ------------------------------------------
+
+void RendererGPU::CreateComposePipeline()
+{
+	VkDevice device = Walnut::Application::GetDevice();
+
+	m_ComposeShader = ShaderManager::LoadShader("compose.spv");
+	if (!m_ComposeShader)
+		m_ComposeShader = ShaderManager::LoadShader("RT2App/shaders/compose.spv");
+	if (!m_ComposeShader)
+	{
+		std::cerr << "[RT2] Failed to load compose shader\n";
+		return;
+	}
+
+	// Descriptor set layout: 5 storage images (output, nrdDiff, nrdSpec, albedoF0, directEmission)
+	VkDescriptorSetLayoutBinding bindings[5] = {};
+	for (int i = 0; i < 5; i++)
+	{
+		bindings[i].binding = i;
+		bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		bindings[i].descriptorCount = 1;
+		bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+	}
+
+	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	layoutInfo.bindingCount = 5;
+	layoutInfo.pBindings = bindings;
+	vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_ComposeSetLayout);
+
+	// Pipeline layout
+	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
+	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	pipelineLayoutInfo.setLayoutCount = 1;
+	pipelineLayoutInfo.pSetLayouts = &m_ComposeSetLayout;
+	vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &m_ComposePipelineLayout);
+
+	// Compute pipeline
+	VkComputePipelineCreateInfo pipelineInfo = {};
+	pipelineInfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+	pipelineInfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	pipelineInfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+	pipelineInfo.stage.module = m_ComposeShader;
+	pipelineInfo.stage.pName = "main";
+	pipelineInfo.layout = m_ComposePipelineLayout;
+
+	vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_ComposePipeline);
+}
+
+void RendererGPU::DestroyComposePipeline()
+{
+	VkDevice device = Walnut::Application::GetDevice();
+	if (m_ComposePipeline) { vkDestroyPipeline(device, m_ComposePipeline, nullptr); m_ComposePipeline = VK_NULL_HANDLE; }
+	if (m_ComposePipelineLayout) { vkDestroyPipelineLayout(device, m_ComposePipelineLayout, nullptr); m_ComposePipelineLayout = VK_NULL_HANDLE; }
+	if (m_ComposeSetLayout) { vkDestroyDescriptorSetLayout(device, m_ComposeSetLayout, nullptr); m_ComposeSetLayout = VK_NULL_HANDLE; }
+	if (m_ComposePool) { vkDestroyDescriptorPool(device, m_ComposePool, nullptr); m_ComposePool = VK_NULL_HANDLE; }
+	if (m_ComposeShader) { vkDestroyShaderModule(device, m_ComposeShader, nullptr); m_ComposeShader = VK_NULL_HANDLE; }
+	m_ComposeSet = VK_NULL_HANDLE;
+}
+
+void RendererGPU::CreateComposeDescriptorSet()
+{
+	VkDevice device = Walnut::Application::GetDevice();
+
+	VkDescriptorPoolSize poolSize = {};
+	poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	poolSize.descriptorCount = 5;
+
+	VkDescriptorPoolCreateInfo poolInfo = {};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.maxSets = 1;
+	poolInfo.poolSizeCount = 1;
+	poolInfo.pPoolSizes = &poolSize;
+	vkCreateDescriptorPool(device, &poolInfo, nullptr, &m_ComposePool);
+
+	VkDescriptorSetAllocateInfo allocInfo = {};
+	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	allocInfo.descriptorPool = m_ComposePool;
+	allocInfo.descriptorSetCount = 1;
+	allocInfo.pSetLayouts = &m_ComposeSetLayout;
+	vkAllocateDescriptorSets(device, &allocInfo, &m_ComposeSet);
+}
+
+void RendererGPU::UpdateComposeDescriptorSet()
+{
+	VkDevice device = Walnut::Application::GetDevice();
+
+	VkDescriptorImageInfo imageInfos[5] = {};
+	VkImageView views[] = { m_OutputImageView, m_NRDDiffOutView, m_NRDSpecOutView, m_GAlbedoF0View, m_GDirectEmissionView };
+	for (int i = 0; i < 5; i++)
+	{
+		imageInfos[i].imageView = views[i];
+		imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	}
+
+	VkWriteDescriptorSet writes[5] = {};
+	for (int i = 0; i < 5; i++)
+	{
+		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[i].dstSet = m_ComposeSet;
+		writes[i].dstBinding = i;
+		writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		writes[i].descriptorCount = 1;
+		writes[i].pImageInfo = &imageInfos[i];
+	}
+
+	vkUpdateDescriptorSets(device, 5, writes, 0, nullptr);
 }

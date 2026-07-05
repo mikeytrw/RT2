@@ -19,7 +19,7 @@ Camera::Camera(float verticalFOV, float nearClip, float farClip, float apeture, 
 	m_ForwardDirection = glm::vec3(0,0, -1);
 	m_Position = glm::vec3(0, 1, 10);
 
-	m_Aperture = 0.05f;
+	m_Aperture = 0.0f;
 }
 
 bool Camera::OnUpdate(float ts)

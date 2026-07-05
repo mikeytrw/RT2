@@ -74,6 +74,7 @@ struct SceneMaterial
     int baseColorTextureIndex = -1;
     int normalTextureIndex = -1;
     int emissiveTextureIndex = -1;
+    int metallicRoughnessTextureIndex = -1;
 
     // glTF alpha mode: "OPAQUE", "MASK", "BLEND"
     std::string alphaMode = "OPAQUE";

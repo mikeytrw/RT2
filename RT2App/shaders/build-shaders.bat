@@ -24,6 +24,8 @@ if %ERRORLEVEL% neq 0 goto :fail
 if %ERRORLEVEL% neq 0 goto :fail
 %GLSLC% %TARGET% -fshader-stage=rahit "%SHADER_DIR%shadow.rahit"     -o "%SHADER_DIR%shadowhit.spv"     -I "%SHADER_DIR%"
 if %ERRORLEVEL% neq 0 goto :fail
+%GLSLC% %TARGET% -fshader-stage=comp   "%SHADER_DIR%compose.comp"     -o "%SHADER_DIR%compose.spv"       -I "%SHADER_DIR%"
+if %ERRORLEVEL% neq 0 goto :fail
 
 echo RT shaders compiled successfully.
 exit /b 0

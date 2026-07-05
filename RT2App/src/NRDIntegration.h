@@ -27,7 +27,10 @@ public:
 	                       const float* worldToView, const float* worldToViewPrev,
 	                       float jitterX, float jitterY,
 	                       float jitterXPrev, float jitterYPrev,
-	                       uint32_t frameIndex, bool reset);
+	                       uint32_t frameIndex, bool reset, float splitScreen = 0.0f);
+
+	void SetReblurSettings(float maxBlurRadius, uint32_t maxAccumulatedFrameNum,
+	                       bool enableAntiFirefly, float splitScreen);
 
 	void Denoise(VkCommandBuffer cmdBuffer,
 	             VkImage inNormalRoughness, VkFormat normalRoughnessFmt,

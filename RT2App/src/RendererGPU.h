@@ -54,6 +54,12 @@ public:
 	float m_EnvIntensity = 1.0f;
 	bool m_NRDEnabled = false;  // NRD denoiser toggle
 
+	// NRD tunable settings (exposed in UI)
+	float m_NRDMaxBlurRadius = 30.0f;
+	int m_NRDMaxAccumFrames = 30;
+	bool m_NRDAntiFirefly = true;
+	float m_NRDSplitScreen = 0.0f;
+
 private:
 	void CreateOutputImage();
 	void DestroyOutputImage();
@@ -69,11 +75,17 @@ private:
 	void CreateEnvMapCDFTextures(const GPUSceneData& sceneData);
 	void DestroyEnvMapCDFTextures();
 
-	// NRD G-buffer images (set 1)
+	// NRD G-buffer images (set 1, bindings 0-4)
 	void CreateGBufferImages();
 	void DestroyGBufferImages();
 	void CreateGBufferDescriptorSet();
 	void UpdateGBufferDescriptorSet();
+
+	// Compose pass (compute shader)
+	void CreateComposePipeline();
+	void DestroyComposePipeline();
+	void CreateComposeDescriptorSet();
+	void UpdateComposeDescriptorSet();
 
 	bool m_Initialized = false;
 
@@ -162,6 +174,16 @@ private:
 	VkDeviceMemory m_GSpecRadianceMem = VK_NULL_HANDLE;
 	VkImageView m_GSpecRadianceView = VK_NULL_HANDLE;
 
+	// Albedo + F0 for compose pass remodulation (set 1 binding 6, RT writes, compose reads)
+	VkImage m_GAlbedoF0 = VK_NULL_HANDLE;
+	VkDeviceMemory m_GAlbedoF0Mem = VK_NULL_HANDLE;
+	VkImageView m_GAlbedoF0View = VK_NULL_HANDLE;
+
+	// Direct emission (emissive surfaces + sky) — bypasses NRD, added in compose
+	VkImage m_GDirectEmission = VK_NULL_HANDLE;
+	VkDeviceMemory m_GDirectEmissionMem = VK_NULL_HANDLE;
+	VkImageView m_GDirectEmissionView = VK_NULL_HANDLE;
+
 	// NRD output images (denoised)
 	VkImage m_NRDDiffOut = VK_NULL_HANDLE;
 	VkDeviceMemory m_NRDDiffOutMem = VK_NULL_HANDLE;
@@ -179,6 +201,14 @@ private:
 	VkDescriptorSetLayout m_GBufferSetLayout = VK_NULL_HANDLE;
 	VkDescriptorSet m_GBufferSet = VK_NULL_HANDLE;
 	VkDescriptorPool m_GBufferPool = VK_NULL_HANDLE;
+
+	// Compose pass (compute shader: NRD outputs + albedo/F0 -> beauty)
+	VkPipeline m_ComposePipeline = VK_NULL_HANDLE;
+	VkPipelineLayout m_ComposePipelineLayout = VK_NULL_HANDLE;
+	VkDescriptorSetLayout m_ComposeSetLayout = VK_NULL_HANDLE;
+	VkDescriptorSet m_ComposeSet = VK_NULL_HANDLE;
+	VkDescriptorPool m_ComposePool = VK_NULL_HANDLE;
+	VkShaderModule m_ComposeShader = VK_NULL_HANDLE;
 
 	// NRD integration wrapper
 	NRDWrapper m_NRD;

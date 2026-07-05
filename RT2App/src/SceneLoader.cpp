@@ -107,6 +107,12 @@ bool SceneLoader::Save(const Scene& scene, const std::string& filepath)
             gmat.pbrMetallicRoughness.baseColorTexture.texCoord = 0;
         }
 
+        if (mat.metallicRoughnessTextureIndex >= 0 && mat.metallicRoughnessTextureIndex < (int)model.textures.size())
+        {
+            gmat.pbrMetallicRoughness.metallicRoughnessTexture.index = mat.metallicRoughnessTextureIndex;
+            gmat.pbrMetallicRoughness.metallicRoughnessTexture.texCoord = 0;
+        }
+
         gmat.emissiveFactor = {
             mat.emissiveIntensity > 0.0f ? mat.emissiveColor.r : 0.0f,
             mat.emissiveIntensity > 0.0f ? mat.emissiveColor.g : 0.0f,
@@ -158,6 +164,7 @@ bool SceneLoader::Save(const Scene& scene, const std::string& filepath)
         matExtras["baseColorTextureIndex"] = tinygltf::Value(mat.baseColorTextureIndex);
         matExtras["normalTextureIndex"] = tinygltf::Value(mat.normalTextureIndex);
         matExtras["emissiveTextureIndex"] = tinygltf::Value(mat.emissiveTextureIndex);
+        matExtras["metallicRoughnessTextureIndex"] = tinygltf::Value(mat.metallicRoughnessTextureIndex);
         matExtras["emissiveColor"] = tinygltf::Value(tinygltf::Value::Array({
             tinygltf::Value(static_cast<double>(mat.emissiveColor.r)),
             tinygltf::Value(static_cast<double>(mat.emissiveColor.g)),
@@ -497,6 +504,9 @@ bool SceneLoader::Load(Scene& scene, const std::string& filepath)
         if (gmat.pbrMetallicRoughness.baseColorTexture.index >= 0)
             mat.baseColorTextureIndex = gmat.pbrMetallicRoughness.baseColorTexture.index;
 
+        if (gmat.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0)
+            mat.metallicRoughnessTextureIndex = gmat.pbrMetallicRoughness.metallicRoughnessTexture.index;
+
         if (gmat.normalTexture.index >= 0)
             mat.normalTextureIndex = gmat.normalTexture.index;
 
@@ -568,6 +578,10 @@ bool SceneLoader::Load(Scene& scene, const std::string& filepath)
         if (gmat.extras.Has("emissiveTextureIndex"))
         {
             mat.emissiveTextureIndex = (int)gmat.extras.Get("emissiveTextureIndex").GetNumberAsInt();
+        }
+        if (gmat.extras.Has("metallicRoughnessTextureIndex"))
+        {
+            mat.metallicRoughnessTextureIndex = (int)gmat.extras.Get("metallicRoughnessTextureIndex").GetNumberAsInt();
         }
         if (gmat.extras.Has("emissiveColor") && gmat.extras.Get("emissiveColor").IsArray())
         {

@@ -281,6 +281,15 @@ void main()
     vec3 emissive = mat.emissive_roughness.xyz;
     float ior = mat.ior;
 
+    // Metallic-roughness texture: glTF convention — G=roughness, B=metallic
+    int metalRoughTexIdx = mat.extraIndices.x;
+    if (metalRoughTexIdx >= 0)
+    {
+        vec3 mr = texture(textures[nonuniformEXT(metalRoughTexIdx)], uv).rgb;
+        roughness *= mr.g;
+        metallic *= mr.b;
+    }
+
     // Emissive contribution: texture-sampled or flat
     int emissiveTexIdx = mat.textureIndices.z;
     if (emissiveTexIdx >= 0)
@@ -329,6 +338,22 @@ void main()
         }
         payload.b.xyz += payload.a.xyz * emissive * weight * boost;
         payload.c.w = 1.0;
+
+        // NRD: tag emissive hits at depth 0 with lobeType=2 so raygen routes
+        // their radiance to gDirectEmission (bypassing NRD entirely).
+        if (uint(payload.b.w) == 0u && nrdData.nrdEnabled != 0u)
+        {
+            ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+            vec3 geoN = hitFaceNormal();
+            imageStore(gNormalRoughness, pixel, vec4(geoN * 0.5 + 0.5, 1.0));
+            vec3 worldPos = gl_WorldRayOriginEXT + gl_HitTEXT * gl_WorldRayDirectionEXT;
+            float viewZE = (camera.worldToView * vec4(worldPos, 1.0)).z;
+            imageStore(gViewZ, pixel, vec4(viewZE, 0.0, 0.0, 0.0));
+            imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+            imageStore(gAlbedoF0, pixel, vec4(1.0, 1.0, 1.0, 1.0));
+            // lobeType=2 (emissive), viewZ in z, hitT in w
+            payload.e = vec4(0.0, 0.0, 2.0, gl_HitTEXT);
+        }
         return;
     }
 
@@ -580,10 +605,11 @@ void main()
     {
         ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
 
-        // Determine lobe type: 0 = diffuse, 1 = specular (includes reflect/refract)
-        bool isSpecularLobe = isDelta || (r < P_s) ||
-                              (mat.alphaMode < 0.5 && transmissionFactor > 0.0 &&
-                               r >= P_s); // transmission materials: refract = specular
+        // Determine lobe type: 0 = diffuse, 1 = specular (reflect/refract/delta)
+        // Based on what actually scattered, not just material type.
+        // Diffuse = cosine hemisphere sample (nextBsdfPdf == pdfDiffuse, not delta)
+        // Specular = everything else (delta reflect/refract, GGX VNDF, BTDF)
+        bool isSpecularLobe = isDelta || (nextBsdfPdf != pdfDiffuse(scatterDir, n));
         float lobeType = isSpecularLobe ? 1.0 : 0.0;
 
         // World-space normal + roughness. gNormalRoughness is rgba8 UNORM, so
@@ -593,18 +619,28 @@ void main()
         // View-space Z: transform world position to view space
         vec3 worldPos = gl_WorldRayOriginEXT + gl_HitTEXT * rayDir;
         vec4 viewPos = camera.worldToView * vec4(worldPos, 1.0);
-        imageStore(gViewZ, pixel, vec4(viewPos.z, 0.0, 0.0, 0.0));
+        float viewZ = viewPos.z;
+        imageStore(gViewZ, pixel, vec4(viewZ, 0.0, 0.0, 0.0));
+
+        // Motion vectors: temporarily disabled (Vulkan Y-flip issue)
+        imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
 
         // Demodulation factors:
         // Diffuse: divide by albedo = baseColor * (1 - metallic)
         // Specular: divide by F0 (Schlick fresnel at normal incidence)
-        vec3 diffFactor = max(baseColor * (1.0 - metallic), vec3(1e-4));
-        float f0Scalar = max(mix(0.04, luminance(baseColor), metallic), 1e-4);
+        vec3 diffFactor = max(baseColor * (1.0 - metallic), vec3(0.01));
+        float f0Scalar = max(mix(0.04, luminance(baseColor), metallic), 0.01);
+
+        // Store demod factors for the compose compute shader
+        imageStore(gAlbedoF0, pixel, vec4(diffFactor, f0Scalar));
 
         // Return routing/demod info to raygen through the payload.
+        // Pack lobeType into the 4th component of the albedo pack (0-1 range).
+        // Pack F0 + roughness into y via packUnorm2x16.
         // hitT = gl_HitTEXT (> 0); raygen treats e.w == 0 as "primary miss".
-        payload.e = vec4(uintBitsToFloat(packUnorm4x8(vec4(diffFactor, 0.0))),
-                         f0Scalar, lobeType, gl_HitTEXT);
+        payload.e = vec4(uintBitsToFloat(packUnorm4x8(vec4(diffFactor, lobeType))),
+                         uintBitsToFloat(packUnorm2x16(vec2(clamp(f0Scalar, 0.0, 1.0), clamp(roughness, 0.0, 1.0)))),
+                         viewZ, gl_HitTEXT);
     }
 
     if (!doScatter || depth >= maxBounces)

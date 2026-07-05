@@ -28,6 +28,10 @@ struct GPUMaterial
     float     baseAlpha;             // baseColorFactor.a (1.0 = fully opaque, for any-hit)
     glm::ivec4 textureIndices;      // x = baseColor, y = normal, z = emissive,
                                     // w = floatBitsToInt(transmissionFactor)
+    int       metallicRoughnessTextureIndex; // -1 = no texture
+    int       pad0;
+    int       pad1;
+    int       pad2;
 
     static GPUMaterial fromSceneMaterial(const SceneMaterial& sm)
     {
@@ -46,6 +50,7 @@ struct GPUMaterial
             sm.normalTextureIndex,
             sm.emissiveTextureIndex,
             glm::floatBitsToInt(sm.transmissionFactor));
+        m.metallicRoughnessTextureIndex = sm.metallicRoughnessTextureIndex;
         return m;
     }
 
@@ -54,6 +59,7 @@ struct GPUMaterial
         , emissive_roughness(0.0f, 0.0f, 0.0f, 0.5f)
         , ior(1.5f), alphaCutoff(0.5f), alphaMode(0.0f), baseAlpha(1.0f)
         , textureIndices(-1, -1, -1, 0)  // w = floatBitsToInt(0.0f) = 0
+        , metallicRoughnessTextureIndex(-1), pad0(0), pad1(0), pad2(0)
     {}
 };
 

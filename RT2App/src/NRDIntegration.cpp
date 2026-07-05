@@ -173,10 +173,10 @@ void NRDWrapper::ResetHistory()
 }
 
 void NRDWrapper::SetCommonSettings(const float* viewToClip, const float* viewToClipPrev,
-                                   const float* worldToView, const float* worldToViewPrev,
-                                   float jitterX, float jitterY,
-                                   float jitterXPrev, float jitterYPrev,
-                                   uint32_t frameIndex, bool reset)
+                                    const float* worldToView, const float* worldToViewPrev,
+                                    float jitterX, float jitterY,
+                                    float jitterXPrev, float jitterYPrev,
+                                    uint32_t frameIndex, bool reset, float splitScreen)
 {
 	if (!m_Initialized)
 		return;
@@ -207,11 +207,20 @@ void NRDWrapper::SetCommonSettings(const float* viewToClip, const float* viewToC
 	common.frameIndex = frameIndex;
 	common.isMotionVectorInWorldSpace = false;
 	common.accumulationMode = reset ? nrd::AccumulationMode::RESTART : nrd::AccumulationMode::CONTINUE;
+	common.splitScreen = splitScreen;
 
 	g_NRD.SetCommonSettings(common);
+}
 
-	// Set REBLUR settings
-	nrd::ReblurSettings settings = {}; // defaults are fine
+void NRDWrapper::SetReblurSettings(float maxBlurRadius, uint32_t maxAccumulatedFrameNum,
+                                    bool enableAntiFirefly, float splitScreen)
+{
+	if (!m_Initialized) return;
+
+	nrd::ReblurSettings settings = {};
+	settings.maxBlurRadius = maxBlurRadius;
+	settings.maxAccumulatedFrameNum = maxAccumulatedFrameNum;
+	settings.enableAntiFirefly = enableAntiFirefly;
 	g_NRD.SetDenoiserSettings(m_DenoiserID, &settings);
 }
 
@@ -238,8 +247,8 @@ void NRDWrapper::Denoise(VkCommandBuffer cmdBuffer,
 	if (!m_Initialized)
 		return;
 
-	// NRD output format is R11G11B10f (B10G11R11_UFLOAT_PACK32)
-	VkFormat outFmt = VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+	// NRD output format is RGBA16f (signed — needed for YCoCg chroma)
+	VkFormat outFmt = VK_FORMAT_R16G16B16A16_SFLOAT;
 
 	nrd::ResourceSnapshot snapshot = {};
 	snapshot.restoreInitialState = true;

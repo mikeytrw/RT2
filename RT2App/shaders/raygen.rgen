@@ -31,6 +31,7 @@ void main()
     vec3 color = vec3(0.0);
     vec3 diffRad = vec3(0.0);  // NRD: diffuse radiance accumulator
     vec3 specRad = vec3(0.0);  // NRD: specular radiance accumulator
+    vec3 directEmission = vec3(0.0); // NRD: emissive/miss radiance (bypasses NRD)
     float diffHitT = 0.0;
     float specHitT = 0.0;
 
@@ -79,9 +80,22 @@ void main()
 
         if (nrdMode)
         {
-            // Route radiance to diffuse or specular based on primary hit lobe
-            float lobeType = payload.e.z;
-            if (lobeType < 0.5)
+            // Route radiance based on primary hit lobe type:
+            // 0 = diffuse, 1 = specular, 2 = emissive (bypass NRD)
+            // For emissive: lobeType is in payload.e.z (set by closesthit)
+            // For normal: lobeType is packed in payload.e.x's w component
+            float lobeType;
+            if (payload.e.z > 1.5)
+                lobeType = 2.0; // emissive
+            else
+                lobeType = unpackUnorm4x8(floatBitsToUint(payload.e.x)).w;
+
+            if (lobeType > 1.5 || payload.e.w == 0.0)
+            {
+                // Emissive or primary miss — direct emission, bypasses NRD
+                directEmission += payload.b.xyz;
+            }
+            else if (lobeType < 0.5)
             {
                 diffRad += payload.b.xyz;
                 diffHitT = payload.e.w;
@@ -97,31 +111,53 @@ void main()
 
     if (nrdMode)
     {
-        // Primary miss (or emissive hit): closesthit wrote no G-buffer data,
-        // so write sane defaults here (NRD treats huge |viewZ| as sky).
-        if (payload.e.w == 0.0)
+        // Primary miss: write sky defaults (NRD skips viewZ >= denoisingRange)
+        if (payload.e.w == 0.0 && payload.e.z <= 1.5)
         {
             imageStore(gNormalRoughness, pixel, vec4(0.5, 0.5, 1.0, 1.0));
             imageStore(gViewZ, pixel, vec4(1e6, 0.0, 0.0, 0.0));
+            imageStore(gAlbedoF0, pixel, vec4(1.0, 1.0, 1.0, 1.0));
         }
-        // (gNormalRoughness / gViewZ for hits are written by closesthit.)
 
-        // Demodulate: divide radiance by material factors returned in payload.e
-        vec3 diffFactor = max(unpackUnorm4x8(floatBitsToUint(payload.e.x)).xyz, vec3(1e-4));
-        float specFactor = max(payload.e.y, 1e-4);
+        // Write direct emission (emissive surfaces + sky/miss)
+        imageStore(gDirectEmission, pixel, vec4(directEmission, 0.0));
 
-        vec3 demodDiff = diffRad / diffFactor;
-        vec3 demodSpec = specRad / vec3(specFactor);
+        // Zero NRD inputs for emissive/miss pixels (no noisy signal to denoise)
+        bool isEmissiveOrMiss = (payload.e.w == 0.0) || (payload.e.z > 1.5);
+        if (isEmissiveOrMiss)
+        {
+            imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
+            imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
+            imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        }
+        else
+        {
+            // Demodulate: divide radiance by material factors returned in payload.e
+            vec4 albedoLobe = unpackUnorm4x8(floatBitsToUint(payload.e.x));
+            vec2 f0rough = unpackUnorm2x16(floatBitsToUint(payload.e.y));
+            vec3 diffFactor = max(albedoLobe.xyz, vec3(0.01));
+            float specFactor = max(f0rough.x, 0.01);
+            float viewZ = payload.e.z;
+            float roughness = f0rough.y;
 
-        // Motion vector: 2D screen-space (previous UV - current UV)
-        // For static scenes, MV = camera reprojection delta
-        // TODO: compute proper MV from previous/current matrices
-        imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+            vec3 demodDiff = diffRad / diffFactor;
+            vec3 demodSpec = specRad / vec3(specFactor);
 
-        imageStore(gDiffRadianceHitDist, pixel, vec4(demodDiff, diffHitT));
-        imageStore(gSpecRadianceHitDist, pixel, vec4(demodSpec, specHitT));
+            // NRD hit distance normalization
+            vec3 hitDistParams = vec3(3.0, 0.1, 20.0);
+            float normDiffHitT = nrdGetNormHitDist(diffHitT, viewZ, hitDistParams, 1.0);
+            float normSpecHitT = nrdGetNormHitDist(specHitT, viewZ, hitDistParams, roughness);
 
-        // Write beauty output as the sum (will be replaced by NRD compose pass)
+            // NRD expects radiance in YCoCg color space
+            vec3 diffYCoCg = linearToYCoCg(demodDiff);
+            vec3 specYCoCg = linearToYCoCg(demodSpec);
+
+            imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+            imageStore(gDiffRadianceHitDist, pixel, vec4(diffYCoCg, normDiffHitT));
+            imageStore(gSpecRadianceHitDist, pixel, vec4(specYCoCg, normSpecHitT));
+        }
+
+        // Write beauty output as the sum (compose pass will overwrite with denoised)
         imageStore(outputImage, pixel, vec4(color, 1.0));
         return;
     }

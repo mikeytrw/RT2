@@ -1,0 +1,48 @@
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform image2D outputImage;
+layout(set = 0, binding = 1, rgba16f) uniform readonly image2D nrdDiffOut;
+layout(set = 0, binding = 2, rgba16f) uniform readonly image2D nrdSpecOut;
+layout(set = 0, binding = 3, rgba16f) uniform readonly image2D gAlbedoF0;
+layout(set = 0, binding = 4, rgba16f) uniform readonly image2D gDirectEmission;
+
+// NRD REBLUR outputs are encoded in YCoCg color space, not linear RGB.
+// (See REBLUR_BackEnd_UnpackRadianceAndNormHitDist in NRD.hlsli)
+vec3 YCoCgToLinear(vec3 ycocg)
+{
+    float t = ycocg.x - ycocg.z;
+    vec3 linear;
+    linear.y = ycocg.x + ycocg.z;
+    linear.x = t + ycocg.y;
+    linear.z = t - ycocg.y;
+    return max(linear, vec3(0.0));
+}
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outputImage);
+    if (pixel.x >= size.x || pixel.y >= size.y)
+        return;
+
+    vec4 albedoF0 = imageLoad(gAlbedoF0, pixel);
+    vec3 albedo = albedoF0.rgb;
+    float f0 = albedoF0.a;
+
+    // NRD outputs are in YCoCg — convert to linear before remodulation
+    vec3 diffDenoised = YCoCgToLinear(imageLoad(nrdDiffOut, pixel).rgb);
+    vec3 specDenoised = YCoCgToLinear(imageLoad(nrdSpecOut, pixel).rgb);
+
+    // Remodulate: multiply denoised demodulated radiance back by albedo/F0
+    vec3 diffRemod = diffDenoised * albedo;
+    vec3 specRemod = specDenoised * vec3(f0);
+
+    // Add direct emission (emissive surfaces + sky — bypasses NRD)
+    vec3 directEmission = imageLoad(gDirectEmission, pixel).rgb;
+
+    vec3 finalColor = diffRemod + specRemod + directEmission;
+    imageStore(outputImage, pixel, vec4(finalColor, 1.0));
+}

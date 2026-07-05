@@ -12,6 +12,7 @@
 #include "GPUSceneData.h"
 #include "stb_image.h"
 #include <tinyexr.h>
+#include "NRD.h"
 
 #include <cstdio>
 
@@ -62,6 +63,18 @@ public:
 		ImGui::Text("Renderer");
 		bool rtSupported = Walnut::Application::IsRayTracingSupported();
 		ImGui::Text("RT Supported: %s", rtSupported ? "yes" : "no");
+
+		// Auto-init GPU renderer if RT is supported and default is GPU
+		if (rtSupported && m_UseGPU == 1 && !m_RendererGPU.IsAvailable())
+		{
+			if (m_RendererGPU.Init())
+			{
+				m_RendererGPU.m_SPP = m_Renderer.m_SamplesPerPixel;
+				m_RendererGPU.m_MaxBounces = m_Renderer.m_MaxBounceDepth;
+			}
+			else
+				m_UseGPU = 0; // fall back to CPU if init fails
+		}
 		if (rtSupported)
 		{
 			if (ImGui::RadioButton("CPU", m_UseGPU == 0)) { m_UseGPU = 0; }
@@ -141,6 +154,15 @@ public:
 		m_RendererGPU.ResetAccumulation();
 	if (ImGui::Checkbox("NRD Denoiser", &m_RendererGPU.m_NRDEnabled))
 		m_RendererGPU.ResetAccumulation();
+	if (m_RendererGPU.m_NRDEnabled)
+	{
+		ImGui::Indent();
+		ImGui::SliderFloat("Blur Radius", &m_RendererGPU.m_NRDMaxBlurRadius, 1.0f, 50.0f, "%.1f");
+		ImGui::SliderInt("Accum Frames", &m_RendererGPU.m_NRDMaxAccumFrames, 1, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+		ImGui::Checkbox("Anti-Firefly", &m_RendererGPU.m_NRDAntiFirefly);
+		ImGui::SliderFloat("Split Screen", &m_RendererGPU.m_NRDSplitScreen, 0.0f, 1.0f, "%.2f");
+		ImGui::Unindent();
+	}
 	ImGui::Separator();
 	ImGui::Text("Environment Map");
 	if (ImGui::Button("Load HDR..."))
@@ -549,7 +571,7 @@ private:
 	}
 	Renderer m_Renderer;
 	RendererGPU m_RendererGPU;
-	int m_UseGPU = 0; // 0=CPU, 1=GPU
+	int m_UseGPU = 1; // 0=CPU, 1=GPU
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
 	uint32_t* m_ImageData = nullptr;
 	float m_LastRenderTime = 0.0f;

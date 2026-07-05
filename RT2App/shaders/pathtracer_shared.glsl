@@ -27,7 +27,7 @@ layout(set = 0, binding = 1, std140) uniform CameraData
     mat4 worldToViewPrev;   // previous world-to-view
 } camera;
 
-// PBR material — matches GPUMaterial in GPUSceneData.h (64 bytes, std430)
+// PBR material — matches GPUMaterial in GPUSceneData.h (80 bytes, std430)
 struct Material
 {
     vec4 baseColor_metallic;   // xyz = base color, w = metallic factor
@@ -38,6 +38,7 @@ struct Material
     float baseAlpha;           // baseColorFactor.a (1.0 = fully opaque, for any-hit)
     ivec4 textureIndices;      // x = baseColor, y = normal, z = emissive,
                                // w = floatBitsToInt(transmissionFactor)
+    ivec4 extraIndices;        // x = metallicRoughness texture index, yzw = pad
 };
 
 layout(set = 0, binding = 2, std430) readonly buffer MaterialBuffer
@@ -117,9 +118,13 @@ layout(set = 1, binding = 1, r16f)  uniform image2D gViewZ;            // view-s
 layout(set = 1, binding = 2, rg16f) uniform image2D gMotion;           // 2D screen-space motion vector
 layout(set = 1, binding = 3, rgba16f) uniform image2D gDiffRadianceHitDist; // rgb = diffuse radiance, a = hitT
 layout(set = 1, binding = 4, rgba16f) uniform image2D gSpecRadianceHitDist; // rgb = specular radiance, a = hitT
+layout(set = 1, binding = 5, rgba16f) uniform image2D gAlbedoF0;            // rgb = demod albedo, a = F0 scalar
+
+// Direct emission (emissive surfaces + sky) — bypasses NRD, added in compose
+layout(set = 1, binding = 7, rgba16f) uniform image2D gDirectEmission;
 
 // NRD enable flag (1 = NRD mode, 0 = normal temporal accumulation)
-layout(set = 1, binding = 5) uniform NRDUniform
+layout(set = 1, binding = 6) uniform NRDUniform
 {
     uint nrdEnabled;      // 1 = NRD mode (1 spp, no temporal accum, write G-buffer)
     uint pad0;
@@ -142,8 +147,9 @@ struct RayPayload
     vec4 c; // xyz = ray origin, w = done (0/1)
     vec4 d; // xyz = ray dir,    w = bsdfPdf
     vec4 e; // NRD primary-hit info (written by closesthit at depth 0 only):
-            // x = uintBitsToFloat(packUnorm4x8(vec4(demodAlbedo, 0)))
-            // y = F0 scalar, z = lobeType (0=diffuse, 1=specular)
+            // x = uintBitsToFloat(packUnorm4x8(vec4(demodAlbedo, lobeType)))
+            // y = uintBitsToFloat(packUnorm2x16(vec2(F0, roughness)))
+            // z = viewZ (view-space Z at primary hit)
             // w = primary hitT (0 = primary ray missed or hit an emitter)
 };
 
@@ -392,6 +398,46 @@ float reflectance(float cosine, float refIdx)
     return r0 + (1.0 - r0) * pow(1.0 - cosine, 5.0);
 }
 
+// ---- NRD helpers (YCoCg + hit distance normalization) ----------------------
+
+// NRD REBLUR uses YCoCg color space for radiance packing.
+vec3 linearToYCoCg(vec3 c)
+{
+    float Y  = dot(c, vec3(0.25, 0.5, 0.25));
+    float Co = dot(c, vec3(0.5, 0.0, -0.5));
+    float Cg = dot(c, vec3(-0.25, 0.5, -0.25));
+    return vec3(Y, Co, Cg);
+}
+
+vec3 YCoCgToLinear(vec3 c)
+{
+    float t = c.x - c.z;
+    return max(vec3(t + c.y, c.x + c.z, t - c.y), vec3(0.0));
+}
+
+// NRD spec magic curve (for hit distance normalization)
+float nrdSpecMagicCurve(float roughness, float power)
+{
+    float f = 1.0 - exp2(-200.0 * roughness * roughness);
+    f *= pow(clamp(roughness, 0.0, 1.0), power);
+    return f;
+}
+
+// NRD REBLUR hit distance normalization
+// hitDistParams = (A, B, C) from ReblurHitDistanceParameters (defaults: 3.0, 0.1, 20.0)
+// For diffuse: roughness = 1.0
+float nrdGetHitDistanceNormalization(float viewZ, vec3 hitDistParams, float roughness)
+{
+    float smc = nrdSpecMagicCurve(roughness, 0.5);
+    return (hitDistParams.x + abs(viewZ) * hitDistParams.y) * mix(hitDistParams.z, 1.0, smc);
+}
+
+float nrdGetNormHitDist(float hitDist, float viewZ, vec3 hitDistParams, float roughness)
+{
+    float f = nrdGetHitDistanceNormalization(viewZ, hitDistParams, roughness);
+    return clamp(hitDist / f, 0.0, 1.0);
+}
+
 // ---- Cook-Torrance GGX BRDF (M7) -------------------------------------------
 // Reference: Heitz 2018 "Sampling the GGX visible distribution of normals"
 // and Walter et al. 2007 for the GGX distribution.
@@ -571,37 +617,38 @@ float evalBSDFPdf(vec3 wo, vec3 wi, vec3 n,
 // eta = eta_i / eta_o (incident medium IOR / transmitted medium IOR).
 // wo points away from surface (towards viewer).
 // h is the microfacet normal (oriented towards the upper hemisphere).
+// Snell with eta = eta_i/eta_t: sin²θ_t = eta² · sin²θ_o
 bool checkTIR(vec3 wo, vec3 h, float eta)
 {
-    float cosTheta_o_h = max(dot(wo, h), 0.0);
-    float sin2Theta_o_h = max(1.0 - cosTheta_o_h * cosTheta_o_h, 0.0);
-    float sin2Theta_i_h = sin2Theta_o_h / (eta * eta);
-    return sin2Theta_i_h >= 1.0;
+    float c = max(dot(wo, h), 0.0);
+    float sin2Theta_t = (1.0 - c * c) * eta * eta;
+    return sin2Theta_t >= 1.0;
 }
 
 // Refract wo around microfacet normal h using Snell's law.
 // eta = eta_i / eta_o. Returns refracted wi (pointing into the other medium).
+// Walter 2007 eq. 40 — identical math to GLSL refract(-wo, h, eta).
 // Caller must check TIR before calling this.
 vec3 refractAroundH(vec3 wo, vec3 h, float eta)
 {
-    float cosTheta_o_h = max(dot(wo, h), 0.0);
-    float sin2Theta_o_h = max(1.0 - cosTheta_o_h * cosTheta_o_h, 0.0);
-    float sin2Theta_i_h = sin2Theta_o_h / (eta * eta);
-    float cosTheta_i_h = sqrt(max(1.0 - sin2Theta_i_h, 0.0));
-    return -wo / eta + (cosTheta_o_h / eta - cosTheta_i_h) * h;
+    float c = max(dot(wo, h), 0.0);
+    float k = 1.0 - eta * eta * (1.0 - c * c);
+    if (k < 0.0) return vec3(0.0);             // TIR (caller already handles)
+    return (eta * c - sqrt(k)) * h - eta * wo; // unit length by construction
 }
 
-// Transmission half-vector: h = normalize(wo + eta * wi), face-forwarded to n.
-// For reflection, h = normalize(wo + wi); for transmission, eta weights wi.
+// Transmission half-vector: h = normalize(eta * wo + wi), face-forwarded to n.
+// For reflection, h = normalize(wo + wi); for transmission, eta weights wo.
 vec3 transmissionHalfVector(vec3 wo, vec3 wi, float eta, vec3 n)
 {
-    vec3 h = normalize(wo + eta * wi);
+    vec3 h = normalize(eta * wo + wi);
     return dot(h, n) < 0.0 ? -h : h;
 }
 
 // Solid-angle PDF for the transmitted direction wi.
-// p(wi) = pdfVNDF(wo, h, n, alpha) * |wo·h| / (wi·h + wo·h/eta)²
-// where h = transmissionHalfVector(wo, wi, eta, n).
+// p(wi) = pdf_h(h) * |wi·h| / (eta*(wo·h) + (wi·h))²
+// where h = transmissionHalfVector(wo, wi, eta, n) and pdf_h is the raw
+// VNDF half-vector density (NOT the reflection-mapped /4·NdotV form).
 float pdfBTDF(vec3 wo, vec3 wi, vec3 n, float eta, float alpha)
 {
     float NdotL = max(-dot(wi, n), 0.0);  // wi is below surface for transmission
@@ -611,24 +658,21 @@ float pdfBTDF(vec3 wo, vec3 wi, vec3 n, float eta, float alpha)
     float NdotH = max(dot(n, h), 0.0);
     if (NdotH <= 0.0) return 0.0;
 
-    float VdotH = max(dot(wo, h), 0.0);
-    float LdotH = max(dot(wi, h), 0.0);  // wi·h > 0 after face-forwarding
-    if (VdotH <= 0.0 || LdotH <= 0.0) return 0.0;
+    float VdotH = dot(wo, h);   // > 0 for valid transmission
+    float LdotH = dot(wi, h);   // < 0 for valid transmission
+    if (VdotH <= 0.0 || LdotH >= 0.0) return 0.0;
 
-    // Jacobian: dω_h/dω_i = |wo·h| / (wi·h + wo·h/eta)²
-    float denom = LdotH + VdotH / eta;
+    // Signed denominator: eta*(wo·h) + (wi·h)
+    float denom = eta * VdotH + LdotH;
     if (abs(denom) < 1e-8) return 0.0;
 
-    // Raw VNDF PDF for the transmission half-vector h:
-    // D(h) * G1(wo) / (4 * NdotV). (Do NOT use pdfVNDF() here — it derives
-    // its own h = normalize(wo + wi), which is the reflection half-vector.)
+    // Raw VNDF density of h: D(h) * G1(wo) * (wo·h) / NdotV
     float NdotV = max(dot(wo, n), 1e-4);
-    float D = D_GGX(NdotH, alpha);
-    float G1 = G1_Smith(NdotV, alpha);
-    float pdf_h_vndf = D * G1 / (4.0 * NdotV);
+    float pdf_h = D_GGX(NdotH, alpha) * G1_Smith(NdotV, alpha) * VdotH / NdotV;
 
-    float jacobian = abs(VdotH) / (denom * denom);
-    return pdf_h_vndf * jacobian;
+    // Transmission Jacobian (Walter 2007 eq. 17): dωh/dωi = |wi·h| / denom²
+    float jacobian = abs(LdotH) / (denom * denom);
+    return pdf_h * jacobian;
 }
 
 // Combined BSDF PDF for transmission materials (3 lobes: reflect, refract, diffuse).
