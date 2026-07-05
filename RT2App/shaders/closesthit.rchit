@@ -622,8 +622,17 @@ void main()
         float viewZ = viewPos.z;
         imageStore(gViewZ, pixel, vec4(viewZ, 0.0, 0.0, 0.0));
 
-        // Motion vectors: temporarily disabled (Vulkan Y-flip issue)
-        imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+        // Motion vector: reproject world position into previous and current
+        // screen space. NRD expects MV in UV space: pixelUvPrev = pixelUv + mv.
+        // The projection matrix has a Y-flip (m_Projection[1][1] *= -1), so
+        // both current and previous frames use the same flip — the delta
+        // cancels the flip, so standard NDC-to-UV conversion works.
+        vec4 currClip = camera.viewToClip * viewPos;
+        vec4 prevView = camera.worldToViewPrev * vec4(worldPos, 1.0);
+        vec4 prevClip = camera.viewToClipPrev * prevView;
+        vec2 currUv = (currClip.xy / currClip.w) * 0.5 + 0.5;
+        vec2 prevUv = (prevClip.xy / prevClip.w) * 0.5 + 0.5;
+        imageStore(gMotion, pixel, vec4(prevUv - currUv, 0.0, 0.0));
 
         // Demodulation factors:
         // Diffuse: divide by albedo = baseColor * (1 - metallic)
