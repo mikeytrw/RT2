@@ -83,10 +83,12 @@ bool RendererGPU::Init()
 	m_AS.SetDevice(m_Device);
 	ShaderManager::Init(m_Device.device);
 
-	CreatePipeline();
-	if (m_RTPipeline == VK_NULL_HANDLE)
+	// Create G-buffer descriptor set layout (set 1) first — needed by PathTracePass
+	CreateGBufferDescriptorSet();
+
+	if (!m_PathTracePass.Init(m_Device, m_GBufferSetLayout))
 	{
-		std::cerr << "[RT2] GPU renderer initialization failed (shader or pipeline creation error)\n";
+		std::cerr << "[RT2] GPU renderer initialization failed (pipeline creation error)\n";
 		return false;
 	}
 	m_ComposePass.Init(m_Device);
@@ -100,7 +102,7 @@ void RendererGPU::Destroy()
 	vkDeviceWaitIdle(device);
 
 	m_NRD.Destroy();
-	DestroyPipeline();
+	m_PathTracePass.Destroy();
 	m_ComposePass.Destroy();
 	DestroyOutputImage();
 	DestroyGBufferImages();
@@ -123,340 +125,6 @@ void RendererGPU::Destroy()
 	}
 
 	m_Initialized = false;
-}
-
-void RendererGPU::CreatePipeline()
-{
-	VkDevice device = m_Device.device;
-
-	// Load the six RT shader modules.
-	m_RgenShader   = ShaderManager::LoadShader("raygen.spv");
-	if (!m_RgenShader)   m_RgenShader   = ShaderManager::LoadShader("RT2App/shaders/raygen.spv");
-	m_MissShader    = ShaderManager::LoadShader("miss.spv");
-	if (!m_MissShader)    m_MissShader    = ShaderManager::LoadShader("RT2App/shaders/miss.spv");
-	m_ShadowShader  = ShaderManager::LoadShader("shadow.spv");
-	if (!m_ShadowShader)  m_ShadowShader  = ShaderManager::LoadShader("RT2App/shaders/shadow.spv");
-	m_ClosestShader = ShaderManager::LoadShader("closesthit.spv");
-	if (!m_ClosestShader) m_ClosestShader = ShaderManager::LoadShader("RT2App/shaders/closesthit.spv");
-	m_AnyHitShader  = ShaderManager::LoadShader("anyhit.spv");
-	if (!m_AnyHitShader)  m_AnyHitShader  = ShaderManager::LoadShader("RT2App/shaders/anyhit.spv");
-	m_ShadowHitShader = ShaderManager::LoadShader("shadowhit.spv");
-	if (!m_ShadowHitShader) m_ShadowHitShader = ShaderManager::LoadShader("RT2App/shaders/shadowhit.spv");
-
-	if (!m_RgenShader || !m_MissShader || !m_ShadowShader || !m_ClosestShader ||
-	    !m_AnyHitShader || !m_ShadowHitShader)
-	{
-		std::cerr << "[RT2] Failed to load RT shaders\n";
-		return;
-	}
-
-	// Descriptor set layout — 11 bindings:
-	//   0: storage image (output)
-	//   1: uniform buffer (camera)
-	//   2: storage buffer (materials)
-	//   3: storage buffer (combined normals)
-	//   4: acceleration structure (TLAS)
-	//   5: storage buffer (per-instance normal offsets)
-	//   6: storage buffer (combined tangents, 3 per triangle)
-	//   7: storage buffer (combined UVs, 3 per triangle)
-	//   8: storage buffer (combined positions, 3 per triangle)
-	//   9: storage buffer (lights for NEE, std430 with header)
-	//  10: combined image sampler array (textures, bindless, variable count) — MUST be last binding
-	const VkShaderStageFlags allRTFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR |
-	                                      VK_SHADER_STAGE_MISS_BIT_KHR |
-	                                      VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
-	                                      VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
-
-	const uint32_t maxTextures = 1024;
-
-	VkDescriptorSetLayoutBinding bindings[11] = {};
-
-	bindings[0] = {};
-	bindings[0].binding = SI_BINDING_OUTPUT_IMAGE;
-	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	bindings[0].descriptorCount = 1;
-	bindings[0].stageFlags = allRTFlags;
-
-	bindings[1] = {};
-	bindings[1].binding = SI_BINDING_CAMERA_UBO;
-	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	bindings[1].descriptorCount = 1;
-	bindings[1].stageFlags = allRTFlags;
-
-	bindings[2] = {};
-	bindings[2].binding = SI_BINDING_MATERIAL_BUFFER;
-	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[2].descriptorCount = 1;
-	bindings[2].stageFlags = allRTFlags;
-
-	bindings[3] = {};
-	bindings[3].binding = SI_BINDING_NORMAL_BUFFER;
-	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[3].descriptorCount = 1;
-	bindings[3].stageFlags = allRTFlags;
-
-	bindings[4] = {};
-	bindings[4].binding = SI_BINDING_TLAS;
-	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-	bindings[4].descriptorCount = 1;
-	bindings[4].stageFlags = allRTFlags;
-
-	bindings[5] = {};
-	bindings[5].binding = SI_BINDING_INSTANCE_OFFSETS;
-	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[5].descriptorCount = 1;
-	bindings[5].stageFlags = allRTFlags;
-
-	bindings[6] = {};
-	bindings[6].binding = SI_BINDING_TANGENT_BUFFER;
-	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[6].descriptorCount = 1;
-	bindings[6].stageFlags = allRTFlags;
-
-	bindings[7] = {};
-	bindings[7].binding = SI_BINDING_UV_BUFFER;
-	bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[7].descriptorCount = 1;
-	bindings[7].stageFlags = allRTFlags;
-
-	bindings[8] = {};
-	bindings[8].binding = SI_BINDING_POSITION_BUFFER;
-	bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[8].descriptorCount = 1;
-	bindings[8].stageFlags = allRTFlags;
-
-	bindings[9] = {};
-	bindings[9].binding = SI_BINDING_LIGHT_BUFFER;
-	bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[9].descriptorCount = 1;
-	bindings[9].stageFlags = allRTFlags;
-
-	bindings[10] = {};
-	bindings[10].binding = SI_BINDING_TEXTURE_ARRAY;
-	bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[10].descriptorCount = maxTextures;
-	bindings[10].stageFlags = allRTFlags;
-
-	// Binding flags: binding 10 (texture array) is partially bound + variable descriptor count
-	// Must be the highest-numbered binding per Vulkan spec.
-	VkDescriptorBindingFlagsEXT bindingFlags[11] = {};
-	bindingFlags[10] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT |
-	                   VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT;
-
-	VkDescriptorSetLayoutBindingFlagsCreateInfoEXT bindingFlagsInfo = {};
-	bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
-	bindingFlagsInfo.bindingCount = 11;
-	bindingFlagsInfo.pBindingFlags = bindingFlags;
-
-	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
-	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 11;
-	layoutInfo.pBindings = bindings;
-	layoutInfo.pNext = &bindingFlagsInfo;
-
-	vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_DescriptorSetLayout);
-
-	// Pipeline layout
-	// Create G-buffer descriptor set layout (set 1)
-	CreateGBufferDescriptorSet();
-
-	VkDescriptorSetLayout setLayouts[2] = { m_DescriptorSetLayout, m_GBufferSetLayout };
-
-	VkPipelineLayoutCreateInfo pipelineLayoutInfo = {};
-	pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-	pipelineLayoutInfo.setLayoutCount = 2;
-	pipelineLayoutInfo.pSetLayouts = setLayouts;
-
-	vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &m_PipelineLayout);
-
-	// Ray tracing pipeline
-	const VkPhysicalDeviceRayTracingPipelinePropertiesKHR& rtProps =
-		m_Device.rtPipelineProps;
-
-	// 6 stages: rgen, miss_sky, miss_shadow, closesthit, anyhit, shadow_anyhit
-	VkPipelineShaderStageCreateInfo stages[6] = {};
-	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[0].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
-	stages[0].module = m_RgenShader;
-	stages[0].pName = "main";
-	stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[1].stage = VK_SHADER_STAGE_MISS_BIT_KHR;
-	stages[1].module = m_MissShader;
-	stages[1].pName = "main";
-	stages[2].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[2].stage = VK_SHADER_STAGE_MISS_BIT_KHR;
-	stages[2].module = m_ShadowShader;
-	stages[2].pName = "main";
-	stages[3].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[3].stage = VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
-	stages[3].module = m_ClosestShader;
-	stages[3].pName = "main";
-	stages[4].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[4].stage = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
-	stages[4].module = m_AnyHitShader;
-	stages[4].pName = "main";
-	stages[5].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	stages[5].stage = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
-	stages[5].module = m_ShadowHitShader;
-	stages[5].pName = "main";
-
-	// 6 groups — SBT hit layout: [primary_opaque, primary_alpha, shadow_opaque, shadow_alpha]
-	//   Primary rays:  hit offset 0, instance adds 0 (opaque) or 1 (alpha)
-	//   Shadow rays:   hit offset 2, instance adds 0 (opaque) or 1 (alpha)
-	VkRayTracingShaderGroupCreateInfoKHR groups[6] = {};
-	// 0: raygen
-	groups[0].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
-	groups[0].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-	groups[0].generalShader = 0;
-	groups[0].closestHitShader = VK_SHADER_UNUSED_KHR;
-	groups[0].anyHitShader = VK_SHADER_UNUSED_KHR;
-	groups[0].intersectionShader = VK_SHADER_UNUSED_KHR;
-	// 1: miss (sky) — SBT miss index 0
-	groups[1].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
-	groups[1].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-	groups[1].generalShader = 1;
-	groups[1].closestHitShader = VK_SHADER_UNUSED_KHR;
-	groups[1].anyHitShader = VK_SHADER_UNUSED_KHR;
-	groups[1].intersectionShader = VK_SHADER_UNUSED_KHR;
-	// 2: miss (shadow) — SBT miss index 1
-	groups[2].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
-	groups[2].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
-	groups[2].generalShader = 2;
-	groups[2].closestHitShader = VK_SHADER_UNUSED_KHR;
-	groups[2].anyHitShader = VK_SHADER_UNUSED_KHR;
-	groups[2].intersectionShader = VK_SHADER_UNUSED_KHR;
-	// 3: hit_primary_opaque — closesthit only (SBT hit offset 0)
-	groups[3].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
-	groups[3].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-	groups[3].generalShader = VK_SHADER_UNUSED_KHR;
-	groups[3].closestHitShader = 3;
-	groups[3].anyHitShader = VK_SHADER_UNUSED_KHR;
-	groups[3].intersectionShader = VK_SHADER_UNUSED_KHR;
-	// 4: hit_primary_alpha — closesthit + anyhit (SBT hit offset 0 + instance offset 1)
-	groups[4].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
-	groups[4].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-	groups[4].generalShader = VK_SHADER_UNUSED_KHR;
-	groups[4].closestHitShader = 3;
-	groups[4].anyHitShader = 4;
-	groups[4].intersectionShader = VK_SHADER_UNUSED_KHR;
-	// 5: hit_shadow — shadow anyhit only, no closesthit (SBT hit offset 2 + instance offset 0 or 1)
-	groups[5].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
-	groups[5].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
-	groups[5].generalShader = VK_SHADER_UNUSED_KHR;
-	groups[5].closestHitShader = VK_SHADER_UNUSED_KHR;
-	groups[5].anyHitShader = 5;
-	groups[5].intersectionShader = VK_SHADER_UNUSED_KHR;
-
-	// Recursion depth: a path of maxBounces bounces needs maxBounces+1 levels
-	// (bounce chain + NEE shadow rays at the deepest shading level). Do NOT
-	// request the device maximum (31 on NVIDIA): the driver sizes the default
-	// ray stack proportionally to maxPipelineRayRecursionDepth, so an oversized
-	// value wastes stack memory and kills occupancy. The UBO maxBounces value
-	// is clamped to m_MaxRecursionDepth - 1 so the slider can never exceed it.
-	const uint32_t kRecursionCap = 16;
-	m_MaxRecursionDepth = rtProps.maxRayRecursionDepth < kRecursionCap
-	                    ? rtProps.maxRayRecursionDepth : kRecursionCap;
-	if (m_MaxRecursionDepth < 2) m_MaxRecursionDepth = 2;
-
-	VkRayTracingPipelineCreateInfoKHR pipelineInfo = {};
-	pipelineInfo.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
-	pipelineInfo.stageCount = 6;
-	pipelineInfo.pStages = stages;
-	pipelineInfo.groupCount = 6;
-	pipelineInfo.pGroups = groups;
-	pipelineInfo.maxPipelineRayRecursionDepth = m_MaxRecursionDepth;
-	pipelineInfo.layout = m_PipelineLayout;
-
-	VkResult err = g_RTDispatch.CreateRayTracingPipelinesKHR(
-		device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_RTPipeline);
-	if (err != VK_SUCCESS)
-	{
-		std::cerr << "[RT2] vkCreateRayTracingPipelinesKHR failed: " << err << "\n";
-		m_RTPipeline = VK_NULL_HANDLE;
-		return;
-	}
-
-	// ---- Shader Binding Table ----
-	// Layout: [rgen][miss_sky][miss_shadow][hit_primary_opaque][hit_primary_alpha][hit_shadow_opaque][hit_shadow_alpha]
-	// Each handle padded to baseAlignment.
-	// Miss region: 2 entries (sky + shadow) = 2 × baseAlign
-	// Hit region:  4 entries (primary_opaque, primary_alpha, shadow_opaque, shadow_alpha) = 4 × baseAlign
-	//   Primary rays: hit offset 0, instance adds 0 (opaque) or 1 (alpha)
-	//   Shadow rays:  hit offset 2, instance adds 0 (opaque) or 1 (alpha)
-	const uint32_t handleSize  = rtProps.shaderGroupHandleSize;
-	const uint32_t baseAlign   = std::max<uint32_t>(rtProps.shaderGroupBaseAlignment, 1);
-	const uint32_t handleAlign = std::max<uint32_t>(rtProps.shaderGroupHandleAlignment, 1);
-
-	m_SBTStride       = baseAlign;
-	m_RgenRegionSize  = baseAlign;
-	m_MissRegionSize  = baseAlign * 2;  // 2 miss entries: sky + shadow
-	m_HitRegionSize   = baseAlign * 4;  // 4 hit entries: primary_opaque, primary_alpha, shadow_opaque, shadow_alpha
-
-	VkDeviceSize sbtSize = m_RgenRegionSize + m_MissRegionSize + m_HitRegionSize;
-
-	CreateBuffer(sbtSize,
-	             VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR |
-	             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-	             m_SBTBuffer, m_SBTMemory);
-	m_SBTSize = sbtSize;
-
-	// Fetch all six group handles in one call.
-	std::vector<uint8_t> handles(6 * handleSize);
-	err = g_RTDispatch.GetRayTracingShaderGroupHandlesKHR(
-		device, m_RTPipeline, 0, 6, handles.size(), handles.data());
-	if (err != VK_SUCCESS)
-	{
-		std::cerr << "[RT2] vkGetRayTracingShaderGroupHandlesKHR failed: " << err << "\n";
-		return;
-	}
-
-	// Copy handles into the SBT buffer at baseAlignment-aligned offsets.
-	// Hit region: [group3=primary_opaque, group4=primary_alpha, group5=shadow, group5=shadow]
-	// (shadow_opaque and shadow_alpha both point to the same group 5)
-	void* mapped = nullptr;
-	vkMapMemory(device, m_SBTMemory, 0, sbtSize, 0, &mapped);
-	std::memset(mapped, 0, (size_t)sbtSize);
-	uint8_t* dst = static_cast<uint8_t*>(mapped);
-	std::memcpy(dst + 0,                       handles.data() + 0 * handleSize, handleSize); // rgen
-	std::memcpy(dst + m_RgenRegionSize,        handles.data() + 1 * handleSize, handleSize); // miss_sky
-	std::memcpy(dst + m_RgenRegionSize + baseAlign,
-	            handles.data() + 2 * handleSize, handleSize);                                 // miss_shadow
-	// Hit region: 4 entries at baseAlign stride
-	VkDeviceSize hitBase = m_RgenRegionSize + m_MissRegionSize;
-	std::memcpy(dst + hitBase,                   handles.data() + 3 * handleSize, handleSize); // primary_opaque
-	std::memcpy(dst + hitBase + baseAlign,       handles.data() + 4 * handleSize, handleSize); // primary_alpha
-	std::memcpy(dst + hitBase + baseAlign * 2,   handles.data() + 5 * handleSize, handleSize); // shadow_opaque
-	std::memcpy(dst + hitBase + baseAlign * 3,   handles.data() + 5 * handleSize, handleSize); // shadow_alpha (same shader)
-	vkUnmapMemory(device, m_SBTMemory);
-
-	// Print the SBT device address and region layout for verification.
-	VkDeviceAddress sbtAddr = GetBufferDeviceAddress(m_SBTBuffer);
-	std::cerr << "[RT2] SBT deviceAddress=0x" << std::hex << sbtAddr << std::dec
-	          << " stride=" << m_SBTStride << "\n";
-}
-
-void RendererGPU::DestroyPipeline()
-{
-	VkDevice device = m_Device.device;
-	if (m_RTPipeline) vkDestroyPipeline(device, m_RTPipeline, nullptr);
-	if (m_PipelineLayout) vkDestroyPipelineLayout(device, m_PipelineLayout, nullptr);
-	if (m_DescriptorSetLayout) vkDestroyDescriptorSetLayout(device, m_DescriptorSetLayout, nullptr);
-	if (m_RgenShader)   vkDestroyShaderModule(device, m_RgenShader, nullptr);
-	if (m_MissShader)    vkDestroyShaderModule(device, m_MissShader, nullptr);
-	if (m_ShadowShader)  vkDestroyShaderModule(device, m_ShadowShader, nullptr);
-	if (m_ClosestShader) vkDestroyShaderModule(device, m_ClosestShader, nullptr);
-	if (m_AnyHitShader)  vkDestroyShaderModule(device, m_AnyHitShader, nullptr);
-	if (m_ShadowHitShader) vkDestroyShaderModule(device, m_ShadowHitShader, nullptr);
-	DestroyBuffer(m_SBTBuffer, m_SBTMemory);
-	m_RTPipeline = VK_NULL_HANDLE;
-	m_PipelineLayout = VK_NULL_HANDLE;
-	m_DescriptorSetLayout = VK_NULL_HANDLE;
-	m_RgenShader = m_MissShader = m_ShadowShader = m_ClosestShader = VK_NULL_HANDLE;
-	m_AnyHitShader = m_ShadowHitShader = VK_NULL_HANDLE;
-	m_SBTBuffer = VK_NULL_HANDLE;
-	m_SBTMemory = VK_NULL_HANDLE;
-	m_SBTSize = 0;
 }
 
 void RendererGPU::CreateOutputImage()
@@ -588,11 +256,7 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	vkDeviceWaitIdle(device);
 
 	// Free old descriptor set before allocating a new one
-	if (m_DescriptorSet)
-	{
-		vkFreeDescriptorSets(device, m_Device.descriptorPool, 1, &m_DescriptorSet);
-		m_DescriptorSet = VK_NULL_HANDLE;
-	}
+	m_PathTracePass.FreeDescriptorSet(device, m_Device.descriptorPool);
 
 	DestroyOutputImage();
 
@@ -601,7 +265,7 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 
 	CreateOutputImage();
 	CreateGBufferImages();
-	CreateDescriptorSet();
+	m_PathTracePass.CreateDescriptorSet(m_Device, m_Device.descriptorPool);
 	UpdateGBufferDescriptorSet();
 
 	// Initialize NRD if enabled
@@ -618,48 +282,15 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	{
 		m_NRD.OnResize(m_Width, m_Height);
 	}
-	UpdateDescriptorSet();
+	UpdatePathTraceDescriptorSet();
 
 	m_FrameIndex = 1;
 }
 
-void RendererGPU::CreateDescriptorSet()
+void RendererGPU::UpdatePathTraceDescriptorSet()
 {
-	VkDevice device = m_Device.device;
-
-	// Allocate with fixed maxTextures count so the descriptor set is valid
-	// regardless of how many textures are currently loaded. The variable
-	// descriptor count feature allows us to specify the actual count at
-	// allocation time, but using the max avoids reallocation when textures
-	// are added/removed after a resize.
-	const uint32_t maxTextures = 1024;
-
-	VkDescriptorSetVariableDescriptorCountAllocateInfoEXT varCountInfo = {};
-	varCountInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO_EXT;
-	varCountInfo.descriptorSetCount = 1;
-	varCountInfo.pDescriptorCounts = &maxTextures;
-
-	VkDescriptorSetAllocateInfo allocInfo = {};
-	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	allocInfo.descriptorPool = m_Device.descriptorPool;
-	allocInfo.descriptorSetCount = 1;
-	allocInfo.pSetLayouts = &m_DescriptorSetLayout;
-	allocInfo.pNext = &varCountInfo;
-
-	vkAllocateDescriptorSets(device, &allocInfo, &m_DescriptorSet);
-}
-
-void RendererGPU::UpdateDescriptorSet()
-{
+	if (!m_PathTracePass.IsAvailable()) return;
 	if (!m_AS.IsValid()) { RT_LOG("[UpdateDS] skip: AS not valid"); return; }
-	if (!m_DescriptorSet) { RT_LOG("[UpdateDS] skip: no descriptor set"); return; }
-	if (!m_AS.GetNormalBuffer()) { RT_LOG("[UpdateDS] skip: no normal buffer"); return; }
-	if (!m_MaterialBuffer) { RT_LOG("[UpdateDS] skip: no material buffer"); return; }
-
-	RT_LOG("[UpdateDS] enter: textures=%d validTextures=%d",
-	       (int)m_Textures.size(), (int)[&]() { int c = 0; for (auto& t : m_Textures) if (t.view && t.sampler) c++; return c; }());
-
-	VkDevice device = m_Device.device;
 
 	// Create camera UBO if needed
 	if (!m_CameraUBO)
@@ -669,61 +300,13 @@ void RendererGPU::UpdateDescriptorSet()
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             m_CameraUBO, m_CameraUBOMemory);
 	}
+	if (!m_MaterialBuffer) { RT_LOG("[UpdateDS] skip: no material buffer"); return; }
 
-	if (!m_MaterialBuffer)
-	{
-		std::cerr << "[RT2] Warning: material buffer not created yet\n";
-		return;
-	}
-
-	if (!m_LightBuffer)
-	{
-		std::cerr << "[RT2] Warning: light buffer not created yet\n";
-		return;
-	}
-
-	VkDescriptorImageInfo imageInfo = {};
-	imageInfo.imageView = m_OutputImageView;
-	imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-	imageInfo.sampler = m_Sampler;
-
-	VkDescriptorBufferInfo cameraBufferInfo = {};
-	cameraBufferInfo.buffer = m_CameraUBO;
-	cameraBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo materialBufferInfo = {};
-	materialBufferInfo.buffer = m_MaterialBuffer;
-	materialBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo normalBufferInfo = {};
-	normalBufferInfo.buffer = m_AS.GetNormalBuffer();
-	normalBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo offsetBufferInfo = {};
-	offsetBufferInfo.buffer = m_AS.GetInstanceOffsetBuffer();
-	offsetBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo uvBufferInfo = {};
-	uvBufferInfo.buffer = m_AS.GetUVBuffer();
-	uvBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo positionBufferInfo = {};
-	positionBufferInfo.buffer = m_AS.GetPositionBuffer();
-	positionBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo tangentBufferInfo = {};
-	tangentBufferInfo.buffer = m_AS.GetTangentBuffer();
-	tangentBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo lightBufferInfo = {};
-	lightBufferInfo.buffer = m_LightBuffer;
-	lightBufferInfo.range = VK_WHOLE_SIZE;
-
-	// Texture array image infos (binding 10) — write only valid textures
+	// Build texture image infos
 	std::vector<VkDescriptorImageInfo> textureImageInfos;
 	for (const auto& gt : m_Textures)
 	{
-		if (!gt.view || !gt.sampler) continue; // skip unloaded textures
+		if (!gt.view || !gt.sampler) continue;
 		VkDescriptorImageInfo imgInfo = {};
 		imgInfo.sampler = gt.sampler;
 		imgInfo.imageView = gt.view;
@@ -731,105 +314,19 @@ void RendererGPU::UpdateDescriptorSet()
 		textureImageInfos.push_back(imgInfo);
 	}
 
-	VkWriteDescriptorSetAccelerationStructureKHR asInfo = {};
-	asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
-	asInfo.accelerationStructureCount = 1;
-	VkAccelerationStructureKHR tlas = m_AS.GetTLAS();
-	asInfo.pAccelerationStructures = &tlas;
+	m_PathTracePass.UpdateDescriptorSet(m_Device,
+		m_OutputImageView, m_Sampler,
+		m_CameraUBO, m_MaterialBuffer,
+		m_AS.GetNormalBuffer(), m_AS.GetInstanceOffsetBuffer(),
+		m_AS.GetTangentBuffer(), m_AS.GetUVBuffer(), m_AS.GetPositionBuffer(),
+		m_LightBuffer,
+		m_AS.GetTLAS(),
+		textureImageInfos);
 
-	std::cerr << "[RT2] UpdateDescriptorSet: TLAS=" << (void*)tlas
-	          << " descSet=" << m_DescriptorSet << "\n";
-
-	VkWriteDescriptorSet writes[11] = {};
-
-	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[0].dstSet = m_DescriptorSet;
-	writes[0].dstBinding = SI_BINDING_OUTPUT_IMAGE;
-	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	writes[0].descriptorCount = 1;
-	writes[0].pImageInfo = &imageInfo;
-
-	writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[1].dstSet = m_DescriptorSet;
-	writes[1].dstBinding = SI_BINDING_CAMERA_UBO;
-	writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	writes[1].descriptorCount = 1;
-	writes[1].pBufferInfo = &cameraBufferInfo;
-
-	writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[2].dstSet = m_DescriptorSet;
-	writes[2].dstBinding = SI_BINDING_MATERIAL_BUFFER;
-	writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[2].descriptorCount = 1;
-	writes[2].pBufferInfo = &materialBufferInfo;
-
-	writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[3].dstSet = m_DescriptorSet;
-	writes[3].dstBinding = SI_BINDING_NORMAL_BUFFER;
-	writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[3].descriptorCount = 1;
-	writes[3].pBufferInfo = &normalBufferInfo;
-
-	writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[4].dstSet = m_DescriptorSet;
-	writes[4].dstBinding = SI_BINDING_TLAS;
-	writes[4].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-	writes[4].descriptorCount = 1;
-	writes[4].pNext = &asInfo;
-
-	writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[5].dstSet = m_DescriptorSet;
-	writes[5].dstBinding = SI_BINDING_INSTANCE_OFFSETS;
-	writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[5].descriptorCount = 1;
-	writes[5].pBufferInfo = &offsetBufferInfo;
-
-	writes[6] = {};
-	writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[6].dstSet = m_DescriptorSet;
-	writes[6].dstBinding = SI_BINDING_TANGENT_BUFFER;
-	writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[6].descriptorCount = 1;
-	writes[6].pBufferInfo = &tangentBufferInfo;
-
-	writes[7] = {};
-	writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[7].dstSet = m_DescriptorSet;
-	writes[7].dstBinding = SI_BINDING_UV_BUFFER;
-	writes[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[7].descriptorCount = 1;
-	writes[7].pBufferInfo = &uvBufferInfo;
-
-	writes[8] = {};
-	writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[8].dstSet = m_DescriptorSet;
-	writes[8].dstBinding = SI_BINDING_POSITION_BUFFER;
-	writes[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[8].descriptorCount = 1;
-	writes[8].pBufferInfo = &positionBufferInfo;
-
-	writes[9] = {};
-	writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[9].dstSet = m_DescriptorSet;
-	writes[9].dstBinding = SI_BINDING_LIGHT_BUFFER;
-	writes[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[9].descriptorCount = 1;
-	writes[9].pBufferInfo = &lightBufferInfo;
-
-	uint32_t writeCount = 10; // bindings 0-9 always written
-	if (!textureImageInfos.empty())
-	{
-		writes[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[10].dstSet = m_DescriptorSet;
-		writes[10].dstBinding = SI_BINDING_TEXTURE_ARRAY;
-		writes[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		writes[10].descriptorCount = (uint32_t)textureImageInfos.size();
-		writes[10].pImageInfo = textureImageInfos.data();
-		writeCount = 11;
-	}
-	RT_LOG("[UpdateDS] writing %d descriptors (textureInfos=%d)", writeCount, (int)textureImageInfos.size());
-	vkUpdateDescriptorSets(device, writeCount, writes, 0, nullptr);
-	RT_LOG("[UpdateDS] done");
+	RT_LOG("[UpdateDS] done (textures=%d, descSet=%p, TLAS=%p, outView=%p, camUBO=%p, matBuf=%p)",
+	       (int)textureImageInfos.size(), (void*)m_PathTracePass.GetDescriptorSet(),
+	       (void*)m_AS.GetTLAS(), (void*)m_OutputImageView,
+	       (void*)m_CameraUBO, (void*)m_MaterialBuffer);
 }
 
 void RendererGPU::CreateMaterialBuffer()
@@ -1224,7 +721,7 @@ void RendererGPU::SetScene(const GPUSceneData& sceneData)
 	if (m_AS.IsValid() && !m_NeedsASRebuild)
 	{
 		RT_LOG("[SetScene] updating descriptor set (AS valid, no rebuild needed)");
-		UpdateDescriptorSet();
+		UpdatePathTraceDescriptorSet();
 	}
 	else
 	{
@@ -1314,7 +811,7 @@ void RendererGPU::RebuildAccelerationStructures()
 	RT_LOG("[RebuildAS] creating light buffer");
 	CreateLightBuffer();
 	RT_LOG("[RebuildAS] updating descriptor set");
-	UpdateDescriptorSet();
+	UpdatePathTraceDescriptorSet();
 
 	m_NeedsASRebuild = false;
 	m_ASJustBuilt = true;
@@ -1354,7 +851,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	ubo.right = glm::vec4(right, m_NRDJitter.y);
 	ubo.up = glm::vec4(up, 0.0f);
 	int maxBouncesClamped = m_MaxBounces;
-	const int bounceLimit = (int)m_MaxRecursionDepth - 1;
+	const int bounceLimit = (int)m_PathTracePass.GetMaxRecursionDepth() - 1;
 	if (maxBouncesClamped > bounceLimit) maxBouncesClamped = bounceLimit;
 	ubo.viewportSPP = glm::vec4((float)m_Width, (float)m_Height, (float)m_SPP, (float)maxBouncesClamped);
 	ubo.apertureFocal = glm::vec4(camera.m_Aperture, camera.m_FocusDistance, m_ShowBackground ? 1.0f : 0.0f, m_EmissiveBoost);
@@ -1415,10 +912,10 @@ void RendererGPU::Render(const Camera& camera)
 
 	UpdateCameraUBO(camera);
 
-	if (!m_DescriptorSet || !m_RTPipeline || !m_CameraUBO || !m_MaterialBuffer)
+	if (!m_PathTracePass.IsAvailable() || !m_PathTracePass.GetDescriptorSet() || !m_CameraUBO || !m_MaterialBuffer)
 	{
-		std::cerr << "[RT2] Render: missing resource (ds=" << m_DescriptorSet
-		          << " pipe=" << m_RTPipeline << " ubo=" << m_CameraUBO
+		std::cerr << "[RT2] Render: missing resource (pipe=" << m_PathTracePass.IsAvailable()
+		          << " ubo=" << m_CameraUBO
 		          << " mat=" << m_MaterialBuffer << ")\n";
 		return;
 	}
@@ -1475,55 +972,8 @@ void RendererGPU::Render(const Camera& camera)
 		vkUnmapMemory(device, m_NRDUBOMemory);
 	}
 
-	// Trace rays
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_RTPipeline);
-	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_PipelineLayout, 0, 1, &m_DescriptorSet, 0, nullptr);
-	if (m_GBufferSet)
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_PipelineLayout, 1, 1, &m_GBufferSet, 0, nullptr);
-
-	VkDeviceAddress sbtAddress = GetBufferDeviceAddress(m_SBTBuffer);
-
-	// Barrier: ensure host writes to SBT (from CreatePipeline) are visible to
-	// the ray tracing pipeline. HOST_COHERENT should handle this, but some
-	// drivers need an explicit barrier for the SBT specifically.
-	VkBufferMemoryBarrier sbtBarrier = {};
-	sbtBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-	sbtBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-	sbtBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	sbtBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	sbtBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	sbtBarrier.buffer = m_SBTBuffer;
-	sbtBarrier.offset = 0;
-	sbtBarrier.size = m_SBTSize;
-
-	vkCmdPipelineBarrier(cmd,
-		VK_PIPELINE_STAGE_HOST_BIT,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-		0, 0, nullptr, 1, &sbtBarrier, 0, nullptr);
-
-	VkStridedDeviceAddressRegionKHR rgenRegion = {};
-	rgenRegion.deviceAddress = sbtAddress + 0;
-	rgenRegion.stride        = m_SBTStride;
-	rgenRegion.size          = m_RgenRegionSize;
-
-	VkStridedDeviceAddressRegionKHR missRegion = {};
-	missRegion.deviceAddress = sbtAddress + m_RgenRegionSize;
-	missRegion.stride        = m_SBTStride;
-	missRegion.size          = m_MissRegionSize;
-
-	VkStridedDeviceAddressRegionKHR hitRegion = {};
-	hitRegion.deviceAddress = sbtAddress + m_RgenRegionSize + m_MissRegionSize;
-	hitRegion.stride        = m_SBTStride;
-	hitRegion.size          = m_HitRegionSize;
-
-	VkStridedDeviceAddressRegionKHR callableRegion = {}; // unused
-
-	g_RTDispatch.CmdTraceRaysKHR(cmd,
-		&rgenRegion, &missRegion, &hitRegion, &callableRegion,
-		m_Width, m_Height, 1);
-
-	if (!g_RTDispatch.CmdTraceRaysKHR)
-		std::cerr << "[RT2] ERROR: CmdTraceRaysKHR is NULL!\n";
+	// Trace rays via PathTracePass
+	m_PathTracePass.Record(cmd, m_Width, m_Height, m_GBufferSet);
 
 	// NRD denoising pass
 	if (m_NRDEnabled && m_NRD.IsAvailable())
@@ -1932,6 +1382,8 @@ void RendererGPU::CreateGBufferDescriptorSet()
 void RendererGPU::UpdateGBufferDescriptorSet()
 {
 	VkDevice device = m_Device.device;
+
+	RT_LOG("[UpdateGBufferDS] enter: GBufferSet=%p, NRDUBO=%p", (void*)m_GBufferSet, (void*)m_NRDUBO);
 
 	VkDescriptorImageInfo imageInfos[7] = {};
 	VkImageView views[] = { m_GNormalRoughnessView, m_GViewZView, m_GMotionView, m_GDiffRadianceView, m_GSpecRadianceView, m_GAlbedoF0View, m_GDirectEmissionView };

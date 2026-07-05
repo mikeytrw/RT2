@@ -9,6 +9,7 @@
 #include "GPUSceneData.h"
 #include "GpuDevice.h"
 #include "ComposePass.h"
+#include "PathTracePass.h"
 #include "NRDIntegration.h"
 #include "Scene.h"
 #include <memory>
@@ -72,13 +73,10 @@ public:
 private:
 	void CreateOutputImage();
 	void DestroyOutputImage();
-	void CreatePipeline();
-	void DestroyPipeline();
-	void CreateDescriptorSet();
-	void UpdateDescriptorSet();
 	void CreateMaterialBuffer();
 	void CreateLightBuffer();
 	void UpdateCameraUBO(const Camera& camera);
+	void UpdatePathTraceDescriptorSet();
 	void CreateTextures(const std::vector<SceneTexture>& textures);
 	void DestroyTextures();
 	void CreateEnvMapCDFTextures(const GPUSceneData& sceneData);
@@ -103,27 +101,8 @@ private:
 	VkSampler m_Sampler = VK_NULL_HANDLE;
 	VkDescriptorSet m_ImGuiDescriptorSet = VK_NULL_HANDLE;
 
-	// Ray tracing pipeline + SBT
-	VkPipeline m_RTPipeline = VK_NULL_HANDLE;
-	VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
-	VkDescriptorSetLayout m_DescriptorSetLayout = VK_NULL_HANDLE;
-	VkDescriptorSet m_DescriptorSet = VK_NULL_HANDLE;
-
-	VkShaderModule m_RgenShader   = VK_NULL_HANDLE;
-	VkShaderModule m_MissShader    = VK_NULL_HANDLE;
-	VkShaderModule m_ShadowShader  = VK_NULL_HANDLE;
-	VkShaderModule m_ClosestShader = VK_NULL_HANDLE;
-	VkShaderModule m_AnyHitShader  = VK_NULL_HANDLE;
-	VkShaderModule m_ShadowHitShader = VK_NULL_HANDLE;
-
-	VkBuffer m_SBTBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_SBTMemory = VK_NULL_HANDLE;
-	VkDeviceSize m_SBTSize = 0;
-	VkDeviceSize m_SBTStride = 0;
-	VkDeviceSize m_RgenRegionSize = 0;
-	VkDeviceSize m_MissRegionSize = 0;  // covers both miss entries (sky + shadow)
-	VkDeviceSize m_HitRegionSize = 0;
-	uint32_t m_MaxRecursionDepth = 1;
+	// Ray tracing pipeline + SBT (owned by PathTracePass)
+	PathTracePass m_PathTracePass;
 
 	VkBuffer m_CameraUBO = VK_NULL_HANDLE;
 	VkDeviceMemory m_CameraUBOMemory = VK_NULL_HANDLE;

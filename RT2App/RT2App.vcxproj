@@ -188,6 +188,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/R
     <ClInclude Include="src\Material.h" />
     <ClInclude Include="src\Mesh.h" />
     <ClInclude Include="src\NRDIntegration.h" />
+    <ClInclude Include="src\PathTracePass.h" />
     <ClInclude Include="src\RTLog.h" />
     <ClInclude Include="src\Ray.h" />
     <ClInclude Include="src\Renderer.h" />
@@ -269,6 +270,11 @@ copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/R
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\PathTracePass.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\RendererGPU.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -301,49 +307,49 @@ copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/R
   <ItemGroup>
     <CustomBuild Include="shaders\anyhit.rahit">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2 -O -fshader-stage=rahit -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/anyhit.rahit -o $(SolutionDir)/RT2App/shaders/anyhit.spv</Command>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rahit -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/anyhit.rahit -o $(SolutionDir)/RT2App/shaders/anyhit.spv</Command>
       <Outputs>shaders/anyhit.spv</Outputs>
       <Message>Compiling anyhit.rahit</Message>
       <AdditionalInputs>shaders/shader_interface.h"</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\closesthit.rchit">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2 -O -fshader-stage=rchit -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/closesthit.rchit -o $(SolutionDir)/RT2App/shaders/closesthit.spv</Command>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rchit -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/closesthit.rchit -o $(SolutionDir)/RT2App/shaders/closesthit.spv</Command>
       <Outputs>shaders/closesthit.spv</Outputs>
       <Message>Compiling closesthit.rchit</Message>
       <AdditionalInputs>shaders/shader_interface.h"</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\compose.comp">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2 -O -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/compose.comp -o $(SolutionDir)/RT2App/shaders/compose.spv</Command>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/compose.comp -o $(SolutionDir)/RT2App/shaders/compose.spv</Command>
       <Outputs>shaders/compose.spv</Outputs>
       <Message>Compiling compose.comp</Message>
       <AdditionalInputs>shaders/shader_interface.h"</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\miss.rmiss">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2 -O -fshader-stage=rmiss -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/miss.rmiss -o $(SolutionDir)/RT2App/shaders/miss.spv</Command>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rmiss -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/miss.rmiss -o $(SolutionDir)/RT2App/shaders/miss.spv</Command>
       <Outputs>shaders/miss.spv</Outputs>
       <Message>Compiling miss.rmiss</Message>
       <AdditionalInputs>shaders/shader_interface.h"</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\raygen.rgen">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2 -O -fshader-stage=rgen -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/raygen.rgen -o $(SolutionDir)/RT2App/shaders/raygen.spv</Command>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rgen -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/raygen.rgen -o $(SolutionDir)/RT2App/shaders/raygen.spv</Command>
       <Outputs>shaders/raygen.spv</Outputs>
       <Message>Compiling raygen.rgen</Message>
       <AdditionalInputs>shaders/shader_interface.h"</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\shadow.rahit">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2 -O -fshader-stage=rahit -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/shadow.rahit -o $(SolutionDir)/RT2App/shaders/shadowhit.spv</Command>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rahit -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/shadow.rahit -o $(SolutionDir)/RT2App/shaders/shadowhit.spv</Command>
       <Outputs>shaders/shadowhit.spv</Outputs>
       <Message>Compiling shadow.rahit</Message>
       <AdditionalInputs>shaders/shader_interface.h"</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\shadow.rmiss">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2 -O -fshader-stage=rmiss -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/shadow.rmiss -o $(SolutionDir)/RT2App/shaders/shadow.spv</Command>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rmiss -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/shadow.rmiss -o $(SolutionDir)/RT2App/shaders/shadow.spv</Command>
       <Outputs>shaders/shadow.spv</Outputs>
       <Message>Compiling shadow.rmiss</Message>
       <AdditionalInputs>shaders/shader_interface.h"</AdditionalInputs>

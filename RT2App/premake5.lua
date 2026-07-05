@@ -30,7 +30,7 @@ project "RT2App"
     end
     local shaderDir = "%{wks.location}/RT2App/shaders"
     local shaderTarget = "--target-env=vulkan1.2"
-    local shaderOpt = "-O"
+    local shaderOpt = ""
     local shaderInclude = "-I " .. shaderDir
     -- Shared dependencies: all stages include pathtracer_shared.glsl + shader_interface.h
     local shaderDeps = '"' .. shaderDir .. "/pathtracer_shared.glsl" .. '" "' .. shaderDir .. "/shader_interface.h" .. '"'
