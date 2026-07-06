@@ -2,7 +2,7 @@
 #include "GpuDevice.h"
 #include "VulkanUtils.h"
 #include "RTLog.h"
-#include "Walnut/Application.h" // for GetCommandBuffer/FlushCommandBuffer (temp until frames-in-flight)
+#include "CommandUtils.h"
 
 namespace GpuResources
 {
@@ -261,14 +261,12 @@ namespace GpuResources
 		memcpy(mapped, data, (size_t)size);
 		vkUnmapMemory(dev.device, stagingMemory);
 
-		// Record copy command
-		VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
-
-		VkBufferCopy copyRegion = {};
-		copyRegion.size = size;
-		vkCmdCopyBuffer(cmd, stagingBuffer, dstBuffer, 1, &copyRegion);
-
-		Walnut::Application::FlushCommandBuffer(cmd);
+		// Record copy command via ImmediateSubmit
+		CommandUtils::ImmediateSubmit(dev, [&](VkCommandBuffer cmd) {
+			VkBufferCopy copyRegion = {};
+			copyRegion.size = size;
+			vkCmdCopyBuffer(cmd, stagingBuffer, dstBuffer, 1, &copyRegion);
+		});
 
 		// Cleanup staging
 		vkDestroyBuffer(dev.device, stagingBuffer, nullptr);

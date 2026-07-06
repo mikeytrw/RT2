@@ -4,6 +4,7 @@
 #include "VulkanUtils.h"
 #include "shader_interface.h"
 #include "GpuResources.h"
+#include "CommandUtils.h"
 #include "Walnut/Application.h"
 #include "Walnut/RTDispatch.h"
 #include "backends/imgui_impl_vulkan.h"
@@ -112,23 +113,21 @@ void RendererGPU::CreateOutputImage()
 		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_MIPMAP_MODE_LINEAR);
 
 	// Transition image to general layout for compute writes
-	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
+	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+		VkImageMemoryBarrier barrier = {};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = m_OutputImage;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
 
-	VkImageMemoryBarrier barrier = {};
-	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-	barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.image = m_OutputImage;
-	barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	barrier.subresourceRange.levelCount = 1;
-	barrier.subresourceRange.layerCount = 1;
-
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-	Walnut::Application::FlushCommandBuffer(cmd);
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	});
 
 	m_OutputImageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
@@ -312,6 +311,12 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 
 	m_Textures.resize(textures.size());
 
+	// Collect staging buffers so we can destroy them after a single batched submit
+	std::vector<VkBuffer> stagingBuffers;
+	std::vector<VkDeviceMemory> stagingMemories;
+	stagingBuffers.reserve(textures.size());
+	stagingMemories.reserve(textures.size());
+
 	for (size_t i = 0; i < textures.size(); i++)
 	{
 		const auto& tex = textures[i];
@@ -362,53 +367,65 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gt);
 
-		// Transition + copy via command buffer
-		VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
-
-		VkImageMemoryBarrier barrier = {};
-		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier.srcAccessMask = 0;
-		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image = gt.image;
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier.subresourceRange.levelCount = 1;
-		barrier.subresourceRange.layerCount = 1;
-
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-		                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-		VkBufferImageCopy region = {};
-		region.bufferOffset = 0;
-		region.bufferRowLength = 0;
-		region.bufferImageHeight = 0;
-		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		region.imageSubresource.mipLevel = 0;
-		region.imageSubresource.baseArrayLayer = 0;
-		region.imageSubresource.layerCount = 1;
-		region.imageOffset = {0, 0, 0};
-		region.imageExtent = {(uint32_t)tex.width, (uint32_t)tex.height, 1};
-
-		vkCmdCopyBufferToImage(cmd, stagingBuffer, gt.image,
-		                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-		// Transition to shader read optimal
-		VkImageMemoryBarrier shaderBarrier = barrier;
-		shaderBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		shaderBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		shaderBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		shaderBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-		                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &shaderBarrier);
-
-		Walnut::Application::FlushCommandBuffer(cmd);
-
-		GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
+		stagingBuffers.push_back(stagingBuffer);
+		stagingMemories.push_back(stagingMemory);
 	}
+
+	// Batch all texture copies + transitions into a single command buffer
+	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+		for (size_t i = 0; i < textures.size(); i++)
+		{
+			const auto& tex = textures[i];
+			if (tex.floatPixels.empty() && tex.pixels.empty()) continue;
+
+			GpuImage& gt = m_Textures[i];
+
+			// Transition UNDEFINED -> TRANSFER_DST_OPTIMAL
+			VkImageMemoryBarrier barrier = {};
+			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barrier.srcAccessMask = 0;
+			barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image = gt.image;
+			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			barrier.subresourceRange.levelCount = 1;
+			barrier.subresourceRange.layerCount = 1;
+
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+			VkBufferImageCopy region = {};
+			region.bufferOffset = 0;
+			region.bufferRowLength = 0;
+			region.bufferImageHeight = 0;
+			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			region.imageSubresource.mipLevel = 0;
+			region.imageSubresource.baseArrayLayer = 0;
+			region.imageSubresource.layerCount = 1;
+			region.imageOffset = {0, 0, 0};
+			region.imageExtent = {(uint32_t)tex.width, (uint32_t)tex.height, 1};
+
+			vkCmdCopyBufferToImage(cmd, stagingBuffers[i], gt.image,
+			                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+			// Transition TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
+			VkImageMemoryBarrier shaderBarrier = barrier;
+			shaderBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			shaderBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			shaderBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			shaderBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &shaderBarrier);
+		}
+	});
+
+	// Destroy all staging buffers now that the GPU has completed the copy
+	for (size_t i = 0; i < stagingBuffers.size(); i++)
+		GpuResources::DestroyBuffer(m_Device, stagingBuffers[i], stagingMemories[i]);
 
 	RT_LOG("[RT2] Created %d GPU textures", (int)m_Textures.size());
 }
@@ -433,66 +450,85 @@ void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
 
 	VkDevice device = m_Device.device;
 
-	// Helper: create a CDF texture and append to m_Textures
-	auto createCDFTexture = [&](const std::vector<float>& cdfData, int w, int h) -> int
-	{
-		GpuImage gt;
-		gt.width = w;
-		gt.height = h;
-		gt.format = VK_FORMAT_R32_SFLOAT;
-		VkDeviceSize imageSize = (VkDeviceSize)(w * h * 4);
-
-		VkBuffer stagingBuffer;
-		VkDeviceMemory stagingMemory;
-		GpuResources::CreateBuffer(m_Device, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		             stagingBuffer, stagingMemory);
-		void* data;
-		vkMapMemory(device, stagingMemory, 0, imageSize, 0, &data);
-		memcpy(data, cdfData.data(), (size_t)imageSize);
-		vkUnmapMemory(device, stagingMemory);
-
-		// Create 1D/2D image via GpuResources (handles image + memory + view)
-		GpuResources::CreateImage1D(m_Device, w, h, VK_FORMAT_R32_SFLOAT,
-			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gt);
-
-		VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
-		VkImageMemoryBarrier barrier = {};
-		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		barrier.image = gt.image;
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier.subresourceRange.levelCount = 1;
-		barrier.subresourceRange.layerCount = 1;
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-		                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-		VkBufferImageCopy region = {};
-		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		region.imageSubresource.layerCount = 1;
-		region.imageExtent = {(uint32_t)w, (h == 1) ? 1u : (uint32_t)h, 1};
-		vkCmdCopyBufferToImage(cmd, stagingBuffer, gt.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-		VkImageMemoryBarrier shaderBarrier = barrier;
-		shaderBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-		shaderBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		shaderBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-		shaderBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-		                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &shaderBarrier);
-		Walnut::Application::FlushCommandBuffer(cmd);
-		GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
-
-		int idx = (int)m_Textures.size();
-		m_Textures.push_back(gt);
-		return idx;
+	// Helper: prepare a CDF texture (staging + image) without recording commands
+	struct CDFEntry {
+		GpuImage img;
+		VkBuffer staging;
+		VkDeviceMemory stagingMem;
+		const std::vector<float>* data;
+		int w, h;
 	};
 
-	m_MarginalCDFIndex = createCDFTexture(sceneData.marginalCDF, sceneData.cdfHeight, 1);
-	m_ConditionalCDFIndex = createCDFTexture(sceneData.conditionalCDF, sceneData.cdfWidth, sceneData.cdfHeight);
+	auto prepareCDFTexture = [&](const std::vector<float>& cdfData, int w, int h) -> CDFEntry {
+		CDFEntry e;
+		e.img.width = w;
+		e.img.height = h;
+		e.img.format = VK_FORMAT_R32_SFLOAT;
+		e.w = w;
+		e.h = h;
+		e.data = &cdfData;
+		VkDeviceSize imageSize = (VkDeviceSize)(w * h * 4);
+
+		GpuResources::CreateBuffer(m_Device, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		             e.staging, e.stagingMem);
+		void* data;
+		vkMapMemory(device, e.stagingMem, 0, imageSize, 0, &data);
+		memcpy(data, cdfData.data(), (size_t)imageSize);
+		vkUnmapMemory(device, e.stagingMem);
+
+		GpuResources::CreateImage1D(m_Device, w, h, VK_FORMAT_R32_SFLOAT,
+			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, e.img);
+		return e;
+	};
+
+	CDFEntry entries[2];
+	entries[0] = prepareCDFTexture(sceneData.marginalCDF, sceneData.cdfHeight, 1);
+	entries[1] = prepareCDFTexture(sceneData.conditionalCDF, sceneData.cdfWidth, sceneData.cdfHeight);
+
+	// Batch both CDF texture copies + transitions into a single command buffer
+	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+		for (int i = 0; i < 2; i++)
+		{
+			const auto& e = entries[i];
+			VkImageMemoryBarrier barrier = {};
+			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			barrier.image = e.img.image;
+			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			barrier.subresourceRange.levelCount = 1;
+			barrier.subresourceRange.layerCount = 1;
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+			VkBufferImageCopy region = {};
+			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			region.imageSubresource.layerCount = 1;
+			region.imageExtent = {(uint32_t)e.w, (e.h == 1) ? 1u : (uint32_t)e.h, 1};
+			vkCmdCopyBufferToImage(cmd, e.staging, e.img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+			VkImageMemoryBarrier shaderBarrier = barrier;
+			shaderBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			shaderBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			shaderBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			shaderBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &shaderBarrier);
+		}
+	});
+
+	// Destroy staging + append to m_Textures
+	for (int i = 0; i < 2; i++)
+	{
+		GpuResources::DestroyBuffer(m_Device, entries[i].staging, entries[i].stagingMem);
+		int idx = (int)m_Textures.size();
+		m_Textures.push_back(entries[i].img);
+		if (i == 0) m_MarginalCDFIndex = idx;
+		else        m_ConditionalCDFIndex = idx;
+	}
 
 	RT_LOG("[RT2] Env map CDF textures: marginal idx=%d conditional idx=%d (%dx%d)",
 	       m_MarginalCDFIndex, m_ConditionalCDFIndex, sceneData.cdfWidth, sceneData.cdfHeight);
@@ -553,8 +589,6 @@ void RendererGPU::SetScene(const GPUSceneData& sceneData)
 void RendererGPU::RebuildAccelerationStructures()
 {
 	RT_LOG("[RebuildAS] enter: meshes=%d", (int)m_CurrentScene.meshes.size());
-	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
-	RT_LOG("[RebuildAS] got command buffer");
 
 	// Build one BLAS per mesh geometry
 	std::vector<BLASGeometry> geometries;
@@ -568,7 +602,6 @@ void RendererGPU::RebuildAccelerationStructures()
 		geo.tangents = &mesh.tangents;
 		geo.materialIndex = mesh.materialIndex;
 
-		// Check if this mesh's material uses alpha blending/cutout
 		uint32_t matIdx = mesh.materialIndex;
 		if (matIdx < m_CurrentScene.materials.size())
 		{
@@ -580,51 +613,49 @@ void RendererGPU::RebuildAccelerationStructures()
 	}
 	RT_LOG("[RebuildAS] built %d geometry entries, calling BuildBLASes", (int)geometries.size());
 
-	bool blasOK = m_AS.BuildBLASes(cmd, geometries);
-	RT_LOG("[RebuildAS] BuildBLASes result=%d", blasOK);
+	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+		bool blasOK = m_AS.BuildBLASes(cmd, geometries);
+		RT_LOG("[RebuildAS] BuildBLASes result=%d", blasOK);
 
-	// Barrier: BLAS builds must complete before TLAS build reads them
-	VkMemoryBarrier blasBarrier = {};
-	blasBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-	blasBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-	blasBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+		// Barrier: BLAS builds must complete before TLAS build reads them
+		VkMemoryBarrier blasBarrier = {};
+		blasBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+		blasBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+		blasBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
 
-	vkCmdPipelineBarrier(cmd,
-		VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-		VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-		0, 1, &blasBarrier, 0, nullptr, 0, nullptr);
+		vkCmdPipelineBarrier(cmd,
+			VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+			VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+			0, 1, &blasBarrier, 0, nullptr, 0, nullptr);
 
-	// Build TLAS instances — one per BLAS, with customIndex = material index
-	// sbtHitOffset: 0 = opaque hit group (no any-hit), 1 = alpha hit group (any-hit)
-	std::vector<BLASInstance> instances;
-	instances.reserve(m_CurrentScene.meshes.size());
-	for (size_t i = 0; i < m_CurrentScene.meshes.size(); i++)
-	{
-		VkTransformMatrixKHR transform = {};
-		transform.matrix[0][0] = 1.0f;
-		transform.matrix[1][1] = 1.0f;
-		transform.matrix[2][2] = 1.0f;
-
-		BLASInstance inst = {};
-		inst.blasAddress = m_AS.GetBLASAddress(static_cast<uint32_t>(i));
-		inst.customIndex = m_CurrentScene.meshes[i].materialIndex;
-		inst.transform = transform;
-
-		// Check if this mesh's material uses alpha blending/cutout
-		uint32_t matIdx = m_CurrentScene.meshes[i].materialIndex;
-		if (matIdx < m_CurrentScene.materials.size())
+		// Build TLAS instances
+		std::vector<BLASInstance> instances;
+		instances.reserve(m_CurrentScene.meshes.size());
+		for (size_t i = 0; i < m_CurrentScene.meshes.size(); i++)
 		{
-			float alphaMode = m_CurrentScene.materials[matIdx].alphaMode;
-			inst.sbtHitOffset = (alphaMode > 0.5f) ? 1u : 0u;  // 1 = alpha hit group
+			VkTransformMatrixKHR transform = {};
+			transform.matrix[0][0] = 1.0f;
+			transform.matrix[1][1] = 1.0f;
+			transform.matrix[2][2] = 1.0f;
+
+			BLASInstance inst = {};
+			inst.blasAddress = m_AS.GetBLASAddress(static_cast<uint32_t>(i));
+			inst.customIndex = m_CurrentScene.meshes[i].materialIndex;
+			inst.transform = transform;
+
+			uint32_t matIdx = m_CurrentScene.meshes[i].materialIndex;
+			if (matIdx < m_CurrentScene.materials.size())
+			{
+				float alphaMode = m_CurrentScene.materials[matIdx].alphaMode;
+				inst.sbtHitOffset = (alphaMode > 0.5f) ? 1u : 0u;
+			}
+
+			instances.push_back(inst);
 		}
 
-		instances.push_back(inst);
-	}
-
-	bool tlasOK = m_AS.BuildTLAS(cmd, instances);
-	RT_LOG("[RebuildAS] TLAS build result=%d instances=%d", tlasOK, (int)instances.size());
-
-	Walnut::Application::FlushCommandBuffer(cmd);
+		bool tlasOK = m_AS.BuildTLAS(cmd, instances);
+		RT_LOG("[RebuildAS] TLAS build result=%d instances=%d", tlasOK, (int)instances.size());
+	});
 
 	RT_LOG("[RebuildAS] creating material buffer");
 	CreateMaterialBuffer();
@@ -1047,8 +1078,6 @@ void RendererGPU::CreateGBufferImages()
 		{ VK_FORMAT_R16G16B16A16_SFLOAT, m_NRDSpecOut,       m_NRDSpecOutMem,       m_NRDSpecOutView },
 	};
 
-	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
-
 	for (auto& s : specs)
 	{
 		// Create image via GpuResources (image + memory + view)
@@ -1059,24 +1088,27 @@ void RendererGPU::CreateGBufferImages()
 		s.image = tmp.image;
 		s.mem   = tmp.memory;
 		s.view  = tmp.view;
-
-		// Transition to GENERAL layout
-		VkImageMemoryBarrier barrier = {};
-		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image = s.image;
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier.subresourceRange.levelCount = 1;
-		barrier.subresourceRange.layerCount = 1;
-
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 	}
 
-	Walnut::Application::FlushCommandBuffer(cmd);
+	// Transition all G-buffer images to GENERAL layout in a single command buffer
+	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+		for (auto& s : specs)
+		{
+			VkImageMemoryBarrier barrier = {};
+			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image = s.image;
+			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			barrier.subresourceRange.levelCount = 1;
+			barrier.subresourceRange.layerCount = 1;
+
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+		}
+	});
 }
 
 void RendererGPU::DestroyGBufferImages()
