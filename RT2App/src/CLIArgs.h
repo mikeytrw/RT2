@@ -21,6 +21,7 @@ struct CLIArgs
 	bool verbose = false;
 	bool validate = false;        // enable Vulkan validation layers
 	bool syncValidate = false;    // enable synchronization validation
+	bool rasterFirst = false;      // raster-first hybrid path
 	int gbufferDebug = -1;        // G-buffer debug view mode (-1 = off)
 
 	bool hasScene() const { return !scenePath.empty(); }
@@ -78,10 +79,14 @@ struct CLIArgs
 			{
 				args.nrd = true;
 			}
-			else if (strcmp(a, "--gbuffer-debug") == 0)
-			{
-				if (const char* v = next()) args.gbufferDebug = std::atoi(v);
-			}
+		else if (strcmp(a, "--gbuffer-debug") == 0)
+		{
+			if (const char* v = next()) args.gbufferDebug = std::atoi(v);
+		}
+		else if (strcmp(a, "--raster-first") == 0)
+		{
+			args.rasterFirst = true;
+		}
 			else if (strcmp(a, "--headless") == 0)
 			{
 				args.headless = true;
@@ -118,7 +123,9 @@ struct CLIArgs
 				printf("  --spp <N>            Samples per pixel override\n");
 				printf("  --bounces <N>        Max bounces override\n");
 				printf("  --nrd                Enable NRD denoiser\n");
-				printf("  --headless           Render N frames, save screenshot, exit\n");
+				printf("  --raster-first       Enable raster-first hybrid path\n");
+		printf("  --gbuffer-debug <N>  G-buffer debug view mode\n");
+		printf("  --headless           Render N frames, save screenshot, exit\n");
 				printf("  --list               Print what would be loaded, then exit\n");
 			printf("  --verbose            Verbose logging\n");
 			printf("  --validate           Enable Vulkan validation layers\n");

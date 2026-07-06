@@ -158,13 +158,25 @@ public:
 
 	ImGui::Separator();
 	ImGui::Text("Camera");
+	bool rasterFirst = m_RendererGPU.m_RasterFirst;
+	ImGui::BeginDisabled(rasterFirst);
 	if (ImGui::DragFloat("Aperture", &m_Cam.m_Aperture, 0.001f, 0.0f, 5.0f))
 		m_RendererGPU.ResetAccumulation();
 	if (ImGui::DragFloat("Focus Distance", &m_Cam.m_FocusDistance, 0.1f, 0.1f, 50.0f))
 		m_RendererGPU.ResetAccumulation();
+	ImGui::EndDisabled();
+	if (rasterFirst && m_Cam.m_Aperture > 0.0f)
+	{
+		m_Cam.m_Aperture = 0.0f;
+		m_RendererGPU.ResetAccumulation();
+	}
 	ImGui::Separator();
 	if (ImGui::Checkbox("Raster-First Path", &m_RendererGPU.m_RasterFirst))
+	{
+		if (m_RendererGPU.m_RasterFirst)
+			m_Cam.m_Aperture = 0.0f;
 		m_RendererGPU.ResetAccumulation();
+	}
 	if (m_RendererGPU.m_RasterFirst)
 	{
 		ImGui::SameLine();
@@ -176,8 +188,7 @@ public:
 		m_RendererGPU.ResetAccumulation();
 
 	// NRD only works with raster-first (RT-primary is accumulation-only after B4)
-	// Also requires aperture=0 (DOF fallback disables raster-first → NRD has no G-buffer)
-	bool nrdAvailable = m_RendererGPU.m_RasterFirst && (m_Cam.m_Aperture <= 0.0f);
+	bool nrdAvailable = m_RendererGPU.m_RasterFirst;
 	if (!nrdAvailable && m_RendererGPU.m_NRDEnabled)
 	{
 		m_RendererGPU.m_NRDEnabled = false;
@@ -419,6 +430,11 @@ private:
 		}
 		if (g_CLI.nrd)
 			m_RendererGPU.m_NRDEnabled = true;
+		if (g_CLI.rasterFirst)
+		{
+			m_RendererGPU.m_RasterFirst = true;
+			m_Cam.m_Aperture = 0.0f;  // raster-first can't do DOF
+		}
 		if (g_CLI.gbufferDebug >= 0)
 			m_RendererGPU.m_GBufferDebugMode = g_CLI.gbufferDebug;
 
@@ -444,6 +460,11 @@ private:
 		// Auto-load scene
 		if (g_CLI.hasScene())
 			LoadScene(g_CLI.scenePath);
+
+		// Raster-first: force aperture=0 (DOF fallback) AFTER scene load,
+		// because the scene file may store a non-zero aperture in camera extras.
+		if (g_CLI.rasterFirst)
+			m_Cam.m_Aperture = 0.0f;
 
 		// Headless mode: render N frames, screenshot, exit
 		if (g_CLI.headless)

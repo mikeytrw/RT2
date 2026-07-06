@@ -105,11 +105,11 @@ void main()
 
     // View direction (towards camera)
     vec3 wo = normalize(camera.position.xyz - worldPos);
-    float NdotV = max(dot(gBufferN, wo), 0.0);
 
     // Face-forward flip: raster FS doesn't flip normal to face camera.
     // RT closesthit does: n = frontFace ? normal : -normal
     vec3 n = dot(gBufferN, wo) >= 0.0 ? gBufferN : -gBufferN;
+    float NdotV = max(dot(n, wo), 0.0);
 
     // Geometric normal (for ray offset)
     vec3 geoN = normalize(imageLoad(gPrimGeoNormal, pixel).xyz * 2.0 - 1.0);
@@ -210,28 +210,31 @@ void main()
     float nextBsdfPdf = nee.nextBsdfPdf;
 
     // ---- Trace secondary ray (depth=1, closesthit handles bounces) ----
+    // Offset along the face-forward shading normal (n), not geoN — geoN from
+    // raster derivatives can point into the surface depending on triangle winding.
     vec3 offsetN = dot(scatter.scatterDir, n) > 0.0 ? n : -n;
-    // Offset along geometric normal (Fable: raster-derived positions carry
-    // interpolation/depth error; offset along geoN, scale with distance)
-    float offsetEps = 0.001 * max(1.0, abs(viewZ) * 0.01);
+    vec3 rayOrigin = worldPos + offsetN * 0.001;
 
-    nextPayload.a = vec4(scatter.attenuation, rngState);  // throughput * attenuation
-    nextPayload.b = vec4(vec3(0.0), 1.0);  // radiance = 0, depth = 1
-    nextPayload.c = vec4(worldPos + geoN * offsetEps, 0.0);
-    nextPayload.d = vec4(normalize(scatter.scatterDir), nextBsdfPdf);
-    nextPayload.e = vec4(0.0);  // hitT = 0 (will be set by closesthit at depth=1)
+    // Write scatter data to payload (location 0) — the trace uses location 0.
+    // nextPayload (location 1) is only used by closesthit for recursive traces;
+    // here we trace directly from raygen, so payload (location 0) is the one.
+    payload.a = vec4(scatter.attenuation, rngState);  // throughput * attenuation
+    payload.b = vec4(vec3(0.0), 1.0);                  // radiance = 0, depth = 1
+    payload.c = vec4(rayOrigin, 0.0);
+    payload.d = vec4(normalize(scatter.scatterDir), nextBsdfPdf);
+    payload.e = vec4(0.0);
 
     traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0,
-                nextPayload.c.xyz, offsetEps, nextPayload.d.xyz, 1e9, 0);
+                rayOrigin, 0.001, payload.d.xyz, 1e9, 0);
 
     // Total radiance = direct lighting (NEE) + indirect (secondary ray)
-    vec3 indirectRad = nextPayload.b.xyz;
+    vec3 indirectRad = payload.b.xyz;
     vec3 totalRad = directLighting + indirectRad;
-    rngState = floatBitsToUint(nextPayload.a.w);
+    rngState = floatBitsToUint(payload.a.w);
 
     // hitT for NRD = secondary ray hit distance only (NOT primary, per NRD docs)
     // closesthit stores gl_HitTEXT in payload.e.w at depth=1
-    float secondaryHitT = nextPayload.e.w;
+    float secondaryHitT = payload.e.w;
     // Fallback for missed rays (hitT=0): use a large value so NRD treats it as far hit
     if (secondaryHitT <= 0.0)
         secondaryHitT = 1e4;

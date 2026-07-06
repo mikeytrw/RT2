@@ -162,7 +162,7 @@ void main()
 
     // Write G-buffer via MRT color attachments (rasterization-ordered, no race)
     // matIdx sentinel: store matIdx + 1 in gPrimHit.w (0 = miss/sky, used by secondary_raygen)
-    outPrimHit = vec4(inWorldPos, floatBitsToInt(matIdx + 1u));
+    outPrimHit = vec4(inWorldPos, uintBitsToFloat(matIdx + 1u));
     outPrimGeoNormal = vec4(geoN * 0.5 + 0.5, 0.0);
     outPrimUV = vec4(uv, 0.0, 0.0);
 
