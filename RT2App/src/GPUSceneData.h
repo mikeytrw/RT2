@@ -4,6 +4,7 @@
 #define GPU_SCENE_DATA_H
 
 #include "Scene.h"
+#include "ECSScene.h"
 #include <glm/glm.hpp>
 #include <vector>
 
@@ -78,6 +79,17 @@ struct GPUMeshGeometry
     uint32_t               materialIndex = 0;
 };
 
+// One instance of a mesh in the world. Multiple instances can reference
+// the same meshIndex (BLAS) with different transforms — instancing.
+struct GPUInstance
+{
+    uint32_t     meshIndex = 0;       // index into GPUSceneData::meshes
+    uint32_t     materialIndex = 0;   // material for this instance
+    glm::mat4    worldMatrix = glm::mat4(1.0f);       // object-to-world
+    glm::mat4    prevWorldMatrix = glm::mat4(1.0f);   // previous frame (for motion vectors)
+    bool         isTransparent = false;  // alpha mode > 0.5 → any-hit SBT group
+};
+
 // A triangle light for Next-Event Estimation. 32 bytes (vec4 + uvec4).
 // The shader samples the emissive texture at the picked barycentric point
 // using (instanceID, primitiveID) to look up positions/UVs from existing
@@ -97,7 +109,8 @@ struct GPUTriangleLight
 // Full scene data ready for GPU upload.
 struct GPUSceneData
 {
-    std::vector<GPUMeshGeometry>  meshes;
+    std::vector<GPUMeshGeometry>  meshes;     // unique geometry (one BLAS per entry)
+    std::vector<GPUInstance>      instances;  // TLAS instances (one per entity with MeshRef)
     std::vector<GPUMaterial>      materials;
     std::vector<SceneTexture>     textures;
     std::vector<GPUTriangleLight> lights;  // emissive triangles for NEE
@@ -119,6 +132,11 @@ struct GPUSceneData
 // with geometry, one GPUMaterial per scene material. Meshes without
 // geometry are skipped. Out-of-range material indices clamp to 0.
 GPUSceneData BuildGPUSceneData(const Scene& scene);
+
+// Convert an ECSScene into GPUSceneData: one GPUMeshGeometry per unique mesh
+// in the MeshRegistry, one GPUInstance per entity with MeshRef. World matrices
+// are read from Transform components (must be updated by SceneGraph first).
+GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene);
 
 // Build marginal and conditional CDFs for env map importance sampling (M8).
 void BuildEnvMapCDF(const std::vector<float>& floatPixels, int width, int height,

@@ -1,4 +1,5 @@
 #include "GPUSceneData.h"
+#include "SceneGraph.h"
 #include <glm/glm.hpp>
 #include <cmath>
 
@@ -206,6 +207,169 @@ GPUSceneData BuildGPUSceneData(const Scene& scene)
 
         gpu.meshes.push_back(std::move(geo));
         ++instanceID;
+    }
+
+    return gpu;
+}
+
+GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
+{
+    GPUSceneData gpu;
+
+    // Copy textures and materials (same as BuildGPUSceneData)
+    gpu.textures = ecsScene.textures;
+    gpu.materials.reserve(ecsScene.materials.size());
+    for (const auto& sm : ecsScene.materials)
+        gpu.materials.push_back(GPUMaterial::fromSceneMaterial(sm));
+    if (gpu.materials.empty())
+        gpu.materials.push_back(GPUMaterial{});
+
+    // Build one GPUMeshGeometry per unique mesh in the MeshRegistry.
+    // Vertices stay in object space — transforms are applied via TLAS instances.
+    uint32_t meshCount = ecsScene.meshRegistry.GetCount();
+    gpu.meshes.reserve(meshCount);
+
+    for (uint32_t m = 0; m < meshCount; m++)
+    {
+        const auto& src = ecsScene.meshRegistry.GetMesh(m);
+        GPUMeshGeometry geo;
+        geo.vertices = src.vertices;
+        geo.indices  = src.indices;
+
+        uint32_t triCount = static_cast<uint32_t>(src.indices.size() / 3);
+        geo.vertexUVs.reserve(triCount * 6);
+        geo.tangents.reserve(triCount * 12);
+
+        if (!src.uvs.empty())
+        {
+            for (uint32_t t = 0; t < triCount; t++)
+            {
+                uint32_t vi0 = src.indices[t * 3 + 0] * 3;
+                uint32_t vi1 = src.indices[t * 3 + 1] * 3;
+                uint32_t vi2 = src.indices[t * 3 + 2] * 3;
+                uint32_t ui0 = src.indices[t * 3 + 0] * 2;
+                uint32_t ui1 = src.indices[t * 3 + 1] * 2;
+                uint32_t ui2 = src.indices[t * 3 + 2] * 2;
+
+                // UVs
+                geo.vertexUVs.push_back(src.uvs[ui0]);
+                geo.vertexUVs.push_back(src.uvs[ui0 + 1]);
+                geo.vertexUVs.push_back(src.uvs[ui1]);
+                geo.vertexUVs.push_back(src.uvs[ui1 + 1]);
+                geo.vertexUVs.push_back(src.uvs[ui2]);
+                geo.vertexUVs.push_back(src.uvs[ui2 + 1]);
+
+                // Tangent from edges and UV derivatives
+                glm::vec3 v0(src.vertices[vi0], src.vertices[vi0 + 1], src.vertices[vi0 + 2]);
+                glm::vec3 v1(src.vertices[vi1], src.vertices[vi1 + 1], src.vertices[vi1 + 2]);
+                glm::vec3 v2(src.vertices[vi2], src.vertices[vi2 + 1], src.vertices[vi2 + 2]);
+
+                glm::vec2 uv0(src.uvs[ui0], src.uvs[ui0 + 1]);
+                glm::vec2 uv1(src.uvs[ui1], src.uvs[ui1 + 1]);
+                glm::vec2 uv2(src.uvs[ui2], src.uvs[ui2 + 1]);
+
+                glm::vec3 edge1 = v1 - v0;
+                glm::vec3 edge2 = v2 - v0;
+                glm::vec2 dUV1 = uv1 - uv0;
+                glm::vec2 dUV2 = uv2 - uv0;
+
+                float det = dUV1.x * dUV2.y - dUV1.y * dUV2.x;
+                glm::vec3 tangent(1.0f, 0.0f, 0.0f);
+                if (std::abs(det) > 1e-8f)
+                {
+                    float r = 1.0f / det;
+                    tangent = normalize(r * (dUV2.y * edge1 - dUV1.y * edge2));
+                }
+
+                for (int v = 0; v < 3; v++)
+                {
+                    geo.tangents.push_back(tangent.x);
+                    geo.tangents.push_back(tangent.y);
+                    geo.tangents.push_back(tangent.z);
+                }
+            }
+        }
+        else
+        {
+            geo.vertexUVs.resize(triCount * 6, 0.0f);
+            geo.tangents.resize(triCount * 9, 0.0f);
+        }
+
+        gpu.meshes.push_back(std::move(geo));
+    }
+
+    // Build instance list: one GPUInstance per entity with MeshRef
+    // World matrices come from Transform (already resolved by SceneGraph)
+    auto meshView = ecsScene.registry.view<MeshRef, Transform>();
+
+    for (auto entity : meshView)
+    {
+        const auto& ref = meshView.get<MeshRef>(entity);
+        const auto& tf = meshView.get<Transform>(entity);
+
+        GPUInstance inst;
+        inst.meshIndex = ref.meshIndex;
+        inst.materialIndex = static_cast<uint32_t>(
+            ref.materialIndex < static_cast<int>(gpu.materials.size()) ? ref.materialIndex : 0);
+        inst.worldMatrix = tf.worldMatrix;
+        inst.prevWorldMatrix = tf.prevWorldMatrix;
+
+        // Check transparency from material
+        if (inst.materialIndex < gpu.materials.size())
+        {
+            float alphaMode = gpu.materials[inst.materialIndex].alphaMode;
+            inst.isTransparent = (alphaMode > 0.5f);
+        }
+
+        gpu.instances.push_back(inst);
+    }
+
+    // Build emissive triangle lights from instances with emissive materials.
+    // Each emissive triangle stores (instanceID, primitiveID) so the shader
+    // can look up positions from the combined buffers.
+    // NOTE: Positions are in object space — the shader must transform them
+    // to world space using the instance's world matrix. This will be handled
+    // in Phase 2.6 (shader changes). For now, we bake world-space positions
+    // like BuildGPUSceneData does, using the instance world matrix.
+    for (uint32_t instIdx = 0; instIdx < gpu.instances.size(); instIdx++)
+    {
+        const auto& inst = gpu.instances[instIdx];
+        if (inst.meshIndex >= gpu.meshes.size())
+            continue;
+
+        const auto& mesh = gpu.meshes[inst.meshIndex];
+        const auto& mat = gpu.materials[inst.materialIndex];
+        glm::vec3 emissive = glm::vec3(mat.emissive_roughness);
+        bool isEmissive = (emissive.x > 0.0f || emissive.y > 0.0f || emissive.z > 0.0f);
+        if (!isEmissive)
+            continue;
+
+        int emissiveTexIdx = mat.textureIndices.z;
+        uint32_t triCount = static_cast<uint32_t>(mesh.indices.size() / 3);
+
+        for (uint32_t t = 0; t < triCount; t++)
+        {
+            uint32_t vi0 = mesh.indices[t * 3 + 0] * 3;
+            uint32_t vi1 = mesh.indices[t * 3 + 1] * 3;
+            uint32_t vi2 = mesh.indices[t * 3 + 2] * 3;
+
+            // Object-space vertices → world space via instance transform
+            glm::vec4 v0 = inst.worldMatrix * glm::vec4(mesh.vertices[vi0], mesh.vertices[vi0 + 1], mesh.vertices[vi0 + 2], 1.0f);
+            glm::vec4 v1 = inst.worldMatrix * glm::vec4(mesh.vertices[vi1], mesh.vertices[vi1 + 1], mesh.vertices[vi1 + 2], 1.0f);
+            glm::vec4 v2 = inst.worldMatrix * glm::vec4(mesh.vertices[vi2], mesh.vertices[vi2 + 1], mesh.vertices[vi2 + 2], 1.0f);
+
+            glm::vec3 w0(v0), w1(v1), w2(v2);
+            glm::vec3 edge1 = w1 - w0;
+            glm::vec3 edge2 = w2 - w0;
+            float area = 0.5f * std::abs(glm::length(glm::cross(edge1, edge2)));
+
+            GPUTriangleLight light;
+            light.emission_area = glm::vec4(emissive, area);
+            light.ids = glm::uvec4(instIdx, t, inst.materialIndex,
+                                   emissiveTexIdx >= 0 ? static_cast<uint32_t>(emissiveTexIdx) : 0xFFFFFFFFu);
+            gpu.lights.push_back(light);
+            gpu.totalLightArea += area;
+        }
     }
 
     return gpu;
