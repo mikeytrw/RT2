@@ -5,7 +5,6 @@
 #include "shader_interface.h"
 #include "GpuResources.h"
 #include "CommandUtils.h"
-#include "Walnut/Application.h"
 #include "Walnut/RTDispatch.h"
 #include "backends/imgui_impl_vulkan.h"
 #include <glm/glm.hpp>
@@ -989,46 +988,46 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 	             stagingBuffer, stagingMemory);
 
-	// Transition output image to TRANSFER_SRC layout, copy to buffer
-	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
+	// Wait for all in-flight frames, then use ImmediateSubmit for the copy
+	vkDeviceWaitIdle(device);
 
-	VkImageMemoryBarrier toTransfer = {};
-	toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	toTransfer.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-	toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-	toTransfer.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-	toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-	toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	toTransfer.image = m_OutputImage;
-	toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	toTransfer.subresourceRange.levelCount = 1;
-	toTransfer.subresourceRange.layerCount = 1;
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-	                     0, nullptr, 0, nullptr, 1, &toTransfer);
+	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+		VkImageMemoryBarrier toTransfer = {};
+		toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		toTransfer.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		toTransfer.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toTransfer.image = m_OutputImage;
+		toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		toTransfer.subresourceRange.levelCount = 1;
+		toTransfer.subresourceRange.layerCount = 1;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+		                     0, nullptr, 0, nullptr, 1, &toTransfer);
 
-	VkBufferImageCopy region = {};
-	region.bufferOffset = 0;
-	region.bufferRowLength = 0;
-	region.bufferImageHeight = 0;
-	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	region.imageSubresource.mipLevel = 0;
-	region.imageSubresource.baseArrayLayer = 0;
-	region.imageSubresource.layerCount = 1;
-	region.imageOffset = { 0, 0, 0 };
-	region.imageExtent = { m_Width, m_Height, 1 };
-	vkCmdCopyImageToBuffer(cmd, m_OutputImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer, 1, &region);
+		VkBufferImageCopy region = {};
+		region.bufferOffset = 0;
+		region.bufferRowLength = 0;
+		region.bufferImageHeight = 0;
+		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.imageSubresource.mipLevel = 0;
+		region.imageSubresource.baseArrayLayer = 0;
+		region.imageSubresource.layerCount = 1;
+		region.imageOffset = { 0, 0, 0 };
+		region.imageExtent = { m_Width, m_Height, 1 };
+		vkCmdCopyImageToBuffer(cmd, m_OutputImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer, 1, &region);
 
-	// Transition back to GENERAL
-	VkImageMemoryBarrier toGeneral = toTransfer;
-	toGeneral.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-	toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-	toGeneral.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-	toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, 0,
-	                     0, nullptr, 0, nullptr, 1, &toGeneral);
-
-	Walnut::Application::FlushCommandBuffer(cmd);
+		// Transition back to GENERAL
+		VkImageMemoryBarrier toGeneral = toTransfer;
+		toGeneral.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		toGeneral.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, 0,
+		                     0, nullptr, 0, nullptr, 1, &toGeneral);
+	});
 
 	// Map and convert R32G32B32A32 float → RGBA8 (tonemap + sRGB)
 	void* mapped = nullptr;
