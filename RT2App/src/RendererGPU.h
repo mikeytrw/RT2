@@ -98,6 +98,7 @@ private:
 
 	VkBuffer m_CameraUBO = VK_NULL_HANDLE;
 	VkDeviceMemory m_CameraUBOMemory = VK_NULL_HANDLE;
+	SICameraData m_CameraUBOData = {}; // stashed by UpdateCameraUBO, written via vkCmdUpdateBuffer in Render()
 
 	VkBuffer m_MaterialBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_MaterialBufferMemory = VK_NULL_HANDLE;

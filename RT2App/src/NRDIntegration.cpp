@@ -124,9 +124,9 @@ bool NRDWrapper::Init(VkInstance instance, VkPhysicalDevice physicalDevice, VkDe
 	strncpy(integrationDesc.name, "RT2 NRD", sizeof(integrationDesc.name));
 	integrationDesc.resourceWidth = (uint16_t)width;
 	integrationDesc.resourceHeight = (uint16_t)height;
-	integrationDesc.queuedFrameNum = 3;
+	integrationDesc.queuedFrameNum = 3; // must be >= RendererGPU::MAX_FRAMES_IN_FLIGHT (2)
 	integrationDesc.enableWholeLifetimeDescriptorCaching = false;
-	integrationDesc.autoWaitForIdle = true;
+	integrationDesc.autoWaitForIdle = true; // TODO: false for true pipelining (needs NRD sync investigation)
 
 	RT_LOG("[NRD] calling RecreateVK...");
 	nrd::Result rr = g_NRD.RecreateVK(integrationDesc, instanceDesc, deviceDesc);

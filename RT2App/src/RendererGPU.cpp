@@ -211,7 +211,7 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 	if (!m_CameraUBO)
 	{
 		GpuResources::CreateBuffer(m_Device, sizeof(SICameraData),
-		             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+		             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             m_CameraUBO, m_CameraUBOMemory);
 	}
@@ -719,11 +719,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	m_PrevWorldToView = ubo.worldToView;
 	m_HasPrevMatrices = true;
 
-	VkDevice device = m_Device.device;
-	void* data;
-	vkMapMemory(device, m_CameraUBOMemory, 0, sizeof(SICameraData), 0, &data);
-	memcpy(data, &ubo, sizeof(SICameraData));
-	vkUnmapMemory(device, m_CameraUBOMemory);
+	m_CameraUBOData = ubo; // stash for vkCmdUpdateBuffer in Render()
 }
 
 void RendererGPU::Render(const Camera& camera)
@@ -770,12 +766,44 @@ void RendererGPU::Render(const Camera& camera)
 		return;
 	}
 
-	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
+	VkDevice device = m_Device.device;
 
-	// If the AS was just rebuilt this frame, insert a barrier so the
-	// traceRayEXT sees the completed TLAS/BLAS writes (host-side flush
-	// of the build command buffer is not sufficient for device visibility
-	// across command buffers).
+	// NRD requires all previous GPU work to be complete before NewFrame().
+	// With frames-in-flight, previous frames may still be in flight.
+	// Temporarily use full device idle for NRD mode until NRD pipelining is investigated.
+	if (m_NRDEnabled && m_NRD.IsAvailable())
+		vkDeviceWaitIdle(device);
+
+	// ---- Frames-in-flight ring: wait for this frame slot to be free ----
+	FrameContext& frame = m_Frames[m_CurrentFrame];
+	frame.WaitForFence(device);
+	frame.Begin(device);
+	VkCommandBuffer cmd = frame.commandBuffer;
+
+	// ---- Top-of-frame barrier: protect ImGui's read of previous frame's output ----
+	// ImGui's fragment shader reads the output image from the previous frame's submission.
+	// With pipelining, that read may still be in flight when we start writing.
+	{
+		VkImageMemoryBarrier topBarrier = {};
+		topBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		topBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		topBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		topBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		topBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		topBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		topBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		topBarrier.image = m_OutputImage;
+		topBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		topBarrier.subresourceRange.levelCount = 1;
+		topBarrier.subresourceRange.layerCount = 1;
+		vkCmdPipelineBarrier(cmd,
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0,
+			0, nullptr, 0, nullptr, 1, &topBarrier);
+	}
+
+	// If the AS was just rebuilt this frame (via ImmediateSubmit), the GPU is
+	// provably done. The barrier is technically redundant but harmless.
 	if (m_ASJustBuilt)
 	{
 		VkMemoryBarrier asBarrier = {};
@@ -789,38 +817,34 @@ void RendererGPU::Render(const Camera& camera)
 		m_ASJustBuilt = false;
 	}
 
-	// The output image stays in VK_IMAGE_LAYOUT_GENERAL for its entire lifetime:
-	// both the RT storage-image write and the ImGui sampled-image read (whose
-	// descriptor was registered with GENERAL in CreateOutputImage) are valid in
-	// GENERAL. The previous GENERAL<->SHADER_READ_ONLY dance desynced from the
-	// ImGui descriptor and produced validation errors + a black screen.
-	VkImageMemoryBarrier rtWriteBarrier = {};
-	rtWriteBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	rtWriteBarrier.srcAccessMask = 0;
-	rtWriteBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-	rtWriteBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-	rtWriteBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-	rtWriteBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	rtWriteBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	rtWriteBarrier.image = m_OutputImage;
-	rtWriteBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	rtWriteBarrier.subresourceRange.levelCount = 1;
-	rtWriteBarrier.subresourceRange.layerCount = 1;
-
+	// ---- UBO updates via vkCmdUpdateBuffer (avoids host-write/GPU-read race) ----
+	// Barrier: protect previous frame's uniform read from our transfer write
+	VkMemoryBarrier uboPreBarrier = {};
+	uboPreBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+	uboPreBarrier.srcAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+	uboPreBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 	vkCmdPipelineBarrier(cmd,
-		VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0, nullptr, 1, &rtWriteBarrier);
+		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+		VK_PIPELINE_STAGE_TRANSFER_BIT,
+		0, 1, &uboPreBarrier, 0, nullptr, 0, nullptr);
 
-	// Update NRD UBO
-	VkDevice device = m_Device.device;
+	// Update camera UBO via vkCmdUpdateBuffer (496 bytes, within 65536 limit)
+	vkCmdUpdateBuffer(cmd, m_CameraUBO, 0, sizeof(SICameraData), &m_CameraUBOData);
+
+	// Update NRD UBO via vkCmdUpdateBuffer (16 bytes)
+	SINRDUniformData nrdData = { m_NRDEnabled ? 1u : 0u, 0, 0, 0 };
 	if (m_NRDUBO)
-	{
-		SINRDUniformData nrdData = { m_NRDEnabled ? 1u : 0u, 0, 0, 0 };
-		void* nrdMapped;
-		vkMapMemory(device, m_NRDUBOMemory, 0, sizeof(SINRDUniformData), 0, &nrdMapped);
-		memcpy(nrdMapped, &nrdData, sizeof(SINRDUniformData));
-		vkUnmapMemory(device, m_NRDUBOMemory);
-	}
+		vkCmdUpdateBuffer(cmd, m_NRDUBO, 0, sizeof(SINRDUniformData), &nrdData);
+
+	// Barrier: make transfer writes visible to ray tracing shader
+	VkMemoryBarrier uboPostBarrier = {};
+	uboPostBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+	uboPostBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	uboPostBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
+	vkCmdPipelineBarrier(cmd,
+		VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+		0, 1, &uboPostBarrier, 0, nullptr, 0, nullptr);
 
 	// Trace rays via PathTracePass
 	m_PathTracePass.Record(cmd, m_Width, m_Height, m_GBufferSet);
@@ -939,8 +963,10 @@ void RendererGPU::Render(const Camera& camera)
 
 	vkCmdPipelineBarrier(cmd, srcStage, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &rtReadBarrier);
 
-	Walnut::Application::FlushCommandBuffer(cmd);
+	// ---- Submit this frame's work (async, no wait) ----
+	frame.Submit(m_Device.queue);
 
+	m_CurrentFrame = (m_CurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	m_FrameIndex++;
 }
 
@@ -1194,7 +1220,8 @@ void RendererGPU::CreateGBufferDescriptorSet()
 	// Create NRD UBO
 	if (!m_NRDUBO)
 	{
-		GpuResources::CreateBuffer(m_Device, sizeof(SINRDUniformData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+		GpuResources::CreateBuffer(m_Device, sizeof(SINRDUniformData),
+		             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             m_NRDUBO, m_NRDUBOMemory);
 	}
