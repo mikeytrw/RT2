@@ -1017,8 +1017,43 @@ void RendererGPU::Render(const Camera& camera)
 	// ---- Raster G-buffer pass (primary visibility) ----
 	if (m_RasterPass.IsAvailable() && m_DepthImageView)
 	{
-		// G-buffer images stay in GENERAL — FS writes via imageStore (storage images)
-		// Only depth image needs transition
+		// Clear G-buffer images to zero so uncovered pixels don't retain stale data
+		VkImage gbufferClearImgs[] = {
+			m_GNormalRoughness, m_GViewZ, m_GMotion,
+			m_GAlbedoF0, m_GDirectEmission,
+			m_GPrimHit, m_GPrimGeoNormal, m_GPrimUV
+		};
+		VkClearColorValue clearVal = {};
+		for (auto img : gbufferClearImgs)
+		{
+			VkImageSubresourceRange range = {};
+			range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			range.levelCount = 1;
+			range.layerCount = 1;
+			vkCmdClearColorImage(cmd, img, VK_IMAGE_LAYOUT_GENERAL, &clearVal, 1, &range);
+		}
+
+		// Barrier: clears must complete before FS writes via imageStore
+		for (auto img : gbufferClearImgs)
+		{
+			VkImageMemoryBarrier b = {};
+			b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.image = img;
+			b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			b.subresourceRange.levelCount = 1;
+			b.subresourceRange.layerCount = 1;
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+			                     0, nullptr, 0, nullptr, 1, &b);
+		}
+
+		// Depth image: UNDEFINED → DEPTH_ATTACHMENT_OPTIMAL (cleared by loadOp)
 		VkImageMemoryBarrier depthBarrier = {};
 		depthBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 		depthBarrier.srcAccessMask = 0;
