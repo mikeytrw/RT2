@@ -57,6 +57,7 @@ public:
 	float m_EmissiveBoost = 1.0f;
 	float m_EnvIntensity = 1.0f;
 	bool m_NRDEnabled = false;  // NRD denoiser toggle
+	bool m_RasterFirst = false; // raster-first path (raster primary + RT secondary)
 
 	// NRD tunable settings (exposed in UI)
 	float m_NRDMaxBlurRadius = 30.0f;

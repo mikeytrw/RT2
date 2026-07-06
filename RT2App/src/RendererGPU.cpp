@@ -1100,7 +1100,10 @@ void RendererGPU::Render(const Camera& camera)
 	else
 	{
 		// Trace rays via PathTracePass
-		m_PathTracePass.Record(cmd, m_Width, m_Height, m_GBufferSet);
+		// DOF fallback: raster-first can't do depth of field (aperture > 0).
+		// Auto-fallback to RT-primary if aperture is set.
+		bool useRasterFirst = m_RasterFirst && (camera.m_Aperture <= 0.0f);
+		m_PathTracePass.Record(cmd, m_Width, m_Height, m_GBufferSet, useRasterFirst);
 
 	// NRD denoising pass
 	if (m_NRDEnabled && m_NRD.IsAvailable())

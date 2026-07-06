@@ -163,10 +163,26 @@ public:
 	if (ImGui::DragFloat("Focus Distance", &m_Cam.m_FocusDistance, 0.1f, 0.1f, 50.0f))
 		m_RendererGPU.ResetAccumulation();
 	ImGui::Separator();
+	if (ImGui::Checkbox("Raster-First Path", &m_RendererGPU.m_RasterFirst))
+		m_RendererGPU.ResetAccumulation();
+	if (m_RendererGPU.m_RasterFirst)
+	{
+		ImGui::SameLine();
+		ImGui::TextDisabled("(aperture=0, no DOF)");
+	}
 	if (ImGui::Checkbox("Show Background", &m_RendererGPU.m_ShowBackground))
 		m_RendererGPU.ResetAccumulation();
 	if (ImGui::SliderFloat("Emissive Boost", &m_RendererGPU.m_EmissiveBoost, 0.0f, 50.0f, "%.1f"))
 		m_RendererGPU.ResetAccumulation();
+
+	// NRD only works with raster-first (RT-primary is accumulation-only after B4)
+	bool nrdAvailable = m_RendererGPU.m_RasterFirst;
+	if (!nrdAvailable && m_RendererGPU.m_NRDEnabled)
+	{
+		m_RendererGPU.m_NRDEnabled = false;
+		m_RendererGPU.ResetAccumulation();
+	}
+	ImGui::BeginDisabled(!nrdAvailable);
 	if (ImGui::Checkbox("NRD Denoiser", &m_RendererGPU.m_NRDEnabled))
 		m_RendererGPU.ResetAccumulation();
 	if (m_RendererGPU.m_NRDEnabled)
@@ -178,6 +194,7 @@ public:
 		ImGui::SliderFloat("Split Screen", &m_RendererGPU.m_NRDSplitScreen, 0.0f, 1.0f, "%.2f");
 		ImGui::Unindent();
 	}
+	ImGui::EndDisabled();
 	ImGui::Separator();
 	ImGui::Text("G-buffer Debug");
 	const char* gbufferModes[] = {
