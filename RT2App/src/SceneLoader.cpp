@@ -48,6 +48,10 @@ bool DecodeImageData(tinygltf::Image *image, const int image_idx,
 #include <functional>
 #include <cstring>
 #include <algorithm>
+#include <unordered_map>
+
+#include "SceneGraph.h"
+#include "ECSScene.h"
 
 namespace fs = std::filesystem;
 
@@ -1115,6 +1119,554 @@ bool SceneLoader::Load(Scene& scene, const std::string& filepath)
         for (int i = 0; i < (int)model.nodes.size(); i++)
             traverseNode(i, glm::mat4(1.0f));
     }
+
+    return true;
+}
+
+// ============================================================================
+// LoadIntoECS — ECS-based scene loading
+//
+// Populates an ECSScene with object-space meshes + per-entity transforms.
+// Meshes are stored in the MeshRegistry (unique geometry, deduplicated by
+// glTF mesh index). Entities get Transform, MeshRef, and Hierarchy components.
+// The SceneGraph system resolves the hierarchy to world matrices.
+//
+// ============================================================================
+
+bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
+{
+    if (filepath.empty() || !fs::exists(filepath))
+        return false;
+
+    tinygltf::Model model;
+    tinygltf::TinyGLTF loader;
+    loader.SetImageLoader(DecodeImageData, nullptr);
+    std::string err, warn;
+
+    fs::path fpath(filepath);
+    std::string ext = fpath.extension().string();
+    bool isGLB = (ext == ".glb" || ext == ".GLB");
+
+    bool ret;
+    if (isGLB)
+        ret = loader.LoadBinaryFromFile(&model, &err, &warn, filepath);
+    else
+        ret = loader.LoadASCIIFromFile(&model, &err, &warn, filepath);
+
+    if (!err.empty())
+        printf("[SceneLoader] Error: %s\n", err.c_str());
+    if (!warn.empty())
+        printf("[SceneLoader] Warning: %s\n", warn.c_str());
+
+    if (!ret)
+        return false;
+
+    ecsScene.Clear();
+
+    // --- Textures (same as Load) ---
+    for (const auto& gtext : model.textures)
+    {
+        SceneTexture tex;
+        if (gtext.source >= 0 && gtext.source < (int)model.images.size())
+        {
+            const auto& img = model.images[gtext.source];
+            tex.filepath = img.uri;
+            if (!img.image.empty() && img.width > 0 && img.height > 0)
+            {
+                tex.width = img.width;
+                tex.height = img.height;
+                tex.channels = 4;
+                tex.pixels.assign(img.image.begin(), img.image.end());
+            }
+        }
+        ecsScene.textures.push_back(tex);
+    }
+
+    // --- Materials (same as Load) ---
+    for (const auto& gmat : model.materials)
+    {
+        SceneMaterial mat;
+
+        if (gmat.pbrMetallicRoughness.baseColorFactor.size() >= 4)
+        {
+            mat.baseColor = {
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[0],
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[1],
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[2]
+            };
+            mat.baseAlpha = (float)gmat.pbrMetallicRoughness.baseColorFactor[3];
+        }
+        else if (gmat.pbrMetallicRoughness.baseColorFactor.size() >= 3)
+        {
+            mat.baseColor = {
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[0],
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[1],
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[2]
+            };
+        }
+
+        mat.metallic = (float)gmat.pbrMetallicRoughness.metallicFactor;
+        mat.roughness = (float)gmat.pbrMetallicRoughness.roughnessFactor;
+
+        if (gmat.pbrMetallicRoughness.baseColorTexture.index >= 0)
+            mat.baseColorTextureIndex = gmat.pbrMetallicRoughness.baseColorTexture.index;
+        if (gmat.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0)
+            mat.metallicRoughnessTextureIndex = gmat.pbrMetallicRoughness.metallicRoughnessTexture.index;
+        if (gmat.normalTexture.index >= 0)
+            mat.normalTextureIndex = gmat.normalTexture.index;
+        if (gmat.emissiveTexture.index >= 0)
+            mat.emissiveTextureIndex = gmat.emissiveTexture.index;
+
+        if (gmat.emissiveFactor.size() >= 3)
+        {
+            float r = (float)gmat.emissiveFactor[0];
+            float g = (float)gmat.emissiveFactor[1];
+            float b = (float)gmat.emissiveFactor[2];
+            float maxComp = std::max({r, g, b});
+            if (maxComp > 0.0f)
+            {
+                mat.emissiveColor = {r / maxComp, g / maxComp, b / maxComp};
+                mat.emissiveIntensity = maxComp;
+            }
+        }
+
+        auto emissiveStrengthIt = gmat.extensions.find("KHR_materials_emissive_strength");
+        if (emissiveStrengthIt != gmat.extensions.end() && emissiveStrengthIt->second.IsObject())
+        {
+            const tinygltf::Value& strengthExt = emissiveStrengthIt->second;
+            if (strengthExt.Has("emissiveStrength"))
+                mat.emissiveIntensity *= (float)strengthExt.Get("emissiveStrength").GetNumberAsDouble();
+        }
+
+        mat.alphaMode = gmat.alphaMode;
+        mat.alphaCutoff = (float)gmat.alphaCutoff;
+
+        auto transmissionIt = gmat.extensions.find("KHR_materials_transmission");
+        if (transmissionIt != gmat.extensions.end() && transmissionIt->second.IsObject())
+        {
+            const tinygltf::Value& transExt = transmissionIt->second;
+            if (transExt.Has("transmissionFactor"))
+            {
+                float transFactor = (float)transExt.Get("transmissionFactor").GetNumberAsDouble();
+                if (transFactor > 0.0f)
+                {
+                    mat.transmissionFactor = transFactor;
+                    if (mat.transmissionFactor > 1.0f) mat.transmissionFactor = 1.0f;
+                }
+            }
+        }
+
+        if (gmat.extras.Has("ior"))
+            mat.ior = (float)gmat.extras.Get("ior").GetNumberAsDouble();
+
+        ecsScene.materials.push_back(mat);
+    }
+
+    // If no materials, add a default so index 0 is always valid
+    if (ecsScene.materials.empty())
+        ecsScene.materials.push_back(SceneMaterial{});
+
+    // --- Helper: extract local TRS from a glTF node ---
+    auto extractLocalTRS = [](const tinygltf::Node& node, glm::vec3& outT, glm::quat& outR, glm::vec3& outS) {
+        outT = {0.0f, 0.0f, 0.0f};
+        outR = {1.0f, 0.0f, 0.0f, 0.0f};  // identity
+        outS = {1.0f, 1.0f, 1.0f};
+
+        if (node.matrix.size() == 16)
+        {
+            glm::mat4 m = glm::make_mat4(node.matrix.data());
+            // Decompose matrix into TRS
+            outT = glm::vec3(m[3]);
+            float scaleX = glm::length(glm::vec3(m[0]));
+            float scaleY = glm::length(glm::vec3(m[1]));
+            float scaleZ = glm::length(glm::vec3(m[2]));
+            outS = {scaleX, scaleY, scaleZ};
+
+            glm::mat3 rotMat(
+                glm::vec3(m[0]) / scaleX,
+                glm::vec3(m[1]) / scaleY,
+                glm::vec3(m[2]) / scaleZ
+            );
+            outR = glm::quat_cast(rotMat);
+        }
+        else
+        {
+            if (node.translation.size() >= 3)
+                outT = {(float)node.translation[0], (float)node.translation[1], (float)node.translation[2]};
+            if (node.rotation.size() >= 4)
+            {
+                // glTF quaternion is [x, y, z, w]; GLM wants (w, x, y, z)
+                outR = glm::quat((float)node.rotation[3], (float)node.rotation[0],
+                                 (float)node.rotation[1], (float)node.rotation[2]);
+            }
+            if (node.scale.size() >= 3)
+                outS = {(float)node.scale[0], (float)node.scale[1], (float)node.scale[2]};
+        }
+    };
+
+    // --- Helper: read accessor data (shared with Load) ---
+    auto readVec3Accessor = [](const tinygltf::Model& model, int accessorIdx) -> std::vector<glm::vec3> {
+        std::vector<glm::vec3> out;
+        if (accessorIdx < 0 || accessorIdx >= (int)model.accessors.size())
+            return out;
+        const tinygltf::Accessor& acc = model.accessors[accessorIdx];
+        if (acc.bufferView < 0 || acc.bufferView >= (int)model.bufferViews.size())
+            return out;
+        const tinygltf::BufferView& bv = model.bufferViews[acc.bufferView];
+        if (bv.buffer < 0 || bv.buffer >= (int)model.buffers.size())
+            return out;
+        const tinygltf::Buffer& buf = model.buffers[bv.buffer];
+        int stride = acc.ByteStride(bv);
+        if (stride < 0) return out;
+        const unsigned char* data = buf.data.data() + bv.byteOffset + acc.byteOffset;
+        out.resize(acc.count);
+        for (size_t i = 0; i < acc.count; i++)
+        {
+            const float* f = reinterpret_cast<const float*>(data + i * stride);
+            out[i] = glm::vec3(f[0], f[1], f[2]);
+        }
+        return out;
+    };
+
+    auto readVec2Accessor = [](const tinygltf::Model& model, int accessorIdx) -> std::vector<glm::vec2> {
+        std::vector<glm::vec2> out;
+        if (accessorIdx < 0 || accessorIdx >= (int)model.accessors.size())
+            return out;
+        const tinygltf::Accessor& acc = model.accessors[accessorIdx];
+        if (acc.bufferView < 0 || acc.bufferView >= (int)model.bufferViews.size())
+            return out;
+        const tinygltf::BufferView& bv = model.bufferViews[acc.bufferView];
+        if (bv.buffer < 0 || bv.buffer >= (int)model.buffers.size())
+            return out;
+        const tinygltf::Buffer& buf = model.buffers[bv.buffer];
+        int stride = acc.ByteStride(bv);
+        if (stride < 0) return out;
+        const unsigned char* data = buf.data.data() + bv.byteOffset + acc.byteOffset;
+        out.resize(acc.count);
+        for (size_t i = 0; i < acc.count; i++)
+        {
+            const unsigned char* p = data + i * stride;
+            if (acc.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT)
+            {
+                const float* f = reinterpret_cast<const float*>(p);
+                out[i] = glm::vec2(f[0], f[1]);
+            }
+            else if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
+            {
+                const uint8_t* b = reinterpret_cast<const uint8_t*>(p);
+                out[i] = acc.normalized ? glm::vec2(b[0] / 255.0f, b[1] / 255.0f)
+                                        : glm::vec2((float)b[0], (float)b[1]);
+            }
+            else if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT)
+            {
+                const uint16_t* s = reinterpret_cast<const uint16_t*>(p);
+                out[i] = acc.normalized ? glm::vec2(s[0] / 65535.0f, s[1] / 65535.0f)
+                                        : glm::vec2((float)s[0], (float)s[1]);
+            }
+            else if (acc.componentType == TINYGLTF_COMPONENT_TYPE_SHORT)
+            {
+                const int16_t* s = reinterpret_cast<const int16_t*>(p);
+                out[i] = acc.normalized
+                            ? glm::vec2(std::max(-1.0f, s[0] / 32767.0f), std::max(-1.0f, s[1] / 32767.0f))
+                            : glm::vec2((float)s[0], (float)s[1]);
+            }
+        }
+        return out;
+    };
+
+    auto readIndices = [](const tinygltf::Model& model, int accessorIdx) -> std::vector<uint32_t> {
+        std::vector<uint32_t> out;
+        if (accessorIdx < 0 || accessorIdx >= (int)model.accessors.size())
+            return out;
+        const tinygltf::Accessor& acc = model.accessors[accessorIdx];
+        if (acc.bufferView < 0 || acc.bufferView >= (int)model.bufferViews.size())
+            return out;
+        const tinygltf::BufferView& bv = model.bufferViews[acc.bufferView];
+        if (bv.buffer < 0 || bv.buffer >= (int)model.buffers.size())
+            return out;
+        const tinygltf::Buffer& buf = model.buffers[bv.buffer];
+        int stride = acc.ByteStride(bv);
+        if (stride < 0) return out;
+        const unsigned char* data = buf.data.data() + bv.byteOffset + acc.byteOffset;
+        out.resize(acc.count);
+        for (size_t i = 0; i < acc.count; i++)
+        {
+            const unsigned char* p = data + i * stride;
+            if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
+                out[i] = *reinterpret_cast<const uint8_t*>(p);
+            else if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT)
+                out[i] = *reinterpret_cast<const uint16_t*>(p);
+            else if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT)
+                out[i] = *reinterpret_cast<const uint32_t*>(p);
+            else
+                out[i] = 0;
+        }
+        return out;
+    };
+
+    // --- Helper: create a MeshData from a glTF primitive (object space) ---
+    auto createMeshData = [&](const tinygltf::Model& model, const tinygltf::Primitive& prim) -> MeshData {
+        MeshData mesh;
+
+        // POSITION (required)
+        auto posIt = prim.attributes.find("POSITION");
+        if (posIt == prim.attributes.end())
+            return mesh;
+        std::vector<glm::vec3> positions = readVec3Accessor(model, posIt->second);
+        if (positions.empty())
+            return mesh;
+
+        // Object-space vertices (NO world transform applied)
+        mesh.vertices.reserve(positions.size() * 3);
+        for (const auto& p : positions)
+        {
+            mesh.vertices.push_back(p.x);
+            mesh.vertices.push_back(p.y);
+            mesh.vertices.push_back(p.z);
+        }
+
+        // NORMAL (optional, object space)
+        auto nrmIt = prim.attributes.find("NORMAL");
+        if (nrmIt != prim.attributes.end())
+        {
+            std::vector<glm::vec3> normals = readVec3Accessor(model, nrmIt->second);
+            mesh.normals.reserve(normals.size() * 3);
+            for (const auto& n : normals)
+            {
+                mesh.normals.push_back(n.x);
+                mesh.normals.push_back(n.y);
+                mesh.normals.push_back(n.z);
+            }
+        }
+
+        // TEXCOORD_0 (optional)
+        auto uvIt = prim.attributes.find("TEXCOORD_0");
+        if (uvIt != prim.attributes.end())
+        {
+            std::vector<glm::vec2> uvs = readVec2Accessor(model, uvIt->second);
+            mesh.uvs.reserve(uvs.size() * 2);
+            for (const auto& uv : uvs)
+            {
+                mesh.uvs.push_back(uv.x);
+                mesh.uvs.push_back(uv.y);
+            }
+        }
+
+        // INDICES
+        if (prim.indices >= 0)
+        {
+            mesh.indices = readIndices(model, prim.indices);
+        }
+        else
+        {
+            // Non-indexed: generate sequential
+            size_t vertCount = positions.size();
+            size_t triCount = vertCount / 3;
+            mesh.indices.resize(triCount * 3);
+            for (size_t i = 0; i < triCount * 3; i++)
+                mesh.indices[i] = static_cast<uint32_t>(i);
+        }
+
+        return mesh;
+    };
+
+    // --- Node traversal: create entities with Transform + MeshRef ---
+    // Cache: glTF mesh index → MeshRegistry index (one BLAS per unique mesh)
+    std::unordered_map<int, std::vector<uint32_t>> meshIndexCache;
+    // glTF mesh index → list of MeshRegistry indices (one per primitive)
+
+    std::function<entt::entity(int, entt::entity)> traverseNodeECS =
+        [&](int nodeIdx, entt::entity parentEntity) -> entt::entity {
+        if (nodeIdx < 0 || nodeIdx >= (int)model.nodes.size())
+            return entt::null;
+
+        const tinygltf::Node& node = model.nodes[nodeIdx];
+
+        // Create entity with Transform
+        entt::entity entity = ecsScene.registry.create();
+
+        Transform& tf = ecsScene.registry.emplace<Transform>(entity);
+        extractLocalTRS(node, tf.translation, tf.rotation, tf.scale);
+        tf.dirty = true;
+
+        // Hierarchy: link to parent
+        if (parentEntity != entt::null)
+        {
+            Hierarchy& hier = ecsScene.registry.emplace<Hierarchy>(entity);
+            hier.parent = parentEntity;
+        }
+
+        // Name
+        if (!node.name.empty())
+        {
+            auto& name = ecsScene.registry.emplace<NameComponent>(entity);
+            name.name = node.name;
+        }
+
+        // Handle camera nodes
+        if (node.camera >= 0 && node.camera < (int)model.cameras.size())
+        {
+            const tinygltf::Camera& gcam = model.cameras[node.camera];
+            SceneCamera& cam = ecsScene.camera;
+            cam.verticalFOV = glm::degrees((float)gcam.perspective.yfov);
+
+            // Camera position/forward will be computed from world matrix
+            // after SceneGraph::UpdateWorldTransforms
+            if (gcam.extras.Has("position") && gcam.extras.Get("position").IsArray())
+            {
+                const tinygltf::Value& posArr = gcam.extras.Get("position");
+                if (posArr.ArrayLen() >= 3)
+                {
+                    cam.position = {
+                        (float)posArr.Get(0).GetNumberAsDouble(),
+                        (float)posArr.Get(1).GetNumberAsDouble(),
+                        (float)posArr.Get(2).GetNumberAsDouble()
+                    };
+                }
+            }
+            if (gcam.extras.Has("forward") && gcam.extras.Get("forward").IsArray())
+            {
+                const tinygltf::Value& fwdArr = gcam.extras.Get("forward");
+                if (fwdArr.ArrayLen() >= 3)
+                {
+                    cam.forwardDirection = {
+                        (float)fwdArr.Get(0).GetNumberAsDouble(),
+                        (float)fwdArr.Get(1).GetNumberAsDouble(),
+                        (float)fwdArr.Get(2).GetNumberAsDouble()
+                    };
+                }
+            }
+            if (gcam.extras.Has("aperture"))
+                cam.aperture = (float)gcam.extras.Get("aperture").GetNumberAsDouble();
+            if (gcam.extras.Has("focusDistance"))
+                cam.focusDistance = (float)gcam.extras.Get("focusDistance").GetNumberAsDouble();
+            if (gcam.extras.Has("verticalFOV"))
+                cam.verticalFOV = (float)gcam.extras.Get("verticalFOV").GetNumberAsDouble();
+
+            // If no explicit position/forward in extras, we'll compute from
+            // the world matrix after SceneGraph::UpdateWorldTransforms
+            // (handled by caller)
+        }
+
+        // Handle mesh nodes
+        if (node.mesh >= 0 && node.mesh < (int)model.meshes.size())
+        {
+            const tinygltf::Mesh& gmesh = model.meshes[node.mesh];
+
+            if (!gmesh.primitives.empty())
+            {
+                // Get or create MeshRegistry entries for this glTF mesh
+                auto cacheIt = meshIndexCache.find(node.mesh);
+                if (cacheIt == meshIndexCache.end())
+                {
+                    // First time seeing this mesh — create MeshData for each primitive
+                    std::vector<uint32_t> meshIndices;
+                    for (const auto& prim : gmesh.primitives)
+                    {
+                        int mode = (prim.mode >= 0) ? prim.mode : 4;
+                        if (mode != 4) // TINYGLTF_MODE_TRIANGLES
+                        {
+                            printf("[SceneLoader] Skipping non-triangle primitive (mode %d)\n", mode);
+                            meshIndices.push_back(0xFFFFFFFF);  // invalid marker
+                            continue;
+                        }
+
+                        MeshData meshData = createMeshData(model, prim);
+                        if (meshData.vertices.empty())
+                        {
+                            meshIndices.push_back(0xFFFFFFFF);
+                            continue;
+                        }
+
+                        uint32_t meshIdx = ecsScene.meshRegistry.AddMesh(std::move(meshData));
+                        meshIndices.push_back(meshIdx);
+                    }
+                    cacheIt = meshIndexCache.emplace(node.mesh, std::move(meshIndices)).first;
+                }
+
+                // Create a MeshRef entity for each primitive
+                for (size_t p = 0; p < cacheIt->second.size(); p++)
+                {
+                    uint32_t meshIdx = cacheIt->second[p];
+                    if (meshIdx == 0xFFFFFFFF)
+                        continue;
+
+                    const auto& prim = gmesh.primitives[p];
+                    int matIdx = (prim.material >= 0) ? prim.material : 0;
+
+                    if (p == 0)
+                    {
+                        // First primitive goes on the node entity itself
+                        MeshRef& ref = ecsScene.registry.emplace<MeshRef>(entity);
+                        ref.meshIndex = meshIdx;
+                        ref.materialIndex = matIdx;
+                    }
+                    else
+                    {
+                        // Additional primitives: create child entities (same transform)
+                        entt::entity primEntity = ecsScene.registry.create();
+                        Transform& primTf = ecsScene.registry.emplace<Transform>(primEntity);
+                        primTf.dirty = true;
+
+                        Hierarchy& hier = ecsScene.registry.emplace<Hierarchy>(primEntity);
+                        hier.parent = entity;
+
+                        MeshRef& ref = ecsScene.registry.emplace<MeshRef>(primEntity);
+                        ref.meshIndex = meshIdx;
+                        ref.materialIndex = matIdx;
+                    }
+                }
+            }
+            else if (!gmesh.name.empty())
+            {
+                // RT2 custom format: mesh.name is an external OBJ filepath
+                // This is a legacy path — the OBJ would need to be loaded separately.
+                // For now, just create a MeshRef with an invalid mesh index.
+                // The caller can handle OBJ loading after ECS population.
+                printf("[SceneLoader] RT2 custom mesh format (OBJ filepath): %s\n", gmesh.name.c_str());
+            }
+        }
+
+        // Recurse into children
+        for (int childIdx : node.children)
+            traverseNodeECS(childIdx, entity);
+
+        return entity;
+    };
+
+    // Start traversal from scene root nodes
+    if (model.defaultScene >= 0 && model.defaultScene < (int)model.scenes.size())
+    {
+        const tinygltf::Scene& gltfScene = model.scenes[model.defaultScene];
+        for (int rootIdx : gltfScene.nodes)
+            traverseNodeECS(rootIdx, entt::null);
+    }
+    else if (!model.scenes.empty())
+    {
+        for (int rootIdx : model.scenes[0].nodes)
+            traverseNodeECS(rootIdx, entt::null);
+    }
+    else
+    {
+        for (int i = 0; i < (int)model.nodes.size(); i++)
+            traverseNodeECS(i, entt::null);
+    }
+
+    // Resolve world transforms
+    SceneGraph::UpdateWorldTransforms(ecsScene.registry);
+
+    // If camera position wasn't set from extras, compute from camera entity's world matrix
+    // Find entity with camera (we stored camera data on the node entity)
+    // For now, leave camera as-is — the caller can update it from the entity world matrix
+
+    // Count entities with Transform component
+    size_t entityCount = ecsScene.registry.view<Transform>().size();
+
+    printf("[SceneLoader] ECS load: %zu entities, %d meshes, %d materials, %d textures\n",
+           entityCount,
+           (int)ecsScene.meshRegistry.GetCount(),
+           (int)ecsScene.materials.size(),
+           (int)ecsScene.textures.size());
 
     return true;
 }

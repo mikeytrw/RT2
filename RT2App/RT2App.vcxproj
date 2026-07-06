@@ -181,6 +181,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/R
     <ClInclude Include="src\CommandUtils.h" />
     <ClInclude Include="src\ComposePass.h" />
     <ClInclude Include="src\ECSComponents.h" />
+    <ClInclude Include="src\ECSScene.h" />
     <ClInclude Include="src\FileDialog.h" />
     <ClInclude Include="src\FrameContext.h" />
     <ClInclude Include="src\GPUSceneData.h" />
