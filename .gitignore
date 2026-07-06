@@ -17,3 +17,6 @@ imgui.ini
 rt2_log.txt
 regression_current.png
 test_*.png
+
+# Graphify cache
+graphify-out/cache/
