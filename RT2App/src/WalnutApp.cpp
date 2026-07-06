@@ -179,13 +179,6 @@ public:
 		ImGui::Unindent();
 	}
 	ImGui::Separator();
-	ImGui::Text("Animation");
-	if (ImGui::Checkbox("Animate Scene", &m_AnimateScene))
-	{
-		if (m_AnimateScene)
-			m_AnimationTime = 0.0f;
-		m_RendererGPU.ResetAccumulation();
-	}
 	ImGui::Text("Environment Map");
 	if (ImGui::Button("Load HDR..."))
 	{
@@ -395,8 +388,6 @@ private:
 		}
 		if (g_CLI.nrd)
 			m_RendererGPU.m_NRDEnabled = true;
-		if (g_CLI.animate)
-			m_AnimateScene = true;
 
 		// Auto-init GPU renderer if needed
 		if (m_UseGPU == 1 && Walnut::Application::IsRayTracingSupported() && !m_RendererGPU.IsAvailable())
@@ -452,8 +443,6 @@ private:
 			Timer timer;
 			if (m_UseGPU && m_RendererGPU.IsAvailable())
 			{
-				if (m_AnimateScene && m_EcsScene.meshRegistry.GetCount() > 0)
-					UpdateAnimation();
 				m_RendererGPU.Render(m_Cam);
 			}
 			else
@@ -533,12 +522,6 @@ private:
 
 		if (m_UseGPU && m_RendererGPU.IsAvailable())
 		{
-			// Per-frame ECS animation update
-			if (m_AnimateScene && m_EcsScene.meshRegistry.GetCount() > 0)
-			{
-				UpdateAnimation();
-			}
-
 			m_RendererGPU.Render(m_Cam);
 		}
 		else
@@ -548,44 +531,6 @@ private:
 			m_Renderer.Render(m_Cam);
 		}
 		m_LastRenderTime = timer.ElapsedMillis();
-	}
-
-	void UpdateAnimation()
-	{
-		// Find the first entity with MeshRef if not already cached
-		if (m_AnimatedEntity == entt::null)
-		{
-			auto view = m_EcsScene.registry.view<MeshRef>();
-			if (view.empty()) return;
-			m_AnimatedEntity = *view.begin();
-		}
-
-		// Rotate the entity around Y axis
-		auto* tf = m_EcsScene.registry.try_get<Transform>(m_AnimatedEntity);
-		if (!tf) return;
-
-		m_AnimationTime += 1.0f / 60.0f; // approximate frame time
-		float angle = m_AnimationTime * 0.5f; // 0.5 rad/s
-		tf->rotation = glm::angleAxis(angle, glm::vec3(0.0f, 1.0f, 0.0f));
-		SceneGraph::MarkDirty(m_EcsScene.registry, m_AnimatedEntity);
-		SceneGraph::SnapshotTransforms(m_EcsScene.registry);
-		SceneGraph::UpdateWorldTransforms(m_EcsScene.registry);
-
-		// Update GPU scene data (instances + lights only)
-		GPUSceneData gpuData;
-		gpuData.meshes = m_CurrentGpuScene.meshes;
-		gpuData.materials = m_CurrentGpuScene.materials;
-		gpuData.textures = m_CurrentGpuScene.textures;
-		gpuData.envMapIndex = m_CurrentGpuScene.envMapIndex;
-		gpuData.envIntensity = m_CurrentGpuScene.envIntensity;
-		gpuData.marginalCDF = m_CurrentGpuScene.marginalCDF;
-		gpuData.conditionalCDF = m_CurrentGpuScene.conditionalCDF;
-		gpuData.cdfWidth = m_CurrentGpuScene.cdfWidth;
-		gpuData.cdfHeight = m_CurrentGpuScene.cdfHeight;
-		UpdateInstancesFromECS(gpuData, m_EcsScene);
-
-		m_RendererGPU.UpdateSceneInstances(gpuData);
-		m_RendererGPU.ResetAccumulation();
 	}
 
 	void RebuildMaterial()
@@ -703,8 +648,6 @@ private:
 	void LoadScene(const std::string& filepath)
 	{
 		printf("[Scene] LoadScene: '%s'\n", filepath.c_str());
-		m_AnimatedEntity = entt::null; // reset animation target
-		m_AnimationTime = 0.0f;
 		if (!SceneLoader::Load(m_Scene, filepath))
 		{
 			printf("[Scene] SceneLoader::Load failed!\n");
@@ -876,12 +819,7 @@ private:
 
 	Scene m_Scene;
 	ECSScene m_EcsScene;
-	GPUSceneData m_CurrentGpuScene; // cached for animation updates
-
-	// Animation test: rotate first mesh entity
-	bool m_AnimateScene = false;
-	float m_AnimationTime = 0.0f;
-	entt::entity m_AnimatedEntity = entt::null;
+	GPUSceneData m_CurrentGpuScene;
 
 	bool m_CLIProcessed = false;
 
