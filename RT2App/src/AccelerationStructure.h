@@ -51,10 +51,9 @@ public:
 
 	// Build combined normal/position/UV/tangent buffers from BLAS data.
 	// Must be called after BuildTLAS (needs instance-to-BLAS mapping).
-	// If worldMatrices is provided, positions/normals/tangents are transformed
-	// to world space per-instance (transitional — Phase 2.6 moves this to shader).
-	// If empty, data stays in object space.
-	void BuildCombinedBuffers(const std::vector<glm::mat4>& worldMatrices = {});
+	// Emits per-BLAS object-space data (deduplicated). The shader transforms
+	// to world space at hit time using the instance transform SSBO.
+	void BuildCombinedBuffers();
 
 	VkDeviceAddress GetTLASDeviceAddress() const { return m_TLASDeviceAddress; }
 	bool IsValid() const { return m_TLAS != VK_NULL_HANDLE; }

@@ -11,7 +11,8 @@ class AccelerationStructure;
 // PathTracePass — owns the RT pipeline, SBT, and set 0 descriptor layout.
 // Set 0 bindings (see shader_interface.h):
 //   0: output image, 1: camera UBO, 2: materials, 3: normals, 4: TLAS,
-//   5: instance offsets, 6: tangents, 7: UVs, 8: positions, 9: lights, 10: textures
+//   5: instance offsets, 6: tangents, 7: UVs, 8: positions, 9: lights,
+//   10: instance transforms, 11: textures
 class PathTracePass
 {
 public:
@@ -28,7 +29,7 @@ public:
 		VkBuffer cameraUBO, VkBuffer materialBuffer,
 		VkBuffer normalBuffer, VkBuffer instanceOffsetBuffer,
 		VkBuffer tangentBuffer, VkBuffer uvBuffer, VkBuffer positionBuffer,
-		VkBuffer lightBuffer,
+		VkBuffer lightBuffer, VkBuffer instanceTransformBuffer,
 		VkAccelerationStructureKHR tlas,
 		const std::vector<VkDescriptorImageInfo>& textureImageInfos);
 

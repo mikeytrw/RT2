@@ -67,6 +67,7 @@ private:
 	void DestroyOutputImage();
 	void CreateMaterialBuffer();
 	void CreateLightBuffer();
+	void CreateInstanceTransformBuffer();
 	void UpdateCameraUBO(const Camera& camera);
 	void UpdatePathTraceDescriptorSet();
 	void CreateTextures(const std::vector<SceneTexture>& textures);
@@ -108,6 +109,10 @@ private:
 	VkBuffer m_LightBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_LightBufferMemory = VK_NULL_HANDLE;
 	VkDeviceSize m_LightBufferSize = 0;
+
+	// Instance transform buffer — one mat4 per instance (object-to-world)
+	VkBuffer m_InstanceTransformBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_InstanceTransformBufferMemory = VK_NULL_HANDLE;
 
 	// Textures (bindless array) — GpuImage wrapper, shared samplers
 	std::vector<GpuImage> m_Textures;

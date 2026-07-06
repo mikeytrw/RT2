@@ -13,14 +13,17 @@ layout(location = 2) rayPayloadEXT float shadowVisible;
 // attribs = (v, w) weights for vertices 1 and 2; u = 1 - v - w.
 hitAttributeEXT vec2 attribs;
 
-// Get the 3 vertex positions of the current hit triangle
+// Get the 3 vertex positions of the current hit triangle (world space).
+// Combined buffers store object-space positions; transform by the
+// instance's world matrix at hit time.
 void hitTriPositions(out vec3 p0, out vec3 p1, out vec3 p2)
 {
     uint triIdx = normalOffsets[gl_InstanceID] + uint(gl_PrimitiveID);
     uint posIdx = triIdx * 3u;
-    p0 = trianglePositions[posIdx + 0u].xyz;
-    p1 = trianglePositions[posIdx + 1u].xyz;
-    p2 = trianglePositions[posIdx + 2u].xyz;
+    mat4 world = instanceTransforms[gl_InstanceID];
+    p0 = vec3(world * trianglePositions[posIdx + 0u]);
+    p1 = vec3(world * trianglePositions[posIdx + 1u]);
+    p2 = vec3(world * trianglePositions[posIdx + 2u]);
 }
 
 // Barycentric coordinates of the hit point, straight from the hardware.
@@ -29,11 +32,12 @@ vec3 hitBarycentric()
     return vec3(1.0 - attribs.x - attribs.y, attribs.x, attribs.y);
 }
 
+// Face normal computed from world-space triangle positions.
 vec3 hitFaceNormal()
 {
-    uint offset = normalOffsets[gl_InstanceID];
-    vec4 n = triangleNormals[offset + uint(gl_PrimitiveID)];
-    return normalize(n.xyz);
+    vec3 p0, p1, p2;
+    hitTriPositions(p0, p1, p2);
+    return normalize(cross(p1 - p0, p2 - p0));
 }
 
 vec2 hitUV()
@@ -49,14 +53,16 @@ vec2 hitUV()
     return bary.x * uv0 + bary.y * uv1 + bary.z * uv2;
 }
 
+// Vertex tangents transformed to world space via the instance matrix.
 vec3 hitTangent()
 {
     uint triIdx = normalOffsets[gl_InstanceID] + uint(gl_PrimitiveID);
     uint posIdx = triIdx * 3u;
 
-    vec3 t0 = triangleTangents[posIdx + 0u].xyz;
-    vec3 t1 = triangleTangents[posIdx + 1u].xyz;
-    vec3 t2 = triangleTangents[posIdx + 2u].xyz;
+    mat3 worldMat3 = mat3(instanceTransforms[gl_InstanceID]);
+    vec3 t0 = normalize(worldMat3 * triangleTangents[posIdx + 0u].xyz);
+    vec3 t1 = normalize(worldMat3 * triangleTangents[posIdx + 1u].xyz);
+    vec3 t2 = normalize(worldMat3 * triangleTangents[posIdx + 2u].xyz);
 
     vec3 bary = hitBarycentric();
     return normalize(bary.x * t0 + bary.y * t1 + bary.z * t2);
@@ -173,12 +179,13 @@ NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
     uint lightIdx = pcg(rngState) % lightCount;
     TriangleLight light = lights[lightIdx];
 
-    // Sample a uniform point on the light triangle
+    // Sample a uniform point on the light triangle (world space)
     uint triIdx = normalOffsets[light.ids.x] + light.ids.y;
     uint posIdx = triIdx * 3u;
-    vec3 lp0 = trianglePositions[posIdx + 0u].xyz;
-    vec3 lp1 = trianglePositions[posIdx + 1u].xyz;
-    vec3 lp2 = trianglePositions[posIdx + 2u].xyz;
+    mat4 lightWorld = instanceTransforms[light.ids.x];
+    vec3 lp0 = vec3(lightWorld * trianglePositions[posIdx + 0u]);
+    vec3 lp1 = vec3(lightWorld * trianglePositions[posIdx + 1u]);
+    vec3 lp2 = vec3(lightWorld * trianglePositions[posIdx + 2u]);
 
     float r1 = randomFloat(rngState);
     float r2 = randomFloat(rngState);

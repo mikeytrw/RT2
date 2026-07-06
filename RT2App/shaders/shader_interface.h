@@ -49,8 +49,9 @@
 #define SI_BINDING_TANGENT_BUFFER   6
 #define SI_BINDING_UV_BUFFER        7
 #define SI_BINDING_POSITION_BUFFER  8
-#define SI_BINDING_LIGHT_BUFFER     9
-#define SI_BINDING_TEXTURE_ARRAY    10
+#define SI_BINDING_LIGHT_BUFFER          9
+#define SI_BINDING_INSTANCE_TRANSFORMS   10
+#define SI_BINDING_TEXTURE_ARRAY         11
 
 // ============================================================================
 // Binding indices — set 1 (NRD G-buffer)

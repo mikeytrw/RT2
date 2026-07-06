@@ -73,6 +73,7 @@ void RendererGPU::Destroy()
 	GpuResources::DestroyBuffer(m_Device, m_CameraUBO, m_CameraUBOMemory);
 	GpuResources::DestroyBuffer(m_Device, m_MaterialBuffer, m_MaterialBufferMemory);
 	GpuResources::DestroyBuffer(m_Device, m_LightBuffer, m_LightBufferMemory);
+	GpuResources::DestroyBuffer(m_Device, m_InstanceTransformBuffer, m_InstanceTransformBufferMemory);
 	GpuResources::DestroyBuffer(m_Device, m_NRDUBO, m_NRDUBOMemory);
 
 	if (m_GBufferPool)
@@ -234,7 +235,7 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 		m_CameraUBO, m_MaterialBuffer,
 		m_AS.GetNormalBuffer(), m_AS.GetInstanceOffsetBuffer(),
 		m_AS.GetTangentBuffer(), m_AS.GetUVBuffer(), m_AS.GetPositionBuffer(),
-		m_LightBuffer,
+		m_LightBuffer, m_InstanceTransformBuffer,
 		m_AS.GetTLAS(),
 		textureImageInfos);
 
@@ -302,6 +303,37 @@ void RendererGPU::CreateLightBuffer()
 	vkUnmapMemory(device, m_LightBufferMemory);
 
 	RT_LOG("[RT2] Light buffer: %d lights, totalArea=%f", lightCount, totalArea);
+}
+
+void RendererGPU::CreateInstanceTransformBuffer()
+{
+	GpuResources::DestroyBuffer(m_Device, m_InstanceTransformBuffer, m_InstanceTransformBufferMemory);
+
+	size_t instanceCount = m_CurrentScene.instances.size();
+	VkDeviceSize bufferSize = instanceCount * sizeof(glm::mat4);
+	if (bufferSize == 0) bufferSize = sizeof(glm::mat4); // always non-empty
+
+	GpuResources::CreateBuffer(m_Device, bufferSize,
+	             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+	             m_InstanceTransformBuffer, m_InstanceTransformBufferMemory);
+
+	// Extract just the worldMatrix from each GPUInstance
+	std::vector<glm::mat4> transforms(instanceCount);
+	for (size_t i = 0; i < instanceCount; i++)
+		transforms[i] = m_CurrentScene.instances[i].worldMatrix;
+
+	VkDevice device = m_Device.device;
+	void* data;
+	vkMapMemory(device, m_InstanceTransformBufferMemory, 0, bufferSize, 0, &data);
+	if (instanceCount > 0)
+		memcpy(data, transforms.data(), instanceCount * sizeof(glm::mat4));
+	else
+		memset(data, 0, bufferSize);
+	vkUnmapMemory(device, m_InstanceTransformBufferMemory);
+
+	RT_LOG("[RT2] Instance transform buffer: %d instances (%zu bytes)",
+	       (int)instanceCount, (size_t)bufferSize);
 }
 
 void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
@@ -689,17 +721,15 @@ void RendererGPU::RebuildAccelerationStructures()
 	});
 
 	// Build combined buffers after TLAS (needs instance-to-BLAS mapping)
-	// Transitional: bake world-space positions per-instance
-	std::vector<glm::mat4> worldMatrices;
-	worldMatrices.reserve(m_CurrentScene.instances.size());
-	for (const auto& gpuInst : m_CurrentScene.instances)
-		worldMatrices.push_back(gpuInst.worldMatrix);
-	m_AS.BuildCombinedBuffers(worldMatrices);
+	// Object-space data — shader transforms to world space via instanceTransforms SSBO
+	m_AS.BuildCombinedBuffers();
 
 	RT_LOG("[RebuildAS] creating material buffer");
 	CreateMaterialBuffer();
 	RT_LOG("[RebuildAS] creating light buffer");
 	CreateLightBuffer();
+	RT_LOG("[RebuildAS] creating instance transform buffer");
+	CreateInstanceTransformBuffer();
 	RT_LOG("[RebuildAS] updating descriptor set");
 	UpdatePathTraceDescriptorSet();
 

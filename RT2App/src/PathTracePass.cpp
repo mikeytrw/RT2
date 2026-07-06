@@ -44,7 +44,7 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 
 	const uint32_t maxTextures = 1024;
 
-	VkDescriptorSetLayoutBinding bindings[11] = {};
+	VkDescriptorSetLayoutBinding bindings[12] = {};
 
 	bindings[0] = {};
 	bindings[0].binding = SI_BINDING_OUTPUT_IMAGE;
@@ -107,23 +107,29 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	bindings[9].stageFlags = allRTFlags;
 
 	bindings[10] = {};
-	bindings[10].binding = SI_BINDING_TEXTURE_ARRAY;
-	bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[10].descriptorCount = maxTextures;
+	bindings[10].binding = SI_BINDING_INSTANCE_TRANSFORMS;
+	bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bindings[10].descriptorCount = 1;
 	bindings[10].stageFlags = allRTFlags;
 
-	VkDescriptorBindingFlagsEXT bindingFlags[11] = {};
-	bindingFlags[10] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT |
+	bindings[11] = {};
+	bindings[11].binding = SI_BINDING_TEXTURE_ARRAY;
+	bindings[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	bindings[11].descriptorCount = maxTextures;
+	bindings[11].stageFlags = allRTFlags;
+
+	VkDescriptorBindingFlagsEXT bindingFlags[12] = {};
+	bindingFlags[11] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT |
 	                   VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT;
 
 	VkDescriptorSetLayoutBindingFlagsCreateInfoEXT bindingFlagsInfo = {};
 	bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
-	bindingFlagsInfo.bindingCount = 11;
+	bindingFlagsInfo.bindingCount = 12;
 	bindingFlagsInfo.pBindingFlags = bindingFlags;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 11;
+	layoutInfo.bindingCount = 12;
 	layoutInfo.pBindings = bindings;
 	layoutInfo.pNext = &bindingFlagsInfo;
 
@@ -327,7 +333,7 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	VkBuffer cameraUBO, VkBuffer materialBuffer,
 	VkBuffer normalBuffer, VkBuffer instanceOffsetBuffer,
 	VkBuffer tangentBuffer, VkBuffer uvBuffer, VkBuffer positionBuffer,
-	VkBuffer lightBuffer,
+	VkBuffer lightBuffer, VkBuffer instanceTransformBuffer,
 	VkAccelerationStructureKHR tlas,
 	const std::vector<VkDescriptorImageInfo>& textureImageInfos)
 {
@@ -368,12 +374,16 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	lightBufferInfo.buffer = lightBuffer;
 	lightBufferInfo.range = VK_WHOLE_SIZE;
 
+	VkDescriptorBufferInfo instanceTransformBufferInfo = {};
+	instanceTransformBufferInfo.buffer = instanceTransformBuffer;
+	instanceTransformBufferInfo.range = VK_WHOLE_SIZE;
+
 	VkWriteDescriptorSetAccelerationStructureKHR asInfo = {};
 	asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
 	asInfo.accelerationStructureCount = 1;
 	asInfo.pAccelerationStructures = &tlas;
 
-	VkWriteDescriptorSet writes[11] = {};
+	VkWriteDescriptorSet writes[12] = {};
 
 	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[0].dstSet = m_DescriptorSet;
@@ -449,16 +459,24 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	writes[9].descriptorCount = 1;
 	writes[9].pBufferInfo = &lightBufferInfo;
 
-	uint32_t writeCount = 10;
+	writes[10] = {};
+	writes[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[10].dstSet = m_DescriptorSet;
+	writes[10].dstBinding = SI_BINDING_INSTANCE_TRANSFORMS;
+	writes[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[10].descriptorCount = 1;
+	writes[10].pBufferInfo = &instanceTransformBufferInfo;
+
+	uint32_t writeCount = 11;
 	if (!textureImageInfos.empty())
 	{
-		writes[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[10].dstSet = m_DescriptorSet;
-		writes[10].dstBinding = SI_BINDING_TEXTURE_ARRAY;
-		writes[10].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		writes[10].descriptorCount = (uint32_t)textureImageInfos.size();
-		writes[10].pImageInfo = textureImageInfos.data();
-		writeCount = 11;
+		writes[11].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		writes[11].dstSet = m_DescriptorSet;
+		writes[11].dstBinding = SI_BINDING_TEXTURE_ARRAY;
+		writes[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		writes[11].descriptorCount = (uint32_t)textureImageInfos.size();
+		writes[11].pImageInfo = textureImageInfos.data();
+		writeCount = 12;
 	}
 
 	vkUpdateDescriptorSets(dev.device, writeCount, writes, 0, nullptr);

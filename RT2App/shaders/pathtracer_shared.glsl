@@ -109,6 +109,14 @@ float computePTri()
     return 0.0;
 }
 
+// Per-instance world transform matrices (object-to-world).
+// Combined buffers store object-space data; the shader transforms to
+// world space at hit time using instanceTransforms[gl_InstanceID].
+layout(set = 0, binding = SI_BINDING_INSTANCE_TRANSFORMS, std430) readonly buffer InstanceTransformBuffer
+{
+    mat4 instanceTransforms[];
+};
+
 // Bindless texture array (combined image samplers, variable count)
 // Must be the highest binding number for VARIABLE_DESCRIPTOR_COUNT.
 layout(set = 0, binding = SI_BINDING_TEXTURE_ARRAY) uniform sampler2D textures[];
