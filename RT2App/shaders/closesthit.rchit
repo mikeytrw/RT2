@@ -163,22 +163,6 @@ void main()
         }
         payload.b.xyz += payload.a.xyz * emissive * weight * boost;
         payload.c.w = 1.0;
-
-        // NRD: tag emissive hits at depth 0 with lobeType=2 so raygen routes
-        // their radiance to gDirectEmission (bypassing NRD entirely).
-        if (uint(payload.b.w) == 0u && nrdData.nrdEnabled != 0u)
-        {
-            ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
-            vec3 geoN = hitFaceNormal();
-            imageStore(gNormalRoughness, pixel, vec4(geoN * 0.5 + 0.5, 1.0));
-            vec3 worldPos = gl_WorldRayOriginEXT + gl_HitTEXT * gl_WorldRayDirectionEXT;
-            float viewZE = (camera.worldToView * vec4(worldPos, 1.0)).z;
-            imageStore(gViewZ, pixel, vec4(viewZE, 0.0, 0.0, 0.0));
-            imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
-            imageStore(gAlbedoF0, pixel, vec4(1.0, 1.0, 1.0, 1.0));
-            // lobeType=2 (emissive), viewZ in z, hitT in w
-            payload.e = vec4(0.0, 0.0, 2.0, gl_HitTEXT);
-        }
         return;
     }
 
@@ -202,48 +186,6 @@ void main()
     ScatterResult scatter = scatterPrimaryHit(
         mat, baseColor, metallic, roughness, ior,
         n, wo, NdotV, rayDir, frontFace, rngState);
-
-    // ---- NRD G-buffer capture at primary hit (depth=0) ----
-    // Per-pixel data (normal/roughness, viewZ) is written straight to the
-    // G-buffer images here — this shader knows the pixel via gl_LaunchIDEXT.
-    // Data raygen needs for radiance routing/demodulation goes back through
-    // payload.e (the ONLY legal return channel — see RayPayload note).
-    if (depth == 0u && nrdData.nrdEnabled != 0u)
-    {
-        ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
-
-        // World-space normal + roughness. gNormalRoughness is rgba8 UNORM, so
-        // the signed normal must be encoded to [0,1] (NRD RGBA8 unorm encoding).
-        imageStore(gNormalRoughness, pixel, vec4(n * 0.5 + 0.5, roughness));
-
-        // View-space Z: transform world position to view space
-        vec4 viewPos = camera.worldToView * vec4(hitPoint, 1.0);
-        float viewZ = viewPos.z;
-        imageStore(gViewZ, pixel, vec4(viewZ, 0.0, 0.0, 0.0));
-
-        // Motion vector: reproject world position into previous and current
-        // screen space. NRD expects MV in UV space: pixelUvPrev = pixelUv + mv.
-        vec4 currClip = camera.viewToClip * viewPos;
-        vec4 prevView = camera.worldToViewPrev * vec4(hitPoint, 1.0);
-        vec4 prevClip = camera.viewToClipPrev * prevView;
-        vec2 currUv = (currClip.xy / currClip.w) * 0.5 + 0.5;
-        vec2 prevUv = (prevClip.xy / prevClip.w) * 0.5 + 0.5;
-        imageStore(gMotion, pixel, vec4(prevUv - currUv, 0.0, 0.0));
-
-        // Demodulation factors:
-        // Diffuse: divide by albedo = baseColor * (1 - metallic)
-        // Specular: divide by F0 (Schlick fresnel at normal incidence)
-        vec3 diffFactor = max(baseColor * (1.0 - metallic), vec3(0.01));
-        float f0Scalar = max(mix(0.04, luminance(baseColor), metallic), 0.01);
-
-        // Store demod factors for the compose compute shader
-        imageStore(gAlbedoF0, pixel, vec4(diffFactor, f0Scalar));
-
-        // Return routing/demod info to raygen through the payload.
-        payload.e = vec4(uintBitsToFloat(packUnorm4x8(vec4(diffFactor, scatter.lobeType))),
-                         uintBitsToFloat(packUnorm2x16(vec2(clamp(f0Scalar, 0.0, 1.0), clamp(roughness, 0.0, 1.0)))),
-                         viewZ, gl_HitTEXT);
-    }
 
     // Store hitT for secondary_raygen (depth=1 = first bounce after raster primary)
     if (depth == 1u)
