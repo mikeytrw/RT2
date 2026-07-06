@@ -619,9 +619,10 @@ void RendererGPU::SetScene(const GPUSceneData& sceneData)
 
 void RendererGPU::RebuildAccelerationStructures()
 {
-	RT_LOG("[RebuildAS] enter: meshes=%d", (int)m_CurrentScene.meshes.size());
+	RT_LOG("[RebuildAS] enter: meshes=%d instances=%d",
+	       (int)m_CurrentScene.meshes.size(), (int)m_CurrentScene.instances.size());
 
-	// Build one BLAS per mesh geometry
+	// Build one BLAS per unique mesh geometry (object space)
 	std::vector<BLASGeometry> geometries;
 	geometries.reserve(m_CurrentScene.meshes.size());
 	for (const auto& mesh : m_CurrentScene.meshes)
@@ -633,6 +634,7 @@ void RendererGPU::RebuildAccelerationStructures()
 		geo.tangents = &mesh.tangents;
 		geo.materialIndex = mesh.materialIndex;
 
+		// Check transparency from the mesh's material
 		uint32_t matIdx = mesh.materialIndex;
 		if (matIdx < m_CurrentScene.materials.size())
 		{
@@ -659,34 +661,40 @@ void RendererGPU::RebuildAccelerationStructures()
 			VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
 			0, 1, &blasBarrier, 0, nullptr, 0, nullptr);
 
-		// Build TLAS instances
+		// Build TLAS instances from GPUInstance list
 		std::vector<BLASInstance> instances;
-		instances.reserve(m_CurrentScene.meshes.size());
-		for (size_t i = 0; i < m_CurrentScene.meshes.size(); i++)
+		std::vector<uint32_t> instanceMeshIndices;
+		instances.reserve(m_CurrentScene.instances.size());
+		instanceMeshIndices.reserve(m_CurrentScene.instances.size());
+		for (const auto& gpuInst : m_CurrentScene.instances)
 		{
-			VkTransformMatrixKHR transform = {};
-			transform.matrix[0][0] = 1.0f;
-			transform.matrix[1][1] = 1.0f;
-			transform.matrix[2][2] = 1.0f;
-
 			BLASInstance inst = {};
-			inst.blasAddress = m_AS.GetBLASAddress(static_cast<uint32_t>(i));
-			inst.customIndex = m_CurrentScene.meshes[i].materialIndex;
-			inst.transform = transform;
+			inst.blasAddress = m_AS.GetBLASAddress(gpuInst.meshIndex);
+			inst.customIndex = gpuInst.materialIndex;
+			inst.sbtHitOffset = gpuInst.isTransparent ? 1u : 0u;
 
-			uint32_t matIdx = m_CurrentScene.meshes[i].materialIndex;
-			if (matIdx < m_CurrentScene.materials.size())
-			{
-				float alphaMode = m_CurrentScene.materials[matIdx].alphaMode;
-				inst.sbtHitOffset = (alphaMode > 0.5f) ? 1u : 0u;
-			}
+			// Convert glm::mat4 to VkTransformMatrixKHR (3x4 row-major)
+			const glm::mat4& w = gpuInst.worldMatrix;
+			VkTransformMatrixKHR& t = inst.transform;
+			t.matrix[0][0] = w[0][0]; t.matrix[0][1] = w[1][0]; t.matrix[0][2] = w[2][0]; t.matrix[0][3] = w[3][0];
+			t.matrix[1][0] = w[0][1]; t.matrix[1][1] = w[1][1]; t.matrix[1][2] = w[2][1]; t.matrix[1][3] = w[3][1];
+			t.matrix[2][0] = w[0][2]; t.matrix[2][1] = w[1][2]; t.matrix[2][2] = w[2][2]; t.matrix[2][3] = w[3][2];
 
 			instances.push_back(inst);
+			instanceMeshIndices.push_back(gpuInst.meshIndex);
 		}
 
-		bool tlasOK = m_AS.BuildTLAS(cmd, instances);
+		bool tlasOK = m_AS.BuildTLAS(cmd, instances, instanceMeshIndices);
 		RT_LOG("[RebuildAS] TLAS build result=%d instances=%d", tlasOK, (int)instances.size());
 	});
+
+	// Build combined buffers after TLAS (needs instance-to-BLAS mapping)
+	// Transitional: bake world-space positions per-instance
+	std::vector<glm::mat4> worldMatrices;
+	worldMatrices.reserve(m_CurrentScene.instances.size());
+	for (const auto& gpuInst : m_CurrentScene.instances)
+		worldMatrices.push_back(gpuInst.worldMatrix);
+	m_AS.BuildCombinedBuffers(worldMatrices);
 
 	RT_LOG("[RebuildAS] creating material buffer");
 	CreateMaterialBuffer();

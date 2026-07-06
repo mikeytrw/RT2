@@ -5,6 +5,7 @@
 
 #include "vulkan/vulkan.h"
 #include "GpuDevice.h"
+#include <glm/glm.hpp>
 #include <vector>
 #include <string>
 
@@ -43,8 +44,17 @@ public:
 
 	// Build TLAS over the previously-built BLASes. Each instance references
 	// a BLAS by index and carries a customIndex (material index).
+	// Also stores the instance-to-BLAS mapping for combined buffer offsets.
 	bool BuildTLAS(VkCommandBuffer cmdBuffer,
-	               const std::vector<BLASInstance>& instances);
+	               const std::vector<BLASInstance>& instances,
+	               const std::vector<uint32_t>& instanceMeshIndices = {});
+
+	// Build combined normal/position/UV/tangent buffers from BLAS data.
+	// Must be called after BuildTLAS (needs instance-to-BLAS mapping).
+	// If worldMatrices is provided, positions/normals/tangents are transformed
+	// to world space per-instance (transitional — Phase 2.6 moves this to shader).
+	// If empty, data stays in object space.
+	void BuildCombinedBuffers(const std::vector<glm::mat4>& worldMatrices = {});
 
 	VkDeviceAddress GetTLASDeviceAddress() const { return m_TLASDeviceAddress; }
 	bool IsValid() const { return m_TLAS != VK_NULL_HANDLE; }
@@ -111,9 +121,10 @@ private:
 
 	uint32_t m_TotalTriangleCount = 0;
 
-	GpuDevice m_Device;
+	// Maps TLAS instance index → BLAS index (for combined buffer offsets)
+	std::vector<uint32_t> m_InstanceToBLAS;
 
-	void BuildCombinedBuffers();
+	GpuDevice m_Device;
 };
 
 #endif // !ACCELERATION_STRUCTURE_H

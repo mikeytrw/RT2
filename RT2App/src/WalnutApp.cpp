@@ -10,6 +10,8 @@
 #include "Scene.h"
 #include "SceneLoader.h"
 #include "GPUSceneData.h"
+#include "ECSScene.h"
+#include "SceneGraph.h"
 #include "CLIArgs.h"
 #include "RTLog.h"
 #include "stb_image.h"
@@ -563,8 +565,19 @@ private:
 	{
 		if (m_SceneMeshes.empty() && !m_Mesh.IsLoaded()) return;
 
-		// Build GPUSceneData from the Scene (per-mesh materials from glTF)
-		GPUSceneData gpuData = BuildGPUSceneData(m_Scene);
+		// Build GPUSceneData from ECS if available, otherwise from Scene
+		GPUSceneData gpuData;
+		bool usedECS = false;
+
+		if (m_EcsScene.meshRegistry.GetCount() > 0)
+		{
+			gpuData = BuildGPUSceneDataFromECS(m_EcsScene);
+			usedECS = true;
+		}
+		else
+		{
+			gpuData = BuildGPUSceneData(m_Scene);
+		}
 
 		// Fallback: if no scene meshes from glTF, use the single OBJ mesh
 		if (gpuData.meshes.empty() && m_Mesh.IsLoaded())
@@ -583,6 +596,22 @@ private:
 			sm.roughness = m_MeshFuzz;
 			sm.ior = m_MeshIOR;
 			gpuData.materials.push_back(GPUMaterial::fromSceneMaterial(sm));
+		}
+
+		// If we used ECS but there are no instances (shouldn't happen normally),
+		// or if we used the legacy path and there are meshes but no instances,
+		// create one identity-transform instance per mesh
+		if (gpuData.instances.empty() && !gpuData.meshes.empty())
+		{
+			for (uint32_t i = 0; i < gpuData.meshes.size(); i++)
+			{
+				GPUInstance inst;
+				inst.meshIndex = i;
+				inst.materialIndex = gpuData.meshes[i].materialIndex;
+				inst.worldMatrix = glm::mat4(1.0f);
+				inst.prevWorldMatrix = glm::mat4(1.0f);
+				gpuData.instances.push_back(inst);
+			}
 		}
 
 		printf("[Scene] GPU upload: %d meshes, %d materials\n",
@@ -623,6 +652,22 @@ private:
 			return;
 		}
 		printf("[Scene] SceneLoader::Load succeeded\n");
+
+		// Also load into ECS for GPU rendering
+		if (!SceneLoader::LoadIntoECS(m_EcsScene, filepath))
+		{
+			printf("[Scene] SceneLoader::LoadIntoECS failed, GPU will use legacy path\n");
+		}
+		else
+		{
+			// Compute camera from ECS if camera wasn't set from extras
+			// (find entity with CameraComponent or use the camera data)
+			const auto& cam = m_Scene.GetCamera();
+			printf("[Scene] Camera: pos=(%.1f,%.1f,%.1f), forward=(%.1f,%.1f,%.1f), fov=%.1f\n",
+			       cam.position.x, cam.position.y, cam.position.z,
+			       cam.forwardDirection.x, cam.forwardDirection.y, cam.forwardDirection.z,
+			       cam.verticalFOV);
+		}
 
 		printf("[Scene] Loaded %d meshes, %d materials, %d lights, %d textures\n",
 		       (int)m_Scene.GetMeshes().size(), (int)m_Scene.GetMaterials().size(),
@@ -770,6 +815,7 @@ private:
 	int m_EnvMapHeight = 0;
 
 	Scene m_Scene;
+	ECSScene m_EcsScene;
 
 	bool m_CLIProcessed = false;
 

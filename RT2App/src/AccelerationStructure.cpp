@@ -4,6 +4,8 @@
 #include "GpuResources.h"
 #include "Walnut/RTDispatch.h"
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
+#include <cmath>
 #include <iostream>
 #include <cstring>
 
@@ -203,17 +205,16 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		RT_LOG("[BuildBLASes] mesh %d: done", (int)i);
 	}
 
-	RT_LOG("[BuildBLASes] all meshes built, calling BuildCombinedBuffers");
-	BuildCombinedBuffers();
-	RT_LOG("[BuildBLASes] BuildCombinedBuffers done, returning true");
+	RT_LOG("[BuildBLASes] all meshes built, BuildCombinedBuffers deferred to after BuildTLAS");
 
 	return true;
 }
 
-void AccelerationStructure::BuildCombinedBuffers()
+void AccelerationStructure::BuildCombinedBuffers(const std::vector<glm::mat4>& worldMatrices)
 {
 	VkDevice device = m_Device.device;
-	RT_LOG("[BuildCombinedBuffers] enter: totalTris=%d blasCount=%d", (int)m_TotalTriangleCount, (int)m_BLASes.size());
+	RT_LOG("[BuildCombinedBuffers] enter: totalTris=%d blasCount=%d instances=%d",
+	       (int)m_TotalTriangleCount, (int)m_BLASes.size(), (int)m_InstanceToBLAS.size());
 
 	// Destroy previous combined buffers (already destroyed in BuildBLASes, but safe no-op)
 	GpuResources::DestroyBuffer(m_Device, m_CombinedNormalBuffer, m_CombinedNormalMemory);
@@ -223,53 +224,146 @@ void AccelerationStructure::BuildCombinedBuffers()
 	GpuResources::DestroyBuffer(m_Device, m_CombinedTangentBuffer, m_CombinedTangentMemory);
 	RT_LOG("[BuildCombinedBuffers] old buffers destroyed (no-op if already done)");
 
+	// Determine the number of instances and whether we're baking world transforms
+	bool bakeWorld = !worldMatrices.empty() && !m_InstanceToBLAS.empty();
+	size_t instanceCount = m_InstanceToBLAS.size();
+	if (!bakeWorld)
+		instanceCount = m_BLASes.size();  // legacy: one per BLAS
+
 	// Collect all normals, positions, UVs, and tangents into combined buffers.
-	// Per-triangle data layout (using vec4 arrays for std430 alignment):
-	//   normals:    1 × vec4 per triangle (xyz = face normal)
-	//   positions:  3 × vec4 per triangle (3 vertex positions)
-	//   UVs:        3 × vec4 per triangle (3 vertex UVs in xy, zw = pad)
-	//   tangents:   3 × vec4 per triangle (3 vertex tangents in xyz, w = pad)
+	// If bakeWorld is true, we emit per-instance data (world-space).
+	// If bakeWorld is false, we emit per-BLAS data (object-space, legacy).
 	std::vector<glm::vec4> allNormals;
 	std::vector<glm::vec4> allPositions;
 	std::vector<glm::vec4> allUVs;
 	std::vector<glm::vec4> allTangents;
 	std::vector<uint32_t> offsets;
-	allNormals.reserve(m_TotalTriangleCount);
-	allPositions.reserve(m_TotalTriangleCount * 3);
-	allUVs.reserve(m_TotalTriangleCount * 3);
-	allTangents.reserve(m_TotalTriangleCount * 3);
-	offsets.reserve(m_BLASes.size());
+
+	// Build per-BLAS triangle data and record the starting offset of each BLAS
+	std::vector<uint32_t> blasOffsets(m_BLASes.size());
+
+	// First pass: collect per-BLAS data in object space
+	struct BLASTriData {
+		std::vector<glm::vec4> positions;  // 3 per tri
+		std::vector<glm::vec4> normals;     // 1 per tri
+		std::vector<glm::vec4> uvs;         // 3 per tri
+		std::vector<glm::vec4> tangents;    // 3 per tri
+	};
+	std::vector<BLASTriData> blasData(m_BLASes.size());
 
 	for (size_t b = 0; b < m_BLASes.size(); b++)
 	{
 		auto& blas = m_BLASes[b];
-		offsets.push_back(static_cast<uint32_t>(allNormals.size()));
+		blasOffsets[b] = static_cast<uint32_t>(allNormals.size());
 
+		auto& bd = blasData[b];
 		uint32_t triCount = blas.triangleCount;
+		bd.positions.reserve(triCount * 3);
+		bd.normals.reserve(triCount);
+		bd.uvs.reserve(triCount * 3);
+		bd.tangents.reserve(triCount * 3);
+
 		for (uint32_t t = 0; t < triCount; t++)
 		{
-			// Positions from stored triPositions
 			glm::vec3 v0(blas.triPositions[t * 9 + 0], blas.triPositions[t * 9 + 1], blas.triPositions[t * 9 + 2]);
 			glm::vec3 v1(blas.triPositions[t * 9 + 3], blas.triPositions[t * 9 + 4], blas.triPositions[t * 9 + 5]);
 			glm::vec3 v2(blas.triPositions[t * 9 + 6], blas.triPositions[t * 9 + 7], blas.triPositions[t * 9 + 8]);
 
-			allPositions.push_back(glm::vec4(v0, 0.0f));
-			allPositions.push_back(glm::vec4(v1, 0.0f));
-			allPositions.push_back(glm::vec4(v2, 0.0f));
+			bd.positions.push_back(glm::vec4(v0, 0.0f));
+			bd.positions.push_back(glm::vec4(v1, 0.0f));
+			bd.positions.push_back(glm::vec4(v2, 0.0f));
 
-			// Face normal
 			glm::vec3 normal = glm::normalize(glm::cross(v1 - v0, v2 - v0));
-			allNormals.push_back(glm::vec4(normal, 0.0f));
+			bd.normals.push_back(glm::vec4(normal, 0.0f));
 
-			// UVs from stored triUVs
-			allUVs.push_back(glm::vec4(blas.triUVs[t * 6 + 0], blas.triUVs[t * 6 + 1], 0.0f, 0.0f));
-			allUVs.push_back(glm::vec4(blas.triUVs[t * 6 + 2], blas.triUVs[t * 6 + 3], 0.0f, 0.0f));
-			allUVs.push_back(glm::vec4(blas.triUVs[t * 6 + 4], blas.triUVs[t * 6 + 5], 0.0f, 0.0f));
+			bd.uvs.push_back(glm::vec4(blas.triUVs[t * 6 + 0], blas.triUVs[t * 6 + 1], 0.0f, 0.0f));
+			bd.uvs.push_back(glm::vec4(blas.triUVs[t * 6 + 2], blas.triUVs[t * 6 + 3], 0.0f, 0.0f));
+			bd.uvs.push_back(glm::vec4(blas.triUVs[t * 6 + 4], blas.triUVs[t * 6 + 5], 0.0f, 0.0f));
 
-			// Tangents from stored triTangents (9 floats per triangle = 3 × xyz)
-			allTangents.push_back(glm::vec4(blas.triTangents[t * 9 + 0], blas.triTangents[t * 9 + 1], blas.triTangents[t * 9 + 2], 0.0f));
-			allTangents.push_back(glm::vec4(blas.triTangents[t * 9 + 3], blas.triTangents[t * 9 + 4], blas.triTangents[t * 9 + 5], 0.0f));
-			allTangents.push_back(glm::vec4(blas.triTangents[t * 9 + 6], blas.triTangents[t * 9 + 7], blas.triTangents[t * 9 + 8], 0.0f));
+			bd.tangents.push_back(glm::vec4(blas.triTangents[t * 9 + 0], blas.triTangents[t * 9 + 1], blas.triTangents[t * 9 + 2], 0.0f));
+			bd.tangents.push_back(glm::vec4(blas.triTangents[t * 9 + 3], blas.triTangents[t * 9 + 4], blas.triTangents[t * 9 + 5], 0.0f));
+			bd.tangents.push_back(glm::vec4(blas.triTangents[t * 9 + 6], blas.triTangents[t * 9 + 7], blas.triTangents[t * 9 + 8], 0.0f));
+		}
+	}
+
+	// Second pass: emit combined buffers
+	if (bakeWorld)
+	{
+		// Per-instance: transform positions/normals/tangents to world space
+		// UVs stay the same (texture coordinates are not affected by transform)
+		glm::mat3 normalMatTemplate = glm::transpose(glm::inverse(glm::mat3(1.0f)));  // identity
+
+		for (size_t inst = 0; inst < m_InstanceToBLAS.size(); inst++)
+		{
+			uint32_t blasIdx = m_InstanceToBLAS[inst];
+			if (blasIdx >= blasData.size())
+			{
+				offsets.push_back(0);
+				continue;
+			}
+
+			offsets.push_back(static_cast<uint32_t>(allNormals.size()));
+
+			const auto& bd = blasData[blasIdx];
+			const glm::mat4& world = (inst < worldMatrices.size()) ? worldMatrices[inst] : glm::mat4(1.0f);
+			glm::mat3 normalMat = glm::transpose(glm::inverse(glm::mat3(world)));
+
+			uint32_t triCount = static_cast<uint32_t>(bd.normals.size());
+			for (uint32_t t = 0; t < triCount; t++)
+			{
+				// Transform positions to world space
+				glm::vec3 v0 = glm::vec3(world * bd.positions[t * 3 + 0]);
+				glm::vec3 v1 = glm::vec3(world * bd.positions[t * 3 + 1]);
+				glm::vec3 v2 = glm::vec3(world * bd.positions[t * 3 + 2]);
+
+				allPositions.push_back(glm::vec4(v0, 0.0f));
+				allPositions.push_back(glm::vec4(v1, 0.0f));
+				allPositions.push_back(glm::vec4(v2, 0.0f));
+
+				// Face normal from world-space positions (matches old path)
+				glm::vec3 normal = glm::normalize(glm::cross(v1 - v0, v2 - v0));
+				allNormals.push_back(glm::vec4(normal, 0.0f));
+
+				// UVs unchanged
+				allUVs.push_back(bd.uvs[t * 3 + 0]);
+				allUVs.push_back(bd.uvs[t * 3 + 1]);
+				allUVs.push_back(bd.uvs[t * 3 + 2]);
+
+				// Tangents: recompute from world-space edges + UV derivatives
+				// (matches old path which computed from world-space vertices)
+				glm::vec2 uv0 = glm::vec2(bd.uvs[t * 3 + 0]);
+				glm::vec2 uv1 = glm::vec2(bd.uvs[t * 3 + 1]);
+				glm::vec2 uv2 = glm::vec2(bd.uvs[t * 3 + 2]);
+				glm::vec3 edge1 = v1 - v0;
+				glm::vec3 edge2 = v2 - v0;
+				glm::vec2 dUV1 = uv1 - uv0;
+				glm::vec2 dUV2 = uv2 - uv0;
+				float det = dUV1.x * dUV2.y - dUV1.y * dUV2.x;
+				glm::vec3 tangent(1.0f, 0.0f, 0.0f);
+				if (std::abs(det) > 1e-8f)
+				{
+					float r = 1.0f / det;
+					tangent = glm::normalize(r * (dUV2.y * edge1 - dUV1.y * edge2));
+				}
+
+				allTangents.push_back(glm::vec4(tangent, 0.0f));
+				allTangents.push_back(glm::vec4(tangent, 0.0f));
+				allTangents.push_back(glm::vec4(tangent, 0.0f));
+			}
+		}
+	}
+	else
+	{
+		// Per-BLAS: object-space data (legacy path)
+		for (size_t b = 0; b < m_BLASes.size(); b++)
+		{
+			offsets.push_back(static_cast<uint32_t>(allNormals.size()));
+
+			const auto& bd = blasData[b];
+			allPositions.insert(allPositions.end(), bd.positions.begin(), bd.positions.end());
+			allNormals.insert(allNormals.end(), bd.normals.begin(), bd.normals.end());
+			allUVs.insert(allUVs.end(), bd.uvs.begin(), bd.uvs.end());
+			allTangents.insert(allTangents.end(), bd.tangents.begin(), bd.tangents.end());
 		}
 	}
 
@@ -309,7 +403,8 @@ void AccelerationStructure::BuildCombinedBuffers()
 }
 
 bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,
-                                       const std::vector<BLASInstance>& instances)
+                                        const std::vector<BLASInstance>& instances,
+                                        const std::vector<uint32_t>& instanceMeshIndices)
 {
 	VkDevice device = m_Device.device;
 
@@ -318,6 +413,9 @@ bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,
 		RT_LOG("[RT2] No instances for TLAS build");
 		return false;
 	}
+
+	// Store instance-to-BLAS mapping for combined buffer offset computation
+	m_InstanceToBLAS = instanceMeshIndices;
 
 	// Destroy previous TLAS
 	if (m_TLAS)
