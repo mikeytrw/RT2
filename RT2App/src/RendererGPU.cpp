@@ -1108,12 +1108,14 @@ void RendererGPU::Render(const Camera& camera)
 	// NRD denoising pass
 	if (m_NRDEnabled && m_NRD.IsAvailable())
 	{
-		// Barrier: RT writes to G-buffer images must complete before NRD reads them
-		VkImage gbufferImgs[] = {
-			m_GNormalRoughness, m_GViewZ, m_GMotion,
-			m_GDiffRadiance, m_GSpecRadiance
-		};
-		for (auto img : gbufferImgs)
+		bool useRasterFirst = m_RasterFirst && (camera.m_Aperture <= 0.0f);
+
+		// Barrier: RT writes to noisy inputs (gDiffRadiance, gSpecRadiance) must complete
+		// before NRD reads them. In raster-first mode, gNormalRoughness/gViewZ/gMotion
+		// were written by the raster pass (already barriered to GENERAL), so only the
+		// noisy inputs need this RT→compute barrier.
+		VkImage noisyImgs[] = { m_GDiffRadiance, m_GSpecRadiance };
+		for (auto img : noisyImgs)
 		{
 			VkImageMemoryBarrier b = {};
 			b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1130,6 +1132,33 @@ void RendererGPU::Render(const Camera& camera)
 			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
 			                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
 			                     0, nullptr, 0, nullptr, 1, &b);
+		}
+
+		// In raster-first mode, gNormalRoughness/gViewZ/gMotion were written by raster
+		// (COLOR_ATTACHMENT_OUTPUT) and already barriered to GENERAL. But gDirectEmission
+		// was written by secondary_raygen (SHADER_WRITE) and needs a barrier too.
+		if (useRasterFirst)
+		{
+			VkImage rasterGbufferImgs[] = { m_GNormalRoughness, m_GViewZ, m_GMotion, m_GDirectEmission };
+			for (auto img : rasterGbufferImgs)
+			{
+				VkImageMemoryBarrier b = {};
+				b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+				b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+				b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+				b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+				b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				b.image = img;
+				b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+				b.subresourceRange.levelCount = 1;
+				b.subresourceRange.layerCount = 1;
+				vkCmdPipelineBarrier(cmd,
+				                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+				                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+				                     0, nullptr, 0, nullptr, 1, &b);
+			}
 		}
 
 		m_NRD.NewFrame();
