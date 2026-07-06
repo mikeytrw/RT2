@@ -32,6 +32,10 @@ public:
 	void Render(const Camera& camera);
 	void SetScene(const GPUSceneData& sceneData);
 
+	// Update instance transforms + lights + TLAS only (no BLAS rebuild).
+	// Call after ECS transforms have changed (e.g. animation).
+	void UpdateSceneInstances(const GPUSceneData& sceneData);
+
 	VkDescriptorSet GetOutputDescriptorSet() const { return m_ImGuiDescriptorSet; }
 	bool HasOutput() const { return m_OutputImage != VK_NULL_HANDLE; }
 	uint32_t GetWidth() const { return m_Width; }

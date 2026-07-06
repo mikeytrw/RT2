@@ -440,6 +440,131 @@ VkDeviceAddress AccelerationStructure::GetBLASAddress(uint32_t index) const
 	return 0;
 }
 
+bool AccelerationStructure::RebuildTLASOnly(VkCommandBuffer cmdBuffer,
+                                             const std::vector<BLASInstance>& instances,
+                                             const std::vector<uint32_t>& instanceMeshIndices)
+{
+	VkDevice device = m_Device.device;
+
+	if (instances.empty())
+	{
+		RT_LOG("[RebuildTLASOnly] No instances");
+		return false;
+	}
+
+	if (m_BLASes.empty())
+	{
+		RT_LOG("[RebuildTLASOnly] No BLASes — need full rebuild first");
+		return false;
+	}
+
+	// Update instance-to-BLAS mapping
+	m_InstanceToBLAS = instanceMeshIndices;
+
+	// Destroy previous TLAS (keep BLASes)
+	if (m_TLAS)
+	{
+		g_RTDispatch.DestroyAccelerationStructureKHR(device, m_TLAS, nullptr);
+		m_TLAS = VK_NULL_HANDLE;
+	}
+	GpuResources::DestroyBuffer(m_Device, m_TLASBuffer, m_TLASMemory);
+	GpuResources::DestroyBuffer(m_Device, m_InstanceBuffer, m_InstanceMemory);
+	GpuResources::DestroyBuffer(m_Device, m_TLASScratchBuffer, m_TLASScratchMemory);
+
+	// --- Instance buffer ---
+	VkDeviceSize instanceBufferSize = instances.size() * sizeof(VkAccelerationStructureInstanceKHR);
+	GpuResources::CreateBuffer(m_Device, instanceBufferSize,
+	             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+	             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+	             m_InstanceBuffer, m_InstanceMemory);
+
+	std::vector<VkAccelerationStructureInstanceKHR> vkInstances;
+	vkInstances.reserve(instances.size());
+	for (const auto& inst : instances)
+	{
+		VkAccelerationStructureInstanceKHR vkInst = {};
+		vkInst.transform = inst.transform;
+		vkInst.instanceCustomIndex = inst.customIndex;
+		vkInst.mask = 0xFF;
+		vkInst.instanceShaderBindingTableRecordOffset = inst.sbtHitOffset;
+		vkInst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+		vkInst.accelerationStructureReference = inst.blasAddress;
+		vkInstances.push_back(vkInst);
+	}
+
+	void* instanceData;
+	vkMapMemory(device, m_InstanceMemory, 0, instanceBufferSize, 0, &instanceData);
+	memcpy(instanceData, vkInstances.data(), instanceBufferSize);
+	vkUnmapMemory(device, m_InstanceMemory);
+
+	// --- TLAS geometry ---
+	VkAccelerationStructureGeometryKHR geometry = {};
+	geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+	geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+	geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+
+	VkAccelerationStructureGeometryInstancesDataKHR instancesData = {};
+	instancesData.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+	instancesData.data.deviceAddress = m_Device.GetBufferDeviceAddress(m_InstanceBuffer);
+	geometry.geometry.instances = instancesData;
+
+	VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {};
+	buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+	buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+	buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+	buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+	buildInfo.geometryCount = 1;
+	buildInfo.pGeometries = &geometry;
+
+	VkAccelerationStructureBuildSizesInfoKHR sizeInfo = {};
+	sizeInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+
+	uint32_t primitiveCount = static_cast<uint32_t>(instances.size());
+	g_RTDispatch.GetAccelerationStructureBuildSizesKHR(device,
+		VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+		&buildInfo, &primitiveCount, &sizeInfo);
+
+	// --- TLAS buffer ---
+	GpuResources::CreateBuffer(m_Device, sizeInfo.accelerationStructureSize,
+	             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+	             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+	             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+	             m_TLASBuffer, m_TLASMemory);
+
+	VkAccelerationStructureCreateInfoKHR createInfo = {};
+	createInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+	createInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+	createInfo.buffer = m_TLASBuffer;
+	createInfo.size = sizeInfo.accelerationStructureSize;
+	g_RTDispatch.CreateAccelerationStructureKHR(device, &createInfo, nullptr, &m_TLAS);
+
+	// --- TLAS scratch ---
+	GpuResources::CreateBuffer(m_Device, sizeInfo.buildScratchSize,
+	             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+	             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+	             m_TLASScratchBuffer, m_TLASScratchMemory);
+
+	buildInfo.dstAccelerationStructure = m_TLAS;
+	buildInfo.scratchData.deviceAddress = m_Device.GetBufferDeviceAddress(m_TLASScratchBuffer);
+
+	VkAccelerationStructureBuildRangeInfoKHR buildRangeInfo = {};
+	buildRangeInfo.primitiveCount = primitiveCount;
+	buildRangeInfo.primitiveOffset = 0;
+
+	VkAccelerationStructureBuildRangeInfoKHR* pBuildRangeInfos = &buildRangeInfo;
+	g_RTDispatch.CmdBuildAccelerationStructuresKHR(cmdBuffer, 1, &buildInfo, &pBuildRangeInfos);
+
+	// --- Get TLAS device address ---
+	VkAccelerationStructureDeviceAddressInfoKHR addressInfo = {};
+	addressInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+	addressInfo.accelerationStructure = m_TLAS;
+	m_TLASDeviceAddress = g_RTDispatch.GetAccelerationStructureDeviceAddressKHR(device, &addressInfo);
+
+	RT_LOG("[RebuildTLASOnly] done: instances=%d", (int)instances.size());
+	return true;
+}
+
 void AccelerationStructure::Destroy()
 {
 	VkDevice device = m_Device.device;

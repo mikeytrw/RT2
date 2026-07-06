@@ -138,6 +138,11 @@ GPUSceneData BuildGPUSceneData(const Scene& scene);
 // are read from Transform components (must be updated by SceneGraph first).
 GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene);
 
+// Update only the instances[] and lights[] arrays in an existing GPUSceneData
+// from the current ECS transforms. Meshes and materials are unchanged.
+// Call after SceneGraph::UpdateWorldTransforms when transforms have changed.
+void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene);
+
 // Build marginal and conditional CDFs for env map importance sampling (M8).
 void BuildEnvMapCDF(const std::vector<float>& floatPixels, int width, int height,
                     std::vector<float>& marginalCDF, std::vector<float>& conditionalCDF);

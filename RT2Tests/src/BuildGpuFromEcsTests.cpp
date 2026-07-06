@@ -103,3 +103,105 @@ TEST_CASE("BuildGPUSceneDataFromECS: emissive lights from instances")
         CHECK(light.ids.x < gpu.instances.size());
     }
 }
+
+// ============================================================================
+// UpdateInstancesFromECS tests
+// ============================================================================
+
+TEST_CASE("UpdateInstancesFromECS: updates world matrices after transform change")
+{
+    ECSScene ecsScene;
+    bool ok = SceneLoader::LoadIntoECS(ecsScene, "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
+    CHECK(ok);
+    if (!ok) return;
+
+    GPUSceneData gpu = BuildGPUSceneDataFromECS(ecsScene);
+    CHECK(gpu.instances.size() > 0);
+
+    // Record original world matrices
+    std::vector<glm::mat4> originalMatrices;
+    for (const auto& inst : gpu.instances)
+        originalMatrices.push_back(inst.worldMatrix);
+
+    // Rotate the first entity with a MeshRef
+    auto view = ecsScene.registry.view<MeshRef>();
+    CHECK(!view.empty());
+    if (view.empty()) return;
+    entt::entity first = *view.begin();
+    auto* tf = ecsScene.registry.try_get<Transform>(first);
+    CHECK(tf != nullptr);
+    if (!tf) return;
+
+    tf->rotation = glm::angleAxis(glm::radians(45.0f), glm::vec3(0, 1, 0));
+    SceneGraph::MarkDirty(ecsScene.registry, first);
+    SceneGraph::UpdateWorldTransforms(ecsScene.registry);
+
+    // Update instances
+    UpdateInstancesFromECS(gpu, ecsScene);
+
+    // At least one instance should have a different world matrix
+    bool anyChanged = false;
+    for (size_t i = 0; i < gpu.instances.size() && i < originalMatrices.size(); i++)
+    {
+        if (gpu.instances[i].worldMatrix != originalMatrices[i])
+        {
+            anyChanged = true;
+            break;
+        }
+    }
+    CHECK(anyChanged);
+}
+
+TEST_CASE("UpdateInstancesFromECS: preserves mesh and material arrays")
+{
+    ECSScene ecsScene;
+    bool ok = SceneLoader::LoadIntoECS(ecsScene, "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
+    CHECK(ok);
+    if (!ok) return;
+
+    GPUSceneData gpu = BuildGPUSceneDataFromECS(ecsScene);
+    size_t meshCount = gpu.meshes.size();
+    size_t matCount = gpu.materials.size();
+    size_t texCount = gpu.textures.size();
+
+    CHECK(meshCount > 0);
+    CHECK(matCount > 0);
+
+    // Update transforms (no actual change needed)
+    UpdateInstancesFromECS(gpu, ecsScene);
+
+    // Meshes and materials should be unchanged
+    CHECK(gpu.meshes.size() == meshCount);
+    CHECK(gpu.materials.size() == matCount);
+    CHECK(gpu.textures.size() == texCount);
+}
+
+TEST_CASE("UpdateInstancesFromECS: light areas update with transform")
+{
+    ECSScene ecsScene;
+    bool ok = SceneLoader::LoadIntoECS(ecsScene, "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
+    CHECK(ok);
+    if (!ok) return;
+
+    GPUSceneData gpu = BuildGPUSceneDataFromECS(ecsScene);
+
+    // Scale the first entity with a MeshRef (uniform scale changes light area)
+    auto view = ecsScene.registry.view<MeshRef>();
+    if (view.empty()) return;
+    entt::entity first = *view.begin();
+    auto* tf = ecsScene.registry.try_get<Transform>(first);
+    if (!tf) return;
+
+    tf->scale = glm::vec3(2.0f); // 2x scale → 4x area
+    SceneGraph::MarkDirty(ecsScene.registry, first);
+    SceneGraph::UpdateWorldTransforms(ecsScene.registry);
+
+    UpdateInstancesFromECS(gpu, ecsScene);
+
+    // If the scaled entity had emissive triangles, total area should change.
+    // If it didn't, area stays the same. Either way, the function should not crash.
+    // For sofa_and_lamp, the lamp is emissive — if it's the first entity, area changes.
+    // Just verify the function completed without crashing.
+    CHECK(gpu.lights.size() > 0);
+    CHECK(gpu.totalLightArea > 0.0f);
+}

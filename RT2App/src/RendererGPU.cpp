@@ -737,6 +737,57 @@ void RendererGPU::RebuildAccelerationStructures()
 	m_ASJustBuilt = true;
 }
 
+void RendererGPU::UpdateSceneInstances(const GPUSceneData& sceneData)
+{
+	if (!m_AS.IsValid() || m_AS.GetBLASCount() == 0)
+	{
+		RT_LOG("[UpdateInstances] skip: AS not valid or no BLASes");
+		return;
+	}
+
+	// Update instance + light data from the new scene data
+	m_CurrentScene.instances = sceneData.instances;
+	m_CurrentScene.lights = sceneData.lights;
+	m_CurrentScene.totalLightArea = sceneData.totalLightArea;
+
+	// Build TLAS instances from the updated GPUInstance list
+	std::vector<BLASInstance> instances;
+	std::vector<uint32_t> instanceMeshIndices;
+	instances.reserve(m_CurrentScene.instances.size());
+	instanceMeshIndices.reserve(m_CurrentScene.instances.size());
+	for (const auto& gpuInst : m_CurrentScene.instances)
+	{
+		BLASInstance inst = {};
+		inst.blasAddress = m_AS.GetBLASAddress(gpuInst.meshIndex);
+		inst.customIndex = gpuInst.materialIndex;
+		inst.sbtHitOffset = gpuInst.isTransparent ? 1u : 0u;
+
+		const glm::mat4& w = gpuInst.worldMatrix;
+		VkTransformMatrixKHR& t = inst.transform;
+		t.matrix[0][0] = w[0][0]; t.matrix[0][1] = w[1][0]; t.matrix[0][2] = w[2][0]; t.matrix[0][3] = w[3][0];
+		t.matrix[1][0] = w[0][1]; t.matrix[1][1] = w[1][1]; t.matrix[1][2] = w[2][1]; t.matrix[1][3] = w[3][1];
+		t.matrix[2][0] = w[0][2]; t.matrix[2][1] = w[1][2]; t.matrix[2][2] = w[2][2]; t.matrix[2][3] = w[3][2];
+
+		instances.push_back(inst);
+		instanceMeshIndices.push_back(gpuInst.meshIndex);
+	}
+
+	// Rebuild TLAS only (BLASes unchanged)
+	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+		m_AS.RebuildTLASOnly(cmd, instances, instanceMeshIndices);
+	});
+
+	// Update instance transform + light buffers
+	CreateInstanceTransformBuffer();
+	CreateLightBuffer();
+
+	// Update descriptor set (TLAS handle changed)
+	UpdatePathTraceDescriptorSet();
+
+	RT_LOG("[UpdateInstances] done: instances=%d lights=%d",
+	       (int)m_CurrentScene.instances.size(), (int)m_CurrentScene.lights.size());
+}
+
 void RendererGPU::UpdateCameraUBO(const Camera& camera)
 {
 	SICameraData ubo = {};

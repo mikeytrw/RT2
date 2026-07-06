@@ -374,3 +374,78 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
 
     return gpu;
 }
+
+void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene)
+{
+    // Update instance world matrices from ECS transforms
+    auto meshView = ecsScene.registry.view<MeshRef, Transform>();
+
+    // The instance order must match BuildGPUSceneDataFromECS exactly
+    // (entt view iteration order is deterministic for the same registry state).
+    gpu.instances.clear();
+
+    for (auto entity : meshView)
+    {
+        const auto& ref = meshView.get<MeshRef>(entity);
+        const auto& tf = meshView.get<Transform>(entity);
+
+        GPUInstance inst;
+        inst.meshIndex = ref.meshIndex;
+        inst.materialIndex = static_cast<uint32_t>(
+            ref.materialIndex < static_cast<int>(gpu.materials.size()) ? ref.materialIndex : 0);
+        inst.worldMatrix = tf.worldMatrix;
+        inst.prevWorldMatrix = tf.prevWorldMatrix;
+
+        if (inst.materialIndex < gpu.materials.size())
+        {
+            float alphaMode = gpu.materials[inst.materialIndex].alphaMode;
+            inst.isTransparent = (alphaMode > 0.5f);
+        }
+
+        gpu.instances.push_back(inst);
+    }
+
+    // Rebuild light list (areas change with transforms)
+    gpu.lights.clear();
+    gpu.totalLightArea = 0.0f;
+
+    for (uint32_t instIdx = 0; instIdx < gpu.instances.size(); instIdx++)
+    {
+        const auto& inst = gpu.instances[instIdx];
+        if (inst.meshIndex >= gpu.meshes.size())
+            continue;
+
+        const auto& mesh = gpu.meshes[inst.meshIndex];
+        const auto& mat = gpu.materials[inst.materialIndex];
+        glm::vec3 emissive = glm::vec3(mat.emissive_roughness);
+        bool isEmissive = (emissive.x > 0.0f || emissive.y > 0.0f || emissive.z > 0.0f);
+        if (!isEmissive)
+            continue;
+
+        int emissiveTexIdx = mat.textureIndices.z;
+        uint32_t triCount = static_cast<uint32_t>(mesh.indices.size() / 3);
+
+        for (uint32_t t = 0; t < triCount; t++)
+        {
+            uint32_t vi0 = mesh.indices[t * 3 + 0] * 3;
+            uint32_t vi1 = mesh.indices[t * 3 + 1] * 3;
+            uint32_t vi2 = mesh.indices[t * 3 + 2] * 3;
+
+            glm::vec4 v0 = inst.worldMatrix * glm::vec4(mesh.vertices[vi0], mesh.vertices[vi0 + 1], mesh.vertices[vi0 + 2], 1.0f);
+            glm::vec4 v1 = inst.worldMatrix * glm::vec4(mesh.vertices[vi1], mesh.vertices[vi1 + 1], mesh.vertices[vi1 + 2], 1.0f);
+            glm::vec4 v2 = inst.worldMatrix * glm::vec4(mesh.vertices[vi2], mesh.vertices[vi2 + 1], mesh.vertices[vi2 + 2], 1.0f);
+
+            glm::vec3 w0(v0), w1(v1), w2(v2);
+            glm::vec3 edge1 = w1 - w0;
+            glm::vec3 edge2 = w2 - w0;
+            float area = 0.5f * std::abs(glm::length(glm::cross(edge1, edge2)));
+
+            GPUTriangleLight light;
+            light.emission_area = glm::vec4(emissive, area);
+            light.ids = glm::uvec4(instIdx, t, inst.materialIndex,
+                                   emissiveTexIdx >= 0 ? static_cast<uint32_t>(emissiveTexIdx) : 0xFFFFFFFFu);
+            gpu.lights.push_back(light);
+            gpu.totalLightArea += area;
+        }
+    }
+}

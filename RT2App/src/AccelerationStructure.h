@@ -49,6 +49,13 @@ public:
 	               const std::vector<BLASInstance>& instances,
 	               const std::vector<uint32_t>& instanceMeshIndices = {});
 
+	// Rebuild TLAS only (no BLAS rebuild, no combined buffer rebuild).
+	// Uses existing BLASes — just updates instance transforms.
+	// Call after BuildBLASes + BuildTLAS have been called at least once.
+	bool RebuildTLASOnly(VkCommandBuffer cmdBuffer,
+	                     const std::vector<BLASInstance>& instances,
+	                     const std::vector<uint32_t>& instanceMeshIndices);
+
 	// Build combined normal/position/UV/tangent buffers from BLAS data.
 	// Must be called after BuildTLAS (needs instance-to-BLAS mapping).
 	// Emits per-BLAS object-space data (deduplicated). The shader transforms
