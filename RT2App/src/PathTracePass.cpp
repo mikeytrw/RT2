@@ -44,7 +44,8 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 
 	const VkShaderStageFlags allGraphicsRTFlags = allRTFlags |
 	                                      VK_SHADER_STAGE_VERTEX_BIT |
-	                                      VK_SHADER_STAGE_FRAGMENT_BIT;
+	                                      VK_SHADER_STAGE_FRAGMENT_BIT |
+	                                      VK_SHADER_STAGE_COMPUTE_BIT;
 
 	const uint32_t maxTextures = 1000;
 
@@ -54,7 +55,7 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	bindings[0].binding = SI_BINDING_OUTPUT_IMAGE;
 	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	bindings[0].descriptorCount = 1;
-	bindings[0].stageFlags = allRTFlags;
+	bindings[0].stageFlags = allGraphicsRTFlags;
 
 	bindings[1] = {};
 	bindings[1].binding = SI_BINDING_CAMERA_UBO;

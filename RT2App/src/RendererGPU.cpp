@@ -1458,34 +1458,35 @@ void RendererGPU::CreateGBufferDescriptorSet()
 		bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		bindings[i].descriptorCount = 1;
 		bindings[i].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
-		                         VK_SHADER_STAGE_FRAGMENT_BIT;
+		                         VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 	}
 	// Binding 6: UBO (nrdData)
 	bindings[SI_BINDING_NRD_UBO].binding = SI_BINDING_NRD_UBO;
 	bindings[SI_BINDING_NRD_UBO].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	bindings[SI_BINDING_NRD_UBO].descriptorCount = 1;
-	bindings[SI_BINDING_NRD_UBO].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+	bindings[SI_BINDING_NRD_UBO].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+	                                          VK_SHADER_STAGE_COMPUTE_BIT;
 	// Binding 7: gDirectEmission storage image
 	bindings[SI_BINDING_G_DIRECT_EMISSION].binding = SI_BINDING_G_DIRECT_EMISSION;
 	bindings[SI_BINDING_G_DIRECT_EMISSION].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	bindings[SI_BINDING_G_DIRECT_EMISSION].descriptorCount = 1;
 	bindings[SI_BINDING_G_DIRECT_EMISSION].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
-	                                                    VK_SHADER_STAGE_FRAGMENT_BIT;
+	                                                    VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 	// Bindings 8-10: new raster G-buffer images
 	bindings[8].binding = SI_BINDING_G_PRIM_HIT;
 	bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	bindings[8].descriptorCount = 1;
-	bindings[8].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_FRAGMENT_BIT;
+	bindings[8].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
 	bindings[9].binding = SI_BINDING_G_PRIM_GEO_NORMAL;
 	bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	bindings[9].descriptorCount = 1;
-	bindings[9].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_FRAGMENT_BIT;
+	bindings[9].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
 	bindings[10].binding = SI_BINDING_G_PRIM_UV;
 	bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	bindings[10].descriptorCount = 1;
-	bindings[10].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_FRAGMENT_BIT;
+	bindings[10].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
