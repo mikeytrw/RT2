@@ -88,12 +88,20 @@ bool RasterPass::Init(const GpuDevice& dev, VkDescriptorSetLayout sceneSetLayout
 	depthStencil.depthBoundsTestEnable = VK_FALSE;
 	depthStencil.stencilTestEnable = VK_FALSE;
 
-	// No color blend — G-buffer written via imageStore (storage images), not color attachments
+	// MRT: 8 color attachments, no blending (G-buffer writes are direct)
+	VkPipelineColorBlendAttachmentState blendAttachments[8] = {};
+	for (int i = 0; i < 8; i++)
+	{
+		blendAttachments[i].blendEnable = VK_FALSE;
+		blendAttachments[i].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+		                                      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	}
+
 	VkPipelineColorBlendStateCreateInfo colorBlending = {};
 	colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 	colorBlending.logicOpEnable = VK_FALSE;
-	colorBlending.attachmentCount = 0;
-	colorBlending.pAttachments = nullptr;
+	colorBlending.attachmentCount = 8;
+	colorBlending.pAttachments = blendAttachments;
 
 	VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
 	VkPipelineDynamicStateCreateInfo dynamicState = {};
@@ -111,8 +119,20 @@ bool RasterPass::Init(const GpuDevice& dev, VkDescriptorSetLayout sceneSetLayout
 
 	VkPipelineRenderingCreateInfoKHR renderingInfo = {};
 	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
-	renderingInfo.colorAttachmentCount = 0;
-	renderingInfo.pColorAttachmentFormats = nullptr;
+	// 8 MRT color attachments: gNormalRoughness, gViewZ, gMotion, gAlbedoF0,
+	// gDirectEmission, gPrimHit, gPrimGeoNormal, gPrimUV
+	VkFormat colorFormats[8] = {
+		VK_FORMAT_R8G8B8A8_UNORM,      // 0: gNormalRoughness
+		VK_FORMAT_R16_SFLOAT,          // 1: gViewZ
+		VK_FORMAT_R16G16_SFLOAT,       // 2: gMotion
+		VK_FORMAT_R16G16B16A16_SFLOAT, // 3: gAlbedoF0
+		VK_FORMAT_R16G16B16A16_SFLOAT, // 4: gDirectEmission
+		VK_FORMAT_R32G32B32A32_SFLOAT, // 5: gPrimHit
+		VK_FORMAT_R8G8B8A8_UNORM,     // 6: gPrimGeoNormal
+		VK_FORMAT_R16G16_SFLOAT,      // 7: gPrimUV
+	};
+	renderingInfo.colorAttachmentCount = 8;
+	renderingInfo.pColorAttachmentFormats = colorFormats;
 	renderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
 
 	VkGraphicsPipelineCreateInfo pipelineInfo = {};
@@ -305,13 +325,28 @@ void RasterPass::DestroyDrawData()
 
 void RasterPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
                         VkDescriptorSet sceneSet, VkDescriptorSet gbufferSet,
-                        VkImageView depthView) const
+                        VkImageView depthView, const VkImageView gbufferViews[8]) const
 {
 	if (!m_Pipeline || !m_MegaVertexBuffer) return;
 	if (m_OpaqueDrawCount == 0 && m_MaskedDrawCount == 0) return;
 
-	VkClearValue depthClear = {};
-	depthClear.depthStencil.depth = 1.0f;
+	VkClearValue clearValues[9] = {}; // 8 color + 1 depth
+	// Color attachments cleared to zero
+	for (int i = 0; i < 8; i++)
+		clearValues[i].color = VkClearColorValue{};
+	// Depth
+	clearValues[8].depthStencil.depth = 1.0f;
+
+	VkRenderingAttachmentInfoKHR colorAttachments[8] = {};
+	for (int i = 0; i < 8; i++)
+	{
+		colorAttachments[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
+		colorAttachments[i].imageView = gbufferViews[i];
+		colorAttachments[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+		colorAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+		colorAttachments[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+		colorAttachments[i].clearValue = clearValues[i];
+	}
 
 	VkRenderingAttachmentInfoKHR depthAttachment = {};
 	depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
@@ -319,7 +354,7 @@ void RasterPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 	depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL_KHR;
 	depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	depthAttachment.clearValue = depthClear;
+	depthAttachment.clearValue = clearValues[8];
 
 	VkRenderingInfoKHR renderingInfo = {};
 	renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
@@ -328,7 +363,8 @@ void RasterPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 	renderingInfo.renderArea.extent.width = width;
 	renderingInfo.renderArea.extent.height = height;
 	renderingInfo.layerCount = 1;
-	renderingInfo.colorAttachmentCount = 0;
+	renderingInfo.colorAttachmentCount = 8;
+	renderingInfo.pColorAttachments = colorAttachments;
 	renderingInfo.pDepthAttachment = &depthAttachment;
 
 	vkCmdBeginRendering(cmd, &renderingInfo);

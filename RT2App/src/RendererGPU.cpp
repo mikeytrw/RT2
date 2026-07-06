@@ -1014,42 +1014,32 @@ void RendererGPU::Render(const Camera& camera)
 		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 		0, 1, &uboPostBarrier, 0, nullptr, 0, nullptr);
 
-	// ---- Raster G-buffer pass (primary visibility) ----
+	// ---- Raster G-buffer pass (primary visibility — MRT color attachments) ----
 	if (m_RasterPass.IsAvailable() && m_DepthImageView)
 	{
-		// Clear G-buffer images to zero so uncovered pixels don't retain stale data
-		VkImage gbufferClearImgs[] = {
+		// G-buffer images: GENERAL → COLOR_ATTACHMENT_OPTIMAL
+		// (8 images written by raster pass as MRT color attachments)
+		VkImage gbufferImgs[] = {
 			m_GNormalRoughness, m_GViewZ, m_GMotion,
 			m_GAlbedoF0, m_GDirectEmission,
 			m_GPrimHit, m_GPrimGeoNormal, m_GPrimUV
 		};
-		VkClearColorValue clearVal = {};
-		for (auto img : gbufferClearImgs)
-		{
-			VkImageSubresourceRange range = {};
-			range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			range.levelCount = 1;
-			range.layerCount = 1;
-			vkCmdClearColorImage(cmd, img, VK_IMAGE_LAYOUT_GENERAL, &clearVal, 1, &range);
-		}
-
-		// Barrier: clears must complete before FS writes via imageStore
-		for (auto img : gbufferClearImgs)
+		for (auto img : gbufferImgs)
 		{
 			VkImageMemoryBarrier b = {};
 			b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			b.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+			b.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 			b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-			b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 			b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			b.image = img;
 			b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			b.subresourceRange.levelCount = 1;
 			b.subresourceRange.layerCount = 1;
-			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-			                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
 			                     0, nullptr, 0, nullptr, 1, &b);
 		}
 
@@ -1066,27 +1056,27 @@ void RendererGPU::Render(const Camera& camera)
 		depthBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 		depthBarrier.subresourceRange.levelCount = 1;
 		depthBarrier.subresourceRange.layerCount = 1;
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
 		                     VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0,
 		                     0, nullptr, 0, nullptr, 1, &depthBarrier);
 
+		VkImageView gbufferViews[8] = {
+			m_GNormalRoughnessView, m_GViewZView, m_GMotionView,
+			m_GAlbedoF0View, m_GDirectEmissionView,
+			m_GPrimHitView, m_GPrimGeoNormalView, m_GPrimUVView
+		};
 		m_RasterPass.Record(cmd, m_Width, m_Height,
 		                    m_PathTracePass.GetDescriptorSet(), m_GBufferSet,
-		                    m_DepthImageView);
+		                    m_DepthImageView, gbufferViews);
 
-		// Barrier: FS writes to G-buffer (storage images) must complete before RT/compute reads
-		VkImage gbufferImgs[] = {
-			m_GNormalRoughness, m_GViewZ, m_GMotion,
-			m_GAlbedoF0, m_GDirectEmission,
-			m_GPrimHit, m_GPrimGeoNormal, m_GPrimUV
-		};
+		// Barrier: color attachment writes must complete before RT/compute reads (GENERAL)
 		for (auto img : gbufferImgs)
 		{
 			VkImageMemoryBarrier b = {};
 			b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 			b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-			b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 			b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 			b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1094,7 +1084,7 @@ void RendererGPU::Render(const Camera& camera)
 			b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			b.subresourceRange.levelCount = 1;
 			b.subresourceRange.layerCount = 1;
-			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 			                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
 			                     0, nullptr, 0, nullptr, 1, &b);
 		}
@@ -1378,7 +1368,8 @@ void RendererGPU::CreateGBufferImages()
 
 	for (auto& s : specs)
 	{
-		VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+		                           VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
 		GpuImage tmp;
 		GpuResources::CreateImage(m_Device, m_Width, m_Height, s.format,

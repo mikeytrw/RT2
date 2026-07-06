@@ -4,8 +4,6 @@
 
 #include "shader_interface.h"
 
-layout(early_fragment_tests) in;
-
 // Camera UBO (set 0, binding 1)
 layout(set = 0, binding = SI_BINDING_CAMERA_UBO, std140) uniform CameraData
 {
@@ -51,17 +49,17 @@ layout(set = 0, binding = SI_BINDING_INSTANCE_OFFSETS, std430) readonly buffer I
 // Bindless textures (set 0, binding 11)
 layout(set = 0, binding = SI_BINDING_TEXTURE_ARRAY) uniform sampler2D textures[];
 
-// G-buffer outputs (set 1 — color attachments via dynamic rendering)
-layout(set = 1, binding = 0, rgba8) uniform image2D gNormalRoughness;
-layout(set = 1, binding = 1, r16f) uniform image2D gViewZ;
-layout(set = 1, binding = 2, rg16f) uniform image2D gMotion;
-layout(set = 1, binding = 5, rgba16f) uniform image2D gAlbedoF0;
-layout(set = 1, binding = 7, rgba16f) uniform image2D gDirectEmission;
-
-// New: primary hit data for path tracer
-layout(set = 1, binding = 8, rgba32f) uniform image2D gPrimHit;       // xyz = world pos, w = material index
-layout(set = 1, binding = 9, rgba8) uniform image2D gPrimGeoNormal;   // xyz = geo normal (0.5+0.5), w = unused
-layout(set = 1, binding = 10, rg16f) uniform image2D gPrimUV;         // xy = UV at primary hit
+// G-buffer outputs (MRT color attachments — rasterization-ordered, no imageStore race)
+// Location mapping: 0=gNormalRoughness, 1=gViewZ, 2=gMotion, 3=gAlbedoF0,
+//                   4=gDirectEmission, 5=gPrimHit, 6=gPrimGeoNormal, 7=gPrimUV
+layout(location = 0) out vec4 outNormalRoughness;   // rgba8
+layout(location = 1) out vec4 outViewZ;             // r16f
+layout(location = 2) out vec4 outMotion;            // rg16f
+layout(location = 3) out vec4 outAlbedoF0;          // rgba16f
+layout(location = 4) out vec4 outDirectEmission;    // rgba16f
+layout(location = 5) out vec4 outPrimHit;           // rgba32f: xyz=worldPos, w=floatBitsToInt(matIdx)
+layout(location = 6) out vec4 outPrimGeoNormal;     // rgba8
+layout(location = 7) out vec4 outPrimUV;            // rg16f
 
 layout(location = 0) in vec3 inWorldPos;
 layout(location = 1) in vec3 inWorldPosPrev;
@@ -81,7 +79,6 @@ layout(set = 0, binding = 13, std430) readonly buffer InstanceMaterialIndices
 
 void main()
 {
-    ivec2 pixel = ivec2(gl_FragCoord.xy);
     uint matIdx = instanceMaterialIndices[inInstanceIndex];
     Material mat = materials[matIdx];
 
@@ -163,13 +160,13 @@ void main()
     vec2 currUv = (currClip.xy / currClip.w) * 0.5 + 0.5;
     vec2 prevUv = (prevClip.xy / prevClip.w) * 0.5 + 0.5;
 
-    // Write G-buffer
-    imageStore(gNormalRoughness, pixel, vec4(shadingN * 0.5 + 0.5, roughness));
-    imageStore(gViewZ, pixel, vec4(viewZ, 0.0, 0.0, 0.0));
-    imageStore(gMotion, pixel, vec4(prevUv - currUv, 0.0, 0.0));
-    imageStore(gAlbedoF0, pixel, vec4(diffFactor, f0Scalar));
-    imageStore(gDirectEmission, pixel, vec4(emissive, 0.0));
-    imageStore(gPrimHit, pixel, vec4(inWorldPos, floatBitsToInt(matIdx)));
-    imageStore(gPrimGeoNormal, pixel, vec4(geoN * 0.5 + 0.5, 0.0));
-    imageStore(gPrimUV, pixel, vec4(uv, 0.0, 0.0));
+    // Write G-buffer via MRT color attachments (rasterization-ordered, no race)
+    outNormalRoughness = vec4(shadingN * 0.5 + 0.5, roughness);
+    outViewZ = vec4(viewZ, 0.0, 0.0, 0.0);
+    outMotion = vec4(prevUv - currUv, 0.0, 0.0);
+    outAlbedoF0 = vec4(diffFactor, f0Scalar);
+    outDirectEmission = vec4(emissive, 0.0);
+    outPrimHit = vec4(inWorldPos, floatBitsToInt(matIdx));
+    outPrimGeoNormal = vec4(geoN * 0.5 + 0.5, 0.0);
+    outPrimUV = vec4(uv, 0.0, 0.0);
 }
