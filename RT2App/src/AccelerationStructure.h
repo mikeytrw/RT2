@@ -81,11 +81,6 @@ private:
 		std::vector<float> triTangents;  // 9 floats per triangle (3 × xyz)
 	};
 
-	void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
-	                  VkBuffer& buffer, VkDeviceMemory& memory);
-	void DestroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory);
-	VkDeviceAddress GetBufferDeviceAddress(VkBuffer buffer);
-
 	std::vector<BLASData> m_BLASes;
 
 	// Combined normal buffer (all triangles from all BLASes) + per-instance offsets
@@ -117,8 +112,6 @@ private:
 	uint32_t m_TotalTriangleCount = 0;
 
 	GpuDevice m_Device;
-
-	uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 
 	void BuildCombinedBuffers();
 };

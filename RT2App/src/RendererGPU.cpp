@@ -3,6 +3,7 @@
 #include "RTLog.h"
 #include "VulkanUtils.h"
 #include "shader_interface.h"
+#include "GpuResources.h"
 #include "Walnut/Application.h"
 #include "Walnut/RTDispatch.h"
 #include "backends/imgui_impl_vulkan.h"
@@ -12,61 +13,6 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <iostream>
 #include <cstring>
-
-uint32_t RendererGPU::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
-{
-	return m_Device.FindMemoryType(typeFilter, properties);
-}
-
-void RendererGPU::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
-                                VkBuffer& buffer, VkDeviceMemory& memory)
-{
-	VkDevice device = m_Device.device;
-
-	VkBufferCreateInfo bufferInfo = {};
-	bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-	bufferInfo.size = size;
-	bufferInfo.usage = usage;
-	bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-	VK_CHECK(vkCreateBuffer(device, &bufferInfo, nullptr, &buffer));
-
-	VkMemoryRequirements memRequirements;
-	vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
-
-	VkMemoryAllocateInfo allocInfo = {};
-	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	allocInfo.allocationSize = memRequirements.size;
-	allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits, properties);
-	if (allocInfo.memoryTypeIndex == 0xFFFFFFFF)
-	{
-		RT_LOG("[CreateBuffer] no valid memory type for buffer size=%llu", (unsigned long long)size);
-		return;
-	}
-
-	VkMemoryAllocateFlagsInfo allocateFlagsInfo = {};
-	if (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
-	{
-		allocateFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
-		allocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
-		allocInfo.pNext = &allocateFlagsInfo;
-	}
-
-	VK_CHECK(vkAllocateMemory(device, &allocInfo, nullptr, &memory));
-	VK_CHECK(vkBindBufferMemory(device, buffer, memory, 0));
-}
-
-void RendererGPU::DestroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory)
-{
-	VkDevice device = m_Device.device;
-	if (buffer) { vkDestroyBuffer(device, buffer, nullptr); buffer = VK_NULL_HANDLE; }
-	if (memory) { vkFreeMemory(device, memory, nullptr);    memory = VK_NULL_HANDLE; }
-}
-
-VkDeviceAddress RendererGPU::GetBufferDeviceAddress(VkBuffer buffer)
-{
-	return m_Device.GetBufferDeviceAddress(buffer);
-}
 
 bool RendererGPU::Init()
 {
@@ -108,10 +54,10 @@ void RendererGPU::Destroy()
 	DestroyGBufferImages();
 	DestroyTextures();
 	DestroyEnvMapCDFTextures();
-	DestroyBuffer(m_CameraUBO, m_CameraUBOMemory);
-	DestroyBuffer(m_MaterialBuffer, m_MaterialBufferMemory);
-	DestroyBuffer(m_LightBuffer, m_LightBufferMemory);
-	DestroyBuffer(m_NRDUBO, m_NRDUBOMemory);
+	GpuResources::DestroyBuffer(m_Device, m_CameraUBO, m_CameraUBOMemory);
+	GpuResources::DestroyBuffer(m_Device, m_MaterialBuffer, m_MaterialBufferMemory);
+	GpuResources::DestroyBuffer(m_Device, m_LightBuffer, m_LightBufferMemory);
+	GpuResources::DestroyBuffer(m_Device, m_NRDUBO, m_NRDUBOMemory);
 
 	if (m_GBufferPool)
 	{
@@ -159,7 +105,7 @@ void RendererGPU::CreateOutputImage()
 	VkMemoryAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	allocInfo.allocationSize = memRequirements.size;
-	allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+	allocInfo.memoryTypeIndex = m_Device.FindMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 	err = vkAllocateMemory(device, &allocInfo, nullptr, &m_OutputMemory);
 	if (err != VK_SUCCESS)
@@ -295,7 +241,7 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 	// Create camera UBO if needed
 	if (!m_CameraUBO)
 	{
-		CreateBuffer(sizeof(SICameraData),
+		GpuResources::CreateBuffer(m_Device, sizeof(SICameraData),
 		             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             m_CameraUBO, m_CameraUBOMemory);
@@ -331,14 +277,14 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 
 void RendererGPU::CreateMaterialBuffer()
 {
-	DestroyBuffer(m_MaterialBuffer, m_MaterialBufferMemory);
+	GpuResources::DestroyBuffer(m_Device, m_MaterialBuffer, m_MaterialBufferMemory);
 
 	size_t matCount = m_CurrentScene.materials.size();
 	if (matCount == 0) matCount = 1; // always at least 1
 
 	m_MaterialBufferSize = matCount * sizeof(GPUMaterial);
 
-	CreateBuffer(m_MaterialBufferSize,
+	GpuResources::CreateBuffer(m_Device, m_MaterialBufferSize,
 	             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 	             m_MaterialBuffer, m_MaterialBufferMemory);
@@ -352,7 +298,7 @@ void RendererGPU::CreateMaterialBuffer()
 
 void RendererGPU::CreateLightBuffer()
 {
-	DestroyBuffer(m_LightBuffer, m_LightBufferMemory);
+	GpuResources::DestroyBuffer(m_Device, m_LightBuffer, m_LightBufferMemory);
 
 	// Layout: 16-byte header + N * sizeof(GPUTriangleLight)
 	// Header: uint lightCount, float totalLightArea, uint pad, uint pad
@@ -362,7 +308,7 @@ void RendererGPU::CreateLightBuffer()
 	// Always at least the header so the buffer is non-empty
 	if (m_LightBufferSize < 16) m_LightBufferSize = 16;
 
-	CreateBuffer(m_LightBufferSize,
+	GpuResources::CreateBuffer(m_Device, m_LightBufferSize,
 	             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 	             m_LightBuffer, m_LightBufferMemory);
@@ -428,7 +374,7 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 		// Staging buffer
 		VkBuffer stagingBuffer;
 		VkDeviceMemory stagingMemory;
-		CreateBuffer(imageSize,
+		GpuResources::CreateBuffer(m_Device, imageSize,
 		             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             stagingBuffer, stagingMemory);
@@ -465,7 +411,7 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 		VkMemoryAllocateInfo allocInfo = {};
 		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 		allocInfo.allocationSize = memReq.size;
-		allocInfo.memoryTypeIndex = FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		allocInfo.memoryTypeIndex = m_Device.FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 		vkAllocateMemory(device, &allocInfo, nullptr, &gt.memory);
 		vkBindImageMemory(device, gt.image, gt.memory, 0);
@@ -515,7 +461,7 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 
 		Walnut::Application::FlushCommandBuffer(cmd);
 
-		DestroyBuffer(stagingBuffer, stagingMemory);
+		GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
 
 		// Create image view
 		VkImageViewCreateInfo viewInfo = {};
@@ -582,7 +528,7 @@ void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
 
 		VkBuffer stagingBuffer;
 		VkDeviceMemory stagingMemory;
-		CreateBuffer(imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		GpuResources::CreateBuffer(m_Device, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             stagingBuffer, stagingMemory);
 		void* data;
@@ -610,7 +556,7 @@ void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
 		VkMemoryAllocateInfo allocInfo = {};
 		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 		allocInfo.allocationSize = memReq.size;
-		allocInfo.memoryTypeIndex = FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		allocInfo.memoryTypeIndex = m_Device.FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 		vkAllocateMemory(device, &allocInfo, nullptr, &gt.memory);
 		vkBindImageMemory(device, gt.image, gt.memory, 0);
 
@@ -641,7 +587,7 @@ void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
 		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
 		                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &shaderBarrier);
 		Walnut::Application::FlushCommandBuffer(cmd);
-		DestroyBuffer(stagingBuffer, stagingMemory);
+		GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
 
 		VkImageViewCreateInfo viewInfo = {};
 		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -1108,7 +1054,7 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 	VkDeviceMemory stagingMemory;
 	VkDeviceSize imageSize = (VkDeviceSize)m_Width * m_Height * 16; // R32G32B32A32_SFLOAT = 16 bytes/pixel
 
-	CreateBuffer(imageSize,
+	GpuResources::CreateBuffer(m_Device, imageSize,
 	             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 	             stagingBuffer, stagingMemory);
@@ -1160,7 +1106,7 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 	if (err != VK_SUCCESS || !mapped)
 	{
 		fprintf(stderr, "[Readback] vkMapMemory failed: %d\n", err);
-		DestroyBuffer(stagingBuffer, stagingMemory);
+		GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
 		return false;
 	}
 
@@ -1192,7 +1138,7 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 	}
 
 	vkUnmapMemory(device, stagingMemory);
-	DestroyBuffer(stagingBuffer, stagingMemory);
+	GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
 
 	outWidth = m_Width;
 	outHeight = m_Height;
@@ -1255,7 +1201,7 @@ void RendererGPU::CreateGBufferImages()
 		VkMemoryAllocateInfo allocInfo = {};
 		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 		allocInfo.allocationSize = memReq.size;
-		allocInfo.memoryTypeIndex = FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		allocInfo.memoryTypeIndex = m_Device.FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
 
 		vkAllocateMemory(device, &allocInfo, nullptr, &s.mem);
 		vkBindImageMemory(device, s.image, s.mem, 0);
@@ -1373,7 +1319,7 @@ void RendererGPU::CreateGBufferDescriptorSet()
 	// Create NRD UBO
 	if (!m_NRDUBO)
 	{
-		CreateBuffer(sizeof(SINRDUniformData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+		GpuResources::CreateBuffer(m_Device, sizeof(SINRDUniformData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             m_NRDUBO, m_NRDUBOMemory);
 	}

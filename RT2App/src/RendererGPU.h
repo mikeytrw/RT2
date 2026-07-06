@@ -196,12 +196,6 @@ private:
 	glm::mat4 m_PrevViewToClip = glm::mat4(1.0f);
 	glm::mat4 m_PrevWorldToView = glm::mat4(1.0f);
 	bool m_HasPrevMatrices = false;
-
-	void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
-	                  VkBuffer& buffer, VkDeviceMemory& memory);
-	void DestroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory);
-	VkDeviceAddress GetBufferDeviceAddress(VkBuffer buffer);
-	uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
 };
 
 #endif // !RENDERER_GPU_H

@@ -103,6 +103,22 @@ namespace GpuResources
 		return true;
 	}
 
+	bool CreateBuffer(const GpuDevice& dev, VkDeviceSize size,
+	                  VkBufferUsageFlags usage, VkMemoryPropertyFlags memProps,
+	                  VkBuffer& outBuffer, VkDeviceMemory& outMemory)
+	{
+		GpuBuffer tmp;
+		if (!CreateBuffer(dev, size, usage, memProps, tmp))
+		{
+			outBuffer = VK_NULL_HANDLE;
+			outMemory = VK_NULL_HANDLE;
+			return false;
+		}
+		outBuffer = tmp.buffer;
+		outMemory = tmp.memory;
+		return true;
+	}
+
 	void DestroyImage(const GpuDevice& dev, GpuImage& img)
 	{
 		if (img.view)   { vkDestroyImageView(dev.device, img.view, nullptr);   img.view = VK_NULL_HANDLE; }
@@ -115,6 +131,12 @@ namespace GpuResources
 		if (buf.buffer) { vkDestroyBuffer(dev.device, buf.buffer, nullptr);  buf.buffer = VK_NULL_HANDLE; }
 		if (buf.memory)  { vkFreeMemory(dev.device, buf.memory, nullptr);     buf.memory = VK_NULL_HANDLE; }
 		buf.size = 0;
+	}
+
+	void DestroyBuffer(const GpuDevice& dev, VkBuffer& buffer, VkDeviceMemory& memory)
+	{
+		if (buffer) { vkDestroyBuffer(dev.device, buffer, nullptr); buffer = VK_NULL_HANDLE; }
+		if (memory) { vkFreeMemory(dev.device, memory, nullptr);    memory = VK_NULL_HANDLE; }
 	}
 
 	void TransitionImage(VkCommandBuffer cmd, VkImage image,

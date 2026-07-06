@@ -43,11 +43,19 @@ namespace GpuResources
 	                  VkBufferUsageFlags usage, VkMemoryPropertyFlags memProperties,
 	                  GpuBuffer& outBuffer);
 
+	// Convenience overload for callers that hold decomposed VkBuffer/VkDeviceMemory pairs.
+	bool CreateBuffer(const GpuDevice& dev, VkDeviceSize size,
+	                  VkBufferUsageFlags usage, VkMemoryPropertyFlags memProperties,
+	                  VkBuffer& outBuffer, VkDeviceMemory& outMemory);
+
 	// Destroy an image (image + memory + view). Safe to call on zeroed struct.
 	void DestroyImage(const GpuDevice& dev, GpuImage& img);
 
 	// Destroy a buffer (buffer + memory). Safe to call on zeroed struct.
 	void DestroyBuffer(const GpuDevice& dev, GpuBuffer& buf);
+
+	// Convenience overload for decomposed VkBuffer/VkDeviceMemory pairs.
+	void DestroyBuffer(const GpuDevice& dev, VkBuffer& buffer, VkDeviceMemory& memory);
 
 	// Transition an image between layouts via pipeline barrier in the given cmd buffer.
 	void TransitionImage(VkCommandBuffer cmd, VkImage image,

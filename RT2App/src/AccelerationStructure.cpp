@@ -1,76 +1,11 @@
 #include "AccelerationStructure.h"
 #include "RTLog.h"
 #include "VulkanUtils.h"
+#include "GpuResources.h"
 #include "Walnut/RTDispatch.h"
 #include <glm/glm.hpp>
 #include <iostream>
 #include <cstring>
-
-uint32_t AccelerationStructure::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties)
-{
-	return m_Device.FindMemoryType(typeFilter, properties);
-}
-
-void AccelerationStructure::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties,
-                                          VkBuffer& buffer, VkDeviceMemory& memory)
-{
-	VkDevice device = m_Device.device;
-
-	VkBufferCreateInfo bufferInfo = {};
-	bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-	bufferInfo.size = size;
-	bufferInfo.usage = usage;
-	bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-	VkResult err = vkCreateBuffer(device, &bufferInfo, nullptr, &buffer);
-	if (err != VK_SUCCESS)
-	{
-		std::cerr << "[RT2] vkCreateBuffer failed: " << err << " (size=" << size << ")\n";
-		return;
-	}
-
-	VkMemoryRequirements memRequirements;
-	vkGetBufferMemoryRequirements(device, buffer, &memRequirements);
-
-	VkMemoryAllocateInfo allocInfo = {};
-	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	allocInfo.allocationSize = memRequirements.size;
-	allocInfo.memoryTypeIndex = FindMemoryType(memRequirements.memoryTypeBits, properties);
-
-	VkMemoryAllocateFlagsInfo allocateFlagsInfo = {};
-	if (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT)
-	{
-		allocateFlagsInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
-		allocateFlagsInfo.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
-		allocInfo.pNext = &allocateFlagsInfo;
-	}
-
-	err = vkAllocateMemory(device, &allocInfo, nullptr, &memory);
-	if (err != VK_SUCCESS)
-	{
-		std::cerr << "[RT2] vkAllocateMemory failed: " << err << " (size=" << memRequirements.size << ")\n";
-		vkDestroyBuffer(device, buffer, nullptr);
-		buffer = VK_NULL_HANDLE;
-		return;
-	}
-
-	vkBindBufferMemory(device, buffer, memory, 0);
-}
-
-void AccelerationStructure::DestroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory)
-{
-	VkDevice device = m_Device.device;
-	if (buffer) { vkDestroyBuffer(device, buffer, nullptr); buffer = VK_NULL_HANDLE; }
-	if (memory) { vkFreeMemory(device, memory, nullptr); memory = VK_NULL_HANDLE; }
-}
-
-VkDeviceAddress AccelerationStructure::GetBufferDeviceAddress(VkBuffer buffer)
-{
-	VkBufferDeviceAddressInfo info = {};
-	info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-	info.buffer = buffer;
-	return vkGetBufferDeviceAddress(m_Device.device, &info);
-}
 
 bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
                                          const std::vector<BLASGeometry>& meshes)
@@ -88,22 +23,22 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 	{
 		auto& blas = m_BLASes[i];
 		RT_LOG("[BuildBLASes] destroying BLAS %d/%d", (int)i, (int)m_BLASes.size());
-		DestroyBuffer(blas.vertexBuffer, blas.vertexMemory);
-		DestroyBuffer(blas.indexBuffer, blas.indexMemory);
-		DestroyBuffer(blas.normalBuffer, blas.normalMemory);
-		DestroyBuffer(blas.blasBuffer, blas.blasMemory);
-		DestroyBuffer(blas.scratchBuffer, blas.scratchMemory);
+		GpuResources::DestroyBuffer(m_Device, blas.vertexBuffer, blas.vertexMemory);
+		GpuResources::DestroyBuffer(m_Device, blas.indexBuffer, blas.indexMemory);
+		GpuResources::DestroyBuffer(m_Device, blas.normalBuffer, blas.normalMemory);
+		GpuResources::DestroyBuffer(m_Device, blas.blasBuffer, blas.blasMemory);
+		GpuResources::DestroyBuffer(m_Device, blas.scratchBuffer, blas.scratchMemory);
 		if (blas.handle)
 			g_RTDispatch.DestroyAccelerationStructureKHR(device, blas.handle, nullptr);
 	}
 	m_BLASes.clear();
 	RT_LOG("[BuildBLASes] old BLASes destroyed, destroying combined buffers");
 
-	DestroyBuffer(m_CombinedNormalBuffer, m_CombinedNormalMemory);
-	DestroyBuffer(m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
-	DestroyBuffer(m_CombinedUVBuffer, m_CombinedUVMemory);
-	DestroyBuffer(m_CombinedPositionBuffer, m_CombinedPositionMemory);
-	DestroyBuffer(m_CombinedTangentBuffer, m_CombinedTangentMemory);
+	GpuResources::DestroyBuffer(m_Device, m_CombinedNormalBuffer, m_CombinedNormalMemory);
+	GpuResources::DestroyBuffer(m_Device, m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
+	GpuResources::DestroyBuffer(m_Device, m_CombinedUVBuffer, m_CombinedUVMemory);
+	GpuResources::DestroyBuffer(m_Device, m_CombinedPositionBuffer, m_CombinedPositionMemory);
+	GpuResources::DestroyBuffer(m_Device, m_CombinedTangentBuffer, m_CombinedTangentMemory);
 	RT_LOG("[BuildBLASes] combined buffers destroyed, resizing");
 	m_BLASes.resize(meshes.size());
 	m_TotalTriangleCount = 0;
@@ -165,7 +100,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		// --- Vertex buffer ---
 		VkDeviceSize vertexBufferSize = mesh.vertices->size() * sizeof(float);
 		RT_LOG("[BuildBLASes] mesh %d: creating vertex buffer (%zu bytes)", (int)i, (size_t)vertexBufferSize);
-		CreateBuffer(vertexBufferSize,
+		GpuResources::CreateBuffer(m_Device, vertexBufferSize,
 		             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 		             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -179,7 +114,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		// --- Index buffer ---
 		VkDeviceSize indexBufferSize = mesh.indices->size() * sizeof(uint32_t);
 		RT_LOG("[BuildBLASes] mesh %d: creating index buffer (%zu bytes)", (int)i, (size_t)indexBufferSize);
-		CreateBuffer(indexBufferSize,
+		GpuResources::CreateBuffer(m_Device, indexBufferSize,
 		             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 		             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -199,11 +134,11 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		VkAccelerationStructureGeometryTrianglesDataKHR trianglesData = {};
 		trianglesData.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
 		trianglesData.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-		trianglesData.vertexData.deviceAddress = GetBufferDeviceAddress(blas.vertexBuffer);
+		trianglesData.vertexData.deviceAddress = m_Device.GetBufferDeviceAddress(blas.vertexBuffer);
 		trianglesData.vertexStride = 3 * sizeof(float);
 		trianglesData.maxVertex = static_cast<uint32_t>(mesh.vertices->size() / 3) - 1;
 		trianglesData.indexType = VK_INDEX_TYPE_UINT32;
-		trianglesData.indexData.deviceAddress = GetBufferDeviceAddress(blas.indexBuffer);
+		trianglesData.indexData.deviceAddress = m_Device.GetBufferDeviceAddress(blas.indexBuffer);
 		geometry.geometry.triangles = trianglesData;
 
 		// --- Build sizes ---
@@ -226,7 +161,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 
 		// --- BLAS buffer ---
 		RT_LOG("[BuildBLASes] mesh %d: creating BLAS buffer (%zu bytes)", (int)i, (size_t)sizeInfo.accelerationStructureSize);
-		CreateBuffer(sizeInfo.accelerationStructureSize,
+		GpuResources::CreateBuffer(m_Device, sizeInfo.accelerationStructureSize,
 		             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
 		             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -242,13 +177,13 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 
 		// --- Scratch buffer ---
 		RT_LOG("[BuildBLASes] mesh %d: creating scratch buffer (%zu bytes)", (int)i, (size_t)sizeInfo.buildScratchSize);
-		CreateBuffer(sizeInfo.buildScratchSize,
+		GpuResources::CreateBuffer(m_Device, sizeInfo.buildScratchSize,
 		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 		             blas.scratchBuffer, blas.scratchMemory);
 
 		buildInfo.dstAccelerationStructure = blas.handle;
-		buildInfo.scratchData.deviceAddress = GetBufferDeviceAddress(blas.scratchBuffer);
+		buildInfo.scratchData.deviceAddress = m_Device.GetBufferDeviceAddress(blas.scratchBuffer);
 
 		VkAccelerationStructureBuildRangeInfoKHR buildRangeInfo = {};
 		buildRangeInfo.primitiveCount = primitiveCount;
@@ -281,11 +216,11 @@ void AccelerationStructure::BuildCombinedBuffers()
 	RT_LOG("[BuildCombinedBuffers] enter: totalTris=%d blasCount=%d", (int)m_TotalTriangleCount, (int)m_BLASes.size());
 
 	// Destroy previous combined buffers (already destroyed in BuildBLASes, but safe no-op)
-	DestroyBuffer(m_CombinedNormalBuffer, m_CombinedNormalMemory);
-	DestroyBuffer(m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
-	DestroyBuffer(m_CombinedUVBuffer, m_CombinedUVMemory);
-	DestroyBuffer(m_CombinedPositionBuffer, m_CombinedPositionMemory);
-	DestroyBuffer(m_CombinedTangentBuffer, m_CombinedTangentMemory);
+	GpuResources::DestroyBuffer(m_Device, m_CombinedNormalBuffer, m_CombinedNormalMemory);
+	GpuResources::DestroyBuffer(m_Device, m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
+	GpuResources::DestroyBuffer(m_Device, m_CombinedUVBuffer, m_CombinedUVMemory);
+	GpuResources::DestroyBuffer(m_Device, m_CombinedPositionBuffer, m_CombinedPositionMemory);
+	GpuResources::DestroyBuffer(m_Device, m_CombinedTangentBuffer, m_CombinedTangentMemory);
 	RT_LOG("[BuildCombinedBuffers] old buffers destroyed (no-op if already done)");
 
 	// Collect all normals, positions, UVs, and tangents into combined buffers.
@@ -345,7 +280,7 @@ void AccelerationStructure::BuildCombinedBuffers()
 	                          const void* data, VkDeviceSize size)
 	{
 		if (size == 0) return;
-		CreateBuffer(size,
+		GpuResources::CreateBuffer(m_Device, size,
 		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             buf, mem);
@@ -390,13 +325,13 @@ bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,
 		g_RTDispatch.DestroyAccelerationStructureKHR(device, m_TLAS, nullptr);
 		m_TLAS = VK_NULL_HANDLE;
 	}
-	DestroyBuffer(m_TLASBuffer, m_TLASMemory);
-	DestroyBuffer(m_InstanceBuffer, m_InstanceMemory);
-	DestroyBuffer(m_TLASScratchBuffer, m_TLASScratchMemory);
+	GpuResources::DestroyBuffer(m_Device, m_TLASBuffer, m_TLASMemory);
+	GpuResources::DestroyBuffer(m_Device, m_InstanceBuffer, m_InstanceMemory);
+	GpuResources::DestroyBuffer(m_Device, m_TLASScratchBuffer, m_TLASScratchMemory);
 
 	// --- Instance buffer ---
 	VkDeviceSize instanceBufferSize = instances.size() * sizeof(VkAccelerationStructureInstanceKHR);
-	CreateBuffer(instanceBufferSize,
+	GpuResources::CreateBuffer(m_Device, instanceBufferSize,
 	             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 	             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -429,7 +364,7 @@ bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,
 
 	VkAccelerationStructureGeometryInstancesDataKHR instancesData = {};
 	instancesData.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
-	instancesData.data.deviceAddress = GetBufferDeviceAddress(m_InstanceBuffer);
+	instancesData.data.deviceAddress = m_Device.GetBufferDeviceAddress(m_InstanceBuffer);
 	geometry.geometry.instances = instancesData;
 
 	VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {};
@@ -449,7 +384,7 @@ bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,
 		&buildInfo, &primitiveCount, &sizeInfo);
 
 	// --- TLAS buffer ---
-	CreateBuffer(sizeInfo.accelerationStructureSize,
+	GpuResources::CreateBuffer(m_Device, sizeInfo.accelerationStructureSize,
 	             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
 	             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 	             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -463,13 +398,13 @@ bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,
 	g_RTDispatch.CreateAccelerationStructureKHR(device, &createInfo, nullptr, &m_TLAS);
 
 	// --- TLAS scratch ---
-	CreateBuffer(sizeInfo.buildScratchSize,
+	GpuResources::CreateBuffer(m_Device, sizeInfo.buildScratchSize,
 	             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 	             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 	             m_TLASScratchBuffer, m_TLASScratchMemory);
 
 	buildInfo.dstAccelerationStructure = m_TLAS;
-	buildInfo.scratchData.deviceAddress = GetBufferDeviceAddress(m_TLASScratchBuffer);
+	buildInfo.scratchData.deviceAddress = m_Device.GetBufferDeviceAddress(m_TLASScratchBuffer);
 
 	VkAccelerationStructureBuildRangeInfoKHR buildRangeInfo = {};
 	buildRangeInfo.primitiveCount = primitiveCount;
@@ -500,30 +435,30 @@ void AccelerationStructure::Destroy()
 
 	for (auto& blas : m_BLASes)
 	{
-		DestroyBuffer(blas.vertexBuffer, blas.vertexMemory);
-		DestroyBuffer(blas.indexBuffer, blas.indexMemory);
-		DestroyBuffer(blas.normalBuffer, blas.normalMemory);
-		DestroyBuffer(blas.blasBuffer, blas.blasMemory);
-		DestroyBuffer(blas.scratchBuffer, blas.scratchMemory);
+		GpuResources::DestroyBuffer(m_Device, blas.vertexBuffer, blas.vertexMemory);
+		GpuResources::DestroyBuffer(m_Device, blas.indexBuffer, blas.indexMemory);
+		GpuResources::DestroyBuffer(m_Device, blas.normalBuffer, blas.normalMemory);
+		GpuResources::DestroyBuffer(m_Device, blas.blasBuffer, blas.blasMemory);
+		GpuResources::DestroyBuffer(m_Device, blas.scratchBuffer, blas.scratchMemory);
 		if (blas.handle)
 			g_RTDispatch.DestroyAccelerationStructureKHR(device, blas.handle, nullptr);
 	}
 	m_BLASes.clear();
 
-	DestroyBuffer(m_CombinedNormalBuffer, m_CombinedNormalMemory);
-	DestroyBuffer(m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
-	DestroyBuffer(m_CombinedUVBuffer, m_CombinedUVMemory);
-	DestroyBuffer(m_CombinedPositionBuffer, m_CombinedPositionMemory);
-	DestroyBuffer(m_CombinedTangentBuffer, m_CombinedTangentMemory);
+	GpuResources::DestroyBuffer(m_Device, m_CombinedNormalBuffer, m_CombinedNormalMemory);
+	GpuResources::DestroyBuffer(m_Device, m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
+	GpuResources::DestroyBuffer(m_Device, m_CombinedUVBuffer, m_CombinedUVMemory);
+	GpuResources::DestroyBuffer(m_Device, m_CombinedPositionBuffer, m_CombinedPositionMemory);
+	GpuResources::DestroyBuffer(m_Device, m_CombinedTangentBuffer, m_CombinedTangentMemory);
 
 	if (m_TLAS)
 	{
 		g_RTDispatch.DestroyAccelerationStructureKHR(device, m_TLAS, nullptr);
 		m_TLAS = VK_NULL_HANDLE;
 	}
-	DestroyBuffer(m_TLASBuffer, m_TLASMemory);
-	DestroyBuffer(m_InstanceBuffer, m_InstanceMemory);
-	DestroyBuffer(m_TLASScratchBuffer, m_TLASScratchMemory);
+	GpuResources::DestroyBuffer(m_Device, m_TLASBuffer, m_TLASMemory);
+	GpuResources::DestroyBuffer(m_Device, m_InstanceBuffer, m_InstanceMemory);
+	GpuResources::DestroyBuffer(m_Device, m_TLASScratchBuffer, m_TLASScratchMemory);
 
 	m_TLASDeviceAddress = 0;
 	m_TotalTriangleCount = 0;
