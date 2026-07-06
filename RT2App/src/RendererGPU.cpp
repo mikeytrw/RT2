@@ -1057,7 +1057,7 @@ void RendererGPU::Render(const Camera& camera)
 		VkImageMemoryBarrier depthBarrier = {};
 		depthBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 		depthBarrier.srcAccessMask = 0;
-		depthBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		depthBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 		depthBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 		depthBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
 		depthBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
