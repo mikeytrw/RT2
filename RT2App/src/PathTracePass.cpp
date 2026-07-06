@@ -33,7 +33,7 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	if (!m_RgenShader || !m_MissShader || !m_ShadowShader || !m_ClosestShader ||
 	    !m_AnyHitShader || !m_ShadowHitShader)
 	{
-		std::cerr << "[PathTracePass] Failed to load RT shaders\n";
+		RT_LOG("[PathTracePass] Failed to load RT shaders");
 		return false;
 	}
 
@@ -210,7 +210,7 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 		m_Device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_Pipeline);
 	if (err != VK_SUCCESS)
 	{
-		std::cerr << "[PathTracePass] vkCreateRayTracingPipelinesKHR failed: " << err << "\n";
+		RT_LOG("[PathTracePass] vkCreateRayTracingPipelinesKHR failed: %d", (int)err);
 		m_Pipeline = VK_NULL_HANDLE;
 		return false;
 	}
@@ -233,7 +233,7 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		m_SBTBuffer))
 	{
-		std::cerr << "[PathTracePass] failed to create SBT buffer\n";
+		RT_LOG("[PathTracePass] failed to create SBT buffer");
 		return false;
 	}
 	m_SBTSize = sbtSize;
@@ -244,7 +244,7 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 		m_Device, m_Pipeline, 0, 6, handles.size(), handles.data());
 	if (err != VK_SUCCESS)
 	{
-		std::cerr << "[PathTracePass] GetRayTracingShaderGroupHandlesKHR failed: " << err << "\n";
+		RT_LOG("[PathTracePass] GetRayTracingShaderGroupHandlesKHR failed: %d", (int)err);
 		return false;
 	}
 
@@ -306,7 +306,7 @@ bool PathTracePass::CreateDescriptorSet(const GpuDevice& dev, VkDescriptorPool p
 	VkResult err = vkAllocateDescriptorSets(dev.device, &allocInfo, &m_DescriptorSet);
 	if (err != VK_SUCCESS)
 	{
-		std::cerr << "[PathTracePass] vkAllocateDescriptorSets failed: " << err << "\n";
+		RT_LOG("[PathTracePass] vkAllocateDescriptorSets failed: %d", (int)err);
 		return false;
 	}
 	RT_LOG("[PathTracePass] descriptor set allocated");
@@ -514,7 +514,7 @@ void PathTracePass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 
 	if (!g_RTDispatch.CmdTraceRaysKHR)
 	{
-		std::cerr << "[PathTracePass] ERROR: CmdTraceRaysKHR is NULL!\n";
+		RT_LOG("[PathTracePass] ERROR: CmdTraceRaysKHR is NULL!");
 		return;
 	}
 	g_RTDispatch.CmdTraceRaysKHR(cmd,

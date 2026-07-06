@@ -22,7 +22,7 @@ bool RendererGPU::Init()
 
 	if (!m_Device.rayTracingSupported)
 	{
-		std::cerr << "[RT2] Ray tracing not supported, GPU renderer unavailable.\n";
+		RT_LOG("[RT2] Ray tracing not supported, GPU renderer unavailable.");
 		return false;
 	}
 
@@ -34,7 +34,7 @@ bool RendererGPU::Init()
 
 	if (!m_PathTracePass.Init(m_Device, m_GBufferSetLayout))
 	{
-		std::cerr << "[RT2] GPU renderer initialization failed (pipeline creation error)\n";
+		RT_LOG("[RT2] GPU renderer initialization failed (pipeline creation error)");
 		return false;
 	}
 	m_ComposePass.Init(m_Device);
@@ -294,7 +294,7 @@ void RendererGPU::CreateLightBuffer()
 	memcpy(data, bufData.data(), m_LightBufferSize);
 	vkUnmapMemory(device, m_LightBufferMemory);
 
-	std::cerr << "[RT2] Light buffer: " << lightCount << " lights, totalArea=" << totalArea << "\n";
+	RT_LOG("[RT2] Light buffer: %d lights, totalArea=%f", lightCount, totalArea);
 }
 
 void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
@@ -309,7 +309,7 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 		const auto& tex = textures[i];
 		if (tex.floatPixels.empty() && tex.pixels.empty())
 		{
-			std::cerr << "[RT2] Texture " << i << ": no pixel data, skipping\n";
+			RT_LOG("[RT2] Texture %d: no pixel data, skipping", (int)i);
 			continue;
 		}
 
@@ -402,7 +402,7 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 		GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
 	}
 
-	std::cerr << "[RT2] Created " << m_Textures.size() << " GPU textures\n";
+	RT_LOG("[RT2] Created %d GPU textures", (int)m_Textures.size());
 }
 
 void RendererGPU::DestroyTextures()
@@ -486,9 +486,8 @@ void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
 	m_MarginalCDFIndex = createCDFTexture(sceneData.marginalCDF, sceneData.cdfHeight, 1);
 	m_ConditionalCDFIndex = createCDFTexture(sceneData.conditionalCDF, sceneData.cdfWidth, sceneData.cdfHeight);
 
-	std::cerr << "[RT2] Env map CDF textures: marginal idx=" << m_MarginalCDFIndex
-	          << " conditional idx=" << m_ConditionalCDFIndex
-	          << " (" << sceneData.cdfWidth << "x" << sceneData.cdfHeight << ")\n";
+	RT_LOG("[RT2] Env map CDF textures: marginal idx=%d conditional idx=%d (%dx%d)",
+	       m_MarginalCDFIndex, m_ConditionalCDFIndex, sceneData.cdfWidth, sceneData.cdfHeight);
 }
 
 void RendererGPU::DestroyEnvMapCDFTextures()
@@ -704,7 +703,7 @@ void RendererGPU::Render(const Camera& camera)
 	if (!m_AS.IsValid())
 	{
 		static bool warned = false;
-		if (!warned) { std::cerr << "[RT2] Render: TLAS not valid (no mesh loaded?)\n"; warned = true; }
+		if (!warned) { RT_LOG("[RT2] Render: TLAS not valid (no mesh loaded?)"); warned = true; }
 		return;
 	}
 
@@ -727,9 +726,8 @@ void RendererGPU::Render(const Camera& camera)
 
 	if (!m_PathTracePass.IsAvailable() || !m_PathTracePass.GetDescriptorSet() || !m_CameraUBO || !m_MaterialBuffer)
 	{
-		std::cerr << "[RT2] Render: missing resource (pipe=" << m_PathTracePass.IsAvailable()
-		          << " ubo=" << m_CameraUBO
-		          << " mat=" << m_MaterialBuffer << ")\n";
+		RT_LOG("[RT2] Render: missing resource (pipe=%d ubo=%p mat=%p)",
+		       m_PathTracePass.IsAvailable(), (void*)m_CameraUBO, (void*)m_MaterialBuffer);
 		return;
 	}
 
@@ -972,7 +970,7 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 	VkResult err = vkMapMemory(device, stagingMemory, 0, imageSize, 0, &mapped);
 	if (err != VK_SUCCESS || !mapped)
 	{
-		fprintf(stderr, "[Readback] vkMapMemory failed: %d\n", err);
+		RT_LOG("[Readback] vkMapMemory failed: %d", (int)err);
 		GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
 		return false;
 	}

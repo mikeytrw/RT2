@@ -11,6 +11,7 @@
 #include "SceneLoader.h"
 #include "GPUSceneData.h"
 #include "CLIArgs.h"
+#include "RTLog.h"
 #include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -396,7 +397,7 @@ private:
 			}
 			else
 			{
-				fprintf(stderr, "[CLI] GPU renderer init failed, falling back to CPU\n");
+				RT_LOG("[CLI] GPU renderer init failed, falling back to CPU");
 				m_UseGPU = 0;
 			}
 		}
@@ -467,11 +468,11 @@ private:
 				if (stbi_write_png(g_CLI.outputPath.c_str(), w, h, 4, flipped.data(), w * 4))
 					printf("[Headless] saved screenshot: %s (%ux%u)\n", g_CLI.outputPath.c_str(), w, h);
 				else
-					fprintf(stderr, "[Headless] stbi_write_png failed for %s\n", g_CLI.outputPath.c_str());
+					RT_LOG("[Headless] stbi_write_png failed for %s", g_CLI.outputPath.c_str());
 			}
 			else
 			{
-				fprintf(stderr, "[Headless] ReadbackOutput failed\n");
+				RT_LOG("[Headless] ReadbackOutput failed");
 			}
 		}
 		else if (g_CLI.hasOutput() && !m_UseGPU)

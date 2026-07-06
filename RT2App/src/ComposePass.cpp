@@ -16,7 +16,7 @@ bool ComposePass::Init(const GpuDevice& dev)
 		m_Shader = ShaderManager::LoadShader("RT2App/shaders/compose.spv");
 	if (!m_Shader)
 	{
-		std::cerr << "[ComposePass] Failed to load compose.spv\n";
+		RT_LOG("[ComposePass] Failed to load compose.spv");
 		return false;
 	}
 

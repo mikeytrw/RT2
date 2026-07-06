@@ -315,7 +315,7 @@ bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,
 
 	if (instances.empty())
 	{
-		std::cerr << "[RT2] No instances for TLAS build\n";
+		RT_LOG("[RT2] No instances for TLAS build");
 		return false;
 	}
 
