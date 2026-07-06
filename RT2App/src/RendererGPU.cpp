@@ -45,6 +45,8 @@ bool RendererGPU::Init()
 		RT_LOG("[RT2] RasterPass init failed (non-fatal, RT primary visibility will be used)");
 	}
 
+	m_GBufferDebugPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout);
+
 	// Create shared texture samplers
 	m_TextureSampler = GpuResources::CreateSampler(m_Device,
 		VK_FILTER_LINEAR, VK_FILTER_LINEAR,
@@ -70,6 +72,7 @@ void RendererGPU::Destroy()
 	m_PathTracePass.Destroy();
 	m_ComposePass.Destroy();
 	m_RasterPass.Destroy();
+	m_GBufferDebugPass.Destroy();
 	DestroyOutputImage();
 	DestroyGBufferImages();
 	DestroyTextures();
@@ -1014,32 +1017,8 @@ void RendererGPU::Render(const Camera& camera)
 	// ---- Raster G-buffer pass (primary visibility) ----
 	if (m_RasterPass.IsAvailable() && m_DepthImageView)
 	{
-		// Transition G-buffer images: GENERAL → COLOR_ATTACHMENT_OPTIMAL
-		VkImage gbufferImgs[] = {
-			m_GNormalRoughness, m_GViewZ, m_GMotion,
-			m_GAlbedoF0, m_GDirectEmission,
-			m_GPrimHit, m_GPrimGeoNormal, m_GPrimUV
-		};
-		for (auto img : gbufferImgs)
-		{
-			VkImageMemoryBarrier b = {};
-			b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-			b.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-			b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-			b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-			b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			b.image = img;
-			b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			b.subresourceRange.levelCount = 1;
-			b.subresourceRange.layerCount = 1;
-			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-			                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
-			                     0, nullptr, 0, nullptr, 1, &b);
-		}
-
-		// Transition depth image: UNDEFINED → DEPTH_ATTACHMENT_OPTIMAL
+		// G-buffer images stay in GENERAL — FS writes via imageStore (storage images)
+		// Only depth image needs transition
 		VkImageMemoryBarrier depthBarrier = {};
 		depthBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 		depthBarrier.srcAccessMask = 0;
@@ -1060,14 +1039,19 @@ void RendererGPU::Render(const Camera& camera)
 		                    m_PathTracePass.GetDescriptorSet(), m_GBufferSet,
 		                    m_DepthImageView);
 
-		// Transition G-buffer images back: COLOR_ATTACHMENT_OPTIMAL → GENERAL
+		// Barrier: FS writes to G-buffer (storage images) must complete before RT/compute reads
+		VkImage gbufferImgs[] = {
+			m_GNormalRoughness, m_GViewZ, m_GMotion,
+			m_GAlbedoF0, m_GDirectEmission,
+			m_GPrimHit, m_GPrimGeoNormal, m_GPrimUV
+		};
 		for (auto img : gbufferImgs)
 		{
 			VkImageMemoryBarrier b = {};
 			b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 			b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-			b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 			b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 			b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -1075,14 +1059,23 @@ void RendererGPU::Render(const Camera& camera)
 			b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			b.subresourceRange.levelCount = 1;
 			b.subresourceRange.layerCount = 1;
-			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0,
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+			                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
 			                     0, nullptr, 0, nullptr, 1, &b);
 		}
 	}
 
-	// Trace rays via PathTracePass
-	m_PathTracePass.Record(cmd, m_Width, m_Height, m_GBufferSet);
+	// ---- G-buffer debug view (skips path tracing + NRD) ----
+	if (m_GBufferDebugMode >= 0 && m_GBufferDebugPass.IsAvailable())
+	{
+		m_GBufferDebugPass.Record(cmd, m_Width, m_Height,
+		                          m_PathTracePass.GetDescriptorSet(), m_GBufferSet,
+		                          (uint32_t)m_GBufferDebugMode);
+	}
+	else
+	{
+		// Trace rays via PathTracePass
+		m_PathTracePass.Record(cmd, m_Width, m_Height, m_GBufferSet);
 
 	// NRD denoising pass
 	if (m_NRDEnabled && m_NRD.IsAvailable())
@@ -1173,9 +1166,10 @@ void RendererGPU::Render(const Camera& camera)
 				                     0, nullptr, 0, nullptr, 1, &b);
 			}
 
-			m_ComposePass.Record(cmd, m_Width, m_Height);
-		}
+		m_ComposePass.Record(cmd, m_Width, m_Height);
 	}
+	}
+	} // end else (not debug mode)
 
 	VkImageMemoryBarrier rtReadBarrier = {};
 	rtReadBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1191,10 +1185,15 @@ void RendererGPU::Render(const Camera& camera)
 	rtReadBarrier.subresourceRange.layerCount = 1;
 
 	// If NRD+compose ran, the output image was written by compute (compose).
+	// If debug mode, written by compute (debug pass).
 	// Otherwise it was written by the ray tracing shader.
-	VkPipelineStageFlags srcStage = (m_NRDEnabled && m_NRD.IsAvailable() && m_ComposePass.IsAvailable())
-		? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
-		: VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
+	VkPipelineStageFlags srcStage;
+	if (m_GBufferDebugMode >= 0 && m_GBufferDebugPass.IsAvailable())
+		srcStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+	else if (m_NRDEnabled && m_NRD.IsAvailable() && m_ComposePass.IsAvailable())
+		srcStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+	else
+		srcStage = VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
 
 	vkCmdPipelineBarrier(cmd, srcStage, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &rtReadBarrier);
 
@@ -1345,11 +1344,6 @@ void RendererGPU::CreateGBufferImages()
 	for (auto& s : specs)
 	{
 		VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-		// G-buffer images that the raster pass writes to also need COLOR_ATTACHMENT_BIT
-		if (&s.image == &m_GNormalRoughness || &s.image == &m_GViewZ || &s.image == &m_GMotion ||
-		    &s.image == &m_GAlbedoF0 || &s.image == &m_GDirectEmission ||
-		    &s.image == &m_GPrimHit || &s.image == &m_GPrimGeoNormal || &s.image == &m_GPrimUV)
-			usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
 		GpuImage tmp;
 		GpuResources::CreateImage(m_Device, m_Width, m_Height, s.format,

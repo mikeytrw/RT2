@@ -24,6 +24,7 @@ project "RT2App"
         "shaders/compose.comp",
         "shaders/raster.vert",
         "shaders/raster.frag",
+        "shaders/gbuffer_debug.comp",
         "shaders/pathtracer_shared.glsl",
         "shaders/shader_interface.h",
     }
@@ -98,6 +99,12 @@ project "RT2App"
         buildoutputs { shaderDir .. "/rasterfrag.spv" }
         buildinputs { shaderDeps }
 
+    filter {"files:shaders/gbuffer_debug.comp"}
+        buildmessage "Compiling gbuffer_debug.comp"
+        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/gbuffer_debug.comp -o " .. shaderDir .. "/gbufferdebug.spv" }
+        buildoutputs { shaderDir .. "/gbufferdebug.spv" }
+        buildinputs { shaderDeps }
+
     -- Reset filter for the rest
     filter {}
 
@@ -153,7 +160,8 @@ project "RT2App"
             "copy /Y \"%{wks.location}RT2App\\shaders\\shadowhit.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\compose.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\raster.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\rasterfrag.spv\" \"%{cfg.targetdir}\""
+            "copy /Y \"%{wks.location}RT2App\\shaders\\rasterfrag.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"%{wks.location}RT2App\\shaders\\gbufferdebug.spv\" \"%{cfg.targetdir}\""
         }
 
    filter "configurations:Debug"

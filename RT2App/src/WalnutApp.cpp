@@ -179,6 +179,19 @@ public:
 		ImGui::Unindent();
 	}
 	ImGui::Separator();
+	ImGui::Text("G-buffer Debug");
+	const char* gbufferModes[] = {
+		"Off", "Shading Normal", "Roughness", "ViewZ (depth)",
+		"Motion Vectors", "Albedo", "F0", "Direct Emission",
+		"World Position", "Geo Normal", "UV", "Material Index"
+	};
+	int debugCombo = m_RendererGPU.m_GBufferDebugMode + 1; // -1→0 (Off), 0→1, etc.
+	if (ImGui::Combo("G-buffer View", &debugCombo, gbufferModes, IM_ARRAYSIZE(gbufferModes)))
+	{
+		m_RendererGPU.m_GBufferDebugMode = debugCombo - 1;
+		m_RendererGPU.ResetAccumulation();
+	}
+	ImGui::Separator();
 	ImGui::Text("Environment Map");
 	if (ImGui::Button("Load HDR..."))
 	{
@@ -388,6 +401,8 @@ private:
 		}
 		if (g_CLI.nrd)
 			m_RendererGPU.m_NRDEnabled = true;
+		if (g_CLI.gbufferDebug >= 0)
+			m_RendererGPU.m_GBufferDebugMode = g_CLI.gbufferDebug;
 
 		// Auto-init GPU renderer if needed
 		if (m_UseGPU == 1 && Walnut::Application::IsRayTracingSupported() && !m_RendererGPU.IsAvailable())

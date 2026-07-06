@@ -21,6 +21,7 @@ struct CLIArgs
 	bool verbose = false;
 	bool validate = false;        // enable Vulkan validation layers
 	bool syncValidate = false;    // enable synchronization validation
+	int gbufferDebug = -1;        // G-buffer debug view mode (-1 = off)
 
 	bool hasScene() const { return !scenePath.empty(); }
 	bool hasEnvMap() const { return !envMapPath.empty(); }
@@ -76,6 +77,10 @@ struct CLIArgs
 			else if (strcmp(a, "--nrd") == 0)
 			{
 				args.nrd = true;
+			}
+			else if (strcmp(a, "--gbuffer-debug") == 0)
+			{
+				if (const char* v = next()) args.gbufferDebug = std::atoi(v);
 			}
 			else if (strcmp(a, "--headless") == 0)
 			{

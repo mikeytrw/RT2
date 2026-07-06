@@ -101,7 +101,8 @@ copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Debug-windows-x86_64/R
 copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Debug-windows-x86_64/RT2App"</Command>
+copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Debug-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -137,7 +138,8 @@ copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Release-windows-x86_64
 copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Release-windows-x86_64/RT2App"</Command>
+copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Release-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Dist|x64'">
@@ -173,7 +175,8 @@ copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Dist-windows-x86_64/RT
 copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Dist-windows-x86_64/RT2App"</Command>
+copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -190,6 +193,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Dist-windows-x86_6
     <ClInclude Include="src\ECSScene.h" />
     <ClInclude Include="src\FileDialog.h" />
     <ClInclude Include="src\FrameContext.h" />
+    <ClInclude Include="src\GBufferDebugPass.h" />
     <ClInclude Include="src\GPUSceneData.h" />
     <ClInclude Include="src\GpuDevice.h" />
     <ClInclude Include="src\GpuResources.h" />
@@ -265,6 +269,11 @@ copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Dist-windows-x86_6
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\FrameContext.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\GBufferDebugPass.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -363,6 +372,13 @@ copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Dist-windows-x86_6
       <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/compose.comp -o $(SolutionDir)/RT2App/shaders/compose.spv</Command>
       <Outputs>shaders/compose.spv</Outputs>
       <Message>Compiling compose.comp</Message>
+      <AdditionalInputs>shaders/shader_interface.h"</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="shaders\gbuffer_debug.comp">
+      <FileType>Document</FileType>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/gbuffer_debug.comp -o $(SolutionDir)/RT2App/shaders/gbufferdebug.spv</Command>
+      <Outputs>shaders/gbufferdebug.spv</Outputs>
+      <Message>Compiling gbuffer_debug.comp</Message>
       <AdditionalInputs>shaders/shader_interface.h"</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\miss.rmiss">

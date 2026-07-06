@@ -44,7 +44,7 @@ layout(location = 3) flat out uint outInstanceIndex;
 
 void main()
 {
-    uint instIdx = gl_DrawID;
+    uint instIdx = gl_InstanceIndex;
     mat4 world = instanceTransforms[instIdx];
     mat4 worldPrev = instanceTransformsPrev[instIdx];
 

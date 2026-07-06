@@ -1,0 +1,95 @@
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0, rgba32f) uniform image2D outputImage;
+
+// G-buffer inputs (same bindings as set 1)
+layout(set = 1, binding = 0, rgba8) uniform readonly image2D gNormalRoughness;
+layout(set = 1, binding = 1, r16f)  uniform readonly image2D gViewZ;
+layout(set = 1, binding = 2, rg16f) uniform readonly image2D gMotion;
+layout(set = 1, binding = 5, rgba16f) uniform readonly image2D gAlbedoF0;
+layout(set = 1, binding = 7, rgba16f) uniform readonly image2D gDirectEmission;
+layout(set = 1, binding = 8, rgba32f) uniform readonly image2D gPrimHit;
+layout(set = 1, binding = 9, rgba8)  uniform readonly image2D gPrimGeoNormal;
+layout(set = 1, binding = 10, rg16f) uniform readonly image2D gPrimUV;
+
+layout(push_constant) uniform Push {
+    uint mode;
+} pc;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outputImage);
+    if (pixel.x >= size.x || pixel.y >= size.y) return;
+
+    vec3 color = vec3(0.0);
+
+    if (pc.mode >= 100) {
+        // Self-test: constant color output
+        color = vec3(1.0, 0.5, 0.2);
+        imageStore(outputImage, pixel, vec4(color, 1.0));
+        return;
+    }
+
+    switch (pc.mode)
+    {
+        case 0: { // shading normal (decoded 0.5+0.5)
+            vec4 n = imageLoad(gNormalRoughness, pixel);
+            color = n.xyz * 2.0 - 1.0;
+            color = color * 0.5 + 0.5;
+            break;
+        }
+        case 1: { // roughness
+            vec4 n = imageLoad(gNormalRoughness, pixel);
+            color = vec3(n.w);
+            break;
+        }
+        case 2: { // viewZ (depth, inverted)
+            float z = imageLoad(gViewZ, pixel).x;
+            color = vec3(clamp(-z * 0.02, 0.0, 1.0));
+            break;
+        }
+        case 3: { // motion vectors
+            vec2 m = imageLoad(gMotion, pixel).xy;
+            color = vec3(abs(m) * 20.0, 0.0);
+            break;
+        }
+        case 4: { // albedo
+            color = imageLoad(gAlbedoF0, pixel).rgb;
+            break;
+        }
+        case 5: { // F0
+            color = vec3(imageLoad(gAlbedoF0, pixel).a);
+            break;
+        }
+        case 6: { // direct emission
+            color = imageLoad(gDirectEmission, pixel).rgb;
+            break;
+        }
+        case 7: { // world position
+            vec3 p = imageLoad(gPrimHit, pixel).xyz;
+            color = p * 0.1;
+            break;
+        }
+        case 8: { // geometric normal (decoded)
+            vec4 n = imageLoad(gPrimGeoNormal, pixel);
+            color = n.xyz * 2.0 - 1.0;
+            color = color * 0.5 + 0.5;
+            break;
+        }
+        case 9: { // UV
+            color = vec3(imageLoad(gPrimUV, pixel).xy, 0.0);
+            break;
+        }
+        case 10: { // material index (from gPrimHit.w as floatBitsToInt)
+            float matIdx = float(int(imageLoad(gPrimHit, pixel).w));
+            color = vec3(fract(matIdx * 0.1), fract(matIdx * 0.3), fract(matIdx * 0.7));
+            break;
+        }
+    }
+
+    imageStore(outputImage, pixel, vec4(color, 1.0));
+}

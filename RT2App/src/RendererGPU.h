@@ -11,6 +11,7 @@
 #include "ComposePass.h"
 #include "PathTracePass.h"
 #include "RasterPass.h"
+#include "GBufferDebugPass.h"
 #include "NRDIntegration.h"
 #include "GpuResources.h"
 #include "FrameContext.h"
@@ -62,6 +63,8 @@ public:
 	int m_NRDMaxAccumFrames = 30;
 	bool m_NRDAntiFirefly = true;
 	float m_NRDSplitScreen = 0.0f;
+
+	int m_GBufferDebugMode = -1; // -1 = off, 0-10 = G-buffer view modes
 
 	// Camera jitter for NRD temporal AA (Halton sequence)
 	glm::vec2 m_NRDJitter = glm::vec2(0.0f);
@@ -204,6 +207,7 @@ private:
 
 	// Raster pass (primary visibility G-buffer)
 	RasterPass m_RasterPass;
+	GBufferDebugPass m_GBufferDebugPass;
 	VkImage m_DepthImage = VK_NULL_HANDLE;
 	VkDeviceMemory m_DepthImageMem = VK_NULL_HANDLE;
 	VkImageView m_DepthImageView = VK_NULL_HANDLE;

@@ -88,19 +88,12 @@ bool RasterPass::Init(const GpuDevice& dev, VkDescriptorSetLayout sceneSetLayout
 	depthStencil.depthBoundsTestEnable = VK_FALSE;
 	depthStencil.stencilTestEnable = VK_FALSE;
 
-	VkPipelineColorBlendAttachmentState blendAttachments[8] = {};
-	for (int i = 0; i < 8; i++)
-	{
-		blendAttachments[i].blendEnable = VK_FALSE;
-		blendAttachments[i].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-		                                     VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	}
-
+	// No color blend — G-buffer written via imageStore (storage images), not color attachments
 	VkPipelineColorBlendStateCreateInfo colorBlending = {};
 	colorBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 	colorBlending.logicOpEnable = VK_FALSE;
-	colorBlending.attachmentCount = 8;
-	colorBlending.pAttachments = blendAttachments;
+	colorBlending.attachmentCount = 0;
+	colorBlending.pAttachments = nullptr;
 
 	VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
 	VkPipelineDynamicStateCreateInfo dynamicState = {};
@@ -116,17 +109,10 @@ bool RasterPass::Init(const GpuDevice& dev, VkDescriptorSetLayout sceneSetLayout
 
 	VK_CHECK(vkCreatePipelineLayout(m_Device.device, &pipelineLayoutInfo, nullptr, &m_PipelineLayout));
 
-	VkFormat colorFormats[] = {
-		VK_FORMAT_R8G8B8A8_UNORM,     VK_FORMAT_R16_SFLOAT,
-		VK_FORMAT_R16G16_SFLOAT,       VK_FORMAT_R16G16B16A16_SFLOAT,
-		VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R32G32B32A32_SFLOAT,
-		VK_FORMAT_R8G8B8A8_UNORM,      VK_FORMAT_R16G16_SFLOAT,
-	};
-
 	VkPipelineRenderingCreateInfoKHR renderingInfo = {};
 	renderingInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
-	renderingInfo.colorAttachmentCount = 8;
-	renderingInfo.pColorAttachmentFormats = colorFormats;
+	renderingInfo.colorAttachmentCount = 0;
+	renderingInfo.pColorAttachmentFormats = nullptr;
 	renderingInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
 
 	VkGraphicsPipelineCreateInfo pipelineInfo = {};
