@@ -100,8 +100,16 @@ void main()
 
     // Normal from G-buffer (already normal-mapped by raster pass — do NOT re-sample)
     vec4 normalRough = imageLoad(gNormalRoughness, pixel);
-    vec3 n = normalize(normalRough.xyz * 2.0 - 1.0);
+    vec3 gBufferN = normalize(normalRough.xyz * 2.0 - 1.0);
     float roughness = normalRough.w;
+
+    // View direction (towards camera)
+    vec3 wo = normalize(camera.position.xyz - worldPos);
+    float NdotV = max(dot(gBufferN, wo), 0.0);
+
+    // Face-forward flip: raster FS doesn't flip normal to face camera.
+    // RT closesthit does: n = frontFace ? normal : -normal
+    vec3 n = dot(gBufferN, wo) >= 0.0 ? gBufferN : -gBufferN;
 
     // Geometric normal (for ray offset)
     vec3 geoN = normalize(imageLoad(gPrimGeoNormal, pixel).xyz * 2.0 - 1.0);
@@ -164,12 +172,8 @@ void main()
 
     float ior = mat.ior;
 
-    // View direction (towards camera)
-    vec3 wo = normalize(camera.position.xyz - worldPos);
-    float NdotV = max(dot(n, wo), 0.0);
-
-    // frontFace: ray came from camera towards surface, so frontFace = dot(wo, n) > 0
-    // (n is already face-forward flipped by raster pass to point towards viewer)
+    // frontFace: ray came from camera towards surface.
+    // Raster pass renders the closest surface; n is flipped to face camera above.
     bool frontFace = true;
 
     // ---- Scatter: stochastic lobe selection (same as closesthit) ----
@@ -228,6 +232,9 @@ void main()
     // hitT for NRD = secondary ray hit distance only (NOT primary, per NRD docs)
     // closesthit stores gl_HitTEXT in payload.e.w at depth=1
     float secondaryHitT = nextPayload.e.w;
+    // Fallback for missed rays (hitT=0): use a large value so NRD treats it as far hit
+    if (secondaryHitT <= 0.0)
+        secondaryHitT = 1e4;
 
     // ---- NRD output ----
     if (nrdMode)
