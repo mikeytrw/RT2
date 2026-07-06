@@ -11,3 +11,9 @@ bin-int/
 
 # Exclude
 !vendor/binimgui.ini
+
+# Temp / generated files
+imgui.ini
+rt2_log.txt
+regression_current.png
+test_*.png
