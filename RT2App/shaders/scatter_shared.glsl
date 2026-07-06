@@ -66,6 +66,7 @@ ScatterResult scatterPrimaryHit(
     bool doScatter = true;
     bool isDelta = false;
     float nextBsdfPdf = -1.0;
+    float lobeType = 0.0;  // 0 = diffuse, 1 = specular (set explicitly at each pick)
 
     float r = randomFloat(rngState);
 
@@ -97,6 +98,7 @@ ScatterResult scatterPrimaryHit(
                 scatterDir = reflect(rayDir, n);
                 attenuation = vec3(F_scalar);
                 isDelta = true;
+                lobeType = 1.0;
                 nextBsdfPdf = -1.0;
             }
             else
@@ -112,6 +114,7 @@ ScatterResult scatterPrimaryHit(
                     float NdotWi = max(dot(n, scatterDir), 0.0);
                     attenuation = F * G1_Smith(NdotWi, alpha) / P_reflect;
                     nextBsdfPdf = pdfVNDF(wo, scatterDir, n, alpha);
+                    lobeType = 1.0;
                 }
             }
         }
@@ -133,6 +136,7 @@ ScatterResult scatterPrimaryHit(
                     attenuation = vec3(1.0);
                 }
                 isDelta = true;
+                lobeType = 1.0;
                 nextBsdfPdf = -1.0;
             }
             else
@@ -153,6 +157,7 @@ ScatterResult scatterPrimaryHit(
                         float NdotWi = max(dot(n, scatterDir), 0.0);
                         attenuation = vec3(F_h) * G1_Smith(NdotWi, alpha) / P_refract;
                         nextBsdfPdf = pdfVNDF(wo, scatterDir, n, alpha);
+                        lobeType = 1.0;
                     }
                 }
                 else
@@ -172,6 +177,7 @@ ScatterResult scatterPrimaryHit(
                             float NdotWi = max(dot(n, scatterDir), 0.0);
                             attenuation = vec3(F_h) * G1_Smith(NdotWi, alpha) / P_refract;
                             nextBsdfPdf = pdfVNDF(wo, scatterDir, n, alpha);
+                            lobeType = 1.0;
                         }
                     }
                     else
@@ -183,6 +189,7 @@ ScatterResult scatterPrimaryHit(
                         float G1_wi = G1_Smith(NdotWi, alpha);
                         attenuation = vec3(1.0 - F_h) * G1_wi / P_refract;
                         nextBsdfPdf = pdfBTDF(wo, scatterDir, n, eta, alpha);
+                        lobeType = 1.0;
                     }
                 }
             }
@@ -195,6 +202,7 @@ ScatterResult scatterPrimaryHit(
             float specW_t = mix(F_t, 1.0, metallic);
             attenuation = (1.0 - specW_t) * baseColor * (1.0 - metallic) / P_diffuse;
             nextBsdfPdf = pdfDiffuse(scatterDir, n);
+            lobeType = 0.0;
         }
     }
     else if (roughness < 0.001 && metallic >= 0.5)
@@ -202,6 +210,7 @@ ScatterResult scatterPrimaryHit(
         scatterDir = reflect(rayDir, n);
         attenuation = F;
         isDelta = true;
+        lobeType = 1.0;
         nextBsdfPdf = -1.0;
     }
     else if (r < result.P_s)
@@ -211,6 +220,7 @@ ScatterResult scatterPrimaryHit(
             scatterDir = reflect(rayDir, n);
             attenuation = F;
             isDelta = true;
+            lobeType = 1.0;
             nextBsdfPdf = -1.0;
         }
         else
@@ -227,6 +237,7 @@ ScatterResult scatterPrimaryHit(
                 float G1_wi = G1_Smith(NdotWi, alpha);
                 attenuation = F * G1_wi / result.P_s;
                 nextBsdfPdf = pdfVNDF(wo, scatterDir, n, alpha);
+                lobeType = 1.0;
             }
         }
     }
@@ -238,11 +249,11 @@ ScatterResult scatterPrimaryHit(
         float specWeight_d = mix(luminance(F_d), 1.0, metallic);
         attenuation = (1.0 - specWeight_d) * baseColor * (1.0 - metallic) / result.P_d;
         nextBsdfPdf = pdfDiffuse(scatterDir, n);
+        lobeType = 0.0;
     }
 
-    // Determine lobe type: 0 = diffuse, 1 = specular (reflect/refract/delta)
-    bool isSpecularLobe = isDelta || (nextBsdfPdf != pdfDiffuse(scatterDir, n));
-    result.lobeType = isSpecularLobe ? 1.0 : 0.0;
+    // lobeType set explicitly at each pick branch (0 = diffuse, 1 = specular)
+    result.lobeType = lobeType;
     result.frontFace = frontFace;
 
     result.scatterDir = scatterDir;

@@ -66,7 +66,7 @@ void main()
         // e = NRD primary-hit info, filled by closesthit at depth 0;
         //     e.w == 0 after the trace means the primary ray missed (or hit an
         //     emitter, which returns before the G-buffer capture).
-        payload.a = vec4(vec3(1.0), rngState);   // throughput = 1, rngState in .w
+        payload.a = vec4(vec3(1.0), uintBitsToFloat(rngState));   // throughput = 1, rngState in .w (bit-cast to preserve uint bits)
         payload.b = vec4(vec3(0.0), 0);           // radiance = 0, depth = 0
         payload.c = vec4(rayOrigin, 0.0);          // ray origin, done = 0
         payload.d = vec4(dir, -1.0);              // ray dir, bsdfPdf = -1 (camera)
