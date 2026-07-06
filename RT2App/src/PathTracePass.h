@@ -1,6 +1,7 @@
 #pragma once
 
 #include "vulkan/vulkan.h"
+#include "GpuResources.h"
 #include <cstdint>
 #include <vector>
 
@@ -40,7 +41,7 @@ public:
 	VkDescriptorSetLayout GetDescriptorSetLayout() const { return m_DescriptorSetLayout; }
 	VkPipelineLayout GetPipelineLayout() const { return m_PipelineLayout; }
 	VkPipeline GetPipeline() const { return m_Pipeline; }
-	VkBuffer GetSBTBuffer() const { return m_SBTBuffer; }
+	VkBuffer GetSBTBuffer() const { return m_SBTBuffer.buffer; }
 	VkDeviceSize GetSBTSize() const { return m_SBTSize; }
 	VkDeviceSize GetSBTStride() const { return m_SBTStride; }
 	VkDeviceSize GetRgenRegionSize() const { return m_RgenRegionSize; }
@@ -72,8 +73,7 @@ private:
 	VkShaderModule m_ShadowHitShader = VK_NULL_HANDLE;
 
 	// SBT
-	VkBuffer m_SBTBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_SBTMemory = VK_NULL_HANDLE;
+	GpuBuffer m_SBTBuffer;
 	VkDeviceSize m_SBTSize = 0;
 	VkDeviceSize m_SBTStride = 0;
 	VkDeviceSize m_RgenRegionSize = 0;

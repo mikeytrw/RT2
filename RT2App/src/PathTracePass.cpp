@@ -228,17 +228,14 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	VkDeviceSize sbtSize = m_RgenRegionSize + m_MissRegionSize + m_HitRegionSize;
 
 	// Create SBT buffer via GpuResources (ensures correct memory flags + device address)
-	GpuBuffer sbtBuf;
 	if (!GpuResources::CreateBuffer(dev, sbtSize,
 		VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		sbtBuf))
+		m_SBTBuffer))
 	{
 		std::cerr << "[PathTracePass] failed to create SBT buffer\n";
 		return false;
 	}
-	m_SBTBuffer = sbtBuf.buffer;
-	m_SBTMemory = sbtBuf.memory;
 	m_SBTSize = sbtSize;
 
 	// Fetch group handles
@@ -253,7 +250,7 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 
 	// Copy handles into SBT
 	void* mapped = nullptr;
-	vkMapMemory(m_Device, m_SBTMemory, 0, sbtSize, 0, &mapped);
+	vkMapMemory(m_Device, m_SBTBuffer.memory, 0, sbtSize, 0, &mapped);
 	std::memset(mapped, 0, (size_t)sbtSize);
 	uint8_t* dst = static_cast<uint8_t*>(mapped);
 	std::memcpy(dst + 0, handles.data() + 0 * handleSize, handleSize);
@@ -264,7 +261,7 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	std::memcpy(dst + hitBase + baseAlign, handles.data() + 4 * handleSize, handleSize);
 	std::memcpy(dst + hitBase + baseAlign * 2, handles.data() + 5 * handleSize, handleSize);
 	std::memcpy(dst + hitBase + baseAlign * 3, handles.data() + 5 * handleSize, handleSize);
-	vkUnmapMemory(m_Device, m_SBTMemory);
+	vkUnmapMemory(m_Device, m_SBTBuffer.memory);
 
 	RT_LOG("[PathTracePass] initialized (recursion=%u, SBT stride=%llu)",
 	       m_MaxRecursionDepth, (unsigned long long)m_SBTStride);
@@ -284,8 +281,9 @@ void PathTracePass::Destroy()
 	if (m_ClosestShader) { vkDestroyShaderModule(device, m_ClosestShader, nullptr); m_ClosestShader = VK_NULL_HANDLE; }
 	if (m_AnyHitShader) { vkDestroyShaderModule(device, m_AnyHitShader, nullptr); m_AnyHitShader = VK_NULL_HANDLE; }
 	if (m_ShadowHitShader) { vkDestroyShaderModule(device, m_ShadowHitShader, nullptr); m_ShadowHitShader = VK_NULL_HANDLE; }
-	if (m_SBTBuffer) { vkDestroyBuffer(device, m_SBTBuffer, nullptr); m_SBTBuffer = VK_NULL_HANDLE; }
-	if (m_SBTMemory) { vkFreeMemory(device, m_SBTMemory, nullptr); m_SBTMemory = VK_NULL_HANDLE; }
+	if (m_SBTBuffer.buffer) { vkDestroyBuffer(device, m_SBTBuffer.buffer, nullptr); m_SBTBuffer.buffer = VK_NULL_HANDLE; }
+	if (m_SBTBuffer.memory)  { vkFreeMemory(device, m_SBTBuffer.memory, nullptr);  m_SBTBuffer.memory = VK_NULL_HANDLE; }
+	m_SBTBuffer.size = 0;
 	m_SBTSize = 0;
 	m_DescriptorSet = VK_NULL_HANDLE;
 }
@@ -478,7 +476,7 @@ void PathTracePass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 
 	VkBufferDeviceAddressInfo sbtAddrInfo = {};
 	sbtAddrInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-	sbtAddrInfo.buffer = m_SBTBuffer;
+	sbtAddrInfo.buffer = m_SBTBuffer.buffer;
 	VkDeviceAddress sbtAddress = vkGetBufferDeviceAddress(m_Device, &sbtAddrInfo);
 
 	// Barrier: ensure host writes to SBT are visible to the ray tracing pipeline.
@@ -488,7 +486,7 @@ void PathTracePass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 	sbtBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 	sbtBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	sbtBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	sbtBarrier.buffer = m_SBTBuffer;
+	sbtBarrier.buffer = m_SBTBuffer.buffer;
 	sbtBarrier.offset = 0;
 	sbtBarrier.size = m_SBTSize;
 
