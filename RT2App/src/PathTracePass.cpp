@@ -16,9 +16,11 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	if (m_Pipeline != VK_NULL_HANDLE) return true;
 	m_Device = dev.device;
 
-	// Load the six RT shader modules.
+	// Load the seven RT shader modules (6 original + secondary_raygen for raster-first).
 	m_RgenShader   = ShaderManager::LoadShader("raygen.spv");
 	if (!m_RgenShader)   m_RgenShader   = ShaderManager::LoadShader("RT2App/shaders/raygen.spv");
+	m_SecondaryRgenShader = ShaderManager::LoadShader("secondary_raygen.spv");
+	if (!m_SecondaryRgenShader) m_SecondaryRgenShader = ShaderManager::LoadShader("RT2App/shaders/secondary_raygen.spv");
 	m_MissShader    = ShaderManager::LoadShader("miss.spv");
 	if (!m_MissShader)    m_MissShader    = ShaderManager::LoadShader("RT2App/shaders/miss.spv");
 	m_ShadowShader  = ShaderManager::LoadShader("shadow.spv");
@@ -30,8 +32,8 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	m_ShadowHitShader = ShaderManager::LoadShader("shadowhit.spv");
 	if (!m_ShadowHitShader) m_ShadowHitShader = ShaderManager::LoadShader("RT2App/shaders/shadowhit.spv");
 
-	if (!m_RgenShader || !m_MissShader || !m_ShadowShader || !m_ClosestShader ||
-	    !m_AnyHitShader || !m_ShadowHitShader)
+	if (!m_RgenShader || !m_SecondaryRgenShader || !m_MissShader || !m_ShadowShader ||
+	    !m_ClosestShader || !m_AnyHitShader || !m_ShadowHitShader)
 	{
 		RT_LOG("[PathTracePass] Failed to load RT shaders");
 		return false;
@@ -162,8 +164,8 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 
 	VK_CHECK(vkCreatePipelineLayout(m_Device, &pipelineLayoutInfo, nullptr, &m_PipelineLayout));
 
-	// 6 stages
-	VkPipelineShaderStageCreateInfo stages[6] = {};
+	// 7 stages (6 original + secondary_raygen)
+	VkPipelineShaderStageCreateInfo stages[7] = {};
 	stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
 	stages[0].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
 	stages[0].module = m_RgenShader;
@@ -188,10 +190,18 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	stages[5].stage = VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
 	stages[5].module = m_ShadowHitShader;
 	stages[5].pName = "main";
+	stages[6].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	stages[6].stage = VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+	stages[6].module = m_SecondaryRgenShader;
+	stages[6].pName = "main";
 
-	// 6 groups — must init ALL fields, VK_SHADER_UNUSED_KHR is ~0u not 0
-	VkRayTracingShaderGroupCreateInfoKHR groups[6];
-	for (int i = 0; i < 6; i++)
+	// 7 groups — must init ALL fields, VK_SHADER_UNUSED_KHR is ~0u not 0
+	// Group layout:
+	//   0: raygen (RT-primary), 1: miss_sky, 2: miss_shadow,
+	//   3: hit_primary_opaque, 4: hit_primary_alpha, 5: hit_shadow,
+	//   6: secondary_raygen (raster-first)
+	VkRayTracingShaderGroupCreateInfoKHR groups[7];
+	for (int i = 0; i < 7; i++)
 	{
 		groups[i].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
 		groups[i].pNext = nullptr;
@@ -215,6 +225,9 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	groups[4].anyHitShader = 4;
 	groups[5].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
 	groups[5].anyHitShader = 5;
+	// Group 6: secondary_raygen (raster-first path)
+	groups[6].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
+	groups[6].generalShader = 6;
 
 	const uint32_t kRecursionCap = 16;
 	m_MaxRecursionDepth = dev.rtPipelineProps.maxRayRecursionDepth < kRecursionCap
@@ -223,9 +236,9 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 
 	VkRayTracingPipelineCreateInfoKHR pipelineInfo = {};
 	pipelineInfo.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
-	pipelineInfo.stageCount = 6;
+	pipelineInfo.stageCount = 7;
 	pipelineInfo.pStages = stages;
-	pipelineInfo.groupCount = 6;
+	pipelineInfo.groupCount = 7;
 	pipelineInfo.pGroups = groups;
 	pipelineInfo.maxPipelineRayRecursionDepth = m_MaxRecursionDepth;
 	pipelineInfo.layout = m_PipelineLayout;
@@ -245,7 +258,7 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	const uint32_t handleAlign = std::max<uint32_t>(dev.rtPipelineProps.shaderGroupHandleAlignment, 1);
 
 	m_SBTStride       = baseAlign;
-	m_RgenRegionSize  = baseAlign;
+	m_RgenRegionSize  = baseAlign * 2;  // 2 raygen records: raygen + secondary_raygen
 	m_MissRegionSize  = baseAlign * 2;
 	m_HitRegionSize   = baseAlign * 4;
 
@@ -262,10 +275,10 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	}
 	m_SBTSize = sbtSize;
 
-	// Fetch group handles
-	std::vector<uint8_t> handles(6 * handleSize);
+	// Fetch group handles (7 groups)
+	std::vector<uint8_t> handles(7 * handleSize);
 	err = g_RTDispatch.GetRayTracingShaderGroupHandlesKHR(
-		m_Device, m_Pipeline, 0, 6, handles.size(), handles.data());
+		m_Device, m_Pipeline, 0, 7, handles.size(), handles.data());
 	if (err != VK_SUCCESS)
 	{
 		RT_LOG("[PathTracePass] GetRayTracingShaderGroupHandlesKHR failed: %d", (int)err);
@@ -273,11 +286,13 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	}
 
 	// Copy handles into SBT
+	// Rgen region: [0] = raygen (RT-primary), [baseAlign] = secondary_raygen (raster-first)
 	void* mapped = nullptr;
 	vkMapMemory(m_Device, m_SBTBuffer.memory, 0, sbtSize, 0, &mapped);
 	std::memset(mapped, 0, (size_t)sbtSize);
 	uint8_t* dst = static_cast<uint8_t*>(mapped);
 	std::memcpy(dst + 0, handles.data() + 0 * handleSize, handleSize);
+	std::memcpy(dst + baseAlign, handles.data() + 6 * handleSize, handleSize);  // secondary_raygen
 	std::memcpy(dst + m_RgenRegionSize, handles.data() + 1 * handleSize, handleSize);
 	std::memcpy(dst + m_RgenRegionSize + baseAlign, handles.data() + 2 * handleSize, handleSize);
 	VkDeviceSize hitBase = m_RgenRegionSize + m_MissRegionSize;
@@ -300,6 +315,7 @@ void PathTracePass::Destroy()
 	if (m_PipelineLayout) { vkDestroyPipelineLayout(device, m_PipelineLayout, nullptr); m_PipelineLayout = VK_NULL_HANDLE; }
 	if (m_DescriptorSetLayout) { vkDestroyDescriptorSetLayout(device, m_DescriptorSetLayout, nullptr); m_DescriptorSetLayout = VK_NULL_HANDLE; }
 	if (m_RgenShader) { vkDestroyShaderModule(device, m_RgenShader, nullptr); m_RgenShader = VK_NULL_HANDLE; }
+	if (m_SecondaryRgenShader) { vkDestroyShaderModule(device, m_SecondaryRgenShader, nullptr); m_SecondaryRgenShader = VK_NULL_HANDLE; }
 	if (m_MissShader) { vkDestroyShaderModule(device, m_MissShader, nullptr); m_MissShader = VK_NULL_HANDLE; }
 	if (m_ShadowShader) { vkDestroyShaderModule(device, m_ShadowShader, nullptr); m_ShadowShader = VK_NULL_HANDLE; }
 	if (m_ClosestShader) { vkDestroyShaderModule(device, m_ClosestShader, nullptr); m_ClosestShader = VK_NULL_HANDLE; }
@@ -520,7 +536,7 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 }
 
 void PathTracePass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
-                            VkDescriptorSet gbufferSet) const
+                            VkDescriptorSet gbufferSet, bool rasterFirst) const
 {
 	if (!m_Pipeline || !m_DescriptorSet) return;
 
@@ -550,10 +566,15 @@ void PathTracePass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
 		0, 0, nullptr, 1, &sbtBarrier, 0, nullptr);
 
+	// Select raygen SBT entry:
+	// rasterFirst=false → offset 0 (raygen, RT-primary)
+	// rasterFirst=true  → offset baseAlign (secondary_raygen, raster-first)
+	VkDeviceSize rgenOffset = rasterFirst ? m_SBTStride : 0;
+
 	VkStridedDeviceAddressRegionKHR rgenRegion = {};
-	rgenRegion.deviceAddress = sbtAddress;
+	rgenRegion.deviceAddress = sbtAddress + rgenOffset;
 	rgenRegion.stride        = m_SBTStride;
-	rgenRegion.size          = m_RgenRegionSize;
+	rgenRegion.size          = m_SBTStride;  // single record per dispatch
 
 	VkStridedDeviceAddressRegionKHR missRegion = {};
 	missRegion.deviceAddress = sbtAddress + m_RgenRegionSize;

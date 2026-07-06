@@ -36,8 +36,10 @@ public:
 		const std::vector<VkDescriptorImageInfo>& textureImageInfos);
 
 	// Record trace into command buffer. Caller handles pre/post barriers.
+	// rasterFirst=true: use secondary_raygen (reads G-buffer, traces secondary rays only)
+	// rasterFirst=false: use raygen (traces primary ray — RT-primary path, accumulation-only)
 	void Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
-	            VkDescriptorSet gbufferSet) const;
+	            VkDescriptorSet gbufferSet, bool rasterFirst = false) const;
 
 	bool IsAvailable() const { return m_Pipeline != VK_NULL_HANDLE; }
 	VkDescriptorSet GetDescriptorSet() const { return m_DescriptorSet; }
@@ -69,6 +71,7 @@ private:
 
 	// Shader modules
 	VkShaderModule m_RgenShader = VK_NULL_HANDLE;
+	VkShaderModule m_SecondaryRgenShader = VK_NULL_HANDLE;  // raster-first path
 	VkShaderModule m_MissShader = VK_NULL_HANDLE;
 	VkShaderModule m_ShadowShader = VK_NULL_HANDLE;
 	VkShaderModule m_ClosestShader = VK_NULL_HANDLE;
