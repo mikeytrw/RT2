@@ -7,6 +7,12 @@ project "RT2App"
 
     files { "src/**.h", "src/**.cpp", "vendor/**.h", "vendor/**.cpp" }
 
+    -- Exclude entt entirely from the file glob — it's header-only and
+    -- included via #include <entt/entt.hpp>. The include dir is sufficient.
+    removefiles {
+        "vendor/entt/**",
+    }
+
     -- Shader source files (compiled via custom build rules below)
     files {
         "shaders/raygen.rgen",
@@ -86,6 +92,7 @@ project "RT2App"
        "vendor",
        "vendor/tinygltf",
        "vendor/stb",
+       "vendor/entt/src",
        "vendor/NRD/Include",
        "vendor/NRD/Integration",
        "vendor/NRI/Include",

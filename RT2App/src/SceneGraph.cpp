@@ -1,0 +1,81 @@
+#include "SceneGraph.h"
+#include "RTLog.h"
+
+void SceneGraph::MarkDirty(entt::registry& registry, entt::entity entity)
+{
+	SetLocalDirty(registry, entity);
+
+	// Propagate to children — find all entities whose parent is this entity
+	auto view = registry.view<Hierarchy>();
+	for (auto e : view)
+	{
+		const auto& hier = view.get<Hierarchy>(e);
+		if (hier.parent == entity)
+			MarkDirty(registry, e);
+	}
+}
+
+void SceneGraph::SetLocalDirty(entt::registry& registry, entt::entity entity)
+{
+	if (auto* t = registry.try_get<Transform>(entity))
+		t->dirty = true;
+}
+
+void SceneGraph::UpdateWorldTransforms(entt::registry& registry)
+{
+	// Find all root entities (have Transform, no Hierarchy or Hierarchy.parent == null)
+	auto view = registry.view<Transform>();
+
+	for (auto entity : view)
+	{
+		Hierarchy* hier = registry.try_get<Hierarchy>(entity);
+		if (hier && hier->parent != entt::null)
+			continue;  // not a root
+
+		UpdateNode(registry, entity, glm::mat4(1.0f), false);
+	}
+}
+
+void SceneGraph::SnapshotTransforms(entt::registry& registry)
+{
+	auto view = registry.view<Transform>();
+	for (auto entity : view)
+	{
+		auto& t = view.get<Transform>(entity);
+		t.prevWorldMatrix = t.worldMatrix;
+	}
+}
+
+glm::vec3 SceneGraph::GetWorldPosition(const entt::registry& registry, entt::entity entity)
+{
+	const auto* t = registry.try_get<Transform>(entity);
+	if (t)
+		return glm::vec3(t->worldMatrix[3]);
+	return {0.0f, 0.0f, 0.0f};
+}
+
+void SceneGraph::UpdateNode(entt::registry& registry, entt::entity entity,
+                            const glm::mat4& parentWorld, bool parentDirty)
+{
+	auto* t = registry.try_get<Transform>(entity);
+	if (!t)
+		return;
+
+	bool dirty = parentDirty || t->dirty;
+
+	if (dirty)
+	{
+		glm::mat4 local = t->localMatrix();
+		t->worldMatrix = parentWorld * local;
+		t->dirty = false;
+	}
+
+	// Find children — scan all entities with Hierarchy whose parent is this entity
+	auto view = registry.view<Hierarchy>();
+	for (auto child : view)
+	{
+		const auto& hier = view.get<Hierarchy>(child);
+		if (hier.parent == entity)
+			UpdateNode(registry, child, t->worldMatrix, dirty);
+	}
+}

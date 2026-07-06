@@ -79,7 +79,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;WL_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
@@ -107,7 +107,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Debug-windows-x86_64/
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;WL_RELEASE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -141,7 +141,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Release-windows-x86_6
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;WL_DIST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>None</DebugInformationFormat>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -180,6 +180,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/R
     <ClInclude Include="src\Colour.h" />
     <ClInclude Include="src\CommandUtils.h" />
     <ClInclude Include="src\ComposePass.h" />
+    <ClInclude Include="src\ECSComponents.h" />
     <ClInclude Include="src\FileDialog.h" />
     <ClInclude Include="src\FrameContext.h" />
     <ClInclude Include="src\GPUSceneData.h" />
@@ -189,6 +190,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/R
     <ClInclude Include="src\HittableList.h" />
     <ClInclude Include="src\Material.h" />
     <ClInclude Include="src\Mesh.h" />
+    <ClInclude Include="src\MeshRegistry.h" />
     <ClInclude Include="src\NRDIntegration.h" />
     <ClInclude Include="src\PathTracePass.h" />
     <ClInclude Include="src\RTLog.h" />
@@ -196,6 +198,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/R
     <ClInclude Include="src\Renderer.h" />
     <ClInclude Include="src\RendererGPU.h" />
     <ClInclude Include="src\Scene.h" />
+    <ClInclude Include="src\SceneGraph.h" />
     <ClInclude Include="src\SceneLoader.h" />
     <ClInclude Include="src\ShaderManager.h" />
     <ClInclude Include="src\Sphere.h" />
@@ -289,6 +292,11 @@ copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/R
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\RendererGPU.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\SceneGraph.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
