@@ -69,11 +69,6 @@ namespace GpuResources
 	                     VkImageLayout oldLayout, VkImageLayout newLayout,
 	                     VkPipelineStageFlags srcStage, VkPipelineStageFlags dstStage);
 
-	// Upload data to a buffer via a staging buffer + one-time submit.
-	// The host-visible staging buffer is destroyed after the copy completes.
-	bool UploadToBuffer(const GpuDevice& dev, VkBuffer dstBuffer,
-	                     const void* data, VkDeviceSize size);
-
 	// Create a sampler with standard linear/clamp settings.
 	VkSampler CreateSampler(const GpuDevice& dev,
 	                         VkFilter magFilter = VK_FILTER_LINEAR,

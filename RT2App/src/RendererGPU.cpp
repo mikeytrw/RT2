@@ -5,6 +5,7 @@
 #include "shader_interface.h"
 #include "GpuResources.h"
 #include "CommandUtils.h"
+#include "StagingArena.h"
 #include "Walnut/RTDispatch.h"
 #include "backends/imgui_impl_vulkan.h"
 #include <glm/glm.hpp>
@@ -310,11 +311,43 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 
 	m_Textures.resize(textures.size());
 
-	// Collect staging buffers so we can destroy them after a single batched submit
-	std::vector<VkBuffer> stagingBuffers;
-	std::vector<VkDeviceMemory> stagingMemories;
-	stagingBuffers.reserve(textures.size());
-	stagingMemories.reserve(textures.size());
+	// First pass: compute total staging size needed, create images
+	VkDeviceSize totalStagingSize = 0;
+	for (size_t i = 0; i < textures.size(); i++)
+	{
+		const auto& tex = textures[i];
+		if (tex.floatPixels.empty() && tex.pixels.empty())
+			continue;
+
+		bool isHDR = tex.isHDR && !tex.floatPixels.empty();
+		VkDeviceSize imageSize = isHDR
+			? (VkDeviceSize)(tex.width * tex.height * 8)
+			: (VkDeviceSize)(tex.width * tex.height * 4);
+
+		totalStagingSize += imageSize;
+	}
+
+	if (totalStagingSize == 0)
+	{
+		RT_LOG("[RT2] No textures to create");
+		return;
+	}
+
+	// Single staging arena for all texture uploads
+	StagingArena arena;
+	if (!arena.Init(m_Device, totalStagingSize))
+	{
+		RT_LOG("[RT2] Failed to create staging arena for textures");
+		return;
+	}
+
+	// Second pass: create images, copy pixel data into arena, record offsets
+	struct TextureUpload {
+		VkDeviceSize offset;
+		VkDeviceSize size;
+		bool isHDR;
+	};
+	std::vector<TextureUpload> uploads(textures.size());
 
 	for (size_t i = 0; i < textures.size(); i++)
 	{
@@ -333,44 +366,40 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 		VkFormat format = isHDR ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
 		gt.format = format;
 		VkDeviceSize imageSize = isHDR
-			? (VkDeviceSize)(tex.width * tex.height * 8)  // 4× half-float = 8 bytes
-			: (VkDeviceSize)(tex.width * tex.height * 4);  // 4× uint8 = 4 bytes
+			? (VkDeviceSize)(tex.width * tex.height * 8)
+			: (VkDeviceSize)(tex.width * tex.height * 4);
 
-		// For HDR, convert float pixels to half-float
-		std::vector<uint16_t> halfPixels;
-		if (isHDR)
+		// Allocate from arena (16-byte alignment for safety)
+		VkDeviceSize offset = arena.Alloc(imageSize, 16);
+		if (offset == VK_WHOLE_SIZE)
 		{
-			halfPixels.resize(tex.width * tex.height * 4);
-			for (size_t p = 0; p < tex.floatPixels.size(); p++)
-				halfPixels[p] = glm::packHalf1x16(tex.floatPixels[p]);
+			RT_LOG("[RT2] Texture %d: staging arena out of space", (int)i);
+			continue;
 		}
 
-		// Staging buffer
-		VkBuffer stagingBuffer;
-		VkDeviceMemory stagingMemory;
-		GpuResources::CreateBuffer(m_Device, imageSize,
-		             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		             stagingBuffer, stagingMemory);
-
-		void* data;
-		vkMapMemory(device, stagingMemory, 0, imageSize, 0, &data);
+		// Copy pixel data into mapped arena
 		if (isHDR)
-			memcpy(data, halfPixels.data(), (size_t)imageSize);
+		{
+			// Convert float pixels to half-float
+			uint16_t* dst = static_cast<uint16_t*>(arena.GetMappedPointer(offset));
+			for (size_t p = 0; p < tex.floatPixels.size(); p++)
+				dst[p] = glm::packHalf1x16(tex.floatPixels[p]);
+		}
 		else
-			memcpy(data, tex.pixels.data(), (size_t)imageSize);
-		vkUnmapMemory(device, stagingMemory);
+		{
+			memcpy(arena.GetMappedPointer(offset), tex.pixels.data(), (size_t)imageSize);
+		}
+
+		uploads[i] = { offset, imageSize, isHDR };
 
 		// Create VkImage via GpuResources
 		GpuResources::CreateImage(m_Device, tex.width, tex.height, format,
 			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gt);
-
-		stagingBuffers.push_back(stagingBuffer);
-		stagingMemories.push_back(stagingMemory);
 	}
 
 	// Batch all texture copies + transitions into a single command buffer
+	VkBuffer stagingBuffer = arena.GetBuffer();
 	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
 		for (size_t i = 0; i < textures.size(); i++)
 		{
@@ -378,6 +407,7 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 			if (tex.floatPixels.empty() && tex.pixels.empty()) continue;
 
 			GpuImage& gt = m_Textures[i];
+			const auto& up = uploads[i];
 
 			// Transition UNDEFINED -> TRANSFER_DST_OPTIMAL
 			VkImageMemoryBarrier barrier = {};
@@ -397,7 +427,7 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 			                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
 			VkBufferImageCopy region = {};
-			region.bufferOffset = 0;
+			region.bufferOffset = up.offset;
 			region.bufferRowLength = 0;
 			region.bufferImageHeight = 0;
 			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -407,7 +437,7 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 			region.imageOffset = {0, 0, 0};
 			region.imageExtent = {(uint32_t)tex.width, (uint32_t)tex.height, 1};
 
-			vkCmdCopyBufferToImage(cmd, stagingBuffers[i], gt.image,
+			vkCmdCopyBufferToImage(cmd, stagingBuffer, gt.image,
 			                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
 			// Transition TRANSFER_DST_OPTIMAL -> SHADER_READ_ONLY_OPTIMAL
@@ -422,11 +452,10 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 		}
 	});
 
-	// Destroy all staging buffers now that the GPU has completed the copy
-	for (size_t i = 0; i < stagingBuffers.size(); i++)
-		GpuResources::DestroyBuffer(m_Device, stagingBuffers[i], stagingMemories[i]);
+	// Arena destroyed automatically when it goes out of scope
 
-	RT_LOG("[RT2] Created %d GPU textures", (int)m_Textures.size());
+	RT_LOG("[RT2] Created %d GPU textures (staging arena: %zu bytes, %zu used)",
+	       (int)m_Textures.size(), (size_t)arena.GetCapacity(), (size_t)arena.GetUsed());
 }
 
 void RendererGPU::DestroyTextures()
@@ -447,14 +476,20 @@ void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
 	if (sceneData.envMapIndex < 0 || sceneData.marginalCDF.empty() || sceneData.conditionalCDF.empty())
 		return;
 
-	VkDevice device = m_Device.device;
+	// Compute total staging size: marginal (cdfHeight * 1 * 4) + conditional (cdfWidth * cdfHeight * 4)
+	VkDeviceSize marginalSize = (VkDeviceSize)(sceneData.cdfHeight * 1 * 4);
+	VkDeviceSize conditionalSize = (VkDeviceSize)(sceneData.cdfWidth * sceneData.cdfHeight * 4);
 
-	// Helper: prepare a CDF texture (staging + image) without recording commands
+	StagingArena arena;
+	if (!arena.Init(m_Device, marginalSize + conditionalSize))
+	{
+		RT_LOG("[RT2] Failed to create staging arena for CDF textures");
+		return;
+	}
+
 	struct CDFEntry {
 		GpuImage img;
-		VkBuffer staging;
-		VkDeviceMemory stagingMem;
-		const std::vector<float>* data;
+		VkDeviceSize offset;
 		int w, h;
 	};
 
@@ -465,16 +500,10 @@ void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
 		e.img.format = VK_FORMAT_R32_SFLOAT;
 		e.w = w;
 		e.h = h;
-		e.data = &cdfData;
 		VkDeviceSize imageSize = (VkDeviceSize)(w * h * 4);
 
-		GpuResources::CreateBuffer(m_Device, imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		             e.staging, e.stagingMem);
-		void* data;
-		vkMapMemory(device, e.stagingMem, 0, imageSize, 0, &data);
-		memcpy(data, cdfData.data(), (size_t)imageSize);
-		vkUnmapMemory(device, e.stagingMem);
+		e.offset = arena.Alloc(imageSize, 16);
+		memcpy(arena.GetMappedPointer(e.offset), cdfData.data(), (size_t)imageSize);
 
 		GpuResources::CreateImage1D(m_Device, w, h, VK_FORMAT_R32_SFLOAT,
 			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -487,6 +516,7 @@ void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
 	entries[1] = prepareCDFTexture(sceneData.conditionalCDF, sceneData.cdfWidth, sceneData.cdfHeight);
 
 	// Batch both CDF texture copies + transitions into a single command buffer
+	VkBuffer stagingBuffer = arena.GetBuffer();
 	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
 		for (int i = 0; i < 2; i++)
 		{
@@ -504,10 +534,11 @@ void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
 			                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
 			VkBufferImageCopy region = {};
+			region.bufferOffset = e.offset;
 			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 			region.imageSubresource.layerCount = 1;
 			region.imageExtent = {(uint32_t)e.w, (e.h == 1) ? 1u : (uint32_t)e.h, 1};
-			vkCmdCopyBufferToImage(cmd, e.staging, e.img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+			vkCmdCopyBufferToImage(cmd, stagingBuffer, e.img.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
 			VkImageMemoryBarrier shaderBarrier = barrier;
 			shaderBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -519,10 +550,11 @@ void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
 		}
 	});
 
-	// Destroy staging + append to m_Textures
+	// Arena destroyed automatically when it goes out of scope
+
+	// Append to m_Textures
 	for (int i = 0; i < 2; i++)
 	{
-		GpuResources::DestroyBuffer(m_Device, entries[i].staging, entries[i].stagingMem);
 		int idx = (int)m_Textures.size();
 		m_Textures.push_back(entries[i].img);
 		if (i == 0) m_MarginalCDFIndex = idx;

@@ -199,6 +199,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/R
     <ClInclude Include="src\SceneLoader.h" />
     <ClInclude Include="src\ShaderManager.h" />
     <ClInclude Include="src\Sphere.h" />
+    <ClInclude Include="src\StagingArena.h" />
     <ClInclude Include="src\Triangle.h" />
     <ClInclude Include="src\Utility.h" />
     <ClInclude Include="src\VulkanUtils.h" />
@@ -298,6 +299,11 @@ copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/R
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\ShaderManager.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\StagingArena.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

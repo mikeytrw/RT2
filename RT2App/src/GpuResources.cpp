@@ -2,7 +2,6 @@
 #include "GpuDevice.h"
 #include "VulkanUtils.h"
 #include "RTLog.h"
-#include "CommandUtils.h"
 
 namespace GpuResources
 {
@@ -216,63 +215,6 @@ namespace GpuResources
 
 		vkCmdPipelineBarrier(cmd, srcStage, dstStage, 0,
 		                     0, nullptr, 0, nullptr, 1, &barrier);
-	}
-
-	bool UploadToBuffer(const GpuDevice& dev, VkBuffer dstBuffer,
-	                     const void* data, VkDeviceSize size)
-	{
-		// Create host-visible staging buffer
-		VkBuffer stagingBuffer;
-		VkDeviceMemory stagingMemory;
-
-		VkBufferCreateInfo stagingInfo = {};
-		stagingInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-		stagingInfo.size = size;
-		stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-		stagingInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-		if (vkCreateBuffer(dev.device, &stagingInfo, nullptr, &stagingBuffer) != VK_SUCCESS)
-			return false;
-
-		VkMemoryRequirements memReqs;
-		vkGetBufferMemoryRequirements(dev.device, stagingBuffer, &memReqs);
-
-		VkMemoryAllocateInfo allocInfo = {};
-		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		allocInfo.allocationSize = memReqs.size;
-		allocInfo.memoryTypeIndex = dev.FindMemoryType(memReqs.memoryTypeBits,
-			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-		if (allocInfo.memoryTypeIndex == 0xFFFFFFFF)
-		{
-			vkDestroyBuffer(dev.device, stagingBuffer, nullptr);
-			return false;
-		}
-
-		if (vkAllocateMemory(dev.device, &allocInfo, nullptr, &stagingMemory) != VK_SUCCESS)
-		{
-			vkDestroyBuffer(dev.device, stagingBuffer, nullptr);
-			return false;
-		}
-		vkBindBufferMemory(dev.device, stagingBuffer, stagingMemory, 0);
-
-		// Map, copy, unmap
-		void* mapped = nullptr;
-		vkMapMemory(dev.device, stagingMemory, 0, size, 0, &mapped);
-		memcpy(mapped, data, (size_t)size);
-		vkUnmapMemory(dev.device, stagingMemory);
-
-		// Record copy command via ImmediateSubmit
-		CommandUtils::ImmediateSubmit(dev, [&](VkCommandBuffer cmd) {
-			VkBufferCopy copyRegion = {};
-			copyRegion.size = size;
-			vkCmdCopyBuffer(cmd, stagingBuffer, dstBuffer, 1, &copyRegion);
-		});
-
-		// Cleanup staging
-		vkDestroyBuffer(dev.device, stagingBuffer, nullptr);
-		vkFreeMemory(dev.device, stagingMemory, nullptr);
-
-		return true;
 	}
 
 	VkSampler CreateSampler(const GpuDevice& dev,
