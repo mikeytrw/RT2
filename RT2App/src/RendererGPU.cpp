@@ -1105,11 +1105,11 @@ void RendererGPU::Render(const Camera& camera)
 		bool useRasterFirst = m_RasterFirst && (camera.m_Aperture <= 0.0f);
 		m_PathTracePass.Record(cmd, m_Width, m_Height, m_GBufferSet, useRasterFirst);
 
-	// NRD denoising pass
-	if (m_NRDEnabled && m_NRD.IsAvailable())
+	// NRD denoising pass — only when raster-first is actually active.
+	// RT-primary path is accumulation-only (B4 removed G-buffer writes),
+	// so NRD + RT-primary produces garbage (stale G-buffer → vibrating).
+	if (m_NRDEnabled && m_NRD.IsAvailable() && useRasterFirst)
 	{
-		bool useRasterFirst = m_RasterFirst && (camera.m_Aperture <= 0.0f);
-
 		// Barrier: RT writes to noisy inputs (gDiffRadiance, gSpecRadiance) must complete
 		// before NRD reads them. In raster-first mode, gNormalRoughness/gViewZ/gMotion
 		// were written by the raster pass (already barriered to GENERAL), so only the

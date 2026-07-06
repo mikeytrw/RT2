@@ -176,7 +176,8 @@ public:
 		m_RendererGPU.ResetAccumulation();
 
 	// NRD only works with raster-first (RT-primary is accumulation-only after B4)
-	bool nrdAvailable = m_RendererGPU.m_RasterFirst;
+	// Also requires aperture=0 (DOF fallback disables raster-first → NRD has no G-buffer)
+	bool nrdAvailable = m_RendererGPU.m_RasterFirst && (m_Cam.m_Aperture <= 0.0f);
 	if (!nrdAvailable && m_RendererGPU.m_NRDEnabled)
 	{
 		m_RendererGPU.m_NRDEnabled = false;
