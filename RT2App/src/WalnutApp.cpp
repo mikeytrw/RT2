@@ -835,6 +835,7 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 
 	Walnut::ApplicationSpecification spec;
 	spec.Name = "RT2";
+	spec.EnableValidation = g_CLI.validate;
 
 	Walnut::Application* app = new Walnut::Application(spec);
 	app->PushLayer<ExampleLayer>();

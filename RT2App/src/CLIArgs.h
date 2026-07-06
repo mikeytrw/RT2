@@ -19,6 +19,7 @@ struct CLIArgs
 	bool headless = false;        // render N frames, save screenshot, exit
 	bool listScenes = false;      // just print what would be loaded
 	bool verbose = false;
+	bool validate = false;        // enable Vulkan validation layers
 
 	bool hasScene() const { return !scenePath.empty(); }
 	bool hasEnvMap() const { return !envMapPath.empty(); }
@@ -83,6 +84,10 @@ struct CLIArgs
 			{
 				args.verbose = true;
 			}
+			else if (strcmp(a, "--validate") == 0)
+			{
+				args.validate = true;
+			}
 			else if (strcmp(a, "--list") == 0 || strcmp(a, "--dry-run") == 0)
 			{
 				args.listScenes = true;
@@ -104,8 +109,9 @@ struct CLIArgs
 				printf("  --nrd                Enable NRD denoiser\n");
 				printf("  --headless           Render N frames, save screenshot, exit\n");
 				printf("  --list               Print what would be loaded, then exit\n");
-				printf("  --verbose            Verbose logging\n");
-				printf("  --help               Show this help\n");
+			printf("  --verbose            Verbose logging\n");
+			printf("  --validate           Enable Vulkan validation layers\n");
+			printf("  --help               Show this help\n");
 				exit(0);
 			}
 			else
