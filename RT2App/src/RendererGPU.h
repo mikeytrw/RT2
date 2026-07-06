@@ -11,20 +11,9 @@
 #include "ComposePass.h"
 #include "PathTracePass.h"
 #include "NRDIntegration.h"
+#include "GpuResources.h"
 #include "Scene.h"
 #include <memory>
-
-// A single GPU texture (VkImage + view + sampler + staging)
-struct GPUTexture
-{
-	VkImage image = VK_NULL_HANDLE;
-	VkDeviceMemory memory = VK_NULL_HANDLE;
-	VkImageView view = VK_NULL_HANDLE;
-	VkSampler sampler = VK_NULL_HANDLE;
-	int width = 0;
-	int height = 0;
-	VkFormat format = VK_FORMAT_R8G8B8A8_UNORM;
-};
 
 class RendererGPU
 {
@@ -116,8 +105,10 @@ private:
 	VkDeviceMemory m_LightBufferMemory = VK_NULL_HANDLE;
 	VkDeviceSize m_LightBufferSize = 0;
 
-	// Textures (bindless array)
-	std::vector<GPUTexture> m_Textures;
+	// Textures (bindless array) — GpuImage wrapper, shared samplers
+	std::vector<GpuImage> m_Textures;
+	VkSampler m_TextureSampler = VK_NULL_HANDLE;      // REPEAT + LINEAR mipmap (scene textures)
+	VkSampler m_CDFTextureSampler = VK_NULL_HANDLE;   // CLAMP_TO_EDGE + NEAREST mipmap (CDF textures)
 	VkDescriptorSetLayout m_TextureDescriptorSetLayout = VK_NULL_HANDLE;
 	VkDescriptorSet m_TextureDescriptorSet = VK_NULL_HANDLE;
 

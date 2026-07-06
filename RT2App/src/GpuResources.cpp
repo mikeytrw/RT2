@@ -61,6 +61,63 @@ namespace GpuResources
 		return true;
 	}
 
+	bool CreateImage1D(const GpuDevice& dev, uint32_t width, uint32_t height,
+	                 VkFormat format, VkImageUsageFlags usage,
+	                 VkMemoryPropertyFlags memProps,
+	                 GpuImage& outImage)
+	{
+		bool is1D = (height == 1);
+
+		VkImageCreateInfo imageInfo = {};
+		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+		imageInfo.imageType = is1D ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D;
+		imageInfo.format = format;
+		imageInfo.extent = { width, is1D ? 1u : height, 1 };
+		imageInfo.mipLevels = 1;
+		imageInfo.arrayLayers = 1;
+		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+		imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+		imageInfo.usage = usage;
+		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+		VK_CHECK(vkCreateImage(dev.device, &imageInfo, nullptr, &outImage.image));
+
+		VkMemoryRequirements memReqs;
+		vkGetImageMemoryRequirements(dev.device, outImage.image, &memReqs);
+
+		VkMemoryAllocateInfo allocInfo = {};
+		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize = memReqs.size;
+		allocInfo.memoryTypeIndex = dev.FindMemoryType(memReqs.memoryTypeBits, memProps);
+		if (allocInfo.memoryTypeIndex == 0xFFFFFFFF)
+		{
+			RT_LOG("[GpuResources::CreateImage1D] no valid memory type");
+			vkDestroyImage(dev.device, outImage.image, nullptr);
+			outImage.image = VK_NULL_HANDLE;
+			return false;
+		}
+
+		VK_CHECK(vkAllocateMemory(dev.device, &allocInfo, nullptr, &outImage.memory));
+		VK_CHECK(vkBindImageMemory(dev.device, outImage.image, outImage.memory, 0));
+
+		VkImageViewCreateInfo viewInfo = {};
+		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		viewInfo.image = outImage.image;
+		viewInfo.viewType = is1D ? VK_IMAGE_VIEW_TYPE_1D : VK_IMAGE_VIEW_TYPE_2D;
+		viewInfo.format = format;
+		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		viewInfo.subresourceRange.levelCount = 1;
+		viewInfo.subresourceRange.layerCount = 1;
+
+		VK_CHECK(vkCreateImageView(dev.device, &viewInfo, nullptr, &outImage.view));
+
+		outImage.format = format;
+		outImage.width = width;
+		outImage.height = height;
+		return true;
+	}
+
 	bool CreateBuffer(const GpuDevice& dev, VkDeviceSize size,
 	                  VkBufferUsageFlags usage, VkMemoryPropertyFlags memProps,
 	                  GpuBuffer& outBuffer)
@@ -233,6 +290,27 @@ namespace GpuResources
 		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
 		samplerInfo.minLod = -1000;
 		samplerInfo.maxLod = 1000;
+
+		VkSampler sampler = VK_NULL_HANDLE;
+		VK_CHECK(vkCreateSampler(dev.device, &samplerInfo, nullptr, &sampler));
+		return sampler;
+	}
+
+	VkSampler CreateSampler(const GpuDevice& dev,
+	                         VkFilter magFilter, VkFilter minFilter,
+	                         VkSamplerAddressMode addressMode,
+	                         VkSamplerMipmapMode mipmapMode)
+	{
+		VkSamplerCreateInfo samplerInfo = {};
+		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+		samplerInfo.magFilter = magFilter;
+		samplerInfo.minFilter = minFilter;
+		samplerInfo.mipmapMode = mipmapMode;
+		samplerInfo.addressModeU = addressMode;
+		samplerInfo.addressModeV = addressMode;
+		samplerInfo.addressModeW = addressMode;
+		samplerInfo.minLod = 0;
+		samplerInfo.maxLod = 0;
 
 		VkSampler sampler = VK_NULL_HANDLE;
 		VK_CHECK(vkCreateSampler(dev.device, &samplerInfo, nullptr, &sampler));

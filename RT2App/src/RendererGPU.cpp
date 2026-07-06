@@ -38,6 +38,15 @@ bool RendererGPU::Init()
 		return false;
 	}
 	m_ComposePass.Init(m_Device);
+
+	// Create shared texture samplers
+	m_TextureSampler = GpuResources::CreateSampler(m_Device,
+		VK_FILTER_LINEAR, VK_FILTER_LINEAR,
+		VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_MIPMAP_MODE_LINEAR);
+	m_CDFTextureSampler = GpuResources::CreateSampler(m_Device,
+		VK_FILTER_LINEAR, VK_FILTER_LINEAR,
+		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_MIPMAP_MODE_NEAREST);
+
 	m_Initialized = true;
 	return true;
 }
@@ -54,6 +63,8 @@ void RendererGPU::Destroy()
 	DestroyGBufferImages();
 	DestroyTextures();
 	DestroyEnvMapCDFTextures();
+	GpuResources::DestroySampler(m_Device, m_TextureSampler);
+	GpuResources::DestroySampler(m_Device, m_CDFTextureSampler);
 	GpuResources::DestroyBuffer(m_Device, m_CameraUBO, m_CameraUBOMemory);
 	GpuResources::DestroyBuffer(m_Device, m_MaterialBuffer, m_MaterialBufferMemory);
 	GpuResources::DestroyBuffer(m_Device, m_LightBuffer, m_LightBufferMemory);
@@ -77,69 +88,20 @@ void RendererGPU::CreateOutputImage()
 {
 	VkDevice device = m_Device.device;
 
-	VkImageCreateInfo imageInfo = {};
-	imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-	imageInfo.imageType = VK_IMAGE_TYPE_2D;
-	imageInfo.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-	imageInfo.extent.width = m_Width;
-	imageInfo.extent.height = m_Height;
-	imageInfo.extent.depth = 1;
-	imageInfo.mipLevels = 1;
-	imageInfo.arrayLayers = 1;
-	imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-	imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-	imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	// Create output image via GpuResources (image + memory + view)
+	GpuImage outputImg;
+	GpuResources::CreateImage(m_Device, m_Width, m_Height,
+		VK_FORMAT_R32G32B32A32_SFLOAT,
+		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, outputImg);
+	m_OutputImage    = outputImg.image;
+	m_OutputMemory   = outputImg.memory;
+	m_OutputImageView = outputImg.view;
 
-	VkResult err = vkCreateImage(device, &imageInfo, nullptr, &m_OutputImage);
-	if (err != VK_SUCCESS)
-	{
-		std::cerr << "[RT2] vkCreateImage failed: " << err << "\n";
-		return;
-	}
-
-	VkMemoryRequirements memRequirements;
-	vkGetImageMemoryRequirements(device, m_OutputImage, &memRequirements);
-
-	VkMemoryAllocateInfo allocInfo = {};
-	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	allocInfo.allocationSize = memRequirements.size;
-	allocInfo.memoryTypeIndex = m_Device.FindMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-	err = vkAllocateMemory(device, &allocInfo, nullptr, &m_OutputMemory);
-	if (err != VK_SUCCESS)
-	{
-		std::cerr << "[RT2] vkAllocateMemory for output image failed: " << err << " (size=" << memRequirements.size << ")\n";
-		vkDestroyImage(device, m_OutputImage, nullptr);
-		m_OutputImage = VK_NULL_HANDLE;
-		return;
-	}
-	vkBindImageMemory(device, m_OutputImage, m_OutputMemory, 0);
-
-	VkImageViewCreateInfo viewInfo = {};
-	viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-	viewInfo.image = m_OutputImage;
-	viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	viewInfo.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-	viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	viewInfo.subresourceRange.levelCount = 1;
-	viewInfo.subresourceRange.layerCount = 1;
-
-	vkCreateImageView(device, &viewInfo, nullptr, &m_OutputImageView);
-
-	VkSamplerCreateInfo samplerInfo = {};
-	samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-	samplerInfo.magFilter = VK_FILTER_LINEAR;
-	samplerInfo.minFilter = VK_FILTER_LINEAR;
-	samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-	samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-	samplerInfo.minLod = -1000;
-	samplerInfo.maxLod = 1000;
-
-	vkCreateSampler(device, &samplerInfo, nullptr, &m_Sampler);
+	// Create output sampler (clamp + extended lod range for ImGui display)
+	m_Sampler = GpuResources::CreateSampler(m_Device,
+		VK_FILTER_LINEAR, VK_FILTER_LINEAR,
+		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_MIPMAP_MODE_LINEAR);
 
 	// Transition image to general layout for compute writes
 	VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
@@ -248,13 +210,13 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 	}
 	if (!m_MaterialBuffer) { RT_LOG("[UpdateDS] skip: no material buffer"); return; }
 
-	// Build texture image infos
+	// Build texture image infos — use shared texture sampler for all textures
 	std::vector<VkDescriptorImageInfo> textureImageInfos;
 	for (const auto& gt : m_Textures)
 	{
-		if (!gt.view || !gt.sampler) continue;
+		if (!gt.view) continue;
 		VkDescriptorImageInfo imgInfo = {};
-		imgInfo.sampler = gt.sampler;
+		imgInfo.sampler = m_TextureSampler;
 		imgInfo.imageView = gt.view;
 		imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		textureImageInfos.push_back(imgInfo);
@@ -351,7 +313,7 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 			continue;
 		}
 
-		GPUTexture& gt = m_Textures[i];
+		GpuImage& gt = m_Textures[i];
 		gt.width = tex.width;
 		gt.height = tex.height;
 
@@ -387,34 +349,10 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 			memcpy(data, tex.pixels.data(), (size_t)imageSize);
 		vkUnmapMemory(device, stagingMemory);
 
-		// Create VkImage
-		VkImageCreateInfo imageInfo = {};
-		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-		imageInfo.imageType = VK_IMAGE_TYPE_2D;
-		imageInfo.format = format;
-		imageInfo.extent.width = tex.width;
-		imageInfo.extent.height = tex.height;
-		imageInfo.extent.depth = 1;
-		imageInfo.mipLevels = 1;
-		imageInfo.arrayLayers = 1;
-		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-		imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-		imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-		vkCreateImage(device, &imageInfo, nullptr, &gt.image);
-
-		VkMemoryRequirements memReq;
-		vkGetImageMemoryRequirements(device, gt.image, &memReq);
-
-		VkMemoryAllocateInfo allocInfo = {};
-		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		allocInfo.allocationSize = memReq.size;
-		allocInfo.memoryTypeIndex = m_Device.FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-		vkAllocateMemory(device, &allocInfo, nullptr, &gt.memory);
-		vkBindImageMemory(device, gt.image, gt.memory, 0);
+		// Create VkImage via GpuResources
+		GpuResources::CreateImage(m_Device, tex.width, tex.height, format,
+			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gt);
 
 		// Transition + copy via command buffer
 		VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
@@ -462,30 +400,6 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 		Walnut::Application::FlushCommandBuffer(cmd);
 
 		GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
-
-		// Create image view
-		VkImageViewCreateInfo viewInfo = {};
-		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-		viewInfo.image = gt.image;
-		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		viewInfo.format = format;
-		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		viewInfo.subresourceRange.levelCount = 1;
-		viewInfo.subresourceRange.layerCount = 1;
-		vkCreateImageView(device, &viewInfo, nullptr, &gt.view);
-
-		// Create sampler
-		VkSamplerCreateInfo samplerInfo = {};
-		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-		samplerInfo.magFilter = VK_FILTER_LINEAR;
-		samplerInfo.minFilter = VK_FILTER_LINEAR;
-		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-		samplerInfo.minLod = 0;
-		samplerInfo.maxLod = 0;
-		vkCreateSampler(device, &samplerInfo, nullptr, &gt.sampler);
 	}
 
 	std::cerr << "[RT2] Created " << m_Textures.size() << " GPU textures\n";
@@ -493,14 +407,8 @@ void RendererGPU::CreateTextures(const std::vector<SceneTexture>& textures)
 
 void RendererGPU::DestroyTextures()
 {
-	VkDevice device = m_Device.device;
 	for (auto& gt : m_Textures)
-	{
-		if (gt.sampler) vkDestroySampler(device, gt.sampler, nullptr);
-		if (gt.view) vkDestroyImageView(device, gt.view, nullptr);
-		if (gt.image) vkDestroyImage(device, gt.image, nullptr);
-		if (gt.memory) vkFreeMemory(device, gt.memory, nullptr);
-	}
+		GpuResources::DestroyImage(m_Device, gt);
 	m_Textures.clear();
 }
 
@@ -520,7 +428,7 @@ void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
 	// Helper: create a CDF texture and append to m_Textures
 	auto createCDFTexture = [&](const std::vector<float>& cdfData, int w, int h) -> int
 	{
-		GPUTexture gt;
+		GpuImage gt;
 		gt.width = w;
 		gt.height = h;
 		gt.format = VK_FORMAT_R32_SFLOAT;
@@ -536,29 +444,10 @@ void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
 		memcpy(data, cdfData.data(), (size_t)imageSize);
 		vkUnmapMemory(device, stagingMemory);
 
-		VkImageCreateInfo imageInfo = {};
-		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-		imageInfo.imageType = (h == 1) ? VK_IMAGE_TYPE_1D : VK_IMAGE_TYPE_2D;
-		imageInfo.format = VK_FORMAT_R32_SFLOAT;
-		imageInfo.extent.width = w;
-		imageInfo.extent.height = (h == 1) ? 1 : h;
-		imageInfo.extent.depth = 1;
-		imageInfo.mipLevels = 1;
-		imageInfo.arrayLayers = 1;
-		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-		imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-		imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		vkCreateImage(device, &imageInfo, nullptr, &gt.image);
-
-		VkMemoryRequirements memReq;
-		vkGetImageMemoryRequirements(device, gt.image, &memReq);
-		VkMemoryAllocateInfo allocInfo = {};
-		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		allocInfo.allocationSize = memReq.size;
-		allocInfo.memoryTypeIndex = m_Device.FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		vkAllocateMemory(device, &allocInfo, nullptr, &gt.memory);
-		vkBindImageMemory(device, gt.image, gt.memory, 0);
+		// Create 1D/2D image via GpuResources (handles image + memory + view)
+		GpuResources::CreateImage1D(m_Device, w, h, VK_FORMAT_R32_SFLOAT,
+			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gt);
 
 		VkCommandBuffer cmd = Walnut::Application::GetCommandBuffer(true);
 		VkImageMemoryBarrier barrier = {};
@@ -588,28 +477,6 @@ void RendererGPU::CreateEnvMapCDFTextures(const GPUSceneData& sceneData)
 		                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &shaderBarrier);
 		Walnut::Application::FlushCommandBuffer(cmd);
 		GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
-
-		VkImageViewCreateInfo viewInfo = {};
-		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-		viewInfo.image = gt.image;
-		viewInfo.viewType = (h == 1) ? VK_IMAGE_VIEW_TYPE_1D : VK_IMAGE_VIEW_TYPE_2D;
-		viewInfo.format = VK_FORMAT_R32_SFLOAT;
-		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		viewInfo.subresourceRange.levelCount = 1;
-		viewInfo.subresourceRange.layerCount = 1;
-		vkCreateImageView(device, &viewInfo, nullptr, &gt.view);
-
-		VkSamplerCreateInfo samplerInfo = {};
-		samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-		samplerInfo.magFilter = VK_FILTER_LINEAR;
-		samplerInfo.minFilter = VK_FILTER_LINEAR;
-		samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-		samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-		samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-		samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-		samplerInfo.minLod = 0;
-		samplerInfo.maxLod = 0;
-		vkCreateSampler(device, &samplerInfo, nullptr, &gt.sampler);
 
 		int idx = (int)m_Textures.size();
 		m_Textures.push_back(gt);
@@ -1178,44 +1045,14 @@ void RendererGPU::CreateGBufferImages()
 
 	for (auto& s : specs)
 	{
-		VkImageCreateInfo imageInfo = {};
-		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-		imageInfo.imageType = VK_IMAGE_TYPE_2D;
-		imageInfo.format = s.format;
-		imageInfo.extent.width = m_Width;
-		imageInfo.extent.height = m_Height;
-		imageInfo.extent.depth = 1;
-		imageInfo.mipLevels = 1;
-		imageInfo.arrayLayers = 1;
-		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-		imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-		imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-		imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-		imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-		vkCreateImage(device, &imageInfo, nullptr, &s.image);
-
-		VkMemoryRequirements memReq;
-		vkGetImageMemoryRequirements(device, s.image, &memReq);
-
-		VkMemoryAllocateInfo allocInfo = {};
-		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		allocInfo.allocationSize = memReq.size;
-		allocInfo.memoryTypeIndex = m_Device.FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-
-		vkAllocateMemory(device, &allocInfo, nullptr, &s.mem);
-		vkBindImageMemory(device, s.image, s.mem, 0);
-
-		VkImageViewCreateInfo viewInfo = {};
-		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-		viewInfo.image = s.image;
-		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		viewInfo.format = s.format;
-		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		viewInfo.subresourceRange.levelCount = 1;
-		viewInfo.subresourceRange.layerCount = 1;
-
-		vkCreateImageView(device, &viewInfo, nullptr, &s.view);
+		// Create image via GpuResources (image + memory + view)
+		GpuImage tmp;
+		GpuResources::CreateImage(m_Device, m_Width, m_Height, s.format,
+			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, tmp);
+		s.image = tmp.image;
+		s.mem   = tmp.memory;
+		s.view  = tmp.view;
 
 		// Transition to GENERAL layout
 		VkImageMemoryBarrier barrier = {};

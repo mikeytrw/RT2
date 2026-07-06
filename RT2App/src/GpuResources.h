@@ -38,6 +38,12 @@ namespace GpuResources
 	                 VkMemoryPropertyFlags memProperties,
 	                 GpuImage& outImage);
 
+	// Create a 1D or 2D image with view. height==1 creates a 1D image.
+	bool CreateImage1D(const GpuDevice& dev, uint32_t width, uint32_t height,
+	                 VkFormat format, VkImageUsageFlags usage,
+	                 VkMemoryPropertyFlags memProperties,
+	                 GpuImage& outImage);
+
 	// Create a buffer with given size/usage/memory. Returns false on failure.
 	bool CreateBuffer(const GpuDevice& dev, VkDeviceSize size,
 	                  VkBufferUsageFlags usage, VkMemoryPropertyFlags memProperties,
@@ -72,5 +78,12 @@ namespace GpuResources
 	VkSampler CreateSampler(const GpuDevice& dev,
 	                         VkFilter magFilter = VK_FILTER_LINEAR,
 	                         VkFilter minFilter = VK_FILTER_LINEAR);
+
+	// Create a sampler with full control over address mode + mipmap mode.
+	VkSampler CreateSampler(const GpuDevice& dev,
+	                         VkFilter magFilter, VkFilter minFilter,
+	                         VkSamplerAddressMode addressMode,
+	                         VkSamplerMipmapMode mipmapMode);
+
 	void DestroySampler(const GpuDevice& dev, VkSampler& sampler);
 }
