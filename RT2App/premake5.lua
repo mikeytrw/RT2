@@ -22,6 +22,8 @@ project "RT2App"
         "shaders/anyhit.rahit",
         "shaders/shadow.rahit",
         "shaders/compose.comp",
+        "shaders/raster.vert",
+        "shaders/raster.frag",
         "shaders/pathtracer_shared.glsl",
         "shaders/shader_interface.h",
     }
@@ -84,6 +86,18 @@ project "RT2App"
         buildoutputs { shaderDir .. "/compose.spv" }
         buildinputs { shaderDeps }
 
+    filter {"files:shaders/raster.vert"}
+        buildmessage "Compiling raster.vert"
+        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=vert " .. shaderInclude .. " " .. shaderDir .. "/raster.vert -o " .. shaderDir .. "/raster.spv" }
+        buildoutputs { shaderDir .. "/raster.spv" }
+        buildinputs { shaderDeps }
+
+    filter {"files:shaders/raster.frag"}
+        buildmessage "Compiling raster.frag"
+        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=frag " .. shaderInclude .. " " .. shaderDir .. "/raster.frag -o " .. shaderDir .. "/rasterfrag.spv" }
+        buildoutputs { shaderDir .. "/rasterfrag.spv" }
+        buildinputs { shaderDeps }
+
     -- Reset filter for the rest
     filter {}
 
@@ -137,7 +151,9 @@ project "RT2App"
             "copy /Y \"%{wks.location}RT2App\\shaders\\closesthit.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\anyhit.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\shadowhit.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\compose.spv\" \"%{cfg.targetdir}\""
+            "copy /Y \"%{wks.location}RT2App\\shaders\\compose.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"%{wks.location}RT2App\\shaders\\raster.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"%{wks.location}RT2App\\shaders\\rasterfrag.spv\" \"%{cfg.targetdir}\""
         }
 
    filter "configurations:Debug"

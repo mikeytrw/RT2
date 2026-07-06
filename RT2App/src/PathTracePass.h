@@ -30,6 +30,8 @@ public:
 		VkBuffer normalBuffer, VkBuffer instanceOffsetBuffer,
 		VkBuffer tangentBuffer, VkBuffer uvBuffer, VkBuffer positionBuffer,
 		VkBuffer lightBuffer, VkBuffer instanceTransformBuffer,
+		VkBuffer instanceTransformPrevBuffer,
+		VkBuffer instanceMaterialIndexBuffer,
 		VkAccelerationStructureKHR tlas,
 		const std::vector<VkDescriptorImageInfo>& textureImageInfos);
 

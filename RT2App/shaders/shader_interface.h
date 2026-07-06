@@ -52,6 +52,8 @@
 #define SI_BINDING_LIGHT_BUFFER          9
 #define SI_BINDING_INSTANCE_TRANSFORMS   10
 #define SI_BINDING_TEXTURE_ARRAY         11
+#define SI_BINDING_INSTANCE_TRANSFORMS_PREV 12
+#define SI_BINDING_INSTANCE_MATERIAL_INDICES 13
 
 // ============================================================================
 // Binding indices — set 1 (NRD G-buffer)
@@ -64,6 +66,9 @@
 #define SI_BINDING_G_ALBEDO_F0         5
 #define SI_BINDING_NRD_UBO             6
 #define SI_BINDING_G_DIRECT_EMISSION   7
+#define SI_BINDING_G_PRIM_HIT          8   // rgba32f: xyz = world pos, w = material index (floatBitsToInt)
+#define SI_BINDING_G_PRIM_GEO_NORMAL   9   // rgba8: xyz = geo normal (0.5+0.5 encode)
+#define SI_BINDING_G_PRIM_UV           10  // rg16f: xy = UV at primary hit
 
 // ============================================================================
 // CameraData UBO — std140, matches layout in RendererGPU.cpp UpdateCameraUBO

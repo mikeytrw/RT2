@@ -10,6 +10,7 @@
 #include "GpuDevice.h"
 #include "ComposePass.h"
 #include "PathTracePass.h"
+#include "RasterPass.h"
 #include "NRDIntegration.h"
 #include "GpuResources.h"
 #include "FrameContext.h"
@@ -118,6 +119,14 @@ private:
 	VkBuffer m_InstanceTransformBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_InstanceTransformBufferMemory = VK_NULL_HANDLE;
 
+	// Previous frame instance transforms (for motion vectors)
+	VkBuffer m_InstanceTransformPrevBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_InstanceTransformPrevBufferMemory = VK_NULL_HANDLE;
+
+	// Per-instance material index (uint32 per instance, for raster pass)
+	VkBuffer m_InstanceMaterialIndexBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_InstanceMaterialIndexBufferMemory = VK_NULL_HANDLE;
+
 	// Textures (bindless array) — GpuImage wrapper, shared samplers
 	std::vector<GpuImage> m_Textures;
 	VkSampler m_TextureSampler = VK_NULL_HANDLE;      // REPEAT + LINEAR mipmap (scene textures)
@@ -192,6 +201,25 @@ private:
 
 	// Compose pass (compute shader: NRD outputs + albedo/F0 -> beauty)
 	ComposePass m_ComposePass;
+
+	// Raster pass (primary visibility G-buffer)
+	RasterPass m_RasterPass;
+	VkImage m_DepthImage = VK_NULL_HANDLE;
+	VkDeviceMemory m_DepthImageMem = VK_NULL_HANDLE;
+	VkImageView m_DepthImageView = VK_NULL_HANDLE;
+
+	// New G-buffer images for raster→RT handoff
+	VkImage m_GPrimHit = VK_NULL_HANDLE;
+	VkDeviceMemory m_GPrimHitMem = VK_NULL_HANDLE;
+	VkImageView m_GPrimHitView = VK_NULL_HANDLE;
+
+	VkImage m_GPrimGeoNormal = VK_NULL_HANDLE;
+	VkDeviceMemory m_GPrimGeoNormalMem = VK_NULL_HANDLE;
+	VkImageView m_GPrimGeoNormalView = VK_NULL_HANDLE;
+
+	VkImage m_GPrimUV = VK_NULL_HANDLE;
+	VkDeviceMemory m_GPrimUVMem = VK_NULL_HANDLE;
+	VkImageView m_GPrimUVView = VK_NULL_HANDLE;
 
 	// NRD integration wrapper
 	NRDWrapper m_NRD;

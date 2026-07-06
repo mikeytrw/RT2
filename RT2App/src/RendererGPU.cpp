@@ -74,6 +74,8 @@ void RendererGPU::Destroy()
 	GpuResources::DestroyBuffer(m_Device, m_MaterialBuffer, m_MaterialBufferMemory);
 	GpuResources::DestroyBuffer(m_Device, m_LightBuffer, m_LightBufferMemory);
 	GpuResources::DestroyBuffer(m_Device, m_InstanceTransformBuffer, m_InstanceTransformBufferMemory);
+	GpuResources::DestroyBuffer(m_Device, m_InstanceTransformPrevBuffer, m_InstanceTransformPrevBufferMemory);
+	GpuResources::DestroyBuffer(m_Device, m_InstanceMaterialIndexBuffer, m_InstanceMaterialIndexBufferMemory);
 	GpuResources::DestroyBuffer(m_Device, m_NRDUBO, m_NRDUBOMemory);
 
 	if (m_GBufferPool)
@@ -236,6 +238,7 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 		m_AS.GetNormalBuffer(), m_AS.GetInstanceOffsetBuffer(),
 		m_AS.GetTangentBuffer(), m_AS.GetUVBuffer(), m_AS.GetPositionBuffer(),
 		m_LightBuffer, m_InstanceTransformBuffer,
+		m_InstanceTransformPrevBuffer, m_InstanceMaterialIndexBuffer,
 		m_AS.GetTLAS(),
 		textureImageInfos);
 
@@ -309,16 +312,22 @@ void RendererGPU::CreateInstanceTransformBuffer()
 {
 	GpuResources::DestroyBuffer(m_Device, m_InstanceTransformBuffer, m_InstanceTransformBufferMemory);
 
+	// Previous transform buffer: swap current → prev before creating new
+	GpuResources::DestroyBuffer(m_Device, m_InstanceTransformPrevBuffer, m_InstanceTransformPrevBufferMemory);
+	m_InstanceTransformPrevBuffer = m_InstanceTransformBuffer;
+	m_InstanceTransformPrevBufferMemory = m_InstanceTransformBufferMemory;
+	m_InstanceTransformBuffer = VK_NULL_HANDLE;
+	m_InstanceTransformBufferMemory = VK_NULL_HANDLE;
+
 	size_t instanceCount = m_CurrentScene.instances.size();
 	VkDeviceSize bufferSize = instanceCount * sizeof(glm::mat4);
-	if (bufferSize == 0) bufferSize = sizeof(glm::mat4); // always non-empty
+	if (bufferSize == 0) bufferSize = sizeof(glm::mat4);
 
 	GpuResources::CreateBuffer(m_Device, bufferSize,
 	             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 	             m_InstanceTransformBuffer, m_InstanceTransformBufferMemory);
 
-	// Extract just the worldMatrix from each GPUInstance
 	std::vector<glm::mat4> transforms(instanceCount);
 	for (size_t i = 0; i < instanceCount; i++)
 		transforms[i] = m_CurrentScene.instances[i].worldMatrix;
@@ -326,11 +335,37 @@ void RendererGPU::CreateInstanceTransformBuffer()
 	VkDevice device = m_Device.device;
 	void* data;
 	vkMapMemory(device, m_InstanceTransformBufferMemory, 0, bufferSize, 0, &data);
-	if (instanceCount > 0)
-		memcpy(data, transforms.data(), instanceCount * sizeof(glm::mat4));
-	else
-		memset(data, 0, bufferSize);
+	memcpy(data, transforms.data(), instanceCount * sizeof(glm::mat4));
 	vkUnmapMemory(device, m_InstanceTransformBufferMemory);
+
+	// If prev buffer is empty (first creation), fill it with current transforms
+	if (m_InstanceTransformPrevBuffer == VK_NULL_HANDLE)
+	{
+		GpuResources::CreateBuffer(m_Device, bufferSize,
+		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		             m_InstanceTransformPrevBuffer, m_InstanceTransformPrevBufferMemory);
+		vkMapMemory(device, m_InstanceTransformPrevBufferMemory, 0, bufferSize, 0, &data);
+		memcpy(data, transforms.data(), instanceCount * sizeof(glm::mat4));
+		vkUnmapMemory(device, m_InstanceTransformPrevBufferMemory);
+	}
+
+	// Create per-instance material index buffer
+	GpuResources::DestroyBuffer(m_Device, m_InstanceMaterialIndexBuffer, m_InstanceMaterialIndexBufferMemory);
+	VkDeviceSize matIdxSize = instanceCount * sizeof(uint32_t);
+	if (matIdxSize == 0) matIdxSize = sizeof(uint32_t);
+	GpuResources::CreateBuffer(m_Device, matIdxSize,
+	             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+	             m_InstanceMaterialIndexBuffer, m_InstanceMaterialIndexBufferMemory);
+
+	std::vector<uint32_t> matIndices(instanceCount);
+	for (size_t i = 0; i < instanceCount; i++)
+		matIndices[i] = m_CurrentScene.instances[i].materialIndex;
+
+	vkMapMemory(device, m_InstanceMaterialIndexBufferMemory, 0, matIdxSize, 0, &data);
+	memcpy(data, matIndices.data(), instanceCount * sizeof(uint32_t));
+	vkUnmapMemory(device, m_InstanceMaterialIndexBufferMemory);
 
 	RT_LOG("[RT2] Instance transform buffer: %d instances (%zu bytes)",
 	       (int)instanceCount, (size_t)bufferSize);
@@ -1222,14 +1257,23 @@ void RendererGPU::CreateGBufferImages()
 		{ VK_FORMAT_R16G16B16A16_SFLOAT, m_GDirectEmission,  m_GDirectEmissionMem,  m_GDirectEmissionView },
 		{ VK_FORMAT_R16G16B16A16_SFLOAT, m_NRDDiffOut,       m_NRDDiffOutMem,       m_NRDDiffOutView },
 		{ VK_FORMAT_R16G16B16A16_SFLOAT, m_NRDSpecOut,       m_NRDSpecOutMem,       m_NRDSpecOutView },
+		{ VK_FORMAT_R32G32B32A32_SFLOAT, m_GPrimHit,         m_GPrimHitMem,         m_GPrimHitView },
+		{ VK_FORMAT_R8G8B8A8_UNORM,      m_GPrimGeoNormal,   m_GPrimGeoNormalMem,   m_GPrimGeoNormalView },
+		{ VK_FORMAT_R16G16_SFLOAT,       m_GPrimUV,          m_GPrimUVMem,          m_GPrimUVView },
 	};
 
 	for (auto& s : specs)
 	{
-		// Create image via GpuResources (image + memory + view)
+		VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+		// G-buffer images that the raster pass writes to also need COLOR_ATTACHMENT_BIT
+		if (&s.image == &m_GNormalRoughness || &s.image == &m_GViewZ || &s.image == &m_GMotion ||
+		    &s.image == &m_GAlbedoF0 || &s.image == &m_GDirectEmission ||
+		    &s.image == &m_GPrimHit || &s.image == &m_GPrimGeoNormal || &s.image == &m_GPrimUV)
+			usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
 		GpuImage tmp;
 		GpuResources::CreateImage(m_Device, m_Width, m_Height, s.format,
-			VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+			usage,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, tmp);
 		s.image = tmp.image;
 		s.mem   = tmp.memory;
@@ -1272,6 +1316,9 @@ void RendererGPU::DestroyGBufferImages()
 		{ m_GDirectEmission,  m_GDirectEmissionMem,  m_GDirectEmissionView },
 		{ m_NRDDiffOut,       m_NRDDiffOutMem,       m_NRDDiffOutView },
 		{ m_NRDSpecOut,       m_NRDSpecOutMem,       m_NRDSpecOutView },
+		{ m_GPrimHit,         m_GPrimHitMem,         m_GPrimHitView },
+		{ m_GPrimGeoNormal,   m_GPrimGeoNormalMem,   m_GPrimGeoNormalView },
+		{ m_GPrimUV,          m_GPrimUVMem,          m_GPrimUVView },
 	};
 
 	for (auto& p : pairs)
@@ -1286,15 +1333,16 @@ void RendererGPU::CreateGBufferDescriptorSet()
 {
 	VkDevice device = m_Device.device;
 
-	// Set 1 layout: 7 storage images (0-5, 7) + 1 UBO (6)
-	VkDescriptorSetLayoutBinding bindings[8] = {};
+	// Set 1 layout: 10 storage images (0-5, 7-10) + 1 UBO (6)
+	VkDescriptorSetLayoutBinding bindings[11] = {};
 	// Bindings 0-5: storage images (gNormalRoughness, gViewZ, gMotion, gDiff, gSpec, gAlbedoF0)
 	for (int i = 0; i < 6; i++)
 	{
-		bindings[i].binding = i; // G-buffer bindings 0-5 match SI_BINDING_G_* 0-5
+		bindings[i].binding = i;
 		bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		bindings[i].descriptorCount = 1;
-		bindings[i].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+		bindings[i].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+		                         VK_SHADER_STAGE_FRAGMENT_BIT;
 	}
 	// Binding 6: UBO (nrdData)
 	bindings[SI_BINDING_NRD_UBO].binding = SI_BINDING_NRD_UBO;
@@ -1305,11 +1353,27 @@ void RendererGPU::CreateGBufferDescriptorSet()
 	bindings[SI_BINDING_G_DIRECT_EMISSION].binding = SI_BINDING_G_DIRECT_EMISSION;
 	bindings[SI_BINDING_G_DIRECT_EMISSION].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	bindings[SI_BINDING_G_DIRECT_EMISSION].descriptorCount = 1;
-	bindings[SI_BINDING_G_DIRECT_EMISSION].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+	bindings[SI_BINDING_G_DIRECT_EMISSION].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+	                                                    VK_SHADER_STAGE_FRAGMENT_BIT;
+	// Bindings 8-10: new raster G-buffer images
+	bindings[8].binding = SI_BINDING_G_PRIM_HIT;
+	bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[8].descriptorCount = 1;
+	bindings[8].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	bindings[9].binding = SI_BINDING_G_PRIM_GEO_NORMAL;
+	bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[9].descriptorCount = 1;
+	bindings[9].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	bindings[10].binding = SI_BINDING_G_PRIM_UV;
+	bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	bindings[10].descriptorCount = 1;
+	bindings[10].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_FRAGMENT_BIT;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 8;
+	layoutInfo.bindingCount = 11;
 	layoutInfo.pBindings = bindings;
 
 	vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_GBufferSetLayout);
@@ -1317,7 +1381,7 @@ void RendererGPU::CreateGBufferDescriptorSet()
 	// Create dedicated pool
 	VkDescriptorPoolSize poolSizes[2] = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	poolSizes[0].descriptorCount = 7;
+	poolSizes[0].descriptorCount = 10;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSizes[1].descriptorCount = 1;
 
@@ -1351,9 +1415,14 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 {
 	VkDevice device = m_Device.device;
 
-	VkDescriptorImageInfo imageInfos[7] = {};
-	VkImageView views[] = { m_GNormalRoughnessView, m_GViewZView, m_GMotionView, m_GDiffRadianceView, m_GSpecRadianceView, m_GAlbedoF0View, m_GDirectEmissionView };
-	for (int i = 0; i < 7; i++)
+	VkDescriptorImageInfo imageInfos[10] = {};
+	VkImageView views[] = {
+		m_GNormalRoughnessView, m_GViewZView, m_GMotionView,
+		m_GDiffRadianceView, m_GSpecRadianceView, m_GAlbedoF0View,
+		m_GDirectEmissionView,
+		m_GPrimHitView, m_GPrimGeoNormalView, m_GPrimUVView
+	};
+	for (int i = 0; i < 10; i++)
 	{
 		imageInfos[i].imageView = views[i];
 		imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1363,13 +1432,13 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 	uboInfo.buffer = m_NRDUBO;
 	uboInfo.range = VK_WHOLE_SIZE;
 
-	VkWriteDescriptorSet writes[8] = {};
-	// Storage images: bindings 0-5 and 7
+	VkWriteDescriptorSet writes[11] = {};
+	// Storage images: bindings 0-5 and 7-10
 	for (int i = 0; i < 6; i++)
 	{
 		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[i].dstSet = m_GBufferSet;
-		writes[i].dstBinding = i; // G-buffer 0-5
+		writes[i].dstBinding = i;
 		writes[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		writes[i].descriptorCount = 1;
 		writes[i].pImageInfo = &imageInfos[i];
@@ -1388,6 +1457,27 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 	writes[SI_BINDING_G_DIRECT_EMISSION].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	writes[SI_BINDING_G_DIRECT_EMISSION].descriptorCount = 1;
 	writes[SI_BINDING_G_DIRECT_EMISSION].pImageInfo = &imageInfos[6];
+	// New G-buffer: bindings 8-10
+	writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[8].dstSet = m_GBufferSet;
+	writes[8].dstBinding = SI_BINDING_G_PRIM_HIT;
+	writes[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	writes[8].descriptorCount = 1;
+	writes[8].pImageInfo = &imageInfos[7];
 
-	vkUpdateDescriptorSets(device, 8, writes, 0, nullptr);
+	writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[9].dstSet = m_GBufferSet;
+	writes[9].dstBinding = SI_BINDING_G_PRIM_GEO_NORMAL;
+	writes[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	writes[9].descriptorCount = 1;
+	writes[9].pImageInfo = &imageInfos[8];
+
+	writes[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[10].dstSet = m_GBufferSet;
+	writes[10].dstBinding = SI_BINDING_G_PRIM_UV;
+	writes[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	writes[10].descriptorCount = 1;
+	writes[10].pImageInfo = &imageInfos[9];
+
+	vkUpdateDescriptorSets(device, 11, writes, 0, nullptr);
 }
