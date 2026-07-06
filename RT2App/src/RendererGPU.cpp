@@ -40,6 +40,11 @@ bool RendererGPU::Init()
 	}
 	m_ComposePass.Init(m_Device);
 
+	if (!m_RasterPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout))
+	{
+		RT_LOG("[RT2] RasterPass init failed (non-fatal, RT primary visibility will be used)");
+	}
+
 	// Create shared texture samplers
 	m_TextureSampler = GpuResources::CreateSampler(m_Device,
 		VK_FILTER_LINEAR, VK_FILTER_LINEAR,
@@ -64,6 +69,7 @@ void RendererGPU::Destroy()
 	m_NRD.Destroy();
 	m_PathTracePass.Destroy();
 	m_ComposePass.Destroy();
+	m_RasterPass.Destroy();
 	DestroyOutputImage();
 	DestroyGBufferImages();
 	DestroyTextures();
@@ -759,6 +765,10 @@ void RendererGPU::RebuildAccelerationStructures()
 	// Object-space data — shader transforms to world space via instanceTransforms SSBO
 	m_AS.BuildCombinedBuffers();
 
+	// Build raster vertex buffers + draw data
+	m_RasterPass.CreateVertexBuffers(m_Device, m_CurrentScene);
+	m_RasterPass.CreateDrawData(m_Device, m_CurrentScene);
+
 	RT_LOG("[RebuildAS] creating material buffer");
 	CreateMaterialBuffer();
 	RT_LOG("[RebuildAS] creating light buffer");
@@ -998,8 +1008,78 @@ void RendererGPU::Render(const Camera& camera)
 	uboPostBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
 	vkCmdPipelineBarrier(cmd,
 		VK_PIPELINE_STAGE_TRANSFER_BIT,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
 		0, 1, &uboPostBarrier, 0, nullptr, 0, nullptr);
+
+	// ---- Raster G-buffer pass (primary visibility) ----
+	if (m_RasterPass.IsAvailable() && m_DepthImageView)
+	{
+		// Transition G-buffer images: GENERAL → COLOR_ATTACHMENT_OPTIMAL
+		VkImage gbufferImgs[] = {
+			m_GNormalRoughness, m_GViewZ, m_GMotion,
+			m_GAlbedoF0, m_GDirectEmission,
+			m_GPrimHit, m_GPrimGeoNormal, m_GPrimUV
+		};
+		for (auto img : gbufferImgs)
+		{
+			VkImageMemoryBarrier b = {};
+			b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			b.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			b.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			b.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			b.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.image = img;
+			b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			b.subresourceRange.levelCount = 1;
+			b.subresourceRange.layerCount = 1;
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+			                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
+			                     0, nullptr, 0, nullptr, 1, &b);
+		}
+
+		// Transition depth image: UNDEFINED → DEPTH_ATTACHMENT_OPTIMAL
+		VkImageMemoryBarrier depthBarrier = {};
+		depthBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		depthBarrier.srcAccessMask = 0;
+		depthBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		depthBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		depthBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+		depthBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		depthBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		depthBarrier.image = m_DepthImage;
+		depthBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		depthBarrier.subresourceRange.levelCount = 1;
+		depthBarrier.subresourceRange.layerCount = 1;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		                     VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0,
+		                     0, nullptr, 0, nullptr, 1, &depthBarrier);
+
+		m_RasterPass.Record(cmd, m_Width, m_Height,
+		                    m_PathTracePass.GetDescriptorSet(), m_GBufferSet,
+		                    m_DepthImageView);
+
+		// Transition G-buffer images back: COLOR_ATTACHMENT_OPTIMAL → GENERAL
+		for (auto img : gbufferImgs)
+		{
+			VkImageMemoryBarrier b = {};
+			b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+			b.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.image = img;
+			b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			b.subresourceRange.levelCount = 1;
+			b.subresourceRange.layerCount = 1;
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0,
+			                     0, nullptr, 0, nullptr, 1, &b);
+		}
+	}
 
 	// Trace rays via PathTracePass
 	m_PathTracePass.Record(cmd, m_Width, m_Height, m_GBufferSet);
@@ -1299,6 +1379,44 @@ void RendererGPU::CreateGBufferImages()
 			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 		}
 	});
+
+	// Create depth image for raster pass
+	{
+		VkImageCreateInfo depthInfo = {};
+		depthInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+		depthInfo.imageType = VK_IMAGE_TYPE_2D;
+		depthInfo.format = VK_FORMAT_D32_SFLOAT;
+		depthInfo.extent = { m_Width, m_Height, 1 };
+		depthInfo.mipLevels = 1;
+		depthInfo.arrayLayers = 1;
+		depthInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+		depthInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+		depthInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+		depthInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+		vkCreateImage(device, &depthInfo, nullptr, &m_DepthImage);
+
+		VkMemoryRequirements memReq;
+		vkGetImageMemoryRequirements(device, m_DepthImage, &memReq);
+		uint32_t memType = m_Device.FindMemoryType(memReq.memoryTypeBits,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		VkMemoryAllocateInfo allocInfo = {};
+		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		allocInfo.allocationSize = memReq.size;
+		allocInfo.memoryTypeIndex = memType;
+		vkAllocateMemory(device, &allocInfo, nullptr, &m_DepthImageMem);
+		vkBindImageMemory(device, m_DepthImage, m_DepthImageMem, 0);
+
+		VkImageViewCreateInfo viewInfo = {};
+		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+		viewInfo.image = m_DepthImage;
+		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+		viewInfo.format = VK_FORMAT_D32_SFLOAT;
+		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+		viewInfo.subresourceRange.levelCount = 1;
+		viewInfo.subresourceRange.layerCount = 1;
+		vkCreateImageView(device, &viewInfo, nullptr, &m_DepthImageView);
+	}
 }
 
 void RendererGPU::DestroyGBufferImages()
@@ -1327,6 +1445,10 @@ void RendererGPU::DestroyGBufferImages()
 		if (p.img)  { vkDestroyImage(device, p.img, nullptr);      p.img  = VK_NULL_HANDLE; }
 		if (p.mem)  { vkFreeMemory(device, p.mem, nullptr);        p.mem  = VK_NULL_HANDLE; }
 	}
+
+	if (m_DepthImageView) { vkDestroyImageView(device, m_DepthImageView, nullptr); m_DepthImageView = VK_NULL_HANDLE; }
+	if (m_DepthImage) { vkDestroyImage(device, m_DepthImage, nullptr); m_DepthImage = VK_NULL_HANDLE; }
+	if (m_DepthImageMem) { vkFreeMemory(device, m_DepthImageMem, nullptr); m_DepthImageMem = VK_NULL_HANDLE; }
 }
 
 void RendererGPU::CreateGBufferDescriptorSet()

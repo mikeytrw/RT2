@@ -46,7 +46,7 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	                                      VK_SHADER_STAGE_VERTEX_BIT |
 	                                      VK_SHADER_STAGE_FRAGMENT_BIT;
 
-	const uint32_t maxTextures = 1024;
+	const uint32_t maxTextures = 1000;
 
 	VkDescriptorSetLayoutBinding bindings[14] = {};
 
@@ -135,8 +135,9 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	bindings[13].stageFlags = allGraphicsRTFlags;
 
 	VkDescriptorBindingFlagsEXT bindingFlags[14] = {};
-	bindingFlags[11] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT |
-	                   VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT;
+	bindingFlags[11] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT;
+	// Note: no VARIABLE_DESCRIPTOR_COUNT_BIT — binding 11 is no longer the
+	// highest binding number (12, 13 exist). Use fixed descriptorCount instead.
 
 	VkDescriptorSetLayoutBindingFlagsCreateInfoEXT bindingFlagsInfo = {};
 	bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
@@ -317,13 +318,6 @@ bool PathTracePass::CreateDescriptorSet(const GpuDevice& dev, VkDescriptorPool p
 	allocInfo.descriptorPool = pool;
 	allocInfo.descriptorSetCount = 1;
 	allocInfo.pSetLayouts = &m_DescriptorSetLayout;
-
-	VkDescriptorSetVariableDescriptorCountAllocateInfoEXT varInfo = {};
-	uint32_t variableCount = 1024;
-	varInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO_EXT;
-	varInfo.descriptorSetCount = 1;
-	varInfo.pDescriptorCounts = &variableCount;
-	allocInfo.pNext = &varInfo;
 
 	VkResult err = vkAllocateDescriptorSets(dev.device, &allocInfo, &m_DescriptorSet);
 	if (err != VK_SUCCESS)
