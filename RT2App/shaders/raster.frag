@@ -4,6 +4,8 @@
 
 #include "shader_interface.h"
 
+layout(early_fragment_tests) in;
+
 // Camera UBO (set 0, binding 1)
 layout(set = 0, binding = SI_BINDING_CAMERA_UBO, std140) uniform CameraData
 {
