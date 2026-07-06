@@ -7,12 +7,17 @@ param(
     [string]$Label = "current",
     [string]$Scene = "C:\Users\mikey\Downloads\sofa_and_lamp.glb",
     [string]$Env = "C:\Users\mikey\Downloads\kloofendal_48d_partly_cloudy_puresky_4k.exr",
-    [string]$Baseline = "baseline_before_phase1.png",
+    [string]$Baseline = "",
     [int]$Frames = 10,
     [int]$Spp = 5,
     [int]$Bounces = 4,
     [switch]$NRD
 )
+
+# Default baseline depends on NRD mode
+if ($Baseline -eq "") {
+    $Baseline = if ($NRD) { "baseline_nrd.png" } else { "baseline_before_phase1.png" }
+}
 
 $ErrorActionPreference = "Continue"
 $Exe = "bin\Release-windows-x86_64\RT2App\RT2App.exe"
