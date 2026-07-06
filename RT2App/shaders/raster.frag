@@ -161,12 +161,27 @@ void main()
     vec2 prevUv = (prevClip.xy / prevClip.w) * 0.5 + 0.5;
 
     // Write G-buffer via MRT color attachments (rasterization-ordered, no race)
+    // matIdx sentinel: store matIdx + 1 in gPrimHit.w (0 = miss/sky, used by secondary_raygen)
+    outPrimHit = vec4(inWorldPos, floatBitsToInt(matIdx + 1u));
+    outPrimGeoNormal = vec4(geoN * 0.5 + 0.5, 0.0);
+    outPrimUV = vec4(uv, 0.0, 0.0);
+
+    // Emissive special-casing: match RT closesthit's emissive path (lines 351-363).
+    // Emissive surfaces terminate — no bounce lighting, no NRD demod.
+    // Override G-buffer to signal "direct emission only" to secondary_raygen + NRD.
+    if (dot(emissive, emissive) > 0.0)
+    {
+        outNormalRoughness = vec4(geoN * 0.5 + 0.5, 1.0);  // geo normal, roughness=1.0
+        outViewZ = vec4(viewZ, 0.0, 0.0, 0.0);
+        outMotion = vec4(0.0, 0.0, 0.0, 0.0);              // zero motion (emissive bypasses NRD)
+        outAlbedoF0 = vec4(1.0, 1.0, 1.0, 1.0);            // white albedo, F0=1 (no demod)
+        outDirectEmission = vec4(emissive, 0.0);
+        return;
+    }
+
     outNormalRoughness = vec4(shadingN * 0.5 + 0.5, roughness);
     outViewZ = vec4(viewZ, 0.0, 0.0, 0.0);
     outMotion = vec4(prevUv - currUv, 0.0, 0.0);
     outAlbedoF0 = vec4(diffFactor, f0Scalar);
-    outDirectEmission = vec4(emissive, 0.0);
-    outPrimHit = vec4(inWorldPos, floatBitsToInt(matIdx));
-    outPrimGeoNormal = vec4(geoN * 0.5 + 0.5, 0.0);
-    outPrimUV = vec4(uv, 0.0, 0.0);
+    outDirectEmission = vec4(0.0);  // non-emissive: no direct emission
 }

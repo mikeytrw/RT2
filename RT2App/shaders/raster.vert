@@ -56,5 +56,10 @@ void main()
     outUV = inUV;
     outInstanceIndex = instIdx;
 
-    gl_Position = camera.viewToClip * camera.worldToView * worldPos;
+    // Jittered clip-space position for raster (matches RT raygen jitter).
+    // camera.forward.w = jitter.x, camera.right.w = jitter.y (subpixel offset in [-0.5, 0.5] pixels).
+    // Convert to NDC: offset = jitter / viewport * 2 (NDC range is [-1, 1]).
+    vec4 clipPos = camera.viewToClip * camera.worldToView * worldPos;
+    clipPos.xy += vec2(camera.forward.w, camera.right.w) * 2.0 / clipPos.w;
+    gl_Position = clipPos;
 }
