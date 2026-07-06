@@ -1,0 +1,210 @@
+=== RT2 Log ===
+[PathTracePass] initialized (recursion=16, SBT stride=64)
+[ComposePass] initialized
+[SetScene] enter: textures=6, envMapIndex=-1, meshes=18, materials=4
+[SetScene] destroying old textures (count=0)
+[SetScene] creating new textures
+[RT2] Created 6 GPU textures
+[SetScene] destroying old CDF textures
+[SetScene] creating new CDF textures
+[SetScene] CDF indices: marginal=-1 conditional=-1 envMap=-1
+[SetScene] skipping descriptor update (AS needs rebuild or not valid)
+[SetScene] done
+[PathTracePass] descriptor set allocated
+[UpdateDS] skip: AS not valid
+[Render] frame=1 needsASRebuild=1
+[Render] rebuilding AS...
+[RebuildAS] enter: meshes=18
+[RebuildAS] got command buffer
+[RebuildAS] built 18 geometry entries, calling BuildBLASes
+[BuildBLASes] enter: meshes=18 prevBLASes=0
+[BuildBLASes] calling vkDeviceWaitIdle
+[BuildBLASes] vkDeviceWaitIdle done
+[BuildBLASes] old BLASes destroyed, destroying combined buffers
+[BuildBLASes] combined buffers destroyed, resizing
+[BuildBLASes] mesh 0: verts=16929 indices=31872
+[BuildBLASes] mesh 0: creating vertex buffer (67716 bytes)
+[BuildBLASes] mesh 0: creating index buffer (127488 bytes)
+[BuildBLASes] mesh 0: getting build sizes (prims=10624)
+[BuildBLASes] mesh 0: creating BLAS buffer (747392 bytes)
+[BuildBLASes] mesh 0: creating AS handle
+[BuildBLASes] mesh 0: creating scratch buffer (227328 bytes)
+[BuildBLASes] mesh 0: cmdBuildAS
+[BuildBLASes] mesh 0: done
+[BuildBLASes] mesh 1: verts=16938 indices=31872
+[BuildBLASes] mesh 1: creating vertex buffer (67752 bytes)
+[BuildBLASes] mesh 1: creating index buffer (127488 bytes)
+[BuildBLASes] mesh 1: getting build sizes (prims=10624)
+[BuildBLASes] mesh 1: creating BLAS buffer (747392 bytes)
+[BuildBLASes] mesh 1: creating AS handle
+[BuildBLASes] mesh 1: creating scratch buffer (227328 bytes)
+[BuildBLASes] mesh 1: cmdBuildAS
+[BuildBLASes] mesh 1: done
+[BuildBLASes] mesh 2: verts=16938 indices=31872
+[BuildBLASes] mesh 2: creating vertex buffer (67752 bytes)
+[BuildBLASes] mesh 2: creating index buffer (127488 bytes)
+[BuildBLASes] mesh 2: getting build sizes (prims=10624)
+[BuildBLASes] mesh 2: creating BLAS buffer (747392 bytes)
+[BuildBLASes] mesh 2: creating AS handle
+[BuildBLASes] mesh 2: creating scratch buffer (227328 bytes)
+[BuildBLASes] mesh 2: cmdBuildAS
+[BuildBLASes] mesh 2: done
+[BuildBLASes] mesh 3: verts=34026 indices=63744
+[BuildBLASes] mesh 3: creating vertex buffer (136104 bytes)
+[BuildBLASes] mesh 3: creating index buffer (254976 bytes)
+[BuildBLASes] mesh 3: getting build sizes (prims=21248)
+[BuildBLASes] mesh 3: creating BLAS buffer (1492864 bytes)
+[BuildBLASes] mesh 3: creating AS handle
+[BuildBLASes] mesh 3: creating scratch buffer (452096 bytes)
+[BuildBLASes] mesh 3: cmdBuildAS
+[BuildBLASes] mesh 3: done
+[BuildBLASes] mesh 4: verts=17022 indices=31872
+[BuildBLASes] mesh 4: creating vertex buffer (68088 bytes)
+[BuildBLASes] mesh 4: creating index buffer (127488 bytes)
+[BuildBLASes] mesh 4: getting build sizes (prims=10624)
+[BuildBLASes] mesh 4: creating BLAS buffer (747392 bytes)
+[BuildBLASes] mesh 4: creating AS handle
+[BuildBLASes] mesh 4: creating scratch buffer (227328 bytes)
+[BuildBLASes] mesh 4: cmdBuildAS
+[BuildBLASes] mesh 4: done
+[BuildBLASes] mesh 5: verts=17031 indices=31872
+[BuildBLASes] mesh 5: creating vertex buffer (68124 bytes)
+[BuildBLASes] mesh 5: creating index buffer (127488 bytes)
+[BuildBLASes] mesh 5: getting build sizes (prims=10624)
+[BuildBLASes] mesh 5: creating BLAS buffer (747392 bytes)
+[BuildBLASes] mesh 5: creating AS handle
+[BuildBLASes] mesh 5: creating scratch buffer (227328 bytes)
+[BuildBLASes] mesh 5: cmdBuildAS
+[BuildBLASes] mesh 5: done
+[BuildBLASes] mesh 6: verts=17010 indices=31872
+[BuildBLASes] mesh 6: creating vertex buffer (68040 bytes)
+[BuildBLASes] mesh 6: creating index buffer (127488 bytes)
+[BuildBLASes] mesh 6: getting build sizes (prims=10624)
+[BuildBLASes] mesh 6: creating BLAS buffer (747392 bytes)
+[BuildBLASes] mesh 6: creating AS handle
+[BuildBLASes] mesh 6: creating scratch buffer (227328 bytes)
+[BuildBLASes] mesh 6: cmdBuildAS
+[BuildBLASes] mesh 6: done
+[BuildBLASes] mesh 7: verts=72 indices=36
+[BuildBLASes] mesh 7: creating vertex buffer (288 bytes)
+[BuildBLASes] mesh 7: creating index buffer (144 bytes)
+[BuildBLASes] mesh 7: getting build sizes (prims=12)
+[BuildBLASes] mesh 7: creating BLAS buffer (3584 bytes)
+[BuildBLASes] mesh 7: creating AS handle
+[BuildBLASes] mesh 7: creating scratch buffer (1920 bytes)
+[BuildBLASes] mesh 7: cmdBuildAS
+[BuildBLASes] mesh 7: done
+[BuildBLASes] mesh 8: verts=480 indices=282
+[BuildBLASes] mesh 8: creating vertex buffer (1920 bytes)
+[BuildBLASes] mesh 8: creating index buffer (1128 bytes)
+[BuildBLASes] mesh 8: getting build sizes (prims=94)
+[BuildBLASes] mesh 8: creating BLAS buffer (7680 bytes)
+[BuildBLASes] mesh 8: creating AS handle
+[BuildBLASes] mesh 8: creating scratch buffer (2432 bytes)
+[BuildBLASes] mesh 8: cmdBuildAS
+[BuildBLASes] mesh 8: done
+[BuildBLASes] mesh 9: verts=13470 indices=13656
+[BuildBLASes] mesh 9: creating vertex buffer (53880 bytes)
+[BuildBLASes] mesh 9: creating index buffer (54624 bytes)
+[BuildBLASes] mesh 9: getting build sizes (prims=4552)
+[BuildBLASes] mesh 9: creating BLAS buffer (321280 bytes)
+[BuildBLASes] mesh 9: creating AS handle
+[BuildBLASes] mesh 9: creating scratch buffer (98944 bytes)
+[BuildBLASes] mesh 9: cmdBuildAS
+[BuildBLASes] mesh 9: done
+[BuildBLASes] mesh 10: verts=576 indices=372
+[BuildBLASes] mesh 10: creating vertex buffer (2304 bytes)
+[BuildBLASes] mesh 10: creating index buffer (1488 bytes)
+[BuildBLASes] mesh 10: getting build sizes (prims=124)
+[BuildBLASes] mesh 10: creating BLAS buffer (9600 bytes)
+[BuildBLASes] mesh 10: creating AS handle
+[BuildBLASes] mesh 10: creating scratch buffer (2688 bytes)
+[BuildBLASes] mesh 10: cmdBuildAS
+[BuildBLASes] mesh 10: done
+[BuildBLASes] mesh 11: verts=576 indices=372
+[BuildBLASes] mesh 11: creating vertex buffer (2304 bytes)
+[BuildBLASes] mesh 11: creating index buffer (1488 bytes)
+[BuildBLASes] mesh 11: getting build sizes (prims=124)
+[BuildBLASes] mesh 11: creating BLAS buffer (9600 bytes)
+[BuildBLASes] mesh 11: creating AS handle
+[BuildBLASes] mesh 11: creating scratch buffer (2688 bytes)
+[BuildBLASes] mesh 11: cmdBuildAS
+[BuildBLASes] mesh 11: done
+[BuildBLASes] mesh 12: verts=576 indices=372
+[BuildBLASes] mesh 12: creating vertex buffer (2304 bytes)
+[BuildBLASes] mesh 12: creating index buffer (1488 bytes)
+[BuildBLASes] mesh 12: getting build sizes (prims=124)
+[BuildBLASes] mesh 12: creating BLAS buffer (9600 bytes)
+[BuildBLASes] mesh 12: creating AS handle
+[BuildBLASes] mesh 12: creating scratch buffer (2688 bytes)
+[BuildBLASes] mesh 12: cmdBuildAS
+[BuildBLASes] mesh 12: done
+[BuildBLASes] mesh 13: verts=576 indices=372
+[BuildBLASes] mesh 13: creating vertex buffer (2304 bytes)
+[BuildBLASes] mesh 13: creating index buffer (1488 bytes)
+[BuildBLASes] mesh 13: getting build sizes (prims=124)
+[BuildBLASes] mesh 13: creating BLAS buffer (9600 bytes)
+[BuildBLASes] mesh 13: creating AS handle
+[BuildBLASes] mesh 13: creating scratch buffer (2688 bytes)
+[BuildBLASes] mesh 13: cmdBuildAS
+[BuildBLASes] mesh 13: done
+[BuildBLASes] mesh 14: verts=576 indices=372
+[BuildBLASes] mesh 14: creating vertex buffer (2304 bytes)
+[BuildBLASes] mesh 14: creating index buffer (1488 bytes)
+[BuildBLASes] mesh 14: getting build sizes (prims=124)
+[BuildBLASes] mesh 14: creating BLAS buffer (9600 bytes)
+[BuildBLASes] mesh 14: creating AS handle
+[BuildBLASes] mesh 14: creating scratch buffer (2688 bytes)
+[BuildBLASes] mesh 14: cmdBuildAS
+[BuildBLASes] mesh 14: done
+[BuildBLASes] mesh 15: verts=46470 indices=92928
+[BuildBLASes] mesh 15: creating vertex buffer (185880 bytes)
+[BuildBLASes] mesh 15: creating index buffer (371712 bytes)
+[BuildBLASes] mesh 15: getting build sizes (prims=30976)
+[BuildBLASes] mesh 15: creating BLAS buffer (2169088 bytes)
+[BuildBLASes] mesh 15: creating AS handle
+[BuildBLASes] mesh 15: creating scratch buffer (657920 bytes)
+[BuildBLASes] mesh 15: cmdBuildAS
+[BuildBLASes] mesh 15: done
+[BuildBLASes] mesh 16: verts=46470 indices=92928
+[BuildBLASes] mesh 16: creating vertex buffer (185880 bytes)
+[BuildBLASes] mesh 16: creating index buffer (371712 bytes)
+[BuildBLASes] mesh 16: getting build sizes (prims=30976)
+[BuildBLASes] mesh 16: creating BLAS buffer (2169088 bytes)
+[BuildBLASes] mesh 16: creating AS handle
+[BuildBLASes] mesh 16: creating scratch buffer (657920 bytes)
+[BuildBLASes] mesh 16: cmdBuildAS
+[BuildBLASes] mesh 16: done
+[BuildBLASes] mesh 17: verts=11622 indices=23232
+[BuildBLASes] mesh 17: creating vertex buffer (46488 bytes)
+[BuildBLASes] mesh 17: creating index buffer (92928 bytes)
+[BuildBLASes] mesh 17: getting build sizes (prims=7744)
+[BuildBLASes] mesh 17: creating BLAS buffer (547840 bytes)
+[BuildBLASes] mesh 17: creating AS handle
+[BuildBLASes] mesh 17: creating scratch buffer (166528 bytes)
+[BuildBLASes] mesh 17: cmdBuildAS
+[BuildBLASes] mesh 17: done
+[BuildBLASes] all meshes built, calling BuildCombinedBuffers
+[BuildCombinedBuffers] enter: totalTris=159966 blasCount=18
+[BuildCombinedBuffers] old buffers destroyed (no-op if already done)
+[BuildCombinedBuffers] collecting data: normals=159966 positions=479898 uvs=479898 tangents=479898
+[BuildCombinedBuffers] creating normal buffer (2559456 bytes)
+[BuildCombinedBuffers] creating position buffer (7678368 bytes)
+[BuildCombinedBuffers] creating UV buffer (7678368 bytes)
+[BuildCombinedBuffers] creating tangent buffer (7678368 bytes)
+[BuildCombinedBuffers] creating offset buffer (72 bytes)
+[BuildCombinedBuffers] done
+[BuildBLASes] BuildCombinedBuffers done, returning true
+[RebuildAS] BuildBLASes result=1
+[RebuildAS] TLAS build result=1 instances=18
+[RebuildAS] creating material buffer
+[RebuildAS] creating light buffer
+[RT2] Light buffer: 12 lights, totalArea=0.062717
+[RebuildAS] updating descriptor set
+[UpdateDS] done (textures=6, descSet=00007E000000007E, TLAS=00012F000000012F, outView=00005E000000005E, camUBO=0001370000000137, matBuf=0001330000000133)
+[Render] AS rebuild done, AS valid=1
+[Render] frame=2 needsASRebuild=0
+[Render] frame=3 needsASRebuild=0
+[Readback] captured 1280x720 → 3686400 bytes
+[PathTracePass] descriptor set allocated
+[UpdateDS] done (textures=6, descSet=0001610000000161, TLAS=00012F000000012F, outView=0001410000000141, camUBO=0001370000000137, matBuf=0001330000000133)

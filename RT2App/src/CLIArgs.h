@@ -20,6 +20,7 @@ struct CLIArgs
 	bool listScenes = false;      // just print what would be loaded
 	bool verbose = false;
 	bool validate = false;        // enable Vulkan validation layers
+	bool syncValidate = false;    // enable synchronization validation
 
 	bool hasScene() const { return !scenePath.empty(); }
 	bool hasEnvMap() const { return !envMapPath.empty(); }
@@ -88,6 +89,11 @@ struct CLIArgs
 			{
 				args.validate = true;
 			}
+			else if (strcmp(a, "--sync-validate") == 0)
+			{
+				args.validate = true;
+				args.syncValidate = true;
+			}
 			else if (strcmp(a, "--list") == 0 || strcmp(a, "--dry-run") == 0)
 			{
 				args.listScenes = true;
@@ -111,6 +117,7 @@ struct CLIArgs
 				printf("  --list               Print what would be loaded, then exit\n");
 			printf("  --verbose            Verbose logging\n");
 			printf("  --validate           Enable Vulkan validation layers\n");
+			printf("  --sync-validate     Enable synchronization validation (implies --validate)\n");
 			printf("  --help               Show this help\n");
 				exit(0);
 			}
