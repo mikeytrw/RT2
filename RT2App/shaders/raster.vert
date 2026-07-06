@@ -44,7 +44,7 @@ layout(location = 3) flat out uint outInstanceIndex;
 
 void main()
 {
-    uint instIdx = gl_DrawID; // index of draw in vkCmdDrawIndirect = instance index
+    uint instIdx = gl_InstanceIndex; // firstInstance from VkDrawIndirectCommand = global instance index
     mat4 world = instanceTransforms[instIdx];
     mat4 worldPrev = instanceTransformsPrev[instIdx];
 

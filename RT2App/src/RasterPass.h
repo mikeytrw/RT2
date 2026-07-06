@@ -52,7 +52,8 @@ public:
 
 private:
 	GpuDevice m_Device;
-	VkPipeline m_Pipeline = VK_NULL_HANDLE;
+	VkPipeline m_Pipeline = VK_NULL_HANDLE;       // opaque (depthWrite=ON)
+	VkPipeline m_MaskedPipeline = VK_NULL_HANDLE;  // alpha-tested (depthWrite=OFF)
 	VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
 
 	// Single mega-vertex buffer (all meshes concatenated, per-triangle non-indexed)
@@ -62,10 +63,14 @@ private:
 	// Per-mesh vertex offset into the mega buffer
 	std::vector<uint32_t> m_MeshVertexOffsets;
 
-	// Indirect draw buffer: one VkDrawIndirectCommand per instance
-	VkBuffer m_DrawBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_DrawMemory = VK_NULL_HANDLE;
-	uint32_t m_DrawCount = 0;
+	// Indirect draw buffers: split into opaque and masked passes
+	VkBuffer m_OpaqueDrawBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_OpaqueDrawMemory = VK_NULL_HANDLE;
+	uint32_t m_OpaqueDrawCount = 0;
+
+	VkBuffer m_MaskedDrawBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_MaskedDrawMemory = VK_NULL_HANDLE;
+	uint32_t m_MaskedDrawCount = 0;
 
 	// Instance index buffer (gl_DrawID → instance index for transform lookup)
 	// Stored as a push constant (just the draw ID), actual transforms via SSBO.

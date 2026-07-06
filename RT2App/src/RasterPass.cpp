@@ -131,12 +131,24 @@ bool RasterPass::Init(const GpuDevice& dev, VkDescriptorSetLayout sceneSetLayout
 	pipelineInfo.pNext = &renderingInfo;
 
 	VkResult err = vkCreateGraphicsPipelines(m_Device.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_Pipeline);
+
+	// Masked pipeline: same as opaque but depthWrite=OFF so discard'd fragments don't occlude
+	VkPipelineDepthStencilStateCreateInfo maskedDepth = depthStencil;
+	maskedDepth.depthWriteEnable = VK_FALSE;
+	pipelineInfo.pDepthStencilState = &maskedDepth;
+	VkResult err2 = vkCreateGraphicsPipelines(m_Device.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_MaskedPipeline);
+
 	vkDestroyShaderModule(dev.device, vertModule, nullptr);
 	vkDestroyShaderModule(dev.device, fragModule, nullptr);
 
 	if (err != VK_SUCCESS)
 	{
-		RT_LOG("[RasterPass] vkCreateGraphicsPipelines failed: %d", (int)err);
+		RT_LOG("[RasterPass] vkCreateGraphicsPipelines (opaque) failed: %d", (int)err);
+		return false;
+	}
+	if (err2 != VK_SUCCESS)
+	{
+		RT_LOG("[RasterPass] vkCreateGraphicsPipelines (masked) failed: %d", (int)err2);
 		return false;
 	}
 
@@ -149,6 +161,7 @@ void RasterPass::Destroy()
 	DestroyDrawData();
 	DestroyVertexBuffers();
 	if (m_Pipeline) { vkDestroyPipeline(m_Device.device, m_Pipeline, nullptr); m_Pipeline = VK_NULL_HANDLE; }
+	if (m_MaskedPipeline) { vkDestroyPipeline(m_Device.device, m_MaskedPipeline, nullptr); m_MaskedPipeline = VK_NULL_HANDLE; }
 	if (m_PipelineLayout) { vkDestroyPipelineLayout(m_Device.device, m_PipelineLayout, nullptr); m_PipelineLayout = VK_NULL_HANDLE; }
 }
 
@@ -218,59 +231,84 @@ void RasterPass::CreateDrawData(const GpuDevice& dev, const GPUSceneData& scene)
 {
 	DestroyDrawData();
 
-	m_DrawCount = static_cast<uint32_t>(scene.instances.size());
-	if (m_DrawCount == 0) return;
+	uint32_t totalInstances = static_cast<uint32_t>(scene.instances.size());
+	if (totalInstances == 0) return;
 
-	std::vector<VkDrawIndirectCommand> drawCmds(m_DrawCount);
-	for (uint32_t i = 0; i < m_DrawCount; i++)
+	// Split instances into opaque (alphaMode 0) and masked (alphaMode 1).
+	// BLEND (alphaMode 2) goes into masked pass too (no depth write).
+	std::vector<VkDrawIndirectCommand> opaqueCmds;
+	std::vector<VkDrawIndirectCommand> maskedCmds;
+	opaqueCmds.reserve(totalInstances);
+	maskedCmds.reserve(totalInstances);
+
+	for (uint32_t i = 0; i < totalInstances; i++)
 	{
 		const auto& inst = scene.instances[i];
-		drawCmds[i].firstInstance = i; // not used by gl_DrawID but required
-		drawCmds[i].instanceCount = 1;
+		float alphaMode = scene.materials[inst.materialIndex].alphaMode;
+
+		VkDrawIndirectCommand cmd = {};
+		cmd.firstInstance = i;
+		cmd.instanceCount = 1;
+
 		if (inst.meshIndex < m_MeshVertexOffsets.size())
 		{
 			uint32_t meshOffset = m_MeshVertexOffsets[inst.meshIndex];
-			uint32_t nextMeshOffset = (inst.meshIndex + 1 < m_MeshVertexOffsets.size())
-				? m_MeshVertexOffsets[inst.meshIndex + 1] : 0;
-			// Count vertices for this mesh: look at next mesh offset or compute from triangles
-			// Actually we need the vertex count per mesh. Let me store it.
-			// For now compute from the scene data.
 			uint32_t triCount = static_cast<uint32_t>(scene.meshes[inst.meshIndex].indices.size() / 3);
-			drawCmds[i].vertexCount = triCount * 3;
-			drawCmds[i].firstVertex = meshOffset;
+			cmd.vertexCount = triCount * 3;
+			cmd.firstVertex = meshOffset;
 		}
 		else
 		{
-			drawCmds[i].vertexCount = 0;
-			drawCmds[i].firstVertex = 0;
+			cmd.vertexCount = 0;
+			cmd.firstVertex = 0;
 		}
+
+		if (alphaMode < 0.5f)
+			opaqueCmds.push_back(cmd);
+		else
+			maskedCmds.push_back(cmd);
 	}
 
-	VkDeviceSize bufSize = m_DrawCount * sizeof(VkDrawIndirectCommand);
-	GpuResources::CreateBuffer(dev, bufSize,
-	             VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
-	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-	             m_DrawBuffer, m_DrawMemory);
+	auto createDrawBuffer = [&](const std::vector<VkDrawIndirectCommand>& cmds,
+	                            VkBuffer& buf, VkDeviceMemory& mem, uint32_t& count) {
+		count = static_cast<uint32_t>(cmds.size());
+		if (count == 0) return;
+		VkDeviceSize bufSize = cmds.size() * sizeof(VkDrawIndirectCommand);
+		GpuResources::CreateBuffer(dev, bufSize,
+		             VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		             buf, mem);
+		void* data;
+		vkMapMemory(dev.device, mem, 0, bufSize, 0, &data);
+		memcpy(data, cmds.data(), bufSize);
+		vkUnmapMemory(dev.device, mem);
+	};
 
-	void* data;
-	vkMapMemory(dev.device, m_DrawMemory, 0, bufSize, 0, &data);
-	memcpy(data, drawCmds.data(), bufSize);
-	vkUnmapMemory(dev.device, m_DrawMemory);
+	createDrawBuffer(opaqueCmds, m_OpaqueDrawBuffer, m_OpaqueDrawMemory, m_OpaqueDrawCount);
+	createDrawBuffer(maskedCmds, m_MaskedDrawBuffer, m_MaskedDrawMemory, m_MaskedDrawCount);
+
+	RT_LOG("[RasterPass] Draw data: %u opaque, %u masked", m_OpaqueDrawCount, m_MaskedDrawCount);
 }
 
 void RasterPass::DestroyDrawData()
 {
-	GpuResources::DestroyBuffer(m_Device, m_DrawBuffer, m_DrawMemory);
-	m_DrawBuffer = VK_NULL_HANDLE;
-	m_DrawMemory = VK_NULL_HANDLE;
-	m_DrawCount = 0;
+	GpuResources::DestroyBuffer(m_Device, m_OpaqueDrawBuffer, m_OpaqueDrawMemory);
+	m_OpaqueDrawBuffer = VK_NULL_HANDLE;
+	m_OpaqueDrawMemory = VK_NULL_HANDLE;
+	m_OpaqueDrawCount = 0;
+
+	GpuResources::DestroyBuffer(m_Device, m_MaskedDrawBuffer, m_MaskedDrawMemory);
+	m_MaskedDrawBuffer = VK_NULL_HANDLE;
+	m_MaskedDrawMemory = VK_NULL_HANDLE;
+	m_MaskedDrawCount = 0;
 }
 
 void RasterPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
                         VkDescriptorSet sceneSet, VkDescriptorSet gbufferSet,
                         VkImageView depthView) const
 {
-	if (!m_Pipeline || m_DrawCount == 0 || !m_MegaVertexBuffer) return;
+	if (!m_Pipeline || !m_MegaVertexBuffer) return;
+	if (m_OpaqueDrawCount == 0 && m_MaskedDrawCount == 0) return;
 
 	VkClearValue depthClear = {};
 	depthClear.depthStencil.depth = 1.0f;
@@ -295,12 +333,6 @@ void RasterPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 
 	vkCmdBeginRendering(cmd, &renderingInfo);
 
-	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline);
-	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout,
-	                        0, 1, &sceneSet, 0, nullptr);
-	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout,
-	                        1, 1, &gbufferSet, 0, nullptr);
-
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
 	viewport.y = 0.0f;
@@ -318,7 +350,27 @@ void RasterPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 	VkDeviceSize offsets[] = { 0 };
 	vkCmdBindVertexBuffers(cmd, 0, 1, &m_MegaVertexBuffer, offsets);
 
-	vkCmdDrawIndirect(cmd, m_DrawBuffer, 0, m_DrawCount, sizeof(VkDrawIndirectCommand));
+	// Pass 1: opaque instances (depth write ON)
+	if (m_OpaqueDrawCount > 0)
+	{
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout,
+		                        0, 1, &sceneSet, 0, nullptr);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout,
+		                        1, 1, &gbufferSet, 0, nullptr);
+		vkCmdDrawIndirect(cmd, m_OpaqueDrawBuffer, 0, m_OpaqueDrawCount, sizeof(VkDrawIndirectCommand));
+	}
+
+	// Pass 2: masked/blend instances (depth write OFF — discard'd fragments don't occlude)
+	if (m_MaskedDrawCount > 0)
+	{
+		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_MaskedPipeline);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout,
+		                        0, 1, &sceneSet, 0, nullptr);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout,
+		                        1, 1, &gbufferSet, 0, nullptr);
+		vkCmdDrawIndirect(cmd, m_MaskedDrawBuffer, 0, m_MaskedDrawCount, sizeof(VkDrawIndirectCommand));
+	}
 
 	vkCmdEndRendering(cmd);
 }
