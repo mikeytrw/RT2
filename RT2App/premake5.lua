@@ -26,6 +26,7 @@ project "RT2App"
         "shaders/raster.frag",
         "shaders/gbuffer_debug.comp",
         "shaders/pathtracer_shared.glsl",
+        "shaders/scatter_shared.glsl",
         "shaders/shader_interface.h",
     }
 
@@ -42,7 +43,8 @@ project "RT2App"
     local shaderOpt = ""
     local shaderInclude = "-I " .. shaderDir
     -- Shared dependencies: all stages include pathtracer_shared.glsl + shader_interface.h
-    local shaderDeps = '"' .. shaderDir .. "/pathtracer_shared.glsl" .. '" "' .. shaderDir .. "/shader_interface.h" .. '"'
+    -- closesthit also includes scatter_shared.glsl
+    local shaderDeps = '"' .. shaderDir .. "/pathtracer_shared.glsl" .. '" "' .. shaderDir .. "/scatter_shared.glsl" .. '" "' .. shaderDir .. "/shader_interface.h" .. '"'
 
     -- Per-stage custom build rules (dependency tracking via premake)
     filter {"files:shaders/raygen.rgen"}

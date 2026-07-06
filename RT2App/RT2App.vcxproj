@@ -351,6 +351,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
   </ItemGroup>
   <ItemGroup>
     <None Include="shaders\pathtracer_shared.glsl" />
+    <None Include="shaders\scatter_shared.glsl" />
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="shaders\anyhit.rahit">
