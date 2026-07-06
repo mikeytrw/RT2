@@ -16,6 +16,7 @@ project "RT2App"
     -- Shader source files (compiled via custom build rules below)
     files {
         "shaders/raygen.rgen",
+        "shaders/secondary_raygen.rgen",
         "shaders/miss.rmiss",
         "shaders/shadow.rmiss",
         "shaders/closesthit.rchit",
@@ -51,6 +52,12 @@ project "RT2App"
         buildmessage "Compiling raygen.rgen"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rgen " .. shaderInclude .. " " .. shaderDir .. "/raygen.rgen -o " .. shaderDir .. "/raygen.spv" }
         buildoutputs { shaderDir .. "/raygen.spv" }
+        buildinputs { shaderDeps }
+
+    filter {"files:shaders/secondary_raygen.rgen"}
+        buildmessage "Compiling secondary_raygen.rgen"
+        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rgen " .. shaderInclude .. " " .. shaderDir .. "/secondary_raygen.rgen -o " .. shaderDir .. "/secondary_raygen.spv" }
+        buildoutputs { shaderDir .. "/secondary_raygen.spv" }
         buildinputs { shaderDeps }
 
     filter {"files:shaders/miss.rmiss"}
@@ -155,6 +162,7 @@ project "RT2App"
        defines { "WL_PLATFORM_WINDOWS" }
         postbuildcommands {
             "copy /Y \"%{wks.location}RT2App\\shaders\\raygen.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"%{wks.location}RT2App\\shaders\\secondary_raygen.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\miss.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\shadow.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\closesthit.spv\" \"%{cfg.targetdir}\"",

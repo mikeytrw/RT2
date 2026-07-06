@@ -1,0 +1,279 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+// scatter_shared.glsl includes pathtracer_shared.glsl + scatter/NEE functions
+#include "scatter_shared.glsl"
+
+layout(location = 0) rayPayloadEXT RayPayload payload;
+layout(location = 1) rayPayloadEXT RayPayload nextPayload;
+
+// G-buffer images (set 1) — written by raster pass, read here
+// Declared in pathtracer_shared.glsl:
+//   gNormalRoughness (rgba8), gViewZ (r16f), gMotion (rg16f),
+//   gDiffRadianceHitDist (rgba16f), gSpecRadianceHitDist (rgba16f),
+//   gAlbedoF0 (rgba16f), gDirectEmission (rgba16f)
+// Additional G-buffer images (raster-only, set 1):
+layout(set = 1, binding = SI_BINDING_G_PRIM_HIT, rgba32f) uniform readonly image2D gPrimHit;
+layout(set = 1, binding = SI_BINDING_G_PRIM_GEO_NORMAL, rgba8) uniform readonly image2D gPrimGeoNormal;
+layout(set = 1, binding = SI_BINDING_G_PRIM_UV, rg16f) uniform readonly image2D gPrimUV;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+    uint width  = uint(camera.viewportSPP.x);
+    uint height = uint(camera.viewportSPP.y);
+    uint spp    = uint(camera.viewportSPP.z);
+
+    if (pixel.x >= int(width) || pixel.y >= int(height))
+        return;
+
+    bool nrdMode = (nrdData.nrdEnabled != 0u);
+    if (nrdMode)
+        spp = 1u; // NRD expects 1 spp
+
+    // ---- Read G-buffer (primary hit data from raster pass) ----
+    vec4 primHit = imageLoad(gPrimHit, pixel);
+    uint matIdxPacked = floatBitsToUint(primHit.w);
+    bool isMiss = (matIdxPacked == 0u);  // 0 = miss/sky sentinel
+
+    // Initialize RNG from pixel coords + frame index
+    uint rngState = pixel.x * 1973u + pixel.y * 9277u + uint(camera.position.w) * 26699u;
+    pcg(rngState); // warm up
+
+    // ---- Handle primary miss (sky) ----
+    if (isMiss)
+    {
+        // Trace a ray to get sky/env radiance (miss shader handles it)
+        vec3 origin = camera.position.xyz;
+        float u = (float(pixel.x) + 0.5 + camera.forward.w) / float(width);
+        float v = (float(pixel.y) + 0.5 + camera.right.w) / float(height);
+        vec2 coord = vec2(u, v) * 2.0 - 1.0;
+        vec4 target = camera.inverseProjection * vec4(coord.x, coord.y, 1.0, 1.0);
+        vec3 dir = normalize(vec3(camera.inverseView * vec4(normalize(vec3(target) / target.w), 0.0)));
+
+        payload.a = vec4(vec3(1.0), rngState);
+        payload.b = vec4(vec3(0.0), 0);
+        payload.c = vec4(origin, 0.0);
+        payload.d = vec4(dir, -1.0);
+        payload.e = vec4(0.0);
+
+        traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0,
+                    origin, 0.001, dir, 1e9, 0);
+
+        vec3 skyRadiance = payload.b.xyz;
+
+        if (nrdMode)
+        {
+            // Write sky defaults (NRD skips viewZ >= denoisingRange)
+            imageStore(gNormalRoughness, pixel, vec4(0.5, 0.5, 1.0, 1.0));
+            imageStore(gViewZ, pixel, vec4(1e6, 0.0, 0.0, 0.0));
+            imageStore(gAlbedoF0, pixel, vec4(1.0, 1.0, 1.0, 1.0));
+            imageStore(gDirectEmission, pixel, vec4(skyRadiance, 0.0));
+            imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
+            imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
+            imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+            imageStore(outputImage, pixel, vec4(skyRadiance, 1.0));
+        }
+        else
+        {
+            // Temporal accumulation
+            float frameIndex = camera.position.w;
+            vec3 color = skyRadiance;
+            if (frameIndex > 1.0)
+            {
+                vec3 prevColor = imageLoad(outputImage, pixel).xyz;
+                color = (prevColor * (frameIndex - 1.0) + color) / frameIndex;
+            }
+            imageStore(outputImage, pixel, vec4(color, 1.0));
+        }
+        return;
+    }
+
+    // ---- Primary hit from G-buffer ----
+    uint matIdx = matIdxPacked - 1u;  // unpack sentinel
+    Material mat = materials[matIdx];
+
+    vec3 worldPos = primHit.xyz;
+    vec2 uv = imageLoad(gPrimUV, pixel).xy;
+
+    // Normal from G-buffer (already normal-mapped by raster pass — do NOT re-sample)
+    vec4 normalRough = imageLoad(gNormalRoughness, pixel);
+    vec3 n = normalize(normalRough.xyz * 2.0 - 1.0);
+    float roughness = normalRough.w;
+
+    // Geometric normal (for ray offset)
+    vec3 geoN = normalize(imageLoad(gPrimGeoNormal, pixel).xyz * 2.0 - 1.0);
+
+    // View-space Z
+    float viewZ = imageLoad(gViewZ, pixel).x;
+
+    // Albedo/F0 (demod factors)
+    vec4 albedoF0 = imageLoad(gAlbedoF0, pixel);
+    vec3 diffFactor = albedoF0.rgb;
+    float f0Scalar = albedoF0.a;
+
+    // Direct emission (from raster pass)
+    vec3 directEmission = imageLoad(gDirectEmission, pixel).rgb;
+
+    // Check if emissive (raster pass writes emissive to gDirectEmission and
+    // overrides gAlbedoF0 to (1,1,1,1) for emissive pixels)
+    bool isEmissive = dot(directEmission, directEmission) > 0.0;
+
+    // ---- Emissive: terminate (parity with closesthit early-return) ----
+    if (isEmissive)
+    {
+        if (nrdMode)
+        {
+            // G-buffer already written by raster pass (emissive overrides).
+            // Just write beauty output.
+            imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
+            imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
+            imageStore(outputImage, pixel, vec4(directEmission, 1.0));
+        }
+        else
+        {
+            float frameIndex = camera.position.w;
+            vec3 color = directEmission;
+            if (frameIndex > 1.0)
+            {
+                vec3 prevColor = imageLoad(outputImage, pixel).xyz;
+                color = (prevColor * (frameIndex - 1.0) + color) / frameIndex;
+            }
+            imageStore(outputImage, pixel, vec4(color, 1.0));
+        }
+        return;
+    }
+
+    // ---- Reconstruct primary-hit state for scatter ----
+    // Sample textures for base color / metallic (normal already from G-buffer)
+    vec3 baseColor = mat.baseColor_metallic.xyz;
+    int baseColorTexIdx = mat.textureIndices.x;
+    if (baseColorTexIdx >= 0)
+        baseColor *= texture(textures[nonuniformEXT(baseColorTexIdx)], uv).rgb;
+
+    float metallic = mat.baseColor_metallic.w;
+    int metalRoughTexIdx = mat.extraIndices.x;
+    if (metalRoughTexIdx >= 0)
+    {
+        vec3 mr = texture(textures[nonuniformEXT(metalRoughTexIdx)], uv).rgb;
+        roughness *= mr.g;
+        metallic *= mr.b;
+    }
+
+    float ior = mat.ior;
+
+    // View direction (towards camera)
+    vec3 wo = normalize(camera.position.xyz - worldPos);
+    float NdotV = max(dot(n, wo), 0.0);
+
+    // frontFace: ray came from camera towards surface, so frontFace = dot(wo, n) > 0
+    // (n is already face-forward flipped by raster pass to point towards viewer)
+    bool frontFace = true;
+
+    // ---- Scatter: stochastic lobe selection (same as closesthit) ----
+    vec3 rayDir = -wo;  // incoming ray direction
+    ScatterResult scatter = scatterPrimaryHit(
+        mat, baseColor, metallic, roughness, ior,
+        n, wo, NdotV, rayDir, frontFace, rngState);
+
+    // ---- Check termination conditions ----
+    uint maxBounces = uint(camera.viewportSPP.w);
+    if (!scatter.doScatter)
+    {
+        // Invalid scatter direction — absorb
+        if (nrdMode)
+        {
+            imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
+            imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
+            imageStore(outputImage, pixel, vec4(0.0, 0.0, 0.0, 1.0));
+        }
+        else
+        {
+            imageStore(outputImage, pixel, vec4(0.0, 0.0, 0.0, 1.0));
+        }
+        return;
+    }
+
+    // ---- NEE: direct lighting ----
+    NEEDispatchResult nee = computeNEE(
+        scatter, wo, n, worldPos,
+        baseColor, metallic, roughness, ior, mat.alphaMode,
+        vec3(1.0), rngState);  // throughput = 1 at primary hit
+
+    vec3 directLighting = nee.radiance;
+    float nextBsdfPdf = nee.nextBsdfPdf;
+
+    // ---- Trace secondary ray (depth=1, closesthit handles bounces) ----
+    vec3 offsetN = dot(scatter.scatterDir, n) > 0.0 ? n : -n;
+    // Offset along geometric normal (Fable: raster-derived positions carry
+    // interpolation/depth error; offset along geoN, scale with distance)
+    float offsetEps = 0.001 * max(1.0, abs(viewZ) * 0.01);
+
+    nextPayload.a = vec4(scatter.attenuation, rngState);  // throughput * attenuation
+    nextPayload.b = vec4(vec3(0.0), 1.0);  // radiance = 0, depth = 1
+    nextPayload.c = vec4(worldPos + geoN * offsetEps, 0.0);
+    nextPayload.d = vec4(normalize(scatter.scatterDir), nextBsdfPdf);
+    nextPayload.e = vec4(0.0);  // hitT = 0 (will be set by closesthit at depth=1)
+
+    traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0,
+                nextPayload.c.xyz, offsetEps, nextPayload.d.xyz, 1e9, 0);
+
+    // Total radiance = direct lighting (NEE) + indirect (secondary ray)
+    vec3 indirectRad = nextPayload.b.xyz;
+    vec3 totalRad = directLighting + indirectRad;
+    rngState = floatBitsToUint(nextPayload.a.w);
+
+    // hitT for NRD = secondary ray hit distance only (NOT primary, per NRD docs)
+    // closesthit stores gl_HitTEXT in payload.e.w at depth=1
+    float secondaryHitT = nextPayload.e.w;
+
+    // ---- NRD output ----
+    if (nrdMode)
+    {
+        // Route radiance based on lobe type
+        if (scatter.lobeType < 0.5)
+        {
+            // Diffuse lobe
+            vec3 demodDiff = totalRad / max(diffFactor, vec3(0.01));
+            const float NRD_CLAMP = 100.0;
+            demodDiff = clamp(demodDiff, vec3(0.0), vec3(NRD_CLAMP));
+            vec3 hitDistParams = vec3(3.0, 0.1, 20.0);
+            float normHitT = nrdGetNormHitDist(secondaryHitT, viewZ, hitDistParams, 1.0);
+            vec3 diffYCoCg = linearToYCoCg(demodDiff);
+            imageStore(gDiffRadianceHitDist, pixel, vec4(diffYCoCg, normHitT));
+            imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
+        }
+        else
+        {
+            // Specular lobe
+            float specFactor = max(f0Scalar, 0.01);
+            vec3 demodSpec = totalRad / vec3(specFactor);
+            const float NRD_CLAMP = 100.0;
+            demodSpec = clamp(demodSpec, vec3(0.0), vec3(NRD_CLAMP));
+            vec3 hitDistParams = vec3(3.0, 0.1, 20.0);
+            float normHitT = nrdGetNormHitDist(secondaryHitT, viewZ, hitDistParams, roughness);
+            vec3 specYCoCg = linearToYCoCg(demodSpec);
+            imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
+            imageStore(gSpecRadianceHitDist, pixel, vec4(specYCoCg, normHitT));
+        }
+
+        // Motion vectors already written by raster pass (gMotion)
+        // Direct emission already written by raster pass (gDirectEmission = 0 for non-emissive)
+        imageStore(gDirectEmission, pixel, vec4(0.0));
+        imageStore(outputImage, pixel, vec4(totalRad, 1.0));
+    }
+    else
+    {
+        // Non-NRD: temporal accumulation
+        float frameIndex = camera.position.w;
+        vec3 color = totalRad;
+        if (frameIndex > 1.0)
+        {
+            vec3 prevColor = imageLoad(outputImage, pixel).xyz;
+            color = (prevColor * (frameIndex - 1.0) + color) / frameIndex;
+        }
+        imageStore(outputImage, pixel, vec4(color, 1.0));
+    }
+}

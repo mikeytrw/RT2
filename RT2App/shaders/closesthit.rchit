@@ -245,6 +245,10 @@ void main()
                          viewZ, gl_HitTEXT);
     }
 
+    // Store hitT for secondary_raygen (depth=1 = first bounce after raster primary)
+    if (depth == 1u)
+        payload.e.w = gl_HitTEXT;
+
     if (!scatter.doScatter || depth >= maxBounces)
     {
         payload.c.w = 1.0;

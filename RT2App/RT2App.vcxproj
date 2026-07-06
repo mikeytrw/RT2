@@ -94,6 +94,7 @@
     </Link>
     <PostBuildEvent>
       <Command>copy /Y "$(SolutionDir)RT2App\shaders\raygen.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\secondary_raygen.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\miss.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\shadow.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Debug-windows-x86_64/RT2App"
@@ -131,6 +132,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Debug-windows-x8
     </Link>
     <PostBuildEvent>
       <Command>copy /Y "$(SolutionDir)RT2App\shaders\raygen.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\secondary_raygen.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\miss.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\shadow.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Release-windows-x86_64/RT2App"
@@ -168,6 +170,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Release-windows-
     </Link>
     <PostBuildEvent>
       <Command>copy /Y "$(SolutionDir)RT2App\shaders\raygen.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\secondary_raygen.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\miss.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\shadow.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Dist-windows-x86_64/RT2App"
@@ -408,6 +411,13 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rgen -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/raygen.rgen -o $(SolutionDir)/RT2App/shaders/raygen.spv</Command>
       <Outputs>shaders/raygen.spv</Outputs>
       <Message>Compiling raygen.rgen</Message>
+      <AdditionalInputs>shaders/shader_interface.h"</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="shaders\secondary_raygen.rgen">
+      <FileType>Document</FileType>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rgen -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/secondary_raygen.rgen -o $(SolutionDir)/RT2App/shaders/secondary_raygen.spv</Command>
+      <Outputs>shaders/secondary_raygen.spv</Outputs>
+      <Message>Compiling secondary_raygen.rgen</Message>
       <AdditionalInputs>shaders/shader_interface.h"</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\shadow.rahit">
