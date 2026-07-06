@@ -47,6 +47,10 @@ bool RendererGPU::Init()
 		VK_FILTER_LINEAR, VK_FILTER_LINEAR,
 		VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, VK_SAMPLER_MIPMAP_MODE_NEAREST);
 
+	// Create frames-in-flight ring
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+		m_Frames[i].Init(m_Device.device, m_Device.queueFamily);
+
 	m_Initialized = true;
 	return true;
 }
@@ -80,6 +84,10 @@ void RendererGPU::Destroy()
 		vkDestroyDescriptorSetLayout(device, m_GBufferSetLayout, nullptr);
 		m_GBufferSetLayout = VK_NULL_HANDLE;
 	}
+
+	// Destroy frames-in-flight ring
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+		m_Frames[i].Destroy(device);
 
 	m_Initialized = false;
 }

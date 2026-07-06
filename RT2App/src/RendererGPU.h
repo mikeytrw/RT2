@@ -12,12 +12,15 @@
 #include "PathTracePass.h"
 #include "NRDIntegration.h"
 #include "GpuResources.h"
+#include "FrameContext.h"
 #include "Scene.h"
+#include <array>
 #include <memory>
 
 class RendererGPU
 {
 public:
+	static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
 	RendererGPU() = default;
 	~RendererGPU() { Destroy(); }
 
@@ -187,6 +190,10 @@ private:
 	glm::mat4 m_PrevViewToClip = glm::mat4(1.0f);
 	glm::mat4 m_PrevWorldToView = glm::mat4(1.0f);
 	bool m_HasPrevMatrices = false;
+
+	// Frames in flight ring
+	std::array<FrameContext, MAX_FRAMES_IN_FLIGHT> m_Frames;
+	uint32_t m_CurrentFrame = 0;
 };
 
 #endif // !RENDERER_GPU_H
