@@ -201,7 +201,8 @@ public:
 	if (m_RendererGPU.m_NRDEnabled)
 	{
 		ImGui::Indent();
-		ImGui::Checkbox("Jitter", &m_RendererGPU.m_NRDJitterEnabled);
+		if (ImGui::Checkbox("Jitter", &m_RendererGPU.m_NRDJitterEnabled))
+			m_RendererGPU.ResetAccumulation();
 		ImGui::SliderFloat("Blur Radius", &m_RendererGPU.m_NRDMaxBlurRadius, 1.0f, 50.0f, "%.1f");
 		ImGui::SliderInt("Accum Frames", &m_RendererGPU.m_NRDMaxAccumFrames, 1, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
 		ImGui::Checkbox("Anti-Firefly", &m_RendererGPU.m_NRDAntiFirefly);

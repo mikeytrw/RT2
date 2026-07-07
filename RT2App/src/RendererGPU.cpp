@@ -212,6 +212,8 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	UpdatePathTraceDescriptorSet();
 
 	m_FrameIndex = 1;
+	m_NRDFrameIndex = 1;
+	m_NRDNeedsReset = true;
 }
 
 void RendererGPU::UpdatePathTraceDescriptorSet()
@@ -652,6 +654,8 @@ void RendererGPU::DestroyEnvMapCDFTextures()
 void RendererGPU::ResetAccumulation()
 {
 	m_FrameIndex = 1;
+	m_NRDFrameIndex = 1;
+	m_NRDNeedsReset = true;
 	m_HasPrevMatrices = false;
 }
 
@@ -666,6 +670,8 @@ void RendererGPU::SetScene(const GPUSceneData& sceneData)
 	m_CurrentScene = sceneData;
 	m_NeedsASRebuild = true;
 	m_FrameIndex = 1;
+	m_NRDFrameIndex = 1;
+	m_NRDNeedsReset = true;
 	RT_LOG("[SetScene] destroying old textures (count=%d)", (int)m_Textures.size());
 	DestroyTextures();
 	RT_LOG("[SetScene] creating new textures");
@@ -856,7 +862,8 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 			}
 			return r;
 		};
-		int frame = (m_FrameIndex - 1) % 16 + 1; // cycle through 16 offsets
+		// Use m_NRDFrameIndex (continuously incrementing) for stable jitter sequence
+		int frame = (m_NRDFrameIndex - 1) % 16 + 1; // cycle through 16 offsets
 		m_NRDJitter = glm::vec2(halton(frame, 2) - 0.5f, halton(frame, 3) - 0.5f);
 	}
 	else
@@ -911,7 +918,7 @@ void RendererGPU::Render(const Camera& camera)
 	}
 
 	if (const_cast<Camera&>(camera).checkHasMoved())
-		m_FrameIndex = 1;
+		m_FrameIndex = 1; // restart non-NRD temporal accumulation (NRD uses MVs, no reset needed)
 
 	// Lazy-init NRD when toggled on
 	if (m_NRDEnabled && !m_NRD.IsAvailable() && m_Width > 0 && m_Height > 0)
@@ -1174,7 +1181,7 @@ void RendererGPU::Render(const Camera& camera)
 		glm::mat4 prevViewToClip = m_HasPrevMatrices ? m_CameraUBOData.viewToClipPrev : viewToClip;
 		glm::mat4 prevWorldToView = m_HasPrevMatrices ? m_CameraUBOData.worldToViewPrev : worldToView;
 
-		bool reset = (m_FrameIndex == 1);
+		bool reset = m_NRDNeedsReset;
 		m_NRD.SetCommonSettings(
 			glm::value_ptr(viewToClip),
 			glm::value_ptr(prevViewToClip),
@@ -1182,7 +1189,8 @@ void RendererGPU::Render(const Camera& camera)
 			glm::value_ptr(prevWorldToView),
 			m_NRDJitter.x, m_NRDJitter.y,
 			m_NRDJitterPrev.x, m_NRDJitterPrev.y,
-			m_FrameIndex, reset, m_NRDSplitScreen);
+			m_NRDFrameIndex, reset, m_NRDSplitScreen);
+		m_NRDNeedsReset = false;
 
 		m_NRD.SetReblurSettings(m_NRDMaxBlurRadius, (uint32_t)m_NRDMaxAccumFrames,
 		                        m_NRDAntiFirefly, m_NRDSplitScreen);
@@ -1263,6 +1271,7 @@ void RendererGPU::Render(const Camera& camera)
 
 	m_CurrentFrame = (m_CurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	m_FrameIndex++;
+	m_NRDFrameIndex++;
 }
 
 // ---- Output readback for screenshots ---------------------------------------

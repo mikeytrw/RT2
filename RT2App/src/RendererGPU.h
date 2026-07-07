@@ -152,7 +152,9 @@ private:
 	bool m_NeedsASRebuild = false;
 	bool m_ASJustBuilt = false;
 
-	uint32_t m_FrameIndex = 1;
+	uint32_t m_FrameIndex = 1; // non-NRD temporal accumulation frame counter (resets on camera move)
+	uint32_t m_NRDFrameIndex = 1; // NRD frame counter (continuously increments, resets only on explicit ResetAccumulation)
+	bool m_NRDNeedsReset = true; // triggers NRD CLEAR_AND_RESTART on next frame (set on init/scene change/reset)
 	VkImageLayout m_OutputImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 	// NRD G-buffer images (set 1, bindings 0-4)
