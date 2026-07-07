@@ -126,7 +126,7 @@ bool NRDWrapper::Init(VkInstance instance, VkPhysicalDevice physicalDevice, VkDe
 	integrationDesc.resourceHeight = (uint16_t)height;
 	integrationDesc.queuedFrameNum = 3; // must be >= RendererGPU::MAX_FRAMES_IN_FLIGHT (2)
 	integrationDesc.enableWholeLifetimeDescriptorCaching = false;
-	integrationDesc.autoWaitForIdle = true; // TODO: false for true pipelining (needs NRD sync investigation)
+	integrationDesc.autoWaitForIdle = false; // frame fence already guarantees slot is free
 
 	RT_LOG("[NRD] calling RecreateVK...");
 	nrd::Result rr = g_NRD.RecreateVK(integrationDesc, instanceDesc, deviceDesc);

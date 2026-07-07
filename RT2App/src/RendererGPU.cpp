@@ -943,11 +943,10 @@ void RendererGPU::Render(const Camera& camera)
 
 	VkDevice device = m_Device.device;
 
-	// NRD requires all previous GPU work to be complete before NewFrame().
-	// With frames-in-flight, previous frames may still be in flight.
-	// Temporarily use full device idle for NRD mode until NRD pipelining is investigated.
-	if (m_NRDEnabled && m_NRD.IsAvailable())
-		vkDeviceWaitIdle(device);
+	// NRD uses a descriptor pool ring (queuedFrameNum=3 > MAX_FRAMES_IN_FLIGHT=2).
+	// The frame fence wait above guarantees this frame slot is free, which means
+	// the NRD descriptor pool slot for this frame is also free. No device-wide
+	// idle needed.
 
 	// ---- Frames-in-flight ring: wait for this frame slot to be free ----
 	FrameContext& frame = m_Frames[m_CurrentFrame];
