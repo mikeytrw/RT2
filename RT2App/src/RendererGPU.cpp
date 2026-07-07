@@ -1163,12 +1163,16 @@ void RendererGPU::Render(const Camera& camera)
 
 		m_NRD.NewFrame();
 
-		// Set common settings
+		// Set common settings.
+		// NOTE: m_PrevViewToClip/m_PrevWorldToView were already updated to the
+		// CURRENT frame's matrices in UpdateCameraUBO (line 886-887), so we can't
+		// use them here. Use the stashed UBO data which captured the prev matrices
+		// BEFORE the update (line 882-883).
 		const Camera& cam = camera;
 		glm::mat4 viewToClip = cam.GetProjection();
 		glm::mat4 worldToView = cam.GetView();
-		glm::mat4 prevViewToClip = m_HasPrevMatrices ? m_PrevViewToClip : viewToClip;
-		glm::mat4 prevWorldToView = m_HasPrevMatrices ? m_PrevWorldToView : worldToView;
+		glm::mat4 prevViewToClip = m_HasPrevMatrices ? m_CameraUBOData.viewToClipPrev : viewToClip;
+		glm::mat4 prevWorldToView = m_HasPrevMatrices ? m_CameraUBOData.worldToViewPrev : worldToView;
 
 		bool reset = (m_FrameIndex == 1);
 		m_NRD.SetCommonSettings(

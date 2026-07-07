@@ -206,7 +206,7 @@ void NRDWrapper::SetCommonSettings(const float* viewToClip, const float* viewToC
 	common.disocclusionThreshold = 0.01f;
 	common.frameIndex = frameIndex;
 	common.isMotionVectorInWorldSpace = false;
-	common.accumulationMode = reset ? nrd::AccumulationMode::RESTART : nrd::AccumulationMode::CONTINUE;
+	common.accumulationMode = reset ? nrd::AccumulationMode::CLEAR_AND_RESTART : nrd::AccumulationMode::CONTINUE;
 	common.splitScreen = splitScreen;
 
 	g_NRD.SetCommonSettings(common);
@@ -221,6 +221,10 @@ void NRDWrapper::SetReblurSettings(float maxBlurRadius, uint32_t maxAccumulatedF
 	settings.maxBlurRadius = maxBlurRadius;
 	settings.maxAccumulatedFrameNum = maxAccumulatedFrameNum;
 	settings.enableAntiFirefly = enableAntiFirefly;
+	// We use probabilistic lobe selection (diffuse OR specular per pixel) at
+	// the primary hit. NRD docs: "Must be set to something other than OFF" in
+	// this case, so the skipped lobe's hitT=0 is reconstructed from neighbors.
+	settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
 	g_NRD.SetDenoiserSettings(m_DenoiserID, &settings);
 }
 

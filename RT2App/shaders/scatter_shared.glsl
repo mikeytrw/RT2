@@ -56,7 +56,11 @@ ScatterResult scatterPrimaryHit(
 
     vec3 F0 = computeF0(baseColor, metallic);
     vec3 F = F_Schlick(NdotV, F0);
-    result.P_s = mix(luminance(F), 1.0, metallic);
+    // Clamp P_s to [1/4, 3/4] for NRD HitDistanceReconstructionMode::AREA_3X3.
+    // NRD requires a valid sample in every 3x3 neighborhood to reconstruct the
+    // skipped lobe's hit distance. Without clamping, metals (P_s=1) produce
+    // blocks of all-zero diffuse hitT that can't be reconstructed.
+    result.P_s = clamp(mix(luminance(F), 1.0, metallic), 0.25, 0.75);
     result.P_d = 1.0 - result.P_s;
 
     float alpha = roughnessToAlpha(roughness);
