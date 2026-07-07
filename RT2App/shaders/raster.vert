@@ -59,8 +59,12 @@ void main()
     // Jittered clip-space position for raster (matches RT raygen jitter).
     // camera.forward.w = jitter.x, camera.right.w = jitter.y (subpixel offset in [-0.5, 0.5] pixels).
     // Convert pixel offset to NDC: jitter / viewport * 2 (NDC range is [-1, 1]).
+    // Multiply by clipPos.w to pre-cancel the hardware perspective divide, so the
+    // post-divide NDC offset is exactly jitter * 2 / viewport regardless of depth.
+    // (Without this, the offset becomes jitter * 2 / (viewport * w), which is
+    // depth-dependent and breaks NRD's temporal reprojection.)
     vec4 clipPos = camera.viewToClip * camera.worldToView * worldPos;
     vec2 viewport = camera.viewportSPP.xy;
-    clipPos.xy += vec2(camera.forward.w, camera.right.w) * 2.0 / viewport;
+    clipPos.xy += vec2(camera.forward.w, camera.right.w) * 2.0 / viewport * clipPos.w;
     gl_Position = clipPos;
 }
