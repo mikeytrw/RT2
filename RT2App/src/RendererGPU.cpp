@@ -214,6 +214,7 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
+	m_ComposeDescriptorSetCached = false;
 }
 
 void RendererGPU::UpdatePathTraceDescriptorSet()
@@ -1208,10 +1209,14 @@ void RendererGPU::Render(const Camera& camera)
 		// Compose pass: remodulate NRD outputs by albedo/F0, write to beauty
 		if (m_ComposePass.IsAvailable())
 		{
-			// Update descriptor set with current image views
-			m_ComposePass.UpdateDescriptorSet(m_Device,
-				m_OutputImageView, m_NRDDiffOutView, m_NRDSpecOutView,
-				m_GAlbedoF0View, m_GDirectEmissionView, m_GViewZView);
+			// Update descriptor set once (views don't change after OnResize)
+			if (!m_ComposeDescriptorSetCached)
+			{
+				m_ComposePass.UpdateDescriptorSet(m_Device,
+					m_OutputImageView, m_NRDDiffOutView, m_NRDSpecOutView,
+					m_GAlbedoF0View, m_GDirectEmissionView, m_GViewZView);
+				m_ComposeDescriptorSetCached = true;
+			}
 
 			// Barrier: NRD outputs (compute writes) + G-buffer reads (ray tracing writes) → compose (compute reads)
 			VkImage composeImgs[] = { m_NRDDiffOut, m_NRDSpecOut, m_GAlbedoF0, m_GDirectEmission, m_GViewZ };

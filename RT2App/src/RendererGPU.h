@@ -209,6 +209,7 @@ private:
 
 	// Compose pass (compute shader: NRD outputs + albedo/F0 -> beauty)
 	ComposePass m_ComposePass;
+	bool m_ComposeDescriptorSetCached = false;
 
 	// Raster pass (primary visibility G-buffer)
 	RasterPass m_RasterPass;
