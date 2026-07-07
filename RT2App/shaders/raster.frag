@@ -77,6 +77,21 @@ layout(set = 0, binding = 13, std430) readonly buffer InstanceMaterialIndices
     uint instanceMaterialIndices[];
 };
 
+// NRD oct-packing (matches NRD_NORMAL_ENCODING=2, NRD_ROUGHNESS_ENCODING=1)
+// Ported from NRD.hlsli _NRD_EncodeNormalRoughness101010.
+vec3 nrdEncodeNormalRoughness(vec3 n, float roughness)
+{
+    n /= abs(n.x) + abs(n.y) + abs(n.z);
+    vec3 r;
+    r.y = n.y * 0.5 + 0.5;
+    r.x = n.x * 0.5 + r.y;
+    r.y -= n.x * 0.5;
+    roughness = max(roughness, 1.5 / 512.0);
+    float s = n.z < 0.0 ? -roughness : roughness;
+    r.z = s * 0.5 + 0.5;
+    return r;
+}
+
 void main()
 {
     uint matIdx = instanceMaterialIndices[inInstanceIndex];
@@ -171,7 +186,8 @@ void main()
     // Override G-buffer to signal "direct emission only" to secondary_raygen + NRD.
     if (dot(emissive, emissive) > 0.0)
     {
-        outNormalRoughness = vec4(geoN * 0.5 + 0.5, 1.0);  // geo normal, roughness=1.0
+        vec3 octE = nrdEncodeNormalRoughness(geoN, 1.0);
+        outNormalRoughness = vec4(octE, 1.0);  // oct-packed geo normal, roughness=1.0
         outViewZ = vec4(viewZ, 0.0, 0.0, 0.0);
         outMotion = vec4(0.0, 0.0, 0.0, 0.0);              // zero motion (emissive bypasses NRD)
         outAlbedoF0 = vec4(1.0, 1.0, 1.0, 1.0);            // white albedo, F0=1 (no demod)
@@ -179,7 +195,9 @@ void main()
         return;
     }
 
-    outNormalRoughness = vec4(shadingN * 0.5 + 0.5, roughness);
+    // NRD expects oct-packed normal + sqrt(roughness) (encoding=2, SQRT_LINEAR)
+    vec3 octNR = nrdEncodeNormalRoughness(shadingN, roughness);
+    outNormalRoughness = vec4(octNR, 0.0);
     outViewZ = vec4(viewZ, 0.0, 0.0, 0.0);
     outMotion = vec4(prevUv - currUv, 0.0, 0.0);
     outAlbedoF0 = vec4(diffFactor, f0Scalar);

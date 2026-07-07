@@ -122,8 +122,8 @@ bool RasterPass::Init(const GpuDevice& dev, VkDescriptorSetLayout sceneSetLayout
 	// 8 MRT color attachments: gNormalRoughness, gViewZ, gMotion, gAlbedoF0,
 	// gDirectEmission, gPrimHit, gPrimGeoNormal, gPrimUV
 	VkFormat colorFormats[8] = {
-		VK_FORMAT_R8G8B8A8_UNORM,      // 0: gNormalRoughness
-		VK_FORMAT_R16_SFLOAT,          // 1: gViewZ
+		VK_FORMAT_A2B10G10R10_UNORM_PACK32, // 0: gNormalRoughness (NRD encoding=2)
+		VK_FORMAT_R32_SFLOAT,               // 1: gViewZ (fp32 — fp16 overflows for large scenes)
 		VK_FORMAT_R16G16_SFLOAT,       // 2: gMotion
 		VK_FORMAT_R16G16B16A16_SFLOAT, // 3: gAlbedoF0
 		VK_FORMAT_R16G16B16A16_SFLOAT, // 4: gDirectEmission

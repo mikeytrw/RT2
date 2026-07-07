@@ -67,7 +67,8 @@ void main()
         if (nrdMode)
         {
             // Write sky defaults (NRD skips viewZ >= denoisingRange)
-            imageStore(gNormalRoughness, pixel, vec4(0.5, 0.5, 1.0, 1.0));
+            vec3 skyOct = nrdEncodeNormalRoughness(vec3(0.0, 0.0, 1.0), 1.0);
+            imageStore(gNormalRoughness, pixel, vec4(skyOct, 0.0));
             imageStore(gViewZ, pixel, vec4(1e6, 0.0, 0.0, 0.0));
             imageStore(gAlbedoF0, pixel, vec4(1.0, 1.0, 1.0, 1.0));
             imageStore(gDirectEmission, pixel, vec4(skyRadiance, 0.0));
@@ -98,10 +99,11 @@ void main()
     vec3 worldPos = primHit.xyz;
     vec2 uv = imageLoad(gPrimUV, pixel).xy;
 
-    // Normal from G-buffer (already normal-mapped by raster pass — do NOT re-sample)
-    vec4 normalRough = imageLoad(gNormalRoughness, pixel);
-    vec3 gBufferN = normalize(normalRough.xyz * 2.0 - 1.0);
-    float roughness = normalRough.w;
+    // Normal from G-buffer: NRD oct-packed (encoding=2, SQRT_LINEAR)
+    vec4 nrPacked = imageLoad(gNormalRoughness, pixel);
+    vec4 nrDecoded = nrdDecodeNormalRoughness(nrPacked.xyz);
+    vec3 gBufferN = nrDecoded.xyz;
+    float roughness = nrDecoded.w;
 
     // View direction (towards camera)
     vec3 wo = normalize(camera.position.xyz - worldPos);

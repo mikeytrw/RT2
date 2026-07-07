@@ -1196,8 +1196,8 @@ void RendererGPU::Render(const Camera& camera)
 		                        m_NRDAntiFirefly, m_NRDSplitScreen);
 
 		m_NRD.Denoise(cmd,
-			m_GNormalRoughness, VK_FORMAT_R8G8B8A8_UNORM,
-			m_GViewZ, VK_FORMAT_R16_SFLOAT,
+			m_GNormalRoughness, VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+			m_GViewZ, VK_FORMAT_R32_SFLOAT,
 			m_GMotion, VK_FORMAT_R16G16_SFLOAT,
 			m_GDiffRadiance, VK_FORMAT_R16G16B16A16_SFLOAT,
 			m_GSpecRadiance, VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -1397,8 +1397,8 @@ void RendererGPU::CreateGBufferImages()
 	};
 
 	GBufferImageSpec specs[] = {
-		{ VK_FORMAT_R8G8B8A8_UNORM,     m_GNormalRoughness, m_GNormalRoughnessMem, m_GNormalRoughnessView },
-		{ VK_FORMAT_R16_SFLOAT,          m_GViewZ,           m_GViewZMem,           m_GViewZView },
+		{ VK_FORMAT_A2B10G10R10_UNORM_PACK32, m_GNormalRoughness, m_GNormalRoughnessMem, m_GNormalRoughnessView },
+		{ VK_FORMAT_R32_SFLOAT,              m_GViewZ,           m_GViewZMem,           m_GViewZView },
 		{ VK_FORMAT_R16G16_SFLOAT,       m_GMotion,          m_GMotionMem,          m_GMotionView },
 		{ VK_FORMAT_R16G16B16A16_SFLOAT, m_GDiffRadiance,    m_GDiffRadianceMem,    m_GDiffRadianceView },
 		{ VK_FORMAT_R16G16B16A16_SFLOAT, m_GSpecRadiance,    m_GSpecRadianceMem,    m_GSpecRadianceView },

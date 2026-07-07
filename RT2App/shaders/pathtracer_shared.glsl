@@ -126,8 +126,11 @@ layout(set = 0, binding = SI_BINDING_TLAS) uniform accelerationStructureEXT topL
 // ---- NRD G-buffer outputs (set 1) -------------------------------------------
 // Storage images written by closesthit at the primary hit (depth=0) and
 // read by the NRD denoiser. When NRD is disabled, these are unused.
-layout(set = 1, binding = SI_BINDING_G_NORMAL_ROUGHNESS, rgba8) uniform image2D gNormalRoughness;  // xyz = world normal, w = roughness
-layout(set = 1, binding = SI_BINDING_G_VIEWZ, r16f)  uniform image2D gViewZ;            // view-space Z
+// NRD expects A2B10G10R10_UNORM_PACK32 + oct-packed normals. GLSL storage image
+// format qualifiers don't support A2B10G10R10, so we use rgba8ui and pack/unpack
+// ourselves (the Vulkan image is created with the actual format).
+layout(set = 1, binding = SI_BINDING_G_NORMAL_ROUGHNESS, rgba8) uniform image2D gNormalRoughness;  // xyz = oct-packed normal+roughness, w = unused
+layout(set = 1, binding = SI_BINDING_G_VIEWZ, r32f)  uniform image2D gViewZ;            // view-space Z (fp32 — fp16 overflows for large scenes)
 layout(set = 1, binding = SI_BINDING_G_MOTION, rg16f) uniform image2D gMotion;           // 2D screen-space motion vector
 layout(set = 1, binding = SI_BINDING_G_DIFF_RADIANCE, rgba16f) uniform image2D gDiffRadianceHitDist; // rgb = diffuse radiance, a = hitT
 layout(set = 1, binding = SI_BINDING_G_SPEC_RADIANCE, rgba16f) uniform image2D gSpecRadianceHitDist; // rgb = specular radiance, a = hitT
@@ -411,7 +414,54 @@ float reflectance(float cosine, float refIdx)
     return r0 + (1.0 - r0) * pow(1.0 - cosine, 5.0);
 }
 
-// ---- NRD helpers (YCoCg + hit distance normalization) ----------------------
+// ---- NRD helpers (oct normal packing, YCoCg, hit distance normalization) -----
+
+// NRD normal/roughness packing (matches NRD_NORMAL_ENCODING=2, NRD_ROUGHNESS_ENCODING=1)
+// Ported from NRD.hlsli _NRD_EncodeNormalRoughness101010 / _NRD_DecodeNormalRoughness101010.
+// The packed image format is A2B10G10R10_UNORM_PACK32, but storage image format qualifier
+// is rgba8 in GLSL (GL does not expose A2B10G10R10 as a storage format qualifier; the
+// Vulkan backend reinterprets). We pack into a vec3 (rgb) and store .xyz, leaving .w=0.
+// The pack stores: xy = octahedral normal, z = signed roughness (encodes n.z sign).
+
+// Encode: N (unit normal, world space) + linear roughness → vec3 for imageStore
+vec3 nrdEncodeNormalRoughness(vec3 n, float roughness)
+{
+    n /= abs(n.x) + abs(n.y) + abs(n.z);
+
+    vec3 r;
+    r.y = n.y * 0.5 + 0.5;
+    r.x = n.x * 0.5 + r.y;
+    r.y -= n.x * 0.5;
+
+    // SQRT_LINEAR encoding: store sqrt(roughness) in the z channel
+    roughness = max(roughness, 1.5 / 512.0); // can't be 0 to not ruin n.z sign bit
+    float s = n.z < 0.0 ? -roughness : roughness;
+    r.z = s * 0.5 + 0.5;
+
+    return r;
+}
+
+// Decode: vec3 from imageLoad → vec4(xyz = unit normal, w = linear roughness)
+vec4 nrdDecodeNormalRoughness(vec3 p)
+{
+    float t = p.z * 2.0 - 1.0; // signed roughness
+
+    vec4 r;
+    r.x = p.x - p.y;
+    r.y = p.x + p.y - 1.0;
+    r.z = t < 0.0 ? -1.0 : 1.0;
+    r.z *= 1.0 - abs(r.x) - abs(r.y);
+
+    r.w = abs(t); // sqrt-linear roughness (squared to get linear)
+
+    // Normalize normal
+    r.xyz = normalize(r.xyz);
+
+    // SQRT_LINEAR decode: linear roughness = (stored value)^2
+    r.w = clamp(r.w * r.w, 0.0, 1.0);
+
+    return r;
+}
 
 // NRD REBLUR uses YCoCg color space for radiance packing.
 vec3 linearToYCoCg(vec3 c)

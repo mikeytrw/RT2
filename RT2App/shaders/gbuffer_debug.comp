@@ -7,7 +7,7 @@ layout(set = 0, binding = 0, rgba32f) uniform image2D outputImage;
 
 // G-buffer inputs (same bindings as set 1)
 layout(set = 1, binding = 0, rgba8) uniform readonly image2D gNormalRoughness;
-layout(set = 1, binding = 1, r16f)  uniform readonly image2D gViewZ;
+layout(set = 1, binding = 1, r32f)  uniform readonly image2D gViewZ;
 layout(set = 1, binding = 2, rg16f) uniform readonly image2D gMotion;
 layout(set = 1, binding = 5, rgba16f) uniform readonly image2D gAlbedoF0;
 layout(set = 1, binding = 7, rgba16f) uniform readonly image2D gDirectEmission;
@@ -18,6 +18,21 @@ layout(set = 1, binding = 10, rg16f) uniform readonly image2D gPrimUV;
 layout(push_constant) uniform Push {
     uint mode;
 } pc;
+
+// NRD oct-decode (ported from NRD.hlsli)
+vec4 nrdDecodeNormalRoughness(vec3 p)
+{
+    float t = p.z * 2.0 - 1.0;
+    vec4 r;
+    r.x = p.x - p.y;
+    r.y = p.x + p.y - 1.0;
+    r.z = t < 0.0 ? -1.0 : 1.0;
+    r.z *= 1.0 - abs(r.x) - abs(r.y);
+    r.w = abs(t);
+    r.xyz = normalize(r.xyz);
+    r.w = clamp(r.w * r.w, 0.0, 1.0);
+    return r;
+}
 
 void main()
 {
@@ -36,15 +51,16 @@ void main()
 
     switch (pc.mode)
     {
-        case 0: { // shading normal (decoded 0.5+0.5)
-            vec4 n = imageLoad(gNormalRoughness, pixel);
-            color = n.xyz * 2.0 - 1.0;
-            color = color * 0.5 + 0.5;
+        case 0: { // shading normal (oct-packed, decode + visualize)
+            vec4 nr = imageLoad(gNormalRoughness, pixel);
+            vec4 decoded = nrdDecodeNormalRoughness(nr.xyz);
+            color = decoded.xyz * 0.5 + 0.5;
             break;
         }
-        case 1: { // roughness
-            vec4 n = imageLoad(gNormalRoughness, pixel);
-            color = vec3(n.w);
+        case 1: { // roughness (decoded from oct-packed SQRT_LINEAR)
+            vec4 nr = imageLoad(gNormalRoughness, pixel);
+            vec4 decoded = nrdDecodeNormalRoughness(nr.xyz);
+            color = vec3(decoded.w);
             break;
         }
         case 2: { // viewZ (depth, inverted)
