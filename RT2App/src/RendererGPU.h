@@ -64,6 +64,7 @@ public:
 	int m_NRDMaxAccumFrames = 30;
 	bool m_NRDAntiFirefly = true;
 	float m_NRDSplitScreen = 0.0f;
+	bool m_NRDJitterEnabled = true; // toggle camera jitter (for debugging NRD vs noise)
 
 	int m_GBufferDebugMode = -1; // -1 = off, 0-10 = G-buffer view modes
 

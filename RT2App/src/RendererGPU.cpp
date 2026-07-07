@@ -843,7 +843,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 
 	// NRD camera jitter (Halton sequence, subpixel offset in [-0.5, 0.5])
 	m_NRDJitterPrev = m_NRDJitter;
-	if (m_NRDEnabled)
+	if (m_NRDEnabled && m_NRDJitterEnabled)
 	{
 		// Halton sequence (base 2, base 3) for low-discrepancy jitter
 		auto halton = [](int index, int base) -> float {

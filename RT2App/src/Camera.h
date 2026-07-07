@@ -39,6 +39,7 @@ public:
 
 	float m_Aperture = 0.0f;
 	float m_FocusDistance = 1.0f;
+	float m_Speed = 5.0f; // movement speed (units/sec)
 private:
 	void RecalculateProjection();
 	void RecalculateView();
