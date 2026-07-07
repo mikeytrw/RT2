@@ -1214,8 +1214,8 @@ void RendererGPU::Render(const Camera& camera)
 				m_OutputImageView, m_NRDDiffOutView, m_NRDSpecOutView,
 				m_GAlbedoF0View, m_GDirectEmissionView);
 
-			// Barrier: NRD outputs (compute writes) → compose (compute reads)
-			VkImage composeImgs[] = { m_NRDDiffOut, m_NRDSpecOut, m_GAlbedoF0 };
+			// Barrier: NRD outputs (compute writes) + G-buffer reads (ray tracing writes) → compose (compute reads)
+			VkImage composeImgs[] = { m_NRDDiffOut, m_NRDSpecOut, m_GAlbedoF0, m_GDirectEmission };
 			for (auto img : composeImgs)
 			{
 				VkImageMemoryBarrier b = {};
@@ -1230,7 +1230,8 @@ void RendererGPU::Render(const Camera& camera)
 				b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 				b.subresourceRange.levelCount = 1;
 				b.subresourceRange.layerCount = 1;
-				vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+				vkCmdPipelineBarrier(cmd,
+				                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
 				                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
 				                     0, nullptr, 0, nullptr, 1, &b);
 			}
