@@ -8,7 +8,7 @@ struct GpuDevice;
 // ComposePass — compute shader that remodulates NRD diff/spec outputs
 // by albedo/F0, adds direct emission, writes to beauty output image.
 //
-// Bindings: 0=output, 1=nrdDiffOut, 2=nrdSpecOut, 3=albedoF0, 4=directEmission
+// Bindings: 0=output, 1=nrdDiffOut, 2=nrdSpecOut, 3=albedoF0, 4=directEmission, 5=viewZ
 class ComposePass
 {
 public:
@@ -24,7 +24,8 @@ public:
 	                         VkImageView nrdDiffOutView,
 	                         VkImageView nrdSpecOutView,
 	                         VkImageView albedoF0View,
-	                         VkImageView directEmissionView);
+	                         VkImageView directEmissionView,
+	                         VkImageView viewZView);
 
 	// Record the compose dispatch into the given command buffer.
 	// Caller is responsible for barriers before/after.

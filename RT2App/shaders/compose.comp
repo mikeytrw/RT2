@@ -8,6 +8,7 @@ layout(set = 0, binding = 1, rgba16f) uniform readonly image2D nrdDiffOut;
 layout(set = 0, binding = 2, rgba16f) uniform readonly image2D nrdSpecOut;
 layout(set = 0, binding = 3, rgba16f) uniform readonly image2D gAlbedoF0;
 layout(set = 0, binding = 4, rgba16f) uniform readonly image2D gDirectEmission;
+layout(set = 0, binding = 5, r32f)   uniform readonly image2D gViewZ;
 
 // NRD REBLUR outputs are encoded in YCoCg color space, not linear RGB.
 // (See REBLUR_BackEnd_UnpackRadianceAndNormHitDist in NRD.hlsli)
@@ -32,17 +33,32 @@ void main()
     vec3 albedo = albedoF0.rgb;
     float f0 = albedoF0.a;
 
-    // NRD outputs are in YCoCg — convert to linear before remodulation
-    vec3 diffDenoised = YCoCgToLinear(imageLoad(nrdDiffOut, pixel).rgb);
-    vec3 specDenoised = YCoCgToLinear(imageLoad(nrdSpecOut, pixel).rgb);
-
-    // Remodulate: multiply denoised demodulated radiance back by albedo/F0
-    vec3 diffRemod = diffDenoised * albedo;
-    vec3 specRemod = specDenoised * vec3(f0);
-
-    // Add direct emission (emissive surfaces + sky — bypasses NRD)
+    // Direct emission (emissive surfaces + sky — bypasses NRD)
     vec3 directEmission = imageLoad(gDirectEmission, pixel).rgb;
 
-    vec3 finalColor = diffRemod + specRemod + directEmission;
+    // Sky pixels: viewZ > denoisingRange (500000). NRD skips these pixels but
+    // may leave stale data in its output images from previous frames when the
+    // pixel was geometry. Skip NRD contribution entirely for sky pixels.
+    float viewZ = imageLoad(gViewZ, pixel).x;
+    bool isSky = abs(viewZ) > 500000.0;
+
+    vec3 finalColor;
+    if (isSky)
+    {
+        finalColor = directEmission;
+    }
+    else
+    {
+        // NRD outputs are in YCoCg — convert to linear before remodulation
+        vec3 diffDenoised = YCoCgToLinear(imageLoad(nrdDiffOut, pixel).rgb);
+        vec3 specDenoised = YCoCgToLinear(imageLoad(nrdSpecOut, pixel).rgb);
+
+        // Remodulate: multiply denoised demodulated radiance back by albedo/F0
+        vec3 diffRemod = diffDenoised * albedo;
+        vec3 specRemod = specDenoised * vec3(f0);
+
+        finalColor = diffRemod + specRemod + directEmission;
+    }
+
     imageStore(outputImage, pixel, vec4(finalColor, 1.0));
 }

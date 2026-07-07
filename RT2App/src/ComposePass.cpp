@@ -20,8 +20,8 @@ bool ComposePass::Init(const GpuDevice& dev)
 		return false;
 	}
 
-	VkDescriptorSetLayoutBinding bindings[5] = {};
-	for (int i = 0; i < 5; i++)
+	VkDescriptorSetLayoutBinding bindings[6] = {};
+	for (int i = 0; i < 6; i++)
 	{
 		bindings[i].binding = i;
 		bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -31,7 +31,7 @@ bool ComposePass::Init(const GpuDevice& dev)
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 5;
+	layoutInfo.bindingCount = 6;
 	layoutInfo.pBindings = bindings;
 	VK_CHECK(vkCreateDescriptorSetLayout(dev.device, &layoutInfo, nullptr, &m_SetLayout));
 
@@ -54,7 +54,7 @@ bool ComposePass::Init(const GpuDevice& dev)
 	// Create descriptor pool + set
 	VkDescriptorPoolSize poolSize = {};
 	poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	poolSize.descriptorCount = 5;
+	poolSize.descriptorCount = 6;
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -99,18 +99,19 @@ void ComposePass::UpdateDescriptorSet(const GpuDevice& dev,
                                       VkImageView nrdDiffOutView,
                                       VkImageView nrdSpecOutView,
                                       VkImageView albedoF0View,
-                                      VkImageView directEmissionView)
+                                      VkImageView directEmissionView,
+                                      VkImageView viewZView)
 {
-	VkDescriptorImageInfo imageInfos[5] = {};
-	VkImageView views[] = { outputView, nrdDiffOutView, nrdSpecOutView, albedoF0View, directEmissionView };
-	for (int i = 0; i < 5; i++)
+	VkDescriptorImageInfo imageInfos[6] = {};
+	VkImageView views[] = { outputView, nrdDiffOutView, nrdSpecOutView, albedoF0View, directEmissionView, viewZView };
+	for (int i = 0; i < 6; i++)
 	{
 		imageInfos[i].imageView = views[i];
 		imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 	}
 
-	VkWriteDescriptorSet writes[5] = {};
-	for (int i = 0; i < 5; i++)
+	VkWriteDescriptorSet writes[6] = {};
+	for (int i = 0; i < 6; i++)
 	{
 		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[i].dstSet = m_DescriptorSet;
@@ -120,7 +121,7 @@ void ComposePass::UpdateDescriptorSet(const GpuDevice& dev,
 		writes[i].pImageInfo = &imageInfos[i];
 	}
 
-	vkUpdateDescriptorSets(dev.device, 5, writes, 0, nullptr);
+	vkUpdateDescriptorSets(dev.device, 6, writes, 0, nullptr);
 }
 
 void ComposePass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height) const

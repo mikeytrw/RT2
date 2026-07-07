@@ -1212,10 +1212,10 @@ void RendererGPU::Render(const Camera& camera)
 			// Update descriptor set with current image views
 			m_ComposePass.UpdateDescriptorSet(m_Device,
 				m_OutputImageView, m_NRDDiffOutView, m_NRDSpecOutView,
-				m_GAlbedoF0View, m_GDirectEmissionView);
+				m_GAlbedoF0View, m_GDirectEmissionView, m_GViewZView);
 
 			// Barrier: NRD outputs (compute writes) + G-buffer reads (ray tracing writes) → compose (compute reads)
-			VkImage composeImgs[] = { m_NRDDiffOut, m_NRDSpecOut, m_GAlbedoF0, m_GDirectEmission };
+			VkImage composeImgs[] = { m_NRDDiffOut, m_NRDSpecOut, m_GAlbedoF0, m_GDirectEmission, m_GViewZ };
 			for (auto img : composeImgs)
 			{
 				VkImageMemoryBarrier b = {};
