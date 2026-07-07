@@ -203,6 +203,12 @@ public:
 		ImGui::Indent();
 		if (ImGui::Checkbox("Jitter", &m_RendererGPU.m_NRDJitterEnabled))
 			m_RendererGPU.ResetAccumulation();
+		ImGui::SameLine();
+		ImGui::PushID("JitterScale");
+		ImGui::SetNextItemWidth(80.0f);
+		if (ImGui::SliderFloat("Scale", &m_RendererGPU.m_NRDJitterScale, 0.0f, 1.0f, "%.2f"))
+			m_RendererGPU.ResetAccumulation();
+		ImGui::PopID();
 		ImGui::SliderFloat("Blur Radius", &m_RendererGPU.m_NRDMaxBlurRadius, 1.0f, 50.0f, "%.1f");
 		ImGui::SliderInt("Accum Frames", &m_RendererGPU.m_NRDMaxAccumFrames, 1, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
 		ImGui::Checkbox("Anti-Firefly", &m_RendererGPU.m_NRDAntiFirefly);

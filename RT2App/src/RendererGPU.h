@@ -65,6 +65,7 @@ public:
 	bool m_NRDAntiFirefly = true;
 	float m_NRDSplitScreen = 0.0f;
 	bool m_NRDJitterEnabled = true; // toggle camera jitter (for debugging NRD vs noise)
+	float m_NRDJitterScale = 1.0f; // jitter magnitude scale [0.0 = none, 1.0 = full ±0.5 pixel]
 
 	int m_GBufferDebugMode = -1; // -1 = off, 0-10 = G-buffer view modes
 

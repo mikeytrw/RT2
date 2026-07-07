@@ -864,7 +864,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 		};
 		// Use m_NRDFrameIndex (continuously incrementing) for stable jitter sequence
 		int frame = (m_NRDFrameIndex - 1) % 16 + 1; // cycle through 16 offsets
-		m_NRDJitter = glm::vec2(halton(frame, 2) - 0.5f, halton(frame, 3) - 0.5f);
+		m_NRDJitter = (glm::vec2(halton(frame, 2) - 0.5f, halton(frame, 3) - 0.5f)) * m_NRDJitterScale;
 	}
 	else
 	{
