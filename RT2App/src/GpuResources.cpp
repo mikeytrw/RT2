@@ -8,14 +8,14 @@ namespace GpuResources
 	bool CreateImage(const GpuDevice& dev, uint32_t width, uint32_t height,
 	                 VkFormat format, VkImageUsageFlags usage,
 	                 VkMemoryPropertyFlags memProps,
-	                 GpuImage& outImage)
+	                 GpuImage& outImage, uint32_t mipLevels)
 	{
 		VkImageCreateInfo imageInfo = {};
 		imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 		imageInfo.imageType = VK_IMAGE_TYPE_2D;
 		imageInfo.format = format;
 		imageInfo.extent = { width, height, 1 };
-		imageInfo.mipLevels = 1;
+		imageInfo.mipLevels = mipLevels;
 		imageInfo.arrayLayers = 1;
 		imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
 		imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -49,7 +49,7 @@ namespace GpuResources
 		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
 		viewInfo.format = format;
 		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		viewInfo.subresourceRange.levelCount = 1;
+		viewInfo.subresourceRange.levelCount = mipLevels;
 		viewInfo.subresourceRange.layerCount = 1;
 
 		VK_CHECK(vkCreateImageView(dev.device, &viewInfo, nullptr, &outImage.view));

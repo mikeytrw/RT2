@@ -36,7 +36,7 @@ namespace GpuResources
 	bool CreateImage(const GpuDevice& dev, uint32_t width, uint32_t height,
 	                 VkFormat format, VkImageUsageFlags usage,
 	                 VkMemoryPropertyFlags memProperties,
-	                 GpuImage& outImage);
+	                 GpuImage& outImage, uint32_t mipLevels = 1);
 
 	// Create a 1D or 2D image with view. height==1 creates a 1D image.
 	bool CreateImage1D(const GpuDevice& dev, uint32_t width, uint32_t height,

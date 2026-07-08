@@ -6,6 +6,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/packing.hpp>
 #include <functional>
+#include <algorithm>
 
 SceneResources::~SceneResources()
 {
@@ -342,6 +343,7 @@ void SceneResources::CreateTextures(const GpuDevice& dev, const std::vector<Scen
 		VkDeviceSize offset;
 		VkDeviceSize size;
 		bool isHDR;
+		uint32_t mipLevels;
 	};
 	std::vector<TextureUpload> uploads(textures.size());
 
@@ -365,6 +367,11 @@ void SceneResources::CreateTextures(const GpuDevice& dev, const std::vector<Scen
 		else
 			format = tex.isSRGB ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
 		gt.format = format;
+
+		uint32_t mipLevels = 1;
+		uint32_t w = tex.width, h = tex.height;
+		while (w > 1 || h > 1) { w = std::max(w / 2, 1u); h = std::max(h / 2, 1u); mipLevels++; }
+
 		VkDeviceSize imageSize = isHDR
 			? (VkDeviceSize)(tex.width * tex.height * 8)
 			: (VkDeviceSize)(tex.width * tex.height * 4);
@@ -387,11 +394,11 @@ void SceneResources::CreateTextures(const GpuDevice& dev, const std::vector<Scen
 			memcpy(arena.GetMappedPointer(offset), tex.pixels.data(), (size_t)imageSize);
 		}
 
-		uploads[i] = { offset, imageSize, isHDR };
+		uploads[i] = { offset, imageSize, isHDR, mipLevels };
 
 		GpuResources::CreateImage(dev, tex.width, tex.height, format,
-			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gt);
+			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gt, mipLevels);
 	}
 
 	VkBuffer stagingBuffer = arena.GetBuffer();
@@ -404,6 +411,7 @@ void SceneResources::CreateTextures(const GpuDevice& dev, const std::vector<Scen
 			GpuImage& gt = m_Textures[i];
 			const auto& up = uploads[i];
 
+			// Transition mip 0 to TRANSFER_DST_OPTIMAL
 			VkImageMemoryBarrier barrier = {};
 			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 			barrier.srcAccessMask = 0;
@@ -414,7 +422,8 @@ void SceneResources::CreateTextures(const GpuDevice& dev, const std::vector<Scen
 			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 			barrier.image = gt.image;
 			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			barrier.subresourceRange.levelCount = 1;
+			barrier.subresourceRange.baseMipLevel = 0;
+			barrier.subresourceRange.levelCount = up.mipLevels;
 			barrier.subresourceRange.layerCount = 1;
 
 			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
@@ -434,11 +443,72 @@ void SceneResources::CreateTextures(const GpuDevice& dev, const std::vector<Scen
 			vkCmdCopyBufferToImage(cmd, stagingBuffer, gt.image,
 			                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-			VkImageMemoryBarrier shaderBarrier = barrier;
+			// Generate mip chain via blits (if more than 1 mip)
+			if (up.mipLevels > 1)
+			{
+				uint32_t mipW = (uint32_t)tex.width;
+				uint32_t mipH = (uint32_t)tex.height;
+
+				for (uint32_t mip = 1; mip < up.mipLevels; mip++)
+				{
+					// Transition previous mip to TRANSFER_SRC_OPTIMAL
+					VkImageMemoryBarrier srcBarrier = {};
+					srcBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+					srcBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+					srcBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+					srcBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+					srcBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+					srcBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					srcBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					srcBarrier.image = gt.image;
+					srcBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+					srcBarrier.subresourceRange.baseMipLevel = mip - 1;
+					srcBarrier.subresourceRange.levelCount = 1;
+					srcBarrier.subresourceRange.layerCount = 1;
+
+					vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+					                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &srcBarrier);
+
+					uint32_t dstW = std::max(mipW / 2, 1u);
+					uint32_t dstH = std::max(mipH / 2, 1u);
+
+					VkImageBlit blit = {};
+					blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+					blit.srcSubresource.mipLevel = mip - 1;
+					blit.srcSubresource.baseArrayLayer = 0;
+					blit.srcSubresource.layerCount = 1;
+					blit.srcOffsets[0] = {0, 0, 0};
+					blit.srcOffsets[1] = {(int32_t)mipW, (int32_t)mipH, 1};
+					blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+					blit.dstSubresource.mipLevel = mip;
+					blit.dstSubresource.baseArrayLayer = 0;
+					blit.dstSubresource.layerCount = 1;
+					blit.dstOffsets[0] = {0, 0, 0};
+					blit.dstOffsets[1] = {(int32_t)dstW, (int32_t)dstH, 1};
+
+					vkCmdBlitImage(cmd, gt.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					              gt.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					              1, &blit, VK_FILTER_LINEAR);
+
+					mipW = dstW;
+					mipH = dstH;
+				}
+			}
+
+			// Transition all mips to SHADER_READ_ONLY_OPTIMAL
+			VkImageMemoryBarrier shaderBarrier = {};
+			shaderBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 			shaderBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 			shaderBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
 			shaderBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 			shaderBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+			shaderBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			shaderBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			shaderBarrier.image = gt.image;
+			shaderBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			shaderBarrier.subresourceRange.baseMipLevel = 0;
+			shaderBarrier.subresourceRange.levelCount = up.mipLevels;
+			shaderBarrier.subresourceRange.layerCount = 1;
 
 			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
 			                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &shaderBarrier);
