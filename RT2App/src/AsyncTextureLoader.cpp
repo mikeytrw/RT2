@@ -55,7 +55,8 @@ bool AsyncTextureLoader::Begin(const GpuDevice& dev,
 bool AsyncTextureLoader::IsComplete() const
 {
 	if (!m_Busy.load()) return false;
-	return m_Complete.load();
+	if (!m_Complete.load()) return false;
+	return true;
 }
 
 void AsyncTextureLoader::Adopt(std::vector<GpuImage>& outTextures,
@@ -71,6 +72,25 @@ void AsyncTextureLoader::Adopt(std::vector<GpuImage>& outTextures,
 
 	if (m_Thread.joinable())
 		m_Thread.join();
+
+	// Submit the recorded command buffer from the main thread (queues
+	// are not thread-safe — worker only records).
+	if (m_CmdBuffer != VK_NULL_HANDLE && m_UploadFence != VK_NULL_HANDLE && m_Device)
+	{
+		VkSubmitInfo submitInfo = {};
+		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+		submitInfo.commandBufferCount = 1;
+		submitInfo.pCommandBuffers = &m_CmdBuffer;
+		VkResult r = vkQueueSubmit(m_Device->queue, 1, &submitInfo, m_UploadFence);
+		if (r != VK_SUCCESS)
+		{
+			RT_LOG("[AsyncTex] vkQueueSubmit failed: %d", (int)r);
+		}
+
+		// Wait for the upload to finish before adopting (keeps semantics
+		// simple: Adopt returns with textures fully ready)
+		vkWaitForFences(m_Device->device, 1, &m_UploadFence, VK_TRUE, UINT64_MAX);
+	}
 
 	outTextures = std::move(m_ResultTextures);
 	envMapIndex = m_ResultEnvMapIndex;
@@ -470,23 +490,16 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 
 	vkEndCommandBuffer(cmd);
 
-	// 8. Create fence + submit (non-blocking)
+	// Store the command buffer for main-thread submission. Vulkan queues
+	// are not thread-safe, so the worker must NOT call vkQueueSubmit.
+	m_CmdBuffer = cmd;
+
+	// Create fence now (main thread will use it when submitting)
 	VkFenceCreateInfo fenceInfo = {};
 	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 	if (vkCreateFence(device, &fenceInfo, nullptr, &m_UploadFence) != VK_SUCCESS)
 	{
 		RT_LOG("[AsyncTex] Failed to create fence");
-		m_Complete.store(true);
-		return;
-	}
-
-	VkSubmitInfo submitInfo = {};
-	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-	submitInfo.commandBufferCount = 1;
-	submitInfo.pCommandBuffers = &cmd;
-	if (vkQueueSubmit(dev.queue, 1, &submitInfo, m_UploadFence) != VK_SUCCESS)
-	{
-		RT_LOG("[AsyncTex] Failed to submit command buffer");
 		m_Complete.store(true);
 		return;
 	}

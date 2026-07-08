@@ -50,10 +50,18 @@ void SceneResources::SetScene(const GpuDevice& dev, const GPUSceneData& sceneDat
 
 	m_CurrentScene = sceneData;
 	m_NeedsASRebuild = true;
-	RT_LOG("[SetScene] destroying old textures (count=%d)", (int)m_Textures.size());
-	DestroyTextures();
-	RT_LOG("[SetScene] destroying old CDF textures");
-	DestroyEnvMapCDFTextures();
+
+	// Note: old textures are NOT destroyed here — they stay alive until
+	// PollTextureUpload() adopts the new ones, so the descriptor set
+	// remains valid during the async upload window.
+
+	// If a previous async upload is still in flight, cancel it and
+	// adopt its results (or discard if incomplete) before starting a new one.
+	if (m_TextureLoader.IsBusy())
+	{
+		m_TextureLoader.Cancel();
+		m_TextureLoader.Destroy();
+	}
 
 	// Determine env map pixel data for the async loader.
 	// WalnutApp appends the env map as the last texture in sceneData.textures
@@ -78,6 +86,19 @@ void SceneResources::SetScene(const GpuDevice& dev, const GPUSceneData& sceneDat
 	if (sceneData.envMapIndex >= 0 && sceneData.envMapIndex < (int)baseTextures.size())
 		baseTextures.erase(baseTextures.begin() + sceneData.envMapIndex);
 
+	// If there are no textures at all (e.g. Clear HDR with no scene textures),
+	// destroy old textures immediately and skip the loader.
+	if (baseTextures.empty() && envMapFloat.empty())
+	{
+		RT_LOG("[SetScene] no textures to load — destroying old textures");
+		DestroyTextures();
+		DestroyEnvMapCDFTextures();
+		m_EnvMapIndex = -1;
+		m_MarginalCDFIndex = -1;
+		m_ConditionalCDFIndex = -1;
+		return;
+	}
+
 	RT_LOG("[SetScene] kicking async texture loader (%d base + envMap=%dx%d)",
 	       (int)baseTextures.size(), envMapW, envMapH);
 	m_TextureLoader.Begin(dev, baseTextures,
@@ -96,6 +117,7 @@ bool SceneResources::PollTextureUpload()
 	int envMapIdx = -1, margCDFIdx = -1, condCDFIdx = -1;
 	m_TextureLoader.Adopt(newTextures, envMapIdx, margCDFIdx, condCDFIdx);
 
+	// Now safe to destroy old textures — new ones are ready
 	DestroyTextures();
 	DestroyEnvMapCDFTextures();
 
@@ -109,7 +131,7 @@ bool SceneResources::PollTextureUpload()
 		m_CDFHeight = m_CurrentScene.cdfHeight;
 	}
 
-	RT_LOG("[SetScene] textures adopted: %d (envMap=%d, margCDF=%d, condCDF=%d)",
+	RT_LOG("[PollTextureUpload] textures adopted: %d (envMap=%d, margCDF=%d, condCDF=%d)",
 	       (int)m_Textures.size(), m_EnvMapIndex, m_MarginalCDFIndex, m_ConditionalCDFIndex);
 	return true;
 }

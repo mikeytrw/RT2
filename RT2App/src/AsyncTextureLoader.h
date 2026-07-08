@@ -89,6 +89,7 @@ private:
 
 	VkFence       m_UploadFence    = VK_NULL_HANDLE;
 	VkCommandPool m_CmdPool        = VK_NULL_HANDLE;
+	VkCommandBuffer m_CmdBuffer    = VK_NULL_HANDLE;
 
 	// Staging arena (kept alive until fence signals, destroyed in Adopt)
 	StagingArena  m_Staging;
