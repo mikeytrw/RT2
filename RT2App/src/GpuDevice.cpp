@@ -17,6 +17,13 @@ void GpuDevice::InitFromWalnut()
 
 	// Cache memory properties once
 	vkGetPhysicalDeviceMemoryProperties(physicalDevice, &cachedMemProps);
+
+	// Query + log the allocation count limit so we know how close we are
+	VkPhysicalDeviceProperties props = {};
+	vkGetPhysicalDeviceProperties(physicalDevice, &props);
+	maxMemoryAllocationCount = props.limits.maxMemoryAllocationCount;
+	RT_LOG("[GpuDevice] maxMemoryAllocationCount = %u (each image/buffer uses 1 allocation)",
+	       maxMemoryAllocationCount);
 }
 
 uint32_t GpuDevice::FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) const

@@ -22,6 +22,12 @@ struct GpuDevice
 	// Cached memory properties (avoids re-querying on every FindMemoryType call)
 	VkPhysicalDeviceMemoryProperties cachedMemProps = {};
 
+	// maxMemoryAllocationCount from VkPhysicalDeviceLimits — the hard cap
+	// on vkAllocateMemory calls. Typical: 4096 (NVIDIA/AMD), 1024 (Intel).
+	// When the app creates more allocations than this, vkAllocateMemory
+	// returns VK_ERROR_TOO_MANY_OBJECTS and VK_CHECK aborts.
+	uint32_t maxMemoryAllocationCount = 0;
+
 	// Initialize from Walnut::Application statics
 	void InitFromWalnut();
 
