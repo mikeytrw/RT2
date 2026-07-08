@@ -47,6 +47,12 @@ public:
 	// (via RendererGPU) when it returns true.
 	void SetScene(const GpuDevice& dev, const GPUSceneData& sceneData);
 
+	// Update scene data (meshes, instances, materials, lights) WITHOUT
+	// re-uploading textures. Use this when only entities/transforms/materials
+	// changed (add/delete entity, material edit) but textures are unchanged.
+	// Marks AS for rebuild. Existing textures + descriptor set remain valid.
+	void SetSceneKeepTextures(const GpuDevice& dev, const GPUSceneData& sceneData);
+
 	// Returns true if async texture upload just completed (once per upload).
 	// Caller should update the texture descriptor set when this returns true.
 	bool PollTextureUpload();

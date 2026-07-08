@@ -14,6 +14,8 @@
 #include "GPUSceneData.h"
 #include "ECSScene.h"
 #include "SceneGraph.h"
+#include "SceneEditorUI.h"
+#include "PrimitiveGeometry.h"
 #include "CLIArgs.h"
 #include "RTLog.h"
 #include "stb_image.h"
@@ -39,10 +41,37 @@ public:
 		{
 			m_Cam = Camera(45.0f, 0.1f, 10000.0f,0.005f,2.5f);
 			m_Renderer = Renderer();
-			m_RenderOnUpdate = false;
+			m_RenderOnUpdate = true;
+			m_Cam.m_Aperture = 0.0f;  // NRD/raster-first requires no DOF
 
 			m_MeshMaterial = make_shared<LambertianMaterial>(vec3(0.7f, 0.7f, 0.7f));
 
+			// Wire scene editor UI
+			m_EditorUI.SetSceneMgr(&m_SceneMgr);
+			m_EditorUI.SetOnSceneChanged([this]() {
+				if (m_UseGPU && m_RendererGPU.IsAvailable())
+				{
+					m_SceneMgr.CompactMeshRegistry();
+					m_SceneMgr.SetSyncKeepTexturesCallback([this](const GPUSceneData& gpuData) {
+						m_RendererGPU.SetSceneKeepTextures(gpuData);
+					});
+					m_SceneMgr.SyncToGPUKeepTextures();
+				}
+				m_RendererGPU.ResetAccumulation();
+			});
+			m_EditorUI.SetOnTransformChanged([this]() {
+				if (m_UseGPU && m_RendererGPU.IsAvailable())
+				{
+					m_SceneMgr.SetInstanceSyncCallback([this](const GPUSceneData& gpuData) {
+						m_RendererGPU.UpdateSceneInstances(gpuData);
+					});
+					m_SceneMgr.SyncTransformsToGPU();
+				}
+				m_RendererGPU.ResetAccumulation();
+			});
+			m_EditorUI.SetOnLoadMeshFile([this](const std::string& path) -> SceneManager::EntityId {
+				return LoadMeshFileAsEntity(path);
+			});
 		}
 
 	virtual void OnUIRender() override
@@ -52,6 +81,18 @@ public:
 		{
 			ProcessCLIArgs();
 			m_CLIProcessed = true;
+
+			// Apply UI defaults for interactive (non-headless) mode.
+			// CLI flags have already overridden what they specify; the
+			// remaining fields get sensible UI defaults.
+			if (!g_CLI.headless && m_UseGPU && m_RendererGPU.IsAvailable())
+			{
+				m_Settings.showBackground = true;
+				m_Settings.rasterFirst = true;
+				m_Settings.nrdEnabled = true;
+				m_Cam.m_Aperture = 0.0f;  // NRD/raster-first requires no DOF
+				m_RendererGPU.ApplySettings(m_Settings);
+			}
 		}
 
 	ImGui::Begin("Info");
@@ -372,6 +413,8 @@ public:
 			}
 		}
 		ImGui::End();
+
+		m_EditorUI.RenderPanels();
 
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 		ImGui::Begin("Viewport");
@@ -767,6 +810,36 @@ private:
 		}
 	}
 
+	SceneManager::EntityId LoadMeshFileAsEntity(const std::string& filepath)
+	{
+		// Load OBJ file as geometry, then add to ECS via SceneManager
+		Mesh mesh;
+		auto material = make_shared<LambertianMaterial>(vec3(0.7f, 0.7f, 0.7f));
+		if (!mesh.Load(filepath, {0, 0, 0}, {0, 0, 0}, 1.0f, material))
+		{
+			printf("[SceneEditor] Failed to load mesh: %s\n", filepath.c_str());
+			return SceneManager::EntityId{};
+		}
+
+		auto [verts, indices] = mesh.GetRawVertexData();
+
+		MeshData meshData;
+		meshData.vertices = verts;
+		meshData.indices = indices;
+		meshData.name = filepath;
+
+		// Extract a name from the filepath
+		std::string name = filepath;
+		size_t lastSlash = name.find_last_of("/\\");
+		if (lastSlash != std::string::npos)
+			name = name.substr(lastSlash + 1);
+		size_t lastDot = name.find_last_of('.');
+		if (lastDot != std::string::npos)
+			name = name.substr(0, lastDot);
+
+		return m_SceneMgr.AddObjectWithGeometry(name, std::move(meshData), {0, 0.5f, 0});
+	}
+
 	void BuildSceneFromCurrentState()
 	{
 		auto& scene = m_SceneMgr.GetScene();
@@ -810,6 +883,7 @@ private:
 	RendererGPU m_RendererGPU;
 	RenderSettings m_Settings; // local copy — mutated by UI, synced via ApplySettings
 	SceneManager m_SceneMgr;
+	SceneEditorUI m_EditorUI;
 	int m_UseGPU = 1; // 0=CPU, 1=GPU
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
 	uint32_t* m_ImageData = nullptr;

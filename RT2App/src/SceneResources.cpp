@@ -39,6 +39,46 @@ void SceneResources::Destroy()
 	m_ASJustBuilt = false;
 }
 
+void SceneResources::SetSceneKeepTextures(const GpuDevice& dev, const GPUSceneData& sceneData)
+{
+	m_Device = &dev;
+	VkDevice device = dev.device;
+	RT_LOG("[SetSceneKeepTextures] enter: meshes=%d instances=%d materials=%d",
+	       (int)sceneData.meshes.size(), (int)sceneData.instances.size(),
+	       (int)sceneData.materials.size());
+	vkDeviceWaitIdle(device);
+
+	// Cancel any in-flight async texture upload — we're keeping the existing textures.
+	if (m_TextureLoader.IsBusy())
+	{
+		m_TextureLoader.Cancel();
+		m_TextureLoader.Destroy();
+	}
+
+	// Preserve env map metadata from existing scene (textures aren't re-uploaded).
+	// The new sceneData may have env map data in its textures array, but since
+	// we're not re-uploading textures, we keep the existing GPU textures and
+	// env map indices. We just need to make sure the env map index points to
+	// the existing texture.
+	GPUSceneData copy = sceneData;
+	if (m_EnvMapIndex >= 0)
+	{
+		copy.envMapIndex = m_EnvMapIndex;
+		copy.marginalCDF = {};
+		copy.conditionalCDF = {};
+		copy.cdfWidth = 0;
+		copy.cdfHeight = 0;
+	}
+	// Clear texture CPU data — not needed since we're not re-uploading.
+	// The GPU textures (m_Textures) remain valid.
+	copy.textures.clear();
+
+	m_CurrentScene = copy;
+	m_NeedsASRebuild = true;
+	RT_LOG("[SetSceneKeepTextures] done (textures preserved: %d, envMap=%d)",
+	       (int)m_Textures.size(), m_EnvMapIndex);
+}
+
 void SceneResources::SetScene(const GpuDevice& dev, const GPUSceneData& sceneData)
 {
 	m_Device = &dev;
@@ -116,6 +156,12 @@ bool SceneResources::PollTextureUpload()
 	std::vector<GpuImage> newTextures;
 	int envMapIdx = -1, margCDFIdx = -1, condCDFIdx = -1;
 	m_TextureLoader.Adopt(newTextures, envMapIdx, margCDFIdx, condCDFIdx);
+
+	// Wait for all in-flight render frames to finish before destroying
+	// old textures — the previous frame's GPU commands may still be
+	// reading the old texture images via the descriptor set.
+	VkDevice device = m_Device->device;
+	vkDeviceWaitIdle(device);
 
 	// Now safe to destroy old textures — new ones are ready
 	DestroyTextures();

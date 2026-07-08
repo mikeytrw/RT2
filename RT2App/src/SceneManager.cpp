@@ -8,6 +8,8 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <cstdio>
+#include <set>
+#include <map>
 
 // ============================================================================
 // Scene loading
@@ -29,11 +31,66 @@ bool SceneManager::LoadScene(const std::string& filepath)
 	}
 	else
 	{
+		m_EcsPopulated = true;
 		const auto& cam = m_Scene.GetCamera();
 		printf("[Scene] Camera: pos=(%.1f,%.1f,%.1f), forward=(%.1f,%.1f,%.1f), fov=%.1f\n",
 		       cam.position.x, cam.position.y, cam.position.z,
 		       cam.forwardDirection.x, cam.forwardDirection.y, cam.forwardDirection.z,
 		       cam.verticalFOV);
+	}
+
+	// Create a wrapper root entity that parents all glTF root nodes,
+	// so a loaded glTF file appears as a single entity in the outliner.
+	// The user can then move/rotate/scale the whole object by editing the root.
+	{
+		auto& reg = m_EcsScene.registry;
+
+		// Collect current root entities (no Hierarchy or parent == null)
+		std::vector<entt::entity> roots;
+		auto view = reg.view<Transform>();
+		for (auto entity : view)
+		{
+			auto* h = reg.try_get<Hierarchy>(entity);
+			if (!h || h->parent == entt::null)
+				roots.push_back(entity);
+		}
+
+		if (!roots.empty())
+		{
+			// Derive a name from the filepath
+			std::string name = filepath;
+			size_t lastSlash = name.find_last_of("/\\");
+			if (lastSlash != std::string::npos)
+				name = name.substr(lastSlash + 1);
+			size_t lastDot = name.find_last_of('.');
+			if (lastDot != std::string::npos)
+				name = name.substr(0, lastDot);
+
+			// Create wrapper root
+			auto rootEntity = reg.create();
+			Transform& tf = reg.emplace<Transform>(rootEntity);
+			tf.dirty = true;
+			reg.emplace<NameComponent>(rootEntity, name);
+			reg.emplace<VisibleComponent>(rootEntity);
+			Hierarchy& rootHier = reg.emplace<Hierarchy>(rootEntity);
+			rootHier.parent = entt::null;
+
+			// Reparent all roots under the wrapper
+			for (auto child : roots)
+			{
+				auto* childHier = reg.try_get<Hierarchy>(child);
+				if (!childHier)
+				{
+					childHier = &reg.emplace<Hierarchy>(child);
+				}
+				childHier->parent = rootEntity;
+				rootHier.children.push_back(child);
+				SceneGraph::SetLocalDirty(reg, child);
+			}
+
+			SceneGraph::SetLocalDirty(reg, rootEntity);
+			SceneGraph::UpdateWorldTransforms(reg);
+		}
 	}
 
 	printf("[Scene] Loaded %d meshes, %d materials, %d lights, %d textures\n",
@@ -131,10 +188,13 @@ void SceneManager::ClearEnvMap()
 
 void SceneManager::SyncToGPU()
 {
-	// Build GPUSceneData from ECS if available, otherwise from legacy Scene
 	GPUSceneData gpuData;
 
-	if (m_EcsScene.meshRegistry.GetCount() > 0)
+	// Build from ECS if it has been populated (glTF load), otherwise legacy Scene.
+	// Use m_EcsPopulated, not entity count — after deleting all entities the ECS
+	// is still the active representation and should produce an empty scene,
+	// not fall back to the legacy Scene which still has the original meshes.
+	if (m_EcsPopulated)
 	{
 		UpdateWorldTransforms();
 		gpuData = BuildGPUSceneDataFromECS(m_EcsScene);
@@ -144,8 +204,9 @@ void SceneManager::SyncToGPU()
 		gpuData = BuildGPUSceneData(m_Scene);
 	}
 
-	// If no scene meshes but we have CPU meshes, use the OBJ fallback
-	if (gpuData.meshes.empty() && !m_CpuMeshes.empty())
+	// OBJ fallback: only when the ECS was never populated
+	// AND we have CPU meshes from a legacy OBJ load.
+	if (!m_EcsPopulated && gpuData.meshes.empty() && !m_CpuMeshes.empty())
 	{
 		for (auto& mesh : m_CpuMeshes)
 		{
@@ -156,11 +217,8 @@ void SceneManager::SyncToGPU()
 			geo.materialIndex = 0;
 			gpuData.meshes.push_back(std::move(geo));
 		}
-	}
 
-	// Create identity instances if none exist
-	if (gpuData.instances.empty() && !gpuData.meshes.empty())
-	{
+		// OBJ fallback: create identity instances for each mesh
 		for (uint32_t i = 0; i < gpuData.meshes.size(); i++)
 		{
 			GPUInstance inst;
@@ -195,6 +253,62 @@ void SceneManager::SyncToGPU()
 	m_CurrentGpuScene = gpuData;
 	if (m_SyncCallback)
 		m_SyncCallback(gpuData);
+}
+
+void SceneManager::SyncToGPUKeepTextures()
+{
+	GPUSceneData gpuData;
+
+	// Build from ECS if it has been populated (glTF load), otherwise legacy Scene.
+	if (m_EcsPopulated)
+	{
+		UpdateWorldTransforms();
+		gpuData = BuildGPUSceneDataFromECS(m_EcsScene);
+	}
+	else
+	{
+		gpuData = BuildGPUSceneData(m_Scene);
+	}
+
+	// OBJ fallback: only when the ECS was never populated
+	if (!m_EcsPopulated && gpuData.meshes.empty() && !m_CpuMeshes.empty())
+	{
+		for (auto& mesh : m_CpuMeshes)
+		{
+			auto [verts, indices] = mesh.GetRawVertexData();
+			GPUMeshGeometry geo;
+			geo.vertices = verts;
+			geo.indices = indices;
+			geo.materialIndex = 0;
+			gpuData.meshes.push_back(std::move(geo));
+		}
+
+		// OBJ fallback: create identity instances for each mesh
+		for (uint32_t i = 0; i < gpuData.meshes.size(); i++)
+		{
+			GPUInstance inst;
+			inst.meshIndex = i;
+			inst.materialIndex = gpuData.meshes[i].materialIndex;
+			inst.worldMatrix = glm::mat4(1.0f);
+			inst.prevWorldMatrix = glm::mat4(1.0f);
+			gpuData.instances.push_back(inst);
+		}
+	}
+
+	// Preserve env map data from current GPU scene (textures aren't re-uploaded)
+	if (m_CurrentGpuScene.envMapIndex >= 0)
+	{
+		gpuData.envMapIndex = m_CurrentGpuScene.envMapIndex;
+		gpuData.envIntensity = m_CurrentGpuScene.envIntensity;
+		gpuData.marginalCDF = m_CurrentGpuScene.marginalCDF;
+		gpuData.conditionalCDF = m_CurrentGpuScene.conditionalCDF;
+		gpuData.cdfWidth = m_CurrentGpuScene.cdfWidth;
+		gpuData.cdfHeight = m_CurrentGpuScene.cdfHeight;
+	}
+
+	m_CurrentGpuScene = gpuData;
+	if (m_SyncKeepTexturesCallback)
+		m_SyncKeepTexturesCallback(gpuData);
 }
 
 // ============================================================================
@@ -281,6 +395,7 @@ void SceneManager::RemoveEntity(EntityId entity)
 	if (!entity.IsValid()) return;
 
 	auto& reg = m_EcsScene.registry;
+	if (!reg.valid(entity.id)) return;
 
 	// Remove from parent's children list if has Hierarchy
 	if (auto* h = reg.try_get<Hierarchy>(entity.id))
@@ -334,6 +449,7 @@ void SceneManager::SetMaterial(EntityId entity, int materialIndex)
 std::string SceneManager::GetEntityName(EntityId entity) const
 {
 	if (!entity.IsValid()) return "";
+	if (!m_EcsScene.registry.valid(entity.id)) return "";
 	auto& reg = m_EcsScene.registry;
 	if (auto* name = reg.try_get<NameComponent>(entity.id))
 		return name->name;
@@ -371,6 +487,163 @@ SceneManager::EntityId SceneManager::GetEntityByIndex(size_t index) const
 	}
 	if (index >= m_EntityCache.size()) return {entt::null};
 	return {m_EntityCache[index]};
+}
+
+std::vector<SceneManager::EntityId> SceneManager::GetRootEntities() const
+{
+	std::vector<EntityId> roots;
+	auto view = m_EcsScene.registry.view<Transform>();
+	for (auto entity : view)
+	{
+		auto* h = m_EcsScene.registry.try_get<Hierarchy>(entity);
+		if (!h || h->parent == entt::null)
+			roots.push_back({entity});
+	}
+	return roots;
+}
+
+// ============================================================================
+// Entity queries (for inspector UI)
+// ============================================================================
+
+bool SceneManager::HasMeshRef(EntityId entity) const
+{
+	if (!entity.IsValid()) return false;
+	if (!m_EcsScene.registry.valid(entity.id)) return false;
+	return m_EcsScene.registry.try_get<MeshRef>(entity.id) != nullptr;
+}
+
+bool SceneManager::HasLight(EntityId entity) const
+{
+	if (!entity.IsValid()) return false;
+	if (!m_EcsScene.registry.valid(entity.id)) return false;
+	return m_EcsScene.registry.try_get<LightComponent>(entity.id) != nullptr;
+}
+
+bool SceneManager::HasTransform(EntityId entity) const
+{
+	if (!entity.IsValid()) return false;
+	if (!m_EcsScene.registry.valid(entity.id)) return false;
+	return m_EcsScene.registry.try_get<Transform>(entity.id) != nullptr;
+}
+
+bool SceneManager::HasCamera(EntityId entity) const
+{
+	if (!entity.IsValid()) return false;
+	if (!m_EcsScene.registry.valid(entity.id)) return false;
+	return m_EcsScene.registry.try_get<CameraComponent>(entity.id) != nullptr;
+}
+
+bool SceneManager::IsEntityAlive(EntityId entity) const
+{
+	if (!entity.IsValid()) return false;
+	return m_EcsScene.registry.valid(entity.id);
+}
+
+bool SceneManager::GetTransform(EntityId entity, glm::vec3& outPosition, glm::vec3& outRotationEuler, float& outScale) const
+{
+	if (!entity.IsValid()) return false;
+	if (!m_EcsScene.registry.valid(entity.id)) return false;
+	auto* tf = m_EcsScene.registry.try_get<Transform>(entity.id);
+	if (!tf) return false;
+	outPosition = tf->translation;
+	outRotationEuler = glm::degrees(glm::eulerAngles(tf->rotation));
+	outScale = tf->scale.x;
+	return true;
+}
+
+bool SceneManager::GetLightProperties(EntityId entity, glm::vec3& outColor, float& outIntensity, bool& outIsSpot) const
+{
+	if (!entity.IsValid()) return false;
+	if (!m_EcsScene.registry.valid(entity.id)) return false;
+	auto* light = m_EcsScene.registry.try_get<LightComponent>(entity.id);
+	if (!light) return false;
+	outColor = light->color;
+	outIntensity = light->intensity;
+	outIsSpot = light->isSpot;
+	return true;
+}
+
+void SceneManager::SetLightProperties(EntityId entity, const glm::vec3& color, float intensity, bool isSpot)
+{
+	if (!entity.IsValid()) return;
+	auto* light = m_EcsScene.registry.try_get<LightComponent>(entity.id);
+	if (!light) return;
+	light->color = color;
+	light->intensity = intensity;
+	light->isSpot = isSpot;
+}
+
+bool SceneManager::GetMeshRef(EntityId entity, uint32_t& outMeshIndex, int& outMaterialIndex) const
+{
+	if (!entity.IsValid()) return false;
+	if (!m_EcsScene.registry.valid(entity.id)) return false;
+	auto* ref = m_EcsScene.registry.try_get<MeshRef>(entity.id);
+	if (!ref) return false;
+	outMeshIndex = ref->meshIndex;
+	outMaterialIndex = ref->materialIndex;
+	return true;
+}
+
+void SceneManager::SetMeshRefMeshIndex(EntityId entity, uint32_t meshIndex)
+{
+	if (!entity.IsValid()) return;
+	auto* ref = m_EcsScene.registry.try_get<MeshRef>(entity.id);
+	if (!ref) return;
+	ref->meshIndex = meshIndex;
+}
+
+void SceneManager::SyncTransformsToGPU()
+{
+	if (m_EcsScene.meshRegistry.GetCount() == 0) return;
+
+	UpdateWorldTransforms();
+
+	GPUSceneData gpuData = m_CurrentGpuScene;
+	UpdateInstancesFromECS(gpuData, m_EcsScene);
+
+	if (m_InstanceSyncCallback)
+		m_InstanceSyncCallback(gpuData);
+
+	m_CurrentGpuScene = gpuData;
+}
+
+// ============================================================================
+// Hierarchy queries (for tree view outliner)
+// ============================================================================
+
+bool SceneManager::HasChildren(EntityId entity) const
+{
+	if (!entity.IsValid()) return false;
+	if (!m_EcsScene.registry.valid(entity.id)) return false;
+	auto* h = m_EcsScene.registry.try_get<Hierarchy>(entity.id);
+	return h && !h->children.empty();
+}
+
+std::vector<SceneManager::EntityId> SceneManager::GetChildren(EntityId entity) const
+{
+	std::vector<EntityId> result;
+	if (!entity.IsValid()) return result;
+	if (!m_EcsScene.registry.valid(entity.id)) return result;
+	auto* h = m_EcsScene.registry.try_get<Hierarchy>(entity.id);
+	if (!h) return result;
+	result.reserve(h->children.size());
+	for (auto child : h->children)
+	{
+		if (m_EcsScene.registry.valid(child))
+			result.push_back({child});
+	}
+	return result;
+}
+
+SceneManager::EntityId SceneManager::GetParent(EntityId entity) const
+{
+	if (!entity.IsValid()) return {entt::null};
+	if (!m_EcsScene.registry.valid(entity.id)) return {entt::null};
+	auto* h = m_EcsScene.registry.try_get<Hierarchy>(entity.id);
+	if (!h || h->parent == entt::null) return {entt::null};
+	if (!m_EcsScene.registry.valid(h->parent)) return {entt::null};
+	return {h->parent};
 }
 
 // ============================================================================
@@ -443,7 +716,64 @@ void SceneManager::Clear()
 	m_CurrentGpuScene = GPUSceneData{};
 	m_CpuMeshes.clear();
 	ClearEnvMap();
+	m_EcsPopulated = false;
 	m_EntityCacheDirty = true;
+}
+
+void SceneManager::CompactMeshRegistry()
+{
+	auto& reg = m_EcsScene.registry;
+	auto& meshReg = m_EcsScene.meshRegistry;
+
+	// Find which mesh indices are still referenced by alive entities
+	std::set<uint32_t> referenced;
+	auto view = reg.view<MeshRef>();
+	for (auto entity : view)
+	{
+		if (!reg.valid(entity)) continue;
+		const auto& ref = view.get<MeshRef>(entity);
+		referenced.insert(ref.meshIndex);
+	}
+
+	// If all meshes are referenced, nothing to do
+	if (referenced.size() == meshReg.GetCount())
+		return;
+
+	// If no meshes referenced, clear the registry entirely
+	if (referenced.empty())
+	{
+		meshReg.Clear();
+		return;
+	}
+
+	// Build remap: old index → new index
+	std::map<uint32_t, uint32_t> remap;
+	uint32_t newIndex = 0;
+	for (uint32_t old : referenced)
+		remap[old] = newIndex++;
+
+	// Rebuild the mesh registry with only referenced meshes
+	std::vector<MeshData> newMeshes;
+	newMeshes.reserve(referenced.size());
+	for (uint32_t old : referenced)
+		newMeshes.push_back(std::move(meshReg.GetMesh(old)));
+
+	meshReg.Clear();
+	for (auto& mesh : newMeshes)
+		meshReg.AddMesh(std::move(mesh));
+
+	// Remap all MeshRef components
+	for (auto entity : view)
+	{
+		if (!reg.valid(entity)) continue;
+		auto& ref = view.get<MeshRef>(entity);
+		auto it = remap.find(ref.meshIndex);
+		if (it != remap.end())
+			ref.meshIndex = it->second;
+	}
+
+	printf("[Scene] Compacted mesh registry: %d -> %d meshes\n",
+	       (int)meshReg.GetCount(), (int)referenced.size());
 }
 
 // ============================================================================

@@ -225,3 +225,47 @@ TEST_CASE("SceneManager: SyncToGPU with no sync callback is safe")
 	bool hasMeshes = !mgr.GetCurrentGpuScene().meshes.empty();
 	CHECK((hasInstances || hasMeshes || true)); // just verify no crash
 }
+
+TEST_CASE("SceneManager: Delete all mesh entities + compact produces empty GPU scene")
+{
+	SceneManager mgr;
+	std::string scenePath = "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb";
+
+	if (!mgr.LoadScene(scenePath))
+	{
+		// Skip if file not available
+		return;
+	}
+
+	// Should have loaded entities
+	CHECK(mgr.GetEntityCount() > 0);
+	printf("[Test] After load: %zu entities, %d meshes\n",
+	       mgr.GetEntityCount(), (int)mgr.GetECS().meshRegistry.GetCount());
+
+	// Delete all root entities (this recursively deletes children)
+	auto roots = mgr.GetRootEntities();
+	printf("[Test] Deleting %zu root entities\n", roots.size());
+	for (auto root : roots)
+		mgr.RemoveEntity(root);
+
+	printf("[Test] After delete: %zu entities, %d meshes\n",
+	       mgr.GetEntityCount(), (int)mgr.GetECS().meshRegistry.GetCount());
+
+	// Compact the mesh registry
+	mgr.CompactMeshRegistry();
+
+	printf("[Test] After compact: %zu entities, %d meshes\n",
+	       mgr.GetEntityCount(), (int)mgr.GetECS().meshRegistry.GetCount());
+
+	// Sync to GPU (no callback — just build the data)
+	mgr.SyncToGPUKeepTextures();
+
+	printf("[Test] After sync: meshes=%d instances=%d materials=%d\n",
+	       (int)mgr.GetCurrentGpuScene().meshes.size(),
+	       (int)mgr.GetCurrentGpuScene().instances.size(),
+	       (int)mgr.GetCurrentGpuScene().materials.size());
+
+	// The GPU scene should have zero meshes and zero instances
+	CHECK(mgr.GetCurrentGpuScene().meshes.empty());
+	CHECK(mgr.GetCurrentGpuScene().instances.empty());
+}

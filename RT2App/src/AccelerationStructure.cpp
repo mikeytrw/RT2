@@ -321,12 +321,6 @@ bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,
 {
 	VkDevice device = m_Device.device;
 
-	if (instances.empty())
-	{
-		RT_LOG("[RT2] No instances for TLAS build");
-		return false;
-	}
-
 	// Store instance-to-BLAS mapping for combined buffer offset computation
 	m_InstanceToBLAS = instanceMeshIndices;
 
@@ -341,7 +335,11 @@ bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,
 	GpuResources::DestroyBuffer(m_Device, m_TLASScratchBuffer, m_TLASScratchMemory);
 
 	// --- Instance buffer ---
+	// Allocate at least 1 byte so the buffer has a valid device address
+	// even with 0 instances (Vulkan allows TLAS build with primitiveCount=0).
 	VkDeviceSize instanceBufferSize = instances.size() * sizeof(VkAccelerationStructureInstanceKHR);
+	if (instanceBufferSize == 0)
+		instanceBufferSize = 1;
 	GpuResources::CreateBuffer(m_Device, instanceBufferSize,
 	             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 	             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -364,7 +362,8 @@ bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,
 
 	void* instanceData;
 	vkMapMemory(device, m_InstanceMemory, 0, instanceBufferSize, 0, &instanceData);
-	memcpy(instanceData, vkInstances.data(), instanceBufferSize);
+	if (!vkInstances.empty())
+		memcpy(instanceData, vkInstances.data(), vkInstances.size() * sizeof(VkAccelerationStructureInstanceKHR));
 	vkUnmapMemory(device, m_InstanceMemory);
 
 	// --- TLAS geometry ---
@@ -446,12 +445,6 @@ bool AccelerationStructure::RebuildTLASOnly(VkCommandBuffer cmdBuffer,
 {
 	VkDevice device = m_Device.device;
 
-	if (instances.empty())
-	{
-		RT_LOG("[RebuildTLASOnly] No instances");
-		return false;
-	}
-
 	if (m_BLASes.empty())
 	{
 		RT_LOG("[RebuildTLASOnly] No BLASes — need full rebuild first");
@@ -472,7 +465,10 @@ bool AccelerationStructure::RebuildTLASOnly(VkCommandBuffer cmdBuffer,
 	GpuResources::DestroyBuffer(m_Device, m_TLASScratchBuffer, m_TLASScratchMemory);
 
 	// --- Instance buffer ---
+	// Allocate at least 1 byte for valid device address with 0 instances.
 	VkDeviceSize instanceBufferSize = instances.size() * sizeof(VkAccelerationStructureInstanceKHR);
+	if (instanceBufferSize == 0)
+		instanceBufferSize = 1;
 	GpuResources::CreateBuffer(m_Device, instanceBufferSize,
 	             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 	             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -495,7 +491,8 @@ bool AccelerationStructure::RebuildTLASOnly(VkCommandBuffer cmdBuffer,
 
 	void* instanceData;
 	vkMapMemory(device, m_InstanceMemory, 0, instanceBufferSize, 0, &instanceData);
-	memcpy(instanceData, vkInstances.data(), instanceBufferSize);
+	if (!vkInstances.empty())
+		memcpy(instanceData, vkInstances.data(), vkInstances.size() * sizeof(VkAccelerationStructureInstanceKHR));
 	vkUnmapMemory(device, m_InstanceMemory);
 
 	// --- TLAS geometry ---

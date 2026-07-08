@@ -1514,6 +1514,16 @@ bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
         {
             Hierarchy& hier = ecsScene.registry.emplace<Hierarchy>(entity);
             hier.parent = parentEntity;
+
+            // Register this entity as a child of the parent
+            auto* parentHier = ecsScene.registry.try_get<Hierarchy>(parentEntity);
+            if (parentHier)
+                parentHier->children.push_back(entity);
+            else
+            {
+                Hierarchy& ph = ecsScene.registry.emplace<Hierarchy>(parentEntity);
+                ph.children.push_back(entity);
+            }
         }
 
         // Name
@@ -1529,6 +1539,9 @@ bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
             const tinygltf::Camera& gcam = model.cameras[node.camera];
             SceneCamera& cam = ecsScene.camera;
             cam.verticalFOV = glm::degrees((float)gcam.perspective.yfov);
+
+            CameraComponent camComp;
+            camComp.verticalFOV = cam.verticalFOV;
 
             // Camera position/forward will be computed from world matrix
             // after SceneGraph::UpdateWorldTransforms
@@ -1554,14 +1567,27 @@ bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
                         (float)fwdArr.Get(1).GetNumberAsDouble(),
                         (float)fwdArr.Get(2).GetNumberAsDouble()
                     };
+                    camComp.forwardDirection = cam.forwardDirection;
                 }
             }
             if (gcam.extras.Has("aperture"))
+            {
                 cam.aperture = (float)gcam.extras.Get("aperture").GetNumberAsDouble();
+                camComp.aperture = cam.aperture;
+            }
             if (gcam.extras.Has("focusDistance"))
+            {
                 cam.focusDistance = (float)gcam.extras.Get("focusDistance").GetNumberAsDouble();
+                camComp.focusDistance = cam.focusDistance;
+            }
             if (gcam.extras.Has("verticalFOV"))
+            {
                 cam.verticalFOV = (float)gcam.extras.Get("verticalFOV").GetNumberAsDouble();
+                camComp.verticalFOV = cam.verticalFOV;
+            }
+
+            // Attach CameraComponent to the entity so it appears in the outliner
+            ecsScene.registry.emplace<CameraComponent>(entity, camComp);
 
             // If no explicit position/forward in extras, we'll compute from
             // the world matrix after SceneGraph::UpdateWorldTransforms
@@ -1630,6 +1656,17 @@ bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
 
                         Hierarchy& hier = ecsScene.registry.emplace<Hierarchy>(primEntity);
                         hier.parent = entity;
+
+                        // Register this primitive as a child of the node entity
+                        // so RemoveEntity can recursively destroy it.
+                        auto* parentHier = ecsScene.registry.try_get<Hierarchy>(entity);
+                        if (parentHier)
+                            parentHier->children.push_back(primEntity);
+                        else
+                        {
+                            Hierarchy& ph = ecsScene.registry.emplace<Hierarchy>(entity);
+                            ph.children.push_back(primEntity);
+                        }
 
                         MeshRef& ref = ecsScene.registry.emplace<MeshRef>(primEntity);
                         ref.meshIndex = meshIdx;

@@ -203,6 +203,8 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
     <ClInclude Include="src\SceneResources.h" />
     <ClInclude Include="src\RenderSettings.h" />
     <ClInclude Include="src\SceneManager.h" />
+    <ClInclude Include="src\SceneEditorUI.h" />
+    <ClInclude Include="src\PrimitiveGeometry.h" />
     <ClInclude Include="src\AsyncTextureLoader.h" />
     <ClInclude Include="src\GpuDevice.h" />
     <ClInclude Include="src\GpuResources.h" />
@@ -308,6 +310,16 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\SceneManager.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\SceneEditorUI.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PrimitiveGeometry.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

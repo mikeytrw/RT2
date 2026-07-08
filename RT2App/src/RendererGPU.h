@@ -37,6 +37,10 @@ public:
 	void Render(const Camera& camera);
 	void SetScene(const GPUSceneData& sceneData);
 
+	// Update scene data WITHOUT re-uploading textures. Use when only
+	// entities/transforms/materials changed (add/delete entity, material edit).
+	void SetSceneKeepTextures(const GPUSceneData& sceneData);
+
 	// Async texture upload polling — forward to SceneResources.
 	bool IsTextureUploadPending() const { return m_Scene.IsTextureUploadPending(); }
 	bool PollTextureUpload() { return m_Scene.PollTextureUpload(); }

@@ -43,10 +43,11 @@ public:
 	SceneManager() = default;
 	~SceneManager() = default;
 
-	// ---- Sync callback ----
-	// Called after scene changes that require a full GPU re-upload
-	// (SetScene path: textures, meshes, AS rebuild).
+	// Set callback for full re-upload (SetScene path: textures + AS rebuild).
 	void SetSyncCallback(SyncCallback cb) { m_SyncCallback = std::move(cb); }
+
+	// Set callback for no-texture re-upload (SetSceneKeepTextures path).
+	void SetSyncKeepTexturesCallback(SyncCallback cb) { m_SyncKeepTexturesCallback = std::move(cb); }
 
 	// ---- Scene loading ----
 	bool LoadScene(const std::string& filepath);
@@ -56,6 +57,11 @@ public:
 	// ---- Full GPU re-upload (rebuilds GPUSceneData from scene state) ----
 	void SyncToGPU();
 
+	// ---- GPU re-upload without texture re-upload ----
+	// Use when only entities/transforms/materials changed (add/delete entity,
+	// material edit) but textures are unchanged. Much cheaper than SyncToGPU.
+	void SyncToGPUKeepTextures();
+
 	// ---- Entity manipulation ----
 	// EntityId is a thin wrapper around entt::entity for type safety.
 	struct EntityId
@@ -63,6 +69,9 @@ public:
 		entt::entity id = entt::null;
 		bool IsValid() const { return id != entt::null; }
 	};
+
+	// Check if an entity is still alive in the registry.
+	bool IsEntityAlive(EntityId entity) const;
 
 	// Add a mesh object to the scene. Returns the new entity.
 	// If meshData is empty and filepath is set, the mesh will be loaded
@@ -108,6 +117,44 @@ public:
 	size_t GetEntityCount() const;
 	EntityId GetEntityByIndex(size_t index) const;
 
+	// Get root entities (no parent) for tree view outliner.
+	std::vector<EntityId> GetRootEntities() const;
+
+	// ---- Entity queries (for inspector UI) ----
+	bool HasMeshRef(EntityId entity) const;
+	bool HasLight(EntityId entity) const;
+	bool HasCamera(EntityId entity) const;
+	bool HasTransform(EntityId entity) const;
+
+	// Read transform as euler degrees (for UI sliders). Returns false if no Transform.
+	bool GetTransform(EntityId entity, glm::vec3& outPosition, glm::vec3& outRotationEuler, float& outScale) const;
+
+	// Read/write light properties.
+	bool GetLightProperties(EntityId entity, glm::vec3& outColor, float& outIntensity, bool& outIsSpot) const;
+	void SetLightProperties(EntityId entity, const glm::vec3& color, float intensity, bool isSpot);
+
+	// Read/write mesh ref (meshIndex + materialIndex).
+	bool GetMeshRef(EntityId entity, uint32_t& outMeshIndex, int& outMaterialIndex) const;
+	void SetMeshRefMeshIndex(EntityId entity, uint32_t meshIndex);
+
+	// Material count (for combo dropdowns)
+	size_t GetMaterialCount() const { return m_EcsScene.materials.size(); }
+
+	// Mesh registry count (for info display)
+	uint32_t GetMeshRegistryCount() const { return m_EcsScene.meshRegistry.GetCount(); }
+
+	// ---- Hierarchy queries (for tree view outliner) ----
+	bool HasChildren(EntityId entity) const;
+	std::vector<EntityId> GetChildren(EntityId entity) const;
+	EntityId GetParent(EntityId entity) const;
+
+	// ---- Instance-only GPU sync ----
+	// Rebuilds GPUSceneData instances + lights from ECS transforms, then
+	// calls the instance sync callback (RendererGPU::UpdateSceneInstances).
+	// Much cheaper than SyncToGPU() — no BLAS rebuild, no texture re-upload.
+	void SetInstanceSyncCallback(SyncCallback cb) { m_InstanceSyncCallback = std::move(cb); }
+	void SyncTransformsToGPU();
+
 	// ---- Material + texture management ----
 	int AddMaterial(const SceneMaterial& material);
 	SceneMaterial& GetMaterial(int index);
@@ -134,12 +181,18 @@ public:
 	// Clear all scene state.
 	void Clear();
 
+	// Remove unreferenced meshes from the MeshRegistry and remap all
+	// MeshRef components to the compacted indices. Call after entity
+	// deletion to prevent deleted meshes from lingering in GPU scene.
+	void CompactMeshRegistry();
+
 private:
 	void UpdateWorldTransforms();
 
 	Scene              m_Scene;
 	ECSScene           m_EcsScene;
 	GPUSceneData       m_CurrentGpuScene;
+	bool               m_EcsPopulated = false;  // true after LoadIntoECS
 
 	// Environment map
 	std::string        m_EnvMapPath;
@@ -151,6 +204,8 @@ private:
 	std::vector<Mesh>  m_CpuMeshes;
 
 	SyncCallback       m_SyncCallback;
+	SyncCallback       m_InstanceSyncCallback;
+	SyncCallback       m_SyncKeepTexturesCallback;
 
 	// Cache of entity list (for GetEntityByIndex — rebuilt on demand)
 	mutable std::vector<entt::entity> m_EntityCache;

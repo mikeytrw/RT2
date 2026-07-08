@@ -244,6 +244,20 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 	       (void*)m_CameraUBO, (void*)m_Scene.GetMaterialBuffer());
 }
 
+void RendererGPU::SetSceneKeepTextures(const GPUSceneData& sceneData)
+{
+	m_Scene.SetSceneKeepTextures(m_Device, sceneData);
+	m_FrameIndex = 1;
+	m_NRDFrameIndex = 1;
+	m_NRDNeedsReset = true;
+
+	if (m_Scene.IsValid() && !m_Scene.NeedsASRebuild() && !m_Scene.IsTextureUploadPending())
+	{
+		RT_LOG("[SetSceneKeepTextures] updating descriptor set");
+		UpdatePathTraceDescriptorSet();
+	}
+}
+
 void RendererGPU::SetScene(const GPUSceneData& sceneData)
 {
 	m_Scene.SetScene(m_Device, sceneData);
@@ -266,6 +280,11 @@ void RendererGPU::SetScene(const GPUSceneData& sceneData)
 
 void RendererGPU::UpdateSceneInstances(const GPUSceneData& sceneData)
 {
+	// Wait for all in-flight frames to finish before destroying/recreating
+	// GPU buffers (instance transform, light). Without this, a previous frame's
+	// render commands may still be referencing the old buffers → use-after-free.
+	vkDeviceWaitIdle(m_Device.device);
+
 	m_Scene.UpdateInstances(m_Device, sceneData);
 	UpdatePathTraceDescriptorSet();
 }
@@ -387,7 +406,7 @@ void RendererGPU::Render(const Camera& camera)
 			m_RasterPass.CreateDrawData(dev, scene);
 		});
 		RT_LOG("[Render] AS rebuild done, AS valid=%d", m_Scene.IsValid());
-		if (!m_Scene.IsTextureUploadPending())
+		if (m_Scene.IsValid())
 			UpdatePathTraceDescriptorSet();
 	}
 

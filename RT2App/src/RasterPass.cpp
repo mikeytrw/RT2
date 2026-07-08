@@ -361,9 +361,11 @@ void RasterPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
                         VkDescriptorSet sceneSet, VkDescriptorSet gbufferSet,
                         VkImageView depthView, const VkImageView gbufferViews[8]) const
 {
-	if (!m_Pipeline || !m_MegaVertexBuffer) return;
-	if (m_OpaqueDrawCount == 0 && m_MaskedDrawCount == 0) return;
+	if (!m_Pipeline) return;
 
+	// Even with 0 draw calls, we must clear the G-buffer so stale data
+	// from the previous frame doesn't persist (raster-first path tracer
+	// would shade deleted geometry).
 	VkClearValue clearValues[9] = {}; // 8 color + 1 depth
 	// Color attachments cleared to zero
 	for (int i = 0; i < 8; i++)
@@ -418,11 +420,11 @@ void RasterPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 	vkCmdSetScissor(cmd, 0, 1, &scissor);
 
 	VkDeviceSize offsets[] = { 0 };
-	vkCmdBindVertexBuffers(cmd, 0, 1, &m_MegaVertexBuffer, offsets);
 
 	// Pass 1: opaque instances (depth write ON)
-	if (m_OpaqueDrawCount > 0)
+	if (m_MegaVertexBuffer && m_OpaqueDrawCount > 0)
 	{
+		vkCmdBindVertexBuffers(cmd, 0, 1, &m_MegaVertexBuffer, offsets);
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout,
 		                        0, 1, &sceneSet, 0, nullptr);
@@ -432,8 +434,9 @@ void RasterPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 	}
 
 	// Pass 2: masked/blend instances (depth write OFF — discard'd fragments don't occlude)
-	if (m_MaskedDrawCount > 0)
+	if (m_MegaVertexBuffer && m_MaskedDrawCount > 0)
 	{
+		vkCmdBindVertexBuffers(cmd, 0, 1, &m_MegaVertexBuffer, offsets);
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_MaskedPipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout,
 		                        0, 1, &sceneSet, 0, nullptr);
