@@ -367,7 +367,7 @@ bool SceneLoader::Save(const Scene& scene, const std::string& filepath)
         persp.yfov = glm::radians(cam.verticalFOV);
         persp.aspectRatio = 16.0 / 9.0;
         persp.znear = 0.1;
-        persp.zfar = 100.0;
+        persp.zfar = 10000.0;
         gcam.perspective = persp;
 
         // Store camera position, forward, aperture, focusDistance, FOV in extras

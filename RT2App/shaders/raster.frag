@@ -53,7 +53,7 @@ layout(set = 0, binding = SI_BINDING_TEXTURE_ARRAY) uniform sampler2D textures[]
 // Location mapping: 0=gNormalRoughness, 1=gViewZ, 2=gMotion, 3=gAlbedoF0,
 //                   4=gDirectEmission, 5=gPrimHit, 6=gPrimGeoNormal, 7=gPrimUV
 layout(location = 0) out vec4 outNormalRoughness;   // rgba8
-layout(location = 1) out vec4 outViewZ;             // r16f
+layout(location = 1) out vec4 outViewZ;             // r32f
 layout(location = 2) out vec4 outMotion;            // rg16f
 layout(location = 3) out vec4 outAlbedoF0;          // rgba16f
 layout(location = 4) out vec4 outDirectEmission;    // rgba16f

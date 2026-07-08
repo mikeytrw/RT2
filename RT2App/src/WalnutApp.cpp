@@ -33,7 +33,7 @@ public:
 
 		ExampleLayer()
 		{
-			m_Cam = Camera(45.0f, 0.1f, 100.0f,0.005f,2.5f);
+			m_Cam = Camera(45.0f, 0.1f, 10000.0f,0.005f,2.5f);
 			m_Renderer = Renderer();
 			m_RenderOnUpdate = false;
 
@@ -159,6 +159,11 @@ public:
 	ImGui::Separator();
 	ImGui::Text("Camera");
 	ImGui::SliderFloat("Move Speed", &m_Cam.m_Speed, 0.5f, 50.0f, "%.1f");
+	if (ImGui::SliderFloat("Far Clip", &m_Cam.m_FarClip, 100.0f, 100000.0f, "%.0f"))
+	{
+		m_Cam.SetFarClip(m_Cam.m_FarClip);
+		m_RendererGPU.ResetAccumulation();
+	}
 	bool rasterFirst = m_RendererGPU.m_RasterFirst;
 	ImGui::BeginDisabled(rasterFirst);
 	if (ImGui::DragFloat("Aperture", &m_Cam.m_Aperture, 0.001f, 0.0f, 5.0f))

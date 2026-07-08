@@ -40,6 +40,9 @@ public:
 	float m_Aperture = 0.0f;
 	float m_FocusDistance = 1.0f;
 	float m_Speed = 5.0f; // movement speed (units/sec)
+	float m_FarClip = 10000.0f;
+
+	void SetFarClip(float farClip) { m_FarClip = farClip; RecalculateProjection(); }
 private:
 	void RecalculateProjection();
 	void RecalculateView();
@@ -51,7 +54,6 @@ private:
 
 	float m_VerticalFOV = 45.0f;
 	float m_NearClip = 0.1f;
-	float m_FarClip = 100.0f;
 
 	glm::vec3 m_Position{ 0.0f, 0.0f, 0.0f };
 	glm::vec3 m_ForwardDirection{ 0.0f, 0.0f, 0.0f };

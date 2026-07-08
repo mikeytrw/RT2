@@ -11,7 +11,7 @@ layout(location = 1) rayPayloadEXT RayPayload nextPayload;
 
 // G-buffer images (set 1) — written by raster pass, read here
 // Declared in pathtracer_shared.glsl:
-//   gNormalRoughness (rgba8), gViewZ (r16f), gMotion (rg16f),
+//   gNormalRoughness (rgba8), gViewZ (r32f), gMotion (rg16f),
 //   gDiffRadianceHitDist (rgba16f), gSpecRadianceHitDist (rgba16f),
 //   gAlbedoF0 (rgba16f), gDirectEmission (rgba16f)
 // Additional G-buffer images (raster-only, set 1):
