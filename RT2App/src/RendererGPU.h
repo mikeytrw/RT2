@@ -19,7 +19,6 @@
 #include "SceneResources.h"
 #include "GpuResources.h"
 #include "FrameContext.h"
-#include "Scene.h"
 #include <array>
 #include <memory>
 
