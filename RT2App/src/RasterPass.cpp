@@ -33,13 +33,13 @@ bool RasterPass::Init(const GpuDevice& dev, VkDescriptorSetLayout sceneSetLayout
 	stages[1].module = fragModule;
 	stages[1].pName = "main";
 
-	// Vertex input: interleaved {vec3 pos, vec2 uv} = 20 bytes per vertex
+	// Vertex input: interleaved {vec3 pos, vec2 uv, vec3 tangent} = 32 bytes per vertex
 	VkVertexInputBindingDescription bindingDesc = {};
 	bindingDesc.binding = 0;
-	bindingDesc.stride = sizeof(float) * 5;
+	bindingDesc.stride = sizeof(float) * 8;
 	bindingDesc.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-	VkVertexInputAttributeDescription attrDescs[2] = {};
+	VkVertexInputAttributeDescription attrDescs[3] = {};
 	attrDescs[0].location = 0;
 	attrDescs[0].binding = 0;
 	attrDescs[0].format = VK_FORMAT_R32G32B32_SFLOAT;
@@ -48,12 +48,16 @@ bool RasterPass::Init(const GpuDevice& dev, VkDescriptorSetLayout sceneSetLayout
 	attrDescs[1].binding = 0;
 	attrDescs[1].format = VK_FORMAT_R32G32_SFLOAT;
 	attrDescs[1].offset = sizeof(float) * 3;
+	attrDescs[2].location = 2;
+	attrDescs[2].binding = 0;
+	attrDescs[2].format = VK_FORMAT_R32G32B32_SFLOAT;
+	attrDescs[2].offset = sizeof(float) * 5;
 
 	VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
 	vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 	vertexInputInfo.vertexBindingDescriptionCount = 1;
 	vertexInputInfo.pVertexBindingDescriptions = &bindingDesc;
-	vertexInputInfo.vertexAttributeDescriptionCount = 2;
+	vertexInputInfo.vertexAttributeDescriptionCount = 3;
 	vertexInputInfo.pVertexAttributeDescriptions = attrDescs;
 
 	VkPipelineInputAssemblyStateCreateInfo inputAssembly = {};
@@ -191,13 +195,13 @@ void RasterPass::CreateVertexBuffers(const GpuDevice& dev, const GPUSceneData& s
 	DestroyVertexBuffers();
 
 	// Build a single mega-vertex buffer with all meshes concatenated.
-	// Per-triangle non-indexed (3 vertices per triangle, 5 floats per vertex).
+	// Per-triangle non-indexed (3 vertices per triangle, 8 floats per vertex).
 	std::vector<float> megaVerts;
 	m_MeshVertexOffsets.resize(scene.meshes.size());
 
 	for (size_t m = 0; m < scene.meshes.size(); m++)
 	{
-		m_MeshVertexOffsets[m] = static_cast<uint32_t>(megaVerts.size() / 5);
+		m_MeshVertexOffsets[m] = static_cast<uint32_t>(megaVerts.size() / 8);
 
 		const auto& mesh = scene.meshes[m];
 		uint32_t triCount = static_cast<uint32_t>(mesh.indices.size() / 3);
@@ -216,6 +220,19 @@ void RasterPass::CreateVertexBuffers(const GpuDevice& dev, const GPUSceneData& s
 				}
 				else
 				{
+					megaVerts.push_back(0.0f);
+					megaVerts.push_back(0.0f);
+				}
+				if (!mesh.tangents.empty())
+				{
+					uint32_t ti = t * 9 + v * 3;
+					megaVerts.push_back(mesh.tangents[ti]);
+					megaVerts.push_back(mesh.tangents[ti + 1]);
+					megaVerts.push_back(mesh.tangents[ti + 2]);
+				}
+				else
+				{
+					megaVerts.push_back(1.0f);
 					megaVerts.push_back(0.0f);
 					megaVerts.push_back(0.0f);
 				}

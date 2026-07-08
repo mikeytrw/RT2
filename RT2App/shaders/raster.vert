@@ -33,14 +33,16 @@ layout(set = 0, binding = 12, std430) readonly buffer InstanceTransformsPrev
     mat4 instanceTransformsPrev[];
 };
 
-// Vertex format: interleaved {vec3 pos, vec2 uv}
+// Vertex format: interleaved {vec3 pos, vec2 uv, vec3 tangent}
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec2 inUV;
+layout(location = 2) in vec3 inTangent;
 
 layout(location = 0) out vec3 outWorldPos;
 layout(location = 1) out vec3 outWorldPosPrev;
 layout(location = 2) out vec2 outUV;
 layout(location = 3) flat out uint outInstanceIndex;
+layout(location = 4) out vec3 outWorldTangent;
 
 void main()
 {
@@ -55,6 +57,7 @@ void main()
     outWorldPosPrev = worldPosPrev.xyz;
     outUV = inUV;
     outInstanceIndex = instIdx;
+    outWorldTangent = normalize(mat3(world) * inTangent);
 
     // Jittered clip-space position for raster (matches RT raygen jitter).
     // camera.forward.w = jitter.x, camera.right.w = jitter.y (subpixel offset in [-0.5, 0.5] pixels).

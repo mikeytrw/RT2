@@ -65,6 +65,7 @@ layout(location = 0) in vec3 inWorldPos;
 layout(location = 1) in vec3 inWorldPosPrev;
 layout(location = 2) in vec2 inUV;
 layout(location = 3) flat in uint inInstanceIndex;
+layout(location = 4) in vec3 inWorldTangent;
 
 // Material index is passed via the instance's custom index.
 // We store it in a separate SSBO or derive from instance data.
@@ -135,17 +136,8 @@ void main()
     int normalTexIdx = mat.textureIndices.y;
     if (normalTexIdx >= 0)
     {
-        // Need tangent — compute from screen-space derivatives of UV and position
-        vec3 dp1 = dFdx(inWorldPos);
-        vec3 dp2 = dFdy(inWorldPos);
-        vec2 duv1 = dFdx(uv);
-        vec2 duv2 = dFdy(uv);
-
-        vec3 dp2perp = cross(geoN, dp2);
-        vec3 dp1perp = cross(dp1, geoN);
-        vec3 T = normalize(dp2perp * duv1.x + dp1perp * duv2.x);
-        // Gram-Schmidt orthogonalize
-        T = normalize(T - dot(T, geoN) * geoN);
+        // Use precomputed vertex tangent (transformed to world space in vert shader)
+        vec3 T = normalize(inWorldTangent - dot(inWorldTangent, geoN) * geoN);
         vec3 B = cross(geoN, T);
 
         vec3 tangentN = texture(textures[nonuniformEXT(normalTexIdx)], uv).rgb * 2.0 - 1.0;
