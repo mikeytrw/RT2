@@ -359,7 +359,11 @@ void SceneResources::CreateTextures(const GpuDevice& dev, const std::vector<Scen
 		gt.height = tex.height;
 
 		bool isHDR = tex.isHDR && !tex.floatPixels.empty();
-		VkFormat format = isHDR ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
+		VkFormat format;
+		if (isHDR)
+			format = VK_FORMAT_R16G16B16A16_SFLOAT;
+		else
+			format = tex.isSRGB ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
 		gt.format = format;
 		VkDeviceSize imageSize = isHDR
 			? (VkDeviceSize)(tex.width * tex.height * 8)

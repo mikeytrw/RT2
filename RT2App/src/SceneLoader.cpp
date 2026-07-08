@@ -619,6 +619,16 @@ bool SceneLoader::Load(Scene& scene, const std::string& filepath)
         scene.AddMaterial(mat);
     }
 
+    // Mark sRGB textures — base color and emissive are perceptual color data.
+    // Normal, metallicRoughness, and other data textures stay linear.
+    for (const auto& mat : scene.GetMaterials())
+    {
+        if (mat.baseColorTextureIndex >= 0 && mat.baseColorTextureIndex < (int)scene.GetTextures().size())
+            scene.GetTexture(mat.baseColorTextureIndex).isSRGB = true;
+        if (mat.emissiveTextureIndex >= 0 && mat.emissiveTextureIndex < (int)scene.GetTextures().size())
+            scene.GetTexture(mat.emissiveTextureIndex).isSRGB = true;
+    }
+
     // --- Lights ---
     auto lightsIt = model.extensions.find("KHR_lights_punctual");
     if (lightsIt != model.extensions.end() && lightsIt->second.IsObject())
@@ -1265,6 +1275,16 @@ bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
     // If no materials, add a default so index 0 is always valid
     if (ecsScene.materials.empty())
         ecsScene.materials.push_back(SceneMaterial{});
+
+    // Mark sRGB textures — base color and emissive are perceptual color data.
+    // Normal, metallicRoughness, and other data textures stay linear.
+    for (const auto& mat : ecsScene.materials)
+    {
+        if (mat.baseColorTextureIndex >= 0 && mat.baseColorTextureIndex < (int)ecsScene.textures.size())
+            ecsScene.textures[mat.baseColorTextureIndex].isSRGB = true;
+        if (mat.emissiveTextureIndex >= 0 && mat.emissiveTextureIndex < (int)ecsScene.textures.size())
+            ecsScene.textures[mat.emissiveTextureIndex].isSRGB = true;
+    }
 
     // --- Helper: extract local TRS from a glTF node ---
     auto extractLocalTRS = [](const tinygltf::Node& node, glm::vec3& outT, glm::quat& outR, glm::vec3& outS) {

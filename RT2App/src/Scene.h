@@ -108,6 +108,12 @@ struct SceneTexture
     // pixels is empty and floatPixels contains RGBA float data.
     bool isHDR = false;
     std::vector<float> floatPixels;
+
+    // sRGB color space flag — true for base color / emissive textures
+    // (glTF: these contain perceptual color data, should use sRGB format).
+    // False for normal / metallicRoughness / CDF / data textures (linear).
+    // Set by SceneLoader based on which material slot references this texture.
+    bool isSRGB = false;
 };
 
 struct SceneCamera
