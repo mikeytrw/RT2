@@ -28,14 +28,14 @@
 
 using namespace Walnut;
 
-// Global CLI args (parsed in CreateApplication, consumed by ExampleLayer)
+// Global CLI args (parsed in CreateApplication, consumed by RT2Layer)
 static CLIArgs g_CLI;
 
-class ExampleLayer : public Walnut::Layer
+class RT2Layer : public Walnut::Layer
 {
 public:
 
-		ExampleLayer()
+		RT2Layer()
 		{
 			m_Cam = Camera(45.0f, 0.1f, 10000.0f,0.005f,2.5f);
 			m_Renderer = Renderer();
@@ -819,7 +819,7 @@ private:
 	bool m_RenderOnUpdate;
 	Camera m_Cam;
 
-	// Mesh UI state (OBJ path — kept in ExampleLayer for UI binding)
+	// Mesh UI state (OBJ path — kept in RT2Layer for UI binding)
 	Mesh m_Mesh;
 	std::string m_MeshPath;
 	vec3 m_MeshPosition = vec3(0.0f, 0.0f, 0.0f);
@@ -845,7 +845,7 @@ private:
 
 Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 {
-	// Parse CLI args (stored in global g_CLI for ExampleLayer to consume)
+	// Parse CLI args (stored in global g_CLI for RT2Layer to consume)
 	g_CLI = CLIArgs::Parse(argc, argv);
 
 	Walnut::ApplicationSpecification spec;
@@ -854,7 +854,7 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 	spec.EnableSyncValidation = g_CLI.syncValidate;
 
 	Walnut::Application* app = new Walnut::Application(spec);
-	app->PushLayer<ExampleLayer>();
+	app->PushLayer<RT2Layer>();
 	app->SetMenubarCallback([app]()
 	{
 		if (ImGui::BeginMenu("File"))
