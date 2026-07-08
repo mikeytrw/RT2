@@ -21,8 +21,11 @@ struct GpuDevice;
 class GBufferTarget
 {
 public:
-	// Color image index (internal storage order). Matches shader binding order
-	// where possible. Indices 0-10 correspond to SI_BINDING_G_* constants.
+	// Color image index (internal storage order).
+	// NOTE: indices match SI_BINDING_G_* shader bindings where applicable
+	// (0-5, 7-10). Index 6 is reserved for the NRD UBO (not a color image),
+	// so the color array has a gap at index 6. COLOR_COUNT=13 to accommodate
+	// indices 0-12, with slot 6 left unused (null handle).
 	enum ColorIndex : uint32_t
 	{
 		// --- Shader descriptor set bindings (SI_BINDING_G_*) ---
@@ -32,7 +35,7 @@ public:
 		DIFF_RADIANCE,         // RGBA16F      — NRD diffuse radiance + norm hit dist
 		SPEC_RADIANCE,         // RGBA16F      — NRD specular radiance + norm hit dist
 		ALBEDO_F0,             // RGBA16F      — albedo.rgb + F0.a
-		// Index 6 = NRD UBO (not an image)
+		// Index 6 = NRD UBO (not a color image — slot left empty)
 		DIRECT_EMISSION = 7,   // RGBA16F      — emissive surfaces + sky
 		PRIM_HIT,              // RGBA32F      — xyz = world pos, w = matIdx+1
 		PRIM_GEO_NORMAL,       // RGBA8        — geometric normal (0.5+0.5 encode)
@@ -40,9 +43,10 @@ public:
 		// --- Not in shader descriptor set (NRD-internal) ---
 		NRD_DIFF_OUT,          // RGBA16F      — NRD denoised diffuse output
 		NRD_SPEC_OUT,          // RGBA16F      — NRD denoised specular output
+		MAX_COLOR_INDEX = NRD_SPEC_OUT,
 	};
 
-	static constexpr uint32_t COLOR_COUNT = 12;
+	static constexpr uint32_t COLOR_COUNT = MAX_COLOR_INDEX + 1; // 13 (indices 0-12, slot 6 unused)
 
 	// MRT color formats (8 attachments written by raster pass).
 	// Order matches RasterPass MRT layout (raster.frag location 0-7).

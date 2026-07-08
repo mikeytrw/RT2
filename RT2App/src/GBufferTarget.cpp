@@ -20,6 +20,7 @@ void GBufferTarget::Create(const GpuDevice& dev, uint32_t width, uint32_t height
 
 	for (uint32_t i = 0; i < COLOR_COUNT; i++)
 	{
+		if (i == 6) continue; // slot 6 = NRD UBO, not a color image
 		GpuResources::CreateImage(dev, width, height, GetColorFormat(i),
 			colorUsage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_ColorImages[i]);
 	}
@@ -28,6 +29,7 @@ void GBufferTarget::Create(const GpuDevice& dev, uint32_t width, uint32_t height
 	CommandUtils::ImmediateSubmit(dev, [&](VkCommandBuffer cmd) {
 		for (uint32_t i = 0; i < COLOR_COUNT; i++)
 		{
+			if (i == 6) continue; // slot 6 = NRD UBO, not a color image
 			VkImageMemoryBarrier barrier = {};
 			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 			barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -88,7 +90,10 @@ void GBufferTarget::Destroy()
 	if (!m_Device) return;
 
 	for (uint32_t i = 0; i < COLOR_COUNT; i++)
+	{
+		if (i == 6) continue; // slot 6 = NRD UBO, not a color image
 		GpuResources::DestroyImage(*m_Device, m_ColorImages[i]);
+	}
 
 	GpuResources::DestroyImage(*m_Device, m_DepthImage);
 
