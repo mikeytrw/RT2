@@ -46,15 +46,14 @@ void SceneEditorUI::RenderOutliner()
 
 	if (ImGui::BeginPopup("AddEntity"))
 	{
-		if (ImGui::MenuItem("Point Light"))
+		if (ImGui::MenuItem("Emissive Light"))
 		{
-			auto id = m_SceneMgr->AddLight("Point Light", {0, 5, 0}, {1, 1, 1}, 10.0f, false);
-			m_SelectedEntity = id;
-			NotifySceneChanged();
-		}
-		if (ImGui::MenuItem("Spot Light"))
-		{
-			auto id = m_SceneMgr->AddLight("Spot Light", {0, 5, 0}, {1, 1, 1}, 10.0f, true);
+			SceneMaterial mat;
+			mat.emissiveColor = {1.0f, 1.0f, 1.0f};
+			mat.emissiveIntensity = 10.0f;
+			int matIdx = m_SceneMgr->AddMaterial(mat);
+			auto id = m_SceneMgr->AddObjectWithGeometry("Light",
+				PrimitiveGeometry::CreateSphere(0.2f), {0, 3, 0}, {0, 0, 0}, 1.0f, matIdx);
 			m_SelectedEntity = id;
 			NotifySceneChanged();
 		}
@@ -146,8 +145,6 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 	std::string label;
 	if (m_SceneMgr->HasCamera(entity))
 		label = "[Camera] " + name;
-	else if (m_SceneMgr->HasLight(entity))
-		label = "[Light] " + name;
 	else if (m_SceneMgr->HasMeshRef(entity))
 		label = "[Mesh] " + name;
 	else
@@ -255,9 +252,6 @@ void SceneEditorUI::RenderInspector()
 
 	if (m_SceneMgr->HasMeshRef(entity))
 		RenderMaterialEditor(entity);
-
-	if (m_SceneMgr->HasLight(entity))
-		RenderLightEditor(entity);
 
 	if (m_SceneMgr->HasCamera(entity))
 		RenderCameraEditor(entity);
