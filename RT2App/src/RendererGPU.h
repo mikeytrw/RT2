@@ -14,6 +14,7 @@
 #include "RasterPass.h"
 #include "GBufferDebugPass.h"
 #include "NRDIntegration.h"
+#include "SceneResources.h"
 #include "GpuResources.h"
 #include "FrameContext.h"
 #include "Scene.h"
@@ -45,7 +46,6 @@ public:
 	uint32_t GetHeight() const { return m_Height; }
 
 	bool Init();
-	void RebuildAccelerationStructures();
 	void ResetAccumulation();
 
 	// Read back the output image to CPU as RGBA8 (tonemapped+sRGB). Returns false on failure.
@@ -77,15 +77,8 @@ public:
 private:
 	void CreateOutputImage();
 	void DestroyOutputImage();
-	void CreateMaterialBuffer();
-	void CreateLightBuffer();
-	void CreateInstanceTransformBuffer();
 	void UpdateCameraUBO(const Camera& camera);
 	void UpdatePathTraceDescriptorSet();
-	void CreateTextures(const std::vector<SceneTexture>& textures);
-	void DestroyTextures();
-	void CreateEnvMapCDFTextures(const GPUSceneData& sceneData);
-	void DestroyEnvMapCDFTextures();
 
 	// G-buffer images + descriptor set
 	void CreateGBufferImages();
@@ -111,46 +104,8 @@ private:
 	VkDeviceMemory m_CameraUBOMemory = VK_NULL_HANDLE;
 	SICameraData m_CameraUBOData = {}; // stashed by UpdateCameraUBO, written via vkCmdUpdateBuffer in Render()
 
-	VkBuffer m_MaterialBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_MaterialBufferMemory = VK_NULL_HANDLE;
-	VkDeviceSize m_MaterialBufferSize = 0;
-
-	// Light buffer (NEE) — std430 with 16-byte header + TriangleLight[]
-	VkBuffer m_LightBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_LightBufferMemory = VK_NULL_HANDLE;
-	VkDeviceSize m_LightBufferSize = 0;
-
-	// Instance transform buffer — one mat4 per instance (object-to-world)
-	VkBuffer m_InstanceTransformBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_InstanceTransformBufferMemory = VK_NULL_HANDLE;
-
-	// Previous frame instance transforms (for motion vectors)
-	VkBuffer m_InstanceTransformPrevBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_InstanceTransformPrevBufferMemory = VK_NULL_HANDLE;
-
-	// Per-instance material index (uint32 per instance, for raster pass)
-	VkBuffer m_InstanceMaterialIndexBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_InstanceMaterialIndexBufferMemory = VK_NULL_HANDLE;
-
-	// Textures (bindless array) — GpuImage wrapper, shared samplers
-	std::vector<GpuImage> m_Textures;
-	VkSampler m_TextureSampler = VK_NULL_HANDLE;      // REPEAT + LINEAR mipmap (scene textures)
-	VkSampler m_CDFTextureSampler = VK_NULL_HANDLE;   // CLAMP_TO_EDGE + NEAREST mipmap (CDF textures)
-	VkDescriptorSetLayout m_TextureDescriptorSetLayout = VK_NULL_HANDLE;
-	VkDescriptorSet m_TextureDescriptorSet = VK_NULL_HANDLE;
-
-	// Environment map CDF textures (M8) — appended to m_Textures array as extra entries
-	int m_MarginalCDFIndex = -1;    // index into m_Textures for marginal CDF
-	int m_ConditionalCDFIndex = -1; // index into m_Textures for conditional CDF
-	int m_EnvMapIndex = -1;
-	int m_CDFWidth = 0;
-	int m_CDFHeight = 0;
-
-	AccelerationStructure m_AS;
-
-	GPUSceneData m_CurrentScene;
-	bool m_NeedsASRebuild = false;
-	bool m_ASJustBuilt = false;
+	// Scene resources — materials, lights, transforms, textures, AS
+	SceneResources m_Scene;
 
 	uint32_t m_FrameIndex = 1; // non-NRD temporal accumulation frame counter (resets on camera move)
 	uint32_t m_NRDFrameIndex = 1; // NRD frame counter (continuously increments, resets only on explicit ResetAccumulation)
