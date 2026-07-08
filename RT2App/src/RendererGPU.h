@@ -37,6 +37,10 @@ public:
 	void Render(const Camera& camera);
 	void SetScene(const GPUSceneData& sceneData);
 
+	// Async texture upload polling — forward to SceneResources.
+	bool IsTextureUploadPending() const { return m_Scene.IsTextureUploadPending(); }
+	bool PollTextureUpload() { return m_Scene.PollTextureUpload(); }
+
 	// Update instance transforms + lights + TLAS only (no BLAS rebuild).
 	// Call after ECS transforms have changed (e.g. animation).
 	void UpdateSceneInstances(const GPUSceneData& sceneData);

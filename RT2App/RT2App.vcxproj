@@ -201,6 +201,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
     <ClInclude Include="src\GBufferTarget.h" />
     <ClInclude Include="src\GPUSceneData.h" />
     <ClInclude Include="src\SceneResources.h" />
+    <ClInclude Include="src\AsyncTextureLoader.h" />
     <ClInclude Include="src\GpuDevice.h" />
     <ClInclude Include="src\GpuResources.h" />
     <ClInclude Include="src\Hittable.h" />
@@ -295,6 +296,11 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\SceneResources.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\AsyncTextureLoader.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

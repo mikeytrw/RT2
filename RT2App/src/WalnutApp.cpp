@@ -21,6 +21,8 @@
 #include "NRD.h"
 
 #include <cstdio>
+#include <thread>
+#include <chrono>
 
 using namespace Walnut;
 
@@ -503,6 +505,17 @@ private:
 		{
 			m_Renderer.OnResize(m_ViewportWidth, m_ViewportHeight);
 			m_Cam.OnResize(m_ViewportWidth, m_ViewportHeight);
+		}
+
+		// Wait for async texture upload to complete before rendering headless
+		// frames (ensures the screenshot captures the final textured scene).
+		if (m_UseGPU && m_RendererGPU.IsAvailable())
+		{
+			while (m_RendererGPU.IsTextureUploadPending())
+			{
+				m_RendererGPU.PollTextureUpload();
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
 		}
 
 		// Render N frames

@@ -4,6 +4,7 @@
 #include "GpuResources.h"
 #include "GPUSceneData.h"
 #include "AccelerationStructure.h"
+#include "AsyncTextureLoader.h"
 #include <vector>
 #include <cstdint>
 
@@ -41,7 +42,14 @@ public:
 	// Upload scene data: textures, CDF textures, set m_NeedsASRebuild=true.
 	// Does NOT build AS or create material/transform buffers — call
 	// RebuildAccelerationStructures() for that (needs RasterPass too).
+	// Textures are uploaded asynchronously via AsyncTextureLoader; poll
+	// PollTextureUpload() each frame and call UpdatePathTraceDescriptorSet
+	// (via RendererGPU) when it returns true.
 	void SetScene(const GpuDevice& dev, const GPUSceneData& sceneData);
+
+	// Returns true if async texture upload just completed (once per upload).
+	// Caller should update the texture descriptor set when this returns true.
+	bool PollTextureUpload();
 
 	// Rebuild BLAS + TLAS, create material/light/transform buffers,
 	// build raster vertex buffers + draw data.
@@ -83,6 +91,9 @@ public:
 	const std::vector<GpuImage>& GetTextures() const { return m_Textures; }
 	VkSampler GetTextureSampler() const { return m_TextureSampler; }
 
+	// True if an async texture upload is in flight.
+	bool IsTextureUploadPending() const { return m_TextureLoader.IsBusy(); }
+
 	// Env map metadata
 	int GetEnvMapIndex() const { return m_EnvMapIndex; }
 	int GetMarginalCDFIndex() const { return m_MarginalCDFIndex; }
@@ -120,6 +131,9 @@ private:
 	// Textures (bindless array — scene textures + CDF textures appended)
 	std::vector<GpuImage> m_Textures;
 	VkSampler m_TextureSampler = VK_NULL_HANDLE;
+
+	// Async texture loader (background decode + GPU upload)
+	AsyncTextureLoader m_TextureLoader;
 
 	// Env map CDF metadata
 	int m_MarginalCDFIndex = -1;

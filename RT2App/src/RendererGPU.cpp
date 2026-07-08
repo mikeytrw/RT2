@@ -252,14 +252,15 @@ void RendererGPU::SetScene(const GPUSceneData& sceneData)
 	m_NRDNeedsReset = true;
 
 	// Update descriptor set if AS is already valid (no rebuild needed)
-	if (m_Scene.IsValid() && !m_Scene.NeedsASRebuild())
+	// and textures are not still loading asynchronously.
+	if (m_Scene.IsValid() && !m_Scene.NeedsASRebuild() && !m_Scene.IsTextureUploadPending())
 	{
 		RT_LOG("[SetScene] updating descriptor set (AS valid, no rebuild needed)");
 		UpdatePathTraceDescriptorSet();
 	}
 	else
 	{
-		RT_LOG("[SetScene] skipping descriptor update (AS needs rebuild or not valid)");
+		RT_LOG("[SetScene] skipping descriptor update (AS needs rebuild or textures loading)");
 	}
 }
 
@@ -338,6 +339,14 @@ void RendererGPU::Render(const Camera& camera)
 
 	RT_LOG("[Render] frame=%d needsASRebuild=%d", m_FrameIndex, m_Scene.NeedsASRebuild());
 
+	// Poll async texture upload — adopt textures when the GPU fence signals
+	if (m_Scene.PollTextureUpload())
+	{
+		RT_LOG("[Render] async textures adopted, updating descriptor set");
+		if (m_Scene.IsValid() && !m_Scene.NeedsASRebuild())
+			UpdatePathTraceDescriptorSet();
+	}
+
 	if (m_Scene.NeedsASRebuild())
 	{
 		RT_LOG("[Render] rebuilding AS...");
@@ -346,7 +355,8 @@ void RendererGPU::Render(const Camera& camera)
 			m_RasterPass.CreateDrawData(dev, scene);
 		});
 		RT_LOG("[Render] AS rebuild done, AS valid=%d", m_Scene.IsValid());
-		UpdatePathTraceDescriptorSet();
+		if (!m_Scene.IsTextureUploadPending())
+			UpdatePathTraceDescriptorSet();
 	}
 
 	if (!m_Scene.IsValid())

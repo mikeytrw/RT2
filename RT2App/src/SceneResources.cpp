@@ -25,6 +25,7 @@ void SceneResources::Destroy()
 {
 	if (!m_Device) return;
 
+	m_TextureLoader.Destroy();
 	DestroyTextures();
 	GpuResources::DestroyBuffer(*m_Device, m_MaterialBuffer, m_MaterialBufferMemory);
 	GpuResources::DestroyBuffer(*m_Device, m_LightBuffer, m_LightBufferMemory);
@@ -51,15 +52,66 @@ void SceneResources::SetScene(const GpuDevice& dev, const GPUSceneData& sceneDat
 	m_NeedsASRebuild = true;
 	RT_LOG("[SetScene] destroying old textures (count=%d)", (int)m_Textures.size());
 	DestroyTextures();
-	RT_LOG("[SetScene] creating new textures");
-	CreateTextures(dev, m_CurrentScene.textures);
 	RT_LOG("[SetScene] destroying old CDF textures");
 	DestroyEnvMapCDFTextures();
-	RT_LOG("[SetScene] creating new CDF textures");
-	CreateEnvMapCDFTextures(dev, m_CurrentScene);
-	RT_LOG("[SetScene] CDF indices: marginal=%d conditional=%d envMap=%d",
-	       m_MarginalCDFIndex, m_ConditionalCDFIndex, m_EnvMapIndex);
-	RT_LOG("[SetScene] done");
+
+	// Determine env map pixel data for the async loader.
+	// WalnutApp appends the env map as the last texture in sceneData.textures
+	// and sets envMapIndex to its index. Extract its float pixels from the
+	// scene textures so the loader can rebuild the full array.
+	std::vector<float> envMapFloat;
+	int envMapW = 0, envMapH = 0;
+	if (sceneData.envMapIndex >= 0 && sceneData.envMapIndex < (int)sceneData.textures.size())
+	{
+		const auto& envTex = sceneData.textures[sceneData.envMapIndex];
+		if (envTex.isHDR && !envTex.floatPixels.empty())
+		{
+			envMapFloat = envTex.floatPixels;
+			envMapW = envTex.width;
+			envMapH = envTex.height;
+		}
+	}
+
+	// Strip env map from the texture list passed to the loader (loader
+	// re-appends it internally to match the existing convention).
+	std::vector<SceneTexture> baseTextures = sceneData.textures;
+	if (sceneData.envMapIndex >= 0 && sceneData.envMapIndex < (int)baseTextures.size())
+		baseTextures.erase(baseTextures.begin() + sceneData.envMapIndex);
+
+	RT_LOG("[SetScene] kicking async texture loader (%d base + envMap=%dx%d)",
+	       (int)baseTextures.size(), envMapW, envMapH);
+	m_TextureLoader.Begin(dev, baseTextures,
+	                      envMapFloat, envMapW, envMapH,
+	                      sceneData.marginalCDF, sceneData.conditionalCDF,
+	                      sceneData.cdfWidth, sceneData.cdfHeight);
+	RT_LOG("[SetScene] done (textures loading async)");
+}
+
+bool SceneResources::PollTextureUpload()
+{
+	if (!m_TextureLoader.IsBusy()) return false;
+	if (!m_TextureLoader.IsComplete()) return false;
+
+	std::vector<GpuImage> newTextures;
+	int envMapIdx = -1, margCDFIdx = -1, condCDFIdx = -1;
+	m_TextureLoader.Adopt(newTextures, envMapIdx, margCDFIdx, condCDFIdx);
+
+	DestroyTextures();
+	DestroyEnvMapCDFTextures();
+
+	m_Textures = std::move(newTextures);
+	m_EnvMapIndex = envMapIdx;
+	m_MarginalCDFIndex = margCDFIdx;
+	m_ConditionalCDFIndex = condCDFIdx;
+	if (m_CurrentScene.envMapIndex >= 0)
+	{
+		m_CDFWidth = m_CurrentScene.cdfWidth;
+		m_CDFHeight = m_CurrentScene.cdfHeight;
+	}
+
+	RT_LOG("[SetScene] textures adopted: %d (envMap=%d, margCDF=%d, condCDF=%d)",
+	       (int)m_Textures.size(), m_EnvMapIndex, m_MarginalCDFIndex, m_ConditionalCDFIndex);
+	return true;
 }
 
 void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
