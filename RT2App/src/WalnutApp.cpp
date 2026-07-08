@@ -50,14 +50,14 @@ public:
 			m_CLIProcessed = true;
 		}
 
-		ImGui::Begin("Info");
-		ImGui::Text("Last Render: %.3fms", m_LastRenderTime);
-		ImGui::Text("Rays Cast: %d", m_Renderer.m_NumRaysCast);
-		ImGui::Text("FPS: %.1f",1000/m_LastRenderTime);
+	ImGui::Begin("Info");
+	ImGui::Text("Last Render: %.3fms", m_SmoothedFrameTime);
+	ImGui::Text("Rays Cast: %d", m_Renderer.m_NumRaysCast);
+	ImGui::Text("FPS: %.1f", m_SmoothedFPS);
 
-		float raysPerSec = m_Renderer.m_NumRaysCast / (m_LastRenderTime / 1000);
+	float raysPerSec = m_SmoothedFPS > 0.0f ? m_Renderer.m_NumRaysCast * m_SmoothedFPS : 0.0f;
 
-		ImGui::Text("Rays/Sec: %.1f", raysPerSec);
+	ImGui::Text("Rays/Sec: %.1f", raysPerSec);
 		
 		if (auto image = m_Renderer.GetFinalImage())
 			ImGui::Text("Render Res: %d x %d", image->GetWidth(), image->GetHeight());
@@ -599,6 +599,12 @@ private:
 			m_Renderer.Render(m_Cam);
 		}
 		m_LastRenderTime = timer.ElapsedMillis();
+
+		// EMA over ~0.5s: alpha = dt / (dt + timeConstant)
+		// At ~60fps, dt~16.7ms, 0.5s constant → alpha~0.032 (~15 frame avg)
+		float alpha = m_LastRenderTime / (m_LastRenderTime + 500.0f);
+		m_SmoothedFrameTime = m_SmoothedFrameTime * (1.0f - alpha) + m_LastRenderTime * alpha;
+		m_SmoothedFPS = m_SmoothedFrameTime > 0.0f ? 1000.0f / m_SmoothedFrameTime : 0.0f;
 	}
 
 	void RebuildMaterial()
@@ -864,6 +870,8 @@ private:
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
 	uint32_t* m_ImageData = nullptr;
 	float m_LastRenderTime = 0.0f;
+	float m_SmoothedFrameTime = 0.0f;
+	float m_SmoothedFPS = 0.0f;
 	bool m_RenderOnUpdate;
 	Camera m_Cam;
 
