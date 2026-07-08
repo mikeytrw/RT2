@@ -15,6 +15,7 @@
 #include "RasterPass.h"
 #include "GBufferDebugPass.h"
 #include "NRDIntegration.h"
+#include "RenderSettings.h"
 #include "SceneResources.h"
 #include "GpuResources.h"
 #include "FrameContext.h"
@@ -56,28 +57,16 @@ public:
 	// Read back the output image to CPU as RGBA8 (tonemapped+sRGB). Returns false on failure.
 	bool ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t& outWidth, uint32_t& outHeight);
 
-	int m_SPP = 5;
-	int m_MaxBounces = 8;
-	bool m_ShowBackground = false;
-	bool m_NEEOnly = false;
-	float m_EmissiveBoost = 1.0f;
-	float m_EnvIntensity = 1.0f;
-	bool m_NRDEnabled = false;  // NRD denoiser toggle
-	bool m_RasterFirst = false; // raster-first path (raster primary + RT secondary)
+	// Render settings — the only writable configuration surface.
+	// Mutate a copy, then call ApplySettings() to detect changes and
+	// auto-trigger ResetAccumulation on the next Render().
+	RenderSettings GetSettings() const { return m_Settings; }
+	void ApplySettings(const RenderSettings& newSettings);
 
-	// NRD tunable settings (exposed in UI)
-	float m_NRDMaxBlurRadius = 30.0f;
-	int m_NRDMaxAccumFrames = 30;
-	bool m_NRDAntiFirefly = true;
-	float m_NRDSplitScreen = 0.0f;
-	bool m_NRDJitterEnabled = true; // toggle camera jitter (for debugging NRD vs noise)
-	float m_NRDJitterScale = 1.0f; // jitter magnitude scale [0.0 = none, 1.0 = full ±0.5 pixel]
-
-	int m_GBufferDebugMode = -1; // -1 = off, 0-10 = G-buffer view modes
-
-	// Camera jitter for NRD temporal AA (Halton sequence)
-	glm::vec2 m_NRDJitter = glm::vec2(0.0f);
-	glm::vec2 m_NRDJitterPrev = glm::vec2(0.0f);
+	// Camera jitter for NRD temporal AA (Halton sequence) — internal,
+	// computed each frame from settings.nrdJitterEnabled + nrdJitterScale.
+	glm::vec2 GetNRDJitter() const { return m_NRDJitter; }
+	glm::vec2 GetNRDJitterPrev() const { return m_NRDJitterPrev; }
 
 private:
 	void CreateOutputImage();
@@ -104,6 +93,13 @@ private:
 
 	// Ray tracing pipeline + SBT (owned by PathTracePass)
 	PathTracePass m_PathTracePass;
+
+	// Render settings (user-tunable knobs)
+	RenderSettings m_Settings;
+
+	// NRD jitter state (computed each frame from m_Settings)
+	glm::vec2 m_NRDJitter = glm::vec2(0.0f);
+	glm::vec2 m_NRDJitterPrev = glm::vec2(0.0f);
 
 	VkBuffer m_CameraUBO = VK_NULL_HANDLE;
 	VkDeviceMemory m_CameraUBOMemory = VK_NULL_HANDLE;

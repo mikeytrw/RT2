@@ -5,6 +5,7 @@
 #include "Walnut/Timer.h"
 #include "Renderer.h"
 #include "RendererGPU.h"
+#include "RenderSettings.h"
 #include "Mesh.h"
 #include "FileDialog.h"
 #include "Scene.h"
@@ -86,8 +87,10 @@ public:
 		{
 			if (m_RendererGPU.Init())
 			{
-				m_RendererGPU.m_SPP = m_Renderer.m_SamplesPerPixel;
-				m_RendererGPU.m_MaxBounces = m_Renderer.m_MaxBounceDepth;
+				m_Settings = m_RendererGPU.GetSettings();
+				m_Settings.spp = m_Renderer.m_SamplesPerPixel;
+				m_Settings.maxBounces = m_Renderer.m_MaxBounceDepth;
+				m_RendererGPU.ApplySettings(m_Settings);
 			}
 			else
 				m_UseGPU = 0; // fall back to CPU if init fails
@@ -103,8 +106,10 @@ public:
 					if (m_RendererGPU.Init())
 					{
 						m_UseGPU = 1;
-						m_RendererGPU.m_SPP = m_Renderer.m_SamplesPerPixel;
-						m_RendererGPU.m_MaxBounces = m_Renderer.m_MaxBounceDepth;
+						m_Settings = m_RendererGPU.GetSettings();
+						m_Settings.spp = m_Renderer.m_SamplesPerPixel;
+						m_Settings.maxBounces = m_Renderer.m_MaxBounceDepth;
+						m_RendererGPU.ApplySettings(m_Settings);
 						if (!m_SceneMeshes.empty() || m_Mesh.IsLoaded())
 							UploadMeshToGPU();
 					}
@@ -116,8 +121,10 @@ public:
 				else
 				{
 					m_UseGPU = 1;
-					m_RendererGPU.m_SPP = m_Renderer.m_SamplesPerPixel;
-					m_RendererGPU.m_MaxBounces = m_Renderer.m_MaxBounceDepth;
+					m_Settings = m_RendererGPU.GetSettings();
+					m_Settings.spp = m_Renderer.m_SamplesPerPixel;
+					m_Settings.maxBounces = m_Renderer.m_MaxBounceDepth;
+					m_RendererGPU.ApplySettings(m_Settings);
 					if (!m_SceneMeshes.empty() || m_Mesh.IsLoaded())
 						UploadMeshToGPU();
 				}
@@ -141,21 +148,21 @@ public:
 	ImGui::Text("Samples Per Pixel");
 	if (ImGui::DragInt("SPP", &m_Renderer.m_SamplesPerPixel, 1.0f, 1, 1500))
 	{
-		m_RendererGPU.m_SPP = m_Renderer.m_SamplesPerPixel;
-		m_RendererGPU.ResetAccumulation();
+		m_Settings.spp = m_Renderer.m_SamplesPerPixel;
+		m_RendererGPU.ApplySettings(m_Settings);
 	}
 	ImGui::Text("Sample Depth");
 	if (ImGui::DragInt("Bounces", &m_Renderer.m_MaxBounceDepth, 1.0f, 2, 100))
 	{
-		m_RendererGPU.m_MaxBounces = m_Renderer.m_MaxBounceDepth;
-		m_RendererGPU.ResetAccumulation();
+		m_Settings.maxBounces = m_Renderer.m_MaxBounceDepth;
+		m_RendererGPU.ApplySettings(m_Settings);
 	}
 	if (ImGui::Button("Reset")) {
 		m_Renderer.m_SamplesPerPixel = 1;
 		m_Renderer.m_MaxBounceDepth = 2;
-		m_RendererGPU.m_SPP = 1;
-		m_RendererGPU.m_MaxBounces = 2;
-		m_RendererGPU.ResetAccumulation();
+		m_Settings.spp = 1;
+		m_Settings.maxBounces = 2;
+		m_RendererGPU.ApplySettings(m_Settings);
 	};
 
 	ImGui::Separator();
@@ -166,7 +173,7 @@ public:
 		m_Cam.SetFarClip(m_Cam.m_FarClip);
 		m_RendererGPU.ResetAccumulation();
 	}
-	bool rasterFirst = m_RendererGPU.m_RasterFirst;
+	bool rasterFirst = m_Settings.rasterFirst;
 	ImGui::BeginDisabled(rasterFirst);
 	if (ImGui::DragFloat("Aperture", &m_Cam.m_Aperture, 0.001f, 0.0f, 5.0f))
 		m_RendererGPU.ResetAccumulation();
@@ -179,48 +186,50 @@ public:
 		m_RendererGPU.ResetAccumulation();
 	}
 	ImGui::Separator();
-	if (ImGui::Checkbox("Raster-First Path", &m_RendererGPU.m_RasterFirst))
+	if (ImGui::Checkbox("Raster-First Path", &m_Settings.rasterFirst))
 	{
-		if (m_RendererGPU.m_RasterFirst)
+		if (m_Settings.rasterFirst)
 			m_Cam.m_Aperture = 0.0f;
-		m_RendererGPU.ResetAccumulation();
+		m_RendererGPU.ApplySettings(m_Settings);
 	}
-	if (m_RendererGPU.m_RasterFirst)
+	if (m_Settings.rasterFirst)
 	{
 		ImGui::SameLine();
 		ImGui::TextDisabled("(aperture=0, no DOF)");
 	}
-	if (ImGui::Checkbox("Show Background", &m_RendererGPU.m_ShowBackground))
-		m_RendererGPU.ResetAccumulation();
-	if (ImGui::SliderFloat("Emissive Boost", &m_RendererGPU.m_EmissiveBoost, 0.0f, 50.0f, "%.1f"))
-		m_RendererGPU.ResetAccumulation();
+	if (ImGui::Checkbox("Show Background", &m_Settings.showBackground))
+		m_RendererGPU.ApplySettings(m_Settings);
+	if (ImGui::SliderFloat("Emissive Boost", &m_Settings.emissiveBoost, 0.0f, 50.0f, "%.1f"))
+		m_RendererGPU.ApplySettings(m_Settings);
 
 	// NRD only works with raster-first (RT-primary is accumulation-only after B4)
-	bool nrdAvailable = m_RendererGPU.m_RasterFirst;
-	if (!nrdAvailable && m_RendererGPU.m_NRDEnabled)
+	bool nrdAvailable = m_Settings.rasterFirst;
+	if (!nrdAvailable && m_Settings.nrdEnabled)
 	{
-		m_RendererGPU.m_NRDEnabled = false;
-		m_RendererGPU.ResetAccumulation();
+		m_Settings.nrdEnabled = false;
+		m_RendererGPU.ApplySettings(m_Settings);
 	}
 	ImGui::BeginDisabled(!nrdAvailable);
-	if (ImGui::Checkbox("NRD Denoiser", &m_RendererGPU.m_NRDEnabled))
-		m_RendererGPU.ResetAccumulation();
-	if (m_RendererGPU.m_NRDEnabled)
+	if (ImGui::Checkbox("NRD Denoiser", &m_Settings.nrdEnabled))
+		m_RendererGPU.ApplySettings(m_Settings);
+	if (m_Settings.nrdEnabled)
 	{
 		ImGui::Indent();
-		if (ImGui::Checkbox("Jitter", &m_RendererGPU.m_NRDJitterEnabled))
-			m_RendererGPU.ResetAccumulation();
+		if (ImGui::Checkbox("Jitter", &m_Settings.nrdJitterEnabled))
+			m_RendererGPU.ApplySettings(m_Settings);
 		ImGui::SameLine();
 		ImGui::PushID("JitterScale");
 		ImGui::SetNextItemWidth(80.0f);
-		if (ImGui::SliderFloat("Scale", &m_RendererGPU.m_NRDJitterScale, 0.0f, 1.0f, "%.2f"))
-			m_RendererGPU.ResetAccumulation();
+		if (ImGui::SliderFloat("Scale", &m_Settings.nrdJitterScale, 0.0f, 1.0f, "%.2f"))
+			m_RendererGPU.ApplySettings(m_Settings);
 		ImGui::PopID();
-		ImGui::SliderFloat("Blur Radius", &m_RendererGPU.m_NRDMaxBlurRadius, 1.0f, 50.0f, "%.1f");
-		ImGui::SliderInt("Accum Frames", &m_RendererGPU.m_NRDMaxAccumFrames, 1, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
-		ImGui::Checkbox("Anti-Firefly", &m_RendererGPU.m_NRDAntiFirefly);
-		ImGui::SliderFloat("Split Screen", &m_RendererGPU.m_NRDSplitScreen, 0.0f, 1.0f, "%.2f");
+		ImGui::SliderFloat("Blur Radius", &m_Settings.nrdMaxBlurRadius, 1.0f, 50.0f, "%.1f");
+		ImGui::SliderInt("Accum Frames", &m_Settings.nrdMaxAccumFrames, 1, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+		ImGui::Checkbox("Anti-Firefly", &m_Settings.nrdAntiFirefly);
+		ImGui::SliderFloat("Split Screen", &m_Settings.nrdSplitScreen, 0.0f, 1.0f, "%.2f");
 		ImGui::Unindent();
+		// Apply any NRD slider changes
+		m_RendererGPU.ApplySettings(m_Settings);
 	}
 	ImGui::EndDisabled();
 	ImGui::Separator();
@@ -230,11 +239,11 @@ public:
 		"Motion Vectors", "Albedo", "F0", "Direct Emission",
 		"World Position", "Geo Normal", "UV", "Material Index"
 	};
-	int debugCombo = m_RendererGPU.m_GBufferDebugMode + 1; // -1→0 (Off), 0→1, etc.
+	int debugCombo = m_Settings.gbufferDebugMode + 1; // -1→0 (Off), 0→1, etc.
 	if (ImGui::Combo("G-buffer View", &debugCombo, gbufferModes, IM_ARRAYSIZE(gbufferModes)))
 	{
-		m_RendererGPU.m_GBufferDebugMode = debugCombo - 1;
-		m_RendererGPU.ResetAccumulation();
+		m_Settings.gbufferDebugMode = debugCombo - 1;
+		m_RendererGPU.ApplySettings(m_Settings);
 	}
 	ImGui::Separator();
 	ImGui::Text("Environment Map");
@@ -257,8 +266,8 @@ public:
 	}
 	if (!m_EnvMapPath.empty())
 		ImGui::Text("Loaded: %s (%dx%d)", m_EnvMapPath.c_str(), m_EnvMapWidth, m_EnvMapHeight);
-	if (ImGui::SliderFloat("Env Intensity", &m_RendererGPU.m_EnvIntensity, 0.0f, 10.0f, "%.2f"))
-		m_RendererGPU.ResetAccumulation();
+	if (ImGui::SliderFloat("Env Intensity", &m_Settings.envIntensity, 0.0f, 10.0f, "%.2f"))
+		m_RendererGPU.ApplySettings(m_Settings);
 	ImGui::End();
 
 		ImGui::Begin("Mesh");
@@ -437,30 +446,36 @@ private:
 		if (g_CLI.spp > 0)
 		{
 			m_Renderer.m_SamplesPerPixel = g_CLI.spp;
-			m_RendererGPU.m_SPP = g_CLI.spp;
+			m_Settings.spp = g_CLI.spp;
 		}
 		if (g_CLI.bounces > 0)
 		{
 			m_Renderer.m_MaxBounceDepth = g_CLI.bounces;
-			m_RendererGPU.m_MaxBounces = g_CLI.bounces;
+			m_Settings.maxBounces = g_CLI.bounces;
 		}
 		if (g_CLI.nrd)
-			m_RendererGPU.m_NRDEnabled = true;
+			m_Settings.nrdEnabled = true;
 		if (g_CLI.rasterFirst)
 		{
-			m_RendererGPU.m_RasterFirst = true;
+			m_Settings.rasterFirst = true;
 			m_Cam.m_Aperture = 0.0f;  // raster-first can't do DOF
 		}
 		if (g_CLI.gbufferDebug >= 0)
-			m_RendererGPU.m_GBufferDebugMode = g_CLI.gbufferDebug;
+			m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
 
 		// Auto-init GPU renderer if needed
 		if (m_UseGPU == 1 && Walnut::Application::IsRayTracingSupported() && !m_RendererGPU.IsAvailable())
 		{
 			if (m_RendererGPU.Init())
 			{
-				m_RendererGPU.m_SPP = m_Renderer.m_SamplesPerPixel;
-				m_RendererGPU.m_MaxBounces = m_Renderer.m_MaxBounceDepth;
+				m_Settings = m_RendererGPU.GetSettings();
+				m_Settings.spp = m_Renderer.m_SamplesPerPixel;
+				m_Settings.maxBounces = m_Renderer.m_MaxBounceDepth;
+				// Re-apply CLI overrides on top of defaults
+				if (g_CLI.nrd) m_Settings.nrdEnabled = true;
+				if (g_CLI.rasterFirst) m_Settings.rasterFirst = true;
+				if (g_CLI.gbufferDebug >= 0) m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
+				m_RendererGPU.ApplySettings(m_Settings);
 			}
 			else
 			{
@@ -716,7 +731,7 @@ private:
 			envTex.floatPixels = m_EnvMapFloatPixels;
 			gpuData.textures.push_back(envTex);
 			gpuData.envMapIndex = (int)gpuData.textures.size() - 1;
-			gpuData.envIntensity = m_RendererGPU.m_EnvIntensity;
+			gpuData.envIntensity = m_Settings.envIntensity;
 
 			// Build CDFs for importance sampling
 			BuildEnvMapCDF(m_EnvMapFloatPixels, m_EnvMapWidth, m_EnvMapHeight,
@@ -879,6 +894,7 @@ private:
 	}
 	Renderer m_Renderer;
 	RendererGPU m_RendererGPU;
+	RenderSettings m_Settings; // local copy — mutated by UI, synced via ApplySettings
 	int m_UseGPU = 1; // 0=CPU, 1=GPU
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
 	uint32_t* m_ImageData = nullptr;

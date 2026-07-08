@@ -180,7 +180,7 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	UpdateGBufferDescriptorSet();
 
 	// Initialize NRD if enabled
-	if (m_NRDEnabled && !m_NRD.IsAvailable())
+	if (m_Settings.nrdEnabled && !m_NRD.IsAvailable())
 	{
 		m_NRD.Init(m_Device.instance,
 		           m_Device.physicalDevice,
@@ -189,7 +189,7 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 		           m_Device.queueFamily,
 		           m_Width, m_Height);
 	}
-	else if (m_NRDEnabled && m_NRD.IsAvailable())
+	else if (m_Settings.nrdEnabled && m_NRD.IsAvailable())
 	{
 		m_NRD.OnResize(m_Width, m_Height);
 	}
@@ -278,6 +278,31 @@ void RendererGPU::ResetAccumulation()
 	m_HasPrevMatrices = false;
 }
 
+void RendererGPU::ApplySettings(const RenderSettings& newSettings)
+{
+	// Field-by-field comparison — set dirty if anything changed.
+	// The dirty flag is checked in Render() which calls ResetAccumulation.
+	if (m_Settings.spp != newSettings.spp ||
+	    m_Settings.maxBounces != newSettings.maxBounces ||
+	    m_Settings.showBackground != newSettings.showBackground ||
+	    m_Settings.neeOnly != newSettings.neeOnly ||
+	    m_Settings.emissiveBoost != newSettings.emissiveBoost ||
+	    m_Settings.envIntensity != newSettings.envIntensity ||
+	    m_Settings.rasterFirst != newSettings.rasterFirst ||
+	    m_Settings.nrdEnabled != newSettings.nrdEnabled ||
+	    m_Settings.nrdMaxBlurRadius != newSettings.nrdMaxBlurRadius ||
+	    m_Settings.nrdMaxAccumFrames != newSettings.nrdMaxAccumFrames ||
+	    m_Settings.nrdAntiFirefly != newSettings.nrdAntiFirefly ||
+	    m_Settings.nrdSplitScreen != newSettings.nrdSplitScreen ||
+	    m_Settings.nrdJitterEnabled != newSettings.nrdJitterEnabled ||
+	    m_Settings.nrdJitterScale != newSettings.nrdJitterScale ||
+	    m_Settings.gbufferDebugMode != newSettings.gbufferDebugMode)
+	{
+		m_Settings.dirty = true;
+	}
+	m_Settings = newSettings;
+}
+
 void RendererGPU::UpdateCameraUBO(const Camera& camera)
 {
 	SICameraData ubo = {};
@@ -285,7 +310,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 
 	// NRD camera jitter (Halton sequence, subpixel offset in [-0.5, 0.5])
 	m_NRDJitterPrev = m_NRDJitter;
-	if (m_NRDEnabled && m_NRDJitterEnabled)
+	if (m_Settings.nrdEnabled && m_Settings.nrdJitterEnabled)
 	{
 		// Halton sequence (base 2, base 3) for low-discrepancy jitter
 		auto halton = [](int index, int base) -> float {
@@ -300,7 +325,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 		};
 		// Use m_NRDFrameIndex (continuously incrementing) for stable jitter sequence
 		int frame = (m_NRDFrameIndex - 1) % 16 + 1; // cycle through 16 offsets
-		m_NRDJitter = (glm::vec2(halton(frame, 2) - 0.5f, halton(frame, 3) - 0.5f)) * m_NRDJitterScale;
+		m_NRDJitter = (glm::vec2(halton(frame, 2) - 0.5f, halton(frame, 3) - 0.5f)) * m_Settings.nrdJitterScale;
 	}
 	else
 	{
@@ -312,12 +337,12 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	glm::vec3 up = glm::cross(right, camera.GetDirection());
 	ubo.right = glm::vec4(right, m_NRDJitter.y);
 	ubo.up = glm::vec4(up, 0.0f);
-	int maxBouncesClamped = m_MaxBounces;
+	int maxBouncesClamped = m_Settings.maxBounces;
 	const int bounceLimit = (int)m_PathTracePass.GetMaxRecursionDepth() - 1;
 	if (maxBouncesClamped > bounceLimit) maxBouncesClamped = bounceLimit;
-	ubo.viewportSPP = glm::vec4((float)m_Width, (float)m_Height, (float)m_SPP, (float)maxBouncesClamped);
-	ubo.apertureFocal = glm::vec4(camera.m_Aperture, camera.m_FocusDistance, m_ShowBackground ? 1.0f : 0.0f, m_EmissiveBoost);
-	ubo.envMap = glm::vec4((float)m_Scene.GetEnvMapIndex(), m_EnvIntensity, (float)m_Scene.GetMarginalCDFIndex(), (float)m_Scene.GetConditionalCDFIndex());
+	ubo.viewportSPP = glm::vec4((float)m_Width, (float)m_Height, (float)m_Settings.spp, (float)maxBouncesClamped);
+	ubo.apertureFocal = glm::vec4(camera.m_Aperture, camera.m_FocusDistance, m_Settings.showBackground ? 1.0f : 0.0f, m_Settings.emissiveBoost);
+	ubo.envMap = glm::vec4((float)m_Scene.GetEnvMapIndex(), m_Settings.envIntensity, (float)m_Scene.GetMarginalCDFIndex(), (float)m_Scene.GetConditionalCDFIndex());
 	ubo.inverseProjection = camera.GetInverseProjection();
 	ubo.inverseView = camera.GetInverseView();
 	ubo.viewToClip = camera.GetProjection();
@@ -336,6 +361,13 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 void RendererGPU::Render(const Camera& camera)
 {
 	if (!m_Initialized || m_OutputImage.image == VK_NULL_HANDLE) return;
+
+	// Check dirty flag — auto reset accumulation on settings change
+	if (m_Settings.dirty)
+	{
+		ResetAccumulation();
+		m_Settings.dirty = false;
+	}
 
 	RT_LOG("[Render] frame=%d needsASRebuild=%d", m_FrameIndex, m_Scene.NeedsASRebuild());
 
@@ -370,7 +402,7 @@ void RendererGPU::Render(const Camera& camera)
 		m_FrameIndex = 1;
 
 	// Lazy-init NRD when toggled on
-	if (m_NRDEnabled && !m_NRD.IsAvailable() && m_Width > 0 && m_Height > 0)
+	if (m_Settings.nrdEnabled && !m_NRD.IsAvailable() && m_Width > 0 && m_Height > 0)
 	{
 		RT_LOG("[Render] initializing NRD (%ux%u)", m_Width, m_Height);
 		m_NRD.Init(m_Device.instance,
@@ -415,13 +447,13 @@ void RendererGPU::Render(const Camera& camera)
 		m_CameraUBOData,
 		m_Width,
 		m_Height,
-		m_RasterFirst,
-		m_NRDEnabled,
-		m_GBufferDebugMode,
-		m_NRDMaxBlurRadius,
-		m_NRDMaxAccumFrames,
-		m_NRDAntiFirefly,
-		m_NRDSplitScreen,
+		m_Settings.rasterFirst,
+		m_Settings.nrdEnabled,
+		m_Settings.gbufferDebugMode,
+		m_Settings.nrdMaxBlurRadius,
+		m_Settings.nrdMaxAccumFrames,
+		m_Settings.nrdAntiFirefly,
+		m_Settings.nrdSplitScreen,
 		m_NRDJitter,
 		m_NRDJitterPrev,
 		m_NRDFrameIndex,
