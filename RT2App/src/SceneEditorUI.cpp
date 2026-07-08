@@ -61,22 +61,25 @@ void SceneEditorUI::RenderOutliner()
 		ImGui::Separator();
 		if (ImGui::MenuItem("Cube"))
 		{
+			int matIdx = m_SceneMgr->AddMaterial(SceneMaterial{});
 			auto id = m_SceneMgr->AddObjectWithGeometry("Cube",
-				PrimitiveGeometry::CreateCube(1.0f), {0, 0.5f, 0});
+				PrimitiveGeometry::CreateCube(1.0f), {0, 0.5f, 0}, {0, 0, 0}, 1.0f, matIdx);
 			m_SelectedEntity = id;
 			NotifySceneChanged();
 		}
 		if (ImGui::MenuItem("Sphere"))
 		{
+			int matIdx = m_SceneMgr->AddMaterial(SceneMaterial{});
 			auto id = m_SceneMgr->AddObjectWithGeometry("Sphere",
-				PrimitiveGeometry::CreateSphere(0.5f), {0, 0.5f, 0});
+				PrimitiveGeometry::CreateSphere(0.5f), {0, 0.5f, 0}, {0, 0, 0}, 1.0f, matIdx);
 			m_SelectedEntity = id;
 			NotifySceneChanged();
 		}
 		if (ImGui::MenuItem("Plane"))
 		{
+			int matIdx = m_SceneMgr->AddMaterial(SceneMaterial{});
 			auto id = m_SceneMgr->AddObjectWithGeometry("Plane",
-				PrimitiveGeometry::CreatePlane(5.0f), {0, 0, 0});
+				PrimitiveGeometry::CreatePlane(5.0f), {0, 0, 0}, {0, 0, 0}, 1.0f, matIdx);
 			m_SelectedEntity = id;
 			NotifySceneChanged();
 		}
