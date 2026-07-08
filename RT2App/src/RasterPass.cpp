@@ -3,6 +3,7 @@
 #include "VulkanUtils.h"
 #include "GPUSceneData.h"
 #include "GpuResources.h"
+#include "CommandUtils.h"
 #include "ShaderManager.h"
 #include <cstring>
 #include <vector>
@@ -225,15 +226,31 @@ void RasterPass::CreateVertexBuffers(const GpuDevice& dev, const GPUSceneData& s
 	VkDeviceSize bufSize = megaVerts.size() * sizeof(float);
 	if (bufSize == 0) return;
 
+	// Staging buffer (host-visible) → device-local vertex buffer
+	VkBuffer stagingBuffer;
+	VkDeviceMemory stagingMemory;
 	GpuResources::CreateBuffer(dev, bufSize,
-	             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+	             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-	             m_MegaVertexBuffer, m_MegaVertexMemory);
+	             stagingBuffer, stagingMemory);
 
 	void* data;
-	vkMapMemory(dev.device, m_MegaVertexMemory, 0, bufSize, 0, &data);
+	vkMapMemory(dev.device, stagingMemory, 0, bufSize, 0, &data);
 	memcpy(data, megaVerts.data(), bufSize);
-	vkUnmapMemory(dev.device, m_MegaVertexMemory);
+	vkUnmapMemory(dev.device, stagingMemory);
+
+	GpuResources::CreateBuffer(dev, bufSize,
+	             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+	             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+	             m_MegaVertexBuffer, m_MegaVertexMemory);
+
+	CommandUtils::ImmediateSubmit(dev, [&](VkCommandBuffer cmd) {
+		VkBufferCopy region = {};
+		region.size = bufSize;
+		vkCmdCopyBuffer(cmd, stagingBuffer, m_MegaVertexBuffer, 1, &region);
+	});
+
+	GpuResources::DestroyBuffer(dev, stagingBuffer, stagingMemory);
 
 	RT_LOG("[RasterPass] Mega vertex buffer: %zu bytes, %zu meshes",
 	       (size_t)bufSize, scene.meshes.size());

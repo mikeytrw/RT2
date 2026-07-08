@@ -58,9 +58,11 @@ private:
 	VkPipeline m_MaskedPipeline = VK_NULL_HANDLE;  // alpha-tested (depthWrite=OFF)
 	VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
 
-	// Single mega-vertex buffer (all meshes concatenated, per-triangle non-indexed)
+	// Mega-vertex buffer (all meshes concatenated, per-triangle non-indexed, DEVICE_LOCAL)
 	VkBuffer m_MegaVertexBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_MegaVertexMemory = VK_NULL_HANDLE;
+	VkBuffer m_MegaVertexStaging = VK_NULL_HANDLE;
+	VkDeviceMemory m_MegaVertexStagingMemory = VK_NULL_HANDLE;
 
 	// Per-mesh vertex offset into the mega buffer
 	std::vector<uint32_t> m_MeshVertexOffsets;

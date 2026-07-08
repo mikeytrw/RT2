@@ -550,21 +550,9 @@ void PathTracePass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 	sbtAddrInfo.buffer = m_SBTBuffer.buffer;
 	VkDeviceAddress sbtAddress = vkGetBufferDeviceAddress(m_Device, &sbtAddrInfo);
 
-	// Barrier: ensure host writes to SBT are visible to the ray tracing pipeline.
-	VkBufferMemoryBarrier sbtBarrier = {};
-	sbtBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-	sbtBarrier.srcAccessMask = VK_ACCESS_HOST_WRITE_BIT;
-	sbtBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	sbtBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	sbtBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	sbtBarrier.buffer = m_SBTBuffer.buffer;
-	sbtBarrier.offset = 0;
-	sbtBarrier.size = m_SBTSize;
-
-	vkCmdPipelineBarrier(cmd,
-		VK_PIPELINE_STAGE_HOST_BIT,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-		0, 0, nullptr, 1, &sbtBarrier, 0, nullptr);
+	// SBT is written once during Init() and never changes. The host→shader
+	// visibility is handled by the first vkQueueSubmit after Init. No per-frame
+	// barrier needed.
 
 	// Select raygen SBT entry:
 	// rasterFirst=false → offset 0 (raygen, RT-primary)
