@@ -357,7 +357,7 @@ void RendererGPU::Render(const Camera& camera)
 	}
 
 	if (const_cast<Camera&>(camera).checkHasMoved())
-		m_FrameIndex = 1; // restart non-NRD temporal accumulation (NRD uses MVs, no reset needed)
+		m_FrameIndex = 1;
 
 	// Lazy-init NRD when toggled on
 	if (m_NRDEnabled && !m_NRD.IsAvailable() && m_Width > 0 && m_Height > 0)
@@ -382,311 +382,48 @@ void RendererGPU::Render(const Camera& camera)
 
 	VkDevice device = m_Device.device;
 
-	// NRD uses a descriptor pool ring (queuedFrameNum=3 > MAX_FRAMES_IN_FLIGHT=2).
-	// The frame fence wait above guarantees this frame slot is free, which means
-	// the NRD descriptor pool slot for this frame is also free. No device-wide
-	// idle needed.
-
 	// ---- Frames-in-flight ring: wait for this frame slot to be free ----
 	FrameContext& frame = m_Frames[m_CurrentFrame];
 	frame.WaitForFence(device);
 	frame.Begin(device);
 	VkCommandBuffer cmd = frame.commandBuffer;
 
-	// ---- Top-of-frame barrier: protect ImGui's read of previous frame's output ----
-	// ImGui's fragment shader reads the output image from the previous frame's submission.
-	// With pipelining, that read may still be in flight when we start writing.
-	{
-		VkImageMemoryBarrier topBarrier = {};
-		topBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		topBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		topBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-		topBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-		topBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		topBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		topBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		topBarrier.image = m_OutputImage.image;
-		topBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		topBarrier.subresourceRange.levelCount = 1;
-		topBarrier.subresourceRange.layerCount = 1;
-		vkCmdPipelineBarrier(cmd,
-			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-			VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0,
-			0, nullptr, 0, nullptr, 1, &topBarrier);
-	}
+	// Build the frame render context and delegate to FrameRenderer
+	FrameRenderer::Context ctx = {
+		m_Device,
+		m_GBuffer,
+		m_Scene,
+		m_PathTracePass,
+		m_RasterPass,
+		m_GBufferDebugPass,
+		m_ComposePass,
+		m_NRD,
+		m_OutputImage,
+		m_GBufferSet,
+		m_CameraUBO,
+		m_NRDUBO,
+		m_CameraUBOData,
+		m_Width,
+		m_Height,
+		m_RasterFirst,
+		m_NRDEnabled,
+		m_GBufferDebugMode,
+		m_NRDMaxBlurRadius,
+		m_NRDMaxAccumFrames,
+		m_NRDAntiFirefly,
+		m_NRDSplitScreen,
+		m_NRDJitter,
+		m_NRDJitterPrev,
+		m_NRDFrameIndex,
+		m_NRDNeedsReset,
+		m_HasPrevMatrices,
+		m_PrevViewToClip,
+		m_PrevWorldToView,
+		m_ComposeDescriptorSetCached,
+		camera
+	};
 
-	// If the AS was just rebuilt this frame (via ImmediateSubmit), the GPU is
-	// provably done. The barrier is technically redundant but harmless.
-	if (m_Scene.ASJustBuilt())
-	{
-		VkMemoryBarrier asBarrier = {};
-		asBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-		asBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-		asBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
-		vkCmdPipelineBarrier(cmd,
-			VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-			VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-			0, 1, &asBarrier, 0, nullptr, 0, nullptr);
-		m_Scene.ClearASJustBuilt();
-	}
-
-	// ---- UBO updates via vkCmdUpdateBuffer (avoids host-write/GPU-read race) ----
-	// Barrier: protect previous frame's uniform read from our transfer write
-	VkMemoryBarrier uboPreBarrier = {};
-	uboPreBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-	uboPreBarrier.srcAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-	uboPreBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	vkCmdPipelineBarrier(cmd,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-		VK_PIPELINE_STAGE_TRANSFER_BIT,
-		0, 1, &uboPreBarrier, 0, nullptr, 0, nullptr);
-
-	// Update camera UBO via vkCmdUpdateBuffer (496 bytes, within 65536 limit)
-	vkCmdUpdateBuffer(cmd, m_CameraUBO, 0, sizeof(SICameraData), &m_CameraUBOData);
-
-	// Update NRD UBO via vkCmdUpdateBuffer (16 bytes)
-	SINRDUniformData nrdData = { m_NRDEnabled ? 1u : 0u, 0, 0, 0 };
-	if (m_NRDUBO)
-		vkCmdUpdateBuffer(cmd, m_NRDUBO, 0, sizeof(SINRDUniformData), &nrdData);
-
-	// Barrier: make transfer writes visible to ray tracing shader
-	VkMemoryBarrier uboPostBarrier = {};
-	uboPostBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
-	uboPostBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	uboPostBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
-	vkCmdPipelineBarrier(cmd,
-		VK_PIPELINE_STAGE_TRANSFER_BIT,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
-		0, 1, &uboPostBarrier, 0, nullptr, 0, nullptr);
-
-	// ---- Raster G-buffer pass (primary visibility â€” MRT color attachments) ----
-	if (m_RasterPass.IsAvailable() && m_GBuffer.GetDepth().view)
-	{
-		// G-buffer images: GENERAL â†’ COLOR_ATTACHMENT_OPTIMAL
-		// (8 images written by raster pass as MRT color attachments)
-		VkImage gbufferImgs[8];
-		m_GBuffer.GetMRTImages(gbufferImgs);
-		// Batch all 8 G-buffer images into a single barrier call
-		VkImageMemoryBarrier gbufferBarriers[8] = {};
-		for (int i = 0; i < 8; i++)
-		{
-			gbufferBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			gbufferBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-			gbufferBarriers[i].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-			gbufferBarriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-			gbufferBarriers[i].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-			gbufferBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			gbufferBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			gbufferBarriers[i].image = gbufferImgs[i];
-			gbufferBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			gbufferBarriers[i].subresourceRange.levelCount = 1;
-			gbufferBarriers[i].subresourceRange.layerCount = 1;
-		}
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
-		                     0, nullptr, 0, nullptr, 8, gbufferBarriers);
-
-		// Depth image: UNDEFINED â†’ DEPTH_ATTACHMENT_OPTIMAL (cleared by loadOp)
-		VkImageMemoryBarrier depthBarrier = {};
-		depthBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		depthBarrier.srcAccessMask = 0;
-		depthBarrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-		depthBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		depthBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-		depthBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		depthBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		depthBarrier.image = m_GBuffer.GetDepth().image;
-		depthBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-		depthBarrier.subresourceRange.levelCount = 1;
-		depthBarrier.subresourceRange.layerCount = 1;
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-		                     VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0,
-		                     0, nullptr, 0, nullptr, 1, &depthBarrier);
-
-		VkImageView gbufferViews[8];
-		m_GBuffer.GetMRTViews(gbufferViews);
-		m_RasterPass.Record(cmd, m_Width, m_Height,
-		                    m_PathTracePass.GetDescriptorSet(), m_GBufferSet,
-		                    m_GBuffer.GetDepth().view, gbufferViews);
-
-		// Barrier: color attachment writes must complete before RT/compute reads (GENERAL)
-		VkImageMemoryBarrier postRasterBarriers[8] = {};
-		for (int i = 0; i < 8; i++)
-		{
-			postRasterBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			postRasterBarriers[i].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-			postRasterBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-			postRasterBarriers[i].oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-			postRasterBarriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-			postRasterBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			postRasterBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			postRasterBarriers[i].image = gbufferImgs[i];
-			postRasterBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			postRasterBarriers[i].subresourceRange.levelCount = 1;
-			postRasterBarriers[i].subresourceRange.layerCount = 1;
-		}
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-		                     0, nullptr, 0, nullptr, 8, postRasterBarriers);
-	}
-
-	// ---- G-buffer debug view (skips path tracing + NRD) ----
-	if (m_GBufferDebugMode >= 0 && m_GBufferDebugPass.IsAvailable())
-	{
-		m_GBufferDebugPass.Record(cmd, m_Width, m_Height,
-		                          m_PathTracePass.GetDescriptorSet(), m_GBufferSet,
-		                          (uint32_t)m_GBufferDebugMode);
-	}
-	else
-	{
-		// Trace rays via PathTracePass
-		// DOF fallback: raster-first can't do depth of field (aperture > 0).
-		// Auto-fallback to RT-primary if aperture is set.
-		bool useRasterFirst = m_RasterFirst && (camera.m_Aperture <= 0.0f);
-		m_PathTracePass.Record(cmd, m_Width, m_Height, m_GBufferSet, useRasterFirst);
-
-	// NRD denoising pass â€” only when raster-first is actually active.
-	// RT-primary path is accumulation-only (B4 removed G-buffer writes),
-	// so NRD + RT-primary produces garbage (stale G-buffer â†’ vibrating).
-	if (m_NRDEnabled && m_NRD.IsAvailable() && useRasterFirst)
-	{
-		// Barrier: all RT-written G-buffer images must complete before NRD reads them.
-		// - gDiffRadiance, gSpecRadiance: RT writes only (SHADER_WRITE)
-		// - gNormalRoughness, gViewZ, gMotion: raster writes (COLOR_ATTACHMENT_WRITE, already barriered above)
-		//   + RT writes for sky pixels (SHADER_WRITE)
-		// - gDirectEmission: raster writes (COLOR_ATTACHMENT_WRITE) + RT writes (SHADER_WRITE)
-		VkImage preNrdImgs[] = { m_GBuffer.GetColor(GBufferTarget::DIFF_RADIANCE).image, m_GBuffer.GetColor(GBufferTarget::SPEC_RADIANCE).image,
-		                         m_GBuffer.GetColor(GBufferTarget::NORMAL_ROUGHNESS).image, m_GBuffer.GetColor(GBufferTarget::VIEWZ).image, m_GBuffer.GetColor(GBufferTarget::MOTION).image, m_GBuffer.GetColor(GBufferTarget::DIRECT_EMISSION).image };
-		VkAccessFlags preNrdSrc[] = {
-			VK_ACCESS_SHADER_WRITE_BIT,                                   // gDiffRadiance
-			VK_ACCESS_SHADER_WRITE_BIT,                                   // gSpecRadiance
-			VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, // gNormalRoughness
-			VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, // gViewZ
-			VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, // gMotion
-			VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, // gDirectEmission
-		};
-		VkImageMemoryBarrier preNrdBarriers[6] = {};
-		for (int i = 0; i < 6; i++)
-		{
-			preNrdBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			preNrdBarriers[i].srcAccessMask = preNrdSrc[i];
-			preNrdBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-			preNrdBarriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-			preNrdBarriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-			preNrdBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			preNrdBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			preNrdBarriers[i].image = preNrdImgs[i];
-			preNrdBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			preNrdBarriers[i].subresourceRange.levelCount = 1;
-			preNrdBarriers[i].subresourceRange.layerCount = 1;
-		}
-		vkCmdPipelineBarrier(cmd,
-		                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-		                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-		                     0, nullptr, 0, nullptr, 6, preNrdBarriers);
-
-		m_NRD.NewFrame();
-
-		// Set common settings.
-		// NOTE: m_PrevViewToClip/m_PrevWorldToView were already updated to the
-		// CURRENT frame's matrices in UpdateCameraUBO (line 886-887), so we can't
-		// use them here. Use the stashed UBO data which captured the prev matrices
-		// BEFORE the update (line 882-883).
-		const Camera& cam = camera;
-		glm::mat4 viewToClip = cam.GetProjection();
-		glm::mat4 worldToView = cam.GetView();
-		glm::mat4 prevViewToClip = m_HasPrevMatrices ? m_CameraUBOData.viewToClipPrev : viewToClip;
-		glm::mat4 prevWorldToView = m_HasPrevMatrices ? m_CameraUBOData.worldToViewPrev : worldToView;
-
-		bool reset = m_NRDNeedsReset;
-		m_NRD.SetCommonSettings(
-			glm::value_ptr(viewToClip),
-			glm::value_ptr(prevViewToClip),
-			glm::value_ptr(worldToView),
-			glm::value_ptr(prevWorldToView),
-			m_NRDJitter.x, m_NRDJitter.y,
-			m_NRDJitterPrev.x, m_NRDJitterPrev.y,
-			m_NRDFrameIndex, reset, m_NRDSplitScreen);
-		m_NRDNeedsReset = false;
-
-		m_NRD.SetReblurSettings(m_NRDMaxBlurRadius, (uint32_t)m_NRDMaxAccumFrames,
-		                        m_NRDAntiFirefly, m_NRDSplitScreen);
-
-		m_NRD.Denoise(cmd,
-			m_GBuffer.GetColor(GBufferTarget::NORMAL_ROUGHNESS).image, VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-			m_GBuffer.GetColor(GBufferTarget::VIEWZ).image, VK_FORMAT_R32_SFLOAT,
-			m_GBuffer.GetColor(GBufferTarget::MOTION).image, VK_FORMAT_R16G16_SFLOAT,
-			m_GBuffer.GetColor(GBufferTarget::DIFF_RADIANCE).image, VK_FORMAT_R16G16B16A16_SFLOAT,
-			m_GBuffer.GetColor(GBufferTarget::SPEC_RADIANCE).image, VK_FORMAT_R16G16B16A16_SFLOAT,
-			m_GBuffer.GetColor(GBufferTarget::NRD_DIFF_OUT).image, m_GBuffer.GetColor(GBufferTarget::NRD_SPEC_OUT).image);
-
-		// NRD with restoreInitialState=true + GENERAL layout restores images
-		// to GENERAL after denoising, so no manual barriers needed.
-
-		// Compose pass: remodulate NRD outputs by albedo/F0, write to beauty
-		if (m_ComposePass.IsAvailable())
-		{
-			// Update descriptor set once (views don't change after OnResize)
-			if (!m_ComposeDescriptorSetCached)
-			{
-				m_ComposePass.UpdateDescriptorSet(m_Device,
-					m_OutputImage.view, m_GBuffer.GetColor(GBufferTarget::NRD_DIFF_OUT).view, m_GBuffer.GetColor(GBufferTarget::NRD_SPEC_OUT).view,
-					m_GBuffer.GetColor(GBufferTarget::ALBEDO_F0).view, m_GBuffer.GetColor(GBufferTarget::DIRECT_EMISSION).view, m_GBuffer.GetColor(GBufferTarget::VIEWZ).view);
-				m_ComposeDescriptorSetCached = true;
-			}
-
-			// Barrier: NRD outputs (compute writes) + G-buffer reads (ray tracing writes) â†’ compose (compute reads)
-			VkImage composeImgs[] = { m_GBuffer.GetColor(GBufferTarget::NRD_DIFF_OUT).image, m_GBuffer.GetColor(GBufferTarget::NRD_SPEC_OUT).image, m_GBuffer.GetColor(GBufferTarget::ALBEDO_F0).image, m_GBuffer.GetColor(GBufferTarget::DIRECT_EMISSION).image, m_GBuffer.GetColor(GBufferTarget::VIEWZ).image };
-			VkImageMemoryBarrier composeBarriers[5] = {};
-			for (int i = 0; i < 5; i++)
-			{
-				composeBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-				composeBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-				composeBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-				composeBarriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-				composeBarriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-				composeBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				composeBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				composeBarriers[i].image = composeImgs[i];
-				composeBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-				composeBarriers[i].subresourceRange.levelCount = 1;
-				composeBarriers[i].subresourceRange.layerCount = 1;
-			}
-			vkCmdPipelineBarrier(cmd,
-			                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-			                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-			                     0, nullptr, 0, nullptr, 5, composeBarriers);
-
-		m_ComposePass.Record(cmd, m_Width, m_Height);
-	}
-	}
-	} // end else (not debug mode)
-
-	VkImageMemoryBarrier rtReadBarrier = {};
-	rtReadBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	rtReadBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-	rtReadBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	rtReadBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-	rtReadBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-	rtReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	rtReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	rtReadBarrier.image = m_OutputImage.image;
-	rtReadBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	rtReadBarrier.subresourceRange.levelCount = 1;
-	rtReadBarrier.subresourceRange.layerCount = 1;
-
-	// If NRD+compose ran, the output image was written by compute (compose).
-	// If debug mode, written by compute (debug pass).
-	// Otherwise it was written by the ray tracing shader.
-	VkPipelineStageFlags srcStage;
-	if (m_GBufferDebugMode >= 0 && m_GBufferDebugPass.IsAvailable())
-		srcStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-	else if (m_NRDEnabled && m_NRD.IsAvailable() && m_ComposePass.IsAvailable())
-		srcStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-	else
-		srcStage = VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
-
-	vkCmdPipelineBarrier(cmd, srcStage, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &rtReadBarrier);
+	FrameRenderer::RecordFrame(cmd, ctx);
 
 	// ---- Submit this frame's work (async, no wait) ----
 	frame.Submit(m_Device.queue);
@@ -695,8 +432,6 @@ void RendererGPU::Render(const Camera& camera)
 	m_FrameIndex++;
 	m_NRDFrameIndex++;
 }
-
-// ---- Output readback for screenshots ---------------------------------------
 
 bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t& outWidth, uint32_t& outHeight)
 {

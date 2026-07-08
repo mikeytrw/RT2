@@ -196,6 +196,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
     <ClInclude Include="src\ECSScene.h" />
     <ClInclude Include="src\FileDialog.h" />
     <ClInclude Include="src\FrameContext.h" />
+    <ClInclude Include="src\FrameRenderer.h" />
     <ClInclude Include="src\GBufferDebugPass.h" />
     <ClInclude Include="src\GBufferTarget.h" />
     <ClInclude Include="src\GPUSceneData.h" />
@@ -274,6 +275,11 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\FrameContext.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\FrameRenderer.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

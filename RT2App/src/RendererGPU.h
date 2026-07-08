@@ -9,6 +9,7 @@
 #include "GPUSceneData.h"
 #include "GpuDevice.h"
 #include "ComposePass.h"
+#include "FrameRenderer.h"
 #include "GBufferTarget.h"
 #include "PathTracePass.h"
 #include "RasterPass.h"
