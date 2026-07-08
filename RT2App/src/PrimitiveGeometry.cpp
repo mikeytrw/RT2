@@ -7,29 +7,41 @@ MeshData PrimitiveGeometry::CreateCube(float size)
 
 	// 24 vertices (4 per face) so each face has its own flat normals
 	// 36 indices (12 triangles)
+	// Winding: indices ordered so cross(v1-v0, v2-v0) points outward
+	// (matches declared normals), ensuring NEE light sampling works.
 	MeshData mesh;
 	mesh.name = "Cube";
 	mesh.vertices = {
-		// +X face
+		// +X face (looking from +X towards origin)
 		s, -s, -s,  s, -s,  s,  s,  s,  s,  s,  s, -s,
-		// -X face
+		// -X face (looking from -X towards origin)
 		-s, -s,  s, -s, -s, -s, -s,  s, -s, -s,  s,  s,
-		// +Y face (top)
+		// +Y face (top, looking from +Y down)
 		-s,  s, -s,  s,  s, -s,  s,  s,  s, -s,  s,  s,
-		// -Y face (bottom)
+		// -Y face (bottom, looking from -Y up)
 		-s, -s,  s,  s, -s,  s,  s, -s, -s, -s, -s, -s,
-		// +Z face
+		// +Z face (looking from +Z towards origin)
 		-s, -s,  s,  s, -s,  s,  s,  s,  s, -s,  s,  s,
-		// -Z face
+		// -Z face (looking from -Z towards origin)
 		-s, -s, -s, -s,  s, -s,  s,  s, -s,  s, -s, -s,
 	};
 	mesh.indices = {
-		0, 1, 2,  0, 2, 3,
-		4, 5, 6,  4, 6, 7,
-		8, 9, 10, 8, 10, 11,
-		12, 13, 14, 12, 14, 15,
-		16, 17, 18, 16, 18, 19,
-		20, 21, 22, 20, 22, 23,
+		// +X: cross(v1-v0, v2-v0) = cross((0,0,2s),(0,2s,2s)) = (-4s²,0,0) → inward
+		// Fix: swap to (0,2,1),(0,3,2) → cross(v2-v0, v1-v0) = (4s²,0,0) → outward
+		0, 2, 1,  0, 3, 2,
+		// -X: cross(v1-v0, v2-v0) = cross((0,0,-2s),(0,2s,-2s)) = (4s²,0,0) → inward
+		// Fix: swap to (4,6,5),(4,7,6)
+		4, 6, 5,  4, 7, 6,
+		// +Y: cross(v1-v0, v2-v0) = cross((2s,0,0),(2s,0,2s)) = (0,-4s²,0) → inward
+		// Fix: swap to (8,10,9),(8,11,10)
+		8, 10, 9,  8, 11, 10,
+		// -Y: cross(v1-v0, v2-v0) = cross((2s,0,0),(2s,0,-2s)) = (0,4s²,0) → inward
+		// Fix: swap to (12,14,13),(12,15,14)
+		12, 14, 13,  12, 15, 14,
+		// +Z: cross(v1-v0, v2-v0) = cross((2s,0,0),(2s,2s,0)) = (0,0,4s²) → outward ✓
+		16, 17, 18,  16, 18, 19,
+		// -Z: cross(v1-v0, v2-v0) = cross((0,2s,0),(2s,2s,0)) = (0,0,-4s²) → outward ✓
+		20, 21, 22,  20, 22, 23,
 	};
 	mesh.normals = {
 		1, 0, 0,  1, 0, 0,  1, 0, 0,  1, 0, 0,
@@ -98,13 +110,17 @@ MeshData PrimitiveGeometry::CreatePlane(float size)
 {
 	float s = size * 0.5f;
 
+	// Winding: cross(v1-v0, v2-v0) must point +Y (up, matching normals)
+	// Vertices: (-s,0,-s), (s,0,-s), (s,0,s), (-s,0,s)
+	// cross(v1-v0, v2-v0) = cross((2s,0,0),(2s,0,2s)) = (0,-4s²,0) → inward
+	// Fix: swap indices to (0,2,1),(0,3,2) → cross(v2-v0, v1-v0) = (0,4s²,0) → outward
 	MeshData mesh;
 	mesh.name = "Plane";
 	mesh.vertices = {
 		-s, 0, -s,  s, 0, -s,  s, 0,  s, -s, 0,  s,
 	};
 	mesh.indices = {
-		0, 1, 2, 0, 2, 3,
+		0, 2, 1,  0, 3, 2,
 	};
 	mesh.normals = {
 		0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0,
