@@ -6,6 +6,7 @@
 #include "Renderer.h"
 #include "RendererGPU.h"
 #include "RenderSettings.h"
+#include "SceneManager.h"
 #include "Mesh.h"
 #include "FileDialog.h"
 #include "Scene.h"
@@ -110,7 +111,7 @@ public:
 						m_Settings.spp = m_Renderer.m_SamplesPerPixel;
 						m_Settings.maxBounces = m_Renderer.m_MaxBounceDepth;
 						m_RendererGPU.ApplySettings(m_Settings);
-						if (!m_SceneMeshes.empty() || m_Mesh.IsLoaded())
+						if (m_SceneMgr.GetECS().meshRegistry.GetCount() > 0 || m_Mesh.IsLoaded())
 							UploadMeshToGPU();
 					}
 					else
@@ -125,7 +126,7 @@ public:
 					m_Settings.spp = m_Renderer.m_SamplesPerPixel;
 					m_Settings.maxBounces = m_Renderer.m_MaxBounceDepth;
 					m_RendererGPU.ApplySettings(m_Settings);
-					if (!m_SceneMeshes.empty() || m_Mesh.IsLoaded())
+					if (m_SceneMgr.GetECS().meshRegistry.GetCount() > 0 || m_Mesh.IsLoaded())
 						UploadMeshToGPU();
 				}
 			}
@@ -256,16 +257,13 @@ public:
 	ImGui::SameLine();
 	if (ImGui::Button("Clear HDR"))
 	{
-		m_EnvMapPath.clear();
-		m_EnvMapFloatPixels.clear();
-		m_EnvMapWidth = 0;
-		m_EnvMapHeight = 0;
-		if (m_UseGPU && m_RendererGPU.IsAvailable() && (!m_SceneMeshes.empty() || m_Mesh.IsLoaded()))
+		m_SceneMgr.ClearEnvMap();
+		if (m_UseGPU && m_RendererGPU.IsAvailable() && (m_SceneMgr.GetECS().meshRegistry.GetCount() > 0 || m_Mesh.IsLoaded()))
 			UploadMeshToGPU();
 		m_RendererGPU.ResetAccumulation();
 	}
-	if (!m_EnvMapPath.empty())
-		ImGui::Text("Loaded: %s (%dx%d)", m_EnvMapPath.c_str(), m_EnvMapWidth, m_EnvMapHeight);
+	if (m_SceneMgr.HasEnvMap())
+		ImGui::Text("Loaded: %s (%dx%d)", m_SceneMgr.GetEnvMapPath().c_str(), m_SceneMgr.GetEnvMapWidth(), m_SceneMgr.GetEnvMapHeight());
 	if (ImGui::SliderFloat("Env Intensity", &m_Settings.envIntensity, 0.0f, 10.0f, "%.2f"))
 		m_RendererGPU.ApplySettings(m_Settings);
 	ImGui::End();
@@ -336,10 +334,10 @@ public:
 		ImGui::End();
 
 		ImGui::Begin("Scene");
-		ImGui::Text("Meshes: %d", (int)m_Scene.GetMeshes().size());
-		ImGui::Text("Materials: %d", (int)m_Scene.GetMaterials().size());
-		ImGui::Text("Lights: %d", (int)m_Scene.GetLights().size());
-		ImGui::Text("Textures: %d", (int)m_Scene.GetTextures().size());
+		ImGui::Text("Meshes: %d", (int)m_SceneMgr.GetScene().GetMeshes().size());
+		ImGui::Text("Materials: %d", (int)m_SceneMgr.GetScene().GetMaterials().size());
+		ImGui::Text("Lights: %d", (int)m_SceneMgr.GetScene().GetLights().size());
+		ImGui::Text("Textures: %d", (int)m_SceneMgr.GetScene().GetTextures().size());
 		ImGui::Separator();
 		if (ImGui::Button("Load Scene..."))
 		{
@@ -356,16 +354,16 @@ public:
 			if (!path.empty())
 			{
 				BuildSceneFromCurrentState();
-				SceneLoader::Save(m_Scene, path);
+				SceneLoader::Save(m_SceneMgr.GetScene(), path);
 			}
 		}
 		ImGui::Separator();
-		if (!m_Scene.GetMeshes().empty())
+		if (!m_SceneMgr.GetScene().GetMeshes().empty())
 		{
 			ImGui::Text("Loaded meshes:");
-			for (int i = 0; i < (int)m_Scene.GetMeshes().size(); i++)
+			for (int i = 0; i < (int)m_SceneMgr.GetScene().GetMeshes().size(); i++)
 			{
-				const auto& m = m_Scene.GetMesh(i);
+				const auto& m = m_SceneMgr.GetScene().GetMesh(i);
 				if (m.HasGeometry())
 					ImGui::Text("  [%d] geometry (%d verts, %d tris)",
 					            i, (int)(m.vertices.size() / 3), (int)(m.indices.size() / 3));
@@ -667,25 +665,20 @@ private:
 
 	void UploadMeshToGPU()
 	{
-		if (m_SceneMeshes.empty() && !m_Mesh.IsLoaded()) return;
+		if (m_SceneMgr.GetECS().meshRegistry.GetCount() == 0 && !m_Mesh.IsLoaded()) return;
 
-		// Build GPUSceneData from ECS if available, otherwise from Scene
-		GPUSceneData gpuData;
-		bool usedECS = false;
+		// Set the sync callback to push to the renderer, then call SyncToGPU.
+		// The callback is set once but is safe to set repeatedly.
+		m_SceneMgr.SetSyncCallback([this](const GPUSceneData& gpuData) {
+			m_RendererGPU.SetScene(gpuData);
+		});
 
-		if (m_EcsScene.meshRegistry.GetCount() > 0)
+		// If no ECS meshes but we have a CPU OBJ mesh, inject it as a
+		// single-mesh scene via the legacy path.
+		if (m_SceneMgr.GetECS().meshRegistry.GetCount() == 0 && m_Mesh.IsLoaded())
 		{
-			gpuData = BuildGPUSceneDataFromECS(m_EcsScene);
-			usedECS = true;
-		}
-		else
-		{
-			gpuData = BuildGPUSceneData(m_Scene);
-		}
-
-		// Fallback: if no scene meshes from glTF, use the single OBJ mesh
-		if (gpuData.meshes.empty() && m_Mesh.IsLoaded())
-		{
+			// Build a minimal GPUSceneData from the OBJ mesh
+			GPUSceneData gpuData;
 			auto [verts, indices] = m_Mesh.GetRawVertexData();
 			GPUMeshGeometry geo;
 			geo.vertices = verts;
@@ -693,109 +686,44 @@ private:
 			geo.materialIndex = 0;
 			gpuData.meshes.push_back(std::move(geo));
 
-			// Single default material from UI controls
 			SceneMaterial sm;
 			sm.baseColor = m_MeshAlbedo;
 			sm.metallic = (m_MaterialType == 1) ? 1.0f : 0.0f;
 			sm.roughness = m_MeshFuzz;
 			sm.ior = m_MeshIOR;
 			gpuData.materials.push_back(GPUMaterial::fromSceneMaterial(sm));
+
+			GPUInstance inst;
+			inst.meshIndex = 0;
+			inst.materialIndex = 0;
+			inst.worldMatrix = glm::mat4(1.0f);
+			inst.prevWorldMatrix = glm::mat4(1.0f);
+			gpuData.instances.push_back(inst);
+
+			m_RendererGPU.SetScene(gpuData);
+			return;
 		}
 
-		// If we used ECS but there are no instances (shouldn't happen normally),
-		// or if we used the legacy path and there are meshes but no instances,
-		// create one identity-transform instance per mesh
-		if (gpuData.instances.empty() && !gpuData.meshes.empty())
-		{
-			for (uint32_t i = 0; i < gpuData.meshes.size(); i++)
-			{
-				GPUInstance inst;
-				inst.meshIndex = i;
-				inst.materialIndex = gpuData.meshes[i].materialIndex;
-				inst.worldMatrix = glm::mat4(1.0f);
-				inst.prevWorldMatrix = glm::mat4(1.0f);
-				gpuData.instances.push_back(inst);
-			}
-		}
-
-		printf("[Scene] GPU upload: %d meshes, %d materials\n",
-		       (int)gpuData.meshes.size(), (int)gpuData.materials.size());
-
-		// Add env map as an extra texture in the texture array (M8)
-		if (!m_EnvMapFloatPixels.empty() && m_EnvMapWidth > 0 && m_EnvMapHeight > 0)
-		{
-			SceneTexture envTex;
-			envTex.isHDR = true;
-			envTex.width = m_EnvMapWidth;
-			envTex.height = m_EnvMapHeight;
-			envTex.floatPixels = m_EnvMapFloatPixels;
-			gpuData.textures.push_back(envTex);
-			gpuData.envMapIndex = (int)gpuData.textures.size() - 1;
-			gpuData.envIntensity = m_Settings.envIntensity;
-
-			// Build CDFs for importance sampling
-			BuildEnvMapCDF(m_EnvMapFloatPixels, m_EnvMapWidth, m_EnvMapHeight,
-			               gpuData.marginalCDF, gpuData.conditionalCDF);
-			gpuData.cdfWidth = m_EnvMapWidth;
-			gpuData.cdfHeight = m_EnvMapHeight;
-
-		printf("[Scene] Env map: idx=%d %dx%d, CDF built\n",
-		       gpuData.envMapIndex, m_EnvMapWidth, m_EnvMapHeight);
-		}
-
-		m_CurrentGpuScene = gpuData;
-		m_RendererGPU.SetScene(gpuData);
+		m_SceneMgr.SyncToGPU();
 	}
 
 	void LoadScene(const std::string& filepath)
 	{
-		printf("[Scene] LoadScene: '%s'\n", filepath.c_str());
-		if (!SceneLoader::Load(m_Scene, filepath))
+		if (!m_SceneMgr.LoadScene(filepath))
 		{
-			printf("[Scene] SceneLoader::Load failed!\n");
 			ImGui::OpenPopup("Scene Load Failed");
 			return;
 		}
-		printf("[Scene] SceneLoader::Load succeeded\n");
 
-		// Also load into ECS for GPU rendering
-		if (!SceneLoader::LoadIntoECS(m_EcsScene, filepath))
-		{
-			printf("[Scene] SceneLoader::LoadIntoECS failed, GPU will use legacy path\n");
-		}
-		else
-		{
-			// Compute camera from ECS if camera wasn't set from extras
-			// (find entity with CameraComponent or use the camera data)
-			const auto& cam = m_Scene.GetCamera();
-			printf("[Scene] Camera: pos=(%.1f,%.1f,%.1f), forward=(%.1f,%.1f,%.1f), fov=%.1f\n",
-			       cam.position.x, cam.position.y, cam.position.z,
-			       cam.forwardDirection.x, cam.forwardDirection.y, cam.forwardDirection.z,
-			       cam.verticalFOV);
-		}
-
-		printf("[Scene] Loaded %d meshes, %d materials, %d lights, %d textures\n",
-		       (int)m_Scene.GetMeshes().size(), (int)m_Scene.GetMaterials().size(),
-		       (int)m_Scene.GetLights().size(), (int)m_Scene.GetTextures().size());
-
+		// Wire CPU renderer to the loaded meshes
 		m_Renderer.ClearHittables();
 		m_Renderer.m_TriangleCount = 0;
 		m_Renderer.m_BvhNodeCount = 0;
 		m_Renderer.m_BvhMaxDepth = 0;
-		m_Mesh.Clear();
-		for (auto& m : m_SceneMeshes) m.Clear();
-		m_SceneMeshes.clear();
 
 		bool loadedAny = false;
-		int meshIdx = 0;
-
-		for (const auto& sceneMesh : m_Scene.GetMeshes())
+		for (const auto& sceneMesh : m_SceneMgr.GetScene().GetMeshes())
 		{
-			// printf("[Scene] Mesh %d: hasGeometry=%d, filepath='%s', pos=(%.1f,%.1f,%.1f), scale=%.3f, verts=%d, indices=%d\n",
-			//        meshIdx, sceneMesh.HasGeometry(), sceneMesh.filepath.c_str(),
-			//        sceneMesh.position.x, sceneMesh.position.y, sceneMesh.position.z, sceneMesh.scale,
-			//        (int)(sceneMesh.vertices.size() / 3), (int)sceneMesh.indices.size());
-
 			Mesh mesh;
 			bool meshLoaded = false;
 
@@ -820,32 +748,17 @@ private:
 				if (auto bvh = mesh.GetBvhNode())
 					bvh->GetStats(m_Renderer.m_BvhNodeCount, m_Renderer.m_BvhMaxDepth);
 				loadedAny = true;
-				m_SceneMeshes.push_back(std::move(mesh));
-				// printf("[Scene]   Loaded: %d triangles\n", (int)m_SceneMeshes.back().GetTriangleCount());
 			}
-			else
-			{
-				printf("[Scene]   Failed to load\n");
-			}
-			meshIdx++;
 		}
-
-		// printf("[Scene] Total triangles: %d, BVH nodes: %d, BVH depth: %d\n",
-		//        m_Renderer.m_TriangleCount, m_Renderer.m_BvhNodeCount, m_Renderer.m_BvhMaxDepth);
 
 		if (loadedAny)
 		{
 			if (m_RendererGPU.IsAvailable())
 				UploadMeshToGPU();
 
-			const auto& cam = m_Scene.GetCamera();
-			printf("[Scene] Camera: pos=(%.1f,%.1f,%.1f), forward=(%.1f,%.1f,%.1f), fov=%.1f\n",
-			       cam.position.x, cam.position.y, cam.position.z,
-			       cam.forwardDirection.x, cam.forwardDirection.y, cam.forwardDirection.z,
-			       cam.verticalFOV);
+			const auto& cam = m_SceneMgr.GetScene().GetCamera();
 			m_Cam.SetPosition(cam.position);
 			m_Cam.SetForwardDirection(cam.forwardDirection);
-
 			m_Renderer.mFrameIndex = 1;
 		}
 		else
@@ -856,7 +769,8 @@ private:
 
 	void BuildSceneFromCurrentState()
 	{
-		m_Scene.Clear();
+		auto& scene = m_SceneMgr.GetScene();
+		scene.Clear();
 
 		SceneMesh mesh;
 		if (m_Mesh.IsLoaded())
@@ -876,13 +790,13 @@ private:
 			mesh.rotation = m_MeshRotation;
 			mesh.scale = m_MeshScale;
 		}
-		m_Scene.AddMesh(mesh);
+		scene.AddMesh(mesh);
 
 		SceneMaterial mat;
 		mat.type = static_cast<MaterialType>(m_MaterialType);
 		mat.baseColor = m_MeshAlbedo;
 		mat.ior = m_MeshIOR;
-		m_Scene.AddMaterial(mat);
+		scene.AddMaterial(mat);
 
 		SceneCamera cam;
 		cam.position = m_Cam.GetPosition();
@@ -890,11 +804,12 @@ private:
 		cam.verticalFOV = 45.0f;
 		cam.aperture = m_Cam.m_Aperture;
 		cam.focusDistance = m_Cam.m_FocusDistance;
-		m_Scene.GetCamera() = cam;
+		scene.GetCamera() = cam;
 	}
 	Renderer m_Renderer;
 	RendererGPU m_RendererGPU;
 	RenderSettings m_Settings; // local copy — mutated by UI, synced via ApplySettings
+	SceneManager m_SceneMgr;
 	int m_UseGPU = 1; // 0=CPU, 1=GPU
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
 	uint32_t* m_ImageData = nullptr;
@@ -904,8 +819,8 @@ private:
 	bool m_RenderOnUpdate;
 	Camera m_Cam;
 
+	// Mesh UI state (OBJ path — kept in ExampleLayer for UI binding)
 	Mesh m_Mesh;
-	std::vector<Mesh> m_SceneMeshes;  // one per scene mesh when loaded via Scene panel
 	std::string m_MeshPath;
 	vec3 m_MeshPosition = vec3(0.0f, 0.0f, 0.0f);
 	vec3 m_MeshRotation = vec3(0.0f, 0.0f, 0.0f);
@@ -916,69 +831,14 @@ private:
 	float m_MeshFuzz = 0.0f;
 	float m_MeshIOR = 1.5f;
 
-	// Environment map (M8)
-	std::string m_EnvMapPath;
-	std::vector<float> m_EnvMapFloatPixels;
-	int m_EnvMapWidth = 0;
-	int m_EnvMapHeight = 0;
-
-	Scene m_Scene;
-	ECSScene m_EcsScene;
-	GPUSceneData m_CurrentGpuScene;
-
 	bool m_CLIProcessed = false;
 
 	void LoadEnvMap(const std::string& filepath)
 	{
-		printf("[EnvMap] Loading '%s'\n", filepath.c_str());
-
-		// Determine format by extension: .exr uses tinyexr, .hdr uses stb_image
-		bool isEXR = filepath.size() >= 4 &&
-		             (filepath.compare(filepath.size() - 4, 4, ".exr") == 0 ||
-		              filepath.compare(filepath.size() - 4, 4, ".EXR") == 0);
-
-		int w = 0, h = 0;
-		std::vector<float> pixels;
-
-		if (isEXR)
-		{
-			// OpenEXR via tinyexr
-			float* outRGBA = nullptr;
-			const char* err = nullptr;
-			int ret = LoadEXR(&outRGBA, &w, &h, filepath.c_str(), &err);
-			if (ret != TINYEXR_SUCCESS || !outRGBA)
-			{
-				printf("[EnvMap] Failed to load EXR: %s\n", err ? err : "unknown");
-				if (err) free((void*)err);
-				return;
-			}
-			pixels.assign(outRGBA, outRGBA + (size_t)w * h * 4);
-			free(outRGBA);
-			if (err) free((void*)err);
-			printf("[EnvMap] Loaded %dx%d EXR\n", w, h);
-		}
-		else
-		{
-			// HDR (RGBE) via stb_image
-			int channels;
-			float* data = stbi_loadf(filepath.c_str(), &w, &h, &channels, 4);
-			if (!data)
-			{
-				printf("[EnvMap] Failed to load HDR file!\n");
-				return;
-			}
-			pixels.assign(data, data + (size_t)w * h * 4);
-			stbi_image_free(data);
-			printf("[EnvMap] Loaded %dx%d HDR\n", w, h);
-		}
-
-		m_EnvMapPath = filepath;
-		m_EnvMapWidth = w;
-		m_EnvMapHeight = h;
-		m_EnvMapFloatPixels = std::move(pixels);
-
-		if (m_UseGPU && m_RendererGPU.IsAvailable() && (!m_SceneMeshes.empty() || m_Mesh.IsLoaded()))
-			UploadMeshToGPU();
+		if (!m_SceneMgr.LoadEnvMap(filepath))
+			return;
+		if (m_UseGPU && m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
+			m_SceneMgr.SyncToGPU();
 		m_RendererGPU.ResetAccumulation();
 	}
 };
