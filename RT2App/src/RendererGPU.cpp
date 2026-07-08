@@ -1022,15 +1022,12 @@ void RendererGPU::Render(const Camera& camera)
 		0, 1, &uboPostBarrier, 0, nullptr, 0, nullptr);
 
 	// ---- Raster G-buffer pass (primary visibility — MRT color attachments) ----
-	if (m_RasterPass.IsAvailable() && m_DepthImage.view)
+	if (m_RasterPass.IsAvailable() && m_GBuffer.GetDepth().view)
 	{
 		// G-buffer images: GENERAL → COLOR_ATTACHMENT_OPTIMAL
 		// (8 images written by raster pass as MRT color attachments)
-		VkImage gbufferImgs[] = {
-			m_GNormalRoughness.image, m_GViewZ.image, m_GMotion.image,
-			m_GAlbedoF0.image, m_GDirectEmission.image,
-			m_GPrimHit.image, m_GPrimGeoNormal.image, m_GPrimUV.image
-		};
+		VkImage gbufferImgs[8];
+		m_GBuffer.GetMRTImages(gbufferImgs);
 		// Batch all 8 G-buffer images into a single barrier call
 		VkImageMemoryBarrier gbufferBarriers[8] = {};
 		for (int i = 0; i < 8; i++)
@@ -1060,7 +1057,7 @@ void RendererGPU::Render(const Camera& camera)
 		depthBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
 		depthBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		depthBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		depthBarrier.image = m_DepthImage.image;
+		depthBarrier.image = m_GBuffer.GetDepth().image;
 		depthBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
 		depthBarrier.subresourceRange.levelCount = 1;
 		depthBarrier.subresourceRange.layerCount = 1;
@@ -1068,14 +1065,11 @@ void RendererGPU::Render(const Camera& camera)
 		                     VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0,
 		                     0, nullptr, 0, nullptr, 1, &depthBarrier);
 
-		VkImageView gbufferViews[8] = {
-			m_GNormalRoughness.view, m_GViewZ.view, m_GMotion.view,
-			m_GAlbedoF0.view, m_GDirectEmission.view,
-			m_GPrimHit.view, m_GPrimGeoNormal.view, m_GPrimUV.view
-		};
+		VkImageView gbufferViews[8];
+		m_GBuffer.GetMRTViews(gbufferViews);
 		m_RasterPass.Record(cmd, m_Width, m_Height,
 		                    m_PathTracePass.GetDescriptorSet(), m_GBufferSet,
-		                    m_DepthImage.view, gbufferViews);
+		                    m_GBuffer.GetDepth().view, gbufferViews);
 
 		// Barrier: color attachment writes must complete before RT/compute reads (GENERAL)
 		VkImageMemoryBarrier postRasterBarriers[8] = {};
@@ -1123,8 +1117,8 @@ void RendererGPU::Render(const Camera& camera)
 		// - gNormalRoughness, gViewZ, gMotion: raster writes (COLOR_ATTACHMENT_WRITE, already barriered above)
 		//   + RT writes for sky pixels (SHADER_WRITE)
 		// - gDirectEmission: raster writes (COLOR_ATTACHMENT_WRITE) + RT writes (SHADER_WRITE)
-		VkImage preNrdImgs[] = { m_GDiffRadiance.image, m_GSpecRadiance.image,
-		                         m_GNormalRoughness.image, m_GViewZ.image, m_GMotion.image, m_GDirectEmission.image };
+		VkImage preNrdImgs[] = { m_GBuffer.GetColor(GBufferTarget::DIFF_RADIANCE).image, m_GBuffer.GetColor(GBufferTarget::SPEC_RADIANCE).image,
+		                         m_GBuffer.GetColor(GBufferTarget::NORMAL_ROUGHNESS).image, m_GBuffer.GetColor(GBufferTarget::VIEWZ).image, m_GBuffer.GetColor(GBufferTarget::MOTION).image, m_GBuffer.GetColor(GBufferTarget::DIRECT_EMISSION).image };
 		VkAccessFlags preNrdSrc[] = {
 			VK_ACCESS_SHADER_WRITE_BIT,                                   // gDiffRadiance
 			VK_ACCESS_SHADER_WRITE_BIT,                                   // gSpecRadiance
@@ -1181,12 +1175,12 @@ void RendererGPU::Render(const Camera& camera)
 		                        m_NRDAntiFirefly, m_NRDSplitScreen);
 
 		m_NRD.Denoise(cmd,
-			m_GNormalRoughness.image, VK_FORMAT_A2B10G10R10_UNORM_PACK32,
-			m_GViewZ.image, VK_FORMAT_R32_SFLOAT,
-			m_GMotion.image, VK_FORMAT_R16G16_SFLOAT,
-			m_GDiffRadiance.image, VK_FORMAT_R16G16B16A16_SFLOAT,
-			m_GSpecRadiance.image, VK_FORMAT_R16G16B16A16_SFLOAT,
-			m_NRDDiffOut.image, m_NRDSpecOut.image);
+			m_GBuffer.GetColor(GBufferTarget::NORMAL_ROUGHNESS).image, VK_FORMAT_A2B10G10R10_UNORM_PACK32,
+			m_GBuffer.GetColor(GBufferTarget::VIEWZ).image, VK_FORMAT_R32_SFLOAT,
+			m_GBuffer.GetColor(GBufferTarget::MOTION).image, VK_FORMAT_R16G16_SFLOAT,
+			m_GBuffer.GetColor(GBufferTarget::DIFF_RADIANCE).image, VK_FORMAT_R16G16B16A16_SFLOAT,
+			m_GBuffer.GetColor(GBufferTarget::SPEC_RADIANCE).image, VK_FORMAT_R16G16B16A16_SFLOAT,
+			m_GBuffer.GetColor(GBufferTarget::NRD_DIFF_OUT).image, m_GBuffer.GetColor(GBufferTarget::NRD_SPEC_OUT).image);
 
 		// NRD with restoreInitialState=true + GENERAL layout restores images
 		// to GENERAL after denoising, so no manual barriers needed.
@@ -1198,13 +1192,13 @@ void RendererGPU::Render(const Camera& camera)
 			if (!m_ComposeDescriptorSetCached)
 			{
 				m_ComposePass.UpdateDescriptorSet(m_Device,
-					m_OutputImage.view, m_NRDDiffOut.view, m_NRDSpecOut.view,
-					m_GAlbedoF0.view, m_GDirectEmission.view, m_GViewZ.view);
+					m_OutputImage.view, m_GBuffer.GetColor(GBufferTarget::NRD_DIFF_OUT).view, m_GBuffer.GetColor(GBufferTarget::NRD_SPEC_OUT).view,
+					m_GBuffer.GetColor(GBufferTarget::ALBEDO_F0).view, m_GBuffer.GetColor(GBufferTarget::DIRECT_EMISSION).view, m_GBuffer.GetColor(GBufferTarget::VIEWZ).view);
 				m_ComposeDescriptorSetCached = true;
 			}
 
 			// Barrier: NRD outputs (compute writes) + G-buffer reads (ray tracing writes) → compose (compute reads)
-			VkImage composeImgs[] = { m_NRDDiffOut.image, m_NRDSpecOut.image, m_GAlbedoF0.image, m_GDirectEmission.image, m_GViewZ.image };
+			VkImage composeImgs[] = { m_GBuffer.GetColor(GBufferTarget::NRD_DIFF_OUT).image, m_GBuffer.GetColor(GBufferTarget::NRD_SPEC_OUT).image, m_GBuffer.GetColor(GBufferTarget::ALBEDO_F0).image, m_GBuffer.GetColor(GBufferTarget::DIRECT_EMISSION).image, m_GBuffer.GetColor(GBufferTarget::VIEWZ).image };
 			VkImageMemoryBarrier composeBarriers[5] = {};
 			for (int i = 0; i < 5; i++)
 			{
@@ -1374,114 +1368,12 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 
 void RendererGPU::CreateGBufferImages()
 {
-	DestroyGBufferImages();
-
-	VkDevice device = m_Device.device;
-
-	struct GBufferImageSpec
-	{
-		VkFormat format;
-		GpuImage& img;
-	};
-
-	GBufferImageSpec specs[] = {
-		{ VK_FORMAT_A2B10G10R10_UNORM_PACK32, m_GNormalRoughness },
-		{ VK_FORMAT_R32_SFLOAT,              m_GViewZ },
-		{ VK_FORMAT_R16G16_SFLOAT,           m_GMotion },
-		{ VK_FORMAT_R16G16B16A16_SFLOAT,     m_GDiffRadiance },
-		{ VK_FORMAT_R16G16B16A16_SFLOAT,     m_GSpecRadiance },
-		{ VK_FORMAT_R16G16B16A16_SFLOAT,     m_GAlbedoF0 },
-		{ VK_FORMAT_R16G16B16A16_SFLOAT,     m_GDirectEmission },
-		{ VK_FORMAT_R16G16B16A16_SFLOAT,     m_NRDDiffOut },
-		{ VK_FORMAT_R16G16B16A16_SFLOAT,     m_NRDSpecOut },
-		{ VK_FORMAT_R32G32B32A32_SFLOAT,     m_GPrimHit },
-		{ VK_FORMAT_R8G8B8A8_UNORM,          m_GPrimGeoNormal },
-		{ VK_FORMAT_R16G16_SFLOAT,           m_GPrimUV },
-	};
-
-	for (auto& s : specs)
-	{
-		VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-		                           VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-
-		GpuResources::CreateImage(m_Device, m_Width, m_Height, s.format,
-			usage,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, s.img);
-	}
-
-	// Transition all G-buffer images to GENERAL layout in a single command buffer
-	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
-		for (auto& s : specs)
-		{
-			VkImageMemoryBarrier barrier = {};
-			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-			barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.image = s.img.image;
-			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			barrier.subresourceRange.levelCount = 1;
-			barrier.subresourceRange.layerCount = 1;
-
-			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-		}
-	});
-
-	// Create depth image for raster pass
-	{
-		VkImageCreateInfo depthInfo = {};
-		depthInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-		depthInfo.imageType = VK_IMAGE_TYPE_2D;
-		depthInfo.format = VK_FORMAT_D32_SFLOAT;
-		depthInfo.extent = { m_Width, m_Height, 1 };
-		depthInfo.mipLevels = 1;
-		depthInfo.arrayLayers = 1;
-		depthInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-		depthInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-		depthInfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-		depthInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-
-		vkCreateImage(device, &depthInfo, nullptr, &m_DepthImage.image);
-
-		VkMemoryRequirements memReq;
-		vkGetImageMemoryRequirements(device, m_DepthImage.image, &memReq);
-		uint32_t memType = m_Device.FindMemoryType(memReq.memoryTypeBits,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-		VkMemoryAllocateInfo allocInfo = {};
-		allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		allocInfo.allocationSize = memReq.size;
-		allocInfo.memoryTypeIndex = memType;
-		vkAllocateMemory(device, &allocInfo, nullptr, &m_DepthImage.memory);
-		vkBindImageMemory(device, m_DepthImage.image, m_DepthImage.memory, 0);
-
-		VkImageViewCreateInfo viewInfo = {};
-		viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-		viewInfo.image = m_DepthImage.image;
-		viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-		viewInfo.format = VK_FORMAT_D32_SFLOAT;
-		viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-		viewInfo.subresourceRange.levelCount = 1;
-		viewInfo.subresourceRange.layerCount = 1;
-		vkCreateImageView(device, &viewInfo, nullptr, &m_DepthImage.view);
-	}
+	m_GBuffer.Create(m_Device, m_Width, m_Height);
 }
 
 void RendererGPU::DestroyGBufferImages()
 {
-	VkDevice device = m_Device.device;
-
-	GpuImage* imgs[] = {
-		&m_GNormalRoughness, &m_GViewZ, &m_GMotion,
-		&m_GDiffRadiance, &m_GSpecRadiance, &m_GAlbedoF0,
-		&m_GDirectEmission, &m_NRDDiffOut, &m_NRDSpecOut,
-		&m_GPrimHit, &m_GPrimGeoNormal, &m_GPrimUV,
-	};
-	for (auto* img : imgs)
-		GpuResources::DestroyImage(m_Device, *img);
-
-	GpuResources::DestroyImage(m_Device, m_DepthImage);
+	m_GBuffer.Destroy();
 }
 
 void RendererGPU::CreateGBufferDescriptorSet()
@@ -1573,10 +1465,10 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 
 	VkDescriptorImageInfo imageInfos[10] = {};
 	VkImageView views[] = {
-		m_GNormalRoughness.view, m_GViewZ.view, m_GMotion.view,
-		m_GDiffRadiance.view, m_GSpecRadiance.view, m_GAlbedoF0.view,
-		m_GDirectEmission.view,
-		m_GPrimHit.view, m_GPrimGeoNormal.view, m_GPrimUV.view
+		m_GBuffer.GetColor(GBufferTarget::NORMAL_ROUGHNESS).view, m_GBuffer.GetColor(GBufferTarget::VIEWZ).view, m_GBuffer.GetColor(GBufferTarget::MOTION).view,
+		m_GBuffer.GetColor(GBufferTarget::DIFF_RADIANCE).view, m_GBuffer.GetColor(GBufferTarget::SPEC_RADIANCE).view, m_GBuffer.GetColor(GBufferTarget::ALBEDO_F0).view,
+		m_GBuffer.GetColor(GBufferTarget::DIRECT_EMISSION).view,
+		m_GBuffer.GetColor(GBufferTarget::PRIM_HIT).view, m_GBuffer.GetColor(GBufferTarget::PRIM_GEO_NORMAL).view, m_GBuffer.GetColor(GBufferTarget::PRIM_UV).view
 	};
 	for (int i = 0; i < 10; i++)
 	{

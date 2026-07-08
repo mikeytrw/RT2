@@ -9,6 +9,7 @@
 #include "GPUSceneData.h"
 #include "GpuDevice.h"
 #include "ComposePass.h"
+#include "GBufferTarget.h"
 #include "PathTracePass.h"
 #include "RasterPass.h"
 #include "GBufferDebugPass.h"
@@ -86,7 +87,7 @@ private:
 	void CreateEnvMapCDFTextures(const GPUSceneData& sceneData);
 	void DestroyEnvMapCDFTextures();
 
-	// NRD G-buffer images (set 1, bindings 0-4)
+	// G-buffer images + descriptor set
 	void CreateGBufferImages();
 	void DestroyGBufferImages();
 	void CreateGBufferDescriptorSet();
@@ -156,22 +157,8 @@ private:
 	bool m_NRDNeedsReset = true; // triggers NRD CLEAR_AND_RESTART on next frame (set on init/scene change/reset)
 	VkImageLayout m_OutputImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-	// NRD G-buffer images (set 1, bindings 0-4)
-	GpuImage m_GNormalRoughness;
-	GpuImage m_GViewZ;
-	GpuImage m_GMotion;
-	GpuImage m_GDiffRadiance;
-	GpuImage m_GSpecRadiance;
-
-	// Albedo + F0 for compose pass remodulation (set 1 binding 6, RT writes, compose reads)
-	GpuImage m_GAlbedoF0;
-
-	// Direct emission (emissive surfaces + sky) — bypasses NRD, added in compose
-	GpuImage m_GDirectEmission;
-
-	// NRD output images (denoised)
-	GpuImage m_NRDDiffOut;
-	GpuImage m_NRDSpecOut;
+	// G-buffer target — owns all G-buffer color images + depth image
+	GBufferTarget m_GBuffer;
 
 	// NRD UBO (set 1, binding 5)
 	VkBuffer m_NRDUBO = VK_NULL_HANDLE;
@@ -189,12 +176,6 @@ private:
 	// Raster pass (primary visibility G-buffer)
 	RasterPass m_RasterPass;
 	GBufferDebugPass m_GBufferDebugPass;
-	GpuImage m_DepthImage;
-
-	// New G-buffer images for raster→RT handoff
-	GpuImage m_GPrimHit;
-	GpuImage m_GPrimGeoNormal;
-	GpuImage m_GPrimUV;
 
 	// NRD integration wrapper
 	NRDWrapper m_NRD;
