@@ -22,8 +22,7 @@ void main()
         spp = 1u; // NRD expects 1 spp
 
     // Initialize RNG from pixel coords + frame index
-    uint rngState = pixel.x * 1973u + pixel.y * 9277u + uint(camera.position.w) * 26699u;
-    pcg(rngState); // warm up
+    uint rngState = initRNG(pixel, camera.position.w);
 
     vec3 origin = camera.position.xyz;
 
@@ -137,32 +136,16 @@ void main()
             vec4 albedoLobe = unpackUnorm4x8(floatBitsToUint(payload.e.x));
             vec2 f0rough = unpackUnorm2x16(floatBitsToUint(payload.e.y));
             vec3 diffFactor = max(albedoLobe.xyz, vec3(0.01));
-            float specFactor = max(f0rough.x, 0.01);
+            float f0 = max(f0rough.x, 0.01);
             float viewZ = payload.e.z;
             float roughness = f0rough.y;
 
-            vec3 demodDiff = diffRad / diffFactor;
-            vec3 demodSpec = specRad / vec3(specFactor);
-
-            // Clamp fireflies: NRD's anti-firefly works better when extreme
-            // outliers are clamped. The sun disk in env maps can produce
-            // radiance values >10000 which NRD can't handle during reprojection.
-            const float NRD_CLAMP = 100.0;
-            demodDiff = clamp(demodDiff, vec3(0.0), vec3(NRD_CLAMP));
-            demodSpec = clamp(demodSpec, vec3(0.0), vec3(NRD_CLAMP));
-
-            // NRD hit distance normalization
-            vec3 hitDistParams = vec3(3.0, 0.1, 20.0);
-            float normDiffHitT = nrdGetNormHitDist(diffHitT, viewZ, hitDistParams, 1.0);
-            float normSpecHitT = nrdGetNormHitDist(specHitT, viewZ, hitDistParams, roughness);
-
-            // NRD expects radiance in YCoCg color space
-            vec3 diffYCoCg = linearToYCoCg(demodDiff);
-            vec3 specYCoCg = linearToYCoCg(demodSpec);
+            if (diffRad != vec3(0.0))
+                writeNRDDiffuse(pixel, diffRad, diffFactor, diffHitT, viewZ);
+            else
+                writeNRDSpecular(pixel, specRad, f0, specHitT, viewZ, roughness);
 
             imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
-            imageStore(gDiffRadianceHitDist, pixel, vec4(diffYCoCg, normDiffHitT));
-            imageStore(gSpecRadianceHitDist, pixel, vec4(specYCoCg, normSpecHitT));
         }
 
         // Write beauty output as the sum (compose pass will overwrite with denoised)
@@ -171,12 +154,6 @@ void main()
     }
 
     // Temporal accumulation: blend with previous frame
-    float frameIndex = camera.position.w;
-    if (frameIndex > 1.0)
-    {
-        vec3 prevColor = imageLoad(outputImage, pixel).xyz;
-        color = (prevColor * (frameIndex - 1.0) + color) / frameIndex;
-    }
-
-    imageStore(outputImage, pixel, vec4(color, 1.0));
+    vec3 accColor = temporalAccumulate(pixel, color, camera.position.w);
+    imageStore(outputImage, pixel, vec4(accColor, 1.0));
 }

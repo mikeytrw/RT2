@@ -750,3 +750,68 @@ float evalTransmissionBSDFPdf(vec3 wo, vec3 wi, vec3 n,
     float pdf_d = pdfDiffuse(wi, n);                // diffuse lobe
     return P_reflect * pdf_r + P_refract * pdf_t + P_diffuse * pdf_d;
 }
+
+// ---- Shared raygen helpers (used by raygen.rgen + secondary_raygen.rgen) ----
+
+// Initialize RNG from pixel coords + frame index (camera.position.w).
+// Returns warmed-up rngState ready for randomFloat/pcg calls.
+uint initRNG(ivec2 pixel, float frameIndex)
+{
+    uint rngState = uint(pixel.x) * 1973u + uint(pixel.y) * 9277u + uint(frameIndex) * 26699u;
+    pcg(rngState);
+    return rngState;
+}
+
+// Temporal accumulation: blend current color with previous frame.
+// frameIndex = camera.position.w (accumulation counter, 1 = first frame).
+vec3 temporalAccumulate(ivec2 pixel, vec3 color, float frameIndex)
+{
+    if (frameIndex > 1.0)
+    {
+        vec3 prevColor = imageLoad(outputImage, pixel).xyz;
+        return (prevColor * (frameIndex - 1.0) + color) / frameIndex;
+    }
+    return color;
+}
+
+// Write sky-pixel NRD defaults: oct-packed up normal, roughness=1, viewZ=1e6,
+// white albedo/F0, zero diff/spec radiance, zero motion, sky radiance as
+// direct emission + beauty output.
+void writeNRDSkyDefaults(ivec2 pixel, vec3 skyRadiance)
+{
+    vec3 skyOct = nrdEncodeNormalRoughness(vec3(0.0, 0.0, 1.0), 1.0);
+    imageStore(gNormalRoughness, pixel, vec4(skyOct, 0.0));
+    imageStore(gViewZ, pixel, vec4(1e6, 0.0, 0.0, 0.0));
+    imageStore(gAlbedoF0, pixel, vec4(1.0, 1.0, 1.0, 1.0));
+    imageStore(gDirectEmission, pixel, vec4(skyRadiance, 0.0));
+    imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
+    imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
+    imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+    imageStore(outputImage, pixel, vec4(skyRadiance, 1.0));
+}
+
+// NRD hit distance params (REBLUR defaults: A=3, B=0.1, C=20).
+const vec3 NRD_HIT_DIST_PARAMS = vec3(3.0, 0.1, 20.0);
+const float NRD_FIREFLY_CLAMP = 100.0;
+
+// Pack diffuse lobe NRD output: demodulate, clamp fireflies, normalize hit dist,
+// convert to YCoCg, store to gDiffRadianceHitDist. Zeros specular.
+void writeNRDDiffuse(ivec2 pixel, vec3 radiance, vec3 diffFactor, float hitT, float viewZ)
+{
+    vec3 demod = clamp(radiance / max(diffFactor, vec3(0.01)), vec3(0.0), vec3(NRD_FIREFLY_CLAMP));
+    float normHitT = nrdGetNormHitDist(hitT, viewZ, NRD_HIT_DIST_PARAMS, 1.0);
+    vec3 ycocg = linearToYCoCg(demod);
+    imageStore(gDiffRadianceHitDist, pixel, vec4(ycocg, normHitT));
+    imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
+}
+
+// Pack specular lobe NRD output: demodulate, clamp fireflies, normalize hit dist,
+// convert to YCoCg, store to gSpecRadianceHitDist. Zeros diffuse.
+void writeNRDSpecular(ivec2 pixel, vec3 radiance, float f0, float hitT, float viewZ, float roughness)
+{
+    vec3 demod = clamp(radiance / vec3(max(f0, 0.01)), vec3(0.0), vec3(NRD_FIREFLY_CLAMP));
+    float normHitT = nrdGetNormHitDist(hitT, viewZ, NRD_HIT_DIST_PARAMS, roughness);
+    vec3 ycocg = linearToYCoCg(demod);
+    imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
+    imageStore(gSpecRadianceHitDist, pixel, vec4(ycocg, normHitT));
+}

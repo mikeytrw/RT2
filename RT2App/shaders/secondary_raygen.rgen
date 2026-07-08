@@ -39,8 +39,7 @@ void main()
     bool isMiss = (matIdxPacked == 0u);  // 0 = miss/sky sentinel
 
     // Initialize RNG from pixel coords + frame index
-    uint rngState = pixel.x * 1973u + pixel.y * 9277u + uint(camera.position.w) * 26699u;
-    pcg(rngState); // warm up
+    uint rngState = initRNG(pixel, camera.position.w);
 
     // ---- Handle primary miss (sky) ----
     if (isMiss)
@@ -66,27 +65,11 @@ void main()
 
         if (nrdMode)
         {
-            // Write sky defaults (NRD skips viewZ >= denoisingRange)
-            vec3 skyOct = nrdEncodeNormalRoughness(vec3(0.0, 0.0, 1.0), 1.0);
-            imageStore(gNormalRoughness, pixel, vec4(skyOct, 0.0));
-            imageStore(gViewZ, pixel, vec4(1e6, 0.0, 0.0, 0.0));
-            imageStore(gAlbedoF0, pixel, vec4(1.0, 1.0, 1.0, 1.0));
-            imageStore(gDirectEmission, pixel, vec4(skyRadiance, 0.0));
-            imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
-            imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
-            imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
-            imageStore(outputImage, pixel, vec4(skyRadiance, 1.0));
+            writeNRDSkyDefaults(pixel, skyRadiance);
         }
         else
         {
-            // Temporal accumulation
-            float frameIndex = camera.position.w;
-            vec3 color = skyRadiance;
-            if (frameIndex > 1.0)
-            {
-                vec3 prevColor = imageLoad(outputImage, pixel).xyz;
-                color = (prevColor * (frameIndex - 1.0) + color) / frameIndex;
-            }
+            vec3 color = temporalAccumulate(pixel, skyRadiance, camera.position.w);
             imageStore(outputImage, pixel, vec4(color, 1.0));
         }
         return;
@@ -144,13 +127,7 @@ void main()
         }
         else
         {
-            float frameIndex = camera.position.w;
-            vec3 color = directEmission;
-            if (frameIndex > 1.0)
-            {
-                vec3 prevColor = imageLoad(outputImage, pixel).xyz;
-                color = (prevColor * (frameIndex - 1.0) + color) / frameIndex;
-            }
+            vec3 color = temporalAccumulate(pixel, directEmission, camera.position.w);
             imageStore(outputImage, pixel, vec4(color, 1.0));
         }
         return;
@@ -247,46 +224,16 @@ void main()
     {
         // Route radiance based on lobe type
         if (scatter.lobeType < 0.5)
-        {
-            // Diffuse lobe
-            vec3 demodDiff = totalRad / max(diffFactor, vec3(0.01));
-            const float NRD_CLAMP = 100.0;
-            demodDiff = clamp(demodDiff, vec3(0.0), vec3(NRD_CLAMP));
-            vec3 hitDistParams = vec3(3.0, 0.1, 20.0);
-            float normHitT = nrdGetNormHitDist(secondaryHitT, viewZ, hitDistParams, 1.0);
-            vec3 diffYCoCg = linearToYCoCg(demodDiff);
-            imageStore(gDiffRadianceHitDist, pixel, vec4(diffYCoCg, normHitT));
-            imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
-        }
+            writeNRDDiffuse(pixel, totalRad, diffFactor, secondaryHitT, viewZ);
         else
-        {
-            // Specular lobe
-            float specFactor = max(f0Scalar, 0.01);
-            vec3 demodSpec = totalRad / vec3(specFactor);
-            const float NRD_CLAMP = 100.0;
-            demodSpec = clamp(demodSpec, vec3(0.0), vec3(NRD_CLAMP));
-            vec3 hitDistParams = vec3(3.0, 0.1, 20.0);
-            float normHitT = nrdGetNormHitDist(secondaryHitT, viewZ, hitDistParams, roughness);
-            vec3 specYCoCg = linearToYCoCg(demodSpec);
-            imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
-            imageStore(gSpecRadianceHitDist, pixel, vec4(specYCoCg, normHitT));
-        }
+            writeNRDSpecular(pixel, totalRad, f0Scalar, secondaryHitT, viewZ, roughness);
 
-        // Motion vectors already written by raster pass (gMotion)
-        // Direct emission already written by raster pass (gDirectEmission = 0 for non-emissive)
         imageStore(gDirectEmission, pixel, vec4(0.0));
         imageStore(outputImage, pixel, vec4(totalRad, 1.0));
     }
     else
     {
-        // Non-NRD: temporal accumulation
-        float frameIndex = camera.position.w;
-        vec3 color = totalRad;
-        if (frameIndex > 1.0)
-        {
-            vec3 prevColor = imageLoad(outputImage, pixel).xyz;
-            color = (prevColor * (frameIndex - 1.0) + color) / frameIndex;
-        }
+        vec3 color = temporalAccumulate(pixel, totalRad, camera.position.w);
         imageStore(outputImage, pixel, vec4(color, 1.0));
     }
 }
