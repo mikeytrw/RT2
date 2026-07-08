@@ -306,12 +306,27 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 	if (ImGui::Combo("Material", &current, [](void* data, int idx, const char** out_text) -> bool {
 		auto* mats = static_cast<const std::vector<SceneMaterial>*>(data);
 		if (idx < 0 || idx >= (int)mats->size()) return false;
-		*out_text = "Material"; // Could show a name if we had one
+		static char buf[64];
+		snprintf(buf, sizeof(buf), "Material %d", idx);
+		*out_text = buf;
 		return true;
 	}, (void*)&materials, (int)materials.size()))
 	{
 		m_SceneMgr->SetMaterial(entity, current);
 		NotifySceneChanged();
+	}
+
+	ImGui::SameLine();
+	if (ImGui::Button("Duplicate"))
+	{
+		// Clone current material so this entity gets its own independent copy
+		if (current >= 0 && current < (int)materials.size())
+		{
+			SceneMaterial copy = m_SceneMgr->GetMaterial(current);
+			int newIdx = m_SceneMgr->AddMaterial(copy);
+			m_SceneMgr->SetMaterial(entity, newIdx);
+			NotifySceneChanged();
+		}
 	}
 
 	// Inline material editor (edits the material that this entity references)

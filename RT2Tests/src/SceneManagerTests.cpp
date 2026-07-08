@@ -2,6 +2,7 @@
 
 #include "SceneManager.h"
 #include "MeshRegistry.h"
+#include "PrimitiveGeometry.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -130,6 +131,61 @@ TEST_CASE("SceneManager: SetMaterial updates MeshRef")
 	auto& reg = mgr.GetECS().registry;
 	auto& ref = reg.get<MeshRef>(e.id);
 	CHECK(ref.materialIndex == 2);
+}
+
+TEST_CASE("SceneManager: Emissive sphere added to scene only creates lights for sphere")
+{
+	SceneManager mgr;
+	std::string scenePath = "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb";
+	if (!mgr.LoadScene(scenePath))
+		return;
+
+	// Sync to GPU first to get the baseline light count from the scene
+	mgr.SyncToGPU();
+	int initialLights = (int)mgr.GetCurrentGpuScene().lights.size();
+	printf("[Test] Initial lights: %d (from lamp shade)\n", initialLights);
+	CHECK(initialLights > 0);
+
+	// Add a sphere with its own material (index 4)
+	int matIdx = mgr.AddMaterial(SceneMaterial{});
+	printf("[Test] New material index: %d\n", matIdx);
+	CHECK(matIdx == 4);
+
+	MeshData sphereData = PrimitiveGeometry::CreateSphere(0.2f);
+	auto e = mgr.AddObjectWithGeometry("Sphere", std::move(sphereData),
+	                                   {0, 0.5f, 0}, {0, 0, 0}, 1.0f, matIdx);
+
+	// Make it emissive
+	auto& mat = mgr.GetMaterial(matIdx);
+	mat.emissiveColor = {1, 1, 1};
+	mat.emissiveIntensity = 10.0f;
+
+	// Sync to GPU (no callback — just build the data)
+	mgr.SyncToGPUKeepTextures();
+
+	int newLights = (int)mgr.GetCurrentGpuScene().lights.size();
+	int sphereTris = 24 * 16 * 2; // segments=24, rings=16, 2 tris per quad
+	printf("[Test] After emissive: %d lights (expected %d + %d = %d)\n",
+	       newLights, initialLights, sphereTris, initialLights + sphereTris);
+
+	// The sphere should add exactly its triangle count to the light list.
+	// If it added MORE, something is sharing the material.
+	CHECK(newLights == initialLights + sphereTris);
+
+	// Verify the sphere's instance has the right world matrix
+	auto& instances = mgr.GetCurrentGpuScene().instances;
+	bool foundSphere = false;
+	for (int i = 0; i < (int)instances.size(); i++)
+	{
+		if (instances[i].materialIndex == (uint32_t)matIdx)
+		{
+			glm::vec3 pos = glm::vec3(instances[i].worldMatrix[3]);
+			printf("[Test] Sphere instance at (%.1f, %.1f, %.1f)\n", pos.x, pos.y, pos.z);
+			CHECK(pos.y == doctest::Approx(0.5f).epsilon(0.001));
+			foundSphere = true;
+		}
+	}
+	CHECK(foundSphere);
 }
 
 TEST_CASE("SceneManager: SetEntityName updates NameComponent")
