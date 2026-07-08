@@ -39,7 +39,7 @@ public:
 	void UpdateSceneInstances(const GPUSceneData& sceneData);
 
 	VkDescriptorSet GetOutputDescriptorSet() const { return m_ImGuiDescriptorSet; }
-	bool HasOutput() const { return m_OutputImage != VK_NULL_HANDLE; }
+	bool HasOutput() const { return m_OutputImage.IsValid(); }
 	uint32_t GetWidth() const { return m_Width; }
 	uint32_t GetHeight() const { return m_Height; }
 
@@ -99,9 +99,7 @@ private:
 	uint32_t m_Width = 0;
 	uint32_t m_Height = 0;
 
-	VkImage m_OutputImage = VK_NULL_HANDLE;
-	VkDeviceMemory m_OutputMemory = VK_NULL_HANDLE;
-	VkImageView m_OutputImageView = VK_NULL_HANDLE;
+	GpuImage m_OutputImage; // RGBA32F beauty output
 	VkSampler m_Sampler = VK_NULL_HANDLE;
 	VkDescriptorSet m_ImGuiDescriptorSet = VK_NULL_HANDLE;
 
@@ -159,44 +157,21 @@ private:
 	VkImageLayout m_OutputImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 	// NRD G-buffer images (set 1, bindings 0-4)
-	VkImage m_GNormalRoughness = VK_NULL_HANDLE;
-	VkDeviceMemory m_GNormalRoughnessMem = VK_NULL_HANDLE;
-	VkImageView m_GNormalRoughnessView = VK_NULL_HANDLE;
-
-	VkImage m_GViewZ = VK_NULL_HANDLE;
-	VkDeviceMemory m_GViewZMem = VK_NULL_HANDLE;
-	VkImageView m_GViewZView = VK_NULL_HANDLE;
-
-	VkImage m_GMotion = VK_NULL_HANDLE;
-	VkDeviceMemory m_GMotionMem = VK_NULL_HANDLE;
-	VkImageView m_GMotionView = VK_NULL_HANDLE;
-
-	VkImage m_GDiffRadiance = VK_NULL_HANDLE;
-	VkDeviceMemory m_GDiffRadianceMem = VK_NULL_HANDLE;
-	VkImageView m_GDiffRadianceView = VK_NULL_HANDLE;
-
-	VkImage m_GSpecRadiance = VK_NULL_HANDLE;
-	VkDeviceMemory m_GSpecRadianceMem = VK_NULL_HANDLE;
-	VkImageView m_GSpecRadianceView = VK_NULL_HANDLE;
+	GpuImage m_GNormalRoughness;
+	GpuImage m_GViewZ;
+	GpuImage m_GMotion;
+	GpuImage m_GDiffRadiance;
+	GpuImage m_GSpecRadiance;
 
 	// Albedo + F0 for compose pass remodulation (set 1 binding 6, RT writes, compose reads)
-	VkImage m_GAlbedoF0 = VK_NULL_HANDLE;
-	VkDeviceMemory m_GAlbedoF0Mem = VK_NULL_HANDLE;
-	VkImageView m_GAlbedoF0View = VK_NULL_HANDLE;
+	GpuImage m_GAlbedoF0;
 
 	// Direct emission (emissive surfaces + sky) — bypasses NRD, added in compose
-	VkImage m_GDirectEmission = VK_NULL_HANDLE;
-	VkDeviceMemory m_GDirectEmissionMem = VK_NULL_HANDLE;
-	VkImageView m_GDirectEmissionView = VK_NULL_HANDLE;
+	GpuImage m_GDirectEmission;
 
 	// NRD output images (denoised)
-	VkImage m_NRDDiffOut = VK_NULL_HANDLE;
-	VkDeviceMemory m_NRDDiffOutMem = VK_NULL_HANDLE;
-	VkImageView m_NRDDiffOutView = VK_NULL_HANDLE;
-
-	VkImage m_NRDSpecOut = VK_NULL_HANDLE;
-	VkDeviceMemory m_NRDSpecOutMem = VK_NULL_HANDLE;
-	VkImageView m_NRDSpecOutView = VK_NULL_HANDLE;
+	GpuImage m_NRDDiffOut;
+	GpuImage m_NRDSpecOut;
 
 	// NRD UBO (set 1, binding 5)
 	VkBuffer m_NRDUBO = VK_NULL_HANDLE;
@@ -214,22 +189,12 @@ private:
 	// Raster pass (primary visibility G-buffer)
 	RasterPass m_RasterPass;
 	GBufferDebugPass m_GBufferDebugPass;
-	VkImage m_DepthImage = VK_NULL_HANDLE;
-	VkDeviceMemory m_DepthImageMem = VK_NULL_HANDLE;
-	VkImageView m_DepthImageView = VK_NULL_HANDLE;
+	GpuImage m_DepthImage;
 
 	// New G-buffer images for raster→RT handoff
-	VkImage m_GPrimHit = VK_NULL_HANDLE;
-	VkDeviceMemory m_GPrimHitMem = VK_NULL_HANDLE;
-	VkImageView m_GPrimHitView = VK_NULL_HANDLE;
-
-	VkImage m_GPrimGeoNormal = VK_NULL_HANDLE;
-	VkDeviceMemory m_GPrimGeoNormalMem = VK_NULL_HANDLE;
-	VkImageView m_GPrimGeoNormalView = VK_NULL_HANDLE;
-
-	VkImage m_GPrimUV = VK_NULL_HANDLE;
-	VkDeviceMemory m_GPrimUVMem = VK_NULL_HANDLE;
-	VkImageView m_GPrimUVView = VK_NULL_HANDLE;
+	GpuImage m_GPrimHit;
+	GpuImage m_GPrimGeoNormal;
+	GpuImage m_GPrimUV;
 
 	// NRD integration wrapper
 	NRDWrapper m_NRD;
