@@ -553,25 +553,28 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 		writeCount = 14;
 	}
 
-	writes[14].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[14].dstSet = m_DescriptorSet;
-	writes[14].dstBinding = SI_BINDING_RESERVOIR;
-	writes[14].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[14].descriptorCount = 1;
-	writes[14].pBufferInfo = &reservoirBufferInfo;
+	// Reservoir descriptors: append at writeCount (handles the no-textures case
+	// where writeCount=13, avoiding a gap of uninitialized writes).
+	uint32_t risIdx = writeCount;
+	writes[risIdx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[risIdx].dstSet = m_DescriptorSet;
+	writes[risIdx].dstBinding = SI_BINDING_RESERVOIR;
+	writes[risIdx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[risIdx].descriptorCount = 1;
+	writes[risIdx].pBufferInfo = &reservoirBufferInfo;
 
-	writes[15].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[15].dstSet = m_DescriptorSet;
-	writes[15].dstBinding = SI_BINDING_RESERVOIR_PREV;
-	writes[15].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[15].descriptorCount = 1;
-	writes[15].pBufferInfo = &reservoirPrevBufferInfo;
+	writes[risIdx + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[risIdx + 1].dstSet = m_DescriptorSet;
+	writes[risIdx + 1].dstBinding = SI_BINDING_RESERVOIR_PREV;
+	writes[risIdx + 1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[risIdx + 1].descriptorCount = 1;
+	writes[risIdx + 1].pBufferInfo = &reservoirPrevBufferInfo;
 
 	// Only write reservoir descriptors if the buffers exist (skip on first
 	// SetScene before OnResize allocates reservoirs — VK_NULL_HANDLE buffer
 	// in a descriptor write is UB / crashes validation).
 	if (reservoirBuffer != VK_NULL_HANDLE)
-		writeCount += 2;
+		writeCount = risIdx + 2;
 
 	vkUpdateDescriptorSets(dev.device, writeCount, writes, 0, nullptr);
 }
