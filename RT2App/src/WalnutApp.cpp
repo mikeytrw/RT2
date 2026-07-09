@@ -52,10 +52,22 @@ public:
 				if (m_UseGPU && m_RendererGPU.IsAvailable())
 				{
 					m_SceneMgr.CompactMeshRegistry();
-					m_SceneMgr.SetSyncKeepTexturesCallback([this](const GPUSceneData& gpuData) {
-						m_RendererGPU.SetSceneKeepTextures(gpuData);
-					});
-					m_SceneMgr.SyncToGPUKeepTextures();
+					if (m_PendingFullSync)
+					{
+						// Import brought new textures — need full re-upload
+						m_SceneMgr.SetSyncCallback([this](const GPUSceneData& gpuData) {
+							m_RendererGPU.SetScene(gpuData);
+						});
+						m_SceneMgr.SyncToGPU();
+						m_PendingFullSync = false;
+					}
+					else
+					{
+						m_SceneMgr.SetSyncKeepTexturesCallback([this](const GPUSceneData& gpuData) {
+							m_RendererGPU.SetSceneKeepTextures(gpuData);
+						});
+						m_SceneMgr.SyncToGPUKeepTextures();
+					}
 				}
 				m_RendererGPU.ResetAccumulation();
 			});
@@ -76,14 +88,12 @@ public:
 				auto id = m_SceneMgr.ImportGltf(path);
 				if (id.IsValid())
 				{
-					if (m_UseGPU && m_RendererGPU.IsAvailable())
-					{
-						m_SceneMgr.SetSyncCallback([this](const GPUSceneData& gpuData) {
-							m_RendererGPU.SetScene(gpuData);
-						});
-						m_SceneMgr.SyncToGPU();
-					}
-					m_RendererGPU.ResetAccumulation();
+					// Don't sync here — NotifySceneChanged (called by the Add
+					// popup after this callback) will trigger SyncToGPUKeepTextures.
+					// But imported glTFs bring new textures, so we need a FULL
+					// sync (SetScene with texture upload), not keep-textures.
+					// Flag the scene changed callback to use full sync this once.
+					m_PendingFullSync = true;
 				}
 				return id;
 			});
@@ -940,6 +950,7 @@ private:
 	float m_SmoothedFrameTime = 0.0f;
 	float m_SmoothedFPS = 0.0f;
 	bool m_RenderOnUpdate;
+	bool m_PendingFullSync = false;  // true when next SceneChanged should use SetScene (full) not KeepTextures
 	Camera m_Cam;
 
 	// Mesh UI state (OBJ path — kept in RT2Layer for UI binding)
