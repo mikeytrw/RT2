@@ -311,7 +311,8 @@ public:
 	const char* gbufferModes[] = {
 		"Off", "Shading Normal", "Roughness", "ViewZ (depth)",
 		"Motion Vectors", "Albedo", "F0", "Direct Emission",
-		"World Position", "Geo Normal", "UV", "Material Index"
+		"World Position", "Geo Normal", "UV", "Material Index",
+		"RIS Reservoir"
 	};
 	int debugCombo = m_Settings.gbufferDebugMode + 1; // -1→0 (Off), 0→1, etc.
 	if (ImGui::Combo("G-buffer View", &debugCombo, gbufferModes, IM_ARRAYSIZE(gbufferModes)))

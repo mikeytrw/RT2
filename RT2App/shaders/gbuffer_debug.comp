@@ -1,5 +1,8 @@
 #version 460
 #extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+#include "shader_interface.h"
 
 layout(local_size_x = 16, local_size_y = 16) in;
 
@@ -14,6 +17,23 @@ layout(set = 1, binding = 7, rgba16f) uniform readonly image2D gDirectEmission;
 layout(set = 1, binding = 8, rgba32f) uniform readonly image2D gPrimHit;
 layout(set = 1, binding = 9, rgba8)  uniform readonly image2D gPrimGeoNormal;
 layout(set = 1, binding = 10, rg16f) uniform readonly image2D gPrimUV;
+
+// Reservoir buffer (set 0, binding 14) — shared with PathTracePass set 0 layout
+struct Reservoir
+{
+    uint  lightIdx;
+    float b1;
+    float b2;
+    float weightSum;
+    float targetPdf;
+    uint  M;
+    uint  pad0;
+    uint  pad1;
+};
+layout(set = 0, binding = SI_BINDING_RESERVOIR, std430) readonly buffer ReservoirBuffer
+{
+    Reservoir reservoirs[];
+};
 
 layout(push_constant) uniform Push {
     uint mode;
@@ -103,6 +123,23 @@ void main()
         case 10: { // material index (from gPrimHit.w as floatBitsToInt)
             float matIdx = float(int(imageLoad(gPrimHit, pixel).w));
             color = vec3(fract(matIdx * 0.1), fract(matIdx * 0.3), fract(matIdx * 0.7));
+            break;
+        }
+        case 11: { // RIS reservoir visualization
+            // Red = has valid reservoir (M > 0), Green = targetPdf intensity,
+            // Blue = weightSum intensity. Sky/emissive = black.
+            uint w = uint(size.x);
+            Reservoir res = reservoirs[pixel.y * w + pixel.x];
+            if (res.M > 0u && res.targetPdf > 0.0)
+            {
+                color.r = 1.0;
+                color.g = clamp(log(res.targetPdf + 1.0) * 0.1, 0.0, 1.0);
+                color.b = clamp(log(res.weightSum + 1.0) * 0.02, 0.0, 1.0);
+            }
+            else
+            {
+                color = vec3(0.0);
+            }
             break;
         }
     }
