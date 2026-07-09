@@ -182,6 +182,17 @@ void SceneManager::ClearEnvMap()
 	m_EnvMapHeight = 0;
 }
 
+SceneManager::EntityId SceneManager::ImportGltf(const std::string& filepath)
+{
+	entt::entity root = SceneLoader::ImportIntoECS(m_EcsScene, filepath);
+	if (root == entt::null)
+		return EntityId{};
+
+	m_EcsPopulated = true;
+	m_EntityCacheDirty = true;
+	return EntityId{ root };
+}
+
 // ============================================================================
 // GPU sync — build GPUSceneData from current scene state and push to renderer
 // ============================================================================

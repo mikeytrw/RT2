@@ -72,6 +72,21 @@ public:
 			m_EditorUI.SetOnLoadMeshFile([this](const std::string& path) -> SceneManager::EntityId {
 				return LoadMeshFileAsEntity(path);
 			});
+			m_EditorUI.SetOnImportGltf([this](const std::string& path) -> SceneManager::EntityId {
+				auto id = m_SceneMgr.ImportGltf(path);
+				if (id.IsValid())
+				{
+					if (m_UseGPU && m_RendererGPU.IsAvailable())
+					{
+						m_SceneMgr.SetSyncCallback([this](const GPUSceneData& gpuData) {
+							m_RendererGPU.SetScene(gpuData);
+						});
+						m_SceneMgr.SyncToGPU();
+					}
+					m_RendererGPU.ResetAccumulation();
+				}
+				return id;
+			});
 			m_EditorUI.SetOnDumpGPUTransforms([this]() {
 				if (m_UseGPU && m_RendererGPU.IsAvailable())
 					m_RendererGPU.DumpInstanceTransforms();

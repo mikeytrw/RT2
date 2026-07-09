@@ -83,6 +83,17 @@ void SceneEditorUI::RenderOutliner()
 			NotifySceneChanged();
 		}
 		ImGui::Separator();
+		if (ImGui::MenuItem("Import glTF..."))
+		{
+			std::string path = FileDialog::OpenFile(
+				"glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0");
+			if (!path.empty() && m_OnImportGltf)
+			{
+				auto id = m_OnImportGltf(path);
+				m_SelectedEntity = id;
+				NotifySceneChanged();
+			}
+		}
 		if (ImGui::MenuItem("Load Mesh File..."))
 		{
 			std::string path = FileDialog::OpenFile(

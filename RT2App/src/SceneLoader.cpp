@@ -1172,7 +1172,6 @@ bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
         return false;
 
     ecsScene.Clear();
-
     // --- Textures (same as Load) ---
     for (const auto& gtext : model.textures)
     {
@@ -1726,4 +1725,478 @@ bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
            (int)ecsScene.textures.size());
 
     return true;
+}
+
+entt::entity SceneLoader::ImportIntoECS(ECSScene& ecsScene, const std::string& filepath)
+{
+    if (filepath.empty() || !fs::exists(filepath))
+        return entt::null;
+
+    tinygltf::Model model;
+    tinygltf::TinyGLTF loader;
+    loader.SetImageLoader(DecodeImageData, nullptr);
+    std::string err, warn;
+
+    fs::path fpath(filepath);
+    std::string ext = fpath.extension().string();
+    bool isGLB = (ext == ".glb" || ext == ".GLB");
+
+    bool ret;
+    if (isGLB)
+        ret = loader.LoadBinaryFromFile(&model, &err, &warn, filepath);
+    else
+        ret = loader.LoadASCIIFromFile(&model, &err, &warn, filepath);
+
+    if (!err.empty())
+        printf("[SceneLoader] Import Error: %s\n", err.c_str());
+    if (!warn.empty())
+        printf("[SceneLoader] Import Warning: %s\n", warn.c_str());
+
+    if (!ret)
+        return entt::null;
+
+    // Record base offsets for merging into existing scene
+    size_t texBase = ecsScene.textures.size();
+    size_t matBase = ecsScene.materials.size();
+
+    // --- Textures (append to existing) ---
+    for (const auto& gtext : model.textures)
+    {
+        SceneTexture tex;
+        if (gtext.source >= 0 && gtext.source < (int)model.images.size())
+        {
+            const auto& img = model.images[gtext.source];
+            tex.filepath = img.uri;
+            if (!img.image.empty() && img.width > 0 && img.height > 0)
+            {
+                tex.width = img.width;
+                tex.height = img.height;
+                tex.channels = 4;
+                tex.pixels.assign(img.image.begin(), img.image.end());
+            }
+        }
+        ecsScene.textures.push_back(tex);
+    }
+
+    // --- Materials (append with index offset) ---
+    for (const auto& gmat : model.materials)
+    {
+        SceneMaterial mat;
+
+        if (gmat.pbrMetallicRoughness.baseColorFactor.size() >= 4)
+        {
+            mat.baseColor = {
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[0],
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[1],
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[2]
+            };
+            mat.baseAlpha = (float)gmat.pbrMetallicRoughness.baseColorFactor[3];
+        }
+        else if (gmat.pbrMetallicRoughness.baseColorFactor.size() >= 3)
+        {
+            mat.baseColor = {
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[0],
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[1],
+                (float)gmat.pbrMetallicRoughness.baseColorFactor[2]
+            };
+        }
+
+        mat.metallic = (float)gmat.pbrMetallicRoughness.metallicFactor;
+        mat.roughness = (float)gmat.pbrMetallicRoughness.roughnessFactor;
+
+        if (gmat.pbrMetallicRoughness.baseColorTexture.index >= 0)
+            mat.baseColorTextureIndex = gmat.pbrMetallicRoughness.baseColorTexture.index + (int)texBase;
+        if (gmat.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0)
+            mat.metallicRoughnessTextureIndex = gmat.pbrMetallicRoughness.metallicRoughnessTexture.index + (int)texBase;
+        if (gmat.normalTexture.index >= 0)
+            mat.normalTextureIndex = gmat.normalTexture.index + (int)texBase;
+        if (gmat.emissiveTexture.index >= 0)
+            mat.emissiveTextureIndex = gmat.emissiveTexture.index + (int)texBase;
+
+        if (gmat.emissiveFactor.size() >= 3)
+        {
+            float r = (float)gmat.emissiveFactor[0];
+            float g = (float)gmat.emissiveFactor[1];
+            float b = (float)gmat.emissiveFactor[2];
+            float maxComp = std::max({r, g, b});
+            if (maxComp > 0.0f)
+            {
+                mat.emissiveColor = {r / maxComp, g / maxComp, b / maxComp};
+                mat.emissiveIntensity = maxComp;
+            }
+        }
+
+        auto emissiveStrengthIt = gmat.extensions.find("KHR_materials_emissive_strength");
+        if (emissiveStrengthIt != gmat.extensions.end() && emissiveStrengthIt->second.IsObject())
+        {
+            const tinygltf::Value& strengthExt = emissiveStrengthIt->second;
+            if (strengthExt.Has("emissiveStrength"))
+                mat.emissiveIntensity *= (float)strengthExt.Get("emissiveStrength").GetNumberAsDouble();
+        }
+
+        mat.alphaMode = gmat.alphaMode;
+        mat.alphaCutoff = (float)gmat.alphaCutoff;
+
+        auto transmissionIt = gmat.extensions.find("KHR_materials_transmission");
+        if (transmissionIt != gmat.extensions.end() && transmissionIt->second.IsObject())
+        {
+            const tinygltf::Value& transExt = transmissionIt->second;
+            if (transExt.Has("transmissionFactor"))
+            {
+                float transFactor = (float)transExt.Get("transmissionFactor").GetNumberAsDouble();
+                if (transFactor > 0.0f)
+                {
+                    mat.transmissionFactor = transFactor;
+                    if (mat.transmissionFactor > 1.0f) mat.transmissionFactor = 1.0f;
+                }
+            }
+        }
+
+        if (gmat.extras.Has("ior"))
+            mat.ior = (float)gmat.extras.Get("ior").GetNumberAsDouble();
+
+        ecsScene.materials.push_back(mat);
+    }
+
+    // Mark sRGB textures for imported materials
+    for (size_t i = matBase; i < ecsScene.materials.size(); i++)
+    {
+        const auto& mat = ecsScene.materials[i];
+        if (mat.baseColorTextureIndex >= 0 && mat.baseColorTextureIndex < (int)ecsScene.textures.size())
+            ecsScene.textures[mat.baseColorTextureIndex].isSRGB = true;
+        if (mat.emissiveTextureIndex >= 0 && mat.emissiveTextureIndex < (int)ecsScene.textures.size())
+            ecsScene.textures[mat.emissiveTextureIndex].isSRGB = true;
+    }
+
+    // --- Helpers (same as LoadIntoECS) ---
+    auto extractLocalTRS = [](const tinygltf::Node& node, glm::vec3& outT, glm::quat& outR, glm::vec3& outS) {
+        outT = {0.0f, 0.0f, 0.0f};
+        outR = {1.0f, 0.0f, 0.0f, 0.0f};
+        outS = {1.0f, 1.0f, 1.0f};
+
+        if (node.matrix.size() == 16)
+        {
+            glm::mat4 m = glm::make_mat4(node.matrix.data());
+            outT = glm::vec3(m[3]);
+            float scaleX = glm::length(glm::vec3(m[0]));
+            float scaleY = glm::length(glm::vec3(m[1]));
+            float scaleZ = glm::length(glm::vec3(m[2]));
+            outS = {scaleX, scaleY, scaleZ};
+            glm::mat3 rotMat(
+                glm::vec3(m[0]) / scaleX,
+                glm::vec3(m[1]) / scaleY,
+                glm::vec3(m[2]) / scaleZ
+            );
+            outR = glm::quat_cast(rotMat);
+        }
+        else
+        {
+            if (node.translation.size() >= 3)
+                outT = {(float)node.translation[0], (float)node.translation[1], (float)node.translation[2]};
+            if (node.rotation.size() >= 4)
+            {
+                outR = glm::quat((float)node.rotation[3], (float)node.rotation[0],
+                                 (float)node.rotation[1], (float)node.rotation[2]);
+            }
+            if (node.scale.size() >= 3)
+                outS = {(float)node.scale[0], (float)node.scale[1], (float)node.scale[2]};
+        }
+    };
+
+    auto readVec3Accessor = [](const tinygltf::Model& model, int accessorIdx) -> std::vector<glm::vec3> {
+        std::vector<glm::vec3> out;
+        if (accessorIdx < 0 || accessorIdx >= (int)model.accessors.size())
+            return out;
+        const tinygltf::Accessor& acc = model.accessors[accessorIdx];
+        if (acc.bufferView < 0 || acc.bufferView >= (int)model.bufferViews.size())
+            return out;
+        const tinygltf::BufferView& bv = model.bufferViews[acc.bufferView];
+        if (bv.buffer < 0 || bv.buffer >= (int)model.buffers.size())
+            return out;
+        const tinygltf::Buffer& buf = model.buffers[bv.buffer];
+        int stride = acc.ByteStride(bv);
+        if (stride < 0) return out;
+        const unsigned char* data = buf.data.data() + bv.byteOffset + acc.byteOffset;
+        out.resize(acc.count);
+        for (size_t i = 0; i < acc.count; i++)
+        {
+            const unsigned char* p = data + i * stride;
+            if (acc.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT)
+                out[i] = {((float*)p)[0], ((float*)p)[1], ((float*)p)[2]};
+        }
+        return out;
+    };
+
+    auto readVec2Accessor = [](const tinygltf::Model& model, int accessorIdx) -> std::vector<glm::vec2> {
+        std::vector<glm::vec2> out;
+        if (accessorIdx < 0 || accessorIdx >= (int)model.accessors.size())
+            return out;
+        const tinygltf::Accessor& acc = model.accessors[accessorIdx];
+        if (acc.bufferView < 0 || acc.bufferView >= (int)model.bufferViews.size())
+            return out;
+        const tinygltf::BufferView& bv = model.bufferViews[acc.bufferView];
+        if (bv.buffer < 0 || bv.buffer >= (int)model.buffers.size())
+            return out;
+        const tinygltf::Buffer& buf = model.buffers[bv.buffer];
+        int stride = acc.ByteStride(bv);
+        if (stride < 0) return out;
+        const unsigned char* data = buf.data.data() + bv.byteOffset + acc.byteOffset;
+        out.resize(acc.count);
+        for (size_t i = 0; i < acc.count; i++)
+        {
+            const unsigned char* p = data + i * stride;
+            if (acc.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT)
+                out[i] = {((float*)p)[0], ((float*)p)[1]};
+            else if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT)
+            {
+                const uint16_t* s = reinterpret_cast<const uint16_t*>(p);
+                out[i] = acc.normalized ? glm::vec2(s[0] / 65535.0f, s[1] / 65535.0f)
+                                        : glm::vec2((float)s[0], (float)s[1]);
+            }
+        }
+        return out;
+    };
+
+    auto readIndices = [](const tinygltf::Model& model, int accessorIdx) -> std::vector<uint32_t> {
+        std::vector<uint32_t> out;
+        if (accessorIdx < 0 || accessorIdx >= (int)model.accessors.size())
+            return out;
+        const tinygltf::Accessor& acc = model.accessors[accessorIdx];
+        if (acc.bufferView < 0 || acc.bufferView >= (int)model.bufferViews.size())
+            return out;
+        const tinygltf::BufferView& bv = model.bufferViews[acc.bufferView];
+        if (bv.buffer < 0 || bv.buffer >= (int)model.buffers.size())
+            return out;
+        const tinygltf::Buffer& buf = model.buffers[bv.buffer];
+        int stride = acc.ByteStride(bv);
+        if (stride < 0) return out;
+        const unsigned char* data = buf.data.data() + bv.byteOffset + acc.byteOffset;
+        out.resize(acc.count);
+        for (size_t i = 0; i < acc.count; i++)
+        {
+            const unsigned char* p = data + i * stride;
+            if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
+                out[i] = *reinterpret_cast<const uint8_t*>(p);
+            else if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT)
+                out[i] = *reinterpret_cast<const uint16_t*>(p);
+            else if (acc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT)
+                out[i] = *reinterpret_cast<const uint32_t*>(p);
+            else
+                out[i] = 0;
+        }
+        return out;
+    };
+
+    auto createMeshData = [&](const tinygltf::Model& model, const tinygltf::Primitive& prim) -> MeshData {
+        MeshData mesh;
+        auto posIt = prim.attributes.find("POSITION");
+        if (posIt == prim.attributes.end())
+            return mesh;
+        std::vector<glm::vec3> positions = readVec3Accessor(model, posIt->second);
+        if (positions.empty())
+            return mesh;
+
+        mesh.vertices.reserve(positions.size() * 3);
+        for (const auto& p : positions)
+        {
+            mesh.vertices.push_back(p.x);
+            mesh.vertices.push_back(p.y);
+            mesh.vertices.push_back(p.z);
+        }
+
+        auto nrmIt = prim.attributes.find("NORMAL");
+        if (nrmIt != prim.attributes.end())
+        {
+            std::vector<glm::vec3> normals = readVec3Accessor(model, nrmIt->second);
+            mesh.normals.reserve(normals.size() * 3);
+            for (const auto& n : normals)
+            {
+                mesh.normals.push_back(n.x);
+                mesh.normals.push_back(n.y);
+                mesh.normals.push_back(n.z);
+            }
+        }
+
+        auto uvIt = prim.attributes.find("TEXCOORD_0");
+        if (uvIt != prim.attributes.end())
+        {
+            std::vector<glm::vec2> uvs = readVec2Accessor(model, uvIt->second);
+            mesh.uvs.reserve(uvs.size() * 2);
+            for (const auto& uv : uvs)
+            {
+                mesh.uvs.push_back(uv.x);
+                mesh.uvs.push_back(uv.y);
+            }
+        }
+
+        if (prim.indices >= 0)
+            mesh.indices = readIndices(model, prim.indices);
+        else
+        {
+            size_t vertCount = positions.size();
+            size_t triCount = vertCount / 3;
+            mesh.indices.resize(triCount * 3);
+            for (size_t i = 0; i < triCount * 3; i++)
+                mesh.indices[i] = static_cast<uint32_t>(i);
+        }
+
+        return mesh;
+    };
+
+    // --- Create wrapper root entity for the imported glTF ---
+    auto& reg = ecsScene.registry;
+    entt::entity wrapperRoot = reg.create();
+    {
+        Transform& tf = reg.emplace<Transform>(wrapperRoot);
+        tf.translation = {0.0f, 0.0f, 0.0f};
+        tf.dirty = true;
+        reg.emplace<NameComponent>(wrapperRoot, fs::path(filepath).stem().string());
+        reg.emplace<VisibleComponent>(wrapperRoot);
+        Hierarchy& rootHier = reg.emplace<Hierarchy>(wrapperRoot);
+        rootHier.parent = entt::null;
+    }
+
+    // --- Node traversal (same as LoadIntoECS but with material offset) ---
+    std::unordered_map<int, std::vector<uint32_t>> meshIndexCache;
+
+    std::function<entt::entity(int, entt::entity)> traverseNodeECS =
+        [&](int nodeIdx, entt::entity parentEntity) -> entt::entity {
+        if (nodeIdx < 0 || nodeIdx >= (int)model.nodes.size())
+            return entt::null;
+
+        const tinygltf::Node& node = model.nodes[nodeIdx];
+
+        entt::entity entity = reg.create();
+
+        Transform& tf = reg.emplace<Transform>(entity);
+        extractLocalTRS(node, tf.translation, tf.rotation, tf.scale);
+        tf.dirty = true;
+
+        if (parentEntity != entt::null)
+        {
+            Hierarchy& hier = reg.emplace<Hierarchy>(entity);
+            hier.parent = parentEntity;
+            auto* parentHier = reg.try_get<Hierarchy>(parentEntity);
+            if (parentHier)
+                parentHier->children.push_back(entity);
+            else
+            {
+                Hierarchy& ph = reg.emplace<Hierarchy>(parentEntity);
+                ph.children.push_back(entity);
+            }
+        }
+
+        if (!node.name.empty())
+        {
+            auto& name = reg.emplace<NameComponent>(entity);
+            name.name = node.name;
+        }
+
+        if (node.mesh >= 0 && node.mesh < (int)model.meshes.size())
+        {
+            const tinygltf::Mesh& gmesh = model.meshes[node.mesh];
+
+            if (!gmesh.primitives.empty())
+            {
+                auto cacheIt = meshIndexCache.find(node.mesh);
+                if (cacheIt == meshIndexCache.end())
+                {
+                    std::vector<uint32_t> meshIndices;
+                    for (const auto& prim : gmesh.primitives)
+                    {
+                        int mode = (prim.mode >= 0) ? prim.mode : 4;
+                        if (mode != 4)
+                        {
+                            meshIndices.push_back(0xFFFFFFFF);
+                            continue;
+                        }
+
+                        MeshData meshData = createMeshData(model, prim);
+                        if (meshData.vertices.empty())
+                        {
+                            meshIndices.push_back(0xFFFFFFFF);
+                            continue;
+                        }
+
+                        uint32_t meshIdx = ecsScene.meshRegistry.AddMesh(std::move(meshData));
+                        meshIndices.push_back(meshIdx);
+                    }
+                    cacheIt = meshIndexCache.emplace(node.mesh, std::move(meshIndices)).first;
+                }
+
+                for (size_t p = 0; p < cacheIt->second.size(); p++)
+                {
+                    uint32_t meshIdx = cacheIt->second[p];
+                    if (meshIdx == 0xFFFFFFFF)
+                        continue;
+
+                    const auto& prim = gmesh.primitives[p];
+                    // Offset material index by matBase to reference imported materials
+                    int matIdx = (prim.material >= 0) ? (prim.material + (int)matBase) : 0;
+
+                    if (p == 0)
+                    {
+                        MeshRef& ref = reg.emplace<MeshRef>(entity);
+                        ref.meshIndex = meshIdx;
+                        ref.materialIndex = matIdx;
+                    }
+                    else
+                    {
+                        entt::entity primEntity = reg.create();
+                        Transform& primTf = reg.emplace<Transform>(primEntity);
+                        primTf.dirty = true;
+
+                        Hierarchy& hier = reg.emplace<Hierarchy>(primEntity);
+                        hier.parent = entity;
+
+                        auto* parentHier = reg.try_get<Hierarchy>(entity);
+                        if (parentHier)
+                            parentHier->children.push_back(primEntity);
+                        else
+                        {
+                            Hierarchy& ph = reg.emplace<Hierarchy>(entity);
+                            ph.children.push_back(primEntity);
+                        }
+
+                        MeshRef& ref = reg.emplace<MeshRef>(primEntity);
+                        ref.meshIndex = meshIdx;
+                        ref.materialIndex = matIdx;
+                    }
+                }
+            }
+        }
+
+        for (int childIdx : node.children)
+            traverseNodeECS(childIdx, entity);
+
+        return entity;
+    };
+
+    // Traverse from glTF scene root nodes, parent them under wrapper root
+    if (model.defaultScene >= 0 && model.defaultScene < (int)model.scenes.size())
+    {
+        const tinygltf::Scene& gltfScene = model.scenes[model.defaultScene];
+        for (int rootIdx : gltfScene.nodes)
+            traverseNodeECS(rootIdx, wrapperRoot);
+    }
+    else if (!model.scenes.empty())
+    {
+        for (int rootIdx : model.scenes[0].nodes)
+            traverseNodeECS(rootIdx, wrapperRoot);
+    }
+    else
+    {
+        for (int i = 0; i < (int)model.nodes.size(); i++)
+            traverseNodeECS(i, wrapperRoot);
+    }
+
+    SceneGraph::SetLocalDirty(reg, wrapperRoot);
+    SceneGraph::UpdateWorldTransforms(reg);
+
+    printf("[SceneLoader] Import: %zu textures, %zu materials, %d meshes\n",
+           ecsScene.textures.size() - texBase,
+           ecsScene.materials.size() - matBase,
+           (int)ecsScene.meshRegistry.GetCount());
+
+    return wrapperRoot;
 }

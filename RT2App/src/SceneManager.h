@@ -54,14 +54,6 @@ public:
 	bool LoadEnvMap(const std::string& filepath);
 	void ClearEnvMap();
 
-	// ---- Full GPU re-upload (rebuilds GPUSceneData from scene state) ----
-	void SyncToGPU();
-
-	// ---- GPU re-upload without texture re-upload ----
-	// Use when only entities/transforms/materials changed (add/delete entity,
-	// material edit) but textures are unchanged. Much cheaper than SyncToGPU.
-	void SyncToGPUKeepTextures();
-
 	// ---- Entity manipulation ----
 	// EntityId is a thin wrapper around entt::entity for type safety.
 	struct EntityId
@@ -69,6 +61,19 @@ public:
 		entt::entity id = entt::null;
 		bool IsValid() const { return id != entt::null; }
 	};
+
+	// Import a glTF file into the EXISTING scene (merges meshes/materials/
+	// textures, creates a wrapper root entity). Does NOT clear the scene.
+	// Returns the wrapper root entity, or invalid EntityId on failure.
+	EntityId ImportGltf(const std::string& filepath);
+
+	// ---- Full GPU re-upload (rebuilds GPUSceneData from scene state) ----
+	void SyncToGPU();
+
+	// ---- GPU re-upload without texture re-upload ----
+	// Use when only entities/transforms/materials changed (add/delete entity,
+	// material edit) but textures are unchanged. Much cheaper than SyncToGPU.
+	void SyncToGPUKeepTextures();
 
 	// Check if an entity is still alive in the registry.
 	bool IsEntityAlive(EntityId entity) const;

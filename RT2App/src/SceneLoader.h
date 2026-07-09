@@ -22,6 +22,12 @@ public:
     // transforms. Meshes are stored in the MeshRegistry (unique geometry),
     // entities get Transform + MeshRef + Hierarchy components.
     static bool LoadIntoECS(ECSScene& ecsScene, const std::string& filepath);
+
+    // Import a glTF into an EXISTING ECSScene without clearing it.
+    // Merges textures, materials (with index offset), and entities (with a
+    // wrapper root entity parented to existing scene). Returns the wrapper
+    // root entity, or entt::null on failure.
+    static entt::entity ImportIntoECS(ECSScene& ecsScene, const std::string& filepath);
 };
 
 #endif // !SCENE_LOADER_H

@@ -50,6 +50,11 @@ public:
 	void SetOnLoadMeshFile(std::function<SceneManager::EntityId(const std::string&)> cb)
 	{ m_OnLoadMeshFile = std::move(cb); }
 
+	// Called when user picks "Import glTF..." — host imports the glTF into
+	// the existing scene (merge, not replace). Returns the wrapper root entity ID.
+	void SetOnImportGltf(std::function<SceneManager::EntityId(const std::string&)> cb)
+	{ m_OnImportGltf = std::move(cb); }
+
 	// Called when user clicks "Dump GPU Transforms" — host should call
 	// RendererGPU::DumpInstanceTransforms().
 	void SetOnDumpGPUTransforms(std::function<void()> cb)
@@ -79,6 +84,7 @@ private:
 	std::function<void()> m_OnSceneChanged;
 	std::function<void()> m_OnTransformChanged;
 	std::function<SceneManager::EntityId(const std::string&)> m_OnLoadMeshFile;
+	std::function<SceneManager::EntityId(const std::string&)> m_OnImportGltf;
 	std::function<void()> m_OnDumpGPUTransforms;
 	std::function<void()> m_OnDumpNEEBuffers;
 
