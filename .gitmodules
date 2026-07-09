@@ -1,6 +1,6 @@
 [submodule "Walnut"]
 	path = Walnut
-	url = https://github.com/TheCherno/Walnut
+	url = https://github.com/mikeytrw/Walnut
 [submodule "RT2App/vendor/entt"]
 	path = RT2App/vendor/entt
 	url = https://github.com/skypjack/entt.git
