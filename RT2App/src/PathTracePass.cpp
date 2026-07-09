@@ -566,7 +566,12 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	writes[15].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[15].descriptorCount = 1;
 	writes[15].pBufferInfo = &reservoirPrevBufferInfo;
-	writeCount += 2;
+
+	// Only write reservoir descriptors if the buffers exist (skip on first
+	// SetScene before OnResize allocates reservoirs — VK_NULL_HANDLE buffer
+	// in a descriptor write is UB / crashes validation).
+	if (reservoirBuffer != VK_NULL_HANDLE)
+		writeCount += 2;
 
 	vkUpdateDescriptorSets(dev.device, writeCount, writes, 0, nullptr);
 }

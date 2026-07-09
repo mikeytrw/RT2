@@ -222,6 +222,16 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 	}
 	if (!m_Scene.GetMaterialBuffer()) { RT_LOG("[UpdateDS] skip: no material buffer"); return; }
 
+	// Ensure reservoir buffers exist before writing them into the descriptor set.
+	// SetScene can be called before OnResize (e.g. glTF import at startup),
+	// in which case the reservoirs aren't allocated yet. Allocate them now
+	// so the descriptor write gets valid handles (avoids VK_NULL_HANDLE crash).
+	if (!m_Reservoirs.IsValid() || !m_Reservoirs.MatchesSize(m_Width, m_Height))
+	{
+		if (m_Width > 0 && m_Height > 0)
+			m_Reservoirs.Create(m_Device, m_Width, m_Height);
+	}
+
 	// Build texture image infos â€” use shared texture sampler for all textures
 	std::vector<VkDescriptorImageInfo> textureImageInfos;
 	for (const auto& gt : m_Scene.GetTextures())
