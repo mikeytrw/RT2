@@ -22,6 +22,7 @@ struct CLIArgs
 	bool validate = false;        // enable Vulkan validation layers
 	bool syncValidate = false;    // enable synchronization validation
 	bool rasterFirst = false;      // raster-first hybrid path
+	bool ris = false;              // enable RIS (Resampled Importance Sampling)
 	int gbufferDebug = -1;        // G-buffer debug view mode (-1 = off)
 
 	bool hasScene() const { return !scenePath.empty(); }
@@ -87,6 +88,10 @@ struct CLIArgs
 		{
 			args.rasterFirst = true;
 		}
+		else if (strcmp(a, "--ris") == 0)
+		{
+			args.ris = true;
+		}
 			else if (strcmp(a, "--headless") == 0)
 			{
 				args.headless = true;
@@ -124,6 +129,7 @@ struct CLIArgs
 				printf("  --bounces <N>        Max bounces override\n");
 				printf("  --nrd                Enable NRD denoiser\n");
 				printf("  --raster-first       Enable raster-first hybrid path\n");
+				printf("  --ris                Enable RIS (requires raster-first)\n");
 		printf("  --gbuffer-debug <N>  G-buffer debug view mode\n");
 		printf("  --headless           Render N frames, save screenshot, exit\n");
 				printf("  --list               Print what would be loaded, then exit\n");

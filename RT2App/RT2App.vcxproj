@@ -101,6 +101,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Debug-windows-x86_
 copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\ris.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Debug-windows-x86_64/RT2App"</Command>
@@ -139,6 +140,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Release-windows-x8
 copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\ris.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Release-windows-x86_64/RT2App"</Command>
@@ -177,6 +179,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Dist-windows-x86_6
 copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\ris.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2App"</Command>
@@ -186,6 +189,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
     <ClInclude Include="shaders\shader_interface.h" />
     <ClInclude Include="src\AABB.h" />
     <ClInclude Include="src\AccelerationStructure.h" />
+    <ClInclude Include="src\AsyncTextureLoader.h" />
     <ClInclude Include="src\BVHNode.h" />
     <ClInclude Include="src\CLIArgs.h" />
     <ClInclude Include="src\Camera.h" />
@@ -200,12 +204,6 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
     <ClInclude Include="src\GBufferDebugPass.h" />
     <ClInclude Include="src\GBufferTarget.h" />
     <ClInclude Include="src\GPUSceneData.h" />
-    <ClInclude Include="src\SceneResources.h" />
-    <ClInclude Include="src\RenderSettings.h" />
-    <ClInclude Include="src\SceneManager.h" />
-    <ClInclude Include="src\SceneEditorUI.h" />
-    <ClInclude Include="src\PrimitiveGeometry.h" />
-    <ClInclude Include="src\AsyncTextureLoader.h" />
     <ClInclude Include="src\GpuDevice.h" />
     <ClInclude Include="src\GpuResources.h" />
     <ClInclude Include="src\Hittable.h" />
@@ -215,14 +213,21 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
     <ClInclude Include="src\MeshRegistry.h" />
     <ClInclude Include="src\NRDIntegration.h" />
     <ClInclude Include="src\PathTracePass.h" />
+    <ClInclude Include="src\PrimitiveGeometry.h" />
+    <ClInclude Include="src\RISPass.h" />
     <ClInclude Include="src\RTLog.h" />
     <ClInclude Include="src\RasterPass.h" />
     <ClInclude Include="src\Ray.h" />
+    <ClInclude Include="src\RenderSettings.h" />
     <ClInclude Include="src\Renderer.h" />
     <ClInclude Include="src\RendererGPU.h" />
+    <ClInclude Include="src\ReservoirResources.h" />
     <ClInclude Include="src\Scene.h" />
+    <ClInclude Include="src\SceneEditorUI.h" />
     <ClInclude Include="src\SceneGraph.h" />
     <ClInclude Include="src\SceneLoader.h" />
+    <ClInclude Include="src\SceneManager.h" />
+    <ClInclude Include="src\SceneResources.h" />
     <ClInclude Include="src\ShaderManager.h" />
     <ClInclude Include="src\Sphere.h" />
     <ClInclude Include="src\StagingArena.h" />
@@ -255,6 +260,11 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\AccelerationStructure.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\AsyncTextureLoader.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -299,31 +309,6 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
-    <ClCompile Include="src\SceneResources.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\AsyncTextureLoader.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\SceneManager.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\SceneEditorUI.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\PrimitiveGeometry.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
     <ClCompile Include="src\GPUSceneData.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -354,6 +339,16 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\PrimitiveGeometry.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\RISPass.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\RasterPass.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -364,12 +359,32 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\ReservoirResources.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\SceneEditorUI.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\SceneGraph.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\SceneLoader.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\SceneManager.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\SceneResources.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -454,6 +469,13 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rgen -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/raygen.rgen -o $(SolutionDir)/RT2App/shaders/raygen.spv</Command>
       <Outputs>shaders/raygen.spv</Outputs>
       <Message>Compiling raygen.rgen</Message>
+      <AdditionalInputs>shaders/shader_interface.h"</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="shaders\ris.comp">
+      <FileType>Document</FileType>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/ris.comp -o $(SolutionDir)/RT2App/shaders/ris.spv</Command>
+      <Outputs>shaders/ris.spv</Outputs>
+      <Message>Compiling ris.comp</Message>
       <AdditionalInputs>shaders/shader_interface.h"</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\secondary_raygen.rgen">

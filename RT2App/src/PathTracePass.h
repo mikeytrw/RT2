@@ -33,6 +33,7 @@ public:
 		VkBuffer instanceTransformPrevBuffer,
 		VkBuffer instanceMaterialIndexBuffer,
 		VkAccelerationStructureKHR tlas,
+		VkBuffer reservoirBuffer, VkBuffer reservoirPrevBuffer,
 		const std::vector<VkDescriptorImageInfo>& textureImageInfos);
 
 	// Record trace into command buffer. Caller handles pre/post barriers.

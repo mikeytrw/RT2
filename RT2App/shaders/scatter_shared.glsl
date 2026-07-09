@@ -10,6 +10,25 @@
 // Shadow ray payload (location 2) — used by sampleNEE / sampleEnvNEE.
 layout(location = 2) rayPayloadEXT float shadowVisible;
 
+// ---- RIS Reservoir (read by shading pass, written by ris.comp) ---------------
+// Matches SIReservoir in shader_interface.h (32 bytes, std430).
+struct Reservoir
+{
+    uint  lightIdx;     // index into lights[] array
+    float b1;           // post-warp barycentric coord 1
+    float b2;           // post-warp barycentric coord 2
+    float weightSum;    // Σ w_i = p_hat(x_i) / p(x_i)
+    float targetPdf;    // p_hat of selected sample
+    uint  M;            // candidates seen
+    uint  pad0;
+    uint  pad1;
+};
+
+layout(set = 0, binding = SI_BINDING_RESERVOIR, std430) readonly buffer ReservoirBuffer
+{
+    Reservoir reservoirs[];
+};
+
 // ---- Scatter result ----------------------------------------------------------
 
 struct ScatterResult
@@ -418,6 +437,132 @@ NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
     result.pdfLightOmega = pdfOmega;
     return result;
 }
+
+// ---- RIS-based NEE (Phase 1 of ReSTIR) ----------------------------------------
+// sampleNEE_RIS: consumes a per-pixel reservoir (written by ris.comp) instead of
+// sampling a single uniform light. The reservoir's selected light + barycentrics
+// are reused; the shading pass traces the single shadow ray and computes MIS.
+//
+// Estimator (AREA MEASURE throughout — see plan):
+//   W = (1 / M) * (weightSum / targetPdf)     // stochastic replacement for 1/pdf
+//   radiance = throughput * brdf * Le * NdotL * (LNdotL / dist²) * W * wLight
+//
+// NOTE: There is NO division by pdfOmega — W replaces 1/pdf. Dividing by
+// pdfOmega would double-divide. The original sampleNEE divides by pdfOmega
+// because it samples uniformly (pdfOmega is the source pdf); here the RIS
+// weight W already accounts for the source distribution.
+//
+// MIS WEIGHTS — UNCHANGED from sampleNEE:
+//   wLight = pdfOmega / (pdfOmega + pdfBsdf)
+// The RIS effective sampling pdf has no closed form, so a "correct" balance
+// heuristic against it is not computable. Keeping MIS weights defined against
+// the ORIGINAL uniform-light pdf (pdfOmega reconstructed from the reservoir
+// sample exactly as in sampleNEE) stays unbiased: MIS weights only need to
+// partition unity per direction (they're part of the integrand), and RIS
+// estimates any integrand correctly as long as p_hat has matching support.
+// Do NOT "fix" the MIS weight for RIS — doing so introduces bias.
+NEEResult sampleNEE_RIS(vec3 wo, vec3 N, vec3 P,
+                        vec3 baseColor, float metallic, float roughness,
+                        float P_s, float P_d,
+                        vec3 throughput, inout uint rngState,
+                        bool hasTransmission, float P_refract, float eta,
+                        uint pixelLinear)
+{
+    NEEResult result;
+    result.radiance = vec3(0.0);
+    result.pdfLightOmega = 0.0;
+
+    if (lightCount == 0u || totalLightArea <= 0.0)
+        return result;
+
+    Reservoir res = reservoirs[pixelLinear];
+
+    // Guard: empty reservoir (all candidates rejected or no lights at RIS time)
+    if (res.M == 0u || res.weightSum <= 0.0 || res.targetPdf <= 0.0)
+        return result;
+
+    TriangleLight light = lights[res.lightIdx];
+
+    uint triIdx = normalOffsets[light.ids.x] + light.ids.y;
+    uint posIdx = triIdx * 3u;
+    mat4 lightWorld = instanceTransforms[light.ids.x];
+    vec3 lp0 = vec3(lightWorld * trianglePositions[posIdx + 0u]);
+    vec3 lp1 = vec3(lightWorld * trianglePositions[posIdx + 1u]);
+    vec3 lp2 = vec3(lightWorld * trianglePositions[posIdx + 2u]);
+
+    // Reconstruct barycentrics from stored post-warp (b1, b2)
+    float b1 = res.b1;
+    float b2 = res.b2;
+    float b0 = 1.0 - b1 - b2;
+    vec3 lightPoint = b0 * lp0 + b1 * lp1 + b2 * lp2;
+
+    vec3 lightN = normalize(cross(lp1 - lp0, lp2 - lp0));
+
+    vec3 toLight = lightPoint - P;
+    float dist = length(toLight);
+    vec3 L = toLight / max(dist, 1e-6);
+
+    float NdotL = dot(N, L);
+    float LNdotL = dot(lightN, -L);
+
+    if (NdotL <= 0.0 || LNdotL <= 0.0)
+        return result;
+
+    vec3 brdf = evalDiffuseBRDF(wo, L, N, baseColor, metallic);
+    if (dot(brdf, brdf) <= 0.0)
+        return result;
+
+    // Shadow ray (same as sampleNEE)
+    shadowVisible = 0.0;
+    traceRayEXT(topLevelAS,
+                gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
+                0xFF, 2, 1, 1,
+                P + N * 0.001, 0.001, L, dist - 0.002, 2);
+
+    if (shadowVisible < 0.5)
+        return result;
+
+    vec3 Le = light.emission_area.xyz;
+    uint emissiveTexIdx = light.ids.w;
+    if (emissiveTexIdx != 0xFFFFFFFFu)
+    {
+        vec2 luv0 = triangleUVs[posIdx + 0u].xy;
+        vec2 luv1 = triangleUVs[posIdx + 1u].xy;
+        vec2 luv2 = triangleUVs[posIdx + 2u].xy;
+        vec2 lightUV = b0 * luv0 + b1 * luv1 + b2 * luv2;
+        Le *= texture(textures[nonuniformEXT(int(emissiveTexIdx))], lightUV).rgb;
+    }
+    Le *= camera.apertureFocal.w;
+
+    // pdfOmega — reconstructed from the reservoir sample (for MIS only, NOT for 1/pdf)
+    float lightArea = light.emission_area.w;
+    float pdfA = (1.0 / float(lightCount)) * (1.0 / lightArea);
+    float pdfOmega = pdfA * (dist * dist) / abs(LNdotL);
+
+    // MIS weight — UNCHANGED, defined against original uniform-light pdf
+    float alpha = roughnessToAlpha(roughness);
+    float pdfBsdf;
+    if (hasTransmission)
+    {
+        pdfBsdf = evalTransmissionBSDFPdf(wo, L, N, P_s, P_refract, P_d, alpha, eta);
+    }
+    else
+    {
+        pdfBsdf = evalBSDFPdf(wo, L, N, P_s, P_d, alpha);
+    }
+    float wLight = pdfOmega / (pdfOmega + pdfBsdf);
+
+    // RIS estimator — AREA MEASURE, NO /pdfOmega (W replaces 1/pdf)
+    float W = (1.0 / float(res.M)) * (res.weightSum / res.targetPdf);
+    vec3 contribution = brdf * Le * NdotL * (LNdotL / (dist * dist));
+    vec3 direct = contribution * W * wLight;
+
+    result.radiance = throughput * direct;
+    result.pdfLightOmega = pdfOmega;
+    return result;
+}
+
+// ---- computeNEE dispatch (shared by closesthit + secondary_raygen) -----------
 // Extracted from closesthit lines 669-793. Handles:
 // - Delta path skip (no NEE for specular/delta)
 // - Transmission material MIS probability recomputation
@@ -438,7 +583,8 @@ NEEDispatchResult computeNEE(
     vec3 baseColor, float metallic, float roughness,
     float ior, float alphaMode,
     vec3 throughput,
-    inout uint rngState)
+    inout uint rngState,
+    bool useRIS, uint pixelLinear)
 {
     NEEDispatchResult result;
     result.radiance = vec3(0.0);
@@ -488,11 +634,20 @@ NEEDispatchResult computeNEE(
         {
             if (randomFloat(rngState) < pTri)
             {
-                NEEResult nee = sampleNEE(wo, n, hitPoint,
-                                          baseColor, metallic, roughness,
-                                          nee_Ps, nee_Pd,
-                                          throughput, rngState,
-                                          isTransmissionMat, nee_P_refract, nee_eta);
+                NEEResult nee;
+                if (useRIS)
+                    nee = sampleNEE_RIS(wo, n, hitPoint,
+                                        baseColor, metallic, roughness,
+                                        nee_Ps, nee_Pd,
+                                        throughput, rngState,
+                                        isTransmissionMat, nee_P_refract, nee_eta,
+                                        pixelLinear);
+                else
+                    nee = sampleNEE(wo, n, hitPoint,
+                                    baseColor, metallic, roughness,
+                                    nee_Ps, nee_Pd,
+                                    throughput, rngState,
+                                    isTransmissionMat, nee_P_refract, nee_eta);
                 result.radiance = nee.radiance / pTri;
             }
             else
@@ -507,11 +662,20 @@ NEEDispatchResult computeNEE(
         }
         else if (hasTriNee)
         {
-            NEEResult nee = sampleNEE(wo, n, hitPoint,
-                                      baseColor, metallic, roughness,
-                                      nee_Ps, nee_Pd,
-                                      throughput, rngState,
-                                      isTransmissionMat, nee_P_refract, nee_eta);
+            NEEResult nee;
+            if (useRIS)
+                nee = sampleNEE_RIS(wo, n, hitPoint,
+                                    baseColor, metallic, roughness,
+                                    nee_Ps, nee_Pd,
+                                    throughput, rngState,
+                                    isTransmissionMat, nee_P_refract, nee_eta,
+                                    pixelLinear);
+            else
+                nee = sampleNEE(wo, n, hitPoint,
+                                baseColor, metallic, roughness,
+                                nee_Ps, nee_Pd,
+                                throughput, rngState,
+                                isTransmissionMat, nee_P_refract, nee_eta);
             result.radiance = nee.radiance;
         }
         else if (hasEnvNee)

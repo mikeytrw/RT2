@@ -283,6 +283,30 @@ public:
 	}
 	ImGui::EndDisabled();
 	ImGui::Separator();
+
+	// RIS (Resampled Importance Sampling) — raster-first only
+	bool risAvailable = m_Settings.rasterFirst;
+	if (!risAvailable && m_Settings.risEnabled)
+	{
+		m_Settings.risEnabled = false;
+		m_RendererGPU.ApplySettings(m_Settings);
+	}
+	ImGui::BeginDisabled(!risAvailable);
+	if (ImGui::Checkbox("RIS (Resampled Importance Sampling)", &m_Settings.risEnabled))
+		m_RendererGPU.ApplySettings(m_Settings);
+	if (m_Settings.risEnabled)
+	{
+		ImGui::Indent();
+		int m = (int)m_Settings.risCandidateCount;
+		if (ImGui::SliderInt("Candidates (M)", &m, 1, 32))
+		{
+			m_Settings.risCandidateCount = (uint32_t)m;
+			m_RendererGPU.ApplySettings(m_Settings);
+		}
+		ImGui::Unindent();
+	}
+	ImGui::EndDisabled();
+	ImGui::Separator();
 	ImGui::Text("G-buffer Debug");
 	const char* gbufferModes[] = {
 		"Off", "Shading Normal", "Roughness", "ViewZ (depth)",
@@ -521,9 +545,10 @@ private:
 				m_Settings.spp = m_Renderer.m_SamplesPerPixel;
 				m_Settings.maxBounces = m_Renderer.m_MaxBounceDepth;
 				// Re-apply CLI overrides on top of defaults
-				if (g_CLI.nrd) m_Settings.nrdEnabled = true;
-				if (g_CLI.rasterFirst) m_Settings.rasterFirst = true;
-				if (g_CLI.gbufferDebug >= 0) m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
+			if (g_CLI.nrd) m_Settings.nrdEnabled = true;
+			if (g_CLI.rasterFirst) m_Settings.rasterFirst = true;
+			if (g_CLI.ris) { m_Settings.risEnabled = true; m_Settings.rasterFirst = true; }
+			if (g_CLI.gbufferDebug >= 0) m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
 				m_RendererGPU.ApplySettings(m_Settings);
 			}
 			else

@@ -8,6 +8,8 @@
 #include "RasterPass.h"
 #include "GBufferDebugPass.h"
 #include "ComposePass.h"
+#include "RISPass.h"
+#include "ReservoirResources.h"
 #include "NRDIntegration.h"
 #include "FrameContext.h"
 #include "shader_interface.h"
@@ -35,6 +37,8 @@ public:
 		RasterPass& rasterPass;
 		GBufferDebugPass& gbufferDebugPass;
 		ComposePass& composePass;
+		RISPass& risPass;
+		ReservoirResources& reservoirs;
 		NRDWrapper& nrd;
 
 		GpuImage& outputImage;
@@ -49,6 +53,8 @@ public:
 		// Render mode flags
 		bool rasterFirst;
 		bool nrdEnabled;
+		bool risEnabled;
+		uint32_t risCandidateCount;
 		int gbufferDebugMode;
 
 		// NRD settings
@@ -84,6 +90,7 @@ private:
 	static void RecordASBarrier(VkCommandBuffer cmd, Context& ctx);
 	static void RecordUBOUpdates(VkCommandBuffer cmd, Context& ctx);
 	static void RecordRasterPass(VkCommandBuffer cmd, Context& ctx);
+	static void RecordRISPass(VkCommandBuffer cmd, Context& ctx);
 	static void RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx);
 	static void RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx);
 	static void RecordOutputTransition(VkCommandBuffer cmd, Context& ctx);

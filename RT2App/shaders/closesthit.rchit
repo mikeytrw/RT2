@@ -199,10 +199,12 @@ void main()
     }
 
     // ---- NEE + MIS: direct lighting from a random light ----
+    // Bounces always use uniform sampleNEE — RIS reservoirs are screen-space
+    // (primary-hit only). Standard ReSTIR-DI scope.
     NEEDispatchResult nee = computeNEE(
         scatter, wo, n, hitPoint,
         baseColor, metallic, roughness, ior, mat.alphaMode,
-        payload.a.xyz, rngState);
+        payload.a.xyz, rngState, false, 0u);
 
     payload.b.xyz += nee.radiance;
 

@@ -29,6 +29,11 @@ struct RenderSettings
 	// Render path
 	bool  rasterFirst   = false;
 
+	// RIS (Resampled Importance Sampling) — Phase 1 of ReSTIR.
+	// Raster-first mode only; improves triangle NEE sampling at primary hits.
+	bool  risEnabled    = false;
+	uint32_t risCandidateCount = 8;
+
 	// NRD denoiser
 	bool  nrdEnabled        = false;
 	float nrdMaxBlurRadius = 30.0f;

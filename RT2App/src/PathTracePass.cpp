@@ -51,7 +51,7 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 
 	const uint32_t maxTextures = 1000;
 
-	VkDescriptorSetLayoutBinding bindings[14] = {};
+	VkDescriptorSetLayoutBinding bindings[16] = {};
 
 	bindings[0] = {};
 	bindings[0].binding = SI_BINDING_OUTPUT_IMAGE;
@@ -93,25 +93,25 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	bindings[6].binding = SI_BINDING_TANGENT_BUFFER;
 	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[6].descriptorCount = 1;
-	bindings[6].stageFlags = allRTFlags;
+	bindings[6].stageFlags = allGraphicsRTFlags;
 
 	bindings[7] = {};
 	bindings[7].binding = SI_BINDING_UV_BUFFER;
 	bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[7].descriptorCount = 1;
-	bindings[7].stageFlags = allRTFlags;
+	bindings[7].stageFlags = allGraphicsRTFlags;
 
 	bindings[8] = {};
 	bindings[8].binding = SI_BINDING_POSITION_BUFFER;
 	bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[8].descriptorCount = 1;
-	bindings[8].stageFlags = allRTFlags;
+	bindings[8].stageFlags = allGraphicsRTFlags;
 
 	bindings[9] = {};
 	bindings[9].binding = SI_BINDING_LIGHT_BUFFER;
 	bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[9].descriptorCount = 1;
-	bindings[9].stageFlags = allRTFlags;
+	bindings[9].stageFlags = allGraphicsRTFlags;
 
 	bindings[10] = {};
 	bindings[10].binding = SI_BINDING_INSTANCE_TRANSFORMS;
@@ -137,19 +137,31 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	bindings[13].descriptorCount = 1;
 	bindings[13].stageFlags = allGraphicsRTFlags;
 
-	VkDescriptorBindingFlagsEXT bindingFlags[14] = {};
+	bindings[14] = {};
+	bindings[14].binding = SI_BINDING_RESERVOIR;
+	bindings[14].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bindings[14].descriptorCount = 1;
+	bindings[14].stageFlags = allGraphicsRTFlags;
+
+	bindings[15] = {};
+	bindings[15].binding = SI_BINDING_RESERVOIR_PREV;
+	bindings[15].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bindings[15].descriptorCount = 1;
+	bindings[15].stageFlags = allGraphicsRTFlags;
+
+	VkDescriptorBindingFlagsEXT bindingFlags[16] = {};
 	bindingFlags[11] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT;
 	// Note: no VARIABLE_DESCRIPTOR_COUNT_BIT — binding 11 is no longer the
-	// highest binding number (12, 13 exist). Use fixed descriptorCount instead.
+	// highest binding number (12-15 exist). Use fixed descriptorCount instead.
 
 	VkDescriptorSetLayoutBindingFlagsCreateInfoEXT bindingFlagsInfo = {};
 	bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
-	bindingFlagsInfo.bindingCount = 14;
+	bindingFlagsInfo.bindingCount = 16;
 	bindingFlagsInfo.pBindingFlags = bindingFlags;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 14;
+	layoutInfo.bindingCount = 16;
 	layoutInfo.pBindings = bindings;
 	layoutInfo.pNext = &bindingFlagsInfo;
 
@@ -364,6 +376,7 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	VkBuffer instanceTransformPrevBuffer,
 	VkBuffer instanceMaterialIndexBuffer,
 	VkAccelerationStructureKHR tlas,
+	VkBuffer reservoirBuffer, VkBuffer reservoirPrevBuffer,
 	const std::vector<VkDescriptorImageInfo>& textureImageInfos)
 {
 	VkDescriptorImageInfo imageInfo = {};
@@ -415,12 +428,20 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	instanceMaterialIndexBufferInfo.buffer = instanceMaterialIndexBuffer;
 	instanceMaterialIndexBufferInfo.range = VK_WHOLE_SIZE;
 
+	VkDescriptorBufferInfo reservoirBufferInfo = {};
+	reservoirBufferInfo.buffer = reservoirBuffer;
+	reservoirBufferInfo.range = VK_WHOLE_SIZE;
+
+	VkDescriptorBufferInfo reservoirPrevBufferInfo = {};
+	reservoirPrevBufferInfo.buffer = reservoirPrevBuffer;
+	reservoirPrevBufferInfo.range = VK_WHOLE_SIZE;
+
 	VkWriteDescriptorSetAccelerationStructureKHR asInfo = {};
 	asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
 	asInfo.accelerationStructureCount = 1;
 	asInfo.pAccelerationStructures = &tlas;
 
-	VkWriteDescriptorSet writes[14] = {};
+	VkWriteDescriptorSet writes[16] = {};
 
 	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[0].dstSet = m_DescriptorSet;
@@ -531,6 +552,21 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 		writes[13].pImageInfo = textureImageInfos.data();
 		writeCount = 14;
 	}
+
+	writes[14].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[14].dstSet = m_DescriptorSet;
+	writes[14].dstBinding = SI_BINDING_RESERVOIR;
+	writes[14].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[14].descriptorCount = 1;
+	writes[14].pBufferInfo = &reservoirBufferInfo;
+
+	writes[15].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[15].dstSet = m_DescriptorSet;
+	writes[15].dstBinding = SI_BINDING_RESERVOIR_PREV;
+	writes[15].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[15].descriptorCount = 1;
+	writes[15].pBufferInfo = &reservoirPrevBufferInfo;
+	writeCount += 2;
 
 	vkUpdateDescriptorSets(dev.device, writeCount, writes, 0, nullptr);
 }

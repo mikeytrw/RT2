@@ -40,6 +40,8 @@ bool RendererGPU::Init()
 	}
 	m_ComposePass.Init(m_Device);
 
+	m_RISPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout);
+
 	if (!m_RasterPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout))
 	{
 		RT_LOG("[RT2] RasterPass init failed (non-fatal, RT primary visibility will be used)");
@@ -61,6 +63,8 @@ void RendererGPU::Destroy()
 	vkDeviceWaitIdle(device);
 
 	m_NRD.Destroy();
+	m_RISPass.Destroy();
+	m_Reservoirs.Destroy();
 	m_PathTracePass.Destroy();
 	m_ComposePass.Destroy();
 	m_RasterPass.Destroy();
@@ -176,6 +180,7 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 
 	CreateOutputImage();
 	CreateGBufferImages();
+	m_Reservoirs.Create(m_Device, m_Width, m_Height);
 	m_PathTracePass.CreateDescriptorSet(m_Device, m_Device.descriptorPool);
 	UpdateGBufferDescriptorSet();
 
@@ -199,6 +204,7 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
 	m_ComposeDescriptorSetCached = false;
+	m_RISDescriptorSetCached = false;
 }
 
 void RendererGPU::UpdatePathTraceDescriptorSet()
@@ -236,6 +242,7 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 		m_Scene.GetLightBuffer(), m_Scene.GetInstanceTransformBuffer(),
 		m_Scene.GetInstanceTransformPrevBuffer(), m_Scene.GetInstanceMaterialIndexBuffer(),
 		m_Scene.GetTLAS(),
+		m_Reservoirs.GetCurrentBuffer(), m_Reservoirs.GetPrevBuffer(),
 		textureImageInfos);
 
 	RT_LOG("[UpdateDS] done (textures=%d, descSet=%p, TLAS=%p, outView=%p, camUBO=%p, matBuf=%p)",
@@ -329,6 +336,8 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	    m_Settings.nrdSplitScreen != newSettings.nrdSplitScreen ||
 	    m_Settings.nrdJitterEnabled != newSettings.nrdJitterEnabled ||
 	    m_Settings.nrdJitterScale != newSettings.nrdJitterScale ||
+	    m_Settings.risEnabled != newSettings.risEnabled ||
+	    m_Settings.risCandidateCount != newSettings.risCandidateCount ||
 	    m_Settings.gbufferDebugMode != newSettings.gbufferDebugMode)
 	{
 		m_Settings.dirty = true;
@@ -369,7 +378,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	glm::vec3 right = glm::cross(camera.GetDirection(), glm::vec3(0, 1, 0));
 	glm::vec3 up = glm::cross(right, camera.GetDirection());
 	ubo.right = glm::vec4(right, m_NRDJitter.y);
-	ubo.up = glm::vec4(up, 0.0f);
+	ubo.up = glm::vec4(up, m_Settings.risEnabled ? 1.0f : 0.0f);
 	int maxBouncesClamped = m_Settings.maxBounces;
 	const int bounceLimit = (int)m_PathTracePass.GetMaxRecursionDepth() - 1;
 	if (maxBouncesClamped > bounceLimit) maxBouncesClamped = bounceLimit;
@@ -472,6 +481,8 @@ void RendererGPU::Render(const Camera& camera)
 		m_RasterPass,
 		m_GBufferDebugPass,
 		m_ComposePass,
+		m_RISPass,
+		m_Reservoirs,
 		m_NRD,
 		m_OutputImage,
 		m_GBufferSet,
@@ -482,6 +493,8 @@ void RendererGPU::Render(const Camera& camera)
 		m_Height,
 		m_Settings.rasterFirst,
 		m_Settings.nrdEnabled,
+		m_Settings.risEnabled,
+		m_Settings.risCandidateCount,
 		m_Settings.gbufferDebugMode,
 		m_Settings.nrdMaxBlurRadius,
 		m_Settings.nrdMaxAccumFrames,

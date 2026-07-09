@@ -54,6 +54,8 @@
 #define SI_BINDING_TEXTURE_ARRAY         11
 #define SI_BINDING_INSTANCE_TRANSFORMS_PREV 12
 #define SI_BINDING_INSTANCE_MATERIAL_INDICES 13
+#define SI_BINDING_RESERVOIR              14
+#define SI_BINDING_RESERVOIR_PREV          15
 
 // ============================================================================
 // Binding indices — set 1 (NRD G-buffer)
@@ -121,6 +123,31 @@ struct SITriangleLight
 };
 
 // ============================================================================
+// Reservoir — per-pixel RIS/ReSTIR reservoir. 32 bytes, std430.
+//
+// Stores post-warp barycentrics (b1, b2), NOT raw (r1, r2) — avoids
+// reconstruction ambiguity when the shading pass re-samples the triangle.
+//
+// Phase 1 (basic RIS): only `current` is written/read. `prev` is allocated
+// for temporal reuse (RIS.4) to avoid allocation churn rework later.
+//
+// M = number of candidates seen (accumulates across frames in temporal reuse).
+// weightSum = Σ w_i = p_hat(x_i) / p(x_i) for accepted candidates.
+// targetPdf = p_hat of the selected sample (for W = weightSum / (M * targetPdf)).
+// ============================================================================
+struct SIReservoir
+{
+    SI_UINT  lightIdx;    // index into lights[] array
+    SI_FLOAT b1;          // post-warp barycentric coord 1
+    SI_FLOAT b2;          // post-warp barycentric coord 2
+    SI_FLOAT weightSum;   // Σ w_i = p_hat(x_i) / p(x_i)
+    SI_FLOAT targetPdf;   // p_hat of selected sample
+    SI_UINT  M;           // candidates seen
+    SI_UINT  pad0;        // future: visibility flag
+    SI_UINT  pad1;
+};
+
+// ============================================================================
 // NRD UBO — set 1 binding 6, 16 bytes
 // ============================================================================
 struct SINRDUniformData
@@ -138,6 +165,7 @@ struct SINRDUniformData
 static_assert(sizeof(SICameraData) == 496, "SICameraData must be 496 bytes (7 vec4 + 6 mat4)");
 static_assert(sizeof(SIMaterial) == 80, "SIMaterial must be 80 bytes (2 vec4 + 4 float + 2 ivec4)");
 static_assert(sizeof(SITriangleLight) == 32, "SITriangleLight must be 32 bytes (vec4 + uvec4)");
+static_assert(sizeof(SIReservoir) == 32, "SIReservoir must be 32 bytes (1 uint + 4 float + 3 uint)");
 static_assert(sizeof(SINRDUniformData) == 16, "SINRDUniformData must be 16 bytes");
 #endif
 

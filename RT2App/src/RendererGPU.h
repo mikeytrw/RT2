@@ -17,6 +17,8 @@
 #include "NRDIntegration.h"
 #include "RenderSettings.h"
 #include "SceneResources.h"
+#include "ReservoirResources.h"
+#include "RISPass.h"
 #include "GpuResources.h"
 #include "FrameContext.h"
 #include <array>
@@ -135,6 +137,11 @@ private:
 	// Compose pass (compute shader: NRD outputs + albedo/F0 -> beauty)
 	ComposePass m_ComposePass;
 	bool m_ComposeDescriptorSetCached = false;
+
+	// RIS (Resampled Importance Sampling) pass + reservoir resources
+	RISPass m_RISPass;
+	ReservoirResources m_Reservoirs;
+	bool m_RISDescriptorSetCached = false;
 
 	// Raster pass (primary visibility G-buffer)
 	RasterPass m_RasterPass;

@@ -8,6 +8,7 @@ void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 	RecordASBarrier(cmd, ctx);
 	RecordUBOUpdates(cmd, ctx);
 	RecordRasterPass(cmd, ctx);
+	RecordRISPass(cmd, ctx);
 	RecordPathTraceOrDebug(cmd, ctx);
 	RecordOutputTransition(cmd, ctx);
 }
@@ -142,6 +143,39 @@ void FrameRenderer::RecordRasterPass(VkCommandBuffer cmd, Context& ctx)
 	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 	                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
 	                     0, nullptr, 0, nullptr, 8, postRasterBarriers);
+}
+
+void FrameRenderer::RecordRISPass(VkCommandBuffer cmd, Context& ctx)
+{
+	// RIS is raster-first mode only (needs G-buffer). Skip if disabled,
+	// pipeline unavailable, or no lights (CPU-side skip per plan).
+	if (!ctx.risEnabled || !ctx.risPass.IsAvailable() || !ctx.reservoirs.IsValid())
+		return;
+	if (!ctx.rasterFirst)
+		return;
+
+	// Dispatch the RIS compute pass. G-buffer images are already in GENERAL
+	// layout with SHADER_READ access (post-raster barrier above).
+	ctx.risPass.Record(cmd, ctx.width, ctx.height,
+	                  ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
+	                  ctx.risCandidateCount);
+
+	// Barrier: reservoir SSBO write (compute) → RT shader read.
+	// The shading pass (secondary_raygen) reads reservoirs[] via set 0
+	// binding SI_BINDING_RESERVOIR.
+	VkBufferMemoryBarrier reservoirBarrier = {};
+	reservoirBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	reservoirBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	reservoirBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	reservoirBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	reservoirBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	reservoirBarrier.buffer = ctx.reservoirs.GetCurrentBuffer();
+	reservoirBarrier.offset = 0;
+	reservoirBarrier.size = VK_WHOLE_SIZE;
+	vkCmdPipelineBarrier(cmd,
+	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+	                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0,
+	                     0, nullptr, 1, &reservoirBarrier, 0, nullptr);
 }
 
 void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
