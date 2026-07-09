@@ -196,6 +196,9 @@ GPUSceneData BuildGPUSceneData(const Scene& scene)
                 glm::vec3 edge2 = v2 - v0;
                 float area = 0.5f * std::abs(glm::length(glm::cross(edge1, edge2)));
 
+                if (area < 1e-8f)
+                    continue;
+
                 GPUTriangleLight light;
                 light.emission_area = glm::vec4(emissive, area);
                 light.ids = glm::uvec4(instanceID, t, matIdx,
@@ -363,6 +366,9 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
             glm::vec3 edge2 = w2 - w0;
             float area = 0.5f * std::abs(glm::length(glm::cross(edge1, edge2)));
 
+            if (area < 1e-8f)
+                continue;
+
             GPUTriangleLight light;
             light.emission_area = glm::vec4(emissive, area);
             light.ids = glm::uvec4(instIdx, t, inst.materialIndex,
@@ -439,6 +445,9 @@ void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene)
             glm::vec3 edge1 = w1 - w0;
             glm::vec3 edge2 = w2 - w0;
             float area = 0.5f * std::abs(glm::length(glm::cross(edge1, edge2)));
+
+            if (area < 1e-8f)
+                continue;
 
             GPUTriangleLight light;
             light.emission_area = glm::vec4(emissive, area);
