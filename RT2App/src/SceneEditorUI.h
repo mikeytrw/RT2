@@ -50,6 +50,14 @@ public:
 	void SetOnLoadMeshFile(std::function<SceneManager::EntityId(const std::string&)> cb)
 	{ m_OnLoadMeshFile = std::move(cb); }
 
+	// Called when user clicks "Dump GPU Transforms" — host should call
+	// RendererGPU::DumpInstanceTransforms().
+	void SetOnDumpGPUTransforms(std::function<void()> cb)
+	{ m_OnDumpGPUTransforms = std::move(cb); }
+
+	void SetOnDumpNEEBuffers(std::function<void()> cb)
+	{ m_OnDumpNEEBuffers = std::move(cb); }
+
 	void RenderPanels();
 
 private:
@@ -71,6 +79,8 @@ private:
 	std::function<void()> m_OnSceneChanged;
 	std::function<void()> m_OnTransformChanged;
 	std::function<SceneManager::EntityId(const std::string&)> m_OnLoadMeshFile;
+	std::function<void()> m_OnDumpGPUTransforms;
+	std::function<void()> m_OnDumpNEEBuffers;
 
 	// UI state for the "Add" popup
 	bool m_ShowAddPopup = false;

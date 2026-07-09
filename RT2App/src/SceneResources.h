@@ -100,6 +100,13 @@ public:
 	// True if an async texture upload is in flight.
 	bool IsTextureUploadPending() const { return m_TextureLoader.IsBusy(); }
 
+	// Debug: dump GPU instance transform buffer contents to log.
+	// Reads back instanceTransforms[] and instanceTransformsPrev[] from GPU
+	// memory and prints the world position (translation column) for each
+	// instance, plus material index from the material index buffer.
+	void DumpInstanceTransforms() const;
+	void DumpNEEBuffers() const;
+
 	// Env map metadata
 	int GetEnvMapIndex() const { return m_EnvMapIndex; }
 	int GetMarginalCDFIndex() const { return m_MarginalCDFIndex; }

@@ -366,8 +366,9 @@ void SceneResources::CreateLightBuffer(const GpuDevice& dev)
 
 void SceneResources::CreateInstanceTransformBuffer(const GpuDevice& dev)
 {
-	GpuResources::DestroyBuffer(dev, m_InstanceTransformBuffer, m_InstanceTransformBufferMemory);
-
+	// Save old current as new prev BEFORE destroying either buffer.
+	// The previous frame's transforms are needed for motion vectors (NRD).
+	// Destroy the old prev buffer (no longer needed), then move current→prev.
 	GpuResources::DestroyBuffer(dev, m_InstanceTransformPrevBuffer, m_InstanceTransformPrevBufferMemory);
 	m_InstanceTransformPrevBuffer = m_InstanceTransformBuffer;
 	m_InstanceTransformPrevBufferMemory = m_InstanceTransformBufferMemory;
@@ -747,4 +748,170 @@ void SceneResources::DestroyEnvMapCDFTextures()
 	m_EnvMapIndex = -1;
 	m_MarginalCDFIndex = -1;
 	m_ConditionalCDFIndex = -1;
+}
+
+void SceneResources::DumpInstanceTransforms() const
+{
+	VkDevice device = m_Device->device;
+	size_t instCount = m_CurrentScene.instances.size();
+
+	RT_LOG("===== GPU Instance Transform Dump (%d instances) =====", (int)instCount);
+
+	// Read back current transform buffer
+	if (m_InstanceTransformBuffer && m_InstanceTransformBufferMemory)
+	{
+		VkDeviceSize bufSize = instCount * sizeof(glm::mat4);
+		if (bufSize == 0) bufSize = sizeof(glm::mat4);
+		void* mapped;
+		vkMapMemory(device, m_InstanceTransformBufferMemory, 0, bufSize, 0, &mapped);
+		glm::mat4* transforms = reinterpret_cast<glm::mat4*>(mapped);
+		for (size_t i = 0; i < instCount; i++)
+		{
+			glm::vec3 pos = glm::vec3(transforms[i][3]);
+			uint32_t meshIdx = m_CurrentScene.instances.size() > i
+				? m_CurrentScene.instances[i].meshIndex : 0xFFFFFFFF;
+			uint32_t matIdx = m_CurrentScene.instances.size() > i
+				? m_CurrentScene.instances[i].materialIndex : 0xFFFFFFFF;
+			bool isEm = false;
+			if (matIdx < m_CurrentScene.materials.size())
+			{
+				glm::vec3 em = glm::vec3(m_CurrentScene.materials[matIdx].emissive_roughness);
+				isEm = (em.x > 0 || em.y > 0 || em.z > 0);
+			}
+			RT_LOG("  inst %d: pos=(%.2f,%.2f,%.2f) mesh=%d mat=%d%s",
+			       (int)i, pos.x, pos.y, pos.z, meshIdx, matIdx,
+			       isEm ? " EMISSIVE" : "");
+		}
+		vkUnmapMemory(device, m_InstanceTransformBufferMemory);
+	}
+	else
+		RT_LOG("  (current transform buffer is NULL)");
+
+	// Read back prev transform buffer
+	if (m_InstanceTransformPrevBuffer && m_InstanceTransformPrevBufferMemory)
+	{
+		VkDeviceSize bufSize = instCount * sizeof(glm::mat4);
+		if (bufSize == 0) bufSize = sizeof(glm::mat4);
+		void* mapped;
+		vkMapMemory(device, m_InstanceTransformPrevBufferMemory, 0, bufSize, 0, &mapped);
+		glm::mat4* transforms = reinterpret_cast<glm::mat4*>(mapped);
+		bool allSameAsCurrent = true;
+		if (m_InstanceTransformBuffer && m_InstanceTransformBufferMemory)
+		{
+			void* curMapped;
+			vkMapMemory(device, m_InstanceTransformBufferMemory, 0, bufSize, 0, &curMapped);
+			glm::mat4* cur = reinterpret_cast<glm::mat4*>(curMapped);
+			for (size_t i = 0; i < instCount && allSameAsCurrent; i++)
+			{
+				if (memcmp(&cur[i], &transforms[i], sizeof(glm::mat4)) != 0)
+					allSameAsCurrent = false;
+			}
+			vkUnmapMemory(device, m_InstanceTransformBufferMemory);
+		}
+		RT_LOG("  prev buffer: %s", allSameAsCurrent
+			? "IDENTICAL to current (zero motion vectors!)"
+			: "differs from current (motion vectors present)");
+		for (size_t i = 0; i < instCount && i < 5; i++)
+		{
+			glm::vec3 pos = glm::vec3(transforms[i][3]);
+			RT_LOG("  prev inst %d: pos=(%.2f,%.2f,%.2f)", (int)i, pos.x, pos.y, pos.z);
+		}
+		vkUnmapMemory(device, m_InstanceTransformPrevBufferMemory);
+	}
+	else
+		RT_LOG("  (prev transform buffer is NULL)");
+
+	RT_LOG("===== End GPU Instance Transform Dump =====");
+}
+
+void SceneResources::DumpNEEBuffers() const
+{
+	VkDevice device = m_Device->device;
+	size_t instCount = m_CurrentScene.instances.size();
+
+	RT_LOG("===== NEE Buffer Dump =====");
+
+	// Read back InstanceOffsetBuffer (normalOffsets in shader)
+	VkBuffer offBuf = m_AS.GetInstanceOffsetBuffer();
+	VkDeviceMemory offMem = m_AS.GetInstanceOffsetMemory();
+	if (offBuf && offMem)
+	{
+		VkDeviceSize offSize = instCount * sizeof(uint32_t);
+		if (offSize == 0) offSize = sizeof(uint32_t);
+		void* mapped;
+		vkMapMemory(device, offMem, 0, offSize, 0, &mapped);
+		uint32_t* offsets = reinterpret_cast<uint32_t*>(mapped);
+		for (size_t i = 0; i < instCount; i++)
+		{
+			bool isEm = false;
+			uint32_t matIdx = m_CurrentScene.instances.size() > i
+				? m_CurrentScene.instances[i].materialIndex : 0;
+			if (matIdx < m_CurrentScene.materials.size())
+			{
+				glm::vec3 em = glm::vec3(m_CurrentScene.materials[matIdx].emissive_roughness);
+				isEm = (em.x > 0 || em.y > 0 || em.z > 0);
+			}
+			if (isEm)
+				RT_LOG("  normalOffsets[%d] = %u (mesh=%d)", (int)i, offsets[i],
+				       m_CurrentScene.instances.size() > i ? m_CurrentScene.instances[i].meshIndex : -1);
+		}
+		vkUnmapMemory(device, offMem);
+	}
+	else
+		RT_LOG("  (InstanceOffsetBuffer is NULL)");
+
+	// Read back the first few triangle positions for the sphere's BLAS
+	// inst 0 is the sphere, meshIndex=18
+	if (instCount > 0)
+	{
+		uint32_t sphereMeshIdx = m_CurrentScene.instances[0].meshIndex;
+		uint32_t sphereOffset = 0;
+		if (offBuf && offMem)
+		{
+			VkDeviceSize offSize = instCount * sizeof(uint32_t);
+			void* mapped;
+			vkMapMemory(device, offMem, 0, offSize, 0, &mapped);
+			uint32_t* offsets = reinterpret_cast<uint32_t*>(mapped);
+			sphereOffset = offsets[0];
+			vkUnmapMemory(device, offMem);
+		}
+
+		VkBuffer posBuf = m_AS.GetPositionBuffer();
+		VkDeviceMemory posMem = m_AS.GetPositionBufferMemory();
+		if (posBuf && posMem)
+		{
+			// Each position is a vec4 (16 bytes). sphereOffset is in "triangle index" units.
+			// trianglePositions[posIdx + 0..2] where posIdx = triIdx * 3
+			// So for the first triangle: triIdx = sphereOffset, posIdx = sphereOffset * 3
+			uint32_t posIdx = sphereOffset * 3;
+			VkDeviceSize readOffset = posIdx * sizeof(glm::vec4);
+			VkDeviceSize readSize = 6 * sizeof(glm::vec4); // 2 triangles = 6 verts
+			void* mapped;
+			vkMapMemory(device, posMem, readOffset, readSize, 0, &mapped);
+			glm::vec4* positions = reinterpret_cast<glm::vec4*>(mapped);
+			for (int v = 0; v < 6; v++)
+				RT_LOG("  posBuf[%d] (sphere tri %d vert %d) = (%.4f, %.4f, %.4f, %.4f)",
+				       posIdx + v, v / 3, v % 3,
+				       positions[v].x, positions[v].y, positions[v].z, positions[v].w);
+			vkUnmapMemory(device, posMem);
+		}
+		else
+			RT_LOG("  (PositionBuffer is NULL)");
+	}
+
+	// Also read back the light buffer for the sphere's first light
+	if (m_LightBuffer && m_LightBufferMemory && m_CurrentScene.lights.size() > 0)
+	{
+		void* mapped;
+		vkMapMemory(device, m_LightBufferMemory, 0, VK_WHOLE_SIZE, 0, &mapped);
+		GPUTriangleLight* gpuLights = reinterpret_cast<GPUTriangleLight*>((uint8_t*)mapped + 16);
+		// First light should be inst 0 (sphere, since it's iterated first)
+		RT_LOG("  Light[0]: inst=%u prim=%u mat=%u emissive=(%.1f,%.1f,%.1f) area=%.5f",
+		       gpuLights[0].ids.x, gpuLights[0].ids.y, gpuLights[0].ids.z,
+		       gpuLights[0].emission_area.x, gpuLights[0].emission_area.y, gpuLights[0].emission_area.z,
+		       gpuLights[0].emission_area.w);
+		vkUnmapMemory(device, m_LightBufferMemory);
+	}
+
+	RT_LOG("===== End NEE Buffer Dump =====");
 }

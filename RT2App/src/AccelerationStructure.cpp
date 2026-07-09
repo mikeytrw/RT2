@@ -247,9 +247,9 @@ void AccelerationStructure::BuildCombinedBuffers()
 			glm::vec3 v1(blas.triPositions[t * 9 + 3], blas.triPositions[t * 9 + 4], blas.triPositions[t * 9 + 5]);
 			glm::vec3 v2(blas.triPositions[t * 9 + 6], blas.triPositions[t * 9 + 7], blas.triPositions[t * 9 + 8]);
 
-			allPositions.push_back(glm::vec4(v0, 0.0f));
-			allPositions.push_back(glm::vec4(v1, 0.0f));
-			allPositions.push_back(glm::vec4(v2, 0.0f));
+			allPositions.push_back(glm::vec4(v0, 1.0f));
+			allPositions.push_back(glm::vec4(v1, 1.0f));
+			allPositions.push_back(glm::vec4(v2, 1.0f));
 
 			glm::vec3 normal = glm::normalize(glm::cross(v1 - v0, v2 - v0));
 			allNormals.push_back(glm::vec4(normal, 0.0f));

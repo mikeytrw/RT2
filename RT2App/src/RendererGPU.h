@@ -71,6 +71,10 @@ public:
 	glm::vec2 GetNRDJitter() const { return m_NRDJitter; }
 	glm::vec2 GetNRDJitterPrev() const { return m_NRDJitterPrev; }
 
+	// Debug: dump GPU instance transform buffer contents to log.
+	void DumpInstanceTransforms() const;
+	void DumpNEEBuffers() const;
+
 private:
 	void CreateOutputImage();
 	void DestroyOutputImage();

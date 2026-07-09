@@ -418,8 +418,6 @@ NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
     result.pdfLightOmega = pdfOmega;
     return result;
 }
-
-// ---- NEE dispatch (stochastic triangle/env NEE selection) --------------------
 // Extracted from closesthit lines 669-793. Handles:
 // - Delta path skip (no NEE for specular/delta)
 // - Transmission material MIS probability recomputation

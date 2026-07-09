@@ -123,12 +123,26 @@ void SceneEditorUI::RenderOutliner()
 
 	ImGui::Separator();
 
-	if (m_SelectedEntity.IsValid() && ImGui::Button("Delete Selected"))
+	if (ImGui::Button("Delete Selected"))
 	{
 		m_SceneMgr->RemoveEntity(m_SelectedEntity);
 		m_SelectedEntity = SceneManager::EntityId{};
 		NotifySceneChanged();
 		m_TreeDirty = true;
+	}
+
+	ImGui::SameLine();
+	if (ImGui::Button("Dump GPU Transforms"))
+	{
+		if (m_OnDumpGPUTransforms)
+			m_OnDumpGPUTransforms();
+	}
+
+	ImGui::SameLine();
+	if (ImGui::Button("Dump NEE Buffers"))
+	{
+		if (m_OnDumpNEEBuffers)
+			m_OnDumpNEEBuffers();
 	}
 
 	ImGui::End();

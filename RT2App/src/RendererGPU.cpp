@@ -289,6 +289,20 @@ void RendererGPU::UpdateSceneInstances(const GPUSceneData& sceneData)
 	UpdatePathTraceDescriptorSet();
 }
 
+void RendererGPU::DumpInstanceTransforms() const
+{
+	m_Scene.DumpInstanceTransforms();
+}
+
+void RendererGPU::DumpNEEBuffers() const
+{
+	m_Scene.DumpNEEBuffers();
+	RT_LOG("  m_FrameIndex=%d m_NRDFrameIndex=%d m_NRDNeedsReset=%d m_HasPrevMatrices=%d",
+	       m_FrameIndex, m_NRDFrameIndex, m_NRDNeedsReset, m_HasPrevMatrices);
+	RT_LOG("  rasterFirst=%d nrdEnabled=%d",
+	       m_Settings.rasterFirst, m_Settings.nrdEnabled);
+}
+
 void RendererGPU::ResetAccumulation()
 {
 	m_FrameIndex = 1;

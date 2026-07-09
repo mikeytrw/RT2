@@ -71,8 +71,10 @@ public:
 
 	VkBuffer GetNormalBuffer() const { return m_CombinedNormalBuffer; }
 	VkBuffer GetInstanceOffsetBuffer() const { return m_InstanceOffsetBuffer; }
+	VkDeviceMemory GetInstanceOffsetMemory() const { return m_InstanceOffsetMemory; }
 	VkBuffer GetUVBuffer() const { return m_CombinedUVBuffer; }
 	VkBuffer GetPositionBuffer() const { return m_CombinedPositionBuffer; }
+	VkDeviceMemory GetPositionBufferMemory() const { return m_CombinedPositionMemory; }
 	VkBuffer GetTangentBuffer() const { return m_CombinedTangentBuffer; }
 	uint32_t GetTriangleCount() const { return m_TotalTriangleCount; }
 

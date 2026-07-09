@@ -72,6 +72,14 @@ public:
 			m_EditorUI.SetOnLoadMeshFile([this](const std::string& path) -> SceneManager::EntityId {
 				return LoadMeshFileAsEntity(path);
 			});
+			m_EditorUI.SetOnDumpGPUTransforms([this]() {
+				if (m_UseGPU && m_RendererGPU.IsAvailable())
+					m_RendererGPU.DumpInstanceTransforms();
+			});
+			m_EditorUI.SetOnDumpNEEBuffers([this]() {
+				if (m_UseGPU && m_RendererGPU.IsAvailable())
+					m_RendererGPU.DumpNEEBuffers();
+			});
 		}
 
 	virtual void OnUIRender() override
