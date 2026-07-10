@@ -20,18 +20,23 @@ bool ComposePass::Init(const GpuDevice& dev)
 		return false;
 	}
 
-	VkDescriptorSetLayoutBinding bindings[6] = {};
-	for (int i = 0; i < 6; i++)
+	VkDescriptorSetLayoutBinding bindings[8] = {};
+	for (int i = 0; i < 7; i++)
 	{
 		bindings[i].binding = i;
 		bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 		bindings[i].descriptorCount = 1;
 		bindings[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 	}
+	// Binding 7: camera UBO (for view direction reconstruction)
+	bindings[7].binding = 7;
+	bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	bindings[7].descriptorCount = 1;
+	bindings[7].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 6;
+	layoutInfo.bindingCount = 8;
 	layoutInfo.pBindings = bindings;
 	VK_CHECK(vkCreateDescriptorSetLayout(dev.device, &layoutInfo, nullptr, &m_SetLayout));
 
@@ -52,15 +57,17 @@ bool ComposePass::Init(const GpuDevice& dev)
 	VK_CHECK(vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_Pipeline));
 
 	// Create descriptor pool + set
-	VkDescriptorPoolSize poolSize = {};
-	poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	poolSize.descriptorCount = 6;
+	VkDescriptorPoolSize poolSizes[2] = {};
+	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+	poolSizes[0].descriptorCount = 7;
+	poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	poolSizes[1].descriptorCount = 1;
 
 	VkDescriptorPoolCreateInfo poolInfo = {};
 	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	poolInfo.maxSets = 1;
-	poolInfo.poolSizeCount = 1;
-	poolInfo.pPoolSizes = &poolSize;
+	poolInfo.poolSizeCount = 2;
+	poolInfo.pPoolSizes = poolSizes;
 	VK_CHECK(vkCreateDescriptorPool(dev.device, &poolInfo, nullptr, &m_Pool));
 
 	VkDescriptorSetAllocateInfo allocInfo = {};
@@ -100,18 +107,25 @@ void ComposePass::UpdateDescriptorSet(const GpuDevice& dev,
                                       VkImageView nrdSpecOutView,
                                       VkImageView albedoF0View,
                                       VkImageView directEmissionView,
-                                      VkImageView viewZView)
+                                      VkImageView viewZView,
+                                      VkImageView normalRoughnessView,
+                                      VkBuffer cameraUBO)
 {
-	VkDescriptorImageInfo imageInfos[6] = {};
-	VkImageView views[] = { outputView, nrdDiffOutView, nrdSpecOutView, albedoF0View, directEmissionView, viewZView };
-	for (int i = 0; i < 6; i++)
+	VkDescriptorImageInfo imageInfos[7] = {};
+	VkImageView views[] = { outputView, nrdDiffOutView, nrdSpecOutView, albedoF0View, directEmissionView, viewZView, normalRoughnessView };
+	for (int i = 0; i < 7; i++)
 	{
 		imageInfos[i].imageView = views[i];
 		imageInfos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 	}
 
-	VkWriteDescriptorSet writes[6] = {};
-	for (int i = 0; i < 6; i++)
+	VkDescriptorBufferInfo uboInfo = {};
+	uboInfo.buffer = cameraUBO;
+	uboInfo.offset = 0;
+	uboInfo.range = VK_WHOLE_SIZE;
+
+	VkWriteDescriptorSet writes[8] = {};
+	for (int i = 0; i < 7; i++)
 	{
 		writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 		writes[i].dstSet = m_DescriptorSet;
@@ -120,8 +134,14 @@ void ComposePass::UpdateDescriptorSet(const GpuDevice& dev,
 		writes[i].descriptorCount = 1;
 		writes[i].pImageInfo = &imageInfos[i];
 	}
+	writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[7].dstSet = m_DescriptorSet;
+	writes[7].dstBinding = 7;
+	writes[7].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	writes[7].descriptorCount = 1;
+	writes[7].pBufferInfo = &uboInfo;
 
-	vkUpdateDescriptorSets(dev.device, 6, writes, 0, nullptr);
+	vkUpdateDescriptorSets(dev.device, 8, writes, 0, nullptr);
 }
 
 void ComposePass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height) const

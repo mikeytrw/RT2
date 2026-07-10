@@ -301,6 +301,9 @@ public:
 		ImGui::SliderFloat("Blur Radius", &m_Settings.nrdMaxBlurRadius, 1.0f, 50.0f, "%.1f");
 		ImGui::SliderInt("Accum Frames", &m_Settings.nrdMaxAccumFrames, 1, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
 		ImGui::Checkbox("Anti-Firefly", &m_Settings.nrdAntiFirefly);
+		const char* ditherOptions[] = { "Off (white noise)", "Bayer 4x4", "Interleaved Gradient" };
+		int& dither = m_Settings.nrdLobeDither;
+		ImGui::Combo("Lobe Dither", &dither, ditherOptions, 3);
 		ImGui::SliderFloat("Split Screen", &m_Settings.nrdSplitScreen, 0.0f, 1.0f, "%.2f");
 		ImGui::Unindent();
 		// Apply any NRD slider changes

@@ -62,11 +62,14 @@ struct ScatterResult
 //   rayDir       — incoming ray direction (used for reflect/refract)
 //   frontFace    — true if ray hit front face (dot(rayDir, rawNormal) < 0)
 //   rngState     — PCG RNG state (inout, consumed for lobe pick + sampling)
+//   pixelCoord   — pixel coordinates (for Bayer/IGN dithering of lobe selection,
+//                  required by NRD HitDistanceReconstructionMode::AREA_3X3)
+//   ditherMode   — 0=white noise, 1=Bayer 4x4, 2=Interleaved Gradient Noise
 ScatterResult scatterPrimaryHit(
     Material mat,
     vec3 baseColor, float metallic, float roughness, float ior,
     vec3 n, vec3 wo, float NdotV, vec3 rayDir, bool frontFace,
-    inout uint rngState)
+    inout uint rngState, uvec2 pixelCoord, int ditherMode)
 {
     ScatterResult result;
     result.doScatter = true;
@@ -91,7 +94,36 @@ ScatterResult scatterPrimaryHit(
     float nextBsdfPdf = -1.0;
     float lobeType = 0.0;  // 0 = diffuse, 1 = specular (set explicitly at each pick)
 
-    float r = randomFloat(rngState);
+    // Dithered lobe selection for NRD HitDistanceReconstructionMode::AREA_3X3.
+    // NRD requires a low-discrepancy pattern (not white noise) to guarantee
+    // a valid sample in every 3x3 neighborhood for both lobes.
+    // 0 = white noise (no NRD guarantee), 1 = Bayer 4x4, 2 = IGN
+    float r;
+    if (ditherMode == 1)
+    {
+        const float bayer4x4[16] = float[16](
+            0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0,
+           12.0/16.0,  4.0/16.0, 14.0/16.0,  6.0/16.0,
+            3.0/16.0, 11.0/16.0,  1.0/16.0,  9.0/16.0,
+           15.0/16.0,  7.0/16.0, 13.0/16.0,  5.0/16.0
+        );
+        uint bayerIdx = (pixelCoord.y % 4u) * 4u + (pixelCoord.x % 4u);
+        r = bayer4x4[bayerIdx];
+    }
+    else if (ditherMode == 2)
+    {
+        // Interleaved Gradient Noise (Jorge Jimenez) — less structured than
+        // Bayer, quasi-random, still good spatial coverage for 3x3 recon.
+        r = fract(52.9829189 * fract(0.06711056 * float(pixelCoord.x)
+                + 0.00583715 * float(pixelCoord.y)));
+    }
+    else
+    {
+        r = randomFloat(rngState);
+    }
+
+    // Transmission path uses white noise (separate from NRD lobe reconstruction)
+    float rTransmission = randomFloat(rngState);
 
     // ---- Dielectric transmission (M7 Phase 3) ----
     float transmissionFactor = intBitsToFloat(mat.textureIndices.w);
@@ -114,7 +146,7 @@ ScatterResult scatterPrimaryHit(
             P_diffuse  /= Psum;
         }
 
-        if (r < P_reflect)
+        if (rTransmission < P_reflect)
         {
             if (roughness < 0.001)
             {
@@ -141,7 +173,7 @@ ScatterResult scatterPrimaryHit(
                 }
             }
         }
-        else if (r < P_reflect + P_refract)
+        else if (rTransmission < P_reflect + P_refract)
         {
             float eta = frontFace ? (1.0 / ior) : ior;
 

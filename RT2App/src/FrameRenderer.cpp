@@ -4,13 +4,28 @@
 
 void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 {
+	RT_LOG("[Frame] RecordFrame begin");
 	RecordTopBarrier(cmd, ctx);
 	RecordASBarrier(cmd, ctx);
 	RecordUBOUpdates(cmd, ctx);
+
+	// Advance prev transform buffers to current after a scene edit so
+	// motion vectors go to zero on subsequent frames (NRD finding #3).
+	if (ctx.scene.NeedsTransformAdvance())
+	{
+		RT_LOG("[Frame] advancing transform buffers");
+		ctx.scene.AdvanceTransformBuffers(cmd);
+		ctx.scene.ClearTransformAdvance();
+	}
+
 	RecordRasterPass(cmd, ctx);
+	RT_LOG("[Frame] raster done");
 	RecordRISPass(cmd, ctx);
+	RT_LOG("[Frame] RIS done");
 	RecordPathTraceOrDebug(cmd, ctx);
+	RT_LOG("[Frame] pathtrace/debug done");
 	RecordOutputTransition(cmd, ctx);
+	RT_LOG("[Frame] RecordFrame end");
 }
 
 void FrameRenderer::RecordTopBarrier(VkCommandBuffer cmd, Context& ctx)
@@ -62,7 +77,7 @@ void FrameRenderer::RecordUBOUpdates(VkCommandBuffer cmd, Context& ctx)
 
 	vkCmdUpdateBuffer(cmd, ctx.cameraUBO, 0, sizeof(SICameraData), &ctx.cameraUBOData);
 
-	SINRDUniformData nrdData = { ctx.nrdEnabled ? 1u : 0u, 0, 0, 0 };
+	SINRDUniformData nrdData = { ctx.nrdEnabled ? 1u : 0u, (uint32_t)ctx.lobeDither, 0u, 0u };
 	if (ctx.nrdUBO)
 		vkCmdUpdateBuffer(cmd, ctx.nrdUBO, 0, sizeof(SINRDUniformData), &nrdData);
 
@@ -72,7 +87,8 @@ void FrameRenderer::RecordUBOUpdates(VkCommandBuffer cmd, Context& ctx)
 	uboPostBarrier.dstAccessMask = VK_ACCESS_UNIFORM_READ_BIT;
 	vkCmdPipelineBarrier(cmd,
 		VK_PIPELINE_STAGE_TRANSFER_BIT,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
+		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		0, 1, &uboPostBarrier, 0, nullptr, 0, nullptr);
 }
 
@@ -197,6 +213,8 @@ void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 
 void FrameRenderer::RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx)
 {
+	RT_LOG("[NRD] RecordNRDAndCompose begin");
+
 	VkImage preNrdImgs[] = {
 		ctx.gbuffer.GetColor(GBufferTarget::DIFF_RADIANCE).image,
 		ctx.gbuffer.GetColor(GBufferTarget::SPEC_RADIANCE).image,
@@ -263,17 +281,22 @@ void FrameRenderer::RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx)
 		ctx.gbuffer.GetColor(GBufferTarget::SPEC_RADIANCE).image, VK_FORMAT_R16G16B16A16_SFLOAT,
 		ctx.gbuffer.GetColor(GBufferTarget::NRD_DIFF_OUT).image, ctx.gbuffer.GetColor(GBufferTarget::NRD_SPEC_OUT).image);
 
+	RT_LOG("[NRD] Denoise recorded");
+
 	if (ctx.composePass.IsAvailable())
 	{
 		if (!ctx.composeDescriptorSetCached)
 		{
+			RT_LOG("[NRD] updating compose descriptor set (7 images + UBO)");
 			ctx.composePass.UpdateDescriptorSet(ctx.device,
 				ctx.outputImage.view,
 				ctx.gbuffer.GetColor(GBufferTarget::NRD_DIFF_OUT).view,
 				ctx.gbuffer.GetColor(GBufferTarget::NRD_SPEC_OUT).view,
 				ctx.gbuffer.GetColor(GBufferTarget::ALBEDO_F0).view,
 				ctx.gbuffer.GetColor(GBufferTarget::DIRECT_EMISSION).view,
-				ctx.gbuffer.GetColor(GBufferTarget::VIEWZ).view);
+				ctx.gbuffer.GetColor(GBufferTarget::VIEWZ).view,
+				ctx.gbuffer.GetColor(GBufferTarget::NORMAL_ROUGHNESS).view,
+				ctx.cameraUBO);
 			ctx.composeDescriptorSetCached = true;
 		}
 
@@ -282,10 +305,11 @@ void FrameRenderer::RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx)
 			ctx.gbuffer.GetColor(GBufferTarget::NRD_SPEC_OUT).image,
 			ctx.gbuffer.GetColor(GBufferTarget::ALBEDO_F0).image,
 			ctx.gbuffer.GetColor(GBufferTarget::DIRECT_EMISSION).image,
-			ctx.gbuffer.GetColor(GBufferTarget::VIEWZ).image
+			ctx.gbuffer.GetColor(GBufferTarget::VIEWZ).image,
+			ctx.gbuffer.GetColor(GBufferTarget::NORMAL_ROUGHNESS).image
 		};
-		VkImageMemoryBarrier composeBarriers[5] = {};
-		for (int i = 0; i < 5; i++)
+		VkImageMemoryBarrier composeBarriers[6] = {};
+		for (int i = 0; i < 6; i++)
 		{
 			composeBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
 			composeBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
@@ -302,10 +326,13 @@ void FrameRenderer::RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx)
 		vkCmdPipelineBarrier(cmd,
 		                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
 		                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-		                     0, nullptr, 0, nullptr, 5, composeBarriers);
+		                     0, nullptr, 0, nullptr, 6, composeBarriers);
 
 		ctx.composePass.Record(cmd, ctx.width, ctx.height);
+		RT_LOG("[NRD] compose dispatched (%ux%u)", ctx.width, ctx.height);
 	}
+
+	RT_LOG("[NRD] RecordNRDAndCompose end");
 }
 
 void FrameRenderer::RecordOutputTransition(VkCommandBuffer cmd, Context& ctx)

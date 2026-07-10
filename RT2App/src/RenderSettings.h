@@ -36,6 +36,8 @@ struct RenderSettings
 
 	// NRD denoiser
 	bool  nrdEnabled        = false;
+	// 0 = off (white noise), 1 = Bayer 4x4, 2 = Interleaved Gradient Noise
+	int   nrdLobeDither     = 1;
 	float nrdMaxBlurRadius = 30.0f;
 	int   nrdMaxAccumFrames = 30;
 	bool  nrdAntiFirefly    = true;

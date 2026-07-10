@@ -1,6 +1,8 @@
 #include "GPUSceneData.h"
 #include "SceneGraph.h"
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <cmath>
 
 // Build marginal and conditional CDFs for environment map importance sampling.
@@ -182,18 +184,29 @@ GPUSceneData BuildGPUSceneData(const Scene& scene)
         if (isEmissive)
         {
             int emissiveTexIdx = mat.textureIndices.z;
+
+            // Build world matrix from mesh transform (position, rotation, scale)
+            glm::mat4 worldMatrix = glm::translate(glm::mat4(1.0f), sceneMesh.position) *
+                glm::mat4_cast(glm::quat(sceneMesh.rotation)) *
+                glm::scale(glm::mat4(1.0f), glm::vec3(sceneMesh.scale));
+
             for (uint32_t t = 0; t < triCount; t++)
             {
                 uint32_t vi0 = sceneMesh.indices[t * 3 + 0] * 3;
                 uint32_t vi1 = sceneMesh.indices[t * 3 + 1] * 3;
                 uint32_t vi2 = sceneMesh.indices[t * 3 + 2] * 3;
 
+                // Object-space vertices → world space via mesh transform
                 glm::vec3 v0(sceneMesh.vertices[vi0], sceneMesh.vertices[vi0 + 1], sceneMesh.vertices[vi0 + 2]);
                 glm::vec3 v1(sceneMesh.vertices[vi1], sceneMesh.vertices[vi1 + 1], sceneMesh.vertices[vi1 + 2]);
                 glm::vec3 v2(sceneMesh.vertices[vi2], sceneMesh.vertices[vi2 + 1], sceneMesh.vertices[vi2 + 2]);
 
-                glm::vec3 edge1 = v1 - v0;
-                glm::vec3 edge2 = v2 - v0;
+                glm::vec3 w0 = glm::vec3(worldMatrix * glm::vec4(v0, 1.0f));
+                glm::vec3 w1 = glm::vec3(worldMatrix * glm::vec4(v1, 1.0f));
+                glm::vec3 w2 = glm::vec3(worldMatrix * glm::vec4(v2, 1.0f));
+
+                glm::vec3 edge1 = w1 - w0;
+                glm::vec3 edge2 = w2 - w0;
                 float area = 0.5f * std::abs(glm::length(glm::cross(edge1, edge2)));
 
                 if (area < 1e-8f)

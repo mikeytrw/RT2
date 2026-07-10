@@ -44,82 +44,84 @@ project "RT2App"
     local shaderTarget = "--target-env=vulkan1.2"
     local shaderOpt = ""
     local shaderInclude = "-I " .. shaderDir
-    -- Shared dependencies: all stages include pathtracer_shared.glsl + shader_interface.h
-    -- closesthit also includes scatter_shared.glsl
-    local shaderDeps = '"' .. shaderDir .. "/pathtracer_shared.glsl" .. '" "' .. shaderDir .. "/scatter_shared.glsl" .. '" "' .. shaderDir .. "/shader_interface.h" .. '"'
+    -- Shared dependencies (relative paths for MSBuild buildinputs — premake
+    -- tokens like %{wks.location} don't expand in buildinputs, so use
+    -- paths relative to the .vcxproj which lives in the RT2App project dir).
+    local depShared  = { "shaders/pathtracer_shared.glsl", "shaders/scatter_shared.glsl", "shaders/shader_interface.h" }
+    local depBasic   = { "shaders/shader_interface.h" }
 
     -- Per-stage custom build rules (dependency tracking via premake)
     filter {"files:shaders/raygen.rgen"}
         buildmessage "Compiling raygen.rgen"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rgen " .. shaderInclude .. " " .. shaderDir .. "/raygen.rgen -o " .. shaderDir .. "/raygen.spv" }
         buildoutputs { shaderDir .. "/raygen.spv" }
-        buildinputs { shaderDeps }
+        buildinputs { depShared }
 
     filter {"files:shaders/secondary_raygen.rgen"}
         buildmessage "Compiling secondary_raygen.rgen"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rgen " .. shaderInclude .. " " .. shaderDir .. "/secondary_raygen.rgen -o " .. shaderDir .. "/secondary_raygen.spv" }
         buildoutputs { shaderDir .. "/secondary_raygen.spv" }
-        buildinputs { shaderDeps }
+        buildinputs { depShared }
 
     filter {"files:shaders/miss.rmiss"}
         buildmessage "Compiling miss.rmiss"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rmiss " .. shaderInclude .. " " .. shaderDir .. "/miss.rmiss -o " .. shaderDir .. "/miss.spv" }
         buildoutputs { shaderDir .. "/miss.spv" }
-        buildinputs { shaderDeps }
+        buildinputs { depShared }
 
     filter {"files:shaders/shadow.rmiss"}
         buildmessage "Compiling shadow.rmiss"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rmiss " .. shaderInclude .. " " .. shaderDir .. "/shadow.rmiss -o " .. shaderDir .. "/shadow.spv" }
         buildoutputs { shaderDir .. "/shadow.spv" }
-        buildinputs { shaderDeps }
+        buildinputs { depShared }
 
     filter {"files:shaders/closesthit.rchit"}
         buildmessage "Compiling closesthit.rchit"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rchit " .. shaderInclude .. " " .. shaderDir .. "/closesthit.rchit -o " .. shaderDir .. "/closesthit.spv" }
         buildoutputs { shaderDir .. "/closesthit.spv" }
-        buildinputs { shaderDeps }
+        buildinputs { depShared }
 
     filter {"files:shaders/anyhit.rahit"}
         buildmessage "Compiling anyhit.rahit"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rahit " .. shaderInclude .. " " .. shaderDir .. "/anyhit.rahit -o " .. shaderDir .. "/anyhit.spv" }
         buildoutputs { shaderDir .. "/anyhit.spv" }
-        buildinputs { shaderDeps }
+        buildinputs { depShared }
 
     filter {"files:shaders/shadow.rahit"}
         buildmessage "Compiling shadow.rahit"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=rahit " .. shaderInclude .. " " .. shaderDir .. "/shadow.rahit -o " .. shaderDir .. "/shadowhit.spv" }
         buildoutputs { shaderDir .. "/shadowhit.spv" }
-        buildinputs { shaderDeps }
+        buildinputs { depShared }
 
     filter {"files:shaders/compose.comp"}
         buildmessage "Compiling compose.comp"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/compose.comp -o " .. shaderDir .. "/compose.spv" }
         buildoutputs { shaderDir .. "/compose.spv" }
-        buildinputs { shaderDeps }
+        buildinputs { depBasic }
 
     filter {"files:shaders/ris.comp"}
         buildmessage "Compiling ris.comp"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/ris.comp -o " .. shaderDir .. "/ris.spv" }
         buildoutputs { shaderDir .. "/ris.spv" }
-        buildinputs { '"' .. shaderDir .. "/shader_interface.h" .. '"' }
+        buildinputs { depBasic }
 
     filter {"files:shaders/raster.vert"}
         buildmessage "Compiling raster.vert"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=vert " .. shaderInclude .. " " .. shaderDir .. "/raster.vert -o " .. shaderDir .. "/raster.spv" }
         buildoutputs { shaderDir .. "/raster.spv" }
-        buildinputs { shaderDeps }
+        buildinputs { depBasic }
 
     filter {"files:shaders/raster.frag"}
         buildmessage "Compiling raster.frag"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=frag " .. shaderInclude .. " " .. shaderDir .. "/raster.frag -o " .. shaderDir .. "/rasterfrag.spv" }
         buildoutputs { shaderDir .. "/rasterfrag.spv" }
-        buildinputs { shaderDeps }
+        buildinputs { depBasic }
 
     filter {"files:shaders/gbuffer_debug.comp"}
         buildmessage "Compiling gbuffer_debug.comp"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/gbuffer_debug.comp -o " .. shaderDir .. "/gbufferdebug.spv" }
         buildoutputs { shaderDir .. "/gbufferdebug.spv" }
-        buildinputs { shaderDeps }
+        buildinputs { depBasic }
 
     -- Reset filter for the rest
     filter {}

@@ -143,7 +143,7 @@ void main()
             if (diffRad != vec3(0.0))
                 writeNRDDiffuse(pixel, diffRad, diffFactor, diffHitT, viewZ);
             else
-                writeNRDSpecular(pixel, specRad, f0, specHitT, viewZ, roughness);
+                writeNRDSpecular(pixel, specRad, vec3(f0), specHitT, viewZ, roughness);
 
             imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
         }

@@ -152,9 +152,12 @@ void main()
     float boost = camera.apertureFocal.w;
     emissive *= boost;
 
-    // F0
-    float f0Scalar = max(mix(0.04, dot(baseColor, vec3(0.2126, 0.7152, 0.0722)), metallic), 0.01);
-    vec3 diffFactor = max(baseColor * (1.0 - metallic), vec3(0.01));
+    // F0 (Fresnel reflectance at normal incidence) — vec3 for colored metals
+    vec3 F0 = mix(vec3(0.04), baseColor, metallic);
+    // Store albedo.rgb + metallic in gAlbedoF0 for NRD material factor computation.
+    // Compose pass reconstructs Rf0 = mix(0.04, albedo, metallic) and computes
+    // NRD_MaterialFactors(N, V, albedo, Rf0, roughness).
+    vec3 diffAlbedo = baseColor;
 
     // View-space Z
     vec4 viewPos = camera.worldToView * vec4(inWorldPos, 1.0);
@@ -182,16 +185,16 @@ void main()
         outNormalRoughness = vec4(octE, 1.0);  // oct-packed geo normal, roughness=1.0
         outViewZ = vec4(viewZ, 0.0, 0.0, 0.0);
         outMotion = vec4(0.0, 0.0, 0.0, 0.0);              // zero motion (emissive bypasses NRD)
-        outAlbedoF0 = vec4(1.0, 1.0, 1.0, 1.0);            // white albedo, F0=1 (no demod)
+        outAlbedoF0 = vec4(1.0, 1.0, 1.0, 1.0);            // white albedo, metallic=1 (no demod)
         outDirectEmission = vec4(emissive, 0.0);
         return;
     }
 
-    // NRD expects oct-packed normal + sqrt(roughness) (encoding=2, SQRT_LINEAR)
+    // NRD expects oct-packed normal + linear roughness (encoding=2, LINEAR)
     vec3 octNR = nrdEncodeNormalRoughness(shadingN, roughness);
     outNormalRoughness = vec4(octNR, 0.0);
     outViewZ = vec4(viewZ, 0.0, 0.0, 0.0);
     outMotion = vec4(prevUv - currUv, 0.0, 0.0);
-    outAlbedoF0 = vec4(diffFactor, f0Scalar);
+    outAlbedoF0 = vec4(diffAlbedo, metallic);
     outDirectEmission = vec4(0.0);  // non-emissive: no direct emission
 }

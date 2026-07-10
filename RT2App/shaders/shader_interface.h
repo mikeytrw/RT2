@@ -153,7 +153,7 @@ struct SIReservoir
 struct SINRDUniformData
 {
     SI_UINT nrdEnabled;  // 1 = NRD mode (1 spp, no temporal accum, write G-buffer)
-    SI_UINT pad0;
+    SI_UINT lobeDither;  // 0=off (white noise), 1=Bayer 4x4, 2=Interleaved Gradient Noise
     SI_UINT pad1;
     SI_UINT pad2;
 };

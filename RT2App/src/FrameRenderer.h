@@ -53,6 +53,7 @@ public:
 		// Render mode flags
 		bool rasterFirst;
 		bool nrdEnabled;
+		int  lobeDither;  // 0=off, 1=Bayer, 2=IGN
 		bool risEnabled;
 		uint32_t risCandidateCount;
 		int gbufferDebugMode;

@@ -11,7 +11,7 @@ layout(location = 1) rayPayloadEXT RayPayload nextPayload;
 
 // G-buffer images (set 1) — written by raster pass, read here
 // Declared in pathtracer_shared.glsl:
-//   gNormalRoughness (rgba8), gViewZ (r32f), gMotion (rg16f),
+//   gNormalRoughness (rgb10_a2), gViewZ (r32f), gMotion (rg16f),
 //   gDiffRadianceHitDist (rgba16f), gSpecRadianceHitDist (rgba16f),
 //   gAlbedoF0 (rgba16f), gDirectEmission (rgba16f)
 // Additional G-buffer images (raster-only, set 1):
@@ -102,10 +102,15 @@ void main()
     // View-space Z
     float viewZ = imageLoad(gViewZ, pixel).x;
 
-    // Albedo/F0 (demod factors)
+    // Albedo + metallic (for NRD material factor computation)
     vec4 albedoF0 = imageLoad(gAlbedoF0, pixel);
-    vec3 diffFactor = albedoF0.rgb;
-    float f0Scalar = albedoF0.a;
+    vec3 albedo = albedoF0.rgb;
+    float metallic = albedoF0.a;
+
+    // Compute NRD material factors for demodulation
+    vec3 Rf0 = mix(vec3(0.04), albedo, metallic);
+    vec3 diffFactor, specFactor;
+    nrdMaterialFactors(n, wo, albedo, Rf0, roughness, diffFactor, specFactor);
 
     // Direct emission (from raster pass)
     vec3 directEmission = imageLoad(gDirectEmission, pixel).rgb;
@@ -142,13 +147,9 @@ void main()
     if (baseColorTexIdx >= 0)
         baseColor *= texture(textures[nonuniformEXT(baseColorTexIdx)], uv).rgb;
 
-    float metallic = mat.baseColor_metallic.w;
-    int metalRoughTexIdx = mat.extraIndices.x;
-    if (metalRoughTexIdx >= 0)
-    {
-        vec3 mr = texture(textures[nonuniformEXT(metalRoughTexIdx)], uv).rgb;
-        metallic *= mr.b;
-    }
+    // Metallic: use the textured value from gAlbedoF0 (baked by raster.frag).
+    // Do NOT re-sample the metallicRoughness texture — that would double-apply.
+    // (metallic was already loaded from albedoF0.a at line 108)
 
     float ior = mat.ior;
 
@@ -160,7 +161,8 @@ void main()
     vec3 rayDir = -wo;  // incoming ray direction
     ScatterResult scatter = scatterPrimaryHit(
         mat, baseColor, metallic, roughness, ior,
-        n, wo, NdotV, rayDir, frontFace, rngState);
+        n, wo, NdotV, rayDir, frontFace, rngState,
+        uvec2(pixel.xy), int(nrdData.lobeDither));
 
     // ---- Check termination conditions ----
     uint maxBounces = uint(camera.viewportSPP.w);
@@ -224,14 +226,45 @@ void main()
     // ---- NRD output ----
     if (nrdMode)
     {
-        // Route radiance based on lobe type
-        if (scatter.lobeType < 0.5)
-            writeNRDDiffuse(pixel, totalRad, diffFactor, secondaryHitT, viewZ);
-        else
-            writeNRDSpecular(pixel, totalRad, f0Scalar, secondaryHitT, viewZ, roughness);
+        // NEE is diffuse-only (evalDiffuseBRDF in NEE only evaluates the
+        // diffuse term). It must always go to the diffuse NRD signal,
+        // NOT be routed by lobe type. Only the indirect radiance from
+        // the secondary ray follows the selected lobe.
+        vec3 diffNee = directLighting;
+        vec3 diffIndirect = vec3(0.0);
+        vec3 specIndirect = vec3(0.0);
+        float diffHitT = secondaryHitT;
+        float specHitT = secondaryHitT;
 
+        if (scatter.lobeType < 0.5)
+        {
+            // Diffuse lobe: indirect goes to diffuse
+            diffIndirect = indirectRad;
+        }
+        else
+        {
+            // Specular lobe: indirect goes to specular
+            specIndirect = indirectRad;
+        }
+
+        vec3 diffRad = diffNee + diffIndirect;
+        if (dot(diffRad, diffRad) > 0.0)
+            writeNRDDiffuse(pixel, diffRad, diffFactor, diffHitT, viewZ);
+        else
+        {
+            imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
+        }
+
+        if (dot(specIndirect, specIndirect) > 0.0)
+            writeNRDSpecular(pixel, specIndirect, specFactor, specHitT, viewZ, roughness);
+        else
+        {
+            imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
+        }
+
+        vec3 beautyRad = diffRad + specIndirect;
         imageStore(gDirectEmission, pixel, vec4(0.0));
-        imageStore(outputImage, pixel, vec4(totalRad, 1.0));
+        imageStore(outputImage, pixel, vec4(beautyRad, 1.0));
     }
     else
     {

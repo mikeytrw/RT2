@@ -185,7 +185,8 @@ void main()
 
     ScatterResult scatter = scatterPrimaryHit(
         mat, baseColor, metallic, roughness, ior,
-        n, wo, NdotV, rayDir, frontFace, rngState);
+        n, wo, NdotV, rayDir, frontFace, rngState,
+        gl_LaunchIDEXT.xy, 0);
 
     // Store hitT for secondary_raygen (depth=1 = first bounce after raster primary)
     if (depth == 1u)

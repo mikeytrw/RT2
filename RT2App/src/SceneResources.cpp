@@ -380,9 +380,10 @@ void SceneResources::CreateInstanceTransformBuffer(const GpuDevice& dev)
 	if (bufferSize == 0) bufferSize = sizeof(glm::mat4);
 
 	GpuResources::CreateBuffer(dev, bufferSize,
-	             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+	             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 	             m_InstanceTransformBuffer, m_InstanceTransformBufferMemory);
+	m_InstanceTransformBufferSize = bufferSize;
 
 	std::vector<glm::mat4> transforms(instanceCount);
 	for (size_t i = 0; i < instanceCount; i++)
@@ -397,7 +398,7 @@ void SceneResources::CreateInstanceTransformBuffer(const GpuDevice& dev)
 	if (m_InstanceTransformPrevBuffer == VK_NULL_HANDLE)
 	{
 		GpuResources::CreateBuffer(dev, bufferSize,
-		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
 		             m_InstanceTransformPrevBuffer, m_InstanceTransformPrevBufferMemory);
 		vkMapMemory(device, m_InstanceTransformPrevBufferMemory, 0, bufferSize, 0, &data);
@@ -423,6 +424,34 @@ void SceneResources::CreateInstanceTransformBuffer(const GpuDevice& dev)
 
 	RT_LOG("[RT2] Instance transform buffer: %d instances (%zu bytes)",
 	       (int)instanceCount, (size_t)bufferSize);
+
+	m_NeedsTransformAdvance = true;
+}
+
+void SceneResources::AdvanceTransformBuffers(VkCommandBuffer cmd)
+{
+	if (m_InstanceTransformBuffer == VK_NULL_HANDLE ||
+	    m_InstanceTransformPrevBuffer == VK_NULL_HANDLE)
+		return;
+
+	VkBufferCopy region = {};
+	region.size = m_InstanceTransformBufferSize;
+	vkCmdCopyBuffer(cmd, m_InstanceTransformBuffer,
+	                m_InstanceTransformPrevBuffer, 1, &region);
+
+	VkBufferMemoryBarrier barrier = {};
+	barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+	barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.buffer = m_InstanceTransformPrevBuffer;
+	barrier.offset = 0;
+	barrier.size = VK_WHOLE_SIZE;
+	vkCmdPipelineBarrier(cmd,
+	                     VK_PIPELINE_STAGE_TRANSFER_BIT,
+	                     VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+	                     0, 0, nullptr, 1, &barrier, 0, nullptr);
 }
 
 void SceneResources::CreateTextures(const GpuDevice& dev, const std::vector<SceneTexture>& textures)

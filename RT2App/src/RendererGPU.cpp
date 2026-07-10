@@ -263,20 +263,26 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 
 void RendererGPU::SetSceneKeepTextures(const GPUSceneData& sceneData)
 {
+	RT_LOG("[SetSceneKeepTextures] enter: meshes=%zu instances=%zu lights=%zu",
+	       sceneData.meshes.size(), sceneData.instances.size(), sceneData.lights.size());
 	m_Scene.SetSceneKeepTextures(m_Device, sceneData);
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
+	m_ComposeDescriptorSetCached = false;
 
 	if (m_Scene.IsValid() && !m_Scene.NeedsASRebuild() && !m_Scene.IsTextureUploadPending())
 	{
 		RT_LOG("[SetSceneKeepTextures] updating descriptor set");
 		UpdatePathTraceDescriptorSet();
 	}
+	RT_LOG("[SetSceneKeepTextures] done");
 }
 
 void RendererGPU::SetScene(const GPUSceneData& sceneData)
 {
+	RT_LOG("[SetScene] enter: meshes=%zu instances=%zu lights=%zu",
+	       sceneData.meshes.size(), sceneData.instances.size(), sceneData.lights.size());
 	m_Scene.SetScene(m_Device, sceneData);
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
@@ -326,6 +332,8 @@ void RendererGPU::ResetAccumulation()
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
 	m_HasPrevMatrices = false;
+	m_PrevViewToClipForFrame = glm::mat4(1.0f);
+	m_PrevWorldToViewForFrame = glm::mat4(1.0f);
 }
 
 void RendererGPU::ApplySettings(const RenderSettings& newSettings)
@@ -340,6 +348,7 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	    m_Settings.envIntensity != newSettings.envIntensity ||
 	    m_Settings.rasterFirst != newSettings.rasterFirst ||
 	    m_Settings.nrdEnabled != newSettings.nrdEnabled ||
+	    m_Settings.nrdLobeDither != newSettings.nrdLobeDither ||
 	    m_Settings.nrdMaxBlurRadius != newSettings.nrdMaxBlurRadius ||
 	    m_Settings.nrdMaxAccumFrames != newSettings.nrdMaxAccumFrames ||
 	    m_Settings.nrdAntiFirefly != newSettings.nrdAntiFirefly ||
@@ -399,8 +408,10 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	ubo.inverseView = camera.GetInverseView();
 	ubo.viewToClip = camera.GetProjection();
 	ubo.worldToView = camera.GetView();
-	ubo.viewToClipPrev = m_HasPrevMatrices ? m_PrevViewToClip : ubo.viewToClip;
-	ubo.worldToViewPrev = m_HasPrevMatrices ? m_PrevWorldToView : ubo.worldToView;
+	glm::mat4 prevViewToClip = m_HasPrevMatrices ? m_PrevViewToClip : camera.GetProjection();
+	glm::mat4 prevWorldToView = m_HasPrevMatrices ? m_PrevWorldToView : camera.GetView();
+	ubo.viewToClipPrev = prevViewToClip;
+	ubo.worldToViewPrev = prevWorldToView;
 
 	// Update previous frame matrices for next frame
 	m_PrevViewToClip = ubo.viewToClip;
@@ -408,6 +419,8 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	m_HasPrevMatrices = true;
 
 	m_CameraUBOData = ubo; // stash for vkCmdUpdateBuffer in Render()
+	m_PrevViewToClipForFrame = prevViewToClip;
+	m_PrevWorldToViewForFrame = prevWorldToView;
 }
 
 void RendererGPU::Render(const Camera& camera)
@@ -503,6 +516,7 @@ void RendererGPU::Render(const Camera& camera)
 		m_Height,
 		m_Settings.rasterFirst,
 		m_Settings.nrdEnabled,
+		m_Settings.nrdLobeDither,
 		m_Settings.risEnabled,
 		m_Settings.risCandidateCount,
 		m_Settings.gbufferDebugMode,
@@ -515,8 +529,8 @@ void RendererGPU::Render(const Camera& camera)
 		m_NRDFrameIndex,
 		m_NRDNeedsReset,
 		m_HasPrevMatrices,
-		m_PrevViewToClip,
-		m_PrevWorldToView,
+		m_PrevViewToClipForFrame,
+		m_PrevWorldToViewForFrame,
 		m_ComposeDescriptorSetCached,
 		camera
 	};
@@ -524,7 +538,10 @@ void RendererGPU::Render(const Camera& camera)
 	FrameRenderer::RecordFrame(cmd, ctx);
 
 	// ---- Submit this frame's work (async, no wait) ----
+	RT_LOG("[Render] submitting frame %d (NRD=%d composeCached=%d)",
+	       m_FrameIndex, m_Settings.nrdEnabled ? 1 : 0, m_ComposeDescriptorSetCached ? 1 : 0);
 	frame.Submit(m_Device.queue);
+	RT_LOG("[Render] submit ok, frame %d", m_FrameIndex);
 
 	m_CurrentFrame = (m_CurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	m_FrameIndex++;

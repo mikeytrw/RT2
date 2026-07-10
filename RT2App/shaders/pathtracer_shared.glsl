@@ -126,10 +126,8 @@ layout(set = 0, binding = SI_BINDING_TLAS) uniform accelerationStructureEXT topL
 // ---- NRD G-buffer outputs (set 1) -------------------------------------------
 // Storage images written by closesthit at the primary hit (depth=0) and
 // read by the NRD denoiser. When NRD is disabled, these are unused.
-// NRD expects A2B10G10R10_UNORM_PACK32 + oct-packed normals. GLSL storage image
-// format qualifiers don't support A2B10G10R10, so we use rgba8ui and pack/unpack
-// ourselves (the Vulkan image is created with the actual format).
-layout(set = 1, binding = SI_BINDING_G_NORMAL_ROUGHNESS, rgba8) uniform image2D gNormalRoughness;  // xyz = oct-packed normal+roughness, w = unused
+// NRD expects A2B10G10R10_UNORM_PACK32 + oct-packed normals.
+layout(set = 1, binding = SI_BINDING_G_NORMAL_ROUGHNESS, rgb10_a2) uniform image2D gNormalRoughness;  // xyz = oct-packed normal+roughness, w = unused
 layout(set = 1, binding = SI_BINDING_G_VIEWZ, r32f)  uniform image2D gViewZ;            // view-space Z (fp32 — fp16 overflows for large scenes)
 layout(set = 1, binding = SI_BINDING_G_MOTION, rg16f) uniform image2D gMotion;           // 2D screen-space motion vector
 layout(set = 1, binding = SI_BINDING_G_DIFF_RADIANCE, rgba16f) uniform image2D gDiffRadianceHitDist; // rgb = diffuse radiance, a = hitT
@@ -143,7 +141,7 @@ layout(set = 1, binding = SI_BINDING_G_DIRECT_EMISSION, rgba16f) uniform image2D
 layout(set = 1, binding = SI_BINDING_NRD_UBO) uniform NRDUniform
 {
     uint nrdEnabled;      // 1 = NRD mode (1 spp, no temporal accum, write G-buffer)
-    uint pad0;
+    uint lobeDither;      // 0=off (white noise), 1=Bayer 4x4, 2=Interleaved Gradient Noise
     uint pad1;
     uint pad2;
 } nrdData;
@@ -424,6 +422,7 @@ float reflectance(float cosine, float refIdx)
 // The pack stores: xy = octahedral normal, z = signed roughness (encodes n.z sign).
 
 // Encode: N (unit normal, world space) + linear roughness → vec3 for imageStore
+// NRD_ROUGHNESS_ENCODING=1 (LINEAR): stores linear roughness directly.
 vec3 nrdEncodeNormalRoughness(vec3 n, float roughness)
 {
     n /= abs(n.x) + abs(n.y) + abs(n.z);
@@ -433,7 +432,7 @@ vec3 nrdEncodeNormalRoughness(vec3 n, float roughness)
     r.x = n.x * 0.5 + r.y;
     r.y -= n.x * 0.5;
 
-    // SQRT_LINEAR encoding: store sqrt(roughness) in the z channel
+    // LINEAR encoding: store linear roughness in the z channel
     roughness = max(roughness, 1.5 / 512.0); // can't be 0 to not ruin n.z sign bit
     float s = n.z < 0.0 ? -roughness : roughness;
     r.z = s * 0.5 + 0.5;
@@ -452,13 +451,10 @@ vec4 nrdDecodeNormalRoughness(vec3 p)
     r.z = t < 0.0 ? -1.0 : 1.0;
     r.z *= 1.0 - abs(r.x) - abs(r.y);
 
-    r.w = abs(t); // sqrt-linear roughness (squared to get linear)
+    r.w = abs(t); // linear roughness (NRD_ROUGHNESS_ENCODING=1 = LINEAR)
 
     // Normalize normal
     r.xyz = normalize(r.xyz);
-
-    // SQRT_LINEAR decode: linear roughness = (stored value)^2
-    r.w = clamp(r.w * r.w, 0.0, 1.0);
 
     return r;
 }
@@ -499,6 +495,53 @@ float nrdGetNormHitDist(float hitDist, float viewZ, vec3 hitDistParams, float ro
 {
     float f = nrdGetHitDistanceNormalization(viewZ, hitDistParams, roughness);
     return clamp(hitDist / f, 0.0, 1.0);
+}
+
+// NRD environment term (Ray Tracing Gems Ch32, Eq 4) — GGX VNDF + Schlick.
+// Ported from NRD.hlsli _NRD_EnvironmentTerm_Rtg.
+// Used by NRD_MaterialFactors for proper demodulation/remodulation.
+vec3 nrdEnvironmentTerm(vec3 Rf0, float NoV, float roughness)
+{
+    float m = clamp(roughness * roughness, 0.0, 1.0);
+
+    vec4 X = vec4(1.0, NoV, NoV * NoV, NoV * NoV * NoV);
+    vec4 Y = vec4(1.0, m, m * m, m * m * m);
+
+    mat2 M1 = mat2(0.99044, -1.28514, 1.29678, -0.755907);
+    mat3 M2 = mat3(1.0, 2.92338, 59.4188, 20.3225, -27.0302, 222.592, 121.563, 626.13, 316.627);
+
+    mat2 M3 = mat2(0.0365463, 3.32707, 9.0632, -9.04756);
+    mat3 M4 = mat3(1.0, 3.59685, -1.36772, 9.04401, -16.3174, 9.22949, 5.56589, 19.7886, -20.2123);
+
+    vec2 M1X = M1 * X.xy;
+    vec3 M2X = M2 * vec3(X.xyw);
+    float bias = dot(M1X, Y.xy) / max(dot(M2X, Y.xyw), 1e-6);
+
+    vec2 M3X = M3 * X.xy;
+    vec3 M4X = M4 * vec3(X.xzw);
+    float scale = dot(M3X, Y.xy) / max(dot(M4X, Y.xyw), 1e-6);
+
+    return clamp(Rf0 * scale + vec3(bias), 0.0, 1.0);
+}
+
+// NRD material factors (NRD.hlsli:728-745).
+// diffFactor = (1 - Fenv) * albedo, clamped to [MIN_SCALE, 1]
+// specFactor = Fenv * lerp(ROUGHNESS_FACTOR_MIN_SCALE, 1, roughness), clamped to [MIN_SCALE, 1]
+// Both demodulation (before NRD) and remodulation (after NRD) must use the same factors.
+#define NRD_MATERIAL_FACTOR_MIN_SCALE 0.01
+#define NRD_ROUGHNESS_FACTOR_MIN_SCALE 0.1
+
+void nrdMaterialFactors(vec3 N, vec3 V, vec3 albedo, vec3 Rf0, float roughness,
+                       out vec3 diffFactor, out vec3 specFactor)
+{
+    float NoV = abs(dot(N, V));
+    vec3 Fenv = nrdEnvironmentTerm(Rf0, NoV, roughness);
+
+    diffFactor = (1.0 - Fenv) * albedo;
+    diffFactor = mix(vec3(NRD_MATERIAL_FACTOR_MIN_SCALE), vec3(1.0), diffFactor);
+
+    specFactor = Fenv * mix(vec3(NRD_ROUGHNESS_FACTOR_MIN_SCALE), vec3(1.0), roughness);
+    specFactor = mix(vec3(NRD_MATERIAL_FACTOR_MIN_SCALE), vec3(1.0), specFactor);
 }
 
 // ---- Cook-Torrance GGX BRDF (M7) -------------------------------------------
@@ -807,9 +850,9 @@ void writeNRDDiffuse(ivec2 pixel, vec3 radiance, vec3 diffFactor, float hitT, fl
 
 // Pack specular lobe NRD output: demodulate, clamp fireflies, normalize hit dist,
 // convert to YCoCg, store to gSpecRadianceHitDist. Zeros diffuse.
-void writeNRDSpecular(ivec2 pixel, vec3 radiance, float f0, float hitT, float viewZ, float roughness)
+void writeNRDSpecular(ivec2 pixel, vec3 radiance, vec3 specFactor, float hitT, float viewZ, float roughness)
 {
-    vec3 demod = clamp(radiance / vec3(max(f0, 0.01)), vec3(0.0), vec3(NRD_FIREFLY_CLAMP));
+    vec3 demod = clamp(radiance / max(specFactor, vec3(0.01)), vec3(0.0), vec3(NRD_FIREFLY_CLAMP));
     float normHitT = nrdGetNormHitDist(hitT, viewZ, NRD_HIT_DIST_PARAMS, roughness);
     vec3 ycocg = linearToYCoCg(demod);
     imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));

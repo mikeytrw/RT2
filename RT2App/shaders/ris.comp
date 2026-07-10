@@ -127,7 +127,7 @@ layout(set = 0, binding = SI_BINDING_RESERVOIR, std430) buffer ReservoirBuffer
 layout(set = 1, binding = SI_BINDING_G_PRIM_HIT, rgba32f) uniform readonly image2D gPrimHit;
 layout(set = 1, binding = SI_BINDING_G_PRIM_GEO_NORMAL, rgba8) uniform readonly image2D gPrimGeoNormal;
 layout(set = 1, binding = SI_BINDING_G_PRIM_UV, rg16f) uniform readonly image2D gPrimUV;
-layout(set = 1, binding = SI_BINDING_G_NORMAL_ROUGHNESS, rgba8) uniform readonly image2D gNormalRoughness;
+layout(set = 1, binding = SI_BINDING_G_NORMAL_ROUGHNESS, rgb10_a2) uniform readonly image2D gNormalRoughness;
 layout(set = 1, binding = SI_BINDING_G_ALBEDO_F0, rgba16f) uniform readonly image2D gAlbedoF0;
 layout(set = 1, binding = SI_BINDING_G_DIRECT_EMISSION, rgba16f) uniform readonly image2D gDirectEmission;
 
@@ -170,7 +170,6 @@ vec4 nrdDecodeNormalRoughness(vec3 p)
     r.z *= 1.0 - abs(r.x) - abs(r.y);
     r.w = abs(t);
     r.xyz = normalize(r.xyz);
-    r.w = clamp(r.w * r.w, 0.0, 1.0);
     return r;
 }
 

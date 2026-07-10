@@ -155,6 +155,11 @@ private:
 	glm::mat4 m_PrevWorldToView = glm::mat4(1.0f);
 	bool m_HasPrevMatrices = false;
 
+	// Prev matrices captured for the current frame (before UpdateCameraUBO
+	// overwrites m_Prev* with current). Passed to FrameRenderer for NRD.
+	glm::mat4 m_PrevViewToClipForFrame = glm::mat4(1.0f);
+	glm::mat4 m_PrevWorldToViewForFrame = glm::mat4(1.0f);
+
 	// Frames in flight ring
 	std::array<FrameContext, MAX_FRAMES_IN_FLIGHT> m_Frames;
 	uint32_t m_CurrentFrame = 0;

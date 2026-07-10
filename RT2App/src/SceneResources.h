@@ -75,6 +75,12 @@ public:
 	void ClearASRebuildFlag() { m_NeedsASRebuild = false; }
 	bool ASJustBuilt() const { return m_ASJustBuilt; }
 	void ClearASJustBuilt() { m_ASJustBuilt = false; }
+	bool NeedsTransformAdvance() const { return m_NeedsTransformAdvance; }
+	void ClearTransformAdvance() { m_NeedsTransformAdvance = false; }
+
+	// Copy current transform buffer → prev transform buffer (via cmd buffer).
+	// Call on the frame after a scene edit so motion vectors go to zero.
+	void AdvanceTransformBuffers(VkCommandBuffer cmd);
 
 	const GPUSceneData& GetScene() const { return m_CurrentScene; }
 
@@ -136,6 +142,7 @@ private:
 	VkDeviceMemory m_InstanceTransformBufferMemory = VK_NULL_HANDLE;
 	VkBuffer m_InstanceTransformPrevBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_InstanceTransformPrevBufferMemory = VK_NULL_HANDLE;
+	VkDeviceSize m_InstanceTransformBufferSize = 0;
 
 	// Per-instance material index
 	VkBuffer m_InstanceMaterialIndexBuffer = VK_NULL_HANDLE;
@@ -159,6 +166,7 @@ private:
 	AccelerationStructure m_AS;
 	bool m_NeedsASRebuild = false;
 	bool m_ASJustBuilt = false;
+	bool m_NeedsTransformAdvance = false;
 
 	// Current scene data (CPU-side mirror)
 	GPUSceneData m_CurrentScene;
