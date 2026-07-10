@@ -118,7 +118,7 @@ struct Reservoir
     uint  pad1;
 };
 
-layout(set = 0, binding = SI_BINDING_RESERVOIR, std430) buffer ReservoirBuffer
+layout(set = 0, binding = SI_BINDING_RESERVOIR_HISTORY, std430) buffer ReservoirBuffer
 {
     Reservoir reservoirs[];
 };

@@ -18,7 +18,7 @@
 #include "RenderSettings.h"
 #include "SceneResources.h"
 #include "ReservoirResources.h"
-#include "RISPass.h"
+#include "ReSTIRPass.h"
 #include "GpuResources.h"
 #include "FrameContext.h"
 #include <array>
@@ -138,10 +138,10 @@ private:
 	ComposePass m_ComposePass;
 	bool m_ComposeDescriptorSetCached = false;
 
-	// RIS (Resampled Importance Sampling) pass + reservoir resources
-	RISPass m_RISPass;
+	// ReSTIR DI (Reservoir-based Resampling for Direct Illumination) pass + resources
+	ReSTIRPass m_ReSTIRPass;
 	ReservoirResources m_Reservoirs;
-	bool m_RISDescriptorSetCached = false;
+	bool m_ReSTIRHistoryInvalidated = true;  // set on resize/scene change/enable toggle
 
 	// Raster pass (primary visibility G-buffer)
 	RasterPass m_RasterPass;

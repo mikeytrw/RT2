@@ -22,7 +22,9 @@ struct CLIArgs
 	bool validate = false;        // enable Vulkan validation layers
 	bool syncValidate = false;    // enable synchronization validation
 	bool rasterFirst = false;      // raster-first hybrid path
-	bool ris = false;              // enable RIS (Resampled Importance Sampling)
+	bool ris = false;              // enable ReSTIR DI (backward compat alias)
+	bool restir = false;           // enable ReSTIR DI
+	int restirCandidates = 0;     // ReSTIR fresh candidate count override (0 = use default)
 	int gbufferDebug = -1;        // G-buffer debug view mode (-1 = off)
 
 	bool hasScene() const { return !scenePath.empty(); }
@@ -90,7 +92,16 @@ struct CLIArgs
 		}
 		else if (strcmp(a, "--ris") == 0)
 		{
-			args.ris = true;
+			args.ris = true;  // backward compat
+			args.restir = true;
+		}
+		else if (strcmp(a, "--restir") == 0)
+		{
+			args.restir = true;
+		}
+		else if (strcmp(a, "--restir-candidates") == 0)
+		{
+			if (const char* v = next()) args.restirCandidates = std::max(1, std::atoi(v));
 		}
 			else if (strcmp(a, "--headless") == 0)
 			{
@@ -129,7 +140,9 @@ struct CLIArgs
 				printf("  --bounces <N>        Max bounces override\n");
 				printf("  --nrd                Enable NRD denoiser\n");
 				printf("  --raster-first       Enable raster-first hybrid path\n");
-				printf("  --ris                Enable RIS (requires raster-first)\n");
+				printf("  --ris                Enable ReSTIR DI (alias for --restir, requires raster-first)\n");
+			printf("  --restir             Enable ReSTIR DI\n");
+			printf("  --restir-candidates <N>  ReSTIR fresh candidate count\n");
 		printf("  --gbuffer-debug <N>  G-buffer debug view mode\n");
 		printf("  --headless           Render N frames, save screenshot, exit\n");
 				printf("  --list               Print what would be loaded, then exit\n");

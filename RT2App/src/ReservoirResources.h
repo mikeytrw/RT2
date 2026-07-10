@@ -6,19 +6,22 @@
 
 struct GpuDevice;
 
-// ReservoirResources — owns the ping-pong per-pixel reservoir SSBOs used by
-// RIS (Phase 1) and ReSTIR (future spatial/temporal reuse).
+// ReservoirResources — owns per-pixel ReSTIR DI reservoir SSBOs + surface history.
 //
-// Two buffers: `current` (written by RIS pass, read by shading pass) and
-// `prev` (read by future temporal reuse pass, written by end-of-frame swap).
-// Phase 1 only uses `current`; `prev` is allocated up-front to avoid a
-// resize/rework churn when temporal reuse lands.
+// Three buffers:
+//   history  — previous frame's final reservoir (read by temporal, written by spatial)
+//   scratch  — temporal output / spatial input (written by temporal, read by spatial)
+//   surfaceHistory — per-pixel receiver metadata for temporal validation
 //
-// Each buffer holds width*height SIReservoir entries (32 bytes/pixel).
+// No CPU-side swapping: history is overwritten by the spatial pass each frame,
+// and scratch is overwritten by the temporal pass. This avoids descriptor rewrites.
+//
+// Each reservoir buffer holds width*height SIReservoir entries (32 bytes/pixel).
+// Surface history holds width*height SISurfaceHistory entries (16 bytes/pixel).
 // Resized on viewport change; callers should check IsValid() + MatchesSize()
-// before dispatching the RIS pass.
+// before dispatching the ReSTIR passes.
 //
-// Memory: 2 * width * height * 32 bytes. At 1080p: ~16.6 MB total.
+// Memory: 2 * w * h * 32 + w * h * 16 bytes. At 1080p: ~24.9 MB total.
 // Buffers are device-local (not host-visible) — written by compute shaders.
 class ReservoirResources
 {
@@ -29,15 +32,10 @@ public:
 	ReservoirResources(const ReservoirResources&) = delete;
 	ReservoirResources& operator=(const ReservoirResources&) = delete;
 
-	// Create (or recreate) both buffers for the given viewport dimensions.
-	// Destroys any existing buffers first. Safe to call with width/height=0
-	// (results in IsValid()==false).
 	void Create(const GpuDevice& dev, uint32_t width, uint32_t height);
-
-	// Destroy both buffers. Safe to call on uncreated state.
 	void Destroy();
 
-	bool IsValid() const { return m_CurrentBuffer != VK_NULL_HANDLE; }
+	bool IsValid() const { return m_HistoryBuffer != VK_NULL_HANDLE; }
 	bool MatchesSize(uint32_t width, uint32_t height) const
 		{ return m_Width == width && m_Height == height; }
 
@@ -45,23 +43,26 @@ public:
 	uint32_t GetHeight() const { return m_Height; }
 	VkDeviceSize GetBufferSize() const { return m_BufferSize; }
 
-	VkBuffer GetCurrentBuffer() const { return m_CurrentBuffer; }
-	VkBuffer GetPrevBuffer()    const { return m_PrevBuffer; }
+	VkBuffer GetHistoryBuffer() const { return m_HistoryBuffer; }
+	VkBuffer GetScratchBuffer() const { return m_ScratchBuffer; }
+	VkBuffer GetSurfaceHistoryBuffer() const { return m_SurfaceHistoryBuffer; }
 
-	// Swap current ↔ prev. Called at end of frame (after shading pass) so the
-	// next frame's temporal reuse pass can read this frame's reservoirs as history.
-	// No-op if not created.
-	void Swap();
+	// Clear history + surface history buffers (fill with zeros).
+	// Called on resize, scene change, camera cut, and ReSTIR enable/disable.
+	void ClearHistory(VkCommandBuffer cmd);
 
 private:
 	GpuDevice const* m_Device = nullptr;
 
-	VkBuffer m_CurrentBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_CurrentBufferMemory = VK_NULL_HANDLE;
-	VkBuffer m_PrevBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_PrevBufferMemory = VK_NULL_HANDLE;
+	VkBuffer m_HistoryBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_HistoryBufferMemory = VK_NULL_HANDLE;
+	VkBuffer m_ScratchBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_ScratchBufferMemory = VK_NULL_HANDLE;
+	VkBuffer m_SurfaceHistoryBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_SurfaceHistoryBufferMemory = VK_NULL_HANDLE;
 
 	uint32_t m_Width = 0;
 	uint32_t m_Height = 0;
 	VkDeviceSize m_BufferSize = 0;
+	VkDeviceSize m_SurfaceHistorySize = 0;
 };

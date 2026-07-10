@@ -20,8 +20,8 @@ void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 
 	RecordRasterPass(cmd, ctx);
 	RT_LOG("[Frame] raster done");
-	RecordRISPass(cmd, ctx);
-	RT_LOG("[Frame] RIS done");
+	RecordReSTIRPass(cmd, ctx);
+	RT_LOG("[Frame] ReSTIR done");
 	RecordPathTraceOrDebug(cmd, ctx);
 	RT_LOG("[Frame] pathtrace/debug done");
 	RecordOutputTransition(cmd, ctx);
@@ -161,37 +161,94 @@ void FrameRenderer::RecordRasterPass(VkCommandBuffer cmd, Context& ctx)
 	                     0, nullptr, 0, nullptr, 8, postRasterBarriers);
 }
 
-void FrameRenderer::RecordRISPass(VkCommandBuffer cmd, Context& ctx)
+void FrameRenderer::RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx)
 {
-	// RIS is raster-first mode only (needs G-buffer). Skip if disabled,
-	// pipeline unavailable, or no lights (CPU-side skip per plan).
-	if (!ctx.risEnabled || !ctx.risPass.IsAvailable() || !ctx.reservoirs.IsValid())
+	// ReSTIR is raster-first mode only (needs G-buffer). Skip if disabled,
+	// pipeline unavailable, or no reservoir buffers.
+	if (!ctx.restirEnabled || !ctx.restirPass.IsAvailable() || !ctx.reservoirs.IsValid())
 		return;
 	if (!ctx.rasterFirst)
 		return;
 
-	// Dispatch the RIS compute pass. G-buffer images are already in GENERAL
-	// layout with SHADER_READ access (post-raster barrier above).
-	ctx.risPass.Record(cmd, ctx.width, ctx.height,
-	                  ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
-	                  ctx.risCandidateCount);
+	VkBuffer historyBuf = ctx.reservoirs.GetHistoryBuffer();
+	VkBuffer scratchBuf = ctx.reservoirs.GetScratchBuffer();
+	VkBuffer surfaceHistBuf = ctx.reservoirs.GetSurfaceHistoryBuffer();
 
-	// Barrier: reservoir SSBO write (compute) → RT shader read.
-	// The shading pass (secondary_raygen) reads reservoirs[] via set 0
-	// binding SI_BINDING_RESERVOIR.
-	VkBufferMemoryBarrier reservoirBarrier = {};
-	reservoirBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-	reservoirBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-	reservoirBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	reservoirBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	reservoirBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	reservoirBarrier.buffer = ctx.reservoirs.GetCurrentBuffer();
-	reservoirBarrier.offset = 0;
-	reservoirBarrier.size = VK_WHOLE_SIZE;
+	// 1. Barrier: history + surfaceHistory (previous frame's spatial/temporal write) → temporal read
+	VkBufferMemoryBarrier temporalPreBarriers[3] = {};
+	for (int i = 0; i < 3; i++)
+	{
+		temporalPreBarriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		temporalPreBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		temporalPreBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		temporalPreBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		temporalPreBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	}
+	temporalPreBarriers[0].buffer = historyBuf;
+	temporalPreBarriers[0].size = ctx.reservoirs.GetBufferSize();
+	temporalPreBarriers[1].buffer = surfaceHistBuf;
+	temporalPreBarriers[1].size = ctx.reservoirs.GetBufferSize() / 2; // surfaceHistory is 16 bytes/pixel vs 32
+
+	// Also need scratch → temporal write barrier
+	temporalPreBarriers[2].buffer = scratchBuf;
+	temporalPreBarriers[2].size = ctx.reservoirs.GetBufferSize();
+	temporalPreBarriers[2].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	temporalPreBarriers[2].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+	vkCmdPipelineBarrier(cmd,
+	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+	                     0, nullptr, 2, temporalPreBarriers, 0, nullptr);
+
+	// 2. Dispatch temporal pass: history → scratch
+	ctx.restirPass.RecordTemporal(cmd, ctx.width, ctx.height,
+	                              ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
+	                              ctx.restirPC);
+
+	// 3. Barrier: scratch (temporal write) → spatial read
+	//    + history (temporal read) → spatial write
+	//    + surfaceHistory (temporal write) → next frame's temporal read (stays)
+	VkBufferMemoryBarrier spatialPreBarriers[2] = {};
+	for (int i = 0; i < 2; i++)
+	{
+		spatialPreBarriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		spatialPreBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		spatialPreBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	}
+	spatialPreBarriers[0].buffer = scratchBuf;
+	spatialPreBarriers[0].size = ctx.reservoirs.GetBufferSize();
+	spatialPreBarriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	spatialPreBarriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+	spatialPreBarriers[1].buffer = historyBuf;
+	spatialPreBarriers[1].size = ctx.reservoirs.GetBufferSize();
+	spatialPreBarriers[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	spatialPreBarriers[1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+	vkCmdPipelineBarrier(cmd,
+	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+	                     0, nullptr, 2, spatialPreBarriers, 0, nullptr);
+
+	// 4. Dispatch spatial pass: scratch → history
+	ctx.restirPass.RecordSpatial(cmd, ctx.width, ctx.height,
+	                             ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
+	                             ctx.restirPC);
+
+	// 5. Barrier: history (spatial write) → RT shader read
+	VkBufferMemoryBarrier postBarrier = {};
+	postBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	postBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	postBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	postBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	postBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	postBarrier.buffer = historyBuf;
+	postBarrier.offset = 0;
+	postBarrier.size = ctx.reservoirs.GetBufferSize();
 	vkCmdPipelineBarrier(cmd,
 	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 	                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0,
-	                     0, nullptr, 1, &reservoirBarrier, 0, nullptr);
+	                     0, nullptr, 1, &postBarrier, 0, nullptr);
 }
 
 void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)

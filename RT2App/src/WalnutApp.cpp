@@ -312,25 +312,32 @@ public:
 	ImGui::EndDisabled();
 	ImGui::Separator();
 
-	// RIS (Resampled Importance Sampling) — raster-first only
-	bool risAvailable = m_Settings.rasterFirst;
-	if (!risAvailable && m_Settings.risEnabled)
+	// ReSTIR DI (Reservoir-based Resampling for Direct Illumination) — raster-first only
+	bool restirAvailable = m_Settings.rasterFirst;
+	if (!restirAvailable && m_Settings.restirEnabled)
 	{
-		m_Settings.risEnabled = false;
+		m_Settings.restirEnabled = false;
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
-	ImGui::BeginDisabled(!risAvailable);
-	if (ImGui::Checkbox("RIS (Resampled Importance Sampling)", &m_Settings.risEnabled))
+	ImGui::BeginDisabled(!restirAvailable);
+	if (ImGui::Checkbox("ReSTIR DI", &m_Settings.restirEnabled))
 		m_RendererGPU.ApplySettings(m_Settings);
-	if (m_Settings.risEnabled)
+	if (m_Settings.restirEnabled)
 	{
 		ImGui::Indent();
-		int m = (int)m_Settings.risCandidateCount;
-		if (ImGui::SliderInt("Candidates (M)", &m, 1, 32))
-		{
-			m_Settings.risCandidateCount = (uint32_t)m;
-			m_RendererGPU.ApplySettings(m_Settings);
-		}
+		int m = (int)m_Settings.restirFreshCandidates;
+		if (ImGui::SliderInt("Fresh Candidates (M)", &m, 1, 32))
+		{ m_Settings.restirFreshCandidates = (uint32_t)m; m_RendererGPU.ApplySettings(m_Settings); }
+		ImGui::Checkbox("Temporal Reuse", &m_Settings.restirTemporalReuse);
+		ImGui::Checkbox("Spatial Reuse", &m_Settings.restirSpatialReuse);
+		int sn = (int)m_Settings.restirSpatialNeighbors;
+		if (ImGui::SliderInt("Spatial Neighbors", &sn, 1, 32))
+		{ m_Settings.restirSpatialNeighbors = (uint32_t)sn; m_RendererGPU.ApplySettings(m_Settings); }
+		int sr = (int)m_Settings.restirSpatialRadius;
+		if (ImGui::SliderInt("Spatial Radius", &sr, 5, 60))
+		{ m_Settings.restirSpatialRadius = (uint32_t)sr; m_RendererGPU.ApplySettings(m_Settings); }
+		ImGui::SliderFloat("Depth Threshold", &m_Settings.restirDepthThreshold, 0.01f, 0.5f, "%.3f");
+		ImGui::SliderFloat("Normal Threshold", &m_Settings.restirNormalThreshold, 0.8f, 1.0f, "%.3f");
 		ImGui::Unindent();
 	}
 	ImGui::EndDisabled();
@@ -340,7 +347,7 @@ public:
 		"Off", "Shading Normal", "Roughness", "ViewZ (depth)",
 		"Motion Vectors", "Albedo", "F0", "Direct Emission",
 		"World Position", "Geo Normal", "UV", "Material Index",
-		"RIS Reservoir"
+		"ReSTIR Reservoir"
 	};
 	int debugCombo = m_Settings.gbufferDebugMode + 1; // -1→0 (Off), 0→1, etc.
 	if (ImGui::Combo("G-buffer View", &debugCombo, gbufferModes, IM_ARRAYSIZE(gbufferModes)))
@@ -576,7 +583,8 @@ private:
 				// Re-apply CLI overrides on top of defaults
 			if (g_CLI.nrd) m_Settings.nrdEnabled = true;
 			if (g_CLI.rasterFirst) m_Settings.rasterFirst = true;
-			if (g_CLI.ris) { m_Settings.risEnabled = true; m_Settings.rasterFirst = true; }
+			if (g_CLI.ris || g_CLI.restir) { m_Settings.restirEnabled = true; m_Settings.rasterFirst = true; }
+			if (g_CLI.restirCandidates > 0) m_Settings.restirFreshCandidates = (uint32_t)g_CLI.restirCandidates;
 			if (g_CLI.gbufferDebug >= 0) m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
 				m_RendererGPU.ApplySettings(m_Settings);
 			}

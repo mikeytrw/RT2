@@ -29,10 +29,17 @@ struct RenderSettings
 	// Render path
 	bool  rasterFirst   = false;
 
-	// RIS (Resampled Importance Sampling) — Phase 1 of ReSTIR.
-	// Raster-first mode only; improves triangle NEE sampling at primary hits.
-	bool  risEnabled    = false;
-	uint32_t risCandidateCount = 8;
+	// ReSTIR DI (Reservoir-based Resampling for Direct Illumination)
+	// Replaces RIS — raster-first mode only. Temporal + spatial reuse.
+	bool  restirEnabled       = false;
+	uint32_t restirFreshCandidates = 8;    // M: fresh candidates per pixel per frame
+	uint32_t restirSpatialNeighbors = 5;  // neighbor count for spatial reuse
+	uint32_t restirSpatialRadius    = 30; // pixel radius for neighbor sampling
+	uint32_t restirTemporalMCap     = 160; // max M from temporal (20 * freshCandidates)
+	float restirDepthThreshold     = 0.1f; // relative depth difference for validation
+	float restirNormalThreshold    = 0.98f; // normal dot product for validation (cos angle)
+	bool  restirTemporalReuse     = true;  // enable temporal reuse
+	bool  restirSpatialReuse      = true;  // enable spatial reuse
 
 	// NRD denoiser
 	bool  nrdEnabled        = false;

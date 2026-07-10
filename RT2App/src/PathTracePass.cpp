@@ -51,7 +51,7 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 
 	const uint32_t maxTextures = 1000;
 
-	VkDescriptorSetLayoutBinding bindings[16] = {};
+	VkDescriptorSetLayoutBinding bindings[17] = {};
 
 	bindings[0] = {};
 	bindings[0].binding = SI_BINDING_OUTPUT_IMAGE;
@@ -138,30 +138,36 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	bindings[13].stageFlags = allGraphicsRTFlags;
 
 	bindings[14] = {};
-	bindings[14].binding = SI_BINDING_RESERVOIR;
+	bindings[14].binding = SI_BINDING_RESERVOIR_HISTORY;
 	bindings[14].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[14].descriptorCount = 1;
 	bindings[14].stageFlags = allGraphicsRTFlags;
 
 	bindings[15] = {};
-	bindings[15].binding = SI_BINDING_RESERVOIR_PREV;
+	bindings[15].binding = SI_BINDING_RESERVOIR_SCRATCH;
 	bindings[15].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[15].descriptorCount = 1;
 	bindings[15].stageFlags = allGraphicsRTFlags;
 
-	VkDescriptorBindingFlagsEXT bindingFlags[16] = {};
+	bindings[16] = {};
+	bindings[16].binding = SI_BINDING_SURFACE_HISTORY;
+	bindings[16].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	bindings[16].descriptorCount = 1;
+	bindings[16].stageFlags = allGraphicsRTFlags;
+
+	VkDescriptorBindingFlagsEXT bindingFlags[17] = {};
 	bindingFlags[11] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT;
 	// Note: no VARIABLE_DESCRIPTOR_COUNT_BIT — binding 11 is no longer the
-	// highest binding number (12-15 exist). Use fixed descriptorCount instead.
+	// highest binding number (12-16 exist). Use fixed descriptorCount instead.
 
 	VkDescriptorSetLayoutBindingFlagsCreateInfoEXT bindingFlagsInfo = {};
 	bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
-	bindingFlagsInfo.bindingCount = 16;
+	bindingFlagsInfo.bindingCount = 17;
 	bindingFlagsInfo.pBindingFlags = bindingFlags;
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 16;
+	layoutInfo.bindingCount = 17;
 	layoutInfo.pBindings = bindings;
 	layoutInfo.pNext = &bindingFlagsInfo;
 
@@ -376,7 +382,8 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	VkBuffer instanceTransformPrevBuffer,
 	VkBuffer instanceMaterialIndexBuffer,
 	VkAccelerationStructureKHR tlas,
-	VkBuffer reservoirBuffer, VkBuffer reservoirPrevBuffer,
+	VkBuffer reservoirBuffer, VkBuffer reservoirScratchBuffer,
+	VkBuffer surfaceHistoryBuffer,
 	const std::vector<VkDescriptorImageInfo>& textureImageInfos)
 {
 	VkDescriptorImageInfo imageInfo = {};
@@ -432,16 +439,20 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	reservoirBufferInfo.buffer = reservoirBuffer;
 	reservoirBufferInfo.range = VK_WHOLE_SIZE;
 
-	VkDescriptorBufferInfo reservoirPrevBufferInfo = {};
-	reservoirPrevBufferInfo.buffer = reservoirPrevBuffer;
-	reservoirPrevBufferInfo.range = VK_WHOLE_SIZE;
+	VkDescriptorBufferInfo reservoirScratchBufferInfo = {};
+	reservoirScratchBufferInfo.buffer = reservoirScratchBuffer;
+	reservoirScratchBufferInfo.range = VK_WHOLE_SIZE;
+
+	VkDescriptorBufferInfo surfaceHistoryBufferInfo = {};
+	surfaceHistoryBufferInfo.buffer = surfaceHistoryBuffer;
+	surfaceHistoryBufferInfo.range = VK_WHOLE_SIZE;
 
 	VkWriteDescriptorSetAccelerationStructureKHR asInfo = {};
 	asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
 	asInfo.accelerationStructureCount = 1;
 	asInfo.pAccelerationStructures = &tlas;
 
-	VkWriteDescriptorSet writes[16] = {};
+	VkWriteDescriptorSet writes[17] = {};
 
 	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[0].dstSet = m_DescriptorSet;
@@ -553,28 +564,31 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 		writeCount = 14;
 	}
 
-	// Reservoir descriptors: append at writeCount (handles the no-textures case
-	// where writeCount=13, avoiding a gap of uninitialized writes).
-	uint32_t risIdx = writeCount;
-	writes[risIdx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[risIdx].dstSet = m_DescriptorSet;
-	writes[risIdx].dstBinding = SI_BINDING_RESERVOIR;
-	writes[risIdx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[risIdx].descriptorCount = 1;
-	writes[risIdx].pBufferInfo = &reservoirBufferInfo;
+	// Reservoir + surface history descriptors: append at writeCount
+	uint32_t restirIdx = writeCount;
+	writes[restirIdx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[restirIdx].dstSet = m_DescriptorSet;
+	writes[restirIdx].dstBinding = SI_BINDING_RESERVOIR_HISTORY;
+	writes[restirIdx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[restirIdx].descriptorCount = 1;
+	writes[restirIdx].pBufferInfo = &reservoirBufferInfo;
 
-	writes[risIdx + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[risIdx + 1].dstSet = m_DescriptorSet;
-	writes[risIdx + 1].dstBinding = SI_BINDING_RESERVOIR_PREV;
-	writes[risIdx + 1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[risIdx + 1].descriptorCount = 1;
-	writes[risIdx + 1].pBufferInfo = &reservoirPrevBufferInfo;
+	writes[restirIdx + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[restirIdx + 1].dstSet = m_DescriptorSet;
+	writes[restirIdx + 1].dstBinding = SI_BINDING_RESERVOIR_SCRATCH;
+	writes[restirIdx + 1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[restirIdx + 1].descriptorCount = 1;
+	writes[restirIdx + 1].pBufferInfo = &reservoirScratchBufferInfo;
 
-	// Only write reservoir descriptors if the buffers exist (skip on first
-	// SetScene before OnResize allocates reservoirs — VK_NULL_HANDLE buffer
-	// in a descriptor write is UB / crashes validation).
+	writes[restirIdx + 2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	writes[restirIdx + 2].dstSet = m_DescriptorSet;
+	writes[restirIdx + 2].dstBinding = SI_BINDING_SURFACE_HISTORY;
+	writes[restirIdx + 2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+	writes[restirIdx + 2].descriptorCount = 1;
+	writes[restirIdx + 2].pBufferInfo = &surfaceHistoryBufferInfo;
+
 	if (reservoirBuffer != VK_NULL_HANDLE)
-		writeCount = risIdx + 2;
+		writeCount = restirIdx + 3;
 
 	vkUpdateDescriptorSets(dev.device, writeCount, writes, 0, nullptr);
 }

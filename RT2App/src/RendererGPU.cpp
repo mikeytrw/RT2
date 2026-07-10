@@ -40,7 +40,7 @@ bool RendererGPU::Init()
 	}
 	m_ComposePass.Init(m_Device);
 
-	m_RISPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout);
+	m_ReSTIRPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout);
 
 	if (!m_RasterPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout))
 	{
@@ -63,7 +63,7 @@ void RendererGPU::Destroy()
 	vkDeviceWaitIdle(device);
 
 	m_NRD.Destroy();
-	m_RISPass.Destroy();
+	m_ReSTIRPass.Destroy();
 	m_Reservoirs.Destroy();
 	m_PathTracePass.Destroy();
 	m_ComposePass.Destroy();
@@ -204,7 +204,7 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
 	m_ComposeDescriptorSetCached = false;
-	m_RISDescriptorSetCached = false;
+	m_ReSTIRHistoryInvalidated = true;
 }
 
 void RendererGPU::UpdatePathTraceDescriptorSet()
@@ -252,7 +252,8 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 		m_Scene.GetLightBuffer(), m_Scene.GetInstanceTransformBuffer(),
 		m_Scene.GetInstanceTransformPrevBuffer(), m_Scene.GetInstanceMaterialIndexBuffer(),
 		m_Scene.GetTLAS(),
-		m_Reservoirs.GetCurrentBuffer(), m_Reservoirs.GetPrevBuffer(),
+		m_Reservoirs.GetHistoryBuffer(), m_Reservoirs.GetScratchBuffer(),
+		m_Reservoirs.GetSurfaceHistoryBuffer(),
 		textureImageInfos);
 
 	RT_LOG("[UpdateDS] done (textures=%d, descSet=%p, TLAS=%p, outView=%p, camUBO=%p, matBuf=%p)",
@@ -270,6 +271,7 @@ void RendererGPU::SetSceneKeepTextures(const GPUSceneData& sceneData)
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
 	m_ComposeDescriptorSetCached = false;
+	m_ReSTIRHistoryInvalidated = true;
 
 	if (m_Scene.IsValid() && !m_Scene.NeedsASRebuild() && !m_Scene.IsTextureUploadPending())
 	{
@@ -287,6 +289,7 @@ void RendererGPU::SetScene(const GPUSceneData& sceneData)
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
+	m_ReSTIRHistoryInvalidated = true;
 
 	// Update descriptor set if AS is already valid (no rebuild needed)
 	// and textures are not still loading asynchronously.
@@ -338,8 +341,7 @@ void RendererGPU::ResetAccumulation()
 
 void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 {
-	// Field-by-field comparison — set dirty if anything changed.
-	// The dirty flag is checked in Render() which calls ResetAccumulation.
+	bool wasRestirEnabled = m_Settings.restirEnabled;
 	if (m_Settings.spp != newSettings.spp ||
 	    m_Settings.maxBounces != newSettings.maxBounces ||
 	    m_Settings.showBackground != newSettings.showBackground ||
@@ -355,13 +357,21 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	    m_Settings.nrdSplitScreen != newSettings.nrdSplitScreen ||
 	    m_Settings.nrdJitterEnabled != newSettings.nrdJitterEnabled ||
 	    m_Settings.nrdJitterScale != newSettings.nrdJitterScale ||
-	    m_Settings.risEnabled != newSettings.risEnabled ||
-	    m_Settings.risCandidateCount != newSettings.risCandidateCount ||
+	    m_Settings.restirEnabled != newSettings.restirEnabled ||
+	    m_Settings.restirFreshCandidates != newSettings.restirFreshCandidates ||
+	    m_Settings.restirTemporalReuse != newSettings.restirTemporalReuse ||
+	    m_Settings.restirSpatialReuse != newSettings.restirSpatialReuse ||
+	    m_Settings.restirSpatialNeighbors != newSettings.restirSpatialNeighbors ||
+	    m_Settings.restirSpatialRadius != newSettings.restirSpatialRadius ||
 	    m_Settings.gbufferDebugMode != newSettings.gbufferDebugMode)
 	{
 		m_Settings.dirty = true;
 	}
 	m_Settings = newSettings;
+
+	// Invalidate ReSTIR history on enable/disable toggle
+	if (m_Settings.restirEnabled != wasRestirEnabled)
+		m_ReSTIRHistoryInvalidated = true;
 }
 
 void RendererGPU::UpdateCameraUBO(const Camera& camera)
@@ -397,7 +407,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	glm::vec3 right = glm::cross(camera.GetDirection(), glm::vec3(0, 1, 0));
 	glm::vec3 up = glm::cross(right, camera.GetDirection());
 	ubo.right = glm::vec4(right, m_NRDJitter.y);
-	ubo.up = glm::vec4(up, m_Settings.risEnabled ? 1.0f : 0.0f);
+	ubo.up = glm::vec4(up, m_Settings.restirEnabled ? 1.0f : 0.0f);
 	int maxBouncesClamped = m_Settings.maxBounces;
 	const int bounceLimit = (int)m_PathTracePass.GetMaxRecursionDepth() - 1;
 	if (maxBouncesClamped > bounceLimit) maxBouncesClamped = bounceLimit;
@@ -495,6 +505,26 @@ void RendererGPU::Render(const Camera& camera)
 	frame.Begin(device);
 	VkCommandBuffer cmd = frame.commandBuffer;
 
+	// Clear ReSTIR history if invalidated (resize, scene change, enable toggle)
+	if (m_ReSTIRHistoryInvalidated && m_Reservoirs.IsValid())
+	{
+		m_Reservoirs.ClearHistory(cmd);
+		m_ReSTIRHistoryInvalidated = false;
+	}
+
+	// Build ReSTIR push constants from settings
+	SIReSTIRPushConstants restirPC = {};
+	restirPC.freshCandidateCount = m_Settings.restirFreshCandidates;
+	restirPC.temporalMCap = m_Settings.restirTemporalMCap;
+	restirPC.spatialNeighborCount = m_Settings.restirSpatialNeighbors;
+	restirPC.spatialRadius = m_Settings.restirSpatialRadius;
+	restirPC.depthThreshold = m_Settings.restirDepthThreshold;
+	restirPC.normalThreshold = m_Settings.restirNormalThreshold;
+	restirPC.flags = 0;
+	if (m_Settings.restirTemporalReuse) restirPC.flags |= 1u;
+	if (m_Settings.restirSpatialReuse)  restirPC.flags |= 2u;
+	restirPC.frameIndex = m_FrameIndex;
+
 	// Build the frame render context and delegate to FrameRenderer
 	FrameRenderer::Context ctx = {
 		m_Device,
@@ -504,7 +534,7 @@ void RendererGPU::Render(const Camera& camera)
 		m_RasterPass,
 		m_GBufferDebugPass,
 		m_ComposePass,
-		m_RISPass,
+		m_ReSTIRPass,
 		m_Reservoirs,
 		m_NRD,
 		m_OutputImage,
@@ -517,8 +547,8 @@ void RendererGPU::Render(const Camera& camera)
 		m_Settings.rasterFirst,
 		m_Settings.nrdEnabled,
 		m_Settings.nrdLobeDither,
-		m_Settings.risEnabled,
-		m_Settings.risCandidateCount,
+		m_Settings.restirEnabled,
+		restirPC,
 		m_Settings.gbufferDebugMode,
 		m_Settings.nrdMaxBlurRadius,
 		m_Settings.nrdMaxAccumFrames,

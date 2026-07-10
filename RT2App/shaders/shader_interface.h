@@ -54,8 +54,9 @@
 #define SI_BINDING_TEXTURE_ARRAY         11
 #define SI_BINDING_INSTANCE_TRANSFORMS_PREV 12
 #define SI_BINDING_INSTANCE_MATERIAL_INDICES 13
-#define SI_BINDING_RESERVOIR              14
-#define SI_BINDING_RESERVOIR_PREV          15
+#define SI_BINDING_RESERVOIR_HISTORY       14  // previous frame's final reservoir (read by temporal, written by spatial)
+#define SI_BINDING_RESERVOIR_SCRATCH       15  // temporal output / spatial input
+#define SI_BINDING_SURFACE_HISTORY          16  // per-pixel receiver metadata for temporal validation
 
 // ============================================================================
 // Binding indices — set 1 (NRD G-buffer)
@@ -123,28 +124,75 @@ struct SITriangleLight
 };
 
 // ============================================================================
-// Reservoir — per-pixel RIS/ReSTIR reservoir. 32 bytes, std430.
+// Reservoir — per-pixel ReSTIR DI reservoir. 32 bytes (2 × uvec4), std430.
 //
-// Stores post-warp barycentrics (b1, b2), NOT raw (r1, r2) — avoids
-// reconstruction ambiguity when the shading pass re-samples the triangle.
+// Unified representation for both triangle and environment light samples.
+// Stores sample type, light index or environment sentinel, packed barycentrics
+// or environment UV, M, weight sum, selected target density, age, and flags.
 //
-// Phase 1 (basic RIS): only `current` is written/read. `prev` is allocated
-// for temporal reuse (RIS.4) to avoid allocation churn rework later.
+// Sample types:
+//   0 = triangle light (lightIdx + barycentrics b1, b2)
+//   1 = environment light (envUV packed)
+//   0xFFFFFFFF = empty/invalid
 //
-// M = number of candidates seen (accumulates across frames in temporal reuse).
+// M = number of candidates seen (accumulates across temporal/spatial reuse).
 // weightSum = Σ w_i = p_hat(x_i) / p(x_i) for accepted candidates.
 // targetPdf = p_hat of the selected sample (for W = weightSum / (M * targetPdf)).
+// age = frames since the temporal history was first accepted (0 = fresh).
+// flags = bit 0 = valid, bits 1-31 = reserved.
+//
+// Encoding:
+//   data0.x = sampleType (uint)
+//   data0.y = lightIdx (uint, triangle only; 0 for env)
+//   data0.z = floatBitsToUint(b1)  (triangle) or floatBitsToUint(envUV.x) (env)
+//   data0.w = floatBitsToUint(b2)  (triangle) or floatBitsToUint(envUV.y) (env)
+//   data1.x = floatBitsToUint(weightSum)
+//   data1.y = floatBitsToUint(targetPdf)
+//   data1.z = M (uint)
+//   data1.w = (age << 8) | (flags & 0xFF)
 // ============================================================================
 struct SIReservoir
 {
-    SI_UINT  lightIdx;    // index into lights[] array
-    SI_FLOAT b1;          // post-warp barycentric coord 1
-    SI_FLOAT b2;          // post-warp barycentric coord 2
-    SI_FLOAT weightSum;   // Σ w_i = p_hat(x_i) / p(x_i)
-    SI_FLOAT targetPdf;   // p_hat of selected sample
-    SI_UINT  M;           // candidates seen
-    SI_UINT  pad0;        // future: visibility flag
-    SI_UINT  pad1;
+    SI_UVEC4 data0;
+    SI_UVEC4 data1;
+};
+
+// Sample type constants
+#define SI_SAMPLE_TYPE_TRIANGLE  0u
+#define SI_SAMPLE_TYPE_ENV       1u
+#define SI_SAMPLE_TYPE_EMPTY     0xFFFFFFFFu
+
+// ============================================================================
+// SurfaceHistory — per-pixel receiver metadata for temporal validation.
+// 16 bytes (uvec4), std430.
+//
+// Encodes normal (2 components, oct), view depth, material ID, and validity.
+// Written by the spatial pass (overwrites previous frame's history).
+//
+// data.x = oct-normal packed into 16 bits each (x = n.x oct, y = n.y oct)
+// data.y = floatBitsToUint(viewZ)
+// data.z = materialID (uint, 0xFFFFFFFF = sky/invalid)
+// data.w = (flags << 16) | valid (bit 0 = valid)
+// ============================================================================
+struct SISurfaceHistory
+{
+    SI_UVEC4 data;
+};
+
+// ============================================================================
+// ReSTIR push constants — temporal/spatial pass configuration.
+// 32 bytes, fits in the 128-byte push constant limit.
+// ============================================================================
+struct SIReSTIRPushConstants
+{
+    SI_UINT freshCandidateCount;   // M: fresh candidates per pixel
+    SI_UINT temporalMCap;          // max M from temporal history (e.g. 20 * freshCandidateCount)
+    SI_UINT spatialNeighborCount;  // number of neighbors for spatial reuse
+    SI_UINT spatialRadius;         // pixel radius for neighbor sampling
+    SI_FLOAT depthThreshold;      // relative depth difference threshold
+    SI_FLOAT normalThreshold;      // normal similarity threshold (dot product)
+    SI_UINT flags;                 // bit 0 = temporal reuse enabled, bit 1 = spatial reuse enabled
+    SI_UINT frameIndex;           // frame index for neighbor rotation
 };
 
 // ============================================================================
@@ -165,7 +213,9 @@ struct SINRDUniformData
 static_assert(sizeof(SICameraData) == 496, "SICameraData must be 496 bytes (7 vec4 + 6 mat4)");
 static_assert(sizeof(SIMaterial) == 80, "SIMaterial must be 80 bytes (2 vec4 + 4 float + 2 ivec4)");
 static_assert(sizeof(SITriangleLight) == 32, "SITriangleLight must be 32 bytes (vec4 + uvec4)");
-static_assert(sizeof(SIReservoir) == 32, "SIReservoir must be 32 bytes (1 uint + 4 float + 3 uint)");
+static_assert(sizeof(SIReservoir) == 32, "SIReservoir must be 32 bytes (2 uvec4)");
+static_assert(sizeof(SISurfaceHistory) == 16, "SISurfaceHistory must be 16 bytes (1 uvec4)");
+static_assert(sizeof(SIReSTIRPushConstants) == 32, "SIReSTIRPushConstants must be 32 bytes");
 static_assert(sizeof(SINRDUniformData) == 16, "SINRDUniformData must be 16 bytes");
 #endif
 

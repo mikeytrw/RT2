@@ -1,0 +1,274 @@
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+// restir_temporal.comp — fused initial candidate generation + temporal reuse.
+//
+// Frame sequence: Raster G-buffer → [this pass] (history → scratch) → spatial (scratch → history) → RT shading
+//
+// For each pixel:
+// 1. Read G-buffer (world pos, normal, roughness, material, viewZ, motion)
+// 2. Generate M fresh candidates (triangle and/or environment)
+// 3. Reproject current pixel using gMotion to find previous frame's pixel
+// 4. Fetch history reservoir from reservoirHistory[]
+// 5. Validate temporal history (normal, depth, material, sky/emissive checks)
+// 6. Re-evaluate history sample at current receiver → merge into fresh reservoir
+// 7. Clamp temporal M to temporalMCap, scaling weight consistently
+// 8. Write combined reservoir to reservoirScratch[]
+// 9. Write current receiver metadata to surfaceHistoryWrite[] (for next frame's temporal)
+
+#include "restir_bindings.glsl"
+
+// ---- Reservoir + surface history bindings (temporal: history=readonly, scratch=write) ----
+layout(set = 0, binding = SI_BINDING_RESERVOIR_HISTORY, std430) readonly buffer ReservoirHistoryBuffer
+{
+    Reservoir reservoirHistory[];
+};
+
+layout(set = 0, binding = SI_BINDING_RESERVOIR_SCRATCH, std430) buffer ReservoirScratchBuffer
+{
+    Reservoir reservoirScratch[];
+};
+
+layout(set = 0, binding = SI_BINDING_SURFACE_HISTORY, std430) readonly buffer SurfaceHistoryReadBuffer
+{
+    SurfaceHistory surfaceHistory[];
+};
+
+layout(set = 0, binding = SI_BINDING_SURFACE_HISTORY, std430) buffer SurfaceHistoryWriteBuffer
+{
+    SurfaceHistory surfaceHistoryWrite[];
+};
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    uint width  = uint(camera.viewportSPP.x);
+    uint height = uint(camera.viewportSPP.y);
+
+    if (pixel.x >= int(width) || pixel.y >= int(height))
+        return;
+
+    uint pixelLinear = pixel.y * width + pixel.x;
+
+    // Initialize empty reservoir
+    Reservoir res = makeEmptyReservoir();
+
+    // ---- Read G-buffer ----
+    vec4 primHit = imageLoad(gPrimHit, pixel);
+    uint matIdxPacked = floatBitsToUint(primHit.w);
+    bool isMiss = (matIdxPacked == 0u);
+
+    if (isMiss)
+    {
+        reservoirScratch[pixelLinear] = res;
+        // Mark surface history as invalid (sky)
+        surfaceHistoryWrite[pixelLinear] = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6, 0xFFFFFFFFu, false);
+        return;
+    }
+
+    // Check emissive — skip ReSTIR for emissive surfaces
+    vec3 directEmission = imageLoad(gDirectEmission, pixel).rgb;
+    if (dot(directEmission, directEmission) > 0.0)
+    {
+        reservoirScratch[pixelLinear] = res;
+        surfaceHistoryWrite[pixelLinear] = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6, 0xFFFFFFFFu, false);
+        return;
+    }
+
+    uint matIdx = matIdxPacked - 1u;
+    Material mat = materials[matIdx];
+
+    vec3 worldPos = primHit.xyz;
+    vec2 uv = imageLoad(gPrimUV, pixel).xy;
+
+    // Decode normal + roughness
+    vec4 nrPacked = imageLoad(gNormalRoughness, pixel);
+    vec4 nrDecoded = nrdDecodeNormalRoughness(nrPacked.xyz);
+    vec3 gBufferN = nrDecoded.xyz;
+    float roughness = nrDecoded.w;
+
+    vec3 wo = normalize(camera.position.xyz - worldPos);
+    vec3 n = dot(gBufferN, wo) >= 0.0 ? gBufferN : -gBufferN;
+
+    float viewZ = imageLoad(gViewZ, pixel).x;
+
+    // Reconstruct base color + metallic
+    vec3 baseColor = mat.baseColor_metallic.xyz;
+    int baseColorTexIdx = mat.textureIndices.x;
+    if (baseColorTexIdx >= 0)
+        baseColor *= texture(textures[nonuniformEXT(baseColorTexIdx)], uv).rgb;
+
+    float metallic = mat.baseColor_metallic.w;
+    int metalRoughTexIdx = mat.extraIndices.x;
+    if (metalRoughTexIdx >= 0)
+    {
+        vec3 mr = texture(textures[nonuniformEXT(metalRoughTexIdx)], uv).rgb;
+        metallic *= mr.b;
+    }
+
+    // Skip NEE for metals / pure specular
+    float diffuseWeight = (1.0 - metallic)
+                        * max(baseColor.x, max(baseColor.y, baseColor.z));
+    if (diffuseWeight < 1e-4)
+    {
+        reservoirScratch[pixelLinear] = res;
+        surfaceHistoryWrite[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, false);
+        return;
+    }
+
+    // ---- Check if any lights exist ----
+    float pTri = computePTri();
+    bool hasTriLights = (lightCount > 0u && totalLightArea > 0.0);
+    bool hasEnv = (int(camera.envMap.x) >= 0);
+
+    if (pTri <= 0.0 && !hasEnv)
+    {
+        // No lights at all
+        reservoirScratch[pixelLinear] = res;
+        surfaceHistoryWrite[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, false);
+        return;
+    }
+
+    uint rngState = initRNG(pixel, camera.position.w);
+    uint M = max(pc.restir.freshCandidateCount, 1u);
+
+    // ---- Generate fresh candidates ----
+    for (uint i = 0u; i < M; i++)
+    {
+        // Decide: triangle or environment candidate
+        float rFamily = randomFloat(rngState);
+
+        if (hasTriLights && (rFamily < pTri || !hasEnv))
+        {
+            // Triangle candidate
+            uint lightIdx = pcg(rngState) % lightCount;
+            TriangleLight light = lights[lightIdx];
+
+            float r1 = randomFloat(rngState);
+            float r2 = randomFloat(rngState);
+            float sqrtR1 = sqrt(r1);
+            float b1 = sqrtR1 * (1.0 - r2);
+            float b2 = sqrtR1 * r2;
+
+            // Evaluate p_hat at this candidate
+            float p_hat = evalTriangleTargetPdf(worldPos, n, wo, baseColor, metallic,
+                                               lightIdx, b1, b2);
+            if (p_hat <= 0.0) continue;
+
+            // Proposal PDF (solid-angle): pTri * (1/lightCount) * (1/area) * dist² / LNdotL
+            float propPdf = triangleProposalPdfOmega(worldPos, n, lightIdx, b1, b2);
+            if (propPdf <= 0.0) continue;
+
+            float w = p_hat / propPdf;
+            reservoirStreamUpdate(res, w, SAMPLE_TRIANGLE, lightIdx, b1, b2, p_hat, rngState);
+        }
+        else if (hasEnv)
+        {
+            // Environment candidate
+            EnvSample envS = sampleEnvMap(rngState);
+            if (envS.pdf <= 0.0) continue;
+
+            float NdotL = dot(n, envS.dir);
+            if (NdotL <= 0.0) continue;
+
+            vec3 brdf = evalDiffuseBRDF(wo, envS.dir, n, baseColor, metallic);
+            if (dot(brdf, brdf) <= 0.0) continue;
+
+            vec3 Le = envS.radiance;
+            float p_hat = luminance(brdf * Le) * NdotL;
+            if (isnan(p_hat) || isinf(p_hat) || p_hat <= 0.0) continue;
+
+            // Proposal PDF: (1 - pTri) * envS.pdf (family selection × conditional)
+            float propPdf = (1.0 - pTri) * envS.pdf;
+            if (propPdf <= 0.0) continue;
+
+            float w = p_hat / propPdf;
+            reservoirStreamUpdate(res, w, SAMPLE_ENV, 0u, envS.uv.x, envS.uv.y, p_hat, rngState);
+        }
+    }
+
+    // ---- Temporal reuse ----
+    bool temporalEnabled = (pc.restir.flags & 1u) != 0u;
+    if (temporalEnabled)
+    {
+        // Reproject using gMotion: previousUv = currentUv + motion
+        vec2 motion = imageLoad(gMotion, pixel).xy;
+        vec2 prevPixelF = vec2(pixel) + motion + 0.5;
+
+        // Check if reprojected pixel is within viewport
+        if (prevPixelF.x >= 0.0 && prevPixelF.x < float(width) &&
+            prevPixelF.y >= 0.0 && prevPixelF.y < float(height))
+        {
+            ivec2 prevPixel = ivec2(floor(prevPixelF));
+            // Clamp to valid range
+            prevPixel.x = max(0, min(int(width) - 1, prevPixel.x));
+            prevPixel.y = max(0, min(int(height) - 1, prevPixel.y));
+            uint prevLinear = prevPixel.y * width + prevPixel.x;
+
+            Reservoir histRes = reservoirHistory[prevLinear];
+            histRes = sanitizeReservoir(histRes);
+
+            if (histRes.data0.x != SAMPLE_EMPTY)
+            {
+                SurfaceHistory sh = surfaceHistory[prevLinear];
+
+                bool isSkyOrEmissive = false;  // already checked above
+                bool histValid = validateSurfaceHistory(sh, n, viewZ, matIdx,
+                                                        isSkyOrEmissive,
+                                                        pc.restir.depthThreshold,
+                                                        pc.restir.normalThreshold);
+
+                if (histValid)
+                {
+                    // Re-evaluate history sample at current receiver
+                    float p_hat_current = evalTargetPdf(histRes, worldPos, n, wo,
+                                                       baseColor, metallic);
+
+                    if (p_hat_current > 0.0)
+                    {
+                        uint histM = reservoirM(histRes);
+                        uint temporalMCap = max(pc.restir.temporalMCap, 1u);
+                        uint clampedM = min(histM, temporalMCap);
+
+                        // Scale weight by M ratio to account for clamping
+                        float mScale = float(clampedM) / max(float(histM), 1.0);
+                        float W_prev = reservoirW(histRes) * mScale;
+
+                        // Merge weight: p_hat_current(y_prev) * W_prev * M_prev
+                        float w_merge = p_hat_current * W_prev * float(clampedM);
+
+                        if (w_merge > 0.0 && !isnan(w_merge) && !isinf(w_merge))
+                        {
+                            // Temporal merge: the history reservoir's M contributes
+                            // to the combined reservoir
+                            reservoirMerge(res, histRes, w_merge, rngState);
+                            // Adjust M to the clamped value (reservoirMerge adds full M)
+                            // We need to undo the full M add and add clamped M instead
+                            uint currentM = reservoirM(res);
+                            uint addedM = reservoirM(histRes);
+                            // currentM already includes addedM; replace with clamped
+                            reservoirSetM(res, currentM - addedM + clampedM);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sanitize and write
+    res = sanitizeReservoir(res);
+
+    // Set age: 0 for fresh (no temporal), 1 if temporal history was accepted
+    if (temporalEnabled && reservoirM(res) > M)
+    {
+        reservoirSetAge(res, 1u);
+    }
+
+    reservoirScratch[pixelLinear] = res;
+
+    // Write current surface history for next frame's temporal validation
+    surfaceHistoryWrite[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, true);
+}

@@ -24,6 +24,8 @@ project "RT2App"
         "shaders/shadow.rahit",
         "shaders/compose.comp",
         "shaders/ris.comp",
+        "shaders/restir_temporal.comp",
+        "shaders/restir_spatial.comp",
         "shaders/raster.vert",
         "shaders/raster.frag",
         "shaders/gbuffer_debug.comp",
@@ -47,7 +49,8 @@ project "RT2App"
     -- Shared dependencies (relative paths for MSBuild buildinputs — premake
     -- tokens like %{wks.location} don't expand in buildinputs, so use
     -- paths relative to the .vcxproj which lives in the RT2App project dir).
-    local depShared  = { "shaders/pathtracer_shared.glsl", "shaders/scatter_shared.glsl", "shaders/shader_interface.h" }
+    local depShared  = { "shaders/pathtracer_shared.glsl", "shaders/scatter_shared.glsl", "shaders/restir_shared.glsl", "shaders/restir_bindings.glsl", "shaders/shader_interface.h" }
+    local depReSTIR  = { "shaders/restir_shared.glsl", "shaders/restir_bindings.glsl", "shaders/shader_interface.h" }
     local depBasic   = { "shaders/shader_interface.h" }
 
     -- Per-stage custom build rules (dependency tracking via premake)
@@ -103,7 +106,19 @@ project "RT2App"
         buildmessage "Compiling ris.comp"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/ris.comp -o " .. shaderDir .. "/ris.spv" }
         buildoutputs { shaderDir .. "/ris.spv" }
-        buildinputs { depBasic }
+        buildinputs { depReSTIR }
+
+    filter {"files:shaders/restir_temporal.comp"}
+        buildmessage "Compiling restir_temporal.comp"
+        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/restir_temporal.comp -o " .. shaderDir .. "/restir_temporal.spv" }
+        buildoutputs { shaderDir .. "/restir_temporal.spv" }
+        buildinputs { depReSTIR }
+
+    filter {"files:shaders/restir_spatial.comp"}
+        buildmessage "Compiling restir_spatial.comp"
+        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/restir_spatial.comp -o " .. shaderDir .. "/restir_spatial.spv" }
+        buildoutputs { shaderDir .. "/restir_spatial.spv" }
+        buildinputs { depReSTIR }
 
     filter {"files:shaders/raster.vert"}
         buildmessage "Compiling raster.vert"
@@ -179,6 +194,8 @@ project "RT2App"
             "copy /Y \"%{wks.location}RT2App\\shaders\\shadowhit.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\compose.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\ris.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"%{wks.location}RT2App\\shaders\\restir_temporal.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"%{wks.location}RT2App\\shaders\\restir_spatial.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\raster.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\rasterfrag.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\gbufferdebug.spv\" \"%{cfg.targetdir}\""

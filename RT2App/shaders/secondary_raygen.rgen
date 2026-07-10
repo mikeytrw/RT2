@@ -183,12 +183,12 @@ void main()
     }
 
     // ---- NEE: direct lighting ----
-    bool useRIS = (camera.up.w > 0.5);
+    bool useReSTIR = (camera.up.w > 0.5);
     uint pixelLinear = uint(pixel.y) * width + uint(pixel.x);
     NEEDispatchResult nee = computeNEE(
         scatter, wo, n, worldPos,
         baseColor, metallic, roughness, ior, mat.alphaMode,
-        vec3(1.0), rngState, useRIS, pixelLinear);
+        vec3(1.0), rngState, useReSTIR, pixelLinear);
 
     vec3 directLighting = nee.radiance;
     float nextBsdfPdf = nee.nextBsdfPdf;
