@@ -132,6 +132,18 @@ public:
 	ImGui::Text("Last Render: %.3fms", m_SmoothedFrameTime);
 	ImGui::Text("Rays Cast: %d", m_Renderer.m_NumRaysCast);
 	ImGui::Text("FPS: %.1f", m_SmoothedFPS);
+	if (m_UseGPU && m_RendererGPU.HasGpuTimings())
+	{
+		const auto& timings = m_RendererGPU.GetGpuTimings();
+		if (timings.validMask != 0)
+		{
+			static const char* timingNames[] = { "GPU Frame", "Raster", "ReSTIR Temporal", "ReSTIR Spatial", "RT Shading", "NRD", "Compose" };
+			ImGui::Text("GPU timings (frame %llu)", static_cast<unsigned long long>(timings.frameIndex));
+			for (uint32_t i = 0; i < static_cast<uint32_t>(GpuTimestampProfiler::Region::Count); i++)
+				if (timings.validMask & (1u << i))
+					ImGui::Text("  %s: %.3f ms", timingNames[i], timings.milliseconds[i]);
+		}
+	}
 
 	float raysPerSec = m_SmoothedFPS > 0.0f ? m_Renderer.m_NumRaysCast * m_SmoothedFPS : 0.0f;
 
@@ -290,7 +302,6 @@ public:
 	if (m_Settings.nrdEnabled)
 	{
 		ImGui::Indent();
-		ImGui::BeginDisabled(m_Settings.restirEnabled);
 		if (ImGui::Checkbox("Jitter", &m_Settings.nrdJitterEnabled))
 			m_RendererGPU.ApplySettings(m_Settings);
 		ImGui::SameLine();
@@ -299,7 +310,6 @@ public:
 		if (ImGui::SliderFloat("Scale", &m_Settings.nrdJitterScale, 0.0f, 1.0f, "%.2f"))
 			m_RendererGPU.ApplySettings(m_Settings);
 		ImGui::PopID();
-		ImGui::EndDisabled();
 		ImGui::SliderFloat("Blur Radius", &m_Settings.nrdMaxBlurRadius, 1.0f, 50.0f, "%.1f");
 		ImGui::SliderInt("Accum Frames", &m_Settings.nrdMaxAccumFrames, 1, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
 		ImGui::Checkbox("Anti-Firefly", &m_Settings.nrdAntiFirefly);
@@ -330,16 +340,20 @@ public:
 		int m = (int)m_Settings.restirFreshCandidates;
 		if (ImGui::SliderInt("Fresh Candidates (M)", &m, 1, 32))
 		{ m_Settings.restirFreshCandidates = (uint32_t)m; m_RendererGPU.ApplySettings(m_Settings); }
-		ImGui::Checkbox("Temporal Reuse", &m_Settings.restirTemporalReuse);
-		ImGui::Checkbox("Spatial Reuse", &m_Settings.restirSpatialReuse);
+		if (ImGui::Checkbox("Temporal Reuse", &m_Settings.restirTemporalReuse))
+			m_RendererGPU.ApplySettings(m_Settings);
+		if (ImGui::Checkbox("Spatial Reuse", &m_Settings.restirSpatialReuse))
+			m_RendererGPU.ApplySettings(m_Settings);
 		int sn = (int)m_Settings.restirSpatialNeighbors;
 		if (ImGui::SliderInt("Spatial Neighbors", &sn, 1, 32))
 		{ m_Settings.restirSpatialNeighbors = (uint32_t)sn; m_RendererGPU.ApplySettings(m_Settings); }
 		int sr = (int)m_Settings.restirSpatialRadius;
 		if (ImGui::SliderInt("Spatial Radius", &sr, 5, 60))
 		{ m_Settings.restirSpatialRadius = (uint32_t)sr; m_RendererGPU.ApplySettings(m_Settings); }
-		ImGui::SliderFloat("Depth Threshold", &m_Settings.restirDepthThreshold, 0.01f, 0.5f, "%.3f");
-		ImGui::SliderFloat("Normal Threshold", &m_Settings.restirNormalThreshold, 0.8f, 1.0f, "%.3f");
+		if (ImGui::SliderFloat("Depth Threshold", &m_Settings.restirDepthThreshold, 0.01f, 0.5f, "%.3f"))
+			m_RendererGPU.ApplySettings(m_Settings);
+		if (ImGui::SliderFloat("Normal Threshold", &m_Settings.restirNormalThreshold, 0.8f, 1.0f, "%.3f"))
+			m_RendererGPU.ApplySettings(m_Settings);
 		ImGui::Unindent();
 	}
 	ImGui::EndDisabled();
@@ -510,6 +524,24 @@ public:
 		ImGui::End();
 		ImGui::PopStyleVar();
 
+		// Render now happens in OnUpdate() (before ImGui) to eliminate
+		// 1-frame visual latency. Viewport resize is detected here and
+		// applied on the next frame's OnUpdate.
+	}
+
+	virtual void OnUpdate(float ts) override
+	{
+		m_Cam.OnUpdate(ts);
+
+		// Render in OnUpdate (before ImGui) so the GPU work for this frame's
+		// camera position is submitted before the viewport is drawn. This
+		// eliminates the 1-frame visual latency where the viewport showed
+		// the previous frame's output while the camera had already moved.
+		// Skip on the first frame: ProcessCLIArgs() (called from OnUIRender)
+		// initializes the GPU renderer and loads the scene, so we must wait
+		// for it to complete before rendering.
+		if (!m_CLIProcessed) return;
+
 		if (m_RenderOnUpdate) {
 			if (m_UseGPU)
 			{
@@ -524,11 +556,6 @@ public:
 		else {
 			m_Renderer.setTemporalAccumulation(false);
 		}
-	}
-
-	virtual void OnUpdate(float ts) override
-	{
-		m_Cam.OnUpdate(ts);
 	}
 
 private:

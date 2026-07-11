@@ -183,7 +183,7 @@ project "RT2App"
 
     filter "system:windows"
        systemversion "latest"
-       defines { "WL_PLATFORM_WINDOWS" }
+       defines { "WL_PLATFORM_WINDOWS", "GLM_FORCE_DEPTH_ZERO_TO_ONE" }
         postbuildcommands {
             "copy /Y \"%{wks.location}RT2App\\shaders\\raygen.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\secondary_raygen.spv\" \"%{cfg.targetdir}\"",

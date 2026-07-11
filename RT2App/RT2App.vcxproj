@@ -78,7 +78,7 @@
     <ClCompile>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
-      <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;WL_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
@@ -113,7 +113,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Debug-windows-x8
     <ClCompile>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
-      <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;WL_RELEASE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_RELEASE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <Optimization>Full</Optimization>
@@ -154,7 +154,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Release-windows-
     <ClCompile>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
-      <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;WL_DIST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_DIST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>None</DebugInformationFormat>
       <Optimization>Full</Optimization>
@@ -212,6 +212,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
     <ClInclude Include="src\GPUSceneData.h" />
     <ClInclude Include="src\GpuDevice.h" />
     <ClInclude Include="src\GpuResources.h" />
+    <ClInclude Include="src\GpuTimestampProfiler.h" />
     <ClInclude Include="src\Hittable.h" />
     <ClInclude Include="src\HittableList.h" />
     <ClInclude Include="src\Material.h" />
@@ -327,6 +328,11 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\GpuResources.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\GpuTimestampProfiler.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
