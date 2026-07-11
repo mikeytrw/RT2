@@ -198,7 +198,7 @@ void FrameRenderer::RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx)
 	vkCmdPipelineBarrier(cmd,
 	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
 	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-	                     0, nullptr, 2, temporalPreBarriers, 0, nullptr);
+	                     0, nullptr, 3, temporalPreBarriers, 0, nullptr);
 
 	// 2. Dispatch temporal pass: history → scratch
 	ctx.restirPass.RecordTemporal(cmd, ctx.width, ctx.height,

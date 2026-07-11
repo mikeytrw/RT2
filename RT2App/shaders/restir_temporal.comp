@@ -15,7 +15,7 @@
 // 6. Re-evaluate history sample at current receiver → merge into fresh reservoir
 // 7. Clamp temporal M to temporalMCap, scaling weight consistently
 // 8. Write combined reservoir to reservoirScratch[]
-// 9. Write current receiver metadata to surfaceHistoryWrite[] (for next frame's temporal)
+// 9. Write current receiver metadata to surfaceHistory[] (for next frame's temporal)
 
 #include "restir_bindings.glsl"
 
@@ -30,14 +30,9 @@ layout(set = 0, binding = SI_BINDING_RESERVOIR_SCRATCH, std430) buffer Reservoir
     Reservoir reservoirScratch[];
 };
 
-layout(set = 0, binding = SI_BINDING_SURFACE_HISTORY, std430) readonly buffer SurfaceHistoryReadBuffer
+layout(set = 0, binding = SI_BINDING_SURFACE_HISTORY, std430) buffer SurfaceHistoryBuffer
 {
     SurfaceHistory surfaceHistory[];
-};
-
-layout(set = 0, binding = SI_BINDING_SURFACE_HISTORY, std430) buffer SurfaceHistoryWriteBuffer
-{
-    SurfaceHistory surfaceHistoryWrite[];
 };
 
 layout(local_size_x = 16, local_size_y = 16) in;
@@ -65,7 +60,7 @@ void main()
     {
         reservoirScratch[pixelLinear] = res;
         // Mark surface history as invalid (sky)
-        surfaceHistoryWrite[pixelLinear] = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6, 0xFFFFFFFFu, false);
+        surfaceHistory[pixelLinear] = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6, 0xFFFFFFFFu, false);
         return;
     }
 
@@ -74,7 +69,7 @@ void main()
     if (dot(directEmission, directEmission) > 0.0)
     {
         reservoirScratch[pixelLinear] = res;
-        surfaceHistoryWrite[pixelLinear] = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6, 0xFFFFFFFFu, false);
+        surfaceHistory[pixelLinear] = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6, 0xFFFFFFFFu, false);
         return;
     }
 
@@ -115,7 +110,7 @@ void main()
     if (diffuseWeight < 1e-4)
     {
         reservoirScratch[pixelLinear] = res;
-        surfaceHistoryWrite[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, false);
+        surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, false);
         return;
     }
 
@@ -128,7 +123,7 @@ void main()
     {
         // No lights at all
         reservoirScratch[pixelLinear] = res;
-        surfaceHistoryWrite[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, false);
+        surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, false);
         return;
     }
 
@@ -194,9 +189,18 @@ void main()
     bool temporalEnabled = (pc.restir.flags & 1u) != 0u;
     if (temporalEnabled)
     {
-        // Reproject using gMotion: previousUv = currentUv + motion
+        // Reproject using gMotion: motion is in UV space (0-1), convert to pixel space.
+        // Note: gMotion accounts for camera/object motion but NOT jitter (NRD convention).
+        // When NRD jitter is active, the subpixel shift between frames is not captured
+        // in the motion vector, causing temporal reuse to read slightly wrong history.
+        // The surface validation (normal/depth/material) catches most of these errors,
+        // but residual mismatch causes wobble. The correct fix is to either:
+        //   (a) disable NRD jitter when ReSTIR is enabled, or
+        //   (b) store prevJitter in the UBO and compensate here.
+        // For now, (a) is applied on the CPU side — jitter is disabled when restirEnabled.
         vec2 motion = imageLoad(gMotion, pixel).xy;
-        vec2 prevPixelF = vec2(pixel) + motion + 0.5;
+        vec2 motionPixels = motion * vec2(width, height);
+        vec2 prevPixelF = vec2(pixel) + motionPixels + 0.5;
 
         // Check if reprojected pixel is within viewport
         if (prevPixelF.x >= 0.0 && prevPixelF.x < float(width) &&
@@ -233,23 +237,19 @@ void main()
                         uint temporalMCap = max(pc.restir.temporalMCap, 1u);
                         uint clampedM = min(histM, temporalMCap);
 
-                        // Scale weight by M ratio to account for clamping
-                        float mScale = float(clampedM) / max(float(histM), 1.0);
-                        float W_prev = reservoirW(histRes) * mScale;
-
-                        // Merge weight: p_hat_current(y_prev) * W_prev * M_prev
+                        // Canonical ReSTIR merge weight:
+                        // w = p_hat_at_dst(x_src) * W_src * M_src
+                        // W_src = weightSum_src / (M_src * targetPdf_src)
+                        // The M_src cancels: w = p_hat_at_dst * weightSum_src / targetPdf_src
+                        float W_prev = reservoirW(histRes);
                         float w_merge = p_hat_current * W_prev * float(clampedM);
 
                         if (w_merge > 0.0 && !isnan(w_merge) && !isinf(w_merge))
                         {
-                            // Temporal merge: the history reservoir's M contributes
-                            // to the combined reservoir
-                            reservoirMerge(res, histRes, w_merge, rngState);
+                            reservoirMerge(res, histRes, w_merge, p_hat_current, rngState);
                             // Adjust M to the clamped value (reservoirMerge adds full M)
-                            // We need to undo the full M add and add clamped M instead
                             uint currentM = reservoirM(res);
                             uint addedM = reservoirM(histRes);
-                            // currentM already includes addedM; replace with clamped
                             reservoirSetM(res, currentM - addedM + clampedM);
                         }
                     }
@@ -270,5 +270,5 @@ void main()
     reservoirScratch[pixelLinear] = res;
 
     // Write current surface history for next frame's temporal validation
-    surfaceHistoryWrite[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, true);
+    surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, true);
 }

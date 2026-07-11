@@ -167,24 +167,25 @@ void reservoirStreamUpdate(inout Reservoir r, float w,
 }
 
 // ---- Reservoir merge (canonical ReSTIR) ------------------------------------
-// Merge reservoir r_new into r_dst with weight w = p_hat_at_dst(x_new) * W_new * M_new.
-// This is the standard temporal/spatial reuse merge.
+// Merge reservoir r_new into r_dst with weight w_merge.
+// p_hat_at_dst = target density of r_new's sample evaluated at r_dst's receiver.
+// When the sample is adopted, targetPdf is set to p_hat_at_dst (NOT the source's
+// targetPdf), so that reservoirW = weightSum / (M * targetPdf) is correct.
 void reservoirMerge(inout Reservoir r_dst, Reservoir r_new, float w_merge,
-                     inout uint rngState)
+                     float p_hat_at_dst, inout uint rngState)
 {
     if (isnan(w_merge) || isinf(w_merge) || w_merge <= 0.0) return;
 
     float ws_dst = reservoirWeightSum(r_dst);
-    float ws_new = reservoirWeightSum(r_new);
 
     float totalWs = ws_dst + w_merge;
     r_dst.data1.x = floatBitsToUint(totalWs);
 
     if (randomFloat(rngState) < w_merge / max(totalWs, 1e-20))
     {
-        // Adopt the new sample
+        // Adopt the new sample — store p_hat evaluated at the DESTINATION receiver
         r_dst.data0 = r_new.data0;
-        r_dst.data1.y = floatBitsToUint(reservoirTargetPdf(r_new));
+        r_dst.data1.y = floatBitsToUint(p_hat_at_dst);
     }
 
     r_dst.data1.z += reservoirM(r_new);
@@ -462,14 +463,34 @@ EnvSampleRecon reconstructEnvSample(Reservoir r, vec3 N)
     return s;
 }
 
+// ---- Octahedral normal encoding for surface history (preserves full direction) ----
+vec2 octEncode(vec3 n)
+{
+    n /= abs(n.x) + abs(n.y) + abs(n.z);
+    vec2 o = n.xy;
+    if (n.z < 0.0)
+        o = (1.0 - abs(o.yx)) * sign(o.xy);
+    return o;
+}
+
+vec3 octDecode(vec2 o)
+{
+    vec3 n = vec3(o.x, o.y, 1.0 - abs(o.x) - abs(o.y));
+    if (n.z < 0.0)
+        n.xy = (1.0 - abs(n.yx)) * sign(n.xy);
+    return normalize(n);
+}
+
 // ---- Surface history helpers ------------------------------------------------
 
 SurfaceHistory makeSurfaceHistory(vec3 normal, float viewZ, uint matIdx, bool valid)
 {
     SurfaceHistory sh;
-    // Pack normal as two snorm16 values (oct-like, simplified)
-    vec2 n2 = normal.xy / max(abs(normal.x) + abs(normal.y) + abs(normal.z), 1e-6);
-    sh.data.x = (uint(int(n2.x * 32767.0) & 0xFFFF)) | ((uint(int(n2.y * 32767.0) & 0xFFFF)) << 16u);
+    vec2 oct = octEncode(normal);
+    // Pack oct UV as two unorm16 (0-1 range from -1..1)
+    uint ox = uint(clamp(oct.x * 0.5 + 0.5, 0.0, 1.0) * 65535.0);
+    uint oy = uint(clamp(oct.y * 0.5 + 0.5, 0.0, 1.0) * 65535.0);
+    sh.data.x = ox | (oy << 16u);
     sh.data.y = floatBitsToUint(viewZ);
     sh.data.z = matIdx;
     sh.data.w = valid ? 1u : 0u;
@@ -478,13 +499,11 @@ SurfaceHistory makeSurfaceHistory(vec3 normal, float viewZ, uint matIdx, bool va
 
 vec3 surfaceHistoryNormal(SurfaceHistory sh)
 {
-    uint nx_bits = sh.data.x & 0xFFFFu;
-    uint ny_bits = (sh.data.x >> 16u) & 0xFFFFu;
-    float nx = float(int(nx_bits << 16u) >> 16u) / 32767.0;
-    float ny = float(int(ny_bits << 16u) >> 16u) / 32767.0;
-    float nz_sq = max(1.0 - nx * nx - ny * ny, 0.0);
-    float nz = sqrt(nz_sq);
-    return normalize(vec3(nx, ny, nz));
+    uint ox_bits = sh.data.x & 0xFFFFu;
+    uint oy_bits = (sh.data.x >> 16u) & 0xFFFFu;
+    float ox = (float(ox_bits) / 65535.0) * 2.0 - 1.0;
+    float oy = (float(oy_bits) / 65535.0) * 2.0 - 1.0;
+    return octDecode(vec2(ox, oy));
 }
 
 float surfaceHistoryViewZ(SurfaceHistory sh)

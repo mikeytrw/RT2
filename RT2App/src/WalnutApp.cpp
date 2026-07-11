@@ -290,6 +290,7 @@ public:
 	if (m_Settings.nrdEnabled)
 	{
 		ImGui::Indent();
+		ImGui::BeginDisabled(m_Settings.restirEnabled);
 		if (ImGui::Checkbox("Jitter", &m_Settings.nrdJitterEnabled))
 			m_RendererGPU.ApplySettings(m_Settings);
 		ImGui::SameLine();
@@ -298,6 +299,7 @@ public:
 		if (ImGui::SliderFloat("Scale", &m_Settings.nrdJitterScale, 0.0f, 1.0f, "%.2f"))
 			m_RendererGPU.ApplySettings(m_Settings);
 		ImGui::PopID();
+		ImGui::EndDisabled();
 		ImGui::SliderFloat("Blur Radius", &m_Settings.nrdMaxBlurRadius, 1.0f, 50.0f, "%.1f");
 		ImGui::SliderInt("Accum Frames", &m_Settings.nrdMaxAccumFrames, 1, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
 		ImGui::Checkbox("Anti-Firefly", &m_Settings.nrdAntiFirefly);

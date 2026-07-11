@@ -162,8 +162,7 @@ void main()
         centerRes = makeEmptyReservoir();
     }
 
-    // Accumulate total p_hat for MIS denominator
-    float totalPHat = p_hat_center;
+    // Accumulate p_hat for each valid neighbor
     float neighborPHats[32];
     bool neighborValid[32];
 
@@ -212,10 +211,9 @@ void main()
 
         neighborPHats[i] = p_hat_at_center;
         neighborValid[i] = true;
-        totalPHat += p_hat_at_center;
     }
 
-    // Second pass: merge valid neighbors with pairwise MIS weights
+    // Second pass: merge valid neighbors with canonical ReSTIR weights
     for (uint i = 0u; i < actualNeighbors; i++)
     {
         if (!neighborValid[i]) continue;
@@ -227,20 +225,17 @@ void main()
 
         float p_hat_at_center = neighborPHats[i];
 
-        // Pairwise MIS weight: w_j = (p_hat_j / total_p_hat) * W_j * M_j
-        float misWeight = p_hat_at_center / max(totalPHat, 1e-20);
+        // Canonical ReSTIR merge weight:
+        // w = p_hat_at_target(x_source) * W_source * M_source
+        // where W_source = weightSum_source / (M_source * targetPdf_source)
+        // This simplifies to: w = p_hat_at_center * weightSum_source / targetPdf_source
         float W_neighbor = reservoirW(nRes);
         uint M_neighbor = reservoirM(nRes);
-        float w_merge = misWeight * W_neighbor * float(M_neighbor) * p_hat_center;
-
-        // Also add the center's own MIS weight to prevent bias
-        // (the center reservoir contributes its own p_hat / total_p_hat)
-        // This is handled implicitly: we keep the center reservoir's weight
-        // and only add neighbor contributions on top.
+        float w_merge = p_hat_at_center * W_neighbor * float(M_neighbor);
 
         if (w_merge > 0.0 && !isnan(w_merge) && !isinf(w_merge))
         {
-            reservoirMerge(centerRes, nRes, w_merge, rngState);
+            reservoirMerge(centerRes, nRes, w_merge, p_hat_at_center, rngState);
         }
     }
 

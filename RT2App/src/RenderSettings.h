@@ -32,10 +32,10 @@ struct RenderSettings
 	// ReSTIR DI (Reservoir-based Resampling for Direct Illumination)
 	// Replaces RIS — raster-first mode only. Temporal + spatial reuse.
 	bool  restirEnabled       = false;
-	uint32_t restirFreshCandidates = 8;    // M: fresh candidates per pixel per frame
-	uint32_t restirSpatialNeighbors = 5;  // neighbor count for spatial reuse
-	uint32_t restirSpatialRadius    = 30; // pixel radius for neighbor sampling
-	uint32_t restirTemporalMCap     = 160; // max M from temporal (20 * freshCandidates)
+	uint32_t restirFreshCandidates = 4;    // M: fresh candidates per pixel per frame
+	uint32_t restirSpatialNeighbors = 4;  // neighbor count for spatial reuse
+	uint32_t restirSpatialRadius    = 16; // pixel radius for neighbor sampling
+	uint32_t restirTemporalMCap     = 40; // max M from temporal (10 * freshCandidates)
 	float restirDepthThreshold     = 0.1f; // relative depth difference for validation
 	float restirNormalThreshold    = 0.98f; // normal dot product for validation (cos angle)
 	bool  restirTemporalReuse     = true;  // enable temporal reuse
