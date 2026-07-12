@@ -101,7 +101,6 @@ copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Debug-windows-x86_
 copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\ris.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\restir_temporal.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\restir_spatial.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Debug-windows-x86_64/RT2App"
@@ -142,7 +141,6 @@ copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Release-windows-x8
 copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\ris.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\restir_temporal.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\restir_spatial.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Release-windows-x86_64/RT2App"
@@ -183,7 +181,6 @@ copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Dist-windows-x86_6
 copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\ris.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\restir_temporal.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\restir_spatial.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Dist-windows-x86_64/RT2App"
@@ -214,7 +211,6 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
     <ClInclude Include="src\NRDIntegration.h" />
     <ClInclude Include="src\PathTracePass.h" />
     <ClInclude Include="src\PrimitiveGeometry.h" />
-    <ClInclude Include="src\RISPass.h" />
     <ClInclude Include="src\RTLog.h" />
     <ClInclude Include="src\RasterPass.h" />
     <ClInclude Include="src\ReSTIRPass.h" />
@@ -336,11 +332,6 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\PrimitiveGeometry.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\RISPass.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -484,13 +475,6 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/restir_temporal.comp -o $(SolutionDir)/RT2App/shaders/restir_temporal.spv</Command>
       <Outputs>shaders/restir_temporal.spv</Outputs>
       <Message>Compiling restir_temporal.comp</Message>
-      <AdditionalInputs>shaders/restir_shared.glsl;shaders/restir_bindings.glsl;shaders/shader_interface.h</AdditionalInputs>
-    </CustomBuild>
-    <CustomBuild Include="shaders\ris.comp">
-      <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/ris.comp -o $(SolutionDir)/RT2App/shaders/ris.spv</Command>
-      <Outputs>shaders/ris.spv</Outputs>
-      <Message>Compiling ris.comp</Message>
       <AdditionalInputs>shaders/restir_shared.glsl;shaders/restir_bindings.glsl;shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\secondary_raygen.rgen">

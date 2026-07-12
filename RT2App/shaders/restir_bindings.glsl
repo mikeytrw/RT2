@@ -50,22 +50,28 @@ layout(set = 0, binding = SI_BINDING_MATERIAL_BUFFER, std430) readonly buffer Ma
     Material materials[];
 };
 
-// ---- Instance offsets (set 0, binding 5) ------------------------------------
-layout(set = 0, binding = SI_BINDING_INSTANCE_OFFSETS, std430) readonly buffer InstanceNormalOffsets
+// ---- Instance mesh info (set 0, binding 8) ----------------------------------
+layout(set = 0, binding = SI_BINDING_INSTANCE_MESH_INFO, std430) readonly buffer InstanceMeshInfo
 {
-    uint normalOffsets[];
+    uvec4 instanceMeshInfo[];
+};
+
+// ---- Index buffer (set 0, binding 5) ----------------------------------------
+layout(set = 0, binding = SI_BINDING_INDEX_BUFFER, std430) readonly buffer IndexBuffer
+{
+    uint indices[];
+};
+
+// ---- Vertex buffer (set 0, binding 3) ---------------------------------------
+layout(set = 0, binding = SI_BINDING_VERTEX_BUFFER, std430) readonly buffer VertexBuffer
+{
+    vec4 vertices[];
 };
 
 // ---- UV buffer (set 0, binding 7) -------------------------------------------
 layout(set = 0, binding = SI_BINDING_UV_BUFFER, std430) readonly buffer UVBuffer
 {
-    vec4 triangleUVs[];
-};
-
-// ---- Position buffer (set 0, binding 8) -------------------------------------
-layout(set = 0, binding = SI_BINDING_POSITION_BUFFER, std430) readonly buffer PositionBuffer
-{
-    vec4 trianglePositions[];
+    vec4 uvs[];
 };
 
 // ---- Light buffer (set 0, binding 9) ---------------------------------------

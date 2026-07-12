@@ -72,10 +72,10 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	bindings[2].stageFlags = allGraphicsRTFlags;
 
 	bindings[3] = {};
-	bindings[3].binding = SI_BINDING_NORMAL_BUFFER;
+	bindings[3].binding = SI_BINDING_VERTEX_BUFFER;
 	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[3].descriptorCount = 1;
-	bindings[3].stageFlags = allRTFlags;
+	bindings[3].stageFlags = allGraphicsRTFlags;
 
 	bindings[4] = {};
 	bindings[4].binding = SI_BINDING_TLAS;
@@ -84,13 +84,13 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	bindings[4].stageFlags = allRTFlags;
 
 	bindings[5] = {};
-	bindings[5].binding = SI_BINDING_INSTANCE_OFFSETS;
+	bindings[5].binding = SI_BINDING_INDEX_BUFFER;
 	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[5].descriptorCount = 1;
 	bindings[5].stageFlags = allGraphicsRTFlags;
 
 	bindings[6] = {};
-	bindings[6].binding = SI_BINDING_TANGENT_BUFFER;
+	bindings[6].binding = SI_BINDING_NORMAL_BUFFER;
 	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[6].descriptorCount = 1;
 	bindings[6].stageFlags = allGraphicsRTFlags;
@@ -102,7 +102,7 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	bindings[7].stageFlags = allGraphicsRTFlags;
 
 	bindings[8] = {};
-	bindings[8].binding = SI_BINDING_POSITION_BUFFER;
+	bindings[8].binding = SI_BINDING_INSTANCE_MESH_INFO;
 	bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	bindings[8].descriptorCount = 1;
 	bindings[8].stageFlags = allGraphicsRTFlags;
@@ -376,8 +376,9 @@ void PathTracePass::FreeDescriptorSet(VkDevice device, VkDescriptorPool pool)
 void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	VkImageView outputView, VkSampler outputSampler,
 	VkBuffer cameraUBO, VkBuffer materialBuffer,
-	VkBuffer normalBuffer, VkBuffer instanceOffsetBuffer,
-	VkBuffer tangentBuffer, VkBuffer uvBuffer, VkBuffer positionBuffer,
+	VkBuffer vertexBuffer, VkBuffer indexBuffer,
+	VkBuffer normalBuffer, VkBuffer uvBuffer,
+	VkBuffer instanceMeshInfoBuffer,
 	VkBuffer lightBuffer, VkBuffer instanceTransformBuffer,
 	VkBuffer instanceTransformPrevBuffer,
 	VkBuffer instanceMaterialIndexBuffer,
@@ -399,25 +400,25 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	materialBufferInfo.buffer = materialBuffer;
 	materialBufferInfo.range = VK_WHOLE_SIZE;
 
+	VkDescriptorBufferInfo vertexBufferInfo = {};
+	vertexBufferInfo.buffer = vertexBuffer;
+	vertexBufferInfo.range = VK_WHOLE_SIZE;
+
+	VkDescriptorBufferInfo indexBufferInfo = {};
+	indexBufferInfo.buffer = indexBuffer;
+	indexBufferInfo.range = VK_WHOLE_SIZE;
+
 	VkDescriptorBufferInfo normalBufferInfo = {};
 	normalBufferInfo.buffer = normalBuffer;
 	normalBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo offsetBufferInfo = {};
-	offsetBufferInfo.buffer = instanceOffsetBuffer;
-	offsetBufferInfo.range = VK_WHOLE_SIZE;
 
 	VkDescriptorBufferInfo uvBufferInfo = {};
 	uvBufferInfo.buffer = uvBuffer;
 	uvBufferInfo.range = VK_WHOLE_SIZE;
 
-	VkDescriptorBufferInfo positionBufferInfo = {};
-	positionBufferInfo.buffer = positionBuffer;
-	positionBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo tangentBufferInfo = {};
-	tangentBufferInfo.buffer = tangentBuffer;
-	tangentBufferInfo.range = VK_WHOLE_SIZE;
+	VkDescriptorBufferInfo instanceMeshInfoBufferInfo = {};
+	instanceMeshInfoBufferInfo.buffer = instanceMeshInfoBuffer;
+	instanceMeshInfoBufferInfo.range = VK_WHOLE_SIZE;
 
 	VkDescriptorBufferInfo lightBufferInfo = {};
 	lightBufferInfo.buffer = lightBuffer;
@@ -477,10 +478,10 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 
 	writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[3].dstSet = m_DescriptorSet;
-	writes[3].dstBinding = SI_BINDING_NORMAL_BUFFER;
+	writes[3].dstBinding = SI_BINDING_VERTEX_BUFFER;
 	writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[3].descriptorCount = 1;
-	writes[3].pBufferInfo = &normalBufferInfo;
+	writes[3].pBufferInfo = &vertexBufferInfo;
 
 	writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[4].dstSet = m_DescriptorSet;
@@ -491,18 +492,18 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 
 	writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[5].dstSet = m_DescriptorSet;
-	writes[5].dstBinding = SI_BINDING_INSTANCE_OFFSETS;
+	writes[5].dstBinding = SI_BINDING_INDEX_BUFFER;
 	writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[5].descriptorCount = 1;
-	writes[5].pBufferInfo = &offsetBufferInfo;
+	writes[5].pBufferInfo = &indexBufferInfo;
 
 	writes[6] = {};
 	writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[6].dstSet = m_DescriptorSet;
-	writes[6].dstBinding = SI_BINDING_TANGENT_BUFFER;
+	writes[6].dstBinding = SI_BINDING_NORMAL_BUFFER;
 	writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[6].descriptorCount = 1;
-	writes[6].pBufferInfo = &tangentBufferInfo;
+	writes[6].pBufferInfo = &normalBufferInfo;
 
 	writes[7] = {};
 	writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -515,10 +516,10 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	writes[8] = {};
 	writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
 	writes[8].dstSet = m_DescriptorSet;
-	writes[8].dstBinding = SI_BINDING_POSITION_BUFFER;
+	writes[8].dstBinding = SI_BINDING_INSTANCE_MESH_INFO;
 	writes[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
 	writes[8].descriptorCount = 1;
-	writes[8].pBufferInfo = &positionBufferInfo;
+	writes[8].pBufferInfo = &instanceMeshInfoBufferInfo;
 
 	writes[9] = {};
 	writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;

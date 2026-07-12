@@ -40,12 +40,6 @@ layout(set = 0, binding = SI_BINDING_MATERIAL_BUFFER, std430) readonly buffer Ma
     Material materials[];
 };
 
-// Instance offset buffer (set 0, binding 5) — maps instance index to BLAS mesh index
-layout(set = 0, binding = SI_BINDING_INSTANCE_OFFSETS, std430) readonly buffer InstanceOffsets
-{
-    uint normalOffsets[];
-};
-
 // Bindless textures (set 0, binding 11)
 layout(set = 0, binding = SI_BINDING_TEXTURE_ARRAY) uniform sampler2D textures[];
 

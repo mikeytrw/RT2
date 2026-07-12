@@ -66,8 +66,8 @@ TEST_CASE("BuildGPUSceneDataFromECS: object-space mesh vertices")
     const auto& mesh = gpu.meshes[0];
     CHECK(!mesh.vertices.empty());
     CHECK(!mesh.indices.empty());
-    CHECK(!mesh.vertexUVs.empty());
-    CHECK(!mesh.tangents.empty());
+    CHECK(!mesh.uvs.empty());
+    CHECK(!mesh.normals.empty());
 }
 
 TEST_CASE("BuildGPUSceneDataFromECS: ABG instancing reduces BLAS count")

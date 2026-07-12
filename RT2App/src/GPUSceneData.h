@@ -72,10 +72,10 @@ struct GPUMaterial
 // One chunk of triangle geometry for a single BLAS build.
 struct GPUMeshGeometry
 {
-    std::vector<float>     vertices;    // position.xyz, stride 3
+    std::vector<float>     vertices;    // position.xyz, stride 3 (object space)
     std::vector<uint32_t>  indices;     // triangle indices
-    std::vector<float>     vertexUVs;   // 6 floats per triangle (3 UVs × xy), interleaved
-    std::vector<float>     tangents;    // 9 floats per triangle (3 tangents × xyz), one per vertex
+    std::vector<float>     normals;     // normal.xyz, stride 3 (object space, may be empty)
+    std::vector<float>     uvs;         // texcoord.xy, stride 2 (may be empty)
     uint32_t               materialIndex = 0;
 };
 

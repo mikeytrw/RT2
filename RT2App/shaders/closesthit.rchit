@@ -15,16 +15,19 @@ layout(location = 1) rayPayloadEXT RayPayload nextPayload;
 hitAttributeEXT vec2 attribs;
 
 // Get the 3 vertex positions of the current hit triangle (world space).
-// Combined buffers store object-space positions; transform by the
-// instance's world matrix at hit time.
+// Vertices store object-space positions; transform by the instance's world
+// matrix at hit time.
 void hitTriPositions(out vec3 p0, out vec3 p1, out vec3 p2)
 {
-    uint triIdx = normalOffsets[gl_InstanceID] + uint(gl_PrimitiveID);
-    uint posIdx = triIdx * 3u;
+    uvec4 meshInfo = instanceMeshInfo[gl_InstanceID];
+    uint idxBase = meshInfo.y + uint(gl_PrimitiveID) * 3u;
+    uint i0 = indices[idxBase + 0u];
+    uint i1 = indices[idxBase + 1u];
+    uint i2 = indices[idxBase + 2u];
     mat4 world = instanceTransforms[gl_InstanceID];
-    p0 = vec3(world * trianglePositions[posIdx + 0u]);
-    p1 = vec3(world * trianglePositions[posIdx + 1u]);
-    p2 = vec3(world * trianglePositions[posIdx + 2u]);
+    p0 = vec3(world * vertices[meshInfo.x + i0]);
+    p1 = vec3(world * vertices[meshInfo.x + i1]);
+    p2 = vec3(world * vertices[meshInfo.x + i2]);
 }
 
 // Barycentric coordinates of the hit point, straight from the hardware.
@@ -43,30 +46,51 @@ vec3 hitFaceNormal()
 
 vec2 hitUV()
 {
-    uint triIdx = normalOffsets[gl_InstanceID] + uint(gl_PrimitiveID);
-    uint posIdx = triIdx * 3u;
+    uvec4 meshInfo = instanceMeshInfo[gl_InstanceID];
+    uint idxBase = meshInfo.y + uint(gl_PrimitiveID) * 3u;
+    uint i0 = indices[idxBase + 0u];
+    uint i1 = indices[idxBase + 1u];
+    uint i2 = indices[idxBase + 2u];
 
-    vec2 uv0 = triangleUVs[posIdx + 0u].xy;
-    vec2 uv1 = triangleUVs[posIdx + 1u].xy;
-    vec2 uv2 = triangleUVs[posIdx + 2u].xy;
+    vec2 uv0 = uvs[meshInfo.w + i0].xy;
+    vec2 uv1 = uvs[meshInfo.w + i1].xy;
+    vec2 uv2 = uvs[meshInfo.w + i2].xy;
 
     vec3 bary = hitBarycentric();
     return bary.x * uv0 + bary.y * uv1 + bary.z * uv2;
 }
 
-// Vertex tangents transformed to world space via the instance matrix.
+vec3 computeTangent(vec3 p0, vec3 p1, vec3 p2, vec2 uv0, vec2 uv1, vec2 uv2)
+{
+    vec3 edge1 = p1 - p0;
+    vec3 edge2 = p2 - p0;
+    vec2 dUV1 = uv1 - uv0;
+    vec2 dUV2 = uv2 - uv0;
+    float det = dUV1.x * dUV2.y - dUV1.y * dUV2.x;
+    if (abs(det) < 1e-8) return vec3(1.0, 0.0, 0.0);
+    float r = 1.0 / det;
+    return normalize(r * (dUV2.y * edge1 - dUV1.y * edge2));
+}
+
+// Tangent computed inline from UV gradients, transformed to world space.
 vec3 hitTangent()
 {
-    uint triIdx = normalOffsets[gl_InstanceID] + uint(gl_PrimitiveID);
-    uint posIdx = triIdx * 3u;
+    uvec4 meshInfo = instanceMeshInfo[gl_InstanceID];
+    uint idxBase = meshInfo.y + uint(gl_PrimitiveID) * 3u;
+    uint i0 = indices[idxBase + 0u];
+    uint i1 = indices[idxBase + 1u];
+    uint i2 = indices[idxBase + 2u];
 
-    mat3 worldMat3 = mat3(instanceTransforms[gl_InstanceID]);
-    vec3 t0 = normalize(worldMat3 * triangleTangents[posIdx + 0u].xyz);
-    vec3 t1 = normalize(worldMat3 * triangleTangents[posIdx + 1u].xyz);
-    vec3 t2 = normalize(worldMat3 * triangleTangents[posIdx + 2u].xyz);
+    mat4 world = instanceTransforms[gl_InstanceID];
+    vec3 p0 = vec3(world * vertices[meshInfo.x + i0]);
+    vec3 p1 = vec3(world * vertices[meshInfo.x + i1]);
+    vec3 p2 = vec3(world * vertices[meshInfo.x + i2]);
 
-    vec3 bary = hitBarycentric();
-    return normalize(bary.x * t0 + bary.y * t1 + bary.z * t2);
+    vec2 uv0 = uvs[meshInfo.w + i0].xy;
+    vec2 uv1 = uvs[meshInfo.w + i1].xy;
+    vec2 uv2 = uvs[meshInfo.w + i2].xy;
+
+    return computeTangent(p0, p1, p2, uv0, uv1, uv2);
 }
 
 // Get the shading normal: geometric face normal, or normal-mapped if texture exists

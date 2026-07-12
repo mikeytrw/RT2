@@ -383,12 +383,15 @@ NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
     uint lightIdx = pcg(rngState) % lightCount;
     TriangleLight light = lights[lightIdx];
 
-    uint triIdx = normalOffsets[light.ids.x] + light.ids.y;
-    uint posIdx = triIdx * 3u;
+    uvec4 meshInfo = instanceMeshInfo[light.ids.x];
+    uint idxBase = meshInfo.y + light.ids.y * 3u;
+    uint i0 = indices[idxBase + 0u];
+    uint i1 = indices[idxBase + 1u];
+    uint i2 = indices[idxBase + 2u];
     mat4 lightWorld = instanceTransforms[light.ids.x];
-    vec3 lp0 = vec3(lightWorld * trianglePositions[posIdx + 0u]);
-    vec3 lp1 = vec3(lightWorld * trianglePositions[posIdx + 1u]);
-    vec3 lp2 = vec3(lightWorld * trianglePositions[posIdx + 2u]);
+    vec3 lp0 = vec3(lightWorld * vertices[meshInfo.x + i0]);
+    vec3 lp1 = vec3(lightWorld * vertices[meshInfo.x + i1]);
+    vec3 lp2 = vec3(lightWorld * vertices[meshInfo.x + i2]);
 
     float r1 = randomFloat(rngState);
     float r2 = randomFloat(rngState);
@@ -427,9 +430,9 @@ NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
     uint emissiveTexIdx = light.ids.w;
     if (emissiveTexIdx != 0xFFFFFFFFu)
     {
-        vec2 luv0 = triangleUVs[posIdx + 0u].xy;
-        vec2 luv1 = triangleUVs[posIdx + 1u].xy;
-        vec2 luv2 = triangleUVs[posIdx + 2u].xy;
+        vec2 luv0 = uvs[meshInfo.w + i0].xy;
+        vec2 luv1 = uvs[meshInfo.w + i1].xy;
+        vec2 luv2 = uvs[meshInfo.w + i2].xy;
         vec2 lightUV = b0 * luv0 + b1 * luv1 + b2 * luv2;
         Le *= texture(textures[nonuniformEXT(int(emissiveTexIdx))], lightUV).rgb;
     }

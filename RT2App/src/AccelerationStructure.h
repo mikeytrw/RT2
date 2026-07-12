@@ -22,10 +22,10 @@ struct BLASGeometry
 {
 	const std::vector<float>*    vertices;    // position.xyz, stride 3
 	const std::vector<uint32_t>* indices;     // triangle indices
-	const std::vector<float>*    vertexUVs;   // 6 floats per triangle (3 UVs × xy)
-	const std::vector<float>*    tangents;    // 12 floats per triangle (3 tangents × xyz)
+	const std::vector<float>*    normals;     // normal.xyz, stride 3 (may be null)
+	const std::vector<float>*    uvs;         // texcoord.xy, stride 2 (may be null)
 	uint32_t                     materialIndex;
-	bool                         isTransparent = false; // if true, clear VK_GEOMETRY_OPAQUE_BIT_KHR so any-hit runs
+	bool                         isTransparent = false;
 };
 
 class AccelerationStructure
@@ -56,11 +56,9 @@ public:
 	                     const std::vector<BLASInstance>& instances,
 	                     const std::vector<uint32_t>& instanceMeshIndices);
 
-	// Build combined normal/position/UV/tangent buffers from BLAS data.
-	// Must be called after BuildTLAS (needs instance-to-BLAS mapping).
-	// Emits per-BLAS object-space data (deduplicated). The shader transforms
-	// to world space at hit time using the instance transform SSBO.
-	void BuildCombinedBuffers();
+	// Build attribute buffers (vertex as vec4, index as uint, normal as vec4,
+	// UV as vec4, instanceMeshInfo as uvec4). Must be called after BuildTLAS.
+	void BuildAttributeBuffers();
 
 	VkDeviceAddress GetTLASDeviceAddress() const { return m_TLASDeviceAddress; }
 	bool IsValid() const { return m_TLAS != VK_NULL_HANDLE; }
@@ -69,13 +67,11 @@ public:
 	uint32_t GetBLASCount() const { return static_cast<uint32_t>(m_BLASes.size()); }
 	VkDeviceAddress GetBLASAddress(uint32_t index) const;
 
-	VkBuffer GetNormalBuffer() const { return m_CombinedNormalBuffer; }
-	VkBuffer GetInstanceOffsetBuffer() const { return m_InstanceOffsetBuffer; }
-	VkDeviceMemory GetInstanceOffsetMemory() const { return m_InstanceOffsetMemory; }
-	VkBuffer GetUVBuffer() const { return m_CombinedUVBuffer; }
-	VkBuffer GetPositionBuffer() const { return m_CombinedPositionBuffer; }
-	VkDeviceMemory GetPositionBufferMemory() const { return m_CombinedPositionMemory; }
-	VkBuffer GetTangentBuffer() const { return m_CombinedTangentBuffer; }
+	VkBuffer GetVertexBuffer() const { return m_VertexBuffer; }
+	VkBuffer GetIndexBuffer() const { return m_IndexBuffer; }
+	VkBuffer GetNormalBuffer() const { return m_NormalBuffer; }
+	VkBuffer GetUVBuffer() const { return m_UVBuffer; }
+	VkBuffer GetInstanceMeshInfoBuffer() const { return m_InstanceMeshInfoBuffer; }
 	uint32_t GetTriangleCount() const { return m_TotalTriangleCount; }
 
 private:
@@ -85,8 +81,6 @@ private:
 		VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
 		VkBuffer indexBuffer = VK_NULL_HANDLE;
 		VkDeviceMemory indexMemory = VK_NULL_HANDLE;
-		VkBuffer normalBuffer = VK_NULL_HANDLE;
-		VkDeviceMemory normalMemory = VK_NULL_HANDLE;
 		VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
 		VkBuffer blasBuffer = VK_NULL_HANDLE;
 		VkDeviceMemory blasMemory = VK_NULL_HANDLE;
@@ -94,24 +88,26 @@ private:
 		VkDeviceMemory scratchMemory = VK_NULL_HANDLE;
 		VkDeviceAddress deviceAddress = 0;
 		uint32_t triangleCount = 0;
-		std::vector<float> triPositions; // 9 floats per triangle (3 × xyz)
-		std::vector<float> triUVs;       // 6 floats per triangle (3 × uv)
-		std::vector<float> triTangents;  // 9 floats per triangle (3 × xyz)
+		uint32_t vertexCount = 0;
+		const std::vector<float>*    srcVertices = nullptr;
+		const std::vector<uint32_t>* srcIndices = nullptr;
+		const std::vector<float>*    srcNormals = nullptr;
+		const std::vector<float>*    srcUVs = nullptr;
 	};
 
 	std::vector<BLASData> m_BLASes;
 
-	// Combined normal buffer (all triangles from all BLASes) + per-instance offsets
-	VkBuffer m_CombinedNormalBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_CombinedNormalMemory = VK_NULL_HANDLE;
-	VkBuffer m_InstanceOffsetBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_InstanceOffsetMemory = VK_NULL_HANDLE;
-	VkBuffer m_CombinedUVBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_CombinedUVMemory = VK_NULL_HANDLE;
-	VkBuffer m_CombinedPositionBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_CombinedPositionMemory = VK_NULL_HANDLE;
-	VkBuffer m_CombinedTangentBuffer = VK_NULL_HANDLE;
-	VkDeviceMemory m_CombinedTangentMemory = VK_NULL_HANDLE;
+	// Attribute mega-buffers (DEVICE_LOCAL, vec4 storage)
+	VkBuffer m_VertexBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_VertexMemory = VK_NULL_HANDLE;
+	VkBuffer m_IndexBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_IndexMemory = VK_NULL_HANDLE;
+	VkBuffer m_NormalBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_NormalMemory = VK_NULL_HANDLE;
+	VkBuffer m_UVBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_UVMemory = VK_NULL_HANDLE;
+	VkBuffer m_InstanceMeshInfoBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_InstanceMeshInfoMemory = VK_NULL_HANDLE;
 
 	// TLAS
 	VkAccelerationStructureKHR m_TLAS = VK_NULL_HANDLE;

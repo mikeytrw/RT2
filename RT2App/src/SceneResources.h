@@ -93,11 +93,11 @@ public:
 
 	// AS accessors
 	VkAccelerationStructureKHR GetTLAS() const { return m_AS.GetTLAS(); }
+	VkBuffer GetVertexBuffer() const { return m_AS.GetVertexBuffer(); }
+	VkBuffer GetIndexBuffer() const { return m_AS.GetIndexBuffer(); }
 	VkBuffer GetNormalBuffer() const { return m_AS.GetNormalBuffer(); }
-	VkBuffer GetTangentBuffer() const { return m_AS.GetTangentBuffer(); }
 	VkBuffer GetUVBuffer() const { return m_AS.GetUVBuffer(); }
-	VkBuffer GetPositionBuffer() const { return m_AS.GetPositionBuffer(); }
-	VkBuffer GetInstanceOffsetBuffer() const { return m_AS.GetInstanceOffsetBuffer(); }
+	VkBuffer GetInstanceMeshInfoBuffer() const { return m_AS.GetInstanceMeshInfoBuffer(); }
 
 	// Texture accessors
 	const std::vector<GpuImage>& GetTextures() const { return m_Textures; }

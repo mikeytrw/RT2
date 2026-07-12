@@ -24,12 +24,14 @@ layout(set = 1, binding = 10, rg16f) uniform readonly image2D gPrimUV;
 struct TriangleLight { vec4 emission_area; uvec4 ids; };
 layout(set = 0, binding = SI_BINDING_LIGHT_BUFFER, std430) readonly buffer LightBuffer
 { uint lightCount; float totalLightArea; uint _p0; uint _p1; TriangleLight lights[]; };
-layout(set = 0, binding = SI_BINDING_INSTANCE_OFFSETS, std430) readonly buffer InstanceNormalOffsets
-{ uint normalOffsets[]; };
+layout(set = 0, binding = SI_BINDING_INSTANCE_MESH_INFO, std430) readonly buffer InstanceMeshInfo
+{ uvec4 instanceMeshInfo[]; };
+layout(set = 0, binding = SI_BINDING_INDEX_BUFFER, std430) readonly buffer IndexBuffer
+{ uint indices[]; };
+layout(set = 0, binding = SI_BINDING_VERTEX_BUFFER, std430) readonly buffer VertexBuffer
+{ vec4 vertices[]; };
 layout(set = 0, binding = SI_BINDING_UV_BUFFER, std430) readonly buffer UVBuffer
-{ vec4 triangleUVs[]; };
-layout(set = 0, binding = SI_BINDING_POSITION_BUFFER, std430) readonly buffer PositionBuffer
-{ vec4 trianglePositions[]; };
+{ vec4 uvs[]; };
 layout(set = 0, binding = SI_BINDING_INSTANCE_TRANSFORMS, std430) readonly buffer InstanceTransforms
 { mat4 instanceTransforms[]; };
 layout(set = 0, binding = SI_BINDING_TEXTURE_ARRAY) uniform sampler2D textures[];

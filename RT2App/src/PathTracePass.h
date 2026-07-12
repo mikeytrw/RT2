@@ -10,8 +10,8 @@ class AccelerationStructure;
 
 // PathTracePass — owns the RT pipeline, SBT, and set 0 descriptor layout.
 // Set 0 bindings (see shader_interface.h):
-//   0: output image, 1: camera UBO, 2: materials, 3: normals, 4: TLAS,
-//   5: instance offsets, 6: tangents, 7: UVs, 8: positions, 9: lights,
+//   0: output image, 1: camera UBO, 2: materials, 3: vertex buffer, 4: TLAS,
+//   5: index buffer, 6: normals, 7: UVs, 8: instance mesh info, 9: lights,
 //   10: instance transforms, 11: textures
 class PathTracePass
 {
@@ -22,13 +22,13 @@ public:
 	bool Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetLayout);
 	void Destroy();
 
-	// Create/allocate set 0 descriptor set (needs descriptor pool from caller)
 	bool CreateDescriptorSet(const GpuDevice& dev, VkDescriptorPool pool);
 	void UpdateDescriptorSet(const GpuDevice& dev,
 		VkImageView outputView, VkSampler outputSampler,
 		VkBuffer cameraUBO, VkBuffer materialBuffer,
-		VkBuffer normalBuffer, VkBuffer instanceOffsetBuffer,
-		VkBuffer tangentBuffer, VkBuffer uvBuffer, VkBuffer positionBuffer,
+		VkBuffer vertexBuffer, VkBuffer indexBuffer,
+		VkBuffer normalBuffer, VkBuffer uvBuffer,
+		VkBuffer instanceMeshInfoBuffer,
 		VkBuffer lightBuffer, VkBuffer instanceTransformBuffer,
 		VkBuffer instanceTransformPrevBuffer,
 		VkBuffer instanceMaterialIndexBuffer,

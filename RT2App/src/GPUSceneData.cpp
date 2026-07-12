@@ -104,65 +104,8 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
         GPUMeshGeometry geo;
         geo.vertices = src.vertices;
         geo.indices  = src.indices;
-
-        uint32_t triCount = static_cast<uint32_t>(src.indices.size() / 3);
-        geo.vertexUVs.reserve(triCount * 6);
-        geo.tangents.reserve(triCount * 12);
-
-        if (!src.uvs.empty())
-        {
-            for (uint32_t t = 0; t < triCount; t++)
-            {
-                uint32_t vi0 = src.indices[t * 3 + 0] * 3;
-                uint32_t vi1 = src.indices[t * 3 + 1] * 3;
-                uint32_t vi2 = src.indices[t * 3 + 2] * 3;
-                uint32_t ui0 = src.indices[t * 3 + 0] * 2;
-                uint32_t ui1 = src.indices[t * 3 + 1] * 2;
-                uint32_t ui2 = src.indices[t * 3 + 2] * 2;
-
-                // UVs
-                geo.vertexUVs.push_back(src.uvs[ui0]);
-                geo.vertexUVs.push_back(src.uvs[ui0 + 1]);
-                geo.vertexUVs.push_back(src.uvs[ui1]);
-                geo.vertexUVs.push_back(src.uvs[ui1 + 1]);
-                geo.vertexUVs.push_back(src.uvs[ui2]);
-                geo.vertexUVs.push_back(src.uvs[ui2 + 1]);
-
-                // Tangent from edges and UV derivatives
-                glm::vec3 v0(src.vertices[vi0], src.vertices[vi0 + 1], src.vertices[vi0 + 2]);
-                glm::vec3 v1(src.vertices[vi1], src.vertices[vi1 + 1], src.vertices[vi1 + 2]);
-                glm::vec3 v2(src.vertices[vi2], src.vertices[vi2 + 1], src.vertices[vi2 + 2]);
-
-                glm::vec2 uv0(src.uvs[ui0], src.uvs[ui0 + 1]);
-                glm::vec2 uv1(src.uvs[ui1], src.uvs[ui1 + 1]);
-                glm::vec2 uv2(src.uvs[ui2], src.uvs[ui2 + 1]);
-
-                glm::vec3 edge1 = v1 - v0;
-                glm::vec3 edge2 = v2 - v0;
-                glm::vec2 dUV1 = uv1 - uv0;
-                glm::vec2 dUV2 = uv2 - uv0;
-
-                float det = dUV1.x * dUV2.y - dUV1.y * dUV2.x;
-                glm::vec3 tangent(1.0f, 0.0f, 0.0f);
-                if (std::abs(det) > 1e-8f)
-                {
-                    float r = 1.0f / det;
-                    tangent = normalize(r * (dUV2.y * edge1 - dUV1.y * edge2));
-                }
-
-                for (int v = 0; v < 3; v++)
-                {
-                    geo.tangents.push_back(tangent.x);
-                    geo.tangents.push_back(tangent.y);
-                    geo.tangents.push_back(tangent.z);
-                }
-            }
-        }
-        else
-        {
-            geo.vertexUVs.resize(triCount * 6, 0.0f);
-            geo.tangents.resize(triCount * 9, 0.0f);
-        }
+        geo.normals  = src.normals;
+        geo.uvs      = src.uvs;
 
         gpu.meshes.push_back(std::move(geo));
     }

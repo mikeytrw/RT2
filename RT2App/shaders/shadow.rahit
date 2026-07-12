@@ -16,12 +16,15 @@ hitAttributeEXT vec2 attribs;
 
 vec2 shadowAnyHitUV()
 {
-    uint triIdx = normalOffsets[gl_InstanceID] + uint(gl_PrimitiveID);
-    uint posIdx = triIdx * 3u;
+    uvec4 meshInfo = instanceMeshInfo[gl_InstanceID];
+    uint idxBase = meshInfo.y + uint(gl_PrimitiveID) * 3u;
+    uint i0 = indices[idxBase + 0u];
+    uint i1 = indices[idxBase + 1u];
+    uint i2 = indices[idxBase + 2u];
 
-    vec2 uv0 = triangleUVs[posIdx + 0u].xy;
-    vec2 uv1 = triangleUVs[posIdx + 1u].xy;
-    vec2 uv2 = triangleUVs[posIdx + 2u].xy;
+    vec2 uv0 = uvs[meshInfo.w + i0].xy;
+    vec2 uv1 = uvs[meshInfo.w + i1].xy;
+    vec2 uv2 = uvs[meshInfo.w + i2].xy;
 
     float u = 1.0 - attribs.x - attribs.y;
     return u * uv0 + attribs.x * uv1 + attribs.y * uv2;

@@ -51,32 +51,29 @@ layout(set = 0, binding = SI_BINDING_MATERIAL_BUFFER, std430) readonly buffer Ma
     Material materials[];
 };
 
+layout(set = 0, binding = SI_BINDING_VERTEX_BUFFER, std430) readonly buffer VertexBuffer
+{
+    vec4 vertices[]; // xyz = position, w = 1.0
+};
+
+layout(set = 0, binding = SI_BINDING_INDEX_BUFFER, std430) readonly buffer IndexBuffer
+{
+    uint indices[];
+};
+
 layout(set = 0, binding = SI_BINDING_NORMAL_BUFFER, std430) readonly buffer NormalBuffer
 {
-    vec4 triangleNormals[]; // xyz = normal, w = unused (16-byte aligned)
+    vec4 normals[]; // xyz = normal, w = 0.0
 };
 
-layout(set = 0, binding = SI_BINDING_INSTANCE_OFFSETS, std430) readonly buffer InstanceNormalOffsets
-{
-    uint normalOffsets[]; // per-instance offset into triangleNormals
-};
-
-// Combined tangent buffer (3 vec4 per triangle, xyz = vertex tangent)
-layout(set = 0, binding = SI_BINDING_TANGENT_BUFFER, std430) readonly buffer TangentBuffer
-{
-    vec4 triangleTangents[]; // 3 per triangle: xyz = tangent, w = unused
-};
-
-// Combined UV buffer (3 vec4 per triangle, xy = vertex UV)
 layout(set = 0, binding = SI_BINDING_UV_BUFFER, std430) readonly buffer UVBuffer
 {
-    vec4 triangleUVs[]; // 3 per triangle: xy = vertex UV, zw = unused
+    vec4 uvs[]; // xy = UV, zw = 0.0
 };
 
-// Combined position buffer (3 vec4 per triangle, xyz = vertex position)
-layout(set = 0, binding = SI_BINDING_POSITION_BUFFER, std430) readonly buffer PositionBuffer
+layout(set = 0, binding = SI_BINDING_INSTANCE_MESH_INFO, std430) readonly buffer InstanceMeshInfo
 {
-    vec4 trianglePositions[]; // 3 per triangle: xyz = vertex pos, w = unused
+    uvec4 instanceMeshInfo[]; // x = vertOffset, y = idxOffset, z = normOffset, w = uvOffset
 };
 
 // ---- Light buffer (NEE) -----------------------------------------------------

@@ -195,8 +195,8 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 		BLASGeometry geo;
 		geo.vertices = &mesh.vertices;
 		geo.indices = &mesh.indices;
-		geo.vertexUVs = &mesh.vertexUVs;
-		geo.tangents = &mesh.tangents;
+		geo.normals = &mesh.normals;
+		geo.uvs = &mesh.uvs;
 		geo.materialIndex = mesh.materialIndex;
 
 		uint32_t matIdx = mesh.materialIndex;
@@ -250,7 +250,7 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 		RT_LOG("[RebuildAS] TLAS build result=%d instances=%d", tlasOK, (int)instances.size());
 	});
 
-	m_AS.BuildCombinedBuffers();
+	m_AS.BuildAttributeBuffers();
 
 	if (rasterPassBuild)
 		rasterPassBuild(dev, m_CurrentScene);
@@ -860,87 +860,27 @@ void SceneResources::DumpNEEBuffers() const
 
 	RT_LOG("===== NEE Buffer Dump =====");
 
-	// Read back InstanceOffsetBuffer (normalOffsets in shader)
-	VkBuffer offBuf = m_AS.GetInstanceOffsetBuffer();
-	VkDeviceMemory offMem = m_AS.GetInstanceOffsetMemory();
-	if (offBuf && offMem)
-	{
-		VkDeviceSize offSize = instCount * sizeof(uint32_t);
-		if (offSize == 0) offSize = sizeof(uint32_t);
-		void* mapped;
-		vkMapMemory(device, offMem, 0, offSize, 0, &mapped);
-		uint32_t* offsets = reinterpret_cast<uint32_t*>(mapped);
-		for (size_t i = 0; i < instCount; i++)
-		{
-			bool isEm = false;
-			uint32_t matIdx = m_CurrentScene.instances.size() > i
-				? m_CurrentScene.instances[i].materialIndex : 0;
-			if (matIdx < m_CurrentScene.materials.size())
-			{
-				glm::vec3 em = glm::vec3(m_CurrentScene.materials[matIdx].emissive_roughness);
-				isEm = (em.x > 0 || em.y > 0 || em.z > 0);
-			}
-			if (isEm)
-				RT_LOG("  normalOffsets[%d] = %u (mesh=%d)", (int)i, offsets[i],
-				       m_CurrentScene.instances.size() > i ? m_CurrentScene.instances[i].meshIndex : -1);
-		}
-		vkUnmapMemory(device, offMem);
-	}
-	else
-		RT_LOG("  (InstanceOffsetBuffer is NULL)");
+	RT_LOG("  instances=%zu, lights=%zu, totalLightArea=%.4f",
+	       instCount, m_CurrentScene.lights.size(), m_CurrentScene.totalLightArea);
 
-	// Read back the first few triangle positions for the sphere's BLAS
-	// inst 0 is the sphere, meshIndex=18
-	if (instCount > 0)
-	{
-		uint32_t sphereMeshIdx = m_CurrentScene.instances[0].meshIndex;
-		uint32_t sphereOffset = 0;
-		if (offBuf && offMem)
-		{
-			VkDeviceSize offSize = instCount * sizeof(uint32_t);
-			void* mapped;
-			vkMapMemory(device, offMem, 0, offSize, 0, &mapped);
-			uint32_t* offsets = reinterpret_cast<uint32_t*>(mapped);
-			sphereOffset = offsets[0];
-			vkUnmapMemory(device, offMem);
-		}
-
-		VkBuffer posBuf = m_AS.GetPositionBuffer();
-		VkDeviceMemory posMem = m_AS.GetPositionBufferMemory();
-		if (posBuf && posMem)
-		{
-			// Each position is a vec4 (16 bytes). sphereOffset is in "triangle index" units.
-			// trianglePositions[posIdx + 0..2] where posIdx = triIdx * 3
-			// So for the first triangle: triIdx = sphereOffset, posIdx = sphereOffset * 3
-			uint32_t posIdx = sphereOffset * 3;
-			VkDeviceSize readOffset = posIdx * sizeof(glm::vec4);
-			VkDeviceSize readSize = 6 * sizeof(glm::vec4); // 2 triangles = 6 verts
-			void* mapped;
-			vkMapMemory(device, posMem, readOffset, readSize, 0, &mapped);
-			glm::vec4* positions = reinterpret_cast<glm::vec4*>(mapped);
-			for (int v = 0; v < 6; v++)
-				RT_LOG("  posBuf[%d] (sphere tri %d vert %d) = (%.4f, %.4f, %.4f, %.4f)",
-				       posIdx + v, v / 3, v % 3,
-				       positions[v].x, positions[v].y, positions[v].z, positions[v].w);
-			vkUnmapMemory(device, posMem);
-		}
-		else
-			RT_LOG("  (PositionBuffer is NULL)");
-	}
-
-	// Also read back the light buffer for the sphere's first light
 	if (m_LightBuffer && m_LightBufferMemory && m_CurrentScene.lights.size() > 0)
 	{
 		void* mapped;
 		vkMapMemory(device, m_LightBufferMemory, 0, VK_WHOLE_SIZE, 0, &mapped);
 		GPUTriangleLight* gpuLights = reinterpret_cast<GPUTriangleLight*>((uint8_t*)mapped + 16);
-		// First light should be inst 0 (sphere, since it's iterated first)
-		RT_LOG("  Light[0]: inst=%u prim=%u mat=%u emissive=(%.1f,%.1f,%.1f) area=%.5f",
-		       gpuLights[0].ids.x, gpuLights[0].ids.y, gpuLights[0].ids.z,
-		       gpuLights[0].emission_area.x, gpuLights[0].emission_area.y, gpuLights[0].emission_area.z,
-		       gpuLights[0].emission_area.w);
+		size_t numLights = m_CurrentScene.lights.size();
+		size_t dumpCount = numLights < 10 ? numLights : 10;
+		for (size_t i = 0; i < dumpCount; i++)
+		{
+			RT_LOG("  Light[%zu]: inst=%u prim=%u mat=%u emissive=(%.1f,%.1f,%.1f) area=%.5f",
+			       i, gpuLights[i].ids.x, gpuLights[i].ids.y, gpuLights[i].ids.z,
+			       gpuLights[i].emission_area.x, gpuLights[i].emission_area.y, gpuLights[i].emission_area.z,
+			       gpuLights[i].emission_area.w);
+		}
 		vkUnmapMemory(device, m_LightBufferMemory);
 	}
+	else
+		RT_LOG("  (LightBuffer is NULL or empty)");
 
 	RT_LOG("===== End NEE Buffer Dump =====");
 }

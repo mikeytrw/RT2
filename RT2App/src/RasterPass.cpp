@@ -209,33 +209,25 @@ void RasterPass::CreateVertexBuffers(const GpuDevice& dev, const GPUSceneData& s
 		{
 			for (int v = 0; v < 3; v++)
 			{
-				uint32_t vi = mesh.indices[t * 3 + v] * 3;
+				uint32_t idx = mesh.indices[t * 3 + v];
+				uint32_t vi = idx * 3;
 				megaVerts.push_back(mesh.vertices[vi]);
 				megaVerts.push_back(mesh.vertices[vi + 1]);
 				megaVerts.push_back(mesh.vertices[vi + 2]);
-				if (!mesh.vertexUVs.empty())
+				if (!mesh.uvs.empty())
 				{
-					megaVerts.push_back(mesh.vertexUVs[t * 6 + v * 2 + 0]);
-					megaVerts.push_back(mesh.vertexUVs[t * 6 + v * 2 + 1]);
+					uint32_t ui = idx * 2;
+					megaVerts.push_back(mesh.uvs[ui]);
+					megaVerts.push_back(mesh.uvs[ui + 1]);
 				}
 				else
 				{
 					megaVerts.push_back(0.0f);
 					megaVerts.push_back(0.0f);
 				}
-				if (!mesh.tangents.empty())
-				{
-					uint32_t ti = t * 9 + v * 3;
-					megaVerts.push_back(mesh.tangents[ti]);
-					megaVerts.push_back(mesh.tangents[ti + 1]);
-					megaVerts.push_back(mesh.tangents[ti + 2]);
-				}
-				else
-				{
-					megaVerts.push_back(1.0f);
-					megaVerts.push_back(0.0f);
-					megaVerts.push_back(0.0f);
-				}
+				megaVerts.push_back(1.0f);
+				megaVerts.push_back(0.0f);
+				megaVerts.push_back(0.0f);
 			}
 		}
 	}
