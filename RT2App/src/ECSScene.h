@@ -6,7 +6,7 @@
 #include <entt/entt.hpp>
 #include "ECSComponents.h"
 #include "MeshRegistry.h"
-#include "Scene.h"  // for SceneMaterial, SceneTexture, SceneCamera ( transitional)
+#include "SceneTypes.h"
 
 // ============================================================================
 // ECSScene — ECS-based scene representation
@@ -28,9 +28,9 @@ struct ECSScene
     entt::registry registry;
     MeshRegistry meshRegistry;
 
-    // Flat arrays (transitional — same as Scene)
     std::vector<SceneMaterial> materials;
     std::vector<SceneTexture>  textures;
+    std::vector<SceneLight>    lights;
     SceneCamera                camera;
 
     void Clear()
@@ -39,6 +39,7 @@ struct ECSScene
         meshRegistry.Clear();
         materials.clear();
         textures.clear();
+        lights.clear();
         camera = SceneCamera{};
     }
 };

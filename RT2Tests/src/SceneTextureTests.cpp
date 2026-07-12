@@ -1,6 +1,6 @@
 #include <doctest/doctest.h>
 
-#include "Scene.h"
+#include "SceneTypes.h"
 #include "SceneLoader.h"
 #include <glm/glm.hpp>
 #include <filesystem>

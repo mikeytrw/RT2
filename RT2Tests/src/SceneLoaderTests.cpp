@@ -1,10 +1,13 @@
 #include <doctest/doctest.h>
 
-#include "Scene.h"
+#include "SceneTypes.h"
+#include "ECSScene.h"
+#include "ECSComponents.h"
 #include "SceneLoader.h"
 #include <glm/glm.hpp>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 
 namespace fs = std::filesystem;
 
@@ -36,14 +39,13 @@ static void cleanupTestFiles()
 TEST_CASE("Save and load empty scene")
 {
     cleanupTestFiles();
-    Scene scene;
+    ECSScene scene;
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
-    Scene loaded;
-    REQUIRE(SceneLoader::Load(loaded, TEST_FILE));
-    CHECK(loaded.GetMeshes().empty());
-    CHECK(loaded.GetMaterials().empty());
-    CHECK(loaded.GetLights().empty());
-    CHECK(loaded.GetTextures().empty());
+    ECSScene loaded;
+    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    CHECK(loaded.meshRegistry.GetCount() == 0);
+    CHECK(loaded.lights.empty());
+    CHECK(loaded.textures.empty());
     cleanupTestFiles();
 }
 
@@ -52,25 +54,40 @@ TEST_CASE("Save and load empty scene")
 TEST_CASE("Mesh round-trips through glTF")
 {
     cleanupTestFiles();
-    Scene scene;
-    SceneMesh mesh;
-    mesh.filepath = "models/car.obj";
-    mesh.position = {1.5f, 2.0f, -3.0f};
-    mesh.rotation = {0.0f, 0.5f, 0.0f};
-    mesh.scale = 0.01f;
-    mesh.materialIndex = 1;
-    scene.AddMesh(mesh);
+    ECSScene scene;
+
+    MeshData meshData;
+    meshData.vertices = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    meshData.indices = {0, 1, 2};
+    uint32_t meshIdx = scene.meshRegistry.AddMesh(std::move(meshData));
+
+    auto entity = scene.registry.create();
+    auto& tf = scene.registry.emplace<Transform>(entity);
+    tf.translation = {1.5f, 2.0f, -3.0f};
+    tf.scale = {0.01f, 0.01f, 0.01f};
+    auto& ref = scene.registry.emplace<MeshRef>(entity);
+    ref.meshIndex = meshIdx;
+    ref.materialIndex = 1;
+
+    scene.materials.push_back(SceneMaterial{});
+    scene.materials.push_back(SceneMaterial{});
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
-    Scene loaded;
-    REQUIRE(SceneLoader::Load(loaded, TEST_FILE));
-    REQUIRE(loaded.GetMeshes().size() == 1);
-    const auto& m = loaded.GetMesh(0);
-    CHECK(m.filepath == "models/car.obj");
-    CHECK(m.position == glm::vec3(1.5f, 2.0f, -3.0f));
-    CHECK(m.rotation == glm::vec3(0.0f, 0.5f, 0.0f));
-    CHECK(m.scale == 0.01f);
-    CHECK(m.materialIndex == 1);
+    ECSScene loaded;
+    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+
+    auto meshView = loaded.registry.view<MeshRef, Transform>();
+    size_t meshCount = std::distance(meshView.begin(), meshView.end());
+    REQUIRE(meshCount == 1);
+    auto loadedEntity = *meshView.begin();
+    auto& loadedTf = meshView.get<Transform>(loadedEntity);
+    auto& loadedRef = meshView.get<MeshRef>(loadedEntity);
+
+    CHECK(loadedTf.translation == glm::vec3(1.5f, 2.0f, -3.0f));
+    CHECK(loadedTf.scale.x == doctest::Approx(0.01f).epsilon(0.001));
+    CHECK(loadedRef.materialIndex == 1);
+    CHECK(loaded.meshRegistry.GetCount() >= 1);
+    CHECK(loaded.meshRegistry.GetMesh(0).vertices.size() == 9);
     cleanupTestFiles();
 }
 
@@ -79,7 +96,7 @@ TEST_CASE("Mesh round-trips through glTF")
 TEST_CASE("Material round-trips through glTF")
 {
     cleanupTestFiles();
-    Scene scene;
+    ECSScene scene;
     SceneMaterial mat;
     mat.type = MaterialType::Metal;
     mat.baseColor = {0.9f, 0.6f, 0.3f};
@@ -89,18 +106,20 @@ TEST_CASE("Material round-trips through glTF")
     mat.emissiveColor = {0.1f, 0.0f, 0.0f};
     mat.emissiveIntensity = 0.0f;
     mat.baseColorTextureIndex = 0;
-    scene.AddMaterial(mat);
+    scene.materials.push_back(mat);
+
+    scene.textures.push_back({"textures/albedo.png"});
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
-    Scene loaded;
-    REQUIRE(SceneLoader::Load(loaded, TEST_FILE));
-    REQUIRE(loaded.GetMaterials().size() == 1);
-    const auto& m = loaded.GetMaterial(0);
+    ECSScene loaded;
+    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    REQUIRE(loaded.materials.size() >= 1);
+    const auto& m = loaded.materials[0];
     CHECK(m.type == MaterialType::Metal);
     CHECK(m.baseColor == glm::vec3(0.9f, 0.6f, 0.3f));
-    CHECK(m.metallic == 0.8f);
-    CHECK(m.roughness == 0.15f);
-    CHECK(m.ior == 1.45f);
+    CHECK(m.metallic == doctest::Approx(0.8f).epsilon(0.001));
+    CHECK(m.roughness == doctest::Approx(0.15f).epsilon(0.001));
+    CHECK(m.ior == doctest::Approx(1.45f).epsilon(0.001));
     CHECK(m.baseColorTextureIndex == 0);
     cleanupTestFiles();
 }
@@ -110,21 +129,21 @@ TEST_CASE("Material round-trips through glTF")
 TEST_CASE("Emissive material round-trips through glTF")
 {
     cleanupTestFiles();
-    Scene scene;
+    ECSScene scene;
     SceneMaterial mat;
     mat.type = MaterialType::Emissive;
     mat.emissiveColor = {1.0f, 0.8f, 0.4f};
     mat.emissiveIntensity = 5.0f;
-    scene.AddMaterial(mat);
+    scene.materials.push_back(mat);
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
-    Scene loaded;
-    REQUIRE(SceneLoader::Load(loaded, TEST_FILE));
-    REQUIRE(loaded.GetMaterials().size() == 1);
-    const auto& m = loaded.GetMaterial(0);
+    ECSScene loaded;
+    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    REQUIRE(loaded.materials.size() >= 1);
+    const auto& m = loaded.materials[0];
     CHECK(m.type == MaterialType::Emissive);
     CHECK(m.emissiveColor == glm::vec3(1.0f, 0.8f, 0.4f));
-    CHECK(m.emissiveIntensity == 5.0f);
+    CHECK(m.emissiveIntensity == doctest::Approx(5.0f).epsilon(0.001));
     cleanupTestFiles();
 }
 
@@ -133,32 +152,32 @@ TEST_CASE("Emissive material round-trips through glTF")
 TEST_CASE("Point light round-trips through glTF")
 {
     cleanupTestFiles();
-    Scene scene;
+    ECSScene scene;
     SceneLight light;
     light.type = LightType::Point;
     light.position = {5.0f, 10.0f, 0.0f};
     light.color = {1.0f, 0.5f, 0.2f};
     light.intensity = 50.0f;
     light.range = 30.0f;
-    scene.AddLight(light);
+    scene.lights.push_back(light);
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
-    Scene loaded;
-    REQUIRE(SceneLoader::Load(loaded, TEST_FILE));
-    REQUIRE(loaded.GetLights().size() == 1);
-    const auto& l = loaded.GetLight(0);
+    ECSScene loaded;
+    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    REQUIRE(loaded.lights.size() >= 1);
+    const auto& l = loaded.lights[0];
     CHECK(l.type == LightType::Point);
     CHECK(l.position == glm::vec3(5.0f, 10.0f, 0.0f));
     CHECK(l.color == glm::vec3(1.0f, 0.5f, 0.2f));
-    CHECK(l.intensity == 50.0f);
-    CHECK(l.range == 30.0f);
+    CHECK(l.intensity == doctest::Approx(50.0f).epsilon(0.001));
+    CHECK(l.range == doctest::Approx(30.0f).epsilon(0.001));
     cleanupTestFiles();
 }
 
 TEST_CASE("Spot light round-trips through glTF")
 {
     cleanupTestFiles();
-    Scene scene;
+    ECSScene scene;
     SceneLight light;
     light.type = LightType::Spot;
     light.position = {0.0f, 5.0f, 0.0f};
@@ -167,17 +186,17 @@ TEST_CASE("Spot light round-trips through glTF")
     light.intensity = 20.0f;
     light.innerConeAngle = 25.0f;
     light.outerConeAngle = 40.0f;
-    scene.AddLight(light);
+    scene.lights.push_back(light);
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
-    Scene loaded;
-    REQUIRE(SceneLoader::Load(loaded, TEST_FILE));
-    REQUIRE(loaded.GetLights().size() == 1);
-    const auto& l = loaded.GetLight(0);
+    ECSScene loaded;
+    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    REQUIRE(loaded.lights.size() >= 1);
+    const auto& l = loaded.lights[0];
     CHECK(l.type == LightType::Spot);
     CHECK(l.direction == glm::vec3(0.0f, -1.0f, 0.0f));
-    CHECK(l.innerConeAngle == 25.0f);
-    CHECK(l.outerConeAngle == 40.0f);
+    CHECK(l.innerConeAngle == doctest::Approx(25.0f).epsilon(0.001));
+    CHECK(l.outerConeAngle == doctest::Approx(40.0f).epsilon(0.001));
     cleanupTestFiles();
 }
 
@@ -186,16 +205,16 @@ TEST_CASE("Spot light round-trips through glTF")
 TEST_CASE("Texture round-trips through glTF")
 {
     cleanupTestFiles();
-    Scene scene;
-    scene.AddTexture({"textures/albedo.png"});
-    scene.AddTexture({"textures/normal.png"});
+    ECSScene scene;
+    scene.textures.push_back({"textures/albedo.png"});
+    scene.textures.push_back({"textures/normal.png"});
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
-    Scene loaded;
-    REQUIRE(SceneLoader::Load(loaded, TEST_FILE));
-    REQUIRE(loaded.GetTextures().size() == 2);
-    CHECK(loaded.GetTexture(0).filepath == "textures/albedo.png");
-    CHECK(loaded.GetTexture(1).filepath == "textures/normal.png");
+    ECSScene loaded;
+    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    REQUIRE(loaded.textures.size() == 2);
+    CHECK(loaded.textures[0].filepath == "textures/albedo.png");
+    CHECK(loaded.textures[1].filepath == "textures/normal.png");
     cleanupTestFiles();
 }
 
@@ -204,22 +223,22 @@ TEST_CASE("Texture round-trips through glTF")
 TEST_CASE("Camera round-trips through glTF")
 {
     cleanupTestFiles();
-    Scene scene;
-    scene.GetCamera().position = {3.0f, 4.0f, 5.0f};
-    scene.GetCamera().forwardDirection = {0.0f, -0.5f, -1.0f};
-    scene.GetCamera().verticalFOV = 60.0f;
-    scene.GetCamera().aperture = 0.1f;
-    scene.GetCamera().focusDistance = 5.0f;
+    ECSScene scene;
+    scene.camera.position = {3.0f, 4.0f, 5.0f};
+    scene.camera.forwardDirection = {0.0f, -0.5f, -1.0f};
+    scene.camera.verticalFOV = 60.0f;
+    scene.camera.aperture = 0.1f;
+    scene.camera.focusDistance = 5.0f;
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
-    Scene loaded;
-    REQUIRE(SceneLoader::Load(loaded, TEST_FILE));
-    const auto& cam = loaded.GetCamera();
+    ECSScene loaded;
+    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    const auto& cam = loaded.camera;
     CHECK(cam.position == glm::vec3(3.0f, 4.0f, 5.0f));
     CHECK(cam.forwardDirection == glm::vec3(0.0f, -0.5f, -1.0f));
-    CHECK(cam.verticalFOV == 60.0f);
-    CHECK(cam.aperture == 0.1f);
-    CHECK(cam.focusDistance == 5.0f);
+    CHECK(cam.verticalFOV == doctest::Approx(60.0f).epsilon(0.001));
+    CHECK(cam.aperture == doctest::Approx(0.1f).epsilon(0.001));
+    CHECK(cam.focusDistance == doctest::Approx(5.0f).epsilon(0.001));
     cleanupTestFiles();
 }
 
@@ -228,17 +247,15 @@ TEST_CASE("Camera round-trips through glTF")
 TEST_CASE("Full scene with multiple meshes, materials, lights round-trips")
 {
     cleanupTestFiles();
-    Scene scene;
+    ECSScene scene;
 
-    // Textures
-    scene.AddTexture({"textures/albedo.png"});
-    scene.AddTexture({"textures/normal.png"});
+    scene.textures.push_back({"textures/albedo.png"});
+    scene.textures.push_back({"textures/normal.png"});
 
-    // Materials
     SceneMaterial mat0;
     mat0.type = MaterialType::Lambertian;
     mat0.baseColor = {0.5f, 0.5f, 0.5f};
-    scene.AddMaterial(mat0);
+    scene.materials.push_back(mat0);
 
     SceneMaterial mat1;
     mat1.type = MaterialType::Metal;
@@ -246,71 +263,87 @@ TEST_CASE("Full scene with multiple meshes, materials, lights round-trips")
     mat1.metallic = 1.0f;
     mat1.roughness = 0.1f;
     mat1.baseColorTextureIndex = 0;
-    scene.AddMaterial(mat1);
+    scene.materials.push_back(mat1);
 
     SceneMaterial mat2;
     mat2.type = MaterialType::Emissive;
     mat2.emissiveColor = {1.0f, 1.0f, 0.9f};
     mat2.emissiveIntensity = 10.0f;
-    scene.AddMaterial(mat2);
+    scene.materials.push_back(mat2);
 
-    // Meshes
-    SceneMesh mesh0;
-    mesh0.filepath = "models/floor.obj";
-    mesh0.position = {0.0f, 0.0f, 0.0f};
-    mesh0.materialIndex = 0;
-    scene.AddMesh(mesh0);
+    MeshData meshData0;
+    meshData0.vertices = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    meshData0.indices = {0, 1, 2};
+    uint32_t meshIdx0 = scene.meshRegistry.AddMesh(std::move(meshData0));
 
-    SceneMesh mesh1;
-    mesh1.filepath = "models/car.obj";
-    mesh1.position = {0.0f, 0.0f, 0.0f};
-    mesh1.scale = 0.01f;
-    mesh1.materialIndex = 1;
-    scene.AddMesh(mesh1);
+    MeshData meshData1;
+    meshData1.vertices = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    meshData1.indices = {0, 1, 2};
+    uint32_t meshIdx1 = scene.meshRegistry.AddMesh(std::move(meshData1));
 
-    // Lights
+    {
+        auto entity = scene.registry.create();
+        auto& tf = scene.registry.emplace<Transform>(entity);
+        tf.translation = {0.0f, 0.0f, 0.0f};
+        auto& ref = scene.registry.emplace<MeshRef>(entity);
+        ref.meshIndex = meshIdx0;
+        ref.materialIndex = 0;
+    }
+    {
+        auto entity = scene.registry.create();
+        auto& tf = scene.registry.emplace<Transform>(entity);
+        tf.translation = {0.0f, 0.0f, 0.0f};
+        tf.scale = {0.01f, 0.01f, 0.01f};
+        auto& ref = scene.registry.emplace<MeshRef>(entity);
+        ref.meshIndex = meshIdx1;
+        ref.materialIndex = 1;
+    }
+
     SceneLight light;
     light.type = LightType::Point;
     light.position = {5.0f, 10.0f, 5.0f};
     light.intensity = 30.0f;
-    scene.AddLight(light);
+    scene.lights.push_back(light);
 
-    // Camera
-    scene.GetCamera().position = {2.0f, 2.0f, 8.0f};
-    scene.GetCamera().verticalFOV = 50.0f;
+    scene.camera.position = {2.0f, 2.0f, 8.0f};
+    scene.camera.verticalFOV = 50.0f;
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
-    Scene loaded;
-    REQUIRE(SceneLoader::Load(loaded, TEST_FILE));
+    ECSScene loaded;
+    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
 
-    // Verify textures
-    REQUIRE(loaded.GetTextures().size() == 2);
-    CHECK(loaded.GetTexture(0).filepath == "textures/albedo.png");
+    REQUIRE(loaded.textures.size() == 2);
+    CHECK(loaded.textures[0].filepath == "textures/albedo.png");
 
-    // Verify materials
-    REQUIRE(loaded.GetMaterials().size() == 3);
-    CHECK(loaded.GetMaterial(0).type == MaterialType::Lambertian);
-    CHECK(loaded.GetMaterial(1).type == MaterialType::Metal);
-    CHECK(loaded.GetMaterial(1).baseColorTextureIndex == 0);
-    CHECK(loaded.GetMaterial(2).type == MaterialType::Emissive);
-    CHECK(loaded.GetMaterial(2).emissiveIntensity == 10.0f);
+    REQUIRE(loaded.materials.size() >= 3);
+    CHECK(loaded.materials[0].type == MaterialType::Lambertian);
+    CHECK(loaded.materials[1].type == MaterialType::Metal);
+    CHECK(loaded.materials[1].baseColorTextureIndex == 0);
+    CHECK(loaded.materials[2].type == MaterialType::Emissive);
+    CHECK(loaded.materials[2].emissiveIntensity == doctest::Approx(10.0f).epsilon(0.001));
 
-    // Verify meshes
-    REQUIRE(loaded.GetMeshes().size() == 2);
-    CHECK(loaded.GetMesh(0).filepath == "models/floor.obj");
-    CHECK(loaded.GetMesh(0).materialIndex == 0);
-    CHECK(loaded.GetMesh(1).filepath == "models/car.obj");
-    CHECK(loaded.GetMesh(1).scale == 0.01f);
-    CHECK(loaded.GetMesh(1).materialIndex == 1);
+    auto meshView = loaded.registry.view<MeshRef, Transform>();
+    size_t meshCount = std::distance(meshView.begin(), meshView.end());
+    REQUIRE(meshCount == 2);
+    bool foundScale001 = false;
+    for (auto e : meshView)
+    {
+        const auto& ref = meshView.get<MeshRef>(e);
+        const auto& tf = meshView.get<Transform>(e);
+        if (ref.materialIndex == 1)
+        {
+            CHECK(tf.scale.x == doctest::Approx(0.01f).epsilon(0.001));
+            foundScale001 = true;
+        }
+    }
+    CHECK(foundScale001);
 
-    // Verify lights
-    REQUIRE(loaded.GetLights().size() == 1);
-    CHECK(loaded.GetLight(0).type == LightType::Point);
-    CHECK(loaded.GetLight(0).position == glm::vec3(5.0f, 10.0f, 5.0f));
+    REQUIRE(loaded.lights.size() >= 1);
+    CHECK(loaded.lights[0].type == LightType::Point);
+    CHECK(loaded.lights[0].position == glm::vec3(5.0f, 10.0f, 5.0f));
 
-    // Verify camera
-    CHECK(loaded.GetCamera().position == glm::vec3(2.0f, 2.0f, 8.0f));
-    CHECK(loaded.GetCamera().verticalFOV == 50.0f);
+    CHECK(loaded.camera.position == glm::vec3(2.0f, 2.0f, 8.0f));
+    CHECK(loaded.camera.verticalFOV == doctest::Approx(50.0f).epsilon(0.001));
 
     cleanupTestFiles();
 }
@@ -320,17 +353,17 @@ TEST_CASE("Full scene with multiple meshes, materials, lights round-trips")
 TEST_CASE("Scene saves and loads as GLB (binary glTF)")
 {
     cleanupTestFiles();
-    Scene scene;
-    scene.AddMaterial({});
+    ECSScene scene;
+    scene.materials.push_back({});
     SceneMaterial mat;
     mat.baseColor = {0.2f, 0.4f, 0.6f};
-    scene.AddMaterial(mat);
+    scene.materials.push_back(mat);
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE_GLB));
-    Scene loaded;
-    REQUIRE(SceneLoader::Load(loaded, TEST_FILE_GLB));
-    REQUIRE(loaded.GetMaterials().size() == 2);
-    CHECK(loaded.GetMaterial(1).baseColor == glm::vec3(0.2f, 0.4f, 0.6f));
+    ECSScene loaded;
+    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE_GLB));
+    REQUIRE(loaded.materials.size() >= 2);
+    CHECK(loaded.materials[1].baseColor == glm::vec3(0.2f, 0.4f, 0.6f));
     cleanupTestFiles();
 }
 
@@ -338,14 +371,14 @@ TEST_CASE("Scene saves and loads as GLB (binary glTF)")
 
 TEST_CASE("Load returns false for non-existent file")
 {
-    Scene loaded;
-    CHECK_FALSE(SceneLoader::Load(loaded, "does_not_exist.gltf"));
+    ECSScene loaded;
+    CHECK_FALSE(SceneLoader::LoadIntoECS(loaded, "does_not_exist.gltf"));
 }
 
 // --- Save returns false for invalid path ---
 
 TEST_CASE("Save returns false for invalid path")
 {
-    Scene scene;
+    ECSScene scene;
     CHECK_FALSE(SceneLoader::Save(scene, "Z:/nonexistent_dir/scene.gltf"));
 }

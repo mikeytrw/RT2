@@ -1,8 +1,12 @@
 #include <doctest/doctest.h>
 
 #include "GPUSceneData.h"
-#include "Scene.h"
+#include "SceneTypes.h"
+#include "ECSScene.h"
+#include "ECSComponents.h"
+#include "SceneGraph.h"
 #include <glm/glm.hpp>
+#include <cstddef>
 
 // ============================================================================
 // shader_interface.h struct layout tests (shared C++/GLSL)
@@ -26,6 +30,12 @@ TEST_CASE("SITriangleLight is 32 bytes")
 TEST_CASE("SINRDUniformData is 16 bytes")
 {
     CHECK(sizeof(SINRDUniformData) == 16);
+}
+
+TEST_CASE("SIReSTIRPushConstants carries both jitter samples")
+{
+    CHECK(sizeof(SIReSTIRPushConstants) == 48);
+    CHECK(offsetof(SIReSTIRPushConstants, jitter) == 32);
 }
 
 TEST_CASE("GPUMaterial matches SIMaterial layout")
@@ -169,93 +179,122 @@ TEST_CASE("GPUSceneData holds multiple meshes and materials")
 }
 
 // ============================================================================
-// BuildGPUSceneData from Scene (integration of scene → GPU data)
+// BuildGPUSceneDataFromECS from ECSScene (integration of scene → GPU data)
 // ============================================================================
 
-TEST_CASE("BuildGPUSceneData converts Scene meshes and materials")
+TEST_CASE("BuildGPUSceneDataFromECS converts ECSScene meshes and materials")
 {
-    Scene scene;
+    ECSScene ecsScene;
 
-    // Add 2 materials
     SceneMaterial mat0;
     mat0.baseColor = {1.0f, 0.0f, 0.0f};
     mat0.metallic = 0.0f;
-    scene.AddMaterial(mat0);
+    ecsScene.materials.push_back(mat0);
 
     SceneMaterial mat1;
     mat1.baseColor = {0.0f, 0.0f, 1.0f};
     mat1.metallic = 1.0f;
-    scene.AddMaterial(mat1);
+    ecsScene.materials.push_back(mat1);
 
-    // Add 2 meshes with different material indices
-    SceneMesh mesh0;
-    mesh0.hasGeometry = true;
-    mesh0.vertices = {0, 0, 0,  1, 0, 0,  0, 1, 0};
-    mesh0.indices = {0, 1, 2};
-    mesh0.materialIndex = 0;
-    scene.AddMesh(mesh0);
+    MeshData meshData0;
+    meshData0.vertices = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    meshData0.indices = {0, 1, 2};
+    uint32_t meshIdx0 = ecsScene.meshRegistry.AddMesh(std::move(meshData0));
 
-    SceneMesh mesh1;
-    mesh1.hasGeometry = true;
-    mesh1.vertices = {0, 0, 0,  1, 0, 0,  0, 1, 0};
-    mesh1.indices = {0, 1, 2};
-    mesh1.materialIndex = 1;
-    scene.AddMesh(mesh1);
+    MeshData meshData1;
+    meshData1.vertices = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    meshData1.indices = {0, 1, 2};
+    uint32_t meshIdx1 = ecsScene.meshRegistry.AddMesh(std::move(meshData1));
 
-    GPUSceneData gpu = BuildGPUSceneData(scene);
+    {
+        auto entity = ecsScene.registry.create();
+        ecsScene.registry.emplace<Transform>(entity);
+        auto& ref = ecsScene.registry.emplace<MeshRef>(entity);
+        ref.meshIndex = meshIdx0;
+        ref.materialIndex = 0;
+    }
+    {
+        auto entity = ecsScene.registry.create();
+        ecsScene.registry.emplace<Transform>(entity);
+        auto& ref = ecsScene.registry.emplace<MeshRef>(entity);
+        ref.meshIndex = meshIdx1;
+        ref.materialIndex = 1;
+    }
+
+    SceneGraph::UpdateWorldTransforms(ecsScene.registry);
+
+    GPUSceneData gpu = BuildGPUSceneDataFromECS(ecsScene);
 
     CHECK(gpu.meshes.size() == 2);
     CHECK(gpu.materials.size() == 2);
-    CHECK(gpu.meshes[0].materialIndex == 0);
-    CHECK(gpu.meshes[1].materialIndex == 1);
+    CHECK(gpu.instances.size() == 2);
 
-    // Material 0: red, non-metallic
+    bool foundMat0 = false, foundMat1 = false;
+    for (const auto& inst : gpu.instances)
+    {
+        if (inst.materialIndex == 0) foundMat0 = true;
+        if (inst.materialIndex == 1) foundMat1 = true;
+    }
+    CHECK(foundMat0);
+    CHECK(foundMat1);
+
     CHECK(gpu.materials[0].baseColor_metallic.x == 1.0f);
     CHECK(gpu.materials[0].baseColor_metallic.w == 0.0f);
 
-    // Material 1: blue, metallic
     CHECK(gpu.materials[1].baseColor_metallic.z == 1.0f);
     CHECK(gpu.materials[1].baseColor_metallic.w == 1.0f);
 }
 
-TEST_CASE("BuildGPUSceneData handles mesh with invalid materialIndex")
+TEST_CASE("BuildGPUSceneDataFromECS handles mesh with invalid materialIndex")
 {
-    Scene scene;
-    scene.AddMaterial(SceneMaterial{});
+    ECSScene ecsScene;
+    ecsScene.materials.push_back(SceneMaterial{});
 
-    SceneMesh mesh;
-    mesh.hasGeometry = true;
-    mesh.vertices = {0, 0, 0,  1, 0, 0,  0, 1, 0};
-    mesh.indices = {0, 1, 2};
-    mesh.materialIndex = 99; // out of range
-    scene.AddMesh(mesh);
+    MeshData meshData;
+    meshData.vertices = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    meshData.indices = {0, 1, 2};
+    uint32_t meshIdx = ecsScene.meshRegistry.AddMesh(std::move(meshData));
 
-    GPUSceneData gpu = BuildGPUSceneData(scene);
+    auto entity = ecsScene.registry.create();
+    ecsScene.registry.emplace<Transform>(entity);
+    auto& ref = ecsScene.registry.emplace<MeshRef>(entity);
+    ref.meshIndex = meshIdx;
+    ref.materialIndex = 99;
 
-    // Should clamp to material 0 (fallback)
-    CHECK(gpu.meshes[0].materialIndex == 0);
+    SceneGraph::UpdateWorldTransforms(ecsScene.registry);
+
+    GPUSceneData gpu = BuildGPUSceneDataFromECS(ecsScene);
+
+    CHECK(gpu.instances[0].materialIndex == 0);
 }
 
-TEST_CASE("BuildGPUSceneData skips meshes without geometry")
+TEST_CASE("BuildGPUSceneDataFromECS only creates instances for entities with MeshRef")
 {
-    Scene scene;
-    scene.AddMaterial(SceneMaterial{});
+    ECSScene ecsScene;
+    ecsScene.materials.push_back(SceneMaterial{});
 
-    SceneMesh meshNoGeo;
-    meshNoGeo.hasGeometry = false;
-    meshNoGeo.materialIndex = 0;
-    scene.AddMesh(meshNoGeo);
+    MeshData meshData;
+    meshData.vertices = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    meshData.indices = {0, 1, 2};
+    uint32_t meshIdx = ecsScene.meshRegistry.AddMesh(std::move(meshData));
 
-    SceneMesh meshWithGeo;
-    meshWithGeo.hasGeometry = true;
-    meshWithGeo.vertices = {0, 0, 0,  1, 0, 0,  0, 1, 0};
-    meshWithGeo.indices = {0, 1, 2};
-    meshWithGeo.materialIndex = 0;
-    scene.AddMesh(meshWithGeo);
+    {
+        auto entity = ecsScene.registry.create();
+        ecsScene.registry.emplace<Transform>(entity);
+        auto& ref = ecsScene.registry.emplace<MeshRef>(entity);
+        ref.meshIndex = meshIdx;
+        ref.materialIndex = 0;
+    }
+    {
+        auto entity = ecsScene.registry.create();
+        ecsScene.registry.emplace<Transform>(entity);
+    }
 
-    GPUSceneData gpu = BuildGPUSceneData(scene);
+    SceneGraph::UpdateWorldTransforms(ecsScene.registry);
 
-    CHECK(gpu.meshes.size() == 1);
+    GPUSceneData gpu = BuildGPUSceneDataFromECS(ecsScene);
+
+    CHECK(gpu.instances.size() == 1);
 }
 
 // ============================================================================
@@ -278,185 +317,235 @@ TEST_CASE("GPUTriangleLight default values")
 // Light list building tests (NEE Phase 1)
 // ============================================================================
 
-TEST_CASE("BuildGPUSceneData finds no lights when no emissive materials")
+TEST_CASE("BuildGPUSceneDataFromECS finds no lights when no emissive materials")
 {
-    Scene scene;
+    ECSScene ecsScene;
 
     SceneMaterial mat;
     mat.emissiveColor = {0.0f, 0.0f, 0.0f};
     mat.emissiveIntensity = 0.0f;
-    scene.AddMaterial(mat);
+    ecsScene.materials.push_back(mat);
 
-    SceneMesh mesh;
-    mesh.hasGeometry = true;
-    mesh.vertices = {0, 0, 0,  1, 0, 0,  0, 1, 0};
-    mesh.indices = {0, 1, 2};
-    mesh.materialIndex = 0;
-    scene.AddMesh(mesh);
+    MeshData meshData;
+    meshData.vertices = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    meshData.indices = {0, 1, 2};
+    uint32_t meshIdx = ecsScene.meshRegistry.AddMesh(std::move(meshData));
 
-    GPUSceneData gpu = BuildGPUSceneData(scene);
+    auto entity = ecsScene.registry.create();
+    ecsScene.registry.emplace<Transform>(entity);
+    auto& ref = ecsScene.registry.emplace<MeshRef>(entity);
+    ref.meshIndex = meshIdx;
+    ref.materialIndex = 0;
+
+    SceneGraph::UpdateWorldTransforms(ecsScene.registry);
+
+    GPUSceneData gpu = BuildGPUSceneDataFromECS(ecsScene);
 
     CHECK(gpu.lights.empty());
     CHECK(gpu.totalLightArea == 0.0f);
 }
 
-TEST_CASE("BuildGPUSceneData finds one light per emissive triangle")
+TEST_CASE("BuildGPUSceneDataFromECS finds one light per emissive triangle")
 {
-    Scene scene;
+    ECSScene ecsScene;
 
     SceneMaterial mat;
     mat.emissiveColor = {1.0f, 0.8f, 0.4f};
     mat.emissiveIntensity = 5.0f;
-    scene.AddMaterial(mat);
+    ecsScene.materials.push_back(mat);
 
-    // 2 triangles (a quad split into 2 tris)
-    SceneMesh mesh;
-    mesh.hasGeometry = true;
-    mesh.vertices = {0, 0, 0,  1, 0, 0,  1, 1, 0,  0, 1, 0};
-    mesh.indices = {0, 1, 2,  0, 2, 3};
-    mesh.materialIndex = 0;
-    scene.AddMesh(mesh);
+    MeshData meshData;
+    meshData.vertices = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0};
+    meshData.indices = {0, 1, 2, 0, 2, 3};
+    uint32_t meshIdx = ecsScene.meshRegistry.AddMesh(std::move(meshData));
 
-    GPUSceneData gpu = BuildGPUSceneData(scene);
+    auto entity = ecsScene.registry.create();
+    ecsScene.registry.emplace<Transform>(entity);
+    auto& ref = ecsScene.registry.emplace<MeshRef>(entity);
+    ref.meshIndex = meshIdx;
+    ref.materialIndex = 0;
+
+    SceneGraph::UpdateWorldTransforms(ecsScene.registry);
+
+    GPUSceneData gpu = BuildGPUSceneDataFromECS(ecsScene);
 
     CHECK(gpu.lights.size() == 2);
-    CHECK(gpu.totalLightArea == doctest::Approx(1.0f).epsilon(0.001f));  // unit square = area 1
+    CHECK(gpu.totalLightArea == doctest::Approx(1.0f).epsilon(0.001f));
 }
 
 TEST_CASE("GPUTriangleLight stores correct ids and emission")
 {
-    Scene scene;
+    ECSScene ecsScene;
 
     SceneMaterial mat;
     mat.emissiveColor = {1.0f, 0.5f, 0.2f};
     mat.emissiveIntensity = 3.0f;
-    scene.AddMaterial(mat);
+    ecsScene.materials.push_back(mat);
 
-    SceneMesh mesh;
-    mesh.hasGeometry = true;
-    mesh.vertices = {0, 0, 0,  2, 0, 0,  0, 2, 0};
-    mesh.indices = {0, 1, 2};
-    mesh.materialIndex = 0;
-    scene.AddMesh(mesh);
+    MeshData meshData;
+    meshData.vertices = {0, 0, 0, 2, 0, 0, 0, 2, 0};
+    meshData.indices = {0, 1, 2};
+    uint32_t meshIdx = ecsScene.meshRegistry.AddMesh(std::move(meshData));
 
-    GPUSceneData gpu = BuildGPUSceneData(scene);
+    auto entity = ecsScene.registry.create();
+    ecsScene.registry.emplace<Transform>(entity);
+    auto& ref = ecsScene.registry.emplace<MeshRef>(entity);
+    ref.meshIndex = meshIdx;
+    ref.materialIndex = 0;
+
+    SceneGraph::UpdateWorldTransforms(ecsScene.registry);
+
+    GPUSceneData gpu = BuildGPUSceneDataFromECS(ecsScene);
 
     REQUIRE(gpu.lights.size() == 1);
     const auto& light = gpu.lights[0];
 
-    // Emission = emissiveColor * intensity
     CHECK(light.emission_area.x == doctest::Approx(3.0f));
     CHECK(light.emission_area.y == doctest::Approx(1.5f));
     CHECK(light.emission_area.z == doctest::Approx(0.6f));
 
-    // Area = 0.5 * |edge1 x edge2| = 0.5 * |(2,0,0) x (0,2,0)| = 0.5 * |(0,0,4)| = 2
     CHECK(light.emission_area.w == doctest::Approx(2.0f).epsilon(0.001f));
 
-    // ids: instanceID=0, primitiveID=0, materialIndex=0, emissiveTexIdx=0xFFFFFFFF (no texture)
     CHECK(light.ids.x == 0);
     CHECK(light.ids.y == 0);
     CHECK(light.ids.z == 0);
     CHECK(light.ids.w == 0xFFFFFFFFu);
 }
 
-TEST_CASE("BuildGPUSceneData light ids map to correct instanceID and primitiveID")
+TEST_CASE("BuildGPUSceneDataFromECS light ids map to correct instanceID and primitiveID")
 {
-    Scene scene;
+    ECSScene ecsScene;
 
-    // Material 0: non-emissive, Material 1: emissive
     SceneMaterial mat0;
-    scene.AddMaterial(mat0);
+    ecsScene.materials.push_back(mat0);
 
     SceneMaterial mat1;
     mat1.emissiveColor = {1.0f, 1.0f, 1.0f};
     mat1.emissiveIntensity = 2.0f;
-    scene.AddMaterial(mat1);
+    ecsScene.materials.push_back(mat1);
 
-    // Mesh 0: non-emissive (instanceID 0)
-    SceneMesh mesh0;
-    mesh0.hasGeometry = true;
-    mesh0.vertices = {0, 0, 0,  1, 0, 0,  0, 1, 0};
-    mesh0.indices = {0, 1, 2};
-    mesh0.materialIndex = 0;
-    scene.AddMesh(mesh0);
+    MeshData meshData0;
+    meshData0.vertices = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    meshData0.indices = {0, 1, 2};
+    uint32_t meshIdx0 = ecsScene.meshRegistry.AddMesh(std::move(meshData0));
 
-    // Mesh 1: emissive with 3 triangles (instanceID 1)
-    SceneMesh mesh1;
-    mesh1.hasGeometry = true;
-    mesh1.vertices = {0, 0, 0,  1, 0, 0,  0, 1, 0,
-                      1, 0, 0,  1, 1, 0,  0, 1, 0,
-                      0, 0, 0,  1, 0, 0,  1, 1, 0};
-    mesh1.indices = {0, 1, 2,  3, 4, 5,  6, 7, 8};
-    mesh1.materialIndex = 1;
-    scene.AddMesh(mesh1);
+    MeshData meshData1;
+    meshData1.vertices = {0, 0, 0, 1, 0, 0, 0, 1, 0,
+                          1, 0, 0, 1, 1, 0, 0, 1, 0,
+                          0, 0, 0, 1, 0, 0, 1, 1, 0};
+    meshData1.indices = {0, 1, 2, 3, 4, 5, 6, 7, 8};
+    uint32_t meshIdx1 = ecsScene.meshRegistry.AddMesh(std::move(meshData1));
 
-    GPUSceneData gpu = BuildGPUSceneData(scene);
+    {
+        auto entity = ecsScene.registry.create();
+        ecsScene.registry.emplace<Transform>(entity);
+        auto& ref = ecsScene.registry.emplace<MeshRef>(entity);
+        ref.meshIndex = meshIdx0;
+        ref.materialIndex = 0;
+    }
+    {
+        auto entity = ecsScene.registry.create();
+        ecsScene.registry.emplace<Transform>(entity);
+        auto& ref = ecsScene.registry.emplace<MeshRef>(entity);
+        ref.meshIndex = meshIdx1;
+        ref.materialIndex = 1;
+    }
+
+    SceneGraph::UpdateWorldTransforms(ecsScene.registry);
+
+    GPUSceneData gpu = BuildGPUSceneDataFromECS(ecsScene);
 
     CHECK(gpu.lights.size() == 3);
     CHECK(gpu.meshes.size() == 2);
+    CHECK(gpu.instances.size() == 2);
 
-    // All lights should have instanceID=1 (second mesh), materialIndex=1
+    uint32_t emissiveInstIdx = 0;
+    for (uint32_t i = 0; i < gpu.instances.size(); i++)
+    {
+        if (gpu.instances[i].materialIndex == 1)
+        {
+            emissiveInstIdx = i;
+            break;
+        }
+    }
+
     for (uint32_t i = 0; i < gpu.lights.size(); i++)
     {
-        CHECK(gpu.lights[i].ids.x == 1);  // instanceID
-        CHECK(gpu.lights[i].ids.z == 1);  // materialIndex
-        CHECK(gpu.lights[i].ids.y == i);  // primitiveID = triangle index within BLAS
+        CHECK(gpu.lights[i].ids.x == emissiveInstIdx);
+        CHECK(gpu.lights[i].ids.z == 1);
+        CHECK(gpu.lights[i].ids.y == i);
     }
 }
 
-TEST_CASE("BuildGPUSceneData totalLightArea sums all light areas")
+TEST_CASE("BuildGPUSceneDataFromECS totalLightArea sums all light areas")
 {
-    Scene scene;
+    ECSScene ecsScene;
 
     SceneMaterial mat;
     mat.emissiveColor = {1.0f, 1.0f, 1.0f};
     mat.emissiveIntensity = 1.0f;
-    scene.AddMaterial(mat);
+    ecsScene.materials.push_back(mat);
 
-    // Two emissive meshes with different areas
-    // Mesh 0: area 2 (triangle (0,0,0),(2,0,0),(0,2,0))
-    SceneMesh mesh0;
-    mesh0.hasGeometry = true;
-    mesh0.vertices = {0, 0, 0,  2, 0, 0,  0, 2, 0};
-    mesh0.indices = {0, 1, 2};
-    mesh0.materialIndex = 0;
-    scene.AddMesh(mesh0);
+    MeshData meshData0;
+    meshData0.vertices = {0, 0, 0, 2, 0, 0, 0, 2, 0};
+    meshData0.indices = {0, 1, 2};
+    uint32_t meshIdx0 = ecsScene.meshRegistry.AddMesh(std::move(meshData0));
 
-    // Mesh 1: area 0.5 (triangle (0,0,0),(1,0,0),(0,1,0))
-    SceneMesh mesh1;
-    mesh1.hasGeometry = true;
-    mesh1.vertices = {0, 0, 0,  1, 0, 0,  0, 1, 0};
-    mesh1.indices = {0, 1, 2};
-    mesh1.materialIndex = 0;
-    scene.AddMesh(mesh1);
+    MeshData meshData1;
+    meshData1.vertices = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    meshData1.indices = {0, 1, 2};
+    uint32_t meshIdx1 = ecsScene.meshRegistry.AddMesh(std::move(meshData1));
 
-    GPUSceneData gpu = BuildGPUSceneData(scene);
+    {
+        auto entity = ecsScene.registry.create();
+        ecsScene.registry.emplace<Transform>(entity);
+        auto& ref = ecsScene.registry.emplace<MeshRef>(entity);
+        ref.meshIndex = meshIdx0;
+        ref.materialIndex = 0;
+    }
+    {
+        auto entity = ecsScene.registry.create();
+        ecsScene.registry.emplace<Transform>(entity);
+        auto& ref = ecsScene.registry.emplace<MeshRef>(entity);
+        ref.meshIndex = meshIdx1;
+        ref.materialIndex = 0;
+    }
+
+    SceneGraph::UpdateWorldTransforms(ecsScene.registry);
+
+    GPUSceneData gpu = BuildGPUSceneDataFromECS(ecsScene);
 
     CHECK(gpu.lights.size() == 2);
     CHECK(gpu.totalLightArea == doctest::Approx(2.5f).epsilon(0.001f));
 }
 
-TEST_CASE("BuildGPUSceneData light stores emissiveTexIdx when material has emissive texture")
+TEST_CASE("BuildGPUSceneDataFromECS light stores emissiveTexIdx when material has emissive texture")
 {
-    Scene scene;
+    ECSScene ecsScene;
 
     SceneMaterial mat;
     mat.emissiveColor = {1.0f, 1.0f, 1.0f};
     mat.emissiveIntensity = 2.0f;
     mat.emissiveTextureIndex = 5;
-    scene.AddMaterial(mat);
+    ecsScene.materials.push_back(mat);
 
-    SceneMesh mesh;
-    mesh.hasGeometry = true;
-    mesh.vertices = {0, 0, 0,  1, 0, 0,  0, 1, 0};
-    mesh.indices = {0, 1, 2};
-    mesh.materialIndex = 0;
-    scene.AddMesh(mesh);
+    MeshData meshData;
+    meshData.vertices = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+    meshData.indices = {0, 1, 2};
+    uint32_t meshIdx = ecsScene.meshRegistry.AddMesh(std::move(meshData));
 
-    GPUSceneData gpu = BuildGPUSceneData(scene);
+    auto entity = ecsScene.registry.create();
+    ecsScene.registry.emplace<Transform>(entity);
+    auto& ref = ecsScene.registry.emplace<MeshRef>(entity);
+    ref.meshIndex = meshIdx;
+    ref.materialIndex = 0;
+
+    SceneGraph::UpdateWorldTransforms(ecsScene.registry);
+
+    GPUSceneData gpu = BuildGPUSceneDataFromECS(ecsScene);
 
     REQUIRE(gpu.lights.size() == 1);
-    CHECK(gpu.lights[0].ids.w == 5u);  // emissiveTexIdx
+    CHECK(gpu.lights[0].ids.w == 5u);
 }
 
 // ============================================================================

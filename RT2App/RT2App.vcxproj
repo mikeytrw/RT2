@@ -193,13 +193,10 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="shaders\shader_interface.h" />
-    <ClInclude Include="src\AABB.h" />
     <ClInclude Include="src\AccelerationStructure.h" />
     <ClInclude Include="src\AsyncTextureLoader.h" />
-    <ClInclude Include="src\BVHNode.h" />
     <ClInclude Include="src\CLIArgs.h" />
     <ClInclude Include="src\Camera.h" />
-    <ClInclude Include="src\Colour.h" />
     <ClInclude Include="src\CommandUtils.h" />
     <ClInclude Include="src\ComposePass.h" />
     <ClInclude Include="src\ECSComponents.h" />
@@ -213,10 +210,6 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
     <ClInclude Include="src\GpuDevice.h" />
     <ClInclude Include="src\GpuResources.h" />
     <ClInclude Include="src\GpuTimestampProfiler.h" />
-    <ClInclude Include="src\Hittable.h" />
-    <ClInclude Include="src\HittableList.h" />
-    <ClInclude Include="src\Material.h" />
-    <ClInclude Include="src\Mesh.h" />
     <ClInclude Include="src\MeshRegistry.h" />
     <ClInclude Include="src\NRDIntegration.h" />
     <ClInclude Include="src\PathTracePass.h" />
@@ -224,23 +217,18 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
     <ClInclude Include="src\RISPass.h" />
     <ClInclude Include="src\RTLog.h" />
     <ClInclude Include="src\RasterPass.h" />
-    <ClInclude Include="src\Ray.h" />
     <ClInclude Include="src\ReSTIRPass.h" />
     <ClInclude Include="src\RenderSettings.h" />
-    <ClInclude Include="src\Renderer.h" />
     <ClInclude Include="src\RendererGPU.h" />
     <ClInclude Include="src\ReservoirResources.h" />
-    <ClInclude Include="src\Scene.h" />
     <ClInclude Include="src\SceneEditorUI.h" />
     <ClInclude Include="src\SceneGraph.h" />
     <ClInclude Include="src\SceneLoader.h" />
     <ClInclude Include="src\SceneManager.h" />
     <ClInclude Include="src\SceneResources.h" />
+    <ClInclude Include="src\SceneTypes.h" />
     <ClInclude Include="src\ShaderManager.h" />
-    <ClInclude Include="src\Sphere.h" />
     <ClInclude Include="src\StagingArena.h" />
-    <ClInclude Include="src\Triangle.h" />
-    <ClInclude Include="src\Utility.h" />
     <ClInclude Include="src\VulkanUtils.h" />
     <ClInclude Include="vendor\NRD\Include\NRD.h" />
     <ClInclude Include="vendor\NRD\Include\NRDDescs.h" />
@@ -333,11 +321,6 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\GpuTimestampProfiler.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\Mesh.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

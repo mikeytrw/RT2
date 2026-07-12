@@ -15,7 +15,7 @@
 // 6. Re-evaluate history sample at current receiver → merge into fresh reservoir
 // 7. Clamp temporal M to temporalMCap, scaling weight consistently
 // 8. Write combined reservoir to reservoirScratch[]
-// 9. Write current receiver metadata to surfaceHistory[] (for next frame's temporal)
+// Surface history is written by the later spatial pass, after all temporal reads finish.
 
 #include "restir_bindings.glsl"
 
@@ -30,7 +30,7 @@ layout(set = 0, binding = SI_BINDING_RESERVOIR_SCRATCH, std430) buffer Reservoir
     Reservoir reservoirScratch[];
 };
 
-layout(set = 0, binding = SI_BINDING_SURFACE_HISTORY, std430) buffer SurfaceHistoryBuffer
+layout(set = 0, binding = SI_BINDING_SURFACE_HISTORY, std430) readonly buffer SurfaceHistoryBuffer
 {
     SurfaceHistory surfaceHistory[];
 };
@@ -59,8 +59,6 @@ void main()
     if (isMiss)
     {
         reservoirScratch[pixelLinear] = res;
-        // Mark surface history as invalid (sky)
-        surfaceHistory[pixelLinear] = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6, 0xFFFFFFFFu, false);
         return;
     }
 
@@ -69,7 +67,6 @@ void main()
     if (dot(directEmission, directEmission) > 0.0)
     {
         reservoirScratch[pixelLinear] = res;
-        surfaceHistory[pixelLinear] = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6, 0xFFFFFFFFu, false);
         return;
     }
 
@@ -110,7 +107,6 @@ void main()
     if (diffuseWeight < 1e-4)
     {
         reservoirScratch[pixelLinear] = res;
-        surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, false);
         return;
     }
 
@@ -123,7 +119,6 @@ void main()
     {
         // No lights at all
         reservoirScratch[pixelLinear] = res;
-        surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, false);
         return;
     }
 
@@ -189,18 +184,12 @@ void main()
     bool temporalEnabled = (pc.restir.flags & 1u) != 0u;
     if (temporalEnabled)
     {
-        // Reproject using gMotion: motion is in UV space (0-1), convert to pixel space.
-        // Note: gMotion accounts for camera/object motion but NOT jitter (NRD convention).
-        // When NRD jitter is active, the subpixel shift between frames is not captured
-        // in the motion vector, causing temporal reuse to read slightly wrong history.
-        // The surface validation (normal/depth/material) catches most of these errors,
-        // but residual mismatch causes wobble. The correct fix is to either:
-        //   (a) disable NRD jitter when ReSTIR is enabled, or
-        //   (b) store prevJitter in the UBO and compensate here.
-        // For now, (a) is applied on the CPU side — jitter is disabled when restirEnabled.
+        // gMotion is non-jittered UV displacement. Convert to pixels and move from
+        // this frame's jittered storage coordinates to the previous frame's.
         vec2 motion = imageLoad(gMotion, pixel).xy;
         vec2 motionPixels = motion * vec2(width, height);
-        vec2 prevPixelF = vec2(pixel) + motionPixels + 0.5;
+        vec2 jitterDelta = pc.restir.jitter.xy - pc.restir.jitter.zw;
+        vec2 prevPixelF = vec2(pixel) + motionPixels + jitterDelta + 0.5;
 
         // Check if reprojected pixel is within viewport
         if (prevPixelF.x >= 0.0 && prevPixelF.x < float(width) &&
@@ -268,7 +257,4 @@ void main()
     }
 
     reservoirScratch[pixelLinear] = res;
-
-    // Write current surface history for next frame's temporal validation
-    surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, true);
 }

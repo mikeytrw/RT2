@@ -11,41 +11,41 @@
 #include <set>
 #include <map>
 
-// ============================================================================
-// Scene loading
-// ============================================================================
-
 bool SceneManager::LoadScene(const std::string& filepath)
 {
 	printf("[Scene] LoadScene: '%s'\n", filepath.c_str());
-	if (!SceneLoader::Load(m_Scene, filepath))
+
+	std::string ext = filepath.substr(filepath.find_last_of('.') + 1);
+	std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+	bool isObj = (ext == "obj");
+
+	if (isObj)
 	{
-		printf("[Scene] SceneLoader::Load failed!\n");
-		return false;
+		if (!SceneLoader::LoadObjIntoECS(m_EcsScene, filepath))
+		{
+			printf("[Scene] LoadObjIntoECS failed!\n");
+			return false;
+		}
+		printf("[Scene] LoadObjIntoECS succeeded\n");
+		return true;
 	}
-	printf("[Scene] SceneLoader::Load succeeded\n");
 
 	if (!SceneLoader::LoadIntoECS(m_EcsScene, filepath))
 	{
-		printf("[Scene] SceneLoader::LoadIntoECS failed, GPU will use legacy path\n");
+		printf("[Scene] SceneLoader::LoadIntoECS failed!\n");
+		return false;
 	}
-	else
-	{
-		m_EcsPopulated = true;
-		const auto& cam = m_Scene.GetCamera();
-		printf("[Scene] Camera: pos=(%.1f,%.1f,%.1f), forward=(%.1f,%.1f,%.1f), fov=%.1f\n",
-		       cam.position.x, cam.position.y, cam.position.z,
-		       cam.forwardDirection.x, cam.forwardDirection.y, cam.forwardDirection.z,
-		       cam.verticalFOV);
-	}
+	printf("[Scene] SceneLoader::LoadIntoECS succeeded\n");
 
-	// Create a wrapper root entity that parents all glTF root nodes,
-	// so a loaded glTF file appears as a single entity in the outliner.
-	// The user can then move/rotate/scale the whole object by editing the root.
+	const auto& cam = m_EcsScene.camera;
+	printf("[Scene] Camera: pos=(%.1f,%.1f,%.1f), forward=(%.1f,%.1f,%.1f), fov=%.1f\n",
+	       cam.position.x, cam.position.y, cam.position.z,
+	       cam.forwardDirection.x, cam.forwardDirection.y, cam.forwardDirection.z,
+	       cam.verticalFOV);
+
 	{
 		auto& reg = m_EcsScene.registry;
 
-		// Collect current root entities (no Hierarchy or parent == null)
 		std::vector<entt::entity> roots;
 		auto view = reg.view<Transform>();
 		for (auto entity : view)
@@ -57,7 +57,6 @@ bool SceneManager::LoadScene(const std::string& filepath)
 
 		if (!roots.empty())
 		{
-			// Derive a name from the filepath
 			std::string name = filepath;
 			size_t lastSlash = name.find_last_of("/\\");
 			if (lastSlash != std::string::npos)
@@ -66,7 +65,6 @@ bool SceneManager::LoadScene(const std::string& filepath)
 			if (lastDot != std::string::npos)
 				name = name.substr(0, lastDot);
 
-			// Create wrapper root
 			auto rootEntity = reg.create();
 			Transform& tf = reg.emplace<Transform>(rootEntity);
 			tf.dirty = true;
@@ -75,14 +73,11 @@ bool SceneManager::LoadScene(const std::string& filepath)
 			Hierarchy& rootHier = reg.emplace<Hierarchy>(rootEntity);
 			rootHier.parent = entt::null;
 
-			// Reparent all roots under the wrapper
 			for (auto child : roots)
 			{
 				auto* childHier = reg.try_get<Hierarchy>(child);
 				if (!childHier)
-				{
 					childHier = &reg.emplace<Hierarchy>(child);
-				}
 				childHier->parent = rootEntity;
 				rootHier.children.push_back(child);
 				SceneGraph::SetLocalDirty(reg, child);
@@ -94,33 +89,8 @@ bool SceneManager::LoadScene(const std::string& filepath)
 	}
 
 	printf("[Scene] Loaded %d meshes, %d materials, %d lights, %d textures\n",
-	       (int)m_Scene.GetMeshes().size(), (int)m_Scene.GetMaterials().size(),
-	       (int)m_Scene.GetLights().size(), (int)m_Scene.GetTextures().size());
-
-	// Rebuild CPU-side meshes for the CPU ray tracer
-	m_CpuMeshes.clear();
-	for (const auto& sceneMesh : m_Scene.GetMeshes())
-	{
-		Mesh mesh;
-		bool meshLoaded = false;
-
-		if (sceneMesh.HasGeometry())
-		{
-			auto material = std::make_shared<LambertianMaterial>(glm::vec3(0.7f));
-			meshLoaded = mesh.LoadFromGeometry(sceneMesh.vertices, sceneMesh.normals,
-			                                   sceneMesh.indices, sceneMesh.position,
-			                                   sceneMesh.rotation, sceneMesh.scale, material);
-		}
-		else if (!sceneMesh.filepath.empty())
-		{
-			auto material = std::make_shared<LambertianMaterial>(glm::vec3(0.7f));
-			meshLoaded = mesh.Load(sceneMesh.filepath, sceneMesh.position, sceneMesh.rotation,
-			                       sceneMesh.scale, material);
-		}
-
-		if (meshLoaded)
-			m_CpuMeshes.push_back(std::move(mesh));
-	}
+	       (int)m_EcsScene.meshRegistry.GetCount(), (int)m_EcsScene.materials.size(),
+	       (int)m_EcsScene.lights.size(), (int)m_EcsScene.textures.size());
 
 	m_EntityCacheDirty = true;
 	return true;
@@ -188,7 +158,6 @@ SceneManager::EntityId SceneManager::ImportGltf(const std::string& filepath)
 	if (root == entt::null)
 		return EntityId{};
 
-	m_EcsPopulated = true;
 	m_EntityCacheDirty = true;
 	return EntityId{ root };
 }
@@ -201,45 +170,8 @@ void SceneManager::SyncToGPU()
 {
 	GPUSceneData gpuData;
 
-	// Build from ECS if it has been populated (glTF load), otherwise legacy Scene.
-	// Use m_EcsPopulated, not entity count — after deleting all entities the ECS
-	// is still the active representation and should produce an empty scene,
-	// not fall back to the legacy Scene which still has the original meshes.
-	if (m_EcsPopulated)
-	{
-		UpdateWorldTransforms();
-		gpuData = BuildGPUSceneDataFromECS(m_EcsScene);
-	}
-	else
-	{
-		gpuData = BuildGPUSceneData(m_Scene);
-	}
-
-	// OBJ fallback: only when the ECS was never populated
-	// AND we have CPU meshes from a legacy OBJ load.
-	if (!m_EcsPopulated && gpuData.meshes.empty() && !m_CpuMeshes.empty())
-	{
-		for (auto& mesh : m_CpuMeshes)
-		{
-			auto [verts, indices] = mesh.GetRawVertexData();
-			GPUMeshGeometry geo;
-			geo.vertices = verts;
-			geo.indices = indices;
-			geo.materialIndex = 0;
-			gpuData.meshes.push_back(std::move(geo));
-		}
-
-		// OBJ fallback: create identity instances for each mesh
-		for (uint32_t i = 0; i < gpuData.meshes.size(); i++)
-		{
-			GPUInstance inst;
-			inst.meshIndex = i;
-			inst.materialIndex = gpuData.meshes[i].materialIndex;
-			inst.worldMatrix = glm::mat4(1.0f);
-			inst.prevWorldMatrix = glm::mat4(1.0f);
-			gpuData.instances.push_back(inst);
-		}
-	}
+	UpdateWorldTransforms();
+	gpuData = BuildGPUSceneDataFromECS(m_EcsScene);
 
 	// Add env map as an extra texture in the texture array
 	if (HasEnvMap())
@@ -270,41 +202,8 @@ void SceneManager::SyncToGPUKeepTextures()
 {
 	GPUSceneData gpuData;
 
-	// Build from ECS if it has been populated (glTF load), otherwise legacy Scene.
-	if (m_EcsPopulated)
-	{
-		UpdateWorldTransforms();
-		gpuData = BuildGPUSceneDataFromECS(m_EcsScene);
-	}
-	else
-	{
-		gpuData = BuildGPUSceneData(m_Scene);
-	}
-
-	// OBJ fallback: only when the ECS was never populated
-	if (!m_EcsPopulated && gpuData.meshes.empty() && !m_CpuMeshes.empty())
-	{
-		for (auto& mesh : m_CpuMeshes)
-		{
-			auto [verts, indices] = mesh.GetRawVertexData();
-			GPUMeshGeometry geo;
-			geo.vertices = verts;
-			geo.indices = indices;
-			geo.materialIndex = 0;
-			gpuData.meshes.push_back(std::move(geo));
-		}
-
-		// OBJ fallback: create identity instances for each mesh
-		for (uint32_t i = 0; i < gpuData.meshes.size(); i++)
-		{
-			GPUInstance inst;
-			inst.meshIndex = i;
-			inst.materialIndex = gpuData.meshes[i].materialIndex;
-			inst.worldMatrix = glm::mat4(1.0f);
-			inst.prevWorldMatrix = glm::mat4(1.0f);
-			gpuData.instances.push_back(inst);
-		}
-	}
+	UpdateWorldTransforms();
+	gpuData = BuildGPUSceneDataFromECS(m_EcsScene);
 
 	// Preserve env map data from current GPU scene (textures aren't re-uploaded)
 	if (m_CurrentGpuScene.envMapIndex >= 0)
@@ -680,54 +579,11 @@ SceneMaterial& SceneManager::GetMaterial(int index)
 // Stats + misc
 // ============================================================================
 
-uint32_t SceneManager::GetTriangleCount() const
-{
-	uint32_t count = 0;
-	for (const auto& mesh : m_CpuMeshes)
-		count += static_cast<uint32_t>(mesh.GetTriangleCount());
-	return count;
-}
-
-uint32_t SceneManager::GetBVHNodeCount() const
-{
-	uint32_t count = 0;
-	for (const auto& mesh : m_CpuMeshes)
-	{
-		if (auto bvh = mesh.GetBvhNode())
-		{
-			uint32_t nodes = 0;
-			int depth = 0;
-			bvh->GetStats(nodes, depth);
-			count += nodes;
-		}
-	}
-	return count;
-}
-
-int SceneManager::GetBVHMaxDepth() const
-{
-	int maxDepth = 0;
-	for (const auto& mesh : m_CpuMeshes)
-	{
-		if (auto bvh = mesh.GetBvhNode())
-		{
-			uint32_t nodes = 0;
-			int depth = 0;
-			bvh->GetStats(nodes, depth);
-			maxDepth = std::max(maxDepth, depth);
-		}
-	}
-	return maxDepth;
-}
-
 void SceneManager::Clear()
 {
-	m_Scene.Clear();
 	m_EcsScene.Clear();
 	m_CurrentGpuScene = GPUSceneData{};
-	m_CpuMeshes.clear();
 	ClearEnvMap();
-	m_EcsPopulated = false;
 	m_EntityCacheDirty = true;
 }
 

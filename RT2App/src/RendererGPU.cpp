@@ -52,6 +52,7 @@ bool RendererGPU::Init()
 	// Create frames-in-flight ring
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 		m_Frames[i].Init(m_Device.device, m_Device.queueFamily);
+	m_GpuProfiler.Init(m_Device, MAX_FRAMES_IN_FLIGHT);
 
 	m_Initialized = true;
 	return true;
@@ -61,6 +62,7 @@ void RendererGPU::Destroy()
 {
 	VkDevice device = m_Device.device;
 	vkDeviceWaitIdle(device);
+	m_GpuProfiler.Destroy(device);
 
 	m_NRD.Destroy();
 	m_ReSTIRPass.Destroy();
@@ -342,6 +344,16 @@ void RendererGPU::ResetAccumulation()
 void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 {
 	bool wasRestirEnabled = m_Settings.restirEnabled;
+	bool restirJitterPolicyChanged = m_Settings.nrdJitterEnabled != newSettings.nrdJitterEnabled ||
+	                                m_Settings.nrdJitterScale != newSettings.nrdJitterScale;
+	bool restirPolicyChanged = m_Settings.restirFreshCandidates != newSettings.restirFreshCandidates ||
+	                          m_Settings.restirTemporalMCap != newSettings.restirTemporalMCap ||
+	                          m_Settings.restirTemporalReuse != newSettings.restirTemporalReuse ||
+	                          m_Settings.restirSpatialReuse != newSettings.restirSpatialReuse ||
+	                          m_Settings.restirSpatialNeighbors != newSettings.restirSpatialNeighbors ||
+	                          m_Settings.restirSpatialRadius != newSettings.restirSpatialRadius ||
+	                          m_Settings.restirDepthThreshold != newSettings.restirDepthThreshold ||
+	                          m_Settings.restirNormalThreshold != newSettings.restirNormalThreshold;
 	if (m_Settings.spp != newSettings.spp ||
 	    m_Settings.maxBounces != newSettings.maxBounces ||
 	    m_Settings.showBackground != newSettings.showBackground ||
@@ -363,14 +375,18 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	    m_Settings.restirSpatialReuse != newSettings.restirSpatialReuse ||
 	    m_Settings.restirSpatialNeighbors != newSettings.restirSpatialNeighbors ||
 	    m_Settings.restirSpatialRadius != newSettings.restirSpatialRadius ||
+	    m_Settings.restirTemporalMCap != newSettings.restirTemporalMCap ||
+	    m_Settings.restirDepthThreshold != newSettings.restirDepthThreshold ||
+	    m_Settings.restirNormalThreshold != newSettings.restirNormalThreshold ||
 	    m_Settings.gbufferDebugMode != newSettings.gbufferDebugMode)
 	{
 		m_Settings.dirty = true;
 	}
 	m_Settings = newSettings;
 
-	// Invalidate ReSTIR history on enable/disable toggle
-	if (m_Settings.restirEnabled != wasRestirEnabled)
+	// A different jitter sequence changes history storage coordinates.
+	if (m_Settings.restirEnabled != wasRestirEnabled ||
+	    (m_Settings.restirEnabled && (restirJitterPolicyChanged || restirPolicyChanged)))
 		m_ReSTIRHistoryInvalidated = true;
 }
 
@@ -381,7 +397,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 
 	// NRD camera jitter (Halton sequence, subpixel offset in [-0.5, 0.5])
 	m_NRDJitterPrev = m_NRDJitter;
-	if (m_Settings.nrdEnabled && m_Settings.nrdJitterEnabled && !m_Settings.restirEnabled)
+	if (m_Settings.nrdEnabled && m_Settings.nrdJitterEnabled)
 	{
 		// Halton sequence (base 2, base 3) for low-discrepancy jitter
 		auto halton = [](int index, int base) -> float {
@@ -502,8 +518,10 @@ void RendererGPU::Render(const Camera& camera)
 	// ---- Frames-in-flight ring: wait for this frame slot to be free ----
 	FrameContext& frame = m_Frames[m_CurrentFrame];
 	frame.WaitForFence(device);
+	m_GpuProfiler.ReadCompletedSlot(device, m_CurrentFrame);
 	frame.Begin(device);
 	VkCommandBuffer cmd = frame.commandBuffer;
+	m_GpuProfiler.BeginFrame(cmd, m_CurrentFrame, m_FrameIndex);
 
 	// Clear ReSTIR history if invalidated (resize, scene change, enable toggle)
 	if (m_ReSTIRHistoryInvalidated && m_Reservoirs.IsValid())
@@ -524,10 +542,12 @@ void RendererGPU::Render(const Camera& camera)
 	if (m_Settings.restirTemporalReuse) restirPC.flags |= 1u;
 	if (m_Settings.restirSpatialReuse)  restirPC.flags |= 2u;
 	restirPC.frameIndex = m_FrameIndex;
+	restirPC.jitter = glm::vec4(m_NRDJitter, m_NRDJitterPrev);
 
 	// Build the frame render context and delegate to FrameRenderer
 	FrameRenderer::Context ctx = {
 		m_Device,
+		&m_GpuProfiler,
 		m_GBuffer,
 		m_Scene,
 		m_PathTracePass,
@@ -566,6 +586,7 @@ void RendererGPU::Render(const Camera& camera)
 	};
 
 	FrameRenderer::RecordFrame(cmd, ctx);
+	m_GpuProfiler.EndFrame(m_CurrentFrame);
 
 	// ---- Submit this frame's work (async, no wait) ----
 	RT_LOG("[Render] submitting frame %d (NRD=%d composeCached=%d)",

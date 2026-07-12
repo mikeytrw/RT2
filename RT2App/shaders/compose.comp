@@ -132,9 +132,9 @@ void main()
         // In view space: surface = (viewX, viewY, viewZ). Camera is at origin.
         // V_view = normalize(-surface_view). Transform to world: V = inverseView * V_view.
         vec2 ndc = (vec2(pixel.xy) + 0.5) / vec2(size) * 2.0 - 1.0;
-        // Remove jitter (camera.forward.w = jitter.x, camera.right.w = jitter.y)
-        vec2 ndcUnjittered = ndc - vec2(camera.forward.w, camera.right.w) * 2.0 / camera.viewportSPP.xy;
-        vec4 viewRay = camera.inverseProjection * vec4(ndcUnjittered, 1.0, 1.0);
+        // Raster storage coordinate pixelCenter represents sample pixelCenter + jitter.
+        vec2 ndcSample = ndc + vec2(camera.forward.w, camera.right.w) * 2.0 / camera.viewportSPP.xy;
+        vec4 viewRay = camera.inverseProjection * vec4(ndcSample, 1.0, 1.0);
         vec3 viewDir = normalize(vec3(viewRay) / viewRay.w);
         // The surface in view space is at viewDir * |viewZ| (viewZ is negative for camera looking -Z)
         vec3 surfaceView = viewDir * abs(viewZ);

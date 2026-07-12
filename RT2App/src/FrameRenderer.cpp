@@ -5,6 +5,8 @@
 void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 {
 	RT_LOG("[Frame] RecordFrame begin");
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::Frame, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
 	RecordTopBarrier(cmd, ctx);
 	RecordASBarrier(cmd, ctx);
 	RecordUBOUpdates(cmd, ctx);
@@ -25,6 +27,8 @@ void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 	RecordPathTraceOrDebug(cmd, ctx);
 	RT_LOG("[Frame] pathtrace/debug done");
 	RecordOutputTransition(cmd, ctx);
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::Frame, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 	RT_LOG("[Frame] RecordFrame end");
 }
 
@@ -137,9 +141,13 @@ void FrameRenderer::RecordRasterPass(VkCommandBuffer cmd, Context& ctx)
 
 	VkImageView gbufferViews[8];
 	ctx.gbuffer.GetMRTViews(gbufferViews);
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::Raster, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
 	ctx.rasterPass.Record(cmd, ctx.width, ctx.height,
 	                    ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
 	                    ctx.gbuffer.GetDepth().view, gbufferViews);
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::Raster, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
 
 	VkImageMemoryBarrier postRasterBarriers[8] = {};
 	for (int i = 0; i < 8; i++)
@@ -201,15 +209,18 @@ void FrameRenderer::RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx)
 	                     0, nullptr, 3, temporalPreBarriers, 0, nullptr);
 
 	// 2. Dispatch temporal pass: history → scratch
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::ReSTIRTemporal, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	ctx.restirPass.RecordTemporal(cmd, ctx.width, ctx.height,
 	                              ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
 	                              ctx.restirPC);
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::ReSTIRTemporal, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 	// 3. Barrier: scratch (temporal write) → spatial read
-	//    + history (temporal read) → spatial write
-	//    + surfaceHistory (temporal write) → next frame's temporal read (stays)
-	VkBufferMemoryBarrier spatialPreBarriers[2] = {};
-	for (int i = 0; i < 2; i++)
+	//    + history and surface history (temporal read) → spatial write
+	VkBufferMemoryBarrier spatialPreBarriers[3] = {};
+	for (int i = 0; i < 3; i++)
 	{
 		spatialPreBarriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
 		spatialPreBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -225,15 +236,24 @@ void FrameRenderer::RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx)
 	spatialPreBarriers[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
 	spatialPreBarriers[1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 
+	spatialPreBarriers[2].buffer = surfaceHistBuf;
+	spatialPreBarriers[2].size = ctx.reservoirs.GetBufferSize() / 2;
+	spatialPreBarriers[2].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	spatialPreBarriers[2].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
 	vkCmdPipelineBarrier(cmd,
 	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
-	                     0, nullptr, 2, spatialPreBarriers, 0, nullptr);
+	                     0, nullptr, 3, spatialPreBarriers, 0, nullptr);
 
 	// 4. Dispatch spatial pass: scratch → history
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::ReSTIRSpatial, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	ctx.restirPass.RecordSpatial(cmd, ctx.width, ctx.height,
 	                             ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
 	                             ctx.restirPC);
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::ReSTIRSpatial, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 	// 5. Barrier: history (spatial write) → RT shader read
 	VkBufferMemoryBarrier postBarrier = {};
@@ -262,7 +282,11 @@ void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 	}
 
 	bool useRasterFirst = ctx.rasterFirst && (ctx.camera.m_Aperture <= 0.0f);
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::RTShading, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
 	ctx.pathTracePass.Record(cmd, ctx.width, ctx.height, ctx.gbufferSet, useRasterFirst);
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::RTShading, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
 
 	if (ctx.nrdEnabled && ctx.nrd.IsAvailable() && useRasterFirst)
 		RecordNRDAndCompose(cmd, ctx);
@@ -330,6 +354,8 @@ void FrameRenderer::RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx)
 	ctx.nrd.SetReblurSettings(ctx.nrdMaxBlurRadius, (uint32_t)ctx.nrdMaxAccumFrames,
 	                        ctx.nrdAntiFirefly, ctx.nrdSplitScreen);
 
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::NRD, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	ctx.nrd.Denoise(cmd,
 		ctx.gbuffer.GetColor(GBufferTarget::NORMAL_ROUGHNESS).image, VK_FORMAT_A2B10G10R10_UNORM_PACK32,
 		ctx.gbuffer.GetColor(GBufferTarget::VIEWZ).image, VK_FORMAT_R32_SFLOAT,
@@ -337,6 +363,8 @@ void FrameRenderer::RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx)
 		ctx.gbuffer.GetColor(GBufferTarget::DIFF_RADIANCE).image, VK_FORMAT_R16G16B16A16_SFLOAT,
 		ctx.gbuffer.GetColor(GBufferTarget::SPEC_RADIANCE).image, VK_FORMAT_R16G16B16A16_SFLOAT,
 		ctx.gbuffer.GetColor(GBufferTarget::NRD_DIFF_OUT).image, ctx.gbuffer.GetColor(GBufferTarget::NRD_SPEC_OUT).image);
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::NRD, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 	RT_LOG("[NRD] Denoise recorded");
 
@@ -385,7 +413,11 @@ void FrameRenderer::RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx)
 		                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
 		                     0, nullptr, 0, nullptr, 6, composeBarriers);
 
+		if (ctx.gpuProfiler)
+			ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::Compose, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 		ctx.composePass.Record(cmd, ctx.width, ctx.height);
+		if (ctx.gpuProfiler)
+			ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::Compose, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 		RT_LOG("[NRD] compose dispatched (%ux%u)", ctx.width, ctx.height);
 	}
 

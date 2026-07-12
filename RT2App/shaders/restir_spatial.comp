@@ -14,7 +14,7 @@
 //    b. Validate neighbor using current-frame normal, depth, material
 //    c. Re-evaluate neighbor's selected sample at the center receiver
 //    d. Merge valid reservoirs using pairwise MIS weight
-// 4. Write final result to reservoirHistory[] (overwrites previous frame)
+// 4. Write final result and current surface metadata for the next frame
 //
 // Neighbor selection: frame-rotated disk pattern, not fixed square kernel.
 // One pass only (avoids needing a third reservoir buffer).
@@ -30,6 +30,11 @@ layout(set = 0, binding = SI_BINDING_RESERVOIR_SCRATCH, std430) readonly buffer 
 layout(set = 0, binding = SI_BINDING_RESERVOIR_HISTORY, std430) buffer ReservoirHistoryWriteBuffer
 {
     Reservoir reservoirHistory[];
+};
+
+layout(set = 0, binding = SI_BINDING_SURFACE_HISTORY, std430) buffer SurfaceHistoryWriteBuffer
+{
+    SurfaceHistory surfaceHistory[];
 };
 
 layout(local_size_x = 16, local_size_y = 16) in;
@@ -64,6 +69,7 @@ void main()
     if (isMiss)
     {
         reservoirHistory[pixelLinear] = makeEmptyReservoir();
+        surfaceHistory[pixelLinear] = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6, 0xFFFFFFFFu, false);
         return;
     }
 
@@ -71,6 +77,7 @@ void main()
     if (dot(directEmission, directEmission) > 0.0)
     {
         reservoirHistory[pixelLinear] = makeEmptyReservoir();
+        surfaceHistory[pixelLinear] = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6, 0xFFFFFFFFu, false);
         return;
     }
 
@@ -109,6 +116,7 @@ void main()
     if (diffuseWeight < 1e-4)
     {
         reservoirHistory[pixelLinear] = makeEmptyReservoir();
+        surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, false);
         return;
     }
 
@@ -120,6 +128,7 @@ void main()
     if (!spatialEnabled || centerRes.data0.x == SAMPLE_EMPTY)
     {
         reservoirHistory[pixelLinear] = centerRes;
+        surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, true);
         return;
     }
 
@@ -242,4 +251,5 @@ void main()
     // Sanitize and write to history
     centerRes = sanitizeReservoir(centerRes);
     reservoirHistory[pixelLinear] = centerRes;
+    surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, true);
 }

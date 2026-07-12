@@ -2,6 +2,7 @@
 #include "RTLog.h"
 #include "VulkanUtils.h"
 #include "GpuResources.h"
+#include "CommandUtils.h"
 #include "Walnut/RTDispatch.h"
 #include <glm/glm.hpp>
 #include <cmath>
@@ -223,29 +224,108 @@ void AccelerationStructure::BuildCombinedBuffers()
 	GpuResources::DestroyBuffer(m_Device, m_CombinedTangentBuffer, m_CombinedTangentMemory);
 	RT_LOG("[BuildCombinedBuffers] old buffers destroyed (no-op if already done)");
 
-	// Collect per-BLAS object-space data (deduplicated — one copy per unique mesh).
-	// The shader transforms positions/normals/tangents to world space at hit time
-	// using instanceTransforms[gl_InstanceID].
-	std::vector<glm::vec4> allNormals;
-	std::vector<glm::vec4> allPositions;
-	std::vector<glm::vec4> allUVs;
-	std::vector<glm::vec4> allTangents;
-	std::vector<uint32_t> offsets;
+	// Pre-compute total triangle count for direct GPU buffer allocation.
+	// For large scenes (5.6M tris), building intermediate std::vector<glm::vec4>
+	// arrays would require ~896MB of CPU RAM on top of the BLAS data. Instead,
+	// we allocate the GPU buffers directly and write via mapped memory.
+	uint32_t totalTriCount = 0;
+	for (size_t b = 0; b < m_BLASes.size(); b++)
+		totalTriCount += m_BLASes[b].triangleCount;
 
-	// Build per-BLAS triangle data in object space
+	if (totalTriCount == 0)
+	{
+		RT_LOG("[BuildCombinedBuffers] no triangles, skipping");
+		return;
+	}
+
+	VkDeviceSize normalSize   = (VkDeviceSize)totalTriCount * sizeof(glm::vec4);
+	VkDeviceSize positionSize = (VkDeviceSize)totalTriCount * 3 * sizeof(glm::vec4);
+	VkDeviceSize uvSize       = (VkDeviceSize)totalTriCount * 3 * sizeof(glm::vec4);
+	VkDeviceSize tangentSize  = (VkDeviceSize)totalTriCount * 3 * sizeof(glm::vec4);
+
+	RT_LOG("[BuildCombinedBuffers] totalTris=%u, GPU buffers: normal=%zuMB pos=%zuMB uv=%zuMB tan=%zuMB",
+	       totalTriCount,
+	       normalSize/(1024*1024), positionSize/(1024*1024),
+	       uvSize/(1024*1024), tangentSize/(1024*1024));
+
+	// Allocate GPU-side DEVICE_LOCAL buffers and upload via a staging buffer.
+	// HOST_VISIBLE memory is limited (~256MB-1GB on most GPUs), so we can't
+	// map 856MB directly. Instead, build the data in a temporary CPU buffer,
+	// create a DEVICE_LOCAL GPU buffer, and copy via a staging buffer.
+	auto createDeviceLocal = [&](VkBuffer& buf, VkDeviceMemory& mem,
+	                              const std::vector<glm::vec4>& data) {
+		if (data.empty()) return;
+		VkDeviceSize size = (VkDeviceSize)(data.size() * sizeof(glm::vec4));
+		GpuResources::CreateBuffer(m_Device, size,
+		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+		             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+		             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+		             buf, mem);
+		VkBuffer stagingBuf; VkDeviceMemory stagingMem;
+		GpuResources::CreateBuffer(m_Device, size,
+		             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		             stagingBuf, stagingMem);
+		void* mapped = nullptr;
+		vkMapMemory(device, stagingMem, 0, size, 0, &mapped);
+		memcpy(mapped, data.data(), (size_t)size);
+		vkUnmapMemory(device, stagingMem);
+		VkBuffer stagingBufCapture = stagingBuf;
+		VkDeviceMemory stagingMemCapture = stagingMem;
+		VkBuffer dstBufCapture = buf;
+		VkDeviceSize sizeCapture = size;
+		CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+			VkBufferCopy region = {}; region.size = sizeCapture;
+			vkCmdCopyBuffer(cmd, stagingBufCapture, dstBufCapture, 1, &region);
+		});
+		GpuResources::DestroyBuffer(m_Device, stagingBufCapture, stagingMemCapture);
+	};
+
+	// Build per-BLAS triangle data into CPU-side vectors, then upload to
+	// DEVICE_LOCAL GPU buffers via staging. Free BLAS per-triangle data after
+	// copying to reduce peak memory.
+	std::vector<glm::vec4> allNormals, allPositions, allUVs, allTangents;
+	allNormals.reserve(totalTriCount);
+	allPositions.reserve(totalTriCount * 3);
+	allUVs.reserve(totalTriCount * 3);
+	allTangents.reserve(totalTriCount * 3);
 	std::vector<uint32_t> blasOffsets(m_BLASes.size());
 
+	RT_LOG("[BuildCombinedBuffers] vectors reserved, starting BLAS loop");
+
+	try
+	{
 	for (size_t b = 0; b < m_BLASes.size(); b++)
 	{
 		auto& blas = m_BLASes[b];
 		blasOffsets[b] = static_cast<uint32_t>(allNormals.size());
 
 		uint32_t triCount = blas.triangleCount;
+		RT_LOG("[BuildCombinedBuffers] blas=%zu: triCount=%u triPositions.size=%zu triUVs.size=%zu triTangents.size=%zu",
+		       b, triCount, blas.triPositions.size(), blas.triUVs.size(), blas.triTangents.size());
 		for (uint32_t t = 0; t < triCount; t++)
 		{
-			glm::vec3 v0(blas.triPositions[t * 9 + 0], blas.triPositions[t * 9 + 1], blas.triPositions[t * 9 + 2]);
-			glm::vec3 v1(blas.triPositions[t * 9 + 3], blas.triPositions[t * 9 + 4], blas.triPositions[t * 9 + 5]);
-			glm::vec3 v2(blas.triPositions[t * 9 + 6], blas.triPositions[t * 9 + 7], blas.triPositions[t * 9 + 8]);
+			if (t % 1000000 == 0)
+				RT_LOG("[BuildCombinedBuffers] blas=%zu tri=%u/%u", b, t, triCount);
+
+			size_t posIdx = (size_t)t * 9;
+			size_t uvIdx = (size_t)t * 6;
+			size_t tanIdx = (size_t)t * 9;
+
+			if (posIdx + 8 >= blas.triPositions.size() ||
+			    uvIdx + 5 >= blas.triUVs.size() ||
+			    tanIdx + 8 >= blas.triTangents.size())
+			{
+				RT_LOG("[BuildCombinedBuffers] bounds check FAILED: blas=%zu tri=%u posIdx=%zu/%zu uvIdx=%zu/%zu tanIdx=%zu/%zu",
+				       b, t, posIdx, blas.triPositions.size(),
+				       uvIdx, blas.triUVs.size(),
+				       tanIdx, blas.triTangents.size());
+				continue;
+			}
+
+			glm::vec3 v0(blas.triPositions[posIdx + 0], blas.triPositions[posIdx + 1], blas.triPositions[posIdx + 2]);
+			glm::vec3 v1(blas.triPositions[posIdx + 3], blas.triPositions[posIdx + 4], blas.triPositions[posIdx + 5]);
+			glm::vec3 v2(blas.triPositions[posIdx + 6], blas.triPositions[posIdx + 7], blas.triPositions[posIdx + 8]);
 
 			allPositions.push_back(glm::vec4(v0, 1.0f));
 			allPositions.push_back(glm::vec4(v1, 1.0f));
@@ -262,10 +342,41 @@ void AccelerationStructure::BuildCombinedBuffers()
 			allTangents.push_back(glm::vec4(blas.triTangents[t * 9 + 3], blas.triTangents[t * 9 + 4], blas.triTangents[t * 9 + 5], 0.0f));
 			allTangents.push_back(glm::vec4(blas.triTangents[t * 9 + 6], blas.triTangents[t * 9 + 7], blas.triTangents[t * 9 + 8], 0.0f));
 		}
+
+		// Free BLAS per-triangle data to reduce peak memory
+		blas.triPositions.clear();
+		blas.triPositions.shrink_to_fit();
+		blas.triUVs.clear();
+		blas.triUVs.shrink_to_fit();
+		blas.triTangents.clear();
+		blas.triTangents.shrink_to_fit();
+	}
+	}
+	catch (const std::exception& e)
+	{
+		RT_LOG("[BuildCombinedBuffers] EXCEPTION: %s", e.what());
+		return;
 	}
 
+	RT_LOG("[BuildCombinedBuffers] uploading to DEVICE_LOCAL: normals=%zuMB pos=%zuMB uv=%zuMB tan=%zuMB",
+	       allNormals.size() * sizeof(glm::vec4) / (1024*1024),
+	       allPositions.size() * sizeof(glm::vec4) / (1024*1024),
+	       allUVs.size() * sizeof(glm::vec4) / (1024*1024),
+	       allTangents.size() * sizeof(glm::vec4) / (1024*1024));
+
+	createDeviceLocal(m_CombinedNormalBuffer, m_CombinedNormalMemory, allNormals);
+	createDeviceLocal(m_CombinedPositionBuffer, m_CombinedPositionMemory, allPositions);
+	createDeviceLocal(m_CombinedUVBuffer, m_CombinedUVMemory, allUVs);
+	createDeviceLocal(m_CombinedTangentBuffer, m_CombinedTangentMemory, allTangents);
+
+	// Free CPU-side vectors after upload
+	allNormals.clear(); allNormals.shrink_to_fit();
+	allPositions.clear(); allPositions.shrink_to_fit();
+	allUVs.clear(); allUVs.shrink_to_fit();
+	allTangents.clear(); allTangents.shrink_to_fit();
+
 	// Build per-instance offset table: each instance maps to its BLAS's offset.
-	// If no instances (legacy path), emit per-BLAS offsets directly.
+	std::vector<uint32_t> offsets;
 	if (!m_InstanceToBLAS.empty())
 	{
 		offsets.reserve(m_InstanceToBLAS.size());
@@ -280,38 +391,19 @@ void AccelerationStructure::BuildCombinedBuffers()
 		offsets = blasOffsets;
 	}
 
-	RT_LOG("[BuildCombinedBuffers] collecting data: normals=%d positions=%d uvs=%d tangents=%d instances=%d",
-	       (int)allNormals.size(), (int)allPositions.size(), (int)allUVs.size(), (int)allTangents.size(), (int)offsets.size());
+	RT_LOG("[BuildCombinedBuffers] instances=%zu, creating offset buffer (%zu bytes)",
+	       offsets.size(), offsets.size() * sizeof(uint32_t));
 
-	auto createCombined = [&](VkBuffer& buf, VkDeviceMemory& mem,
-	                          const void* data, VkDeviceSize size)
-	{
-		if (size == 0) return;
-		GpuResources::CreateBuffer(m_Device, size,
-		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		             buf, mem);
-		void* mapped;
-		vkMapMemory(device, mem, 0, size, 0, &mapped);
-		memcpy(mapped, data, (size_t)size);
-		vkUnmapMemory(device, mem);
-	};
+	VkDeviceSize offsetSize = offsets.size() * sizeof(uint32_t);
+	GpuResources::CreateBuffer(m_Device, offsetSize,
+	             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+	             m_InstanceOffsetBuffer, m_InstanceOffsetMemory);
+	void* offsetMapped = nullptr;
+	vkMapMemory(device, m_InstanceOffsetMemory, 0, offsetSize, 0, &offsetMapped);
+	memcpy(offsetMapped, offsets.data(), (size_t)offsetSize);
+	vkUnmapMemory(device, m_InstanceOffsetMemory);
 
-	RT_LOG("[BuildCombinedBuffers] creating normal buffer (%zu bytes)", allNormals.size() * sizeof(glm::vec4));
-	createCombined(m_CombinedNormalBuffer, m_CombinedNormalMemory,
-	               allNormals.data(), allNormals.size() * sizeof(glm::vec4));
-	RT_LOG("[BuildCombinedBuffers] creating position buffer (%zu bytes)", allPositions.size() * sizeof(glm::vec4));
-	createCombined(m_CombinedPositionBuffer, m_CombinedPositionMemory,
-	               allPositions.data(), allPositions.size() * sizeof(glm::vec4));
-	RT_LOG("[BuildCombinedBuffers] creating UV buffer (%zu bytes)", allUVs.size() * sizeof(glm::vec4));
-	createCombined(m_CombinedUVBuffer, m_CombinedUVMemory,
-	               allUVs.data(), allUVs.size() * sizeof(glm::vec4));
-	RT_LOG("[BuildCombinedBuffers] creating tangent buffer (%zu bytes)", allTangents.size() * sizeof(glm::vec4));
-	createCombined(m_CombinedTangentBuffer, m_CombinedTangentMemory,
-	               allTangents.data(), allTangents.size() * sizeof(glm::vec4));
-	RT_LOG("[BuildCombinedBuffers] creating offset buffer (%zu bytes)", offsets.size() * sizeof(uint32_t));
-	createCombined(m_InstanceOffsetBuffer, m_InstanceOffsetMemory,
-	               offsets.data(), offsets.size() * sizeof(uint32_t));
 	RT_LOG("[BuildCombinedBuffers] done");
 }
 

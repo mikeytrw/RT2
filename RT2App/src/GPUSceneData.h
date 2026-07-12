@@ -3,7 +3,7 @@
 #ifndef GPU_SCENE_DATA_H
 #define GPU_SCENE_DATA_H
 
-#include "Scene.h"
+#include "SceneTypes.h"
 #include "ECSScene.h"
 #include <glm/glm.hpp>
 #include <vector>
@@ -127,11 +127,6 @@ struct GPUSceneData
     int cdfWidth = 0;
     int cdfHeight = 0;
 };
-
-// Convert a Scene into GPUSceneData: one GPUMeshGeometry per scene mesh
-// with geometry, one GPUMaterial per scene material. Meshes without
-// geometry are skipped. Out-of-range material indices clamp to 0.
-GPUSceneData BuildGPUSceneData(const Scene& scene);
 
 // Convert an ECSScene into GPUSceneData: one GPUMeshGeometry per unique mesh
 // in the MeshRegistry, one GPUInstance per entity with MeshRef. World matrices

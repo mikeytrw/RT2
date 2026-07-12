@@ -9,7 +9,6 @@ struct CLIArgs
 	std::string scenePath;
 	std::string envMapPath;
 	std::string outputPath;       // screenshot PNG path
-	std::string renderer = "gpu"; // "gpu" or "cpu"
 	int frames = 0;               // number of frames to render before screenshot (0 = no auto-screenshot)
 	int width = 1280;             // viewport width for headless mode
 	int height = 720;             // viewport height for headless mode
@@ -57,10 +56,6 @@ struct CLIArgs
 			else if (strcmp(a, "--frames") == 0 || strcmp(a, "-f") == 0)
 			{
 				if (const char* v = next()) args.frames = std::max(1, std::atoi(v));
-			}
-			else if (strcmp(a, "--renderer") == 0 || strcmp(a, "-r") == 0)
-			{
-				if (const char* v = next()) args.renderer = v;
 			}
 			else if (strcmp(a, "--width") == 0 || strcmp(a, "-w") == 0)
 			{
@@ -129,12 +124,11 @@ struct CLIArgs
 				printf("RT2 — path traced renderer\n");
 				printf("Usage: RT2App [options]\n");
 				printf("Options:\n");
-				printf("  --scene <path>       Load glTF scene (.glb/.gltf) on startup\n");
+				printf("  --scene <path>       Load scene (.glb/.gltf/.obj) on startup\n");
 				printf("  --env <path>         Load HDR env map (.hdr/.exr) on startup\n");
-				printf("  --output <path>      Save screenshot PNG after rendering\n");
-				printf("  --frames <N>         Render N frames before screenshot (default 1)\n");
-				printf("  --renderer <mode>    'gpu' (default) or 'cpu'\n");
-				printf("  --width <W>          Viewport width (default 1280)\n");
+			printf("  --output <path>      Save screenshot PNG after rendering\n");
+			printf("  --frames <N>         Render N frames before screenshot (default 1)\n");
+			printf("  --width <W>          Viewport width (default 1280)\n");
 				printf("  --height <H>         Viewport height (default 720)\n");
 				printf("  --spp <N>            Samples per pixel override\n");
 				printf("  --bounces <N>        Max bounces override\n");
@@ -171,7 +165,6 @@ struct CLIArgs
 		printf("[CLI] scene     = %s\n", scenePath.empty() ? "(none)" : scenePath.c_str());
 		printf("[CLI] env       = %s\n", envMapPath.empty() ? "(none)" : envMapPath.c_str());
 		printf("[CLI] output    = %s\n", outputPath.empty() ? "(none)" : outputPath.c_str());
-		printf("[CLI] renderer  = %s\n", renderer.c_str());
 		printf("[CLI] frames    = %d\n", frames);
 		printf("[CLI] %dx%d  spp=%d  bounces=%d  nrd=%d  headless=%d\n",
 		       width, height, spp, bounces, nrd, headless);

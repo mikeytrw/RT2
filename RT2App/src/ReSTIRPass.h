@@ -22,7 +22,7 @@ struct GpuDevice;
 //   [Spatial]  → history   ← this pass (reads scratch)
 //   [Shading]  reads history (PathTracePass secondary_raygen)
 //
-// Push constants: SIReSTIRPushConstants (32 bytes).
+// Push constants: SIReSTIRPushConstants (48 bytes).
 class ReSTIRPass
 {
 public:

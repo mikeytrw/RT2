@@ -181,7 +181,7 @@ struct SISurfaceHistory
 
 // ============================================================================
 // ReSTIR push constants — temporal/spatial pass configuration.
-// 32 bytes, fits in the 128-byte push constant limit.
+// 48 bytes, fits in the 128-byte push constant limit.
 // ============================================================================
 struct SIReSTIRPushConstants
 {
@@ -193,6 +193,7 @@ struct SIReSTIRPushConstants
     SI_FLOAT normalThreshold;      // normal similarity threshold (dot product)
     SI_UINT flags;                 // bit 0 = temporal reuse enabled, bit 1 = spatial reuse enabled
     SI_UINT frameIndex;           // frame index for neighbor rotation
+    SI_VEC4 jitter;               // xy = current, zw = previous jitter in pixel units
 };
 
 // ============================================================================
@@ -215,7 +216,7 @@ static_assert(sizeof(SIMaterial) == 80, "SIMaterial must be 80 bytes (2 vec4 + 4
 static_assert(sizeof(SITriangleLight) == 32, "SITriangleLight must be 32 bytes (vec4 + uvec4)");
 static_assert(sizeof(SIReservoir) == 32, "SIReservoir must be 32 bytes (2 uvec4)");
 static_assert(sizeof(SISurfaceHistory) == 16, "SISurfaceHistory must be 16 bytes (1 uvec4)");
-static_assert(sizeof(SIReSTIRPushConstants) == 32, "SIReSTIRPushConstants must be 32 bytes");
+static_assert(sizeof(SIReSTIRPushConstants) == 48, "SIReSTIRPushConstants must be 48 bytes");
 static_assert(sizeof(SINRDUniformData) == 16, "SINRDUniformData must be 16 bytes");
 #endif
 

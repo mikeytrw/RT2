@@ -21,6 +21,7 @@
 #include "ReSTIRPass.h"
 #include "GpuResources.h"
 #include "FrameContext.h"
+#include "GpuTimestampProfiler.h"
 #include <array>
 #include <memory>
 
@@ -72,6 +73,8 @@ public:
 	// computed each frame from settings.nrdJitterEnabled + nrdJitterScale.
 	glm::vec2 GetNRDJitter() const { return m_NRDJitter; }
 	glm::vec2 GetNRDJitterPrev() const { return m_NRDJitterPrev; }
+	const GpuTimestampProfiler::Timings& GetGpuTimings() const { return m_GpuProfiler.GetLatest(); }
+	bool HasGpuTimings() const { return m_GpuProfiler.IsAvailable(); }
 
 	// Debug: dump GPU instance transform buffer contents to log.
 	void DumpInstanceTransforms() const;
@@ -163,6 +166,7 @@ private:
 	// Frames in flight ring
 	std::array<FrameContext, MAX_FRAMES_IN_FLIGHT> m_Frames;
 	uint32_t m_CurrentFrame = 0;
+	GpuTimestampProfiler m_GpuProfiler;
 };
 
 #endif // !RENDERER_GPU_H

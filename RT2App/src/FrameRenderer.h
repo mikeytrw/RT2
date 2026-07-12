@@ -12,6 +12,7 @@
 #include "ReservoirResources.h"
 #include "NRDIntegration.h"
 #include "FrameContext.h"
+#include "GpuTimestampProfiler.h"
 #include "shader_interface.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -31,6 +32,7 @@ public:
 	struct Context
 	{
 		const GpuDevice& device;
+		GpuTimestampProfiler* gpuProfiler;
 		GBufferTarget& gbuffer;
 		SceneResources& scene;
 		PathTracePass& pathTracePass;

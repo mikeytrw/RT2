@@ -7,7 +7,7 @@ project "RT2Tests"
     files { "src/**.h", "src/**.cpp", "vendor/**.h", "vendor/**.cpp" }
 
     -- Include source files from RT2App for testing
-    files { "../RT2App/src/SceneLoader.cpp", "../RT2App/src/GPUSceneData.cpp", "../RT2App/src/SceneGraph.cpp" }
+    files { "../RT2App/src/SceneLoader.cpp", "../RT2App/src/GPUSceneData.cpp", "../RT2App/src/SceneGraph.cpp", "../RT2App/src/SceneManager.cpp", "../RT2App/src/PrimitiveGeometry.cpp", "../RT2App/src/TinyEXRLoader.cpp" }
 
     includedirs
     {

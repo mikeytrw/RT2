@@ -3,10 +3,9 @@
 #ifndef SCENE_MANAGER_H
 #define SCENE_MANAGER_H
 
-#include "Scene.h"
+#include "SceneTypes.h"
 #include "ECSScene.h"
 #include "GPUSceneData.h"
-#include "Mesh.h"
 #include <string>
 #include <vector>
 #include <functional>
@@ -16,11 +15,9 @@
 // SceneManager — owns all scene state + provides entity manipulation APIs.
 //
 // Owns:
-//   - Legacy Scene (flat mesh array — used by CPU renderer + OBJ fallback)
-//   - ECSScene (entity-component model — used by GPU renderer)
+//   - ECSScene (entity-component model — sole scene representation)
 //   - GPU scene data (last uploaded to RendererGPU)
 //   - Environment map (HDR/EXR float pixels + dimensions)
-//   - CPU-side meshes (for the CPU ray tracer)
 //
 // Entity manipulation APIs (for P4.2 + future scene outliner):
 //   - AddObject: register mesh geometry + create entity with transform
@@ -166,8 +163,6 @@ public:
 	const std::vector<SceneMaterial>& GetMaterials() const { return m_EcsScene.materials; }
 
 	// ---- Accessors ----
-	const Scene& GetScene() const { return m_Scene; }
-	Scene& GetScene() { return m_Scene; }
 	const ECSScene& GetECS() const { return m_EcsScene; }
 	ECSScene& GetECS() { return m_EcsScene; }
 	const GPUSceneData& GetCurrentGpuScene() const { return m_CurrentGpuScene; }
@@ -177,11 +172,6 @@ public:
 	const std::string& GetEnvMapPath() const { return m_EnvMapPath; }
 	int GetEnvMapWidth() const { return m_EnvMapWidth; }
 	int GetEnvMapHeight() const { return m_EnvMapHeight; }
-
-	// CPU-side mesh count (for CPU renderer stats)
-	uint32_t GetTriangleCount() const;
-	uint32_t GetBVHNodeCount() const;
-	int GetBVHMaxDepth() const;
 
 	// Clear all scene state.
 	void Clear();
@@ -194,19 +184,14 @@ public:
 private:
 	void UpdateWorldTransforms();
 
-	Scene              m_Scene;
 	ECSScene           m_EcsScene;
 	GPUSceneData       m_CurrentGpuScene;
-	bool               m_EcsPopulated = false;  // true after LoadIntoECS
 
 	// Environment map
 	std::string        m_EnvMapPath;
 	std::vector<float> m_EnvMapFloatPixels;
 	int                m_EnvMapWidth = 0;
 	int                m_EnvMapHeight = 0;
-
-	// CPU-side meshes (for CPU ray tracer)
-	std::vector<Mesh>  m_CpuMeshes;
 
 	SyncCallback       m_SyncCallback;
 	SyncCallback       m_InstanceSyncCallback;
