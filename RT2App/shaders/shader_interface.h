@@ -211,6 +211,8 @@ struct SINRDUniformData
 // Size assertions (C++ only)
 // ============================================================================
 #ifdef __cplusplus
+#include <glm/glm.hpp>
+
 static_assert(sizeof(SICameraData) == 496, "SICameraData must be 496 bytes (7 vec4 + 6 mat4)");
 static_assert(sizeof(SIMaterial) == 80, "SIMaterial must be 80 bytes (2 vec4 + 4 float + 2 ivec4)");
 static_assert(sizeof(SITriangleLight) == 32, "SITriangleLight must be 32 bytes (vec4 + uvec4)");
@@ -218,6 +220,18 @@ static_assert(sizeof(SIReservoir) == 32, "SIReservoir must be 32 bytes (2 uvec4)
 static_assert(sizeof(SISurfaceHistory) == 16, "SISurfaceHistory must be 16 bytes (1 uvec4)");
 static_assert(sizeof(SIReSTIRPushConstants) == 48, "SIReSTIRPushConstants must be 48 bytes");
 static_assert(sizeof(SINRDUniformData) == 16, "SINRDUniformData must be 16 bytes");
+
+// ============================================================================
+// Indexed-buffer ABI assertions (Phase 3.0)
+// ============================================================================
+// Post-refactor attribute buffers use vec4 storage (16-byte stride) to match
+// std430 array stride without requiring GL_EXT_scalar_block_layout. These
+// assertions verify that C++ and GLSL agree on element sizes.
+static_assert(sizeof(glm::vec4) == 16, "vec4 must be 16 bytes for std430 array stride");
+static_assert(sizeof(glm::uvec4) == 16, "uvec4 must be 16 bytes for std430 array stride");
+static_assert(sizeof(uint32_t) == 4, "uint32 must be 4 bytes for index buffer stride");
+static_assert(alignof(glm::vec4) == 4, "vec4 alignment must be 4 bytes");
+static_assert(alignof(glm::uvec4) == 4, "uvec4 alignment must be 4 bytes");
 #endif
 
 #endif // SHADER_INTERFACE_H
