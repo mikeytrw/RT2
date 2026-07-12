@@ -38,7 +38,7 @@ public:
 
 	void OnResize(uint32_t width, uint32_t height);
 	void Render(const Camera& camera);
-	void SetScene(const GPUSceneData& sceneData);
+	void SetScene(GPUSceneData& sceneData);
 
 	// Update scene data WITHOUT re-uploading textures. Use when only
 	// entities/transforms/materials changed (add/delete entity, material edit).

@@ -204,21 +204,24 @@ void RasterPass::CreateVertexBuffers(const GpuDevice& dev, const GPUSceneData& s
 		m_MeshVertexOffsets[m] = static_cast<uint32_t>(megaVerts.size() / 8);
 
 		const auto& mesh = scene.meshes[m];
-		uint32_t triCount = static_cast<uint32_t>(mesh.indices.size() / 3);
+		const auto& verts = *mesh.vertices;
+		const auto& idxs = *mesh.indices;
+		const auto& uvs = mesh.uvs ? *mesh.uvs : std::vector<float>{};
+		uint32_t triCount = static_cast<uint32_t>(idxs.size() / 3);
 		for (uint32_t t = 0; t < triCount; t++)
 		{
 			for (int v = 0; v < 3; v++)
 			{
-				uint32_t idx = mesh.indices[t * 3 + v];
+				uint32_t idx = idxs[t * 3 + v];
 				uint32_t vi = idx * 3;
-				megaVerts.push_back(mesh.vertices[vi]);
-				megaVerts.push_back(mesh.vertices[vi + 1]);
-				megaVerts.push_back(mesh.vertices[vi + 2]);
-				if (!mesh.uvs.empty())
+				megaVerts.push_back(verts[vi]);
+				megaVerts.push_back(verts[vi + 1]);
+				megaVerts.push_back(verts[vi + 2]);
+				if (!uvs.empty())
 				{
 					uint32_t ui = idx * 2;
-					megaVerts.push_back(mesh.uvs[ui]);
-					megaVerts.push_back(mesh.uvs[ui + 1]);
+					megaVerts.push_back(uvs[ui]);
+					megaVerts.push_back(uvs[ui + 1]);
 				}
 				else
 				{
@@ -299,7 +302,7 @@ void RasterPass::CreateDrawData(const GpuDevice& dev, const GPUSceneData& scene)
 		if (inst.meshIndex < m_MeshVertexOffsets.size())
 		{
 			uint32_t meshOffset = m_MeshVertexOffsets[inst.meshIndex];
-			uint32_t triCount = static_cast<uint32_t>(scene.meshes[inst.meshIndex].indices.size() / 3);
+			uint32_t triCount = static_cast<uint32_t>(scene.meshes[inst.meshIndex].indices->size() / 3);
 			cmd.vertexCount = triCount * 3;
 			cmd.firstVertex = meshOffset;
 		}

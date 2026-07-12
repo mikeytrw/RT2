@@ -222,9 +222,15 @@ void AccelerationStructure::BuildAttributeBuffers()
 		             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, buf, mem);
 	};
 	createDeviceLocal(m_VertexBuffer, m_VertexMemory, vertBufSize);
+	RT_LOG("[BuildAttributeBuffers] vertex buffer created (%zuMB)", (size_t)vertBufSize / (1024 * 1024));
 	createDeviceLocal(m_IndexBuffer, m_IndexMemory, idxBufSize);
+	RT_LOG("[BuildAttributeBuffers] index buffer created (%zuMB)", (size_t)idxBufSize / (1024 * 1024));
 	createDeviceLocal(m_NormalBuffer, m_NormalMemory, normBufSize);
+	RT_LOG("[BuildAttributeBuffers] normal buffer created (%zuMB)", (size_t)normBufSize / (1024 * 1024));
 	createDeviceLocal(m_UVBuffer, m_UVMemory, uvBufSize);
+	RT_LOG("[BuildAttributeBuffers] UV buffer created (%zuMB)", (size_t)uvBufSize / (1024 * 1024));
+
+	RT_LOG("[BuildAttributeBuffers] starting chunked upload...");
 
 	// Chunked upload: pack float3→vec4 in a staging buffer, one BLAS at a time.
 	// This avoids building the entire vec4 array in CPU memory.

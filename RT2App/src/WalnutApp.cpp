@@ -47,7 +47,7 @@ public:
 				m_SceneMgr.CompactMeshRegistry();
 				if (m_PendingFullSync)
 				{
-					m_SceneMgr.SetSyncCallback([this](const GPUSceneData& gpuData) {
+					m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData) {
 						m_RendererGPU.SetScene(gpuData);
 					});
 					m_SceneMgr.SyncToGPU();
@@ -55,7 +55,7 @@ public:
 				}
 				else
 				{
-					m_SceneMgr.SetSyncKeepTexturesCallback([this](const GPUSceneData& gpuData) {
+					m_SceneMgr.SetSyncKeepTexturesCallback([this](GPUSceneData& gpuData) {
 						m_RendererGPU.SetSceneKeepTextures(gpuData);
 					});
 					m_SceneMgr.SyncToGPUKeepTextures();
@@ -66,7 +66,7 @@ public:
 		m_EditorUI.SetOnTransformChanged([this]() {
 			if (m_RendererGPU.IsAvailable())
 			{
-				m_SceneMgr.SetInstanceSyncCallback([this](const GPUSceneData& gpuData) {
+				m_SceneMgr.SetInstanceSyncCallback([this](GPUSceneData& gpuData) {
 					m_RendererGPU.UpdateSceneInstances(gpuData);
 				});
 				m_SceneMgr.SyncTransformsToGPU();
@@ -531,7 +531,7 @@ private:
 	{
 		if (m_SceneMgr.GetECS().meshRegistry.GetCount() == 0) return;
 
-		m_SceneMgr.SetSyncCallback([this](const GPUSceneData& gpuData) {
+		m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData) {
 			m_RendererGPU.SetScene(gpuData);
 		});
 		m_SceneMgr.SyncToGPU();
@@ -550,7 +550,7 @@ private:
 
 		if (ext == "obj")
 		{
-			m_SceneMgr.SetSyncCallback([this](const GPUSceneData& gpuData) {
+			m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData) {
 				m_RendererGPU.SetScene(gpuData);
 			});
 			m_SceneMgr.SyncToGPU();

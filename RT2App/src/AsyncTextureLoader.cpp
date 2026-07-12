@@ -197,9 +197,9 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 		: (VkDeviceSize)(m_CDFHeight * 4);
 	VkDeviceSize conditionalSize = conditionalCDF.empty() ? 0
 		: (VkDeviceSize)(m_CDFWidth * m_CDFHeight * 4);
-	totalStaging += marginalSize + conditionalSize;
+	VkDeviceSize cdfStaging = marginalSize + conditionalSize;
 
-	if (totalStaging == 0)
+	if (totalStaging == 0 && cdfStaging == 0)
 	{
 		RT_LOG("[AsyncTex] No staging needed — creating empty textures only");
 		m_ResultTextures.resize(textures.size());
@@ -210,21 +210,29 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 		return;
 	}
 
-	if (!m_Staging.Init(dev, totalStaging))
+	// Use per-texture staging to avoid allocating all textures at once.
+	// For large scenes (265 textures × 4K = ~17GB), a single staging arena
+	// would exceed HOST_VISIBLE memory. Instead, create+map+copy+submit+destroy
+	// one staging buffer per texture (or small batch).
+	const VkDeviceSize MAX_STAGING_CHUNK = 64 * 1024 * 1024; // 64MB per batch
+	bool usePerTextureStaging = (totalStaging > MAX_STAGING_CHUNK);
+
+	if (!usePerTextureStaging && totalStaging + cdfStaging > 0)
 	{
-		RT_LOG("[AsyncTex] Failed to init staging arena");
-		m_ResultTextures.clear();
-		m_ResultEnvMapIndex = -1;
-		m_ResultMarginalCDFIndex = -1;
-		m_ResultConditionalCDFIndex = -1;
-		m_Complete.store(true);
-		return;
+		if (!m_Staging.Init(dev, totalStaging + cdfStaging))
+		{
+			RT_LOG("[AsyncTex] Staging arena failed (%zuMB), falling back to per-texture",
+			       (size_t)(totalStaging + cdfStaging) / (1024 * 1024));
+			usePerTextureStaging = true;
+		}
 	}
 
 	std::vector<GpuImage> images(textures.size());
 	std::vector<AsyncUploadEntry> uploads(textures.size());
 
 	// 3. Create images + copy CPU pixels to staging
+	// For large texture sets, use per-texture staging (create+map+copy+submit+destroy
+	// per texture) to avoid exceeding HOST_VISIBLE memory.
 	for (size_t i = 0; i < textures.size(); i++)
 	{
 		const auto& tex = textures[i];
@@ -250,29 +258,185 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 			? (VkDeviceSize)(tex.width * tex.height * 8)
 			: (VkDeviceSize)(tex.width * tex.height * 4);
 
-		VkDeviceSize offset = m_Staging.Alloc(imageSize, 16);
-		if (offset == VK_WHOLE_SIZE)
+		if (usePerTextureStaging)
 		{
-			RT_LOG("[AsyncTex] Texture %d: staging arena full", (int)i);
-			continue;
-		}
+			// Per-texture staging: create a small staging buffer, copy, submit, destroy
+			VkBuffer stageBuf; VkDeviceMemory stageMem;
+			GpuResources::CreateBuffer(dev, imageSize,
+			             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			             stageBuf, stageMem);
+			void* mapped = nullptr;
+			vkMapMemory(device, stageMem, 0, imageSize, 0, &mapped);
+			if (isHDR)
+			{
+				uint16_t* dst = static_cast<uint16_t*>(mapped);
+				for (size_t p = 0; p < tex.floatPixels.size(); p++)
+					dst[p] = glm::packHalf1x16(tex.floatPixels[p]);
+			}
+			else
+			{
+				memcpy(mapped, tex.pixels.data(), (size_t)imageSize);
+			}
+			vkUnmapMemory(device, stageMem);
 
-		if (isHDR)
-		{
-			uint16_t* dst = static_cast<uint16_t*>(m_Staging.GetMappedPointer(offset));
-			for (size_t p = 0; p < tex.floatPixels.size(); p++)
-				dst[p] = glm::packHalf1x16(tex.floatPixels[p]);
+			GpuResources::CreateImage(dev, tex.width, tex.height, format,
+				VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gt, mipLevels);
+
+			// Record copy command immediately (per-texture submit)
+			VkCommandPoolCreateInfo poolInfo2 = {};
+			poolInfo2.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+			poolInfo2.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+			poolInfo2.queueFamilyIndex = dev.queueFamily;
+			VkCommandPool tmpPool;
+			vkCreateCommandPool(device, &poolInfo2, nullptr, &tmpPool);
+
+			VkCommandBufferAllocateInfo ai = {};
+			ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+			ai.commandPool = tmpPool;
+			ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+			ai.commandBufferCount = 1;
+			VkCommandBuffer tmpCmd;
+			vkAllocateCommandBuffers(device, &ai, &tmpCmd);
+
+			VkCommandBufferBeginInfo bi = {};
+			bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+			bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+			vkBeginCommandBuffer(tmpCmd, &bi);
+
+			VkImageMemoryBarrier barrier = {};
+			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barrier.srcAccessMask = 0;
+			barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barrier.image = gt.image;
+			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			barrier.subresourceRange.baseMipLevel = 0;
+			barrier.subresourceRange.levelCount = mipLevels;
+			barrier.subresourceRange.layerCount = 1;
+			vkCmdPipelineBarrier(tmpCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+			VkBufferImageCopy region = {};
+			region.bufferOffset = 0;
+			region.bufferRowLength = 0;
+			region.bufferImageHeight = 0;
+			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			region.imageSubresource.mipLevel = 0;
+			region.imageSubresource.baseArrayLayer = 0;
+			region.imageSubresource.layerCount = 1;
+			region.imageOffset = {0, 0, 0};
+			region.imageExtent = {(uint32_t)tex.width, (uint32_t)tex.height, 1};
+			vkCmdCopyBufferToImage(tmpCmd, stageBuf, gt.image,
+			                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+			// Mip blits
+			if (mipLevels > 1)
+			{
+				uint32_t mipW = (uint32_t)tex.width, mipH = (uint32_t)tex.height;
+				for (uint32_t mip = 1; mip < mipLevels; mip++)
+				{
+					VkImageMemoryBarrier srcB = {}, dstB = {};
+					srcB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+					srcB.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+					srcB.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+					srcB.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+					srcB.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+					srcB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					srcB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					srcB.image = gt.image;
+					srcB.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 1, 0, 1};
+					vkCmdPipelineBarrier(tmpCmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+					                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &srcB);
+
+					VkImageBlit blit = {};
+					blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 0, 1};
+					blit.srcOffsets[0] = {0, 0, 0};
+					blit.srcOffsets[1] = {(int32_t)mipW, (int32_t)mipH, 1};
+					blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1};
+					blit.dstOffsets[0] = {0, 0, 0};
+					int32_t mipW2 = std::max(mipW / 2, 1u);
+					int32_t mipH2 = std::max(mipH / 2, 1u);
+					blit.dstOffsets[1] = {mipW2, mipH2, 1};
+					vkCmdBlitImage(tmpCmd, gt.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					               gt.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+					               1, &blit, VK_FILTER_LINEAR);
+					mipW = mipW2; mipH = mipH2;
+				}
+
+				VkImageMemoryBarrier finalB = {};
+				finalB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+				finalB.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+				finalB.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				finalB.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+				finalB.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				finalB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				finalB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				finalB.image = gt.image;
+				finalB.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 1};
+				vkCmdPipelineBarrier(tmpCmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &finalB);
+			}
+			else
+			{
+				VkImageMemoryBarrier finalB = {};
+				finalB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+				finalB.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+				finalB.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+				finalB.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+				finalB.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+				finalB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				finalB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				finalB.image = gt.image;
+				finalB.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+				vkCmdPipelineBarrier(tmpCmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+				                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &finalB);
+			}
+
+			vkEndCommandBuffer(tmpCmd);
+
+			VkSubmitInfo si = {};
+			si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+			si.commandBufferCount = 1;
+			si.pCommandBuffers = &tmpCmd;
+			vkQueueSubmit(dev.queue, 1, &si, VK_NULL_HANDLE);
+			vkQueueWaitIdle(dev.queue);
+
+			vkDestroyCommandPool(device, tmpPool, nullptr);
+			GpuResources::DestroyBuffer(dev, stageBuf, stageMem);
+
+			uploads[i] = { 0, 0, isHDR, 0 }; // already uploaded, no arena offset needed
 		}
 		else
 		{
-			memcpy(m_Staging.GetMappedPointer(offset), tex.pixels.data(), (size_t)imageSize);
+			VkDeviceSize offset = m_Staging.Alloc(imageSize, 16);
+			if (offset == VK_WHOLE_SIZE)
+			{
+				RT_LOG("[AsyncTex] Texture %d: staging arena full", (int)i);
+				continue;
+			}
+
+			if (isHDR)
+			{
+				uint16_t* dst = static_cast<uint16_t*>(m_Staging.GetMappedPointer(offset));
+				for (size_t p = 0; p < tex.floatPixels.size(); p++)
+					dst[p] = glm::packHalf1x16(tex.floatPixels[p]);
+			}
+			else
+			{
+				memcpy(m_Staging.GetMappedPointer(offset), tex.pixels.data(), (size_t)imageSize);
+			}
+
+			uploads[i] = { offset, imageSize, isHDR, mipLevels };
+
+			GpuResources::CreateImage(dev, tex.width, tex.height, format,
+				VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gt, mipLevels);
 		}
-
-		uploads[i] = { offset, imageSize, isHDR, mipLevels };
-
-		GpuResources::CreateImage(dev, tex.width, tex.height, format,
-			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gt, mipLevels);
 	}
 
 	// 4. Create CDF textures
@@ -344,11 +508,12 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	vkBeginCommandBuffer(cmd, &beginInfo);
 
-	// 6. Record copy + mip blits for each texture
+	// 6. Record copy + mip blits for each texture (skip per-texture staged ones)
 	for (size_t i = 0; i < textures.size(); i++)
 	{
 		const auto& tex = textures[i];
 		if (tex.floatPixels.empty() && tex.pixels.empty()) continue;
+		if (uploads[i].mipLevels == 0) continue; // already uploaded via per-texture staging
 
 		GpuImage& gt = images[i];
 		const auto& up = uploads[i];

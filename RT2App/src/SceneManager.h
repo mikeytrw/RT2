@@ -35,7 +35,7 @@
 class SceneManager
 {
 public:
-	using SyncCallback = std::function<void(const GPUSceneData&)>;
+	using SyncCallback = std::function<void(GPUSceneData&)>;
 
 	SceneManager() = default;
 	~SceneManager() = default;

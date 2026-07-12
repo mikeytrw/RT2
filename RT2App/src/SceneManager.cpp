@@ -202,7 +202,6 @@ void SceneManager::SyncToGPU()
 		       gpuData.envMapIndex, m_EnvMapWidth, m_EnvMapHeight);
 	}
 
-	m_CurrentGpuScene = gpuData;
 	if (m_SyncCallback)
 	{
 		printf("[Scene] SyncToGPU: calling sync callback (SetScene)...\n");
@@ -210,6 +209,17 @@ void SceneManager::SyncToGPU()
 		m_SyncCallback(gpuData);
 		printf("[Scene] SyncToGPU: sync callback done\n");
 		fflush(stdout);
+	}
+
+	m_CurrentGpuScene = std::move(gpuData);
+
+	// Free CPU-side texture pixels — they've been moved to the async loader
+	for (auto& tex : m_EcsScene.textures)
+	{
+		tex.pixels.clear();
+		tex.pixels.shrink_to_fit();
+		tex.floatPixels.clear();
+		tex.floatPixels.shrink_to_fit();
 	}
 }
 

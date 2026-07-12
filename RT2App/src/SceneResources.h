@@ -45,7 +45,7 @@ public:
 	// Textures are uploaded asynchronously via AsyncTextureLoader; poll
 	// PollTextureUpload() each frame and call UpdatePathTraceDescriptorSet
 	// (via RendererGPU) when it returns true.
-	void SetScene(const GpuDevice& dev, const GPUSceneData& sceneData);
+	void SetScene(const GpuDevice& dev, GPUSceneData& sceneData);
 
 	// Update scene data (meshes, instances, materials, lights) WITHOUT
 	// re-uploading textures. Use this when only entities/transforms/materials

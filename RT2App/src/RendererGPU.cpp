@@ -284,7 +284,7 @@ void RendererGPU::SetSceneKeepTextures(const GPUSceneData& sceneData)
 	RT_LOG("[SetSceneKeepTextures] done");
 }
 
-void RendererGPU::SetScene(const GPUSceneData& sceneData)
+void RendererGPU::SetScene(GPUSceneData& sceneData)
 {
 	RT_LOG("[SetScene] enter: meshes=%zu instances=%zu lights=%zu",
 	       sceneData.meshes.size(), sceneData.instances.size(), sceneData.lights.size());

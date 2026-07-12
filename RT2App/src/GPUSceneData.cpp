@@ -102,10 +102,10 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
     {
         const auto& src = ecsScene.meshRegistry.GetMesh(m);
         GPUMeshGeometry geo;
-        geo.vertices = src.vertices;
-        geo.indices  = src.indices;
-        geo.normals  = src.normals;
-        geo.uvs      = src.uvs;
+        geo.vertices = &src.vertices;
+        geo.indices  = &src.indices;
+        geo.normals  = src.normals.empty() ? nullptr : &src.normals;
+        geo.uvs      = src.uvs.empty() ? nullptr : &src.uvs;
 
         gpu.meshes.push_back(std::move(geo));
     }
@@ -157,18 +157,19 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
             continue;
 
         int emissiveTexIdx = mat.textureIndices.z;
-        uint32_t triCount = static_cast<uint32_t>(mesh.indices.size() / 3);
+        const auto& verts = *mesh.vertices;
+        const auto& idxs = *mesh.indices;
+        uint32_t triCount = static_cast<uint32_t>(idxs.size() / 3);
 
         for (uint32_t t = 0; t < triCount; t++)
         {
-            uint32_t vi0 = mesh.indices[t * 3 + 0] * 3;
-            uint32_t vi1 = mesh.indices[t * 3 + 1] * 3;
-            uint32_t vi2 = mesh.indices[t * 3 + 2] * 3;
+            uint32_t vi0 = idxs[t * 3 + 0] * 3;
+            uint32_t vi1 = idxs[t * 3 + 1] * 3;
+            uint32_t vi2 = idxs[t * 3 + 2] * 3;
 
-            // Object-space vertices → world space via instance transform
-            glm::vec4 v0 = inst.worldMatrix * glm::vec4(mesh.vertices[vi0], mesh.vertices[vi0 + 1], mesh.vertices[vi0 + 2], 1.0f);
-            glm::vec4 v1 = inst.worldMatrix * glm::vec4(mesh.vertices[vi1], mesh.vertices[vi1 + 1], mesh.vertices[vi1 + 2], 1.0f);
-            glm::vec4 v2 = inst.worldMatrix * glm::vec4(mesh.vertices[vi2], mesh.vertices[vi2 + 1], mesh.vertices[vi2 + 2], 1.0f);
+            glm::vec4 v0 = inst.worldMatrix * glm::vec4(verts[vi0], verts[vi0 + 1], verts[vi0 + 2], 1.0f);
+            glm::vec4 v1 = inst.worldMatrix * glm::vec4(verts[vi1], verts[vi1 + 1], verts[vi1 + 2], 1.0f);
+            glm::vec4 v2 = inst.worldMatrix * glm::vec4(verts[vi2], verts[vi2 + 1], verts[vi2 + 2], 1.0f);
 
             glm::vec3 w0(v0), w1(v1), w2(v2);
             glm::vec3 edge1 = w1 - w0;
@@ -238,17 +239,19 @@ void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene)
             continue;
 
         int emissiveTexIdx = mat.textureIndices.z;
-        uint32_t triCount = static_cast<uint32_t>(mesh.indices.size() / 3);
+        const auto& verts = *mesh.vertices;
+        const auto& idxs = *mesh.indices;
+        uint32_t triCount = static_cast<uint32_t>(idxs.size() / 3);
 
         for (uint32_t t = 0; t < triCount; t++)
         {
-            uint32_t vi0 = mesh.indices[t * 3 + 0] * 3;
-            uint32_t vi1 = mesh.indices[t * 3 + 1] * 3;
-            uint32_t vi2 = mesh.indices[t * 3 + 2] * 3;
+            uint32_t vi0 = idxs[t * 3 + 0] * 3;
+            uint32_t vi1 = idxs[t * 3 + 1] * 3;
+            uint32_t vi2 = idxs[t * 3 + 2] * 3;
 
-            glm::vec4 v0 = inst.worldMatrix * glm::vec4(mesh.vertices[vi0], mesh.vertices[vi0 + 1], mesh.vertices[vi0 + 2], 1.0f);
-            glm::vec4 v1 = inst.worldMatrix * glm::vec4(mesh.vertices[vi1], mesh.vertices[vi1 + 1], mesh.vertices[vi1 + 2], 1.0f);
-            glm::vec4 v2 = inst.worldMatrix * glm::vec4(mesh.vertices[vi2], mesh.vertices[vi2 + 1], mesh.vertices[vi2 + 2], 1.0f);
+            glm::vec4 v0 = inst.worldMatrix * glm::vec4(verts[vi0], verts[vi0 + 1], verts[vi0 + 2], 1.0f);
+            glm::vec4 v1 = inst.worldMatrix * glm::vec4(verts[vi1], verts[vi1 + 1], verts[vi1 + 2], 1.0f);
+            glm::vec4 v2 = inst.worldMatrix * glm::vec4(verts[vi2], verts[vi2 + 1], verts[vi2 + 2], 1.0f);
 
             glm::vec3 w0(v0), w1(v1), w2(v2);
             glm::vec3 edge1 = w1 - w0;

@@ -79,7 +79,7 @@ void SceneResources::SetSceneKeepTextures(const GpuDevice& dev, const GPUSceneDa
 	       (int)m_Textures.size(), m_EnvMapIndex);
 }
 
-void SceneResources::SetScene(const GpuDevice& dev, const GPUSceneData& sceneData)
+void SceneResources::SetScene(const GpuDevice& dev, GPUSceneData& sceneData)
 {
 	m_Device = &dev;
 	VkDevice device = dev.device;
@@ -88,43 +88,38 @@ void SceneResources::SetScene(const GpuDevice& dev, const GPUSceneData& sceneDat
 	       (int)sceneData.meshes.size(), (int)sceneData.materials.size());
 	vkDeviceWaitIdle(device);
 
-	m_CurrentScene = sceneData;
 	m_NeedsASRebuild = true;
 
-	// Note: old textures are NOT destroyed here — they stay alive until
-	// PollTextureUpload() adopts the new ones, so the descriptor set
-	// remains valid during the async upload window.
-
-	// If a previous async upload is still in flight, cancel it and
-	// adopt its results (or discard if incomplete) before starting a new one.
 	if (m_TextureLoader.IsBusy())
 	{
 		m_TextureLoader.Cancel();
 		m_TextureLoader.Destroy();
 	}
 
-	// Determine env map pixel data for the async loader.
-	// WalnutApp appends the env map as the last texture in sceneData.textures
-	// and sets envMapIndex to its index. Extract its float pixels from the
-	// scene textures so the loader can rebuild the full array.
 	std::vector<float> envMapFloat;
 	int envMapW = 0, envMapH = 0;
 	if (sceneData.envMapIndex >= 0 && sceneData.envMapIndex < (int)sceneData.textures.size())
 	{
-		const auto& envTex = sceneData.textures[sceneData.envMapIndex];
+		auto& envTex = sceneData.textures[sceneData.envMapIndex];
 		if (envTex.isHDR && !envTex.floatPixels.empty())
 		{
-			envMapFloat = envTex.floatPixels;
+			envMapFloat = std::move(envTex.floatPixels);
+			envTex.floatPixels.clear();
 			envMapW = envTex.width;
 			envMapH = envTex.height;
 		}
 	}
 
-	// Strip env map from the texture list passed to the loader (loader
-	// re-appends it internally to match the existing convention).
-	std::vector<SceneTexture> baseTextures = sceneData.textures;
-	if (sceneData.envMapIndex >= 0 && sceneData.envMapIndex < (int)baseTextures.size())
+	std::vector<SceneTexture> baseTextures;
+	if (sceneData.envMapIndex >= 0 && sceneData.envMapIndex < (int)sceneData.textures.size())
+	{
+		baseTextures.assign(sceneData.textures.begin(), sceneData.textures.end());
 		baseTextures.erase(baseTextures.begin() + sceneData.envMapIndex);
+	}
+	else
+	{
+		baseTextures = std::move(sceneData.textures);
+	}
 
 	// If there are no textures at all (e.g. Clear HDR with no scene textures),
 	// destroy old textures immediately and skip the loader.
@@ -136,8 +131,12 @@ void SceneResources::SetScene(const GpuDevice& dev, const GPUSceneData& sceneDat
 		m_EnvMapIndex = -1;
 		m_MarginalCDFIndex = -1;
 		m_ConditionalCDFIndex = -1;
+		m_CurrentScene = std::move(sceneData);
 		return;
 	}
+
+	m_CurrentScene = std::move(sceneData);
+	m_CurrentScene.textures.clear(); // textures moved to loader, not needed here
 
 	RT_LOG("[SetScene] kicking async texture loader (%d base + envMap=%dx%d)",
 	       (int)baseTextures.size(), envMapW, envMapH);
@@ -193,10 +192,10 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 	for (const auto& mesh : m_CurrentScene.meshes)
 	{
 		BLASGeometry geo;
-		geo.vertices = &mesh.vertices;
-		geo.indices = &mesh.indices;
-		geo.normals = &mesh.normals;
-		geo.uvs = &mesh.uvs;
+		geo.vertices = mesh.vertices;
+		geo.indices = mesh.indices;
+		geo.normals = mesh.normals;
+		geo.uvs = mesh.uvs;
 		geo.materialIndex = mesh.materialIndex;
 
 		uint32_t matIdx = mesh.materialIndex;

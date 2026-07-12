@@ -69,14 +69,16 @@ struct GPUMaterial
     {}
 };
 
-// One chunk of triangle geometry for a single BLAS build.
+// Non-owning reference to mesh geometry stored in MeshRegistry.
+// GPUSceneData does NOT own mesh data — it points into ECSScene::meshRegistry.
+// The MeshRegistry must outlive any GPUSceneData that references it.
 struct GPUMeshGeometry
 {
-    std::vector<float>     vertices;    // position.xyz, stride 3 (object space)
-    std::vector<uint32_t>  indices;     // triangle indices
-    std::vector<float>     normals;     // normal.xyz, stride 3 (object space, may be empty)
-    std::vector<float>     uvs;         // texcoord.xy, stride 2 (may be empty)
-    uint32_t               materialIndex = 0;
+    const std::vector<float>*    vertices = nullptr;    // position.xyz, stride 3
+    const std::vector<uint32_t>* indices = nullptr;     // triangle indices
+    const std::vector<float>*    normals = nullptr;     // normal.xyz, stride 3 (may be null)
+    const std::vector<float>*    uvs = nullptr;         // texcoord.xy, stride 2 (may be null)
+    uint32_t                     materialIndex = 0;
 };
 
 // One instance of a mesh in the world. Multiple instances can reference
