@@ -1604,12 +1604,19 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
     config.triangulate = true;
     config.vertex_color = false;
 
+    printf("[SceneLoader] OBJ: parsing '%s' (%.1fMB)...\n", filepath.c_str(),
+           (double)fs::file_size(filepath) / (1024.0 * 1024.0));
+    fflush(stdout);
+
     if (!reader.ParseFromFile(filepath, config))
     {
         if (!reader.Error().empty())
             printf("[SceneLoader] OBJ error: %s\n", reader.Error().c_str());
+        fflush(stdout);
         return false;
     }
+    printf("[SceneLoader] OBJ: parse done\n");
+    fflush(stdout);
     if (!reader.Warning().empty())
         printf("[SceneLoader] OBJ warning: %s\n", reader.Warning().c_str());
 
@@ -1619,6 +1626,7 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
 
     printf("[SceneLoader] OBJ: %d verts, %d shapes, %d materials\n",
            (int)attrib.vertices.size() / 3, (int)shapes.size(), (int)materials.size());
+    fflush(stdout);
 
     // Convert MTL materials to SceneMaterial
     int matBase = (int)ecsScene.materials.size();
@@ -1678,6 +1686,7 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
     };
 
     // Assign textures to materials
+    int texCount = 0;
     for (int mi = 0; mi < (int)materials.size(); mi++)
     {
         int matIdx = matBase + mi;
@@ -1686,14 +1695,16 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
         auto& mat = ecsScene.materials[matIdx];
 
         if (!materials[mi].diffuse_texname.empty())
-            mat.baseColorTextureIndex = loadTexture(materials[mi].diffuse_texname);
+            { int ti = loadTexture(materials[mi].diffuse_texname); if (ti >= 0) { mat.baseColorTextureIndex = ti; texCount++; } }
         if (!materials[mi].normal_texname.empty())
-            mat.normalTextureIndex = loadTexture(materials[mi].normal_texname);
+            { int ti = loadTexture(materials[mi].normal_texname); if (ti >= 0) { mat.normalTextureIndex = ti; texCount++; } }
         if (!materials[mi].emissive_texname.empty())
-            mat.emissiveTextureIndex = loadTexture(materials[mi].emissive_texname);
+            { int ti = loadTexture(materials[mi].emissive_texname); if (ti >= 0) { mat.emissiveTextureIndex = ti; texCount++; } }
         if (!materials[mi].roughness_texname.empty())
-            mat.metallicRoughnessTextureIndex = loadTexture(materials[mi].roughness_texname);
+            { int ti = loadTexture(materials[mi].roughness_texname); if (ti >= 0) { mat.metallicRoughnessTextureIndex = ti; texCount++; } }
     }
+    printf("[SceneLoader] OBJ: %d textures loaded\n", texCount);
+    fflush(stdout);
 
     // Merge all shapes into a single mega-mesh (one BLAS)
     std::vector<float>    megaVertices;
@@ -1702,6 +1713,9 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
     std::vector<float>    megaUVs;
 
     uint32_t vertBase = 0;
+
+    printf("[SceneLoader] OBJ: merging %d shapes...\n", (int)shapes.size());
+    fflush(stdout);
 
     for (size_t s = 0; s < shapes.size(); s++)
     {
@@ -1766,6 +1780,9 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
         }
     }
 
+    printf("[SceneLoader] OBJ: merge done, %d verts, %d indices\n", (int)megaVertices.size() / 3, (int)megaIndices.size());
+    fflush(stdout);
+
     // Create one MeshData for the mega-mesh
     MeshData meshData;
     meshData.vertices = std::move(megaVertices);
@@ -1793,6 +1810,7 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
            (int)ecsScene.meshRegistry.GetMesh(meshIdx).indices.size() / 3,
            (int)ecsScene.textures.size() - texBase,
            (int)ecsScene.materials.size() - matBase);
+    fflush(stdout);
 
     return true;
 }

@@ -436,6 +436,9 @@ private:
 		if (g_CLI.rasterFirst)
 			m_Cam.m_Aperture = 0.0f;
 
+		printf("[CLI] LoadScene done, headless=%d\n", g_CLI.headless ? 1 : 0);
+		fflush(stdout);
+
 		if (g_CLI.headless)
 			RunHeadless();
 	}
@@ -443,23 +446,33 @@ private:
 	void RunHeadless()
 	{
 		printf("[Headless] starting: %d frames at %dx%d\n", g_CLI.frames, g_CLI.width, g_CLI.height);
+		fflush(stdout);
 
 		m_ViewportWidth = (uint32_t)g_CLI.width;
 		m_ViewportHeight = (uint32_t)g_CLI.height;
 		if (m_RendererGPU.IsAvailable())
 		{
+			printf("[Headless] OnResize %dx%d...\n", m_ViewportWidth, m_ViewportHeight);
+			fflush(stdout);
 			m_RendererGPU.OnResize(m_ViewportWidth, m_ViewportHeight);
 			m_Cam.OnResize(m_ViewportWidth, m_ViewportHeight);
 		}
 
 		if (m_RendererGPU.IsAvailable())
 		{
+			printf("[Headless] waiting for texture upload...\n");
+			fflush(stdout);
 			while (m_RendererGPU.IsTextureUploadPending())
 			{
 				m_RendererGPU.PollTextureUpload();
 				std::this_thread::sleep_for(std::chrono::milliseconds(1));
 			}
+			printf("[Headless] texture upload done\n");
+			fflush(stdout);
 		}
+
+		printf("[Headless] rendering %d frames...\n", g_CLI.frames);
+		fflush(stdout);
 
 		for (int i = 0; i < g_CLI.frames; i++)
 		{
@@ -469,6 +482,7 @@ private:
 			float ms = timer.ElapsedMillis();
 			if (g_CLI.verbose || i == g_CLI.frames - 1)
 				printf("[Headless] frame %d/%d: %.1fms\n", i + 1, g_CLI.frames, ms);
+			fflush(stdout);
 		}
 
 		if (g_CLI.hasOutput() && m_RendererGPU.IsAvailable())

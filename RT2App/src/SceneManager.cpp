@@ -14,6 +14,7 @@
 bool SceneManager::LoadScene(const std::string& filepath)
 {
 	printf("[Scene] LoadScene: '%s'\n", filepath.c_str());
+	fflush(stdout);
 
 	std::string ext = filepath.substr(filepath.find_last_of('.') + 1);
 	std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
@@ -27,6 +28,7 @@ bool SceneManager::LoadScene(const std::string& filepath)
 			return false;
 		}
 		printf("[Scene] LoadObjIntoECS succeeded\n");
+		fflush(stdout);
 		return true;
 	}
 
@@ -168,10 +170,17 @@ SceneManager::EntityId SceneManager::ImportGltf(const std::string& filepath)
 
 void SceneManager::SyncToGPU()
 {
+	printf("[Scene] SyncToGPU: building GPU scene data...\n");
+	fflush(stdout);
+
 	GPUSceneData gpuData;
 
 	UpdateWorldTransforms();
 	gpuData = BuildGPUSceneDataFromECS(m_EcsScene);
+
+	printf("[Scene] SyncToGPU: GPUSceneData built: meshes=%zu instances=%zu lights=%zu textures=%zu\n",
+	       gpuData.meshes.size(), gpuData.instances.size(), gpuData.lights.size(), gpuData.textures.size());
+	fflush(stdout);
 
 	// Add env map as an extra texture in the texture array
 	if (HasEnvMap())
@@ -195,7 +204,13 @@ void SceneManager::SyncToGPU()
 
 	m_CurrentGpuScene = gpuData;
 	if (m_SyncCallback)
+	{
+		printf("[Scene] SyncToGPU: calling sync callback (SetScene)...\n");
+		fflush(stdout);
 		m_SyncCallback(gpuData);
+		printf("[Scene] SyncToGPU: sync callback done\n");
+		fflush(stdout);
+	}
 }
 
 void SceneManager::SyncToGPUKeepTextures()

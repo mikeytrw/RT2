@@ -184,132 +184,121 @@ void AccelerationStructure::BuildAttributeBuffers()
 	}
 
 	// Per-BLAS offsets into mega-buffers
-	struct BlasOffsets
-	{
-		uint32_t vert, idx, norm, uv;
-	};
+	struct BlasOffsets { uint32_t vert, idx, norm, uv; };
 	std::vector<BlasOffsets> offsets(m_BLASes.size());
 
-	// We need the source data from BLASGeometry. But BuildBLASes doesn't store
-	// normals/uvs pointers. We stored vertex/index data in per-BLAS HOST_VISIBLE
-	// buffers. For attribute buffers, we need to re-extract from those.
-	// Actually, we can just read back from the HOST_VISIBLE vertex/index buffers.
-	// But it's simpler to pass the data through — let's use the BLAS vertex/index
-	// buffers we already created (they're HOST_VISIBLE).
-
-	// Build CPU-side arrays from source data
-	std::vector<glm::vec4> allPositions;
-	std::vector<uint32_t>  allIndices;
-	std::vector<glm::vec4> allNormals;
-	std::vector<glm::vec4> allUVs;
-
-	allPositions.reserve(totalVerts);
-	allIndices.reserve(totalIndices);
-
 	uint32_t vertOffset = 0, idxOffset = 0;
+	uint32_t totalNormCount = 0, totalUVCount = 0;
 	for (size_t b = 0; b < m_BLASes.size(); b++)
 	{
 		auto& blas = m_BLASes[b];
 		offsets[b].vert = vertOffset;
 		offsets[b].idx = idxOffset;
-		offsets[b].norm = (uint32_t)allNormals.size();
-		offsets[b].uv = (uint32_t)allUVs.size();
-
-		// Pack positions as vec4(x, y, z, 1.0)
-		if (blas.srcVertices)
-		{
-			const auto& verts = *blas.srcVertices;
-			for (uint32_t v = 0; v < blas.vertexCount; v++)
-				allPositions.push_back(glm::vec4(verts[v * 3], verts[v * 3 + 1], verts[v * 3 + 2], 1.0f));
-		}
-
-		// Copy indices
-		if (blas.srcIndices)
-		{
-			const auto& idxs = *blas.srcIndices;
-			for (uint32_t i = 0; i < blas.triangleCount * 3; i++)
-				allIndices.push_back(idxs[i]);
-		}
-
-		// Pack normals as vec4(x, y, z, 0.0)
-		if (blas.srcNormals && !blas.srcNormals->empty())
-		{
-			const auto& norms = *blas.srcNormals;
-			for (size_t i = 0; i < norms.size(); i += 3)
-				allNormals.push_back(glm::vec4(norms[i], norms[i + 1], norms[i + 2], 0.0f));
-		}
-
-		// Pack UVs as vec4(u, v, 0.0, 0.0)
-		if (blas.srcUVs && !blas.srcUVs->empty())
-		{
-			const auto& uvs = *blas.srcUVs;
-			for (size_t i = 0; i < uvs.size(); i += 2)
-				allUVs.push_back(glm::vec4(uvs[i], uvs[i + 1], 0.0f, 0.0f));
-		}
-
+		offsets[b].norm = totalNormCount;
+		offsets[b].uv = totalUVCount;
 		vertOffset += blas.vertexCount;
 		idxOffset += blas.triangleCount * 3;
+		if (blas.srcNormals && !blas.srcNormals->empty())
+			totalNormCount += blas.vertexCount;
+		if (blas.srcUVs && !blas.srcUVs->empty())
+			totalUVCount += blas.vertexCount;
 	}
 
-	// Create DEVICE_LOCAL mega-buffers and upload via staging
-	auto createDeviceLocalFromVec4 = [&](VkBuffer& buf, VkDeviceMemory& mem,
-	                                      const std::vector<glm::vec4>& data) {
-		if (data.empty()) return;
-		VkDeviceSize size = data.size() * sizeof(glm::vec4);
+	VkDeviceSize vertBufSize = (VkDeviceSize)totalVerts * sizeof(glm::vec4);
+	VkDeviceSize idxBufSize  = (VkDeviceSize)totalIndices * sizeof(uint32_t);
+	VkDeviceSize normBufSize = (VkDeviceSize)totalNormCount * sizeof(glm::vec4);
+	VkDeviceSize uvBufSize   = (VkDeviceSize)totalUVCount * sizeof(glm::vec4);
+
+	RT_LOG("[BuildAttributeBuffers] vert=%uMB idx=%uMB norm=%uMB uv=%uMB",
+	       (uint32_t)(vertBufSize / (1024 * 1024)), (uint32_t)(idxBufSize / (1024 * 1024)),
+	       (uint32_t)(normBufSize / (1024 * 1024)), (uint32_t)(uvBufSize / (1024 * 1024)));
+
+	// Create DEVICE_LOCAL mega-buffers
+	auto createDeviceLocal = [&](VkBuffer& buf, VkDeviceMemory& mem, VkDeviceSize size) {
+		if (size == 0) return;
 		GpuResources::CreateBuffer(m_Device, size,
 		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
 		             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, buf, mem);
-		VkBuffer stagingBuf; VkDeviceMemory stagingMem;
-		GpuResources::CreateBuffer(m_Device, size,
-		             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		             stagingBuf, stagingMem);
-		void* mapped = nullptr;
-		vkMapMemory(device, stagingMem, 0, size, 0, &mapped);
-		memcpy(mapped, data.data(), (size_t)size);
-		vkUnmapMemory(device, stagingMem);
-		VkBuffer sBuf = stagingBuf; VkDeviceMemory sMem = stagingMem;
-		VkBuffer dstBuf = buf; VkDeviceSize sz = size;
-		CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
-			VkBufferCopy region = {}; region.size = sz;
-			vkCmdCopyBuffer(cmd, sBuf, dstBuf, 1, &region);
-		});
-		GpuResources::DestroyBuffer(m_Device, sBuf, sMem);
+	};
+	createDeviceLocal(m_VertexBuffer, m_VertexMemory, vertBufSize);
+	createDeviceLocal(m_IndexBuffer, m_IndexMemory, idxBufSize);
+	createDeviceLocal(m_NormalBuffer, m_NormalMemory, normBufSize);
+	createDeviceLocal(m_UVBuffer, m_UVMemory, uvBufSize);
+
+	// Chunked upload: pack float3→vec4 in a staging buffer, one BLAS at a time.
+	// This avoids building the entire vec4 array in CPU memory.
+	auto uploadPackedVec4 = [&](VkBuffer dstBuf, uint32_t dstOffsetElements,
+	                            const std::vector<float>* srcData, uint32_t elementCount,
+	                            float w) {
+		if (!srcData || srcData->empty() || elementCount == 0) return;
+		// Sub-chunk to keep HOST_VISIBLE staging small (max 16MB = 1M vec4s)
+		const uint32_t CHUNK = 1000000;
+		for (uint32_t off = 0; off < elementCount; off += CHUNK)
+		{
+			uint32_t thisCount = std::min(CHUNK, elementCount - off);
+			VkDeviceSize chunkSize = (VkDeviceSize)thisCount * sizeof(glm::vec4);
+			VkBuffer stagingBuf; VkDeviceMemory stagingMem;
+			GpuResources::CreateBuffer(m_Device, chunkSize,
+			             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			             stagingBuf, stagingMem);
+			void* mapped = nullptr;
+			vkMapMemory(device, stagingMem, 0, chunkSize, 0, &mapped);
+			glm::vec4* dst = static_cast<glm::vec4*>(mapped);
+			const float* src = srcData->data() + (size_t)off * 3;
+			for (uint32_t i = 0; i < thisCount; i++)
+				dst[i] = glm::vec4(src[i * 3], src[i * 3 + 1], src[i * 3 + 2], w);
+			vkUnmapMemory(device, stagingMem);
+			VkBufferCopy region = {};
+			region.size = chunkSize;
+			region.dstOffset = (VkDeviceSize)(dstOffsetElements + off) * sizeof(glm::vec4);
+			VkBuffer sBuf = stagingBuf; VkDeviceMemory sMem = stagingMem; VkBuffer dB = dstBuf; VkDeviceSize sz = chunkSize;
+			CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+				vkCmdCopyBuffer(cmd, sBuf, dB, 1, &region);
+			});
+			GpuResources::DestroyBuffer(m_Device, sBuf, sMem);
+		}
 	};
 
-	auto createDeviceLocalFromUint = [&](VkBuffer& buf, VkDeviceMemory& mem,
-	                                      const std::vector<uint32_t>& data) {
-		if (data.empty()) return;
-		VkDeviceSize size = data.size() * sizeof(uint32_t);
-		GpuResources::CreateBuffer(m_Device, size,
-		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-		             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-		             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, buf, mem);
-		VkBuffer stagingBuf; VkDeviceMemory stagingMem;
-		GpuResources::CreateBuffer(m_Device, size,
-		             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		             stagingBuf, stagingMem);
-		void* mapped = nullptr;
-		vkMapMemory(device, stagingMem, 0, size, 0, &mapped);
-		memcpy(mapped, data.data(), (size_t)size);
-		vkUnmapMemory(device, stagingMem);
-		VkBuffer sBuf = stagingBuf; VkDeviceMemory sMem = stagingMem;
-		VkBuffer dstBuf = buf; VkDeviceSize sz = size;
-		CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
-			VkBufferCopy region = {}; region.size = sz;
-			vkCmdCopyBuffer(cmd, sBuf, dstBuf, 1, &region);
-		});
-		GpuResources::DestroyBuffer(m_Device, sBuf, sMem);
+	auto uploadRaw = [&](VkBuffer dstBuf, uint32_t dstOffsetElements,
+	                     const std::vector<uint32_t>* srcData, uint32_t elementCount) {
+		if (!srcData || srcData->empty() || elementCount == 0) return;
+		const uint32_t CHUNK = 3000000;
+		for (uint32_t off = 0; off < elementCount; off += CHUNK)
+		{
+			uint32_t thisCount = std::min(CHUNK, elementCount - off);
+			VkDeviceSize chunkSize = (VkDeviceSize)thisCount * sizeof(uint32_t);
+			VkBuffer stagingBuf; VkDeviceMemory stagingMem;
+			GpuResources::CreateBuffer(m_Device, chunkSize,
+			             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			             stagingBuf, stagingMem);
+			void* mapped = nullptr;
+			vkMapMemory(device, stagingMem, 0, chunkSize, 0, &mapped);
+			memcpy(mapped, srcData->data() + off, (size_t)chunkSize);
+			vkUnmapMemory(device, stagingMem);
+			VkBufferCopy region = {};
+			region.size = chunkSize;
+			region.dstOffset = (VkDeviceSize)(dstOffsetElements + off) * sizeof(uint32_t);
+			VkBuffer sBuf = stagingBuf; VkDeviceMemory sMem = stagingMem; VkBuffer dB = dstBuf; VkDeviceSize sz = chunkSize;
+			CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+				vkCmdCopyBuffer(cmd, sBuf, dB, 1, &region);
+			});
+			GpuResources::DestroyBuffer(m_Device, sBuf, sMem);
+		}
 	};
 
-	createDeviceLocalFromVec4(m_VertexBuffer, m_VertexMemory, allPositions);
-	createDeviceLocalFromUint(m_IndexBuffer, m_IndexMemory, allIndices);
-	if (!allNormals.empty())
-		createDeviceLocalFromVec4(m_NormalBuffer, m_NormalMemory, allNormals);
-	if (!allUVs.empty())
-		createDeviceLocalFromVec4(m_UVBuffer, m_UVMemory, allUVs);
+	for (size_t b = 0; b < m_BLASes.size(); b++)
+	{
+		auto& blas = m_BLASes[b];
+		uploadPackedVec4(m_VertexBuffer, offsets[b].vert, blas.srcVertices, blas.vertexCount, 1.0f);
+		uploadRaw(m_IndexBuffer, offsets[b].idx, blas.srcIndices, blas.triangleCount * 3);
+		if (blas.srcNormals && !blas.srcNormals->empty())
+			uploadPackedVec4(m_NormalBuffer, offsets[b].norm, blas.srcNormals, blas.vertexCount, 0.0f);
+		if (blas.srcUVs && !blas.srcUVs->empty())
+			uploadPackedVec4(m_UVBuffer, offsets[b].uv, blas.srcUVs, blas.vertexCount, 0.0f);
+	}
 
 	// Build per-instance mesh info (uvec4 per instance: vertOffset, idxOffset, normOffset, uvOffset)
 	std::vector<glm::uvec4> instanceMeshInfo;
