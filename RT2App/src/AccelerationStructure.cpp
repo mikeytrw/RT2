@@ -13,12 +13,9 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
                                          const std::vector<BLASGeometry>& meshes)
 {
 	VkDevice device = m_Device.device;
-	RT_LOG("[BuildBLASes] enter: meshes=%d prevBLASes=%d", (int)meshes.size(), (int)m_BLASes.size());
+	RT_LOG("[BuildBLASes] meshes=%d prevBLASes=%d", (int)meshes.size(), (int)m_BLASes.size());
 
-	// Wait for GPU to finish before destroying old BLAS buffers
-	RT_LOG("[BuildBLASes] calling vkDeviceWaitIdle");
 	vkDeviceWaitIdle(device);
-	RT_LOG("[BuildBLASes] vkDeviceWaitIdle done");
 
 	// Destroy previous BLASes
 	for (size_t i = 0; i < m_BLASes.size(); i++)
@@ -46,7 +43,6 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 	{
 		const auto& mesh = meshes[i];
 		BLASData& blas = m_BLASes[i];
-		RT_LOG("[BuildBLASes] mesh %d: verts=%d indices=%d", (int)i, (int)mesh.vertices->size(), (int)mesh.indices->size());
 
 		uint32_t triCount = static_cast<uint32_t>(mesh.indices->size() / 3);
 		blas.triangleCount = triCount;
@@ -59,7 +55,6 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 
 		// --- Vertex buffer ---
 		VkDeviceSize vertexBufferSize = mesh.vertices->size() * sizeof(float);
-		RT_LOG("[BuildBLASes] mesh %d: creating vertex buffer (%zu bytes)", (int)i, (size_t)vertexBufferSize);
 		GpuResources::CreateBuffer(m_Device, vertexBufferSize,
 		             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 		             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -73,7 +68,6 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 
 		// --- Index buffer ---
 		VkDeviceSize indexBufferSize = mesh.indices->size() * sizeof(uint32_t);
-		RT_LOG("[BuildBLASes] mesh %d: creating index buffer (%zu bytes)", (int)i, (size_t)indexBufferSize);
 		GpuResources::CreateBuffer(m_Device, indexBufferSize,
 		             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
 		             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -114,13 +108,11 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		sizeInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
 
 		uint32_t primitiveCount = triCount;
-		RT_LOG("[BuildBLASes] mesh %d: getting build sizes (prims=%d)", (int)i, primitiveCount);
 		g_RTDispatch.GetAccelerationStructureBuildSizesKHR(device,
 			VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
 			&buildInfo, &primitiveCount, &sizeInfo);
 
 		// --- BLAS buffer ---
-		RT_LOG("[BuildBLASes] mesh %d: creating BLAS buffer (%zu bytes)", (int)i, (size_t)sizeInfo.accelerationStructureSize);
 		GpuResources::CreateBuffer(m_Device, sizeInfo.accelerationStructureSize,
 		             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
 		             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
@@ -132,11 +124,9 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		createInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
 		createInfo.buffer = blas.blasBuffer;
 		createInfo.size = sizeInfo.accelerationStructureSize;
-		RT_LOG("[BuildBLASes] mesh %d: creating AS handle", (int)i);
 		g_RTDispatch.CreateAccelerationStructureKHR(device, &createInfo, nullptr, &blas.handle);
 
 		// --- Scratch buffer ---
-		RT_LOG("[BuildBLASes] mesh %d: creating scratch buffer (%zu bytes)", (int)i, (size_t)sizeInfo.buildScratchSize);
 		GpuResources::CreateBuffer(m_Device, sizeInfo.buildScratchSize,
 		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
@@ -152,7 +142,6 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		buildRangeInfo.transformOffset = 0;
 
 		VkAccelerationStructureBuildRangeInfoKHR* pBuildRangeInfos = &buildRangeInfo;
-		RT_LOG("[BuildBLASes] mesh %d: cmdBuildAS", (int)i);
 		g_RTDispatch.CmdBuildAccelerationStructuresKHR(cmdBuffer, 1, &buildInfo, &pBuildRangeInfos);
 
 		// --- Get BLAS device address ---
@@ -160,10 +149,9 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		addrInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
 		addrInfo.accelerationStructure = blas.handle;
 		blas.deviceAddress = g_RTDispatch.GetAccelerationStructureDeviceAddressKHR(device, &addrInfo);
-		RT_LOG("[BuildBLASes] mesh %d: done", (int)i);
 	}
 
-	RT_LOG("[BuildBLASes] all meshes built, BuildAttributeBuffers deferred to after BuildTLAS");
+	RT_LOG("[BuildBLASes] done: %d BLASes, %d total tris", (int)m_BLASes.size(), (int)m_TotalTriangleCount);
 
 	return true;
 }
