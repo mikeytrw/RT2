@@ -1805,7 +1805,7 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
     tf.translation = {0, 0, 0};
     tf.scale = {1, 1, 1};
     ecsScene.registry.emplace<Transform>(entity, tf);
-    ecsScene.registry.emplace<MeshRef>(entity, meshIdx, 0); // material 0
+    ecsScene.registry.emplace<MeshRef>(entity, meshIdx, -1); // use per-triangle materials
     ecsScene.registry.emplace<NameComponent>(entity, name);
     ecsScene.registry.emplace<VisibleComponent>(entity);
 

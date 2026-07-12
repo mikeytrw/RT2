@@ -267,7 +267,7 @@ TEST_CASE("BuildGPUSceneDataFromECS handles mesh with invalid materialIndex")
 
     GPUSceneData gpu = BuildGPUSceneDataFromECS(ecsScene);
 
-    CHECK(gpu.instances[0].materialIndex == 0);
+    CHECK(gpu.instances[0].materialIndex == 0xFFFFFFFFu);
 }
 
 TEST_CASE("BuildGPUSceneDataFromECS only creates instances for entities with MeshRef")

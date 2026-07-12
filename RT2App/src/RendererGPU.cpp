@@ -28,6 +28,7 @@ bool RendererGPU::Init()
 	}
 
 	m_Scene.InitSamplers(m_Device);
+	CreateFallbackTexture();
 	ShaderManager::Init(m_Device.device);
 
 	// Create G-buffer descriptor set layout (set 1) first — needed by PathTracePass
@@ -74,6 +75,7 @@ void RendererGPU::Destroy()
 	DestroyOutputImage();
 	DestroyGBufferImages();
 	m_Scene.Destroy();
+	GpuResources::DestroyImage(m_Device, m_FallbackTexture);
 	GpuResources::DestroyBuffer(m_Device, m_CameraUBO, m_CameraUBOMemory);
 	GpuResources::DestroyBuffer(m_Device, m_NRDUBO, m_NRDUBOMemory);
 
@@ -161,6 +163,63 @@ void RendererGPU::DestroyOutputImage()
 	m_OutputImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
+void RendererGPU::CreateFallbackTexture()
+{
+	uint8_t white[4] = {255, 255, 255, 255};
+
+	GpuResources::CreateImage(m_Device, 1, 1, VK_FORMAT_R8G8B8A8_UNORM,
+		VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_FallbackTexture);
+
+	VkBuffer stagingBuf; VkDeviceMemory stagingMem;
+	GpuResources::CreateBuffer(m_Device, 4,
+		VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		stagingBuf, stagingMem);
+
+	void* mapped = nullptr;
+	vkMapMemory(m_Device.device, stagingMem, 0, 4, 0, &mapped);
+	memcpy(mapped, white, 4);
+	vkUnmapMemory(m_Device.device, stagingMem);
+
+	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+		VkImageMemoryBarrier barrier = {};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.srcAccessMask = 0;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = m_FallbackTexture.image;
+		barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+		                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+		VkBufferImageCopy region = {};
+		region.bufferOffset = 0;
+		region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+		region.imageExtent = {1, 1, 1};
+		vkCmdCopyBufferToImage(cmd, stagingBuf, m_FallbackTexture.image,
+		                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+		VkImageMemoryBarrier shaderBarrier = {};
+		shaderBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		shaderBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		shaderBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		shaderBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+		shaderBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+		shaderBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		shaderBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		shaderBarrier.image = m_FallbackTexture.image;
+		shaderBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &shaderBarrier);
+	});
+
+	GpuResources::DestroyBuffer(m_Device, stagingBuf, stagingMem);
+}
+
 void RendererGPU::OnResize(uint32_t width, uint32_t height)
 {
 	if (width == 0 || height == 0)
@@ -173,7 +232,7 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	vkDeviceWaitIdle(device);
 
 	// Free old descriptor set before allocating a new one
-	m_PathTracePass.FreeDescriptorSet(device, m_Device.descriptorPool);
+	m_PathTracePass.FreeDescriptorSet();
 
 	DestroyOutputImage();
 
@@ -183,7 +242,9 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	CreateOutputImage();
 	CreateGBufferImages();
 	m_Reservoirs.Create(m_Device, m_Width, m_Height);
-	m_PathTracePass.CreateDescriptorSet(m_Device, m_Device.descriptorPool);
+	// Allocate descriptor set with current texture count (0 if no scene yet)
+	uint32_t texCount = (uint32_t)m_Scene.GetTextures().size();
+	m_PathTracePass.CreateDescriptorSet(m_Device, texCount > 0 ? texCount : 1);
 	UpdateGBufferDescriptorSet();
 
 	// Initialize NRD if enabled
@@ -211,12 +272,14 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 
 void RendererGPU::UpdatePathTraceDescriptorSet()
 {
+	RT_LOG("[UpdateDS] enter"); fflush(stdout);
 	if (!m_PathTracePass.IsAvailable()) return;
 	if (!m_Scene.IsValid()) { RT_LOG("[UpdateDS] skip: AS not valid"); return; }
 
 	// Create camera UBO if needed
 	if (!m_CameraUBO)
 	{
+		RT_LOG("[UpdateDS] creating camera UBO"); fflush(stdout);
 		GpuResources::CreateBuffer(m_Device, sizeof(SICameraData),
 		             VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -224,28 +287,80 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 	}
 	if (!m_Scene.GetMaterialBuffer()) { RT_LOG("[UpdateDS] skip: no material buffer"); return; }
 
-	// Ensure reservoir buffers exist before writing them into the descriptor set.
-	// SetScene can be called before OnResize (e.g. glTF import at startup),
-	// in which case the reservoirs aren't allocated yet. Allocate them now
-	// so the descriptor write gets valid handles (avoids VK_NULL_HANDLE crash).
+	RT_LOG("[UpdateDS] checking reservoirs (valid=%d w=%d h=%d)", (int)m_Reservoirs.IsValid(), m_Width, m_Height); fflush(stdout);
 	if (!m_Reservoirs.IsValid() || !m_Reservoirs.MatchesSize(m_Width, m_Height))
 	{
 		if (m_Width > 0 && m_Height > 0)
 			m_Reservoirs.Create(m_Device, m_Width, m_Height);
 	}
 
-	// Build texture image infos â€” use shared texture sampler for all textures
+	RT_LOG("[UpdateDS] building texture infos"); fflush(stdout);
 	std::vector<VkDescriptorImageInfo> textureImageInfos;
 	for (const auto& gt : m_Scene.GetTextures())
 	{
-		if (!gt.view) continue;
 		VkDescriptorImageInfo imgInfo = {};
 		imgInfo.sampler = m_Scene.GetTextureSampler();
-		imgInfo.imageView = gt.view;
+		imgInfo.imageView = gt.view ? gt.view : m_FallbackTexture.view;
 		imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		textureImageInfos.push_back(imgInfo);
 	}
 
+	// Bounds check: texture count must not exceed MAX_TEXTURES
+	const uint32_t MAX_TEXTURES = PathTracePass::MAX_TEXTURES;
+	if (textureImageInfos.size() > MAX_TEXTURES)
+	{
+		RT_LOG("[UpdateDS] ERROR: texture count %zu exceeds MAX_TEXTURES %u — skipping descriptor update",
+		       textureImageInfos.size(), MAX_TEXTURES);
+		return;
+	}
+
+	// Ensure descriptor set has enough texture slots allocated.
+	// CreateDescriptorSet re-allocates if the current set has fewer slots than needed.
+	uint32_t texCount = (uint32_t)textureImageInfos.size();
+	if (texCount == 0) texCount = 1;  // need at least 1 slot for fallback
+	if (!m_PathTracePass.CreateDescriptorSet(m_Device, texCount))
+	{
+		RT_LOG("[UpdateDS] ERROR: failed to allocate descriptor set for %u textures", texCount);
+		return;
+	}
+
+	// Bounds check: material texture indices must be < texture count
+	const auto& scene = m_Scene.GetScene();
+	uint32_t sceneTexCount = (uint32_t)m_Scene.GetTextures().size();
+		for (size_t i = 0; i < scene.materials.size(); i++)
+	{
+		const auto& mat = scene.materials[i];
+		int indices[] = { mat.textureIndices.x, mat.textureIndices.y, mat.textureIndices.z, mat.metallicRoughnessTextureIndex };
+		const char* names[] = { "baseColor", "normal", "emissive", "metallicRoughness" };
+		for (int j = 0; j < 4; j++)
+		{
+			if (indices[j] >= 0 && (uint32_t)indices[j] >= sceneTexCount)
+			{
+				RT_LOG("[UpdateDS] ERROR: material %zu %s texIdx=%d >= texCount=%u — skipping descriptor update",
+				       i, names[j], indices[j], sceneTexCount);
+				return;
+			}
+		}
+	}
+
+	// Bounds check: env/CDF indices
+	if (m_Scene.GetEnvMapIndex() >= 0 && (uint32_t)m_Scene.GetEnvMapIndex() >= sceneTexCount)
+	{
+		RT_LOG("[UpdateDS] ERROR: envMapIndex=%d >= texCount=%u — skipping", m_Scene.GetEnvMapIndex(), sceneTexCount);
+		return;
+	}
+	if (m_Scene.GetMarginalCDFIndex() >= 0 && (uint32_t)m_Scene.GetMarginalCDFIndex() >= sceneTexCount)
+	{
+		RT_LOG("[UpdateDS] ERROR: marginalCDFIndex=%d >= texCount=%u — skipping", m_Scene.GetMarginalCDFIndex(), sceneTexCount);
+		return;
+	}
+	if (m_Scene.GetConditionalCDFIndex() >= 0 && (uint32_t)m_Scene.GetConditionalCDFIndex() >= sceneTexCount)
+	{
+		RT_LOG("[UpdateDS] ERROR: conditionalCDFIndex=%d >= texCount=%u — skipping", m_Scene.GetConditionalCDFIndex(), sceneTexCount);
+		return;
+	}
+
+	RT_LOG("[UpdateDS] calling UpdateDescriptorSet (matOffBuf=%p)", (void*)m_Scene.GetInstanceMatOffsetBuffer()); fflush(stdout);
 	m_PathTracePass.UpdateDescriptorSet(m_Device,
 		m_OutputImage.view, m_Sampler,
 		m_CameraUBO, m_Scene.GetMaterialBuffer(),
@@ -254,6 +369,7 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 		m_Scene.GetInstanceMeshInfoBuffer(),
 		m_Scene.GetLightBuffer(), m_Scene.GetInstanceTransformBuffer(),
 		m_Scene.GetInstanceTransformPrevBuffer(), m_Scene.GetMaterialIndexBuffer(),
+		m_Scene.GetInstanceMatOffsetBuffer(),
 		m_Scene.GetTLAS(),
 		m_Reservoirs.GetHistoryBuffer(), m_Reservoirs.GetScratchBuffer(),
 		m_Reservoirs.GetSurfaceHistoryBuffer(),
@@ -487,6 +603,11 @@ void RendererGPU::Render(const Camera& camera)
 	{
 		static bool warned = false;
 		if (!warned) { RT_LOG("[RT2] Render: TLAS not valid (no mesh loaded?)"); warned = true; }
+		return;
+	}
+
+	if (m_Scene.IsTextureUploadPending())
+	{
 		return;
 	}
 

@@ -11,6 +11,52 @@
 #include <algorithm>
 #include <vector>
 
+// ============================================================================
+// Descriptor schema — single source of truth for set 0 bindings.
+// The layout, binding flags, and descriptor writes are all derived from this.
+//
+// Array index in this vector == array index passed to vkCreateDescriptorSetLayout.
+// Binding numbers can be sparse (e.g. 11 is skipped — textures moved to 18).
+// ============================================================================
+static const std::vector<BindingDef>& GetSet0Bindings()
+{
+	static const VkShaderStageFlags allRTFlags =
+		VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+		VK_SHADER_STAGE_MISS_BIT_KHR |
+		VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
+		VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+
+	static const VkShaderStageFlags allGraphicsRTFlags = allRTFlags |
+		VK_SHADER_STAGE_VERTEX_BIT |
+		VK_SHADER_STAGE_FRAGMENT_BIT |
+		VK_SHADER_STAGE_COMPUTE_BIT;
+
+	static const std::vector<BindingDef> bindings = {
+		{ SI_BINDING_OUTPUT_IMAGE,            VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,              1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_CAMERA_UBO,              VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,             1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_MATERIAL_BUFFER,         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_VERTEX_BUFFER,           VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_TLAS,                    VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, allRTFlags,         0 },
+		{ SI_BINDING_INDEX_BUFFER,            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_NORMAL_BUFFER,           VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_UV_BUFFER,               VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_INSTANCE_MESH_INFO,      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_LIGHT_BUFFER,            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_INSTANCE_TRANSFORMS,     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
+		// Binding 11 is intentionally skipped — texture array moved to binding 18
+		{ SI_BINDING_INSTANCE_TRANSFORMS_PREV,    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_INSTANCE_MATERIAL_INDICES,   VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_RESERVOIR_HISTORY,           VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_RESERVOIR_SCRATCH,           VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_SURFACE_HISTORY,             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_INSTANCE_MAT_OFFSETS,        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, allGraphicsRTFlags, 0 },
+		{ SI_BINDING_TEXTURE_ARRAY,               VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, PathTracePass::MAX_TEXTURES, allGraphicsRTFlags,
+			VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT_EXT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT },
+	};
+
+	return bindings;
+}
+
 bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetLayout)
 {
 	if (m_Pipeline != VK_NULL_HANDLE) return true;
@@ -39,136 +85,32 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 		return false;
 	}
 
-	const VkShaderStageFlags allRTFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR |
-	                                      VK_SHADER_STAGE_MISS_BIT_KHR |
-	                                      VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
-	                                      VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+	// ---- Create descriptor set layout from schema ----
+	const auto& schema = GetSet0Bindings();
 
-	const VkShaderStageFlags allGraphicsRTFlags = allRTFlags |
-	                                      VK_SHADER_STAGE_VERTEX_BIT |
-	                                      VK_SHADER_STAGE_FRAGMENT_BIT |
-	                                      VK_SHADER_STAGE_COMPUTE_BIT;
+	std::vector<VkDescriptorSetLayoutBinding> layoutBindings(schema.size());
+	for (size_t i = 0; i < schema.size(); i++)
+	{
+		layoutBindings[i].binding = schema[i].binding;
+		layoutBindings[i].descriptorType = schema[i].type;
+		layoutBindings[i].descriptorCount = schema[i].descriptorCount;
+		layoutBindings[i].stageFlags = schema[i].stageFlags;
+		layoutBindings[i].pImmutableSamplers = nullptr;
+	}
 
-	const uint32_t maxTextures = 1000;
-
-	VkDescriptorSetLayoutBinding bindings[17] = {};
-
-	bindings[0] = {};
-	bindings[0].binding = SI_BINDING_OUTPUT_IMAGE;
-	bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	bindings[0].descriptorCount = 1;
-	bindings[0].stageFlags = allGraphicsRTFlags;
-
-	bindings[1] = {};
-	bindings[1].binding = SI_BINDING_CAMERA_UBO;
-	bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	bindings[1].descriptorCount = 1;
-	bindings[1].stageFlags = allGraphicsRTFlags;
-
-	bindings[2] = {};
-	bindings[2].binding = SI_BINDING_MATERIAL_BUFFER;
-	bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[2].descriptorCount = 1;
-	bindings[2].stageFlags = allGraphicsRTFlags;
-
-	bindings[3] = {};
-	bindings[3].binding = SI_BINDING_VERTEX_BUFFER;
-	bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[3].descriptorCount = 1;
-	bindings[3].stageFlags = allGraphicsRTFlags;
-
-	bindings[4] = {};
-	bindings[4].binding = SI_BINDING_TLAS;
-	bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-	bindings[4].descriptorCount = 1;
-	bindings[4].stageFlags = allRTFlags;
-
-	bindings[5] = {};
-	bindings[5].binding = SI_BINDING_INDEX_BUFFER;
-	bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[5].descriptorCount = 1;
-	bindings[5].stageFlags = allGraphicsRTFlags;
-
-	bindings[6] = {};
-	bindings[6].binding = SI_BINDING_NORMAL_BUFFER;
-	bindings[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[6].descriptorCount = 1;
-	bindings[6].stageFlags = allGraphicsRTFlags;
-
-	bindings[7] = {};
-	bindings[7].binding = SI_BINDING_UV_BUFFER;
-	bindings[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[7].descriptorCount = 1;
-	bindings[7].stageFlags = allGraphicsRTFlags;
-
-	bindings[8] = {};
-	bindings[8].binding = SI_BINDING_INSTANCE_MESH_INFO;
-	bindings[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[8].descriptorCount = 1;
-	bindings[8].stageFlags = allGraphicsRTFlags;
-
-	bindings[9] = {};
-	bindings[9].binding = SI_BINDING_LIGHT_BUFFER;
-	bindings[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[9].descriptorCount = 1;
-	bindings[9].stageFlags = allGraphicsRTFlags;
-
-	bindings[10] = {};
-	bindings[10].binding = SI_BINDING_INSTANCE_TRANSFORMS;
-	bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[10].descriptorCount = 1;
-	bindings[10].stageFlags = allGraphicsRTFlags;
-
-	bindings[11] = {};
-	bindings[11].binding = SI_BINDING_TEXTURE_ARRAY;
-	bindings[11].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-	bindings[11].descriptorCount = maxTextures;
-	bindings[11].stageFlags = allGraphicsRTFlags;
-
-	bindings[12] = {};
-	bindings[12].binding = SI_BINDING_INSTANCE_TRANSFORMS_PREV;
-	bindings[12].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[12].descriptorCount = 1;
-	bindings[12].stageFlags = allGraphicsRTFlags;
-
-	bindings[13] = {};
-	bindings[13].binding = SI_BINDING_INSTANCE_MATERIAL_INDICES;
-	bindings[13].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[13].descriptorCount = 1;
-	bindings[13].stageFlags = allGraphicsRTFlags;
-
-	bindings[14] = {};
-	bindings[14].binding = SI_BINDING_RESERVOIR_HISTORY;
-	bindings[14].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[14].descriptorCount = 1;
-	bindings[14].stageFlags = allGraphicsRTFlags;
-
-	bindings[15] = {};
-	bindings[15].binding = SI_BINDING_RESERVOIR_SCRATCH;
-	bindings[15].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[15].descriptorCount = 1;
-	bindings[15].stageFlags = allGraphicsRTFlags;
-
-	bindings[16] = {};
-	bindings[16].binding = SI_BINDING_SURFACE_HISTORY;
-	bindings[16].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	bindings[16].descriptorCount = 1;
-	bindings[16].stageFlags = allGraphicsRTFlags;
-
-	VkDescriptorBindingFlagsEXT bindingFlags[17] = {};
-	bindingFlags[11] = VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT_EXT;
-	// Note: no VARIABLE_DESCRIPTOR_COUNT_BIT — binding 11 is no longer the
-	// highest binding number (12-16 exist). Use fixed descriptorCount instead.
+	std::vector<VkDescriptorBindingFlagsEXT> bindingFlags(schema.size());
+	for (size_t i = 0; i < schema.size(); i++)
+		bindingFlags[i] = schema[i].flags;
 
 	VkDescriptorSetLayoutBindingFlagsCreateInfoEXT bindingFlagsInfo = {};
 	bindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO_EXT;
-	bindingFlagsInfo.bindingCount = 17;
-	bindingFlagsInfo.pBindingFlags = bindingFlags;
+	bindingFlagsInfo.bindingCount = (uint32_t)bindingFlags.size();
+	bindingFlagsInfo.pBindingFlags = bindingFlags.data();
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 17;
-	layoutInfo.pBindings = bindings;
+	layoutInfo.bindingCount = (uint32_t)layoutBindings.size();
+	layoutInfo.pBindings = layoutBindings.data();
 	layoutInfo.pNext = &bindingFlagsInfo;
 
 	VK_CHECK(vkCreateDescriptorSetLayout(m_Device, &layoutInfo, nullptr, &m_DescriptorSetLayout));
@@ -214,10 +156,6 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	stages[6].pName = "main";
 
 	// 7 groups — must init ALL fields, VK_SHADER_UNUSED_KHR is ~0u not 0
-	// Group layout:
-	//   0: raygen (RT-primary), 1: miss_sky, 2: miss_shadow,
-	//   3: hit_primary_opaque, 4: hit_primary_alpha, 5: hit_shadow,
-	//   6: secondary_raygen (raster-first)
 	VkRayTracingShaderGroupCreateInfoKHR groups[7];
 	for (int i = 0; i < 7; i++)
 	{
@@ -243,7 +181,6 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	groups[4].anyHitShader = 4;
 	groups[5].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_TRIANGLES_HIT_GROUP_KHR;
 	groups[5].anyHitShader = 5;
-	// Group 6: secondary_raygen (raster-first path)
 	groups[6].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
 	groups[6].generalShader = 6;
 
@@ -282,7 +219,6 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 
 	VkDeviceSize sbtSize = m_RgenRegionSize + m_MissRegionSize + m_HitRegionSize;
 
-	// Create SBT buffer via GpuResources (ensures correct memory flags + device address)
 	if (!GpuResources::CreateBuffer(dev, sbtSize,
 		VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
 		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -293,7 +229,6 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	}
 	m_SBTSize = sbtSize;
 
-	// Fetch group handles (7 groups)
 	std::vector<uint8_t> handles(7 * handleSize);
 	err = g_RTDispatch.GetRayTracingShaderGroupHandlesKHR(
 		m_Device, m_Pipeline, 0, 7, handles.size(), handles.data());
@@ -303,14 +238,12 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 		return false;
 	}
 
-	// Copy handles into SBT
-	// Rgen region: [0] = raygen (RT-primary), [baseAlign] = secondary_raygen (raster-first)
 	void* mapped = nullptr;
 	vkMapMemory(m_Device, m_SBTBuffer.memory, 0, sbtSize, 0, &mapped);
 	std::memset(mapped, 0, (size_t)sbtSize);
 	uint8_t* dst = static_cast<uint8_t*>(mapped);
 	std::memcpy(dst + 0, handles.data() + 0 * handleSize, handleSize);
-	std::memcpy(dst + baseAlign, handles.data() + 6 * handleSize, handleSize);  // secondary_raygen
+	std::memcpy(dst + baseAlign, handles.data() + 6 * handleSize, handleSize);
 	std::memcpy(dst + m_RgenRegionSize, handles.data() + 1 * handleSize, handleSize);
 	std::memcpy(dst + m_RgenRegionSize + baseAlign, handles.data() + 2 * handleSize, handleSize);
 	VkDeviceSize hitBase = m_RgenRegionSize + m_MissRegionSize;
@@ -320,15 +253,44 @@ bool PathTracePass::Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetL
 	std::memcpy(dst + hitBase + baseAlign * 3, handles.data() + 5 * handleSize, handleSize);
 	vkUnmapMemory(m_Device, m_SBTBuffer.memory);
 
-	RT_LOG("[PathTracePass] initialized (recursion=%u, SBT stride=%llu)",
-	       m_MaxRecursionDepth, (unsigned long long)m_SBTStride);
+	// ---- Dedicated descriptor pool for set 0 ----
+	// Walnut's pool has only 1000 COMBINED_IMAGE_SAMPLER descriptors, shared
+	// with ImGui. Large scenes need more. We create a separate pool sized for
+	// MAX_TEXTURES per set, plus enough for the non-texture bindings.
+	VkDescriptorPoolSize poolSizes[] = {
+		{ VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,              4 },
+		{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,             4 },
+		{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,            64 },
+		{ VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,  4 },
+		{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,    MAX_TEXTURES },
+	};
+
+	VkDescriptorPoolCreateInfo poolInfo = {};
+	poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	poolInfo.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+	poolInfo.maxSets = 4;  // only need 1-2 sets (current + resize)
+	poolInfo.poolSizeCount = (uint32_t)(sizeof(poolSizes) / sizeof(poolSizes[0]));
+	poolInfo.pPoolSizes = poolSizes;
+
+	err = vkCreateDescriptorPool(m_Device, &poolInfo, nullptr, &m_DescriptorPool);
+	if (err != VK_SUCCESS)
+	{
+		RT_LOG("[PathTracePass] vkCreateDescriptorPool failed: %d", (int)err);
+		return false;
+	}
+
+	RT_LOG("[PathTracePass] initialized (recursion=%u, SBT stride=%llu, MAX_TEXTURES=%u, pool created)",
+	       m_MaxRecursionDepth, (unsigned long long)m_SBTStride, MAX_TEXTURES);
 	return true;
 }
 
 void PathTracePass::Destroy()
 {
-	if (!m_Pipeline) return;
+	if (!m_Pipeline && !m_DescriptorPool) return;
 	VkDevice device = m_Device;
+	if (m_DescriptorSet) { vkFreeDescriptorSets(device, m_DescriptorPool, 1, &m_DescriptorSet); m_DescriptorSet = VK_NULL_HANDLE; }
+	m_AllocatedTextureCount = 0;
+	if (m_DescriptorPool) { vkDestroyDescriptorPool(device, m_DescriptorPool, nullptr); m_DescriptorPool = VK_NULL_HANDLE; }
 	if (m_Pipeline) { vkDestroyPipeline(device, m_Pipeline, nullptr); m_Pipeline = VK_NULL_HANDLE; }
 	if (m_PipelineLayout) { vkDestroyPipelineLayout(device, m_PipelineLayout, nullptr); m_PipelineLayout = VK_NULL_HANDLE; }
 	if (m_DescriptorSetLayout) { vkDestroyDescriptorSetLayout(device, m_DescriptorSetLayout, nullptr); m_DescriptorSetLayout = VK_NULL_HANDLE; }
@@ -343,33 +305,62 @@ void PathTracePass::Destroy()
 	if (m_SBTBuffer.memory)  { vkFreeMemory(device, m_SBTBuffer.memory, nullptr);  m_SBTBuffer.memory = VK_NULL_HANDLE; }
 	m_SBTBuffer.size = 0;
 	m_SBTSize = 0;
-	m_DescriptorSet = VK_NULL_HANDLE;
 }
 
-bool PathTracePass::CreateDescriptorSet(const GpuDevice& dev, VkDescriptorPool pool)
+bool PathTracePass::CreateDescriptorSet(const GpuDevice& dev, uint32_t textureCount)
 {
+	if (textureCount > MAX_TEXTURES)
+	{
+		RT_LOG("[PathTracePass] textureCount=%u exceeds MAX_TEXTURES=%u", textureCount, MAX_TEXTURES);
+		return false;
+	}
+
+	// If we already have a set with enough slots, no-op
+	if (m_DescriptorSet != VK_NULL_HANDLE && m_AllocatedTextureCount >= textureCount)
+		return true;
+
+	// Free old set if any
+	if (m_DescriptorSet != VK_NULL_HANDLE)
+	{
+		vkDeviceWaitIdle(dev.device);
+		vkFreeDescriptorSets(dev.device, m_DescriptorPool, 1, &m_DescriptorSet);
+		m_DescriptorSet = VK_NULL_HANDLE;
+		m_AllocatedTextureCount = 0;
+	}
+
+	// Allocate with variable descriptor count
+	uint32_t variableCount = textureCount;
+	VkDescriptorSetVariableDescriptorCountAllocateInfoEXT varCountInfo = {};
+	varCountInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO_EXT;
+	varCountInfo.descriptorSetCount = 1;
+	varCountInfo.pDescriptorCounts = &variableCount;
+
 	VkDescriptorSetAllocateInfo allocInfo = {};
 	allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-	allocInfo.descriptorPool = pool;
+	allocInfo.descriptorPool = m_DescriptorPool;
 	allocInfo.descriptorSetCount = 1;
 	allocInfo.pSetLayouts = &m_DescriptorSetLayout;
+	allocInfo.pNext = &varCountInfo;
 
 	VkResult err = vkAllocateDescriptorSets(dev.device, &allocInfo, &m_DescriptorSet);
 	if (err != VK_SUCCESS)
 	{
-		RT_LOG("[PathTracePass] vkAllocateDescriptorSets failed: %d", (int)err);
+		RT_LOG("[PathTracePass] vkAllocateDescriptorSets failed: %d (textureCount=%u)", (int)err, textureCount);
 		return false;
 	}
-	RT_LOG("[PathTracePass] descriptor set allocated");
+
+	m_AllocatedTextureCount = textureCount;
+	RT_LOG("[PathTracePass] descriptor set allocated (%u texture slots)", textureCount);
 	return true;
 }
 
-void PathTracePass::FreeDescriptorSet(VkDevice device, VkDescriptorPool pool)
+void PathTracePass::FreeDescriptorSet()
 {
 	if (m_DescriptorSet)
 	{
-		vkFreeDescriptorSets(device, pool, 1, &m_DescriptorSet);
+		vkFreeDescriptorSets(m_Device, m_DescriptorPool, 1, &m_DescriptorSet);
 		m_DescriptorSet = VK_NULL_HANDLE;
+		m_AllocatedTextureCount = 0;
 	}
 }
 
@@ -382,216 +373,114 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	VkBuffer lightBuffer, VkBuffer instanceTransformBuffer,
 	VkBuffer instanceTransformPrevBuffer,
 	VkBuffer instanceMaterialIndexBuffer,
+	VkBuffer instanceMatOffsetBuffer,
 	VkAccelerationStructureKHR tlas,
 	VkBuffer reservoirBuffer, VkBuffer reservoirScratchBuffer,
 	VkBuffer surfaceHistoryBuffer,
 	const std::vector<VkDescriptorImageInfo>& textureImageInfos)
 {
-	VkDescriptorImageInfo imageInfo = {};
-	imageInfo.imageView = outputView;
-	imageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-	imageInfo.sampler = outputSampler;
+	// Local descriptor info structs — must stay alive until vkUpdateDescriptorSets
+	VkDescriptorImageInfo outputImageInfo = {};
+	outputImageInfo.imageView = outputView;
+	outputImageInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+	outputImageInfo.sampler = outputSampler;
 
-	VkDescriptorBufferInfo cameraBufferInfo = {};
-	cameraBufferInfo.buffer = cameraUBO;
-	cameraBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo materialBufferInfo = {};
-	materialBufferInfo.buffer = materialBuffer;
-	materialBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo vertexBufferInfo = {};
-	vertexBufferInfo.buffer = vertexBuffer;
-	vertexBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo indexBufferInfo = {};
-	indexBufferInfo.buffer = indexBuffer;
-	indexBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo normalBufferInfo = {};
-	normalBufferInfo.buffer = normalBuffer;
-	normalBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo uvBufferInfo = {};
-	uvBufferInfo.buffer = uvBuffer;
-	uvBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo instanceMeshInfoBufferInfo = {};
-	instanceMeshInfoBufferInfo.buffer = instanceMeshInfoBuffer;
-	instanceMeshInfoBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo lightBufferInfo = {};
-	lightBufferInfo.buffer = lightBuffer;
-	lightBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo instanceTransformBufferInfo = {};
-	instanceTransformBufferInfo.buffer = instanceTransformBuffer;
-	instanceTransformBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo instanceTransformPrevBufferInfo = {};
-	instanceTransformPrevBufferInfo.buffer = instanceTransformPrevBuffer;
-	instanceTransformPrevBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo instanceMaterialIndexBufferInfo = {};
-	instanceMaterialIndexBufferInfo.buffer = instanceMaterialIndexBuffer;
-	instanceMaterialIndexBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo reservoirBufferInfo = {};
-	reservoirBufferInfo.buffer = reservoirBuffer;
-	reservoirBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo reservoirScratchBufferInfo = {};
-	reservoirScratchBufferInfo.buffer = reservoirScratchBuffer;
-	reservoirScratchBufferInfo.range = VK_WHOLE_SIZE;
-
-	VkDescriptorBufferInfo surfaceHistoryBufferInfo = {};
-	surfaceHistoryBufferInfo.buffer = surfaceHistoryBuffer;
-	surfaceHistoryBufferInfo.range = VK_WHOLE_SIZE;
+	VkDescriptorBufferInfo cameraBufInfo = { cameraUBO, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo materialBufInfo = { materialBuffer, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo vertexBufInfo = { vertexBuffer, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo indexBufInfo = { indexBuffer, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo normalBufInfo = { normalBuffer, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo uvBufInfo = { uvBuffer, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo meshInfoBufInfo = { instanceMeshInfoBuffer, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo lightBufInfo = { lightBuffer, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo transformBufInfo = { instanceTransformBuffer, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo transformPrevBufInfo = { instanceTransformPrevBuffer, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo matIdxBufInfo = { instanceMaterialIndexBuffer, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo matOffsetBufInfo = { instanceMatOffsetBuffer, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo reservoirBufInfo = { reservoirBuffer, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo reservoirScratchBufInfo = { reservoirScratchBuffer, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo surfaceHistoryBufInfo = { surfaceHistoryBuffer, 0, VK_WHOLE_SIZE };
 
 	VkWriteDescriptorSetAccelerationStructureKHR asInfo = {};
 	asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
 	asInfo.accelerationStructureCount = 1;
 	asInfo.pAccelerationStructures = &tlas;
 
-	VkWriteDescriptorSet writes[17] = {};
+	// Build writes vector — one write per binding, no gaps, no fragile index arithmetic
+	std::vector<VkWriteDescriptorSet> writes;
+	writes.reserve(18);
 
-	writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[0].dstSet = m_DescriptorSet;
-	writes[0].dstBinding = SI_BINDING_OUTPUT_IMAGE;
-	writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	writes[0].descriptorCount = 1;
-	writes[0].pImageInfo = &imageInfo;
+	auto addBufferWrite = [&](uint32_t binding, VkDescriptorType type, VkDescriptorBufferInfo* info) {
+		VkWriteDescriptorSet w = {};
+		w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		w.dstSet = m_DescriptorSet;
+		w.dstBinding = binding;
+		w.descriptorType = type;
+		w.descriptorCount = 1;
+		w.pBufferInfo = info;
+		writes.push_back(w);
+	};
 
-	writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[1].dstSet = m_DescriptorSet;
-	writes[1].dstBinding = SI_BINDING_CAMERA_UBO;
-	writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-	writes[1].descriptorCount = 1;
-	writes[1].pBufferInfo = &cameraBufferInfo;
+	auto addImageWrite = [&](uint32_t binding, VkDescriptorType type, VkDescriptorImageInfo* info) {
+		VkWriteDescriptorSet w = {};
+		w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		w.dstSet = m_DescriptorSet;
+		w.dstBinding = binding;
+		w.descriptorType = type;
+		w.descriptorCount = 1;
+		w.pImageInfo = info;
+		writes.push_back(w);
+	};
 
-	writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[2].dstSet = m_DescriptorSet;
-	writes[2].dstBinding = SI_BINDING_MATERIAL_BUFFER;
-	writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[2].descriptorCount = 1;
-	writes[2].pBufferInfo = &materialBufferInfo;
+	addImageWrite(SI_BINDING_OUTPUT_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &outputImageInfo);
+	addBufferWrite(SI_BINDING_CAMERA_UBO, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &cameraBufInfo);
+	addBufferWrite(SI_BINDING_MATERIAL_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &materialBufInfo);
+	addBufferWrite(SI_BINDING_VERTEX_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &vertexBufInfo);
 
-	writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[3].dstSet = m_DescriptorSet;
-	writes[3].dstBinding = SI_BINDING_VERTEX_BUFFER;
-	writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[3].descriptorCount = 1;
-	writes[3].pBufferInfo = &vertexBufferInfo;
-
-	writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[4].dstSet = m_DescriptorSet;
-	writes[4].dstBinding = SI_BINDING_TLAS;
-	writes[4].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-	writes[4].descriptorCount = 1;
-	writes[4].pNext = &asInfo;
-
-	writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[5].dstSet = m_DescriptorSet;
-	writes[5].dstBinding = SI_BINDING_INDEX_BUFFER;
-	writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[5].descriptorCount = 1;
-	writes[5].pBufferInfo = &indexBufferInfo;
-
-	writes[6] = {};
-	writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[6].dstSet = m_DescriptorSet;
-	writes[6].dstBinding = SI_BINDING_NORMAL_BUFFER;
-	writes[6].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[6].descriptorCount = 1;
-	writes[6].pBufferInfo = &normalBufferInfo;
-
-	writes[7] = {};
-	writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[7].dstSet = m_DescriptorSet;
-	writes[7].dstBinding = SI_BINDING_UV_BUFFER;
-	writes[7].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[7].descriptorCount = 1;
-	writes[7].pBufferInfo = &uvBufferInfo;
-
-	writes[8] = {};
-	writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[8].dstSet = m_DescriptorSet;
-	writes[8].dstBinding = SI_BINDING_INSTANCE_MESH_INFO;
-	writes[8].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[8].descriptorCount = 1;
-	writes[8].pBufferInfo = &instanceMeshInfoBufferInfo;
-
-	writes[9] = {};
-	writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[9].dstSet = m_DescriptorSet;
-	writes[9].dstBinding = SI_BINDING_LIGHT_BUFFER;
-	writes[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[9].descriptorCount = 1;
-	writes[9].pBufferInfo = &lightBufferInfo;
-
-	writes[10] = {};
-	writes[10].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[10].dstSet = m_DescriptorSet;
-	writes[10].dstBinding = SI_BINDING_INSTANCE_TRANSFORMS;
-	writes[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[10].descriptorCount = 1;
-	writes[10].pBufferInfo = &instanceTransformBufferInfo;
-
-	writes[11] = {};
-	writes[11].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[11].dstSet = m_DescriptorSet;
-	writes[11].dstBinding = SI_BINDING_INSTANCE_TRANSFORMS_PREV;
-	writes[11].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[11].descriptorCount = 1;
-	writes[11].pBufferInfo = &instanceTransformPrevBufferInfo;
-
-	writes[12] = {};
-	writes[12].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[12].dstSet = m_DescriptorSet;
-	writes[12].dstBinding = SI_BINDING_INSTANCE_MATERIAL_INDICES;
-	writes[12].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[12].descriptorCount = 1;
-	writes[12].pBufferInfo = &instanceMaterialIndexBufferInfo;
-
-	uint32_t writeCount = 13;
-	if (!textureImageInfos.empty())
+	// TLAS — uses pNext for acceleration structure
 	{
-		writes[13].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-		writes[13].dstSet = m_DescriptorSet;
-		writes[13].dstBinding = SI_BINDING_TEXTURE_ARRAY;
-		writes[13].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-		writes[13].descriptorCount = (uint32_t)textureImageInfos.size();
-		writes[13].pImageInfo = textureImageInfos.data();
-		writeCount = 14;
+		VkWriteDescriptorSet w = {};
+		w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		w.dstSet = m_DescriptorSet;
+		w.dstBinding = SI_BINDING_TLAS;
+		w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+		w.descriptorCount = 1;
+		w.pNext = &asInfo;
+		writes.push_back(w);
 	}
 
-	// Reservoir + surface history descriptors: append at writeCount
-	uint32_t restirIdx = writeCount;
-	writes[restirIdx].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[restirIdx].dstSet = m_DescriptorSet;
-	writes[restirIdx].dstBinding = SI_BINDING_RESERVOIR_HISTORY;
-	writes[restirIdx].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[restirIdx].descriptorCount = 1;
-	writes[restirIdx].pBufferInfo = &reservoirBufferInfo;
+	addBufferWrite(SI_BINDING_INDEX_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &indexBufInfo);
+	addBufferWrite(SI_BINDING_NORMAL_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &normalBufInfo);
+	addBufferWrite(SI_BINDING_UV_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &uvBufInfo);
+	addBufferWrite(SI_BINDING_INSTANCE_MESH_INFO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &meshInfoBufInfo);
+	addBufferWrite(SI_BINDING_LIGHT_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &lightBufInfo);
+	addBufferWrite(SI_BINDING_INSTANCE_TRANSFORMS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &transformBufInfo);
+	addBufferWrite(SI_BINDING_INSTANCE_TRANSFORMS_PREV, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &transformPrevBufInfo);
+	addBufferWrite(SI_BINDING_INSTANCE_MATERIAL_INDICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &matIdxBufInfo);
+	addBufferWrite(SI_BINDING_RESERVOIR_HISTORY, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &reservoirBufInfo);
+	addBufferWrite(SI_BINDING_RESERVOIR_SCRATCH, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &reservoirScratchBufInfo);
+	addBufferWrite(SI_BINDING_SURFACE_HISTORY, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &surfaceHistoryBufInfo);
+	addBufferWrite(SI_BINDING_INSTANCE_MAT_OFFSETS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &matOffsetBufInfo);
 
-	writes[restirIdx + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[restirIdx + 1].dstSet = m_DescriptorSet;
-	writes[restirIdx + 1].dstBinding = SI_BINDING_RESERVOIR_SCRATCH;
-	writes[restirIdx + 1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[restirIdx + 1].descriptorCount = 1;
-	writes[restirIdx + 1].pBufferInfo = &reservoirScratchBufferInfo;
+	// Texture array — only write if we have textures
+	if (!textureImageInfos.empty())
+	{
+		VkWriteDescriptorSet w = {};
+		w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+		w.dstSet = m_DescriptorSet;
+		w.dstBinding = SI_BINDING_TEXTURE_ARRAY;
+		w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+		w.descriptorCount = (uint32_t)textureImageInfos.size();
+		w.pImageInfo = textureImageInfos.data();
+		writes.push_back(w);
+	}
 
-	writes[restirIdx + 2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	writes[restirIdx + 2].dstSet = m_DescriptorSet;
-	writes[restirIdx + 2].dstBinding = SI_BINDING_SURFACE_HISTORY;
-	writes[restirIdx + 2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[restirIdx + 2].descriptorCount = 1;
-	writes[restirIdx + 2].pBufferInfo = &surfaceHistoryBufferInfo;
+	RT_LOG("[UpdateDS] writeCount=%zu (textures=%zu, allocatedSlots=%u)",
+	       writes.size(), textureImageInfos.size(), m_AllocatedTextureCount);
+	fflush(stdout);
 
-	if (reservoirBuffer != VK_NULL_HANDLE)
-		writeCount = restirIdx + 3;
-
-	vkUpdateDescriptorSets(dev.device, writeCount, writes, 0, nullptr);
+	vkUpdateDescriptorSets(dev.device, (uint32_t)writes.size(), writes.data(), 0, nullptr);
+	RT_LOG("[UpdateDS] vkUpdateDescriptorSets done"); fflush(stdout);
 }
 
 void PathTracePass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
@@ -609,19 +498,12 @@ void PathTracePass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 	sbtAddrInfo.buffer = m_SBTBuffer.buffer;
 	VkDeviceAddress sbtAddress = vkGetBufferDeviceAddress(m_Device, &sbtAddrInfo);
 
-	// SBT is written once during Init() and never changes. The host→shader
-	// visibility is handled by the first vkQueueSubmit after Init. No per-frame
-	// barrier needed.
-
-	// Select raygen SBT entry:
-	// rasterFirst=false → offset 0 (raygen, RT-primary)
-	// rasterFirst=true  → offset baseAlign (secondary_raygen, raster-first)
 	VkDeviceSize rgenOffset = rasterFirst ? m_SBTStride : 0;
 
 	VkStridedDeviceAddressRegionKHR rgenRegion = {};
 	rgenRegion.deviceAddress = sbtAddress + rgenOffset;
 	rgenRegion.stride        = m_SBTStride;
-	rgenRegion.size          = m_SBTStride;  // single record per dispatch
+	rgenRegion.size          = m_SBTStride;
 
 	VkStridedDeviceAddressRegionKHR missRegion = {};
 	missRegion.deviceAddress = sbtAddress + m_RgenRegionSize;

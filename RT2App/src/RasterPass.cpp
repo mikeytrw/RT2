@@ -293,7 +293,10 @@ void RasterPass::CreateDrawData(const GpuDevice& dev, const GPUSceneData& scene)
 	for (uint32_t i = 0; i < totalInstances; i++)
 	{
 		const auto& inst = scene.instances[i];
-		float alphaMode = scene.materials[inst.materialIndex].alphaMode;
+		uint32_t effMatIdx = inst.materialIndex;
+		if (effMatIdx >= scene.materials.size())
+			effMatIdx = 0;
+		float alphaMode = scene.materials[effMatIdx].alphaMode;
 
 		VkDrawIndirectCommand cmd = {};
 		cmd.firstInstance = i;

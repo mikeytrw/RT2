@@ -36,6 +36,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 	GpuResources::DestroyBuffer(m_Device, m_UVBuffer, m_UVMemory);
 	GpuResources::DestroyBuffer(m_Device, m_InstanceMeshInfoBuffer, m_InstanceMeshInfoMemory);
 	GpuResources::DestroyBuffer(m_Device, m_MaterialIndexBuffer, m_MaterialIndexMemory);
+	GpuResources::DestroyBuffer(m_Device, m_InstanceMatOffsetBuffer, m_InstanceMatOffsetMemory);
 
 	m_BLASes.resize(meshes.size());
 	m_TotalTriangleCount = 0;
@@ -204,6 +205,7 @@ void AccelerationStructure::BuildAttributeBuffers()
 	GpuResources::DestroyBuffer(m_Device, m_UVBuffer, m_UVMemory);
 	GpuResources::DestroyBuffer(m_Device, m_InstanceMeshInfoBuffer, m_InstanceMeshInfoMemory);
 	GpuResources::DestroyBuffer(m_Device, m_MaterialIndexBuffer, m_MaterialIndexMemory);
+	GpuResources::DestroyBuffer(m_Device, m_InstanceMatOffsetBuffer, m_InstanceMatOffsetMemory);
 
 	// Compute total counts and per-BLAS offsets
 	uint32_t totalVerts = 0, totalIndices = 0, totalNormals = 0, totalUVs = 0;
@@ -223,8 +225,37 @@ void AccelerationStructure::BuildAttributeBuffers()
 	struct BlasOffsets { uint32_t vert, idx, norm, uv, matIdx; };
 	std::vector<BlasOffsets> offsets(m_BLASes.size());
 
+	// Per-instance material indices (from TLAS instance customIndex)
+	// Used to fill the material index buffer when a mesh has no per-triangle materials.
+	std::vector<uint32_t> instanceMaterialIndices;
+	bool hasInstances = !m_InstanceToBLAS.empty();
+
 	uint32_t vertOffset = 0, idxOffset = 0;
-	uint32_t totalNormCount = 0, totalUVCount = 0, totalMatIdxCount = 0;
+	uint32_t totalNormCount = 0, totalUVCount = 0;
+	uint32_t totalMatIdxCount = 0;
+
+	// When there are instances, material index buffer is per-instance (each
+	// instance gets its own material index for all its triangles).
+	// When no instances (fallback), it's per-BLAS.
+	if (hasInstances)
+	{
+		// We need the per-instance material indices. These come from the
+		// TLAS instances' customIndex, which we don't have directly here.
+		// Instead, we store them during BuildTLAS.
+		// For now, compute per-instance offsets.
+		for (size_t inst = 0; inst < m_InstanceToBLAS.size(); inst++)
+		{
+			uint32_t blasIdx = m_InstanceToBLAS[inst];
+			if (blasIdx < m_BLASes.size())
+				totalMatIdxCount += m_BLASes[blasIdx].triangleCount;
+		}
+	}
+	else
+	{
+		for (const auto& blas : m_BLASes)
+			totalMatIdxCount += blas.triangleCount;
+	}
+
 	for (size_t b = 0; b < m_BLASes.size(); b++)
 	{
 		auto& blas = m_BLASes[b];
@@ -232,14 +263,13 @@ void AccelerationStructure::BuildAttributeBuffers()
 		offsets[b].idx = idxOffset;
 		offsets[b].norm = totalNormCount;
 		offsets[b].uv = totalUVCount;
-		offsets[b].matIdx = totalMatIdxCount;
+		offsets[b].matIdx = 0; // not used for per-instance material indices
 		vertOffset += blas.vertexCount;
 		idxOffset += blas.triangleCount * 3;
 		if (blas.srcNormals && !blas.srcNormals->empty())
 			totalNormCount += blas.vertexCount;
 		if (blas.srcUVs && !blas.srcUVs->empty())
 			totalUVCount += blas.vertexCount;
-		totalMatIdxCount += blas.triangleCount;
 	}
 
 	VkDeviceSize vertBufSize = (VkDeviceSize)totalVerts * sizeof(glm::vec4);
@@ -350,35 +380,124 @@ void AccelerationStructure::BuildAttributeBuffers()
 			uploadPackedVec4(m_NormalBuffer, offsets[b].norm, blas.srcNormals, blas.vertexCount, 0.0f, 3);
 		if (blas.srcUVs && !blas.srcUVs->empty())
 			uploadPackedVec4(m_UVBuffer, offsets[b].uv, blas.srcUVs, blas.vertexCount, 0.0f, 2);
-		if (blas.srcMaterialIndices && !blas.srcMaterialIndices->empty())
-			uploadRaw(m_MaterialIndexBuffer, offsets[b].matIdx, blas.srcMaterialIndices, blas.triangleCount);
-		else
+	}
+
+	// Build per-instance material index buffer.
+	// Each instance gets its own section. If the mesh has per-triangle
+	// material indices AND the instance has no override (0xFFFFFFFF), use them.
+	// Otherwise, fill with the instance's override material index.
+	static const uint32_t MAT_OVERRIDE_SENTINEL = 0xFFFFFFFFu;
+	std::vector<uint32_t> matIndexData;
+	matIndexData.reserve(totalMatIdxCount);
+	if (hasInstances)
+	{
+		for (size_t inst = 0; inst < m_InstanceToBLAS.size(); inst++)
 		{
-			std::vector<uint32_t> fillMat(blas.triangleCount, blas.materialIndex);
-			uploadRaw(m_MaterialIndexBuffer, offsets[b].matIdx, &fillMat, blas.triangleCount);
+			uint32_t blasIdx = m_InstanceToBLAS[inst];
+			if (blasIdx >= m_BLASes.size())
+				continue;
+			const auto& blas = m_BLASes[blasIdx];
+			uint32_t instMatIdx = (inst < m_InstanceMaterialIndices.size())
+				? m_InstanceMaterialIndices[inst] : MAT_OVERRIDE_SENTINEL;
+
+			bool usePerTri = (instMatIdx == MAT_OVERRIDE_SENTINEL) &&
+			                 blas.srcMaterialIndices && !blas.srcMaterialIndices->empty();
+			if (usePerTri)
+			{
+				for (uint32_t t = 0; t < blas.triangleCount; t++)
+					matIndexData.push_back((*blas.srcMaterialIndices)[t]);
+			}
+			else
+			{
+				uint32_t fillIdx = (instMatIdx == MAT_OVERRIDE_SENTINEL) ? 0u : instMatIdx;
+				for (uint32_t t = 0; t < blas.triangleCount; t++)
+					matIndexData.push_back(fillIdx);
+			}
+		}
+	}
+	else
+	{
+		for (size_t b = 0; b < m_BLASes.size(); b++)
+		{
+			const auto& blas = m_BLASes[b];
+			if (blas.srcMaterialIndices && !blas.srcMaterialIndices->empty())
+			{
+				for (uint32_t t = 0; t < blas.triangleCount; t++)
+					matIndexData.push_back((*blas.srcMaterialIndices)[t]);
+			}
+			else
+			{
+				for (uint32_t t = 0; t < blas.triangleCount; t++)
+					matIndexData.push_back(blas.materialIndex);
+			}
 		}
 	}
 
+	// Upload material index buffer
+	if (!matIndexData.empty())
+	{
+		VkDeviceSize matSize = matIndexData.size() * sizeof(uint32_t);
+		RT_LOG("[MatIdx] matIndexData.size()=%zu matIdxBufSize=%zu",
+		       matIndexData.size(), (size_t)matIdxBufSize);
+		if (matSize > matIdxBufSize)
+		{
+			RT_LOG("[MatIdx] ERROR: matSize > matIdxBufSize! Clamping.");
+			matSize = matIdxBufSize;
+		}
+		VkBuffer stagingBuf; VkDeviceMemory stagingMem;
+		GpuResources::CreateBuffer(m_Device, matSize,
+		             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		             stagingBuf, stagingMem);
+		void* mapped = nullptr;
+		vkMapMemory(device, stagingMem, 0, matSize, 0, &mapped);
+		memcpy(mapped, matIndexData.data(), (size_t)matSize);
+		vkUnmapMemory(device, stagingMem);
+		VkBufferCopy region = {};
+		region.size = matSize;
+		VkBuffer sBuf = stagingBuf; VkDeviceMemory sMem = stagingMem; VkBuffer dB = m_MaterialIndexBuffer;
+		CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+			vkCmdCopyBuffer(cmd, sBuf, dB, 1, &region);
+		});
+		GpuResources::DestroyBuffer(m_Device, sBuf, sMem);
+	}
+
 	// Build per-instance mesh info (uvec4 per instance: vertOffset, idxOffset, normOffset, uvOffset)
+	// and per-instance material index offsets.
 	std::vector<glm::uvec4> instanceMeshInfo;
-	if (!m_InstanceToBLAS.empty())
+	std::vector<uint32_t> instanceMatOffsets;
+	if (hasInstances)
 	{
 		instanceMeshInfo.reserve(m_InstanceToBLAS.size());
+		instanceMatOffsets.reserve(m_InstanceToBLAS.size());
+		uint32_t matIdxRunning = 0;
 		for (size_t inst = 0; inst < m_InstanceToBLAS.size(); inst++)
 		{
 			uint32_t blasIdx = m_InstanceToBLAS[inst];
 			if (blasIdx < offsets.size())
+			{
 				instanceMeshInfo.push_back(glm::uvec4(offsets[blasIdx].vert, offsets[blasIdx].idx,
 				                                      offsets[blasIdx].norm, offsets[blasIdx].uv));
+				instanceMatOffsets.push_back(matIdxRunning);
+				matIdxRunning += m_BLASes[blasIdx].triangleCount;
+			}
 			else
+			{
 				instanceMeshInfo.push_back(glm::uvec4(0));
+				instanceMatOffsets.push_back(0);
+			}
 		}
 	}
 	else
 	{
 		instanceMeshInfo.reserve(m_BLASes.size());
+		uint32_t matOff = 0;
 		for (const auto& off : offsets)
+		{
 			instanceMeshInfo.push_back(glm::uvec4(off.vert, off.idx, off.norm, off.uv));
+			instanceMatOffsets.push_back(matOff);
+			matOff += m_BLASes[&off - offsets.data()].triangleCount;
+		}
 	}
 
 	// Upload instance mesh info (HOST_VISIBLE — small, read by shaders)
@@ -392,6 +511,21 @@ void AccelerationStructure::BuildAttributeBuffers()
 	memcpy(infoMapped, instanceMeshInfo.data(), (size_t)infoSize);
 	vkUnmapMemory(device, m_InstanceMeshInfoMemory);
 
+	// Upload per-instance material index offsets
+	GpuResources::DestroyBuffer(m_Device, m_InstanceMatOffsetBuffer, m_InstanceMatOffsetMemory);
+	VkDeviceSize matOffSize = instanceMatOffsets.size() * sizeof(uint32_t);
+	if (matOffSize > 0)
+	{
+		GpuResources::CreateBuffer(m_Device, matOffSize,
+		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+		             m_InstanceMatOffsetBuffer, m_InstanceMatOffsetMemory);
+		void* matOffMapped = nullptr;
+		vkMapMemory(device, m_InstanceMatOffsetMemory, 0, matOffSize, 0, &matOffMapped);
+		memcpy(matOffMapped, instanceMatOffsets.data(), (size_t)matOffSize);
+		vkUnmapMemory(device, m_InstanceMatOffsetMemory);
+	}
+
 	RT_LOG("[BuildAttributeBuffers] done: verts=%u indices=%u instances=%zu",
 	       totalVerts, totalIndices, instanceMeshInfo.size());
 }
@@ -404,6 +538,12 @@ bool AccelerationStructure::BuildTLAS(VkCommandBuffer cmdBuffer,
 
 	// Store instance-to-BLAS mapping for combined buffer offset computation
 	m_InstanceToBLAS = instanceMeshIndices;
+
+	// Store per-instance material indices (from customIndex)
+	m_InstanceMaterialIndices.clear();
+	m_InstanceMaterialIndices.reserve(instances.size());
+	for (const auto& inst : instances)
+		m_InstanceMaterialIndices.push_back(inst.customIndex);
 
 	// Destroy previous TLAS
 	if (m_TLAS)
@@ -535,6 +675,12 @@ bool AccelerationStructure::RebuildTLASOnly(VkCommandBuffer cmdBuffer,
 	// Update instance-to-BLAS mapping
 	m_InstanceToBLAS = instanceMeshIndices;
 
+	// Update per-instance material indices
+	m_InstanceMaterialIndices.clear();
+	m_InstanceMaterialIndices.reserve(instances.size());
+	for (const auto& inst : instances)
+		m_InstanceMaterialIndices.push_back(inst.customIndex);
+
 	// Destroy previous TLAS (keep BLASes)
 	if (m_TLAS)
 	{
@@ -664,6 +810,7 @@ void AccelerationStructure::Destroy()
 	GpuResources::DestroyBuffer(m_Device, m_UVBuffer, m_UVMemory);
 	GpuResources::DestroyBuffer(m_Device, m_InstanceMeshInfoBuffer, m_InstanceMeshInfoMemory);
 	GpuResources::DestroyBuffer(m_Device, m_MaterialIndexBuffer, m_MaterialIndexMemory);
+	GpuResources::DestroyBuffer(m_Device, m_InstanceMatOffsetBuffer, m_InstanceMatOffsetMemory);
 
 	if (m_TLAS)
 	{

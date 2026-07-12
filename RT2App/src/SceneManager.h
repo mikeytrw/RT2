@@ -176,10 +176,11 @@ public:
 	// Clear all scene state.
 	void Clear();
 
-	// Remove unreferenced meshes from the MeshRegistry and remap all
-	// MeshRef components to the compacted indices. Call after entity
-	// deletion to prevent deleted meshes from lingering in GPU scene.
-	void CompactMeshRegistry();
+	// Remove unreferenced meshes/materials/textures and remap all
+	// references to the compacted indices. Call after entity
+	// deletion to prevent deleted resources from lingering in GPU scene.
+	// Returns true if any compaction occurred (requires full re-sync).
+	bool CompactMeshRegistry();
 
 private:
 	void UpdateWorldTransforms();

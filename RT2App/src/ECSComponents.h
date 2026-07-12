@@ -61,7 +61,8 @@ struct Hierarchy
 struct MeshRef
 {
     uint32_t meshIndex = 0;      // index into MeshRegistry
-    int materialIndex = 0;       // material index for this instance
+    int materialIndex = -1;      // -1 = use per-triangle material indices from mesh,
+                                 // >=0 = override all triangles with this material
 };
 
 // Light component for point/spot lights (CPU-side, not emissive triangles)

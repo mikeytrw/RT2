@@ -212,15 +212,6 @@ void SceneManager::SyncToGPU()
 	}
 
 	m_CurrentGpuScene = std::move(gpuData);
-
-	// Free CPU-side texture pixels — they've been moved to the async loader
-	for (auto& tex : m_EcsScene.textures)
-	{
-		tex.pixels.clear();
-		tex.pixels.shrink_to_fit();
-		tex.floatPixels.clear();
-		tex.floatPixels.shrink_to_fit();
-	}
 }
 
 void SceneManager::SyncToGPUKeepTextures()
@@ -612,7 +603,7 @@ void SceneManager::Clear()
 	m_EntityCacheDirty = true;
 }
 
-void SceneManager::CompactMeshRegistry()
+bool SceneManager::CompactMeshRegistry()
 {
 	auto& reg = m_EcsScene.registry;
 	auto& meshReg = m_EcsScene.meshRegistry;
@@ -627,45 +618,182 @@ void SceneManager::CompactMeshRegistry()
 		referenced.insert(ref.meshIndex);
 	}
 
+	bool meshesChanged = false;
+
 	// If all meshes are referenced, nothing to do
 	if (referenced.size() == meshReg.GetCount())
-		return;
-
+	{
+		// Meshes are fine, but still may need to compact materials/textures
+	}
 	// If no meshes referenced, clear the registry entirely
-	if (referenced.empty())
+	else if (referenced.empty())
 	{
 		meshReg.Clear();
-		return;
+		meshesChanged = true;
+	}
+	else
+	{
+		// Build remap: old index -> new index
+		std::map<uint32_t, uint32_t> remap;
+		uint32_t newIndex = 0;
+		for (uint32_t old : referenced)
+			remap[old] = newIndex++;
+
+		// Rebuild the mesh registry with only referenced meshes
+		std::vector<MeshData> newMeshes;
+		newMeshes.reserve(referenced.size());
+		for (uint32_t old : referenced)
+			newMeshes.push_back(std::move(meshReg.GetMesh(old)));
+
+		meshReg.Clear();
+		for (auto& mesh : newMeshes)
+			meshReg.AddMesh(std::move(mesh));
+
+		// Remap all MeshRef components
+		for (auto entity : view)
+		{
+			if (!reg.valid(entity)) continue;
+			auto& ref = view.get<MeshRef>(entity);
+			auto it = remap.find(ref.meshIndex);
+			if (it != remap.end())
+				ref.meshIndex = it->second;
+		}
+
+		printf("[Scene] Compacted mesh registry: %d -> %d meshes\n",
+		       (int)meshReg.GetCount(), (int)referenced.size());
+		meshesChanged = true;
 	}
 
-	// Build remap: old index → new index
-	std::map<uint32_t, uint32_t> remap;
-	uint32_t newIndex = 0;
-	for (uint32_t old : referenced)
-		remap[old] = newIndex++;
-
-	// Rebuild the mesh registry with only referenced meshes
-	std::vector<MeshData> newMeshes;
-	newMeshes.reserve(referenced.size());
-	for (uint32_t old : referenced)
-		newMeshes.push_back(std::move(meshReg.GetMesh(old)));
-
-	meshReg.Clear();
-	for (auto& mesh : newMeshes)
-		meshReg.AddMesh(std::move(mesh));
-
-	// Remap all MeshRef components
+	// ---- Compact materials ----
+	// Collect all referenced material indices from MeshRef components
+	// and per-triangle materialIndices in meshes.
+	std::set<int> referencedMats;
 	for (auto entity : view)
 	{
 		if (!reg.valid(entity)) continue;
-		auto& ref = view.get<MeshRef>(entity);
-		auto it = remap.find(ref.meshIndex);
-		if (it != remap.end())
-			ref.meshIndex = it->second;
+		const auto& ref = view.get<MeshRef>(entity);
+		referencedMats.insert(ref.materialIndex);
+	}
+	for (uint32_t m = 0; m < meshReg.GetCount(); m++)
+	{
+		const auto& mesh = meshReg.GetMesh(m);
+		for (int idx : mesh.materialIndices)
+			referencedMats.insert(idx);
 	}
 
-	printf("[Scene] Compacted mesh registry: %d -> %d meshes\n",
-	       (int)meshReg.GetCount(), (int)referenced.size());
+	// Always include a default material at index 0 if there are meshes
+	// but no materials (safety net).
+	if (meshReg.GetCount() > 0 && referencedMats.empty())
+		referencedMats.insert(0);
+
+	// Build material remap: old index -> new index
+	std::map<int, int> matRemap;
+	int newMatIdx = 0;
+	for (int old : referencedMats)
+	{
+		if (old >= 0 && old < (int)m_EcsScene.materials.size())
+			matRemap[old] = newMatIdx++;
+	}
+
+	bool matsChanged = (matRemap.size() < m_EcsScene.materials.size());
+
+	if (matsChanged)
+	{
+		// Rebuild materials vector
+		std::vector<SceneMaterial> newMaterials;
+		newMaterials.reserve(matRemap.size());
+		for (int old : referencedMats)
+		{
+			if (old >= 0 && old < (int)m_EcsScene.materials.size())
+				newMaterials.push_back(m_EcsScene.materials[old]);
+		}
+		m_EcsScene.materials = std::move(newMaterials);
+
+		// Remap MeshRef.materialIndex
+		for (auto entity : view)
+		{
+			if (!reg.valid(entity)) continue;
+			auto& ref = view.get<MeshRef>(entity);
+			auto it = matRemap.find(ref.materialIndex);
+			if (it != matRemap.end())
+				ref.materialIndex = it->second;
+		}
+
+		// Remap per-triangle materialIndices in meshes
+		for (uint32_t m = 0; m < meshReg.GetCount(); m++)
+		{
+			auto& mesh = meshReg.GetMesh(m);
+			for (auto& idx : mesh.materialIndices)
+			{
+				auto it = matRemap.find(idx);
+				if (it != matRemap.end())
+					idx = it->second;
+			}
+		}
+
+		printf("[Scene] Compacted materials: %zu -> %zu\n",
+		       m_EcsScene.materials.size() + matRemap.size(), matRemap.size());
+	}
+
+	// ---- Compact textures ----
+	// Collect all referenced texture indices from remaining materials.
+	std::set<int> referencedTexs;
+	for (const auto& mat : m_EcsScene.materials)
+	{
+		if (mat.baseColorTextureIndex >= 0)        referencedTexs.insert(mat.baseColorTextureIndex);
+		if (mat.normalTextureIndex >= 0)          referencedTexs.insert(mat.normalTextureIndex);
+		if (mat.emissiveTextureIndex >= 0)         referencedTexs.insert(mat.emissiveTextureIndex);
+		if (mat.metallicRoughnessTextureIndex >= 0) referencedTexs.insert(mat.metallicRoughnessTextureIndex);
+	}
+
+	// Build texture remap: old index -> new index
+	std::map<int, int> texRemap;
+	int newTexIdx = 0;
+	for (int old : referencedTexs)
+	{
+		if (old >= 0 && old < (int)m_EcsScene.textures.size())
+			texRemap[old] = newTexIdx++;
+	}
+
+	bool texsChanged = (texRemap.size() < m_EcsScene.textures.size());
+
+	if (texsChanged)
+	{
+		// Rebuild textures vector
+		std::vector<SceneTexture> newTextures;
+		newTextures.reserve(texRemap.size());
+		for (int old : referencedTexs)
+		{
+			if (old >= 0 && old < (int)m_EcsScene.textures.size())
+				newTextures.push_back(std::move(m_EcsScene.textures[old]));
+		}
+		m_EcsScene.textures = std::move(newTextures);
+
+		// Remap texture indices in materials
+		auto remapTex = [&texRemap](int& idx) {
+			if (idx >= 0)
+			{
+				auto it = texRemap.find(idx);
+				if (it != texRemap.end())
+					idx = it->second;
+				else
+					idx = -1; // orphaned texture reference
+			}
+		};
+		for (auto& mat : m_EcsScene.materials)
+		{
+			remapTex(mat.baseColorTextureIndex);
+			remapTex(mat.normalTextureIndex);
+			remapTex(mat.emissiveTextureIndex);
+			remapTex(mat.metallicRoughnessTextureIndex);
+		}
+
+		printf("[Scene] Compacted textures: %zu -> %zu\n",
+		       texRemap.size() + (m_EcsScene.textures.size() - texRemap.size()),
+		       m_EcsScene.textures.size());
+	}
+
+	return meshesChanged || matsChanged || texsChanged;
 }
 
 // ============================================================================

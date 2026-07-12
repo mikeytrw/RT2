@@ -51,12 +51,13 @@
 #define SI_BINDING_INSTANCE_MESH_INFO 8
 #define SI_BINDING_LIGHT_BUFFER          9
 #define SI_BINDING_INSTANCE_TRANSFORMS   10
-#define SI_BINDING_TEXTURE_ARRAY         11
+#define SI_BINDING_TEXTURE_ARRAY         18
 #define SI_BINDING_INSTANCE_TRANSFORMS_PREV 12
 #define SI_BINDING_INSTANCE_MATERIAL_INDICES 13
 #define SI_BINDING_RESERVOIR_HISTORY       14  // previous frame's final reservoir (read by temporal, written by spatial)
 #define SI_BINDING_RESERVOIR_SCRATCH       15  // temporal output / spatial input
 #define SI_BINDING_SURFACE_HISTORY          16  // per-pixel receiver metadata for temporal validation
+#define SI_BINDING_INSTANCE_MAT_OFFSETS     17  // per-instance material index offset (uint32 per instance)
 
 // ============================================================================
 // Binding indices — set 1 (NRD G-buffer)

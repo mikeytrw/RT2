@@ -41,15 +41,14 @@ public:
 	AsyncTextureLoader& operator=(const AsyncTextureLoader&) = delete;
 
 	// Kick off async decode + upload. Returns false if busy or no textures.
-	// `envMapFloatPixels` / `envMapWidth` / `envMapHeight` supply the HDR
-	// env map texture that gets appended to the texture array (matches
-	// the existing WalnutApp::UploadMeshToGPU convention).
+	// `envMapIndex` is the pass-through index of the env map entry within
+	// `textures` (or -1 if no env map). The loader does NOT extract or
+	// re-append the env map — it processes all `textures[]` entries in-order.
 	// `marginalCDF` / `conditionalCDF` / `cdfWidth` / `cdfHeight` supply
-	// the CDF textures (also appended after the env map).
+	// the CDF textures (appended after all scene textures).
 	bool Begin(const GpuDevice& dev,
 	           const std::vector<SceneTexture>& textures,
-	           const std::vector<float>& envMapFloatPixels,
-	           int envMapWidth, int envMapHeight,
+	           int envMapIndex,
 	           const std::vector<float>& marginalCDF,
 	           const std::vector<float>& conditionalCDF,
 	           int cdfWidth, int cdfHeight);
@@ -77,7 +76,7 @@ public:
 private:
 	void WorkerThread(const GpuDevice* dev,
 	                  std::vector<SceneTexture> textures,
-	                  std::vector<float> envMapFloat,
+	                  int envMapIndex,
 	                  std::vector<float> marginalCDF,
 	                  std::vector<float> conditionalCDF);
 
@@ -94,6 +93,10 @@ private:
 	// Staging arena (kept alive until fence signals, destroyed in Adopt)
 	StagingArena  m_Staging;
 
+	// Per-texture staging buffers (kept alive until fence signals, destroyed in Adopt)
+	std::vector<VkBuffer>       m_PendingStagingBufs;
+	std::vector<VkDeviceMemory> m_PendingStagingMems;
+
 	// Results from worker thread
 	std::vector<GpuImage> m_ResultTextures;
 	int m_ResultEnvMapIndex       = -1;
@@ -101,9 +104,7 @@ private:
 	int m_ResultConditionalCDFIndex = -1;
 
 	// Env map + CDF inputs (copied for the worker)
-	std::vector<float> m_EnvMapFloatPixels;
-	int m_EnvMapWidth  = 0;
-	int m_EnvMapHeight = 0;
+	int m_EnvMapIndex = -1;
 	std::vector<float> m_MarginalCDF;
 	std::vector<float> m_ConditionalCDF;
 	int m_CDFWidth  = 0;

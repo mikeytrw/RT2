@@ -122,13 +122,14 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
 
         GPUInstance inst;
         inst.meshIndex = ref.meshIndex;
-        inst.materialIndex = static_cast<uint32_t>(
-            ref.materialIndex < static_cast<int>(gpu.materials.size()) ? ref.materialIndex : 0);
+        inst.materialIndex = (ref.materialIndex >= 0 &&
+            ref.materialIndex < static_cast<int>(gpu.materials.size()))
+            ? static_cast<uint32_t>(ref.materialIndex) : 0xFFFFFFFFu;
         inst.worldMatrix = tf.worldMatrix;
         inst.prevWorldMatrix = tf.prevWorldMatrix;
 
-        // Check transparency from material
-        if (inst.materialIndex < gpu.materials.size())
+        // Check transparency from material (only for override materials)
+        if (inst.materialIndex != 0xFFFFFFFFu && inst.materialIndex < gpu.materials.size())
         {
             float alphaMode = gpu.materials[inst.materialIndex].alphaMode;
             inst.isTransparent = (alphaMode > 0.5f);
@@ -151,41 +152,94 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
             continue;
 
         const auto& mesh = gpu.meshes[inst.meshIndex];
-        const auto& mat = gpu.materials[inst.materialIndex];
-        glm::vec3 emissive = glm::vec3(mat.emissive_roughness);
-        bool isEmissive = (emissive.x > 0.0f || emissive.y > 0.0f || emissive.z > 0.0f);
-        if (!isEmissive)
-            continue;
 
-        int emissiveTexIdx = mat.textureIndices.z;
-        const auto& verts = *mesh.vertices;
-        const auto& idxs = *mesh.indices;
-        uint32_t triCount = static_cast<uint32_t>(idxs.size() / 3);
-
-        for (uint32_t t = 0; t < triCount; t++)
+        // Determine effective material index for emissive check
+        // For per-triangle materials, check each triangle's material
+        if (inst.materialIndex != 0xFFFFFFFFu)
         {
-            uint32_t vi0 = idxs[t * 3 + 0] * 3;
-            uint32_t vi1 = idxs[t * 3 + 1] * 3;
-            uint32_t vi2 = idxs[t * 3 + 2] * 3;
-
-            glm::vec4 v0 = inst.worldMatrix * glm::vec4(verts[vi0], verts[vi0 + 1], verts[vi0 + 2], 1.0f);
-            glm::vec4 v1 = inst.worldMatrix * glm::vec4(verts[vi1], verts[vi1 + 1], verts[vi1 + 2], 1.0f);
-            glm::vec4 v2 = inst.worldMatrix * glm::vec4(verts[vi2], verts[vi2 + 1], verts[vi2 + 2], 1.0f);
-
-            glm::vec3 w0(v0), w1(v1), w2(v2);
-            glm::vec3 edge1 = w1 - w0;
-            glm::vec3 edge2 = w2 - w0;
-            float area = 0.5f * std::abs(glm::length(glm::cross(edge1, edge2)));
-
-            if (area < 1e-8f)
+            const auto& mat = gpu.materials[inst.materialIndex];
+            glm::vec3 emissive = glm::vec3(mat.emissive_roughness);
+            bool isEmissive = (emissive.x > 0.0f || emissive.y > 0.0f || emissive.z > 0.0f);
+            if (!isEmissive)
                 continue;
 
-            GPUTriangleLight light;
-            light.emission_area = glm::vec4(emissive, area);
-            light.ids = glm::uvec4(instIdx, t, inst.materialIndex,
-                                   emissiveTexIdx >= 0 ? static_cast<uint32_t>(emissiveTexIdx) : 0xFFFFFFFFu);
-            gpu.lights.push_back(light);
-            gpu.totalLightArea += area;
+            int emissiveTexIdx = mat.textureIndices.z;
+            const auto& verts = *mesh.vertices;
+            const auto& idxs = *mesh.indices;
+            uint32_t triCount = static_cast<uint32_t>(idxs.size() / 3);
+
+            for (uint32_t t = 0; t < triCount; t++)
+            {
+                uint32_t vi0 = idxs[t * 3 + 0] * 3;
+                uint32_t vi1 = idxs[t * 3 + 1] * 3;
+                uint32_t vi2 = idxs[t * 3 + 2] * 3;
+
+                glm::vec4 v0 = inst.worldMatrix * glm::vec4(verts[vi0], verts[vi0 + 1], verts[vi0 + 2], 1.0f);
+                glm::vec4 v1 = inst.worldMatrix * glm::vec4(verts[vi1], verts[vi1 + 1], verts[vi1 + 2], 1.0f);
+                glm::vec4 v2 = inst.worldMatrix * glm::vec4(verts[vi2], verts[vi2 + 1], verts[vi2 + 2], 1.0f);
+
+                glm::vec3 w0(v0), w1(v1), w2(v2);
+                glm::vec3 edge1 = w1 - w0;
+                glm::vec3 edge2 = w2 - w0;
+                float area = 0.5f * std::abs(glm::length(glm::cross(edge1, edge2)));
+
+                if (area < 1e-8f)
+                    continue;
+
+                GPUTriangleLight light;
+                light.emission_area = glm::vec4(emissive, area);
+                light.ids = glm::uvec4(instIdx, t, inst.materialIndex,
+                                       emissiveTexIdx >= 0 ? static_cast<uint32_t>(emissiveTexIdx) : 0xFFFFFFFFu);
+                gpu.lights.push_back(light);
+                gpu.totalLightArea += area;
+            }
+        }
+        else
+        {
+            // Per-triangle materials: iterate triangles, check each material
+            if (!mesh.materialIndices)
+                continue;
+            const auto& matIndices = *mesh.materialIndices;
+            const auto& verts = *mesh.vertices;
+            const auto& idxs = *mesh.indices;
+            uint32_t triCount = static_cast<uint32_t>(idxs.size() / 3);
+
+            for (uint32_t t = 0; t < triCount; t++)
+            {
+                uint32_t triMatIdx = matIndices[t];
+                if (triMatIdx >= gpu.materials.size())
+                    continue;
+                const auto& mat = gpu.materials[triMatIdx];
+                glm::vec3 emissive = glm::vec3(mat.emissive_roughness);
+                bool isEmissive = (emissive.x > 0.0f || emissive.y > 0.0f || emissive.z > 0.0f);
+                if (!isEmissive)
+                    continue;
+
+                int emissiveTexIdx = mat.textureIndices.z;
+
+                uint32_t vi0 = idxs[t * 3 + 0] * 3;
+                uint32_t vi1 = idxs[t * 3 + 1] * 3;
+                uint32_t vi2 = idxs[t * 3 + 2] * 3;
+
+                glm::vec4 v0 = inst.worldMatrix * glm::vec4(verts[vi0], verts[vi0 + 1], verts[vi0 + 2], 1.0f);
+                glm::vec4 v1 = inst.worldMatrix * glm::vec4(verts[vi1], verts[vi1 + 1], verts[vi1 + 2], 1.0f);
+                glm::vec4 v2 = inst.worldMatrix * glm::vec4(verts[vi2], verts[vi2 + 1], verts[vi2 + 2], 1.0f);
+
+                glm::vec3 w0(v0), w1(v1), w2(v2);
+                glm::vec3 edge1 = w1 - w0;
+                glm::vec3 edge2 = w2 - w0;
+                float area = 0.5f * std::abs(glm::length(glm::cross(edge1, edge2)));
+
+                if (area < 1e-8f)
+                    continue;
+
+                GPUTriangleLight light;
+                light.emission_area = glm::vec4(emissive, area);
+                light.ids = glm::uvec4(instIdx, t, triMatIdx,
+                                       emissiveTexIdx >= 0 ? static_cast<uint32_t>(emissiveTexIdx) : 0xFFFFFFFFu);
+                gpu.lights.push_back(light);
+                gpu.totalLightArea += area;
+            }
         }
     }
 
@@ -208,12 +262,13 @@ void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene)
 
         GPUInstance inst;
         inst.meshIndex = ref.meshIndex;
-        inst.materialIndex = static_cast<uint32_t>(
-            ref.materialIndex < static_cast<int>(gpu.materials.size()) ? ref.materialIndex : 0);
+        inst.materialIndex = (ref.materialIndex >= 0 &&
+            ref.materialIndex < static_cast<int>(gpu.materials.size()))
+            ? static_cast<uint32_t>(ref.materialIndex) : 0xFFFFFFFFu;
         inst.worldMatrix = tf.worldMatrix;
         inst.prevWorldMatrix = tf.prevWorldMatrix;
 
-        if (inst.materialIndex < gpu.materials.size())
+        if (inst.materialIndex != 0xFFFFFFFFu && inst.materialIndex < gpu.materials.size())
         {
             float alphaMode = gpu.materials[inst.materialIndex].alphaMode;
             inst.isTransparent = (alphaMode > 0.5f);
@@ -233,41 +288,91 @@ void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene)
             continue;
 
         const auto& mesh = gpu.meshes[inst.meshIndex];
-        const auto& mat = gpu.materials[inst.materialIndex];
-        glm::vec3 emissive = glm::vec3(mat.emissive_roughness);
-        bool isEmissive = (emissive.x > 0.0f || emissive.y > 0.0f || emissive.z > 0.0f);
-        if (!isEmissive)
-            continue;
 
-        int emissiveTexIdx = mat.textureIndices.z;
-        const auto& verts = *mesh.vertices;
-        const auto& idxs = *mesh.indices;
-        uint32_t triCount = static_cast<uint32_t>(idxs.size() / 3);
-
-        for (uint32_t t = 0; t < triCount; t++)
+        if (inst.materialIndex != 0xFFFFFFFFu)
         {
-            uint32_t vi0 = idxs[t * 3 + 0] * 3;
-            uint32_t vi1 = idxs[t * 3 + 1] * 3;
-            uint32_t vi2 = idxs[t * 3 + 2] * 3;
-
-            glm::vec4 v0 = inst.worldMatrix * glm::vec4(verts[vi0], verts[vi0 + 1], verts[vi0 + 2], 1.0f);
-            glm::vec4 v1 = inst.worldMatrix * glm::vec4(verts[vi1], verts[vi1 + 1], verts[vi1 + 2], 1.0f);
-            glm::vec4 v2 = inst.worldMatrix * glm::vec4(verts[vi2], verts[vi2 + 1], verts[vi2 + 2], 1.0f);
-
-            glm::vec3 w0(v0), w1(v1), w2(v2);
-            glm::vec3 edge1 = w1 - w0;
-            glm::vec3 edge2 = w2 - w0;
-            float area = 0.5f * std::abs(glm::length(glm::cross(edge1, edge2)));
-
-            if (area < 1e-8f)
+            const auto& mat = gpu.materials[inst.materialIndex];
+            glm::vec3 emissive = glm::vec3(mat.emissive_roughness);
+            bool isEmissive = (emissive.x > 0.0f || emissive.y > 0.0f || emissive.z > 0.0f);
+            if (!isEmissive)
                 continue;
 
-            GPUTriangleLight light;
-            light.emission_area = glm::vec4(emissive, area);
-            light.ids = glm::uvec4(instIdx, t, inst.materialIndex,
-                                   emissiveTexIdx >= 0 ? static_cast<uint32_t>(emissiveTexIdx) : 0xFFFFFFFFu);
-            gpu.lights.push_back(light);
-            gpu.totalLightArea += area;
+            int emissiveTexIdx = mat.textureIndices.z;
+            const auto& verts = *mesh.vertices;
+            const auto& idxs = *mesh.indices;
+            uint32_t triCount = static_cast<uint32_t>(idxs.size() / 3);
+
+            for (uint32_t t = 0; t < triCount; t++)
+            {
+                uint32_t vi0 = idxs[t * 3 + 0] * 3;
+                uint32_t vi1 = idxs[t * 3 + 1] * 3;
+                uint32_t vi2 = idxs[t * 3 + 2] * 3;
+
+                glm::vec4 v0 = inst.worldMatrix * glm::vec4(verts[vi0], verts[vi0 + 1], verts[vi0 + 2], 1.0f);
+                glm::vec4 v1 = inst.worldMatrix * glm::vec4(verts[vi1], verts[vi1 + 1], verts[vi1 + 2], 1.0f);
+                glm::vec4 v2 = inst.worldMatrix * glm::vec4(verts[vi2], verts[vi2 + 1], verts[vi2 + 2], 1.0f);
+
+                glm::vec3 w0(v0), w1(v1), w2(v2);
+                glm::vec3 edge1 = w1 - w0;
+                glm::vec3 edge2 = w2 - w0;
+                float area = 0.5f * std::abs(glm::length(glm::cross(edge1, edge2)));
+
+                if (area < 1e-8f)
+                    continue;
+
+                GPUTriangleLight light;
+                light.emission_area = glm::vec4(emissive, area);
+                light.ids = glm::uvec4(instIdx, t, inst.materialIndex,
+                                       emissiveTexIdx >= 0 ? static_cast<uint32_t>(emissiveTexIdx) : 0xFFFFFFFFu);
+                gpu.lights.push_back(light);
+                gpu.totalLightArea += area;
+            }
+        }
+        else
+        {
+            if (!mesh.materialIndices)
+                continue;
+            const auto& matIndices = *mesh.materialIndices;
+            const auto& verts = *mesh.vertices;
+            const auto& idxs = *mesh.indices;
+            uint32_t triCount = static_cast<uint32_t>(idxs.size() / 3);
+
+            for (uint32_t t = 0; t < triCount; t++)
+            {
+                uint32_t triMatIdx = matIndices[t];
+                if (triMatIdx >= gpu.materials.size())
+                    continue;
+                const auto& mat = gpu.materials[triMatIdx];
+                glm::vec3 emissive = glm::vec3(mat.emissive_roughness);
+                bool isEmissive = (emissive.x > 0.0f || emissive.y > 0.0f || emissive.z > 0.0f);
+                if (!isEmissive)
+                    continue;
+
+                int emissiveTexIdx = mat.textureIndices.z;
+
+                uint32_t vi0 = idxs[t * 3 + 0] * 3;
+                uint32_t vi1 = idxs[t * 3 + 1] * 3;
+                uint32_t vi2 = idxs[t * 3 + 2] * 3;
+
+                glm::vec4 v0 = inst.worldMatrix * glm::vec4(verts[vi0], verts[vi0 + 1], verts[vi0 + 2], 1.0f);
+                glm::vec4 v1 = inst.worldMatrix * glm::vec4(verts[vi1], verts[vi1 + 1], verts[vi1 + 2], 1.0f);
+                glm::vec4 v2 = inst.worldMatrix * glm::vec4(verts[vi2], verts[vi2 + 1], verts[vi2 + 2], 1.0f);
+
+                glm::vec3 w0(v0), w1(v1), w2(v2);
+                glm::vec3 edge1 = w1 - w0;
+                glm::vec3 edge2 = w2 - w0;
+                float area = 0.5f * std::abs(glm::length(glm::cross(edge1, edge2)));
+
+                if (area < 1e-8f)
+                    continue;
+
+                GPUTriangleLight light;
+                light.emission_area = glm::vec4(emissive, area);
+                light.ids = glm::uvec4(instIdx, t, triMatIdx,
+                                       emissiveTexIdx >= 0 ? static_cast<uint32_t>(emissiveTexIdx) : 0xFFFFFFFFu);
+                gpu.lights.push_back(light);
+                gpu.totalLightArea += area;
+            }
         }
     }
 }

@@ -74,6 +74,7 @@ public:
 	VkBuffer GetUVBuffer() const { return m_UVBuffer; }
 	VkBuffer GetInstanceMeshInfoBuffer() const { return m_InstanceMeshInfoBuffer; }
 	VkBuffer GetMaterialIndexBuffer() const { return m_MaterialIndexBuffer; }
+	VkBuffer GetInstanceMatOffsetBuffer() const { return m_InstanceMatOffsetBuffer; }
 	uint32_t GetTriangleCount() const { return m_TotalTriangleCount; }
 
 private:
@@ -114,6 +115,8 @@ private:
 	VkDeviceMemory m_InstanceMeshInfoMemory = VK_NULL_HANDLE;
 	VkBuffer m_MaterialIndexBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_MaterialIndexMemory = VK_NULL_HANDLE;
+	VkBuffer m_InstanceMatOffsetBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_InstanceMatOffsetMemory = VK_NULL_HANDLE;
 
 	// TLAS
 	VkAccelerationStructureKHR m_TLAS = VK_NULL_HANDLE;
@@ -133,6 +136,9 @@ private:
 
 	// Maps TLAS instance index → BLAS index (for combined buffer offsets)
 	std::vector<uint32_t> m_InstanceToBLAS;
+
+	// Per-instance material indices (from BLASInstance::customIndex during BuildTLAS)
+	std::vector<uint32_t> m_InstanceMaterialIndices;
 
 	GpuDevice m_Device;
 };

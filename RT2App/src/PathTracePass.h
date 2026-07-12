@@ -8,21 +8,45 @@
 struct GpuDevice;
 class AccelerationStructure;
 
+// DescriptorSchema — single source of truth for set 0 binding definitions.
+// The layout, binding flags, and descriptor writes are all derived from this table.
+struct BindingDef
+{
+	uint32_t              binding;
+	VkDescriptorType      type;
+	uint32_t              descriptorCount;  // 1 for non-array, MAX_TEXTURES for texture array
+	VkShaderStageFlags    stageFlags;
+	VkDescriptorBindingFlagsEXT flags;
+};
+
 // PathTracePass — owns the RT pipeline, SBT, and set 0 descriptor layout.
 // Set 0 bindings (see shader_interface.h):
 //   0: output image, 1: camera UBO, 2: materials, 3: vertex buffer, 4: TLAS,
 //   5: index buffer, 6: normals, 7: UVs, 8: instance mesh info, 9: lights,
-//   10: instance transforms, 11: textures
+//   10: instance transforms, 12: transforms prev, 13: instance material indices,
+//   14: reservoir history, 15: reservoir scratch, 16: surface history,
+//   17: instance mat offsets, 18: texture array (variable count)
 class PathTracePass
 {
 public:
+	static constexpr uint32_t MAX_TEXTURES = 4096;
+
 	PathTracePass() = default;
 	~PathTracePass() { Destroy(); }
 
 	bool Init(const GpuDevice& dev, VkDescriptorSetLayout gbufferSetLayout);
 	void Destroy();
 
-	bool CreateDescriptorSet(const GpuDevice& dev, VkDescriptorPool pool);
+	// Allocate (or re-allocate) the descriptor set with space for the given
+	// texture count. If a set is already allocated with >= textureCount slots,
+	// this is a no-op. Otherwise the old set is freed and a new one allocated.
+	// Returns false on allocation failure.
+	bool CreateDescriptorSet(const GpuDevice& dev, uint32_t textureCount);
+
+	// Free the descriptor set (for resize / destroy). Caller must ensure
+	// GPU is idle before calling.
+	void FreeDescriptorSet();
+
 	void UpdateDescriptorSet(const GpuDevice& dev,
 		VkImageView outputView, VkSampler outputSampler,
 		VkBuffer cameraUBO, VkBuffer materialBuffer,
@@ -32,10 +56,11 @@ public:
 		VkBuffer lightBuffer, VkBuffer instanceTransformBuffer,
 		VkBuffer instanceTransformPrevBuffer,
 		VkBuffer instanceMaterialIndexBuffer,
+		VkBuffer instanceMatOffsetBuffer,
 		VkAccelerationStructureKHR tlas,
 		VkBuffer reservoirBuffer, VkBuffer reservoirScratchBuffer,
-	VkBuffer surfaceHistoryBuffer,
-	const std::vector<VkDescriptorImageInfo>& textureImageInfos);
+		VkBuffer surfaceHistoryBuffer,
+		const std::vector<VkDescriptorImageInfo>& textureImageInfos);
 
 	// Record trace into command buffer. Caller handles pre/post barriers.
 	// rasterFirst=true: use secondary_raygen (reads G-buffer, traces secondary rays only)
@@ -57,8 +82,8 @@ public:
 
 	uint32_t GetMaxRecursionDepth() const { return m_MaxRecursionDepth; }
 
-	// Free the descriptor set (for resize). Caller provides the pool.
-	void FreeDescriptorSet(VkDevice device, VkDescriptorPool pool);
+	// Number of texture slots the current descriptor set was allocated with.
+	uint32_t GetAllocatedTextureCount() const { return m_AllocatedTextureCount; }
 
 private:
 	VkDevice m_Device = VK_NULL_HANDLE;
@@ -68,8 +93,12 @@ private:
 	VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
 	VkDescriptorSetLayout m_DescriptorSetLayout = VK_NULL_HANDLE;
 
+	// Dedicated descriptor pool for set 0 (separate from Walnut/ImGui pool)
+	VkDescriptorPool m_DescriptorPool = VK_NULL_HANDLE;
+
 	// Set 0 descriptor set
 	VkDescriptorSet m_DescriptorSet = VK_NULL_HANDLE;
+	uint32_t m_AllocatedTextureCount = 0;  // texture slots in the current set
 
 	// Shader modules
 	VkShaderModule m_RgenShader = VK_NULL_HANDLE;

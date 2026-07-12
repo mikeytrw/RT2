@@ -92,6 +92,8 @@ private:
 	void CreateGBufferDescriptorSet();
 	void UpdateGBufferDescriptorSet();
 
+	void CreateFallbackTexture();
+
 	bool m_Initialized = false;
 
 	GpuDevice m_Device;
@@ -100,6 +102,7 @@ private:
 	uint32_t m_Height = 0;
 
 	GpuImage m_OutputImage; // RGBA32F beauty output
+	GpuImage m_FallbackTexture; // 1x1 white, used for missing texture views
 	VkSampler m_Sampler = VK_NULL_HANDLE;
 	VkDescriptorSet m_ImGuiDescriptorSet = VK_NULL_HANDLE;
 

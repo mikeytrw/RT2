@@ -72,6 +72,11 @@ layout(set = 0, binding = 13, std430) readonly buffer InstanceMaterialIndices
     uint instanceMaterialIndices[];
 };
 
+layout(set = 0, binding = 17, std430) readonly buffer InstanceMatOffsets
+{
+    uint instanceMatOffsets[];
+};
+
 // NRD oct-packing (matches NRD_NORMAL_ENCODING=2, NRD_ROUGHNESS_ENCODING=1)
 // Ported from NRD.hlsli _NRD_EncodeNormalRoughness101010.
 vec3 nrdEncodeNormalRoughness(vec3 n, float roughness)
@@ -89,7 +94,7 @@ vec3 nrdEncodeNormalRoughness(vec3 n, float roughness)
 
 void main()
 {
-    uint matIdx = instanceMaterialIndices[uint(gl_PrimitiveID)];
+    uint matIdx = instanceMaterialIndices[instanceMatOffsets[inInstanceIndex] + uint(gl_PrimitiveID)];
     Material mat = materials[matIdx];
 
     vec2 uv = inUV;

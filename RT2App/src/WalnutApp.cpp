@@ -44,8 +44,8 @@ public:
 		m_EditorUI.SetOnSceneChanged([this]() {
 			if (m_RendererGPU.IsAvailable())
 			{
-				m_SceneMgr.CompactMeshRegistry();
-				if (m_PendingFullSync)
+				bool didCompact = m_SceneMgr.CompactMeshRegistry();
+				if (m_PendingFullSync || didCompact)
 				{
 					m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData) {
 						m_RendererGPU.SetScene(gpuData);
@@ -53,7 +53,7 @@ public:
 					m_SceneMgr.SyncToGPU();
 					m_PendingFullSync = false;
 				}
-				else
+				else if (!m_RendererGPU.IsTextureUploadPending())
 				{
 					m_SceneMgr.SetSyncKeepTexturesCallback([this](GPUSceneData& gpuData) {
 						m_RendererGPU.SetSceneKeepTextures(gpuData);

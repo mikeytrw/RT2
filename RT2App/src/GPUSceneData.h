@@ -84,10 +84,12 @@ struct GPUMeshGeometry
 
 // One instance of a mesh in the world. Multiple instances can reference
 // the same meshIndex (BLAS) with different transforms — instancing.
+// materialIndex = 0xFFFFFFFF means "use per-triangle material indices from
+// the mesh's materialIndices array". Any other value overrides all triangles.
 struct GPUInstance
 {
     uint32_t     meshIndex = 0;       // index into GPUSceneData::meshes
-    uint32_t     materialIndex = 0;   // material for this instance
+    uint32_t     materialIndex = 0xFFFFFFFFu;   // per-instance override, or sentinel
     glm::mat4    worldMatrix = glm::mat4(1.0f);       // object-to-world
     glm::mat4    prevWorldMatrix = glm::mat4(1.0f);   // previous frame (for motion vectors)
     bool         isTransparent = false;  // alpha mode > 0.5 → any-hit SBT group

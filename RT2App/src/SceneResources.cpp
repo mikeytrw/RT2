@@ -7,6 +7,8 @@
 #include <glm/gtc/packing.hpp>
 #include <functional>
 #include <algorithm>
+#include <thread>
+#include <chrono>
 
 SceneResources::~SceneResources()
 {
@@ -97,34 +99,9 @@ void SceneResources::SetScene(const GpuDevice& dev, GPUSceneData& sceneData)
 		m_TextureLoader.Destroy();
 	}
 
-	std::vector<float> envMapFloat;
-	int envMapW = 0, envMapH = 0;
-	if (sceneData.envMapIndex >= 0 && sceneData.envMapIndex < (int)sceneData.textures.size())
-	{
-		auto& envTex = sceneData.textures[sceneData.envMapIndex];
-		if (envTex.isHDR && !envTex.floatPixels.empty())
-		{
-			envMapFloat = std::move(envTex.floatPixels);
-			envTex.floatPixels.clear();
-			envMapW = envTex.width;
-			envMapH = envTex.height;
-		}
-	}
-
-	std::vector<SceneTexture> baseTextures;
-	if (sceneData.envMapIndex >= 0 && sceneData.envMapIndex < (int)sceneData.textures.size())
-	{
-		baseTextures.assign(sceneData.textures.begin(), sceneData.textures.end());
-		baseTextures.erase(baseTextures.begin() + sceneData.envMapIndex);
-	}
-	else
-	{
-		baseTextures = std::move(sceneData.textures);
-	}
-
 	// If there are no textures at all (e.g. Clear HDR with no scene textures),
 	// destroy old textures immediately and skip the loader.
-	if (baseTextures.empty() && envMapFloat.empty())
+	if (sceneData.textures.empty())
 	{
 		RT_LOG("[SetScene] no textures to load — destroying old textures");
 		DestroyTextures();
@@ -136,15 +113,21 @@ void SceneResources::SetScene(const GpuDevice& dev, GPUSceneData& sceneData)
 		return;
 	}
 
-	m_CurrentScene = std::move(sceneData);
-	m_CurrentScene.textures.clear(); // textures moved to loader, not needed here
+	auto marginalCDF = sceneData.marginalCDF;
+	auto conditionalCDF = sceneData.conditionalCDF;
+	int cdfW = sceneData.cdfWidth, cdfH = sceneData.cdfHeight;
+	int envMapIdx = sceneData.envMapIndex;
 
-	RT_LOG("[SetScene] kicking async texture loader (%d base + envMap=%dx%d)",
-	       (int)baseTextures.size(), envMapW, envMapH);
-	m_TextureLoader.Begin(dev, baseTextures,
-	                      envMapFloat, envMapW, envMapH,
-	                      sceneData.marginalCDF, sceneData.conditionalCDF,
-	                      sceneData.cdfWidth, sceneData.cdfHeight);
+	// Pass textures to the loader BEFORE moving sceneData — Begin() takes
+	// a const ref and copies internally for the worker thread.
+	m_TextureLoader.Begin(dev, sceneData.textures,
+	                      envMapIdx,
+	                      marginalCDF, conditionalCDF,
+	                      cdfW, cdfH);
+
+	m_CurrentScene = std::move(sceneData);
+	m_CurrentScene.textures.clear(); // textures now owned by loader
+
 	RT_LOG("[SetScene] done (textures loading async)");
 }
 
@@ -187,6 +170,15 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 {
 	RT_LOG("[RebuildAS] enter: meshes=%d instances=%d",
 	       (int)m_CurrentScene.meshes.size(), (int)m_CurrentScene.instances.size());
+
+	// Wait for async texture upload to finish — the worker thread submits
+	// command buffers on the same queue, racing with BLAS build.
+	if (m_TextureLoader.IsBusy())
+	{
+		RT_LOG("[RebuildAS] waiting for async texture upload...");
+		while (m_TextureLoader.IsBusy() && !m_TextureLoader.IsComplete())
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
 
 	std::vector<BLASGeometry> geometries;
 	geometries.reserve(m_CurrentScene.meshes.size());
@@ -419,7 +411,10 @@ void SceneResources::CreateInstanceTransformBuffer(const GpuDevice& dev)
 
 	std::vector<uint32_t> matIndices(instanceCount);
 	for (size_t i = 0; i < instanceCount; i++)
-		matIndices[i] = m_CurrentScene.instances[i].materialIndex;
+	{
+		uint32_t mi = m_CurrentScene.instances[i].materialIndex;
+		matIndices[i] = (mi < m_CurrentScene.materials.size()) ? mi : 0;
+	}
 
 	vkMapMemory(device, m_InstanceMaterialIndexBufferMemory, 0, matIdxSize, 0, &data);
 	memcpy(data, matIndices.data(), instanceCount * sizeof(uint32_t));

@@ -121,6 +121,13 @@ layout(set = 0, binding = SI_BINDING_INSTANCE_MATERIAL_INDICES, std430) readonly
     uint instanceMaterialIndices[];
 };
 
+// Per-instance material index offsets (binding 17).
+// Each instance has its own section in instanceMaterialIndices, starting at this offset.
+layout(set = 0, binding = SI_BINDING_INSTANCE_MAT_OFFSETS, std430) readonly buffer InstanceMatOffsetBuffer
+{
+    uint instanceMatOffsets[];
+};
+
 // Bindless texture array (combined image samplers, variable count)
 // Must be the highest binding number for VARIABLE_DESCRIPTOR_COUNT.
 layout(set = 0, binding = SI_BINDING_TEXTURE_ARRAY) uniform sampler2D textures[];
