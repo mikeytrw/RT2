@@ -130,13 +130,15 @@ TEST_CASE("GPUMaterial emissive is zero when intensity is zero")
 
 TEST_CASE("GPUMeshGeometry stores vertices and indices")
 {
+    std::vector<float> verts = {0.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f};
+    std::vector<uint32_t> idxs = {0, 1, 2};
     GPUMeshGeometry geo;
-    geo.vertices = {0.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f};
-    geo.indices = {0, 1, 2};
+    geo.vertices = &verts;
+    geo.indices = &idxs;
     geo.materialIndex = 3;
 
-    CHECK(geo.vertices.size() == 9);
-    CHECK(geo.indices.size() == 3);
+    CHECK(geo.vertices->size() == 9);
+    CHECK(geo.indices->size() == 3);
     CHECK(geo.materialIndex == 3);
 }
 

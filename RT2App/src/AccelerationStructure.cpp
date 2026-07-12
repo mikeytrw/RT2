@@ -53,31 +53,59 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		blas.srcNormals = mesh.normals;
 		blas.srcUVs = mesh.uvs;
 
-		// --- Vertex buffer ---
+		// --- Vertex buffer (DEVICE_LOCAL + staging) ---
 		VkDeviceSize vertexBufferSize = mesh.vertices->size() * sizeof(float);
-		GpuResources::CreateBuffer(m_Device, vertexBufferSize,
-		             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-		             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		             blas.vertexBuffer, blas.vertexMemory);
+		{
+			VkBuffer stagingBuf; VkDeviceMemory stagingMem;
+			GpuResources::CreateBuffer(m_Device, vertexBufferSize,
+			             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			             stagingBuf, stagingMem);
+			void* data;
+			vkMapMemory(device, stagingMem, 0, vertexBufferSize, 0, &data);
+			memcpy(data, mesh.vertices->data(), vertexBufferSize);
+			vkUnmapMemory(device, stagingMem);
 
-		void* vertexData;
-		vkMapMemory(device, blas.vertexMemory, 0, vertexBufferSize, 0, &vertexData);
-		memcpy(vertexData, mesh.vertices->data(), vertexBufferSize);
-		vkUnmapMemory(device, blas.vertexMemory);
+			GpuResources::CreateBuffer(m_Device, vertexBufferSize,
+			             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+			             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			             blas.vertexBuffer, blas.vertexMemory);
 
-		// --- Index buffer ---
+			VkBuffer sBuf = stagingBuf; VkDeviceMemory sMem = stagingMem; VkBuffer dB = blas.vertexBuffer; VkDeviceSize sz = vertexBufferSize;
+			CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+				VkBufferCopy region = {}; region.size = sz;
+				vkCmdCopyBuffer(cmd, sBuf, dB, 1, &region);
+			});
+			GpuResources::DestroyBuffer(m_Device, sBuf, sMem);
+		}
+
+		// --- Index buffer (DEVICE_LOCAL + staging) ---
 		VkDeviceSize indexBufferSize = mesh.indices->size() * sizeof(uint32_t);
-		GpuResources::CreateBuffer(m_Device, indexBufferSize,
-		             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
-		             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-		             blas.indexBuffer, blas.indexMemory);
+		{
+			VkBuffer stagingBuf; VkDeviceMemory stagingMem;
+			GpuResources::CreateBuffer(m_Device, indexBufferSize,
+			             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+			             stagingBuf, stagingMem);
+			void* data;
+			vkMapMemory(device, stagingMem, 0, indexBufferSize, 0, &data);
+			memcpy(data, mesh.indices->data(), indexBufferSize);
+			vkUnmapMemory(device, stagingMem);
 
-		void* indexData;
-		vkMapMemory(device, blas.indexMemory, 0, indexBufferSize, 0, &indexData);
-		memcpy(indexData, mesh.indices->data(), indexBufferSize);
-		vkUnmapMemory(device, blas.indexMemory);
+			GpuResources::CreateBuffer(m_Device, indexBufferSize,
+			             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
+			             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+			             blas.indexBuffer, blas.indexMemory);
+
+			VkBuffer sBuf = stagingBuf; VkDeviceMemory sMem = stagingMem; VkBuffer dB = blas.indexBuffer; VkDeviceSize sz = indexBufferSize;
+			CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+				VkBufferCopy region = {}; region.size = sz;
+				vkCmdCopyBuffer(cmd, sBuf, dB, 1, &region);
+			});
+			GpuResources::DestroyBuffer(m_Device, sBuf, sMem);
+		}
 
 		// --- BLAS geometry ---
 		VkAccelerationStructureGeometryKHR geometry = {};
@@ -149,6 +177,24 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		addrInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
 		addrInfo.accelerationStructure = blas.handle;
 		blas.deviceAddress = g_RTDispatch.GetAccelerationStructureDeviceAddressKHR(device, &addrInfo);
+
+		// Free scratch buffer — only needed during build, not after
+		GpuResources::DestroyBuffer(m_Device, blas.scratchBuffer, blas.scratchMemory);
+		blas.scratchBuffer = VK_NULL_HANDLE;
+		blas.scratchMemory = VK_NULL_HANDLE;
+	}
+
+	// Free per-BLAS vertex/index buffers — the AS is self-contained.
+	// The attribute mega-buffers (BuildAttributeBuffers) are the shader-side
+	// data source; the BLAS vertex/index buffers were only for AS construction.
+	for (auto& blas : m_BLASes)
+	{
+		GpuResources::DestroyBuffer(m_Device, blas.vertexBuffer, blas.vertexMemory);
+		GpuResources::DestroyBuffer(m_Device, blas.indexBuffer, blas.indexMemory);
+		blas.vertexBuffer = VK_NULL_HANDLE;
+		blas.vertexMemory = VK_NULL_HANDLE;
+		blas.indexBuffer = VK_NULL_HANDLE;
+		blas.indexMemory = VK_NULL_HANDLE;
 	}
 
 	RT_LOG("[BuildBLASes] done: %d BLASes, %d total tris", (int)m_BLASes.size(), (int)m_TotalTriangleCount);

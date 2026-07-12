@@ -86,6 +86,7 @@ void SceneResources::SetScene(const GpuDevice& dev, GPUSceneData& sceneData)
 	RT_LOG("[SetScene] enter: textures=%d, envMapIndex=%d, meshes=%d, materials=%d",
 	       (int)sceneData.textures.size(), sceneData.envMapIndex,
 	       (int)sceneData.meshes.size(), (int)sceneData.materials.size());
+	dev.LogMemoryUsage("SetScene start");
 	vkDeviceWaitIdle(device);
 
 	m_NeedsASRebuild = true;
@@ -210,6 +211,7 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 	RT_LOG("[RebuildAS] built %d geometry entries, calling BuildBLASes", (int)geometries.size());
 
 	m_AS.SetDevice(dev);
+	dev.LogMemoryUsage("RebuildAS pre-BLAS");
 	CommandUtils::ImmediateSubmit(dev, [&](VkCommandBuffer cmd) {
 		bool blasOK = m_AS.BuildBLASes(cmd, geometries);
 		RT_LOG("[RebuildAS] BuildBLASes result=%d", blasOK);
@@ -250,6 +252,7 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 	});
 
 	m_AS.BuildAttributeBuffers();
+	dev.LogMemoryUsage("RebuildAS post-attr-buffers");
 
 	if (rasterPassBuild)
 		rasterPassBuild(dev, m_CurrentScene);

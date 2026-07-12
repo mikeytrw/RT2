@@ -168,6 +168,9 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 	const GpuDevice& dev = *devPtr;
 	VkDevice device = dev.device;
 
+	RT_LOG("[AsyncTex] WorkerThread: textures.size=%zu", textures.size());
+	dev.LogMemoryUsage("AsyncTex worker start");
+
 	// 1. Append env map as a texture (matches WalnutApp convention)
 	int envMapIndex = -1;
 	if (!envMapFloat.empty() && m_EnvMapWidth > 0 && m_EnvMapHeight > 0)
@@ -217,6 +220,10 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 	const VkDeviceSize MAX_STAGING_CHUNK = 64 * 1024 * 1024; // 64MB per batch
 	bool usePerTextureStaging = (totalStaging > MAX_STAGING_CHUNK);
 
+	RT_LOG("[AsyncTex] totalStaging=%zuMB cdfStaging=%zuMB usePerTexture=%d",
+	       (size_t)totalStaging / (1024 * 1024), (size_t)cdfStaging / (1024 * 1024),
+	       usePerTextureStaging ? 1 : 0);
+
 	if (!usePerTextureStaging && totalStaging + cdfStaging > 0)
 	{
 		if (!m_Staging.Init(dev, totalStaging + cdfStaging))
@@ -237,6 +244,9 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 	{
 		const auto& tex = textures[i];
 		if (tex.floatPixels.empty() && tex.pixels.empty()) continue;
+
+		if (usePerTextureStaging && i % 50 == 0)
+			dev.LogMemoryUsage("AsyncTex mid-upload");
 
 		GpuImage& gt = images[i];
 		gt.width  = tex.width;
@@ -260,182 +270,252 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 
 		if (usePerTextureStaging)
 		{
-			// Per-texture staging: create a small staging buffer, copy, submit, destroy
-			VkBuffer stageBuf; VkDeviceMemory stageMem;
-			GpuResources::CreateBuffer(dev, imageSize,
-			             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-			             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-			             stageBuf, stageMem);
-			void* mapped = nullptr;
-			vkMapMemory(device, stageMem, 0, imageSize, 0, &mapped);
-			if (isHDR)
+			// Per-texture staging: batch textures into groups to avoid
+			// creating 265 command pools + staging buffers.
+			// Each batch: create staging, record all copies, submit, wait, destroy.
+			const size_t BATCH_SIZE = 5;
+			VkCommandPool batchPool = VK_NULL_HANDLE;
+			VkCommandBuffer batchCmd = VK_NULL_HANDLE;
+
+			auto beginBatch = [&]() {
+				VkCommandPoolCreateInfo pi = {};
+				pi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+				pi.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+				pi.queueFamilyIndex = dev.queueFamily;
+				vkCreateCommandPool(device, &pi, nullptr, &batchPool);
+				VkCommandBufferAllocateInfo ai = {};
+				ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+				ai.commandPool = batchPool;
+				ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+				ai.commandBufferCount = 1;
+				vkAllocateCommandBuffers(device, &ai, &batchCmd);
+				VkCommandBufferBeginInfo bi = {};
+				bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+				bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+				vkBeginCommandBuffer(batchCmd, &bi);
+			};
+
+			auto endBatch = [&]() {
+				vkEndCommandBuffer(batchCmd);
+				VkSubmitInfo si = {};
+				si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+				si.commandBufferCount = 1;
+				si.pCommandBuffers = &batchCmd;
+				vkQueueSubmit(dev.queue, 1, &si, VK_NULL_HANDLE);
+				vkQueueWaitIdle(dev.queue);
+				vkFreeCommandBuffers(device, batchPool, 1, &batchCmd);
+				vkDestroyCommandPool(device, batchPool, nullptr);
+				batchPool = VK_NULL_HANDLE;
+			};
+
+			std::vector<VkBuffer> batchStagingBufs;
+			std::vector<VkDeviceMemory> batchStagingMems;
+
+			for (size_t i = 0; i < textures.size(); i++)
 			{
-				uint16_t* dst = static_cast<uint16_t*>(mapped);
-				for (size_t p = 0; p < tex.floatPixels.size(); p++)
-					dst[p] = glm::packHalf1x16(tex.floatPixels[p]);
-			}
-			else
-			{
-				memcpy(mapped, tex.pixels.data(), (size_t)imageSize);
-			}
-			vkUnmapMemory(device, stageMem);
+				const auto& tex = textures[i];
+				if (tex.floatPixels.empty() && tex.pixels.empty()) continue;
 
-			GpuResources::CreateImage(dev, tex.width, tex.height, format,
-				VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gt, mipLevels);
-
-			// Record copy command immediately (per-texture submit)
-			VkCommandPoolCreateInfo poolInfo2 = {};
-			poolInfo2.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-			poolInfo2.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-			poolInfo2.queueFamilyIndex = dev.queueFamily;
-			VkCommandPool tmpPool;
-			vkCreateCommandPool(device, &poolInfo2, nullptr, &tmpPool);
-
-			VkCommandBufferAllocateInfo ai = {};
-			ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-			ai.commandPool = tmpPool;
-			ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-			ai.commandBufferCount = 1;
-			VkCommandBuffer tmpCmd;
-			vkAllocateCommandBuffers(device, &ai, &tmpCmd);
-
-			VkCommandBufferBeginInfo bi = {};
-			bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-			bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-			vkBeginCommandBuffer(tmpCmd, &bi);
-
-			VkImageMemoryBarrier barrier = {};
-			barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			barrier.srcAccessMask = 0;
-			barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-			barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-			barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			barrier.image = gt.image;
-			barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			barrier.subresourceRange.baseMipLevel = 0;
-			barrier.subresourceRange.levelCount = mipLevels;
-			barrier.subresourceRange.layerCount = 1;
-			vkCmdPipelineBarrier(tmpCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-			                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-			VkBufferImageCopy region = {};
-			region.bufferOffset = 0;
-			region.bufferRowLength = 0;
-			region.bufferImageHeight = 0;
-			region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			region.imageSubresource.mipLevel = 0;
-			region.imageSubresource.baseArrayLayer = 0;
-			region.imageSubresource.layerCount = 1;
-			region.imageOffset = {0, 0, 0};
-			region.imageExtent = {(uint32_t)tex.width, (uint32_t)tex.height, 1};
-			vkCmdCopyBufferToImage(tmpCmd, stageBuf, gt.image,
-			                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-			// Mip blits
-			if (mipLevels > 1)
-			{
-				uint32_t mipW = (uint32_t)tex.width, mipH = (uint32_t)tex.height;
-				for (uint32_t mip = 1; mip < mipLevels; mip++)
+				size_t batchIdx = i / BATCH_SIZE;
+				if (batchIdx * BATCH_SIZE == i)
 				{
-					VkImageMemoryBarrier srcB = {}, dstB = {};
-					srcB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-					srcB.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-					srcB.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-					srcB.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-					srcB.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-					srcB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-					srcB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-					srcB.image = gt.image;
-					srcB.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 1, 0, 1};
-					vkCmdPipelineBarrier(tmpCmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-					                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &srcB);
-
-					VkImageBlit blit = {};
-					blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 0, 1};
-					blit.srcOffsets[0] = {0, 0, 0};
-					blit.srcOffsets[1] = {(int32_t)mipW, (int32_t)mipH, 1};
-					blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1};
-					blit.dstOffsets[0] = {0, 0, 0};
-					int32_t mipW2 = std::max(mipW / 2, 1u);
-					int32_t mipH2 = std::max(mipH / 2, 1u);
-					blit.dstOffsets[1] = {mipW2, mipH2, 1};
-					vkCmdBlitImage(tmpCmd, gt.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-					               gt.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-					               1, &blit, VK_FILTER_LINEAR);
-					mipW = mipW2; mipH = mipH2;
+					if (batchPool != VK_NULL_HANDLE)
+					{
+						endBatch();
+						for (size_t b = 0; b < batchStagingBufs.size(); b++)
+							GpuResources::DestroyBuffer(dev, batchStagingBufs[b], batchStagingMems[b]);
+						batchStagingBufs.clear();
+						batchStagingMems.clear();
+					}
+					beginBatch();
 				}
 
-				VkImageMemoryBarrier finalB = {};
-				finalB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-				finalB.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-				finalB.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-				finalB.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-				finalB.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				finalB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				finalB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				finalB.image = gt.image;
-				finalB.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 1};
-				vkCmdPipelineBarrier(tmpCmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-				                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &finalB);
+				GpuImage& gt = images[i];
+				gt.width = tex.width;
+				gt.height = tex.height;
+
+				bool isHDR = tex.isHDR && !tex.floatPixels.empty();
+				VkFormat format = isHDR ? VK_FORMAT_R16G16B16A16_SFLOAT
+				                        : (tex.isSRGB ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
+				gt.format = format;
+
+				uint32_t mipLevels = 1;
+				uint32_t w = tex.width, h = tex.height;
+				while (w > 1 || h > 1) { w = std::max(w / 2, 1u); h = std::max(h / 2, 1u); mipLevels++; }
+
+				VkDeviceSize imageSize = isHDR
+					? (VkDeviceSize)(tex.width * tex.height * 8)
+					: (VkDeviceSize)(tex.width * tex.height * 4);
+
+				VkBuffer stageBuf; VkDeviceMemory stageMem;
+				GpuResources::CreateBuffer(dev, imageSize,
+				             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+				             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+				             stageBuf, stageMem);
+				void* mapped = nullptr;
+				vkMapMemory(device, stageMem, 0, imageSize, 0, &mapped);
+				if (isHDR)
+				{
+					uint16_t* dst = static_cast<uint16_t*>(mapped);
+					for (size_t p = 0; p < tex.floatPixels.size(); p++)
+						dst[p] = glm::packHalf1x16(tex.floatPixels[p]);
+				}
+				else
+				{
+					memcpy(mapped, tex.pixels.data(), (size_t)imageSize);
+				}
+				vkUnmapMemory(device, stageMem);
+				batchStagingBufs.push_back(stageBuf);
+				batchStagingMems.push_back(stageMem);
+
+				GpuResources::CreateImage(dev, tex.width, tex.height, format,
+					VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gt, mipLevels);
+
+				VkImageMemoryBarrier barrier = {};
+				barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+				barrier.srcAccessMask = 0;
+				barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+				barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+				barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+				barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+				barrier.image = gt.image;
+				barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 1};
+				vkCmdPipelineBarrier(batchCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+				                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+				VkBufferImageCopy region = {};
+				region.bufferOffset = 0;
+				region.bufferRowLength = 0;
+				region.bufferImageHeight = 0;
+				region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+				region.imageOffset = {0, 0, 0};
+				region.imageExtent = {(uint32_t)tex.width, (uint32_t)tex.height, 1};
+				vkCmdCopyBufferToImage(batchCmd, stageBuf, gt.image,
+				                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+				if (mipLevels > 1)
+				{
+					uint32_t mipW = (uint32_t)tex.width, mipH = (uint32_t)tex.height;
+					for (uint32_t mip = 1; mip < mipLevels; mip++)
+					{
+						VkImageMemoryBarrier srcB = {};
+						srcB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+						srcB.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+						srcB.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+						srcB.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+						srcB.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+						srcB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+						srcB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+						srcB.image = gt.image;
+						srcB.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 1, 0, 1};
+						vkCmdPipelineBarrier(batchCmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+						                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &srcB);
+
+						VkImageBlit blit = {};
+						blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 0, 1};
+						blit.srcOffsets[0] = {0, 0, 0};
+						blit.srcOffsets[1] = {(int32_t)mipW, (int32_t)mipH, 1};
+						blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 1};
+						blit.dstOffsets[0] = {0, 0, 0};
+						int32_t mipW2 = std::max(mipW / 2, 1u);
+						int32_t mipH2 = std::max(mipH / 2, 1u);
+						blit.dstOffsets[1] = {mipW2, mipH2, 1};
+						vkCmdBlitImage(batchCmd, gt.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+						               gt.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+						               1, &blit, VK_FILTER_LINEAR);
+						mipW = mipW2; mipH = mipH2;
+					}
+
+					VkImageMemoryBarrier finalB = {};
+					finalB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+					finalB.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+					finalB.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+					finalB.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+					finalB.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+					finalB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					finalB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					finalB.image = gt.image;
+					finalB.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 1};
+					vkCmdPipelineBarrier(batchCmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+					                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &finalB);
+				}
+				else
+				{
+					VkImageMemoryBarrier finalB = {};
+					finalB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+					finalB.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+					finalB.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+					finalB.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+					finalB.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+					finalB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					finalB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+					finalB.image = gt.image;
+					finalB.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+					vkCmdPipelineBarrier(batchCmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+					                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &finalB);
+				}
+
+				uploads[i] = { 0, 0, isHDR, 0 };
 			}
-			else
+
+			if (batchPool != VK_NULL_HANDLE)
 			{
-				VkImageMemoryBarrier finalB = {};
-				finalB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-				finalB.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-				finalB.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-				finalB.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-				finalB.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-				finalB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				finalB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-				finalB.image = gt.image;
-				finalB.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-				vkCmdPipelineBarrier(tmpCmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-				                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &finalB);
+				endBatch();
+				for (size_t b = 0; b < batchStagingBufs.size(); b++)
+					GpuResources::DestroyBuffer(dev, batchStagingBufs[b], batchStagingMems[b]);
 			}
-
-			vkEndCommandBuffer(tmpCmd);
-
-			VkSubmitInfo si = {};
-			si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-			si.commandBufferCount = 1;
-			si.pCommandBuffers = &tmpCmd;
-			vkQueueSubmit(dev.queue, 1, &si, VK_NULL_HANDLE);
-			vkQueueWaitIdle(dev.queue);
-
-			vkDestroyCommandPool(device, tmpPool, nullptr);
-			GpuResources::DestroyBuffer(dev, stageBuf, stageMem);
-
-			uploads[i] = { 0, 0, isHDR, 0 }; // already uploaded, no arena offset needed
 		}
 		else
 		{
-			VkDeviceSize offset = m_Staging.Alloc(imageSize, 16);
-			if (offset == VK_WHOLE_SIZE)
+			RT_LOG("[AsyncTex] ERROR: arena path running (usePerTextureStaging=false)!");
+			for (size_t i = 0; i < textures.size(); i++)
 			{
-				RT_LOG("[AsyncTex] Texture %d: staging arena full", (int)i);
-				continue;
-			}
+				const auto& tex = textures[i];
+				if (tex.floatPixels.empty() && tex.pixels.empty()) continue;
 
-			if (isHDR)
-			{
-				uint16_t* dst = static_cast<uint16_t*>(m_Staging.GetMappedPointer(offset));
-				for (size_t p = 0; p < tex.floatPixels.size(); p++)
-					dst[p] = glm::packHalf1x16(tex.floatPixels[p]);
-			}
-			else
-			{
-				memcpy(m_Staging.GetMappedPointer(offset), tex.pixels.data(), (size_t)imageSize);
-			}
+				GpuImage& gt = images[i];
+				gt.width = tex.width;
+				gt.height = tex.height;
 
-			uploads[i] = { offset, imageSize, isHDR, mipLevels };
+				bool isHDR = tex.isHDR && !tex.floatPixels.empty();
+				VkFormat format = isHDR ? VK_FORMAT_R16G16B16A16_SFLOAT
+				                        : (tex.isSRGB ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
+				gt.format = format;
 
-			GpuResources::CreateImage(dev, tex.width, tex.height, format,
-				VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gt, mipLevels);
+				uint32_t mipLevels = 1;
+				uint32_t w = tex.width, h = tex.height;
+				while (w > 1 || h > 1) { w = std::max(w / 2, 1u); h = std::max(h / 2, 1u); mipLevels++; }
+
+				VkDeviceSize imageSize = isHDR
+					? (VkDeviceSize)(tex.width * tex.height * 8)
+					: (VkDeviceSize)(tex.width * tex.height * 4);
+
+				VkDeviceSize offset = m_Staging.Alloc(imageSize, 16);
+				if (offset == VK_WHOLE_SIZE)
+				{
+					RT_LOG("[AsyncTex] Texture %d: staging arena full", (int)i);
+					continue;
+				}
+
+				if (isHDR)
+				{
+					uint16_t* dst = static_cast<uint16_t*>(m_Staging.GetMappedPointer(offset));
+					for (size_t p = 0; p < tex.floatPixels.size(); p++)
+						dst[p] = glm::packHalf1x16(tex.floatPixels[p]);
+				}
+				else
+				{
+					memcpy(m_Staging.GetMappedPointer(offset), tex.pixels.data(), (size_t)imageSize);
+				}
+
+				uploads[i] = { offset, imageSize, isHDR, mipLevels };
+
+				GpuResources::CreateImage(dev, tex.width, tex.height, format,
+					VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+					VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, gt, mipLevels);
+			}
 		}
 	}
 

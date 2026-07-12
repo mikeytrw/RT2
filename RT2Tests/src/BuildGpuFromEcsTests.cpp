@@ -64,10 +64,10 @@ TEST_CASE("BuildGPUSceneDataFromECS: object-space mesh vertices")
     // World-space baking would produce larger absolute values for translated meshes
     CHECK(gpu.meshes.size() > 0);
     const auto& mesh = gpu.meshes[0];
-    CHECK(!mesh.vertices.empty());
-    CHECK(!mesh.indices.empty());
-    CHECK(!mesh.uvs.empty());
-    CHECK(!mesh.normals.empty());
+    CHECK(mesh.vertices != nullptr);
+    CHECK(mesh.indices != nullptr);
+    CHECK(mesh.uvs != nullptr);
+    CHECK(mesh.normals != nullptr);
 }
 
 TEST_CASE("BuildGPUSceneDataFromECS: ABG instancing reduces BLAS count")

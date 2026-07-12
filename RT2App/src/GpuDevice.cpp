@@ -44,3 +44,27 @@ VkDeviceAddress GpuDevice::GetBufferDeviceAddress(VkBuffer buffer) const
 	info.buffer = buffer;
 	return vkGetBufferDeviceAddress(device, &info);
 }
+
+void GpuDevice::LogMemoryUsage(const char* context) const
+{
+	VkPhysicalDeviceMemoryBudgetPropertiesEXT budgetProps = {};
+	budgetProps.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+
+	VkPhysicalDeviceMemoryProperties2 memProps2 = {};
+	memProps2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+	memProps2.pNext = &budgetProps;
+
+	vkGetPhysicalDeviceMemoryProperties2(physicalDevice, &memProps2);
+
+	RT_LOG("[VRAM] %s:", context);
+	for (uint32_t i = 0; i < memProps2.memoryProperties.memoryHeapCount; i++)
+	{
+		const auto& heap = memProps2.memoryProperties.memoryHeaps[i];
+		const char* type = (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) ? "DEVICE_LOCAL" : "HOST_VISIBLE";
+		VkDeviceSize used = budgetProps.heapUsage[i];
+		VkDeviceSize budget = budgetProps.heapBudget[i];
+		RT_LOG("[VRAM]   heap %u (%s): used=%zuMB budget=%zuMB (%.1f%%)",
+		       i, type, (size_t)used / (1024 * 1024), (size_t)budget / (1024 * 1024),
+		       budget > 0 ? 100.0 * used / budget : 0.0);
+	}
+}

@@ -34,4 +34,7 @@ struct GpuDevice
 	// Helpers
 	uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) const;
 	VkDeviceAddress GetBufferDeviceAddress(VkBuffer buffer) const;
+
+	// Log current VRAM usage per heap (requires VK_EXT_memory_budget)
+	void LogMemoryUsage(const char* context) const;
 };
