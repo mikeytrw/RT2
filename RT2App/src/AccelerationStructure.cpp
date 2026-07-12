@@ -35,6 +35,7 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 	GpuResources::DestroyBuffer(m_Device, m_NormalBuffer, m_NormalMemory);
 	GpuResources::DestroyBuffer(m_Device, m_UVBuffer, m_UVMemory);
 	GpuResources::DestroyBuffer(m_Device, m_InstanceMeshInfoBuffer, m_InstanceMeshInfoMemory);
+	GpuResources::DestroyBuffer(m_Device, m_MaterialIndexBuffer, m_MaterialIndexMemory);
 
 	m_BLASes.resize(meshes.size());
 	m_TotalTriangleCount = 0;
@@ -52,6 +53,8 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		blas.srcIndices = mesh.indices;
 		blas.srcNormals = mesh.normals;
 		blas.srcUVs = mesh.uvs;
+		blas.srcMaterialIndices = mesh.materialIndices;
+		blas.materialIndex = mesh.materialIndex;
 
 		// --- Vertex buffer (DEVICE_LOCAL + staging) ---
 		VkDeviceSize vertexBufferSize = mesh.vertices->size() * sizeof(float);
@@ -178,23 +181,9 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 		addrInfo.accelerationStructure = blas.handle;
 		blas.deviceAddress = g_RTDispatch.GetAccelerationStructureDeviceAddressKHR(device, &addrInfo);
 
-		// Free scratch buffer — only needed during build, not after
-		GpuResources::DestroyBuffer(m_Device, blas.scratchBuffer, blas.scratchMemory);
-		blas.scratchBuffer = VK_NULL_HANDLE;
-		blas.scratchMemory = VK_NULL_HANDLE;
-	}
-
-	// Free per-BLAS vertex/index buffers — the AS is self-contained.
-	// The attribute mega-buffers (BuildAttributeBuffers) are the shader-side
-	// data source; the BLAS vertex/index buffers were only for AS construction.
-	for (auto& blas : m_BLASes)
-	{
-		GpuResources::DestroyBuffer(m_Device, blas.vertexBuffer, blas.vertexMemory);
-		GpuResources::DestroyBuffer(m_Device, blas.indexBuffer, blas.indexMemory);
-		blas.vertexBuffer = VK_NULL_HANDLE;
-		blas.vertexMemory = VK_NULL_HANDLE;
-		blas.indexBuffer = VK_NULL_HANDLE;
-		blas.indexMemory = VK_NULL_HANDLE;
+		// NOTE: scratch/vertex/index buffers are freed after vkQueueWaitIdle
+		// (in next BuildBLASes call or Destroy), NOT here — freeing during
+		// command buffer recording causes VK_ERROR_DEVICE_LOST on large meshes.
 	}
 
 	RT_LOG("[BuildBLASes] done: %d BLASes, %d total tris", (int)m_BLASes.size(), (int)m_TotalTriangleCount);
@@ -214,6 +203,7 @@ void AccelerationStructure::BuildAttributeBuffers()
 	GpuResources::DestroyBuffer(m_Device, m_NormalBuffer, m_NormalMemory);
 	GpuResources::DestroyBuffer(m_Device, m_UVBuffer, m_UVMemory);
 	GpuResources::DestroyBuffer(m_Device, m_InstanceMeshInfoBuffer, m_InstanceMeshInfoMemory);
+	GpuResources::DestroyBuffer(m_Device, m_MaterialIndexBuffer, m_MaterialIndexMemory);
 
 	// Compute total counts and per-BLAS offsets
 	uint32_t totalVerts = 0, totalIndices = 0, totalNormals = 0, totalUVs = 0;
@@ -230,11 +220,11 @@ void AccelerationStructure::BuildAttributeBuffers()
 	}
 
 	// Per-BLAS offsets into mega-buffers
-	struct BlasOffsets { uint32_t vert, idx, norm, uv; };
+	struct BlasOffsets { uint32_t vert, idx, norm, uv, matIdx; };
 	std::vector<BlasOffsets> offsets(m_BLASes.size());
 
 	uint32_t vertOffset = 0, idxOffset = 0;
-	uint32_t totalNormCount = 0, totalUVCount = 0;
+	uint32_t totalNormCount = 0, totalUVCount = 0, totalMatIdxCount = 0;
 	for (size_t b = 0; b < m_BLASes.size(); b++)
 	{
 		auto& blas = m_BLASes[b];
@@ -242,18 +232,21 @@ void AccelerationStructure::BuildAttributeBuffers()
 		offsets[b].idx = idxOffset;
 		offsets[b].norm = totalNormCount;
 		offsets[b].uv = totalUVCount;
+		offsets[b].matIdx = totalMatIdxCount;
 		vertOffset += blas.vertexCount;
 		idxOffset += blas.triangleCount * 3;
 		if (blas.srcNormals && !blas.srcNormals->empty())
 			totalNormCount += blas.vertexCount;
 		if (blas.srcUVs && !blas.srcUVs->empty())
 			totalUVCount += blas.vertexCount;
+		totalMatIdxCount += blas.triangleCount;
 	}
 
 	VkDeviceSize vertBufSize = (VkDeviceSize)totalVerts * sizeof(glm::vec4);
 	VkDeviceSize idxBufSize  = (VkDeviceSize)totalIndices * sizeof(uint32_t);
 	VkDeviceSize normBufSize = (VkDeviceSize)totalNormCount * sizeof(glm::vec4);
 	VkDeviceSize uvBufSize   = (VkDeviceSize)totalUVCount * sizeof(glm::vec4);
+	VkDeviceSize matIdxBufSize = (VkDeviceSize)totalMatIdxCount * sizeof(uint32_t);
 
 	RT_LOG("[BuildAttributeBuffers] vert=%uMB idx=%uMB norm=%uMB uv=%uMB",
 	       (uint32_t)(vertBufSize / (1024 * 1024)), (uint32_t)(idxBufSize / (1024 * 1024)),
@@ -275,6 +268,8 @@ void AccelerationStructure::BuildAttributeBuffers()
 	RT_LOG("[BuildAttributeBuffers] normal buffer created (%zuMB)", (size_t)normBufSize / (1024 * 1024));
 	createDeviceLocal(m_UVBuffer, m_UVMemory, uvBufSize);
 	RT_LOG("[BuildAttributeBuffers] UV buffer created (%zuMB)", (size_t)uvBufSize / (1024 * 1024));
+	createDeviceLocal(m_MaterialIndexBuffer, m_MaterialIndexMemory, matIdxBufSize);
+	RT_LOG("[BuildAttributeBuffers] material index buffer created (%zuMB)", (size_t)matIdxBufSize / (1024 * 1024));
 
 	RT_LOG("[BuildAttributeBuffers] starting chunked upload...");
 
@@ -282,7 +277,7 @@ void AccelerationStructure::BuildAttributeBuffers()
 	// This avoids building the entire vec4 array in CPU memory.
 	auto uploadPackedVec4 = [&](VkBuffer dstBuf, uint32_t dstOffsetElements,
 	                            const std::vector<float>* srcData, uint32_t elementCount,
-	                            float w) {
+	                            float w, uint32_t srcStride) {
 		if (!srcData || srcData->empty() || elementCount == 0) return;
 		// Sub-chunk to keep HOST_VISIBLE staging small (max 16MB = 1M vec4s)
 		const uint32_t CHUNK = 1000000;
@@ -298,9 +293,14 @@ void AccelerationStructure::BuildAttributeBuffers()
 			void* mapped = nullptr;
 			vkMapMemory(device, stagingMem, 0, chunkSize, 0, &mapped);
 			glm::vec4* dst = static_cast<glm::vec4*>(mapped);
-			const float* src = srcData->data() + (size_t)off * 3;
+			const float* src = srcData->data() + (size_t)off * srcStride;
 			for (uint32_t i = 0; i < thisCount; i++)
-				dst[i] = glm::vec4(src[i * 3], src[i * 3 + 1], src[i * 3 + 2], w);
+			{
+				if (srcStride == 3)
+					dst[i] = glm::vec4(src[i * 3], src[i * 3 + 1], src[i * 3 + 2], w);
+				else // srcStride == 2
+					dst[i] = glm::vec4(src[i * 2], src[i * 2 + 1], 0.0f, w);
+			}
 			vkUnmapMemory(device, stagingMem);
 			VkBufferCopy region = {};
 			region.size = chunkSize;
@@ -344,12 +344,19 @@ void AccelerationStructure::BuildAttributeBuffers()
 	for (size_t b = 0; b < m_BLASes.size(); b++)
 	{
 		auto& blas = m_BLASes[b];
-		uploadPackedVec4(m_VertexBuffer, offsets[b].vert, blas.srcVertices, blas.vertexCount, 1.0f);
+		uploadPackedVec4(m_VertexBuffer, offsets[b].vert, blas.srcVertices, blas.vertexCount, 1.0f, 3);
 		uploadRaw(m_IndexBuffer, offsets[b].idx, blas.srcIndices, blas.triangleCount * 3);
 		if (blas.srcNormals && !blas.srcNormals->empty())
-			uploadPackedVec4(m_NormalBuffer, offsets[b].norm, blas.srcNormals, blas.vertexCount, 0.0f);
+			uploadPackedVec4(m_NormalBuffer, offsets[b].norm, blas.srcNormals, blas.vertexCount, 0.0f, 3);
 		if (blas.srcUVs && !blas.srcUVs->empty())
-			uploadPackedVec4(m_UVBuffer, offsets[b].uv, blas.srcUVs, blas.vertexCount, 0.0f);
+			uploadPackedVec4(m_UVBuffer, offsets[b].uv, blas.srcUVs, blas.vertexCount, 0.0f, 2);
+		if (blas.srcMaterialIndices && !blas.srcMaterialIndices->empty())
+			uploadRaw(m_MaterialIndexBuffer, offsets[b].matIdx, blas.srcMaterialIndices, blas.triangleCount);
+		else
+		{
+			std::vector<uint32_t> fillMat(blas.triangleCount, blas.materialIndex);
+			uploadRaw(m_MaterialIndexBuffer, offsets[b].matIdx, &fillMat, blas.triangleCount);
+		}
 	}
 
 	// Build per-instance mesh info (uvec4 per instance: vertOffset, idxOffset, normOffset, uvOffset)
@@ -656,6 +663,7 @@ void AccelerationStructure::Destroy()
 	GpuResources::DestroyBuffer(m_Device, m_NormalBuffer, m_NormalMemory);
 	GpuResources::DestroyBuffer(m_Device, m_UVBuffer, m_UVMemory);
 	GpuResources::DestroyBuffer(m_Device, m_InstanceMeshInfoBuffer, m_InstanceMeshInfoMemory);
+	GpuResources::DestroyBuffer(m_Device, m_MaterialIndexBuffer, m_MaterialIndexMemory);
 
 	if (m_TLAS)
 	{

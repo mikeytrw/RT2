@@ -114,7 +114,9 @@ vec3 hitShadingNormal(Material mat, vec2 uv)
 
 void main()
 {
-    uint matIdx = gl_InstanceCustomIndexEXT;
+    uvec4 meshInfo = instanceMeshInfo[gl_InstanceID];
+    uint triMatOffset = meshInfo.y / 3u + uint(gl_PrimitiveID);
+    uint matIdx = instanceMaterialIndices[triMatOffset];
     Material mat = materials[matIdx];
 
     vec2 uv = hitUV();

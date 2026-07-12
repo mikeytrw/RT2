@@ -114,6 +114,13 @@ layout(set = 0, binding = SI_BINDING_INSTANCE_TRANSFORMS, std430) readonly buffe
     mat4 instanceTransforms[];
 };
 
+// Per-triangle material indices (binding 13 — shared with raster path).
+// When the buffer has per-triangle entries, overrides gl_InstanceCustomIndexEXT.
+layout(set = 0, binding = SI_BINDING_INSTANCE_MATERIAL_INDICES, std430) readonly buffer InstanceMaterialIndexBuffer
+{
+    uint instanceMaterialIndices[];
+};
+
 // Bindless texture array (combined image samplers, variable count)
 // Must be the highest binding number for VARIABLE_DESCRIPTOR_COUNT.
 layout(set = 0, binding = SI_BINDING_TEXTURE_ARRAY) uniform sampler2D textures[];

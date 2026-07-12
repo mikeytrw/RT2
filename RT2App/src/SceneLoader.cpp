@@ -1711,6 +1711,7 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
     std::vector<uint32_t> megaIndices;
     std::vector<float>    megaNormals;
     std::vector<float>    megaUVs;
+    std::vector<uint32_t> megaMaterialIds;
 
     uint32_t vertBase = 0;
 
@@ -1777,6 +1778,8 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
 
                 megaIndices.push_back(vertBase++);
             }
+
+            megaMaterialIds.push_back(static_cast<uint32_t>(shapeMatIdx));
         }
     }
 
@@ -1789,6 +1792,7 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
     meshData.indices = std::move(megaIndices);
     meshData.normals = std::move(megaNormals);
     meshData.uvs = std::move(megaUVs);
+    meshData.materialIndices = std::move(megaMaterialIds);
 
     std::string name = fpath.stem().string();
     meshData.name = name;

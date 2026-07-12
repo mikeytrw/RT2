@@ -40,13 +40,6 @@ namespace GpuResources
 			return false;
 		}
 
-	static int s_createImageCount = 0;
-	s_createImageCount++;
-	RT_LOG("[GpuResources::CreateImage #%d] %ux%u mip=%u: allocSize=%zu typeBits=0x%X memType=%u props=0x%X",
-	       s_createImageCount, width, height, mipLevels, (size_t)memReqs.size, memReqs.memoryTypeBits,
-	       allocInfo.memoryTypeIndex, memProps);
-		dev.LogMemoryUsage("CreateImage pre-alloc");
-
 		VK_CHECK(vkAllocateMemory(dev.device, &allocInfo, nullptr, &outImage.memory));
 		VK_CHECK(vkBindImageMemory(dev.device, outImage.image, outImage.memory, 0));
 

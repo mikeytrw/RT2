@@ -24,6 +24,7 @@ struct BLASGeometry
 	const std::vector<uint32_t>* indices;     // triangle indices
 	const std::vector<float>*    normals;     // normal.xyz, stride 3 (may be null)
 	const std::vector<float>*    uvs;         // texcoord.xy, stride 2 (may be null)
+	const std::vector<uint32_t>* materialIndices; // per-triangle material index (may be null)
 	uint32_t                     materialIndex;
 	bool                         isTransparent = false;
 };
@@ -72,6 +73,7 @@ public:
 	VkBuffer GetNormalBuffer() const { return m_NormalBuffer; }
 	VkBuffer GetUVBuffer() const { return m_UVBuffer; }
 	VkBuffer GetInstanceMeshInfoBuffer() const { return m_InstanceMeshInfoBuffer; }
+	VkBuffer GetMaterialIndexBuffer() const { return m_MaterialIndexBuffer; }
 	uint32_t GetTriangleCount() const { return m_TotalTriangleCount; }
 
 private:
@@ -93,6 +95,8 @@ private:
 		const std::vector<uint32_t>* srcIndices = nullptr;
 		const std::vector<float>*    srcNormals = nullptr;
 		const std::vector<float>*    srcUVs = nullptr;
+		const std::vector<uint32_t>* srcMaterialIndices = nullptr;
+		uint32_t                     materialIndex = 0;
 	};
 
 	std::vector<BLASData> m_BLASes;
@@ -108,6 +112,8 @@ private:
 	VkDeviceMemory m_UVMemory = VK_NULL_HANDLE;
 	VkBuffer m_InstanceMeshInfoBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_InstanceMeshInfoMemory = VK_NULL_HANDLE;
+	VkBuffer m_MaterialIndexBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_MaterialIndexMemory = VK_NULL_HANDLE;
 
 	// TLAS
 	VkAccelerationStructureKHR m_TLAS = VK_NULL_HANDLE;

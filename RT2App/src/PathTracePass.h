@@ -34,8 +34,8 @@ public:
 		VkBuffer instanceMaterialIndexBuffer,
 		VkAccelerationStructureKHR tlas,
 		VkBuffer reservoirBuffer, VkBuffer reservoirScratchBuffer,
-		VkBuffer surfaceHistoryBuffer,
-		const std::vector<VkDescriptorImageInfo>& textureImageInfos);
+	VkBuffer surfaceHistoryBuffer,
+	const std::vector<VkDescriptorImageInfo>& textureImageInfos);
 
 	// Record trace into command buffer. Caller handles pre/post barriers.
 	// rasterFirst=true: use secondary_raygen (reads G-buffer, traces secondary rays only)

@@ -106,6 +106,7 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
         geo.indices  = &src.indices;
         geo.normals  = src.normals.empty() ? nullptr : &src.normals;
         geo.uvs      = src.uvs.empty() ? nullptr : &src.uvs;
+        geo.materialIndices = src.materialIndices.empty() ? nullptr : &src.materialIndices;
 
         gpu.meshes.push_back(std::move(geo));
     }

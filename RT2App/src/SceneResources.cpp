@@ -197,6 +197,7 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 		geo.indices = mesh.indices;
 		geo.normals = mesh.normals;
 		geo.uvs = mesh.uvs;
+		geo.materialIndices = mesh.materialIndices;
 		geo.materialIndex = mesh.materialIndex;
 
 		uint32_t matIdx = mesh.materialIndex;

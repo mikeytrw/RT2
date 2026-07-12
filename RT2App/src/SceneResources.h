@@ -98,6 +98,7 @@ public:
 	VkBuffer GetNormalBuffer() const { return m_AS.GetNormalBuffer(); }
 	VkBuffer GetUVBuffer() const { return m_AS.GetUVBuffer(); }
 	VkBuffer GetInstanceMeshInfoBuffer() const { return m_AS.GetInstanceMeshInfoBuffer(); }
+	VkBuffer GetMaterialIndexBuffer() const { return m_AS.GetMaterialIndexBuffer(); }
 
 	// Texture accessors
 	const std::vector<GpuImage>& GetTextures() const { return m_Textures; }

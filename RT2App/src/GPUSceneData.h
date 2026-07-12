@@ -78,6 +78,7 @@ struct GPUMeshGeometry
     const std::vector<uint32_t>* indices = nullptr;     // triangle indices
     const std::vector<float>*    normals = nullptr;     // normal.xyz, stride 3 (may be null)
     const std::vector<float>*    uvs = nullptr;         // texcoord.xy, stride 2 (may be null)
+    const std::vector<uint32_t>* materialIndices = nullptr; // per-triangle material index (may be null)
     uint32_t                     materialIndex = 0;
 };
 

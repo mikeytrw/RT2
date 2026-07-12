@@ -89,7 +89,7 @@ vec3 nrdEncodeNormalRoughness(vec3 n, float roughness)
 
 void main()
 {
-    uint matIdx = instanceMaterialIndices[inInstanceIndex];
+    uint matIdx = instanceMaterialIndices[uint(gl_PrimitiveID)];
     Material mat = materials[matIdx];
 
     vec2 uv = inUV;
