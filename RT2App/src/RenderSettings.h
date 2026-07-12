@@ -36,8 +36,11 @@ struct RenderSettings
 	uint32_t restirSpatialNeighbors = 4;  // neighbor count for spatial reuse
 	uint32_t restirSpatialRadius    = 16; // pixel radius for neighbor sampling
 	uint32_t restirTemporalMCap     = 40; // max M from temporal (10 * freshCandidates)
+	uint32_t restirSpatialMCap      = 20; // max M from spatial neighbors
 	float restirDepthThreshold     = 0.1f; // relative depth difference for validation
 	float restirNormalThreshold    = 0.98f; // normal dot product for validation (cos angle)
+	float restirWorldPosThreshold  = 0.5f; // world-position distance for temporal validation
+	uint32_t restirMaxTemporalAge  = 20;  // max temporal reuse age before rejection
 	bool  restirTemporalReuse     = true;  // enable temporal reuse
 	bool  restirSpatialReuse      = true;  // enable spatial reuse
 

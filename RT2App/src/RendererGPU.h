@@ -60,6 +60,11 @@ public:
 	bool Init();
 	void ResetAccumulation();
 
+	// ReSTIR history invalidation — call whenever the receiver, light
+	// distribution, reservoir normalization, or surface correspondence
+	// changes. Sets the clear flag and increments the history version.
+	void InvalidateReSTIRHistory();
+
 	// Read back the output image to CPU as RGBA8 (tonemapped+sRGB). Returns false on failure.
 	bool ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t& outWidth, uint32_t& outHeight);
 
@@ -148,6 +153,8 @@ private:
 	ReSTIRPass m_ReSTIRPass;
 	ReservoirResources m_Reservoirs;
 	bool m_ReSTIRHistoryInvalidated = true;  // set on resize/scene change/enable toggle
+	uint32_t m_ReSTIRFrameIndex = 1;         // independent of m_FrameIndex — monotonically increasing
+	uint32_t m_ReSTIRHistoryVersion = 0;     // incremented on each InvalidateReSTIRHistory()
 
 	// Raster pass (primary visibility G-buffer)
 	RasterPass m_RasterPass;

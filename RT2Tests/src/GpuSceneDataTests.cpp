@@ -34,8 +34,8 @@ TEST_CASE("SINRDUniformData is 16 bytes")
 
 TEST_CASE("SIReSTIRPushConstants carries both jitter samples")
 {
-    CHECK(sizeof(SIReSTIRPushConstants) == 48);
-    CHECK(offsetof(SIReSTIRPushConstants, jitter) == 32);
+    CHECK(sizeof(SIReSTIRPushConstants) == 60);
+    CHECK(offsetof(SIReSTIRPushConstants, jitter) == 44);
 }
 
 TEST_CASE("GPUMaterial matches SIMaterial layout")

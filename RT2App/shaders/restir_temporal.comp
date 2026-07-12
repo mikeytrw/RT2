@@ -180,6 +180,9 @@ void main()
         }
     }
 
+    bool temporalAccepted = false;
+    uint historyAge = 0u;
+
     // ---- Temporal reuse ----
     bool temporalEnabled = (pc.restir.flags & 1u) != 0u;
     if (temporalEnabled)
@@ -208,38 +211,38 @@ void main()
             {
                 SurfaceHistory sh = surfaceHistory[prevLinear];
 
-                bool isSkyOrEmissive = false;  // already checked above
+                bool isSkyOrEmissive = false;
                 bool histValid = validateSurfaceHistory(sh, n, viewZ, matIdx,
-                                                        isSkyOrEmissive,
+                                                        isSkyOrEmissive, worldPos,
                                                         pc.restir.depthThreshold,
-                                                        pc.restir.normalThreshold);
+                                                        pc.restir.normalThreshold,
+                                                        pc.restir.worldPosThreshold);
 
                 if (histValid)
                 {
-                    // Re-evaluate history sample at current receiver
-                    float p_hat_current = evalTargetPdf(histRes, worldPos, n, wo,
-                                                       baseColor, metallic);
-
-                    if (p_hat_current > 0.0)
+                    uint histAge = reservoirAge(histRes);
+                    uint maxAge = max(pc.restir.maxTemporalAge, 1u);
+                    if (histAge < maxAge)
                     {
-                        uint histM = reservoirM(histRes);
-                        uint temporalMCap = max(pc.restir.temporalMCap, 1u);
-                        uint clampedM = min(histM, temporalMCap);
+                        float p_hat_current = evalTargetPdf(histRes, worldPos, n, wo,
+                                                           baseColor, metallic);
 
-                        // Canonical ReSTIR merge weight:
-                        // w = p_hat_at_dst(x_src) * W_src * M_src
-                        // W_src = weightSum_src / (M_src * targetPdf_src)
-                        // The M_src cancels: w = p_hat_at_dst * weightSum_src / targetPdf_src
-                        float W_prev = reservoirW(histRes);
-                        float w_merge = p_hat_current * W_prev * float(clampedM);
-
-                        if (w_merge > 0.0 && !isnan(w_merge) && !isinf(w_merge))
+                        if (p_hat_current > 0.0)
                         {
-                            reservoirMerge(res, histRes, w_merge, p_hat_current, rngState);
-                            // Adjust M to the clamped value (reservoirMerge adds full M)
-                            uint currentM = reservoirM(res);
-                            uint addedM = reservoirM(histRes);
-                            reservoirSetM(res, currentM - addedM + clampedM);
+                            uint histM = reservoirM(histRes);
+                            uint temporalMCap = max(pc.restir.temporalMCap, 1u);
+                            uint clampedM = min(histM, temporalMCap);
+
+                            float W_prev = reservoirW(histRes);
+                            float w_merge = p_hat_current * W_prev * float(clampedM);
+
+                            if (w_merge > 0.0 && !isnan(w_merge) && !isinf(w_merge))
+                            {
+                                reservoirMerge(res, histRes, w_merge, clampedM,
+                                               p_hat_current, rngState);
+                                temporalAccepted = true;
+                                historyAge = histAge;
+                            }
                         }
                     }
                 }
@@ -250,10 +253,11 @@ void main()
     // Sanitize and write
     res = sanitizeReservoir(res);
 
-    // Set age: 0 for fresh (no temporal), 1 if temporal history was accepted
-    if (temporalEnabled && reservoirM(res) > M)
+    // Set age: 0 for fresh-only, min(historyAge+1, maxAge) if temporal was accepted
+    if (temporalAccepted)
     {
-        reservoirSetAge(res, 1u);
+        uint maxAge = max(pc.restir.maxTemporalAge, 1u);
+        reservoirSetAge(res, min(historyAge + 1u, maxAge));
     }
 
     reservoirScratch[pixelLinear] = res;

@@ -471,11 +471,16 @@ NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
 //
 // Estimator (solid-angle measure throughout):
 //   W = weightSum / (M * targetPdf)     — stochastic replacement for 1/pdf
-//   For triangle: radiance = throughput * brdf * Le * NdotL * (LNdotL / dist²) * W * wLight
-//   For env:      radiance = throughput * brdf * Le * NdotL * W * wLight
+//   For triangle: radiance = throughput * brdf * Le * NdotL * W
+//   For env:      radiance = throughput * brdf * Le * NdotL * W
 //
-// MIS WEIGHTS: pdfOmega is reconstructed from the reservoir sample for MIS only
-// (NOT for the 1/pdf factor — W replaces that).
+// The area→solid-angle Jacobian (LNdotL/dist²) is in the proposal PDF only,
+// NOT in p_hat or the final contribution. This avoids double-application.
+//
+// MIS: The conventional light-vs-BSDF balance heuristic is NOT valid for a
+// RIS/ReSTIR-selected sample — the sample follows the reservoir distribution,
+// not the base light proposal. MIS is disabled (wLight = 1.0) until a
+// reservoir-aware MIS derivation is implemented.
 NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
                          vec3 baseColor, float metallic, float roughness,
                          float P_s, float P_d,
@@ -497,7 +502,6 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
 
     if (sampleType == SAMPLE_TRIANGLE)
     {
-        // Triangle sample
         TriangleSample ts = reconstructTriangleSample(res, P, N, wo);
         if (!ts.valid)
             return result;
@@ -506,7 +510,6 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
         if (dot(brdf, brdf) <= 0.0)
             return result;
 
-        // Shadow ray (finite distance for triangle)
         shadowVisible = 0.0;
         traceRayEXT(topLevelAS,
                     gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
@@ -516,31 +519,14 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
         if (shadowVisible < 0.5)
             return result;
 
-        vec3 Le = ts.Le;
-
-        // pdfOmega — reconstructed for MIS only
-        float pdfA = (1.0 / float(lightCount)) * (1.0 / ts.lightArea);
-        float pdfOmega = pdfA * (ts.dist * ts.dist) / abs(ts.LNdotL);
-
-        float alpha = roughnessToAlpha(roughness);
-        float pdfBsdf;
-        if (hasTransmission)
-            pdfBsdf = evalTransmissionBSDFPdf(wo, ts.L, N, P_s, P_refract, P_d, alpha, eta);
-        else
-            pdfBsdf = evalBSDFPdf(wo, ts.L, N, P_s, P_d, alpha);
-
-        float wLight = pdfOmega / (pdfOmega + pdfBsdf);
-
         float W = reservoirW(res);
-        vec3 contribution = brdf * Le * ts.NdotL * (ts.LNdotL / (ts.dist * ts.dist));
-        vec3 direct = contribution * W * wLight;
+        vec3 direct = brdf * ts.Le * ts.NdotL * W;
 
         result.radiance = throughput * direct;
-        result.pdfLightOmega = pdfOmega;
+        result.pdfLightOmega = 0.0;
     }
     else if (sampleType == SAMPLE_ENV)
     {
-        // Environment sample
         EnvSampleRecon es = reconstructEnvSample(res, N);
         if (!es.valid)
             return result;
@@ -549,7 +535,6 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
         if (dot(brdf, brdf) <= 0.0)
             return result;
 
-        // Shadow ray (infinite distance for environment)
         shadowVisible = 0.0;
         traceRayEXT(topLevelAS,
                     gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
@@ -559,24 +544,11 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
         if (shadowVisible < 0.5)
             return result;
 
-        vec3 Le = es.radiance;
-        float pdfOmega = es.pdf;
-
-        float alpha = roughnessToAlpha(roughness);
-        float pdfBsdf;
-        if (hasTransmission)
-            pdfBsdf = evalTransmissionBSDFPdf(wo, es.dir, N, P_s, P_refract, P_d, alpha, eta);
-        else
-            pdfBsdf = evalBSDFPdf(wo, es.dir, N, P_s, P_d, alpha);
-
-        float wLight = pdfOmega / (pdfOmega + pdfBsdf);
-
         float W = reservoirW(res);
-        vec3 contribution = brdf * Le * es.NdotL;
-        vec3 direct = contribution * W * wLight;
+        vec3 direct = brdf * es.radiance * es.NdotL * W;
 
         result.radiance = throughput * direct;
-        result.pdfLightOmega = pdfOmega;
+        result.pdfLightOmega = 0.0;
     }
 
     return result;

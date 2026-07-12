@@ -167,17 +167,19 @@ struct SIReservoir
 // SurfaceHistory — per-pixel receiver metadata for temporal validation.
 // 16 bytes (uvec4), std430.
 //
-// Encodes normal (2 components, oct), view depth, material ID, and validity.
-// Written by the spatial pass (overwrites previous frame's history).
+// Encodes normal (2 components, oct), view depth, material ID, world position,
+// and validity. Written by the spatial pass (overwrites previous frame's history).
 //
-// data.x = oct-normal packed into 16 bits each (x = n.x oct, y = n.y oct)
-// data.y = floatBitsToUint(viewZ)
-// data.z = materialID (uint, 0xFFFFFFFF = sky/invalid)
-// data.w = (flags << 16) | valid (bit 0 = valid)
+// data0.x = oct-normal packed into 16 bits each (x = n.x oct, y = n.y oct)
+// data0.y = floatBitsToUint(viewZ)
+// data0.z = materialID (uint, 0xFFFFFFFF = sky/invalid)
+// data0.w = (flags << 16) | valid (bit 0 = valid)
+// data1.xyz = floatBitsToUint(worldPos.xyz), data1.w = 0 (pad)
 // ============================================================================
 struct SISurfaceHistory
 {
-    SI_UVEC4 data;
+    SI_UVEC4 data0;
+    SI_UVEC4 data1;
 };
 
 // ============================================================================
@@ -188,10 +190,13 @@ struct SIReSTIRPushConstants
 {
     SI_UINT freshCandidateCount;   // M: fresh candidates per pixel
     SI_UINT temporalMCap;          // max M from temporal history (e.g. 20 * freshCandidateCount)
+    SI_UINT spatialMCap;           // max M from spatial neighbors
     SI_UINT spatialNeighborCount;  // number of neighbors for spatial reuse
     SI_UINT spatialRadius;         // pixel radius for neighbor sampling
     SI_FLOAT depthThreshold;      // relative depth difference threshold
     SI_FLOAT normalThreshold;      // normal similarity threshold (dot product)
+    SI_FLOAT worldPosThreshold;    // world-position difference threshold for temporal validation
+    SI_UINT maxTemporalAge;        // maximum temporal reuse age before rejection
     SI_UINT flags;                 // bit 0 = temporal reuse enabled, bit 1 = spatial reuse enabled
     SI_UINT frameIndex;           // frame index for neighbor rotation
     SI_VEC4 jitter;               // xy = current, zw = previous jitter in pixel units
@@ -218,8 +223,8 @@ static_assert(sizeof(SICameraData) == 496, "SICameraData must be 496 bytes (7 ve
 static_assert(sizeof(SIMaterial) == 80, "SIMaterial must be 80 bytes (2 vec4 + 4 float + 2 ivec4)");
 static_assert(sizeof(SITriangleLight) == 32, "SITriangleLight must be 32 bytes (vec4 + uvec4)");
 static_assert(sizeof(SIReservoir) == 32, "SIReservoir must be 32 bytes (2 uvec4)");
-static_assert(sizeof(SISurfaceHistory) == 16, "SISurfaceHistory must be 16 bytes (1 uvec4)");
-static_assert(sizeof(SIReSTIRPushConstants) == 48, "SIReSTIRPushConstants must be 48 bytes");
+static_assert(sizeof(SISurfaceHistory) == 32, "SISurfaceHistory must be 32 bytes (2 uvec4)");
+static_assert(sizeof(SIReSTIRPushConstants) == 60, "SIReSTIRPushConstants must be 60 bytes");
 static_assert(sizeof(SINRDUniformData) == 16, "SINRDUniformData must be 16 bytes");
 
 // ============================================================================

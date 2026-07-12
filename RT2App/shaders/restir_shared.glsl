@@ -19,10 +19,11 @@ struct Reservoir
     uvec4 data1;  // x = uint(weightSum), y = uint(targetPdf), z = M, w = packedAgeFlags
 };
 
-// ---- SurfaceHistory struct (16 bytes) ---------------------------------------
+// ---- SurfaceHistory struct (32 bytes) ---------------------------------------
 struct SurfaceHistory
 {
-    uvec4 data;  // x = packed normal oct, y = uint(viewZ), z = materialID, w = packed flags
+    uvec4 data0;  // x = packed normal oct, y = uint(viewZ), z = materialID, w = packed flags
+    uvec4 data1;  // xyz = uint(worldPos.xyz), w = pad
 };
 
 // ---- Sample type constants --------------------------------------------------
@@ -144,11 +145,15 @@ void reservoirSetTargetPdf(inout Reservoir r, float tp)
 // ---- Reservoir streaming update ---------------------------------------------
 // Streaming RIS: for each candidate with weight w_i = p_hat(x_i) / p(x_i),
 // accumulate weightSum and probabilistically select the sample.
+// M is always incremented (counting all proposals), while weightSum and
+// replacement selection only proceed for positive finite weights.
 void reservoirStreamUpdate(inout Reservoir r, float w,
                             uint sampleType, uint lightIdx,
                             float sampleParam1, float sampleParam2,
                             float p_hat, inout uint rngState)
 {
+    r.data1.z += 1u;  // M++ — always count this proposal
+
     if (isnan(w) || isinf(w) || w <= 0.0) return;
 
     r.data1.x = floatBitsToUint(uintBitsToFloat(r.data1.x) + w);
@@ -162,19 +167,20 @@ void reservoirStreamUpdate(inout Reservoir r, float w,
         r.data0.w = floatBitsToUint(sampleParam2);
         r.data1.y = floatBitsToUint(p_hat);
     }
-    r.data1.z += 1u;  // M++
     r.data1.w = (r.data1.w & ~0xFFu) | 1u;  // valid
 }
 
 // ---- Reservoir merge (canonical ReSTIR) ------------------------------------
 // Merge reservoir r_new into r_dst with weight w_merge.
 // p_hat_at_dst = target density of r_new's sample evaluated at r_dst's receiver.
+// representedM = the effective candidate count to add to r_dst.M (may be capped).
 // When the sample is adopted, targetPdf is set to p_hat_at_dst (NOT the source's
 // targetPdf), so that reservoirW = weightSum / (M * targetPdf) is correct.
 void reservoirMerge(inout Reservoir r_dst, Reservoir r_new, float w_merge,
-                     float p_hat_at_dst, inout uint rngState)
+                     uint representedM, float p_hat_at_dst, inout uint rngState)
 {
     if (isnan(w_merge) || isinf(w_merge) || w_merge <= 0.0) return;
+    if (representedM == 0u) return;
 
     float ws_dst = reservoirWeightSum(r_dst);
 
@@ -183,12 +189,11 @@ void reservoirMerge(inout Reservoir r_dst, Reservoir r_new, float w_merge,
 
     if (randomFloat(rngState) < w_merge / max(totalWs, 1e-20))
     {
-        // Adopt the new sample — store p_hat evaluated at the DESTINATION receiver
         r_dst.data0 = r_new.data0;
         r_dst.data1.y = floatBitsToUint(p_hat_at_dst);
     }
 
-    r_dst.data1.z += reservoirM(r_new);
+    r_dst.data1.z += representedM;
     r_dst.data1.w = (r_dst.data1.w & ~0xFFu) | 1u;  // valid
 }
 
@@ -204,13 +209,16 @@ float reservoirW(Reservoir r)
 }
 
 // ---- Target density (p_hat) evaluation --------------------------------------
-// p_hat = luminance(BRDF * Le * NdotL) — solid-angle measure.
-// For triangle samples: includes the area→solid-angle Jacobian (dist² / LNdotL).
+// p_hat = luminance(BRDF * Le * NdotL) — solid-angle measure for both families.
+// For triangle samples, the area→solid-angle Jacobian lives in the proposal PDF
+// (triangleProposalPdfOmega), NOT in p_hat. This avoids double-applying the
+// geometry factor (LNdotL/dist²) in both p_hat and final shading.
 // For environment samples: Le and pdf from env map, NdotL from BRDF.
 //
 // Returns 0.0 for invalid samples (back-facing, below horizon, NaN).
 
-// Triangle target density: p_hat = luminance(brdf * Le * NdotL * LNdotL / dist²)
+// Triangle target density: p_hat = luminance(brdf * Le * NdotL) — solid-angle measure.
+// The area→solid-angle Jacobian (dist²/LNdotL) is in the proposal PDF only.
 float evalTriangleTargetPdf(vec3 P, vec3 N, vec3 wo,
                             vec3 baseColor, float metallic,
                             uint lightIdx, float b1, float b2)
@@ -255,8 +263,7 @@ float evalTriangleTargetPdf(vec3 P, vec3 N, vec3 wo,
     }
     Le *= camera.apertureFocal.w;
 
-    float geom = NdotL * LNdotL / (dist * dist);
-    float p_hat = luminance(brdf * Le) * geom;
+    float p_hat = luminance(brdf * Le) * NdotL;
 
     if (isnan(p_hat) || isinf(p_hat) || p_hat <= 0.0) return 0.0;
     return p_hat;
@@ -492,24 +499,28 @@ vec3 octDecode(vec2 o)
 
 // ---- Surface history helpers ------------------------------------------------
 
-SurfaceHistory makeSurfaceHistory(vec3 normal, float viewZ, uint matIdx, bool valid)
+SurfaceHistory makeSurfaceHistory(vec3 normal, float viewZ, uint matIdx, bool valid,
+                                   vec3 worldPos)
 {
     SurfaceHistory sh;
     vec2 oct = octEncode(normal);
-    // Pack oct UV as two unorm16 (0-1 range from -1..1)
     uint ox = uint(clamp(oct.x * 0.5 + 0.5, 0.0, 1.0) * 65535.0);
     uint oy = uint(clamp(oct.y * 0.5 + 0.5, 0.0, 1.0) * 65535.0);
-    sh.data.x = ox | (oy << 16u);
-    sh.data.y = floatBitsToUint(viewZ);
-    sh.data.z = matIdx;
-    sh.data.w = valid ? 1u : 0u;
+    sh.data0.x = ox | (oy << 16u);
+    sh.data0.y = floatBitsToUint(viewZ);
+    sh.data0.z = matIdx;
+    sh.data0.w = valid ? 1u : 0u;
+    sh.data1.x = floatBitsToUint(worldPos.x);
+    sh.data1.y = floatBitsToUint(worldPos.y);
+    sh.data1.z = floatBitsToUint(worldPos.z);
+    sh.data1.w = 0u;
     return sh;
 }
 
 vec3 surfaceHistoryNormal(SurfaceHistory sh)
 {
-    uint ox_bits = sh.data.x & 0xFFFFu;
-    uint oy_bits = (sh.data.x >> 16u) & 0xFFFFu;
+    uint ox_bits = sh.data0.x & 0xFFFFu;
+    uint oy_bits = (sh.data0.x >> 16u) & 0xFFFFu;
     float ox = (float(ox_bits) / 65535.0) * 2.0 - 1.0;
     float oy = (float(oy_bits) / 65535.0) * 2.0 - 1.0;
     return octDecode(vec2(ox, oy));
@@ -517,30 +528,39 @@ vec3 surfaceHistoryNormal(SurfaceHistory sh)
 
 float surfaceHistoryViewZ(SurfaceHistory sh)
 {
-    return uintBitsToFloat(sh.data.y);
+    return uintBitsToFloat(sh.data0.y);
 }
 
 uint surfaceHistoryMatIdx(SurfaceHistory sh)
 {
-    return sh.data.z;
+    return sh.data0.z;
+}
+
+vec3 surfaceHistoryWorldPos(SurfaceHistory sh)
+{
+    return vec3(uintBitsToFloat(sh.data1.x),
+                uintBitsToFloat(sh.data1.y),
+                uintBitsToFloat(sh.data1.z));
 }
 
 bool surfaceHistoryValid(SurfaceHistory sh)
 {
-    return sh.data.w != 0u;
+    return sh.data0.w != 0u;
 }
 
 // ---- Surface history validation ---------------------------------------------
 bool validateSurfaceHistory(SurfaceHistory sh, vec3 currentN, float currentViewZ,
                             uint currentMatIdx, bool currentIsSkyOrEmissive,
-                            float depthThreshold, float normalThreshold)
+                            vec3 currentWorldPos,
+                            float depthThreshold, float normalThreshold,
+                            float worldPosThreshold)
 {
     if (currentIsSkyOrEmissive) return false;
     if (!surfaceHistoryValid(sh)) return false;
 
     uint histMatIdx = surfaceHistoryMatIdx(sh);
     if (histMatIdx != currentMatIdx) return false;
-    if (histMatIdx == 0xFFFFFFFFu) return false;  // sky/invalid
+    if (histMatIdx == 0xFFFFFFFFu) return false;
 
     vec3 histN = surfaceHistoryNormal(sh);
     if (dot(histN, currentN) < normalThreshold) return false;
@@ -548,6 +568,10 @@ bool validateSurfaceHistory(SurfaceHistory sh, vec3 currentN, float currentViewZ
     float histZ = surfaceHistoryViewZ(sh);
     float depthDiff = abs(histZ - currentViewZ) / max(abs(currentViewZ), 1e-6);
     if (depthDiff > depthThreshold) return false;
+
+    vec3 histPos = surfaceHistoryWorldPos(sh);
+    float posDiff = distance(histPos, currentWorldPos);
+    if (posDiff > worldPosThreshold) return false;
 
     return true;
 }

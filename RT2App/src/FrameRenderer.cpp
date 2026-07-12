@@ -195,7 +195,7 @@ void FrameRenderer::RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx)
 	temporalPreBarriers[0].buffer = historyBuf;
 	temporalPreBarriers[0].size = ctx.reservoirs.GetBufferSize();
 	temporalPreBarriers[1].buffer = surfaceHistBuf;
-	temporalPreBarriers[1].size = ctx.reservoirs.GetBufferSize() / 2; // surfaceHistory is 16 bytes/pixel vs 32
+	temporalPreBarriers[1].size = ctx.reservoirs.GetSurfaceHistorySize();
 
 	// Also need scratch → temporal write barrier
 	temporalPreBarriers[2].buffer = scratchBuf;
@@ -237,7 +237,7 @@ void FrameRenderer::RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx)
 	spatialPreBarriers[1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 
 	spatialPreBarriers[2].buffer = surfaceHistBuf;
-	spatialPreBarriers[2].size = ctx.reservoirs.GetBufferSize() / 2;
+	spatialPreBarriers[2].size = ctx.reservoirs.GetSurfaceHistorySize();
 	spatialPreBarriers[2].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
 	spatialPreBarriers[2].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
 

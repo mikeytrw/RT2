@@ -42,6 +42,7 @@ public:
 	uint32_t GetWidth()  const { return m_Width; }
 	uint32_t GetHeight() const { return m_Height; }
 	VkDeviceSize GetBufferSize() const { return m_BufferSize; }
+	VkDeviceSize GetSurfaceHistorySize() const { return m_SurfaceHistorySize; }
 
 	VkBuffer GetHistoryBuffer() const { return m_HistoryBuffer; }
 	VkBuffer GetScratchBuffer() const { return m_ScratchBuffer; }

@@ -85,36 +85,48 @@ void ReservoirResources::ClearHistory(VkCommandBuffer cmd)
 	if (m_HistoryBuffer == VK_NULL_HANDLE)
 		return;
 
-	VkClearColorValue clear = {};
-	VkBufferMemoryBarrier barrier = {};
-	barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-	barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-	barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier.buffer = m_HistoryBuffer;
-	barrier.offset = 0;
-	barrier.size = m_BufferSize;
+	VkBufferMemoryBarrier preBarriers[2] = {};
+	for (int i = 0; i < 2; i++)
+	{
+		preBarriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		preBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		preBarriers[i].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		preBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		preBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	}
+	preBarriers[0].buffer = m_HistoryBuffer;
+	preBarriers[0].offset = 0;
+	preBarriers[0].size = m_BufferSize;
+	preBarriers[1].buffer = m_SurfaceHistoryBuffer;
+	preBarriers[1].offset = 0;
+	preBarriers[1].size = m_SurfaceHistorySize;
+
 	vkCmdPipelineBarrier(cmd,
 		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
 		VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-		0, nullptr, 1, &barrier, 0, nullptr);
+		0, nullptr, 2, preBarriers, 0, nullptr);
 
 	vkCmdFillBuffer(cmd, m_HistoryBuffer, 0, m_BufferSize, 0);
-
-	VkBufferMemoryBarrier barrier2 = {};
-	barrier2.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
-	barrier2.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
-	barrier2.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-	barrier2.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier2.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	barrier2.buffer = m_SurfaceHistoryBuffer;
-	barrier2.offset = 0;
-	barrier2.size = m_SurfaceHistorySize;
-	vkCmdPipelineBarrier(cmd,
-		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-		VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
-		0, nullptr, 1, &barrier2, 0, nullptr);
-
 	vkCmdFillBuffer(cmd, m_SurfaceHistoryBuffer, 0, m_SurfaceHistorySize, 0);
+
+	VkBufferMemoryBarrier postBarriers[2] = {};
+	for (int i = 0; i < 2; i++)
+	{
+		postBarriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		postBarriers[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		postBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		postBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		postBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	}
+	postBarriers[0].buffer = m_HistoryBuffer;
+	postBarriers[0].offset = 0;
+	postBarriers[0].size = m_BufferSize;
+	postBarriers[1].buffer = m_SurfaceHistoryBuffer;
+	postBarriers[1].offset = 0;
+	postBarriers[1].size = m_SurfaceHistorySize;
+
+	vkCmdPipelineBarrier(cmd,
+		VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+		0, nullptr, 2, postBarriers, 0, nullptr);
 }

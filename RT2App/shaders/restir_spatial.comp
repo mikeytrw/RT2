@@ -13,7 +13,7 @@
 //    a. Read neighbor reservoir from reservoirScratch[]
 //    b. Validate neighbor using current-frame normal, depth, material
 //    c. Re-evaluate neighbor's selected sample at the center receiver
-//    d. Merge valid reservoirs using pairwise MIS weight
+//    d. Merge using canonical ReSTIR weight with source-M cap
 // 4. Write final result and current surface metadata for the next frame
 //
 // Neighbor selection: frame-rotated disk pattern, not fixed square kernel.
@@ -69,7 +69,7 @@ void main()
     if (isMiss)
     {
         reservoirHistory[pixelLinear] = makeEmptyReservoir();
-        surfaceHistory[pixelLinear] = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6, 0xFFFFFFFFu, false);
+        surfaceHistory[pixelLinear] = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6, 0xFFFFFFFFu, false, vec3(0.0));
         return;
     }
 
@@ -77,7 +77,7 @@ void main()
     if (dot(directEmission, directEmission) > 0.0)
     {
         reservoirHistory[pixelLinear] = makeEmptyReservoir();
-        surfaceHistory[pixelLinear] = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6, 0xFFFFFFFFu, false);
+        surfaceHistory[pixelLinear] = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6, 0xFFFFFFFFu, false, vec3(0.0));
         return;
     }
 
@@ -116,7 +116,7 @@ void main()
     if (diffuseWeight < 1e-4)
     {
         reservoirHistory[pixelLinear] = makeEmptyReservoir();
-        surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, false);
+        surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, false, worldPos);
         return;
     }
 
@@ -128,11 +128,17 @@ void main()
     if (!spatialEnabled || centerRes.data0.x == SAMPLE_EMPTY)
     {
         reservoirHistory[pixelLinear] = centerRes;
-        surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, true);
+        surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, true, worldPos);
         return;
     }
 
-    // ---- Spatial neighbor reuse with pairwise MIS ----
+    // ---- Spatial neighbor reuse with canonical merge + source-M cap ----
+    // Each valid neighbor is merged using the canonical ReSTIR merge weight:
+    //   w_j = p_hat_center(x_j) * W_j * M_j_capped
+    // The source M is capped by spatialMCap to prevent correlated reservoirs
+    // from inflating effective M without bound across frames.
+    // Pairwise MIS is NOT implemented — the p_hat_center is used only as a
+    // validity check, not in a denominator.
     uint neighborCount = max(pc.restir.spatialNeighborCount, 1u);
     uint radius = max(pc.restir.spatialRadius, 1u);
     uint frameIndex = pc.restir.frameIndex;
@@ -151,17 +157,6 @@ void main()
         vec2 offset = vec2(cos(theta), sin(theta)) * r;
         neighborOffsets[i] = rotateOffset(offset, frameIndex);
     }
-
-    // Pairwise MIS: for each valid neighbor, compute the merge weight as
-    // w = p_hat_center(x_neighbor) / (p_hat_center(x_center) + Σ p_hat_center(x_j))
-    // This is the 1-MIS approximation (treat each neighbor independently).
-    // The full pairwise MIS would require evaluating all neighbor samples at
-    // all receivers, which is expensive. We use the simpler "1-MIS" form from
-    // the ReSTIR paper (Boksma et al. 2024, "Resampling-based Global Illumination").
-    //
-    // For each neighbor j:
-    //   w_j = p_hat_center(x_j) * W_j * M_j
-    // Merge into center with these weights.
 
     // First pass: compute p_hat for center and all valid neighbors
     float p_hat_center = evalTargetPdf(centerRes, worldPos, n, wo, baseColor, metallic);
@@ -223,6 +218,7 @@ void main()
     }
 
     // Second pass: merge valid neighbors with canonical ReSTIR weights
+    uint spatialMCap = max(pc.restir.spatialMCap, 1u);
     for (uint i = 0u; i < actualNeighbors; i++)
     {
         if (!neighborValid[i]) continue;
@@ -234,22 +230,21 @@ void main()
 
         float p_hat_at_center = neighborPHats[i];
 
-        // Canonical ReSTIR merge weight:
-        // w = p_hat_at_target(x_source) * W_source * M_source
-        // where W_source = weightSum_source / (M_source * targetPdf_source)
-        // This simplifies to: w = p_hat_at_center * weightSum_source / targetPdf_source
         float W_neighbor = reservoirW(nRes);
         uint M_neighbor = reservoirM(nRes);
-        float w_merge = p_hat_at_center * W_neighbor * float(M_neighbor);
+        uint clampedM = min(M_neighbor, spatialMCap);
+
+        float w_merge = p_hat_at_center * W_neighbor * float(clampedM);
 
         if (w_merge > 0.0 && !isnan(w_merge) && !isinf(w_merge))
         {
-            reservoirMerge(centerRes, nRes, w_merge, p_hat_at_center, rngState);
+            reservoirMerge(centerRes, nRes, w_merge, clampedM,
+                           p_hat_at_center, rngState);
         }
     }
 
     // Sanitize and write to history
     centerRes = sanitizeReservoir(centerRes);
     reservoirHistory[pixelLinear] = centerRes;
-    surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, true);
+    surfaceHistory[pixelLinear] = makeSurfaceHistory(n, viewZ, matIdx, true, worldPos);
 }

@@ -267,7 +267,7 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
 	m_ComposeDescriptorSetCached = false;
-	m_ReSTIRHistoryInvalidated = true;
+	InvalidateReSTIRHistory();
 }
 
 void RendererGPU::UpdatePathTraceDescriptorSet()
@@ -390,7 +390,7 @@ void RendererGPU::SetSceneKeepTextures(const GPUSceneData& sceneData)
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
 	m_ComposeDescriptorSetCached = false;
-	m_ReSTIRHistoryInvalidated = true;
+	InvalidateReSTIRHistory();
 
 	if (m_Scene.IsValid() && !m_Scene.NeedsASRebuild() && !m_Scene.IsTextureUploadPending())
 	{
@@ -408,7 +408,7 @@ void RendererGPU::SetScene(GPUSceneData& sceneData)
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
-	m_ReSTIRHistoryInvalidated = true;
+	InvalidateReSTIRHistory();
 
 	// Update descriptor set if AS is already valid (no rebuild needed)
 	// and textures are not still loading asynchronously.
@@ -425,13 +425,11 @@ void RendererGPU::SetScene(GPUSceneData& sceneData)
 
 void RendererGPU::UpdateSceneInstances(const GPUSceneData& sceneData)
 {
-	// Wait for all in-flight frames to finish before destroying/recreating
-	// GPU buffers (instance transform, light). Without this, a previous frame's
-	// render commands may still be referencing the old buffers → use-after-free.
 	vkDeviceWaitIdle(m_Device.device);
 
 	m_Scene.UpdateInstances(m_Device, sceneData);
 	UpdatePathTraceDescriptorSet();
+	InvalidateReSTIRHistory();
 }
 
 void RendererGPU::DumpInstanceTransforms() const
@@ -458,6 +456,13 @@ void RendererGPU::ResetAccumulation()
 	m_PrevWorldToViewForFrame = glm::mat4(1.0f);
 }
 
+void RendererGPU::InvalidateReSTIRHistory()
+{
+	m_ReSTIRHistoryInvalidated = true;
+	m_ReSTIRHistoryVersion++;
+	m_ReSTIRFrameIndex = 1;
+}
+
 void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 {
 	bool wasRestirEnabled = m_Settings.restirEnabled;
@@ -465,12 +470,15 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	                                m_Settings.nrdJitterScale != newSettings.nrdJitterScale;
 	bool restirPolicyChanged = m_Settings.restirFreshCandidates != newSettings.restirFreshCandidates ||
 	                          m_Settings.restirTemporalMCap != newSettings.restirTemporalMCap ||
+	                          m_Settings.restirSpatialMCap != newSettings.restirSpatialMCap ||
 	                          m_Settings.restirTemporalReuse != newSettings.restirTemporalReuse ||
 	                          m_Settings.restirSpatialReuse != newSettings.restirSpatialReuse ||
 	                          m_Settings.restirSpatialNeighbors != newSettings.restirSpatialNeighbors ||
 	                          m_Settings.restirSpatialRadius != newSettings.restirSpatialRadius ||
 	                          m_Settings.restirDepthThreshold != newSettings.restirDepthThreshold ||
-	                          m_Settings.restirNormalThreshold != newSettings.restirNormalThreshold;
+	                          m_Settings.restirNormalThreshold != newSettings.restirNormalThreshold ||
+	                          m_Settings.restirWorldPosThreshold != newSettings.restirWorldPosThreshold ||
+	                          m_Settings.restirMaxTemporalAge != newSettings.restirMaxTemporalAge;
 	if (m_Settings.spp != newSettings.spp ||
 	    m_Settings.maxBounces != newSettings.maxBounces ||
 	    m_Settings.showBackground != newSettings.showBackground ||
@@ -493,18 +501,20 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	    m_Settings.restirSpatialNeighbors != newSettings.restirSpatialNeighbors ||
 	    m_Settings.restirSpatialRadius != newSettings.restirSpatialRadius ||
 	    m_Settings.restirTemporalMCap != newSettings.restirTemporalMCap ||
+	    m_Settings.restirSpatialMCap != newSettings.restirSpatialMCap ||
 	    m_Settings.restirDepthThreshold != newSettings.restirDepthThreshold ||
 	    m_Settings.restirNormalThreshold != newSettings.restirNormalThreshold ||
+	    m_Settings.restirWorldPosThreshold != newSettings.restirWorldPosThreshold ||
+	    m_Settings.restirMaxTemporalAge != newSettings.restirMaxTemporalAge ||
 	    m_Settings.gbufferDebugMode != newSettings.gbufferDebugMode)
 	{
 		m_Settings.dirty = true;
 	}
 	m_Settings = newSettings;
 
-	// A different jitter sequence changes history storage coordinates.
 	if (m_Settings.restirEnabled != wasRestirEnabled ||
 	    (m_Settings.restirEnabled && (restirJitterPolicyChanged || restirPolicyChanged)))
-		m_ReSTIRHistoryInvalidated = true;
+		InvalidateReSTIRHistory();
 }
 
 void RendererGPU::UpdateCameraUBO(const Camera& camera)
@@ -656,14 +666,17 @@ void RendererGPU::Render(const Camera& camera)
 	SIReSTIRPushConstants restirPC = {};
 	restirPC.freshCandidateCount = m_Settings.restirFreshCandidates;
 	restirPC.temporalMCap = m_Settings.restirTemporalMCap;
+	restirPC.spatialMCap = m_Settings.restirSpatialMCap;
 	restirPC.spatialNeighborCount = m_Settings.restirSpatialNeighbors;
 	restirPC.spatialRadius = m_Settings.restirSpatialRadius;
 	restirPC.depthThreshold = m_Settings.restirDepthThreshold;
 	restirPC.normalThreshold = m_Settings.restirNormalThreshold;
+	restirPC.worldPosThreshold = m_Settings.restirWorldPosThreshold;
+	restirPC.maxTemporalAge = m_Settings.restirMaxTemporalAge;
 	restirPC.flags = 0;
 	if (m_Settings.restirTemporalReuse) restirPC.flags |= 1u;
 	if (m_Settings.restirSpatialReuse)  restirPC.flags |= 2u;
-	restirPC.frameIndex = m_FrameIndex;
+	restirPC.frameIndex = m_ReSTIRFrameIndex;
 	restirPC.jitter = glm::vec4(m_NRDJitter, m_NRDJitterPrev);
 
 	// Build the frame render context and delegate to FrameRenderer
@@ -719,6 +732,7 @@ void RendererGPU::Render(const Camera& camera)
 	m_CurrentFrame = (m_CurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 	m_FrameIndex++;
 	m_NRDFrameIndex++;
+	m_ReSTIRFrameIndex++;
 }
 
 bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t& outWidth, uint32_t& outHeight)
