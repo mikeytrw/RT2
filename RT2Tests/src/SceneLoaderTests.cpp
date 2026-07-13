@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <cmath>
 
 namespace fs = std::filesystem;
 
@@ -20,6 +21,50 @@ namespace fs = std::filesystem;
 
 static const char* TEST_FILE = "test_scene.gltf";
 static const char* TEST_FILE_GLB = "test_scene.glb";
+
+static void cleanupObjTestFiles()
+{
+    fs::remove("test_scene.obj");
+    fs::remove("test_scene.mtl");
+}
+
+TEST_CASE("OBJ import flips V coordinates and converts legacy MTL shininess")
+{
+    cleanupObjTestFiles();
+    {
+        std::ofstream mtl("test_scene.mtl");
+        mtl << "newmtl concrete\n"
+               "Kd 0.5 0.5 0.5\n"
+               "Ns 16\n"
+               "illum 2\n";
+    }
+    {
+        std::ofstream obj("test_scene.obj");
+        obj << "mtllib test_scene.mtl\n"
+               "v 0 0 0\n"
+               "v 1 0 0\n"
+               "v 0 1 0\n"
+               "vt 0.25 0.20\n"
+               "vt 0.75 0.20\n"
+               "vt 0.25 0.90\n"
+               "usemtl concrete\n"
+               "f 1/1 2/2 3/3\n";
+    }
+
+    ECSScene scene;
+    REQUIRE(SceneLoader::LoadObjIntoECS(scene, "test_scene.obj"));
+    REQUIRE(scene.meshRegistry.GetCount() == 1);
+    const auto& mesh = scene.meshRegistry.GetMesh(0);
+    REQUIRE(mesh.uvs.size() == 6);
+    CHECK(mesh.uvs[0] == doctest::Approx(0.25f));
+    CHECK(mesh.uvs[1] == doctest::Approx(0.80f));
+    CHECK(mesh.uvs[5] == doctest::Approx(0.10f));
+
+    REQUIRE(scene.materials.size() == 1);
+    const float expectedRoughness = std::sqrt(std::sqrt(2.0f / 18.0f));
+    CHECK(scene.materials[0].roughness == doctest::Approx(expectedRoughness));
+    cleanupObjTestFiles();
+}
 
 static void cleanupTestFiles()
 {

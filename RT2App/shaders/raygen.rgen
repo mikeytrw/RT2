@@ -140,6 +140,12 @@ void main()
             float viewZ = payload.e.z;
             float roughness = f0rough.y;
 
+            // The write helpers do not clear the opposite lobe because the
+            // raster-first path may legitimately write both. Clear both here
+            // before routing this RT-primary pixel to its single selected lobe.
+            imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
+            imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
+
             if (diffRad != vec3(0.0))
                 writeNRDDiffuse(pixel, diffRad, diffFactor, diffHitT, viewZ);
             else

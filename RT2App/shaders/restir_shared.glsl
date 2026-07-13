@@ -143,17 +143,21 @@ void reservoirSetTargetPdf(inout Reservoir r, float tp)
 }
 
 // ---- Reservoir streaming update ---------------------------------------------
-// Streaming RIS: for each candidate with weight w_i = p_hat(x_i) / p(x_i),
-// accumulate weightSum and probabilistically select the sample.
-// M is always incremented (counting all proposals), while weightSum and
-// replacement selection only proceed for positive finite weights.
-void reservoirStreamUpdate(inout Reservoir r, float w,
-                            uint sampleType, uint lightIdx,
-                            float sampleParam1, float sampleParam2,
-                            float p_hat, inout uint rngState)
+// Candidate count is independent of weight acceptance. Every proposal must be
+// represented in M, including proposals whose target density is zero.
+void reservoirAddCandidateCount(inout Reservoir r, uint count)
 {
-    r.data1.z += 1u;  // M++ — always count this proposal
+    r.data1.z += count;
+}
 
+// Streaming RIS: for each positive finite candidate weight
+// w_i = p_hat(x_i) / p(x_i), accumulate weightSum and probabilistically select
+// the sample. The caller accounts for the proposal in M before any rejection.
+void reservoirStreamUpdate(inout Reservoir r, float w,
+                             uint sampleType, uint lightIdx,
+                             float sampleParam1, float sampleParam2,
+                             float p_hat, inout uint rngState)
+{
     if (isnan(w) || isinf(w) || w <= 0.0) return;
 
     r.data1.x = floatBitsToUint(uintBitsToFloat(r.data1.x) + w);
@@ -174,27 +178,33 @@ void reservoirStreamUpdate(inout Reservoir r, float w,
 // Merge reservoir r_new into r_dst with weight w_merge.
 // p_hat_at_dst = target density of r_new's sample evaluated at r_dst's receiver.
 // representedM = the effective candidate count to add to r_dst.M (may be capped).
+// sourceAge follows the selected sample, so reuse cannot relabel an old source
+// sample as fresh at the destination. Returns true when r_new is selected.
 // When the sample is adopted, targetPdf is set to p_hat_at_dst (NOT the source's
 // targetPdf), so that reservoirW = weightSum / (M * targetPdf) is correct.
-void reservoirMerge(inout Reservoir r_dst, Reservoir r_new, float w_merge,
-                     uint representedM, float p_hat_at_dst, inout uint rngState)
+bool reservoirMerge(inout Reservoir r_dst, Reservoir r_new, float w_merge,
+                    uint representedM, uint sourceAge, float p_hat_at_dst,
+                    inout uint rngState)
 {
-    if (isnan(w_merge) || isinf(w_merge) || w_merge <= 0.0) return;
-    if (representedM == 0u) return;
+    if (isnan(w_merge) || isinf(w_merge) || w_merge <= 0.0) return false;
+    if (representedM == 0u) return false;
 
     float ws_dst = reservoirWeightSum(r_dst);
 
     float totalWs = ws_dst + w_merge;
     r_dst.data1.x = floatBitsToUint(totalWs);
 
-    if (randomFloat(rngState) < w_merge / max(totalWs, 1e-20))
+    bool sourceSelected = randomFloat(rngState) < w_merge / max(totalWs, 1e-20);
+    if (sourceSelected)
     {
         r_dst.data0 = r_new.data0;
         r_dst.data1.y = floatBitsToUint(p_hat_at_dst);
+        reservoirSetAge(r_dst, sourceAge);
     }
 
     r_dst.data1.z += representedM;
     r_dst.data1.w = (r_dst.data1.w & ~0xFFu) | 1u;  // valid
+    return sourceSelected;
 }
 
 // ---- Reservoir final normalization -------------------------------------------

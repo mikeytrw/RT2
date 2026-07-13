@@ -23,6 +23,7 @@ project "RT2App"
         "shaders/anyhit.rahit",
         "shaders/shadow.rahit",
         "shaders/compose.comp",
+        "shaders/tonemap.comp",
         "shaders/restir_temporal.comp",
         "shaders/restir_spatial.comp",
         "shaders/raster.vert",
@@ -100,6 +101,11 @@ project "RT2App"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/compose.comp -o " .. shaderDir .. "/compose.spv" }
         buildoutputs { shaderDir .. "/compose.spv" }
         buildinputs { depBasic }
+
+    filter {"files:shaders/tonemap.comp"}
+        buildmessage "Compiling tonemap.comp"
+        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/tonemap.comp -o " .. shaderDir .. "/tonemap.spv" }
+        buildoutputs { shaderDir .. "/tonemap.spv" }
 
     filter {"files:shaders/restir_temporal.comp"}
         buildmessage "Compiling restir_temporal.comp"
@@ -186,6 +192,7 @@ project "RT2App"
             "copy /Y \"%{wks.location}RT2App\\shaders\\anyhit.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\shadowhit.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\compose.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"%{wks.location}RT2App\\shaders\\tonemap.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\restir_temporal.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\restir_spatial.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\raster.spv\" \"%{cfg.targetdir}\"",

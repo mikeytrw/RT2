@@ -9,6 +9,7 @@
 #include "GPUSceneData.h"
 #include "GpuDevice.h"
 #include "ComposePass.h"
+#include "TonemapPass.h"
 #include "FrameRenderer.h"
 #include "GBufferTarget.h"
 #include "PathTracePass.h"
@@ -53,7 +54,7 @@ public:
 	void UpdateSceneInstances(const GPUSceneData& sceneData);
 
 	VkDescriptorSet GetOutputDescriptorSet() const { return m_ImGuiDescriptorSet; }
-	bool HasOutput() const { return m_OutputImage.IsValid(); }
+	bool HasOutput() const { return m_OutputImage.IsValid() && m_DisplayImage.IsValid(); }
 	uint32_t GetWidth() const { return m_Width; }
 	uint32_t GetHeight() const { return m_Height; }
 
@@ -106,7 +107,8 @@ private:
 	uint32_t m_Width = 0;
 	uint32_t m_Height = 0;
 
-	GpuImage m_OutputImage; // RGBA32F beauty output
+	GpuImage m_OutputImage;  // RGBA32F linear beauty + accumulation history
+	GpuImage m_DisplayImage; // RGBA8 Reinhard-tonemapped viewport image
 	GpuImage m_FallbackTexture; // 1x1 white, used for missing texture views
 	VkSampler m_Sampler = VK_NULL_HANDLE;
 	VkDescriptorSet m_ImGuiDescriptorSet = VK_NULL_HANDLE;
@@ -147,6 +149,7 @@ private:
 
 	// Compose pass (compute shader: NRD outputs + albedo/F0 -> beauty)
 	ComposePass m_ComposePass;
+	TonemapPass m_TonemapPass;
 	bool m_ComposeDescriptorSetCached = false;
 
 	// ReSTIR DI (Reservoir-based Resampling for Direct Illumination) pass + resources

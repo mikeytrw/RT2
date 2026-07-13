@@ -8,6 +8,7 @@
 #include "RasterPass.h"
 #include "GBufferDebugPass.h"
 #include "ComposePass.h"
+#include "TonemapPass.h"
 #include "ReSTIRPass.h"
 #include "ReservoirResources.h"
 #include "NRDIntegration.h"
@@ -39,11 +40,13 @@ public:
 		RasterPass& rasterPass;
 		GBufferDebugPass& gbufferDebugPass;
 		ComposePass& composePass;
+		TonemapPass& tonemapPass;
 		ReSTIRPass& restirPass;
 		ReservoirResources& reservoirs;
 		NRDWrapper& nrd;
 
 		GpuImage& outputImage;
+		GpuImage& displayImage;
 		VkDescriptorSet gbufferSet;
 		VkBuffer cameraUBO;
 		VkBuffer nrdUBO;
@@ -96,5 +99,6 @@ private:
 	static void RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx);
 	static void RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx);
 	static void RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx);
+	static void RecordTonemapPass(VkCommandBuffer cmd, Context& ctx);
 	static void RecordOutputTransition(VkCommandBuffer cmd, Context& ctx);
 };

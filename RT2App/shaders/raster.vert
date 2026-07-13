@@ -33,16 +33,18 @@ layout(set = 0, binding = 12, std430) readonly buffer InstanceTransformsPrev
     mat4 instanceTransformsPrev[];
 };
 
-// Vertex format: interleaved {vec3 pos, vec2 uv, vec3 tangent}
+// Vertex format: interleaved {vec3 pos, vec2 uv, vec3 normal, vec4 tangent}
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec2 inUV;
-layout(location = 2) in vec3 inTangent;
+layout(location = 2) in vec3 inNormal;
+layout(location = 3) in vec4 inTangent;
 
 layout(location = 0) out vec3 outWorldPos;
 layout(location = 1) out vec3 outWorldPosPrev;
 layout(location = 2) out vec2 outUV;
 layout(location = 3) flat out uint outInstanceIndex;
-layout(location = 4) out vec3 outWorldTangent;
+layout(location = 4) out vec3 outWorldNormal;
+layout(location = 5) out vec4 outWorldTangent;
 
 void main()
 {
@@ -57,7 +59,9 @@ void main()
     outWorldPosPrev = worldPosPrev.xyz;
     outUV = inUV;
     outInstanceIndex = instIdx;
-    outWorldTangent = normalize(mat3(world) * inTangent);
+    mat3 normalMatrix = transpose(inverse(mat3(world)));
+    outWorldNormal = normalMatrix * inNormal;
+    outWorldTangent = vec4(mat3(world) * inTangent.xyz, inTangent.w);
 
     // Jittered clip-space position for raster (matches NRD convention).
     // NRD defines sampleUv = pixelUv + cameraJitter. Shifting geometry by

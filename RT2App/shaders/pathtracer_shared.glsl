@@ -253,7 +253,9 @@ vec3 skyColor(vec3 direction)
 // Exact inverse of envUVToDirection: u ∈ [-0.5, 0.5] (wraps), v ∈ [0, 1].
 vec2 directionToEnvUV(vec3 dir)
 {
-    float u = atan(dir.z, dir.x) * 0.15915494309;  // 1/(2π)
+    // The bindless sampler clamps U, so wrap explicitly. Radiance and PDF
+    // must address the same texel or HDR importance weights become biased.
+    float u = fract(atan(dir.z, dir.x) * 0.15915494309);  // [0, 1)
     float v = asin(clamp(dir.y, -1.0, 1.0)) * 0.31830988618;  // asin/π ∈ [-0.5, 0.5]
     return vec2(u, 0.5 - v);  // flip V for image convention, spans [0, 1]
 }
@@ -354,7 +356,6 @@ EnvSample sampleEnvMap(inout uint rngState)
     // p(u|v) = conditionalCDF[u,v] - conditionalCDF[u-1,v]
     // p(dir) = p(u,v) / (2π² * sin(θ))
     // where θ is the polar angle and the Jacobian of the spherical mapping.
-    vec2 envSize = vec2(float(condW), float(marginalLen));
     float sinTheta = sqrt(max(1.0 - s.dir.y * s.dir.y, 1e-6));
 
     // Marginal PDF
@@ -367,9 +368,12 @@ EnvSample sampleEnvMap(inout uint rngState)
     float condCurr = texelFetch(textures[nonuniformEXT(conditionalIdx)], ivec2(uIdx, vIdx), 0).r;
     float pdfU = max(condCurr - condPrev, 1e-8);
 
-    // Convert to solid-angle PDF: p(ω) = p(u,v) / (sinθ * 2π²)
-    // The area-to-solid-angle Jacobian for equirect mapping is sinθ * 2π²
-    s.pdf = (pdfV * pdfU) / (sinTheta * 2.0 * PI * PI);
+    // pdfV*pdfU is probability mass for one texel. Convert it to UV density
+    // by dividing by the texel area (1 / width*height), then apply the
+    // equirectangular UV-to-solid-angle Jacobian.
+    float texelDensityScale = float(condW) * float(marginalLen);
+    s.pdf = (pdfV * pdfU * texelDensityScale) /
+            (sinTheta * 2.0 * PI * PI);
 
     // Sample radiance
     s.radiance = envMapRadiance(s.dir);
@@ -397,9 +401,8 @@ float envMapPdf(vec3 dir)
     // Convert UV to pixel indices (same quantization as sampleEnvMap).
     // uv.x from atan() is in [-0.5, 0.5] — wrap to [0, 1) before quantizing
     // (clamping would collapse half the sphere onto column 0).
-    float uWrapped = fract(uv.x);
     int vIdx = int(clamp(uv.y * float(marginalLen), 0.0, float(marginalLen - 1)));
-    int uIdx = int(clamp(uWrapped * float(condW),   0.0, float(condW - 1)));
+    int uIdx = int(clamp(uv.x * float(condW),       0.0, float(condW - 1)));
 
     // Marginal PDF: p(v) = marginalCDF[v] - marginalCDF[v-1]
     float margPrev = (vIdx > 0) ? texelFetch(textures[nonuniformEXT(marginalIdx)], ivec2(vIdx - 1, 0), 0).r : 0.0;
@@ -411,9 +414,13 @@ float envMapPdf(vec3 dir)
     float condCurr = texelFetch(textures[nonuniformEXT(conditionalIdx)], ivec2(uIdx, vIdx), 0).r;
     float pdfU = max(condCurr - condPrev, 1e-8);
 
-    // Convert to solid-angle PDF: p(ω) = p(u,v) / (sinθ * 2π²)
+    // CDF differences are discrete texel probability masses, so multiply by
+    // width*height to obtain a density over normalized UV before converting
+    // to a density over solid angle.
     float sinTheta = sqrt(max(1.0 - dir.y * dir.y, 1e-6));
-    return (pdfV * pdfU) / (sinTheta * 2.0 * PI * PI);
+    float texelDensityScale = float(condW) * float(marginalLen);
+    return (pdfV * pdfU * texelDensityScale) /
+           (sinTheta * 2.0 * PI * PI);
 }
 
 float reflectance(float cosine, float refIdx)
@@ -849,23 +856,24 @@ const vec3 NRD_HIT_DIST_PARAMS = vec3(3.0, 0.1, 20.0);
 const float NRD_FIREFLY_CLAMP = 100.0;
 
 // Pack diffuse lobe NRD output: demodulate, clamp fireflies, normalize hit dist,
-// convert to YCoCg, store to gDiffRadianceHitDist. Zeros specular.
+// convert to YCoCg, and store to gDiffRadianceHitDist. The caller owns the
+// opposite signal: raster-first shading can produce diffuse direct and specular
+// indirect radiance for the same pixel, so this helper must not erase it.
 void writeNRDDiffuse(ivec2 pixel, vec3 radiance, vec3 diffFactor, float hitT, float viewZ)
 {
     vec3 demod = clamp(radiance / max(diffFactor, vec3(0.01)), vec3(0.0), vec3(NRD_FIREFLY_CLAMP));
     float normHitT = nrdGetNormHitDist(hitT, viewZ, NRD_HIT_DIST_PARAMS, 1.0);
     vec3 ycocg = linearToYCoCg(demod);
     imageStore(gDiffRadianceHitDist, pixel, vec4(ycocg, normHitT));
-    imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
 }
 
 // Pack specular lobe NRD output: demodulate, clamp fireflies, normalize hit dist,
-// convert to YCoCg, store to gSpecRadianceHitDist. Zeros diffuse.
+// convert to YCoCg, and store to gSpecRadianceHitDist. The caller owns the
+// opposite signal for the same reason as writeNRDDiffuse.
 void writeNRDSpecular(ivec2 pixel, vec3 radiance, vec3 specFactor, float hitT, float viewZ, float roughness)
 {
     vec3 demod = clamp(radiance / max(specFactor, vec3(0.01)), vec3(0.0), vec3(NRD_FIREFLY_CLAMP));
     float normHitT = nrdGetNormHitDist(hitT, viewZ, NRD_HIT_DIST_PARAMS, roughness);
     vec3 ycocg = linearToYCoCg(demod);
-    imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
     imageStore(gSpecRadianceHitDist, pixel, vec4(ycocg, normHitT));
 }

@@ -191,7 +191,9 @@ float computePTri()
 // Environment map helpers (from pathtracer_shared.glsl)
 vec2 directionToEnvUV(vec3 dir)
 {
-    float u = atan(dir.z, dir.x) * 0.15915494309;
+    // The shared bindless sampler clamps U, so wrap explicitly and keep the
+    // radiance lookup consistent with the importance-sampling PDF lookup.
+    float u = fract(atan(dir.z, dir.x) * 0.15915494309);
     float v = asin(clamp(dir.y, -1.0, 1.0)) * 0.31830988618;
     return vec2(u, 0.5 - v);
 }
@@ -228,9 +230,8 @@ float envMapPdf(vec3 dir)
     int condW = condSize.x;
 
     vec2 uv = directionToEnvUV(dir);
-    float uWrapped = fract(uv.x);
     int vIdx = int(clamp(uv.y * float(marginalLen), 0.0, float(marginalLen - 1)));
-    int uIdx = int(clamp(uWrapped * float(condW),   0.0, float(condW - 1)));
+    int uIdx = int(clamp(uv.x * float(condW),       0.0, float(condW - 1)));
 
     float margPrev = (vIdx > 0) ? texelFetch(textures[nonuniformEXT(marginalIdx)], ivec2(vIdx - 1, 0), 0).r : 0.0;
     float margCurr = texelFetch(textures[nonuniformEXT(marginalIdx)], ivec2(vIdx, 0), 0).r;
@@ -241,7 +242,9 @@ float envMapPdf(vec3 dir)
     float pdfU = max(condCurr - condPrev, 1e-8);
 
     float sinTheta = sqrt(max(1.0 - dir.y * dir.y, 1e-6));
-    return (pdfV * pdfU) / (sinTheta * 2.0 * PI * PI);
+    float texelDensityScale = float(condW) * float(marginalLen);
+    return (pdfV * pdfU * texelDensityScale) /
+           (sinTheta * 2.0 * PI * PI);
 }
 
 // Environment map inverse-CDF sampling
@@ -301,7 +304,6 @@ EnvSample sampleEnvMap(inout uint rngState)
     s.uv = vec2(u, v);
     s.dir = envUVToDirection(s.uv);
 
-    vec2 envSize = vec2(float(condW), float(marginalLen));
     float sinTheta = sqrt(max(1.0 - s.dir.y * s.dir.y, 1e-6));
 
     float margPrev = (vIdx > 0) ? texelFetch(textures[nonuniformEXT(marginalIdx)], ivec2(vIdx - 1, 0), 0).r : 0.0;
@@ -312,7 +314,11 @@ EnvSample sampleEnvMap(inout uint rngState)
     float condCurr = texelFetch(textures[nonuniformEXT(conditionalIdx)], ivec2(uIdx, vIdx), 0).r;
     float pdfU = max(condCurr - condPrev, 1e-8);
 
-    s.pdf = (pdfV * pdfU) / (sinTheta * 2.0 * PI * PI);
+    // pdfV*pdfU is one texel's probability mass. Convert to normalized-UV
+    // density before applying the equirectangular solid-angle Jacobian.
+    float texelDensityScale = float(condW) * float(marginalLen);
+    s.pdf = (pdfV * pdfU * texelDensityScale) /
+            (sinTheta * 2.0 * PI * PI);
     s.radiance = envMapRadiance(s.dir);
 
     return s;

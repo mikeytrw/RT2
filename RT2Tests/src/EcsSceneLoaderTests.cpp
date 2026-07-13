@@ -82,6 +82,19 @@ TEST_CASE("LoadIntoECS: ABeautifulGame.glb loads with many meshes")
 
     // Should have 15+ materials
     CHECK(ecsScene.materials.size() >= 10);
+
+    // The chessboard uses a normal map. Preserve glTF tangent.xyz plus its
+    // handedness so raster-first shading can build a valid TBN basis.
+    bool foundTangents = false;
+    for (const auto& mesh : ecsScene.meshRegistry.GetMeshes())
+    {
+        if (!mesh.tangents.empty())
+        {
+            CHECK(mesh.tangents.size() == (mesh.vertices.size() / 3) * 4);
+            foundTangents = true;
+        }
+    }
+    CHECK(foundTangents);
 }
 
 TEST_CASE("LoadIntoECS: mesh deduplication works")

@@ -7,7 +7,7 @@
 
 // Build marginal and conditional CDFs for environment map importance sampling.
 // The env map is an equirectangular HDR image. We compute the luminance of each
-// pixel, weight by sin(theta) (solid-angle correction), and build:
+// pixel, weight by the equirectangular solid-angle Jacobian, and build:
 //   - conditionalCDF[row][col]: CDF over columns within each row
 //   - marginalCDF[row]: CDF over rows (using row sums)
 // Both CDFs are normalized to [0, 1].
@@ -24,11 +24,13 @@ void BuildEnvMapCDF(const std::vector<float>& floatPixels, int width, int height
 
     for (int y = 0; y < height; y++)
     {
-        // Solid-angle weight: sin(theta) where theta = (0.5 - v) * PI
+        // The shader maps v to latitude phi = (0.5 - v) * PI. Its spherical
+        // area Jacobian is cos(phi), not sin(phi). Using sin(phi) suppresses
+        // the lower hemisphere and produces rare, enormous-PDF-weighted samples.
         float v = (float(y) + 0.5f) / float(height);
-        float theta = (0.5f - v) * 3.14159265359f;
-        float sinTheta = std::sin(theta);
-        if (sinTheta < 1e-6f) sinTheta = 1e-6f;
+        float latitude = (0.5f - v) * 3.14159265359f;
+        float solidAngleWeight = std::cos(latitude);
+        if (solidAngleWeight < 1e-6f) solidAngleWeight = 1e-6f;
 
         float rowSum = 0.0f;
         for (int x = 0; x < width; x++)
@@ -38,7 +40,7 @@ void BuildEnvMapCDF(const std::vector<float>& floatPixels, int width, int height
             float g = floatPixels[idx + 1];
             float b = floatPixels[idx + 2];
             float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-            float weight = lum * sinTheta;
+            float weight = lum * solidAngleWeight;
             rowSum += weight;
             conditionalCDF[y * width + x] = rowSum;
             rowSums[y] = rowSum;
@@ -106,6 +108,7 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
         geo.indices  = &src.indices;
         geo.normals  = src.normals.empty() ? nullptr : &src.normals;
         geo.uvs      = src.uvs.empty() ? nullptr : &src.uvs;
+        geo.tangents = src.tangents.empty() ? nullptr : &src.tangents;
         geo.materialIndices = src.materialIndices.empty() ? nullptr : &src.materialIndices;
 
         gpu.meshes.push_back(std::move(geo));

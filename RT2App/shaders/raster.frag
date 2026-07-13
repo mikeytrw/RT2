@@ -59,7 +59,8 @@ layout(location = 0) in vec3 inWorldPos;
 layout(location = 1) in vec3 inWorldPosPrev;
 layout(location = 2) in vec2 inUV;
 layout(location = 3) flat in uint inInstanceIndex;
-layout(location = 4) in vec3 inWorldTangent;
+layout(location = 4) in vec3 inWorldNormal;
+layout(location = 5) in vec4 inWorldTangent;
 
 // Material index is passed via the instance's custom index.
 // We store it in a separate SSBO or derive from instance data.
@@ -127,17 +128,33 @@ void main()
         metallic *= mr.b;
     }
 
-    // Geometric normal from screen-space derivatives (flat, matches RT path)
-    vec3 geoN = normalize(cross(dFdx(inWorldPos), dFdy(inWorldPos)));
+    // Prefer the authored normal. Fall back to a face normal for assets without
+    // NORMAL data, then orient the basis for the visible side of this uncullled pass.
+    vec3 geoN = inWorldNormal;
+    if (dot(geoN, geoN) < 1e-10)
+        geoN = cross(dFdx(inWorldPos), dFdy(inWorldPos));
+    geoN = normalize(geoN);
+    if (!gl_FrontFacing)
+        geoN = -geoN;
 
     // Shading normal (normal-mapped or geometric)
     vec3 shadingN = geoN;
     int normalTexIdx = mat.textureIndices.y;
     if (normalTexIdx >= 0)
     {
-        // Use precomputed vertex tangent (transformed to world space in vert shader)
-        vec3 T = normalize(inWorldTangent - dot(inWorldTangent, geoN) * geoN);
-        vec3 B = cross(geoN, T);
+        // glTF tangents carry a bitangent handedness in .w. The fallback avoids
+        // normalizing a zero tangent on faces parallel to the default tangent.
+        vec3 T = inWorldTangent.xyz - dot(inWorldTangent.xyz, geoN) * geoN;
+        if (dot(T, T) < 1e-10)
+        {
+            vec3 axis = abs(geoN.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(0.0, 1.0, 0.0);
+            T = normalize(cross(axis, geoN));
+        }
+        else
+        {
+            T = normalize(T);
+        }
+        vec3 B = inWorldTangent.w * normalize(cross(geoN, T));
 
         vec3 tangentN = texture(textures[nonuniformEXT(normalTexIdx)], uv).rgb * 2.0 - 1.0;
         shadingN = normalize(mat3(T, B, geoN) * tangentN);
@@ -170,8 +187,10 @@ void main()
     vec2 prevUv = (prevClip.xy / prevClip.w) * 0.5 + 0.5;
 
     // Write G-buffer via MRT color attachments (rasterization-ordered, no race)
-    // matIdx sentinel: store matIdx + 1 in gPrimHit.w (0 = miss/sky, used by secondary_raygen)
-    outPrimHit = vec4(inWorldPos, uintBitsToFloat(matIdx + 1u));
+    // Numeric material-ID sentinel: 0 = miss/sky, material IDs are +1. Do not
+    // bit-cast small uints into fp32 here: those are subnormal floats and may
+    // be flushed to zero by the floating-point color attachment path.
+    outPrimHit = vec4(inWorldPos, float(matIdx + 1u));
     outPrimGeoNormal = vec4(geoN * 0.5 + 0.5, 0.0);
     outPrimUV = vec4(uv, 0.0, 0.0);
 

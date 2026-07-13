@@ -427,19 +427,40 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 			}
 		}
 
-		// Final layout transition: TRANSFER_DST_OPTIMAL → SHADER_READ_ONLY_OPTIMAL
+		// Generated mips 0..N-2 are TRANSFER_SRC_OPTIMAL; only the final mip
+		// remains TRANSFER_DST_OPTIMAL. Transition the two ranges separately.
+		// A single TRANSFER_DST transition across every level is invalid and can
+		// leave sampled environment textures in undefined layout state.
+		const VkPipelineStageFlags shaderReadStages =
+			VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+			VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
 		VkImageMemoryBarrier finalB = {};
 		finalB.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		finalB.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		finalB.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
 		finalB.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-		finalB.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 		finalB.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 		finalB.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		finalB.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		finalB.image = gt.image;
-		finalB.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 1};
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-		                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &finalB);
+		finalB.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+
+		if (mipLevels > 1)
+		{
+			VkImageMemoryBarrier finalBarriers[2] = { finalB, finalB };
+			finalBarriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			finalBarriers[0].subresourceRange.levelCount = mipLevels - 1;
+			finalBarriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			finalBarriers[1].subresourceRange.baseMipLevel = mipLevels - 1;
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, shaderReadStages,
+			                     0, 0, nullptr, 0, nullptr, 2, finalBarriers);
+		}
+		else
+		{
+			finalB.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, shaderReadStages,
+			                     0, 0, nullptr, 0, nullptr, 1, &finalB);
+		}
 
 		uploads[i] = { stagingOffset, imageSize, isHDR, mipLevels };
 	}
@@ -465,7 +486,11 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 		cdfEntries[0].offset = off;
 		cdfEntries[0].w = m_CDFHeight;
 		cdfEntries[0].h = 1;
-		GpuResources::CreateImage1D(dev, m_CDFHeight, 1, VK_FORMAT_R32_SFLOAT,
+		// Bindless textures are declared as sampler2D in every shader. Keep the
+		// marginal CDF as a height-by-1 2D image as well; binding a 1D image view
+		// to sampler2D is descriptor/view dimensional mismatch and makes texelFetch
+		// results undefined (observed as near-zero PDF differences in ReSTIR).
+		GpuResources::CreateImage(dev, m_CDFHeight, 1, VK_FORMAT_R32_SFLOAT,
 			VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, cdfEntries[0].img);
 
@@ -514,7 +539,10 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 			shaderBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 			shaderBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 			vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-			                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &shaderBarrier);
+			                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+			                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+			                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+			                     0, 0, nullptr, 0, nullptr, 1, &shaderBarrier);
 		}
 	}
 

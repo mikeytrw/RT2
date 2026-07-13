@@ -144,8 +144,8 @@ void main()
             color = vec3(imageLoad(gPrimUV, pixel).xy, 0.0);
             break;
         }
-        case 10: { // material index (from gPrimHit.w as floatBitsToInt)
-            float matIdx = float(int(imageLoad(gPrimHit, pixel).w));
+        case 10: { // material index (numeric +1 sentinel in gPrimHit.w)
+            float matIdx = imageLoad(gPrimHit, pixel).w - 1.0;
             color = vec3(fract(matIdx * 0.1), fract(matIdx * 0.3), fract(matIdx * 0.7));
             break;
         }

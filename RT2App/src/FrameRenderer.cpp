@@ -26,6 +26,7 @@ void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 	RT_LOG("[Frame] ReSTIR done");
 	RecordPathTraceOrDebug(cmd, ctx);
 	RT_LOG("[Frame] pathtrace/debug done");
+	RecordTonemapPass(cmd, ctx);
 	RecordOutputTransition(cmd, ctx);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::Frame, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -34,10 +35,13 @@ void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 
 void FrameRenderer::RecordTopBarrier(VkCommandBuffer cmd, Context& ctx)
 {
-	VkImageMemoryBarrier topBarrier = {};
+	VkImageMemoryBarrier topBarriers[2] = {};
+	VkImageMemoryBarrier& topBarrier = topBarriers[0];
 	topBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-	topBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
-	topBarrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	// The output is both sampled by the UI and read as the previous frame by
+	// temporalAccumulate. Synchronize the complete read/modify/write chain.
+	topBarrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+	topBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
 	topBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 	topBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 	topBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -46,10 +50,15 @@ void FrameRenderer::RecordTopBarrier(VkCommandBuffer cmd, Context& ctx)
 	topBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	topBarrier.subresourceRange.levelCount = 1;
 	topBarrier.subresourceRange.layerCount = 1;
+	topBarriers[1] = topBarrier;
+	topBarriers[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	topBarriers[1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	topBarriers[1].image = ctx.displayImage.image;
 	vkCmdPipelineBarrier(cmd,
-		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0,
-		0, nullptr, 0, nullptr, 1, &topBarrier);
+		VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR |
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+		0, nullptr, 0, nullptr, 2, topBarriers);
 }
 
 void FrameRenderer::RecordASBarrier(VkCommandBuffer cmd, Context& ctx)
@@ -424,6 +433,30 @@ void FrameRenderer::RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx)
 	RT_LOG("[NRD] RecordNRDAndCompose end");
 }
 
+void FrameRenderer::RecordTonemapPass(VkCommandBuffer cmd, Context& ctx)
+{
+	if (!ctx.tonemapPass.IsAvailable()) return;
+
+	VkImageMemoryBarrier linearReady = {};
+	linearReady.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	linearReady.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	linearReady.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	linearReady.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+	linearReady.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+	linearReady.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	linearReady.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	linearReady.image = ctx.outputImage.image;
+	linearReady.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	linearReady.subresourceRange.levelCount = 1;
+	linearReady.subresourceRange.layerCount = 1;
+
+	vkCmdPipelineBarrier(cmd,
+		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+		0, nullptr, 0, nullptr, 1, &linearReady);
+	ctx.tonemapPass.Record(cmd, ctx.width, ctx.height);
+}
+
 void FrameRenderer::RecordOutputTransition(VkCommandBuffer cmd, Context& ctx)
 {
 	VkImageMemoryBarrier rtReadBarrier = {};
@@ -434,18 +467,12 @@ void FrameRenderer::RecordOutputTransition(VkCommandBuffer cmd, Context& ctx)
 	rtReadBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 	rtReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	rtReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	rtReadBarrier.image = ctx.outputImage.image;
+	rtReadBarrier.image = ctx.displayImage.image;
 	rtReadBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	rtReadBarrier.subresourceRange.levelCount = 1;
 	rtReadBarrier.subresourceRange.layerCount = 1;
 
-	VkPipelineStageFlags srcStage;
-	if (ctx.gbufferDebugMode >= 0 && ctx.gbufferDebugPass.IsAvailable())
-		srcStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-	else if (ctx.nrdEnabled && ctx.nrd.IsAvailable() && ctx.composePass.IsAvailable())
-		srcStage = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-	else
-		srcStage = VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
-
-	vkCmdPipelineBarrier(cmd, srcStage, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &rtReadBarrier);
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+	                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+	                     0, nullptr, 0, nullptr, 1, &rtReadBarrier);
 }

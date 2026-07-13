@@ -48,6 +48,7 @@ bool DecodeImageData(tinygltf::Image *image, const int image_idx,
 #include <functional>
 #include <cstring>
 #include <algorithm>
+#include <cmath>
 #include <unordered_map>
 
 #include "SceneGraph.h"
@@ -725,6 +726,26 @@ bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
         return out;
     };
 
+    auto readVec4Accessor = [](const tinygltf::Model& model, int accessorIdx) -> std::vector<glm::vec4> {
+        std::vector<glm::vec4> out;
+        if (accessorIdx < 0 || accessorIdx >= (int)model.accessors.size()) return out;
+        const tinygltf::Accessor& acc = model.accessors[accessorIdx];
+        if (acc.bufferView < 0 || acc.bufferView >= (int)model.bufferViews.size()) return out;
+        const tinygltf::BufferView& bv = model.bufferViews[acc.bufferView];
+        if (bv.buffer < 0 || bv.buffer >= (int)model.buffers.size()) return out;
+        const tinygltf::Buffer& buf = model.buffers[bv.buffer];
+        int stride = acc.ByteStride(bv);
+        if (stride < 0 || acc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) return out;
+        const unsigned char* data = buf.data.data() + bv.byteOffset + acc.byteOffset;
+        out.resize(acc.count);
+        for (size_t i = 0; i < acc.count; i++)
+        {
+            const float* f = reinterpret_cast<const float*>(data + i * stride);
+            out[i] = glm::vec4(f[0], f[1], f[2], f[3]);
+        }
+        return out;
+    };
+
     auto readVec2Accessor = [](const tinygltf::Model& model, int accessorIdx) -> std::vector<glm::vec2> {
         std::vector<glm::vec2> out;
         if (accessorIdx < 0 || accessorIdx >= (int)model.accessors.size())
@@ -833,6 +854,21 @@ bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
                 mesh.normals.push_back(n.x);
                 mesh.normals.push_back(n.y);
                 mesh.normals.push_back(n.z);
+            }
+        }
+
+        // TANGENT (optional glTF vec4: xyz tangent, w bitangent handedness)
+        auto tangentIt = prim.attributes.find("TANGENT");
+        if (tangentIt != prim.attributes.end())
+        {
+            std::vector<glm::vec4> tangents = readVec4Accessor(model, tangentIt->second);
+            mesh.tangents.reserve(tangents.size() * 4);
+            for (const auto& tangent : tangents)
+            {
+                mesh.tangents.push_back(tangent.x);
+                mesh.tangents.push_back(tangent.y);
+                mesh.tangents.push_back(tangent.z);
+                mesh.tangents.push_back(tangent.w);
             }
         }
 
@@ -1305,6 +1341,26 @@ entt::entity SceneLoader::ImportIntoECS(ECSScene& ecsScene, const std::string& f
         return out;
     };
 
+    auto readVec4Accessor = [](const tinygltf::Model& model, int accessorIdx) -> std::vector<glm::vec4> {
+        std::vector<glm::vec4> out;
+        if (accessorIdx < 0 || accessorIdx >= (int)model.accessors.size()) return out;
+        const tinygltf::Accessor& acc = model.accessors[accessorIdx];
+        if (acc.bufferView < 0 || acc.bufferView >= (int)model.bufferViews.size()) return out;
+        const tinygltf::BufferView& bv = model.bufferViews[acc.bufferView];
+        if (bv.buffer < 0 || bv.buffer >= (int)model.buffers.size()) return out;
+        const tinygltf::Buffer& buf = model.buffers[bv.buffer];
+        int stride = acc.ByteStride(bv);
+        if (stride < 0 || acc.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) return out;
+        const unsigned char* data = buf.data.data() + bv.byteOffset + acc.byteOffset;
+        out.resize(acc.count);
+        for (size_t i = 0; i < acc.count; i++)
+        {
+            const float* f = reinterpret_cast<const float*>(data + i * stride);
+            out[i] = glm::vec4(f[0], f[1], f[2], f[3]);
+        }
+        return out;
+    };
+
     auto readVec2Accessor = [](const tinygltf::Model& model, int accessorIdx) -> std::vector<glm::vec2> {
         std::vector<glm::vec2> out;
         if (accessorIdx < 0 || accessorIdx >= (int)model.accessors.size())
@@ -1392,6 +1448,20 @@ entt::entity SceneLoader::ImportIntoECS(ECSScene& ecsScene, const std::string& f
                 mesh.normals.push_back(n.x);
                 mesh.normals.push_back(n.y);
                 mesh.normals.push_back(n.z);
+            }
+        }
+
+        auto tangentIt = prim.attributes.find("TANGENT");
+        if (tangentIt != prim.attributes.end())
+        {
+            std::vector<glm::vec4> tangents = readVec4Accessor(model, tangentIt->second);
+            mesh.tangents.reserve(tangents.size() * 4);
+            for (const auto& tangent : tangents)
+            {
+                mesh.tangents.push_back(tangent.x);
+                mesh.tangents.push_back(tangent.y);
+                mesh.tangents.push_back(tangent.z);
+                mesh.tangents.push_back(tangent.w);
             }
         }
 
@@ -1636,7 +1706,19 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
         mat.baseColor = {mtl.diffuse[0], mtl.diffuse[1], mtl.diffuse[2]};
         mat.baseAlpha = (mtl.dissolve > 0.0f) ? mtl.dissolve : 1.0f;
         mat.metallic = 0.0f;
-        mat.roughness = (mtl.roughness > 0.0f) ? mtl.roughness : 0.5f;
+        if (mtl.roughness > 0.0f)
+        {
+            // Exocortex's Pr extension already stores perceptual roughness.
+            mat.roughness = std::clamp(static_cast<float>(mtl.roughness), 0.0f, 1.0f);
+        }
+        else
+        {
+            // Legacy MTL stores a Blinn-Phong exponent (Ns).  Matching its
+            // lobe to GGX gives alpha=sqrt(2/(Ns+2)); RT2's material value is
+            // perceptual roughness (alpha=roughness^2), hence the extra sqrt.
+            const float shininess = std::max(static_cast<float>(mtl.shininess), 0.0f);
+            mat.roughness = std::sqrt(std::sqrt(2.0f / (shininess + 2.0f)));
+        }
         mat.ior = mtl.ior;
         mat.emissiveColor = {mtl.emission[0], mtl.emission[1], mtl.emission[2]};
         mat.emissiveIntensity = (mtl.emission[0] + mtl.emission[1] + mtl.emission[2]) > 0.0f ? 1.0f : 0.0f;
@@ -1768,7 +1850,9 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
                 if (ti >= 0 && ti * 2 + 1 < (int)attrib.texcoords.size())
                 {
                     megaUVs.push_back(attrib.texcoords[ti * 2 + 0]);
-                    megaUVs.push_back(attrib.texcoords[ti * 2 + 1]);
+                    // OBJ texture coordinates use a bottom-left V origin,
+                    // while stb_image and Vulkan sampling use top-left here.
+                    megaUVs.push_back(1.0f - attrib.texcoords[ti * 2 + 1]);
                 }
                 else
                 {

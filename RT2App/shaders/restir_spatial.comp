@@ -63,7 +63,7 @@ void main()
 
     // ---- Read G-buffer for center pixel ----
     vec4 primHit = imageLoad(gPrimHit, pixel);
-    uint matIdxPacked = floatBitsToUint(primHit.w);
+    uint matIdxPacked = uint(max(primHit.w, 0.0) + 0.5);
     bool isMiss = (matIdxPacked == 0u);
 
     if (isMiss)
@@ -182,10 +182,15 @@ void main()
 
         uint nLinear = nPixel.y * width + nPixel.x;
 
-        // Validate neighbor: check normal, depth, material
+        // Validate neighbor: retain reuse on the same local surface only.
+        // Material, normal, and view depth alone admit nearby parallel or thin
+        // geometry, which can spread a high-energy reservoir across surfaces.
         vec4 nPrimHit = imageLoad(gPrimHit, nPixel);
-        uint nMatIdxPacked = floatBitsToUint(nPrimHit.w);
+        uint nMatIdxPacked = uint(max(nPrimHit.w, 0.0) + 0.5);
         if (nMatIdxPacked == 0u) continue;  // sky
+
+        if (length(nPrimHit.xyz - worldPos) > pc.restir.worldPosThreshold)
+            continue;
 
         vec3 nDirectEmission = imageLoad(gDirectEmission, nPixel).rgb;
         if (dot(nDirectEmission, nDirectEmission) > 0.0) continue;  // emissive
@@ -209,6 +214,12 @@ void main()
         Reservoir nRes = reservoirScratch[nLinear];
         nRes = sanitizeReservoir(nRes);
         if (nRes.data0.x == SAMPLE_EMPTY) continue;
+
+        // Reject aged temporal lineage before spatial reuse. A selected spatial
+        // source keeps this age through reservoirMerge, preventing it from
+        // being reintroduced as a fresh sample on future frames.
+        uint maxTemporalAge = max(pc.restir.maxTemporalAge, 1u);
+        if (reservoirAge(nRes) >= maxTemporalAge) continue;
 
         float p_hat_at_center = evalTargetPdf(nRes, worldPos, n, wo, baseColor, metallic);
         if (p_hat_at_center <= 0.0) continue;
@@ -239,7 +250,7 @@ void main()
         if (w_merge > 0.0 && !isnan(w_merge) && !isinf(w_merge))
         {
             reservoirMerge(centerRes, nRes, w_merge, clampedM,
-                           p_hat_at_center, rngState);
+                           reservoirAge(nRes), p_hat_at_center, rngState);
         }
     }
 

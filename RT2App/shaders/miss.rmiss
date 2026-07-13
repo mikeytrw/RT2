@@ -17,7 +17,24 @@ void main()
         vec3 env = envMapRadiance(dir);
         float bsdfPdf = payload.d.w;
 
-        if (bsdfPdf >= 0.0)
+        // ReSTIR DI replaces only the primary diffuse direct-light estimator.
+        // Keep rough-specular environment reflection: there is no competing
+        // ReSTIR specular estimator, and scatter attenuation already includes
+        // stochastic lobe-selection compensation.
+        bool restirFirstBounce = camera.up.w > 0.5 &&
+                                 uint(payload.b.w) == 1u &&
+                                 bsdfPdf >= 0.0;
+        bool selectedDiffuse = payload.e.x < 0.5;
+
+        if (restirFirstBounce && selectedDiffuse)
+        {
+            // ReSTIR replaces primary diffuse environment NEE.
+        }
+        else if (restirFirstBounce)
+        {
+            payload.b.xyz += payload.a.xyz * env;
+        }
+        else if (bsdfPdf >= 0.0)
         {
             // Non-delta bounce: MIS with env PDF.
             // Stochastic NEE: env NEE is selected with probability (1-P_tri),

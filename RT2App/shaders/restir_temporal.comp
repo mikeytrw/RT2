@@ -53,7 +53,7 @@ void main()
 
     // ---- Read G-buffer ----
     vec4 primHit = imageLoad(gPrimHit, pixel);
-    uint matIdxPacked = floatBitsToUint(primHit.w);
+    uint matIdxPacked = uint(max(primHit.w, 0.0) + 0.5);
     bool isMiss = (matIdxPacked == 0u);
 
     if (isMiss)
@@ -128,6 +128,11 @@ void main()
     // ---- Generate fresh candidates ----
     for (uint i = 0u; i < M; i++)
     {
+        // M represents all proposals, including samples rejected for a zero
+        // target density or proposal PDF below. Counting only accepted samples
+        // biases reservoir normalization upward in sparse-light regions.
+        reservoirAddCandidateCount(res, 1u);
+
         // Decide: triangle or environment candidate
         float rFamily = randomFloat(rngState);
 
@@ -180,8 +185,7 @@ void main()
         }
     }
 
-    bool temporalAccepted = false;
-    uint historyAge = 0u;
+    bool historySelected = false;
 
     // ---- Temporal reuse ----
     bool temporalEnabled = (pc.restir.flags & 1u) != 0u;
@@ -238,10 +242,9 @@ void main()
 
                             if (w_merge > 0.0 && !isnan(w_merge) && !isinf(w_merge))
                             {
-                                reservoirMerge(res, histRes, w_merge, clampedM,
-                                               p_hat_current, rngState);
-                                temporalAccepted = true;
-                                historyAge = histAge;
+                                historySelected = reservoirMerge(
+                                    res, histRes, w_merge, clampedM, histAge,
+                                    p_hat_current, rngState);
                             }
                         }
                     }
@@ -253,11 +256,12 @@ void main()
     // Sanitize and write
     res = sanitizeReservoir(res);
 
-    // Set age: 0 for fresh-only, min(historyAge+1, maxAge) if temporal was accepted
-    if (temporalAccepted)
+    // Age follows the selected sample. A fresh sample that remains selected
+    // stays at age zero even when history participated in the merge.
+    if (historySelected)
     {
         uint maxAge = max(pc.restir.maxTemporalAge, 1u);
-        reservoirSetAge(res, min(historyAge + 1u, maxAge));
+        reservoirSetAge(res, min(reservoirAge(res) + 1u, maxAge));
     }
 
     reservoirScratch[pixelLinear] = res;

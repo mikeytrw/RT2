@@ -40,6 +40,7 @@ bool RendererGPU::Init()
 		return false;
 	}
 	m_ComposePass.Init(m_Device);
+	m_TonemapPass.Init(m_Device);
 
 	m_ReSTIRPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout);
 
@@ -70,6 +71,7 @@ void RendererGPU::Destroy()
 	m_Reservoirs.Destroy();
 	m_PathTracePass.Destroy();
 	m_ComposePass.Destroy();
+	m_TonemapPass.Destroy();
 	m_RasterPass.Destroy();
 	m_GBufferDebugPass.Destroy();
 	DestroyOutputImage();
@@ -105,11 +107,17 @@ void RendererGPU::CreateOutputImage()
 	GpuImage outputImg;
 	GpuResources::CreateImage(m_Device, m_Width, m_Height,
 		VK_FORMAT_R32G32B32A32_SFLOAT,
-		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+		VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, outputImg);
 	m_OutputImage.image    = outputImg.image;
 	m_OutputImage.memory   = outputImg.memory;
 	m_OutputImage.view = outputImg.view;
+
+	GpuResources::CreateImage(m_Device, m_Width, m_Height,
+		VK_FORMAT_R8G8B8A8_UNORM,
+		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_DisplayImage);
 
 	// Create output sampler (clamp + extended lod range for ImGui display)
 	m_Sampler = GpuResources::CreateSampler(m_Device,
@@ -118,25 +126,31 @@ void RendererGPU::CreateOutputImage()
 
 	// Transition image to general layout for compute writes
 	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
-		VkImageMemoryBarrier barrier = {};
-		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-		barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barrier.image = m_OutputImage.image;
-		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-		barrier.subresourceRange.levelCount = 1;
-		barrier.subresourceRange.layerCount = 1;
+		VkImageMemoryBarrier barriers[2] = {};
+		for (int i = 0; i < 2; ++i)
+		{
+			barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barriers[i].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+			barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			barriers[i].subresourceRange.levelCount = 1;
+			barriers[i].subresourceRange.layerCount = 1;
+		}
+		barriers[0].image = m_OutputImage.image;
+		barriers[1].image = m_DisplayImage.image;
 
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_HOST_BIT,
+		                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		                     0, 0, nullptr, 0, nullptr, 2, barriers);
 	});
 
 	m_OutputImageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
 	// Create ImGui descriptor set for display
-	m_ImGuiDescriptorSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(m_Sampler, m_OutputImage.view, VK_IMAGE_LAYOUT_GENERAL);
+	m_ImGuiDescriptorSet = (VkDescriptorSet)ImGui_ImplVulkan_AddTexture(m_Sampler, m_DisplayImage.view, VK_IMAGE_LAYOUT_GENERAL);
 }
 
 void RendererGPU::DestroyOutputImage()
@@ -156,6 +170,7 @@ void RendererGPU::DestroyOutputImage()
 	if (m_OutputImage.view) vkDestroyImageView(device, m_OutputImage.view, nullptr);
 	if (m_OutputImage.image) vkDestroyImage(device, m_OutputImage.image, nullptr);
 	if (m_OutputImage.memory) vkFreeMemory(device, m_OutputImage.memory, nullptr);
+	GpuResources::DestroyImage(m_Device, m_DisplayImage);
 	m_Sampler = VK_NULL_HANDLE;
 	m_OutputImage.view = VK_NULL_HANDLE;
 	m_OutputImage.image = VK_NULL_HANDLE;
@@ -240,6 +255,7 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	m_Height = height;
 
 	CreateOutputImage();
+	m_TonemapPass.UpdateDescriptorSet(m_Device, m_OutputImage.view, m_DisplayImage.view);
 	CreateGBufferImages();
 	m_Reservoirs.Create(m_Device, m_Width, m_Height);
 	// Allocate descriptor set with current texture count (0 if no scene yet)
@@ -689,10 +705,12 @@ void RendererGPU::Render(const Camera& camera)
 		m_RasterPass,
 		m_GBufferDebugPass,
 		m_ComposePass,
+		m_TonemapPass,
 		m_ReSTIRPass,
 		m_Reservoirs,
 		m_NRD,
 		m_OutputImage,
+		m_DisplayImage,
 		m_GBufferSet,
 		m_CameraUBO,
 		m_NRDUBO,

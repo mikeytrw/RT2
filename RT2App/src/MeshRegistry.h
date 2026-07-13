@@ -27,6 +27,7 @@ struct MeshData
     std::vector<uint32_t> indices;    // triangle indices
     std::vector<float>    normals;    // normal.xyz, stride 3 (object space, may be empty)
     std::vector<float>    uvs;        // texcoord.xy, stride 2 (may be empty)
+    std::vector<float>    tangents;   // glTF tangent.xyzw, stride 4 (object space, may be empty)
     std::vector<uint32_t> materialIndices; // per-triangle material index (may be empty)
     std::string           name;       // for debugging
 };

@@ -101,6 +101,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Debug-windows-x86_
 copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\tonemap.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\restir_temporal.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\restir_spatial.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Debug-windows-x86_64/RT2App"
@@ -141,6 +142,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Release-windows-x8
 copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\tonemap.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\restir_temporal.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\restir_spatial.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Release-windows-x86_64/RT2App"
@@ -181,6 +183,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Dist-windows-x86_6
 copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(SolutionDir)RT2App\shaders\tonemap.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\restir_temporal.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\restir_spatial.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Dist-windows-x86_64/RT2App"
@@ -225,6 +228,7 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
     <ClInclude Include="src\SceneTypes.h" />
     <ClInclude Include="src\ShaderManager.h" />
     <ClInclude Include="src\StagingArena.h" />
+    <ClInclude Include="src\TonemapPass.h" />
     <ClInclude Include="src\VulkanUtils.h" />
     <ClInclude Include="vendor\NRD\Include\NRD.h" />
     <ClInclude Include="vendor\NRD\Include\NRDDescs.h" />
@@ -396,6 +400,11 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\TonemapPass.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\WalnutApp.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -497,6 +506,12 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <Outputs>shaders/shadow.spv</Outputs>
       <Message>Compiling shadow.rmiss</Message>
       <AdditionalInputs>shaders/pathtracer_shared.glsl;shaders/scatter_shared.glsl;shaders/restir_shared.glsl;shaders/restir_bindings.glsl;shaders/shader_interface.h</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="shaders\tonemap.comp">
+      <FileType>Document</FileType>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/tonemap.comp -o $(SolutionDir)/RT2App/shaders/tonemap.spv</Command>
+      <Outputs>shaders/tonemap.spv</Outputs>
+      <Message>Compiling tonemap.comp</Message>
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
