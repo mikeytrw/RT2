@@ -1,0 +1,73 @@
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+// restir_gi_history.comp — writes the current receiver history.
+//
+// Second GI dispatch: writes the current receiver history (SurfaceHistory)
+// to the current receiver-history region. Runs AFTER restir_gi_temporal.comp
+// finishes all reads of the previous receiver-history region, avoiding the
+// read/write race that a single dispatch would create.
+//
+// Phase 2: writes actual G-buffer receiver data (normal, viewZ, material ID,
+// world position) for temporal validation in the next frame.
+
+#include "restir_gi_bindings.glsl"
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    uint width  = uint(camera.viewportSPP.x);
+    uint height = uint(camera.viewportSPP.y);
+
+    if (pixel.x >= int(width) || pixel.y >= int(height))
+        return;
+
+    uint pixelLinear = pixel.y * width + pixel.x;
+    uint pixelCount = width * height;
+    uint region = giCurrentRegion(pc.gi.frameIndex);
+
+    // Read G-buffer to build receiver history.
+    vec4 primHit = imageLoad(gPrimHit, pixel);
+    uint matIdxPacked = uint(max(primHit.w, 0.0) + 0.5);
+    bool isMiss = (matIdxPacked == 0u);
+
+    if (isMiss)
+    {
+        // Sky: write invalid history.
+        SurfaceHistory empty = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6,
+                                                   0xFFFFFFFFu, false, vec3(0.0));
+        storeGIReceiverHistory(region, pixelLinear, pixelCount, empty);
+        return;
+    }
+
+    // Check emissive — no GI history for emissive surfaces.
+    vec3 directEmission = imageLoad(gDirectEmission, pixel).rgb;
+    if (dot(directEmission, directEmission) > 0.0)
+    {
+        SurfaceHistory empty = makeSurfaceHistory(vec3(0.0, 0.0, 1.0), 1e6,
+                                                   0xFFFFFFFFu, false, vec3(0.0));
+        storeGIReceiverHistory(region, pixelLinear, pixelCount, empty);
+        return;
+    }
+
+    uint matIdx = matIdxPacked - 1u;
+
+    vec3 worldPos = primHit.xyz;
+
+    // Decode normal.
+    vec4 nrPacked = imageLoad(gNormalRoughness, pixel);
+    vec4 nrDecoded = nrdDecodeNormalRoughness(nrPacked.xyz);
+    vec3 gBufferN = nrDecoded.xyz;
+
+    vec3 wo = normalize(camera.position.xyz - worldPos);
+    vec3 n = dot(gBufferN, wo) >= 0.0 ? gBufferN : -gBufferN;
+
+    float viewZ = imageLoad(gViewZ, pixel).x;
+
+    // Write valid receiver history.
+    SurfaceHistory sh = makeSurfaceHistory(n, viewZ, matIdx, true, worldPos);
+    storeGIReceiverHistory(region, pixelLinear, pixelCount, sh);
+}

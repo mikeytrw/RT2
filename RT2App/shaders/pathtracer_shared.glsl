@@ -151,10 +151,10 @@ layout(set = 1, binding = SI_BINDING_G_DIRECT_EMISSION, rgba16f) uniform image2D
 // NRD enable flag (1 = NRD mode, 0 = normal temporal accumulation)
 layout(set = 1, binding = SI_BINDING_NRD_UBO) uniform NRDUniform
 {
-    uint nrdEnabled;      // 1 = NRD mode (1 spp, no temporal accum, write G-buffer)
-    uint lobeDither;      // 0=off (white noise), 1=Bayer 4x4, 2=Interleaved Gradient Noise
-    uint pad1;
-    uint pad2;
+    uint nrdEnabled;            // 1 = NRD mode (1 spp, no temporal accum, write G-buffer)
+    uint lobeDither;            // 0=off (white noise), 1=Bayer 4x4, 2=Interleaved Gradient Noise
+    uint restirGIEnabled;       // 1 = ReSTIR GI active (consume stored GI sample in raygen)
+    uint restirGIReservoirIndex;// current GI reservoir region index (frame parity)
 } nrdData;
 
 // ---- Payload ----------------------------------------------------------------

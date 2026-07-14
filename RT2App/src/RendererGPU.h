@@ -19,7 +19,9 @@
 #include "RenderSettings.h"
 #include "SceneResources.h"
 #include "ReservoirResources.h"
+#include "ReservoirGIResources.h"
 #include "ReSTIRPass.h"
+#include "ReSTIRGIPass.h"
 #include "GpuResources.h"
 #include "FrameContext.h"
 #include "GpuTimestampProfiler.h"
@@ -65,6 +67,14 @@ public:
 	// distribution, reservoir normalization, or surface correspondence
 	// changes. Sets the clear flag and increments the history version.
 	void InvalidateReSTIRHistory();
+
+	// ReSTIR GI history invalidation — call when the GI sample domain
+	// changes (scene/light-list/env/resize/material/camera-mode change or
+	// GI setting change). Transform-only updates do NOT call this —
+	// rigid motion is handled by reprojection + re-evaluation.
+	// Sets the clear flag, resets the GI frame index (parity), and
+	// requests an NRD reset.
+	void InvalidateGIHistory();
 
 	// Read back the output image to CPU as RGBA8 (tonemapped+sRGB). Returns false on failure.
 	bool ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t& outWidth, uint32_t& outHeight);
@@ -158,6 +168,15 @@ private:
 	bool m_ReSTIRHistoryInvalidated = true;  // set on resize/scene change/enable toggle
 	uint32_t m_ReSTIRFrameIndex = 1;         // independent of m_FrameIndex — monotonically increasing
 	uint32_t m_ReSTIRHistoryVersion = 0;     // incremented on each InvalidateReSTIRHistory()
+
+	// ReSTIR GI (one-bounce diffuse GI, temporal reuse, raster-first only).
+	// Independent of DI — requires raster-first G-buffer but not DI enabled.
+	// m_GIFrameIndex drives reservoir/receiver-history parity (giCurrentRegion).
+	// Incremented only after a submitted frame (end of Render()).
+	ReSTIRGIPass m_ReSTIRGIPass;
+	ReservoirGIResources m_GIReservoirs;
+	bool m_GIHistoryInvalidated = true;   // set on resize/scene/setting change
+	uint32_t m_GIFrameIndex = 1;          // parity driver; reset to 1 on invalidation
 
 	// Raster pass (primary visibility G-buffer)
 	RasterPass m_RasterPass;

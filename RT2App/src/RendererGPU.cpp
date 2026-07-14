@@ -44,6 +44,13 @@ bool RendererGPU::Init()
 
 	m_ReSTIRPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout);
 
+	m_ReSTIRGIPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout);
+	// Allocate GI buffer (dummy while disabled, full when enabled).
+	if (m_Settings.restirGIEnabled && m_Width > 0 && m_Height > 0)
+		m_GIReservoirs.Create(m_Device, m_Width, m_Height);
+	else
+		m_GIReservoirs.CreateDummy(m_Device);
+
 	if (!m_RasterPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout))
 	{
 		RT_LOG("[RT2] RasterPass init failed (non-fatal, RT primary visibility will be used)");
@@ -69,6 +76,8 @@ void RendererGPU::Destroy()
 	m_NRD.Destroy();
 	m_ReSTIRPass.Destroy();
 	m_Reservoirs.Destroy();
+	m_ReSTIRGIPass.Destroy();
+	m_GIReservoirs.Destroy();
 	m_PathTracePass.Destroy();
 	m_ComposePass.Destroy();
 	m_TonemapPass.Destroy();
@@ -258,6 +267,11 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	m_TonemapPass.UpdateDescriptorSet(m_Device, m_OutputImage.view, m_DisplayImage.view);
 	CreateGBufferImages();
 	m_Reservoirs.Create(m_Device, m_Width, m_Height);
+	// Reallocate GI buffer: full size if GI enabled, dummy otherwise.
+	if (m_Settings.restirGIEnabled)
+		m_GIReservoirs.Create(m_Device, m_Width, m_Height);
+	else
+		m_GIReservoirs.CreateDummy(m_Device);
 	// Allocate descriptor set with current texture count (0 if no scene yet)
 	uint32_t texCount = (uint32_t)m_Scene.GetTextures().size();
 	m_PathTracePass.CreateDescriptorSet(m_Device, texCount > 0 ? texCount : 1);
@@ -284,6 +298,7 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	m_NRDNeedsReset = true;
 	m_ComposeDescriptorSetCached = false;
 	InvalidateReSTIRHistory();
+	InvalidateGIHistory();
 }
 
 void RendererGPU::UpdatePathTraceDescriptorSet()
@@ -389,6 +404,7 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 		m_Scene.GetTLAS(),
 		m_Reservoirs.GetHistoryBuffer(), m_Reservoirs.GetScratchBuffer(),
 		m_Reservoirs.GetSurfaceHistoryBuffer(),
+		m_GIReservoirs.GetBuffer(),
 		textureImageInfos);
 
 	RT_LOG("[UpdateDS] done (textures=%d, descSet=%p, TLAS=%p, outView=%p, camUBO=%p, matBuf=%p)",
@@ -407,6 +423,7 @@ void RendererGPU::SetSceneKeepTextures(const GPUSceneData& sceneData)
 	m_NRDNeedsReset = true;
 	m_ComposeDescriptorSetCached = false;
 	InvalidateReSTIRHistory();
+	InvalidateGIHistory();
 
 	if (m_Scene.IsValid() && !m_Scene.NeedsASRebuild() && !m_Scene.IsTextureUploadPending())
 	{
@@ -425,6 +442,7 @@ void RendererGPU::SetScene(GPUSceneData& sceneData)
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
 	InvalidateReSTIRHistory();
+	InvalidateGIHistory();
 
 	// Update descriptor set if AS is already valid (no rebuild needed)
 	// and textures are not still loading asynchronously.
@@ -445,6 +463,9 @@ void RendererGPU::UpdateSceneInstances(const GPUSceneData& sceneData)
 
 	m_Scene.UpdateInstances(m_Device, sceneData);
 	UpdatePathTraceDescriptorSet();
+	// Transform-only update: do NOT invalidate GI history. Rigid motion is
+	// handled by reprojection + history re-evaluation. Stable instance identity
+	// preserves the correspondence between previous and current receiver regions.
 	InvalidateReSTIRHistory();
 }
 
@@ -479,9 +500,17 @@ void RendererGPU::InvalidateReSTIRHistory()
 	m_ReSTIRFrameIndex = 1;
 }
 
+void RendererGPU::InvalidateGIHistory()
+{
+	m_GIHistoryInvalidated = true;
+	m_GIFrameIndex = 1;  // reset parity; all four regions will be cleared
+	m_NRDNeedsReset = true;
+}
+
 void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 {
 	bool wasRestirEnabled = m_Settings.restirEnabled;
+	bool wasGIEnabled = m_Settings.restirGIEnabled;
 	bool restirJitterPolicyChanged = m_Settings.nrdJitterEnabled != newSettings.nrdJitterEnabled ||
 	                                m_Settings.nrdJitterScale != newSettings.nrdJitterScale;
 	bool restirPolicyChanged = m_Settings.restirFreshCandidates != newSettings.restirFreshCandidates ||
@@ -495,6 +524,13 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	                          m_Settings.restirNormalThreshold != newSettings.restirNormalThreshold ||
 	                          m_Settings.restirWorldPosThreshold != newSettings.restirWorldPosThreshold ||
 	                          m_Settings.restirMaxTemporalAge != newSettings.restirMaxTemporalAge;
+	bool giPolicyChanged = m_Settings.restirGITemporalEnabled != newSettings.restirGITemporalEnabled ||
+	                       m_Settings.restirGIFreshCandidates != newSettings.restirGIFreshCandidates ||
+	                       m_Settings.restirGITemporalMCap != newSettings.restirGITemporalMCap ||
+	                       m_Settings.restirGIMaxTemporalAge != newSettings.restirGIMaxTemporalAge ||
+	                       m_Settings.restirGIDepthThreshold != newSettings.restirGIDepthThreshold ||
+	                       m_Settings.restirGINormalThreshold != newSettings.restirGINormalThreshold ||
+	                       m_Settings.restirGIWorldPosThreshold != newSettings.restirGIWorldPosThreshold;
 	if (m_Settings.spp != newSettings.spp ||
 	    m_Settings.maxBounces != newSettings.maxBounces ||
 	    m_Settings.showBackground != newSettings.showBackground ||
@@ -522,6 +558,14 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	    m_Settings.restirNormalThreshold != newSettings.restirNormalThreshold ||
 	    m_Settings.restirWorldPosThreshold != newSettings.restirWorldPosThreshold ||
 	    m_Settings.restirMaxTemporalAge != newSettings.restirMaxTemporalAge ||
+	    m_Settings.restirGIEnabled != newSettings.restirGIEnabled ||
+	    m_Settings.restirGITemporalEnabled != newSettings.restirGITemporalEnabled ||
+	    m_Settings.restirGIFreshCandidates != newSettings.restirGIFreshCandidates ||
+	    m_Settings.restirGITemporalMCap != newSettings.restirGITemporalMCap ||
+	    m_Settings.restirGIMaxTemporalAge != newSettings.restirGIMaxTemporalAge ||
+	    m_Settings.restirGIDepthThreshold != newSettings.restirGIDepthThreshold ||
+	    m_Settings.restirGINormalThreshold != newSettings.restirGINormalThreshold ||
+	    m_Settings.restirGIWorldPosThreshold != newSettings.restirGIWorldPosThreshold ||
 	    m_Settings.gbufferDebugMode != newSettings.gbufferDebugMode)
 	{
 		m_Settings.dirty = true;
@@ -531,6 +575,24 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	if (m_Settings.restirEnabled != wasRestirEnabled ||
 	    (m_Settings.restirEnabled && (restirJitterPolicyChanged || restirPolicyChanged)))
 		InvalidateReSTIRHistory();
+
+	// GI enable/disable toggle: reallocate the buffer (full vs dummy) and
+	// update binding 11 immediately so the descriptor stays legal. Then
+	// invalidate history (clears all four regions + requests NRD reset).
+	if (m_Settings.restirGIEnabled != wasGIEnabled)
+	{
+		vkDeviceWaitIdle(m_Device.device);
+		if (m_Settings.restirGIEnabled && m_Width > 0 && m_Height > 0)
+			m_GIReservoirs.Create(m_Device, m_Width, m_Height);
+		else
+			m_GIReservoirs.CreateDummy(m_Device);
+		UpdatePathTraceDescriptorSet();
+		InvalidateGIHistory();
+	}
+	else if (m_Settings.restirGIEnabled && giPolicyChanged)
+	{
+		InvalidateGIHistory();
+	}
 }
 
 void RendererGPU::UpdateCameraUBO(const Camera& camera)
@@ -678,6 +740,13 @@ void RendererGPU::Render(const Camera& camera)
 		m_ReSTIRHistoryInvalidated = false;
 	}
 
+	// Clear ReSTIR GI history if invalidated (resize, scene/env/material/setting change)
+	if (m_GIHistoryInvalidated && m_GIReservoirs.IsValid() && !m_GIReservoirs.IsDummy())
+	{
+		m_GIReservoirs.ClearAll(cmd);
+		m_GIHistoryInvalidated = false;
+	}
+
 	// Build ReSTIR push constants from settings
 	SIReSTIRPushConstants restirPC = {};
 	restirPC.freshCandidateCount = m_Settings.restirFreshCandidates;
@@ -694,6 +763,19 @@ void RendererGPU::Render(const Camera& camera)
 	if (m_Settings.restirSpatialReuse)  restirPC.flags |= 2u;
 	restirPC.frameIndex = m_ReSTIRFrameIndex;
 	restirPC.jitter = glm::vec4(m_NRDJitter, m_NRDJitterPrev);
+
+	// Build ReSTIR GI push constants from settings
+	SIGIPushConstants giPC = {};
+	giPC.freshCandidateCount = m_Settings.restirGIFreshCandidates;
+	giPC.temporalMCap = m_Settings.restirGITemporalMCap;
+	giPC.maxTemporalAge = m_Settings.restirGIMaxTemporalAge;
+	giPC.flags = 0;
+	if (m_Settings.restirGITemporalEnabled) giPC.flags |= 1u;
+	giPC.depthThreshold = m_Settings.restirGIDepthThreshold;
+	giPC.normalThreshold = m_Settings.restirGINormalThreshold;
+	giPC.worldPosThreshold = m_Settings.restirGIWorldPosThreshold;
+	giPC.frameIndex = m_GIFrameIndex;
+	giPC.jitter = glm::vec4(m_NRDJitter, m_NRDJitterPrev);
 
 	// Build the frame render context and delegate to FrameRenderer
 	FrameRenderer::Context ctx = {
@@ -735,7 +817,13 @@ void RendererGPU::Render(const Camera& camera)
 		m_PrevViewToClipForFrame,
 		m_PrevWorldToViewForFrame,
 		m_ComposeDescriptorSetCached,
-		camera
+		camera,
+		m_ReSTIRGIPass,
+		m_GIReservoirs,
+		m_Settings.restirGIEnabled,
+		giPC,
+		m_GIFrameIndex,
+		m_GIFrameIndex & 1u
 	};
 
 	FrameRenderer::RecordFrame(cmd, ctx);
@@ -751,6 +839,9 @@ void RendererGPU::Render(const Camera& camera)
 	m_FrameIndex++;
 	m_NRDFrameIndex++;
 	m_ReSTIRFrameIndex++;
+	// GI frame index increments only after a submitted frame, driving the
+	// reservoir/receiver-history parity for the NEXT frame's dispatch.
+	m_GIFrameIndex++;
 }
 
 bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t& outWidth, uint32_t& outHeight)

@@ -10,7 +10,9 @@
 #include "ComposePass.h"
 #include "TonemapPass.h"
 #include "ReSTIRPass.h"
+#include "ReSTIRGIPass.h"
 #include "ReservoirResources.h"
+#include "ReservoirGIResources.h"
 #include "NRDIntegration.h"
 #include "FrameContext.h"
 #include "GpuTimestampProfiler.h"
@@ -83,6 +85,15 @@ public:
 
 		// Camera (for NRD matrix settings)
 		const Camera& camera;
+
+		// ReSTIR GI (one-bounce diffuse GI, temporal reuse, raster-first only).
+		// Independent of DI — requires raster-first G-buffer but not DI enabled.
+		ReSTIRGIPass& restirGIPass;
+		ReservoirGIResources& giReservoirs;
+		bool restirGIEnabled;
+		SIGIPushConstants restirGIPC;
+		uint32_t giFrameIndex;        // drives reservoir/receiver-history parity
+		uint32_t giReservoirIndex;    // current region index read by raygen (frame parity)
 	};
 
 	// Record the full frame into the given command buffer.
@@ -97,6 +108,7 @@ private:
 	static void RecordUBOUpdates(VkCommandBuffer cmd, Context& ctx);
 	static void RecordRasterPass(VkCommandBuffer cmd, Context& ctx);
 	static void RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx);
+	static void RecordReSTIRGIPass(VkCommandBuffer cmd, Context& ctx);
 	static void RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx);
 	static void RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx);
 	static void RecordTonemapPass(VkCommandBuffer cmd, Context& ctx);

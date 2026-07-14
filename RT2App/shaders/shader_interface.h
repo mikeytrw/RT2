@@ -51,6 +51,7 @@
 #define SI_BINDING_INSTANCE_MESH_INFO 8
 #define SI_BINDING_LIGHT_BUFFER          9
 #define SI_BINDING_INSTANCE_TRANSFORMS   10
+#define SI_BINDING_GI_DATA                 11  // ReSTIR GI monolithic buffer (reservoir A/B + receiver history prev/cur)
 #define SI_BINDING_TEXTURE_ARRAY         18
 #define SI_BINDING_INSTANCE_TRANSFORMS_PREV 12
 #define SI_BINDING_INSTANCE_MATERIAL_INDICES 13
@@ -203,14 +204,71 @@ struct SIReSTIRPushConstants
 };
 
 // ============================================================================
+// ReSTIR GI reservoir — per-pixel one-bounce GI reservoir. 48 bytes (3 × uvec4).
+//
+// Stores the evaluated outgoing radiance Lo along the selected primary-scatter
+// direction so final shading does NOT retrace the selected direction. The root
+// sample seed is stored so temporal re-evaluation can replay the stochastic
+// choices (alpha traversal, secondary NEE, shadow alpha) deterministically.
+//
+// Layout (matches GIReservoir in restir_gi_shared.glsl):
+//   data0.xyz = floatBitsToUint(direction.xyz), data0.w = floatBitsToUint(hitT)
+//   data1.xyz = floatBitsToUint(Lo.xyz),       data1.w = floatBitsToUint(weightSum)
+//   data2.x   = floatBitsToUint(targetPdf)
+//   data2.y   = M (uint, accumulated candidate count)
+//   data2.z   = packed (age << 16) | flags
+//                flags bit 0 = valid, bit 1 = environment miss,
+//                bit 2 = geometry hit, bit 3 = history-derived,
+//                bit 4 = secondary NEE valid
+//   data2.w   = root sample seed (or compact sample key)
+//
+// A zeroed SIGIReservoir decodes as invalid: flags bit 0 == 0 and M == 0.
+// vkCmdFillBuffer(..., 0) therefore produces invalid reservoirs by construction.
+// ============================================================================
+struct SIGIReservoir
+{
+    SI_UVEC4 data0;
+    SI_UVEC4 data1;
+    SI_UVEC4 data2;
+};
+
+// GI reservoir flag constants
+#define SI_GI_FLAG_VALID          1u
+#define SI_GI_FLAG_ENV_MISS       2u
+#define SI_GI_FLAG_GEOMETRY_HIT   4u
+#define SI_GI_FLAG_HISTORY        8u
+#define SI_GI_FLAG_NEE_VALID     16u
+
+// ============================================================================
+// ReSTIR GI push constants — GI compute pass configuration.
+// 48 bytes, separate from SIReSTIRPushConstants (DI and GI pipelines are
+// independent). Matches SIGIPushConstants in restir_gi_bindings.glsl.
+// ============================================================================
+struct SIGIPushConstants
+{
+    SI_UINT freshCandidateCount;   // M: fresh GI candidates per pixel
+    SI_UINT temporalMCap;          // capped M from temporal history
+    SI_UINT maxTemporalAge;        // reject history above this age
+    SI_UINT flags;                 // bit 0: temporal reuse enabled
+
+    SI_FLOAT depthThreshold;       // relative depth difference threshold
+    SI_FLOAT normalThreshold;      // normal similarity threshold (dot product)
+    SI_FLOAT worldPosThreshold;    // world-position difference threshold
+    SI_UINT frameIndex;            // GI frame index (drives reservoir parity)
+
+    SI_VEC4 jitter;                // xy = current, zw = previous jitter in pixel units
+};
+
+// ============================================================================
 // NRD UBO — set 1 binding 6, 16 bytes
+// spare fields repurposed for ReSTIR GI control without growing the UBO.
 // ============================================================================
 struct SINRDUniformData
 {
-    SI_UINT nrdEnabled;  // 1 = NRD mode (1 spp, no temporal accum, write G-buffer)
-    SI_UINT lobeDither;  // 0=off (white noise), 1=Bayer 4x4, 2=Interleaved Gradient Noise
-    SI_UINT pad1;
-    SI_UINT pad2;
+    SI_UINT nrdEnabled;            // 1 = NRD mode (1 spp, no temporal accum, write G-buffer)
+    SI_UINT lobeDither;            // 0=off (white noise), 1=Bayer 4x4, 2=Interleaved Gradient Noise
+    SI_UINT restirGIEnabled;       // 1 = ReSTIR GI active (consume stored GI sample in raygen)
+    SI_UINT restirGIReservoirIndex;// current GI reservoir region index (frame parity)
 };
 
 // ============================================================================
@@ -226,6 +284,8 @@ static_assert(sizeof(SIReservoir) == 32, "SIReservoir must be 32 bytes (2 uvec4)
 static_assert(sizeof(SISurfaceHistory) == 32, "SISurfaceHistory must be 32 bytes (2 uvec4)");
 static_assert(sizeof(SIReSTIRPushConstants) == 60, "SIReSTIRPushConstants must be 60 bytes");
 static_assert(sizeof(SINRDUniformData) == 16, "SINRDUniformData must be 16 bytes");
+static_assert(sizeof(SIGIReservoir) == 48, "SIGIReservoir must be 48 bytes (3 uvec4)");
+static_assert(sizeof(SIGIPushConstants) == 48, "SIGIPushConstants must be 48 bytes");
 
 // ============================================================================
 // Indexed-buffer ABI assertions (Phase 3.0)

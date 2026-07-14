@@ -8,6 +8,7 @@
 #include <functional>
 #include <algorithm>
 #include <thread>
+#include <cmath>
 #include <chrono>
 
 SceneResources::~SceneResources()
@@ -535,7 +536,13 @@ void SceneResources::CreateTextures(const GpuDevice& dev, const std::vector<Scen
 		{
 			uint16_t* dst = static_cast<uint16_t*>(arena.GetMappedPointer(offset));
 			for (size_t p = 0; p < tex.floatPixels.size(); p++)
-				dst[p] = glm::packHalf1x16(tex.floatPixels[p]);
+			{
+				float v = tex.floatPixels[p];
+				if (isnan(v) || isinf(v))
+					v = 0.0f;
+				v = glm::min(v, 65504.0f);
+				dst[p] = glm::packHalf1x16(v);
+			}
 		}
 		else
 		{

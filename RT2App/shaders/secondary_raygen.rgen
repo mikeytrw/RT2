@@ -199,31 +199,72 @@ void main()
     vec3 offsetN = dot(scatter.scatterDir, n) > 0.0 ? n : -n;
     vec3 rayOrigin = worldPos + offsetN * 0.001;
 
-    // Write scatter data to payload (location 0) — the trace uses location 0.
-    // nextPayload (location 1) is only used by closesthit for recursive traces;
-    // here we trace directly from raygen, so payload (location 0) is the one.
-    payload.a = vec4(scatter.attenuation, uintBitsToFloat(rngState));  // throughput * attenuation, rngState bit-cast
-    payload.b = vec4(vec3(0.0), 1.0);                  // radiance = 0, depth = 1
-    payload.c = vec4(rayOrigin, 0.0);
-    payload.d = vec4(normalize(scatter.scatterDir), nextBsdfPdf);
-    // Carry the selected primary lobe to the miss shader. ReSTIR replaces only
-    // diffuse direct lighting; rough-specular environment transport must remain.
-    payload.e = vec4(scatter.lobeType, 0.0, 0.0, 0.0);
+    // ---- ReSTIR GI consumption (diffuse lobe only) ----
+    // When GI is enabled and the diffuse lobe was selected and the GI
+    // reservoir is valid, consume the stored Lo/hitT directly — no retrace.
+    // The estimator is:
+    //   indirectRad = evalDiffuseBRDF(wo, wi, N, mat) * Lo * cosTheta * W / P_d
+    // where W = giReservoirW(r) and P_d = scatter.P_d (diffuse lobe prob).
+    bool giConsumed = false;
+    vec3 indirectRad = vec3(0.0);
+    float secondaryHitT = 1e4;
 
-    traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0,
-                rayOrigin, 0.001, payload.d.xyz, 1e9, 0);
+    bool giEnabled = (nrdData.restirGIEnabled != 0u);
+    if (giEnabled && scatter.lobeType < 0.5 && scatter.P_d > 0.0)
+    {
+        uint giRegion = nrdData.restirGIReservoirIndex;
+        uint pixelCount = width * height;
+        GIReservoir giRes = loadGIReservoir(giRegion, pixelLinear, pixelCount);
+        giRes = sanitizeGIReservoir(giRes);
 
-    // Total radiance = direct lighting (NEE) + indirect (secondary ray)
-    vec3 indirectRad = payload.b.xyz;
+        if (giValid(giRes))
+        {
+            vec3 wi = giDirection(giRes);
+            vec3 Lo = giLo(giRes);
+            float giHitT = giHitT(giRes);
+            float W = giReservoirW(giRes);
+
+            float cosTheta = max(dot(n, wi), 0.0);
+            if (cosTheta > 0.0 && W > 0.0)
+            {
+                vec3 C = evalDiffuseBRDF(wo, wi, n, baseColor, metallic) * Lo * cosTheta;
+                vec3 giRad = C * W / scatter.P_d;
+                indirectRad = giRad;
+                secondaryHitT = giHitT;
+                giConsumed = true;
+            }
+        }
+    }
+
+    if (!giConsumed)
+    {
+        // Write scatter data to payload (location 0) — the trace uses location 0.
+        // nextPayload (location 1) is only used by closesthit for recursive traces;
+        // here we trace directly from raygen, so payload (location 0) is the one.
+        payload.a = vec4(scatter.attenuation, uintBitsToFloat(rngState));  // throughput * attenuation, rngState bit-cast
+        payload.b = vec4(vec3(0.0), 1.0);                  // radiance = 0, depth = 1
+        payload.c = vec4(rayOrigin, 0.0);
+        payload.d = vec4(normalize(scatter.scatterDir), nextBsdfPdf);
+        // Carry the selected primary lobe to the miss shader. ReSTIR replaces only
+        // diffuse direct lighting; rough-specular environment transport must remain.
+        payload.e = vec4(scatter.lobeType, 0.0, 0.0, 0.0);
+
+        traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0,
+                    rayOrigin, 0.001, payload.d.xyz, 1e9, 0);
+
+        // Total radiance = direct lighting (NEE) + indirect (secondary ray)
+        indirectRad = payload.b.xyz;
+        rngState = floatBitsToUint(payload.a.w);
+
+        // hitT for NRD = secondary ray hit distance only (NOT primary, per NRD docs)
+        // closesthit stores gl_HitTEXT in payload.e.w at depth=1
+        secondaryHitT = payload.e.w;
+        // Fallback for missed rays (hitT=0): use a large value so NRD treats it as far hit
+        if (secondaryHitT <= 0.0)
+            secondaryHitT = 1e4;
+    }
+
     vec3 totalRad = directLighting + indirectRad;
-    rngState = floatBitsToUint(payload.a.w);
-
-    // hitT for NRD = secondary ray hit distance only (NOT primary, per NRD docs)
-    // closesthit stores gl_HitTEXT in payload.e.w at depth=1
-    float secondaryHitT = payload.e.w;
-    // Fallback for missed rays (hitT=0): use a large value so NRD treats it as far hit
-    if (secondaryHitT <= 0.0)
-        secondaryHitT = 1e4;
 
     // ---- NRD output ----
     if (nrdMode)

@@ -26,11 +26,18 @@ project "RT2App"
         "shaders/tonemap.comp",
         "shaders/restir_temporal.comp",
         "shaders/restir_spatial.comp",
+        "shaders/restir_gi_temporal.comp",
+        "shaders/restir_gi_history.comp",
         "shaders/raster.vert",
         "shaders/raster.frag",
         "shaders/gbuffer_debug.comp",
         "shaders/pathtracer_shared.glsl",
         "shaders/scatter_shared.glsl",
+        "shaders/restir_gi_shared.glsl",
+        "shaders/restir_gi_bindings.glsl",
+        "shaders/surface_history_shared.glsl",
+        "shaders/material_resolve.glsl",
+        "shaders/ray_query_scene.glsl",
         "shaders/shader_interface.h",
     }
 
@@ -51,6 +58,7 @@ project "RT2App"
     -- paths relative to the .vcxproj which lives in the RT2App project dir).
     local depShared  = { "shaders/pathtracer_shared.glsl", "shaders/scatter_shared.glsl", "shaders/restir_shared.glsl", "shaders/restir_bindings.glsl", "shaders/shader_interface.h" }
     local depReSTIR  = { "shaders/restir_shared.glsl", "shaders/restir_bindings.glsl", "shaders/shader_interface.h" }
+    local depGI      = { "shaders/restir_gi_shared.glsl", "shaders/restir_gi_bindings.glsl", "shaders/surface_history_shared.glsl", "shaders/material_resolve.glsl", "shaders/ray_query_scene.glsl", "shaders/shader_interface.h" }
     local depBasic   = { "shaders/shader_interface.h" }
 
     -- Per-stage custom build rules (dependency tracking via premake)
@@ -118,6 +126,18 @@ project "RT2App"
         buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/restir_spatial.comp -o " .. shaderDir .. "/restir_spatial.spv" }
         buildoutputs { shaderDir .. "/restir_spatial.spv" }
         buildinputs { depReSTIR }
+
+    filter {"files:shaders/restir_gi_temporal.comp"}
+        buildmessage "Compiling restir_gi_temporal.comp"
+        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/restir_gi_temporal.comp -o " .. shaderDir .. "/restir_gi_temporal.spv" }
+        buildoutputs { shaderDir .. "/restir_gi_temporal.spv" }
+        buildinputs { depGI }
+
+    filter {"files:shaders/restir_gi_history.comp"}
+        buildmessage "Compiling restir_gi_history.comp"
+        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/restir_gi_history.comp -o " .. shaderDir .. "/restir_gi_history.spv" }
+        buildoutputs { shaderDir .. "/restir_gi_history.spv" }
+        buildinputs { depGI }
 
     filter {"files:shaders/raster.vert"}
         buildmessage "Compiling raster.vert"
@@ -195,6 +215,8 @@ project "RT2App"
             "copy /Y \"%{wks.location}RT2App\\shaders\\tonemap.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\restir_temporal.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\restir_spatial.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"%{wks.location}RT2App\\shaders\\restir_gi_temporal.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"%{wks.location}RT2App\\shaders\\restir_gi_history.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\raster.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\rasterfrag.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"%{wks.location}RT2App\\shaders\\gbufferdebug.spv\" \"%{cfg.targetdir}\""

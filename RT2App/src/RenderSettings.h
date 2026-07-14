@@ -44,6 +44,18 @@ struct RenderSettings
 	bool  restirTemporalReuse     = true;  // enable temporal reuse
 	bool  restirSpatialReuse      = true;  // enable spatial reuse
 
+	// ReSTIR GI (Reservoir-based Resampling for one-bounce Global Illumination)
+	// One diffuse indirect bounce, temporal reuse first, raster-first only.
+	// Independent of ReSTIR DI — requires raster-first G-buffer but not DI.
+	bool     restirGIEnabled         = false;
+	bool     restirGITemporalEnabled = true;
+	uint32_t restirGIFreshCandidates = 1;    // M: fresh GI candidates per pixel
+	uint32_t restirGITemporalMCap    = 20;   // capped M from temporal history
+	uint32_t restirGIMaxTemporalAge  = 4;    // reject history above this age
+	float    restirGIDepthThreshold  = 0.10f; // relative depth difference for validation
+	float    restirGINormalThreshold  = 0.90f; // normal dot product for validation
+	float    restirGIWorldPosThreshold = 0.10f; // world-position distance for temporal validation
+
 	// NRD denoiser
 	bool  nrdEnabled        = false;
 	// 0 = off (white noise), 1 = Bayer 4x4, 2 = Interleaved Gradient Noise

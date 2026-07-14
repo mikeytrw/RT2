@@ -5,6 +5,7 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 #include "pathtracer_shared.glsl"
+#include "material_resolve.glsl"
 
 // Any-hit shader for shadow rays on alpha-blended/cutout materials.
 // Accept = return (do nothing) → ray terminates, surface blocks light.
@@ -32,7 +33,7 @@ vec2 shadowAnyHitUV()
 
 void main()
 {
-    uint matIdx = gl_InstanceCustomIndexEXT;
+    uint matIdx = resolveMaterialIndex(gl_InstanceID, uint(gl_PrimitiveID));
     Material mat = materials[matIdx];
 
     // OPAQUE: blocks the light (accept = return)

@@ -39,6 +39,9 @@ void BuildEnvMapCDF(const std::vector<float>& floatPixels, int width, int height
             float r = floatPixels[idx + 0];
             float g = floatPixels[idx + 1];
             float b = floatPixels[idx + 2];
+            if (std::isnan(r) || std::isinf(r)) r = 0.0f;
+            if (std::isnan(g) || std::isinf(g)) g = 0.0f;
+            if (std::isnan(b) || std::isinf(b)) b = 0.0f;
             float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
             float weight = lum * solidAngleWeight;
             rowSum += weight;

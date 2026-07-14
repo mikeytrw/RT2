@@ -32,6 +32,27 @@ TEST_CASE("SINRDUniformData is 16 bytes")
     CHECK(sizeof(SINRDUniformData) == 16);
 }
 
+TEST_CASE("SIGIReservoir is 48 bytes (3 uvec4, std430)")
+{
+    CHECK(sizeof(SIGIReservoir) == 48);
+}
+
+TEST_CASE("SIGIPushConstants is 48 bytes")
+{
+    CHECK(sizeof(SIGIPushConstants) == 48);
+}
+
+TEST_CASE("Zeroed SIGIReservoir decodes as invalid")
+{
+    // vkCmdFillBuffer(..., 0) must produce an invalid reservoir: valid bit = 0
+    // and M = 0. This is the contract that ClearAll relies on.
+    SIGIReservoir r{};
+    // data2.z packs (age << 16) | flags; zeroed → flags = 0 → valid bit clear.
+    uint32_t flags = r.data2.z & 0xFFFFu;
+    CHECK((flags & SI_GI_FLAG_VALID) == 0u);
+    CHECK(r.data2.y == 0u);  // M == 0
+}
+
 TEST_CASE("SIReSTIRPushConstants carries both jitter samples")
 {
     CHECK(sizeof(SIReSTIRPushConstants) == 60);

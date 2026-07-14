@@ -26,6 +26,9 @@ static const std::vector<BindingDef>& GetSet0Bindings()
 		VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR |
 		VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
 
+	static const VkShaderStageFlags allRTComputeFlags = allRTFlags |
+		VK_SHADER_STAGE_COMPUTE_BIT;
+
 	static const VkShaderStageFlags allGraphicsRTFlags = allRTFlags |
 		VK_SHADER_STAGE_VERTEX_BIT |
 		VK_SHADER_STAGE_FRAGMENT_BIT |
@@ -36,14 +39,16 @@ static const std::vector<BindingDef>& GetSet0Bindings()
 		{ SI_BINDING_CAMERA_UBO,              VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,             1, allGraphicsRTFlags, 0 },
 		{ SI_BINDING_MATERIAL_BUFFER,         VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
 		{ SI_BINDING_VERTEX_BUFFER,           VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
-		{ SI_BINDING_TLAS,                    VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, allRTFlags,         0 },
+		{ SI_BINDING_TLAS,                    VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, allRTComputeFlags,  0 },
 		{ SI_BINDING_INDEX_BUFFER,            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
 		{ SI_BINDING_NORMAL_BUFFER,           VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
 		{ SI_BINDING_UV_BUFFER,               VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
 		{ SI_BINDING_INSTANCE_MESH_INFO,      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
 		{ SI_BINDING_LIGHT_BUFFER,            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
 		{ SI_BINDING_INSTANCE_TRANSFORMS,     VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allGraphicsRTFlags, 0 },
-		// Binding 11 is intentionally skipped — texture array moved to binding 18
+		// Binding 11: ReSTIR GI monolithic buffer (reservoir A/B + receiver history prev/cur).
+		// Visible to compute (GI passes) and raygen (final shading consumes stored GI sample).
+		{ SI_BINDING_GI_DATA,                 VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,             1, allRTComputeFlags,  0 },
 		{ SI_BINDING_INSTANCE_TRANSFORMS_PREV,    VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, allGraphicsRTFlags, 0 },
 		{ SI_BINDING_INSTANCE_MATERIAL_INDICES,   VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, allGraphicsRTFlags, 0 },
 		{ SI_BINDING_RESERVOIR_HISTORY,           VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         1, allGraphicsRTFlags, 0 },
@@ -377,6 +382,7 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	VkAccelerationStructureKHR tlas,
 	VkBuffer reservoirBuffer, VkBuffer reservoirScratchBuffer,
 	VkBuffer surfaceHistoryBuffer,
+	VkBuffer giDataBuffer,
 	const std::vector<VkDescriptorImageInfo>& textureImageInfos)
 {
 	// Local descriptor info structs — must stay alive until vkUpdateDescriptorSets
@@ -400,6 +406,7 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	VkDescriptorBufferInfo reservoirBufInfo = { reservoirBuffer, 0, VK_WHOLE_SIZE };
 	VkDescriptorBufferInfo reservoirScratchBufInfo = { reservoirScratchBuffer, 0, VK_WHOLE_SIZE };
 	VkDescriptorBufferInfo surfaceHistoryBufInfo = { surfaceHistoryBuffer, 0, VK_WHOLE_SIZE };
+	VkDescriptorBufferInfo giDataBufInfo = { giDataBuffer, 0, VK_WHOLE_SIZE };
 
 	VkWriteDescriptorSetAccelerationStructureKHR asInfo = {};
 	asInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
@@ -455,6 +462,7 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	addBufferWrite(SI_BINDING_INSTANCE_MESH_INFO, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &meshInfoBufInfo);
 	addBufferWrite(SI_BINDING_LIGHT_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &lightBufInfo);
 	addBufferWrite(SI_BINDING_INSTANCE_TRANSFORMS, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &transformBufInfo);
+	addBufferWrite(SI_BINDING_GI_DATA, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &giDataBufInfo);
 	addBufferWrite(SI_BINDING_INSTANCE_TRANSFORMS_PREV, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &transformPrevBufInfo);
 	addBufferWrite(SI_BINDING_INSTANCE_MATERIAL_INDICES, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &matIdxBufInfo);
 	addBufferWrite(SI_BINDING_RESERVOIR_HISTORY, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &reservoirBufInfo);

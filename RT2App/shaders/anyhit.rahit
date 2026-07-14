@@ -5,6 +5,7 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 #include "pathtracer_shared.glsl"
+#include "material_resolve.glsl"
 
 // Any-hit shader for alpha-blended/cutout materials (primary + BSDF rays).
 // Reads base color texture alpha and uses Russian roulette (BLEND) or
@@ -33,7 +34,7 @@ vec2 anyHitUV()
 
 void main()
 {
-    uint matIdx = gl_InstanceCustomIndexEXT;
+    uint matIdx = resolveMaterialIndex(gl_InstanceID, uint(gl_PrimitiveID));
     Material mat = materials[matIdx];
 
     // OPAQUE: accept (shouldn't reach here, but safe)

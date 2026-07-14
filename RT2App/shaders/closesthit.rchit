@@ -5,6 +5,7 @@
 
 // scatter_shared.glsl includes pathtracer_shared.glsl + scatter/NEE functions
 #include "scatter_shared.glsl"
+#include "material_resolve.glsl"
 
 layout(location = 0) rayPayloadInEXT RayPayload payload;
 layout(location = 1) rayPayloadEXT RayPayload nextPayload;
@@ -115,8 +116,7 @@ vec3 hitShadingNormal(Material mat, vec2 uv)
 void main()
 {
     uvec4 meshInfo = instanceMeshInfo[gl_InstanceID];
-    uint triMatOffset = instanceMatOffsets[gl_InstanceID] + uint(gl_PrimitiveID);
-    uint matIdx = instanceMaterialIndices[triMatOffset];
+    uint matIdx = resolveMaterialIndex(gl_InstanceID, uint(gl_PrimitiveID));
     Material mat = materials[matIdx];
 
     vec2 uv = hitUV();

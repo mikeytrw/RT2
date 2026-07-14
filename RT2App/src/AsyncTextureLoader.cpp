@@ -5,6 +5,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/packing.hpp>
 #include <algorithm>
+#include <cmath>
 
 AsyncTextureLoader::~AsyncTextureLoader()
 {
@@ -326,7 +327,13 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 			{
 				uint16_t* dst = static_cast<uint16_t*>(mapped);
 				for (size_t p = 0; p < tex.floatPixels.size(); p++)
-					dst[p] = glm::packHalf1x16(tex.floatPixels[p]);
+				{
+					float v = tex.floatPixels[p];
+					if (isnan(v) || isinf(v))
+						v = 0.0f;
+					v = glm::min(v, 65504.0f);
+					dst[p] = glm::packHalf1x16(v);
+				}
 			}
 			else
 			{
@@ -353,7 +360,13 @@ void AsyncTextureLoader::WorkerThread(const GpuDevice* devPtr,
 			{
 				uint16_t* dst = static_cast<uint16_t*>(m_Staging.GetMappedPointer(stagingOffset));
 				for (size_t p = 0; p < tex.floatPixels.size(); p++)
-					dst[p] = glm::packHalf1x16(tex.floatPixels[p]);
+				{
+					float v = tex.floatPixels[p];
+					if (isnan(v) || isinf(v))
+						v = 0.0f;
+					v = glm::min(v, 65504.0f);
+					dst[p] = glm::packHalf1x16(v);
+				}
 			}
 			else
 			{

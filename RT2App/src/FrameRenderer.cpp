@@ -24,6 +24,8 @@ void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 	RT_LOG("[Frame] raster done");
 	RecordReSTIRPass(cmd, ctx);
 	RT_LOG("[Frame] ReSTIR done");
+	RecordReSTIRGIPass(cmd, ctx);
+	RT_LOG("[Frame] ReSTIR GI done");
 	RecordPathTraceOrDebug(cmd, ctx);
 	RT_LOG("[Frame] pathtrace/debug done");
 	RecordTonemapPass(cmd, ctx);
@@ -72,7 +74,7 @@ void FrameRenderer::RecordASBarrier(VkCommandBuffer cmd, Context& ctx)
 	asBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
 	vkCmdPipelineBarrier(cmd,
 		VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		0, 1, &asBarrier, 0, nullptr, 0, nullptr);
 	ctx.scene.ClearASJustBuilt();
 }
@@ -90,7 +92,14 @@ void FrameRenderer::RecordUBOUpdates(VkCommandBuffer cmd, Context& ctx)
 
 	vkCmdUpdateBuffer(cmd, ctx.cameraUBO, 0, sizeof(SICameraData), &ctx.cameraUBOData);
 
-	SINRDUniformData nrdData = { ctx.nrdEnabled ? 1u : 0u, (uint32_t)ctx.lobeDither, 0u, 0u };
+	// NRD UBO: nrdEnabled, lobeDither, restirGIEnabled, restirGIReservoirIndex.
+	// The spare fields are repurposed for GI control without growing the UBO.
+	SINRDUniformData nrdData = {
+		ctx.nrdEnabled ? 1u : 0u,
+		(uint32_t)ctx.lobeDither,
+		ctx.restirGIEnabled ? 1u : 0u,
+		ctx.giReservoirIndex
+	};
 	if (ctx.nrdUBO)
 		vkCmdUpdateBuffer(cmd, ctx.nrdUBO, 0, sizeof(SINRDUniformData), &nrdData);
 
@@ -278,6 +287,126 @@ void FrameRenderer::RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx)
 	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 	                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0,
 	                     0, nullptr, 1, &postBarrier, 0, nullptr);
+}
+
+void FrameRenderer::RecordReSTIRGIPass(VkCommandBuffer cmd, Context& ctx)
+{
+	// GI requires raster-first G-buffer. It does NOT require ReSTIR DI.
+	// Skip if disabled, pipeline unavailable, no GI buffer, or dummy buffer.
+	if (!ctx.restirGIEnabled || !ctx.restirGIPass.IsAvailable())
+		return;
+	if (!ctx.rasterFirst)
+		return;
+	if (!ctx.giReservoirs.IsValid() || ctx.giReservoirs.IsDummy())
+		return;
+
+	VkBuffer giBuf = ctx.giReservoirs.GetBuffer();
+	VkDeviceSize reservoirRegionSize = ctx.giReservoirs.GetReservoirRegionSize();
+	VkDeviceSize historyRegionSize    = ctx.giReservoirs.GetReceiverHistoryRegionSize();
+	VkDeviceSize totalSize            = ctx.giReservoirs.GetTotalSize();
+
+	uint32_t curRegion  = ctx.giFrameIndex & 1u;
+	uint32_t prevRegion = ctx.giFrameIndex ^ 1u;
+
+	VkDeviceSize curReservoirOffset  = ctx.giReservoirs.GetReservoirRegionOffset(curRegion);
+	VkDeviceSize prevReservoirOffset = ctx.giReservoirs.GetReservoirRegionOffset(prevRegion);
+	VkDeviceSize curHistoryOffset    = ctx.giReservoirs.GetReceiverHistoryRegionOffset(curRegion);
+	VkDeviceSize prevHistoryOffset   = ctx.giReservoirs.GetReceiverHistoryRegionOffset(prevRegion);
+
+	// 1. Barrier: prev reservoir + prev receiver history → compute read;
+	//    current reservoir → compute write. G-buffer images are already
+	//    compute-readable after the post-raster barrier.
+	VkBufferMemoryBarrier temporalPreBarriers[3] = {};
+	for (int i = 0; i < 3; i++)
+	{
+		temporalPreBarriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		temporalPreBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		temporalPreBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	}
+	// Previous reservoir region: shader write/read → compute read.
+	temporalPreBarriers[0].buffer = giBuf;
+	temporalPreBarriers[0].offset = prevReservoirOffset;
+	temporalPreBarriers[0].size   = reservoirRegionSize;
+	temporalPreBarriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+	temporalPreBarriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	// Previous receiver history: shader write/read → compute read.
+	temporalPreBarriers[1].buffer = giBuf;
+	temporalPreBarriers[1].offset = prevHistoryOffset;
+	temporalPreBarriers[1].size   = historyRegionSize;
+	temporalPreBarriers[1].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+	temporalPreBarriers[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	// Current reservoir region: shader read → compute write.
+	temporalPreBarriers[2].buffer = giBuf;
+	temporalPreBarriers[2].offset = curReservoirOffset;
+	temporalPreBarriers[2].size   = reservoirRegionSize;
+	temporalPreBarriers[2].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	temporalPreBarriers[2].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+	vkCmdPipelineBarrier(cmd,
+	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+	                     0, nullptr, 3, temporalPreBarriers, 0, nullptr);
+
+	// 2. Dispatch temporal pass: prev reservoir + prev history → current reservoir.
+	//    Phase 0 stub writes empty (invalid) reservoirs only.
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::ReSTIRTemporal, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	ctx.restirGIPass.RecordTemporal(cmd, ctx.width, ctx.height,
+	                               ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
+	                               ctx.restirGIPC);
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::ReSTIRTemporal, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+	// 3. Barrier: serialize — temporal writes (current reservoir) complete
+	//    before the history-write dispatch reads G-buffer and writes current
+	//    receiver history. Also transition current reservoir: compute write →
+	//    ray-tracing read for final shading.
+	VkBufferMemoryBarrier betweenBarriers[2] = {};
+	for (int i = 0; i < 2; i++)
+	{
+		betweenBarriers[i].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+		betweenBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		betweenBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	}
+	// Current reservoir: compute write → RT read.
+	betweenBarriers[0].buffer = giBuf;
+	betweenBarriers[0].offset = curReservoirOffset;
+	betweenBarriers[0].size   = reservoirRegionSize;
+	betweenBarriers[0].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	betweenBarriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	// Current receiver history: shader read → compute write (history dispatch).
+	betweenBarriers[1].buffer = giBuf;
+	betweenBarriers[1].offset = curHistoryOffset;
+	betweenBarriers[1].size   = historyRegionSize;
+	betweenBarriers[1].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	betweenBarriers[1].dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+
+	vkCmdPipelineBarrier(cmd,
+	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0,
+	                     0, nullptr, 2, betweenBarriers, 0, nullptr);
+
+	// 4. Dispatch history-write pass: G-buffer → current receiver history.
+	//    Runs AFTER all temporal reads of the previous history region finish,
+	//    avoiding the read/write race a single dispatch would create.
+	ctx.restirGIPass.RecordHistoryWrite(cmd, ctx.width, ctx.height,
+	                                    ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
+	                                    ctx.restirGIPC);
+
+	// 5. Barrier: current receiver history (compute write) → next-frame compute read.
+	VkBufferMemoryBarrier historyPostBarrier = {};
+	historyPostBarrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+	historyPostBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	historyPostBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	historyPostBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	historyPostBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	historyPostBarrier.buffer = giBuf;
+	historyPostBarrier.offset = curHistoryOffset;
+	historyPostBarrier.size   = historyRegionSize;
+	vkCmdPipelineBarrier(cmd,
+	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+	                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0,
+	                     0, nullptr, 1, &historyPostBarrier, 0, nullptr);
 }
 
 void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)

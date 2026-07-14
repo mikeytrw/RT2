@@ -289,12 +289,50 @@ public:
 	}
 	ImGui::EndDisabled();
 	ImGui::Separator();
+
+	// ReSTIR GI — one-bounce diffuse GI, temporal reuse, raster-first only.
+	// Independent of DI; requires raster-first G-buffer but not DI enabled.
+	bool giAvailable = m_RendererGPU.IsAvailable() && m_Settings.rasterFirst;
+	if (!giAvailable && m_Settings.restirGIEnabled)
+	{
+		m_Settings.restirGIEnabled = false;
+		m_RendererGPU.ApplySettings(m_Settings);
+	}
+	ImGui::BeginDisabled(!giAvailable);
+	if (ImGui::Checkbox("ReSTIR GI", &m_Settings.restirGIEnabled))
+		m_RendererGPU.ApplySettings(m_Settings);
+	if (m_Settings.restirGIEnabled)
+	{
+		ImGui::Indent();
+		if (ImGui::Checkbox("Temporal Reuse", &m_Settings.restirGITemporalEnabled))
+			m_RendererGPU.ApplySettings(m_Settings);
+		int m = (int)m_Settings.restirGIFreshCandidates;
+		if (ImGui::SliderInt("GI Fresh Candidates (M)", &m, 1, 8))
+		{ m_Settings.restirGIFreshCandidates = (uint32_t)m; m_RendererGPU.ApplySettings(m_Settings); }
+		int tmc = (int)m_Settings.restirGITemporalMCap;
+		if (ImGui::SliderInt("GI Temporal M Cap", &tmc, 1, 100))
+		{ m_Settings.restirGITemporalMCap = (uint32_t)tmc; m_RendererGPU.ApplySettings(m_Settings); }
+		int age = (int)m_Settings.restirGIMaxTemporalAge;
+		if (ImGui::SliderInt("GI Max Temporal Age", &age, 0, 16))
+		{ m_Settings.restirGIMaxTemporalAge = (uint32_t)age; m_RendererGPU.ApplySettings(m_Settings); }
+		if (ImGui::SliderFloat("GI Depth Threshold", &m_Settings.restirGIDepthThreshold, 0.01f, 0.5f, "%.3f"))
+			m_RendererGPU.ApplySettings(m_Settings);
+		if (ImGui::SliderFloat("GI Normal Threshold", &m_Settings.restirGINormalThreshold, 0.5f, 1.0f, "%.3f"))
+			m_RendererGPU.ApplySettings(m_Settings);
+		if (ImGui::SliderFloat("GI WorldPos Threshold", &m_Settings.restirGIWorldPosThreshold, 0.01f, 0.5f, "%.3f"))
+			m_RendererGPU.ApplySettings(m_Settings);
+		ImGui::Unindent();
+	}
+	ImGui::EndDisabled();
+	ImGui::Separator();
 	ImGui::Text("G-buffer Debug");
 	const char* gbufferModes[] = {
 		"Off", "Shading Normal", "Roughness", "ViewZ (depth)",
 		"Motion Vectors", "Albedo", "F0", "Direct Emission",
 		"World Position", "Geo Normal", "UV", "Material Index",
-		"ReSTIR Reservoir"
+		"ReSTIR Reservoir",
+		"GI Direction", "GI Lo", "GI HitT", "GI M/Age",
+		"GI Fresh vs History", "GI Rejection Reason", "GI Fallback"
 	};
 	int debugCombo = m_Settings.gbufferDebugMode + 1;
 	if (ImGui::Combo("G-buffer View", &debugCombo, gbufferModes, IM_ARRAYSIZE(gbufferModes)))

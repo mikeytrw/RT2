@@ -23,9 +23,9 @@ struct BindingDef
 // Set 0 bindings (see shader_interface.h):
 //   0: output image, 1: camera UBO, 2: materials, 3: vertex buffer, 4: TLAS,
 //   5: index buffer, 6: normals, 7: UVs, 8: instance mesh info, 9: lights,
-//   10: instance transforms, 12: transforms prev, 13: instance material indices,
-//   14: reservoir history, 15: reservoir scratch, 16: surface history,
-//   17: instance mat offsets, 18: texture array (variable count)
+//   10: instance transforms, 11: GI data, 12: transforms prev,
+//   13: instance material indices, 14: reservoir history, 15: reservoir scratch,
+//   16: surface history, 17: instance mat offsets, 18: texture array (variable count)
 class PathTracePass
 {
 public:
@@ -60,6 +60,7 @@ public:
 		VkAccelerationStructureKHR tlas,
 		VkBuffer reservoirBuffer, VkBuffer reservoirScratchBuffer,
 		VkBuffer surfaceHistoryBuffer,
+		VkBuffer giDataBuffer,
 		const std::vector<VkDescriptorImageInfo>& textureImageInfos);
 
 	// Record trace into command buffer. Caller handles pre/post barriers.

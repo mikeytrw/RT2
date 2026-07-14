@@ -39,6 +39,15 @@ layout(set = 0, binding = SI_BINDING_CAMERA_UBO, std140) uniform CameraData
 { vec4 position; vec4 forward; vec4 right; vec4 up; vec4 viewportSPP; vec4 apertureFocal;
   vec4 envMap; mat4 inverseProjection; mat4 inverseView; mat4 viewToClip; mat4 viewToClipPrev;
   mat4 worldToView; mat4 worldToViewPrev; } camera;
+
+// NRD UBO — for GI debug views (restirGIReservoirIndex).
+layout(set = 1, binding = SI_BINDING_NRD_UBO) uniform NRDUniformDebug
+{
+    uint nrdEnabledDebug;
+    uint lobeDitherDebug;
+    uint restirGIEnabledDebug;
+    uint restirGIReservoirIndexDebug;
+} nrdDebugData;
 struct Material { vec4 baseColor_metallic; vec4 emissive_roughness; float ior;
   float alphaCutoff; float alphaMode; float baseAlpha; ivec4 textureIndices; ivec4 extraIndices; };
 layout(set = 0, binding = SI_BINDING_MATERIAL_BUFFER, std430) readonly buffer MaterialBuffer
@@ -58,6 +67,28 @@ layout(set = 0, binding = SI_BINDING_RESERVOIR_HISTORY, std430) readonly buffer 
 {
     Reservoir reservoirs[];
 };
+
+// ---- GI reservoir buffer (set 0, binding 11) — for GI debug views ----
+#include "surface_history_shared.glsl"
+#include "restir_gi_shared.glsl"
+layout(set = 0, binding = SI_BINDING_GI_DATA, std430) readonly buffer GIDebugDataBuffer
+{
+    uvec4 giDebugData[];
+};
+
+const uint GI_RESERVOIR_BYTES_DBG = 48u;
+
+GIReservoir loadGIDebugReservoir(uint region, uint pixelLinear, uint pixelCount)
+{
+    uint byteOffset = region * pixelCount * GI_RESERVOIR_BYTES_DBG
+                    + pixelLinear * GI_RESERVOIR_BYTES_DBG;
+    uint wordOffset = byteOffset / 16u;
+    GIReservoir r;
+    r.data0 = giDebugData[wordOffset + 0u];
+    r.data1 = giDebugData[wordOffset + 1u];
+    r.data2 = giDebugData[wordOffset + 2u];
+    return r;
+}
 
 layout(push_constant) uniform Push {
     uint mode;
@@ -164,6 +195,102 @@ void main()
             else
             {
                 color = vec3(0.0);
+            }
+            break;
+        }
+        case 12: { // GI direction (selected direction → RGB)
+            uint w = uint(size.x);
+            uint h = uint(size.y);
+            uint pl = pixel.y * w + pixel.x;
+            uint region = nrdDebugData.restirGIReservoirIndexDebug;
+            GIReservoir r = loadGIDebugReservoir(region, pl, w * h);
+            r = sanitizeGIReservoir(r);
+            if (giValid(r))
+                color = giDirection(r) * 0.5 + 0.5;
+            break;
+        }
+        case 13: { // GI Lo (stored outgoing radiance)
+            uint w = uint(size.x);
+            uint h = uint(size.y);
+            uint pl = pixel.y * w + pixel.x;
+            uint region = nrdDebugData.restirGIReservoirIndexDebug;
+            GIReservoir r = loadGIDebugReservoir(region, pl, w * h);
+            r = sanitizeGIReservoir(r);
+            if (giValid(r))
+                color = giLo(r);
+            color = clamp(color * 0.1, 0.0, 1.0);
+            break;
+        }
+        case 14: { // GI hitT (selected direction hit distance)
+            uint w = uint(size.x);
+            uint h = uint(size.y);
+            uint pl = pixel.y * w + pixel.x;
+            uint region = nrdDebugData.restirGIReservoirIndexDebug;
+            GIReservoir r = loadGIDebugReservoir(region, pl, w * h);
+            r = sanitizeGIReservoir(r);
+            if (giValid(r))
+                color = vec3(clamp(giHitT(r) * 0.02, 0.0, 1.0));
+            break;
+        }
+        case 15: { // GI M/Age (R = M, G = age)
+            uint w = uint(size.x);
+            uint h = uint(size.y);
+            uint pl = pixel.y * w + pixel.x;
+            uint region = nrdDebugData.restirGIReservoirIndexDebug;
+            GIReservoir r = loadGIDebugReservoir(region, pl, w * h);
+            r = sanitizeGIReservoir(r);
+            if (giValid(r))
+            {
+                color.r = clamp(float(giM(r)) / 10.0, 0.0, 1.0);
+                color.g = clamp(float(giAge(r)) / 8.0, 0.0, 1.0);
+            }
+            break;
+        }
+        case 16: { // GI fresh vs history (R = fresh, G = history)
+            uint w = uint(size.x);
+            uint h = uint(size.y);
+            uint pl = pixel.y * w + pixel.x;
+            uint region = nrdDebugData.restirGIReservoirIndexDebug;
+            GIReservoir r = loadGIDebugReservoir(region, pl, w * h);
+            r = sanitizeGIReservoir(r);
+            if (giValid(r))
+            {
+                if ((giFlags(r) & GI_FLAG_HISTORY) != 0u)
+                    color.g = 1.0;  // history-derived
+                else
+                    color.r = 1.0;  // fresh
+            }
+            break;
+        }
+        case 17: { // GI reservoir validity (R = valid, G = env miss, B = geometry hit)
+            uint w = uint(size.x);
+            uint h = uint(size.y);
+            uint pl = pixel.y * w + pixel.x;
+            uint region = nrdDebugData.restirGIReservoirIndexDebug;
+            GIReservoir r = loadGIDebugReservoir(region, pl, w * h);
+            if (giValid(r))
+            {
+                color.r = 1.0;
+                if ((giFlags(r) & GI_FLAG_ENV_MISS) != 0u)
+                    color.g = 1.0;
+                if ((giFlags(r) & GI_FLAG_GEOMETRY_HIT) != 0u)
+                    color.b = 1.0;
+            }
+            break;
+        }
+        case 18: { // GI weight W (R = W intensity, G = targetPdf, B = weightSum)
+            uint w = uint(size.x);
+            uint h = uint(size.y);
+            uint pl = pixel.y * w + pixel.x;
+            uint region = nrdDebugData.restirGIReservoirIndexDebug;
+            GIReservoir r = loadGIDebugReservoir(region, pl, w * h);
+            r = sanitizeGIReservoir(r);
+            if (giValid(r))
+            {
+                float W = giReservoirW(r);
+                color.r = clamp(log(W + 1.0) * 0.1, 0.0, 1.0);
+                color.g = clamp(log(giTargetPdf(r) + 1.0) * 0.1, 0.0, 1.0);
+                color.b = clamp(log(giWeightSum(r) + 1.0) * 0.02, 0.0, 1.0);
             }
             break;
         }

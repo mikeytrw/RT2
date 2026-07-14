@@ -7,6 +7,8 @@
 
 #include "pathtracer_shared.glsl"
 #include "restir_shared.glsl"
+#include "surface_history_shared.glsl"
+#include "restir_gi_shared.glsl"
 
 // Shadow ray payload (location 2) — used by sampleNEE / sampleEnvNEE.
 layout(location = 2) rayPayloadEXT float shadowVisible;
@@ -16,6 +18,31 @@ layout(set = 0, binding = SI_BINDING_RESERVOIR_HISTORY, std430) readonly buffer 
 {
     Reservoir reservoirs[];
 };
+
+// ---- GI reservoir buffer (set 0, binding 11 — monolithic, read by shading) ----
+// The GI buffer contains four regions (reservoirA/B + receiverHistory prev/cur).
+// Raygen reads the current reservoir region selected by nrdData.restirGIReservoirIndex.
+layout(set = 0, binding = SI_BINDING_GI_DATA, std430) readonly buffer GIReservoirReadBuffer
+{
+    uvec4 giReservoirData[];
+};
+
+// GIReservoir is 48 bytes (3 uvec4). sizeof() is not available in GLSL.
+const uint GI_RESERVOIR_BYTES_RT = 48u;
+
+// Load a GI reservoir from the monolithic buffer by region + pixel.
+// region = nrdData.restirGIReservoirIndex (frame parity).
+GIReservoir loadGIReservoir(uint region, uint pixelLinear, uint pixelCount)
+{
+    uint byteOffset = region * pixelCount * GI_RESERVOIR_BYTES_RT
+                    + pixelLinear * GI_RESERVOIR_BYTES_RT;
+    uint wordOffset = byteOffset / 16u;
+    GIReservoir r;
+    r.data0 = giReservoirData[wordOffset + 0u];
+    r.data1 = giReservoirData[wordOffset + 1u];
+    r.data2 = giReservoirData[wordOffset + 2u];
+    return r;
+}
 
 // ---- Scatter result ----------------------------------------------------------
 
@@ -620,13 +647,67 @@ NEEDispatchResult computeNEE(
     {
         if (useReSTIR)
         {
-            // ReSTIR DI: use the unified reservoir (handles both triangle + env)
-            result.radiance = sampleReSTIRDI(wo, n, hitPoint,
+            // ReSTIR DI: use the unified reservoir (handles both triangle + env).
+            // If the reservoir shadow ray fails (occluded) or the reservoir is
+            // invalid/empty, fall back to the standard NEE path so direct
+            // lighting is never lost.
+            NEEResult restirResult = sampleReSTIRDI(wo, n, hitPoint,
                                              baseColor, metallic, roughness,
                                              nee_Ps, nee_Pd,
                                              throughput, rngState,
                                              isTransmissionMat, nee_P_refract, nee_eta,
-                                             pixelLinear).radiance;
+                                             pixelLinear);
+            if (dot(restirResult.radiance, restirResult.radiance) > 0.0)
+            {
+                result.radiance = restirResult.radiance;
+            }
+            else
+            {
+                // Fallback: standard NEE path.
+                float pTri = computePTri();
+                bool hasTriNee = (pTri > 0.0);
+                bool hasEnvNee = (pTri < 1.0);
+
+                if (hasTriNee && hasEnvNee)
+                {
+                    if (randomFloat(rngState) < pTri)
+                    {
+                        NEEResult nee = sampleNEE(wo, n, hitPoint,
+                                                  baseColor, metallic, roughness,
+                                                  nee_Ps, nee_Pd,
+                                                  throughput, rngState,
+                                                  isTransmissionMat, nee_P_refract, nee_eta);
+                        result.radiance = nee.radiance / pTri;
+                    }
+                    else
+                    {
+                        NEEResult envNee = sampleEnvNEE(wo, n, hitPoint,
+                                                        baseColor, metallic, roughness,
+                                                        nee_Ps, nee_Pd,
+                                                        throughput, rngState,
+                                                        isTransmissionMat, nee_P_refract, nee_eta);
+                        result.radiance = envNee.radiance / (1.0 - pTri);
+                    }
+                }
+                else if (hasTriNee)
+                {
+                    NEEResult nee = sampleNEE(wo, n, hitPoint,
+                                              baseColor, metallic, roughness,
+                                              nee_Ps, nee_Pd,
+                                              throughput, rngState,
+                                              isTransmissionMat, nee_P_refract, nee_eta);
+                    result.radiance = nee.radiance;
+                }
+                else if (hasEnvNee)
+                {
+                    NEEResult envNee = sampleEnvNEE(wo, n, hitPoint,
+                                                    baseColor, metallic, roughness,
+                                                    nee_Ps, nee_Pd,
+                                                    throughput, rngState,
+                                                    isTransmissionMat, nee_P_refract, nee_eta);
+                    result.radiance = envNee.radiance;
+                }
+            }
         }
         else
         {

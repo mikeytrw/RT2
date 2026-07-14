@@ -1,0 +1,252 @@
+#version 460
+#extension GL_EXT_scalar_block_layout : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+// restir_gi_temporal.comp — ReSTIR GI fresh candidate generation + temporal reuse.
+//
+// Frame sequence: Raster G-buffer → DI (temporal + spatial) → [this pass]
+// (reads previous reservoir + previous receiver history, writes current
+// reservoir) → history write dispatch → RT shading.
+//
+// Phase 2: Fresh candidate generation + temporal reuse.
+//   1. Generate M cosine-weighted diffuse directions, trace each via ray query,
+//      evaluate Lo, stream into reservoir.
+//   2. Reproject current pixel via gMotion to find previous frame's pixel.
+//   3. Load previous GI reservoir + previous receiver history.
+//   4. Validate receiver history (normal, depth, worldPos, material, age).
+//   5. Re-evaluate history sample at current receiver (replay root seed).
+//   6. Canonical merge with capped history M.
+//   7. Store current Lo/hitT for whichever candidate wins.
+//
+// The reservoir stores the evaluated Lo and hitT so final shading does NOT
+// retrace the selected direction. A root sample seed is stored so temporal
+// re-evaluation can replay the stochastic choices (alpha, NEE, shadow)
+// deterministically.
+//
+// A second dispatch (restir_gi_history.comp) writes the current receiver
+// history AFTER all temporal reads finish to avoid a read/write race.
+
+#include "restir_gi_bindings.glsl"
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+void main()
+{
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    uint width  = uint(camera.viewportSPP.x);
+    uint height = uint(camera.viewportSPP.y);
+
+    if (pixel.x >= int(width) || pixel.y >= int(height))
+        return;
+
+    uint pixelLinear = pixel.y * width + pixel.x;
+    uint pixelCount = width * height;
+    uint region = giCurrentRegion(pc.gi.frameIndex);
+    uint prevRegion = giPreviousRegion(pc.gi.frameIndex);
+
+    // Initialize empty reservoir.
+    GIReservoir res = makeEmptyGIReservoir();
+
+    // ---- Read G-buffer ----
+    vec4 primHit = imageLoad(gPrimHit, pixel);
+    uint matIdxPacked = uint(max(primHit.w, 0.0) + 0.5);
+    bool isMiss = (matIdxPacked == 0u);
+
+    if (isMiss)
+    {
+        storeGIReservoirCompute(region, pixelLinear, pixelCount, res);
+        return;
+    }
+
+    // Check emissive — skip GI for emissive surfaces.
+    vec3 directEmission = imageLoad(gDirectEmission, pixel).rgb;
+    if (dot(directEmission, directEmission) > 0.0)
+    {
+        storeGIReservoirCompute(region, pixelLinear, pixelCount, res);
+        return;
+    }
+
+    uint matIdx = matIdxPacked - 1u;
+    Material mat = materials[matIdx];
+
+    vec3 worldPos = primHit.xyz;
+    vec2 uv = imageLoad(gPrimUV, pixel).xy;
+
+    // Decode normal + roughness.
+    vec4 nrPacked = imageLoad(gNormalRoughness, pixel);
+    vec4 nrDecoded = nrdDecodeNormalRoughness(nrPacked.xyz);
+    vec3 gBufferN = nrDecoded.xyz;
+    float roughness = nrDecoded.w;
+
+    vec3 wo = normalize(camera.position.xyz - worldPos);
+    vec3 n = dot(gBufferN, wo) >= 0.0 ? gBufferN : -gBufferN;
+
+    float viewZ = imageLoad(gViewZ, pixel).x;
+
+    // Reconstruct base color + metallic.
+    vec3 baseColor = mat.baseColor_metallic.xyz;
+    int baseColorTexIdx = mat.textureIndices.x;
+    if (baseColorTexIdx >= 0)
+        baseColor *= texture(textures[nonuniformEXT(baseColorTexIdx)], uv).rgb;
+
+    float metallic = mat.baseColor_metallic.w;
+    int metalRoughTexIdx = mat.extraIndices.x;
+    if (metalRoughTexIdx >= 0)
+    {
+        vec3 mr = texture(textures[nonuniformEXT(metalRoughTexIdx)], uv).rgb;
+        metallic *= mr.b;
+    }
+
+    // Skip GI for metals (no diffuse component).
+    float diffuseWeight = (1.0 - metallic)
+                        * max(baseColor.x, max(baseColor.y, baseColor.z));
+    if (diffuseWeight <= 1e-4)
+    {
+        storeGIReservoirCompute(region, pixelLinear, pixelCount, res);
+        return;
+    }
+
+    // ---- Generate M fresh candidates ----
+    uint rngState = initRNG(pixel, pc.gi.frameIndex);
+    uint M = pc.gi.freshCandidateCount;
+    if (M == 0u) M = 1u;
+
+    for (uint i = 0u; i < M; i++)
+    {
+        // M represents all proposals, including those rejected for zero target
+        // density or proposal PDF. Counting only accepted samples biases the
+        // reservoir normalization upward in sparse-light regions.
+        giSetM(res, giM(res) + 1u);
+
+        // Root seed for this candidate — stored in the reservoir so temporal
+        // re-evaluation can replay the stochastic choices deterministically.
+        uint rootSeed = pcg(rngState);
+
+        // Cosine-weighted diffuse direction.
+        vec3 wi = sampleCosineHemisphere(n, rngState);
+        float cosTheta = max(dot(n, wi), 0.0);
+        if (cosTheta <= 0.0)
+            continue;
+
+        // Evaluate Lo along this direction (trace + NEE/env/emissive).
+        GIRadianceResult rad = giEvaluateRadiance(worldPos, n, wo, wi, cosTheta, rootSeed);
+
+        // Compute target density and proposal PDF.
+        vec3 C = evalDiffuseBRDF(wo, wi, n, baseColor, metallic) * rad.Lo * cosTheta;
+        float p_hat = luminance(C);
+        float q = cosTheta / PI;  // cosine-weighted diffuse proposal PDF
+
+        if (p_hat <= 0.0 || q <= 0.0)
+            continue;
+
+        float w = p_hat / q;
+
+        // Stream into the reservoir.
+        giStreamUpdate(res, w,
+                       wi, rad.Lo, rad.hitT, rootSeed, rad.flags,
+                       p_hat, rngState);
+    }
+
+    // ---- Temporal reuse ----
+    bool temporalEnabled = (pc.gi.flags & 1u) != 0u;
+    bool historySelected = false;
+
+    if (temporalEnabled)
+    {
+        // Reproject current pixel using gMotion (non-jittered UV displacement).
+        vec2 motion = imageLoad(gMotion, pixel).xy;
+        vec2 motionPixels = motion * vec2(width, height);
+        vec2 jitterDelta = pc.gi.jitter.xy - pc.gi.jitter.zw;
+        vec2 prevPixelF = vec2(pixel) + motionPixels + jitterDelta + 0.5;
+
+        if (prevPixelF.x >= 0.0 && prevPixelF.x < float(width) &&
+            prevPixelF.y >= 0.0 && prevPixelF.y < float(height))
+        {
+            ivec2 prevPixel = ivec2(floor(prevPixelF));
+            prevPixel.x = max(0, min(int(width) - 1, prevPixel.x));
+            prevPixel.y = max(0, min(int(height) - 1, prevPixel.y));
+            uint prevLinear = prevPixel.y * width + prevPixel.x;
+
+            GIReservoir histRes = loadGIReservoirCompute(prevRegion, prevLinear, pixelCount);
+            histRes = sanitizeGIReservoir(histRes);
+
+            if (giValid(histRes))
+            {
+                SurfaceHistory sh = loadGIReceiverHistory(prevRegion, prevLinear, pixelCount);
+
+                bool isSkyOrEmissive = false;
+                bool histValid = validateSurfaceHistory(sh, n, viewZ, matIdx,
+                                                        isSkyOrEmissive, worldPos,
+                                                        pc.gi.depthThreshold,
+                                                        pc.gi.normalThreshold,
+                                                        pc.gi.worldPosThreshold);
+
+                if (histValid)
+                {
+                    uint histAge = giAge(histRes);
+                    uint maxAge = max(pc.gi.maxTemporalAge, 1u);
+                    if (histAge < maxAge)
+                    {
+                        // Re-evaluate the historical sample at the current receiver.
+                        // Replay the stored root seed to reproduce alpha, NEE, and
+                        // shadow decisions deterministically.
+                        vec3 histWi = giDirection(histRes);
+                        float histCosTheta = max(dot(n, histWi), 0.0);
+
+                        if (histCosTheta > 0.0)
+                        {
+                            uint histSeed = giSeed(histRes);
+                            GIRadianceResult histRad = giEvaluateRadiance(
+                                worldPos, n, wo, histWi, histCosTheta, histSeed);
+
+                            if (dot(histRad.Lo, histRad.Lo) > 0.0)
+                            {
+                                vec3 C = evalDiffuseBRDF(wo, histWi, n, baseColor, metallic)
+                                       * histRad.Lo * histCosTheta;
+                                float p_hat_current = luminance(C);
+
+                                if (p_hat_current > 0.0)
+                                {
+                                    uint histM = giM(histRes);
+                                    uint temporalMCap = max(pc.gi.temporalMCap, 1u);
+                                    uint clampedM = min(histM, temporalMCap);
+
+                                    float W_prev = giReservoirW(histRes);
+                                    float w_merge = p_hat_current * W_prev * float(clampedM);
+
+                                    if (w_merge > 0.0 && !isnan(w_merge) && !isinf(w_merge))
+                                    {
+                                        historySelected = giMerge(
+                                            res, histRes, w_merge, clampedM, histAge,
+                                            p_hat_current, rngState);
+
+                                        // If history was selected, update Lo/hitT
+                                        // to the freshly evaluated values.
+                                        if (historySelected)
+                                        {
+                                            giSetPayload(res, histWi, histRad.Lo,
+                                                         histRad.hitT, histSeed);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Sanitize and write.
+    res = sanitizeGIReservoir(res);
+
+    // Age follows the selected sample. A fresh sample that remains selected
+    // stays at age zero even when history participated in the merge.
+    if (historySelected)
+    {
+        uint maxAge = max(pc.gi.maxTemporalAge, 1u);
+        giSetAge(res, min(giAge(res) + 1u, maxAge));
+    }
+
+    storeGIReservoirCompute(region, pixelLinear, pixelCount, res);
+}
