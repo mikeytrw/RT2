@@ -123,13 +123,18 @@ Vulkan serializes them in submission order.
 RT2Layer::OnDetach()
   └─ RendererGPU::Destroy()
        ├─ vkDeviceWaitIdle()
-       ├─ SceneResources::Destroy()    — AS, buffers, textures
        ├─ NRD::Destroy()
-       ├─ PathTracePass::Destroy()     — pipeline, SBT, descriptor sets
-       ├─ RasterPass::Destroy()
-       ├─ ReSTIRPass::Destroy()
+       ├─ ReSTIRPass::Destroy()           — DI compute pipelines
+       ├─ Reservoirs::Destroy()           — DI reservoir buffers
+       ├─ ReSTIRGIPass::Destroy()         — GI compute pipelines (temporal + history)
+       ├─ GIReservoirs::Destroy()         — GI monolithic buffer
+       ├─ PathTracePass::Destroy()        — pipeline, SBT, descriptor sets
        ├─ ComposePass::Destroy()
-       └─ FrameContext::Destroy() x2   — command pools, fences
+       ├─ TonemapPass::Destroy()
+       ├─ RasterPass::Destroy()
+       ├─ GBufferDebugPass::Destroy()
+       ├─ SceneResources::Destroy()       — AS, buffers, textures
+       └─ FrameContext::Destroy() x2      — command pools, fences
 
 Application::Shutdown()
   ├─ vkDeviceWaitIdle()

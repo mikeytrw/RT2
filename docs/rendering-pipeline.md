@@ -18,11 +18,18 @@ RendererGPU::Render(camera)
   │    ├─ B. UBO updates (camera + NRD via vkCmdUpdateBuffer)
   │    ├─ C. Transform buffer advance (current ← prev)
   │    ├─ D. Raster G-buffer pass (or G-buffer debug)
-  │    ├─ E. ReSTIR temporal pass      [if ReSTIR enabled]
-  │    ├─ F. ReSTIR spatial pass       [if ReSTIR enabled]
-  │    ├─ G. RT shading pass            [or G-buffer debug bypass]
-  │    ├─ H. NRD denoise + compose      [if NRD enabled]
-  │    └─ I. Output image layout transition
+  │    ├─ E. ReSTIR DI temporal pass      [if ReSTIR DI enabled]
+  │    ├─ F. ReSTIR DI spatial pass       [if ReSTIR DI enabled]
+  │    ├─ G. ReSTIR GI temporal pass      [if ReSTIR GI enabled]
+  │    │    - fresh candidate + temporal reuse (prev reservoir + prev
+  │    │      receiver history → current reservoir)
+  │    ├─ H. ReSTIR GI history-write pass [if ReSTIR GI enabled]
+  │    │    - G-buffer → current receiver history (separate dispatch,
+  │    │      runs after temporal reads finish to avoid history race)
+  │    ├─ I. RT shading pass               [or G-buffer debug bypass]
+  │    ├─ J. NRD denoise + compose          [if NRD enabled]
+  │    ├─ K. Tonemap pass                   [separate compute dispatch]
+  │    └─ L. Output image layout transition
   └─ 4. Submit (fence signaled, non-blocking)
 ```
 
@@ -46,8 +53,9 @@ vkCmdUpdateBuffer(m_CameraUBO, &m_CameraUBOData)
   - inverseProjection, inverseView, viewToClip, viewToClipPrev
   - worldToView, worldToViewPrev
 
-vkCmdUpdateBuffer(m_NRDUBO, &nrdUniformData)
-  - nrdEnabled, lobeDither mode
+vkCmdUpdateBuffer(m_NRDUBO, &nrdUniformData)  // SINRDUniformData, 16 bytes
+  - nrdEnabled, lobeDither
+  - restirGIEnabled, restirGIReservoirIndex  (spare fields repurposed for GI)
 ```
 
 ## Step C: Transform Buffer Advance
@@ -89,7 +97,7 @@ clip-space position), and motion vectors (reprojection of prev-world-pos).
 
 **Barrier after**: G-buffer images transition to SHADER_READ for RT pass.
 
-## Step E: ReSTIR Temporal Pass
+## Step E: ReSTIR DI Temporal Pass
 
 ```
 vkCmdBindPipeline (restir_temporal.comp)
@@ -110,7 +118,7 @@ Writes to:
 
 **Barrier after**: reservoirScratch → SHADER_READ for spatial pass.
 
-## Step F: ReSTIR Spatial Pass
+## Step F: ReSTIR DI Spatial Pass
 
 ```
 vkCmdBindPipeline (restir_spatial.comp)
@@ -129,7 +137,56 @@ Writes to:
 
 **Barrier after**: reservoirHistory → SHADER_READ for RT pass.
 
-## Step G: RT Shading Pass
+## Step G: ReSTIR GI Temporal Pass
+
+```
+vkCmdBindPipeline (restir_gi_temporal.comp)
+vkCmdBindDescriptorSets (set 0: scene + GI buffer, set 1: G-buffer)
+vkCmdPushConstants (SIGIPushConstants: freshCandidateCount, temporalMCap,
+                    maxTemporalAge, thresholds, frameIndex, jitter)
+vkCmdDispatch ((width + 15) / 16, (height + 15) / 16, 1)
+```
+
+ReSTIR GI requires raster-first G-buffer but does NOT require ReSTIR DI.
+The GI buffer (binding 11) holds four regions ping-ponging by frame parity:
+reservoir A/B and receiver history prev/cur.
+
+The temporal dispatch reads:
+- G-buffer images (world pos, normal, viewZ, material, UV)
+- previous reservoir region (last frame's GI samples)
+- previous receiver history region (last frame's receiver metadata)
+- TLAS via `GL_EXT_ray_query` (compute-stage ray queries for fresh
+  candidate generation and history re-evaluation)
+
+It writes:
+- current reservoir region only (never touches current receiver history)
+
+Each pixel generates `freshCandidateCount` cosine-weighted diffuse directions,
+traces them with ray queries, evaluates `Lo` (environment miss / emissive hit
+/ secondary NEE), and canonically merges with re-evaluated history.
+
+**Barrier after**: current reservoir → SHADER_READ for RT pass; current
+receiver history → SHADER_WRITE for the history-write dispatch.
+
+## Step H: ReSTIR GI History-Write Pass
+
+```
+vkCmdBindPipeline (restir_gi_history.comp)
+vkCmdBindDescriptorSets (set 0, set 1)
+vkCmdPushConstants (same SIGIPushConstants)
+vkCmdDispatch ((width + 15) / 16, (height + 15) / 16, 1)
+```
+
+A separate lightweight dispatch writes the current receiver history region
+from G-buffer data only — no ray queries, no reads of other pixels' history.
+It runs AFTER the temporal dispatch finishes to avoid a read/write race on
+the shared receiver-history region. The temporal dispatch reads previous
+history; this dispatch writes current history.
+
+**Barrier after**: current receiver history → SHADER_READ for next frame's
+temporal dispatch.
+
+## Step I: RT Shading Pass
 
 ```
 vkCmdBindPipeline (VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR)
@@ -143,21 +200,28 @@ Two raygen modes (selected by SBT offset):
 - **raygen.rgen** (RT-primary): traces full camera rays, no G-buffer read
 
 **Closest-hit shader** does:
-1. Fetch vertex attributes (position, UV, tangent) via combined buffers
-   *(post-refactor: via per-mesh vertex/index buffers + gl_PrimitiveID)*
+1. Fetch vertex attributes via indexed buffers (position, UV) using
+   `gl_PrimitiveID` → index buffer → vertex buffer
 2. Transform to world space via instance transform matrix
 3. Sample material textures (base color, metallicRoughness, normal, emissive)
 4. Evaluate GGX BRDF + NEE (with optional ReSTIR DI from reservoirHistory)
 5. Trace shadow ray (shadow.rmiss / shadow.rahit)
 6. Russian roulette + recursive traceRayEXT (up to maxBounces)
 
+**ReSTIR GI consumption**: when the primary scatter selects the diffuse lobe
+and `restirGIEnabled` is set, `secondary_raygen.rgen` loads the current GI
+reservoir and uses its stored `Lo` / `hitT` / `W` directly — no GI retrace is
+issued. The contribution is divided by the diffuse-lobe selection probability
+to preserve the one-lobe mixture estimator. Specular/transmission lobes and
+invalid-reservoir fallbacks use the existing recursive BSDF path.
+
 **Output** (raster-first path): writes to G-buffer diff/spec radiance images
-(for NRD) + output image (beauty). Emissive pixels bypass NRD.
+(for NRD) + output image (beauty, linear HDR). Emissive pixels bypass NRD.
 
-**Barrier after**: output image → SHADER_READ for compose; G-buffer diff/spec
-→ SHADER_READ for NRD.
+**Barrier after**: output image → SHADER_READ for compose/tonemap; G-buffer
+diff/spec → SHADER_READ for NRD.
 
-## Step H: NRD Denoise + Compose
+## Step J: NRD Denoise + Compose
 
 ### NRD
 
@@ -170,7 +234,7 @@ NRDWrapper::Denoise(cmd, ...)
 ```
 
 NRD reads: gNormalRoughness, gViewZ, gMotion, gDiffRadiance, gSpecRadiance
-Writes: denoised diffuse + specular radiance
+Writes: denoised diffuse + specular radiance (NRD_DIFF_OUT, NRD_SPEC_OUT)
 
 ### Compose
 
@@ -181,14 +245,27 @@ vkCmdDispatch (width / 8, height / 8, 1)
 ```
 
 Compose reads NRD's denoised output, remodulates with material albedo/F0
-(removed before denoising to reduce noise), adds direct emission, applies
-tone mapping, writes final color to output image.
+(removed before denoising to reduce noise), adds direct emission, and writes
+linear HDR color to the output image. Tone mapping is NOT done here — it is
+a separate pass (Step K).
 
-## Step I: Output Transition
+## Step K: Tonemap Pass
+
+```
+vkCmdBindPipeline (tonemap.comp)
+vkCmdDispatch (width / 8, height / 8, 1)
+```
+
+A dedicated compute dispatch reads the linear HDR output image and writes
+tone-mapped display color to the display image. Splitting tonemap from
+compose keeps the linear output available for debug views and future
+upscalers (FSR 2 / DLSS) that operate on linear HDR input.
+
+## Step L: Output Transition
 
 ```
 vkCmdPipelineBarrier:
-  output image: SHADER_WRITE → SHADER_READ (for ImGui viewport display)
+  display image: SHADER_WRITE → SHADER_READ (for ImGui viewport display)
 ```
 
 ---
@@ -202,8 +279,8 @@ boundaries:
 |--------|-----------------|
 | Frame | Total GPU frame time |
 | Raster | G-buffer pass (vertex + fragment) |
-| ReSTIRTemporal | Temporal candidate + reuse dispatch |
-| ReSTIRSpatial | Spatial neighbor reuse dispatch |
+| ReSTIRTemporal | DI temporal + GI temporal candidate/reuse dispatch |
+| ReSTIRSpatial | DI spatial neighbor reuse dispatch |
 | RTShading | Ray tracing dispatch (secondary rays + bounces) |
 | NRD | NRD denoise passes |
 | Compose | Compose compute dispatch |
@@ -212,12 +289,30 @@ boundaries:
 
 ## G-buffer Debug Mode
 
-When `gbufferDebugMode >= 0`, the pipeline runs Raster → ReSTIR (temporal +
-spatial) → G-buffer debug dispatch. ReSTIR runs before the debug dispatch
-because the ReSTIR reservoir debug view needs reservoirs to exist. The debug
-pass replaces the RT shading + NRD + Compose stages — `gbuffer_debug.comp`
-visualizes a selected G-buffer channel (or ReSTIR reservoir data) directly
-to the output image.
+When `gbufferDebugMode >= 0`, `gbuffer_debug.comp` visualizes a selected
+G-buffer channel, ReSTIR DI/GI reservoir, or packed NRD input directly to the
+output image. Two execution paths exist:
+
+- **Modes 0-18** (G-buffer + ReSTIR reservoirs): the pipeline runs Raster →
+  ReSTIR DI (temporal + spatial) → ReSTIR GI (temporal + history) → debug
+  dispatch. ReSTIR runs before the debug dispatch because the reservoir debug
+  views need reservoirs to exist. This path replaces RT shading + NRD +
+  Compose + Tonemap.
+
+- **Modes 19-21** (packed NRD inputs): the pipeline runs Raster → ReSTIR →
+  RT shading → debug dispatch. These modes inspect diff/spec radiance after
+  the RT dispatch writes them, so they require the RT pass to run first.
+  Replaces NRD + Compose + Tonemap.
+
+Mode index reference (defined in `gbuffer_debug.comp`):
+
+| Mode | View |
+|---|---|
+| 0-10 | G-buffer channels: normal, roughness, viewZ, motion, albedo, F0, direct emission, world pos, geo normal, UV, material index |
+| 11 | ReSTIR DI reservoir |
+| 12-18 | ReSTIR GI: direction, Lo, hitT, M/Age, fresh vs history, validity, weight W |
+| 19-20 | Packed NRD diffuse / specular input |
+| 21 | ReSTIR DI normalization weight W |
 
 ---
 

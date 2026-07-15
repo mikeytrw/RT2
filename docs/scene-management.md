@@ -6,7 +6,7 @@ How scenes are represented, loaded, and synced to the GPU.
 
 ## Scene Representation
 
-### ECSScene (sole representation, post-refactor)
+### ECSScene (sole representation)
 
 ```
 ECSScene
@@ -17,10 +17,8 @@ ECSScene
   └─ SceneCamera           camera
 ```
 
-The legacy `Scene` class (flat `SceneMesh` array) is being removed. ECSScene
-is the only scene representation. `SceneMaterial`, `SceneTexture`, and
-`SceneCamera` are shared POD structs defined in `Scene.h` (to be moved to
-their own header during refactor).
+ECSScene is the only scene representation. `SceneMaterial`, `SceneTexture`, and
+`SceneCamera` are shared POD structs defined in `Scene.h`.
 
 ### ECS Components
 
@@ -28,7 +26,7 @@ their own header during refactor).
 |-----------|--------|---------|
 | `Transform` | translation (vec3), rotation (quat), scale (vec3), worldMatrix (mat4), prevWorldMatrix (mat4), dirty (bool) | Local TRS + computed world matrix |
 | `Hierarchy` | parent (entity), children (vector<entity>) | Parent-child relationship for scene graph |
-| `MeshRef` | meshIndex (uint32), materialIndex (int) | Reference to MeshRegistry entry + material |
+| `MeshRef` | meshIndex (uint32), materialIndex (int, -1 = use per-triangle material indices) | Reference to MeshRegistry entry + material |
 | `LightComponent` | color, intensity, range, direction, innerCone, outerCone | Point/spot light (CPU-side, not emissive triangles) |
 | `CameraComponent` | verticalFOV, aperture, focusDistance, forwardDirection | Camera metadata for scene file round-tripping |
 | `NameComponent` | name (string) | Entity name for outliner display |
@@ -49,8 +47,7 @@ MeshData
   └─ string           name       — for debugging
 ```
 
-Tangents are NOT stored — they are computed in the shader from UV gradients
-(or in `GPUSceneData` pre-processing, post-refactor: computed in shader).
+Tangents are NOT stored — they are computed in the shader from UV gradients.
 
 ---
 
@@ -93,9 +90,9 @@ SceneLoader::LoadObjIntoECS(ecsScene, filepath)
 
 **Note**: OBJ merging all geometry into one mesh eliminates per-material BLAS
 proliferation (San Miguel: 1722 shapes → 1 BLAS). Per-triangle material
-assignment is lost (all geometry uses material 0). Future improvement: add a
-per-triangle material index buffer so the shader can look up materials per
-primitive without needing separate BLASes.
+indices are used so each primitive looks up its material independently —
+the OBJ loader sets `materialIndex = -1` to indicate per-triangle materials.
+glTF loaders set explicit material overrides per primitive.
 
 ### Import (merge into existing scene)
 
@@ -141,8 +138,7 @@ SceneManager::SyncToGPU()
   ├─ UpdateWorldTransforms()
   ├─ BuildGPUSceneDataFromECS(ecsScene)  → GPUSceneData
   │    ├─ Copy textures + materials (convert to GPUMaterial)
-  │    ├─ For each mesh: copy vertices + indices
-  │    │   (post-refactor: also copy normals + UVs as per-vertex buffers)
+  │    ├─ For each mesh: copy vertices + indices + normals + UVs as per-vertex buffers
   │    ├─ For each entity with MeshRef: create GPUInstance (worldMatrix, meshIndex, materialIndex)
   │    └─ Collect emissive triangles → GPUTriangleLight list
   ├─ Append env map texture + build CDFs

@@ -2,6 +2,15 @@
 
 ## Status and Intent
 
+**Implementation status**: Phases 0-2 are complete (see git history:
+"ReSTIR GI Phase 0-2 + ReSTIR DI fallback + HDR env map fix" and
+"Fix ReSTIR NRD stability during camera motion"). Phase 3 (NRD integration
+and optimization) is partially done; Phase 4 (spatial reuse) and Phase 5
+(rough-specular GI) remain future work. This document now also serves as the
+design reference for the implemented system — sections that describe the
+shipped layout are marked "Implemented" where they diverge from the original
+plan.
+
 This document defines an implementation-ready, temporal-first prototype for
 one-bounce diffuse global illumination in RT2.
 
@@ -234,9 +243,11 @@ difficult.
 
 ### Receiver History
 
-Reuse the existing 32-byte `SISurfaceHistory` layout, but allocate a GI-owned
-history region because the DI pass overwrites its own surface history before
-the GI pass executes.
+Reuse the existing 32-byte `SISurfaceHistory` layout, but allocate **two**
+GI-owned history regions (prev/cur), because the DI pass overwrites its own
+surface history before the GI pass executes, and because the GI temporal
+dispatch reads previous history while a separate second dispatch writes
+current history — a single region would race.
 
 ```c
 // Existing 32-byte layout.
@@ -255,45 +266,53 @@ randomized current scatter direction.
 Set 0's texture array at binding 18 is variable descriptor count and must
 remain the highest binding. Therefore do not add bindings 19-21.
 
-Use the currently unused set-0 binding 11:
+Use the set-0 binding 11 (implemented as `SI_BINDING_GI_DATA = 11`):
 
 ```c
 #define SI_BINDING_GI_DATA 11
 ```
 
-One storage buffer contains three aligned regions:
+**Implemented layout** — one storage buffer contains four aligned regions:
 
 ```text
-reservoir A       pixelCount * 48 bytes
-reservoir B       pixelCount * 48 bytes
-receiver history  pixelCount * 32 bytes
+reservoir A            pixelCount * 48 bytes
+reservoir B            pixelCount * 48 bytes
+receiver history prev  pixelCount * 32 bytes
+receiver history cur   pixelCount * 32 bytes
 ```
 
-Reservoir A/B ping-pong by frame parity. Shader helpers calculate region
-offsets in `uvec4` units, so internal region starts need 16-byte alignment.
-`minStorageBufferOffsetAlignment` applies only if the implementation later
-binds regions through nonzero or dynamic descriptor offsets; it is not needed
-for manual indexing through one whole-buffer descriptor.
+Reservoir A/B and receiver-history prev/cur ping-pong by frame parity
+(`giFrameIndex & 1` selects current, `^1` selects previous). Two
+receiver-history regions are required because the temporal dispatch reads
+previous history while a separate `restir_gi_history.comp` dispatch writes
+current history after all temporal reads finish — a single combined dispatch
+would race on the shared region.
+
+Shader helpers calculate region offsets in `uvec4` units, so internal region
+starts need 16-byte alignment. `minStorageBufferOffsetAlignment` applies only
+if the implementation later binds regions through nonzero or dynamic
+descriptor offsets; it is not needed for manual indexing through one
+whole-buffer descriptor.
 
 This layout is legal with the existing variable texture array and requires
 only one descriptor write.
 
 ### Memory Cost
 
-The baseline is 128 bytes per full-resolution pixel:
+**Implemented baseline** is 160 bytes per full-resolution pixel:
 
 ```text
-2 * 48-byte reservoirs + 32-byte receiver history = 128 bytes/pixel
+2 * 48-byte reservoirs + 2 * 32-byte receiver histories = 160 bytes/pixel
 ```
 
 | Resolution | Decimal | Binary |
 |---|---:|---:|
-| 1920 x 1080 | 265.42 MB | 253.13 MiB |
-| 3840 x 2160 | 1061.68 MB | 1012.50 MiB (0.99 GiB) |
+| 1920 x 1080 | 331.78 MB | 316.41 MiB |
+| 3840 x 2160 | 1327.10 MB | 1266.30 MiB (1.24 GiB) |
 
-A future 32-byte packed reservoir reduces this to 96 bytes/pixel, which is
-still 199.07 MB / 189.84 MiB at 1080p. Half-resolution baseline GI uses one
-quarter of the full-resolution storage, approximately 63.3 MiB at 1080p
+A future 32-byte packed reservoir reduces this to 128 bytes/pixel, which is
+still 265.42 MB / 253.13 MiB at 1080p. Half-resolution baseline GI uses one
+quarter of the full-resolution storage, approximately 79.1 MiB at 1080p
 output.
 
 ## Shader and Pipeline Interfaces
@@ -531,29 +550,30 @@ Compose remains a remodulation pass. Tonemapping remains a separate pass.
 
 ### New Files
 
-| File | Purpose |
-|---|---|
-| `RT2App/shaders/restir_gi_shared.glsl` | GI reservoir access, streaming, target and validation helpers |
-| `RT2App/shaders/restir_gi_temporal.comp` | Fresh generation and temporal reuse |
-| `RT2App/shaders/restir_gi_bindings.glsl` | GI buffer, TLAS, scene and G-buffer declarations |
-| `RT2App/shaders/ray_query_scene.glsl` | Shared ray-query hit reconstruction and alpha traversal |
-| `RT2App/src/ReservoirGIResources.h/.cpp` | Monolithic GI buffer allocation, aligned region layout and clears |
-| `RT2App/src/ReSTIRGIPass.h/.cpp` | GI compute pipeline and dispatch |
+| File | Purpose | Status |
+|---|---|---|
+| `RT2App/shaders/restir_gi_shared.glsl` | GI reservoir access, streaming, target and validation helpers | Implemented |
+| `RT2App/shaders/restir_gi_temporal.comp` | Fresh generation and temporal reuse (reads prev reservoir + prev history, writes current reservoir) | Implemented |
+| `RT2App/shaders/restir_gi_history.comp` | Receiver-history write (G-buffer → current history); separate dispatch to avoid history race | Implemented (split from temporal) |
+| `RT2App/shaders/restir_gi_bindings.glsl` | GI buffer, TLAS, scene and G-buffer declarations | Implemented |
+| `RT2App/shaders/ray_query_scene.glsl` | Shared ray-query hit reconstruction and alpha traversal | Implemented |
+| `RT2App/src/ReservoirGIResources.h/.cpp` | Monolithic GI buffer allocation, aligned region layout and clears | Implemented |
+| `RT2App/src/ReSTIRGIPass.h/.cpp` | GI compute pipelines (temporal + history-write) and dispatch | Implemented |
 
 ### Files to Modify
 
-| File | Changes |
-|---|---|
-| `RT2App/shaders/shader_interface.h` | Add binding 11, `SIGIReservoir` and `SIGIPushConstants`; name the spare NRD UBO fields |
-| `RT2App/src/PathTracePass.cpp` | Add binding 11, add compute visibility to TLAS, write the GI descriptor |
-| `RT2App/src/RenderSettings.h` | Add GI controls |
-| `RT2App/src/RendererGPU.h/.cpp` | Own GI resources/pass, update settings and centralized invalidation |
-| `RT2App/src/FrameRenderer.h/.cpp` | Dispatch GI, update GI UBO controls, and add barriers |
-| `RT2App/shaders/secondary_raygen.rgen` | Consume stored diffuse GI payload with lobe-probability compensation |
-| `RT2App/shaders/scatter_shared.glsl` | Expose diffuse-only BRDF and lobe-probability helpers |
-| `RT2App/src/WalnutApp.cpp` | Add GI controls and debug views |
-| `RT2Tests/src/GpuSceneDataTests.cpp` | Add layout/size assertions |
-| Shader build configuration | Compile the new compute shader/includes |
+| File | Changes | Status |
+|---|---|---|
+| `RT2App/shaders/shader_interface.h` | Add binding 11, `SIGIReservoir` and `SIGIPushConstants`; name the spare NRD UBO fields | Implemented |
+| `RT2App/src/PathTracePass.cpp` | Add binding 11, add compute visibility to TLAS, write the GI descriptor | Implemented |
+| `RT2App/src/RenderSettings.h` | Add GI controls | Implemented |
+| `RT2App/src/RendererGPU.h/.cpp` | Own GI resources/pass, update settings and centralized invalidation | Implemented |
+| `RT2App/src/FrameRenderer.h/.cpp` | Dispatch GI (temporal + history-write), update GI UBO controls, add barriers | Implemented |
+| `RT2App/shaders/secondary_raygen.rgen` | Consume stored diffuse GI payload with lobe-probability compensation | Implemented |
+| `RT2App/shaders/scatter_shared.glsl` | Expose diffuse-only BRDF and lobe-probability helpers | Implemented |
+| `RT2App/src/WalnutApp.cpp` | Add GI controls and debug views | Implemented |
+| `RT2Tests/src/GpuSceneDataTests.cpp` | Add layout/size assertions | Implemented |
+| Shader build configuration | Compile the new compute shader/includes | Implemented |
 
 Do not add bindings above the variable-count texture binding. Do not add RT
 push constants solely for GI enable/parity.
@@ -585,7 +605,7 @@ Useful debug views:
 
 ## Implementation Phases
 
-### Phase 0: Infrastructure
+### Phase 0: Infrastructure — DONE
 
 Goal: allocate legal resources and create an idle pipeline with no visual
 change.
@@ -601,7 +621,7 @@ change.
 9. Compile shaders, build and run the complete current test suite.
 10. Confirm no validation-layer warnings and no visual change while disabled.
 
-### Phase 1: Fresh-Only Correctness
+### Phase 1: Fresh-Only Correctness — DONE
 
 Goal: establish a correct one-sample estimator before temporal reuse.
 
@@ -620,7 +640,7 @@ Goal: establish a correct one-sample estimator before temporal reuse.
 Phase 1 is not complete until environment-only, emissive-only, textured,
 normal-mapped, alpha-cutout and moving-light scenes behave correctly.
 
-### Phase 2: Temporal Reuse
+### Phase 2: Temporal Reuse — DONE
 
 Goal: reuse the previous sample without changing the estimator's sample
 identity.
@@ -634,7 +654,7 @@ identity.
 6. Exercise every invalidation path.
 7. Profile two radiance queries plus secondary shadow queries separately.
 
-### Phase 3: NRD Integration and Optimization
+### Phase 3: NRD Integration and Optimization — IN PROGRESS
 
 Goal: integrate the stable estimator with denoising and remove avoidable work.
 
@@ -675,14 +695,25 @@ out of the initial diffuse implementation.
 
 | Producer | Consumer | Resource | Required dependency |
 |---|---|---|---|
-| Raster G-buffer | GI compute | Primary G-buffer images | Raster/image writes -> compute shader reads |
+| Raster G-buffer | GI temporal compute | Primary G-buffer images | Raster/image writes -> compute shader reads |
 | GI history clear | GI compute | Monolithic GI buffer | Transfer writes -> compute reads/writes |
-| Previous frame | GI compute | Previous reservoir/history regions | Queue/frame ordering plus compute read visibility |
-| GI compute | RT shading | Current reservoir region | Compute shader writes -> ray-tracing shader reads |
+| Previous frame | GI temporal compute | Previous reservoir + previous receiver-history regions | Queue/frame ordering plus compute read visibility |
+| GI temporal compute | RT shading | Current reservoir region | Compute shader writes -> ray-tracing shader reads |
+| GI temporal compute | GI history-write compute | Current reservoir region (read) + current receiver-history region (write) | Compute writes -> compute read; compute read -> compute write (between-barrier in `FrameRenderer::RecordReSTIRGIPass`) |
+| GI history-write compute | Next frame GI temporal | Current receiver-history region | Compute writes -> compute reads (next frame) |
 | RT shading | NRD | Diffuse/specular NRD inputs | Existing RT writes -> compute reads |
 
 The DI-spatial-to-GI ordering is part of frame scheduling, but GI does not
 need a DI-reservoir memory dependency because it does not read DI output.
+
+The implemented barrier sequence in `FrameRenderer::RecordReSTIRGIPass` is:
+1. Pre-barrier: prev reservoir + prev history → compute read; current
+   reservoir → compute write.
+2. Dispatch `restir_gi_temporal.comp`.
+3. Between-barrier: current reservoir (compute write → RT read); current
+   receiver history (shader read → compute write).
+4. Dispatch `restir_gi_history.comp`.
+5. Post-barrier: current receiver history (compute write → next-frame read).
 
 ## Risk Assessment
 
