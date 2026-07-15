@@ -208,6 +208,19 @@ Two raygen modes (selected by SBT offset):
 5. Trace shadow ray (shadow.rmiss / shadow.rahit)
 6. Russian roulette + recursive traceRayEXT (up to maxBounces)
 
+Conventional NEE samples either the emissive-triangle family or the environment
+family. Its proposal PDF includes that family-selection probability. NEE
+evaluates the diffuse BRDF only, so ordinary MIS competes against
+`P_diffuse * pdfDiffuse`; specular and transmission continuations retain their
+full terminal contribution. The raster-first NRD joint-lobe estimator instead
+competes with its full mixture PDF and carries the diffuse MIS weight separately
+so the reconstructed specular signal is not attenuated.
+
+When ReSTIR DI is enabled, its reservoir is the complete primary diffuse direct
+estimator. BSDF-sampled primary diffuse hits on both the environment and
+emissive triangles are suppressed, while primary specular transport and all
+later-bounce conventional NEE remain active.
+
 **ReSTIR GI consumption**: when the primary scatter selects the diffuse lobe
 and `restirGIEnabled` is set, `secondary_raygen.rgen` loads the current GI
 reservoir and uses its stored `Lo` / `hitT` / `W` directly — no GI retrace is
@@ -236,6 +249,10 @@ NRDWrapper::Denoise(cmd, ...)
 NRD reads: gNormalRoughness, gViewZ, gMotion, gDiffRadiance, gSpecRadiance
 Writes: denoised diffuse + specular radiance (NRD_DIFF_OUT, NRD_SPEC_OUT)
 
+Diffuse/specular radiance is demodulated and remodulated with the same NRD
+material factors. The minimum factor is `0.02`, matching the vendored NRD
+default; the existing demodulated anti-firefly safety clamp remains `100.0`.
+
 ### Compose
 
 ```
@@ -257,7 +274,10 @@ vkCmdDispatch (width / 8, height / 8, 1)
 ```
 
 A dedicated compute dispatch reads the linear HDR output image and writes
-tone-mapped display color to the display image. Splitting tonemap from
+Reinhard-tone-mapped, exact sRGB-encoded color to the UNORM display image.
+Encoding explicitly is required because the display image is a storage image;
+the ImGui/swapchain path expects nonlinear sRGB byte values. The CPU headless
+readback uses the same Reinhard and piecewise sRGB transfer. Splitting tonemap from
 compose keeps the linear output available for debug views and future
 upscalers (FSR 2 / DLSS) that operate on linear HDR input.
 

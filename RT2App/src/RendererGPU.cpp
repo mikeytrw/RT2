@@ -1,4 +1,5 @@
 ﻿#include "RendererGPU.h"
+#include "ColorTransfer.h"
 #include "ShaderManager.h"
 #include "RTLog.h"
 #include "VulkanUtils.h"
@@ -958,21 +959,16 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 		float b = floatData[i * 4 + 2];
 		float a = floatData[i * 4 + 3];
 
-		// Reinhard tonemap + clamp
-		r = r / (1.0f + r);
-		g = g / (1.0f + g);
-		b = b / (1.0f + b);
+		// Keep the CPU readback reference identical to tonemap.comp:
+		// linear HDR -> Reinhard -> exact sRGB OETF -> RGBA8.
+		r = ColorTransfer::Reinhard(r);
+		g = ColorTransfer::Reinhard(g);
+		b = ColorTransfer::Reinhard(b);
 		a = (a > 1.0f) ? 1.0f : (a < 0.0f ? 0.0f : a);
 
-		// sRGB encode (gamma 2.2 approx)
-		auto toSRGB = [](float c) -> uint8_t {
-			if (c <= 0.0031308f) return (uint8_t)(c * 12.92f * 255.0f + 0.5f);
-			return (uint8_t)((1.055f * powf(c, 1.0f / 2.4f) - 0.055f) * 255.0f + 0.5f);
-		};
-
-		outPixelsRGBA8[i * 4 + 0] = toSRGB(r);
-		outPixelsRGBA8[i * 4 + 1] = toSRGB(g);
-		outPixelsRGBA8[i * 4 + 2] = toSRGB(b);
+		outPixelsRGBA8[i * 4 + 0] = ColorTransfer::LinearToSRGB8(r);
+		outPixelsRGBA8[i * 4 + 1] = ColorTransfer::LinearToSRGB8(g);
+		outPixelsRGBA8[i * 4 + 2] = ColorTransfer::LinearToSRGB8(b);
 		outPixelsRGBA8[i * 4 + 3] = (uint8_t)(a * 255.0f + 0.5f);
 	}
 

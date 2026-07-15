@@ -189,10 +189,14 @@ void main()
     // ---- NEE: direct lighting ----
     bool useReSTIR = (camera.up.w > 0.5);
     uint pixelLinear = uint(pixel.y) * width + uint(pixel.x);
+    float transmissionFactor = intBitsToFloat(mat.textureIndices.w);
+    // Raster-first NRD evaluates diffuse and specular from the same
+    // mixture-sampled incident-radiance ray.
+    bool jointLobeEstimator = nrdMode && transmissionFactor <= 0.0 && roughness >= 0.001;
     NEEDispatchResult nee = computeNEE(
         scatter, wo, n, worldPos,
         baseColor, metallic, roughness, ior, mat.alphaMode,
-        vec3(1.0), rngState, useReSTIR, pixelLinear);
+        vec3(1.0), rngState, useReSTIR, jointLobeEstimator, pixelLinear);
 
     vec3 directLighting = nee.radiance;
     float nextBsdfPdf = nee.nextBsdfPdf;
@@ -217,12 +221,10 @@ void main()
     float secondaryHitT = 1e4;
 
     bool giEnabled = (nrdData.restirGIEnabled != 0u);
-    float transmissionFactor = intBitsToFloat(mat.textureIndices.w);
     // Evaluate both primary BRDF lobes from the same mixture-sampled ray. This
     // preserves the one-ray cost while giving NRD a valid diffuse and specular
     // sample at every opaque, non-delta pixel. A sparse specular mask otherwise
     // exposes hit-distance reconstruction as triangle-shaped history in motion.
-    bool jointLobeEstimator = nrdMode && transmissionFactor <= 0.0 && roughness >= 0.001;
     if (giEnabled)
     {
         uint giRegion = nrdData.restirGIReservoirIndex;
@@ -322,7 +324,16 @@ void main()
                 // count that terminal a second time as diffuse indirect.
                 bool directTerminal = payload.e.z > 0.5;
                 if (!(useReSTIR && directTerminal))
-                    diffIndirect = indirectRad * diffuseBrdf * (NdotL / mixturePdf);
+                {
+                    // Values >= 2 carry a separately encoded diffuse MIS
+                    // weight. A marker of 1 means a terminal with no competing
+                    // light technique (for example the fallback sky).
+                    float diffuseMISWeight = payload.e.z >= 2.0
+                        ? clamp(payload.e.z - 2.0, 0.0, 1.0)
+                        : 1.0;
+                    diffIndirect = indirectRad * diffuseBrdf
+                                 * (NdotL / mixturePdf) * diffuseMISWeight;
+                }
                 specIndirect = indirectRad * specularBrdf * (NdotL / mixturePdf);
             }
 

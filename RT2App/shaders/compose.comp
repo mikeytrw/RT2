@@ -78,7 +78,7 @@ vec3 nrdEnvironmentTerm(vec3 Rf0, float NoV, float roughness)
     return clamp(Rf0 * scale + vec3(bias), 0.0, 1.0);
 }
 
-#define NRD_MATERIAL_FACTOR_MIN_SCALE 0.01
+#define NRD_MATERIAL_FACTOR_MIN_SCALE 0.02
 #define NRD_ROUGHNESS_FACTOR_MIN_SCALE 0.1
 
 void nrdMaterialFactors(vec3 N, vec3 V, vec3 albedo, vec3 Rf0, float roughness,

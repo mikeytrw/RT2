@@ -21,9 +21,8 @@ void main()
         // Keep rough-specular environment reflection: there is no competing
         // ReSTIR specular estimator, and scatter attenuation already includes
         // stochastic lobe-selection compensation.
-        bool restirFirstBounce = camera.up.w > 0.5 &&
-                                 uint(payload.b.w) == 1u &&
-                                 bsdfPdf >= 0.0;
+        bool firstBounce = uint(payload.b.w) == 1u;
+        bool restirFirstBounce = camera.up.w > 0.5 && firstBounce && bsdfPdf >= 0.0;
         bool selectedDiffuse = payload.e.x < 0.5;
         bool jointLobeEstimator = payload.e.y > 0.5;
 
@@ -44,7 +43,18 @@ void main()
             float pdfEnv = envMapPdf(dir);
             float pTri = computePTri();
             float weight = bsdfPdf / (bsdfPdf + (1.0 - pTri) * pdfEnv);
-            payload.b.xyz += payload.a.xyz * env * weight;
+            if (jointLobeEstimator && firstBounce)
+            {
+                // The raster-first joint estimator splits the returned
+                // incident radiance into diffuse and specular in raygen. Store
+                // diffuse MIS separately so the specular term remains full.
+                payload.b.xyz += payload.a.xyz * env;
+                payload.e.z = 2.0 + weight;
+            }
+            else
+            {
+                payload.b.xyz += payload.a.xyz * env * weight;
+            }
         }
         else
         {
@@ -62,7 +72,7 @@ void main()
             payload.b.xyz += payload.a.xyz * sky;
         }
     }
-    if (uint(payload.b.w) == 1u)
+    if (uint(payload.b.w) == 1u && payload.e.z < 0.5)
         payload.e.z = 1.0;
     payload.c.w = 1.0; // done
 }

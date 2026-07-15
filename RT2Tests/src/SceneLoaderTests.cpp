@@ -26,6 +26,18 @@ static void cleanupObjTestFiles()
 {
     fs::remove("test_scene.obj");
     fs::remove("test_scene.mtl");
+	fs::remove("test_diffuse.ppm");
+	fs::remove("test_normal.ppm");
+	fs::remove("test_emissive.ppm");
+	fs::remove("test_roughness.ppm");
+}
+
+static void writeObjTestTexture(const char* path, unsigned char value)
+{
+	std::ofstream image(path, std::ios::binary);
+	image << "P6\n1 1\n255\n";
+	const unsigned char pixel[3] = {value, value, value};
+	image.write(reinterpret_cast<const char*>(pixel), sizeof(pixel));
 }
 
 TEST_CASE("OBJ import flips V coordinates and converts legacy MTL shininess")
@@ -64,6 +76,52 @@ TEST_CASE("OBJ import flips V coordinates and converts legacy MTL shininess")
     const float expectedRoughness = std::sqrt(std::sqrt(2.0f / 18.0f));
     CHECK(scene.materials[0].roughness == doctest::Approx(expectedRoughness));
     cleanupObjTestFiles();
+}
+
+TEST_CASE("OBJ import classifies color and data texture color spaces")
+{
+	cleanupObjTestFiles();
+	writeObjTestTexture("test_diffuse.ppm", 128);
+	writeObjTestTexture("test_normal.ppm", 128);
+	writeObjTestTexture("test_emissive.ppm", 128);
+	writeObjTestTexture("test_roughness.ppm", 128);
+
+	{
+		std::ofstream mtl("test_scene.mtl");
+		mtl << "newmtl textured\n"
+		       "Kd 1 1 1\n"
+		       "Ke 1 1 1\n"
+		       "map_Kd test_diffuse.ppm\n"
+		       "norm test_normal.ppm\n"
+		       "map_Ke test_emissive.ppm\n"
+		       "map_Pr test_roughness.ppm\n";
+	}
+	{
+		std::ofstream obj("test_scene.obj");
+		obj << "mtllib test_scene.mtl\n"
+		       "v 0 0 0\n"
+		       "v 1 0 0\n"
+		       "v 0 1 0\n"
+		       "vt 0 0\n"
+		       "vt 1 0\n"
+		       "vt 0 1\n"
+		       "usemtl textured\n"
+		       "f 1/1 2/2 3/3\n";
+	}
+
+	ECSScene scene;
+	REQUIRE(SceneLoader::LoadObjIntoECS(scene, "test_scene.obj"));
+	REQUIRE(scene.materials.size() == 1);
+	const SceneMaterial& material = scene.materials[0];
+	REQUIRE(material.baseColorTextureIndex >= 0);
+	REQUIRE(material.normalTextureIndex >= 0);
+	REQUIRE(material.emissiveTextureIndex >= 0);
+	REQUIRE(material.metallicRoughnessTextureIndex >= 0);
+	CHECK(scene.textures[material.baseColorTextureIndex].isSRGB);
+	CHECK_FALSE(scene.textures[material.normalTextureIndex].isSRGB);
+	CHECK(scene.textures[material.emissiveTextureIndex].isSRGB);
+	CHECK_FALSE(scene.textures[material.metallicRoughnessTextureIndex].isSRGB);
+	cleanupObjTestFiles();
 }
 
 static void cleanupTestFiles()

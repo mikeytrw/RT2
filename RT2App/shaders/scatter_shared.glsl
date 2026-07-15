@@ -52,7 +52,7 @@ struct ScatterResult
     vec3  attenuation;       // throughput attenuation for the scattered ray
     bool  doScatter;         // false = invalid scatter direction (absorb)
     bool  isDelta;           // true = delta path (no NEE, full emission at next hit)
-    float nextBsdfPdf;       // -1 = delta, >= 0 = combined PDF (for MIS at next hit)
+    float nextBsdfPdf;       // -1 = no diffuse-NEE competitor; >= 0 = competing PDF
     float P_s;               // specular lobe selection probability
     float P_d;               // diffuse lobe selection probability
     float lobeType;          // 0 = diffuse, 1 = specular (for NRD routing)
@@ -353,6 +353,8 @@ struct NEEResult
 NEEResult sampleEnvNEE(vec3 wo, vec3 N, vec3 P,
                        vec3 baseColor, float metallic, float roughness,
                        float P_s, float P_d,
+                       float familyProbability,
+                       bool jointLobeEstimator,
                        vec3 throughput, inout uint rngState,
                        bool hasTransmission, float P_refract, float eta)
 {
@@ -383,13 +385,19 @@ NEEResult sampleEnvNEE(vec3 wo, vec3 N, vec3 P,
         return result;
 
     vec3 Le = envS.radiance;
-    float pdfOmega = envS.pdf;
+    // The environment is selected stochastically against triangle lights.
+    // MIS and the estimator denominator must both use the complete proposal.
+    float pdfOmega = familyProbability * envS.pdf;
+    if (pdfOmega <= 0.0)
+        return result;
 
     float alpha = roughnessToAlpha(roughness);
-    float pdfBsdf;
-    if (hasTransmission)
-        pdfBsdf = evalTransmissionBSDFPdf(wo, L, N, P_s, P_refract, P_d, alpha, eta);
-    else
+    // NEE evaluates only the diffuse integrand. Ordinary lobe sampling can
+    // therefore compete only through its diffuse branch. The raster-first NRD
+    // joint estimator evaluates diffuse for every mixture-sampled direction,
+    // so its competing density is the full mixture PDF.
+    float pdfBsdf = P_d * pdfDiffuse(L, N);
+    if (jointLobeEstimator)
         pdfBsdf = evalBSDFPdf(wo, L, N, P_s, P_d, alpha);
 
     float wLight = pdfOmega / (pdfOmega + pdfBsdf);
@@ -404,6 +412,8 @@ NEEResult sampleEnvNEE(vec3 wo, vec3 N, vec3 P,
 NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
                     vec3 baseColor, float metallic, float roughness,
                     float P_s, float P_d,
+                    float familyProbability,
+                    bool jointLobeEstimator,
                     vec3 throughput, inout uint rngState,
                     bool hasTransmission, float P_refract, float eta)
 {
@@ -474,18 +484,16 @@ NEEResult sampleNEE(vec3 wo, vec3 N, vec3 P,
 
     float lightArea = light.emission_area.w;
     float pdfA = (1.0 / float(lightCount)) * (1.0 / lightArea);
-    float pdfOmega = pdfA * (dist * dist) / abs(LNdotL);
+    // Include the stochastic triangle-vs-environment family selection in the
+    // proposal PDF. The BSDF-hit side uses the same effective density.
+    float pdfOmega = familyProbability * pdfA * (dist * dist) / abs(LNdotL);
+    if (pdfOmega <= 0.0)
+        return result;
 
     float alpha = roughnessToAlpha(roughness);
-    float pdfBsdf;
-    if (hasTransmission)
-    {
-        pdfBsdf = evalTransmissionBSDFPdf(wo, L, N, P_s, P_refract, P_d, alpha, eta);
-    }
-    else
-    {
+    float pdfBsdf = P_d * pdfDiffuse(L, N);
+    if (jointLobeEstimator)
         pdfBsdf = evalBSDFPdf(wo, L, N, P_s, P_d, alpha);
-    }
 
     float wLight = pdfOmega / (pdfOmega + pdfBsdf);
     vec3 direct = brdf * Le * NdotL * wLight / pdfOmega;
@@ -599,7 +607,7 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
 // - Transmission material MIS probability recomputation
 // - Diffuse weight check (skip NEE if diffuse lobe is black)
 // - Stochastic NEE selection (triangle OR env, divided by selection prob)
-// - Combined BSDF PDF update for next-hit MIS
+// - Lobe-aware competing BSDF PDF update for next-hit MIS
 //
 // Returns radiance to add to payload.b.xyz and potentially-modified nextBsdfPdf.
 struct NEEDispatchResult
@@ -615,7 +623,7 @@ NEEDispatchResult computeNEE(
     float ior, float alphaMode,
     vec3 throughput,
     inout uint rngState,
-    bool useReSTIR, uint pixelLinear)
+    bool useReSTIR, bool jointLobeEstimator, uint pixelLinear)
 {
     NEEDispatchResult result;
     result.radiance = vec3(0.0);
@@ -686,18 +694,22 @@ NEEDispatchResult computeNEE(
                         NEEResult nee = sampleNEE(wo, n, hitPoint,
                                                   baseColor, metallic, roughness,
                                                   nee_Ps, nee_Pd,
+                                                  pTri,
+                                                  jointLobeEstimator,
                                                   throughput, rngState,
                                                   isTransmissionMat, nee_P_refract, nee_eta);
-                        result.radiance = nee.radiance / pTri;
+                        result.radiance = nee.radiance;
                     }
                     else
                     {
                         NEEResult envNee = sampleEnvNEE(wo, n, hitPoint,
                                                         baseColor, metallic, roughness,
                                                         nee_Ps, nee_Pd,
+                                                        1.0 - pTri,
+                                                        jointLobeEstimator,
                                                         throughput, rngState,
                                                         isTransmissionMat, nee_P_refract, nee_eta);
-                        result.radiance = envNee.radiance / (1.0 - pTri);
+                        result.radiance = envNee.radiance;
                     }
                 }
                 else if (hasTriNee)
@@ -705,6 +717,8 @@ NEEDispatchResult computeNEE(
                     NEEResult nee = sampleNEE(wo, n, hitPoint,
                                               baseColor, metallic, roughness,
                                               nee_Ps, nee_Pd,
+                                              1.0,
+                                              jointLobeEstimator,
                                               throughput, rngState,
                                               isTransmissionMat, nee_P_refract, nee_eta);
                     result.radiance = nee.radiance;
@@ -714,6 +728,8 @@ NEEDispatchResult computeNEE(
                     NEEResult envNee = sampleEnvNEE(wo, n, hitPoint,
                                                     baseColor, metallic, roughness,
                                                     nee_Ps, nee_Pd,
+                                                    1.0,
+                                                    jointLobeEstimator,
                                                     throughput, rngState,
                                                     isTransmissionMat, nee_P_refract, nee_eta);
                     result.radiance = envNee.radiance;
@@ -734,18 +750,22 @@ NEEDispatchResult computeNEE(
                     NEEResult nee = sampleNEE(wo, n, hitPoint,
                                               baseColor, metallic, roughness,
                                               nee_Ps, nee_Pd,
+                                              pTri,
+                                              jointLobeEstimator,
                                               throughput, rngState,
                                               isTransmissionMat, nee_P_refract, nee_eta);
-                    result.radiance = nee.radiance / pTri;
+                    result.radiance = nee.radiance;
                 }
                 else
                 {
                     NEEResult envNee = sampleEnvNEE(wo, n, hitPoint,
                                                     baseColor, metallic, roughness,
                                                     nee_Ps, nee_Pd,
+                                                    1.0 - pTri,
+                                                    jointLobeEstimator,
                                                     throughput, rngState,
                                                     isTransmissionMat, nee_P_refract, nee_eta);
-                    result.radiance = envNee.radiance / (1.0 - pTri);
+                    result.radiance = envNee.radiance;
                 }
             }
             else if (hasTriNee)
@@ -753,6 +773,8 @@ NEEDispatchResult computeNEE(
                 NEEResult nee = sampleNEE(wo, n, hitPoint,
                                           baseColor, metallic, roughness,
                                           nee_Ps, nee_Pd,
+                                          1.0,
+                                          jointLobeEstimator,
                                           throughput, rngState,
                                           isTransmissionMat, nee_P_refract, nee_eta);
                 result.radiance = nee.radiance;
@@ -762,6 +784,8 @@ NEEDispatchResult computeNEE(
                 NEEResult envNee = sampleEnvNEE(wo, n, hitPoint,
                                                 baseColor, metallic, roughness,
                                                 nee_Ps, nee_Pd,
+                                                1.0,
+                                                jointLobeEstimator,
                                                 throughput, rngState,
                                                 isTransmissionMat, nee_P_refract, nee_eta);
                 result.radiance = envNee.radiance;
@@ -769,26 +793,29 @@ NEEDispatchResult computeNEE(
         }
     }
 
-    // Combined BSDF PDF for the scattered direction (for next-hit MIS).
+    // PDF for the continuation technique that competes with diffuse-only NEE.
     if (result.nextBsdfPdf >= 0.0)
     {
         if (!neeUseful)
         {
             result.nextBsdfPdf = -1.0;
         }
-        else if (isTransmissionMat && roughness >= 0.001)
+        else if (jointLobeEstimator)
         {
             float alpha = roughnessToAlpha(roughness);
-            result.nextBsdfPdf = evalTransmissionBSDFPdf(wo, scatter.scatterDir, n,
-                                                          nee_Ps, nee_P_refract, nee_Pd,
-                                                          alpha, nee_eta);
+            result.nextBsdfPdf = evalBSDFPdf(wo, scatter.scatterDir, n,
+                                              nee_Ps, nee_Pd, alpha);
+        }
+        else if (scatter.lobeType < 0.5)
+        {
+            result.nextBsdfPdf = nee_Pd * pdfDiffuse(scatter.scatterDir, n);
         }
         else
         {
-            float alpha = roughnessToAlpha(roughness);
-            float pdfS = pdfVNDF(wo, scatter.scatterDir, n, alpha);
-            float pdfD = pdfDiffuse(scatter.scatterDir, n);
-            result.nextBsdfPdf = nee_Ps * pdfS + nee_Pd * pdfD;
+            // Specular/refraction continuations do not estimate the diffuse
+            // integrand sampled by NEE and therefore have no competing light
+            // technique at their terminal hit.
+            result.nextBsdfPdf = -1.0;
         }
     }
 

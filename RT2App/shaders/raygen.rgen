@@ -61,7 +61,7 @@ void main()
 
         // Initialize payload for recursive path tracing
         // d.w = bsdfPdf (solid-angle): -1.0 = camera ray (delta, full emission),
-        // >= 0 = diffuse bounce (MIS-weighted emission).
+        // >= 0 = a diffuse-capable continuation (MIS-weighted emission).
         // e = NRD primary-hit info, filled by closesthit at depth 0;
         //     e.w == 0 after the trace means the primary ray missed (or hit an
         //     emitter, which returns before the G-buffer capture).
@@ -135,8 +135,8 @@ void main()
             // Demodulate: divide radiance by material factors returned in payload.e
             vec4 albedoLobe = unpackUnorm4x8(floatBitsToUint(payload.e.x));
             vec2 f0rough = unpackUnorm2x16(floatBitsToUint(payload.e.y));
-            vec3 diffFactor = max(albedoLobe.xyz, vec3(0.01));
-            float f0 = max(f0rough.x, 0.01);
+            vec3 diffFactor = max(albedoLobe.xyz, vec3(NRD_MATERIAL_FACTOR_MIN_SCALE));
+            float f0 = max(f0rough.x, NRD_MATERIAL_FACTOR_MIN_SCALE);
             float viewZ = payload.e.z;
             float roughness = f0rough.y;
 

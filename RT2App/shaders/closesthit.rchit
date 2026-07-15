@@ -174,8 +174,8 @@ void main()
 
     // If emissive, add contribution with MIS weight.
     // payload.d.w = bsdfPdf (solid-angle PDF of the incoming ray).
-    //   -1.0 = camera ray or delta/specular bounce → no MIS, full emission.
-    //   >= 0  = diffuse bounce → weight by w_bsdf = bsdfPdf / (bsdfPdf + pdfLight)
+    //   -1.0 = camera or a continuation outside diffuse NEE → full emission.
+    //   >= 0  = a diffuse-capable estimator → balance against light sampling.
     // With stochastic NEE selection, the effective light-sampling PDF for a
     // direction hitting a triangle is P_tri * pdfLight (env NEE can't sample
     // this direction), so the MIS weight becomes:
@@ -218,7 +218,30 @@ void main()
             float pTri = computePTri();
             weight = bsdfPdf / (bsdfPdf + pTri * pdfLight);
         }
-        payload.b.xyz += payload.a.xyz * emissive * weight * boost;
+
+        bool firstBounce = uint(payload.b.w) == 1u;
+        bool selectedDiffuse = payload.e.x < 0.5;
+        bool jointLobeEstimator = payload.e.y > 0.5;
+        bool restirFirstBounce = camera.up.w > 0.5 && firstBounce;
+
+        if (restirFirstBounce && selectedDiffuse && !jointLobeEstimator)
+        {
+            // ReSTIR DI is the complete primary diffuse direct estimator.
+            // Suppress the competing BSDF-sampled emissive terminal, matching
+            // the environment-miss behavior.
+        }
+        else if (jointLobeEstimator && firstBounce)
+        {
+            // Preserve unweighted incident radiance for the later lobe split.
+            // Store the conventional diffuse MIS weight in the terminal marker;
+            // ReSTIR consumes the diffuse component without conventional MIS.
+            payload.b.xyz += payload.a.xyz * emissive * boost;
+            payload.e.z = restirFirstBounce ? 1.0 : 2.0 + weight;
+        }
+        else
+        {
+            payload.b.xyz += payload.a.xyz * emissive * weight * boost;
+        }
         payload.c.w = 1.0;
         return;
     }
@@ -269,7 +292,7 @@ void main()
     NEEDispatchResult nee = computeNEE(
         scatter, wo, n, hitPoint,
         baseColor, metallic, roughness, ior, mat.alphaMode,
-        payload.a.xyz, rngState, false, 0u);
+        payload.a.xyz, rngState, false, false, 0u);
 
     payload.b.xyz += nee.radiance;
 
@@ -300,7 +323,7 @@ void main()
     payload.b.w = float(depth + 1);
 
     // Recursively trace the scattered ray.
-    // d.w = bsdfPdf (solid-angle): -1.0 for specular/delta, cos(θ)/pi for diffuse.
+    // d.w = effective competing BSDF PDF, or -1 when diffuse NEE cannot compete.
     // Offset origin along the shading normal's side of the scatter direction:
     // refraction goes into the surface (dot < 0), so offset by -n; others by +n.
     vec3 offsetN = dot(scatter.scatterDir, n) > 0.0 ? n : -n;
@@ -308,6 +331,10 @@ void main()
     nextPayload.b = vec4(vec3(0.0), float(depth + 1));
     nextPayload.c = vec4(hitPoint + offsetN * 0.001, 0.0);
     nextPayload.d = vec4(normalize(scatter.scatterDir), nextBsdfPdf);
+    // e.x/e.y carry lobe metadata only for the immediate continuation. Always
+    // initialize recursive payloads so stale register contents cannot be
+    // mistaken for the raster-first joint estimator.
+    nextPayload.e = vec4(scatter.lobeType, 0.0, 0.0, 0.0);
 
     traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0,
                 nextPayload.c.xyz, 0.001, nextPayload.d.xyz, 1e9, 0);

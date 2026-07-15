@@ -546,7 +546,7 @@ vec3 nrdEnvironmentTerm(vec3 Rf0, float NoV, float roughness)
 // diffFactor = (1 - Fenv) * albedo, clamped to [MIN_SCALE, 1]
 // specFactor = Fenv * lerp(ROUGHNESS_FACTOR_MIN_SCALE, 1, roughness), clamped to [MIN_SCALE, 1]
 // Both demodulation (before NRD) and remodulation (after NRD) must use the same factors.
-#define NRD_MATERIAL_FACTOR_MIN_SCALE 0.01
+#define NRD_MATERIAL_FACTOR_MIN_SCALE 0.02
 #define NRD_ROUGHNESS_FACTOR_MIN_SCALE 0.1
 
 void nrdMaterialFactors(vec3 N, vec3 V, vec3 albedo, vec3 Rf0, float roughness,
@@ -867,7 +867,7 @@ const float NRD_FIREFLY_CLAMP = 100.0;
 // indirect radiance for the same pixel, so this helper must not erase it.
 void writeNRDDiffuse(ivec2 pixel, vec3 radiance, vec3 diffFactor, float hitT, float viewZ)
 {
-    vec3 demod = clamp(radiance / max(diffFactor, vec3(0.01)),
+    vec3 demod = clamp(radiance / max(diffFactor, vec3(NRD_MATERIAL_FACTOR_MIN_SCALE)),
                        vec3(0.0), vec3(NRD_FIREFLY_CLAMP));
     float normHitT = nrdGetNormHitDist(hitT, viewZ, NRD_HIT_DIST_PARAMS, 1.0);
     vec3 ycocg = linearToYCoCg(demod);
@@ -879,7 +879,7 @@ void writeNRDDiffuse(ivec2 pixel, vec3 radiance, vec3 diffFactor, float hitT, fl
 // opposite signal for the same reason as writeNRDDiffuse.
 void writeNRDSpecular(ivec2 pixel, vec3 radiance, vec3 specFactor, float hitT, float viewZ, float roughness)
 {
-    vec3 demod = clamp(radiance / max(specFactor, vec3(0.01)),
+    vec3 demod = clamp(radiance / max(specFactor, vec3(NRD_MATERIAL_FACTOR_MIN_SCALE)),
                        vec3(0.0), vec3(NRD_FIREFLY_CLAMP));
     float normHitT = nrdGetNormHitDist(hitT, viewZ, NRD_HIT_DIST_PARAMS, roughness);
     vec3 ycocg = linearToYCoCg(demod);

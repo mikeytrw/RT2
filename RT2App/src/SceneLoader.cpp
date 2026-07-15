@@ -1740,7 +1740,7 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
 
     // Load textures
     int texBase = (int)ecsScene.textures.size();
-    auto loadTexture = [&](const std::string& texName) -> int {
+    auto loadTexture = [&](const std::string& texName, bool isSRGB) -> int {
         if (texName.empty()) return -1;
         fs::path texPath = fs::path(baseDir) / texName;
         if (!fs::exists(texPath)) return -1;
@@ -1759,7 +1759,9 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
         tex.height = h;
         tex.channels = 4;
         tex.pixels.assign(pixels, pixels + (size_t)w * h * 4);
-        tex.isSRGB = true;
+        // Color textures are decoded through an sRGB image format. Data
+        // textures must preserve their stored numeric values.
+        tex.isSRGB = isSRGB;
         stbi_image_free(pixels);
 
         int idx = (int)ecsScene.textures.size();
@@ -1777,13 +1779,13 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
         auto& mat = ecsScene.materials[matIdx];
 
         if (!materials[mi].diffuse_texname.empty())
-            { int ti = loadTexture(materials[mi].diffuse_texname); if (ti >= 0) { mat.baseColorTextureIndex = ti; texCount++; } }
+            { int ti = loadTexture(materials[mi].diffuse_texname, true); if (ti >= 0) { mat.baseColorTextureIndex = ti; texCount++; } }
         if (!materials[mi].normal_texname.empty())
-            { int ti = loadTexture(materials[mi].normal_texname); if (ti >= 0) { mat.normalTextureIndex = ti; texCount++; } }
+            { int ti = loadTexture(materials[mi].normal_texname, false); if (ti >= 0) { mat.normalTextureIndex = ti; texCount++; } }
         if (!materials[mi].emissive_texname.empty())
-            { int ti = loadTexture(materials[mi].emissive_texname); if (ti >= 0) { mat.emissiveTextureIndex = ti; texCount++; } }
+            { int ti = loadTexture(materials[mi].emissive_texname, true); if (ti >= 0) { mat.emissiveTextureIndex = ti; texCount++; } }
         if (!materials[mi].roughness_texname.empty())
-            { int ti = loadTexture(materials[mi].roughness_texname); if (ti >= 0) { mat.metallicRoughnessTextureIndex = ti; texCount++; } }
+            { int ti = loadTexture(materials[mi].roughness_texname, false); if (ti >= 0) { mat.metallicRoughnessTextureIndex = ti; texCount++; } }
     }
     printf("[SceneLoader] OBJ: %d textures loaded\n", texCount);
     fflush(stdout);
