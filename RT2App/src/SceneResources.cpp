@@ -256,7 +256,9 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 	RT_LOG("[RebuildAS] creating light buffer");
 	CreateLightBuffer(dev);
 	RT_LOG("[RebuildAS] creating instance transform buffer");
-	CreateInstanceTransformBuffer(dev);
+	// Instance indices from the old scene do not correspond to this rebuilt
+	// scene, so initialize both motion-vector transform buffers from the new data.
+	CreateInstanceTransformBuffer(dev, false);
 
 	m_NeedsASRebuild = false;
 	m_ASJustBuilt = true;
@@ -299,7 +301,7 @@ void SceneResources::UpdateInstances(const GpuDevice& dev, const GPUSceneData& s
 		m_AS.RebuildTLASOnly(cmd, instances, instanceMeshIndices);
 	});
 
-	CreateInstanceTransformBuffer(dev);
+	CreateInstanceTransformBuffer(dev, true);
 	CreateLightBuffer(dev);
 
 	RT_LOG("[UpdateInstances] done: instances=%d lights=%d",
@@ -360,16 +362,16 @@ void SceneResources::CreateLightBuffer(const GpuDevice& dev)
 	RT_LOG("[RT2] Light buffer: %d lights, totalArea=%f", lightCount, totalArea);
 }
 
-void SceneResources::CreateInstanceTransformBuffer(const GpuDevice& dev)
+void SceneResources::CreateInstanceTransformBuffer(const GpuDevice& dev, bool preservePrevious)
 {
-	// Save old current as new prev BEFORE destroying either buffer.
-	// The previous frame's transforms are needed for motion vectors (NRD).
-	// Destroy the old prev buffer (no longer needed), then move current→prev.
-	GpuResources::DestroyBuffer(dev, m_InstanceTransformPrevBuffer, m_InstanceTransformPrevBufferMemory);
-	m_InstanceTransformPrevBuffer = m_InstanceTransformBuffer;
-	m_InstanceTransformPrevBufferMemory = m_InstanceTransformBufferMemory;
+	// Keep the old current allocation only when it is valid previous-frame data.
+	// Full scene rebuilds must not carry transform history across scene domains.
+	VkBuffer oldCurrentBuffer = m_InstanceTransformBuffer;
+	VkDeviceMemory oldCurrentMemory = m_InstanceTransformBufferMemory;
+	VkDeviceSize oldCurrentSize = m_InstanceTransformBufferSize;
 	m_InstanceTransformBuffer = VK_NULL_HANDLE;
 	m_InstanceTransformBufferMemory = VK_NULL_HANDLE;
+	GpuResources::DestroyBuffer(dev, m_InstanceTransformPrevBuffer, m_InstanceTransformPrevBufferMemory);
 
 	size_t instanceCount = m_CurrentScene.instances.size();
 	VkDeviceSize bufferSize = instanceCount * sizeof(glm::mat4);
@@ -391,8 +393,20 @@ void SceneResources::CreateInstanceTransformBuffer(const GpuDevice& dev)
 	memcpy(data, transforms.data(), instanceCount * sizeof(glm::mat4));
 	vkUnmapMemory(device, m_InstanceTransformBufferMemory);
 
-	if (m_InstanceTransformPrevBuffer == VK_NULL_HANDLE)
+	const bool canPreservePrevious = preservePrevious &&
+		oldCurrentBuffer != VK_NULL_HANDLE && oldCurrentSize == bufferSize;
+	if (canPreservePrevious)
 	{
+		m_InstanceTransformPrevBuffer = oldCurrentBuffer;
+		m_InstanceTransformPrevBufferMemory = oldCurrentMemory;
+	}
+	else
+	{
+		// On scene/topology replacement the old transform buffer may have a
+		// different allocation size and unrelated instance ordering. Reusing it
+		// caused out-of-bounds copies after delete-then-load and fed NRD corrupt
+		// motion vectors. Allocate a matching buffer and begin with zero motion.
+		GpuResources::DestroyBuffer(dev, oldCurrentBuffer, oldCurrentMemory);
 		GpuResources::CreateBuffer(dev, bufferSize,
 		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -424,7 +438,7 @@ void SceneResources::CreateInstanceTransformBuffer(const GpuDevice& dev)
 	RT_LOG("[RT2] Instance transform buffer: %d instances (%zu bytes)",
 	       (int)instanceCount, (size_t)bufferSize);
 
-	m_NeedsTransformAdvance = true;
+	m_NeedsTransformAdvance = canPreservePrevious;
 }
 
 void SceneResources::AdvanceTransformBuffers(VkCommandBuffer cmd)

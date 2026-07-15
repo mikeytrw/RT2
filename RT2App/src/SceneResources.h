@@ -123,7 +123,9 @@ public:
 private:
 	void CreateMaterialBuffer(const GpuDevice& dev);
 	void CreateLightBuffer(const GpuDevice& dev);
-	void CreateInstanceTransformBuffer(const GpuDevice& dev);
+	// Full scene rebuilds initialize current and previous from the new scene;
+	// transform-only updates may preserve a size-compatible previous buffer.
+	void CreateInstanceTransformBuffer(const GpuDevice& dev, bool preservePrevious);
 	void CreateTextures(const GpuDevice& dev, const std::vector<SceneTexture>& textures);
 	void DestroyTextures();
 	void CreateEnvMapCDFTextures(const GpuDevice& dev, const GPUSceneData& sceneData);
