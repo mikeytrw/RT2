@@ -28,6 +28,7 @@ struct RenderSettings
 
 	// Render path
 	bool  rasterFirst   = false;
+	bool  accumulate    = true;  // temporal accumulation (non-NRD path only)
 
 	// ReSTIR DI (Reservoir-based Resampling for Direct Illumination)
 	// Replaces RIS — raster-first mode only. Temporal + spatial reuse.

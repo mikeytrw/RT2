@@ -143,6 +143,9 @@ private:
 	uint32_t m_FrameIndex = 1; // non-NRD temporal accumulation frame counter (resets on camera move)
 	uint32_t m_NRDFrameIndex = 1; // NRD frame counter (continuously increments, resets only on explicit ResetAccumulation)
 	bool m_NRDNeedsReset = true; // triggers NRD CLEAR_AND_RESTART on next frame (set on init/scene change/reset)
+	glm::vec3 m_PrevCameraPos = glm::vec3(0.0f);
+	glm::vec3 m_PrevCameraForward = glm::vec3(0.0f, 0.0f, -1.0f);
+	bool m_HasPrevCamera = false;
 	VkImageLayout m_OutputImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 	// G-buffer target — owns all G-buffer color images + depth image

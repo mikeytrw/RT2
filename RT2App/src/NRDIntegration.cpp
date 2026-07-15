@@ -225,6 +225,22 @@ void NRDWrapper::SetReblurSettings(float maxBlurRadius, uint32_t maxAccumulatedF
 	// the primary hit. NRD docs: "Must be set to something other than OFF" in
 	// this case, so the skipped lobe's hitT=0 is reconstructed from neighbors.
 	settings.hitDistanceReconstructionMode = nrd::HitDistanceReconstructionMode::AREA_3X3;
+
+	// Pre-pass blur: required for probabilistic sampling — reconstructs the
+	// skipped lobe's signal spatially before temporal accumulation.
+	// NRD defaults are 30 (diffuse) and 50 (specular). Set explicitly to
+	// guard against accidental zero-initialization.
+	settings.diffusePrepassBlurRadius = 30.0f;
+	settings.specularPrepassBlurRadius = 50.0f;
+	// Responsive accumulation: for roughness < threshold, temporal accumulation
+	// becomes responsive (shorter history) to handle fast-moving specular
+	// highlights that screen-space motion vectors can't track. 2D motion
+	// vectors capture geometry motion but NOT specular highlight "swimming"
+	// across surfaces on camera move. Without this, NRD's reprojection finds
+	// stale specular history → disocclusion reset → flickering.
+	settings.responsiveAccumulationSettings.roughnessThreshold = 0.15f;
+	settings.responsiveAccumulationSettings.minAccumulatedFrameNum = 3;
+
 	g_NRD.SetDenoiserSettings(m_DenoiserID, &settings);
 }
 

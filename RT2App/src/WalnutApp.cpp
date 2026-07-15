@@ -23,6 +23,7 @@
 #include "NRD.h"
 
 #include <cstdio>
+#include <cmath>
 #include <thread>
 #include <chrono>
 
@@ -186,6 +187,38 @@ public:
 
 	ImGui::Separator();
 	ImGui::Text("Camera");
+	glm::vec3 cameraPosition = m_Cam.GetPosition();
+	glm::vec3 cameraForward = m_Cam.GetDirection();
+	bool cameraPoseChanged = false;
+	if (ImGui::DragFloat3("Position", &cameraPosition.x, 0.01f, 0.0f, 0.0f, "%.6f"))
+	{
+		m_Cam.SetPosition(cameraPosition);
+		cameraPoseChanged = true;
+	}
+	if (ImGui::DragFloat3("Forward", &cameraForward.x, 0.001f, -1.0f, 1.0f, "%.6f"))
+	{
+		if (glm::dot(cameraForward, cameraForward) > 1e-8f)
+		{
+			m_Cam.SetForwardDirection(glm::normalize(cameraForward));
+			cameraPoseChanged = true;
+		}
+	}
+	if (cameraPoseChanged && m_RendererGPU.IsAvailable())
+	{
+		m_RendererGPU.ResetAccumulation();
+		m_RendererGPU.InvalidateReSTIRHistory();
+		m_RendererGPU.InvalidateGIHistory();
+	}
+	if (ImGui::Button("Copy Camera Pose"))
+	{
+		const glm::vec3& p = m_Cam.GetPosition();
+		const glm::vec3& f = m_Cam.GetDirection();
+		char pose[256];
+		std::snprintf(pose, sizeof(pose),
+		              "position=(%.6f, %.6f, %.6f) forward=(%.6f, %.6f, %.6f)",
+		              p.x, p.y, p.z, f.x, f.y, f.z);
+		ImGui::SetClipboardText(pose);
+	}
 	ImGui::SliderFloat("Move Speed", &m_Cam.m_Speed, 0.5f, 50.0f, "%.1f");
 	if (ImGui::SliderFloat("Far Clip", &m_Cam.m_FarClip, 100.0f, 100000.0f, "%.0f"))
 	{
@@ -211,6 +244,14 @@ public:
 			m_Cam.m_Aperture = 0.0f;
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
+	ImGui::BeginDisabled(m_Settings.nrdEnabled);
+	if (ImGui::Checkbox("Accumulate", &m_Settings.accumulate))
+	{
+		if (!m_Settings.accumulate)
+			m_RendererGPU.ResetAccumulation();
+		m_RendererGPU.ApplySettings(m_Settings);
+	}
+	ImGui::EndDisabled();
 	if (m_Settings.rasterFirst)
 	{
 		ImGui::SameLine();
@@ -233,16 +274,17 @@ public:
 	if (m_Settings.nrdEnabled)
 	{
 		ImGui::Indent();
-		ImGui::BeginDisabled(m_Settings.restirEnabled);
+		bool restirActive = m_Settings.restirEnabled || m_Settings.restirGIEnabled;
+		ImGui::BeginDisabled(restirActive);
 		if (ImGui::Checkbox("Jitter", &m_Settings.nrdJitterEnabled))
 			m_RendererGPU.ApplySettings(m_Settings);
-		ImGui::EndDisabled();
 		ImGui::SameLine();
 		ImGui::PushID("JitterScale");
 		ImGui::SetNextItemWidth(80.0f);
 		if (ImGui::SliderFloat("Scale", &m_Settings.nrdJitterScale, 0.0f, 1.0f, "%.2f"))
 			m_RendererGPU.ApplySettings(m_Settings);
 		ImGui::PopID();
+		ImGui::EndDisabled();
 		ImGui::SliderFloat("Blur Radius", &m_Settings.nrdMaxBlurRadius, 1.0f, 50.0f, "%.1f");
 		ImGui::SliderInt("Accum Frames", &m_Settings.nrdMaxAccumFrames, 1, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
 		ImGui::Checkbox("Anti-Firefly", &m_Settings.nrdAntiFirefly);
@@ -264,7 +306,11 @@ public:
 	}
 	ImGui::BeginDisabled(!restirAvailable);
 	if (ImGui::Checkbox("ReSTIR DI", &m_Settings.restirEnabled))
+	{
+		if (m_Settings.restirEnabled)
+			m_Settings.nrdJitterEnabled = false;
 		m_RendererGPU.ApplySettings(m_Settings);
+	}
 	if (m_Settings.restirEnabled)
 	{
 		ImGui::Indent();
@@ -300,7 +346,11 @@ public:
 	}
 	ImGui::BeginDisabled(!giAvailable);
 	if (ImGui::Checkbox("ReSTIR GI", &m_Settings.restirGIEnabled))
+	{
+		if (m_Settings.restirGIEnabled)
+			m_Settings.nrdJitterEnabled = false;
 		m_RendererGPU.ApplySettings(m_Settings);
+	}
 	if (m_Settings.restirGIEnabled)
 	{
 		ImGui::Indent();
@@ -332,7 +382,8 @@ public:
 		"World Position", "Geo Normal", "UV", "Material Index",
 		"ReSTIR Reservoir",
 		"GI Direction", "GI Lo", "GI HitT", "GI M/Age",
-		"GI Fresh vs History", "GI Rejection Reason", "GI Fallback"
+		"GI Fresh vs History", "GI Rejection Reason", "GI Fallback",
+		"NRD Diffuse Input", "NRD Specular Input", "ReSTIR DI Weight"
 	};
 	int debugCombo = m_Settings.gbufferDebugMode + 1;
 	if (ImGui::Combo("G-buffer View", &debugCombo, gbufferModes, IM_ARRAYSIZE(gbufferModes)))
@@ -453,9 +504,14 @@ private:
 				if (g_CLI.spp > 0) m_Settings.spp = g_CLI.spp;
 				if (g_CLI.bounces > 0) m_Settings.maxBounces = g_CLI.bounces;
 				if (g_CLI.nrd) m_Settings.nrdEnabled = true;
+				if (g_CLI.noAccumulate) m_Settings.accumulate = false;
 				if (g_CLI.rasterFirst) m_Settings.rasterFirst = true;
 				if (g_CLI.ris || g_CLI.restir) { m_Settings.restirEnabled = true; m_Settings.rasterFirst = true; }
 				if (g_CLI.restirCandidates > 0) m_Settings.restirFreshCandidates = (uint32_t)g_CLI.restirCandidates;
+				if (g_CLI.restirNoTemporal) m_Settings.restirTemporalReuse = false;
+				if (g_CLI.restirNoSpatial) m_Settings.restirSpatialReuse = false;
+				if (g_CLI.restirGI) { m_Settings.restirGIEnabled = true; m_Settings.rasterFirst = true; }
+				if (g_CLI.restirGICandidates > 0) m_Settings.restirGIFreshCandidates = (uint32_t)g_CLI.restirGICandidates;
 				if (g_CLI.gbufferDebug >= 0) m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
 				m_RendererGPU.ApplySettings(m_Settings);
 			}
@@ -470,6 +526,15 @@ private:
 
 		if (g_CLI.hasScene())
 			LoadScene(g_CLI.scenePath);
+
+		if (g_CLI.hasCameraPosition)
+			m_Cam.SetPosition(glm::vec3(g_CLI.cameraPosition[0], g_CLI.cameraPosition[1], g_CLI.cameraPosition[2]));
+		if (g_CLI.hasCameraForward)
+		{
+			glm::vec3 forward(g_CLI.cameraForward[0], g_CLI.cameraForward[1], g_CLI.cameraForward[2]);
+			if (glm::dot(forward, forward) > 1e-8f)
+				m_Cam.SetForwardDirection(glm::normalize(forward));
+		}
 
 		if (g_CLI.rasterFirst)
 			m_Cam.m_Aperture = 0.0f;
@@ -512,8 +577,79 @@ private:
 		printf("[Headless] rendering %d frames...\n", g_CLI.frames);
 		fflush(stdout);
 
+		auto saveOutput = [&](const std::string& path) -> bool {
+			std::vector<uint8_t> pixels;
+			uint32_t w, h;
+			if (!m_RendererGPU.ReadbackOutput(pixels, w, h))
+			{
+				RT_LOG("[Headless] ReadbackOutput failed");
+				return false;
+			}
+
+			std::vector<uint8_t> flipped(pixels.size());
+			for (uint32_t y = 0; y < h; y++)
+			{
+				memcpy(&flipped[(size_t)(h - 1 - y) * w * 4],
+				       &pixels[(size_t)y * w * 4],
+				       (size_t)w * 4);
+			}
+
+			if (!stbi_write_png(path.c_str(), w, h, 4, flipped.data(), w * 4))
+			{
+				RT_LOG("[Headless] stbi_write_png failed for %s", path.c_str());
+				return false;
+			}
+
+			printf("[Headless] saved screenshot: %s (%ux%u)\n", path.c_str(), w, h);
+			return true;
+		};
+
+		const glm::vec3 sweepBasePosition = m_Cam.GetPosition();
+		const glm::vec3 sweepBaseForward = m_Cam.GetDirection();
+		glm::vec3 sweepRight = glm::cross(m_Cam.GetDirection(), glm::vec3(0.0f, 1.0f, 0.0f));
+		if (glm::dot(sweepRight, sweepRight) > 1e-8f)
+			sweepRight = glm::normalize(sweepRight);
+		else
+			sweepRight = glm::vec3(1.0f, 0.0f, 0.0f);
+
+		auto sequencePath = [&](const char* tag, int frame) {
+			std::string path = g_CLI.outputPath;
+			size_t dot = path.find_last_of('.');
+			if (dot == std::string::npos)
+				dot = path.size();
+			char suffix[64];
+			if (frame >= 0)
+				std::snprintf(suffix, sizeof(suffix), "_%s_%04d", tag, frame);
+			else
+				std::snprintf(suffix, sizeof(suffix), "_%s", tag);
+			path.insert(dot, suffix);
+			return path;
+		};
+
 		for (int i = 0; i < g_CLI.frames; i++)
 		{
+			if (g_CLI.cameraSweepAmplitude > 0.0f && i >= g_CLI.cameraSweepWarmup)
+			{
+				float phase = float(i - g_CLI.cameraSweepWarmup) / float(g_CLI.cameraSweepPeriod);
+				float offset = -g_CLI.cameraSweepAmplitude * std::sin(phase * 6.28318530718f);
+				if (g_CLI.cameraSweepMode == 1)
+				{
+					m_Cam.SetPosition(sweepBasePosition + sweepBaseForward * offset);
+				}
+				else if (g_CLI.cameraSweepMode == 2)
+				{
+					float c = std::cos(offset);
+					float s = std::sin(offset);
+					glm::vec3 yawed(c * sweepBaseForward.x + s * sweepBaseForward.z,
+					                  sweepBaseForward.y,
+					                 -s * sweepBaseForward.x + c * sweepBaseForward.z);
+					m_Cam.SetForwardDirection(glm::normalize(yawed));
+				}
+				else
+				{
+					m_Cam.SetPosition(sweepBasePosition + sweepRight * offset);
+				}
+			}
 			Timer timer;
 			if (m_RendererGPU.IsAvailable())
 				m_RendererGPU.Render(m_Cam);
@@ -521,32 +657,21 @@ private:
 			if (g_CLI.verbose || i == g_CLI.frames - 1)
 				printf("[Headless] frame %d/%d: %.1fms\n", i + 1, g_CLI.frames, ms);
 			fflush(stdout);
+
+			if (g_CLI.captureEvery > 0 && m_RendererGPU.IsAvailable())
+			{
+				bool stillFrame = g_CLI.cameraSweepWarmup > 0 && i == g_CLI.cameraSweepWarmup - 1;
+				bool periodicFrame = i >= g_CLI.cameraSweepWarmup &&
+				                     ((i - g_CLI.cameraSweepWarmup) % g_CLI.captureEvery == 0);
+				if (stillFrame)
+					saveOutput(sequencePath("still", -1));
+				else if (periodicFrame)
+					saveOutput(sequencePath("move", i + 1));
+			}
 		}
 
 		if (g_CLI.hasOutput() && m_RendererGPU.IsAvailable())
-		{
-			std::vector<uint8_t> pixels;
-			uint32_t w, h;
-			if (m_RendererGPU.ReadbackOutput(pixels, w, h))
-			{
-				std::vector<uint8_t> flipped(pixels.size());
-				for (uint32_t y = 0; y < h; y++)
-				{
-					memcpy(&flipped[(size_t)(h - 1 - y) * w * 4],
-					       &pixels[(size_t)y * w * 4],
-					       (size_t)w * 4);
-				}
-
-				if (stbi_write_png(g_CLI.outputPath.c_str(), w, h, 4, flipped.data(), w * 4))
-					printf("[Headless] saved screenshot: %s (%ux%u)\n", g_CLI.outputPath.c_str(), w, h);
-				else
-					RT_LOG("[Headless] stbi_write_png failed for %s", g_CLI.outputPath.c_str());
-			}
-			else
-			{
-				RT_LOG("[Headless] ReadbackOutput failed");
-			}
-		}
+			saveOutput(g_CLI.outputPath);
 
 		printf("[Headless] done, exiting\n");
 		Walnut::Application::Get().Close();

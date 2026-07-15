@@ -45,6 +45,31 @@ vec3 hitFaceNormal()
     return normalize(cross(p1 - p0, p2 - p0));
 }
 
+// Authored shading normal, barycentrically interpolated exactly like the
+// raster path. meshInfo.z is UINT_MAX when a mesh has no normal stream.
+vec3 hitVertexNormal()
+{
+    uvec4 meshInfo = instanceMeshInfo[gl_InstanceID];
+    if (meshInfo.z == 0xFFFFFFFFu)
+        return hitFaceNormal();
+
+    uint idxBase = meshInfo.y + uint(gl_PrimitiveID) * 3u;
+    uint i0 = indices[idxBase + 0u];
+    uint i1 = indices[idxBase + 1u];
+    uint i2 = indices[idxBase + 2u];
+
+    vec3 n0 = normals[meshInfo.z + i0].xyz;
+    vec3 n1 = normals[meshInfo.z + i1].xyz;
+    vec3 n2 = normals[meshInfo.z + i2].xyz;
+    vec3 bary = hitBarycentric();
+    vec3 objectN = bary.x * n0 + bary.y * n1 + bary.z * n2;
+    if (dot(objectN, objectN) < 1e-10)
+        return hitFaceNormal();
+
+    mat3 normalMatrix = transpose(inverse(mat3(instanceTransforms[gl_InstanceID])));
+    return normalize(normalMatrix * objectN);
+}
+
 vec2 hitUV()
 {
     uvec4 meshInfo = instanceMeshInfo[gl_InstanceID];
@@ -94,23 +119,24 @@ vec3 hitTangent()
     return computeTangent(p0, p1, p2, uv0, uv1, uv2);
 }
 
-// Get the shading normal: geometric face normal, or normal-mapped if texture exists
+// Get the shading normal from authored vertex normals, then apply a normal map.
+// Falling back to the face normal is reserved for meshes without usable normals.
 vec3 hitShadingNormal(Material mat, vec2 uv)
 {
-    vec3 geoN = hitFaceNormal();
+    vec3 baseN = hitVertexNormal();
     int normalTexIdx = mat.textureIndices.y;
 
     if (normalTexIdx >= 0)
     {
         vec3 tangentN = texture(textures[nonuniformEXT(normalTexIdx)], uv).rgb * 2.0 - 1.0;
         vec3 T = hitTangent();
-        vec3 N = geoN;
+        vec3 N = baseN;
         T = normalize(T - dot(T, N) * N);
         vec3 B = cross(N, T);
         return normalize(mat3(T, B, N) * tangentN);
     }
 
-    return geoN;
+    return baseN;
 }
 
 void main()
@@ -156,6 +182,11 @@ void main()
     //   w_bsdf = bsdfPdf / (bsdfPdf + P_tri * pdfLight)
     if (dot(emissive, emissive) > 0.0)
     {
+        if (uint(payload.b.w) == 1u)
+        {
+            payload.e.z = 1.0;
+            payload.e.w = gl_HitTEXT;
+        }
         float boost = camera.apertureFocal.w;
         float bsdfPdf = payload.d.w;
         float weight = 1.0;  // default: full emission (camera/specular)
@@ -209,10 +240,17 @@ void main()
     vec3 wo = -rayDir;  // outgoing direction (away from surface, towards viewer)
     float NdotV = max(dot(n, wo), 0.0);
 
+    // Only the primary lobe participates in NRD's probabilistic split. Use the
+    // configured spatial dither there and apply the same frame-global temporal
+    // rotation as the raster-first path. Later bounces keep ordinary RNG.
+    int primaryDitherMode = (depth == 0u && nrdData.nrdEnabled != 0u)
+        ? int(nrdData.lobeDither) : 0;
+    float lobeTemporalShift = fract(camera.position.w * 0.6180339887498948);
+
     ScatterResult scatter = scatterPrimaryHit(
         mat, baseColor, metallic, roughness, ior,
         n, wo, NdotV, rayDir, frontFace, rngState,
-        gl_LaunchIDEXT.xy, 0);
+        gl_LaunchIDEXT.xy, primaryDitherMode, lobeTemporalShift);
 
     // Store hitT for secondary_raygen (depth=1 = first bounce after raster primary)
     if (depth == 1u)

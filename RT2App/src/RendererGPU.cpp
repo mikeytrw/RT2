@@ -538,6 +538,7 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	    m_Settings.emissiveBoost != newSettings.emissiveBoost ||
 	    m_Settings.envIntensity != newSettings.envIntensity ||
 	    m_Settings.rasterFirst != newSettings.rasterFirst ||
+	    m_Settings.accumulate != newSettings.accumulate ||
 	    m_Settings.nrdEnabled != newSettings.nrdEnabled ||
 	    m_Settings.nrdLobeDither != newSettings.nrdLobeDither ||
 	    m_Settings.nrdMaxBlurRadius != newSettings.nrdMaxBlurRadius ||
@@ -597,12 +598,41 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 
 void RendererGPU::UpdateCameraUBO(const Camera& camera)
 {
+	// Detect camera movement and reset accumulation when NRD is off and
+	// accumulation is enabled. Without this, temporal accumulation blends
+	// 1/N of each frame, leaving the old noise pattern frozen in screen space.
+	// When accumulation is off, don't reset — keep m_FrameIndex incrementing
+	// so the RNG seed varies per frame for fresh Monte Carlo noise.
+	glm::vec3 camPos = camera.GetPosition();
+	glm::vec3 camFwd = camera.GetDirection();
+	if (!m_Settings.nrdEnabled && m_Settings.accumulate && m_HasPrevCamera)
+	{
+		float posDiff = glm::distance(camPos, m_PrevCameraPos);
+		float fwdDiff = glm::distance(camFwd, m_PrevCameraForward);
+		if (posDiff > 1e-5f || fwdDiff > 1e-5f)
+			ResetAccumulation();
+	}
+	m_PrevCameraPos = camPos;
+	m_PrevCameraForward = camFwd;
+	m_HasPrevCamera = true;
+
 	SICameraData ubo = {};
-	ubo.position = glm::vec4(camera.GetPosition(), (float)m_FrameIndex);
+	// frameIndex serves dual duty: RNG seed (initRNG) + temporal accumulation counter.
+	// When accumulation is off, pass negative frameIndex so temporalAccumulate
+	// skips blending, while initRNG uses abs() for a per-frame-varying seed.
+	float frameIdxForShader = (float)m_FrameIndex;
+	if (!m_Settings.nrdEnabled && !m_Settings.accumulate)
+		frameIdxForShader = -(float)m_FrameIndex;
+	ubo.position = glm::vec4(camera.GetPosition(), frameIdxForShader);
 
 	// NRD camera jitter (Halton sequence, subpixel offset in [-0.5, 0.5])
 	m_NRDJitterPrev = m_NRDJitter;
-	if (m_Settings.nrdEnabled && m_Settings.nrdJitterEnabled)
+	// ReSTIR DI/GI history already performs its own reprojection. Keep raster
+	// sampling unjittered while either reservoir system is active; otherwise the
+	// subpixel sequence adds temporal instability to both reservoir and NRD
+	// histories. This also enforces the policy for CLI-created settings.
+	bool restirActive = m_Settings.restirEnabled || m_Settings.restirGIEnabled;
+	if (m_Settings.nrdEnabled && m_Settings.nrdJitterEnabled && !restirActive)
 	{
 		// Halton sequence (base 2, base 3) for low-discrepancy jitter
 		auto halton = [](int index, int base) -> float {
@@ -700,7 +730,13 @@ void RendererGPU::Render(const Camera& camera)
 	}
 
 	if (const_cast<Camera&>(camera).checkHasMoved())
-		m_FrameIndex = 1;
+	{
+		// Only reset accumulation counter when temporal accumulation is active
+		// (non-NRD path with accumulate enabled). With accumulation off, keep
+		// m_FrameIndex incrementing so the RNG seed varies per frame.
+		if (m_Settings.accumulate && !m_Settings.nrdEnabled)
+			m_FrameIndex = 1;
+	}
 
 	// Lazy-init NRD when toggled on
 	if (m_Settings.nrdEnabled && !m_NRD.IsAvailable() && m_Width > 0 && m_Height > 0)
@@ -771,6 +807,7 @@ void RendererGPU::Render(const Camera& camera)
 	giPC.maxTemporalAge = m_Settings.restirGIMaxTemporalAge;
 	giPC.flags = 0;
 	if (m_Settings.restirGITemporalEnabled) giPC.flags |= 1u;
+	giPC.flags |= (uint32_t)(m_Settings.nrdLobeDither & 3u) << 1;  // bits 1-2: dither mode
 	giPC.depthThreshold = m_Settings.restirGIDepthThreshold;
 	giPC.normalThreshold = m_Settings.restirGINormalThreshold;
 	giPC.worldPosThreshold = m_Settings.restirGIWorldPosThreshold;

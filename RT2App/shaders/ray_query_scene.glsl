@@ -121,6 +121,23 @@ RayQueryHit giReconstructHit(rayQueryEXT query, vec3 rayOrigin, vec3 rayDir)
     // ---- Face normal ----
     h.geoNormal = normalize(cross(p1 - p0, p2 - p0));
 
+    // ---- Authored shading normal ----
+    // Match raster/closest-hit interpolation. A sentinel normal offset marks
+    // meshes without a normal stream, and zero OBJ normals also fall back.
+    vec3 baseNormal = h.geoNormal;
+    if (meshInfo.z != 0xFFFFFFFFu)
+    {
+        vec3 n0 = normals[meshInfo.z + i0].xyz;
+        vec3 n1 = normals[meshInfo.z + i1].xyz;
+        vec3 n2 = normals[meshInfo.z + i2].xyz;
+        vec3 objectN = b0 * n0 + b1 * n1 + b2 * n2;
+        if (dot(objectN, objectN) >= 1e-10)
+        {
+            mat3 normalMatrix = transpose(inverse(mat3(world)));
+            baseNormal = normalize(normalMatrix * objectN);
+        }
+    }
+
     // ---- UV — matches hitUV ----
     vec2 uv0 = uvs[meshInfo.w + i0].xy;
     vec2 uv1 = uvs[meshInfo.w + i1].xy;
@@ -166,20 +183,20 @@ RayQueryHit giReconstructHit(rayQueryEXT query, vec3 rayOrigin, vec3 rayDir)
     if (emissiveTexIdx >= 0)
         h.emissive *= texture(textures[nonuniformEXT(emissiveTexIdx)], h.uv).rgb;
 
-    // ---- Shading normal (normal-mapped or geometric) — matches hitShadingNormal ----
+    // ---- Shading normal (normal-mapped or authored) — matches hitShadingNormal ----
     int normalTexIdx = h.mat.textureIndices.y;
     if (normalTexIdx >= 0)
     {
         vec3 tangentN = texture(textures[nonuniformEXT(normalTexIdx)], h.uv).rgb * 2.0 - 1.0;
         vec3 T = h.tangent;
-        vec3 N = h.geoNormal;
+        vec3 N = baseNormal;
         T = normalize(T - dot(T, N) * N);
         vec3 B = cross(N, T);
         h.shadingNormal = normalize(mat3(T, B, N) * tangentN);
     }
     else
     {
-        h.shadingNormal = h.geoNormal;
+        h.shadingNormal = baseNormal;
     }
 
     // ---- Front/back face — matches closesthit ----

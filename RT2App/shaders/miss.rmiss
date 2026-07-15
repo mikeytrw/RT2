@@ -25,8 +25,9 @@ void main()
                                  uint(payload.b.w) == 1u &&
                                  bsdfPdf >= 0.0;
         bool selectedDiffuse = payload.e.x < 0.5;
+        bool jointLobeEstimator = payload.e.y > 0.5;
 
-        if (restirFirstBounce && selectedDiffuse)
+        if (restirFirstBounce && selectedDiffuse && !jointLobeEstimator)
         {
             // ReSTIR replaces primary diffuse environment NEE.
         }
@@ -61,5 +62,7 @@ void main()
             payload.b.xyz += payload.a.xyz * sky;
         }
     }
+    if (uint(payload.b.w) == 1u)
+        payload.e.z = 1.0;
     payload.c.w = 1.0; // done
 }

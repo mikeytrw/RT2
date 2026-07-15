@@ -82,7 +82,7 @@ void main()
     vec3 worldPos = primHit.xyz;
     vec2 uv = imageLoad(gPrimUV, pixel).xy;
 
-    // Normal from G-buffer: NRD oct-packed (encoding=2, SQRT_LINEAR)
+    // Normal from G-buffer: NRD oct-packed (normal encoding 2, roughness LINEAR)
     vec4 nrPacked = imageLoad(gNormalRoughness, pixel);
     vec4 nrDecoded = nrdDecodeNormalRoughness(nrPacked.xyz);
     vec3 gBufferN = nrDecoded.xyz;
@@ -159,10 +159,14 @@ void main()
 
     // ---- Scatter: stochastic lobe selection (same as closesthit) ----
     vec3 rayDir = -wo;  // incoming ray direction
+    // Global Weyl-sequence rotation for probabilistic lobe selection. Keep the
+    // shift identical for every pixel so the Bayer pattern retains its 3x3
+    // coverage, but vary it each frame to avoid screen-space directional bias.
+    float lobeTemporalShift = fract(camera.position.w * 0.6180339887498948);
     ScatterResult scatter = scatterPrimaryHit(
         mat, baseColor, metallic, roughness, ior,
         n, wo, NdotV, rayDir, frontFace, rngState,
-        uvec2(pixel.xy), int(nrdData.lobeDither));
+        uvec2(pixel.xy), int(nrdData.lobeDither), lobeTemporalShift);
 
     // ---- Check termination conditions ----
     uint maxBounces = uint(camera.viewportSPP.w);
@@ -206,11 +210,20 @@ void main()
     //   indirectRad = evalDiffuseBRDF(wo, wi, N, mat) * Lo * cosTheta * W / P_d
     // where W = giReservoirW(r) and P_d = scatter.P_d (diffuse lobe prob).
     bool giConsumed = false;
+    bool giDiffuseValid = false;
+    vec3 giDiffuseRad = vec3(0.0);
+    float giDiffuseHitT = 1e4;
     vec3 indirectRad = vec3(0.0);
     float secondaryHitT = 1e4;
 
     bool giEnabled = (nrdData.restirGIEnabled != 0u);
-    if (giEnabled && scatter.lobeType < 0.5 && scatter.P_d > 0.0)
+    float transmissionFactor = intBitsToFloat(mat.textureIndices.w);
+    // Evaluate both primary BRDF lobes from the same mixture-sampled ray. This
+    // preserves the one-ray cost while giving NRD a valid diffuse and specular
+    // sample at every opaque, non-delta pixel. A sparse specular mask otherwise
+    // exposes hit-distance reconstruction as triangle-shaped history in motion.
+    bool jointLobeEstimator = nrdMode && transmissionFactor <= 0.0 && roughness >= 0.001;
+    if (giEnabled)
     {
         uint giRegion = nrdData.restirGIReservoirIndex;
         uint pixelCount = width * height;
@@ -228,10 +241,18 @@ void main()
             if (cosTheta > 0.0 && W > 0.0)
             {
                 vec3 C = evalDiffuseBRDF(wo, wi, n, baseColor, metallic) * Lo * cosTheta;
-                vec3 giRad = C * W / scatter.P_d;
-                indirectRad = giRad;
-                secondaryHitT = giHitT;
-                giConsumed = true;
+                giDiffuseRad = C * W;
+                giDiffuseHitT = giHitT;
+                giDiffuseValid = true;
+
+                // Outside the joint NRD estimator, retain the legacy
+                // selected-diffuse consumption and probability compensation.
+                if (!jointLobeEstimator && scatter.lobeType < 0.5 && scatter.P_d > 0.0)
+                {
+                    indirectRad = giDiffuseRad / scatter.P_d;
+                    secondaryHitT = giDiffuseHitT;
+                    giConsumed = true;
+                }
             }
         }
     }
@@ -241,13 +262,14 @@ void main()
         // Write scatter data to payload (location 0) — the trace uses location 0.
         // nextPayload (location 1) is only used by closesthit for recursive traces;
         // here we trace directly from raygen, so payload (location 0) is the one.
-        payload.a = vec4(scatter.attenuation, uintBitsToFloat(rngState));  // throughput * attenuation, rngState bit-cast
+        vec3 primaryThroughput = jointLobeEstimator ? vec3(1.0) : scatter.attenuation;
+        payload.a = vec4(primaryThroughput, uintBitsToFloat(rngState));
         payload.b = vec4(vec3(0.0), 1.0);                  // radiance = 0, depth = 1
         payload.c = vec4(rayOrigin, 0.0);
         payload.d = vec4(normalize(scatter.scatterDir), nextBsdfPdf);
         // Carry the selected primary lobe to the miss shader. ReSTIR replaces only
         // diffuse direct lighting; rough-specular environment transport must remain.
-        payload.e = vec4(scatter.lobeType, 0.0, 0.0, 0.0);
+        payload.e = vec4(scatter.lobeType, jointLobeEstimator ? 1.0 : 0.0, 0.0, 0.0);
 
         traceRayEXT(topLevelAS, gl_RayFlagsNoneEXT, 0xFF, 0, 0, 0,
                     rayOrigin, 0.001, payload.d.xyz, 1e9, 0);
@@ -279,14 +301,46 @@ void main()
         float diffHitT = secondaryHitT;
         float specHitT = secondaryHitT;
 
-        if (scatter.lobeType < 0.5)
+        if (jointLobeEstimator)
         {
-            // Diffuse lobe: indirect goes to diffuse
+            // The continuation direction was sampled from the diffuse/specular
+            // mixture. Split its incident radiance with the two BRDF terms and
+            // their shared mixture PDF so both estimators remain unbiased.
+            vec3 wi = normalize(scatter.scatterDir);
+            float NdotL = max(dot(n, wi), 0.0);
+            float alpha = roughnessToAlpha(roughness);
+            float mixturePdf = evalBSDFPdf(wo, wi, n, scatter.P_s, scatter.P_d, alpha);
+
+            if (NdotL > 0.0 && mixturePdf > 1e-8)
+            {
+                vec3 diffuseBrdf = evalDiffuseBRDF(wo, wi, n, baseColor, metallic);
+                vec3 specularBrdf = max(
+                    evalBRDF(wo, wi, n, baseColor, metallic, roughness) - diffuseBrdf,
+                    vec3(0.0));
+                // ReSTIR DI already represents a first-bounce environment or
+                // emissive terminal. Keep its specular component, but do not
+                // count that terminal a second time as diffuse indirect.
+                bool directTerminal = payload.e.z > 0.5;
+                if (!(useReSTIR && directTerminal))
+                    diffIndirect = indirectRad * diffuseBrdf * (NdotL / mixturePdf);
+                specIndirect = indirectRad * specularBrdf * (NdotL / mixturePdf);
+            }
+
+            // ReSTIR GI owns diffuse indirect when it produced a valid sample;
+            // the traced mixture path remains the fallback for invalid/empty
+            // reservoirs and always supplies the specular NRD signal.
+            if (giEnabled && giDiffuseValid)
+            {
+                diffIndirect = giDiffuseRad;
+                diffHitT = giDiffuseHitT;
+            }
+        }
+        else if (scatter.lobeType < 0.5)
+        {
             diffIndirect = indirectRad;
         }
         else
         {
-            // Specular lobe: indirect goes to specular
             specIndirect = indirectRad;
         }
 
@@ -298,11 +352,28 @@ void main()
         imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
         imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
 
-        if (dot(diffRad, diffRad) > 0.0)
+        // A selected lobe must keep its valid hit distance even when the traced
+        // radiance is black. NRD reserves hitT == 0 for an UNSAMPLED lobe; using
+        // radiance as the validity test turns shadowed/dark samples into false
+        // holes and makes hit-distance reconstruction unstable under motion.
+        if (jointLobeEstimator)
+        {
             writeNRDDiffuse(pixel, diffRad, diffFactor, diffHitT, viewZ);
-
-        if (dot(specIndirect, specIndirect) > 0.0)
             writeNRDSpecular(pixel, specIndirect, specFactor, specHitT, viewZ, roughness);
+        }
+        else if (scatter.lobeType < 0.5)
+        {
+            writeNRDDiffuse(pixel, diffRad, diffFactor, diffHitT, viewZ);
+        }
+        else
+        {
+            writeNRDSpecular(pixel, specIndirect, specFactor, specHitT, viewZ, roughness);
+
+            // NEE is sampled independently of the continuation lobe. Preserve
+            // a non-zero diffuse direct sample alongside a specular continuation.
+            if (dot(diffNee, diffNee) > 0.0)
+                writeNRDDiffuse(pixel, diffNee, diffFactor, diffHitT, viewZ);
+        }
 
         vec3 beautyRad = diffRad + specIndirect;
         imageStore(gDirectEmission, pixel, vec4(0.0));

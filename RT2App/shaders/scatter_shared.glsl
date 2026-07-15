@@ -80,11 +80,15 @@ struct ScatterResult
 //   pixelCoord   — pixel coordinates (for Bayer/IGN dithering of lobe selection,
 //                  required by NRD HitDistanceReconstructionMode::AREA_3X3)
 //   ditherMode   — 0=white noise, 1=Bayer 4x4, 2=Interleaved Gradient Noise
+//   temporalShift — frame-global Cranley-Patterson rotation in [0, 1). NRD
+//                   requires this for Bayer-based probabilistic lobe selection:
+//                   a static screen-space pattern develops directional bias and
+//                   shimmers when camera motion scans it across world surfaces.
 ScatterResult scatterPrimaryHit(
     Material mat,
     vec3 baseColor, float metallic, float roughness, float ior,
     vec3 n, vec3 wo, float NdotV, vec3 rayDir, bool frontFace,
-    inout uint rngState, uvec2 pixelCoord, int ditherMode)
+    inout uint rngState, uvec2 pixelCoord, int ditherMode, float temporalShift)
 {
     ScatterResult result;
     result.doScatter = true;
@@ -123,14 +127,17 @@ ScatterResult scatterPrimaryHit(
            15.0/16.0,  7.0/16.0, 13.0/16.0,  5.0/16.0
         );
         uint bayerIdx = (pixelCoord.y % 4u) * 4u + (pixelCoord.x % 4u);
-        r = bayer4x4[bayerIdx];
+        // A global temporal rotation preserves the Bayer pattern's spatial
+        // coverage while turning its static directional bias into temporal
+        // variance that REBLUR can filter.
+        r = fract(bayer4x4[bayerIdx] + temporalShift);
     }
     else if (ditherMode == 2)
     {
         // Interleaved Gradient Noise (Jorge Jimenez) — less structured than
         // Bayer, quasi-random, still good spatial coverage for 3x3 recon.
         r = fract(52.9829189 * fract(0.06711056 * float(pixelCoord.x)
-                + 0.00583715 * float(pixelCoord.y)));
+                + 0.00583715 * float(pixelCoord.y)) + temporalShift);
     }
     else
     {
@@ -517,7 +524,11 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
 {
     NEEResult result;
     result.radiance = vec3(0.0);
-    result.pdfLightOmega = 0.0;
+    // Once ReSTIR DI is selected for this pixel, its reservoir outcome is the
+    // complete estimator. An empty reservoir is a legitimate zero-valued RIS
+    // estimate (all M candidates had zero weight), not a reason to draw a
+    // conditional conventional NEE fallback sample.
+    result.pdfLightOmega = -1.0;
 
     Reservoir res = reservoirs[pixelLinear];
     res = sanitizeReservoir(res);
@@ -537,6 +548,9 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
         if (dot(brdf, brdf) <= 0.0)
             return result;
 
+        // A reconstructed reservoir sample is a complete estimator even when
+        // its visibility ray returns zero. Mark it handled before tracing so
+        // the caller does not conditionally draw a second, biased NEE sample.
         shadowVisible = 0.0;
         traceRayEXT(topLevelAS,
                     gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
@@ -550,7 +564,6 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
         vec3 direct = brdf * ts.Le * ts.NdotL * W;
 
         result.radiance = throughput * direct;
-        result.pdfLightOmega = 0.0;
     }
     else if (sampleType == SAMPLE_ENV)
     {
@@ -575,7 +588,6 @@ NEEResult sampleReSTIRDI(vec3 wo, vec3 N, vec3 P,
         vec3 direct = brdf * es.radiance * es.NdotL * W;
 
         result.radiance = throughput * direct;
-        result.pdfLightOmega = 0.0;
     }
 
     return result;
@@ -648,16 +660,15 @@ NEEDispatchResult computeNEE(
         if (useReSTIR)
         {
             // ReSTIR DI: use the unified reservoir (handles both triangle + env).
-            // If the reservoir shadow ray fails (occluded) or the reservoir is
-            // invalid/empty, fall back to the standard NEE path so direct
-            // lighting is never lost.
+            // Empty, rejected, and occluded reservoir outcomes are valid zero
+            // estimates and must not conditionally draw another NEE sample.
             NEEResult restirResult = sampleReSTIRDI(wo, n, hitPoint,
                                              baseColor, metallic, roughness,
                                              nee_Ps, nee_Pd,
                                              throughput, rngState,
                                              isTransmissionMat, nee_P_refract, nee_eta,
                                              pixelLinear);
-            if (dot(restirResult.radiance, restirResult.radiance) > 0.0)
+            if (restirResult.pdfLightOmega < 0.0)
             {
                 result.radiance = restirResult.radiance;
             }

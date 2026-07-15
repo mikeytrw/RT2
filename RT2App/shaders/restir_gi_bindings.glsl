@@ -263,6 +263,78 @@ vec3 evalDiffuseBRDF(vec3 wo, vec3 wi, vec3 n,
     return (1.0 - specWeight) * diffuseAlbedo / PI;
 }
 
+// ---- Lobe selection prediction (matches scatterPrimaryHit in scatter_shared.glsl) ----
+// Returns true if the primary scatter will select the diffuse lobe.
+// Used by the GI compute pass to skip specular-selected pixels, avoiding
+// wasted ray queries. The decision must match scatterPrimaryHit exactly.
+//
+// ditherMode: 0=white noise, 1=Bayer 4x4, 2=IGN (packed in GI flags bits 1-2).
+bool giWillSelectDiffuse(Material mat, vec3 baseColor, float metallic,
+                          float roughness, vec3 n, vec3 wo, float NdotV,
+                          uvec2 pixelCoord, int ditherMode)
+{
+    // Delta specular: roughness < 0.001 && metallic >= 0.5 → always specular.
+    if (roughness < 0.001 && metallic >= 0.5)
+        return false;
+
+    vec3 F0 = mix(vec3(0.04), baseColor, metallic);
+    float f = pow(clamp(1.0 - NdotV, 0.0, 1.0), 5.0);
+    vec3 F = F0 + (1.0 - F0) * f;
+    float P_s = clamp(mix(luminance(F), 1.0, metallic), 0.25, 0.75);
+
+    // Dithered lobe selection (matches scatterPrimaryHit exactly).
+    float r;
+    if (ditherMode == 1)
+    {
+        const float bayer4x4[16] = float[16](
+            0.0/16.0,  8.0/16.0,  2.0/16.0, 10.0/16.0,
+           12.0/16.0,  4.0/16.0, 14.0/16.0,  6.0/16.0,
+            3.0/16.0, 11.0/16.0,  1.0/16.0,  9.0/16.0,
+           15.0/16.0,  7.0/16.0, 13.0/16.0,  5.0/16.0
+        );
+        uint bayerIdx = (pixelCoord.y % 4u) * 4u + (pixelCoord.x % 4u);
+        r = bayer4x4[bayerIdx];
+    }
+    else if (ditherMode == 2)
+    {
+        r = fract(52.9829189 * fract(0.06711056 * float(pixelCoord.x)
+                + 0.00583715 * float(pixelCoord.y)));
+    }
+    else
+    {
+        // White noise: no deterministic prediction possible. Use the
+        // deterministic threshold r = 0.5 as a best-effort heuristic.
+        r = 0.5;
+    }
+
+    // Transmission materials: 3-way pick (reflect/refract/diffuse).
+    float transmissionFactor = intBitsToFloat(mat.textureIndices.w);
+    if (mat.alphaMode < 0.5 && transmissionFactor > 0.0)
+    {
+        float F0_scalar = mix(0.04, luminance(baseColor), metallic);
+        float F_scalar = F0_scalar + (1.0 - F0_scalar) * f;
+        float P_reflect = F_scalar;
+        float P_refract  = (1.0 - F_scalar) * transmissionFactor;
+        float P_diffuse = (1.0 - F_scalar) * (1.0 - transmissionFactor) * (1.0 - metallic);
+        float Psum = P_reflect + P_refract + P_diffuse;
+        if (Psum > 1e-6)
+        {
+            P_reflect /= Psum;
+            P_refract  /= Psum;
+            P_diffuse  /= Psum;
+        }
+        // Diffuse is selected when rTransmission >= P_reflect + P_refract.
+        // rTransmission is white noise (randomFloat), not dithered.
+        // For prediction, use the deterministic threshold: diffuse if
+        // P_diffuse > 0.5 (likely), otherwise predict specular.
+        // This is conservative — it only skips when diffuse is clearly unlikely.
+        return P_diffuse > 0.5;
+    }
+
+    // Standard 2-way pick: diffuse if r >= P_s.
+    return r >= P_s;
+}
+
 // ---- Environment map helpers (from pathtracer_shared.glsl) -----------------
 vec2 directionToEnvUV(vec3 dir)
 {

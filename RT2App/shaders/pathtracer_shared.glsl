@@ -818,15 +818,19 @@ float evalTransmissionBSDFPdf(vec3 wo, vec3 wi, vec3 n,
 // Returns warmed-up rngState ready for randomFloat/pcg calls.
 uint initRNG(ivec2 pixel, float frameIndex)
 {
-    uint rngState = uint(pixel.x) * 1973u + uint(pixel.y) * 9277u + uint(frameIndex) * 26699u;
+    uint seed = uint(abs(frameIndex));
+    uint rngState = uint(pixel.x) * 1973u + uint(pixel.y) * 9277u + seed * 26699u;
     pcg(rngState);
     return rngState;
 }
 
 // Temporal accumulation: blend current color with previous frame.
 // frameIndex = camera.position.w (accumulation counter, 1 = first frame).
+// Negative frameIndex = accumulation disabled (per-frame Monte Carlo noise).
 vec3 temporalAccumulate(ivec2 pixel, vec3 color, float frameIndex)
 {
+    if (frameIndex < 0.0)
+        return color;
     if (frameIndex > 1.0)
     {
         vec3 prevColor = imageLoad(outputImage, pixel).xyz;
@@ -853,6 +857,8 @@ void writeNRDSkyDefaults(ivec2 pixel, vec3 skyRadiance)
 
 // NRD hit distance params (REBLUR defaults: A=3, B=0.1, C=20).
 const vec3 NRD_HIT_DIST_PARAMS = vec3(3.0, 0.1, 20.0);
+// Keep stochastic outliers within the range REBLUR's anti-firefly pass can
+// robustly sanitize. FP16-scale impulses turn into visible multi-pixel blooms.
 const float NRD_FIREFLY_CLAMP = 100.0;
 
 // Pack diffuse lobe NRD output: demodulate, clamp fireflies, normalize hit dist,
@@ -861,7 +867,8 @@ const float NRD_FIREFLY_CLAMP = 100.0;
 // indirect radiance for the same pixel, so this helper must not erase it.
 void writeNRDDiffuse(ivec2 pixel, vec3 radiance, vec3 diffFactor, float hitT, float viewZ)
 {
-    vec3 demod = clamp(radiance / max(diffFactor, vec3(0.01)), vec3(0.0), vec3(NRD_FIREFLY_CLAMP));
+    vec3 demod = clamp(radiance / max(diffFactor, vec3(0.01)),
+                       vec3(0.0), vec3(NRD_FIREFLY_CLAMP));
     float normHitT = nrdGetNormHitDist(hitT, viewZ, NRD_HIT_DIST_PARAMS, 1.0);
     vec3 ycocg = linearToYCoCg(demod);
     imageStore(gDiffRadianceHitDist, pixel, vec4(ycocg, normHitT));
@@ -872,7 +879,8 @@ void writeNRDDiffuse(ivec2 pixel, vec3 radiance, vec3 diffFactor, float hitT, fl
 // opposite signal for the same reason as writeNRDDiffuse.
 void writeNRDSpecular(ivec2 pixel, vec3 radiance, vec3 specFactor, float hitT, float viewZ, float roughness)
 {
-    vec3 demod = clamp(radiance / max(specFactor, vec3(0.01)), vec3(0.0), vec3(NRD_FIREFLY_CLAMP));
+    vec3 demod = clamp(radiance / max(specFactor, vec3(0.01)),
+                       vec3(0.0), vec3(NRD_FIREFLY_CLAMP));
     float normHitT = nrdGetNormHitDist(hitT, viewZ, NRD_HIT_DIST_PARAMS, roughness);
     vec3 ycocg = linearToYCoCg(demod);
     imageStore(gSpecRadianceHitDist, pixel, vec4(ycocg, normHitT));

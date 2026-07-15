@@ -476,8 +476,11 @@ void AccelerationStructure::BuildAttributeBuffers()
 			uint32_t blasIdx = m_InstanceToBLAS[inst];
 			if (blasIdx < offsets.size())
 			{
+				const auto& blas = m_BLASes[blasIdx];
+				uint32_t normalOffset = (blas.srcNormals && !blas.srcNormals->empty())
+					? offsets[blasIdx].norm : 0xFFFFFFFFu;
 				instanceMeshInfo.push_back(glm::uvec4(offsets[blasIdx].vert, offsets[blasIdx].idx,
-				                                      offsets[blasIdx].norm, offsets[blasIdx].uv));
+				                                      normalOffset, offsets[blasIdx].uv));
 				instanceMatOffsets.push_back(matIdxRunning);
 				matIdxRunning += m_BLASes[blasIdx].triangleCount;
 			}
@@ -494,9 +497,13 @@ void AccelerationStructure::BuildAttributeBuffers()
 		uint32_t matOff = 0;
 		for (const auto& off : offsets)
 		{
-			instanceMeshInfo.push_back(glm::uvec4(off.vert, off.idx, off.norm, off.uv));
+			size_t blasIdx = (size_t)(&off - offsets.data());
+			const auto& blas = m_BLASes[blasIdx];
+			uint32_t normalOffset = (blas.srcNormals && !blas.srcNormals->empty())
+				? off.norm : 0xFFFFFFFFu;
+			instanceMeshInfo.push_back(glm::uvec4(off.vert, off.idx, normalOffset, off.uv));
 			instanceMatOffsets.push_back(matOff);
-			matOff += m_BLASes[&off - offsets.data()].triangleCount;
+			matOff += blas.triangleCount;
 		}
 	}
 

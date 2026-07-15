@@ -15,6 +15,7 @@ struct CLIArgs
 	int spp = 0;                  // SPP override (0 = use default)
 	int bounces = 0;              // bounces override (0 = use default)
 	bool nrd = false;             // enable NRD
+	bool noAccumulate = false;    // disable non-NRD temporal accumulation
 	bool headless = false;        // render N frames, save screenshot, exit
 	bool listScenes = false;      // just print what would be loaded
 	bool verbose = false;
@@ -24,7 +25,20 @@ struct CLIArgs
 	bool ris = false;              // enable ReSTIR DI (backward compat alias)
 	bool restir = false;           // enable ReSTIR DI
 	int restirCandidates = 0;     // ReSTIR fresh candidate count override (0 = use default)
+	bool restirNoTemporal = false;
+	bool restirNoSpatial = false;
+	bool restirGI = false;         // enable ReSTIR GI independently of DI
+	int restirGICandidates = 0;   // GI fresh candidate count override (0 = use default)
 	int gbufferDebug = -1;        // G-buffer debug view mode (-1 = off)
+	bool hasCameraPosition = false;
+	bool hasCameraForward = false;
+	float cameraPosition[3] = {};
+	float cameraForward[3] = {};
+	float cameraSweepAmplitude = 0.0f; // world-space left/right amplitude
+	int cameraSweepMode = 0;           // 0=lateral, 1=forward, 2=yaw (amplitude=radians)
+	int cameraSweepWarmup = 0;         // stationary frames before motion
+	int cameraSweepPeriod = 32;        // frames per complete left/right cycle
+	int captureEvery = 0;              // save sequence frame every N frames
 
 	bool hasScene() const { return !scenePath.empty(); }
 	bool hasEnvMap() const { return !envMapPath.empty(); }
@@ -77,9 +91,44 @@ struct CLIArgs
 			{
 				args.nrd = true;
 			}
+			else if (strcmp(a, "--no-accumulate") == 0)
+			{
+				args.noAccumulate = true;
+			}
 		else if (strcmp(a, "--gbuffer-debug") == 0)
 		{
 			if (const char* v = next()) args.gbufferDebug = std::atoi(v);
+		}
+		else if (strcmp(a, "--camera-pos") == 0)
+		{
+			for (int c = 0; c < 3; c++)
+				if (const char* v = next()) args.cameraPosition[c] = (float)std::atof(v);
+			args.hasCameraPosition = true;
+		}
+		else if (strcmp(a, "--camera-forward") == 0)
+		{
+			for (int c = 0; c < 3; c++)
+				if (const char* v = next()) args.cameraForward[c] = (float)std::atof(v);
+			args.hasCameraForward = true;
+		}
+		else if (strcmp(a, "--camera-sweep") == 0)
+		{
+			if (const char* v = next()) args.cameraSweepAmplitude = (float)std::atof(v);
+			if (const char* v = next()) args.cameraSweepWarmup = std::max(0, std::atoi(v));
+			if (const char* v = next()) args.cameraSweepPeriod = std::max(4, std::atoi(v));
+		}
+		else if (strcmp(a, "--camera-sweep-mode") == 0)
+		{
+			if (const char* v = next())
+			{
+				if (strcmp(v, "forward") == 0) args.cameraSweepMode = 1;
+				else if (strcmp(v, "yaw") == 0) args.cameraSweepMode = 2;
+				else args.cameraSweepMode = 0;
+			}
+		}
+		else if (strcmp(a, "--capture-every") == 0)
+		{
+			if (const char* v = next()) args.captureEvery = std::max(1, std::atoi(v));
 		}
 		else if (strcmp(a, "--raster-first") == 0)
 		{
@@ -97,6 +146,22 @@ struct CLIArgs
 		else if (strcmp(a, "--restir-candidates") == 0)
 		{
 			if (const char* v = next()) args.restirCandidates = std::max(1, std::atoi(v));
+		}
+		else if (strcmp(a, "--restir-no-temporal") == 0)
+		{
+			args.restirNoTemporal = true;
+		}
+		else if (strcmp(a, "--restir-no-spatial") == 0)
+		{
+			args.restirNoSpatial = true;
+		}
+		else if (strcmp(a, "--restir-gi") == 0)
+		{
+			args.restirGI = true;
+		}
+		else if (strcmp(a, "--restir-gi-candidates") == 0)
+		{
+			if (const char* v = next()) args.restirGICandidates = std::max(1, std::atoi(v));
 		}
 			else if (strcmp(a, "--headless") == 0)
 			{
@@ -133,11 +198,21 @@ struct CLIArgs
 				printf("  --spp <N>            Samples per pixel override\n");
 				printf("  --bounces <N>        Max bounces override\n");
 				printf("  --nrd                Enable NRD denoiser\n");
+				printf("  --no-accumulate      Disable non-NRD temporal accumulation\n");
 				printf("  --raster-first       Enable raster-first hybrid path\n");
 				printf("  --ris                Enable ReSTIR DI (alias for --restir, requires raster-first)\n");
 			printf("  --restir             Enable ReSTIR DI\n");
-			printf("  --restir-candidates <N>  ReSTIR fresh candidate count\n");
+		printf("  --restir-candidates <N>  ReSTIR fresh candidate count\n");
+		printf("  --restir-no-temporal  Disable ReSTIR DI temporal reuse\n");
+		printf("  --restir-no-spatial   Disable ReSTIR DI spatial reuse\n");
+		printf("  --restir-gi          Enable ReSTIR GI independently of DI\n");
+		printf("  --restir-gi-candidates <N>  ReSTIR GI fresh candidate count\n");
 		printf("  --gbuffer-debug <N>  G-buffer debug view mode\n");
+		printf("  --camera-pos <x> <y> <z>      Override loaded camera position\n");
+		printf("  --camera-forward <x> <y> <z>  Override loaded camera direction\n");
+		printf("  --camera-sweep <amplitude> <warmup> <period>  Headless left/right motion\n");
+		printf("  --camera-sweep-mode <lateral|forward|yaw>  Sweep direction (yaw amplitude is radians)\n");
+		printf("  --capture-every <N>  Save periodic headless sequence frames\n");
 		printf("  --headless           Render N frames, save screenshot, exit\n");
 				printf("  --list               Print what would be loaded, then exit\n");
 			printf("  --verbose            Verbose logging\n");

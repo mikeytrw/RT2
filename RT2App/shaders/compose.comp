@@ -52,7 +52,10 @@ vec4 nrdDecodeNormalRoughness(vec3 p)
     r.z *= 1.0 - abs(r.x) - abs(r.y);
     r.w = abs(t);
     r.xyz = normalize(r.xyz);
-    r.w = clamp(r.w * r.w, 0.0, 1.0);
+    // NRD_ROUGHNESS_ENCODING=1 stores linear roughness directly. The exact
+    // same value must be used for front-end demodulation and back-end
+    // remodulation (NRD.hlsli: NRD_MaterialFactors contract).
+    r.w = clamp(r.w, 0.0, 1.0);
     return r;
 }
 
@@ -131,10 +134,11 @@ void main()
         // can compute it from viewZ and the inverse projection.
         // In view space: surface = (viewX, viewY, viewZ). Camera is at origin.
         // V_view = normalize(-surface_view). Transform to world: V = inverseView * V_view.
+        // Use non-jittered NDC: jitter changes every frame, introducing per-frame
+        // variation in the reconstructed V → per-frame variation in remodulated
+        // specular output → flickering, especially on camera move.
         vec2 ndc = (vec2(pixel.xy) + 0.5) / vec2(size) * 2.0 - 1.0;
-        // Raster storage coordinate pixelCenter represents sample pixelCenter + jitter.
-        vec2 ndcSample = ndc + vec2(camera.forward.w, camera.right.w) * 2.0 / camera.viewportSPP.xy;
-        vec4 viewRay = camera.inverseProjection * vec4(ndcSample, 1.0, 1.0);
+        vec4 viewRay = camera.inverseProjection * vec4(ndc, 1.0, 1.0);
         vec3 viewDir = normalize(vec3(viewRay) / viewRay.w);
         // The surface in view space is at viewDir * |viewZ| (viewZ is negative for camera looking -Z)
         vec3 surfaceView = viewDir * abs(viewZ);

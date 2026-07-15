@@ -17,6 +17,8 @@ layout(set = 1, binding = 7, rgba16f) uniform readonly image2D gDirectEmission;
 layout(set = 1, binding = 8, rgba32f) uniform readonly image2D gPrimHit;
 layout(set = 1, binding = 9, rgba8)  uniform readonly image2D gPrimGeoNormal;
 layout(set = 1, binding = 10, rg16f) uniform readonly image2D gPrimUV;
+layout(set = 1, binding = SI_BINDING_G_DIFF_RADIANCE, rgba16f) uniform readonly image2D gDiffRadianceHitDist;
+layout(set = 1, binding = SI_BINDING_G_SPEC_RADIANCE, rgba16f) uniform readonly image2D gSpecRadianceHitDist;
 
 // Reservoir buffer (set 0, binding 14) — shared with PathTracePass set 0 layout
 // restir_shared.glsl needs bindings + helpers that gbuffer_debug doesn't have.
@@ -105,8 +107,14 @@ vec4 nrdDecodeNormalRoughness(vec3 p)
     r.z *= 1.0 - abs(r.x) - abs(r.y);
     r.w = abs(t);
     r.xyz = normalize(r.xyz);
-    r.w = clamp(r.w * r.w, 0.0, 1.0);
+    r.w = clamp(r.w, 0.0, 1.0); // NRD_ROUGHNESS_ENCODING=1 (LINEAR)
     return r;
+}
+
+vec3 debugYCoCgToLinear(vec3 ycocg)
+{
+    float t = ycocg.x - ycocg.z;
+    return max(vec3(t + ycocg.y, ycocg.x + ycocg.z, t - ycocg.y), vec3(0.0));
 }
 
 void main()
@@ -132,7 +140,7 @@ void main()
             color = decoded.xyz * 0.5 + 0.5;
             break;
         }
-        case 1: { // roughness (decoded from oct-packed SQRT_LINEAR)
+        case 1: { // roughness (decoded from oct-packed LINEAR)
             vec4 nr = imageLoad(gNormalRoughness, pixel);
             vec4 decoded = nrdDecodeNormalRoughness(nr.xyz);
             color = vec3(decoded.w);
@@ -292,6 +300,23 @@ void main()
                 color.g = clamp(log(giTargetPdf(r) + 1.0) * 0.1, 0.0, 1.0);
                 color.b = clamp(log(giWeightSum(r) + 1.0) * 0.02, 0.0, 1.0);
             }
+            break;
+        }
+        case 19: { // packed NRD diffuse input, decoded and compressed for display
+            vec3 radiance = debugYCoCgToLinear(imageLoad(gDiffRadianceHitDist, pixel).rgb);
+            color = radiance / (vec3(1.0) + radiance);
+            break;
+        }
+        case 20: { // packed NRD specular input, decoded and compressed for display
+            vec3 radiance = debugYCoCgToLinear(imageLoad(gSpecRadianceHitDist, pixel).rgb);
+            color = radiance / (vec3(1.0) + radiance);
+            break;
+        }
+        case 21: { // ReSTIR DI normalization weight W
+            uint w = uint(size.x);
+            Reservoir res = sanitizeReservoir(reservoirs[pixel.y * w + pixel.x]);
+            if (reservoirValid(res))
+                color = vec3(clamp(log2(1.0 + reservoirW(res)) / 16.0, 0.0, 1.0));
             break;
         }
     }

@@ -94,9 +94,12 @@ void FrameRenderer::RecordUBOUpdates(VkCommandBuffer cmd, Context& ctx)
 
 	// NRD UBO: nrdEnabled, lobeDither, restirGIEnabled, restirGIReservoirIndex.
 	// The spare fields are repurposed for GI control without growing the UBO.
+	// When NRD is off, force lobe dither to 0 (white noise) — Bayer/IGN dithering
+	// is only needed for NRD's hit-distance reconstruction of skipped lobes.
+	uint32_t effectiveLobeDither = ctx.nrdEnabled ? (uint32_t)ctx.lobeDither : 0u;
 	SINRDUniformData nrdData = {
 		ctx.nrdEnabled ? 1u : 0u,
-		(uint32_t)ctx.lobeDither,
+		effectiveLobeDither,
 		ctx.restirGIEnabled ? 1u : 0u,
 		ctx.giReservoirIndex
 	};
@@ -411,7 +414,8 @@ void FrameRenderer::RecordReSTIRGIPass(VkCommandBuffer cmd, Context& ctx)
 
 void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 {
-	if (ctx.gbufferDebugMode >= 0 && ctx.gbufferDebugPass.IsAvailable())
+    if (ctx.gbufferDebugMode >= 0 && ctx.gbufferDebugMode < 19 &&
+        ctx.gbufferDebugPass.IsAvailable())
 	{
 		ctx.gbufferDebugPass.Record(cmd, ctx.width, ctx.height,
 		                          ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
@@ -425,6 +429,40 @@ void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 	ctx.pathTracePass.Record(cmd, ctx.width, ctx.height, ctx.gbufferSet, useRasterFirst);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::RTShading, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
+
+	// Modes 19-20 inspect the packed NRD inputs produced by raster-first RT
+	// shading. Run them after the RT dispatch and before NRD consumes the images.
+	if (ctx.gbufferDebugMode >= 19 && ctx.gbufferDebugMode <= 21 &&
+	    ctx.gbufferDebugPass.IsAvailable())
+	{
+		VkImage debugImages[] = {
+			ctx.gbuffer.GetColor(GBufferTarget::DIFF_RADIANCE).image,
+			ctx.gbuffer.GetColor(GBufferTarget::SPEC_RADIANCE).image
+		};
+		VkImageMemoryBarrier barriers[2] = {};
+		for (int i = 0; i < 2; ++i)
+		{
+			barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			barriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			barriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			barriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			barriers[i].image = debugImages[i];
+			barriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			barriers[i].subresourceRange.levelCount = 1;
+			barriers[i].subresourceRange.layerCount = 1;
+		}
+		vkCmdPipelineBarrier(cmd,
+		                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+		                     VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+		                     0, nullptr, 0, nullptr, 2, barriers);
+		ctx.gbufferDebugPass.Record(cmd, ctx.width, ctx.height,
+		                            ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
+		                            (uint32_t)ctx.gbufferDebugMode);
+		return;
+	}
 
 	if (ctx.nrdEnabled && ctx.nrd.IsAvailable() && useRasterFirst)
 		RecordNRDAndCompose(cmd, ctx);
