@@ -86,14 +86,19 @@ vkCmdBeginRendering (dynamic rendering, 8 color attachments + depth)
 
 vkCmdBindPipeline (opaque or masked)
 vkCmdBindDescriptorSets (set 0: scene, set 1: G-buffer)
-vkCmdBindVertexBuffers (mega vertex buffer: {vec3 pos, vec2 uv, vec3 tangent})
-vkCmdDrawIndirect (opaque draws, then masked draws)
+vkCmdBindVertexBuffers (indexed mega vertex buffer: position, UV, normal, tangent)
+vkCmdBindIndexBuffer (uint32 mega index buffer)
+vkCmdDrawIndexedIndirect (opaque draws, then masked draws)
 vkCmdEndRendering
 ```
 
 **Output**: 8 G-buffer images filled with primary-hit data. The rasterizer
 handles primary visibility (cheaper than RT), jitter (vertex shader offsets
 clip-space position), and motion vectors (reprojection of prev-world-pos).
+OBJ import deduplicates position/normal/UV index tuples, and the raster pass
+preserves mesh indices instead of expanding every triangle corner into a new
+vertex. Primitive order remains unchanged so per-triangle material lookup via
+`gl_PrimitiveID` still matches the ray-tracing buffers.
 
 **Barrier after**: G-buffer images transition to SHADER_READ for RT pass.
 
@@ -299,11 +304,14 @@ boundaries:
 |--------|-----------------|
 | Frame | Total GPU frame time |
 | Raster | G-buffer pass (vertex + fragment) |
-| ReSTIRTemporal | DI temporal + GI temporal candidate/reuse dispatch |
-| ReSTIRSpatial | DI spatial neighbor reuse dispatch |
+| ReSTIR DI Temporal | DI candidate generation and temporal reuse |
+| ReSTIR DI Spatial | DI spatial neighbor reuse |
+| ReSTIR GI Temporal | GI fresh candidates, ray-query evaluation, and temporal re-evaluation |
+| ReSTIR GI History | GI receiver-history write dispatch |
 | RTShading | Ray tracing dispatch (secondary rays + bounces) |
 | NRD | NRD denoise passes |
 | Compose | Compose compute dispatch |
+| Tonemap | Linear HDR to display-image compute dispatch |
 
 ---
 

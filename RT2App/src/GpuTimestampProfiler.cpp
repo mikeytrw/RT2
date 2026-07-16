@@ -4,6 +4,25 @@
 #include "VulkanUtils.h"
 #include <vector>
 
+const char* GpuTimestampProfiler::RegionName(Region region)
+{
+	switch (region)
+	{
+	case Region::Frame:             return "GPU Frame";
+	case Region::Raster:            return "Raster";
+	case Region::ReSTIRDITemporal:  return "ReSTIR DI Temporal";
+	case Region::ReSTIRDISpatial:   return "ReSTIR DI Spatial";
+	case Region::ReSTIRGITemporal:  return "ReSTIR GI Temporal";
+	case Region::ReSTIRGIHistory:   return "ReSTIR GI History";
+	case Region::RTShading:         return "RT Shading";
+	case Region::NRD:               return "NRD";
+	case Region::Compose:           return "Compose";
+	case Region::Tonemap:           return "Tonemap";
+	case Region::Count:             break;
+	}
+	return "Unknown";
+}
+
 bool GpuTimestampProfiler::Init(const GpuDevice& gpu, uint32_t frameSlotCount)
 {
 	if (m_QueryPool || frameSlotCount == 0 || frameSlotCount > m_Slots.size())
@@ -91,7 +110,11 @@ void GpuTimestampProfiler::ReadCompletedSlot(VkDevice device, uint32_t frameSlot
 		timings.validMask |= 1u << region;
 		timings.milliseconds[region] = float(TickDelta(values[0], values[1]) * double(m_TimestampPeriod) / 1000000.0);
 	}
-	m_Latest = timings;
+	// Flushing more than one completed frame slot can encounter them out of
+	// ring order. Never let an older slot replace a newer measurement.
+	if (timings.validMask != 0 &&
+	    (m_Latest.validMask == 0 || timings.frameIndex >= m_Latest.frameIndex))
+		m_Latest = timings;
 	slot.submitted = false;
 }
 
@@ -103,27 +126,47 @@ void GpuTimestampProfiler::BeginFrame(VkCommandBuffer cmd, uint32_t frameSlot, u
 	Slot& slot = m_Slots[frameSlot];
 	slot.frameIndex = frameIndex;
 	slot.issuedMask = 0;
+	slot.activeMask = 0;
 	m_ActiveFrameSlot = frameSlot;
 	vkCmdResetQueryPool(cmd, m_QueryPool, frameSlot * QueriesPerSlot, QueriesPerSlot);
 }
 
 void GpuTimestampProfiler::EndFrame(uint32_t frameSlot)
 {
-	if (IsAvailable() && frameSlot < m_FrameSlotCount)
-		m_Slots[frameSlot].submitted = true;
+	if (!IsAvailable() || frameSlot >= m_FrameSlotCount)
+		return;
+	Slot& slot = m_Slots[frameSlot];
+	if (slot.activeMask != 0)
+		RT_LOG("[GpuTiming] frame ended with active timestamp regions: 0x%x", slot.activeMask);
+	slot.activeMask = 0;
+	slot.submitted = true;
 }
 
 void GpuTimestampProfiler::BeginRegion(VkCommandBuffer cmd, Region region, VkPipelineStageFlagBits stage)
 {
 	if (!IsAvailable())
 		return;
+	Slot& slot = m_Slots[m_ActiveFrameSlot];
+	const uint32_t bit = 1u << static_cast<uint32_t>(region);
+	if ((slot.issuedMask & bit) != 0 || (slot.activeMask & bit) != 0)
+	{
+		RT_LOG("[GpuTiming] duplicate region in frame %llu: %s",
+		       static_cast<unsigned long long>(slot.frameIndex), RegionName(region));
+		return;
+	}
 	vkCmdWriteTimestamp(cmd, stage, m_QueryPool, QueryIndex(m_ActiveFrameSlot, region, false));
+	slot.activeMask |= bit;
 }
 
 void GpuTimestampProfiler::EndRegion(VkCommandBuffer cmd, Region region, VkPipelineStageFlagBits stage)
 {
 	if (!IsAvailable())
 		return;
+	Slot& slot = m_Slots[m_ActiveFrameSlot];
+	const uint32_t bit = 1u << static_cast<uint32_t>(region);
+	if ((slot.activeMask & bit) == 0)
+		return;
 	vkCmdWriteTimestamp(cmd, stage, m_QueryPool, QueryIndex(m_ActiveFrameSlot, region, true));
-	m_Slots[m_ActiveFrameSlot].issuedMask |= 1u << static_cast<uint32_t>(region);
+	slot.activeMask &= ~bit;
+	slot.issuedMask |= bit;
 }

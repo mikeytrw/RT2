@@ -109,6 +109,15 @@ void RendererGPU::Destroy()
 	m_Initialized = false;
 }
 
+void RendererGPU::FlushGpuTimings()
+{
+	if (!m_Initialized || !m_GpuProfiler.IsAvailable())
+		return;
+	vkDeviceWaitIdle(m_Device.device);
+	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+		m_GpuProfiler.ReadCompletedSlot(m_Device.device, i);
+}
+
 void RendererGPU::CreateOutputImage()
 {
 	VkDevice device = m_Device.device;
@@ -544,6 +553,8 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	    m_Settings.nrdLobeDither != newSettings.nrdLobeDither ||
 	    m_Settings.nrdMaxBlurRadius != newSettings.nrdMaxBlurRadius ||
 	    m_Settings.nrdMaxAccumFrames != newSettings.nrdMaxAccumFrames ||
+	    m_Settings.nrdResponsiveRoughnessThreshold != newSettings.nrdResponsiveRoughnessThreshold ||
+	    m_Settings.nrdResponsiveMinAccumFrames != newSettings.nrdResponsiveMinAccumFrames ||
 	    m_Settings.nrdAntiFirefly != newSettings.nrdAntiFirefly ||
 	    m_Settings.nrdSplitScreen != newSettings.nrdSplitScreen ||
 	    m_Settings.nrdJitterEnabled != newSettings.nrdJitterEnabled ||
@@ -845,6 +856,8 @@ void RendererGPU::Render(const Camera& camera)
 		m_Settings.gbufferDebugMode,
 		m_Settings.nrdMaxBlurRadius,
 		m_Settings.nrdMaxAccumFrames,
+		m_Settings.nrdResponsiveRoughnessThreshold,
+		m_Settings.nrdResponsiveMinAccumFrames,
 		m_Settings.nrdAntiFirefly,
 		m_Settings.nrdSplitScreen,
 		m_NRDJitter,

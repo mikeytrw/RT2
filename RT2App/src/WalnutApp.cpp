@@ -127,11 +127,12 @@ public:
 		const auto& timings = m_RendererGPU.GetGpuTimings();
 		if (timings.validMask != 0)
 		{
-			static const char* timingNames[] = { "GPU Frame", "Raster", "ReSTIR Temporal", "ReSTIR Spatial", "RT Shading", "NRD", "Compose" };
 			ImGui::Text("GPU timings (frame %llu)", static_cast<unsigned long long>(timings.frameIndex));
 			for (uint32_t i = 0; i < static_cast<uint32_t>(GpuTimestampProfiler::Region::Count); i++)
 				if (timings.validMask & (1u << i))
-					ImGui::Text("  %s: %.3f ms", timingNames[i], timings.milliseconds[i]);
+					ImGui::Text("  %s: %.3f ms",
+					            GpuTimestampProfiler::RegionName(static_cast<GpuTimestampProfiler::Region>(i)),
+					            timings.milliseconds[i]);
 		}
 	}
 
@@ -174,8 +175,15 @@ public:
 	}
 	ImGui::Separator();
 	ImGui::Text("Samples Per Pixel");
+	ImGui::BeginDisabled(m_Settings.rasterFirst);
 	if (ImGui::DragInt("SPP", &m_Settings.spp, 1.0f, 1, 1500))
 		m_RendererGPU.ApplySettings(m_Settings);
+	ImGui::EndDisabled();
+	if (m_Settings.rasterFirst)
+	{
+		ImGui::SameLine();
+		ImGui::TextDisabled("(unused by raster-first)");
+	}
 	ImGui::Text("Sample Depth");
 	if (ImGui::DragInt("Bounces", &m_Settings.maxBounces, 1.0f, 2, 100))
 		m_RendererGPU.ApplySettings(m_Settings);
@@ -287,6 +295,12 @@ public:
 		ImGui::EndDisabled();
 		ImGui::SliderFloat("Blur Radius", &m_Settings.nrdMaxBlurRadius, 1.0f, 50.0f, "%.1f");
 		ImGui::SliderInt("Accum Frames", &m_Settings.nrdMaxAccumFrames, 1, nrd::REBLUR_MAX_HISTORY_FRAME_NUM);
+		ImGui::SliderFloat("Responsive Roughness", &m_Settings.nrdResponsiveRoughnessThreshold, 0.0f, 1.0f, "%.3f");
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Below this roughness, REBLUR shortens history. Set to 0 to disable.");
+		ImGui::SliderInt("Responsive Min Frames", &m_Settings.nrdResponsiveMinAccumFrames, 0, 3);
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Minimum glossy-history length when responsive accumulation is active.");
 		ImGui::Checkbox("Anti-Firefly", &m_Settings.nrdAntiFirefly);
 		const char* ditherOptions[] = { "Off (white noise)", "Bayer 4x4", "Interleaved Gradient" };
 		int& dither = m_Settings.nrdLobeDither;
@@ -668,6 +682,23 @@ private:
 				else if (periodicFrame)
 					saveOutput(sequencePath("move", i + 1));
 			}
+		}
+
+		if (m_RendererGPU.IsAvailable() && m_RendererGPU.HasGpuTimings())
+		{
+			m_RendererGPU.FlushGpuTimings();
+			const auto& timings = m_RendererGPU.GetGpuTimings();
+			printf("[Headless] GPU timings (frame %llu)\n",
+			       static_cast<unsigned long long>(timings.frameIndex));
+			for (uint32_t i = 0; i < static_cast<uint32_t>(GpuTimestampProfiler::Region::Count); i++)
+			{
+				if ((timings.validMask & (1u << i)) == 0)
+					continue;
+				printf("[Headless]   %s: %.3f ms\n",
+				       GpuTimestampProfiler::RegionName(static_cast<GpuTimestampProfiler::Region>(i)),
+				       timings.milliseconds[i]);
+			}
+			fflush(stdout);
 		}
 
 		if (g_CLI.hasOutput() && m_RendererGPU.IsAvailable())

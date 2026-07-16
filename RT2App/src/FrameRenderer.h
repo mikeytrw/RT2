@@ -68,6 +68,8 @@ public:
 		// NRD settings
 		float nrdMaxBlurRadius;
 		int nrdMaxAccumFrames;
+		float nrdResponsiveRoughnessThreshold;
+		int nrdResponsiveMinAccumFrames;
 		bool nrdAntiFirefly;
 		float nrdSplitScreen;
 		glm::vec2 nrdJitter;

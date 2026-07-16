@@ -13,11 +13,14 @@ public:
 	{
 		Frame,
 		Raster,
-		ReSTIRTemporal,
-		ReSTIRSpatial,
+		ReSTIRDITemporal,
+		ReSTIRDISpatial,
+		ReSTIRGITemporal,
+		ReSTIRGIHistory,
 		RTShading,
 		NRD,
 		Compose,
+		Tonemap,
 		Count
 	};
 
@@ -33,6 +36,7 @@ public:
 
 	bool IsAvailable() const { return m_QueryPool != VK_NULL_HANDLE; }
 	const Timings& GetLatest() const { return m_Latest; }
+	static const char* RegionName(Region region);
 
 	// Call only after the slot's render fence has signaled, before re-recording it.
 	void ReadCompletedSlot(VkDevice device, uint32_t frameSlot);
@@ -50,6 +54,7 @@ private:
 	{
 		uint64_t frameIndex = 0;
 		uint32_t issuedMask = 0;
+		uint32_t activeMask = 0;
 		bool submitted = false;
 	};
 

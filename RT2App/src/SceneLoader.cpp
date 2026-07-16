@@ -48,6 +48,7 @@ bool DecodeImageData(tinygltf::Image *image, const int image_idx,
 #include <functional>
 #include <cstring>
 #include <algorithm>
+#include <unordered_map>
 #include <cmath>
 #include <unordered_map>
 
@@ -1797,7 +1798,46 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
     std::vector<float>    megaUVs;
     std::vector<uint32_t> megaMaterialIds;
 
-    uint32_t vertBase = 0;
+    // OBJ uses separate indices for position, normal, and texture coordinate.
+    // Build one indexed vertex for each unique attribute tuple instead of
+    // expanding every triangle corner into a new vertex. Large architectural
+    // scenes otherwise become multi-gigabyte triangle-soup buffers and make
+    // the raster-first G-buffer pass vertex-bound.
+    struct ObjVertexKey
+    {
+        int vertex;
+        int normal;
+        int texcoord;
+
+        bool operator==(const ObjVertexKey& other) const
+        {
+            return vertex == other.vertex && normal == other.normal && texcoord == other.texcoord;
+        }
+    };
+    struct ObjVertexKeyHash
+    {
+        size_t operator()(const ObjVertexKey& key) const
+        {
+            size_t h = std::hash<int>{}(key.vertex);
+            h ^= std::hash<int>{}(key.normal) + size_t(0x9e3779b9u) + (h << 6) + (h >> 2);
+            h ^= std::hash<int>{}(key.texcoord) + size_t(0x9e3779b9u) + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+
+    std::unordered_map<ObjVertexKey, uint32_t, ObjVertexKeyHash> vertexCache;
+    vertexCache.max_load_factor(0.8f);
+    vertexCache.reserve(attrib.vertices.size() / 3);
+
+    size_t cornerCount = 0;
+    size_t triangleCount = 0;
+    for (const auto& shape : shapes)
+    {
+        cornerCount += shape.mesh.indices.size();
+        triangleCount += shape.mesh.num_face_vertices.size();
+    }
+    megaIndices.reserve(cornerCount);
+    megaMaterialIds.reserve(triangleCount);
 
     printf("[SceneLoader] OBJ: merging %d shapes...\n", (int)shapes.size());
     fflush(stdout);
@@ -1819,6 +1859,17 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
             for (size_t v = 0; v < fv; v++)
             {
                 tinyobj::index_t idx = shape.mesh.indices[f * fv + v];
+
+                ObjVertexKey key = { idx.vertex_index, idx.normal_index, idx.texcoord_index };
+                auto cached = vertexCache.find(key);
+                if (cached != vertexCache.end())
+                {
+                    megaIndices.push_back(cached->second);
+                    continue;
+                }
+
+                uint32_t unifiedIndex = static_cast<uint32_t>(megaVertices.size() / 3);
+                vertexCache.emplace(key, unifiedIndex);
 
                 int vi = idx.vertex_index;
                 if (vi >= 0)
@@ -1862,14 +1913,16 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
                     megaUVs.push_back(0.0f);
                 }
 
-                megaIndices.push_back(vertBase++);
+                megaIndices.push_back(unifiedIndex);
             }
 
             megaMaterialIds.push_back(static_cast<uint32_t>(shapeMatIdx));
         }
     }
 
-    printf("[SceneLoader] OBJ: merge done, %d verts, %d indices\n", (int)megaVertices.size() / 3, (int)megaIndices.size());
+    printf("[SceneLoader] OBJ: merge done, %d indexed verts, %d corners (%.2fx reuse)\n",
+           (int)megaVertices.size() / 3, (int)megaIndices.size(),
+           megaVertices.empty() ? 0.0 : double(megaIndices.size()) / double(megaVertices.size() / 3));
     fflush(stdout);
 
     // Create one MeshData for the mega-mesh

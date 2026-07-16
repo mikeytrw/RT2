@@ -30,6 +30,8 @@ public:
 	                       uint32_t frameIndex, bool reset, float splitScreen = 0.0f);
 
 	void SetReblurSettings(float maxBlurRadius, uint32_t maxAccumulatedFrameNum,
+	                       float responsiveRoughnessThreshold,
+	                       uint32_t responsiveMinAccumulatedFrameNum,
 	                       bool enableAntiFirefly, float splitScreen);
 
 	void Denoise(VkCommandBuffer cmdBuffer,

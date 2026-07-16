@@ -202,11 +202,24 @@ void RasterPass::CreateVertexBuffers(const GpuDevice& dev, const GPUSceneData& s
 	// Build a single mega-vertex buffer with all meshes concatenated.
 	// Per-triangle non-indexed (3 vertices per triangle, 12 floats per vertex).
 	std::vector<float> megaVerts;
+	std::vector<uint32_t> megaIndices;
 	m_MeshVertexOffsets.resize(scene.meshes.size());
+	m_MeshIndexOffsets.resize(scene.meshes.size());
+
+	size_t totalVertexCount = 0;
+	size_t totalIndexCount = 0;
+	for (const auto& mesh : scene.meshes)
+	{
+		totalVertexCount += mesh.vertices->size() / 3;
+		totalIndexCount += mesh.indices->size();
+	}
+	megaVerts.reserve(totalVertexCount * 12);
+	megaIndices.reserve(totalIndexCount);
 
 	for (size_t m = 0; m < scene.meshes.size(); m++)
 	{
 		m_MeshVertexOffsets[m] = static_cast<uint32_t>(megaVerts.size() / 12);
+		m_MeshIndexOffsets[m] = static_cast<uint32_t>(megaIndices.size());
 
 		const auto& mesh = scene.meshes[m];
 		const auto& verts = *mesh.vertices;
@@ -214,93 +227,111 @@ void RasterPass::CreateVertexBuffers(const GpuDevice& dev, const GPUSceneData& s
 		const auto& uvs = mesh.uvs ? *mesh.uvs : std::vector<float>{};
 		const auto& normals = mesh.normals ? *mesh.normals : std::vector<float>{};
 		const auto& tangents = mesh.tangents ? *mesh.tangents : std::vector<float>{};
-		uint32_t triCount = static_cast<uint32_t>(idxs.size() / 3);
-		for (uint32_t t = 0; t < triCount; t++)
+		uint32_t vertexCount = static_cast<uint32_t>(verts.size() / 3);
+		for (uint32_t idx = 0; idx < vertexCount; idx++)
 		{
-			for (int v = 0; v < 3; v++)
+			uint32_t vi = idx * 3;
+			megaVerts.push_back(verts[vi]);
+			megaVerts.push_back(verts[vi + 1]);
+			megaVerts.push_back(verts[vi + 2]);
+			if (idx * 2 + 1 < uvs.size())
 			{
-				uint32_t idx = idxs[t * 3 + v];
-				uint32_t vi = idx * 3;
-				megaVerts.push_back(verts[vi]);
-				megaVerts.push_back(verts[vi + 1]);
-				megaVerts.push_back(verts[vi + 2]);
-				if (!uvs.empty())
-				{
-					uint32_t ui = idx * 2;
-					megaVerts.push_back(uvs[ui]);
-					megaVerts.push_back(uvs[ui + 1]);
-				}
-				else
-				{
-					megaVerts.push_back(0.0f);
-					megaVerts.push_back(0.0f);
-				}
-				if (!normals.empty())
-				{
-					uint32_t ni = idx * 3;
-					megaVerts.push_back(normals[ni]);
-					megaVerts.push_back(normals[ni + 1]);
-					megaVerts.push_back(normals[ni + 2]);
-				}
-				else
-				{
-					megaVerts.insert(megaVerts.end(), { 0.0f, 0.0f, 0.0f });
-				}
-				if (!tangents.empty())
-				{
-					uint32_t ti = idx * 4;
-					megaVerts.push_back(tangents[ti]);
-					megaVerts.push_back(tangents[ti + 1]);
-					megaVerts.push_back(tangents[ti + 2]);
-					megaVerts.push_back(tangents[ti + 3]);
-				}
-				else
-				{
-					megaVerts.insert(megaVerts.end(), { 1.0f, 0.0f, 0.0f, 1.0f });
-				}
+				megaVerts.push_back(uvs[idx * 2]);
+				megaVerts.push_back(uvs[idx * 2 + 1]);
+			}
+			else
+			{
+				megaVerts.push_back(0.0f);
+				megaVerts.push_back(0.0f);
+			}
+			if (idx * 3 + 2 < normals.size())
+			{
+				megaVerts.push_back(normals[idx * 3]);
+				megaVerts.push_back(normals[idx * 3 + 1]);
+				megaVerts.push_back(normals[idx * 3 + 2]);
+			}
+			else
+			{
+				megaVerts.insert(megaVerts.end(), { 0.0f, 0.0f, 0.0f });
+			}
+			if (idx * 4 + 3 < tangents.size())
+			{
+				megaVerts.push_back(tangents[idx * 4]);
+				megaVerts.push_back(tangents[idx * 4 + 1]);
+				megaVerts.push_back(tangents[idx * 4 + 2]);
+				megaVerts.push_back(tangents[idx * 4 + 3]);
+			}
+			else
+			{
+				megaVerts.insert(megaVerts.end(), { 1.0f, 0.0f, 0.0f, 1.0f });
 			}
 		}
+		megaIndices.insert(megaIndices.end(), idxs.begin(), idxs.end());
 	}
 
-	VkDeviceSize bufSize = megaVerts.size() * sizeof(float);
-	if (bufSize == 0) return;
+	VkDeviceSize vertexBufferSize = megaVerts.size() * sizeof(float);
+	VkDeviceSize indexBufferSize = megaIndices.size() * sizeof(uint32_t);
+	if (vertexBufferSize == 0 || indexBufferSize == 0) return;
 
 	// Staging buffer (host-visible) → device-local vertex buffer
-	VkBuffer stagingBuffer;
-	VkDeviceMemory stagingMemory;
-	GpuResources::CreateBuffer(dev, bufSize,
+	VkBuffer vertexStagingBuffer;
+	VkDeviceMemory vertexStagingMemory;
+	GpuResources::CreateBuffer(dev, vertexBufferSize,
 	             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
 	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-	             stagingBuffer, stagingMemory);
+	             vertexStagingBuffer, vertexStagingMemory);
 
 	void* data;
-	vkMapMemory(dev.device, stagingMemory, 0, bufSize, 0, &data);
-	memcpy(data, megaVerts.data(), bufSize);
-	vkUnmapMemory(dev.device, stagingMemory);
+	vkMapMemory(dev.device, vertexStagingMemory, 0, vertexBufferSize, 0, &data);
+	memcpy(data, megaVerts.data(), vertexBufferSize);
+	vkUnmapMemory(dev.device, vertexStagingMemory);
 
-	GpuResources::CreateBuffer(dev, bufSize,
+	GpuResources::CreateBuffer(dev, vertexBufferSize,
 	             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
 	             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 	             m_MegaVertexBuffer, m_MegaVertexMemory);
 
+	VkBuffer indexStagingBuffer;
+	VkDeviceMemory indexStagingMemory;
+	GpuResources::CreateBuffer(dev, indexBufferSize,
+	             VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+	             indexStagingBuffer, indexStagingMemory);
+	vkMapMemory(dev.device, indexStagingMemory, 0, indexBufferSize, 0, &data);
+	memcpy(data, megaIndices.data(), indexBufferSize);
+	vkUnmapMemory(dev.device, indexStagingMemory);
+
+	GpuResources::CreateBuffer(dev, indexBufferSize,
+	             VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+	             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+	             m_MegaIndexBuffer, m_MegaIndexMemory);
+
 	CommandUtils::ImmediateSubmit(dev, [&](VkCommandBuffer cmd) {
-		VkBufferCopy region = {};
-		region.size = bufSize;
-		vkCmdCopyBuffer(cmd, stagingBuffer, m_MegaVertexBuffer, 1, &region);
+		VkBufferCopy vertexCopy = {};
+		vertexCopy.size = vertexBufferSize;
+		vkCmdCopyBuffer(cmd, vertexStagingBuffer, m_MegaVertexBuffer, 1, &vertexCopy);
+		VkBufferCopy indexCopy = {};
+		indexCopy.size = indexBufferSize;
+		vkCmdCopyBuffer(cmd, indexStagingBuffer, m_MegaIndexBuffer, 1, &indexCopy);
 	});
 
-	GpuResources::DestroyBuffer(dev, stagingBuffer, stagingMemory);
+	GpuResources::DestroyBuffer(dev, vertexStagingBuffer, vertexStagingMemory);
+	GpuResources::DestroyBuffer(dev, indexStagingBuffer, indexStagingMemory);
 
-	RT_LOG("[RasterPass] Mega vertex buffer: %zu bytes, %zu meshes",
-	       (size_t)bufSize, scene.meshes.size());
+	RT_LOG("[RasterPass] Indexed mega-mesh: %zu vertex bytes, %zu index bytes, %zu meshes",
+	       (size_t)vertexBufferSize, (size_t)indexBufferSize, scene.meshes.size());
 }
 
 void RasterPass::DestroyVertexBuffers()
 {
 	GpuResources::DestroyBuffer(m_Device, m_MegaVertexBuffer, m_MegaVertexMemory);
+	GpuResources::DestroyBuffer(m_Device, m_MegaIndexBuffer, m_MegaIndexMemory);
 	m_MegaVertexBuffer = VK_NULL_HANDLE;
 	m_MegaVertexMemory = VK_NULL_HANDLE;
+	m_MegaIndexBuffer = VK_NULL_HANDLE;
+	m_MegaIndexMemory = VK_NULL_HANDLE;
 	m_MeshVertexOffsets.clear();
+	m_MeshIndexOffsets.clear();
 }
 
 void RasterPass::CreateDrawData(const GpuDevice& dev, const GPUSceneData& scene)
@@ -312,8 +343,8 @@ void RasterPass::CreateDrawData(const GpuDevice& dev, const GPUSceneData& scene)
 
 	// Split instances into opaque (alphaMode 0) and masked (alphaMode 1).
 	// BLEND (alphaMode 2) goes into masked pass too (no depth write).
-	std::vector<VkDrawIndirectCommand> opaqueCmds;
-	std::vector<VkDrawIndirectCommand> maskedCmds;
+	std::vector<VkDrawIndexedIndirectCommand> opaqueCmds;
+	std::vector<VkDrawIndexedIndirectCommand> maskedCmds;
 	opaqueCmds.reserve(totalInstances);
 	maskedCmds.reserve(totalInstances);
 
@@ -325,21 +356,22 @@ void RasterPass::CreateDrawData(const GpuDevice& dev, const GPUSceneData& scene)
 			effMatIdx = 0;
 		float alphaMode = scene.materials[effMatIdx].alphaMode;
 
-		VkDrawIndirectCommand cmd = {};
+		VkDrawIndexedIndirectCommand cmd = {};
 		cmd.firstInstance = i;
 		cmd.instanceCount = 1;
 
-		if (inst.meshIndex < m_MeshVertexOffsets.size())
+		if (inst.meshIndex < m_MeshVertexOffsets.size() &&
+		    inst.meshIndex < m_MeshIndexOffsets.size())
 		{
-			uint32_t meshOffset = m_MeshVertexOffsets[inst.meshIndex];
-			uint32_t triCount = static_cast<uint32_t>(scene.meshes[inst.meshIndex].indices->size() / 3);
-			cmd.vertexCount = triCount * 3;
-			cmd.firstVertex = meshOffset;
+			cmd.indexCount = static_cast<uint32_t>(scene.meshes[inst.meshIndex].indices->size());
+			cmd.firstIndex = m_MeshIndexOffsets[inst.meshIndex];
+			cmd.vertexOffset = static_cast<int32_t>(m_MeshVertexOffsets[inst.meshIndex]);
 		}
 		else
 		{
-			cmd.vertexCount = 0;
-			cmd.firstVertex = 0;
+			cmd.indexCount = 0;
+			cmd.firstIndex = 0;
+			cmd.vertexOffset = 0;
 		}
 
 		if (alphaMode < 0.5f)
@@ -348,11 +380,11 @@ void RasterPass::CreateDrawData(const GpuDevice& dev, const GPUSceneData& scene)
 			maskedCmds.push_back(cmd);
 	}
 
-	auto createDrawBuffer = [&](const std::vector<VkDrawIndirectCommand>& cmds,
+	auto createDrawBuffer = [&](const std::vector<VkDrawIndexedIndirectCommand>& cmds,
 	                            VkBuffer& buf, VkDeviceMemory& mem, uint32_t& count) {
 		count = static_cast<uint32_t>(cmds.size());
 		if (count == 0) return;
-		VkDeviceSize bufSize = cmds.size() * sizeof(VkDrawIndirectCommand);
+		VkDeviceSize bufSize = cmds.size() * sizeof(VkDrawIndexedIndirectCommand);
 		GpuResources::CreateBuffer(dev, bufSize,
 		             VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
 		             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
@@ -447,27 +479,29 @@ void RasterPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 	VkDeviceSize offsets[] = { 0 };
 
 	// Pass 1: opaque instances (depth write ON)
-	if (m_MegaVertexBuffer && m_OpaqueDrawCount > 0)
+	if (m_MegaVertexBuffer && m_MegaIndexBuffer && m_OpaqueDrawCount > 0)
 	{
 		vkCmdBindVertexBuffers(cmd, 0, 1, &m_MegaVertexBuffer, offsets);
+		vkCmdBindIndexBuffer(cmd, m_MegaIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout,
 		                        0, 1, &sceneSet, 0, nullptr);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout,
 		                        1, 1, &gbufferSet, 0, nullptr);
-		vkCmdDrawIndirect(cmd, m_OpaqueDrawBuffer, 0, m_OpaqueDrawCount, sizeof(VkDrawIndirectCommand));
+		vkCmdDrawIndexedIndirect(cmd, m_OpaqueDrawBuffer, 0, m_OpaqueDrawCount, sizeof(VkDrawIndexedIndirectCommand));
 	}
 
 	// Pass 2: masked/blend instances (depth write OFF — discard'd fragments don't occlude)
-	if (m_MegaVertexBuffer && m_MaskedDrawCount > 0)
+	if (m_MegaVertexBuffer && m_MegaIndexBuffer && m_MaskedDrawCount > 0)
 	{
 		vkCmdBindVertexBuffers(cmd, 0, 1, &m_MegaVertexBuffer, offsets);
+		vkCmdBindIndexBuffer(cmd, m_MegaIndexBuffer, 0, VK_INDEX_TYPE_UINT32);
 		vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_MaskedPipeline);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout,
 		                        0, 1, &sceneSet, 0, nullptr);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_PipelineLayout,
 		                        1, 1, &gbufferSet, 0, nullptr);
-		vkCmdDrawIndirect(cmd, m_MaskedDrawBuffer, 0, m_MaskedDrawCount, sizeof(VkDrawIndirectCommand));
+		vkCmdDrawIndexedIndirect(cmd, m_MaskedDrawBuffer, 0, m_MaskedDrawCount, sizeof(VkDrawIndexedIndirectCommand));
 	}
 
 	vkCmdEndRendering(cmd);

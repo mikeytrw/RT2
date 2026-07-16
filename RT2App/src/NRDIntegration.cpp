@@ -1,6 +1,8 @@
 #include "NRDIntegration.h"
 #include "RTLog.h"
 
+#include <algorithm>
+
 // Include NRI + NRD headers
 #include "NRI.h"
 #include "Extensions/NRIRayTracing.h" // AccelerationStructureBits (needed before NRIWrapperVK.h)
@@ -213,6 +215,8 @@ void NRDWrapper::SetCommonSettings(const float* viewToClip, const float* viewToC
 }
 
 void NRDWrapper::SetReblurSettings(float maxBlurRadius, uint32_t maxAccumulatedFrameNum,
+	                                float responsiveRoughnessThreshold,
+	                                uint32_t responsiveMinAccumulatedFrameNum,
                                     bool enableAntiFirefly, float splitScreen)
 {
 	if (!m_Initialized) return;
@@ -232,14 +236,10 @@ void NRDWrapper::SetReblurSettings(float maxBlurRadius, uint32_t maxAccumulatedF
 	// guard against accidental zero-initialization.
 	settings.diffusePrepassBlurRadius = 30.0f;
 	settings.specularPrepassBlurRadius = 50.0f;
-	// Responsive accumulation: for roughness < threshold, temporal accumulation
-	// becomes responsive (shorter history) to handle fast-moving specular
-	// highlights that screen-space motion vectors can't track. 2D motion
-	// vectors capture geometry motion but NOT specular highlight "swimming"
-	// across surfaces on camera move. Without this, NRD's reprojection finds
-	// stale specular history → disocclusion reset → flickering.
-	settings.responsiveAccumulationSettings.roughnessThreshold = 0.15f;
-	settings.responsiveAccumulationSettings.minAccumulatedFrameNum = 3;
+	settings.responsiveAccumulationSettings.roughnessThreshold =
+		std::clamp(responsiveRoughnessThreshold, 0.0f, 1.0f);
+	settings.responsiveAccumulationSettings.minAccumulatedFrameNum =
+		std::min(responsiveMinAccumulatedFrameNum, settings.historyFixFrameNum);
 
 	g_NRD.SetDenoiserSettings(m_DenoiserID, &settings);
 }

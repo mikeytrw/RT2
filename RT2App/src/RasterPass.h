@@ -17,8 +17,8 @@ struct GPUSceneData;
 // motion, albedo, F0, emission, worldPos, geoNormal, UV) using dynamic rendering.
 // The path tracer reads this G-buffer instead of tracing primary rays.
 //
-// Vertex format: interleaved {vec3 pos, vec2 uv} per vertex (per-BLAS).
-// Index buffer: reused from BLAS builds (uint32 indices).
+// Vertex format: interleaved {vec3 pos, vec2 uv, vec3 normal, vec4 tangent}.
+// A device-local mega index buffer preserves each mesh's indexed topology.
 // Instance data: per-draw push constant with instance index → SSBO lookup.
 class RasterPass
 {
@@ -58,14 +58,15 @@ private:
 	VkPipeline m_MaskedPipeline = VK_NULL_HANDLE;  // alpha-tested (depthWrite=OFF)
 	VkPipelineLayout m_PipelineLayout = VK_NULL_HANDLE;
 
-	// Mega-vertex buffer (all meshes concatenated, per-triangle non-indexed, DEVICE_LOCAL)
+	// Indexed mega-mesh buffers (all meshes concatenated, DEVICE_LOCAL).
 	VkBuffer m_MegaVertexBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_MegaVertexMemory = VK_NULL_HANDLE;
-	VkBuffer m_MegaVertexStaging = VK_NULL_HANDLE;
-	VkDeviceMemory m_MegaVertexStagingMemory = VK_NULL_HANDLE;
+	VkBuffer m_MegaIndexBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_MegaIndexMemory = VK_NULL_HANDLE;
 
 	// Per-mesh vertex offset into the mega buffer
 	std::vector<uint32_t> m_MeshVertexOffsets;
+	std::vector<uint32_t> m_MeshIndexOffsets;
 
 	// Indirect draw buffers: split into opaque and masked passes
 	VkBuffer m_OpaqueDrawBuffer = VK_NULL_HANDLE;

@@ -91,6 +91,9 @@ public:
 	glm::vec2 GetNRDJitterPrev() const { return m_NRDJitterPrev; }
 	const GpuTimestampProfiler::Timings& GetGpuTimings() const { return m_GpuProfiler.GetLatest(); }
 	bool HasGpuTimings() const { return m_GpuProfiler.IsAvailable(); }
+	// Wait for submitted frames and collect the newest timestamp slot. Intended
+	// for headless benchmarks and explicit capture points, not the live loop.
+	void FlushGpuTimings();
 
 	// Debug: dump GPU instance transform buffer contents to log.
 	void DumpInstanceTransforms() const;

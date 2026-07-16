@@ -78,6 +78,35 @@ TEST_CASE("OBJ import flips V coordinates and converts legacy MTL shininess")
     cleanupObjTestFiles();
 }
 
+TEST_CASE("OBJ import preserves shared indexed vertices")
+{
+    cleanupObjTestFiles();
+    {
+        std::ofstream obj("test_scene.obj");
+        obj << "v 0 0 0\n"
+               "v 1 0 0\n"
+               "v 1 1 0\n"
+               "v 0 1 0\n"
+               "vt 0 0\n"
+               "vt 1 0\n"
+               "vt 1 1\n"
+               "vt 0 1\n"
+               "f 1/1 2/2 3/3\n"
+               "f 1/1 3/3 4/4\n";
+    }
+
+    ECSScene scene;
+    REQUIRE(SceneLoader::LoadObjIntoECS(scene, "test_scene.obj"));
+    REQUIRE(scene.meshRegistry.GetCount() == 1);
+    const auto& mesh = scene.meshRegistry.GetMesh(0);
+    CHECK(mesh.vertices.size() / 3 == 4);
+    REQUIRE(mesh.indices.size() == 6);
+    CHECK(mesh.indices[0] == mesh.indices[3]);
+    CHECK(mesh.indices[2] == mesh.indices[4]);
+    CHECK(mesh.materialIndices.size() == 2);
+    cleanupObjTestFiles();
+}
+
 TEST_CASE("OBJ import classifies color and data texture color spaces")
 {
 	cleanupObjTestFiles();

@@ -231,12 +231,12 @@ void FrameRenderer::RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx)
 
 	// 2. Dispatch temporal pass: history → scratch
 	if (ctx.gpuProfiler)
-		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::ReSTIRTemporal, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::ReSTIRDITemporal, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	ctx.restirPass.RecordTemporal(cmd, ctx.width, ctx.height,
 	                              ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
 	                              ctx.restirPC);
 	if (ctx.gpuProfiler)
-		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::ReSTIRTemporal, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::ReSTIRDITemporal, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 	// 3. Barrier: scratch (temporal write) → spatial read
 	//    + history and surface history (temporal read) → spatial write
@@ -269,12 +269,12 @@ void FrameRenderer::RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx)
 
 	// 4. Dispatch spatial pass: scratch → history
 	if (ctx.gpuProfiler)
-		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::ReSTIRSpatial, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::ReSTIRDISpatial, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	ctx.restirPass.RecordSpatial(cmd, ctx.width, ctx.height,
 	                             ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
 	                             ctx.restirPC);
 	if (ctx.gpuProfiler)
-		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::ReSTIRSpatial, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::ReSTIRDISpatial, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 	// 5. Barrier: history (spatial write) → RT shader read
 	VkBufferMemoryBarrier postBarrier = {};
@@ -353,12 +353,12 @@ void FrameRenderer::RecordReSTIRGIPass(VkCommandBuffer cmd, Context& ctx)
 	// 2. Dispatch temporal pass: prev reservoir + prev history → current reservoir.
 	//    Phase 0 stub writes empty (invalid) reservoirs only.
 	if (ctx.gpuProfiler)
-		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::ReSTIRTemporal, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::ReSTIRGITemporal, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	ctx.restirGIPass.RecordTemporal(cmd, ctx.width, ctx.height,
 	                               ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
 	                               ctx.restirGIPC);
 	if (ctx.gpuProfiler)
-		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::ReSTIRTemporal, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::ReSTIRGITemporal, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 	// 3. Barrier: serialize — temporal writes (current reservoir) complete
 	//    before the history-write dispatch reads G-buffer and writes current
@@ -392,9 +392,13 @@ void FrameRenderer::RecordReSTIRGIPass(VkCommandBuffer cmd, Context& ctx)
 	// 4. Dispatch history-write pass: G-buffer → current receiver history.
 	//    Runs AFTER all temporal reads of the previous history region finish,
 	//    avoiding the read/write race a single dispatch would create.
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::ReSTIRGIHistory, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	ctx.restirGIPass.RecordHistoryWrite(cmd, ctx.width, ctx.height,
 	                                    ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
 	                                    ctx.restirGIPC);
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::ReSTIRGIHistory, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
 	// 5. Barrier: current receiver history (compute write) → next-frame compute read.
 	VkBufferMemoryBarrier historyPostBarrier = {};
@@ -528,6 +532,8 @@ void FrameRenderer::RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx)
 	ctx.nrdNeedsReset = false;
 
 	ctx.nrd.SetReblurSettings(ctx.nrdMaxBlurRadius, (uint32_t)ctx.nrdMaxAccumFrames,
+	                        ctx.nrdResponsiveRoughnessThreshold,
+	                        (uint32_t)ctx.nrdResponsiveMinAccumFrames,
 	                        ctx.nrdAntiFirefly, ctx.nrdSplitScreen);
 
 	if (ctx.gpuProfiler)
@@ -621,7 +627,11 @@ void FrameRenderer::RecordTonemapPass(VkCommandBuffer cmd, Context& ctx)
 		VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
 		0, nullptr, 0, nullptr, 1, &linearReady);
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::Tonemap, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	ctx.tonemapPass.Record(cmd, ctx.width, ctx.height);
+	if (ctx.gpuProfiler)
+		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::Tonemap, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 }
 
 void FrameRenderer::RecordOutputTransition(VkCommandBuffer cmd, Context& ctx)

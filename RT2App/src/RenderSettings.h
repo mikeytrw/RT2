@@ -62,7 +62,9 @@ struct RenderSettings
 	// 0 = off (white noise), 1 = Bayer 4x4, 2 = Interleaved Gradient Noise
 	int   nrdLobeDither     = 1;
 	float nrdMaxBlurRadius = 30.0f;
-	int   nrdMaxAccumFrames = 30;
+	int   nrdMaxAccumFrames = 63; // REBLUR_MAX_HISTORY_FRAME_NUM
+	float nrdResponsiveRoughnessThreshold = 0.0f; // 0 disables shortened glossy history
+	int   nrdResponsiveMinAccumFrames = 3;        // valid range: 0..historyFixFrameNum (3)
 	bool  nrdAntiFirefly    = true;
 	float nrdSplitScreen    = 0.0f;
 	bool  nrdJitterEnabled  = true;
