@@ -18,6 +18,20 @@ rt2_log.txt
 regression_current.png
 test_*.png
 
+# Renderer captures, benchmark output, logs, and Python caches are local-only.
+/artifacts/
+/baselines/
+/benchmarking/*.png
+*.pfm
+*.exr
+*.log
+*.dmp
+scripts/__pycache__/
+.pytest_cache/
+
+# Incremental graph exports are generated metadata, not source.
+graphify-out/2026-*/
+
 # Research PDFs are local-only reference material, not tracked.
 *.pdf
 /research/

@@ -9,6 +9,11 @@ and emissive-triangle sampling are exercised together.
 
 ## Measurement contract
 
+The exact renderer switches and JSON timing protocol are documented in
+[`headless-cli.md`](headless-cli.md). Generated outputs belong under the
+ignored `artifacts/` directory; only manifests and compact summaries are
+eligible for version control.
+
 The JSON manifest defines:
 
 - the executable and output directory;

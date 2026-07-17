@@ -47,6 +47,77 @@ These apply across every phase.
 6. **Every phase leaves a usable increment.** Features are accepted through a
    small end-to-end workflow, not only isolated classes.
 
+## Cross-phase architecture contracts
+
+These contracts are prerequisites for work in later phases; they are not local
+implementation choices.
+
+### Scene mutation, synchronization, and dependency direction
+
+All scene changes flow through the scene API. The editor reaches it through
+commands; runtime systems reach it through narrow runtime services. The scene
+API determines the only permitted renderer synchronization category:
+
+| Impact | Required SceneManager path | Typical changes |
+|---|---|---|
+| `None` | No GPU sync | Editor selection, lock state, runtime-only counters |
+| `Transform` | Transform-only sync | Rigid movement, hierarchy world-transform updates |
+| `Material` | Material-only sync | Material assignment and editable material properties |
+| `Structural` | Full scene/acceleration-structure rebuild | Entity, mesh, visibility, light, or topology changes |
+
+```mermaid
+flowchart LR
+  UI[Editor UI] --> Commands --> SceneAPI[Scene API]
+  Runtime[Runtime controller and systems] --> SceneAPI
+  Scripts[Lua bindings] --> SceneAPI
+  Assets[Asset database] --> Handles[Asset handles] --> SceneAPI
+  SceneAPI --> SceneManager --> Sync[Sync-impact policy] --> Renderer
+```
+
+No UI panel, script, asset importer, physics backend, or animation backend may
+call EnTT mutation paths or renderer synchronization callbacks directly.
+
+### Component ownership and persistence
+
+Every component must be classified before it is introduced:
+
+- **Shared authoring/runtime, persisted:** transform, hierarchy, mesh/material
+  references, lights, cameras, and script field values.
+- **Editor-only, never persisted in a scene:** selection, editor locks, gizmo
+  state, outliner expansion, and editor camera state.
+- **Runtime-only, never copied back to authoring:** physics bodies/handles,
+  audio voices, Lua environments/timers, animation evaluation caches, and
+  transient simulation state.
+
+Runtime cloning copies persisted shared data into a runtime world, constructs
+runtime-only state there, and destroys it on Stop. Editor-only state remains
+outside both serialized scene data and the runtime world.
+
+### Determinism and performance budgets
+
+Fixed-step systems must define stable entity iteration, deferred-command/spawn
+ordering, seed assignment, and event ordering. They must not depend on
+unordered container traversal or order-dependent parallel accumulation.
+Cross-platform floating-point results are compared with documented per-system
+tolerances; exact byte equality is required only where the format or algorithm
+is explicitly deterministic.
+
+The vertical slice establishes baselines for Release build time, `RT2Tests`
+runtime, headless runtime checks, and render-regression duration. Each later
+phase must add at least one automated regression check for each public behavior
+it introduces, and must record its measured build/test deltas. Until a project
+specific budget replaces them, the default guardrails are: Release build median
+within `max(10%, 60 s)` of baseline, `RT2Tests` plus required headless checks
+within `max(20%, 30 s)`, and no unexplained renderer benchmark median regression
+above 5% on the affected manifest cases. A justified baseline update is allowed
+only with the reason and before/after measurements recorded. Renderer
+performance work additionally uses the benchmark manifests and frame-time
+thresholds in the rendering docs.
+
+`UUID` is a core value type owned by a dedicated engine header/source pair (for
+example `core/UUID.h` and `core/UUID.cpp`), with parsing, formatting, generation,
+comparison, and hashing defined there. It is not a SceneManager-local alias.
+
 ## Test strategy
 
 Use four layers of tests throughout the roadmap.
@@ -111,7 +182,8 @@ path.
   save/discard/cancel prompts.
 - Write atomically via a temporary sibling file followed by replacement.
 - Add a schema migration entry point even while only version 1 exists.
-- Add autosave/recovery after basic explicit saving is stable.
+- Add bounded autosave and recovery records after explicit saving is stable;
+  recovery must never overwrite the last explicitly saved scene.
 
 ### Unit and integration tests
 
@@ -123,6 +195,8 @@ path.
 - Unknown optional fields are ignored; unsupported schema versions fail clearly.
 - Relative paths are normalized without escaping the project root silently.
 - Failed writes leave the previous valid scene intact.
+- Recovery discovers an interrupted unsaved session, offers restore/discard, and
+  leaves the explicitly saved scene unchanged in both cases.
 - Dirty state changes only after authoring commands and clears after successful
   save/load.
 - Continue running all existing glTF/GLB round-trip tests.
@@ -134,11 +208,14 @@ path.
 - Attempt New/Open/Exit with unsaved changes and verify all three prompt choices.
 - Temporarily remove a referenced asset and verify a visible placeholder/error,
   not a crash or silent data loss.
+- Simulate an interrupted session and verify the recovery prompt restores the
+  autosave only when the user chooses it.
 
 ### Exit criteria
 
-A non-trivial authored scene survives restart, missing assets produce actionable
-diagnostics, and existing interchange saving still passes its tests.
+A non-trivial authored scene survives restart, recovery is available without
+overwriting explicit saves, missing assets produce actionable diagnostics, and
+existing interchange saving still passes its tests.
 
 ## Phase 2 - Scene-building ergonomics and viewport tools
 
@@ -197,6 +274,9 @@ synchronization category.
 
 - Introduce `IEditorCommand` with `Execute`, `Undo`, optional merge/coalesce,
   description, and sync impact (`None`, `Transform`, `Material`, `Structural`).
+- Route every impact through the cross-phase SceneManager contract: `None` has
+  no renderer work, `Transform` uses transform-only sync, `Material` uses
+  material-only sync, and `Structural` uses full scene/AS rebuild.
 - Add a bounded command history and redo stack.
 - Route transform, create, delete, duplicate, rename, reparent, add/remove
   component, material assignment, and property edits through commands.
@@ -211,7 +291,9 @@ synchronization category.
 - A new command after Undo clears the redo branch.
 - Coalescing creates one transform command per drag, not per frame.
 - Delete/undo restores UUIDs, hierarchy, components, and asset references.
-- Sync impact selects the expected SceneManager callback using spies/counters.
+- Sync impact selects only the expected SceneManager callback using
+  spies/counters; transform commands must not trigger material or structural
+  work, and structural commands must not silently downgrade.
 - History limit evicts safely without corrupting retained commands.
 
 ### Runtime acceptance
@@ -244,24 +326,12 @@ The editor can run a temporary runtime world and return safely to authored state
 - Disable or clearly scope authoring operations during Play.
 - Restore the unchanged authoring scene on Stop.
 
-Proposed frame order:
-
-```
-sample input
-accumulate fixed time
-while fixed step available:
-    fixed scripts
-    physics
-variable scripts
-animation
-update world transforms
-sync dirty runtime state
-audio update
-render
-```
-
-The fixed-step ordering should become the single authoritative version shared by
-this document and `game-loop.md`.
+[`game-loop.md`](game-loop.md#planned-runtime-frame-order-contract-phase-4) is
+the canonical runtime frame-order contract. Phase 4 must implement its named
+stages, including the deferred structural-change safe point and one batched
+sync before render. Changes to runtime ordering are proposed there first; this
+plan deliberately does not duplicate the sequence. Lifecycle-order tests
+exercise the same named stages recorded in that contract.
 
 ### Unit and integration tests
 
@@ -337,6 +407,10 @@ Entities can have persistent, hot-reloadable behavior authored outside C++.
   serialize their values in the scene.
 - Add file watching and safe hot reload. Preserve compatible public fields and
   report syntax/runtime errors with path, entity, callback, and stack trace.
+- Define public-field compatibility precisely: same field name and supported
+  type preserves its value; added fields receive declared defaults; removed
+  fields are dropped with a warning; renamed fields require an explicit alias;
+  incompatible type changes reset to the declared default with a diagnostic.
 - Queue structural ECS changes made during iteration and apply them at a defined
   safe point.
 
@@ -346,6 +420,8 @@ Entities can have persistent, hot-reloadable behavior authored outside C++.
 - Two entities using one script have isolated environment state.
 - Public fields serialize, deserialize, retain types, and preserve compatible
   values across reload.
+- Reload tests cover added, removed, explicitly renamed, and incompatible-type
+  public fields, including the required warning/diagnostic for each lossy case.
 - Destroyed entity handles fail safely rather than aliasing a reused EnTT ID.
 - Spawn/destroy during update is deferred and deterministic.
 - Script syntax/runtime errors disable or quarantine only the affected instance.
@@ -457,6 +533,13 @@ Scenes support reliable rigid-body gameplay and scriptable spatial queries.
 - Add collider/contact/velocity debug drawing independent of the RT pipeline.
 - Use CPU collision data; do not make simulation correctness depend on asynchronous
   GPU BLAS queries.
+- Treat rigid-body transform changes as `Transform` syncs: update the matching
+  RT instance transform/TLAS path once per rendered frame so path tracing sees
+  dynamic rigid bodies. Static triangle-mesh collider geometry stays static;
+  deforming geometry is deferred to the explicit animation/BLAS policy in Phase
+  10. Do not pause or silently cheapen RT rendering during simulation.
+- Measure and document the dynamic-instance/TLAS update cost in the physics
+  acceptance scene before enabling large dynamic-body counts by default.
 
 ### Unit and integration tests
 
@@ -466,6 +549,8 @@ Scenes support reliable rigid-body gameplay and scriptable spatial queries.
 - Parent/child and non-uniform-scale restrictions are validated clearly.
 - Destroying an entity removes its body and pending events safely.
 - Collision events fire with correct enter/stay/exit transitions.
+- Dynamic rigid-body motion triggers transform-only renderer sync and the
+  corresponding RT instance update, not a full BLAS rebuild.
 
 ### Headless/runtime acceptance
 
@@ -477,7 +562,8 @@ Scenes support reliable rigid-body gameplay and scriptable spatial queries.
 ### Exit criteria
 
 Scripts can build a basic character/object interaction without touching the
-physics library directly.
+physics library directly. Lua (Phase 6) is a hard prerequisite for this
+script-facing acceptance criterion, not for the underlying physics integration.
 
 ## Phase 10 - Animation
 
@@ -514,7 +600,9 @@ Imported assets can play and blend transform and skeletal animations in runtime.
 
 ### Exit criteria
 
-A scripted entity can select and blend imported clips reproducibly.
+A scripted entity can select and blend imported clips reproducibly. Lua (Phase
+6) is a hard prerequisite for the script-API portion of this phase, not for
+implementing animation playback itself.
 
 ## Phase 11 - Audio
 
@@ -547,6 +635,8 @@ Games can play 2D and spatial sounds through a small mixer model.
 ### Exit criteria
 
 Audio can be authored, saved, controlled by scripts, and cleaned up reliably.
+Lua (Phase 6) is a hard prerequisite for the script-control acceptance portion,
+not for implementing the audio backend itself.
 
 ## Phase 12 - Standalone runtime and packaging
 
@@ -562,9 +652,15 @@ A project can be built and run without editor UI or source asset assumptions.
 - Build a dependency collector from the startup scene and referenced scenes,
   prefabs, scripts, and assets.
 - Copy or archive runtime-ready assets, shaders, project settings, and manifests.
+- Package the exact SPIR-V/shader set required by the selected runtime renderer;
+  fail packaging if the package manifest and shader inventory disagree.
 - Add Build, Build and Run, Debug, and Release options.
 - Add window title, resolution, fullscreen, vsync, and logging settings.
 - Detect missing package dependencies before launch.
+- Validate runtime device assumptions before launch: required Vulkan version,
+  ray-tracing/descriptor extensions and features, required formats, and the
+  documented fallback or clear failure when unsupported. Debug validation layers
+  are optional diagnostics and must not be a Release package dependency.
 - Make package output reproducible where possible.
 
 ### Unit and integration tests
@@ -574,6 +670,11 @@ A project can be built and run without editor UI or source asset assumptions.
 - Missing startup scenes/assets fail packaging with clear dependency chains.
 - Runtime configuration parsing handles defaults and invalid values.
 - Editor-only assets/code are absent from Release packages.
+- Package validation detects missing or stale SPIR-V/shader files before launch.
+- A device-capability preflight reports unsupported required Vulkan features and
+  validates the documented fallback/failure path.
+- Debug and Release package manifests differ only where documented; Release does
+  not require validation layers or source-tree shader paths.
 
 ### Headless/runtime acceptance
 
@@ -581,6 +682,8 @@ A project can be built and run without editor UI or source asset assumptions.
   a fixed frame count, and verify a successful report/exit code.
 - Launch interactively on a clean directory or test machine without source-tree
   working-directory assumptions.
+- Launch on a clean machine/configuration with the packaged shaders and verify
+  capability diagnostics or the supported renderer fallback before scene load.
 
 ### Exit criteria
 
@@ -598,8 +701,15 @@ one earlier:
 - additive scenes and scene streaming;
 - mesh LOD, visibility culling, and mesh streaming;
 - terrain tooling;
-- FSR/DLSS and display/runtime performance features;
 - networking and visual scripting.
+
+Renderer-specific upscaling and display performance work (for example FSR/DLSS)
+belongs in the rendering roadmap and must use renderer benchmarks, not this
+engine-feature backlog. Before Phase 5 input mappings become a stable public
+gameplay API, write a networking feasibility note covering authority, replicated
+state ownership, input-command serialization, prediction/reconciliation, and
+the determinism policy above. Networking remains deferred until a concrete game
+requires it, but its dependency direction must not be designed retroactively.
 
 # First tiny vertical slice development plan
 
@@ -621,16 +731,28 @@ scripting language. The component is a temporary vertical-slice vehicle or a
 generic reusable movement component; it must not become the long-term scripting
 API accidentally.
 
+### Migration contract with Phase 1
+
+The slice is a constrained Phase 1 implementation, not a throwaway serializer.
+It must use the production UUID type, schema-version header, atomic save path,
+two-pass UUID reference resolution, and migration entry point. Its primitive
+mesh identifiers are explicitly a v1 subset: Phase 1 migrates them to
+project-relative asset references or asset IDs without changing entity UUIDs,
+hierarchy references, or authored material identity. Slice-only shortcuts may
+not become the general serializer contract, and Phase 1 must add fixtures that
+load every slice scene before expanding the schema.
+
 ## In scope
 
-- UUID component and lookup.
+- UUID component and lookup, backed by the core UUID value type.
 - Minimal version-1 `.rt2scene` JSON containing:
   - scene version;
   - entity UUID, name, transform, hierarchy, visibility;
   - primitive mesh identity/reference and material assignment;
   - light and camera components needed by the fixture;
   - `MotionComponent` velocity for the test behavior.
-- New/Open/Save/Save As and dirty marker. Autosave and recent scenes are deferred.
+- New/Open/Save/Save As and dirty marker. Recent scenes are deferred; recovery
+  autosave is required by the subsequent full Phase 1 persistence gate.
 - Edit, Play, Paused states plus Play/Pause/Step/Stop controls.
 - Deep cloning of authoring scene to runtime scene.
 - Fixed timestep accumulator with maximum substep count.
@@ -802,7 +924,8 @@ repair or hidden working-directory assumptions.
 
 ## What follows immediately
 
-After the slice, implement the full Phase 1 persistence requirements, then Phase
-2 scene-building tools and Phase 3 commands/undo. General Lua scripting should
-begin only after the Play lifecycle and mutation boundaries proven by this slice
-are stable.
+After the slice, implement the full Phase 1 persistence requirements, including
+the migration of every slice fixture to the general asset-reference schema and
+autosave/recovery, then Phase 2 scene-building tools and Phase 3 commands/undo.
+General Lua scripting should begin only after the Play lifecycle and mutation
+boundaries proven by this slice are stable.

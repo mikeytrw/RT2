@@ -4,6 +4,10 @@ RT2's measurement harness turns renderer settings into repeatable captures and
 machine-readable evidence. It is intended for estimator, denoiser, temporal,
 and performance work; it does not replace interactive visual inspection.
 
+For the complete native command-line reference, including scene loading,
+render settings, ReSTIR controls, camera motion, validation, and timing output,
+see [`headless-cli.md`](headless-cli.md).
+
 ## Native capture options
 
 Headless mode supports both presentation and transport outputs:
@@ -86,8 +90,9 @@ stationary tail.
 
 Each timestamped run contains per-case PNG/PFM captures, sequence frames, the
 renderer log, and a SHA-256 hash. `report.json` records the full command,
-return status, wall time, every GPU timestamp region, image statistics,
-temporal frame-to-frame deltas, and reference comparison metrics.
+return status, wall time, every GPU timestamp region, any diagnostic or memory
+records emitted by the renderer, image statistics, temporal frame-to-frame
+deltas, and reference comparison metrics.
 
 The compact `report.md` table reports:
 
@@ -104,9 +109,11 @@ NumPy can read without an EXR binding. EXR is available for external tools.
 
 This slice covers deterministic capture, linear HDR output, repeatable
 motion-plus-hold paths, timestamp collection, image metrics, temporal deltas,
-hashes, difference images, and baseline storage. Phase 0 still needs native
-GPU counters for ray families, invalid samples, history rejection and age,
-plus VRAM telemetry and checked-in known-good scene baselines.
+hashes, difference images, baseline storage, and parsing slots for renderer
+diagnostic and memory JSON records. The image-comparison report stores those
+records whenever the renderer emits them; timing data is the current benchmark
+acceptance signal. Stable known-good manifests and compact numeric baseline
+reports remain the outstanding Phase 0 documentation work.
 
 ## Performance benchmark runner
 
@@ -115,4 +122,6 @@ manifest such as `benchmarking/restir_di_benchmark.json`. Unlike the image
 comparison harness, the performance runner accepts an array of camera poses
 per model, requires an environment map, records a warmup-free window of raw
 per-frame GPU timestamps, and writes `results.json`, `summary.csv`, and
-`report.md`. Pass `--baseline <results.json>` to produce matched median deltas.
+`report.md`. It submits two extra drain frames so the asynchronous two-frame
+timestamp ring exposes the complete requested measurement window. Pass
+`--baseline <results.json>` to produce matched median deltas.

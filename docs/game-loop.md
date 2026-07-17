@@ -95,6 +95,41 @@ while (window not closed):
 
 ---
 
+## Planned runtime frame-order contract (Phase 4+)
+
+This section is the canonical ordering contract for the planned Edit/Play/Pause
+runtime lifecycle. `game-engine-development-plan.md` may state phase-specific
+requirements but must link here rather than define a competing order.
+
+```text
+sample input
+accumulate clamped frame time
+while a fixed step is available, up to the configured maximum:
+    fixed script callbacks, in stable entity order
+    physics step
+apply deferred structural changes at the defined safe point, in stable order
+variable script callbacks
+animation evaluation
+update world transforms
+issue one batched dirty-state GPU sync using the scene sync-impact contract
+update audio
+render
+```
+
+Pause executes none of the simulation stages. Step executes exactly one fixed
+iteration, then the post-simulation stages needed to present the result. The
+runtime controller snapshots previous transforms before simulation and owns the
+runtime-world lifecycle; Stop destroys runtime-only state and restores the
+unchanged authoring world.
+
+The stable-order requirements are part of the determinism policy: fixed system
+iteration, deferred creates/destroys, seeds, and event delivery must not depend
+on hash-table or thread scheduling order. Floating-point comparisons use the
+documented system tolerance rather than claiming bitwise equality across all
+platforms.
+
+---
+
 ## Frames in Flight
 
 RT2 uses a 2-frame-in-flight ring (`MAX_FRAMES_IN_FLIGHT = 2`):
@@ -145,14 +180,17 @@ Application::Shutdown()
 
 ---
 
-## Future Hooks
+## Extension notes
+
+The sketches below identify integration points only. The planned runtime order
+above is normative once Phase 4 is implemented.
 
 ### Scripting (placeholder)
 
 ```
-OnUpdate(ts):
-  Camera::OnUpdate(ts)
-  ScriptSystem::OnUpdate(ts)     // ← NEW: runs entity behavior scripts
+runtime frame:
+  FixedScriptSystem::Update(fixedDt)
+  ScriptSystem::OnUpdate(frameDt)
   Render()
 ```
 
@@ -164,15 +202,16 @@ modify transforms, spawn/despawn entities, and set material parameters.
 ### Physics (placeholder)
 
 ```
-OnUpdate(ts):
-  Camera::OnUpdate(ts)
-  PhysicsSystem::Step(ts)        // ← NEW: advances simulation
-  ScriptSystem::OnUpdate(ts)     // ← scripts see post-physics transforms
-  SceneGraph::UpdateWorldTransforms()  // ← sync ECS from physics
+runtime frame:
+  FixedScriptSystem::Update(fixedDt)
+  PhysicsSystem::Step(fixedDt)
+  ScriptSystem::OnUpdate(frameDt) // scripts see post-physics transforms
+  SceneGraph::UpdateWorldTransforms()
   Render()
 ```
 
-Physics runs before scripting so scripts see post-step transforms. A
+Fixed scripts run before physics; variable scripts run after physics so they
+see post-step transforms. A
 `RigidBodyComponent` would hold simulation state (velocity, mass, collider
 handle). The physics system writes to `Transform::translation` and marks
 `Transform::dirty = true`. SceneGraph resolves dirty transforms before
