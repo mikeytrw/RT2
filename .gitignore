@@ -18,5 +18,9 @@ rt2_log.txt
 regression_current.png
 test_*.png
 
+# Research PDFs are local-only reference material, not tracked.
+*.pdf
+/research/
+
 # Graphify cache
 graphify-out/cache/
