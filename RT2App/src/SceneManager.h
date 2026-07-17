@@ -6,6 +6,9 @@
 #include "SceneTypes.h"
 #include "ECSScene.h"
 #include "GPUSceneData.h"
+#include "SceneDocument.h"
+#include "core/UUID.h"
+#include "core/Error.h"
 #include <string>
 #include <vector>
 #include <functional>
@@ -32,13 +35,24 @@
 // This keeps SceneManager decoupled from the renderer.
 //
 // ============================================================================
-class SceneManager
-{
-public:
-	using SyncCallback = std::function<void(GPUSceneData&)>;
+	class SceneManager
+	{
+	public:
+		using SyncCallback = std::function<void(GPUSceneData&)>;
 
-	SceneManager() = default;
-	~SceneManager() = default;
+		SceneManager();
+		~SceneManager() = default;
+
+		// Inject a UUID provider for entity creation. Default is OsUuidProvider.
+		// Tests and deterministic fixtures may inject DeterministicUuidProvider.
+		void SetUuidProvider(rt2::core::IUuidProvider* provider);
+
+		// Find an entity by its stable UUID. Returns entt::null if not found.
+		entt::entity FindEntityByUuid(const rt2::core::UUID& uuid) const;
+
+		// The authoring scene document (ECS + UUID index + metadata).
+		rt2::core::SceneDocument& AuthoringDoc() { return m_Authoring; }
+		const rt2::core::SceneDocument& AuthoringDoc() const { return m_Authoring; }
 
 	// Set callback for full re-upload (SetScene path: textures + AS rebuild).
 	void SetSyncCallback(SyncCallback cb) { m_SyncCallback = std::move(cb); }
@@ -162,16 +176,33 @@ public:
 	SceneMaterial& GetMaterial(int index);
 	const std::vector<SceneMaterial>& GetMaterials() const { return m_EcsScene.materials; }
 
+	// Set material properties on an index and mark the scene dirty + flag
+	// a material-sync GPU re-upload. Use this instead of mutating the
+	// reference returned by GetMaterial() so dirty tracking and the
+	// correct sync path are invoked.
+	void SetMaterialProperties(int index, const SceneMaterial& props);
+
+	// ---- Dirty tracking ----
+	bool IsDirty() const { return m_Authoring.metadata.dirty; }
+	void MarkDirty() { m_Authoring.metadata.dirty = true; }
+	void ClearDirty() { m_Authoring.metadata.dirty = false; }
+
+	// Centralized authoring-change notification. All editor mutations
+	// (Add/Remove/SetTransform/SetMaterial/SetMaterialProperties) call
+	// this. It marks the scene dirty. The host checks IsDirty() for
+	// unsaved-changes prompts.
+	void NotifyAuthoringChanged();
+
 	// ---- Accessors ----
 	const ECSScene& GetECS() const { return m_EcsScene; }
 	ECSScene& GetECS() { return m_EcsScene; }
 	const GPUSceneData& GetCurrentGpuScene() const { return m_CurrentGpuScene; }
 
-	// Environment map
-	bool HasEnvMap() const { return !m_EnvMapFloatPixels.empty(); }
-	const std::string& GetEnvMapPath() const { return m_EnvMapPath; }
-	int GetEnvMapWidth() const { return m_EnvMapWidth; }
-	int GetEnvMapHeight() const { return m_EnvMapHeight; }
+	// Environment map (delegates to authoring document)
+	bool HasEnvMap() const { return m_Authoring.environment.HasEnvMap(); }
+	const std::string& GetEnvMapPath() const { return m_Authoring.environment.path; }
+	int GetEnvMapWidth() const { return m_Authoring.environment.width; }
+	int GetEnvMapHeight() const { return m_Authoring.environment.height; }
 
 	// Clear all scene state.
 	void Clear();
@@ -185,14 +216,21 @@ public:
 private:
 	void UpdateWorldTransforms();
 
-	ECSScene           m_EcsScene;
-	GPUSceneData       m_CurrentGpuScene;
+	// Record a durable MaterialOverrideComponent on an imported entity for the
+	// material currently at `materialIndex`. Captures the material value
+	// snapshot so the override survives save/reopen regardless of how the
+	// source asset re-imports. Creates or replaces the component.
+	void RecordMaterialOverride(entt::entity entity, int materialIndex);
 
-	// Environment map
-	std::string        m_EnvMapPath;
-	std::vector<float> m_EnvMapFloatPixels;
-	int                m_EnvMapWidth = 0;
-	int                m_EnvMapHeight = 0;
+	// Authoring scene document. m_EcsScene below is a reference alias so
+	// existing code continues to work; both refer to m_Authoring.ecs.
+	rt2::core::SceneDocument m_Authoring;
+	ECSScene&                m_EcsScene;       // = m_Authoring.ecs
+	GPUSceneData&            m_CurrentGpuScene; // = m_Authoring.gpuCache
+
+	// UUID provider for entity creation. Default is an internal OsUuidProvider.
+	rt2::core::OsUuidProvider      m_DefaultProvider;
+	rt2::core::IUuidProvider*      m_UuidProvider = &m_DefaultProvider;
 
 	SyncCallback       m_SyncCallback;
 	SyncCallback       m_InstanceSyncCallback;

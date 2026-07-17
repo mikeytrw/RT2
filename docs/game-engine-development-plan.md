@@ -114,9 +114,33 @@ only with the reason and before/after measurements recorded. Renderer
 performance work additionally uses the benchmark manifests and frame-time
 thresholds in the rendering docs.
 
-`UUID` is a core value type owned by a dedicated engine header/source pair (for
-example `core/UUID.h` and `core/UUID.cpp`), with parsing, formatting, generation,
+`UUID` is a core value type owned by a dedicated engine header/source pair
+(`core/UUID.h` and `core/UUID.cpp`), with parsing, formatting, generation,
 comparison, and hashing defined there. It is not a SceneManager-local alias.
+
+### UUID generation policy
+
+Entity identity uses RFC 9562 UUID v4 from the OS cryptographic RNG
+(`CoCreateGuid`/`UuidCreate` on Windows). Generation is injectable through
+`IUuidProvider` so tests and deterministic fixtures use
+`DeterministicUuidProvider` while production uses `OsUuidProvider`.
+
+- **Authored entities**: v4 from OS cryptographic RNG. Never use timestamps,
+  pointers, `rand()`, EnTT IDs, or render seeds.
+- **Asset IDs**: separate stable IDs, persisted in the asset database. They
+  survive file renames and moves.
+- **Linked imported nodes**: if stable source-node identity is required,
+  derive UUID v5 from the asset ID plus a canonical importer node key.
+  Ordinary "import into scene" entities receive fresh v4 IDs and retain them
+  in the native scene.
+- **Runtime cloning**: preserve UUIDs, because the runtime clone represents
+  the same logical entities.
+- **Duplication**: generate fresh v4 IDs for the duplicated subtree and
+  remap internal references.
+- **Undo/delete restoration**: restore the original IDs.
+
+The render sampling seed must not influence UUID generation. UUID generation
+is a pure identity concern, not a rendering or simulation concern.
 
 ## Test strategy
 
@@ -929,3 +953,34 @@ the migration of every slice fixture to the general asset-reference schema and
 autosave/recovery, then Phase 2 scene-building tools and Phase 3 commands/undo.
 General Lua scripting should begin only after the Play lifecycle and mutation
 boundaries proven by this slice are stable.
+
+### Phase 1A — asset-backed native scene round-trip (implemented)
+
+Phase 1A extends the vertical slice so an imported model plus an HDR/EXR
+environment map survive save, restart, and reopen. It delivers:
+
+- Schema version 2 with durable asset references (`ImportedMeshSourceComponent`,
+  `MaterialOverrideComponent`) and v1 read + in-memory migration.
+- `SceneAssetResolver`: a CPU-side, Vulkan-free service that rebuilds meshes,
+  textures, materials, and environment pixels from durable references after a
+  structural load, with `AssetDiagnostic` reporting for missing/malformed/
+  unresolved assets.
+- Import provenance attached at load/import time (glTF scene/node/mesh/
+  primitive keys; OBJ whole-model + importer profile).
+- Scene-relative, normalized, portable UTF-8 asset paths; absolute machine-
+  specific paths are not persisted.
+- `SetEditable(false)` enforced across all authoring mutation paths during
+  Play.
+- Transactional load (parse/schema/resolution failure cannot partially
+  replace the open authoring document) and atomic save semantics retained.
+- Checked-in tiny fixtures (textured GLB, tiny EXR) and focused RT2Tests
+  covering UUID coverage, v1→v2 migration, malformed references, deterministic
+  v2 saves, imported-asset round trip, environment round trip,
+  transactionality, and the runtime boundary.
+
+What remains in full Phase 1 (intentionally deferred from 1A):
+
+- Bounded autosave and recovery records after explicit saving is stable.
+- Recent-scenes UI and project-root settings.
+- Later asset-database migration (Phase 7 global asset UUIDs) — explicitly
+  out of scope for 1A; the slice uses scene-relative paths, not asset UUIDs.

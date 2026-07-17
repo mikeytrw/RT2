@@ -11,6 +11,24 @@
 #include <set>
 #include <map>
 
+SceneManager::SceneManager()
+	: m_EcsScene(m_Authoring.ecs)
+	, m_CurrentGpuScene(m_Authoring.gpuCache)
+{
+	m_Authoring.SetUuidProvider(&m_DefaultProvider);
+}
+
+void SceneManager::SetUuidProvider(rt2::core::IUuidProvider* provider)
+{
+	m_UuidProvider = provider ? provider : &m_DefaultProvider;
+	m_Authoring.SetUuidProvider(m_UuidProvider);
+}
+
+entt::entity SceneManager::FindEntityByUuid(const rt2::core::UUID& uuid) const
+{
+	return m_Authoring.FindByUuid(uuid);
+}
+
 bool SceneManager::LoadScene(const std::string& filepath)
 {
 	printf("[Scene] LoadScene: '%s'\n", filepath.c_str());
@@ -29,21 +47,23 @@ bool SceneManager::LoadScene(const std::string& filepath)
 		}
 		printf("[Scene] LoadObjIntoECS succeeded\n");
 		fflush(stdout);
-		return true;
+		// Fall through to UUID assignment + wrapper-root + validation below.
 	}
-
-	if (!SceneLoader::LoadIntoECS(m_EcsScene, filepath))
+	else
 	{
-		printf("[Scene] SceneLoader::LoadIntoECS failed!\n");
-		return false;
-	}
-	printf("[Scene] SceneLoader::LoadIntoECS succeeded\n");
+		if (!SceneLoader::LoadIntoECS(m_EcsScene, filepath))
+		{
+			printf("[Scene] SceneLoader::LoadIntoECS failed!\n");
+			return false;
+		}
+		printf("[Scene] SceneLoader::LoadIntoECS succeeded\n");
 
-	const auto& cam = m_EcsScene.camera;
-	printf("[Scene] Camera: pos=(%.1f,%.1f,%.1f), forward=(%.1f,%.1f,%.1f), fov=%.1f\n",
-	       cam.position.x, cam.position.y, cam.position.z,
-	       cam.forwardDirection.x, cam.forwardDirection.y, cam.forwardDirection.z,
-	       cam.verticalFOV);
+		const auto& cam = m_EcsScene.camera;
+		printf("[Scene] Camera: pos=(%.1f,%.1f,%.1f), forward=(%.1f,%.1f,%.1f), fov=%.1f\n",
+		       cam.position.x, cam.position.y, cam.position.z,
+		       cam.forwardDirection.x, cam.forwardDirection.y, cam.forwardDirection.z,
+		       cam.verticalFOV);
+	}
 
 	{
 		auto& reg = m_EcsScene.registry;
@@ -87,7 +107,44 @@ bool SceneManager::LoadScene(const std::string& filepath)
 
 			SceneGraph::SetLocalDirty(reg, rootEntity);
 			SceneGraph::UpdateWorldTransforms(reg);
+
+			m_Authoring.AssignNewUuid(rootEntity);
 		}
+	}
+
+	// Rebuild the UUID index for all entities loaded by the scene loader.
+	// SceneLoader creates entities directly on the registry without going
+	// through SceneManager::Add*, so they do not yet have EntityIdComponent.
+	// Assign UUIDs to any entity that lacks one, then validate.
+	{
+		auto& reg = m_EcsScene.registry;
+		auto view = reg.view<Transform>();
+		for (auto entity : view)
+		{
+			if (!reg.all_of<EntityIdComponent>(entity))
+				m_Authoring.AssignNewUuid(entity);
+		}
+	}
+
+	// Record the source model path on imported mesh entities so the native
+	// .rt2scene serializer can persist a durable reference. The path is
+	// stored as-is; the serializer relativizes it at save time.
+	{
+		auto& reg = m_EcsScene.registry;
+		auto mv = reg.view<ImportedMeshSourceComponent>();
+		for (auto e : mv)
+		{
+			auto& src = mv.get<ImportedMeshSourceComponent>(e);
+			if (src.model.path.empty())
+				src.model.path = filepath;
+		}
+	}
+
+	rt2::core::Error uuidErr;
+	if (!m_Authoring.ValidateUniqueUuids(uuidErr))
+	{
+		printf("[Scene] UUID validation failed after load: %s\n", uuidErr.Format().c_str());
+		fflush(stdout);
 	}
 
 	printf("[Scene] Loaded %d meshes, %d materials, %d lights, %d textures\n",
@@ -139,19 +196,16 @@ bool SceneManager::LoadEnvMap(const std::string& filepath)
 		printf("[EnvMap] Loaded %dx%d HDR\n", w, h);
 	}
 
-	m_EnvMapPath = filepath;
-	m_EnvMapWidth = w;
-	m_EnvMapHeight = h;
-	m_EnvMapFloatPixels = std::move(pixels);
+	m_Authoring.environment.path = filepath;
+	m_Authoring.environment.width = w;
+	m_Authoring.environment.height = h;
+	m_Authoring.environment.floatPixels = std::move(pixels);
 	return true;
 }
 
 void SceneManager::ClearEnvMap()
 {
-	m_EnvMapPath.clear();
-	m_EnvMapFloatPixels.clear();
-	m_EnvMapWidth = 0;
-	m_EnvMapHeight = 0;
+	m_Authoring.environment.Clear();
 }
 
 SceneManager::EntityId SceneManager::ImportGltf(const std::string& filepath)
@@ -159,6 +213,29 @@ SceneManager::EntityId SceneManager::ImportGltf(const std::string& filepath)
 	entt::entity root = SceneLoader::ImportIntoECS(m_EcsScene, filepath);
 	if (root == entt::null)
 		return EntityId{};
+
+	// Assign UUIDs to any imported entity that lacks one.
+	auto& reg = m_EcsScene.registry;
+	auto view = reg.view<Transform>();
+	for (auto entity : view)
+	{
+		if (!reg.all_of<EntityIdComponent>(entity))
+			m_Authoring.AssignNewUuid(entity);
+	}
+
+	// Record the source model path on every imported mesh entity so the
+	// native .rt2scene serializer can persist a durable reference. The path
+	// is stored as-is (possibly absolute); the serializer relativizes it
+	// against the .rt2scene location at save time.
+	{
+		auto mv = reg.view<ImportedMeshSourceComponent>();
+		for (auto e : mv)
+		{
+			auto& src = mv.get<ImportedMeshSourceComponent>(e);
+			if (src.model.path.empty())
+				src.model.path = filepath;
+		}
+	}
 
 	m_EntityCacheDirty = true;
 	return EntityId{ root };
@@ -186,21 +263,22 @@ void SceneManager::SyncToGPU()
 	// Add env map as an extra texture in the texture array
 	if (HasEnvMap())
 	{
+		auto& env = m_Authoring.environment;
 		SceneTexture envTex;
 		envTex.isHDR = true;
-		envTex.width = m_EnvMapWidth;
-		envTex.height = m_EnvMapHeight;
-		envTex.floatPixels = m_EnvMapFloatPixels;
+		envTex.width = env.width;
+		envTex.height = env.height;
+		envTex.floatPixels = env.floatPixels;
 		gpuData.textures.push_back(envTex);
 		gpuData.envMapIndex = (int)gpuData.textures.size() - 1;
 
-		BuildEnvMapCDF(m_EnvMapFloatPixels, m_EnvMapWidth, m_EnvMapHeight,
+		BuildEnvMapCDF(env.floatPixels, env.width, env.height,
 		               gpuData.marginalCDF, gpuData.conditionalCDF);
-		gpuData.cdfWidth = m_EnvMapWidth;
-		gpuData.cdfHeight = m_EnvMapHeight;
+		gpuData.cdfWidth = env.width;
+		gpuData.cdfHeight = env.height;
 
 		printf("[Scene] Env map: idx=%d %dx%d, CDF built\n",
-		       gpuData.envMapIndex, m_EnvMapWidth, m_EnvMapHeight);
+		       gpuData.envMapIndex, env.width, env.height);
 	}
 
 	if (m_SyncCallback)
@@ -261,6 +339,8 @@ SceneManager::EntityId SceneManager::AddObject(const std::string& name,
 		m_EcsScene.registry.emplace<NameComponent>(entity, name);
 	m_EcsScene.registry.emplace<VisibleComponent>(entity);
 
+	m_Authoring.AssignNewUuid(entity);
+	NotifyAuthoringChanged();
 	m_EntityCacheDirty = true;
 	return {entity};
 }
@@ -287,6 +367,8 @@ SceneManager::EntityId SceneManager::AddObjectWithGeometry(const std::string& na
 		m_EcsScene.registry.emplace<NameComponent>(entity, name);
 	m_EcsScene.registry.emplace<VisibleComponent>(entity);
 
+	m_Authoring.AssignNewUuid(entity);
+	NotifyAuthoringChanged();
 	m_EntityCacheDirty = true;
 	return {entity};
 }
@@ -313,6 +395,8 @@ SceneManager::EntityId SceneManager::AddLight(const std::string& name,
 		m_EcsScene.registry.emplace<NameComponent>(entity, name);
 	m_EcsScene.registry.emplace<VisibleComponent>(entity);
 
+	m_Authoring.AssignNewUuid(entity);
+	NotifyAuthoringChanged();
 	m_EntityCacheDirty = true;
 	return {entity};
 }
@@ -323,6 +407,10 @@ void SceneManager::RemoveEntity(EntityId entity)
 
 	auto& reg = m_EcsScene.registry;
 	if (!reg.valid(entity.id)) return;
+
+	// Remove from UUID index before destruction.
+	if (auto* idc = reg.try_get<EntityIdComponent>(entity.id))
+		m_Authoring.uuidIndex.Erase(idc->id);
 
 	// Remove from parent's children list if has Hierarchy
 	if (auto* h = reg.try_get<Hierarchy>(entity.id))
@@ -346,6 +434,7 @@ void SceneManager::RemoveEntity(EntityId entity)
 	}
 
 	reg.destroy(entity.id);
+	NotifyAuthoringChanged();
 	m_EntityCacheDirty = true;
 }
 
@@ -362,6 +451,7 @@ void SceneManager::SetTransform(EntityId entity,
 		tf->rotation = glm::quat(glm::radians(rotation));
 		tf->scale = {scale, scale, scale};
 		SceneGraph::SetLocalDirty(reg, entity.id);
+		NotifyAuthoringChanged();
 	}
 }
 
@@ -370,7 +460,19 @@ void SceneManager::SetMaterial(EntityId entity, int materialIndex)
 	if (!entity.IsValid()) return;
 	auto& reg = m_EcsScene.registry;
 	if (auto* ref = reg.try_get<MeshRef>(entity.id))
+	{
 		ref->materialIndex = materialIndex;
+		// If this is an imported entity, record a durable override so the
+		// assignment survives save/reopen. The override captures the material
+		// value at the assigned index; the resolver re-appends it on reopen
+		// rather than discarding the user's choice in favor of the re-imported
+		// source material.
+		if (reg.all_of<ImportedMeshSourceComponent>(entity.id))
+		{
+			RecordMaterialOverride(entity.id, materialIndex);
+		}
+		NotifyAuthoringChanged();
+	}
 }
 
 std::string SceneManager::GetEntityName(EntityId entity) const
@@ -391,6 +493,7 @@ void SceneManager::SetEntityName(EntityId entity, const std::string& name)
 		nc->name = name;
 	else
 		reg.emplace<NameComponent>(entity.id, name);
+	NotifyAuthoringChanged();
 }
 
 size_t SceneManager::GetEntityCount() const
@@ -499,6 +602,7 @@ void SceneManager::SetLightProperties(EntityId entity, const glm::vec3& color, f
 	light->color = color;
 	light->intensity = intensity;
 	light->isSpot = isSpot;
+	NotifyAuthoringChanged();
 }
 
 bool SceneManager::GetMeshRef(EntityId entity, uint32_t& outMeshIndex, int& outMaterialIndex) const
@@ -518,6 +622,7 @@ void SceneManager::SetMeshRefMeshIndex(EntityId entity, uint32_t meshIndex)
 	auto* ref = m_EcsScene.registry.try_get<MeshRef>(entity.id);
 	if (!ref) return;
 	ref->meshIndex = meshIndex;
+	NotifyAuthoringChanged();
 }
 
 void SceneManager::SyncTransformsToGPU()
@@ -581,6 +686,7 @@ int SceneManager::AddMaterial(const SceneMaterial& material)
 {
 	int idx = (int)m_EcsScene.materials.size();
 	m_EcsScene.materials.push_back(material);
+	NotifyAuthoringChanged();
 	return idx;
 }
 
@@ -592,15 +698,67 @@ SceneMaterial& SceneManager::GetMaterial(int index)
 	return dummy;
 }
 
+void SceneManager::SetMaterialProperties(int index, const SceneMaterial& props)
+{
+	if (index < 0 || index >= (int)m_EcsScene.materials.size())
+		return;
+	m_EcsScene.materials[index] = props;
+
+	// Propagate the edit into durable MaterialOverrideComponent on every
+	// imported entity whose MeshRef points at this material slot, so saved
+	// material edits survive reopen. Without this, the resolver would
+	// re-import the source material and discard the user's edits.
+	{
+		auto& reg = m_EcsScene.registry;
+		auto view = reg.view<ImportedMeshSourceComponent>();
+		for (auto e : view)
+		{
+			auto* ref = reg.try_get<MeshRef>(e);
+			if (ref && ref->materialIndex == index)
+				RecordMaterialOverride(e, index);
+		}
+	}
+
+	NotifyAuthoringChanged();
+}
+
+void SceneManager::RecordMaterialOverride(entt::entity entity, int materialIndex)
+{
+	auto& reg = m_EcsScene.registry;
+	if (!reg.valid(entity)) return;
+	if (materialIndex < 0 || materialIndex >= (int)m_EcsScene.materials.size())
+		return;
+
+	// Derive the durable source material key from the imported source, if
+	// available. For glTF primitives the sourceKey encodes the primitive; the
+	// material key is separate and not currently recoverable from the loader
+	// without deeper integration, so we use a generic stable key derived from
+	// the model source key + the current material slot. This is durable
+	// enough to match the override back to the rebuilt source material slot.
+	std::string sourceMatKey;
+	if (auto* src = reg.try_get<ImportedMeshSourceComponent>(entity))
+		sourceMatKey = src->model.sourceKey + ":material";
+
+	MaterialOverrideComponent ov;
+	ov.material        = m_EcsScene.materials[materialIndex];
+	ov.authored        = true;
+	ov.sourceMaterialKey = sourceMatKey;
+	ov.materialIndex   = materialIndex; // transient; repaired by resolver
+	reg.emplace_or_replace<MaterialOverrideComponent>(entity, ov);
+}
+
+void SceneManager::NotifyAuthoringChanged()
+{
+	m_Authoring.metadata.dirty = true;
+}
+
 // ============================================================================
 // Stats + misc
 // ============================================================================
 
 void SceneManager::Clear()
 {
-	m_EcsScene.Clear();
-	m_CurrentGpuScene = GPUSceneData{};
-	ClearEnvMap();
+	m_Authoring.Clear();
 	m_EntityCacheDirty = true;
 }
 

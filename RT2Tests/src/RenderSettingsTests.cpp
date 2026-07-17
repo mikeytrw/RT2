@@ -21,10 +21,12 @@ TEST_CASE("RenderSettings: default values")
 	CHECK(s.neeOnly == false);
 	CHECK(s.emissiveBoost == 1.0f);
 	CHECK(s.envIntensity == 1.0f);
-	CHECK(s.rasterFirst == false);
+	CHECK(s.rasterFirst == true);
 	CHECK(s.nrdEnabled == false);
 	CHECK(s.nrdMaxBlurRadius == 30.0f);
-	CHECK(s.nrdMaxAccumFrames == 30);
+	CHECK(s.nrdMaxAccumFrames == 63);
+	CHECK(s.restirEnabled == true);
+	CHECK(s.restirGIEnabled == true);
 	CHECK(s.nrdAntiFirefly == true);
 	CHECK(s.nrdSplitScreen == 0.0f);
 	CHECK(s.nrdJitterEnabled == true);

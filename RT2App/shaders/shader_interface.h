@@ -76,6 +76,11 @@
 #define SI_BINDING_G_PRIM_UV           10  // rg16f: xy = UV at primary hit
 
 // ============================================================================
+// Binding indices — set 1 (diagnostics)
+// ============================================================================
+#define SI_BINDING_DIAGNOSTICS         11  // std430 storage buffer: per-frame-slot counters
+
+// ============================================================================
 // CameraData UBO — std140, matches layout in RendererGPU.cpp UpdateCameraUBO
 // ============================================================================
 struct SICameraData
@@ -270,6 +275,14 @@ struct SINRDUniformData
     SI_UINT restirGIEnabled;       // 1 = ReSTIR GI active (consume stored GI sample in raygen)
     SI_UINT restirGIReservoirIndex;// current GI reservoir region index (frame parity)
 };
+
+// ============================================================================
+// GPU diagnostics constants — shared between GpuDiagnostics.h/.cpp and
+// diagnostics.glsl. Must stay in sync.
+// ============================================================================
+#define SI_DIAGNOSTIC_FRAME_SLOTS    2   // matches MAX_FRAMES_IN_FLIGHT
+#define SI_DIAGNOSTIC_COUNTER_COUNT  56  // must match GpuDiagnostics::CounterName array
+#define SI_DIAGNOSTIC_AGE_BIN_COUNT  8   // age_0 .. age_7_plus
 
 // ============================================================================
 // Size assertions (C++ only)

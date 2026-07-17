@@ -102,3 +102,36 @@ records represent completed GPU frames rather than CPU frame time.
 Both runners write under ignored `artifacts/` or `baselines/` directories.
 Commit manifests, scripts, and compact reports only; never commit captures,
 PFM/EXR images, renderer logs, or generated result directories.
+
+## RT2SliceRunner — CPU-only vertical slice verification
+
+`RT2SliceRunner` is a standalone console target that links only CPU scene
+code (no Vulkan, Walnut, ImGui, GLFW, NRD, or NRI). It loads a `.rt2scene`
+file, enters Play, runs N fixed update steps, Stops, and verifies that the
+authoring scene is unchanged. It emits a JSON report with per-entity final
+runtime transforms and exits non-zero on failure.
+
+```powershell
+.\bin\Release-windows-x86_64\RT2SliceRunner\RT2SliceRunner.exe `
+  --scene RT2App\assets\vertical-slice.rt2scene `
+  --steps 60 `
+  --out artifacts\slice_report.json
+```
+
+| Option | Meaning |
+|---|---|
+| `--scene <path>` | `.rt2scene` file to load and run. |
+| `--steps <N>` | Number of fixed update steps (default 60). |
+| `--out <path>` | Write JSON report to file instead of stdout. |
+| `--help` | Print usage. |
+
+The regression script `run_slice_test.ps1` invokes the slice runner on the
+checked-in fixture with 60 steps and asserts exit code 0, authoring
+intactness, and the expected final cube transform (x ≈ 1.0).
+
+`RT2SliceRunner` links `SceneAssetResolver` (CPU-only) so it can resolve
+imported assets and environment maps referenced by a `.rt2scene` file without
+requiring Vulkan. The JSON report fields are unchanged in Phase 1A; the
+runner continues to emit `scene`, `steps`, `authoringIntact`, `bridge`, and
+`runtimeTransforms`. If a loaded scene references external assets, the
+runner loads them through the same CPU importer path used by the editor.

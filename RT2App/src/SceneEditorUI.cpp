@@ -40,7 +40,8 @@ void SceneEditorUI::RenderOutliner()
 		return;
 	}
 
-	// Add menu
+	// Add menu — disabled during Play
+	ImGui::BeginDisabled(!m_Editable);
 	if (ImGui::Button("Add"))
 		ImGui::OpenPopup("AddEntity");
 
@@ -63,6 +64,9 @@ void SceneEditorUI::RenderOutliner()
 			int matIdx = m_SceneMgr->AddMaterial(SceneMaterial{});
 			auto id = m_SceneMgr->AddObjectWithGeometry("Cube",
 				PrimitiveGeometry::CreateCube(1.0f), {0, 0.5f, 0}, {0, 0, 0}, 1.0f, matIdx);
+			// Attach PrimitiveComponent so the entity can be saved to .rt2scene
+			m_SceneMgr->GetECS().registry.emplace_or_replace<PrimitiveComponent>(id.id,
+				PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16});
 			m_SelectedEntity = id;
 			NotifySceneChanged();
 		}
@@ -71,6 +75,8 @@ void SceneEditorUI::RenderOutliner()
 			int matIdx = m_SceneMgr->AddMaterial(SceneMaterial{});
 			auto id = m_SceneMgr->AddObjectWithGeometry("Sphere",
 				PrimitiveGeometry::CreateSphere(0.5f), {0, 0.5f, 0}, {0, 0, 0}, 1.0f, matIdx);
+			m_SceneMgr->GetECS().registry.emplace_or_replace<PrimitiveComponent>(id.id,
+				PrimitiveComponent{PrimitiveComponent::Sphere, 1.0f, 24, 16});
 			m_SelectedEntity = id;
 			NotifySceneChanged();
 		}
@@ -79,14 +85,16 @@ void SceneEditorUI::RenderOutliner()
 			int matIdx = m_SceneMgr->AddMaterial(SceneMaterial{});
 			auto id = m_SceneMgr->AddObjectWithGeometry("Plane",
 				PrimitiveGeometry::CreatePlane(5.0f), {0, 0, 0}, {0, 0, 0}, 1.0f, matIdx);
+			m_SceneMgr->GetECS().registry.emplace_or_replace<PrimitiveComponent>(id.id,
+				PrimitiveComponent{PrimitiveComponent::Plane, 5.0f, 24, 16});
 			m_SelectedEntity = id;
 			NotifySceneChanged();
 		}
 		ImGui::Separator();
-	if (ImGui::MenuItem("Import Scene..."))
-	{
-		std::string path = FileDialog::OpenFile(
-			"glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0");
+		if (ImGui::MenuItem("Import Scene..."))
+		{
+			std::string path = FileDialog::OpenFile(
+				"glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0");
 			if (!path.empty() && m_OnImportGltf)
 			{
 				auto id = m_OnImportGltf(path);
@@ -107,6 +115,7 @@ void SceneEditorUI::RenderOutliner()
 		}
 		ImGui::EndPopup();
 	}
+	ImGui::EndDisabled();
 
 	ImGui::Separator();
 
@@ -134,6 +143,7 @@ void SceneEditorUI::RenderOutliner()
 
 	ImGui::Separator();
 
+	ImGui::BeginDisabled(!m_Editable);
 	if (ImGui::Button("Delete Selected"))
 	{
 		m_SceneMgr->RemoveEntity(m_SelectedEntity);
@@ -141,6 +151,7 @@ void SceneEditorUI::RenderOutliner()
 		NotifySceneChanged();
 		m_TreeDirty = true;
 	}
+	ImGui::EndDisabled();
 
 	ImGui::SameLine();
 	if (ImGui::Button("Dump GPU Transforms"))
@@ -194,6 +205,7 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 		// Right-click context menu for deletion
 		if (ImGui::BeginPopupContextItem("EntityCtx"))
 		{
+			ImGui::BeginDisabled(!m_Editable);
 			if (ImGui::MenuItem("Delete"))
 			{
 				if (m_SelectedEntity.id == entity.id)
@@ -201,10 +213,12 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 				m_SceneMgr->RemoveEntity(entity);
 				NotifySceneChanged();
 				m_TreeDirty = true;
+				ImGui::EndDisabled();
 				ImGui::EndPopup();
 				ImGui::PopID();
 				return;
 			}
+			ImGui::EndDisabled();
 			ImGui::EndPopup();
 		}
 
@@ -227,6 +241,7 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 
 		if (ImGui::BeginPopupContextItem("EntityCtx"))
 		{
+			ImGui::BeginDisabled(!m_Editable);
 			if (ImGui::MenuItem("Delete"))
 			{
 				if (m_SelectedEntity.id == entity.id)
@@ -235,6 +250,7 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 				NotifySceneChanged();
 				m_TreeDirty = true;
 			}
+			ImGui::EndDisabled();
 			ImGui::EndPopup();
 		}
 	}
@@ -266,10 +282,12 @@ void SceneEditorUI::RenderInspector()
 	ImGui::Text("Name:");
 	ImGui::SameLine();
 	ImGui::SetNextItemWidth(200.0f);
+	ImGui::BeginDisabled(!m_Editable);
 	if (ImGui::InputText("##EntityName", nameBuf, sizeof(nameBuf), ImGuiInputTextFlags_EnterReturnsTrue))
 	{
 		m_SceneMgr->SetEntityName(entity, nameBuf);
 	}
+	ImGui::EndDisabled();
 	ImGui::Separator();
 
 	RenderTransformEditor(entity);
@@ -278,8 +296,47 @@ void SceneEditorUI::RenderInspector()
 	if (m_SceneMgr->HasMeshRef(entity))
 		RenderMaterialEditor(entity);
 
+	if (m_SceneMgr->HasLight(entity))
+		RenderLightEditor(entity);
+
 	if (m_SceneMgr->HasCamera(entity))
 		RenderCameraEditor(entity);
+
+	// Motion component editor (vertical-slice test behavior)
+	{
+		auto& reg = const_cast<entt::registry&>(m_SceneMgr->GetECS().registry);
+		if (reg.valid(entity.id))
+		{
+			ImGui::Separator();
+			bool hasMotion = reg.all_of<MotionComponent>(entity.id);
+			if (hasMotion)
+			{
+				ImGui::Text("Motion");
+				auto& mc = reg.get<MotionComponent>(entity.id);
+				ImGui::BeginDisabled(!m_Editable);
+				ImGui::DragFloat3("Linear Velocity", &mc.linearVelocity[0], 0.1f);
+				ImGui::EndDisabled();
+				ImGui::SameLine();
+				ImGui::BeginDisabled(!m_Editable);
+				if (ImGui::Button("Remove Motion"))
+				{
+					reg.remove<MotionComponent>(entity.id);
+					NotifySceneChanged();
+				}
+				ImGui::EndDisabled();
+			}
+			else
+			{
+				ImGui::BeginDisabled(!m_Editable);
+				if (ImGui::Button("Add Motion"))
+				{
+					reg.emplace<MotionComponent>(entity.id, MotionComponent{});
+					NotifySceneChanged();
+				}
+				ImGui::EndDisabled();
+			}
+		}
+	}
 
 	ImGui::End();
 }
@@ -295,6 +352,7 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 
 	bool changed = false;
 	ImGui::PushID("Transform");
+	ImGui::BeginDisabled(!m_Editable);
 	ImGui::SetNextItemWidth(180.0f);
 	if (ImGui::DragFloat3("Position", &pos[0], 0.1f))
 		changed = true;
@@ -304,6 +362,7 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	ImGui::SetNextItemWidth(180.0f);
 	if (ImGui::DragFloat("Scale", &scale, 0.05f, 0.01f, 100.0f))
 		changed = true;
+	ImGui::EndDisabled();
 	ImGui::PopID();
 
 	if (changed)
@@ -324,6 +383,7 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 
 	ImGui::Text("Mesh Index: %u", meshIdx);
 
+	ImGui::BeginDisabled(!m_Editable);
 	// Material index combo
 	const auto& materials = m_SceneMgr->GetMaterials();
 	int current = matIdx;
@@ -354,10 +414,13 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 		}
 	}
 
-	// Inline material editor (edits the material that this entity references)
+	// Inline material editor (edits the material that this entity references).
+	// Edits go through SetMaterialProperties so dirty tracking, the correct
+	// GPU sync path, and durable MaterialOverrideComponent recording on
+	// imported entities all fire.
 	if (current >= 0 && current < (int)materials.size())
 	{
-		auto& mat = m_SceneMgr->GetMaterial(current);
+		SceneMaterial mat = m_SceneMgr->GetMaterial(current);
 		bool matChanged = false;
 
 		ImGui::Indent();
@@ -376,8 +439,12 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 		ImGui::Unindent();
 
 		if (matChanged)
+		{
+			m_SceneMgr->SetMaterialProperties(current, mat);
 			NotifySceneChanged();
+		}
 	}
+	ImGui::EndDisabled();
 }
 
 void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
@@ -392,12 +459,14 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 
 	bool changed = false;
 	ImGui::PushID("Light");
+	ImGui::BeginDisabled(!m_Editable);
 	if (ImGui::ColorEdit3("Color", &color[0]))
 		changed = true;
 	if (ImGui::DragFloat("Intensity", &intensity, 0.1f, 0.0f, 1000.0f, "%.1f"))
 		changed = true;
 	if (ImGui::Checkbox("Spot", &isSpot))
 		changed = true;
+	ImGui::EndDisabled();
 	ImGui::PopID();
 
 	if (changed)
@@ -417,9 +486,11 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 	auto* cam = reg.try_get<CameraComponent>(entity.id);
 	if (!cam) return;
 
+	ImGui::BeginDisabled(!m_Editable);
 	ImGui::DragFloat("FOV", &cam->verticalFOV, 1.0f, 10.0f, 170.0f, "%.1f");
 	ImGui::DragFloat("Aperture", &cam->aperture, 0.001f, 0.0f, 5.0f, "%.3f");
 	ImGui::DragFloat("Focus Distance", &cam->focusDistance, 0.1f, 0.1f, 1000.0f, "%.1f");
+	ImGui::EndDisabled();
 
 	// Camera edits need accumulation reset but no GPU scene rebuild
 	NotifyTransformChanged();

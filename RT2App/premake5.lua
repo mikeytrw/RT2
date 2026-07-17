@@ -49,7 +49,10 @@ project "RT2App"
     else
         glslc = "C:\\VulkanSDK\\1.4.350.0\\Bin\\glslc.exe"
     end
-    local shaderDir = "%{wks.location}/RT2App/shaders"
+    -- Shader directory: use $(ProjectDir) so paths resolve correctly whether
+    -- building from the .sln or directly from the .vcxproj. The .vcxproj lives
+    -- in RT2App/, so $(ProjectDir)shaders = RT2App/shaders.
+    local shaderDir = "$(ProjectDir)shaders"
     local shaderTarget = "--target-env=vulkan1.2"
     local shaderOpt = ""
     local shaderInclude = "-I " .. shaderDir
@@ -204,22 +207,22 @@ project "RT2App"
        systemversion "latest"
        defines { "WL_PLATFORM_WINDOWS", "GLM_FORCE_DEPTH_ZERO_TO_ONE" }
         postbuildcommands {
-            "copy /Y \"%{wks.location}RT2App\\shaders\\raygen.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\secondary_raygen.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\miss.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\shadow.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\closesthit.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\anyhit.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\shadowhit.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\compose.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\tonemap.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\restir_temporal.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\restir_spatial.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\restir_gi_temporal.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\restir_gi_history.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\raster.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\rasterfrag.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"%{wks.location}RT2App\\shaders\\gbufferdebug.spv\" \"%{cfg.targetdir}\""
+            "copy /Y \"$(ProjectDir)shaders\\raygen.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\secondary_raygen.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\miss.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\shadow.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\closesthit.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\anyhit.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\shadowhit.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\compose.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\tonemap.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\restir_temporal.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\restir_spatial.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\restir_gi_temporal.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\restir_gi_history.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\raster.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\rasterfrag.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\gbufferdebug.spv\" \"%{cfg.targetdir}\""
         }
 
    filter "configurations:Debug"

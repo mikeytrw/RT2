@@ -6,7 +6,29 @@ How scenes are represented, loaded, and synced to the GPU.
 
 ## Scene Representation
 
-### ECSScene (sole representation)
+### SceneDocument (authoring + runtime unit)
+
+```
+SceneDocument
+  ├─ ECSScene ecs                   — entity-component scene
+  ├─ EnvironmentSettings environment — env map path + cached HDR pixels + dims
+  ├─ SceneMetadata metadata          — schema version, source path, dirty flag, name
+  ├─ UuidIndex uuidIndex             — UUID -> entity lookup
+  └─ GPUSceneData gpuCache           — per-document CPU cache (no Vulkan types)
+```
+
+`SceneDocument` is the serializable, cloneable unit of scene state. It unifies
+what was historically split across `ECSScene` and `SceneManager`-private
+environment state. The serializer, the runtime clone, and the slice runner all
+operate on one self-contained `SceneDocument` instead of a raw `ECSScene` plus
+loose manager state.
+
+`ECSScene` remains the entity/mesh/material/texture/camera container inside
+`SceneDocument`, but it is no longer described as the "sole representation" —
+the document also owns the environment map, metadata, UUID index, and a CPU
+GPU-scene cache.
+
+### ECSScene
 
 ```
 ECSScene
@@ -17,8 +39,8 @@ ECSScene
   └─ SceneCamera           camera
 ```
 
-ECSScene is the only scene representation. `SceneMaterial`, `SceneTexture`, and
-`SceneCamera` are shared POD structs defined in `Scene.h`.
+`SceneMaterial`, `SceneTexture`, and `SceneCamera` are shared POD structs
+defined in `Scene.h`.
 
 ### ECS Components
 
@@ -195,11 +217,216 @@ SceneManager::SyncToGPUKeepTextures()
 
 The `Camera` class (`Camera.h/.cpp`) is an FPS-style controller:
 - Right-click + drag to look, WASD/QE to move
-- Projection: `glm::perspectiveFov` with `GLM_FORCE_DEPTH_ZERO_TO_ONE` (Vulkan depth range)
+- Projection: `glm::perspective` with `GLM_FORCE_DEPTH_ZERO_TO_ONE` (Vulkan depth range)
 - Near plane: 0.1, far plane: 10000
 - Jitter: Halton(2,3) sequence, applied in raster vertex shader (clip-space offset)
 - When ReSTIR is enabled, NRD jitter is disabled via a greyed-out UI toggle
   (jitter causes temporal wobble in ReSTIR reprojection)
 
 The scene camera (`SceneCamera` in ECSScene) stores position/forward/FOV from
-the scene file. On load, `RT2Layer` copies these into the active `Camera`.
+
+---
+
+## Native scene persistence (.rt2scene)
+
+The `.rt2scene` format is RT2's native authoring format, distinct from glTF
+(which remains the interchange/export path). It is a versioned JSON file
+handled by `SceneSerializer`.
+
+### Schema version 1 (vertical slice — read-only migration input)
+
+- **Version field**: `{"version": 1, ...}`. v1 scenes are accepted by the
+  loader and migrated in memory to the v2 representation without changing
+  entity UUIDs, hierarchy UUID references, transforms, material identity, or
+  camera. The serializer always writes v2 on save, so v1 inputs are migrated
+  on the next save.
+- v1 supports primitive meshes only (`PrimitiveComponent`). Non-primitive
+  meshes were rejected with `Error{UnknownPrimitive}`.
+
+### Schema version 2 (Phase 1A — asset-backed native scene round-trip)
+
+- **Version field**: `{"version": 2, ...}`. Unsupported versions fail with
+  `Error{SchemaVersion}`. Supported read range is `1..2`.
+- **Entities**: serialized by UUID, sorted for deterministic output. Each
+  entity carries: `uuid`, `name`, `parent` (UUID or empty), `transform`
+  (translation, quaternion xyzw, scale), `visible`, and optional component
+  blocks (`primitive`, `meshRef`, `importedSource`, `materialOverride`,
+  `light`, `camera`, `motion`).
+- **Procedural meshes**: `PrimitiveComponent` entities are directly
+  serializable. The serializer rebuilds their geometry on load.
+- **Imported meshes**: durable provenance is stored in an
+  `importedSource` block containing an `AssetReference` (`kind`, portable
+  scene-relative `path`, `sourceKey`, `importSettings`). The serializer does
+  NOT write decoded vertex buffers, pixel data, GPU handles, or transient
+  `MeshRef::meshIndex` values. `SceneAssetResolver` rebuilds meshes,
+  materials, and textures from the durable references after a structural
+  load.
+- **Material overrides**: an optional `materialOverride` block records
+  authored edits to an imported material. The block stores a FULL
+  `SceneMaterial` value snapshot (`material`), an `authored` flag, and the
+  durable `sourceMaterialKey`. The `materialIndex` field is transient and is
+  not persisted as identity. Precedence: when `authored` is true, the
+  resolver appends the override material to the document's materials array
+  and points the entity's `MeshRef` at the new slot, overriding the re-
+  imported source material. Editor mutation paths
+  (`SceneManager::SetMaterial`, `SetMaterialProperties`, and the inline
+  material editor in `SceneEditorUI`) create or update
+  `MaterialOverrideComponent` on every imported entity they touch, so saved
+  UI edits are never discarded by re-import on reopen.
+- **MeshRef**: only `materialIndex` is serialized. `meshIndex` is transient
+  runtime state and is repaired by the resolver on load.
+- **Lights**: `LightComponent` entities only. The legacy `ECSScene::lights`
+  array is the glTF interchange representation and is NOT serialized by the
+  native format.
+- **Materials**: full round-trip (PBR parameters, emissive, alpha mode,
+  texture indices).
+- **Camera**: `SceneCamera` (position, forward, FOV, aperture, focus).
+- **Environment**: `envMap.path` is a portable, scene-relative UTF-8 path.
+  Pixels are NOT serialized; `SceneAssetResolver::ResolveEnvironment` re-reads
+  the file on load and verifies both dimensions and non-empty decoded float
+  pixels before the GPU scene is built.
+- **Textures**: the schema includes the array for forward-compatibility; the
+  slice does not serialize texture pixel data. Textures are rebuilt from the
+  source model by the resolver.
+- **Paths**: asset reference paths and the environment path are stored as
+  portable, scene-relative UTF-8 (forward slashes, normalized) wherever
+  possible. They are resolved relative to the `.rt2scene` file's directory at
+  load time. Absolute machine-specific paths are NOT persisted unless the
+  asset is on a different drive and cannot be relativized.
+
+### Save validation (v2)
+
+The serializer rejects scenes that cannot reopen: every entity with a
+`MeshRef` must have either a `PrimitiveComponent` (procedural) or an
+`ImportedMeshSourceComponent` (durable asset reference). Entities with
+neither produce `Error{UnknownPrimitive}` listing the offending UUIDs. This
+prevents silently saving a native scene that cannot be loaded back.
+
+### Load (two-pass, transactional, resolution-decoupled)
+
+1. Parse JSON, check schema version (accepts v1 and v2).
+2. Parse entity records (pass 0 — no entity creation).
+3. Pass 1: create entities + components by UUID, build UUID index.
+4. Pass 2: resolve parent UUIDs to `Hierarchy`. Missing parent →
+   `Error{MissingParent}`. Duplicate UUID → `Error{DuplicateUuid}`.
+5. Load into a temporary document; only on success does the caller swap it
+   in as the live authoring scene. A parse/schema failure cannot corrupt the
+   live scene.
+6. The serializer does NOT resolve external assets. After a successful load,
+   the caller runs `SceneAssetResolver::ResolveAll` to rebuild meshes,
+   textures, and materials from durable references, and
+   `SceneAssetResolver::ResolveEnvironment` to decode the environment map.
+   Missing assets produce `AssetDiagnostic` entries but do not corrupt the
+   UUID/entity hierarchy.
+
+### Save (atomic, deterministic)
+
+- Write to `path + ".tmp"`, then atomically replace the target via
+  `ReplaceFileW` (or `MoveFileExW` on Windows). On failure, the existing
+  file is left intact.
+- Entities sorted by UUID, fixed float precision (`%.9g`), stable key order
+  for readable source-control diffs.
+
+### CloneInMemory
+
+`SceneSerializer::CloneInMemory` reuses the same two-pass component visitor
+as `Load` but without file I/O. It preserves authored UUIDs exactly and does
+NOT clone transient runtime state (GPU cache, dirty flag, prevWorldMatrix,
+renderer temporal history). `RuntimeSceneController::Play` uses this to deep-
+clone the authoring `SceneDocument` into a runtime document.
+
+### SceneDocument
+
+`SceneDocument` unifies what was historically split across `ECSScene` and
+`SceneManager`-private state:
+- `ECSScene ecs` — entities, mesh registry, materials, textures, lights, camera
+- `EnvironmentSettings environment` — env map path + cached pixels + dims
+- `SceneMetadata metadata` — schema version, source path, dirty flag, name
+- `UuidIndex uuidIndex` — UUID → entity lookup, maintained alongside the registry
+- `GPUSceneData gpuCache` — per-document CPU cache (no Vulkan types)
+
+### Dirty tracking
+
+`SceneManager` exposes `IsDirty()`/`MarkDirty()`/`ClearDirty()`. All
+authoring mutations (Add/Remove/SetTransform/SetMaterial/SetMaterialProperties/
+SetEntityName/SetLightProperties/SetMeshRefMeshIndex/AddMaterial) call
+`NotifyAuthoringChanged()` which marks the scene dirty. The editor UI checks
+`IsDirty()` for unsaved-changes prompts. Material edits must go through
+`SetMaterialProperties()` rather than mutating the reference returned by
+`GetMaterial()` so dirty tracking and the correct sync path are invoked.
+
+### ISceneRenderBridge
+
+Scene code communicates with the renderer through `ISceneRenderBridge`, a
+narrow interface with `FullSync`/`MaterialSync`/`TransformSync`/
+`ResetTemporalState`/`RequestRender`. `SceneManager` and
+`RuntimeSceneController` call this interface instead of `RendererGPU`
+directly. RT2App provides `SceneRenderBridge` (backed by `RendererGPU`);
+RT2Tests and RT2SliceRunner supply a null/recording implementation. This
+keeps scene core code free of Vulkan/Walnut/ImGui dependencies.
+
+### SceneAssetResolver (Phase 1A)
+
+`SceneAssetResolver` resolves durable asset references into a `SceneDocument`
+after a structural load. It is the single place that calls `SceneLoader`
+(glTF/OBJ) and the EXR/HDR loader, so `SceneSerializer` never depends on the
+importer. It remains Vulkan/Walnut/ImGui/GLFW/NRD/NRI-free and links cleanly
+into RT2Tests and RT2SliceRunner.
+
+- `ResolveAll(doc, sceneRoot, diagnostics, err)` walks entities with
+  `ImportedMeshSourceComponent`, loads each referenced model once through
+  `SceneLoader` into a staging `ECSScene`, maps durable source keys to
+  rebuilt mesh/material/texture indices, merges staged resources into the
+  target document, and installs/repairs `MeshRef` components. For each
+  entity with an authored `MaterialOverrideComponent`, it appends the
+  override material value to the document's materials array and points the
+  entity's `MeshRef` at the new slot, so saved UI edits survive reopen.
+- `ResolveEnvironment(doc, sceneRoot, diagnostics, err)` reads the
+  environment map file (HDR/EXR) and fills `floatPixels`/dimensions. It
+  verifies both dimensions and non-empty decoded pixels.
+- Paths are resolved relative to `sceneRoot` (the `.rt2scene` directory).
+
+### Missing-asset policy (Phase 1A)
+
+Missing external assets are a distinct, user-visible diagnostic state, not a
+crash and not silent data loss:
+
+- The document stays structurally valid: the UUID/entity hierarchy,
+  transforms, visibility, camera, and any resolved entities are preserved.
+- The missing reference is recorded as an `AssetDiagnostic` (severity
+  `Missing`, `Malformed`, or `Unresolved`) identifying the referring entity
+  (UUID + name), the expected path, the resolved path attempted, the source
+  key, and a human-readable detail.
+- The affected entity is left without a resolved `MeshRef` (or with a
+  placeholder). The renderer sees zero meshes for that entity rather than
+  stale geometry.
+- If every imported entity is unresolvable, `ResolveAll` returns false with
+  `Error{MissingAsset}` so the caller can surface a clear message. Partial
+  resolution returns true with diagnostics so the scene remains usable.
+- Environment failure clears stale pixels (so the renderer does not sample
+  half-decoded data) but preserves the path reference so a later successful
+  reload can reattach.
+
+### Import provenance (Phase 1A)
+
+Durable source identity is attached at import time so the native scene can
+rebuild the same mesh/material/texture association after reopening:
+
+- **glTF**: `ImportedMeshSourceComponent::model.sourceKey` is
+  `"gltf:scene=<s>:node=<n>:mesh=<m>:primitive=<p>"` (indices into the
+  source glTF file, stable across loads). The key does NOT depend on EnTT
+  entity values or current `MeshRegistry` ordering.
+- **OBJ**: the merged mega-mesh uses `"obj:whole-model"` and a persisted
+  importer profile (`ImportSettings`: triangulate, generateNormals,
+  mergeMegaMesh) sufficient to recreate the geometry.
+- `MeshRef::meshIndex` is transient runtime state. Its numeric value is
+  never treated as persistent identity; the serializer writes only
+  `materialIndex` and the resolver repairs `meshIndex` on load.
+
+### v1 → v2 migration
+
+v1 primitive-only scenes load and are migrated in memory to the v2
+representation without changing entity UUIDs, hierarchy UUID references,
+transforms, material identity, or camera. The only observable difference is
+the version field written back on save (v2). v1 scenes carry no asset
+references, so no resolution is needed for them.

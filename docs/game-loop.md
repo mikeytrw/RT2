@@ -95,11 +95,37 @@ while (window not closed):
 
 ---
 
-## Planned runtime frame-order contract (Phase 4+)
+## Runtime frame-order contract
 
-This section is the canonical ordering contract for the planned Edit/Play/Pause
+This section is the canonical ordering contract for the Edit/Play/Pause
 runtime lifecycle. `game-engine-development-plan.md` may state phase-specific
 requirements but must link here rather than define a competing order.
+
+### Implemented (vertical slice)
+
+The vertical slice implements a subset of the full contract. Systems marked
+absent are placeholders for later phases.
+
+```text
+sample input
+accumulate clamped frame time (max 0.25s)
+while a fixed step is available, up to kMaxSubsteps (5):
+    MotionSystem::FixedUpdate (UUID-sorted entity order)
+    [physics step — absent, Phase 9]
+apply deferred structural changes at the defined safe point
+[variable script callbacks — absent, Phase 6]
+[animation evaluation — absent, Phase 10]
+update world transforms (SceneGraph)
+issue one batched transform-only GPU sync
+[audio update — absent, Phase 11]
+render
+```
+
+Constants: `kFixedDt = 1/60`, `kMaxFrameTime = 0.25s`, `kMaxSubsteps = 5`.
+If the substep cap is reached, residual accumulator time is dropped to
+prevent cascading catch-up.
+
+### Full contract (Phase 4+)
 
 ```text
 sample input
@@ -116,11 +142,38 @@ update audio
 render
 ```
 
-Pause executes none of the simulation stages. Step executes exactly one fixed
-iteration, then the post-simulation stages needed to present the result. The
-runtime controller snapshots previous transforms before simulation and owns the
-runtime-world lifecycle; Stop destroys runtime-only state and restores the
-unchanged authoring world.
+### Pause and Step
+
+Pause executes none of the simulation stages and clears the accumulator so
+stale wall-clock time cannot become queued simulation on resume.
+
+Step is valid only while Paused. It means: advance the paused runtime world
+by exactly one `kFixedDt` tick, then make that tick renderable once. It must
+not run the accumulator or consume wall-clock time. Specifically:
+
+1. Snapshot previous transforms.
+2. Run one fixed update tick (MotionSystem, UUID-sorted).
+3. Apply deferred structural changes at the defined safe point.
+4. Update world transforms (SceneGraph).
+5. Issue one batched GPU sync (coalesced: structural > material > transform).
+6. Request one render submission.
+
+The accumulator is NOT advanced. Variable scripts (when present) run once
+with `kFixedDt`, not an arbitrary frame duration, so a stepped frame is
+deterministic. After the render consumes the transform pair, previous
+transforms must be committed to current before the next paused render,
+otherwise motion vectors persist while stationary.
+
+### Lifecycle
+
+The runtime controller (`RuntimeSceneController`) snapshots previous
+transforms before simulation and owns the runtime-world lifecycle. Play
+deep-clones the authoring `SceneDocument` into a runtime document
+(preserving UUIDs, not cloning transient state), initializes
+`prevWorldMatrix = worldMatrix`, and performs a full GPU sync. Stop
+destroys runtime-only state, re-activates the authoring document with a
+full GPU sync, and restores the editor camera. The authoring scene is
+never mutated during Play.
 
 The stable-order requirements are part of the determinism policy: fixed system
 iteration, deferred creates/destroys, seeds, and event delivery must not depend

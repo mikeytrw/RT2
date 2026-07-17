@@ -1,0 +1,167 @@
+{
+  "camera": {
+    "aperture": 0.0,
+    "focusDist": 1.0,
+    "forward": [
+      0.0,
+      0.0,
+      -1.0
+    ],
+    "fov": 45.0,
+    "position": [
+      0.0,
+      1.0,
+      10.0
+    ]
+  },
+  "entities": [
+    {
+      "meshRef": {
+        "materialIndex": 0
+      },
+      "motion": {
+        "velocity": [
+          1.0,
+          0.0,
+          0.0
+        ]
+      },
+      "name": "Cube",
+      "parent": "",
+      "primitive": {
+        "kind": "cube",
+        "rings": 16,
+        "segments": 24,
+        "size": 1.0
+      },
+      "transform": {
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "translation": [
+          0.0,
+          0.0,
+          0.0
+        ]
+      },
+      "uuid": "00000000-0000-4000-8000-000000000000",
+      "visible": true
+    },
+    {
+      "light": {
+        "color": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "innerCone": 30.0,
+        "intensity": 50.0,
+        "isSpot": false,
+        "outerCone": 45.0,
+        "range": 50.0
+      },
+      "name": "Light",
+      "parent": "",
+      "transform": {
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "translation": [
+          5.0,
+          10.0,
+          5.0
+        ]
+      },
+      "uuid": "01000000-0000-4000-8000-000000000000",
+      "visible": true
+    },
+    {
+      "camera": {
+        "aperture": 0.0,
+        "focusDist": 1.0,
+        "forward": [
+          0.0,
+          0.0,
+          -1.0
+        ],
+        "fov": 45.0
+      },
+      "name": "Camera",
+      "parent": "",
+      "transform": {
+        "rotation": [
+          0.0,
+          0.0,
+          0.0,
+          1.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "translation": [
+          0.0,
+          1.0,
+          10.0
+        ]
+      },
+      "uuid": "02000000-0000-4000-8000-000000000000",
+      "visible": true
+    }
+  ],
+  "envMap": {
+    "height": 0,
+    "path": "",
+    "width": 0
+  },
+  "materials": [
+    {
+      "alphaCutoff": 0.5,
+      "alphaMode": "OPAQUE",
+      "baseAlpha": 1.0,
+      "baseColor": [
+        0.800000011920929,
+        0.20000000298023224,
+        0.20000000298023224
+      ],
+      "baseColorTex": -1,
+      "emissiveColor": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "emissiveIntensity": 0.0,
+      "emissiveTex": -1,
+      "ior": 1.5,
+      "metallic": 0.0,
+      "metallicRoughTex": -1,
+      "normalTex": -1,
+      "roughness": 0.5,
+      "transmission": 0.0,
+      "type": 0
+    }
+  ],
+  "metadata": {
+    "name": "vertical-slice",
+    "sourcePath": "C:\\Users\\mikey\\source\\repos\\RT2\\RT2App\\assets\\vertical-slice.rt2scene"
+  },
+  "textures": [],
+  "version": 2
+}

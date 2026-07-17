@@ -6,8 +6,11 @@ project "RT2Tests"
 
     files { "src/**.h", "src/**.cpp", "vendor/**.h", "vendor/**.cpp" }
 
+    -- Phase1A fixture generator header (header-only, included by tests).
+    files { "../RT2App/src/Phase1AFixtureGenerator.h" }
+
     -- Include source files from RT2App for testing
-    files { "../RT2App/src/SceneLoader.cpp", "../RT2App/src/GPUSceneData.cpp", "../RT2App/src/SceneGraph.cpp", "../RT2App/src/SceneManager.cpp", "../RT2App/src/PrimitiveGeometry.cpp", "../RT2App/src/TinyEXRLoader.cpp" }
+    files { "../RT2App/src/SceneLoader.cpp", "../RT2App/src/GPUSceneData.cpp", "../RT2App/src/SceneGraph.cpp", "../RT2App/src/SceneManager.cpp", "../RT2App/src/PrimitiveGeometry.cpp", "../RT2App/src/TinyEXRLoader.cpp", "../RT2App/src/SceneDocument.cpp", "../RT2App/src/SceneSerializer.cpp", "../RT2App/src/SceneAssetResolver.cpp", "../RT2App/src/RuntimeSceneController.cpp", "../RT2App/src/core/UUID.cpp", "../RT2App/src/core/Error.cpp" }
 
     includedirs
     {

@@ -16,6 +16,14 @@
 #include "PrimitiveGeometry.h"
 #include "CLIArgs.h"
 #include "RTLog.h"
+#include "SceneSerializer.h"
+#include "SceneDocument.h"
+#include "SceneAssetResolver.h"
+#include "RuntimeSceneController.h"
+#include "SceneRenderBridge.h"
+#include "ECSComponents.h"
+#include "core/UUID.h"
+#include "core/Error.h"
 #include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -42,7 +50,6 @@ public:
 	RT2Layer()
 	{
 		m_Cam = Camera(45.0f, 0.1f, 10000.0f, 0.005f, 2.5f);
-		m_RenderOnUpdate = true;
 		m_Cam.m_Aperture = 0.0f;
 
 		m_EditorUI.SetSceneMgr(&m_SceneMgr);
@@ -143,12 +150,6 @@ public:
 	if (m_RendererGPU.HasOutput())
 		ImGui::Text("Render Res: %d x %d", m_RendererGPU.GetWidth(), m_RendererGPU.GetHeight());
 	ImGui::Separator();
-
-	if (ImGui::Button("Render")) {
-		Render();
-	};
-
-	ImGui::Checkbox("Render on Update", &m_RenderOnUpdate);
 
 	ImGui::Separator();
 	ImGui::Text("Renderer");
@@ -436,20 +437,106 @@ public:
 	ImGui::Text("Materials: %d", (int)m_SceneMgr.GetMaterials().size());
 	ImGui::Text("Lights: %d", (int)m_SceneMgr.GetECS().lights.size());
 	ImGui::Text("Textures: %d", (int)m_SceneMgr.GetECS().textures.size());
+	if (m_SceneMgr.IsDirty())
+		ImGui::TextColored(ImVec4(1, 0.8f, 0, 1), "Unsaved changes");
 	ImGui::Separator();
-	if (ImGui::Button("Load Scene..."))
+
+	// ---- File operations ----
+	if (ImGui::Button("New"))
+		NewScene();
+	ImGui::SameLine();
+	if (ImGui::Button("Open..."))
 	{
-		std::string path = FileDialog::OpenFile("glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0");
+		std::string path = FileDialog::OpenFile("RT2 Scene (*.rt2scene)\0*.rt2scene\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0");
 		if (!path.empty())
 			LoadScene(path);
 	}
 	ImGui::SameLine();
-	if (ImGui::Button("Save Scene..."))
+	if (ImGui::Button("Save..."))
 	{
-		std::string path = FileDialog::SaveFile("glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0");
+		std::string path = FileDialog::SaveFile("RT2 Scene (*.rt2scene)\0*.rt2scene\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0");
 		if (!path.empty())
-			SceneLoader::Save(m_SceneMgr.GetECS(), path);
+		{
+			// Ensure the path has an extension. If none, default to .rt2scene.
+			size_t dotPos = path.find_last_of('.');
+			if (dotPos == std::string::npos)
+			{
+				path += ".rt2scene";
+				SaveRt2Scene(path);
+			}
+			else
+			{
+				std::string fext = path.substr(dotPos + 1);
+				std::transform(fext.begin(), fext.end(), fext.begin(), ::tolower);
+				if (fext == "rt2scene")
+					SaveRt2Scene(path);
+				else
+					SceneLoader::Save(m_SceneMgr.GetECS(), path);
+			}
+		}
 	}
+	ImGui::SameLine();
+	if (ImGui::Button("Save As..."))
+	{
+		std::string path = FileDialog::SaveFile("RT2 Scene (*.rt2scene)\0*.rt2scene\0");
+		if (!path.empty())
+		{
+			// Ensure .rt2scene extension is present.
+			size_t dotPos = path.find_last_of('.');
+			if (dotPos == std::string::npos || path.substr(dotPos + 1) != "rt2scene")
+			{
+				// Strip any existing extension and add .rt2scene
+				if (dotPos != std::string::npos)
+					path = path.substr(0, dotPos);
+				path += ".rt2scene";
+			}
+			SaveRt2Scene(path);
+		}
+	}
+
+	ImGui::Separator();
+
+	// ---- Play/Pause/Step/Stop controls ----
+	{
+		auto state = m_Runtime.GetState();
+		bool playing = (state == rt2::core::SceneRunState::Playing);
+		bool paused  = (state == rt2::core::SceneRunState::Paused);
+		bool editing = (state == rt2::core::SceneRunState::Edit);
+
+		ImGui::BeginDisabled(playing);
+		if (ImGui::Button("Play"))
+		{
+			if (paused)
+				m_Runtime.Resume();
+			else
+				EnterPlay();
+		}
+		ImGui::EndDisabled();
+
+		ImGui::SameLine();
+		ImGui::BeginDisabled(!playing);
+		if (ImGui::Button("Pause"))
+			EnterPause();
+		ImGui::EndDisabled();
+
+		ImGui::SameLine();
+		ImGui::BeginDisabled(!paused);
+		if (ImGui::Button("Step"))
+			EnterStep();
+		ImGui::EndDisabled();
+
+		ImGui::SameLine();
+		ImGui::BeginDisabled(editing);
+		if (ImGui::Button("Stop"))
+			EnterStop();
+		ImGui::EndDisabled();
+
+		// State indicator
+		const char* stateStr = editing ? "Edit" : (paused ? "Paused" : "Playing");
+		ImGui::SameLine();
+		ImGui::TextDisabled("(%s)", stateStr);
+	}
+
 	ImGui::End();
 
 	m_EditorUI.RenderPanels();
@@ -463,7 +550,8 @@ public:
 	if (m_RendererGPU.IsAvailable())
 	{
 		m_RendererGPU.OnResize(m_ViewportWidth, m_ViewportHeight);
-		m_Cam.OnResize(m_ViewportWidth, m_ViewportHeight);
+		Camera& activeCam = m_RuntimeCamActive ? m_RuntimeCam : m_Cam;
+		activeCam.OnResize(m_ViewportWidth, m_ViewportHeight);
 	}
 
 	if (m_RendererGPU.HasOutput())
@@ -476,13 +564,20 @@ public:
 
 	virtual void OnUpdate(float ts) override
 	{
-		m_Cam.OnUpdate(ts);
+		if (m_RuntimeCamActive)
+			m_RuntimeCam.OnUpdate(ts);
+		else
+			m_Cam.OnUpdate(ts);
 
 		if (!m_CLIProcessed) return;
 
-		if (m_RenderOnUpdate) {
-			Render();
+		// Drive the runtime controller when Playing.
+		if (m_Runtime.GetState() == rt2::core::SceneRunState::Playing && m_RenderBridge)
+		{
+			m_Runtime.Update(ts, *m_RenderBridge);
 		}
+
+		Render();
 	}
 
 private:
@@ -878,7 +973,7 @@ private:
 		Timer timer;
 
 		if (m_RendererGPU.IsAvailable())
-			m_RendererGPU.Render(m_Cam);
+			m_RendererGPU.Render(m_RuntimeCamActive ? m_RuntimeCam : m_Cam);
 
 		m_LastRenderTime = timer.ElapsedMillis();
 
@@ -899,14 +994,20 @@ private:
 
 	void LoadScene(const std::string& filepath)
 	{
+		// Dispatch .rt2scene files to the native serializer.
+		std::string ext = filepath.substr(filepath.find_last_of('.') + 1);
+		std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+		if (ext == "rt2scene")
+		{
+			OpenRt2Scene(filepath);
+			return;
+		}
+
 		if (!m_SceneMgr.LoadScene(filepath))
 		{
 			ImGui::OpenPopup("Scene Load Failed");
 			return;
 		}
-
-		std::string ext = filepath.substr(filepath.find_last_of('.') + 1);
-		std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
 		if (ext == "obj")
 		{
@@ -962,10 +1063,196 @@ private:
 	float m_LastRenderTime = 0.0f;
 	float m_SmoothedFrameTime = 0.0f;
 	float m_SmoothedFPS = 0.0f;
-	bool m_RenderOnUpdate = true;
 	bool m_PendingFullSync = false;
 	Camera m_Cam;
 	bool m_CLIProcessed = false;
+
+	// Runtime lifecycle
+	SceneRenderBridge* m_RenderBridge = nullptr;
+	rt2::core::RuntimeSceneController m_Runtime;
+	Camera m_RuntimeCam;           // separate camera for Play mode
+	Camera m_EditorCamSnapshot;    // saved on Play, restored on Stop
+	bool m_RuntimeCamActive = false;
+
+	// ---- Runtime lifecycle ----
+
+	void EnterPlay()
+	{
+		if (!m_RenderBridge)
+			m_RenderBridge = new SceneRenderBridge(m_RendererGPU);
+
+		rt2::core::Error err;
+		if (!m_Runtime.Play(m_SceneMgr.AuthoringDoc(), *m_RenderBridge, err))
+		{
+			printf("[Play] Failed to enter Play: %s\n", err.Format().c_str());
+			return;
+		}
+
+		// Snapshot the editor camera and switch to the runtime camera.
+		m_EditorCamSnapshot = m_Cam;
+		m_RuntimeCam = m_Cam;
+		m_RuntimeCamActive = true;
+
+		// Find the runtime scene's camera entity and adopt its pose.
+		const rt2::core::SceneDocument* rt = m_Runtime.TryGetRuntimeScene();
+		if (rt)
+		{
+			auto& reg = rt->ecs.registry;
+			auto view = reg.view<CameraComponent>();
+			for (auto e : view)
+			{
+				auto& cc = view.get<CameraComponent>(e);
+				auto* tf = reg.try_get<Transform>(e);
+				if (tf)
+				{
+					m_RuntimeCam.SetPosition(tf->translation);
+					m_RuntimeCam.SetForwardDirection(cc.forwardDirection);
+				}
+				break; // first camera entity
+			}
+		}
+
+		m_EditorUI.SetEditable(false);
+		printf("[Play] Entered Play mode\n");
+	}
+
+	void EnterPause()
+	{
+		m_Runtime.Pause();
+		printf("[Play] Paused\n");
+	}
+
+	void EnterStep()
+	{
+		if (!m_RenderBridge) return;
+		m_Runtime.Step(*m_RenderBridge);
+	}
+
+	void EnterStop()
+	{
+		if (!m_RenderBridge) return;
+		m_Runtime.Stop(m_SceneMgr.AuthoringDoc(), *m_RenderBridge);
+
+		// Restore the editor camera.
+		m_Cam = m_EditorCamSnapshot;
+		m_RuntimeCamActive = false;
+
+		m_EditorUI.SetEditable(true);
+		printf("[Play] Stopped, editor scene restored\n");
+	}
+
+	// ---- Native .rt2scene file operations ----
+
+	void NewScene()
+	{
+		if (m_SceneMgr.IsDirty())
+		{
+			// TODO: save/discard/cancel prompt
+		}
+		m_SceneMgr.Clear();
+		m_SceneMgr.ClearDirty();
+
+		// Push the now-empty scene to the GPU so the renderer drops all
+		// geometry and instances from the previous scene.
+		if (m_RendererGPU.IsAvailable())
+		{
+			m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData) {
+				m_RendererGPU.SetScene(gpuData);
+			});
+			m_SceneMgr.SyncToGPU();
+			m_RendererGPU.ResetAccumulation();
+		}
+	}
+
+	void OpenRt2Scene(const std::string& filepath)
+	{
+		if (m_SceneMgr.IsDirty())
+		{
+			// TODO: save/discard/cancel prompt
+		}
+
+		rt2::core::Error err;
+		// Load + resolve into a temporary document first. Only on success do
+		// we swap it into the live authoring document and GPU-sync. This
+		// preserves the transactional guarantee: a parse, schema, or hard
+		// resolution failure cannot partially replace the currently open
+		// authoring scene.
+		rt2::core::SceneDocument tempDoc;
+		tempDoc.SetUuidProvider(m_SceneMgr.AuthoringDoc().GetUuidProvider());
+
+		if (!rt2::core::SceneSerializer::Load(tempDoc, filepath, err))
+		{
+			printf("[Scene] Failed to load .rt2scene: %s\n", err.Format().c_str());
+			ImGui::OpenPopup("Scene Load Failed");
+			return;
+		}
+
+		// Resolve durable asset references into the temporary document. The
+		// serializer persists durable refs only; the resolver rebuilds
+		// transient mesh/texture/material/environment state from the source
+		// files. Missing assets produce diagnostics, not crashes.
+		std::filesystem::path sceneRoot = std::filesystem::path(filepath).parent_path();
+		std::vector<rt2::core::AssetDiagnostic> diagnostics;
+		rt2::core::Error resolveErr;
+		bool resolveOk = rt2::core::SceneAssetResolver::ResolveAll(
+		        tempDoc, sceneRoot, diagnostics, resolveErr);
+
+		for (const auto& d : diagnostics)
+		{
+			const char* sev = (d.severity == rt2::core::AssetDiagnostic::Missing)
+			                  ? "Missing" : (d.severity == rt2::core::AssetDiagnostic::Malformed)
+			                  ? "Malformed" : "Unresolved";
+			printf("[Scene] Asset %s: kind=%d ref='%s' resolved='%s' entity=%s%s%s"
+			       " sourceKey='%s' detail=%s\n",
+			       sev, (int)d.kind, d.refPath.c_str(), d.resolvedPath.c_str(),
+			       d.entityUuid.IsNull() ? "(env)" : d.entityUuid.ToString().c_str(),
+			       d.entityName.empty() ? "" : " (",
+			       d.entityName.empty() ? "" : d.entityName.c_str(),
+			       d.sourceKey.c_str(), d.detail.c_str());
+		}
+
+		if (!resolveOk)
+		{
+			// Hard resolution failure: every imported entity was unresolvable.
+			// Preserve the currently open authoring document — do not swap in
+			// a document that cannot render its imported content.
+			printf("[Scene] Asset resolution failed, keeping current scene: %s\n",
+			       resolveErr.Format().c_str());
+			ImGui::OpenPopup("Scene Load Failed");
+			return;
+		}
+
+		// Swap the resolved document into the SceneManager.
+		m_SceneMgr.Clear();
+		m_SceneMgr.AuthoringDoc() = std::move(tempDoc);
+		m_SceneMgr.ClearDirty();
+
+		// Upload to GPU
+		if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
+			UploadMeshToGPU();
+
+		m_RendererGPU.ResetAccumulation();
+
+		// Adopt the scene camera
+		const auto& cam = m_SceneMgr.GetECS().camera;
+		m_Cam.SetPosition(cam.position);
+		m_Cam.SetForwardDirection(cam.forwardDirection);
+
+		printf("[Scene] Loaded .rt2scene: %s\n", filepath.c_str());
+	}
+
+	void SaveRt2Scene(const std::string& filepath)
+	{
+		rt2::core::Error err;
+		m_SceneMgr.AuthoringDoc().metadata.sourcePath = filepath;
+		if (!rt2::core::SceneSerializer::Save(m_SceneMgr.AuthoringDoc(), filepath, err))
+		{
+			printf("[Scene] Failed to save .rt2scene: %s\n", err.Format().c_str());
+			return;
+		}
+		m_SceneMgr.ClearDirty();
+		printf("[Scene] Saved .rt2scene: %s\n", filepath.c_str());
+	}
 
 	void LoadEnvMap(const std::string& filepath)
 	{
@@ -992,6 +1279,19 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 	{
 		if (ImGui::BeginMenu("File"))
 		{
+			if (ImGui::MenuItem("New"))
+			{
+				// TODO: wire to RT2Layer::NewScene via callback
+			}
+			if (ImGui::MenuItem("Open..."))
+			{
+				// TODO: wire to RT2Layer::LoadScene via callback
+			}
+			if (ImGui::MenuItem("Save..."))
+			{
+				// TODO: wire to RT2Layer::SaveRt2Scene via callback
+			}
+			ImGui::Separator();
 			if (ImGui::MenuItem("Exit"))
 			{
 				app->Close();

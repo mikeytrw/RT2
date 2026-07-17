@@ -79,6 +79,9 @@ public:
 	// Read back the output image to CPU as RGBA8 (tonemapped+sRGB). Returns false on failure.
 	bool ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t& outWidth, uint32_t& outHeight);
 
+	// Read back the output image to CPU as RGBA32F linear HDR. Returns false on failure.
+	bool ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uint32_t& outWidth, uint32_t& outHeight);
+
 	// Render settings — the only writable configuration surface.
 	// Mutate a copy, then call ApplySettings() to detect changes and
 	// auto-trigger ResetAccumulation on the next Render().

@@ -63,6 +63,11 @@ public:
 	void SetOnDumpNEEBuffers(std::function<void()> cb)
 	{ m_OnDumpNEEBuffers = std::move(cb); }
 
+	// Set whether authoring edits are allowed. During Play, the UI is
+	// read-only (bound to the runtime scene).
+	void SetEditable(bool editable) { m_Editable = editable; }
+	bool IsEditable() const { return m_Editable; }
+
 	void RenderPanels();
 
 private:
@@ -95,6 +100,9 @@ private:
 	// The outliner checks this after each RenderEntityTree call and aborts
 	// the remaining traversal (stale entity IDs would crash entt).
 	bool m_TreeDirty = false;
+
+	// When false, authoring controls are disabled (during Play).
+	bool m_Editable = true;
 };
 
 #endif // SCENE_EDITOR_UI_H

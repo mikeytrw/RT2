@@ -93,22 +93,22 @@
       <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
-      <Command>copy /Y "$(SolutionDir)RT2App\shaders\raygen.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\secondary_raygen.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\miss.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\shadow.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\tonemap.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\restir_temporal.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\restir_spatial.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\restir_gi_temporal.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\restir_gi_history.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Debug-windows-x86_64/RT2App"</Command>
+      <Command>copy /Y "$(ProjectDir)shaders\raygen.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\secondary_raygen.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\miss.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\shadow.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\closesthit.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\anyhit.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\shadowhit.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\compose.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\tonemap.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\restir_temporal.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\restir_spatial.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\restir_gi_temporal.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\restir_gi_history.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Debug-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -136,22 +136,22 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Debug-windows-x8
       <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
-      <Command>copy /Y "$(SolutionDir)RT2App\shaders\raygen.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\secondary_raygen.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\miss.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\shadow.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\tonemap.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\restir_temporal.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\restir_spatial.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\restir_gi_temporal.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\restir_gi_history.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Release-windows-x86_64/RT2App"</Command>
+      <Command>copy /Y "$(ProjectDir)shaders\raygen.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\secondary_raygen.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\miss.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\shadow.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\closesthit.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\anyhit.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\shadowhit.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\compose.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\tonemap.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\restir_temporal.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\restir_spatial.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\restir_gi_temporal.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\restir_gi_history.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Release-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Dist|x64'">
@@ -179,22 +179,22 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Release-windows-
       <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
-      <Command>copy /Y "$(SolutionDir)RT2App\shaders\raygen.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\secondary_raygen.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\miss.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\shadow.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\closesthit.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\anyhit.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\shadowhit.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\compose.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\tonemap.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\restir_temporal.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\restir_spatial.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\restir_gi_temporal.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\restir_gi_history.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\raster.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\rasterfrag.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2App"</Command>
+      <Command>copy /Y "$(ProjectDir)shaders\raygen.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\secondary_raygen.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\miss.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\shadow.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\closesthit.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\anyhit.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\shadowhit.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\compose.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\tonemap.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\restir_temporal.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\restir_spatial.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\restir_gi_temporal.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\restir_gi_history.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -203,19 +203,23 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
     <ClInclude Include="src\AsyncTextureLoader.h" />
     <ClInclude Include="src\CLIArgs.h" />
     <ClInclude Include="src\Camera.h" />
+    <ClInclude Include="src\ColorTransfer.h" />
     <ClInclude Include="src\CommandUtils.h" />
     <ClInclude Include="src\ComposePass.h" />
     <ClInclude Include="src\ECSComponents.h" />
     <ClInclude Include="src\ECSScene.h" />
     <ClInclude Include="src\FileDialog.h" />
+    <ClInclude Include="src\FixtureGenerator.h" />
     <ClInclude Include="src\FrameContext.h" />
     <ClInclude Include="src\FrameRenderer.h" />
     <ClInclude Include="src\GBufferDebugPass.h" />
     <ClInclude Include="src\GBufferTarget.h" />
     <ClInclude Include="src\GPUSceneData.h" />
     <ClInclude Include="src\GpuDevice.h" />
+    <ClInclude Include="src\GpuDiagnostics.h" />
     <ClInclude Include="src\GpuResources.h" />
     <ClInclude Include="src\GpuTimestampProfiler.h" />
+    <ClInclude Include="src\ISceneRenderBridge.h" />
     <ClInclude Include="src\MeshRegistry.h" />
     <ClInclude Include="src\NRDIntegration.h" />
     <ClInclude Include="src\PathTracePass.h" />
@@ -228,16 +232,23 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
     <ClInclude Include="src\RendererGPU.h" />
     <ClInclude Include="src\ReservoirGIResources.h" />
     <ClInclude Include="src\ReservoirResources.h" />
+    <ClInclude Include="src\RuntimeSceneController.h" />
+    <ClInclude Include="src\SceneDocument.h" />
     <ClInclude Include="src\SceneEditorUI.h" />
     <ClInclude Include="src\SceneGraph.h" />
     <ClInclude Include="src\SceneLoader.h" />
     <ClInclude Include="src\SceneManager.h" />
+    <ClInclude Include="src\SceneRenderBridge.h" />
     <ClInclude Include="src\SceneResources.h" />
+    <ClInclude Include="src\SceneSerializer.h" />
+    <ClInclude Include="src\SceneAssetResolver.h" />
     <ClInclude Include="src\SceneTypes.h" />
     <ClInclude Include="src\ShaderManager.h" />
     <ClInclude Include="src\StagingArena.h" />
     <ClInclude Include="src\TonemapPass.h" />
     <ClInclude Include="src\VulkanUtils.h" />
+    <ClInclude Include="src\core\Error.h" />
+    <ClInclude Include="src\core\UUID.h" />
     <ClInclude Include="vendor\NRD\Include\NRD.h" />
     <ClInclude Include="vendor\NRD\Include\NRDDescs.h" />
     <ClInclude Include="vendor\NRD\Include\NRDSettings.h" />
@@ -323,6 +334,11 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\GpuDiagnostics.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\GpuResources.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -378,6 +394,16 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\RuntimeSceneController.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\SceneDocument.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\SceneEditorUI.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -398,7 +424,22 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\SceneRenderBridge.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\SceneResources.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\SceneSerializer.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\SceneAssetResolver.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -428,6 +469,16 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\core\Error.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\core\UUID.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="shaders\material_resolve.glsl" />
@@ -441,113 +492,113 @@ copy /Y "$(SolutionDir)RT2App\shaders\gbufferdebug.spv" "../bin/Dist-windows-x86
   <ItemGroup>
     <CustomBuild Include="shaders\anyhit.rahit">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rahit -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/anyhit.rahit -o $(SolutionDir)/RT2App/shaders/anyhit.spv</Command>
-      <Outputs>shaders/anyhit.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rahit -I $(ProjectDir)shaders $(ProjectDir)shaders/anyhit.rahit -o $(ProjectDir)shaders/anyhit.spv</Command>
+      <Outputs>$(ProjectDir)shaders/anyhit.spv</Outputs>
       <Message>Compiling anyhit.rahit</Message>
       <AdditionalInputs>shaders/pathtracer_shared.glsl;shaders/scatter_shared.glsl;shaders/restir_shared.glsl;shaders/restir_bindings.glsl;shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\closesthit.rchit">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rchit -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/closesthit.rchit -o $(SolutionDir)/RT2App/shaders/closesthit.spv</Command>
-      <Outputs>shaders/closesthit.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rchit -I $(ProjectDir)shaders $(ProjectDir)shaders/closesthit.rchit -o $(ProjectDir)shaders/closesthit.spv</Command>
+      <Outputs>$(ProjectDir)shaders/closesthit.spv</Outputs>
       <Message>Compiling closesthit.rchit</Message>
       <AdditionalInputs>shaders/pathtracer_shared.glsl;shaders/scatter_shared.glsl;shaders/restir_shared.glsl;shaders/restir_bindings.glsl;shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\compose.comp">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/compose.comp -o $(SolutionDir)/RT2App/shaders/compose.spv</Command>
-      <Outputs>shaders/compose.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(ProjectDir)shaders $(ProjectDir)shaders/compose.comp -o $(ProjectDir)shaders/compose.spv</Command>
+      <Outputs>$(ProjectDir)shaders/compose.spv</Outputs>
       <Message>Compiling compose.comp</Message>
       <AdditionalInputs>shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\gbuffer_debug.comp">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/gbuffer_debug.comp -o $(SolutionDir)/RT2App/shaders/gbufferdebug.spv</Command>
-      <Outputs>shaders/gbufferdebug.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(ProjectDir)shaders $(ProjectDir)shaders/gbuffer_debug.comp -o $(ProjectDir)shaders/gbufferdebug.spv</Command>
+      <Outputs>$(ProjectDir)shaders/gbufferdebug.spv</Outputs>
       <Message>Compiling gbuffer_debug.comp</Message>
       <AdditionalInputs>shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\miss.rmiss">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rmiss -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/miss.rmiss -o $(SolutionDir)/RT2App/shaders/miss.spv</Command>
-      <Outputs>shaders/miss.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rmiss -I $(ProjectDir)shaders $(ProjectDir)shaders/miss.rmiss -o $(ProjectDir)shaders/miss.spv</Command>
+      <Outputs>$(ProjectDir)shaders/miss.spv</Outputs>
       <Message>Compiling miss.rmiss</Message>
       <AdditionalInputs>shaders/pathtracer_shared.glsl;shaders/scatter_shared.glsl;shaders/restir_shared.glsl;shaders/restir_bindings.glsl;shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\raster.frag">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=frag -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/raster.frag -o $(SolutionDir)/RT2App/shaders/rasterfrag.spv</Command>
-      <Outputs>shaders/rasterfrag.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=frag -I $(ProjectDir)shaders $(ProjectDir)shaders/raster.frag -o $(ProjectDir)shaders/rasterfrag.spv</Command>
+      <Outputs>$(ProjectDir)shaders/rasterfrag.spv</Outputs>
       <Message>Compiling raster.frag</Message>
       <AdditionalInputs>shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\raster.vert">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=vert -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/raster.vert -o $(SolutionDir)/RT2App/shaders/raster.spv</Command>
-      <Outputs>shaders/raster.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=vert -I $(ProjectDir)shaders $(ProjectDir)shaders/raster.vert -o $(ProjectDir)shaders/raster.spv</Command>
+      <Outputs>$(ProjectDir)shaders/raster.spv</Outputs>
       <Message>Compiling raster.vert</Message>
       <AdditionalInputs>shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\raygen.rgen">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rgen -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/raygen.rgen -o $(SolutionDir)/RT2App/shaders/raygen.spv</Command>
-      <Outputs>shaders/raygen.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rgen -I $(ProjectDir)shaders $(ProjectDir)shaders/raygen.rgen -o $(ProjectDir)shaders/raygen.spv</Command>
+      <Outputs>$(ProjectDir)shaders/raygen.spv</Outputs>
       <Message>Compiling raygen.rgen</Message>
       <AdditionalInputs>shaders/pathtracer_shared.glsl;shaders/scatter_shared.glsl;shaders/restir_shared.glsl;shaders/restir_bindings.glsl;shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\restir_gi_history.comp">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/restir_gi_history.comp -o $(SolutionDir)/RT2App/shaders/restir_gi_history.spv</Command>
-      <Outputs>shaders/restir_gi_history.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(ProjectDir)shaders $(ProjectDir)shaders/restir_gi_history.comp -o $(ProjectDir)shaders/restir_gi_history.spv</Command>
+      <Outputs>$(ProjectDir)shaders/restir_gi_history.spv</Outputs>
       <Message>Compiling restir_gi_history.comp</Message>
       <AdditionalInputs>shaders/restir_gi_shared.glsl;shaders/restir_gi_bindings.glsl;shaders/surface_history_shared.glsl;shaders/material_resolve.glsl;shaders/ray_query_scene.glsl;shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\restir_gi_temporal.comp">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/restir_gi_temporal.comp -o $(SolutionDir)/RT2App/shaders/restir_gi_temporal.spv</Command>
-      <Outputs>shaders/restir_gi_temporal.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(ProjectDir)shaders $(ProjectDir)shaders/restir_gi_temporal.comp -o $(ProjectDir)shaders/restir_gi_temporal.spv</Command>
+      <Outputs>$(ProjectDir)shaders/restir_gi_temporal.spv</Outputs>
       <Message>Compiling restir_gi_temporal.comp</Message>
       <AdditionalInputs>shaders/restir_gi_shared.glsl;shaders/restir_gi_bindings.glsl;shaders/surface_history_shared.glsl;shaders/material_resolve.glsl;shaders/ray_query_scene.glsl;shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\restir_spatial.comp">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/restir_spatial.comp -o $(SolutionDir)/RT2App/shaders/restir_spatial.spv</Command>
-      <Outputs>shaders/restir_spatial.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(ProjectDir)shaders $(ProjectDir)shaders/restir_spatial.comp -o $(ProjectDir)shaders/restir_spatial.spv</Command>
+      <Outputs>$(ProjectDir)shaders/restir_spatial.spv</Outputs>
       <Message>Compiling restir_spatial.comp</Message>
       <AdditionalInputs>shaders/restir_shared.glsl;shaders/restir_bindings.glsl;shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\restir_temporal.comp">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/restir_temporal.comp -o $(SolutionDir)/RT2App/shaders/restir_temporal.spv</Command>
-      <Outputs>shaders/restir_temporal.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(ProjectDir)shaders $(ProjectDir)shaders/restir_temporal.comp -o $(ProjectDir)shaders/restir_temporal.spv</Command>
+      <Outputs>$(ProjectDir)shaders/restir_temporal.spv</Outputs>
       <Message>Compiling restir_temporal.comp</Message>
       <AdditionalInputs>shaders/restir_shared.glsl;shaders/restir_bindings.glsl;shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\secondary_raygen.rgen">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rgen -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/secondary_raygen.rgen -o $(SolutionDir)/RT2App/shaders/secondary_raygen.spv</Command>
-      <Outputs>shaders/secondary_raygen.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rgen -I $(ProjectDir)shaders $(ProjectDir)shaders/secondary_raygen.rgen -o $(ProjectDir)shaders/secondary_raygen.spv</Command>
+      <Outputs>$(ProjectDir)shaders/secondary_raygen.spv</Outputs>
       <Message>Compiling secondary_raygen.rgen</Message>
       <AdditionalInputs>shaders/pathtracer_shared.glsl;shaders/scatter_shared.glsl;shaders/restir_shared.glsl;shaders/restir_bindings.glsl;shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\shadow.rahit">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rahit -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/shadow.rahit -o $(SolutionDir)/RT2App/shaders/shadowhit.spv</Command>
-      <Outputs>shaders/shadowhit.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rahit -I $(ProjectDir)shaders $(ProjectDir)shaders/shadow.rahit -o $(ProjectDir)shaders/shadowhit.spv</Command>
+      <Outputs>$(ProjectDir)shaders/shadowhit.spv</Outputs>
       <Message>Compiling shadow.rahit</Message>
       <AdditionalInputs>shaders/pathtracer_shared.glsl;shaders/scatter_shared.glsl;shaders/restir_shared.glsl;shaders/restir_bindings.glsl;shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\shadow.rmiss">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rmiss -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/shadow.rmiss -o $(SolutionDir)/RT2App/shaders/shadow.spv</Command>
-      <Outputs>shaders/shadow.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=rmiss -I $(ProjectDir)shaders $(ProjectDir)shaders/shadow.rmiss -o $(ProjectDir)shaders/shadow.spv</Command>
+      <Outputs>$(ProjectDir)shaders/shadow.spv</Outputs>
       <Message>Compiling shadow.rmiss</Message>
       <AdditionalInputs>shaders/pathtracer_shared.glsl;shaders/scatter_shared.glsl;shaders/restir_shared.glsl;shaders/restir_bindings.glsl;shaders/shader_interface.h</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\tonemap.comp">
       <FileType>Document</FileType>
-      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(SolutionDir)/RT2App/shaders $(SolutionDir)/RT2App/shaders/tonemap.comp -o $(SolutionDir)/RT2App/shaders/tonemap.spv</Command>
-      <Outputs>shaders/tonemap.spv</Outputs>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(ProjectDir)shaders $(ProjectDir)shaders/tonemap.comp -o $(ProjectDir)shaders/tonemap.spv</Command>
+      <Outputs>$(ProjectDir)shaders/tonemap.spv</Outputs>
       <Message>Compiling tonemap.comp</Message>
     </CustomBuild>
   </ItemGroup>

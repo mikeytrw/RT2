@@ -909,6 +909,12 @@ bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
     std::unordered_map<int, std::vector<uint32_t>> meshIndexCache;
     // glTF mesh index → list of MeshRegistry indices (one per primitive)
 
+    // Capture the glTF default scene index for durable source keys so a
+    // directly-loaded glTF scene can be saved and reopened as .rt2scene.
+    int gltfSceneIdx = model.defaultScene;
+    if (gltfSceneIdx < 0 && !model.scenes.empty())
+        gltfSceneIdx = 0;
+
     std::function<entt::entity(int, entt::entity)> traverseNodeECS =
         [&](int nodeIdx, entt::entity parentEntity) -> entt::entity {
         if (nodeIdx < 0 || nodeIdx >= (int)model.nodes.size())
@@ -1054,12 +1060,23 @@ bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
                     const auto& prim = gmesh.primitives[p];
                     int matIdx = (prim.material >= 0) ? prim.material : 0;
 
+                    std::string sourceKey =
+                        "gltf:scene=" + std::to_string(gltfSceneIdx) +
+                        ":node=" + std::to_string(nodeIdx) +
+                        ":mesh=" + std::to_string(node.mesh) +
+                        ":primitive=" + std::to_string(p);
+
                     if (p == 0)
                     {
                         // First primitive goes on the node entity itself
                         MeshRef& ref = ecsScene.registry.emplace<MeshRef>(entity);
                         ref.meshIndex = meshIdx;
                         ref.materialIndex = matIdx;
+
+                        ImportedMeshSourceComponent src;
+                        src.model.kind      = AssetKind::Model;
+                        src.model.sourceKey = sourceKey;
+                        ecsScene.registry.emplace<ImportedMeshSourceComponent>(entity, src);
                     }
                     else
                     {
@@ -1085,6 +1102,11 @@ bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
                         MeshRef& ref = ecsScene.registry.emplace<MeshRef>(primEntity);
                         ref.meshIndex = meshIdx;
                         ref.materialIndex = matIdx;
+
+                        ImportedMeshSourceComponent src;
+                        src.model.kind      = AssetKind::Model;
+                        src.model.sourceKey = sourceKey;
+                        ecsScene.registry.emplace<ImportedMeshSourceComponent>(primEntity, src);
                     }
                 }
             }
@@ -1508,6 +1530,13 @@ entt::entity SceneLoader::ImportIntoECS(ECSScene& ecsScene, const std::string& f
     // --- Node traversal (same as LoadIntoECS but with material offset) ---
     std::unordered_map<int, std::vector<uint32_t>> meshIndexCache;
 
+    // Capture the glTF default scene index for durable source keys. The
+    // importer attaches ImportedMeshSourceComponent so the native .rt2scene
+    // can rebuild the same mesh/material association after reopen.
+    int gltfSceneIdx = model.defaultScene;
+    if (gltfSceneIdx < 0 && !model.scenes.empty())
+        gltfSceneIdx = 0;
+
     std::function<entt::entity(int, entt::entity)> traverseNodeECS =
         [&](int nodeIdx, entt::entity parentEntity) -> entt::entity {
         if (nodeIdx < 0 || nodeIdx >= (int)model.nodes.size())
@@ -1583,11 +1612,25 @@ entt::entity SceneLoader::ImportIntoECS(ECSScene& ecsScene, const std::string& f
                     // Offset material index by matBase to reference imported materials
                     int matIdx = (prim.material >= 0) ? (prim.material + (int)matBase) : 0;
 
+                    // Durable source key for this primitive. Uses the glTF
+                    // scene/node/mesh/primitive indices so the native scene
+                    // can rebuild the same association after reopen.
+                    std::string sourceKey =
+                        "gltf:scene=" + std::to_string(gltfSceneIdx) +
+                        ":node=" + std::to_string(nodeIdx) +
+                        ":mesh=" + std::to_string(node.mesh) +
+                        ":primitive=" + std::to_string(p);
+
                     if (p == 0)
                     {
                         MeshRef& ref = reg.emplace<MeshRef>(entity);
                         ref.meshIndex = meshIdx;
                         ref.materialIndex = matIdx;
+
+                        ImportedMeshSourceComponent src;
+                        src.model.kind      = AssetKind::Model;
+                        src.model.sourceKey = sourceKey;
+                        reg.emplace<ImportedMeshSourceComponent>(entity, src);
                     }
                     else
                     {
@@ -1610,6 +1653,11 @@ entt::entity SceneLoader::ImportIntoECS(ECSScene& ecsScene, const std::string& f
                         MeshRef& ref = reg.emplace<MeshRef>(primEntity);
                         ref.meshIndex = meshIdx;
                         ref.materialIndex = matIdx;
+
+                        ImportedMeshSourceComponent src;
+                        src.model.kind      = AssetKind::Model;
+                        src.model.sourceKey = sourceKey;
+                        reg.emplace<ImportedMeshSourceComponent>(primEntity, src);
                     }
                 }
             }
@@ -1947,6 +1995,18 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
     ecsScene.registry.emplace<MeshRef>(entity, meshIdx, -1); // use per-triangle materials
     ecsScene.registry.emplace<NameComponent>(entity, name);
     ecsScene.registry.emplace<VisibleComponent>(entity);
+
+    // Durable provenance: OBJ whole-model mega-mesh. The importer profile is
+    // persisted by the serializer so the resolver can rebuild the same mesh.
+    {
+        ImportedMeshSourceComponent src;
+        src.model.kind      = AssetKind::Model;
+        src.model.sourceKey = "obj:whole-model";
+        src.model.importSettings.triangulate     = true;
+        src.model.importSettings.mergeMegaMesh   = true;
+        src.model.importSettings.generateNormals = false;
+        ecsScene.registry.emplace<ImportedMeshSourceComponent>(entity, src);
+    }
 
     printf("[SceneLoader] OBJ loaded: %d verts, %d tris, %d textures, %d materials\n",
            (int)ecsScene.meshRegistry.GetMesh(meshIdx).vertices.size() / 3,

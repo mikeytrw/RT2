@@ -9,3 +9,4 @@ include "Walnut/WalnutExternal.lua"
 
 include "RT2App"
 include "RT2Tests"
+include "RT2SliceRunner"

@@ -24,6 +24,8 @@ test_*.png
 /benchmarking/*.png
 *.pfm
 *.exr
+# Checked-in tiny fixture environment maps are source, not captures.
+!RT2App/assets/phase1a-fixtures/*.exr
 *.log
 *.dmp
 scripts/__pycache__/

@@ -26,13 +26,17 @@ struct RenderSettings
 	float emissiveBoost  = 1.0f;
 	float envIntensity   = 1.0f;
 
+	// Deterministic sampling seed (0 = renderer default). Set from CLI
+	// --seed; consumed by the path tracer to initialize per-pixel RNG.
+	uint32_t sceneSeed   = 0;
+
 	// Render path
-	bool  rasterFirst   = false;
+	bool  rasterFirst   = true;
 	bool  accumulate    = true;  // temporal accumulation (non-NRD path only)
 
 	// ReSTIR DI (Reservoir-based Resampling for Direct Illumination)
 	// Replaces RIS — raster-first mode only. Temporal + spatial reuse.
-	bool  restirEnabled       = false;
+	bool  restirEnabled       = true;
 	uint32_t restirFreshCandidates = 4;    // M: fresh candidates per pixel per frame
 	uint32_t restirSpatialNeighbors = 4;  // neighbor count for spatial reuse
 	uint32_t restirSpatialRadius    = 16; // pixel radius for neighbor sampling
@@ -48,7 +52,7 @@ struct RenderSettings
 	// ReSTIR GI (Reservoir-based Resampling for one-bounce Global Illumination)
 	// One diffuse indirect bounce, temporal reuse first, raster-first only.
 	// Independent of ReSTIR DI — requires raster-first G-buffer but not DI.
-	bool     restirGIEnabled         = false;
+	bool     restirGIEnabled         = true;
 	bool     restirGITemporalEnabled = true;
 	uint32_t restirGIFreshCandidates = 1;    // M: fresh GI candidates per pixel
 	uint32_t restirGITemporalMCap    = 20;   // capped M from temporal history

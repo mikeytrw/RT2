@@ -1,7 +1,7 @@
 {
   ".opencode/opencode.json": {
-    "mtime": 1783340930.402241,
-    "ast_hash": "1efe24ecf938911d4f23e4b1c6ec91f7",
+    "mtime": 1784292622.866253,
+    "ast_hash": "97e6a4c36f8b1f702e86ccd3a3e253b9",
     "semantic_hash": ""
   },
   ".opencode/package.json": {
@@ -10,407 +10,337 @@
     "semantic_hash": ""
   },
   ".opencode/plugins/graphify.js": {
-    "mtime": 1783357998.8308268,
+    "mtime": 1784292622.866253,
     "ast_hash": "b33d000860642c6f4907a877e0387a21",
     "semantic_hash": ""
   },
   "RT2App/premake5.lua": {
-    "mtime": 1783347833.1733208,
-    "ast_hash": "6fba017205b7d042aff8e35b28a3f91f",
+    "mtime": 1784300514.2774699,
+    "ast_hash": "5ec08155436b9a43d766b0dd90b7680e",
     "semantic_hash": ""
   },
   "RT2App/shaders/shader_interface.h": {
-    "mtime": 1783345866.95006,
-    "ast_hash": "7a65ed83e3819565253b5ef782c192cd",
-    "semantic_hash": ""
-  },
-  "RT2App/src/AABB.h": {
-    "mtime": 1782152980.8681946,
-    "ast_hash": "fb35f27d8ee165de41a2286abf591290",
+    "mtime": 1784300240.118568,
+    "ast_hash": "ae07bb6872ede9b886aa9c8ba11ed72a",
     "semantic_hash": ""
   },
   "RT2App/src/AccelerationStructure.cpp": {
-    "mtime": 1783343069.5342953,
-    "ast_hash": "dee52f2bb2d84662634dcec8ff598d6c",
+    "mtime": 1784042760.8299177,
+    "ast_hash": "c222f6b2aae28584d6c8cd12b5e7cf6e",
     "semantic_hash": ""
   },
   "RT2App/src/AccelerationStructure.h": {
-    "mtime": 1783343051.8399546,
-    "ast_hash": "4370f2a0a53ea136d8a861396780300c",
-    "semantic_hash": ""
-  },
-  "RT2App/src/BVHNode.h": {
-    "mtime": 1782151480.6835463,
-    "ast_hash": "96b005f12b1f85b51e702f9d598d6182",
+    "mtime": 1783881546.762128,
+    "ast_hash": "ae498c0df842d935aa5ca76896aff738",
     "semantic_hash": ""
   },
   "RT2App/src/CLIArgs.h": {
-    "mtime": 1783348048.560302,
-    "ast_hash": "3b3d5c7b43fff5c2b3bc809ec563818d",
+    "mtime": 1784275024.6975973,
+    "ast_hash": "79fa833e539ef67b019861ea426a3ae7",
     "semantic_hash": ""
   },
   "RT2App/src/Camera.cpp": {
-    "mtime": 1783270896.0261154,
-    "ast_hash": "a88679ae504bb1c9ba3ef077bd43da42",
+    "mtime": 1783453001.4445972,
+    "ast_hash": "0d6e8b0b0a9232b115cf44df2104da19",
     "semantic_hash": ""
   },
   "RT2App/src/Camera.h": {
-    "mtime": 1783270952.1794393,
-    "ast_hash": "61469c0a7642e732f3afaa5d40415962",
-    "semantic_hash": ""
-  },
-  "RT2App/src/Colour.h": {
-    "mtime": 1782068808.2086005,
-    "ast_hash": "1556afe3f42f6767e54ae64629fea0bc",
+    "mtime": 1783501883.5061185,
+    "ast_hash": "32602837c6a24011b916d54a81277ea0",
     "semantic_hash": ""
   },
   "RT2App/src/CommandUtils.cpp": {
-    "mtime": 1783328961.8713539,
+    "mtime": 1783364251.179486,
     "ast_hash": "16d0729d8249e03e57d4977f64feb283",
     "semantic_hash": ""
   },
   "RT2App/src/CommandUtils.h": {
-    "mtime": 1783328951.8926744,
+    "mtime": 1783364251.179486,
     "ast_hash": "d2ccd7f6f976af8a2277c2f890741db6",
     "semantic_hash": ""
   },
   "RT2App/src/ComposePass.cpp": {
-    "mtime": 1783326500.3201795,
-    "ast_hash": "2a5078f65822fb8c39fe87a7dbe9358b",
+    "mtime": 1783712573.7127006,
+    "ast_hash": "06a7107cdb2d7cf51c2840bf7b8c5145",
     "semantic_hash": ""
   },
   "RT2App/src/ComposePass.h": {
-    "mtime": 1783278933.422368,
-    "ast_hash": "15fee6b33da7e9ca477089dd2a8c8f18",
+    "mtime": 1784036947.9738166,
+    "ast_hash": "543815b693007ff07d63aed6fbe05fb8",
     "semantic_hash": ""
   },
   "RT2App/src/ECSComponents.h": {
-    "mtime": 1783334761.0539556,
-    "ast_hash": "ffe8ca0f7a434b8d16179660e2eb5d8a",
+    "mtime": 1784319654.9966438,
+    "ast_hash": "8fdb27b81a33d33c851f10530efa6dd1",
     "semantic_hash": ""
   },
   "RT2App/src/ECSScene.h": {
-    "mtime": 1783336162.934416,
-    "ast_hash": "54282b74b07d2a7aa6c199f4a90dfb4d",
+    "mtime": 1783857194.6086578,
+    "ast_hash": "59a4ef37e3883f583a8be44342d533d7",
     "semantic_hash": ""
   },
   "RT2App/src/FileDialog.cpp": {
-    "mtime": 1782246182.9100463,
-    "ast_hash": "bad023acf78c9e004086e5ccbf9f20d5",
+    "mtime": 1784314200.8315785,
+    "ast_hash": "0d965b4224fe66f0534ec0d0876f2c83",
     "semantic_hash": ""
   },
   "RT2App/src/FileDialog.h": {
-    "mtime": 1782246175.9824412,
+    "mtime": 1783364251.184758,
     "ast_hash": "09af6d4fdb1a64d940bbbf6627ae6184",
     "semantic_hash": ""
   },
   "RT2App/src/FrameContext.cpp": {
-    "mtime": 1783329036.8694074,
+    "mtime": 1783364251.1857896,
     "ast_hash": "c5a3979bf8d652284dc069f32e5211f4",
     "semantic_hash": ""
   },
   "RT2App/src/FrameContext.h": {
-    "mtime": 1783329020.2925014,
+    "mtime": 1783364251.1857896,
     "ast_hash": "d20ce5aadb71e9040fe069ce6fb69d7d",
     "semantic_hash": ""
   },
   "RT2App/src/GBufferDebugPass.cpp": {
-    "mtime": 1783347866.0900426,
+    "mtime": 1783364251.1867926,
     "ast_hash": "487cba95e1bc8a75125747ce3258bf6a",
     "semantic_hash": ""
   },
   "RT2App/src/GBufferDebugPass.h": {
-    "mtime": 1783347844.8317566,
+    "mtime": 1783364251.1882956,
     "ast_hash": "045bc1dc57b58499410e1d17141d9b4e",
     "semantic_hash": ""
   },
   "RT2App/src/GPUSceneData.cpp": {
-    "mtime": 1783343369.1589212,
-    "ast_hash": "de5278e1321a9aafccb7d556a37fc7ea",
+    "mtime": 1784276045.2936552,
+    "ast_hash": "5657f6436c38c5ffa396959a599c9f5a",
     "semantic_hash": ""
   },
   "RT2App/src/GPUSceneData.h": {
-    "mtime": 1783342998.367841,
-    "ast_hash": "7ad40c4e4763999f8a4d838fc5072bde",
+    "mtime": 1784276043.9881146,
+    "ast_hash": "fc054e9534d8ba6720895558b3883ad0",
     "semantic_hash": ""
   },
   "RT2App/src/GpuDevice.cpp": {
-    "mtime": 1783280606.403941,
-    "ast_hash": "f36c31e79dbbba0c4dac69506d224000",
+    "mtime": 1784292622.9005299,
+    "ast_hash": "075072554e28554ce17b8d473120d65b",
     "semantic_hash": ""
   },
   "RT2App/src/GpuDevice.h": {
-    "mtime": 1783280592.6494374,
-    "ast_hash": "0dca5fe315e538cca94667703bf80ba5",
+    "mtime": 1784292622.9005299,
+    "ast_hash": "8de4693b4f2e47dafe2a4b428922842b",
     "semantic_hash": ""
   },
   "RT2App/src/GpuResources.cpp": {
-    "mtime": 1783332962.1516998,
-    "ast_hash": "74a0f4ebeaf5917a7759e51f03b300c3",
+    "mtime": 1783869792.0229113,
+    "ast_hash": "e5446404fb68e30cba00116f7ced62e0",
     "semantic_hash": ""
   },
   "RT2App/src/GpuResources.h": {
-    "mtime": 1783332948.911581,
-    "ast_hash": "68f496a0ce0910c915afb4c79e77b1f5",
-    "semantic_hash": ""
-  },
-  "RT2App/src/Hittable.h": {
-    "mtime": 1782153041.4536624,
-    "ast_hash": "1b1c0a0d02807f739556ca713eb8cca0",
-    "semantic_hash": ""
-  },
-  "RT2App/src/HittableList.h": {
-    "mtime": 1782072214.516244,
-    "ast_hash": "66db132b8ea52f4e8e47a49541e989e9",
-    "semantic_hash": ""
-  },
-  "RT2App/src/Material.h": {
-    "mtime": 1782153056.1791925,
-    "ast_hash": "38d568e993656cea4d796e72b5d33720",
-    "semantic_hash": ""
-  },
-  "RT2App/src/Mesh.cpp": {
-    "mtime": 1782377642.9867878,
-    "ast_hash": "5f23d8363c60f14769cf1ca9aecab57c",
-    "semantic_hash": ""
-  },
-  "RT2App/src/Mesh.h": {
-    "mtime": 1782246140.062605,
-    "ast_hash": "36ac5d184fbc82875711f317ef149512",
+    "mtime": 1783509817.466159,
+    "ast_hash": "91702b4664b95449c3f300aca53926c6",
     "semantic_hash": ""
   },
   "RT2App/src/MeshRegistry.h": {
-    "mtime": 1783334770.7982757,
-    "ast_hash": "c913c92f4c9511e6eecdc9de0cb9ec72",
+    "mtime": 1783927410.1083424,
+    "ast_hash": "612f5371aa1ec3ddc07440ff1030f484",
     "semantic_hash": ""
   },
   "RT2App/src/NRDIntegration.cpp": {
-    "mtime": 1783331154.5444286,
-    "ast_hash": "d75e95b598f9bc7625158d062a8b15f0",
+    "mtime": 1784231269.9121933,
+    "ast_hash": "ce06920c00cbbc9665f8b2a0df9b7ce2",
     "semantic_hash": ""
   },
   "RT2App/src/NRDIntegration.h": {
-    "mtime": 1783273063.6175957,
-    "ast_hash": "dcc14c06683f3bfd6c2eef222f97cac3",
+    "mtime": 1784231192.2784657,
+    "ast_hash": "d493e1752799792ba9c2246311fb7d1c",
     "semantic_hash": ""
   },
   "RT2App/src/PathTracePass.cpp": {
-    "mtime": 1783349671.7380743,
-    "ast_hash": "c13682174bd6969285740865c397af76",
+    "mtime": 1783975214.625451,
+    "ast_hash": "8f90ad7121b9196aa2e92705bee57c6a",
     "semantic_hash": ""
   },
   "RT2App/src/PathTracePass.h": {
-    "mtime": 1783345974.8481112,
-    "ast_hash": "fdda4cc0a1d53a58464b6b99dd790e79",
+    "mtime": 1783975220.51499,
+    "ast_hash": "38384ffa031cab56235c46ee5640c064",
     "semantic_hash": ""
   },
   "RT2App/src/RTLog.h": {
-    "mtime": 1783083186.8287952,
+    "mtime": 1783364251.2007923,
     "ast_hash": "b54c7ee1f1e33bf2a5d674001030c26a",
     "semantic_hash": ""
   },
   "RT2App/src/RasterPass.cpp": {
-    "mtime": 1783357738.4251034,
-    "ast_hash": "96937c360293aad458404c6c5be228c8",
+    "mtime": 1784224209.9010932,
+    "ast_hash": "3b50cb7966d592248986e009fbce8f2a",
     "semantic_hash": ""
   },
   "RT2App/src/RasterPass.h": {
-    "mtime": 1783357601.581316,
-    "ast_hash": "468e718e99ae14a8842befc299418d80",
-    "semantic_hash": ""
-  },
-  "RT2App/src/Ray.h": {
-    "mtime": 1782250648.0531929,
-    "ast_hash": "bb61ebb21721f53c2e7042eb06a0c4ad",
-    "semantic_hash": ""
-  },
-  "RT2App/src/Renderer.h": {
-    "mtime": 1783270331.4140124,
-    "ast_hash": "bd3e7ed1f790046c2c71288a8af50124",
+    "mtime": 1784223979.2672977,
+    "ast_hash": "1f5c1ec613d4f7f6e594b94aad44651b",
     "semantic_hash": ""
   },
   "RT2App/src/RendererGPU.cpp": {
-    "mtime": 1783357766.4763603,
-    "ast_hash": "aaafdb7d388bf0b2c41d20051b6362af",
+    "mtime": 1784300276.7883916,
+    "ast_hash": "4a053092036e3c34ef686ab169d0c742",
     "semantic_hash": ""
   },
   "RT2App/src/RendererGPU.h": {
-    "mtime": 1783348009.5667312,
-    "ast_hash": "b52e3389181efe6d44a104c74ae8e175",
-    "semantic_hash": ""
-  },
-  "RT2App/src/Scene.h": {
-    "mtime": 1783251292.3738322,
-    "ast_hash": "931004d7c1a6eb81fa460182eea8fa62",
+    "mtime": 1784300257.8172395,
+    "ast_hash": "fa7160cc67f724c3b64782e9b7d88378",
     "semantic_hash": ""
   },
   "RT2App/src/SceneGraph.cpp": {
-    "mtime": 1783335379.00233,
+    "mtime": 1783364251.2062006,
     "ast_hash": "a57ca1421004e6c7a65a6d5a61e64206",
     "semantic_hash": ""
   },
   "RT2App/src/SceneGraph.h": {
-    "mtime": 1783334776.8656526,
+    "mtime": 1783364251.2070203,
     "ast_hash": "c658f820d8c4678acd1381925e3d31ee",
     "semantic_hash": ""
   },
   "RT2App/src/SceneLoader.cpp": {
-    "mtime": 1783336290.2133052,
-    "ast_hash": "8be9cf6c88b2ce9c69f1c2da499d40cb",
+    "mtime": 1784317513.531991,
+    "ast_hash": "a09fb5be8349855fe472bc90c357735b",
     "semantic_hash": ""
   },
   "RT2App/src/SceneLoader.h": {
-    "mtime": 1783336188.472838,
-    "ast_hash": "ec91cd439c165ec950e1017e58ece2cb",
+    "mtime": 1783857328.6443193,
+    "ast_hash": "fd030dfb5afc2e8d9bb1d4432aa9da45",
     "semantic_hash": ""
   },
   "RT2App/src/ShaderManager.cpp": {
-    "mtime": 1783280577.1890082,
+    "mtime": 1783364251.2097237,
     "ast_hash": "b96d615c52666cc91c0b984868219482",
     "semantic_hash": ""
   },
   "RT2App/src/ShaderManager.h": {
-    "mtime": 1783280564.9069467,
+    "mtime": 1783364251.2097237,
     "ast_hash": "0474cecb2932a9f3253a4ab130672d6a",
     "semantic_hash": ""
   },
-  "RT2App/src/Sphere.h": {
-    "mtime": 1782072181.6876793,
-    "ast_hash": "0e9bcf976e3e79eacae024e28023d5b9",
-    "semantic_hash": ""
-  },
   "RT2App/src/StagingArena.cpp": {
-    "mtime": 1783332887.6033802,
+    "mtime": 1783364251.2112339,
     "ast_hash": "a2dc540609d9d9bc74ed558ef75559a7",
     "semantic_hash": ""
   },
   "RT2App/src/StagingArena.h": {
-    "mtime": 1783332882.826488,
+    "mtime": 1783364251.2127368,
     "ast_hash": "628821886095d5acf1bb7dbd18aba5ef",
     "semantic_hash": ""
   },
   "RT2App/src/TinyEXRLoader.cpp": {
-    "mtime": 1783080920.8102565,
+    "mtime": 1783364251.213782,
     "ast_hash": "9f20c5a55de4392dd0119519216d7d2a",
     "semantic_hash": ""
   },
-  "RT2App/src/Triangle.h": {
-    "mtime": 1782252170.8405266,
-    "ast_hash": "3e865d321a2301ca92be029f5252b390",
-    "semantic_hash": ""
-  },
-  "RT2App/src/Utility.h": {
-    "mtime": 1782068802.977794,
-    "ast_hash": "fc8d9bc24604bca9304493ae572a94ee",
-    "semantic_hash": ""
-  },
   "RT2App/src/VulkanUtils.h": {
-    "mtime": 1783271287.1882207,
-    "ast_hash": "58c7e605f98853419ea67661679d490d",
+    "mtime": 1783513762.623033,
+    "ast_hash": "9f60b3e6b63f860aa89f960c433b47e9",
     "semantic_hash": ""
   },
   "RT2App/src/WalnutApp.cpp": {
-    "mtime": 1783348056.4157608,
-    "ast_hash": "05b3ea4119a8f28d44f973eb907f3383",
+    "mtime": 1784319772.651411,
+    "ast_hash": "1422da01ba154f51adc226fb6754d243",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRD/Include/NRD.h": {
-    "mtime": 1783174201.6126666,
+    "mtime": 1783364251.217287,
     "ast_hash": "60549bf8a9fe341c5fd85d64523519a8",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRD/Include/NRDDescs.h": {
-    "mtime": 1783174201.6136932,
+    "mtime": 1783364251.217287,
     "ast_hash": "8be3809130baabd1dc41ab9e7c7310b5",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRD/Include/NRDSettings.h": {
-    "mtime": 1783174201.6136932,
+    "mtime": 1783364251.2182884,
     "ast_hash": "0bc61b7c4b64395527f10e910485a293",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRD/Integration/NRDIntegration.h": {
-    "mtime": 1783174201.6147685,
+    "mtime": 1783364251.2192886,
     "ast_hash": "6b7d73bc02513b95e61e067a75c58558",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRD/Integration/NRDIntegration.hpp": {
-    "mtime": 1783174201.6147685,
+    "mtime": 1783364251.2192886,
     "ast_hash": "ef4c1b3dfceb15539ae485bdb1a24478",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/Extensions/NRIDeviceCreation.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.224576,
     "ast_hash": "9ce8f3f1f306e704a6ab3f35326b359e",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/Extensions/NRIHelper.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.224576,
     "ast_hash": "3d5a0ce296404e6fe09e6fad001129de",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/Extensions/NRIImgui.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.2263386,
     "ast_hash": "7f7dc0911e3b84367f953473fcc6224d",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/Extensions/NRILowLatency.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.2271914,
     "ast_hash": "cbfad914ff156c3b58ebb1a19c92d97a",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/Extensions/NRIMeshShader.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.2271914,
     "ast_hash": "5146c8a3f51b21a414a0bcad7d65230e",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/Extensions/NRIRayTracing.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.2288125,
     "ast_hash": "ed9f1612463bc5e6dc077facea5b292d",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/Extensions/NRIStreamer.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.2297437,
     "ast_hash": "17031d3c3d8e8412ee40d0153d24bde5",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/Extensions/NRISwapChain.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.2307708,
     "ast_hash": "996ec4aef9f79e9967b82c021549bdec",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/Extensions/NRIUpscaler.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.231514,
     "ast_hash": "aff7fd9e8f8aa17ebc5c62b19a8bbe94",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/Extensions/NRIWrapperD3D11.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.2325158,
     "ast_hash": "534556975559f6926eb5ee41503bbe41",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/Extensions/NRIWrapperD3D12.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.2330222,
     "ast_hash": "31b3b1bcd5c4f557e099465744262bed",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/Extensions/NRIWrapperVK.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.2342744,
     "ast_hash": "b88792bf6f3111caacbe27f83cf1563c",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/NRI.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.2352774,
     "ast_hash": "7303f9d4eee86cde8bdff59f1e6cbb9a",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/NRIDescs.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.23678,
     "ast_hash": "a24835f97e3566a0650706a2a0670531",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRI/Include/NRIMacro.h": {
-    "mtime": 1782113851.0,
+    "mtime": 1783364251.2386403,
     "ast_hash": "fddb56881337403711f5b13980d01f48",
     "semantic_hash": ""
   },
@@ -1600,92 +1530,87 @@
     "semantic_hash": ""
   },
   "RT2App/vendor/stb/stb_image_write.h": {
-    "mtime": 1680276845.0888896,
+    "mtime": 1783364251.2450404,
     "ast_hash": "3000e87a8fef3545674236a27efe2097",
     "semantic_hash": ""
   },
   "RT2App/vendor/tinyexr.h": {
-    "mtime": 1783080693.6525455,
+    "mtime": 1783364251.2473395,
     "ast_hash": "ef0adde651140411cad52a31cb9bc146",
     "semantic_hash": ""
   },
   "RT2App/vendor/tinygltf/json.hpp": {
-    "mtime": 1782243962.9710746,
+    "mtime": 1783364251.2515368,
     "ast_hash": "a03591084a083789add58ef4aae3642b",
     "semantic_hash": ""
   },
   "RT2App/vendor/tinygltf/tiny_gltf.h": {
-    "mtime": 1782243947.1491604,
+    "mtime": 1783364251.2540593,
     "ast_hash": "1ef013060edc02e821b7768dd3154448",
     "semantic_hash": ""
   },
   "RT2App/vendor/tinyobjloader/tiny_obj_loader.h": {
-    "mtime": 1782068547.783134,
+    "mtime": 1783364251.2563064,
     "ast_hash": "2cac52c8a40cc4237829d6b5ab64fb1a",
     "semantic_hash": ""
   },
   "RT2Tests/premake5.lua": {
-    "mtime": 1783335221.104472,
-    "ast_hash": "42d7bffefa62fc7fe0d51ba7e6da050a",
+    "mtime": 1784318297.7721143,
+    "ast_hash": "216e8776e9020c64155fd394fddd1433",
     "semantic_hash": ""
   },
   "RT2Tests/src/BuildGpuFromEcsTests.cpp": {
-    "mtime": 1783343943.315983,
-    "ast_hash": "3faef3723fe45b85c0c5b712225a4a17",
+    "mtime": 1783866439.6173294,
+    "ast_hash": "5deabfb32352d939ce657aadc7eefbb1",
     "semantic_hash": ""
   },
   "RT2Tests/src/EcsSceneLoaderTests.cpp": {
-    "mtime": 1783336328.4539294,
-    "ast_hash": "4bb5da0acc429e1b83a46888e161b0e5",
+    "mtime": 1783927549.3270657,
+    "ast_hash": "d48d479704f843ba5c1036498561107d",
     "semantic_hash": ""
   },
   "RT2Tests/src/EcsTests.cpp": {
-    "mtime": 1783335328.6791544,
+    "mtime": 1783364251.2605555,
     "ast_hash": "1f54375875e1cfa2274fa377baa20019",
     "semantic_hash": ""
   },
   "RT2Tests/src/GltfBuilder.h": {
-    "mtime": 1782245870.7451737,
+    "mtime": 1783364251.2614076,
     "ast_hash": "f93afab6097185e20ceb773c51e59aa6",
     "semantic_hash": ""
   },
   "RT2Tests/src/GltfGeometryTests.cpp": {
-    "mtime": 1782245767.216031,
-    "ast_hash": "12fa042e49a045a5689edcd5838a2059",
+    "mtime": 1783858434.3860555,
+    "ast_hash": "2abcf6f32076cf94c3b74d862b165660",
     "semantic_hash": ""
   },
   "RT2Tests/src/GltfSaveGeometryTests.cpp": {
-    "mtime": 1782245912.535639,
-    "ast_hash": "7e5f330241ed92d8b037c9acae8b1453",
+    "mtime": 1783858438.361508,
+    "ast_hash": "5c6a1be33114805c3c92b510657550a2",
     "semantic_hash": ""
   },
   "RT2Tests/src/GpuSceneDataTests.cpp": {
-    "mtime": 1783273360.8318515,
-    "ast_hash": "d7b4e66afcf0ded70868c913414b253d",
+    "mtime": 1783975445.519358,
+    "ast_hash": "1815d8a28bbef0a56ed6c83e4265ce05",
     "semantic_hash": ""
   },
   "RT2Tests/src/SceneLoaderTests.cpp": {
-    "mtime": 1782244201.6196597,
-    "ast_hash": "df54ddd018ea35f79b3c31ecb1624d00",
-    "semantic_hash": ""
-  },
-  "RT2Tests/src/SceneTests.cpp": {
-    "mtime": 1782243752.0010169,
-    "ast_hash": "2325413b79a5fd2656b157bd4fa72188",
+    "mtime": 1784224231.6246123,
+    "ast_hash": "105c419b2fa353ab55b67f933a2303f9",
     "semantic_hash": ""
   },
   "RT2Tests/src/SceneTextureTests.cpp": {
-    "mtime": 1782392516.234271,
-    "ast_hash": "a5257fcbe3b285317de6025c4f93859f",
+    "mtime": 1783857741.4423542,
+    "ast_hash": "ef4e1073544072ad5c353d061d87c210",
     "semantic_hash": ""
   },
   "RT2Tests/src/StbImageImpl.cpp": {
-    "mtime": 1782392692.8561199,
+    "mtime": 1783364251.2673223,
     "ast_hash": "9e600f1ca0564645c2e51cc78a8a3355",
     "semantic_hash": ""
   },
   "RT2Tests/vendor/doctest/doctest.h": {
-    "mtime": 1782243679.5724733,
+    "mtime": 1783364251.2696495,
     "ast_hash": "93ba72fdc31828e521b1cf53da8b2d0f",
     "semantic_hash": ""
   },
@@ -1710,8 +1635,8 @@
     "semantic_hash": ""
   },
   "Walnut/Walnut/src/Walnut/Application.cpp": {
-    "mtime": 1783349884.6054974,
-    "ast_hash": "caf74928c8a5706f6e75fe94c7ba0f7f",
+    "mtime": 1783868160.4473276,
+    "ast_hash": "5b8504a5891df44f1f8f3b6e815d1272",
     "semantic_hash": ""
   },
   "Walnut/Walnut/src/Walnut/Application.h": {
@@ -5710,77 +5635,77 @@
     "semantic_hash": ""
   },
   "premake5.lua": {
-    "mtime": 1782243700.0117328,
-    "ast_hash": "34b5d5dd8f03c0c62c41b4e5cc5b5e86",
+    "mtime": 1784302566.8568857,
+    "ast_hash": "4ab75d9b5063356dd7835dd3a61339ea",
     "semantic_hash": ""
   },
   "run_regression_test.ps1": {
-    "mtime": 1783338677.895778,
-    "ast_hash": "5e5eccdb95dc0bcf9c6de8f10275c1b4",
+    "mtime": 1783455745.436485,
+    "ast_hash": "bfa2fe518f86be1deb206098e4b30d1e",
     "semantic_hash": ""
   },
   ".opencode/skills/graphify/SKILL.md": {
-    "mtime": 1783341014.286249,
+    "mtime": 1783364251.1426084,
     "ast_hash": "191057e7ac59245c89ea26cbea701526",
     "semantic_hash": ""
   },
   ".opencode/skills/graphify/references/add-watch.md": {
-    "mtime": 1783340835.406775,
+    "mtime": 1783364251.1436114,
     "ast_hash": "d59d027fe449f06aa03905a01184e779",
     "semantic_hash": ""
   },
   ".opencode/skills/graphify/references/exports.md": {
-    "mtime": 1783340835.4072776,
+    "mtime": 1783364251.1441157,
     "ast_hash": "9da2a2152e60a22f07f05fed5158f287",
     "semantic_hash": ""
   },
   ".opencode/skills/graphify/references/extraction-spec.md": {
-    "mtime": 1783340835.412297,
+    "mtime": 1783364251.14512,
     "ast_hash": "42fef56a01698118f7fd722acdadea34",
     "semantic_hash": ""
   },
   ".opencode/skills/graphify/references/github-and-merge.md": {
-    "mtime": 1783340835.4142976,
+    "mtime": 1783364251.1461227,
     "ast_hash": "cde13df085e4c492aeb7ba298a996d0d",
     "semantic_hash": ""
   },
   ".opencode/skills/graphify/references/hooks.md": {
-    "mtime": 1783340835.4158003,
+    "mtime": 1783364251.1461227,
     "ast_hash": "3f545db6ce646650bb9de588f5512a27",
     "semantic_hash": ""
   },
   ".opencode/skills/graphify/references/query.md": {
-    "mtime": 1783340835.4188101,
+    "mtime": 1783364251.147125,
     "ast_hash": "3c46f8ad006874260614ed8657d02307",
     "semantic_hash": ""
   },
   ".opencode/skills/graphify/references/transcribe.md": {
-    "mtime": 1783340835.4198108,
+    "mtime": 1783364251.1482382,
     "ast_hash": "67b6a5fa6c0974e18f60db9f8932fbd8",
     "semantic_hash": ""
   },
   ".opencode/skills/graphify/references/update.md": {
-    "mtime": 1783340835.4208107,
+    "mtime": 1783364251.1492422,
     "ast_hash": "c698309979460d0f02ba616417844399",
     "semantic_hash": ""
   },
   "AGENTS.md": {
-    "mtime": 1783341014.2887657,
+    "mtime": 1784292622.8677306,
     "ast_hash": "21ceb6533048be51308e69e7b74a35cf",
     "semantic_hash": ""
   },
   "LICENSE.txt": {
-    "mtime": 1680276817.9431584,
-    "ast_hash": "c58801b629b53ee683c3c2e8917f655e",
+    "mtime": 1783364251.1502435,
+    "ast_hash": "b7f04416d60721342cc6d655249e9faf",
     "semantic_hash": ""
   },
   "README.md": {
-    "mtime": 1680276817.9431584,
-    "ast_hash": "8dcfa920e5924a3a8d974fd427e47cc2",
+    "mtime": 1783364251.1502435,
+    "ast_hash": "62727aa530fcce3093d99ed074fbff47",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRD/LICENSE.txt": {
-    "mtime": 1783174201.6157897,
+    "mtime": 1783364251.2202888,
     "ast_hash": "2c262491931a8b3c9ea7a27046ca683a",
     "semantic_hash": ""
   },
@@ -10124,14 +10049,414 @@
     "ast_hash": "f31521b46308300ae1c67defa1d60026",
     "semantic_hash": ""
   },
-  "baseline_before_phase1.png": {
-    "mtime": 1783342330.3345737,
-    "ast_hash": "084c3c45eea81d05dcf6833eaa315848",
+  "RT2App/src/AsyncTextureLoader.cpp": {
+    "mtime": 1783982667.847306,
+    "ast_hash": "712311cf479ffafe35d8153ddcc26c6d",
     "semantic_hash": ""
   },
-  "baseline_nrd.png": {
-    "mtime": 1783342352.6419659,
-    "ast_hash": "131a42571b1b8b17e9e8e837fd170f08",
+  "RT2App/src/AsyncTextureLoader.h": {
+    "mtime": 1783889027.0972576,
+    "ast_hash": "a9fac54a5d8d3215254c674d7458c2f1",
+    "semantic_hash": ""
+  },
+  "RT2App/src/ColorTransfer.h": {
+    "mtime": 1784147572.4311342,
+    "ast_hash": "11d30993b08d3112ff194beabcf8b90e",
+    "semantic_hash": ""
+  },
+  "RT2App/src/FixtureGenerator.h": {
+    "mtime": 1784302610.3558695,
+    "ast_hash": "64e3be7bbbd9d4d6ad1e8ec3f9787241",
+    "semantic_hash": ""
+  },
+  "RT2App/src/FrameRenderer.cpp": {
+    "mtime": 1784292622.8990273,
+    "ast_hash": "db39647e93b81258146448adda949780",
+    "semantic_hash": ""
+  },
+  "RT2App/src/FrameRenderer.h": {
+    "mtime": 1784231190.9418304,
+    "ast_hash": "90d4f9a569756dc159da282b19e6ce47",
+    "semantic_hash": ""
+  },
+  "RT2App/src/GBufferTarget.cpp": {
+    "mtime": 1783504463.7214537,
+    "ast_hash": "0666d6f21cd69d7b45324eda13dd712c",
+    "semantic_hash": ""
+  },
+  "RT2App/src/GBufferTarget.h": {
+    "mtime": 1783504388.6865015,
+    "ast_hash": "05f2adefba0de7aeacf6b592cb386f03",
+    "semantic_hash": ""
+  },
+  "RT2App/src/GpuDiagnostics.cpp": {
+    "mtime": 1784284951.6822565,
+    "ast_hash": "269a41a1951b210a3fcd103fcfd69f5d",
+    "semantic_hash": ""
+  },
+  "RT2App/src/GpuDiagnostics.h": {
+    "mtime": 1784284950.3829856,
+    "ast_hash": "9394d9032106cc062d174e2ae4069fec",
+    "semantic_hash": ""
+  },
+  "RT2App/src/GpuTimestampProfiler.cpp": {
+    "mtime": 1784223107.4054086,
+    "ast_hash": "29a6367d9f3d4c5466dea1c7eb3876d0",
+    "semantic_hash": ""
+  },
+  "RT2App/src/GpuTimestampProfiler.h": {
+    "mtime": 1784223105.96658,
+    "ast_hash": "def10a16718373f4c90cc0f3c1daff5f",
+    "semantic_hash": ""
+  },
+  "RT2App/src/ISceneRenderBridge.h": {
+    "mtime": 1784298417.839388,
+    "ast_hash": "898133376ba15c10cc1cd0adec8c9c6f",
+    "semantic_hash": ""
+  },
+  "RT2App/src/Phase1AFixtureGenerator.h": {
+    "mtime": 1784318435.356987,
+    "ast_hash": "68d3733eb5e1b825f2d9822e2ffa8e6a",
+    "semantic_hash": ""
+  },
+  "RT2App/src/PrimitiveGeometry.cpp": {
+    "mtime": 1783543569.382299,
+    "ast_hash": "ca4de26094afe05111332a82c3196cde",
+    "semantic_hash": ""
+  },
+  "RT2App/src/PrimitiveGeometry.h": {
+    "mtime": 1783522213.8075087,
+    "ast_hash": "7918f7422898a02bb29c23946448dd56",
+    "semantic_hash": ""
+  },
+  "RT2App/src/ReSTIRGIPass.cpp": {
+    "mtime": 1783975170.224583,
+    "ast_hash": "ceb87f7d9adb4db4fed10732b6593d6e",
+    "semantic_hash": ""
+  },
+  "RT2App/src/ReSTIRGIPass.h": {
+    "mtime": 1783975161.9797945,
+    "ast_hash": "fdc51ee512ca932a4f2df0dc189fa34f",
+    "semantic_hash": ""
+  },
+  "RT2App/src/ReSTIRPass.cpp": {
+    "mtime": 1783717353.6822927,
+    "ast_hash": "52243598a54435af5f3894ff242372ea",
+    "semantic_hash": ""
+  },
+  "RT2App/src/ReSTIRPass.h": {
+    "mtime": 1783798465.9297051,
+    "ast_hash": "6fa900b388655a3730436926aaad88ac",
+    "semantic_hash": ""
+  },
+  "RT2App/src/RenderSettings.h": {
+    "mtime": 1784300249.7122135,
+    "ast_hash": "d3f44a82a3ff29d4cf7f0292d7fe3f83",
+    "semantic_hash": ""
+  },
+  "RT2App/src/ReservoirGIResources.cpp": {
+    "mtime": 1783975154.632766,
+    "ast_hash": "0d036a6dfcd4fce30223111c7bbab236",
+    "semantic_hash": ""
+  },
+  "RT2App/src/ReservoirGIResources.h": {
+    "mtime": 1783975145.3786616,
+    "ast_hash": "d679cd947841001081b0a86aebe837a0",
+    "semantic_hash": ""
+  },
+  "RT2App/src/ReservoirResources.cpp": {
+    "mtime": 1783891131.469376,
+    "ast_hash": "a19000418b94787dd0f668525aa243bd",
+    "semantic_hash": ""
+  },
+  "RT2App/src/ReservoirResources.h": {
+    "mtime": 1783891149.012649,
+    "ast_hash": "8f6c827f145cd738e7cbf0eeb0830f81",
+    "semantic_hash": ""
+  },
+  "RT2App/src/RuntimeSceneController.cpp": {
+    "mtime": 1784315937.426814,
+    "ast_hash": "fa129183e7561db73e907f6699917a89",
+    "semantic_hash": ""
+  },
+  "RT2App/src/RuntimeSceneController.h": {
+    "mtime": 1784315898.711004,
+    "ast_hash": "412dd6afc6dea5b9a5a23904747731e9",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneAssetResolver.cpp": {
+    "mtime": 1784319685.7278354,
+    "ast_hash": "70c2eb2a5c01ffaa8c901da89ec1c1a9",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneAssetResolver.h": {
+    "mtime": 1784317337.6425376,
+    "ast_hash": "4d05cbcedb28ccfec83a31e07f9ec2a6",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneDocument.cpp": {
+    "mtime": 1784298461.4759178,
+    "ast_hash": "5e498eb5bf435c92a077949e19a84c14",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneDocument.h": {
+    "mtime": 1784298562.2639132,
+    "ast_hash": "5a2e7c16880d1585334c10d686972e83",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneEditorUI.cpp": {
+    "mtime": 1784319755.8005004,
+    "ast_hash": "e2567fe68938a8df50a8e56ec53ba467",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneEditorUI.h": {
+    "mtime": 1784309236.5667787,
+    "ast_hash": "4a802a82a4bace1a28e6788357e94486",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneManager.cpp": {
+    "mtime": 1784319941.726671,
+    "ast_hash": "9d6952397c345e8848c66574f3221860",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneManager.h": {
+    "mtime": 1784319717.8432152,
+    "ast_hash": "2ab2f8432c350327110637e377e1ebcd",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneRenderBridge.cpp": {
+    "mtime": 1784309256.454702,
+    "ast_hash": "25b75adedf204dc0cc2b5ddf42a63110",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneRenderBridge.h": {
+    "mtime": 1784309247.5211248,
+    "ast_hash": "d996d4f2a2cf83276216b781b2eb0621",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneResources.cpp": {
+    "mtime": 1784134837.9000638,
+    "ast_hash": "aeb1b6466b09b3905a5759b91828dd38",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneResources.h": {
+    "mtime": 1784134758.666834,
+    "ast_hash": "c4a3b53656d0dcaa18fcde7b2d82fe3c",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneSerializer.cpp": {
+    "mtime": 1784319675.3231432,
+    "ast_hash": "7688268db70f2815fcc8bf196fb738bc",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneSerializer.h": {
+    "mtime": 1784317566.3714838,
+    "ast_hash": "1a0450ed1912fca1f28d78d1bbe24e13",
+    "semantic_hash": ""
+  },
+  "RT2App/src/SceneTypes.h": {
+    "mtime": 1783857176.210524,
+    "ast_hash": "51962e6d0af797e43b6b8573f7d17566",
+    "semantic_hash": ""
+  },
+  "RT2App/src/TonemapPass.cpp": {
+    "mtime": 1783971923.2079403,
+    "ast_hash": "a176b259091f8b11504a7ea77b407666",
+    "semantic_hash": ""
+  },
+  "RT2App/src/TonemapPass.h": {
+    "mtime": 1783971922.0537536,
+    "ast_hash": "652690252eebc7c1edcb61991d961615",
+    "semantic_hash": ""
+  },
+  "RT2App/src/core/Error.cpp": {
+    "mtime": 1784298395.484432,
+    "ast_hash": "f14fc3b66b2b5a3c62683dd62ae8ac2a",
+    "semantic_hash": ""
+  },
+  "RT2App/src/core/Error.h": {
+    "mtime": 1784298388.78045,
+    "ast_hash": "e688c7f4cb80ef081144a97d48d44174",
+    "semantic_hash": ""
+  },
+  "RT2App/src/core/UUID.cpp": {
+    "mtime": 1784298837.0237951,
+    "ast_hash": "eaefff2ba70d7dc94068930ce6dcb7fa",
+    "semantic_hash": ""
+  },
+  "RT2App/src/core/UUID.h": {
+    "mtime": 1784298355.824301,
+    "ast_hash": "545eb27f064bb6b8130a992f66ab6eb4",
+    "semantic_hash": ""
+  },
+  "RT2SliceRunner/premake5.lua": {
+    "mtime": 1784317779.7825458,
+    "ast_hash": "ece00aaa7116ba7201b22cc4f85bb5b2",
+    "semantic_hash": ""
+  },
+  "RT2SliceRunner/src/Main.cpp": {
+    "mtime": 1784302807.4825597,
+    "ast_hash": "03ae965200b10560b6299d133efce5a5",
+    "semantic_hash": ""
+  },
+  "RT2SliceRunner/src/StbImageImpl.cpp": {
+    "mtime": 1784302703.4269438,
+    "ast_hash": "a8ba71c29c364bc9fc281bcbc1ff3060",
+    "semantic_hash": ""
+  },
+  "RT2Tests/src/ColorTransferTests.cpp": {
+    "mtime": 1784147573.6724687,
+    "ast_hash": "903a4a0a513d30fc320ce5ebc1b862be",
+    "semantic_hash": ""
+  },
+  "RT2Tests/src/FixtureTests.cpp": {
+    "mtime": 1784302953.257332,
+    "ast_hash": "5e84901579c72a25ef881d6a78060102",
+    "semantic_hash": ""
+  },
+  "RT2Tests/src/FoundationTests.cpp": {
+    "mtime": 1784298505.3633547,
+    "ast_hash": "ec3585b0079aa25f048cce25da91a804",
+    "semantic_hash": ""
+  },
+  "RT2Tests/src/IndexedBufferAbiTests.cpp": {
+    "mtime": 1783861620.7608092,
+    "ast_hash": "eca8b5d957dcf2e492bd1c7551a98394",
+    "semantic_hash": ""
+  },
+  "RT2Tests/src/Main.cpp": {
+    "mtime": 1783858559.5887372,
+    "ast_hash": "67b6c0c8ee9977e822527f5376a3f051",
+    "semantic_hash": ""
+  },
+  "RT2Tests/src/Phase1ASceneAssetTests.cpp": {
+    "mtime": 1784319835.5531714,
+    "ast_hash": "7214a4e079f7581130ed19751bea7404",
+    "semantic_hash": ""
+  },
+  "RT2Tests/src/RenderSettingsTests.cpp": {
+    "mtime": 1784300848.6261923,
+    "ast_hash": "f021e3082590acbe09f8b95f8918dcba",
+    "semantic_hash": ""
+  },
+  "RT2Tests/src/RuntimeSceneControllerTests.cpp": {
+    "mtime": 1784302440.3628552,
+    "ast_hash": "32efafaf67529e470bd2d1aae817db7a",
+    "semantic_hash": ""
+  },
+  "RT2Tests/src/SceneManagerTests.cpp": {
+    "mtime": 1783621829.404275,
+    "ast_hash": "aa507268d2fe248affb7a14b6d6fe9b4",
+    "semantic_hash": ""
+  },
+  "RT2Tests/src/SceneSerializerTests.cpp": {
+    "mtime": 1784313224.8894289,
+    "ast_hash": "e9d64ec2f1f5096c02ffdbb91d152640",
+    "semantic_hash": ""
+  },
+  "RT2Tests/src/UuidTests.cpp": {
+    "mtime": 1784299527.7109063,
+    "ast_hash": "f748146da8a1a610a7dd20dbf4f3ad4e",
+    "semantic_hash": ""
+  },
+  "benchmarking/restir_di_benchmark.json": {
+    "mtime": 1784275261.9195263,
+    "ast_hash": "d907391c51f017caa600c7011ab2ba2d",
+    "semantic_hash": ""
+  },
+  "run_all_regression_tests.ps1": {
+    "mtime": 1783455789.6537983,
+    "ast_hash": "99ee7108498c29b64da3bd9608dfd232",
+    "semantic_hash": ""
+  },
+  "run_slice_test.ps1": {
+    "mtime": 1784302766.7734976,
+    "ast_hash": "b59ddb7fe23dc551d4dda48d8f5e6290",
+    "semantic_hash": ""
+  },
+  "scripts/perf_benchmark.py": {
+    "mtime": 1784292622.9736493,
+    "ast_hash": "f5e371e9a0e0876daa64b5cba7b38050",
+    "semantic_hash": ""
+  },
+  "scripts/render_harness.example.json": {
+    "mtime": 1784234075.7026093,
+    "ast_hash": "633e3e1174da05af7eb209fe80702572",
+    "semantic_hash": ""
+  },
+  "scripts/render_harness.py": {
+    "mtime": 1784285805.906607,
+    "ast_hash": "594f802d6a9539edbf4802daafa83da8",
+    "semantic_hash": ""
+  },
+  "ARCHITECTURE.md": {
+    "mtime": 1783852667.8291197,
+    "ast_hash": "5a340783146a25f4a22a0fdb2b415c06",
+    "semantic_hash": ""
+  },
+  "benchmarking/PATH_FORWARD.md": {
+    "mtime": 1783814910.8240507,
+    "ast_hash": "1ac851dea40408acb18c2a4f30757fe8",
+    "semantic_hash": ""
+  },
+  "docs/future-extensions.md": {
+    "mtime": 1783852933.0387073,
+    "ast_hash": "79127a981f14f53983c3cb6d1c6add31",
+    "semantic_hash": ""
+  },
+  "docs/game-engine-development-plan.md": {
+    "mtime": 1784318860.6171715,
+    "ast_hash": "5a1faf35b6aad46723c936fa225bf469",
+    "semantic_hash": ""
+  },
+  "docs/game-loop.md": {
+    "mtime": 1784309535.446921,
+    "ast_hash": "c6f9ae16508f9cfb7d44e461530202ee",
+    "semantic_hash": ""
+  },
+  "docs/gpu-memory.md": {
+    "mtime": 1784141525.0274456,
+    "ast_hash": "5c13f9b11d819bcd3266fcfa75e23788",
+    "semantic_hash": ""
+  },
+  "docs/headless-cli.md": {
+    "mtime": 1784318871.4635715,
+    "ast_hash": "9e4c413e4756423bc7622a4ddcc2fa06",
+    "semantic_hash": ""
+  },
+  "docs/render_measurement_harness.md": {
+    "mtime": 1784294938.184601,
+    "ast_hash": "be68e51cd057821b1e5efa4594ce378e",
+    "semantic_hash": ""
+  },
+  "docs/rendering-pipeline.md": {
+    "mtime": 1784224559.1944416,
+    "ast_hash": "000e8c055bac862361b935af80489dd5",
+    "semantic_hash": ""
+  },
+  "docs/restir_di_performance_plan.md": {
+    "mtime": 1784294939.4048193,
+    "ast_hash": "3a0c5e9ea75d5b3fb01a7ae4f16f362b",
+    "semantic_hash": ""
+  },
+  "docs/restir_gi_plan.md": {
+    "mtime": 1784292622.906413,
+    "ast_hash": "ba86725eb01c27ee453cc6f41cd0fa6b",
+    "semantic_hash": ""
+  },
+  "docs/scene-management.md": {
+    "mtime": 1784318849.1646578,
+    "ast_hash": "dd9a5330243a5de443554c9bd0d6801d",
+    "semantic_hash": ""
+  },
+  "docs/shader-bindings.md": {
+    "mtime": 1784292622.906413,
+    "ast_hash": "d9d568bc04eb7667c4dc840e47b53cef",
+    "semantic_hash": ""
+  },
+  "scripts/requirements-render-harness.txt": {
+    "mtime": 1784234074.2784808,
+    "ast_hash": "3e6a2533e19395fef843024bec8d260f",
     "semantic_hash": ""
   }
 }

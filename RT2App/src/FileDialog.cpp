@@ -47,6 +47,8 @@ std::string SaveFile(const char* filter)
 	ofn.lpstrFilter = filter;
 	ofn.nFilterIndex = 1;
 	ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST;
+	// No default extension — the caller is responsible for ensuring the
+	// correct extension is present on the returned path.
 
 	if (GetSaveFileNameA(&ofn))
 		return std::string(ofn.lpstrFile);

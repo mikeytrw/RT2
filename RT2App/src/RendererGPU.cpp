@@ -990,7 +990,85 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 
 	outWidth = m_Width;
 	outHeight = m_Height;
-	RT_LOG("[Readback] captured %ux%u â†’ %zu bytes", m_Width, m_Height, outPixelsRGBA8.size());
+	RT_LOG("[Readback] captured %ux%u → %zu bytes", m_Width, m_Height, outPixelsRGBA8.size());
+	return true;
+}
+
+bool RendererGPU::ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uint32_t& outWidth, uint32_t& outHeight)
+{
+	if (!m_Initialized || m_OutputImage.image == VK_NULL_HANDLE || m_Width == 0 || m_Height == 0)
+		return false;
+
+	VkDevice device = m_Device.device;
+
+	VkBuffer stagingBuffer;
+	VkDeviceMemory stagingMemory;
+	VkDeviceSize imageSize = (VkDeviceSize)m_Width * m_Height * 16; // R32G32B32A32_SFLOAT = 16 bytes/pixel
+
+	GpuResources::CreateBuffer(m_Device, imageSize,
+	             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+	             stagingBuffer, stagingMemory);
+
+	vkDeviceWaitIdle(device);
+
+	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+		VkImageMemoryBarrier toTransfer = {};
+		toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		toTransfer.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		toTransfer.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		toTransfer.image = m_OutputImage.image;
+		toTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		toTransfer.subresourceRange.levelCount = 1;
+		toTransfer.subresourceRange.layerCount = 1;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+		                     0, nullptr, 0, nullptr, 1, &toTransfer);
+
+		VkBufferImageCopy region = {};
+		region.bufferOffset = 0;
+		region.bufferRowLength = 0;
+		region.bufferImageHeight = 0;
+		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.imageSubresource.mipLevel = 0;
+		region.imageSubresource.baseArrayLayer = 0;
+		region.imageSubresource.layerCount = 1;
+		region.imageOffset = { 0, 0, 0 };
+		region.imageExtent = { m_Width, m_Height, 1 };
+		vkCmdCopyImageToBuffer(cmd, m_OutputImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer, 1, &region);
+
+		VkImageMemoryBarrier toGeneral = toTransfer;
+		toGeneral.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+		toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		toGeneral.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+		toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT, 0,
+		                     0, nullptr, 0, nullptr, 1, &toGeneral);
+	});
+
+	void* mapped = nullptr;
+	VkResult err = vkMapMemory(device, stagingMemory, 0, imageSize, 0, &mapped);
+	if (err != VK_SUCCESS || !mapped)
+	{
+		RT_LOG("[ReadbackLinear] vkMapMemory failed: %d", (int)err);
+		GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
+		return false;
+	}
+
+	const float* floatData = static_cast<const float*>(mapped);
+	size_t pixelCount = (size_t)m_Width * m_Height * 4;
+	outPixelsRGBA32F.resize(pixelCount);
+	std::memcpy(outPixelsRGBA32F.data(), floatData, pixelCount * sizeof(float));
+
+	vkUnmapMemory(device, stagingMemory);
+	GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
+
+	outWidth = m_Width;
+	outHeight = m_Height;
+	RT_LOG("[ReadbackLinear] captured %ux%u → %zu floats", m_Width, m_Height, outPixelsRGBA32F.size());
 	return true;
 }
 
