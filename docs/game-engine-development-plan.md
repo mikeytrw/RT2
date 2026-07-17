@@ -1,0 +1,808 @@
+# Lightweight Game Engine Development Plan
+
+Implementation roadmap for evolving RT2 from a renderer with scene-editing
+facilities into a small, usable game engine. This plan is ordered around one
+goal: close the authoring loop before expanding the renderer further.
+
+The intended loop is:
+
+```
+create/import -> edit -> save -> play -> stop safely -> package -> run
+```
+
+## Existing foundation
+
+RT2 already provides:
+
+- an EnTT ECS with transforms, hierarchy, mesh references, materials, lights,
+  cameras, names, and visibility;
+- glTF/GLB and OBJ loading, scene import, primitive creation, and instancing;
+- glTF/GLB scene saving with unit-tested geometry, material, texture, light,
+  camera, and full-scene round trips;
+- an outliner and inspector with transform, material, light, and camera editing;
+- efficient full, material-only, and transform-only scene-to-GPU sync paths;
+- a defined game loop and fixed-timestep integration point;
+- headless rendering, regression scripts, and a Doctest-based `RT2Tests` target.
+
+The glTF save path is useful for interchange and export. A native authoring
+format is still needed because engine-only components and editor state should
+not be forced into glTF extensions from the outset.
+
+## Engineering principles
+
+These apply across every phase.
+
+1. **Editor and runtime state are distinct.** Playing a scene must not mutate
+   the saved authoring scene unless the user explicitly applies a change.
+2. **Stable identities cross persistence boundaries.** Serialized references
+   use UUIDs or asset IDs, never raw `entt::entity` values or vector indices.
+3. **Systems depend on narrow services.** Scripts do not access EnTT, GLFW,
+   Vulkan, or ImGui directly.
+4. **Scene mutations are centralized.** Editor operations use commands and the
+   runtime uses a scene API, allowing validation, undo, dirty tracking, and the
+   correct GPU synchronization path.
+5. **CPU logic remains testable without a GPU.** Serialization, commands,
+   input mapping, script bindings, asset resolution, prefab merging, physics
+   mapping, and packaging should be separable from renderer initialization.
+6. **Every phase leaves a usable increment.** Features are accepted through a
+   small end-to-end workflow, not only isolated classes.
+
+## Test strategy
+
+Use four layers of tests throughout the roadmap.
+
+### Unit tests
+
+Add deterministic Doctest cases to `RT2Tests`. Keep engine logic in source
+files that can be linked by the test target without initializing Vulkan or a
+window. Tests should use temporary directories and tiny programmatically built
+scenes where practical.
+
+### Integration tests
+
+Exercise several CPU systems together: save/load round trips, command stacks,
+play-scene cloning, script lifecycle, asset dependency resolution, prefab
+overrides, and package manifests. These belong in `RT2Tests` when they do not
+require an interactive window.
+
+### Headless runtime tests
+
+Extend the existing headless command line for deterministic smoke scenarios.
+Return a non-zero exit code on load, script, asset, or runtime assertion
+failures. Prefer state assertions or compact JSON reports to image comparison
+for gameplay logic. Retain the existing render regression harness for visual
+changes.
+
+### Interactive acceptance tests
+
+Some editor behavior cannot be proven economically through unit tests. Each
+feature therefore lists a short manual runtime checklist. Keep these checks
+small and repeatable; automate them later only when their regression frequency
+justifies UI automation.
+
+For all phases, the baseline gate is:
+
+1. build `RT2App` and `RT2Tests` in Release x64;
+2. run all `RT2Tests`;
+3. run applicable headless smoke/regression tests;
+4. complete the phase-specific interactive checklist.
+
+## Phase 1 - Native scene persistence and stable IDs
+
+### Outcome
+
+Users can create a scene, save it, reopen it, and retain all authored state and
+cross-entity references. Existing glTF/GLB saving remains an interchange/export
+path.
+
+### Work
+
+- Add a stable `EntityIdComponent` containing a generated UUID.
+- Add UUID lookup and enforce uniqueness during create, clone, import, and load.
+- Define a versioned `.rt2scene` JSON schema.
+- Store entity hierarchy and component data by UUID.
+- Store source/imported mesh, texture, environment, and future script references
+  as project-relative paths or asset IDs.
+- Initially permit inline primitive geometry, but do not serialize large imported
+  vertex arrays into readable JSON by default.
+- Serialize camera, environment, materials, entities, and relevant render/world
+  settings. Keep transient GPU and editor selection state out of the scene.
+- Implement New, Open, Save, Save As, recent scenes, dirty tracking, and
+  save/discard/cancel prompts.
+- Write atomically via a temporary sibling file followed by replacement.
+- Add a schema migration entry point even while only version 1 exists.
+- Add autosave/recovery after basic explicit saving is stable.
+
+### Unit and integration tests
+
+- UUID generation produces non-null unique IDs and survives entity moves.
+- Duplicate IDs in an input file are rejected with a useful error.
+- Empty, primitive-only, imported-asset, hierarchy, light, camera, material, and
+  mixed scenes round-trip structurally.
+- Parent and component references resolve after entity creation order changes.
+- Unknown optional fields are ignored; unsupported schema versions fail clearly.
+- Relative paths are normalized without escaping the project root silently.
+- Failed writes leave the previous valid scene intact.
+- Dirty state changes only after authoring commands and clears after successful
+  save/load.
+- Continue running all existing glTF/GLB round-trip tests.
+
+### Runtime acceptance
+
+- Build a scene containing a parented primitive, imported mesh, material, light,
+  and camera; save, restart RT2, reopen, and compare the viewport and inspector.
+- Attempt New/Open/Exit with unsaved changes and verify all three prompt choices.
+- Temporarily remove a referenced asset and verify a visible placeholder/error,
+  not a crash or silent data loss.
+
+### Exit criteria
+
+A non-trivial authored scene survives restart, missing assets produce actionable
+diagnostics, and existing interchange saving still passes its tests.
+
+## Phase 2 - Scene-building ergonomics and viewport tools
+
+### Outcome
+
+A small level can be assembled efficiently from the viewport and outliner.
+
+### Work
+
+- Implement viewport picking with an entity/instance ID result. Prefer a small
+  raster ID attachment or a CPU/GPU ray query with one-frame-safe readback over
+  coupling selection to path-tracing samples.
+- Add translate, rotate, and scale gizmos.
+- Support local/world space, pivot choice, grid/angle/scale snapping, and numeric
+  inspector entry.
+- Add create-empty, create-child, rename, copy/paste, duplicate hierarchy,
+  delete, and drag/drop reparenting.
+- Add multi-selection, focus/frame selected, visibility, editor lock, and
+  outliner search.
+- Validate hierarchy edits against cycles and preserve world transform when the
+  chosen reparent mode requests it.
+- Add camera bookmarks and align active camera/entity camera to the editor view.
+
+### Unit and integration tests
+
+- Screen-coordinate/picking math maps known IDs and handles background pixels.
+- Reparent rejects self-parenting and descendant cycles.
+- Reparent preserve-world mode reconstructs the expected local transform.
+- Duplicate hierarchy creates new UUIDs and remaps internal references.
+- Deleting a hierarchy removes all descendants without invalid iteration.
+- Snapping handles negative values, non-uniform scale, and configured increments.
+- Locked entities reject editor mutations but remain available to runtime systems.
+
+### Runtime acceptance
+
+- Select overlapping objects from the viewport and outliner.
+- Build a simple room using only primitives, gizmos, duplication, snapping, and
+  reparenting.
+- Verify selection stays correct while the renderer is accumulating and while
+  frames are in flight.
+- Verify transform edits use the transform-only GPU sync path.
+
+### Exit criteria
+
+The simple room can be built without editing source files or relying primarily
+on inspector numeric fields.
+
+## Phase 3 - Command system, undo, and redo
+
+### Outcome
+
+Every normal editor mutation is reversible and drives a deliberate scene/GPU
+synchronization category.
+
+### Work
+
+- Introduce `IEditorCommand` with `Execute`, `Undo`, optional merge/coalesce,
+  description, and sync impact (`None`, `Transform`, `Material`, `Structural`).
+- Add a bounded command history and redo stack.
+- Route transform, create, delete, duplicate, rename, reparent, add/remove
+  component, material assignment, and property edits through commands.
+- Snapshot only the affected subtree/component data rather than the whole scene.
+- Coalesce continuous gizmo drags and sliders into one history entry.
+- Clear or deliberately preserve history on scene load; do not retain commands
+  that refer to a previous scene instance.
+
+### Unit and integration tests
+
+- Every command restores the exact relevant before/after state.
+- A new command after Undo clears the redo branch.
+- Coalescing creates one transform command per drag, not per frame.
+- Delete/undo restores UUIDs, hierarchy, components, and asset references.
+- Sync impact selects the expected SceneManager callback using spies/counters.
+- History limit evicts safely without corrupting retained commands.
+
+### Runtime acceptance
+
+- Build and then undo/redo a mixed sequence of create, transform, reparent,
+  material edit, and delete operations.
+- Hold a gizmo drag for many frames and confirm one Undo restores the starting
+  transform.
+
+### Exit criteria
+
+All exposed authoring changes are command-backed or explicitly documented as
+non-undoable.
+
+## Phase 4 - Edit/Play/Pause lifecycle
+
+### Outcome
+
+The editor can run a temporary runtime world and return safely to authored state.
+
+### Work
+
+- Add explicit `Edit`, `Playing`, and `Paused` application states.
+- Clone/serialize the authoring scene into a runtime scene on Play.
+- Keep selection and editor camera separate from the runtime primary camera.
+- Add Play, Pause, Step, and Stop controls plus shortcuts.
+- Define system lifecycle: scene start, fixed update, variable update, scene stop.
+- Snapshot previous transforms before simulation, update hierarchy after systems,
+  then issue one batched transform sync before render.
+- Disable or clearly scope authoring operations during Play.
+- Restore the unchanged authoring scene on Stop.
+
+Proposed frame order:
+
+```
+sample input
+accumulate fixed time
+while fixed step available:
+    fixed scripts
+    physics
+variable scripts
+animation
+update world transforms
+sync dirty runtime state
+audio update
+render
+```
+
+The fixed-step ordering should become the single authoritative version shared by
+this document and `game-loop.md`.
+
+### Unit and integration tests
+
+- Runtime clone has the same UUIDs and data but independent storage.
+- Runtime create/delete/transform changes do not affect the authoring scene.
+- Stop restores authoring data byte-for-byte at the serialization level.
+- Pause runs no simulation updates; Step runs exactly one fixed update.
+- Lifecycle callbacks fire once and in the documented order.
+- A long frame is clamped and fixed substeps obey a configurable maximum.
+
+### Runtime acceptance
+
+- Press Play, move/spawn/delete runtime entities through a temporary test system,
+  Pause, Step, and Stop; verify the edit scene is unchanged.
+- Verify the primary runtime camera controls the viewport during Play and the
+  editor camera returns on Stop.
+
+### Exit criteria
+
+Repeated Play/Stop cycles neither leak entities/resources nor alter saved scene
+state.
+
+## Phase 5 - Input action system
+
+### Outcome
+
+Gameplay code consumes stable named actions and axes, independent of GLFW and
+editor shortcuts.
+
+### Work
+
+- Add action and axis definitions with keyboard, mouse, and controller bindings.
+- Track pressed, held, released, axis value, and mouse delta per frame.
+- Add editor and runtime input contexts and explicit cursor capture modes.
+- Serialize mappings in project settings, not individual scenes.
+- Expose a read-only input service to scripts.
+- Add controller dead zones and focus-loss reset behavior.
+
+### Unit and integration tests
+
+- Synthetic input events produce correct edge/held states.
+- Multiple bindings combine predictably and axes clamp as documented.
+- Focus loss releases held inputs and prevents stuck movement.
+- Context switching prevents runtime input from triggering editor commands.
+- Mapping serialization round-trips and unknown device inputs are ignored safely.
+
+### Runtime acceptance
+
+- Rebind a movement action, enter Play, and verify the new binding immediately.
+- Switch window focus while holding a key and confirm no stuck action on return.
+- Verify editor shortcuts do not move the player while editing script fields.
+
+### Exit criteria
+
+No gameplay-facing code reads GLFW key or mouse state directly.
+
+## Phase 6 - Lua scripting
+
+### Outcome
+
+Entities can have persistent, hot-reloadable behavior authored outside C++.
+
+### Work
+
+- Embed Lua and add a serializable script component referencing a script asset.
+- Use one engine Lua state with isolated per-entity environments unless profiling
+  proves a different model necessary.
+- Implement `OnCreate`, `OnFixedUpdate`, `OnUpdate`, and `OnDestroy`.
+- Expose validated entity handles, transform/light/camera/visibility access,
+  find, spawn, destroy, logging, timers, input, and later physics queries.
+- Do not expose the EnTT registry, raw component pointers, renderer, or window.
+- Reflect declared public fields with supported types into the inspector and
+  serialize their values in the scene.
+- Add file watching and safe hot reload. Preserve compatible public fields and
+  report syntax/runtime errors with path, entity, callback, and stack trace.
+- Queue structural ECS changes made during iteration and apply them at a defined
+  safe point.
+
+### Unit and integration tests
+
+- Lifecycle order and callback counts match Play/Pause/Stop rules.
+- Two entities using one script have isolated environment state.
+- Public fields serialize, deserialize, retain types, and preserve compatible
+  values across reload.
+- Destroyed entity handles fail safely rather than aliasing a reused EnTT ID.
+- Spawn/destroy during update is deferred and deterministic.
+- Script syntax/runtime errors disable or quarantine only the affected instance.
+- Timers respect pause and scene destruction.
+- A scripted transform results in one batched transform sync per rendered frame.
+
+### Headless/runtime acceptance
+
+- Run a deterministic script that moves an entity for a fixed number of frames;
+  emit a JSON state report and assert the final transform.
+- Edit the script while Playing and confirm hot reload without restarting RT2.
+- Introduce a syntax error and verify the scene continues running with a useful
+  error in the console.
+
+### Exit criteria
+
+A saved script component can drive an entity using input and survive save/load,
+Play/Stop, and hot reload.
+
+## Phase 7 - Project model and asset database
+
+### Outcome
+
+Scenes, scripts, meshes, textures, environments, and generated data belong to a
+portable project with stable references.
+
+### Work
+
+- Define `project.rt2proj` with project UUID, asset root, cache root, startup
+  scene, input map, and default runtime settings.
+- Add stable asset IDs, source paths, asset types, import settings, and dependency
+  records.
+- Add a content browser with search, rename/move/delete, drag/drop, and reimport.
+- Watch source files and reimport asynchronously where safe.
+- Keep generated cache artifacts outside source asset folders.
+- Add placeholders and diagnostics for missing, invalid, or cyclic references.
+- Make project moves portable by storing paths relative to the project root.
+
+### Unit and integration tests
+
+- Asset IDs survive rename/move and scene references continue resolving.
+- Scanning produces the same database independent of directory enumeration order.
+- Dependency graphs detect missing assets and cycles.
+- Reimport updates cache metadata without changing asset identity.
+- Project relocation preserves all valid relative references.
+- Asset deletion reports dependants before committing the change.
+
+### Runtime acceptance
+
+- Move and rename a referenced mesh and script through the content browser; reload
+  the scene and confirm both still resolve.
+- Modify a source texture and verify reimport updates the viewport safely.
+
+### Exit criteria
+
+A project folder can be copied to another machine/location without rewriting
+scene files manually.
+
+## Phase 8 - Prefabs
+
+### Outcome
+
+Reusable entity hierarchies can be instantiated and customized without losing
+their relationship to the source.
+
+### Work
+
+- Define a prefab asset as a serialized entity subtree with stable local IDs.
+- Add instantiate, unpack, apply overrides, and revert overrides.
+- Track instance-to-prefab local-ID mapping and property-level overrides.
+- Remap internal entity references per instance; preserve external references only
+  when explicitly supported.
+- Defer nested prefabs until the single-level model is stable and tested.
+
+### Unit and integration tests
+
+- Multiple instances receive unique scene UUIDs with correct internal references.
+- Source updates propagate to non-overridden properties.
+- Overrides survive save/load and source updates.
+- Apply/revert produces deterministic serialized output.
+- Deleted or added prefab children merge predictably.
+
+### Runtime acceptance
+
+- Create a light fixture hierarchy, instantiate it several times, override one
+  material, update the source, and verify expected propagation.
+
+### Exit criteria
+
+Common hierarchy reuse no longer requires copy/paste, and overrides are visible
+and recoverable.
+
+## Phase 9 - Physics and collision queries
+
+### Outcome
+
+Scenes support reliable rigid-body gameplay and scriptable spatial queries.
+
+### Work
+
+- Integrate Jolt behind an RT2-owned `PhysicsSystem` abstraction.
+- Add rigid-body and collider components with static, dynamic, and kinematic modes.
+- Support box, sphere, capsule, convex, trigger, and static triangle-mesh shapes in
+  that order.
+- Add collision layers/masks, materials, gravity, fixed timestep, and interpolation.
+- Synchronize authored transforms into physics at scene start and physics results
+  back to ECS after each fixed step.
+- Add raycast, overlap, and shape-cast APIs and collision enter/stay/exit events.
+- Add collider/contact/velocity debug drawing independent of the RT pipeline.
+- Use CPU collision data; do not make simulation correctness depend on asynchronous
+  GPU BLAS queries.
+
+### Unit and integration tests
+
+- Component-to-Jolt shape/body conversion preserves scale and mode constraints.
+- Collision mask filtering, raycasts, overlaps, and triggers return expected IDs.
+- Fixed-step integration is repeatable within documented floating-point tolerance.
+- Parent/child and non-uniform-scale restrictions are validated clearly.
+- Destroying an entity removes its body and pending events safely.
+- Collision events fire with correct enter/stay/exit transitions.
+
+### Headless/runtime acceptance
+
+- Run a deterministic drop-and-collision scene for a fixed number of steps and
+  validate final position, sleep state, and event counts.
+- Interactively test stacked boxes, a kinematic platform, a trigger, and collider
+  debug visualization.
+
+### Exit criteria
+
+Scripts can build a basic character/object interaction without touching the
+physics library directly.
+
+## Phase 10 - Animation
+
+### Outcome
+
+Imported assets can play and blend transform and skeletal animations in runtime.
+
+### Work
+
+- Import glTF animation clips, skin data, and inverse bind matrices.
+- Add animation clip assets and animator components.
+- Begin with clip playback and cross-fade; add a parameterized state machine next.
+- Evaluate animation before world-transform propagation.
+- Implement skinning with a path usable by both raster and ray-tracing geometry;
+  define the RT acceleration-structure update cost explicitly.
+- Add inspector controls, playback preview, speed, looping, and script API.
+- Defer root motion, animation events, IK, and blend trees until clip/state-machine
+  playback is sound.
+
+### Unit and integration tests
+
+- Keyframe interpolation handles boundary, loop, step, linear, and supported cubic
+  cases.
+- Skeleton hierarchy and inverse-bind evaluation match known fixtures.
+- Cross-fade weights remain normalized and reach exact endpoints.
+- Animator state serialization and parameter transitions round-trip.
+- Malformed clips fail without corrupting the scene.
+
+### Runtime acceptance
+
+- Play, pause, scrub, loop, and blend a known glTF character.
+- Verify raster and RT representations remain spatially consistent during motion.
+- Use render regression captures for a fixed animation frame sequence.
+
+### Exit criteria
+
+A scripted entity can select and blend imported clips reproducibly.
+
+## Phase 11 - Audio
+
+### Outcome
+
+Games can play 2D and spatial sounds through a small mixer model.
+
+### Work
+
+- Integrate miniaudio behind RT2 audio interfaces.
+- Add audio clip assets, source components, and a listener bound to the active
+  runtime camera.
+- Support play/stop/pause, loop, volume, pitch, spatial attenuation, and autoplay.
+- Add master, music, effects, and UI buses.
+- Expose safe script controls and update spatial state after transforms.
+
+### Unit and integration tests
+
+- Attenuation, pan, bus gain, and state transitions use deterministic math tests.
+- Source/listener component serialization round-trips.
+- Destroying a playing entity releases the voice safely.
+- Mock backend tests verify play/stop/pause calls without requiring an audio device.
+
+### Runtime acceptance
+
+- Walk around a looping spatial source and verify attenuation/orientation.
+- Pause/Stop Play mode and confirm runtime voices stop and do not accumulate across
+  repeated sessions.
+
+### Exit criteria
+
+Audio can be authored, saved, controlled by scripts, and cleaned up reliably.
+
+## Phase 12 - Standalone runtime and packaging
+
+### Outcome
+
+A project can be built and run without editor UI or source asset assumptions.
+
+### Work
+
+- Separate reusable engine/runtime startup from editor startup.
+- Add a runtime executable/configuration that loads a packaged project and startup
+  scene without editor panels.
+- Build a dependency collector from the startup scene and referenced scenes,
+  prefabs, scripts, and assets.
+- Copy or archive runtime-ready assets, shaders, project settings, and manifests.
+- Add Build, Build and Run, Debug, and Release options.
+- Add window title, resolution, fullscreen, vsync, and logging settings.
+- Detect missing package dependencies before launch.
+- Make package output reproducible where possible.
+
+### Unit and integration tests
+
+- Dependency collection is complete, deduplicated, cycle-safe, and deterministic.
+- Package manifest hashes and paths are stable for identical inputs.
+- Missing startup scenes/assets fail packaging with clear dependency chains.
+- Runtime configuration parsing handles defaults and invalid values.
+- Editor-only assets/code are absent from Release packages.
+
+### Headless/runtime acceptance
+
+- Package the vertical-slice project, launch its runtime executable headlessly for
+  a fixed frame count, and verify a successful report/exit code.
+- Launch interactively on a clean directory or test machine without source-tree
+  working-directory assumptions.
+
+### Exit criteria
+
+The vertical slice runs from a self-contained package without launching the RT2
+editor.
+
+## Later backlog
+
+These should follow the core authoring/runtime loop unless a concrete game needs
+one earlier:
+
+- particles and decals;
+- runtime UI/canvas and menus;
+- navigation mesh and AI helpers;
+- additive scenes and scene streaming;
+- mesh LOD, visibility culling, and mesh streaming;
+- terrain tooling;
+- FSR/DLSS and display/runtime performance features;
+- networking and visual scripting.
+
+# First tiny vertical slice development plan
+
+## Goal
+
+Deliver the smallest end-to-end proof that RT2 can author and run behavior
+without committing to the full asset, physics, prefab, or packaging designs.
+
+The slice is:
+
+> Create a cube and camera, save the scene, press Play, run a built-in test
+> behavior that moves the cube, Pause/Step, Stop, and confirm the authored cube
+> returns to its saved transform; reopen the scene and confirm persistence.
+
+This intentionally uses a native C++ `MotionComponent`/test runtime system, not
+Lua. The purpose is to validate persistence, stable IDs, runtime scene cloning,
+lifecycle, transform propagation, and GPU synchronization before embedding a
+scripting language. The component is a temporary vertical-slice vehicle or a
+generic reusable movement component; it must not become the long-term scripting
+API accidentally.
+
+## In scope
+
+- UUID component and lookup.
+- Minimal version-1 `.rt2scene` JSON containing:
+  - scene version;
+  - entity UUID, name, transform, hierarchy, visibility;
+  - primitive mesh identity/reference and material assignment;
+  - light and camera components needed by the fixture;
+  - `MotionComponent` velocity for the test behavior.
+- New/Open/Save/Save As and dirty marker. Autosave and recent scenes are deferred.
+- Edit, Play, Paused states plus Play/Pause/Step/Stop controls.
+- Deep cloning of authoring scene to runtime scene.
+- Fixed timestep accumulator with maximum substep count.
+- `MotionSystem::FixedUpdate` moving runtime transforms.
+- One batched transform propagation/sync per rendered frame.
+- A deterministic headless slice runner or CLI flags.
+- Focused tests and a checked-in tiny fixture scene.
+
+## Explicitly out of scope
+
+- Lua, user-configurable input, physics, prefabs, asset database, gizmos, undo,
+  audio, animation, and standalone packaging.
+- General serialization of arbitrary components through reflection.
+- Embedded imported geometry in `.rt2scene`; use built-in primitive identifiers in
+  this slice.
+- Applying runtime changes back to the authoring scene.
+
+## Proposed types and boundaries
+
+```cpp
+struct EntityIdComponent { UUID id; };
+
+struct MotionComponent
+{
+    glm::vec3 linearVelocity{0.0f};
+};
+
+enum class SceneRunState { Edit, Playing, Paused };
+
+class SceneSerializer
+{
+public:
+    static bool Save(const ECSScene&, const std::filesystem::path&, Error&);
+    static bool Load(ECSScene&, const std::filesystem::path&, Error&);
+};
+
+class RuntimeSceneController
+{
+public:
+    bool Play(const ECSScene& authoringScene);
+    void Pause();
+    void Step();
+    void Stop();
+    void Update(float frameDt);
+};
+```
+
+`RuntimeSceneController` owns the runtime clone. The editor retains ownership of
+the authoring scene. Renderer scene selection must be explicit when entering and
+leaving Play so callbacks do not retain references to the wrong scene.
+
+## Work packages
+
+### VS-1 - UUID foundation
+
+- Implement UUID parse/format/generation and `EntityIdComponent`.
+- Assign IDs in every current SceneManager entity-creation path and during import.
+- Add lookup and uniqueness validation.
+
+Tests:
+
+- parse/format round trip;
+- generation uniqueness over a practical sample;
+- all SceneManager creation paths receive IDs;
+- lookup and duplicate rejection.
+
+Done when every authored entity has a stable ID and existing ECS tests pass.
+
+### VS-2 - Minimal scene serializer
+
+- Define and document schema version 1.
+- Serialize the in-scope components and hierarchy references by UUID.
+- Load in two passes: create entities/components, then resolve references.
+- Save atomically and report path plus reason on failure.
+- Add the file-menu actions and dirty title marker.
+
+Tests:
+
+- empty and slice fixture round trips;
+- hierarchy resolves independent of serialized order;
+- malformed UUID, duplicate UUID, missing parent, and unsupported version errors;
+- failed save does not destroy an existing file;
+- loaded scene generates equivalent GPU scene instance/material counts.
+
+Runtime check:
+
+- author fixture, save, restart, reopen, and visually compare.
+
+Done when the fixture survives restart and its serialized form is deterministic
+enough for readable source control diffs.
+
+### VS-3 - Runtime scene clone and state machine
+
+- Implement a deep CPU clone, preferably through an in-memory serializer path so
+  clone and persistence exercise the same component coverage.
+- Add Play/Pause/Stop and make renderer scene switching explicit.
+- On Stop, destroy runtime systems/resources and resync the untouched edit scene.
+
+Tests:
+
+- clone equivalence and storage independence;
+- legal and illegal state transitions;
+- repeated Play/Stop cycles;
+- runtime entity changes cannot affect authoring data;
+- Stop restores serialized authoring state exactly.
+
+Runtime check:
+
+- enter and stop Play repeatedly while editing transforms between sessions.
+
+Done when runtime state can be discarded without modifying or leaking the edit
+scene.
+
+### VS-4 - Fixed update and motion behavior
+
+- Add the fixed accumulator, maximum substep guard, and `MotionSystem`.
+- Update runtime local transforms, mark them dirty, propagate hierarchy once after
+  simulation, and issue the appropriate transform-only GPU sync.
+- Implement Pause and single fixed Step.
+
+Tests:
+
+- known velocity and step count produce the expected transform;
+- frame-time partitioning produces equivalent results within tolerance;
+- Pause performs zero updates and Step performs exactly one;
+- large frame time respects clamp/substep cap;
+- sync callback spy observes no structural sync during motion.
+
+Headless check:
+
+- load the fixture, run 60 fixed steps, emit final cube transform, compare it with
+  the expected value, Stop, and verify the authoring transform.
+
+Done when the cube moves deterministically in Play and snaps back on Stop.
+
+### VS-5 - End-to-end hardening
+
+- Add the fixture and vertical-slice invocation to regression scripts.
+- Verify useful error behavior for unreadable scenes and invalid fixture data.
+- Update `scene-management.md`, `game-loop.md`, and `future-extensions.md` so their
+  implemented/planned status and lifecycle order agree.
+- Run full Release build, all unit tests, headless slice, and existing render
+  regressions affected by scene switching.
+
+Done when a clean checkout can execute the documented slice without manual data
+repair or hidden working-directory assumptions.
+
+## Vertical slice acceptance script
+
+1. Launch RT2 and create a new scene.
+2. Add a cube, camera, and light; set the cube velocity to `(1, 0, 0)`.
+3. Save as `vertical-slice.rt2scene`; close and reopen it.
+4. Record the authored cube transform.
+5. Press Play and observe the cube move.
+6. Pause and verify it stops; press Step and verify exactly one small movement.
+7. Press Stop and verify the original authored transform returns.
+8. Save/reopen again and verify no runtime transform was persisted.
+9. Run the headless form for 60 fixed steps and require a zero exit code plus the
+   expected final runtime and restored authoring transforms.
+
+## Vertical slice merge gates
+
+- `RT2App` Release x64 builds.
+- `RT2Tests` Release x64 builds and all tests pass.
+- Headless vertical-slice test passes deterministically in repeated runs.
+- Existing glTF save/load and GPU scene-data tests remain green.
+- Manual acceptance script passes.
+- New public formats and lifecycle behavior are documented.
+
+## What follows immediately
+
+After the slice, implement the full Phase 1 persistence requirements, then Phase
+2 scene-building tools and Phase 3 commands/undo. General Lua scripting should
+begin only after the Play lifecycle and mutation boundaries proven by this slice
+are stable.

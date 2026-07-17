@@ -1,0 +1,45 @@
+{
+  "app": "../bin/Release-windows-x86_64/RT2App/RT2App.exe",
+  "output_dir": "../artifacts/render-harness",
+  "baseline_dir": "../baselines/render-harness",
+  "defaults": {
+    "width": 640,
+    "height": 360,
+    "bounces": 8,
+    "seed": 20260716,
+    "raster_first": true,
+    "no_accumulate": true,
+    "camera": {
+      "position": [-5.966501, 3.924139, 4.955873],
+      "forward": [0.262140, 0.423300, -0.867237]
+    }
+  },
+  "cases": [
+    {
+      "name": "san_miguel_reference",
+      "scene": "C:/Users/mikey/Downloads/San_Miguel/san-miguel.obj",
+      "env": "C:/Users/mikey/Downloads/kloofendal_48d_partly_cloudy_puresky_4k.exr",
+      "frames": 1,
+      "spp": 256,
+      "raster_first": false
+    },
+    {
+      "name": "san_miguel_restir_di_motion",
+      "scene": "C:/Users/mikey/Downloads/San_Miguel/san-miguel.obj",
+      "env": "C:/Users/mikey/Downloads/kloofendal_48d_partly_cloudy_puresky_4k.exr",
+      "spp": 1,
+      "nrd": true,
+      "restir_di": true,
+      "reference": "san_miguel_reference",
+      "sweep": {
+        "mode": "lateral",
+        "amplitude": 0.08,
+        "warmup": 8,
+        "period": 32,
+        "cycles": 1,
+        "hold_frames": 16,
+        "capture_every": 4
+      }
+    }
+  ]
+}
