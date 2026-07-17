@@ -178,8 +178,9 @@ void SceneManager::SyncToGPU()
 	UpdateWorldTransforms();
 	gpuData = BuildGPUSceneDataFromECS(m_EcsScene);
 
-	printf("[Scene] SyncToGPU: GPUSceneData built: meshes=%zu instances=%zu lights=%zu textures=%zu\n",
-	       gpuData.meshes.size(), gpuData.instances.size(), gpuData.lights.size(), gpuData.textures.size());
+	printf("[Scene] SyncToGPU: GPUSceneData built: meshes=%zu instances=%zu lights=%zu textures=%zu source_emissive=%u filtered_black=%u\n",
+	       gpuData.meshes.size(), gpuData.instances.size(), gpuData.lights.size(), gpuData.textures.size(),
+	       gpuData.sourceEmissiveTriangleCount, gpuData.filteredBlackEmissiveTriangleCount);
 	fflush(stdout);
 
 	// Add env map as an extra texture in the texture array

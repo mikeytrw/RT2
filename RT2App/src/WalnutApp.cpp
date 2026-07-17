@@ -26,6 +26,10 @@
 #include <cmath>
 #include <thread>
 #include <chrono>
+#include <fstream>
+#include <algorithm>
+#include <cctype>
+#include <filesystem>
 
 using namespace Walnut;
 
@@ -502,6 +506,12 @@ private:
 			m_Settings.maxBounces = g_CLI.bounces;
 		if (g_CLI.nrd)
 			m_Settings.nrdEnabled = true;
+		if (g_CLI.nrdMaxAccumFrames > 0)
+			m_Settings.nrdMaxAccumFrames = g_CLI.nrdMaxAccumFrames;
+		if (g_CLI.nrdResponsiveRoughness >= 0.0f)
+			m_Settings.nrdResponsiveRoughnessThreshold = g_CLI.nrdResponsiveRoughness;
+		if (g_CLI.nrdResponsiveMinFrames >= 0)
+			m_Settings.nrdResponsiveMinAccumFrames = g_CLI.nrdResponsiveMinFrames;
 		if (g_CLI.rasterFirst)
 		{
 			m_Settings.rasterFirst = true;
@@ -509,6 +519,7 @@ private:
 		}
 		if (g_CLI.gbufferDebug >= 0)
 			m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
+		m_Settings.sceneSeed = g_CLI.sceneSeed;
 
 		if (Walnut::Application::IsRayTracingSupported() && !m_RendererGPU.IsAvailable())
 		{
@@ -518,6 +529,9 @@ private:
 				if (g_CLI.spp > 0) m_Settings.spp = g_CLI.spp;
 				if (g_CLI.bounces > 0) m_Settings.maxBounces = g_CLI.bounces;
 				if (g_CLI.nrd) m_Settings.nrdEnabled = true;
+				if (g_CLI.nrdMaxAccumFrames > 0) m_Settings.nrdMaxAccumFrames = g_CLI.nrdMaxAccumFrames;
+				if (g_CLI.nrdResponsiveRoughness >= 0.0f) m_Settings.nrdResponsiveRoughnessThreshold = g_CLI.nrdResponsiveRoughness;
+				if (g_CLI.nrdResponsiveMinFrames >= 0) m_Settings.nrdResponsiveMinAccumFrames = g_CLI.nrdResponsiveMinFrames;
 				if (g_CLI.noAccumulate) m_Settings.accumulate = false;
 				if (g_CLI.rasterFirst) m_Settings.rasterFirst = true;
 				if (g_CLI.ris || g_CLI.restir) { m_Settings.restirEnabled = true; m_Settings.rasterFirst = true; }
@@ -527,6 +541,7 @@ private:
 				if (g_CLI.restirGI) { m_Settings.restirGIEnabled = true; m_Settings.rasterFirst = true; }
 				if (g_CLI.restirGICandidates > 0) m_Settings.restirGIFreshCandidates = (uint32_t)g_CLI.restirGICandidates;
 				if (g_CLI.gbufferDebug >= 0) m_Settings.gbufferDebugMode = g_CLI.gbufferDebug;
+				m_Settings.sceneSeed = g_CLI.sceneSeed;
 				m_RendererGPU.ApplySettings(m_Settings);
 			}
 			else
@@ -592,6 +607,15 @@ private:
 		fflush(stdout);
 
 		auto saveOutput = [&](const std::string& path) -> bool {
+			std::error_code directoryError;
+			const std::filesystem::path outputPath(path);
+			if (outputPath.has_parent_path())
+				std::filesystem::create_directories(outputPath.parent_path(), directoryError);
+			if (directoryError)
+			{
+				RT_LOG("[Headless] failed to create output directory for %s: %s", path.c_str(), directoryError.message().c_str());
+				return false;
+			}
 			std::vector<uint8_t> pixels;
 			uint32_t w, h;
 			if (!m_RendererGPU.ReadbackOutput(pixels, w, h))
@@ -618,6 +642,90 @@ private:
 			return true;
 		};
 
+		auto saveHDROutput = [&](const std::string& path) -> bool {
+			std::error_code directoryError;
+			const std::filesystem::path outputPath(path);
+			if (outputPath.has_parent_path())
+				std::filesystem::create_directories(outputPath.parent_path(), directoryError);
+			if (directoryError)
+			{
+				RT_LOG("[Headless] failed to create output directory for %s: %s", path.c_str(), directoryError.message().c_str());
+				return false;
+			}
+			std::vector<float> pixels;
+			uint32_t w = 0, h = 0;
+			if (!m_RendererGPU.ReadbackOutputLinear(pixels, w, h))
+			{
+				RT_LOG("[Headless] ReadbackOutputLinear failed");
+				return false;
+			}
+
+			// Vulkan readback is bottom-up for the application's presentation convention.
+			// Store conventional top-down scanlines while dropping the unused alpha channel.
+			std::vector<float> rgb((size_t)w * h * 3);
+			for (uint32_t y = 0; y < h; y++)
+			{
+				const uint32_t sourceY = h - 1 - y;
+				for (uint32_t x = 0; x < w; x++)
+				{
+					const size_t src = ((size_t)sourceY * w + x) * 4;
+					const size_t dst = ((size_t)y * w + x) * 3;
+					rgb[dst + 0] = pixels[src + 0];
+					rgb[dst + 1] = pixels[src + 1];
+					rgb[dst + 2] = pixels[src + 2];
+				}
+			}
+
+			std::string extension;
+			size_t dot = path.find_last_of('.');
+			if (dot != std::string::npos)
+				extension = path.substr(dot);
+			std::transform(extension.begin(), extension.end(), extension.begin(),
+			               [](unsigned char c) { return (char)std::tolower(c); });
+
+			if (extension == ".exr")
+			{
+				const char* error = nullptr;
+				int result = SaveEXR(rgb.data(), (int)w, (int)h, 3, 0, path.c_str(), &error);
+				if (result != TINYEXR_SUCCESS)
+				{
+					RT_LOG("[Headless] SaveEXR failed for %s: %s", path.c_str(), error ? error : "unknown error");
+					if (error) FreeEXRErrorMessage(error);
+					return false;
+				}
+			}
+			else if (extension == ".pfm")
+			{
+				std::ofstream output(path, std::ios::binary);
+				if (!output)
+				{
+					RT_LOG("[Headless] failed to open PFM output %s", path.c_str());
+					return false;
+				}
+				output << "PF\n" << w << " " << h << "\n-1.0\n";
+				// PFM stores scanlines bottom-to-top. rgb is currently top-to-bottom.
+				for (uint32_t y = 0; y < h; y++)
+				{
+					const uint32_t sourceY = h - 1 - y;
+					output.write(reinterpret_cast<const char*>(&rgb[(size_t)sourceY * w * 3]),
+					             (std::streamsize)((size_t)w * 3 * sizeof(float)));
+				}
+				if (!output)
+				{
+					RT_LOG("[Headless] failed while writing PFM output %s", path.c_str());
+					return false;
+				}
+			}
+			else
+			{
+				RT_LOG("[Headless] unsupported HDR output extension for %s (use .exr or .pfm)", path.c_str());
+				return false;
+			}
+
+			printf("[Headless] saved linear HDR: %s (%ux%u)\n", path.c_str(), w, h);
+			return true;
+		};
+
 		const glm::vec3 sweepBasePosition = m_Cam.GetPosition();
 		const glm::vec3 sweepBaseForward = m_Cam.GetDirection();
 		glm::vec3 sweepRight = glm::cross(m_Cam.GetDirection(), glm::vec3(0.0f, 1.0f, 0.0f));
@@ -626,8 +734,8 @@ private:
 		else
 			sweepRight = glm::vec3(1.0f, 0.0f, 0.0f);
 
-		auto sequencePath = [&](const char* tag, int frame) {
-			std::string path = g_CLI.outputPath;
+		auto sequencePath = [&](const std::string& basePath, const char* tag, int frame) {
+			std::string path = basePath;
 			size_t dot = path.find_last_of('.');
 			if (dot == std::string::npos)
 				dot = path.size();
@@ -640,11 +748,33 @@ private:
 			return path;
 		};
 
+		std::vector<GpuTimestampProfiler::Timings> benchmarkTimings;
+		uint64_t lastBenchmarkTimingFrame = UINT64_MAX;
+		auto collectBenchmarkTiming = [&]() {
+			if (!g_CLI.benchmarkTimings || !m_RendererGPU.IsAvailable() || !m_RendererGPU.HasGpuTimings())
+				return;
+			const auto& timings = m_RendererGPU.GetGpuTimings();
+			if (timings.validMask == 0 || timings.frameIndex == lastBenchmarkTimingFrame)
+				return;
+			benchmarkTimings.push_back(timings);
+			lastBenchmarkTimingFrame = timings.frameIndex;
+		};
+
 		for (int i = 0; i < g_CLI.frames; i++)
 		{
 			if (g_CLI.cameraSweepAmplitude > 0.0f && i >= g_CLI.cameraSweepWarmup)
 			{
-				float phase = float(i - g_CLI.cameraSweepWarmup) / float(g_CLI.cameraSweepPeriod);
+				const int motionFrame = i - g_CLI.cameraSweepWarmup;
+				const bool sweepEnded = g_CLI.cameraSweepCycles > 0 &&
+				                        motionFrame >= g_CLI.cameraSweepCycles * g_CLI.cameraSweepPeriod;
+				if (sweepEnded)
+				{
+					m_Cam.SetPosition(sweepBasePosition);
+					m_Cam.SetForwardDirection(sweepBaseForward);
+				}
+				else
+				{
+				float phase = float(motionFrame) / float(g_CLI.cameraSweepPeriod);
 				float offset = -g_CLI.cameraSweepAmplitude * std::sin(phase * 6.28318530718f);
 				if (g_CLI.cameraSweepMode == 1)
 				{
@@ -663,10 +793,12 @@ private:
 				{
 					m_Cam.SetPosition(sweepBasePosition + sweepRight * offset);
 				}
+				}
 			}
 			Timer timer;
 			if (m_RendererGPU.IsAvailable())
 				m_RendererGPU.Render(m_Cam);
+			collectBenchmarkTiming();
 			float ms = timer.ElapsedMillis();
 			if (g_CLI.verbose || i == g_CLI.frames - 1)
 				printf("[Headless] frame %d/%d: %.1fms\n", i + 1, g_CLI.frames, ms);
@@ -677,16 +809,26 @@ private:
 				bool stillFrame = g_CLI.cameraSweepWarmup > 0 && i == g_CLI.cameraSweepWarmup - 1;
 				bool periodicFrame = i >= g_CLI.cameraSweepWarmup &&
 				                     ((i - g_CLI.cameraSweepWarmup) % g_CLI.captureEvery == 0);
+				const bool holdFrame = g_CLI.cameraSweepCycles > 0 &&
+				                       i - g_CLI.cameraSweepWarmup >= g_CLI.cameraSweepCycles * g_CLI.cameraSweepPeriod;
 				if (stillFrame)
-					saveOutput(sequencePath("still", -1));
+				{
+					if (!g_CLI.outputPath.empty()) saveOutput(sequencePath(g_CLI.outputPath, "still", -1));
+					if (!g_CLI.outputHDRPath.empty()) saveHDROutput(sequencePath(g_CLI.outputHDRPath, "still", -1));
+				}
 				else if (periodicFrame)
-					saveOutput(sequencePath("move", i + 1));
+				{
+					const char* tag = holdFrame ? "hold" : "move";
+					if (!g_CLI.outputPath.empty()) saveOutput(sequencePath(g_CLI.outputPath, tag, i + 1));
+					if (!g_CLI.outputHDRPath.empty()) saveHDROutput(sequencePath(g_CLI.outputHDRPath, tag, i + 1));
+				}
 			}
 		}
 
 		if (m_RendererGPU.IsAvailable() && m_RendererGPU.HasGpuTimings())
 		{
 			m_RendererGPU.FlushGpuTimings();
+			collectBenchmarkTiming();
 			const auto& timings = m_RendererGPU.GetGpuTimings();
 			printf("[Headless] GPU timings (frame %llu)\n",
 			       static_cast<unsigned long long>(timings.frameIndex));
@@ -701,8 +843,32 @@ private:
 			fflush(stdout);
 		}
 
-		if (g_CLI.hasOutput() && m_RendererGPU.IsAvailable())
+		if (g_CLI.benchmarkTimings)
+		{
+			for (const auto& timings : benchmarkTimings)
+			{
+				printf("[HeadlessTiming] {\"frame\":%llu,\"regions_ms\":{",
+				       static_cast<unsigned long long>(timings.frameIndex));
+				bool first = true;
+				for (uint32_t i = 0; i < static_cast<uint32_t>(GpuTimestampProfiler::Region::Count); i++)
+				{
+					if ((timings.validMask & (1u << i)) == 0)
+						continue;
+					if (!first) printf(",");
+					first = false;
+					printf("\"%s\":%.6f",
+					       GpuTimestampProfiler::RegionName(static_cast<GpuTimestampProfiler::Region>(i)),
+					       timings.milliseconds[i]);
+				}
+				printf("}}\n");
+			}
+			fflush(stdout);
+		}
+
+		if (!g_CLI.outputPath.empty() && m_RendererGPU.IsAvailable())
 			saveOutput(g_CLI.outputPath);
+		if (!g_CLI.outputHDRPath.empty() && m_RendererGPU.IsAvailable())
+			saveHDROutput(g_CLI.outputHDRPath);
 
 		printf("[Headless] done, exiting\n");
 		Walnut::Application::Get().Close();

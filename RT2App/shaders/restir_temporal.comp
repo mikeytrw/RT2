@@ -149,12 +149,13 @@ void main()
             float b2 = sqrtR1 * r2;
 
             // Evaluate p_hat at this candidate
-            float p_hat = evalTriangleTargetPdf(worldPos, n, wo, baseColor, metallic,
-                                               lightIdx, b1, b2);
+            TriangleCandidateEvaluation evaluation = evalTriangleCandidate(
+                worldPos, n, wo, baseColor, metallic, lightIdx, b1, b2);
+            float p_hat = evaluation.targetPdf;
             if (p_hat <= 0.0) continue;
 
             // Proposal PDF (solid-angle): pTri * (1/lightCount) * (1/area) * dist² / LNdotL
-            float propPdf = triangleProposalPdfOmega(worldPos, n, lightIdx, b1, b2);
+            float propPdf = evaluation.proposalPdf;
             if (propPdf <= 0.0) continue;
 
             float w = p_hat / propPdf;

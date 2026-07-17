@@ -3,7 +3,132 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <algorithm>
 #include <cmath>
+
+namespace
+{
+constexpr uint32_t kEmissiveOccupancyBlockSize = 8;
+
+void BuildEmissiveTextureOccupancy(GPUSceneData& gpu)
+{
+    gpu.emissiveTextureOccupancy.clear();
+    gpu.emissiveTextureOccupancy.resize(gpu.textures.size());
+    std::vector<bool> referenced(gpu.textures.size(), false);
+    for (const auto& material : gpu.materials)
+    {
+        const glm::vec3 emission(material.emissive_roughness);
+        const int textureIndex = material.textureIndices.z;
+        if ((emission.x > 0.0f || emission.y > 0.0f || emission.z > 0.0f) &&
+            textureIndex >= 0 && textureIndex < static_cast<int>(referenced.size()))
+            referenced[textureIndex] = true;
+    }
+
+    for (size_t textureIndex = 0; textureIndex < gpu.textures.size(); textureIndex++)
+    {
+        if (!referenced[textureIndex])
+            continue;
+        const SceneTexture& texture = gpu.textures[textureIndex];
+        if (texture.width <= 0 || texture.height <= 0 || texture.channels <= 0 || texture.pixels.empty())
+            continue;
+        const size_t requiredBytes = static_cast<size_t>(texture.width) * texture.height * texture.channels;
+        if (texture.pixels.size() < requiredBytes)
+            continue;
+
+        EmissiveTextureOccupancy& occupancy = gpu.emissiveTextureOccupancy[textureIndex];
+        occupancy.blockWidth = (static_cast<uint32_t>(texture.width) + kEmissiveOccupancyBlockSize - 1) /
+                               kEmissiveOccupancyBlockSize;
+        occupancy.blockHeight = (static_cast<uint32_t>(texture.height) + kEmissiveOccupancyBlockSize - 1) /
+                                kEmissiveOccupancyBlockSize;
+        const uint32_t stride = occupancy.blockWidth + 1;
+        occupancy.summedArea.assign(static_cast<size_t>(stride) * (occupancy.blockHeight + 1), 0);
+
+        for (uint32_t blockY = 0; blockY < occupancy.blockHeight; blockY++)
+        {
+            uint32_t rowSum = 0;
+            for (uint32_t blockX = 0; blockX < occupancy.blockWidth; blockX++)
+            {
+                bool emits = false;
+                const uint32_t xBegin = blockX * kEmissiveOccupancyBlockSize;
+                const uint32_t yBegin = blockY * kEmissiveOccupancyBlockSize;
+                const uint32_t xEnd = std::min(xBegin + kEmissiveOccupancyBlockSize, static_cast<uint32_t>(texture.width));
+                const uint32_t yEnd = std::min(yBegin + kEmissiveOccupancyBlockSize, static_cast<uint32_t>(texture.height));
+                for (uint32_t y = yBegin; y < yEnd && !emits; y++)
+                {
+                    for (uint32_t x = xBegin; x < xEnd; x++)
+                    {
+                        const size_t pixel = (static_cast<size_t>(y) * texture.width + x) * texture.channels;
+                        const int colorChannels = std::min(texture.channels, 3);
+                        for (int channel = 0; channel < colorChannels; channel++)
+                        {
+                            if (texture.pixels[pixel + channel] != 0)
+                            {
+                                emits = true;
+                                break;
+                            }
+                        }
+                        if (emits) break;
+                    }
+                }
+                rowSum += emits ? 1u : 0u;
+                occupancy.summedArea[static_cast<size_t>(blockY + 1) * stride + blockX + 1] =
+                    occupancy.summedArea[static_cast<size_t>(blockY) * stride + blockX + 1] + rowSum;
+            }
+        }
+    }
+}
+
+bool TriangleTextureMayEmit(const GPUSceneData& gpu, const GPUMeshGeometry& mesh,
+                            uint32_t triangleIndex, int textureIndex)
+{
+    if (textureIndex < 0 || textureIndex >= static_cast<int>(gpu.textures.size()) ||
+        textureIndex >= static_cast<int>(gpu.emissiveTextureOccupancy.size()) || !mesh.uvs)
+        return true;
+    const EmissiveTextureOccupancy& occupancy = gpu.emissiveTextureOccupancy[textureIndex];
+    if (occupancy.summedArea.empty() || occupancy.blockWidth == 0 || occupancy.blockHeight == 0)
+        return true;
+
+    const SceneTexture& texture = gpu.textures[textureIndex];
+    const auto& indices = *mesh.indices;
+    const auto& uvs = *mesh.uvs;
+    const size_t indexBase = static_cast<size_t>(triangleIndex) * 3;
+    if (indexBase + 2 >= indices.size())
+        return true;
+    const uint32_t vertices[3] = { indices[indexBase], indices[indexBase + 1], indices[indexBase + 2] };
+    glm::vec2 triangleUV[3];
+    for (int vertex = 0; vertex < 3; vertex++)
+    {
+        const size_t uvIndex = static_cast<size_t>(vertices[vertex]) * 2;
+        if (uvIndex + 1 >= uvs.size())
+            return true;
+        triangleUV[vertex] = glm::vec2(uvs[uvIndex], uvs[uvIndex + 1]);
+        if (!std::isfinite(triangleUV[vertex].x) || !std::isfinite(triangleUV[vertex].y) ||
+            triangleUV[vertex].x < 0.0f || triangleUV[vertex].x > 1.0f ||
+            triangleUV[vertex].y < 0.0f || triangleUV[vertex].y > 1.0f)
+            return true; // Unknown wrap behavior: retain conservatively.
+    }
+
+    const float minU = std::min({ triangleUV[0].x, triangleUV[1].x, triangleUV[2].x });
+    const float maxU = std::max({ triangleUV[0].x, triangleUV[1].x, triangleUV[2].x });
+    const float minV = std::min({ triangleUV[0].y, triangleUV[1].y, triangleUV[2].y });
+    const float maxV = std::max({ triangleUV[0].y, triangleUV[1].y, triangleUV[2].y });
+    const int x0 = std::clamp(static_cast<int>(std::floor(minU * texture.width)) - 1, 0, texture.width - 1);
+    const int x1 = std::clamp(static_cast<int>(std::ceil(maxU * texture.width)) + 1, 0, texture.width - 1);
+    const int y0 = std::clamp(static_cast<int>(std::floor(minV * texture.height)) - 1, 0, texture.height - 1);
+    const int y1 = std::clamp(static_cast<int>(std::ceil(maxV * texture.height)) + 1, 0, texture.height - 1);
+    const uint32_t blockX0 = static_cast<uint32_t>(x0) / kEmissiveOccupancyBlockSize;
+    const uint32_t blockX1 = static_cast<uint32_t>(x1) / kEmissiveOccupancyBlockSize;
+    const uint32_t blockY0 = static_cast<uint32_t>(y0) / kEmissiveOccupancyBlockSize;
+    const uint32_t blockY1 = static_cast<uint32_t>(y1) / kEmissiveOccupancyBlockSize;
+    const uint32_t stride = occupancy.blockWidth + 1;
+    const auto sample = [&](uint32_t x, uint32_t y) {
+        return occupancy.summedArea[static_cast<size_t>(y) * stride + x];
+    };
+    const uint32_t occupiedBlocks = sample(blockX1 + 1, blockY1 + 1) - sample(blockX0, blockY1 + 1) -
+                                    sample(blockX1 + 1, blockY0) + sample(blockX0, blockY0);
+    return occupiedBlocks != 0;
+}
+}
 
 // Build marginal and conditional CDFs for environment map importance sampling.
 // The env map is an equirectangular HDR image. We compute the luminance of each
@@ -97,6 +222,7 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
         gpu.materials.push_back(GPUMaterial::fromSceneMaterial(sm));
     if (gpu.materials.empty())
         gpu.materials.push_back(GPUMaterial{});
+    BuildEmissiveTextureOccupancy(gpu);
 
     // Build one GPUMeshGeometry per unique mesh in the MeshRegistry.
     // Vertices stay in object space — transforms are applied via TLAS instances.
@@ -176,6 +302,12 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
 
             for (uint32_t t = 0; t < triCount; t++)
             {
+                gpu.sourceEmissiveTriangleCount++;
+                if (!TriangleTextureMayEmit(gpu, mesh, t, emissiveTexIdx))
+                {
+                    gpu.filteredBlackEmissiveTriangleCount++;
+                    continue;
+                }
                 uint32_t vi0 = idxs[t * 3 + 0] * 3;
                 uint32_t vi1 = idxs[t * 3 + 1] * 3;
                 uint32_t vi2 = idxs[t * 3 + 2] * 3;
@@ -222,6 +354,13 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
                     continue;
 
                 int emissiveTexIdx = mat.textureIndices.z;
+
+                gpu.sourceEmissiveTriangleCount++;
+                if (!TriangleTextureMayEmit(gpu, mesh, t, emissiveTexIdx))
+                {
+                    gpu.filteredBlackEmissiveTriangleCount++;
+                    continue;
+                }
 
                 uint32_t vi0 = idxs[t * 3 + 0] * 3;
                 uint32_t vi1 = idxs[t * 3 + 1] * 3;
@@ -286,6 +425,8 @@ void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene)
     // Rebuild light list (areas change with transforms)
     gpu.lights.clear();
     gpu.totalLightArea = 0.0f;
+    gpu.sourceEmissiveTriangleCount = 0;
+    gpu.filteredBlackEmissiveTriangleCount = 0;
 
     for (uint32_t instIdx = 0; instIdx < gpu.instances.size(); instIdx++)
     {
@@ -310,6 +451,12 @@ void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene)
 
             for (uint32_t t = 0; t < triCount; t++)
             {
+                gpu.sourceEmissiveTriangleCount++;
+                if (!TriangleTextureMayEmit(gpu, mesh, t, emissiveTexIdx))
+                {
+                    gpu.filteredBlackEmissiveTriangleCount++;
+                    continue;
+                }
                 uint32_t vi0 = idxs[t * 3 + 0] * 3;
                 uint32_t vi1 = idxs[t * 3 + 1] * 3;
                 uint32_t vi2 = idxs[t * 3 + 2] * 3;
@@ -355,6 +502,13 @@ void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene)
                     continue;
 
                 int emissiveTexIdx = mat.textureIndices.z;
+
+                gpu.sourceEmissiveTriangleCount++;
+                if (!TriangleTextureMayEmit(gpu, mesh, t, emissiveTexIdx))
+                {
+                    gpu.filteredBlackEmissiveTriangleCount++;
+                    continue;
+                }
 
                 uint32_t vi0 = idxs[t * 3 + 0] * 3;
                 uint32_t vi1 = idxs[t * 3 + 1] * 3;

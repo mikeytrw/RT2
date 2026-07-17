@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "app": "../bin/Release-windows-x86_64/RT2App/RT2App.exe",
+  "output_dir": "../artifacts/perf-benchmarks",
+  "defaults": {
+    "environment": "C:/Users/mikey/Downloads/kloofendal_48d_partly_cloudy_puresky_4k.exr",
+    "warmup_frames": 12,
+    "sample_frames": 30,
+    "repetitions": 1,
+    "seed": 20260717,
+    "render": {
+      "width": 930,
+      "height": 730,
+      "spp": 1,
+      "bounces": 8,
+      "raster_first": true,
+      "nrd": true,
+      "no_accumulate": true
+    },
+    "restir": {
+      "di": {
+        "enabled": true,
+        "candidates": 4,
+        "temporal": true,
+        "spatial": true
+      },
+      "gi": {
+        "enabled": true,
+        "candidates": 1
+      }
+    }
+  },
+  "benchmarks": [
+    {
+      "name": "saepinum",
+      "model": "C:/Users/mikey/Downloads/GLTFs/saepinum_benevento_gate__italy/scene.gltf",
+      "camera_poses": [{ "name": "loaded_default" }]
+    },
+    {
+      "name": "calcata",
+      "model": "C:/Users/mikey/Downloads/GLTFs/uploads_files_6550374_Calcata+(glb)/Calcata.glb",
+      "camera_poses": [{ "name": "loaded_default" }]
+    },
+    {
+      "name": "sci_fi_wall",
+      "model": "C:/Users/mikey/Downloads/GLTFs/uploads_files_5094786_sci-fi_door_wall.glb",
+      "camera_poses": [{ "name": "front", "position": [0.0, 1.8, 10.0], "forward": [0.0, 0.0, -1.0] }]
+    },
+    {
+      "name": "spaceship",
+      "model": "C:/Users/mikey/Downloads/uploads_files_6967902_Spaseship.glb",
+      "camera_poses": [{ "name": "loaded_default" }]
+    },
+    {
+      "name": "san_miguel",
+      "model": "C:/Users/mikey/Downloads/San_Miguel/san-miguel.obj",
+      "camera_poses": [
+        {
+          "name": "courtyard",
+          "position": [-5.966501, 3.924139, 4.955873],
+          "forward": [0.262140, 0.423300, -0.867237]
+        },
+        {
+          "name": "blue_wall",
+          "position": [18.709085, 9.430285, 4.157508],
+          "forward": [0.846798, 0.131072, -0.515511]
+        }
+      ]
+    }
+  ]
+}

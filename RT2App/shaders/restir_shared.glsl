@@ -351,6 +351,76 @@ float triangleProposalPdfOmega(vec3 P, vec3 N,
     return pdfOmega;
 }
 
+// Fresh candidates need both p_hat and q. Computing them independently used
+// to reconstruct the same randomly selected triangle twice. This combined
+// path performs all geometry and texture loads once.
+struct TriangleCandidateEvaluation
+{
+    float targetPdf;
+    float proposalPdf;
+};
+
+TriangleCandidateEvaluation evalTriangleCandidate(vec3 P, vec3 N, vec3 wo,
+                                                   vec3 baseColor, float metallic,
+                                                   uint lightIdx, float b1, float b2)
+{
+    TriangleCandidateEvaluation result;
+    result.targetPdf = 0.0;
+    result.proposalPdf = 0.0;
+
+    float pTri = computePTri();
+    if (pTri <= 0.0 || lightCount == 0u) return result;
+    TriangleLight light = lights[lightIdx];
+    float lightArea = light.emission_area.w;
+    if (lightArea <= 0.0) return result;
+
+    uvec4 meshInfo = instanceMeshInfo[light.ids.x];
+    uint idxBase = meshInfo.y + light.ids.y * 3u;
+    uint i0 = indices[idxBase + 0u];
+    uint i1 = indices[idxBase + 1u];
+    uint i2 = indices[idxBase + 2u];
+    mat4 lightWorld = instanceTransforms[light.ids.x];
+    vec3 lp0 = vec3(lightWorld * vertices[meshInfo.x + i0]);
+    vec3 lp1 = vec3(lightWorld * vertices[meshInfo.x + i1]);
+    vec3 lp2 = vec3(lightWorld * vertices[meshInfo.x + i2]);
+
+    float b0 = 1.0 - b1 - b2;
+    vec3 lightPoint = b0 * lp0 + b1 * lp1 + b2 * lp2;
+    vec3 lightN = normalize(cross(lp1 - lp0, lp2 - lp0));
+    vec3 toLight = lightPoint - P;
+    float dist = length(toLight);
+    vec3 L = toLight / max(dist, 1e-6);
+    float NdotL = dot(N, L);
+    float LNdotL = dot(lightN, -L);
+    if (NdotL <= 0.0 || LNdotL <= 0.0) return result;
+
+    vec3 brdf = evalDiffuseBRDF(wo, L, N, baseColor, metallic);
+    if (dot(brdf, brdf) <= 0.0) return result;
+    vec3 Le = light.emission_area.xyz;
+    uint emissiveTexIdx = light.ids.w;
+    if (emissiveTexIdx != 0xFFFFFFFFu)
+    {
+        vec2 luv0 = uvs[meshInfo.w + i0].xy;
+        vec2 luv1 = uvs[meshInfo.w + i1].xy;
+        vec2 luv2 = uvs[meshInfo.w + i2].xy;
+        vec2 lightUV = b0 * luv0 + b1 * luv1 + b2 * luv2;
+        Le *= texture(textures[nonuniformEXT(int(emissiveTexIdx))], lightUV).rgb;
+    }
+    Le *= camera.apertureFocal.w;
+    result.targetPdf = luminance(brdf * Le) * NdotL;
+    if (isnan(result.targetPdf) || isinf(result.targetPdf) || result.targetPdf <= 0.0)
+    {
+        result.targetPdf = 0.0;
+        return result;
+    }
+
+    float pdfArea = pTri * (1.0 / float(lightCount)) * (1.0 / lightArea);
+    result.proposalPdf = pdfArea * (dist * dist) / LNdotL;
+    if (isnan(result.proposalPdf) || isinf(result.proposalPdf) || result.proposalPdf <= 0.0)
+        result.proposalPdf = 0.0;
+    return result;
+}
+
 // ---- Environment proposal PDF (solid-angle) ---------------------------------
 float envProposalPdfOmega(vec2 envUV)
 {

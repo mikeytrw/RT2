@@ -112,6 +112,17 @@ struct GPUTriangleLight
     {}
 };
 
+// Coarse conservative occupancy for an emissive texture. Each entry in the
+// summed-area table represents an 8x8 texel block containing at least one
+// non-black RGB texel. It is CPU-only and is used to reject UV triangles whose
+// expanded texel bounds provably contain no emission.
+struct EmissiveTextureOccupancy
+{
+    uint32_t blockWidth = 0;
+    uint32_t blockHeight = 0;
+    std::vector<uint32_t> summedArea;
+};
+
 // Full scene data ready for GPU upload.
 struct GPUSceneData
 {
@@ -120,7 +131,10 @@ struct GPUSceneData
     std::vector<GPUMaterial>      materials;
     std::vector<SceneTexture>     textures;
     std::vector<GPUTriangleLight> lights;  // emissive triangles for NEE
+    std::vector<EmissiveTextureOccupancy> emissiveTextureOccupancy;
     float                         totalLightArea = 0.0f;  // sum of all light triangle areas
+    uint32_t sourceEmissiveTriangleCount = 0;
+    uint32_t filteredBlackEmissiveTriangleCount = 0;
 
     // Environment map (M8). When envMapIndex >= 0, the miss shader samples
     // this texture from the bindless array instead of the sky gradient.

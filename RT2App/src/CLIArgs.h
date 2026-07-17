@@ -3,24 +3,31 @@
 #include <string>
 #include <vector>
 #include <cstring>
+#include <cstdint>
+#include <cstdlib>
 
 struct CLIArgs
 {
 	std::string scenePath;
 	std::string envMapPath;
 	std::string outputPath;       // screenshot PNG path
+	std::string outputHDRPath;    // linear HDR output (.exr or .pfm)
 	int frames = 0;               // number of frames to render before screenshot (0 = no auto-screenshot)
 	int width = 1280;             // viewport width for headless mode
 	int height = 720;             // viewport height for headless mode
 	int spp = 0;                  // SPP override (0 = use default)
 	int bounces = 0;              // bounces override (0 = use default)
 	bool nrd = false;             // enable NRD
+	int nrdMaxAccumFrames = 0;    // NRD history override (0 = default)
+	float nrdResponsiveRoughness = -1.0f; // responsive threshold override (<0 = default)
+	int nrdResponsiveMinFrames = -1;      // responsive minimum history override (<0 = default)
 	bool noAccumulate = false;    // disable non-NRD temporal accumulation
 	bool headless = false;        // render N frames, save screenshot, exit
 	bool listScenes = false;      // just print what would be loaded
 	bool verbose = false;
 	bool validate = false;        // enable Vulkan validation layers
 	bool syncValidate = false;    // enable synchronization validation
+	bool benchmarkTimings = false; // emit one JSON timing record per completed GPU frame
 	bool rasterFirst = false;      // raster-first hybrid path
 	bool ris = false;              // enable ReSTIR DI (backward compat alias)
 	bool restir = false;           // enable ReSTIR DI
@@ -39,10 +46,12 @@ struct CLIArgs
 	int cameraSweepWarmup = 0;         // stationary frames before motion
 	int cameraSweepPeriod = 32;        // frames per complete left/right cycle
 	int captureEvery = 0;              // save sequence frame every N frames
+	int cameraSweepCycles = 0;         // complete cycles before holding still (0 = repeat)
+	uint32_t sceneSeed = 0;            // deterministic sampling seed
 
 	bool hasScene() const { return !scenePath.empty(); }
 	bool hasEnvMap() const { return !envMapPath.empty(); }
-	bool hasOutput() const { return !outputPath.empty(); }
+	bool hasOutput() const { return !outputPath.empty() || !outputHDRPath.empty(); }
 
 	static CLIArgs Parse(int argc, char** argv)
 	{
@@ -67,6 +76,10 @@ struct CLIArgs
 			{
 				if (const char* v = next()) args.outputPath = v;
 			}
+			else if (strcmp(a, "--output-hdr") == 0)
+			{
+				if (const char* v = next()) args.outputHDRPath = v;
+			}
 			else if (strcmp(a, "--frames") == 0 || strcmp(a, "-f") == 0)
 			{
 				if (const char* v = next()) args.frames = std::max(1, std::atoi(v));
@@ -90,6 +103,18 @@ struct CLIArgs
 			else if (strcmp(a, "--nrd") == 0)
 			{
 				args.nrd = true;
+			}
+			else if (strcmp(a, "--nrd-accum-frames") == 0)
+			{
+				if (const char* v = next()) args.nrdMaxAccumFrames = std::max(1, std::atoi(v));
+			}
+			else if (strcmp(a, "--nrd-responsive-roughness") == 0)
+			{
+				if (const char* v = next()) args.nrdResponsiveRoughness = (float)std::atof(v);
+			}
+			else if (strcmp(a, "--nrd-responsive-min-frames") == 0)
+			{
+				if (const char* v = next()) args.nrdResponsiveMinFrames = std::max(0, std::atoi(v));
 			}
 			else if (strcmp(a, "--no-accumulate") == 0)
 			{
@@ -129,6 +154,14 @@ struct CLIArgs
 		else if (strcmp(a, "--capture-every") == 0)
 		{
 			if (const char* v = next()) args.captureEvery = std::max(1, std::atoi(v));
+		}
+		else if (strcmp(a, "--camera-sweep-cycles") == 0)
+		{
+			if (const char* v = next()) args.cameraSweepCycles = std::max(0, std::atoi(v));
+		}
+		else if (strcmp(a, "--seed") == 0)
+		{
+			if (const char* v = next()) args.sceneSeed = static_cast<uint32_t>(std::strtoul(v, nullptr, 0));
 		}
 		else if (strcmp(a, "--raster-first") == 0)
 		{
@@ -171,6 +204,10 @@ struct CLIArgs
 			{
 				args.verbose = true;
 			}
+			else if (strcmp(a, "--benchmark-timings") == 0)
+			{
+				args.benchmarkTimings = true;
+			}
 			else if (strcmp(a, "--validate") == 0)
 			{
 				args.validate = true;
@@ -191,13 +228,17 @@ struct CLIArgs
 				printf("Options:\n");
 				printf("  --scene <path>       Load scene (.glb/.gltf/.obj) on startup\n");
 				printf("  --env <path>         Load HDR env map (.hdr/.exr) on startup\n");
-			printf("  --output <path>      Save screenshot PNG after rendering\n");
+			printf("  --output <path>      Save tonemapped PNG after rendering\n");
+			printf("  --output-hdr <path>  Save linear HDR output (.exr or .pfm)\n");
 			printf("  --frames <N>         Render N frames before screenshot (default 1)\n");
 			printf("  --width <W>          Viewport width (default 1280)\n");
 				printf("  --height <H>         Viewport height (default 720)\n");
 				printf("  --spp <N>            Samples per pixel override\n");
 				printf("  --bounces <N>        Max bounces override\n");
 				printf("  --nrd                Enable NRD denoiser\n");
+				printf("  --nrd-accum-frames <N>  Override REBLUR maximum history\n");
+				printf("  --nrd-responsive-roughness <R>  Override responsive-history roughness threshold\n");
+				printf("  --nrd-responsive-min-frames <N>  Override responsive minimum history\n");
 				printf("  --no-accumulate      Disable non-NRD temporal accumulation\n");
 				printf("  --raster-first       Enable raster-first hybrid path\n");
 				printf("  --ris                Enable ReSTIR DI (alias for --restir, requires raster-first)\n");
@@ -212,10 +253,13 @@ struct CLIArgs
 		printf("  --camera-forward <x> <y> <z>  Override loaded camera direction\n");
 		printf("  --camera-sweep <amplitude> <warmup> <period>  Headless left/right motion\n");
 		printf("  --camera-sweep-mode <lateral|forward|yaw>  Sweep direction (yaw amplitude is radians)\n");
+		printf("  --camera-sweep-cycles <N>  Sweep N cycles, then return to the base pose and hold\n");
 		printf("  --capture-every <N>  Save periodic headless sequence frames\n");
+		printf("  --seed <N>           Deterministic sampling seed (decimal or 0x-prefixed)\n");
 		printf("  --headless           Render N frames, save screenshot, exit\n");
 				printf("  --list               Print what would be loaded, then exit\n");
 			printf("  --verbose            Verbose logging\n");
+			printf("  --benchmark-timings  Emit per-frame GPU timing records as JSON lines\n");
 			printf("  --validate           Enable Vulkan validation layers\n");
 			printf("  --sync-validate     Enable synchronization validation (implies --validate)\n");
 			printf("  --help               Show this help\n");
@@ -240,6 +284,8 @@ struct CLIArgs
 		printf("[CLI] scene     = %s\n", scenePath.empty() ? "(none)" : scenePath.c_str());
 		printf("[CLI] env       = %s\n", envMapPath.empty() ? "(none)" : envMapPath.c_str());
 		printf("[CLI] output    = %s\n", outputPath.empty() ? "(none)" : outputPath.c_str());
+		printf("[CLI] outputHDR = %s\n", outputHDRPath.empty() ? "(none)" : outputHDRPath.c_str());
+		printf("[CLI] seed      = %u\n", sceneSeed);
 		printf("[CLI] frames    = %d\n", frames);
 		printf("[CLI] %dx%d  spp=%d  bounces=%d  nrd=%d  headless=%d\n",
 		       width, height, spp, bounces, nrd, headless);
