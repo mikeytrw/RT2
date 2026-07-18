@@ -1,4 +1,4 @@
-#include "SceneEditorUI.h"
+﻿#include "SceneEditorUI.h"
 #include "PrimitiveGeometry.h"
 #include "FileDialog.h"
 #include "ECSComponents.h"
@@ -6,6 +6,9 @@
 #include "RTLog.h"
 #include "imgui.h"
 #include <cstdio>
+#include <algorithm>
+#include <cctype>
+#include <cstring>
 
 void SceneEditorUI::RenderPanels()
 {
@@ -25,11 +28,70 @@ void SceneEditorUI::NotifyTransformChanged()
 		m_OnTransformChanged();
 }
 
+void SceneEditorUI::ApplyMutation(const EditorMutationResult& result, bool selectAffected)
+{
+	if (!result.success)
+	{
+		m_MutationError = result.error.Format();
+		return;
+	}
+	m_MutationError.clear();
+	if (selectAffected && !result.affectedEntities.empty())
+	{
+		m_State.Selection().Clear();
+		for (const auto& uuid : result.affectedEntities)
+			m_State.Selection().Add(uuid);
+	}
+	if (m_OnMutation)
+	{
+		m_OnMutation(result.syncImpact);
+		return;
+	}
+	switch (result.syncImpact)
+	{
+		case rt2::core::SyncImpact::Transform: NotifyTransformChanged(); break;
+		case rt2::core::SyncImpact::Material:
+		case rt2::core::SyncImpact::Structural: NotifySceneChanged(); break;
+		case rt2::core::SyncImpact::None: break;
+	}
+}
+
+bool SceneEditorUI::MutationSelectionAllowed(std::string& reason) const
+{
+	if (!m_Editable)
+	{
+		reason = "Authoring is read-only while Play mode is active.";
+		return false;
+	}
+	if (m_State.AnyDirectlyLocked(m_State.Selection().Ordered()))
+	{
+		reason = "The selection contains a directly locked entity.";
+		return false;
+	}
+	return true;
+}
+
+bool SceneEditorUI::MatchesSearch(SceneManager::EntityId entity) const
+{
+	const std::string query = m_State.SearchText();
+	if (query.empty()) return true;
+	std::string name = m_SceneMgr->GetEntityName(entity);
+	std::string lowerQuery = query;
+	std::transform(name.begin(), name.end(), name.begin(),
+		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(),
+		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	if (name.find(lowerQuery) != std::string::npos) return true;
+	for (const auto child : m_SceneMgr->GetChildren(entity))
+		if (MatchesSearch(child)) return true;
+	return false;
+}
+
 SceneManager::EntityId SceneEditorUI::SelectedEntity() const
 {
 	if (!m_SceneMgr)
 		return {};
-	const auto uuid = m_Selection.Primary();
+	const auto uuid = m_State.Selection().Primary();
 	return uuid.IsNull() ? SceneManager::EntityId{} :
 		SceneManager::EntityId{ m_SceneMgr->FindEntityByUuid(uuid) };
 }
@@ -38,18 +100,19 @@ void SceneEditorUI::SelectEntity(SceneManager::EntityId entity, bool toggle)
 {
 	if (!m_SceneMgr || !entity.IsValid())
 	{
-		if (!toggle) m_Selection.Clear();
+		if (!toggle) m_State.Selection().Clear();
 		return;
 	}
+	m_State.Prune(m_SceneMgr->AuthoringDoc());
 	const auto uuid = m_SceneMgr->GetEntityUuid(entity);
-	if (toggle) m_Selection.Toggle(uuid);
-	else m_Selection.SelectOnly(uuid);
+	if (toggle) m_State.Selection().Toggle(uuid);
+	else m_State.Selection().SelectOnly(uuid);
 }
 
 bool SceneEditorUI::IsSelected(SceneManager::EntityId entity) const
 {
 	return m_SceneMgr && entity.IsValid() &&
-		m_Selection.Contains(m_SceneMgr->GetEntityUuid(entity));
+		m_State.Selection().Contains(m_SceneMgr->GetEntityUuid(entity));
 }
 
 // ============================================================================
@@ -67,13 +130,21 @@ void SceneEditorUI::RenderOutliner()
 		return;
 	}
 
-	// Add menu — disabled during Play
+	// Add menu â€” disabled during Play
 	ImGui::BeginDisabled(!m_Editable);
 	if (ImGui::Button("Add"))
 		ImGui::OpenPopup("AddEntity");
 
 	if (ImGui::BeginPopup("AddEntity"))
 	{
+		if (ImGui::MenuItem("Empty"))
+			ApplyMutation(m_SceneMgr->CreateEmpty(), true);
+		const auto selectedParent = m_State.Selection().Primary();
+		ImGui::BeginDisabled(selectedParent.IsNull() || m_State.IsLocked(selectedParent));
+		if (ImGui::MenuItem("Child Empty"))
+			ApplyMutation(m_SceneMgr->CreateEmpty("Empty", selectedParent), true);
+		ImGui::EndDisabled();
+		ImGui::Separator();
 		if (ImGui::MenuItem("Emissive Light"))
 		{
 			SceneMaterial mat;
@@ -82,6 +153,8 @@ void SceneEditorUI::RenderOutliner()
 			int matIdx = m_SceneMgr->AddMaterial(mat);
 			auto id = m_SceneMgr->AddObjectWithGeometry("Light",
 				PrimitiveGeometry::CreateSphere(0.2f), {0, 3, 0}, {0, 0, 0}, 1.0f, matIdx);
+			m_SceneMgr->GetECS().registry.emplace_or_replace<PrimitiveComponent>(id.id,
+				PrimitiveComponent{PrimitiveComponent::Sphere, 0.4f, 24, 16});
 			SelectEntity(id);
 			NotifySceneChanged();
 		}
@@ -157,14 +230,17 @@ void SceneEditorUI::RenderOutliner()
 	ImGui::EndDisabled();
 
 	ImGui::Separator();
+	if (ImGui::InputTextWithHint("##OutlinerSearch", "Search entities...",
+		m_SearchBuffer, sizeof(m_SearchBuffer)))
+		m_State.SearchText() = m_SearchBuffer;
 
-	// Entity tree (root entities → children)
+	// Entity tree (root entities â†’ children)
 	size_t count = m_SceneMgr->GetEntityCount();
 	ImGui::Text("Entities: %d", (int)count);
 
 	if (count == 0)
 	{
-		ImGui::TextDisabled("  (empty — load a scene or add an entity)");
+		ImGui::TextDisabled("  (empty â€” load a scene or add an entity)");
 		ImGui::End();
 		return;
 	}
@@ -185,17 +261,34 @@ void SceneEditorUI::RenderOutliner()
 	ImGui::BeginDisabled(!m_Editable);
 	if (ImGui::Button("Delete Selected"))
 	{
-		const auto selected = m_Selection.Ordered();
-		for (const auto& uuid : selected)
+		std::string reason;
+		if (MutationSelectionAllowed(reason))
 		{
-			const entt::entity entity = m_SceneMgr->FindEntityByUuid(uuid);
-			if (entity != entt::null)
-				m_SceneMgr->RemoveEntity(SceneManager::EntityId{ entity });
+			ApplyMutation(m_SceneMgr->RemoveSubtrees(m_State.Selection().Ordered()));
+			m_State.Selection().Clear();
+			m_TreeDirty = true;
 		}
-		m_Selection.Clear();
-		NotifySceneChanged();
-		m_TreeDirty = true;
+		else m_MutationError = reason;
 	}
+	ImGui::EndDisabled();
+
+	ImGui::SameLine();
+	if (ImGui::Button("Copy"))
+	{
+		rt2::core::Error error;
+		if (!m_State.Copy(*m_SceneMgr, m_State.Selection().Ordered(), error))
+			m_MutationError = error.Format();
+		else m_MutationError.clear();
+	}
+	ImGui::SameLine();
+	ImGui::BeginDisabled(!m_Editable || !m_State.HasClipboard());
+	if (ImGui::Button("Paste"))
+		ApplyMutation(m_State.Paste(*m_SceneMgr), true);
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	ImGui::BeginDisabled(!m_Editable || m_State.Selection().Empty());
+	if (ImGui::Button("Duplicate"))
+		ApplyMutation(m_SceneMgr->DuplicateSubtrees(m_State.Selection().Ordered()), true);
 	ImGui::EndDisabled();
 
 	ImGui::SameLine();
@@ -212,12 +305,47 @@ void SceneEditorUI::RenderOutliner()
 			m_OnDumpNEEBuffers();
 	}
 
+	if (!m_MutationError.empty())
+		ImGui::TextWrapped("%s", m_MutationError.c_str());
+
+	const auto& io = ImGui::GetIO();
+	if (m_Editable && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+		!io.WantTextInput)
+	{
+		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C))
+		{
+			rt2::core::Error error;
+			if (!m_State.Copy(*m_SceneMgr, m_State.Selection().Ordered(), error))
+				m_MutationError = error.Format();
+		}
+		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V))
+			ApplyMutation(m_State.Paste(*m_SceneMgr), true);
+		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D))
+			ApplyMutation(m_SceneMgr->DuplicateSubtrees(m_State.Selection().Ordered()), true);
+		if (ImGui::IsKeyPressed(ImGuiKey_Delete))
+		{
+			std::string reason;
+			if (MutationSelectionAllowed(reason))
+			{
+				ApplyMutation(m_SceneMgr->RemoveSubtrees(m_State.Selection().Ordered()));
+				m_State.Selection().Clear();
+				m_TreeDirty = true;
+			}
+			else m_MutationError = reason;
+		}
+	}
+
 	ImGui::End();
 }
 
 void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 {
 	if (!entity.IsValid()) return;
+	if (!MatchesSearch(entity)) return;
+	const auto uuid = m_SceneMgr->GetEntityUuid(entity);
+	const bool directlyLocked = m_State.IsLocked(uuid);
+	const auto* visibleComponent = m_SceneMgr->GetECS().registry.try_get<VisibleComponent>(entity.id);
+	const bool directlyVisible = !visibleComponent || visibleComponent->visible;
 
 	std::string name = m_SceneMgr->GetEntityName(entity);
 	if (name.empty())
@@ -230,11 +358,43 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 		label = "[Mesh] " + name;
 	else
 		label = "[Entity] " + name;
+	if (!directlyVisible) label = "[Hidden] " + label;
+	if (directlyLocked) label = "[Locked] " + label;
 
 	ImGui::PushID((int)entity.id);
 
 	bool isSelected = IsSelected(entity);
 	bool hasChildren = m_SceneMgr->HasChildren(entity);
+	auto handleDragDrop = [&]()
+	{
+		if (!m_Editable) return;
+		if (ImGui::BeginDragDropSource())
+		{
+			ImGui::SetDragDropPayload("RT2_ENTITY_UUID", uuid.bytes.data(), uuid.bytes.size());
+			ImGui::Text("Move %s", name.c_str());
+			ImGui::EndDragDropSource();
+		}
+		if (ImGui::BeginDragDropTarget())
+		{
+			if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("RT2_ENTITY_UUID"))
+			{
+				std::array<uint8_t, 16> bytes{};
+				if (payload->DataSize == static_cast<int>(bytes.size()))
+				{
+					std::memcpy(bytes.data(), payload->Data, bytes.size());
+					const rt2::core::UUID dragged(bytes);
+					auto sources = m_State.Selection().Contains(dragged)
+						? m_State.Selection().Ordered()
+						: std::vector<rt2::core::UUID>{ dragged };
+					if (directlyLocked || m_State.AnyDirectlyLocked(sources))
+						m_MutationError = "Locked entities cannot be reparented or receive children.";
+					else
+						ApplyMutation(m_SceneMgr->Reparent(sources, uuid));
+				}
+			}
+			ImGui::EndDragDropTarget();
+		}
+	};
 
 	if (hasChildren)
 	{
@@ -242,6 +402,7 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 			ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_OpenOnDoubleClick |
 			ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen |
 			(isSelected ? ImGuiTreeNodeFlags_Selected : 0));
+		handleDragDrop();
 
 		// Click on the tree node label selects it
 		if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
@@ -251,18 +412,40 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 		if (ImGui::BeginPopupContextItem("EntityCtx"))
 		{
 			ImGui::BeginDisabled(!m_Editable);
+			if (ImGui::MenuItem(directlyLocked ? "Unlock" : "Lock"))
+				m_State.ToggleLocked(uuid);
+			ImGui::BeginDisabled(directlyLocked);
+			if (ImGui::MenuItem(directlyVisible ? "Hide" : "Show"))
+				ApplyMutation(m_SceneMgr->SetVisibility({ uuid }, !directlyVisible));
+			if (ImGui::MenuItem("Create Child"))
+				ApplyMutation(m_SceneMgr->CreateEmpty("Empty", uuid), true);
+			if (m_SceneMgr->GetParent(entity).IsValid() && ImGui::MenuItem("Move to Scene Root"))
+				ApplyMutation(m_SceneMgr->Reparent({ uuid }, std::nullopt));
+			if (ImGui::MenuItem("Paste as Child", nullptr, false, m_State.HasClipboard()))
+				ApplyMutation(m_State.Paste(*m_SceneMgr, uuid), true);
+			ImGui::EndDisabled();
+			if (ImGui::MenuItem("Copy"))
+			{
+				rt2::core::Error error;
+				if (!m_State.Copy(*m_SceneMgr, { uuid }, error)) m_MutationError = error.Format();
+			}
+			if (ImGui::MenuItem("Duplicate"))
+				ApplyMutation(m_SceneMgr->DuplicateSubtrees({ uuid }), true);
+			ImGui::BeginDisabled(directlyLocked);
 			if (ImGui::MenuItem("Delete"))
 			{
 				if (IsSelected(entity))
-					m_Selection.Remove(m_SceneMgr->GetEntityUuid(entity));
-				m_SceneMgr->RemoveEntity(entity);
-				NotifySceneChanged();
+					m_State.Selection().Remove(m_SceneMgr->GetEntityUuid(entity));
+				ApplyMutation(m_SceneMgr->RemoveSubtrees({ uuid }));
 				m_TreeDirty = true;
 				ImGui::EndDisabled();
+				ImGui::EndDisabled();
 				ImGui::EndPopup();
+				if (open) ImGui::TreePop();
 				ImGui::PopID();
 				return;
 			}
+			ImGui::EndDisabled();
 			ImGui::EndDisabled();
 			ImGui::EndPopup();
 		}
@@ -283,18 +466,39 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 	{
 		if (ImGui::Selectable(label.c_str(), isSelected, ImGuiTreeNodeFlags_SpanAvailWidth))
 			SelectEntity(entity, ImGui::GetIO().KeyCtrl);
+		handleDragDrop();
 
 		if (ImGui::BeginPopupContextItem("EntityCtx"))
 		{
 			ImGui::BeginDisabled(!m_Editable);
+			if (ImGui::MenuItem(directlyLocked ? "Unlock" : "Lock"))
+				m_State.ToggleLocked(uuid);
+			ImGui::BeginDisabled(directlyLocked);
+			if (ImGui::MenuItem(directlyVisible ? "Hide" : "Show"))
+				ApplyMutation(m_SceneMgr->SetVisibility({ uuid }, !directlyVisible));
+			if (ImGui::MenuItem("Create Child"))
+				ApplyMutation(m_SceneMgr->CreateEmpty("Empty", uuid), true);
+			if (m_SceneMgr->GetParent(entity).IsValid() && ImGui::MenuItem("Move to Scene Root"))
+				ApplyMutation(m_SceneMgr->Reparent({ uuid }, std::nullopt));
+			if (ImGui::MenuItem("Paste as Child", nullptr, false, m_State.HasClipboard()))
+				ApplyMutation(m_State.Paste(*m_SceneMgr, uuid), true);
+			ImGui::EndDisabled();
+			if (ImGui::MenuItem("Copy"))
+			{
+				rt2::core::Error error;
+				if (!m_State.Copy(*m_SceneMgr, { uuid }, error)) m_MutationError = error.Format();
+			}
+			if (ImGui::MenuItem("Duplicate"))
+				ApplyMutation(m_SceneMgr->DuplicateSubtrees({ uuid }), true);
+			ImGui::BeginDisabled(directlyLocked);
 			if (ImGui::MenuItem("Delete"))
 			{
 				if (IsSelected(entity))
-					m_Selection.Remove(m_SceneMgr->GetEntityUuid(entity));
-				m_SceneMgr->RemoveEntity(entity);
-				NotifySceneChanged();
+					m_State.Selection().Remove(m_SceneMgr->GetEntityUuid(entity));
+				ApplyMutation(m_SceneMgr->RemoveSubtrees({ uuid }));
 				m_TreeDirty = true;
 			}
+			ImGui::EndDisabled();
 			ImGui::EndDisabled();
 			ImGui::EndPopup();
 		}
@@ -312,7 +516,7 @@ void SceneEditorUI::RenderInspector()
 	ImGui::Begin("Inspector");
 
 	if (m_SceneMgr)
-		m_Selection.Prune(m_SceneMgr->AuthoringDoc());
+		m_State.Selection().Prune(m_SceneMgr->AuthoringDoc());
 	const auto selectedEntity = SelectedEntity();
 	if (!m_SceneMgr || !selectedEntity.IsValid() || !m_SceneMgr->IsEntityAlive(selectedEntity))
 	{
@@ -323,6 +527,10 @@ void SceneEditorUI::RenderInspector()
 
 	auto entity = selectedEntity;
 	std::string name = m_SceneMgr->GetEntityName(entity);
+	const bool directlyLocked = m_State.IsLocked(m_SceneMgr->GetEntityUuid(entity));
+	if (directlyLocked)
+		ImGui::TextDisabled("Directly locked in the editor");
+	ImGui::BeginDisabled(directlyLocked);
 
 	// Name field
 	char nameBuf[128];
@@ -386,6 +594,7 @@ void SceneEditorUI::RenderInspector()
 		}
 	}
 
+	ImGui::EndDisabled();
 	ImGui::End();
 }
 

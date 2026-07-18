@@ -33,6 +33,12 @@ struct Error
         MissingParent,
         UnknownPrimitive,
         MissingAsset,
+        InvalidEntity,
+        InvalidHierarchy,
+        HierarchyCycle,
+        InvalidTransform,
+        LockedEntity,
+        ClipboardStale,
         // Runtime
         InvalidRuntimeState,
     };

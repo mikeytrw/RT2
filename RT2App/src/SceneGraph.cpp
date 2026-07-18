@@ -6,13 +6,10 @@ void SceneGraph::MarkDirty(entt::registry& registry, entt::entity entity)
 	SetLocalDirty(registry, entity);
 
 	// Propagate to children — find all entities whose parent is this entity
-	auto view = registry.view<Hierarchy>();
-	for (auto e : view)
-	{
-		const auto& hier = view.get<Hierarchy>(e);
-		if (hier.parent == entity)
-			MarkDirty(registry, e);
-	}
+	if (const auto* hierarchy = registry.try_get<Hierarchy>(entity))
+		for (const auto child : hierarchy->children)
+			if (registry.valid(child))
+				MarkDirty(registry, child);
 }
 
 void SceneGraph::SetLocalDirty(entt::registry& registry, entt::entity entity)
@@ -71,11 +68,8 @@ void SceneGraph::UpdateNode(entt::registry& registry, entt::entity entity,
 	}
 
 	// Find children — scan all entities with Hierarchy whose parent is this entity
-	auto view = registry.view<Hierarchy>();
-	for (auto child : view)
-	{
-		const auto& hier = view.get<Hierarchy>(child);
-		if (hier.parent == entity)
-			UpdateNode(registry, child, t->worldMatrix, dirty);
-	}
+	if (const auto* hierarchy = registry.try_get<Hierarchy>(entity))
+		for (const auto child : hierarchy->children)
+			if (registry.valid(child))
+				UpdateNode(registry, child, t->worldMatrix, dirty);
 }

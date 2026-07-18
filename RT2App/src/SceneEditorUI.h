@@ -4,7 +4,7 @@
 #define SCENE_EDITOR_UI_H
 
 #include "SceneManager.h"
-#include "EditorSelection.h"
+#include "EditorSceneState.h"
 #include <functional>
 #include <filesystem>
 #include <string>
@@ -46,6 +46,8 @@ public:
 	// Called when only transforms change (move/rotate/scale).
 	// Host should call SyncTransformsToGPU() + ResetAccumulation().
 	void SetOnTransformChanged(std::function<void()> cb) { m_OnTransformChanged = std::move(cb); }
+	void SetOnMutation(std::function<void(rt2::core::SyncImpact)> cb)
+	{ m_OnMutation = std::move(cb); }
 
 	// Called when user picks "Load Mesh File..." — host loads the OBJ/glTF
 	// as geometry and adds it via AddObjectWithGeometry. Returns the entity ID.
@@ -74,10 +76,13 @@ public:
 	void SetEditable(bool editable) { m_Editable = editable; }
 	bool IsEditable() const { return m_Editable; }
 
-	void SelectUuid(const rt2::core::UUID& uuid) { m_Selection.SelectOnly(uuid); }
-	void ClearSelection() { m_Selection.Clear(); }
-	EditorSelection& Selection() { return m_Selection; }
-	const EditorSelection& Selection() const { return m_Selection; }
+	void SelectUuid(const rt2::core::UUID& uuid) { m_State.Selection().SelectOnly(uuid); }
+	void ClearSelection() { m_State.Selection().Clear(); }
+	void ResetForDocument() { m_State.ResetForDocument(); m_SearchBuffer[0] = '\0'; }
+	EditorSelection& Selection() { return m_State.Selection(); }
+	const EditorSelection& Selection() const { return m_State.Selection(); }
+	bool SelectionHasDirectLock() const
+	{ return m_State.AnyDirectlyLocked(m_State.Selection().Ordered()); }
 	TransformSpace GetTransformSpace() const { return m_TransformSpace; }
 	TransformPivot GetTransformPivot() const { return m_TransformPivot; }
 	const TransformSnapSettings& GetTransformSnapSettings() const { return m_TransformSnap; }
@@ -96,15 +101,19 @@ private:
 
 	void NotifySceneChanged();
 	void NotifyTransformChanged();
+	void ApplyMutation(const EditorMutationResult& result, bool selectAffected = false);
+	bool MutationSelectionAllowed(std::string& reason) const;
+	bool MatchesSearch(SceneManager::EntityId entity) const;
 	SceneManager::EntityId SelectedEntity() const;
 	void SelectEntity(SceneManager::EntityId entity, bool toggle = false);
 	bool IsSelected(SceneManager::EntityId entity) const;
 
 	SceneManager* m_SceneMgr = nullptr;
 
-	EditorSelection m_Selection;
+	EditorSceneState m_State;
 	std::function<void()> m_OnSceneChanged;
 	std::function<void()> m_OnTransformChanged;
+	std::function<void(rt2::core::SyncImpact)> m_OnMutation;
 	std::function<SceneManager::EntityId(const std::string&)> m_OnLoadMeshFile;
 	std::function<SceneManager::EntityId(const std::string&)> m_OnImportGltf;
 	std::function<std::filesystem::path()> m_DialogInitialDirectory;
@@ -127,6 +136,8 @@ private:
 	TransformPivot m_TransformPivot = TransformPivot::Primary;
 	TransformSnapSettings m_TransformSnap;
 	std::string m_TransformEditError;
+	std::string m_MutationError;
+	char m_SearchBuffer[128]{};
 };
 
 #endif // SCENE_EDITOR_UI_H

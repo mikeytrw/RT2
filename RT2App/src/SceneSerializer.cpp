@@ -3,6 +3,8 @@
 #include "PrimitiveGeometry.h"
 #include "SceneTypes.h"
 #include "RTLog.h"
+#include "SceneHierarchy.h"
+#include "PersistedComponents.h"
 
 #include "json.hpp"
 
@@ -24,6 +26,9 @@
 using json = nlohmann::json;
 
 namespace rt2::core {
+
+static_assert(PersistedComponents::Count == 10,
+              "Update EntityRecord serialization when authored component coverage changes");
 
 // ============================================================================
 // Helpers
@@ -750,11 +755,10 @@ bool BuildDocumentFromRecords(SceneDocument& doc,
         auto& childHier  = doc.ecs.registry.emplace<Hierarchy>(child);
         childHier.parent = parent;
 
-        auto* parentHier = doc.ecs.registry.try_get<Hierarchy>(parent);
-        if (!parentHier)
-            parentHier = &doc.ecs.registry.emplace<Hierarchy>(parent);
-        parentHier->children.push_back(child);
     }
+
+    if (!SceneHierarchy::RebuildChildren(doc.ecs.registry, err))
+        return false;
 
     // --- Materials ---
     doc.ecs.materials = materials;

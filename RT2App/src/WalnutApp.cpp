@@ -160,6 +160,35 @@ public:
 		m_EditorUI.SetOnTransformChanged([this]() {
 			SyncAuthoringTransforms();
 		});
+		m_EditorUI.SetOnMutation([this](rt2::core::SyncImpact impact) {
+			if (impact == rt2::core::SyncImpact::None)
+				return;
+			if (impact == rt2::core::SyncImpact::Transform)
+			{
+				SyncAuthoringTransforms();
+				return;
+			}
+			if (m_RendererGPU.IsAvailable())
+			{
+				if (impact == rt2::core::SyncImpact::Structural)
+				{
+					m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData,
+						const RenderInstanceMap& instanceMap) {
+						m_RendererGPU.SetScene(gpuData, instanceMap);
+					});
+					m_SceneMgr.SyncToGPU();
+				}
+				else if (!m_RendererGPU.IsTextureUploadPending())
+				{
+					m_SceneMgr.SetSyncKeepTexturesCallback([this](GPUSceneData& gpuData,
+						const RenderInstanceMap& instanceMap) {
+						m_RendererGPU.SetSceneKeepTextures(gpuData, instanceMap);
+					});
+					m_SceneMgr.SyncToGPUKeepTextures();
+				}
+			}
+			m_RendererGPU.ResetAccumulation();
+		});
 		m_EditorUI.SetOnLoadMeshFile([this](const std::string& path) -> SceneManager::EntityId {
 			return LoadMeshFileAsEntity(path);
 		});
@@ -623,7 +652,8 @@ public:
 		const TransformGizmoResult gizmo = m_TransformGizmo.Draw(
 			m_SceneMgr, m_EditorUI.Selection(), m_Cam,
 			{ imageMin.x, imageMin.y }, { imageSize.x, imageSize.y }, imageHovered,
-			m_Runtime.GetState() == rt2::core::SceneRunState::Edit,
+			m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
+				!m_EditorUI.SelectionHasDirectLock(),
 			m_EditorUI.GetTransformSpace(), m_EditorUI.GetTransformPivot(),
 			m_EditorUI.GetTransformSnapSettings());
 		if (gizmo.changed)
@@ -769,6 +799,7 @@ public:
 					// Commit the already validated document without clearing it.
 					m_SceneMgr.ReplaceAuthoringDocument(
 						std::move(restored), std::max<uint64_t>(1, r.revision));
+					m_EditorUI.ResetForDocument();
 					m_Recovery->ResetSchedule();
 					m_LastStatusMsg = "Restored recovery";
 					// Upload to GPU
@@ -1583,6 +1614,7 @@ public:
 	void NewSceneInternal()
 	{
 		m_SceneMgr.Clear();
+		m_EditorUI.ResetForDocument();
 		m_SceneMgr.ClearDirty();
 		m_Recovery->ResetSchedule();
 		// New untitled doc gets a fresh recovery id for this session.
@@ -1663,6 +1695,7 @@ public:
 
 		// Adopt the resolved document without an intermediate cleared live state.
 		m_SceneMgr.ReplaceAuthoringDocument(std::move(tempDoc));
+		m_EditorUI.ResetForDocument();
 		m_SceneMgr.ClearDirty();
 		m_Recovery->ResetSchedule();
 		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();

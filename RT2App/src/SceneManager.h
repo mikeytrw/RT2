@@ -10,11 +10,13 @@
 #include "core/UUID.h"
 #include "core/Error.h"
 #include "TransformEditing.h"
+#include "SceneMutation.h"
 #include <string>
 #include <vector>
 #include <functional>
 #include <cstdint>
 #include <utility>
+#include <optional>
 
 // ============================================================================
 // SceneManager — owns all scene state + provides entity manipulation APIs.
@@ -128,6 +130,27 @@
 	// Remove an entity and its children. Safe to call with invalid EntityId.
 	void RemoveEntity(EntityId entity);
 
+	// UUID-keyed atomic authoring operations. Each operation performs all
+	// validation before mutation, bumps the authoring revision at most once,
+	// and reports the single renderer sync class required by the caller.
+	EditorMutationResult CreateEmpty(
+		const std::string& name = "Empty",
+		const std::optional<rt2::core::UUID>& parent = std::nullopt);
+	EditorMutationResult Reparent(
+		const std::vector<rt2::core::UUID>& entities,
+		const std::optional<rt2::core::UUID>& newParent,
+		ReparentMode mode = ReparentMode::PreserveWorld);
+	EditorMutationResult RemoveSubtrees(
+		const std::vector<rt2::core::UUID>& roots);
+	EditorMutationResult SetVisibility(
+		const std::vector<rt2::core::UUID>& entities, bool visible);
+	EditorMutationResult DuplicateSubtrees(
+		const std::vector<rt2::core::UUID>& roots);
+	EditorMutationResult PasteSubtreesFrom(
+		const rt2::core::SceneDocument& snapshot,
+		const std::vector<rt2::core::UUID>& roots,
+		const std::optional<rt2::core::UUID>& parent = std::nullopt);
+
 	// Update an entity's local transform (marks it dirty for SceneGraph).
 	void SetTransform(EntityId entity,
 	                  const glm::vec3& position,
@@ -219,6 +242,8 @@
 	// NotifyAuthoringChanged(). Used by the recovery/autosave service to
 	// skip rewriting an identical snapshot. Not serialized into .rt2scene.
 	uint64_t AuthoringRevision() const { return m_AuthoringRevision; }
+	uint64_t DocumentGeneration() const { return m_DocumentGeneration; }
+	uint64_t ResourceGeneration() const { return m_ResourceGeneration; }
 
 	// Centralized authoring-change notification. All editor mutations
 	// (Add/Remove/SetTransform/SetMaterial/SetMaterialProperties) call
@@ -277,6 +302,8 @@ private:
 	// Authoring revision counter (not serialized). Bumped by
 	// NotifyAuthoringChanged(). See AuthoringRevision().
 	uint64_t m_AuthoringRevision = 0;
+	uint64_t m_DocumentGeneration = 1;
+	uint64_t m_ResourceGeneration = 1;
 };
 
 #endif // SCENE_MANAGER_H

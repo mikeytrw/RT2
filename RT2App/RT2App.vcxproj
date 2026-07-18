@@ -211,6 +211,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\ComposePass.h" />
     <ClInclude Include="src\ECSComponents.h" />
     <ClInclude Include="src\ECSScene.h" />
+    <ClInclude Include="src\EditorSceneState.h" />
     <ClInclude Include="src\EditorSelection.h" />
     <ClInclude Include="src\EditorSettings.h" />
     <ClInclude Include="src\EditorTransformGizmo.h" />
@@ -230,6 +231,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\MeshRegistry.h" />
     <ClInclude Include="src\NRDIntegration.h" />
     <ClInclude Include="src\PathTracePass.h" />
+    <ClInclude Include="src\PersistedComponents.h" />
     <ClInclude Include="src\Phase1AFixtureGenerator.h" />
     <ClInclude Include="src\PrimitiveGeometry.h" />
     <ClInclude Include="src\RTLog.h" />
@@ -246,13 +248,16 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\SceneDocument.h" />
     <ClInclude Include="src\SceneEditorUI.h" />
     <ClInclude Include="src\SceneGraph.h" />
+    <ClInclude Include="src\SceneHierarchy.h" />
     <ClInclude Include="src\SceneLoader.h" />
     <ClInclude Include="src\SceneManager.h" />
+    <ClInclude Include="src\SceneMutation.h" />
     <ClInclude Include="src\SceneRecoveryService.h" />
     <ClInclude Include="src\SceneRenderBridge.h" />
     <ClInclude Include="src\SceneResources.h" />
     <ClInclude Include="src\SceneSerializer.h" />
     <ClInclude Include="src\SceneTypes.h" />
+    <ClInclude Include="src\SceneVisibility.h" />
     <ClInclude Include="src\ShaderManager.h" />
     <ClInclude Include="src\StagingArena.h" />
     <ClInclude Include="src\TonemapPass.h" />
@@ -308,6 +313,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\ComposePass.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\EditorSceneState.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -452,6 +462,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\SceneHierarchy.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\SceneLoader.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -478,6 +493,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\SceneSerializer.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\SceneVisibility.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

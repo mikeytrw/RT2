@@ -1119,6 +1119,50 @@ Verification:
   through its horizontal gizmo handle selected neighboring `Knight_W2`; a
   deliberate drag of the same handle changed the selected transform.
 
-Phase 2 is not complete. The next vertical slice is Phase 2C: hierarchy
-creation, duplication, reparenting, visibility/lock, and outliner search.
-Phase 2D then adds framing and camera bookmarks. Undo/redo remains Phase 3.
+### Phase 2C - hierarchy authoring and outliner workflow (implemented)
+
+The third Phase 2 slice completes the hierarchy-building workflow without
+introducing the Phase 3 command stack:
+
+- `Hierarchy::parent` is the authoritative relationship. `children` is an
+  eagerly maintained traversal cache, reconstructed and validated at load and
+  document-adoption boundaries. Scene-graph recursion no longer scans the
+  registry once per node.
+- UUID-keyed create, reparent, batch-delete, visibility, duplicate, and paste
+  operations use validate/calculate/commit semantics. They bump the authoring
+  revision once and return one `SyncImpact`; a failed operation leaves the
+  scene unchanged. Reparent defaults to preserve-world and rejects cycles,
+  singular transforms, and shear.
+- Batch deletion canonicalizes selected roots, collects complete post-order
+  subtrees before destroying anything, detaches only roots from surviving
+  parents, compacts resources once, and repairs transient mesh, material,
+  material-override, and texture indices.
+- Effective visibility is inherited through parent links. Full scene builds
+  and transform-only instance updates share one visible-renderable enumerator,
+  preserving the GPU-instance-to-UUID mapping and excluding hidden emissive
+  geometry from light extraction.
+- Subtree duplication uses a canonical authored-component registry, generates
+  fresh UUIDs in two passes, remaps internal hierarchy links, and shares the
+  same-document mesh resources. Clipboard copy holds an immutable in-memory
+  scene snapshot, is document-scoped, and invalidates when resource generations
+  change.
+- Editor locks are direct-only editor state: directly locked entities reject
+  inspector, gizmo, delete, visibility, and reparent edits; an unlocked ancestor
+  may still carry or delete locked descendants. Copy/duplicate of locked sources
+  is allowed and new copies are unlocked.
+- The Outliner now supports create-empty/create-child, case-insensitive search,
+  visibility and lock state, copy/paste/duplicate/delete shortcuts (suppressed
+  while text input owns the keyboard), context actions, and preserve-world
+  drag/drop reparenting. Structural operations use the full renderer sync path.
+
+Verification:
+
+- Release x64 full solution builds.
+- RT2Tests: 307/307 test cases pass, including 10 focused Phase 2C cases for
+  hierarchy rebuilding/cycles, inherited visibility and instance-map ordering,
+  atomic reparent/delete, duplication, locks, and immutable clipboard behavior.
+- The vertical-slice and recovery regression scripts pass.
+
+Phase 2 is not complete. The next vertical slice is Phase 2D: frame/focus
+selected, camera bookmarks, and editor-view alignment. Undo/redo remains
+Phase 3 and is deliberately not embedded in the Phase 2C mutation APIs.

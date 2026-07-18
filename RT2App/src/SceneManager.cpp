@@ -1,6 +1,8 @@
 #include "SceneManager.h"
 #include "SceneLoader.h"
 #include "SceneGraph.h"
+#include "SceneHierarchy.h"
+#include "PersistedComponents.h"
 #include "RTLog.h"
 #include "stb_image.h"
 #include <tinyexr.h>
@@ -12,6 +14,78 @@
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
+#include <algorithm>
+
+namespace
+{
+std::vector<entt::entity> ResolveCanonicalRoots(
+	const rt2::core::SceneDocument& document,
+	const std::vector<rt2::core::UUID>& uuids,
+	rt2::core::Error& error)
+{
+	std::vector<entt::entity> resolved;
+	std::unordered_set<entt::entity> unique;
+	for (const auto& uuid : uuids)
+	{
+		const auto entity = document.FindByUuid(uuid);
+		if (entity == entt::null || !document.ecs.registry.valid(entity))
+		{
+			error.code = rt2::core::Error::InvalidEntity;
+			error.path = uuid.ToString();
+			error.detail = "entity UUID is not present in the authoring scene";
+			return {};
+		}
+		if (unique.insert(entity).second)
+			resolved.push_back(entity);
+	}
+
+	std::vector<entt::entity> canonical;
+	for (const auto candidate : resolved)
+	{
+		bool covered = false;
+		for (const auto possibleAncestor : resolved)
+			if (candidate != possibleAncestor &&
+				SceneHierarchy::IsDescendant(document.ecs.registry,
+				                             possibleAncestor, candidate))
+			{
+				covered = true;
+				break;
+			}
+		if (!covered)
+			canonical.push_back(candidate);
+	}
+	return canonical;
+}
+
+void RemoveChild(entt::registry& registry, entt::entity parent, entt::entity child)
+{
+	if (parent == entt::null)
+		return;
+	if (auto* hierarchy = registry.try_get<Hierarchy>(parent))
+		hierarchy->children.erase(
+			std::remove(hierarchy->children.begin(), hierarchy->children.end(), child),
+			hierarchy->children.end());
+}
+
+void CopyAuthoredComponents(const entt::registry& sourceRegistry,
+	                       entt::entity source,
+	                       entt::registry& destinationRegistry,
+	                       entt::entity destination)
+{
+	PersistedComponents::ForEach([&](auto tag)
+	{
+		using Component = typename decltype(tag)::Type;
+		if (const auto* component = sourceRegistry.try_get<Component>(source))
+			destinationRegistry.emplace<Component>(destination, *component);
+	});
+	if (auto* transform = destinationRegistry.try_get<Transform>(destination))
+	{
+		transform->worldMatrix = glm::mat4(1.0f);
+		transform->prevWorldMatrix = glm::mat4(1.0f);
+		transform->dirty = true;
+	}
+}
+}
 
 SceneManager::SceneManager()
 	: m_EcsScene(m_Authoring.ecs)
@@ -48,10 +122,16 @@ void SceneManager::ReplaceAuthoringDocument(rt2::core::SceneDocument&& document,
 	document.SetUuidProvider(m_UuidProvider);
 	m_Authoring = std::move(document);
 	m_Authoring.SetUuidProvider(m_UuidProvider);
+	rt2::core::Error hierarchyError;
+	if (!SceneHierarchy::RebuildChildren(m_EcsScene.registry, hierarchyError))
+		printf("[Scene] Adopted document hierarchy is invalid: %s\n",
+		       hierarchyError.Format().c_str());
 
 	m_EntityCache.clear();
 	m_EntityCacheDirty = true;
 	m_AuthoringRevision = authoringRevision;
+	++m_DocumentGeneration;
+	++m_ResourceGeneration;
 }
 
 bool SceneManager::LoadScene(const std::string& filepath)
@@ -165,6 +245,14 @@ bool SceneManager::LoadScene(const std::string& filepath)
 		}
 	}
 
+	rt2::core::Error hierarchyError;
+	if (!SceneHierarchy::RebuildChildren(m_EcsScene.registry, hierarchyError))
+	{
+		printf("[Scene] Hierarchy validation failed after load: %s\n",
+		       hierarchyError.Format().c_str());
+		return false;
+	}
+
 	rt2::core::Error uuidErr;
 	if (!m_Authoring.ValidateUniqueUuids(uuidErr))
 	{
@@ -177,6 +265,8 @@ bool SceneManager::LoadScene(const std::string& filepath)
 	       (int)m_EcsScene.lights.size(), (int)m_EcsScene.textures.size());
 
 	m_EntityCacheDirty = true;
+	++m_DocumentGeneration;
+	++m_ResourceGeneration;
 	return true;
 }
 
@@ -432,6 +522,12 @@ void SceneManager::RemoveEntity(EntityId entity)
 
 	auto& reg = m_EcsScene.registry;
 	if (!reg.valid(entity.id)) return;
+	const auto stableId = GetEntityUuid(entity);
+	if (!stableId.IsNull())
+	{
+		RemoveSubtrees({ stableId });
+		return;
+	}
 
 	// Remove from UUID index before destruction.
 	if (auto* idc = reg.try_get<EntityIdComponent>(entity.id))
@@ -461,6 +557,364 @@ void SceneManager::RemoveEntity(EntityId entity)
 	reg.destroy(entity.id);
 	NotifyAuthoringChanged();
 	m_EntityCacheDirty = true;
+}
+
+EditorMutationResult SceneManager::CreateEmpty(
+	const std::string& name,
+	const std::optional<rt2::core::UUID>& parentUuid)
+{
+	auto& registry = m_EcsScene.registry;
+	entt::entity parent = entt::null;
+	if (parentUuid)
+	{
+		parent = m_Authoring.FindByUuid(*parentUuid);
+		if (parent == entt::null || !registry.valid(parent))
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				parentUuid->ToString(), "parent UUID is not present in the authoring scene");
+	}
+	const auto entity = registry.create();
+	registry.emplace<Transform>(entity);
+	registry.emplace<NameComponent>(entity, name.empty() ? "Empty" : name);
+	registry.emplace<VisibleComponent>(entity);
+	if (parent != entt::null)
+	{
+		registry.emplace<Hierarchy>(entity).parent = parent;
+		auto* hierarchy = registry.try_get<Hierarchy>(parent);
+		if (!hierarchy)
+			hierarchy = &registry.emplace<Hierarchy>(parent);
+		hierarchy->children.push_back(entity);
+	}
+	const auto uuid = m_Authoring.AssignNewUuid(entity);
+	SceneGraph::MarkDirty(registry, entity);
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	EditorMutationResult result;
+	result.affectedEntities.push_back(uuid);
+	return result;
+}
+
+EditorMutationResult SceneManager::Reparent(
+	const std::vector<rt2::core::UUID>& entityUuids,
+	const std::optional<rt2::core::UUID>& newParentUuid,
+	ReparentMode mode)
+{
+	if (entityUuids.empty()) return {};
+	auto& registry = m_EcsScene.registry;
+	rt2::core::Error error;
+	auto roots = ResolveCanonicalRoots(m_Authoring, entityUuids, error);
+	if (!error.IsOk())
+	{
+		EditorMutationResult result;
+		result.success = false;
+		result.error = error;
+		return result;
+	}
+	entt::entity newParent = entt::null;
+	if (newParentUuid)
+	{
+		newParent = m_Authoring.FindByUuid(*newParentUuid);
+		if (newParent == entt::null || !registry.valid(newParent))
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				newParentUuid->ToString(), "new parent UUID is not present in the authoring scene");
+	}
+	std::vector<entt::entity> changed;
+	for (const auto root : roots)
+	{
+		if (newParent != entt::null && SceneHierarchy::IsDescendant(registry, root, newParent))
+			return EditorMutationResult::Failure(rt2::core::Error::HierarchyCycle,
+				GetEntityUuid({ root }).ToString(),
+				"cannot parent an entity beneath itself or a descendant");
+		const auto* hierarchy = registry.try_get<Hierarchy>(root);
+		if ((hierarchy ? hierarchy->parent : entt::null) != newParent)
+			changed.push_back(root);
+	}
+	if (changed.empty()) return {};
+
+	UpdateWorldTransforms();
+	std::vector<std::pair<entt::entity, EditableTRS>> newLocals;
+	if (mode == ReparentMode::PreserveWorld)
+	{
+		glm::mat4 parentWorld(1.0f);
+		if (newParent != entt::null)
+		{
+			const auto* parentTransform = registry.try_get<Transform>(newParent);
+			if (!parentTransform)
+				return EditorMutationResult::Failure(rt2::core::Error::InvalidTransform,
+					newParentUuid->ToString(), "new parent has no transform");
+			parentWorld = parentTransform->worldMatrix;
+		}
+		for (const auto root : changed)
+		{
+			const auto* transform = registry.try_get<Transform>(root);
+			if (!transform)
+				return EditorMutationResult::Failure(rt2::core::Error::InvalidTransform,
+					GetEntityUuid({ root }).ToString(), "reparented entity has no transform");
+			EditableTRS local;
+			if (!TryWorldToLocalTRS(parentWorld, transform->worldMatrix, local))
+				return EditorMutationResult::Failure(rt2::core::Error::InvalidTransform,
+					GetEntityUuid({ root }).ToString(),
+					"preserve-world reparent produced a singular or sheared transform");
+			newLocals.emplace_back(root, local);
+		}
+	}
+
+	for (const auto root : changed)
+	{
+		auto* hierarchy = registry.try_get<Hierarchy>(root);
+		RemoveChild(registry, hierarchy ? hierarchy->parent : entt::null, root);
+		if (!hierarchy)
+			hierarchy = &registry.emplace<Hierarchy>(root);
+		hierarchy->parent = newParent;
+		if (newParent != entt::null)
+		{
+			auto* parentHierarchy = registry.try_get<Hierarchy>(newParent);
+			if (!parentHierarchy)
+				parentHierarchy = &registry.emplace<Hierarchy>(newParent);
+			parentHierarchy->children.push_back(root);
+		}
+	}
+	for (const auto& entry : newLocals)
+	{
+		auto& transform = registry.get<Transform>(entry.first);
+		transform.translation = entry.second.translation;
+		transform.rotation = glm::normalize(entry.second.rotation);
+		transform.scale = entry.second.scale;
+	}
+	for (const auto root : changed)
+		SceneGraph::MarkDirty(registry, root);
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	EditorMutationResult result;
+	result.syncImpact = rt2::core::SyncImpact::Transform;
+	for (const auto root : changed)
+		result.affectedEntities.push_back(GetEntityUuid({ root }));
+	return result;
+}
+
+EditorMutationResult SceneManager::RemoveSubtrees(
+	const std::vector<rt2::core::UUID>& rootUuids)
+{
+	if (rootUuids.empty()) return {};
+	rt2::core::Error error;
+	auto roots = ResolveCanonicalRoots(m_Authoring, rootUuids, error);
+	if (!error.IsOk())
+	{
+		EditorMutationResult result;
+		result.success = false;
+		result.error = error;
+		return result;
+	}
+	auto& registry = m_EcsScene.registry;
+	std::vector<entt::entity> postOrder;
+	bool removesRenderable = false;
+	EditorMutationResult result;
+	for (const auto root : roots)
+	{
+		std::vector<entt::entity> subtree;
+		SceneHierarchy::CollectSubtreePostOrder(registry, root, subtree);
+		for (const auto entity : subtree)
+		{
+			postOrder.push_back(entity);
+			removesRenderable = removesRenderable || registry.all_of<MeshRef>(entity);
+			if (const auto* identity = registry.try_get<EntityIdComponent>(entity))
+				result.affectedEntities.push_back(identity->id);
+		}
+		if (const auto* hierarchy = registry.try_get<Hierarchy>(root))
+			RemoveChild(registry, hierarchy->parent, root);
+	}
+	for (const auto entity : postOrder)
+	{
+		if (const auto* identity = registry.try_get<EntityIdComponent>(entity))
+			m_Authoring.uuidIndex.Erase(identity->id);
+		registry.destroy(entity);
+	}
+	const bool compacted = CompactMeshRegistry();
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	result.syncImpact = (removesRenderable || compacted)
+		? rt2::core::SyncImpact::Structural : rt2::core::SyncImpact::None;
+	return result;
+}
+
+EditorMutationResult SceneManager::SetVisibility(
+	const std::vector<rt2::core::UUID>& entityUuids, bool visible)
+{
+	if (entityUuids.empty()) return {};
+	auto& registry = m_EcsScene.registry;
+	std::vector<entt::entity> entities;
+	std::unordered_set<entt::entity> unique;
+	for (const auto& uuid : entityUuids)
+	{
+		const auto entity = m_Authoring.FindByUuid(uuid);
+		if (entity == entt::null || !registry.valid(entity))
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				uuid.ToString(), "entity UUID is not present in the authoring scene");
+		if (unique.insert(entity).second)
+			entities.push_back(entity);
+	}
+	EditorMutationResult result;
+	for (const auto entity : entities)
+	{
+		auto* component = registry.try_get<VisibleComponent>(entity);
+		const bool current = component ? component->visible : true;
+		if (current == visible) continue;
+		if (!component)
+			component = &registry.emplace<VisibleComponent>(entity);
+		component->visible = visible;
+		result.affectedEntities.push_back(GetEntityUuid({ entity }));
+	}
+	if (result.affectedEntities.empty()) return result;
+	NotifyAuthoringChanged();
+	result.syncImpact = rt2::core::SyncImpact::Structural;
+	return result;
+}
+
+EditorMutationResult SceneManager::DuplicateSubtrees(
+	const std::vector<rt2::core::UUID>& rootUuids)
+{
+	if (rootUuids.empty()) return {};
+	rt2::core::Error error;
+	auto roots = ResolveCanonicalRoots(m_Authoring, rootUuids, error);
+	if (!error.IsOk())
+	{
+		EditorMutationResult result;
+		result.success = false;
+		result.error = error;
+		return result;
+	}
+	auto& registry = m_EcsScene.registry;
+	std::vector<entt::entity> sources;
+	for (const auto root : roots)
+		SceneHierarchy::CollectSubtreePreOrder(registry, root, sources);
+
+	std::unordered_map<entt::entity, entt::entity> remap;
+	bool duplicatesRenderable = false;
+	for (const auto source : sources)
+	{
+		const auto duplicate = registry.create();
+		remap.emplace(source, duplicate);
+		CopyAuthoredComponents(registry, source, registry, duplicate);
+		m_Authoring.AssignNewUuid(duplicate);
+		duplicatesRenderable = duplicatesRenderable || registry.all_of<MeshRef>(duplicate);
+	}
+	for (const auto source : sources)
+	{
+		const auto duplicate = remap.at(source);
+		const auto* sourceHierarchy = registry.try_get<Hierarchy>(source);
+		if (!sourceHierarchy || sourceHierarchy->parent == entt::null)
+			continue;
+		const auto mappedParent = remap.find(sourceHierarchy->parent);
+		const auto duplicateParent = mappedParent != remap.end()
+			? mappedParent->second : sourceHierarchy->parent;
+		registry.emplace<Hierarchy>(duplicate).parent = duplicateParent;
+		auto* parentHierarchy = registry.try_get<Hierarchy>(duplicateParent);
+		if (!parentHierarchy)
+			parentHierarchy = &registry.emplace<Hierarchy>(duplicateParent);
+		parentHierarchy->children.push_back(duplicate);
+	}
+
+	EditorMutationResult result;
+	for (const auto root : roots)
+	{
+		const auto duplicate = remap.at(root);
+		if (auto* name = registry.try_get<NameComponent>(duplicate))
+			name->name += " Copy";
+		result.affectedEntities.push_back(GetEntityUuid({ duplicate }));
+		SceneGraph::MarkDirty(registry, duplicate);
+	}
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	result.syncImpact = duplicatesRenderable
+		? rt2::core::SyncImpact::Structural : rt2::core::SyncImpact::None;
+	return result;
+}
+
+EditorMutationResult SceneManager::PasteSubtreesFrom(
+	const rt2::core::SceneDocument& snapshot,
+	const std::vector<rt2::core::UUID>& rootUuids,
+	const std::optional<rt2::core::UUID>& parentUuid)
+{
+	if (rootUuids.empty()) return {};
+	rt2::core::Error error;
+	auto roots = ResolveCanonicalRoots(snapshot, rootUuids, error);
+	if (!error.IsOk())
+	{
+		EditorMutationResult result;
+		result.success = false;
+		result.error = error;
+		return result;
+	}
+	auto& destination = m_EcsScene.registry;
+	entt::entity destinationParent = entt::null;
+	if (parentUuid)
+	{
+		destinationParent = m_Authoring.FindByUuid(*parentUuid);
+		if (destinationParent == entt::null || !destination.valid(destinationParent))
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				parentUuid->ToString(), "paste parent is not present in the authoring scene");
+	}
+
+	std::vector<entt::entity> sources;
+	for (const auto root : roots)
+		SceneHierarchy::CollectSubtreePreOrder(snapshot.ecs.registry, root, sources);
+	for (const auto source : sources)
+	{
+		if (const auto* mesh = snapshot.ecs.registry.try_get<MeshRef>(source))
+		{
+			if (mesh->meshIndex >= m_EcsScene.meshRegistry.GetCount())
+				return EditorMutationResult::Failure(rt2::core::Error::ClipboardStale,
+					GetEntityUuid({ destinationParent }).ToString(),
+					"clipboard mesh resources no longer match this document");
+			if (mesh->materialIndex >= static_cast<int>(m_EcsScene.materials.size()))
+				return EditorMutationResult::Failure(rt2::core::Error::ClipboardStale,
+					{}, "clipboard material resources no longer match this document");
+		}
+	}
+
+	std::unordered_map<entt::entity, entt::entity> remap;
+	bool pastesRenderable = false;
+	for (const auto source : sources)
+	{
+		const auto pasted = destination.create();
+		remap.emplace(source, pasted);
+		CopyAuthoredComponents(snapshot.ecs.registry, source, destination, pasted);
+		m_Authoring.AssignNewUuid(pasted);
+		pastesRenderable = pastesRenderable || destination.all_of<MeshRef>(pasted);
+	}
+	for (const auto source : sources)
+	{
+		const auto pasted = remap.at(source);
+		const auto* sourceHierarchy = snapshot.ecs.registry.try_get<Hierarchy>(source);
+		entt::entity pastedParent = destinationParent;
+		if (sourceHierarchy)
+		{
+			const auto mappedParent = remap.find(sourceHierarchy->parent);
+			if (mappedParent != remap.end())
+				pastedParent = mappedParent->second;
+		}
+		if (pastedParent == entt::null)
+			continue;
+		destination.emplace<Hierarchy>(pasted).parent = pastedParent;
+		auto* parentHierarchy = destination.try_get<Hierarchy>(pastedParent);
+		if (!parentHierarchy)
+			parentHierarchy = &destination.emplace<Hierarchy>(pastedParent);
+		parentHierarchy->children.push_back(pasted);
+	}
+
+	EditorMutationResult result;
+	for (const auto root : roots)
+	{
+		const auto pasted = remap.at(root);
+		if (auto* name = destination.try_get<NameComponent>(pasted))
+			name->name += " Copy";
+		result.affectedEntities.push_back(GetEntityUuid({ pasted }));
+		SceneGraph::MarkDirty(destination, pasted);
+	}
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	result.syncImpact = pastesRenderable
+		? rt2::core::SyncImpact::Structural : rt2::core::SyncImpact::None;
+	return result;
 }
 
 void SceneManager::SetTransform(EntityId entity,
@@ -916,6 +1370,8 @@ void SceneManager::Clear()
 {
 	m_Authoring.Clear();
 	m_EntityCacheDirty = true;
+	++m_DocumentGeneration;
+	++m_ResourceGeneration;
 }
 
 bool SceneManager::CompactMeshRegistry()
@@ -1046,6 +1502,16 @@ bool SceneManager::CompactMeshRegistry()
 			}
 		}
 
+		// The durable override value survives compaction, but its transient
+		// material slot must follow the same remap as MeshRef.
+		auto overrideView = reg.view<MaterialOverrideComponent>();
+		for (const auto entity : overrideView)
+		{
+			auto& materialOverride = overrideView.get<MaterialOverrideComponent>(entity);
+			const auto it = matRemap.find(materialOverride.materialIndex);
+			materialOverride.materialIndex = it != matRemap.end() ? it->second : -1;
+		}
+
 		printf("[Scene] Compacted materials: %zu -> %zu\n",
 		       m_EcsScene.materials.size() + matRemap.size(), matRemap.size());
 	}
@@ -1102,13 +1568,25 @@ bool SceneManager::CompactMeshRegistry()
 			remapTex(mat.emissiveTextureIndex);
 			remapTex(mat.metallicRoughnessTextureIndex);
 		}
+		auto overrideView = reg.view<MaterialOverrideComponent>();
+		for (const auto entity : overrideView)
+		{
+			auto& mat = overrideView.get<MaterialOverrideComponent>(entity).material;
+			remapTex(mat.baseColorTextureIndex);
+			remapTex(mat.normalTextureIndex);
+			remapTex(mat.emissiveTextureIndex);
+			remapTex(mat.metallicRoughnessTextureIndex);
+		}
 
 		printf("[Scene] Compacted textures: %zu -> %zu\n",
 		       texRemap.size() + (m_EcsScene.textures.size() - texRemap.size()),
 		       m_EcsScene.textures.size());
 	}
 
-	return meshesChanged || matsChanged || texsChanged;
+	const bool changed = meshesChanged || matsChanged || texsChanged;
+	if (changed)
+		++m_ResourceGeneration;
+	return changed;
 }
 
 // ============================================================================

@@ -631,6 +631,42 @@ state. A live UUID lookup is still required before adopting the result, because
 an entity may have been deleted while the GPU query was in flight. A miss
 clears selection.
 
+## Hierarchy mutation and visibility contract
+
+`Hierarchy::parent` is persisted and authoritative. `Hierarchy::children` is
+an eager traversal cache only. `SceneHierarchy::RebuildChildren` clears and
+reconstructs that cache after load/adoption; `SceneHierarchy::Validate` rejects
+missing parents, self-parenting, cycles, duplicate cache entries, and any cache
+entry that disagrees with the child's parent. Runtime traversal, dirtiness
+propagation, subtree collection, and Outliner expansion consume the cache.
+
+Editor hierarchy mutations are UUID-keyed and atomic. `CreateEmpty`, `Reparent`,
+`RemoveSubtrees`, `SetVisibility`, `DuplicateSubtrees`, and `PasteSubtreesFrom`
+return `EditorMutationResult`, containing a diagnostic, affected UUIDs, and the
+single renderer `SyncImpact`. Callers must perform that sync once after success;
+they must not infer a second sync from the affected UUID list.
+
+Reparent defaults to preserve-world. All sources are resolved and reduced to
+topmost selected roots before cycle and transform validation. Local transforms
+are calculated before relationship changes; if any conversion is singular or
+contains shear, nothing is committed. Selecting both an ancestor and descendant
+therefore never moves or deletes the descendant twice.
+
+Visibility is effective through the ancestor chain: an entity renders only if
+its own `VisibleComponent` and every parent's component are visible. Both
+`BuildGPUSceneDataFromECS` and `UpdateInstancesFromECS` use
+`SceneVisibility::CollectVisibleRenderables`; this is the required ordering
+boundary for `gpu.instances[i]` and `RenderInstanceMap[i]`. Hidden mesh emitters
+are absent from emissive-triangle light extraction as a consequence.
+
+Locks, selection, search text, and clipboard are editor-only state. Locks are
+direct-only: an operation targeting a locked entity is rejected, while moving
+or deleting an unlocked ancestor may include locked descendants. Clipboard
+copy deep-clones the document in memory, records selected root UUIDs and
+document/resource generations, and paste creates fresh UUIDs. New/open/recovery
+document adoption clears this state; resource compaction makes an older
+clipboard stale rather than risking transient-index corruption.
+
 ## Editor transform contract
 
 `EditableTRS` is the editor-facing affine transform type. Its decomposition is

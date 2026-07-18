@@ -1,5 +1,6 @@
 #include "GPUSceneData.h"
 #include "SceneGraph.h"
+#include "SceneVisibility.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -248,12 +249,12 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene,
 
     // Build instance list: one GPUInstance per entity with MeshRef
     // World matrices come from Transform (already resolved by SceneGraph)
-    auto meshView = ecsScene.registry.view<MeshRef, Transform>();
+    const auto renderables = SceneVisibility::CollectVisibleRenderables(ecsScene);
 
-    for (auto entity : meshView)
+    for (auto entity : renderables)
     {
-        const auto& ref = meshView.get<MeshRef>(entity);
-        const auto& tf = meshView.get<Transform>(entity);
+        const auto& ref = ecsScene.registry.get<MeshRef>(entity);
+        const auto& tf = ecsScene.registry.get<Transform>(entity);
 
         GPUInstance inst;
         inst.meshIndex = ref.meshIndex;
@@ -403,7 +404,7 @@ void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene,
                             RenderInstanceMap* instanceMap)
 {
     // Update instance world matrices from ECS transforms
-    auto meshView = ecsScene.registry.view<MeshRef, Transform>();
+    const auto renderables = SceneVisibility::CollectVisibleRenderables(ecsScene);
 
     // The instance order must match BuildGPUSceneDataFromECS exactly
     // (entt view iteration order is deterministic for the same registry state).
@@ -411,10 +412,10 @@ void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene,
 	if (instanceMap)
 		instanceMap->clear();
 
-    for (auto entity : meshView)
+    for (auto entity : renderables)
     {
-        const auto& ref = meshView.get<MeshRef>(entity);
-        const auto& tf = meshView.get<Transform>(entity);
+        const auto& ref = ecsScene.registry.get<MeshRef>(entity);
+        const auto& tf = ecsScene.registry.get<Transform>(entity);
 
         GPUInstance inst;
         inst.meshIndex = ref.meshIndex;

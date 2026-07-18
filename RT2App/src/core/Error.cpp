@@ -14,6 +14,12 @@ const char* Error::CodeName(Code c)
         case MissingParent:        return "missing_parent";
         case UnknownPrimitive:     return "unknown_primitive";
         case MissingAsset:         return "missing_asset";
+        case InvalidEntity:        return "invalid_entity";
+        case InvalidHierarchy:     return "invalid_hierarchy";
+        case HierarchyCycle:       return "hierarchy_cycle";
+        case InvalidTransform:     return "invalid_transform";
+        case LockedEntity:         return "locked_entity";
+        case ClipboardStale:       return "clipboard_stale";
         case InvalidRuntimeState:  return "invalid_runtime_state";
     }
     return "unknown";
