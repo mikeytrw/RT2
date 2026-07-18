@@ -1085,8 +1085,40 @@ Verification:
 - Live Release-layout test: cube click selected Cube in Outliner/Inspector,
   sphere click switched both to Sphere, and a background click cleared both.
 
-Phase 2 is not complete. The next vertical slice is Phase 2B: transform
-gizmos plus the tested local/world transform conversion and snapping
-subsystem. Phase 2C then adds hierarchy creation, duplication, reparenting,
-visibility/lock/search, and Phase 2D adds framing and camera bookmarks.
-Undo/redo remains Phase 3.
+### Phase 2B — transform editing and gizmos (implemented)
+
+The second Phase 2 slice adds a viewport-first transform workflow while
+preserving the existing renderer synchronization boundary:
+
+- `EditableTRS` provides strict affine decomposition and composition. Singular
+  matrices and results containing shear are rejected instead of silently
+  changing the authored transform.
+- `SceneManager` supports non-uniform local transforms, validated world-space
+  edits through parent transforms, and atomic world edits for a selection. A
+  failed batch leaves every selected entity unchanged.
+- The Inspector exposes numeric local/world position, rotation, and non-uniform
+  scale; primary/median/individual pivot choice; and configurable translation,
+  angle, and scale snapping.
+- The viewport provides move, rotate, and scale handles with W/E/R shortcuts,
+  local/world axes, all pivot modes, snapping, and ordered UUID multi-selection.
+  Continuous manipulation uses the transform-only GPU update path.
+- A four-pixel drag threshold separates manipulation from selection. A plain
+  click on an axis selects the object underneath it, preventing handles from
+  masking small or nearby objects. Ctrl-click toggles viewport selection.
+- Shared-pivot edits apply `D = currentPivot * inverse(startPivot)` and
+  `world[i]' = D * world[i]`. Individual mode builds the corresponding delta
+  around each entity's own pivot and, in local mode, its own orientation.
+
+Verification:
+
+- Release x64 full solution builds.
+- RT2Tests: 297/297 test cases pass; focused Phase 2B coverage passes 11/11
+  cases and 103/103 assertions.
+- The vertical-slice and recovery regression scripts pass.
+- Live Release-layout test: viewport click selected `Bishop_W2`; a click
+  through its horizontal gizmo handle selected neighboring `Knight_W2`; a
+  deliberate drag of the same handle changed the selected transform.
+
+Phase 2 is not complete. The next vertical slice is Phase 2C: hierarchy
+creation, duplication, reparenting, visibility/lock, and outliner search.
+Phase 2D then adds framing and camera bookmarks. Undo/redo remains Phase 3.

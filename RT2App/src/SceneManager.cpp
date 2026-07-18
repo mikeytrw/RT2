@@ -10,6 +10,8 @@
 #include <cstdio>
 #include <set>
 #include <map>
+#include <unordered_map>
+#include <unordered_set>
 
 SceneManager::SceneManager()
 	: m_EcsScene(m_Authoring.ecs)
@@ -466,16 +468,116 @@ void SceneManager::SetTransform(EntityId entity,
                                 const glm::vec3& rotation,
                                 float scale)
 {
+	SetTransform(entity, position, rotation, glm::vec3(scale));
+}
+
+void SceneManager::SetTransform(EntityId entity,
+	const glm::vec3& position, const glm::vec3& rotation, const glm::vec3& scale)
+{
 	if (!entity.IsValid()) return;
 	auto& reg = m_EcsScene.registry;
 	if (auto* tf = reg.try_get<Transform>(entity.id))
 	{
 		tf->translation = position;
 		tf->rotation = glm::quat(glm::radians(rotation));
-		tf->scale = {scale, scale, scale};
+		tf->scale = scale;
 		SceneGraph::SetLocalDirty(reg, entity.id);
 		NotifyAuthoringChanged();
 	}
+}
+
+void SceneManager::SetLocalTransform(EntityId entity, const EditableTRS& transform)
+{
+	if (!entity.IsValid() || !m_EcsScene.registry.valid(entity.id)) return;
+	if (auto* tf = m_EcsScene.registry.try_get<Transform>(entity.id))
+	{
+		tf->translation = transform.translation;
+		tf->rotation = glm::normalize(transform.rotation);
+		tf->scale = transform.scale;
+		SceneGraph::MarkDirty(m_EcsScene.registry, entity.id);
+		NotifyAuthoringChanged();
+	}
+}
+
+bool SceneManager::TrySetWorldTransform(EntityId entity, const glm::mat4& desiredWorld)
+{
+	return TrySetWorldTransforms({ { entity, desiredWorld } });
+}
+
+bool SceneManager::TrySetWorldTransforms(
+	const std::vector<std::pair<EntityId, glm::mat4>>& desiredWorldTransforms)
+{
+	if (desiredWorldTransforms.empty()) return true;
+	UpdateWorldTransforms();
+	auto& registry = m_EcsScene.registry;
+	std::unordered_map<entt::entity, glm::mat4> desiredByEntity;
+	desiredByEntity.reserve(desiredWorldTransforms.size());
+	for (const auto& edit : desiredWorldTransforms)
+	{
+		if (!edit.first.IsValid() || !registry.valid(edit.first.id) ||
+			!registry.all_of<Transform>(edit.first.id) ||
+			!desiredByEntity.emplace(edit.first.id, edit.second).second)
+			return false;
+	}
+	std::unordered_map<entt::entity, glm::mat4> predictedWorldCache;
+	std::unordered_set<entt::entity> resolving;
+	std::function<bool(entt::entity, glm::mat4&)> resolvePredictedWorld;
+	resolvePredictedWorld = [&](entt::entity entity, glm::mat4& outWorld) -> bool
+	{
+		const auto desired = desiredByEntity.find(entity);
+		if (desired != desiredByEntity.end())
+		{
+			outWorld = desired->second;
+			return true;
+		}
+		const auto cached = predictedWorldCache.find(entity);
+		if (cached != predictedWorldCache.end())
+		{
+			outWorld = cached->second;
+			return true;
+		}
+		if (!registry.valid(entity) || !registry.all_of<Transform>(entity) ||
+			!resolving.insert(entity).second)
+			return false;
+		glm::mat4 parentWorld(1.0f);
+		if (const auto* hierarchy = registry.try_get<Hierarchy>(entity);
+			hierarchy && hierarchy->parent != entt::null)
+		{
+			if (!resolvePredictedWorld(hierarchy->parent, parentWorld))
+			{
+				resolving.erase(entity);
+				return false;
+			}
+		}
+		outWorld = parentWorld * registry.get<Transform>(entity).localMatrix();
+		predictedWorldCache.emplace(entity, outWorld);
+		resolving.erase(entity);
+		return true;
+	};
+
+	std::vector<std::pair<entt::entity, EditableTRS>> locals;
+	locals.reserve(desiredWorldTransforms.size());
+	for (const auto& edit : desiredWorldTransforms)
+	{
+		glm::mat4 parentWorld(1.0f);
+		const EntityId parent = GetParent(edit.first);
+		if (parent.IsValid() && !resolvePredictedWorld(parent.id, parentWorld))
+			return false;
+		EditableTRS local;
+		if (!TryWorldToLocalTRS(parentWorld, edit.second, local)) return false;
+		locals.emplace_back(edit.first.id, local);
+	}
+
+	for (const auto& edit : locals)
+	{
+		auto& transform = registry.get<Transform>(edit.first);
+		transform.translation = edit.second.translation;
+		transform.rotation = glm::normalize(edit.second.rotation);
+		transform.scale = edit.second.scale;
+		SceneGraph::MarkDirty(registry, edit.first);
+	}
+	NotifyAuthoringChanged();
+	return true;
 }
 
 void SceneManager::SetMaterial(EntityId entity, int materialIndex)
@@ -603,6 +705,36 @@ bool SceneManager::GetTransform(EntityId entity, glm::vec3& outPosition, glm::ve
 	outRotationEuler = glm::degrees(glm::eulerAngles(tf->rotation));
 	outScale = tf->scale.x;
 	return true;
+}
+
+bool SceneManager::GetTransform(EntityId entity, glm::vec3& outPosition,
+	glm::vec3& outRotationEuler, glm::vec3& outScale) const
+{
+	EditableTRS transform;
+	if (!GetLocalTransform(entity, transform)) return false;
+	outPosition = transform.translation;
+	outRotationEuler = glm::degrees(glm::eulerAngles(transform.rotation));
+	outScale = transform.scale;
+	return true;
+}
+
+bool SceneManager::GetLocalTransform(EntityId entity, EditableTRS& outTransform) const
+{
+	if (!entity.IsValid() || !m_EcsScene.registry.valid(entity.id)) return false;
+	const auto* transform = m_EcsScene.registry.try_get<Transform>(entity.id);
+	if (!transform) return false;
+	outTransform.translation = transform->translation;
+	outTransform.rotation = transform->rotation;
+	outTransform.scale = transform->scale;
+	return true;
+}
+
+bool SceneManager::GetWorldTransform(EntityId entity, EditableTRS& outTransform)
+{
+	if (!entity.IsValid() || !m_EcsScene.registry.valid(entity.id)) return false;
+	UpdateWorldTransforms();
+	const auto* transform = m_EcsScene.registry.try_get<Transform>(entity.id);
+	return transform && TryDecomposeEditableTRS(transform->worldMatrix, outTransform);
 }
 
 bool SceneManager::GetLightProperties(EntityId entity, glm::vec3& outColor, float& outIntensity, bool& outIsSpot) const

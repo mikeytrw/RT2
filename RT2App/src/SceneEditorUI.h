@@ -78,6 +78,9 @@ public:
 	void ClearSelection() { m_Selection.Clear(); }
 	EditorSelection& Selection() { return m_Selection; }
 	const EditorSelection& Selection() const { return m_Selection; }
+	TransformSpace GetTransformSpace() const { return m_TransformSpace; }
+	TransformPivot GetTransformPivot() const { return m_TransformPivot; }
+	const TransformSnapSettings& GetTransformSnapSettings() const { return m_TransformSnap; }
 
 	void RenderPanels();
 
@@ -118,6 +121,12 @@ private:
 
 	// When false, authoring controls are disabled (during Play).
 	bool m_Editable = true;
+
+	// Shared Inspector/viewport transform editing state.
+	TransformSpace m_TransformSpace = TransformSpace::Local;
+	TransformPivot m_TransformPivot = TransformPivot::Primary;
+	TransformSnapSettings m_TransformSnap;
+	std::string m_TransformEditError;
 };
 
 #endif // SCENE_EDITOR_UI_H

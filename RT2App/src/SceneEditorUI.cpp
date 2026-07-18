@@ -391,33 +391,88 @@ void SceneEditorUI::RenderInspector()
 
 void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 {
-	ImGui::Text("Transform");
-
-	glm::vec3 pos, rot;
-	float scale;
-	if (!m_SceneMgr->GetTransform(entity, pos, rot, scale))
+	EditableTRS transform;
+	const bool hasTransform = m_TransformSpace == TransformSpace::Local
+		? m_SceneMgr->GetLocalTransform(entity, transform)
+		: m_SceneMgr->GetWorldTransform(entity, transform);
+	if (!hasTransform)
+	{
+		ImGui::TextDisabled("Transform cannot be represented as affine TRS");
 		return;
+	}
+
+	glm::vec3 pos = transform.translation;
+	glm::vec3 rot = glm::degrees(glm::eulerAngles(transform.rotation));
+	glm::vec3 scale = transform.scale;
 
 	bool changed = false;
 	ImGui::PushID("Transform");
+	ImGui::Text("Transform");
+	int space = m_TransformSpace == TransformSpace::Local ? 0 : 1;
+	ImGui::SetNextItemWidth(100.0f);
+	if (ImGui::Combo("Space", &space, "Local\0World\0"))
+	{
+		m_TransformSpace = space == 0 ? TransformSpace::Local : TransformSpace::World;
+		m_TransformEditError.clear();
+	}
+	int pivot = static_cast<int>(m_TransformPivot);
+	ImGui::SetNextItemWidth(100.0f);
+	if (ImGui::Combo("Pivot", &pivot, "Primary\0Median\0Individual\0"))
+		m_TransformPivot = static_cast<TransformPivot>(pivot);
+	ImGui::Checkbox("Snap", &m_TransformSnap.enabled);
+	if (m_TransformSnap.enabled)
+	{
+		ImGui::SetNextItemWidth(80.0f);
+		ImGui::DragFloat("Move step", &m_TransformSnap.translation, 0.05f, 0.001f, 1000.0f, "%.3f");
+		ImGui::SetNextItemWidth(80.0f);
+		ImGui::DragFloat("Rotate step", &m_TransformSnap.rotationDegrees, 1.0f, 0.1f, 180.0f, "%.1f deg");
+		ImGui::SetNextItemWidth(80.0f);
+		ImGui::DragFloat("Scale step", &m_TransformSnap.scale, 0.01f, 0.001f, 100.0f, "%.3f");
+	}
 	ImGui::BeginDisabled(!m_Editable);
 	ImGui::SetNextItemWidth(180.0f);
 	if (ImGui::DragFloat3("Position", &pos[0], 0.1f))
+	{
+		if (m_TransformSnap.enabled) pos = SnapValues(pos, m_TransformSnap.translation);
 		changed = true;
+	}
 	ImGui::SetNextItemWidth(180.0f);
 	if (ImGui::DragFloat3("Rotation", &rot[0], 1.0f))
+	{
+		if (m_TransformSnap.enabled) rot = SnapValues(rot, m_TransformSnap.rotationDegrees);
 		changed = true;
+	}
 	ImGui::SetNextItemWidth(180.0f);
-	if (ImGui::DragFloat("Scale", &scale, 0.05f, 0.01f, 100.0f))
+	if (ImGui::DragFloat3("Scale", &scale[0], 0.05f))
+	{
+		if (m_TransformSnap.enabled) scale = SnapValues(scale, m_TransformSnap.scale);
 		changed = true;
+	}
 	ImGui::EndDisabled();
-	ImGui::PopID();
 
 	if (changed)
 	{
-		m_SceneMgr->SetTransform(entity, pos, rot, scale);
-		NotifyTransformChanged();
+		EditableTRS edited;
+		edited.translation = pos;
+		edited.rotation = glm::quat(glm::radians(rot));
+		edited.scale = scale;
+		const bool applied = m_TransformSpace == TransformSpace::Local
+			? (m_SceneMgr->SetLocalTransform(entity, edited), true)
+			: m_SceneMgr->TrySetWorldTransform(entity, edited.Matrix());
+		if (applied)
+		{
+			m_TransformEditError.clear();
+			NotifyTransformChanged();
+		}
+		else
+		{
+			m_TransformEditError =
+				"World edit rejected: parent is singular or the result contains shear.";
+		}
 	}
+	if (!m_TransformEditError.empty())
+		ImGui::TextWrapped("%s", m_TransformEditError.c_str());
+	ImGui::PopID();
 }
 
 void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)

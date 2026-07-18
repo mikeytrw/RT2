@@ -26,6 +26,7 @@
 #include "SceneRecoveryService.h"
 #include "UnsavedChangesCoordinator.h"
 #include "ViewportCoordinates.h"
+#include "EditorTransformGizmo.h"
 #include "core/UUID.h"
 #include "core/Error.h"
 #include "stb_image.h"
@@ -157,14 +158,7 @@ public:
 			m_RendererGPU.ResetAccumulation();
 		});
 		m_EditorUI.SetOnTransformChanged([this]() {
-			if (m_RendererGPU.IsAvailable())
-			{
-				m_SceneMgr.SetInstanceSyncCallback([this](GPUSceneData& gpuData, const RenderInstanceMap& instanceMap) {
-					m_RendererGPU.UpdateSceneInstances(gpuData, instanceMap);
-				});
-				m_SceneMgr.SyncTransformsToGPU();
-			}
-			m_RendererGPU.ResetAccumulation();
+			SyncAuthoringTransforms();
 		});
 		m_EditorUI.SetOnLoadMeshFile([this](const std::string& path) -> SceneManager::EntityId {
 			return LoadMeshFileAsEntity(path);
@@ -592,8 +586,14 @@ public:
 	{
 		if (m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
 			pick->hit && m_SceneMgr.FindEntityByUuid(pick->entityUuid) != entt::null)
-			m_EditorUI.SelectUuid(pick->entityUuid);
-		else if (m_Runtime.GetState() == rt2::core::SceneRunState::Edit)
+		{
+			if (pick->serial == m_ViewportPickSerial && m_ViewportPickToggle)
+				m_EditorUI.Selection().Toggle(pick->entityUuid);
+			else
+				m_EditorUI.SelectUuid(pick->entityUuid);
+		}
+		else if (m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
+			!(pick->serial == m_ViewportPickSerial && m_ViewportPickToggle))
 			m_EditorUI.ClearSelection();
 	}
 
@@ -619,10 +619,30 @@ public:
 		                       (float)m_RendererGPU.GetHeight());
 		ImGui::Image((ImTextureID)m_RendererGPU.GetOutputDescriptorSet(),
 		             imageSize);
+		const bool imageHovered = ImGui::IsItemHovered();
+		const TransformGizmoResult gizmo = m_TransformGizmo.Draw(
+			m_SceneMgr, m_EditorUI.Selection(), m_Cam,
+			{ imageMin.x, imageMin.y }, { imageSize.x, imageSize.y }, imageHovered,
+			m_Runtime.GetState() == rt2::core::SceneRunState::Edit,
+			m_EditorUI.GetTransformSpace(), m_EditorUI.GetTransformPivot(),
+			m_EditorUI.GetTransformSnapSettings());
+		if (gizmo.changed)
+			SyncAuthoringTransforms();
+		if (!gizmo.error.empty())
+			m_LastStatusMsg = gizmo.error;
 
+		const bool ordinaryPickClick = imageHovered && !gizmo.consumesMouse &&
+			ImGui::IsMouseClicked(ImGuiMouseButton_Left);
 		const bool canPick = m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
-			ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+			(ordinaryPickClick || gizmo.pickThrough) &&
 			!ImGui::IsMouseDown(ImGuiMouseButton_Right);
+		if (imageHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+		{
+			RT_LOG("[ViewportPick] click edit=%d gizmoConsumes=%d gizmoActive=%d rightDown=%d",
+				m_Runtime.GetState() == rt2::core::SceneRunState::Edit ? 1 : 0,
+				gizmo.consumesMouse ? 1 : 0, gizmo.active ? 1 : 0,
+				ImGui::IsMouseDown(ImGuiMouseButton_Right) ? 1 : 0);
+		}
 		if (canPick)
 		{
 			const ImVec2 mouse = ImGui::GetMousePos();
@@ -634,8 +654,12 @@ public:
 			{
 				const glm::vec2 uv = (glm::vec2(*pixel) + 0.5f) /
 					glm::vec2(rect.renderExtent);
-				m_RendererGPU.RequestPick(m_Cam.GetPickingRay(uv.x, uv.y),
-				                          m_Cam.m_FarClip);
+				const uint64_t serial = m_RendererGPU.RequestPick(
+					m_Cam.GetPickingRay(uv.x, uv.y), m_Cam.m_FarClip);
+				m_ViewportPickSerial = serial;
+				m_ViewportPickToggle = ImGui::GetIO().KeyCtrl;
+				RT_LOG("[ViewportPick] requested serial=%llu pixel=(%u,%u) uv=(%.6f,%.6f)",
+					static_cast<unsigned long long>(serial), pixel->x, pixel->y, uv.x, uv.y);
 			}
 		}
 	}
@@ -894,6 +918,20 @@ public:
 	}
 
 private:
+	void SyncAuthoringTransforms()
+	{
+		m_RendererGPU.CancelPicks();
+		if (m_RendererGPU.IsAvailable())
+		{
+			m_SceneMgr.SetInstanceSyncCallback(
+				[this](GPUSceneData& gpuData, const RenderInstanceMap& instanceMap) {
+					m_RendererGPU.UpdateSceneInstances(gpuData, instanceMap);
+				});
+			m_SceneMgr.SyncTransformsToGPU();
+		}
+		m_RendererGPU.ResetAccumulation();
+	}
+
 
 	void ProcessCLIArgs()
 	{
@@ -1388,6 +1426,9 @@ private:
 	RenderSettings m_Settings;
 	SceneManager m_SceneMgr;
 	SceneEditorUI m_EditorUI;
+	EditorTransformGizmo m_TransformGizmo;
+	uint64_t m_ViewportPickSerial = 0;
+	bool m_ViewportPickToggle = false;
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
 	float m_LastRenderTime = 0.0f;
 	float m_SmoothedFrameTime = 0.0f;

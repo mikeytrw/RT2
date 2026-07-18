@@ -73,6 +73,7 @@ public:
 
 	uint64_t RequestPick(const CameraRay& ray, float maxDistance = 100000.0f);
 	std::optional<PickResult> ConsumePickResult();
+	void CancelPicks();
 
 	bool Init();
 	void ResetAccumulation();
@@ -117,7 +118,6 @@ public:
 	void DumpNEEBuffers() const;
 
 private:
-	void CancelPicks();
 	void CreateOutputImage();
 	void DestroyOutputImage();
 	void UpdateCameraUBO(const Camera& camera);

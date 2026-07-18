@@ -630,3 +630,26 @@ Viewport selection is accepted only while the runtime controller is in Edit
 state. A live UUID lookup is still required before adopting the result, because
 an entity may have been deleted while the GPU query was in flight. A miss
 clears selection.
+
+## Editor transform contract
+
+`EditableTRS` is the editor-facing affine transform type. Its decomposition is
+strict: singular scale, non-finite values, and shear are rejected. World-space
+editing converts the desired world matrix through the parent world matrix and
+only commits when the resulting local matrix is representable as TRS.
+
+`SceneManager::TrySetWorldTransforms` validates an entire selection first. If
+every desired world transform converts successfully, all local transforms are
+committed and the hierarchy is marked dirty once; otherwise none are changed.
+This is the mutation path used by the viewport gizmo.
+
+The Inspector and gizmo share local/world space, primary/median/individual
+pivot, and translation/rotation/scale snapping settings. Shared-pivot edits use
+`D = currentPivot * inverse(startPivot)` followed by `world[i]' = D * world[i]`.
+Individual mode applies an equivalent delta around each entity's own pivot.
+
+Gizmo handles use a four-pixel drag threshold. Press/release without crossing
+that threshold is forwarded to GPU picking, so an axis overlay never prevents
+selection of the object underneath. Crossing the threshold starts manipulation
+and cancels outstanding pick work. Successful edits invoke only
+`SyncTransformsToGPU`; they do not rebuild BLAS geometry or upload textures.

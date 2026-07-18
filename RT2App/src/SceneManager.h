@@ -9,10 +9,12 @@
 #include "SceneDocument.h"
 #include "core/UUID.h"
 #include "core/Error.h"
+#include "TransformEditing.h"
 #include <string>
 #include <vector>
 #include <functional>
 #include <cstdint>
+#include <utility>
 
 // ============================================================================
 // SceneManager — owns all scene state + provides entity manipulation APIs.
@@ -131,6 +133,14 @@
 	                  const glm::vec3& position,
 	                  const glm::vec3& rotation = {0, 0, 0},
 	                  float scale = 1.0f);
+	void SetTransform(EntityId entity,
+	                  const glm::vec3& position,
+	                  const glm::vec3& rotation,
+	                  const glm::vec3& scale);
+	void SetLocalTransform(EntityId entity, const EditableTRS& transform);
+	bool TrySetWorldTransform(EntityId entity, const glm::mat4& desiredWorld);
+	bool TrySetWorldTransforms(
+		const std::vector<std::pair<EntityId, glm::mat4>>& desiredWorldTransforms);
 
 	// Update an entity's material index (which material from the materials array).
 	void SetMaterial(EntityId entity, int materialIndex);
@@ -154,6 +164,10 @@
 
 	// Read transform as euler degrees (for UI sliders). Returns false if no Transform.
 	bool GetTransform(EntityId entity, glm::vec3& outPosition, glm::vec3& outRotationEuler, float& outScale) const;
+	bool GetTransform(EntityId entity, glm::vec3& outPosition,
+	                  glm::vec3& outRotationEuler, glm::vec3& outScale) const;
+	bool GetLocalTransform(EntityId entity, EditableTRS& outTransform) const;
+	bool GetWorldTransform(EntityId entity, EditableTRS& outTransform);
 
 	// Read/write light properties.
 	bool GetLightProperties(EntityId entity, glm::vec3& outColor, float& outIntensity, bool& outIsSpot) const;

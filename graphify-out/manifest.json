@@ -175,13 +175,13 @@
     "semantic_hash": ""
   },
   "RT2App/src/RendererGPU.cpp": {
-    "mtime": 1784372624.7392018,
-    "ast_hash": "cd5609cd022fc25467bc94f95949c20b",
+    "mtime": 1784374886.0377023,
+    "ast_hash": "6db50397f8d37216e26986712fea2b68",
     "semantic_hash": ""
   },
   "RT2App/src/RendererGPU.h": {
-    "mtime": 1784372623.622672,
-    "ast_hash": "cdfa736a4fb43517fe60bfeb95c9cca8",
+    "mtime": 1784374210.3847752,
+    "ast_hash": "c69267e04dc114430fc2cb98ab528415",
     "semantic_hash": ""
   },
   "RT2App/src/SceneGraph.cpp": {
@@ -235,8 +235,8 @@
     "semantic_hash": ""
   },
   "RT2App/src/WalnutApp.cpp": {
-    "mtime": 1784371979.9162502,
-    "ast_hash": "6aff7833cfd1579f1188ee7e7e0bb385",
+    "mtime": 1784375318.8240707,
+    "ast_hash": "7a0990138a708a90b502fceccf15c23b",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRD/Include/NRD.h": {
@@ -1550,8 +1550,8 @@
     "semantic_hash": ""
   },
   "RT2Tests/premake5.lua": {
-    "mtime": 1784371334.3530138,
-    "ast_hash": "470191f08b2a118bcd882cb7a656e46c",
+    "mtime": 1784373505.0443726,
+    "ast_hash": "422dec7688f5c3a44b696e52761730e3",
     "semantic_hash": ""
   },
   "RT2Tests/src/BuildGpuFromEcsTests.cpp": {
@@ -10190,23 +10190,23 @@
     "semantic_hash": ""
   },
   "RT2App/src/SceneEditorUI.cpp": {
-    "mtime": 1784371720.03144,
-    "ast_hash": "7ce8a62b0fcbb04e4b4909e02a5dbad2",
+    "mtime": 1784373841.2835777,
+    "ast_hash": "1d6f8be7209eecd6e4aeeeb265295c15",
     "semantic_hash": ""
   },
   "RT2App/src/SceneEditorUI.h": {
-    "mtime": 1784371696.5918686,
-    "ast_hash": "6e878013caad39825fc17d493c4e717d",
+    "mtime": 1784373839.913457,
+    "ast_hash": "6a740c220047a54fb25e2595ca0b19ae",
     "semantic_hash": ""
   },
   "RT2App/src/SceneManager.cpp": {
-    "mtime": 1784371541.0784516,
-    "ast_hash": "44e7a4eab8ef7d5da752c355d08449c3",
+    "mtime": 1784375614.4330022,
+    "ast_hash": "5af8d0eb06c9ec436815afc0c2c49640",
     "semantic_hash": ""
   },
   "RT2App/src/SceneManager.h": {
-    "mtime": 1784371566.1860352,
-    "ast_hash": "1763d80a20b1f7b3c181ad615e47bf90",
+    "mtime": 1784373999.3773563,
+    "ast_hash": "f8dc7c9cefa686707cfd6b42948e3917",
     "semantic_hash": ""
   },
   "RT2App/src/SceneRenderBridge.cpp": {
@@ -10275,8 +10275,8 @@
     "semantic_hash": ""
   },
   "RT2SliceRunner/premake5.lua": {
-    "mtime": 1784330630.9852767,
-    "ast_hash": "0307e3844013ffcd702757c6e34c47c9",
+    "mtime": 1784373881.9815423,
+    "ast_hash": "4337865f2a7cb53a57a608753b0feedf",
     "semantic_hash": ""
   },
   "RT2SliceRunner/src/Main.cpp": {
@@ -10390,8 +10390,8 @@
     "semantic_hash": ""
   },
   "docs/game-engine-development-plan.md": {
-    "mtime": 1784372767.4402628,
-    "ast_hash": "3f5215a616224671571ee34b244397a5",
+    "mtime": 1784375692.4415772,
+    "ast_hash": "a2e36410cc96f58828bf87457c6f4636",
     "semantic_hash": ""
   },
   "docs/game-loop.md": {
@@ -10430,8 +10430,8 @@
     "semantic_hash": ""
   },
   "docs/scene-management.md": {
-    "mtime": 1784372768.5570145,
-    "ast_hash": "4dac933b20bc301de2771987414676de",
+    "mtime": 1784375457.0179002,
+    "ast_hash": "70ecb745dfe1a8f0a32e3b36c4ff0825",
     "semantic_hash": ""
   },
   "docs/shader-bindings.md": {
@@ -10530,8 +10530,28 @@
     "semantic_hash": ""
   },
   "RT2Tests/src/Phase2EditorTests.cpp": {
-    "mtime": 1784372604.3950114,
-    "ast_hash": "b3d7477a31a6c7cc6079d07eee42fb0a",
+    "mtime": 1784375623.6230488,
+    "ast_hash": "4d77a6d6439494c464760351b8fd9cfe",
+    "semantic_hash": ""
+  },
+  "RT2App/src/EditorTransformGizmo.cpp": {
+    "mtime": 1784375317.6804295,
+    "ast_hash": "85bf05db64dc0f72d75d8cf42ef783f3",
+    "semantic_hash": ""
+  },
+  "RT2App/src/EditorTransformGizmo.h": {
+    "mtime": 1784375028.5076773,
+    "ast_hash": "abf10b4af06618e2e05dac6ee1a11ecb",
+    "semantic_hash": ""
+  },
+  "RT2App/src/TransformEditing.cpp": {
+    "mtime": 1784375053.4160182,
+    "ast_hash": "8b7068764f42f46df2dadcc411cd7abd",
+    "semantic_hash": ""
+  },
+  "RT2App/src/TransformEditing.h": {
+    "mtime": 1784375052.2472446,
+    "ast_hash": "c29dd5e1dff4e652be69c62e63d86aa8",
     "semantic_hash": ""
   }
 }

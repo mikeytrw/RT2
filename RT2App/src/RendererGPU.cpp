@@ -329,6 +329,9 @@ uint64_t RendererGPU::RequestPick(const CameraRay& ray, float maxDistance)
 	const uint64_t serial = ++m_LatestPickSerial;
 	m_PendingPick = PendingPick{ serial, ray, maxDistance };
 	m_CompletedPick.reset();
+	RT_LOG("[GpuPick] queued serial=%llu origin=(%.3f,%.3f,%.3f) direction=(%.4f,%.4f,%.4f)",
+		static_cast<unsigned long long>(serial), ray.origin.x, ray.origin.y, ray.origin.z,
+		ray.direction.x, ray.direction.y, ray.direction.z);
 	return serial;
 }
 
@@ -813,6 +816,10 @@ void RendererGPU::Render(const Camera& camera)
 	m_GpuProfiler.ReadCompletedSlot(device, m_CurrentFrame);
 	if (auto completed = m_PickingPass.ReadCompletedSlot(m_CurrentFrame))
 	{
+		RT_LOG("[GpuPick] read serial=%llu latest=%llu hit=%d instance=%u map=%zu",
+			static_cast<unsigned long long>(completed->serial),
+			static_cast<unsigned long long>(m_LatestPickSerial), completed->hit ? 1 : 0,
+			completed->instanceIndex, completed->instanceMap.size());
 		if (completed->serial == m_LatestPickSerial)
 		{
 			PickResult result;
@@ -929,6 +936,9 @@ void RendererGPU::Render(const Camera& camera)
 	FrameRenderer::RecordFrame(cmd, ctx);
 	if (m_PendingPick && m_PickingPass.IsAvailable())
 	{
+		RT_LOG("[GpuPick] record serial=%llu frameSlot=%u map=%zu",
+			static_cast<unsigned long long>(m_PendingPick->serial), m_CurrentFrame,
+			m_RenderInstanceMap.size());
 		m_PickingPass.Record(cmd, m_CurrentFrame,
 			m_PathTracePass.GetDescriptorSet(),
 			m_PendingPick->ray.origin, m_PendingPick->ray.direction,
