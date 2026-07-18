@@ -1,0 +1,113 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_nonuniform_qualifier : require
+
+layout(set = 0, binding = 4) uniform accelerationStructureEXT tlas;
+
+struct Material
+{
+    vec4 baseColor_metallic;
+    vec4 emissive_roughness;
+    float ior;
+    float alphaCutoff;
+    float alphaMode;
+    float baseAlpha;
+    ivec4 textureIndices;
+    ivec4 extraIndices;
+};
+layout(set = 0, binding = 2, std430) readonly buffer MaterialBuffer
+{
+    Material materials[];
+};
+layout(set = 0, binding = 5, std430) readonly buffer IndexBuffer
+{
+    uint indices[];
+};
+layout(set = 0, binding = 7, std430) readonly buffer UVBuffer
+{
+    vec4 uvs[];
+};
+layout(set = 0, binding = 8, std430) readonly buffer InstanceMeshInfo
+{
+    uvec4 instanceMeshInfo[];
+};
+layout(set = 0, binding = 13, std430) readonly buffer InstanceMaterialIndexBuffer
+{
+    uint instanceMaterialIndices[];
+};
+layout(set = 0, binding = 17, std430) readonly buffer InstanceMatOffsetBuffer
+{
+    uint instanceMatOffsets[];
+};
+layout(set = 0, binding = 18) uniform sampler2D textures[];
+
+layout(set = 1, binding = 0, std430) buffer PickOutput
+{
+    uint hit;
+    uint instanceIndex;
+    float hitT;
+    uint padding;
+    vec4 worldPosition;
+} outputData;
+
+layout(push_constant) uniform PickConstants
+{
+    vec4 originTMin;
+    vec4 directionTMax;
+} pc;
+
+layout(local_size_x = 1, local_size_y = 1, local_size_z = 1) in;
+
+void main()
+{
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, tlas, gl_RayFlagsNoneEXT, 0xFF,
+                          pc.originTMin.xyz, pc.originTMin.w,
+                          normalize(pc.directionTMax.xyz), pc.directionTMax.w);
+    while (rayQueryProceedEXT(query))
+    {
+        if (rayQueryGetIntersectionTypeEXT(query, false) ==
+            gl_RayQueryCandidateIntersectionTriangleEXT)
+        {
+            uint instanceId = rayQueryGetIntersectionInstanceIdEXT(query, false);
+            uint primitiveId = rayQueryGetIntersectionPrimitiveIndexEXT(query, false);
+            uint materialOffset = instanceMatOffsets[instanceId] + primitiveId;
+            uint materialIndex = instanceMaterialIndices[materialOffset];
+            Material material = materials[materialIndex];
+
+            bool accept = true;
+            if (material.alphaMode >= 0.5)
+            {
+                uvec4 meshInfo = instanceMeshInfo[instanceId];
+                uint indexBase = meshInfo.y + primitiveId * 3u;
+                uint i0 = indices[indexBase + 0u];
+                uint i1 = indices[indexBase + 1u];
+                uint i2 = indices[indexBase + 2u];
+                vec2 bary = rayQueryGetIntersectionBarycentricsEXT(query, false);
+                float b0 = 1.0 - bary.x - bary.y;
+                vec2 uv = b0 * uvs[meshInfo.w + i0].xy +
+                          bary.x * uvs[meshInfo.w + i1].xy +
+                          bary.y * uvs[meshInfo.w + i2].xy;
+                float alpha = material.baseAlpha;
+                if (material.textureIndices.x >= 0)
+                    alpha *= texture(textures[nonuniformEXT(material.textureIndices.x)], uv).a;
+                accept = material.alphaMode < 1.5
+                    ? alpha >= material.alphaCutoff
+                    : alpha >= 0.5;
+            }
+            if (accept)
+                rayQueryConfirmIntersectionEXT(query);
+        }
+    }
+
+    if (rayQueryGetIntersectionTypeEXT(query, true) ==
+        gl_RayQueryCommittedIntersectionTriangleEXT)
+    {
+        outputData.hit = 1u;
+        outputData.instanceIndex =
+            rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
+        outputData.hitT = rayQueryGetIntersectionTEXT(query, true);
+        outputData.worldPosition = vec4(pc.originTMin.xyz +
+            outputData.hitT * normalize(pc.directionTMax.xyz), 1.0);
+    }
+}

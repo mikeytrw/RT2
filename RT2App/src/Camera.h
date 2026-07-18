@@ -2,6 +2,7 @@
 #include <glm/glm.hpp>
 #include <cstdint>
 #include <utility>
+#include "ViewportCoordinates.h"
 
 class Camera
 {
@@ -34,6 +35,7 @@ public:
 
 	glm::vec3 RandomInUnitDisk() const;
 	std::pair<glm::vec3, glm::vec3> GetRayOriginAndDirection(float u, float v) const;
+	CameraRay GetPickingRay(float u, float v) const;
 
 	float GetRotationSpeed();
 

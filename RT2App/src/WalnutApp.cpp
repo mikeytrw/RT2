@@ -22,6 +22,10 @@
 #include "RuntimeSceneController.h"
 #include "SceneRenderBridge.h"
 #include "ECSComponents.h"
+#include "EditorSettings.h"
+#include "SceneRecoveryService.h"
+#include "UnsavedChangesCoordinator.h"
+#include "ViewportCoordinates.h"
 #include "core/UUID.h"
 #include "core/Error.h"
 #include "stb_image.h"
@@ -37,7 +41,9 @@
 #include <fstream>
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <filesystem>
+#include <memory>
 
 using namespace Walnut;
 
@@ -52,23 +58,98 @@ public:
 		m_Cam = Camera(45.0f, 0.1f, 10000.0f, 0.005f, 2.5f);
 		m_Cam.m_Aperture = 0.0f;
 
+		// ---- Phase 1B: settings, recovery, unsaved-changes coordinator ----
+		auto appData = AppDataRoot();
+		m_Settings2 = std::make_unique<rt2::core::EditorSettingsStore>(appData);
+		m_Recovery  = std::make_unique<rt2::core::SceneRecoveryService>(
+		    appData / "Recovery",
+		    nullptr,                              // real wall clock
+		    rt2::core::SceneRecoveryService::kDefaultMaxRecords,
+		    rt2::core::SceneRecoveryService::kDefaultIntervalSeconds);
+		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
+
+		rt2::core::Error settingsErr;
+		if (!m_Settings2->Load(settingsErr))
+			printf("[Settings] Failed to load: %s\n", settingsErr.Format().c_str());
+
+		// Discover pending recovery records from a previous unclean exit.
+		// We surface these as a startup Restore/Discard modal below.
+		{
+			rt2::core::Error rErr;
+			m_PendingRecovery = m_Recovery->Discover(rErr);
+			if (!rErr.IsOk())
+				printf("[Recovery] Discover failed: %s\n", rErr.Format().c_str());
+			if (!m_PendingRecovery.empty())
+				m_RecoveryPromptOpen = true;
+		}
+
+		// Wire the unsaved-changes coordinator.
+		m_Unsaved.SetIsDirtyQuery([this]() { return m_SceneMgr.IsDirty(); });
+		m_Unsaved.SetSaveGate([this]() -> bool {
+			// One transactional host path decides Save versus Save As from the
+			// current source path. Cancellation/failure retains the pending action.
+			return SaveCurrentScene(false);
+		});
+		m_Unsaved.SetExecuteGate([this](const rt2::core::UnsavedChangesCoordinator::PendingAction& a) {
+			switch (a.kind)
+			{
+			case rt2::core::UnsavedChangesCoordinator::ActionKind::New:
+				NewSceneInternal();
+				break;
+			case rt2::core::UnsavedChangesCoordinator::ActionKind::Open:
+				LoadSceneInternal(a.path.string());
+				break;
+			case rt2::core::UnsavedChangesCoordinator::ActionKind::Recent:
+				LoadSceneInternal(a.path.string());
+				break;
+			case rt2::core::UnsavedChangesCoordinator::ActionKind::Exit:
+				Walnut::Application::Get().Close();
+				break;
+			case rt2::core::UnsavedChangesCoordinator::ActionKind::None:
+			default: break;
+			}
+		});
+		m_Unsaved.SetDiscardRecoveryGate([this]() {
+			std::string docId = rt2::core::SceneRecoveryService::DocIdFor(
+			    m_SceneMgr.AuthoringDoc(), m_UntitledRecoveryId);
+			m_Recovery->DiscardForDoc(docId);
+		});
+
+		// Wire the Walnut close-request callback so OS close (title-bar X /
+		// Alt+F4) routes through the unsaved-changes coordinator.
+		Walnut::Application::Get().SetCloseRequestCallback([this]() -> bool {
+			// If a recovery prompt is open, refuse to close.
+			if (m_RecoveryPromptOpen) return false;
+			// If a coordinator prompt is already pending, do not clobber it.
+			if (m_Unsaved.NeedsPrompt()) return false;
+			bool executed = m_Unsaved.Request({rt2::core::UnsavedChangesCoordinator::ActionKind::Exit, {}});
+			return !executed ? false : true;
+			// When the doc is clean, Request executes immediately and returns
+			// true — we return true so the app proceeds to close.
+			// When dirty, Request queues the prompt and returns false — we
+			// return false so the app stays open until the user resolves.
+		});
+
 		m_EditorUI.SetSceneMgr(&m_SceneMgr);
+		m_EditorUI.SetDialogInitialDirectoryProvider([this]() {
+			return DialogInitialDirectory();
+		});
 		m_EditorUI.SetOnSceneChanged([this]() {
 			if (m_RendererGPU.IsAvailable())
 			{
 				bool didCompact = m_SceneMgr.CompactMeshRegistry();
 				if (m_PendingFullSync || didCompact)
 				{
-					m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData) {
-						m_RendererGPU.SetScene(gpuData);
+					m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData, const RenderInstanceMap& instanceMap) {
+						m_RendererGPU.SetScene(gpuData, instanceMap);
 					});
 					m_SceneMgr.SyncToGPU();
 					m_PendingFullSync = false;
 				}
 				else if (!m_RendererGPU.IsTextureUploadPending())
 				{
-					m_SceneMgr.SetSyncKeepTexturesCallback([this](GPUSceneData& gpuData) {
-						m_RendererGPU.SetSceneKeepTextures(gpuData);
+					m_SceneMgr.SetSyncKeepTexturesCallback([this](GPUSceneData& gpuData, const RenderInstanceMap& instanceMap) {
+						m_RendererGPU.SetSceneKeepTextures(gpuData, instanceMap);
 					});
 					m_SceneMgr.SyncToGPUKeepTextures();
 				}
@@ -78,8 +159,8 @@ public:
 		m_EditorUI.SetOnTransformChanged([this]() {
 			if (m_RendererGPU.IsAvailable())
 			{
-				m_SceneMgr.SetInstanceSyncCallback([this](GPUSceneData& gpuData) {
-					m_RendererGPU.UpdateSceneInstances(gpuData);
+				m_SceneMgr.SetInstanceSyncCallback([this](GPUSceneData& gpuData, const RenderInstanceMap& instanceMap) {
+					m_RendererGPU.UpdateSceneInstances(gpuData, instanceMap);
 				});
 				m_SceneMgr.SyncTransformsToGPU();
 			}
@@ -93,7 +174,7 @@ public:
 			std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 			if (ext == "obj")
 			{
-				LoadScene(path);
+				RequestOpenScene(path);
 				return SceneManager::EntityId{};
 			}
 			auto id = m_SceneMgr.ImportGltf(path);
@@ -414,7 +495,9 @@ public:
 	ImGui::Text("Environment Map");
 	if (ImGui::Button("Load HDR..."))
 	{
-		std::string path = FileDialog::OpenFile("HDR Files (*.hdr;*.exr)\0*.hdr;*.exr\0HDR (*.hdr)\0*.hdr\0All Files (*.*)\0*.*\0");
+		std::string path = FileDialog::OpenFile(
+			L"HDR Files (*.hdr;*.exr)\0*.hdr;*.exr\0HDR (*.hdr)\0*.hdr\0All Files (*.*)\0*.*\0",
+			DialogInitialDirectory());
 		if (!path.empty())
 			LoadEnvMap(path);
 	}
@@ -447,52 +530,18 @@ public:
 	ImGui::SameLine();
 	if (ImGui::Button("Open..."))
 	{
-		std::string path = FileDialog::OpenFile("RT2 Scene (*.rt2scene)\0*.rt2scene\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0");
+		std::string path = FileDialog::OpenFile(
+			L"RT2 Scene (*.rt2scene)\0*.rt2scene\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0",
+			DialogInitialDirectory());
 		if (!path.empty())
-			LoadScene(path);
+			RequestOpenScene(path);
 	}
 	ImGui::SameLine();
-	if (ImGui::Button("Save..."))
-	{
-		std::string path = FileDialog::SaveFile("RT2 Scene (*.rt2scene)\0*.rt2scene\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0");
-		if (!path.empty())
-		{
-			// Ensure the path has an extension. If none, default to .rt2scene.
-			size_t dotPos = path.find_last_of('.');
-			if (dotPos == std::string::npos)
-			{
-				path += ".rt2scene";
-				SaveRt2Scene(path);
-			}
-			else
-			{
-				std::string fext = path.substr(dotPos + 1);
-				std::transform(fext.begin(), fext.end(), fext.begin(), ::tolower);
-				if (fext == "rt2scene")
-					SaveRt2Scene(path);
-				else
-					SceneLoader::Save(m_SceneMgr.GetECS(), path);
-			}
-		}
-	}
+	if (ImGui::Button("Save"))
+		SaveRt2Scene();
 	ImGui::SameLine();
 	if (ImGui::Button("Save As..."))
-	{
-		std::string path = FileDialog::SaveFile("RT2 Scene (*.rt2scene)\0*.rt2scene\0");
-		if (!path.empty())
-		{
-			// Ensure .rt2scene extension is present.
-			size_t dotPos = path.find_last_of('.');
-			if (dotPos == std::string::npos || path.substr(dotPos + 1) != "rt2scene")
-			{
-				// Strip any existing extension and add .rt2scene
-				if (dotPos != std::string::npos)
-					path = path.substr(0, dotPos);
-				path += ".rt2scene";
-			}
-			SaveRt2Scene(path);
-		}
-	}
+		SaveRt2SceneAs();
 
 	ImGui::Separator();
 
@@ -539,6 +588,15 @@ public:
 
 	ImGui::End();
 
+	if (auto pick = m_RendererGPU.ConsumePickResult())
+	{
+		if (m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
+			pick->hit && m_SceneMgr.FindEntityByUuid(pick->entityUuid) != entt::null)
+			m_EditorUI.SelectUuid(pick->entityUuid);
+		else if (m_Runtime.GetState() == rt2::core::SceneRunState::Edit)
+			m_EditorUI.ClearSelection();
+	}
+
 	m_EditorUI.RenderPanels();
 
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
@@ -555,11 +613,237 @@ public:
 	}
 
 	if (m_RendererGPU.HasOutput())
+	{
+		const ImVec2 imageMin = ImGui::GetCursorScreenPos();
+		const ImVec2 imageSize((float)m_RendererGPU.GetWidth(),
+		                       (float)m_RendererGPU.GetHeight());
 		ImGui::Image((ImTextureID)m_RendererGPU.GetOutputDescriptorSet(),
-		             { (float)m_RendererGPU.GetWidth(), (float)m_RendererGPU.GetHeight() });
+		             imageSize);
+
+		const bool canPick = m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
+			ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+			!ImGui::IsMouseDown(ImGuiMouseButton_Right);
+		if (canPick)
+		{
+			const ImVec2 mouse = ImGui::GetMousePos();
+			ViewportImageRect rect;
+			rect.screenMin = { imageMin.x, imageMin.y };
+			rect.displaySize = { imageSize.x, imageSize.y };
+			rect.renderExtent = { m_RendererGPU.GetWidth(), m_RendererGPU.GetHeight() };
+			if (const auto pixel = ScreenToRenderPixel({ mouse.x, mouse.y }, rect))
+			{
+				const glm::vec2 uv = (glm::vec2(*pixel) + 0.5f) /
+					glm::vec2(rect.renderExtent);
+				m_RendererGPU.RequestPick(m_Cam.GetPickingRay(uv.x, uv.y),
+				                          m_Cam.m_FarClip);
+			}
+		}
+	}
 
 	ImGui::End();
 	ImGui::PopStyleVar();
+
+	// ---- Phase 1B: Session / Recovery UI ----
+	DrawSessionPanel();
+	DrawRecoveryPrompt();
+	DrawUnsavedChangesPrompt();
+	} // end OnUIRender
+
+	// ---- Phase 1B: Session / Recovery / Unsaved-changes UI ----
+
+	void DrawSessionPanel()
+	{
+		ImGui::Begin("Session");
+		ImGui::Text("Dirty: %s", m_SceneMgr.IsDirty() ? "yes" : "no");
+		ImGui::Text("Revision: %llu", static_cast<unsigned long long>(m_SceneMgr.AuthoringRevision()));
+		ImGui::Text("Status: %s", m_LastStatusMsg.c_str());
+		ImGui::Separator();
+		if (m_Settings2)
+		{
+			ImGui::Text("Project Root");
+			auto pr = m_Settings2->GetProjectRoot();
+			char buf[512];
+			std::snprintf(buf, sizeof(buf), "%s", pr.empty() ? "(none)" : pr.string().c_str());
+			ImGui::InputText("##ProjectRoot", buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
+			ImGui::SameLine();
+			if (ImGui::Button("Browse..."))
+			{
+				std::string folder = FileDialog::OpenFolder(DialogInitialDirectory());
+				if (!folder.empty())
+				{
+					m_Settings2->SetProjectRoot(std::filesystem::path(folder));
+					PersistEditorSettings("project root");
+				}
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Clear"))
+			{
+				m_Settings2->ClearProjectRoot();
+				PersistEditorSettings("project root");
+			}
+		}
+		ImGui::Separator();
+		if (m_Settings2 && !m_Settings2->GetRecentScenes().empty())
+		{
+			ImGui::Text("Recent Scenes");
+			auto recents = m_Settings2->GetRecentScenes();
+			for (size_t i = 0; i < recents.size(); ++i)
+			{
+				const auto& p = recents[i];
+				bool exists = std::filesystem::exists(p);
+				std::string label = p.string();
+				if (!exists) label = "(missing) " + label;
+				if (ImGui::MenuItem(label.c_str()))
+				{
+					if (exists)
+					{
+						rt2::core::UnsavedChangesCoordinator::PendingAction a;
+						a.kind = rt2::core::UnsavedChangesCoordinator::ActionKind::Recent;
+						a.path = p;
+						m_Unsaved.Request(a);
+					}
+				}
+				if (!exists)
+				{
+					ImGui::SameLine();
+					std::string removeId = "Remove##" + std::to_string(i);
+					if (ImGui::SmallButton(removeId.c_str()))
+					{
+						m_Settings2->RemoveRecentScene(p);
+						PersistEditorSettings("recent scenes");
+					}
+				}
+			}
+		}
+		ImGui::End();
+	}
+
+	void DrawRecoveryPrompt()
+	{
+		if (!m_RecoveryPromptOpen || m_PendingRecovery.empty()) return;
+		ImGui::OpenPopup("Recovery Available");
+		m_RecoveryPromptOpen = false; // we opened it; let the modal drive state
+		if (ImGui::BeginPopupModal("Recovery Available", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::Text("Unsaved work from a previous session is available.");
+			size_t idx = m_RecoveryPromptIndex < m_PendingRecovery.size() ? m_RecoveryPromptIndex : 0;
+			const auto& r = m_PendingRecovery[idx];
+			ImGui::Text("Doc: %s", r.docId.c_str());
+			ImGui::Text("Created: %lld", static_cast<long long>(r.createdAtUnix));
+			ImGui::Text("Original: %s", r.originalSourcePath.empty() ? "(untitled)" : r.originalSourcePath.string().c_str());
+			if (!r.valid)
+				ImGui::TextColored({1,0.6f,0.4f,1}, "Malformed: %s", r.diagnostic.c_str());
+			if (ImGui::Button("Restore"))
+			{
+				rt2::core::Error err;
+				std::vector<rt2::core::AssetDiagnostic> diags;
+				rt2::core::SceneDocument restored;
+				restored.SetUuidProvider(m_SceneMgr.AuthoringDoc().GetUuidProvider());
+				bool ok = m_Recovery->Restore(r, restored, diags, err);
+				if (ok)
+				{
+					// Commit the already validated document without clearing it.
+					m_SceneMgr.ReplaceAuthoringDocument(
+						std::move(restored), std::max<uint64_t>(1, r.revision));
+					m_Recovery->ResetSchedule();
+					m_LastStatusMsg = "Restored recovery";
+					// Upload to GPU
+					if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
+						UploadMeshToGPU();
+					m_RendererGPU.ResetAccumulation();
+					// Adopt the scene camera
+					const auto& cam = m_SceneMgr.GetECS().camera;
+					m_Cam.SetPosition(cam.position);
+					m_Cam.SetForwardDirection(cam.forwardDirection);
+
+					// Stop offering this record during this process, but deliberately
+					// keep it on disk until explicit Save or Discard.
+					m_PendingRecovery.erase(m_PendingRecovery.begin() + idx);
+					if (!m_PendingRecovery.empty()) m_RecoveryPromptOpen = true;
+					ImGui::CloseCurrentPopup();
+				}
+				else
+				{
+					m_LastStatusMsg = std::string("Restore failed: ") + err.Format();
+					printf("[Recovery] Restore failed: %s\n", err.Format().c_str());
+				}
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Discard"))
+			{
+				rt2::core::Error err;
+				if (m_Recovery->Discard(r, err))
+				{
+					m_PendingRecovery.erase(m_PendingRecovery.begin() + idx);
+					if (m_PendingRecovery.empty()) m_RecoveryPromptIndex = 0;
+					else
+					{
+						if (m_RecoveryPromptIndex >= m_PendingRecovery.size()) m_RecoveryPromptIndex = 0;
+						m_RecoveryPromptOpen = true;
+					}
+					m_LastStatusMsg = "Discarded recovery";
+					ImGui::CloseCurrentPopup();
+				}
+				else
+				{
+					m_LastStatusMsg = std::string("Discard failed: ") + err.Format();
+					printf("[Recovery] %s\n", m_LastStatusMsg.c_str());
+				}
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Skip"))
+			{
+				// Leave the record intact, advance to the next or close.
+				if (m_PendingRecovery.size() > 1)
+				{
+					m_RecoveryPromptIndex = (m_RecoveryPromptIndex + 1) % m_PendingRecovery.size();
+					m_RecoveryPromptOpen = true;
+				}
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+	}
+
+	void DrawUnsavedChangesPrompt()
+	{
+		if (!m_Unsaved.NeedsPrompt()) return;
+		ImGui::OpenPopup("Unsaved Changes");
+		if (ImGui::BeginPopupModal("Unsaved Changes", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			const auto& a = m_Unsaved.Pending();
+			const char* actionName = "action";
+			switch (a.kind)
+			{
+			case rt2::core::UnsavedChangesCoordinator::ActionKind::New:    actionName = "New Scene"; break;
+			case rt2::core::UnsavedChangesCoordinator::ActionKind::Open:  actionName = "Open Scene"; break;
+			case rt2::core::UnsavedChangesCoordinator::ActionKind::Recent: actionName = "Open Recent"; break;
+			case rt2::core::UnsavedChangesCoordinator::ActionKind::Exit:  actionName = "Exit"; break;
+			default: break;
+			}
+			ImGui::Text("You have unsaved changes.");
+			ImGui::Text("Pending: %s", actionName);
+			if (!a.path.empty())
+				ImGui::Text("To: %s", a.path.string().c_str());
+			if (ImGui::Button("Save"))
+			{
+				m_Unsaved.ResolveSave();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Discard"))
+			{
+				m_Unsaved.ResolveDiscard();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel"))
+			{
+				m_Unsaved.ResolveCancel();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
 	}
 
 	virtual void OnUpdate(float ts) override
@@ -575,6 +859,35 @@ public:
 		if (m_Runtime.GetState() == rt2::core::SceneRunState::Playing && m_RenderBridge)
 		{
 			m_Runtime.Update(ts, *m_RenderBridge);
+		}
+
+		// ---- Phase 1B: autosave (authoring only, never runtime) ----
+		// Only snapshot the authoring document; the runtime Play clone is
+		// never captured. Skips work entirely on clean frames or when the
+		// revision has not advanced since the last snapshot.
+		if (m_Recovery && m_Runtime.GetState() == rt2::core::SceneRunState::Edit)
+		{
+			rt2::core::Error ae;
+			const auto started = std::chrono::steady_clock::now();
+			const bool wrote = m_Recovery->MaybeSnapshot(
+				m_SceneMgr.AuthoringDoc(), m_SceneMgr.AuthoringRevision(),
+				m_UntitledRecoveryId, UntitledAssetRoot(), ae);
+			const double elapsedMs = std::chrono::duration<double, std::milli>(
+				std::chrono::steady_clock::now() - started).count();
+			if (wrote)
+			{
+				char status[128];
+				std::snprintf(status, sizeof(status), "Autosaved in %.2f ms", elapsedMs);
+				m_LastStatusMsg = status;
+				printf("[Recovery] %s\n", status);
+				if (elapsedMs > 10.0)
+					printf("[Recovery] Warning: main-thread autosave exceeded 10 ms guardrail\n");
+			}
+			if (!ae.IsOk())
+			{
+				m_LastStatusMsg = std::string("Autosave failed: ") + ae.Format();
+				printf("[Recovery] Autosave failed: %s\n", ae.Format().c_str());
+			}
 		}
 
 		Render();
@@ -649,7 +962,7 @@ private:
 			LoadEnvMap(g_CLI.envMapPath);
 
 		if (g_CLI.hasScene())
-			LoadScene(g_CLI.scenePath);
+			LoadSceneInternal(g_CLI.scenePath);
 
 		if (g_CLI.hasCameraPosition)
 			m_Cam.SetPosition(glm::vec3(g_CLI.cameraPosition[0], g_CLI.cameraPosition[1], g_CLI.cameraPosition[2]));
@@ -986,20 +1299,28 @@ private:
 	{
 		if (m_SceneMgr.GetECS().meshRegistry.GetCount() == 0) return;
 
-		m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData) {
-			m_RendererGPU.SetScene(gpuData);
+		m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData, const RenderInstanceMap& instanceMap) {
+			m_RendererGPU.SetScene(gpuData, instanceMap);
 		});
 		m_SceneMgr.SyncToGPU();
 	}
 
-	void LoadScene(const std::string& filepath)
+	void RequestOpenScene(const std::string& filepath)
+	{
+		rt2::core::UnsavedChangesCoordinator::PendingAction action;
+		action.kind = rt2::core::UnsavedChangesCoordinator::ActionKind::Open;
+		action.path = std::filesystem::u8path(filepath);
+		m_Unsaved.Request(action);
+	}
+
+	void LoadSceneInternal(const std::string& filepath)
 	{
 		// Dispatch .rt2scene files to the native serializer.
 		std::string ext = filepath.substr(filepath.find_last_of('.') + 1);
 		std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 		if (ext == "rt2scene")
 		{
-			OpenRt2Scene(filepath);
+			OpenRt2SceneInternal(filepath);
 			return;
 		}
 
@@ -1011,8 +1332,8 @@ private:
 
 		if (ext == "obj")
 		{
-			m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData) {
-				m_RendererGPU.SetScene(gpuData);
+			m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData, const RenderInstanceMap& instanceMap) {
+				m_RendererGPU.SetScene(gpuData, instanceMap);
 			});
 			m_SceneMgr.SyncToGPU();
 			m_RendererGPU.ResetAccumulation();
@@ -1026,6 +1347,14 @@ private:
 		const auto& cam = m_SceneMgr.GetECS().camera;
 		m_Cam.SetPosition(cam.position);
 		m_Cam.SetForwardDirection(cam.forwardDirection);
+
+		// Imported interchange files become an untitled native authoring
+		// document. They must be explicitly saved as .rt2scene.
+		m_SceneMgr.AuthoringDoc().metadata.sourcePath.clear();
+		m_SceneMgr.MarkDirty();
+		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
+		m_Recovery->ResetSchedule();
+		m_LastStatusMsg = "Imported scene (unsaved)";
 	}
 
 	SceneManager::EntityId LoadMeshFileAsEntity(const std::string& filepath)
@@ -1034,7 +1363,7 @@ private:
 		std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 		if (ext == "obj")
 		{
-			LoadScene(filepath);
+			RequestOpenScene(filepath);
 			return SceneManager::EntityId{};
 		}
 
@@ -1073,6 +1402,58 @@ private:
 	Camera m_RuntimeCam;           // separate camera for Play mode
 	Camera m_EditorCamSnapshot;    // saved on Play, restored on Stop
 	bool m_RuntimeCamActive = false;
+
+	// ---- Phase 1B: editor settings, recovery, unsaved-changes coordinator ----
+	std::filesystem::path DialogInitialDirectory() const
+	{
+		const auto& source = m_SceneMgr.AuthoringDoc().metadata.sourcePath;
+		if (!source.empty()) return source.parent_path();
+		if (m_Settings2 && !m_Settings2->GetProjectRoot().empty())
+			return m_Settings2->GetProjectRoot();
+		return {};
+	}
+
+	std::filesystem::path UntitledAssetRoot() const
+	{
+		if (m_Settings2 && !m_Settings2->GetProjectRoot().empty())
+			return m_Settings2->GetProjectRoot();
+		std::error_code ec;
+		auto cwd = std::filesystem::current_path(ec);
+		return ec ? std::filesystem::path{} : cwd;
+	}
+
+	bool PersistEditorSettings(const char* context)
+	{
+		if (!m_Settings2) return true;
+		rt2::core::Error err;
+		if (m_Settings2->Save(err)) return true;
+		m_LastStatusMsg = std::string("Settings save failed (") + context + "): " + err.Format();
+		printf("[Settings] %s\n", m_LastStatusMsg.c_str());
+		return false;
+	}
+
+	std::filesystem::path AppDataRoot() const
+	{
+		// Production: %LOCALAPPDATA%\RT2\Editor. Tests would override this
+		// by constructing the services with a temp dir, but WalnutApp uses
+		// the production path.
+	#ifdef _WIN32
+		const wchar_t* la = _wgetenv(L"LOCALAPPDATA");
+		if (la) return std::filesystem::path(la) / L"RT2" / L"Editor";
+	#else
+		const char* la = std::getenv("LOCALAPPDATA");
+		if (la) return std::filesystem::path(la) / "RT2" / "Editor";
+	#endif
+		return std::filesystem::current_path() / "RT2Editor";
+	}
+	std::unique_ptr<rt2::core::EditorSettingsStore>      m_Settings2;
+	std::unique_ptr<rt2::core::SceneRecoveryService>      m_Recovery;
+	rt2::core::UnsavedChangesCoordinator                  m_Unsaved;
+	std::vector<rt2::core::SceneRecoveryService::RecoveryRecord> m_PendingRecovery;
+	size_t                                                m_RecoveryPromptIndex = 0;
+	bool                                                  m_RecoveryPromptOpen = false;
+	std::string                                           m_UntitledRecoveryId; // stable per session
+	std::string                                           m_LastStatusMsg;
 
 	// ---- Runtime lifecycle ----
 
@@ -1142,35 +1523,50 @@ private:
 	}
 
 	// ---- Native .rt2scene file operations ----
+	//
+	// Public wrappers route through the unsaved-changes coordinator. The
+	// *Internal functions perform the actual mutation and are called by
+	// the coordinator's ExecuteGate once any pending prompt is resolved.
+
+public:
+	std::filesystem::path GetDialogInitialDirectory() const
+	{
+		return DialogInitialDirectory();
+	}
 
 	void NewScene()
 	{
-		if (m_SceneMgr.IsDirty())
-		{
-			// TODO: save/discard/cancel prompt
-		}
+		m_Unsaved.Request({rt2::core::UnsavedChangesCoordinator::ActionKind::New, {}});
+	}
+
+	void NewSceneInternal()
+	{
 		m_SceneMgr.Clear();
 		m_SceneMgr.ClearDirty();
+		m_Recovery->ResetSchedule();
+		// New untitled doc gets a fresh recovery id for this session.
+		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
 
 		// Push the now-empty scene to the GPU so the renderer drops all
 		// geometry and instances from the previous scene.
 		if (m_RendererGPU.IsAvailable())
 		{
-			m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData) {
-				m_RendererGPU.SetScene(gpuData);
+			m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData, const RenderInstanceMap& instanceMap) {
+				m_RendererGPU.SetScene(gpuData, instanceMap);
 			});
 			m_SceneMgr.SyncToGPU();
 			m_RendererGPU.ResetAccumulation();
 		}
+		m_LastStatusMsg = "New scene";
 	}
 
 	void OpenRt2Scene(const std::string& filepath)
 	{
-		if (m_SceneMgr.IsDirty())
-		{
-			// TODO: save/discard/cancel prompt
-		}
+		RequestOpenScene(filepath);
+	}
 
+	void OpenRt2SceneInternal(const std::string& filepath)
+	{
 		rt2::core::Error err;
 		// Load + resolve into a temporary document first. Only on success do
 		// we swap it into the live authoring document and GPU-sync. This
@@ -1184,6 +1580,7 @@ private:
 		{
 			printf("[Scene] Failed to load .rt2scene: %s\n", err.Format().c_str());
 			ImGui::OpenPopup("Scene Load Failed");
+			m_LastStatusMsg = std::string("Open failed: ") + err.Format();
 			return;
 		}
 
@@ -1219,13 +1616,15 @@ private:
 			printf("[Scene] Asset resolution failed, keeping current scene: %s\n",
 			       resolveErr.Format().c_str());
 			ImGui::OpenPopup("Scene Load Failed");
+			m_LastStatusMsg = std::string("Open failed (resolution): ") + resolveErr.Format();
 			return;
 		}
 
-		// Swap the resolved document into the SceneManager.
-		m_SceneMgr.Clear();
-		m_SceneMgr.AuthoringDoc() = std::move(tempDoc);
+		// Adopt the resolved document without an intermediate cleared live state.
+		m_SceneMgr.ReplaceAuthoringDocument(std::move(tempDoc));
 		m_SceneMgr.ClearDirty();
+		m_Recovery->ResetSchedule();
+		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
 
 		// Upload to GPU
 		if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
@@ -1238,20 +1637,69 @@ private:
 		m_Cam.SetPosition(cam.position);
 		m_Cam.SetForwardDirection(cam.forwardDirection);
 
+		// Update recents.
+		if (m_Settings2)
+		{
+			m_Settings2->AddRecentScene(filepath);
+			PersistEditorSettings("recent scenes");
+		}
 		printf("[Scene] Loaded .rt2scene: %s\n", filepath.c_str());
+		m_LastStatusMsg = "Opened";
 	}
 
-	void SaveRt2Scene(const std::string& filepath)
+	void SaveRt2Scene()
 	{
-		rt2::core::Error err;
-		m_SceneMgr.AuthoringDoc().metadata.sourcePath = filepath;
-		if (!rt2::core::SceneSerializer::Save(m_SceneMgr.AuthoringDoc(), filepath, err))
+		SaveCurrentScene(false);
+	}
+
+	void SaveRt2SceneAs()
+	{
+		SaveCurrentScene(true);
+	}
+
+	bool SaveCurrentScene(bool forceSaveAs)
+	{
+		auto& doc = m_SceneMgr.AuthoringDoc();
+		const std::filesystem::path oldSourcePath = doc.metadata.sourcePath;
+		const std::string oldDocId = rt2::core::SceneRecoveryService::DocIdFor(
+			doc, m_UntitledRecoveryId);
+
+		std::filesystem::path target = oldSourcePath;
+		if (forceSaveAs || target.empty())
 		{
-			printf("[Scene] Failed to save .rt2scene: %s\n", err.Format().c_str());
-			return;
+			const std::string selected = FileDialog::SaveFile(
+				L"RT2 Scene (*.rt2scene)\0*.rt2scene\0", DialogInitialDirectory());
+			if (selected.empty()) return false;
+			target = std::filesystem::u8path(selected);
 		}
+
+		std::string extension = target.extension().string();
+		std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
+		if (extension != ".rt2scene") target.replace_extension(".rt2scene");
+
+		rt2::core::Error err;
+		if (!rt2::core::SceneSerializer::Save(doc, target, err))
+		{
+			// The live source path is committed only after the file is safe.
+			m_LastStatusMsg = std::string("Save failed: ") + err.Format();
+			printf("[Scene] %s\n", m_LastStatusMsg.c_str());
+			return false;
+		}
+
+		doc.metadata.sourcePath = target;
 		m_SceneMgr.ClearDirty();
-		printf("[Scene] Saved .rt2scene: %s\n", filepath.c_str());
+		const std::string newDocId = rt2::core::SceneRecoveryService::DocIdFor(
+			doc, m_UntitledRecoveryId);
+		if (oldDocId == newDocId) m_Recovery->DiscardForDoc(newDocId);
+		else m_Recovery->OnSaveAs(oldDocId, newDocId);
+		m_Recovery->ResetSchedule();
+
+		if (m_Settings2) m_Settings2->AddRecentScene(target);
+		const bool settingsSaved = PersistEditorSettings("recent scenes");
+		if (settingsSaved)
+			m_LastStatusMsg = (forceSaveAs || oldSourcePath.empty()) ? "Saved As" : "Saved";
+		printf("[Scene] Saved .rt2scene: %s\n", target.u8string().c_str());
+		return true;
 	}
 
 	void LoadEnvMap(const std::string& filepath)
@@ -1262,6 +1710,8 @@ private:
 			m_SceneMgr.SyncToGPU();
 		m_RendererGPU.ResetAccumulation();
 	}
+
+private:
 };
 
 Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
@@ -1274,27 +1724,40 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 	spec.EnableSyncValidation = g_CLI.syncValidate;
 
 	Walnut::Application* app = new Walnut::Application(spec);
-	app->PushLayer<RT2Layer>();
-	app->SetMenubarCallback([app]()
+	auto layer = std::make_shared<RT2Layer>();
+	app->PushLayer(layer);
+	// Keep a raw pointer for the menubar callback. The Application owns the
+	// layer (shared_ptr in the layer stack), so this pointer is valid for
+	// the app's lifetime.
+	RT2Layer* layerPtr = layer.get();
+	app->SetMenubarCallback([app, layerPtr]()
 	{
 		if (ImGui::BeginMenu("File"))
 		{
 			if (ImGui::MenuItem("New"))
 			{
-				// TODO: wire to RT2Layer::NewScene via callback
+				layerPtr->NewScene();
 			}
 			if (ImGui::MenuItem("Open..."))
 			{
-				// TODO: wire to RT2Layer::LoadScene via callback
+				std::string filepath = FileDialog::OpenFile(
+					L"RT2 Scene (*.rt2scene)\0*.rt2scene\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0",
+					layerPtr->GetDialogInitialDirectory());
+				if (!filepath.empty())
+					layerPtr->OpenRt2Scene(filepath);
 			}
-			if (ImGui::MenuItem("Save..."))
+			if (ImGui::MenuItem("Save"))
 			{
-				// TODO: wire to RT2Layer::SaveRt2Scene via callback
+				layerPtr->SaveRt2Scene();
+			}
+			if (ImGui::MenuItem("Save As..."))
+			{
+				layerPtr->SaveRt2SceneAs();
 			}
 			ImGui::Separator();
 			if (ImGui::MenuItem("Exit"))
 			{
-				app->Close();
+				app->RequestClose();
 			}
 			ImGui::EndMenu();
 		}

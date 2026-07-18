@@ -40,6 +40,9 @@ bool RendererGPU::Init()
 		RT_LOG("[RT2] GPU renderer initialization failed (pipeline creation error)");
 		return false;
 	}
+	if (!m_PickingPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(),
+	                        MAX_FRAMES_IN_FLIGHT))
+		RT_LOG("[RT2] GPU picking unavailable (non-fatal)");
 	m_ComposePass.Init(m_Device);
 	m_TonemapPass.Init(m_Device);
 
@@ -73,6 +76,7 @@ void RendererGPU::Destroy()
 	VkDevice device = m_Device.device;
 	vkDeviceWaitIdle(device);
 	m_GpuProfiler.Destroy(device);
+	m_PickingPass.Destroy();
 
 	m_NRD.Destroy();
 	m_ReSTIRPass.Destroy();
@@ -309,6 +313,30 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 	m_ComposeDescriptorSetCached = false;
 	InvalidateReSTIRHistory();
 	InvalidateGIHistory();
+	CancelPicks();
+}
+
+void RendererGPU::CancelPicks()
+{
+	m_PendingPick.reset();
+	m_CompletedPick.reset();
+	++m_LatestPickSerial;
+	m_PickingPass.Invalidate();
+}
+
+uint64_t RendererGPU::RequestPick(const CameraRay& ray, float maxDistance)
+{
+	const uint64_t serial = ++m_LatestPickSerial;
+	m_PendingPick = PendingPick{ serial, ray, maxDistance };
+	m_CompletedPick.reset();
+	return serial;
+}
+
+std::optional<RendererGPU::PickResult> RendererGPU::ConsumePickResult()
+{
+	auto result = std::move(m_CompletedPick);
+	m_CompletedPick.reset();
+	return result;
 }
 
 void RendererGPU::UpdatePathTraceDescriptorSet()
@@ -423,8 +451,10 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 	       (void*)m_CameraUBO, (void*)m_Scene.GetMaterialBuffer());
 }
 
-void RendererGPU::SetSceneKeepTextures(const GPUSceneData& sceneData)
+void RendererGPU::SetSceneKeepTextures(const GPUSceneData& sceneData, const RenderInstanceMap& instanceMap)
 {
+	m_RenderInstanceMap = instanceMap;
+	CancelPicks();
 	RT_LOG("[SetSceneKeepTextures] enter: meshes=%zu instances=%zu lights=%zu",
 	       sceneData.meshes.size(), sceneData.instances.size(), sceneData.lights.size());
 	m_Scene.SetSceneKeepTextures(m_Device, sceneData);
@@ -443,8 +473,10 @@ void RendererGPU::SetSceneKeepTextures(const GPUSceneData& sceneData)
 	RT_LOG("[SetSceneKeepTextures] done");
 }
 
-void RendererGPU::SetScene(GPUSceneData& sceneData)
+void RendererGPU::SetScene(GPUSceneData& sceneData, const RenderInstanceMap& instanceMap)
 {
+	m_RenderInstanceMap = instanceMap;
+	CancelPicks();
 	RT_LOG("[SetScene] enter: meshes=%zu instances=%zu lights=%zu",
 	       sceneData.meshes.size(), sceneData.instances.size(), sceneData.lights.size());
 	m_Scene.SetScene(m_Device, sceneData);
@@ -467,8 +499,10 @@ void RendererGPU::SetScene(GPUSceneData& sceneData)
 	}
 }
 
-void RendererGPU::UpdateSceneInstances(const GPUSceneData& sceneData)
+void RendererGPU::UpdateSceneInstances(const GPUSceneData& sceneData, const RenderInstanceMap& instanceMap)
 {
+	m_RenderInstanceMap = instanceMap;
+	CancelPicks();
 	vkDeviceWaitIdle(m_Device.device);
 
 	m_Scene.UpdateInstances(m_Device, sceneData);
@@ -777,6 +811,21 @@ void RendererGPU::Render(const Camera& camera)
 	FrameContext& frame = m_Frames[m_CurrentFrame];
 	frame.WaitForFence(device);
 	m_GpuProfiler.ReadCompletedSlot(device, m_CurrentFrame);
+	if (auto completed = m_PickingPass.ReadCompletedSlot(m_CurrentFrame))
+	{
+		if (completed->serial == m_LatestPickSerial)
+		{
+			PickResult result;
+			result.serial = completed->serial;
+			result.worldPosition = completed->worldPosition;
+			if (completed->hit && completed->instanceIndex < completed->instanceMap.size())
+			{
+				result.entityUuid = completed->instanceMap[completed->instanceIndex];
+				result.hit = !result.entityUuid.IsNull();
+			}
+			m_CompletedPick = result;
+		}
+	}
 	frame.Begin(device);
 	VkCommandBuffer cmd = frame.commandBuffer;
 	m_GpuProfiler.BeginFrame(cmd, m_CurrentFrame, m_FrameIndex);
@@ -878,6 +927,15 @@ void RendererGPU::Render(const Camera& camera)
 	};
 
 	FrameRenderer::RecordFrame(cmd, ctx);
+	if (m_PendingPick && m_PickingPass.IsAvailable())
+	{
+		m_PickingPass.Record(cmd, m_CurrentFrame,
+			m_PathTracePass.GetDescriptorSet(),
+			m_PendingPick->ray.origin, m_PendingPick->ray.direction,
+			m_PendingPick->maxDistance, m_PendingPick->serial,
+			m_RenderInstanceMap);
+		m_PendingPick.reset();
+	}
 	m_GpuProfiler.EndFrame(m_CurrentFrame);
 
 	// ---- Submit this frame's work (async, no wait) ----

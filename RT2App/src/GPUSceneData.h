@@ -7,6 +7,7 @@
 #include "ECSScene.h"
 #include <glm/glm.hpp>
 #include <vector>
+#include "RenderInstanceMap.h"
 
 // Include the shared shader interface header to keep C++/GLSL structs in sync.
 // The GPUMaterial and GPUTriangleLight structs below must match the Material
@@ -151,12 +152,14 @@ struct GPUSceneData
 // Convert an ECSScene into GPUSceneData: one GPUMeshGeometry per unique mesh
 // in the MeshRegistry, one GPUInstance per entity with MeshRef. World matrices
 // are read from Transform components (must be updated by SceneGraph first).
-GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene);
+GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene,
+                                     RenderInstanceMap* instanceMap = nullptr);
 
 // Update only the instances[] and lights[] arrays in an existing GPUSceneData
 // from the current ECS transforms. Meshes and materials are unchanged.
 // Call after SceneGraph::UpdateWorldTransforms when transforms have changed.
-void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene);
+void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene,
+                            RenderInstanceMap* instanceMap = nullptr);
 
 // Build marginal and conditional CDFs for env map importance sampling (M8).
 void BuildEnvMapCDF(const std::vector<float>& floatPixels, int width, int height,

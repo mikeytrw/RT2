@@ -25,8 +25,11 @@
 #include "GpuResources.h"
 #include "FrameContext.h"
 #include "GpuTimestampProfiler.h"
+#include "RenderInstanceMap.h"
+#include "GpuPickingPass.h"
 #include <array>
 #include <memory>
+#include <optional>
 
 class RendererGPU
 {
@@ -41,11 +44,11 @@ public:
 
 	void OnResize(uint32_t width, uint32_t height);
 	void Render(const Camera& camera);
-	void SetScene(GPUSceneData& sceneData);
+	void SetScene(GPUSceneData& sceneData, const RenderInstanceMap& instanceMap = {});
 
 	// Update scene data WITHOUT re-uploading textures. Use when only
 	// entities/transforms/materials changed (add/delete entity, material edit).
-	void SetSceneKeepTextures(const GPUSceneData& sceneData);
+	void SetSceneKeepTextures(const GPUSceneData& sceneData, const RenderInstanceMap& instanceMap = {});
 
 	// Async texture upload polling — forward to SceneResources.
 	bool IsTextureUploadPending() const { return m_Scene.IsTextureUploadPending(); }
@@ -53,12 +56,23 @@ public:
 
 	// Update instance transforms + lights + TLAS only (no BLAS rebuild).
 	// Call after ECS transforms have changed (e.g. animation).
-	void UpdateSceneInstances(const GPUSceneData& sceneData);
+	void UpdateSceneInstances(const GPUSceneData& sceneData, const RenderInstanceMap& instanceMap = {});
 
 	VkDescriptorSet GetOutputDescriptorSet() const { return m_ImGuiDescriptorSet; }
 	bool HasOutput() const { return m_OutputImage.IsValid() && m_DisplayImage.IsValid(); }
 	uint32_t GetWidth() const { return m_Width; }
 	uint32_t GetHeight() const { return m_Height; }
+
+	struct PickResult
+	{
+		uint64_t serial = 0;
+		bool hit = false;
+		rt2::core::UUID entityUuid = rt2::core::UUID::Nil();
+		glm::vec3 worldPosition{ 0.0f };
+	};
+
+	uint64_t RequestPick(const CameraRay& ray, float maxDistance = 100000.0f);
+	std::optional<PickResult> ConsumePickResult();
 
 	bool Init();
 	void ResetAccumulation();
@@ -103,6 +117,7 @@ public:
 	void DumpNEEBuffers() const;
 
 private:
+	void CancelPicks();
 	void CreateOutputImage();
 	void DestroyOutputImage();
 	void UpdateCameraUBO(const Camera& camera);
@@ -207,6 +222,17 @@ private:
 	// Frames in flight ring
 	std::array<FrameContext, MAX_FRAMES_IN_FLIGHT> m_Frames;
 	uint32_t m_CurrentFrame = 0;
+	RenderInstanceMap m_RenderInstanceMap;
+	GpuPickingPass m_PickingPass;
+	struct PendingPick
+	{
+		uint64_t serial = 0;
+		CameraRay ray;
+		float maxDistance = 100000.0f;
+	};
+	std::optional<PendingPick> m_PendingPick;
+	std::optional<PickResult> m_CompletedPick;
+	uint64_t m_LatestPickSerial = 0;
 	GpuTimestampProfiler m_GpuProfiler;
 };
 

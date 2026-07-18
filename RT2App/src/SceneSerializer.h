@@ -74,6 +74,16 @@ public:
     // the save `path`'s parent directory where possible.
     static bool Save(const SceneDocument& doc, const std::filesystem::path& path, Error& err);
 
+    // Save a document to `outPath`, but relativize asset references against
+    // `logicalScenePath`'s parent directory instead of `outPath`. This is the
+    // recovery-snapshot path: bytes land under the recovery directory, but
+    // durable asset references remain resolvable against the original
+    // authoring scene's logical root. Does NOT mutate doc.metadata.sourcePath.
+    static bool SaveTo(const SceneDocument& doc,
+                       const std::filesystem::path& outPath,
+                       const std::filesystem::path& logicalScenePath,
+                       Error& err);
+
     // Load a .rt2scene file into a document. The document is cleared first;
     // on failure, the document is left in a cleared state (not partially
     // filled). Uses the document's injected UUID provider for any new IDs.

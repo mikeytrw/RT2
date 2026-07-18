@@ -108,7 +108,8 @@ copy /Y "$(ProjectDir)shaders\restir_gi_temporal.spv" "../bin/Debug-windows-x86_
 copy /Y "$(ProjectDir)shaders\restir_gi_history.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Debug-windows-x86_64/RT2App"</Command>
+copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Debug-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -151,7 +152,8 @@ copy /Y "$(ProjectDir)shaders\restir_gi_temporal.spv" "../bin/Release-windows-x8
 copy /Y "$(ProjectDir)shaders\restir_gi_history.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Release-windows-x86_64/RT2App"</Command>
+copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Release-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Dist|x64'">
@@ -194,7 +196,8 @@ copy /Y "$(ProjectDir)shaders\restir_gi_temporal.spv" "../bin/Dist-windows-x86_6
 copy /Y "$(ProjectDir)shaders\restir_gi_history.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Dist-windows-x86_64/RT2App"
-copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2App"</Command>
+copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -208,6 +211,8 @@ copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2A
     <ClInclude Include="src\ComposePass.h" />
     <ClInclude Include="src\ECSComponents.h" />
     <ClInclude Include="src\ECSScene.h" />
+    <ClInclude Include="src\EditorSelection.h" />
+    <ClInclude Include="src\EditorSettings.h" />
     <ClInclude Include="src\FileDialog.h" />
     <ClInclude Include="src\FixtureGenerator.h" />
     <ClInclude Include="src\FrameContext.h" />
@@ -217,35 +222,41 @@ copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2A
     <ClInclude Include="src\GPUSceneData.h" />
     <ClInclude Include="src\GpuDevice.h" />
     <ClInclude Include="src\GpuDiagnostics.h" />
+    <ClInclude Include="src\GpuPickingPass.h" />
     <ClInclude Include="src\GpuResources.h" />
     <ClInclude Include="src\GpuTimestampProfiler.h" />
     <ClInclude Include="src\ISceneRenderBridge.h" />
     <ClInclude Include="src\MeshRegistry.h" />
     <ClInclude Include="src\NRDIntegration.h" />
     <ClInclude Include="src\PathTracePass.h" />
+    <ClInclude Include="src\Phase1AFixtureGenerator.h" />
     <ClInclude Include="src\PrimitiveGeometry.h" />
     <ClInclude Include="src\RTLog.h" />
     <ClInclude Include="src\RasterPass.h" />
     <ClInclude Include="src\ReSTIRGIPass.h" />
     <ClInclude Include="src\ReSTIRPass.h" />
+    <ClInclude Include="src\RenderInstanceMap.h" />
     <ClInclude Include="src\RenderSettings.h" />
     <ClInclude Include="src\RendererGPU.h" />
     <ClInclude Include="src\ReservoirGIResources.h" />
     <ClInclude Include="src\ReservoirResources.h" />
     <ClInclude Include="src\RuntimeSceneController.h" />
+    <ClInclude Include="src\SceneAssetResolver.h" />
     <ClInclude Include="src\SceneDocument.h" />
     <ClInclude Include="src\SceneEditorUI.h" />
     <ClInclude Include="src\SceneGraph.h" />
     <ClInclude Include="src\SceneLoader.h" />
     <ClInclude Include="src\SceneManager.h" />
+    <ClInclude Include="src\SceneRecoveryService.h" />
     <ClInclude Include="src\SceneRenderBridge.h" />
     <ClInclude Include="src\SceneResources.h" />
     <ClInclude Include="src\SceneSerializer.h" />
-    <ClInclude Include="src\SceneAssetResolver.h" />
     <ClInclude Include="src\SceneTypes.h" />
     <ClInclude Include="src\ShaderManager.h" />
     <ClInclude Include="src\StagingArena.h" />
     <ClInclude Include="src\TonemapPass.h" />
+    <ClInclude Include="src\UnsavedChangesCoordinator.h" />
+    <ClInclude Include="src\ViewportCoordinates.h" />
     <ClInclude Include="src\VulkanUtils.h" />
     <ClInclude Include="src\core\Error.h" />
     <ClInclude Include="src\core\UUID.h" />
@@ -299,6 +310,16 @@ copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2A
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\EditorSelection.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\EditorSettings.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\FileDialog.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -335,6 +356,11 @@ copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2A
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\GpuDiagnostics.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\GpuPickingPass.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -399,6 +425,11 @@ copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2A
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\SceneAssetResolver.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\SceneDocument.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -424,6 +455,11 @@ copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2A
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\SceneRecoveryService.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\SceneRenderBridge.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -435,11 +471,6 @@ copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2A
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\SceneSerializer.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\SceneAssetResolver.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -460,6 +491,16 @@ copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2A
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\TonemapPass.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\UnsavedChangesCoordinator.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\ViewportCoordinates.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -524,6 +565,12 @@ copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2A
       <Outputs>$(ProjectDir)shaders/miss.spv</Outputs>
       <Message>Compiling miss.rmiss</Message>
       <AdditionalInputs>shaders/pathtracer_shared.glsl;shaders/scatter_shared.glsl;shaders/restir_shared.glsl;shaders/restir_bindings.glsl;shaders/shader_interface.h</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="shaders\picking.comp">
+      <FileType>Document</FileType>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2  -fshader-stage=comp -I $(ProjectDir)shaders $(ProjectDir)shaders/picking.comp -o $(ProjectDir)shaders/picking.spv</Command>
+      <Outputs>$(ProjectDir)shaders/picking.spv</Outputs>
+      <Message>Compiling picking.comp</Message>
     </CustomBuild>
     <CustomBuild Include="shaders\raster.frag">
       <FileType>Document</FileType>

@@ -798,7 +798,14 @@ std::vector<EntityRecord> CollectRecords(const SceneDocument& doc)
 // Save
 // ============================================================================
 
-bool SceneSerializer::Save(const SceneDocument& doc, const std::filesystem::path& path, Error& err)
+// Internal save: writes the document to outPath, but relativizes asset
+// references against sceneDir (which may differ from outPath's parent when
+// writing a recovery snapshot whose logical scene root is elsewhere).
+// Pre-save validation + atomic replace are shared by Save and SaveTo.
+static bool SaveInternal(const SceneDocument& doc,
+                         const std::filesystem::path& outPath,
+                         const std::filesystem::path& sceneDir,
+                         Error& err)
 {
     // Pre-save validation: every entity with a MeshRef must have either a
     // PrimitiveComponent (procedural) or an ImportedMeshSourceComponent
@@ -827,7 +834,7 @@ bool SceneSerializer::Save(const SceneDocument& doc, const std::filesystem::path
         if (count > 0)
         {
             err.code = Error::UnknownPrimitive;
-            err.path = path.string();
+            err.path = outPath.string();
             err.detail = std::to_string(count) + " entit" +
                          (count == 1 ? "y" : "ies") +
                          " with mesh geometry but no PrimitiveComponent or "
@@ -838,11 +845,9 @@ bool SceneSerializer::Save(const SceneDocument& doc, const std::filesystem::path
         }
     }
 
-    const std::filesystem::path sceneDir = path.parent_path();
-
     // Build the JSON document.
     json root;
-    root["version"] = SchemaVersion;
+    root["version"] = SceneSerializer::SchemaVersion;
 
     // Metadata
     {
@@ -887,7 +892,7 @@ bool SceneSerializer::Save(const SceneDocument& doc, const std::filesystem::path
 
     // --- Atomic save ---
     // Write to a temp sibling file, then atomically replace the target.
-    std::filesystem::path tmpPath = path;
+    std::filesystem::path tmpPath = outPath;
     tmpPath += ".tmp";
 
     {
@@ -918,11 +923,11 @@ bool SceneSerializer::Save(const SceneDocument& doc, const std::filesystem::path
     auto toWide = [](const std::filesystem::path& p) {
         return p.wstring();
     };
-    std::wstring wTarget = toWide(path);
+    std::wstring wTarget = toWide(outPath);
     std::wstring wTmp    = toWide(tmpPath);
 
     // If the target exists, use ReplaceFileW (atomic replace).
-    if (std::filesystem::exists(path))
+    if (std::filesystem::exists(outPath))
     {
         BOOL ok = ReplaceFileW(wTarget.c_str(), wTmp.c_str(), nullptr,
                                REPLACEFILE_WRITE_THROUGH, nullptr, nullptr);
@@ -934,7 +939,7 @@ bool SceneSerializer::Save(const SceneDocument& doc, const std::filesystem::path
                              MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
             {
                 err.code = Error::Io;
-                err.path = path.string();
+                err.path = outPath.string();
                 err.detail = "ReplaceFileW and MoveFileExW both failed";
                 std::filesystem::remove(tmpPath);
                 return false;
@@ -947,7 +952,7 @@ bool SceneSerializer::Save(const SceneDocument& doc, const std::filesystem::path
         if (!MoveFileExW(wTmp.c_str(), wTarget.c_str(), MOVEFILE_WRITE_THROUGH))
         {
             err.code = Error::Io;
-            err.path = path.string();
+            err.path = outPath.string();
             err.detail = "MoveFileExW failed for new file";
             std::filesystem::remove(tmpPath);
             return false;
@@ -956,11 +961,11 @@ bool SceneSerializer::Save(const SceneDocument& doc, const std::filesystem::path
 #else
     // Portable fallback (not the primary path on Windows).
     std::error_code ec;
-    std::filesystem::rename(tmpPath, path, ec);
+    std::filesystem::rename(tmpPath, outPath, ec);
     if (ec)
     {
         err.code = Error::Io;
-        err.path = path.string();
+        err.path = outPath.string();
         err.detail = "filesystem::rename failed: " + ec.message();
         std::filesystem::remove(tmpPath);
         return false;
@@ -968,6 +973,23 @@ bool SceneSerializer::Save(const SceneDocument& doc, const std::filesystem::path
 #endif
 
     return true;
+}
+
+bool SceneSerializer::Save(const SceneDocument& doc, const std::filesystem::path& path, Error& err)
+{
+    return SaveInternal(doc, path, path.parent_path(), err);
+}
+
+bool SceneSerializer::SaveTo(const SceneDocument& doc,
+                            const std::filesystem::path& outPath,
+                            const std::filesystem::path& logicalScenePath,
+                            Error& err)
+{
+    // Relativize asset references against the logical scene's directory,
+    // not the physical output path. This is the recovery-snapshot path:
+    // bytes land under the recovery directory, but durable references
+    // remain resolvable against the original authoring scene's root.
+    return SaveInternal(doc, outPath, logicalScenePath.parent_path(), err);
 }
 
 // ============================================================================

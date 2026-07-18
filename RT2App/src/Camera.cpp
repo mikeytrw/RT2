@@ -153,3 +153,9 @@ void Camera::RecalculateView()
 	m_View = glm::lookAt(m_Position, m_Position + m_ForwardDirection, glm::vec3(0, 1, 0));
 	m_InverseView = glm::inverse(m_View);
 }
+
+CameraRay Camera::GetPickingRay(float u, float v) const
+{
+	return BuildPickingRay(m_InverseProjection, m_InverseView, m_Position,
+	                       glm::vec2(u, v));
+}

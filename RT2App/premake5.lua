@@ -31,6 +31,7 @@ project "RT2App"
         "shaders/raster.vert",
         "shaders/raster.frag",
         "shaders/gbuffer_debug.comp",
+		"shaders/picking.comp",
         "shaders/pathtracer_shared.glsl",
         "shaders/scatter_shared.glsl",
         "shaders/restir_gi_shared.glsl",
@@ -160,6 +161,11 @@ project "RT2App"
         buildoutputs { shaderDir .. "/gbufferdebug.spv" }
         buildinputs { depBasic }
 
+	filter {"files:shaders/picking.comp"}
+		buildmessage "Compiling picking.comp"
+		buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/picking.comp -o " .. shaderDir .. "/picking.spv" }
+		buildoutputs { shaderDir .. "/picking.spv" }
+
     -- Reset filter for the rest
     filter {}
 
@@ -222,7 +228,8 @@ project "RT2App"
             "copy /Y \"$(ProjectDir)shaders\\restir_gi_history.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\raster.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\rasterfrag.spv\" \"%{cfg.targetdir}\"",
-            "copy /Y \"$(ProjectDir)shaders\\gbufferdebug.spv\" \"%{cfg.targetdir}\""
+			"copy /Y \"$(ProjectDir)shaders\\gbufferdebug.spv\" \"%{cfg.targetdir}\"",
+			"copy /Y \"$(ProjectDir)shaders\\picking.spv\" \"%{cfg.targetdir}\""
         }
 
    filter "configurations:Debug"

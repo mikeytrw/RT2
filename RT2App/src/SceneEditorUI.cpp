@@ -25,6 +25,33 @@ void SceneEditorUI::NotifyTransformChanged()
 		m_OnTransformChanged();
 }
 
+SceneManager::EntityId SceneEditorUI::SelectedEntity() const
+{
+	if (!m_SceneMgr)
+		return {};
+	const auto uuid = m_Selection.Primary();
+	return uuid.IsNull() ? SceneManager::EntityId{} :
+		SceneManager::EntityId{ m_SceneMgr->FindEntityByUuid(uuid) };
+}
+
+void SceneEditorUI::SelectEntity(SceneManager::EntityId entity, bool toggle)
+{
+	if (!m_SceneMgr || !entity.IsValid())
+	{
+		if (!toggle) m_Selection.Clear();
+		return;
+	}
+	const auto uuid = m_SceneMgr->GetEntityUuid(entity);
+	if (toggle) m_Selection.Toggle(uuid);
+	else m_Selection.SelectOnly(uuid);
+}
+
+bool SceneEditorUI::IsSelected(SceneManager::EntityId entity) const
+{
+	return m_SceneMgr && entity.IsValid() &&
+		m_Selection.Contains(m_SceneMgr->GetEntityUuid(entity));
+}
+
 // ============================================================================
 // Outliner
 // ============================================================================
@@ -55,7 +82,7 @@ void SceneEditorUI::RenderOutliner()
 			int matIdx = m_SceneMgr->AddMaterial(mat);
 			auto id = m_SceneMgr->AddObjectWithGeometry("Light",
 				PrimitiveGeometry::CreateSphere(0.2f), {0, 3, 0}, {0, 0, 0}, 1.0f, matIdx);
-			m_SelectedEntity = id;
+			SelectEntity(id);
 			NotifySceneChanged();
 		}
 		ImGui::Separator();
@@ -67,7 +94,7 @@ void SceneEditorUI::RenderOutliner()
 			// Attach PrimitiveComponent so the entity can be saved to .rt2scene
 			m_SceneMgr->GetECS().registry.emplace_or_replace<PrimitiveComponent>(id.id,
 				PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16});
-			m_SelectedEntity = id;
+			SelectEntity(id);
 			NotifySceneChanged();
 		}
 		if (ImGui::MenuItem("Sphere"))
@@ -77,7 +104,7 @@ void SceneEditorUI::RenderOutliner()
 				PrimitiveGeometry::CreateSphere(0.5f), {0, 0.5f, 0}, {0, 0, 0}, 1.0f, matIdx);
 			m_SceneMgr->GetECS().registry.emplace_or_replace<PrimitiveComponent>(id.id,
 				PrimitiveComponent{PrimitiveComponent::Sphere, 1.0f, 24, 16});
-			m_SelectedEntity = id;
+			SelectEntity(id);
 			NotifySceneChanged();
 		}
 		if (ImGui::MenuItem("Plane"))
@@ -87,30 +114,42 @@ void SceneEditorUI::RenderOutliner()
 				PrimitiveGeometry::CreatePlane(5.0f), {0, 0, 0}, {0, 0, 0}, 1.0f, matIdx);
 			m_SceneMgr->GetECS().registry.emplace_or_replace<PrimitiveComponent>(id.id,
 				PrimitiveComponent{PrimitiveComponent::Plane, 5.0f, 24, 16});
-			m_SelectedEntity = id;
+			SelectEntity(id);
 			NotifySceneChanged();
 		}
 		ImGui::Separator();
 		if (ImGui::MenuItem("Import Scene..."))
 		{
+			const auto initialDirectory = m_DialogInitialDirectory
+				? m_DialogInitialDirectory() : std::filesystem::path{};
 			std::string path = FileDialog::OpenFile(
-				"glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0");
+				L"glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0",
+				initialDirectory);
 			if (!path.empty() && m_OnImportGltf)
 			{
 				auto id = m_OnImportGltf(path);
-				m_SelectedEntity = id;
-				NotifySceneChanged();
+				if (id.IsValid())
+				{
+					SelectEntity(id);
+					NotifySceneChanged();
+				}
 			}
 		}
 		if (ImGui::MenuItem("Load Mesh File..."))
 		{
+			const auto initialDirectory = m_DialogInitialDirectory
+				? m_DialogInitialDirectory() : std::filesystem::path{};
 			std::string path = FileDialog::OpenFile(
-				"OBJ Files (*.obj)\0*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0");
+				L"OBJ Files (*.obj)\0*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0",
+				initialDirectory);
 			if (!path.empty() && m_OnLoadMeshFile)
 			{
 				auto id = m_OnLoadMeshFile(path);
-				m_SelectedEntity = id;
-				NotifySceneChanged();
+				if (id.IsValid())
+				{
+					SelectEntity(id);
+					NotifySceneChanged();
+				}
 			}
 		}
 		ImGui::EndPopup();
@@ -146,8 +185,14 @@ void SceneEditorUI::RenderOutliner()
 	ImGui::BeginDisabled(!m_Editable);
 	if (ImGui::Button("Delete Selected"))
 	{
-		m_SceneMgr->RemoveEntity(m_SelectedEntity);
-		m_SelectedEntity = SceneManager::EntityId{};
+		const auto selected = m_Selection.Ordered();
+		for (const auto& uuid : selected)
+		{
+			const entt::entity entity = m_SceneMgr->FindEntityByUuid(uuid);
+			if (entity != entt::null)
+				m_SceneMgr->RemoveEntity(SceneManager::EntityId{ entity });
+		}
+		m_Selection.Clear();
 		NotifySceneChanged();
 		m_TreeDirty = true;
 	}
@@ -188,7 +233,7 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 
 	ImGui::PushID((int)entity.id);
 
-	bool isSelected = (m_SelectedEntity.id == entity.id);
+	bool isSelected = IsSelected(entity);
 	bool hasChildren = m_SceneMgr->HasChildren(entity);
 
 	if (hasChildren)
@@ -200,7 +245,7 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 
 		// Click on the tree node label selects it
 		if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
-			m_SelectedEntity = entity;
+			SelectEntity(entity, ImGui::GetIO().KeyCtrl);
 
 		// Right-click context menu for deletion
 		if (ImGui::BeginPopupContextItem("EntityCtx"))
@@ -208,8 +253,8 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 			ImGui::BeginDisabled(!m_Editable);
 			if (ImGui::MenuItem("Delete"))
 			{
-				if (m_SelectedEntity.id == entity.id)
-					m_SelectedEntity = SceneManager::EntityId{};
+				if (IsSelected(entity))
+					m_Selection.Remove(m_SceneMgr->GetEntityUuid(entity));
 				m_SceneMgr->RemoveEntity(entity);
 				NotifySceneChanged();
 				m_TreeDirty = true;
@@ -237,15 +282,15 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 	else
 	{
 		if (ImGui::Selectable(label.c_str(), isSelected, ImGuiTreeNodeFlags_SpanAvailWidth))
-			m_SelectedEntity = entity;
+			SelectEntity(entity, ImGui::GetIO().KeyCtrl);
 
 		if (ImGui::BeginPopupContextItem("EntityCtx"))
 		{
 			ImGui::BeginDisabled(!m_Editable);
 			if (ImGui::MenuItem("Delete"))
 			{
-				if (m_SelectedEntity.id == entity.id)
-					m_SelectedEntity = SceneManager::EntityId{};
+				if (IsSelected(entity))
+					m_Selection.Remove(m_SceneMgr->GetEntityUuid(entity));
 				m_SceneMgr->RemoveEntity(entity);
 				NotifySceneChanged();
 				m_TreeDirty = true;
@@ -266,14 +311,17 @@ void SceneEditorUI::RenderInspector()
 {
 	ImGui::Begin("Inspector");
 
-	if (!m_SceneMgr || !m_SelectedEntity.IsValid() || !m_SceneMgr->IsEntityAlive(m_SelectedEntity))
+	if (m_SceneMgr)
+		m_Selection.Prune(m_SceneMgr->AuthoringDoc());
+	const auto selectedEntity = SelectedEntity();
+	if (!m_SceneMgr || !selectedEntity.IsValid() || !m_SceneMgr->IsEntityAlive(selectedEntity))
 	{
 		ImGui::TextDisabled("Select an entity in the Outliner");
 		ImGui::End();
 		return;
 	}
 
-	auto entity = m_SelectedEntity;
+	auto entity = selectedEntity;
 	std::string name = m_SceneMgr->GetEntityName(entity);
 
 	// Name field

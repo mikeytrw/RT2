@@ -10,3 +10,4 @@ Rules:
 - If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
 - Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
 - After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
+- Codex sandbox note: the installed `graphify.exe` is a uv trampoline whose environment lives under the user's AppData. Inside the restricted sandbox it may fail immediately with `uv trampoline failed to canonicalize script path`; this is a sandbox-access issue, not a broken graph. Rerun Graphify commands with sandbox escalation. The user has approved the `graphify update` command prefix. Allow up to 180 seconds for `graphify update .` on this repository.

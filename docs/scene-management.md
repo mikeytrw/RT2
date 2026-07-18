@@ -430,3 +430,203 @@ representation without changing entity UUIDs, hierarchy UUID references,
 transforms, material identity, or camera. The only observable difference is
 the version field written back on save (v2). v1 scenes carry no asset
 references, so no resolution is needed for them.
+
+---
+
+## Editor settings, recovery, and session lifecycle (Phase 1B)
+
+### EditorSettingsStore
+
+Per-user editor preferences stored as a versioned JSON file under
+`<appDataRoot>/settings.json` (production: `%LOCALAPPDATA%\RT2\Editor`).
+Tests inject a temporary directory so they never touch the developer's
+LocalAppData.
+
+Schema (version 1):
+
+```json
+{
+  "version": 1,
+  "projectRoot": "<absolute path or empty>",
+  "recentScenes": ["<absolute .rt2scene path>", ...]
+}
+```
+
+- Atomic write: tmp + MoveFileExW/ReplaceFileW. A failed write leaves the
+  previous valid file intact.
+- Recents: native `.rt2scene` files only, most-recent-first, bounded
+  (default 10), normalized + deduplicated case-insensitively on Windows.
+  Updated only after a successful native open or save. Failed/cancelled
+  operations do not change the list.
+- Project root: optional editor preference used as an initial file-dialog
+  location. Does NOT reinterpret the Phase 1A scene-relative asset-reference
+  contract.
+- Unsupported versions and malformed files produce useful diagnostics and
+  safe defaults. Unknown optional fields are ignored.
+
+### SceneRecoveryService
+
+Crash-safe authoring recovery. Recovery is crash protection, NOT version
+history. One atomically-replaced record per logical document. At most
+`MaxRecords` (default 8) document records exist globally; the oldest are
+evicted only AFTER a new record commits successfully. The just-written
+record is never evicted.
+
+Storage layout: one `<fnv1a64(docId)>.rt2recovery` JSON envelope directly
+under `recoveryRoot`. Hashing the complete normalized document identity avoids
+long-path truncation collisions; discovery validates that the stored `docId`
+hash matches the filename. The file contains both the recovery metadata and a
+nested schema-v2 scene snapshot. Asset references are still relativized
+against the ORIGINAL logical scene root via `SceneSerializer::SaveTo`, not
+against the recovery directory.
+
+Envelope fields (the nested `snapshot` is the complete `.rt2scene` JSON
+object, not a second file):
+
+```json
+{
+  "version": 1,
+  "docId": "<normalized case-folded absolute path or untitled:id>",
+  "untitled": false,
+  "originalSourcePath": "<empty when untitled>",
+  "assetRoot": "<directory asset references were relativized against>",
+  "revision": 0,
+  "createdAt": 0,
+  "snapshot": { "schemaVersion": 2, "...": "..." }
+}
+```
+
+Autosave scheduling (`MaybeSnapshot`):
+
+- Called once per frame from the host's `OnUpdate` while in Edit state.
+- Only snapshots the authoring document — never the runtime Play clone.
+- Guards: `doc.metadata.dirty == true`, interval elapsed (default 60s,
+  injectable) after the first dirty observation, and revision changed since
+  the last snapshot. The first dirty frame starts the timer; it does not write
+  immediately. No work occurs on clean frames or unchanged revisions.
+- Does NOT clear dirty state, change `sourcePath`, update recents, or reset
+  UUIDs. Never overwrites the explicit `.rt2scene`.
+- Writes one temp sibling and atomically replaces the envelope with
+  `ReplaceFileW`/`MoveFileExW`. A failed write leaves the previous valid
+  recovery intact.
+- Autosave is deliberately synchronous on the main thread for Phase 1B.
+  Success reports elapsed milliseconds; failures and writes above the 10 ms
+  guardrail surface non-modal diagnostics without terminating the app.
+
+Restore (`Restore(record, outDoc, diagnostics, err)`):
+
+- Transactional: loads + resolves into a temporary document using the
+  recorded `assetRoot` (NOT the recovery directory). Only on success does
+  it swap into `outDoc`.
+- The restored document is marked dirty.
+- Preserves `metadata.sourcePath` from the record (empty when untitled).
+- UUIDs, hierarchy, components, camera, lights, environment references,
+  imported model references, and material overrides are preserved.
+- On failure (parse, resolution, or IO), the live document is untouched and
+  the recovery record remains available.
+
+Discard:
+
+- `Discard(record)` deletes only a directly contained `.rt2recovery` file;
+  path-containment validation prevents deletion outside the recovery root.
+  The explicit scene file is untouched.
+- `DiscardForDoc(docId)` after successful Save/Save As/Discard.
+- `OnSaveAs(oldId, newId)` retires both identities so a post-Save-As crash
+  does not resurrect the pre-Save-As state.
+
+Doc identity:
+
+- Titled documents: normalized case-folded absolute `sourcePath`.
+- Untitled documents: a stable per-session recovery UUID string.
+
+Authoring revision counter:
+
+- `SceneManager::AuthoringRevision()` bumps on every authoring mutation via
+  `NotifyAuthoringChanged()`. Used by the recovery service to skip
+  rewriting identical snapshots. Not serialized into `.rt2scene`.
+
+### UnsavedChangesCoordinator
+
+Pure state machine for New/Open/Recent/Exit requests against a document that may
+have unsaved authoring changes. No ImGui dependency. The host wires
+`IsDirtyQuery`, one unified `SaveGate`, `ExecuteGate`, and
+`DiscardRecoveryGate` callbacks.
+
+- `Request(action)` when clean → execute immediately.
+- `Request(action)` when dirty → queue one pending action; a second request
+  while pending is rejected.
+- `ResolveSave()` → unified save gate; the host chooses Save or Save As from
+  the document's source path. On success it executes the pending action; on
+  failure or dialog cancellation it retains that action.
+- `ResolveDiscard()` → execute pending + clear recovery for the abandoned
+  document.
+- `ResolveCancel()` → clear pending, no mutations.
+
+### Window-close integration
+
+Walnut's `Application::RequestClose()` is an interactive, cancelable close
+that fires a `CloseRequestCallback`. The OS title-bar close button / Alt+F4
+is routed through a `glfwSetWindowCloseCallback` that cancels the GLFW-level
+close and calls `RequestClose()` instead. Headless/internal completion
+still uses `Application::Close()` directly.
+
+### Production user-data locations
+
+- Settings: `%LOCALAPPDATA%\RT2\Editor\settings.json`
+- Recovery: `%LOCALAPPDATA%\RT2\Editor\Recovery\<doc-id-hash>.rt2recovery`
+
+Tests override both by constructing the stores/services with a temporary
+directory. No core logic hardcodes these paths.
+
+## Editor selection and viewport picking
+
+Selection is transient editor state and uses stable `UUID` values rather than
+`entt::entity`. `EditorSelection` preserves ordered multi-selection; its final
+entry is primary. The Inspector resolves that UUID through the active
+authoring `SceneDocument` each frame, and stale IDs are pruned. Selection is
+not part of `.rt2scene`, runtime cloning, autosave, recovery, or `GPUSceneData`.
+
+### Coordinate and ray contract
+
+`ViewportImageRect` records the ImGui image's desktop-space top-left,
+displayed size, and actual render extent. `ScreenToRenderPixel` treats right
+and bottom edges as exclusive and returns a top-left-origin render pixel.
+The pixel centre is converted to normalized UV before calling
+`Camera::GetPickingRay`.
+
+Picking rays are deterministic pinhole rays built from the camera inverse
+projection and inverse view. They intentionally do not call
+`GetRayOriginAndDirection`, because that path samples the aperture for depth
+of field and would make editor selection stochastic.
+
+### Instance identity boundary
+
+`BuildGPUSceneDataFromECS` and `UpdateInstancesFromECS` optionally emit a
+`RenderInstanceMap` alongside the GPU DTO. Entry `i` is the entity UUID for
+GPU instance `i`. The map is passed through the SceneManager sync callback to
+RendererGPU but remains outside `GPUSceneData`; shaders never consume UUIDs.
+
+This boundary must remain atomic: code that changes GPU instance ordering must
+change map construction in the same iteration. Never reconstruct the mapping
+later from a second registry traversal.
+
+### Frame-safe GPU result
+
+`GpuPickingPass` dispatches one compute invocation using `GL_EXT_ray_query`
+against the renderer's existing TLAS. It confirms opaque intersections and
+applies the same MASK alpha cutoff; BLEND uses deterministic 0.5 coverage for
+selection. The result contains hit state, instance custom index, hit distance,
+and world position.
+
+Each frame-in-flight slot owns a host-coherent result buffer and the exact
+`RenderInstanceMap` snapshot captured when its query was recorded. RendererGPU
+reads the slot only after `FrameContext::WaitForFence` for that same slot, then
+resolves the instance index against the captured map. This adds no explicit
+GPU stall. A monotonically increasing request serial discards older results
+after a newer click. Resize or scene/instance updates cancel outstanding
+requests.
+
+Viewport selection is accepted only while the runtime controller is in Edit
+state. A live UUID lookup is still required before adopting the result, because
+an entity may have been deleted while the GPU query was in flight. A miss
+clears selection.

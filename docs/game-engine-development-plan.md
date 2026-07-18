@@ -984,3 +984,109 @@ What remains in full Phase 1 (intentionally deferred from 1A):
 - Recent-scenes UI and project-root settings.
 - Later asset-database migration (Phase 7 global asset UUIDs) — explicitly
   out of scope for 1A; the slice uses scene-relative paths, not asset UUIDs.
+
+### Phase 1B — crash-safe authoring and session recovery (implemented)
+
+Phase 1B closes the remaining Phase 1 requirements: bounded autosave,
+recovery, Save/Discard/Cancel prompts, recent-scenes, and project-root
+editor settings. It delivers:
+
+- `EditorSettingsStore`: versioned JSON, atomic write, MRU recents (bounded
+  10, deduplicated case-insensitively on Windows), optional project root.
+  Production path: `%LOCALAPPDATA%\RT2\Editor\settings.json`. Tests inject
+  a temporary directory.
+- `SceneRecoveryService`: one atomically-replaced `.rt2recovery` JSON envelope
+  per
+  logical document, global cap of 8 records (oldest evicted only AFTER a
+  new record commits). `MaybeSnapshot` is guarded by dirty + interval +
+  revision; the first dirty observation starts the interval rather than
+  writing immediately. No work happens on clean frames or unchanged revisions.
+  Snapshots use `SceneSerializer::SaveTo` so asset references stay
+  relativized against the original authoring scene root, NOT the recovery
+  directory. The complete document identity is hashed into the record filename,
+  and discard is constrained to direct child records. A recovered scene with
+  imported meshes/materials/env resolves correctly. Transactional restore,
+  discard, `DiscardForDoc`, `OnSaveAs`.
+  Recovery manifest has its own version (independent of `.rt2scene` v2).
+- `UnsavedChangesCoordinator`: pure state machine (no ImGui) for
+  New/Open/Recent/Exit with Save/Discard/Cancel. One pending action; a second
+  request while pending is rejected. `SaveGate`/`ExecuteGate`/
+  `DiscardRecoveryGate` callbacks support test injection. The host
+  exposes one unified save gate and decides Save versus Save As from whether
+  the document already has a native source path.
+- `SceneManager::AuthoringRevision()`: a transient counter bumped on every
+  authoring mutation via `NotifyAuthoringChanged()`. Used by the recovery
+  service to skip identical snapshots. Not serialized into `.rt2scene`.
+- `Walnut::Application::RequestClose()`: interactive, cancelable close
+  request. `glfwSetWindowCloseCallback` cancels the OS close and routes
+  through the coordinator. Headless/internal completion still uses
+  `Close()` directly.
+- Unicode Windows file/folder dialogs with long-path-sized buffers and the
+  active scene/project root as the initial location. `FileDialog::OpenFolder()`
+  supports project-root selection.
+- RT2SliceRunner `--recovery-scenario` mode + `run_recovery_test.ps1`: a
+  deterministic CPU-only, asset-backed recovery regression (generate textured
+  GLB + EXR → load → save → edit transform/material →
+  autosave → drop session → discover → restore → verify edit + UUIDs +
+  imported assets + decoded environment + explicit file unchanged → discard).
+  Emits structured JSON; exits non-zero on
+  failure.
+- RT2Tests Phase 1B coverage: 44 tests (14 EditorSettings + 30 Recovery/
+  Coordinator) covering defaults, round trip, malformed/unsupported
+  settings, Unicode paths, atomic replacement failure, MRU order/dedup,
+  bounded recents, autosave scheduling, dirty/sourcePath/
+  explicit-file preservation, retention eviction, discovery, restore
+  (UUIDs, imported GLB/texture/EXR, authored material override, dirty,
+  untitled), document adoption, full-path identity, contained discard,
+  corrupt envelope, failed-restore-preserves-live-doc, asset-root, Save As
+  retirement, and all coordinator transitions.
+- Verified baseline delta: the implementation report's 275 passing tests rose
+  to 281 (+6 targeted regression cases added during review). Release x64,
+  RT2Tests, the original slice runner, and the asset-backed recovery scenario
+  all pass. No renderer benchmark baseline changes are expected because this
+  slice affects editor/session code and the recovery runner is CPU-only.
+
+**Phase 1 exit criteria are now satisfied.** A non-trivial authored scene
+survives restart, recovery is available without overwriting explicit
+saves, missing assets produce actionable diagnostics, and existing
+interchange saving still passes its tests.
+
+### Phase 2A — stable viewport selection (implemented)
+
+The first Phase 2 slice establishes selection and picking without coupling
+editor identity to transient ECS handles or path-tracing samples:
+
+- `EditorSelection` stores an ordered set of authoring UUIDs. The final UUID
+  is the primary selection used by the Inspector. Selection is editor-only,
+  is never serialized, and prunes UUIDs that no longer resolve.
+- Outliner clicks and viewport clicks share that selection state. Ctrl-click
+  toggles Outliner membership; hierarchy deletion clears/prunes affected IDs.
+- `ScreenToRenderPixel` defines the single top-left-origin conversion from
+  ImGui screen coordinates through displayed viewport size to render pixels.
+- `Camera::GetPickingRay` is a deterministic pinhole ray. It deliberately
+  ignores the path tracer's stochastic aperture sampling.
+- A one-invocation Vulkan compute pass uses `GL_EXT_ray_query` against the
+  existing TLAS. It evaluates MASK alpha cutoffs and deterministic BLEND alpha
+  coverage before confirming an intersection.
+- `RenderInstanceMap` is submission metadata outside `GPUSceneData`. It is
+  produced by the same ECS iteration as the GPU instance array, so instance
+  index `i` always maps to the UUID at entry `i`.
+- Picking has one result buffer per frame in flight. A slot captures its own
+  UUID map when recorded and is read only after that slot's normal render
+  fence signals. No queue-idle/device-idle wait is added. Monotonic request
+  serials suppress superseded clicks; scene/transform/resize changes cancel
+  outstanding requests.
+- Picking is active only in Edit state. A background miss clears selection.
+
+Verification:
+
+- Release x64 full solution builds, including `picking.comp`.
+- RT2Tests: 286/286 test cases and 141,627/141,627 assertions pass.
+- Live Release-layout test: cube click selected Cube in Outliner/Inspector,
+  sphere click switched both to Sphere, and a background click cleared both.
+
+Phase 2 is not complete. The next vertical slice is Phase 2B: transform
+gizmos plus the tested local/world transform conversion and snapping
+subsystem. Phase 2C then adds hierarchy creation, duplication, reparenting,
+visibility/lock/search, and Phase 2D adds framing and camera bookmarks.
+Undo/redo remains Phase 3.

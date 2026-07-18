@@ -211,9 +211,12 @@ void BuildEnvMapCDF(const std::vector<float>& floatPixels, int width, int height
     }
 }
 
-GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
+GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene,
+                                     RenderInstanceMap* instanceMap)
 {
     GPUSceneData gpu;
+	if (instanceMap)
+		instanceMap->clear();
 
     // Copy textures and materials (same as BuildGPUSceneData)
     gpu.textures = ecsScene.textures;
@@ -268,6 +271,11 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
         }
 
         gpu.instances.push_back(inst);
+		if (instanceMap)
+		{
+			const auto* identity = ecsScene.registry.try_get<EntityIdComponent>(entity);
+			instanceMap->push_back(identity ? identity->id : rt2::core::UUID::Nil());
+		}
     }
 
     // Build emissive triangle lights from instances with emissive materials.
@@ -391,7 +399,8 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene)
     return gpu;
 }
 
-void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene)
+void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene,
+                            RenderInstanceMap* instanceMap)
 {
     // Update instance world matrices from ECS transforms
     auto meshView = ecsScene.registry.view<MeshRef, Transform>();
@@ -399,6 +408,8 @@ void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene)
     // The instance order must match BuildGPUSceneDataFromECS exactly
     // (entt view iteration order is deterministic for the same registry state).
     gpu.instances.clear();
+	if (instanceMap)
+		instanceMap->clear();
 
     for (auto entity : meshView)
     {
@@ -420,6 +431,11 @@ void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene)
         }
 
         gpu.instances.push_back(inst);
+		if (instanceMap)
+		{
+			const auto* identity = ecsScene.registry.try_get<EntityIdComponent>(entity);
+			instanceMap->push_back(identity ? identity->id : rt2::core::UUID::Nil());
+		}
     }
 
     // Rebuild light list (areas change with transforms)

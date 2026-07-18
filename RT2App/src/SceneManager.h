@@ -38,7 +38,7 @@
 	class SceneManager
 	{
 	public:
-		using SyncCallback = std::function<void(GPUSceneData&)>;
+		using SyncCallback = std::function<void(GPUSceneData&, const RenderInstanceMap&)>;
 
 		SceneManager();
 		~SceneManager() = default;
@@ -48,11 +48,20 @@
 		void SetUuidProvider(rt2::core::IUuidProvider* provider);
 
 		// Find an entity by its stable UUID. Returns entt::null if not found.
-		entt::entity FindEntityByUuid(const rt2::core::UUID& uuid) const;
+	entt::entity FindEntityByUuid(const rt2::core::UUID& uuid) const;
 
-		// The authoring scene document (ECS + UUID index + metadata).
-		rt2::core::SceneDocument& AuthoringDoc() { return m_Authoring; }
-		const rt2::core::SceneDocument& AuthoringDoc() const { return m_Authoring; }
+	// The authoring scene document (ECS + UUID index + metadata).
+	rt2::core::SceneDocument& AuthoringDoc() { return m_Authoring; }
+	const rt2::core::SceneDocument& AuthoringDoc() const { return m_Authoring; }
+
+	// Atomically adopt a fully constructed authoring document. This is the
+	// only supported path for transactional open/recovery commits: the
+	// caller prepares and validates a temporary document, then transfers it
+	// here after success. Reference aliases remain valid because m_Authoring
+	// itself is assigned in place. Entity caches and the transient authoring
+	// revision are reset deliberately without clearing the adopted data.
+	void ReplaceAuthoringDocument(rt2::core::SceneDocument&& document,
+	                              uint64_t authoringRevision = 0);
 
 	// Set callback for full re-upload (SetScene path: textures + AS rebuild).
 	void SetSyncCallback(SyncCallback cb) { m_SyncCallback = std::move(cb); }
@@ -72,6 +81,7 @@
 		entt::entity id = entt::null;
 		bool IsValid() const { return id != entt::null; }
 	};
+	rt2::core::UUID GetEntityUuid(EntityId entity) const;
 
 	// Import a glTF file into the EXISTING scene (merges meshes/materials/
 	// textures, creates a wrapper root entity). Does NOT clear the scene.
@@ -184,13 +194,22 @@
 
 	// ---- Dirty tracking ----
 	bool IsDirty() const { return m_Authoring.metadata.dirty; }
-	void MarkDirty() { m_Authoring.metadata.dirty = true; }
+	void MarkDirty()
+	{
+		m_Authoring.metadata.dirty = true;
+		++m_AuthoringRevision;
+	}
 	void ClearDirty() { m_Authoring.metadata.dirty = false; }
+
+	// Authoring revision counter. Bumped on every authoring mutation via
+	// NotifyAuthoringChanged(). Used by the recovery/autosave service to
+	// skip rewriting an identical snapshot. Not serialized into .rt2scene.
+	uint64_t AuthoringRevision() const { return m_AuthoringRevision; }
 
 	// Centralized authoring-change notification. All editor mutations
 	// (Add/Remove/SetTransform/SetMaterial/SetMaterialProperties) call
-	// this. It marks the scene dirty. The host checks IsDirty() for
-	// unsaved-changes prompts.
+	// this. It marks the scene dirty and bumps the revision counter. The
+	// host checks IsDirty() for unsaved-changes prompts.
 	void NotifyAuthoringChanged();
 
 	// ---- Accessors ----
@@ -235,10 +254,15 @@ private:
 	SyncCallback       m_SyncCallback;
 	SyncCallback       m_InstanceSyncCallback;
 	SyncCallback       m_SyncKeepTexturesCallback;
+	RenderInstanceMap  m_RenderInstanceMap;
 
 	// Cache of entity list (for GetEntityByIndex — rebuilt on demand)
 	mutable std::vector<entt::entity> m_EntityCache;
 	mutable bool m_EntityCacheDirty = true;
+
+	// Authoring revision counter (not serialized). Bumped by
+	// NotifyAuthoringChanged(). See AuthoringRevision().
+	uint64_t m_AuthoringRevision = 0;
 };
 
 #endif // SCENE_MANAGER_H

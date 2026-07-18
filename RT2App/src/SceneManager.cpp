@@ -29,6 +29,29 @@ entt::entity SceneManager::FindEntityByUuid(const rt2::core::UUID& uuid) const
 	return m_Authoring.FindByUuid(uuid);
 }
 
+rt2::core::UUID SceneManager::GetEntityUuid(EntityId entity) const
+{
+	if (!entity.IsValid() || !m_EcsScene.registry.valid(entity.id))
+		return rt2::core::UUID::Nil();
+	const auto* identity = m_EcsScene.registry.try_get<EntityIdComponent>(entity.id);
+	return identity ? identity->id : rt2::core::UUID::Nil();
+}
+
+void SceneManager::ReplaceAuthoringDocument(rt2::core::SceneDocument&& document,
+	                                         uint64_t authoringRevision)
+{
+	// SceneDocument does not own its provider. Rebind it to the manager's
+	// provider before and after assignment so future entity creation remains
+	// valid even when the temporary document used a short-lived provider.
+	document.SetUuidProvider(m_UuidProvider);
+	m_Authoring = std::move(document);
+	m_Authoring.SetUuidProvider(m_UuidProvider);
+
+	m_EntityCache.clear();
+	m_EntityCacheDirty = true;
+	m_AuthoringRevision = authoringRevision;
+}
+
 bool SceneManager::LoadScene(const std::string& filepath)
 {
 	printf("[Scene] LoadScene: '%s'\n", filepath.c_str());
@@ -253,7 +276,7 @@ void SceneManager::SyncToGPU()
 	GPUSceneData gpuData;
 
 	UpdateWorldTransforms();
-	gpuData = BuildGPUSceneDataFromECS(m_EcsScene);
+	gpuData = BuildGPUSceneDataFromECS(m_EcsScene, &m_RenderInstanceMap);
 
 	printf("[Scene] SyncToGPU: GPUSceneData built: meshes=%zu instances=%zu lights=%zu textures=%zu source_emissive=%u filtered_black=%u\n",
 	       gpuData.meshes.size(), gpuData.instances.size(), gpuData.lights.size(), gpuData.textures.size(),
@@ -285,7 +308,7 @@ void SceneManager::SyncToGPU()
 	{
 		printf("[Scene] SyncToGPU: calling sync callback (SetScene)...\n");
 		fflush(stdout);
-		m_SyncCallback(gpuData);
+		m_SyncCallback(gpuData, m_RenderInstanceMap);
 		printf("[Scene] SyncToGPU: sync callback done\n");
 		fflush(stdout);
 	}
@@ -298,7 +321,7 @@ void SceneManager::SyncToGPUKeepTextures()
 	GPUSceneData gpuData;
 
 	UpdateWorldTransforms();
-	gpuData = BuildGPUSceneDataFromECS(m_EcsScene);
+	gpuData = BuildGPUSceneDataFromECS(m_EcsScene, &m_RenderInstanceMap);
 
 	// Preserve env map data from current GPU scene (textures aren't re-uploaded)
 	if (m_CurrentGpuScene.envMapIndex >= 0)
@@ -313,7 +336,7 @@ void SceneManager::SyncToGPUKeepTextures()
 
 	m_CurrentGpuScene = gpuData;
 	if (m_SyncKeepTexturesCallback)
-		m_SyncKeepTexturesCallback(gpuData);
+		m_SyncKeepTexturesCallback(gpuData, m_RenderInstanceMap);
 }
 
 // ============================================================================
@@ -632,10 +655,10 @@ void SceneManager::SyncTransformsToGPU()
 	UpdateWorldTransforms();
 
 	GPUSceneData gpuData = m_CurrentGpuScene;
-	UpdateInstancesFromECS(gpuData, m_EcsScene);
+	UpdateInstancesFromECS(gpuData, m_EcsScene, &m_RenderInstanceMap);
 
 	if (m_InstanceSyncCallback)
-		m_InstanceSyncCallback(gpuData);
+		m_InstanceSyncCallback(gpuData, m_RenderInstanceMap);
 
 	m_CurrentGpuScene = gpuData;
 }
@@ -750,6 +773,7 @@ void SceneManager::RecordMaterialOverride(entt::entity entity, int materialIndex
 void SceneManager::NotifyAuthoringChanged()
 {
 	m_Authoring.metadata.dirty = true;
+	++m_AuthoringRevision;
 }
 
 // ============================================================================

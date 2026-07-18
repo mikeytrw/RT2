@@ -181,6 +181,46 @@ on hash-table or thread scheduling order. Floating-point comparisons use the
 documented system tolerance rather than claiming bitwise equality across all
 platforms.
 
+### Autosave and recovery scheduling (Phase 1B)
+
+Autosave runs synchronously on the editor main thread in `OnUpdate`, AFTER the
+runtime step and BEFORE `Render()`, and only while the controller is in Edit.
+It is authoring-only: the runtime Play clone is never captured.
+The `SceneRecoveryService::MaybeSnapshot` call is guarded by:
+
+1. `doc.metadata.dirty == true` — clean frames do nothing.
+2. interval elapsed (default 60s, injectable clock for tests) since the first
+   dirty observation or the previous successful snapshot. The first dirty
+   frame starts the timer and does not write immediately.
+3. `AuthoringRevision()` changed since the last snapshot — unchanged
+   revisions skip the write.
+
+The authoring revision counter is bumped by `SceneManager::NotifyAuthoringChanged()`
+on every authoring mutation and is NOT serialized into `.rt2scene`. This
+prevents rewriting an identical recovery snapshot every frame while still
+capturing every distinct edit.
+
+A successful write reports its elapsed main-thread time in the editor status;
+writes above the current 10 ms guardrail emit a warning. Failure remains
+non-fatal and preserves the previous valid recovery envelope.
+
+### Close / recovery lifecycle
+
+- OS window close (title-bar X / Alt+F4) is routed through
+  `Walnut::Application::RequestClose()`, an interactive, cancelable close.
+  The `glfwSetWindowCloseCallback` cancels the GLFW-level close and calls
+  `RequestClose()`, which fires the host's `CloseRequestCallback`. If the
+  document is dirty, the callback queues an Exit action through the
+  `UnsavedChangesCoordinator` and returns false (do not close) so the
+  Save/Discard/Cancel modal can resolve. If clean, it executes immediately
+  and the app exits.
+- Headless/internal completion uses `Application::Close()` directly — no
+  prompt, immediate exit.
+- On startup, `SceneRecoveryService::Discover()` finds pending records
+  from a previous unclean exit. If any exist, a Restore/Discard/Skip modal
+  is shown. Restore is transactional (loads + resolves into a temp doc, swaps
+  only on success). Discard deletes the record. Skip leaves it intact.
+
 ---
 
 ## Frames in Flight

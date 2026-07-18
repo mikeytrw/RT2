@@ -135,3 +135,37 @@ requiring Vulkan. The JSON report fields are unchanged in Phase 1A; the
 runner continues to emit `scene`, `steps`, `authoringIntact`, `bridge`, and
 `runtimeTransforms`. If a loaded scene references external assets, the
 runner loads them through the same CPU importer path used by the editor.
+
+### Phase 1B recovery regression
+
+```powershell
+.\bin\Release-windows-x86_64\RT2SliceRunner\RT2SliceRunner.exe `
+  --recovery-scenario `
+  --out artifacts\recovery_report.json
+```
+
+| Option | Meaning |
+|---|---|
+| `--recovery-scenario` | Run the Phase 1B recovery regression scenario. |
+| `--out <path>` | Write JSON report to file instead of stdout. |
+
+The scenario generates and loads a tiny textured GLB plus a tiny EXR
+environment, saves the native scene explicitly, authors a transform and
+material override, advances an injected clock through the autosave interval,
+drops the session (simulating an unclean exit), and restores the atomic
+recovery envelope. It verifies imported-asset provenance, texture and decoded
+environment data, the override, transform, UUID, and dirty state; proves the
+explicit file remains byte-for-byte unchanged; then discards the record.
+Emits:
+
+```json
+{
+  "recoveryScenario": "pass",
+  "assetBacked": true,
+  "workDir": "<temp dir>"
+}
+```
+
+Exit code is 0 on pass, 1 on fail. The regression script
+`run_recovery_test.ps1` invokes this scenario and asserts the report
+contains both `"recoveryScenario": "pass"` and `"assetBacked": true`.

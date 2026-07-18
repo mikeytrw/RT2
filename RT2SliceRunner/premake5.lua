@@ -20,6 +20,9 @@ project "RT2SliceRunner"
         "../RT2App/src/GPUSceneData.cpp",
         "../RT2App/src/PrimitiveGeometry.cpp",
         "../RT2App/src/TinyEXRLoader.cpp",
+        "../RT2App/src/EditorSettings.cpp",
+        "../RT2App/src/SceneRecoveryService.cpp",
+        "../RT2App/src/UnsavedChangesCoordinator.cpp",
         "../RT2App/src/core/UUID.cpp",
         "../RT2App/src/core/Error.cpp",
     }

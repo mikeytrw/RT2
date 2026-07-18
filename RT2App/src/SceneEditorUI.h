@@ -4,7 +4,9 @@
 #define SCENE_EDITOR_UI_H
 
 #include "SceneManager.h"
+#include "EditorSelection.h"
 #include <functional>
+#include <filesystem>
 #include <string>
 
 // ============================================================================
@@ -55,6 +57,10 @@ public:
 	void SetOnImportGltf(std::function<SceneManager::EntityId(const std::string&)> cb)
 	{ m_OnImportGltf = std::move(cb); }
 
+	void SetDialogInitialDirectoryProvider(
+		std::function<std::filesystem::path()> provider)
+	{ m_DialogInitialDirectory = std::move(provider); }
+
 	// Called when user clicks "Dump GPU Transforms" — host should call
 	// RendererGPU::DumpInstanceTransforms().
 	void SetOnDumpGPUTransforms(std::function<void()> cb)
@@ -67,6 +73,11 @@ public:
 	// read-only (bound to the runtime scene).
 	void SetEditable(bool editable) { m_Editable = editable; }
 	bool IsEditable() const { return m_Editable; }
+
+	void SelectUuid(const rt2::core::UUID& uuid) { m_Selection.SelectOnly(uuid); }
+	void ClearSelection() { m_Selection.Clear(); }
+	EditorSelection& Selection() { return m_Selection; }
+	const EditorSelection& Selection() const { return m_Selection; }
 
 	void RenderPanels();
 
@@ -82,14 +93,18 @@ private:
 
 	void NotifySceneChanged();
 	void NotifyTransformChanged();
+	SceneManager::EntityId SelectedEntity() const;
+	void SelectEntity(SceneManager::EntityId entity, bool toggle = false);
+	bool IsSelected(SceneManager::EntityId entity) const;
 
 	SceneManager* m_SceneMgr = nullptr;
 
-	SceneManager::EntityId m_SelectedEntity;
+	EditorSelection m_Selection;
 	std::function<void()> m_OnSceneChanged;
 	std::function<void()> m_OnTransformChanged;
 	std::function<SceneManager::EntityId(const std::string&)> m_OnLoadMeshFile;
 	std::function<SceneManager::EntityId(const std::string&)> m_OnImportGltf;
+	std::function<std::filesystem::path()> m_DialogInitialDirectory;
 	std::function<void()> m_OnDumpGPUTransforms;
 	std::function<void()> m_OnDumpNEEBuffers;
 
