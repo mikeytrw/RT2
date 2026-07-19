@@ -2050,161 +2050,448 @@ cycles neither leak entities/resources nor alter saved scene state" — is
 met by construction and verified by a dedicated test surface, not just by
 the existing 100-cycle smoke test.
 
-The slice adds three things:
+The slice adds four things:
 
-1. **Scene start/stop lifecycle callbacks.** A small, dependency-free
-   interface (`ISceneLifecycleCallbacks`) the host can install on the
-   runtime controller. `OnSceneStart(runtime)` fires once after the runtime
-   clone is built and activated (Play). `OnSceneStop(runtime)` fires once
-   before the runtime clone is destroyed (Stop). This is the seam Phase 6
-   scripting will hook `OnCreate`/`OnDestroy` into; for Phase 4 it is
-   exercised by a recording test spy, not a real system. The callbacks
-   receive the runtime document by const reference — they may observe but
-   not mutate during the start/stop envelope. Mutation happens in the
-   fixed/variable update hooks (Phase 6).
+### 1. Injectable runtime UUID provider
 
-2. **Deferred structural-change safe point.** Today the runtime document
-   is mutated in-place during `RunFixedTick` (MotionSystem writes
-   `Transform::translation`). Structural changes (spawn/destroy during
-   Play) are not supported — `game-loop.md` notes the safe point exists
-   conceptually but is unimplemented. This slice adds a deferred queue on
-   the runtime controller:
-   - `QueueCreateRuntimeEntity(record)` and `QueueDestroyRuntimeEntity(uuid)`
-     push onto `m_PendingCreates` / `m_PendingDestroys`. Public, callable by
-     future script systems during a fixed tick.
-   - `ApplyDeferredStructuralChanges()` drains both queues at the defined
-     safe point (after the fixed-step loop, before
-     `SceneGraph::UpdateWorldTransforms` and the batched sync). Creates are
-     applied in queued order; destroys are applied in queued order. Both
-     operate on the runtime document only; the authoring document is
-     untouched.
-   - The queue is cleared on Stop (any pending changes are dropped — the
-     runtime document is being destroyed anyway).
-   - The structural impact of a deferred change is coalesced into the
-     existing per-frame batched sync: if any structural change was applied,
-     the sync impact is `Structural` (full rebuild); otherwise `Transform`
-     (instance-only). The controller does NOT call `FullSync` per change —
-     one coalesced sync per rendered frame, matching `game-loop.md`.
+`RuntimeSceneController::Play()` today constructs a default `SceneDocument`
+(`m_Runtime = std::make_unique<SceneDocument>()`) with no UUID provider
+set. `SceneSerializer::CloneInMemory` deliberately preserves the
+destination provider (see `SceneSerializer.cpp:1132-1137`), which is
+therefore null. Runtime UUID generation is impossible as specified.
 
-3. **Exit-criterion test surface.** A new `Phase4LifecycleTests.cpp` with:
-   - Lifecycle callback order and counts: Play → OnSceneStart(1) → ...
-     → Stop → OnSceneStop(1). 100 cycles → 100 of each, no double-fire.
-   - Deferred create queued during a fixed tick appears in the runtime
-     scene after the next `ApplyDeferredStructuralChanges`, with a fresh
-     UUID (not the authoring document's UUID space).
-   - Deferred destroy queued during a fixed tick removes the runtime
-     entity; the authoring entity with the same UUID is unaffected.
-   - Deferred changes are dropped on Stop (queue cleared; authoring
-     unchanged).
-   - Structural impact coalescing: a frame with a deferred create fires
-     exactly one `FullSync`; a frame with only motion fires
-     `TransformSync`; a frame with both fires one `FullSync` (not two).
-   - Repeated Play/Stop with deferred changes pending: no leak, no
-     authoring mutation, no crash. (Extends the existing 100-cycle test
-     with pending-queue stress.)
-   - Resume from Paused preserves the deferred queue (it is not cleared
-     on Pause/Resume — only on Stop).
+Fix: add an injectable runtime UUID provider to the controller.
 
-Core design decisions:
+```
+void RuntimeSceneController::SetRuntimeUuidProvider(
+    rt2::core::IUuidProvider* provider);
+```
 
-- **Lifecycle callbacks are const-observe only at start/stop.** The
-  start/stop envelope is for initialization/teardown, not simulation.
-  Phase 6's `OnCreate`/`OnDestroy` will run inside these callbacks but
-  operate on already-built runtime state. Mutation hooks (fixed/variable
-  update) are a Phase 6 addition; Phase 4 only proves the envelope.
-- **Deferred queue is runtime-only.** The authoring document is never
-  mutated by a deferred change. Stop destroys the runtime document and
-  any pending queue contents; the authoring document is the restore
-  source, exactly as today.
-- **Coalesced sync, one per frame.** A frame with structural changes
-  fires one `FullSync` (the bridge's `FullSync` is the structural-impact
-  callback; the existing `EditorSyncRouter` would downgrade a
-  no-resource-change structural to a material sync, but the runtime
-  controller talks to `ISceneRenderBridge` directly, not the router —
-  so the controller picks the impact itself: `Structural` if any
-  deferred create/destroy was applied, else `Transform`). This matches
-  the existing vertical-slice contract where `Update` always calls
-  `TransformSync`; the slice just adds the `Structural` path.
-- **UUIDs for runtime-created entities are fresh v4 UUIDs from the
-  runtime document's UUID provider.** They do NOT collide with authoring
-  UUIDs (the runtime clone's UUID index is a copy of the authoring's at
-  Play, but new UUIDs are generated by the provider, not the authoring
-  document). A deferred create therefore never aliases an authoring
-  entity on Stop-then-re-Play (the runtime document is destroyed and
-  re-cloned fresh each Play).
-- **No new public SceneManager APIs.** Deferred creates use a small
-  private helper on the controller that emplaces the entity directly
-  into the runtime `ECSScene` registry and assigns a fresh UUID via the
-  runtime document's UUID provider. The helper is internal to the
-  controller; no public API surface changes. (This avoids constructing a
-  second SceneManager bound to the runtime document.)
-- **No ImGui, no WalnutApp behavior change.** The Play/Pause/Step/Stop
-  UI is unchanged. The lifecycle callbacks and deferred queue are
-  exercised by tests; the interactive app installs no callbacks and
-  never queues a deferred change. Phase 6 wires scripting into both.
+The host (WalnutApp) injects the production `OsUuidProvider` (or reuses
+the authoring document's provider — they are stateless and the UUID
+spaces are disjoint because the runtime document's index is a fresh copy
+at Play). Tests inject a `DeterministicUuidProvider` seeded for
+reproducibility. The controller sets the provider on the freshly
+constructed runtime document BEFORE `CloneInMemory`:
 
-Files:
+```
+m_Runtime = std::make_unique<SceneDocument>();
+if (m_RuntimeUuidProvider)
+    m_Runtime->SetUuidProvider(m_RuntimeUuidProvider);
+if (!SceneSerializer::CloneInMemory(authoring, *m_Runtime, err)) { ... }
+```
 
-- New: `RT2App/src/SceneLifecycleCallbacks.h` (the
-  `ISceneLifecycleCallbacks` interface, dependency-free),
-  `RT2Tests/src/Phase4LifecycleTests.cpp`.
-- Modified: `RuntimeSceneController.h/.cpp` (lifecycle callback storage +
-  dispatch in Play/Stop; deferred-create/destroy queue + drain at the
-  safe point; structural-impact coalescing in `Update`/`Step`),
-  `RT2Tests/premake5.lua` and `RT2Tests.vcxproj` (new test file
-  registered). `WalnutApp.cpp` is NOT modified — interactive behavior is
+The provider is stored on the controller (non-owning, like
+`SceneManager::m_UuidProvider`), so a single `DeterministicUuidProvider`
+injected by a test seeds every Play across 100 cycles consistently.
+
+### 2. Runtime scene mutator (no registry mutation from the controller)
+
+The naive approach — a private controller helper that emplaces directly
+into the runtime `ECSScene` registry — duplicates SceneManager invariants
+inside `RuntimeSceneController` and would silently break:
+`EntityIdComponent` / `uuidIndex` consistency, hierarchy parent/children
+invariants, transform dirtiness and `prevWorldMatrix`, component/resource
+references, subtree destruction semantics (post-order collect, parent
+unlink, UUID erase).
+
+Fix: extract a small, Vulkan-free `RuntimeSceneMutator` that operates on
+a `SceneDocument` and owns exactly those invariants for the runtime-only
+operations Phase 4 needs. It is NOT a second SceneManager — it exposes
+only `CreateEntity` and `DestroySubtree` (no compaction, no command
+history, no sync callbacks, no material overrides). It lives in
+`rt2::core` next to `SceneDocument` so both the controller and tests can
+link it without Vulkan.
+
+```
+namespace rt2::core {
+
+struct RuntimeEntityCreateDesc
+{
+    std::string name;
+    std::optional<UUID> parentUuid;     // nullopt = root
+    std::optional<glm::vec3> translation;
+    std::optional<glm::quat> rotation;
+    std::optional<glm::vec3> scale;
+    // Phase 4 supports only the empty + transform + name + visibility
+    // component set. No mesh, no light, no camera, no primitive. Phase 6
+    // scripting may extend this; Phase 4 deliberately keeps the surface
+    // minimal so the mutator invariants are tractable and testable.
+};
+
+class RuntimeSceneMutator
+{
+public:
+    // Create an entity with a caller-allocated UUID (the controller
+    // allocates the UUID at queue time — see §3). Returns Failure if the
+    // UUID is already present or the parent UUID does not resolve.
+    // Emplaces: Transform, NameComponent, VisibleComponent, EntityIdComponent,
+    // Hierarchy (if parent). Marks the transform dirty. Initializes
+    // prevWorldMatrix = worldMatrix after the first SceneGraph evaluation
+    // (see §5).
+    Result<UUID> CreateEntity(SceneDocument& doc,
+                               const UUID& uuid,
+                               const RuntimeEntityCreateDesc& desc) const;
+
+    // Destroy the subtree rooted at `uuid` (post-order collect, parent
+    // unlink, UUID erase from doc.uuidIndex, registry.destroy). Returns
+    // Failure if the UUID does not resolve. No compaction (the runtime
+    // document has no compaction invariant; it is destroyed on Stop).
+    Result<void> DestroySubtree(SceneDocument& doc, const UUID& uuid) const;
+};
+
+} // namespace rt2::core
+```
+
+The mutator reuses `SceneHierarchy::CollectSubtreePostOrder` and
+`SceneGraph::MarkDirty` (already linked into RT2Tests). It does NOT call
+`NotifyAuthoringChanged` (no authoring revision to bump on the runtime
+document) and does NOT touch any `SceneManager`-private state.
+
+### 3. Single FIFO structural-operation queue
+
+Separate create and destroy queues lose cross-operation ordering,
+contrary to the stable-order game-loop contract. Use one FIFO queue of
+tagged operations drained in exact enqueue order.
+
+```
+struct CreateRuntimeEntityOperation
+{
+    UUID uuid;                          // allocated at queue time
+    RuntimeEntityCreateDesc desc;
+};
+
+struct DestroyRuntimeSubtreeOperation
+{
+    UUID uuid;
+};
+
+using RuntimeStructuralOperation =
+    std::variant<CreateRuntimeEntityOperation,
+                 DestroyRuntimeSubtreeOperation>;
+```
+
+Public controller API:
+
+```
+// Allocate a fresh UUID from the runtime provider, enqueue a create,
+// return the UUID so later operations in the same tick can reference the
+// new entity. Returns Failure if the controller is not Playing/Paused,
+// or if the provider is null, or if the allocated UUID is already
+// present (defensive — the provider should not produce duplicates).
+Result<UUID> QueueCreateRuntimeEntity(const RuntimeEntityCreateDesc& desc);
+
+// Enqueue a destroy. Returns Failure if the controller is not
+// Playing/Paused. Does NOT validate the UUID here — validation happens
+// at drain time so a queued destroy of a not-yet-created entity is a
+// meaningful error rather than a silent drop. Returns Ok (nullopt
+// payload) on enqueue success.
+Result<void> QueueDestroyRuntimeEntity(const UUID& uuid);
+```
+
+Drain semantics (`ApplyDeferredStructuralChanges`, called at the safe
+point in both `Update` and `Step`):
+
+1. **Validate the complete batch before any mutation.** Walk the queue
+   in order, building the set of UUIDs that will exist after each
+   operation. A create adds its UUID; a destroy removes its UUID. The
+   validation state starts from the current runtime document UUID set.
+   Validation failures:
+   - Create with a UUID already in the validation set → `DuplicateUuid`.
+   - Destroy with a UUID not in the validation set (missing, or already
+     destroyed by an earlier op in this batch) → `InvalidEntity`.
+   - Create whose `parentUuid` does not resolve in the validation set
+     (parent never existed, or was destroyed by an earlier op) →
+     `InvalidEntity`.
+   - Destroy of an entity that is an ancestor of an entity a LATER
+     create in the batch targets as `parentUuid` → `InvalidEntity`
+     (would create an orphan). This is the "destroy→create-child-of-
+     destroyed-parent" case.
+2. On ANY validation failure: drain nothing, leave the queue intact,
+   surface the error via the bridge (or a controller error callback),
+   and keep running. The runtime document is unchanged. The queue is
+   NOT cleared — the host or test can inspect it. (A future Phase 6
+   script error handler may clear or edit the queue; Phase 4 just
+   reports.)
+3. On validation success: apply the batch atomically in enqueue order
+   via the `RuntimeSceneMutator`. Each operation either succeeds or the
+   mutator returns Failure (which, post-validation, should not happen —
+   if it does, it is a bug, and the controller treats it as a fatal
+   queue error: clear the queue and log).
+4. After successful application: clear the queue. Compute the frame's
+   sync impact as `Structural` (any create or destroy was applied) or
+   `Transform` (queue was empty or validation failed with no partial
+   application).
+
+This batch-validate-then-apply design matches the 3B1 structural
+command precedent (`RemoveSubtreesExact`, `ReparentBatch` both validate
+all then apply) and gives deterministic failure semantics: the runtime
+document is never left in a partially-mutated state.
+
+### 4. UUID allocation at queue time
+
+`QueueCreateRuntimeEntity` allocates the UUID when called, not when
+drained. This lets later operations in the same tick refer to the new
+entity (e.g. create-then-destroy in one frame, or create a parent then
+create a child of it) and makes deterministic testing possible (the test
+sees the UUID immediately and can assert against it).
+
+```
+Result<UUID> QueueCreateRuntimeEntity(const RuntimeEntityCreateDesc& desc)
+{
+    if (m_State != SceneRunState::Playing && m_State != SceneRunState::Paused)
+        return Result<UUID>::Fail(Error::InvalidRuntimeState, "",
+            "QueueCreateRuntimeEntity: not Playing/Paused");
+    if (!m_RuntimeUuidProvider)
+        return Result<UUID>::Fail(Error::InvalidRuntimeState, "",
+            "QueueCreateRuntimeEntity: no runtime UUID provider");
+
+    UUID uuid = m_RuntimeUuidProvider->CreateV4();
+    while (m_Runtime->uuidIndex.Contains(uuid) ||
+           PendingCreateUuids().contains(uuid))
+        uuid = m_RuntimeUuidProvider->CreateV4();
+
+    m_PendingOperations.push_back(
+        CreateRuntimeEntityOperation{ uuid, desc });
+    return Result<UUID>::Ok(uuid);
+}
+```
+
+`PendingCreateUuids()` is a helper that walks the queue and collects the
+UUIDs of pending create operations, so a second create with a
+provider-duplicate UUID does not collide with a queued-but-undrained
+create.
+
+### 5. Created-transform prevWorldMatrix initialization
+
+A freshly created entity's `Transform::prevWorldMatrix` is
+default-constructed (identity). After `ApplyDeferredStructuralChanges`
+runs and `SceneGraph::UpdateWorldTransforms` evaluates the new
+entity's `worldMatrix`, the controller sets
+`prevWorldMatrix = worldMatrix` for every entity whose UUID was added by
+this batch. This prevents first-frame motion-vector spikes for the new
+entity. (Mirror of `RuntimeSceneController::InitPrevTransforms`, scoped
+to the batch's created set.)
+
+### 6. Lifecycle ordering and state
+
+Precise ordering for Play:
+
+1. Construct runtime document, set UUID provider, `CloneInMemory`.
+2. `InitPrevTransforms`.
+3. Bridge `FullSync` + `ResetTemporalState`.
+4. Set `m_State = Playing`.
+5. Fire `OnSceneStart(runtime)`.
+
+So `OnSceneStart` observes a fully-activated runtime document while the
+state is already `Playing` (a callback that queries `GetState()` sees
+the post-Play state). This makes the callback a clean observation seam.
+
+Precise ordering for Stop:
+
+1. Set a `m_Stopping` flag (or check `m_State` in queue entry points)
+   that disables further `QueueCreateRuntimeEntity` /
+   `QueueDestroyRuntimeEntity` calls (return
+   `Error::InvalidRuntimeState`).
+2. Fire `OnSceneStop(runtime)` while the runtime document still exists
+   and is observable.
+3. Clear `m_PendingOperations`.
+4. `m_Runtime.reset()`.
+5. Bridge `FullSync` + `ResetTemporalState` on the authoring document.
+6. Set `m_State = Edit`.
+
+This means a callback cannot queue structural operations during
+`OnSceneStop` (queueing is disabled before the callback fires) and
+cannot observe a half-destroyed runtime document.
+
+### 7. Lifecycle observer naming and the Phase 6 seam
+
+The const callback is suitable as an observer but not yet a complete
+Phase 6 scripting seam because script `OnCreate` commonly needs
+mutation/spawning. Rename the interface to
+`IRuntimeLifecycleObserver` to reflect that it is an observation seam,
+not a mutation seam. Phase 6 will add a separate
+`IRuntimeCommandSink` (or similar) passed alongside the const document
+to `OnSceneStart`, giving scripts a controlled mutation channel that
+routes through the deferred queue. Phase 4 implements only the observer.
+
+```
+namespace rt2::core {
+
+class IRuntimeLifecycleObserver
+{
+public:
+    virtual ~IRuntimeLifecycleObserver() = default;
+    virtual void OnSceneStart(const SceneDocument& runtime) {}
+    virtual void OnSceneStop(const SceneDocument& runtime) {}
+};
+
+} // namespace rt2::core
+```
+
+The controller stores an optional non-owning pointer and dispatches in
+Play/Stop. Phase 4 tests install a recording spy that counts calls and
+snapshots the runtime document state.
+
+### 8. "Authoring unchanged" — precise definition
+
+The current `Stop` path mutates the authoring document's transient
+`gpuCache` through a `const_cast` (`RuntimeSceneController.cpp:149`).
+So "the whole `SceneDocument` is literally unchanged" is false today.
+The exit criterion is therefore defined precisely as: the authoring
+document's **canonical serialized state** is unchanged across Play/Stop
+cycles. That is:
+
+- `metadata.dirty` unchanged.
+- `metadata.sourcePath` / `metadata.name` / `metadata.schemaVersion`
   unchanged.
+- `AuthoringRevision()` unchanged (Play/Stop do not call
+  `NotifyAuthoringChanged`).
+- `ECSScene` (registry entities, components, mesh registry, materials,
+  textures, lights, camera) unchanged.
+- `uuidIndex` unchanged (same UUID set, same entity mappings).
+- `environment` unchanged.
 
-Test plan (all CPU, doctest; existing 17 RuntimeSceneController tests stay
-green; 3A/3B1/3B2 coverage stays green; the six known pre-existing
-failures remain the only failures):
+The transient `gpuCache` is explicitly excluded (it is a CPU cache; the
+Stop path legitimately rebuilds it). Tests assert via
+`SceneSerializer::SerializeToString` (or equivalent canonical dump)
+before Play and after Stop, comparing the strings. This is the
+"byte-for-byte" claim, scoped to canonical serialized state.
 
-- Lifecycle callbacks fire exactly once per Play and once per Stop, in
-  order, across a single cycle.
-- Lifecycle callbacks fire 100 times each across 100 Play/Stop cycles;
-  no double-fire, no missed fire.
-- OnSceneStart receives a non-null runtime document; OnSceneStop receives
-  a non-null runtime document (the destroy happens AFTER the callback).
-- Deferred create queued during a fixed tick: after `Update` returns, the
-  entity exists in the runtime scene with a fresh UUID; the bridge
-  received exactly one `FullSync` (structural impact) for that frame.
-- Deferred destroy queued during a fixed tick: after `Update` returns, the
-  runtime entity is gone; the authoring entity with the same UUID is
-  unchanged; one `FullSync` for that frame.
-- Mixed frame (motion + deferred create): one `FullSync`, not
-  `TransformSync` + `FullSync`.
-- Frame with only motion: `TransformSync` only (unchanged behavior).
-- Stop with pending deferred changes: queue is cleared; authoring
-  document is byte-for-byte unchanged (serialize before and after,
-  compare). The existing 100-cycle test is extended with a pending-queue
-  variant.
-- Pause/Resume preserves the deferred queue (queued during Paused via the
-  public API, drained on the next `Step` or on Resume's next `Update`).
-- Step drains the deferred queue at its safe point (same as `Update`).
+### 9. Exit-criterion test surface
 
-Verification gates: Release x64 build; focused Phase 4 lifecycle tests;
-full RT2Tests where the only permitted failures are exactly the six known
-pre-existing cases; `run_slice_test.ps1` and `run_recovery_test.ps1` pass;
+New `RT2Tests/src/Phase4LifecycleTests.cpp` with:
+
+- **Lifecycle callback order and counts:** Play → OnSceneStart(1) → ...
+  → Stop → OnSceneStop(1). 100 cycles → 100 of each, no double-fire.
+- **OnSceneStart receives a non-null runtime document while state is
+  Playing; OnSceneStop receives a non-null runtime document.**
+- **Injectable UUID provider:** a `DeterministicUuidProvider` injected
+  via `SetRuntimeUuidProvider` produces the same UUID sequence across
+  two identical Play/Stop/Play cycles (deterministic test).
+- **Deferred create queued during a fixed tick:** after `Update`
+  returns, the entity exists in the runtime scene with the UUID
+  returned by `QueueCreateRuntimeEntity`; the bridge received exactly
+  one `FullSync` for that frame; the new entity's
+  `prevWorldMatrix == worldMatrix`.
+- **Deferred destroy queued during a fixed tick:** after `Update`
+  returns, the runtime entity is gone; the authoring entity with the
+  same UUID is unchanged; one `FullSync` for that frame.
+- **FIFO ordering:** queue a create (UUID A), then a create (UUID B
+  with parentUuid A), then a destroy (UUID A) — the batch validates
+  successfully (A exists after op 1, B exists and is a child of A after
+  op 2, A is destroyed by op 3 which post-order-collects and also
+  destroys B). Assert both A and B are gone after `Update`. This is
+  the cross-operation ordering guarantee.
+- **Create→destroy in one frame:** queue create(A), then destroy(A).
+  Validation: A exists after op 1, A is destroyed by op 2. After
+  `Update`, A is gone. One `FullSync`.
+- **Destroy→create-child-of-destroyed-parent:** queue destroy(A), then
+  create(B with parentUuid A). Validation fails (A's UUID is not in the
+  validation set when op 2 runs). The batch is NOT applied; the queue
+  remains intact; the runtime document is unchanged; the bridge
+  receives no `FullSync` (or the controller surfaces an error — see
+  §3.2). A test asserts the runtime document matches its pre-frame
+  state.
+- **Duplicate destroy:** queue destroy(A) twice. Validation fails on
+  the second op (A is no longer in the validation set). Batch not
+  applied.
+- **UUID collision on create:** manually construct a
+  `CreateRuntimeEntityOperation` with a UUID already in the runtime
+  index (via a test-only backdoor, or by injecting a provider that
+  returns a duplicate). Validation fails with `DuplicateUuid`.
+- **Invalid queue calls in Edit:** `QueueCreateRuntimeEntity` and
+  `QueueDestroyRuntimeEntity` return `Error::InvalidRuntimeState` when
+  the controller is in `Edit`.
+- **Callback reentrancy:** an observer whose `OnSceneStart` calls
+  `QueueCreateRuntimeEntity` is rejected (queueing is allowed during
+  `OnSceneStart` — it fires after `m_State = Playing` — but the queued
+  op is NOT drained during `OnSceneStart`; it waits for the next
+  `Update`/`Step`). Assert the op appears in the runtime document only
+  after the next `Update`.
+- **Pause/Resume preserves the queue:** queue a create while Paused,
+  Resume, call `Update`; the create is drained. Queue a create while
+  Paused, Step; the create is drained at Step's safe point.
+- **Step drains the queue** at its safe point (same path as `Update`).
+- **100-cycle stress with pending changes:** each cycle queues a create
+  and a destroy (some cycles leave them pending by calling Stop
+  mid-frame in the test); assert no leak, no authoring mutation (via
+  canonical serialization compare), no crash.
+- **Authoring-unchanged invariant:** serialize the authoring document
+  to a string before the first Play; after N Play/Stop cycles with any
+  sequence of queue calls, serialize again and assert the strings are
+  equal (excluding `gpuCache`, which is not serialized).
+
+### Core design decisions (carried from the original spec, amended)
+
+- **No ImGui, no WalnutApp behavior change.** The Play/Pause/Step/Stop
+  UI is unchanged. The observer and queue are exercised by tests; the
+  interactive app installs no observer and never queues a deferred
+  change. `WalnutApp` is modified ONLY to inject the production UUID
+  provider via `SetRuntimeUuidProvider` (one line in the
+  RuntimeSceneController wiring).
+- **Coalesced sync, one per frame.** A frame with any applied
+  structural operation fires one `FullSync`; a frame with only motion
+  fires `TransformSync`; a frame with a failed validation batch fires
+  neither (no mutation occurred). The controller picks the impact
+  itself (it talks to `ISceneRenderBridge` directly, not the
+  `EditorSyncRouter`).
+- **Runtime-only mutation.** The authoring document is never mutated by
+  a deferred change. Stop destroys the runtime document and any
+  pending queue contents.
+- **No new public SceneManager APIs.** The `RuntimeSceneMutator` is a
+  separate, small class in `rt2::core`, not a SceneManager extension.
+
+### Files
+
+- New: `RT2App/src/RuntimeLifecycleObserver.h` (the
+  `IRuntimeLifecycleObserver` interface, dependency-free),
+  `RT2App/src/RuntimeSceneMutator.h/.cpp` (the
+  `RuntimeEntityCreateDesc`, `RuntimeSceneMutator` class),
+  `RT2Tests/src/Phase4LifecycleTests.cpp`.
+- Modified: `RuntimeSceneController.h/.cpp` (injectable UUID provider
+  storage + setter; observer storage + dispatch in Play/Stop with the
+  precise ordering in §6; single FIFO `m_PendingOperations` queue +
+  `QueueCreateRuntimeEntity` / `QueueDestroyRuntimeEntity` +
+  `ApplyDeferredStructuralChanges` with batch-validate-then-apply;
+  structural-impact coalescing in `Update`/`Step`; created-transform
+  `prevWorldMatrix` initialization; `m_Stopping` queue-disable flag),
+  `WalnutApp.cpp` (one line: inject the UUID provider),
+  `RT2Tests/premake5.lua` and `RT2Tests.vcxproj` (new test file +
+  `RuntimeSceneMutator.cpp` registered).
+
+### Verification gates
+
+Release x64 build; focused Phase 4 lifecycle tests; full RT2Tests where
+the only permitted failures are exactly the six known pre-existing
+cases; `run_slice_test.ps1` and `run_recovery_test.ps1` pass;
 `graphify update .`; documentation updates with actual test counts.
 
-Runtime acceptance (interactive, pending user):
+### Runtime acceptance (interactive, pending user)
 
 - Play, observe motion, Stop — authoring scene unchanged (existing
-  behavior, now backed by an explicit test).
-- (No new interactive surface — the deferred queue and lifecycle
-  callbacks are exercised by tests only this phase; Phase 6 wires them
-  to scripting.)
+  behavior, now backed by an explicit canonical-serialization test).
+- (No new interactive surface — the queue and observer are exercised by
+  tests only this phase; Phase 6 wires them to scripting.)
 
-Exit criterion (post-Phase-4): Repeated Play/Stop cycles — including cycles
-with deferred structural changes pending — neither leak entities/resources
-nor alter saved scene state. The authoring document is byte-for-byte
-identical across any number of Play/Stop cycles with any sequence of
-runtime mutations.
+### Exit criterion (post-Phase-4)
 
-Explicitly out of scope for this Phase 4 completion slice: scripting
-(`OnCreate`/`OnFixedUpdate`/`OnUpdate`/`OnDestroy` — Phase 6); physics
-(Phase 9); variable-update script callbacks (Phase 6); exposing the
-deferred queue to Lua (Phase 6); content browser / asset database
-(Phase 7); input action system (Phase 5). The lifecycle callback
-interface is added now so Phase 6 can hook into it without further
-RuntimeSceneController changes.
+Repeated Play/Stop cycles — including cycles with deferred structural
+operations pending, including cycles where a batch validation fails and
+the queue is left intact — neither leak entities/resources nor alter
+saved scene state. The authoring document's canonical serialized state
+is identical across any number of Play/Stop cycles with any sequence of
+runtime operations.
+
+### Explicitly out of scope for this Phase 4 completion slice
+
+Scripting (`OnCreate`/`OnFixedUpdate`/`OnUpdate`/`OnDestroy` — Phase 6);
+the `IRuntimeCommandSink` mutation channel for `OnSceneStart` (Phase 6);
+physics (Phase 9); variable-update script callbacks (Phase 6); exposing
+the queue to Lua (Phase 6); content browser / asset database (Phase 7);
+input action system (Phase 5); runtime creation of mesh/light/camera/
+primitive entities (Phase 6 — Phase 4 supports only empty +
+transform + name + visibility); runtime reparenting during Play (Phase
+6). The observer interface and mutator are added now so Phase 6 can
+hook scripting into them without further `RuntimeSceneController`
+structural changes.

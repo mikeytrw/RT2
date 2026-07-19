@@ -881,29 +881,52 @@ scene-management contracts are:
 The vertical-slice `RuntimeSceneController` (Play/Pause/Step/Stop, deep-clone,
 editor camera snapshot, runtime camera selection by lowest UUID) is
 implemented. The Phase 4 completion slice closes the remaining plan items:
-scene start/stop lifecycle callbacks, a deferred structural-change queue
-drained at the `game-loop.md` safe point, and a dedicated exit-criterion test
-surface. See the Phase 4 section of `docs/game-engine-development-plan.md`
-for the full specification. The key scene-management contracts are:
+an injectable runtime UUID provider, a `RuntimeSceneMutator` that owns the
+runtime-only structural invariants (no registry mutation from the
+controller), a single FIFO structural-operation queue drained at the
+`game-loop.md` safe point with batch-validate-then-apply semantics, and a
+dedicated exit-criterion test surface. See the Phase 4 section of
+`docs/game-engine-development-plan.md` for the full specification. The key
+scene-management contracts are:
 
-- **Lifecycle callbacks are const-observe at start/stop.**
-  `ISceneLifecycleCallbacks::OnSceneStart` / `OnSceneStop` fire once per Play
-  / Stop on the runtime controller, receiving the runtime document by const
-  reference. This is the seam Phase 6 scripting hooks `OnCreate` /
-  `OnDestroy` into; for Phase 4 it is exercised by a recording test spy.
-- **Deferred structural changes are runtime-only and coalesced.**
-  `QueueCreateRuntimeEntity` / `QueueDestroyRuntimeEntity` push onto a
-  pending queue drained at the safe point (after the fixed-step loop,
-  before `SceneGraph::UpdateWorldTransforms` and the batched sync). The
-  authoring document is never mutated. Stop destroys the runtime document
-  and any pending queue contents. A frame with any structural change fires
-  one `FullSync`; a frame with only motion fires `TransformSync`.
-- **Runtime-created UUIDs are fresh v4 from the runtime document's UUID
-  provider.** They do not collide with authoring UUIDs and never alias an
-  authoring entity on Stop-then-re-Play.
-- **No new public SceneManager APIs.** Deferred creates use a private
-  controller helper that emplaces into the runtime `ECSScene` registry and
-  assigns a fresh UUID via the runtime document's UUID provider.
+- **Injectable runtime UUID provider.** `SetRuntimeUuidProvider` is set on
+  the controller; `Play()` sets it on the freshly-constructed runtime
+  document BEFORE `CloneInMemory` (which preserves the destination
+  provider — see `SceneSerializer.cpp:1132-1137`). Without this, runtime
+  UUID generation is impossible.
+- **`RuntimeSceneMutator` owns the invariants.** A small Vulkan-free class
+  in `rt2::core` with `CreateEntity` and `DestroySubtree` that maintains
+  `EntityIdComponent`/`uuidIndex`, hierarchy parent/children, transform
+  dirtiness, and subtree post-order destruction. The controller does
+  NOT mutate the registry directly.
+- **Single FIFO structural-operation queue.**
+  `QueueCreateRuntimeEntity(desc)` allocates a fresh UUID at queue time
+  (returns `Result<UUID>`) so later ops in the same tick can reference
+  the new entity. `QueueDestroyRuntimeEntity(uuid)` enqueues a destroy.
+  Both are rejected when the controller is in `Edit` (or stopping). The
+  queue is one `std::variant<Create, Destroy>` FIFO, drained in exact
+  enqueue order at the safe point. The drain validates the complete
+  batch first (duplicate UUID, missing UUID, parent resolution, ancestor
+  of a later create) and applies atomically; on any validation failure
+  the queue is left intact and the runtime document is unchanged.
+- **Created-transform `prevWorldMatrix` initialization.** After the
+  batch is applied and `SceneGraph::UpdateWorldTransforms` runs, every
+  created entity gets `prevWorldMatrix = worldMatrix` to prevent
+  first-frame motion-vector spikes.
+- **Lifecycle observer is const-observe.** `IRuntimeLifecycleObserver`
+  (`OnSceneStart` / `OnSceneStop`) fires with the runtime document by
+  const reference. `OnSceneStart` fires after `m_State = Playing`;
+  `OnSceneStop` fires before the runtime is destroyed but after
+  queueing is disabled. Phase 6 adds a separate mutation channel.
+- **"Authoring unchanged" = canonical serialized state.** The transient
+  `gpuCache` (mutated by the existing Stop path's `const_cast`) is
+  excluded. The exit-criterion test compares
+  `SceneSerializer::SerializeToString` output before Play and after
+  Stop across N cycles with any queue activity.
+- **Coalesced sync.** A frame with any applied structural operation fires
+  one `FullSync`; a frame with only motion fires `TransformSync`; a frame
+  with a failed validation batch fires neither.
 - **Exit criterion:** repeated Play/Stop cycles — including cycles with
-  deferred structural changes pending — neither leak entities/resources
-  nor alter saved scene state.
+  deferred structural operations pending, including cycles where a batch
+  validation fails and the queue is left intact — neither leak
+  entities/resources nor alter saved scene state.
