@@ -1814,6 +1814,14 @@ private:
 	{
 		EnsureRenderBridge();
 
+		// Phase 4: inject the production UUID provider so the runtime document
+		// can generate fresh UUIDs for deferred-create operations. The
+		// provider is stateless and the UUID spaces are disjoint (the runtime
+		// document's uuidIndex is a fresh copy at Play), so we reuse the
+		// authoring document's provider.
+		m_Runtime.SetRuntimeUuidProvider(
+			m_SceneMgr.AuthoringDoc().GetUuidProvider());
+
 		rt2::core::Error err;
 		if (!m_Runtime.Play(m_SceneMgr.AuthoringDoc(), *m_RenderBridge, err))
 		{

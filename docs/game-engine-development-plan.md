@@ -2040,7 +2040,7 @@ Verification report (implementation):
 Runtime acceptance (interactive): pending — to be performed by the user
 against a Release deployment. The six behavioural checks listed above.
 
-## Phase 4 — Edit/Play/Pause lifecycle (completion specification)
+## Phase 4 — Edit/Play/Pause lifecycle (completion, implemented)
 
 Phase 4's vertical slice is already implemented (RuntimeSceneController,
 Play/Pause/Step/Stop, deep-clone, editor camera snapshot, runtime camera
@@ -2049,6 +2049,14 @@ remaining Phase 4 work items so the exit criterion — "Repeated Play/Stop
 cycles neither leak entities/resources nor alter saved scene state" — is
 met by construction and verified by a dedicated test surface, not just by
 the existing 100-cycle smoke test.
+
+Verification: `RT2Tests/src/Phase4LifecycleTests.cpp` — 23 tests, 671
+assertions, all passing. Full RT2Tests: 354 cases, 348 passed, 6
+pre-existing failures (5 `SceneGraph` cases in `EcsTests.cpp` + 1 SIGSEGV
+in `SceneManager: RemoveEntity destroys entity`), 48 skipped.
+`run_slice_test.ps1` and `run_recovery_test.ps1` pass. WalnutApp injects
+the production UUID provider via one line in `EnterPlay`. The interactive
+app installs no observer and never queues a deferred operation.
 
 The slice adds four things:
 

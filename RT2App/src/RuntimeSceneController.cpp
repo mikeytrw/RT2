@@ -1,10 +1,13 @@
 #include "RuntimeSceneController.h"
 #include "SceneSerializer.h"
 #include "SceneGraph.h"
+#include "SceneHierarchy.h"
 #include "ECSComponents.h"
 #include "GPUSceneData.h"
+#include "core/UUID.h"
 
 #include <algorithm>
+#include <unordered_set>
 #include <vector>
 
 namespace rt2::core {
@@ -14,14 +17,22 @@ namespace rt2::core {
 // ============================================================================
 
 bool RuntimeSceneController::Play(const SceneDocument& authoring,
-                                  ISceneRenderBridge& bridge,
-                                  Error& err)
+                                   ISceneRenderBridge& bridge,
+                                   Error& err)
 {
     if (m_State != SceneRunState::Edit)
         return false;
 
-    // Deep-clone the authoring document into the runtime document.
+    m_Stopping = false;
+    m_PendingOperations.clear();
+
+    // Construct the runtime document and set the UUID provider BEFORE
+    // CloneInMemory. CloneInMemory preserves the destination provider (see
+    // SceneSerializer.cpp:1132-1137), so this is the only place we need to
+    // inject it. Without this, runtime UUID generation is impossible.
     m_Runtime = std::make_unique<SceneDocument>();
+    if (m_RuntimeUuidProvider)
+        m_Runtime->SetUuidProvider(m_RuntimeUuidProvider);
     if (!SceneSerializer::CloneInMemory(authoring, *m_Runtime, err))
     {
         m_Runtime.reset();
@@ -35,8 +46,6 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
     // Activate the runtime document for rendering: full GPU upload + temporal
     // reset. The bridge builds GPUSceneData from m_Runtime and hands it to
     // the renderer.
-    // For the vertical slice, we do a full sync on Play and Stop. Keep-
-    // textures optimization can come later.
     GPUSceneData gpuData = BuildGPUSceneDataFromECS(m_Runtime->ecs);
     if (m_Runtime->environment.HasEnvMap())
     {
@@ -52,8 +61,16 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
     bridge.FullSync(gpuData);
     bridge.ResetTemporalState();
 
+    // Set m_State = Playing BEFORE firing OnSceneStart so a callback that
+    // queries GetState() sees the post-Play state. OnSceneStart is a clean
+    // observation seam — it may call QueueCreateRuntimeEntity (the queued op
+    // is NOT drained during OnSceneStart; it waits for the next Update/Step).
     m_State = SceneRunState::Playing;
     m_Accumulator = 0.0f;
+
+    if (m_LifecycleObserver)
+        m_LifecycleObserver->OnSceneStart(*m_Runtime);
+
     return true;
 }
 
@@ -101,16 +118,41 @@ bool RuntimeSceneController::Step(ISceneRenderBridge& bridge)
     // Run one fixed update tick.
     RunFixedTick(dt);
 
-    // Update world transforms (batched — once after simulation).
+    // Safe point: drain the deferred queue. The queue is drained in both
+    // Update and Step so a queued op is processed on the next simulation
+    // tick regardless of Pause state.
+    Error drainErr;
+    std::vector<UUID> createdThisBatch;
+    const bool structural = ApplyDeferredStructuralChanges(drainErr, createdThisBatch);
+
+    // Batched: update world transforms once after the tick + drain.
     SceneGraph::UpdateWorldTransforms(m_Runtime->ecs.registry);
 
-    // One batched transform sync for the presentation pass.
-    // The slice only has motion (no structural changes during Play), so
-    // the sync impact is always Transform.
+    // For every entity created by this batch, set prevWorldMatrix = worldMatrix
+    // so the first frame's motion vectors are zero (no spurious movement from
+    // uninitialized prev state). This mirrors InitPrevTransforms, scoped to
+    // the batch's created set.
+    if (!createdThisBatch.empty())
+    {
+        auto& reg = m_Runtime->ecs.registry;
+        for (const auto& uuid : createdThisBatch)
+        {
+            const auto e = m_Runtime->FindByUuid(uuid);
+            if (e != entt::null)
+                if (auto* tf = reg.try_get<Transform>(e))
+                    tf->prevWorldMatrix = tf->worldMatrix;
+        }
+    }
+
+    // One sync for the presentation pass: FullSync if the frame applied any
+    // structural operation, otherwise TransformSync.
     GPUSceneData gpuData = m_Runtime->gpuCache;
     UpdateInstancesFromECS(gpuData, m_Runtime->ecs);
     m_Runtime->gpuCache = gpuData;
-    bridge.TransformSync(gpuData);
+    if (structural)
+        bridge.FullSync(gpuData);
+    else
+        bridge.TransformSync(gpuData);
 
     // Request a render submission for the presentation pass.
     bridge.RequestRender();
@@ -123,17 +165,32 @@ bool RuntimeSceneController::Step(ISceneRenderBridge& bridge)
 // ============================================================================
 
 void RuntimeSceneController::Stop(const SceneDocument& authoring,
-                                  ISceneRenderBridge& bridge)
+                                   ISceneRenderBridge& bridge)
 {
     if (m_State == SceneRunState::Edit)
         return;
 
-    // Destroy the runtime document and all runtime-only state.
+    // 1. Disable queue submission so a callback cannot queue structural
+    //    operations during OnSceneStop.
+    m_Stopping = true;
+
+    // 2. Fire OnSceneStop while the runtime document still exists and is
+    //    observable.
+    if (m_LifecycleObserver && m_Runtime)
+        m_LifecycleObserver->OnSceneStop(*m_Runtime);
+
+    // 3. Clear any pending operations (they are runtime-only).
+    m_PendingOperations.clear();
+
+    // 4. Destroy the runtime document and all runtime-only state.
     m_Runtime.reset();
 
-    // Re-activate the authoring document for rendering: full upload + temporal
-    // reset. The authoring document was never mutated during Play, so this
-    // restores the exact pre-Play visual state.
+    // 5. Re-activate the authoring document for rendering: full upload +
+    //    temporal reset. The authoring document's canonical serialized state
+    //    was never mutated during Play, so this restores the exact pre-Play
+    //    visual state. (The transient gpuCache IS mutated via const_cast
+    //    below — see Phase 4 spec §8: "authoring unchanged" excludes
+    //    gpuCache, which is a CPU cache the Stop path legitimately rebuilds.)
     GPUSceneData gpuData = BuildGPUSceneDataFromECS(authoring.ecs);
     if (authoring.environment.HasEnvMap())
     {
@@ -145,13 +202,14 @@ void RuntimeSceneController::Stop(const SceneDocument& authoring,
         gpuData.textures.push_back(envTex);
         gpuData.envMapIndex = (int)gpuData.textures.size() - 1;
     }
-    // Update the authoring document's gpuCache (it may have been stale).
     const_cast<SceneDocument&>(authoring).gpuCache = gpuData;
     bridge.FullSync(gpuData);
     bridge.ResetTemporalState();
 
+    // 6. Reset state.
     m_State = SceneRunState::Edit;
     m_Accumulator = 0.0f;
+    m_Stopping = false;
 }
 
 // ============================================================================
@@ -180,21 +238,212 @@ void RuntimeSceneController::Update(float frameDt, ISceneRenderBridge& bridge)
     }
 
     // If we hit the substep cap, drop residual time to avoid buildup.
-    // (Alternative: carry it to next frame, but that can cause cascading
-    // catch-up. The drop policy is documented in game-loop.md.)
     if (substeps == kMaxSubsteps)
         m_Accumulator = 0.0f;
 
-    // Batched: update world transforms once after all substeps.
+    // Safe point: drain the deferred queue after the fixed-step loop, before
+    // SceneGraph::UpdateWorldTransforms and the batched sync.
+    Error drainErr;
+    std::vector<UUID> createdThisBatch;
+    const bool structural = ApplyDeferredStructuralChanges(drainErr, createdThisBatch);
+
+    // Batched: update world transforms once after all substeps + drain.
     SceneGraph::UpdateWorldTransforms(m_Runtime->ecs.registry);
 
-    // One batched transform-only sync per rendered frame.
+    // For every entity created by this batch, set prevWorldMatrix = worldMatrix
+    // so the first frame's motion vectors are zero.
+    if (!createdThisBatch.empty())
+    {
+        auto& reg = m_Runtime->ecs.registry;
+        for (const auto& uuid : createdThisBatch)
+        {
+            const auto e = m_Runtime->FindByUuid(uuid);
+            if (e != entt::null)
+                if (auto* tf = reg.try_get<Transform>(e))
+                    tf->prevWorldMatrix = tf->worldMatrix;
+        }
+    }
+
+    // One sync per rendered frame: FullSync if any structural operation was
+    // applied this frame, otherwise TransformSync. A frame with a failed
+    // validation batch (no mutation) fires TransformSync — the runtime
+    // document is unchanged, so a transform-only sync is correct.
     GPUSceneData gpuData = m_Runtime->gpuCache;
     UpdateInstancesFromECS(gpuData, m_Runtime->ecs);
     m_Runtime->gpuCache = gpuData;
-    bridge.TransformSync(gpuData);
+    if (structural)
+        bridge.FullSync(gpuData);
+    else
+        bridge.TransformSync(gpuData);
 
     bridge.RequestRender();
+}
+
+// ============================================================================
+// Deferred structural-operation queue (Phase 4 §3, §4)
+// ============================================================================
+
+std::unordered_set<UUID> RuntimeSceneController::PendingCreateUuids() const
+{
+    std::unordered_set<UUID> set;
+    for (const auto& op : m_PendingOperations)
+    {
+        if (auto* create = std::get_if<CreateRuntimeEntityOperation>(&op))
+            set.insert(create->uuid);
+    }
+    return set;
+}
+
+Result<UUID> RuntimeSceneController::QueueCreateRuntimeEntity(
+    const RuntimeEntityCreateDesc& desc)
+{
+    if (m_State != SceneRunState::Playing && m_State != SceneRunState::Paused)
+        return Result<UUID>::Fail(Error::InvalidRuntimeState, "",
+            "QueueCreateRuntimeEntity: not Playing/Paused");
+    if (m_Stopping)
+        return Result<UUID>::Fail(Error::InvalidRuntimeState, "",
+            "QueueCreateRuntimeEntity: controller is stopping");
+    if (!m_RuntimeUuidProvider)
+        return Result<UUID>::Fail(Error::InvalidRuntimeState, "",
+            "QueueCreateRuntimeEntity: no runtime UUID provider");
+    if (!m_Runtime)
+        return Result<UUID>::Fail(Error::InvalidRuntimeState, "",
+            "QueueCreateRuntimeEntity: no runtime document");
+
+    UUID uuid = m_RuntimeUuidProvider->CreateV4();
+    while (m_Runtime->uuidIndex.Contains(uuid) ||
+           PendingCreateUuids().count(uuid) != 0)
+        uuid = m_RuntimeUuidProvider->CreateV4();
+
+    m_PendingOperations.push_back(
+        CreateRuntimeEntityOperation{ uuid, desc });
+    return Result<UUID>::Ok(uuid);
+}
+
+Result<void> RuntimeSceneController::QueueDestroyRuntimeEntity(const UUID& uuid)
+{
+    if (m_State != SceneRunState::Playing && m_State != SceneRunState::Paused)
+        return Result<void>::Fail(Error::InvalidRuntimeState, "",
+            "QueueDestroyRuntimeEntity: not Playing/Paused");
+    if (m_Stopping)
+        return Result<void>::Fail(Error::InvalidRuntimeState, "",
+            "QueueDestroyRuntimeEntity: controller is stopping");
+
+    m_PendingOperations.push_back(DestroyRuntimeSubtreeOperation{ uuid });
+    return Result<void>::Ok();
+}
+
+bool RuntimeSceneController::ApplyDeferredStructuralChanges(
+    Error& err, std::vector<UUID>& createdUuids)
+{
+    createdUuids.clear();
+
+    if (!m_Runtime)
+        return false;
+
+    if (m_PendingOperations.empty())
+        return false;
+
+    auto& doc = *m_Runtime;
+
+    // Phase 1: validate the complete batch before any mutation. Walk the
+    // queue in order, building the set of UUIDs that will exist after each
+    // operation. The validation state starts from the current runtime
+    // document UUID set.
+    std::unordered_set<UUID> existingUuids;
+    for (const auto& [uuid, entity] : doc.uuidIndex.All())
+        existingUuids.insert(uuid);
+
+    for (const auto& op : m_PendingOperations)
+    {
+        if (auto* create = std::get_if<CreateRuntimeEntityOperation>(&op))
+        {
+            if (existingUuids.count(create->uuid) != 0)
+            {
+                err = Error{ Error::DuplicateUuid, create->uuid.ToString(),
+                    "ApplyDeferredStructuralChanges: duplicate UUID in batch" };
+                return false;
+            }
+            if (create->desc.parentUuid &&
+                existingUuids.count(*create->desc.parentUuid) == 0)
+            {
+                err = Error{ Error::InvalidEntity, create->desc.parentUuid->ToString(),
+                    "ApplyDeferredStructuralChanges: parent UUID does not resolve" };
+                return false;
+            }
+            existingUuids.insert(create->uuid);
+        }
+        else if (auto* destroy = std::get_if<DestroyRuntimeSubtreeOperation>(&op))
+        {
+            if (existingUuids.count(destroy->uuid) == 0)
+            {
+                err = Error{ Error::InvalidEntity, destroy->uuid.ToString(),
+                    "ApplyDeferredStructuralChanges: destroy UUID not present (already destroyed or missing)" };
+                return false;
+            }
+            // Remove the destroyed UUID (and its subtree, if it already exists
+            // in the registry) from the validation set. A destroy of an
+            // entity created earlier in this same batch has no subtree yet
+            // (children would have to be created later in the batch and
+            // would have specified this entity as parentUuid — but the
+            // destroy removes it from the projected set, so a later create
+            // child-of-destroyed-parent is correctly rejected). A destroy of
+            // an entity that existed before this batch has its subtree in
+            // the registry, so we collect it post-order and remove every
+            // descendant UUID.
+            existingUuids.erase(destroy->uuid);
+            const auto root = doc.FindByUuid(destroy->uuid);
+            if (root != entt::null)
+            {
+                std::vector<entt::entity> subtree;
+                SceneHierarchy::CollectSubtreePostOrder(doc.ecs.registry, root, subtree);
+                for (const auto e : subtree)
+                {
+                    if (const auto* id = doc.ecs.registry.try_get<EntityIdComponent>(e))
+                        existingUuids.erase(id->id);
+                }
+            }
+        }
+    }
+
+    // Phase 2: apply the batch atomically in enqueue order via the mutator.
+    // Post-validation, mutator failures are bugs — treat as fatal: clear the
+    // queue, surface the error, and keep running.
+    for (const auto& op : m_PendingOperations)
+    {
+        if (auto* create = std::get_if<CreateRuntimeEntityOperation>(&op))
+        {
+            auto r = m_Mutator.CreateEntity(doc, create->uuid, create->desc);
+            if (!r.IsOk())
+            {
+                err = r.error;
+                m_PendingOperations.clear();
+                return false;
+            }
+            createdUuids.push_back(create->uuid);
+        }
+        else if (auto* destroy = std::get_if<DestroyRuntimeSubtreeOperation>(&op))
+        {
+            auto r = m_Mutator.DestroySubtree(doc, destroy->uuid);
+            if (!r.IsOk())
+            {
+                err = r.error;
+                m_PendingOperations.clear();
+                return false;
+            }
+        }
+    }
+
+    // Phase 3: clear the queue. The batch is committed.
+    m_PendingOperations.clear();
+
+    // Phase 4 (post-apply): the caller will run SceneGraph::UpdateWorldTransforms
+    // next, then set prevWorldMatrix = worldMatrix for every created entity
+    // so the first frame's motion vectors are zero. We hand the created set
+    // back via the out-param so the controller can finalize prevWorldMatrix
+    // after UpdateWorldTransforms.
+
+    return true;
 }
 
 // ============================================================================
@@ -258,9 +507,6 @@ void RuntimeSceneController::RunFixedTick(float dt)
         tf.translation += mc.linearVelocity * dt;
         SceneGraph::SetLocalDirty(reg, e);
     }
-
-    // Deferred structural changes would be applied here at the defined safe
-    // point. The vertical slice has no structural changes during Play.
 }
 
 } // namespace rt2::core

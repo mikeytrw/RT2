@@ -82,6 +82,27 @@ struct Result
     }
 };
 
+// Result<void> specialization for APIs that can fail without a value payload.
+// Used by RuntimeSceneController::QueueDestroyRuntimeEntity and
+// RuntimeSceneMutator::DestroySubtree. `Ok({})` constructs the success case.
+template<>
+struct Result<void>
+{
+    Error   error;
+
+    bool IsOk() const { return error.IsOk(); }
+
+    static Result Ok() { Result r; return r; }
+    static Result Fail(Error::Code code, std::string path, std::string detail)
+    {
+        Result r;
+        r.error.code = code;
+        r.error.path = std::move(path);
+        r.error.detail = std::move(detail);
+        return r;
+    }
+};
+
 } // namespace rt2::core
 
 #endif // RT2_CORE_ERROR_H

@@ -876,11 +876,11 @@ scene-management contracts are:
   glTF import, Load Mesh File, and env-map load. The `NotifySceneChanged` →
   compaction-gated path shrinks to imports only.
 
-### Runtime lifecycle — Phase 4 completion (planned)
+### Runtime lifecycle — Phase 4 completion (implemented)
 
 The vertical-slice `RuntimeSceneController` (Play/Pause/Step/Stop, deep-clone,
 editor camera snapshot, runtime camera selection by lowest UUID) is
-implemented. The Phase 4 completion slice closes the remaining plan items:
+implemented, and the Phase 4 completion slice closes the remaining plan items:
 an injectable runtime UUID provider, a `RuntimeSceneMutator` that owns the
 runtime-only structural invariants (no registry mutation from the
 controller), a single FIFO structural-operation queue drained at the
@@ -930,3 +930,10 @@ scene-management contracts are:
   deferred structural operations pending, including cycles where a batch
   validation fails and the queue is left intact — neither leak
   entities/resources nor alter saved scene state.
+
+Verification: `RT2Tests/src/Phase4LifecycleTests.cpp` (23 tests, 671
+assertions). Full RT2Tests: 354 cases, 348 passed, 6 pre-existing failures
+(5 `SceneGraph` cases in `EcsTests.cpp` + 1 SIGSEGV in `SceneManager:
+RemoveEntity destroys entity`), 48 skipped. Slice runner, recovery
+scenario, and `RuntimeSceneControllerTests` all pass. WalnutApp injects
+the production UUID provider via one line in `EnterPlay`.

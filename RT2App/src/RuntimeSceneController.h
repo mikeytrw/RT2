@@ -5,10 +5,17 @@
 
 #include "SceneDocument.h"
 #include "ISceneRenderBridge.h"
+#include "RuntimeLifecycleObserver.h"
+#include "RuntimeSceneMutator.h"
 #include "core/Error.h"
+#include "core/UUID.h"
 #include "ECSComponents.h"
 
 #include <memory>
+#include <optional>
+#include <unordered_set>
+#include <variant>
+#include <vector>
 
 // ============================================================================
 // RuntimeSceneController — owns the runtime scene clone and the Edit/Play/
@@ -19,27 +26,40 @@
 // cleanly into RT2Tests and RT2SliceRunner (which supply a null/recording
 // bridge) while RT2App supplies a real bridge backed by RendererGPU.
 //
-// Lifecycle:
+// Lifecycle (Phase 4 completion):
 //   Play(authoring):
-//     1. Deep-clone authoring → m_Runtime via SceneSerializer::CloneInMemory.
-//        UUIDs are preserved; transient state (gpuCache, dirty, prevTransforms)
-//        is NOT cloned.
-//     2. Initialize runtime prevWorldMatrix = worldMatrix for all transforms
-//        so the first Play frame does not produce invalid motion vectors.
-//     3. Activate the runtime document for rendering via the bridge:
-//        FullSync (full GPUSceneData upload) + ResetTemporalState.
+//     1. Construct runtime document, set UUID provider, CloneInMemory.
+//     2. InitPrevTransforms.
+//     3. Bridge FullSync + ResetTemporalState.
+//     4. Set m_State = Playing.
+//     5. Fire OnSceneStart(runtime).
 //   Pause:
 //     Clear the accumulator so stale wall-clock time cannot become queued
-//     simulation on resume. No simulation runs while paused.
+//     simulation on resume. No simulation runs while paused. Queue
+//     submission remains allowed while Paused.
 //   Step:
 //     Valid only while Paused. Runs exactly one fixed tick (MotionSystem +
 //     deferred structural changes + SceneGraph + one batched sync) plus one
-//     presentation pass. The accumulator is NOT advanced. Returns false if
-//     not paused.
+//     presentation pass. Drains the deferred queue at the safe point. The
+//     accumulator is NOT advanced. Returns false if not paused.
 //   Stop:
-//     1. Activate the authoring document for rendering via the bridge:
-//        FullSync + ResetTemporalState.
-//     2. Destroy m_Runtime and its runtime-only components.
+//     1. Set m_Stopping (queue submission disabled).
+//     2. Fire OnSceneStop(runtime).
+//     3. Clear m_PendingOperations.
+//     4. m_Runtime.reset().
+//     5. Bridge FullSync + ResetTemporalState on the authoring document.
+//     6. Set m_State = Edit.
+//
+// Deferred structural operations:
+//   QueueCreateRuntimeEntity allocates a fresh UUID at queue time (returns
+//   Result<UUID>) so later ops in the same tick can reference the new entity.
+//   QueueDestroyRuntimeEntity enqueues a destroy. Both are rejected when
+//   the controller is in Edit or stopping. The queue is one FIFO of
+//   std::variant<Create, Destroy>, drained in exact enqueue order at the
+//   safe point in Update/Step. The drain validates the complete batch first
+//   (duplicate UUID, missing UUID, parent resolution, ancestor of a later
+//   create) and applies atomically; on any validation failure the queue
+//   is left intact and the runtime document is unchanged.
 //
 // The host (WalnutApp or RT2SliceRunner) calls Update(frameDt) each frame
 // while Playing. The controller runs the fixed-step accumulator, performs
@@ -62,6 +82,23 @@ enum class SceneRunState
     Playing,
     Paused,
 };
+
+// Deferred structural operations (Phase 4 §3). One FIFO queue, drained in
+// exact enqueue order at the safe point.
+struct CreateRuntimeEntityOperation
+{
+    UUID uuid;                          // allocated at queue time
+    RuntimeEntityCreateDesc desc;
+};
+
+struct DestroyRuntimeSubtreeOperation
+{
+    UUID uuid;
+};
+
+using RuntimeStructuralOperation =
+    std::variant<CreateRuntimeEntityOperation,
+                 DestroyRuntimeSubtreeOperation>;
 
 class RuntimeSceneController
 {
@@ -100,6 +137,47 @@ public:
     // (e.g. MotionSystem). Null if Edit.
     SceneDocument* TryGetRuntimeSceneMut() { return m_Runtime.get(); }
 
+    // ---- Phase 4 completion API -----------------------------------------
+
+    // Injectable runtime UUID provider. Stored non-owning, like
+    // SceneManager::m_UuidProvider. The host (WalnutApp) injects the
+    // production OsUuidProvider; tests inject a DeterministicUuidProvider
+    // seeded for reproducibility. Play() sets the provider on the freshly
+    // constructed runtime document BEFORE CloneInMemory, so the clone
+    // preserves it (see SceneSerializer.cpp:1132-1137). Without this,
+    // runtime UUID generation is impossible.
+    void SetRuntimeUuidProvider(IUuidProvider* provider) { m_RuntimeUuidProvider = provider; }
+    IUuidProvider* GetRuntimeUuidProvider() const { return m_RuntimeUuidProvider; }
+
+    // Injectable lifecycle observer. Stored non-owning. OnSceneStart fires
+    // after m_State = Playing with the runtime document by const reference;
+    // OnSceneStop fires before the runtime is destroyed but after queue
+    // submission is disabled.
+    void SetLifecycleObserver(IRuntimeLifecycleObserver* observer) { m_LifecycleObserver = observer; }
+    IRuntimeLifecycleObserver* GetLifecycleObserver() const { return m_LifecycleObserver; }
+
+    // Allocate a fresh UUID from the runtime provider, enqueue a create,
+    // return the UUID so later operations in the same tick can reference
+    // the new entity. Returns Failure if the controller is not
+    // Playing/Paused (or is stopping), or if the provider is null, or if
+    // the allocated UUID is already present (defensive — the provider
+    // should not produce duplicates).
+    Result<UUID> QueueCreateRuntimeEntity(const RuntimeEntityCreateDesc& desc);
+
+    // Enqueue a destroy. Returns Failure if the controller is not
+    // Playing/Paused (or is stopping). Does NOT validate the UUID here —
+    // validation happens at drain time so a queued destroy of a not-yet-
+    // created entity is a meaningful error rather than a silent drop.
+    Result<void> QueueDestroyRuntimeEntity(const UUID& uuid);
+
+    // Test-only accessors: number of pending operations and the queue
+    // contents (by value, so tests can inspect without aliasing).
+    size_t PendingOperationCount() const { return m_PendingOperations.size(); }
+    std::vector<RuntimeStructuralOperation> PendingOperations() const
+    {
+        return m_PendingOperations;
+    }
+
 private:
     // Initialize prevWorldMatrix = worldMatrix for all transforms in the
     // runtime document. Called once at Play to prevent invalid motion vectors
@@ -110,12 +188,37 @@ private:
     // each simulation step.
     void SnapshotPrevTransforms();
 
-    // Run one fixed update tick (MotionSystem + SceneGraph).
+    // Run one fixed update tick (MotionSystem). Does NOT drain the queue —
+    // the queue is drained at the safe point AFTER the fixed-step loop.
     void RunFixedTick(float dt);
+
+    // Apply deferred structural changes at the safe point (after the fixed-
+    // step loop, before SceneGraph::UpdateWorldTransforms and the batched
+    // sync). Batch-validate-then-apply: on any validation failure the queue
+    // is left intact and the runtime document is unchanged. On success,
+    // `createdUuids` is filled with the UUIDs of every entity created by
+    // this batch so the caller can finalize prevWorldMatrix = worldMatrix
+    // after the next UpdateWorldTransforms pass. Returns true if any
+    // structural operation was applied this frame (so the caller picks
+    // FullSync instead of TransformSync).
+    bool ApplyDeferredStructuralChanges(Error& err,
+                                        std::vector<UUID>& createdUuids);
+
+    // Helper: collect UUIDs of pending create operations so a second create
+    // with a provider-duplicate UUID does not collide with a queued-but-
+    // undrained create.
+    std::unordered_set<UUID> PendingCreateUuids() const;
 
     std::unique_ptr<SceneDocument> m_Runtime;
     SceneRunState m_State = SceneRunState::Edit;
     float m_Accumulator = 0.0f;
+
+    // Phase 4: injectable UUID provider, lifecycle observer, FIFO queue.
+    IUuidProvider* m_RuntimeUuidProvider = nullptr;
+    IRuntimeLifecycleObserver* m_LifecycleObserver = nullptr;
+    std::vector<RuntimeStructuralOperation> m_PendingOperations;
+    RuntimeSceneMutator m_Mutator;
+    bool m_Stopping = false;
 };
 
 } // namespace rt2::core
