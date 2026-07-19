@@ -770,10 +770,18 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	// records via RecordApplied. IsItemDeactivated without AfterEdit
 	// (Escape cancel — ImGui reverts the value itself) discards the session
 	// and records nothing.
+	//
+	// The close is deferred until AFTER the mutation block below: a
+	// keyboard-committed edit (Ctrl+click, type, Enter) fires both
+	// changed==true and IsItemDeactivatedAfterEdit() on the same frame, and
+	// the after-state must be read AFTER SetLocalTransform/TrySetWorldTransform
+	// has applied the committed value. Mouse-drag releases carry no value
+	// change on the release frame, so deferring is safe for them too.
 	EditableTRS beforeLocalCapture;
 	bool hasLocalForCapture = m_SceneMgr->GetLocalTransform(entity, beforeLocalCapture);
 	const unsigned int owningWidgetId = m_TransformEditSession.open
 		? m_TransformEditSession.owningWidgetId : 0;
+	unsigned int pendingCloseWidgetId = 0;
 
 	ImGui::SetNextItemWidth(180.0f);
 	if (ImGui::DragFloat3("Position", &pos[0], 0.1f))
@@ -793,11 +801,7 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	if (ImGui::IsItemDeactivatedAfterEdit())
 	{
 		if (m_TransformEditSession.open && owningWidgetId == posWidgetId)
-		{
-			EditableTRS afterLocal;
-			if (m_SceneMgr->GetLocalTransform(entity, afterLocal))
-				CloseTransformEditSessionIfOwning(targetUuid, afterLocal);
-		}
+			pendingCloseWidgetId = posWidgetId;
 	}
 	else if (ImGui::IsItemDeactivated() && m_TransformEditSession.open &&
 	         owningWidgetId == posWidgetId)
@@ -824,11 +828,7 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	if (ImGui::IsItemDeactivatedAfterEdit())
 	{
 		if (m_TransformEditSession.open && owningWidgetId == rotWidgetId)
-		{
-			EditableTRS afterLocal;
-			if (m_SceneMgr->GetLocalTransform(entity, afterLocal))
-				CloseTransformEditSessionIfOwning(targetUuid, afterLocal);
-		}
+			pendingCloseWidgetId = rotWidgetId;
 	}
 	else if (ImGui::IsItemDeactivated() && m_TransformEditSession.open &&
 	         owningWidgetId == rotWidgetId)
@@ -854,11 +854,7 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	if (ImGui::IsItemDeactivatedAfterEdit())
 	{
 		if (m_TransformEditSession.open && owningWidgetId == scaleWidgetId)
-		{
-			EditableTRS afterLocal;
-			if (m_SceneMgr->GetLocalTransform(entity, afterLocal))
-				CloseTransformEditSessionIfOwning(targetUuid, afterLocal);
-		}
+			pendingCloseWidgetId = scaleWidgetId;
 	}
 	else if (ImGui::IsItemDeactivated() && m_TransformEditSession.open &&
 	         owningWidgetId == scaleWidgetId)
@@ -887,6 +883,17 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 			m_TransformEditError =
 				"World edit rejected: parent is singular or the result contains shear.";
 		}
+	}
+
+	// Close the session AFTER the mutation block so the recorded after-state
+	// reflects the committed value (keyboard-committed edits fire both
+	// changed==true and IsItemDeactivatedAfterEdit() on the same frame).
+	if (pendingCloseWidgetId != 0 && m_TransformEditSession.open &&
+	    m_TransformEditSession.owningWidgetId == pendingCloseWidgetId)
+	{
+		EditableTRS afterLocal;
+		if (m_SceneMgr->GetLocalTransform(entity, afterLocal))
+			CloseTransformEditSessionIfOwning(targetUuid, afterLocal);
 	}
 	if (!m_TransformEditError.empty())
 		ImGui::TextWrapped("%s", m_TransformEditError.c_str());
