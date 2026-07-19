@@ -35,13 +35,13 @@
     "semantic_hash": ""
   },
   "RT2App/src/Camera.cpp": {
-    "mtime": 1784371331.7797766,
-    "ast_hash": "2459f2e0f913dcf177b47bc56cdce4a2",
+    "mtime": 1784387175.3495982,
+    "ast_hash": "27c0ba02cb0a1b1691b657673910b5ed",
     "semantic_hash": ""
   },
   "RT2App/src/Camera.h": {
-    "mtime": 1784371330.5057878,
-    "ast_hash": "5d167de2100186caf14ff00194f24242",
+    "mtime": 1784387174.1798775,
+    "ast_hash": "ee29c38bcef6002ee55216d6f227ca13",
     "semantic_hash": ""
   },
   "RT2App/src/CommandUtils.cpp": {
@@ -135,8 +135,8 @@
     "semantic_hash": ""
   },
   "RT2App/src/MeshRegistry.h": {
-    "mtime": 1783927410.1083424,
-    "ast_hash": "612f5371aa1ec3ddc07440ff1030f484",
+    "mtime": 1784387065.7251117,
+    "ast_hash": "5a2b0abc41b2397891fc89565b135960",
     "semantic_hash": ""
   },
   "RT2App/src/NRDIntegration.cpp": {
@@ -235,8 +235,8 @@
     "semantic_hash": ""
   },
   "RT2App/src/WalnutApp.cpp": {
-    "mtime": 1784382901.806177,
-    "ast_hash": "46e4099b2c23e0e6e4d1035fb2223f3d",
+    "mtime": 1784388459.4440873,
+    "ast_hash": "ddf8b049a2aa4ad1fb6ccfc7fcb9ec2e",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRD/Include/NRD.h": {
@@ -1550,8 +1550,8 @@
     "semantic_hash": ""
   },
   "RT2Tests/premake5.lua": {
-    "mtime": 1784382493.9434226,
-    "ast_hash": "1e2d3276456b7d2b2a73dd81669f9d62",
+    "mtime": 1784387478.5470688,
+    "ast_hash": "78bd9ce71c91b639ef977f8fa9533311",
     "semantic_hash": ""
   },
   "RT2Tests/src/BuildGpuFromEcsTests.cpp": {
@@ -10190,23 +10190,23 @@
     "semantic_hash": ""
   },
   "RT2App/src/SceneEditorUI.cpp": {
-    "mtime": 1784383785.4341643,
-    "ast_hash": "69fea5ba661b5e5a9d11d6d259b04356",
+    "mtime": 1784387834.4975567,
+    "ast_hash": "817ac000abe64afb67abf5325c1cd302",
     "semantic_hash": ""
   },
   "RT2App/src/SceneEditorUI.h": {
-    "mtime": 1784382899.5089197,
-    "ast_hash": "4b472b43514df7ef6bede88d287aff73",
+    "mtime": 1784387793.083238,
+    "ast_hash": "11e60c42fd6ce3a2cc328f6a39278192",
     "semantic_hash": ""
   },
   "RT2App/src/SceneManager.cpp": {
-    "mtime": 1784382936.9154727,
-    "ast_hash": "2a21733f4f906c7772d58645166f8f3c",
+    "mtime": 1784387815.234507,
+    "ast_hash": "e944cd12b468f8d72438ba00b0c1bbf8",
     "semantic_hash": ""
   },
   "RT2App/src/SceneManager.h": {
-    "mtime": 1784382391.515517,
-    "ast_hash": "b6a2ce5f4f3edaff848cb9c529a285e6",
+    "mtime": 1784387814.0456617,
+    "ast_hash": "e8f952e4c51550d083831c91a01ef332",
     "semantic_hash": ""
   },
   "RT2App/src/SceneRenderBridge.cpp": {
@@ -10275,8 +10275,8 @@
     "semantic_hash": ""
   },
   "RT2SliceRunner/premake5.lua": {
-    "mtime": 1784381548.3331664,
-    "ast_hash": "0a6db82944e453704c6197aec7986127",
+    "mtime": 1784387673.2158678,
+    "ast_hash": "ad38f0cdcbbff4bd6354bb63d9a57609",
     "semantic_hash": ""
   },
   "RT2SliceRunner/src/Main.cpp": {
@@ -10390,13 +10390,13 @@
     "semantic_hash": ""
   },
   "docs/game-engine-development-plan.md": {
-    "mtime": 1784383080.2300613,
-    "ast_hash": "df6937c95848b6b3c2357d392ec63105",
+    "mtime": 1784388610.6381001,
+    "ast_hash": "48dae04ac0c8568204eead15691ba065",
     "semantic_hash": ""
   },
   "docs/game-loop.md": {
-    "mtime": 1784368995.0254967,
-    "ast_hash": "cab10e297564830619cd3b2f886d9302",
+    "mtime": 1784388613.0607324,
+    "ast_hash": "9733aab8bb19e7e0c4208f029a5aa6c5",
     "semantic_hash": ""
   },
   "docs/gpu-memory.md": {
@@ -10430,8 +10430,8 @@
     "semantic_hash": ""
   },
   "docs/scene-management.md": {
-    "mtime": 1784383091.0220122,
-    "ast_hash": "360e87c39ad15788313cebe320f00804",
+    "mtime": 1784388611.816843,
+    "ast_hash": "8670df2de6346a2a5942f8f6b61e58ca",
     "semantic_hash": ""
   },
   "docs/shader-bindings.md": {
@@ -10555,13 +10555,13 @@
     "semantic_hash": ""
   },
   "RT2App/src/EditorSceneState.cpp": {
-    "mtime": 1784382492.7824185,
-    "ast_hash": "4191352bb6c624ea9e3b273f993797d5",
+    "mtime": 1784387195.0131824,
+    "ast_hash": "0293ae6746fda0b92cb00ec7b8583e85",
     "semantic_hash": ""
   },
   "RT2App/src/EditorSceneState.h": {
-    "mtime": 1784382491.6576736,
-    "ast_hash": "eabd6743be1d69b51aa287e6dc12ea1d",
+    "mtime": 1784387193.8815587,
+    "ast_hash": "7e22bdd7a32aabfc5d5a71894700fa8d",
     "semantic_hash": ""
   },
   "RT2App/src/PersistedComponents.h": {
@@ -10597,6 +10597,21 @@
   "RT2Tests/src/Phase2CHierarchyTests.cpp": {
     "mtime": 1784382732.2835085,
     "ast_hash": "eb61f9ccc04ee7a87d4c2b8434b06074",
+    "semantic_hash": ""
+  },
+  "RT2App/src/EditorCameraWorkflow.cpp": {
+    "mtime": 1784388458.2462978,
+    "ast_hash": "78fda95b32e6bfd4f09172a532eb6da8",
+    "semantic_hash": ""
+  },
+  "RT2App/src/EditorCameraWorkflow.h": {
+    "mtime": 1784388457.0359776,
+    "ast_hash": "f54ed9c2d8c9d82ce99a4c2d40b1be77",
+    "semantic_hash": ""
+  },
+  "RT2Tests/src/Phase2DCameraTests.cpp": {
+    "mtime": 1784388460.7028048,
+    "ast_hash": "89d9f86f4aeed9550884e1ba043db0eb",
     "semantic_hash": ""
   }
 }

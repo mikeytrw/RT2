@@ -18,6 +18,8 @@
 #include <utility>
 #include <optional>
 
+struct EditorCameraPose;
+
 // ============================================================================
 // SceneManager — owns all scene state + provides entity manipulation APIs.
 //
@@ -164,6 +166,8 @@
 	bool TrySetWorldTransform(EntityId entity, const glm::mat4& desiredWorld);
 	bool TrySetWorldTransforms(
 		const std::vector<std::pair<EntityId, glm::mat4>>& desiredWorldTransforms);
+	EditorMutationResult AlignCameraEntityToView(
+		const rt2::core::UUID& cameraEntity, const EditorCameraPose& pose);
 
 	// Update an entity's material index (which material from the materials array).
 	void SetMaterial(EntityId entity, int materialIndex);
@@ -195,6 +199,8 @@
 	// Read/write light properties.
 	bool GetLightProperties(EntityId entity, glm::vec3& outColor, float& outIntensity, bool& outIsSpot) const;
 	void SetLightProperties(EntityId entity, const glm::vec3& color, float intensity, bool isSpot);
+	bool SetCameraProperties(EntityId entity, float verticalFOV,
+		float aperture, float focusDistance);
 
 	// Read/write mesh ref (meshIndex + materialIndex).
 	bool GetMeshRef(EntityId entity, uint32_t& outMeshIndex, int& outMaterialIndex) const;
@@ -273,6 +279,8 @@
 
 private:
 	void UpdateWorldTransforms();
+	void RefreshCameraForwardDirections(const std::vector<entt::entity>& roots);
+	void ReconcileStoredCameraDirections();
 
 	// Record a durable MaterialOverrideComponent on an imported entity for the
 	// material currently at `materialIndex`. Captures the material value

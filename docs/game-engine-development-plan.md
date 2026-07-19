@@ -1163,6 +1163,74 @@ Verification:
   atomic reparent/delete, duplication, locks, and immutable clipboard behavior.
 - The vertical-slice and recovery regression scripts pass.
 
-Phase 2 is not complete. The next vertical slice is Phase 2D: frame/focus
-selected, camera bookmarks, and editor-view alignment. Undo/redo remains
-Phase 3 and is deliberately not embedded in the Phase 2C mutation APIs.
+### Phase 2D - camera authoring workflow (implemented)
+
+The final Phase 2 slice completes viewport navigation and authored-camera
+alignment without introducing the Phase 3 command stack:
+
+- `MeshRegistry::AddMesh` caches finite object-space AABBs once. Selection
+  bounds transform the eight AABB corners, include selected roots and every
+  descendant without visibility filtering, and give non-renderable entities a
+  deterministic 0.5 m fallback cube.
+- Frame Selected fits both horizontal and vertical projection axes, uses the
+  larger required distance plus a margin, updates focus distance, and has a
+  deterministic fallback when the camera starts inside the bounds. Focus
+  Selected rotates in place toward the bounds centre.
+- The editor provides nine document-session camera bookmarks containing pose,
+  FOV, aperture, focus distance, and far clip. Bookmarks and movement speed are
+  editor state: they are not serialized, do not dirty the scene, and do not
+  trigger scene synchronization. New/Open/recovery adoption clears bookmarks
+  through `EditorSceneState::ResetForDocument()`.
+- `CameraComponent` entity pose is authoritative in `Transform`; its stored
+  `forwardDirection` is a compatibility mirror refreshed after generic
+  transform and hierarchy mutations. Document adoption reconciles legacy
+  stored directions, after which Transform remains authoritative.
+- View Through Camera copies one authored camera pose into the editor view.
+  Align Camera to View converts the editor pose through the entity's parent and
+  commits exactly one Transform mutation/revision. Singular or sheared
+  parent-relative results are rejected atomically with a diagnostic.
+- Play snapshots the current editor view and restores that exact pose on Stop.
+  A runtime `CameraComponent` is chosen by lowest UUID; legacy
+  `ECSScene::camera` remains the fallback when no camera entity exists.
+- Every programmatic editor-camera cut routes through
+  `ApplyEditorCameraCut()` and the existing
+  `ISceneRenderBridge::ResetTemporalState()` contract exactly once. The real
+  bridge resets accumulation/NRD state and invalidates both ReSTIR DI and GI
+  histories; editor navigation issues no Full/Material/Transform sync.
+- Shortcuts are `F` frame, `Shift+F` focus, `Ctrl+1..9` recall, and
+  `Ctrl+Shift+1..9` store. They are suppressed during text entry, active widget
+  editing, and Play.
+
+Verification:
+
+- Release x64 full solution builds.
+- RT2Tests: 318 total cases; focused Phase 2D coverage passes 11/11 cases and
+  81/81 assertions for cached bounds, hierarchy/hidden/empty bounds, per-axis
+  framing, focus, bookmarks, one-reset/no-sync camera cuts, deterministic
+  runtime camera choice, atomic alignment/rejection, and native save/reload.
+- The vertical-slice and recovery regression scripts pass.
+- Interactive acceptance uses a Release-layout temporary deployment with the
+  Release `imgui.ini` copied beside the executable. All five behavioural checks
+  pass against `vertical-slice.rt2scene`: (1) `F` frames the selection and
+  `Shift+F` rotates toward it without translating; (2) `Ctrl+Shift+1` store then
+  `Ctrl+1` recall restores the full editor pose and optical values; (3) *View
+  Through Camera* copies the camera-entity pose to the editor without dirtying,
+  and *Align Camera to View* writes the editor pose back onto the camera entity
+  and dirties the document (Transform sync, revision advances); (4) Play
+  snapshots the editor pose and Stop restores it exactly; (5) frame/focus/recall
+  never dirty the document while align does, and no camera cut leaves visible
+  accumulation/NRD/ReSTIR smearing.
+
+Known pre-existing test failures (unrelated to Phase 2D, tracked for a separate
+fix): the full unfiltered `RT2Tests` run exits non-zero with six failures that
+also reproduce on the Phase 2C checkpoint — five `SceneGraph` cases in
+`EcsTests.cpp` (raw-registry hierarchy setups that omit the parent `children`
+list `SceneGraph::UpdateNode` traverses) and one SIGSEGV in `SceneManager:
+RemoveEntity destroys entity` via the UUID-backed `RemoveSubtrees` path. Phase
+2D's sources are byte-identical to HEAD for all six, so none is attributable to
+this slice.
+
+**Phase 2 exit criteria are now satisfied.** The next vertical slice is Phase
+3A: establish the command/history foundation and migrate a narrow set of
+existing editor mutations to undo/redo without changing their sync-impact
+contract.

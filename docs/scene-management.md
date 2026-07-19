@@ -223,7 +223,36 @@ The `Camera` class (`Camera.h/.cpp`) is an FPS-style controller:
 - When ReSTIR is enabled, NRD jitter is disabled via a greyed-out UI toggle
   (jitter causes temporal wobble in ReSTIR reprojection)
 
-The scene camera (`SceneCamera` in ECSScene) stores position/forward/FOV from
+Programmatic editor-camera changes are atomic `EditorCameraPose` cuts. Frame,
+focus, bookmark recall, View Through Camera, and numeric pose/optics edits all
+use the same application path. A successful cut resets accumulation/NRD and
+invalidates ReSTIR DI and GI history exactly once; it does not dirty the scene
+or invoke a scene GPU sync.
+
+Frame Selected uses cached object-space `MeshData` bounds transformed to world
+space. It unions selected hierarchy roots and all descendants even when hidden.
+Entities without render geometry contribute a 0.5 m cube at their world origin,
+so an empty-only selection remains finite. Frame fits both projection axes;
+Focus rotates in place. Shortcuts are `F` / `Shift+F`.
+
+Nine editor-only bookmark slots store position, forward, vertical FOV,
+aperture, focus distance, and far clip. `Ctrl+1..9` recalls and
+`Ctrl+Shift+1..9` stores. They are cleared on document adoption and are not
+part of `.rt2scene`; camera movement speed is also session-only.
+
+Authored camera entities use `Transform` as the authoritative pose.
+`CameraComponent::forwardDirection` remains serialized for v2 compatibility
+but is maintained as a derived world-space mirror after generic transform and
+hierarchy mutations. On document adoption, legacy files are reconciled once
+from the stored direction and then Transform is authoritative. View Through
+Camera copies an entity pose into the editor camera; Align Camera to View writes
+the editor pose back through the entity's parent. A singular or sheared
+parent-relative conversion is rejected atomically.
+
+On Play, RT2 snapshots the current editor pose. The runtime chooses the
+`CameraComponent` with the lowest UUID deterministically; if none exists, the
+legacy scene-level `ECSScene::camera` pose remains the fallback. Stop restores
+the exact pre-Play editor pose.
 
 ---
 

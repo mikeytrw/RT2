@@ -181,6 +181,22 @@ on hash-table or thread scheduling order. Floating-point comparisons use the
 documented system tolerance rather than claiming bitwise equality across all
 platforms.
 
+### Editor camera cuts and temporal history
+
+Interactive continuous movement is sampled by `Camera::OnUpdate`. Atomic
+programmatic cuts (frame/focus selected, bookmark recall, View Through Camera,
+and numeric pose/optics edits) route through `ApplyEditorCameraCut`. The pose is
+validated and applied as one unit, then
+`ISceneRenderBridge::ResetTemporalState()` is invoked exactly once. The real
+bridge resets accumulation and NRD correspondence state and invalidates both
+ReSTIR DI and ReSTIR GI histories. Editor-only navigation does not dirty the
+authoring document and emits no scene synchronization impact.
+
+Play snapshots whatever editor pose exists at the instant Play begins. A
+runtime camera entity is selected deterministically by lowest UUID, with the
+legacy scene-level camera as fallback. Stop restores the exact snapshot; View
+Through Camera is a one-time pose copy, not a persistent mode.
+
 ### Autosave and recovery scheduling (Phase 1B)
 
 Autosave runs synchronously on the editor main thread in `OnUpdate`, AFTER the

@@ -72,6 +72,31 @@ EditorMutationResult EditorSceneState::Paste(
     return manager.PasteSubtreesFrom(*m_Clipboard, m_ClipboardRoots, parent);
 }
 
+bool EditorSceneState::CaptureCameraBookmark(size_t slot,
+                                             const EditorCameraPose& requested)
+{
+    if (slot >= m_CameraBookmarks.size()) return false;
+    EditorCameraPose pose = requested;
+    if (!TryNormalizeEditorCameraPose(pose)) return false;
+    m_CameraBookmarks[slot] = pose;
+    return true;
+}
+
+const EditorCameraPose* EditorSceneState::CameraBookmark(size_t slot) const
+{
+    if (slot >= m_CameraBookmarks.size() || !m_CameraBookmarks[slot])
+        return nullptr;
+    return &*m_CameraBookmarks[slot];
+}
+
+bool EditorSceneState::ClearCameraBookmark(size_t slot)
+{
+    if (slot >= m_CameraBookmarks.size() || !m_CameraBookmarks[slot])
+        return false;
+    m_CameraBookmarks[slot].reset();
+    return true;
+}
+
 void EditorSceneState::Prune(const rt2::core::SceneDocument& document)
 {
     m_Selection.Prune(document);
@@ -91,4 +116,6 @@ void EditorSceneState::ResetForDocument()
     m_ClipboardRoots.clear();
     m_ClipboardDocumentGeneration = 0;
     m_ClipboardResourceGeneration = 0;
+    for (auto& bookmark : m_CameraBookmarks)
+        bookmark.reset();
 }

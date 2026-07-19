@@ -798,12 +798,20 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 	auto* cam = reg.try_get<CameraComponent>(entity.id);
 	if (!cam) return;
 
+	float verticalFOV = cam->verticalFOV;
+	float aperture = cam->aperture;
+	float focusDistance = cam->focusDistance;
 	ImGui::BeginDisabled(!m_Editable);
-	ImGui::DragFloat("FOV", &cam->verticalFOV, 1.0f, 10.0f, 170.0f, "%.1f");
-	ImGui::DragFloat("Aperture", &cam->aperture, 0.001f, 0.0f, 5.0f, "%.3f");
-	ImGui::DragFloat("Focus Distance", &cam->focusDistance, 0.1f, 0.1f, 1000.0f, "%.1f");
+	bool changed = ImGui::DragFloat("FOV", &verticalFOV, 1.0f, 10.0f, 170.0f, "%.1f");
+	changed |= ImGui::DragFloat("Aperture", &aperture, 0.001f, 0.0f, 5.0f, "%.3f");
+	changed |= ImGui::DragFloat("Focus Distance", &focusDistance, 0.1f, 0.1f, 1000.0f, "%.1f");
+	if (changed)
+		m_SceneMgr->SetCameraProperties(entity, verticalFOV, aperture, focusDistance);
+	const auto uuid = m_SceneMgr->GetEntityUuid(entity);
+	if (ImGui::Button("View Through Camera") && m_OnViewThroughCamera)
+		m_OnViewThroughCamera(uuid);
+	ImGui::SameLine();
+	if (ImGui::Button("Align Camera to View") && m_OnAlignCameraToView)
+		m_OnAlignCameraToView(uuid);
 	ImGui::EndDisabled();
-
-	// Camera edits need accumulation reset but no GPU scene rebuild
-	NotifyTransformChanged();
 }

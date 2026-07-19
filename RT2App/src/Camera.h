@@ -2,6 +2,7 @@
 #include <glm/glm.hpp>
 #include <cstdint>
 #include <utility>
+#include "EditorCameraWorkflow.h"
 #include "ViewportCoordinates.h"
 
 class Camera
@@ -21,6 +22,12 @@ public:
 
 	const glm::vec3& GetPosition() const { return m_Position; }
 	const glm::vec3& GetDirection() const { return m_ForwardDirection; }
+	float GetVerticalFOV() const { return m_VerticalFOV; }
+	float GetNearClip() const { return m_NearClip; }
+	float GetViewportAspect() const
+	{ return m_ViewportHeight > 0 ? float(m_ViewportWidth) / float(m_ViewportHeight) : 1.0f; }
+	EditorCameraPose GetEditorPose() const;
+	bool SetEditorPose(const EditorCameraPose& pose);
 
 	void SetPosition(const glm::vec3& pos) { m_Position = pos; RecalculateView(); }
 	void SetForwardDirection(const glm::vec3& dir) { m_ForwardDirection = dir; RecalculateView(); }

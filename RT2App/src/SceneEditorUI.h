@@ -70,6 +70,12 @@ public:
 
 	void SetOnDumpNEEBuffers(std::function<void()> cb)
 	{ m_OnDumpNEEBuffers = std::move(cb); }
+	void SetOnViewThroughCamera(
+		std::function<void(const rt2::core::UUID&)> cb)
+	{ m_OnViewThroughCamera = std::move(cb); }
+	void SetOnAlignCameraToView(
+		std::function<void(const rt2::core::UUID&)> cb)
+	{ m_OnAlignCameraToView = std::move(cb); }
 
 	// Set whether authoring edits are allowed. During Play, the UI is
 	// read-only (bound to the runtime scene).
@@ -86,6 +92,12 @@ public:
 	TransformSpace GetTransformSpace() const { return m_TransformSpace; }
 	TransformPivot GetTransformPivot() const { return m_TransformPivot; }
 	const TransformSnapSettings& GetTransformSnapSettings() const { return m_TransformSnap; }
+	bool CaptureCameraBookmark(size_t slot, const EditorCameraPose& pose)
+	{ return m_State.CaptureCameraBookmark(slot, pose); }
+	const EditorCameraPose* CameraBookmark(size_t slot) const
+	{ return m_State.CameraBookmark(slot); }
+	bool ClearCameraBookmark(size_t slot)
+	{ return m_State.ClearCameraBookmark(slot); }
 
 	void RenderPanels();
 
@@ -119,6 +131,8 @@ private:
 	std::function<std::filesystem::path()> m_DialogInitialDirectory;
 	std::function<void()> m_OnDumpGPUTransforms;
 	std::function<void()> m_OnDumpNEEBuffers;
+	std::function<void(const rt2::core::UUID&)> m_OnViewThroughCamera;
+	std::function<void(const rt2::core::UUID&)> m_OnAlignCameraToView;
 
 	// UI state for the "Add" popup
 	bool m_ShowAddPopup = false;

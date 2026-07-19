@@ -4,9 +4,12 @@
 #define RT2_EDITOR_SCENE_STATE_H
 
 #include "EditorSelection.h"
+#include "EditorCameraWorkflow.h"
 #include "SceneManager.h"
 
+#include <array>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_set>
 
@@ -15,6 +18,8 @@
 class EditorSceneState
 {
 public:
+    static constexpr size_t kCameraBookmarkCount = 9;
+
     EditorSelection& Selection() { return m_Selection; }
     const EditorSelection& Selection() const { return m_Selection; }
 
@@ -29,6 +34,10 @@ public:
     EditorMutationResult Paste(SceneManager& manager,
         const std::optional<rt2::core::UUID>& parent = std::nullopt) const;
     bool HasClipboard() const { return m_Clipboard != nullptr && !m_ClipboardRoots.empty(); }
+
+    bool CaptureCameraBookmark(size_t slot, const EditorCameraPose& pose);
+    const EditorCameraPose* CameraBookmark(size_t slot) const;
+    bool ClearCameraBookmark(size_t slot);
 
     void Prune(const rt2::core::SceneDocument& document);
     void ResetForDocument();
@@ -45,6 +54,7 @@ private:
     std::vector<rt2::core::UUID> m_ClipboardRoots;
     uint64_t m_ClipboardDocumentGeneration = 0;
     uint64_t m_ClipboardResourceGeneration = 0;
+    std::array<std::optional<EditorCameraPose>, kCameraBookmarkCount> m_CameraBookmarks{};
 };
 
 #endif

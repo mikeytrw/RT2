@@ -2,6 +2,7 @@
 #include "SceneLoader.h"
 #include "SceneGraph.h"
 #include "SceneHierarchy.h"
+#include "EditorCameraWorkflow.h"
 #include "PersistedComponents.h"
 #include "RTLog.h"
 #include "stb_image.h"
@@ -130,6 +131,7 @@ void SceneManager::ReplaceAuthoringDocument(rt2::core::SceneDocument&& document,
 	m_EntityCache.clear();
 	m_EntityCacheDirty = true;
 	m_AuthoringRevision = authoringRevision;
+	ReconcileStoredCameraDirections();
 	++m_DocumentGeneration;
 	++m_ResourceGeneration;
 }
@@ -682,6 +684,7 @@ EditorMutationResult SceneManager::Reparent(
 	}
 	for (const auto root : changed)
 		SceneGraph::MarkDirty(registry, root);
+	RefreshCameraForwardDirections(changed);
 	NotifyAuthoringChanged();
 	m_EntityCacheDirty = true;
 	EditorMutationResult result;
@@ -936,6 +939,7 @@ void SceneManager::SetTransform(EntityId entity,
 		tf->rotation = glm::quat(glm::radians(rotation));
 		tf->scale = scale;
 		SceneGraph::SetLocalDirty(reg, entity.id);
+		RefreshCameraForwardDirections({ entity.id });
 		NotifyAuthoringChanged();
 	}
 }
@@ -949,6 +953,7 @@ void SceneManager::SetLocalTransform(EntityId entity, const EditableTRS& transfo
 		tf->rotation = glm::normalize(transform.rotation);
 		tf->scale = transform.scale;
 		SceneGraph::MarkDirty(m_EcsScene.registry, entity.id);
+		RefreshCameraForwardDirections({ entity.id });
 		NotifyAuthoringChanged();
 	}
 }
@@ -1030,8 +1035,119 @@ bool SceneManager::TrySetWorldTransforms(
 		transform.scale = edit.second.scale;
 		SceneGraph::MarkDirty(registry, edit.first);
 	}
+	std::vector<entt::entity> changedEntities;
+	changedEntities.reserve(locals.size());
+	for (const auto& edit : locals)
+		changedEntities.push_back(edit.first);
+	RefreshCameraForwardDirections(changedEntities);
 	NotifyAuthoringChanged();
 	return true;
+}
+
+EditorMutationResult SceneManager::AlignCameraEntityToView(
+	const rt2::core::UUID& cameraEntity, const EditorCameraPose& requested)
+{
+	EditorCameraPose pose = requested;
+	if (!TryNormalizeEditorCameraPose(pose))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidTransform,
+			cameraEntity.ToString(), "editor camera pose is invalid");
+	const entt::entity entity = m_Authoring.FindByUuid(cameraEntity);
+	if (entity == entt::null || !m_EcsScene.registry.valid(entity) ||
+		!m_EcsScene.registry.all_of<Transform, CameraComponent>(entity))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			cameraEntity.ToString(), "selected entity is not a camera");
+
+	EditableTRS currentWorld;
+	if (!GetWorldTransform({ entity }, currentWorld))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidTransform,
+			cameraEntity.ToString(), "camera world transform is not representable as TRS");
+	glm::quat rotation;
+	if (!TryCameraRotationFromForward(pose.forward, rotation))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidTransform,
+			cameraEntity.ToString(), "camera forward vector is invalid");
+	EditableTRS desired = currentWorld;
+	desired.translation = pose.position;
+	desired.rotation = rotation;
+	if (!TrySetWorldTransform({ entity }, desired.Matrix()))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidTransform,
+			cameraEntity.ToString(),
+			"camera alignment was rejected; its parent may be singular or non-uniformly scaled");
+
+	auto& component = m_EcsScene.registry.get<CameraComponent>(entity);
+	component.verticalFOV = pose.verticalFOV;
+	component.aperture = pose.aperture;
+	component.focusDistance = pose.focusDistance;
+	EditorMutationResult result;
+	result.syncImpact = rt2::core::SyncImpact::Transform;
+	result.affectedEntities.push_back(cameraEntity);
+	return result;
+}
+
+void SceneManager::RefreshCameraForwardDirections(
+	const std::vector<entt::entity>& roots)
+{
+	if (roots.empty()) return;
+	auto& registry = m_EcsScene.registry;
+	SceneGraph::UpdateWorldTransforms(registry);
+	std::unordered_set<entt::entity> visited;
+	for (const entt::entity root : roots)
+	{
+		if (!registry.valid(root)) continue;
+		std::vector<entt::entity> subtree;
+		SceneHierarchy::CollectSubtreePreOrder(registry, root, subtree);
+		for (const entt::entity entity : subtree)
+		{
+			if (!visited.insert(entity).second ||
+				!registry.all_of<CameraComponent, Transform>(entity))
+				continue;
+			EditableTRS world;
+			if (!TryDecomposeEditableTRS(registry.get<Transform>(entity).worldMatrix, world))
+				continue;
+			const glm::vec3 forward =
+				world.rotation * glm::vec3(0.0f, 0.0f, -1.0f);
+			if (glm::dot(forward, forward) > 1e-8f)
+				registry.get<CameraComponent>(entity).forwardDirection =
+					glm::normalize(forward);
+		}
+	}
+}
+
+void SceneManager::ReconcileStoredCameraDirections()
+{
+	auto& registry = m_EcsScene.registry;
+	SceneGraph::UpdateWorldTransforms(registry);
+	std::vector<entt::entity> cameras;
+	const auto view = registry.view<CameraComponent, Transform>();
+	for (const entt::entity entity : view)
+	{
+		const auto& camera = view.get<CameraComponent>(entity);
+		glm::quat rotation;
+		if (!TryCameraRotationFromForward(camera.forwardDirection, rotation))
+			continue;
+		EditableTRS currentWorld;
+		if (!TryDecomposeEditableTRS(view.get<Transform>(entity).worldMatrix,
+			currentWorld))
+			continue;
+		currentWorld.rotation = rotation;
+		glm::mat4 parentWorld(1.0f);
+		if (const auto* hierarchy = registry.try_get<Hierarchy>(entity);
+			hierarchy && hierarchy->parent != entt::null)
+		{
+			const auto* parentTransform = registry.try_get<Transform>(hierarchy->parent);
+			if (!parentTransform) continue;
+			parentWorld = parentTransform->worldMatrix;
+		}
+		EditableTRS local;
+		if (!TryWorldToLocalTRS(parentWorld, currentWorld.Matrix(), local))
+			continue;
+		auto& transform = view.get<Transform>(entity);
+		transform.translation = local.translation;
+		transform.rotation = glm::normalize(local.rotation);
+		transform.scale = local.scale;
+		SceneGraph::MarkDirty(registry, entity);
+		cameras.push_back(entity);
+	}
+	RefreshCameraForwardDirections(cameras);
 }
 
 void SceneManager::SetMaterial(EntityId entity, int materialIndex)
@@ -1212,6 +1328,22 @@ void SceneManager::SetLightProperties(EntityId entity, const glm::vec3& color, f
 	light->intensity = intensity;
 	light->isSpot = isSpot;
 	NotifyAuthoringChanged();
+}
+
+bool SceneManager::SetCameraProperties(EntityId entity, float verticalFOV,
+	float aperture, float focusDistance)
+{
+	if (!entity.IsValid() || !m_EcsScene.registry.valid(entity.id)) return false;
+	auto* camera = m_EcsScene.registry.try_get<CameraComponent>(entity.id);
+	if (!camera) return false;
+	if (camera->verticalFOV == verticalFOV && camera->aperture == aperture &&
+		camera->focusDistance == focusDistance)
+		return false;
+	camera->verticalFOV = verticalFOV;
+	camera->aperture = aperture;
+	camera->focusDistance = focusDistance;
+	NotifyAuthoringChanged();
+	return true;
 }
 
 bool SceneManager::GetMeshRef(EntityId entity, uint32_t& outMeshIndex, int& outMaterialIndex) const

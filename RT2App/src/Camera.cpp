@@ -20,6 +20,35 @@ Camera::Camera(float verticalFOV, float nearClip, float farClip, float apeture, 
 	m_Position = glm::vec3(0, 1, 10);
 }
 
+EditorCameraPose Camera::GetEditorPose() const
+{
+	EditorCameraPose pose;
+	pose.position = m_Position;
+	pose.forward = m_ForwardDirection;
+	pose.verticalFOV = m_VerticalFOV;
+	pose.aperture = m_Aperture;
+	pose.focusDistance = m_FocusDistance;
+	pose.farClip = m_FarClip;
+	return pose;
+}
+
+bool Camera::SetEditorPose(const EditorCameraPose& requested)
+{
+	EditorCameraPose pose = requested;
+	if (!TryNormalizeEditorCameraPose(pose))
+		return false;
+	m_Position = pose.position;
+	m_ForwardDirection = pose.forward;
+	m_VerticalFOV = pose.verticalFOV;
+	m_Aperture = pose.aperture;
+	m_FocusDistance = pose.focusDistance;
+	m_FarClip = pose.farClip;
+	RecalculateView();
+	if (m_ViewportWidth > 0 && m_ViewportHeight > 0)
+		RecalculateProjection();
+	return true;
+}
+
 bool Camera::OnUpdate(float ts)
 {
 	glm::vec2 mousePos = Input::GetMousePosition();

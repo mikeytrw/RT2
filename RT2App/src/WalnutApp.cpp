@@ -215,6 +215,12 @@ public:
 			if (m_RendererGPU.IsAvailable())
 				m_RendererGPU.DumpNEEBuffers();
 		});
+		m_EditorUI.SetOnViewThroughCamera([this](const rt2::core::UUID& camera) {
+			ViewThroughCamera(camera);
+		});
+		m_EditorUI.SetOnAlignCameraToView([this](const rt2::core::UUID& camera) {
+			AlignCameraToView(camera);
+		});
 	}
 
 	virtual void OnUIRender() override
@@ -304,32 +310,20 @@ public:
 
 	ImGui::Separator();
 	ImGui::Text("Camera");
-	glm::vec3 cameraPosition = m_Cam.GetPosition();
-	glm::vec3 cameraForward = m_Cam.GetDirection();
+	EditorCameraPose editorPose = m_Cam.GetEditorPose();
 	bool cameraPoseChanged = false;
-	if (ImGui::DragFloat3("Position", &cameraPosition.x, 0.01f, 0.0f, 0.0f, "%.6f"))
-	{
-		m_Cam.SetPosition(cameraPosition);
-		cameraPoseChanged = true;
-	}
-	if (ImGui::DragFloat3("Forward", &cameraForward.x, 0.001f, -1.0f, 1.0f, "%.6f"))
-	{
-		if (glm::dot(cameraForward, cameraForward) > 1e-8f)
-		{
-			m_Cam.SetForwardDirection(glm::normalize(cameraForward));
-			cameraPoseChanged = true;
-		}
-	}
-	if (cameraPoseChanged && m_RendererGPU.IsAvailable())
-	{
-		m_RendererGPU.ResetAccumulation();
-		m_RendererGPU.InvalidateReSTIRHistory();
-		m_RendererGPU.InvalidateGIHistory();
-	}
+	const bool editCamera = m_Runtime.GetState() == rt2::core::SceneRunState::Edit;
+	ImGui::BeginDisabled(!editCamera);
+	cameraPoseChanged |= ImGui::DragFloat3("Position", &editorPose.position.x,
+		0.01f, 0.0f, 0.0f, "%.6f");
+	cameraPoseChanged |= ImGui::DragFloat3("Forward", &editorPose.forward.x,
+		0.001f, -1.0f, 1.0f, "%.6f");
+	cameraPoseChanged |= ImGui::DragFloat("Vertical FOV", &editorPose.verticalFOV,
+		0.25f, 10.0f, 170.0f, "%.1f");
 	if (ImGui::Button("Copy Camera Pose"))
 	{
-		const glm::vec3& p = m_Cam.GetPosition();
-		const glm::vec3& f = m_Cam.GetDirection();
+		const glm::vec3& p = editorPose.position;
+		const glm::vec3& f = editorPose.forward;
 		char pose[256];
 		std::snprintf(pose, sizeof(pose),
 		              "position=(%.6f, %.6f, %.6f) forward=(%.6f, %.6f, %.6f)",
@@ -337,28 +331,55 @@ public:
 		ImGui::SetClipboardText(pose);
 	}
 	ImGui::SliderFloat("Move Speed", &m_Cam.m_Speed, 0.5f, 50.0f, "%.1f");
-	if (ImGui::SliderFloat("Far Clip", &m_Cam.m_FarClip, 100.0f, 100000.0f, "%.0f"))
-	{
-		m_Cam.SetFarClip(m_Cam.m_FarClip);
-		m_RendererGPU.ResetAccumulation();
-	}
+	cameraPoseChanged |= ImGui::SliderFloat("Far Clip", &editorPose.farClip,
+		100.0f, 100000.0f, "%.0f");
 	bool rasterFirst = m_Settings.rasterFirst;
 	ImGui::BeginDisabled(rasterFirst);
-	if (ImGui::DragFloat("Aperture", &m_Cam.m_Aperture, 0.001f, 0.0f, 5.0f))
-		m_RendererGPU.ResetAccumulation();
-	if (ImGui::DragFloat("Focus Distance", &m_Cam.m_FocusDistance, 0.1f, 0.1f, 50.0f))
-		m_RendererGPU.ResetAccumulation();
+	cameraPoseChanged |= ImGui::DragFloat("Aperture", &editorPose.aperture,
+		0.001f, 0.0f, 5.0f);
+	cameraPoseChanged |= ImGui::DragFloat("Focus Distance", &editorPose.focusDistance,
+		0.1f, 0.1f, 50.0f);
 	ImGui::EndDisabled();
-	if (rasterFirst && m_Cam.m_Aperture > 0.0f)
+	if (rasterFirst && editorPose.aperture > 0.0f)
 	{
-		m_Cam.m_Aperture = 0.0f;
-		m_RendererGPU.ResetAccumulation();
+		editorPose.aperture = 0.0f;
+		cameraPoseChanged = true;
 	}
+	if (cameraPoseChanged)
+		ApplyEditorCameraPose(editorPose);
+	if (ImGui::Button("Frame Selected")) FrameEditorSelection(true);
+	ImGui::SameLine();
+	if (ImGui::Button("Focus Selected")) FrameEditorSelection(false);
+
+	ImGui::Text("Camera Bookmarks");
+	for (size_t slot = 0; slot < EditorSceneState::kCameraBookmarkCount; ++slot)
+	{
+		ImGui::PushID(static_cast<int>(slot));
+		ImGui::Text("%d", static_cast<int>(slot + 1));
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Store"))
+			m_EditorUI.CaptureCameraBookmark(slot, m_Cam.GetEditorPose());
+		ImGui::SameLine();
+		const EditorCameraPose* bookmark = m_EditorUI.CameraBookmark(slot);
+		ImGui::BeginDisabled(bookmark == nullptr);
+		if (ImGui::SmallButton("Recall") && bookmark)
+			ApplyEditorCameraPose(*bookmark);
+		ImGui::SameLine();
+		if (ImGui::SmallButton("Clear"))
+			m_EditorUI.ClearCameraBookmark(slot);
+		ImGui::EndDisabled();
+		ImGui::PopID();
+	}
+	ImGui::EndDisabled();
 	ImGui::Separator();
 	if (ImGui::Checkbox("Raster-First Path", &m_Settings.rasterFirst))
 	{
 		if (m_Settings.rasterFirst)
-			m_Cam.m_Aperture = 0.0f;
+		{
+			EditorCameraPose pinhole = m_Cam.GetEditorPose();
+			pinhole.aperture = 0.0f;
+			ApplyEditorCameraPose(pinhole);
+		}
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
 	ImGui::BeginDisabled(m_Settings.nrdEnabled);
@@ -627,6 +648,7 @@ public:
 	}
 
 	m_EditorUI.RenderPanels();
+	HandleEditorCameraShortcuts();
 
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 	ImGui::Begin("Viewport");
@@ -949,6 +971,131 @@ public:
 	}
 
 private:
+	void EnsureRenderBridge()
+	{
+		if (!m_RenderBridge)
+			m_RenderBridge = new SceneRenderBridge(m_RendererGPU);
+	}
+
+	bool ApplyEditorCameraPose(const EditorCameraPose& pose)
+	{
+		if (m_Runtime.GetState() != rt2::core::SceneRunState::Edit)
+			return false;
+		bool applied = false;
+		if (m_RendererGPU.IsAvailable())
+		{
+			EnsureRenderBridge();
+			applied = ApplyEditorCameraCut(pose, *m_RenderBridge,
+				[this](const EditorCameraPose& normalized) {
+					return m_Cam.SetEditorPose(normalized);
+				});
+		}
+		else
+		{
+			applied = m_Cam.SetEditorPose(pose);
+		}
+		if (!applied)
+		{
+			m_LastStatusMsg = "Camera pose is invalid";
+			return false;
+		}
+		return true;
+	}
+
+	bool FrameEditorSelection(bool moveToFit)
+	{
+		if (m_EditorUI.Selection().Empty())
+		{
+			m_LastStatusMsg = "Select an entity to frame or focus";
+			return false;
+		}
+		EditorSelectionBounds bounds;
+		if (!ComputeEditorSelectionBounds(m_SceneMgr.AuthoringDoc(),
+			m_EditorUI.Selection().Ordered(), bounds))
+		{
+			m_LastStatusMsg = "Selection has no valid world-space bounds";
+			return false;
+		}
+		EditorCameraPose result;
+		const EditorCameraPose current = m_Cam.GetEditorPose();
+		bool valid = false;
+		if (moveToFit)
+		{
+			EditorFrameSettings settings;
+			settings.viewportAspect = m_Cam.GetViewportAspect();
+			settings.nearClip = m_Cam.GetNearClip();
+			valid = TryFrameEditorCamera(current, bounds, settings, result);
+		}
+		else
+		{
+			valid = TryFocusEditorCamera(current, bounds, m_Cam.GetNearClip(), result);
+		}
+		if (!valid || !ApplyEditorCameraPose(result))
+		{
+			m_LastStatusMsg = moveToFit ? "Unable to frame selection" :
+				"Unable to focus selection";
+			return false;
+		}
+		m_LastStatusMsg = moveToFit ? "Framed selection" : "Focused selection";
+		return true;
+	}
+
+	void HandleEditorCameraShortcuts()
+	{
+		const auto& io = ImGui::GetIO();
+		if (m_Runtime.GetState() != rt2::core::SceneRunState::Edit ||
+			io.WantTextInput || ImGui::IsAnyItemActive())
+			return;
+		if (!io.KeyCtrl && !io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_F))
+		{
+			FrameEditorSelection(!io.KeyShift);
+			return;
+		}
+		if (!io.KeyCtrl || io.KeyAlt) return;
+		for (int slot = 0;
+			slot < static_cast<int>(EditorSceneState::kCameraBookmarkCount); ++slot)
+		{
+			const ImGuiKey key = static_cast<ImGuiKey>(ImGuiKey_1 + slot);
+			if (!ImGui::IsKeyPressed(key)) continue;
+			if (io.KeyShift)
+			{
+				m_EditorUI.CaptureCameraBookmark(slot, m_Cam.GetEditorPose());
+				m_LastStatusMsg = "Stored camera bookmark " + std::to_string(slot + 1);
+			}
+			else if (const EditorCameraPose* bookmark = m_EditorUI.CameraBookmark(slot))
+			{
+				ApplyEditorCameraPose(*bookmark);
+				m_LastStatusMsg = "Recalled camera bookmark " + std::to_string(slot + 1);
+			}
+			return;
+		}
+	}
+
+	void ViewThroughCamera(const rt2::core::UUID& camera)
+	{
+		EditorCameraPose pose;
+		if (!TryGetCameraEntityPose(m_SceneMgr.AuthoringDoc(), camera,
+			m_Cam.GetEditorPose(), pose) || !ApplyEditorCameraPose(pose))
+		{
+			m_LastStatusMsg = "Unable to view through selected camera";
+			return;
+		}
+		m_LastStatusMsg = "Editor view aligned to camera entity";
+	}
+
+	void AlignCameraToView(const rt2::core::UUID& camera)
+	{
+		const auto result = m_SceneMgr.AlignCameraEntityToView(camera,
+			m_Cam.GetEditorPose());
+		if (!result.success)
+		{
+			m_LastStatusMsg = result.error.Format();
+			return;
+		}
+		SyncAuthoringTransforms();
+		m_LastStatusMsg = "Camera entity aligned to editor view";
+	}
+
 	void SyncAuthoringTransforms()
 	{
 		m_RendererGPU.CancelPicks();
@@ -1531,8 +1678,7 @@ private:
 
 	void EnterPlay()
 	{
-		if (!m_RenderBridge)
-			m_RenderBridge = new SceneRenderBridge(m_RendererGPU);
+		EnsureRenderBridge();
 
 		rt2::core::Error err;
 		if (!m_Runtime.Play(m_SceneMgr.AuthoringDoc(), *m_RenderBridge, err))
@@ -1547,21 +1693,17 @@ private:
 		m_RuntimeCamActive = true;
 
 		// Find the runtime scene's camera entity and adopt its pose.
-		const rt2::core::SceneDocument* rt = m_Runtime.TryGetRuntimeScene();
+		rt2::core::SceneDocument* rt = const_cast<rt2::core::SceneDocument*>(
+			m_Runtime.TryGetRuntimeScene());
 		if (rt)
 		{
-			auto& reg = rt->ecs.registry;
-			auto view = reg.view<CameraComponent>();
-			for (auto e : view)
+			const auto cameraEntity = FindDeterministicCameraEntity(*rt);
+			if (!cameraEntity.IsNull())
 			{
-				auto& cc = view.get<CameraComponent>(e);
-				auto* tf = reg.try_get<Transform>(e);
-				if (tf)
-				{
-					m_RuntimeCam.SetPosition(tf->translation);
-					m_RuntimeCam.SetForwardDirection(cc.forwardDirection);
-				}
-				break; // first camera entity
+				EditorCameraPose runtimePose;
+				if (TryGetCameraEntityPose(*rt, cameraEntity,
+					m_RuntimeCam.GetEditorPose(), runtimePose))
+					m_RuntimeCam.SetEditorPose(runtimePose);
 			}
 		}
 
