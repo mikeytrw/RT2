@@ -825,3 +825,53 @@ for the full specification; the key scene-management contracts are:
   `sourceToDuplicate` mapping (for paste, source UUIDs are clipboard-document
   UUIDs, not destination-scene entities). The command retains the resulting
   `SubtreeSnapshot` so Redo restores the same entities with the same UUIDs.
+
+### Command layer — property correctness (Phase 3B2, planned)
+
+Phase 3B2 migrates every Inspector property edit onto the 3A/3B1 foundation
+with record-on-release and exact-value Undo/Redo. See the Phase 3B2 section
+of `docs/game-engine-development-plan.md` for the full specification; the key
+scene-management contracts are:
+
+- **`PropertyEditSession<T>` is a pure state machine.** The 3A
+  `TransformEditSession` is UI-embedded and untestable; 3B2 extracts a pure
+  template (no ImGui dep) with `OnActivated`/`OnEditCommitted`/`OnCancelled`/
+  `CloseDeferred` and injected defensive-guard predicates (target-changed,
+  entity death, `m_Editable` false mid-edit, slot-out-of-range). Tests drive
+  the state machine directly.
+- **Material commands capture/restore `MaterialOverrideComponent` atomically.**
+  Both `SetMaterial` and `SetMaterialProperties` mutate durable override state
+  on imported entities as a side effect. The state APIs
+  (`SetMaterialIndexState`, `SetMaterialPropertiesState`) capture and restore
+  override state server-side so Undo restores the exact prior override (or
+  its absence) — not just the index/material value. Without this, Undo of a
+  material assignment on an imported entity would leave a stale override that
+  save/reopen resurrects.
+- **Impact classification is minimally correct.** Material index/properties
+  and light property edits return **Material** (today's effective sync is
+  `SetSceneKeepTextures`; no geometry/AS change). Camera, name, and motion
+  return **None**. `SetCameraPoseState` (align) returns **Transform**. The
+  manager's authoritative impact is never rescued by the router's
+  resource-generation downgrade.
+- **State-API signatures are after-value-only.** Consistent with the 3A
+  property-command precedent (`SetLocalTransform`, `SetVisibilityStates`
+  apply blindly; only 3B1's structural removes validate exactly), the new
+  state APIs take the after-value only; before-state lives in the command
+  alone.
+- **`AlignCameraCommand` uses one atomic API.** `SetCameraPoseState(UUID,
+  local TRS, camera props)` applies both in one pass, bumps the revision
+  once, returns one authoritative `Transform` impact. Composing
+  `SetLocalTransformStates` + `SetCameraPropertiesState` would bump twice
+  and synthesize a combined impact — both violations. The command stores the
+  composite before/after state and records via `RecordApplied`; Redo
+  re-applies the stored after-state, not re-align to current view.
+- **Single `SetMotionCommand`** with `optional<MotionComponent>` before/after
+  covers add, remove, and velocity edits. One command class, three use cases.
+- **Material "Duplicate" button** does `AddMaterial` (out-of-command, orphaned
+  slot — leak-until-clear policy, consistent with 3B1) + a
+  `SetMaterialIndexCommand` recording the index change. Undo restores the old
+  index; the orphaned slot stays until `history.Clear()` +
+  `CompactMeshRegistryNow()`.
+- **Exit criterion:** after 3B2, the only non-command authoring mutations are
+  glTF import, Load Mesh File, and env-map load. The `NotifySceneChanged` →
+  compaction-gated path shrinks to imports only.

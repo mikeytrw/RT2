@@ -1771,3 +1771,239 @@ dirty state; stack-size identity is invalid); coalescing/merge API — deferred
 material/mesh IDs decoupled from slot index — future work (the no-compaction
 invariant makes slot-index reference safe for 3B1); explicit root-entity
 ordering model — root ordering stays unspecified.
+
+### Phase 3B2 — property command completion (planned specification)
+
+Phase 3B2 migrates every Inspector property edit onto the Phase 3A/3B1
+command/history foundation with record-on-release, exact-value Undo/Redo
+(including durable `MaterialOverrideComponent` side effects), and the same
+impact/compaction invariants as 3B1. It covers: name, material index,
+material properties, light, camera, motion (add/remove + velocity), and
+`AlignCameraCommand`. After this slice, the only non-command authoring
+mutations remaining are glTF import, Load Mesh File, and env-map load — the
+Phase 3 exit criterion surface.
+
+Core design decisions:
+
+- `PropertyEditSession<T>` is a pure state machine, with a thin ImGui glue
+  layer. The 3A `TransformEditSession` is UI-embedded and untestable — exactly
+  where the keyboard-commit bug (0dcc490) lived, invisible to 183 assertions.
+  3B2 splits the abstraction:
+  - `PropertyEditSession<T>` (in `PropertyEditSession.h`, no ImGui dep): a
+    pure state machine with `OnActivated(beforeValue)`, `OnEditCommitted()`,
+    `OnCancelled()`, `CloseDeferred(afterValue) → optional<SessionRecord<T>>`.
+    Owns the defensive guards (target-changed, entity death, `m_Editable`
+    false mid-edit) as predicate callbacks injected by the host.
+  - A per-widget ImGui glue layer in `SceneEditorUI.cpp` calls
+    `IsItemActivated`/`IsItemDeactivatedAfterEdit` and forwards to the state
+    machine. The deferred-close-after-mutation ordering lives in the state
+    machine, not the glue.
+  - Tests drive the state machine directly, including deferred-close ordering,
+    Escape-cancel, and keyboard-commit. This is the single change that makes
+    the previously-unreachable layer verifiable.
+- Single active-session slot, not concurrent sessions. ImGui has exactly one
+  active item; concurrent sessions can't arise from real interaction. The
+  host owns one `PropertyEditSession<T>` slot per property kind (asserting no
+  double-open). Cross-kind independence is sequential, not concurrent — a new
+  activation while a different kind's session is open is a programming error
+  and asserts in debug.
+- Material commands capture/restore `MaterialOverrideComponent` atomically,
+  server-side in the state APIs. Both `SetMaterial` and
+  `SetMaterialProperties` mutate durable `MaterialOverrideComponent` state on
+  imported entities as a side effect (`SceneManager.cpp:2717-2720` and
+  `SceneManager.cpp:3000-3013`). The command state must capture and restore
+  override state (or its absence) atomically:
+  - `SetMaterialIndexCommand` stores `{UUID entity, int beforeIndex,
+    int afterIndex, std::optional<MaterialOverrideComponent> beforeOverride,
+    std::optional<MaterialOverrideComponent> afterOverride}`. Execute/Redo
+    apply the after-state (index + override); Undo restores the before-state
+    (index + override, or removes the override if before was absent).
+  - `SetMaterialPropertiesCommand` stores `{int slotIndex, SceneMaterial
+    beforeMaterial, SceneMaterial afterMaterial, std::vector<std::pair<UUID,
+    MaterialOverrideComponent>> beforeOverrides,
+    std::vector<std::pair<UUID, MaterialOverrideComponent>> afterOverrides}`
+    — the per-entity before-overrides of all imported entities referencing
+    the slot at execute time. Undo restores all before-overrides.
+  - The state APIs (`SetMaterialIndexState`, `SetMaterialPropertiesState`)
+    perform the override capture/restore server-side so the command stays
+    thin; the command stores the captured state.
+- Impact classification is minimally correct, not rescued by the router
+  downgrade:
+  - `SetMaterialIndexState` → **Material** (today's effective sync is
+    `SetSceneKeepTextures`; no geometry/AS change).
+  - `SetMaterialPropertiesState` → **Material**.
+  - `SetLightPropertiesState` → **Material** (today's path is
+    `NotifySceneChanged` → keep-textures).
+  - `SetCameraPropertiesState` → **None** (no GPU sync today).
+  - `SetNameState` → **None**.
+  - `SetMotionState` → **None** (no GPU sync; motion is runtime-only).
+  - `SetCameraPoseState` (align) → **Transform**.
+- State-API signatures are after-value-only, consistent with 3A precedent.
+  3A property commands (`SetLocalTransform`, `SetVisibilityStates`) apply
+  blindly; only 3B1's structural removes validate exactly. 3B2 follows the
+  property-command precedent: signatures take the after-value only,
+  before-state lives in the command alone.
+  - `SetEntityNameState(UUID, const std::string& name) → EditorMutationResult`
+  - `SetLightPropertiesState(UUID, const LightComponent& value) → EditorMutationResult`
+  - `SetCameraPropertiesState(UUID, const CameraComponent& value) → EditorMutationResult`
+  - `SetMaterialPropertiesState(int slotIndex, const SceneMaterial& value) → EditorMutationResult` (also captures/restores overrides)
+  - `SetMaterialIndexState(UUID, int afterIndex) → EditorMutationResult` (also captures/restores override)
+  - `SetMotionState(UUID, const std::optional<MotionComponent>& value) → EditorMutationResult`
+  The existing void-returning APIs delegate to the new ones (single
+  implementation); they stay for non-command paths.
+- `AlignCameraCommand` uses one atomic API. Composing
+  `SetLocalTransformStates` + `SetCameraPropertiesState` would bump the
+  revision twice and require a synthesized combined impact — violating both
+  the "revision bumps once" convention and "impact is authoritative from the
+  manager, never synthesized." Instead, one atomic API:
+  - `SetCameraPoseState(UUID, const EditableTRS& local, const CameraComponent&
+    props) → EditorMutationResult` — validates the entity exists and has a
+    CameraComponent, applies the local TRS + camera props in one pass, bumps
+    the revision once, returns one authoritative `Transform` impact. Used by
+    Execute/Redo/Undo alike.
+  - `AlignCameraCommand` stores `{UUID, EditableTRS beforeLocal, EditableTRS
+    afterLocal, CameraComponent beforeCamera, CameraComponent afterCamera}`.
+    Host applies `AlignCameraEntityToView`, captures the after-state, records
+    via `RecordApplied`. Redo re-applies the stored after-state (NOT re-align
+    to current view). Undo restores the before-state via `SetCameraPoseState`.
+  - Wiring fix: the current `AlignCameraToView` (`WalnutApp.cpp:1157`) calls
+    `SyncAuthoringTransforms` directly, bypassing the router. Migration
+    routes through `ApplyMutation`/router so the accumulation reset fires
+    exactly once.
+- Single `SetMotionCommand` covers add, remove, and velocity edits.
+  `SetMotionCommand` stores `{UUID, std::optional<MotionComponent> before,
+  std::optional<MotionComponent> after}`. Execute/Redo emplace or remove to
+  match `after`; Undo restores `before`. Add = {nullopt, some}; Remove =
+  {some, nullopt}; velocity edit = {some, some}. One command class, three use
+  cases.
+- Material "Duplicate" button: AddMaterial (leak) + SetMaterialIndexCommand.
+  `AddMaterial` creates a new slot outside the command (orphaned until
+  history-clear compaction — consistent with the 3B1 leak-until-clear policy,
+  documented here as expected behavior, not a defect). The
+  `SetMaterialIndexCommand` records the index change. Undo restores the old
+  index; the orphaned slot stays until `history.Clear()` +
+  `CompactMeshRegistryNow()`.
+- `SetLightCommand` stores the full `LightComponent` struct (color, intensity,
+  isSpot, range, innerConeAngle, outerConeAngle). One command covers every
+  light property. The Inspector only exposes color/intensity/isSpot today,
+  but the command is forward-compatible.
+- Name edit records on Enter/commit only, not per keystroke. The name
+  `InputText` uses `ImGuiInputTextFlags_EnterReturnsTrue`. The command fires
+  once on Enter (or defocus with commit). Per-keystroke edits mutate the live
+  buffer only. Matches the 3A record-on-release pattern.
+
+Defensive guards in `PropertyEditSession<T>`:
+- Target-changed: the inspected entity UUID no longer matches the session's
+  target (selection switched mid-edit). Discard.
+- Entity death: `FindEntityByUuid(target) == entt::null`. Discard.
+- `m_Editable` false mid-edit: Play started mid-drag. Discard.
+- Slot-still-in-range (material-properties sessions only): the session's key
+  is a slot index, not a UUID; the guard is `slotIndex < materials.size()`.
+  If the slot was removed out-of-band (only possible at history-clear
+  compaction, which clears sessions too), discard.
+
+New SceneManager atomic APIs:
+
+```
+EditorMutationResult SetEntityNameState(const rt2::core::UUID& entity,
+                                        const std::string& name);
+EditorMutationResult SetLightPropertiesState(const rt2::core::UUID& entity,
+                                             const LightComponent& value);
+EditorMutationResult SetCameraPropertiesState(const rt2::core::UUID& entity,
+                                              const CameraComponent& value);
+EditorMutationResult SetMaterialPropertiesState(int slotIndex,
+                                                const SceneMaterial& value);
+EditorMutationResult SetMaterialIndexState(const rt2::core::UUID& entity,
+                                           int afterIndex);
+EditorMutationResult SetMotionState(const rt2::core::UUID& entity,
+                                    const std::optional<MotionComponent>& value);
+EditorMutationResult SetCameraPoseState(const rt2::core::UUID& entity,
+                                        const EditableTRS& local,
+                                        const CameraComponent& props);
+```
+
+The existing void-returning `SetEntityName`, `SetLightProperties`,
+`SetCameraProperties`, `SetMaterialProperties`, `SetMaterial` all delegate to
+the new state APIs (single implementation). They stay for non-command paths
+(RT2SliceRunner, host-driven non-undoable flows).
+
+New files: `RT2App/src/PropertyEditSession.h` (the pure state machine
+template, no ImGui dep), `RT2App/src/EditorPropertyCommands.h/.cpp` (the 7
+property command classes plus factories), `RT2Tests/src/Phase3B2CommandTests.cpp`.
+Modified: `SceneManager.h/.cpp` (new state APIs; existing void APIs delegate),
+`SceneEditorUI.h/.cpp` (migrate all property widgets to `PropertyEditSession<T>`
++ ImGui glue; replace `TransformEditSession` with the template; migrate Name,
+Material, Light, Camera, Motion editors), `WalnutApp.cpp` (`AlignCameraToView`
+records via `RecordApplied`; routes through `ApplyMutation`/router),
+`RT2App.vcxproj`, `RT2Tests.vcxproj`, `RT2Tests/premake5.lua`, both doc files.
+
+Test plan (all CPU, doctest; 3A/3B1 coverage stays green):
+
+- `SetNameCommand`: Execute/Undo/Redo restores name; no-op suppression for
+  identical names.
+- `SetMaterialIndexCommand`: Execute/Undo/Redo restores slot index; Material
+  impact; resource stability (slot index unchanged because no compaction).
+- `SetMaterialIndexCommand` override restore: assign material on an imported
+  entity → Undo → verify the `MaterialOverrideComponent` matches (or is
+  absent as) before.
+- `SetMaterialPropertiesCommand`: Execute/Undo/Redo restores full material
+  value; Material impact; slot-keyed (not entity-keyed); affects all
+  entities referencing the slot.
+- `SetMaterialPropertiesCommand` override restore: edit a shared slot → Undo
+  → verify per-entity overrides of all imported entities referencing the slot
+  are restored.
+- `SetMaterialPropertiesCommand` invariant interplay: slot-keyed material
+  edit survives an unrelated command-delete in history (the 3B1 compaction
+  invariant keeps the slot stable).
+- `SetLightCommand`: Execute/Undo/Redo restores color/intensity/isSpot (full
+  LightComponent); Material impact.
+- `SetCameraCommand`: Execute/Undo/Redo restores FOV/aperture/focusDistance;
+  None impact.
+- `SetMotionCommand`: Add/Remove round trip; velocity edit round trip; Undo
+  restores before-state (present/absent + value). All three use cases via one
+  command class.
+- `AlignCameraCommand`: RecordApplied records the composite after-state; Redo
+  re-applies stored state (not re-align to current view); Undo restores
+  before-localTRS + before-cameraProps; one revision bump; Transform impact
+  authoritative.
+- `PropertyEditSession<T>` state machine: activation/deactivation lifecycle;
+  deferred-close-after-mutation ordering; Escape-cancel discards;
+  keyboard-commit (Ctrl+click+Enter) records; defensive guards
+  (target-changed, entity death, `m_Editable` false mid-edit,
+  slot-out-of-range) all discard.
+- No-op suppression for every command (not just name): identical before/after
+  records no entry.
+- Record-on-release for each property widget: one history entry per drag, not
+  per frame.
+- Generation guard covers the new commands.
+- Full-suite gate: the failing set stays exactly the six known pre-existing
+  cases.
+
+Verification gates: Release x64 build; focused Phase 3B2 tests; full RT2Tests
+where the only permitted failures are exactly the six known pre-existing
+cases; `run_slice_test.ps1` and `run_recovery_test.ps1` pass;
+`graphify update .`; documentation updates with actual test counts.
+
+Runtime acceptance (interactive, pending user):
+
+- Edit a material's base color via DragFloat; release → one `Ctrl+Z` restores
+  the prior color.
+- Change a light's intensity via DragFloat; release → one `Ctrl+Z` restores.
+- Change a camera's FOV; release → one `Ctrl+Z` restores.
+- Type a new entity name + Enter → one `Ctrl+Z` restores the old name.
+- Add Motion, drag velocity, Remove Motion → three Undo steps restore each.
+- Align Camera to View → one `Ctrl+Z` restores the prior transform + FOV.
+
+Exit criterion (post-3B2 non-command surface): after this slice, the only
+non-command authoring mutations are glTF import, Load Mesh File, and env-map
+load. The `NotifySceneChanged` → compaction-gated path shrinks to imports
+only. This mirrors Phase 3's "command-backed or explicitly documented as
+non-undoable" exit criterion.
+
+Explicitly out of scope for 3B2: history panel — deferred (requires
+`TravelTo(stateId)` with batched sync); save-point clean tracking — deferred
+(requires unique history-state identity integrated with authoritative dirty
+state; stack-size identity is invalid); coalescing/merge API — deferred
+(`RecordApplied` + session boundaries handle the common cases); stable
+material/mesh IDs decoupled from slot index — future work (the no-compaction
+invariant makes slot-index reference safe for 3B1/3B2).
