@@ -1,4 +1,4 @@
-# Lightweight Game Engine Development Plan
+﻿# Lightweight Game Engine Development Plan
 
 Implementation roadmap for evolving RT2 from a renderer with scene-editing
 facilities into a small, usable game engine. This plan is ordered around one
@@ -954,7 +954,7 @@ autosave/recovery, then Phase 2 scene-building tools and Phase 3 commands/undo.
 General Lua scripting should begin only after the Play lifecycle and mutation
 boundaries proven by this slice are stable.
 
-### Phase 1A — asset-backed native scene round-trip (implemented)
+### Phase 1A â€” asset-backed native scene round-trip (implemented)
 
 Phase 1A extends the vertical slice so an imported model plus an HDR/EXR
 environment map survive save, restart, and reopen. It delivers:
@@ -974,7 +974,7 @@ environment map survive save, restart, and reopen. It delivers:
 - Transactional load (parse/schema/resolution failure cannot partially
   replace the open authoring document) and atomic save semantics retained.
 - Checked-in tiny fixtures (textured GLB, tiny EXR) and focused RT2Tests
-  covering UUID coverage, v1→v2 migration, malformed references, deterministic
+  covering UUID coverage, v1â†’v2 migration, malformed references, deterministic
   v2 saves, imported-asset round trip, environment round trip,
   transactionality, and the runtime boundary.
 
@@ -982,10 +982,10 @@ What remains in full Phase 1 (intentionally deferred from 1A):
 
 - Bounded autosave and recovery records after explicit saving is stable.
 - Recent-scenes UI and project-root settings.
-- Later asset-database migration (Phase 7 global asset UUIDs) — explicitly
+- Later asset-database migration (Phase 7 global asset UUIDs) â€” explicitly
   out of scope for 1A; the slice uses scene-relative paths, not asset UUIDs.
 
-### Phase 1B — crash-safe authoring and session recovery (implemented)
+### Phase 1B â€” crash-safe authoring and session recovery (implemented)
 
 Phase 1B closes the remaining Phase 1 requirements: bounded autosave,
 recovery, Save/Discard/Cancel prompts, recent-scenes, and project-root
@@ -1026,9 +1026,9 @@ editor settings. It delivers:
   supports project-root selection.
 - RT2SliceRunner `--recovery-scenario` mode + `run_recovery_test.ps1`: a
   deterministic CPU-only, asset-backed recovery regression (generate textured
-  GLB + EXR → load → save → edit transform/material →
-  autosave → drop session → discover → restore → verify edit + UUIDs +
-  imported assets + decoded environment + explicit file unchanged → discard).
+  GLB + EXR â†’ load â†’ save â†’ edit transform/material â†’
+  autosave â†’ drop session â†’ discover â†’ restore â†’ verify edit + UUIDs +
+  imported assets + decoded environment + explicit file unchanged â†’ discard).
   Emits structured JSON; exits non-zero on
   failure.
 - RT2Tests Phase 1B coverage: 44 tests (14 EditorSettings + 30 Recovery/
@@ -1051,7 +1051,7 @@ survives restart, recovery is available without overwriting explicit
 saves, missing assets produce actionable diagnostics, and existing
 interchange saving still passes its tests.
 
-### Phase 2A — stable viewport selection (implemented)
+### Phase 2A â€” stable viewport selection (implemented)
 
 The first Phase 2 slice establishes selection and picking without coupling
 editor identity to transient ECS handles or path-tracing samples:
@@ -1085,7 +1085,7 @@ Verification:
 - Live Release-layout test: cube click selected Cube in Outliner/Inspector,
   sphere click switched both to Sphere, and a background click cleared both.
 
-### Phase 2B — transform editing and gizmos (implemented)
+### Phase 2B â€” transform editing and gizmos (implemented)
 
 The second Phase 2 slice adds a viewport-first transform workflow while
 preserving the existing renderer synchronization boundary:
@@ -1223,7 +1223,7 @@ Verification:
 
 Known pre-existing test failures (unrelated to Phase 2D, tracked for a separate
 fix): the full unfiltered `RT2Tests` run exits non-zero with six failures that
-also reproduce on the Phase 2C checkpoint — five `SceneGraph` cases in
+also reproduce on the Phase 2C checkpoint â€” five `SceneGraph` cases in
 `EcsTests.cpp` (raw-registry hierarchy setups that omit the parent `children`
 list `SceneGraph::UpdateNode` traverses) and one SIGSEGV in `SceneManager:
 RemoveEntity destroys entity` via the UUID-backed `RemoveSubtrees` path. Phase
@@ -1235,7 +1235,7 @@ this slice.
 existing editor mutations to undo/redo without changing their sync-impact
 contract.
 
-### Phase 3A — command/history foundation (implemented)
+### Phase 3A â€” command/history foundation (implemented)
 
 Phase 3A is a narrow vertical slice of the Phase 3 command system: a CPU-only
 command abstraction, a bounded history with redo, and exactly two
@@ -1268,7 +1268,7 @@ Core design decisions:
   cmd)` records a command whose effect was already applied incrementally
   (continuous edits). Failed initial Execute leaves both stacks unchanged.
 - Conservative failure policy: a failed `Undo` or `Redo` surfaces the error
-  and clears both stacks — a failed inverse means history's causal
+  and clears both stacks â€” a failed inverse means history's causal
   assumptions were violated by an out-of-band change, and older entries
   cannot be trusted.
 - Generation guard on every public operation. `Execute`, `RecordApplied`,
@@ -1295,7 +1295,7 @@ Core design decisions:
 The two representative migrations:
 
 - `TransformCommand` wraps Inspector transform editing. It stores
-  `{UUID, beforeLocalTRS, afterLocalTRS}` — always local space, captured via
+  `{UUID, beforeLocalTRS, afterLocalTRS}` â€” always local space, captured via
   `GetLocalTransform` regardless of whether the user edited in Local or World
   mode, so `TrySetWorldTransform`-based edits are fully covered. Undo/Redo
   restore via `SetLocalTransform`. Sync impact: Transform.
@@ -1323,14 +1323,14 @@ holds one `TransformEditSession { target UUID, beforeLocal, open }`:
 - `IsItemDeactivatedAfterEdit()` on the owning widget closes the session:
   current local TRS becomes `afterLocal`; normalized-equal means discard,
   otherwise `RecordApplied(TransformCommand)`.
-- `IsItemDeactivated()` without AfterEdit (Escape cancel — ImGui reverts the
+- `IsItemDeactivated()` without AfterEdit (Escape cancel â€” ImGui reverts the
   value itself) discards the session and records nothing.
 - Failed intermediate World edits cannot corrupt the session: a rejected
   `TrySetWorldTransform` leaves local TRS untouched, and the before/after
   comparison at close is the sole authority. A drag whose every frame failed
   collapses to a no-op.
 - Defensive guards at close: target no longer the inspected entity, entity
-  dead, or `m_Editable` false (Play started mid-drag) — discard.
+  dead, or `m_Editable` false (Play started mid-drag) â€” discard.
 
 Sync routing extraction: a CPU-only `EditorSyncRouter` takes the
 `EditorMutationResult` plus injected callables for transform/material/full
@@ -1345,7 +1345,7 @@ Ownership and integration:
 - WalnutApp owns `EditorCommandHistory` and injects a non-owning pointer via
   `SceneEditorUI::SetCommandHistory()`.
 - SceneEditorUI exposes public `Undo()`/`Redo()`; each runs history and
-  routes the result through the existing private `ApplyMutation()` — one
+  routes the result through the existing private `ApplyMutation()` â€” one
   sync path and one `m_MutationError` display.
 - WalnutApp Edit-menu items and `Ctrl+Z` / `Ctrl+Shift+Z` (and `Ctrl+Y`
   alias) call those public methods, suppressed during text entry, active
@@ -1391,18 +1391,18 @@ Runtime acceptance:
 
 - Numeric-edit a transform, `Ctrl+Z` restores exactly, `Ctrl+Shift+Z`
   reapplies.
-- Hold one slider drag across many frames — exactly one history entry; one
+- Hold one slider drag across many frames â€” exactly one history entry; one
   Undo returns to the pre-drag pose.
-- Toggle visibility on a multi-selection with mixed prior states — one Undo
+- Toggle visibility on a multi-selection with mixed prior states â€” one Undo
   restores the mix.
-- Undo, make a new edit — Redo is unavailable.
-- Open a different scene — history is empty. During Play, undo/redo are
+- Undo, make a new edit â€” Redo is unavailable.
+- Open a different scene â€” history is empty. During Play, undo/redo are
   inert.
 
 Verification gates: Release x64 build; focused Phase 3A tests; full RT2Tests
 where the only permitted failures are exactly the six known pre-existing
 cases listed above (five `SceneGraph` cases and `SceneManager: RemoveEntity
-destroys entity`) — any new or different failure blocks the slice; slice and
+destroys entity`) â€” any new or different failure blocks the slice; slice and
 recovery regression scripts; `graphify update .`; documentation updates with
 new test counts.
 
@@ -1425,14 +1425,14 @@ Verification:
 - `run_slice_test.ps1` and `run_recovery_test.ps1` both pass.
 - `graphify update .` completed (24095 nodes, 49842 edges, 896 communities).
 
-Runtime acceptance (interactive): pending — to be performed by the user
+Runtime acceptance (interactive): pending â€” to be performed by the user
 against a Release deployment. The five behavioural checks: numeric-edit +
 `Ctrl+Z`/`Ctrl+Shift+Z`; one drag = one history entry; mixed-state
 multi-selection visibility toggle with one Undo restoring the mix; new edit
 after Undo clears Redo; open-a-different-scene clears history and Play
 inertness.
 
-### Phase 3B1 — structural command correctness (implemented)
+### Phase 3B1 â€” structural command correctness (implemented)
 
 Phase 3B1 migrates structural editor mutations (create, delete, duplicate,
 paste, reparent, primitive/light entity creation, and the viewport gizmo's
@@ -1443,7 +1443,7 @@ history panel and save-point clean tracking are deferred to a later slice.
 
 Core design decisions:
 
-- Resource-lifetime policy — no compaction while history references resources.
+- Resource-lifetime policy â€” no compaction while history references resources.
   `SceneManager::RemoveSubtrees` currently calls `CompactMeshRegistry()`
   immediately after deletion. Compaction rewrites every surviving entity's
   `MeshRef::meshIndex` and can delete unique meshes/materials/textures. A
@@ -1454,13 +1454,13 @@ Core design decisions:
   `RemoveSubtreesNoCompact` is the deletion path used by structural commands;
   the existing `RemoveSubtrees` (with compaction) stays for non-command paths.
   `CompactMeshRegistry()` may run only at explicit `history.Clear()`, document
-  adoption, or save/reload — never merely because the redo branch was cleared.
+  adoption, or save/reload â€” never merely because the redo branch was cleared.
   A new explicit `CompactMeshRegistryNow()` is the only public compaction entry
   point and asserts (debug) / no-ops (release) when history is non-empty. All
   existing direct `CompactMeshRegistry()` call sites are audited. The eventual
   better design is a stable material/mesh ID decoupled from slot index; that is
   out of scope for 3B1 and is noted as future work.
-- Known-UUID transactional create/restore — commands never touch the registry.
+- Known-UUID transactional create/restore â€” commands never touch the registry.
   Phase 3A's contract is that command before/after state is complete before
   `Execute()` and Redo never recaptures state. Creation commands resolve this
   with the `RecordApplied` seam. Creation pattern: host reserves known UUIDs,
@@ -1474,7 +1474,7 @@ Core design decisions:
   `Undo` calls `RestoreSubtrees(snapshot)`. All creation paths route through a
   single host helper so no creation path can apply successfully and forget to
   record.
-- `SubtreeSnapshot` captures only the affected subtree — never the whole scene.
+- `SubtreeSnapshot` captures only the affected subtree â€” never the whole scene.
   It reuses the serializer's per-entity component payload representation
   (`EntityRecord` shape) so it stays aligned with the persisted format. The
   snapshot carries per-entity UUID, name, parent UUID, local TRS, visibility,
@@ -1499,7 +1499,7 @@ Core design decisions:
   state and hierarchy topology against the snapshot, reject unexpected
   descendants, perform all validation before destroying anything, remove without
   resource compaction, return failure with no scene mutation if validation
-  fails. "Exact" compares authoritative authored state only — not derived
+  fails. "Exact" compares authoritative authored state only â€” not derived
   world matrices, GPU caches, selection state, or other transient editor/
   runtime data. In a valid linear history, later descendant-creation commands
   are undone by their own commands first, so this validation normally passes.
@@ -1528,7 +1528,7 @@ Core design decisions:
   world matrix to local against the NEW parent (singular/shear => fail all).
   Bumps the revision once. `ReparentCommand` stores before/after `ReparentEdit`
   lists; `Execute` calls `ReparentBatch(afterStates, mode)`; `Undo` calls
-  `ReparentBatch(beforeStates, PreserveLocal)` — always restore local, since
+  `ReparentBatch(beforeStates, PreserveLocal)` â€” always restore local, since
   the command stored the exact before-local TRS. `ReparentEdit` carries
   `RootSiblingAnchor` so Undo restores the exact original sibling position.
 - `DuplicateSubtreesWithUuids` / `PasteSubtreesWithUuids` use a flat UUID-list
@@ -1639,7 +1639,7 @@ Test plan (all CPU, doctest; 3A coverage stays green):
   unchanged across the full Undo/Redo cycle; verify the mesh still exists in
   the registry at the original index.
 - `RemoveSubtreesExact` validation: after `RemoveSubtreesCommand::Execute`,
-  add a child to the removed root out-of-band, then attempt Undo — the
+  add a child to the removed root out-of-band, then attempt Undo â€” the
   exact-state validation fails atomically (zero mutation), the command
   surfaces a history-consistency error, and Phase 3A's failure policy clears
   both stacks.
@@ -1673,7 +1673,7 @@ Test plan (all CPU, doctest; 3A coverage stays green):
 - `SetLocalTransformStates`: atomic validate-first (one missing UUID => no
   mutation, Failure); single revision bump; multi-entity round trip; atomic
   failure leaves all entities unchanged.
-- Gizmo drag → TransformCommand: 2-entity selection dragged along one axis;
+- Gizmo drag â†’ TransformCommand: 2-entity selection dragged along one axis;
   ONE history entry; Undo restores both pre-drag local TRS; Redo re-applies
   both. Verify the gizmo's per-frame TrySetWorldTransforms calls continue
   (responsive direct edits) and only the drag-end recording is new.
@@ -1700,7 +1700,7 @@ cases; `run_slice_test.ps1` and `run_recovery_test.ps1` pass;
 Runtime acceptance (interactive, pending user):
 
 - Create an empty entity, add a child to it, then `Ctrl+Z` the child creation
-  followed by `Ctrl+Z` the empty creation — both undo in order; `Ctrl+Shift+Z`
+  followed by `Ctrl+Z` the empty creation â€” both undo in order; `Ctrl+Shift+Z`
   redoes the empty creation (with the SAME UUID), then `Ctrl+Shift+Z` redoes
   the child.
 - Delete a textured mesh entity (sole user of its mesh) while unrelated
@@ -1712,9 +1712,9 @@ Runtime acceptance (interactive, pending user):
 - Reparent two entities with different original parents into a common parent
   (PreserveWorld); `Ctrl+Z` restores each to its original parent at the
   original sibling position with the original local TRS.
-- Hold a gizmo drag on a 2-entity selection across many frames — one `Ctrl+Z`
+- Hold a gizmo drag on a 2-entity selection across many frames â€” one `Ctrl+Z`
   restores both pre-drag transforms.
-- Toggle visibility on a single entity via the context menu — one `Ctrl+Z`
+- Toggle visibility on a single entity via the context menu â€” one `Ctrl+Z`
   restores the prior state.
 
 Verification report (CPU-only, doctest):
@@ -1732,7 +1732,7 @@ Verification report (CPU-only, doctest):
   multi-source PreserveLocal Undo/Redo; ReparentCommand sibling-position
   restoration via anchor; ReparentBatch PreserveWorld preserves world pose;
   ReparentBatch atomic cycle failure; ReparentBatch batch-cycle validation
-  ({A→B, B→A}); SetLocalTransformStates atomic validate-first; multi-entity
+  ({Aâ†’B, Bâ†’A}); SetLocalTransformStates atomic validate-first; multi-entity
   TransformCommand (gizmo path); single-entity visibility via history;
   sibling-anchor middle-position restoration (parented); multi-root
   middle-delete Undo restores entity (root ordering unspecified);
@@ -1756,23 +1756,23 @@ Verification report (CPU-only, doctest):
 - Outliner drag-reparent uses PreserveWorld on Execute (preserves world
   pose); Undo uses PreserveLocal with stored before-local TRS.
 - ReparentBatch uses ReparentEdit.anchor for insertion position; batch-cycle
-  validation against the planned parent map catches {A→B, B→A}.
+  validation against the planned parent map catches {Aâ†’B, Bâ†’A}.
 
-Runtime acceptance (interactive): pending — to be performed by the user
+Runtime acceptance (interactive): pending â€” to be performed by the user
 against a Release deployment. The six behavioural checks listed above.
 
 Explicitly out of scope for 3B1: property commands (name, material, light,
-camera, motion) — Phase 3B2; record-on-release for continuous property widgets
-— Phase 3B2; `AlignCameraCommand` — Phase 3B2; history panel — deferred
-(requires `TravelTo(stateId)` with batched sync); save-point clean tracking —
+camera, motion) â€” Phase 3B2; record-on-release for continuous property widgets
+â€” Phase 3B2; `AlignCameraCommand` â€” Phase 3B2; history panel â€” deferred
+(requires `TravelTo(stateId)` with batched sync); save-point clean tracking â€”
 deferred (requires unique history-state identity integrated with authoritative
-dirty state; stack-size identity is invalid); coalescing/merge API — deferred
+dirty state; stack-size identity is invalid); coalescing/merge API â€” deferred
 (`RecordApplied` + session boundaries handle the common cases); stable
-material/mesh IDs decoupled from slot index — future work (the no-compaction
+material/mesh IDs decoupled from slot index â€” future work (the no-compaction
 invariant makes slot-index reference safe for 3B1); explicit root-entity
-ordering model — root ordering stays unspecified.
+ordering model â€” root ordering stays unspecified.
 
-### Phase 3B2 — property command completion (implemented)
+### Phase 3B2 â€” property command completion (implemented)
 
 Phase 3B2 migrates every Inspector property edit onto the Phase 3A/3B1
 command/history foundation with record-on-release, exact-value Undo/Redo
@@ -1780,18 +1780,18 @@ command/history foundation with record-on-release, exact-value Undo/Redo
 impact/compaction invariants as 3B1. It covers: name, material index,
 material properties, light, camera, motion (add/remove + velocity), and
 `AlignCameraCommand`. After this slice, the only non-command authoring
-mutations remaining are glTF import, Load Mesh File, and env-map load — the
+mutations remaining are glTF import, Load Mesh File, and env-map load â€” the
 Phase 3 exit criterion surface.
 
 Core design decisions:
 
 - `PropertyEditSession<T>` is a pure state machine, with a thin ImGui glue
-  layer. The 3A `TransformEditSession` is UI-embedded and untestable — exactly
+  layer. The 3A `TransformEditSession` is UI-embedded and untestable â€” exactly
   where the keyboard-commit bug (0dcc490) lived, invisible to 183 assertions.
   3B2 splits the abstraction:
   - `PropertyEditSession<T>` (in `PropertyEditSession.h`, no ImGui dep): a
     pure state machine with `OnActivated(beforeValue)`, `OnEditCommitted()`,
-    `OnCancelled()`, `CloseDeferred(afterValue) → optional<SessionRecord<T>>`.
+    `OnCancelled()`, `CloseDeferred(afterValue) â†’ optional<SessionRecord<T>>`.
     Owns the defensive guards (target-changed, entity death, `m_Editable`
     false mid-edit) as predicate callbacks injected by the host.
   - A per-widget ImGui glue layer in `SceneEditorUI.cpp` calls
@@ -1804,7 +1804,7 @@ Core design decisions:
 - Single active-session slot, not concurrent sessions. ImGui has exactly one
   active item; concurrent sessions can't arise from real interaction. The
   host owns one `PropertyEditSession<T>` slot per property kind (asserting no
-  double-open). Cross-kind independence is sequential, not concurrent — a new
+  double-open). Cross-kind independence is sequential, not concurrent â€” a new
   activation while a different kind's session is open is a programming error
   and asserts in debug.
 - Material commands capture/restore `MaterialOverrideComponent` atomically,
@@ -1822,42 +1822,42 @@ Core design decisions:
     beforeMaterial, SceneMaterial afterMaterial, std::vector<std::pair<UUID,
     MaterialOverrideComponent>> beforeOverrides,
     std::vector<std::pair<UUID, MaterialOverrideComponent>> afterOverrides}`
-    — the per-entity before-overrides of all imported entities referencing
+    â€” the per-entity before-overrides of all imported entities referencing
     the slot at execute time. Undo restores all before-overrides.
   - The state APIs (`SetMaterialIndexState`, `SetMaterialPropertiesState`)
     perform the override capture/restore server-side so the command stays
     thin; the command stores the captured state.
 - Impact classification is minimally correct, not rescued by the router
   downgrade:
-  - `SetMaterialIndexState` → **Material** (today's effective sync is
+  - `SetMaterialIndexState` â†’ **Material** (today's effective sync is
     `SetSceneKeepTextures`; no geometry/AS change).
-  - `SetMaterialPropertiesState` → **Material**.
-  - `SetLightPropertiesState` → **Material** (today's path is
-    `NotifySceneChanged` → keep-textures).
-  - `SetCameraPropertiesState` → **None** (no GPU sync today).
-  - `SetNameState` → **None**.
-  - `SetMotionState` → **None** (no GPU sync; motion is runtime-only).
-  - `SetCameraPoseState` (align) → **Transform**.
+  - `SetMaterialPropertiesState` â†’ **Material**.
+  - `SetLightPropertiesState` â†’ **Material** (today's path is
+    `NotifySceneChanged` â†’ keep-textures).
+  - `SetCameraPropertiesState` â†’ **None** (no GPU sync today).
+  - `SetNameState` â†’ **None**.
+  - `SetMotionState` â†’ **None** (no GPU sync; motion is runtime-only).
+  - `SetCameraPoseState` (align) â†’ **Transform**.
 - State-API signatures are after-value-only, consistent with 3A precedent.
   3A property commands (`SetLocalTransform`, `SetVisibilityStates`) apply
   blindly; only 3B1's structural removes validate exactly. 3B2 follows the
   property-command precedent: signatures take the after-value only,
   before-state lives in the command alone.
-  - `SetEntityNameState(UUID, const std::string& name) → EditorMutationResult`
-  - `SetLightPropertiesState(UUID, const LightComponent& value) → EditorMutationResult`
-  - `SetCameraPropertiesState(UUID, const CameraComponent& value) → EditorMutationResult`
-  - `SetMaterialPropertiesState(int slotIndex, const SceneMaterial& value) → EditorMutationResult` (also captures/restores overrides)
-  - `SetMaterialIndexState(UUID, int afterIndex) → EditorMutationResult` (also captures/restores override)
-  - `SetMotionState(UUID, const std::optional<MotionComponent>& value) → EditorMutationResult`
+  - `SetEntityNameState(UUID, const std::string& name) â†’ EditorMutationResult`
+  - `SetLightPropertiesState(UUID, const LightComponent& value) â†’ EditorMutationResult`
+  - `SetCameraPropertiesState(UUID, const CameraComponent& value) â†’ EditorMutationResult`
+  - `SetMaterialPropertiesState(int slotIndex, const SceneMaterial& value) â†’ EditorMutationResult` (also captures/restores overrides)
+  - `SetMaterialIndexState(UUID, int afterIndex) â†’ EditorMutationResult` (also captures/restores override)
+  - `SetMotionState(UUID, const std::optional<MotionComponent>& value) â†’ EditorMutationResult`
   The existing void-returning APIs delegate to the new ones (single
   implementation); they stay for non-command paths.
 - `AlignCameraCommand` uses one atomic API. Composing
   `SetLocalTransformStates` + `SetCameraPropertiesState` would bump the
-  revision twice and require a synthesized combined impact — violating both
+  revision twice and require a synthesized combined impact â€” violating both
   the "revision bumps once" convention and "impact is authoritative from the
   manager, never synthesized." Instead, one atomic API:
   - `SetCameraPoseState(UUID, const EditableTRS& local, const CameraComponent&
-    props) → EditorMutationResult` — validates the entity exists and has a
+    props) â†’ EditorMutationResult` â€” validates the entity exists and has a
     CameraComponent, applies the local TRS + camera props in one pass, bumps
     the revision once, returns one authoritative `Transform` impact. Used by
     Execute/Redo/Undo alike.
@@ -1878,7 +1878,7 @@ Core design decisions:
   cases.
 - Material "Duplicate" button: AddMaterial (leak) + SetMaterialIndexCommand.
   `AddMaterial` creates a new slot outside the command (orphaned until
-  history-clear compaction — consistent with the 3B1 leak-until-clear policy,
+  history-clear compaction â€” consistent with the 3B1 leak-until-clear policy,
   documented here as expected behavior, not a defect). The
   `SetMaterialIndexCommand` records the index change. Undo restores the old
   index; the orphaned slot stays until `history.Clear()` +
@@ -1944,13 +1944,13 @@ Test plan (all CPU, doctest; 3A/3B1 coverage stays green):
 - `SetMaterialIndexCommand`: Execute/Undo/Redo restores slot index; Material
   impact; resource stability (slot index unchanged because no compaction).
 - `SetMaterialIndexCommand` override restore: assign material on an imported
-  entity → Undo → verify the `MaterialOverrideComponent` matches (or is
+  entity â†’ Undo â†’ verify the `MaterialOverrideComponent` matches (or is
   absent as) before.
 - `SetMaterialPropertiesCommand`: Execute/Undo/Redo restores full material
   value; Material impact; slot-keyed (not entity-keyed); affects all
   entities referencing the slot.
-- `SetMaterialPropertiesCommand` override restore: edit a shared slot → Undo
-  → verify per-entity overrides of all imported entities referencing the slot
+- `SetMaterialPropertiesCommand` override restore: edit a shared slot â†’ Undo
+  â†’ verify per-entity overrides of all imported entities referencing the slot
   are restored.
 - `SetMaterialPropertiesCommand` invariant interplay: slot-keyed material
   edit survives an unrelated command-delete in history (the 3B1 compaction
@@ -1986,26 +1986,26 @@ cases; `run_slice_test.ps1` and `run_recovery_test.ps1` pass;
 
 Runtime acceptance (interactive, pending user):
 
-- Edit a material's base color via DragFloat; release → one `Ctrl+Z` restores
+- Edit a material's base color via DragFloat; release â†’ one `Ctrl+Z` restores
   the prior color.
-- Change a light's intensity via DragFloat; release → one `Ctrl+Z` restores.
-- Change a camera's FOV; release → one `Ctrl+Z` restores.
-- Type a new entity name + Enter → one `Ctrl+Z` restores the old name.
-- Add Motion, drag velocity, Remove Motion → three Undo steps restore each.
-- Align Camera to View → one `Ctrl+Z` restores the prior transform + FOV.
+- Change a light's intensity via DragFloat; release â†’ one `Ctrl+Z` restores.
+- Change a camera's FOV; release â†’ one `Ctrl+Z` restores.
+- Type a new entity name + Enter â†’ one `Ctrl+Z` restores the old name.
+- Add Motion, drag velocity, Remove Motion â†’ three Undo steps restore each.
+- Align Camera to View â†’ one `Ctrl+Z` restores the prior transform + FOV.
 
 Exit criterion (post-3B2 non-command surface): after this slice, the only
 non-command authoring mutations are glTF import, Load Mesh File, and env-map
-load. The `NotifySceneChanged` → compaction-gated path shrinks to imports
+load. The `NotifySceneChanged` â†’ compaction-gated path shrinks to imports
 only. This mirrors Phase 3's "command-backed or explicitly documented as
 non-undoable" exit criterion.
 
-Explicitly out of scope for 3B2: history panel — deferred (requires
-`TravelTo(stateId)` with batched sync); save-point clean tracking — deferred
+Explicitly out of scope for 3B2: history panel â€” deferred (requires
+`TravelTo(stateId)` with batched sync); save-point clean tracking â€” deferred
 (requires unique history-state identity integrated with authoritative dirty
-state; stack-size identity is invalid); coalescing/merge API — deferred
+state; stack-size identity is invalid); coalescing/merge API â€” deferred
 (`RecordApplied` + session boundaries handle the common cases); stable
-material/mesh IDs decoupled from slot index — future work (the no-compaction
+material/mesh IDs decoupled from slot index â€” future work (the no-compaction
 invariant makes slot-index reference safe for 3B1/3B2).
 
 Verification report (implementation):
@@ -2037,20 +2037,20 @@ Verification report (implementation):
 - `run_recovery_test.ps1`: PASS.
 - graphify: 24491 nodes, 50899 edges, 913 communities.
 
-Runtime acceptance (interactive): pending — to be performed by the user
+Runtime acceptance (interactive): pending â€” to be performed by the user
 against a Release deployment. The six behavioural checks listed above.
 
-## Phase 4 — Edit/Play/Pause lifecycle (completion, implemented)
+## Phase 4 â€” Edit/Play/Pause lifecycle (completion, implemented)
 
 Phase 4's vertical slice is already implemented (RuntimeSceneController,
 Play/Pause/Step/Stop, deep-clone, editor camera snapshot, runtime camera
 selection by lowest UUID, 17 tests). This completion slice closes the
-remaining Phase 4 work items so the exit criterion — "Repeated Play/Stop
-cycles neither leak entities/resources nor alter saved scene state" — is
+remaining Phase 4 work items so the exit criterion â€” "Repeated Play/Stop
+cycles neither leak entities/resources nor alter saved scene state" â€” is
 met by construction and verified by a dedicated test surface, not just by
 the existing 100-cycle smoke test.
 
-Verification: `RT2Tests/src/Phase4LifecycleTests.cpp` — 23 tests, 671
+Verification: `RT2Tests/src/Phase4LifecycleTests.cpp` â€” 23 tests, 671
 assertions, all passing. Full RT2Tests: 354 cases, 348 passed, 6
 pre-existing failures (5 `SceneGraph` cases in `EcsTests.cpp` + 1 SIGSEGV
 in `SceneManager: RemoveEntity destroys entity`), 48 skipped.
@@ -2076,7 +2076,7 @@ void RuntimeSceneController::SetRuntimeUuidProvider(
 ```
 
 The host (WalnutApp) injects the production `OsUuidProvider` (or reuses
-the authoring document's provider — they are stateless and the UUID
+the authoring document's provider â€” they are stateless and the UUID
 spaces are disjoint because the runtime document's index is a fresh copy
 at Play). Tests inject a `DeterministicUuidProvider` seeded for
 reproducibility. The controller sets the provider on the freshly
@@ -2095,8 +2095,8 @@ injected by a test seeds every Play across 100 cycles consistently.
 
 ### 2. Runtime scene mutator (no registry mutation from the controller)
 
-The naive approach — a private controller helper that emplaces directly
-into the runtime `ECSScene` registry — duplicates SceneManager invariants
+The naive approach â€” a private controller helper that emplaces directly
+into the runtime `ECSScene` registry â€” duplicates SceneManager invariants
 inside `RuntimeSceneController` and would silently break:
 `EntityIdComponent` / `uuidIndex` consistency, hierarchy parent/children
 invariants, transform dirtiness and `prevWorldMatrix`, component/resource
@@ -2105,7 +2105,7 @@ unlink, UUID erase).
 
 Fix: extract a small, Vulkan-free `RuntimeSceneMutator` that operates on
 a `SceneDocument` and owns exactly those invariants for the runtime-only
-operations Phase 4 needs. It is NOT a second SceneManager — it exposes
+operations Phase 4 needs. It is NOT a second SceneManager â€” it exposes
 only `CreateEntity` and `DestroySubtree` (no compaction, no command
 history, no sync callbacks, no material overrides). It lives in
 `rt2::core` next to `SceneDocument` so both the controller and tests can
@@ -2131,12 +2131,12 @@ class RuntimeSceneMutator
 {
 public:
     // Create an entity with a caller-allocated UUID (the controller
-    // allocates the UUID at queue time — see §3). Returns Failure if the
+    // allocates the UUID at queue time â€” see Â§3). Returns Failure if the
     // UUID is already present or the parent UUID does not resolve.
     // Emplaces: Transform, NameComponent, VisibleComponent, EntityIdComponent,
     // Hierarchy (if parent). Marks the transform dirty. Initializes
     // prevWorldMatrix = worldMatrix after the first SceneGraph evaluation
-    // (see §5).
+    // (see Â§5).
     Result<UUID> CreateEntity(SceneDocument& doc,
                                const UUID& uuid,
                                const RuntimeEntityCreateDesc& desc) const;
@@ -2186,11 +2186,11 @@ Public controller API:
 // return the UUID so later operations in the same tick can reference the
 // new entity. Returns Failure if the controller is not Playing/Paused,
 // or if the provider is null, or if the allocated UUID is already
-// present (defensive — the provider should not produce duplicates).
+// present (defensive â€” the provider should not produce duplicates).
 Result<UUID> QueueCreateRuntimeEntity(const RuntimeEntityCreateDesc& desc);
 
 // Enqueue a destroy. Returns Failure if the controller is not
-// Playing/Paused. Does NOT validate the UUID here — validation happens
+// Playing/Paused. Does NOT validate the UUID here â€” validation happens
 // at drain time so a queued destroy of a not-yet-created entity is a
 // meaningful error rather than a silent drop. Returns Ok (nullopt
 // payload) on enqueue success.
@@ -2205,25 +2205,25 @@ point in both `Update` and `Step`):
    operation. A create adds its UUID; a destroy removes its UUID. The
    validation state starts from the current runtime document UUID set.
    Validation failures:
-   - Create with a UUID already in the validation set → `DuplicateUuid`.
+   - Create with a UUID already in the validation set â†’ `DuplicateUuid`.
    - Destroy with a UUID not in the validation set (missing, or already
-     destroyed by an earlier op in this batch) → `InvalidEntity`.
+     destroyed by an earlier op in this batch) â†’ `InvalidEntity`.
    - Create whose `parentUuid` does not resolve in the validation set
-     (parent never existed, or was destroyed by an earlier op) →
+     (parent never existed, or was destroyed by an earlier op) â†’
      `InvalidEntity`.
    - Destroy of an entity that is an ancestor of an entity a LATER
-     create in the batch targets as `parentUuid` → `InvalidEntity`
-     (would create an orphan). This is the "destroy→create-child-of-
+     create in the batch targets as `parentUuid` â†’ `InvalidEntity`
+     (would create an orphan). This is the "destroyâ†’create-child-of-
      destroyed-parent" case.
 2. On ANY validation failure: drain nothing, leave the queue intact,
    surface the error via the bridge (or a controller error callback),
    and keep running. The runtime document is unchanged. The queue is
-   NOT cleared — the host or test can inspect it. (A future Phase 6
+   NOT cleared â€” the host or test can inspect it. (A future Phase 6
    script error handler may clear or edit the queue; Phase 4 just
    reports.)
 3. On validation success: apply the batch atomically in enqueue order
    via the `RuntimeSceneMutator`. Each operation either succeeds or the
-   mutator returns Failure (which, post-validation, should not happen —
+   mutator returns Failure (which, post-validation, should not happen â€”
    if it does, it is a bug, and the controller treats it as a fatal
    queue error: clear the queue and log).
 4. After successful application: clear the queue. Compute the frame's
@@ -2341,7 +2341,7 @@ The controller stores an optional non-owning pointer and dispatches in
 Play/Stop. Phase 4 tests install a recording spy that counts calls and
 snapshots the runtime document state.
 
-### 8. "Authoring unchanged" — precise definition
+### 8. "Authoring unchanged" â€” precise definition
 
 The current `Stop` path mutates the authoring document's transient
 `gpuCache` through a `const_cast` (`RuntimeSceneController.cpp:149`).
@@ -2370,8 +2370,8 @@ before Play and after Stop, comparing the strings. This is the
 
 New `RT2Tests/src/Phase4LifecycleTests.cpp` with:
 
-- **Lifecycle callback order and counts:** Play → OnSceneStart(1) → ...
-  → Stop → OnSceneStop(1). 100 cycles → 100 of each, no double-fire.
+- **Lifecycle callback order and counts:** Play â†’ OnSceneStart(1) â†’ ...
+  â†’ Stop â†’ OnSceneStop(1). 100 cycles â†’ 100 of each, no double-fire.
 - **OnSceneStart receives a non-null runtime document while state is
   Playing; OnSceneStop receives a non-null runtime document.**
 - **Injectable UUID provider:** a `DeterministicUuidProvider` injected
@@ -2386,20 +2386,20 @@ New `RT2Tests/src/Phase4LifecycleTests.cpp` with:
   returns, the runtime entity is gone; the authoring entity with the
   same UUID is unchanged; one `FullSync` for that frame.
 - **FIFO ordering:** queue a create (UUID A), then a create (UUID B
-  with parentUuid A), then a destroy (UUID A) — the batch validates
+  with parentUuid A), then a destroy (UUID A) â€” the batch validates
   successfully (A exists after op 1, B exists and is a child of A after
   op 2, A is destroyed by op 3 which post-order-collects and also
   destroys B). Assert both A and B are gone after `Update`. This is
   the cross-operation ordering guarantee.
-- **Create→destroy in one frame:** queue create(A), then destroy(A).
+- **Createâ†’destroy in one frame:** queue create(A), then destroy(A).
   Validation: A exists after op 1, A is destroyed by op 2. After
   `Update`, A is gone. One `FullSync`.
-- **Destroy→create-child-of-destroyed-parent:** queue destroy(A), then
+- **Destroyâ†’create-child-of-destroyed-parent:** queue destroy(A), then
   create(B with parentUuid A). Validation fails (A's UUID is not in the
   validation set when op 2 runs). The batch is NOT applied; the queue
   remains intact; the runtime document is unchanged; the bridge
-  receives no `FullSync` (or the controller surfaces an error — see
-  §3.2). A test asserts the runtime document matches its pre-frame
+  receives no `FullSync` (or the controller surfaces an error â€” see
+  Â§3.2). A test asserts the runtime document matches its pre-frame
   state.
 - **Duplicate destroy:** queue destroy(A) twice. Validation fails on
   the second op (A is no longer in the validation set). Batch not
@@ -2413,7 +2413,7 @@ New `RT2Tests/src/Phase4LifecycleTests.cpp` with:
   the controller is in `Edit`.
 - **Callback reentrancy:** an observer whose `OnSceneStart` calls
   `QueueCreateRuntimeEntity` is rejected (queueing is allowed during
-  `OnSceneStart` — it fires after `m_State = Playing` — but the queued
+  `OnSceneStart` â€” it fires after `m_State = Playing` â€” but the queued
   op is NOT drained during `OnSceneStart`; it waits for the next
   `Update`/`Step`). Assert the op appears in the runtime document only
   after the next `Update`.
@@ -2459,7 +2459,7 @@ New `RT2Tests/src/Phase4LifecycleTests.cpp` with:
   `RT2Tests/src/Phase4LifecycleTests.cpp`.
 - Modified: `RuntimeSceneController.h/.cpp` (injectable UUID provider
   storage + setter; observer storage + dispatch in Play/Stop with the
-  precise ordering in §6; single FIFO `m_PendingOperations` queue +
+  precise ordering in Â§6; single FIFO `m_PendingOperations` queue +
   `QueueCreateRuntimeEntity` / `QueueDestroyRuntimeEntity` +
   `ApplyDeferredStructuralChanges` with batch-validate-then-apply;
   structural-impact coalescing in `Update`/`Step`; created-transform
@@ -2477,28 +2477,28 @@ cases; `run_slice_test.ps1` and `run_recovery_test.ps1` pass;
 
 ### Runtime acceptance (interactive, pending user)
 
-- Play, observe motion, Stop — authoring scene unchanged (existing
+- Play, observe motion, Stop â€” authoring scene unchanged (existing
   behavior, now backed by an explicit canonical-serialization test).
-- (No new interactive surface — the queue and observer are exercised by
+- (No new interactive surface â€” the queue and observer are exercised by
   tests only this phase; Phase 6 wires them to scripting.)
 
 ### Exit criterion (post-Phase-4)
 
-Repeated Play/Stop cycles — including cycles with deferred structural
+Repeated Play/Stop cycles â€” including cycles with deferred structural
 operations pending, including cycles where a batch validation fails and
-the queue is left intact — neither leak entities/resources nor alter
+the queue is left intact â€” neither leak entities/resources nor alter
 saved scene state. The authoring document's canonical serialized state
 is identical across any number of Play/Stop cycles with any sequence of
 runtime operations.
 
 ### Explicitly out of scope for this Phase 4 completion slice
 
-Scripting (`OnCreate`/`OnFixedUpdate`/`OnUpdate`/`OnDestroy` — Phase 6);
+Scripting (`OnCreate`/`OnFixedUpdate`/`OnUpdate`/`OnDestroy` â€” Phase 6);
 the `IRuntimeCommandSink` mutation channel for `OnSceneStart` (Phase 6);
 physics (Phase 9); variable-update script callbacks (Phase 6); exposing
 the queue to Lua (Phase 6); content browser / asset database (Phase 7);
 input action system (Phase 5); runtime creation of mesh/light/camera/
-primitive entities (Phase 6 — Phase 4 supports only empty +
+primitive entities (Phase 6 â€” Phase 4 supports only empty +
 transform + name + visibility); runtime reparenting during Play (Phase
 6). The observer interface and mutator are added now so Phase 6 can
 hook scripting into them without further `RuntimeSceneController`
@@ -2551,14 +2551,39 @@ No `InputAction` / `InputAxis` / `InputMapping` / `InputContext` /
 `InputState` types exist. `KeyState { None, Pressed, Held, Released }`
 is defined in `Walnut/Input/KeyCodes.h:143` but unused.
 
+### Walnut frame ordering (load-bearing for this design)
+
+Walnut's `Application::Run` (see `Walnut/Walnut/src/Walnut/Application.cpp:745-854`)
+orders the frame as:
+
+1. `glfwPollEvents()` (`:751`).
+2. Timestep computed (`:759-762`).
+3. `Layer::OnUpdate(ts)` called for each layer (`:765`).
+4. `ImGui_ImplVulkan_NewFrame` / `ImGui_ImplGlfw_NewFrame` /
+   `ImGui::NewFrame` (`:787-789`).
+5. DockSpace + menubar built; `Layer::OnUIRender()` called for each
+   layer (`:843`).
+6. `ImGui::Render()` and submission (`:849+`).
+
+**This means `OnUpdate` runs BEFORE `ImGui::NewFrame`**, and the
+shortcuts / viewport hover / gizmo handling in `OnUIRender` run LATER in
+the same frame. Any input frame that begins and ends entirely inside
+`OnUpdate` would: (a) sample stale ImGui IO state from the previous
+frame, (b) not yet know viewport-hover / capture state, (c) clear scroll
+before UI consumers run, and (d) query `ImGui::IsKeyPressed` outside its
+valid frame phase. The Phase 5 input frame is therefore split across
+both stages — see §"Frame phasing" below.
+
 ### Outcome
 
 Gameplay code (Phase 6 scripts, and the editor camera in the meantime)
 consumes stable named actions and axes through a single input service,
 independent of GLFW and ImGui. Editor and runtime input are isolated by
-explicit contexts. Mappings are serialized in project settings. A
-read-only input service is exposed for future scripting. Controller
-dead zones and focus-loss reset are first-class.
+explicit contexts with consumption semantics. Mappings are serialized in
+project settings. A read-only input service is exposed for future
+scripting. Controller support uses GLFW's standardized gamepad API.
+Focus-loss reset is first-class and does not compete with ImGui's
+callbacks.
 
 ### Design constraints
 
@@ -2566,16 +2591,19 @@ dead zones and focus-loss reset are first-class.
   library. The Phase 5 input system lives in `RT2App/src` and consumes
   Walnut's existing `Input` polling API plus ImGui's `GetIO()` state.
   It does not patch `Walnut::Application`, does not install its own
-  GLFW callbacks (those would conflict with ImGui's backend), and does
-  not add a `Walnut::Input::IsKeyPressed` edge API. Instead, the Phase
-  5 service samples `Walnut::Input` + `ImGui::GetIO()` once per frame,
-  computes edge transitions, and exposes its own action/axis state.
-- **CPU-only binding types.** `InputAction`, `InputAxis`,
-  `InputMapping`, `InputContext`, and the serialized schema live in
-  `RT2App/src` headers that include no GLFW/ImGui/Walnut headers (only
-  forward-declare `Walnut::Input` if needed). The serialized form uses
-  logical action-name strings + integer key codes. This preserves the
-  `RT2SliceRunner` and `EditorSettingsStore` CPU-only boundary.
+  GLFW key/mouse/scroll/window-focus callbacks (those would conflict
+  with ImGui's backend — see §"Focus loss" below), and does not add a
+  `Walnut::Input::IsKeyPressed` edge API. The service samples ImGui's
+  IO state each frame and derives its own edges from raw-down
+  snapshots; it does NOT use `ImGui::IsKeyPressed` as an edge source.
+- **CPU-only state machine, separate desktop backend.** The state
+  machine (mappings, contexts, edges, axes) lives in a CPU-only
+  `InputStateMachine` with no GLFW/ImGui/Walnut includes. The GLFW/
+  ImGui/Walnut sampling lives in a separate `DesktopInputBackend`.
+  `InputService` composes the two. This lets `RT2Tests` link and test
+  the state machine directly without a new integration target; the
+  desktop backend's GLFW/ImGui sampling is exercised by an
+  `RT2AppIntegrationTests` target (see §"Test target decision" below).
 - **No new public SceneManager or RuntimeSceneController APIs.** The
   input service is hosted by `WalnutApp` (RT2App), not scene core.
   Phase 6 scripting will receive a read-only `IInputService` reference
@@ -2588,7 +2616,7 @@ dead zones and focus-loss reset are first-class.
   movement is refactored to read from the input service, but its
   visible behavior (WASD + right-mouse-look) is identical.
 
-### Core types
+### Core types (CPU-only, in `RT2App/src/InputTypes.h`)
 
 ```
 namespace rt2::core {
@@ -2596,66 +2624,76 @@ namespace rt2::core {
 // Integer key code mirroring GLFW numeric values (e.g. 'W' = 65).
 // Stored as uint16_t so the schema is portable and CPU-only.
 enum class KeyCode : uint16_t;
-enum class MouseButton : uint16_t;
+enum class MouseButton : uint16_t;   // GLFW mouse button values
+enum class GamepadButton : uint8_t;  // GLFW_GAMEPAD_BUTTON_* values
+enum class GamepadAxis : uint8_t;    // GLFW_GAMEPAD_AXIS_* values
 enum class ModifierBits : uint8_t;   // Ctrl/Shift/Alt bitfield
 
-// Edge-triggered and held state for a logical action.
+// Which device a binding sources from. Required so that key=1 and
+// mouseButton=1 are distinguishable in the serialized form.
+enum class InputDeviceKind : uint8_t
+{
+    KeyboardKey,
+    MouseButton,
+    GamepadButton,
+};
+
+// Edge-triggered and held state for a logical action. Computed AFTER
+// combining all of an action's bindings (see §"Edge computation").
 enum class ActionState : uint8_t
 {
     None      = 0,
-    Pressed   = 1,   // edge: went from down→up this frame (just pressed)
-    Held      = 2,   // held down this frame
-    Released  = 3,   // edge: went from down→up this frame
+    Pressed   = 1,   // edge: up -> down this frame
+    Held      = 2,   // down both this frame and last frame
+    Released  = 3,   // edge: down -> up this frame
     // "IsPressedThisFrame" == (state == Pressed)
     // "IsDown"            == (state == Pressed || state == Held)
 };
 
-// One binding for a logical action. Multiple bindings per action combine
-// disjunctively (any binding firing fires the action).
 struct ActionBinding
 {
-    KeyCode key = KeyCode(0);
+    InputDeviceKind device = InputDeviceKind::KeyboardKey;
+    // For device == KeyboardKey:   KeyCode key
+    // For device == MouseButton:   MouseButton button
+    // For device == GamepadButton: GamepadButton button
+    uint16_t code = 0;
     ModifierBits modifiers = ModifierBits(0);
-    // Optional controller axis/button source (Phase 5 §controller).
-    int controllerIndex = -1;   // -1 = keyboard/mouse
-    int controllerButton = -1;  // -1 = not a controller button
+    // Gamepad slot (see §"Gamepad handling"). -1 = "any connected
+    // gamepad". Persisted as a logical player slot, not a raw jid.
+    int gamepadSlot = -1;
 };
 
 struct AxisBinding
 {
-    KeyCode positive = KeyCode(0);
-    KeyCode negative = KeyCode(0);
-    int controllerIndex = -1;
-    int controllerAxis = -1;    // -1 = not a controller axis
-    float deadZone = 0.15f;     // controller axis dead zone
-    bool invert = false;
+    InputDeviceKind device = InputDeviceKind::KeyboardKey;
+    // Keyboard axis: positive/negative KeyCode.
+    // Gamepad axis:  code = GamepadAxis, positive/negative ignored.
+    uint16_t code = 0;
+    uint16_t positive = 0;
+    uint16_t negative = 0;
+    int gamepadSlot = -1;
+    float deadZone = 0.15f;
+    bool  invert = false;
 };
 
-// Serialized mapping: action/axis name → bindings. Stored in
-// EditorSettingsStore under a new "inputMappings" field (schema v2).
 struct InputMapping
 {
-    std::string name;                       // e.g. "move_forward"
-    std::vector<ActionBinding> actions;     // for action-type mappings
-    std::vector<AxisBinding>   axes;        // for axis-type mappings
-    bool isAxis = false;                    // disambiguates the two kinds
+    std::string name;                        // e.g. "move_forward"
+    bool isAxis = false;
+    std::vector<ActionBinding> actions;
+    std::vector<AxisBinding>   axes;
 };
 
-// Input contexts are stacked. The top active context receives input.
-// Editor and runtime contexts are mutually exclusive; Play activates
-// "runtime", Edit activates "editor". A "viewport" sub-context can be
-// pushed when the viewport is hovered.
+// A context owns a set of named mappings. Contexts are stacked; the
+// resolution policy is defined in §"Context stack and consumption".
 class InputContext
 {
 public:
     explicit InputContext(std::string id) : m_Id(std::move(id)) {}
     const std::string& Id() const { return m_Id; }
-    // Actions/axes consume by name; unhandled input falls through to the
-    // next context down the stack.
-    bool ConsumesAction(const std::string& name) const;
-    bool ConsumesAxis(const std::string& name) const;
     void SetMapping(InputMapping m);
     const InputMapping* FindMapping(const std::string& name) const;
+    bool HasMapping(const std::string& name) const;
 private:
     std::string m_Id;
     std::unordered_map<std::string, InputMapping> m_Mappings;
@@ -2681,88 +2719,212 @@ public:
     virtual float GetAxisValue(const std::string& name) const = 0;
     virtual glm::vec2 GetMouseDelta() const = 0;
     virtual float GetScrollDelta() const = 0;
+    // Cursor capture is a host-controlled request, see §"Cursor
+    // ownership". The service does NOT call glfwSetInputMode directly.
+    virtual void RequestCursorCapture(bool locked) = 0;
+    virtual bool IsCursorCaptureRequested() const = 0;
 };
 
 } // namespace rt2::core
 ```
 
-### The InputService
+### Architecture: state machine + desktop backend + service
 
-Concrete class `rt2::core::InputService final : public IInputService`,
-in `RT2App/src/InputService.h/.cpp`. Hosted by `WalnutApp` (one
-instance, lifetime = app lifetime). Per frame, `WalnutApp::OnUpdate`
-calls `m_InputService.BeginFrame()` before any input consumer runs and
-`EndFrame()` at the end of `OnUpdate`.
+```
+RT2App/src/InputTypes.h           CPU-only types (above). No GLFW/ImGui/Walnut.
+RT2App/src/InputStateMachine.h/.cpp
+                                  CPU-only. Owns:
+                                    - the context stack
+                                    - per-binding previous/current down state
+                                    - edge computation (§"Edge computation")
+                                    - axis computation (§"Axis computation")
+                                    - focus-loss state
+                                  Test-only backdoor: SetSampleState(...)
+                                  injects a frame's synthetic raw-down
+                                  snapshot without any GLFW/ImGui call.
+RT2App/src/DesktopInputBackend.h/.cpp
+                                  Links Walnut/ImGui/GLFW. One method:
+                                    RawInputSnapshot CaptureFrame()
+                                  which polls Walnut::Input, ImGui::GetIO(),
+                                  glfwGetGamepadState, and
+                                  glfwGetWindowAttrib(GLFW_FOCUSED).
+                                  No state, no context logic.
+RT2App/src/InputService.h/.cpp
+                                  Composes the two. Implements IInputService.
+                                  Drives the frame phasing (§"Frame
+                                  phasing"). Hosts the cursor-capture
+                                  request and platform cursor calls.
+```
 
-`BeginFrame`:
+`InputStateMachine` is linked into `RT2Tests` directly. `DesktopInputBackend`
+and `InputService` are linked into `RT2App` and the new
+`RT2AppIntegrationTests` target (§"Test target decision").
 
-1. Sample `Walnut::Input::IsKeyDown` / `IsMouseButtonDown` for every key
-   and mouse button referenced by any active context's bindings. (A
-   precomputed set, rebuilt when mappings change.)
-2. Sample `ImGui::GetIO()` for `KeyCtrl/KeyShift/KeyAlt` and the
-   edge-triggered `ImGui::IsKeyPressed` / `IsMouseClicked` for those
-   same keys. ImGui's IO is the only edge source today; Walnut::Input is
-   held-only.
-3. Sample `glfwGetJoystickAxes` / `glfwGetJoystickButtons` for any
-   controller bindings (Phase 5 §controller).
-4. Compute per-binding `ActionState`: a binding is `Pressed` if it was
-   up last frame and down this frame; `Held` if down both frames;
-   `Released` if down last frame and up this frame; `None` otherwise.
-   An action's state is the disjunction of its bindings' states
-   (Pressed wins over Held; Released wins over None).
-5. Compute per-axis value: keyboard axis = `(down(negative) ? -1 : 0) +
-   (down(positive) ? 1 : 0)`; controller axis = `glm::clamp((raw -
-   deadZone) / (1 - deadZone), -1, 1)` with `invert` applied. The
-   axis's value is the sum of its bindings (clamped to [-1, 1]).
-6. Compute `m_MouseDelta = (current - last)` from
-   `Walnut::Input::GetMousePosition`. Compute `m_ScrollDelta` from
-   `ImGui::GetIO().MouseWheel` (accumulated this frame; reset to 0 at
-   the start of `BeginFrame`).
+### Frame phasing
 
-`EndFrame`:
+The input frame spans both `OnUpdate` and `OnUIRender`:
 
-- Stash this frame's down-state as next frame's "previous" state.
-- Clear `m_ScrollDelta` (already consumed by `BeginFrame` of next
-  frame, but defensively reset).
+1. **`InputService::SampleRaw()` — called at the top of
+   `WalnutApp::OnUpdate` (before `m_Cam.OnUpdate`).** Calls
+   `DesktopInputBackend::CaptureFrame()` to snapshot:
+   - `Walnut::Input::IsKeyDown` / `IsMouseButtonDown` for every key /
+     button referenced by any context's bindings.
+   - `ImGui::GetIO()`'s `KeyCtrl/KeyShift/KeyAlt`, `MouseWheel`,
+     `MouseDown[]`, `MousePos` (ImGui's IO is valid to read here — it
+     reflects the previous frame's `ImGui_ImplGlfw_NewFrame` data; the
+     edge derivation is based on raw-down snapshots, NOT on
+     `ImGui::IsKeyPressed`).
+   - `glfwGetGamepadState` for each present gamepad slot.
+   - `glfwGetWindowAttrib(window, GLFW_FOCUSED)` for focus state.
+   The raw snapshot is handed to `InputStateMachine::BeginFrame(snapshot)`,
+   which advances per-binding current/previous down state. At this
+   point action edges and axis values are computed from the raw-down
+   state only, WITHOUT consulting viewport-hover or widget-capture
+   state. This lets the camera read `move_forward` / `look` etc. inside
+   `OnUpdate`.
+2. **`InputService::ResolveUI()` — called at the top of
+   `WalnutApp::OnUIRender` (after `ImGui::NewFrame`, before any panel
+   code).** Samples the UI capture state that was not available in
+   `OnUpdate`:
+   - `ImGui::GetIO().WantTextInput`, `WantCaptureKeyboard`,
+     `WantCaptureMouse`.
+   - `ImGui::IsWindowHovered()` / `ImGui::IsItemHovered()` for the
+     viewport panel (viewport hover is known only inside `OnUIRender`).
+   - Active-widget state (`ImGui::IsAnyItemActive()`).
+   - Gizmo consumption state (queried from `EditorTransformGizmo`).
+   The state machine applies an editor routing policy (§"Editor routing
+   policy") that suppresses actions when ImGui wants text input, when a
+   widget is active, when the gizmo is consuming mouse, etc. The
+   suppressed actions are marked `None` for this frame. Context-stack
+   transitions (pushing `"viewport"` / `"viewport.look"`) also happen
+   here, since viewport hover is known only now.
+3. **`InputService::EndFrame()` — called at the end of
+   `WalnutApp::OnUIRender` (after all panel code, before
+   `ImGui::Render`).** Commits the current down-state as next frame's
+   "previous" state, clears per-frame deltas (scroll, mouse delta),
+   and applies any pending cursor-capture request (§"Cursor ownership").
+   After `EndFrame`, no further input queries are valid until the next
+   frame's `SampleRaw`.
 
-### Context stack
+This phasing keeps the input frame open across both stages, derives
+edges from raw-down snapshots (never from `ImGui::IsKeyPressed`), and
+ensures scroll is not cleared before UI consumers run.
 
-`InputService` owns a `std::vector<InputContext>` stack. Push / pop /
-clear are host-driven. The active context (top of stack) consumes
-input first; unhandled actions/axes fall through to the next context.
-An action is "handled" if the active context has a mapping for it; if
-not, the service checks the next context down.
+### Edge computation
 
-`WalnutApp` context wiring:
+Edges are computed PER ACTION after combining all of the action's
+bindings, NOT per binding:
 
-- **Edit state:** push the `"editor"` context at app start. The editor
-  context maps the camera movement axes (`move_forward`, `move_right`,
-  `move_up`), the `look` action (right-mouse), the gizmo mode actions
-  (`gizmo_translate` / `gizmo_rotate` / `gizmo_scale`), the editor
-  shortcuts (`undo`, `redo`, `delete`, `focus`, `copy`, `paste`,
-  `duplicate`, `camera_bookmark_slotN`), and the viewport pick action.
-- **Play state:** `EnterPlay` pushes a `"runtime"` context and pops the
-  `"editor"` context. The runtime context maps gameplay actions
-  (`move_forward`, `move_right`, `look`, `jump`, `primary_action`, etc.
-  — a default set that Phase 6 scripts can override). The editor
-  shortcuts and gizmo actions are NOT mapped in the runtime context,
-  so they do not fire during Play.
-- **Pause state:** the runtime context remains active but
-  `m_RuntimeCam.OnUpdate` is not called (matches current behavior —
-  `Pause` clears the accumulator and `Step` runs one tick; the editor
-  camera is restored only on Stop).
-- **Stop:** pops the `"runtime"` context and re-pushes `"editor"`.
+```
+previousActionDown = any of this action's bindings was down last frame
+currentActionDown  = any of this action's bindings is down this frame
 
-The W/E conflict is resolved cleanly: the `"editor"` context maps W/E
-to `move_forward` / `move_up` axes, AND `gizmo_translate` / `gizmo_rotate`
-to W/E actions, but the gizmo actions are gated by a `"viewport"`
-sub-context that is pushed only when the viewport is hovered and the
-gizmo is not dragging. When the `"viewport"` sub-context is active, its
-W/E → gizmo-mode mapping takes precedence over the editor context's
-W/E → camera-axis mapping (context stack top wins). When the right
-mouse button is held, the `"viewport.look"` sub-context is pushed, and
-its W/E → camera-axis mapping takes precedence. This replaces the
-current implicit "right-mouse gate" with an explicit context stack.
+state = (currentActionDown, previousActionDown) =>
+    (true,  false) -> Pressed
+    (true,  true ) -> Held
+    (false, true ) -> Released
+    (false, false) -> None
+```
+
+This avoids false Released edges when one binding is released while
+another remains held.
+
+### Axis computation
+
+Keyboard axis value:
+```
+value = (down(negative) ? -1.0f : 0.0f) + (down(positive) ? 1.0f : 0.0f)
+clamped to [-1, 1]
+```
+
+Gamepad axis value (sign-preserving dead zone):
+```
+float applyDeadZone(float raw, float dz) {
+    if (std::abs(raw) <= dz) return 0.0f;
+    float sign = (raw < 0.0f) ? -1.0f : 1.0f;
+    return sign * (std::abs(raw) - dz) / (1.0f - dz);
+}
+value = applyDeadZone(raw, deadZone)
+if (invert) value = -value
+```
+
+An axis's final value is the sum of its bindings' values, clamped to
+[-1, 1].
+
+### Context stack and consumption
+
+`InputService` owns a `std::vector<InputContext*>` stack (non-owning
+pointers; contexts are owned by the host). Push / pop / clear are
+host-driven.
+
+**Resolution policy: physical-source consumption with lower-context
+blocking.** This replaces the original "fall through" design, which did
+not actually resolve the W/E conflict (a `move_forward` query in the
+`"editor"` context would still see W even when the `"viewport"` context
+was active, because `"viewport"` mapped `gizmo_translate` but not
+`move_forward`).
+
+New policy:
+
+1. For each physical source (key, mouse button, gamepad button/axis)
+   referenced by any binding in the active stack, the topmost context
+   that maps that physical source **claims** it.
+2. A context's bindings only fire if their physical source has not been
+   claimed by a higher context.
+3. A context's action/axis queries are answered from the bindings that
+   survived the claim check.
+
+Concretely, when the `"viewport"` context is top and maps W →
+`gizmo_translate`, W is claimed by `"viewport"`. The `"editor"` context
+below also has a W → `move_forward` binding, but W is already claimed,
+so `editor.move_forward` does not fire. Result: with viewport hovered
+and no right-mouse, `IsPressed("gizmo_translate")` is true and
+`GetAxisValue("move_forward")` is 0 — which is what the integration test
+expects.
+
+When the `"viewport.look"` context is pushed (right-mouse held) and
+maps W → `move_forward`, W is claimed by `"viewport.look"`, and the
+`"viewport"` context's W → `gizmo_translate` binding does not fire.
+Result: right-mouse-held + W → camera moves forward, gizmo mode does
+not toggle.
+
+Context-stack transitions (driven by `ResolveUI`):
+
+- **Edit state, viewport not hovered:** stack = `["editor"]`.
+- **Edit state, viewport hovered, no right-mouse:** stack =
+  `["editor", "viewport"]`. `"viewport"` maps W/E/R → gizmo mode
+  actions; these claim W/E/R.
+- **Edit state, viewport hovered, right-mouse held:** stack =
+  `["editor", "viewport", "viewport.look"]`. `"viewport.look"` maps
+  W/S/A/D/Q/E → camera axes and right-mouse → `look`; these claim
+  their sources, so gizmo-mode bindings do not fire.
+- **Play state:** stack = `["runtime"]`. The runtime context maps
+  gameplay actions; editor shortcuts and gizmo actions are unmapped,
+  so they do not fire. The viewport.look sub-context can still be
+  pushed during Play for runtime flycam.
+- **Stop:** pop `"runtime"`, re-push `"editor"`.
+
+### Editor routing policy (ImGui suppression preserved)
+
+Contexts alone do not replace ImGui's `io.WantTextInput`,
+`WantCaptureKeyboard`, active-widget and gizmo-consumption checks.
+`InputService::ResolveUI` applies an editor routing policy:
+
+- If `io.WantTextInput || io.WantCaptureKeyboard`: suppress all
+  keyboard-sourced actions for this frame (they become `None`). Mouse
+  actions are unaffected unless `io.WantCaptureMouse` is also true.
+- If `io.WantCaptureMouse && !viewportHovered`: suppress all
+  mouse-sourced actions.
+- If `ImGui::IsAnyItemActive()` and the active item is not the viewport
+  image: suppress keyboard-sourced actions (the user is typing in a
+  widget, dragging a slider, etc.).
+- If `gizmo.consumesMouse` (queried from `EditorTransformGizmo`):
+  suppress the viewport-pick action; allow gizmo-drag actions.
+- The suppression is recorded per-action so `IsDown("move_forward")`
+  does not return true while typing in a text box.
+
+This preserves the existing behavior where Ctrl+Z, Delete, W/E/R and
+viewport clicks do not activate while typing or manipulating widgets.
 
 ### Camera refactor
 
@@ -2775,11 +2937,11 @@ float forward = input.GetAxisValue("move_forward");
 float right   = input.GetAxisValue("move_right");
 float up      = input.GetAxisValue("move_up");
 if (input.IsDown("look")) {
-    SetCursorModeLocked(true);
+    input.RequestCursorCapture(true);
     glm::vec2 delta = input.GetMouseDelta();
     // … pitch/yaw …
 } else {
-    SetCursorModeLocked(false);
+    input.RequestCursorCapture(false);
     return;
 }
 // translate by (forward, right, up) * m_Speed * ts
@@ -2789,7 +2951,10 @@ if (input.IsDown("look")) {
 m_InputService)` and `m_RuntimeCam.OnUpdate(ts, m_InputService)`. The
 visible behavior is unchanged: same keys, same speed, same right-mouse
 gate. The camera no longer includes `Walnut/Input/Input.h`; it depends
-only on `IInputService`.
+only on `IInputService`. The camera no longer calls
+`Input::SetCursorMode` directly — it calls
+`input.RequestCursorCapture(true/false)` and the service applies the
+request at `EndFrame` (§"Cursor ownership").
 
 ### Editor shortcut refactor
 
@@ -2801,46 +2966,98 @@ block (733-743), `SceneEditorUI.cpp` (678-695), and
 mappings move into the `"editor"` and `"viewport"` contexts. This is a
 mechanical translation — every `ImGui::IsKeyPressed(ImGuiKey_X)` under
 `io.KeyCtrl` becomes `input.IsPressed("redo")` (or whatever the mapped
-action name is). The ImGui IO state is still sampled by the input
-service (it's the only edge source), but the shortcut code no longer
-touches ImGui directly.
+action name is). The ImGui IO state is still sampled by the desktop
+backend (it's a raw-down source), but the shortcut code no longer
+touches ImGui directly. Edge detection is the state machine's job, not
+ImGui's.
 
-### Controller support
+### Gamepad handling
 
-Phase 5 introduces controller support from scratch. GLFW exposes
-`glfwJoystickPresent`, `glfwJoystickGetAxes`, `glfwJoystickGetButtons`,
-`glfwJoystickGetGUID`, `glfwSetJoystickCallback`. The input service:
+Phase 5 introduces gamepad support from scratch using GLFW's
+standardized gamepad API:
 
-1. On `BeginFrame`, polls `glfwJoystickPresent(GLFW_JOYSTICK_1 .. 5)`.
-2. For each present controller, calls `glfwJoystickGetAxes` /
-   `glfwJoystickGetButtons` and feeds the values into any
-   `controllerIndex`-tagged bindings.
-3. Registers `glfwSetJoystickCallback` **once** in
-   `InputService::Initialize` to track connect/disconnect. This is the
-   one new GLFW callback; it does not conflict with ImGui's backend
-   (ImGui's GLFW backend does not register a joystick callback).
+- **`glfwGetGamepadState(int jid, GLFWgamepadstate* state)`** is the
+  primary polling call. It returns `GLFW_TRUE` if `jid` is present AND
+  has a known gamepad mapping; raw joystick fallback is NOT used.
+- **Standardized controls:** `GLFW_GAMEPAD_BUTTON_*` (A/B/X/Y, bumpers,
+  back/start/guide, thumb, dpad) and `GLFW_GAMEPAD_AXIS_*` (left/right
+  X/Y, left/right trigger). The service does NOT use
+  `glfwGetJoystickAxes` / `glfwGetJoystickButtons` directly.
+- **Player slots, not raw jids.** `gamepadSlot` in `ActionBinding` /
+  `AxisBinding` is a logical player slot (0..3). The service maintains
+  a slot→jid map by enumerating `glfwJoystickIsGamepad(GLFW_JOYSTICK_1
+  .. 16)` at the start of each `SampleRaw` and assigning slots in
+  ascending jid order. Slot 0 = "first connected gamepad", slot 1 =
+  "second", etc. A binding with `gamepadSlot = -1` matches "any
+  connected gamepad" (resolved to slot 0). Raw jids are NOT persisted
+  (they are not stable across reconnects or launches).
+- **Connect/disconnect:** polled per frame via the slot→jid map. A
+  disconnect zeroes the slot's axis values and releases its button
+  bindings for one frame. No `glfwSetJoystickCallback` is registered
+  (it would not conflict with ImGui, but polling is simpler and
+  uniform with the rest of the design).
+- **GUID persistence is NOT in scope** for Phase 5. The slot model is
+  purely positional. GUID-based player assignment ("this controller is
+  always Player 1") is a future convenience.
 
-A controller binding's `deadZone` (default 0.15) is applied per
-`AxisBinding`. The default runtime context maps:
-- Left stick X → `move_right`, Y → `move_forward`.
-- Right stick X → `look_yaw`, Y → `look_pitch`.
-- A/□ → `jump`, X/△ → `primary_action`.
+Default runtime context gamepad mappings:
+- Left stick X → `move_right`, Y → `move_forward` (with `invert = true`
+  on Y, since GLFW's Y is up = -1).
+- Right stick X → `look_yaw`, Y → `look_pitch` (invert on Y).
+- A/Cross → `jump`, X/Square → `primary_action`.
 
-Dead-zone and inversion are per-binding, serialized in the mapping.
+Dead-zone (sign-preserving) and inversion are per-binding, serialized
+in the mapping (§"Edge computation" / §"Axis computation").
 
-### Focus-loss reset
+### Focus loss
 
-On window focus loss (tracked via `glfwSetWindowFocusCallback`, also
-registered once in `InputService::Initialize`), the service:
+ImGui's GLFW backend already installs
+`glfwSetWindowFocusCallback` (`imgui_impl_glfw.cpp:430`) and chains
+the previous callback via `PrevUserCallbackWindowFocus`. Installing a
+competing callback would either clobber ImGui's or require careful
+chaining and restoration — fragile. Phase 5 polls instead:
 
-1. Marks every currently-down binding as `Released` for one frame.
-2. Clears all axis values to 0.
-3. Sets an internal `m_FocusLost` flag so subsequent `BeginFrame`
-   samples ignore input until focus is regained (defensive — GLFW
-   typically returns false from `IsKeyDown` while unfocused, but the
-   flag is a belt-and-suspenders guard against stuck keys).
+```
+bool focused = glfwGetWindowAttrib(window, GLFW_FOCUSED);
+```
 
-On focus regain, clears `m_FocusLost` and resumes normal sampling.
+`DesktopInputBackend::CaptureFrame` records `focused` in the raw
+snapshot. The state machine detects transitions:
+
+- `focused == false` (regardless of previous): mark all currently-down
+  bindings as `Released` for one frame, zero all axis values, set
+  `m_FocusLost = true`.
+- While `m_FocusLost`: ignore raw-down samples (treat all keys / buttons
+  / axes as up). This is belt-and-suspenders against GLFW reporting
+  stale state while unfocused.
+- `focused == true && m_FocusLost`: clear `m_FocusLost` on the next
+  `BeginFrame`. Do NOT immediately treat the current down-state as
+  `Pressed` — the first focused frame's down-state becomes the
+  "previous" for the next frame's edge computation, so a key held
+  through refocus is `Held`, not `Pressed`. This prevents accidental
+  edge spikes on refocus.
+- On focus loss / regain / context-stack transition: reset mouse
+  position history so the first-frame mouse delta is zero, not a large
+  jump from the pre-transition position.
+
+### Cursor ownership
+
+`Walnut::Input::SetCursorMode` calls `glfwSetInputMode(GLFW_CURSOR,
+…)`. The camera today calls it directly. Phase 5 centralizes cursor
+capture on `IInputService`:
+
+- `IInputService::RequestCursorCapture(bool locked)` records the
+  request. Multiple consumers can request; the service applies the
+  most-recent request at `EndFrame` (so a later `RequestCursorCapture(
+  false)` in `OnUIRender` overrides an earlier `true` from `OnUpdate`
+  if the right-mouse was released mid-frame).
+- `InputService::EndFrame` calls `Walnut::Input::SetCursorMode(locked
+  ? CursorMode::Locked : CursorMode::Normal)`.
+- The camera no longer calls `SetCursorMode` directly.
+- On focus loss, focus regain, and context-stack transitions: the
+  service forces `CursorMode::Normal` for one frame and resets mouse
+  position history (§"Focus loss") to prevent a large first-frame look
+  delta.
 
 ### Serialization
 
@@ -2851,37 +3068,71 @@ On focus regain, clears `m_FocusLost` and resumes normal sampling.
   "version": 2,
   "projectRoot": "...",
   "recentScenes": ["..."],
-  "inputMappings": [
+  "inputContexts": [
     {
-      "name": "move_forward",
-      "isAxis": true,
-      "axes": [
-        { "positive": 87, "negative": 83, "controllerIndex": -1, "controllerAxis": -1, "deadZone": 0.15, "invert": false }
-      ],
-      "actions": []
+      "contextId": "editor",
+      "mappings": [
+        {
+          "name": "move_forward",
+          "isAxis": true,
+          "axes": [
+            { "device": 0, "code": 0, "positive": 87, "negative": 83,
+              "gamepadSlot": -1, "deadZone": 0.15, "invert": false }
+          ],
+          "actions": []
+        },
+        {
+          "name": "look",
+          "isAxis": false,
+          "actions": [
+            { "device": 1, "code": 1, "modifiers": 0, "gamepadSlot": -1 }
+          ],
+          "axes": []
+        }
+      ]
     },
     {
-      "name": "look",
-      "isAxis": false,
-      "actions": [
-        { "key": 1, "modifiers": 0, "controllerIndex": -1, "controllerButton": -1 }
-      ],
-      "axes": []
+      "contextId": "viewport",
+      "mappings": [
+        {
+          "name": "gizmo_translate",
+          "isAxis": false,
+          "actions": [
+            { "device": 0, "code": 87, "modifiers": 0, "gamepadSlot": -1 }
+          ],
+          "axes": []
+        }
+      ]
+    },
+    {
+      "contextId": "runtime",
+      "mappings": [ … ]
     }
   ]
 }
 ```
 
-Key codes are stored as integers (matching GLFW numeric values). The
-loader at `EditorSettings.cpp:64-148` already ignores unknown optional
-fields, so a v1 settings file with no `inputMappings` field loads
-cleanly and the service falls back to built-in defaults. A v2 file on a
-v1-only loader is rejected by the version check (existing behavior).
+Notes:
 
-Built-in defaults (used when `inputMappings` is absent or empty) are
+- **`device`** is the `InputDeviceKind` enum value (0 = KeyboardKey,
+  1 = MouseButton, 2 = GamepadButton). This disambiguates `code = 1`
+  for keyboard key 1 vs. mouse button 1.
+- **`contextId`** groups mappings by context. A flat `inputMappings`
+  array cannot represent `"editor"`, `"runtime"` and `"viewport"`
+  contexts with overlapping action names (e.g. both `"editor"` and
+  `"viewport.look"` map W). The new schema is a list of contexts, each
+  with its own mapping list.
+- The loader at `EditorSettings.cpp:64-148` already ignores unknown
+  optional fields, so a v1 settings file with no `inputContexts` field
+  loads cleanly and the service falls back to built-in defaults. A v2
+  file on a v1-only loader is rejected by the version check (existing
+  behavior).
+
+Built-in defaults (used when `inputContexts` is absent or empty) are
 constructed in code by `InputService::LoadDefaults()`, mirroring the
 current hardcoded bindings (W/S/A/D/Q/E, right-mouse look, Ctrl+Z/Y,
-Delete, F, Ctrl+C/V/D, Ctrl+1..N, W/E/R for gizmo). This guarantees the
+Delete, F, Ctrl+C/V/D, Ctrl+1..N, W/E/R for gizmo) plus the default
+runtime gamepad mappings (§"Gamepad handling"). This guarantees the
 editor behaves identically before and after the migration.
 
 ### Runtime input routing
@@ -2900,100 +3151,138 @@ signature (alongside the `IRuntimeCommandSink` mutation channel). Phase
 5 only builds the service and the context switching; scripts are not
 yet a consumer.
 
+### Test target decision
+
+Two test targets:
+
+1. **`RT2Tests` (CPU-only, existing).** Links `InputStateMachine.cpp`
+   (no GLFW/ImGui/Walnut). Tests the state machine, context stack,
+   edge computation, axis computation, focus-loss logic, and mapping
+   serialization round-trip via the `SetSampleState` backdoor. This is
+   the bulk of the test surface and runs in the existing CI path.
+2. **`RT2AppIntegrationTests` (new target, links Walnut + ImGui + GLFW
+   + RT2App source).** Tests `DesktopInputBackend::CaptureFrame`,
+   `InputService`'s frame phasing across `OnUpdate` / `OnUIRender`,
+   context-stack transitions driven by viewport hover, ImGui
+   suppression policy, gamepad polling, and cursor capture. This is a
+   small console executable that constructs a hidden GLFW window,
+   drives `InputService` through one or more frames with synthetic
+   GLFW state where possible, and asserts on the resulting
+   `IInputService` queries. (Where GLFW state cannot be injected
+   synthetically — e.g. viewport hover — the test uses ImGui's
+   test-mode hooks or is marked as a manual acceptance step.)
+
+The decision is made now: `RT2Tests` stays CPU-only and covers the
+state machine; `RT2AppIntegrationTests` is the new integration target.
+The spec no longer says "possibly a new target."
+
 ### Test surface
 
-New `RT2Tests/src/Phase5InputTests.cpp` plus a new
-`RT2Tests/src/InputServiceTests.cpp` (CPU-only, links the InputService
-without GLFW by injecting synthetic sample state). Tests:
+**`RT2Tests/src/InputStateMachineTests.cpp` (CPU-only):**
 
-**CPU-only / unit (InputServiceTests.cpp):**
-
-- Synthetic sample state (a test-only `SetSampleState` backdoor on
-  `InputService` that injects a frame's worth of key/mouse/scroll/
-  controller state without calling GLFW/ImGui) produces correct
-  `Pressed`/`Held`/`Released` edges across multiple frames.
+- Synthetic sample state via `SetSampleState` produces correct
+  `Pressed` / `Held` / `Released` edges across multiple frames.
+- **Edge computation combines bindings:** two bindings on one action,
+  release one while the other stays held → action stays `Held`, NOT
+  `Released`.
+- **`Pressed` is up→down**, not down→up (comment correctness).
 - Multiple bindings to one action combine disjunctively (any fires).
 - Keyboard axis `(down(neg) ? -1 : 0) + (down(pos) ? 1 : 0)` clamps.
-- Controller axis dead-zone and inversion are applied.
-- Context stack: top context consumes first; unhandled falls through.
-- Focus-loss reset: all down bindings become `Released`, axes zero.
-- Mapping serialization round-trips through `EditorSettingsStore` v2.
+- Gamepad axis dead-zone is sign-preserving:
+  `applyDeadZone(-0.5, 0.15) ≈ -0.4118`, `applyDeadZone(0.1, 0.15) ==
+  0.0`, `applyDeadZone(1.0, 0.15) == 1.0`.
+- Gamepad axis inversion is applied.
+- **Context stack — physical-source consumption:**
+  - `"viewport"` maps W → `gizmo_translate`; `"editor"` maps W →
+    `move_forward`. With `"viewport"` on top, `IsPressed(
+    "gizmo_translate")` is true, `GetAxisValue("move_forward")` is 0.
+  - Push `"viewport.look"` (maps W → `move_forward`); now
+    `GetAxisValue("move_forward")` is non-zero, `IsPressed(
+    "gizmo_translate")` is false (W claimed by `"viewport.look"`).
+- Focus-loss reset: all down bindings become `Released`, axes zero,
+  subsequent frames ignore samples until refocus. First refocus frame
+  does not produce `Pressed` edges (down-state becomes "previous").
+- Mapping serialization round-trips through `EditorSettingsStore` v2
+  with `device` and `contextId` fields.
 - Unknown action names return `ActionState::None` and axis value 0
   safely (no throw, no assert).
 - Empty mapping list → built-in defaults loaded.
 
-**Integration (Phase5InputTests.cpp, links the full InputService with
-Walnut/ImGui — gated to RT2App or a new RT2AppIntegrationTests target
-if RT2Tests must stay CPU-only):**
+**`RT2AppIntegrationTests/src/InputServiceFramePhaseTests.cpp`
+(integration):**
 
-- Editor context maps W/E to camera axes; viewport sub-context maps
-  W/E to gizmo mode. With viewport hovered and no right-mouse,
-  `IsPressed("gizmo_translate")` is true and `GetAxisValue("move_forward")`
-  is 0. With right-mouse held, the inverse.
-- Play pushes runtime context; editor `undo` action is `None` during
-  Play; Stop re-activates it.
-- Rebind `move_forward` from W to Up arrow in the serialized mapping;
-  reload; verify Up arrow drives the axis and W does not.
+- `OnUpdate` reads valid action state (raw-down derived) even though
+  `ImGui::NewFrame` has not run yet.
+- `OnUIRender` `ResolveUI` suppresses keyboard actions when
+  `io.WantTextInput` is true.
+- Viewport hover pushes `"viewport"` sub-context; W/E claim resolves
+  as specified.
+- Right-mouse held pushes `"viewport.look"`; gizmo-mode actions go
+  `None`.
+- Play pushes `"runtime"`, pops `"editor"`; `IsPressed("undo")` is
+  false during Play.
+- Stop re-activates `"editor"`; `IsPressed("undo")` works again.
 - Focus loss while holding W: `IsDown("move_forward")` returns false
   on the next frame.
-- Controller connect mid-Play: axis `move_right` reads from the
-  controller's left stick X within one frame.
-
-If RT2Tests must remain CPU-only (no GLFW/ImGui link), the integration
-tests move to a new `RT2AppIntegrationTests` target that links Walnut.
-The CPU-only unit tests cover the core state machine; the integration
-tests cover the GLFW/ImGui sampling and context switching.
+- `RequestCursorCapture(true)` from camera in `OnUpdate`;
+  `EndFrame` applies `CursorMode::Locked`. A subsequent
+  `RequestCursorCapture(false)` from `OnUIRender` overrides it.
+- Gamepad connect mid-Play: axis `move_right` reads from the
+  gamepad's left stick X within one frame (synthetic where possible,
+  else manual acceptance).
 
 ### Files
 
-- New: `RT2App/src/InputService.h/.cpp` (`InputService`,
-  `IInputService`, `ActionState`, `ActionBinding`, `AxisBinding`,
-  `InputMapping`, `InputContext`, `ModifierBits`). CPU-only types in
-  the header; the .cpp links GLFW/ImGui for sampling.
-- New: `RT2App/src/InputTypes.h` (CPU-only `KeyCode`/`MouseButton`/
-  `ModifierBits`/`ActionState`/`ActionBinding`/`AxisBinding`/
-  `InputMapping`/`InputContext` — no GLFW/ImGui/Walnut includes). This
-  splits the types from the service so `EditorSettingsStore` and
-  `RT2SliceRunner` can serialize/bind without pulling GLFW.
-- New: `RT2Tests/src/InputServiceTests.cpp` (CPU-only unit tests).
-- New: `RT2Tests/src/Phase5InputTests.cpp` (integration tests, or
-  moved to a new RT2AppIntegrationTests target if RT2Tests must stay
-  CPU-only).
+- New: `RT2App/src/InputTypes.h` (CPU-only types, no GLFW/ImGui/Walnut).
+- New: `RT2App/src/InputStateMachine.h/.cpp` (CPU-only state machine).
+- New: `RT2App/src/DesktopInputBackend.h/.cpp` (GLFW/ImGui/Walnut
+  snapshot collection).
+- New: `RT2App/src/InputService.h/.cpp` (composes the two; implements
+  `IInputService`; drives frame phasing and cursor capture).
+- New: `RT2Tests/src/InputStateMachineTests.cpp` (CPU-only unit tests).
+- New: `RT2AppIntegrationTests/` project (premake5.lua, vcxproj,
+  `src/InputServiceFramePhaseTests.cpp`, `src/main.cpp`).
 - Modified: `RT2App/src/Camera.h/.cpp` (refactored `OnUpdate` to take
-  `IInputService&`; drop `Walnut/Input/Input.h` include).
-- Modified: `RT2App/src/WalnutApp.cpp` (own `InputService`, push/pop
-  contexts in `EnterPlay`/`EnterStop`, pass service to camera and
-  shortcut handlers, rewrite shortcut handlers to read from service).
+  `IInputService&`; drop `Walnut/Input/Input.h` include; use
+  `RequestCursorCapture`).
+- Modified: `RT2App/src/WalnutApp.cpp` (own `InputService`, call
+  `SampleRaw` / `ResolveUI` / `EndFrame` at the right frame phases,
+  push/pop contexts in `EnterPlay`/`EnterStop` and viewport-hover,
+  pass service to camera and shortcut handlers, rewrite shortcut
+  handlers to read from service).
 - Modified: `RT2App/src/EditorTransformGizmo.cpp` (gizmo mode hotkeys
   read from `IInputService`).
 - Modified: `RT2App/src/SceneEditorUI.cpp` (hierarchy panel shortcuts
   read from `IInputService`).
 - Modified: `RT2App/src/EditorSettings.h/.cpp` (schema v2, new
-  `inputMappings` field, `LoadInputMappings`/`SaveInputMappings`).
-- Modified: `RT2App/RT2App.vcxproj`,
-  `RT2Tests/RT2Tests.vcxproj`, `RT2Tests/premake5.lua`,
-  `RT2SliceRunner/premake5.lua` (if InputTypes.cpp is needed —
-  probably header-only).
+  `inputContexts` field, `LoadInputContexts`/`SaveInputContexts`).
+- Modified: `RT2App/RT2App.vcxproj`, `RT2Tests/RT2Tests.vcxproj`,
+  `RT2Tests/premake5.lua`, `RT2SliceRunner/premake5.lua` (link
+  `InputStateMachine.cpp` into RT2Tests; link `InputService.cpp` +
+  `DesktopInputBackend.cpp` into RT2App and RT2AppIntegrationTests;
+  add `InputTypes.h` to all targets that need it).
 
 ### Verification gates
 
-Release x64 build; focused Phase 5 input tests; full RT2Tests where
-the only permitted failures are the six known pre-existing cases;
-`run_slice_test.ps1` and `run_recovery_test.ps1` pass;
-`graphify update .`; documentation updates with actual test counts.
+Release x64 build; `RT2Tests` (CPU-only) with the only permitted
+failures being the six known pre-existing cases; new
+`RT2AppIntegrationTests` passing; `run_slice_test.ps1` and
+`run_recovery_test.ps1` pass; `graphify update .`; documentation
+updates with actual test counts.
 
 ### Runtime acceptance (interactive, pending user)
 
-- Rebind `move_forward` from W to Up arrow in the editor settings,
-  restart RT2, enter Play, and verify the new binding drives the
+- Rebind `move_forward` from W to Up arrow in the editor settings
+  JSON, restart RT2, enter Play, and verify the new binding drives the
   camera immediately.
 - Hold W, alt-tab away, alt-tab back: no stuck movement.
-- Plug in a controller mid-Play: left stick drives `move_right` /
+- Plug in a gamepad mid-Play: left stick drives `move_right` /
   `move_forward` within one frame.
 - Enter Play with a runtime context mapping; verify Ctrl+Z does
   nothing (Undo is editor-only).
 - Verify the gizmo W/E/R hotkeys still switch modes when the viewport
   is hovered and right-mouse is not held.
+- Verify typing in a text widget suppresses W/E/R and Ctrl+Z.
 
 ### Exit criterion
 
@@ -3001,8 +3290,11 @@ No gameplay-facing code (and no editor camera or shortcut code) reads
 GLFW key or mouse state directly, nor `ImGui::IsKeyPressed` /
 `ImGui::IsMouseClicked` directly. All input consumption goes through
 `IInputService`. The single GLFW-touching code path is
-`InputService::BeginFrame` (and the joystick + window-focus callbacks
-registered in `Initialize`).
+`DesktopInputBackend::CaptureFrame` (which polls `Walnut::Input`,
+`ImGui::GetIO()`, `glfwGetGamepadState`, and
+`glfwGetWindowAttrib(GLFW_FOCUSED)`). No new GLFW callbacks are
+registered. The single `SetCursorMode` call is in
+`InputService::EndFrame`.
 
 ### Explicitly out of scope for this Phase 5 completion slice
 
@@ -3015,9 +3307,14 @@ registered in `Initialize`).
 - Touch input (later backlog).
 - Hot-reload of input mappings while Playing (Phase 5 reloads on next
   Play/Stop cycle; live reload is a future convenience).
-- Rebinding UI (Phase 5 persists mappings and exposes load/save; the
-  interactive rebinding dialog is Phase 7's content-browser era —
-  Phase 5 verification uses JSON editing of the settings file or a
+- Interactive rebinding UI (Phase 5 persists mappings and exposes
+  load/save; the rebinding dialog is Phase 7's content-browser era —
+  Phase 5 verification uses JSON editing of the settings file or the
   test-only `SetMapping` API).
+- GUID-based gamepad persistence ("this controller is always Player
+  1"). Phase 5 uses positional slots only.
 - Multi-viewport input isolation (RT2 has one viewport; multi-viewport
   is a later UI phase).
+- Raw-joystick fallback for non-gamepad controllers. Phase 5 only
+  supports devices with a known GLFW gamepad mapping.
+
