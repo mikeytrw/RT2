@@ -216,6 +216,8 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\EditorCommandHistory.h" />
     <ClInclude Include="src\EditorCommands.h" />
     <ClInclude Include="src\EditorStructuralCommands.h" />
+    <ClInclude Include="src\EditorPropertyCommands.h" />
+    <ClInclude Include="src\PropertyEditSession.h" />
     <ClInclude Include="src\EditorSceneState.h" />
     <ClInclude Include="src\EditorSelection.h" />
     <ClInclude Include="src\EditorSettings.h" />
@@ -338,6 +340,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\EditorStructuralCommands.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\EditorPropertyCommands.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

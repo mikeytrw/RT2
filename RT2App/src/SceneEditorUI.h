@@ -7,10 +7,13 @@
 #include "EditorSceneState.h"
 #include "EditorCommandHistory.h"
 #include "EditorStructuralCommands.h"
+#include "EditorPropertyCommands.h"
+#include "PropertyEditSession.h"
 #include "TransformEditing.h"
 #include "core/UUID.h"
 #include <functional>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 // ============================================================================
@@ -113,9 +116,13 @@ public:
 	{
 		m_State.ResetForDocument();
 		m_SearchBuffer[0] = '\0';
-		m_TransformEditSession.open = false;
-		m_TransformEditSession.target = rt2::core::UUID{};
-		m_TransformEditSession.owningWidgetId = 0;
+		m_TransformSession.Discard();
+		m_NameSession.Discard();
+		m_LightSession.Discard();
+		m_CameraSession.Discard();
+		m_MaterialIndexSession.Discard();
+		m_MaterialPropertiesSession.Discard();
+		m_MotionVelocitySession.Discard();
 	}
 	EditorSelection& Selection() { return m_State.Selection(); }
 	const EditorSelection& Selection() const { return m_State.Selection(); }
@@ -151,12 +158,29 @@ private:
 	void SelectEntity(SceneManager::EntityId entity, bool toggle = false);
 	bool IsSelected(SceneManager::EntityId entity) const;
 
-	// Phase 3A: record-on-release transform edit session helpers.
-	void BeginTransformEditSession(const rt2::core::UUID& target,
-	                               const EditableTRS& beforeLocal);
-	void CloseTransformEditSessionIfOwning(const rt2::core::UUID& target,
-	                                           const EditableTRS& afterLocal);
-	void DiscardTransformEditSession();
+	// Phase 3B2: property command helpers. Each captures the before-state,
+	// applies the per-frame mutation via the manager, records the command
+	// via RecordApplied on close. The state machine (PropertyEditSession)
+	// handles deferred-close ordering and defensive guards.
+	void RecordNameEdit(const rt2::core::UUID& target,
+	                    const std::string& before, const std::string& after);
+	void RecordLightEdit(const rt2::core::UUID& target,
+	                     const LightComponent& before, const LightComponent& after);
+	void RecordCameraEdit(const rt2::core::UUID& target,
+	                      const CameraComponent& before, const CameraComponent& after);
+	void RecordMaterialIndexEdit(const rt2::core::UUID& target,
+	                             int beforeIndex, int afterIndex);
+	void RecordMaterialPropertiesEdit(int slotIndex,
+	                                 const SceneMaterial& before,
+	                                 const SceneMaterial& after);
+	void RecordMotionEdit(const rt2::core::UUID& target,
+	                      const std::optional<MotionComponent>& before,
+	                      const std::optional<MotionComponent>& after);
+	// Capture the current MaterialOverrideComponent state of every imported
+	// entity referencing `slotIndex` (UUID -> override). Used to snapshot
+	// the before-overrides when a material-properties session opens and the
+	// after-overrides when it closes.
+	SetMaterialPropertiesCommand::OverrideList CaptureMaterialOverrideListForSlot(int slotIndex) const;
 	// Hide/Show the current selection as a single SetVisibilityCommand.
 	void HideShowSelectionCommand(bool hide);
 
@@ -216,20 +240,40 @@ private:
 	std::string m_MutationError;
 	char m_SearchBuffer[128]{};
 
-	// Phase 3A: command history (non-owning) and the Inspector's
-	// record-on-release transform edit session.
+	// Phase 3B2: record-on-release property edit sessions. The state
+	// machine (PropertyEditSession<T>) is a pure template; the ImGui glue
+	// (activation/deactivation detection + deferred close after the
+	// mutation block) lives in the Render*Editor functions. Each session
+	// is a single active slot per property kind.
+	using TransformSession = PropertyEditSession<EditableTRS>;
+	using NameSession = PropertyEditSession<std::string>;
+	using LightSession = PropertyEditSession<LightComponent>;
+	using CameraSession = PropertyEditSession<CameraComponent>;
+	using MaterialIndexSession = PropertyEditSession<int>;
+	using MaterialPropertiesSession = PropertyEditSession<SceneMaterial>;
+	using MotionSession = PropertyEditSession<MotionComponent>;
+
 	EditorCommandHistory* m_CommandHistory = nullptr;
 
-	struct TransformEditSession
-	{
-		rt2::core::UUID target;
-		EditableTRS     beforeLocal;
-		bool            open = false;
-		// The ImGui ID of the widget that opened the session. Stored as an
-		// int to avoid depending on ImGui headers here.
-		unsigned int    owningWidgetId = 0;
-	};
-	TransformEditSession m_TransformEditSession;
+	TransformSession             m_TransformSession;
+	NameSession                  m_NameSession;
+	LightSession                 m_LightSession;
+	CameraSession                m_CameraSession;
+	MaterialIndexSession         m_MaterialIndexSession;
+	MaterialPropertiesSession    m_MaterialPropertiesSession;
+	MotionSession                m_MotionVelocitySession;
+	// ImGui widget IDs that opened each multi-widget session (so the
+	// deactivation close only fires for the owning widget). ImGui IDs are
+	// stored as unsigned int to avoid depending on ImGui headers here.
+	unsigned int m_TransformSessionOwningWidgetId = 0;
+	unsigned int m_LightSessionOwningWidgetId = 0;
+	unsigned int m_CameraSessionOwningWidgetId = 0;
+	unsigned int m_MaterialPropertiesSessionOwningWidgetId = 0;
+	// Before-override snapshot captured when the material-properties session
+	// opens. The after-overrides are read live at close time. The session
+	// itself stores the SceneMaterial before/after; this stores the
+	// per-entity override side effect.
+	SetMaterialPropertiesCommand::OverrideList m_PendingMaterialPropertiesBeforeOverrides;
 };
 
 #endif // SCENE_EDITOR_UI_H

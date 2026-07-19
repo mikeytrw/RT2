@@ -18,6 +18,7 @@ const char* Error::CodeName(Code c)
         case InvalidHierarchy:     return "invalid_hierarchy";
         case HierarchyCycle:       return "hierarchy_cycle";
         case InvalidTransform:     return "invalid_transform";
+        case InvalidArgument:      return "invalid_argument";
         case LockedEntity:         return "locked_entity";
         case ClipboardStale:       return "clipboard_stale";
         case InvalidRuntimeState:  return "invalid_runtime_state";

@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <set>
 #include <map>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
@@ -2705,21 +2706,7 @@ void SceneManager::ReconcileStoredCameraDirections()
 void SceneManager::SetMaterial(EntityId entity, int materialIndex)
 {
 	if (!entity.IsValid()) return;
-	auto& reg = m_EcsScene.registry;
-	if (auto* ref = reg.try_get<MeshRef>(entity.id))
-	{
-		ref->materialIndex = materialIndex;
-		// If this is an imported entity, record a durable override so the
-		// assignment survives save/reopen. The override captures the material
-		// value at the assigned index; the resolver re-appends it on reopen
-		// rather than discarding the user's choice in favor of the re-imported
-		// source material.
-		if (reg.all_of<ImportedMeshSourceComponent>(entity.id))
-		{
-			RecordMaterialOverride(entity.id, materialIndex);
-		}
-		NotifyAuthoringChanged();
-	}
+	SetMaterialIndexState(GetEntityUuid(entity), materialIndex);
 }
 
 std::string SceneManager::GetEntityName(EntityId entity) const
@@ -2735,12 +2722,7 @@ std::string SceneManager::GetEntityName(EntityId entity) const
 void SceneManager::SetEntityName(EntityId entity, const std::string& name)
 {
 	if (!entity.IsValid()) return;
-	auto& reg = m_EcsScene.registry;
-	if (auto* nc = reg.try_get<NameComponent>(entity.id))
-		nc->name = name;
-	else
-		reg.emplace<NameComponent>(entity.id, name);
-	NotifyAuthoringChanged();
+	SetEntityNameState(GetEntityUuid(entity), name);
 }
 
 size_t SceneManager::GetEntityCount() const
@@ -2874,28 +2856,29 @@ bool SceneManager::GetLightProperties(EntityId entity, glm::vec3& outColor, floa
 void SceneManager::SetLightProperties(EntityId entity, const glm::vec3& color, float intensity, bool isSpot)
 {
 	if (!entity.IsValid()) return;
-	auto* light = m_EcsScene.registry.try_get<LightComponent>(entity.id);
-	if (!light) return;
-	light->color = color;
-	light->intensity = intensity;
-	light->isSpot = isSpot;
-	NotifyAuthoringChanged();
+	LightComponent value;
+	if (auto* light = m_EcsScene.registry.try_get<LightComponent>(entity.id))
+		value = *light;
+	value.color = color;
+	value.intensity = intensity;
+	value.isSpot = isSpot;
+	SetLightPropertiesState(GetEntityUuid(entity), value);
 }
 
 bool SceneManager::SetCameraProperties(EntityId entity, float verticalFOV,
 	float aperture, float focusDistance)
 {
 	if (!entity.IsValid() || !m_EcsScene.registry.valid(entity.id)) return false;
-	auto* camera = m_EcsScene.registry.try_get<CameraComponent>(entity.id);
-	if (!camera) return false;
-	if (camera->verticalFOV == verticalFOV && camera->aperture == aperture &&
-		camera->focusDistance == focusDistance)
+	CameraComponent value;
+	if (auto* camera = m_EcsScene.registry.try_get<CameraComponent>(entity.id))
+		value = *camera;
+	else
 		return false;
-	camera->verticalFOV = verticalFOV;
-	camera->aperture = aperture;
-	camera->focusDistance = focusDistance;
-	NotifyAuthoringChanged();
-	return true;
+	value.verticalFOV = verticalFOV;
+	value.aperture = aperture;
+	value.focusDistance = focusDistance;
+	const auto result = SetCameraPropertiesState(GetEntityUuid(entity), value);
+	return result.success;
 }
 
 bool SceneManager::GetMeshRef(EntityId entity, uint32_t& outMeshIndex, int& outMaterialIndex) const
@@ -2993,26 +2976,7 @@ SceneMaterial& SceneManager::GetMaterial(int index)
 
 void SceneManager::SetMaterialProperties(int index, const SceneMaterial& props)
 {
-	if (index < 0 || index >= (int)m_EcsScene.materials.size())
-		return;
-	m_EcsScene.materials[index] = props;
-
-	// Propagate the edit into durable MaterialOverrideComponent on every
-	// imported entity whose MeshRef points at this material slot, so saved
-	// material edits survive reopen. Without this, the resolver would
-	// re-import the source material and discard the user's edits.
-	{
-		auto& reg = m_EcsScene.registry;
-		auto view = reg.view<ImportedMeshSourceComponent>();
-		for (auto e : view)
-		{
-			auto* ref = reg.try_get<MeshRef>(e);
-			if (ref && ref->materialIndex == index)
-				RecordMaterialOverride(e, index);
-		}
-	}
-
-	NotifyAuthoringChanged();
+	SetMaterialPropertiesState(index, props);
 }
 
 void SceneManager::RecordMaterialOverride(entt::entity entity, int materialIndex)
@@ -3044,6 +3008,205 @@ void SceneManager::NotifyAuthoringChanged()
 {
 	m_Authoring.metadata.dirty = true;
 	++m_AuthoringRevision;
+}
+
+// ============================================================================
+// Phase 3B2 atomic property state APIs. Each applies the after-value, bumps
+// the revision ONCE, and returns an authoritative EditorMutationResult.
+// Material APIs also capture/restore MaterialOverrideComponent atomically so
+// Undo of an imported-entity material assignment does not leave a stale
+// override that save/reopen would resurrect.
+// ============================================================================
+
+EditorMutationResult SceneManager::SetEntityNameState(const rt2::core::UUID& entity,
+                                                      const std::string& name)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetEntityNameState: entity not present");
+	if (auto* nc = m_EcsScene.registry.try_get<NameComponent>(e))
+		nc->name = name;
+	else
+		m_EcsScene.registry.emplace<NameComponent>(e, name);
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::None;
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
+EditorMutationResult SceneManager::SetLightPropertiesState(const rt2::core::UUID& entity,
+                                                           const LightComponent& value)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetLightPropertiesState: entity not present");
+	auto* light = m_EcsScene.registry.try_get<LightComponent>(e);
+	if (!light)
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetLightPropertiesState: entity has no LightComponent");
+	*light = value;
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::Material; // keep-textures path
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
+EditorMutationResult SceneManager::SetCameraPropertiesState(const rt2::core::UUID& entity,
+                                                            const CameraComponent& value)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetCameraPropertiesState: entity not present");
+	auto* camera = m_EcsScene.registry.try_get<CameraComponent>(e);
+	if (!camera)
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetCameraPropertiesState: entity has no CameraComponent");
+	*camera = value;
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::None;
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
+EditorMutationResult SceneManager::SetMaterialPropertiesState(int slotIndex,
+                                                              const SceneMaterial& value)
+{
+	if (slotIndex < 0 || slotIndex >= (int)m_EcsScene.materials.size())
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+			std::to_string(slotIndex), "SetMaterialPropertiesState: slot index out of range");
+	m_EcsScene.materials[slotIndex] = value;
+
+	// Propagate the edit into durable MaterialOverrideComponent on every
+	// imported entity whose MeshRef points at this material slot, so saved
+	// material edits survive reopen.
+	{
+		auto& reg = m_EcsScene.registry;
+		auto view = reg.view<ImportedMeshSourceComponent>();
+		for (auto e : view)
+		{
+			auto* ref = reg.try_get<MeshRef>(e);
+			if (ref && ref->materialIndex == slotIndex)
+				RecordMaterialOverride(e, slotIndex);
+		}
+	}
+
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::Material;
+	return result;
+}
+
+EditorMutationResult SceneManager::SetMaterialIndexState(const rt2::core::UUID& entity,
+                                                         int afterIndex)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetMaterialIndexState: entity not present");
+	auto* ref = m_EcsScene.registry.try_get<MeshRef>(e);
+	if (!ref)
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetMaterialIndexState: entity has no MeshRef");
+	if (afterIndex < 0 || afterIndex >= (int)m_EcsScene.materials.size())
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+			std::to_string(afterIndex), "SetMaterialIndexState: material index out of range");
+	ref->materialIndex = afterIndex;
+	if (m_EcsScene.registry.all_of<ImportedMeshSourceComponent>(e))
+		RecordMaterialOverride(e, afterIndex);
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::Material;
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
+EditorMutationResult SceneManager::SetMotionState(const rt2::core::UUID& entity,
+                                                  const std::optional<MotionComponent>& value)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetMotionState: entity not present");
+	if (value.has_value())
+		m_EcsScene.registry.emplace_or_replace<MotionComponent>(e, *value);
+	else
+	{
+		if (m_EcsScene.registry.all_of<MotionComponent>(e))
+			m_EcsScene.registry.remove<MotionComponent>(e);
+	}
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::None;
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
+EditorMutationResult SceneManager::SetCameraPoseState(const rt2::core::UUID& entity,
+                                                      const EditableTRS& local,
+                                                      const CameraComponent& props)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetCameraPoseState: entity not present");
+	if (!m_EcsScene.registry.all_of<Transform, CameraComponent>(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetCameraPoseState: entity is not a camera");
+
+	auto& tf = m_EcsScene.registry.get<Transform>(e);
+	tf.translation = local.translation;
+	tf.rotation = glm::normalize(local.rotation);
+	tf.scale = local.scale;
+	SceneGraph::MarkDirty(m_EcsScene.registry, e);
+
+	auto& camera = m_EcsScene.registry.get<CameraComponent>(e);
+	camera = props;
+
+	RefreshCameraForwardDirections({ e });
+	NotifyAuthoringChanged();
+
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::Transform;
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
+std::optional<MaterialOverrideComponent> SceneManager::GetMaterialOverride(
+	const rt2::core::UUID& entity) const
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return std::nullopt;
+	const auto* ov = m_EcsScene.registry.try_get<MaterialOverrideComponent>(e);
+	if (!ov)
+		return std::nullopt;
+	return *ov;
+}
+
+void SceneManager::InstallMaterialOverride(
+	const rt2::core::UUID& entity,
+	const std::optional<MaterialOverrideComponent>& override)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return;
+	if (override.has_value())
+		m_EcsScene.registry.emplace_or_replace<MaterialOverrideComponent>(e, *override);
+	else if (m_EcsScene.registry.all_of<MaterialOverrideComponent>(e))
+		m_EcsScene.registry.remove<MaterialOverrideComponent>(e);
 }
 
 // ============================================================================

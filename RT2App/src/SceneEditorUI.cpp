@@ -5,6 +5,7 @@
 #include "ECSScene.h"
 #include "EditorCommands.h"
 #include "EditorStructuralCommands.h"
+#include "EditorPropertyCommands.h"
 #include "SceneHierarchy.h"
 #include "RTLog.h"
 #include "imgui.h"
@@ -77,7 +78,12 @@ bool SceneEditorUI::MutationSelectionAllowed(std::string& reason) const
 void SceneEditorUI::Undo()
 {
 	if (!m_CommandHistory) return;
-	DiscardTransformEditSession();
+	m_TransformSession.Discard();
+	m_NameSession.Discard();
+	m_LightSession.Discard();
+	m_CameraSession.Discard();
+	m_MaterialIndexSession.Discard();
+	m_MaterialPropertiesSession.Discard();
 	const auto result = m_CommandHistory->Undo(*m_SceneMgr);
 	ApplyMutation(result);
 }
@@ -85,63 +91,130 @@ void SceneEditorUI::Undo()
 void SceneEditorUI::Redo()
 {
 	if (!m_CommandHistory) return;
-	DiscardTransformEditSession();
+	m_TransformSession.Discard();
+	m_NameSession.Discard();
+	m_LightSession.Discard();
+	m_CameraSession.Discard();
+	m_MaterialIndexSession.Discard();
+	m_MaterialPropertiesSession.Discard();
 	const auto result = m_CommandHistory->Redo(*m_SceneMgr);
 	ApplyMutation(result);
 }
 
-void SceneEditorUI::BeginTransformEditSession(const rt2::core::UUID& target,
-                                              const EditableTRS& beforeLocal)
+void SceneEditorUI::RecordNameEdit(const rt2::core::UUID& target,
+                                   const std::string& before, const std::string& after)
 {
-	m_TransformEditSession.target = target;
-	m_TransformEditSession.beforeLocal = beforeLocal;
-	m_TransformEditSession.open = true;
-	m_TransformEditSession.owningWidgetId = ImGui::GetID("");
+	if (!m_CommandHistory) return;
+	auto cmd = MakeSetNameCommandIfEffective(target, before, after);
+	if (!cmd) return;
+	EditorMutationResult applied;
+	applied.success = true;
+	applied.syncImpact = rt2::core::SyncImpact::None;
+	applied.affectedEntities.push_back(target);
+	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
 }
 
-void SceneEditorUI::DiscardTransformEditSession()
+void SceneEditorUI::RecordLightEdit(const rt2::core::UUID& target,
+                                    const LightComponent& before,
+                                    const LightComponent& after)
 {
-	m_TransformEditSession.open = false;
-	m_TransformEditSession.target = rt2::core::UUID{};
-	m_TransformEditSession.owningWidgetId = 0;
+	if (!m_CommandHistory) return;
+	auto cmd = MakeSetLightCommandIfEffective(target, before, after);
+	if (!cmd) return;
+	EditorMutationResult applied;
+	applied.success = true;
+	applied.syncImpact = rt2::core::SyncImpact::Material;
+	applied.affectedEntities.push_back(target);
+	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
 }
 
-void SceneEditorUI::CloseTransformEditSessionIfOwning(const rt2::core::UUID& target,
-                                                      const EditableTRS& afterLocal)
+void SceneEditorUI::RecordCameraEdit(const rt2::core::UUID& target,
+                                     const CameraComponent& before,
+                                     const CameraComponent& after)
 {
-	if (!m_TransformEditSession.open) return;
-	if (!(m_TransformEditSession.target == target)) return;
+	if (!m_CommandHistory) return;
+	auto cmd = MakeSetCameraCommandIfEffective(target, before, after);
+	if (!cmd) return;
+	EditorMutationResult applied;
+	applied.success = true;
+	applied.syncImpact = rt2::core::SyncImpact::None;
+	applied.affectedEntities.push_back(target);
+	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
+}
 
-	// Defensive guards per spec: target no longer the inspected entity,
-	// entity dead, or m_Editable false (Play started mid-drag) -> discard.
-	const auto entity = m_SceneMgr->FindEntityByUuid(target);
-	if (entity == entt::null || !m_Editable)
-	{
-		DiscardTransformEditSession();
-		return;
-	}
+void SceneEditorUI::RecordMaterialIndexEdit(const rt2::core::UUID& target,
+                                            int beforeIndex, int afterIndex)
+{
+	if (!m_CommandHistory) return;
+	const auto beforeOverride = m_SceneMgr->GetMaterialOverride(target);
+	// The after-override is what the manager just recorded via
+	// SetMaterialIndexState's RecordMaterialOverride side effect.
+	const auto afterOverride = m_SceneMgr->GetMaterialOverride(target);
+	auto cmd = MakeSetMaterialIndexCommandIfEffective(target, beforeIndex,
+	                                                  afterIndex, beforeOverride, afterOverride);
+	if (!cmd) return;
+	EditorMutationResult applied;
+	applied.success = true;
+	applied.syncImpact = rt2::core::SyncImpact::Material;
+	applied.affectedEntities.push_back(target);
+	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
+}
 
-	// Record-on-release via RecordApplied. The before/after comparison is
-	// the sole authority (handled inside MakeTransformCommandIfEffective,
-	// which returns null for a no-op).
-	EditableTRS after = afterLocal;
-	if (m_CommandHistory)
+void SceneEditorUI::RecordMaterialPropertiesEdit(int slotIndex,
+                                                 const SceneMaterial& before,
+                                                 const SceneMaterial& after)
+{
+	if (!m_CommandHistory) return;
+	// Capture the after-overrides of all imported entities referencing the
+	// slot now (SetMaterialPropertiesState already re-derived them). The
+	// before-overrides were captured at activation time and stored in the
+	// session... but the session stores SceneMaterial, not the override
+	// list. We capture before-overrides at activation time and stash them
+	// in a member that's not the session. For simplicity here, capture
+	// before-overrides at activation by reading them live — we do that in
+	// RenderMaterialEditor via a separate before-override cache.
+	auto cmd = MakeSetMaterialPropertiesCommandIfEffective(slotIndex, before, after,
+		m_PendingMaterialPropertiesBeforeOverrides, CaptureMaterialOverrideListForSlot(slotIndex));
+	if (!cmd) return;
+	EditorMutationResult applied;
+	applied.success = true;
+	applied.syncImpact = rt2::core::SyncImpact::Material;
+	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
+}
+
+void SceneEditorUI::RecordMotionEdit(const rt2::core::UUID& target,
+                                     const std::optional<MotionComponent>& before,
+                                     const std::optional<MotionComponent>& after)
+{
+	if (!m_CommandHistory) return;
+	auto cmd = MakeSetMotionCommandIfEffective(target, before, after);
+	if (!cmd) return;
+	EditorMutationResult applied;
+	applied.success = true;
+	applied.syncImpact = rt2::core::SyncImpact::None;
+	applied.affectedEntities.push_back(target);
+	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
+}
+
+SetMaterialPropertiesCommand::OverrideList
+SceneEditorUI::CaptureMaterialOverrideListForSlot(int slotIndex) const
+{
+	SetMaterialPropertiesCommand::OverrideList result;
+	if (!m_SceneMgr) return result;
+	const auto& reg = m_SceneMgr->GetECS().registry;
+	auto view = reg.view<ImportedMeshSourceComponent>();
+	for (auto e : view)
 	{
-		auto cmd = MakeTransformCommandIfEffective(target,
-			m_TransformEditSession.beforeLocal, after);
-		if (cmd)
-		{
-			// The mutation was already applied incrementally by the
-			// per-frame SetLocalTransform/TrySetWorldTransform. Record it
-			// without re-applying.
-			EditorMutationResult applied;
-			applied.success = true;
-			applied.syncImpact = rt2::core::SyncImpact::Transform;
-			applied.affectedEntities.push_back(target);
-			m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
-		}
+		if (!reg.valid(e)) continue;
+		const auto* ref = reg.try_get<MeshRef>(e);
+		if (!ref || ref->materialIndex != slotIndex) continue;
+		const auto* ov = reg.try_get<MaterialOverrideComponent>(e);
+		if (!ov) continue;
+		const auto* idc = reg.try_get<EntityIdComponent>(e);
+		if (!idc) continue;
+		result.emplace_back(idc->id, *ov);
 	}
-	DiscardTransformEditSession();
+	return result;
 }
 
 void SceneEditorUI::HideShowSelectionCommand(bool hide)
@@ -833,23 +906,27 @@ void SceneEditorUI::RenderInspector()
 
 	auto entity = selectedEntity;
 	std::string name = m_SceneMgr->GetEntityName(entity);
+	const auto targetUuid = m_SceneMgr->GetEntityUuid(entity);
 	const bool directlyLocked = m_State.IsLocked(m_SceneMgr->GetEntityUuid(entity));
 	if (directlyLocked)
 		ImGui::TextDisabled("Directly locked in the editor");
 	ImGui::BeginDisabled(directlyLocked);
 
-	// Name field
+	// Name field — records on Enter/commit only (not per keystroke).
 	char nameBuf[128];
 	snprintf(nameBuf, sizeof(nameBuf), "%s", name.c_str());
 	ImGui::Text("Name:");
 	ImGui::SameLine();
 	ImGui::SetNextItemWidth(200.0f);
 	ImGui::BeginDisabled(!m_Editable);
+	const bool nameActivated = ImGui::IsItemActivated();
 	if (ImGui::InputText("##EntityName", nameBuf, sizeof(nameBuf), ImGuiInputTextFlags_EnterReturnsTrue))
 	{
 		m_SceneMgr->SetEntityName(entity, nameBuf);
+		RecordNameEdit(targetUuid, name, std::string(nameBuf));
 	}
 	ImGui::EndDisabled();
+	(void)nameActivated;
 	ImGui::Separator();
 
 	RenderTransformEditor(entity);
@@ -876,14 +953,43 @@ void SceneEditorUI::RenderInspector()
 				ImGui::Text("Motion");
 				auto& mc = reg.get<MotionComponent>(entity.id);
 				ImGui::BeginDisabled(!m_Editable);
-				ImGui::DragFloat3("Linear Velocity", &mc.linearVelocity[0], 0.1f);
+				glm::vec3 vel = mc.linearVelocity;
+				if (ImGui::DragFloat3("Linear Velocity", &vel[0], 0.1f))
+				{
+					mc.linearVelocity = vel;
+					m_MotionVelocitySession.OnEditCommitted();
+				}
+				if (ImGui::IsItemActivated() && !m_MotionVelocitySession.IsOpen() && m_Editable)
+				{
+					m_MotionVelocitySession.OnActivated(targetUuid, mc);
+				}
+				bool motionPendingClose = false;
+				if (ImGui::IsItemDeactivatedAfterEdit() && m_MotionVelocitySession.IsOpen())
+					motionPendingClose = true;
+				else if (ImGui::IsItemDeactivated() && m_MotionVelocitySession.IsOpen())
+					m_MotionVelocitySession.OnCancelled();
 				ImGui::EndDisabled();
+
+				if (motionPendingClose)
+				{
+					auto rec = m_MotionVelocitySession.CloseDeferred(mc,
+						{ [this, targetUuid]() {
+							return m_SceneMgr->FindEntityByUuid(targetUuid) != entt::null && m_Editable;
+						} });
+					if (rec)
+					{
+						m_SceneMgr->SetMotionState(targetUuid, rec->after);
+						RecordMotionEdit(targetUuid, rec->before, rec->after);
+					}
+				}
+
 				ImGui::SameLine();
 				ImGui::BeginDisabled(!m_Editable);
 				if (ImGui::Button("Remove Motion"))
 				{
-					reg.remove<MotionComponent>(entity.id);
-					NotifySceneChanged();
+					MotionComponent before = mc;
+					m_SceneMgr->SetMotionState(targetUuid, std::nullopt);
+					RecordMotionEdit(targetUuid, before, std::nullopt);
 				}
 				ImGui::EndDisabled();
 			}
@@ -892,8 +998,9 @@ void SceneEditorUI::RenderInspector()
 				ImGui::BeginDisabled(!m_Editable);
 				if (ImGui::Button("Add Motion"))
 				{
-					reg.emplace<MotionComponent>(entity.id, MotionComponent{});
-					NotifySceneChanged();
+					MotionComponent after{};
+					m_SceneMgr->SetMotionState(targetUuid, after);
+					RecordMotionEdit(targetUuid, std::nullopt, after);
 				}
 				ImGui::EndDisabled();
 			}
@@ -948,26 +1055,29 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	}
 	ImGui::BeginDisabled(!m_Editable);
 
-	// Phase 3A: record-on-release transform edit session. Per-widget
-	// IsItemActivated/IsItemDeactivatedAfterEdit checks immediately after
-	// EACH of the three DragFloat3s (ImGui's last-item rule). The first
-	// activation while no session is open captures beforeLocal BEFORE any
-	// mutation that frame and opens the session, owned by that widget. The
-	// owning widget's IsItemDeactivatedAfterEdit closes the session and
-	// records via RecordApplied. IsItemDeactivated without AfterEdit
-	// (Escape cancel — ImGui reverts the value itself) discards the session
-	// and records nothing.
+	// Phase 3B2: record-on-release via PropertyEditSession<EditableTRS>.
+	// Per-widget IsItemActivated/IsItemDeactivatedAfterEdit checks
+	// immediately after EACH of the three DragFloat3s (ImGui's last-item
+	// rule). The first activation while no session is open captures
+	// beforeLocal BEFORE any mutation that frame and opens the session,
+	// owned by that widget's ImGui ID (tracked locally). The owning
+	// widget's IsItemDeactivatedAfterEdit closes the session and records
+	// via RecordApplied. IsItemDeactivated without AfterEdit (Escape
+	// cancel — ImGui reverts the value itself) discards the session and
+	// records nothing.
 	//
 	// The close is deferred until AFTER the mutation block below: a
 	// keyboard-committed edit (Ctrl+click, type, Enter) fires both
-	// changed==true and IsItemDeactivatedAfterEdit() on the same frame, and
-	// the after-state must be read AFTER SetLocalTransform/TrySetWorldTransform
-	// has applied the committed value. Mouse-drag releases carry no value
-	// change on the release frame, so deferring is safe for them too.
+	// changed==true and IsItemDeactivatedAfterEdit() on the same frame,
+	// and the after-state must be read AFTER SetLocalTransform/
+	// TrySetWorldTransform has applied the committed value. Mouse-drag
+	// releases carry no value change on the release frame, so deferring
+	// is safe for them too.
 	EditableTRS beforeLocalCapture;
 	bool hasLocalForCapture = m_SceneMgr->GetLocalTransform(entity, beforeLocalCapture);
-	const unsigned int owningWidgetId = m_TransformEditSession.open
-		? m_TransformEditSession.owningWidgetId : 0;
+	unsigned int owningWidgetId = 0;
+	if (m_TransformSession.IsOpen())
+		owningWidgetId = m_TransformSessionOwningWidgetId;
 	unsigned int pendingCloseWidgetId = 0;
 
 	ImGui::SetNextItemWidth(180.0f);
@@ -979,26 +1089,29 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	const unsigned int posWidgetId = ImGui::GetID("Position");
 	if (ImGui::IsItemActivated())
 	{
-		if (!m_TransformEditSession.open && hasLocalForCapture && m_Editable)
+		if (!m_TransformSession.IsOpen() && hasLocalForCapture && m_Editable)
 		{
-			BeginTransformEditSession(targetUuid, beforeLocalCapture);
-			m_TransformEditSession.owningWidgetId = posWidgetId;
+			m_TransformSession.OnActivated(targetUuid, beforeLocalCapture);
+			m_TransformSessionOwningWidgetId = posWidgetId;
+			owningWidgetId = posWidgetId;
 		}
 	}
+	if (changed && m_TransformSession.IsOpen())
+		m_TransformSession.OnEditCommitted();
 	if (ImGui::IsItemDeactivatedAfterEdit())
 	{
-		if (m_TransformEditSession.open && owningWidgetId == posWidgetId)
+		if (m_TransformSession.IsOpen() && owningWidgetId == posWidgetId)
 			pendingCloseWidgetId = posWidgetId;
 	}
-	else if (ImGui::IsItemDeactivated() && m_TransformEditSession.open &&
+	else if (ImGui::IsItemDeactivated() && m_TransformSession.IsOpen() &&
 	         owningWidgetId == posWidgetId)
 	{
-		// Escape cancel: ImGui reverted the value; discard the session.
-		DiscardTransformEditSession();
+		m_TransformSession.OnCancelled();
 	}
 
 	ImGui::SetNextItemWidth(180.0f);
-	if (ImGui::DragFloat3("Rotation", &rot[0], 1.0f))
+	const bool rotChangedThis = ImGui::DragFloat3("Rotation", &rot[0], 1.0f);
+	if (rotChangedThis)
 	{
 		if (m_TransformSnap.enabled) rot = SnapValues(rot, m_TransformSnap.rotationDegrees);
 		changed = true;
@@ -1006,25 +1119,29 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	const unsigned int rotWidgetId = ImGui::GetID("Rotation");
 	if (ImGui::IsItemActivated())
 	{
-		if (!m_TransformEditSession.open && hasLocalForCapture && m_Editable)
+		if (!m_TransformSession.IsOpen() && hasLocalForCapture && m_Editable)
 		{
-			BeginTransformEditSession(targetUuid, beforeLocalCapture);
-			m_TransformEditSession.owningWidgetId = rotWidgetId;
+			m_TransformSession.OnActivated(targetUuid, beforeLocalCapture);
+			m_TransformSessionOwningWidgetId = rotWidgetId;
+			owningWidgetId = rotWidgetId;
 		}
 	}
+	if (rotChangedThis && m_TransformSession.IsOpen())
+		m_TransformSession.OnEditCommitted();
 	if (ImGui::IsItemDeactivatedAfterEdit())
 	{
-		if (m_TransformEditSession.open && owningWidgetId == rotWidgetId)
+		if (m_TransformSession.IsOpen() && owningWidgetId == rotWidgetId)
 			pendingCloseWidgetId = rotWidgetId;
 	}
-	else if (ImGui::IsItemDeactivated() && m_TransformEditSession.open &&
+	else if (ImGui::IsItemDeactivated() && m_TransformSession.IsOpen() &&
 	         owningWidgetId == rotWidgetId)
 	{
-		DiscardTransformEditSession();
+		m_TransformSession.OnCancelled();
 	}
 
 	ImGui::SetNextItemWidth(180.0f);
-	if (ImGui::DragFloat3("Scale", &scale[0], 0.05f))
+	const bool scaleChangedThis = ImGui::DragFloat3("Scale", &scale[0], 0.05f);
+	if (scaleChangedThis)
 	{
 		if (m_TransformSnap.enabled) scale = SnapValues(scale, m_TransformSnap.scale);
 		changed = true;
@@ -1032,21 +1149,24 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	const unsigned int scaleWidgetId = ImGui::GetID("Scale");
 	if (ImGui::IsItemActivated())
 	{
-		if (!m_TransformEditSession.open && hasLocalForCapture && m_Editable)
+		if (!m_TransformSession.IsOpen() && hasLocalForCapture && m_Editable)
 		{
-			BeginTransformEditSession(targetUuid, beforeLocalCapture);
-			m_TransformEditSession.owningWidgetId = scaleWidgetId;
+			m_TransformSession.OnActivated(targetUuid, beforeLocalCapture);
+			m_TransformSessionOwningWidgetId = scaleWidgetId;
+			owningWidgetId = scaleWidgetId;
 		}
 	}
+	if (scaleChangedThis && m_TransformSession.IsOpen())
+		m_TransformSession.OnEditCommitted();
 	if (ImGui::IsItemDeactivatedAfterEdit())
 	{
-		if (m_TransformEditSession.open && owningWidgetId == scaleWidgetId)
+		if (m_TransformSession.IsOpen() && owningWidgetId == scaleWidgetId)
 			pendingCloseWidgetId = scaleWidgetId;
 	}
-	else if (ImGui::IsItemDeactivated() && m_TransformEditSession.open &&
+	else if (ImGui::IsItemDeactivated() && m_TransformSession.IsOpen() &&
 	         owningWidgetId == scaleWidgetId)
 	{
-		DiscardTransformEditSession();
+		m_TransformSession.OnCancelled();
 	}
 
 	ImGui::EndDisabled();
@@ -1075,12 +1195,30 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	// Close the session AFTER the mutation block so the recorded after-state
 	// reflects the committed value (keyboard-committed edits fire both
 	// changed==true and IsItemDeactivatedAfterEdit() on the same frame).
-	if (pendingCloseWidgetId != 0 && m_TransformEditSession.open &&
-	    m_TransformEditSession.owningWidgetId == pendingCloseWidgetId)
+	if (pendingCloseWidgetId != 0 && m_TransformSession.IsOpen() &&
+	    m_TransformSessionOwningWidgetId == pendingCloseWidgetId)
 	{
 		EditableTRS afterLocal;
 		if (m_SceneMgr->GetLocalTransform(entity, afterLocal))
-			CloseTransformEditSessionIfOwning(targetUuid, afterLocal);
+		{
+			auto rec = m_TransformSession.CloseDeferred(afterLocal,
+				{ [this, targetUuid]() {
+					return m_SceneMgr->FindEntityByUuid(targetUuid) != entt::null && m_Editable;
+				} });
+			if (rec && m_CommandHistory)
+			{
+				auto cmd = MakeTransformCommandIfEffective(targetUuid,
+					rec->before, rec->after);
+				if (cmd)
+				{
+					EditorMutationResult appliedResult;
+					appliedResult.success = true;
+					appliedResult.syncImpact = rt2::core::SyncImpact::Transform;
+					appliedResult.affectedEntities.push_back(targetUuid);
+					m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, appliedResult);
+				}
+			}
+		}
 	}
 	if (!m_TransformEditError.empty())
 		ImGui::TextWrapped("%s", m_TransformEditError.c_str());
@@ -1097,12 +1235,16 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 		return;
 
 	ImGui::Text("Mesh Index: %u", meshIdx);
+	const auto targetUuid = m_SceneMgr->GetEntityUuid(entity);
 
 	ImGui::BeginDisabled(!m_Editable);
-	// Material index combo
+	// Material index combo — record-on-release via a discrete commit
+	// (Combo returns true only on selection change, so one record per
+	// selection is natural).
 	const auto& materials = m_SceneMgr->GetMaterials();
 	int current = matIdx;
 	ImGui::SetNextItemWidth(180.0f);
+	bool indexChanged = false;
 	if (ImGui::Combo("Material", &current, [](void* data, int idx, const char** out_text) -> bool {
 		auto* mats = static_cast<const std::vector<SceneMaterial>*>(data);
 		if (idx < 0 || idx >= (int)mats->size()) return false;
@@ -1112,51 +1254,130 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 		return true;
 	}, (void*)&materials, (int)materials.size()))
 	{
-		m_SceneMgr->SetMaterial(entity, current);
-		NotifySceneChanged();
+		indexChanged = true;
 	}
 
 	ImGui::SameLine();
+	bool duplicatePressed = false;
 	if (ImGui::Button("Duplicate"))
 	{
-		// Clone current material so this entity gets its own independent copy
+		// Clone current material so this entity gets its own independent copy.
+		// AddMaterial creates a new slot outside the command (orphaned until
+		// history-clear compaction — consistent with the 3B1 leak-until-clear
+		// policy). The SetMaterialIndexCommand records the index change.
 		if (current >= 0 && current < (int)materials.size())
 		{
 			SceneMaterial copy = m_SceneMgr->GetMaterial(current);
 			int newIdx = m_SceneMgr->AddMaterial(copy);
-			m_SceneMgr->SetMaterial(entity, newIdx);
-			NotifySceneChanged();
+			current = newIdx;
+			indexChanged = true;
+			duplicatePressed = true;
 		}
+	}
+
+	if (indexChanged)
+	{
+		const int beforeIndex = matIdx;
+		m_SceneMgr->SetMaterial(entity, current);
+		RecordMaterialIndexEdit(targetUuid, beforeIndex, current);
+		if (duplicatePressed)
+			NotifySceneChanged();
+		else
+			NotifySceneChanged();
 	}
 
 	// Inline material editor (edits the material that this entity references).
 	// Edits go through SetMaterialProperties so dirty tracking, the correct
 	// GPU sync path, and durable MaterialOverrideComponent recording on
-	// imported entities all fire.
+	// imported entities all fire. Record-on-release via the state machine
+	// (PropertyEditSession<SceneMaterial>) with per-widget activation
+	// tracking (ImGui's last-item rule requires checking IsItemActivated/
+	// IsItemDeactivatedAfterEdit immediately after each widget).
 	if (current >= 0 && current < (int)materials.size())
 	{
 		SceneMaterial mat = m_SceneMgr->GetMaterial(current);
 		bool matChanged = false;
 
-		ImGui::Indent();
-		if (ImGui::ColorEdit3("Base Color", &mat.baseColor[0]))
-			matChanged = true;
-		if (ImGui::DragFloat("Metallic", &mat.metallic, 0.01f, 0.0f, 1.0f, "%.2f"))
-			matChanged = true;
-		if (ImGui::DragFloat("Roughness", &mat.roughness, 0.01f, 0.0f, 1.0f, "%.2f"))
-			matChanged = true;
-		if (ImGui::DragFloat("IOR", &mat.ior, 0.01f, 1.0f, 3.0f, "%.2f"))
-			matChanged = true;
-		if (ImGui::ColorEdit3("Emissive", &mat.emissiveColor[0]))
-			matChanged = true;
-		if (ImGui::DragFloat("Emissive Intensity", &mat.emissiveIntensity, 0.1f, 0.0f, 100.0f, "%.1f"))
-			matChanged = true;
-		ImGui::Unindent();
+		unsigned int owningWidgetId = m_MaterialPropertiesSession.IsOpen()
+			? m_MaterialPropertiesSessionOwningWidgetId : 0;
+		unsigned int pendingCloseWidgetId = 0;
+		SceneMaterial beforeMatCapture = mat;
+
+		auto drawMaterialWidget = [&](const char* label, auto drawFn) -> unsigned int {
+			ImGui::Indent();
+			bool w = drawFn();
+			ImGui::Unindent();
+			if (w) matChanged = true;
+			const unsigned int widgetId = ImGui::GetID(label);
+			if (ImGui::IsItemActivated())
+			{
+				if (!m_MaterialPropertiesSession.IsOpen() && m_Editable)
+				{
+					m_MaterialPropertiesSession.OnActivated(targetUuid, beforeMatCapture);
+					m_PendingMaterialPropertiesBeforeOverrides = CaptureMaterialOverrideListForSlot(current);
+					m_MaterialPropertiesSessionOwningWidgetId = widgetId;
+					owningWidgetId = widgetId;
+				}
+			}
+			if (w && m_MaterialPropertiesSession.IsOpen())
+				m_MaterialPropertiesSession.OnEditCommitted();
+			if (ImGui::IsItemDeactivatedAfterEdit())
+			{
+				if (m_MaterialPropertiesSession.IsOpen() && owningWidgetId == widgetId)
+					pendingCloseWidgetId = widgetId;
+			}
+			else if (ImGui::IsItemDeactivated() && m_MaterialPropertiesSession.IsOpen() &&
+			         owningWidgetId == widgetId)
+			{
+				m_MaterialPropertiesSession.OnCancelled();
+			}
+			return widgetId;
+		};
+
+		drawMaterialWidget("Base Color", [&]() {
+			return ImGui::ColorEdit3("Base Color", &mat.baseColor[0]);
+		});
+		drawMaterialWidget("Metallic", [&]() {
+			return ImGui::DragFloat("Metallic", &mat.metallic, 0.01f, 0.0f, 1.0f, "%.2f");
+		});
+		drawMaterialWidget("Roughness", [&]() {
+			return ImGui::DragFloat("Roughness", &mat.roughness, 0.01f, 0.0f, 1.0f, "%.2f");
+		});
+		drawMaterialWidget("IOR", [&]() {
+			return ImGui::DragFloat("IOR", &mat.ior, 0.01f, 1.0f, 3.0f, "%.2f");
+		});
+		drawMaterialWidget("Emissive", [&]() {
+			return ImGui::ColorEdit3("Emissive", &mat.emissiveColor[0]);
+		});
+		drawMaterialWidget("Emissive Intensity", [&]() {
+			return ImGui::DragFloat("Emissive Intensity", &mat.emissiveIntensity, 0.1f, 0.0f, 100.0f, "%.1f");
+		});
 
 		if (matChanged)
 		{
 			m_SceneMgr->SetMaterialProperties(current, mat);
 			NotifySceneChanged();
+		}
+
+		// Deferred close AFTER the mutation block so the recorded after-state
+		// reflects the committed value.
+		if (pendingCloseWidgetId != 0 && m_MaterialPropertiesSession.IsOpen() &&
+		    m_MaterialPropertiesSessionOwningWidgetId == pendingCloseWidgetId)
+		{
+			SceneMaterial afterMat;
+			if (current >= 0 && current < (int)m_SceneMgr->GetMaterials().size())
+				afterMat = m_SceneMgr->GetMaterial(current);
+			else
+				afterMat = mat;
+			auto rec = m_MaterialPropertiesSession.CloseDeferred(afterMat,
+				{ [this, targetUuid, current]() {
+					if (m_SceneMgr->FindEntityByUuid(targetUuid) == entt::null || !m_Editable)
+						return false;
+					return current >= 0 && current < (int)m_SceneMgr->GetMaterials().size();
+				} });
+			if (rec)
+				RecordMaterialPropertiesEdit(current, rec->before, rec->after);
+			m_PendingMaterialPropertiesBeforeOverrides.clear();
 		}
 	}
 	ImGui::EndDisabled();
@@ -1172,15 +1393,62 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 	if (!m_SceneMgr->GetLightProperties(entity, color, intensity, isSpot))
 		return;
 
+	const auto targetUuid = m_SceneMgr->GetEntityUuid(entity);
+
+	// Read the full LightComponent for the session (the Inspector only
+	// exposes color/intensity/isSpot, but the command stores the full
+	// struct for forward compatibility).
+	auto& reg = const_cast<entt::registry&>(m_SceneMgr->GetECS().registry);
+	LightComponent beforeLight;
+	if (auto* lc = reg.try_get<LightComponent>(entity.id))
+		beforeLight = *lc;
+
 	bool changed = false;
 	ImGui::PushID("Light");
 	ImGui::BeginDisabled(!m_Editable);
-	if (ImGui::ColorEdit3("Color", &color[0]))
-		changed = true;
-	if (ImGui::DragFloat("Intensity", &intensity, 0.1f, 0.0f, 1000.0f, "%.1f"))
-		changed = true;
-	if (ImGui::Checkbox("Spot", &isSpot))
-		changed = true;
+
+	unsigned int owningWidgetId = m_LightSession.IsOpen()
+		? m_LightSessionOwningWidgetId : 0;
+	unsigned int pendingCloseWidgetId = 0;
+
+	auto drawLightWidget = [&](const char* label, auto drawFn) -> unsigned int {
+		bool w = drawFn();
+		if (w) changed = true;
+		const unsigned int widgetId = ImGui::GetID(label);
+		if (ImGui::IsItemActivated())
+		{
+			if (!m_LightSession.IsOpen() && m_Editable)
+			{
+				m_LightSession.OnActivated(targetUuid, beforeLight);
+				m_LightSessionOwningWidgetId = widgetId;
+				owningWidgetId = widgetId;
+			}
+		}
+		if (w && m_LightSession.IsOpen())
+			m_LightSession.OnEditCommitted();
+		if (ImGui::IsItemDeactivatedAfterEdit())
+		{
+			if (m_LightSession.IsOpen() && owningWidgetId == widgetId)
+				pendingCloseWidgetId = widgetId;
+		}
+		else if (ImGui::IsItemDeactivated() && m_LightSession.IsOpen() &&
+		         owningWidgetId == widgetId)
+		{
+			m_LightSession.OnCancelled();
+		}
+		return widgetId;
+	};
+
+	drawLightWidget("Color", [&]() {
+		return ImGui::ColorEdit3("Color", &color[0]);
+	});
+	drawLightWidget("Intensity", [&]() {
+		return ImGui::DragFloat("Intensity", &intensity, 0.1f, 0.0f, 1000.0f, "%.1f");
+	});
+	drawLightWidget("Spot", [&]() {
+		return ImGui::Checkbox("Spot", &isSpot);
+	});
+
 	ImGui::EndDisabled();
 	ImGui::PopID();
 
@@ -1189,32 +1457,113 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 		m_SceneMgr->SetLightProperties(entity, color, intensity, isSpot);
 		NotifySceneChanged();
 	}
+
+	// Deferred close AFTER the mutation block.
+	if (pendingCloseWidgetId != 0 && m_LightSession.IsOpen() &&
+	    m_LightSessionOwningWidgetId == pendingCloseWidgetId)
+	{
+		LightComponent afterLight;
+		if (auto* lc = reg.try_get<LightComponent>(entity.id))
+			afterLight = *lc;
+		auto rec = m_LightSession.CloseDeferred(afterLight,
+			{ [this, targetUuid]() {
+				return m_SceneMgr->FindEntityByUuid(targetUuid) != entt::null && m_Editable;
+			} });
+		if (rec)
+			RecordLightEdit(targetUuid, rec->before, rec->after);
+	}
 }
 
 void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 {
 	ImGui::Text("Camera");
 
-	// Access camera component through SceneManager's ECS
 	auto& reg = const_cast<entt::registry&>(m_SceneMgr->GetECS().registry);
 	if (!reg.valid(entity.id)) return;
 	auto* cam = reg.try_get<CameraComponent>(entity.id);
 	if (!cam) return;
 
+	const auto targetUuid = m_SceneMgr->GetEntityUuid(entity);
+	CameraComponent beforeCamera = *cam;
+
 	float verticalFOV = cam->verticalFOV;
 	float aperture = cam->aperture;
 	float focusDistance = cam->focusDistance;
 	ImGui::BeginDisabled(!m_Editable);
-	bool changed = ImGui::DragFloat("FOV", &verticalFOV, 1.0f, 10.0f, 170.0f, "%.1f");
-	changed |= ImGui::DragFloat("Aperture", &aperture, 0.001f, 0.0f, 5.0f, "%.3f");
-	changed |= ImGui::DragFloat("Focus Distance", &focusDistance, 0.1f, 0.1f, 1000.0f, "%.1f");
+
+	unsigned int owningWidgetId = m_CameraSession.IsOpen()
+		? m_CameraSessionOwningWidgetId : 0;
+	unsigned int pendingCloseWidgetId = 0;
+
+	auto drawCameraWidget = [&](const char* label, auto drawFn) -> unsigned int {
+		bool w = drawFn();
+		const unsigned int widgetId = ImGui::GetID(label);
+		if (ImGui::IsItemActivated())
+		{
+			if (!m_CameraSession.IsOpen() && m_Editable)
+			{
+				m_CameraSession.OnActivated(targetUuid, beforeCamera);
+				m_CameraSessionOwningWidgetId = widgetId;
+				owningWidgetId = widgetId;
+			}
+		}
+		if (w && m_CameraSession.IsOpen())
+			m_CameraSession.OnEditCommitted();
+		if (ImGui::IsItemDeactivatedAfterEdit())
+		{
+			if (m_CameraSession.IsOpen() && owningWidgetId == widgetId)
+				pendingCloseWidgetId = widgetId;
+		}
+		else if (ImGui::IsItemDeactivated() && m_CameraSession.IsOpen() &&
+		         owningWidgetId == widgetId)
+		{
+			m_CameraSession.OnCancelled();
+		}
+		return widgetId;
+	};
+
+	drawCameraWidget("FOV", [&]() {
+		return ImGui::DragFloat("FOV", &verticalFOV, 1.0f, 10.0f, 170.0f, "%.1f");
+	});
+	drawCameraWidget("Aperture", [&]() {
+		return ImGui::DragFloat("Aperture", &aperture, 0.001f, 0.0f, 5.0f, "%.3f");
+	});
+	drawCameraWidget("Focus Distance", [&]() {
+		return ImGui::DragFloat("Focus Distance", &focusDistance, 0.1f, 0.1f, 1000.0f, "%.1f");
+	});
+
+	const bool viewPressed = ImGui::Button("View Through Camera");
+	ImGui::SameLine();
+	const bool alignPressed = ImGui::Button("Align Camera to View");
+
+	ImGui::EndDisabled();
+
+	bool changed = false;
+	if (cam->verticalFOV != verticalFOV || cam->aperture != aperture ||
+	    cam->focusDistance != focusDistance)
+	{
+		changed = true;
+	}
 	if (changed)
 		m_SceneMgr->SetCameraProperties(entity, verticalFOV, aperture, focusDistance);
-	const auto uuid = m_SceneMgr->GetEntityUuid(entity);
-	if (ImGui::Button("View Through Camera") && m_OnViewThroughCamera)
-		m_OnViewThroughCamera(uuid);
-	ImGui::SameLine();
-	if (ImGui::Button("Align Camera to View") && m_OnAlignCameraToView)
-		m_OnAlignCameraToView(uuid);
-	ImGui::EndDisabled();
+
+	if (viewPressed && m_OnViewThroughCamera)
+		m_OnViewThroughCamera(targetUuid);
+	if (alignPressed && m_OnAlignCameraToView)
+		m_OnAlignCameraToView(targetUuid);
+
+	// Deferred close AFTER the mutation block.
+	if (pendingCloseWidgetId != 0 && m_CameraSession.IsOpen() &&
+	    m_CameraSessionOwningWidgetId == pendingCloseWidgetId)
+	{
+		CameraComponent afterCamera;
+		if (auto* lc = reg.try_get<CameraComponent>(entity.id))
+			afterCamera = *lc;
+		auto rec = m_CameraSession.CloseDeferred(afterCamera,
+			{ [this, targetUuid]() {
+				return m_SceneMgr->FindEntityByUuid(targetUuid) != entt::null && m_Editable;
+			} });
+		if (rec)
+			RecordCameraEdit(targetUuid, rec->before, rec->after);
+	}
 }

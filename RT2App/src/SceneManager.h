@@ -392,6 +392,63 @@ struct EditorCameraPose;
 	// correct sync path are invoked.
 	void SetMaterialProperties(int index, const SceneMaterial& props);
 
+	// ---- Phase 3B2 atomic property state APIs ----
+	//
+	// Each applies the after-value, captures/restore side effects
+	// (MaterialOverrideComponent on imported entities for the material
+	// APIs), bumps the revision ONCE, and returns an authoritative
+	// EditorMutationResult. Sync impact is set authoritatively:
+	//   - Name / Camera-props / Motion: None
+	//   - Light-props / Material-index / Material-props: Material
+	//   - Camera-pose (composite local TRS + camera props): Transform
+	//
+	// The existing void-returning property APIs delegate to these so there
+	// is one implementation; they remain for non-command paths
+	// (RT2SliceRunner, host-driven non-undoable flows).
+	//
+	// Signatures are after-value-only, consistent with the 3A property
+	// command precedent (SetLocalTransformStates, SetVisibilityStates).
+	// Before-state lives in the command alone.
+	EditorMutationResult SetEntityNameState(const rt2::core::UUID& entity,
+	                                        const std::string& name);
+	EditorMutationResult SetLightPropertiesState(const rt2::core::UUID& entity,
+	                                             const LightComponent& value);
+	EditorMutationResult SetCameraPropertiesState(const rt2::core::UUID& entity,
+	                                              const CameraComponent& value);
+	EditorMutationResult SetMaterialPropertiesState(int slotIndex,
+	                                                const SceneMaterial& value);
+	EditorMutationResult SetMaterialIndexState(const rt2::core::UUID& entity,
+	                                           int afterIndex);
+	EditorMutationResult SetMotionState(const rt2::core::UUID& entity,
+	                                    const std::optional<MotionComponent>& value);
+	EditorMutationResult SetCameraPoseState(const rt2::core::UUID& entity,
+	                                        const EditableTRS& local,
+	                                        const CameraComponent& props);
+
+	// ---- Phase 3B2 MaterialOverrideComponent capture/restore helpers ----
+	//
+	// The material commands (SetMaterialIndex, SetMaterialProperties) must
+	// capture and restore durable MaterialOverrideComponent state atomically
+	// with the index/material-value edit, so Undo of an imported-entity
+	// material assignment does not leave a stale override that save/reopen
+	// would resurrect. The command stores before/after override snapshots
+	// (std::optional<MaterialOverrideComponent>; nullopt = absent) and uses
+	// these helpers.
+	//
+	// GetMaterialOverride returns the current override or nullopt if the
+	// entity has no MaterialOverrideComponent (or does not exist).
+	//
+	// InstallMaterialOverride installs the supplied override verbatim (no
+	// re-derivation from source) when has_value, or removes the component
+	// when nullopt. Does NOT bump the revision or notify — pair with a
+	// state-API call that does. Safe to call on a non-imported entity (the
+	// component is still installed/removed as requested).
+	std::optional<MaterialOverrideComponent> GetMaterialOverride(
+		const rt2::core::UUID& entity) const;
+	void InstallMaterialOverride(
+		const rt2::core::UUID& entity,
+		const std::optional<MaterialOverrideComponent>& override);
+
 	// ---- Dirty tracking ----
 	bool IsDirty() const { return m_Authoring.metadata.dirty; }
 	void MarkDirty()

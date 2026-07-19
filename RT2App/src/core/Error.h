@@ -38,6 +38,7 @@ struct Error
         InvalidHierarchy,
         HierarchyCycle,
         InvalidTransform,
+        InvalidArgument,
         LockedEntity,
         ClipboardStale,
         // Runtime

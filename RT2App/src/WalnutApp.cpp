@@ -30,6 +30,7 @@
 #include "EditorCommandHistory.h"
 #include "EditorSyncRouter.h"
 #include "EditorCommands.h"
+#include "EditorPropertyCommands.h"
 #include "core/UUID.h"
 #include "core/Error.h"
 #include "stb_image.h"
@@ -1156,6 +1157,30 @@ private:
 
 	void AlignCameraToView(const rt2::core::UUID& camera)
 	{
+		// Phase 3B2: capture the before-state, apply the alignment, capture
+		// the after-state, and record via RecordApplied. Redo re-applies the
+		// stored after-state (NOT re-align to current view). Undo restores
+		// the before-localTRS + before-cameraProps via the atomic
+		// SetCameraPoseState API (one revision bump, one authoritative
+		// Transform impact). Routing goes through ApplyMutation/router so
+		// the accumulation reset fires exactly once.
+		const auto entity = m_SceneMgr.FindEntityByUuid(camera);
+		if (entity == entt::null) return;
+		EditableTRS beforeLocal;
+		if (!m_SceneMgr.GetLocalTransform(SceneManager::EntityId{ entity }, beforeLocal))
+		{
+			m_LastStatusMsg = "Camera entity has no transform";
+			return;
+		}
+		auto& reg = m_SceneMgr.GetECS().registry;
+		auto* beforeCam = reg.try_get<CameraComponent>(entity);
+		if (!beforeCam)
+		{
+			m_LastStatusMsg = "Selected entity is not a camera";
+			return;
+		}
+		const CameraComponent beforeCamera = *beforeCam;
+
 		const auto result = m_SceneMgr.AlignCameraEntityToView(camera,
 			m_Cam.GetEditorPose());
 		if (!result.success)
@@ -1163,7 +1188,28 @@ private:
 			m_LastStatusMsg = result.error.Format();
 			return;
 		}
-		SyncAuthoringTransforms();
+
+		// Capture the composite after-state.
+		EditableTRS afterLocal;
+		if (!m_SceneMgr.GetLocalTransform(SceneManager::EntityId{ entity }, afterLocal))
+		{
+			m_LastStatusMsg = "Camera alignment produced an unreadable transform";
+			return;
+		}
+		const CameraComponent afterCamera = *reg.try_get<CameraComponent>(entity);
+
+		auto cmd = MakeAlignCameraCommandIfEffective(camera, beforeLocal, afterLocal,
+			beforeCamera, afterCamera);
+		if (cmd)
+		{
+			EditorMutationResult applied;
+			applied.success = true;
+			applied.syncImpact = rt2::core::SyncImpact::Transform;
+			applied.affectedEntities.push_back(camera);
+			m_History.RecordApplied(std::move(cmd), m_SceneMgr, applied);
+		}
+		// Route through the router so accumulation reset fires once.
+		m_SyncRouter.Route(result, m_SceneMgr);
 		m_LastStatusMsg = "Camera entity aligned to editor view";
 	}
 

@@ -826,7 +826,7 @@ for the full specification; the key scene-management contracts are:
   UUIDs, not destination-scene entities). The command retains the resulting
   `SubtreeSnapshot` so Redo restores the same entities with the same UUIDs.
 
-### Command layer — property correctness (Phase 3B2, planned)
+### Command layer — property correctness (Phase 3B2, implemented)
 
 Phase 3B2 migrates every Inspector property edit onto the 3A/3B1 foundation
 with record-on-release and exact-value Undo/Redo. See the Phase 3B2 section

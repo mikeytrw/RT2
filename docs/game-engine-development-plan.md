@@ -1772,7 +1772,7 @@ material/mesh IDs decoupled from slot index — future work (the no-compaction
 invariant makes slot-index reference safe for 3B1); explicit root-entity
 ordering model — root ordering stays unspecified.
 
-### Phase 3B2 — property command completion (planned specification)
+### Phase 3B2 — property command completion (implemented)
 
 Phase 3B2 migrates every Inspector property edit onto the Phase 3A/3B1
 command/history foundation with record-on-release, exact-value Undo/Redo
@@ -2007,3 +2007,35 @@ state; stack-size identity is invalid); coalescing/merge API — deferred
 (`RecordApplied` + session boundaries handle the common cases); stable
 material/mesh IDs decoupled from slot index — future work (the no-compaction
 invariant makes slot-index reference safe for 3B1/3B2).
+
+Verification report (implementation):
+
+- New files: `RT2App/src/PropertyEditSession.h`,
+  `RT2App/src/EditorPropertyCommands.h/.cpp`,
+  `RT2Tests/src/Phase3B2CommandTests.cpp`.
+- Modified: `SceneManager.h/.cpp` (7 new state APIs:
+  `SetEntityNameState`, `SetLightPropertiesState`,
+  `SetCameraPropertiesState`, `SetMaterialPropertiesState`,
+  `SetMaterialIndexState`, `SetMotionState`, `SetCameraPoseState`; new
+  `GetMaterialOverride`/`InstallMaterialOverride` helpers; void APIs
+  delegate to the state APIs); `core/Error.h/.cpp` (new
+  `InvalidArgument` code); `SceneEditorUI.h/.cpp` (replaced
+  `TransformEditSession` with `PropertyEditSession<T>` sessions for
+  transform, name, light, camera, material-index, material-properties,
+  motion; all property widgets migrated to record-on-release via the
+  state machine + command factories); `WalnutApp.cpp` (`AlignCameraToView`
+  captures composite before/after state, records via `RecordApplied`,
+  routes through `ApplyMutation`/router); `RT2App.vcxproj`,
+  `RT2Tests.vcxproj`, `RT2Tests/premake5.lua` (new files registered).
+- Build: Release x64 clean.
+- Phase 3B2 tests: 22 test cases, 160 assertions, all passing.
+- Full RT2Tests: 331 test cases, 325 passed, 6 failed (the 6 known
+  pre-existing failures: 5 `SceneGraph` cases in `EcsTests.cpp` + 1
+  SIGSEGV in `SceneManager: RemoveEntity destroys entity`), 48 skipped.
+  No new failures introduced.
+- `run_slice_test.ps1`: PASS (60 steps, authoring intact).
+- `run_recovery_test.ps1`: PASS.
+- graphify: 24491 nodes, 50899 edges, 913 communities.
+
+Runtime acceptance (interactive): pending — to be performed by the user
+against a Release deployment. The six behavioural checks listed above.
