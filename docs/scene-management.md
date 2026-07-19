@@ -769,3 +769,59 @@ The dependency direction is
 `WalnutApp -> SceneEditorUI -> EditorCommandHistory -> IEditorCommand ->
 SceneManager`. SceneManager never depends on the command layer, and
 `RT2SliceRunner` does not link it.
+
+### Command layer — structural correctness (Phase 3B1, planned)
+
+Phase 3B1 migrates structural editor mutations onto the Phase 3A foundation
+with exact-UUID, exact-hierarchy, exact-resource-reference restoration on
+Undo/Redo. See the Phase 3B1 section of `docs/game-engine-development-plan.md`
+for the full specification; the key scene-management contracts are:
+
+- **Resource-lifetime invariant.** `CompactMeshRegistry()` may run only at
+  `history.Clear()`, document adoption, or save/reload — never while any Undo
+  or Redo entry references resource slots. Structural deletion uses
+  `RemoveSubtreesNoCompact`; the existing `RemoveSubtrees` (with compaction)
+  stays for non-command paths. A new explicit `CompactMeshRegistryNow()` is
+  the only public compaction entry point and asserts/no-ops when history is
+  non-empty. Without this invariant, a subtree snapshot's stored
+  `MeshRef::meshIndex` could point to a different resource or nothing after
+  compaction rewrites surviving entities' indices.
+- **Known-UUID transactional create/restore.** Creation commands use the
+  `RecordApplied` seam: the host reserves known UUIDs, the manager creates
+  with those UUIDs, the host captures the resulting `SubtreeSnapshot`, and the
+  command stores it. Redo calls `RestoreSubtrees(snapshot)` (re-creates with
+  stored UUIDs); Undo calls `RemoveSubtreesExact(snapshot)` (validates
+  expected state then removes, one transaction). Deletion commands use
+  `Execute`: the snapshot is captured at construction time, `Execute`/`Redo`
+  call `RemoveSubtreesNoCompact(roots)`, `Undo` calls `RestoreSubtrees(snapshot)`.
+- **`SubtreeSnapshot` captures only the affected subtree**, never the whole
+  scene. It reuses the serializer's per-entity component payload
+  representation and carries full-value payloads for every persisted component
+  (including the full `MaterialOverrideComponent` value, not just the
+  material index). Root sibling anchors (`prevSibling`/`nextSibling` UUIDs +
+  child index) preserve exact Outliner position; restoration fails atomically
+  rather than silently appending if the anchors are inconsistent. Root-entity
+  ordering is unspecified (registry-iteration order, no explicit authored
+  ordering vector); 3B1 does not introduce a root-order model.
+- **`RemoveSubtreesExact` compares authoritative authored state only** — not
+  derived world matrices, GPU caches, selection state, or other transient
+  editor/runtime data. A failed exact-state validation surfaces a history-
+  consistency error and triggers Phase 3A's failure policy (clears both
+  stacks). In a valid linear history, later descendant-creation commands are
+  undone by their own commands first, so the validation normally passes; it
+  catches out-of-band edits and refuses to silently absorb them.
+- **Atomic batch transforms and reparents.** `SetLocalTransformStates` and
+  `ReparentBatch` validate the complete batch before mutating, apply all
+  edits in one pass, mark dirty / refresh camera subtrees once, bump the
+  revision once, and return one `EditorMutationResult`. One failure => no
+  mutation. These back the multi-entity `TransformCommand` (gizmo drag) and
+  `ReparentCommand` respectively.
+- **Flat UUID-list duplication/paste.** `DuplicateSubtreesWithUuids` and
+  `PasteSubtreesWithUuids` accept a flat `knownDuplicateUuids` list assigned
+  positionally in the manager's internal deterministic pre-order walk. The
+  host queries the exact canonical entity count via
+  `CountCanonicalSubtreeEntities(roots)` and reserves exactly that many UUIDs.
+  Both return a `DuplicationResult` with `createdRoots` and a
+  `sourceToDuplicate` mapping (for paste, source UUIDs are clipboard-document
+  UUIDs, not destination-scene entities). The command retains the resulting
+  `SubtreeSnapshot` so Redo restores the same entities with the same UUIDs.

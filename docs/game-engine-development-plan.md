@@ -1431,3 +1431,299 @@ against a Release deployment. The five behavioural checks: numeric-edit +
 multi-selection visibility toggle with one Undo restoring the mix; new edit
 after Undo clears Redo; open-a-different-scene clears history and Play
 inertness.
+
+### Phase 3B1 — structural command correctness (planned specification)
+
+Phase 3B1 migrates structural editor mutations (create, delete, duplicate,
+paste, reparent, primitive/light entity creation, and the viewport gizmo's
+transform drag) onto the Phase 3A command/history foundation with exact-UUID,
+exact-hierarchy, exact-resource-reference restoration on Undo/Redo. It is the
+first of two Phase 3B sub-slices; 3B2 will follow with property commands. The
+history panel and save-point clean tracking are deferred to a later slice.
+
+Core design decisions:
+
+- Resource-lifetime policy — no compaction while history references resources.
+  `SceneManager::RemoveSubtrees` currently calls `CompactMeshRegistry()`
+  immediately after deletion. Compaction rewrites every surviving entity's
+  `MeshRef::meshIndex` and can delete unique meshes/materials/textures. A
+  subtree snapshot that only stored the deleted entity's pre-deletion
+  `MeshRef::meshIndex` would restore an index that now points to a different
+  resource or nothing. Phase 3B1 enforces a hard invariant: compaction cannot
+  run while any Undo or Redo entry references resource slots. A new
+  `RemoveSubtreesNoCompact` is the deletion path used by structural commands;
+  the existing `RemoveSubtrees` (with compaction) stays for non-command paths.
+  `CompactMeshRegistry()` may run only at explicit `history.Clear()`, document
+  adoption, or save/reload — never merely because the redo branch was cleared.
+  A new explicit `CompactMeshRegistryNow()` is the only public compaction entry
+  point and asserts (debug) / no-ops (release) when history is non-empty. All
+  existing direct `CompactMeshRegistry()` call sites are audited. The eventual
+  better design is a stable material/mesh ID decoupled from slot index; that is
+  out of scope for 3B1 and is noted as future work.
+- Known-UUID transactional create/restore — commands never touch the registry.
+  Phase 3A's contract is that command before/after state is complete before
+  `Execute()` and Redo never recaptures state. Creation commands resolve this
+  with the `RecordApplied` seam. Creation pattern: host reserves known UUIDs,
+  manager applies the mutation with those UUIDs, host captures the resulting
+  snapshot, host constructs the command, host calls `RecordApplied`. If
+  snapshot capture fails, the initial creation is rolled back. Redo calls
+  `RestoreSubtrees(snapshot)` (re-creates with stored UUIDs). Undo calls
+  `RemoveSubtreesExact(snapshot)`. Deletion pattern: host captures the
+  snapshot at construction time (entity exists), command is executed via
+  `history.Execute`; `Execute`/`Redo` call `RemoveSubtreesNoCompact(roots)`,
+  `Undo` calls `RestoreSubtrees(snapshot)`. All creation paths route through a
+  single host helper so no creation path can apply successfully and forget to
+  record.
+- `SubtreeSnapshot` captures only the affected subtree — never the whole scene.
+  It reuses the serializer's per-entity component payload representation
+  (`EntityRecord` shape) so it stays aligned with the persisted format. The
+  snapshot carries per-entity UUID, name, parent UUID, local TRS, visibility,
+  and optional full-value payloads for every persisted component (MeshRef,
+  PrimitiveComponent, ImportedMeshSourceComponent, MaterialOverrideComponent
+  with full SceneMaterial + sourceMaterialKey, LightComponent, CameraComponent,
+  MotionComponent). Root sibling anchors record `prevSibling`/`nextSibling`
+  UUIDs plus a child index for diagnostic cross-check; the anchors are the
+  authority.
+- Sibling-position restoration fails atomically, never silently appends.
+  `RestoreSubtrees` validates each root's anchors against the parent's current
+  children list (or the root-entity list). If the anchors are inconsistent,
+  restoration fails atomically and Phase 3A's history-failure policy clears
+  both stacks. Root-entity ordering is currently unspecified (registry-
+  iteration order, no explicit authored ordering vector); 3B1 documents it as
+  unspecified and does not introduce an explicit root-order model. A future
+  slice may introduce one if stable root ordering becomes a requirement.
+- Creation Undo must not absorb later descendants. Creation `Undo` uses the
+  creation-time snapshot only and never recaptures. `SceneManager::RemoveSubtrees
+  Exact(snapshot)` performs validation and removal as one transactional
+  operation: validate every expected UUID exists, validate authored component
+  state and hierarchy topology against the snapshot, reject unexpected
+  descendants, perform all validation before destroying anything, remove without
+  resource compaction, return failure with no scene mutation if validation
+  fails. "Exact" compares authoritative authored state only — not derived
+  world matrices, GPU caches, selection state, or other transient editor/
+  runtime data. In a valid linear history, later descendant-creation commands
+  are undone by their own commands first, so this validation normally passes.
+  The validation catches out-of-band edits and refuses to silently absorb
+  them.
+- Atomic multi-transform for gizmos. A new UUID-keyed
+  `SetLocalTransformStates(vector<pair<UUID, EditableTRS>>)` validates ALL
+  UUIDs resolve, applies all local TRS in one pass, marks dirty once, refreshes
+  affected camera subtrees once, bumps the revision ONCE, and returns
+  `Transform` impact with affected UUIDs. One missing target => no mutation,
+  `Failure`. `TransformCommand` is extended to store
+  `std::vector<TransformTriple>` (where `TransformTriple = {UUID,
+  beforeLocalTRS, afterLocalTRS}`). The single-entity factory stays for the
+  Inspector; a new multi-entity factory handles the gizmo path and drops no-op
+  entities. The host captures `beforeLocalTRS[]` at drag start (via `DragState`
+  begin) and `afterLocalTRS[]` at drag end, builds the multi-entity
+  `TransformCommand`, and calls `RecordApplied`. The gizmo's existing per-frame
+  `TrySetWorldTransforms` calls continue (responsive direct edits); only the
+  drag-end recording is new.
+- Atomic batch reparent. `SceneManager::Reparent` accepts one destination
+  parent for all sources. Undo of a multi-source reparent where the sources
+  originally had different parents requires restoring each source to its own
+  original parent. A new `ReparentBatch(vector<ReparentEdit>, ReparentMode)`
+  validates all entities and all new parents resolve and no cycles, then
+  applies all reparents atomically. For `PreserveWorld`, converts each desired
+  world matrix to local against the NEW parent (singular/shear => fail all).
+  Bumps the revision once. `ReparentCommand` stores before/after `ReparentEdit`
+  lists; `Execute` calls `ReparentBatch(afterStates, mode)`; `Undo` calls
+  `ReparentBatch(beforeStates, PreserveLocal)` — always restore local, since
+  the command stored the exact before-local TRS. `ReparentEdit` carries
+  `RootSiblingAnchor` so Undo restores the exact original sibling position.
+- `DuplicateSubtreesWithUuids` / `PasteSubtreesWithUuids` use a flat UUID-list
+  design with an internal pre-order walk. The manager canonicalizes the roots
+  (preserving caller order), walks each canonical subtree in deterministic
+  pre-order, validates the UUID count exactly matches the resulting entity
+  count, validates all supplied UUIDs are valid/unique/absent from the
+  document, builds and validates the complete duplication plan before
+  mutating, assigns UUIDs positionally in that internal pre-order, and returns
+  the created root UUIDs plus the complete source-to-duplicate UUID mapping.
+  The host queries the exact canonical entity count via
+  `CountCanonicalSubtreeEntities(roots)` (returning `Result<size_t>`),
+  reserves exactly that many UUIDs, and calls the duplication API. The
+  manager's internal count validation is mandatory protection against stale
+  input. The command retains the resulting duplicate `SubtreeSnapshot`, so
+  Redo restores the same entities with the same UUIDs rather than repeating
+  the source walk or generating new IDs. `PasteSubtreesWithUuids` returns the
+  same structured `DuplicationResult`; for paste, the source UUIDs in the
+  mapping are clipboard-document UUIDs, not entities currently present in the
+  destination scene (documented as such). The paste command retains only the
+  pasted snapshot and created-root UUIDs for Undo/Redo; it does not need the
+  source mapping after the initial operation.
+- Single-entity visibility migration. Every Hide/Show entry point constructs
+  the same `SetVisibilityCommand`, whether operating on one UUID or a multi-
+  selection. The existing single-entity `ApplyMutation(m_SceneMgr->
+  SetVisibility({uuid}, ...))` calls migrate to construct
+  `SetVisibilityCommand` and route through `history.Execute`. The multi-entity
+  "Hide/Show Selection" context action (Phase 3A) already uses this command.
+- Impact assignments are authoritative from the manager, never synthesized.
+  Structural commands call SceneManager atomic ops that already return
+  `EditorMutationResult.syncImpact` (Structural for renderable-affecting
+  create/remove/restore/duplicate/paste; Structural or Transform for reparent
+  per the existing logic; Transform for `SetLocalTransformStates`). The
+  commands return the manager's result unchanged. No synthesis. The expected
+  impact is asserted in each command's tests.
+- History semantics are unchanged from Phase 3A. History survives Play/Stop
+  and Save; blocked during Play; cleared on document adoption. The generation
+  guard on all four public ops is unchanged. The failure policy (failed
+  Undo/Redo clears both stacks) is unchanged and now also covers the
+  structural-consistency validation failures from `RemoveSubtreesExact` and
+  `RestoreSubtrees` anchor checks. `RecordApplied` is the entry point for
+  creation commands; `Execute` is the entry point for deletion commands. Both
+  clear redo on a successful, effective submission.
+
+New SceneManager APIs:
+
+```
+// Resource lifetime
+EditorMutationResult RemoveSubtreesNoCompact(const std::vector<UUID>& roots);
+EditorMutationResult RemoveSubtreesExact(const SubtreeSnapshot& snapshot);
+void CompactMeshRegistryNow();  // explicit, asserts history clear in debug
+
+// Known-UUID creation
+UUID ReserveKnownUuid();
+std::vector<UUID> ReserveKnownUuids(size_t count);
+Result<size_t> CountCanonicalSubtreeEntities(const std::vector<UUID>& roots) const;
+EditorMutationResult CreateEmptyWithUuid(UUID, name, parent, siblingPosition?);
+EditorMutationResult CreatePrimitiveEntity(UUID, name, type, localTRS, matIdx, parent?);
+EditorMutationResult CreateLightEntity(UUID, name, localTRS, color, intensity, isSpot, parent?);
+
+struct DuplicationResult {
+    EditorMutationResult mutation;
+    std::vector<UUID> createdRoots;
+    std::vector<std::pair<UUID, UUID>> sourceToDuplicate;
+};
+DuplicationResult DuplicateSubtreesWithUuids(sourceRoots, knownDuplicateUuids);
+DuplicationResult PasteSubtreesWithUuids(clipboard, clipboardRoots, parent?, knownPastedUuids);
+
+// Subtree snapshot + restore
+SubtreeSnapshot CaptureSubtreeSnapshot(const std::vector<UUID>& roots);
+EditorMutationResult RestoreSubtrees(const SubtreeSnapshot& snapshot);
+
+// Atomic batch transform
+EditorMutationResult SetLocalTransformStates(const std::vector<std::pair<UUID, EditableTRS>>& states);
+
+// Atomic batch reparent
+EditorMutationResult ReparentBatch(const std::vector<ReparentEdit>& edits, ReparentMode mode);
+```
+
+The existing `CreateEmpty`, `RemoveSubtrees`, `DuplicateSubtrees`,
+`PasteSubtreesFrom`, `Reparent`, `SetVisibility`, `SetVisibilityStates`,
+`TrySetWorldTransforms` all stay unchanged for non-command paths (RT2SliceRunner,
+host-driven non-undoable flows).
+
+New files: `RT2App/src/SubtreeSnapshot.h` (snapshot structs),
+`RT2App/src/EditorStructuralCommands.h/.cpp` (the seven structural command
+classes plus factories), `RT2Tests/src/Phase3B1CommandTests.cpp`. Modified:
+`SceneManager.h/.cpp` (new APIs; existing ops unchanged), `EditorCommands.h/.cpp`
+(multi-entity TransformCommand), `SceneEditorUI.h/.cpp` (command migration of
+Add Primitive / Add Light / Delete / Duplicate / Paste / Reparent / single-entity
+Hide/Show), `WalnutApp.cpp` (gizmo drag-end RecordApplied + creation helper),
+`RT2App.vcxproj`, `RT2Tests.vcxproj`, `RT2Tests/premake5.lua`, both doc files.
+
+Test plan (all CPU, doctest; 3A coverage stays green):
+
+- `CreateEmptyCommand`: `RecordApplied` creates with a known UUID at a known
+  sibling position; Undo removes via `RemoveSubtreesExact`; Redo re-creates
+  via `RestoreSubtrees` with the SAME UUID at the SAME position.
+- `RemoveSubtreesCommand`: multi-level subtree with a mesh entity (carrying
+  MeshRef + ImportedMeshSourceComponent + MaterialOverrideComponent) and a
+  light entity; captures the full snapshot; Undo restores UUIDs, hierarchy
+  children order, all 10 persisted components, and resource references
+  (MeshRef::meshIndex unchanged because no compaction); Redo removes again.
+- Resource stability regression (critical): delete the sole user of a textured
+  mesh while unrelated entities survive; Undo; verify the deleted entity's
+  MeshRef::meshIndex still points to the original mesh (no compaction
+  occurred); verify surviving entities' MeshRef::meshIndex values are
+  unchanged across the full Undo/Redo cycle; verify the mesh still exists in
+  the registry at the original index.
+- `RemoveSubtreesExact` validation: after `RemoveSubtreesCommand::Execute`,
+  add a child to the removed root out-of-band, then attempt Undo — the
+  exact-state validation fails atomically (zero mutation), the command
+  surfaces a history-consistency error, and Phase 3A's failure policy clears
+  both stacks.
+- `RemoveSubtreesExact` transient-state tolerance: verify that
+  Transform::worldMatrix, Transform::prevWorldMatrix, Transform::dirty, and
+  selection/clipboard state are NOT compared by the exact-state validation
+  (only authored component state + hierarchy topology).
+- `DuplicateSubtreesCommand`: captures original + duplicate UUIDs; the
+  manager returns the source-to-duplicate mapping; Undo destroys the
+  duplicates; Redo re-creates the duplicates with the SAME UUIDs (not fresh);
+  verify hierarchy among duplicates is preserved and resource references are
+  intact.
+- `DuplicateSubtreesWithUuids` count validation: pass a `knownDuplicateUuids`
+  list whose count does not match the canonical subtree size; verify the
+  manager fails atomically with no mutation.
+- `CountCanonicalSubtreeEntities`: returns the exact canonical entity count
+  for a multi-root selection including nested descendants; missing/invalid
+  roots return a failure result.
+- `PasteSubtreesCommand`: captures the clipboard snapshot + pasted UUIDs;
+  Undo destroys the pastes; Redo re-pastes with the same UUIDs; verify
+  resource-reference invariants hold (no compaction while the command is in
+  history).
+- `ReparentCommand`: multi-source with different original parents;
+  PreserveWorld and PreserveLocal modes; Undo restores the exact before-local
+  TRS for each source at the exact sibling anchor; Redo re-applies; atomic
+  failure on a cycle (one failure => no mutation).
+- Sibling-anchor restoration: delete a middle child of a 3-child parent; Undo;
+  verify the middle child is restored at the exact middle position (anchors
+  validate); if the parent's children have been reordered out-of-band, Undo
+  fails atomically rather than appending.
+- `SetLocalTransformStates`: atomic validate-first (one missing UUID => no
+  mutation, Failure); single revision bump; multi-entity round trip; atomic
+  failure leaves all entities unchanged.
+- Gizmo drag → TransformCommand: 2-entity selection dragged along one axis;
+  ONE history entry; Undo restores both pre-drag local TRS; Redo re-applies
+  both. Verify the gizmo's per-frame TrySetWorldTransforms calls continue
+  (responsive direct edits) and only the drag-end recording is new.
+- `CreatePrimitiveEntityCommand` / `CreateLightEntityCommand`: `RecordApplied`
+  creates with a known UUID; Undo removes via `RemoveSubtreesExact`; Redo
+  re-creates with the SAME UUID; components and resource references intact.
+- Single-entity visibility migration: the per-entity Hide/Show context-menu
+  items construct `SetVisibilityCommand` and route through `history.Execute`;
+  one Undo restores the prior visibility; verify the command instance is the
+  same type as the multi-entity Hide/Show Selection path.
+- Generation guard still fires on all four public ops (3A coverage stays green).
+- Compaction audit: verify `CompactMeshRegistryNow()` no-ops (or asserts in
+  debug) when history is non-empty; verify no `RemoveSubtrees`-with-compaction
+  call remains on any command-backed path; verify compaction runs at
+  `history.Clear()` and document adoption.
+- Full-suite gate: the failing set stays exactly the six known pre-existing
+  cases.
+
+Verification gates: Release x64 build; focused Phase 3B1 tests; full RT2Tests
+where the only permitted failures are exactly the six known pre-existing
+cases; `run_slice_test.ps1` and `run_recovery_test.ps1` pass;
+`graphify update .`; documentation updates with actual test counts.
+
+Runtime acceptance (interactive, pending user):
+
+- Create an empty entity, add a child to it, then `Ctrl+Z` the child creation
+  followed by `Ctrl+Z` the empty creation — both undo in order; `Ctrl+Shift+Z`
+  redoes the empty creation (with the SAME UUID), then `Ctrl+Shift+Z` redoes
+  the child.
+- Delete a textured mesh entity (sole user of its mesh) while unrelated
+  entities survive; `Ctrl+Z` restores it with its texture intact; the
+  unrelated entities never flicker (no compaction happened).
+- Duplicate a multi-entity hierarchy; `Ctrl+Z` removes the duplicates;
+  `Ctrl+Z` again (if no other edit) does nothing further; `Ctrl+Shift+Z`
+  re-creates the duplicates with the same names + " Copy" suffix.
+- Reparent two entities with different original parents into a common parent
+  (PreserveWorld); `Ctrl+Z` restores each to its original parent at the
+  original sibling position with the original local TRS.
+- Hold a gizmo drag on a 2-entity selection across many frames — one `Ctrl+Z`
+  restores both pre-drag transforms.
+- Toggle visibility on a single entity via the context menu — one `Ctrl+Z`
+  restores the prior state.
+
+Explicitly out of scope for 3B1: property commands (name, material, light,
+camera, motion) — Phase 3B2; record-on-release for continuous property widgets
+— Phase 3B2; `AlignCameraCommand` — Phase 3B2; history panel — deferred
+(requires `TravelTo(stateId)` with batched sync); save-point clean tracking —
+deferred (requires unique history-state identity integrated with authoritative
+dirty state; stack-size identity is invalid); coalescing/merge API — deferred
+(`RecordApplied` + session boundaries handle the common cases); stable
+material/mesh IDs decoupled from slot index — future work (the no-compaction
+invariant makes slot-index reference safe for 3B1); explicit root-entity
+ordering model — root ordering stays unspecified.
