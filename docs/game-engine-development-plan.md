@@ -2503,3 +2503,521 @@ transform + name + visibility); runtime reparenting during Play (Phase
 6). The observer interface and mutator are added now so Phase 6 can
 hook scripting into them without further `RuntimeSceneController`
 structural changes.
+
+## Phase 5 — Input action system (completion specification)
+
+### Survey summary (current state, post-Phase-4)
+
+The RT2 codebase has two parallel, uncoordinated input paths today, and
+no runtime/gameplay input layer whatsoever:
+
+1. **`Walnut::Input` (GLFW polling, held-only).** Defined in
+   `Walnut/Walnut/src/Walnut/Input/Input.cpp`. Exposes `IsKeyDown`,
+   `IsMouseButtonDown`, `GetMousePosition`, `SetCursorMode`. No
+   edge-triggered "pressed this frame" / "released this frame" state, no
+   scroll, no modifiers, no joystick. The only consumer is
+   `RT2App/src/Camera.cpp:52-126` (`Camera::OnUpdate`), which hardcodes
+   W/S/A/D/Q/E + right-mouse-look.
+2. **`ImGui::IsKeyPressed` / `IsMouseClicked` / `io.KeyCtrl` (edge-
+   triggered).** Used by every editor shortcut (Undo/Redo, Delete,
+   Copy/Paste/Duplicate, F to focus, Ctrl+number camera bookmarks),
+   the gizmo mode hotkeys (W/E/R in `EditorTransformGizmo.cpp:101-103`),
+   viewport mouse picking (`WalnutApp.cpp:733-743`), and gizmo dragging
+   (`EditorTransformGizmo.cpp:153-237`). ImGui's GLFW backend
+   (`ImGui_ImplGlfw_InitForVulkan` at `Walnut/Application.cpp:635`) is
+   the only event source in the app — Walnut itself registers no GLFW
+   key/mouse/scroll/joystick callbacks.
+
+There is a latent W/E key conflict: gizmo mode-switch (viewport-hovered,
+no right-mouse) vs. camera translate/up-down (right-mouse held). They do
+not collide today only because the camera gate (right-mouse) and the
+gizmo gate (viewport-hovered, no drag) happen to be disjoint.
+
+The runtime Play path runs the *same* `Camera::OnUpdate` against
+`m_RuntimeCam` (`WalnutApp.cpp:977-980`), so during Play the editor
+flycam bindings are still active and there is no gameplay input
+consumer. `RuntimeSceneController` reads no input. `RT2SliceRunner` is
+headless and links no GLFW/Walnut/ImGui.
+
+`EditorSettingsStore` (`RT2App/src/EditorSettings.h/.cpp`) is CPU-only
+(no GLFW/ImGui/Walnut) and versioned (`SettingsVersion = 1`); its loader
+ignores unknown optional fields, giving a clean v2 upgrade path for
+serialized input bindings. `RT2SliceRunner` and `EditorSettingsStore`
+both enforce a CPU-only boundary that any new input-binding types must
+respect: action names are plain strings, key codes are plain integers
+mirroring GLFW's numeric values (not `GLFW_KEY_*` macros).
+
+No `InputAction` / `InputAxis` / `InputMapping` / `InputContext` /
+`InputState` types exist. `KeyState { None, Pressed, Held, Released }`
+is defined in `Walnut/Input/KeyCodes.h:143` but unused.
+
+### Outcome
+
+Gameplay code (Phase 6 scripts, and the editor camera in the meantime)
+consumes stable named actions and axes through a single input service,
+independent of GLFW and ImGui. Editor and runtime input are isolated by
+explicit contexts. Mappings are serialized in project settings. A
+read-only input service is exposed for future scripting. Controller
+dead zones and focus-loss reset are first-class.
+
+### Design constraints
+
+- **Do not modify `Walnut` itself.** Walnut is a vendored upstream
+  library. The Phase 5 input system lives in `RT2App/src` and consumes
+  Walnut's existing `Input` polling API plus ImGui's `GetIO()` state.
+  It does not patch `Walnut::Application`, does not install its own
+  GLFW callbacks (those would conflict with ImGui's backend), and does
+  not add a `Walnut::Input::IsKeyPressed` edge API. Instead, the Phase
+  5 service samples `Walnut::Input` + `ImGui::GetIO()` once per frame,
+  computes edge transitions, and exposes its own action/axis state.
+- **CPU-only binding types.** `InputAction`, `InputAxis`,
+  `InputMapping`, `InputContext`, and the serialized schema live in
+  `RT2App/src` headers that include no GLFW/ImGui/Walnut headers (only
+  forward-declare `Walnut::Input` if needed). The serialized form uses
+  logical action-name strings + integer key codes. This preserves the
+  `RT2SliceRunner` and `EditorSettingsStore` CPU-only boundary.
+- **No new public SceneManager or RuntimeSceneController APIs.** The
+  input service is hosted by `WalnutApp` (RT2App), not scene core.
+  Phase 6 scripting will receive a read-only `IInputService` reference
+  alongside the runtime document via the existing
+  `IRuntimeLifecycleObserver::OnSceneStart` seam (Phase 6 adds the
+  mutation channel + input reference; Phase 5 only builds the service
+  and the editor-runtime context switching).
+- **No ImGui, no Walnut-app behavior change.** The Play/Pause/Step/Stop
+  UI is unchanged. Existing editor shortcuts keep working. The camera
+  movement is refactored to read from the input service, but its
+  visible behavior (WASD + right-mouse-look) is identical.
+
+### Core types
+
+```
+namespace rt2::core {
+
+// Integer key code mirroring GLFW numeric values (e.g. 'W' = 65).
+// Stored as uint16_t so the schema is portable and CPU-only.
+enum class KeyCode : uint16_t;
+enum class MouseButton : uint16_t;
+enum class ModifierBits : uint8_t;   // Ctrl/Shift/Alt bitfield
+
+// Edge-triggered and held state for a logical action.
+enum class ActionState : uint8_t
+{
+    None      = 0,
+    Pressed   = 1,   // edge: went from down→up this frame (just pressed)
+    Held      = 2,   // held down this frame
+    Released  = 3,   // edge: went from down→up this frame
+    // "IsPressedThisFrame" == (state == Pressed)
+    // "IsDown"            == (state == Pressed || state == Held)
+};
+
+// One binding for a logical action. Multiple bindings per action combine
+// disjunctively (any binding firing fires the action).
+struct ActionBinding
+{
+    KeyCode key = KeyCode(0);
+    ModifierBits modifiers = ModifierBits(0);
+    // Optional controller axis/button source (Phase 5 §controller).
+    int controllerIndex = -1;   // -1 = keyboard/mouse
+    int controllerButton = -1;  // -1 = not a controller button
+};
+
+struct AxisBinding
+{
+    KeyCode positive = KeyCode(0);
+    KeyCode negative = KeyCode(0);
+    int controllerIndex = -1;
+    int controllerAxis = -1;    // -1 = not a controller axis
+    float deadZone = 0.15f;     // controller axis dead zone
+    bool invert = false;
+};
+
+// Serialized mapping: action/axis name → bindings. Stored in
+// EditorSettingsStore under a new "inputMappings" field (schema v2).
+struct InputMapping
+{
+    std::string name;                       // e.g. "move_forward"
+    std::vector<ActionBinding> actions;     // for action-type mappings
+    std::vector<AxisBinding>   axes;        // for axis-type mappings
+    bool isAxis = false;                    // disambiguates the two kinds
+};
+
+// Input contexts are stacked. The top active context receives input.
+// Editor and runtime contexts are mutually exclusive; Play activates
+// "runtime", Edit activates "editor". A "viewport" sub-context can be
+// pushed when the viewport is hovered.
+class InputContext
+{
+public:
+    explicit InputContext(std::string id) : m_Id(std::move(id)) {}
+    const std::string& Id() const { return m_Id; }
+    // Actions/axes consume by name; unhandled input falls through to the
+    // next context down the stack.
+    bool ConsumesAction(const std::string& name) const;
+    bool ConsumesAxis(const std::string& name) const;
+    void SetMapping(InputMapping m);
+    const InputMapping* FindMapping(const std::string& name) const;
+private:
+    std::string m_Id;
+    std::unordered_map<std::string, InputMapping> m_Mappings;
+};
+
+// Read-only input service interface. Phase 6 scripts receive a const
+// reference to this through the lifecycle observer seam (Phase 6 adds
+// the reference; Phase 5 builds the service).
+class IInputService
+{
+public:
+    virtual ~IInputService() = default;
+    virtual ActionState GetActionState(const std::string& name) const = 0;
+    bool IsPressed(const std::string& name) const
+    { return GetActionState(name) == ActionState::Pressed; }
+    bool IsDown(const std::string& name) const
+    {
+        auto s = GetActionState(name);
+        return s == ActionState::Pressed || s == ActionState::Held;
+    }
+    bool IsReleased(const std::string& name) const
+    { return GetActionState(name) == ActionState::Released; }
+    virtual float GetAxisValue(const std::string& name) const = 0;
+    virtual glm::vec2 GetMouseDelta() const = 0;
+    virtual float GetScrollDelta() const = 0;
+};
+
+} // namespace rt2::core
+```
+
+### The InputService
+
+Concrete class `rt2::core::InputService final : public IInputService`,
+in `RT2App/src/InputService.h/.cpp`. Hosted by `WalnutApp` (one
+instance, lifetime = app lifetime). Per frame, `WalnutApp::OnUpdate`
+calls `m_InputService.BeginFrame()` before any input consumer runs and
+`EndFrame()` at the end of `OnUpdate`.
+
+`BeginFrame`:
+
+1. Sample `Walnut::Input::IsKeyDown` / `IsMouseButtonDown` for every key
+   and mouse button referenced by any active context's bindings. (A
+   precomputed set, rebuilt when mappings change.)
+2. Sample `ImGui::GetIO()` for `KeyCtrl/KeyShift/KeyAlt` and the
+   edge-triggered `ImGui::IsKeyPressed` / `IsMouseClicked` for those
+   same keys. ImGui's IO is the only edge source today; Walnut::Input is
+   held-only.
+3. Sample `glfwGetJoystickAxes` / `glfwGetJoystickButtons` for any
+   controller bindings (Phase 5 §controller).
+4. Compute per-binding `ActionState`: a binding is `Pressed` if it was
+   up last frame and down this frame; `Held` if down both frames;
+   `Released` if down last frame and up this frame; `None` otherwise.
+   An action's state is the disjunction of its bindings' states
+   (Pressed wins over Held; Released wins over None).
+5. Compute per-axis value: keyboard axis = `(down(negative) ? -1 : 0) +
+   (down(positive) ? 1 : 0)`; controller axis = `glm::clamp((raw -
+   deadZone) / (1 - deadZone), -1, 1)` with `invert` applied. The
+   axis's value is the sum of its bindings (clamped to [-1, 1]).
+6. Compute `m_MouseDelta = (current - last)` from
+   `Walnut::Input::GetMousePosition`. Compute `m_ScrollDelta` from
+   `ImGui::GetIO().MouseWheel` (accumulated this frame; reset to 0 at
+   the start of `BeginFrame`).
+
+`EndFrame`:
+
+- Stash this frame's down-state as next frame's "previous" state.
+- Clear `m_ScrollDelta` (already consumed by `BeginFrame` of next
+  frame, but defensively reset).
+
+### Context stack
+
+`InputService` owns a `std::vector<InputContext>` stack. Push / pop /
+clear are host-driven. The active context (top of stack) consumes
+input first; unhandled actions/axes fall through to the next context.
+An action is "handled" if the active context has a mapping for it; if
+not, the service checks the next context down.
+
+`WalnutApp` context wiring:
+
+- **Edit state:** push the `"editor"` context at app start. The editor
+  context maps the camera movement axes (`move_forward`, `move_right`,
+  `move_up`), the `look` action (right-mouse), the gizmo mode actions
+  (`gizmo_translate` / `gizmo_rotate` / `gizmo_scale`), the editor
+  shortcuts (`undo`, `redo`, `delete`, `focus`, `copy`, `paste`,
+  `duplicate`, `camera_bookmark_slotN`), and the viewport pick action.
+- **Play state:** `EnterPlay` pushes a `"runtime"` context and pops the
+  `"editor"` context. The runtime context maps gameplay actions
+  (`move_forward`, `move_right`, `look`, `jump`, `primary_action`, etc.
+  — a default set that Phase 6 scripts can override). The editor
+  shortcuts and gizmo actions are NOT mapped in the runtime context,
+  so they do not fire during Play.
+- **Pause state:** the runtime context remains active but
+  `m_RuntimeCam.OnUpdate` is not called (matches current behavior —
+  `Pause` clears the accumulator and `Step` runs one tick; the editor
+  camera is restored only on Stop).
+- **Stop:** pops the `"runtime"` context and re-pushes `"editor"`.
+
+The W/E conflict is resolved cleanly: the `"editor"` context maps W/E
+to `move_forward` / `move_up` axes, AND `gizmo_translate` / `gizmo_rotate`
+to W/E actions, but the gizmo actions are gated by a `"viewport"`
+sub-context that is pushed only when the viewport is hovered and the
+gizmo is not dragging. When the `"viewport"` sub-context is active, its
+W/E → gizmo-mode mapping takes precedence over the editor context's
+W/E → camera-axis mapping (context stack top wins). When the right
+mouse button is held, the `"viewport.look"` sub-context is pushed, and
+its W/E → camera-axis mapping takes precedence. This replaces the
+current implicit "right-mouse gate" with an explicit context stack.
+
+### Camera refactor
+
+`Camera::OnUpdate(float ts)` is refactored to accept an
+`IInputService&` instead of polling `Walnut::Input` directly. The
+hardcoded W/S/A/D/Q/E reads become:
+
+```
+float forward = input.GetAxisValue("move_forward");
+float right   = input.GetAxisValue("move_right");
+float up      = input.GetAxisValue("move_up");
+if (input.IsDown("look")) {
+    SetCursorModeLocked(true);
+    glm::vec2 delta = input.GetMouseDelta();
+    // … pitch/yaw …
+} else {
+    SetCursorModeLocked(false);
+    return;
+}
+// translate by (forward, right, up) * m_Speed * ts
+```
+
+`WalnutApp::OnUpdate` passes `m_InputService` to `m_Cam.OnUpdate(ts,
+m_InputService)` and `m_RuntimeCam.OnUpdate(ts, m_InputService)`. The
+visible behavior is unchanged: same keys, same speed, same right-mouse
+gate. The camera no longer includes `Walnut/Input/Input.h`; it depends
+only on `IInputService`.
+
+### Editor shortcut refactor
+
+The shortcut blocks in `WalnutApp.cpp::HandleEditorCameraShortcuts`
+(1092-1121), `HandleUndoRedoShortcuts` (1128-1144), the viewport pick
+block (733-743), `SceneEditorUI.cpp` (678-695), and
+`EditorTransformGizmo.cpp` (99-104) are rewritten to read from
+`m_InputService` instead of `ImGui::IsKeyPressed` / `io.KeyCtrl`. The
+mappings move into the `"editor"` and `"viewport"` contexts. This is a
+mechanical translation — every `ImGui::IsKeyPressed(ImGuiKey_X)` under
+`io.KeyCtrl` becomes `input.IsPressed("redo")` (or whatever the mapped
+action name is). The ImGui IO state is still sampled by the input
+service (it's the only edge source), but the shortcut code no longer
+touches ImGui directly.
+
+### Controller support
+
+Phase 5 introduces controller support from scratch. GLFW exposes
+`glfwJoystickPresent`, `glfwJoystickGetAxes`, `glfwJoystickGetButtons`,
+`glfwJoystickGetGUID`, `glfwSetJoystickCallback`. The input service:
+
+1. On `BeginFrame`, polls `glfwJoystickPresent(GLFW_JOYSTICK_1 .. 5)`.
+2. For each present controller, calls `glfwJoystickGetAxes` /
+   `glfwJoystickGetButtons` and feeds the values into any
+   `controllerIndex`-tagged bindings.
+3. Registers `glfwSetJoystickCallback` **once** in
+   `InputService::Initialize` to track connect/disconnect. This is the
+   one new GLFW callback; it does not conflict with ImGui's backend
+   (ImGui's GLFW backend does not register a joystick callback).
+
+A controller binding's `deadZone` (default 0.15) is applied per
+`AxisBinding`. The default runtime context maps:
+- Left stick X → `move_right`, Y → `move_forward`.
+- Right stick X → `look_yaw`, Y → `look_pitch`.
+- A/□ → `jump`, X/△ → `primary_action`.
+
+Dead-zone and inversion are per-binding, serialized in the mapping.
+
+### Focus-loss reset
+
+On window focus loss (tracked via `glfwSetWindowFocusCallback`, also
+registered once in `InputService::Initialize`), the service:
+
+1. Marks every currently-down binding as `Released` for one frame.
+2. Clears all axis values to 0.
+3. Sets an internal `m_FocusLost` flag so subsequent `BeginFrame`
+   samples ignore input until focus is regained (defensive — GLFW
+   typically returns false from `IsKeyDown` while unfocused, but the
+   flag is a belt-and-suspenders guard against stuck keys).
+
+On focus regain, clears `m_FocusLost` and resumes normal sampling.
+
+### Serialization
+
+`EditorSettingsStore` schema bumps to v2. New optional field:
+
+```json
+{
+  "version": 2,
+  "projectRoot": "...",
+  "recentScenes": ["..."],
+  "inputMappings": [
+    {
+      "name": "move_forward",
+      "isAxis": true,
+      "axes": [
+        { "positive": 87, "negative": 83, "controllerIndex": -1, "controllerAxis": -1, "deadZone": 0.15, "invert": false }
+      ],
+      "actions": []
+    },
+    {
+      "name": "look",
+      "isAxis": false,
+      "actions": [
+        { "key": 1, "modifiers": 0, "controllerIndex": -1, "controllerButton": -1 }
+      ],
+      "axes": []
+    }
+  ]
+}
+```
+
+Key codes are stored as integers (matching GLFW numeric values). The
+loader at `EditorSettings.cpp:64-148` already ignores unknown optional
+fields, so a v1 settings file with no `inputMappings` field loads
+cleanly and the service falls back to built-in defaults. A v2 file on a
+v1-only loader is rejected by the version check (existing behavior).
+
+Built-in defaults (used when `inputMappings` is absent or empty) are
+constructed in code by `InputService::LoadDefaults()`, mirroring the
+current hardcoded bindings (W/S/A/D/Q/E, right-mouse look, Ctrl+Z/Y,
+Delete, F, Ctrl+C/V/D, Ctrl+1..N, W/E/R for gizmo). This guarantees the
+editor behaves identically before and after the migration.
+
+### Runtime input routing
+
+During Play, the `"runtime"` context is active. The runtime
+`Camera::OnUpdate` call (against `m_RuntimeCam`) now reads from the
+runtime context's mappings, not the editor context's. The editor
+shortcuts (Undo/Redo/Delete/Copy/Paste) are NOT mapped in the runtime
+context, so they are inert during Play. This matches the spec's exit
+criterion: "Switch window focus while holding a key and confirm no
+stuck action on return" and "Verify editor shortcuts do not move the
+player while editing script fields."
+
+Phase 6 will add `IInputService&` to the `OnSceneStart` callback
+signature (alongside the `IRuntimeCommandSink` mutation channel). Phase
+5 only builds the service and the context switching; scripts are not
+yet a consumer.
+
+### Test surface
+
+New `RT2Tests/src/Phase5InputTests.cpp` plus a new
+`RT2Tests/src/InputServiceTests.cpp` (CPU-only, links the InputService
+without GLFW by injecting synthetic sample state). Tests:
+
+**CPU-only / unit (InputServiceTests.cpp):**
+
+- Synthetic sample state (a test-only `SetSampleState` backdoor on
+  `InputService` that injects a frame's worth of key/mouse/scroll/
+  controller state without calling GLFW/ImGui) produces correct
+  `Pressed`/`Held`/`Released` edges across multiple frames.
+- Multiple bindings to one action combine disjunctively (any fires).
+- Keyboard axis `(down(neg) ? -1 : 0) + (down(pos) ? 1 : 0)` clamps.
+- Controller axis dead-zone and inversion are applied.
+- Context stack: top context consumes first; unhandled falls through.
+- Focus-loss reset: all down bindings become `Released`, axes zero.
+- Mapping serialization round-trips through `EditorSettingsStore` v2.
+- Unknown action names return `ActionState::None` and axis value 0
+  safely (no throw, no assert).
+- Empty mapping list → built-in defaults loaded.
+
+**Integration (Phase5InputTests.cpp, links the full InputService with
+Walnut/ImGui — gated to RT2App or a new RT2AppIntegrationTests target
+if RT2Tests must stay CPU-only):**
+
+- Editor context maps W/E to camera axes; viewport sub-context maps
+  W/E to gizmo mode. With viewport hovered and no right-mouse,
+  `IsPressed("gizmo_translate")` is true and `GetAxisValue("move_forward")`
+  is 0. With right-mouse held, the inverse.
+- Play pushes runtime context; editor `undo` action is `None` during
+  Play; Stop re-activates it.
+- Rebind `move_forward` from W to Up arrow in the serialized mapping;
+  reload; verify Up arrow drives the axis and W does not.
+- Focus loss while holding W: `IsDown("move_forward")` returns false
+  on the next frame.
+- Controller connect mid-Play: axis `move_right` reads from the
+  controller's left stick X within one frame.
+
+If RT2Tests must remain CPU-only (no GLFW/ImGui link), the integration
+tests move to a new `RT2AppIntegrationTests` target that links Walnut.
+The CPU-only unit tests cover the core state machine; the integration
+tests cover the GLFW/ImGui sampling and context switching.
+
+### Files
+
+- New: `RT2App/src/InputService.h/.cpp` (`InputService`,
+  `IInputService`, `ActionState`, `ActionBinding`, `AxisBinding`,
+  `InputMapping`, `InputContext`, `ModifierBits`). CPU-only types in
+  the header; the .cpp links GLFW/ImGui for sampling.
+- New: `RT2App/src/InputTypes.h` (CPU-only `KeyCode`/`MouseButton`/
+  `ModifierBits`/`ActionState`/`ActionBinding`/`AxisBinding`/
+  `InputMapping`/`InputContext` — no GLFW/ImGui/Walnut includes). This
+  splits the types from the service so `EditorSettingsStore` and
+  `RT2SliceRunner` can serialize/bind without pulling GLFW.
+- New: `RT2Tests/src/InputServiceTests.cpp` (CPU-only unit tests).
+- New: `RT2Tests/src/Phase5InputTests.cpp` (integration tests, or
+  moved to a new RT2AppIntegrationTests target if RT2Tests must stay
+  CPU-only).
+- Modified: `RT2App/src/Camera.h/.cpp` (refactored `OnUpdate` to take
+  `IInputService&`; drop `Walnut/Input/Input.h` include).
+- Modified: `RT2App/src/WalnutApp.cpp` (own `InputService`, push/pop
+  contexts in `EnterPlay`/`EnterStop`, pass service to camera and
+  shortcut handlers, rewrite shortcut handlers to read from service).
+- Modified: `RT2App/src/EditorTransformGizmo.cpp` (gizmo mode hotkeys
+  read from `IInputService`).
+- Modified: `RT2App/src/SceneEditorUI.cpp` (hierarchy panel shortcuts
+  read from `IInputService`).
+- Modified: `RT2App/src/EditorSettings.h/.cpp` (schema v2, new
+  `inputMappings` field, `LoadInputMappings`/`SaveInputMappings`).
+- Modified: `RT2App/RT2App.vcxproj`,
+  `RT2Tests/RT2Tests.vcxproj`, `RT2Tests/premake5.lua`,
+  `RT2SliceRunner/premake5.lua` (if InputTypes.cpp is needed —
+  probably header-only).
+
+### Verification gates
+
+Release x64 build; focused Phase 5 input tests; full RT2Tests where
+the only permitted failures are the six known pre-existing cases;
+`run_slice_test.ps1` and `run_recovery_test.ps1` pass;
+`graphify update .`; documentation updates with actual test counts.
+
+### Runtime acceptance (interactive, pending user)
+
+- Rebind `move_forward` from W to Up arrow in the editor settings,
+  restart RT2, enter Play, and verify the new binding drives the
+  camera immediately.
+- Hold W, alt-tab away, alt-tab back: no stuck movement.
+- Plug in a controller mid-Play: left stick drives `move_right` /
+  `move_forward` within one frame.
+- Enter Play with a runtime context mapping; verify Ctrl+Z does
+  nothing (Undo is editor-only).
+- Verify the gizmo W/E/R hotkeys still switch modes when the viewport
+  is hovered and right-mouse is not held.
+
+### Exit criterion
+
+No gameplay-facing code (and no editor camera or shortcut code) reads
+GLFW key or mouse state directly, nor `ImGui::IsKeyPressed` /
+`ImGui::IsMouseClicked` directly. All input consumption goes through
+`IInputService`. The single GLFW-touching code path is
+`InputService::BeginFrame` (and the joystick + window-focus callbacks
+registered in `Initialize`).
+
+### Explicitly out of scope for this Phase 5 completion slice
+
+- Lua script access to `IInputService` (Phase 6 adds the reference to
+  `OnSceneStart`).
+- Per-entity input components (Phase 6 — gameplay scripts read the
+  shared service, no per-entity mapping).
+- Input-driven camera cuts / cinematic cameras (Phase 12 — standalone
+  runtime).
+- Touch input (later backlog).
+- Hot-reload of input mappings while Playing (Phase 5 reloads on next
+  Play/Stop cycle; live reload is a future convenience).
+- Rebinding UI (Phase 5 persists mappings and exposes load/save; the
+  interactive rebinding dialog is Phase 7's content-browser era —
+  Phase 5 verification uses JSON editing of the settings file or a
+  test-only `SetMapping` API).
+- Multi-viewport input isolation (RT2 has one viewport; multi-viewport
+  is a later UI phase).
