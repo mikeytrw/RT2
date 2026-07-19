@@ -2039,3 +2039,172 @@ Verification report (implementation):
 
 Runtime acceptance (interactive): pending — to be performed by the user
 against a Release deployment. The six behavioural checks listed above.
+
+## Phase 4 — Edit/Play/Pause lifecycle (completion specification)
+
+Phase 4's vertical slice is already implemented (RuntimeSceneController,
+Play/Pause/Step/Stop, deep-clone, editor camera snapshot, runtime camera
+selection by lowest UUID, 17 tests). This completion slice closes the
+remaining Phase 4 work items so the exit criterion — "Repeated Play/Stop
+cycles neither leak entities/resources nor alter saved scene state" — is
+met by construction and verified by a dedicated test surface, not just by
+the existing 100-cycle smoke test.
+
+The slice adds three things:
+
+1. **Scene start/stop lifecycle callbacks.** A small, dependency-free
+   interface (`ISceneLifecycleCallbacks`) the host can install on the
+   runtime controller. `OnSceneStart(runtime)` fires once after the runtime
+   clone is built and activated (Play). `OnSceneStop(runtime)` fires once
+   before the runtime clone is destroyed (Stop). This is the seam Phase 6
+   scripting will hook `OnCreate`/`OnDestroy` into; for Phase 4 it is
+   exercised by a recording test spy, not a real system. The callbacks
+   receive the runtime document by const reference — they may observe but
+   not mutate during the start/stop envelope. Mutation happens in the
+   fixed/variable update hooks (Phase 6).
+
+2. **Deferred structural-change safe point.** Today the runtime document
+   is mutated in-place during `RunFixedTick` (MotionSystem writes
+   `Transform::translation`). Structural changes (spawn/destroy during
+   Play) are not supported — `game-loop.md` notes the safe point exists
+   conceptually but is unimplemented. This slice adds a deferred queue on
+   the runtime controller:
+   - `QueueCreateRuntimeEntity(record)` and `QueueDestroyRuntimeEntity(uuid)`
+     push onto `m_PendingCreates` / `m_PendingDestroys`. Public, callable by
+     future script systems during a fixed tick.
+   - `ApplyDeferredStructuralChanges()` drains both queues at the defined
+     safe point (after the fixed-step loop, before
+     `SceneGraph::UpdateWorldTransforms` and the batched sync). Creates are
+     applied in queued order; destroys are applied in queued order. Both
+     operate on the runtime document only; the authoring document is
+     untouched.
+   - The queue is cleared on Stop (any pending changes are dropped — the
+     runtime document is being destroyed anyway).
+   - The structural impact of a deferred change is coalesced into the
+     existing per-frame batched sync: if any structural change was applied,
+     the sync impact is `Structural` (full rebuild); otherwise `Transform`
+     (instance-only). The controller does NOT call `FullSync` per change —
+     one coalesced sync per rendered frame, matching `game-loop.md`.
+
+3. **Exit-criterion test surface.** A new `Phase4LifecycleTests.cpp` with:
+   - Lifecycle callback order and counts: Play → OnSceneStart(1) → ...
+     → Stop → OnSceneStop(1). 100 cycles → 100 of each, no double-fire.
+   - Deferred create queued during a fixed tick appears in the runtime
+     scene after the next `ApplyDeferredStructuralChanges`, with a fresh
+     UUID (not the authoring document's UUID space).
+   - Deferred destroy queued during a fixed tick removes the runtime
+     entity; the authoring entity with the same UUID is unaffected.
+   - Deferred changes are dropped on Stop (queue cleared; authoring
+     unchanged).
+   - Structural impact coalescing: a frame with a deferred create fires
+     exactly one `FullSync`; a frame with only motion fires
+     `TransformSync`; a frame with both fires one `FullSync` (not two).
+   - Repeated Play/Stop with deferred changes pending: no leak, no
+     authoring mutation, no crash. (Extends the existing 100-cycle test
+     with pending-queue stress.)
+   - Resume from Paused preserves the deferred queue (it is not cleared
+     on Pause/Resume — only on Stop).
+
+Core design decisions:
+
+- **Lifecycle callbacks are const-observe only at start/stop.** The
+  start/stop envelope is for initialization/teardown, not simulation.
+  Phase 6's `OnCreate`/`OnDestroy` will run inside these callbacks but
+  operate on already-built runtime state. Mutation hooks (fixed/variable
+  update) are a Phase 6 addition; Phase 4 only proves the envelope.
+- **Deferred queue is runtime-only.** The authoring document is never
+  mutated by a deferred change. Stop destroys the runtime document and
+  any pending queue contents; the authoring document is the restore
+  source, exactly as today.
+- **Coalesced sync, one per frame.** A frame with structural changes
+  fires one `FullSync` (the bridge's `FullSync` is the structural-impact
+  callback; the existing `EditorSyncRouter` would downgrade a
+  no-resource-change structural to a material sync, but the runtime
+  controller talks to `ISceneRenderBridge` directly, not the router —
+  so the controller picks the impact itself: `Structural` if any
+  deferred create/destroy was applied, else `Transform`). This matches
+  the existing vertical-slice contract where `Update` always calls
+  `TransformSync`; the slice just adds the `Structural` path.
+- **UUIDs for runtime-created entities are fresh v4 UUIDs from the
+  runtime document's UUID provider.** They do NOT collide with authoring
+  UUIDs (the runtime clone's UUID index is a copy of the authoring's at
+  Play, but new UUIDs are generated by the provider, not the authoring
+  document). A deferred create therefore never aliases an authoring
+  entity on Stop-then-re-Play (the runtime document is destroyed and
+  re-cloned fresh each Play).
+- **No new public SceneManager APIs.** Deferred creates use a small
+  private helper on the controller that emplaces the entity directly
+  into the runtime `ECSScene` registry and assigns a fresh UUID via the
+  runtime document's UUID provider. The helper is internal to the
+  controller; no public API surface changes. (This avoids constructing a
+  second SceneManager bound to the runtime document.)
+- **No ImGui, no WalnutApp behavior change.** The Play/Pause/Step/Stop
+  UI is unchanged. The lifecycle callbacks and deferred queue are
+  exercised by tests; the interactive app installs no callbacks and
+  never queues a deferred change. Phase 6 wires scripting into both.
+
+Files:
+
+- New: `RT2App/src/SceneLifecycleCallbacks.h` (the
+  `ISceneLifecycleCallbacks` interface, dependency-free),
+  `RT2Tests/src/Phase4LifecycleTests.cpp`.
+- Modified: `RuntimeSceneController.h/.cpp` (lifecycle callback storage +
+  dispatch in Play/Stop; deferred-create/destroy queue + drain at the
+  safe point; structural-impact coalescing in `Update`/`Step`),
+  `RT2Tests/premake5.lua` and `RT2Tests.vcxproj` (new test file
+  registered). `WalnutApp.cpp` is NOT modified — interactive behavior is
+  unchanged.
+
+Test plan (all CPU, doctest; existing 17 RuntimeSceneController tests stay
+green; 3A/3B1/3B2 coverage stays green; the six known pre-existing
+failures remain the only failures):
+
+- Lifecycle callbacks fire exactly once per Play and once per Stop, in
+  order, across a single cycle.
+- Lifecycle callbacks fire 100 times each across 100 Play/Stop cycles;
+  no double-fire, no missed fire.
+- OnSceneStart receives a non-null runtime document; OnSceneStop receives
+  a non-null runtime document (the destroy happens AFTER the callback).
+- Deferred create queued during a fixed tick: after `Update` returns, the
+  entity exists in the runtime scene with a fresh UUID; the bridge
+  received exactly one `FullSync` (structural impact) for that frame.
+- Deferred destroy queued during a fixed tick: after `Update` returns, the
+  runtime entity is gone; the authoring entity with the same UUID is
+  unchanged; one `FullSync` for that frame.
+- Mixed frame (motion + deferred create): one `FullSync`, not
+  `TransformSync` + `FullSync`.
+- Frame with only motion: `TransformSync` only (unchanged behavior).
+- Stop with pending deferred changes: queue is cleared; authoring
+  document is byte-for-byte unchanged (serialize before and after,
+  compare). The existing 100-cycle test is extended with a pending-queue
+  variant.
+- Pause/Resume preserves the deferred queue (queued during Paused via the
+  public API, drained on the next `Step` or on Resume's next `Update`).
+- Step drains the deferred queue at its safe point (same as `Update`).
+
+Verification gates: Release x64 build; focused Phase 4 lifecycle tests;
+full RT2Tests where the only permitted failures are exactly the six known
+pre-existing cases; `run_slice_test.ps1` and `run_recovery_test.ps1` pass;
+`graphify update .`; documentation updates with actual test counts.
+
+Runtime acceptance (interactive, pending user):
+
+- Play, observe motion, Stop — authoring scene unchanged (existing
+  behavior, now backed by an explicit test).
+- (No new interactive surface — the deferred queue and lifecycle
+  callbacks are exercised by tests only this phase; Phase 6 wires them
+  to scripting.)
+
+Exit criterion (post-Phase-4): Repeated Play/Stop cycles — including cycles
+with deferred structural changes pending — neither leak entities/resources
+nor alter saved scene state. The authoring document is byte-for-byte
+identical across any number of Play/Stop cycles with any sequence of
+runtime mutations.
+
+Explicitly out of scope for this Phase 4 completion slice: scripting
+(`OnCreate`/`OnFixedUpdate`/`OnUpdate`/`OnDestroy` — Phase 6); physics
+(Phase 9); variable-update script callbacks (Phase 6); exposing the
+deferred queue to Lua (Phase 6); content browser / asset database
+(Phase 7); input action system (Phase 5). The lifecycle callback
+interface is added now so Phase 6 can hook into it without further
+RuntimeSceneController changes.

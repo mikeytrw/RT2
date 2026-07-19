@@ -875,3 +875,35 @@ scene-management contracts are:
 - **Exit criterion:** after 3B2, the only non-command authoring mutations are
   glTF import, Load Mesh File, and env-map load. The `NotifySceneChanged` →
   compaction-gated path shrinks to imports only.
+
+### Runtime lifecycle — Phase 4 completion (planned)
+
+The vertical-slice `RuntimeSceneController` (Play/Pause/Step/Stop, deep-clone,
+editor camera snapshot, runtime camera selection by lowest UUID) is
+implemented. The Phase 4 completion slice closes the remaining plan items:
+scene start/stop lifecycle callbacks, a deferred structural-change queue
+drained at the `game-loop.md` safe point, and a dedicated exit-criterion test
+surface. See the Phase 4 section of `docs/game-engine-development-plan.md`
+for the full specification. The key scene-management contracts are:
+
+- **Lifecycle callbacks are const-observe at start/stop.**
+  `ISceneLifecycleCallbacks::OnSceneStart` / `OnSceneStop` fire once per Play
+  / Stop on the runtime controller, receiving the runtime document by const
+  reference. This is the seam Phase 6 scripting hooks `OnCreate` /
+  `OnDestroy` into; for Phase 4 it is exercised by a recording test spy.
+- **Deferred structural changes are runtime-only and coalesced.**
+  `QueueCreateRuntimeEntity` / `QueueDestroyRuntimeEntity` push onto a
+  pending queue drained at the safe point (after the fixed-step loop,
+  before `SceneGraph::UpdateWorldTransforms` and the batched sync). The
+  authoring document is never mutated. Stop destroys the runtime document
+  and any pending queue contents. A frame with any structural change fires
+  one `FullSync`; a frame with only motion fires `TransformSync`.
+- **Runtime-created UUIDs are fresh v4 from the runtime document's UUID
+  provider.** They do not collide with authoring UUIDs and never alias an
+  authoring entity on Stop-then-re-Play.
+- **No new public SceneManager APIs.** Deferred creates use a private
+  controller helper that emplaces into the runtime `ECSScene` registry and
+  assigns a fresh UUID via the runtime document's UUID provider.
+- **Exit criterion:** repeated Play/Stop cycles — including cycles with
+  deferred structural changes pending — neither leak entities/resources
+  nor alter saved scene state.
