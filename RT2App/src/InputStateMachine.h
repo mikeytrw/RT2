@@ -31,7 +31,17 @@ namespace rt2::core {
 // Resolution policy: physical-source consumption with lower-context
 // blocking. The topmost context in the stack that maps a physical
 // source (key, mouse button, gamepad button/axis) claims it; lower
-// contexts' bindings on the same source do not fire.
+// contexts' bindings on the same source do not fire. The claim is on
+// the physical source, NOT on the modifier-gated binding — a higher
+// context's Ctrl+S binding claims physical S and suppresses a lower
+// context's plain-S binding even when Ctrl is not held.
+//
+// Frame phasing: actions and axes are recomputed ONLY in BeginFrame.
+// A context pushed AFTER BeginFrame (in the same frame) does NOT
+// affect action reads until the next BeginFrame. The host must not
+// read edge-triggered actions (Pressed/Released) on a freshly-pushed
+// context in the same frame; Held/axis reads are benign (one-frame
+// latency for continuous consumers like the fly-camera).
 //
 // Test seam: SetSampleState injects a synthetic raw snapshot without
 // any GLFW/ImGui call. This is the backdoor used by
@@ -212,6 +222,15 @@ private:
     {
         ActionState state = ActionState::None;
         bool suppressed = false;
+        // Previous-frame "down" state for this action, including modifier
+        // matching. Stored per-action (not per-source) so that a modifier-
+        // gated action (e.g. Ctrl+S) correctly transitions None→Pressed
+        // when the base key was held last frame WITHOUT the modifier and
+        // is held this frame WITH the modifier.
+        bool previousActionDown = false;
+        // Current-frame "down" state (computed in RecomputeActionsAndAxes,
+        // committed to previousActionDown in EndFrame).
+        bool currentActionDown = false;
     };
     std::unordered_map<std::string, ActionEntry> m_Actions;
 
@@ -229,6 +248,10 @@ private:
 
     bool m_FocusLost = false;
     bool m_PrevFocused = true;
+    // Cached this frame: m_FocusLost ? false : focused. Gamepad-axis
+    // computation reads this (glfwGetGamepadState is focus-independent,
+    // so the gate is not implicit there).
+    bool m_EffectiveFocus = true;
 
     // Suppression flags set by InputService::ResolveUI and cleared at
     // EndFrame.

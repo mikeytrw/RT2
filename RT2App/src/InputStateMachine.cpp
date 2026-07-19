@@ -1,4 +1,4 @@
-#include "InputStateMachine.h"
+﻿#include "InputStateMachine.h"
 
 #include <algorithm>
 #include <cmath>
@@ -44,7 +44,7 @@ int InputStateMachine::ResolveGamepadSlot(int requested,
         return s.gamepadPresent[requested] ? requested : -1;
     if (requested == -1)
     {
-        // "any connected gamepad" → first present slot.
+        // "any connected gamepad" â†’ first present slot.
         for (int i = 0; i < RawInputSnapshot::kMaxGamepadSlots; ++i)
             if (s.gamepadPresent[i]) return i;
         return -1;
@@ -121,7 +121,7 @@ InputStateMachine::ResolveMapping(const std::string& name) const
 }
 
 // ============================================================================
-// BeginFrame — advance the state machine by one frame
+// BeginFrame â€” advance the state machine by one frame
 // ============================================================================
 
 void InputStateMachine::BeginFrame(const RawInputSnapshot& snapshot)
@@ -139,7 +139,7 @@ void InputStateMachine::BeginFrame(const RawInputSnapshot& snapshot)
 
     if (!focused && !m_FocusLost)
     {
-        // Transition: focused → unfocused. Mark all currently-down
+        // Transition: focused â†’ unfocused. Mark all currently-down
         // sources as Released for one frame. We implement this by
         // keeping currentDown = false next frame and letting the edge
         // computation produce Released (previousDown = true,
@@ -150,7 +150,7 @@ void InputStateMachine::BeginFrame(const RawInputSnapshot& snapshot)
     // If focus is lost, ignore raw samples (treat everything as up).
     // The previous frame's Released edges were already produced; this
     // frame and subsequent frames produce None until refocus.
-    const bool effectiveFocus = m_FocusLost ? false : focused;
+    m_EffectiveFocus = m_FocusLost ? false : focused;
 
     // ---- Per-source current-down ----
     // Walk every binding in every context and record currentDown for
@@ -183,7 +183,7 @@ void InputStateMachine::BeginFrame(const RawInputSnapshot& snapshot)
             {
                 if (!ModifiersMatch(b.modifiers, snapshot)) continue;
                 SourceKey k = BindingSource(b);
-                touchSource(k, effectiveFocus && IsSourceDown(k, snapshot));
+                touchSource(k, m_EffectiveFocus && IsSourceDown(k, snapshot));
             }
             for (const AxisBinding& b : m.axes)
             {
@@ -192,8 +192,8 @@ void InputStateMachine::BeginFrame(const RawInputSnapshot& snapshot)
                     // Two sources: positive and negative.
                     SourceKey kp{ b.device, b.positive, b.gamepadSlot };
                     SourceKey kn{ b.device, b.negative, b.gamepadSlot };
-                    touchSource(kp, effectiveFocus && IsSourceDown(kp, snapshot));
-                    touchSource(kn, effectiveFocus && IsSourceDown(kn, snapshot));
+                    touchSource(kp, m_EffectiveFocus && IsSourceDown(kp, snapshot));
+                    touchSource(kn, m_EffectiveFocus && IsSourceDown(kn, snapshot));
                 }
                 else if (b.device == InputDeviceKind::GamepadAxis)
                 {
@@ -237,6 +237,11 @@ void InputStateMachine::RecomputeActionsAndAxes(
     const RawInputSnapshot& snapshot)
 {
     m_Claimed.clear();
+    // Preserve previousActionDown across the clear so edge computation
+    // can compare against last frame's action-down state.
+    std::unordered_map<std::string, bool> prevActionDown;
+    for (const auto& kv : m_Actions)
+        prevActionDown[kv.first] = kv.second.previousActionDown;
     m_Actions.clear();
     m_Axes.clear();
 
@@ -292,9 +297,10 @@ void InputStateMachine::RecomputeActionsAndAxes(
     // the binding's source is claimed by this context or below (i.e.
     // not claimed by a higher context), it contributes to the action.
     //
-    // The claim map stores the index of the context that claimed the
-    // source. A binding in context[i] survives if the claim map entry
-    // for its source is >= i (i.e. no higher context claimed it).
+    // The claim map stores the index of the HIGHEST context that claimed
+    // the source (top wins). A binding in context[i] survives if the
+    // claim map entry for its source is <= i (i.e. no higher context
+    // claimed it).
     std::unordered_set<std::string> actionNames;
     std::unordered_set<std::string> axisNames;
     for (const InputContext* ctx : m_ContextStack)
@@ -310,7 +316,6 @@ void InputStateMachine::RecomputeActionsAndAxes(
     for (const std::string& name : actionNames)
     {
         bool currentDown = false;
-        bool previousDown = false;
         for (size_t i = 0; i < m_ContextStack.size(); ++i)
         {
             const InputContext* ctx = m_ContextStack[i];
@@ -332,19 +337,24 @@ void InputStateMachine::RecomputeActionsAndAxes(
                 {
                     auto st = m_SourceStates.find(k);
                     if (st != m_SourceStates.end())
-                    {
-                        currentDown  = currentDown  || st->second.currentDown;
-                        previousDown = previousDown || st->second.previousDown;
-                    }
+                        currentDown = currentDown || st->second.currentDown;
                 }
             }
         }
+        // previousActionDown is committed at EndFrame from the previous
+        // frame's currentDown. Using per-action previous (not per-source)
+        // ensures modifier-gated actions transition correctly when the
+        // base key was held without the modifier and is now held with it.
+        auto padIt = prevActionDown.find(name);
+        bool previousDown = (padIt != prevActionDown.end()) ? padIt->second : false;
         ActionState state;
         if (currentDown && !previousDown)      state = ActionState::Pressed;
         else if (currentDown && previousDown)  state = ActionState::Held;
         else if (!currentDown && previousDown) state = ActionState::Released;
         else                                   state = ActionState::None;
         m_Actions[name].state = state;
+        m_Actions[name].currentActionDown = currentDown;
+        m_Actions[name].previousActionDown = previousDown;
     }
 
     for (const std::string& name : axisNames)
@@ -388,6 +398,13 @@ void InputStateMachine::RecomputeActionsAndAxes(
                     SourceKey k = BindingSourceAxis(b);
                     auto it = m_Claimed.find(k);
                     if (it != m_Claimed.end() && it->second > i) continue;
+                    // Focus-loss gate: glfwGetGamepadState is window-
+                    // focus-independent, so a deflected stick would keep
+                    // driving the axis while the window is unfocused.
+                    // Treat gamepad axes as up while focus is lost, matching
+                    // the keyboard-axis behavior (effectiveFocus gate in
+                    // BeginFrame).
+                    if (!m_EffectiveFocus) continue;
                     int slot = ResolveGamepadSlot(b.gamepadSlot, snapshot);
                     if (slot < 0) continue;
                     if (b.code >= 6) continue;
@@ -502,6 +519,13 @@ void InputStateMachine::EndFrame()
     // Commit current → previous for next frame.
     for (auto& kv : m_SourceStates)
         kv.second.previousDown = kv.second.currentDown;
+
+    // Commit per-action current → previous. This must happen AFTER
+    // RecomputeActionsAndAxes (called from BeginFrame) so the next
+    // frame's edge computation sees this frame's action-down state
+    // (including modifier matching), not the per-source state.
+    for (auto& kv : m_Actions)
+        kv.second.previousActionDown = kv.second.currentActionDown;
 
     // Clear per-frame deltas.
     m_MouseDelta = {0.0f, 0.0f};

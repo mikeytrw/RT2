@@ -484,6 +484,54 @@ TEST_CASE("Phase 5 StateMachine: focus loss releases all down bindings and zeroe
     sm.EndFrame();
 }
 
+TEST_CASE("Phase 5 StateMachine: gamepad axis zeroes on focus loss (glfwGetGamepadState is focus-independent)")
+{
+    InputStateMachine sm;
+    InputContext ctx("ctx");
+    ctx.SetMapping(GamepadAxisMapping("move_right",
+        static_cast<uint8_t>(GamepadAxis::LeftX), /*slot=*/0, /*dz=*/0.15f, /*invert=*/false));
+    sm.PushContext(&ctx);
+
+    auto setAxis = [](RawInputSnapshot& s, int slot, uint8_t axis, float v)
+    {
+        s.gamepadPresent[slot] = true;
+        s.gamepadAxes[slot][axis] = v;
+    };
+
+    // Frame 0: focused, stick deflected → axis value non-zero.
+    {
+        RawInputSnapshot s = EmptySnapshot();
+        setAxis(s, 0, static_cast<uint8_t>(GamepadAxis::LeftX), 0.5f);
+        sm.BeginFrame(s);
+        CHECK(doctest::Approx(sm.GetAxisValue("move_right")).epsilon(0.001f) == 0.4117647f);
+        sm.EndFrame();
+    }
+
+    // Frame 1: focus lost, stick still deflected. Gamepad axis must
+    // read 0 (effectiveFocus gate), even though glfwGetGamepadState
+    // would still return the deflection.
+    {
+        RawInputSnapshot s = EmptySnapshot();
+        s.windowFocused = false;
+        setAxis(s, 0, static_cast<uint8_t>(GamepadAxis::LeftX), 0.5f);
+        sm.BeginFrame(s);
+        CHECK(sm.IsFocusLost());
+        CHECK(sm.GetAxisValue("move_right") == 0.0f);
+        sm.EndFrame();
+    }
+
+    // Frame 2: refocus, stick still deflected. Axis reads non-zero again.
+    {
+        RawInputSnapshot s = EmptySnapshot();
+        s.windowFocused = true;
+        setAxis(s, 0, static_cast<uint8_t>(GamepadAxis::LeftX), 0.5f);
+        sm.BeginFrame(s);
+        CHECK_FALSE(sm.IsFocusLost());
+        CHECK(doctest::Approx(sm.GetAxisValue("move_right")).epsilon(0.001f) == 0.4117647f);
+        sm.EndFrame();
+    }
+}
+
 // ============================================================================
 // 8. Unknown action / axis names are safe
 // ============================================================================
@@ -686,5 +734,99 @@ TEST_CASE("Phase 5 StateMachine: modifier-gated action fires only when modifiers
     s1.ctrl = true;
     sm.BeginFrame(s1);
     CHECK(sm.GetActionState("undo") == ActionState::Pressed);
+    sm.EndFrame();
+}
+
+// ============================================================================
+// 13. Modifier-claim semantics — a modified binding in a higher context
+// claims its base physical key, suppressing a lower context's plain
+// binding on the same key even when the modifier is NOT held. This pins
+// the intended "physical-source consumption" model before Phase 6/7 add
+// more modified bindings.
+// ============================================================================
+
+TEST_CASE("Phase 5 StateMachine: modified binding in higher context claims base key, suppresses lower plain binding")
+{
+    InputStateMachine sm;
+    InputContext lower("lower");
+    // Lower context maps plain S → "scroll_down".
+    lower.SetMapping(KeyboardAction("scroll_down",
+        static_cast<uint16_t>(KeyCode::S), ModifierBits::None));
+    sm.PushContext(&lower);
+
+    InputContext upper("upper");
+    // Upper context maps Ctrl+S → "save".
+    upper.SetMapping(KeyboardAction("save",
+        static_cast<uint16_t>(KeyCode::S), ModifierBits::Ctrl));
+    sm.PushContext(&upper);
+
+    // Frame 0: S pressed WITHOUT Ctrl. The upper context's Ctrl+S binding
+    // does NOT fire (modifier mismatch), but its physical S source IS
+    // claimed by the upper context. The lower context's plain-S binding
+    // does not fire either (S is claimed above it). This is the documented
+    // "physical-source consumption" semantics: the claim is on the physical
+    // key, not the modifier-gated binding.
+    RawInputSnapshot s0 = EmptySnapshot();
+    sm.BeginFrame(s0); sm.EndFrame();
+
+    RawInputSnapshot s1 = EmptySnapshot();
+    PressKey(s1, static_cast<uint16_t>(KeyCode::S));
+    sm.BeginFrame(s1);
+    CHECK(sm.GetActionState("save") == ActionState::None);
+    CHECK(sm.GetActionState("scroll_down") == ActionState::None);
+    sm.EndFrame();
+
+    // Frame 2: S pressed WITH Ctrl. Upper context's save fires (modifier
+    // matches); lower context's scroll_down does not (S claimed above).
+    RawInputSnapshot s2 = EmptySnapshot();
+    PressKey(s2, static_cast<uint16_t>(KeyCode::S));
+    s2.ctrl = true;
+    sm.BeginFrame(s2);
+    CHECK(sm.GetActionState("save") == ActionState::Pressed);
+    CHECK(sm.GetActionState("scroll_down") == ActionState::None);
+    sm.EndFrame();
+}
+
+// ============================================================================
+// 14. Same-frame context push lag — actions are recomputed only in
+// BeginFrame (inside SampleRaw), BEFORE the host pushes viewport
+// sub-contexts. So a freshly-pushed context does not affect the same
+// frame's action reads; it takes effect next frame. This pins the
+// documented behavior so a future edge-sensitive action gated on a
+// dynamically-pushed context is not silently misread.
+// ============================================================================
+
+TEST_CASE("Phase 5 StateMachine: freshly-pushed context does not affect same-frame action reads")
+{
+    InputStateMachine sm;
+    InputContext editor("editor");
+    editor.SetMapping(KeyboardAction("undo",
+        static_cast<uint16_t>(KeyCode::Z), ModifierBits::Ctrl));
+    sm.PushContext(&editor);
+
+    InputContext viewport("viewport");
+    viewport.SetMapping(KeyboardAction("gizmo_translate",
+        static_cast<uint16_t>(KeyCode::W)));
+    // Note: viewport is NOT pushed yet.
+
+    // Frame 0: push viewport AFTER BeginFrame (simulating the host
+    // pushing a sub-context after SampleRaw). The action reads this
+    // frame do NOT see the viewport context.
+    RawInputSnapshot s0 = EmptySnapshot();
+    sm.BeginFrame(s0);
+    // Read BEFORE push: viewport not in stack, gizmo_translate unknown.
+    CHECK(sm.GetActionState("gizmo_translate") == ActionState::None);
+    sm.PushContext(&viewport);
+    // Read AFTER push in the same frame: still None — actions were
+    // computed in BeginFrame before the push.
+    CHECK(sm.GetActionState("gizmo_translate") == ActionState::None);
+    sm.EndFrame();
+
+    // Frame 1: BeginFrame now sees the viewport context. A W press
+    // fires gizmo_translate.
+    RawInputSnapshot s1 = EmptySnapshot();
+    PressKey(s1, static_cast<uint16_t>(KeyCode::W));
+    sm.BeginFrame(s1);
+    CHECK(sm.GetActionState("gizmo_translate") == ActionState::Pressed);
     sm.EndFrame();
 }

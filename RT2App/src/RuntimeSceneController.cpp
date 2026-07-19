@@ -7,6 +7,8 @@
 #include "core/UUID.h"
 
 #include <algorithm>
+#include <cassert>
+#include <cstdio>
 #include <unordered_set>
 #include <vector>
 
@@ -124,6 +126,9 @@ bool RuntimeSceneController::Step(ISceneRenderBridge& bridge)
     Error drainErr;
     std::vector<UUID> createdThisBatch;
     const bool structural = ApplyDeferredStructuralChanges(drainErr, createdThisBatch);
+    if (!drainErr.IsOk())
+        printf("[Runtime] Step deferred-queue validation failed: %s (queue left intact)\n",
+               drainErr.Format().c_str());
 
     // Batched: update world transforms once after the tick + drain.
     SceneGraph::UpdateWorldTransforms(m_Runtime->ecs.registry);
@@ -246,6 +251,9 @@ void RuntimeSceneController::Update(float frameDt, ISceneRenderBridge& bridge)
     Error drainErr;
     std::vector<UUID> createdThisBatch;
     const bool structural = ApplyDeferredStructuralChanges(drainErr, createdThisBatch);
+    if (!drainErr.IsOk())
+        printf("[Runtime] Update deferred-queue validation failed: %s (queue left intact)\n",
+               drainErr.Format().c_str());
 
     // Batched: update world transforms once after all substeps + drain.
     SceneGraph::UpdateWorldTransforms(m_Runtime->ecs.registry);
@@ -407,8 +415,13 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
     }
 
     // Phase 2: apply the batch atomically in enqueue order via the mutator.
-    // Post-validation, mutator failures are bugs — treat as fatal: clear the
-    // queue, surface the error, and keep running.
+    // Post-validation, mutator failures are bugs — the validation phase
+    // already checked every precondition (duplicate UUID, missing parent,
+    // missing destroy target). A mutator Failure here means the validation
+    // logic and the mutator disagree, which is a code bug. We assert in
+    // debug and surface the error + clear the queue in release (the runtime
+    // document may be partially mutated, but leaving the queue intact
+    // would retry the same bug every frame).
     for (const auto& op : m_PendingOperations)
     {
         if (auto* create = std::get_if<CreateRuntimeEntityOperation>(&op))
@@ -416,6 +429,11 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
             auto r = m_Mutator.CreateEntity(doc, create->uuid, create->desc);
             if (!r.IsOk())
             {
+                // Post-validation mutator failure is a bug (validation and
+                // mutator disagree). Assert in debug so it's caught in
+                // testing; in release, surface the error and clear the
+                // queue to avoid retrying the same bug every frame.
+                assert(false && "RuntimeSceneMutator::CreateEntity failed post-validation");
                 err = r.error;
                 m_PendingOperations.clear();
                 return false;
@@ -427,6 +445,7 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
             auto r = m_Mutator.DestroySubtree(doc, destroy->uuid);
             if (!r.IsOk())
             {
+                assert(false && "RuntimeSceneMutator::DestroySubtree failed post-validation");
                 err = r.error;
                 m_PendingOperations.clear();
                 return false;
