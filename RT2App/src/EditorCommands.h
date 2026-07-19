@@ -17,10 +17,14 @@
 // entity is a graceful Failure.
 //
 // TransformCommand:
-//   - Stores {UUID, beforeLocalTRS, afterLocalTRS}. ALWAYS local space, even
-//     when the user edited in World mode (the Inspector captures
-//     beforeLocalTRS via GetLocalTransform regardless of mode). Undo/Redo
-//     restore via SetLocalTransform. Sync impact: Transform.
+//   - Stores a vector of {UUID, beforeLocalTRS, afterLocalTRS} triples.
+//     Phase 3A used a single triple; Phase 3B1 extends it to multi-entity for
+//     the gizmo drag path. The single-entity factory stays for the Inspector;
+//     a new multi-entity factory handles the gizmo path and drops no-op
+//     entities. ALWAYS local space, even when the user edited in World mode
+//     (the Inspector captures beforeLocalTRS via GetLocalTransform regardless
+//     of mode). Undo/Redo restore via SetLocalTransformStates. Sync impact:
+//     Transform.
 //
 // SetVisibilityCommand:
 //   - Stores {vector<UUID,bool> beforeStates, vector<UUID,bool> afterStates}.
@@ -34,28 +38,32 @@
 //
 // ============================================================================
 
+struct TransformTriple
+{
+	rt2::core::UUID target;
+	EditableTRS    beforeLocal;
+	EditableTRS    afterLocal;
+};
+
 class TransformCommand final : public IEditorCommand
 {
 public:
+	// Single-entity constructor (Phase 3A, Inspector path).
 	TransformCommand(rt2::core::UUID target,
 	                 EditableTRS beforeLocal,
-	                 EditableTRS afterLocal)
-		: m_Target(target)
-		, m_BeforeLocal(beforeLocal)
-		, m_AfterLocal(afterLocal) {}
+	                 EditableTRS afterLocal);
 
-	const rt2::core::UUID& Target() const { return m_Target; }
-	const EditableTRS& BeforeLocal() const { return m_BeforeLocal; }
-	const EditableTRS& AfterLocal() const { return m_AfterLocal; }
+	// Multi-entity constructor (Phase 3B1, gizmo path).
+	explicit TransformCommand(std::vector<TransformTriple> triples);
+
+	const std::vector<TransformTriple>& Triples() const { return m_Triples; }
 
 	EditorMutationResult Execute(SceneManager& scene) override;
 	EditorMutationResult Undo(SceneManager& scene) override;
 	std::string Description() const override { return "Transform"; }
 
 private:
-	rt2::core::UUID m_Target;
-	EditableTRS     m_BeforeLocal;
-	EditableTRS     m_AfterLocal;
+	std::vector<TransformTriple> m_Triples;
 };
 
 class SetVisibilityCommand final : public IEditorCommand
@@ -88,6 +96,12 @@ std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
 	rt2::core::UUID target,
 	EditableTRS beforeLocal,
 	EditableTRS afterLocal);
+
+// Multi-entity factory (Phase 3B1, gizmo path). Drops no-op triples (where
+// before and after normalize to the same TRS). Returns null if every triple
+// is a no-op.
+std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
+	std::vector<TransformTriple> triples);
 
 // Drops pairs already in the target state; if `afterStates` ends up empty
 // returns null. Validates that before/after UUID sets match.

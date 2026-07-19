@@ -689,6 +689,37 @@ public:
 		if (!gizmo.error.empty())
 			m_LastStatusMsg = gizmo.error;
 
+		// Phase 3B1: on gizmo drag end, build a multi-entity TransformCommand
+		// and record it via RecordApplied. The gizmo's per-frame
+		// TrySetWorldTransforms calls already applied the mutation; we only
+		// record the command here. The before-local TRS was captured at drag
+		// start; the after-local TRS is read live now.
+		if (gizmo.dragJustEnded && !gizmo.draggedUuids.empty())
+		{
+			std::vector<TransformTriple> triples;
+			triples.reserve(gizmo.draggedUuids.size());
+			for (std::size_t i = 0; i < gizmo.draggedUuids.size(); ++i)
+			{
+				const auto& uuid = gizmo.draggedUuids[i];
+				const auto entity = m_SceneMgr.FindEntityByUuid(uuid);
+				if (entity == entt::null) continue;
+				EditableTRS afterLocal;
+				if (!m_SceneMgr.GetLocalTransform(SceneManager::EntityId{ entity }, afterLocal))
+					continue;
+				triples.push_back({ uuid, gizmo.dragStartLocal[i], afterLocal });
+			}
+			auto cmd = MakeTransformCommandIfEffective(std::move(triples));
+			if (cmd)
+			{
+				EditorMutationResult applied;
+				applied.success = true;
+				applied.syncImpact = rt2::core::SyncImpact::Transform;
+				for (std::size_t i = 0; i < gizmo.draggedUuids.size(); ++i)
+					applied.affectedEntities.push_back(gizmo.draggedUuids[i]);
+				m_History.RecordApplied(std::move(cmd), m_SceneMgr, applied);
+			}
+		}
+
 		const bool ordinaryPickClick = imageHovered && !gizmo.consumesMouse &&
 			ImGui::IsMouseClicked(ImGuiMouseButton_Left);
 		const bool canPick = m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
@@ -829,6 +860,7 @@ public:
 					std::move(restored), std::max<uint64_t>(1, r.revision));
 				m_EditorUI.ResetForDocument();
 				m_History.Clear();
+				m_SceneMgr.CompactMeshRegistryNow();
 				m_Recovery->ResetSchedule();
 				m_LastStatusMsg = "Restored recovery";
 					// Upload to GPU
@@ -1577,6 +1609,7 @@ private:
 		}
 		m_EditorUI.ResetForDocument();
 		m_History.Clear();
+		m_SceneMgr.CompactMeshRegistryNow();
 
 		if (ext == "obj")
 		{
@@ -1802,6 +1835,7 @@ public:
 		m_SceneMgr.Clear();
 		m_EditorUI.ResetForDocument();
 		m_History.Clear();
+		m_SceneMgr.CompactMeshRegistryNow();
 		m_SceneMgr.ClearDirty();
 		m_Recovery->ResetSchedule();
 		// New untitled doc gets a fresh recovery id for this session.
@@ -1884,6 +1918,7 @@ public:
 		m_SceneMgr.ReplaceAuthoringDocument(std::move(tempDoc));
 		m_EditorUI.ResetForDocument();
 		m_History.Clear();
+		m_SceneMgr.CompactMeshRegistryNow();
 		m_SceneMgr.ClearDirty();
 		m_Recovery->ResetSchedule();
 		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();

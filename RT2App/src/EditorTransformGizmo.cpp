@@ -212,6 +212,20 @@ TransformGizmoResult EditorTransformGizmo::Draw(SceneManager& scene,
 			};
 		m_Drag.uuids = std::move(liveUuids);
 		m_Drag.startWorld = std::move(liveWorld);
+		// Phase 3B1: capture the before-drag local TRS for each entity so
+		// the host can build a multi-entity TransformCommand on drag end.
+		m_Drag.startLocal.clear();
+		m_Drag.startLocal.reserve(m_Drag.uuids.size());
+		for (const auto& uuid : m_Drag.uuids)
+		{
+			const entt::entity raw = scene.FindEntityByUuid(uuid);
+			EditableTRS local;
+			if (raw != entt::null &&
+			    scene.GetLocalTransform(SceneManager::EntityId{ raw }, local))
+				m_Drag.startLocal.push_back(local);
+			else
+				m_Drag.startLocal.push_back(EditableTRS{});
+		}
 	}
 
 	if (m_Drag.active && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
@@ -220,6 +234,13 @@ TransformGizmoResult EditorTransformGizmo::Draw(SceneManager& scene,
 		// selection click. This keeps the handles from masking small or nearby
 		// objects underneath them.
 		result.pickThrough = !m_Drag.moved;
+		// Phase 3B1: report drag-end so the host can record a TransformCommand.
+		if (m_Drag.moved)
+		{
+			result.dragJustEnded = true;
+			result.draggedUuids = m_Drag.uuids;
+			result.dragStartLocal = m_Drag.startLocal;
+		}
 		Cancel();
 	}
 	if (!m_Drag.active) return result;

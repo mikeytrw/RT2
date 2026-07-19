@@ -11,6 +11,7 @@
 #include "core/Error.h"
 #include "TransformEditing.h"
 #include "SceneMutation.h"
+#include "SubtreeSnapshot.h"
 #include <string>
 #include <vector>
 #include <functional>
@@ -159,6 +160,155 @@ struct EditorCameraPose;
 		const rt2::core::SceneDocument& snapshot,
 		const std::vector<rt2::core::UUID>& roots,
 		const std::optional<rt2::core::UUID>& parent = std::nullopt);
+
+	// ---- Phase 3B1 structural command APIs ----
+	// These APIs back undoable structural editor commands. They NEVER touch
+	// the command layer; the host constructs commands and routes them through
+	// EditorCommandHistory. The existing non-command APIs above stay unchanged
+	// for non-undoable paths (RT2SliceRunner, host-driven non-undoable flows).
+
+	// Remove subtrees WITHOUT running CompactMeshRegistry. Structural
+	// commands use this so a snapshot's stored MeshRef::meshIndex stays
+	// valid across Undo/Redo. The public RemoveSubtrees (with compaction)
+	// stays for non-command paths.
+	EditorMutationResult RemoveSubtreesNoCompact(
+		const std::vector<rt2::core::UUID>& roots);
+
+	// Remove the exact entities recorded in a SubtreeSnapshot. Validates
+	// every expected UUID exists, validates authored component state and
+	// hierarchy topology against the snapshot, rejects unexpected
+	// descendants, performs all validation before destroying anything,
+	// removes without resource compaction. Returns failure with no scene
+	// mutation if validation fails. "Exact" compares authoritative
+	// authored state only — not derived world matrices, GPU caches,
+	// selection state, or other transient editor/runtime data.
+	EditorMutationResult RemoveSubtreesExact(const SubtreeSnapshot& snapshot);
+
+	// Restore every entity in a SubtreeSnapshot with its stored UUID, name,
+	// parent, local TRS, visibility, and full-value component payloads.
+	// Root sibling anchors are validated against the current parent's
+	// children list (or the root-entity list); an inconsistent anchor fails
+	// atomically (zero mutation). Re-creates with the SAME stored UUIDs so
+	// Redo is idempotent.
+	EditorMutationResult RestoreSubtrees(const SubtreeSnapshot& snapshot);
+
+	// Capture the affected subtree(s) for command storage. Captures ONLY
+	// the roots and their descendants — never the whole scene. Roots are
+	// canonicalized (descendants of other roots are dropped) and ordered
+	// in caller-supplied order.
+	SubtreeSnapshot CaptureSubtreeSnapshot(
+		const std::vector<rt2::core::UUID>& roots) const;
+
+	// Explicit, safe compaction entry point. The Phase 3B1 invariant
+	// forbids compaction while any Undo or Redo entry references resource
+	// slots. The host is responsible for calling this only at
+	// history.Clear(), document adoption, or save/reload. In debug builds
+	// asserts history is clear; in release builds no-ops when history is
+	// non-empty (host contract violation would silently corrupt a
+	// snapshot's resource references otherwise).
+	void CompactMeshRegistryNow();
+
+	// Reserve known UUIDs for transactional creation commands. The host
+	// reserves the exact count via CountCanonicalSubtreeEntities, then
+	// passes the reserved UUIDs to the creation API. The manager's
+	// internal count validation is mandatory protection against stale
+	// input.
+	rt2::core::UUID ReserveKnownUuid();
+	std::vector<rt2::core::UUID> ReserveKnownUuids(size_t count);
+
+	// Return the exact canonical entity count for a multi-root selection
+	// including nested descendants. Uses the same root canonicalization
+	// and deterministic traversal as duplication. Missing/invalid roots
+	// return a failure result.
+	rt2::core::Result<size_t> CountCanonicalSubtreeEntities(
+		const std::vector<rt2::core::UUID>& roots) const;
+
+	// Create an empty entity with a caller-supplied UUID at a known sibling
+	// position. The host reserves the UUID, calls this, captures the
+	// resulting SubtreeSnapshot, and constructs the creation command. If
+	// creation fails the host must roll back. siblingPosition is optional;
+	// when omitted the entity is appended as the last child (or last root).
+	EditorMutationResult CreateEmptyWithUuid(
+		const rt2::core::UUID& uuid,
+		const std::string& name = "Empty",
+		const std::optional<rt2::core::UUID>& parent = std::nullopt,
+		std::optional<std::size_t> siblingPosition = std::nullopt);
+
+	// Create a primitive entity (cube/sphere/plane) with a caller-supplied
+	// UUID. The material is added to the material list and the mesh is
+	// registered in the mesh registry; both resource slots are stable
+	// while no compaction runs (3B1 invariant).
+	EditorMutationResult CreatePrimitiveEntity(
+		const rt2::core::UUID& uuid,
+		const std::string& name,
+		PrimitiveComponent::Kind kind,
+		float size,
+		const EditableTRS& localTRS,
+		int materialIndex,
+		const std::optional<rt2::core::UUID>& parent = std::nullopt);
+
+	// Create a light entity with a caller-supplied UUID.
+	EditorMutationResult CreateLightEntity(
+		const rt2::core::UUID& uuid,
+		const std::string& name,
+		const EditableTRS& localTRS,
+		const glm::vec3& color,
+		float intensity,
+		bool isSpot,
+		const std::optional<rt2::core::UUID>& parent = std::nullopt);
+
+	// Structured result for duplication/paste operations. `createdRoots`
+	// are the new root UUIDs in canonical order; `sourceToDuplicate` maps
+	// each source entity UUID to its duplicate's UUID (for paste, source
+	// UUIDs are clipboard-document UUIDs, not destination-scene entities).
+	struct DuplicationResult
+	{
+		EditorMutationResult mutation;
+		std::vector<rt2::core::UUID> createdRoots;
+		std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>> sourceToDuplicate;
+	};
+
+	// Duplicate subtrees with caller-supplied UUIDs. The manager
+	// canonicalizes the roots (preserving caller order), walks each
+	// canonical subtree in deterministic pre-order, validates the UUID
+	// count exactly matches the resulting entity count, validates all
+	// supplied UUIDs are valid/unique/absent from the document, builds and
+	// validates the complete duplication plan before mutating, assigns
+	// UUIDs positionally in that internal pre-order, and returns the
+	// created root UUIDs plus the complete source-to-duplicate mapping.
+	DuplicationResult DuplicateSubtreesWithUuids(
+		const std::vector<rt2::core::UUID>& sourceRoots,
+		const std::vector<rt2::core::UUID>& knownDuplicateUuids);
+
+	// Paste subtrees from a clipboard document with caller-supplied UUIDs.
+	// Same flat-UUID-list contract as DuplicateSubtreesWithUuids. The
+	// source UUIDs in the returned mapping are clipboard-document UUIDs,
+	// not entities currently present in the destination scene.
+	DuplicationResult PasteSubtreesWithUuids(
+		const rt2::core::SceneDocument& clipboard,
+		const std::vector<rt2::core::UUID>& clipboardRoots,
+		const std::optional<rt2::core::UUID>& parent,
+		const std::vector<rt2::core::UUID>& knownPastedUuids);
+
+	// Atomic multi-entity local-transform edit. Validates ALL UUIDs
+	// resolve, applies all local TRS in one pass, marks dirty once,
+	// refreshes affected camera subtrees once, bumps the revision ONCE,
+	// and returns Transform impact with affected UUIDs. One missing
+	// target => no mutation, Failure.
+	EditorMutationResult SetLocalTransformStates(
+		const std::vector<std::pair<rt2::core::UUID, EditableTRS>>& states);
+
+	// Atomic batch reparent. Validates all entities and all new parents
+	// resolve and no cycles, then applies all reparents atomically. For
+	// PreserveWorld, converts each desired world matrix to local against
+	// the NEW parent (singular/shear => fail all). Bumps the revision
+	// once. Undo of a multi-source reparent where the sources originally
+	// had different parents requires restoring each source to its own
+	// original parent — ReparentCommand stores before/after ReparentEdit
+	// lists and Undo always uses PreserveLocal with the stored before-local
+	// TRS.
+	EditorMutationResult ReparentBatch(
+		const std::vector<ReparentEdit>& edits, ReparentMode mode);
 
 	// Update an entity's local transform (marks it dirty for SceneGraph).
 	void SetTransform(EntityId entity,

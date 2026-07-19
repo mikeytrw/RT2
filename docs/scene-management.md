@@ -770,7 +770,7 @@ The dependency direction is
 SceneManager`. SceneManager never depends on the command layer, and
 `RT2SliceRunner` does not link it.
 
-### Command layer — structural correctness (Phase 3B1, planned)
+### Command layer — structural correctness (Phase 3B1, implemented)
 
 Phase 3B1 migrates structural editor mutations onto the Phase 3A foundation
 with exact-UUID, exact-hierarchy, exact-resource-reference restoration on

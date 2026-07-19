@@ -6,6 +6,7 @@
 #include "SceneManager.h"
 #include "EditorSceneState.h"
 #include "EditorCommandHistory.h"
+#include "EditorStructuralCommands.h"
 #include "TransformEditing.h"
 #include "core/UUID.h"
 #include <functional>
@@ -158,6 +159,29 @@ private:
 	void DiscardTransformEditSession();
 	// Hide/Show the current selection as a single SetVisibilityCommand.
 	void HideShowSelectionCommand(bool hide);
+
+	// Phase 3B1: structural command helpers. Each reserves a known UUID,
+	// applies the creation via the manager, captures the resulting
+	// SubtreeSnapshot, constructs the command, and records it via
+	// RecordApplied. On snapshot-capture failure the initial creation is
+	// rolled back via RemoveSubtreesNoCompact.
+	void CreateEmptyCommand(const std::optional<rt2::core::UUID>& parent);
+	void CreatePrimitiveCommand(PrimitiveComponent::Kind kind, float size,
+	                            const char* name, const glm::vec3& position);
+	void CreateLightCommand(const glm::vec3& position, const glm::vec3& color,
+	                        float intensity);
+	// Delete the selection as a single RemoveSubtreesCommand.
+	void DeleteSelectionCommand();
+	// Duplicate the selection as a single DuplicateSubtreesCommand.
+	void DuplicateSelectionCommand();
+	// Paste the clipboard as a single PasteSubtreesCommand.
+	void PasteCommand(const std::optional<rt2::core::UUID>& parent);
+	// Reparent the selection as a single ReparentCommand.
+	void ReparentCommand(const std::vector<rt2::core::UUID>& sources,
+	                     const rt2::core::UUID& newParent);
+	// Single-entity Hide/Show via SetVisibilityCommand (migrated from the
+	// direct SetVisibility call).
+	void SingleEntityHideShowCommand(const rt2::core::UUID& entity, bool hide);
 
 	SceneManager* m_SceneMgr = nullptr;
 

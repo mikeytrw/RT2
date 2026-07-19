@@ -47,6 +47,17 @@ EditorMutationResult TransformResultFor(const rt2::core::UUID& target)
 	return result;
 }
 
+EditorMutationResult TransformResultFor(const std::vector<TransformTriple>& triples)
+{
+	EditorMutationResult result;
+	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::Transform;
+	result.affectedEntities.reserve(triples.size());
+	for (const auto& t : triples)
+		result.affectedEntities.push_back(t.target);
+	return result;
+}
+
 EditorMutationResult FailureFor(const rt2::core::UUID& target, const char* detail)
 {
 	return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
@@ -56,22 +67,43 @@ EditorMutationResult FailureFor(const rt2::core::UUID& target, const char* detai
 
 } // namespace
 
+TransformCommand::TransformCommand(rt2::core::UUID target,
+                                   EditableTRS beforeLocal,
+                                   EditableTRS afterLocal)
+{
+	m_Triples.push_back({target, beforeLocal, afterLocal});
+}
+
+TransformCommand::TransformCommand(std::vector<TransformTriple> triples)
+	: m_Triples(std::move(triples)) {}
+
 EditorMutationResult TransformCommand::Execute(SceneManager& scene)
 {
-	const auto entity = scene.FindEntityByUuid(m_Target);
-	if (entity == entt::null)
-		return FailureFor(m_Target, "transform target UUID is not present in the scene");
-	scene.SetLocalTransform(SceneManager::EntityId{ entity }, m_AfterLocal);
-	return TransformResultFor(m_Target);
+	std::vector<std::pair<rt2::core::UUID, EditableTRS>> states;
+	states.reserve(m_Triples.size());
+	for (const auto& t : m_Triples)
+		states.emplace_back(t.target, t.afterLocal);
+	auto result = scene.SetLocalTransformStates(states);
+	if (!result.success) return result;
+	// SetLocalTransformStates already populated affectedEntities; if it
+	// returned success with empty affectedEntities (empty input), fall back
+	// to the triple-derived result.
+	if (result.affectedEntities.empty())
+		return TransformResultFor(m_Triples);
+	return result;
 }
 
 EditorMutationResult TransformCommand::Undo(SceneManager& scene)
 {
-	const auto entity = scene.FindEntityByUuid(m_Target);
-	if (entity == entt::null)
-		return FailureFor(m_Target, "transform target UUID is not present in the scene");
-	scene.SetLocalTransform(SceneManager::EntityId{ entity }, m_BeforeLocal);
-	return TransformResultFor(m_Target);
+	std::vector<std::pair<rt2::core::UUID, EditableTRS>> states;
+	states.reserve(m_Triples.size());
+	for (const auto& t : m_Triples)
+		states.emplace_back(t.target, t.beforeLocal);
+	auto result = scene.SetLocalTransformStates(states);
+	if (!result.success) return result;
+	if (result.affectedEntities.empty())
+		return TransformResultFor(m_Triples);
+	return result;
 }
 
 EditorMutationResult SetVisibilityCommand::Execute(SceneManager& scene)
@@ -95,6 +127,18 @@ std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
 {
 	if (TrsEqual(beforeLocal, afterLocal)) return nullptr;
 	return std::make_unique<TransformCommand>(target, beforeLocal, afterLocal);
+}
+
+std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
+	std::vector<TransformTriple> triples)
+{
+	std::vector<TransformTriple> effective;
+	effective.reserve(triples.size());
+	for (auto& t : triples)
+		if (!TrsEqual(t.beforeLocal, t.afterLocal))
+			effective.push_back(std::move(t));
+	if (effective.empty()) return nullptr;
+	return std::make_unique<TransformCommand>(std::move(effective));
 }
 
 std::unique_ptr<IEditorCommand> MakeSetVisibilityCommandIfEffective(

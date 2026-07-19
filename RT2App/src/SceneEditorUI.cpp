@@ -4,6 +4,8 @@
 #include "ECSComponents.h"
 #include "ECSScene.h"
 #include "EditorCommands.h"
+#include "EditorStructuralCommands.h"
+#include "SceneHierarchy.h"
 #include "RTLog.h"
 #include "imgui.h"
 #include <cstdio>
@@ -172,6 +174,217 @@ void SceneEditorUI::HideShowSelectionCommand(bool hide)
 	ApplyMutation(result);
 }
 
+// ============================================================================
+// Phase 3B1 structural command helpers
+// ============================================================================
+
+void SceneEditorUI::CreateEmptyCommand(const std::optional<rt2::core::UUID>& parent)
+{
+	if (!m_SceneMgr || !m_CommandHistory) return;
+	const auto uuid = m_SceneMgr->ReserveKnownUuid();
+	auto applied = m_SceneMgr->CreateEmptyWithUuid(uuid, "Empty", parent);
+	if (!applied.success)
+	{
+		ApplyMutation(applied);
+		return;
+	}
+	auto snapshot = m_SceneMgr->CaptureSubtreeSnapshot({ uuid });
+	if (snapshot.entities.empty())
+	{
+		// Rollback the creation.
+		m_SceneMgr->RemoveSubtreesNoCompact({ uuid });
+		return;
+	}
+	auto cmd = MakeCreateEmptyCommand(std::move(snapshot), uuid);
+	if (!cmd) return;
+	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
+	ApplyMutation(applied, true);
+}
+
+void SceneEditorUI::CreatePrimitiveCommand(PrimitiveComponent::Kind kind, float size,
+                                          const char* name, const glm::vec3& position)
+{
+	if (!m_SceneMgr || !m_CommandHistory) return;
+	SceneMaterial mat;
+	if (kind == PrimitiveComponent::Sphere && std::string(name) == "Light")
+	{
+		mat.emissiveColor = {1.0f, 1.0f, 1.0f};
+		mat.emissiveIntensity = 10.0f;
+	}
+	const int matIdx = m_SceneMgr->AddMaterial(mat);
+	const auto uuid = m_SceneMgr->ReserveKnownUuid();
+	EditableTRS trs;
+	trs.translation = position;
+	auto applied = m_SceneMgr->CreatePrimitiveEntity(uuid, name, kind, size, trs, matIdx);
+	if (!applied.success)
+	{
+		ApplyMutation(applied);
+		return;
+	}
+	auto snapshot = m_SceneMgr->CaptureSubtreeSnapshot({ uuid });
+	if (snapshot.entities.empty())
+	{
+		m_SceneMgr->RemoveSubtreesNoCompact({ uuid });
+		return;
+	}
+	auto cmd = MakeCreatePrimitiveCommand(std::move(snapshot), uuid);
+	if (!cmd) return;
+	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
+	ApplyMutation(applied, true);
+}
+
+void SceneEditorUI::CreateLightCommand(const glm::vec3& position, const glm::vec3& color,
+                                      float intensity)
+{
+	if (!m_SceneMgr || !m_CommandHistory) return;
+	const auto uuid = m_SceneMgr->ReserveKnownUuid();
+	EditableTRS trs;
+	trs.translation = position;
+	auto applied = m_SceneMgr->CreateLightEntity(uuid, "Light", trs, color, intensity, false);
+	if (!applied.success)
+	{
+		ApplyMutation(applied);
+		return;
+	}
+	auto snapshot = m_SceneMgr->CaptureSubtreeSnapshot({ uuid });
+	if (snapshot.entities.empty())
+	{
+		m_SceneMgr->RemoveSubtreesNoCompact({ uuid });
+		return;
+	}
+	auto cmd = MakeCreateLightCommand(std::move(snapshot), uuid);
+	if (!cmd) return;
+	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
+	ApplyMutation(applied, true);
+}
+
+void SceneEditorUI::DeleteSelectionCommand()
+{
+	if (!m_SceneMgr || !m_CommandHistory) return;
+	const auto ordered = m_State.Selection().Ordered();
+	if (ordered.empty()) return;
+	auto snapshot = m_SceneMgr->CaptureSubtreeSnapshot(ordered);
+	auto cmd = MakeRemoveSubtreesCommand(std::move(snapshot), ordered);
+	if (!cmd) return;
+	auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+	ApplyMutation(result);
+	m_State.Selection().Clear();
+	m_TreeDirty = true;
+}
+
+void SceneEditorUI::DuplicateSelectionCommand()
+{
+	if (!m_SceneMgr || !m_CommandHistory) return;
+	const auto ordered = m_State.Selection().Ordered();
+	if (ordered.empty()) return;
+	auto countResult = m_SceneMgr->CountCanonicalSubtreeEntities(ordered);
+	if (!countResult.IsOk()) return;
+	auto knownUuids = m_SceneMgr->ReserveKnownUuids(countResult.value);
+	auto dup = m_SceneMgr->DuplicateSubtreesWithUuids(ordered, knownUuids);
+	if (!dup.mutation.success)
+	{
+		ApplyMutation(dup.mutation);
+		return;
+	}
+	auto snapshot = m_SceneMgr->CaptureSubtreeSnapshot(dup.createdRoots);
+	auto cmd = MakeDuplicateSubtreesCommand(std::move(snapshot), dup.createdRoots);
+	if (!cmd) return;
+	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, dup.mutation);
+	ApplyMutation(dup.mutation, true);
+}
+
+void SceneEditorUI::PasteCommand(const std::optional<rt2::core::UUID>& parent)
+{
+	if (!m_SceneMgr || !m_CommandHistory) return;
+	if (!m_State.HasClipboard()) return;
+	const auto& clipboardRoots = m_State.ClipboardRoots();
+	auto countResult = m_SceneMgr->CountCanonicalSubtreeEntities(clipboardRoots);
+	// The clipboard roots are in the clipboard document, not the live scene.
+	// CountCanonicalSubtreeEntities walks the live scene, so it will fail for
+	// clipboard roots. We need to count from the clipboard document instead.
+	// For now, use the clipboard roots size as a lower bound and let the
+	// manager's PasteSubtreesWithUuids validate the exact count.
+	(void)countResult;
+	// Count the entities in the clipboard document by walking it.
+	std::size_t count = 0;
+	{
+		const auto* clip = m_State.ClipboardDocument();
+		if (!clip) return;
+		rt2::core::Error err;
+		// Use the same canonicalization as paste by counting the clipboard
+		// document's subtree entities. We approximate by counting all
+		// entities under the clipboard roots in the clipboard document.
+		for (const auto& root : clipboardRoots)
+		{
+			const auto rootEntity = clip->FindByUuid(root);
+			if (rootEntity == entt::null) continue;
+			std::vector<entt::entity> subtree;
+			SceneHierarchy::CollectSubtreePreOrder(clip->ecs.registry, rootEntity, subtree);
+			count += subtree.size();
+		}
+	}
+	auto knownUuids = m_SceneMgr->ReserveKnownUuids(count);
+	auto paste = m_SceneMgr->PasteSubtreesWithUuids(
+		*m_State.ClipboardDocument(), clipboardRoots, parent, knownUuids);
+	if (!paste.mutation.success)
+	{
+		ApplyMutation(paste.mutation);
+		return;
+	}
+	auto snapshot = m_SceneMgr->CaptureSubtreeSnapshot(paste.createdRoots);
+	auto cmd = MakePasteSubtreesCommand(std::move(snapshot), paste.createdRoots);
+	if (!cmd) return;
+	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, paste.mutation);
+	ApplyMutation(paste.mutation, true);
+}
+
+void SceneEditorUI::ReparentCommand(const std::vector<rt2::core::UUID>& sources,
+                                    const rt2::core::UUID& newParent)
+{
+	if (!m_SceneMgr || !m_CommandHistory) return;
+	if (sources.empty()) return;
+
+	// Capture before-edits: each source's current parent, local TRS, and
+	// sibling anchor.
+	std::vector<ReparentEdit> beforeEdits;
+	std::vector<ReparentEdit> afterEdits;
+	for (const auto& src : sources)
+	{
+		const auto entity = m_SceneMgr->FindEntityByUuid(src);
+		if (entity == entt::null) continue;
+		EditableTRS local;
+		if (!m_SceneMgr->GetLocalTransform(SceneManager::EntityId{ entity }, local)) continue;
+		rt2::core::UUID parentUuid;
+		const auto parent = m_SceneMgr->GetParent(SceneManager::EntityId{ entity });
+		if (parent.IsValid())
+			parentUuid = m_SceneMgr->GetEntityUuid(parent);
+		auto snap = m_SceneMgr->CaptureSubtreeSnapshot({ src });
+		RootSiblingAnchor anchor = snap.rootAnchors.empty() ? RootSiblingAnchor{} : snap.rootAnchors.front();
+		beforeEdits.push_back({ src, parentUuid, local, glm::mat4(1.0f), anchor });
+		afterEdits.push_back({ src, newParent, local, glm::mat4(1.0f), {} });
+	}
+
+	auto cmd = MakeReparentCommandIfEffective(beforeEdits, afterEdits, ReparentMode::PreserveLocal);
+	if (!cmd) return;
+	auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+	ApplyMutation(result);
+}
+
+void SceneEditorUI::SingleEntityHideShowCommand(const rt2::core::UUID& entity, bool hide)
+{
+	if (!m_SceneMgr || !m_CommandHistory) return;
+	const auto e = m_SceneMgr->FindEntityByUuid(entity);
+	if (e == entt::null) return;
+	const auto* vc = m_SceneMgr->GetECS().registry.try_get<VisibleComponent>(e);
+	const bool current = vc ? vc->visible : true;
+	std::vector<std::pair<rt2::core::UUID, bool>> beforeStates = { {entity, current} };
+	std::vector<std::pair<rt2::core::UUID, bool>> afterStates = { {entity, hide} };
+	auto cmd = MakeSetVisibilityCommandIfEffective(beforeStates, afterStates);
+	if (!cmd) return;
+	auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+	ApplyMutation(result);
+}
+
 bool SceneEditorUI::MatchesSearch(SceneManager::EntityId entity) const
 {
 	const std::string query = m_State.SearchText();
@@ -239,57 +452,29 @@ void SceneEditorUI::RenderOutliner()
 	if (ImGui::BeginPopup("AddEntity"))
 	{
 		if (ImGui::MenuItem("Empty"))
-			ApplyMutation(m_SceneMgr->CreateEmpty(), true);
+			CreateEmptyCommand(std::nullopt);
 		const auto selectedParent = m_State.Selection().Primary();
 		ImGui::BeginDisabled(selectedParent.IsNull() || m_State.IsLocked(selectedParent));
 		if (ImGui::MenuItem("Child Empty"))
-			ApplyMutation(m_SceneMgr->CreateEmpty("Empty", selectedParent), true);
+			CreateEmptyCommand(selectedParent);
 		ImGui::EndDisabled();
 		ImGui::Separator();
 		if (ImGui::MenuItem("Emissive Light"))
 		{
-			SceneMaterial mat;
-			mat.emissiveColor = {1.0f, 1.0f, 1.0f};
-			mat.emissiveIntensity = 10.0f;
-			int matIdx = m_SceneMgr->AddMaterial(mat);
-			auto id = m_SceneMgr->AddObjectWithGeometry("Light",
-				PrimitiveGeometry::CreateSphere(0.2f), {0, 3, 0}, {0, 0, 0}, 1.0f, matIdx);
-			m_SceneMgr->GetECS().registry.emplace_or_replace<PrimitiveComponent>(id.id,
-				PrimitiveComponent{PrimitiveComponent::Sphere, 0.4f, 24, 16});
-			SelectEntity(id);
-			NotifySceneChanged();
+			CreatePrimitiveCommand(PrimitiveComponent::Sphere, 0.4f, "Light", {0, 3, 0});
 		}
 		ImGui::Separator();
 		if (ImGui::MenuItem("Cube"))
 		{
-			int matIdx = m_SceneMgr->AddMaterial(SceneMaterial{});
-			auto id = m_SceneMgr->AddObjectWithGeometry("Cube",
-				PrimitiveGeometry::CreateCube(1.0f), {0, 0.5f, 0}, {0, 0, 0}, 1.0f, matIdx);
-			// Attach PrimitiveComponent so the entity can be saved to .rt2scene
-			m_SceneMgr->GetECS().registry.emplace_or_replace<PrimitiveComponent>(id.id,
-				PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16});
-			SelectEntity(id);
-			NotifySceneChanged();
+			CreatePrimitiveCommand(PrimitiveComponent::Cube, 1.0f, "Cube", {0, 0.5f, 0});
 		}
 		if (ImGui::MenuItem("Sphere"))
 		{
-			int matIdx = m_SceneMgr->AddMaterial(SceneMaterial{});
-			auto id = m_SceneMgr->AddObjectWithGeometry("Sphere",
-				PrimitiveGeometry::CreateSphere(0.5f), {0, 0.5f, 0}, {0, 0, 0}, 1.0f, matIdx);
-			m_SceneMgr->GetECS().registry.emplace_or_replace<PrimitiveComponent>(id.id,
-				PrimitiveComponent{PrimitiveComponent::Sphere, 1.0f, 24, 16});
-			SelectEntity(id);
-			NotifySceneChanged();
+			CreatePrimitiveCommand(PrimitiveComponent::Sphere, 1.0f, "Sphere", {0, 0.5f, 0});
 		}
 		if (ImGui::MenuItem("Plane"))
 		{
-			int matIdx = m_SceneMgr->AddMaterial(SceneMaterial{});
-			auto id = m_SceneMgr->AddObjectWithGeometry("Plane",
-				PrimitiveGeometry::CreatePlane(5.0f), {0, 0, 0}, {0, 0, 0}, 1.0f, matIdx);
-			m_SceneMgr->GetECS().registry.emplace_or_replace<PrimitiveComponent>(id.id,
-				PrimitiveComponent{PrimitiveComponent::Plane, 5.0f, 24, 16});
-			SelectEntity(id);
-			NotifySceneChanged();
+			CreatePrimitiveCommand(PrimitiveComponent::Plane, 5.0f, "Plane", {0, 0, 0});
 		}
 		ImGui::Separator();
 		if (ImGui::MenuItem("Import Scene..."))
@@ -364,11 +549,7 @@ void SceneEditorUI::RenderOutliner()
 	{
 		std::string reason;
 		if (MutationSelectionAllowed(reason))
-		{
-			ApplyMutation(m_SceneMgr->RemoveSubtrees(m_State.Selection().Ordered()));
-			m_State.Selection().Clear();
-			m_TreeDirty = true;
-		}
+			DeleteSelectionCommand();
 		else m_MutationError = reason;
 	}
 	ImGui::EndDisabled();
@@ -384,12 +565,12 @@ void SceneEditorUI::RenderOutliner()
 	ImGui::SameLine();
 	ImGui::BeginDisabled(!m_Editable || !m_State.HasClipboard());
 	if (ImGui::Button("Paste"))
-		ApplyMutation(m_State.Paste(*m_SceneMgr), true);
+		PasteCommand(std::nullopt);
 	ImGui::EndDisabled();
 	ImGui::SameLine();
 	ImGui::BeginDisabled(!m_Editable || m_State.Selection().Empty());
 	if (ImGui::Button("Duplicate"))
-		ApplyMutation(m_SceneMgr->DuplicateSubtrees(m_State.Selection().Ordered()), true);
+		DuplicateSelectionCommand();
 	ImGui::EndDisabled();
 
 	ImGui::SameLine();
@@ -420,18 +601,14 @@ void SceneEditorUI::RenderOutliner()
 				m_MutationError = error.Format();
 		}
 		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V))
-			ApplyMutation(m_State.Paste(*m_SceneMgr), true);
+			PasteCommand(std::nullopt);
 		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D))
-			ApplyMutation(m_SceneMgr->DuplicateSubtrees(m_State.Selection().Ordered()), true);
+			DuplicateSelectionCommand();
 		if (ImGui::IsKeyPressed(ImGuiKey_Delete))
 		{
 			std::string reason;
 			if (MutationSelectionAllowed(reason))
-			{
-				ApplyMutation(m_SceneMgr->RemoveSubtrees(m_State.Selection().Ordered()));
-				m_State.Selection().Clear();
-				m_TreeDirty = true;
-			}
+				DeleteSelectionCommand();
 			else m_MutationError = reason;
 		}
 	}
@@ -487,10 +664,10 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 					auto sources = m_State.Selection().Contains(dragged)
 						? m_State.Selection().Ordered()
 						: std::vector<rt2::core::UUID>{ dragged };
-					if (directlyLocked || m_State.AnyDirectlyLocked(sources))
-						m_MutationError = "Locked entities cannot be reparented or receive children.";
-					else
-						ApplyMutation(m_SceneMgr->Reparent(sources, uuid));
+				if (directlyLocked || m_State.AnyDirectlyLocked(sources))
+					m_MutationError = "Locked entities cannot be reparented or receive children.";
+				else
+					ReparentCommand(sources, uuid);
 				}
 			}
 			ImGui::EndDragDropTarget();
@@ -517,13 +694,13 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 				m_State.ToggleLocked(uuid);
 			ImGui::BeginDisabled(directlyLocked);
 			if (ImGui::MenuItem(directlyVisible ? "Hide" : "Show"))
-				ApplyMutation(m_SceneMgr->SetVisibility({ uuid }, !directlyVisible));
+				SingleEntityHideShowCommand(uuid, !directlyVisible);
 			if (ImGui::MenuItem("Create Child"))
-				ApplyMutation(m_SceneMgr->CreateEmpty("Empty", uuid), true);
+				CreateEmptyCommand(uuid);
 			if (m_SceneMgr->GetParent(entity).IsValid() && ImGui::MenuItem("Move to Scene Root"))
-				ApplyMutation(m_SceneMgr->Reparent({ uuid }, std::nullopt));
+				ReparentCommand({ uuid }, rt2::core::UUID::Nil());
 			if (ImGui::MenuItem("Paste as Child", nullptr, false, m_State.HasClipboard()))
-				ApplyMutation(m_State.Paste(*m_SceneMgr, uuid), true);
+				PasteCommand(uuid);
 			ImGui::EndDisabled();
 			ImGui::Separator();
 			// Phase 3A: selection-level Hide/Show, recorded through the
@@ -541,14 +718,15 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 				if (!m_State.Copy(*m_SceneMgr, { uuid }, error)) m_MutationError = error.Format();
 			}
 			if (ImGui::MenuItem("Duplicate"))
-				ApplyMutation(m_SceneMgr->DuplicateSubtrees({ uuid }), true);
+			{
+				m_State.Selection().SelectOnly(uuid);
+				DuplicateSelectionCommand();
+			}
 			ImGui::BeginDisabled(directlyLocked);
 			if (ImGui::MenuItem("Delete"))
 			{
-				if (IsSelected(entity))
-					m_State.Selection().Remove(m_SceneMgr->GetEntityUuid(entity));
-				ApplyMutation(m_SceneMgr->RemoveSubtrees({ uuid }));
-				m_TreeDirty = true;
+				m_State.Selection().SelectOnly(uuid);
+				DeleteSelectionCommand();
 				ImGui::EndDisabled();
 				ImGui::EndDisabled();
 				ImGui::EndPopup();
@@ -586,13 +764,13 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 				m_State.ToggleLocked(uuid);
 			ImGui::BeginDisabled(directlyLocked);
 			if (ImGui::MenuItem(directlyVisible ? "Hide" : "Show"))
-				ApplyMutation(m_SceneMgr->SetVisibility({ uuid }, !directlyVisible));
+				SingleEntityHideShowCommand(uuid, !directlyVisible);
 			if (ImGui::MenuItem("Create Child"))
-				ApplyMutation(m_SceneMgr->CreateEmpty("Empty", uuid), true);
+				CreateEmptyCommand(uuid);
 			if (m_SceneMgr->GetParent(entity).IsValid() && ImGui::MenuItem("Move to Scene Root"))
-				ApplyMutation(m_SceneMgr->Reparent({ uuid }, std::nullopt));
+				ReparentCommand({ uuid }, rt2::core::UUID::Nil());
 			if (ImGui::MenuItem("Paste as Child", nullptr, false, m_State.HasClipboard()))
-				ApplyMutation(m_State.Paste(*m_SceneMgr, uuid), true);
+				PasteCommand(uuid);
 			ImGui::EndDisabled();
 			ImGui::Separator();
 			ImGui::BeginDisabled(m_State.Selection().Empty());
@@ -608,14 +786,15 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 				if (!m_State.Copy(*m_SceneMgr, { uuid }, error)) m_MutationError = error.Format();
 			}
 			if (ImGui::MenuItem("Duplicate"))
-				ApplyMutation(m_SceneMgr->DuplicateSubtrees({ uuid }), true);
+			{
+				m_State.Selection().SelectOnly(uuid);
+				DuplicateSelectionCommand();
+			}
 			ImGui::BeginDisabled(directlyLocked);
 			if (ImGui::MenuItem("Delete"))
 			{
-				if (IsSelected(entity))
-					m_State.Selection().Remove(m_SceneMgr->GetEntityUuid(entity));
-				ApplyMutation(m_SceneMgr->RemoveSubtrees({ uuid }));
-				m_TreeDirty = true;
+				m_State.Selection().SelectOnly(uuid);
+				DeleteSelectionCommand();
 			}
 			ImGui::EndDisabled();
 			ImGui::EndDisabled();

@@ -122,6 +122,13 @@ public:
     // before calling; asserts otherwise.
     UUID AssignNewUuid(entt::entity e);
 
+    // Attach a caller-supplied UUID to an entity, add EntityIdComponent, and
+    // insert into the index. Phase 3B1 structural commands use this to
+    // create entities with known UUIDs so Undo/Redo can restore the exact
+    // same identity. Returns false (no mutation) if the UUID is nil or
+    // already present in the index.
+    bool AssignKnownUuid(entt::entity e, const UUID& uuid);
+
     // Attach a UUID provider used by AssignNewUuid. The document does not
     // own the provider; the caller (SceneManager/slice runner/tests) owns it.
     void SetUuidProvider(IUuidProvider* provider) { m_UuidProvider = provider; }

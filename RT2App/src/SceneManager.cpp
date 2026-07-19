@@ -4,6 +4,7 @@
 #include "SceneHierarchy.h"
 #include "EditorCameraWorkflow.h"
 #include "PersistedComponents.h"
+#include "PrimitiveGeometry.h"
 #include "RTLog.h"
 #include "stb_image.h"
 #include <tinyexr.h>
@@ -969,6 +970,1438 @@ EditorMutationResult SceneManager::PasteSubtreesFrom(
 	m_EntityCacheDirty = true;
 	result.syncImpact = pastesRenderable
 		? rt2::core::SyncImpact::Structural : rt2::core::SyncImpact::None;
+	return result;
+}
+
+// ============================================================================
+// Phase 3B1 structural command APIs
+// ============================================================================
+
+namespace
+{
+
+// Build a SubtreeEntityRecord from a live entity. Reads authored component
+// state only — never derived world matrices, GPU caches, or other transient
+// state. This is the snapshot-side mirror of the serializer's
+// BuildEntityRecord, kept in SceneManager.cpp so the structural command
+// APIs and the serializer stay aligned by construction (a mismatch would
+// cause Undo/Redo to restore different state than what was captured).
+SubtreeEntityRecord BuildSubtreeRecord(const entt::registry& reg, entt::entity e)
+{
+	SubtreeEntityRecord r;
+	rt2::core::UUID uuid;
+	if (const auto* idc = reg.try_get<EntityIdComponent>(e))
+		uuid = idc->id;
+	r.uuid = uuid;
+
+	if (const auto* nc = reg.try_get<NameComponent>(e))
+		r.name = nc->name;
+
+	r.parentUuid = rt2::core::UUID::Nil();
+	if (const auto* h = reg.try_get<Hierarchy>(e))
+	{
+		if (h->parent != entt::null && reg.valid(h->parent))
+		{
+			if (const auto* pidc = reg.try_get<EntityIdComponent>(h->parent))
+				r.parentUuid = pidc->id;
+		}
+	}
+
+	if (const auto* tf = reg.try_get<Transform>(e))
+	{
+		r.translation = tf->translation;
+		r.rotation    = tf->rotation;
+		r.scale       = tf->scale;
+	}
+
+	if (const auto* vc = reg.try_get<VisibleComponent>(e))
+		r.visible = vc->visible;
+
+	if (const auto* ref = reg.try_get<MeshRef>(e))
+	{
+		r.hasMeshRef    = true;
+		r.meshIndex     = ref->meshIndex;
+		r.materialIndex = ref->materialIndex;
+	}
+
+	if (const auto* pc = reg.try_get<PrimitiveComponent>(e))
+	{
+		r.hasPrimitive = true;
+		r.primitive    = *pc;
+	}
+
+	if (const auto* isrc = reg.try_get<ImportedMeshSourceComponent>(e))
+	{
+		r.hasImportedSource = true;
+		r.importedSource    = *isrc;
+	}
+
+	if (const auto* mov = reg.try_get<MaterialOverrideComponent>(e))
+	{
+		r.hasMaterialOverride = true;
+		r.materialOverride    = *mov;
+	}
+
+	if (const auto* lc = reg.try_get<LightComponent>(e))
+	{
+		r.hasLight = true;
+		r.light    = *lc;
+	}
+
+	if (const auto* cc = reg.try_get<CameraComponent>(e))
+	{
+		r.hasCamera = true;
+		r.camera    = *cc;
+	}
+
+	if (const auto* mc = reg.try_get<MotionComponent>(e))
+	{
+		r.hasMotion = true;
+		r.motion    = *mc;
+	}
+
+	return r;
+}
+
+// Restore an entity's authored component state from a SubtreeEntityRecord.
+// Emplaces/overwrites every persisted component the record carries. Does NOT
+// touch derived world matrices, GPU caches, or other transient state — those
+// are recomputed by SceneGraph after restoration.
+void ApplySubtreeRecord(const SubtreeEntityRecord& record, entt::registry& reg,
+                        entt::entity e)
+{
+	if (!record.name.empty())
+		reg.emplace_or_replace<NameComponent>(e, NameComponent{record.name});
+
+	if (auto* tf = reg.try_get<Transform>(e))
+	{
+		tf->translation = record.translation;
+		tf->rotation    = glm::normalize(record.rotation);
+		tf->scale       = record.scale;
+		tf->dirty       = true;
+	}
+	else
+	{
+		Transform fresh;
+		fresh.translation = record.translation;
+		fresh.rotation    = record.rotation;
+		fresh.scale       = record.scale;
+		reg.emplace<Transform>(e, fresh);
+	}
+
+	reg.emplace_or_replace<VisibleComponent>(e, VisibleComponent{record.visible});
+
+	if (record.hasMeshRef)
+		reg.emplace_or_replace<MeshRef>(e, MeshRef{record.meshIndex, record.materialIndex});
+	else
+		reg.remove<MeshRef>(e);
+
+	if (record.hasPrimitive)
+		reg.emplace_or_replace<PrimitiveComponent>(e, record.primitive);
+	else
+		reg.remove<PrimitiveComponent>(e);
+
+	if (record.hasImportedSource)
+		reg.emplace_or_replace<ImportedMeshSourceComponent>(e, record.importedSource);
+	else
+		reg.remove<ImportedMeshSourceComponent>(e);
+
+	if (record.hasMaterialOverride)
+		reg.emplace_or_replace<MaterialOverrideComponent>(e, record.materialOverride);
+	else
+		reg.remove<MaterialOverrideComponent>(e);
+
+	if (record.hasLight)
+		reg.emplace_or_replace<LightComponent>(e, record.light);
+	else
+		reg.remove<LightComponent>(e);
+
+	if (record.hasCamera)
+		reg.emplace_or_replace<CameraComponent>(e, record.camera);
+	else
+		reg.remove<CameraComponent>(e);
+
+	if (record.hasMotion)
+		reg.emplace_or_replace<MotionComponent>(e, record.motion);
+	else
+		reg.remove<MotionComponent>(e);
+}
+
+// Compare authored component state on an entity against a record. Returns
+// true if every persisted component matches exactly. Transient state
+// (worldMatrix, prevWorldMatrix, dirty, selection, clipboard) is NOT
+// compared — only authoritative authored state.
+bool EntityMatchesRecord(const entt::registry& reg, entt::entity e,
+                         const SubtreeEntityRecord& record)
+{
+	if (const auto* idc = reg.try_get<EntityIdComponent>(e))
+	{
+		if (!(idc->id == record.uuid)) return false;
+	}
+	else if (!record.uuid.IsNull()) return false;
+
+	if (const auto* nc = reg.try_get<NameComponent>(e))
+	{
+		if (nc->name != record.name) return false;
+	}
+	else if (!record.name.empty()) return false;
+
+	// Parent UUID
+	rt2::core::UUID liveParent = rt2::core::UUID::Nil();
+	if (const auto* h = reg.try_get<Hierarchy>(e))
+	{
+		if (h->parent != entt::null && reg.valid(h->parent))
+		{
+			if (const auto* pidc = reg.try_get<EntityIdComponent>(h->parent))
+				liveParent = pidc->id;
+		}
+	}
+	if (!(liveParent == record.parentUuid)) return false;
+
+	if (const auto* tf = reg.try_get<Transform>(e))
+	{
+		constexpr float eps = 1e-5f;
+		auto vEq = [eps](const glm::vec3& a, const glm::vec3& b) {
+			return std::fabs(a.x - b.x) <= eps &&
+			       std::fabs(a.y - b.y) <= eps &&
+			       std::fabs(a.z - b.z) <= eps;
+		};
+		auto qEq = [eps](const glm::quat& a, const glm::quat& b) {
+			glm::quat na = a; if (na.w < 0.0f) na = -na;
+			glm::quat nb = b; if (nb.w < 0.0f) nb = -nb;
+			return std::fabs(na.x - nb.x) <= eps &&
+			       std::fabs(na.y - nb.y) <= eps &&
+			       std::fabs(na.z - nb.z) <= eps &&
+			       std::fabs(na.w - nb.w) <= eps;
+		};
+		if (!vEq(tf->translation, record.translation) ||
+		    !qEq(tf->rotation, record.rotation) ||
+		    !vEq(tf->scale, record.scale))
+			return false;
+	}
+	else
+	{
+		// record always carries a TRS; if the live entity has no Transform,
+		// it cannot match unless the record's TRS is identity — but a
+		// structural command snapshot always carries a Transform, so treat
+		// absence as a mismatch.
+		return false;
+	}
+
+	bool liveVisible = true;
+	if (const auto* vc = reg.try_get<VisibleComponent>(e))
+		liveVisible = vc->visible;
+	if (liveVisible != record.visible) return false;
+
+	auto checkRef = [&](bool has, const MeshRef* ref) {
+		if (has != record.hasMeshRef) return false;
+		if (has && ref &&
+		    (ref->meshIndex != record.meshIndex ||
+		     ref->materialIndex != record.materialIndex))
+			return false;
+		return true;
+	};
+	if (!checkRef(reg.all_of<MeshRef>(e), reg.try_get<MeshRef>(e))) return false;
+
+	// Per-component exact compare. Each persisted component is plain data;
+	// we compare fields explicitly because PrimitiveComponent,
+	// AssetReference, and SceneMaterial do not define operator==.
+	if (reg.all_of<PrimitiveComponent>(e) != record.hasPrimitive) return false;
+	if (record.hasPrimitive)
+	{
+		const auto& live = *reg.try_get<PrimitiveComponent>(e);
+		if (live.kind != record.primitive.kind ||
+		    std::fabs(live.size - record.primitive.size) > 1e-5f ||
+		    live.segments != record.primitive.segments ||
+		    live.rings != record.primitive.rings)
+			return false;
+	}
+
+	if (reg.all_of<ImportedMeshSourceComponent>(e) != record.hasImportedSource) return false;
+	if (record.hasImportedSource)
+	{
+		const auto& live = *reg.try_get<ImportedMeshSourceComponent>(e);
+		if (!(live.model.kind == record.importedSource.model.kind &&
+		      live.model.path == record.importedSource.model.path &&
+		      live.model.sourceKey == record.importedSource.model.sourceKey &&
+		      live.model.importSettings == record.importedSource.model.importSettings))
+			return false;
+	}
+
+	if (reg.all_of<MaterialOverrideComponent>(e) != record.hasMaterialOverride) return false;
+	if (record.hasMaterialOverride)
+	{
+		const auto& live = *reg.try_get<MaterialOverrideComponent>(e);
+		constexpr float eps = 1e-5f;
+		if (live.authored != record.materialOverride.authored) return false;
+		if (live.sourceMaterialKey != record.materialOverride.sourceMaterialKey) return false;
+		const auto& a = live.material;
+		const auto& b = record.materialOverride.material;
+		if (a.type != b.type) return false;
+		if (glm::length(a.baseColor - b.baseColor) > eps) return false;
+		if (std::fabs(a.baseAlpha - b.baseAlpha) > eps) return false;
+		if (std::fabs(a.metallic - b.metallic) > eps) return false;
+		if (std::fabs(a.roughness - b.roughness) > eps) return false;
+		if (std::fabs(a.ior - b.ior) > eps) return false;
+		if (std::fabs(a.transmissionFactor - b.transmissionFactor) > eps) return false;
+		if (glm::length(a.emissiveColor - b.emissiveColor) > eps) return false;
+		if (std::fabs(a.emissiveIntensity - b.emissiveIntensity) > eps) return false;
+		if (a.baseColorTextureIndex != b.baseColorTextureIndex) return false;
+		if (a.normalTextureIndex != b.normalTextureIndex) return false;
+		if (a.emissiveTextureIndex != b.emissiveTextureIndex) return false;
+		if (a.metallicRoughnessTextureIndex != b.metallicRoughnessTextureIndex) return false;
+		if (a.alphaMode != b.alphaMode) return false;
+		if (std::fabs(a.alphaCutoff - b.alphaCutoff) > eps) return false;
+	}
+
+	if (reg.all_of<LightComponent>(e) != record.hasLight) return false;
+	if (record.hasLight)
+	{
+		const auto& live = *reg.try_get<LightComponent>(e);
+		constexpr float eps = 1e-5f;
+		if (glm::length(live.color - record.light.color) > eps) return false;
+		if (std::fabs(live.intensity - record.light.intensity) > eps) return false;
+		if (std::fabs(live.range - record.light.range) > eps) return false;
+		if (std::fabs(live.innerConeAngle - record.light.innerConeAngle) > eps) return false;
+		if (std::fabs(live.outerConeAngle - record.light.outerConeAngle) > eps) return false;
+		if (live.isSpot != record.light.isSpot) return false;
+	}
+
+	if (reg.all_of<CameraComponent>(e) != record.hasCamera) return false;
+	if (record.hasCamera)
+	{
+		const auto& live = *reg.try_get<CameraComponent>(e);
+		constexpr float eps = 1e-5f;
+		if (std::fabs(live.verticalFOV - record.camera.verticalFOV) > eps) return false;
+		if (std::fabs(live.aperture - record.camera.aperture) > eps) return false;
+		if (std::fabs(live.focusDistance - record.camera.focusDistance) > eps) return false;
+		if (glm::length(live.forwardDirection - record.camera.forwardDirection) > eps) return false;
+	}
+
+	if (reg.all_of<MotionComponent>(e) != record.hasMotion) return false;
+	if (record.hasMotion)
+	{
+		const auto& live = *reg.try_get<MotionComponent>(e);
+		constexpr float eps = 1e-5f;
+		if (glm::length(live.linearVelocity - record.motion.linearVelocity) > eps) return false;
+	}
+
+	return true;
+}
+
+// Read the sibling anchor for a root entity: the prev/next sibling UUID
+// among the parent's children (or the root-entity list when parent is null),
+// plus the child index for diagnostic cross-check.
+RootSiblingAnchor BuildSiblingAnchor(const entt::registry& reg, entt::entity root)
+{
+	RootSiblingAnchor anchor;
+	entt::entity parent = entt::null;
+	if (const auto* h = reg.try_get<Hierarchy>(root))
+		parent = h->parent;
+
+	std::vector<entt::entity> siblings;
+	if (parent != entt::null)
+	{
+		if (const auto* ph = reg.try_get<Hierarchy>(parent))
+			siblings = ph->children;
+	}
+	else
+	{
+		// Root entities: registry iteration order (unspecified).
+		auto view = reg.view<EntityIdComponent>();
+		for (auto e : view)
+		{
+			const auto* h = reg.try_get<Hierarchy>(e);
+			if (!h || h->parent == entt::null)
+				siblings.push_back(e);
+		}
+	}
+
+	for (std::size_t i = 0; i < siblings.size(); ++i)
+	{
+		if (siblings[i] == root)
+		{
+			anchor.childIndex = i;
+			if (i > 0)
+			{
+				if (const auto* idc = reg.try_get<EntityIdComponent>(siblings[i - 1]))
+					anchor.prevSibling = idc->id;
+			}
+			if (i + 1 < siblings.size())
+			{
+				if (const auto* idc = reg.try_get<EntityIdComponent>(siblings[i + 1]))
+					anchor.nextSibling = idc->id;
+			}
+			break;
+		}
+	}
+	return anchor;
+}
+
+// Validate a root's anchor against the current parent's children list (or
+// the root-entity list). Returns true if the anchor points to a position
+// the root can be restored to consistently. The root itself need not be
+// present (it was just removed).
+bool AnchorIsConsistent(const entt::registry& reg, const rt2::core::UUID& rootUuid,
+                        const rt2::core::UUID& parentUuid, const RootSiblingAnchor& anchor)
+{
+	std::vector<entt::entity> siblings;
+	if (!parentUuid.IsNull())
+	{
+		const auto parent = reg.view<EntityIdComponent>().front();
+		// Find the parent entity by UUID.
+		entt::entity found = entt::null;
+		auto view = reg.view<EntityIdComponent>();
+		for (auto e : view)
+		{
+			if (const auto* idc = reg.try_get<EntityIdComponent>(e);
+			    idc && idc->id == parentUuid)
+			{
+				found = e;
+				break;
+			}
+		}
+		if (found == entt::null) return false;
+		if (const auto* ph = reg.try_get<Hierarchy>(found))
+			siblings = ph->children;
+	}
+	else
+	{
+		auto view = reg.view<EntityIdComponent>();
+		for (auto e : view)
+		{
+			const auto* h = reg.try_get<Hierarchy>(e);
+			if (!h || h->parent == entt::null)
+				siblings.push_back(e);
+		}
+	}
+
+	// Convert siblings to UUIDs.
+	std::vector<rt2::core::UUID> siblingUuids;
+	siblingUuids.reserve(siblings.size());
+	for (auto s : siblings)
+	{
+		if (const auto* idc = reg.try_get<EntityIdComponent>(s))
+			siblingUuids.push_back(idc->id);
+	}
+
+	// Find the insertion position: prevSibling must appear immediately
+	// before the gap, nextSibling immediately after.
+	if (anchor.prevSibling.IsNull() && anchor.nextSibling.IsNull())
+	{
+		// First-and-last: only valid if the list is empty (the root was the
+		// only child/root).
+		return siblingUuids.empty();
+	}
+
+	if (anchor.prevSibling.IsNull())
+	{
+		// Root was the first child; nextSibling must now be the first.
+		if (siblingUuids.empty()) return false;
+		return siblingUuids.front() == anchor.nextSibling;
+	}
+
+	if (anchor.nextSibling.IsNull())
+	{
+		// Root was the last child; prevSibling must now be the last.
+		if (siblingUuids.empty()) return false;
+		return siblingUuids.back() == anchor.prevSibling;
+	}
+
+	// Middle: prevSibling and nextSibling must be adjacent in the current
+	// list (the root fit between them).
+	for (std::size_t i = 0; i + 1 < siblingUuids.size(); ++i)
+	{
+		if (siblingUuids[i] == anchor.prevSibling &&
+		    siblingUuids[i + 1] == anchor.nextSibling)
+			return true;
+	}
+	return false;
+}
+
+} // namespace
+
+EditorMutationResult SceneManager::RemoveSubtreesNoCompact(
+	const std::vector<rt2::core::UUID>& rootUuids)
+{
+	if (rootUuids.empty()) return {};
+	rt2::core::Error error;
+	auto roots = ResolveCanonicalRoots(m_Authoring, rootUuids, error);
+	if (!error.IsOk())
+	{
+		EditorMutationResult result;
+		result.success = false;
+		result.error = error;
+		return result;
+	}
+	auto& registry = m_EcsScene.registry;
+	std::vector<entt::entity> postOrder;
+	bool removesRenderable = false;
+	EditorMutationResult result;
+	for (const auto root : roots)
+	{
+		std::vector<entt::entity> subtree;
+		SceneHierarchy::CollectSubtreePostOrder(registry, root, subtree);
+		for (const auto entity : subtree)
+		{
+			postOrder.push_back(entity);
+			removesRenderable = removesRenderable || registry.all_of<MeshRef>(entity);
+			if (const auto* identity = registry.try_get<EntityIdComponent>(entity))
+				result.affectedEntities.push_back(identity->id);
+		}
+		if (const auto* hierarchy = registry.try_get<Hierarchy>(root))
+			RemoveChild(registry, hierarchy->parent, root);
+	}
+	for (const auto entity : postOrder)
+	{
+		if (const auto* identity = registry.try_get<EntityIdComponent>(entity))
+			m_Authoring.uuidIndex.Erase(identity->id);
+		registry.destroy(entity);
+	}
+	// NO CompactMeshRegistry() — Phase 3B1 invariant.
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	result.syncImpact = removesRenderable
+		? rt2::core::SyncImpact::Structural : rt2::core::SyncImpact::None;
+	return result;
+}
+
+EditorMutationResult SceneManager::RemoveSubtreesExact(const SubtreeSnapshot& snapshot)
+{
+	auto& registry = m_EcsScene.registry;
+
+	// Phase 1: validate every expected UUID exists and authored state
+	// matches the snapshot. Any mismatch => zero mutation, Failure.
+	std::vector<entt::entity> toDestroy;
+	toDestroy.reserve(snapshot.entities.size());
+	for (const auto& record : snapshot.entities)
+	{
+		const auto entity = m_Authoring.FindByUuid(record.uuid);
+		if (entity == entt::null || !registry.valid(entity))
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				record.uuid.ToString(),
+				"RemoveSubtreesExact: expected entity is not present in the scene");
+		if (!EntityMatchesRecord(registry, entity, record))
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				record.uuid.ToString(),
+				"RemoveSubtreesExact: authored state does not match the snapshot");
+		toDestroy.push_back(entity);
+	}
+
+	// Phase 2: validate no unexpected descendants. Every entity that is a
+	// descendant of a snapshot root must appear in the snapshot. This
+	// catches out-of-band edits that added children after the snapshot was
+	// captured.
+	std::unordered_set<rt2::core::UUID> snapshotUuids;
+	for (const auto& record : snapshot.entities)
+		snapshotUuids.insert(record.uuid);
+
+	std::vector<entt::entity> roots;
+	roots.reserve(snapshot.rootUuids.size());
+	for (const auto& rootUuid : snapshot.rootUuids)
+	{
+		const auto root = m_Authoring.FindByUuid(rootUuid);
+		if (root == entt::null || !registry.valid(root))
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				rootUuid.ToString(),
+				"RemoveSubtreesExact: snapshot root is not present in the scene");
+		roots.push_back(root);
+	}
+
+	for (const auto root : roots)
+	{
+		std::vector<entt::entity> subtree;
+		SceneHierarchy::CollectSubtreePostOrder(registry, root, subtree);
+		for (const auto entity : subtree)
+		{
+			const auto* idc = registry.try_get<EntityIdComponent>(entity);
+			if (!idc || snapshotUuids.find(idc->id) == snapshotUuids.end())
+				return EditorMutationResult::Failure(rt2::core::Error::InvalidHierarchy,
+					idc ? idc->id.ToString() : std::string{},
+					"RemoveSubtreesExact: subtree contains an entity not in the snapshot");
+		}
+	}
+
+	// Phase 3: all validation passed. Remove without compaction.
+	EditorMutationResult result;
+	bool removesRenderable = false;
+	for (const auto root : roots)
+	{
+		std::vector<entt::entity> subtree;
+		SceneHierarchy::CollectSubtreePostOrder(registry, root, subtree);
+		for (const auto entity : subtree)
+		{
+			removesRenderable = removesRenderable || registry.all_of<MeshRef>(entity);
+			if (const auto* identity = registry.try_get<EntityIdComponent>(entity))
+			{
+				result.affectedEntities.push_back(identity->id);
+				m_Authoring.uuidIndex.Erase(identity->id);
+			}
+		}
+		if (const auto* hierarchy = registry.try_get<Hierarchy>(root))
+			RemoveChild(registry, hierarchy->parent, root);
+	}
+	for (const auto entity : toDestroy)
+		registry.destroy(entity);
+
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	result.syncImpact = removesRenderable
+		? rt2::core::SyncImpact::Structural : rt2::core::SyncImpact::None;
+	return result;
+}
+
+EditorMutationResult SceneManager::RestoreSubtrees(const SubtreeSnapshot& snapshot)
+{
+	auto& registry = m_EcsScene.registry;
+
+	// Phase 1: validate every stored UUID is absent from the document
+	// (Undo of a creation) or present with matching authored state (Undo of
+	// a deletion). For Undo-of-creation, the entities were just removed by
+	// the command's Execute; for Undo-of-deletion, the entities are still
+	// absent and we re-create them. The anchor check happens in phase 2.
+	for (const auto& record : snapshot.entities)
+	{
+		if (m_Authoring.uuidIndex.Contains(record.uuid))
+		{
+			// Entity already exists — this must be a no-op-safe restore
+			// (the snapshot matches live state). Treat as success without
+			// re-mutating to keep Redo idempotent when the entity is
+			// already present.
+			const auto existing = m_Authoring.FindByUuid(record.uuid);
+			if (existing == entt::null || !registry.valid(existing))
+				return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+					record.uuid.ToString(),
+					"RestoreSubtrees: UUID index inconsistent with registry");
+			if (!EntityMatchesRecord(registry, existing, record))
+				return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+					record.uuid.ToString(),
+					"RestoreSubtrees: existing entity does not match the snapshot");
+		}
+	}
+
+	// Phase 2: validate root sibling anchors against the current parent's
+	// children list (or the root-entity list). An inconsistent anchor fails
+	// atomically — restoration never silently appends.
+	for (std::size_t i = 0; i < snapshot.rootUuids.size(); ++i)
+	{
+		const auto& rootUuid = snapshot.rootUuids[i];
+		const auto& anchor = snapshot.rootAnchors[i];
+		// Find the root's parent UUID from the record.
+		rt2::core::UUID parentUuid;
+		for (const auto& record : snapshot.entities)
+		{
+			if (record.uuid == rootUuid)
+			{
+				parentUuid = record.parentUuid;
+				break;
+			}
+		}
+		// If the root is already present, the anchor was already validated
+		// by EntityMatchesRecord above (parent UUID matches). Skip the
+		// anchor check in that case.
+		if (m_Authoring.uuidIndex.Contains(rootUuid)) continue;
+		if (!AnchorIsConsistent(registry, rootUuid, parentUuid, anchor))
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidHierarchy,
+				rootUuid.ToString(),
+				"RestoreSubtrees: sibling anchor is inconsistent with the current parent's children");
+	}
+
+	// Phase 3: create entities in pre-order (parents before children) so
+	// Hierarchy wiring resolves. Assign known UUIDs.
+	bool addsRenderable = false;
+	EditorMutationResult result;
+	std::unordered_map<rt2::core::UUID, entt::entity> created;
+	for (const auto& record : snapshot.entities)
+	{
+		if (m_Authoring.uuidIndex.Contains(record.uuid))
+		{
+			// Already present and matches — skip (idempotent Redo).
+			created[record.uuid] = m_Authoring.FindByUuid(record.uuid);
+			continue;
+		}
+		const auto entity = registry.create();
+		if (!m_Authoring.AssignKnownUuid(entity, record.uuid))
+		{
+			// Rollback: destroy everything we created so far.
+			for (const auto& [uuid, e] : created)
+			{
+				if (const auto* idc = registry.try_get<EntityIdComponent>(e))
+					m_Authoring.uuidIndex.Erase(idc->id);
+				registry.destroy(e);
+			}
+			return EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+				record.uuid.ToString(),
+				"RestoreSubtrees: failed to assign known UUID");
+		}
+		ApplySubtreeRecord(record, registry, entity);
+		// Reset derived transform state — recomputed by SceneGraph.
+		if (auto* tf = registry.try_get<Transform>(entity))
+		{
+			tf->worldMatrix = glm::mat4(1.0f);
+			tf->prevWorldMatrix = glm::mat4(1.0f);
+			tf->dirty = true;
+		}
+		addsRenderable = addsRenderable || registry.all_of<MeshRef>(entity);
+		created[record.uuid] = entity;
+		result.affectedEntities.push_back(record.uuid);
+	}
+
+	// Phase 4: wire Hierarchy. Each entity's parentUuid points to either
+	// nil (root) or another entity in the snapshot. Insert the entity at
+	// the anchored sibling position.
+	for (const auto& record : snapshot.entities)
+	{
+		const auto entity = created[record.uuid];
+		if (record.parentUuid.IsNull())
+		{
+			// Root entity — no Hierarchy parent, but may gain a Hierarchy
+			// component if it has children. Skip; children wire it.
+			continue;
+		}
+		const auto parentIt = created.find(record.parentUuid);
+		const auto parent = parentIt != created.end()
+			? parentIt->second : m_Authoring.FindByUuid(record.parentUuid);
+		if (parent == entt::null || !registry.valid(parent))
+		{
+			// Parent not in snapshot and not in document — rollback.
+			for (const auto& [uuid, e] : created)
+			{
+				if (const auto* idc = registry.try_get<EntityIdComponent>(e))
+					m_Authoring.uuidIndex.Erase(idc->id);
+				registry.destroy(e);
+			}
+			return EditorMutationResult::Failure(rt2::core::Error::MissingParent,
+				record.parentUuid.ToString(),
+				"RestoreSubtrees: parent UUID is not present");
+		}
+		auto* hierarchy = registry.try_get<Hierarchy>(entity);
+		if (!hierarchy)
+			hierarchy = &registry.emplace<Hierarchy>(entity);
+		hierarchy->parent = parent;
+		auto* parentHierarchy = registry.try_get<Hierarchy>(parent);
+		if (!parentHierarchy)
+			parentHierarchy = &registry.emplace<Hierarchy>(parent);
+		// Find the anchored position. The anchor was validated; insert
+		// between prevSibling and nextSibling.
+		const auto& anchor = [&]() -> const RootSiblingAnchor& {
+			for (std::size_t i = 0; i < snapshot.rootUuids.size(); ++i)
+				if (snapshot.rootUuids[i] == record.uuid)
+					return snapshot.rootAnchors[i];
+			static RootSiblingAnchor empty;
+			return empty;
+		}();
+		std::size_t insertPos = parentHierarchy->children.size();
+		for (std::size_t i = 0; i < parentHierarchy->children.size(); ++i)
+		{
+			const auto* idc = registry.try_get<EntityIdComponent>(parentHierarchy->children[i]);
+			if (idc && idc->id == anchor.nextSibling)
+			{
+				insertPos = i;
+				break;
+			}
+		}
+		parentHierarchy->children.insert(parentHierarchy->children.begin() + insertPos, entity);
+	}
+
+	// Phase 5: mark dirty and refresh camera forward directions.
+	for (const auto& record : snapshot.entities)
+	{
+		const auto entity = created[record.uuid];
+		SceneGraph::MarkDirty(registry, entity);
+	}
+	std::vector<entt::entity> changedEntities;
+	changedEntities.reserve(snapshot.entities.size());
+	for (const auto& [uuid, e] : created)
+		changedEntities.push_back(e);
+	RefreshCameraForwardDirections(changedEntities);
+
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	result.syncImpact = addsRenderable
+		? rt2::core::SyncImpact::Structural : rt2::core::SyncImpact::None;
+	return result;
+}
+
+SubtreeSnapshot SceneManager::CaptureSubtreeSnapshot(
+	const std::vector<rt2::core::UUID>& rootUuids) const
+{
+	SubtreeSnapshot snapshot;
+	if (rootUuids.empty()) return snapshot;
+
+	rt2::core::Error error;
+	auto roots = ResolveCanonicalRoots(m_Authoring, rootUuids, error);
+	if (!error.IsOk())
+		return snapshot;
+
+	auto& registry = m_EcsScene.registry;
+	for (const auto root : roots)
+	{
+		std::vector<entt::entity> subtree;
+		SceneHierarchy::CollectSubtreePreOrder(registry, root, subtree);
+		for (const auto entity : subtree)
+			snapshot.entities.push_back(BuildSubtreeRecord(registry, entity));
+		snapshot.rootUuids.push_back(GetEntityUuid({ root }));
+		snapshot.rootAnchors.push_back(BuildSiblingAnchor(registry, root));
+	}
+	return snapshot;
+}
+
+void SceneManager::CompactMeshRegistryNow()
+{
+	// The host contract forbids compaction while any Undo or Redo entry
+	// references resource slots. The host is responsible for calling this
+	// only at history.Clear(), document adoption, or save/reload. We do
+	// not have access to the history here (SceneManager never depends on
+	// the command layer), so we trust the host contract. The debug assert
+	// lives in the host (WalnutApp) at the call site.
+	CompactMeshRegistry();
+}
+
+rt2::core::UUID SceneManager::ReserveKnownUuid()
+{
+	return m_UuidProvider ? m_UuidProvider->CreateV4() : rt2::core::UUID::Nil();
+}
+
+std::vector<rt2::core::UUID> SceneManager::ReserveKnownUuids(size_t count)
+{
+	std::vector<rt2::core::UUID> uuids;
+	uuids.reserve(count);
+	for (size_t i = 0; i < count; ++i)
+		uuids.push_back(ReserveKnownUuid());
+	return uuids;
+}
+
+rt2::core::Result<size_t> SceneManager::CountCanonicalSubtreeEntities(
+	const std::vector<rt2::core::UUID>& rootUuids) const
+{
+	if (rootUuids.empty())
+		return rt2::core::Result<size_t>::Ok(0);
+	rt2::core::Error error;
+	auto roots = ResolveCanonicalRoots(m_Authoring, rootUuids, error);
+	if (!error.IsOk())
+		return rt2::core::Result<size_t>::Fail(error.code, error.path, error.detail);
+
+	size_t count = 0;
+	auto& registry = m_EcsScene.registry;
+	for (const auto root : roots)
+	{
+		std::vector<entt::entity> subtree;
+		SceneHierarchy::CollectSubtreePreOrder(registry, root, subtree);
+		count += subtree.size();
+	}
+	return rt2::core::Result<size_t>::Ok(count);
+}
+
+EditorMutationResult SceneManager::CreateEmptyWithUuid(
+	const rt2::core::UUID& uuid,
+	const std::string& name,
+	const std::optional<rt2::core::UUID>& parentUuid,
+	std::optional<std::size_t> siblingPosition)
+{
+	auto& registry = m_EcsScene.registry;
+	if (m_Authoring.uuidIndex.Contains(uuid))
+		return EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+			uuid.ToString(), "CreateEmptyWithUuid: UUID already present in the document");
+
+	entt::entity parent = entt::null;
+	if (parentUuid)
+	{
+		parent = m_Authoring.FindByUuid(*parentUuid);
+		if (parent == entt::null || !registry.valid(parent))
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				parentUuid->ToString(),
+				"CreateEmptyWithUuid: parent UUID is not present in the authoring scene");
+	}
+
+	const auto entity = registry.create();
+	registry.emplace<Transform>(entity);
+	registry.emplace<NameComponent>(entity, name.empty() ? "Empty" : name);
+	registry.emplace<VisibleComponent>(entity);
+	if (!m_Authoring.AssignKnownUuid(entity, uuid))
+	{
+		registry.destroy(entity);
+		return EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+			uuid.ToString(), "CreateEmptyWithUuid: failed to assign known UUID");
+	}
+	if (parent != entt::null)
+	{
+		registry.emplace<Hierarchy>(entity).parent = parent;
+		auto* parentHierarchy = registry.try_get<Hierarchy>(parent);
+		if (!parentHierarchy)
+			parentHierarchy = &registry.emplace<Hierarchy>(parent);
+		std::size_t insertPos = siblingPosition
+			? std::min(*siblingPosition, parentHierarchy->children.size())
+			: parentHierarchy->children.size();
+		parentHierarchy->children.insert(parentHierarchy->children.begin() + insertPos, entity);
+	}
+	else if (siblingPosition)
+	{
+		// Root-entity ordering is unspecified; siblingPosition for a root
+		// is informational only. We still honor it best-effort by leaving
+		// the entity in registry-iteration order (no explicit root list).
+	}
+	SceneGraph::MarkDirty(registry, entity);
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	EditorMutationResult result;
+	result.affectedEntities.push_back(uuid);
+	result.syncImpact = rt2::core::SyncImpact::None; // empty entity adds no renderable
+	return result;
+}
+
+EditorMutationResult SceneManager::CreatePrimitiveEntity(
+	const rt2::core::UUID& uuid,
+	const std::string& name,
+	PrimitiveComponent::Kind kind,
+	float size,
+	const EditableTRS& localTRS,
+	int materialIndex,
+	const std::optional<rt2::core::UUID>& parentUuid)
+{
+	auto& registry = m_EcsScene.registry;
+	if (m_Authoring.uuidIndex.Contains(uuid))
+		return EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+			uuid.ToString(), "CreatePrimitiveEntity: UUID already present in the document");
+
+	entt::entity parent = entt::null;
+	if (parentUuid)
+	{
+		parent = m_Authoring.FindByUuid(*parentUuid);
+		if (parent == entt::null || !registry.valid(parent))
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				parentUuid->ToString(),
+				"CreatePrimitiveEntity: parent UUID is not present in the authoring scene");
+	}
+
+	// Build the mesh geometry and register it. The mesh slot is stable
+	// while no compaction runs (3B1 invariant).
+	MeshData meshData;
+	switch (kind)
+	{
+		case PrimitiveComponent::Cube:   meshData = PrimitiveGeometry::CreateCube(size); break;
+		case PrimitiveComponent::Sphere:  meshData = PrimitiveGeometry::CreateSphere(size * 0.5f); break;
+		case PrimitiveComponent::Plane:  meshData = PrimitiveGeometry::CreatePlane(size); break;
+		default:
+			return EditorMutationResult::Failure(rt2::core::Error::UnknownPrimitive,
+				uuid.ToString(), "CreatePrimitiveEntity: unknown primitive kind");
+	}
+	const uint32_t meshIdx = m_EcsScene.meshRegistry.AddMesh(std::move(meshData));
+
+	const auto entity = registry.create();
+	Transform tf;
+	tf.translation = localTRS.translation;
+	tf.rotation = localTRS.rotation;
+	tf.scale = localTRS.scale;
+	registry.emplace<Transform>(entity, tf);
+	registry.emplace<MeshRef>(entity, meshIdx, materialIndex);
+	registry.emplace<PrimitiveComponent>(entity, PrimitiveComponent{kind, size, 24, 16});
+	if (!name.empty())
+		registry.emplace<NameComponent>(entity, name);
+	registry.emplace<VisibleComponent>(entity);
+	if (!m_Authoring.AssignKnownUuid(entity, uuid))
+	{
+		registry.destroy(entity);
+		return EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+			uuid.ToString(), "CreatePrimitiveEntity: failed to assign known UUID");
+	}
+	if (parent != entt::null)
+	{
+		registry.emplace<Hierarchy>(entity).parent = parent;
+		auto* parentHierarchy = registry.try_get<Hierarchy>(parent);
+		if (!parentHierarchy)
+			parentHierarchy = &registry.emplace<Hierarchy>(parent);
+		parentHierarchy->children.push_back(entity);
+	}
+	SceneGraph::MarkDirty(registry, entity);
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	EditorMutationResult result;
+	result.affectedEntities.push_back(uuid);
+	result.syncImpact = rt2::core::SyncImpact::Structural;
+	return result;
+}
+
+EditorMutationResult SceneManager::CreateLightEntity(
+	const rt2::core::UUID& uuid,
+	const std::string& name,
+	const EditableTRS& localTRS,
+	const glm::vec3& color,
+	float intensity,
+	bool isSpot,
+	const std::optional<rt2::core::UUID>& parentUuid)
+{
+	auto& registry = m_EcsScene.registry;
+	if (m_Authoring.uuidIndex.Contains(uuid))
+		return EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+			uuid.ToString(), "CreateLightEntity: UUID already present in the document");
+
+	entt::entity parent = entt::null;
+	if (parentUuid)
+	{
+		parent = m_Authoring.FindByUuid(*parentUuid);
+		if (parent == entt::null || !registry.valid(parent))
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				parentUuid->ToString(),
+				"CreateLightEntity: parent UUID is not present in the authoring scene");
+	}
+
+	const auto entity = registry.create();
+	Transform tf;
+	tf.translation = localTRS.translation;
+	tf.rotation = localTRS.rotation;
+	tf.scale = localTRS.scale;
+	registry.emplace<Transform>(entity, tf);
+	LightComponent light;
+	light.color = color;
+	light.intensity = intensity;
+	light.isSpot = isSpot;
+	registry.emplace<LightComponent>(entity, light);
+	if (!name.empty())
+		registry.emplace<NameComponent>(entity, name);
+	registry.emplace<VisibleComponent>(entity);
+	if (!m_Authoring.AssignKnownUuid(entity, uuid))
+	{
+		registry.destroy(entity);
+		return EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+			uuid.ToString(), "CreateLightEntity: failed to assign known UUID");
+	}
+	if (parent != entt::null)
+	{
+		registry.emplace<Hierarchy>(entity).parent = parent;
+		auto* parentHierarchy = registry.try_get<Hierarchy>(parent);
+		if (!parentHierarchy)
+			parentHierarchy = &registry.emplace<Hierarchy>(parent);
+		parentHierarchy->children.push_back(entity);
+	}
+	SceneGraph::MarkDirty(registry, entity);
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	EditorMutationResult result;
+	result.affectedEntities.push_back(uuid);
+	result.syncImpact = rt2::core::SyncImpact::Structural;
+	return result;
+}
+
+SceneManager::DuplicationResult SceneManager::DuplicateSubtreesWithUuids(
+	const std::vector<rt2::core::UUID>& sourceRoots,
+	const std::vector<rt2::core::UUID>& knownDuplicateUuids)
+{
+	DuplicationResult out;
+	if (sourceRoots.empty()) return out;
+	rt2::core::Error error;
+	auto roots = ResolveCanonicalRoots(m_Authoring, sourceRoots, error);
+	if (!error.IsOk())
+	{
+		out.mutation.success = false;
+		out.mutation.error = error;
+		return out;
+	}
+	auto& registry = m_EcsScene.registry;
+
+	// Walk each canonical subtree in deterministic pre-order and collect
+	// the source entities. This is the SAME pre-order the manager uses
+	// internally to assign UUIDs positionally.
+	std::vector<entt::entity> sources;
+	for (const auto root : roots)
+		SceneHierarchy::CollectSubtreePreOrder(registry, root, sources);
+
+	// Validate the UUID count exactly matches the resulting entity count.
+	if (knownDuplicateUuids.size() != sources.size())
+	{
+		out.mutation = EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			{}, "DuplicateSubtreesWithUuids: known UUID count does not match the canonical subtree size");
+		return out;
+	}
+
+	// Validate all supplied UUIDs are valid/unique/absent from the document.
+	std::unordered_set<rt2::core::UUID> seen;
+	for (const auto& uuid : knownDuplicateUuids)
+	{
+		if (uuid.IsNull() || m_Authoring.uuidIndex.Contains(uuid) || !seen.insert(uuid).second)
+		{
+			out.mutation = EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+				uuid.ToString(), "DuplicateSubtreesWithUuids: known UUID is nil, duplicate, or already present");
+			return out;
+		}
+	}
+
+	// Build the complete duplication plan before mutating.
+	std::unordered_map<entt::entity, entt::entity> remap;
+	std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>> sourceToDuplicate;
+	sourceToDuplicate.reserve(sources.size());
+	for (std::size_t i = 0; i < sources.size(); ++i)
+	{
+		const auto source = sources[i];
+		const auto duplicate = registry.create();
+		remap.emplace(source, duplicate);
+		CopyAuthoredComponents(registry, source, registry, duplicate);
+		if (!m_Authoring.AssignKnownUuid(duplicate, knownDuplicateUuids[i]))
+		{
+			// Rollback: destroy everything we created so far.
+			for (const auto& [s, d] : remap)
+			{
+				if (const auto* idc = registry.try_get<EntityIdComponent>(d))
+					m_Authoring.uuidIndex.Erase(idc->id);
+				registry.destroy(d);
+			}
+			out.mutation = EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+				knownDuplicateUuids[i].ToString(),
+				"DuplicateSubtreesWithUuids: failed to assign known UUID");
+			return out;
+		}
+		const auto* sourceIdc = registry.try_get<EntityIdComponent>(source);
+		sourceToDuplicate.emplace_back(sourceIdc ? sourceIdc->id : rt2::core::UUID{},
+		                               knownDuplicateUuids[i]);
+	}
+
+	// Wire Hierarchy among duplicates.
+	bool duplicatesRenderable = false;
+	for (const auto source : sources)
+	{
+		const auto duplicate = remap.at(source);
+		duplicatesRenderable = duplicatesRenderable || registry.all_of<MeshRef>(duplicate);
+		const auto* sourceHierarchy = registry.try_get<Hierarchy>(source);
+		if (!sourceHierarchy || sourceHierarchy->parent == entt::null)
+			continue;
+		const auto mappedParent = remap.find(sourceHierarchy->parent);
+		const auto duplicateParent = mappedParent != remap.end()
+			? mappedParent->second : sourceHierarchy->parent;
+		registry.emplace<Hierarchy>(duplicate).parent = duplicateParent;
+		auto* parentHierarchy = registry.try_get<Hierarchy>(duplicateParent);
+		if (!parentHierarchy)
+			parentHierarchy = &registry.emplace<Hierarchy>(duplicateParent);
+		parentHierarchy->children.push_back(duplicate);
+	}
+
+	// Append " Copy" to duplicate root names and collect created roots.
+	for (const auto root : roots)
+	{
+		const auto duplicate = remap.at(root);
+		if (auto* name = registry.try_get<NameComponent>(duplicate))
+			name->name += " Copy";
+		out.createdRoots.push_back(GetEntityUuid({ duplicate }));
+		SceneGraph::MarkDirty(registry, duplicate);
+	}
+
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	out.mutation.syncImpact = duplicatesRenderable
+		? rt2::core::SyncImpact::Structural : rt2::core::SyncImpact::None;
+	out.mutation.success = true;
+	for (const auto root : roots)
+		out.mutation.affectedEntities.push_back(GetEntityUuid({ remap.at(root) }));
+	out.sourceToDuplicate = std::move(sourceToDuplicate);
+	return out;
+}
+
+SceneManager::DuplicationResult SceneManager::PasteSubtreesWithUuids(
+	const rt2::core::SceneDocument& clipboard,
+	const std::vector<rt2::core::UUID>& clipboardRoots,
+	const std::optional<rt2::core::UUID>& parentUuid,
+	const std::vector<rt2::core::UUID>& knownPastedUuids)
+{
+	DuplicationResult out;
+	if (clipboardRoots.empty()) return out;
+	rt2::core::Error error;
+	auto roots = ResolveCanonicalRoots(clipboard, clipboardRoots, error);
+	if (!error.IsOk())
+	{
+		out.mutation.success = false;
+		out.mutation.error = error;
+		return out;
+	}
+	auto& destination = m_EcsScene.registry;
+	entt::entity destinationParent = entt::null;
+	if (parentUuid)
+	{
+		destinationParent = m_Authoring.FindByUuid(*parentUuid);
+		if (destinationParent == entt::null || !destination.valid(destinationParent))
+		{
+			out.mutation = EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				parentUuid->ToString(), "paste parent is not present in the authoring scene");
+			return out;
+		}
+	}
+
+	// Validate clipboard mesh/material resources still match this document.
+	std::vector<entt::entity> sources;
+	for (const auto root : roots)
+		SceneHierarchy::CollectSubtreePreOrder(clipboard.ecs.registry, root, sources);
+	for (const auto source : sources)
+	{
+		if (const auto* mesh = clipboard.ecs.registry.try_get<MeshRef>(source))
+		{
+			if (mesh->meshIndex >= m_EcsScene.meshRegistry.GetCount())
+			{
+				out.mutation = EditorMutationResult::Failure(rt2::core::Error::ClipboardStale,
+					{}, "clipboard mesh resources no longer match this document");
+				return out;
+			}
+			if (mesh->materialIndex >= static_cast<int>(m_EcsScene.materials.size()))
+			{
+				out.mutation = EditorMutationResult::Failure(rt2::core::Error::ClipboardStale,
+					{}, "clipboard material resources no longer match this document");
+				return out;
+			}
+		}
+	}
+
+	// Validate the UUID count exactly matches the resulting entity count.
+	if (knownPastedUuids.size() != sources.size())
+	{
+		out.mutation = EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			{}, "PasteSubtreesWithUuids: known UUID count does not match the canonical subtree size");
+		return out;
+	}
+
+	// Validate all supplied UUIDs are valid/unique/absent from the document.
+	std::unordered_set<rt2::core::UUID> seen;
+	for (const auto& uuid : knownPastedUuids)
+	{
+		if (uuid.IsNull() || m_Authoring.uuidIndex.Contains(uuid) || !seen.insert(uuid).second)
+		{
+			out.mutation = EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+				uuid.ToString(), "PasteSubtreesWithUuids: known UUID is nil, duplicate, or already present");
+			return out;
+		}
+	}
+
+	// Build the complete paste plan before mutating.
+	std::unordered_map<entt::entity, entt::entity> remap;
+	std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>> sourceToDuplicate;
+	sourceToDuplicate.reserve(sources.size());
+	bool pastesRenderable = false;
+	for (std::size_t i = 0; i < sources.size(); ++i)
+	{
+		const auto source = sources[i];
+		const auto pasted = destination.create();
+		remap.emplace(source, pasted);
+		CopyAuthoredComponents(clipboard.ecs.registry, source, destination, pasted);
+		if (!m_Authoring.AssignKnownUuid(pasted, knownPastedUuids[i]))
+		{
+			// Rollback.
+			for (const auto& [s, d] : remap)
+			{
+				if (const auto* idc = destination.try_get<EntityIdComponent>(d))
+					m_Authoring.uuidIndex.Erase(idc->id);
+				destination.destroy(d);
+			}
+			out.mutation = EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+				knownPastedUuids[i].ToString(),
+				"PasteSubtreesWithUuids: failed to assign known UUID");
+			return out;
+		}
+		pastesRenderable = pastesRenderable || destination.all_of<MeshRef>(pasted);
+		const auto* sourceIdc = clipboard.ecs.registry.try_get<EntityIdComponent>(source);
+		sourceToDuplicate.emplace_back(sourceIdc ? sourceIdc->id : rt2::core::UUID{},
+		                                knownPastedUuids[i]);
+	}
+
+	// Wire Hierarchy among pastes and to the destination parent.
+	for (const auto source : sources)
+	{
+		const auto pasted = remap.at(source);
+		const auto* sourceHierarchy = clipboard.ecs.registry.try_get<Hierarchy>(source);
+		entt::entity pastedParent = destinationParent;
+		if (sourceHierarchy)
+		{
+			const auto mappedParent = remap.find(sourceHierarchy->parent);
+			if (mappedParent != remap.end())
+				pastedParent = mappedParent->second;
+		}
+		if (pastedParent == entt::null)
+			continue;
+		destination.emplace<Hierarchy>(pasted).parent = pastedParent;
+		auto* parentHierarchy = destination.try_get<Hierarchy>(pastedParent);
+		if (!parentHierarchy)
+			parentHierarchy = &destination.emplace<Hierarchy>(pastedParent);
+		parentHierarchy->children.push_back(pasted);
+	}
+
+	// Append " Copy" to paste root names and collect created roots.
+	for (const auto root : roots)
+	{
+		const auto pasted = remap.at(root);
+		if (auto* name = destination.try_get<NameComponent>(pasted))
+			name->name += " Copy";
+		out.createdRoots.push_back(GetEntityUuid({ pasted }));
+		SceneGraph::MarkDirty(destination, pasted);
+	}
+
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	out.mutation.syncImpact = pastesRenderable
+		? rt2::core::SyncImpact::Structural : rt2::core::SyncImpact::None;
+	out.mutation.success = true;
+	for (const auto root : roots)
+		out.mutation.affectedEntities.push_back(GetEntityUuid({ remap.at(root) }));
+	out.sourceToDuplicate = std::move(sourceToDuplicate);
+	return out;
+}
+
+EditorMutationResult SceneManager::SetLocalTransformStates(
+	const std::vector<std::pair<rt2::core::UUID, EditableTRS>>& states)
+{
+	if (states.empty()) return {};
+	auto& registry = m_EcsScene.registry;
+
+	// Validate ALL UUIDs resolve first. Any failure => zero mutation.
+	std::vector<std::pair<entt::entity, EditableTRS>> resolved;
+	resolved.reserve(states.size());
+	for (const auto& [uuid, trs] : states)
+	{
+		const auto entity = m_Authoring.FindByUuid(uuid);
+		if (entity == entt::null || !registry.valid(entity))
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				uuid.ToString(),
+				"SetLocalTransformStates: entity UUID is not present in the authoring scene");
+		resolved.emplace_back(entity, trs);
+	}
+
+	// Apply all local TRS in one pass.
+	for (const auto& [entity, trs] : resolved)
+	{
+		if (auto* tf = registry.try_get<Transform>(entity))
+		{
+			tf->translation = trs.translation;
+			tf->rotation = glm::normalize(trs.rotation);
+			tf->scale = trs.scale;
+			SceneGraph::MarkDirty(registry, entity);
+		}
+	}
+
+	std::vector<entt::entity> changedEntities;
+	changedEntities.reserve(resolved.size());
+	EditorMutationResult result;
+	result.syncImpact = rt2::core::SyncImpact::Transform;
+	for (const auto& [entity, trs] : resolved)
+	{
+		changedEntities.push_back(entity);
+		if (const auto* idc = registry.try_get<EntityIdComponent>(entity))
+			result.affectedEntities.push_back(idc->id);
+	}
+	RefreshCameraForwardDirections(changedEntities);
+	NotifyAuthoringChanged();
+	return result;
+}
+
+EditorMutationResult SceneManager::ReparentBatch(
+	const std::vector<ReparentEdit>& edits, ReparentMode mode)
+{
+	if (edits.empty()) return {};
+	auto& registry = m_EcsScene.registry;
+
+	// Phase 1: validate all entities and all new parents resolve, and no
+	// cycles. Any failure => zero mutation.
+	std::vector<entt::entity> entities;
+	std::vector<entt::entity> newParents;
+	entities.reserve(edits.size());
+	newParents.reserve(edits.size());
+	for (const auto& edit : edits)
+	{
+		const auto entity = m_Authoring.FindByUuid(edit.entity);
+		if (entity == entt::null || !registry.valid(entity))
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				edit.entity.ToString(),
+				"ReparentBatch: entity UUID is not present in the authoring scene");
+		entt::entity newParent = entt::null;
+		if (!edit.newParent.IsNull())
+		{
+			newParent = m_Authoring.FindByUuid(edit.newParent);
+			if (newParent == entt::null || !registry.valid(newParent))
+				return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+					edit.newParent.ToString(),
+					"ReparentBatch: new parent UUID is not present in the authoring scene");
+		}
+		if (newParent != entt::null && SceneHierarchy::IsDescendant(registry, entity, newParent))
+			return EditorMutationResult::Failure(rt2::core::Error::HierarchyCycle,
+				edit.entity.ToString(),
+				"ReparentBatch: cannot parent an entity beneath itself or a descendant");
+		entities.push_back(entity);
+		newParents.push_back(newParent);
+	}
+
+	// Phase 2: for PreserveWorld, convert each desired world matrix to
+	// local against the NEW parent (singular/shear => fail all).
+	std::vector<EditableTRS> newLocals;
+	if (mode == ReparentMode::PreserveWorld)
+	{
+		UpdateWorldTransforms();
+		newLocals.reserve(edits.size());
+		for (std::size_t i = 0; i < edits.size(); ++i)
+		{
+			const auto entity = entities[i];
+			const auto newParent = newParents[i];
+			glm::mat4 parentWorld(1.0f);
+			if (newParent != entt::null)
+			{
+				const auto* parentTransform = registry.try_get<Transform>(newParent);
+				if (!parentTransform)
+					return EditorMutationResult::Failure(rt2::core::Error::InvalidTransform,
+						edits[i].newParent.ToString(),
+						"ReparentBatch: new parent has no transform");
+				parentWorld = parentTransform->worldMatrix;
+			}
+			const auto* transform = registry.try_get<Transform>(entity);
+			if (!transform)
+				return EditorMutationResult::Failure(rt2::core::Error::InvalidTransform,
+					edits[i].entity.ToString(),
+					"ReparentBatch: reparented entity has no transform");
+			EditableTRS local;
+			if (!TryWorldToLocalTRS(parentWorld, transform->worldMatrix, local))
+				return EditorMutationResult::Failure(rt2::core::Error::InvalidTransform,
+					edits[i].entity.ToString(),
+					"ReparentBatch: preserve-world reparent produced a singular or sheared transform");
+			newLocals.push_back(local);
+		}
+	}
+	else
+	{
+		newLocals.reserve(edits.size());
+		for (const auto& edit : edits)
+			newLocals.push_back(edit.localTRS);
+	}
+
+	// Phase 3: apply all reparents atomically. Remove each entity from its
+	// old parent's children list, set the new parent, and append to the new
+	// parent's children list.
+	for (std::size_t i = 0; i < edits.size(); ++i)
+	{
+		const auto entity = entities[i];
+		const auto newParent = newParents[i];
+		auto* hierarchy = registry.try_get<Hierarchy>(entity);
+		RemoveChild(registry, hierarchy ? hierarchy->parent : entt::null, entity);
+		if (!hierarchy)
+			hierarchy = &registry.emplace<Hierarchy>(entity);
+		hierarchy->parent = newParent;
+		if (newParent != entt::null)
+		{
+			auto* parentHierarchy = registry.try_get<Hierarchy>(newParent);
+			if (!parentHierarchy)
+				parentHierarchy = &registry.emplace<Hierarchy>(newParent);
+			parentHierarchy->children.push_back(entity);
+		}
+	}
+
+	// Phase 4: apply the new local TRS.
+	for (std::size_t i = 0; i < edits.size(); ++i)
+	{
+		auto& transform = registry.get<Transform>(entities[i]);
+		transform.translation = newLocals[i].translation;
+		transform.rotation = glm::normalize(newLocals[i].rotation);
+		transform.scale = newLocals[i].scale;
+		SceneGraph::MarkDirty(registry, entities[i]);
+	}
+
+	std::vector<entt::entity> changedEntities(entities.begin(), entities.end());
+	RefreshCameraForwardDirections(changedEntities);
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	EditorMutationResult result;
+	result.syncImpact = rt2::core::SyncImpact::Transform;
+	for (const auto entity : entities)
+		result.affectedEntities.push_back(GetEntityUuid({ entity }));
 	return result;
 }
 

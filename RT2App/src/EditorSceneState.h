@@ -35,6 +35,12 @@ public:
         const std::optional<rt2::core::UUID>& parent = std::nullopt) const;
     bool HasClipboard() const { return m_Clipboard != nullptr && !m_ClipboardRoots.empty(); }
 
+    // Phase 3B1: read-only access to the clipboard document and roots for
+    // command construction (PasteSubtreesWithUuids needs the clipboard
+    // document). Returns nullptr when the clipboard is empty.
+    const rt2::core::SceneDocument* ClipboardDocument() const { return m_Clipboard.get(); }
+    const std::vector<rt2::core::UUID>& ClipboardRoots() const { return m_ClipboardRoots; }
+
     bool CaptureCameraBookmark(size_t slot, const EditorCameraPose& pose);
     const EditorCameraPose* CameraBookmark(size_t slot) const;
     bool ClearCameraBookmark(size_t slot);

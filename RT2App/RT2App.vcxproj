@@ -215,6 +215,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\EditorCommand.h" />
     <ClInclude Include="src\EditorCommandHistory.h" />
     <ClInclude Include="src\EditorCommands.h" />
+    <ClInclude Include="src\EditorStructuralCommands.h" />
     <ClInclude Include="src\EditorSceneState.h" />
     <ClInclude Include="src\EditorSelection.h" />
     <ClInclude Include="src\EditorSettings.h" />
@@ -265,6 +266,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\SceneVisibility.h" />
     <ClInclude Include="src\ShaderManager.h" />
     <ClInclude Include="src\StagingArena.h" />
+    <ClInclude Include="src\SubtreeSnapshot.h" />
     <ClInclude Include="src\TonemapPass.h" />
     <ClInclude Include="src\TransformEditing.h" />
     <ClInclude Include="src\UnsavedChangesCoordinator.h" />
@@ -331,6 +333,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\EditorCommands.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\EditorStructuralCommands.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

@@ -29,6 +29,15 @@ UUID SceneDocument::AssignNewUuid(entt::entity e)
     return uuid;
 }
 
+bool SceneDocument::AssignKnownUuid(entt::entity e, const UUID& uuid)
+{
+    if (uuid.IsNull()) return false;
+    if (uuidIndex.Contains(uuid)) return false;
+    ecs.registry.emplace_or_replace<EntityIdComponent>(e, EntityIdComponent{uuid});
+    uuidIndex.Insert(uuid, e);
+    return true;
+}
+
 bool SceneDocument::ValidateUniqueUuids(Error& err) const
 {
     // Walk the registry and confirm every EntityIdComponent UUID is in the

@@ -4,6 +4,7 @@
 #define RT2_CORE_ERROR_H
 
 #include <string>
+#include <utility>
 
 // ============================================================================
 // Error — the engine's diagnostic return type.
@@ -55,6 +56,29 @@ struct Error
 
     // Code name for Format and tests.
     static const char* CodeName(Code c);
+};
+
+// Result<T> — value-or-error return type for APIs that can fail with a value
+// in the success case. Engine code paths do not throw; this is the typed
+// equivalent of the (bool, Error out-param) pattern for APIs like
+// SceneManager::CountCanonicalSubtreeEntities that return a count on success.
+template<typename T>
+struct Result
+{
+    T       value{};
+    Error   error;
+
+    bool IsOk() const { return error.IsOk(); }
+
+    static Result Ok(T v) { Result r; r.value = std::move(v); return r; }
+    static Result Fail(Error::Code code, std::string path, std::string detail)
+    {
+        Result r;
+        r.error.code = code;
+        r.error.path = std::move(path);
+        r.error.detail = std::move(detail);
+        return r;
+    }
 };
 
 } // namespace rt2::core

@@ -1432,7 +1432,7 @@ multi-selection visibility toggle with one Undo restoring the mix; new edit
 after Undo clears Redo; open-a-different-scene clears history and Play
 inertness.
 
-### Phase 3B1 — structural command correctness (planned specification)
+### Phase 3B1 — structural command correctness (implemented)
 
 Phase 3B1 migrates structural editor mutations (create, delete, duplicate,
 paste, reparent, primitive/light entity creation, and the viewport gizmo's
@@ -1716,6 +1716,36 @@ Runtime acceptance (interactive, pending user):
   restores both pre-drag transforms.
 - Toggle visibility on a single entity via the context menu — one `Ctrl+Z`
   restores the prior state.
+
+Verification report (CPU-only, doctest):
+
+- Release x64 build succeeds for RT2App, RT2Tests, and RT2SliceRunner.
+- `Phase3B1CommandTests.cpp`: 18 test cases, 266 assertions, all pass.
+  Covers: CreateEmpty/Primitive/Light RecordApplied/Undo/Redo with same UUID;
+  RemoveSubtreesCommand multi-level subtree with resource-reference
+  stability; resource stability regression (no compaction while command in
+  history); RemoveSubtreesExact out-of-band-descendant rejection;
+  DuplicateSubtreesCommand same-UUID Redo; DuplicateSubtreesWithUuids count
+  validation; CountCanonicalSubtreeEntities canonical + invalid;
+  PasteSubtreesCommand same-UUID Redo; ReparentCommand multi-source
+  PreserveLocal Undo/Redo; ReparentBatch atomic cycle failure;
+  SetLocalTransformStates atomic validate-first; multi-entity
+  TransformCommand (gizmo path); single-entity visibility via history;
+  sibling-anchor middle-position restoration; generation guard clears
+  structural commands; CompactMeshRegistryNow explicit entry point.
+- `Phase3ACommandTests.cpp`: 16 test cases, 183 assertions, all pass
+  (3A coverage stays green).
+- Full `RT2Tests` run: 304 test cases, 298 passed, 6 failed, 48 skipped.
+  The failing set is exactly the six known pre-existing cases (five
+  `SceneGraph` cases in `EcsTests.cpp` and one SIGSEGV in
+  `SceneManager: RemoveEntity destroys entity`). No new or different
+  failure.
+- `run_slice_test.ps1` passes (60 steps, authoring intact).
+- `run_recovery_test.ps1` passes.
+- `graphify update .` completed (24306 nodes, 50425 edges, 892 communities).
+
+Runtime acceptance (interactive): pending — to be performed by the user
+against a Release deployment. The six behavioural checks listed above.
 
 Explicitly out of scope for 3B1: property commands (name, material, light,
 camera, motion) — Phase 3B2; record-on-release for continuous property widgets

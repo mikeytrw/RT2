@@ -46,6 +46,9 @@ bool EditorSceneState::Copy(const SceneManager& manager,
             return false;
         }
     auto snapshot = std::make_unique<rt2::core::SceneDocument>();
+    // CloneInMemory preserves dst's UUID provider; set it from the source
+    // so any internal AssignNewUuid calls (if any) have a valid provider.
+    snapshot->SetUuidProvider(manager.AuthoringDoc().GetUuidProvider());
     if (!rt2::core::SceneSerializer::CloneInMemory(
             manager.AuthoringDoc(), *snapshot, error))
         return false;
