@@ -1720,29 +1720,43 @@ Runtime acceptance (interactive, pending user):
 Verification report (CPU-only, doctest):
 
 - Release x64 build succeeds for RT2App, RT2Tests, and RT2SliceRunner.
-- `Phase3B1CommandTests.cpp`: 18 test cases, 266 assertions, all pass.
+- `Phase3B1CommandTests.cpp`: 23 test cases, 308 assertions, all pass.
   Covers: CreateEmpty/Primitive/Light RecordApplied/Undo/Redo with same UUID;
   RemoveSubtreesCommand multi-level subtree with resource-reference
   stability; resource stability regression (no compaction while command in
   history); RemoveSubtreesExact out-of-band-descendant rejection;
-  DuplicateSubtreesCommand same-UUID Redo; DuplicateSubtreesWithUuids count
-  validation; CountCanonicalSubtreeEntities canonical + invalid;
-  PasteSubtreesCommand same-UUID Redo; ReparentCommand multi-source
-  PreserveLocal Undo/Redo; ReparentBatch atomic cycle failure;
-  SetLocalTransformStates atomic validate-first; multi-entity
+  RemoveSubtreesExact transient-state tolerance (worldMatrix/prevWorldMatrix/
+  dirty not compared); DuplicateSubtreesCommand same-UUID Redo;
+  DuplicateSubtreesWithUuids count validation; CountCanonicalSubtreeEntities
+  canonical + invalid; PasteSubtreesCommand same-UUID Redo; ReparentCommand
+  multi-source PreserveLocal Undo/Redo; ReparentCommand sibling-position
+  restoration via anchor; ReparentBatch PreserveWorld preserves world pose;
+  ReparentBatch atomic cycle failure; ReparentBatch batch-cycle validation
+  ({A→B, B→A}); SetLocalTransformStates atomic validate-first; multi-entity
   TransformCommand (gizmo path); single-entity visibility via history;
-  sibling-anchor middle-position restoration; generation guard clears
-  structural commands; CompactMeshRegistryNow explicit entry point.
+  sibling-anchor middle-position restoration (parented); multi-root
+  middle-delete Undo restores entity (root ordering unspecified);
+  generation guard clears structural commands; CompactMeshRegistryNow
+  explicit entry point.
 - `Phase3ACommandTests.cpp`: 16 test cases, 183 assertions, all pass
   (3A coverage stays green).
-- Full `RT2Tests` run: 304 test cases, 298 passed, 6 failed, 48 skipped.
+- Full `RT2Tests` run: 309 test cases, 303 passed, 6 failed, 48 skipped.
   The failing set is exactly the six known pre-existing cases (five
   `SceneGraph` cases in `EcsTests.cpp` and one SIGSEGV in
   `SceneManager: RemoveEntity destroys entity`). No new or different
   failure.
 - `run_slice_test.ps1` passes (60 steps, authoring intact).
 - `run_recovery_test.ps1` passes.
-- `graphify update .` completed (24306 nodes, 50425 edges, 892 communities).
+- `graphify update .` completed (24307 nodes, 50435 edges, 924 communities).
+- Compaction invariant enforced: `OnSceneChanged` gates compaction on
+  `!(m_History.CanUndo() || m_History.CanRedo())`; `CompactMeshRegistryNowAsserted()`
+  debug-asserts history is empty at all four document-adoption call sites.
+- Root-anchor validation skipped for nil-parent roots (root ordering
+  unspecified); strict anchoring kept for parented roots.
+- Outliner drag-reparent uses PreserveWorld on Execute (preserves world
+  pose); Undo uses PreserveLocal with stored before-local TRS.
+- ReparentBatch uses ReparentEdit.anchor for insertion position; batch-cycle
+  validation against the planned parent map catches {A→B, B→A}.
 
 Runtime acceptance (interactive): pending — to be performed by the user
 against a Release deployment. The six behavioural checks listed above.

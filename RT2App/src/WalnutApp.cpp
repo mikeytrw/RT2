@@ -43,6 +43,7 @@
 #include <thread>
 #include <chrono>
 #include <fstream>
+#include <cassert>
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -142,7 +143,15 @@ public:
 		m_EditorUI.SetOnSceneChanged([this]() {
 			if (m_RendererGPU.IsAvailable())
 			{
-				bool didCompact = m_SceneMgr.CompactMeshRegistry();
+				// Phase 3B1 invariant: compaction cannot run while any Undo
+				// or Redo entry references resource slots. A snapshot's stored
+				// MeshRef::meshIndex would point to a different resource or
+				// nothing after compaction. Defer compaction until the history
+				// is cleared (history.Clear() calls CompactMeshRegistryNow()).
+				const bool historyLive = m_History.CanUndo() || m_History.CanRedo();
+				bool didCompact = false;
+				if (!historyLive)
+					didCompact = m_SceneMgr.CompactMeshRegistry();
 				if (m_PendingFullSync || didCompact)
 				{
 					m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData, const RenderInstanceMap& instanceMap) {
@@ -860,7 +869,7 @@ public:
 					std::move(restored), std::max<uint64_t>(1, r.revision));
 				m_EditorUI.ResetForDocument();
 				m_History.Clear();
-				m_SceneMgr.CompactMeshRegistryNow();
+				CompactMeshRegistryNowAsserted();
 				m_Recovery->ResetSchedule();
 				m_LastStatusMsg = "Restored recovery";
 					// Upload to GPU
@@ -1170,6 +1179,18 @@ private:
 			m_SceneMgr.SyncTransformsToGPU();
 		}
 		m_RendererGPU.ResetAccumulation();
+	}
+
+	// Phase 3B1 invariant: compaction cannot run while any Undo or Redo
+	// entry references resource slots. This wrapper asserts the history is
+	// empty in debug builds (catches host-contract violations) and forwards
+	// to SceneManager::CompactMeshRegistryNow(). Call only at
+	// history.Clear(), document adoption, or save/reload.
+	void CompactMeshRegistryNowAsserted()
+	{
+		assert((!m_History.CanUndo() && !m_History.CanRedo()) &&
+		       "CompactMeshRegistryNow must not run while history is non-empty");
+		m_SceneMgr.CompactMeshRegistryNow();
 	}
 
 
@@ -1609,7 +1630,7 @@ private:
 		}
 		m_EditorUI.ResetForDocument();
 		m_History.Clear();
-		m_SceneMgr.CompactMeshRegistryNow();
+		CompactMeshRegistryNowAsserted();
 
 		if (ext == "obj")
 		{
@@ -1918,7 +1939,7 @@ public:
 		m_SceneMgr.ReplaceAuthoringDocument(std::move(tempDoc));
 		m_EditorUI.ResetForDocument();
 		m_History.Clear();
-		m_SceneMgr.CompactMeshRegistryNow();
+		CompactMeshRegistryNowAsserted();
 		m_SceneMgr.ClearDirty();
 		m_Recovery->ResetSchedule();
 		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();

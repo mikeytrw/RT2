@@ -235,8 +235,8 @@
     "semantic_hash": ""
   },
   "RT2App/src/WalnutApp.cpp": {
-    "mtime": 1784477937.7574782,
-    "ast_hash": "63b6c44e99f042b629498f0e9e03962c",
+    "mtime": 1784479542.654894,
+    "ast_hash": "bbd0cd52c78bc57a6bc8e98980b11dd5",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRD/Include/NRD.h": {
@@ -10190,8 +10190,8 @@
     "semantic_hash": ""
   },
   "RT2App/src/SceneEditorUI.cpp": {
-    "mtime": 1784477794.4747527,
-    "ast_hash": "ae8c70d9b14fc643e2f6a20265a7795d",
+    "mtime": 1784479622.22285,
+    "ast_hash": "c095c8fb89a82531a5b60707be0e9143",
     "semantic_hash": ""
   },
   "RT2App/src/SceneEditorUI.h": {
@@ -10200,8 +10200,8 @@
     "semantic_hash": ""
   },
   "RT2App/src/SceneManager.cpp": {
-    "mtime": 1784477069.5181346,
-    "ast_hash": "6f20326f81012a341e41b58aaf538920",
+    "mtime": 1784479827.402473,
+    "ast_hash": "85edf43c740391e4e49f3a39454768ea",
     "semantic_hash": ""
   },
   "RT2App/src/SceneManager.h": {
@@ -10390,8 +10390,8 @@
     "semantic_hash": ""
   },
   "docs/game-engine-development-plan.md": {
-    "mtime": 1784475574.7324367,
-    "ast_hash": "8db8b3497bfaff59c678fe6e1b5ab96b",
+    "mtime": 1784478139.405477,
+    "ast_hash": "b99baffe54503b8b1834cd2947c463c5",
     "semantic_hash": ""
   },
   "docs/game-loop.md": {
@@ -10430,8 +10430,8 @@
     "semantic_hash": ""
   },
   "docs/scene-management.md": {
-    "mtime": 1784475588.1913881,
-    "ast_hash": "12c55793762dc28ee358667e0d3bdcfd",
+    "mtime": 1784478147.1594083,
+    "ast_hash": "91b860490fbfe279e78809b6c13a5d05",
     "semantic_hash": ""
   },
   "docs/shader-bindings.md": {
@@ -10535,8 +10535,8 @@
     "semantic_hash": ""
   },
   "RT2App/src/EditorTransformGizmo.cpp": {
-    "mtime": 1784477829.4000337,
-    "ast_hash": "5cee9fe6b5d4163ea194dc5ab2d18104",
+    "mtime": 1784479801.6302893,
+    "ast_hash": "d08564042d68c5d1b681b5b0c1780532",
     "semantic_hash": ""
   },
   "RT2App/src/EditorTransformGizmo.h": {
@@ -10615,8 +10615,8 @@
     "semantic_hash": ""
   },
   ".claude/settings.local.json": {
-    "mtime": 1784469997.878464,
-    "ast_hash": "15daeb4d716c21f15b0d5094435614d7",
+    "mtime": 1784478347.0333111,
+    "ast_hash": "d112a5e6c27dc3442ad45631319f9efe",
     "semantic_hash": ""
   },
   "RT2App/src/EditorCommand.h": {
@@ -10675,8 +10675,8 @@
     "semantic_hash": ""
   },
   "RT2Tests/src/Phase3B1CommandTests.cpp": {
-    "mtime": 1784477626.6228507,
-    "ast_hash": "43ef7e3dabdc94b403d35991886153f3",
+    "mtime": 1784479856.1533246,
+    "ast_hash": "db5d764507789292e99dd95a28164ab3",
     "semantic_hash": ""
   }
 }

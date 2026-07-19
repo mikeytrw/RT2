@@ -345,7 +345,10 @@ void SceneEditorUI::ReparentCommand(const std::vector<rt2::core::UUID>& sources,
 	if (sources.empty()) return;
 
 	// Capture before-edits: each source's current parent, local TRS, and
-	// sibling anchor.
+	// sibling anchor. The after-edits carry the source's current WORLD
+	// matrix so ReparentBatch with PreserveWorld can derive the new local
+	// TRS that preserves the world pose. Undo uses PreserveLocal with the
+	// stored before-local TRS (set by the command, not here).
 	std::vector<ReparentEdit> beforeEdits;
 	std::vector<ReparentEdit> afterEdits;
 	for (const auto& src : sources)
@@ -354,17 +357,22 @@ void SceneEditorUI::ReparentCommand(const std::vector<rt2::core::UUID>& sources,
 		if (entity == entt::null) continue;
 		EditableTRS local;
 		if (!m_SceneMgr->GetLocalTransform(SceneManager::EntityId{ entity }, local)) continue;
+		EditableTRS world;
+		if (!m_SceneMgr->GetWorldTransform(SceneManager::EntityId{ entity }, world)) continue;
 		rt2::core::UUID parentUuid;
 		const auto parent = m_SceneMgr->GetParent(SceneManager::EntityId{ entity });
 		if (parent.IsValid())
 			parentUuid = m_SceneMgr->GetEntityUuid(parent);
 		auto snap = m_SceneMgr->CaptureSubtreeSnapshot({ src });
 		RootSiblingAnchor anchor = snap.rootAnchors.empty() ? RootSiblingAnchor{} : snap.rootAnchors.front();
-		beforeEdits.push_back({ src, parentUuid, local, glm::mat4(1.0f), anchor });
-		afterEdits.push_back({ src, newParent, local, glm::mat4(1.0f), {} });
+		beforeEdits.push_back({ src, parentUuid, local, world.Matrix(), anchor });
+		afterEdits.push_back({ src, newParent, local, world.Matrix(), {} });
 	}
 
-	auto cmd = MakeReparentCommandIfEffective(beforeEdits, afterEdits, ReparentMode::PreserveLocal);
+	// Execute with PreserveWorld to preserve the world pose (matching
+	// Phase 2C's drag-reparent semantics). Undo uses PreserveLocal with
+	// the stored before-local TRS (handled by ReparentCommand::Undo).
+	auto cmd = MakeReparentCommandIfEffective(beforeEdits, afterEdits, ReparentMode::PreserveWorld);
 	if (!cmd) return;
 	auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
 	ApplyMutation(result);

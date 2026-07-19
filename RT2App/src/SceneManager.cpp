@@ -1342,39 +1342,30 @@ RootSiblingAnchor BuildSiblingAnchor(const entt::registry& reg, entt::entity roo
 // the root-entity list). Returns true if the anchor points to a position
 // the root can be restored to consistently. The root itself need not be
 // present (it was just removed).
+// Validate a root's anchor against the current parent's children list.
+// Returns true if the anchor points to a position the root can be restored
+// to consistently. The root itself need not be present (it was just
+// removed). Only called for parented roots — nil-parent roots skip anchor
+// validation (root ordering is unspecified).
 bool AnchorIsConsistent(const entt::registry& reg, const rt2::core::UUID& rootUuid,
                         const rt2::core::UUID& parentUuid, const RootSiblingAnchor& anchor)
 {
 	std::vector<entt::entity> siblings;
-	if (!parentUuid.IsNull())
+	// Find the parent entity by UUID.
+	entt::entity found = entt::null;
+	auto view = reg.view<EntityIdComponent>();
+	for (auto e : view)
 	{
-		const auto parent = reg.view<EntityIdComponent>().front();
-		// Find the parent entity by UUID.
-		entt::entity found = entt::null;
-		auto view = reg.view<EntityIdComponent>();
-		for (auto e : view)
+		if (const auto* idc = reg.try_get<EntityIdComponent>(e);
+		    idc && idc->id == parentUuid)
 		{
-			if (const auto* idc = reg.try_get<EntityIdComponent>(e);
-			    idc && idc->id == parentUuid)
-			{
-				found = e;
-				break;
-			}
-		}
-		if (found == entt::null) return false;
-		if (const auto* ph = reg.try_get<Hierarchy>(found))
-			siblings = ph->children;
-	}
-	else
-	{
-		auto view = reg.view<EntityIdComponent>();
-		for (auto e : view)
-		{
-			const auto* h = reg.try_get<Hierarchy>(e);
-			if (!h || h->parent == entt::null)
-				siblings.push_back(e);
+			found = e;
+			break;
 		}
 	}
+	if (found == entt::null) return false;
+	if (const auto* ph = reg.try_get<Hierarchy>(found))
+		siblings = ph->children;
 
 	// Convert siblings to UUIDs.
 	std::vector<rt2::core::UUID> siblingUuids;
@@ -1581,8 +1572,13 @@ EditorMutationResult SceneManager::RestoreSubtrees(const SubtreeSnapshot& snapsh
 	}
 
 	// Phase 2: validate root sibling anchors against the current parent's
-	// children list (or the root-entity list). An inconsistent anchor fails
-	// atomically — restoration never silently appends.
+	// children list. An inconsistent anchor fails atomically — restoration
+	// never silently appends. Per the spec, root-entity ordering is
+	// unspecified (registry-iteration order, no explicit authored ordering
+	// vector); anchor validation is skipped for nil-parent roots (the
+	// root-entity list is not a stable ordering authority) and kept
+	// strict for parented roots (the parent's children list is authored
+	// state).
 	for (std::size_t i = 0; i < snapshot.rootUuids.size(); ++i)
 	{
 		const auto& rootUuid = snapshot.rootUuids[i];
@@ -1601,6 +1597,12 @@ EditorMutationResult SceneManager::RestoreSubtrees(const SubtreeSnapshot& snapsh
 		// by EntityMatchesRecord above (parent UUID matches). Skip the
 		// anchor check in that case.
 		if (m_Authoring.uuidIndex.Contains(rootUuid)) continue;
+		// Skip anchor validation for nil-parent roots: root-entity
+		// ordering is unspecified and the entt pool iteration order is not
+		// a stable authority (it changes on every destroy/create via
+		// swap-and-pop). Validating against it would cause legitimate Undo
+		// to fail nondeterministically.
+		if (parentUuid.IsNull()) continue;
 		if (!AnchorIsConsistent(registry, rootUuid, parentUuid, anchor))
 			return EditorMutationResult::Failure(rt2::core::Error::InvalidHierarchy,
 				rootUuid.ToString(),
@@ -1612,6 +1614,7 @@ EditorMutationResult SceneManager::RestoreSubtrees(const SubtreeSnapshot& snapsh
 	bool addsRenderable = false;
 	EditorMutationResult result;
 	std::unordered_map<rt2::core::UUID, entt::entity> created;
+	std::unordered_set<rt2::core::UUID> newlyCreated;
 	for (const auto& record : snapshot.entities)
 	{
 		if (m_Authoring.uuidIndex.Contains(record.uuid))
@@ -1644,14 +1647,21 @@ EditorMutationResult SceneManager::RestoreSubtrees(const SubtreeSnapshot& snapsh
 		}
 		addsRenderable = addsRenderable || registry.all_of<MeshRef>(entity);
 		created[record.uuid] = entity;
+		newlyCreated.insert(record.uuid);
 		result.affectedEntities.push_back(record.uuid);
 	}
 
 	// Phase 4: wire Hierarchy. Each entity's parentUuid points to either
 	// nil (root) or another entity in the snapshot. Insert the entity at
-	// the anchored sibling position.
+	// the anchored sibling position. Skip already-present entities (the
+	// idempotent path) to avoid double-inserting into the parent's children
+	// list.
 	for (const auto& record : snapshot.entities)
 	{
+		// If the entity was already present (not newly created), its
+		// Hierarchy wiring is already correct — skip to avoid corruption.
+		if (newlyCreated.find(record.uuid) == newlyCreated.end())
+			continue;
 		const auto entity = created[record.uuid];
 		if (record.parentUuid.IsNull())
 		{
@@ -2322,8 +2332,48 @@ EditorMutationResult SceneManager::ReparentBatch(
 		newParents.push_back(newParent);
 	}
 
+	// Phase 1b: batch-cycle validation. The per-edit check above validates
+	// each entity against the PRE-batch hierarchy. A batch like {A→under B,
+	// B→under A} passes per-edit validation (neither is a descendant of the
+	// other yet) but creates a cycle. Build the planned parent map and
+	// check that following the planned parent chain from each entity never
+	// revisits an entity in the batch.
+	{
+		std::unordered_map<entt::entity, entt::entity> plannedParent;
+		for (std::size_t i = 0; i < edits.size(); ++i)
+			plannedParent[entities[i]] = newParents[i];
+		for (std::size_t i = 0; i < edits.size(); ++i)
+		{
+			std::unordered_set<entt::entity> visited;
+			visited.insert(entities[i]);
+			entt::entity cursor = newParents[i];
+			while (cursor != entt::null)
+			{
+				if (!visited.insert(cursor).second)
+				{
+					// Cycle detected through the planned parent chain.
+					return EditorMutationResult::Failure(rt2::core::Error::HierarchyCycle,
+						edits[i].entity.ToString(),
+						"ReparentBatch: batch creates a cycle through the planned parent map");
+				}
+				// Follow the planned parent if this entity is in the batch;
+				// otherwise follow the live hierarchy.
+				auto it = plannedParent.find(cursor);
+				if (it != plannedParent.end())
+					cursor = it->second;
+				else if (const auto* h = registry.try_get<Hierarchy>(cursor))
+					cursor = h->parent;
+				else
+					cursor = entt::null;
+			}
+		}
+	}
+
 	// Phase 2: for PreserveWorld, convert each desired world matrix to
-	// local against the NEW parent (singular/shear => fail all).
+	// local against the NEW parent (singular/shear => fail all). Uses the
+	// world matrix stored in the ReparentEdit (captured at construction
+	// time) so the command is self-contained and not dependent on live
+	// state.
 	std::vector<EditableTRS> newLocals;
 	if (mode == ReparentMode::PreserveWorld)
 	{
@@ -2343,13 +2393,12 @@ EditorMutationResult SceneManager::ReparentBatch(
 						"ReparentBatch: new parent has no transform");
 				parentWorld = parentTransform->worldMatrix;
 			}
-			const auto* transform = registry.try_get<Transform>(entity);
-			if (!transform)
-				return EditorMutationResult::Failure(rt2::core::Error::InvalidTransform,
-					edits[i].entity.ToString(),
-					"ReparentBatch: reparented entity has no transform");
+			// Use the world matrix stored in the edit (captured at
+			// construction time) rather than the live transform's
+			// worldMatrix. This keeps the command self-contained.
+			(void)entity; // entity validity already validated in Phase 1.
 			EditableTRS local;
-			if (!TryWorldToLocalTRS(parentWorld, transform->worldMatrix, local))
+			if (!TryWorldToLocalTRS(parentWorld, edits[i].worldMatrix, local))
 				return EditorMutationResult::Failure(rt2::core::Error::InvalidTransform,
 					edits[i].entity.ToString(),
 					"ReparentBatch: preserve-world reparent produced a singular or sheared transform");
@@ -2364,12 +2413,15 @@ EditorMutationResult SceneManager::ReparentBatch(
 	}
 
 	// Phase 3: apply all reparents atomically. Remove each entity from its
-	// old parent's children list, set the new parent, and append to the new
-	// parent's children list.
+	// old parent's children list, set the new parent, and insert at the
+	// anchored sibling position (using ReparentEdit.anchor). For
+	// after-edits the anchor is typically empty (append to the end); for
+	// before-edits (Undo) the anchor restores the exact original position.
 	for (std::size_t i = 0; i < edits.size(); ++i)
 	{
 		const auto entity = entities[i];
 		const auto newParent = newParents[i];
+		const auto& anchor = edits[i].anchor;
 		auto* hierarchy = registry.try_get<Hierarchy>(entity);
 		RemoveChild(registry, hierarchy ? hierarchy->parent : entt::null, entity);
 		if (!hierarchy)
@@ -2380,7 +2432,22 @@ EditorMutationResult SceneManager::ReparentBatch(
 			auto* parentHierarchy = registry.try_get<Hierarchy>(newParent);
 			if (!parentHierarchy)
 				parentHierarchy = &registry.emplace<Hierarchy>(newParent);
-			parentHierarchy->children.push_back(entity);
+			// Find the insertion position from the anchor's nextSibling.
+			// Insert before nextSibling when resolvable; otherwise append.
+			std::size_t insertPos = parentHierarchy->children.size();
+			if (!anchor.nextSibling.IsNull())
+			{
+				for (std::size_t j = 0; j < parentHierarchy->children.size(); ++j)
+				{
+					const auto* idc = registry.try_get<EntityIdComponent>(parentHierarchy->children[j]);
+					if (idc && idc->id == anchor.nextSibling)
+					{
+						insertPos = j;
+						break;
+					}
+				}
+			}
+			parentHierarchy->children.insert(parentHierarchy->children.begin() + insertPos, entity);
 		}
 	}
 

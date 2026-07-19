@@ -210,21 +210,27 @@ TransformGizmoResult EditorTransformGizmo::Draw(SceneManager& scene,
 			m_Drag.dragScreenDirection = {
 				-m_Drag.dragScreenDirection.y, m_Drag.dragScreenDirection.x
 			};
-		m_Drag.uuids = std::move(liveUuids);
-		m_Drag.startWorld = std::move(liveWorld);
 		// Phase 3B1: capture the before-drag local TRS for each entity so
 		// the host can build a multi-entity TransformCommand on drag end.
+		// Exclude entities that fail GetLocalTransform — recording identity
+		// as their "before" would cause Undo to slam them to identity.
+		m_Drag.uuids.clear();
+		m_Drag.startWorld.clear();
 		m_Drag.startLocal.clear();
-		m_Drag.startLocal.reserve(m_Drag.uuids.size());
-		for (const auto& uuid : m_Drag.uuids)
+		m_Drag.uuids.reserve(liveUuids.size());
+		m_Drag.startWorld.reserve(liveUuids.size());
+		m_Drag.startLocal.reserve(liveUuids.size());
+		for (std::size_t i = 0; i < liveUuids.size(); ++i)
 		{
-			const entt::entity raw = scene.FindEntityByUuid(uuid);
+			const entt::entity raw = scene.FindEntityByUuid(liveUuids[i]);
 			EditableTRS local;
 			if (raw != entt::null &&
 			    scene.GetLocalTransform(SceneManager::EntityId{ raw }, local))
+			{
+				m_Drag.uuids.push_back(liveUuids[i]);
+				m_Drag.startWorld.push_back(liveWorld[i]);
 				m_Drag.startLocal.push_back(local);
-			else
-				m_Drag.startLocal.push_back(EditableTRS{});
+			}
 		}
 	}
 
@@ -318,6 +324,20 @@ TransformGizmoResult EditorTransformGizmo::Draw(SceneManager& scene,
 		const entt::entity raw = scene.FindEntityByUuid(m_Drag.uuids[i]);
 		if (raw == entt::null)
 		{
+			// Phase 3B1: if the drag had already moved, per-frame edits were
+			// applied but the host has not yet recorded a command. Fire
+			// dragJustEnded so the host records what was applied before the
+			// selection changed; only the still-resolvable entities are
+			// included.
+			if (m_Drag.moved)
+			{
+				result.dragJustEnded = true;
+				for (std::size_t j = 0; j < i; ++j)
+				{
+					result.draggedUuids.push_back(m_Drag.uuids[j]);
+					result.dragStartLocal.push_back(m_Drag.startLocal[j]);
+				}
+			}
 			Cancel();
 			result.error = "Gizmo edit cancelled because the selection changed.";
 			return result;
