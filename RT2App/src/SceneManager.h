@@ -146,6 +146,13 @@ struct EditorCameraPose;
 		const std::vector<rt2::core::UUID>& roots);
 	EditorMutationResult SetVisibility(
 		const std::vector<rt2::core::UUID>& entities, bool visible);
+	// Atomic multi-entity visibility with per-entity target states. Validates
+	// ALL UUIDs first (any failure => zero mutation), deduplicates
+	// (last-write-wins), skips entities already in the target state, applies
+	// all, bumps the revision once, and returns one result (Structural if
+	// anything changed, empty-success None otherwise). Mirrors SetVisibility.
+	EditorMutationResult SetVisibilityStates(
+		const std::vector<std::pair<rt2::core::UUID, bool>>& states);
 	EditorMutationResult DuplicateSubtrees(
 		const std::vector<rt2::core::UUID>& roots);
 	EditorMutationResult PasteSubtreesFrom(

@@ -772,6 +772,58 @@ EditorMutationResult SceneManager::SetVisibility(
 	return result;
 }
 
+EditorMutationResult SceneManager::SetVisibilityStates(
+	const std::vector<std::pair<rt2::core::UUID, bool>>& states)
+{
+	if (states.empty()) return {};
+	auto& registry = m_EcsScene.registry;
+
+	// Validate ALL UUIDs first. Any failure => zero mutation. Deduplicate
+	// last-write-wins by walking in order and overwriting the per-entity
+	// target slot.
+	std::vector<std::pair<entt::entity, bool>> resolved;
+	std::unordered_map<entt::entity, std::size_t> indexByEntity;
+	for (const auto& [uuid, visible] : states)
+	{
+		const auto entity = m_Authoring.FindByUuid(uuid);
+		if (entity == entt::null || !registry.valid(entity))
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				uuid.ToString(), "entity UUID is not present in the authoring scene");
+		const auto it = indexByEntity.find(entity);
+		if (it == indexByEntity.end())
+		{
+			indexByEntity.emplace(entity, resolved.size());
+			resolved.emplace_back(entity, visible);
+		}
+		else
+		{
+			resolved[it->second].second = visible; // last-write-wins
+		}
+	}
+
+	EditorMutationResult result;
+	for (const auto& [entity, visible] : resolved)
+	{
+		auto* component = registry.try_get<VisibleComponent>(entity);
+		const bool current = component ? component->visible : true;
+		if (current == visible) continue;
+		if (!component)
+			component = &registry.emplace<VisibleComponent>(entity);
+		component->visible = visible;
+		result.affectedEntities.push_back(GetEntityUuid({ entity }));
+	}
+
+	if (result.affectedEntities.empty())
+	{
+		// Empty-success: no entities actually changed state.
+		return result;
+	}
+
+	NotifyAuthoringChanged();
+	result.syncImpact = rt2::core::SyncImpact::Structural;
+	return result;
+}
+
 EditorMutationResult SceneManager::DuplicateSubtrees(
 	const std::vector<rt2::core::UUID>& rootUuids)
 {

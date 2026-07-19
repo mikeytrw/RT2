@@ -27,6 +27,9 @@
 #include "UnsavedChangesCoordinator.h"
 #include "ViewportCoordinates.h"
 #include "EditorTransformGizmo.h"
+#include "EditorCommandHistory.h"
+#include "EditorSyncRouter.h"
+#include "EditorCommands.h"
 #include "core/UUID.h"
 #include "core/Error.h"
 #include "stb_image.h"
@@ -132,6 +135,7 @@ public:
 		});
 
 		m_EditorUI.SetSceneMgr(&m_SceneMgr);
+		m_EditorUI.SetCommandHistory(&m_History);
 		m_EditorUI.SetDialogInitialDirectoryProvider([this]() {
 			return DialogInitialDirectory();
 		});
@@ -160,34 +164,35 @@ public:
 		m_EditorUI.SetOnTransformChanged([this]() {
 			SyncAuthoringTransforms();
 		});
+		// Phase 3A: configure the CPU-only sync router with the same
+		// callables the m_OnMutation lambda used inline. The lambda body
+		// then delegates to the router, making the impact->sync mapping
+		// testable from CPU-only tests.
+		m_SyncRouter.SetTransformSync([this]() { SyncAuthoringTransforms(); });
+		m_SyncRouter.SetFullSync([this]() {
+			if (!m_RendererGPU.IsAvailable()) return;
+			m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData,
+				const RenderInstanceMap& instanceMap) {
+				m_RendererGPU.SetScene(gpuData, instanceMap);
+			});
+			m_SceneMgr.SyncToGPU();
+		});
+		m_SyncRouter.SetMaterialSync([this]() {
+			if (!m_RendererGPU.IsAvailable()) return;
+			m_SceneMgr.SetSyncKeepTexturesCallback([this](GPUSceneData& gpuData,
+				const RenderInstanceMap& instanceMap) {
+				m_RendererGPU.SetSceneKeepTextures(gpuData, instanceMap);
+			});
+			m_SceneMgr.SyncToGPUKeepTextures();
+		});
+		m_SyncRouter.SetResetAccum([this]() { m_RendererGPU.ResetAccumulation(); });
+		m_SyncRouter.SetRendererAvailable([this]() { return m_RendererGPU.IsAvailable(); });
+		m_SyncRouter.SetTextureUploadPending([this]() { return m_RendererGPU.IsTextureUploadPending(); });
 		m_EditorUI.SetOnMutation([this](rt2::core::SyncImpact impact) {
-			if (impact == rt2::core::SyncImpact::None)
-				return;
-			if (impact == rt2::core::SyncImpact::Transform)
-			{
-				SyncAuthoringTransforms();
-				return;
-			}
-			if (m_RendererGPU.IsAvailable())
-			{
-				if (impact == rt2::core::SyncImpact::Structural)
-				{
-					m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData,
-						const RenderInstanceMap& instanceMap) {
-						m_RendererGPU.SetScene(gpuData, instanceMap);
-					});
-					m_SceneMgr.SyncToGPU();
-				}
-				else if (!m_RendererGPU.IsTextureUploadPending())
-				{
-					m_SceneMgr.SetSyncKeepTexturesCallback([this](GPUSceneData& gpuData,
-						const RenderInstanceMap& instanceMap) {
-						m_RendererGPU.SetSceneKeepTextures(gpuData, instanceMap);
-					});
-					m_SceneMgr.SyncToGPUKeepTextures();
-				}
-			}
-			m_RendererGPU.ResetAccumulation();
+			EditorMutationResult routed;
+			routed.success = true;
+			routed.syncImpact = impact;
+			m_SyncRouter.Route(routed, m_SceneMgr);
 		});
 		m_EditorUI.SetOnLoadMeshFile([this](const std::string& path) -> SceneManager::EntityId {
 			return LoadMeshFileAsEntity(path);
@@ -647,8 +652,9 @@ public:
 			m_EditorUI.ClearSelection();
 	}
 
-	m_EditorUI.RenderPanels();
+ 	m_EditorUI.RenderPanels();
 	HandleEditorCameraShortcuts();
+	HandleUndoRedoShortcuts();
 
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
 	ImGui::Begin("Viewport");
@@ -816,14 +822,15 @@ public:
 				rt2::core::SceneDocument restored;
 				restored.SetUuidProvider(m_SceneMgr.AuthoringDoc().GetUuidProvider());
 				bool ok = m_Recovery->Restore(r, restored, diags, err);
-				if (ok)
-				{
-					// Commit the already validated document without clearing it.
-					m_SceneMgr.ReplaceAuthoringDocument(
-						std::move(restored), std::max<uint64_t>(1, r.revision));
-					m_EditorUI.ResetForDocument();
-					m_Recovery->ResetSchedule();
-					m_LastStatusMsg = "Restored recovery";
+			if (ok)
+			{
+				// Commit the already validated document without clearing it.
+				m_SceneMgr.ReplaceAuthoringDocument(
+					std::move(restored), std::max<uint64_t>(1, r.revision));
+				m_EditorUI.ResetForDocument();
+				m_History.Clear();
+				m_Recovery->ResetSchedule();
+				m_LastStatusMsg = "Restored recovery";
 					// Upload to GPU
 					if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
 						UploadMeshToGPU();
@@ -1068,6 +1075,29 @@ private:
 				m_LastStatusMsg = "Recalled camera bookmark " + std::to_string(slot + 1);
 			}
 			return;
+		}
+	}
+
+	// Phase 3A: Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y. Suppressed during text entry,
+	// active widget editing, and Play (same suppression pattern as the
+	// Phase 2D camera shortcuts). Routes through the editor UI's public
+	// Undo()/Redo(), which run history and route results through the existing
+	// private ApplyMutation() sync path.
+	void HandleUndoRedoShortcuts()
+	{
+		const auto& io = ImGui::GetIO();
+		if (m_Runtime.GetState() != rt2::core::SceneRunState::Edit) return;
+		if (io.WantTextInput || ImGui::IsAnyItemActive()) return;
+		if (!io.KeyCtrl) return;
+		const bool shift = io.KeyShift;
+		if (ImGui::IsKeyPressed(ImGuiKey_Z))
+		{
+			if (shift) m_EditorUI.Redo();
+			else       m_EditorUI.Undo();
+		}
+		else if (ImGui::IsKeyPressed(ImGuiKey_Y))
+		{
+			m_EditorUI.Redo();
 		}
 	}
 
@@ -1545,6 +1575,8 @@ private:
 			ImGui::OpenPopup("Scene Load Failed");
 			return;
 		}
+		m_EditorUI.ResetForDocument();
+		m_History.Clear();
 
 		if (ext == "obj")
 		{
@@ -1604,6 +1636,8 @@ private:
 	RenderSettings m_Settings;
 	SceneManager m_SceneMgr;
 	SceneEditorUI m_EditorUI;
+	EditorCommandHistory m_History;
+	EditorSyncRouter m_SyncRouter;
 	EditorTransformGizmo m_TransformGizmo;
 	uint64_t m_ViewportPickSerial = 0;
 	bool m_ViewportPickToggle = false;
@@ -1748,6 +1782,16 @@ public:
 		return DialogInitialDirectory();
 	}
 
+	// Phase 3A: public undo/redo entry points for the Edit menu and Ctrl+Z/
+	// Ctrl+Shift+Z/Ctrl+Y shortcuts. Each delegates to the editor UI, which
+	// runs history and routes results through the existing ApplyMutation().
+	bool CanUndo() const { return m_EditorUI.CanUndo(); }
+	bool CanRedo() const { return m_EditorUI.CanRedo(); }
+	std::string UndoDescription() const { return m_EditorUI.UndoDescription(); }
+	std::string RedoDescription() const { return m_EditorUI.RedoDescription(); }
+	void Undo() { m_EditorUI.Undo(); }
+	void Redo() { m_EditorUI.Redo(); }
+
 	void NewScene()
 	{
 		m_Unsaved.Request({rt2::core::UnsavedChangesCoordinator::ActionKind::New, {}});
@@ -1757,6 +1801,7 @@ public:
 	{
 		m_SceneMgr.Clear();
 		m_EditorUI.ResetForDocument();
+		m_History.Clear();
 		m_SceneMgr.ClearDirty();
 		m_Recovery->ResetSchedule();
 		// New untitled doc gets a fresh recovery id for this session.
@@ -1838,6 +1883,7 @@ public:
 		// Adopt the resolved document without an intermediate cleared live state.
 		m_SceneMgr.ReplaceAuthoringDocument(std::move(tempDoc));
 		m_EditorUI.ResetForDocument();
+		m_History.Clear();
 		m_SceneMgr.ClearDirty();
 		m_Recovery->ResetSchedule();
 		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
@@ -1975,6 +2021,18 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 			{
 				app->RequestClose();
 			}
+			ImGui::EndMenu();
+		}
+		if (ImGui::BeginMenu("Edit"))
+		{
+			const std::string undoLabel = layerPtr->CanUndo()
+				? ("Undo " + layerPtr->UndoDescription()) : "Undo";
+			if (ImGui::MenuItem(undoLabel.c_str(), "Ctrl+Z", false, layerPtr->CanUndo()))
+				layerPtr->Undo();
+			const std::string redoLabel = layerPtr->CanRedo()
+				? ("Redo " + layerPtr->RedoDescription()) : "Redo";
+			if (ImGui::MenuItem(redoLabel.c_str(), "Ctrl+Shift+Z", false, layerPtr->CanRedo()))
+				layerPtr->Redo();
 			ImGui::EndMenu();
 		}
 	});

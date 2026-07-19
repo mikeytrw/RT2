@@ -1234,3 +1234,200 @@ this slice.
 3A: establish the command/history foundation and migrate a narrow set of
 existing editor mutations to undo/redo without changing their sync-impact
 contract.
+
+### Phase 3A — command/history foundation (implemented)
+
+Phase 3A is a narrow vertical slice of the Phase 3 command system: a CPU-only
+command abstraction, a bounded history with redo, and exactly two
+representative mutations migrated end-to-end. It deliberately excludes gizmo
+migration, structural (create/delete/duplicate/paste/reparent) commands,
+material/light/camera/name property commands, a history UI panel, and
+save-point clean tracking.
+
+Core design decisions:
+
+- Commands are UUID-keyed, minimal-state, and CPU-only. A command stores
+  `rt2::core::UUID` targets (never `entt::entity`) plus only the before/after
+  data it touches. No whole-scene snapshots. `Execute`/`Undo` resolve UUIDs at
+  run time and return `EditorMutationResult`; a missing entity is a graceful
+  `Failure`, never a crash.
+- Commands are constructed with complete before/after state. Construction is
+  separated from application, so `Execute` and `Redo` are the same pure
+  "apply after-states" call and can never recapture a stale "before".
+- `result.syncImpact` from the executed mutation is the single sync-impact
+  authority. There is no separate declared-impact channel; a command's
+  expected impact is asserted in its tests.
+- History never touches the render bridge. `EditorCommandHistory` runs
+  commands against `SceneManager` and returns the mutation result; the caller
+  routes it through the existing UI/host sync path. Dependency direction is
+  `WalnutApp -> SceneEditorUI -> EditorCommandHistory -> IEditorCommand ->
+  SceneManager`; SceneManager never depends on the command layer, and
+  RT2SliceRunner does not link it.
+- Two history entry points, both clearing redo only on a successful,
+  effective submission: `Execute(cmd)` applies then records; `RecordApplied(
+  cmd)` records a command whose effect was already applied incrementally
+  (continuous edits). Failed initial Execute leaves both stacks unchanged.
+- Conservative failure policy: a failed `Undo` or `Redo` surfaces the error
+  and clears both stacks — a failed inverse means history's causal
+  assumptions were violated by an out-of-band change, and older entries
+  cannot be trusted.
+- Generation guard on every public operation. `Execute`, `RecordApplied`,
+  `Undo`, and `Redo` all compare the stored `DocumentGeneration` against the
+  current one; on mismatch both stacks are cleared and history rebinds to the
+  new generation (Execute/RecordApplied then proceed as the first entry).
+  Host-side clears at document-adoption sites remain as redundancy only.
+  History survives Play/Stop (document generation is unchanged) but undo/redo
+  entry points are blocked while Play is active. History survives Save;
+  undoing past the save point leaves the document dirty until save-point
+  tracking is implemented (deliberate simplification).
+- Undo/Redo bypass editor locks by construction: locks are editor-session UI
+  state enforced at `MutationSelectionAllowed` when initiating commands; the
+  command layer sits below that gate and SceneManager has no lock concept. A
+  lock guards against new accidental edits, not against restoring states the
+  user already authored.
+- No-op suppression compares normalized state before recording: normalized
+  local TRS (epsilon component compare, sign-canonicalized quaternion) for
+  transforms; for visibility, pairs already in the target state are dropped
+  at construction and an emptied command is never submitted. The no-op rule
+  keeps history clean; it does not claim to un-dirty a document that
+  per-frame direct edits already dirtied.
+
+The two representative migrations:
+
+- `TransformCommand` wraps Inspector transform editing. It stores
+  `{UUID, beforeLocalTRS, afterLocalTRS}` — always local space, captured via
+  `GetLocalTransform` regardless of whether the user edited in Local or World
+  mode, so `TrySetWorldTransform`-based edits are fully covered. Undo/Redo
+  restore via `SetLocalTransform`. Sync impact: Transform.
+- `SetVisibilityCommand` wraps visibility toggling, built on a new atomic
+  UUID-keyed API `SceneManager::SetVisibilityStates(
+  const std::vector<std::pair<rt2::core::UUID, bool>>&)`, which follows the
+  existing `SetVisibility` shape: validate every UUID first (any failure
+  means no mutation), deduplicate (last write wins), skip entities already in
+  the target state, apply all, bump the revision once, and return one result
+  (Structural if anything changed, empty-success None otherwise). Undo is a
+  single `SetVisibilityStates` call with inverted pairs. A "Hide/Show
+  Selection" context action operating on `Selection().Ordered()` makes the
+  multi-entity mixed-state path reachable from the UI.
+
+Continuous-edit lifecycle (the coalescing seam): there is no runtime merge
+API. One drag equals one history entry via record-on-release, and the seam
+future slices reuse is the pattern `RecordApplied` + explicit session
+boundaries (the gizmo's `DragState` already has begin/end). The Inspector
+holds one `TransformEditSession { target UUID, beforeLocal, open }`:
+
+- `ImGui::IsItemActivated()` is checked immediately after each of the three
+  `DragFloat3` widgets (per-widget, honoring ImGui's last-item rule). The
+  first activation while no session is open captures `beforeLocal` before any
+  mutation that frame and opens the session, owned by that widget.
+- `IsItemDeactivatedAfterEdit()` on the owning widget closes the session:
+  current local TRS becomes `afterLocal`; normalized-equal means discard,
+  otherwise `RecordApplied(TransformCommand)`.
+- `IsItemDeactivated()` without AfterEdit (Escape cancel — ImGui reverts the
+  value itself) discards the session and records nothing.
+- Failed intermediate World edits cannot corrupt the session: a rejected
+  `TrySetWorldTransform` leaves local TRS untouched, and the before/after
+  comparison at close is the sole authority. A drag whose every frame failed
+  collapses to a no-op.
+- Defensive guards at close: target no longer the inspected entity, entity
+  dead, or `m_Editable` false (Play started mid-drag) — discard.
+
+Sync routing extraction: a CPU-only `EditorSyncRouter` takes the
+`EditorMutationResult` plus injected callables for transform/material/full
+sync and reset-accumulation, reproducing the current host mapping including
+the resource-generation Structural downgrade check. The WalnutApp
+`m_OnMutation` lambda body delegates to it, making the
+`Transform -> transform-only`, `Material -> material-only`,
+`Structural -> full`, `None -> nothing` contract testable.
+
+Ownership and integration:
+
+- WalnutApp owns `EditorCommandHistory` and injects a non-owning pointer via
+  `SceneEditorUI::SetCommandHistory()`.
+- SceneEditorUI exposes public `Undo()`/`Redo()`; each runs history and
+  routes the result through the existing private `ApplyMutation()` — one
+  sync path and one `m_MutationError` display.
+- WalnutApp Edit-menu items and `Ctrl+Z` / `Ctrl+Shift+Z` (and `Ctrl+Y`
+  alias) call those public methods, suppressed during text entry, active
+  widget editing, and Play (same rules as the Phase 2D shortcuts). Menu
+  labels come from `UndoDescription()`/`RedoDescription()`.
+- History is cleared at every document-adoption site in addition to the lazy
+  generation guard.
+
+New files: `RT2App/src/EditorCommand.h`, `RT2App/src/EditorCommandHistory.h/
+.cpp`, `RT2App/src/EditorCommands.h/.cpp`, `RT2App/src/EditorSyncRouter.h/
+.cpp`, `RT2Tests/src/Phase3ACommandTests.cpp`. Modified: `SceneManager.h/
+.cpp` (`SetVisibilityStates`), `SceneEditorUI.h/.cpp`, `WalnutApp.cpp`,
+`RT2App.vcxproj`, `RT2Tests.vcxproj`, `RT2App/premake5.lua`,
+`RT2Tests/premake5.lua`. RT2SliceRunner is deliberately untouched.
+
+Test plan (all CPU, doctest):
+
+- Execute/Undo restores the precise before-TRS / visibility flags; Redo
+  restores the after-state. An execute/undo/redo/undo cycle asserts the
+  second undo still restores the original before-states.
+- A new effective command after Undo empties the redo stack; failed or no-op
+  submissions do not.
+- Bounded history (default 64, configurable) evicts oldest; every retained
+  entry still undoes correctly.
+- `SetVisibilityStates`: atomic validate-first failure (no partial
+  mutation), single revision bump, mixed-state round trip, empty/no-change
+  None result.
+- Sync-impact spies: with counting `SyncCallback`s installed, Execute/Undo
+  invoke zero sync callbacks; returned impact matches the expected impact
+  per command; `TransformCommand` never reports Material/Structural.
+- `EditorSyncRouter`: each impact triggers exactly its own sync path, `None`
+  triggers nothing, and the resource-generation downgrade check is honored.
+- Generation guard on all four public operations; explicit `Clear` empties
+  both stacks.
+- Failed Undo (target UUID no longer resolves) surfaces an error and clears
+  both stacks; the scene is not further mutated.
+- No-op suppression: identical before/after records no entry.
+- `RecordApplied` records without re-mutating and still clears redo.
+- Lock bypass: an entity locked after a transform edit is still restored by
+  Undo.
+
+Runtime acceptance:
+
+- Numeric-edit a transform, `Ctrl+Z` restores exactly, `Ctrl+Shift+Z`
+  reapplies.
+- Hold one slider drag across many frames — exactly one history entry; one
+  Undo returns to the pre-drag pose.
+- Toggle visibility on a multi-selection with mixed prior states — one Undo
+  restores the mix.
+- Undo, make a new edit — Redo is unavailable.
+- Open a different scene — history is empty. During Play, undo/redo are
+  inert.
+
+Verification gates: Release x64 build; focused Phase 3A tests; full RT2Tests
+where the only permitted failures are exactly the six known pre-existing
+cases listed above (five `SceneGraph` cases and `SceneManager: RemoveEntity
+destroys entity`) — any new or different failure blocks the slice; slice and
+recovery regression scripts; `graphify update .`; documentation updates with
+new test counts.
+
+Verification:
+
+- Release x64 full solution builds clean.
+- RT2Tests: 334 total cases; focused Phase 3A coverage passes 16/16 cases and
+  183/183 assertions covering TransformCommand execute/undo/redo/undo cycles,
+  effective-vs-no-op redo clearing, bounded-history eviction, atomic
+  validate-first `SetVisibilityStates` failure, mixed-state round trips and
+  None/empty results, dedupe last-write-wins, history-invokes-zero-sync-callbacks
+  with authoritative impact, `EditorSyncRouter` per-impact routing plus the
+  resource-generation Structural downgrade check, generation-guard on all four
+  public operations, failed-Undo stack clearing, no-op suppression,
+  `RecordApplied` without re-mutation, lock bypass, and `SetVisibilityCommand`
+  multi-entity round trips.
+- Full `RT2Tests` run: the failing set is exactly the six known pre-existing
+  cases (five `SceneGraph` cases in `EcsTests.cpp` and one SIGSEGV in
+  `SceneManager: RemoveEntity destroys entity`). No new or different failure.
+- `run_slice_test.ps1` and `run_recovery_test.ps1` both pass.
+- `graphify update .` completed (24095 nodes, 49842 edges, 896 communities).
+
+Runtime acceptance (interactive): pending — to be performed by the user
+against a Release deployment. The five behavioural checks: numeric-edit +
+`Ctrl+Z`/`Ctrl+Shift+Z`; one drag = one history entry; mixed-state
+multi-selection visibility toggle with one Undo restoring the mix; new edit
+after Undo clears Redo; open-a-different-scene clears history and Play
+inertness.

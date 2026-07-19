@@ -718,3 +718,54 @@ that threshold is forwarded to GPU picking, so an axis overlay never prevents
 selection of the object underneath. Crossing the threshold starts manipulation
 and cancels outstanding pick work. Successful edits invoke only
 `SyncTransformsToGPU`; they do not rebuild BLAS geometry or upload textures.
+
+## Command layer (Phase 3A)
+
+Editor mutations are gradually being migrated onto a CPU-only command
+abstraction with bounded undo/redo history. Phase 3A migrated two
+representative mutations end-to-end (transform editing and visibility
+toggling) without changing their sync-impact contract.
+
+`IEditorCommand` (in `EditorCommand.h`) is the interface: `Execute` and `Undo`
+both return `EditorMutationResult` against a `SceneManager`, and commands
+store only UUID-keyed before/after state (never `entt::entity`, never
+whole-scene snapshots). `result.syncImpact` from the executed mutation is the
+single sync-impact authority — there is no separate declared-impact channel.
+`EditorCommandHistory` (in `EditorCommandHistory.h/.cpp`) is a bounded deque
+(default 64, configurable) with a redo stack. `Execute` applies then records;
+`RecordApplied` records a command whose effect was already applied
+incrementally (the coalescing seam for continuous edits). Both clear redo only
+on a successful, effective submission. A failed initial `Execute` leaves both
+stacks unchanged; a failed `Undo`/`Redo` clears BOTH stacks. Every public
+operation rebinds to the current `DocumentGeneration` and clears both stacks
+on mismatch. History never calls sync callbacks or the render bridge; the
+caller routes results through the existing host sync path. Undo/Redo bypass
+editor locks by construction (locks gate initiation above the command layer).
+History survives Play/Stop and Save, is blocked during Play, and is cleared at
+every document-adoption site.
+
+`TransformCommand` stores `{UUID, beforeLocalTRS, afterLocalTRS}` — always
+local space, captured via `GetLocalTransform` regardless of whether the user
+edited in Local or World mode. Undo/Redo restore via `SetLocalTransform`.
+`SetVisibilityCommand` is built on the new atomic UUID-keyed
+`SceneManager::SetVisibilityStates(vector<pair<UUID,bool>>)` API, which
+validates every UUID first (any failure means no mutation), deduplicates
+last-write-wins, skips entities already in the target state, applies all,
+bumps the revision once, and returns one `EditorMutationResult` (Structural if
+anything changed, empty-success None otherwise).
+
+`EditorSyncRouter` (in `EditorSyncRouter.h/.cpp`) is a CPU-only extraction of
+the sync-impact routing that lived in WalnutApp's `m_OnMutation` lambda. It
+takes an `EditorMutationResult` plus injected callables for transform /
+material / full sync and reset-accumulation, reproducing the
+`Transform -> transform-only`, `Material -> material-only`,
+`Structural -> full`, `None -> nothing` contract — including a
+resource-generation Structural downgrade check: a Structural mutation whose
+`SceneManager::ResourceGeneration()` has not changed since the last sync this
+router dispatched is downgraded to a material sync (a structural change that
+did not actually invalidate GPU resources, e.g. a pure visibility toggle).
+
+The dependency direction is
+`WalnutApp -> SceneEditorUI -> EditorCommandHistory -> IEditorCommand ->
+SceneManager`. SceneManager never depends on the command layer, and
+`RT2SliceRunner` does not link it.

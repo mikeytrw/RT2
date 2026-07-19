@@ -5,6 +5,9 @@
 
 #include "SceneManager.h"
 #include "EditorSceneState.h"
+#include "EditorCommandHistory.h"
+#include "TransformEditing.h"
+#include "core/UUID.h"
 #include <functional>
 #include <filesystem>
 #include <string>
@@ -77,6 +80,27 @@ public:
 		std::function<void(const rt2::core::UUID&)> cb)
 	{ m_OnAlignCameraToView = std::move(cb); }
 
+	// Phase 3A: non-owning command history injection. WalnutApp owns the
+	// history and injects a pointer so editor UI commands and the public
+	// Undo/Redo below share one history instance.
+	void SetCommandHistory(EditorCommandHistory* history) { m_CommandHistory = history; }
+
+	// Phase 3A: public undo/redo entry points. Each runs the history and
+	// routes the returned mutation result through the existing private
+	// ApplyMutation() — one sync path, one m_MutationError display. These
+	// bypass the editor lock gate (locks gate initiation in
+	// MutationSelectionAllowed above the command layer) and the Play guard
+	// (the host suppresses these calls during Play).
+	void Undo();
+	void Redo();
+
+	bool CanUndo() const { return m_CommandHistory && m_CommandHistory->CanUndo(); }
+	bool CanRedo() const { return m_CommandHistory && m_CommandHistory->CanRedo(); }
+	std::string UndoDescription() const
+	{ return m_CommandHistory ? m_CommandHistory->UndoDescription() : std::string{}; }
+	std::string RedoDescription() const
+	{ return m_CommandHistory ? m_CommandHistory->RedoDescription() : std::string{}; }
+
 	// Set whether authoring edits are allowed. During Play, the UI is
 	// read-only (bound to the runtime scene).
 	void SetEditable(bool editable) { m_Editable = editable; }
@@ -84,7 +108,14 @@ public:
 
 	void SelectUuid(const rt2::core::UUID& uuid) { m_State.Selection().SelectOnly(uuid); }
 	void ClearSelection() { m_State.Selection().Clear(); }
-	void ResetForDocument() { m_State.ResetForDocument(); m_SearchBuffer[0] = '\0'; }
+	void ResetForDocument()
+	{
+		m_State.ResetForDocument();
+		m_SearchBuffer[0] = '\0';
+		m_TransformEditSession.open = false;
+		m_TransformEditSession.target = rt2::core::UUID{};
+		m_TransformEditSession.owningWidgetId = 0;
+	}
 	EditorSelection& Selection() { return m_State.Selection(); }
 	const EditorSelection& Selection() const { return m_State.Selection(); }
 	bool SelectionHasDirectLock() const
@@ -104,7 +135,6 @@ public:
 private:
 	void RenderOutliner();
 	void RenderInspector();
-
 	void RenderEntityTree(SceneManager::EntityId entity, int depth);
 	void RenderTransformEditor(SceneManager::EntityId entity);
 	void RenderMaterialEditor(SceneManager::EntityId entity);
@@ -119,6 +149,15 @@ private:
 	SceneManager::EntityId SelectedEntity() const;
 	void SelectEntity(SceneManager::EntityId entity, bool toggle = false);
 	bool IsSelected(SceneManager::EntityId entity) const;
+
+	// Phase 3A: record-on-release transform edit session helpers.
+	void BeginTransformEditSession(const rt2::core::UUID& target,
+	                               const EditableTRS& beforeLocal);
+	void CloseTransformEditSessionIfOwning(const rt2::core::UUID& target,
+	                                           const EditableTRS& afterLocal);
+	void DiscardTransformEditSession();
+	// Hide/Show the current selection as a single SetVisibilityCommand.
+	void HideShowSelectionCommand(bool hide);
 
 	SceneManager* m_SceneMgr = nullptr;
 
@@ -152,6 +191,21 @@ private:
 	std::string m_TransformEditError;
 	std::string m_MutationError;
 	char m_SearchBuffer[128]{};
+
+	// Phase 3A: command history (non-owning) and the Inspector's
+	// record-on-release transform edit session.
+	EditorCommandHistory* m_CommandHistory = nullptr;
+
+	struct TransformEditSession
+	{
+		rt2::core::UUID target;
+		EditableTRS     beforeLocal;
+		bool            open = false;
+		// The ImGui ID of the widget that opened the session. Stored as an
+		// int to avoid depending on ImGui headers here.
+		unsigned int    owningWidgetId = 0;
+	};
+	TransformEditSession m_TransformEditSession;
 };
 
 #endif // SCENE_EDITOR_UI_H

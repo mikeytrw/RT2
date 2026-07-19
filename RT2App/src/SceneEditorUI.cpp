@@ -3,6 +3,7 @@
 #include "FileDialog.h"
 #include "ECSComponents.h"
 #include "ECSScene.h"
+#include "EditorCommands.h"
 #include "RTLog.h"
 #include "imgui.h"
 #include <cstdio>
@@ -69,6 +70,106 @@ bool SceneEditorUI::MutationSelectionAllowed(std::string& reason) const
 		return false;
 	}
 	return true;
+}
+
+void SceneEditorUI::Undo()
+{
+	if (!m_CommandHistory) return;
+	DiscardTransformEditSession();
+	const auto result = m_CommandHistory->Undo(*m_SceneMgr);
+	ApplyMutation(result);
+}
+
+void SceneEditorUI::Redo()
+{
+	if (!m_CommandHistory) return;
+	DiscardTransformEditSession();
+	const auto result = m_CommandHistory->Redo(*m_SceneMgr);
+	ApplyMutation(result);
+}
+
+void SceneEditorUI::BeginTransformEditSession(const rt2::core::UUID& target,
+                                              const EditableTRS& beforeLocal)
+{
+	m_TransformEditSession.target = target;
+	m_TransformEditSession.beforeLocal = beforeLocal;
+	m_TransformEditSession.open = true;
+	m_TransformEditSession.owningWidgetId = ImGui::GetID("");
+}
+
+void SceneEditorUI::DiscardTransformEditSession()
+{
+	m_TransformEditSession.open = false;
+	m_TransformEditSession.target = rt2::core::UUID{};
+	m_TransformEditSession.owningWidgetId = 0;
+}
+
+void SceneEditorUI::CloseTransformEditSessionIfOwning(const rt2::core::UUID& target,
+                                                      const EditableTRS& afterLocal)
+{
+	if (!m_TransformEditSession.open) return;
+	if (!(m_TransformEditSession.target == target)) return;
+
+	// Defensive guards per spec: target no longer the inspected entity,
+	// entity dead, or m_Editable false (Play started mid-drag) -> discard.
+	const auto entity = m_SceneMgr->FindEntityByUuid(target);
+	if (entity == entt::null || !m_Editable)
+	{
+		DiscardTransformEditSession();
+		return;
+	}
+
+	// Record-on-release via RecordApplied. The before/after comparison is
+	// the sole authority (handled inside MakeTransformCommandIfEffective,
+	// which returns null for a no-op).
+	EditableTRS after = afterLocal;
+	if (m_CommandHistory)
+	{
+		auto cmd = MakeTransformCommandIfEffective(target,
+			m_TransformEditSession.beforeLocal, after);
+		if (cmd)
+		{
+			// The mutation was already applied incrementally by the
+			// per-frame SetLocalTransform/TrySetWorldTransform. Record it
+			// without re-applying.
+			EditorMutationResult applied;
+			applied.success = true;
+			applied.syncImpact = rt2::core::SyncImpact::Transform;
+			applied.affectedEntities.push_back(target);
+			m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
+		}
+	}
+	DiscardTransformEditSession();
+}
+
+void SceneEditorUI::HideShowSelectionCommand(bool hide)
+{
+	if (!m_SceneMgr || !m_CommandHistory) return;
+	const auto ordered = m_State.Selection().Ordered();
+	if (ordered.empty()) return;
+
+	// Build per-entity before/after states. The "after" state for every
+	// selected entity is `hide`. For the mixed-state path to be reachable,
+	// each entity's prior state is read live.
+	std::vector<std::pair<rt2::core::UUID, bool>> beforeStates;
+	std::vector<std::pair<rt2::core::UUID, bool>> afterStates;
+	beforeStates.reserve(ordered.size());
+	afterStates.reserve(ordered.size());
+	for (const auto& uuid : ordered)
+	{
+		const auto entity = m_SceneMgr->FindEntityByUuid(uuid);
+		if (entity == entt::null) continue;
+		const auto* vc = m_SceneMgr->GetECS().registry.try_get<VisibleComponent>(entity);
+		const bool current = vc ? vc->visible : true;
+		beforeStates.emplace_back(uuid, current);
+		afterStates.emplace_back(uuid, hide);
+	}
+
+	auto cmd = MakeSetVisibilityCommandIfEffective(beforeStates, afterStates);
+	if (!cmd) return;
+	// Execute through history so it is recorded and routed.
+	auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+	ApplyMutation(result);
 }
 
 bool SceneEditorUI::MatchesSearch(SceneManager::EntityId entity) const
@@ -424,6 +525,16 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 			if (ImGui::MenuItem("Paste as Child", nullptr, false, m_State.HasClipboard()))
 				ApplyMutation(m_State.Paste(*m_SceneMgr, uuid), true);
 			ImGui::EndDisabled();
+			ImGui::Separator();
+			// Phase 3A: selection-level Hide/Show, recorded through the
+			// command history so a single Undo restores the mixed-state mix.
+			ImGui::BeginDisabled(m_State.Selection().Empty());
+			if (ImGui::MenuItem("Hide Selection"))
+				HideShowSelectionCommand(true);
+			if (ImGui::MenuItem("Show Selection"))
+				HideShowSelectionCommand(false);
+			ImGui::EndDisabled();
+			ImGui::Separator();
 			if (ImGui::MenuItem("Copy"))
 			{
 				rt2::core::Error error;
@@ -483,6 +594,14 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 			if (ImGui::MenuItem("Paste as Child", nullptr, false, m_State.HasClipboard()))
 				ApplyMutation(m_State.Paste(*m_SceneMgr, uuid), true);
 			ImGui::EndDisabled();
+			ImGui::Separator();
+			ImGui::BeginDisabled(m_State.Selection().Empty());
+			if (ImGui::MenuItem("Hide Selection"))
+				HideShowSelectionCommand(true);
+			if (ImGui::MenuItem("Show Selection"))
+				HideShowSelectionCommand(false);
+			ImGui::EndDisabled();
+			ImGui::Separator();
 			if (ImGui::MenuItem("Copy"))
 			{
 				rt2::core::Error error;
@@ -610,6 +729,8 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 		return;
 	}
 
+	const auto targetUuid = m_SceneMgr->GetEntityUuid(entity);
+
 	glm::vec3 pos = transform.translation;
 	glm::vec3 rot = glm::degrees(glm::eulerAngles(transform.rotation));
 	glm::vec3 scale = transform.scale;
@@ -639,24 +760,112 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 		ImGui::DragFloat("Scale step", &m_TransformSnap.scale, 0.01f, 0.001f, 100.0f, "%.3f");
 	}
 	ImGui::BeginDisabled(!m_Editable);
+
+	// Phase 3A: record-on-release transform edit session. Per-widget
+	// IsItemActivated/IsItemDeactivatedAfterEdit checks immediately after
+	// EACH of the three DragFloat3s (ImGui's last-item rule). The first
+	// activation while no session is open captures beforeLocal BEFORE any
+	// mutation that frame and opens the session, owned by that widget. The
+	// owning widget's IsItemDeactivatedAfterEdit closes the session and
+	// records via RecordApplied. IsItemDeactivated without AfterEdit
+	// (Escape cancel — ImGui reverts the value itself) discards the session
+	// and records nothing.
+	EditableTRS beforeLocalCapture;
+	bool hasLocalForCapture = m_SceneMgr->GetLocalTransform(entity, beforeLocalCapture);
+	const unsigned int owningWidgetId = m_TransformEditSession.open
+		? m_TransformEditSession.owningWidgetId : 0;
+
 	ImGui::SetNextItemWidth(180.0f);
 	if (ImGui::DragFloat3("Position", &pos[0], 0.1f))
 	{
 		if (m_TransformSnap.enabled) pos = SnapValues(pos, m_TransformSnap.translation);
 		changed = true;
 	}
+	const unsigned int posWidgetId = ImGui::GetID("Position");
+	if (ImGui::IsItemActivated())
+	{
+		if (!m_TransformEditSession.open && hasLocalForCapture && m_Editable)
+		{
+			BeginTransformEditSession(targetUuid, beforeLocalCapture);
+			m_TransformEditSession.owningWidgetId = posWidgetId;
+		}
+	}
+	if (ImGui::IsItemDeactivatedAfterEdit())
+	{
+		if (m_TransformEditSession.open && owningWidgetId == posWidgetId)
+		{
+			EditableTRS afterLocal;
+			if (m_SceneMgr->GetLocalTransform(entity, afterLocal))
+				CloseTransformEditSessionIfOwning(targetUuid, afterLocal);
+		}
+	}
+	else if (ImGui::IsItemDeactivated() && m_TransformEditSession.open &&
+	         owningWidgetId == posWidgetId)
+	{
+		// Escape cancel: ImGui reverted the value; discard the session.
+		DiscardTransformEditSession();
+	}
+
 	ImGui::SetNextItemWidth(180.0f);
 	if (ImGui::DragFloat3("Rotation", &rot[0], 1.0f))
 	{
 		if (m_TransformSnap.enabled) rot = SnapValues(rot, m_TransformSnap.rotationDegrees);
 		changed = true;
 	}
+	const unsigned int rotWidgetId = ImGui::GetID("Rotation");
+	if (ImGui::IsItemActivated())
+	{
+		if (!m_TransformEditSession.open && hasLocalForCapture && m_Editable)
+		{
+			BeginTransformEditSession(targetUuid, beforeLocalCapture);
+			m_TransformEditSession.owningWidgetId = rotWidgetId;
+		}
+	}
+	if (ImGui::IsItemDeactivatedAfterEdit())
+	{
+		if (m_TransformEditSession.open && owningWidgetId == rotWidgetId)
+		{
+			EditableTRS afterLocal;
+			if (m_SceneMgr->GetLocalTransform(entity, afterLocal))
+				CloseTransformEditSessionIfOwning(targetUuid, afterLocal);
+		}
+	}
+	else if (ImGui::IsItemDeactivated() && m_TransformEditSession.open &&
+	         owningWidgetId == rotWidgetId)
+	{
+		DiscardTransformEditSession();
+	}
+
 	ImGui::SetNextItemWidth(180.0f);
 	if (ImGui::DragFloat3("Scale", &scale[0], 0.05f))
 	{
 		if (m_TransformSnap.enabled) scale = SnapValues(scale, m_TransformSnap.scale);
 		changed = true;
 	}
+	const unsigned int scaleWidgetId = ImGui::GetID("Scale");
+	if (ImGui::IsItemActivated())
+	{
+		if (!m_TransformEditSession.open && hasLocalForCapture && m_Editable)
+		{
+			BeginTransformEditSession(targetUuid, beforeLocalCapture);
+			m_TransformEditSession.owningWidgetId = scaleWidgetId;
+		}
+	}
+	if (ImGui::IsItemDeactivatedAfterEdit())
+	{
+		if (m_TransformEditSession.open && owningWidgetId == scaleWidgetId)
+		{
+			EditableTRS afterLocal;
+			if (m_SceneMgr->GetLocalTransform(entity, afterLocal))
+				CloseTransformEditSessionIfOwning(targetUuid, afterLocal);
+		}
+	}
+	else if (ImGui::IsItemDeactivated() && m_TransformEditSession.open &&
+	         owningWidgetId == scaleWidgetId)
+	{
+		DiscardTransformEditSession();
+	}
+
 	ImGui::EndDisabled();
 
 	if (changed)
