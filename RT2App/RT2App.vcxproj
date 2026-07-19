@@ -254,6 +254,10 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\RuntimeSceneController.h" />
     <ClInclude Include="src\RuntimeLifecycleObserver.h" />
     <ClInclude Include="src\RuntimeSceneMutator.h" />
+    <ClInclude Include="src\InputTypes.h" />
+    <ClInclude Include="src\InputStateMachine.h" />
+    <ClInclude Include="src\DesktopInputBackend.h" />
+    <ClInclude Include="src\InputService.h" />
     <ClInclude Include="src\SceneAssetResolver.h" />
     <ClInclude Include="src\SceneDocument.h" />
     <ClInclude Include="src\SceneEditorUI.h" />
@@ -482,6 +486,21 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\RuntimeSceneMutator.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\InputStateMachine.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\DesktopInputBackend.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\InputService.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

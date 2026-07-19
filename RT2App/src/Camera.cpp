@@ -4,13 +4,12 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/quaternion.hpp>
 #include <glm/gtc/random.hpp>
-#include "Walnut/Input/Input.h"
 #include "Walnut/Random.h"
-
+#include "InputTypes.h"
+#include "InputService.h"
 
 
 #include <iostream>
-using namespace Walnut;
 
 
 Camera::Camera(float verticalFOV, float nearClip, float farClip, float apeture, float focalDistance)
@@ -49,20 +48,19 @@ bool Camera::SetEditorPose(const EditorCameraPose& requested)
 	return true;
 }
 
-bool Camera::OnUpdate(float ts)
+bool Camera::OnUpdate(float ts, rt2::core::IInputService& input)
 {
-	glm::vec2 mousePos = Input::GetMousePosition();
-	glm::vec2 delta = (mousePos - m_LastMousePosition) * 0.002f;
-	m_LastMousePosition = mousePos;
+	using namespace rt2::core;
+	glm::vec2 delta = input.GetMouseDelta() * 0.002f;
 
-	if (!Input::IsMouseButtonDown(MouseButton::Right))
+	if (!input.IsDown("look"))
 	{
-		Input::SetCursorMode(CursorMode::Normal);
+		input.RequestCursorCapture(false);
 		mHasMoved = false;
 		return false;
 	}
 
-	Input::SetCursorMode(CursorMode::Locked);
+	input.RequestCursorCapture(true);
 
 	bool moved = false;
 
@@ -71,35 +69,24 @@ bool Camera::OnUpdate(float ts)
 
 	float speed = m_Speed;
 
-	// Movement
-	if (Input::IsKeyDown(KeyCode::W))
+	// Movement — driven by named axes from the input service.
+	float forward = input.GetAxisValue("move_forward");
+	float right   = input.GetAxisValue("move_right");
+	float up      = input.GetAxisValue("move_up");
+
+	if (forward != 0.0f)
 	{
-		m_Position += m_ForwardDirection * speed * ts;
+		m_Position += m_ForwardDirection * forward * speed * ts;
 		moved = true;
 	}
-	else if (Input::IsKeyDown(KeyCode::S))
+	if (right != 0.0f)
 	{
-		m_Position -= m_ForwardDirection * speed * ts;
+		m_Position += m_RightDirection * right * speed * ts;
 		moved = true;
 	}
-	if (Input::IsKeyDown(KeyCode::A))
+	if (up != 0.0f)
 	{
-		m_Position -= m_RightDirection * speed * ts;
-		moved = true;
-	}
-	else if (Input::IsKeyDown(KeyCode::D))
-	{
-		m_Position += m_RightDirection * speed * ts;
-		moved = true;
-	}
-	if (Input::IsKeyDown(KeyCode::Q))
-	{
-		m_Position -= upDirection * speed * ts;
-		moved = true;
-	}
-	else if (Input::IsKeyDown(KeyCode::E))
-	{
-		m_Position += upDirection * speed * ts;
+		m_Position += upDirection * up * speed * ts;
 		moved = true;
 	}
 
@@ -146,7 +133,7 @@ glm::vec3 Camera::RandomInUnitDisk() const {
 	std::uniform_real_distribution<float> distribution(-1.0f, 1.0f);
 
 	glm::vec3 p;
-	do { 
+	do {
 		p = glm::vec3(distribution(generator), distribution(generator), 0.0f);
 	} while (glm::dot(p, p) >= 1.0f);
 	return p;

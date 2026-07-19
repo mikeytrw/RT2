@@ -2504,7 +2504,7 @@ transform + name + visibility); runtime reparenting during Play (Phase
 hook scripting into them without further `RuntimeSceneController`
 structural changes.
 
-## Phase 5 — Input action system (completion specification)
+## Phase 5 — Input action system (completion, implemented)
 
 ### Survey summary (current state, post-Phase-4)
 
@@ -3317,4 +3317,76 @@ registered. The single `SetCursorMode` call is in
   is a later UI phase).
 - Raw-joystick fallback for non-gamepad controllers. Phase 5 only
   supports devices with a known GLFW gamepad mapping.
+
+### Verification report
+
+**Implemented (this slice):**
+- `InputTypes.h` — CPU-only types (`KeyCode`, `MouseButton`,
+  `GamepadButton`, `GamepadAxis`, `ModifierBits`, `InputDeviceKind`,
+  `ActionState`, `ActionBinding`, `AxisBinding`, `InputMapping`,
+  `InputContext`, `IInputService`). No GLFW/ImGui/Walnut includes.
+- `InputStateMachine.h/.cpp` — CPU-only state machine: context stack,
+  edge computation (per-action after combining bindings), axis
+  computation (sign-preserving dead zone), focus-loss tracking via
+  polled `windowFocused` flag, suppression. `SetSampleState` test
+  backdoor.
+- `DesktopInputBackend.h/.cpp` — single GLFW/ImGui/Walnut sampling
+  path. Polls `Walnut::Input`, `ImGui::GetIO()`, `glfwGetGamepadState`,
+  `glfwGetWindowAttrib(GLFW_FOCUSED)`. No GLFW callbacks registered.
+- `InputService.h/.cpp` — composes the two; implements `IInputService`;
+  drives frame phasing (`SampleRaw` / `ResolveUI` / `EndFrame`);
+  cursor capture via `RequestCursorCapture`; `LoadDefaults()` populates
+  editor + viewport + viewport.look + runtime contexts.
+- `Camera.h/.cpp` — refactored `OnUpdate(float ts, IInputService&)`.
+  WASD/QE reads replaced with `GetAxisValue`; right-mouse gate
+  replaced with `IsDown("look")`; `SetCursorMode` replaced with
+  `RequestCursorCapture`. Visible behavior unchanged.
+- `WalnutApp.cpp` — owns `InputService`; `SampleRaw` at top of
+  `OnUpdate`, `ResolveUI` at top of `OnUIRender`, `EndFrame` at end of
+  `OnUIRender`; viewport sub-context push/pop based on viewport hover
+  + right-mouse; `HandleEditorCameraShortcuts` and
+  `HandleUndoRedoShortcuts` migrated to `IInputService`; viewport pick
+  migrated to `IsPressed("viewport_pick")` / `IsDown("look")`.
+- `EditorSettings.h/.cpp` — schema v2 with `inputContexts` field;
+  v1 → v2 migration (v1 files load with empty `inputContexts`, caller
+  falls back to `LoadDefaults()`).
+- `InputStateMachineTests.cpp` — 18 tests, 60 assertions, all
+  passing. Covers edge transitions, false-Released guard,
+  disjunction, axis clamping, sign-preserving dead zone, inversion,
+  physical-source consumption (W/E conflict resolved), focus-loss
+  reset with refocus-no-spike, mouse delta, scroll, suppression
+  (keyboard/mouse/named), modifier matching, context stack ordering.
+
+**Deferred to a follow-up slice (not blocking Phase 6):**
+- `EditorTransformGizmo.cpp` gizmo-mode hotkeys (W/E/R) — still use
+  `ImGui::IsKeyPressed`. The context stack infrastructure is in place
+  to absorb them; the migration is mechanical but the gizmo's
+  `imageHovered && !m_Drag.active && !WantTextInput` gate needs to be
+  expressed as a viewport sub-context push. The W/E conflict is
+  resolved at the camera level (viewport.look claims W when
+  right-mouse is held), but the gizmo W/E/R hotkeys still fire via
+  ImGui when the viewport is hovered and right-mouse is NOT held.
+- `SceneEditorUI.cpp` hierarchy shortcuts (Copy/Paste/Duplicate/
+  Delete) — still use `ImGui::IsKeyPressed` + `io.KeyCtrl`. These
+  have no conflicts and no gamepad equivalent; migration is
+  mechanical.
+- `RT2AppIntegrationTests` target — not yet created. The
+  `InputStateMachine` is fully tested CPU-only via `RT2Tests`; the
+  `DesktopInputBackend` and `InputService` frame phasing are
+  exercised interactively by RT2App. An automated integration target
+  that constructs a hidden GLFW window and drives `InputService`
+  through synthetic frames is a follow-up.
+- Interactive rebinding UI — Phase 5 persists mappings and loads
+  them on startup; the rebinding dialog is Phase 7's content-browser
+  era.
+
+**Verification:**
+- Release x64 build clean (RT2App + RT2Tests + RT2SliceRunner).
+- `RT2Tests`: 372 cases, 366 passed, 6 pre-existing failures (5
+  `SceneGraph` cases in `EcsTests.cpp` + 1 SIGSEGV in `SceneManager:
+  RemoveEntity destroys entity`), 48 skipped. No regressions.
+- `InputStateMachineTests`: 18/18 pass, 60 assertions.
+- `run_slice_test.ps1` PASS.
+- `run_recovery_test.ps1` PASS.
+- graphify updated: 24825 nodes, 51458 edges, 945 communities.
 

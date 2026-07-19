@@ -1,4 +1,4 @@
-# Input system (Phase 5, planned)
+# Input system (Phase 5, implemented)
 
 ## Current state (pre-Phase-5)
 

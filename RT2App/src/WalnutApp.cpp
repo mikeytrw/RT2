@@ -31,6 +31,7 @@
 #include "EditorSyncRouter.h"
 #include "EditorCommands.h"
 #include "EditorPropertyCommands.h"
+#include "InputService.h"
 #include "core/UUID.h"
 #include "core/Error.h"
 #include "stb_image.h"
@@ -240,6 +241,19 @@ public:
 
 	virtual void OnUIRender() override
 	{
+		// Phase 5: ResolveUI applies ImGui suppression and viewport
+		// sub-context push/pop. The viewport hover / gizmo-consumes-mouse
+		// state from the PREVIOUS frame is used here (we don't know
+		// this frame's viewport hover until the viewport panel is drawn,
+		// which happens later in OnUIRender). One-frame latency is
+		// acceptable for context switching — the camera reads actions
+		// in OnUpdate which already used the correct raw-down state.
+		//
+		// We do the actual viewport context push/pop AFTER the viewport
+		// panel is drawn (see the viewport block), using this frame's
+		// state. ResolveUI here only applies ImGui suppression.
+		m_Input.ResolveUI(m_ViewportHoveredThisFrame, m_GizmoConsumesMouseThisFrame);
+
 		if (!m_CLIProcessed)
 		{
 			ProcessCLIArgs();
@@ -731,16 +745,16 @@ public:
 		}
 
 		const bool ordinaryPickClick = imageHovered && !gizmo.consumesMouse &&
-			ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+			m_Input.IsPressed("viewport_pick");
 		const bool canPick = m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
 			(ordinaryPickClick || gizmo.pickThrough) &&
-			!ImGui::IsMouseDown(ImGuiMouseButton_Right);
-		if (imageHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+			!m_Input.IsDown("look");
+		if (imageHovered && m_Input.IsPressed("viewport_pick"))
 		{
 			RT_LOG("[ViewportPick] click edit=%d gizmoConsumes=%d gizmoActive=%d rightDown=%d",
 				m_Runtime.GetState() == rt2::core::SceneRunState::Edit ? 1 : 0,
 				gizmo.consumesMouse ? 1 : 0, gizmo.active ? 1 : 0,
-				ImGui::IsMouseDown(ImGuiMouseButton_Right) ? 1 : 0);
+				m_Input.IsDown("look") ? 1 : 0);
 		}
 		if (canPick)
 		{
@@ -761,6 +775,14 @@ public:
 					static_cast<unsigned long long>(serial), pixel->x, pixel->y, uv.x, uv.y);
 			}
 		}
+
+		// Phase 5: capture viewport hover + gizmo-consumes-mouse for next
+		// frame's ResolveUI, and push/pop the viewport sub-contexts based
+		// on this frame's state. Context transitions are applied here so
+		// they take effect for the next frame's OnUpdate (which reads
+		// actions for the camera).
+		m_ViewportHoveredThisFrame = imageHovered;
+		m_GizmoConsumesMouseThisFrame = gizmo.consumesMouse;
 	}
 
 	ImGui::End();
@@ -770,6 +792,11 @@ public:
 	DrawSessionPanel();
 	DrawRecoveryPrompt();
 	DrawUnsavedChangesPrompt();
+
+	// Phase 5: EndFrame commits current → previous state, clears
+	// per-frame deltas, and applies cursor capture. Called at the end
+	// of OnUIRender so all UI consumers have run.
+	m_Input.EndFrame();
 	} // end OnUIRender
 
 	// ---- Phase 1B: Session / Recovery / Unsaved-changes UI ----
@@ -974,10 +1001,58 @@ public:
 
 	virtual void OnUpdate(float ts) override
 	{
+		// Phase 5: sample raw input at the top of OnUpdate (before camera).
+		// ResolveUI runs later in OnUIRender after ImGui::NewFrame.
+		if (!m_InputDefaultsLoaded)
+		{
+			m_Input.LoadDefaults();
+			m_Input.PushContext(&m_Input.EditorContext());
+			m_InputDefaultsLoaded = true;
+		}
+		m_Input.SampleRaw();
+
+		// Phase 5: viewport sub-context management. Context transitions
+		// use the previous frame's viewport-hover state (captured at the
+		// end of the viewport panel draw). One-frame latency is
+		// acceptable — the camera reads actions here, and the viewport
+		// sub-contexts only affect W/E claim resolution.
+		//
+		// Stack base: editor (Edit) or runtime (Play).
+		// Pushed on top: "viewport" when viewport hovered (Edit only).
+		// Pushed on top of that: "viewport.look" when right-mouse held.
+		const bool inEdit = m_Runtime.GetState() == rt2::core::SceneRunState::Edit;
+		const bool lookDown = m_Input.IsDown("look");
+
+		// Sync the base context: editor (Edit) or runtime (Play/Paused).
+		// We track this with m_RuntimeCamActive — when it's true, the
+		// runtime context should be the base. This is set in EnterPlay
+		// and cleared in EnterStop.
+		auto& stack = m_Input.StateMachine().ContextStack();
+		// Determine the desired base context.
+		rt2::core::InputContext* desiredBase =
+			m_RuntimeCamActive ? &m_Input.RuntimeContext() : &m_Input.EditorContext();
+		// Pop any viewport sub-contexts first.
+		while (stack.size() > 1)
+			m_Input.PopContext();
+		// Now stack has exactly the base (or is empty). Ensure the base
+		// is the desired one.
+		if (stack.empty() || stack.back() != desiredBase)
+		{
+			m_Input.ClearContextStack();
+			m_Input.PushContext(desiredBase);
+		}
+		// Push viewport sub-contexts (Edit only).
+		if (inEdit && m_ViewportHoveredThisFrame)
+		{
+			m_Input.PushContext(&m_Input.ViewportContext());
+			if (lookDown)
+				m_Input.PushContext(&m_Input.ViewportLookContext());
+		}
+
 		if (m_RuntimeCamActive)
-			m_RuntimeCam.OnUpdate(ts);
+			m_RuntimeCam.OnUpdate(ts, m_Input);
 		else
-			m_Cam.OnUpdate(ts);
+			m_Cam.OnUpdate(ts, m_Input);
 
 		if (!m_CLIProcessed) return;
 
@@ -1091,32 +1166,47 @@ private:
 
 	void HandleEditorCameraShortcuts()
 	{
-		const auto& io = ImGui::GetIO();
-		if (m_Runtime.GetState() != rt2::core::SceneRunState::Edit ||
-			io.WantTextInput || ImGui::IsAnyItemActive())
+		// Phase 5: actions are read from m_Input. The state machine
+		// already applied ImGui suppression (WantTextInput / AnyItemActive)
+		// via ResolveUI, so suppressed keyboard actions read None here.
+		if (m_Runtime.GetState() != rt2::core::SceneRunState::Edit)
 			return;
-		if (!io.KeyCtrl && !io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_F))
+		if (m_Input.IsPressed("focus"))
 		{
-			FrameEditorSelection(!io.KeyShift);
+			// Shift+F → focus_fit (frame); F → focus (focus point).
+			// We distinguish via the focus_fit action which is mapped to
+			// Shift+F. Check focus_fit first since both would fire on
+			// Shift+F (focus is F without modifiers, but the state machine
+			// checks modifier subsets — focus requires no modifiers, so
+			// Shift+F does NOT fire focus; only focus_fit fires).
+			if (m_Input.IsPressed("focus_fit"))
+				FrameEditorSelection(false);
+			else
+				FrameEditorSelection(true);
 			return;
 		}
-		if (!io.KeyCtrl || io.KeyAlt) return;
+		// Camera bookmarks 1..9 (Ctrl+number).
 		for (int slot = 0;
 			slot < static_cast<int>(EditorSceneState::kCameraBookmarkCount); ++slot)
 		{
-			const ImGuiKey key = static_cast<ImGuiKey>(ImGuiKey_1 + slot);
-			if (!ImGui::IsKeyPressed(key)) continue;
-			if (io.KeyShift)
+			char name[32];
+			std::snprintf(name, sizeof(name), "camera_bookmark_slot%d_shift", slot);
+			if (m_Input.IsPressed(name))
 			{
 				m_EditorUI.CaptureCameraBookmark(slot, m_Cam.GetEditorPose());
 				m_LastStatusMsg = "Stored camera bookmark " + std::to_string(slot + 1);
+				return;
 			}
-			else if (const EditorCameraPose* bookmark = m_EditorUI.CameraBookmark(slot))
+			std::snprintf(name, sizeof(name), "camera_bookmark_slot%d", slot);
+			if (m_Input.IsPressed(name))
 			{
-				ApplyEditorCameraPose(*bookmark);
-				m_LastStatusMsg = "Recalled camera bookmark " + std::to_string(slot + 1);
+				if (const EditorCameraPose* bookmark = m_EditorUI.CameraBookmark(slot))
+				{
+					ApplyEditorCameraPose(*bookmark);
+					m_LastStatusMsg = "Recalled camera bookmark " + std::to_string(slot + 1);
+				}
+				return;
 			}
-			return;
 		}
 	}
 
@@ -1127,20 +1217,16 @@ private:
 	// private ApplyMutation() sync path.
 	void HandleUndoRedoShortcuts()
 	{
-		const auto& io = ImGui::GetIO();
 		if (m_Runtime.GetState() != rt2::core::SceneRunState::Edit) return;
-		if (io.WantTextInput || ImGui::IsAnyItemActive()) return;
-		if (!io.KeyCtrl) return;
-		const bool shift = io.KeyShift;
-		if (ImGui::IsKeyPressed(ImGuiKey_Z))
-		{
-			if (shift) m_EditorUI.Redo();
-			else       m_EditorUI.Undo();
-		}
-		else if (ImGui::IsKeyPressed(ImGuiKey_Y))
-		{
+		// Phase 5: read from m_Input. redo_shift_z is Ctrl+Shift+Z;
+		// undo is Ctrl+Z; redo is Ctrl+Y. The state machine's modifier
+		// matching ensures undo (Ctrl only) does not fire on Ctrl+Shift+Z.
+		if (m_Input.IsPressed("redo_shift_z"))
 			m_EditorUI.Redo();
-		}
+		else if (m_Input.IsPressed("undo"))
+			m_EditorUI.Undo();
+		else if (m_Input.IsPressed("redo"))
+			m_EditorUI.Redo();
 	}
 
 	void ViewThroughCamera(const rt2::core::UUID& camera)
@@ -1755,6 +1841,12 @@ private:
 	Camera m_RuntimeCam;           // separate camera for Play mode
 	Camera m_EditorCamSnapshot;    // saved on Play, restored on Stop
 	bool m_RuntimeCamActive = false;
+
+	// Phase 5 input service — owns the context stack and frame phasing.
+	rt2::core::InputService m_Input;
+	bool m_InputDefaultsLoaded = false;
+	bool m_ViewportHoveredThisFrame = false;
+	bool m_GizmoConsumesMouseThisFrame = false;
 
 	// ---- Phase 1B: editor settings, recovery, unsaved-changes coordinator ----
 	std::filesystem::path DialogInitialDirectory() const

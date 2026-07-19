@@ -102,12 +102,18 @@ bool EditorSettingsStore::Load(Error& err)
         return false;
     }
     uint32_t version = root["version"].get<uint32_t>();
-    if (version != SettingsVersion)
+    // v1 → v2 migration: v1 files have no inputContexts field. We
+    // accept v1 and treat it as v2 with empty input contexts (caller
+    // falls back to InputService::LoadDefaults()). Any other version
+    // is rejected.
+    const bool isV1 = (version == kSupportedLegacyVersion);
+    if (version != SettingsVersion && !isV1)
     {
         err.code = Error::SchemaVersion;
         err.path = fp.string();
         err.detail = "unsupported settings version " + std::to_string(version) +
-                     " (supported " + std::to_string(SettingsVersion) + ")";
+                     " (supported " + std::to_string(SettingsVersion) +
+                     ", legacy " + std::to_string(kSupportedLegacyVersion) + ")";
         return false;
     }
 
@@ -144,6 +150,72 @@ bool EditorSettingsStore::Load(Error& err)
     m_ProjectRoot = std::move(parsedProjectRoot);
     m_RecentScenes = std::move(parsedRecents);
 
+    // inputContexts — optional array (v2+). v1 files have no such
+    // field; the caller falls back to InputService::LoadDefaults().
+    m_InputContexts.clear();
+    if (!isV1 && root.contains("inputContexts") && root["inputContexts"].is_array())
+    {
+        for (const auto& ctxJson : root["inputContexts"])
+        {
+            if (!ctxJson.is_object() || !ctxJson.contains("contextId") ||
+                !ctxJson["contextId"].is_string())
+                continue;
+            InputContextRecord rec;
+            rec.contextId = ctxJson["contextId"].get<std::string>();
+            if (ctxJson.contains("mappings") && ctxJson["mappings"].is_array())
+            {
+                for (const auto& mJson : ctxJson["mappings"])
+                {
+                    if (!mJson.is_object() || !mJson.contains("name") ||
+                        !mJson["name"].is_string())
+                        continue;
+                    InputMapping m;
+                    m.name = mJson["name"].get<std::string>();
+                    m.isAxis = mJson.value("isAxis", false);
+
+                    if (mJson.contains("actions") && mJson["actions"].is_array())
+                    {
+                        for (const auto& aJson : mJson["actions"])
+                        {
+                            if (!aJson.is_object()) continue;
+                            ActionBinding b;
+                            b.device = static_cast<InputDeviceKind>(
+                                aJson.value("device", 0));
+                            b.code = static_cast<uint16_t>(
+                                aJson.value("code", 0));
+                            b.modifiers = static_cast<ModifierBits>(
+                                aJson.value("modifiers", 0));
+                            b.gamepadSlot = aJson.value("gamepadSlot", -1);
+                            m.actions.push_back(b);
+                        }
+                    }
+                    if (mJson.contains("axes") && mJson["axes"].is_array())
+                    {
+                        for (const auto& aJson : mJson["axes"])
+                        {
+                            if (!aJson.is_object()) continue;
+                            AxisBinding b;
+                            b.device = static_cast<InputDeviceKind>(
+                                aJson.value("device", 0));
+                            b.code = static_cast<uint16_t>(
+                                aJson.value("code", 0));
+                            b.positive = static_cast<uint16_t>(
+                                aJson.value("positive", 0));
+                            b.negative = static_cast<uint16_t>(
+                                aJson.value("negative", 0));
+                            b.gamepadSlot = aJson.value("gamepadSlot", -1);
+                            b.deadZone = aJson.value("deadZone", 0.15f);
+                            b.invert = aJson.value("invert", false);
+                            m.axes.push_back(b);
+                        }
+                    }
+                    rec.mappings.push_back(std::move(m));
+                }
+            }
+            m_InputContexts.push_back(std::move(rec));
+        }
+    }
+
     return true;
 }
 
@@ -175,6 +247,51 @@ bool EditorSettingsStore::Save(Error& err) const
     for (const auto& p : m_RecentScenes)
         recents.push_back(p.generic_u8string());
     root["recentScenes"] = recents;
+
+    // inputContexts (Phase 5 v2). Empty array if no custom mappings;
+    // the caller (InputService) falls back to LoadDefaults() on empty.
+    json ctxList = json::array();
+    for (const auto& rec : m_InputContexts)
+    {
+        json ctxJson;
+        ctxJson["contextId"] = rec.contextId;
+        json mappings = json::array();
+        for (const InputMapping& m : rec.mappings)
+        {
+            json mJson;
+            mJson["name"] = m.name;
+            mJson["isAxis"] = m.isAxis;
+            json actions = json::array();
+            for (const ActionBinding& b : m.actions)
+            {
+                actions.push_back({
+                    { "device",      static_cast<int>(b.device) },
+                    { "code",        static_cast<int>(b.code) },
+                    { "modifiers",   static_cast<int>(b.modifiers) },
+                    { "gamepadSlot", b.gamepadSlot },
+                });
+            }
+            json axes = json::array();
+            for (const AxisBinding& b : m.axes)
+            {
+                axes.push_back({
+                    { "device",      static_cast<int>(b.device) },
+                    { "code",        static_cast<int>(b.code) },
+                    { "positive",    static_cast<int>(b.positive) },
+                    { "negative",    static_cast<int>(b.negative) },
+                    { "gamepadSlot", b.gamepadSlot },
+                    { "deadZone",    b.deadZone },
+                    { "invert",      b.invert },
+                });
+            }
+            mJson["actions"] = actions;
+            mJson["axes"] = axes;
+            mappings.push_back(mJson);
+        }
+        ctxJson["mappings"] = mappings;
+        ctxList.push_back(ctxJson);
+    }
+    root["inputContexts"] = ctxList;
 
     std::string content = root.dump(2);
 

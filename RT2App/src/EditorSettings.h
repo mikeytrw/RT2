@@ -4,6 +4,7 @@
 #define RT2_CORE_EDITOR_SETTINGS_H
 
 #include "core/Error.h"
+#include "InputTypes.h"
 
 #include <filesystem>
 #include <string>
@@ -36,10 +37,32 @@
 //
 // Schema:
 //   {
-//     "version": 1,
+//     "version": 2,
 //     "projectRoot": "<absolute path or empty>",
-//     "recentScenes": [ "<absolute .rt2scene path>", ... ]
+//     "recentScenes": [ "<absolute .rt2scene path>", ... ],
+//     "inputContexts": [
+//       {
+//         "contextId": "editor",
+//         "mappings": [
+//           {
+//             "name": "move_forward",
+//             "isAxis": true,
+//             "actions": [],
+//             "axes": [
+//               { "device": 0, "code": 0, "positive": 87, "negative": 83,
+//                 "gamepadSlot": -1, "deadZone": 0.15, "invert": false }
+//             ]
+//           },
+//           ...
+//         ]
+//       },
+//       ...
+//     ]
 //   }
+//
+// Version 1 files (no inputContexts field) are migrated to v2 on load:
+// the version field is updated and inputContexts is left empty, which
+// signals to InputService to use built-in defaults (LoadDefaults()).
 //
 // Atomic write: write to settings.json.tmp, then MoveFileExW/ReplaceFileW.
 // A failed write leaves the previous valid settings file intact.
@@ -50,20 +73,25 @@ namespace rt2::core {
 class EditorSettingsStore
 {
 public:
-    static constexpr uint32_t SettingsVersion = 1;
+    static constexpr uint32_t SettingsVersion = 2;
+    static constexpr uint32_t kSupportedLegacyVersion = 1;
     static constexpr size_t   kDefaultMaxRecents = 10;
 
     explicit EditorSettingsStore(std::filesystem::path appDataRoot,
                                  size_t maxRecents = kDefaultMaxRecents);
 
     // Load settings from <appDataRoot>/settings.json. On missing file, leaves
-    // defaults (empty project root, empty recents) and returns true. On
-    // malformed JSON or unsupported version, returns false with err and
-    // leaves defaults. Unknown optional fields are ignored safely.
+    // defaults (empty project root, empty recents, empty input contexts) and
+    // returns true. On malformed JSON, returns false with err and leaves
+    // defaults. A v1 file (no inputContexts field) is migrated to v2:
+    // version is updated, inputContexts is left empty (caller falls back
+    // to InputService::LoadDefaults()). Unknown optional fields are
+    // ignored safely.
     bool Load(Error& err);
 
     // Atomically save settings to <appDataRoot>/settings.json. Creates the
     // directory if needed. On failure, leaves the previous file intact.
+    // Always writes the current SettingsVersion.
     bool Save(Error& err) const;
 
     // ---- Project root ----
@@ -88,6 +116,23 @@ public:
 
     size_t GetMaxRecents() const { return m_MaxRecents; }
 
+    // ---- Input contexts (Phase 5) ----
+
+    // Serialized input mappings grouped by context. Each entry is a
+    // (contextId, vector<InputMapping>) pair. The InputService owns
+    // the InputContext objects; this is the portable serialized form.
+    struct InputContextRecord
+    {
+        std::string contextId;
+        std::vector<InputMapping> mappings;
+    };
+
+    const std::vector<InputContextRecord>& GetInputContexts() const
+    { return m_InputContexts; }
+    void SetInputContexts(std::vector<InputContextRecord> v)
+    { m_InputContexts = std::move(v); }
+    void ClearInputContexts() { m_InputContexts.clear(); }
+
     // Static helpers exposed for tests.
     // Normalize a path to a stable absolute form with forward-slash generic
     // separators removed of trailing slashes for comparison/storage.
@@ -102,6 +147,7 @@ private:
     size_t                             m_MaxRecents;
     std::filesystem::path              m_ProjectRoot;
     std::vector<std::filesystem::path> m_RecentScenes;
+    std::vector<InputContextRecord>    m_InputContexts;
 
     std::filesystem::path SettingsFilePath() const;
 };

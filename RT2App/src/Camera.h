@@ -5,6 +5,8 @@
 #include "EditorCameraWorkflow.h"
 #include "ViewportCoordinates.h"
 
+namespace rt2::core { class IInputService; }
+
 class Camera
 {
 public:
@@ -12,7 +14,7 @@ public:
 	Camera() {};
 	Camera(float verticalFOV, float nearClip, float farClip, float apeture, float focalDistance);
 
-	bool OnUpdate(float ts);
+	bool OnUpdate(float ts, rt2::core::IInputService& input);
 	void OnResize(uint32_t width, uint32_t height);
 
 	const glm::mat4& GetProjection() const { return m_Projection; }

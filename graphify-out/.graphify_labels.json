@@ -933,5 +933,15 @@
   "931": "fnv_1a_params<std::uint32_t>",
   "932": "nk_color",
   "933": "fnv_1a_params<std::uint64_t>",
-  "934": "_EXRMultiPartImage"
+  "934": "_EXRMultiPartImage",
+  "935": "nk_mouse_button",
+  "936": "nk_page",
+  "937": "nk_rp__findresult",
+  "938": "type",
+  "939": "ENTT_DEBUG_TEST",
+  "940": "DOCTEST_REF_WRAP",
+  "941": "present_element",
+  "942": "nk_input",
+  "943": "nk_tt__point",
+  "944": "uint"
 }
