@@ -20,6 +20,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <set>
 #include <vector>
 
@@ -1439,6 +1440,44 @@ TEST_CASE("OBJ Import Wizard: per-shape mode creates one entity per shape")
     CHECK(keys[0] != keys[1]);
     CHECK(keys[0].rfind("obj:shape=", 0) == 0);
     CHECK(keys[1].rfind("obj:shape=", 0) == 0);
+
+    // Verify per-shape rebase: each entity's translation should be at the
+    // shape's bbox center, and the mesh vertices should be centered around
+    // the origin (sum of vertex positions ~ 0). Shape 0's triangle is at
+    // (0,0,0),(1,0,0),(0,1,0) -> center (0.5, 0.5, 0). Shape 1's triangle
+    // is at (3,0,0),(4,0,0),(3,1,0) -> center (3.5, 0.5, 0).
+    for (auto child : rootHier.children)
+    {
+        REQUIRE(reg.all_of<Transform>(child));
+        const auto& tf = reg.get<Transform>(child);
+        const auto& ref = reg.get<MeshRef>(child);
+        const auto& mesh = mgr.GetECS().meshRegistry.GetMesh(ref.meshIndex);
+
+        // Translation should match one of the two expected centers.
+        const bool isShape0 = (std::abs(tf.translation.x - 0.5f) < 0.01f &&
+                               std::abs(tf.translation.y - 0.5f) < 0.01f);
+        const bool isShape1 = (std::abs(tf.translation.x - 3.5f) < 0.01f &&
+                               std::abs(tf.translation.y - 0.5f) < 0.01f);
+        CHECK((isShape0 || isShape1));
+
+        // Rebased vertices: the bbox of the rebased vertices should be
+        // centered at the origin (bmin + bmax ~ 0), since we offset by
+        // -bbox center. (The centroid is not necessarily at the origin
+        // because bbox center != centroid for non-symmetric geometry.)
+        REQUIRE(mesh.vertices.size() >= 9);
+        glm::vec3 vbmin(std::numeric_limits<float>::max());
+        glm::vec3 vbmax(std::numeric_limits<float>::lowest());
+        for (size_t i = 0; i < mesh.vertices.size(); i += 3)
+        {
+            glm::vec3 p(mesh.vertices[i], mesh.vertices[i + 1], mesh.vertices[i + 2]);
+            vbmin = glm::min(vbmin, p);
+            vbmax = glm::max(vbmax, p);
+        }
+        const glm::vec3 bboxCenter = (vbmin + vbmax) * 0.5f;
+        CHECK(std::abs(bboxCenter.x) < 0.01f);
+        CHECK(std::abs(bboxCenter.y) < 0.01f);
+        CHECK(std::abs(bboxCenter.z) < 0.01f);
+    }
 
     std::filesystem::remove_all(dir);
 }

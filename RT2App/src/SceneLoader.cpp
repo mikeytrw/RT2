@@ -51,6 +51,7 @@ bool DecodeImageData(tinygltf::Image *image, const int image_idx,
 #include <unordered_map>
 #include <cmath>
 #include <unordered_map>
+#include <limits>
 
 #include "SceneGraph.h"
 #include "ECSScene.h"
@@ -2404,6 +2405,17 @@ entt::entity SceneLoader::ImportObjIntoECS(ECSScene& ecsScene,
             std::vector<uint32_t> materialIds;
             materialIds.reserve(triCount);
 
+            // Track the shape's bounding box to rebase vertices around the
+            // shape's own center. Without this, each per-shape entity's
+            // origin sits at the OBJ's (0,0,0) while its geometry is
+            // elsewhere in object space — so the gizmo/selection pivot
+            // appears far from the visible mesh. Rebasing offsets vertices
+            // by -center and sets the entity translation to +center so
+            // world-space geometry is unchanged but the entity origin sits
+            // at the shape's bbox center.
+            glm::vec3 bmin(std::numeric_limits<float>::max());
+            glm::vec3 bmax(std::numeric_limits<float>::lowest());
+
             // Per-shape vertex cache (scoped to this shape's faces).
             std::unordered_map<ObjVertexKey, uint32_t, ObjVertexKeyHash> cache;
             cache.max_load_factor(0.8f);
@@ -2425,9 +2437,25 @@ entt::entity SceneLoader::ImportObjIntoECS(ECSScene& ecsScene,
                                                        verts, normals, uvs, cache);
                     indices.push_back(unified);
                 }
-                // Per-triangle material ID (scoped to this shape). The
-                // resolver offsets these by matBase when merging.
                 materialIds.push_back(static_cast<uint32_t>(shapeMatIdx));
+            }
+
+            // Compute bbox center from the accumulated vertices.
+            for (size_t i = 0; i < verts.size(); i += 3)
+            {
+                glm::vec3 p(verts[i], verts[i + 1], verts[i + 2]);
+                bmin = glm::min(bmin, p);
+                bmax = glm::max(bmax, p);
+            }
+            const glm::vec3 center = (bmin + bmax) * 0.5f;
+
+            // Offset vertices by -center so they're local to the shape's
+            // own origin.
+            for (size_t i = 0; i < verts.size(); i += 3)
+            {
+                verts[i + 0] -= center.x;
+                verts[i + 1] -= center.y;
+                verts[i + 2] -= center.z;
             }
 
             std::string shapeName = shape.name.empty()
@@ -2447,7 +2475,7 @@ entt::entity SceneLoader::ImportObjIntoECS(ECSScene& ecsScene,
             auto child = reg.create();
             {
                 Transform& tf = reg.emplace<Transform>(child);
-                tf.translation = {0, 0, 0};
+                tf.translation = center; // entity origin at shape's bbox center
                 tf.scale = {1, 1, 1};
                 tf.dirty = true;
                 reg.emplace<MeshRef>(child, meshIdx, -1); // per-triangle materials
