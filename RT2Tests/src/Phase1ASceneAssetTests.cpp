@@ -1005,3 +1005,192 @@ TEST_CASE("P1A CpuOnly: vertical-slice fixture still round-trips under v2")
 
     std::filesystem::remove(p2);
 }
+
+// ----------------------------------------------------------------------------
+// Multi-model OBJ texture/material index round-trip.
+//
+// Reproduces the bug where importing a second OBJ model, saving, and
+// reloading produced wrong textures on wrong models. The root cause was
+// that the resolver rebuilt the texture/material arrays in UUID-sorted
+// entity order (not import order), but OBJ per-triangle materialIndices
+// were not offset by matBase when merging — so the second model's
+// triangles referenced the first model's material slots. This test
+// verifies that per-triangle material indices correctly map to the right
+// material (and thus the right texture) after save/reload with two OBJ
+// models that have distinct base colors.
+// ----------------------------------------------------------------------------
+
+namespace {
+
+// Write a tiny OBJ + MTL with a distinctive base color into a temp dir.
+// Returns the OBJ path. The MTL has no textures (flat color) so the test
+// can verify material identity via baseColor alone, without needing image
+// files. The model is a single triangle.
+struct TinyObjFixture
+{
+    std::filesystem::path dir;
+    std::filesystem::path objPath;
+    std::filesystem::path mtlPath;
+    std::string objName;     // relative name, e.g. "model_a.obj"
+    glm::vec3 baseColor;     // the Kd color written into the MTL
+
+    ~TinyObjFixture() { Cleanup(); }
+    void Cleanup()
+    {
+        std::filesystem::remove(objPath);
+        std::filesystem::remove(mtlPath);
+    }
+};
+
+TinyObjFixture MakeTinyObj(const std::filesystem::path& dir,
+                           const std::string& name,
+                           const glm::vec3& baseColor)
+{
+    TinyObjFixture f;
+    f.dir = dir;
+    f.objName = name + ".obj";
+    f.objPath = dir / f.objName;
+    f.mtlPath = dir / (name + ".mtl");
+    f.baseColor = baseColor;
+
+    // Write MTL with the distinctive base color.
+    {
+        std::ofstream mtl(f.mtlPath);
+        mtl << "newmtl " << name << "_mat\n"
+            << "Kd " << baseColor.x << " " << baseColor.y << " " << baseColor.z << "\n"
+            << "Ns 16\n"
+            << "illum 2\n";
+    }
+    // Write OBJ: one triangle using the material.
+    {
+        std::ofstream obj(f.objPath);
+        obj << "mtllib " << (name + ".mtl") << "\n"
+            << "v 0 0 0\n"
+            << "v 1 0 0\n"
+            << "v 0 1 0\n"
+            << "vt 0 0\n"
+            << "vt 1 0\n"
+            << "vt 0 1\n"
+            << "usemtl " << name << "_mat\n"
+            << "f 1/1 2/2 3/3\n";
+    }
+    return f;
+}
+
+} // anonymous namespace
+
+TEST_CASE("P1A Multi-Model: two OBJ models save/reload preserves material identity")
+{
+    // Create a temp directory with two OBJ models that have distinct base
+    // colors. Model A is red (1,0,0), Model B is green (0,1,0).
+    auto dir = std::filesystem::temp_directory_path() / "rt2_multi_obj_test";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    auto fixtureA = MakeTinyObj(dir, "model_a", {1.0f, 0.0f, 0.0f});
+    auto fixtureB = MakeTinyObj(dir, "model_b", {0.0f, 1.0f, 0.0f});
+
+    // Step 1: Import model A into a scene.
+    SceneManager mgr;
+    REQUIRE(mgr.LoadScene(fixtureA.objPath.string()));
+
+    // Step 2: Import model B into the same scene (append).
+    REQUIRE(mgr.LoadScene(fixtureB.objPath.string()));
+
+    // Verify both models are present with distinct materials.
+    REQUIRE(mgr.GetECS().materials.size() >= 2);
+
+    // Record which entity has which model (by name).
+    UUID uuidA = UUID::Nil(), uuidB = UUID::Nil();
+    {
+        auto& reg = mgr.GetECS().registry;
+        auto view = reg.view<NameComponent, EntityIdComponent, ImportedMeshSourceComponent>();
+        for (auto e : view)
+        {
+            const auto& name = view.get<NameComponent>(e).name;
+            const auto& uuid = view.get<EntityIdComponent>(e).id;
+            if (name.find("model_a") != std::string::npos)
+                uuidA = uuid;
+            if (name.find("model_b") != std::string::npos)
+                uuidB = uuid;
+        }
+    }
+    // The OBJ importer names entities after the file stem.
+    REQUIRE_FALSE(uuidA.IsNull());
+    REQUIRE_FALSE(uuidB.IsNull());
+    REQUIRE(uuidA != uuidB);
+
+    // Step 3: Save as .rt2scene next to the OBJ files.
+    auto scenePath = dir / "multi_obj.rt2scene";
+    Error saveErr;
+    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(saveErr.IsOk());
+
+    // Step 4: Load into a fresh document and resolve.
+    DeterministicUuidProvider provider;
+    SceneDocument loaded;
+    loaded.SetUuidProvider(&provider);
+    Error loadErr;
+    REQUIRE(SceneSerializer::Load(loaded, scenePath, loadErr));
+    REQUIRE(loadErr.IsOk());
+
+    std::vector<AssetDiagnostic> diagnostics;
+    Error resolveErr;
+    REQUIRE(SceneAssetResolver::ResolveAll(loaded, dir, diagnostics, resolveErr));
+    REQUIRE(resolveErr.IsOk());
+
+    // Step 5: Verify each entity's per-triangle material index maps to the
+    // correct material with the correct base color. This is the core
+    // assertion: after save/reload/resolve, Model A's triangles must
+    // reference a material with baseColor ~(1,0,0) and Model B's must
+    // reference ~(0,1,0).
+    auto& reg = loaded.ecs.registry;
+    auto entA = loaded.FindByUuid(uuidA);
+    auto entB = loaded.FindByUuid(uuidB);
+    REQUIRE(reg.valid(entA));
+    REQUIRE(reg.valid(entB));
+
+    REQUIRE(reg.all_of<MeshRef>(entA));
+    REQUIRE(reg.all_of<MeshRef>(entB));
+
+    const auto& refA = reg.get<MeshRef>(entA);
+    const auto& refB = reg.get<MeshRef>(entB);
+
+    // OBJ uses materialIndex = -1 (per-triangle materials). The per-
+    // triangle indices must reference the correct material slots.
+    CHECK(refA.materialIndex == -1);
+    CHECK(refB.materialIndex == -1);
+
+    // Get the meshes and check per-triangle material indices.
+    const auto& meshA = loaded.ecs.meshRegistry.GetMesh(refA.meshIndex);
+    const auto& meshB = loaded.ecs.meshRegistry.GetMesh(refB.meshIndex);
+
+    REQUIRE(!meshA.materialIndices.empty());
+    REQUIRE(!meshB.materialIndices.empty());
+
+    // Model A's first triangle's material index should map to a red material.
+    uint32_t triMatA = meshA.materialIndices[0];
+    uint32_t triMatB = meshB.materialIndices[0];
+
+    REQUIRE(triMatA < loaded.ecs.materials.size());
+    REQUIRE(triMatB < loaded.ecs.materials.size());
+
+    const auto& matA = loaded.ecs.materials[triMatA];
+    const auto& matB = loaded.ecs.materials[triMatB];
+
+    // The critical assertions: Model A has red, Model B has green.
+    // Before the fix, the per-triangle indices were not offset by matBase,
+    // so Model B's triangles would reference Model A's material (red).
+    CHECK(matA.baseColor.x == doctest::Approx(1.0f).epsilon(0.01f));
+    CHECK(matA.baseColor.y < 0.1f);
+
+    CHECK(matB.baseColor.y == doctest::Approx(1.0f).epsilon(0.01f));
+    CHECK(matB.baseColor.x < 0.1f);
+
+    // Also verify the two triangles don't reference the same material slot
+    // (they should be in different material blocks after the merge).
+    CHECK(triMatA != triMatB);
+
+    std::filesystem::remove(scenePath);
+    std::filesystem::remove_all(dir);
+}

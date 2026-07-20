@@ -497,6 +497,12 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
             // a second OBJ's triangles would reference the first OBJ's
             // material slots (0-based indices into the front of the
             // array), producing wrong textures on wrong models.
+            // Append meshes. For OBJ, offset the per-triangle material
+            // indices by matBase so they reference the correct material
+            // slots in the merged doc.ecs.materials array. Without this,
+            // a second OBJ's triangles would reference the first OBJ's
+            // material slots (0-based indices into the front of the
+            // array), producing wrong textures on wrong models.
             for (uint32_t i = 0; i < s.ecs.meshRegistry.GetCount(); ++i)
             {
                 MeshData mesh = s.ecs.meshRegistry.GetMesh(i);  // copy
