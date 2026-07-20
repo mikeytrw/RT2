@@ -152,11 +152,19 @@ by exactly one `kFixedDt` tick, then make that tick renderable once. It must
 not run the accumulator or consume wall-clock time. Specifically:
 
 1. Snapshot previous transforms.
-2. Run one fixed update tick (MotionSystem, UUID-sorted).
+2. Run one fixed update tick:
+   a. Script fixed callbacks (`IRuntimeScriptDispatch::OnFixedUpdate`,
+      UUID-sorted) — Phase 6A.
+   b. MotionSystem (inline, UUID-sorted).
 3. Apply deferred structural changes at the defined safe point.
-4. Update world transforms (SceneGraph).
-5. Issue one batched GPU sync (coalesced: structural > material > transform).
-6. Request one render submission.
+4. Sync script environments (`IRuntimeScriptDispatch::SyncScriptEnviron-
+   ments` — fires `OnCreate` for newly applied entities, `OnDestroy` for
+   destroyed ones) — Phase 6A.
+5. Script variable callbacks (`IRuntimeScriptDispatch::OnUpdate`,
+   UUID-sorted) — Phase 6A.
+6. Update world transforms (SceneGraph).
+7. Issue one batched GPU sync (coalesced: structural > material > transform).
+8. Request one render submission.
 
 The accumulator is NOT advanced. Variable scripts (when present) run once
 with `kFixedDt`, not an arbitrary frame duration, so a stepped frame is
@@ -294,19 +302,34 @@ Application::Shutdown()
 The sketches below identify integration points only. The planned runtime order
 above is normative once Phase 4 is implemented.
 
-### Scripting (placeholder)
+### Scripting (Phase 6A — implemented)
 
 ```
 runtime frame:
-  FixedScriptSystem::Update(fixedDt)
-  ScriptSystem::OnUpdate(frameDt)
+  IRuntimeScriptDispatch::OnFixedUpdate(fixedDt)   // before motion
+  <inline motion integration>
+  ApplyDeferredStructuralChanges()                  // safe point
+  IRuntimeScriptDispatch::SyncScriptEnvironments()  // OnCreate/OnDestroy
+  IRuntimeScriptDispatch::OnUpdate(frameDt)         // after safe point
+  SceneGraph::UpdateWorldTransforms()
+  <one batched GPU sync>
   Render()
 ```
 
-Scripts would be per-entity components (`ScriptComponent`) containing a
-callback or Lua function. The script system iterates entities with
-`ScriptComponent + Transform` and calls `OnUpdate(entity, ts)`. Scripts can
-modify transforms, spawn/despawn entities, and set material parameters.
+Scripts are per-entity `ScriptComponent` (persisted data: asset path +
+field values) with a live `sol::environment` built by `ScriptSystem` on
+Play and torn down on Stop. `ScriptSystem` implements both
+`IRuntimeLifecycleObserver` (const-observe Play/Stop) and
+`IRuntimeScriptDispatch` (per-frame mutation-driving). The environment
+map is a per-frame-maintained mirror of the runtime registry:
+`SyncScriptEnvironments` (called between the deferred safe point and
+`OnUpdate`) fires `OnCreate` for newly applied entities and `OnDestroy`
+for destroyed ones, so scripted spawning produces scripted entities.
+Scripts mutate the runtime world through `IRuntimeCommandSink` (world
+spawn/destroy, entity get/set transform/name/visible); the const
+`SceneDocument` is never exposed. Per-instance state machine
+(NeverCreated / Live / Quarantined / Destroyed) with protected-call
+discipline ensures one bad script never crashes the engine.
 
 ### Physics (placeholder)
 

@@ -3899,6 +3899,102 @@ mesh/material bindings; timers; headless JSON state report. The
 `ScriptComponent.fieldValues` map exists in the struct but is empty and
 unused in 6A — it is the seam 6B fills.
 
+### Phase 6A verification report (implemented)
+
+**Vendored:**
+- `RT2App/vendor/lua/` — Lua 5.4 (submodule, `v5.4` branch), C sources
+  compiled as a static lib via premake `vendor/**.c` glob. Excludes
+  `lua.c` (interpreter), `luac.c` (compiler), `onelua.c` (amalgamation),
+  `testes/`, `manual/`.
+- `RT2App/vendor/sol2/` — sol2 v3.5.0 (submodule, header-only), included
+  via `vendor/sol2/include`. sol2 tests/examples/scripts/single excluded
+  from the build glob.
+
+**New files:**
+- `RT2App/src/ScriptFieldValue.h` — CPU-only `ScriptFieldValue` variant
+  (`bool, int64_t, double, std::string, UUID, glm::vec3`) and
+  `ScriptFieldType` enum (includes `Vec3` + `Color` per S6).
+- `RT2App/src/IRuntimeScriptDispatch.h` — per-frame mutation-driving
+  interface (G1): `OnFixedUpdate`, `OnUpdate`, `SyncScriptEnvironments`.
+- `RT2App/src/IRuntimeCommandSink.h` — controlled mutation channel (S4):
+  `SpawnEntity`, `DestroyEntity`, `GetLocalTransform`, `SetLocalTransform`,
+  `GetPosition`, `SetPosition`, `GetName`, `SetName`, `GetVisible`,
+  `SetVisible`, `IsAlive`, `FindByName`.
+- `RT2App/src/ScriptSystem.h/.cpp` — single `sol::state`, per-entity
+  environment map (G2: per-frame-maintained mirror via
+  `SyncScriptEnvironments`), per-instance state machine (S1:
+  NeverCreated/Live/Quarantined/Destroyed), protected-call discipline
+  (S7: `sol::protected_function` + `lua_atpanic`), UUID-sorted dispatch
+  (S5), reverse-creation-order `OnDestroy` at Stop (S5). Bindings: `entity`
+  (get/set position/name/visible, get_uuid), `world` (find_by_name,
+  find_by_uuid, spawn, destroy), `log` (info/warn/error), `self` (S3:
+  per-entity field table, empty in 6A), `input` (S2: present but inert,
+  4-arg callback signature locked from 6A). `RuntimeCommandSink` concrete
+  sink resolves the runtime doc lazily via `TryGetRuntimeScene` (avoids
+  the chicken-and-egg of needing the runtime doc before Play).
+- `RT2Tests/src/Phase6ALifecycleTests.cpp` — 8 tests, 37 assertions.
+
+**Modified files:**
+- `RT2App/src/ECSComponents.h` — `ScriptComponent` struct (asset +
+  fieldValues), `AssetKind::Script = 4`, added `<entt/entt.hpp>` include
+  (self-contained), `ScriptFieldValue.h` include, `<unordered_map>`.
+- `RT2App/src/PersistedComponents.h` — `Count` 10→11, `Tag<ScriptComponent>`.
+- `RT2App/src/RuntimeLifecycleObserver.h` — `OnSceneStart` extended with
+  `const IInputService*`, `IRuntimeCommandSink*` params (back-compat shim
+  calls the single-arg overload so Phase 4 observers work unchanged).
+- `RT2App/src/RuntimeSceneController.h/.cpp` —
+  `SetScriptDispatch`/`GetScriptDispatch`, `SetInputService`/
+  `GetInputService`, `SetRuntimeCommandSink`/`GetRuntimeCommandSink`;
+  `RunFixedTick` calls `OnFixedUpdate` before motion; `Update`/`Step` call
+  `SyncScriptEnvironments` after the deferred drain, then `OnUpdate`,
+  before `SceneGraph::UpdateWorldTransformes`; `Play` passes input + sink
+  to `OnSceneStart`.
+- `RT2App/src/RuntimeSceneMutator.h/.cpp` — `RuntimeEntityCreateDesc`
+  gains `std::optional<ScriptComponent> script`; `CreateEntity` emplaces
+  it when present.
+- `RT2App/src/SceneSerializer.cpp` — `static_assert` Count 10→11;
+  `EntityRecord` gains `hasScript`/`script`; `BuildEntityRecord` reads
+  `ScriptComponent`; the apply path emplaces it (clone-in-memory carries
+  it; v2 on-disk path does not serialize it — 6B adds v3).
+- `RT2App/src/SubtreeSnapshot.h` — `SubtreeEntityRecord` gains
+  `hasScript`/`script` (duplication/paste preserves script binding).
+- `RT2App/src/SceneManager.cpp` — `BuildSubtreeRecord` reads
+  `ScriptComponent`; `ApplySubtreeRecord` emplaces/removes it;
+  `EntityMatchesRecord` compares it.
+- `RT2App/premake5.lua` — `vendor/**.c` glob, sol2 + Lua include dirs,
+  sol2/Lua exclusions.
+- `RT2Tests/premake5.lua` — `ScriptSystem.cpp` + Lua C sources in the
+  `files` list, sol2 + Lua include dirs.
+- `docs/game-loop.md` — Step list updated with fixed-script +
+  SyncScriptEnvironments + OnUpdate slots; scripting placeholder replaced
+  with the implemented `IRuntimeScriptDispatch` contract.
+
+**Verification:**
+- Release x64 full solution builds clean (RT2App + RT2Tests +
+  RT2SliceRunner).
+- `RT2Tests`: 385 cases, 379 pass, 6 known pre-existing failures (5
+  `SceneGraph` cases in `EcsTests.cpp` + 1 SIGSEGV in `SceneManager:
+  RemoveEntity destroys entity`), 48 skipped. No regressions.
+- `Phase6ALifecycleTests`: 8/8 pass, 37 assertions covering lifecycle
+  callback counts, two-entity isolation, scripted transform → transform-
+  only sync, syntax error quarantine (only affected instance), runtime
+  error quarantine (mid-frame, no further callbacks), world.spawn
+  deferral to next safe point, Pause/Step callback suppression, Lua
+  error safety (protected-call discipline).
+- `run_slice_test.ps1` PASS.
+- `run_recovery_test.ps1` PASS.
+- graphify updated: 32007 nodes, 68122 edges, 1273 communities.
+
+**Deferred to 6B (as planned):** public-field reflection and inspector
+UI; field-value persistence (v3 serialization); the
+`ScriptComponent.fieldValues` map exists but is empty and unused. The
+`ReloadScript(path)` API is declared on `ScriptSystem` and stubbed (empty
+body); 6C implements it.
+
+**Deferred to 6C (as planned):** hot reload (file watching via efsw);
+input/light/camera/mesh/material bindings; timers; headless JSON state
+report; `RT2SliceRunner --script-scenario` mode.
+
 ### Phase 6B — Public fields, reflection, and persistence (planned)
 
 **Outcome.** A script declares public fields with declared types and
