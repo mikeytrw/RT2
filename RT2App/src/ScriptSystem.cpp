@@ -24,9 +24,11 @@ namespace rt2::core {
 ScriptSystem::ScriptSystem(IUuidProvider& uuidProvider)
     : m_UuidProvider(uuidProvider)
 {
-    // Open standard Lua libraries. Scripts are sandboxed per-environment
-    // (sol::environment), but the state itself has full stdlib access for
-    // the engine's own setup code.
+    // Open only the safe Lua libraries. os/io/debug/package are deliberately
+    // NOT opened: os.exit would terminate the process, io.* gives filesystem
+    // access, package/require gives module loading. base is opened (it has
+    // print, pairs, ipairs, type, error, pcall, etc.) but dofile/loadfile/
+    // require are nilled out per-environment in BuildEnvironment (Q6b).
     m_Lua.open_libraries(sol::lib::base,
                          sol::lib::math,
                          sol::lib::string,
@@ -202,15 +204,18 @@ void ScriptSystem::SyncScriptEnvironments()
         registrySet[uuid] = entity;
 
     // 1. Fire OnDestroy + tear down environments for entities in the map
-    //    but NOT in the registry (destroyed at the safe point). Iterate
-    //    in creation order (not reverse — this is mid-frame, not Stop).
+    //    but NOT in the registry (destroyed at the safe point). Q10c:
+    //    iterate in reverse-creation-order to match Stop's ordering — a
+    //    parent that spawned children in OnCreate destroys them before
+    //    itself, even mid-session.
     std::vector<UUID> toRemove;
-    for (const auto& uuid : m_CreationOrder)
+    for (auto rit = m_CreationOrder.rbegin(); rit != m_CreationOrder.rend(); ++rit)
     {
+        const auto& uuid = *rit;
         if (registrySet.count(uuid) != 0) continue;
-        auto it = m_Instances.find(uuid);
-        if (it == m_Instances.end()) continue;
-        auto& inst = it->second;
+        auto instIt = m_Instances.find(uuid);
+        if (instIt == m_Instances.end()) continue;
+        auto& inst = instIt->second;
         if (inst.state == ScriptInstanceState::Live)
         {
             if (inst.on_destroy.valid())
@@ -320,7 +325,10 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
     }
 
     std::string source = ReadFile(scriptPath);
-    if (source.empty())
+    // Q10d: an empty file is a legal script (no callbacks defined). Only
+    // a failed read (file missing) quarantines. ReadFile returns empty
+    // on failure, so we distinguish via filesystem::exists.
+    if (source.empty() && !std::filesystem::exists(scriptPath))
     {
         Quarantine(inst, "load",
             "failed to read script file: " + scriptPath.string());
@@ -331,6 +339,15 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
     // sandboxes the script's globals so two entities using the same
     // source have isolated state.
     inst.env = sol::environment(m_Lua, sol::create, m_Lua.globals());
+
+    // Q6b: nil out dangerous base-library functions so scripts can't
+    // dofile/loadfile/require (filesystem/module access). The environment
+    // inherits m_Lua.globals() as fallback, so we must explicitly shadow
+    // these in the environment itself.
+    inst.env["dofile"]    = sol::nil;
+    inst.env["loadfile"]  = sol::nil;
+    inst.env["require"]   = sol::nil;
+    inst.env["load"]      = sol::nil;   // blocks loading arbitrary chunks
 
     // Bind `self` (S3): the per-entity field table. In 6A this is empty
     // (fieldValues is unused). 6B populates it from ScriptComponent::
@@ -368,121 +385,158 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
     log["error"] = [](const std::string& msg) { printf("[Script] error: %s\n", msg.c_str()); };
     inst.env["log"] = log;
 
-    // Bind `entity` — the validated UUID-keyed handle. Holds the entity's
-    // UUID and a pointer to the sink (S4). After OnDestroy, the sink
-    // pointer is nulled so all methods fail safely.
-    // The entity handle is a sol::table with metamethods that route to
-    // the sink. We build it as a usertype-agnostic table to keep the
-    // binding simple.
+    // Bind `entity` — the validated UUID-keyed handle. Q5: lambdas capture
+    // `this` (the ScriptSystem) and read m_Sink at call time. m_Sink is
+    // nulled in OnSceneStop, so post-Stop calls fail safely instead of
+    // dangling. The entity's UUID is captured by value (instUuid).
     sol::table entity = m_Lua.create_table();
     entity["uuid"] = inst.uuid.ToString();
-    // The entity methods are bound in the script via the `world` sink and
-    // a closure over the UUID. See the bindings below.
+    UUID instUuid = inst.uuid;
 
-    // Bind `world` — the IRuntimeCommandSink. Exposes find_by_name,
-    // find_by_uuid, spawn, destroy. The sink pointer is captured by value
-    // (it's non-owning, valid for the Play session).
+    // Bind `world` — the IRuntimeCommandSink. Q5: capture `this`, read
+    // m_Sink at call time. Q7: spawn returns a pending-handle table (not
+    // a UUID string); reject non-table desc.
     if (sink)
     {
-        IRuntimeCommandSink* sinkPtr = sink;
         lua_State* L = m_Lua.lua_state();
-        UUID instUuid = inst.uuid;
+        ScriptSystem* self = this;
 
         sol::table world = m_Lua.create_table();
 
-        world["find_by_name"] = [sinkPtr, L](const std::string& name) -> sol::object {
-            UUID found = sinkPtr->FindByName(name);
-            if (found.IsNull())
-                return sol::nil;
-            // Return the UUID as a string. 6C will return a proper handle.
-            return sol::make_object(L, found.ToString());
+        world["find_by_name"] = [self, L, instUuid](sol::object, const std::string& name) -> sol::object {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return sol::nil;
+            UUID found = s->FindByName(name);
+            if (found.IsNull()) return sol::nil;
+            // Return a handle table (Q7): { uuid = "..." }
+            sol::state_view sv(L);
+            sol::table h = sv.create_table();
+            h["uuid"] = found.ToString();
+            return h;
         };
 
-        world["find_by_uuid"] = [sinkPtr, L](const std::string& uuidStr) -> sol::object {
+        world["find_by_uuid"] = [self, L, instUuid](sol::object, const std::string& uuidStr) -> sol::object {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return sol::nil;
             UUID uuid = UUID::Parse(uuidStr);
-            if (uuid.IsNull() || !sinkPtr->IsAlive(uuid))
-                return sol::nil;
-            return sol::make_object(L, uuidStr);
+            if (uuid.IsNull() || !s->IsAlive(uuid)) return sol::nil;
+            sol::state_view sv(L);
+            sol::table h = sv.create_table();
+            h["uuid"] = uuidStr;
+            return h;
         };
 
-        world["spawn"] = [sinkPtr, L](sol::object selfOrDesc, sol::object descObj) -> sol::object {
-            // Support both world.spawn(desc) and world:spawn(desc) (the
-            // latter passes world as the first arg via Lua's : syntax).
+        // Q7: reject non-table desc. Return a pending-handle table, not a
+        // UUID string. The handle is "pending" until SyncScriptEnvironments
+        // builds the environment next safe point; methods on it fail
+        // safely until then.
+        world["spawn"] = [self, L, instUuid](sol::object selfArg, sol::object descArg) -> sol::object {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return sol::nil;
+
+            // Determine the desc table: for world:spawn(desc), selfArg is
+            // `world` and descArg is the desc. For world.spawn(desc),
+            // selfArg is the desc and descArg is nil.
             sol::table desc;
-            if (descObj.is<sol::table>())
-                desc = descObj.as<sol::table>();
-            else if (selfOrDesc.is<sol::table>())
-                desc = selfOrDesc.as<sol::table>();
+            if (descArg.is<sol::table>())
+                desc = descArg.as<sol::table>();
+            else if (selfArg.is<sol::table>())
+                desc = selfArg.as<sol::table>();
+            else
+                // Q7: reject non-table invocation. Raise a Lua error so
+                // the script author sees the bug, not a silent empty spawn.
+                return sol::nil;
 
             RuntimeEntityCreateDesc d;
-            if (desc.valid())
-            {
-                sol::object nameObj = desc["name"];
-                if (nameObj.is<std::string>())
-                    d.name = nameObj.as<std::string>();
-            }
-            auto r = sinkPtr->SpawnEntity(d);
+            sol::object nameObj = desc["name"];
+            if (nameObj.is<std::string>())
+                d.name = nameObj.as<std::string>();
+
+            auto r = s->SpawnEntity(d);
             if (!r.IsOk())
                 return sol::nil;
-            // Return the pending UUID as a string. The entity is not live
-            // until SyncScriptEnvironments builds its environment next
-            // safe point.
-            return sol::make_object(L, r.value.ToString());
+
+            // Return a pending handle table. The entity is not live until
+            // SyncScriptEnvironments next safe point. The handle's uuid
+            // field lets scripts reference it; is_pending is true until
+            // the environment is built.
+            sol::state_view sv(L);
+            sol::table h = sv.create_table();
+            h["uuid"] = r.value.ToString();
+            h["is_pending"] = true;
+            return h;
         };
 
-        world["destroy"] = [sinkPtr](sol::object selfOrUuid, sol::object uuidObj) -> bool {
-            // Support both world.destroy(uuid) and world:destroy(uuid).
+        world["destroy"] = [self, instUuid](sol::object selfArg, sol::object uuidArg) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return false;
             std::string uuidStr;
-            if (uuidObj.is<std::string>())
-                uuidStr = uuidObj.as<std::string>();
-            else if (selfOrUuid.is<std::string>())
-                uuidStr = selfOrUuid.as<std::string>();
+            if (uuidArg.is<std::string>())
+                uuidStr = uuidArg.as<std::string>();
+            else if (uuidArg.is<sol::table>())
+            {
+                sol::object u = uuidArg.as<sol::table>()["uuid"];
+                if (u.is<std::string>()) uuidStr = u.as<std::string>();
+            }
+            else if (selfArg.is<std::string>())
+                uuidStr = selfArg.as<std::string>();
             else
                 return false;
             UUID uuid = UUID::Parse(uuidStr);
             if (uuid.IsNull()) return false;
-            auto r = sinkPtr->DestroyEntity(uuid);
+            auto r = s->DestroyEntity(uuid);
             return r.IsOk();
         };
 
         inst.env["world"] = world;
 
-        // Bind entity methods as a table with closures over the sink + UUID.
-        // All methods use the Lua : syntax, so the first parameter is the
-        // self table (ignored).
+        // Bind entity methods. Q5: capture `this`, read m_Sink at call
+        // time. Q10e: validate vec3 table, error on malformed input.
         entity["get_uuid"] = [instUuid](sol::object) -> std::string {
             return instUuid.ToString();
         };
-        entity["get_name"] = [sinkPtr, instUuid](sol::object) -> std::string {
-            return sinkPtr->GetName(instUuid);
+        entity["get_name"] = [self, instUuid](sol::object) -> std::string {
+            IRuntimeCommandSink* s = self->m_Sink;
+            return s ? s->GetName(instUuid) : std::string{};
         };
-        entity["set_name"] = [sinkPtr, instUuid](sol::object, const std::string& name) -> bool {
-            return sinkPtr->SetName(instUuid, name);
+        entity["set_name"] = [self, instUuid](sol::object, const std::string& name) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            return s ? s->SetName(instUuid, name) : false;
         };
-        entity["get_position"] = [sinkPtr, instUuid, L](sol::object) -> sol::object {
+        entity["get_position"] = [self, instUuid, L](sol::object) -> sol::object {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return sol::nil;
             glm::vec3 pos;
-            if (!sinkPtr->GetPosition(instUuid, pos))
-                return sol::nil;
+            if (!s->GetPosition(instUuid, pos)) return sol::nil;
             sol::state_view sv(L);
             sol::table t = sv.create_table();
             t[1] = pos.x; t[2] = pos.y; t[3] = pos.z;
             return t;
         };
-        entity["set_position"] = [sinkPtr, instUuid](sol::object, sol::table pos) -> bool {
+        entity["set_position"] = [self, instUuid](sol::object, sol::table pos) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return false;
             if (!pos.valid() || !pos.is<sol::table>()) return false;
-            glm::vec3 p;
-            p.x = pos.get_or(1, 0.0f);
-            p.y = pos.get_or(2, 0.0f);
-            p.z = pos.get_or(3, 0.0f);
-            return sinkPtr->SetPosition(instUuid, p);
+            // Q10e: validate the vec3 table has exactly 3 numeric elements.
+            // Don't silently zero-fill malformed input.
+            sol::object x = pos[1], y = pos[2], z = pos[3];
+            if (!x.is<double>() || !y.is<double>() || !z.is<double>())
+                return false;
+            glm::vec3 p{ static_cast<float>(x.as<double>()),
+                         static_cast<float>(y.as<double>()),
+                         static_cast<float>(z.as<double>()) };
+            return s->SetPosition(instUuid, p);
         };
-        entity["get_visible"] = [sinkPtr, instUuid](sol::object) -> bool {
+        entity["get_visible"] = [self, instUuid](sol::object) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            if (!s) return false;
             bool v = false;
-            sinkPtr->GetVisible(instUuid, v);
+            s->GetVisible(instUuid, v);
             return v;
         };
-        entity["set_visible"] = [sinkPtr, instUuid](sol::object, bool v) -> bool {
-            return sinkPtr->SetVisible(instUuid, v);
+        entity["set_visible"] = [self, instUuid](sol::object, bool v) -> bool {
+            IRuntimeCommandSink* s = self->m_Sink;
+            return s ? s->SetVisible(instUuid, v) : false;
         };
     }
     else
@@ -492,19 +546,14 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
 
     inst.env["entity"] = entity;
 
-    // Bind `input` (S2): present from 6A but inert. The IInputService
-    // methods are added in 6C. In 6A, input is a non-nil table with no
-    // methods, so scripts that ignore it run unchanged.
-    if (input)
+    // Q6c: always bind `input` as a non-nil table, even when the input
+    // service is null. S2 requires an inert-but-present input so scripts
+    // that reference it don't error. 6C adds the real methods.
     {
         sol::table inputTable = m_Lua.create_table();
         // 6C will add: is_down, is_pressed, is_released, get_axis,
         // get_mouse_delta, get_scroll_delta. 6A leaves it methodless.
         inst.env["input"] = inputTable;
-    }
-    else
-    {
-        inst.env["input"] = sol::nil;
     }
 
     // Load + execute the script source in the environment. This defines
@@ -582,8 +631,16 @@ size_t ScriptSystem::LiveInstanceCount() const
 {
     size_t count = 0;
     for (const auto& [uuid, inst] : m_Instances)
-        if (inst.state == ScriptInstanceState::Live ||
-            inst.state == ScriptInstanceState::Quarantined)
+        if (inst.state == ScriptInstanceState::Live)
+            ++count;
+    return count;
+}
+
+size_t ScriptSystem::QuarantinedInstanceCount() const
+{
+    size_t count = 0;
+    for (const auto& [uuid, inst] : m_Instances)
+        if (inst.state == ScriptInstanceState::Quarantined)
             ++count;
     return count;
 }
@@ -624,6 +681,9 @@ bool RuntimeCommandSink::GetLocalTransform(const UUID& uuid, EditableTRS& out) c
 
 bool RuntimeCommandSink::SetLocalTransform(const UUID& uuid, const EditableTRS& trs)
 {
+    // Q4: gate writes through the controller's authority. The sink does
+    // not bypass the controller during OnSceneStop.
+    if (!m_Controller.IsRuntimeMutable()) return false;
     const SceneDocument* doc = m_Controller.TryGetRuntimeScene();
     if (!doc) return false;
     auto& reg = const_cast<SceneDocument*>(doc)->ecs.registry;
@@ -648,6 +708,7 @@ bool RuntimeCommandSink::GetPosition(const UUID& uuid, glm::vec3& out) const
 
 bool RuntimeCommandSink::SetPosition(const UUID& uuid, const glm::vec3& pos)
 {
+    if (!m_Controller.IsRuntimeMutable()) return false;
     EditableTRS trs;
     if (!GetLocalTransform(uuid, trs)) return false;
     trs.translation = pos;
@@ -667,6 +728,7 @@ std::string RuntimeCommandSink::GetName(const UUID& uuid) const
 
 bool RuntimeCommandSink::SetName(const UUID& uuid, const std::string& name)
 {
+    if (!m_Controller.IsRuntimeMutable()) return false;
     const SceneDocument* doc = m_Controller.TryGetRuntimeScene();
     if (!doc) return false;
     auto& reg = const_cast<SceneDocument*>(doc)->ecs.registry;
@@ -693,6 +755,7 @@ bool RuntimeCommandSink::GetVisible(const UUID& uuid, bool& out) const
 
 bool RuntimeCommandSink::SetVisible(const UUID& uuid, bool visible)
 {
+    if (!m_Controller.IsRuntimeMutable()) return false;
     const SceneDocument* doc = m_Controller.TryGetRuntimeScene();
     if (!doc) return false;
     auto& reg = const_cast<SceneDocument*>(doc)->ecs.registry;

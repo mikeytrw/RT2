@@ -113,8 +113,11 @@ public:
     // the entity has no script environment.
     ScriptInstanceState GetInstanceState(const UUID& uuid) const;
 
-    // Returns the number of live (Live + Quarantined) script instances.
+    // Returns the number of live (Live only) script instances.
     size_t LiveInstanceCount() const;
+
+    // Returns the number of quarantined script instances.
+    size_t QuarantinedInstanceCount() const;
 
 private:
     // Build a fresh sol::environment for one entity, load the script source

@@ -133,6 +133,20 @@ public:
 
     SceneRunState GetState() const { return m_State; }
 
+    // Q4: a mutation gate the sink checks before writing to the runtime
+    // document. Returns true only when Playing/Paused AND not stopping.
+    // The sink's transform/vis/name setters call this before writing; a
+    // false return means the write is rejected (the session is ending or
+    // has ended). This centralizes the authority the controller already
+    // has over the queue (QueueCreate/QueueDestroy check the same
+    // conditions) and avoids the sink bypassing the controller via
+    // const_cast during OnSceneStop.
+    bool IsRuntimeMutable() const
+    {
+        return (m_State == SceneRunState::Playing ||
+                m_State == SceneRunState::Paused) && !m_Stopping;
+    }
+
     // Returns the runtime document if Playing/Paused, null if Edit.
     const SceneDocument* TryGetRuntimeScene() const { return m_Runtime.get(); }
 
