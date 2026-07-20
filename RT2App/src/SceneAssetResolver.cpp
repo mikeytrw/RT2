@@ -491,9 +491,22 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
             s.matBase  = (int)doc.ecs.materials.size();
             s.texBase  = (int)doc.ecs.textures.size();
 
-            // Append meshes.
+            // Append meshes. For OBJ, offset the per-triangle material
+            // indices by matBase so they reference the correct material
+            // slots in the merged doc.ecs.materials array. Without this,
+            // a second OBJ's triangles would reference the first OBJ's
+            // material slots (0-based indices into the front of the
+            // array), producing wrong textures on wrong models.
             for (uint32_t i = 0; i < s.ecs.meshRegistry.GetCount(); ++i)
-                doc.ecs.meshRegistry.AddMesh(s.ecs.meshRegistry.GetMesh(i));
+            {
+                MeshData mesh = s.ecs.meshRegistry.GetMesh(i);  // copy
+                if (s.isObj && !mesh.materialIndices.empty())
+                {
+                    for (auto& mi : mesh.materialIndices)
+                        mi += static_cast<uint32_t>(s.matBase);
+                }
+                doc.ecs.meshRegistry.AddMesh(std::move(mesh));
+            }
 
             // Append materials and remap texture indices.
             for (const auto& sm : s.ecs.materials)
@@ -588,11 +601,32 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         // document's materials array and points the entity's MeshRef at the
         // new slot, so saved UI edits survive reopen even though the source
         // material was re-imported.
+        //
+        // Texture index fix: the override's material was saved with texture
+        // indices from the import-time texture array, which is stale after
+        // the resolver rebuilds the texture array in a different order. The
+        // re-imported staged material (pointed to by targetMaterialIndex)
+        // has correctly remapped texture indices. We copy those indices
+        // into the override material before appending, so the override
+        // keeps its authored scalar edits (baseColor, roughness, etc.) but
+        // uses the correct texture references. This is safe because 6A
+        // does not expose texture editing in the material editor — the
+        // editor only edits scalar properties, not texture assignments.
         auto& reg = doc.ecs.registry;
         if (auto* ov = reg.try_get<MaterialOverrideComponent>(pe.entity))
         {
             if (ov->authored)
             {
+                // Copy texture indices from the re-imported staged material.
+                if (targetMaterialIndex >= 0 &&
+                    targetMaterialIndex < (int)doc.ecs.materials.size())
+                {
+                    const auto& staged = doc.ecs.materials[targetMaterialIndex];
+                    ov->material.baseColorTextureIndex       = staged.baseColorTextureIndex;
+                    ov->material.normalTextureIndex          = staged.normalTextureIndex;
+                    ov->material.emissiveTextureIndex        = staged.emissiveTextureIndex;
+                    ov->material.metallicRoughnessTextureIndex = staged.metallicRoughnessTextureIndex;
+                }
                 int overrideIdx = (int)doc.ecs.materials.size();
                 doc.ecs.materials.push_back(ov->material);
                 ov->materialIndex = overrideIdx;
