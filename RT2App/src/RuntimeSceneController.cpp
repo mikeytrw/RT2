@@ -67,11 +67,13 @@ bool RuntimeSceneController::Play(const SceneDocument& authoring,
     // queries GetState() sees the post-Play state. OnSceneStart is a clean
     // observation seam — it may call QueueCreateRuntimeEntity (the queued op
     // is NOT drained during OnSceneStart; it waits for the next Update/Step).
+    // Phase 6: pass the input service + command sink so scripts can read
+    // input and mutate the runtime world through the controlled channel.
     m_State = SceneRunState::Playing;
     m_Accumulator = 0.0f;
 
     if (m_LifecycleObserver)
-        m_LifecycleObserver->OnSceneStart(*m_Runtime);
+        m_LifecycleObserver->OnSceneStart(*m_Runtime, m_InputService, m_CommandSink);
 
     return true;
 }
@@ -129,6 +131,18 @@ bool RuntimeSceneController::Step(ISceneRenderBridge& bridge)
     if (!drainErr.IsOk())
         printf("[Runtime] Step deferred-queue validation failed: %s (queue left intact)\n",
                drainErr.Format().c_str());
+
+    // Phase 6: sync script environments with the runtime registry after the
+    // safe point (G2). Fires OnCreate for newly applied entities, OnDestroy
+    // for destroyed ones, before OnUpdate runs.
+    if (m_ScriptDispatch)
+        m_ScriptDispatch->SyncScriptEnvironments();
+
+    // Phase 6: variable script callbacks after the safe point + env sync,
+    // before SceneGraph::UpdateWorldTransforms (game-loop.md:137). Step
+    // runs exactly one OnUpdate at kFixedDt for determinism.
+    if (m_ScriptDispatch)
+        m_ScriptDispatch->OnUpdate(dt);
 
     // Batched: update world transforms once after the tick + drain.
     SceneGraph::UpdateWorldTransforms(m_Runtime->ecs.registry);
@@ -254,6 +268,17 @@ void RuntimeSceneController::Update(float frameDt, ISceneRenderBridge& bridge)
     if (!drainErr.IsOk())
         printf("[Runtime] Update deferred-queue validation failed: %s (queue left intact)\n",
                drainErr.Format().c_str());
+
+    // Phase 6: sync script environments with the runtime registry after the
+    // safe point (G2). Fires OnCreate for newly applied entities, OnDestroy
+    // for destroyed ones, before OnUpdate runs.
+    if (m_ScriptDispatch)
+        m_ScriptDispatch->SyncScriptEnvironments();
+
+    // Phase 6: variable script callbacks after the safe point + env sync,
+    // before SceneGraph::UpdateWorldTransforms (game-loop.md:137).
+    if (m_ScriptDispatch)
+        m_ScriptDispatch->OnUpdate(dt);
 
     // Batched: update world transforms once after all substeps + drain.
     SceneGraph::UpdateWorldTransforms(m_Runtime->ecs.registry);
@@ -502,6 +527,12 @@ void RuntimeSceneController::RunFixedTick(float dt)
         return;
 
     auto& reg = m_Runtime->ecs.registry;
+
+    // Phase 6: fixed script callbacks BEFORE motion integration, in UUID-
+    // sorted entity order (game-loop.md:134). Spawns queued here do NOT
+    // resolve mid-loop; they resolve at the safe point after the loop.
+    if (m_ScriptDispatch)
+        m_ScriptDispatch->OnFixedUpdate(dt);
 
     // MotionSystem: iterate entities with MotionComponent + Transform,
     // sorted by UUID for deterministic iteration order.

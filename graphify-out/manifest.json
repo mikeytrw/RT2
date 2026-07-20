@@ -10,8 +10,8 @@
     "semantic_hash": ""
   },
   "RT2App/premake5.lua": {
-    "mtime": 1784371881.3480995,
-    "ast_hash": "93e7e4c469d0c7749b38ec7684d1e04a",
+    "mtime": 1784570052.6556697,
+    "ast_hash": "e70785fdc984954b95b12a5082f78f93",
     "semantic_hash": ""
   },
   "RT2App/shaders/shader_interface.h": {
@@ -65,8 +65,8 @@
     "semantic_hash": ""
   },
   "RT2App/src/ECSComponents.h": {
-    "mtime": 1784319654.9966438,
-    "ast_hash": "8fdb27b81a33d33c851f10530efa6dd1",
+    "mtime": 1784567913.9768877,
+    "ast_hash": "2942ae0e8a8fa305596219f45a30a4ec",
     "semantic_hash": ""
   },
   "RT2App/src/ECSScene.h": {
@@ -235,8 +235,8 @@
     "semantic_hash": ""
   },
   "RT2App/src/WalnutApp.cpp": {
-    "mtime": 1784494032.7671242,
-    "ast_hash": "1c90776b1d530f8b2c43ec0959b99f67",
+    "mtime": 1784496456.8692296,
+    "ast_hash": "ec6e93fdd861a873dde7b1cb078303d4",
     "semantic_hash": ""
   },
   "RT2App/vendor/NRD/Include/NRD.h": {
@@ -1550,8 +1550,8 @@
     "semantic_hash": ""
   },
   "RT2Tests/premake5.lua": {
-    "mtime": 1784494088.1944375,
-    "ast_hash": "1d1d395559e3e2ce317ff83ee72111a6",
+    "mtime": 1784568333.7631316,
+    "ast_hash": "b30edce36a3e4579a36e298333a0eef2",
     "semantic_hash": ""
   },
   "RT2Tests/src/BuildGpuFromEcsTests.cpp": {
@@ -10160,13 +10160,13 @@
     "semantic_hash": ""
   },
   "RT2App/src/RuntimeSceneController.cpp": {
-    "mtime": 1784490979.867738,
-    "ast_hash": "1fd1e3800ff8a37ad53170937d328a92",
+    "mtime": 1784567702.6981106,
+    "ast_hash": "3d56d21277617371e2484f90d546a3bb",
     "semantic_hash": ""
   },
   "RT2App/src/RuntimeSceneController.h": {
-    "mtime": 1784490323.8399522,
-    "ast_hash": "c899568da5cb7e8ae33496ec602836aa",
+    "mtime": 1784567675.037,
+    "ast_hash": "0111960d61254d5ff0c9efc5a248b1e5",
     "semantic_hash": ""
   },
   "RT2App/src/SceneAssetResolver.cpp": {
@@ -10200,8 +10200,8 @@
     "semantic_hash": ""
   },
   "RT2App/src/SceneManager.cpp": {
-    "mtime": 1784483304.664132,
-    "ast_hash": "135166f49368746fed25852e1913b938",
+    "mtime": 1784568049.4689164,
+    "ast_hash": "d1c44e3793a7fac2a562402602f8e287",
     "semantic_hash": ""
   },
   "RT2App/src/SceneManager.h": {
@@ -10230,8 +10230,8 @@
     "semantic_hash": ""
   },
   "RT2App/src/SceneSerializer.cpp": {
-    "mtime": 1784382137.5265493,
-    "ast_hash": "b5528bf93ee3c7c8ccb17a754d1972af",
+    "mtime": 1784567992.5930874,
+    "ast_hash": "665cfa11abef7792dcbe4b65266eff0e",
     "semantic_hash": ""
   },
   "RT2App/src/SceneSerializer.h": {
@@ -10390,8 +10390,8 @@
     "semantic_hash": ""
   },
   "docs/game-engine-development-plan.md": {
-    "mtime": 1784493312.2600296,
-    "ast_hash": "ed47c76598647bb3ada7740681d00884",
+    "mtime": 1784567272.5579355,
+    "ast_hash": "77d78f99681333643238243932ef60f8",
     "semantic_hash": ""
   },
   "docs/game-loop.md": {
@@ -10535,8 +10535,8 @@
     "semantic_hash": ""
   },
   "RT2App/src/EditorTransformGizmo.cpp": {
-    "mtime": 1784479801.6302893,
-    "ast_hash": "d08564042d68c5d1b681b5b0c1780532",
+    "mtime": 1784496430.8985689,
+    "ast_hash": "e5fd58588ff48e533783530dd4872389",
     "semantic_hash": ""
   },
   "RT2App/src/EditorTransformGizmo.h": {
@@ -10565,8 +10565,8 @@
     "semantic_hash": ""
   },
   "RT2App/src/PersistedComponents.h": {
-    "mtime": 1784382136.3269634,
-    "ast_hash": "438f08d73960da126bd12b794017e31a",
+    "mtime": 1784567551.294126,
+    "ast_hash": "41383955eb0a5e84ee9106fd3319ae34",
     "semantic_hash": ""
   },
   "RT2App/src/SceneHierarchy.cpp": {
@@ -10615,8 +10615,8 @@
     "semantic_hash": ""
   },
   ".claude/settings.local.json": {
-    "mtime": 1784478347.0333111,
-    "ast_hash": "d112a5e6c27dc3442ad45631319f9efe",
+    "mtime": 1784566733.4612808,
+    "ast_hash": "8d98abbf2da3da89dda3cb7ef9e39586",
     "semantic_hash": ""
   },
   "RT2App/src/EditorCommand.h": {
@@ -10670,8 +10670,8 @@
     "semantic_hash": ""
   },
   "RT2App/src/SubtreeSnapshot.h": {
-    "mtime": 1784476791.6584637,
-    "ast_hash": "0ce3241a858a2d830992aa07bc1705ab",
+    "mtime": 1784568004.170321,
+    "ast_hash": "6dc8d4a3b4f542467d23b300528b81e4",
     "semantic_hash": ""
   },
   "RT2Tests/src/Phase3B1CommandTests.cpp": {
@@ -10700,18 +10700,18 @@
     "semantic_hash": ""
   },
   "RT2App/src/RuntimeLifecycleObserver.h": {
-    "mtime": 1784490137.0546682,
-    "ast_hash": "f542bc674dba624e586f6e6aed161675",
+    "mtime": 1784567652.6143773,
+    "ast_hash": "0993a917fd82a9c4ea2c8f6db08a2dcf",
     "semantic_hash": ""
   },
   "RT2App/src/RuntimeSceneMutator.cpp": {
-    "mtime": 1784490680.8455348,
-    "ast_hash": "103e6419d69c57a694b4aa2b17d7aa83",
+    "mtime": 1784567577.4930005,
+    "ast_hash": "aa65458f17c6fa1154d21ef1c40de7ed",
     "semantic_hash": ""
   },
   "RT2App/src/RuntimeSceneMutator.h": {
-    "mtime": 1784490150.4198904,
-    "ast_hash": "b8ba47ab9d9a95c6cbd821dd4d60d479",
+    "mtime": 1784567565.5033264,
+    "ast_hash": "a7fb8ca298efbf4075f4dc817fabfb19",
     "semantic_hash": ""
   },
   "RT2Tests/src/Phase4LifecycleTests.cpp": {
@@ -10740,13 +10740,13 @@
     "semantic_hash": ""
   },
   "RT2App/src/InputStateMachine.cpp": {
-    "mtime": 1784494231.1294715,
-    "ast_hash": "ca1d0daf607f5b361e58166cb35a30de",
+    "mtime": 1784495994.2066262,
+    "ast_hash": "a911a16307ebc02cbe2264f9e4ae1cbb",
     "semantic_hash": ""
   },
   "RT2App/src/InputStateMachine.h": {
-    "mtime": 1784493607.9162211,
-    "ast_hash": "9f88258eb2450c649fdb4b6ef6298458",
+    "mtime": 1784495905.7709994,
+    "ast_hash": "6c163a9cfeb348990e539f67514551da",
     "semantic_hash": ""
   },
   "RT2App/src/InputTypes.h": {
@@ -10755,13 +10755,3698 @@
     "semantic_hash": ""
   },
   "RT2Tests/src/InputStateMachineTests.cpp": {
-    "mtime": 1784493755.1606052,
-    "ast_hash": "adf2cd49a8da2fc7bba5bcc40a016194",
+    "mtime": 1784495773.3687341,
+    "ast_hash": "620f40ca5c64a421455c57e5bc06289a",
     "semantic_hash": ""
   },
   "docs/input-system.md": {
-    "mtime": 1784493334.03566,
-    "ast_hash": "f3a1ef64059969200e835f367b088a45",
+    "mtime": 1784494461.5604017,
+    "ast_hash": "9112b611da1cb426140615cde5eba342",
+    "semantic_hash": ""
+  },
+  "RT2App/src/IRuntimeCommandSink.h": {
+    "mtime": 1784567624.7957518,
+    "ast_hash": "706b6abca7e97e4f7c1a95802e775911",
+    "semantic_hash": ""
+  },
+  "RT2App/src/IRuntimeScriptDispatch.h": {
+    "mtime": 1784567590.263623,
+    "ast_hash": "1d54f667dfbca670596f3d7d7c55e45f",
+    "semantic_hash": ""
+  },
+  "RT2App/src/ScriptFieldValue.h": {
+    "mtime": 1784567525.8555675,
+    "ast_hash": "0590d5331b3ec758c678d48d9c131756",
+    "semantic_hash": ""
+  },
+  "RT2App/src/ScriptSystem.cpp": {
+    "mtime": 1784569062.7840388,
+    "ast_hash": "937f15f5d9d308863e642be5386071fe",
+    "semantic_hash": ""
+  },
+  "RT2App/src/ScriptSystem.h": {
+    "mtime": 1784568714.8904097,
+    "ast_hash": "2604b749a5d870144fb0027035300dae",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lapi.c": {
+    "mtime": 1784567410.517718,
+    "ast_hash": "4549271b709b255daa426ac531a6bd00",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lapi.h": {
+    "mtime": 1784567410.517718,
+    "ast_hash": "d67aa0325be02fc9f673aa3cfebdbfca",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lauxlib.c": {
+    "mtime": 1784567410.518722,
+    "ast_hash": "d66c3b2baedd69ce01e6e16e4dabe14a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lauxlib.h": {
+    "mtime": 1784567410.518722,
+    "ast_hash": "0904e4feeb3f0b1b81899cacadb88195",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lbaselib.c": {
+    "mtime": 1784567410.519723,
+    "ast_hash": "32e6eb9bd2d9e3d5c5b66c7007d08299",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lcode.c": {
+    "mtime": 1784567410.519723,
+    "ast_hash": "f30aa11b85ff94b83f5fda3f2dd5c62c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lcode.h": {
+    "mtime": 1784567410.5207238,
+    "ast_hash": "1600e84925ce663062b104d1df81ee11",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lcorolib.c": {
+    "mtime": 1784567410.5207238,
+    "ast_hash": "6724e237ab36e1058993dd4f13d063c0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lctype.c": {
+    "mtime": 1784567410.5207238,
+    "ast_hash": "c54bda51118d26793aa2e15193775dcd",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lctype.h": {
+    "mtime": 1784567410.5217862,
+    "ast_hash": "2fd213416c26482f1bf570cdc61b77a5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/ldblib.c": {
+    "mtime": 1784567410.5217862,
+    "ast_hash": "0fb37bd2e1f9438abb6cecc003b1fc92",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/ldebug.c": {
+    "mtime": 1784567410.522789,
+    "ast_hash": "db00ba7604a9015ba6457f9ab34896e8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/ldebug.h": {
+    "mtime": 1784567410.523296,
+    "ast_hash": "a803270627c8e8fd64e832dd1195f3c6",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/ldo.c": {
+    "mtime": 1784567410.523296,
+    "ast_hash": "e32bbea85ef753f4216c8f50f644e9b2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/ldo.h": {
+    "mtime": 1784567410.523296,
+    "ast_hash": "eacb44feb10497e120d060bfb586565d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/ldump.c": {
+    "mtime": 1784567410.5243218,
+    "ast_hash": "8964496f8b60f0c9bfa75c49fc4ba105",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lfunc.c": {
+    "mtime": 1784567410.5243218,
+    "ast_hash": "8dab0e446f0eb9a8b203606e6c70be56",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lfunc.h": {
+    "mtime": 1784567410.525323,
+    "ast_hash": "79d63dda9b390b626641abecb711b2fc",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lgc.c": {
+    "mtime": 1784567410.525323,
+    "ast_hash": "f9ac06320872b3c65cc28d3a7e5b2338",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lgc.h": {
+    "mtime": 1784567410.525323,
+    "ast_hash": "a8c8920f939d17eabc21246fe8d90498",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/linit.c": {
+    "mtime": 1784567410.525323,
+    "ast_hash": "881e62e00e93d36fe5c4f59d3bff0ad6",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/liolib.c": {
+    "mtime": 1784567410.5268617,
+    "ast_hash": "f4527847a1ee44f8c07ac84561471729",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/ljumptab.h": {
+    "mtime": 1784567410.5268617,
+    "ast_hash": "ce336396a54d20529ec81cf2acbc527c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/llex.c": {
+    "mtime": 1784567410.5278683,
+    "ast_hash": "c93b12753a3745cc369c7ef0d32c4254",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/llex.h": {
+    "mtime": 1784567410.5278683,
+    "ast_hash": "4366bde21c206847d56b46fd780b7028",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/llimits.h": {
+    "mtime": 1784567410.5278683,
+    "ast_hash": "b5da3e14bc695fc7a27120ad06c3a660",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lmathlib.c": {
+    "mtime": 1784567410.5293543,
+    "ast_hash": "9c40644fd874e2e5af90c16a27f84568",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lmem.c": {
+    "mtime": 1784567410.5293543,
+    "ast_hash": "b9a0f3933512ef802fe91f120ba261a8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lmem.h": {
+    "mtime": 1784567410.5293543,
+    "ast_hash": "9f943767a112d8e7b6e347947f88f3c1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/loadlib.c": {
+    "mtime": 1784567410.5303588,
+    "ast_hash": "6ca97c2255cec84bfd6469848e4289d0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lobject.c": {
+    "mtime": 1784567410.5303588,
+    "ast_hash": "e2ae39a88d7ee8e701aaa3a2c5480afb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lobject.h": {
+    "mtime": 1784567410.531361,
+    "ast_hash": "0edafcd5ce586879b0eea0a65d7fe459",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lopcodes.c": {
+    "mtime": 1784567410.531361,
+    "ast_hash": "88c68e597ab242681034dacfbc53ba0a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lopcodes.h": {
+    "mtime": 1784567410.531361,
+    "ast_hash": "41950edd1a59834c26636401c079eb89",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lopnames.h": {
+    "mtime": 1784567410.5328643,
+    "ast_hash": "d170ba571f5046567c7c1ed64ee257be",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/loslib.c": {
+    "mtime": 1784567410.5328643,
+    "ast_hash": "b6b7f2553865faf85124ba54141f694a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lparser.c": {
+    "mtime": 1784567410.5338671,
+    "ast_hash": "72ea8a98d4363fcef40ae52bb8ab80dd",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lparser.h": {
+    "mtime": 1784567410.5338671,
+    "ast_hash": "0ddc2a24037e44922b56c27da31e82f5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lprefix.h": {
+    "mtime": 1784567410.5338671,
+    "ast_hash": "fdc916406ec8e660cb583291e7502af9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lstate.c": {
+    "mtime": 1784567410.5350044,
+    "ast_hash": "42bc2e9726341bc85fd4be53268f3b30",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lstate.h": {
+    "mtime": 1784567410.5350044,
+    "ast_hash": "6c8b062905dacde8b53ddba7b7dbdb91",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lstring.c": {
+    "mtime": 1784567410.5350044,
+    "ast_hash": "941732091a60210fb290ac029dd2aa88",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lstring.h": {
+    "mtime": 1784567410.5361001,
+    "ast_hash": "1d6ed3f118514977c88aafbf141a0c7d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lstrlib.c": {
+    "mtime": 1784567410.5361001,
+    "ast_hash": "483c99ed6e13cf8f490ca787181df862",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/ltable.c": {
+    "mtime": 1784567410.5371015,
+    "ast_hash": "0844e6cccd42aa53cfcb0163285bda3a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/ltable.h": {
+    "mtime": 1784567410.5371015,
+    "ast_hash": "7b8fcaa3c434ff0eba15df37eba4aa9d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/ltablib.c": {
+    "mtime": 1784567410.5383134,
+    "ast_hash": "cca0a76c11511c6fcf214cb19e586375",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/ltests.c": {
+    "mtime": 1784567410.5383134,
+    "ast_hash": "c4c2dc24292edb326ee6b1c9598bbad2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/ltests.h": {
+    "mtime": 1784567410.539317,
+    "ast_hash": "6ce4dcb25080458754192b79bf0b21c2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/ltm.c": {
+    "mtime": 1784567410.539317,
+    "ast_hash": "78706dd06af880cee43ab723bdcda158",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/ltm.h": {
+    "mtime": 1784567410.539317,
+    "ast_hash": "1104b8a3e04bff60bbf6287f208fec59",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lua.c": {
+    "mtime": 1784567410.5403175,
+    "ast_hash": "c30ff8b45ee1192b05a1e5fab27146c8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lua.h": {
+    "mtime": 1784567410.5408206,
+    "ast_hash": "4e86139a2136526331ed8f1973484477",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/luaconf.h": {
+    "mtime": 1784567410.5418243,
+    "ast_hash": "4d77355ccb45fb052ae5056d7008afc7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lualib.h": {
+    "mtime": 1784567410.5418243,
+    "ast_hash": "1fc7a325d13ce1a74d19aae1292937b4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lundump.c": {
+    "mtime": 1784567410.5418243,
+    "ast_hash": "94737b330550a479846a8dbcca5668b9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lundump.h": {
+    "mtime": 1784567410.542826,
+    "ast_hash": "3ea341b0ebdd63f3e42944320640ec39",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lutf8lib.c": {
+    "mtime": 1784567410.5433283,
+    "ast_hash": "f03eb20f64bea26c6478821f4b48c07a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lvm.c": {
+    "mtime": 1784567410.5438304,
+    "ast_hash": "a31b994571f5beae5be61272aa7da56e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lvm.h": {
+    "mtime": 1784567410.5438304,
+    "ast_hash": "80563c17f435949ec96fff098615bc5a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lzio.c": {
+    "mtime": 1784567410.5438304,
+    "ast_hash": "22f34afb0751db1cc40846926a918cc8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/lzio.h": {
+    "mtime": 1784567410.5448458,
+    "ast_hash": "f1c7b59f637d744bd32e1d529a7f1a6b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/onelua.c": {
+    "mtime": 1784567410.547137,
+    "ast_hash": "ad26bbe7c047381596bbcddb91f6795e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/all.lua": {
+    "mtime": 1784567410.54864,
+    "ast_hash": "5920cb97c4c1e15a037a8c187e41ac7c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/api.lua": {
+    "mtime": 1784567410.5496469,
+    "ast_hash": "c899941ca08799ace778808c0b937f5a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/attrib.lua": {
+    "mtime": 1784567410.5496469,
+    "ast_hash": "29f9fbe7a5386486af65c2f184025a5b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/big.lua": {
+    "mtime": 1784567410.5496469,
+    "ast_hash": "a176e3ba7ebad9405c195e73b5c59b4e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/bitwise.lua": {
+    "mtime": 1784567410.5506477,
+    "ast_hash": "84b7432004c5f775d6b8ca4747445aba",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/bwcoercion.lua": {
+    "mtime": 1784567410.5506477,
+    "ast_hash": "dfbd2af67f856a58ecf8f31c5713432e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/calls.lua": {
+    "mtime": 1784567410.5506477,
+    "ast_hash": "dca840db05894f2b355f426c6a4bb49d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/closure.lua": {
+    "mtime": 1784567410.552096,
+    "ast_hash": "5e2b160c75be594992ad5b8f67f3452f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/code.lua": {
+    "mtime": 1784567410.552096,
+    "ast_hash": "068b9ec9d4bbcf2a360fb10eae1e764a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/constructs.lua": {
+    "mtime": 1784567410.552096,
+    "ast_hash": "156d1efbaee3131859a14cd321e2435b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/coroutine.lua": {
+    "mtime": 1784567410.5530956,
+    "ast_hash": "167cd6b3e584df753c59c7dd871a93f0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/cstack.lua": {
+    "mtime": 1784567410.5535982,
+    "ast_hash": "f8265e66b901209d983f6ca4398dfd7c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/db.lua": {
+    "mtime": 1784567410.5535982,
+    "ast_hash": "9e2145718ae03e13d67b8a57b744eea1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/errors.lua": {
+    "mtime": 1784567410.5545998,
+    "ast_hash": "ae86c676d24a012890a7c804d6336ff2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/events.lua": {
+    "mtime": 1784567410.5545998,
+    "ast_hash": "442dbde363641117df0149a1a276d305",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/files.lua": {
+    "mtime": 1784567410.5545998,
+    "ast_hash": "daf2a45ac83981bd15452a8d5941398d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/gc.lua": {
+    "mtime": 1784567410.5560997,
+    "ast_hash": "95b05c7b49c9c24421d0b0dc4cb37ae0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/gengc.lua": {
+    "mtime": 1784567410.5560997,
+    "ast_hash": "485f482a4add00648700712654644def",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/goto.lua": {
+    "mtime": 1784567410.556604,
+    "ast_hash": "dc0a52800d8f489374048c931bf73eba",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/heavy.lua": {
+    "mtime": 1784567410.557113,
+    "ast_hash": "95d2be7196dc35d77646e9c1ca714353",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/libs/lib1.c": {
+    "mtime": 1784567410.558141,
+    "ast_hash": "6fb0d06b265f94aa1791a3134d1df827",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/libs/lib11.c": {
+    "mtime": 1784567410.558141,
+    "ast_hash": "6c48418925be4a709e5b8cd6051023d7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/libs/lib2.c": {
+    "mtime": 1784567410.5591443,
+    "ast_hash": "00c0712daece406dc009fea9982b1d4a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/libs/lib21.c": {
+    "mtime": 1784567410.5591443,
+    "ast_hash": "33d6e8bc338377fd767d0ffd5bc14652",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/libs/lib22.c": {
+    "mtime": 1784567410.5591443,
+    "ast_hash": "fddb716bb73d38d002a3ca8acac6466a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/literals.lua": {
+    "mtime": 1784567410.5591443,
+    "ast_hash": "2b2195610615500b2708c3dec06f1d35",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/locals.lua": {
+    "mtime": 1784567410.5606518,
+    "ast_hash": "e7f59fe1ffe0e6fe1ba2c6678ad77573",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/main.lua": {
+    "mtime": 1784567410.5606518,
+    "ast_hash": "751a7ed3cac036a2b801585fe6e1727f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/math.lua": {
+    "mtime": 1784567410.5616698,
+    "ast_hash": "e04a1a386552aad72166e82dead1ff11",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/nextvar.lua": {
+    "mtime": 1784567410.5616698,
+    "ast_hash": "83dc890f483e686c1328c541712865f7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/pm.lua": {
+    "mtime": 1784567410.5631738,
+    "ast_hash": "44220b288da04f7d0029a1cc8eb65284",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/sort.lua": {
+    "mtime": 1784567410.5631738,
+    "ast_hash": "a68f076c7503c9c44c078378e0e18585",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/strings.lua": {
+    "mtime": 1784567410.5631738,
+    "ast_hash": "07822dc9900ddd134ca0c7ac63c8173f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/tpack.lua": {
+    "mtime": 1784567410.5642147,
+    "ast_hash": "77cee11ea39b9b8f58fb1ca86c805896",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/tracegc.lua": {
+    "mtime": 1784567410.5642147,
+    "ast_hash": "b73354c80a97a4b2900d4d60aa40c25e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/utf8.lua": {
+    "mtime": 1784567410.5642147,
+    "ast_hash": "88e60ff919ceea701bbb97f16731179b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/vararg.lua": {
+    "mtime": 1784567410.5654778,
+    "ast_hash": "158e97441da1a06dcd82b1c018d1a907",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/testes/verybig.lua": {
+    "mtime": 1784567410.5654778,
+    "ast_hash": "98ca20d0d4ad1c4ec32d5d3130cc5b3d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/conf.py": {
+    "mtime": 1784567419.2470434,
+    "ast_hash": "757ec58e46d975883d725f00fa412bd0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/lua_bindings_shootout.json": {
+    "mtime": 1784567419.2706552,
+    "ast_hash": "9b0ef3feec27d5b6129d4b8622016bab",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/customization/include/entity.hpp": {
+    "mtime": 1784567419.2950797,
+    "ast_hash": "f123952c621017826290e1cacc0673aa",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/customization/include/lua_interop.hpp": {
+    "mtime": 1784567419.2960806,
+    "ast_hash": "cc500ec403322c534cae858dee16d515",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/customization/include/lua_zm_interop.hpp": {
+    "mtime": 1784567419.2960806,
+    "ast_hash": "f3bd3fd9b0aefd1ec2eb5258997715cc",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/customization/include/zm/vec3.hpp": {
+    "mtime": 1784567419.2965846,
+    "ast_hash": "fc3916823fb0d4f09f44aba1305bb7aa",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/customization/source/lua_interop.cpp": {
+    "mtime": 1784567419.2975879,
+    "ast_hash": "e6428328ada7ab1a95db6a7fcee08b8f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/customization/source/lua_zm_interop.cpp": {
+    "mtime": 1784567419.2975879,
+    "ast_hash": "64116c69a9a7601de4698811dd69107e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/customization/source/main.cpp": {
+    "mtime": 1784567419.2975879,
+    "ast_hash": "57b461fd898d071324565f451ff13e47",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/interop/LuaBridge/source/LuaBridge.cpp": {
+    "mtime": 1784567419.2996335,
+    "ast_hash": "965ed98d775692624dae34296ff9bcf1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/interop/kaguya/source/kaguya.cpp": {
+    "mtime": 1784567419.300637,
+    "ast_hash": "ecb50a71973ec60eae8eb6e3b28bfbbe",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/interop/luwra/source/luwra.cpp": {
+    "mtime": 1784567419.3016403,
+    "ast_hash": "9e4813f81357ca8b8644dbf44dc373b0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/interop/tolua/source/Player.h": {
+    "mtime": 1784567419.303145,
+    "ast_hash": "4fc42da46bcb63dc9ac7b06d87b2f8e6",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/interop/tolua/source/tolua.cpp": {
+    "mtime": 1784567419.3041482,
+    "ast_hash": "283b7a3b4bd8c68408faef03823d9201",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/interop/tolua/source/tolua_Player.h": {
+    "mtime": 1784567419.3041482,
+    "ast_hash": "e0e4e50b0929397aec2cecab431d8dd9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/require_dll_example/include/my_object/my_object.hpp": {
+    "mtime": 1784567419.3051548,
+    "ast_hash": "b8a71a217361a0ac7b218dffea8141a7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/require_dll_example/include/my_object/my_object_api.hpp": {
+    "mtime": 1784567419.3051548,
+    "ast_hash": "f6bae73664dd183b0f084682ac88a222",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/require_dll_example/source/my_object.cpp": {
+    "mtime": 1784567419.306658,
+    "ast_hash": "a59649912b672e95b25ae93cf9162b7f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/require_dll_example/source/require_from_dll.cpp": {
+    "mtime": 1784567419.306658,
+    "ast_hash": "bf0877851ce3cce1305498ad3e171e9c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/allocation_limit.cpp": {
+    "mtime": 1784567419.307688,
+    "ast_hash": "25f4f37a4753e987e92dde8f1945695a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/any_return.cpp": {
+    "mtime": 1784567419.307688,
+    "ast_hash": "2f7b192222e29328ad19bf656be9d0f9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/args_from_container.cpp": {
+    "mtime": 1784567419.3086932,
+    "ast_hash": "e24098814681606626ec37dc708ed2e4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/as_returns.cpp": {
+    "mtime": 1784567419.3086932,
+    "ast_hash": "0ff7c115f416fc5d757251c72043f66a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/basic.cpp": {
+    "mtime": 1784567419.3086932,
+    "ast_hash": "8f9538bb88752129c7d4ed11a244781e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/c_array.cpp": {
+    "mtime": 1784567419.309697,
+    "ast_hash": "5cc843b5ba0fc835c3cafe9b4f5a41b2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/c_call.cpp": {
+    "mtime": 1784567419.309697,
+    "ast_hash": "6bd004399c29b436c5486142c8329162",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/calling_lua_functions.cpp": {
+    "mtime": 1784567419.309697,
+    "ast_hash": "3a14b13155f7800519cc48479a806af2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/config.cpp": {
+    "mtime": 1784567419.309697,
+    "ast_hash": "f49456d330a9f49687e22d185b91f090",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/config.lua": {
+    "mtime": 1784567419.3112,
+    "ast_hash": "e3df2b6679ca25dacaa9f5e7e9fdc18d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/container_usertype_as_container.cpp": {
+    "mtime": 1784567419.3112,
+    "ast_hash": "c42d5d8692c343c1604148ff7b80d8e9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/container_with_pairs.cpp": {
+    "mtime": 1784567419.3122027,
+    "ast_hash": "ffab56e07be67b5c9bdb38ff35d3e082",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/containers.cpp": {
+    "mtime": 1784567419.3127062,
+    "ast_hash": "0aed4e95cbe71dea1542e3e99eb04a74",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/containers_as_table.cpp": {
+    "mtime": 1784567419.313248,
+    "ast_hash": "1a99e50fb419844205fa2247ea21c916",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/coroutine.cpp": {
+    "mtime": 1784567419.313248,
+    "ast_hash": "2d1f3f1ada141690c94c1bab2b2e03c6",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/coroutine_multiple_stacks.cpp": {
+    "mtime": 1784567419.3142588,
+    "ast_hash": "ff38e2ce9b6556fa7b570c58940254c8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/coroutine_state.cpp": {
+    "mtime": 1784567419.3142588,
+    "ast_hash": "3cfe7cf619fb0d298c37f5b76eb81308",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/custom_reader.cpp": {
+    "mtime": 1784567419.315262,
+    "ast_hash": "e690027c4cce48cb5ab8ad732c6a95bc",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/customization_base_object_catch.cpp": {
+    "mtime": 1784567419.315262,
+    "ast_hash": "92a01760198eb7ffc781ceabf3edca66",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/customization_convert_on_get.cpp": {
+    "mtime": 1784567419.315262,
+    "ast_hash": "f94753ebd85ce2b0124c46e61a64814c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/customization_global_transparent_argument.cpp": {
+    "mtime": 1784567419.316267,
+    "ast_hash": "7d6eb7b78fea7e5b54ffb0db6c42247a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/customization_multiple.cpp": {
+    "mtime": 1784567419.316267,
+    "ast_hash": "f0ab0257c31920a851fc807c734f828a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/as_function.cpp": {
+    "mtime": 1784567419.3172703,
+    "ast_hash": "4eabf1ae95a9b604561314e45fd46c83",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/as_function_usertype_member_variable.cpp": {
+    "mtime": 1784567419.3172703,
+    "ast_hash": "004140dd04041c317df2bea1669f7b01",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/as_table_ipairs.cpp": {
+    "mtime": 1784567419.3182735,
+    "ast_hash": "334e5878207f17b307cb1e81acf09070",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/coroutine_main.cpp": {
+    "mtime": 1784567419.3182735,
+    "ast_hash": "8613f8e2d3ff409301124973a6c57eca",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/coroutine_thread.cpp": {
+    "mtime": 1784567419.3192792,
+    "ast_hash": "8a37a877d8795b3f0e8eb29aea73d172",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/inheritance.cpp": {
+    "mtime": 1784567419.3192792,
+    "ast_hash": "0c35dce1720f9189fc67cfbfd30d2007",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/my_panic.cpp": {
+    "mtime": 1784567419.3192792,
+    "ast_hash": "685422ae3385848de01692644c2901ff",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/preparing_environments.cpp": {
+    "mtime": 1784567419.3202827,
+    "ast_hash": "840408b6be99880f29edf5db7042260f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/references_in_lambdas.cpp": {
+    "mtime": 1784567419.3202827,
+    "ast_hash": "8e45bdcc1519ac47ee8b8b06429a6945",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/runtime_extension.cpp": {
+    "mtime": 1784567419.3202827,
+    "ast_hash": "dc9bdb343cd24fb78455b514fd7bf0ca",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/simple_functions.cpp": {
+    "mtime": 1784567419.3212836,
+    "ast_hash": "504fdb0d768b7dc097e508e90fb7d79b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/simple_structs.cpp": {
+    "mtime": 1784567419.3217876,
+    "ast_hash": "09b34c58f89841c4102400478c739a11",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/state_script_safe.cpp": {
+    "mtime": 1784567419.3217876,
+    "ast_hash": "14cc64695553575827c37f9411ee7252",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/state_transfer.cpp": {
+    "mtime": 1784567419.3217876,
+    "ast_hash": "9f0e09b3d5ecaf28aa3f3e40f8f4bb3c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/docs/std_thread.cpp": {
+    "mtime": 1784567419.322792,
+    "ast_hash": "5dae156677498c877cb1b5ed156e5d84",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/dump.cpp": {
+    "mtime": 1784567419.322792,
+    "ast_hash": "8312a49060635c8b1673e32430546434",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/dynamic_object.cpp": {
+    "mtime": 1784567430.216643,
+    "ast_hash": "202b54f11e9580832f1ac542c8ab95ba",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/environment_snooping.cpp": {
+    "mtime": 1784567419.3232987,
+    "ast_hash": "be8f8f3ba31a6880d075b4b15bdc8c02",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/environment_state.cpp": {
+    "mtime": 1784567419.3232987,
+    "ast_hash": "7a9a9333e3e545c8e7a23a6375f87e15",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/environment_state_2.cpp": {
+    "mtime": 1784567419.3243077,
+    "ast_hash": "934c6c06d3b7859c76322a30bcf9cd6a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/environments.cpp": {
+    "mtime": 1784567419.3243077,
+    "ast_hash": "0c85ae479394ca05dac11d512c4dfe2f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/environments_on_functions.cpp": {
+    "mtime": 1784567419.3243077,
+    "ast_hash": "51c1ae7517f2d3f4c04c8c056ea303ee",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/error_handler.cpp": {
+    "mtime": 1784567419.3258107,
+    "ast_hash": "2d34c442ab79bd2de1ee0251218ba757",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/exception_handler.cpp": {
+    "mtime": 1784567419.3258107,
+    "ast_hash": "5911df468e70f36250a8b4b2b935e1a2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/functions.cpp": {
+    "mtime": 1784567419.3258107,
+    "ast_hash": "2c7e8a65995efa8039d1f7098b124c52",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/functions_empty_arguments.cpp": {
+    "mtime": 1784567419.3258107,
+    "ast_hash": "a8674d06cac50839bf2a2a284e9bcd93",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/index_and_newindex_usertype.cpp": {
+    "mtime": 1784567419.3273177,
+    "ast_hash": "0e7fde914afbeb7d014bcd80ad549f11",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/indirect_function_calls.cpp": {
+    "mtime": 1784567419.3273177,
+    "ast_hash": "3cd2594eecb2b752fa5169a71207538d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/lua_stream.cpp": {
+    "mtime": 1784567419.3273177,
+    "ast_hash": "0e52fd6a858bba9224c68a12e2650886",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/lua_value.cpp": {
+    "mtime": 1784567419.3283274,
+    "ast_hash": "7267592103841b756d8cd8d83337a976",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/metatable_customization.cpp": {
+    "mtime": 1784567419.3283274,
+    "ast_hash": "c4708b5519d533468e274efe1dcc9704",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/metatable_key_low_level.cpp": {
+    "mtime": 1784567419.3283274,
+    "ast_hash": "8130730ab96a926f527a7c57833e8a30",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/multi_results.cpp": {
+    "mtime": 1784567419.3293855,
+    "ast_hash": "26bf5879cfed760e3da460bf2ca8c1d2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/optional_with_iteration.cpp": {
+    "mtime": 1784567419.3293855,
+    "ast_hash": "dc474c6d5491875da9318f211d04a912",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/overloading.cpp": {
+    "mtime": 1784567419.3293855,
+    "ast_hash": "14acc82db699468b83983c0521089d6b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/overloading_with_fallback.cpp": {
+    "mtime": 1784567419.3303888,
+    "ast_hash": "33e51e8f70626f10eb6f1e425b325b3d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/overloading_with_members.cpp": {
+    "mtime": 1784567419.3303888,
+    "ast_hash": "390dc795857f03f12b4b150c3e5b5816",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/overridable_function_members.cpp": {
+    "mtime": 1784567419.3303888,
+    "ast_hash": "6b94ab89295c767897ca2cb0e73766f1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/pairs.cpp": {
+    "mtime": 1784567419.331892,
+    "ast_hash": "7880dee3ace560bf4d6599726f5211c1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/pairs_with_raw_functions.cpp": {
+    "mtime": 1784567419.331892,
+    "ast_hash": "834cab3fdc17573fd6c8fdf45a0e1fa7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/player_script.lua": {
+    "mtime": 1784567419.331892,
+    "ast_hash": "9f07ebe9e64df1811709b94379ac360a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/property.cpp": {
+    "mtime": 1784567419.3328946,
+    "ast_hash": "6c87337ed0654c2e439623efab67773e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/protect.cpp": {
+    "mtime": 1784567419.3328946,
+    "ast_hash": "c76feb6db8d334c80e7eaef1e73fe7f2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/protected_functions.cpp": {
+    "mtime": 1784567419.3333988,
+    "ast_hash": "56c378d0b6918bc3ef7932ee60276a78",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/read_only.cpp": {
+    "mtime": 1784567419.3333988,
+    "ast_hash": "8242a1416bd1fa66c1f66a470a4ef064",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/require.cpp": {
+    "mtime": 1784567419.334402,
+    "ast_hash": "d8fe593126110878794952441f1d6000",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/require_override_behavior.cpp": {
+    "mtime": 1784567419.334402,
+    "ast_hash": "be6f03da5bdc31556938fde2d9b74fe7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/runtime_additions.cpp": {
+    "mtime": 1784567419.334402,
+    "ast_hash": "870d27ffd19bc559a6beb1e9894edb6b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/script_error_handling.cpp": {
+    "mtime": 1784567419.3354058,
+    "ast_hash": "bdcc0b06c5a82117d73ce52bd6e4f5cb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/self_from_lua.cpp": {
+    "mtime": 1784567419.3354058,
+    "ast_hash": "4e0f940a6117498d5e178d06df118788",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/shared_ptr.cpp": {
+    "mtime": 1784567419.3354058,
+    "ast_hash": "32a809b297bec9f0b07fb4484bbd797c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/shared_ptr_inheritance.cpp": {
+    "mtime": 1784567419.3364093,
+    "ast_hash": "c3c56a9a5fa71d11a983b12f1c1f98ed",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/shared_ptr_modify_in_place.cpp": {
+    "mtime": 1784567419.3364093,
+    "ast_hash": "9fb32a5db47c3c430f7f7ac9074f9a14",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/singleton.cpp": {
+    "mtime": 1784567419.3374126,
+    "ast_hash": "17b6404451251f1ccf121b3a017d712c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/stack_aligned_function.cpp": {
+    "mtime": 1784567419.3374126,
+    "ast_hash": "e6b01724ba34c12f81bb74cf502a18b2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/stack_aligned_stack_handler_function.cpp": {
+    "mtime": 1784567419.338437,
+    "ast_hash": "f3126e0f548e013ce58d74c038dfe49e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/static_variables.cpp": {
+    "mtime": 1784567419.338437,
+    "ast_hash": "6b1194d2e6475bc0dabeb242447dd341",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/table_as_container.cpp": {
+    "mtime": 1784567419.338437,
+    "ast_hash": "2d2f83d0e0008bba5227a3c348967466",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/table_create_if_nil.cpp": {
+    "mtime": 1784567419.338437,
+    "ast_hash": "248f5ac81d1b9912c3a8c1b0667bfa53",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/table_proxy.cpp": {
+    "mtime": 1784567419.33994,
+    "ast_hash": "616f5d5a5fc99c9b263f2f91bbed7447",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tables.cpp": {
+    "mtime": 1784567419.33994,
+    "ast_hash": "ae2113305a68feb9be5337f9389cfafc",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/this_state.cpp": {
+    "mtime": 1784567419.33994,
+    "ast_hash": "8d56736413fa4ac6c576b04e93ce469a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tie.cpp": {
+    "mtime": 1784567419.340948,
+    "ast_hash": "c43f3fb5fd60a83dd48cef4725d473a5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/erase_demo.cpp": {
+    "mtime": 1784567419.340948,
+    "ast_hash": "bd88c8f9d8ecfca457bbc4d88e43ad8c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/first_snippet.cpp": {
+    "mtime": 1784567419.3419516,
+    "ast_hash": "c4afb2ac18dab203f889c4d9a50d99eb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/lazy_demo.cpp": {
+    "mtime": 1784567419.3419516,
+    "ast_hash": "d749bfa05d3cab95e65624a3e6c2aefa",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/multiple_return.cpp": {
+    "mtime": 1784567419.342953,
+    "ast_hash": "dd0d75d3a5037f9812d165c76a50f084",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/object_lifetime.cpp": {
+    "mtime": 1784567419.342953,
+    "ast_hash": "2ed9f3c1c71d2932bf4069fd526a4b5d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/open_multiple_libraries.cpp": {
+    "mtime": 1784567419.342953,
+    "ast_hash": "4a10d03cc2f58fc6705f76d54984b87d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/pointer_lifetime.cpp": {
+    "mtime": 1784567419.342953,
+    "ast_hash": "52e6325dfa772ffa3756b9ecf4e88099",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/arguments_to_scripts.cpp": {
+    "mtime": 1784567419.344456,
+    "ast_hash": "d84833b2291b0c925863e745d9117985",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/functions_all.cpp": {
+    "mtime": 1784567419.344456,
+    "ast_hash": "f5bb9e282b57a89103af4f59dd75250c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/functions_easy.cpp": {
+    "mtime": 1784567419.3455074,
+    "ast_hash": "0bac26ceb8043ee1134f80c0851ccb9c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/make_tables.cpp": {
+    "mtime": 1784567419.3455074,
+    "ast_hash": "02428a20394f03debe4d765370adf7ad",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/multiple_returns_from_lua.cpp": {
+    "mtime": 1784567419.3455074,
+    "ast_hash": "1b9027b32980bb48c107e9315cf457f2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/multiple_returns_to_lua.cpp": {
+    "mtime": 1784567419.346508,
+    "ast_hash": "76701d6d6a8dccbc9300e1f9497511be",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/namespacing.cpp": {
+    "mtime": 1784567419.346508,
+    "ast_hash": "f84b301288aa2156a1a9d1e1b2918f52",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/opening_a_state.cpp": {
+    "mtime": 1784567419.346508,
+    "ast_hash": "eb6f70b8cb3bea50d7e0b312f3eed70f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/opening_state_on_raw_lua.cpp": {
+    "mtime": 1784567419.346508,
+    "ast_hash": "92aae703b2f5ffe46ad6d33e62fe54d9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/running_lua_code.cpp": {
+    "mtime": 1784567419.3477907,
+    "ast_hash": "3f47248a30469d2b8a38ca6b56acea11",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/running_lua_code_low_level.cpp": {
+    "mtime": 1784567419.3477907,
+    "ast_hash": "909889af30304b00bce062152020e4c4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/running_lua_code_safely.cpp": {
+    "mtime": 1784567419.348794,
+    "ast_hash": "b12b7186976707ecaf6bfdd0ba3d3dcb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/self_call.cpp": {
+    "mtime": 1784567419.348794,
+    "ast_hash": "8a3587759de32b21280449351e6baf9b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/set_and_get_variables.cpp": {
+    "mtime": 1784567419.3497949,
+    "ast_hash": "604dcbb68cfa398d9df0bb4bd73178a3",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/set_and_get_variables_exists.cpp": {
+    "mtime": 1784567419.350299,
+    "ast_hash": "43cd03a110c43715ad99c3ebbdc66418",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/tables_and_nesting.cpp": {
+    "mtime": 1784567419.350299,
+    "ast_hash": "4ca95f98c8eda942f74c62f7eff7b18c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/userdata.cpp": {
+    "mtime": 1784567419.350299,
+    "ast_hash": "1484e74a6627770db72ce331c5122e1a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/userdata_memory_reference.cpp": {
+    "mtime": 1784567419.3513048,
+    "ast_hash": "2e461ef7783feebd2f6068c0794b31cc",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/quick_n_dirty/usertypes.cpp": {
+    "mtime": 1784567419.3513048,
+    "ast_hash": "a257587f347da042ef8dfad1f1835dbb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/reading_functions.cpp": {
+    "mtime": 1784567419.3513048,
+    "ast_hash": "4db3e1fcfa435a9b7f2f8c957b2130f1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/variables_demo.cpp": {
+    "mtime": 1784567419.3528082,
+    "ast_hash": "e27b62395fb60e87ad7942fdb33a4879",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/write_variables_demo.cpp": {
+    "mtime": 1784567419.3528082,
+    "ast_hash": "968b105ca7d2cc8ba3a301109ae829a8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/writing_functions.cpp": {
+    "mtime": 1784567419.3528082,
+    "ast_hash": "4f9cb411958f07d2295416bb45e50d9a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/writing_member_functions.cpp": {
+    "mtime": 1784567419.3538349,
+    "ast_hash": "a4694f0bf68f0c16c549b1082bd8ce09",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/writing_overloaded_template_functions.cpp": {
+    "mtime": 1784567419.3538349,
+    "ast_hash": "32cf85796f886bfa50cc354810733922",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/tutorials/writing_template_functions.cpp": {
+    "mtime": 1784567419.3538349,
+    "ast_hash": "4c0eb095410e7641ad3ae40fe2396c83",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/unique_ptr.cpp": {
+    "mtime": 1784567419.3548384,
+    "ast_hash": "8cb63cd5c052ecf63bde2bf6fa9ec760",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/usertype.cpp": {
+    "mtime": 1784567419.3548384,
+    "ast_hash": "6c310cc1f636aefc521c4b1fc7c21b5f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/usertype_advanced.cpp": {
+    "mtime": 1784567419.3558419,
+    "ast_hash": "c7a43fcd1a27a514431d02b3a0a02905",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/usertype_automatic_operators.cpp": {
+    "mtime": 1784567419.3558419,
+    "ast_hash": "cbb4060d275d02a0ef638a90ca12099d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/usertype_basics.cpp": {
+    "mtime": 1784567419.3568425,
+    "ast_hash": "4d1c2a607f03a346b0eb50b96f60e5aa",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/usertype_bitfields.cpp": {
+    "mtime": 1784567419.3568425,
+    "ast_hash": "8a72baca64e2858430e021a20d9cdaf4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/usertype_call_from_c++.cpp": {
+    "mtime": 1784567419.3573468,
+    "ast_hash": "748c53135bafbe54526fcb7948fb484b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/usertype_constructors.cpp": {
+    "mtime": 1784567419.3573468,
+    "ast_hash": "d6907299a69efa68d7f713a30e280ff6",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/usertype_dynamic_get_set.cpp": {
+    "mtime": 1784567419.3583505,
+    "ast_hash": "6fb2f892a1c5177cbc74fc79a7759ddf",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/usertype_initializers.cpp": {
+    "mtime": 1784567419.3583505,
+    "ast_hash": "ba344c1d0c1d0f27517f4ae2fdced1bb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/usertype_special_functions.cpp": {
+    "mtime": 1784567419.3593535,
+    "ast_hash": "9f62a36d8c27dbfe4249453816c79f06",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/usertype_var.cpp": {
+    "mtime": 1784567419.3593535,
+    "ast_hash": "e252afb013adf87236cff61052394b8c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/variables.cpp": {
+    "mtime": 1784567419.3593535,
+    "ast_hash": "9670bade108010ef010351eff04f8d6b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/variadic_args.cpp": {
+    "mtime": 1784567419.360361,
+    "ast_hash": "297ef256a86d40b5149c73ae63b6d017",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/variadic_args_into_lua.cpp": {
+    "mtime": 1784567419.360361,
+    "ast_hash": "22f2b96e6d9282c3df2caa0676e5cd6e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/variadic_args_shifted.cpp": {
+    "mtime": 1784567419.360361,
+    "ast_hash": "f4fc2658834bb98ad076529944515229",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/variadic_args_storage.cpp": {
+    "mtime": 1784567419.3614097,
+    "ast_hash": "549234a07a595d964bee8d3783342df4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/source/wip/lua_inheritance.cpp": {
+    "mtime": 1784567419.3614097,
+    "ast_hash": "15b12ca38277f722b0e0050b9e8725f9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/abort.hpp": {
+    "mtime": 1784567419.3629146,
+    "ast_hash": "9cc5a3bc6cae044d0ed04154ba461a59",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/as_args.hpp": {
+    "mtime": 1784567419.3629146,
+    "ast_hash": "6232ddf66cee239118711123b801e81e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/as_returns.hpp": {
+    "mtime": 1784567419.363918,
+    "ast_hash": "fa0f9fc3f1037cd0152ac6f3eacea541",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/assert.hpp": {
+    "mtime": 1784567419.363918,
+    "ast_hash": "b20e90fb657cb3dcbff2fcb464752a58",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/base_traits.hpp": {
+    "mtime": 1784567419.363918,
+    "ast_hash": "3d077fe380dc5d9c8b133db7be60054b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/bind_traits.hpp": {
+    "mtime": 1784567419.3649213,
+    "ast_hash": "ce87f0f372baf92a4d0560910036bed9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/bytecode.hpp": {
+    "mtime": 1784567419.3649213,
+    "ast_hash": "77cf569c859271a18a0d7ea2d6f039c8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/call.hpp": {
+    "mtime": 1784567419.3659222,
+    "ast_hash": "1badac7b1c36f2381ede2acb991fe8fb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/compatibility.hpp": {
+    "mtime": 1784567419.3659222,
+    "ast_hash": "42ceb337a9f489c2e46054e6a5ff7ac9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/compatibility/compat-5.3.c.h": {
+    "mtime": 1784567419.3664262,
+    "ast_hash": "fd001c084be4d33dcafcfb70c666e947",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/compatibility/compat-5.3.h": {
+    "mtime": 1784567419.3674307,
+    "ast_hash": "6fcbf17f118df125886003dd3304cdf3",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/compatibility/compat-5.4.h": {
+    "mtime": 1784567419.3674307,
+    "ast_hash": "e9ac4bce357250492521019abf669350",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/compatibility/lua_version.hpp": {
+    "mtime": 1784567419.3674307,
+    "ast_hash": "c2868c578bd4ec84ec61281983dec969",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/config.hpp": {
+    "mtime": 1784567419.368461,
+    "ast_hash": "0490c26b4f6465c221376d8dc8d5dd8e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/coroutine.hpp": {
+    "mtime": 1784567419.368461,
+    "ast_hash": "c797b858a407274b04059aa7c8c72ff7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/debug.hpp": {
+    "mtime": 1784567419.3694644,
+    "ast_hash": "b08b0ac3e87c11dc326d565b62766de1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/demangle.hpp": {
+    "mtime": 1784567419.3694644,
+    "ast_hash": "fc98fac7d62191c4a6b8022bc82ea5d4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/deprecate.hpp": {
+    "mtime": 1784567419.3694644,
+    "ast_hash": "8c7a3d9927976917eb6d8a9a3dde47cc",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/detail/build_version.hpp": {
+    "mtime": 1784567419.3704698,
+    "ast_hash": "8e333465a8fc705359d32bf1b1930e29",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/dump_handler.hpp": {
+    "mtime": 1784567419.3704698,
+    "ast_hash": "c36e1837511beafa1b6608276bd4bae1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/ebco.hpp": {
+    "mtime": 1784567419.3704698,
+    "ast_hash": "f5fd80e17f90c043d39bd6a55ffd31cb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/environment.hpp": {
+    "mtime": 1784567419.3704698,
+    "ast_hash": "b8702332de8ec699ef3692a3bd904f23",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/epilogue.hpp": {
+    "mtime": 1784567419.3719728,
+    "ast_hash": "5b6a764ad40d8904269b0c36b834ed23",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/error.hpp": {
+    "mtime": 1784567419.3719728,
+    "ast_hash": "d9615ad99b17e07bd8ef9cd857f04f59",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/error_handler.hpp": {
+    "mtime": 1784567419.3729756,
+    "ast_hash": "17db13639c553cd44509e233a94c1e1c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/forward.hpp": {
+    "mtime": 1784567419.3734794,
+    "ast_hash": "9838af0791798843dddae62dcf33f00e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/forward_as.hpp": {
+    "mtime": 1784567419.3734794,
+    "ast_hash": "3971d72105c6d13572278151636268d5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/forward_detail.hpp": {
+    "mtime": 1784567419.3734794,
+    "ast_hash": "15964e7fdd9eaf15fac95b0e93d39bb6",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/function.hpp": {
+    "mtime": 1784567419.3744874,
+    "ast_hash": "12cc8451880f578f9f97a7f38f7c2f6a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/function_result.hpp": {
+    "mtime": 1784567419.3744874,
+    "ast_hash": "8db83ccf1f9f822fb0d48c665771f8b9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/function_types.hpp": {
+    "mtime": 1784567419.3744874,
+    "ast_hash": "67af0d99ec53e08c82624bee4f59a935",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/function_types_core.hpp": {
+    "mtime": 1784567419.375491,
+    "ast_hash": "de307e4d28ef9f35a2e10fe818f2c785",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/function_types_overloaded.hpp": {
+    "mtime": 1784567419.375491,
+    "ast_hash": "f912daf01892fc8ccb70aa8ac78b1323",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/function_types_stateful.hpp": {
+    "mtime": 1784567419.375491,
+    "ast_hash": "c3356e26f4a0bdfc0ef74d370f8436fa",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/function_types_stateless.hpp": {
+    "mtime": 1784567419.3769948,
+    "ast_hash": "330f9426f9ff89b764d9b64e7873b98c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/function_types_templated.hpp": {
+    "mtime": 1784567419.3769948,
+    "ast_hash": "af054929d73f42563ceff021300e1a77",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/in_place.hpp": {
+    "mtime": 1784567419.378008,
+    "ast_hash": "0c25051b0776a050da956c4037b59fdc",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/inheritance.hpp": {
+    "mtime": 1784567419.378008,
+    "ast_hash": "c6ebc9b5bcca3e032998b9c4a6a4c573",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/load_result.hpp": {
+    "mtime": 1784567419.378008,
+    "ast_hash": "df8b3780ae46ce418fccc0fab135f1bc",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/lua_table.hpp": {
+    "mtime": 1784567419.3790112,
+    "ast_hash": "f2154ae73ad17a1eadd6f721d3d9173f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/lua_value.hpp": {
+    "mtime": 1784567419.3790112,
+    "ast_hash": "0dfb349e12ab8dd7cb8471b837a2bbf0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/make_reference.hpp": {
+    "mtime": 1784567419.3800142,
+    "ast_hash": "0bd081b84c6828f5b4aa32c794d91544",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/metatable.hpp": {
+    "mtime": 1784567419.3800142,
+    "ast_hash": "afa1b2a7d3c6d7ddc62d35d9677a54da",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/object.hpp": {
+    "mtime": 1784567419.3800142,
+    "ast_hash": "90b63edafdb49866be4c595e03e77651",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/object_base.hpp": {
+    "mtime": 1784567419.3810205,
+    "ast_hash": "1d767b128b5ac898c73f517407c3b44f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/optional.hpp": {
+    "mtime": 1784567419.3810205,
+    "ast_hash": "d4ef4b389d80b28aedf59bcd5ea7cf5d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/optional_implementation.hpp": {
+    "mtime": 1784567430.2171469,
+    "ast_hash": "8be06d4edea28d4dbd114fe0d7acf922",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/overload.hpp": {
+    "mtime": 1784567419.382024,
+    "ast_hash": "8549ad474ddbdf7c32678185ba844a7a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/packaged_coroutine.hpp": {
+    "mtime": 1784567419.3830256,
+    "ast_hash": "6d673b7574fbab5a47726b8e996e5c4d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/pairs_iterator.hpp": {
+    "mtime": 1784567419.3830256,
+    "ast_hash": "82b0c890797f1f2f21783bcf78d62fe4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/pointer_like.hpp": {
+    "mtime": 1784567419.3830256,
+    "ast_hash": "f58320bf8305b30d5c90bfdb8e3a0fca",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/policies.hpp": {
+    "mtime": 1784567419.3840294,
+    "ast_hash": "9d6f8d2b4b667ded0af3e6f5cb714937",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/prologue.hpp": {
+    "mtime": 1784567419.3840294,
+    "ast_hash": "60371cee20b0b28ce182624af400dafb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/property.hpp": {
+    "mtime": 1784567419.3840294,
+    "ast_hash": "bff70e5aa1eb16cbc46929727e1dddec",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/protect.hpp": {
+    "mtime": 1784567419.3840294,
+    "ast_hash": "399c56f4c6814931db2ff3312adf134e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/protected_function.hpp": {
+    "mtime": 1784567419.3855326,
+    "ast_hash": "a3e45d743431a0d813f983fc64890266",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/protected_function_result.hpp": {
+    "mtime": 1784567430.2181568,
+    "ast_hash": "113de912fe945a8561a765fb1bbb682f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/protected_handler.hpp": {
+    "mtime": 1784567419.3865445,
+    "ast_hash": "32c6717d7b3f3f5c4fa5765bf6316553",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/proxy_base.hpp": {
+    "mtime": 1784567419.3865445,
+    "ast_hash": "fc37dd8c0daab6263b2d9b6960725b92",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/raii.hpp": {
+    "mtime": 1784567419.387548,
+    "ast_hash": "040649eca5237a43eddc1fd9cb969bbb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/reference.hpp": {
+    "mtime": 1784567419.387548,
+    "ast_hash": "47f680ca10c888ba8099a36194a8dc01",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/resolve.hpp": {
+    "mtime": 1784567419.387548,
+    "ast_hash": "0b0d80298483898f31eaebf5c813bde9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/sol.hpp": {
+    "mtime": 1784567419.3885515,
+    "ast_hash": "53d4328e6bbe34275bbf9191b08994b2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack.hpp": {
+    "mtime": 1784567419.3885515,
+    "ast_hash": "e06d8cdcd018a76d1484a51fd66f1f6d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack/detail/pairs.hpp": {
+    "mtime": 1784567419.3885515,
+    "ast_hash": "6b1fdc67e11a165aedfbe363f01e0c1a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_check.hpp": {
+    "mtime": 1784567419.3900535,
+    "ast_hash": "7b16d7466641437a3bb180b76a6f6ad7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_check_get.hpp": {
+    "mtime": 1784567419.3900535,
+    "ast_hash": "5d61abd274b90d9ed630a19915eb9d87",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_check_get_qualified.hpp": {
+    "mtime": 1784567419.3900535,
+    "ast_hash": "9615ca5e59e9c2a05d0a607c45417663",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_check_get_unqualified.hpp": {
+    "mtime": 1784567419.3910975,
+    "ast_hash": "4d51586ca74e4398890f60b5af40b106",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_check_qualified.hpp": {
+    "mtime": 1784567419.3921447,
+    "ast_hash": "cf3496bb622656c9b13e1940c3fc3a53",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_check_unqualified.hpp": {
+    "mtime": 1784567419.3926482,
+    "ast_hash": "10e488dc61946ec7adc2084531c39bb5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_core.hpp": {
+    "mtime": 1784567419.3926482,
+    "ast_hash": "1a5e9584690ab1b35827c6826bfb9bae",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_field.hpp": {
+    "mtime": 1784567419.3936563,
+    "ast_hash": "6170e9e8d8142d863a2a35ced194d5e7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_get.hpp": {
+    "mtime": 1784567419.3936563,
+    "ast_hash": "bc296181ddf3bf85da5674994a6c99d1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_get_qualified.hpp": {
+    "mtime": 1784567419.3956656,
+    "ast_hash": "49a7799b79f696eb62f8754e14e369d1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_get_unqualified.hpp": {
+    "mtime": 1784567419.3956656,
+    "ast_hash": "ee625ca7c051aeda3e1c262366d5e659",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_guard.hpp": {
+    "mtime": 1784567419.3956656,
+    "ast_hash": "8e7b7a9e6d1eb8fc39ab18c4a888cc03",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_iterator.hpp": {
+    "mtime": 1784567419.3956656,
+    "ast_hash": "31435c73ee938bdc672e2e3a4409f485",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_pop.hpp": {
+    "mtime": 1784567419.3971689,
+    "ast_hash": "0a383a4cc83e83e3a336fcb4afb0589b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_probe.hpp": {
+    "mtime": 1784567419.3971689,
+    "ast_hash": "9de3b9ee42a55978a051108fa9f0dff8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_proxy.hpp": {
+    "mtime": 1784567419.398196,
+    "ast_hash": "4ffa5c533188cb7092035e1bcdd526cc",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_proxy_base.hpp": {
+    "mtime": 1784567419.398196,
+    "ast_hash": "9fc42822fd8a639745857f0ef4e0cd92",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_push.hpp": {
+    "mtime": 1784567419.398196,
+    "ast_hash": "9b293b518827bd22522c28ccc63c980a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/stack_reference.hpp": {
+    "mtime": 1784567419.3991995,
+    "ast_hash": "0a4c4cbddcdec315279163a589563410",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/state.hpp": {
+    "mtime": 1784567419.3991995,
+    "ast_hash": "60699ea4c2a8746f0915726b03ba1ef8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/state_handling.hpp": {
+    "mtime": 1784567419.3991995,
+    "ast_hash": "3cd9aed3c5b4f57b93ef14d7385dc054",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/state_view.hpp": {
+    "mtime": 1784567419.400203,
+    "ast_hash": "d5e07875239239bcfdba3b0db3b8ce7c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/string_view.hpp": {
+    "mtime": 1784567419.400203,
+    "ast_hash": "f888901fc6c2cdd8e86034223c9e6feb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/table.hpp": {
+    "mtime": 1784567419.4012084,
+    "ast_hash": "cd867bcbd031e188749499712f824d76",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/table_core.hpp": {
+    "mtime": 1784567419.4012084,
+    "ast_hash": "50d1c8fc8b37ffa0e782896f01b52690",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/table_iterator.hpp": {
+    "mtime": 1784567419.4012084,
+    "ast_hash": "354f365d90f6c158233e464fd48463e2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/table_proxy.hpp": {
+    "mtime": 1784567419.4012084,
+    "ast_hash": "74f7292a3a761d5497c662a20c50c88b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/thread.hpp": {
+    "mtime": 1784567419.4027114,
+    "ast_hash": "ab676c85449482dc0f69720df7d2322e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/tie.hpp": {
+    "mtime": 1784567419.4027114,
+    "ast_hash": "fe952b11c3b8a55a55042db00aa66a0d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/traits.hpp": {
+    "mtime": 1784567419.4027114,
+    "ast_hash": "16db551b9bcbd712d1d3fbdfbecec5b5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/trampoline.hpp": {
+    "mtime": 1784567419.4037209,
+    "ast_hash": "d8ddfe39ebdf2c726b1df2f5459e1bc8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/tuple.hpp": {
+    "mtime": 1784567419.4037209,
+    "ast_hash": "b1ac23aa496c4905024985555485db10",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/types.hpp": {
+    "mtime": 1784567419.4047241,
+    "ast_hash": "fd1ebb3dfda4d33d5b6d1fa234033483",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/unicode.hpp": {
+    "mtime": 1784567419.4047241,
+    "ast_hash": "39464db1d47ccdc52bb8c1b3ad4915d1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/unique_usertype_traits.hpp": {
+    "mtime": 1784567419.4047241,
+    "ast_hash": "953a8069287aa71b71d71f7105792733",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/unreachable.hpp": {
+    "mtime": 1784567419.4057274,
+    "ast_hash": "74a8eca9007c086c339c6d8ce9962493",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/unsafe_function.hpp": {
+    "mtime": 1784567419.4057274,
+    "ast_hash": "3557016326c8cf359d241fd6945299c2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/unsafe_function_result.hpp": {
+    "mtime": 1784567419.4057274,
+    "ast_hash": "77d3851efdc5659bd82dead321ac29c0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/userdata.hpp": {
+    "mtime": 1784567419.4067285,
+    "ast_hash": "63955c8b49ae7ac103bd008e50a0a4de",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/usertype.hpp": {
+    "mtime": 1784567419.4072337,
+    "ast_hash": "62e91dff8bc2eda083f84b5f268f0eb1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/usertype_container.hpp": {
+    "mtime": 1784567419.4072337,
+    "ast_hash": "c0bba055a28f74841a9370140e174b2a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/usertype_container_launch.hpp": {
+    "mtime": 1784567419.4082463,
+    "ast_hash": "eeef2e6a93589d3eb31065255ade05f5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/usertype_core.hpp": {
+    "mtime": 1784567419.4082463,
+    "ast_hash": "6e2f57d19f4479fec9c3c25ce4b1a3ff",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/usertype_proxy.hpp": {
+    "mtime": 1784567419.4082463,
+    "ast_hash": "c2e4f20c84c510ee0ec75ec0c9026c16",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/usertype_storage.hpp": {
+    "mtime": 1784567419.4097495,
+    "ast_hash": "6781f918702674435c2b32d81f76019c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/usertype_traits.hpp": {
+    "mtime": 1784567419.4097495,
+    "ast_hash": "6770a7c482d96171693d17042fcf9b93",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/utility/is_integer.hpp": {
+    "mtime": 1784567419.4107587,
+    "ast_hash": "3fad20a5bc98943fabe94683059c927f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/utility/to_string.hpp": {
+    "mtime": 1784567419.4107587,
+    "ast_hash": "aed49b7657ec420eb8dfff7bfe449784",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/variadic_args.hpp": {
+    "mtime": 1784567419.4107587,
+    "ast_hash": "49954b9f8eb77356b9bd90a4fbb25f7e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/variadic_results.hpp": {
+    "mtime": 1784567430.2181568,
+    "ast_hash": "08b7f25ce69bcef96c8699fd6944b45a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/version.hpp": {
+    "mtime": 1784567419.412262,
+    "ast_hash": "bb2a441000f55344b3d3f02177808c8e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/include/sol/wrapper.hpp": {
+    "mtime": 1784567419.412771,
+    "ast_hash": "1d539fbddf5829ff8ec1656e65ee0ce6",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/list_headers.py": {
+    "mtime": 1784567419.412771,
+    "ast_hash": "707c728f1b2a55b02a489e195e410980",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/scripts/build.linux.sh": {
+    "mtime": 1784567419.4137843,
+    "ast_hash": "69962ba7178fae441480bd676b0d426e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/scripts/preparation.linux.sh": {
+    "mtime": 1784567419.414787,
+    "ast_hash": "7a1d114e0865d300af7c2e9ccecfebbb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/scripts/preparation.osx.sh": {
+    "mtime": 1784567419.414787,
+    "ast_hash": "261b854c02039e8fa3239f98cc5d5a32",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/scripts/push.linux.sh": {
+    "mtime": 1784567419.4157927,
+    "ast_hash": "4e7746137049ed87e0548fe453861e20",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/scripts/run.linux.sh": {
+    "mtime": 1784567419.4157927,
+    "ast_hash": "80c2844d562edbc231168afb4e302aae",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/scripts/run.osx.sh": {
+    "mtime": 1784567419.4167962,
+    "ast_hash": "be2f69726f6cda0eb4f3c62bccf875f9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/single/single.py": {
+    "mtime": 1784567419.4177997,
+    "ast_hash": "ed78728b953951c8c1dd12202d661671",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/config_tests/function_pointers/source/main.cpp": {
+    "mtime": 1784567419.4208121,
+    "ast_hash": "df2a1b56e190e635760c562c1ec46380",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/config_tests/function_pointers/source/retrieval.cpp": {
+    "mtime": 1784567419.4208121,
+    "ast_hash": "bc9b28111d4a5cd4f1dab7def2824e51",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/config_tests/integer_value_fits/source/main.cpp": {
+    "mtime": 1784567419.42337,
+    "ast_hash": "df2a1b56e190e635760c562c1ec46380",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/config_tests/integer_value_fits/source/negative_size_t.cpp": {
+    "mtime": 1784567419.42337,
+    "ast_hash": "c18ff8f913160aa1d0020c8a708df1a1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/container_exhaustive/source/exhaustive.cpp": {
+    "mtime": 1784567419.4253814,
+    "ast_hash": "7966dabb9fdd4569c1cf7fc3e7d557b3",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/container_exhaustive/source/main.cpp": {
+    "mtime": 1784567419.4253814,
+    "ast_hash": "df2a1b56e190e635760c562c1ec46380",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/coroutines/source/array_proxy_lifetime.cpp": {
+    "mtime": 1784567430.220666,
+    "ast_hash": "cf2db942fea3c4e5161f7c792ec42743",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/coroutines/source/main.cpp": {
+    "mtime": 1784567419.42739,
+    "ast_hash": "3232ab6c80502209d2fdf7409c14cef5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/coroutines/source/properties_lifetime.cpp": {
+    "mtime": 1784567419.42739,
+    "ast_hash": "c7c65bc518cfc1a613929724e2a465d4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/enum/source/main.cpp": {
+    "mtime": 1784567419.4294176,
+    "ast_hash": "df2a1b56e190e635760c562c1ec46380",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/enum/source/read_only_iteration.cpp": {
+    "mtime": 1784567419.4294176,
+    "ast_hash": "f5d60ec925dc5ee00089a3e5d57c8423",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/environment/source/get.cpp": {
+    "mtime": 1784567419.4304247,
+    "ast_hash": "5c98a164f9c04b1c7d27630d7d9a1cd9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/environment/source/main.cpp": {
+    "mtime": 1784567419.4314282,
+    "ast_hash": "df2a1b56e190e635760c562c1ec46380",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/environment/source/sandboxing.cpp": {
+    "mtime": 1784567419.4314282,
+    "ast_hash": "f5c923ad114bf4b877d8d3d403047ab1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/environment/source/shadowing.cpp": {
+    "mtime": 1784567419.4314282,
+    "ast_hash": "d696b8018337e119e6969f2378f6e4bb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/environment/source/this_environment.cpp": {
+    "mtime": 1784567419.4314282,
+    "ast_hash": "b0c04390f0a2d02fcbca3cbefbb5c785",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/exceptions/source/functions.cpp": {
+    "mtime": 1784567419.4339452,
+    "ast_hash": "03f5f01908f94f38f7979b35c6dc40b3",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/exceptions/source/functions.noexcept.cpp": {
+    "mtime": 1784567419.4339452,
+    "ast_hash": "592bfdcced79e0c3e67a85308f0ec0e8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/exceptions/source/functions.yielding.cpp": {
+    "mtime": 1784567419.4349487,
+    "ast_hash": "55a76286f7cfc067f6835c2052866d9a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/exceptions/source/main.cpp": {
+    "mtime": 1784567419.4349487,
+    "ast_hash": "df2a1b56e190e635760c562c1ec46380",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/exceptions/source/usertypes.cpp": {
+    "mtime": 1784567419.4359522,
+    "ast_hash": "07a97646f665633edd167f3ea0e5a678",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/exceptions/source/usertypes.yielding.cpp": {
+    "mtime": 1784567419.4359522,
+    "ast_hash": "86041b1144f017235b14cab30fa0d4bc",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/as_args.cpp": {
+    "mtime": 1784567419.4369557,
+    "ast_hash": "d798d2d160897b80b48dbef5424091c7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/as_returns.cpp": {
+    "mtime": 1784567419.4379592,
+    "ast_hash": "7eac34e18267e46227749b877e104e36",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/base_traits.cpp": {
+    "mtime": 1784567419.4379592,
+    "ast_hash": "1a08ec953020c907f8a474eb91e1a1c7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/bind_traits.cpp": {
+    "mtime": 1784567419.4379592,
+    "ast_hash": "6e07f627158c2af0276b9aaefffd6a6a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/bytecode.cpp": {
+    "mtime": 1784567419.4390452,
+    "ast_hash": "f4c9b2646efc6dc8c6a1c2a132ce3483",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/call.cpp": {
+    "mtime": 1784567419.4390452,
+    "ast_hash": "d42e077ed950c6d427b91e9fa1cb8a01",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/compatibility.cpp": {
+    "mtime": 1784567419.4400449,
+    "ast_hash": "8fc6d38773e176081ab73066cfcfa29e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/compatibility/compat-5.3.cpp": {
+    "mtime": 1784567419.440549,
+    "ast_hash": "8411ddb7431b09fb1990a6611338711e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/compatibility/lua_version.cpp": {
+    "mtime": 1784567419.440549,
+    "ast_hash": "c8f306a6ac6521c6e6052f0db43e108d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/config.cpp": {
+    "mtime": 1784567419.440549,
+    "ast_hash": "c1bb74c4ebf5807ad982ba1d58675dd3",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/coroutine.cpp": {
+    "mtime": 1784567419.441554,
+    "ast_hash": "75e0ad2c85f0c988cb654229a50c9831",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/debug.cpp": {
+    "mtime": 1784567419.441554,
+    "ast_hash": "52557192e51d6c4738be1bddf3bcec5c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/demangle.cpp": {
+    "mtime": 1784567419.441554,
+    "ast_hash": "f8270c0e1102acb0c8e5d3627d8e4893",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/deprecate.cpp": {
+    "mtime": 1784567419.441554,
+    "ast_hash": "6117bbc24ab39926b82ee141e89fe944",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/detail/build_version.cpp": {
+    "mtime": 1784567419.4430573,
+    "ast_hash": "1f96a5a5ac8183b74921bc7aa845d48a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/ebco.cpp": {
+    "mtime": 1784567419.4430573,
+    "ast_hash": "72c4cda8f6672b2252def91630598018",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/environment.cpp": {
+    "mtime": 1784567419.444089,
+    "ast_hash": "4ccceac564a32caad790c3e847470b8c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/error.cpp": {
+    "mtime": 1784567419.444089,
+    "ast_hash": "83a878a8051741f4edfa28a8ed1bba3c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/error_handler.cpp": {
+    "mtime": 1784567419.444089,
+    "ast_hash": "bcfd36663c9bc574e1f20fe23b259447",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/forward.cpp": {
+    "mtime": 1784567419.4450924,
+    "ast_hash": "2aa995625877cdb528af7f2ff96e45f6",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/forward_detail.cpp": {
+    "mtime": 1784567419.4450924,
+    "ast_hash": "69887aee66564bca335894efb9bdc293",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/function.cpp": {
+    "mtime": 1784567419.4450924,
+    "ast_hash": "29187ccdbf9a1034f0a43468d1c823d1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/function_result.cpp": {
+    "mtime": 1784567419.446096,
+    "ast_hash": "ccf04f14d20e8cba165f40774a5f801f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/function_types.cpp": {
+    "mtime": 1784567419.446096,
+    "ast_hash": "e2fe3a57868c43c49f6dd386408530bf",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/function_types_core.cpp": {
+    "mtime": 1784567419.4471931,
+    "ast_hash": "195b9315b81f3d073437bfcf69866eac",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/function_types_overloaded.cpp": {
+    "mtime": 1784567419.4471931,
+    "ast_hash": "5274670508a38a3e81e87d0499a307b3",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/function_types_stateful.cpp": {
+    "mtime": 1784567419.4471931,
+    "ast_hash": "cc378dea58152e71f38e1d29913f063c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/function_types_stateless.cpp": {
+    "mtime": 1784567419.4481945,
+    "ast_hash": "0413e279cdde7689b9512c0740e21502",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/function_types_templated.cpp": {
+    "mtime": 1784567419.4481945,
+    "ast_hash": "5164165b146a0018bc442f655e655edb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/in_place.cpp": {
+    "mtime": 1784567419.4481945,
+    "ast_hash": "b373949569500702cb478b07751f8573",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/inheritance.cpp": {
+    "mtime": 1784567419.4491954,
+    "ast_hash": "5ccffe9b137e00767d44c3bec7d3eed1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/load_result.cpp": {
+    "mtime": 1784567419.4491954,
+    "ast_hash": "c6986fa0b9a5fd43befd3ca9db687854",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/lua_table.cpp": {
+    "mtime": 1784567419.4491954,
+    "ast_hash": "a0b0d611cf8f6a4dd97a4e24c6c87e88",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/lua_value.cpp": {
+    "mtime": 1784567419.4501977,
+    "ast_hash": "2e4b74a7b793f23d1eea377b3a96eafb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/main.cpp": {
+    "mtime": 1784567419.4501977,
+    "ast_hash": "9ace17526f3c85369473b4c5626fec08",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/make_reference.cpp": {
+    "mtime": 1784567419.4501977,
+    "ast_hash": "0be82fc53bbedd8c9f17bae90bb67d2f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/metatable.cpp": {
+    "mtime": 1784567419.4514308,
+    "ast_hash": "734dbf0e0cf6c7f9529bc116e4fbad1e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/object.cpp": {
+    "mtime": 1784567419.4514308,
+    "ast_hash": "f1c6261cff2e742f4eec25392009048d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/object_base.cpp": {
+    "mtime": 1784567419.4514308,
+    "ast_hash": "bd180a846b94a382040561d7085998db",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/optional.cpp": {
+    "mtime": 1784567419.4524314,
+    "ast_hash": "33c92eaca5925b523b2cacc1187dbb7b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/optional_implementation.cpp": {
+    "mtime": 1784567419.4524314,
+    "ast_hash": "f3974a725c3d58cea305ddcdf3e9fbfc",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/overload.cpp": {
+    "mtime": 1784567419.4529347,
+    "ast_hash": "f05529577bfe2828695d5bf3a7fc6c02",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/packaged_coroutine.cpp": {
+    "mtime": 1784567419.4529347,
+    "ast_hash": "794d3f8c87a37235e0d3b86db676efac",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/pairs_iterator.cpp": {
+    "mtime": 1784567419.4529347,
+    "ast_hash": "95dd55c78fb91295a258b14093d652fd",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/pointer_like.cpp": {
+    "mtime": 1784567419.4539611,
+    "ast_hash": "90be35a33a6147ceabbcb836f675e6be",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/policies.cpp": {
+    "mtime": 1784567419.4539611,
+    "ast_hash": "1a93edb0976423a5f3d465ffe94c083b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/property.cpp": {
+    "mtime": 1784567419.4553993,
+    "ast_hash": "c1d6d1b10bf217ae504532bfa67110fa",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/protect.cpp": {
+    "mtime": 1784567419.4553993,
+    "ast_hash": "1e82e076126c4dd7f61efcf59d23a5ad",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/protected_function.cpp": {
+    "mtime": 1784567419.4553993,
+    "ast_hash": "3798e35e56760bf0f8db5f364d71c436",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/protected_function_result.cpp": {
+    "mtime": 1784567419.4553993,
+    "ast_hash": "4c4e953cd862460adc488faedbabc997",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/protected_handler.cpp": {
+    "mtime": 1784567419.456902,
+    "ast_hash": "5b051f9749b5c0c1eb8dbffcb7f0f3b8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/proxy.cpp": {
+    "mtime": 1784567419.456902,
+    "ast_hash": "bc737a81eba9606fe3af051c9c42ebbe",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/proxy_base.cpp": {
+    "mtime": 1784567419.456902,
+    "ast_hash": "cbfa9cf2e55d250432cf32ddc4f0ad71",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/raii.cpp": {
+    "mtime": 1784567419.457911,
+    "ast_hash": "2572caa3733031f47461ee5c155d402b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/reference.cpp": {
+    "mtime": 1784567419.457911,
+    "ast_hash": "61e14670e36c9683401ec86b12f8972a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/resolve.cpp": {
+    "mtime": 1784567419.457911,
+    "ast_hash": "e2371becb8df6d4d3c5f0fbf61bdceff",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/sol.cpp": {
+    "mtime": 1784567419.458912,
+    "ast_hash": "622094d0f524b88b40143a4c68f3f8f5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack.cpp": {
+    "mtime": 1784567419.458912,
+    "ast_hash": "492e6eba63a4961d115fd3f29a3ba69a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack/detail/pairs.cpp": {
+    "mtime": 1784567419.46001,
+    "ast_hash": "f848bfa20fb8ef76c2f56ffe7269923c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_check.cpp": {
+    "mtime": 1784567419.4612286,
+    "ast_hash": "4a5d95458cd0e2abb9e2e652475fddd5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_check_get.cpp": {
+    "mtime": 1784567419.4612286,
+    "ast_hash": "2c922eb9a6e9bd567dc26695c94849b0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_check_get_qualified.cpp": {
+    "mtime": 1784567419.4612286,
+    "ast_hash": "dba5ef30ab03a5a249d6ba84892a7691",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_check_get_unqualified.cpp": {
+    "mtime": 1784567419.4612286,
+    "ast_hash": "f3d608c1f741ef22afe85a3a1463ceeb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_check_qualified.cpp": {
+    "mtime": 1784567419.4627316,
+    "ast_hash": "54497c7ec918fc1a7c5018c82f266282",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_check_unqualified.cpp": {
+    "mtime": 1784567419.4627316,
+    "ast_hash": "805da32320723aaa9262da7a95498341",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_core.cpp": {
+    "mtime": 1784567419.4627316,
+    "ast_hash": "18c2493a4f9de6931eaee011f8a96f8a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_field.cpp": {
+    "mtime": 1784567419.463761,
+    "ast_hash": "dcc8d0fb7ad7ab9bbc7831926a81b572",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_get.cpp": {
+    "mtime": 1784567419.463761,
+    "ast_hash": "e8cf78c01eb031fdb3a98e16d8da8b48",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_get_qualified.cpp": {
+    "mtime": 1784567419.4647715,
+    "ast_hash": "3901535c9b99601495c9e7139d2148fd",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_get_unqualified.cpp": {
+    "mtime": 1784567419.4647715,
+    "ast_hash": "8e37f87fd0e9ce5febcb3627ce24949c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_guard.cpp": {
+    "mtime": 1784567419.4647715,
+    "ast_hash": "c4b8e66f886686323dbba858747d7350",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_iterator.cpp": {
+    "mtime": 1784567419.4657886,
+    "ast_hash": "18ba5be26db1822b8c9b2ce4e9df656d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_pop.cpp": {
+    "mtime": 1784567419.4657886,
+    "ast_hash": "a70bf1a2f33f25e25811864b5b57aa58",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_probe.cpp": {
+    "mtime": 1784567419.4657886,
+    "ast_hash": "8455f4696db0443aa5db6d57664bc9d1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_proxy.cpp": {
+    "mtime": 1784567419.4657886,
+    "ast_hash": "c36a218a217dbce7e3aac854928c0cf0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_proxy_base.cpp": {
+    "mtime": 1784567419.4672928,
+    "ast_hash": "fbdd08cf3dbad2d31dccde38d0b5edec",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_push.cpp": {
+    "mtime": 1784567419.4672928,
+    "ast_hash": "c15d8835486933bbea14713e9a053080",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/stack_reference.cpp": {
+    "mtime": 1784567419.4672928,
+    "ast_hash": "c88c3fd661cc6a480246a69e8b59f8bb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/state.cpp": {
+    "mtime": 1784567419.4683053,
+    "ast_hash": "ed2c3d5bf398378f8146ddbc7ffbd39a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/state_handling.cpp": {
+    "mtime": 1784567419.4683053,
+    "ast_hash": "a2acc364cc7481cdb6db7b9615286f69",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/state_view.cpp": {
+    "mtime": 1784567419.469309,
+    "ast_hash": "16484dcce6b28f65f7081b0ef3cc58b6",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/string_view.cpp": {
+    "mtime": 1784567419.469309,
+    "ast_hash": "968ec49aa581961f04db61ac798d55fe",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/table.cpp": {
+    "mtime": 1784567419.469309,
+    "ast_hash": "fbe72fb583a6259710a4006264832802",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/table_core.cpp": {
+    "mtime": 1784567419.4703112,
+    "ast_hash": "b0e2c3d0bcd60434996a9a7c07ce95c4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/table_iterator.cpp": {
+    "mtime": 1784567419.4703112,
+    "ast_hash": "4caed9c3f7faedb26e81aa69482e8e1c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/thread.cpp": {
+    "mtime": 1784567419.4703112,
+    "ast_hash": "0ecdd906cf0532391d444f4bcf41f9de",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/tie.cpp": {
+    "mtime": 1784567419.4713743,
+    "ast_hash": "5b54a8fbb88b76467a3afd359e0ce1de",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/traits.cpp": {
+    "mtime": 1784567419.4713743,
+    "ast_hash": "7f66be10eb961de27da7e9221d4ff6b0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/trampoline.cpp": {
+    "mtime": 1784567419.4713743,
+    "ast_hash": "5b361c23aa64c79e8352e23ecdb5a5b8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/tuple.cpp": {
+    "mtime": 1784567419.4713743,
+    "ast_hash": "2c737feca54e8708aba8591608726512",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/types.cpp": {
+    "mtime": 1784567419.4728773,
+    "ast_hash": "6a3ee0af8dc5d75470258c4751a32025",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/unicode.cpp": {
+    "mtime": 1784567419.473384,
+    "ast_hash": "a5e09ca7d5cc3b1e57dab5f82035c354",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/unique_usertype_traits.cpp": {
+    "mtime": 1784567419.473384,
+    "ast_hash": "067b3ad31a5086a7719e9f38397f8cea",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/unsafe_function.cpp": {
+    "mtime": 1784567419.473384,
+    "ast_hash": "4b4900e3bfa8ae9553dc4d628d2890be",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/unsafe_function_result.cpp": {
+    "mtime": 1784567419.4743912,
+    "ast_hash": "1fed7618a66fec181f053b2fe2d4e185",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/userdata.cpp": {
+    "mtime": 1784567419.4743912,
+    "ast_hash": "530ae3b2738df8d6848a232d25c6fd9f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/usertype.cpp": {
+    "mtime": 1784567419.4743912,
+    "ast_hash": "23e23a1328c5c3baeb4eab547ebae789",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/usertype_container.cpp": {
+    "mtime": 1784567419.4753919,
+    "ast_hash": "73f3a081f6bca8989df86ab776752245",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/usertype_container_launch.cpp": {
+    "mtime": 1784567419.4753919,
+    "ast_hash": "ecf06c6d31fdaeea38707730c736651f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/usertype_core.cpp": {
+    "mtime": 1784567419.4753919,
+    "ast_hash": "1155eef5cae10737d733183cce19cf72",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/usertype_proxy.cpp": {
+    "mtime": 1784567419.4753919,
+    "ast_hash": "1b6bb1b57aa10e7c0ea2b3edf3b13ca4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/usertype_storage.cpp": {
+    "mtime": 1784567419.4768944,
+    "ast_hash": "cab037c0fb59d9557b4104ac9d792359",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/usertype_traits.cpp": {
+    "mtime": 1784567419.4768944,
+    "ast_hash": "cadff7d59cd4017c9fffe2c65719691e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/utility/is_integer.cpp": {
+    "mtime": 1784567419.4779017,
+    "ast_hash": "4d007db32d8f31b73bddae92b9d1f6db",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/utility/to_string.cpp": {
+    "mtime": 1784567419.4779017,
+    "ast_hash": "cdc260b9c1761e9f7b62475f721880d6",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/variadic_args.cpp": {
+    "mtime": 1784567419.4779017,
+    "ast_hash": "33b5378edc1971c18f92fa618cff4f8a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/variadic_results.cpp": {
+    "mtime": 1784567419.4789026,
+    "ast_hash": "bf2f3c15fb187dedbde9f19b516a94c5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/version.cpp": {
+    "mtime": 1784567419.4789026,
+    "ast_hash": "d3114f3bbc2f5053a624e5be2559b777",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/source/wrapper.cpp": {
+    "mtime": 1784567419.4789026,
+    "ast_hash": "89799c41f170166ef656038518c0730a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/lua_lifetime/source/main.cpp": {
+    "mtime": 1784567419.4809043,
+    "ast_hash": "7a39d68d287d82178a46d13c4c512ee5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/numerics/source/large.cpp": {
+    "mtime": 1784567419.4819055,
+    "ast_hash": "ae1a2838f7961bbfa39e8cfd7d52b227",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/numerics/source/main.cpp": {
+    "mtime": 1784567419.4819055,
+    "ast_hash": "df2a1b56e190e635760c562c1ec46380",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/1011/source/1011 - release mode crash MSVC.cpp": {
+    "mtime": 1784567419.4839087,
+    "ast_hash": "2c80710208cdcda2b23e6c11b386c4d0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/source/1000 - readonly warning.cpp": {
+    "mtime": 1784567419.4854116,
+    "ast_hash": "b1d838a971e2308f16fbc0e717ed33f4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/source/1008 - as_function binding triggers correctly.cpp": {
+    "mtime": 1784567419.4854116,
+    "ast_hash": "ffd889347e6ab8d989ef43f302adab56",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/source/1067 - optional bindings.cpp": {
+    "mtime": 1784567419.4854116,
+    "ast_hash": "bbc43512347fd483e8c6017522b00eb5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/source/1072 - capture exception propagation.cpp": {
+    "mtime": 1784567419.4854116,
+    "ast_hash": "907ac7734225f0921a1aaa160a787ab6",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/source/1087 - readonly property error checking.cpp": {
+    "mtime": 1784567419.4869862,
+    "ast_hash": "2e31374757dafd2cbd56cc12dc4699fe",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/source/1095 - raw_get from global table fails.cpp": {
+    "mtime": 1784567419.4869862,
+    "ast_hash": "5ff51c2297f3ab9343a74e8e12fdd96b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/source/1096 - functions binding wrong.cpp": {
+    "mtime": 1784567419.4869862,
+    "ast_hash": "6e15d3d0db650a20073b71d9f7dd1369",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/source/1144 - type destructed from non-destructed memory.cpp": {
+    "mtime": 1784567419.4879978,
+    "ast_hash": "8b9e9877d24f68be58dfa31fd5052640",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/source/1149 - static method gets const-morphed in internals.cpp": {
+    "mtime": 1784567419.4879978,
+    "ast_hash": "23ef872642da7613204ebd09e0dc98cc",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/source/1192 - incorrect alignment calculation.cpp": {
+    "mtime": 1784567419.4879978,
+    "ast_hash": "eb4fd09115d97de123d092455490335b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/source/1211 - protected_function_result nullptr.cpp": {
+    "mtime": 1784567419.488999,
+    "ast_hash": "c712df1f8c2c07df648c16fbee22be2d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/source/1266 - add method in Lua 5.4 showing freelist.cpp": {
+    "mtime": 1784567419.488999,
+    "ast_hash": "369cd5b0a8467f7ea54e60cf5ca65b89",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/source/1315 - keep-alive memory.cpp": {
+    "mtime": 1784567419.4899998,
+    "ast_hash": "c1aa87c0cf90a6f5a248192c22d5a6dd",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/source/main.cpp": {
+    "mtime": 1784567419.4899998,
+    "ast_hash": "3232ab6c80502209d2fdf7409c14cef5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/basic.cpp": {
+    "mtime": 1784567419.491505,
+    "ast_hash": "391f0474010b404aa7f783c7515c8b5b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/common_classes.hpp": {
+    "mtime": 1784567419.491505,
+    "ast_hash": "5d2329930f308af7826da68a6a539132",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/container.usertype_check.cpp": {
+    "mtime": 1784567419.4925058,
+    "ast_hash": "eef7d8538c89846194ae6e2681d72e85",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/container_semantics.cpp": {
+    "mtime": 1784567419.4930086,
+    "ast_hash": "effe2178c86a23e7f564d2112f78385f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/container_semantics.custom.cpp": {
+    "mtime": 1784567419.4930086,
+    "ast_hash": "c89944710fb623cf30b39505231fc7a7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/container_semantics.ordered.cpp": {
+    "mtime": 1784567419.494023,
+    "ast_hash": "46bccb0a5f0014f5a671de5a7d3b4279",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/container_semantics.unordered.cpp": {
+    "mtime": 1784567419.494023,
+    "ast_hash": "c68cb82c619e647bd70b53ae5c25d5ed",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/container_shims.cpp": {
+    "mtime": 1784567419.495024,
+    "ast_hash": "1494e23b35eb8b7a10e348b3c895da20",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/container_table.cpp": {
+    "mtime": 1784567419.4955268,
+    "ast_hash": "a111546cb55bc98c2aa5a696e4f6bd07",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/containers.cpp": {
+    "mtime": 1784567419.4955268,
+    "ast_hash": "122a240680e59d30c4fcd6685aa035ce",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/containers.roundtrip.cpp": {
+    "mtime": 1784567419.4965281,
+    "ast_hash": "7393b086981f50cd27bdf86dad0b53d5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/containers.table.cpp": {
+    "mtime": 1784567419.4965281,
+    "ast_hash": "cc6f93b62c88b75789989796995f5895",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/coroutines.cpp": {
+    "mtime": 1784567419.4965281,
+    "ast_hash": "a69bae97d09a758b8ca115ea37cc2844",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/customizations.cpp": {
+    "mtime": 1784567419.497529,
+    "ast_hash": "bc1e0c0d38edf5f45056670b2cd48569",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/customizations_private.cpp": {
+    "mtime": 1784567419.497529,
+    "ast_hash": "1e32425d89c413a74ef6b5364d485248",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/dump.cpp": {
+    "mtime": 1784567419.497529,
+    "ast_hash": "02981ed95e01b9ec5027008a61f6eb7c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/functions.cpp": {
+    "mtime": 1784567419.49853,
+    "ast_hash": "bc07ede3a42511592056862070ebbca4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/functions.std.cpp": {
+    "mtime": 1784567419.4995308,
+    "ast_hash": "16798f65aa0ddf7373cfce0f6da7fc70",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/gc.cpp": {
+    "mtime": 1784567419.4995308,
+    "ast_hash": "f5e72dcc813a9cdd1a712a1edbf32539",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/lua_value.cpp": {
+    "mtime": 1784567419.500532,
+    "ast_hash": "b9d1b8b7f70c176a729158e9dfa814fa",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/main.cpp": {
+    "mtime": 1784567419.500532,
+    "ast_hash": "df2a1b56e190e635760c562c1ec46380",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/operators.cpp": {
+    "mtime": 1784567419.500532,
+    "ast_hash": "f7f10b5a40c02330b9fd00a5b33e9a89",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/overflow.cpp": {
+    "mtime": 1784567419.500532,
+    "ast_hash": "8599dfda9b6f2c2d12ac4ef5422ff16d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/plain_types.cpp": {
+    "mtime": 1784567419.5020351,
+    "ast_hash": "1dcb0b1046c3257ebe095ec02e0488e5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/policies.cpp": {
+    "mtime": 1784567419.5020351,
+    "ast_hash": "eff041b396dd7e040869e105e3d23de2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/proxies.cpp": {
+    "mtime": 1784567419.5020351,
+    "ast_hash": "60d1e60c0fd2dbd0f3400a734583d795",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/sol_test.hpp": {
+    "mtime": 1784567419.503038,
+    "ast_hash": "dd57348b982bf97c0666f769a8a959b7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/state.cpp": {
+    "mtime": 1784567419.5035412,
+    "ast_hash": "b03aba1686c0c5403fa4276e8bdad03c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/storage.cpp": {
+    "mtime": 1784567419.5035412,
+    "ast_hash": "e8762f15f4bee366421e09a3b6cf6fe0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/strings.cpp": {
+    "mtime": 1784567419.5045426,
+    "ast_hash": "838d6ea17b796a4d09d1613e826cef03",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/tables.checks.cpp": {
+    "mtime": 1784567419.5045426,
+    "ast_hash": "22ceee3f527082720d57de67156f02a8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/tables.clear.cpp": {
+    "mtime": 1784567419.5055437,
+    "ast_hash": "db72d12f57a4024f27946aec412d2e95",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/tables.cpp": {
+    "mtime": 1784567419.5055437,
+    "ast_hash": "c6a9ff83c16f4779d6d587b37f452296",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/tables.enums.cpp": {
+    "mtime": 1784567419.5055437,
+    "ast_hash": "dff919bede4660858197b1b71abfbebf",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/tables.indexing.cpp": {
+    "mtime": 1784567419.5055437,
+    "ast_hash": "98108cabb9d3b4b30ccbc6a57f8814f3",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/tables.insertion.cpp": {
+    "mtime": 1784567419.5070467,
+    "ast_hash": "a7ea0a89baf0874585e4b870e238c6e0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/tables.traversal.cpp": {
+    "mtime": 1784567419.5070467,
+    "ast_hash": "16967491b56ffc86dc8f2c84ca85e7da",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/usertypes.auxiliary_keys.cpp": {
+    "mtime": 1784567419.5070467,
+    "ast_hash": "668b466459cdda2c143e11a3ce99c65f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/usertypes.basic.cpp": {
+    "mtime": 1784567419.5080538,
+    "ast_hash": "845b3c9caa8f49892fc578213d031d01",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/usertypes.constructors.cpp": {
+    "mtime": 1784567419.5080538,
+    "ast_hash": "7e2e6d089ad8d4319a94295aab97649a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/usertypes.cpp": {
+    "mtime": 1784567419.509055,
+    "ast_hash": "3cb36a0459320854812de0d31a745990",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/usertypes.inheritance.cpp": {
+    "mtime": 1784567419.509055,
+    "ast_hash": "11b1f58621d848bd2e08b90dbe5da826",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/usertypes.inheritance.multi.cpp": {
+    "mtime": 1784567419.5100555,
+    "ast_hash": "87726de32a6ce4cf594ecc97f4ebafd1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/usertypes.member_variables.cpp": {
+    "mtime": 1784567419.5100555,
+    "ast_hash": "d7379c5395db3e25f6d50eaab207d2a2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/usertypes.overload.cpp": {
+    "mtime": 1784567419.5105586,
+    "ast_hash": "afb5808d78f74b9cc79bc1de7699d6a5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/usertypes.properties.cpp": {
+    "mtime": 1784567419.5105586,
+    "ast_hash": "8050f02c7b1f54414c0b08d9b58f7287",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/usertypes.runtime.cpp": {
+    "mtime": 1784567419.5115604,
+    "ast_hash": "e898f9fd1228da80beba1921000d0294",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/usertypes.unique.cpp": {
+    "mtime": 1784567419.5115604,
+    "ast_hash": "c5fed2ac952f33e2ecbf845ff87a2c4b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/usertypes.unregister.cpp": {
+    "mtime": 1784567419.5115604,
+    "ast_hash": "384756083d21e9cc01339a5d273a142e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/utility.cpp": {
+    "mtime": 1784567419.5130632,
+    "ast_hash": "f3017793962c74fbc5f191e4084d9516",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/source/variadics.cpp": {
+    "mtime": 1784567419.5130632,
+    "ast_hash": "bb6cebe8f995a5654abad57e8a1ad268",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/utility/source/is_integer.cpp": {
+    "mtime": 1784567419.5140736,
+    "ast_hash": "27bf2c7cbc2995cfb7d4948a0bf0f770",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/utility/source/main.cpp": {
+    "mtime": 1784567419.5150747,
+    "ast_hash": "df2a1b56e190e635760c562c1ec46380",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/utility/source/to_string.cpp": {
+    "mtime": 1784567419.5150747,
+    "ast_hash": "ab2afdacd867cca7675f30c005a9eeef",
+    "semantic_hash": ""
+  },
+  "RT2Tests/src/Phase6ALifecycleTests.cpp": {
+    "mtime": 1784569188.5343716,
+    "ast_hash": "e486842c90156d8affa1688efa025764",
+    "semantic_hash": ""
+  },
+  "panic.lua": {
+    "mtime": 1784569100.0919538,
+    "ast_hash": "1a5133a70901b8e373600afba12070cd",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/lua/README.md": {
+    "mtime": 1784567410.5166764,
+    "ast_hash": "a4523b4806144efc41d2818744673495",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/.github/ISSUE_TEMPLATE.md": {
+    "mtime": 1784567419.1745825,
+    "ast_hash": "6ae76d255df28d98da7cf1b844539dda",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/.github/workflows/macos.yml": {
+    "mtime": 1784567419.1760857,
+    "ast_hash": "80a7c98479e43ddca27a68df15d0ee77",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/.github/workflows/ubuntu.yml": {
+    "mtime": 1784567419.1760857,
+    "ast_hash": "f8bf46d488728f3a8da62fa66183c8fb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/.github/workflows/windows.yml": {
+    "mtime": 1784567419.1770933,
+    "ast_hash": "005d2a5786200c9ec5eb90f56917bfdb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/CMakeLists.txt": {
+    "mtime": 1784567419.1780963,
+    "ast_hash": "dbd24a9221a5034e0596740ee6b83d2e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/CONTRIBUTING.md": {
+    "mtime": 1784567419.1780963,
+    "ast_hash": "5378c4a75331aaee6d866c133b88fb5a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/CONTRIBUTORS.md": {
+    "mtime": 1784567419.1791015,
+    "ast_hash": "e6f1cee9f1dff6e4a9f45f53713ec9a8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/LICENSE.txt": {
+    "mtime": 1784567419.1791015,
+    "ast_hash": "01b30c27e0faa332667fd029369d6e87",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/README.md": {
+    "mtime": 1784567430.2141316,
+    "ast_hash": "91c0373fa49d6650af5514a8cc514b4e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/CMakeLists.txt": {
+    "mtime": 1784567419.1886547,
+    "ast_hash": "f6afd90d42eac356cd1a709a713949a5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/requirements.txt": {
+    "mtime": 1784567419.2233732,
+    "ast_hash": "13993cfa1cfa3a9d812b8ac5c38729b4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/_themes/sol2/layout.html": {
+    "mtime": 1784567419.2243824,
+    "ast_hash": "07a55c622afc3bd0f502b78b3db0de45",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/api-top.rst": {
+    "mtime": 1784567419.2263954,
+    "ast_hash": "59eca5e79c66560936724c32d1cab7d4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/as_args.rst": {
+    "mtime": 1784567419.2273989,
+    "ast_hash": "5c439b6316c488454797349e81e06ca3",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/as_container.rst": {
+    "mtime": 1784567419.2273989,
+    "ast_hash": "fb1f4622ab48ced0035f93de286154e1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/as_function.rst": {
+    "mtime": 1784567419.2273989,
+    "ast_hash": "b9d2bd8d27f4aa1f2c8d115c6b108cfa",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/as_returns.rst": {
+    "mtime": 1784567419.228402,
+    "ast_hash": "bd128f2570acc1037b4b81e95248ddf4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/as_table.rst": {
+    "mtime": 1784567419.228402,
+    "ast_hash": "fd3188a8b3ae83cb2fa1b6decf96deff",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/c_call.rst": {
+    "mtime": 1784567419.2294054,
+    "ast_hash": "89cf7119d7dc977fb8d533da2e3deab6",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/compatibility.rst": {
+    "mtime": 1784567419.2294054,
+    "ast_hash": "6b2f21eb1145df1d2fe50e9b24102b81",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/coroutine.rst": {
+    "mtime": 1784567419.2294054,
+    "ast_hash": "fcb3256af1a78805944120a0086de7ca",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/environment.rst": {
+    "mtime": 1784567419.230409,
+    "ast_hash": "cf315ff79002a8b0e7fa09bfdbe4a013",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/error.rst": {
+    "mtime": 1784567419.230409,
+    "ast_hash": "5da8ab7359b1aa064ee8fa1848951046",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/function.rst": {
+    "mtime": 1784567419.230409,
+    "ast_hash": "780e94be3363c94cd8fc2e3538f74c7e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/lua_value.rst": {
+    "mtime": 1784567419.2314124,
+    "ast_hash": "442ec234c26fd80b8c115e4baf763015",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/make_reference.rst": {
+    "mtime": 1784567419.2314124,
+    "ast_hash": "89f0e9982f88a0ef025efc7bba292cbe",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/metatable_key.rst": {
+    "mtime": 1784567419.2314124,
+    "ast_hash": "d085062cf6e16f7db2ae51d582f18854",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/nested.rst": {
+    "mtime": 1784567419.2314124,
+    "ast_hash": "21a2411ba411648715f4468113525203",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/new_table.rst": {
+    "mtime": 1784567419.2329159,
+    "ast_hash": "7f5a4b91a557169ebf2d71b78e532c8e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/object.rst": {
+    "mtime": 1784567419.2329159,
+    "ast_hash": "29660249e2cd490a5260f7ef64ef2507",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/optional.rst": {
+    "mtime": 1784567419.2329159,
+    "ast_hash": "0a9d67c5e0e305a968bc840705849f0e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/overload.rst": {
+    "mtime": 1784567419.233946,
+    "ast_hash": "2b13112b90358513601d17e7e4835bc7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/policies.rst": {
+    "mtime": 1784567419.233946,
+    "ast_hash": "0b16f4ad52ba3406f81f5e34478a3940",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/property.rst": {
+    "mtime": 1784567419.2349498,
+    "ast_hash": "8df71a357ba77230cb76627119c18d2a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/protect.rst": {
+    "mtime": 1784567419.2349498,
+    "ast_hash": "89db3d20ff9b17829627dcb024aef418",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/protected_function.rst": {
+    "mtime": 1784567419.2349498,
+    "ast_hash": "0bebd9d868e9cdbe5a2b7a2161046b79",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/proxy.rst": {
+    "mtime": 1784567419.235994,
+    "ast_hash": "ba319d1733842a1277141273e693df2c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/readonly.rst": {
+    "mtime": 1784567419.235994,
+    "ast_hash": "4f42537ed05fef7c4eb58ada53244566",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/reference.rst": {
+    "mtime": 1784567419.237003,
+    "ast_hash": "40403d115a5f26773b52eb7125f8dc22",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/resolve.rst": {
+    "mtime": 1784567419.237003,
+    "ast_hash": "a4bb1f2a3b859de965bf270834d300c7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/stack.rst": {
+    "mtime": 1784567419.2380066,
+    "ast_hash": "3438b7121be048be3e047cc8b013a705",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/stack_reference.rst": {
+    "mtime": 1784567419.2380066,
+    "ast_hash": "72cf2202637a30e106c02aa8f41e70fb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/state.rst": {
+    "mtime": 1784567419.23901,
+    "ast_hash": "7e35aa267d1ff790ead87b5b0bded865",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/table.rst": {
+    "mtime": 1784567419.23901,
+    "ast_hash": "3e9cfa2987c327ea173a3e10fe7380cd",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/table_traversal_keys.rst": {
+    "mtime": 1784567419.23901,
+    "ast_hash": "067bcac976735adb89c88c376fc89193",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/this_environment.rst": {
+    "mtime": 1784567419.240011,
+    "ast_hash": "5c9c45cfe6f54ecc7d38e750571e63ff",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/this_state.rst": {
+    "mtime": 1784567419.240011,
+    "ast_hash": "81408faafdee0709fce38c90ccedcd7e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/thread.rst": {
+    "mtime": 1784567419.240515,
+    "ast_hash": "f289d94b7557c506d545f1ef531185f8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/tie.rst": {
+    "mtime": 1784567419.240515,
+    "ast_hash": "8f47faba3e79ad4c98c2c5f6572f074e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/types.rst": {
+    "mtime": 1784567419.241518,
+    "ast_hash": "17c5e4dd78111755d8bc1ee74b2fbec4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/unique_usertype_traits.rst": {
+    "mtime": 1784567419.241518,
+    "ast_hash": "f4ef8bdf154a24ccce6ff8318be60d3a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/user.rst": {
+    "mtime": 1784567419.241518,
+    "ast_hash": "9bb5baa059d007f3e3dcf2a8c87991ce",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/userdata.rst": {
+    "mtime": 1784567419.241518,
+    "ast_hash": "41e5226ffaa6c3df6a165bb8dcf4b1c7",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/usertype.rst": {
+    "mtime": 1784567419.243022,
+    "ast_hash": "3f7b0639a7f1fd860b50b0344f281f88",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/usertype_memory.rst": {
+    "mtime": 1784567419.243022,
+    "ast_hash": "95f7764517ae6dd7d08b6166b25b3864",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/var.rst": {
+    "mtime": 1784567419.243022,
+    "ast_hash": "659486c2902e5ae6da12cfb12edb6388",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/variadic_args.rst": {
+    "mtime": 1784567419.2445252,
+    "ast_hash": "bf9617de54eaecce0204b44a2babd008",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/variadic_results.rst": {
+    "mtime": 1784567419.2445252,
+    "ast_hash": "365093c44f31c68b7b5e90cd0eca9de1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/api/yielding.rst": {
+    "mtime": 1784567419.2445252,
+    "ast_hash": "080418da313bac853e7b95d9cbeca83c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/benchmarks.rst": {
+    "mtime": 1784567419.2455337,
+    "ast_hash": "988ef21d42f6b881fafaaba319347ee5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/build.rst": {
+    "mtime": 1784567419.2460375,
+    "ast_hash": "81f41821c4722d19bfcf535bc0042672",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/codecvt.rst": {
+    "mtime": 1784567419.2460375,
+    "ast_hash": "36e8b0cc9efbd7cb001f0270211c7528",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/compilation.rst": {
+    "mtime": 1784567419.2460375,
+    "ast_hash": "62a2e8abfc5fa465e0479a6b366642b8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/containers.rst": {
+    "mtime": 1784567419.2470434,
+    "ast_hash": "9a4fcf4f0378a8a3d65263d6a18892d0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/errors.rst": {
+    "mtime": 1784567419.2480683,
+    "ast_hash": "cbf2d3aef756396201dcb8bae744c7ff",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/exceptions.rst": {
+    "mtime": 1784567419.2480683,
+    "ast_hash": "a3c5d2e50f6e50d90554a31774fcbeec",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/features.rst": {
+    "mtime": 1784567419.2480683,
+    "ast_hash": "57fc3ce86c5d765cbaa4657fb4663ec2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/functions.rst": {
+    "mtime": 1784567419.249072,
+    "ast_hash": "136c72483f76f199984b5d28bf0c4b57",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/index.rst": {
+    "mtime": 1784567419.249072,
+    "ast_hash": "cb9074c5bfb09b81f811aa086c86bbb2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/licenses.rst": {
+    "mtime": 1784567419.250075,
+    "ast_hash": "72ca52f641869a7d1a4ad2f56ba1c86b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/mentions.rst": {
+    "mtime": 1784567419.2865398,
+    "ast_hash": "e42458c5ab5eabcaa02a6c3caab1c114",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/origin.rst": {
+    "mtime": 1784567419.287543,
+    "ast_hash": "6706acee264681ab1d4f4c79c332b89f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/performance.rst": {
+    "mtime": 1784567419.287543,
+    "ast_hash": "aba2c44a6104958681ad58a274b009e4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/rtti.rst": {
+    "mtime": 1784567419.287543,
+    "ast_hash": "f08c64bb58b2030f8a4402a52e3056f8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/safety.rst": {
+    "mtime": 1784567419.2885487,
+    "ast_hash": "7d3240ba2cd03183dc28021f485ef849",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/threading.rst": {
+    "mtime": 1784567419.2885487,
+    "ast_hash": "4846a14b1b8ce10509bfa1def72ba53e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/traits.rst": {
+    "mtime": 1784567419.2895546,
+    "ast_hash": "c46d41b50690e08e90050121059df14f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/tutorial/all-the-things.rst": {
+    "mtime": 1784567419.2895546,
+    "ast_hash": "6e49bd688fded0111f2ed30979a3dba0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/tutorial/customization.rst": {
+    "mtime": 1784567419.2905579,
+    "ast_hash": "d6c61c225006db0e4e2d84819e1d25c2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/tutorial/cxx-in-lua.rst": {
+    "mtime": 1784567419.2905579,
+    "ast_hash": "fb7ea324cbf3f6101ca506e043517f06",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/tutorial/existing.rst": {
+    "mtime": 1784567419.2905579,
+    "ast_hash": "b7d88fae8b800caa67ffe54838f6618f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/tutorial/functions.rst": {
+    "mtime": 1784567419.2915587,
+    "ast_hash": "b5d4f6a8c1715a070ad227cc2a8ffa83",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/tutorial/getting-started.rst": {
+    "mtime": 1784567419.2920628,
+    "ast_hash": "b02516dc66d26fce6d1c02930ab4d507",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/tutorial/ownership.rst": {
+    "mtime": 1784567419.2920628,
+    "ast_hash": "2515fef84481d6a6f4299a9987d889d0",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/tutorial/tutorial-top.rst": {
+    "mtime": 1784567419.2920628,
+    "ast_hash": "b62e0d5c80740b5bf6bdc01a705483d1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/tutorial/variables.rst": {
+    "mtime": 1784567419.293067,
+    "ast_hash": "ad602335ade2d700524254b0b5ce6d69",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/usertypes.rst": {
+    "mtime": 1784567419.293067,
+    "ast_hash": "4ce132a2e750971c2fde58538abb09d5",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/CMakeLists.txt": {
+    "mtime": 1784567419.2940762,
+    "ast_hash": "2bd4fa7d9542c26956859a2b613d39a4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/customization/CMakeLists.txt": {
+    "mtime": 1784567419.2950797,
+    "ast_hash": "1b1c466623fe2e0736eb7087758cf688",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/interop/LuaBridge/CMakeLists.txt": {
+    "mtime": 1784567419.29863,
+    "ast_hash": "332a4f95d45d3ae3efda15b0a12b3b87",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/interop/kaguya/CMakeLists.txt": {
+    "mtime": 1784567419.2996335,
+    "ast_hash": "c629fcd95c97af99b08228f13654a85c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/interop/luwra/CMakeLists.txt": {
+    "mtime": 1784567419.3016403,
+    "ast_hash": "dd8ef39843ddff9c1352dc2615f82992",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/interop/tolua/CMakeLists.txt": {
+    "mtime": 1784567419.3026412,
+    "ast_hash": "d3a7034a989bf2f248b6dc60ed3c4554",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/examples/require_dll_example/CMakeLists.txt": {
+    "mtime": 1784567419.3041482,
+    "ast_hash": "a33ac67e624d256a88eb64b61db8b65e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/meson_options.txt": {
+    "mtime": 1784567430.2196622,
+    "ast_hash": "44494d77f46b789e9aaec80f002c8344",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/single/CMakeLists.txt": {
+    "mtime": 1784567419.4167962,
+    "ast_hash": "5da3fa84e3edfaf7ac45e786d7f6521d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/CMakeLists.txt": {
+    "mtime": 1784567419.4198084,
+    "ast_hash": "b748271ab02e19e985eca254ad68e056",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/config_tests/CMakeLists.txt": {
+    "mtime": 1784567419.4198084,
+    "ast_hash": "bafeee3b5f686829906f1e1f7c68ca2b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/config_tests/function_pointers/CMakeLists.txt": {
+    "mtime": 1784567419.4208121,
+    "ast_hash": "33cf0141926d9923132f79e66dda3b9f",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/config_tests/integer_value_fits/CMakeLists.txt": {
+    "mtime": 1784567419.4228616,
+    "ast_hash": "d1c83ce7f70f718972e9c291b2a3a530",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/container_exhaustive/CMakeLists.txt": {
+    "mtime": 1784567419.4243782,
+    "ast_hash": "743d07155a5beb0fa5bf280d2d23d905",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/coroutines/CMakeLists.txt": {
+    "mtime": 1784567419.4263844,
+    "ast_hash": "9dd1e930e351e373982fb2a8c50f8d4a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/enum/CMakeLists.txt": {
+    "mtime": 1784567419.428414,
+    "ast_hash": "becc5be6f7d2868a8a73f3316db8339a",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/environment/CMakeLists.txt": {
+    "mtime": 1784567419.4304247,
+    "ast_hash": "7287a0a3d79b4ca529d136f87833ed2e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/exceptions/CMakeLists.txt": {
+    "mtime": 1784567419.4329317,
+    "ast_hash": "221c07412f92e146172dda8c294aae36",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/inclusion/CMakeLists.txt": {
+    "mtime": 1784567419.4359522,
+    "ast_hash": "4f5f85b704bdb5fc9f1bd3de124020af",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/lua_lifetime/CMakeLists.txt": {
+    "mtime": 1784567419.4799035,
+    "ast_hash": "3778607bf9e381ede7be51c3dc40fac1",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/numerics/CMakeLists.txt": {
+    "mtime": 1784567419.4809043,
+    "ast_hash": "77a3df758682962bc48f2933a6bac6e4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/1011/CMakeLists.txt": {
+    "mtime": 1784567419.4829066,
+    "ast_hash": "13b4f3bed4f150cf8c506a8acd9e3786",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/CMakeLists.txt": {
+    "mtime": 1784567419.4839087,
+    "ast_hash": "e5bd3a386ea08f5dfb61d63f02377391",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/regression_tests/simple/CMakeLists.txt": {
+    "mtime": 1784567419.4839087,
+    "ast_hash": "fd652e2fe7f16653e58c58c61e3d1678",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/run_time/CMakeLists.txt": {
+    "mtime": 1784567419.4905033,
+    "ast_hash": "9771f1f6e410fe2bde6b3be11531490d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/tests/utility/CMakeLists.txt": {
+    "mtime": 1784567419.5140736,
+    "ast_hash": "743d07155a5beb0fa5bf280d2d23d905",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/Ko-fi_Blue.png": {
+    "mtime": 1784567419.250075,
+    "ast_hash": "8371e183d37c06b4245ed345c3ed3685",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/become_a_patron_button.png": {
+    "mtime": 1784567419.2510762,
+    "ast_hash": "8b4321f782e84764e556af3dee32a131",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/base_derived.png": {
+    "mtime": 1784567419.25158,
+    "ast_hash": "cb446c6df5616af547b40e88a1dffcd9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/c_function.png": {
+    "mtime": 1784567419.25158,
+    "ast_hash": "7391e5636c82614e8e2af66804a9abdf",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/c_function_through_lua_in_c.png": {
+    "mtime": 1784567419.253083,
+    "ast_hash": "49fa7fa4426f54ae003eaa76b89d0746",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/implicit_inheritance.png": {
+    "mtime": 1784567419.253083,
+    "ast_hash": "f1b1e9af8ccf9b3f7c30c50d2548f4cf",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/lua_function_in_c.png": {
+    "mtime": 1784567419.271159,
+    "ast_hash": "3ff0ab2e66c81d5e0b4379c0043f26b9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/member_function_call.png": {
+    "mtime": 1784567419.271159,
+    "ast_hash": "22878cb3737885e989a496035a9055cc",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/multi_return.png": {
+    "mtime": 1784567419.2726622,
+    "ast_hash": "f09c24a6efa1fdc1ff49c8c0b30c4266",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/multi_return_lua.png": {
+    "mtime": 1784567419.273665,
+    "ast_hash": "f32f775fa144133a4c5d7e2f97e6a63d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/optional_failure.png": {
+    "mtime": 1784567419.273665,
+    "ast_hash": "6fe2312bde618d3cd8c38fdb1fdfc4b2",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/optional_half_failure.png": {
+    "mtime": 1784567419.273665,
+    "ast_hash": "8b13f8900a6e33e08e5f4b9a5e1b39ef",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/optional_success.png": {
+    "mtime": 1784567419.2749968,
+    "ast_hash": "9449631cf62cefa4e6b06a8659f3c812",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/return_userdata.png": {
+    "mtime": 1784567419.2760003,
+    "ast_hash": "70d55f0abff4664abdb5566a39ce841d",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/stateful_function_object.png": {
+    "mtime": 1784567419.2760003,
+    "ast_hash": "070b8b7511f0227e741cc7f8534cec7c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/table_chained_get.png": {
+    "mtime": 1784567419.2770014,
+    "ast_hash": "e906ba2796ea647d158b81d9e0939980",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/table_chained_set.png": {
+    "mtime": 1784567419.2775056,
+    "ast_hash": "83c355bed0dbee81ef18a43162d313a4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/table_get.png": {
+    "mtime": 1784567419.278511,
+    "ast_hash": "e71c739fe0dd7ea585fa272b11f100d8",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/table_global_string_get.png": {
+    "mtime": 1784567419.278511,
+    "ast_hash": "87c4f79da6a2647475b83dd748b0f78e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/table_global_string_set.png": {
+    "mtime": 1784567419.2795146,
+    "ast_hash": "820c87ce1b03753a621d28d49bacfbcf",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/table_set.png": {
+    "mtime": 1784567419.2795146,
+    "ast_hash": "c047f58310e2b5fb64e077987d6131e4",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/userdata_variable_access.png": {
+    "mtime": 1784567419.2805178,
+    "ast_hash": "db2e5158ef202c098e489315f57d271c",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/userdata_variable_access_large.png": {
+    "mtime": 1784567419.281521,
+    "ast_hash": "243a1c46119d769d88cf3354bab5bc75",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/bench/userdata_variable_access_last.png": {
+    "mtime": 1784567419.281521,
+    "ast_hash": "b3fc69953b28bca8918c787ec555f154",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/discord_logo_wordmark.png": {
+    "mtime": 1784567419.281521,
+    "ast_hash": "fc0b01fe10a0b8c602fb0106d8189d9b",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/eevee_code_after.jpg": {
+    "mtime": 1784567419.2830248,
+    "ast_hash": "af763a0b1ccacc8a91a2cef06bac53a9",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/eevee_code_before.jpg": {
+    "mtime": 1784567419.2830248,
+    "ast_hash": "b44b80d36cb919fd084c96b8a82eadad",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/github_logo.png": {
+    "mtime": 1784567419.2840283,
+    "ast_hash": "ef7a02b69836dc8b6a732a54c4200dcb",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/github_sponsors_logo.png": {
+    "mtime": 1784567419.2840283,
+    "ast_hash": "ec82740869c98533d208a7166c99d1bd",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/liberapay_logo.png": {
+    "mtime": 1784567419.2840283,
+    "ast_hash": "50d429e10705084e120c2fb612d33e0e",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/pp_cc_mark_111x69.jpg": {
+    "mtime": 1784567419.2855315,
+    "ast_hash": "4e3b49f85a3e7180cbb32c4a2c67b985",
+    "semantic_hash": ""
+  },
+  "RT2App/vendor/sol2/documentation/source/media/sol.png": {
+    "mtime": 1784567419.2855315,
+    "ast_hash": "9b9db44b6f886840603830ca02bfe3a3",
     "semantic_hash": ""
   }
 }

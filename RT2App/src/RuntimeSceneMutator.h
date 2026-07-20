@@ -5,6 +5,7 @@
 
 #include "core/Error.h"
 #include "core/UUID.h"
+#include "ECSComponents.h"
 
 #include <optional>
 #include <string>
@@ -49,10 +50,14 @@ struct RuntimeEntityCreateDesc
     std::optional<glm::vec3> translation;
     std::optional<glm::quat> rotation;
     std::optional<glm::vec3> scale;
-    // Phase 4 supports only the empty + transform + name + visibility
-    // component set. No mesh, no light, no camera, no primitive. Phase 6
-    // scripting may extend this; Phase 4 deliberately keeps the surface
-    // minimal so the mutator invariants are tractable and testable.
+    // Phase 6 scripting: optional script component to emplace on the new
+    // runtime entity. Present only when world.spawn(desc) included a script
+    // binding. The mutator emplaces ScriptComponent verbatim (the caller
+    // fills the asset reference + field values); ScriptSystem::SyncScript-
+    // Environments constructs the live sol2 environment for the new entity
+    // at the next safe point. Phase 4 deliberately omitted this; Phase 6A
+    // adds it because scripted spawning must produce scripted entities.
+    std::optional<ScriptComponent> script;
 };
 
 class RuntimeSceneMutator

@@ -5,10 +5,13 @@
 
 #include "core/UUID.h"
 #include "SceneTypes.h"
+#include "ScriptFieldValue.h"
 
+#include <entt/entt.hpp>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <unordered_map>
 #include <vector>
 #include <string>
 #include <cstdint>
@@ -169,6 +172,7 @@ enum class AssetKind : uint8_t
     Model       = 1,   // .gltf / .glb / .obj
     Texture     = 2,   // image referenced by a material
     Environment = 3,   // .hdr / .exr environment map
+    Script      = 4,   // .lua script asset (Phase 6)
 };
 
 // Settings that affect how an asset is rebuilt on load. Only values that
@@ -257,6 +261,43 @@ struct MaterialOverrideComponent
     // Transient: index into doc.ecs.materials of the override slot the
     // resolver installed. Filled by ResolveAll; not persisted as identity.
     int materialIndex = -1;
+};
+
+// ============================================================================
+// Phase 6 — Script component
+//
+// ScriptComponent is the persisted, authored data that binds a Lua script to
+// an entity. It is pure data: which script asset this entity runs, plus the
+// user-authored field values. The live sol2 environment/table is NOT stored
+// here — it lives in ScriptSystem, rebuilt on Play and torn down on Stop.
+// This mirrors the MaterialOverrideComponent::materialIndex precedent
+// (transient post-resolution state is off-document) and keeps SceneDocument
+// free of Lua state, exactly as SceneDocument.h documents ("script VM state"
+// is explicitly NOT part of the document).
+//
+// The fieldValues map is the seam Phase 6B fills: the script's `rt2.fields`
+// DSL declares fields with types and defaults; the inspector edits
+// fieldValues; the serializer persists them; the runtime clone carries them
+// into the per-entity sol2 environment as `self` on OnCreate.
+//
+// Phase 6A: ScriptComponent is declared and registered in
+// PersistedComponents (Count 10->11) so cloning + the serializer visitor
+// account for it, but fieldValues is empty and unused. The live Lua state is
+// what 6A proves; persistence of fieldValues is 6B.
+// ============================================================================
+
+struct ScriptComponent
+{
+    // Durable reference to the .lua script asset. path is a portable,
+    // scene-relative UTF-8 path (forward slashes, normalized). sourceKey is
+    // "lua:asset=<path>" (a stable subresource identity, ready for the
+    // future asset-UUID form). kind must be AssetKind::Script.
+    AssetReference asset;
+
+    // User-authored public field values, keyed by the field name declared in
+    // the script's rt2.fields block. Phase 6B populates this from the
+    // inspector and the serializer; Phase 6A leaves it empty.
+    std::unordered_map<std::string, rt2::core::ScriptFieldValue> fieldValues;
 };
 
 #endif // ECS_COMPONENTS_H

@@ -5,12 +5,23 @@ project "RT2App"
    targetdir "bin/%{cfg.buildcfg}"
    staticruntime "off"
 
-    files { "src/**.h", "src/**.cpp", "vendor/**.h", "vendor/**.cpp" }
+    files { "src/**.h", "src/**.cpp", "vendor/**.h", "vendor/**.cpp", "vendor/**.c" }
 
     -- Exclude entt entirely from the file glob — it's header-only and
     -- included via #include <entt/entt.hpp>. The include dir is sufficient.
+    -- Exclude sol2's tests/examples (they need Catch2 which we don't vendor).
+    -- Exclude Lua's standalone interpreter, compiler, test suite, and docs.
     removefiles {
         "vendor/entt/**",
+        "vendor/sol2/tests/**",
+        "vendor/sol2/examples/**",
+        "vendor/sol2/scripts/**",
+        "vendor/sol2/single/**",
+        "vendor/lua/lua.c",
+        "vendor/lua/luac.c",
+        "vendor/lua/onelua.c",
+        "vendor/lua/testes/**",
+        "vendor/lua/manual/**",
     }
 
     -- Shader source files (compiled via custom build rules below)
@@ -175,6 +186,8 @@ project "RT2App"
        "vendor/tinygltf",
        "vendor/stb",
        "vendor/entt/src",
+       "vendor/sol2/include",          -- Phase 6: sol2 header-only bindings
+       "vendor/lua",                   -- Phase 6: Lua 5.4 public headers
        "vendor/NRD/Include",
        "vendor/NRD/Integration",
        "vendor/NRI/Include",

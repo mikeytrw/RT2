@@ -73,6 +73,13 @@ struct SubtreeEntityRecord
 
 	bool      hasMotion = false;
 	MotionComponent motion{};
+
+	// Phase 6: script component. Carried through subtree snapshots so
+	// duplicate/paste of scripted entities preserves the binding. 6A carries
+	// the asset reference + (empty) field values; 6B adds field-value
+	// persistence.
+	bool      hasScript = false;
+	ScriptComponent script{};
 };
 
 struct RootSiblingAnchor

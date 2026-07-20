@@ -79,7 +79,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
       <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
@@ -117,7 +117,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Debug-windows-x86_64/RT2App"<
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_RELEASE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -161,7 +161,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Release-windows-x86_64/RT2App
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_DIST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>None</DebugInformationFormat>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -209,18 +209,18 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\ColorTransfer.h" />
     <ClInclude Include="src\CommandUtils.h" />
     <ClInclude Include="src\ComposePass.h" />
+    <ClInclude Include="src\DesktopInputBackend.h" />
     <ClInclude Include="src\ECSComponents.h" />
     <ClInclude Include="src\ECSScene.h" />
     <ClInclude Include="src\EditorCameraWorkflow.h" />
     <ClInclude Include="src\EditorCommand.h" />
     <ClInclude Include="src\EditorCommandHistory.h" />
     <ClInclude Include="src\EditorCommands.h" />
-    <ClInclude Include="src\EditorStructuralCommands.h" />
     <ClInclude Include="src\EditorPropertyCommands.h" />
-    <ClInclude Include="src\PropertyEditSession.h" />
     <ClInclude Include="src\EditorSceneState.h" />
     <ClInclude Include="src\EditorSelection.h" />
     <ClInclude Include="src\EditorSettings.h" />
+    <ClInclude Include="src\EditorStructuralCommands.h" />
     <ClInclude Include="src\EditorSyncRouter.h" />
     <ClInclude Include="src\EditorTransformGizmo.h" />
     <ClInclude Include="src\FileDialog.h" />
@@ -235,13 +235,19 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\GpuPickingPass.h" />
     <ClInclude Include="src\GpuResources.h" />
     <ClInclude Include="src\GpuTimestampProfiler.h" />
+    <ClInclude Include="src\IRuntimeCommandSink.h" />
+    <ClInclude Include="src\IRuntimeScriptDispatch.h" />
     <ClInclude Include="src\ISceneRenderBridge.h" />
+    <ClInclude Include="src\InputService.h" />
+    <ClInclude Include="src\InputStateMachine.h" />
+    <ClInclude Include="src\InputTypes.h" />
     <ClInclude Include="src\MeshRegistry.h" />
     <ClInclude Include="src\NRDIntegration.h" />
     <ClInclude Include="src\PathTracePass.h" />
     <ClInclude Include="src\PersistedComponents.h" />
     <ClInclude Include="src\Phase1AFixtureGenerator.h" />
     <ClInclude Include="src\PrimitiveGeometry.h" />
+    <ClInclude Include="src\PropertyEditSession.h" />
     <ClInclude Include="src\RTLog.h" />
     <ClInclude Include="src\RasterPass.h" />
     <ClInclude Include="src\ReSTIRGIPass.h" />
@@ -251,13 +257,9 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\RendererGPU.h" />
     <ClInclude Include="src\ReservoirGIResources.h" />
     <ClInclude Include="src\ReservoirResources.h" />
-    <ClInclude Include="src\RuntimeSceneController.h" />
     <ClInclude Include="src\RuntimeLifecycleObserver.h" />
+    <ClInclude Include="src\RuntimeSceneController.h" />
     <ClInclude Include="src\RuntimeSceneMutator.h" />
-    <ClInclude Include="src\InputTypes.h" />
-    <ClInclude Include="src\InputStateMachine.h" />
-    <ClInclude Include="src\DesktopInputBackend.h" />
-    <ClInclude Include="src\InputService.h" />
     <ClInclude Include="src\SceneAssetResolver.h" />
     <ClInclude Include="src\SceneDocument.h" />
     <ClInclude Include="src\SceneEditorUI.h" />
@@ -272,6 +274,8 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\SceneSerializer.h" />
     <ClInclude Include="src\SceneTypes.h" />
     <ClInclude Include="src\SceneVisibility.h" />
+    <ClInclude Include="src\ScriptFieldValue.h" />
+    <ClInclude Include="src\ScriptSystem.h" />
     <ClInclude Include="src\ShaderManager.h" />
     <ClInclude Include="src\StagingArena.h" />
     <ClInclude Include="src\SubtreeSnapshot.h" />
@@ -301,6 +305,37 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="vendor\NRI\Include\NRI.h" />
     <ClInclude Include="vendor\NRI\Include\NRIDescs.h" />
     <ClInclude Include="vendor\NRI\Include\NRIMacro.h" />
+    <ClInclude Include="vendor\lua\lapi.h" />
+    <ClInclude Include="vendor\lua\lauxlib.h" />
+    <ClInclude Include="vendor\lua\lcode.h" />
+    <ClInclude Include="vendor\lua\lctype.h" />
+    <ClInclude Include="vendor\lua\ldebug.h" />
+    <ClInclude Include="vendor\lua\ldo.h" />
+    <ClInclude Include="vendor\lua\lfunc.h" />
+    <ClInclude Include="vendor\lua\lgc.h" />
+    <ClInclude Include="vendor\lua\ljumptab.h" />
+    <ClInclude Include="vendor\lua\llex.h" />
+    <ClInclude Include="vendor\lua\llimits.h" />
+    <ClInclude Include="vendor\lua\lmem.h" />
+    <ClInclude Include="vendor\lua\lobject.h" />
+    <ClInclude Include="vendor\lua\lopcodes.h" />
+    <ClInclude Include="vendor\lua\lopnames.h" />
+    <ClInclude Include="vendor\lua\lparser.h" />
+    <ClInclude Include="vendor\lua\lprefix.h" />
+    <ClInclude Include="vendor\lua\lstate.h" />
+    <ClInclude Include="vendor\lua\lstring.h" />
+    <ClInclude Include="vendor\lua\ltable.h" />
+    <ClInclude Include="vendor\lua\ltests.h" />
+    <ClInclude Include="vendor\lua\ltm.h" />
+    <ClInclude Include="vendor\lua\lua.h" />
+    <ClInclude Include="vendor\lua\luaconf.h" />
+    <ClInclude Include="vendor\lua\lualib.h" />
+    <ClInclude Include="vendor\lua\lundump.h" />
+    <ClInclude Include="vendor\lua\lvm.h" />
+    <ClInclude Include="vendor\lua\lzio.h" />
+    <ClInclude Include="vendor\sol2\include\sol\compatibility\compat-5.3.c.h" />
+    <ClInclude Include="vendor\sol2\include\sol\compatibility\compat-5.3.h" />
+    <ClInclude Include="vendor\sol2\include\sol\compatibility\compat-5.4.h" />
     <ClInclude Include="vendor\stb\stb_image_write.h" />
     <ClInclude Include="vendor\tinyexr.h" />
     <ClInclude Include="vendor\tinygltf\tiny_gltf.h" />
@@ -332,7 +367,14 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\DesktopInputBackend.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\EditorCameraWorkflow.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\EditorCommandHistory.cpp">
@@ -341,11 +383,6 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\EditorCommands.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\EditorStructuralCommands.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -366,6 +403,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\EditorSettings.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\EditorStructuralCommands.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -435,6 +477,16 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\InputService.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\InputStateMachine.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\NRDIntegration.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -486,21 +538,6 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\RuntimeSceneMutator.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\InputStateMachine.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\DesktopInputBackend.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\InputService.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -565,6 +602,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\ScriptSystem.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\ShaderManager.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -611,6 +653,171 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\core\UUID.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lapi.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lauxlib.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lbaselib.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lcode.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lcorolib.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lctype.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\ldblib.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\ldebug.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\ldo.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\ldump.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lfunc.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lgc.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\linit.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\liolib.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\llex.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lmathlib.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lmem.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\loadlib.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lobject.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lopcodes.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\loslib.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lparser.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lstate.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lstring.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lstrlib.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\ltable.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\ltablib.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\ltests.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\ltm.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lundump.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lutf8lib.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lvm.c">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="vendor\lua\lzio.c">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

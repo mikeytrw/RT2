@@ -80,6 +80,12 @@ Result<UUID> RuntimeSceneMutator::CreateEntity(SceneDocument& doc,
         parentHierarchy->children.push_back(entity);
     }
 
+    // Phase 6: emplace the optional ScriptComponent verbatim. The live sol2
+    // environment is built by ScriptSystem::SyncScriptEnvironments at the
+    // next safe point (after ApplyDeferredStructuralChanges returns).
+    if (desc.script)
+        registry.emplace<ScriptComponent>(entity, *desc.script);
+
     SceneGraph::MarkDirty(registry, entity);
 
     return Result<UUID>::Ok(uuid);

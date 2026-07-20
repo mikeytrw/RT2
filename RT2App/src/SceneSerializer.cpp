@@ -27,7 +27,7 @@ using json = nlohmann::json;
 
 namespace rt2::core {
 
-static_assert(PersistedComponents::Count == 10,
+static_assert(PersistedComponents::Count == 11,
               "Update EntityRecord serialization when authored component coverage changes");
 
 // ============================================================================
@@ -285,6 +285,14 @@ struct EntityRecord
 
     bool hasMotion = false;
     MotionComponent motion{};
+
+    // Phase 6: script component. 6A carries it through clone-in-memory so
+    // Play preserves ScriptComponent. 6B adds the v3 serialization (asset
+    // path + fieldValues); 6A does NOT serialize it to disk (the v2 writer
+    // skips it, the v2 reader leaves it absent). CloneInMemory uses the
+    // in-memory EntityRecord path, so the component survives Play/Stop.
+    bool hasScript = false;
+    ScriptComponent script{};
 };
 
 std::vector<SerializedEntity> CollectEntitiesSorted(const entt::registry& reg)
@@ -371,6 +379,15 @@ EntityRecord BuildEntityRecord(const entt::registry& reg, entt::entity e, const 
     {
         r.hasMotion = true;
         r.motion    = *mc;
+    }
+
+    // Phase 6: carry ScriptComponent through the in-memory clone path. 6A
+    // does not serialize it to disk (the v2 writer/reader skip it); 6B adds
+    // v3 serialization with asset path + fieldValues.
+    if (auto* sc = reg.try_get<ScriptComponent>(e))
+    {
+        r.hasScript = true;
+        r.script    = *sc;
     }
 
     return r;
@@ -732,6 +749,14 @@ bool BuildDocumentFromRecords(SceneDocument& doc,
         // Motion
         if (r.hasMotion)
             doc.ecs.registry.emplace<MotionComponent>(e, r.motion);
+
+        // Phase 6: script component. Carried through the in-memory clone
+        // path (CloneInMemory and the runtime Play clone). 6A does NOT
+        // serialize it to disk in v2; 6B adds v3 serialization. The on-disk
+        // path (JsonToEntityRecord) never sets hasScript, so a load from
+        // disk never emplaces a ScriptComponent here.
+        if (r.hasScript)
+            doc.ecs.registry.emplace<ScriptComponent>(e, r.script);
     }
 
     // --- Pass 2: resolve parent UUIDs to Hierarchy ---

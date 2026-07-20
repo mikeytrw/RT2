@@ -4,3 +4,10 @@
 [submodule "RT2App/vendor/entt"]
 	path = RT2App/vendor/entt
 	url = https://github.com/skypjack/entt.git
+[submodule "RT2App/vendor/lua"]
+	path = RT2App/vendor/lua
+	url = https://github.com/lua/lua.git
+	branch = v5.4
+[submodule "RT2App/vendor/sol2"]
+	path = RT2App/vendor/sol2
+	url = https://github.com/ThePhD/sol2.git

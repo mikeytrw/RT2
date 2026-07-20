@@ -3390,3 +3390,816 @@ registered. The single `SetCursorMode` call is in
 - `run_recovery_test.ps1` PASS.
 - graphify updated: 24825 nodes, 51458 edges, 945 communities.
 
+## Phase 6 — Lua scripting (planned)
+
+The Phase 6 spec above (lines 415–466) is the goal. Phase 6 is delivered in
+three sub-slices. Each sub-slice is a usable increment: 6A proves Lua drives
+an entity; 6B makes the authoring round-trip survive save/load; 6C makes
+runtime iteration productive via hot reload, the remaining bindings, and a
+deterministic headless acceptance script.
+
+### Foundation already in place (no rework needed)
+
+The research survey confirms Phase 6 is greenfield on exactly four axes —
+Lua, `ScriptComponent`, reflection, and file watching — but the seams it
+plugs into are already designed for it:
+
+- `IRuntimeLifecycleObserver` (`RuntimeLifecycleObserver.h`) with
+  `OnSceneStart` / `OnSceneStop` is in place; its header comment explicitly
+  says Phase 6 will add a separate `IRuntimeCommandSink` passed alongside
+  the const document. `RuntimeSceneController::SetLifecycleObserver`
+  registers it.
+- The deferred structural-operation queue
+  (`RuntimeSceneController::QueueCreateRuntimeEntity` /
+  `QueueDestroyRuntimeEntity`, drained by
+  `ApplyDeferredStructuralChanges` at the safe point after the fixed-step
+  loop and before `SceneGraph::UpdateWorldTransforms` + batched sync) is
+  the spawn/destroy channel for scripts.
+- `RuntimeSceneMutator::CreateEntity` /
+  `DestroySubtree` are the CPU-only mutators behind the queue. The header
+  comment says "Phase 6 scripting may extend the surface"; 6A may extend
+  `RuntimeEntityCreateDesc` with a script-asset reference.
+- `IInputService` (`InputTypes.h`, CPU-only) is read-only and ready to
+  hand to scripts through the lifecycle seam. The header comment confirms
+  "Phase 6 scripts will receive a const reference to this through the
+  runtime lifecycle observer seam."
+- `SceneSerializer` is at schema v2 with a `PersistedComponents::ForEach`
+  visitor; adding `ScriptComponent` to the visitor (Count 10→11) is the
+  one place that fails together with serializer and duplication coverage
+  tests if drifted. `CloneInMemory` (the Play path) preserves every
+  persisted component, so cloning is automatic once `ScriptComponent` is
+  in the visitor.
+- `AssetReference` / `ImportedMeshSourceComponent` /
+  `MaterialOverrideComponent` in `ECSComponents.h` are the durable-asset
+  reference pattern. `AssetKind` is an `enum class : uint8_t` that
+  6A/6B extends with `Script = 4`; `sourceKey` is `lua:asset=<path>` or a
+  future asset-UUID form. Scene-relative UTF-8 portable paths are
+  relativized by `SceneSerializer::Save`.
+- `rt2::core::UUID` (`core/UUID.h`) with parse/format/hash/`Nil()` is in
+  place; script asset references and persisted field-value maps key off
+  it.
+- `RuntimeSceneController::RunFixedTick` currently runs `MotionSystem`
+  directly. 6A adds fixed script dispatch before physics' slot and
+  variable script dispatch after the deferred-structural safe point,
+  matching the canonical frame order in `game-loop.md` (lines 130–143).
+- `RT2Tests/premake5.lua` compiles a hand-picked CPU-only subset of
+  RT2App `.cpp` files; 6A adds the new `ScriptSystem.cpp` etc. to that
+  list. Lua source becomes the first external link in `RT2Tests` (today
+  it links nothing external), so the premake change is the gating
+  decision per sub-slice.
+
+### Resolutions from design review (before 6A implementation)
+
+The first draft of this plan had five load-bearing gaps concentrated where
+the runtime lifecycle meets the script environment map — the one genuinely
+new moving part. They are closed here, not deferred to "polish," because
+each is cheap to specify now and expensive to retrofit.
+
+**G1 — Per-frame script dispatch needs its own interface.**
+`IRuntimeLifecycleObserver` is documented as const-observe, start/stop only
+(`OnSceneStart(const SceneDocument&)` / `OnSceneStop(const SceneDocument&)`).
+Folding `OnFixedUpdate(dt)` / `OnUpdate(dt)` into it would pollute that
+contract — those methods drive mutation through the sink and are not const.
+6A introduces a **separate** `IRuntimeScriptDispatch` (CPU-only header):
+
+```cpp
+class IRuntimeScriptDispatch {
+public:
+    virtual ~IRuntimeScriptDispatch() = default;
+    virtual void OnFixedUpdate(float dt) = 0;   // before MotionSystem, UUID-sorted
+    virtual void OnUpdate(float dt) = 0;        // after deferred safe point
+    virtual void SyncScriptEnvironments() = 0;  // see G2
+};
+```
+
+`RuntimeSceneController` holds it via a new `SetScriptDispatch(...)` /
+`GetScriptDispatch()` pair, distinct from the lifecycle observer. This is
+the **one** structural addition to `RuntimeSceneController` the first draft
+hand-waved; it is named now. `ScriptSystem` implements both interfaces;
+the controller calls `OnSceneStart`/`OnSceneStop` on the observer and
+`OnFixedUpdate`/`OnUpdate`/`SyncScriptEnvironments` on the dispatch.
+
+**G2 — Spawned-scripted-entity lifecycle is a core mechanic, not a detail.**
+`world.spawn` during Play creates entities at the safe point, but the first
+draft never said when their `OnCreate` fires — and without that, "scripts
+drive spawning" doesn't hold. 6A specifies the full mechanic:
+
+- `RuntimeEntityCreateDesc` gains an `std::optional<ScriptComponent>
+  script` field. `RuntimeSceneMutator::CreateEntity` emplaces it when
+  present (the header comment already licenses extending the surface).
+- `ScriptSystem` maintains a per-entity environment map that is a
+  **per-frame-maintained mirror of the runtime registry**, not a
+  build-it-once-at-Play structure. Each frame, between
+  `ApplyDeferredStructuralChanges` and `OnUpdate`, the controller calls
+  `SyncScriptEnvironments()` (the third method on
+  `IRuntimeScriptDispatch`), which:
+  1. Walks the runtime registry's `ScriptComponent`-bearing entities.
+  2. For entities in the registry but NOT in the environment map:
+     constructs a fresh `sol::environment`, loads the script, evaluates
+     `rt2.fields` (6B), binds callbacks, and fires `OnCreate` **immediately**
+     — before this frame's `OnUpdate`. This is the only path by which a
+     runtime-spawned scripted entity gets `OnCreate`.
+  3. For entities in the environment map but NOT in the registry (destroyed
+     at the safe point): fires `OnDestroy` **before** tearing down the
+     environment, so the script sees itself as alive for its final
+     callback. This is the `world.destroy` → `OnDestroy` timing rule.
+  4. For entities present in both: no-op (environment already live).
+- `OnUpdate(dt)` then iterates the now-current environment map in UUID
+  order. Entities spawned this frame receive `OnCreate` (in
+  `SyncScriptEnvironments`) then `OnUpdate` (in the dispatch) — both in
+  the same frame, in that order. Entities destroyed this frame received
+  `OnDestroy` (in `SyncScriptEnvironments`) and are absent from `OnUpdate`.
+- `OnFixedUpdate(dt)` runs **before** the fixed-step loop's
+  `ApplyDeferredStructuralChanges`, so spawns queued during
+  `OnFixedUpdate` do NOT resolve until the safe point between the fixed
+  loop and `SyncScriptEnvironments` — same frame, after the loop. A
+  scripted spawn in `OnFixedUpdate` is visible to `OnUpdate` this frame
+  and to `OnFixedUpdate` next frame, never to a later substep this frame.
+  This preserves the "no mid-iteration mutation" guarantee across the
+  fixed loop.
+
+This makes `SyncScriptEnvironments` the single chokepoint where the
+environment map and the runtime registry agree. The first draft's
+"construct environments on Play" is the special case where the registry is
+the full runtime clone and the environment map is empty.
+
+**G3 — Headless acceptance must use a deterministic UUID provider.**
+`QueueCreateRuntimeEntity` allocates the UUID at queue time from the
+runtime provider; with `OsUuidProvider` those UUIDs vary per run, so the
+6C `--script-scenario` JSON report (UUID-keyed, includes spawned
+entities) is non-deterministic. 6C fixes this by having
+`RT2SliceRunner::RunScriptScenario` install a
+`DeterministicUuidProvider` (seeded from a fixed seed in the scenario
+file) via `RuntimeSceneController::SetRuntimeUuidProvider` — the seam
+already exists from Phase 4. The scenario file's `expectedTransforms`
+are then UUID-keyed against the deterministic sequence. Asserting only
+against pre-existing UUIDs is the alternative if a scenario wants to
+forbid spawning; both modes are stated in 6C.
+
+**S1 — Explicit per-instance state machine.** Every script instance is
+in exactly one of four states, made testable:
+
+```
+NeverCreated ──OnCreate──▶ Live ──runtime error──▶ Quarantined
+                              │                        │
+                              │                        └──(reload, 6C)──▶ Live
+                              │
+                              └──OnDestroy (at Stop or safe-point)──▶ Destroyed
+```
+
+- `NeverCreated`: `ScriptComponent` present, environment not yet built.
+  No callbacks fire.
+- `Live`: environment built, `OnCreate` has fired. All callbacks fire.
+- `Quarantined`: a runtime error occurred in a callback (or a syntax
+  error on load/reload). **No further callbacks fire** for this instance
+  this Play session until a successful reload (6C). Mid-frame: if
+  `OnFixedUpdate` throws on substep 2 of 3, substep 3 and this frame's
+  `OnUpdate` are skipped for this instance (the "no further callbacks"
+  rule applies within the frame too — stated explicitly). Other
+  instances are unaffected.
+- `Destroyed`: `OnDestroy` has fired (at Stop or at the safe point for a
+  `world.destroy`'d entity). The environment is torn down. Using the
+  entity handle after this returns nil/false.
+
+Quarantined-at-Stop: `OnDestroy` is **skipped** for a quarantined
+instance — it never had a clean lifecycle, and calling `OnDestroy` on a
+script that failed mid-`OnUpdate` is unsafe. This means a script that
+grabbed a `world` handle in `OnCreate` gets no cleanup hook if it
+quarantines. This is acceptable because Lua state is GC'd and the
+`IRuntimeCommandSink` holds no per-instance resources (the queue is
+controller-owned); the only thing a quarantined script can leak is
+Lua-side state, which the `sol::state` reset on `OnSceneStop` reclaims.
+Stated explicitly so 6C's reload-un-quarantines rule has a clear before
+state.
+
+**S2 — The 4-arg callback signature is locked from 6A.**
+`on_update(entity, dt, input, world)` is the signature from 6A onward.
+`input` is present from 6A but **inert** — the `input.*` methods are
+added in 6C. A 6A-authored script that ignores `input` runs unchanged
+under 6C; a 6C-authored script that uses `input` would see `nil`-method
+errors under 6A (acceptable — 6A scripts are test-only, not shipped). The
+same lock applies to `on_fixed_update(entity, dt, input, world)` and
+`on_create(entity, world)` / `on_destroy(entity)`. Adding a parameter
+later would break every 6A-authored script; the 4-arg form is the
+forward-compatible contract.
+
+**S3 — `self` is the per-entity field table, with split read/write
+semantics.** The first draft's narrative leaned on `self.speed` without
+enumerating `self` in the bindings. Pinned:
+
+- `self` is a per-environment table populated from
+  `ScriptComponent::fieldValues` on `OnCreate` (6B populates the values;
+  6A's `self` is empty because `fieldValues` is empty).
+- **Reads** return the persisted/edited values (6B) or declared defaults
+  (6A). The inspector edits `ScriptComponent::fieldValues`, not `self`
+  directly; `self` is rebuilt from the component on `OnCreate`.
+- **Writes** to `self.x` mutate the runtime environment only — they are
+  **non-persistent** (not written back to `ScriptComponent::fieldValues`,
+  invisible to the inspector, lost on Stop). This is the natural carrier
+  for `rt2.previous_state` in 6C: reload copies the old environment's
+  `self` into the new environment's `rt2.previous_state` before
+  re-binding callbacks.
+- `self` is not a binding on `entity` or `world`; it is a bare Lua local
+  injected into the environment by `ScriptSystem` before callbacks run.
+
+**S4 — `entity.set_position` writes through the sink, not the const
+document.** `ScriptSystem::OnSceneStart` receives `const SceneDocument&`
+(from the observer contract) and `IRuntimeCommandSink*`. The entity
+handle in Lua holds a pointer to the sink; `entity.set_position(vec3)`
+calls `sink->SetRuntimeTransform(uuid, ...)` which writes the runtime
+`SceneDocument`'s `Transform` via the non-const path the sink owns. The
+narrative's "write directly to the runtime `SceneDocument`'s `Transform`"
+is reconciled: the script never sees the document, the sink does. The
+handle→sink wiring is set at `OnCreate` time and is valid for the
+instance's lifetime. A handle used after `OnDestroy` has a null sink
+pointer and fails safely.
+
+**S5 — Two distinct orderings, two distinct bookkeepings.** Updates
+(`OnFixedUpdate`, `OnUpdate`) iterate the environment map in
+**UUID-sorted** order (deterministic, matches `MotionSystem`'s existing
+UUID-sorted iteration and the `game-loop.md` stable-order rule).
+`OnDestroy` at Stop iterates in **reverse-creation-order** so a parent
+that spawned children in `OnCreate` destroys them before itself.
+`ScriptSystem` records creation order in a `std::vector<UUID>`
+alongside the environment map; `SyncScriptEnvironments` appends newly
+created UUIDs to it and the Stop path reverses it. The two orderings are
+explicit and separately testable.
+
+**S6 — `vec3` is in 6B's initial field type set.** The first draft
+deferred `vec3` and `color`. `vec3` (offsets, directions, velocities) is
+among the most common designer-facing script fields, and adding a
+variant arm later re-touches exactly the 6B compatibility-rule +
+serializer surface being built then. 6B's `ScriptFieldValue` variant is
+`std::variant<bool, int64_t, double, std::string, rt2::core::UUID,
+glm::vec3>` from the start. `color` (a `vec3` with a color picker
+widget) is the same variant arm with a different inspector widget — also
+in 6B. `rt2.field.vec3(default)` and `rt2.field.color(default)` join
+the DSL. This avoids a fast-follow that re-touches the serializer.
+
+**S7 — Protected-call discipline is a 6A cross-cutting rule, not a 6C
+detail.** The "one bad script never crashes the engine" guarantee — the
+foundation of the quarantine model — requires **every** Lua entry point
+to use `sol::protected_function` with a bound error handler, plus a
+`lua_atpanic` guard installed on the `sol::state`. This covers: field
+DSL evaluation, all four lifecycle callbacks, timer callbacks (6C), and
+any sink-invoked call back into Lua. A panic or uncaught error
+quarantines the instance per S1. This is universal from 6A, not added
+piecemeal.
+
+**S8 — Doc drift to fix when 6A lands.** (a) `MotionSystem` is inline
+in `RuntimeSceneController::RunFixedTick`, not a class — the spec's
+`MotionSystem::FixedUpdate` naming is aspirational; the 6A implementation
+call site is "the inline motion integration in `RunFixedTick`". (b)
+`game-loop.md`'s numbered Step list (lines 154–159) omits the fixed-
+script slot that the prose at line 161 implies; 6A updates that list to
+include "fixed script callbacks" before the motion integration, matching
+the full contract at lines 130–143.
+
+### Phase 6A — Lua embedding and lifecycle (planned)
+
+**Outcome.** A C++ script component drives an entity's transform during
+Play, with `OnCreate`, `OnFixedUpdate`, `OnUpdate`, and `OnDestroy`
+callbacks dispatched in the canonical frame order. No inspector
+reflection, no field persistence, no hot reload, no input bindings yet —
+the script source is referenced by an absolute or scene-relative path and
+the bindings surface is intentionally minimal. This slice proves the
+embedding, the lifecycle dispatch, and the deferred-queue mutation
+channel.
+
+**Vendor.** Vendor Lua 5.4 (the canonical C sources, compiled as a
+static lib) under `RT2App/vendor/lua/` and sol2 (header-only) under
+`RT2App/vendor/sol2/`. Update `RT2App/premake5.lua` (`includedirs`,
+`libdirs`, `links`, `files` for `vendor/lua/src/**.c`) and
+`RT2Tests/premake5.lua` (link the Lua static lib into RT2Tests so the
+CPU-only script-system tests can run). Add Lua to RT2SliceRunner only if
+the slice runner needs to execute scripts (it does, for the headless
+acceptance in 6C — defer the link until then).
+
+**New types (CPU-only, no Vulkan/ImGui/Walnut/GLFW):**
+
+- `ECSComponents.h`: add `ScriptComponent { AssetReference asset;
+  std::unordered_map<std::string, ScriptFieldValue> fieldValues; }`.
+  `ScriptFieldValue` is defined in a new `ScriptFieldValue.h` as
+  `std::variant<bool, int64_t, double, std::string, rt2::core::UUID,
+  glm::vec3>` (the `vec3` arm is present from 6A per S6, though 6A does
+  not populate `fieldValues` — that is 6B's job). The variant is shared
+  by the serializer and the reflection layer without pulling sol2 into
+  the CPU-only boundary. The live sol2 environment/table handle is NOT
+  stored on the component — it lives in `ScriptSystem` (mirrors the
+  `MaterialOverrideComponent::materialIndex` precedent: transient
+  post-resolution state is off-document).
+- `AssetKind`: extend with `Script = 4`.
+- `PersistedComponents.h`: add `Tag<ScriptComponent>{}`, bump `Count`
+  to 11.
+- `IRuntimeScriptDispatch` (new header, CPU-only — see G1): the
+  per-frame mutation-driving interface, distinct from
+  `IRuntimeLifecycleObserver`'s const-observe contract.
+  ```cpp
+  class IRuntimeScriptDispatch {
+  public:
+      virtual ~IRuntimeScriptDispatch() = default;
+      virtual void OnFixedUpdate(float dt) = 0;
+      virtual void OnUpdate(float dt) = 0;
+      virtual void SyncScriptEnvironments() = 0;
+  };
+  ```
+- `IRuntimeCommandSink` (new header, CPU-only — see S4): the controlled
+  mutation channel handed to scripts. Wraps
+  `RuntimeSceneController::QueueCreateRuntimeEntity` /
+  `QueueDestroyRuntimeEntity` and owns the non-const path to the runtime
+  `SceneDocument`'s transform/visibility setters. No raw
+  `entt::registry`, no `SceneManager` access, no render bridge. The Lua
+  `entity` handle holds a pointer to the sink; `entity.set_position(vec3)`
+  calls `sink->SetRuntimeTransform(uuid, ...)` (the script never sees
+  the document).
+- `ScriptSystem.h/.cpp` (new, CPU-only): owns the single `sol::state`,
+  a per-entity `sol::environment` map keyed by UUID, a per-entity
+  `sol::table` for `self` (see S3), a per-entity declared-fields table
+  (populated in 6B, empty in 6A), a creation-order `std::vector<UUID>`
+  (see S5), and the per-instance state machine (see S1). Implements
+  **both** `IRuntimeLifecycleObserver` (start/stop) and
+  `IRuntimeScriptDispatch` (per-frame). Public API:
+  ```cpp
+  class ScriptSystem : public IRuntimeLifecycleObserver,
+                       public IRuntimeScriptDispatch {
+  public:
+      explicit ScriptSystem(IUuidProvider& uuidProvider);
+
+      // IRuntimeLifecycleObserver
+      void OnSceneStart(const SceneDocument& runtime,
+                        const IInputService* input,
+                        IRuntimeCommandSink* sink) override;
+      void OnSceneStop(const SceneDocument& runtime) override;
+
+      // IRuntimeScriptDispatch
+      void OnFixedUpdate(float dt) override;   // UUID-sorted
+      void OnUpdate(float dt) override;        // UUID-sorted
+      void SyncScriptEnvironments() override;  // see G2
+
+      // 6C hot reload (declared now, stubbed in 6A)
+      virtual void ReloadScript(const std::filesystem::path& path) {}
+  };
+  ```
+  Protected-call discipline (S7): every Lua entry point
+  (`rt2.fields` eval, all four callbacks, sink-invoked calls) runs
+  through `sol::protected_function` with a bound error handler; a
+  `lua_atpanic` guard is installed on the `sol::state` at construction.
+  Any uncaught error or panic transitions the instance to `Quarantined`
+  (S1).
+
+- `RuntimeEntityCreateDesc` (existing, in `RuntimeSceneMutator.h`):
+  gains `std::optional<ScriptComponent> script` so `world.spawn` can
+  spawn a scripted entity (see G2). The header comment already licenses
+  extending the surface.
+
+**Lifecycle dispatch integration (see G1, G2, S1, S5):**
+
+- `RuntimeSceneController` gains `SetScriptDispatch(...)` /
+  `GetScriptDispatch()` (the **one** structural addition — see G1).
+  `ScriptSystem` is registered via both `SetLifecycleObserver` and
+  `SetScriptDispatch`.
+- `Play` calls `m_LifecycleObserver->OnSceneStart(runtime, &inputService,
+  &commandSink)` AFTER the runtime is fully activated. `ScriptSystem`
+  builds environments for all `ScriptComponent`-bearing entities in the
+  runtime clone, fires `OnCreate` once per entity in UUID-sorted order,
+  and records creation order (S5). The `input` and `sink` pointers are
+  stored on the controller and passed through; this is the
+  `IRuntimeCommandSink` addition the `RuntimeLifecycleObserver.h`
+  comment promised.
+- `RunFixedTick(dt)` calls `m_ScriptDispatch->OnFixedUpdate(dt)` BEFORE
+  the inline motion integration, in UUID-sorted order, to match
+  `game-loop.md:134` ("fixed script callbacks … physics step"). Spawns
+  queued during `OnFixedUpdate` do **not** resolve mid-loop — they
+  resolve at the safe point after the loop (G2).
+- After the fixed-step loop, `Update` calls
+  `ApplyDeferredStructuralChanges` (existing), then
+  `m_ScriptDispatch->SyncScriptEnvironments()` (new — see G2): this is
+  the single chokepoint where the environment map mirrors the runtime
+  registry. For newly-applied entities it constructs the environment
+  and fires `OnCreate` immediately; for destroyed entities it fires
+  `OnDestroy` then tears down the environment. Then
+  `m_ScriptDispatch->OnUpdate(frameDt)` runs in UUID-sorted order, then
+  `SceneGraph::UpdateWorldTransforms`, then the batched sync — matching
+  `game-loop.md:137` ("variable script callbacks" after the safe point).
+- `Stop` calls `OnSceneStop` BEFORE runtime destruction: `ScriptSystem`
+  fires `OnDestroy` for all live instances in reverse-creation-order
+  (S5), skips `OnDestroy` for quarantined instances (S1), tears down the
+  `sol::state`, then the controller destroys the runtime document.
+- Pause runs no script callbacks; Step runs exactly one
+  `OnFixedUpdate(kFixedDt)` + one `SyncScriptEnvironments()` + one
+  `OnUpdate(kFixedDt)`, matching the `game-loop.md:161` rule for stepped
+  frames. Spawns queued during the stepped `OnFixedUpdate` resolve in
+  the stepped `SyncScriptEnvironments`, visible to the stepped
+  `OnUpdate`.
+
+**Bindings exposed to scripts in 6A (intentionally narrow; signatures
+locked from 6A per S2, S3):**
+
+- **Callback signatures (forward-compatible contract):**
+  `on_create(entity, world)`,
+  `on_fixed_update(entity, dt, input, world)`,
+  `on_update(entity, dt, input, world)`,
+  `on_destroy(entity)`. The `input` parameter is present from 6A but
+  **inert** — `input.*` methods are added in 6C; a 6A script that
+  ignores `input` runs unchanged under 6C. Missing functions are
+  skipped silently (not an error).
+- **`self` (per S3):** a per-environment table populated from
+  `ScriptComponent::fieldValues` on `OnCreate` (empty in 6A — 6B fills
+  it). Reads return persisted/edited values (6B) or defaults (6A);
+  writes mutate runtime-only and are non-persistent (lost on Stop,
+  invisible to the inspector). `self` is also the carrier for
+  `rt2.previous_state` in 6C reload.
+- **`entity` (validated UUID-keyed handle; holds a sink pointer per
+  S4):** `entity.get_position()`, `entity.set_position(vec3)` (→
+  `sink->SetRuntimeTransform`), `entity.get_local_transform()`,
+  `entity.set_local_transform(trs)`, `entity.get_world_transform()`,
+  `entity.get_name()`, `entity.get_uuid()`, `entity.set_visible(bool)`,
+  `entity.get_visible()`. After `OnDestroy`, the sink pointer is null
+  and all methods fail safely.
+- **`world` (the `IRuntimeCommandSink`):** `world.find_by_name(name)` →
+  handle or nil, `world.find_by_uuid(uuid)` → handle or nil,
+  `world.spawn(desc)` → pending handle (queues a create; resolves at
+  the next `SyncScriptEnvironments`; using it before resolution returns
+  a "pending" handle that fails safely), `world.destroy(handle)` (queues
+  a destroy; `OnDestroy` fires at the next `SyncScriptEnvironments`).
+- **`log`:** `log.info/warn/error(string)`.
+
+**Not exposed in 6A (deferred to 6B/6C):** input actions, light/camera
+properties, timers, mesh/material mutation, public-field reflection.
+
+**Test plan (CPU-only Doctest, `RT2Tests/src/Phase6ALifecycleTests.cpp`):**
+
+- A script that increments a counter in `on_create`, `on_fixed_update`,
+  `on_update`, `on_destroy` fires each callback exactly the documented
+  number of times across a Play/Pause/Step/Stop sequence.
+- Two entities using the same script source have isolated per-entity
+  environment state.
+- A script that sets `entity.set_position(vec3)` in `on_fixed_update`
+  results in the runtime transform changing and one batched
+  transform-only GPU sync per rendered frame (asserted via a recording
+  null render bridge, mirroring the Phase 4 test pattern).
+- **G2 spawn lifecycle:** a script that calls `world.spawn(desc)` (with
+  a `ScriptComponent` in `desc`) during `on_update` for a fixed number
+  of frames results in: the spawn is deferred, applied at the safe
+  point, the new entity's `on_create` fires in `SyncScriptEnvironments`
+  this frame (before the parent's `on_update` returns — well, in the
+  same frame, after the parent's `on_update` since spawn was queued
+  mid-`on_update`), the new entity's `on_update` fires this frame (after
+  its `on_create`), and the new entity is visible to `on_fixed_update`
+  next frame. Iterating during the spawn frame does not see the new
+  entity mid-iteration (deterministic, no invalid iteration).
+- **G2 destroy lifecycle:** a script that calls `world.destroy(self)`
+  during `on_update` is deferred; `on_destroy` fires at the next
+  `SyncScriptEnvironments` (the entity is alive for the rest of this
+  frame's callbacks and gone next frame); the environment is torn down
+  after `on_destroy`.
+- **G2 fixed-loop spawn:** a script that calls `world.spawn` during
+  `on_fixed_update` (substep 2 of 3) does NOT see the new entity in
+  substep 3; it resolves at the safe point and is visible to
+  `on_update` this frame and `on_fixed_update` next frame.
+- A destroyed entity handle used in a subsequent callback fails safely
+  (returns nil/false, does not alias a reused EnTT ID) — the sink
+  pointer is null after `on_destroy`.
+- A script with a syntax error on load quarantines only that instance
+  (state `NeverCreated` → `Quarantined`, no `on_create`); other
+  instances of the same source continue to run; the error includes the
+  script path, entity UUID, and a stack trace.
+- **S1 mid-frame quarantine:** a script that throws in `on_fixed_update`
+  on substep 2 of 3: substep 3 and this frame's `on_update` are skipped
+  for this instance; the instance is `Quarantined`; other instances are
+  unaffected; `on_destroy` is NOT called at Stop for this instance.
+- **S5 ordering:** updates iterate UUID-sorted (asserted by recording
+  the order of callback firings across entities with known UUIDs);
+  `on_destroy` at Stop iterates reverse-creation-order (a parent that
+  spawned a child in `on_create` destroys the child before itself).
+- Lifecycle order: `on_create` fires once per entity on Play;
+  `on_fixed_update` fires `kMaxSubsteps` times max per frame;
+  `on_update` fires once per frame (zero while Paused); `on_destroy`
+  fires once per live entity on Stop (not on quarantine, not for
+  `NeverCreated`).
+- `IRuntimeCommandSink` rejects `world.spawn` / `world.destroy`
+  outside Play with a clear error (the controller already enforces
+  this on the queue; the sink surfaces it to Lua as a Lua error, not
+  a C++ exception).
+- **S7 protected-call discipline:** a script that calls `error()` in
+  `on_update` does not crash the engine; a script that triggers a Lua
+  panic (e.g. stack overflow via deep recursion) does not crash the
+  engine — the `lua_atpanic` guard quarantines the instance.
+
+**Verification gates (6A):** Release x64 build clean (RT2App + RT2Tests
++ RT2SliceRunner); `RT2Tests` with only the six known pre-existing
+failures; new `Phase6ALifecycleTests` passing; `run_slice_test.ps1`
+and `run_recovery_test.ps1` pass; `graphify update .`; documentation
+updates with test counts. No interactive acceptance yet (no inspector
+UI to author a script in).
+
+**Explicitly out of scope for 6A:** public-field reflection and
+inspector UI; field-value persistence; hot reload; input/light/camera/
+mesh/material bindings; timers; headless JSON state report. The
+`ScriptComponent.fieldValues` map exists in the struct but is empty and
+unused in 6A — it is the seam 6B fills.
+
+### Phase 6B — Public fields, reflection, and persistence (planned)
+
+**Outcome.** A script declares public fields with declared types and
+defaults; the inspector renders them, the user edits them, and they
+survive save/load. The compatibility rules (same name+type preserves
+value; added → default; removed → warning; renamed → explicit alias;
+incompatible type → default + diagnostic) are enforced on load and on
+reload. No hot reload yet — reload is exercised via explicit
+`ReloadScript(path)` calls in tests.
+
+**Reflection (built from scratch — none exists today; the `ScriptFieldValue`
+variant and `self` table are already in place from 6A per S3/S6):**
+
+- `ScriptFieldDescriptor { std::string name; ScriptFieldType type;
+  ScriptFieldValue defaultValue; std::optional<std::string> alias; }`
+  discovered by the script system when it loads a script source: the
+  script declares fields via a small RT2-owned DSL (`rt2.fields = {
+  speed = rt2.field.float(5.0), name = rt2.field.string("cube"),
+  enabled = rt2.field.bool(true), offset = rt2.field.vec3(0,0,0),
+  tint = rt2.field.color(1,1,1) }` at the top of the script, evaluated
+  in a sandboxed environment before the lifecycle callbacks are
+  bound). `ScriptFieldType` enumerates the supported variant types
+  (`bool`, `int64`, `double`, `string`, `uuid`, `vec3`, `color` — the
+  last two share the `glm::vec3` variant arm but get different
+  inspector widgets).
+- `ScriptSystem::GetDeclaredFields(UUID)` →
+  `std::vector<ScriptFieldDescriptor>`; used by the inspector and the
+  serializer.
+- `SceneEditorUI::RenderScriptEditor(SceneManager::EntityId)` —
+  mirrors the existing `Render*Editor` dispatch pattern (the model is
+  `RenderMotionEditor` at `SceneEditorUI.cpp:944-1003`, including the
+  "Add Component" / "Remove Component" button pair); renders one
+  widget per declared field, typed by `ScriptFieldType`, with the
+  `PropertyEditSession<T>` record-on-release pattern for continuous
+  edits (drag/slider). Reads/writes
+  `ScriptComponent::fieldValues[fieldName]`; on release, records a
+  `SetScriptFieldCommand` (Phase 3 command, undoable, `Structural`
+  sync impact since it changes authored component state).
+- The inspector lists the bound script asset path with a "Rebind" button
+  (deferred to Phase 7's content-browser era; 6B edits the path as
+  text).
+
+**Field-value persistence:**
+
+- `SceneSerializer` v2 → v3 with a migration path. v3 adds the
+  `ScriptComponent` payload: `AssetReference` (path + sourceKey) plus
+  `fieldValues` as a JSON object keyed by field name with a tagged-
+  value form (`{ "type": "float", "value": 5.0 }`). v2 read + in-memory
+  migration: a v2 scene with no `ScriptComponent` is loaded as v3 with
+  no scripts. Save always writes v3.
+- `PersistedComponents::ForEach` is updated to include
+  `ScriptComponent` (Count 11). Existing v2 fixtures continue to load
+  via the migration path.
+- The two-pass load (create + resolve) is unchanged; script field
+  values are applied in the create pass (they are self-contained per
+  entity, no cross-entity references).
+- `CloneInMemory` (Play path) clones `ScriptComponent` automatically
+  once it is in the visitor; field values are carried into the runtime
+  clone and presented to the script as the initial environment
+  state.
+
+**Compatibility rules on load and on reload (the 6B core):**
+
+- **Same field name + same type:** value preserved.
+- **Added field:** receives the declared default; a warning is logged
+  with the entity UUID and field name.
+- **Removed field:** value dropped from the persisted map; a warning
+  is logged with the entity UUID and field name.
+- **Renamed field (declared `alias = "oldName"`):** value migrated
+  from `oldName` to `newName` if `oldName` is present in the persisted
+  map and `newName` is not; otherwise the declared default. A warning
+  is logged on the migration.
+- **Incompatible type change (e.g. float → string):** value reset to
+  the declared default with a diagnostic naming the entity, field,
+  old type, and new type.
+
+These rules run on (a) scene load (comparing persisted field values
+against the currently declared fields) and (b) reload (comparing the
+in-memory field values against the newly declared fields).
+
+**Test plan (`RT2Tests/src/Phase6BFieldsTests.cpp`):**
+
+- A script declares `speed = rt2.field.float(5.0)`; the inspector
+  path writes `7.0`; save; reload; the value is `7.0` (type preserved).
+- Add a field `height = rt2.field.float(2.0)` to the script between
+  save and reload: `speed` preserves its value, `height` receives
+  the default `2.0`, a warning is logged for the added field.
+- Remove the `speed` field between save and reload: the persisted
+  `speed` value is dropped, a warning is logged, the script's
+  `OnUpdate` does not see `speed`.
+- Rename `speed` to `velocity` with `alias = "speed"`: the persisted
+  `speed` value migrates to `velocity`; a warning is logged.
+- Change `speed`'s declared type from `float` to `string`: the
+  persisted float value is reset to the declared string default; a
+  diagnostic is logged naming the entity, field, old type, new type.
+- A scene with no `ScriptComponent` saved in v2 loads cleanly in v3
+  with no scripts; a v3 scene with scripts round-trips field values
+  of every supported type.
+- `CloneInMemory` carries field values into the runtime clone; the
+  script's `OnCreate` reads the authored values.
+- Field values do not sync the GPU (they are editor/runtime-only
+  state until the script reads them; a script that reads `speed` and
+  writes it to `entity.set_position` produces exactly one
+  transform-only sync per frame, not a structural sync).
+- Two entities using the same script source with different field
+  values have isolated environment state (already proven in 6A; 6B
+  adds that the values are the persisted ones, not the defaults).
+- **S6 vec3/color:** a script declaring `offset = rt2.field.vec3(0,0,0)`
+  and `tint = rt2.field.color(1,1,1)` round-trips both values; the
+  inspector renders `tint` with a color picker widget and `offset`
+  with a `DragFloat3`. A type change `float` → `vec3` on an existing
+  field triggers the incompatible-type rule (default + diagnostic).
+
+**Verification gates (6B):** same as 6A plus an interactive acceptance
+check: author a script with `rt2.fields = { speed = rt2.field.float(5.0) }`
+that moves the entity by `speed * dt` in `OnUpdate`; save; reopen;
+verify the inspector shows the `speed` field with the saved value;
+edit it; Play; verify the entity moves at the edited speed; Stop;
+verify the authoring scene is unchanged.
+
+**Explicitly out of scope for 6B:** hot reload (file watching);
+input/light/camera/mesh/material bindings; timers; headless JSON state
+report; the interactive rebinding UI (Phase 7). Reload is exercised in
+tests via an explicit `ScriptSystem::ReloadScript(path)` call.
+
+### Phase 6C — Hot reload, input, and remaining bindings (planned)
+
+**Outcome.** Editing a `.lua` file while Playing hot-reloads it without
+restarting RT2; syntax/runtime errors during reload are reported with
+path, entity, callback, and stack trace but the scene keeps running.
+Scripts can read input, set light/camera/material properties, and use
+timers. A deterministic headless script emits a JSON state report
+asserting the final transform. This slice satisfies the Phase 6 exit
+criteria.
+
+**File watcher (vendored):** efsw (Entropia File System Watcher) under
+`RT2App/vendor/efsw/`, built as a static lib via premake. The watcher
+is owned by `WalnutApp` (the only owner of GLFW/ImGui/Walnut) and
+watches the project root + any directory containing a referenced
+script asset. On change, `WalnutApp` posts a deferred reload request to
+`ScriptSystem` (thread-safe queue; the actual reload runs on the main
+thread at the next `OnUIRender` top, before `EndFrame`, so it does not
+race the fixed-step loop). `RT2Tests` and `RT2SliceRunner` do not link
+efsw; tests exercise reload via explicit `ReloadScript(path)` calls
+(the same API the watcher uses internally).
+
+**Hot reload semantics (built on the S1 state machine and S3 `self`
+table from 6A; the `ReloadScript(path)` API is declared on
+`ScriptSystem` from 6A and stubbed, implemented in 6C):**
+
+- Reload re-evaluates `rt2.fields` in the sandboxed environment and
+  runs the 6B compatibility rules against the in-memory field values
+  (the current `self` table).
+- Reload re-binds `on_create` / `on_fixed_update` / `on_update` /
+  `on_destroy` from the new source. If a callback was previously bound
+  and is now missing, it is unbound silently (not an error). If a
+  callback was previously missing and is now present, it is bound;
+  `on_create` is NOT re-run on reload (the entity already exists).
+- **S3 `rt2.previous_state`:** reload copies the old environment's
+  `self` table (the runtime-mutated values, not the persisted ones)
+  into the new environment's `rt2.previous_state` before re-binding
+  callbacks. Scripts that want full re-init ignore it; scripts that
+  want to preserve runtime state read it. This is the narrowest
+  contract that survives reload without forcing re-derivation.
+- **S1 reload un-quarantine:** a successful reload transitions a
+  `Quarantined` instance back to `Live` (re-binds callbacks, does NOT
+  re-run `on_create` — the entity exists). A failed reload (syntax
+  error) keeps it `Quarantined`. The error includes path, entity UUID,
+  callback name (empty for load-time), and stack trace. Instances of
+  the same source quarantine and un-quarantine together (they share
+  the source).
+- Reload is suppressed during Paused (the user is inspecting a frozen
+  state; a reload mid-pause would be confusing). Queued reload
+  requests drain on the next Play frame or the next Resume.
+
+**Remaining bindings (added in 6C):**
+
+- `input.is_down("action")`, `input.is_pressed("action")`,
+  `input.is_released("action")`, `input.get_axis("axis")`,
+  `input.get_mouse_delta()`, `input.get_scroll_delta()`. Read-only;
+  the `IInputService&` is handed to `ScriptSystem::OnSceneStart` (the
+  seam from Phase 5).
+- `entity.get_light()` / `entity.set_light(color, intensity, isSpot)`,
+  `entity.get_camera()` / `entity.set_camera(fov, aperture,
+  focusDistance)`, `entity.set_material_index(index)`.
+- `timer.after(seconds, callback)`, `timer.every(seconds, callback)`,
+  `timer.cancel(handle)`. Timers respect Pause (no firing while Paused)
+  and scene destruction (all timers cancelled on Stop). Timers fire on
+  the main thread, in the variable-update phase.
+- `rt2.fields`, `rt2.field.float/int/string/bool/uuid`, `rt2.previous_state`,
+  `rt2.reload()` (requests a self-reload; useful for development).
+
+**Headless acceptance (`RT2SliceRunner` extension; G3 deterministic
+UUIDs):**
+
+- New `--script-scenario <path>` mode: loads a scene, Play, runs a
+  fixed number of frames, emits a JSON state report (`entities:
+  [{uuid, name, position, rotation, scale, visible}]`), Stop, and
+  exits with a non-zero code on any script error or assertion
+  mismatch. The script scenario file declares the scene path, the
+  number of frames, a UUID seed, and the expected final transforms
+  (UUID-keyed).
+- **G3 determinism:** `RT2SliceRunner::RunScriptScenario` installs a
+  `DeterministicUuidProvider` seeded from the scenario file's `uuidSeed`
+  via `RuntimeSceneController::SetRuntimeUuidProvider` (the seam from
+  Phase 4). Spawned entities receive deterministic UUIDs from the
+  seeded sequence, so the JSON report is reproducible run-to-run and
+  the `expectedTransforms` assertions are stable. The scenario file
+  may instead set `forbidSpawn: true` to restrict assertions to pre-
+  existing UUIDs (a scenario that wants to test only authored-entity
+  scripting); both modes are supported.
+- `run_script_test.ps1` regression script invokes the slice runner in
+  this mode against a checked-in tiny fixture (`assets/script-
+  scenario.rt2scene` + `assets/script-scenario.lua`) and asserts the
+  JSON report matches expectations.
+- This links Lua (and only Lua — not efsw, not sol2's optional
+  dependencies) into `RT2SliceRunner` via its premake.
+
+**Test plan (`RT2Tests/src/Phase6CHotReloadTests.cpp` and
+`RT2Tests/src/Phase6CBindingsTests.cpp`):**
+
+- `ReloadScript(path)` with an added field runs the 6B compatibility
+  rules; the new field receives its default; existing fields preserve
+  values.
+- `ReloadScript(path)` with a syntax error quarantines all instances of
+  that source; a subsequent `ReloadScript` with valid source
+  un-quarantines (S1: `Quarantined` → `Live`).
+- A reload that adds an `on_update` callback (previously missing) binds
+  it without re-running `on_create`.
+- A reload that removes an `on_update` callback unbinds it; subsequent
+  frames do not call it.
+- `rt2.previous_state` carries a `self` table value across reload
+  (S3).
+- Reload is suppressed while Paused; queued reloads drain on Resume.
+- `input.is_pressed` returns the same edge as the C++
+  `IInputService::IsPressed` for the same frame.
+- `timer.after(0.1, ...)` fires exactly once, after the expected
+  number of fixed steps; `timer.every(0.05, ...)` fires repeatedly;
+  cancel prevents further firings; Pause suppresses all firings; Stop
+  cancels all timers.
+- `entity.set_light(...)` results in a Material-or-Structural sync
+  (lights are structural in the current sync-impact contract — the
+  test asserts the expected impact).
+- Destroying an entity with a pending timer cancels the timer safely
+  (no firing after destroy).
+- The headless `--script-scenario` runner emits the expected JSON
+  report for the checked-in fixture and exits zero.
+
+**Verification gates (6C):** same as 6A/6B plus the headless script
+scenario regression; interactive acceptance: edit a Playing script's
+`speed` field declaration in the `.lua` file, save it, observe the
+reload log in the console, and verify the new value takes effect
+without restarting RT2; introduce a syntax error and verify the scene
+keeps running with a useful error.
+
+### Phase 6 exit criteria (all three sub-slices)
+
+A saved `ScriptComponent` can drive an entity using input and survive
+save/load, Play/Stop, and hot reload — the spec's exit criterion. No
+gameplay-facing code touches the EnTT registry, renderer, or window
+directly; all script access goes through the validated bindings. The
+single Lua state is owned by `ScriptSystem`; the single file-watcher
+is owned by `WalnutApp`. The CPU-only boundary (RT2Tests,
+RT2SliceRunner, EditorSettingsStore) is preserved: sol2 is header-only
+and the Lua C lib is the only new link, gated per target by premake.
+
+### Phase 6 ordering rationale
+
+6A before 6B before 6C because:
+
+- 6A proves the embedding, the lifecycle dispatch (G1's
+  `IRuntimeScriptDispatch`), the spawned-entity lifecycle (G2's
+  `SyncScriptEnvironments`), and the per-instance state machine (S1) —
+  the riskiest unknowns (Lua + sol2 + the observer/dispatch seam + the
+  deferred queue as the mutation channel + the environment-map mirror).
+  If 6A's lifecycle dispatch is wrong, 6B's field persistence and 6C's
+  hot reload would be built on sand.
+- 6B's reflection and persistence are independently testable via
+  explicit `ReloadScript` calls (the API is declared in 6A, stubbed);
+  deferring file watching to 6C means 6B does not need efsw or a
+  worker thread, keeping the CPU-only test boundary intact.
+- 6C's hot reload is the feature most likely to surface race
+  conditions and lifecycle edge cases; building it last means it runs
+  against a stable lifecycle and a stable field model, so the reload
+  bugs it surfaces are reload bugs, not lifecycle or field bugs. The
+  S1 state machine's `Quarantined` → `Live` reload transition is the
+  6C-specific piece; the rest of the state machine is fixed in 6A.
+
+### Documentation to update when 6A lands (S8)
+
+- `game-loop.md`: the numbered Step list (lines 154–159) is missing
+  the fixed-script slot the prose at line 161 implies. Add "fixed
+  script callbacks" before the inline motion integration, and
+  `SyncScriptEnvironments` after the deferred safe point, matching the
+  full contract at lines 130–143.
+- `game-loop.md` scripting placeholder (lines 297–309): replace the
+  aspirational `FixedScriptSystem::Update` / `ScriptSystem::OnUpdate`
+  sketch with the implemented `IRuntimeScriptDispatch` interface and
+  the `SyncScriptEnvironments` mechanic.
+- `scene-management.md`: note `ScriptComponent` as a persisted
+  component (Count 10→11) and the v2→v3 schema migration (lands in 6B,
+  but note the visitor change in 6A).
+
+

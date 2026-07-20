@@ -1061,6 +1061,12 @@ SubtreeEntityRecord BuildSubtreeRecord(const entt::registry& reg, entt::entity e
 		r.motion    = *mc;
 	}
 
+	if (const auto* sc = reg.try_get<ScriptComponent>(e))
+	{
+		r.hasScript = true;
+		r.script    = *sc;
+	}
+
 	return r;
 }
 
@@ -1126,6 +1132,11 @@ void ApplySubtreeRecord(const SubtreeEntityRecord& record, entt::registry& reg,
 		reg.emplace_or_replace<MotionComponent>(e, record.motion);
 	else
 		reg.remove<MotionComponent>(e);
+
+	if (record.hasScript)
+		reg.emplace_or_replace<ScriptComponent>(e, record.script);
+	else
+		reg.remove<ScriptComponent>(e);
 }
 
 // Compare authored component state on an entity against a record. Returns
@@ -1285,6 +1296,25 @@ bool EntityMatchesRecord(const entt::registry& reg, entt::entity e,
 		const auto& live = *reg.try_get<MotionComponent>(e);
 		constexpr float eps = 1e-5f;
 		if (glm::length(live.linearVelocity - record.motion.linearVelocity) > eps) return false;
+	}
+
+	// Phase 6: script component comparison. The asset reference + field
+	// values must match exactly for a record to be considered consistent.
+	// Field-value comparison is by structural equality (the variant and the
+	// map both define operator==).
+	if (reg.all_of<ScriptComponent>(e) != record.hasScript) return false;
+	if (record.hasScript)
+	{
+		const auto& live = *reg.try_get<ScriptComponent>(e);
+		if (!(live.asset.path == record.script.asset.path)) return false;
+		if (live.asset.kind != record.script.asset.kind) return false;
+		if (live.fieldValues.size() != record.script.fieldValues.size()) return false;
+		for (const auto& [k, v] : record.script.fieldValues)
+		{
+			auto it = live.fieldValues.find(k);
+			if (it == live.fieldValues.end()) return false;
+			if (!(it->second == v)) return false;
+		}
 	}
 
 	return true;

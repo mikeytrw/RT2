@@ -7,6 +7,9 @@
 #include "ISceneRenderBridge.h"
 #include "RuntimeLifecycleObserver.h"
 #include "RuntimeSceneMutator.h"
+#include "IRuntimeScriptDispatch.h"
+#include "IRuntimeCommandSink.h"
+#include "InputTypes.h"
 #include "core/Error.h"
 #include "core/UUID.h"
 #include "ECSComponents.h"
@@ -150,11 +153,39 @@ public:
     IUuidProvider* GetRuntimeUuidProvider() const { return m_RuntimeUuidProvider; }
 
     // Injectable lifecycle observer. Stored non-owning. OnSceneStart fires
-    // after m_State = Playing with the runtime document by const reference;
+    // after m_State = Playing with the runtime document by const reference
+    // and (Phase 6) the read-only input service + runtime command sink;
     // OnSceneStop fires before the runtime is destroyed but after queue
     // submission is disabled.
     void SetLifecycleObserver(IRuntimeLifecycleObserver* observer) { m_LifecycleObserver = observer; }
     IRuntimeLifecycleObserver* GetLifecycleObserver() const { return m_LifecycleObserver; }
+
+    // ---- Phase 6 script dispatch ----------------------------------------
+
+    // Injectable script dispatch (G1). Stored non-owning. Distinct from the
+    // lifecycle observer because OnFixedUpdate/OnUpdate/SyncScriptEnvironments
+    // drive mutation through the sink and are not const-observe. The
+    // controller calls these every frame (Update/Step) at the documented
+    // frame-order slots. WalnutApp injects the ScriptSystem; tests and the
+    // slice runner inject null or a recording spy.
+    void SetScriptDispatch(IRuntimeScriptDispatch* dispatch) { m_ScriptDispatch = dispatch; }
+    IRuntimeScriptDispatch* GetScriptDispatch() const { return m_ScriptDispatch; }
+
+    // The read-only input service handed to scripts via OnSceneStart. Stored
+    // non-owning. Set by WalnutApp to the application's InputService; tests
+    // inject a null input service (scripts see a real-but-empty input). Null
+    // is valid: OnSceneStart receives nullptr for `input` and the script
+    // system treats input.* as inert (per S2: the 4-arg callback signature
+    // is locked from 6A; input methods are added in 6C).
+    void SetInputService(IInputService* input) { m_InputService = input; }
+    IInputService* GetInputService() const { return m_InputService; }
+
+    // The runtime command sink handed to scripts via OnSceneStart. Built by
+    // the host (or ScriptSystem) per Play session; the controller does not
+    // own it. Null is valid: OnSceneStart receives nullptr for `sink` and
+    // the script system's entity/world bindings fail safely.
+    void SetRuntimeCommandSink(IRuntimeCommandSink* sink) { m_CommandSink = sink; }
+    IRuntimeCommandSink* GetRuntimeCommandSink() const { return m_CommandSink; }
 
     // Allocate a fresh UUID from the runtime provider, enqueue a create,
     // return the UUID so later operations in the same tick can reference
@@ -214,8 +245,12 @@ private:
     float m_Accumulator = 0.0f;
 
     // Phase 4: injectable UUID provider, lifecycle observer, FIFO queue.
+    // Phase 6: script dispatch + input service + command sink.
     IUuidProvider* m_RuntimeUuidProvider = nullptr;
     IRuntimeLifecycleObserver* m_LifecycleObserver = nullptr;
+    IRuntimeScriptDispatch* m_ScriptDispatch = nullptr;
+    IInputService* m_InputService = nullptr;
+    IRuntimeCommandSink* m_CommandSink = nullptr;
     std::vector<RuntimeStructuralOperation> m_PendingOperations;
     RuntimeSceneMutator m_Mutator;
     bool m_Stopping = false;
