@@ -1031,22 +1031,34 @@ public:
 		// Determine the desired base context.
 		rt2::core::InputContext* desiredBase =
 			m_RuntimeCamActive ? &m_Input.RuntimeContext() : &m_Input.EditorContext();
-		// Pop any viewport sub-contexts first.
-		while (stack.size() > 1)
-			m_Input.PopContext();
-		// Now stack has exactly the base (or is empty). Ensure the base
-		// is the desired one.
-		if (stack.empty() || stack.back() != desiredBase)
-		{
-			m_Input.ClearContextStack();
-			m_Input.PushContext(desiredBase);
-		}
-		// Push viewport sub-contexts (Edit only).
+		// Build the desired context stack for this frame: base, then the
+		// viewport sub-contexts (Edit only), then viewport.look while the
+		// right mouse is held.
+		std::vector<rt2::core::InputContext*> desiredStack;
+		desiredStack.push_back(desiredBase);
 		if (inEdit && m_ViewportHoveredThisFrame)
 		{
-			m_Input.PushContext(&m_Input.ViewportContext());
+			desiredStack.push_back(&m_Input.ViewportContext());
 			if (lookDown)
-				m_Input.PushContext(&m_Input.ViewportLookContext());
+				desiredStack.push_back(&m_Input.ViewportLookContext());
+		}
+		// Only rebuild the stack when it actually changes. PopContext /
+		// ClearContextStack reset the mouse-delta history; doing that every
+		// frame (as the old unconditional teardown/re-push did) zeroes the
+		// editor camera's look delta, so pan/tilt drops out intermittently.
+		// Steady-state frames must leave the stack — and the mouse history —
+		// untouched.
+		bool stackDiffers = stack.size() != desiredStack.size();
+		if (!stackDiffers)
+		{
+			for (size_t i = 0; i < desiredStack.size(); ++i)
+				if (stack[i] != desiredStack[i]) { stackDiffers = true; break; }
+		}
+		if (stackDiffers)
+		{
+			m_Input.ClearContextStack();
+			for (rt2::core::InputContext* ctx : desiredStack)
+				m_Input.PushContext(ctx);
 		}
 
 		if (m_RuntimeCamActive)

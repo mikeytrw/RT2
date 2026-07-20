@@ -83,24 +83,24 @@ TransformGizmoResult EditorTransformGizmo::Draw(SceneManager& scene,
 	const ImVec2 savedCursor = ImGui::GetCursorScreenPos();
 	ImGui::SetCursorScreenPos(ImVec2(imageMin.x + 10.0f, imageMin.y + 10.0f));
 	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(3.0f, 0.0f));
-	if (ImGui::Button(m_Operation == TransformGizmoOperation::Translate ? "[W] Move" : "W Move"))
+	if (ImGui::Button(m_Operation == TransformGizmoOperation::Translate ? "[Z] Move" : "Z Move"))
 		m_Operation = TransformGizmoOperation::Translate;
 	result.consumesMouse |= ImGui::IsItemHovered();
 	ImGui::SameLine();
-	if (ImGui::Button(m_Operation == TransformGizmoOperation::Rotate ? "[E] Rotate" : "E Rotate"))
+	if (ImGui::Button(m_Operation == TransformGizmoOperation::Rotate ? "[X] Rotate" : "X Rotate"))
 		m_Operation = TransformGizmoOperation::Rotate;
 	result.consumesMouse |= ImGui::IsItemHovered();
 	ImGui::SameLine();
-	if (ImGui::Button(m_Operation == TransformGizmoOperation::Scale ? "[R] Scale" : "R Scale"))
+	if (ImGui::Button(m_Operation == TransformGizmoOperation::Scale ? "[C] Scale" : "C Scale"))
 		m_Operation = TransformGizmoOperation::Scale;
 	result.consumesMouse |= ImGui::IsItemHovered();
 	ImGui::PopStyleVar();
 	ImGui::SetCursorScreenPos(savedCursor);
 	if (imageHovered && !m_Drag.active && !ImGui::GetIO().WantTextInput)
 	{
-		if (ImGui::IsKeyPressed(ImGuiKey_W)) m_Operation = TransformGizmoOperation::Translate;
-		if (ImGui::IsKeyPressed(ImGuiKey_E)) m_Operation = TransformGizmoOperation::Rotate;
-		if (ImGui::IsKeyPressed(ImGuiKey_R)) m_Operation = TransformGizmoOperation::Scale;
+		if (ImGui::IsKeyPressed(ImGuiKey_Z)) m_Operation = TransformGizmoOperation::Translate;
+		if (ImGui::IsKeyPressed(ImGuiKey_X)) m_Operation = TransformGizmoOperation::Rotate;
+		if (ImGui::IsKeyPressed(ImGuiKey_C)) m_Operation = TransformGizmoOperation::Scale;
 	}
 
 	std::vector<rt2::core::UUID> liveUuids;
