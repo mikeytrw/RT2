@@ -18,6 +18,7 @@ void SceneEditorUI::RenderPanels()
 {
 	RenderOutliner();
 	RenderInspector();
+	DrawImportOptionsModal();
 }
 
 void SceneEditorUI::NotifySceneChanged()
@@ -565,14 +566,11 @@ void SceneEditorUI::RenderOutliner()
 			std::string path = FileDialog::OpenFile(
 				L"glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0",
 				initialDirectory);
-			if (!path.empty() && m_OnImportGltf)
+			if (!path.empty() && m_OnImportWithOptions)
 			{
-				auto id = m_OnImportGltf(path);
-				if (id.IsValid())
-				{
-					SelectEntity(id);
-					NotifySceneChanged();
-				}
+				m_PendingImportPath = path;
+				m_PendingImportMergeMegaMesh = true;
+				m_ImportOptionsOpen = true;
 			}
 		}
 		if (ImGui::MenuItem("Load Mesh File..."))
@@ -582,14 +580,11 @@ void SceneEditorUI::RenderOutliner()
 			std::string path = FileDialog::OpenFile(
 				L"OBJ Files (*.obj)\0*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0",
 				initialDirectory);
-			if (!path.empty() && m_OnLoadMeshFile)
+			if (!path.empty() && m_OnImportWithOptions)
 			{
-				auto id = m_OnLoadMeshFile(path);
-				if (id.IsValid())
-				{
-					SelectEntity(id);
-					NotifySceneChanged();
-				}
+				m_PendingImportPath = path;
+				m_PendingImportMergeMegaMesh = true;
+				m_ImportOptionsOpen = true;
 			}
 		}
 		ImGui::EndPopup();
@@ -1053,6 +1048,11 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 		ImGui::SetNextItemWidth(80.0f);
 		ImGui::DragFloat("Scale step", &m_TransformSnap.scale, 0.01f, 0.001f, 100.0f, "%.3f");
 	}
+	ImGui::Checkbox("Uniform Scale", &m_UniformScale);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip(
+			"When checked, scale edits apply equally to X, Y, Z.\n"
+			"Also affects the viewport gizmo in Scale mode.");
 	ImGui::BeginDisabled(!m_Editable);
 
 	// Phase 3B2: record-on-release via PropertyEditSession<EditableTRS>.
@@ -1140,11 +1140,26 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	}
 
 	ImGui::SetNextItemWidth(180.0f);
-	const bool scaleChangedThis = ImGui::DragFloat3("Scale", &scale[0], 0.05f);
-	if (scaleChangedThis)
+	bool scaleChangedThis = false;
+	if (m_UniformScale)
 	{
-		if (m_TransformSnap.enabled) scale = SnapValues(scale, m_TransformSnap.scale);
-		changed = true;
+		float uniformScale = scale.x;
+		scaleChangedThis = ImGui::DragFloat("Scale", &uniformScale, 0.05f);
+		if (scaleChangedThis)
+		{
+			if (m_TransformSnap.enabled) uniformScale = SnapValue(uniformScale, m_TransformSnap.scale);
+			scale = glm::vec3(uniformScale);
+			changed = true;
+		}
+	}
+	else
+	{
+		scaleChangedThis = ImGui::DragFloat3("Scale", &scale[0], 0.05f);
+		if (scaleChangedThis)
+		{
+			if (m_TransformSnap.enabled) scale = SnapValues(scale, m_TransformSnap.scale);
+			changed = true;
+		}
 	}
 	const unsigned int scaleWidgetId = ImGui::GetID("Scale");
 	if (ImGui::IsItemActivated())
@@ -1565,5 +1580,86 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 			} });
 		if (rec)
 			RecordCameraEdit(targetUuid, rec->before, rec->after);
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Import Options modal
+//
+// Shown after the user picks a file from "Import Scene..." or "Load Mesh
+// File...". Collects import settings (currently just mergeMegaMesh for OBJ)
+// and dispatches via m_OnImportWithOptions. The modal is modal — the file
+// dialog cannot open while it is up, so a second pick before dismissing is
+// naturally blocked.
+// ----------------------------------------------------------------------------
+void SceneEditorUI::DrawImportOptionsModal()
+{
+	if (!m_ImportOptionsOpen || m_PendingImportPath.empty())
+		return;
+
+	// Detect OBJ by extension to decide whether to show the merge-mesh
+	// checkbox. glTF has no import settings exposed yet.
+	std::string ext;
+	const auto& path = m_PendingImportPath;
+	const auto dotPos = path.find_last_of('.');
+	if (dotPos != std::string::npos)
+	{
+		ext = path.substr(dotPos + 1);
+		std::transform(ext.begin(), ext.end(), ext.begin(),
+		               [](unsigned char c) { return std::tolower(c); });
+	}
+	bool isObj = (ext == "obj");
+
+	ImGui::OpenPopup("Import Options");
+	if (ImGui::BeginPopupModal("Import Options", nullptr,
+	                           ImGuiWindowFlags_AlwaysAutoResize))
+	{
+		// Filename (basename only, for readability).
+		std::string basename = path;
+		const auto slashPos = basename.find_last_of("/\\");
+		if (slashPos != std::string::npos)
+			basename = basename.substr(slashPos + 1);
+		ImGui::Text("File: %s", basename.c_str());
+
+		if (isObj)
+		{
+			ImGui::Separator();
+			ImGui::Checkbox("Merge shapes into single mesh",
+			                &m_PendingImportMergeMegaMesh);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip(
+					"When checked, all OBJ shapes are merged into one BLAS\n"
+					"(faster ray traversal, no per-shape editing).\n"
+					"When unchecked, each shape becomes its own entity.");
+		}
+		else
+		{
+			ImGui::Separator();
+			ImGui::TextDisabled("(no import options for this format)");
+		}
+
+		ImGui::Separator();
+		if (ImGui::Button("Import"))
+		{
+			ImportSettings settings;
+			settings.mergeMegaMesh = m_PendingImportMergeMegaMesh;
+			auto id = m_OnImportWithOptions(m_PendingImportPath, settings);
+			if (id.IsValid())
+			{
+				SelectEntity(id);
+				NotifySceneChanged();
+			}
+			m_PendingImportPath.clear();
+			m_ImportOptionsOpen = false;
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Cancel"))
+		{
+			m_PendingImportPath.clear();
+			m_ImportOptionsOpen = false;
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::EndPopup();
 	}
 }

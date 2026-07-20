@@ -66,6 +66,14 @@ public:
 	void SetOnImportGltf(std::function<SceneManager::EntityId(const std::string&)> cb)
 	{ m_OnImportGltf = std::move(cb); }
 
+	// Called when the user confirms the Import Options modal. The host
+	// dispatches by extension: OBJ -> SceneManager::ImportObj(path, settings);
+	// glTF -> SceneManager::ImportGltf(path) (settings ignored for glTF).
+	// Returns the wrapper root entity ID.
+	void SetOnImportWithOptions(
+		std::function<SceneManager::EntityId(const std::string&, const ImportSettings&)> cb)
+	{ m_OnImportWithOptions = std::move(cb); }
+
 	void SetDialogInitialDirectoryProvider(
 		std::function<std::filesystem::path()> provider)
 	{ m_DialogInitialDirectory = std::move(provider); }
@@ -131,6 +139,7 @@ public:
 	TransformSpace GetTransformSpace() const { return m_TransformSpace; }
 	TransformPivot GetTransformPivot() const { return m_TransformPivot; }
 	const TransformSnapSettings& GetTransformSnapSettings() const { return m_TransformSnap; }
+	bool GetUniformScale() const { return m_UniformScale; }
 	bool CaptureCameraBookmark(size_t slot, const EditorCameraPose& pose)
 	{ return m_State.CaptureCameraBookmark(slot, pose); }
 	const EditorCameraPose* CameraBookmark(size_t slot) const
@@ -148,6 +157,7 @@ private:
 	void RenderMaterialEditor(SceneManager::EntityId entity);
 	void RenderLightEditor(SceneManager::EntityId entity);
 	void RenderCameraEditor(SceneManager::EntityId entity);
+	void DrawImportOptionsModal();
 
 	void NotifySceneChanged();
 	void NotifyTransformChanged();
@@ -215,6 +225,7 @@ private:
 	std::function<void(rt2::core::SyncImpact)> m_OnMutation;
 	std::function<SceneManager::EntityId(const std::string&)> m_OnLoadMeshFile;
 	std::function<SceneManager::EntityId(const std::string&)> m_OnImportGltf;
+	std::function<SceneManager::EntityId(const std::string&, const ImportSettings&)> m_OnImportWithOptions;
 	std::function<std::filesystem::path()> m_DialogInitialDirectory;
 	std::function<void()> m_OnDumpGPUTransforms;
 	std::function<void()> m_OnDumpNEEBuffers;
@@ -236,6 +247,7 @@ private:
 	TransformSpace m_TransformSpace = TransformSpace::Local;
 	TransformPivot m_TransformPivot = TransformPivot::Primary;
 	TransformSnapSettings m_TransformSnap;
+	bool m_UniformScale = false;
 	std::string m_TransformEditError;
 	std::string m_MutationError;
 	char m_SearchBuffer[128]{};
@@ -274,6 +286,15 @@ private:
 	// itself stores the SceneMaterial before/after; this stores the
 	// per-entity override side effect.
 	SetMaterialPropertiesCommand::OverrideList m_PendingMaterialPropertiesBeforeOverrides;
+
+	// Import Options modal state. When m_ImportOptionsOpen is true, a file
+	// path has been picked and the modal is shown. The modal collects the
+	// import settings (currently just mergeMegaMesh for OBJ) and dispatches
+	// via m_OnImportWithOptions on confirm, or clears the pending path on
+	// cancel.
+	bool        m_ImportOptionsOpen = false;
+	std::string m_PendingImportPath;
+	bool        m_PendingImportMergeMegaMesh = true;
 };
 
 #endif // SCENE_EDITOR_UI_H

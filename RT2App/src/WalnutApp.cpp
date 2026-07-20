@@ -209,14 +209,24 @@ public:
 			return LoadMeshFileAsEntity(path);
 		});
 		m_EditorUI.SetOnImportGltf([this](const std::string& path) -> SceneManager::EntityId {
+			auto id = m_SceneMgr.ImportGltf(path);
+			if (id.IsValid())
+			{
+				m_PendingFullSync = true;
+			}
+			return id;
+		});
+		m_EditorUI.SetOnImportWithOptions(
+			[this](const std::string& path,
+			       const ImportSettings& settings) -> SceneManager::EntityId
+		{
 			std::string ext = path.substr(path.find_last_of('.') + 1);
 			std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+			SceneManager::EntityId id;
 			if (ext == "obj")
-			{
-				RequestOpenScene(path);
-				return SceneManager::EntityId{};
-			}
-			auto id = m_SceneMgr.ImportGltf(path);
+				id = m_SceneMgr.ImportObj(path, settings);
+			else
+				id = m_SceneMgr.ImportGltf(path);
 			if (id.IsValid())
 			{
 				m_PendingFullSync = true;
@@ -707,7 +717,7 @@ public:
 			m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
 				!m_EditorUI.SelectionHasDirectLock(),
 			m_EditorUI.GetTransformSpace(), m_EditorUI.GetTransformPivot(),
-			m_EditorUI.GetTransformSnapSettings());
+			m_EditorUI.GetTransformSnapSettings(), m_EditorUI.GetUniformScale());
 		if (gizmo.changed)
 			SyncAuthoringTransforms();
 		if (!gizmo.error.empty())
@@ -1809,8 +1819,13 @@ private:
 		std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 		if (ext == "obj")
 		{
-			RequestOpenScene(filepath);
-			return SceneManager::EntityId{};
+			// OBJ now imports into the current scene (consistent with glTF).
+			ImportSettings settings;
+			settings.mergeMegaMesh = true;
+			auto id = m_SceneMgr.ImportObj(filepath, settings);
+			if (id.IsValid())
+				m_PendingFullSync = true;
+			return id;
 		}
 
 		if (!SceneLoader::LoadIntoECS(m_SceneMgr.GetECS(), filepath))

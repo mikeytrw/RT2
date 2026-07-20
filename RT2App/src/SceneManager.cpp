@@ -360,6 +360,38 @@ SceneManager::EntityId SceneManager::ImportGltf(const std::string& filepath)
 	return EntityId{ root };
 }
 
+SceneManager::EntityId SceneManager::ImportObj(const std::string& filepath,
+                                                const ImportSettings& settings)
+{
+	entt::entity root = SceneLoader::ImportObjIntoECS(m_EcsScene, filepath, settings);
+	if (root == entt::null)
+		return EntityId{};
+
+	// Assign UUIDs to any imported entity that lacks one.
+	auto& reg = m_EcsScene.registry;
+	auto view = reg.view<Transform>();
+	for (auto entity : view)
+	{
+		if (!reg.all_of<EntityIdComponent>(entity))
+			m_Authoring.AssignNewUuid(entity);
+	}
+
+	// Record the source model path on every imported mesh entity so the
+	// native .rt2scene serializer can persist a durable reference.
+	{
+		auto mv = reg.view<ImportedMeshSourceComponent>();
+		for (auto e : mv)
+		{
+			auto& src = mv.get<ImportedMeshSourceComponent>(e);
+			if (src.model.path.empty())
+				src.model.path = filepath;
+		}
+	}
+
+	m_EntityCacheDirty = true;
+	return EntityId{ root };
+}
+
 // ============================================================================
 // GPU sync — build GPUSceneData from current scene state and push to renderer
 // ============================================================================

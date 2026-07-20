@@ -2017,3 +2017,463 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
 
     return true;
 }
+
+// ----------------------------------------------------------------------------
+// Helper: parse an OBJ file and load materials/textures into ecsScene.
+// Returns the parsed attrib/shapes/materials and the matBase/texBase offsets.
+// On failure returns false.
+// ----------------------------------------------------------------------------
+namespace {
+
+struct ObjParseResult
+{
+    tinyobj::ObjReader reader;
+    const tinyobj::attrib_t*   attrib = nullptr;
+    const std::vector<tinyobj::shape_t>*    shapes = nullptr;
+    const std::vector<tinyobj::material_t>* materials = nullptr;
+    int matBase = 0;
+    int texBase = 0;
+    std::string baseDir;
+    std::string stemName;
+};
+
+bool ParseObjAndLoadResources(ECSScene& ecsScene, const std::string& filepath,
+                              ObjParseResult& out)
+{
+    if (filepath.empty() || !fs::exists(filepath))
+        return false;
+
+    fs::path fpath(filepath);
+    out.baseDir = fpath.parent_path().string();
+    out.stemName = fpath.stem().string();
+
+    tinyobj::ObjReaderConfig config;
+    config.mtl_search_path = out.baseDir;
+    config.triangulate = true;
+    config.vertex_color = false;
+
+    printf("[SceneLoader] OBJ import: parsing '%s' (%.1fMB)...\n", filepath.c_str(),
+           (double)fs::file_size(filepath) / (1024.0 * 1024.0));
+    fflush(stdout);
+
+    if (!out.reader.ParseFromFile(filepath, config))
+    {
+        if (!out.reader.Error().empty())
+            printf("[SceneLoader] OBJ error: %s\n", out.reader.Error().c_str());
+        fflush(stdout);
+        return false;
+    }
+    printf("[SceneLoader] OBJ import: parse done\n");
+    fflush(stdout);
+    if (!out.reader.Warning().empty())
+        printf("[SceneLoader] OBJ warning: %s\n", out.reader.Warning().c_str());
+
+    out.attrib    = &out.reader.GetAttrib();
+    out.shapes    = &out.reader.GetShapes();
+    out.materials = &out.reader.GetMaterials();
+
+    printf("[SceneLoader] OBJ import: %d verts, %d shapes, %d materials\n",
+           (int)out.attrib->vertices.size() / 3, (int)out.shapes->size(),
+           (int)out.materials->size());
+    fflush(stdout);
+
+    // Convert MTL materials to SceneMaterial (append to ecsScene.materials).
+    out.matBase = (int)ecsScene.materials.size();
+    for (const auto& mtl : *out.materials)
+    {
+        SceneMaterial mat;
+        mat.baseColor = {mtl.diffuse[0], mtl.diffuse[1], mtl.diffuse[2]};
+        mat.baseAlpha = (mtl.dissolve > 0.0f) ? mtl.dissolve : 1.0f;
+        mat.metallic = 0.0f;
+        if (mtl.roughness > 0.0f)
+        {
+            mat.roughness = std::clamp(static_cast<float>(mtl.roughness), 0.0f, 1.0f);
+        }
+        else
+        {
+            const float shininess = std::max(static_cast<float>(mtl.shininess), 0.0f);
+            mat.roughness = std::sqrt(std::sqrt(2.0f / (shininess + 2.0f)));
+        }
+        mat.ior = mtl.ior;
+        mat.emissiveColor = {mtl.emission[0], mtl.emission[1], mtl.emission[2]};
+        mat.emissiveIntensity = (mtl.emission[0] + mtl.emission[1] + mtl.emission[2]) > 0.0f ? 1.0f : 0.0f;
+        if (mtl.dissolve < 1.0f)
+        {
+            mat.alphaMode = "BLEND";
+            mat.baseAlpha = (mtl.dissolve > 0.0f) ? mtl.dissolve : 1.0f;
+        }
+        ecsScene.materials.push_back(mat);
+    }
+
+    // If no materials, add a default.
+    if (ecsScene.materials.empty())
+    {
+        SceneMaterial mat;
+        ecsScene.materials.push_back(mat);
+        out.matBase = 0;
+    }
+
+    // Load textures (append to ecsScene.textures).
+    out.texBase = (int)ecsScene.textures.size();
+    auto loadTexture = [&](const std::string& texName, bool isSRGB) -> int {
+        if (texName.empty()) return -1;
+        fs::path texPath = fs::path(out.baseDir) / texName;
+        if (!fs::exists(texPath)) return -1;
+
+        int w, h, channels;
+        unsigned char* pixels = stbi_load(texPath.string().c_str(), &w, &h, &channels, 4);
+        if (!pixels)
+        {
+            printf("[SceneLoader] Failed to load texture: %s\n", texPath.string().c_str());
+            return -1;
+        }
+
+        SceneTexture tex;
+        tex.filepath = texPath.string();
+        tex.width = w;
+        tex.height = h;
+        tex.channels = 4;
+        tex.pixels.assign(pixels, pixels + (size_t)w * h * 4);
+        tex.isSRGB = isSRGB;
+        stbi_image_free(pixels);
+
+        int idx = (int)ecsScene.textures.size();
+        ecsScene.textures.push_back(tex);
+        return idx;
+    };
+
+    int texCount = 0;
+    for (int mi = 0; mi < (int)out.materials->size(); mi++)
+    {
+        int matIdx = out.matBase + mi;
+        if (matIdx >= (int)ecsScene.materials.size()) break;
+
+        auto& mat = ecsScene.materials[matIdx];
+
+        if (!(*out.materials)[mi].diffuse_texname.empty())
+            { int ti = loadTexture((*out.materials)[mi].diffuse_texname, true); if (ti >= 0) { mat.baseColorTextureIndex = ti; texCount++; } }
+        if (!(*out.materials)[mi].normal_texname.empty())
+            { int ti = loadTexture((*out.materials)[mi].normal_texname, false); if (ti >= 0) { mat.normalTextureIndex = ti; texCount++; } }
+        if (!(*out.materials)[mi].emissive_texname.empty())
+            { int ti = loadTexture((*out.materials)[mi].emissive_texname, true); if (ti >= 0) { mat.emissiveTextureIndex = ti; texCount++; } }
+        if (!(*out.materials)[mi].roughness_texname.empty())
+            { int ti = loadTexture((*out.materials)[mi].roughness_texname, false); if (ti >= 0) { mat.metallicRoughnessTextureIndex = ti; texCount++; } }
+    }
+    printf("[SceneLoader] OBJ import: %d textures loaded\n", texCount);
+    fflush(stdout);
+
+    return true;
+}
+
+// Unified vertex key for OBJ (position + normal + texcoord tuple).
+struct ObjVertexKey
+{
+    int vertex;
+    int normal;
+    int texcoord;
+
+    bool operator==(const ObjVertexKey& other) const
+    {
+        return vertex == other.vertex && normal == other.normal && texcoord == other.texcoord;
+    }
+};
+
+struct ObjVertexKeyHash
+{
+    size_t operator()(const ObjVertexKey& key) const
+    {
+        size_t h = std::hash<int>{}(key.vertex);
+        h ^= std::hash<int>{}(key.normal) + size_t(0x9e3779b9u) + (h << 6) + (h >> 2);
+        h ^= std::hash<int>{}(key.texcoord) + size_t(0x9e3779b9u) + (h << 6) + (h >> 2);
+        return h;
+    }
+};
+
+// Append one triangle corner's vertex into the per-shape buffers, using a
+// local vertex cache for deduplication. Returns the unified index.
+uint32_t AppendObjCorner(const tinyobj::attrib_t& attrib,
+                         tinyobj::index_t idx,
+                         std::vector<float>& verts,
+                         std::vector<float>& norms,
+                         std::vector<float>& uvs,
+                         std::unordered_map<ObjVertexKey, uint32_t, ObjVertexKeyHash>& cache)
+{
+    ObjVertexKey key = { idx.vertex_index, idx.normal_index, idx.texcoord_index };
+    auto cached = cache.find(key);
+    if (cached != cache.end())
+        return cached->second;
+
+    uint32_t unifiedIndex = static_cast<uint32_t>(verts.size() / 3);
+    cache.emplace(key, unifiedIndex);
+
+    int vi = idx.vertex_index;
+    if (vi >= 0)
+    {
+        verts.push_back(attrib.vertices[vi * 3 + 0]);
+        verts.push_back(attrib.vertices[vi * 3 + 1]);
+        verts.push_back(attrib.vertices[vi * 3 + 2]);
+    }
+    else
+    {
+        verts.push_back(0.0f);
+        verts.push_back(0.0f);
+        verts.push_back(0.0f);
+    }
+
+    int ni = idx.normal_index;
+    if (ni >= 0 && ni * 3 + 2 < (int)attrib.normals.size())
+    {
+        norms.push_back(attrib.normals[ni * 3 + 0]);
+        norms.push_back(attrib.normals[ni * 3 + 1]);
+        norms.push_back(attrib.normals[ni * 3 + 2]);
+    }
+    else
+    {
+        norms.push_back(0.0f);
+        norms.push_back(0.0f);
+        norms.push_back(0.0f);
+    }
+
+    int ti = idx.texcoord_index;
+    if (ti >= 0 && ti * 2 + 1 < (int)attrib.texcoords.size())
+    {
+        uvs.push_back(attrib.texcoords[ti * 2 + 0]);
+        // OBJ V origin is bottom-left; Vulkan sampling uses top-left.
+        uvs.push_back(1.0f - attrib.texcoords[ti * 2 + 1]);
+    }
+    else
+    {
+        uvs.push_back(0.0f);
+        uvs.push_back(0.0f);
+    }
+
+    return unifiedIndex;
+}
+
+} // anonymous namespace
+
+entt::entity SceneLoader::ImportObjIntoECS(ECSScene& ecsScene,
+                                            const std::string& filepath,
+                                            const ImportSettings& settings)
+{
+    ObjParseResult parsed;
+    if (!ParseObjAndLoadResources(ecsScene, filepath, parsed))
+        return entt::null;
+
+    auto& reg = ecsScene.registry;
+    const auto& attrib = *parsed.attrib;
+    const auto& shapes  = *parsed.shapes;
+    int matBase = parsed.matBase;
+    int materialCount = (int)parsed.materials->size();
+
+    // --- Create wrapper root entity ---
+    entt::entity wrapperRoot = reg.create();
+    {
+        Transform& tf = reg.emplace<Transform>(wrapperRoot);
+        tf.translation = {0.0f, 0.0f, 0.0f};
+        tf.dirty = true;
+        reg.emplace<NameComponent>(wrapperRoot, parsed.stemName);
+        reg.emplace<VisibleComponent>(wrapperRoot);
+        Hierarchy& rootHier = reg.emplace<Hierarchy>(wrapperRoot);
+        rootHier.parent = entt::null;
+    }
+
+    auto attachChildToWrapper = [&](entt::entity child) {
+        Hierarchy& childHier = reg.emplace<Hierarchy>(child);
+        childHier.parent = wrapperRoot;
+        auto* rootHier = reg.try_get<Hierarchy>(wrapperRoot);
+        if (rootHier)
+            rootHier->children.push_back(child);
+        else
+        {
+            Hierarchy& rh = reg.emplace<Hierarchy>(wrapperRoot);
+            rh.children.push_back(child);
+        }
+    };
+
+    if (settings.mergeMegaMesh)
+    {
+        // --- Mega-mesh branch: merge all shapes into one BLAS ---
+        std::vector<float>    megaVertices;
+        std::vector<uint32_t> megaIndices;
+        std::vector<float>    megaNormals;
+        std::vector<float>    megaUVs;
+        std::vector<uint32_t> megaMaterialIds;
+
+        std::unordered_map<ObjVertexKey, uint32_t, ObjVertexKeyHash> vertexCache;
+        vertexCache.max_load_factor(0.8f);
+        vertexCache.reserve(attrib.vertices.size() / 3);
+
+        size_t cornerCount = 0;
+        size_t triangleCount = 0;
+        for (const auto& shape : shapes)
+        {
+            cornerCount += shape.mesh.indices.size();
+            triangleCount += shape.mesh.num_face_vertices.size();
+        }
+        megaIndices.reserve(cornerCount);
+        megaMaterialIds.reserve(triangleCount);
+
+        for (size_t s = 0; s < shapes.size(); s++)
+        {
+            const auto& shape = shapes[s];
+            int shapeMatIdx = 0;
+            for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++)
+            {
+                size_t fv = shape.mesh.num_face_vertices[f];
+                if (fv != 3) continue;
+
+                int matId = shape.mesh.material_ids[f];
+                if (matId >= 0 && matId < materialCount)
+                    shapeMatIdx = matId;
+
+                for (size_t v = 0; v < fv; v++)
+                {
+                    tinyobj::index_t idx = shape.mesh.indices[f * fv + v];
+                    uint32_t unified = AppendObjCorner(attrib, idx,
+                                                       megaVertices, megaNormals,
+                                                       megaUVs, vertexCache);
+                    megaIndices.push_back(unified);
+                }
+                megaMaterialIds.push_back(static_cast<uint32_t>(shapeMatIdx));
+            }
+        }
+
+        MeshData meshData;
+        meshData.vertices = std::move(megaVertices);
+        meshData.indices = std::move(megaIndices);
+        meshData.normals = std::move(megaNormals);
+        meshData.uvs = std::move(megaUVs);
+        meshData.materialIndices = std::move(megaMaterialIds);
+        meshData.name = parsed.stemName;
+
+        uint32_t meshIdx = ecsScene.meshRegistry.AddMesh(std::move(meshData));
+
+        // One child entity for the mega-mesh, parented to wrapper root.
+        auto child = reg.create();
+        {
+            Transform& tf = reg.emplace<Transform>(child);
+            tf.translation = {0, 0, 0};
+            tf.scale = {1, 1, 1};
+            tf.dirty = true;
+            reg.emplace<MeshRef>(child, meshIdx, -1); // per-triangle materials
+            reg.emplace<NameComponent>(child, parsed.stemName);
+            reg.emplace<VisibleComponent>(child);
+
+            ImportedMeshSourceComponent src;
+            src.model.kind      = AssetKind::Model;
+            src.model.sourceKey = "obj:whole-model";
+            src.model.importSettings.triangulate     = true;
+            src.model.importSettings.mergeMegaMesh   = true;
+            src.model.importSettings.generateNormals = false;
+            reg.emplace<ImportedMeshSourceComponent>(child, src);
+        }
+        attachChildToWrapper(child);
+
+        printf("[SceneLoader] OBJ import (merged): %d verts, %d tris, %d textures, %d materials\n",
+               (int)ecsScene.meshRegistry.GetMesh(meshIdx).vertices.size() / 3,
+               (int)ecsScene.meshRegistry.GetMesh(meshIdx).indices.size() / 3,
+               (int)ecsScene.textures.size() - parsed.texBase,
+               (int)ecsScene.materials.size() - matBase);
+        fflush(stdout);
+    }
+    else
+    {
+        // --- Per-shape branch: one entity per non-degenerate shape ---
+        int createdCount = 0;
+        for (size_t s = 0; s < shapes.size(); s++)
+        {
+            const auto& shape = shapes[s];
+
+            // Count triangles for this shape; skip degenerate (zero-tri) shapes.
+            size_t triCount = 0;
+            for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++)
+                if (shape.mesh.num_face_vertices[f] == 3) ++triCount;
+            if (triCount == 0)
+            {
+                printf("[SceneLoader] OBJ import: skipping degenerate shape '%s' (0 triangles)\n",
+                       shape.name.c_str());
+                fflush(stdout);
+                continue;
+            }
+
+            std::vector<float>    verts;
+            std::vector<uint32_t> indices;
+            std::vector<float>    normals;
+            std::vector<float>    uvs;
+            std::vector<uint32_t> materialIds;
+            materialIds.reserve(triCount);
+
+            // Per-shape vertex cache (scoped to this shape's faces).
+            std::unordered_map<ObjVertexKey, uint32_t, ObjVertexKeyHash> cache;
+            cache.max_load_factor(0.8f);
+
+            int shapeMatIdx = 0;
+            for (size_t f = 0; f < shape.mesh.num_face_vertices.size(); f++)
+            {
+                size_t fv = shape.mesh.num_face_vertices[f];
+                if (fv != 3) continue;
+
+                int matId = shape.mesh.material_ids[f];
+                if (matId >= 0 && matId < materialCount)
+                    shapeMatIdx = matId;
+
+                for (size_t v = 0; v < fv; v++)
+                {
+                    tinyobj::index_t idx = shape.mesh.indices[f * fv + v];
+                    uint32_t unified = AppendObjCorner(attrib, idx,
+                                                       verts, normals, uvs, cache);
+                    indices.push_back(unified);
+                }
+                // Per-triangle material ID (scoped to this shape). The
+                // resolver offsets these by matBase when merging.
+                materialIds.push_back(static_cast<uint32_t>(shapeMatIdx));
+            }
+
+            std::string shapeName = shape.name.empty()
+                ? (parsed.stemName + "_shape" + std::to_string(s))
+                : shape.name;
+
+            MeshData meshData;
+            meshData.vertices = std::move(verts);
+            meshData.indices = std::move(indices);
+            meshData.normals = std::move(normals);
+            meshData.uvs = std::move(uvs);
+            meshData.materialIndices = std::move(materialIds);
+            meshData.name = shapeName;
+
+            uint32_t meshIdx = ecsScene.meshRegistry.AddMesh(std::move(meshData));
+
+            auto child = reg.create();
+            {
+                Transform& tf = reg.emplace<Transform>(child);
+                tf.translation = {0, 0, 0};
+                tf.scale = {1, 1, 1};
+                tf.dirty = true;
+                reg.emplace<MeshRef>(child, meshIdx, -1); // per-triangle materials
+                reg.emplace<NameComponent>(child, shapeName);
+                reg.emplace<VisibleComponent>(child);
+
+                ImportedMeshSourceComponent src;
+                src.model.kind      = AssetKind::Model;
+                src.model.sourceKey = "obj:shape=" + std::to_string(s) +
+                                      ":name=" + shapeName;
+                src.model.importSettings.triangulate     = true;
+                src.model.importSettings.mergeMegaMesh   = false;
+                src.model.importSettings.generateNormals = false;
+                reg.emplace<ImportedMeshSourceComponent>(child, src);
+            }
+            attachChildToWrapper(child);
+            ++createdCount;
+        }
+
+        printf("[SceneLoader] OBJ import (per-shape): %d shape entities created\n",
+               createdCount);
+        fflush(stdout);
+    }
+
+    SceneGraph::SetLocalDirty(reg, wrapperRoot);
+    SceneGraph::UpdateWorldTransforms(reg);
+
+    return wrapperRoot;
+}

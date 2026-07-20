@@ -59,6 +59,15 @@ glm::mat4 AxisScale(const glm::quat& orientation, int axis, float factor)
 	return basis * glm::scale(glm::mat4(1.0f), values) * glm::inverse(basis);
 }
 
+// Uniform scale about a pivot: scales all three axes by `factor` in the
+// orientation's basis. Used when the host enables uniform-scale mode.
+glm::mat4 UniformScale(const glm::quat& orientation, float factor)
+{
+	const glm::mat4 basis = glm::mat4_cast(orientation);
+	return basis * glm::scale(glm::mat4(1.0f), glm::vec3(factor)) *
+		glm::inverse(basis);
+}
+
 } // namespace
 
 void EditorTransformGizmo::Cancel()
@@ -70,7 +79,7 @@ TransformGizmoResult EditorTransformGizmo::Draw(SceneManager& scene,
 	const EditorSelection& selection, const Camera& camera,
 	const glm::vec2& imageMin, const glm::vec2& imageSize, bool imageHovered,
 	bool editable, TransformSpace space, TransformPivot pivot,
-	const TransformSnapSettings& snap)
+	const TransformSnapSettings& snap, bool uniformScale)
 {
 	TransformGizmoResult result;
 	if (!editable || selection.Empty() || imageSize.x <= 1.0f || imageSize.y <= 1.0f)
@@ -281,7 +290,9 @@ TransformGizmoResult EditorTransformGizmo::Draw(SceneManager& scene,
 		if (std::abs(operationAmount) < 0.01f)
 			operationAmount = operationAmount < 0.0f ? -0.01f : 0.01f;
 		sharedDelta = AroundPivot(glm::vec3(m_Drag.startPivot[3]),
-			AxisScale(m_Drag.pivotRotation, m_Drag.axis, operationAmount));
+			uniformScale
+				? UniformScale(m_Drag.pivotRotation, operationAmount)
+				: AxisScale(m_Drag.pivotRotation, m_Drag.axis, operationAmount));
 	}
 
 	std::vector<glm::mat4> editedWorld;
@@ -307,7 +318,9 @@ TransformGizmoResult EditorTransformGizmo::Draw(SceneManager& scene,
 					glm::rotate(glm::mat4(1.0f), glm::radians(operationAmount), axisWorld));
 			else
 				delta = AroundPivot(start.translation,
-					AxisScale(orientation, m_Drag.axis, operationAmount));
+					uniformScale
+						? UniformScale(orientation, operationAmount)
+						: AxisScale(orientation, m_Drag.axis, operationAmount));
 			editedWorld.push_back(delta * startWorld);
 		}
 	}

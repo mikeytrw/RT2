@@ -258,16 +258,25 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         std::string path;        // original relative path
         fs::path    resolved;    // absolute path (empty if missing)
         bool        isObj = false;
+        // OBJ import mode (captured from the first entity referencing this
+        // model+mode). The dedup key is (path, isObj, mergeMegaMesh) so the
+        // same OBJ imported in both modes stages independently.
+        bool        mergeMegaMesh = true;
     };
 
     std::vector<ModelRef> models;
-    auto findOrAddModel = [&](const std::string& refPath, bool isObj) -> int {
+    auto findOrAddModel = [&](const std::string& refPath, bool isObj,
+                              bool mergeMegaMesh) -> int {
         for (size_t i = 0; i < models.size(); ++i)
-            if (models[i].path == refPath) return (int)i;
+            if (models[i].path == refPath &&
+                models[i].isObj == isObj &&
+                models[i].mergeMegaMesh == mergeMegaMesh)
+                return (int)i;
         ModelRef m;
         m.path = refPath;
         m.resolved = ResolvePath(refPath, sceneRoot);
         m.isObj = isObj;
+        m.mergeMegaMesh = mergeMegaMesh;
         models.push_back(m);
         return (int)models.size() - 1;
     };
@@ -315,7 +324,8 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
             if (auto* nc = reg.try_get<NameComponent>(e))
                 pe.name = nc->name;
             bool isObj = (src.model.sourceKey.rfind("obj:", 0) == 0);
-            pe.modelIdx = findOrAddModel(src.model.path, isObj);
+            pe.modelIdx = findOrAddModel(src.model.path, isObj,
+                                         src.model.importSettings.mergeMegaMesh);
             pending.push_back(pe);
         }
     }
@@ -330,9 +340,15 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         bool        isObj  = false;
         bool        merged = false;  // true once staged resources are appended
         ECSScene    ecs;        // rebuilt geometry/materials/textures
-        // For glTF: map source key -> (meshIndex, materialIndex) in `ecs`.
-        std::unordered_map<std::string, std::pair<uint32_t,int>> gltfKeyMap;
-        // For OBJ: the single mega-mesh index (per-triangle materials).
+        // Generic: map source key -> (meshIndex, materialIndex) in `ecs`.
+        // Populated from staged entities carrying
+        // ImportedMeshSourceComponent. Works for both glTF primitive keys
+        // ("gltf:scene=...:primitive=...") and OBJ per-shape keys
+        // ("obj:shape=<n>:name=<...>").
+        std::unordered_map<std::string, std::pair<uint32_t,int>> keyMap;
+        // For OBJ mega-mesh (legacy "obj:whole-model"): the single
+        // mega-mesh index (per-triangle materials). Used as a fallback
+        // when keyMap lookup misses on a whole-model key.
         uint32_t    objMeshIndex = 0;
         // Base offsets applied when merging into the target document.
         uint32_t    meshBase   = 0;
@@ -361,7 +377,13 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
 
         bool ok = false;
         if (m.isObj)
-            ok = SceneLoader::LoadObjIntoECS(s.ecs, m.resolved.string());
+        {
+            ImportSettings iset;
+            iset.mergeMegaMesh = m.mergeMegaMesh;
+            entt::entity root = SceneLoader::ImportObjIntoECS(
+                s.ecs, m.resolved.string(), iset);
+            ok = (root != entt::null);
+        }
         else
             ok = SceneLoader::LoadIntoECS(s.ecs, m.resolved.string());
 
@@ -413,10 +435,13 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         // and small models; a later slice can attach full node/primitive
         // provenance inside SceneLoader itself.
 
-        // Build gltfKeyMap from staged entities that carry
-        // ImportedMeshSourceComponent (the importer attaches them when
-        // importing into a scene; the standalone loader path does not, so
-        // this map may be empty for the standalone-load case).
+        // Build keyMap from staged entities that carry
+        // ImportedMeshSourceComponent. This is format-agnostic: glTF
+        // primitive keys ("gltf:scene=...:primitive=...") and OBJ per-shape
+        // keys ("obj:shape=<n>:name=<...>") both flow through the same map.
+        // The importer (ImportIntoECS / ImportObjIntoECS) attaches provenance
+        // to staged entities; the standalone loader path does not, so this
+        // map may be empty for the standalone-load case.
         {
             auto& sreg = s.ecs.registry;
             auto sview = sreg.view<ImportedMeshSourceComponent>();
@@ -425,8 +450,11 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
                 const auto& ssrc = sview.get<ImportedMeshSourceComponent>(se);
                 if (auto* sref = sreg.try_get<MeshRef>(se))
                 {
-                    s.gltfKeyMap[ssrc.model.sourceKey] =
+                    s.keyMap[ssrc.model.sourceKey] =
                         { sref->meshIndex, sref->materialIndex };
+                    // Capture the OBJ mega-mesh index for legacy fallback.
+                    if (ssrc.model.sourceKey == "obj:whole-model")
+                        s.objMeshIndex = sref->meshIndex;
                 }
             }
         }
@@ -438,7 +466,7 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         // <n>:mesh=<m>:primitive=<p>" convention with primitive index = the
         // staged MeshRegistry index. This matches how the first import
         // attached provenance (see SceneManager::ImportGltf wiring).
-        if (s.gltfKeyMap.empty() && !s.isObj)
+        if (s.keyMap.empty() && !s.isObj)
         {
             // Walk staged MeshRegistry in order and synthesize keys with
             // primitive index = mesh position. scene/node indices are not
@@ -539,19 +567,54 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
 
         if (s.isObj)
         {
-            // OBJ whole-model: single mega-mesh at the staged index 0.
-            // materialIndex = -1 means per-triangle materials.
-            if (s.ecs.meshRegistry.GetCount() > 0)
+            // OBJ: try the generic keyMap first (covers both per-shape
+            // "obj:shape=<n>:name=<...>" keys and "obj:whole-model" when
+            // the staged loader attached provenance).
+            auto it = s.keyMap.find(pe.ref.sourceKey);
+            if (it != s.keyMap.end())
             {
-                targetMeshIndex = s.meshBase + 0;
+                targetMeshIndex = s.meshBase + it->second.first;
+                // OBJ always uses per-triangle materials (materialIndex = -1).
                 targetMaterialIndex = -1;
+            }
+            else if (pe.ref.sourceKey == "obj:whole-model")
+            {
+                // Legacy fallback: standalone LoadObjIntoECS path did not
+                // attach provenance, so use the captured mega-mesh index.
+                if (s.ecs.meshRegistry.GetCount() > 0)
+                {
+                    targetMeshIndex = s.meshBase + s.objMeshIndex;
+                    targetMaterialIndex = -1;
+                }
+            }
+            else if (pe.ref.sourceKey.rfind("obj:shape=", 0) == 0)
+            {
+                // Name-based fallback: extract the name= component from the
+                // key and scan keyMap for a key whose name= component matches.
+                // This tolerates externally edited OBJs that reorder shapes.
+                auto namePos = pe.ref.sourceKey.find("name=");
+                if (namePos != std::string::npos)
+                {
+                    std::string wantName = pe.ref.sourceKey.substr(namePos + 5);
+                    for (const auto& kv : s.keyMap)
+                    {
+                        auto np = kv.first.find("name=");
+                        if (np != std::string::npos &&
+                            kv.first.substr(np + 5) == wantName)
+                        {
+                            targetMeshIndex = s.meshBase + kv.second.first;
+                            targetMaterialIndex = -1;
+                            break;
+                        }
+                    }
+                }
             }
         }
         else
         {
             // glTF: look up by sourceKey in the staged key map.
-            auto it = s.gltfKeyMap.find(pe.ref.sourceKey);
-            if (it != s.gltfKeyMap.end())
+            auto it = s.keyMap.find(pe.ref.sourceKey);
+            if (it != s.keyMap.end())
             {
                 targetMeshIndex = s.meshBase + it->second.first;
                 targetMaterialIndex = it->second.second + s.matBase;

@@ -95,6 +95,13 @@ struct EditorCameraPose;
 	// Returns the wrapper root entity, or invalid EntityId on failure.
 	EntityId ImportGltf(const std::string& filepath);
 
+	// Import an OBJ file into the EXISTING scene (merges meshes/materials/
+	// textures, creates a wrapper root entity with one child per shape when
+	// settings.mergeMegaMesh is false, or a single mega-mesh child when true).
+	// Does NOT clear the scene. Returns the wrapper root entity, or invalid
+	// EntityId on failure.
+	EntityId ImportObj(const std::string& filepath, const ImportSettings& settings);
+
 	// ---- Full GPU re-upload (rebuilds GPUSceneData from scene state) ----
 	void SyncToGPU();
 

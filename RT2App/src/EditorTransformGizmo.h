@@ -43,7 +43,7 @@ public:
 	TransformGizmoResult Draw(SceneManager& scene, const EditorSelection& selection,
 		const Camera& camera, const glm::vec2& imageMin, const glm::vec2& imageSize,
 		bool imageHovered, bool editable, TransformSpace space, TransformPivot pivot,
-		const TransformSnapSettings& snap);
+		const TransformSnapSettings& snap, bool uniformScale = false);
 
 	TransformGizmoOperation Operation() const { return m_Operation; }
 	void SetOperation(TransformGizmoOperation operation) { m_Operation = operation; }

@@ -1194,3 +1194,648 @@ TEST_CASE("P1A Multi-Model: two OBJ models save/reload preserves material identi
     std::filesystem::remove(scenePath);
     std::filesystem::remove_all(dir);
 }
+
+// ============================================================================
+// OBJ Import Wizard — per-shape vs mega-mesh import mode tests.
+//
+// These tests exercise SceneLoader::ImportObjIntoECS + SceneManager::ImportObj
+// + the resolver's per-shape OBJ matching (B1: per-triangle materials per
+// shape; B2: dedup by (path, mergeMegaMesh); degenerate-shape skipping; name
+// fallback) and backward compatibility with legacy "obj:whole-model" scenes.
+// ============================================================================
+
+namespace {
+
+// Write an OBJ with multiple shapes (groups), each using a distinct material.
+// shapeColors[i] assigns Kd to shape i. Each shape is one triangle. Returns
+// the OBJ path; the MTL is written alongside.
+struct MultiShapeObjFixture
+{
+    std::filesystem::path dir;
+    std::filesystem::path objPath;
+    std::filesystem::path mtlPath;
+    std::vector<std::string> shapeNames;
+    std::vector<glm::vec3>   shapeColors;
+
+    ~MultiShapeObjFixture() { Cleanup(); }
+    void Cleanup()
+    {
+        std::filesystem::remove(objPath);
+        std::filesystem::remove(mtlPath);
+    }
+};
+
+MultiShapeObjFixture MakeMultiShapeObj(
+    const std::filesystem::path& dir,
+    const std::string& objName,
+    const std::vector<std::string>& shapeNames,
+    const std::vector<glm::vec3>& shapeColors)
+{
+    MultiShapeObjFixture f;
+    f.dir = dir;
+    f.shapeNames = shapeNames;
+    f.shapeColors = shapeColors;
+    f.objPath = dir / (objName + ".obj");
+    f.mtlPath = dir / (objName + ".mtl");
+
+    REQUIRE(shapeNames.size() == shapeColors.size());
+
+    // Write MTL with one material per shape.
+    {
+        std::ofstream mtl(f.mtlPath);
+        for (size_t i = 0; i < shapeNames.size(); ++i)
+        {
+            mtl << "newmtl " << shapeNames[i] << "_mat\n"
+                << "Kd " << shapeColors[i].x << " "
+                << shapeColors[i].y << " "
+                << shapeColors[i].z << "\n"
+                << "Ns 16\n"
+                << "illum 2\n";
+        }
+    }
+    // Write OBJ: one group per shape, each with one triangle.
+    {
+        std::ofstream obj(f.objPath);
+        obj << "mtllib " << (objName + ".mtl") << "\n";
+        // 3 vertices per shape.
+        for (size_t i = 0; i < shapeNames.size(); ++i)
+        {
+            obj << "v " << (i * 3 + 0) << " 0 0\n"
+                << "v " << (i * 3 + 1) << " 0 0\n"
+                << "v " << (i * 3 + 0) << " 1 0\n";
+        }
+        // Texture coordinates.
+        obj << "vt 0 0\nvt 1 0\nvt 0 1\n";
+        for (size_t i = 0; i < shapeNames.size(); ++i)
+        {
+            obj << "g " << shapeNames[i] << "\n"
+                << "usemtl " << shapeNames[i] << "_mat\n"
+                << "f " << (i * 3 + 1) << "/1 "
+                << (i * 3 + 2) << "/2 "
+                << (i * 3 + 3) << "/3\n";
+        }
+    }
+    return f;
+}
+
+// Write an OBJ with a single shape that uses TWO materials (two faces, each
+// with a different usemtl). Used to verify B1: per-triangle materials in
+// per-shape mode.
+struct MultiMaterialShapeFixture
+{
+    std::filesystem::path dir;
+    std::filesystem::path objPath;
+    std::filesystem::path mtlPath;
+    std::string shapeName;
+    glm::vec3 colorA;
+    glm::vec3 colorB;
+
+    ~MultiMaterialShapeFixture() { Cleanup(); }
+    void Cleanup()
+    {
+        std::filesystem::remove(objPath);
+        std::filesystem::remove(mtlPath);
+    }
+};
+
+MultiMaterialShapeFixture MakeMultiMaterialShape(
+    const std::filesystem::path& dir,
+    const std::string& objName,
+    const glm::vec3& colorA,
+    const glm::vec3& colorB)
+{
+    MultiMaterialShapeFixture f;
+    f.dir = dir;
+    f.shapeName = objName + "_shape";
+    f.colorA = colorA;
+    f.colorB = colorB;
+    f.objPath = dir / (objName + ".obj");
+    f.mtlPath = dir / (objName + ".mtl");
+
+    {
+        std::ofstream mtl(f.mtlPath);
+        mtl << "newmtl mat_a\n"
+            << "Kd " << colorA.x << " " << colorA.y << " " << colorA.z << "\n"
+            << "Ns 16\nillum 2\n";
+        mtl << "newmtl mat_b\n"
+            << "Kd " << colorB.x << " " << colorB.y << " " << colorB.z << "\n"
+            << "Ns 16\nillum 2\n";
+    }
+    // Single group, two triangles, each with a different material.
+    {
+        std::ofstream obj(f.objPath);
+        obj << "mtllib " << (objName + ".mtl") << "\n"
+            << "v 0 0 0\n"
+            << "v 1 0 0\n"
+            << "v 0 1 0\n"
+            << "v 1 1 0\n"
+            << "v 2 0 0\n"
+            << "v 2 1 0\n"
+            << "vt 0 0\nvt 1 0\nvt 0 1\n"
+            << "g " << f.shapeName << "\n"
+            << "usemtl mat_a\n"
+            << "f 1/1 2/2 3/3\n"
+            << "usemtl mat_b\n"
+            << "f 2/2 5/2 6/3\n";
+    }
+    return f;
+}
+
+// Write an OBJ with a degenerate (zero-triangle) shape followed by a valid
+// shape. Used to verify degenerate-shape skipping.
+struct DegenerateShapeFixture
+{
+    std::filesystem::path dir;
+    std::filesystem::path objPath;
+    std::filesystem::path mtlPath;
+    std::string validShapeName;
+
+    ~DegenerateShapeFixture() { Cleanup(); }
+    void Cleanup()
+    {
+        std::filesystem::remove(objPath);
+        std::filesystem::remove(mtlPath);
+    }
+};
+
+DegenerateShapeFixture MakeDegenerateShapeObj(
+    const std::filesystem::path& dir,
+    const std::string& objName)
+{
+    DegenerateShapeFixture f;
+    f.dir = dir;
+    f.validShapeName = "valid_shape";
+    f.objPath = dir / (objName + ".obj");
+    f.mtlPath = dir / (objName + ".mtl");
+
+    {
+        std::ofstream mtl(f.mtlPath);
+        mtl << "newmtl mat_v\n"
+            << "Kd 0 1 0\nNs 16\nillum 2\n";
+    }
+    // Shape 0 "empty_shape" is a group marker with no faces.
+    // Shape 1 "valid_shape" has one triangle.
+    {
+        std::ofstream obj(f.objPath);
+        obj << "mtllib " << (objName + ".mtl") << "\n"
+            << "v 0 0 0\n"
+            << "v 1 0 0\n"
+            << "v 0 1 0\n"
+            << "vt 0 0\nvt 1 0\nvt 0 1\n"
+            << "g empty_shape\n"
+            << "g " << f.validShapeName << "\n"
+            << "usemtl mat_v\n"
+            << "f 1/1 2/2 3/3\n";
+    }
+    return f;
+}
+
+} // anonymous namespace
+
+// Test 1: Two-shape OBJ, per-shape mode -> 2 child entities + wrapper root,
+// each with distinct sourceKey and correct mesh.
+TEST_CASE("OBJ Import Wizard: per-shape mode creates one entity per shape")
+{
+    auto dir = std::filesystem::temp_directory_path() / "rt2_obj_wizard_pershape";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    auto fixture = MakeMultiShapeObj(dir, "twoshape",
+        {"shape_red", "shape_green"},
+        {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}});
+
+    SceneManager mgr;
+    ImportSettings settings;
+    settings.mergeMegaMesh = false;
+    auto rootId = mgr.ImportObj(fixture.objPath.string(), settings);
+    REQUIRE(rootId.IsValid());
+
+    auto& reg = mgr.GetECS().registry;
+
+    // Find the wrapper root by the returned entity.
+    auto rootEnt = rootId.id;
+    REQUIRE(reg.valid(rootEnt));
+    REQUIRE(reg.all_of<Hierarchy>(rootEnt));
+
+    // The wrapper root should have 2 children.
+    auto& rootHier = reg.get<Hierarchy>(rootEnt);
+    REQUIRE(rootHier.children.size() == 2);
+
+    // Each child should have a distinct sourceKey with "obj:shape=" prefix.
+    std::vector<std::string> keys;
+    for (auto child : rootHier.children)
+    {
+        REQUIRE(reg.all_of<ImportedMeshSourceComponent>(child));
+        REQUIRE(reg.all_of<MeshRef>(child));
+        const auto& src = reg.get<ImportedMeshSourceComponent>(child);
+        keys.push_back(src.model.sourceKey);
+        // Per-shape mode: materialIndex = -1 (per-triangle materials).
+        const auto& ref = reg.get<MeshRef>(child);
+        CHECK(ref.materialIndex == -1);
+        // The importSettings should record mergeMegaMesh = false.
+        CHECK(src.model.importSettings.mergeMegaMesh == false);
+    }
+    REQUIRE(keys.size() == 2);
+    CHECK(keys[0] != keys[1]);
+    CHECK(keys[0].rfind("obj:shape=", 0) == 0);
+    CHECK(keys[1].rfind("obj:shape=", 0) == 0);
+
+    std::filesystem::remove_all(dir);
+}
+
+// Test 2: Same OBJ, mega-mesh mode -> 1 child entity (current behavior).
+TEST_CASE("OBJ Import Wizard: mega-mesh mode creates single entity")
+{
+    auto dir = std::filesystem::temp_directory_path() / "rt2_obj_wizard_mega";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    auto fixture = MakeMultiShapeObj(dir, "twoshape",
+        {"shape_red", "shape_green"},
+        {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}});
+
+    SceneManager mgr;
+    ImportSettings settings;
+    settings.mergeMegaMesh = true;
+    auto rootId = mgr.ImportObj(fixture.objPath.string(), settings);
+    REQUIRE(rootId.IsValid());
+
+    auto& reg = mgr.GetECS().registry;
+    auto rootEnt = rootId.id;
+    REQUIRE(reg.valid(rootEnt));
+    REQUIRE(reg.all_of<Hierarchy>(rootEnt));
+
+    // Mega-mesh: one child entity with "obj:whole-model" sourceKey.
+    auto& rootHier = reg.get<Hierarchy>(rootEnt);
+    REQUIRE(rootHier.children.size() == 1);
+
+    auto child = rootHier.children[0];
+    REQUIRE(reg.all_of<ImportedMeshSourceComponent>(child));
+    const auto& src = reg.get<ImportedMeshSourceComponent>(child);
+    CHECK(src.model.sourceKey == "obj:whole-model");
+    CHECK(src.model.importSettings.mergeMegaMesh == true);
+
+    std::filesystem::remove_all(dir);
+}
+
+// Test 3: Per-shape scene saved + reloaded + resolved -> each MeshRef points
+// at the correct shape mesh.
+TEST_CASE("OBJ Import Wizard: per-shape save/reload/resolve round-trip")
+{
+    auto dir = std::filesystem::temp_directory_path() / "rt2_obj_wizard_roundtrip";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    auto fixture = MakeMultiShapeObj(dir, "roundtrip",
+        {"shape_red", "shape_green"},
+        {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}});
+
+    // Import in per-shape mode.
+    SceneManager mgr;
+    ImportSettings settings;
+    settings.mergeMegaMesh = false;
+    auto rootId = mgr.ImportObj(fixture.objPath.string(), settings);
+    REQUIRE(rootId.IsValid());
+
+    // Record the sourceKeys and UUIDs of the child entities.
+    auto& reg = mgr.GetECS().registry;
+    auto& rootHier = reg.get<Hierarchy>(rootId.id);
+    REQUIRE(rootHier.children.size() == 2);
+
+    std::vector<std::string> childKeys;
+    std::vector<UUID>        childUuids;
+    for (auto child : rootHier.children)
+    {
+        childKeys.push_back(reg.get<ImportedMeshSourceComponent>(child).model.sourceKey);
+        childUuids.push_back(reg.get<EntityIdComponent>(child).id);
+    }
+
+    // Save as .rt2scene.
+    auto scenePath = dir / "pershape.rt2scene";
+    Error saveErr;
+    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(saveErr.IsOk());
+
+    // Load into a fresh document and resolve.
+    DeterministicUuidProvider provider;
+    SceneDocument loaded;
+    loaded.SetUuidProvider(&provider);
+    Error loadErr;
+    REQUIRE(SceneSerializer::Load(loaded, scenePath, loadErr));
+    REQUIRE(loadErr.IsOk());
+
+    std::vector<AssetDiagnostic> diagnostics;
+    Error resolveErr;
+    REQUIRE(SceneAssetResolver::ResolveAll(loaded, dir, diagnostics, resolveErr));
+    REQUIRE(resolveErr.IsOk());
+
+    // Verify each child entity's MeshRef points at a valid mesh with the
+    // correct per-triangle material.
+    for (size_t i = 0; i < childUuids.size(); ++i)
+    {
+        auto ent = loaded.FindByUuid(childUuids[i]);
+        REQUIRE(loaded.ecs.registry.valid(ent));
+        REQUIRE(loaded.ecs.registry.all_of<MeshRef>(ent));
+        const auto& ref = loaded.ecs.registry.get<MeshRef>(ent);
+        CHECK(ref.materialIndex == -1); // per-triangle materials
+
+        const auto& mesh = loaded.ecs.meshRegistry.GetMesh(ref.meshIndex);
+        REQUIRE(!mesh.materialIndices.empty());
+
+        // The first triangle's material should map to the correct color.
+        uint32_t triMat = mesh.materialIndices[0];
+        REQUIRE(triMat < loaded.ecs.materials.size());
+        const auto& mat = loaded.ecs.materials[triMat];
+
+        if (childKeys[i].find("shape_red") != std::string::npos)
+        {
+            CHECK(mat.baseColor.x == doctest::Approx(1.0f).epsilon(0.01f));
+            CHECK(mat.baseColor.y < 0.1f);
+        }
+        else if (childKeys[i].find("shape_green") != std::string::npos)
+        {
+            CHECK(mat.baseColor.y == doctest::Approx(1.0f).epsilon(0.01f));
+            CHECK(mat.baseColor.x < 0.1f);
+        }
+    }
+
+    std::filesystem::remove(scenePath);
+    std::filesystem::remove_all(dir);
+}
+
+// Test 4: Legacy "obj:whole-model" scene loads correctly (backward compat).
+// This verifies that scenes saved before the import wizard (with
+// LoadObjIntoECS producing "obj:whole-model") still resolve correctly.
+TEST_CASE("OBJ Import Wizard: legacy obj:whole-model scene resolves")
+{
+    auto dir = std::filesystem::temp_directory_path() / "rt2_obj_wizard_legacy";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    auto fixture = MakeMultiShapeObj(dir, "legacy",
+        {"shape_red", "shape_green"},
+        {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}});
+
+    // Use the legacy LoadScene path (which calls LoadObjIntoECS -> mega-mesh
+    // with "obj:whole-model" sourceKey).
+    SceneManager mgr;
+    REQUIRE(mgr.LoadScene(fixture.objPath.string()));
+
+    // Save as .rt2scene.
+    auto scenePath = dir / "legacy.rt2scene";
+    Error saveErr;
+    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(saveErr.IsOk());
+
+    // Load into a fresh document and resolve.
+    DeterministicUuidProvider provider;
+    SceneDocument loaded;
+    loaded.SetUuidProvider(&provider);
+    Error loadErr;
+    REQUIRE(SceneSerializer::Load(loaded, scenePath, loadErr));
+    REQUIRE(loadErr.IsOk());
+
+    std::vector<AssetDiagnostic> diagnostics;
+    Error resolveErr;
+    REQUIRE(SceneAssetResolver::ResolveAll(loaded, dir, diagnostics, resolveErr));
+    REQUIRE(resolveErr.IsOk());
+
+    // The legacy scene should have exactly one imported entity with
+    // sourceKey "obj:whole-model" and a valid MeshRef.
+    int wholeModelCount = 0;
+    auto& reg = loaded.ecs.registry;
+    auto view = reg.view<ImportedMeshSourceComponent>();
+    for (auto e : view)
+    {
+        const auto& src = view.get<ImportedMeshSourceComponent>(e);
+        if (src.model.sourceKey == "obj:whole-model")
+        {
+            ++wholeModelCount;
+            REQUIRE(reg.all_of<MeshRef>(e));
+            const auto& ref = reg.get<MeshRef>(e);
+            CHECK(ref.materialIndex == -1);
+            const auto& mesh = loaded.ecs.meshRegistry.GetMesh(ref.meshIndex);
+            CHECK(!mesh.materialIndices.empty());
+        }
+    }
+    CHECK(wholeModelCount == 1);
+
+    std::filesystem::remove(scenePath);
+    std::filesystem::remove_all(dir);
+}
+
+// Test 5: B1 guard — Multi-material single shape, per-shape mode -> per-
+// triangle materials preserved after import AND reload.
+TEST_CASE("OBJ Import Wizard: multi-material shape preserves per-triangle materials")
+{
+    auto dir = std::filesystem::temp_directory_path() / "rt2_obj_wizard_multimat";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    // Single shape with two triangles, each using a different material.
+    auto fixture = MakeMultiMaterialShape(dir, "multimat",
+        {1.0f, 0.0f, 0.0f},   // mat_a = red
+        {0.0f, 0.0f, 1.0f});  // mat_b = blue
+
+    // Import in per-shape mode.
+    SceneManager mgr;
+    ImportSettings settings;
+    settings.mergeMegaMesh = false;
+    auto rootId = mgr.ImportObj(fixture.objPath.string(), settings);
+    REQUIRE(rootId.IsValid());
+
+    auto& reg = mgr.GetECS().registry;
+    auto& rootHier = reg.get<Hierarchy>(rootId.id);
+    REQUIRE(rootHier.children.size() == 1);
+
+    auto child = rootHier.children[0];
+    REQUIRE(reg.all_of<MeshRef>(child));
+    const auto& ref = reg.get<MeshRef>(child);
+    CHECK(ref.materialIndex == -1); // per-triangle materials
+
+    const auto& mesh = mgr.GetECS().meshRegistry.GetMesh(ref.meshIndex);
+    REQUIRE(mesh.materialIndices.size() == 2);
+
+    // Verify the two triangles reference different materials.
+    uint32_t tri0Mat = mesh.materialIndices[0];
+    uint32_t tri1Mat = mesh.materialIndices[1];
+    CHECK(tri0Mat != tri1Mat);
+
+    // Verify the materials have the correct colors.
+    REQUIRE(tri0Mat < mgr.GetECS().materials.size());
+    REQUIRE(tri1Mat < mgr.GetECS().materials.size());
+    const auto& mat0 = mgr.GetECS().materials[tri0Mat];
+    const auto& mat1 = mgr.GetECS().materials[tri1Mat];
+    CHECK(mat0.baseColor.x == doctest::Approx(1.0f).epsilon(0.01f)); // red
+    CHECK(mat1.baseColor.z == doctest::Approx(1.0f).epsilon(0.01f)); // blue
+
+    // Now save + reload + resolve and verify the materials survive.
+    auto scenePath = dir / "multimat.rt2scene";
+    Error saveErr;
+    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(saveErr.IsOk());
+
+    DeterministicUuidProvider provider;
+    SceneDocument loaded;
+    loaded.SetUuidProvider(&provider);
+    Error loadErr;
+    REQUIRE(SceneSerializer::Load(loaded, scenePath, loadErr));
+    REQUIRE(loadErr.IsOk());
+
+    std::vector<AssetDiagnostic> diagnostics;
+    Error resolveErr;
+    REQUIRE(SceneAssetResolver::ResolveAll(loaded, dir, diagnostics, resolveErr));
+    REQUIRE(resolveErr.IsOk());
+
+    // Find the child entity by sourceKey.
+    auto& lreg = loaded.ecs.registry;
+    auto lview = lreg.view<ImportedMeshSourceComponent>();
+    entt::entity childEnt = entt::null;
+    for (auto e : lview)
+    {
+        const auto& src = lview.get<ImportedMeshSourceComponent>(e);
+        if (src.model.sourceKey.rfind("obj:shape=", 0) == 0)
+        {
+            childEnt = e;
+            break;
+        }
+    }
+    REQUIRE(lreg.valid(childEnt));
+    REQUIRE(lreg.all_of<MeshRef>(childEnt));
+    const auto& lref = lreg.get<MeshRef>(childEnt);
+    CHECK(lref.materialIndex == -1);
+
+    const auto& lmesh = loaded.ecs.meshRegistry.GetMesh(lref.meshIndex);
+    REQUIRE(lmesh.materialIndices.size() == 2);
+
+    uint32_t ltri0Mat = lmesh.materialIndices[0];
+    uint32_t ltri1Mat = lmesh.materialIndices[1];
+    CHECK(ltri0Mat != ltri1Mat);
+
+    REQUIRE(ltri0Mat < loaded.ecs.materials.size());
+    REQUIRE(ltri1Mat < loaded.ecs.materials.size());
+    const auto& lmat0 = loaded.ecs.materials[ltri0Mat];
+    const auto& lmat1 = loaded.ecs.materials[ltri1Mat];
+    CHECK(lmat0.baseColor.x == doctest::Approx(1.0f).epsilon(0.01f)); // red
+    CHECK(lmat1.baseColor.z == doctest::Approx(1.0f).epsilon(0.01f)); // blue
+
+    std::filesystem::remove(scenePath);
+    std::filesystem::remove_all(dir);
+}
+
+// Test 6: B2 guard — Same OBJ imported both merged and per-shape into one
+// scene -> both resolve correctly (no dedup collision).
+TEST_CASE("OBJ Import Wizard: same OBJ merged and per-shape in one scene resolves")
+{
+    auto dir = std::filesystem::temp_directory_path() / "rt2_obj_wizard_dedup";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    auto fixture = MakeMultiShapeObj(dir, "dedup",
+        {"shape_red", "shape_green"},
+        {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}});
+
+    SceneManager mgr;
+
+    // First import: mega-mesh mode.
+    ImportSettings megaSettings;
+    megaSettings.mergeMegaMesh = true;
+    auto rootMega = mgr.ImportObj(fixture.objPath.string(), megaSettings);
+    REQUIRE(rootMega.IsValid());
+
+    // Second import: per-shape mode (same OBJ, different mode).
+    ImportSettings perShapeSettings;
+    perShapeSettings.mergeMegaMesh = false;
+    auto rootPerShape = mgr.ImportObj(fixture.objPath.string(), perShapeSettings);
+    REQUIRE(rootPerShape.IsValid());
+
+    // Verify the scene has both: one "obj:whole-model" entity and two
+    // "obj:shape=..." entities.
+    int wholeModelCount = 0;
+    int shapeCount = 0;
+    auto& reg = mgr.GetECS().registry;
+    auto view = reg.view<ImportedMeshSourceComponent>();
+    for (auto e : view)
+    {
+        const auto& src = view.get<ImportedMeshSourceComponent>(e);
+        if (src.model.sourceKey == "obj:whole-model")
+            ++wholeModelCount;
+        else if (src.model.sourceKey.rfind("obj:shape=", 0) == 0)
+            ++shapeCount;
+    }
+    CHECK(wholeModelCount == 1);
+    CHECK(shapeCount == 2);
+
+    // Save + reload + resolve.
+    auto scenePath = dir / "dedup.rt2scene";
+    Error saveErr;
+    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(saveErr.IsOk());
+
+    DeterministicUuidProvider provider;
+    SceneDocument loaded;
+    loaded.SetUuidProvider(&provider);
+    Error loadErr;
+    REQUIRE(SceneSerializer::Load(loaded, scenePath, loadErr));
+    REQUIRE(loadErr.IsOk());
+
+    std::vector<AssetDiagnostic> diagnostics;
+    Error resolveErr;
+    REQUIRE(SceneAssetResolver::ResolveAll(loaded, dir, diagnostics, resolveErr));
+    REQUIRE(resolveErr.IsOk());
+
+    // After resolve, all three imported entities should have valid MeshRefs.
+    int resolvedWhole = 0;
+    int resolvedShape = 0;
+    auto& lreg = loaded.ecs.registry;
+    auto lview = lreg.view<ImportedMeshSourceComponent>();
+    for (auto e : lview)
+    {
+        const auto& src = lview.get<ImportedMeshSourceComponent>(e);
+        if (!lreg.all_of<MeshRef>(e)) continue;
+        const auto& ref = lreg.get<MeshRef>(e);
+        if (ref.meshIndex == 0xFFFFFFFF) continue; // unresolved
+
+        if (src.model.sourceKey == "obj:whole-model")
+            ++resolvedWhole;
+        else if (src.model.sourceKey.rfind("obj:shape=", 0) == 0)
+            ++resolvedShape;
+    }
+    CHECK(resolvedWhole == 1);
+    CHECK(resolvedShape == 2);
+
+    std::filesystem::remove(scenePath);
+    std::filesystem::remove_all(dir);
+}
+
+// Test 7: Degenerate (zero-triangle) shape -> no spurious child entity.
+TEST_CASE("OBJ Import Wizard: degenerate shape produces no child entity")
+{
+    auto dir = std::filesystem::temp_directory_path() / "rt2_obj_wizard_degenerate";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+
+    auto fixture = MakeDegenerateShapeObj(dir, "degenerate");
+
+    SceneManager mgr;
+    ImportSettings settings;
+    settings.mergeMegaMesh = false;
+    auto rootId = mgr.ImportObj(fixture.objPath.string(), settings);
+    REQUIRE(rootId.IsValid());
+
+    auto& reg = mgr.GetECS().registry;
+    auto& rootHier = reg.get<Hierarchy>(rootId.id);
+
+    // Only the valid shape should produce a child; the empty group should
+    // not. tinyobj may or may not produce a shape entry for the empty
+    // group, but in per-shape mode we skip zero-triangle shapes.
+    CHECK(rootHier.children.size() == 1);
+
+    // The single child should be the valid_shape.
+    auto child = rootHier.children[0];
+    REQUIRE(reg.all_of<ImportedMeshSourceComponent>(child));
+    const auto& src = reg.get<ImportedMeshSourceComponent>(child);
+    CHECK(src.model.sourceKey.find("valid_shape") != std::string::npos);
+
+    std::filesystem::remove_all(dir);
+}
