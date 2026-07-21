@@ -52,7 +52,25 @@ public:
 
 	// Async texture upload polling — forward to SceneResources.
 	bool IsTextureUploadPending() const { return m_Scene.IsTextureUploadPending(); }
-	bool PollTextureUpload() { return m_Scene.PollTextureUpload(); }
+	// Adopts completed textures AND refreshes the path-trace descriptor set,
+	// mirroring what Render() does inline. The loading modal drives this
+	// outside Render(), so without the descriptor refresh a texture-only
+	// upload (e.g. an env map) would leave the renderer bound to stale images.
+	bool PollTextureUpload();
+
+	// AS rebuild status + trigger (used by the async loading modal to
+	// run the BLAS/TLAS build outside Render() so the modal stays visible).
+	bool NeedsASRebuild() const { return m_Scene.NeedsASRebuild(); }
+	void RebuildAccelerationStructures();
+
+	// Async AS rebuild — submit with a fence, poll each frame.
+	bool BeginRebuildAccelerationStructures();
+	bool IsASRebuildPending() const { return m_Scene.IsASRebuildPending(); }
+	bool PollASRebuild() { return m_Scene.PollASRebuild(); }
+
+	// Update the path-trace descriptor set after an async AS rebuild
+	// completes (called by the loading modal).
+	void UpdateDescriptorSetAfterAS();
 
 	// Update instance transforms + lights + TLAS only (no BLAS rebuild).
 	// Call after ECS transforms have changed (e.g. animation).

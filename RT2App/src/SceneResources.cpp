@@ -89,8 +89,12 @@ void SceneResources::SetScene(const GpuDevice& dev, GPUSceneData& sceneData)
 	RT_LOG("[SetScene] enter: textures=%d, envMapIndex=%d, meshes=%d, materials=%d",
 	       (int)sceneData.textures.size(), sceneData.envMapIndex,
 	       (int)sceneData.meshes.size(), (int)sceneData.materials.size());
+	printf("[SetScene] enter: textures=%d meshes=%d, calling vkDeviceWaitIdle...\n",
+	       (int)sceneData.textures.size(), (int)sceneData.meshes.size());
+	fflush(stdout);
 	dev.LogMemoryUsage("SetScene start");
 	vkDeviceWaitIdle(device);
+	printf("[SetScene] vkDeviceWaitIdle returned\n"); fflush(stdout);
 
 	m_NeedsASRebuild = true;
 
@@ -125,10 +129,12 @@ void SceneResources::SetScene(const GpuDevice& dev, GPUSceneData& sceneData)
 	                      envMapIdx,
 	                      marginalCDF, conditionalCDF,
 	                      cdfW, cdfH);
+	printf("[SetScene] AsyncTextureLoader.Begin done\n"); fflush(stdout);
 
 	m_CurrentScene = std::move(sceneData);
 	m_CurrentScene.textures.clear(); // textures now owned by loader
 
+	printf("[SetScene] done (textures loading async, needsASRebuild=true)\n"); fflush(stdout);
 	RT_LOG("[SetScene] done (textures loading async)");
 }
 
@@ -137,15 +143,18 @@ bool SceneResources::PollTextureUpload()
 	if (!m_TextureLoader.IsBusy()) return false;
 	if (!m_TextureLoader.IsComplete()) return false;
 
+	printf("[PollTextureUpload] worker complete, calling Adopt...\n"); fflush(stdout);
 	std::vector<GpuImage> newTextures;
 	int envMapIdx = -1, margCDFIdx = -1, condCDFIdx = -1;
 	m_TextureLoader.Adopt(newTextures, envMapIdx, margCDFIdx, condCDFIdx);
+	printf("[PollTextureUpload] Adopt done, calling vkDeviceWaitIdle...\n"); fflush(stdout);
 
 	// Wait for all in-flight render frames to finish before destroying
 	// old textures — the previous frame's GPU commands may still be
 	// reading the old texture images via the descriptor set.
 	VkDevice device = m_Device->device;
 	vkDeviceWaitIdle(device);
+	printf("[PollTextureUpload] vkDeviceWaitIdle done, swapping textures\n"); fflush(stdout);
 
 	// Now safe to destroy old textures — new ones are ready
 	DestroyTextures();
@@ -169,6 +178,9 @@ bool SceneResources::PollTextureUpload()
 void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 	std::function<void(const GpuDevice&, const GPUSceneData&)> rasterPassBuild)
 {
+	printf("[RebuildAS] enter: meshes=%d instances=%d\n",
+	       (int)m_CurrentScene.meshes.size(), (int)m_CurrentScene.instances.size());
+	fflush(stdout);
 	RT_LOG("[RebuildAS] enter: meshes=%d instances=%d",
 	       (int)m_CurrentScene.meshes.size(), (int)m_CurrentScene.instances.size());
 
@@ -176,9 +188,11 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 	// command buffers on the same queue, racing with BLAS build.
 	if (m_TextureLoader.IsBusy())
 	{
+		printf("[RebuildAS] waiting for async texture upload...\n"); fflush(stdout);
 		RT_LOG("[RebuildAS] waiting for async texture upload...");
 		while (m_TextureLoader.IsBusy() && !m_TextureLoader.IsComplete())
 			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		printf("[RebuildAS] async texture upload done waiting\n"); fflush(stdout);
 	}
 
 	std::vector<BLASGeometry> geometries;
@@ -202,14 +216,23 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 
 		geometries.push_back(geo);
 	}
-	RT_LOG("[RebuildAS] built %d geometry entries, calling BuildBLASes", (int)geometries.size());
+	RT_LOG("[RebuildAS] built %d geometry entries", (int)geometries.size());
+	printf("[RebuildAS] built %d geometry entries, building BLASes (batched)...\n", (int)geometries.size());
+	fflush(stdout);
 
 	m_AS.SetDevice(dev);
 	dev.LogMemoryUsage("RebuildAS pre-BLAS");
-	CommandUtils::ImmediateSubmit(dev, [&](VkCommandBuffer cmd) {
-		bool blasOK = m_AS.BuildBLASes(cmd, geometries);
-		RT_LOG("[RebuildAS] BuildBLASes result=%d", blasOK);
 
+	// BuildBLASes now does its own batched ImmediateSubmit calls
+	// internally (batches of 256 to cap GPU memory). The cmdBuffer
+	// parameter is unused — BLAS builds are submitted per-batch.
+	bool blasOK = m_AS.BuildBLASes(VK_NULL_HANDLE, geometries);
+	RT_LOG("[RebuildAS] BuildBLASes result=%d", blasOK);
+	printf("[RebuildAS] BuildBLASes done, building TLAS...\n"); fflush(stdout);
+
+	// Build TLAS in a single ImmediateSubmit (with a memory barrier
+	// between BLAS writes and TLAS read).
+	CommandUtils::ImmediateSubmit(dev, [&](VkCommandBuffer cmd) {
 		VkMemoryBarrier blasBarrier = {};
 		blasBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
 		blasBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
@@ -244,24 +267,249 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 		bool tlasOK = m_AS.BuildTLAS(cmd, instances, instanceMeshIndices);
 		RT_LOG("[RebuildAS] TLAS build result=%d instances=%d", tlasOK, (int)instances.size());
 	});
+	printf("[RebuildAS] TLAS done\n"); fflush(stdout);
 
+	printf("[RebuildAS] BuildAttributeBuffers...\n"); fflush(stdout);
 	m_AS.BuildAttributeBuffers();
+	printf("[RebuildAS] BuildAttributeBuffers done\n"); fflush(stdout);
 	dev.LogMemoryUsage("RebuildAS post-attr-buffers");
 
 	if (rasterPassBuild)
+	{
+		printf("[RebuildAS] rasterPassBuild (vertex buffers + draw data)...\n"); fflush(stdout);
 		rasterPassBuild(dev, m_CurrentScene);
+		printf("[RebuildAS] rasterPassBuild done\n"); fflush(stdout);
+	}
 
+	printf("[RebuildAS] CreateMaterialBuffer...\n"); fflush(stdout);
 	RT_LOG("[RebuildAS] creating material buffer");
 	CreateMaterialBuffer(dev);
+	printf("[RebuildAS] CreateMaterialBuffer done\n"); fflush(stdout);
+
+	printf("[RebuildAS] CreateLightBuffer...\n"); fflush(stdout);
 	RT_LOG("[RebuildAS] creating light buffer");
 	CreateLightBuffer(dev);
+	printf("[RebuildAS] CreateLightBuffer done\n"); fflush(stdout);
+
+	printf("[RebuildAS] CreateInstanceTransformBuffer...\n"); fflush(stdout);
 	RT_LOG("[RebuildAS] creating instance transform buffer");
 	// Instance indices from the old scene do not correspond to this rebuilt
 	// scene, so initialize both motion-vector transform buffers from the new data.
 	CreateInstanceTransformBuffer(dev, false);
+	printf("[RebuildAS] CreateInstanceTransformBuffer done\n"); fflush(stdout);
 
 	m_NeedsASRebuild = false;
 	m_ASJustBuilt = true;
+	printf("[RebuildAS] complete\n"); fflush(stdout);
+}
+
+// ----------------------------------------------------------------------------
+// Async AS rebuild — submit BLAS/TLAS build with a fence, poll each frame.
+// The CPU-side work (attribute buffers, raster buffers, material/light/
+// transform buffers) runs before the submit. The GPU build runs async.
+// ----------------------------------------------------------------------------
+
+bool SceneResources::BeginRebuildAccelerationStructures(const GpuDevice& dev,
+	std::function<void(const GpuDevice&, const GPUSceneData&)> rasterPassBuild)
+{
+	printf("[RebuildAS-async] enter: meshes=%d instances=%d\n",
+	       (int)m_CurrentScene.meshes.size(), (int)m_CurrentScene.instances.size());
+	fflush(stdout);
+
+	// Wait for async texture upload to finish — the worker thread submits
+	// command buffers on the same queue, racing with BLAS build.
+	if (m_TextureLoader.IsBusy())
+	{
+		printf("[RebuildAS-async] waiting for async texture upload...\n"); fflush(stdout);
+		while (m_TextureLoader.IsBusy() && !m_TextureLoader.IsComplete())
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		printf("[RebuildAS-async] async texture upload done waiting\n"); fflush(stdout);
+	}
+
+	std::vector<BLASGeometry> geometries;
+	geometries.reserve(m_CurrentScene.meshes.size());
+	for (const auto& mesh : m_CurrentScene.meshes)
+	{
+		BLASGeometry geo;
+		geo.vertices = mesh.vertices;
+		geo.indices = mesh.indices;
+		geo.normals = mesh.normals;
+		geo.uvs = mesh.uvs;
+		geo.materialIndices = mesh.materialIndices;
+		geo.materialIndex = mesh.materialIndex;
+
+		uint32_t matIdx = mesh.materialIndex;
+		if (matIdx < m_CurrentScene.materials.size())
+		{
+			float alphaMode = m_CurrentScene.materials[matIdx].alphaMode;
+			geo.isTransparent = (alphaMode > 0.5f);
+		}
+
+		geometries.push_back(geo);
+	}
+
+	m_AS.SetDevice(dev);
+	dev.LogMemoryUsage("RebuildAS-async pre-BLAS");
+
+	// Create a transient command pool + buffer + fence.
+	VkDevice device = dev.device;
+
+	VkCommandPoolCreateInfo poolInfo = {};
+	poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	poolInfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+	poolInfo.queueFamilyIndex = dev.queueFamily;
+	VkResult pr = vkCreateCommandPool(device, &poolInfo, nullptr, &m_ASRebuildCmdPool);
+	if (pr != VK_SUCCESS)
+	{
+		printf("[RebuildAS-async] vkCreateCommandPool failed: %d\n", (int)pr); fflush(stdout);
+		return false;
+	}
+
+	VkCommandBufferAllocateInfo allocInfo = {};
+	allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	allocInfo.commandPool = m_ASRebuildCmdPool;
+	allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	allocInfo.commandBufferCount = 1;
+	VkResult ar = vkAllocateCommandBuffers(device, &allocInfo, &m_ASRebuildCmdBuffer);
+	if (ar != VK_SUCCESS)
+	{
+		printf("[RebuildAS-async] vkAllocateCommandBuffers failed: %d\n", (int)ar); fflush(stdout);
+		vkDestroyCommandPool(device, m_ASRebuildCmdPool, nullptr);
+		m_ASRebuildCmdPool = VK_NULL_HANDLE;
+		return false;
+	}
+
+	VkFenceCreateInfo fenceInfo = {};
+	fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+	VkResult fr = vkCreateFence(device, &fenceInfo, nullptr, &m_ASRebuildFence);
+	if (fr != VK_SUCCESS)
+	{
+		printf("[RebuildAS-async] vkCreateFence failed: %d\n", (int)fr); fflush(stdout);
+		vkFreeCommandBuffers(device, m_ASRebuildCmdPool, 1, &m_ASRebuildCmdBuffer);
+		vkDestroyCommandPool(device, m_ASRebuildCmdPool, nullptr);
+		m_ASRebuildCmdBuffer = VK_NULL_HANDLE;
+		m_ASRebuildCmdPool = VK_NULL_HANDLE;
+		return false;
+	}
+
+	// Record the BLAS + TLAS build commands.
+	VkCommandBufferBeginInfo beginInfo = {};
+	beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+	vkBeginCommandBuffer(m_ASRebuildCmdBuffer, &beginInfo);
+
+	bool blasOK = m_AS.BuildBLASes(m_ASRebuildCmdBuffer, geometries);
+	RT_LOG("[RebuildAS-async] BuildBLASes result=%d", blasOK);
+
+	VkMemoryBarrier blasBarrier = {};
+	blasBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
+	blasBarrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+	blasBarrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
+
+	vkCmdPipelineBarrier(m_ASRebuildCmdBuffer,
+		VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+		VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+		0, 1, &blasBarrier, 0, nullptr, 0, nullptr);
+
+	std::vector<BLASInstance> instances;
+	std::vector<uint32_t> instanceMeshIndices;
+	instances.reserve(m_CurrentScene.instances.size());
+	instanceMeshIndices.reserve(m_CurrentScene.instances.size());
+	for (const auto& gpuInst : m_CurrentScene.instances)
+	{
+		BLASInstance inst = {};
+		inst.blasAddress = m_AS.GetBLASAddress(gpuInst.meshIndex);
+		inst.customIndex = gpuInst.materialIndex;
+		inst.sbtHitOffset = gpuInst.isTransparent ? 1u : 0u;
+
+		const glm::mat4& w = gpuInst.worldMatrix;
+		VkTransformMatrixKHR& t = inst.transform;
+		t.matrix[0][0] = w[0][0]; t.matrix[0][1] = w[1][0]; t.matrix[0][2] = w[2][0]; t.matrix[0][3] = w[3][0];
+		t.matrix[1][0] = w[0][1]; t.matrix[1][1] = w[1][1]; t.matrix[1][2] = w[2][1]; t.matrix[1][3] = w[3][1];
+		t.matrix[2][0] = w[0][2]; t.matrix[2][1] = w[1][2]; t.matrix[2][2] = w[2][2]; t.matrix[2][3] = w[3][2];
+
+		instances.push_back(inst);
+		instanceMeshIndices.push_back(gpuInst.meshIndex);
+	}
+
+	bool tlasOK = m_AS.BuildTLAS(m_ASRebuildCmdBuffer, instances, instanceMeshIndices);
+	RT_LOG("[RebuildAS-async] TLAS build result=%d instances=%d", tlasOK, (int)instances.size());
+
+	vkEndCommandBuffer(m_ASRebuildCmdBuffer);
+
+	// Submit with a fence — NON-BLOCKING. The GPU builds BLAS/TLAS while
+	// the main loop keeps running (loading modal stays responsive).
+	printf("[RebuildAS-async] submitting BLAS+TLAS build with fence (non-blocking)...\n");
+	fflush(stdout);
+	VkSubmitInfo submitInfo = {};
+	submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+	submitInfo.commandBufferCount = 1;
+	submitInfo.pCommandBuffers = &m_ASRebuildCmdBuffer;
+	VkResult sr = vkQueueSubmit(dev.queue, 1, &submitInfo, m_ASRebuildFence);
+	if (sr != VK_SUCCESS)
+	{
+		printf("[RebuildAS-async] vkQueueSubmit failed: %d\n", (int)sr); fflush(stdout);
+		vkDestroyFence(device, m_ASRebuildFence, nullptr);
+		vkFreeCommandBuffers(device, m_ASRebuildCmdPool, 1, &m_ASRebuildCmdBuffer);
+		vkDestroyCommandPool(device, m_ASRebuildCmdPool, nullptr);
+		m_ASRebuildFence = VK_NULL_HANDLE;
+		m_ASRebuildCmdBuffer = VK_NULL_HANDLE;
+		m_ASRebuildCmdPool = VK_NULL_HANDLE;
+		return false;
+	}
+	printf("[RebuildAS-async] submit done, GPU building in background\n"); fflush(stdout);
+
+	// CPU-side work (fast compared to GPU build) — runs while the GPU
+	// builds the acceleration structures.
+	printf("[RebuildAS-async] BuildAttributeBuffers...\n"); fflush(stdout);
+	m_AS.BuildAttributeBuffers();
+	printf("[RebuildAS-async] BuildAttributeBuffers done\n"); fflush(stdout);
+	dev.LogMemoryUsage("RebuildAS-async post-attr-buffers");
+
+	if (rasterPassBuild)
+	{
+		printf("[RebuildAS-async] rasterPassBuild...\n"); fflush(stdout);
+		rasterPassBuild(dev, m_CurrentScene);
+		printf("[RebuildAS-async] rasterPassBuild done\n"); fflush(stdout);
+	}
+
+	printf("[RebuildAS-async] CreateMaterialBuffer...\n"); fflush(stdout);
+	CreateMaterialBuffer(dev);
+	printf("[RebuildAS-async] CreateLightBuffer...\n"); fflush(stdout);
+	CreateLightBuffer(dev);
+	printf("[RebuildAS-async] CreateInstanceTransformBuffer...\n"); fflush(stdout);
+	CreateInstanceTransformBuffer(dev, false);
+	printf("[RebuildAS-async] CPU-side buffers done, waiting for GPU fence\n"); fflush(stdout);
+
+	return true;
+}
+
+bool SceneResources::PollASRebuild()
+{
+	if (m_ASRebuildFence == VK_NULL_HANDLE) return false;
+
+	VkResult result = vkGetFenceStatus(m_Device->device, m_ASRebuildFence);
+	if (result == VK_NOT_READY)
+		return false; // still building
+
+	if (result != VK_SUCCESS)
+	{
+		printf("[RebuildAS-async] fence error: %d\n", (int)result); fflush(stdout);
+	}
+
+	// Fence signalled — BLAS/TLAS build complete. Clean up.
+	VkDevice device = m_Device->device;
+	vkDestroyFence(device, m_ASRebuildFence, nullptr);
+	vkFreeCommandBuffers(device, m_ASRebuildCmdPool, 1, &m_ASRebuildCmdBuffer);
+	vkDestroyCommandPool(device, m_ASRebuildCmdPool, nullptr);
+	m_ASRebuildFence = VK_NULL_HANDLE;
+	m_ASRebuildCmdBuffer = VK_NULL_HANDLE;
+	m_ASRebuildCmdPool = VK_NULL_HANDLE;
+
+	m_NeedsASRebuild = false;
+	m_ASJustBuilt = true;
+	printf("[RebuildAS-async] GPU fence signalled — AS build complete\n"); fflush(stdout);
+	return true;
 }
 
 void SceneResources::UpdateInstances(const GpuDevice& dev, const GPUSceneData& sceneData)

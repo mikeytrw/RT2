@@ -149,6 +149,15 @@ public:
 
 	void RenderPanels();
 
+	// Public hooks for async completion callbacks (host calls these after
+	// a background load/import finishes).
+	void OnImportComplete(SceneManager::EntityId importedRoot)
+	{
+		if (importedRoot.IsValid())
+			SelectEntity(importedRoot);
+		NotifySceneChanged();
+	}
+
 private:
 	void RenderOutliner();
 	void RenderInspector();

@@ -81,6 +81,11 @@ struct EditorCameraPose;
 	bool LoadEnvMap(const std::string& filepath);
 	void ClearEnvMap();
 
+	// Set pre-decoded environment map data (used by the async load path
+	// where the decode runs on a worker thread). Takes ownership of pixels.
+	void SetEnvMapData(const std::string& filepath, int w, int h,
+	                   std::vector<float> pixels);
+
 	// ---- Entity manipulation ----
 	// EntityId is a thin wrapper around entt::entity for type safety.
 	struct EntityId
@@ -101,6 +106,17 @@ struct EditorCameraPose;
 	// Does NOT clear the scene. Returns the wrapper root entity, or invalid
 	// EntityId on failure.
 	EntityId ImportObj(const std::string& filepath, const ImportSettings& settings);
+
+	// Merge a temporary ECSScene (produced by SceneLoader::ImportObjIntoECS
+	// or ImportIntoECS on a fresh ECSScene) into the live scene. Used by the
+	// async import path: the worker thread parses into a temp scene, then
+	// the main thread merges it here. Appends meshes (offsetting per-triangle
+	// material indices by matBase), materials (remapping texture indices),
+	// textures, and entities (re-parenting the wrapper root under the live
+	// scene root). Assigns UUIDs to imported entities and fills source paths.
+	// Returns the wrapper root entity in the live scene, or invalid on failure.
+	EntityId MergeImportedECS(ECSScene&& src, entt::entity srcRoot,
+	                          const std::string& sourcePath);
 
 	// ---- Full GPU re-upload (rebuilds GPUSceneData from scene state) ----
 	void SyncToGPU();

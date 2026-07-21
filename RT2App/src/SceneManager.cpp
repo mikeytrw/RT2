@@ -327,6 +327,15 @@ void SceneManager::ClearEnvMap()
 	m_Authoring.environment.Clear();
 }
 
+void SceneManager::SetEnvMapData(const std::string& filepath, int w, int h,
+                                 std::vector<float> pixels)
+{
+	m_Authoring.environment.path = filepath;
+	m_Authoring.environment.width = w;
+	m_Authoring.environment.height = h;
+	m_Authoring.environment.floatPixels = std::move(pixels);
+}
+
 SceneManager::EntityId SceneManager::ImportGltf(const std::string& filepath)
 {
 	entt::entity root = SceneLoader::ImportIntoECS(m_EcsScene, filepath);
@@ -392,9 +401,174 @@ SceneManager::EntityId SceneManager::ImportObj(const std::string& filepath,
 	return EntityId{ root };
 }
 
-// ============================================================================
-// GPU sync — build GPUSceneData from current scene state and push to renderer
-// ============================================================================
+SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
+                                                       entt::entity srcRoot,
+                                                       const std::string& sourcePath)
+{
+	if (srcRoot == entt::null || !src.registry.valid(srcRoot))
+		return EntityId{};
+
+	auto& dst = m_EcsScene;
+	auto& dstReg = dst.registry;
+	auto& srcReg = src.registry;
+
+	// Record base offsets in the destination scene.
+	const uint32_t meshBase = dst.meshRegistry.GetCount();
+	const int matBase = (int)dst.materials.size();
+	const int texBase = (int)dst.textures.size();
+
+	// Append meshes. OBJ meshes use per-triangle materialIndices that must
+	// be offset by matBase so they reference the correct material slots.
+	for (uint32_t i = 0; i < src.meshRegistry.GetCount(); ++i)
+	{
+		MeshData mesh = src.meshRegistry.GetMesh(i); // copy
+		if (!mesh.materialIndices.empty())
+		{
+			for (auto& mi : mesh.materialIndices)
+				mi += static_cast<uint32_t>(matBase);
+		}
+		dst.meshRegistry.AddMesh(std::move(mesh));
+	}
+
+	// Append materials, remapping texture indices.
+	for (const auto& sm : src.materials)
+	{
+		SceneMaterial m = sm;
+		auto remapTex = [&](int& idx) { if (idx >= 0) idx += texBase; };
+		remapTex(m.baseColorTextureIndex);
+		remapTex(m.normalTextureIndex);
+		remapTex(m.emissiveTextureIndex);
+		remapTex(m.metallicRoughnessTextureIndex);
+		dst.materials.push_back(m);
+	}
+
+	// Append textures.
+	for (auto& st : src.textures)
+		dst.textures.push_back(std::move(st));
+
+	// Map src entities to dst entities.
+	std::unordered_map<entt::entity, entt::entity> entityMap;
+
+	// First pass: create all dst entities and copy simple components.
+	{
+		auto view = srcReg.view<Transform>();
+		for (auto e : view)
+		{
+			entt::entity dstE = dstReg.create();
+			entityMap[e] = dstE;
+
+			const auto& srcTf = view.get<Transform>(e);
+			Transform& dstTf = dstReg.emplace<Transform>(dstE);
+			dstTf.translation = srcTf.translation;
+			dstTf.rotation = srcTf.rotation;
+			dstTf.scale = srcTf.scale;
+			dstTf.dirty = true;
+		}
+	}
+
+	// Copy MeshRef (remap meshIndex by meshBase).
+	{
+		auto view = srcReg.view<MeshRef>();
+		for (auto e : view)
+		{
+			auto it = entityMap.find(e);
+			if (it == entityMap.end()) continue;
+			const auto& srcRef = view.get<MeshRef>(e);
+			MeshRef dstRef;
+			dstRef.meshIndex = srcRef.meshIndex + meshBase;
+			dstRef.materialIndex = srcRef.materialIndex;
+			dstReg.emplace<MeshRef>(it->second, dstRef);
+		}
+	}
+
+	// Copy NameComponent.
+	{
+		auto view = srcReg.view<NameComponent>();
+		for (auto e : view)
+		{
+			auto it = entityMap.find(e);
+			if (it == entityMap.end()) continue;
+			dstReg.emplace<NameComponent>(it->second, view.get<NameComponent>(e));
+		}
+	}
+
+	// Copy VisibleComponent.
+	{
+		auto view = srcReg.view<VisibleComponent>();
+		for (auto e : view)
+		{
+			auto it = entityMap.find(e);
+			if (it == entityMap.end()) continue;
+			dstReg.emplace<VisibleComponent>(it->second, view.get<VisibleComponent>(e));
+		}
+	}
+
+	// Copy Hierarchy (remap parent + children via entityMap).
+	{
+		auto view = srcReg.view<Hierarchy>();
+		for (auto e : view)
+		{
+			auto it = entityMap.find(e);
+			if (it == entityMap.end()) continue;
+			const auto& srcHier = view.get<Hierarchy>(e);
+			Hierarchy dstHier;
+			if (srcHier.parent != entt::null)
+			{
+				auto pit = entityMap.find(srcHier.parent);
+				dstHier.parent = (pit != entityMap.end()) ? pit->second : entt::null;
+			}
+			else
+				dstHier.parent = entt::null;
+			for (auto child : srcHier.children)
+			{
+				auto cit = entityMap.find(child);
+				if (cit != entityMap.end())
+					dstHier.children.push_back(cit->second);
+			}
+			dstReg.emplace<Hierarchy>(it->second, std::move(dstHier));
+		}
+	}
+
+	// Copy ImportedMeshSourceComponent + fill source path.
+	{
+		auto view = srcReg.view<ImportedMeshSourceComponent>();
+		for (auto e : view)
+		{
+			auto it = entityMap.find(e);
+			if (it == entityMap.end()) continue;
+			auto srcComp = view.get<ImportedMeshSourceComponent>(e);
+			if (srcComp.model.path.empty())
+				srcComp.model.path = sourcePath;
+			dstReg.emplace<ImportedMeshSourceComponent>(it->second, std::move(srcComp));
+		}
+	}
+
+	// Assign UUIDs to all imported entities that lack one.
+	{
+		auto view = dstReg.view<Transform>();
+		for (auto entity : view)
+		{
+			if (!dstReg.all_of<EntityIdComponent>(entity))
+				m_Authoring.AssignNewUuid(entity);
+		}
+	}
+
+	// Find the wrapper root in the destination.
+	entt::entity dstRoot = entt::null;
+	auto rootIt = entityMap.find(srcRoot);
+	if (rootIt != entityMap.end())
+		dstRoot = rootIt->second;
+
+	// Update world transforms for the imported hierarchy.
+	if (dstRoot != entt::null)
+	{
+		SceneGraph::SetLocalDirty(dstReg, dstRoot);
+		SceneGraph::UpdateWorldTransforms(dstReg);
+	}
+
+	m_EntityCacheDirty = true;
+	return EntityId{ dstRoot };
+}
 
 void SceneManager::SyncToGPU()
 {

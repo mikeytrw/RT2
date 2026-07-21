@@ -480,9 +480,13 @@ void RendererGPU::SetScene(GPUSceneData& sceneData, const RenderInstanceMap& ins
 {
 	m_RenderInstanceMap = instanceMap;
 	CancelPicks();
+	printf("[RendererGPU::SetScene] enter: meshes=%zu instances=%zu lights=%zu\n",
+	       sceneData.meshes.size(), sceneData.instances.size(), sceneData.lights.size());
+	fflush(stdout);
 	RT_LOG("[SetScene] enter: meshes=%zu instances=%zu lights=%zu",
 	       sceneData.meshes.size(), sceneData.instances.size(), sceneData.lights.size());
 	m_Scene.SetScene(m_Device, sceneData);
+	printf("[RendererGPU::SetScene] SceneResources::SetScene returned\n"); fflush(stdout);
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
@@ -519,6 +523,55 @@ void RendererGPU::UpdateSceneInstances(const GPUSceneData& sceneData, const Rend
 void RendererGPU::DumpInstanceTransforms() const
 {
 	m_Scene.DumpInstanceTransforms();
+}
+
+bool RendererGPU::PollTextureUpload()
+{
+	if (!m_Scene.PollTextureUpload()) return false;
+	printf("[RendererGPU] async textures adopted, updating descriptor set\n"); fflush(stdout);
+	RT_LOG("[RendererGPU] async textures adopted, updating descriptor set");
+	// Matches the inline logic in Render(): skip the refresh when an AS
+	// rebuild is still pending, because that path updates descriptors itself.
+	if (m_Scene.IsValid() && !m_Scene.NeedsASRebuild())
+		UpdatePathTraceDescriptorSet();
+	return true;
+}
+
+void RendererGPU::RebuildAccelerationStructures()
+{
+	if (!m_Scene.NeedsASRebuild()) return;
+	printf("[RendererGPU] RebuildAccelerationStructures (explicit)\n"); fflush(stdout);
+	RT_LOG("[RendererGPU] RebuildAccelerationStructures (explicit)");
+	m_Scene.RebuildAccelerationStructures(m_Device, [this](const GpuDevice& dev, const GPUSceneData& scene) {
+		printf("[RendererGPU] rasterPassBuild callback: CreateVertexBuffers...\n"); fflush(stdout);
+		m_RasterPass.CreateVertexBuffers(dev, scene);
+		printf("[RendererGPU] rasterPassBuild callback: CreateDrawData...\n"); fflush(stdout);
+		m_RasterPass.CreateDrawData(dev, scene);
+		printf("[RendererGPU] rasterPassBuild callback done\n"); fflush(stdout);
+	});
+	printf("[RendererGPU] AS rebuild returned, updating descriptor set\n"); fflush(stdout);
+	if (m_Scene.IsValid())
+		UpdatePathTraceDescriptorSet();
+	printf("[RendererGPU] descriptor set updated\n"); fflush(stdout);
+}
+
+bool RendererGPU::BeginRebuildAccelerationStructures()
+{
+	if (!m_Scene.NeedsASRebuild()) return false;
+	printf("[RendererGPU] BeginRebuildAccelerationStructures (async)\n"); fflush(stdout);
+	bool ok = m_Scene.BeginRebuildAccelerationStructures(m_Device,
+		[this](const GpuDevice& dev, const GPUSceneData& scene) {
+			m_RasterPass.CreateVertexBuffers(dev, scene);
+			m_RasterPass.CreateDrawData(dev, scene);
+		});
+	return ok;
+}
+
+void RendererGPU::UpdateDescriptorSetAfterAS()
+{
+	printf("[RendererGPU] UpdateDescriptorSetAfterAS\n"); fflush(stdout);
+	if (m_Scene.IsValid())
+		UpdatePathTraceDescriptorSet();
 }
 
 void RendererGPU::DumpNEEBuffers() const
@@ -754,7 +807,7 @@ void RendererGPU::Render(const Camera& camera)
 			UpdatePathTraceDescriptorSet();
 	}
 
-	if (m_Scene.NeedsASRebuild())
+	if (m_Scene.NeedsASRebuild() && !m_Scene.IsASRebuildPending())
 	{
 		RT_LOG("[Render] rebuilding AS...");
 		m_Scene.RebuildAccelerationStructures(m_Device, [this](const GpuDevice& dev, const GPUSceneData& scene) {
@@ -765,6 +818,11 @@ void RendererGPU::Render(const Camera& camera)
 		if (m_Scene.IsValid())
 			UpdatePathTraceDescriptorSet();
 	}
+
+	// If an async AS rebuild is pending, skip rendering until it completes
+	// (the loading modal polls PollASRebuild each frame).
+	if (m_Scene.IsASRebuildPending())
+		return;
 
 	if (!m_Scene.IsValid())
 	{

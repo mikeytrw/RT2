@@ -32,6 +32,7 @@
 #include "EditorCommands.h"
 #include "EditorPropertyCommands.h"
 #include "InputService.h"
+#include "BackgroundWork.h"
 #include "core/UUID.h"
 #include "core/Error.h"
 #include "stb_image.h"
@@ -220,18 +221,61 @@ public:
 			[this](const std::string& path,
 			       const ImportSettings& settings) -> SceneManager::EntityId
 		{
+			if (IsBackgroundBusy()) return SceneManager::EntityId{};
+
 			std::string ext = path.substr(path.find_last_of('.') + 1);
 			std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-			SceneManager::EntityId id;
-			if (ext == "obj")
-				id = m_SceneMgr.ImportObj(path, settings);
-			else
-				id = m_SceneMgr.ImportGltf(path);
-			if (id.IsValid())
+			const bool isObj = (ext == "obj");
+			const std::string pathCopy = path;
+			const ImportSettings settingsCopy = settings;
+
+			// The worker parses + decodes into a temp ECSScene. The
+			// completion callback (main thread) merges it into the live
+			// scene + uploads to GPU.
+			struct ImportResult
 			{
-				m_PendingFullSync = true;
-			}
-			return id;
+				ECSScene ecs;
+				entt::entity root = entt::null;
+				bool isObj = false;
+			};
+			auto result = std::make_shared<ImportResult>();
+			result->isObj = isObj;
+
+			StartBackgroundWork(isObj ? "Importing OBJ..." : "Importing glTF...",
+				[result, pathCopy, settingsCopy, isObj](BackgroundWork& self) -> bool
+			{
+				self.SetStatus("Parsing file...");
+				if (isObj)
+					result->root = SceneLoader::ImportObjIntoECS(result->ecs, pathCopy, settingsCopy);
+				else
+					result->root = SceneLoader::ImportIntoECS(result->ecs, pathCopy);
+				return result->root != entt::null;
+			},
+				[this, result, pathCopy](bool success)
+			{
+				if (!success)
+				{
+					printf("[Scene] Import failed: %s\n", pathCopy.c_str());
+					m_LastStatusMsg = "Import failed";
+					return;
+				}
+
+				auto id = m_SceneMgr.MergeImportedECS(std::move(result->ecs),
+				                                      result->root, pathCopy);
+				if (id.IsValid())
+				{
+					m_PendingFullSync = true;
+					m_GpuSyncPending = true;
+					m_EditorUI.OnImportComplete(id);
+					m_SceneMgr.MarkDirty();
+					m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
+					m_Recovery->ResetSchedule();
+					m_LastStatusMsg = "Imported (unsaved)";
+				}
+			});
+
+			// Return invalid — the completion callback handles selection.
+			return SceneManager::EntityId{};
 		});
 		m_EditorUI.SetOnDumpGPUTransforms([this]() {
 			if (m_RendererGPU.IsAvailable())
@@ -802,6 +846,7 @@ public:
 	DrawSessionPanel();
 	DrawRecoveryPrompt();
 	DrawUnsavedChangesPrompt();
+	DrawLoadingModal();
 
 	// Phase 5: EndFrame commits current → previous state, clears
 	// per-frame deltas, and applies cursor capture. Called at the end
@@ -1009,6 +1054,231 @@ public:
 		}
 	}
 
+	// ---- Loading modal ----
+	// Shown while a BackgroundWork is running. The modal is modal (no other
+	// UI interactions possible), but the main loop keeps running so the
+	// window doesn't freeze and the status text updates each frame. When
+	// the work completes, the thread is joined and the completion callback
+	// runs on the main thread (safe for Vulkan/GPU calls).
+	void DrawLoadingModal()
+	{
+		// The modal stays open while either background work is running OR
+		// the GPU sync phase (texture upload + AS rebuild) is pending. It is
+		// also submitted for one final frame after both finish, because
+		// ImGui::CloseCurrentPopup() is only valid between BeginPopupModal()
+		// and EndPopup() — closing from outside that scope is a no-op.
+		if (!m_BackgroundWork && !m_GpuSyncPending && !m_LoadingModalOpen) return;
+
+		// Open the modal on the first frame.
+		if (!m_LoadingModalOpen)
+		{
+			m_LoadingModalOpen = true;
+			ImGui::OpenPopup("Loading...");
+			printf("[LoadingModal] opened (bgWork=%d gpuSync=%d)\n",
+			       m_BackgroundWork ? 1 : 0, m_GpuSyncPending ? 1 : 0);
+			fflush(stdout);
+		}
+
+		if (ImGui::BeginPopupModal("Loading...", nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			const char* spinner[] = { "|", "/", "-", "\\" };
+			const double time = ImGui::GetTime();
+			const int frame = static_cast<int>(time * 4.0) & 3;
+
+			const char* status = "Working...";
+			if (m_GpuSyncPending)
+				status = m_GpuSyncStatus.c_str();
+			else if (m_BackgroundWork)
+				status = m_BackgroundWork->GetStatus().c_str();
+
+			ImGui::Text("%s %s", spinner[frame], status);
+
+			const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(time) * 3.0f);
+			ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.3f, 0.6f, 1.0f, 1.0f));
+			ImGui::ProgressBar(pulse, ImVec2(200.0f, 6.0f), "");
+			ImGui::PopStyleColor();
+
+			// All work finished on a previous frame — close from inside the
+			// popup scope, the only place CloseCurrentPopup() is valid.
+			if (!m_BackgroundWork && !m_GpuSyncPending)
+			{
+				m_LoadingModalOpen = false;
+				ImGui::CloseCurrentPopup();
+			}
+
+			ImGui::EndPopup();
+		}
+
+		// Phase 1: wait for the background worker thread to finish.
+		if (m_BackgroundWork && m_BackgroundWork->JoinIfDone())
+		{
+			printf("[LoadingModal] Phase 1: worker done, running completion callback\n");
+			fflush(stdout);
+			const bool success = m_BackgroundWork->GetResult();
+			m_BackgroundWork.reset();
+			// Don't close the modal yet — the completion callback may set
+			// m_GpuSyncPending to keep it open for the GPU sync phase.
+			if (m_OnBackgroundComplete)
+			{
+				auto cb = std::move(m_OnBackgroundComplete);
+				m_OnBackgroundComplete = nullptr;
+				// Seed a status for the GPU phase so its first frame shows
+				// something meaningful rather than a stale/empty string.
+				m_GpuSyncStatus = "Preparing GPU upload...";
+				cb(success);
+			}
+			printf("[LoadingModal] Phase 1 done: gpuSyncPending=%d\n", m_GpuSyncPending ? 1 : 0);
+			fflush(stdout);
+			// If the callback didn't set m_GpuSyncPending there is nothing
+			// left to do; the popup block above closes the modal next frame.
+			return;
+		}
+
+		// Phase 2: GPU sync (texture upload + AS rebuild). This runs on the
+		// main thread (Vulkan queue ownership). The modal stays visible so
+		// the user sees feedback instead of a frozen window.
+		if (m_GpuSyncPending)
+		{
+			if (m_RendererGPU.IsAvailable())
+			{
+				// Poll async texture upload — Adopt() blocks on
+				// vkWaitForFences when the upload is complete.
+				if (m_RendererGPU.IsTextureUploadPending())
+				{
+					// Announce BEFORE blocking: the modal above already drew
+					// this frame, so doing the work now would leave the user
+					// staring at the previous status for the whole stall.
+					// Set the status, render one frame, then block next frame.
+					static const char* kTextureStatus = "Uploading textures to GPU...";
+					if (m_GpuSyncStatus != kTextureStatus)
+					{
+						m_GpuSyncStatus = kTextureStatus;
+						return;
+					}
+					printf("[LoadingModal] Phase 2: polling texture upload (pending=%d)\n",
+					       m_RendererGPU.IsTextureUploadPending() ? 1 : 0);
+					fflush(stdout);
+					m_RendererGPU.PollTextureUpload();
+					printf("[LoadingModal] Phase 2: PollTextureUpload returned (pending=%d)\n",
+					       m_RendererGPU.IsTextureUploadPending() ? 1 : 0);
+					fflush(stdout);
+					// PollTextureUpload returns true when adopted; if it
+					// did, fall through to AS rebuild check. If not yet
+					// complete, return and try again next frame.
+					if (m_RendererGPU.IsTextureUploadPending())
+						return;
+				}
+
+				// Synchronous AS rebuild. The BLAS/TLAS build blocks the main
+				// thread (hundreds of ImmediateSubmit/vkQueueWaitIdle calls for
+				// staging uploads + the build itself). The loading modal shows
+				// "Building acceleration structures..." before the freeze, so
+				// the user sees feedback instead of a blank window. Running
+				// this on a worker thread crashes because Vulkan queues are
+				// not thread-safe (the render loop also submits to the queue).
+				if (m_RendererGPU.NeedsASRebuild() || m_RendererGPU.IsASRebuildPending())
+				{
+					// Announce before the submit (the CPU-side geometry/
+					// attribute upload still costs time), then drive the
+					// GPU build through the ASYNC path: submit once with a
+					// fence and poll it each frame. The synchronous
+					// RebuildAccelerationStructures() blocks the main thread
+					// for the whole BLAS/TLAS build — with ~9k meshes that
+					// froze the UI for the entire build, which is exactly
+					// what this modal exists to avoid.
+					static const char* kASStatus = "Building acceleration structures...";
+					if (m_GpuSyncStatus != kASStatus)
+					{
+						m_GpuSyncStatus = kASStatus;
+						return;
+					}
+
+					if (!m_RendererGPU.IsASRebuildPending())
+					{
+						printf("[LoadingModal] Phase 2: beginning async AS rebuild\n");
+						fflush(stdout);
+						if (!m_RendererGPU.BeginRebuildAccelerationStructures())
+						{
+							// Could not submit the async build — fall back to
+							// the blocking path so the scene still becomes
+							// renderable (it updates descriptors itself).
+							printf("[LoadingModal] Phase 2: async submit failed, falling back to sync\n");
+							fflush(stdout);
+							m_RendererGPU.RebuildAccelerationStructures();
+						}
+					}
+
+					if (m_RendererGPU.IsASRebuildPending())
+					{
+						// Non-blocking fence check; keeps the modal animating.
+						if (!m_RendererGPU.PollASRebuild())
+							return; // still building — poll again next frame
+						printf("[LoadingModal] Phase 2: async AS rebuild complete\n");
+						fflush(stdout);
+						m_RendererGPU.UpdateDescriptorSetAfterAS();
+					}
+				}
+			}
+
+			// GPU sync complete. The popup block above closes the modal on the
+			// next frame, from inside the BeginPopupModal/EndPopup scope.
+			printf("[LoadingModal] GPU sync complete, closing modal\n");
+			fflush(stdout);
+			m_GpuSyncPending = false;
+		}
+	}
+
+	// Start a background work operation. Only one may be active at a time.
+	// The completion callback runs on the main thread after the worker
+	// joins, so it's safe to do Vulkan/GPU calls there. If work is already
+	// active, this is a no-op (the caller should check IsBackgroundBusy).
+	bool IsBackgroundBusy() const { return m_BackgroundWork != nullptr; }
+
+	// Block until any background work completes (used by headless mode
+	// where the UI loop doesn't run to poll completion). Returns the
+	// success result and runs the completion callback. Also runs the
+	// GPU sync phase (texture upload + AS rebuild) synchronously.
+	void WaitForBackgroundWork()
+	{
+		if (!m_BackgroundWork) return;
+		m_BackgroundWork->Join();
+		const bool success = m_BackgroundWork->GetResult();
+		m_BackgroundWork.reset();
+		m_LoadingModalOpen = false;
+		if (m_OnBackgroundComplete)
+		{
+			auto cb = std::move(m_OnBackgroundComplete);
+			m_OnBackgroundComplete = nullptr;
+			cb(success);
+		}
+
+		// Run the GPU sync phase synchronously (headless has no UI loop).
+		if (m_GpuSyncPending && m_RendererGPU.IsAvailable())
+		{
+			while (m_RendererGPU.IsTextureUploadPending())
+			{
+				m_RendererGPU.PollTextureUpload();
+				if (m_RendererGPU.IsTextureUploadPending())
+					std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+			// Synchronous AS rebuild (headless — no UI loop).
+			if (m_RendererGPU.NeedsASRebuild())
+				m_RendererGPU.RebuildAccelerationStructures();
+			m_GpuSyncPending = false;
+		}
+	}
+
+	void StartBackgroundWork(const std::string& initialStatus,
+		BackgroundWork::WorkFn workFn,
+		std::function<void(bool)> onComplete)
+	{
+		if (m_BackgroundWork) return;
+		m_BackgroundWork = std::make_unique<BackgroundWork>();
+		m_OnBackgroundComplete = std::move(onComplete);
+		m_BackgroundWork->Run(initialStatus, std::move(workFn));
+	}
+
 	virtual void OnUpdate(float ts) override
 	{
 		// Phase 5: sample raw input at the top of OnUpdate (before camera).
@@ -1077,6 +1347,23 @@ public:
 			m_Cam.OnUpdate(ts, m_Input);
 
 		if (!m_CLIProcessed) return;
+
+		// Skip rendering + autosave while background work is active or the
+		// GPU sync phase is running — the worker thread may be parsing files
+		// or the GPU may be uploading textures / building AS. The loading
+		// modal (drawn in OnUIRender) drives the GPU sync and keeps the UI
+		// responsive.
+		if (IsBackgroundBusy() || m_GpuSyncPending)
+		{
+			static int skipCount = 0;
+			if (skipCount++ % 60 == 0) // print once per second
+			{
+				printf("[OnUpdate] skipping Render (bgWork=%d gpuSync=%d) frame=%d\n",
+				       IsBackgroundBusy() ? 1 : 0, m_GpuSyncPending ? 1 : 0, skipCount);
+				fflush(stdout);
+			}
+			return;
+		}
 
 		// Drive the runtime controller when Playing.
 		if (m_Runtime.GetState() == rt2::core::SceneRunState::Playing && m_RenderBridge)
@@ -1416,6 +1703,10 @@ private:
 
 		if (g_CLI.hasScene())
 			LoadSceneInternal(g_CLI.scenePath);
+
+		// Headless: wait for any async loads to complete before proceeding.
+		if (g_CLI.headless)
+			WaitForBackgroundWork();
 
 		if (g_CLI.hasCameraPosition)
 			m_Cam.SetPosition(glm::vec3(g_CLI.cameraPosition[0], g_CLI.cameraPosition[1], g_CLI.cameraPosition[2]));
@@ -1777,40 +2068,103 @@ private:
 			return;
 		}
 
-		if (!m_SceneMgr.LoadScene(filepath))
-		{
-			ImGui::OpenPopup("Scene Load Failed");
-			return;
-		}
-		m_EditorUI.ResetForDocument();
-		m_History.Clear();
-		CompactMeshRegistryNowAsserted();
+		if (IsBackgroundBusy()) return;
 
-		if (ext == "obj")
-		{
-			m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData, const RenderInstanceMap& instanceMap) {
-				m_RendererGPU.SetScene(gpuData, instanceMap);
-			});
-			m_SceneMgr.SyncToGPU();
-			m_RendererGPU.ResetAccumulation();
-		}
-		else
-		{
-			if (m_RendererGPU.IsAvailable())
-				UploadMeshToGPU();
-		}
+		const std::string pathCopy = filepath;
+		const bool isObj = (ext == "obj");
 
-		const auto& cam = m_SceneMgr.GetECS().camera;
-		m_Cam.SetPosition(cam.position);
-		m_Cam.SetForwardDirection(cam.forwardDirection);
+		struct LoadResult
+		{
+			ECSScene ecs;
+			bool ok = false;
+		};
+		auto result = std::make_shared<LoadResult>();
 
-		// Imported interchange files become an untitled native authoring
-		// document. They must be explicitly saved as .rt2scene.
-		m_SceneMgr.AuthoringDoc().metadata.sourcePath.clear();
-		m_SceneMgr.MarkDirty();
-		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
-		m_Recovery->ResetSchedule();
-		m_LastStatusMsg = "Imported scene (unsaved)";
+		StartBackgroundWork(isObj ? "Loading OBJ scene..." : "Loading glTF scene...",
+			[result, pathCopy, isObj](BackgroundWork& self) -> bool
+		{
+			self.SetStatus("Parsing file...");
+			if (isObj)
+				result->ok = SceneLoader::LoadObjIntoECS(result->ecs, pathCopy);
+			else
+				result->ok = SceneLoader::LoadIntoECS(result->ecs, pathCopy);
+			return result->ok;
+		},
+			[this, result, pathCopy, isObj, ext](bool success)
+		{
+			if (!success)
+			{
+				ImGui::OpenPopup("Scene Load Failed");
+				m_LastStatusMsg = "Scene load failed";
+				return;
+			}
+
+			// Clear the live scene and adopt the loaded ECS.
+			m_SceneMgr.Clear();
+			// Move the loaded ECS resources into the live scene.
+			auto& live = m_SceneMgr.GetECS();
+			live.meshRegistry = std::move(result->ecs.meshRegistry);
+			live.materials = std::move(result->ecs.materials);
+			live.textures = std::move(result->ecs.textures);
+			live.lights = std::move(result->ecs.lights);
+			live.camera = std::move(result->ecs.camera);
+			// Move the registry: entt registries are movable.
+			live.registry = std::move(result->ecs.registry);
+
+			// Assign UUIDs to all entities.
+			auto& reg = live.registry;
+			auto view = reg.view<Transform>();
+			for (auto entity : view)
+			{
+				if (!reg.all_of<EntityIdComponent>(entity))
+					m_SceneMgr.AuthoringDoc().AssignNewUuid(entity);
+			}
+
+			// Record source paths on imported entities.
+			{
+				auto mv = reg.view<ImportedMeshSourceComponent>();
+				for (auto e : mv)
+				{
+					auto& src = mv.get<ImportedMeshSourceComponent>(e);
+					if (src.model.path.empty())
+						src.model.path = pathCopy;
+				}
+			}
+
+			m_EditorUI.ResetForDocument();
+			m_History.Clear();
+			CompactMeshRegistryNowAsserted();
+
+			if (isObj)
+			{
+				m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData, const RenderInstanceMap& instanceMap) {
+					m_RendererGPU.SetScene(gpuData, instanceMap);
+				});
+				m_SceneMgr.SyncToGPU();
+				m_RendererGPU.ResetAccumulation();
+				m_GpuSyncPending = true;
+			}
+			else
+			{
+				if (m_RendererGPU.IsAvailable())
+				{
+					UploadMeshToGPU();
+					m_GpuSyncPending = true;
+				}
+			}
+
+			const auto& cam = m_SceneMgr.GetECS().camera;
+			m_Cam.SetPosition(cam.position);
+			m_Cam.SetForwardDirection(cam.forwardDirection);
+
+			// Imported interchange files become an untitled native authoring
+			// document. They must be explicitly saved as .rt2scene.
+			m_SceneMgr.AuthoringDoc().metadata.sourcePath.clear();
+			m_SceneMgr.MarkDirty();
+			m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
+			m_Recovery->ResetSchedule();
+			m_LastStatusMsg = "Imported scene (unsaved)";
+		});
 	}
 
 	SceneManager::EntityId LoadMeshFileAsEntity(const std::string& filepath)
@@ -2055,87 +2409,115 @@ public:
 
 	void OpenRt2SceneInternal(const std::string& filepath)
 	{
-		rt2::core::Error err;
-		// Load + resolve into a temporary document first. Only on success do
-		// we swap it into the live authoring document and GPU-sync. This
-		// preserves the transactional guarantee: a parse, schema, or hard
-		// resolution failure cannot partially replace the currently open
-		// authoring scene.
-		rt2::core::SceneDocument tempDoc;
-		tempDoc.SetUuidProvider(m_SceneMgr.AuthoringDoc().GetUuidProvider());
+		if (IsBackgroundBusy()) return;
 
-		if (!rt2::core::SceneSerializer::Load(tempDoc, filepath, err))
+		// The CPU-heavy work (JSON parse + asset re-import + texture decode)
+		// runs on a worker thread. The result SceneDocument is captured in
+		// a shared_ptr so the worker can fill it and the completion callback
+		// (on the main thread) can adopt it + upload to GPU.
+		auto resultDoc = std::make_shared<rt2::core::SceneDocument>();
+		auto errorStr = std::make_shared<std::string>();
+		auto diagStr = std::make_shared<std::string>();
+		const std::string filepathCopy = filepath;
+		auto uuidProvider = m_SceneMgr.AuthoringDoc().GetUuidProvider();
+
+		StartBackgroundWork("Loading scene...",
+			[resultDoc, errorStr, diagStr, filepathCopy, uuidProvider](BackgroundWork& self) -> bool
 		{
-			printf("[Scene] Failed to load .rt2scene: %s\n", err.Format().c_str());
-			ImGui::OpenPopup("Scene Load Failed");
-			m_LastStatusMsg = std::string("Open failed: ") + err.Format();
-			return;
-		}
+			self.SetStatus("Parsing scene file...");
+			resultDoc->SetUuidProvider(uuidProvider);
 
-		// Resolve durable asset references into the temporary document. The
-		// serializer persists durable refs only; the resolver rebuilds
-		// transient mesh/texture/material/environment state from the source
-		// files. Missing assets produce diagnostics, not crashes.
-		std::filesystem::path sceneRoot = std::filesystem::path(filepath).parent_path();
-		std::vector<rt2::core::AssetDiagnostic> diagnostics;
-		rt2::core::Error resolveErr;
-		bool resolveOk = rt2::core::SceneAssetResolver::ResolveAll(
-		        tempDoc, sceneRoot, diagnostics, resolveErr);
+			rt2::core::Error err;
+			if (!rt2::core::SceneSerializer::Load(*resultDoc, filepathCopy, err))
+			{
+				*errorStr = "Failed to load .rt2scene: " + err.Format();
+				return false;
+			}
 
-		for (const auto& d : diagnostics)
+			self.SetStatus("Resolving assets (models, textures, env)...");
+			std::filesystem::path sceneRoot = std::filesystem::path(filepathCopy).parent_path();
+			std::vector<rt2::core::AssetDiagnostic> diagnostics;
+			rt2::core::Error resolveErr;
+			bool resolveOk = rt2::core::SceneAssetResolver::ResolveAll(
+			        *resultDoc, sceneRoot, diagnostics, resolveErr);
+
+			// Format diagnostics for the completion callback to log.
+			for (const auto& d : diagnostics)
+			{
+				const char* sev = (d.severity == rt2::core::AssetDiagnostic::Missing)
+				                  ? "Missing" : (d.severity == rt2::core::AssetDiagnostic::Malformed)
+				                  ? "Malformed" : "Unresolved";
+				*diagStr += std::string("[Scene] Asset ") + sev +
+				    ": kind=" + std::to_string((int)d.kind) +
+				    " ref='" + d.refPath + "'" +
+				    " sourceKey='" + d.sourceKey + "'" +
+				    " detail=" + d.detail + "\n";
+			}
+
+			if (!resolveOk)
+			{
+				*errorStr = "Asset resolution failed, keeping current scene: " + resolveErr.Format();
+				return false;
+			}
+
+			return true;
+		},
+			[this, resultDoc, errorStr, diagStr, filepathCopy](bool success)
 		{
-			const char* sev = (d.severity == rt2::core::AssetDiagnostic::Missing)
-			                  ? "Missing" : (d.severity == rt2::core::AssetDiagnostic::Malformed)
-			                  ? "Malformed" : "Unresolved";
-			printf("[Scene] Asset %s: kind=%d ref='%s' resolved='%s' entity=%s%s%s"
-			       " sourceKey='%s' detail=%s\n",
-			       sev, (int)d.kind, d.refPath.c_str(), d.resolvedPath.c_str(),
-			       d.entityUuid.IsNull() ? "(env)" : d.entityUuid.ToString().c_str(),
-			       d.entityName.empty() ? "" : " (",
-			       d.entityName.empty() ? "" : d.entityName.c_str(),
-			       d.sourceKey.c_str(), d.detail.c_str());
-		}
+			// Main thread: log diagnostics.
+			if (!diagStr->empty())
+				printf("%s", diagStr->c_str());
 
-		if (!resolveOk)
-		{
-			// Hard resolution failure: every imported entity was unresolvable.
-			// Preserve the currently open authoring document — do not swap in
-			// a document that cannot render its imported content.
-			printf("[Scene] Asset resolution failed, keeping current scene: %s\n",
-			       resolveErr.Format().c_str());
-			ImGui::OpenPopup("Scene Load Failed");
-			m_LastStatusMsg = std::string("Open failed (resolution): ") + resolveErr.Format();
-			return;
-		}
+			if (!success)
+			{
+				printf("[Scene] %s\n", errorStr->c_str());
+				ImGui::OpenPopup("Scene Load Failed");
+				m_LastStatusMsg = *errorStr;
+				return;
+			}
 
-		// Adopt the resolved document without an intermediate cleared live state.
-		m_SceneMgr.ReplaceAuthoringDocument(std::move(tempDoc));
-		m_EditorUI.ResetForDocument();
-		m_History.Clear();
-		CompactMeshRegistryNowAsserted();
-		m_SceneMgr.ClearDirty();
-		m_Recovery->ResetSchedule();
-		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
+			// Adopt the resolved document.
+			printf("[OpenRt2Scene] adopting document...\n"); fflush(stdout);
+			m_SceneMgr.ReplaceAuthoringDocument(std::move(*resultDoc));
+			m_EditorUI.ResetForDocument();
+			m_History.Clear();
+			CompactMeshRegistryNowAsserted();
+			m_SceneMgr.ClearDirty();
+			m_Recovery->ResetSchedule();
+			m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
 
-		// Upload to GPU
-		if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
-			UploadMeshToGPU();
+			// Upload to GPU.
+			if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
+			{
+				printf("[OpenRt2Scene] UploadMeshToGPU...\n"); fflush(stdout);
+				UploadMeshToGPU();
+				printf("[OpenRt2Scene] UploadMeshToGPU done, setting gpuSyncPending\n"); fflush(stdout);
+				m_GpuSyncPending = true;
+			}
+			else
+			{
+				printf("[OpenRt2Scene] no GPU upload needed (meshes=%d available=%d)\n",
+				       (int)m_SceneMgr.GetECS().meshRegistry.GetCount(),
+				       m_RendererGPU.IsAvailable() ? 1 : 0);
+				fflush(stdout);
+			}
 
-		m_RendererGPU.ResetAccumulation();
+			m_RendererGPU.ResetAccumulation();
 
-		// Adopt the scene camera
-		const auto& cam = m_SceneMgr.GetECS().camera;
-		m_Cam.SetPosition(cam.position);
-		m_Cam.SetForwardDirection(cam.forwardDirection);
+			// Adopt the scene camera.
+			const auto& cam = m_SceneMgr.GetECS().camera;
+			m_Cam.SetPosition(cam.position);
+			m_Cam.SetForwardDirection(cam.forwardDirection);
 
-		// Update recents.
-		if (m_Settings2)
-		{
-			m_Settings2->AddRecentScene(filepath);
-			PersistEditorSettings("recent scenes");
-		}
-		printf("[Scene] Loaded .rt2scene: %s\n", filepath.c_str());
-		m_LastStatusMsg = "Opened";
+			// Update recents.
+			if (m_Settings2)
+			{
+				m_Settings2->AddRecentScene(filepathCopy);
+				PersistEditorSettings("recent scenes");
+			}
+			printf("[Scene] Loaded .rt2scene: %s\n", filepathCopy.c_str());
+			m_LastStatusMsg = "Opened";
+		});
 	}
 
 	void SaveRt2Scene()
@@ -2195,11 +2577,79 @@ public:
 
 	void LoadEnvMap(const std::string& filepath)
 	{
-		if (!m_SceneMgr.LoadEnvMap(filepath))
-			return;
-		if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
-			m_SceneMgr.SyncToGPU();
-		m_RendererGPU.ResetAccumulation();
+		if (IsBackgroundBusy()) return;
+
+		const std::string pathCopy = filepath;
+		struct EnvResult
+		{
+			int w = 0, h = 0;
+			std::vector<float> pixels;
+			std::string error;
+		};
+		auto result = std::make_shared<EnvResult>();
+
+		StartBackgroundWork("Loading environment map...",
+			[result, pathCopy](BackgroundWork& self) -> bool
+		{
+			self.SetStatus("Decoding HDR/EXR...");
+			bool isEXR = pathCopy.size() >= 4 &&
+			             (pathCopy.compare(pathCopy.size() - 4, 4, ".exr") == 0 ||
+			              pathCopy.compare(pathCopy.size() - 4, 4, ".EXR") == 0);
+
+			if (isEXR)
+			{
+				float* outRGBA = nullptr;
+				const char* err = nullptr;
+				int ret = LoadEXR(&outRGBA, &result->w, &result->h, pathCopy.c_str(), &err);
+				if (ret != TINYEXR_SUCCESS || !outRGBA)
+				{
+					result->error = err ? err : "unknown EXR decode error";
+					if (err) free((void*)err);
+					return false;
+				}
+				result->pixels.assign(outRGBA, outRGBA + (size_t)result->w * result->h * 4);
+				free(outRGBA);
+				if (err) free((void*)err);
+			}
+			else
+			{
+				int channels;
+				float* data = stbi_loadf(pathCopy.c_str(), &result->w, &result->h, &channels, 4);
+				if (!data)
+				{
+					result->error = "stbi_loadf failed";
+					return false;
+				}
+				result->pixels.assign(data, data + (size_t)result->w * result->h * 4);
+				stbi_image_free(data);
+			}
+			return true;
+		},
+			[this, result, pathCopy](bool success)
+		{
+			if (!success)
+			{
+				printf("[EnvMap] Failed: %s\n", result->error.c_str());
+				m_LastStatusMsg = "Env map load failed";
+				return;
+			}
+
+			m_SceneMgr.SetEnvMapData(pathCopy, result->w, result->h,
+			                         std::move(result->pixels));
+			printf("[EnvMap] Loaded %dx%d\n", result->w, result->h);
+
+			if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
+			{
+				// SyncToGPU() is a silent no-op unless a sync callback has
+				// been installed (SceneManager guards on `if (m_SyncCallback)`).
+				// Calling it bare meant the env map never reached the GPU
+				// unless some earlier operation happened to install one.
+				UploadMeshToGPU();
+				m_GpuSyncPending = true;
+			}
+			m_RendererGPU.ResetAccumulation();
+			m_LastStatusMsg = "Env map loaded";
+		});
 	}
 
 private:

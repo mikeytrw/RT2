@@ -68,13 +68,17 @@ void AsyncTextureLoader::Adopt(std::vector<GpuImage>& outTextures,
 		return;
 	}
 
+	printf("[AsyncTex] Adopt: joining thread...\n"); fflush(stdout);
 	if (m_Thread.joinable())
 		m_Thread.join();
 
 	// Submit the recorded command buffer from the main thread (queues
 	// are not thread-safe — worker only records).
+	bool submitFailed = false;
+	bool waitFailed   = false;
 	if (m_CmdBuffer != VK_NULL_HANDLE && m_UploadFence != VK_NULL_HANDLE && m_Device)
 	{
+		printf("[AsyncTex] Adopt: vkQueueSubmit...\n"); fflush(stdout);
 		VkSubmitInfo submitInfo = {};
 		submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 		submitInfo.commandBufferCount = 1;
@@ -82,18 +86,70 @@ void AsyncTextureLoader::Adopt(std::vector<GpuImage>& outTextures,
 		VkResult r = vkQueueSubmit(m_Device->queue, 1, &submitInfo, m_UploadFence);
 		if (r != VK_SUCCESS)
 		{
-			RT_LOG("[AsyncTex] vkQueueSubmit failed: %d", (int)r);
+			// A failed submit never signals the fence. The old code logged
+			// this and then fell through into vkWaitForFences(UINT64_MAX),
+			// which froze the main thread forever — the UI hung on
+			// "Uploading textures to GPU...". Never wait on a fence that was
+			// not successfully submitted.
+			RT_LOG("[AsyncTex] vkQueueSubmit failed: %d — skipping fence wait", (int)r);
+			printf("[AsyncTex] Adopt: vkQueueSubmit FAILED (%d) — skipping fence wait\n", (int)r);
+			fflush(stdout);
+			submitFailed = true;
 		}
-
-		// Wait for the upload to finish before adopting (keeps semantics
-		// simple: Adopt returns with textures fully ready)
-		vkWaitForFences(m_Device->device, 1, &m_UploadFence, VK_TRUE, UINT64_MAX);
+		else
+		{
+			// Bounded wait. An unbounded wait turns any lost or
+			// never-signalled fence into an unrecoverable freeze; slicing it
+			// keeps a stuck upload visible in the console and recoverable.
+			printf("[AsyncTex] Adopt: vkWaitForFences...\n"); fflush(stdout);
+			constexpr uint64_t kSliceNs   = 1000000000ull; // 1 second
+			constexpr int      kMaxSlices = 30;            // 30 second budget
+			VkResult w = VK_TIMEOUT;
+			for (int i = 0; i < kMaxSlices; ++i)
+			{
+				w = vkWaitForFences(m_Device->device, 1, &m_UploadFence, VK_TRUE, kSliceNs);
+				if (w != VK_TIMEOUT) break;
+				printf("[AsyncTex] Adopt: still waiting for upload fence (%ds)\n", i + 1);
+				fflush(stdout);
+			}
+			if (w != VK_SUCCESS)
+			{
+				RT_LOG("[AsyncTex] upload fence wait failed/timed out: %d", (int)w);
+				printf("[AsyncTex] Adopt: fence wait failed/timed out (%d)\n", (int)w);
+				fflush(stdout);
+				waitFailed = true;
+			}
+			else
+			{
+				printf("[AsyncTex] Adopt: vkWaitForFences returned\n"); fflush(stdout);
+			}
+		}
 	}
 
-	outTextures = std::move(m_ResultTextures);
-	envMapIndex = m_ResultEnvMapIndex;
-	marginalCDFIndex = m_ResultMarginalCDFIndex;
-	conditionalCDFIndex = m_ResultConditionalCDFIndex;
+	if (submitFailed || waitFailed)
+	{
+		// The upload did not complete — do not hand these images to the
+		// renderer. On a failed submit nothing is in flight, so the images
+		// are safe to destroy. On a timeout the GPU may still reference
+		// them, so deliberately leak rather than risk a use-after-free.
+		if (submitFailed && m_Device)
+		{
+			for (auto& img : m_ResultTextures)
+				GpuResources::DestroyImage(*m_Device, img);
+		}
+		m_ResultTextures.clear();
+		outTextures.clear();
+		envMapIndex = -1;
+		marginalCDFIndex = -1;
+		conditionalCDFIndex = -1;
+	}
+	else
+	{
+		outTextures = std::move(m_ResultTextures);
+		envMapIndex = m_ResultEnvMapIndex;
+		marginalCDFIndex = m_ResultMarginalCDFIndex;
+		conditionalCDFIndex = m_ResultConditionalCDFIndex;
+	}
 
 	m_ResultTextures.clear();
 
