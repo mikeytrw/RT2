@@ -9,6 +9,7 @@
 #include "InputTypes.h"
 #include "ECSComponents.h"
 #include "ScriptFieldValue.h"
+#include "ScriptFieldRegistry.h"
 #include "core/UUID.h"
 
 #include <sol/sol.hpp>
@@ -133,6 +134,29 @@ public:
 
     virtual void ReloadScript(const std::filesystem::path& path) { (void)path; }
 
+    // ---- Phase 6B reflection ---------------------------------------------
+
+    // Declared public fields for an entity's bound script. Resolves the
+    // entity's script path the same way BuildEnvironment does (relative to
+    // the runtime document's source path) and delegates to a
+    // ScriptFieldRegistry, so the Play-session path and the editor's
+    // authoring path cannot diverge. An entity with no instance or no script
+    // yields an empty, parsed=false Result.
+    //
+    // The editor queries the registry directly by path — its declarations
+    // must be visible with the editor STOPPED, when m_Instances is empty.
+    //
+    // Returns the registry Result, not a bare vector: on a parse failure the
+    // descriptors are the last known-good set, and a caller that reconciles
+    // against them would delete the user's authored values. Dropping
+    // `parsed` here would make that trap invisible, and 6C reload is exactly
+    // such a caller.
+    ScriptFieldRegistry::Result GetDeclaredFields(const UUID& uuid);
+
+    // The registry backing GetDeclaredFields. Exposed so the host can share
+    // one cache between the inspector and the runtime.
+    ScriptFieldRegistry& FieldRegistry() { return m_FieldRegistry; }
+
     // ---- Test/inspector helpers (6B will extend; 6A provides the seam) --
 
     // Returns the current instance state for an entity, or NeverCreated if
@@ -183,6 +207,10 @@ private:
     // Creation order (S5): UUIDs in the order OnCreate fired. Stop iterates
     // this in reverse for OnDestroy.
     std::vector<UUID> m_CreationOrder;
+
+    // Phase 6B: declaration cache. Independent of the Play session — it has
+    // its own Lua state and survives Stop.
+    ScriptFieldRegistry m_FieldRegistry;
 
     // Non-owning pointers, valid for the duration of a Play session (set
     // at OnSceneStart, cleared at OnSceneStop).

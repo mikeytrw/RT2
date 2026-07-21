@@ -388,6 +388,28 @@ ScriptSystem::ResolveScriptPath(const ScriptComponent& comp) const
     return std::filesystem::path(comp.asset.path);
 }
 
+ScriptFieldRegistry::Result
+ScriptSystem::GetDeclaredFields(const UUID& uuid)
+{
+    ScriptFieldRegistry::Result empty;
+    empty.parsed = false;
+    empty.diagnostic = "entity has no script instance";
+
+    if (!m_RuntimeDoc) return empty;
+    const auto e = m_RuntimeDoc->FindByUuid(uuid);
+    if (e == entt::null) return empty;
+
+    const auto& reg = m_RuntimeDoc->ecs.registry;
+    if (!reg.valid(e)) return empty;
+    const auto* sc = reg.try_get<ScriptComponent>(e);
+    if (!sc) return empty;
+
+    // The full Result propagates: on a parse failure the descriptors are the
+    // registry's last known-good set (D10), and `parsed` is the only signal
+    // that reconciling against them would be destructive.
+    return m_FieldRegistry.GetDeclaredFields(ResolveScriptPath(*sc));
+}
+
 bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
                                     const ScriptComponent& comp,
                                     const IInputService* input,

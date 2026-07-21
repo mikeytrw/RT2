@@ -368,6 +368,10 @@ struct EditorCameraPose;
 	bool HasLight(EntityId entity) const;
 	bool HasCamera(EntityId entity) const;
 	bool HasTransform(EntityId entity) const;
+	// Phase 6B/W0: script component presence + read access for the inspector.
+	bool HasScript(EntityId entity) const;
+	// Returns nullopt when the entity is invalid or carries no ScriptComponent.
+	std::optional<ScriptComponent> GetScriptState(const rt2::core::UUID& entity) const;
 
 	// Read transform as euler degrees (for UI sliders). Returns false if no Transform.
 	bool GetTransform(EntityId entity, glm::vec3& outPosition, glm::vec3& outRotationEuler, float& outScale) const;
@@ -444,6 +448,12 @@ struct EditorCameraPose;
 	                                           int afterIndex);
 	EditorMutationResult SetMotionState(const rt2::core::UUID& entity,
 	                                    const std::optional<MotionComponent>& value);
+	// Phase 6B/W0: add, remove, or replace an entity's ScriptComponent.
+	// nullopt removes. SyncImpact is None — script bindings and field values
+	// are authored/runtime state that never touches the GPU scene (see the
+	// Phase 6B plan, D8; mirrors SetMotionState exactly).
+	EditorMutationResult SetScriptState(const rt2::core::UUID& entity,
+	                                    const std::optional<ScriptComponent>& value);
 	EditorMutationResult SetCameraPoseState(const rt2::core::UUID& entity,
 	                                        const EditableTRS& local,
 	                                        const CameraComponent& props);

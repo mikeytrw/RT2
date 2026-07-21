@@ -20,6 +20,7 @@
 #include "SceneDocument.h"
 #include "SceneAssetResolver.h"
 #include "RuntimeSceneController.h"
+#include "ScriptSystem.h"
 #include "SceneRenderBridge.h"
 #include "ECSComponents.h"
 #include "EditorSettings.h"
@@ -1410,6 +1411,38 @@ private:
 			m_RenderBridge = new SceneRenderBridge(m_RendererGPU);
 	}
 
+	// Phase 6B/W0: install the script system into the runtime controller.
+	//
+	// Before this, ScriptSystem was never instantiated by the app at all —
+	// 6A shipped test-only, so ScriptComponent-bearing entities were inert
+	// in Play. The controller side was already fully wired (Play fires
+	// OnSceneStart, the tick fires SyncScriptEnvironments/OnFixedUpdate/
+	// OnUpdate); only the owner was missing.
+	//
+	// Lazy, idempotent, and mirrors EnsureRenderBridge. ScriptSystem takes
+	// its UUID provider by reference, so construction is deferred until the
+	// authoring document actually has one — hence unique_ptr rather than a
+	// plain member. If the provider is still null we simply stay unwired and
+	// retry on the next Play; scripts are inert, nothing else is affected.
+	void EnsureScriptRuntimeWired()
+	{
+		if (m_ScriptSystem) return;
+
+		// Reuse the authoring document's provider, for the same reason
+		// EnterPlay does: it is stateless and the UUID spaces are disjoint.
+		rt2::core::IUuidProvider* provider =
+			m_SceneMgr.AuthoringDoc().GetUuidProvider();
+		if (!provider) return;
+
+		m_ScriptSystem = std::make_unique<rt2::core::ScriptSystem>(*provider);
+		m_ScriptSink   = std::make_unique<rt2::core::RuntimeCommandSink>(m_Runtime);
+
+		m_Runtime.SetLifecycleObserver(m_ScriptSystem.get());
+		m_Runtime.SetScriptDispatch(m_ScriptSystem.get());
+		m_Runtime.SetRuntimeCommandSink(m_ScriptSink.get());
+		m_Runtime.SetInputService(&m_Input);
+	}
+
 	bool ApplyEditorCameraPose(const EditorCameraPose& pose)
 	{
 		if (m_Runtime.GetState() != rt2::core::SceneRunState::Edit)
@@ -2223,11 +2256,33 @@ private:
 	Camera m_EditorCamSnapshot;    // saved on Play, restored on Stop
 	bool m_RuntimeCamActive = false;
 
+	// Phase 6B/W0: the app's script system + runtime command sink. Declared
+	// after m_Runtime because the sink binds to the controller by reference.
+	// Installed lazily by EnsureScriptRuntimeWired(); null until the first
+	// Play with a valid UUID provider.
+	std::unique_ptr<rt2::core::ScriptSystem>        m_ScriptSystem;
+	std::unique_ptr<rt2::core::RuntimeCommandSink>  m_ScriptSink;
+
 	// Phase 5 input service — owns the context stack and frame phasing.
 	rt2::core::InputService m_Input;
 	bool m_InputDefaultsLoaded = false;
 	bool m_ViewportHoveredThisFrame = false;
 	bool m_GizmoConsumesMouseThisFrame = false;
+
+	// ---- Background async work (scene load / import / env map decode) ----
+	// Only one BackgroundWork may be active at a time. The loading modal
+	// is modal — it blocks all other UI interactions until the work done.
+	// The completion callback runs on the main thread after the worker
+	// thread joins, so Vulkan/GPU calls are safe there.
+	std::unique_ptr<BackgroundWork> m_BackgroundWork;
+	std::function<void(bool)> m_OnBackgroundComplete;
+	bool m_LoadingModalOpen = false;
+	// GPU sync phase: after the async worker completes, the completion
+	// callback may set this to keep the modal open while the GPU uploads
+	// textures + builds acceleration structures. The modal polls each
+	// frame and runs the GPU sync, then clears the flag.
+	bool m_GpuSyncPending = false;
+	std::string m_GpuSyncStatus;
 
 	// ---- Phase 1B: editor settings, recovery, unsaved-changes coordinator ----
 	std::filesystem::path DialogInitialDirectory() const
@@ -2286,6 +2341,7 @@ private:
 	void EnterPlay()
 	{
 		EnsureRenderBridge();
+		EnsureScriptRuntimeWired();
 
 		// Phase 4: inject the production UUID provider so the runtime document
 		// can generate fresh UUIDs for deferred-create operations. The

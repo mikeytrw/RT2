@@ -8,8 +8,10 @@
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <variant>
+#include <vector>
 
 // ============================================================================
 // ScriptFieldValue — the supported value space for script public fields.
@@ -58,6 +60,69 @@ using ScriptFieldValue = std::variant<
     UUID,
     glm::vec3
 >;
+
+// The variant arm a declared type occupies. Two ScriptFieldTypes are
+// *compatible* (a value survives a declaration change) iff they share an
+// arm — this is the single rule behind Phase 6B's incompatible-type
+// handling, and it is why vec3 -> color preserves the value while
+// float -> vec3 does not. Returns the std::variant index.
+constexpr size_t ScriptFieldArmIndex(ScriptFieldType type)
+{
+    switch (type)
+    {
+    case ScriptFieldType::Bool:   return 0;   // bool
+    case ScriptFieldType::Int:    return 1;   // int64_t
+    case ScriptFieldType::Float:  return 2;   // double
+    case ScriptFieldType::String: return 3;   // std::string
+    case ScriptFieldType::Uuid:   return 4;   // UUID
+    case ScriptFieldType::Vec3:   return 5;   // glm::vec3
+    case ScriptFieldType::Color:  return 5;   // glm::vec3 (shared arm)
+    }
+    return 2;
+}
+
+constexpr bool ScriptFieldTypesCompatible(ScriptFieldType a, ScriptFieldType b)
+{
+    return ScriptFieldArmIndex(a) == ScriptFieldArmIndex(b);
+}
+
+// Canonical lowercase tag for a declared type. This is the on-disk tag
+// written by SceneSerializer v3 and the label used in diagnostics.
+constexpr const char* ScriptFieldTypeName(ScriptFieldType type)
+{
+    switch (type)
+    {
+    case ScriptFieldType::Bool:   return "bool";
+    case ScriptFieldType::Int:    return "int";
+    case ScriptFieldType::Float:  return "float";
+    case ScriptFieldType::String: return "string";
+    case ScriptFieldType::Uuid:   return "uuid";
+    case ScriptFieldType::Vec3:   return "vec3";
+    case ScriptFieldType::Color:  return "color";
+    }
+    return "float";
+}
+
+// ============================================================================
+// ScriptFieldDescriptor — one public field as *declared by the script*.
+//
+// Produced by ScriptFieldRegistry from the script's `rt2.fields` block. The
+// declaration is the source of truth for the field's type, its default, and
+// (for a renamed field) the name it used to have. Persisted values are
+// reconciled against these descriptors on load and on reload.
+//
+// `alias` names the OLD field, i.e. a descriptor {name="vel", alias="speed"}
+// means "vel was previously called speed; migrate the persisted speed value
+// into vel". Migration is one hop only — alias chains are not followed.
+// ============================================================================
+
+struct ScriptFieldDescriptor
+{
+    std::string                 name;
+    ScriptFieldType             type = ScriptFieldType::Float;
+    ScriptFieldValue            defaultValue;
+    std::optional<std::string>  alias;
+};
 
 } // namespace rt2::core
 

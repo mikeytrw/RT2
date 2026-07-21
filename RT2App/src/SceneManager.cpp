@@ -3015,6 +3015,24 @@ bool SceneManager::HasLight(EntityId entity) const
 	return m_EcsScene.registry.try_get<LightComponent>(entity.id) != nullptr;
 }
 
+bool SceneManager::HasScript(EntityId entity) const
+{
+	if (!entity.IsValid()) return false;
+	if (!m_EcsScene.registry.valid(entity.id)) return false;
+	return m_EcsScene.registry.try_get<ScriptComponent>(entity.id) != nullptr;
+}
+
+std::optional<ScriptComponent>
+SceneManager::GetScriptState(const rt2::core::UUID& entity) const
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return std::nullopt;
+	if (auto* sc = m_EcsScene.registry.try_get<ScriptComponent>(e))
+		return *sc;
+	return std::nullopt;
+}
+
 bool SceneManager::HasTransform(EntityId entity) const
 {
 	if (!entity.IsValid()) return false;
@@ -3384,6 +3402,29 @@ EditorMutationResult SceneManager::SetMotionState(const rt2::core::UUID& entity,
 	NotifyAuthoringChanged();
 	EditorMutationResult result;
 	result.success = true;
+	result.syncImpact = rt2::core::SyncImpact::None;
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
+EditorMutationResult SceneManager::SetScriptState(const rt2::core::UUID& entity,
+                                                  const std::optional<ScriptComponent>& value)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetScriptState: entity not present");
+	if (value.has_value())
+		m_EcsScene.registry.emplace_or_replace<ScriptComponent>(e, *value);
+	else
+	{
+		if (m_EcsScene.registry.all_of<ScriptComponent>(e))
+			m_EcsScene.registry.remove<ScriptComponent>(e);
+	}
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	// D8: script bindings and field values never reach the GPU scene.
 	result.syncImpact = rt2::core::SyncImpact::None;
 	result.affectedEntities.push_back(entity);
 	return result;
