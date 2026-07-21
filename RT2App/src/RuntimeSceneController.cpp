@@ -467,6 +467,32 @@ bool RuntimeSceneController::ApplyDeferredStructuralChanges(
         }
         else if (auto* destroy = std::get_if<DestroyRuntimeSubtreeOperation>(&op))
         {
+            // Phase 6: give scripts their on_destroy BEFORE the entities go
+            // away, so the final callback can still read the entity it is
+            // tearing down. Post-order = children first, matching the
+            // destruction order. Skipped silently if the root no longer
+            // resolves (a prior op in this batch already removed it).
+            if (m_ScriptDispatch)
+            {
+                const auto root = doc.FindByUuid(destroy->uuid);
+                if (root != entt::null && doc.ecs.registry.valid(root))
+                {
+                    std::vector<entt::entity> subtree;
+                    SceneHierarchy::CollectSubtreePostOrder(
+                        doc.ecs.registry, root, subtree);
+
+                    std::vector<UUID> uuids;
+                    uuids.reserve(subtree.size());
+                    for (auto e : subtree)
+                        if (const auto* idc =
+                                doc.ecs.registry.try_get<EntityIdComponent>(e))
+                            uuids.push_back(idc->id);
+
+                    if (!uuids.empty())
+                        m_ScriptDispatch->OnEntitiesDestroying(uuids);
+                }
+            }
+
             auto r = m_Mutator.DestroySubtree(doc, destroy->uuid);
             if (!r.IsOk())
             {

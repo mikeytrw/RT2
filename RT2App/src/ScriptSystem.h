@@ -45,9 +45,34 @@
 //
 // Protected-call discipline (S7): every Lua entry point (rt2.fields eval,
 // all four callbacks, sink-invoked calls) runs through
-// sol::protected_function with a bound error handler. A lua_atpanic guard
-// is installed on the sol::state at construction. Any uncaught error or
-// panic transitions the instance to Quarantined.
+// sol::protected_function. A lua_atpanic guard is installed on the
+// sol::state at construction. Any uncaught error or panic transitions the
+// instance to Quarantined.
+//
+// KNOWN GAPS in S7 as implemented — do not read the paragraph above as
+// stronger than it is:
+//
+//  - No error handler is bound explicitly, but sol2's DEFAULT handler
+//    already supplies a traceback via luaL_traceback (which lives in
+//    lauxlib and does not need the debug library open), so
+//    sol::error::what() does carry a stack trace with the chunk name. The
+//    S1 promise of "path, entity, callback, and stack trace" is met except
+//    that Quarantine does not log the resolved script path as its own
+//    field. Minor.
+//
+//  - Protected calls catch ERRORS, not HANGS: a callback containing
+//    `while true do end` never returns, so no result is produced and
+//    neither the protected call nor lua_atpanic can intervene. That is why
+//    every Lua entry point here (chunk load and all four callbacks) is
+//    additionally wrapped in a ScriptInstructionBudget (ScriptSandbox.h),
+//    whose LUA_MASKCOUNT hook regains control and routes an exhausted
+//    budget through the ordinary error path into Quarantine.
+//
+//  - Remaining: LuaPanic throws a C++ exception from a handler invoked by
+//    C-compiled Lua. Every Lua entry is protected, so it should be
+//    unreachable, but if it ever fires the throw crosses C frames reached
+//    via longjmp, which is undefined on MSVC. The sound fix is compiling
+//    Lua as C++ (a premake/vendor change); tracked separately.
 // ============================================================================
 
 namespace rt2::core {
@@ -68,16 +93,16 @@ enum class ScriptInstanceState : uint8_t
 struct ScriptInstance
 {
     UUID                    uuid;
+    // Resolved script path, kept so diagnostics can name the file. S1
+    // promises "path, entity, callback, and stack trace"; the trace comes
+    // from sol's default handler, the path from here.
+    std::string             scriptPath;
     sol::environment        env;
     sol::protected_function on_create;
     sol::protected_function on_fixed_update;
     sol::protected_function on_update;
     sol::protected_function on_destroy;
     ScriptInstanceState     state = ScriptInstanceState::NeverCreated;
-    // Creation order (S5): the index in ScriptSystem::m_CreationOrder at
-    // the time OnCreate fired. Used for reverse-creation-order OnDestroy
-    // at Stop.
-    size_t                  creationOrderIndex = 0;
 };
 
 class ScriptSystem : public IRuntimeLifecycleObserver,
@@ -102,6 +127,7 @@ public:
     void OnFixedUpdate(float dt) override;
     void OnUpdate(float dt) override;
     void SyncScriptEnvironments() override;
+    void OnEntitiesDestroying(const std::vector<UUID>& uuids) override;
 
     // ---- Phase 6C hot reload (declared now, stubbed in 6A) --------------
 
@@ -128,18 +154,16 @@ private:
                           const IInputService* input,
                           IRuntimeCommandSink* sink);
 
-    // Fire a protected callback. On any error, quarantines the instance and
-    // returns false. A missing (nil) callback is a no-op (returns true).
-    bool FireProtected(ScriptInstance& inst,
-                       sol::protected_function& fn,
-                       const std::string& callbackName,
-                       const std::function<sol::protected_function_result(sol::protected_function&)>& invoke);
-
     // Transition an instance to Quarantined and log the error with path,
     // entity UUID, callback name, and stack trace.
     void Quarantine(ScriptInstance& inst,
                     const std::string& callbackName,
                     const std::string& message);
+
+    // Resolve a script asset reference to a filesystem path: scene-relative
+    // to the runtime document's source path, or as-is when the document has
+    // no source path (test fixtures use absolute paths).
+    std::filesystem::path ResolveScriptPath(const ScriptComponent& comp) const;
 
     // Collect ScriptComponent-bearing entities from the runtime registry,
     // sorted by UUID for deterministic iteration.

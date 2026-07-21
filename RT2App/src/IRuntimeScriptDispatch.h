@@ -3,6 +3,10 @@
 #ifndef RT2_CORE_IRUNTIME_SCRIPT_DISPATCH_H
 #define RT2_CORE_IRUNTIME_SCRIPT_DISPATCH_H
 
+#include "core/UUID.h"
+
+#include <vector>
+
 // ============================================================================
 // IRuntimeScriptDispatch — per-frame, mutation-driving script dispatch seam.
 //
@@ -58,6 +62,25 @@ public:
     // OnUpdate this frame (it resolved at SyncScriptEnvironments). A spawn
     // queued during OnUpdate resolves next frame.
     virtual void OnUpdate(float dt) = 0;
+
+    // Called from inside ApplyDeferredStructuralChanges, immediately BEFORE
+    // a queued subtree destruction is applied, with the subtree's UUIDs in
+    // post-order (children first). The entities are STILL ALIVE and still
+    // resolve in the runtime document.
+    //
+    // Why this exists: the drain used to apply the destruction and only then
+    // call SyncScriptEnvironments, which fired on_destroy. The environment
+    // was still alive but the UUID no longer resolved, so a script's final
+    // callback saw entity:get_name() return empty and get_position() fail —
+    // contradicting the contract that a script observes itself alive during
+    // its own teardown. Firing here restores it.
+    //
+    // Defaulted to a no-op so non-script dispatch implementations and older
+    // tests are unaffected.
+    virtual void OnEntitiesDestroying(const std::vector<UUID>& uuids)
+    {
+        (void)uuids;
+    }
 
     // G2: the single chokepoint where the script system's per-entity
     // environment map mirrors the runtime registry. Called once per frame

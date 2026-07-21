@@ -1,4 +1,5 @@
 #include "ScriptSystem.h"
+#include "ScriptSandbox.h"
 #include "RuntimeSceneController.h"
 #include "SceneDocument.h"
 #include "ECSComponents.h"
@@ -27,13 +28,19 @@ ScriptSystem::ScriptSystem(IUuidProvider& uuidProvider)
     // Open only the safe Lua libraries. os/io/debug/package are deliberately
     // NOT opened: os.exit would terminate the process, io.* gives filesystem
     // access, package/require gives module loading. base is opened (it has
-    // print, pairs, ipairs, type, error, pcall, etc.) but dofile/loadfile/
-    // require are nilled out per-environment in BuildEnvironment (Q6b).
+    // print, pairs, ipairs, type, error, pcall, etc.) but the dangerous
+    // globals are shadowed per-environment in BuildEnvironment (Q6b) — see
+    // ScriptSandbox.h.
+    //
+    // coroutine was opened here with nothing using it and no sandboxing
+    // story, so it is no longer opened: an unused library is unreviewed
+    // attack surface. If 6C implements timer.after/timer.every on
+    // coroutines it should re-open it deliberately, with the deny list
+    // revisited at the same time.
     m_Lua.open_libraries(sol::lib::base,
                          sol::lib::math,
                          sol::lib::string,
                          sol::lib::table,
-                         sol::lib::coroutine,
                          sol::lib::utf8);
 
     // S7: install a panic guard so a Lua panic (e.g. stack overflow via
@@ -105,7 +112,12 @@ void ScriptSystem::OnSceneStop(const SceneDocument& runtime)
             // session is ending anyway).
             if (inst.on_destroy.valid())
             {
-                auto result = inst.on_destroy(inst.env["entity"]);
+                sol::protected_function_result result;
+                {
+                    ScriptInstructionBudget budget(m_Lua.lua_state(),
+                                                   kScriptCallbackInstructionBudget);
+                    result = inst.on_destroy(inst.env["entity"]);
+                }
                 if (!result.valid())
                 {
                     sol::error err = result;
@@ -153,8 +165,13 @@ void ScriptSystem::OnFixedUpdate(float dt)
         // 4-arg signature locked from 6A (S2): entity, dt, input, world.
         // `input` is inert in 6A (methods added in 6C); the parameter is
         // present so 6A-authored scripts run unchanged under 6C.
-        auto result = inst.on_fixed_update(
-            inst.env["entity"], dt, inst.env["input"], inst.env["world"]);
+        sol::protected_function_result result;
+        {
+            ScriptInstructionBudget budget(m_Lua.lua_state(),
+                                           kScriptCallbackInstructionBudget);
+            result = inst.on_fixed_update(
+                inst.env["entity"], dt, inst.env["input"], inst.env["world"]);
+        }
         if (!result.valid())
         {
             sol::error err = result;
@@ -178,13 +195,55 @@ void ScriptSystem::OnUpdate(float dt)
         if (!inst.on_update.valid())
             continue;
 
-        auto result = inst.on_update(
-            inst.env["entity"], dt, inst.env["input"], inst.env["world"]);
+        sol::protected_function_result result;
+        {
+            ScriptInstructionBudget budget(m_Lua.lua_state(),
+                                           kScriptCallbackInstructionBudget);
+            result = inst.on_update(
+                inst.env["entity"], dt, inst.env["input"], inst.env["world"]);
+        }
         if (!result.valid())
         {
             sol::error err = result;
             Quarantine(inst, "on_update", err.what());
         }
+    }
+}
+
+void ScriptSystem::OnEntitiesDestroying(const std::vector<UUID>& uuids)
+{
+    // Fire on_destroy while the entities are STILL ALIVE (the controller
+    // calls this immediately before applying the destruction), so a script's
+    // final callback can still read itself. `uuids` arrives in post-order,
+    // children before parents.
+    //
+    // Instances are marked Destroyed here, so the removal pass in
+    // SyncScriptEnvironments — which only fires on_destroy for state == Live
+    // — will not fire it a second time; it just erases the entry.
+    for (const auto& uuid : uuids)
+    {
+        auto it = m_Instances.find(uuid);
+        if (it == m_Instances.end()) continue;
+        auto& inst = it->second;
+        if (inst.state != ScriptInstanceState::Live) continue;
+
+        if (inst.on_destroy.valid())
+        {
+            sol::protected_function_result result;
+            {
+                ScriptInstructionBudget budget(m_Lua.lua_state(),
+                                               kScriptCallbackInstructionBudget);
+                result = inst.on_destroy(inst.env["entity"]);
+            }
+            if (!result.valid())
+            {
+                sol::error err = result;
+                printf("[Script] on_destroy error (script %s, entity %s): %s\n",
+                       inst.scriptPath.empty() ? "<unbound>" : inst.scriptPath.c_str(),
+                       inst.uuid.ToString().c_str(), err.what());
+            }
+        }
+        inst.state = ScriptInstanceState::Destroyed;
     }
 }
 
@@ -220,7 +279,12 @@ void ScriptSystem::SyncScriptEnvironments()
         {
             if (inst.on_destroy.valid())
             {
-                auto result = inst.on_destroy(inst.env["entity"]);
+                sol::protected_function_result result;
+                {
+                    ScriptInstructionBudget budget(m_Lua.lua_state(),
+                                                   kScriptCallbackInstructionBudget);
+                    result = inst.on_destroy(inst.env["entity"]);
+                }
                 if (!result.valid())
                 {
                     sol::error err = result;
@@ -232,12 +296,23 @@ void ScriptSystem::SyncScriptEnvironments()
         inst.state = ScriptInstanceState::Destroyed;
         toRemove.push_back(uuid);
     }
-    for (const auto& uuid : toRemove)
+    if (!toRemove.empty())
     {
-        m_Instances.erase(uuid);
-        // Note: we do NOT remove from m_CreationOrder (that would shift
-        // indices). The UUID is simply absent from m_Instances, so the
-        // Stop-path reverse iteration skips it.
+        for (const auto& uuid : toRemove)
+            m_Instances.erase(uuid);
+
+        // Compact m_CreationOrder in place. Order is preserved, which is all
+        // the Stop-path reverse iteration needs — nothing indexes into this
+        // vector. Leaving destroyed UUIDs in it made the vector grow without
+        // bound across a session: a script that spawns and destroys entities
+        // in a loop would leave hundreds of thousands of dead entries to be
+        // walked at every sync and at Stop.
+        m_CreationOrder.erase(
+            std::remove_if(m_CreationOrder.begin(), m_CreationOrder.end(),
+                           [this](const UUID& u) {
+                               return m_Instances.find(u) == m_Instances.end();
+                           }),
+            m_CreationOrder.end());
     }
 
     // 2. Build environments + fire OnCreate for entities in the registry
@@ -258,12 +333,16 @@ void ScriptSystem::SyncScriptEnvironments()
             // OnCreate fires immediately (G2): the entity is live as soon
             // as the environment is built, before this frame's OnUpdate.
             inst.state = ScriptInstanceState::Live;
-            inst.creationOrderIndex = m_CreationOrder.size();
             m_CreationOrder.push_back(uuid);
 
             if (inst.on_create.valid())
             {
-                auto result = inst.on_create(inst.env["entity"], inst.env["world"]);
+                sol::protected_function_result result;
+                {
+                    ScriptInstructionBudget budget(m_Lua.lua_state(),
+                                                   kScriptCallbackInstructionBudget);
+                    result = inst.on_create(inst.env["entity"], inst.env["world"]);
+                }
                 if (!result.valid())
                 {
                     sol::error err = result;
@@ -275,7 +354,6 @@ void ScriptSystem::SyncScriptEnvironments()
         {
             // BuildEnvironment already quarantined the instance on error.
             // Record it so SyncScriptEnvironments doesn't retry every frame.
-            inst.creationOrderIndex = m_CreationOrder.size();
             m_CreationOrder.push_back(uuid);
         }
         m_Instances.emplace(uuid, std::move(inst));
@@ -300,6 +378,16 @@ std::string ReadFile(const std::filesystem::path& path)
 
 } // anonymous namespace
 
+std::filesystem::path
+ScriptSystem::ResolveScriptPath(const ScriptComponent& comp) const
+{
+    // Scene-relative when the document has a source path; as-is otherwise
+    // (test fixtures use absolute paths).
+    if (m_RuntimeDoc && !m_RuntimeDoc->metadata.sourcePath.empty())
+        return m_RuntimeDoc->metadata.sourcePath.parent_path() / comp.asset.path;
+    return std::filesystem::path(comp.asset.path);
+}
+
 bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
                                     const ScriptComponent& comp,
                                     const IInputService* input,
@@ -311,18 +399,8 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
         return false;
     }
 
-    // Resolve the script path relative to the runtime document's source
-    // path (scene-relative). If the document has no source path, try the
-    // path as-is (test fixtures use absolute paths).
-    std::filesystem::path scriptPath;
-    if (m_RuntimeDoc && !m_RuntimeDoc->metadata.sourcePath.empty())
-    {
-        scriptPath = m_RuntimeDoc->metadata.sourcePath.parent_path() / comp.asset.path;
-    }
-    else
-    {
-        scriptPath = comp.asset.path;
-    }
+    const std::filesystem::path scriptPath = ResolveScriptPath(comp);
+    inst.scriptPath = scriptPath.string();
 
     std::string source = ReadFile(scriptPath);
     // Q10d: an empty file is a legal script (no callbacks defined). Only
@@ -340,14 +418,11 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
     // source have isolated state.
     inst.env = sol::environment(m_Lua, sol::create, m_Lua.globals());
 
-    // Q6b: nil out dangerous base-library functions so scripts can't
-    // dofile/loadfile/require (filesystem/module access). The environment
-    // inherits m_Lua.globals() as fallback, so we must explicitly shadow
-    // these in the environment itself.
-    inst.env["dofile"]    = sol::nil;
-    inst.env["loadfile"]  = sol::nil;
-    inst.env["require"]   = sol::nil;
-    inst.env["load"]      = sol::nil;   // blocks loading arbitrary chunks
+    // Q6b: block the dangerous globals. See ScriptSandbox.h for the full
+    // deny list and the reasoning, including why sol::nil does not shadow.
+    // Shared with ScriptFieldRegistry's parse sandbox so the two cannot
+    // drift apart.
+    InstallSandbox(m_Lua, inst.env);
 
     // Bind `self` (S3): the per-entity field table. In 6A this is empty
     // (fieldValues is unused). 6B populates it from ScriptComponent::
@@ -451,6 +526,30 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
             sol::object nameObj = desc["name"];
             if (nameObj.is<std::string>())
                 d.name = nameObj.as<std::string>();
+
+            // G2: scripts spawn SCRIPTED entities. desc.script is a
+            // scene-relative .lua path; the spawned entity gets a
+            // ScriptComponent, so the next SyncScriptEnvironments builds its
+            // environment and fires its on_create in the same frame.
+            //
+            // This was previously dropped on the floor — only `name` was
+            // read — so world:spawn{script=...} produced a permanently inert
+            // entity and G2 was unmet by the Lua API despite the C++ path
+            // (RuntimeEntityCreateDesc::script, RuntimeSceneMutator) fully
+            // supporting it.
+            sol::object scriptObj = desc["script"];
+            if (scriptObj.is<std::string>())
+            {
+                const auto scriptPath = scriptObj.as<std::string>();
+                if (!scriptPath.empty())
+                {
+                    ScriptComponent sc;
+                    sc.asset.kind      = AssetKind::Script;
+                    sc.asset.path      = scriptPath;
+                    sc.asset.sourceKey = "lua:asset=" + scriptPath;
+                    d.script = sc;
+                }
+            }
 
             auto r = s->SpawnEntity(d);
             if (!r.IsOk())
@@ -559,10 +658,16 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
     // Load + execute the script source in the environment. This defines
     // the on_create/on_fixed_update/on_update/on_destroy functions as
     // environment globals.
-    sol::protected_function_result result = m_Lua.safe_script(
-        source, inst.env,
-        sol::script_pass_on_error,
-        scriptPath.string());
+    sol::protected_function_result result;
+    {
+        // A top-level `while true do end` must fail the load, not hang Play.
+        ScriptInstructionBudget budget(m_Lua.lua_state(),
+                                       kScriptLoadInstructionBudget);
+        result = m_Lua.safe_script(
+            source, inst.env,
+            sol::script_pass_on_error,
+            scriptPath.string());
+    }
 
     if (!result.valid())
     {
@@ -593,8 +698,12 @@ void ScriptSystem::Quarantine(ScriptInstance& inst,
                               const std::string& callbackName,
                               const std::string& message)
 {
-    printf("[Script] %s error (entity %s, callback %s): %s\n",
+    // S1 promises path, entity, callback, and stack trace. The trace arrives
+    // inside `message` (sol's default handler builds one with luaL_traceback,
+    // which needs no debug library); the path comes from the instance.
+    printf("[Script] %s error (script %s, entity %s, callback %s): %s\n",
            inst.state == ScriptInstanceState::NeverCreated ? "load" : "runtime",
+           inst.scriptPath.empty() ? "<unbound>" : inst.scriptPath.c_str(),
            inst.uuid.ToString().c_str(),
            callbackName.c_str(),
            message.c_str());

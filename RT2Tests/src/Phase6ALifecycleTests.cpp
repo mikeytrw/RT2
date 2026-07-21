@@ -654,11 +654,16 @@ function on_create(entity, world)
 end
 )LUA");
 
+        // The spawner spawns exactly once, so repeated frames do not pile up
+        // children and the instance count below is unambiguous.
         auto spawnerPath = WriteScript("spawner_script.lua", R"LUA(
+spawned = false
+
 function on_update(entity, dt, input, world)
-    -- Spawn an entity with a script component.
-    -- The desc table carries a "script" field with the asset path.
-    world:spawn({ name = "ChildEntity", script = "child.lua" })
+    if not spawned then
+        spawned = true
+        world:spawn({ name = "ChildEntity", script = "child.lua" })
+    end
 end
 )LUA");
 
@@ -673,29 +678,176 @@ end
         // at the safe point next frame.
         h.Update(1.0f / 60.0f);
 
-        // Frame 2: the safe point drains the queue. But wait — the
-        // world:spawn binding only reads desc["name"], not desc["script"].
-        // The ScriptComponent is not being attached! This test verifies
-        // that gap. For 6A, the spawn binding does not support script
-        // attachment via the Lua API; the RuntimeEntityCreateDesc struct
-        // supports it (for C++ callers), but the Lua binding doesn't
-        // expose it yet. This is a documented limitation — 6C will add
-        // full spawn-with-script support via the Lua API.
+        // Frame 2: the safe point drains the queue, SyncScriptEnvironments
+        // builds the child's environment, and the child's on_create fires —
+        // all in this frame, per G2.
         h.Update(1.0f / 60.0f);
 
-        // The spawned entity exists but has no script (the Lua binding
-        // doesn't pass the script field through).
         const SceneDocument* rt = h.ctrl.TryGetRuntimeScene();
         REQUIRE(rt != nullptr);
         UUID childUuid = h.sink.FindByName("ChildEntity");
         CHECK_FALSE(childUuid.IsNull());
 
-        // No second script instance was created (the child has no script).
-        CHECK(h.scriptSys.LiveInstanceCount() == 1);
+        // G2: a script spawning with desc.script produces a SCRIPTED entity.
+        // This previously asserted LiveInstanceCount() == 1 and described the
+        // inert child as a documented 6C limitation — the test enshrined the
+        // bug instead of the contract. world.spawn now reads desc.script and
+        // attaches a ScriptComponent, so the child is live and its on_create
+        // has run.
+        const auto childEntity = rt->FindByUuid(childUuid);
+        REQUIRE(childEntity != static_cast<entt::entity>(entt::null));
+        CHECK(rt->ecs.registry.all_of<ScriptComponent>(childEntity));
+        CHECK(h.scriptSys.GetInstanceState(childUuid) ==
+              ScriptInstanceState::Live);
+        CHECK(h.scriptSys.LiveInstanceCount() == 2);
 
         h.Stop(doc);
         std::filesystem::remove(childPath);
         std::filesystem::remove(spawnerPath);
+    }
+
+    // ------------------------------------------------------------------------
+    // Hardening: a non-returning callback must not hang the engine.
+    //
+    // Protected calls catch errors, not hangs — `while true do end` never
+    // returns, so no result is produced and neither sol::protected_function
+    // nor lua_atpanic can intervene. Without the LUA_MASKCOUNT budget in
+    // ScriptSandbox.h this test never returns and the whole suite hangs.
+    // ------------------------------------------------------------------------
+    TEST_CASE("Phase 6A: an infinite loop in on_update quarantines, not hangs")
+    {
+        auto scriptPath = WriteScript("hang_update.lua", R"LUA(
+function on_update(entity, dt, input, world)
+    while true do end
+end
+)LUA");
+
+        Phase6Harness h;
+        auto doc = BuildFixtureWithProvider(h, "hang_update.lua");
+        UUID uuid = GetFirstScriptUuid(doc);
+
+        REQUIRE(h.Play(doc));
+        REQUIRE(h.scriptSys.GetInstanceState(uuid) == ScriptInstanceState::Live);
+
+        h.Update(1.0f / 60.0f);
+
+        CHECK(h.scriptSys.GetInstanceState(uuid) ==
+              ScriptInstanceState::Quarantined);
+        CHECK(h.scriptSys.QuarantinedInstanceCount() == 1);
+
+        // The engine keeps running: further frames are harmless no-ops for a
+        // quarantined instance.
+        h.Update(1.0f / 60.0f);
+        CHECK(h.scriptSys.LiveInstanceCount() == 0);
+
+        h.Stop(doc);
+        std::filesystem::remove(scriptPath);
+    }
+
+    TEST_CASE("Phase 6A: an infinite loop at file scope fails the load")
+    {
+        auto scriptPath = WriteScript("hang_load.lua", R"LUA(
+while true do end
+
+function on_update(entity, dt, input, world) end
+)LUA");
+
+        Phase6Harness h;
+        auto doc = BuildFixtureWithProvider(h, "hang_load.lua");
+        UUID uuid = GetFirstScriptUuid(doc);
+
+        // Play builds environments; the chunk never returns without the load
+        // budget, so reaching this line at all is the assertion.
+        REQUIRE(h.Play(doc));
+        CHECK(h.scriptSys.GetInstanceState(uuid) ==
+              ScriptInstanceState::Quarantined);
+
+        h.Stop(doc);
+        std::filesystem::remove(scriptPath);
+    }
+
+    // ------------------------------------------------------------------------
+    // Mid-session on_destroy must run while the entity is still alive.
+    //
+    // The drain used to apply the destruction and only then fire on_destroy
+    // via SyncScriptEnvironments, so the script's final callback saw its own
+    // entity already gone. OnEntitiesDestroying fires it before removal.
+    // ------------------------------------------------------------------------
+    TEST_CASE("Phase 6A: mid-session on_destroy sees the entity still alive")
+    {
+        // Observed in C++ rather than from Lua: with _G denied there is no
+        // cross-script channel, and the victim's own environment is torn down
+        // immediately after its on_destroy returns. A decorator around the
+        // dispatch records whether the UUID still resolved in the runtime
+        // document at the moment on_destroy was invoked — which is exactly
+        // the property that regressed.
+        class RecordingDispatch final : public IRuntimeScriptDispatch
+        {
+        public:
+            RecordingDispatch(IRuntimeScriptDispatch& inner,
+                              RuntimeSceneController& ctrl)
+                : m_Inner(inner), m_Ctrl(ctrl) {}
+
+            void OnFixedUpdate(float dt) override { m_Inner.OnFixedUpdate(dt); }
+            void OnUpdate(float dt) override      { m_Inner.OnUpdate(dt); }
+            void SyncScriptEnvironments() override
+            { m_Inner.SyncScriptEnvironments(); }
+
+            void OnEntitiesDestroying(const std::vector<UUID>& uuids) override
+            {
+                notified = uuids;
+                aliveAtNotify = !uuids.empty();
+                const SceneDocument* rt = m_Ctrl.TryGetRuntimeScene();
+                for (const auto& u : uuids)
+                    if (!rt || rt->FindByUuid(u) == entt::null)
+                        aliveAtNotify = false;
+                m_Inner.OnEntitiesDestroying(uuids);
+            }
+
+            std::vector<UUID> notified;
+            bool              aliveAtNotify = false;
+
+        private:
+            IRuntimeScriptDispatch& m_Inner;
+            RuntimeSceneController& m_Ctrl;
+        };
+
+        auto victimPath = WriteScript("victim.lua", R"LUA(
+function on_destroy(entity)
+    local n = entity:get_name()
+    if n == nil or n == "" then
+        error("on_destroy ran after the entity was already removed")
+    end
+end
+)LUA");
+
+        Phase6Harness h;
+        RecordingDispatch rec(h.scriptSys, h.ctrl);
+        h.ctrl.SetScriptDispatch(&rec);
+
+        auto doc = BuildFixtureWithProvider(h, "victim.lua");
+        UUID victimUuid = GetFirstScriptUuid(doc);
+
+        REQUIRE(h.Play(doc));
+        REQUIRE(h.scriptSys.GetInstanceState(victimUuid) ==
+                ScriptInstanceState::Live);
+
+        // Destroy through the same deferred channel a script would use.
+        REQUIRE(h.sink.DestroyEntity(victimUuid).IsOk());
+        h.Update(1.0f / 60.0f);
+
+        // The notification fired, and the entity was still resolvable then.
+        REQUIRE(rec.notified.size() == 1);
+        CHECK(rec.notified[0] == victimUuid);
+        CHECK(rec.aliveAtNotify);
+
+        // on_destroy ran and did NOT error (an error would have quarantined
+        // rather than cleanly destroyed), and the instance is now gone.
+        CHECK(h.scriptSys.QuarantinedInstanceCount() == 0);
+        CHECK(h.scriptSys.LiveInstanceCount() == 0);
+
+        h.Stop(doc);
+        std::filesystem::remove(victimPath);
     }
 
     // ------------------------------------------------------------------------
