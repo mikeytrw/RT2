@@ -75,6 +75,13 @@ Tangents are NOT stored — they are computed in the shader from UV gradients.
 
 ## Scene Loading
 
+> **These pipelines describe what loading *produces*, not when it runs.**
+> In the app, loading and importing execute on a background worker thread
+> with a two-phase loading modal, and the GPU upload that follows is split
+> across frames. See [async-loading.md](async-loading.md). The functions
+> below are called from the worker thread and must stay free of Vulkan and
+> ImGui.
+
 ### glTF Path (.gltf / .glb)
 
 ```
@@ -124,6 +131,25 @@ SceneLoader::ImportIntoECS(ecsScene, filepath)
   — Offsets material and texture indices to avoid collisions
   — Creates a wrapper root entity parented to the existing scene
 ```
+
+### Async import merge
+
+The async path cannot import directly into the live scene: the worker
+thread must not touch the scene the main thread is rendering. It parses
+into a **fresh temporary `ECSScene`**, and the main thread then merges it:
+
+```
+SceneManager::MergeImportedECS(std::move(src), srcRoot, sourcePath)
+  — Appends meshes (offsetting per-triangle material indices by matBase)
+  — Appends materials (remapping texture indices) and textures
+  — Re-parents the wrapper root under the live scene root
+  — Assigns UUIDs to imported entities and fills source paths
+  — Returns the wrapper root in the live scene, or invalid on failure
+```
+
+`SceneManager::SetEnvMapData(path, w, h, pixels)` is the equivalent seam
+for environment maps: the worker decodes the HDR/EXR pixels, the main
+thread installs the already-decoded buffer.
 
 ---
 

@@ -3995,7 +3995,7 @@ body); 6C implements it.
 input/light/camera/mesh/material bindings; timers; headless JSON state
 report; `RT2SliceRunner --script-scenario` mode.
 
-### Phase 6B — Public fields, reflection, and persistence (planned)
+### Phase 6B — Public fields, reflection, and persistence (W0+W1 implemented, W2-W6 planned)
 
 **Outcome.** A script declares public fields with declared types and
 defaults; the inspector renders them, the user edits them, and they
@@ -4488,6 +4488,71 @@ Hot reload and file watching (`efsw`); input, light, camera, mesh, and
 material bindings; timers; the headless JSON state report; the
 content-browser rebind UI (Phase 7). Reload is exercised in tests via an
 explicit `ScriptSystem::ReloadScript(path)` call (D9).
+
+### Phase 6B W0+W1 verification report (implemented)
+
+Commits `e2edab6` (6A hardening, prerequisite) and `0472274` (W0+W1).
+**W2-W6 are not started** — no reconciliation, no typed `ScriptFieldEntry`
+storage, no serializer v3, no `SetScriptCommand`, no inspector UI.
+
+**W0 — app wiring.** `ScriptSystem` was never instantiated by the app:
+`SetLifecycleObserver` / `SetScriptDispatch` were never called, so 6A
+shipped test-only and `ScriptComponent`-bearing entities were inert in
+Play. The controller side was already fully wired; only the owner was
+missing.
+
+- `WalnutApp` owns a `ScriptSystem` + `RuntimeCommandSink` and installs
+  all four controller seams from `EnsureScriptRuntimeWired()` — lazy and
+  idempotent, mirroring `EnsureRenderBridge`, called from `EnterPlay`.
+  They are `unique_ptr` because `ScriptSystem` takes its UUID provider by
+  reference, so construction must wait until the authoring document has
+  one; if it is still null the app stays unwired and retries next Play.
+- `SceneManager::HasScript` / `GetScriptState` / `SetScriptState`. The
+  mutator mirrors `SetMotionState` exactly and reports
+  `SyncImpact::None` (D8).
+
+**W1 — reflection.**
+
+- `ScriptFieldDescriptor` in `ScriptFieldValue.h`, plus
+  `ScriptFieldArmIndex` / `ScriptFieldTypesCompatible` /
+  `ScriptFieldTypeName`. `ScriptFieldTypesCompatible` is the single
+  expression of D5's rule and is what W2 must use.
+- `ScriptFieldRegistry.h/.cpp` — the `rt2.fields` DSL (all seven
+  constructors plus the `alias` option), sandboxed and instruction-
+  bounded parsing, a `(mtime, size, FNV-1a)` cache with LRU-64 and
+  `Clear()`.
+- `ScriptSystem::GetDeclaredFields(UUID)` delegating to the registry, and
+  `ResolveScriptPath` factored out of `BuildEnvironment` so the Play and
+  authoring paths resolve identically.
+
+**Two contracts W2 depends on, both enforced by tests:**
+
+1. A failed parse returns the **last known-good** descriptors with
+   `parsed=false` and does not stamp mtime/size, so fixing a syntax error
+   recovers on the next query. `GetDeclaredFields` returns the whole
+   `Result` rather than a descriptor vector precisely so this flag cannot
+   be dropped — W2 must skip reconciliation when it is false.
+2. A **malformed** declaration structure (a replaced `rt2` table, or
+   `rt2.fields` set to a non-table mid-edit) is a parse *failure*, not a
+   clean empty set. Reporting it as "no fields" would make W2 delete
+   every authored value.
+
+**Tests:** `RT2Tests/src/Phase6BFieldsTests.cpp`, 21 cases — 4 for W0
+(add/replace/remove, `SyncImpact::None`, missing-entity failure, invalid
+id) and 17 for W1 (every constructor and its declared type, name
+ordering, aliases, empty/absent declarations, syntax-error recovery,
+missing file, runaway loop, sandbox denials including `_G` and the
+environment metatable, library-poisoning isolation, malformed
+declarations, cache invalidation and `Clear()`, non-declaration entries,
+one declaration bound to two names).
+
+**Suite:** 419 cases, 413 passed, 6 failed — the same six pre-existing
+failures documented for Phase 2D (5 × `SceneGraph` in `EcsTests.cpp`,
+1 × SIGSEGV in `SceneManagerTests.cpp:85`). RT2App Release builds clean.
+
+**Not done in W0/W1:** the interactive acceptance gate (authoring a
+script in the editor, editing `speed`, Play) requires the inspector from
+W5, so it remains open.
 
 ### Phase 6C — Hot reload, input, and remaining bindings (planned)
 

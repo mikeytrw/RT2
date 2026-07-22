@@ -156,10 +156,14 @@ not run the accumulator or consume wall-clock time. Specifically:
    a. Script fixed callbacks (`IRuntimeScriptDispatch::OnFixedUpdate`,
       UUID-sorted) — Phase 6A.
    b. MotionSystem (inline, UUID-sorted).
-3. Apply deferred structural changes at the defined safe point.
+3. Apply deferred structural changes at the defined safe point. Each queued
+   destruction fires `IRuntimeScriptDispatch::OnEntitiesDestroying` for the
+   affected subtree (post-order, children first) immediately BEFORE the
+   entities are removed, so a script's `on_destroy` still observes the
+   entity it is tearing down.
 4. Sync script environments (`IRuntimeScriptDispatch::SyncScriptEnviron-
-   ments` — fires `OnCreate` for newly applied entities, `OnDestroy` for
-   destroyed ones) — Phase 6A.
+   ments` — builds environments and fires `OnCreate` for newly applied
+   entities, and erases entries for entities that are gone) — Phase 6A.
 5. Script variable callbacks (`IRuntimeScriptDispatch::OnUpdate`,
    UUID-sorted) — Phase 6A.
 6. Update world transforms (SceneGraph).
@@ -309,7 +313,8 @@ runtime frame:
   IRuntimeScriptDispatch::OnFixedUpdate(fixedDt)   // before motion
   <inline motion integration>
   ApplyDeferredStructuralChanges()                  // safe point
-  IRuntimeScriptDispatch::SyncScriptEnvironments()  // OnCreate/OnDestroy
+    └─ OnEntitiesDestroying(subtree)                //   per destroy, BEFORE removal
+  IRuntimeScriptDispatch::SyncScriptEnvironments()  // OnCreate + env teardown
   IRuntimeScriptDispatch::OnUpdate(frameDt)         // after safe point
   SceneGraph::UpdateWorldTransforms()
   <one batched GPU sync>
@@ -323,13 +328,31 @@ Play and torn down on Stop. `ScriptSystem` implements both
 `IRuntimeScriptDispatch` (per-frame mutation-driving). The environment
 map is a per-frame-maintained mirror of the runtime registry:
 `SyncScriptEnvironments` (called between the deferred safe point and
-`OnUpdate`) fires `OnCreate` for newly applied entities and `OnDestroy`
-for destroyed ones, so scripted spawning produces scripted entities.
+`OnUpdate`) builds environments and fires `OnCreate` for newly applied
+entities, so scripted spawning produces scripted entities — a
+`world:spawn{ script = "child.lua" }` during frame N's `OnUpdate`
+resolves at frame N+1's safe point and its `on_create` fires that same
+frame.
+
+**`on_destroy` fires earlier than the rest of this teardown.** It is
+driven by `OnEntitiesDestroying`, called from inside
+`ApplyDeferredStructuralChanges` immediately before each queued subtree
+is removed, in post-order. This ordering is deliberate: firing it from
+`SyncScriptEnvironments` (i.e. after the drain) meant the environment was
+still alive but the UUID no longer resolved, so `entity:get_name()`
+returned empty inside a script's own final callback. Instances are marked
+`Destroyed` at that point, so the later sync pass erases the entry
+without invoking the callback a second time. At `Stop`, `on_destroy`
+instead runs from `OnSceneStop` in reverse creation order, while the
+runtime document still exists.
+
 Scripts mutate the runtime world through `IRuntimeCommandSink` (world
 spawn/destroy, entity get/set transform/name/visible); the const
 `SceneDocument` is never exposed. Per-instance state machine
 (NeverCreated / Live / Quarantined / Destroyed) with protected-call
-discipline ensures one bad script never crashes the engine.
+discipline ensures one bad script never crashes the engine — including
+non-returning ones, which protected calls alone cannot catch (see
+`docs/scripting.md`).
 
 ### Physics (placeholder)
 
