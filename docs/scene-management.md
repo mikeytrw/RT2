@@ -963,3 +963,9 @@ assertions). Full RT2Tests: 354 cases, 348 passed, 6 pre-existing failures
 RemoveEntity destroys entity`), 48 skipped. Slice runner, recovery
 scenario, and `RuntimeSceneControllerTests` all pass. WalnutApp injects
 the production UUID provider via one line in `EnterPlay`.
+
+> Those counts were a truncated run — the SIGSEGV aborted the process and
+> the 48 "skipped" cases simply never executed. Fixed in `b19512b`; the
+> current baseline is 468 run / 0 skipped / 7 failed (Release) and
+> 15 failed (Debug). See the Phase 6B verification report in
+> `game-engine-development-plan.md` for the breakdown.

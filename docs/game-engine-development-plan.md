@@ -4546,9 +4546,29 @@ environment metatable, library-poisoning isolation, malformed
 declarations, cache invalidation and `Clear()`, non-declaration entries,
 one declaration bound to two names).
 
-**Suite:** 419 cases, 413 passed, 6 failed — the same six pre-existing
-failures documented for Phase 2D (5 × `SceneGraph` in `EcsTests.cpp`,
-1 × SIGSEGV in `SceneManagerTests.cpp:85`). RT2App Release builds clean.
+**Suite:** 419 cases, 413 passed, 6 failed at the time of the commit —
+the same six pre-existing failures documented for Phase 2D. RT2App
+Release builds clean.
+
+> **That figure, and every "6 failed / 48 skipped" in the verification
+> reports above, was a truncated run.** The SIGSEGV in `SceneManager:
+> RemoveEntity destroys entity` did not merely fail — it took the process
+> down mid-run, so Release abandoned the 48 cases after it and Debug could
+> not complete a run at all. Fixed in `b19512b` (an unchecked
+> `m_Meshes[index]` in `CompactMeshRegistry`). The honest baseline is now:
+>
+> - **Release: 468 run, 0 skipped, 7 failed** — 5 × `SceneGraph`
+>   (`EcsTests.cpp:93-193`) plus `SceneManager: SetTransform updates TRS
+>   and marks dirty` and `SceneManager: SetMaterial updates MeshRef`. The
+>   last two are long-standing test/implementation drift that the crash
+>   had been hiding.
+> - **Debug: 468 run, 0 skipped, 15 failed** — the 7 above plus 7 ×
+>   `OBJ Import Wizard` and 1 × `P1A Multi-Model`, which fail only in
+>   Debug.
+>
+> Compare regressions against those numbers, not against 6. The earlier
+> reports are left as written because they were accurate measurements of
+> what the suite reported at the time.
 
 **Not done in W0/W1:** the interactive acceptance gate (authoring a
 script in the editor, editing `speed`, Play) requires the inspector from
