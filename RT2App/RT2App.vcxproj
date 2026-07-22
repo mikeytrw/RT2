@@ -204,6 +204,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="shaders\shader_interface.h" />
     <ClInclude Include="src\AccelerationStructure.h" />
     <ClInclude Include="src\AsyncTextureLoader.h" />
+    <ClInclude Include="src\BackgroundWork.h" />
     <ClInclude Include="src\CLIArgs.h" />
     <ClInclude Include="src\Camera.h" />
     <ClInclude Include="src\ColorTransfer.h" />
@@ -274,8 +275,8 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\SceneSerializer.h" />
     <ClInclude Include="src\SceneTypes.h" />
     <ClInclude Include="src\SceneVisibility.h" />
-    <ClInclude Include="src\ScriptFieldValue.h" />
     <ClInclude Include="src\ScriptFieldRegistry.h" />
+    <ClInclude Include="src\ScriptFieldValue.h" />
     <ClInclude Include="src\ScriptSandbox.h" />
     <ClInclude Include="src\ScriptSystem.h" />
     <ClInclude Include="src\ShaderManager.h" />
@@ -604,12 +605,12 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
-    <ClCompile Include="src\ScriptSystem.cpp">
+    <ClCompile Include="src\ScriptFieldRegistry.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
-    <ClCompile Include="src\ScriptFieldRegistry.cpp">
+    <ClCompile Include="src\ScriptSystem.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
