@@ -658,6 +658,18 @@ SceneManager::EntityId SceneManager::AddObject(const std::string& name,
 	tf.rotation = glm::quat(glm::radians(rotation));
 	tf.scale = {scale, scale, scale};
 	m_EcsScene.registry.emplace<Transform>(entity, tf);
+
+	// NOTE: this references mesh 0 even when the registry is empty, which is
+	// a dangling reference until geometry arrives. It is deliberate and
+	// depended upon: the production caller (WalnutApp's model-load path)
+	// calls this straight after SceneLoader::LoadIntoECS, when index 0 is
+	// valid, and test fixtures treat AddObject as "add a renderable object"
+	// and read the MeshRef back. Making it conditional breaks both.
+	//
+	// The reference is inert because every consumer bounds-checks it before
+	// indexing: CompactMeshRegistry skips out-of-range indices, and
+	// GPUSceneData guards at :292 and :451. Anything new that indexes
+	// meshRegistry by a MeshRef must do the same.
 	m_EcsScene.registry.emplace<MeshRef>(entity, 0u, materialIndex);
 
 	if (!name.empty())
@@ -3503,13 +3515,23 @@ bool SceneManager::CompactMeshRegistry()
 	auto& reg = m_EcsScene.registry;
 	auto& meshReg = m_EcsScene.meshRegistry;
 
-	// Find which mesh indices are still referenced by alive entities
+	// Find which mesh indices are still referenced by alive entities.
+	//
+	// A MeshRef may name an index the registry does not have — a stale
+	// reference left by an entity built before its mesh was added, or one
+	// that outlived a registry shrink. Such an index must NOT be treated as
+	// live: it would flow into GetMesh() below, which is an unchecked
+	// m_Meshes[index], and read out of bounds (SIGSEGV in Release, a
+	// __fastfail on Debug's iterator checks). Skipping it is also correct
+	// on the merits — a mesh that does not exist cannot be keeping anything
+	// alive. GPUSceneData applies the same guard before indexing meshes.
 	std::set<uint32_t> referenced;
 	auto view = reg.view<MeshRef>();
 	for (auto entity : view)
 	{
 		if (!reg.valid(entity)) continue;
 		const auto& ref = view.get<MeshRef>(entity);
+		if (ref.meshIndex >= meshReg.GetCount()) continue;
 		referenced.insert(ref.meshIndex);
 	}
 

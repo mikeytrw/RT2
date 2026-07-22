@@ -95,6 +95,38 @@ TEST_CASE("SceneManager: RemoveEntity destroys entity")
 	CHECK(mgr.GetECS().registry.valid(e2.id));
 }
 
+TEST_CASE("SceneManager: compaction tolerates a MeshRef with no backing mesh")
+{
+	// Regression. AddObject used to emplace MeshRef{meshIndex = 0}
+	// unconditionally, so on an empty mesh registry every entity carried a
+	// reference to a mesh that was never added. CompactMeshRegistry then fed
+	// that index to MeshRegistry::GetMesh, an unchecked m_Meshes[index],
+	// reading out of bounds: SIGSEGV in Release and a 0xC0000409 fastfail in
+	// Debug. The Release crash aborted the remainder of the suite, hiding 48
+	// other cases, so this is pinned directly rather than relied upon
+	// incidentally.
+	SceneManager mgr;
+	auto a = mgr.AddObject("A");
+	mgr.AddObject("B");
+	REQUIRE(mgr.GetEntityCount() == 2);
+
+	// AddObject deliberately still emplaces MeshRef{0}; with an empty
+	// registry that is a reference to a mesh which does not exist.
+	REQUIRE(mgr.GetECS().meshRegistry.GetCount() == 0);
+	REQUIRE(mgr.HasMeshRef(a));
+
+	// Must not crash, and must leave the scene intact.
+	mgr.CompactMeshRegistry();
+	CHECK(mgr.GetEntityCount() == 2);
+	CHECK(mgr.GetECS().meshRegistry.GetCount() == 0);
+
+	// An arbitrarily out-of-range index is skipped, not followed.
+	auto& reg = mgr.GetECS().registry;
+	reg.get<MeshRef>(a.id).meshIndex = 9999u;
+	mgr.CompactMeshRegistry();
+	CHECK(mgr.GetEntityCount() == 2);
+}
+
 TEST_CASE("SceneManager: RemoveEntity on invalid id is no-op")
 {
 	SceneManager mgr;
