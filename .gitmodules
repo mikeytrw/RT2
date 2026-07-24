@@ -11,3 +11,6 @@
 [submodule "RT2App/vendor/sol2"]
 	path = RT2App/vendor/sol2
 	url = https://github.com/ThePhD/sol2.git
+[submodule "RT2App/vendor/efsw"]
+	path = RT2App/vendor/efsw
+	url = https://github.com/SpartanJ/efsw.git
