@@ -1,6 +1,8 @@
 #include <doctest/doctest.h>
 
 #include "ScriptSystem.h"
+#include "ScriptFieldRegistry.h"
+#include "ScriptFieldResolver.h"
 #include "RuntimeSceneController.h"
 #include "RuntimeLifecycleObserver.h"
 #include "IRuntimeScriptDispatch.h"
@@ -871,6 +873,117 @@ end
 
         // Running a frame should not error (no callbacks to fire).
         h.Update(1.0f / 60.0f);
+        CHECK(h.scriptSys.GetInstanceState(cubeUuid) == ScriptInstanceState::Live);
+
+        h.Stop(doc);
+        std::filesystem::remove(scriptPath);
+    }
+
+    TEST_CASE("Phase 6B W2: runtime self receives the authored typed value")
+    {
+        auto scriptPath = WriteScript("typed_self.lua", R"LUA(
+function on_create(entity, world)
+    entity:set_position({ self.speed, 0, 0 })
+end
+)LUA");
+
+        Phase6Harness h;
+        auto doc = BuildFixtureWithProvider(h, "typed_self.lua");
+        const UUID cubeUuid = GetFirstScriptUuid(doc);
+        const auto cube = doc.FindByUuid(cubeUuid);
+        REQUIRE(doc.ecs.registry.valid(cube));
+        auto& component = doc.ecs.registry.get<ScriptComponent>(cube);
+        component.fieldValues["speed"] = ScriptFieldEntry{
+            ScriptFieldType::Float,
+            ScriptFieldValue{ 7.5 }
+        };
+
+        REQUIRE(h.Play(doc));
+        glm::vec3 position{};
+        REQUIRE(h.sink.GetPosition(cubeUuid, position));
+        CHECK(position.x == doctest::Approx(7.5f));
+        CHECK(h.scriptSys.GetInstanceState(cubeUuid) == ScriptInstanceState::Live);
+
+        h.Stop(doc);
+        std::filesystem::remove(scriptPath);
+    }
+
+    TEST_CASE("Phase6B W3: persisted field reaches runtime self after load and reconcile")
+    {
+        auto scriptPath = WriteScript("persisted_self.lua", R"LUA(
+rt2.fields = {
+    speed = rt2.field.float(1.0),
+}
+
+function on_create(entity, world)
+    entity:set_position({ self.speed, 0, 0 })
+end
+)LUA");
+
+        Phase6Harness h;
+        auto authored = BuildFixtureWithProvider(h, "persisted_self.lua");
+        const UUID cubeUuid = GetFirstScriptUuid(authored);
+        const auto cube = authored.FindByUuid(cubeUuid);
+        REQUIRE(authored.ecs.registry.valid(cube));
+        authored.ecs.registry.get<ScriptComponent>(cube).fieldValues["speed"] =
+            ScriptFieldEntry{ ScriptFieldType::Float, ScriptFieldValue{ 12.5 } };
+
+        const auto scenePath = g_TempDir / "persisted_self.rt2scene";
+        authored.metadata.sourcePath = scenePath;
+        Error err;
+        REQUIRE(SceneSerializer::Save(authored, scenePath, err));
+
+        SceneDocument loaded;
+        SceneLoadReport loadReport;
+        REQUIRE(SceneSerializer::Load(loaded, scenePath, loadReport, err));
+        CHECK(loadReport.fieldDiagnostics.empty());
+
+        ScriptFieldRegistry registry;
+        std::vector<FieldDiagnostic> diagnostics;
+        const auto resolution = ScriptFieldResolver::ResolveDocument(
+            loaded, registry, diagnostics);
+        CHECK_FALSE(resolution.changed);
+        CHECK(resolution.resolvedEntities == 1);
+        CHECK(diagnostics.empty());
+
+        REQUIRE(h.Play(loaded));
+        glm::vec3 position{};
+        REQUIRE(h.sink.GetPosition(cubeUuid, position));
+        CHECK(position.x == doctest::Approx(12.5f));
+        CHECK(h.scriptSys.GetInstanceState(cubeUuid) == ScriptInstanceState::Live);
+
+        h.Stop(loaded);
+        std::filesystem::remove(scenePath);
+        std::filesystem::remove(scriptPath);
+    }
+
+    TEST_CASE("Phase 6B W2: malformed authored entries are omitted from runtime self")
+    {
+        auto scriptPath = WriteScript("malformed_self.lua", R"LUA(
+function on_create(entity, world)
+    if self.bad == nil then
+        entity:set_position({ 1, 0, 0 })
+    else
+        entity:set_position({ 2, 0, 0 })
+    end
+end
+)LUA");
+
+        Phase6Harness h;
+        auto doc = BuildFixtureWithProvider(h, "malformed_self.lua");
+        const UUID cubeUuid = GetFirstScriptUuid(doc);
+        const auto cube = doc.FindByUuid(cubeUuid);
+        REQUIRE(doc.ecs.registry.valid(cube));
+        auto& component = doc.ecs.registry.get<ScriptComponent>(cube);
+        component.fieldValues["bad"] = ScriptFieldEntry{
+            ScriptFieldType::Vec3,
+            ScriptFieldValue{ 7.5 }
+        };
+
+        REQUIRE(h.Play(doc));
+        glm::vec3 position{};
+        REQUIRE(h.sink.GetPosition(cubeUuid, position));
+        CHECK(position.x == doctest::Approx(1.0f));
         CHECK(h.scriptSys.GetInstanceState(cubeUuid) == ScriptInstanceState::Live);
 
         h.Stop(doc);

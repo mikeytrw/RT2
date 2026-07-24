@@ -11,8 +11,12 @@
 #include "Phase1AFixtureGenerator.h"
 #include "FixtureGenerator.h"
 #include "UnsavedChangesCoordinator.h"
+#include "ScriptFieldRegistry.h"
+#include "ScriptFieldResolver.h"
+#include "ScriptFieldChangePolicy.h"
 #include "core/UUID.h"
 #include "core/Error.h"
+#include "json.hpp"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -439,6 +443,90 @@ TEST_CASE("Recovery: corrupt manifest is reported")
         if (!r.valid) { foundInvalid = true; break; }
     }
     CHECK(foundInvalid);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Recovery: manifest v1 is rejected at envelope discovery")
+{
+    auto dir = UniqueTempDir("rcv_old_manifest");
+    FakeClock clk;
+    SceneRecoveryService svc(dir, ClockRef(clk), 8, 60.0);
+    OsUuidProvider provider;
+    auto doc = MakePrimitiveScene(&provider);
+    doc.metadata.dirty = true;
+    doc.metadata.sourcePath = dir / "scene.rt2scene";
+    Error err;
+    REQUIRE(SnapshotAfterInterval(svc, doc, 1, clk, err));
+
+    auto records = svc.Discover(err);
+    REQUIRE(records.size() == 1);
+    nlohmann::json envelope;
+    { std::ifstream in(records[0].recordPath); in >> envelope; }
+    envelope["version"] = 1;
+    { std::ofstream out(records[0].recordPath, std::ios::trunc); out << envelope.dump(2); }
+
+    records = svc.Discover(err);
+    REQUIRE(records.size() == 1);
+    CHECK_FALSE(records[0].valid);
+    CHECK(records[0].diagnostic.find("unsupported recovery version 1") !=
+          std::string::npos);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Recovery: restored script fields resolve from original source path")
+{
+    auto dir = UniqueTempDir("rcv_script_root");
+    std::filesystem::create_directories(dir / "scripts");
+    {
+        std::ofstream script(dir / "scripts" / "move.lua");
+        script << "rt2.fields = { speed = rt2.field.float(1.0) }\n";
+    }
+
+    FakeClock clk;
+    SceneRecoveryService svc(dir / "Recovery", ClockRef(clk), 8, 60.0);
+    OsUuidProvider provider;
+    auto doc = MakePrimitiveScene(&provider);
+    doc.metadata.dirty = true;
+    doc.metadata.sourcePath = dir / "scene.rt2scene";
+    auto entities = doc.ecs.registry.view<EntityIdComponent>();
+    REQUIRE(entities.size() == 1);
+    const auto entity = *entities.begin();
+    ScriptComponent component;
+    component.asset.kind = AssetKind::Script;
+    component.asset.path = "scripts/move.lua";
+    component.asset.sourceKey = "lua:asset=scripts/move.lua";
+    component.fieldValues["speed"] = {
+        ScriptFieldType::Float, ScriptFieldValue{5.0} };
+    doc.ecs.registry.emplace<ScriptComponent>(entity, component);
+
+    Error err;
+    REQUIRE(SnapshotAfterInterval(svc, doc, 2, clk, err));
+    auto records = svc.Discover(err);
+    REQUIRE(records.size() == 1);
+
+    SceneDocument restored;
+    restored.SetUuidProvider(&provider);
+    std::vector<AssetDiagnostic> assetDiagnostics;
+    SceneLoadReport loadReport;
+    REQUIRE(svc.Restore(
+        records[0], restored, assetDiagnostics, loadReport, err));
+    CHECK(restored.metadata.sourcePath == doc.metadata.sourcePath);
+
+    ScriptFieldRegistry registry;
+    std::vector<FieldDiagnostic> fieldDiagnostics = loadReport.fieldDiagnostics;
+    const auto resolution = ScriptFieldResolver::ResolveDocument(
+        restored, registry, fieldDiagnostics);
+    CHECK(resolution.resolvedEntities == 1);
+    CHECK(resolution.skippedEntities == 0);
+    CHECK_FALSE(resolution.changed);
+    CHECK(fieldDiagnostics.empty());
+
+    const auto restoredEntity = restored.FindByUuid(
+        doc.ecs.registry.get<EntityIdComponent>(entity).id);
+    REQUIRE(restoredEntity != static_cast<entt::entity>(entt::null));
+    CHECK(std::get<double>(restored.ecs.registry
+        .get<ScriptComponent>(restoredEntity).fieldValues.at("speed").value) ==
+        doctest::Approx(5.0));
     std::filesystem::remove_all(dir);
 }
 

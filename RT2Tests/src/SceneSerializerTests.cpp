@@ -8,6 +8,7 @@
 #include "PrimitiveGeometry.h"
 #include "core/UUID.h"
 #include "core/Error.h"
+#include "json.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -297,7 +298,7 @@ TEST_CASE("VS-2 Serializer: unsupported schema version fails clearly")
 TEST_CASE("VS-2 Serializer: duplicate UUID fails with DuplicateUuid error")
 {
     auto path = WriteTempFile(R"({
-        "version": 1,
+        "version": 3,
         "entities": [
             {"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"A","parent":"","visible":true,"transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}},
             {"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"B","parent":"","visible":true,"transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}}
@@ -319,7 +320,7 @@ TEST_CASE("VS-2 Serializer: duplicate UUID fails with DuplicateUuid error")
 TEST_CASE("VS-2 Serializer: missing parent fails with MissingParent error")
 {
     auto path = WriteTempFile(R"({
-        "version": 1,
+        "version": 3,
         "entities": [
             {"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"Child","parent":"660e8400-e29b-41d4-a716-446655440001","visible":true,"transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}}
         ],
@@ -399,7 +400,7 @@ TEST_CASE("VS-2 Serializer: hierarchy resolves independent of serialized order")
 TEST_CASE("VS-2 Serializer: unknown optional fields are ignored")
 {
     auto path = WriteTempFile(R"({
-        "version": 1,
+        "version": 3,
         "entities": [],
         "materials": [],
         "textures": [],
@@ -421,7 +422,7 @@ TEST_CASE("VS-2 Serializer: non-primitive mesh entity rejected with UnknownPrimi
 {
     // An entity with a MeshRef but no PrimitiveComponent should be rejected.
     auto path = WriteTempFile(R"({
-        "version": 1,
+        "version": 3,
         "entities": [
             {"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"ImportedMesh","parent":"","visible":true,
              "transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
@@ -689,3 +690,370 @@ TEST_CASE("VS-2 Serializer: save succeeds when all mesh entities have PrimitiveC
     CHECK(std::filesystem::exists(path));
     std::filesystem::remove(path);
 }
+
+TEST_CASE("Phase6B W3 Serializer: every typed script field round-trips")
+{
+    DeterministicUuidProvider provider;
+    SceneDocument doc;
+    doc.SetUuidProvider(&provider);
+    const entt::entity entity = doc.ecs.registry.create();
+    const UUID entityId = doc.AssignNewUuid(entity);
+    doc.ecs.registry.emplace<Transform>(entity);
+    doc.ecs.registry.emplace<VisibleComponent>(entity);
+
+    ScriptComponent script;
+    script.asset.kind = AssetKind::Script;
+    script.asset.path = "scripts/all-fields.lua";
+    script.asset.sourceKey = "stale-key";
+    script.fieldValues["enabled"] = { ScriptFieldType::Bool, true };
+    script.fieldValues["count"] = { ScriptFieldType::Int, int64_t{42} };
+    script.fieldValues["speed"] = { ScriptFieldType::Float, 7.5 };
+    script.fieldValues["label"] = { ScriptFieldType::String, std::string("runner") };
+    script.fieldValues["target"] = { ScriptFieldType::Uuid, UUID::Nil() };
+    script.fieldValues["offset"] = { ScriptFieldType::Vec3, glm::vec3(1, 2, 3) };
+    script.fieldValues["tint"] = { ScriptFieldType::Color, glm::vec3(1, 0.5f, 0.2f) };
+    doc.ecs.registry.emplace<ScriptComponent>(entity, script);
+    doc.metadata.sourcePath = "C:/project/scenes/source.rt2scene";
+
+    const auto path = std::filesystem::temp_directory_path() / "rt2_w3_all_fields.rt2scene";
+    Error err;
+    REQUIRE(SceneSerializer::Save(doc, path, err));
+    CHECK(doc.ecs.registry.get<ScriptComponent>(entity).asset.sourceKey == "stale-key");
+
+    nlohmann::json saved;
+    { std::ifstream in(path); in >> saved; }
+    CHECK(saved["version"].get<uint32_t>() == 3);
+    CHECK_FALSE(saved["metadata"].contains("sourcePath"));
+    CHECK_FALSE(saved["entities"][0]["script"]["asset"].contains("importSettings"));
+
+    SceneDocument loaded;
+    loaded.SetUuidProvider(&provider);
+    SceneLoadReport report;
+    REQUIRE(SceneSerializer::Load(loaded, path, report, err));
+    CHECK_FALSE(report.normalizedScriptMetadata);
+    CHECK_FALSE(report.droppedScriptFieldData);
+    CHECK(loaded.metadata.sourcePath == path);
+
+    const auto loadedEntity = loaded.FindByUuid(entityId);
+    REQUIRE(loadedEntity != static_cast<entt::entity>(entt::null));
+    const auto& roundTrip = loaded.ecs.registry.get<ScriptComponent>(loadedEntity);
+    CHECK(roundTrip.asset.kind == AssetKind::Script);
+    CHECK(roundTrip.asset.sourceKey == "lua:asset=" + roundTrip.asset.path);
+    REQUIRE(roundTrip.fieldValues.size() == 7);
+    CHECK(std::get<bool>(roundTrip.fieldValues.at("enabled").value));
+    CHECK(std::get<int64_t>(roundTrip.fieldValues.at("count").value) == 42);
+    CHECK(std::get<double>(roundTrip.fieldValues.at("speed").value) == doctest::Approx(7.5));
+    CHECK(std::get<std::string>(roundTrip.fieldValues.at("label").value) == "runner");
+    CHECK(std::get<UUID>(roundTrip.fieldValues.at("target").value).IsNull());
+    CHECK(roundTrip.fieldValues.at("offset").type == ScriptFieldType::Vec3);
+    CHECK(roundTrip.fieldValues.at("tint").type == ScriptFieldType::Color);
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("Phase6B W3 Serializer: bad fields are isolated and reported")
+{
+    const auto path = WriteTempFile(R"({
+      "version":3,
+      "metadata":{"name":"repair"},
+      "entities":[{
+        "uuid":"550e8400-e29b-41d4-a716-446655440000",
+        "name":"Scripted","parent":"","visible":true,
+        "transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+        "script":{
+          "asset":{"kind":"script","path":"scripts/test.lua","sourceKey":"lua:asset=old.lua"},
+          "fields":{
+            "good":{"type":"float","value":2.5},
+            "unknown":{"type":"matrix","value":[]},
+            "wrong":{"type":"vec3","value":[1,2]}
+          }
+        }
+      }],"materials":[],"textures":[],
+      "camera":{"position":[0,0,10],"forward":[0,0,-1],"fov":45,"aperture":0,"focusDist":1},
+      "envMap":{"path":"","width":0,"height":0}
+    })");
+
+    SceneDocument loaded;
+    SceneLoadReport report;
+    Error err;
+    REQUIRE(SceneSerializer::Load(loaded, path, report, err));
+    CHECK(report.normalizedScriptMetadata);
+    CHECK(report.droppedScriptFieldData);
+    REQUIRE(report.fieldDiagnostics.size() == 3);
+    CHECK(report.fieldDiagnostics[0].kind == FieldDiagnostic::Kind::NormalizedScriptSourceKey);
+    CHECK(report.fieldDiagnostics[1].kind == FieldDiagnostic::Kind::UnknownSerializedType);
+    CHECK(report.fieldDiagnostics[2].kind == FieldDiagnostic::Kind::MalformedSerializedValue);
+
+    const auto view = loaded.ecs.registry.view<ScriptComponent>();
+    REQUIRE(view.size() == 1);
+    const auto& script = view.get<ScriptComponent>(*view.begin());
+    REQUIRE(script.fieldValues.size() == 1);
+    CHECK(script.fieldValues.count("good") == 1);
+    CHECK(script.asset.sourceKey == "lua:asset=scripts/test.lua");
+
+    const auto repairedPath = std::filesystem::temp_directory_path() /
+        "rt2_w3_repaired_save.rt2scene";
+    REQUIRE(SceneSerializer::Save(loaded, repairedPath, err));
+    std::filesystem::remove(path);
+    std::filesystem::remove(repairedPath);
+}
+
+TEST_CASE("Phase6B W3 Serializer: invalid live script fails atomically")
+{
+    DeterministicUuidProvider provider;
+    SceneDocument doc;
+    doc.SetUuidProvider(&provider);
+    const entt::entity entity = doc.ecs.registry.create();
+    doc.AssignNewUuid(entity);
+    doc.ecs.registry.emplace<Transform>(entity);
+    doc.ecs.registry.emplace<VisibleComponent>(entity);
+    ScriptComponent invalid;
+    invalid.asset.kind = AssetKind::Script;
+    invalid.asset.path = "scripts/bad.lua";
+    invalid.fieldValues["bad"] = { ScriptFieldType::Bool, 1.0 };
+    doc.ecs.registry.emplace<ScriptComponent>(entity, invalid);
+
+    const auto path = std::filesystem::temp_directory_path() / "rt2_w3_atomic.rt2scene";
+    { std::ofstream out(path); out << "sentinel"; }
+    Error err;
+    CHECK_FALSE(SceneSerializer::Save(doc, path, err));
+    CHECK(err.code == Error::InvalidArgument);
+    {
+        std::ifstream in(path);
+        CHECK(std::string((std::istreambuf_iterator<char>(in)), {}) == "sentinel");
+    }
+    CHECK(doc.ecs.registry.get<ScriptComponent>(entity).fieldValues.count("bad") == 1);
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("Phase6B W3 Serializer: invalid UTF-8 and empty field names reject save")
+{
+    DeterministicUuidProvider provider;
+    SceneDocument doc;
+    doc.SetUuidProvider(&provider);
+    const entt::entity entity = doc.ecs.registry.create();
+    doc.AssignNewUuid(entity);
+    doc.ecs.registry.emplace<Transform>(entity);
+    doc.ecs.registry.emplace<VisibleComponent>(entity);
+    ScriptComponent script;
+    script.asset.kind = AssetKind::Script;
+    script.asset.path = "scripts/bad-text.lua";
+    script.fieldValues["label"] = {
+        ScriptFieldType::String, std::string(1, static_cast<char>(0xff)) };
+    doc.ecs.registry.emplace<ScriptComponent>(entity, script);
+
+    const auto path = std::filesystem::temp_directory_path() /
+        "rt2_w3_invalid_utf8.rt2scene";
+    { std::ofstream out(path); out << "sentinel"; }
+    Error err;
+    CHECK_FALSE(SceneSerializer::Save(doc, path, err));
+    CHECK(err.code == Error::InvalidArgument);
+    CHECK(err.detail.find("UTF-8") != std::string::npos);
+    { std::ifstream in(path); CHECK(std::string((std::istreambuf_iterator<char>(in)), {}) == "sentinel"); }
+
+    auto& fields = doc.ecs.registry.get<ScriptComponent>(entity).fieldValues;
+    fields.clear();
+    fields[""] = { ScriptFieldType::Bool, true };
+    err = Error{};
+    CHECK_FALSE(SceneSerializer::Save(doc, path, err));
+    CHECK(err.code == Error::InvalidArgument);
+    CHECK(err.detail.find("must not be empty") != std::string::npos);
+    { std::ifstream in(path); CHECK(std::string((std::istreambuf_iterator<char>(in)), {}) == "sentinel"); }
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("Phase6B W3 Serializer: empty field name is isolated on load")
+{
+    const auto path = WriteTempFile(R"({
+      "version":3,"metadata":{"name":"empty-name"},
+      "entities":[{"uuid":"550e8400-e29b-41d4-a716-446655440000",
+        "name":"Scripted","parent":"","visible":true,
+        "transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+        "script":{"asset":{"kind":"script","path":"test.lua","sourceKey":"lua:asset=test.lua"},
+                  "fields":{"":{"type":"bool","value":true}}}}],
+      "materials":[],"textures":[],
+      "camera":{"position":[0,0,10],"forward":[0,0,-1],"fov":45,"aperture":0,"focusDist":1},
+      "envMap":{"path":"","width":0,"height":0}})");
+
+    SceneDocument loaded;
+    SceneLoadReport report;
+    Error err;
+    REQUIRE(SceneSerializer::Load(loaded, path, report, err));
+    CHECK(report.droppedScriptFieldData);
+    REQUIRE(report.fieldDiagnostics.size() == 1);
+    CHECK(report.fieldDiagnostics[0].kind ==
+          FieldDiagnostic::Kind::MalformedSerializedValue);
+    const auto view = loaded.ecs.registry.view<ScriptComponent>();
+    REQUIRE(view.size() == 1);
+    CHECK(view.get<ScriptComponent>(*view.begin()).fieldValues.empty());
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("Phase6B W3 Serializer: uppercase UUID text normalizes without loss")
+{
+    const auto path = WriteTempFile(R"({
+      "version":3,"metadata":{"name":"uuid-normalize"},
+      "entities":[{"uuid":"550e8400-e29b-41d4-a716-446655440000",
+        "name":"Scripted","parent":"","visible":true,
+        "transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+        "script":{"asset":{"kind":"script","path":"test.lua","sourceKey":"lua:asset=test.lua"},
+                  "fields":{"target":{"type":"uuid","value":"550E8400-E29B-41D4-A716-446655440000"}}}}],
+      "materials":[],"textures":[],
+      "camera":{"position":[0,0,10],"forward":[0,0,-1],"fov":45,"aperture":0,"focusDist":1},
+      "envMap":{"path":"","width":0,"height":0}})");
+
+    SceneDocument loaded;
+    SceneLoadReport report;
+    Error err;
+    REQUIRE(SceneSerializer::Load(loaded, path, report, err));
+    CHECK(report.normalizedScriptFieldData);
+    CHECK_FALSE(report.droppedScriptFieldData);
+    REQUIRE(report.fieldDiagnostics.size() == 1);
+    CHECK(report.fieldDiagnostics[0].kind ==
+          FieldDiagnostic::Kind::NormalizedSerializedUuid);
+    const auto view = loaded.ecs.registry.view<ScriptComponent>();
+    REQUIRE(view.size() == 1);
+    const auto& target = view.get<ScriptComponent>(*view.begin()).fieldValues.at("target");
+    CHECK(std::get<UUID>(target.value).ToString() ==
+          "550e8400-e29b-41d4-a716-446655440000");
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("Phase6B W3 Serializer: unbound script round-trips")
+{
+    DeterministicUuidProvider provider;
+    SceneDocument doc;
+    doc.SetUuidProvider(&provider);
+    const entt::entity entity = doc.ecs.registry.create();
+    const UUID id = doc.AssignNewUuid(entity);
+    doc.ecs.registry.emplace<Transform>(entity);
+    doc.ecs.registry.emplace<VisibleComponent>(entity);
+    ScriptComponent unbound;
+    unbound.asset.kind = AssetKind::Script;
+    doc.ecs.registry.emplace<ScriptComponent>(entity, unbound);
+
+    const auto path = std::filesystem::temp_directory_path() / "rt2_w3_unbound.rt2scene";
+    Error err;
+    REQUIRE(SceneSerializer::Save(doc, path, err));
+    SceneDocument loaded;
+    REQUIRE(SceneSerializer::Load(loaded, path, err));
+    const auto loadedEntity = loaded.FindByUuid(id);
+    REQUIRE(loadedEntity != static_cast<entt::entity>(entt::null));
+    const auto& script = loaded.ecs.registry.get<ScriptComponent>(loadedEntity);
+    CHECK(script.asset.path.empty());
+    CHECK(script.asset.sourceKey.empty());
+    CHECK(script.fieldValues.empty());
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("Phase6B W3 Serializer: Save As rebases every durable path")
+{
+    const auto root = std::filesystem::temp_directory_path() / "rt2_w3_rebase";
+    const auto oldRoot = root / "old";
+    const auto newRoot = root / "new";
+    std::filesystem::create_directories(oldRoot);
+    std::filesystem::create_directories(newRoot);
+
+    DeterministicUuidProvider provider;
+    SceneDocument doc;
+    doc.SetUuidProvider(&provider);
+    doc.metadata.sourcePath = oldRoot / "source.rt2scene";
+    doc.environment.path = "env/night.exr";
+    const auto entity = doc.ecs.registry.create();
+    doc.AssignNewUuid(entity);
+    doc.ecs.registry.emplace<Transform>(entity);
+    doc.ecs.registry.emplace<VisibleComponent>(entity);
+    ImportedMeshSourceComponent imported;
+    imported.model.kind = AssetKind::Model;
+    imported.model.path = "assets/model.glb";
+    imported.model.sourceKey = "gltf:scene=0:node=0:mesh=0:prim=0";
+    doc.ecs.registry.emplace<ImportedMeshSourceComponent>(entity, imported);
+    ScriptComponent script;
+    script.asset.kind = AssetKind::Script;
+    script.asset.path = "scripts/move.lua";
+    doc.ecs.registry.emplace<ScriptComponent>(entity, script);
+
+    const auto target = newRoot / "saved.rt2scene";
+    Error err;
+    REQUIRE(SceneSerializer::Save(doc, target, err));
+    nlohmann::json saved;
+    { std::ifstream in(target); in >> saved; }
+    CHECK(saved["envMap"]["path"] == "../old/env/night.exr");
+    CHECK(saved["entities"][0]["importedSource"]["path"] ==
+          "../old/assets/model.glb");
+    CHECK(saved["entities"][0]["script"]["asset"]["path"] ==
+          "../old/scripts/move.lua");
+    CHECK(saved["entities"][0]["script"]["asset"]["sourceKey"] ==
+          "lua:asset=../old/scripts/move.lua");
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("Phase6B W3 Serializer: field insertion order does not affect bytes")
+{
+    auto build = [](bool reverse) {
+        SceneDocument doc;
+        const auto entity = doc.ecs.registry.create();
+        const UUID id = UUID::Parse("550e8400-e29b-41d4-a716-446655440000");
+        const bool assigned = doc.AssignKnownUuid(entity, id);
+        (void)assigned;
+        doc.ecs.registry.emplace<Transform>(entity);
+        doc.ecs.registry.emplace<VisibleComponent>(entity);
+        ScriptComponent script;
+        script.asset.kind = AssetKind::Script;
+        script.asset.path = "scripts/order.lua";
+        if (reverse)
+        {
+            script.fieldValues["zeta"] = { ScriptFieldType::Int, int64_t{2} };
+            script.fieldValues["alpha"] = { ScriptFieldType::Bool, true };
+        }
+        else
+        {
+            script.fieldValues["alpha"] = { ScriptFieldType::Bool, true };
+            script.fieldValues["zeta"] = { ScriptFieldType::Int, int64_t{2} };
+        }
+        doc.ecs.registry.emplace<ScriptComponent>(entity, script);
+        return doc;
+    };
+
+    auto first = build(false);
+    auto second = build(true);
+    const auto dir = std::filesystem::temp_directory_path();
+    const auto a = dir / "rt2_w3_order_a.rt2scene";
+    const auto b = dir / "rt2_w3_order_b.rt2scene";
+    Error err;
+    REQUIRE(SceneSerializer::Save(first, a, err));
+    REQUIRE(SceneSerializer::Save(second, b, err));
+    std::ifstream inA(a, std::ios::binary), inB(b, std::ios::binary);
+    const std::string bytesA((std::istreambuf_iterator<char>(inA)), {});
+    const std::string bytesB((std::istreambuf_iterator<char>(inB)), {});
+    CHECK(bytesA == bytesB);
+    inA.close();
+    inB.close();
+    std::filesystem::remove(a);
+    std::filesystem::remove(b);
+}
+
+#ifdef _WIN32
+TEST_CASE("Phase6B W3 Serializer: cross-volume absolute path remains absolute")
+{
+    SceneDocument doc;
+    const auto entity = doc.ecs.registry.create();
+    REQUIRE(doc.AssignKnownUuid(
+        entity, UUID::Parse("550e8400-e29b-41d4-a716-446655440000")));
+    doc.ecs.registry.emplace<Transform>(entity);
+    doc.ecs.registry.emplace<VisibleComponent>(entity);
+    ScriptComponent script;
+    script.asset.kind = AssetKind::Script;
+    script.asset.path = "Z:/external/move.lua";
+    doc.ecs.registry.emplace<ScriptComponent>(entity, script);
+
+    const auto path = std::filesystem::temp_directory_path() /
+        "rt2_w3_cross_volume.rt2scene";
+    Error err;
+    REQUIRE(SceneSerializer::Save(doc, path, err));
+    nlohmann::json saved;
+    { std::ifstream in(path); in >> saved; }
+    CHECK(saved["entities"][0]["script"]["asset"]["path"] ==
+          "Z:/external/move.lua");
+    std::filesystem::remove(path);
+}
+#endif

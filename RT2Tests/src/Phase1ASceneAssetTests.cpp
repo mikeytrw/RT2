@@ -106,78 +106,28 @@ TEST_CASE("P1A UUID: glTF load assigns UUIDs to every entity")
 }
 
 // ----------------------------------------------------------------------------
-// 2. Schema — v1 migration, malformed refs, deterministic v2.
+// 2. Schema — v3 hard cutover, malformed refs, deterministic saves.
 // ----------------------------------------------------------------------------
 
-TEST_CASE("P1A Schema: v1 primitive fixture loads and writes valid v2")
+TEST_CASE("P1A Schema: v1 and v2 scenes are rejected by the v3 hard cutover")
 {
-    // Use the existing slice fixture generator to produce a v1 file.
-    auto v1Path = std::filesystem::temp_directory_path() / "rt2_p1a_v1.rt2scene";
-    Error genErr;
-    REQUIRE(GenerateSliceFixture(v1Path, genErr));
-    REQUIRE(genErr.IsOk());
-
-    // Load the v1 file.
-    DeterministicUuidProvider provider;
-    SceneDocument doc;
-    doc.SetUuidProvider(&provider);
-    Error loadErr;
-    REQUIRE(SceneSerializer::Load(doc, v1Path, loadErr));
-    REQUIRE(loadErr.IsOk());
-
-    // Snapshot UUIDs, transforms, materials, camera.
-    std::set<UUID> uuidsBefore;
-    glm::vec3 camPosBefore = doc.ecs.camera.position;
-    size_t matCountBefore = doc.ecs.materials.size();
+    for (const uint32_t version : {1u, 2u})
     {
-        auto view = doc.ecs.registry.view<EntityIdComponent>();
-        for (auto e : view)
-            uuidsBefore.insert(view.get<EntityIdComponent>(e).id);
+        auto path = WriteTempFile(
+            std::string("{\"version\":") + std::to_string(version) +
+            ",\"entities\":[]}");
+        SceneDocument doc;
+        Error err;
+        CHECK_FALSE(SceneSerializer::Load(doc, path, err));
+        CHECK(err.code == Error::SchemaVersion);
+        std::filesystem::remove(path);
     }
-
-    // Save as v2.
-    auto v2Path = std::filesystem::temp_directory_path() / "rt2_p1a_v1_to_v2.rt2scene";
-    Error saveErr;
-    REQUIRE(SceneSerializer::Save(doc, v2Path, saveErr));
-    REQUIRE(saveErr.IsOk());
-
-    // The saved file must declare version 2.
-    {
-        std::ifstream in(v2Path, std::ios::binary);
-        std::string content((std::istreambuf_iterator<char>(in)),
-                            std::istreambuf_iterator<char>());
-        in.close();
-        CHECK(content.find("\"version\": 2") != std::string::npos);
-    }
-
-    // Load the v2 file and verify UUIDs/hierarchy/transforms/materials/camera.
-    DeterministicUuidProvider provider2;
-    SceneDocument doc2;
-    doc2.SetUuidProvider(&provider2);
-    Error loadErr2;
-    REQUIRE(SceneSerializer::Load(doc2, v2Path, loadErr2));
-    REQUIRE(loadErr2.IsOk());
-
-    std::set<UUID> uuidsAfter;
-    {
-        auto view = doc2.ecs.registry.view<EntityIdComponent>();
-        for (auto e : view)
-            uuidsAfter.insert(view.get<EntityIdComponent>(e).id);
-    }
-    CHECK(uuidsBefore == uuidsAfter);
-    CHECK(doc2.ecs.materials.size() == matCountBefore);
-    CHECK(doc2.ecs.camera.position.x == doctest::Approx(camPosBefore.x));
-    CHECK(doc2.ecs.camera.position.y == doctest::Approx(camPosBefore.y));
-    CHECK(doc2.ecs.camera.position.z == doctest::Approx(camPosBefore.z));
-
-    std::filesystem::remove(v1Path);
-    std::filesystem::remove(v2Path);
 }
 
-TEST_CASE("P1A Schema: malformed v2 importedSource reference produces error")
+TEST_CASE("P1A Schema: malformed v3 importedSource reference produces error")
 {
     auto path = WriteTempFile(R"({
-        "version": 2,
+        "version": 3,
         "entities": [
             {"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"Bad","parent":"","visible":true,
              "transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
@@ -200,7 +150,7 @@ TEST_CASE("P1A Schema: malformed v2 importedSource reference produces error")
 TEST_CASE("P1A Schema: malformed importedSource missing path")
 {
     auto path = WriteTempFile(R"({
-        "version": 2,
+        "version": 3,
         "entities": [
             {"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"Bad","parent":"","visible":true,
              "transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
@@ -220,7 +170,7 @@ TEST_CASE("P1A Schema: malformed importedSource missing path")
     std::filesystem::remove(path);
 }
 
-TEST_CASE("P1A Schema: deterministic v2 saves are byte-identical")
+TEST_CASE("P1A Schema: deterministic v3 saves are byte-identical")
 {
     DeterministicUuidProvider provider;
     SceneDocument src;
@@ -274,7 +224,7 @@ TEST_CASE("P1A Fixture: generate tiny textured GLB")
     CHECK(std::filesystem::exists(glbPath));
 }
 
-TEST_CASE("P1A RoundTrip: glTF import -> save v2 -> load + resolve")
+TEST_CASE("P1A RoundTrip: glTF import -> save v3 -> load + resolve")
 {
     auto glbPath = FixtureDir() / "tiny_textured.glb";
     if (!std::filesystem::exists(glbPath))
@@ -323,7 +273,7 @@ TEST_CASE("P1A RoundTrip: glTF import -> save v2 -> load + resolve")
         std::string content((std::istreambuf_iterator<char>(in)),
                             std::istreambuf_iterator<char>());
         in.close();
-        CHECK(content.find("\"version\": 2") != std::string::npos);
+        CHECK(content.find("\"version\": 3") != std::string::npos);
         CHECK(content.find("tiny_textured.glb") != std::string::npos);
         CHECK(content.find("\"importedSource\"") != std::string::npos);
     }
@@ -647,7 +597,7 @@ TEST_CASE("P1A Transactionality: duplicate-UUID load into temp preserves live do
     // temp is cleared but the live document (loaded into a separate temp)
     // must remain intact.
     auto path = WriteTempFile(R"({
-        "version": 2,
+        "version": 3,
         "entities": [
             {"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"A","parent":"","visible":true,
              "transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}},
@@ -692,7 +642,7 @@ TEST_CASE("P1A Transactionality: missing-parent load into temp preserves live do
     // resolution), after entities are created in the temp. The temp is
     // cleared, but the live document must survive.
     auto path = WriteTempFile(R"({
-        "version": 2,
+        "version": 3,
         "entities": [
             {"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"Orphan","parent":"660e8400-e29b-41d4-a716-446655440001","visible":true,
              "transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}}
@@ -740,7 +690,7 @@ TEST_CASE("P1A Transactionality: resolution failure into temp preserves live doc
     // A .rt2scene that references a missing model — every imported entity is
     // unresolvable, so ResolveAll returns false.
     auto path = WriteTempFile(R"({
-        "version": 2,
+        "version": 3,
         "entities": [
             {"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"Missing","parent":"","visible":true,
              "transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
@@ -970,7 +920,7 @@ TEST_CASE("P1A RuntimeBoundary: Play/Stop clone preserves imported mesh registry
 //      dependency, RT2SliceRunner would fail to link.)
 // ----------------------------------------------------------------------------
 
-TEST_CASE("P1A CpuOnly: vertical-slice fixture still round-trips under v2")
+TEST_CASE("P1A CpuOnly: vertical-slice fixture still round-trips under v3")
 {
     auto path = std::filesystem::current_path() / "RT2App" / "assets" /
                 "vertical-slice.rt2scene";
