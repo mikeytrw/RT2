@@ -4,23 +4,22 @@
 #define RT2_CORE_SCENE_SERIALIZER_H
 
 #include "SceneDocument.h"
+#include "ScriptFieldReconcile.h"
 #include "core/Error.h"
 #include "core/UUID.h"
 
 #include <filesystem>
 #include <string>
+#include <vector>
 
 // ============================================================================
-// SceneSerializer — native .rt2scene JSON format (schema version 2).
+// SceneSerializer — native .rt2scene JSON format (schema version 3).
 //
 // Operates on SceneDocument (not bare ECSScene) so it can persist the
 // environment map path, scene metadata, and UUID index alongside ECS data.
 //
-// Schema version 2 (Phase 1A — asset-backed native scene round-trip):
-//   - Reads v1 primitive-only scenes and migrates them in memory to the v2
-//     representation without changing entity UUIDs, hierarchy UUID
-//     references, transforms, material identity, or camera.
-//   - Saves all scenes as v2.
+// Schema version 3 (Phase 6B W3 — typed Lua field persistence):
+//   - Reads and writes v3 only. v1/v2 are rejected deliberately.
 //   - Serializes durable asset references (ImportedMeshSourceComponent) and
 //     authored material overrides (MaterialOverrideComponent). Does NOT
 //     serialize decoded vertex buffers, pixel data, GPU handles, or
@@ -30,11 +29,11 @@
 //   - Primitive meshes (PrimitiveComponent) remain directly serializable.
 //   - Paths are stored as portable, scene-relative UTF-8 where possible.
 //
-// Components serialized (v2):
+// Components serialized (v3):
 //   EntityIdComponent, NameComponent, Transform, Hierarchy (parent UUID),
 //   VisibleComponent, MeshRef (materialIndex only; meshIndex is transient),
 //   PrimitiveComponent, LightComponent, CameraComponent, MotionComponent,
-//   ImportedMeshSourceComponent, MaterialOverrideComponent.
+//   ImportedMeshSourceComponent, MaterialOverrideComponent, ScriptComponent.
 //
 // Save:
 //   - Atomic: write to path + ".tmp", then ReplaceFileW/MoveFileExW.
@@ -49,9 +48,8 @@
 //   - Transactional: parse into a temporary document; only on success does
 //     the caller swap it in as the live authoring scene. A parse/schema
 //     failure cannot corrupt the live scene.
-//   - Schema version check: v1 and v2 are accepted. v1 is migrated in
-//     memory to v2 (no UUID/transform/material changes). Unsupported
-//     versions fail with Error{SchemaVersion}.
+//   - Schema version check: only v3 is accepted; every other version fails
+//     with Error{SchemaVersion}.
 //   - Does NOT resolve external assets; the caller runs SceneAssetResolver
 //     after a successful load to rebuild meshes/textures/environment.
 //
@@ -65,12 +63,20 @@
 
 namespace rt2::core {
 
+struct SceneLoadReport
+{
+    std::vector<FieldDiagnostic> fieldDiagnostics;
+    bool normalizedScriptMetadata = false;
+    bool normalizedScriptFieldData = false;
+    bool droppedScriptFieldData = false;
+};
+
 class SceneSerializer
 {
 public:
     // Save a document to a .rt2scene file. Atomic on Windows via
     // ReplaceFileW/MoveFileExW. On failure, leaves the existing file intact.
-    // Saves as schema v2. Paths in asset references are relativized against
+    // Saves as schema v3. Paths in asset references are rebased against
     // the save `path`'s parent directory where possible.
     static bool Save(const SceneDocument& doc, const std::filesystem::path& path, Error& err);
 
@@ -84,12 +90,16 @@ public:
                        const std::filesystem::path& logicalScenePath,
                        Error& err);
 
-    // Load a .rt2scene file into a document. The document is cleared first;
-    // on failure, the document is left in a cleared state (not partially
-    // filled). Uses the document's injected UUID provider for any new IDs.
-    // Accepts v1 and v2; v1 is migrated to v2 in memory. Does NOT resolve
+    // Load a v3 .rt2scene transactionally. The destination is replaced only
+    // after every parse/build pass succeeds and is unchanged on failure.
+    // Does NOT resolve
     // external assets — call SceneAssetResolver::ResolveAll afterward.
     static bool Load(SceneDocument& doc, const std::filesystem::path& path, Error& err);
+
+    // Production load path with non-fatal script-field diagnostics. Structural
+    // scene/component failures still return false and preserve the destination.
+    static bool Load(SceneDocument& doc, const std::filesystem::path& path,
+                     SceneLoadReport& report, Error& err);
 
     // Deep-clone a document in memory. Reuses the same two-pass component
     // visitor as Load so persistence and Play share coverage by construction.
@@ -99,9 +109,9 @@ public:
     static bool CloneInMemory(const SceneDocument& src, SceneDocument& dst, Error& err);
 
     // Current schema version (written by Save).
-    static constexpr uint32_t SchemaVersion = 2;
-    // Lowest schema version that Save will accept as input for migration.
-    static constexpr uint32_t MinReadVersion = 1;
+    static constexpr uint32_t SchemaVersion = 3;
+    // Lowest readable schema version (equal to SchemaVersion by hard cutover).
+    static constexpr uint32_t MinReadVersion = 3;
 };
 
 } // namespace rt2::core

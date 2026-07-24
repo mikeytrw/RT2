@@ -275,15 +275,11 @@ struct MaterialOverrideComponent
 // free of Lua state, exactly as SceneDocument.h documents ("script VM state"
 // is explicitly NOT part of the document).
 //
-// The fieldValues map is the seam Phase 6B fills: the script's `rt2.fields`
-// DSL declares fields with types and defaults; the inspector edits
-// fieldValues; the serializer persists them; the runtime clone carries them
-// into the per-entity sol2 environment as `self` on OnCreate.
-//
-// Phase 6A: ScriptComponent is declared and registered in
-// PersistedComponents (Count 10->11) so cloning + the serializer visitor
-// account for it, but fieldValues is empty and unused. The live Lua state is
-// what 6A proves; persistence of fieldValues is 6B.
+// The fieldValues map is the Phase 6B seam: the script's `rt2.fields` DSL
+// declares types/defaults, W2 reconciles authored values against those
+// declarations, and the runtime clone injects the typed values into the
+// per-entity sol2 environment as `self`. W3 adds the on-disk v3 form and W5
+// adds inspector editing; no Lua objects ever enter the document.
 // ============================================================================
 
 struct ScriptComponent
@@ -295,9 +291,9 @@ struct ScriptComponent
     AssetReference asset;
 
     // User-authored public field values, keyed by the field name declared in
-    // the script's rt2.fields block. Phase 6B populates this from the
-    // inspector and the serializer; Phase 6A leaves it empty.
-    std::unordered_map<std::string, rt2::core::ScriptFieldValue> fieldValues;
+    // the script's rt2.fields block. The explicit tag preserves distinctions
+    // such as vec3 versus color even though they share a variant payload arm.
+    rt2::core::ScriptFieldMap fieldValues;
 };
 
 #endif // ECS_COMPONENTS_H

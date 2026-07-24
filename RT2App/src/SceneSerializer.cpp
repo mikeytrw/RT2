@@ -5,6 +5,7 @@
 #include "RTLog.h"
 #include "SceneHierarchy.h"
 #include "PersistedComponents.h"
+#include "ScriptComponentValidation.h"
 
 #include "json.hpp"
 
@@ -12,8 +13,12 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <limits>
+#include <optional>
 #include <sstream>
 #include <vector>
 #include <set>
@@ -184,6 +189,7 @@ const char* AssetKindName(AssetKind k)
         case AssetKind::Model:       return "model";
         case AssetKind::Texture:     return "texture";
         case AssetKind::Environment: return "environment";
+        case AssetKind::Script:      return "script";
         default:                     return "unknown";
     }
 }
@@ -193,6 +199,7 @@ AssetKind AssetKindFromName(const std::string& s)
     if (s == "model")       return AssetKind::Model;
     if (s == "texture")     return AssetKind::Texture;
     if (s == "environment") return AssetKind::Environment;
+    if (s == "script")      return AssetKind::Script;
     return AssetKind::Unknown;
 }
 
@@ -230,22 +237,167 @@ AssetReference JsonToAssetReference(const json& j, Error& err)
 // Relativize an absolute or relative path against the .rt2scene directory.
 // Stores a portable UTF-8 path with forward slashes. If the path cannot be
 // made relative (different drive on Windows), stores it as-is.
-std::string RelativizePath(const std::string& stored, const std::filesystem::path& sceneDir)
+std::string RebasePath(const std::string& stored,
+                       const std::filesystem::path& currentSceneDir,
+                       const std::filesystem::path& outputSceneDir)
 {
     if (stored.empty()) return {};
     std::error_code ec;
     std::filesystem::path p(stored);
-    p.make_preferred();
+    p = p.lexically_normal();
     if (!p.is_absolute())
     {
         // Already relative — normalize separators and return.
-        std::string s = p.generic_string();
-        return s;
+        if (currentSceneDir.empty()) return p.generic_string();
+        const auto combined = currentSceneDir / p;
+        p = std::filesystem::absolute(combined, ec);
+        if (ec) p = combined.lexically_normal();
     }
-    std::filesystem::path rel = std::filesystem::relative(p, sceneDir, ec);
-    if (ec || rel.empty())
+    if (outputSceneDir.empty()) return p.generic_string();
+    std::filesystem::path base = outputSceneDir.lexically_normal();
+    if (!base.is_absolute())
+    {
+        ec.clear();
+        const auto absoluteBase = std::filesystem::absolute(base, ec);
+        if (!ec) base = absoluteBase;
+    }
+    const std::filesystem::path rel = p.lexically_relative(base);
+    if (rel.empty())
         return p.generic_string(); // fallback: keep absolute portable form
-    return rel.generic_string();
+    return rel.lexically_normal().generic_string();
+}
+
+bool ScriptFieldTypeFromName(const std::string& name, ScriptFieldType& out)
+{
+    for (size_t i = 0; i < ScriptFieldTypeNames.size(); ++i)
+    {
+        if (name != ScriptFieldTypeNames[i]) continue;
+        out = static_cast<ScriptFieldType>(i);
+        return true;
+    }
+    return false;
+}
+
+json ScriptFieldValueToJson(const ScriptFieldEntry& entry)
+{
+    switch (entry.type)
+    {
+    case ScriptFieldType::Bool:   return std::get<bool>(entry.value);
+    case ScriptFieldType::Int:    return std::get<int64_t>(entry.value);
+    case ScriptFieldType::Float:  return std::get<double>(entry.value);
+    case ScriptFieldType::String: return std::get<std::string>(entry.value);
+    case ScriptFieldType::Uuid:   return std::get<UUID>(entry.value).ToString();
+    case ScriptFieldType::Vec3:
+    case ScriptFieldType::Color:  return Vec3ToJson(std::get<glm::vec3>(entry.value));
+    }
+    return nullptr;
+}
+
+bool JsonNumberToFiniteDouble(const json& value, double& out)
+{
+    if (!value.is_number()) return false;
+    out = value.get<double>();
+    return std::isfinite(out);
+}
+
+bool JsonToScriptFieldEntry(const json& serialized,
+                            ScriptFieldEntry& out,
+                            FieldDiagnostic::Kind& failureKind,
+                            std::string& detail,
+                            bool& normalized)
+{
+    normalized = false;
+    failureKind = FieldDiagnostic::Kind::MalformedSerializedValue;
+    if (!serialized.is_object() || !serialized.contains("type") ||
+        !serialized["type"].is_string() || !serialized.contains("value"))
+    {
+        detail = "field entry must contain a string type and value";
+        return false;
+    }
+
+    const std::string typeName = serialized["type"].get<std::string>();
+    if (!ScriptFieldTypeFromName(typeName, out.type))
+    {
+        failureKind = FieldDiagnostic::Kind::UnknownSerializedType;
+        detail = "unknown serialized script field type '" + typeName + "'";
+        return false;
+    }
+
+    const auto& value = serialized["value"];
+    switch (out.type)
+    {
+    case ScriptFieldType::Bool:
+        if (value.is_boolean()) { out.value = value.get<bool>(); return true; }
+        break;
+    case ScriptFieldType::Int:
+        if (value.is_number_unsigned())
+        {
+            const uint64_t number = value.get<uint64_t>();
+            if (number <= static_cast<uint64_t>((std::numeric_limits<int64_t>::max)()))
+            {
+                out.value = static_cast<int64_t>(number);
+                return true;
+            }
+        }
+        else if (value.is_number_integer())
+        {
+            out.value = value.get<int64_t>();
+            return true;
+        }
+        break;
+    case ScriptFieldType::Float:
+    {
+        double number = 0.0;
+        if (JsonNumberToFiniteDouble(value, number))
+        {
+            out.value = number;
+            return true;
+        }
+        break;
+    }
+    case ScriptFieldType::String:
+        if (value.is_string()) { out.value = value.get<std::string>(); return true; }
+        break;
+    case ScriptFieldType::Uuid:
+        if (value.is_string())
+        {
+            const std::string text = value.get<std::string>();
+            const UUID parsed = UUID::Parse(text);
+            std::string folded = text;
+            std::transform(folded.begin(), folded.end(), folded.begin(),
+                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            const std::string canonical = parsed.ToString();
+            if (text.size() == 36 && canonical == folded)
+            {
+                out.value = parsed;
+                normalized = canonical != text;
+                return true;
+            }
+        }
+        break;
+    case ScriptFieldType::Vec3:
+    case ScriptFieldType::Color:
+        if (value.is_array() && value.size() == 3)
+        {
+            double x = 0.0, y = 0.0, z = 0.0;
+            if (JsonNumberToFiniteDouble(value[0], x) &&
+                JsonNumberToFiniteDouble(value[1], y) &&
+                JsonNumberToFiniteDouble(value[2], z) &&
+                std::abs(x) <= (std::numeric_limits<float>::max)() &&
+                std::abs(y) <= (std::numeric_limits<float>::max)() &&
+                std::abs(z) <= (std::numeric_limits<float>::max)())
+            {
+                out.value = glm::vec3(static_cast<float>(x),
+                                      static_cast<float>(y),
+                                      static_cast<float>(z));
+                return true;
+            }
+        }
+        break;
+    }
+
+    detail = "serialized value does not match type '" + typeName + "'";
+    return false;
 }
 
 struct SerializedEntity
@@ -288,9 +440,8 @@ struct EntityRecord
 
     // Phase 6: script component. 6A carries it through clone-in-memory so
     // Play preserves ScriptComponent. 6B adds the v3 serialization (asset
-    // path + fieldValues); 6A does NOT serialize it to disk (the v2 writer
-    // skips it, the v2 reader leaves it absent). CloneInMemory uses the
-    // in-memory EntityRecord path, so the component survives Play/Stop.
+    // path + typed fieldValues) and CloneInMemory uses the same in-memory
+    // EntityRecord path, so the component also survives Play/Stop.
     bool hasScript = false;
     ScriptComponent script{};
 };
@@ -382,8 +533,7 @@ EntityRecord BuildEntityRecord(const entt::registry& reg, entt::entity e, const 
     }
 
     // Phase 6: carry ScriptComponent through the in-memory clone path. 6A
-    // does not serialize it to disk (the v2 writer/reader skip it); 6B adds
-    // v3 serialization with asset path + fieldValues.
+    // serializes it in v3 with its asset path and typed fieldValues.
     if (auto* sc = reg.try_get<ScriptComponent>(e))
     {
         r.hasScript = true;
@@ -393,7 +543,11 @@ EntityRecord BuildEntityRecord(const entt::registry& reg, entt::entity e, const 
     return r;
 }
 
-json EntityRecordToJson(const EntityRecord& r, const std::filesystem::path& sceneDir)
+std::optional<json> EntityRecordToJson(
+                        const EntityRecord& r,
+                        const std::filesystem::path& currentSceneDir,
+                        const std::filesystem::path& outputSceneDir,
+                        Error& err)
 {
     json j;
     j["uuid"]       = r.uuid.ToString();
@@ -429,7 +583,7 @@ json EntityRecordToJson(const EntityRecord& r, const std::filesystem::path& scen
     if (r.hasImportedSource)
     {
         AssetReference relRef = r.importedSource.model;
-        relRef.path = RelativizePath(relRef.path, sceneDir);
+        relRef.path = RebasePath(relRef.path, currentSceneDir, outputSceneDir);
         j["importedSource"] = AssetReferenceToJson(relRef);
     }
 
@@ -471,11 +625,60 @@ json EntityRecordToJson(const EntityRecord& r, const std::filesystem::path& scen
         j["motion"] = m;
     }
 
+    if (r.hasScript)
+    {
+        ScriptComponent canonical;
+        std::string detail;
+        std::string field;
+        if (!NormalizeAndValidateScriptComponent(
+                r.script, canonical, detail, &field))
+        {
+            err.code = Error::InvalidArgument;
+            err.path = r.uuid.ToString();
+            if (!field.empty()) err.path += ":" + field;
+            err.detail = "invalid ScriptComponent while writing entity: " + detail;
+            return std::nullopt;
+        }
+
+        const std::string serializedPath = RebasePath(
+            canonical.asset.path, currentSceneDir, outputSceneDir);
+        json asset;
+        asset["kind"] = "script";
+        asset["path"] = serializedPath;
+        asset["sourceKey"] = serializedPath.empty()
+                           ? std::string{}
+                           : "lua:asset=" + serializedPath;
+
+        json fields = json::object();
+        std::vector<std::string> names;
+        names.reserve(canonical.fieldValues.size());
+        for (const auto& [name, value] : canonical.fieldValues)
+        {
+            (void)value;
+            names.push_back(name);
+        }
+        std::sort(names.begin(), names.end());
+        for (const auto& name : names)
+        {
+            const auto& entry = canonical.fieldValues.at(name);
+            json serialized;
+            serialized["type"] = ScriptFieldTypeName(entry.type);
+            serialized["value"] = ScriptFieldValueToJson(entry);
+            fields[name] = std::move(serialized);
+        }
+
+        json script;
+        script["asset"] = std::move(asset);
+        script["fields"] = std::move(fields);
+        j["script"] = std::move(script);
+    }
+
     return j;
 }
 
 // Parse an entity from JSON into a record (pass 1 — no entity creation yet).
-EntityRecord JsonToEntityRecord(const json& j, Error& err)
+EntityRecord JsonToEntityRecord(const json& j, Error& err,
+                                SceneLoadReport* report)
 {
     EntityRecord r;
 
@@ -594,6 +797,119 @@ EntityRecord JsonToEntityRecord(const json& j, Error& err)
         r.hasMotion = true;
         const auto& m = j["motion"];
         if (m.contains("velocity")) r.motion.linearVelocity = JsonToVec3(m["velocity"]);
+    }
+
+    if (j.contains("script"))
+    {
+        const auto& script = j["script"];
+        if (!script.is_object() || !script.contains("asset") ||
+            !script["asset"].is_object())
+        {
+            err.code = Error::Parse;
+            err.path = r.uuid.ToString();
+            err.detail = "script must contain an asset object";
+            return r;
+        }
+
+        const auto& asset = script["asset"];
+        if (!asset.contains("kind") || !asset["kind"].is_string() ||
+            !asset.contains("path") || !asset["path"].is_string() ||
+            !asset.contains("sourceKey") || !asset["sourceKey"].is_string())
+        {
+            err.code = Error::Parse;
+            err.path = r.uuid.ToString();
+            err.detail = "script asset requires string kind, path, and sourceKey";
+            return r;
+        }
+        if (asset["kind"].get<std::string>() != "script")
+        {
+            err.code = Error::Parse;
+            err.path = r.uuid.ToString();
+            err.detail = "ScriptComponent asset kind must be script";
+            return r;
+        }
+        if (script.contains("fields") && !script["fields"].is_object())
+        {
+            err.code = Error::Parse;
+            err.path = r.uuid.ToString();
+            err.detail = "script fields must be an object";
+            return r;
+        }
+
+        r.hasScript = true;
+        r.script.asset.kind = AssetKind::Script;
+        r.script.asset.path = asset["path"].get<std::string>();
+        const std::string storedSourceKey = asset["sourceKey"].get<std::string>();
+        const std::string canonicalSourceKey = r.script.asset.path.empty()
+                                             ? std::string{}
+                                             : "lua:asset=" + r.script.asset.path;
+        const json emptyFields = json::object();
+        const json& fields = script.contains("fields")
+                           ? script["fields"] : emptyFields;
+        if (r.script.asset.path.empty() &&
+            (!storedSourceKey.empty() || !fields.empty()))
+        {
+            err.code = Error::Parse;
+            err.path = r.uuid.ToString();
+            err.detail = "an unbound script must have an empty sourceKey and fields";
+            return r;
+        }
+
+        r.script.asset.sourceKey = canonicalSourceKey;
+        if (storedSourceKey != canonicalSourceKey && report)
+        {
+            report->normalizedScriptMetadata = true;
+            FieldDiagnostic diagnostic;
+            diagnostic.kind = FieldDiagnostic::Kind::NormalizedScriptSourceKey;
+            diagnostic.entity = r.uuid;
+            diagnostic.message = "entity " + r.uuid.ToString() +
+                " script sourceKey was regenerated from its path";
+            report->fieldDiagnostics.push_back(std::move(diagnostic));
+        }
+
+        for (auto it = fields.begin(); it != fields.end(); ++it)
+        {
+            ScriptFieldEntry entry;
+            FieldDiagnostic::Kind failureKind;
+            std::string detail;
+            bool normalized = false;
+            if (!IsValidScriptFieldName(it.key()))
+            {
+                failureKind = FieldDiagnostic::Kind::MalformedSerializedValue;
+                detail = it.key().empty()
+                       ? "field name must not be empty"
+                       : "field name must be valid UTF-8";
+            }
+            else if (JsonToScriptFieldEntry(
+                         it.value(), entry, failureKind, detail, normalized))
+            {
+                r.script.fieldValues.emplace(it.key(), std::move(entry));
+                if (normalized && report)
+                {
+                    report->normalizedScriptFieldData = true;
+                    FieldDiagnostic diagnostic;
+                    diagnostic.kind = FieldDiagnostic::Kind::NormalizedSerializedUuid;
+                    diagnostic.entity = r.uuid;
+                    diagnostic.field = it.key();
+                    diagnostic.message = "entity " + r.uuid.ToString() +
+                        " field '" + it.key() + "' UUID text was normalized";
+                    report->fieldDiagnostics.push_back(std::move(diagnostic));
+                }
+                continue;
+            }
+
+            if (report)
+            {
+                report->droppedScriptFieldData = true;
+                FieldDiagnostic diagnostic;
+                diagnostic.kind = failureKind;
+                diagnostic.entity = r.uuid;
+                diagnostic.field = it.key();
+                diagnostic.message = "entity " + r.uuid.ToString() +
+                    " field '" + it.key() + "' was dropped: " + detail;
+                report->fieldDiagnostics.push_back(std::move(diagnostic));
+            }
+        }
     }
 
     return r;
@@ -750,11 +1066,7 @@ bool BuildDocumentFromRecords(SceneDocument& doc,
         if (r.hasMotion)
             doc.ecs.registry.emplace<MotionComponent>(e, r.motion);
 
-        // Phase 6: script component. Carried through the in-memory clone
-        // path (CloneInMemory and the runtime Play clone). 6A does NOT
-        // serialize it to disk in v2; 6B adds v3 serialization. The on-disk
-        // path (JsonToEntityRecord) never sets hasScript, so a load from
-        // disk never emplaces a ScriptComponent here.
+        // Script component shared by v3 load and the in-memory Play clone.
         if (r.hasScript)
             doc.ecs.registry.emplace<ScriptComponent>(e, r.script);
     }
@@ -833,9 +1145,10 @@ std::vector<EntityRecord> CollectRecords(const SceneDocument& doc)
 // Pre-save validation + atomic replace are shared by Save and SaveTo.
 static bool SaveInternal(const SceneDocument& doc,
                          const std::filesystem::path& outPath,
-                         const std::filesystem::path& sceneDir,
+                         const std::filesystem::path& outputSceneDir,
                          Error& err)
 {
+    err = Error{};
     // Pre-save validation: every entity with a MeshRef must have either a
     // PrimitiveComponent (procedural) or an ImportedMeshSourceComponent
     // (durable asset reference). Entities with neither cannot reopen —
@@ -874,6 +1187,38 @@ static bool SaveInternal(const SceneDocument& doc,
         }
     }
 
+    // Script components are validated before the temp file is opened. The
+    // helper canonicalizes redundant sourceKey data in a copy, so a stale key
+    // never mutates the live authoring document and never makes it unsaveable.
+    {
+        const auto& reg = doc.ecs.registry;
+        auto view = reg.view<ScriptComponent>();
+        for (const auto entity : view)
+        {
+            ScriptComponent canonical;
+            std::string detail;
+            std::string field;
+            if (NormalizeAndValidateScriptComponent(
+                    view.get<ScriptComponent>(entity), canonical, detail, &field))
+                continue;
+
+            err.code = Error::InvalidArgument;
+            if (const auto* id = reg.try_get<EntityIdComponent>(entity))
+                err.path = id->id.ToString();
+            else
+                err.path = "registry-entity:" +
+                    std::to_string(entt::to_integral(entity));
+            if (!field.empty()) err.path += ":" + field;
+            err.detail = "invalid ScriptComponent: " + detail;
+            return false;
+        }
+    }
+
+    const std::filesystem::path currentSceneDir =
+        doc.metadata.sourcePath.empty()
+            ? std::filesystem::path{}
+            : doc.metadata.sourcePath.parent_path();
+
     // Build the JSON document.
     json root;
     root["version"] = SceneSerializer::SchemaVersion;
@@ -881,7 +1226,6 @@ static bool SaveInternal(const SceneDocument& doc,
     // Metadata
     {
         json meta;
-        meta["sourcePath"] = doc.metadata.sourcePath.string();
         meta["name"]       = doc.metadata.name;
         root["metadata"]   = meta;
     }
@@ -890,7 +1234,12 @@ static bool SaveInternal(const SceneDocument& doc,
     auto records = CollectRecords(doc);
     json entitiesArray = json::array();
     for (const auto& r : records)
-        entitiesArray.push_back(EntityRecordToJson(r, sceneDir));
+    {
+        auto serialized = EntityRecordToJson(
+            r, currentSceneDir, outputSceneDir, err);
+        if (!serialized) return false;
+        entitiesArray.push_back(std::move(*serialized));
+    }
     root["entities"] = entitiesArray;
 
     // Materials
@@ -910,14 +1259,27 @@ static bool SaveInternal(const SceneDocument& doc,
     // Environment (path only; relativize against scene dir)
     {
         json env;
-        env["path"]   = RelativizePath(doc.environment.path, sceneDir);
+        env["path"]   = RebasePath(doc.environment.path,
+                                    currentSceneDir, outputSceneDir);
         env["width"]  = doc.environment.width;
         env["height"] = doc.environment.height;
         root["envMap"] = env;
     }
 
     // Serialize with sorted keys and fixed precision for deterministic output.
-    std::string content = root.dump(2);
+    std::string content;
+    try
+    {
+        content = root.dump(2);
+    }
+    catch (const std::exception& e)
+    {
+        err.code = Error::InvalidArgument;
+        err.path = outPath.string();
+        err.detail = std::string("scene contains text that cannot be serialized: ") +
+                     e.what();
+        return false;
+    }
 
     // --- Atomic save ---
     // Write to a temp sibling file, then atomically replace the target.
@@ -1027,6 +1389,15 @@ bool SceneSerializer::SaveTo(const SceneDocument& doc,
 
 bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path, Error& err)
 {
+    SceneLoadReport ignored;
+    return Load(doc, path, ignored, err);
+}
+
+bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path,
+                           SceneLoadReport& report, Error& err)
+{
+    err = Error{};
+    report = SceneLoadReport{};
     // Read the file.
     std::ifstream in(path, std::ios::binary);
     if (!in)
@@ -1054,11 +1425,7 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
         return false;
     }
 
-    // Schema version check. v1 and v2 are accepted; v1 is migrated in memory
-    // to v2 (no UUID/transform/material changes). v1 scenes are primitive-
-    // only and carry no asset references, so they load identically under
-    // v2 semantics — the only difference is the version field written back
-    // on save.
+    // W3 is a deliberate hard cutover: only schema version 3 is readable.
     if (!root.contains("version") || !root["version"].is_number_unsigned())
     {
         err.code = Error::Parse;
@@ -1067,26 +1434,21 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
         return false;
     }
     uint32_t version = root["version"].get<uint32_t>();
-    if (version < MinReadVersion || version > SchemaVersion)
+    if (version != SchemaVersion)
     {
         err.code = Error::SchemaVersion;
         err.path = path.string();
         err.detail = "unsupported schema version " + std::to_string(version) +
-                     " (supported " + std::to_string(MinReadVersion) + ".." +
-                     std::to_string(SchemaVersion) + ")";
+                     " (supported " + std::to_string(SchemaVersion) + ")";
         return false;
     }
-    // Treat v1 as v2 for in-memory construction. The serialized output is
-    // always v2 (see Save), so v1 inputs are migrated on save.
-    const uint32_t effectiveVersion = SchemaVersion;
-
     // Parse entities into records (pass 0 — no entity creation).
     std::vector<EntityRecord> records;
     if (root.contains("entities") && root["entities"].is_array())
     {
         for (const auto& ej : root["entities"])
         {
-            EntityRecord r = JsonToEntityRecord(ej, err);
+            EntityRecord r = JsonToEntityRecord(ej, err, &report);
             if (!err.IsOk())
             {
                 err.path = path.string();
@@ -1120,28 +1482,23 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
     }
 
     // Parse metadata.
-    std::filesystem::path sourcePath = path;
     std::string sceneName;
     if (root.contains("metadata"))
     {
         const auto& mj = root["metadata"];
-        if (mj.contains("sourcePath")) sourcePath = mj["sourcePath"].get<std::string>();
         if (mj.contains("name"))       sceneName  = mj["name"].get<std::string>();
     }
 
-    // Build the document into a temporary first, then swap on success.
-    // Since `doc` is already cleared by the caller, we build directly into
-    // it. On failure, we clear it to avoid partial state.
-    doc.Clear();
-
-    if (!BuildDocumentFromRecords(doc, records, materials, camera, env,
-                                  effectiveVersion, sourcePath, err))
-    {
-        doc.Clear();
+    // Build into a temporary and adopt only after every pass succeeds. This
+    // keeps an already-populated destination byte-for-byte intact on failure.
+    SceneDocument temp;
+    temp.SetUuidProvider(doc.GetUuidProvider());
+    if (!BuildDocumentFromRecords(temp, records, materials, camera, env,
+                                  version, path, err))
         return false;
-    }
 
-    doc.metadata.name = sceneName;
+    temp.metadata.name = sceneName;
+    doc = std::move(temp);
     return true;
 }
 

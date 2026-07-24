@@ -18,9 +18,13 @@
 // Two entry points, both clearing redo only on a successful, effective
 // submission:
 //   - Execute(cmd): applies cmd, then records it. A failed Execute leaves
-//     both stacks unchanged.
+//     both stacks unchanged. A successful but ineffective Execute (the
+//     manager suppressed a canonical no-op, reported via
+//     EditorMutationResult::effective == false) also leaves both stacks
+//     unchanged and does not clear redo.
 //   - RecordApplied(cmd): records a command whose effect was already applied
 //     incrementally (continuous edits / gizmo drags). Does not re-apply.
+//     A successful but ineffective appliedResult is not recorded.
 //
 // Document-generation guard: Execute, RecordApplied, Undo, and Redo all
 // compare the stored DocumentGeneration against the SceneManager's current
@@ -51,14 +55,17 @@ public:
 	std::size_t GetCapacity() const { return m_Capacity; }
 
 	// Apply cmd to scene and record it. A failed Execute leaves both stacks
-	// unchanged. A successful, effective submission clears the redo stack.
+	// unchanged. A successful but ineffective Execute (manager no-op) is not
+	// recorded and does not clear redo. A successful, effective submission
+	// clears the redo stack.
 	EditorMutationResult Execute(std::unique_ptr<IEditorCommand> cmd,
 	                             SceneManager& scene);
 
 	// Record a command whose effect was already applied. Does not re-apply.
 	// Records only if the command's intended mutation is "effective" (caller
-	// passes the already-applied result; an unsuccessful result is not
-	// recorded). A successful, effective submission clears the redo stack.
+	// passes the already-applied result; an unsuccessful or ineffective result
+	// is not recorded). A successful, effective submission clears the redo
+	// stack.
 	EditorMutationResult RecordApplied(std::unique_ptr<IEditorCommand> cmd,
 	                                   SceneManager& scene,
 	                                   const EditorMutationResult& appliedResult);

@@ -4,6 +4,7 @@
 #define RT2_CORE_IRUNTIME_COMMAND_SINK_H
 
 #include "RuntimeSceneMutator.h"   // RuntimeEntityCreateDesc
+#include "SceneRunState.h"         // SceneRunState
 #include "TransformEditing.h"      // EditableTRS
 #include "core/Error.h"
 #include "core/UUID.h"
@@ -96,6 +97,24 @@ public:
     virtual bool GetVisible(const UUID& uuid, bool& out) const = 0;
     virtual bool SetVisible(const UUID& uuid, bool visible) = 0;
 
+    // ---- entity.* light/camera/material (Phase 6C) ----------------------
+
+    // Light. Get returns false if the entity has no LightComponent. Set
+    // gates on IsRuntimeMutable. Writes the full component (6 fields).
+    virtual bool GetLight(const UUID& uuid, LightComponent& out) const = 0;
+    virtual bool SetLight(const UUID& uuid, const LightComponent& light) = 0;
+
+    // Camera. Get returns false if the entity has no CameraComponent. Set
+    // gates on IsRuntimeMutable. Writes the full component (4 fields,
+    // including forwardDirection).
+    virtual bool GetCamera(const UUID& uuid, CameraComponent& out) const = 0;
+    virtual bool SetCamera(const UUID& uuid, const CameraComponent& cam) = 0;
+
+    // Material index. Gates on IsRuntimeMutable. Returns false if the
+    // entity has no MeshRef. Rejects index < -1 or index >= materialCount
+    // (-1 is the "use per-triangle indices" sentinel).
+    virtual bool SetMaterialIndex(const UUID& uuid, int index) = 0;
+
     // ---- lookup ----------------------------------------------------------
 
     // Find by UUID. Returns true if the UUID resolves in the runtime
@@ -106,6 +125,17 @@ public:
     // Find by name. Returns the first matching UUID in UUID-sorted order,
     // or UUID::Nil() if none. Name lookup is O(n) over the registry.
     virtual UUID FindByName(const std::string& name) const = 0;
+
+    // ---- run-state query (Phase 6C) --------------------------------------
+
+    // The current run state. Used by ReloadScript to distinguish Playing
+    // (reload now) from Paused (queue) from Stopped (invalidate cache only).
+    // Delegates to RuntimeSceneController::GetState.
+    virtual SceneRunState GetRunState() const = 0;
+
+    // True when Playing or Paused and not mid-Stop. Delegates to
+    // RuntimeSceneController::IsRuntimeMutable (which checks m_Stopping).
+    virtual bool IsRuntimeMutable() const = 0;
 };
 
 } // namespace rt2::core

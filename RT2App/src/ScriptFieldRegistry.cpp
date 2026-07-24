@@ -5,6 +5,7 @@
 #include <sol/sol.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -136,24 +137,24 @@ bool ScriptFieldRegistry::ParseFile(const std::filesystem::path& path,
         return m;
     };
 
-    field["bool"] = [marker](sol::optional<bool> v,
+    field[ScriptFieldTypeName(ScriptFieldType::Bool)] = [marker](sol::optional<bool> v,
                              sol::optional<sol::table> opts) {
         return marker(ScriptFieldType::Bool, ScriptFieldValue{ v.value_or(false) }, opts);
     };
-    field["int"] = [marker](sol::optional<int64_t> v,
+    field[ScriptFieldTypeName(ScriptFieldType::Int)] = [marker](sol::optional<int64_t> v,
                             sol::optional<sol::table> opts) {
         return marker(ScriptFieldType::Int, ScriptFieldValue{ v.value_or(int64_t{0}) }, opts);
     };
-    field["float"] = [marker](sol::optional<double> v,
+    field[ScriptFieldTypeName(ScriptFieldType::Float)] = [marker](sol::optional<double> v,
                               sol::optional<sol::table> opts) {
         return marker(ScriptFieldType::Float, ScriptFieldValue{ v.value_or(0.0) }, opts);
     };
-    field["string"] = [marker](sol::optional<std::string> v,
+    field[ScriptFieldTypeName(ScriptFieldType::String)] = [marker](sol::optional<std::string> v,
                                sol::optional<sol::table> opts) {
         return marker(ScriptFieldType::String,
                       ScriptFieldValue{ v.value_or(std::string{}) }, opts);
     };
-    field["uuid"] = [marker](sol::optional<std::string> v,
+    field[ScriptFieldTypeName(ScriptFieldType::Uuid)] = [marker](sol::optional<std::string> v,
                              sol::optional<sol::table> opts) {
         // Default is the nil UUID, meaning "unset". Validation is
         // format-only: a script may legitimately reference an entity that
@@ -162,14 +163,14 @@ bool ScriptFieldRegistry::ParseFile(const std::filesystem::path& path,
         if (v && !v->empty()) u = UUID::Parse(*v);
         return marker(ScriptFieldType::Uuid, ScriptFieldValue{ u }, opts);
     };
-    field["vec3"] = [marker](sol::optional<double> x, sol::optional<double> y,
+    field[ScriptFieldTypeName(ScriptFieldType::Vec3)] = [marker](sol::optional<double> x, sol::optional<double> y,
                              sol::optional<double> z, sol::optional<sol::table> opts) {
         glm::vec3 v{ static_cast<float>(x.value_or(0.0)),
                      static_cast<float>(y.value_or(0.0)),
                      static_cast<float>(z.value_or(0.0)) };
         return marker(ScriptFieldType::Vec3, ScriptFieldValue{ v }, opts);
     };
-    field["color"] = [marker](sol::optional<double> r, sol::optional<double> g,
+    field[ScriptFieldTypeName(ScriptFieldType::Color)] = [marker](sol::optional<double> r, sol::optional<double> g,
                               sol::optional<double> b, sol::optional<sol::table> opts) {
         glm::vec3 v{ static_cast<float>(r.value_or(1.0)),
                      static_cast<float>(g.value_or(1.0)),
@@ -226,6 +227,7 @@ bool ScriptFieldRegistry::ParseFile(const std::filesystem::path& path,
     }
 
     sol::table fields = fieldsObj.as<sol::table>();
+    bool invalidFieldName = false;
     fields.for_each([&](sol::object key, sol::object value) {
         if (!key.is<std::string>() || !value.is<sol::table>())
             return;   // ignore array-style or non-declaration entries
@@ -240,14 +242,60 @@ bool ScriptFieldRegistry::ParseFile(const std::filesystem::path& path,
 
         // Copied, not moved: one declaration object may legally be bound to
         // more than one field name.
+        const std::string name = key.as<std::string>();
+        if (!IsValidScriptFieldName(name))
+        {
+            invalidFieldName = true;
+            diagnostic = name.empty()
+                       ? "`rt2.fields` contains an empty field name"
+                       : "`rt2.fields` contains a field name that is not valid UTF-8";
+            return;
+        }
+
         const PendingField& pf = (*pending)[idx];
         ScriptFieldDescriptor d;
-        d.name         = key.as<std::string>();
+        d.name         = name;
         d.type         = pf.type;
         d.defaultValue = pf.defaultValue;
         d.alias        = pf.alias;
         out.push_back(std::move(d));
     });
+
+    if (invalidFieldName)
+    {
+        out.clear();
+        return false;
+    }
+
+    for (const auto& descriptor : out)
+    {
+        bool valid = true;
+        switch (descriptor.type)
+        {
+        case ScriptFieldType::Float:
+            valid = std::isfinite(std::get<double>(descriptor.defaultValue));
+            break;
+        case ScriptFieldType::String:
+            valid = IsWellFormedUtf8(std::get<std::string>(descriptor.defaultValue));
+            break;
+        case ScriptFieldType::Vec3:
+        case ScriptFieldType::Color:
+        {
+            const auto& value = std::get<glm::vec3>(descriptor.defaultValue);
+            valid = std::isfinite(value.x) && std::isfinite(value.y) &&
+                    std::isfinite(value.z);
+            break;
+        }
+        default:
+            break;
+        }
+        if (valid) continue;
+
+        diagnostic = "field '" + descriptor.name +
+                     "' has a default that cannot be persisted";
+        out.clear();
+        return false;
+    }
 
     // D2: Lua table iteration is unordered, which would reshuffle the
     // inspector between frames. Sort by name for a deterministic layout.
@@ -295,17 +343,31 @@ ScriptFieldRegistry::GetDeclaredFields(const std::filesystem::path& path)
         }
     }
 
-    // Read the source up front and hash it. (mtime, size) alone is not a
-    // sound invalidation key: filesystem timestamp granularity is coarse
-    // enough that a same-length in-place edit within one clock tick — a
-    // formatter rewriting 5.0 -> 9.0, say — would be served stale forever.
-    // Hashing costs one pass over a file we must read to parse anyway, and
-    // it makes 6C's file watcher correct by construction.
+    // Fast-path: if the cache has an entry and (mtime, size) are unchanged,
+    // return the cached descriptors without reading or hashing the file.
+    // The hash is a tiebreaker for the same-tick same-size edge case; that
+    // case is caught the moment the timestamp advances. This avoids 60
+    // file reads + hashes per second when the inspector queries every frame.
+    auto it = m_Cache.find(key);
+    if (it != m_Cache.end() && it->second.everParsed && stated &&
+        it->second.mtime == mtime && it->second.size == size)
+    {
+        it->second.lastUse = ++m_UseTick;
+        result.descriptors = it->second.descriptors;
+        result.parsed = true;
+        return result;
+    }
+
+    // Slow path: (mtime, size) differ or the entry is absent/never-parsed.
+    // Read the source and hash it. The hash makes same-tick same-size edits
+    // detectable and makes 6C's file watcher correct by construction.
     bool readOk = false;
     const std::string source = ReadFileText(path, readOk);
     const uint64_t hash = readOk ? HashSource(source) : 0;
 
-    auto it = m_Cache.find(key);
+    // Re-check the cache with the hash: a same-tick same-size edit that
+    // changed the content will have a different hash.
+    it = m_Cache.find(key);
     const bool cacheHit = it != m_Cache.end()
                        && it->second.everParsed
                        && stated

@@ -396,6 +396,16 @@ bool SceneRecoveryService::Restore(const RecoveryRecord& record,
                                    std::vector<AssetDiagnostic>& diagnostics,
                                    Error& err) const
 {
+    SceneLoadReport ignored;
+    return Restore(record, outDoc, diagnostics, ignored, err);
+}
+
+bool SceneRecoveryService::Restore(const RecoveryRecord& record,
+                                   SceneDocument& outDoc,
+                                   std::vector<AssetDiagnostic>& diagnostics,
+                                   SceneLoadReport& loadReport,
+                                   Error& err) const
+{
     err = Error{};
     if (!record.valid || record.snapshotJson.empty())
     {
@@ -429,15 +439,18 @@ bool SceneRecoveryService::Restore(const RecoveryRecord& record,
 
     SceneDocument temp;
     temp.SetUuidProvider(outDoc.GetUuidProvider());
-    const bool loaded = SceneSerializer::Load(temp, restoreTemp, err);
+    const bool loaded = SceneSerializer::Load(temp, restoreTemp, loadReport, err);
     std::error_code ec;
     std::filesystem::remove(restoreTemp, ec);
     if (!loaded) return false;
 
+    // Script resolution uses metadata.sourcePath, so restore the logical path
+    // before either resolver runs. Asset resolution still receives assetRoot
+    // explicitly for untitled recovery records.
+    temp.metadata.sourcePath = record.originalSourcePath;
     if (!SceneAssetResolver::ResolveAll(temp, record.assetRoot, diagnostics, err))
         return false;
 
-    temp.metadata.sourcePath = record.originalSourcePath;
     temp.metadata.dirty = true;
     outDoc = std::move(temp);
     return true;

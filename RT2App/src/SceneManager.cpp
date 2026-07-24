@@ -6,6 +6,7 @@
 #include "PersistedComponents.h"
 #include "PrimitiveGeometry.h"
 #include "RTLog.h"
+#include "ScriptComponentValidation.h"
 #include "stb_image.h"
 #include <tinyexr.h>
 #include <glm/glm.hpp>
@@ -3427,11 +3428,52 @@ EditorMutationResult SceneManager::SetScriptState(const rt2::core::UUID& entity,
 		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
 			entity.ToString(), "SetScriptState: entity not present");
 	if (value.has_value())
-		m_EcsScene.registry.emplace_or_replace<ScriptComponent>(e, *value);
+	{
+		ScriptComponent canonical;
+		std::string detail;
+		std::string field;
+		if (!rt2::core::NormalizeAndValidateScriptComponent(
+				*value, canonical, detail, &field))
+		{
+			return EditorMutationResult::Failure(
+				rt2::core::Error::InvalidArgument,
+				field.empty() ? entity.ToString()
+				              : entity.ToString() + ":" + field,
+				"SetScriptState: " + detail);
+		}
+
+		// Suppress canonical no-ops: present→same-present must not dirty the
+		// document, bump the revision, or notify observers (W4-F1). The
+		// caller's value has already been canonicalized above, so compare
+		// against the currently stored component.
+		std::optional<ScriptComponent> current;
+		if (m_EcsScene.registry.all_of<ScriptComponent>(e))
+			current = m_EcsScene.registry.get<ScriptComponent>(e);
+		if (rt2::core::ScriptComponentCanonicalEqual(
+				current, std::optional<ScriptComponent>{canonical}))
+		{
+			EditorMutationResult result;
+			result.success = true;
+			result.effective = false;
+			result.syncImpact = rt2::core::SyncImpact::None;
+			return result;
+		}
+
+		m_EcsScene.registry.emplace_or_replace<ScriptComponent>(e,
+			std::move(canonical));
+	}
 	else
 	{
-		if (m_EcsScene.registry.all_of<ScriptComponent>(e))
-			m_EcsScene.registry.remove<ScriptComponent>(e);
+		// Suppress absent→absent removal (W4-F1).
+		if (!m_EcsScene.registry.all_of<ScriptComponent>(e))
+		{
+			EditorMutationResult result;
+			result.success = true;
+			result.effective = false;
+			result.syncImpact = rt2::core::SyncImpact::None;
+			return result;
+		}
+		m_EcsScene.registry.remove<ScriptComponent>(e);
 	}
 	NotifyAuthoringChanged();
 	EditorMutationResult result;

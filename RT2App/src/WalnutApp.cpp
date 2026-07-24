@@ -21,6 +21,11 @@
 #include "SceneAssetResolver.h"
 #include "RuntimeSceneController.h"
 #include "ScriptSystem.h"
+#include "ScriptFieldRegistry.h"
+#include "ScriptFieldResolver.h"
+#include "ScriptAssetPath.h"
+#include "ScriptFieldChangePolicy.h"
+#include "ScriptFileWatchPolicy.h"
 #include "SceneRenderBridge.h"
 #include "ECSComponents.h"
 #include "EditorSettings.h"
@@ -41,6 +46,7 @@
 #include "stb_image_write.h"
 #include <tinyexr.h>
 #include "NRD.h"
+#include "efsw/efsw.hpp"
 
 #include <cstdio>
 #include <cmath>
@@ -53,6 +59,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <mutex>
+#include <set>
 
 using namespace Walnut;
 
@@ -139,8 +147,16 @@ public:
 			// return false so the app stays open until the user resolves.
 		});
 
+		m_InspectorFieldRegistry = std::make_unique<rt2::core::ScriptFieldRegistry>();
+
+		// Phase 6C/W2: file watcher for hot reload.
+		m_FileWatchListener = std::make_unique<ScriptFileWatchListener>();
+		m_FileWatcher = std::make_unique<efsw::FileWatcher>();
+		m_FileWatcher->watch();
+
 		m_EditorUI.SetSceneMgr(&m_SceneMgr);
 		m_EditorUI.SetCommandHistory(&m_History);
+		m_EditorUI.SetFieldRegistry(m_InspectorFieldRegistry.get());
 		m_EditorUI.SetDialogInitialDirectoryProvider([this]() {
 			return DialogInitialDirectory();
 		});
@@ -849,6 +865,56 @@ public:
 	DrawUnsavedChangesPrompt();
 	DrawLoadingModal();
 
+	// Phase 6C/W2: drain file-watcher changes with debounce. Atomic save
+	// (temp + rename) yields Modified + Added + Deleted for one Ctrl+S.
+	// Coalesce by path over a ~100ms quiet window, then reload.
+	if (m_FileWatchListener)
+	{
+		{
+			std::lock_guard<std::mutex> lock(m_FileWatchListener->mutex);
+			if (!m_FileWatchListener->pendingChanges.empty())
+			{
+				for (const auto& p : m_FileWatchListener->pendingChanges)
+				{
+					// Dedupe: don't add a path already in the debounce buffer.
+					if (std::find(m_DebouncedChanges.begin(),
+					              m_DebouncedChanges.end(), p) ==
+					    m_DebouncedChanges.end())
+						m_DebouncedChanges.push_back(p);
+				}
+				m_FileWatchListener->pendingChanges.clear();
+				m_LastFileChangeTime = std::chrono::steady_clock::now();
+			}
+		}
+
+		// If no new changes for 100ms and we have pending, drain.
+		if (!m_DebouncedChanges.empty())
+		{
+			const auto now = std::chrono::steady_clock::now();
+			const auto elapsed = std::chrono::duration_cast<
+				std::chrono::milliseconds>(now - m_LastFileChangeTime);
+			if (elapsed.count() >= 100)
+			{
+				auto changes = std::move(m_DebouncedChanges);
+				m_DebouncedChanges.clear();
+				const auto action = rt2::core::DecideScriptFileChange(
+					m_Runtime.GetState(),
+					m_ScriptSystem != nullptr,
+					m_InspectorFieldRegistry != nullptr);
+				for (const auto& path : changes)
+				{
+					if (action.reloadScript)
+						m_ScriptSystem->ReloadScript(path);
+				}
+				// Once per drain, not per path: the inspector cache is
+				// whole-registry, so clearing it per file would be
+				// redundant work.
+				if (action.invalidateFieldRegistry)
+					m_InspectorFieldRegistry->Clear();
+			}
+		}
+	}
+
 	// Phase 5: EndFrame commits current → previous state, clears
 	// per-frame deltas, and applies cursor capture. Called at the end
 	// of OnUIRender so all UI consumers have run.
@@ -943,19 +1009,41 @@ public:
 			{
 				rt2::core::Error err;
 				std::vector<rt2::core::AssetDiagnostic> diags;
+				rt2::core::SceneLoadReport loadReport;
+				std::vector<rt2::core::FieldDiagnostic> fieldDiags;
+				rt2::core::ScriptFieldResolutionResult fieldResolution;
+				rt2::core::ScriptFieldChangeClassification fieldChanges;
 				rt2::core::SceneDocument restored;
 				restored.SetUuidProvider(m_SceneMgr.AuthoringDoc().GetUuidProvider());
-				bool ok = m_Recovery->Restore(r, restored, diags, err);
+				bool ok = m_Recovery->Restore(
+					r, restored, diags, loadReport, err);
+				if (ok)
+				{
+					fieldDiags = loadReport.fieldDiagnostics;
+					rt2::core::ScriptFieldRegistry fieldRegistry;
+					fieldResolution = rt2::core::ScriptFieldResolver::ResolveDocument(
+						restored, fieldRegistry, fieldDiags);
+					fieldChanges = rt2::core::ClassifyScriptFieldChanges(
+						loadReport, fieldResolution, fieldDiags);
+					for (const auto& diagnostic : fieldDiags)
+						printf("[Recovery] Script field: %s\n", diagnostic.message.c_str());
+				}
 			if (ok)
 			{
 				// Commit the already validated document without clearing it.
 				m_SceneMgr.ReplaceAuthoringDocument(
 					std::move(restored), std::max<uint64_t>(1, r.revision));
-				m_EditorUI.ResetForDocument();
-				m_History.Clear();
+			m_EditorUI.ResetForDocument();
+			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
+			m_History.Clear();
 				CompactMeshRegistryNowAsserted();
 				m_Recovery->ResetSchedule();
-				m_LastStatusMsg = "Restored recovery";
+				m_ScriptRepairGate.Adopt(fieldChanges.destructive);
+				m_LastStatusMsg = fieldChanges.destructive
+					? "Restored recovery with discarded script field data; Save once to acknowledge"
+					: (fieldChanges.requiresSave
+						? "Restored recovery; script fields changed and need saving"
+						: "Restored recovery");
 					// Upload to GPU
 					if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
 						UploadMeshToGPU();
@@ -1376,7 +1464,8 @@ public:
 		// Only snapshot the authoring document; the runtime Play clone is
 		// never captured. Skips work entirely on clean frames or when the
 		// revision has not advanced since the last snapshot.
-		if (m_Recovery && m_Runtime.GetState() == rt2::core::SceneRunState::Edit)
+		if (m_Recovery && m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
+			!m_ScriptRepairGate.SuppressAutosave())
 		{
 			rt2::core::Error ae;
 			const auto started = std::chrono::steady_clock::now();
@@ -2165,6 +2254,7 @@ private:
 			}
 
 			m_EditorUI.ResetForDocument();
+			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 			m_History.Clear();
 			CompactMeshRegistryNowAsserted();
 
@@ -2194,6 +2284,7 @@ private:
 			// document. They must be explicitly saved as .rt2scene.
 			m_SceneMgr.AuthoringDoc().metadata.sourcePath.clear();
 			m_SceneMgr.MarkDirty();
+			m_ScriptRepairGate.OnPersistedOrReset();
 			m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
 			m_Recovery->ResetSchedule();
 			m_LastStatusMsg = "Imported scene (unsaved)";
@@ -2262,6 +2353,58 @@ private:
 	// Play with a valid UUID provider.
 	std::unique_ptr<rt2::core::ScriptSystem>        m_ScriptSystem;
 	std::unique_ptr<rt2::core::RuntimeCommandSink>  m_ScriptSink;
+
+	// Phase 6B/W5: inspector-side field registry. Created at startup so the
+	// inspector can query declared fields while the editor is STOPPED (the
+	// ScriptSystem's registry is lazy-created at Play). Cleared on scene
+	// load/close alongside ResetForDocument.
+	std::unique_ptr<rt2::core::ScriptFieldRegistry> m_InspectorFieldRegistry;
+
+	// Phase 6C/W2: file watcher for hot reload. efsw watches directories
+	// containing referenced script assets. On .lua file change, the path
+	// is posted to m_PendingFileChanges (thread-safe). The drain in
+	// OnUIRender debounces (~100ms) and calls ScriptSystem::ReloadScript.
+	class ScriptFileWatchListener : public efsw::FileWatchListener
+	{
+	public:
+		std::mutex mutex;
+		std::vector<std::string> pendingChanges;
+
+		void handleFileAction(efsw::WatchID watchid, const std::string& dir,
+		                      const std::string& filename, efsw::Action action,
+		                      const std::string& oldFilename) override
+		{
+			(void)watchid; (void)oldFilename;
+			// Only react to .lua file modifications and adds (atomic save =
+			// delete + add, so catch both). Delete alone means the file is
+			// gone — no reload needed.
+			if (action == efsw::Actions::Delete) return;
+
+			// Only .lua files (case-insensitive on Windows).
+			if (filename.size() < 5) return;
+			auto ext = filename.substr(filename.size() - 4);
+			std::transform(ext.begin(), ext.end(), ext.begin(),
+				[](unsigned char c) { return std::tolower(c); });
+			if (ext != ".lua") return;
+
+			// Build the full path. efsw gives dir + filename separately;
+			// normalize to a single path.
+			std::filesystem::path full = std::filesystem::path(dir) / filename;
+			std::lock_guard<std::mutex> lock(mutex);
+			pendingChanges.push_back(full.string());
+		}
+	};
+
+	// Declaration order matters: m_FileWatchListener must outlive
+	// m_FileWatcher so that efsw's watch thread (stopped by
+	// ~FileWatcher) never calls handleFileAction on a destroyed
+	// listener. Members destroy in reverse declaration order, so
+	// the watcher is declared second and dies first.
+	std::unique_ptr<ScriptFileWatchListener>    m_FileWatchListener;
+	std::unique_ptr<efsw::FileWatcher>          m_FileWatcher;
+	std::vector<efsw::WatchID>                  m_ActiveWatchIds;
+	std::vector<std::string>                    m_DebouncedChanges;
+	std::chrono::steady_clock::time_point       m_LastFileChangeTime;
 
 	// Phase 5 input service — owns the context stack and frame phasing.
 	rt2::core::InputService m_Input;
@@ -2335,6 +2478,7 @@ private:
 	bool                                                  m_RecoveryPromptOpen = false;
 	std::string                                           m_UntitledRecoveryId; // stable per session
 	std::string                                           m_LastStatusMsg;
+	rt2::core::ScriptRepairPersistenceGate                m_ScriptRepairGate;
 
 	// ---- Runtime lifecycle ----
 
@@ -2437,10 +2581,12 @@ public:
 	void NewSceneInternal()
 	{
 		m_SceneMgr.Clear();
-		m_EditorUI.ResetForDocument();
-		m_History.Clear();
+			m_EditorUI.ResetForDocument();
+			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
+			m_History.Clear();
 		m_SceneMgr.CompactMeshRegistryNow();
 		m_SceneMgr.ClearDirty();
+		m_ScriptRepairGate.OnPersistedOrReset();
 		m_Recovery->ResetSchedule();
 		// New untitled doc gets a fresh recovery id for this session.
 		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
@@ -2474,17 +2620,26 @@ public:
 		auto resultDoc = std::make_shared<rt2::core::SceneDocument>();
 		auto errorStr = std::make_shared<std::string>();
 		auto diagStr = std::make_shared<std::string>();
+		auto loadReport = std::make_shared<rt2::core::SceneLoadReport>();
+		auto fieldDiagnostics =
+			std::make_shared<std::vector<rt2::core::FieldDiagnostic>>();
+		auto fieldResolution =
+			std::make_shared<rt2::core::ScriptFieldResolutionResult>();
+		auto fieldChanges =
+			std::make_shared<rt2::core::ScriptFieldChangeClassification>();
 		const std::string filepathCopy = filepath;
 		auto uuidProvider = m_SceneMgr.AuthoringDoc().GetUuidProvider();
 
 		StartBackgroundWork("Loading scene...",
-			[resultDoc, errorStr, diagStr, filepathCopy, uuidProvider](BackgroundWork& self) -> bool
+			[resultDoc, errorStr, diagStr, loadReport, fieldDiagnostics,
+			 fieldResolution, fieldChanges, filepathCopy, uuidProvider](BackgroundWork& self) -> bool
 		{
 			self.SetStatus("Parsing scene file...");
 			resultDoc->SetUuidProvider(uuidProvider);
 
 			rt2::core::Error err;
-			if (!rt2::core::SceneSerializer::Load(*resultDoc, filepathCopy, err))
+			if (!rt2::core::SceneSerializer::Load(
+					*resultDoc, filepathCopy, *loadReport, err))
 			{
 				*errorStr = "Failed to load .rt2scene: " + err.Format();
 				return false;
@@ -2516,9 +2671,22 @@ public:
 				return false;
 			}
 
+			self.SetStatus("Reconciling script fields...");
+			*fieldDiagnostics = loadReport->fieldDiagnostics;
+			rt2::core::ScriptFieldRegistry fieldRegistry;
+			*fieldResolution = rt2::core::ScriptFieldResolver::ResolveDocument(
+				*resultDoc, fieldRegistry, *fieldDiagnostics);
+			*fieldChanges = rt2::core::ClassifyScriptFieldChanges(
+				*loadReport, *fieldResolution, *fieldDiagnostics);
+			for (const auto& diagnostic : *fieldDiagnostics)
+			{
+				*diagStr += "[Scene] Script field: " + diagnostic.message + "\n";
+			}
+
 			return true;
 		},
-			[this, resultDoc, errorStr, diagStr, filepathCopy](bool success)
+			[this, resultDoc, errorStr, diagStr, fieldChanges,
+			 filepathCopy](bool success)
 		{
 			// Main thread: log diagnostics.
 			if (!diagStr->empty())
@@ -2536,9 +2704,59 @@ public:
 			printf("[OpenRt2Scene] adopting document...\n"); fflush(stdout);
 			m_SceneMgr.ReplaceAuthoringDocument(std::move(*resultDoc));
 			m_EditorUI.ResetForDocument();
+			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
+
+			// Phase 6C/W2: watch directories containing referenced
+			// script assets for .lua file changes. The scene's parent
+			// directory covers scene-relative scripts; we also walk
+			// every ScriptComponent to catch absolute paths or shared
+			// script folders outside the scene tree. All watches are
+			// recursive and deduped by directory path.
+			if (m_FileWatcher && m_FileWatchListener)
+			{
+				for (efsw::WatchID wid : m_ActiveWatchIds)
+					m_FileWatcher->removeWatch(wid);
+				m_ActiveWatchIds.clear();
+
+				std::set<std::string> dirs;
+				auto sceneDir = std::filesystem::path(filepathCopy).
+					parent_path().lexically_normal().string();
+				if (!sceneDir.empty())
+					dirs.insert(sceneDir);
+
+				auto& doc = m_SceneMgr.AuthoringDoc();
+				auto view = doc.ecs.registry.view<ScriptComponent>();
+				for (auto e : view)
+				{
+					const auto& sc = view.get<ScriptComponent>(e);
+					auto resolved = rt2::core::ResolveScriptAssetPath(
+						doc, sc);
+					auto parent = resolved.parent_path().
+						lexically_normal().string();
+					if (!parent.empty())
+						dirs.insert(parent);
+				}
+
+				for (const auto& dir : dirs)
+				{
+					efsw::WatchID wid =
+						m_FileWatcher->addWatch(dir,
+							m_FileWatchListener.get(), true);
+					if (wid < 0)
+						printf("[FileWatcher] addWatch failed for "
+							"\"%s\" (id=%d)\n", dir.c_str(),
+							static_cast<int>(wid));
+					else
+						m_ActiveWatchIds.push_back(wid);
+				}
+			}
+
 			m_History.Clear();
 			CompactMeshRegistryNowAsserted();
 			m_SceneMgr.ClearDirty();
+			if (fieldChanges->requiresSave)
+				m_SceneMgr.MarkDirty();
+			m_ScriptRepairGate.Adopt(fieldChanges->destructive);
 			m_Recovery->ResetSchedule();
 			m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
 
@@ -2572,7 +2790,12 @@ public:
 				PersistEditorSettings("recent scenes");
 			}
 			printf("[Scene] Loaded .rt2scene: %s\n", filepathCopy.c_str());
-			m_LastStatusMsg = "Opened";
+			if (fieldChanges->destructive)
+				m_LastStatusMsg = "Opened with discarded script field data; Save once to acknowledge";
+			else if (fieldChanges->requiresSave)
+				m_LastStatusMsg = "Opened; script fields changed and the scene needs saving";
+			else
+				m_LastStatusMsg = "Opened";
 		});
 	}
 
@@ -2588,6 +2811,14 @@ public:
 
 	bool SaveCurrentScene(bool forceSaveAs)
 	{
+		if (m_ScriptRepairGate.ConsumeSaveAcknowledgement())
+		{
+			m_LastStatusMsg =
+				"Script field data was discarded during load; repeat Save to confirm persistence";
+			printf("[Scene] %s\n", m_LastStatusMsg.c_str());
+			return false;
+		}
+
 		auto& doc = m_SceneMgr.AuthoringDoc();
 		const std::filesystem::path oldSourcePath = doc.metadata.sourcePath;
 		const std::string oldDocId = rt2::core::SceneRecoveryService::DocIdFor(
@@ -2617,6 +2848,7 @@ public:
 
 		doc.metadata.sourcePath = target;
 		m_SceneMgr.ClearDirty();
+		m_ScriptRepairGate.OnPersistedOrReset();
 		const std::string newDocId = rt2::core::SceneRecoveryService::DocIdFor(
 			doc, m_UntitledRecoveryId);
 		if (oldDocId == newDocId) m_Recovery->DiscardForDoc(newDocId);

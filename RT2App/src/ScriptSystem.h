@@ -69,11 +69,15 @@
 //    whose LUA_MASKCOUNT hook regains control and routes an exhausted
 //    budget through the ordinary error path into Quarantine.
 //
-//  - Remaining: LuaPanic throws a C++ exception from a handler invoked by
-//    C-compiled Lua. Every Lua entry is protected, so it should be
-//    unreachable, but if it ever fires the throw crosses C frames reached
-//    via longjmp, which is undefined on MSVC. The sound fix is compiling
-//    Lua as C++ (a premake/vendor change); tracked separately.
+//  - Remaining: LuaPanic logs to stderr and calls std::terminate. Lua is
+//    compiled as C, so throwing a C++ exception from the panic handler would
+//    cross C frames reached via longjmp — undefined on MSVC. Every Lua
+//    evaluation entry point is protected, so a panic is unreachable except
+//    under allocation failure in unprotected setup (open_libraries,
+//    BuildEnvironment table construction). A panic is fatal by design: it
+//    does not quarantine and the process aborts. Compiling Lua as C++
+//    (LUAI_THROW) would make throwing safe and is tracked as a deferred
+//    option.
 // ============================================================================
 
 namespace rt2::core {
@@ -90,6 +94,21 @@ enum class ScriptInstanceState : uint8_t
     Destroyed    = 3,
 };
 
+// Phase 6C: a script timer. Stored in ScriptSystem keyed by instance UUID.
+// The callback is a sol::protected_function captured from the entity's
+// environment; it fires in OnUpdate under an instruction budget (6th entry
+// point). An error quarantines the instance.
+struct ScriptTimer
+{
+    int                     handle = 0;       // opaque ID for cancellation
+    double                  interval = 0.0;   // seconds between firings
+    double                  remaining = 0.0;  // time until next fire
+    bool                    repeating = false; // timer.every vs timer.after
+    bool                    cancelled = false;
+    sol::protected_function callback;
+    UUID                    ownerUuid;        // the instance that owns this timer
+};
+
 // One entry per entity that has a live or pending script environment.
 struct ScriptInstance
 {
@@ -104,6 +123,10 @@ struct ScriptInstance
     sol::protected_function on_update;
     sol::protected_function on_destroy;
     ScriptInstanceState     state = ScriptInstanceState::NeverCreated;
+    // True once on_create has fired. On reload, a Quarantined instance that
+    // never had on_create run (e.g. initial load failed) must fire on_create
+    // after the swap rather than jumping straight to Live.
+    bool                    onCreateFired = false;
 };
 
 class ScriptSystem : public IRuntimeLifecycleObserver,
@@ -130,9 +153,14 @@ public:
     void SyncScriptEnvironments() override;
     void OnEntitiesDestroying(const std::vector<UUID>& uuids) override;
 
-    // ---- Phase 6C hot reload (declared now, stubbed in 6A) --------------
+    // ---- Phase 6C hot reload --------------------------------------------
 
-    virtual void ReloadScript(const std::filesystem::path& path) { (void)path; }
+    // Reload all instances bound to `path`. Re-parses declarations, reconciles
+    // field values, builds a fresh environment per instance, copies old `self`
+    // into `rt2.previous_state`, and re-binds callbacks. A parse failure keeps
+    // instances in their current state. Stopped: invalidates the registry cache
+    // only. Playing: reload now. Paused: queues and drains on Resume.
+    void ReloadScript(const std::filesystem::path& path);
 
     // ---- Phase 6B reflection ---------------------------------------------
 
@@ -184,11 +212,6 @@ private:
                     const std::string& callbackName,
                     const std::string& message);
 
-    // Resolve a script asset reference to a filesystem path: scene-relative
-    // to the runtime document's source path, or as-is when the document has
-    // no source path (test fixtures use absolute paths).
-    std::filesystem::path ResolveScriptPath(const ScriptComponent& comp) const;
-
     // Collect ScriptComponent-bearing entities from the runtime registry,
     // sorted by UUID for deterministic iteration.
     std::vector<std::pair<UUID, entt::entity>>
@@ -219,9 +242,26 @@ private:
     IRuntimeCommandSink*      m_Sink = nullptr;
     IUuidProvider&            m_UuidProvider;
 
-    // Lua panic handler (S7). Installed via lua_atpanic on m_Lua. Returns
-    // a longjmp-style error so the offending protected_call sees it as a
-    // runtime error rather than a process abort.
+    // Phase 6C: queued reload paths, drained on Resume from Pause or the
+    // next Play frame. Populated when ReloadScript is called while Paused.
+    std::vector<std::string>  m_PendingReloads;
+
+    // Phase 6C: script timers. All timers across all instances, fired in
+    // OnUpdate. Keyed by handle for cancellation. Cancelled on Stop,
+    // entity destruction, and reload (before environment swap).
+    std::vector<ScriptTimer>  m_Timers;
+    int                       m_NextTimerHandle = 1;
+
+    // Fire due timers. Called from OnUpdate. dt is the variable-update
+    // delta. Timer callbacks are protected + budgeted (6th entry point).
+    void FireTimers(float dt);
+
+    // Cancel all timers owned by a given instance UUID. Called on entity
+    // destruction and before reload swap (B3).
+    void CancelTimersForInstance(const UUID& uuid);
+
+    // Lua panic handler (S7). Installed via lua_atpanic on m_Lua. Logs to
+    // stderr and calls std::terminate — a panic is fatal by design.
     static int LuaPanic(lua_State* L);
 };
 
@@ -259,8 +299,15 @@ public:
     bool SetName(const UUID& uuid, const std::string& name) override;
     bool GetVisible(const UUID& uuid, bool& out) const override;
     bool SetVisible(const UUID& uuid, bool visible) override;
+    bool GetLight(const UUID& uuid, LightComponent& out) const override;
+    bool SetLight(const UUID& uuid, const LightComponent& light) override;
+    bool GetCamera(const UUID& uuid, CameraComponent& out) const override;
+    bool SetCamera(const UUID& uuid, const CameraComponent& cam) override;
+    bool SetMaterialIndex(const UUID& uuid, int index) override;
     bool IsAlive(const UUID& uuid) const override;
     UUID FindByName(const std::string& name) const override;
+    SceneRunState GetRunState() const override;
+    bool IsRuntimeMutable() const override;
 
 private:
     RuntimeSceneController&  m_Controller;

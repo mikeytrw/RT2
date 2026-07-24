@@ -5,6 +5,7 @@
 
 #include "EditorCommand.h"
 #include "SceneManager.h"
+#include "ScriptComponentValidation.h"
 #include "TransformEditing.h"
 #include "core/UUID.h"
 #include "ECSComponents.h"
@@ -207,6 +208,36 @@ private:
 	std::optional<MotionComponent>      m_AfterValue;
 };
 
+// SetScriptCommand covers add, remove, script-path replacement, and any typed
+// field-map change via std::optional<ScriptComponent> before/after. Add =
+// {nullopt, some}; Remove = {some, nullopt}; edit = {some, some}. The command
+// owns full value copies only — no entt::entity, Lua objects, registry
+// pointers, file handles, descriptors or runtime callbacks. Descriptions are
+// state-aware: "Add Script", "Remove Script", or "Edit Script".
+class SetScriptCommand final : public IEditorCommand
+{
+public:
+	SetScriptCommand(rt2::core::UUID target,
+	                 std::optional<ScriptComponent> beforeValue,
+	                 std::optional<ScriptComponent> afterValue)
+		: m_Target(target)
+		, m_BeforeValue(std::move(beforeValue))
+		, m_AfterValue(std::move(afterValue)) {}
+
+	const rt2::core::UUID& Target() const { return m_Target; }
+	const std::optional<ScriptComponent>& BeforeValue() const { return m_BeforeValue; }
+	const std::optional<ScriptComponent>& AfterValue() const { return m_AfterValue; }
+
+	EditorMutationResult Execute(SceneManager& scene) override;
+	EditorMutationResult Undo(SceneManager& scene) override;
+	std::string Description() const override;
+
+private:
+	rt2::core::UUID                        m_Target;
+	std::optional<ScriptComponent>         m_BeforeValue;
+	std::optional<ScriptComponent>         m_AfterValue;
+};
+
 class AlignCameraCommand final : public IEditorCommand
 {
 public:
@@ -288,6 +319,19 @@ std::unique_ptr<IEditorCommand> MakeSetMotionCommandIfEffective(
 	rt2::core::UUID target,
 	std::optional<MotionComponent> beforeValue,
 	std::optional<MotionComponent> afterValue);
+
+// Returns null if both are absent OR both present and canonically equal
+// (same path, derived sourceKey, and exact typed field map). A present
+// before-state is validated/canonicalized first — an invalid before-snapshot
+// returns null (it must never enter history, since a later failed Undo would
+// clear the entire history under the established policy). An invalid
+// after-state is NOT suppressed: the command is returned so
+// EditorCommandHistory::Execute surfaces the manager's actionable failure
+// without recording.
+std::unique_ptr<IEditorCommand> MakeSetScriptCommandIfEffective(
+	rt2::core::UUID target,
+	std::optional<ScriptComponent> beforeValue,
+	std::optional<ScriptComponent> afterValue);
 
 // Returns null if before/after local TRS are equal AND before/after camera
 // props are equal. Used by AlignCameraToView — the host has ALREADY applied

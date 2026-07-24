@@ -7,6 +7,9 @@
 #include "EditorStructuralCommands.h"
 #include "EditorPropertyCommands.h"
 #include "SceneHierarchy.h"
+#include "ScriptAssetPath.h"
+#include "ScriptFieldRegistry.h"
+#include "ScriptFieldValue.h"
 #include "RTLog.h"
 #include "imgui.h"
 #include <cstdio>
@@ -79,12 +82,7 @@ bool SceneEditorUI::MutationSelectionAllowed(std::string& reason) const
 void SceneEditorUI::Undo()
 {
 	if (!m_CommandHistory) return;
-	m_TransformSession.Discard();
-	m_NameSession.Discard();
-	m_LightSession.Discard();
-	m_CameraSession.Discard();
-	m_MaterialIndexSession.Discard();
-	m_MaterialPropertiesSession.Discard();
+	DiscardAllPropertySessions();
 	const auto result = m_CommandHistory->Undo(*m_SceneMgr);
 	ApplyMutation(result);
 }
@@ -92,12 +90,7 @@ void SceneEditorUI::Undo()
 void SceneEditorUI::Redo()
 {
 	if (!m_CommandHistory) return;
-	m_TransformSession.Discard();
-	m_NameSession.Discard();
-	m_LightSession.Discard();
-	m_CameraSession.Discard();
-	m_MaterialIndexSession.Discard();
-	m_MaterialPropertiesSession.Discard();
+	DiscardAllPropertySessions();
 	const auto result = m_CommandHistory->Redo(*m_SceneMgr);
 	ApplyMutation(result);
 }
@@ -195,6 +188,29 @@ void SceneEditorUI::RecordMotionEdit(const rt2::core::UUID& target,
 	applied.syncImpact = rt2::core::SyncImpact::None;
 	applied.affectedEntities.push_back(target);
 	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
+}
+
+void SceneEditorUI::RecordScriptEdit(const rt2::core::UUID& target,
+                                     const std::optional<ScriptComponent>& before,
+                                     const std::optional<ScriptComponent>& after,
+                                     const EditorMutationResult& applied)
+{
+	if (!m_CommandHistory) return;
+	auto cmd = MakeSetScriptCommandIfEffective(target, before, after);
+	if (!cmd) return;
+	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
+}
+
+void SceneEditorUI::DiscardAllPropertySessions()
+{
+	m_TransformSession.Discard();
+	m_NameSession.Discard();
+	m_LightSession.Discard();
+	m_CameraSession.Discard();
+	m_MaterialIndexSession.Discard();
+	m_MaterialPropertiesSession.Discard();
+	m_MotionVelocitySession.Discard();
+	m_ScriptFieldSession.Discard();
 }
 
 SetMaterialPropertiesCommand::OverrideList
@@ -907,21 +923,25 @@ void SceneEditorUI::RenderInspector()
 		ImGui::TextDisabled("Directly locked in the editor");
 	ImGui::BeginDisabled(directlyLocked);
 
-	// Name field — records on Enter/commit only (not per keystroke).
+	// Name field — records on Enter or focus loss after edit (not per keystroke).
 	char nameBuf[128];
 	snprintf(nameBuf, sizeof(nameBuf), "%s", name.c_str());
 	ImGui::Text("Name:");
 	ImGui::SameLine();
 	ImGui::SetNextItemWidth(200.0f);
 	ImGui::BeginDisabled(!m_Editable);
-	const bool nameActivated = ImGui::IsItemActivated();
-	if (ImGui::InputText("##EntityName", nameBuf, sizeof(nameBuf), ImGuiInputTextFlags_EnterReturnsTrue))
+	const bool nameReturned = ImGui::InputText("##EntityName", nameBuf,
+		sizeof(nameBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+	const bool nameDeactivatedAfterEdit = ImGui::IsItemDeactivatedAfterEdit();
+	if (nameReturned || nameDeactivatedAfterEdit)
 	{
-		m_SceneMgr->SetEntityName(entity, nameBuf);
-		RecordNameEdit(targetUuid, name, std::string(nameBuf));
+		if (std::string(nameBuf) != name)
+		{
+			m_SceneMgr->SetEntityName(entity, nameBuf);
+			RecordNameEdit(targetUuid, name, std::string(nameBuf));
+		}
 	}
 	ImGui::EndDisabled();
-	(void)nameActivated;
 	ImGui::Separator();
 
 	RenderTransformEditor(entity);
@@ -1000,6 +1020,23 @@ void SceneEditorUI::RenderInspector()
 				ImGui::EndDisabled();
 			}
 		}
+	}
+
+	// Script component editor (Phase 6B/W5)
+	if (m_SceneMgr->HasScript(entity))
+		RenderScriptEditor(entity);
+	else
+	{
+		ImGui::Separator();
+		ImGui::BeginDisabled(!m_Editable);
+		if (ImGui::Button("Add Script"))
+		{
+			ScriptComponent unbound;
+			unbound.asset.kind = AssetKind::Script;
+			const auto r = m_SceneMgr->SetScriptState(targetUuid, unbound);
+			RecordScriptEdit(targetUuid, std::nullopt, unbound, r);
+		}
+		ImGui::EndDisabled();
 	}
 
 	ImGui::EndDisabled();
@@ -1580,6 +1617,314 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 			} });
 		if (rec)
 			RecordCameraEdit(targetUuid, rec->before, rec->after);
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Phase 6B/W5 — Script component editor
+// ----------------------------------------------------------------------------
+void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
+{
+	ImGui::Separator();
+	ImGui::Text("Script");
+
+	const auto targetUuid = m_SceneMgr->GetEntityUuid(entity);
+	auto scriptState = m_SceneMgr->GetScriptState(targetUuid);
+	if (!scriptState.has_value()) return;
+
+	// Path field (InputText with EnterReturnsTrue + DeactivatedAfterEdit).
+	char pathBuf[512];
+	snprintf(pathBuf, sizeof(pathBuf), "%s", scriptState->asset.path.c_str());
+	ImGui::Text("Path:");
+	ImGui::SameLine();
+	ImGui::SetNextItemWidth(300.0f);
+	ImGui::BeginDisabled(!m_Editable);
+	const bool pathReturned = ImGui::InputText("##ScriptPath", pathBuf,
+		sizeof(pathBuf), ImGuiInputTextFlags_EnterReturnsTrue);
+	const bool pathDeactivatedAfterEdit = ImGui::IsItemDeactivatedAfterEdit();
+	if (pathReturned || pathDeactivatedAfterEdit)
+	{
+		const std::string newPath(pathBuf);
+		if (newPath != scriptState->asset.path)
+		{
+			auto before = *scriptState;
+			auto after = *scriptState;
+			after.asset.path = newPath;
+			const auto r = m_SceneMgr->SetScriptState(targetUuid, after);
+			RecordScriptEdit(targetUuid, before, after, r);
+			scriptState = m_SceneMgr->GetScriptState(targetUuid);
+		}
+	}
+	ImGui::EndDisabled();
+
+	// Remove Script button.
+	ImGui::SameLine();
+	ImGui::BeginDisabled(!m_Editable);
+	if (ImGui::Button("Remove Script"))
+	{
+		auto before = *scriptState;
+		const auto r = m_SceneMgr->SetScriptState(targetUuid, std::nullopt);
+		RecordScriptEdit(targetUuid, before, std::nullopt, r);
+	}
+	ImGui::EndDisabled();
+
+	// Empty path → unbound component: no field widgets, no diagnostics.
+	if (scriptState->asset.path.empty())
+		return;
+
+	// Query declared fields from the registry (if injected).
+	if (!m_FieldRegistry) return;
+
+	const auto resolvedPath = rt2::core::ResolveScriptAssetPath(
+		m_SceneMgr->AuthoringDoc(), *scriptState);
+	const auto result = m_FieldRegistry->GetDeclaredFields(resolvedPath);
+
+	// Parse-failure warning banner (D10). Widgets are read-only while
+	// parsed == false so the user cannot author against stale declarations.
+	if (!result.parsed)
+	{
+		ImGui::TextDisabled("[Warning] Script parse failed: %s",
+			result.diagnostic.c_str());
+	}
+
+	ImGui::BeginDisabled(!m_Editable || !result.parsed);
+
+	unsigned int owningWidgetId = m_ScriptFieldSession.IsOpen()
+		? m_ScriptFieldSessionOwningWidgetId : 0;
+	unsigned int pendingCloseWidgetId = 0;
+
+	// Capture the before-state for the session from the current document
+	// state (not from scriptState, which may have already been mutated this
+	// frame). This matches the Light/Camera pattern.
+	std::optional<ScriptComponent> sessionBefore;
+	if (m_ScriptFieldSession.IsOpen())
+		sessionBefore = m_ScriptFieldSession.BeforeValue();
+	else
+		sessionBefore = *scriptState;
+
+	// Track the last effective mutation result for the deferred close path.
+	EditorMutationResult lastApplied;
+	lastApplied.success = true;
+	lastApplied.effective = false;
+
+	for (const auto& desc : result.descriptors)
+	{
+		ImGui::PushID(desc.name.c_str());
+		ImGui::Text("%s:", desc.name.c_str());
+		ImGui::SameLine();
+
+		// Find the stored entry. Do NOT auto-insert defaults into the map —
+		// only insert when the widget actually changes a field, so untouched
+		// declared-but-unstored fields don't get persisted as authored data.
+		auto& fieldMap = scriptState->fieldValues;
+		auto it = fieldMap.find(desc.name);
+		const bool hasStored = it != fieldMap.end();
+
+		// Guard: if the stored type and declared type are incompatible (different
+		// variant arms), don't touch the value — the user needs to reload/reconcile.
+		// Compatible types (vec3 <-> color, same arm) are safe to read/write.
+		if (hasStored && !rt2::core::ScriptFieldTypesCompatible(
+		        it->second.type, desc.type))
+		{
+			ImGui::TextDisabled("(declaration type changed — reopen to reconcile)");
+			ImGui::PopID();
+			continue;
+		}
+
+		// Build a display value: the stored entry if present, or the declared
+		// default. We use this for rendering without mutating the map.
+		rt2::core::ScriptFieldEntry display;
+		if (hasStored)
+			display = it->second;
+		else
+			display = rt2::core::ScriptFieldEntry{ desc.type, desc.defaultValue };
+
+		bool changed = false;
+		const bool isContinuous =
+			desc.type == rt2::core::ScriptFieldType::Int ||
+			desc.type == rt2::core::ScriptFieldType::Float ||
+			desc.type == rt2::core::ScriptFieldType::Vec3 ||
+			desc.type == rt2::core::ScriptFieldType::Color;
+
+		switch (desc.type)
+		{
+		case rt2::core::ScriptFieldType::Bool:
+		{
+			bool v = std::get<bool>(display.value);
+			if (ImGui::Checkbox("##val", &v))
+			{
+				display.value = v;
+				changed = true;
+			}
+			break;
+		}
+		case rt2::core::ScriptFieldType::Int:
+		{
+			int64_t v = std::get<int64_t>(display.value);
+			if (ImGui::DragScalar("##val", ImGuiDataType_S64, &v, 1.0f))
+			{
+				display.value = v;
+				changed = true;
+			}
+			break;
+		}
+		case rt2::core::ScriptFieldType::Float:
+		{
+			double v = std::get<double>(display.value);
+			if (ImGui::DragScalar("##val", ImGuiDataType_Double, &v, 0.1f))
+			{
+				display.value = v;
+				changed = true;
+			}
+			break;
+		}
+		case rt2::core::ScriptFieldType::String:
+		{
+			char buf[1024];
+			snprintf(buf, sizeof(buf), "%s",
+				std::get<std::string>(display.value).c_str());
+			if (ImGui::InputText("##val", buf, sizeof(buf),
+				ImGuiInputTextFlags_EnterReturnsTrue))
+			{
+				display.value = std::string(buf);
+				changed = true;
+			}
+			if (ImGui::IsItemDeactivatedAfterEdit())
+			{
+				display.value = std::string(buf);
+				changed = true;
+			}
+			break;
+		}
+		case rt2::core::ScriptFieldType::Uuid:
+		{
+			char buf[64];
+			snprintf(buf, sizeof(buf), "%s",
+				std::get<rt2::core::UUID>(display.value).ToString().c_str());
+			const auto tryCommit = [&]() {
+				const auto parsed = rt2::core::UUID::Parse(buf);
+				if (!parsed.IsNull() ||
+				    std::string(buf) == "00000000-0000-0000-0000-000000000000")
+				{
+					display.value = parsed;
+					changed = true;
+				}
+			};
+			if (ImGui::InputText("##val", buf, sizeof(buf),
+				ImGuiInputTextFlags_EnterReturnsTrue))
+				tryCommit();
+			if (ImGui::IsItemDeactivatedAfterEdit())
+				tryCommit();
+			break;
+		}
+		case rt2::core::ScriptFieldType::Vec3:
+		{
+			glm::vec3 v = std::get<glm::vec3>(display.value);
+			if (ImGui::DragFloat3("##val", &v[0], 0.1f))
+			{
+				display.value = v;
+				changed = true;
+			}
+			break;
+		}
+		case rt2::core::ScriptFieldType::Color:
+		{
+			glm::vec3 v = std::get<glm::vec3>(display.value);
+			if (ImGui::ColorEdit3("##val", &v[0]))
+			{
+				display.value = v;
+				changed = true;
+			}
+			break;
+		}
+		}
+
+		// Apply the changed field to the document. Only insert into the map
+		// here, so untouched declared-but-unstored fields are not persisted.
+		EditorMutationResult applied;
+		applied.success = true;
+		applied.effective = false;
+
+		if (changed)
+		{
+			// Write the display entry back into the field map, then write
+			// the full component to the manager.
+			if (hasStored)
+				it->second = display;
+			else
+				fieldMap[desc.name] = display;
+
+			applied = m_SceneMgr->SetScriptState(targetUuid, *scriptState);
+			lastApplied = applied;
+		}
+
+		// Session management for continuous widgets.
+		if (isContinuous)
+		{
+			const unsigned int widgetId = ImGui::GetID("##val");
+			if (ImGui::IsItemActivated())
+			{
+				if (!m_ScriptFieldSession.IsOpen() && m_Editable)
+				{
+					m_ScriptFieldSession.OnActivated(targetUuid, *sessionBefore);
+					m_ScriptFieldSessionOwningWidgetId = widgetId;
+					owningWidgetId = widgetId;
+				}
+			}
+			if (changed && m_ScriptFieldSession.IsOpen())
+				m_ScriptFieldSession.OnEditCommitted();
+			if (ImGui::IsItemDeactivatedAfterEdit())
+			{
+				if (m_ScriptFieldSession.IsOpen() && owningWidgetId == widgetId)
+					pendingCloseWidgetId = widgetId;
+			}
+			else if (ImGui::IsItemDeactivated() && m_ScriptFieldSession.IsOpen() &&
+			         owningWidgetId == widgetId)
+			{
+				m_ScriptFieldSession.OnCancelled();
+				m_ScriptFieldSessionOwningWidgetId = 0;
+			}
+		}
+		else if (changed && applied.effective)
+		{
+			// Discrete widget: commit immediately via a command, using the
+			// actual mutation result (so effective flows through).
+			RecordScriptEdit(targetUuid, *sessionBefore, *scriptState, applied);
+		}
+
+		ImGui::PopID();
+	}
+
+	ImGui::EndDisabled();
+
+	// Deferred close AFTER the mutation block (Light/Camera pattern).
+	if (pendingCloseWidgetId != 0 && m_ScriptFieldSession.IsOpen() &&
+	    m_ScriptFieldSessionOwningWidgetId == pendingCloseWidgetId)
+	{
+		auto after = m_SceneMgr->GetScriptState(targetUuid);
+		if (after.has_value())
+		{
+			auto rec = m_ScriptFieldSession.CloseDeferred(*after,
+				{ [this, targetUuid]() {
+					return m_SceneMgr->FindEntityByUuid(targetUuid) != entt::null && m_Editable;
+				} });
+			if (rec)
+			{
+				// The per-frame writes already put the document into rec->after.
+				// Do NOT call SetScriptState again — that would be a no-op
+				// (effective=false) and RecordApplied would reject the command.
+				// Pass the last effective mutation result so the command is
+				// recorded. If no per-frame write was effective (e.g. the final
+				// frame returned to the start value), lastApplied.effective is
+				// false and the command is correctly suppressed.
+				RecordScriptEdit(targetUuid, rec->before, rec->after, lastApplied);
+			}
+		}
+		else
+		{
+			m_ScriptFieldSession.Discard();
+		}
+		m_ScriptFieldSessionOwningWidgetId = 0;
 	}
 }
 

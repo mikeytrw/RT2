@@ -7,9 +7,12 @@
 
 #include <glm/glm.hpp>
 
+#include <array>
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -50,6 +53,67 @@ enum class ScriptFieldType : uint8_t
     Color   = 6,    // glm::vec3 arm, color-picker widget
 };
 
+inline constexpr std::array<const char*, 7> ScriptFieldTypeNames{
+    "bool", "int", "float", "string", "uuid", "vec3", "color"
+};
+
+// JSON persistence is strict UTF-8. Validate authored Lua byte strings before
+// nlohmann::json::dump so invalid input becomes an actionable save error rather
+// than an exception escaping the editor frame.
+inline bool IsWellFormedUtf8(std::string_view text)
+{
+    size_t i = 0;
+    while (i < text.size())
+    {
+        const auto lead = static_cast<unsigned char>(text[i]);
+        if (lead <= 0x7f) { ++i; continue; }
+
+        uint32_t codePoint = 0;
+        size_t continuationCount = 0;
+        if (lead >= 0xc2 && lead <= 0xdf)
+        {
+            codePoint = lead & 0x1f;
+            continuationCount = 1;
+        }
+        else if (lead >= 0xe0 && lead <= 0xef)
+        {
+            codePoint = lead & 0x0f;
+            continuationCount = 2;
+        }
+        else if (lead >= 0xf0 && lead <= 0xf4)
+        {
+            codePoint = lead & 0x07;
+            continuationCount = 3;
+        }
+        else
+        {
+            return false;
+        }
+
+        if (i + continuationCount >= text.size()) return false;
+        for (size_t offset = 1; offset <= continuationCount; ++offset)
+        {
+            const auto byte = static_cast<unsigned char>(text[i + offset]);
+            if ((byte & 0xc0) != 0x80) return false;
+            codePoint = (codePoint << 6) | (byte & 0x3f);
+        }
+
+        if ((continuationCount == 2 && codePoint < 0x800) ||
+            (continuationCount == 3 && codePoint < 0x10000) ||
+            (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
+            codePoint > 0x10ffff)
+            return false;
+
+        i += continuationCount + 1;
+    }
+    return true;
+}
+
+inline bool IsValidScriptFieldName(std::string_view name)
+{
+    return !name.empty() && IsWellFormedUtf8(name);
+}
+
 // Variant of supported field value types. Default-constructed state is
 // bool/false so a ScriptFieldValue is never valueless-by-exception.
 using ScriptFieldValue = std::variant<
@@ -60,6 +124,29 @@ using ScriptFieldValue = std::variant<
     UUID,
     glm::vec3
 >;
+
+// A persisted/authored field value keeps its semantic declaration tag next
+// to the variant payload. This is required because Vec3 and Color deliberately
+// share the same glm::vec3 variant arm but select different inspector widgets
+// and different on-disk type tags.
+struct ScriptFieldEntry
+{
+    // Keep the default state internally consistent. Map insertion through
+    // operator[] is therefore safe even before the caller assigns a value.
+    ScriptFieldType  type = ScriptFieldType::Float;
+    ScriptFieldValue value = 0.0;
+
+    bool operator==(const ScriptFieldEntry& other) const
+    {
+        return type == other.type && value == other.value;
+    }
+    bool operator!=(const ScriptFieldEntry& other) const
+    {
+        return !(*this == other);
+    }
+};
+
+using ScriptFieldMap = std::unordered_map<std::string, ScriptFieldEntry>;
 
 // The variant arm a declared type occupies. Two ScriptFieldTypes are
 // *compatible* (a value survives a declaration change) iff they share an
@@ -86,21 +173,18 @@ constexpr bool ScriptFieldTypesCompatible(ScriptFieldType a, ScriptFieldType b)
     return ScriptFieldArmIndex(a) == ScriptFieldArmIndex(b);
 }
 
+inline bool ScriptFieldEntryHasValidPayload(const ScriptFieldEntry& entry)
+{
+    return entry.value.index() == ScriptFieldArmIndex(entry.type);
+}
+
 // Canonical lowercase tag for a declared type. This is the on-disk tag
 // written by SceneSerializer v3 and the label used in diagnostics.
 constexpr const char* ScriptFieldTypeName(ScriptFieldType type)
 {
-    switch (type)
-    {
-    case ScriptFieldType::Bool:   return "bool";
-    case ScriptFieldType::Int:    return "int";
-    case ScriptFieldType::Float:  return "float";
-    case ScriptFieldType::String: return "string";
-    case ScriptFieldType::Uuid:   return "uuid";
-    case ScriptFieldType::Vec3:   return "vec3";
-    case ScriptFieldType::Color:  return "color";
-    }
-    return "float";
+    const size_t index = static_cast<size_t>(type);
+    return index < ScriptFieldTypeNames.size()
+         ? ScriptFieldTypeNames[index] : ScriptFieldTypeNames[2];
 }
 
 // ============================================================================

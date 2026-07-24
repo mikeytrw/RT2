@@ -9,6 +9,7 @@
 #include "RuntimeSceneMutator.h"
 #include "IRuntimeScriptDispatch.h"
 #include "IRuntimeCommandSink.h"
+#include "SceneRunState.h"
 #include "InputTypes.h"
 #include "core/Error.h"
 #include "core/UUID.h"
@@ -78,13 +79,6 @@ namespace rt2::core {
 constexpr float kFixedDt       = 1.0f / 60.0f;
 constexpr float kMaxFrameTime  = 0.25f;   // clamp large stalls
 constexpr int   kMaxSubsteps   = 5;       // prevent spiral of death
-
-enum class SceneRunState
-{
-    Edit,
-    Playing,
-    Paused,
-};
 
 // Deferred structural operations (Phase 4 §3). One FIFO queue, drained in
 // exact enqueue order at the safe point.

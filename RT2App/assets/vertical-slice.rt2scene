@@ -159,9 +159,8 @@
     }
   ],
   "metadata": {
-    "name": "vertical-slice",
-    "sourcePath": "C:\\Users\\mikey\\source\\repos\\RT2\\RT2App\\assets\\vertical-slice.rt2scene"
+    "name": "vertical-slice"
   },
   "textures": [],
-  "version": 2
+  "version": 3
 }

@@ -18,6 +18,12 @@ enum class ReparentMode
 struct EditorMutationResult
 {
     bool success = true;
+    // A successful mutation that changed nothing (canonical no-op suppression).
+    // History uses this to avoid recording phantom undo entries: when the
+    // manager accepts a value that is already the stored state, it returns
+    // success=true but effective=false. Commands and callers never set this
+    // to false for a real mutation.
+    bool effective = true;
     rt2::core::Error error;
     rt2::core::SyncImpact syncImpact = rt2::core::SyncImpact::None;
     std::vector<rt2::core::UUID> affectedEntities;
@@ -28,6 +34,7 @@ struct EditorMutationResult
     {
         EditorMutationResult result;
         result.success = false;
+        result.effective = false;
         result.error.code = code;
         result.error.path = path;
         result.error.detail = detail;

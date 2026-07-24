@@ -27,9 +27,9 @@
 //
 // SANDBOXING (D3). The editor parses arbitrary user .lua on selection, so
 // the parse environment:
-//   - opens base/math/string/table only (mirroring ScriptSystem's library
-//     set); no io, os, debug, or package,
-//   - nils dofile/loadfile/require/load in the environment,
+//   - opens the shared safe library set; no io, os, debug, or package,
+//   - installs throwing stubs for denied base functions (nil would expose
+//     the globals fallback again),
 //   - runs under a protected call, so a syntax or runtime error is a
 //     diagnostic rather than a throw,
 //   - installs a LUA_MASKCOUNT hook with an instruction budget, so a
@@ -43,7 +43,9 @@
 // declarations would treat every field as removed and delete the user's
 // authored values on a transient syntax error.
 //
-// CPU-only: no ImGui, no Vulkan, no Walnut. Links into RT2Tests.
+// CPU-only: no ImGui, no Vulkan, no Walnut. Links into RT2Tests. Instances
+// are not thread-safe; an eventual asynchronous importer must use worker-local
+// registries or serialize access rather than sharing this Lua state/cache.
 // ============================================================================
 
 // Forward-declared so this header does not pull sol2/Lua into every TU that
@@ -73,8 +75,8 @@ public:
     };
 
     // Parse (or return cached) declarations for a script path. The cache is
-    // keyed by path and invalidated when the file's last-write time or size
-    // changes, so an edited script re-parses on the next query.
+    // keyed by path and invalidated by (last-write time, size, FNV-1a source
+    // hash), so same-size edits within one timestamp tick still re-parse.
     //
     // A missing or unreadable file yields parsed=false with a diagnostic;
     // an empty file is a legal script that declares no fields (parsed=true,

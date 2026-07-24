@@ -16,13 +16,15 @@
 
 namespace rt2::core {
 
+struct SceneLoadReport;
+
 // Crash recovery is deliberately one atomic envelope per logical document,
 // not version history. Each .rt2recovery file contains its manifest and the
-// complete schema-v2 scene JSON. Tests inject the storage root and clock.
+// complete schema-v3 scene JSON. Tests inject the storage root and clock.
 class SceneRecoveryService
 {
 public:
-    static constexpr uint32_t ManifestVersion = 1;
+    static constexpr uint32_t ManifestVersion = 2;
     static constexpr size_t   kDefaultMaxRecords = 8;
     static constexpr double   kDefaultIntervalSeconds = 60.0;
 
@@ -74,6 +76,12 @@ public:
     bool Restore(const RecoveryRecord& record,
                  SceneDocument& outDoc,
                  std::vector<AssetDiagnostic>& diagnostics,
+                 Error& err) const;
+
+    bool Restore(const RecoveryRecord& record,
+                 SceneDocument& outDoc,
+                 std::vector<AssetDiagnostic>& diagnostics,
+                 SceneLoadReport& loadReport,
                  Error& err) const;
 
     bool Discard(const RecoveryRecord& record, Error& err) const;
