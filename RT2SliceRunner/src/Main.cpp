@@ -13,6 +13,12 @@
 #include "core/UUID.h"
 #include "core/Error.h"
 #include "GPUSceneData.h"
+#include "ScriptSystem.h"
+#include "ScriptScenarioCompare.h"
+#include "IRuntimeCommandSink.h"
+#include "IRuntimeScriptDispatch.h"
+#include "RuntimeLifecycleObserver.h"
+#include "InputTypes.h"
 
 #include <cstdio>
 #include <cstring>
@@ -22,8 +28,11 @@
 #include <fstream>
 #include <sstream>
 #include <cmath>
+#include <algorithm>
+#include "json.hpp"
 
 using namespace rt2::core;
+using json = nlohmann::json;
 
 // ============================================================================
 // NullSceneRenderBridge — no GPU, records calls for verification
@@ -41,6 +50,24 @@ public:
     void TransformSync(GPUSceneData&) override { ++transformSyncs; }
     void ResetTemporalState() override         {}
     void RequestRender() override              { ++renders; }
+};
+
+// ============================================================================
+// NullInputService — inert input for the headless script scenario.
+// All actions return None; axes return 0; mouse/scroll return zero. This
+// proves the script-scenario runs without a real window/input system.
+// ============================================================================
+
+class NullInputService final : public IInputService
+{
+public:
+    ActionState GetActionState(const std::string&) const override
+    { return ActionState::None; }
+    float GetAxisValue(const std::string&) const override { return 0.0f; }
+    glm::vec2 GetMouseDelta() const override { return {0.0f, 0.0f}; }
+    float GetScrollDelta() const override { return 0.0f; }
+    void RequestCursorCapture(bool) override {}
+    bool IsCursorCaptureRequested() const override { return false; }
 };
 
 // ============================================================================
@@ -67,6 +94,8 @@ void PrintUsage()
     printf("  --steps <N>            Number of fixed update steps (default 60)\n");
     printf("  --out <path>           Write JSON report to file instead of stdout\n");
     printf("  --recovery-scenario    Run the Phase 1B recovery regression scenario\n");
+    printf("  --script-scenario <p>  Run the Phase 6C headless script scenario\n");
+    printf("  --out <path>           (with --script-scenario) write report to file\n");
     printf("  --help                 Show this help\n");
 }
 
@@ -350,12 +379,380 @@ static int RunRecoveryScenario(const std::string& outPath)
     }
 }
 
+// ============================================================================
+// Phase 6C/W7: Headless script scenario
+// ============================================================================
+//
+// Loads a scene, wires up ScriptSystem + RuntimeCommandSink + a null input
+// service, plays it for N fixed steps, then compares entity transforms
+// against expected values from the scenario JSON. This proves the full
+// script lifecycle (on_create → on_fixed_update → on_update) runs end-to-
+// end without the editor, GPU, or efsw. The scenario JSON schema is:
+//
+//   {
+//     "scenePath":   "assets/script-scenario.rt2scene",
+//     "frames":      60,
+//     "uuidSeed":    42,
+//     "forbidSpawn": false,
+//     "expectedTransforms": {
+//       "<uuid-string>": {
+//         "position": [x, y, z],
+//         "rotation": [x, y, z, w],
+//         "scale":    [x, y, z]
+//       }
+//     }
+//   }
+//
+// Exit codes are ScenarioExit (ScriptScenarioCompare.h) — that enum is the
+// contract, this comment is a convenience copy:
+//
+//   0  pass                 4  --out could not be opened
+//   1  scenario JSON bad    5  expectation failed (mismatch/missing/spawn)
+//   2  scene load failed    6  script error (quarantined / none survived)
+//   3  Play failed
+//
+// The comparison logic itself lives in ScriptScenarioCompare.h as pure
+// functions over plain structs, so RT2Tests can exercise it without a scene.
+
+static int RunScriptScenario(const std::string& scenarioPath,
+                             const std::string& outPath)
+{
+    namespace fs = std::filesystem;
+
+    // Exit codes come from ScenarioExit (ScriptScenarioCompare.h), which is
+    // the single source of truth shared with the docs and run_script_test.ps1.
+    auto exitCode = [](ScenarioExit e) { return static_cast<int>(e); };
+
+    // --- Load and parse the scenario JSON ---
+    std::string scenarioContent;
+    {
+        std::ifstream f(scenarioPath);
+        if (!f)
+        {
+            fprintf(stderr, "[ScriptScenario] Cannot open scenario: %s\n",
+                    scenarioPath.c_str());
+            return exitCode(ScenarioExit::ScenarioParse);
+        }
+        std::stringstream ss; ss << f.rdbuf();
+        scenarioContent = ss.str();
+    }
+
+    nlohmann::json scenario;
+    try
+    {
+        scenario = nlohmann::json::parse(scenarioContent);
+    }
+    catch (const std::exception& e)
+    {
+        fprintf(stderr, "[ScriptScenario] JSON parse error: %s\n", e.what());
+        return exitCode(ScenarioExit::ScenarioParse);
+    }
+
+    auto warnType = [&](const char* key, const char* expected) {
+        if (scenario.contains(key) && !scenario[key].is_null())
+            fprintf(stderr, "[ScriptScenario] Warning: \"%s\" is present "
+                    "but not %s; using default\n", key, expected);
+    };
+    auto getString = [&](const char* key,
+                         const std::string& def) -> std::string {
+        if (scenario.contains(key) && scenario[key].is_string())
+            return scenario[key].get<std::string>();
+        warnType(key, "a string");
+        return def;
+    };
+    auto getInt = [&](const char* key, int def) -> int {
+        if (scenario.contains(key) && scenario[key].is_number_integer())
+            return scenario[key].get<int>();
+        warnType(key, "an integer");
+        return def;
+    };
+    auto getBool = [&](const char* key, bool def) -> bool {
+        if (scenario.contains(key) && scenario[key].is_boolean())
+            return scenario[key].get<bool>();
+        warnType(key, "a boolean");
+        return def;
+    };
+
+    // Resolve scenePath relative to the scenario's directory.
+    fs::path scenarioDir = fs::path(scenarioPath).parent_path();
+    std::string scenePathStr = getString("scenePath", "");
+    if (scenePathStr.empty())
+    {
+        fprintf(stderr, "[ScriptScenario] Missing \"scenePath\" in scenario\n");
+        return exitCode(ScenarioExit::ScenarioParse);
+    }
+    std::error_code pathEc;
+    fs::path scenePath = fs::weakly_canonical(
+        scenarioDir / scenePathStr, pathEc);
+    if (pathEc)
+    {
+        fprintf(stderr, "[ScriptScenario] Cannot resolve scene path: %s\n",
+                pathEc.message().c_str());
+        return exitCode(ScenarioExit::SceneLoad);
+    }
+
+    int frames = std::max(1, getInt("frames", 60));
+    uint64_t uuidSeed = static_cast<uint64_t>(
+        std::max(0, getInt("uuidSeed", 42)));
+    bool forbidSpawn = getBool("forbidSpawn", false);
+
+    // --- Load the scene ---
+    // Build a UUID seed from the integer seed (low 64 bits).
+    std::array<uint8_t, 16> seedBytes{};
+    for (int i = 0; i < 8; ++i)
+        seedBytes[i] = static_cast<uint8_t>(
+            (uuidSeed >> (i * 8)) & 0xFF);
+    UUID seedUuid(seedBytes);
+    DeterministicUuidProvider uuidProv(seedUuid);
+    SceneDocument authoring;
+    authoring.SetUuidProvider(&uuidProv);
+
+    Error err;
+    SceneLoadReport loadReport;
+    if (!SceneSerializer::Load(authoring, scenePath, loadReport, err))
+    {
+        fprintf(stderr, "[ScriptScenario] Scene load failed: %s\n",
+                err.Format().c_str());
+        return exitCode(ScenarioExit::SceneLoad);
+    }
+    for (const auto& d : loadReport.fieldDiagnostics)
+        fprintf(stderr, "[ScriptScenario] Field diagnostic: %s\n",
+                d.message.c_str());
+
+    // --- Wire up the script system ---
+    NullSceneRenderBridge bridge;
+    RuntimeSceneController ctrl;
+    ScriptSystem scriptSys(uuidProv);
+    RuntimeCommandSink sink(ctrl);
+    NullInputService input;
+
+    ctrl.SetRuntimeUuidProvider(&uuidProv);
+    ctrl.SetLifecycleObserver(&scriptSys);
+    ctrl.SetScriptDispatch(&scriptSys);
+    ctrl.SetInputService(&input);
+    ctrl.SetRuntimeCommandSink(&sink);
+
+    // --- Capture authoring entity count as the forbidSpawn baseline ---
+    size_t authoringEntityCount = 0;
+    {
+        auto view = authoring.ecs.registry.view<EntityIdComponent>();
+        authoringEntityCount = view.size();
+    }
+
+    // --- Play ---
+    if (!ctrl.Play(authoring, bridge, err))
+    {
+        fprintf(stderr, "[ScriptScenario] Play failed: %s\n",
+                err.Format().c_str());
+        return exitCode(ScenarioExit::PlayFailed);
+    }
+
+    // --- Run N fixed steps at kFixedDt (deterministic) ---
+    for (int i = 0; i < frames; ++i)
+        ctrl.Update(kFixedDt, bridge);
+
+    // --- Capture runtime entity state ---
+    std::vector<ScenarioEntityState> entities;
+    const SceneDocument* runtime = ctrl.TryGetRuntimeScene();
+    if (runtime)
+    {
+        auto view = runtime->ecs.registry.view<EntityIdComponent>();
+        for (auto e : view)
+        {
+            const auto& idc = view.get<EntityIdComponent>(e);
+            ScenarioEntityState r;
+            r.uuid = idc.id.ToString();
+            if (auto* nc = runtime->ecs.registry.try_get<NameComponent>(e))
+                r.name = nc->name;
+            if (auto* tf = runtime->ecs.registry.try_get<Transform>(e))
+            {
+                r.translation = tf->translation;
+                r.rotation    = tf->rotation;
+                r.scale       = tf->scale;
+            }
+            if (auto* vc = runtime->ecs.registry.try_get<VisibleComponent>(e))
+                r.visible = vc->visible;
+            entities.push_back(r);
+        }
+    }
+
+    // --- Assemble the verdict (pure logic lives in ScriptScenarioCompare.h) ---
+    ScenarioResult result;
+    result.liveInstances        = scriptSys.LiveInstanceCount();
+    result.quarantinedInstances = scriptSys.QuarantinedInstanceCount();
+    result.authoringEntityCount = authoringEntityCount;
+    result.runtimeEntityCount   = entities.size();
+    result.scriptError = DetectScriptError(result.liveInstances,
+                                           result.quarantinedInstances,
+                                           result.runtimeEntityCount);
+    result.spawnViolation = DetectSpawnViolation(forbidSpawn,
+                                                 result.runtimeEntityCount,
+                                                 authoringEntityCount);
+
+    // --- Stop ---
+    ctrl.Stop(authoring, bridge);
+
+    // --- Parse expectedTransforms into plain structs, then compare ---
+    std::vector<ScenarioExpectation> expectations;
+    if (scenario.contains("expectedTransforms") &&
+        scenario["expectedTransforms"].is_object())
+    {
+        for (const auto& [uuid, exp] : scenario["expectedTransforms"].items())
+        {
+            ScenarioExpectation e;
+            e.uuid = uuid;
+
+            if (exp.contains("position"))
+            {
+                const auto& ep = exp["position"];
+                if (ep.is_array() && ep.size() >= 3)
+                {
+                    e.hasPosition = true;
+                    e.position = glm::vec3(ep[0].get<float>(),
+                                           ep[1].get<float>(),
+                                           ep[2].get<float>());
+                }
+            }
+            if (exp.contains("rotation"))
+            {
+                const auto& er = exp["rotation"];
+                if (er.is_array() && er.size() >= 4)
+                {
+                    e.hasRotation = true;
+                    // Scenario JSON stores [x, y, z, w]; glm::quat takes
+                    // (w, x, y, z).
+                    e.rotation = glm::quat(er[3].get<float>(),
+                                           er[0].get<float>(),
+                                           er[1].get<float>(),
+                                           er[2].get<float>());
+                }
+            }
+            if (exp.contains("scale"))
+            {
+                const auto& es = exp["scale"];
+                if (es.is_array() && es.size() >= 3)
+                {
+                    e.hasScale = true;
+                    e.scale = glm::vec3(es[0].get<float>(),
+                                        es[1].get<float>(),
+                                        es[2].get<float>());
+                }
+            }
+            expectations.push_back(std::move(e));
+        }
+    }
+
+    result.mismatches = CompareTransforms(entities, expectations);
+    const auto& mismatches = result.mismatches;
+
+    // --- Emit JSON report ---
+    auto emitReport = [&](FILE* out) {
+        fprintf(out, "{\n");
+        fprintf(out, "  \"scenario\": \"%s\",\n", scenarioPath.c_str());
+        fprintf(out, "  \"scene\": \"%s\",\n", scenePath.string().c_str());
+        fprintf(out, "  \"frames\": %d,\n", frames);
+        fprintf(out, "  \"forbidSpawn\": %s,\n", forbidSpawn ? "true" : "false");
+        fprintf(out, "  \"spawnViolation\": %s,\n",
+                result.spawnViolation ? "true" : "false");
+        fprintf(out, "  \"scriptError\": %s,\n",
+                result.scriptError ? "true" : "false");
+        fprintf(out, "  \"liveInstances\": %zu,\n", result.liveInstances);
+        fprintf(out, "  \"quarantinedInstances\": %zu,\n",
+                result.quarantinedInstances);
+        fprintf(out, "  \"exitCode\": %d,\n",
+                static_cast<int>(result.Exit()));
+        fprintf(out, "  \"mismatchCount\": %zu,\n", mismatches.size());
+        if (!mismatches.empty())
+        {
+            fprintf(out, "  \"mismatches\": [\n");
+            for (size_t i = 0; i < mismatches.size(); ++i)
+            {
+                fprintf(out, "    {\n");
+                fprintf(out, "      \"uuid\": \"%s\",\n",
+                        mismatches[i].uuid.c_str());
+                fprintf(out, "      \"field\": \"%s\",\n",
+                        mismatches[i].field.c_str());
+                fprintf(out, "      \"expected\": \"%s\",\n",
+                        mismatches[i].expected.c_str());
+                fprintf(out, "      \"actual\": \"%s\"\n",
+                        mismatches[i].actual.c_str());
+                fprintf(out, "    }%s\n",
+                        (i + 1 < mismatches.size()) ? "," : "");
+            }
+            fprintf(out, "  ],\n");
+        }
+        fprintf(out, "  \"entities\": [\n");
+        for (size_t i = 0; i < entities.size(); ++i)
+        {
+            fprintf(out, "    {\n");
+            fprintf(out, "      \"uuid\": \"%s\",\n",
+                    entities[i].uuid.c_str());
+            fprintf(out, "      \"name\": \"%s\",\n",
+                    entities[i].name.c_str());
+            fprintf(out, "      \"visible\": %s,\n",
+                    entities[i].visible ? "true" : "false");
+            fprintf(out, "      \"position\": [%.9g, %.9g, %.9g],\n",
+                    entities[i].translation.x, entities[i].translation.y,
+                    entities[i].translation.z);
+            fprintf(out, "      \"rotation\":    [%.9g, %.9g, %.9g, %.9g],\n",
+                    entities[i].rotation.x, entities[i].rotation.y,
+                    entities[i].rotation.z, entities[i].rotation.w);
+            fprintf(out, "      \"scale\":       [%.9g, %.9g, %.9g]\n",
+                    entities[i].scale.x, entities[i].scale.y,
+                    entities[i].scale.z);
+            fprintf(out, "    }%s\n",
+                    (i + 1 < entities.size()) ? "," : "");
+        }
+        fprintf(out, "  ]\n");
+        fprintf(out, "}\n");
+    };
+
+    if (outPath.empty())
+        emitReport(stdout);
+    else
+    {
+        FILE* f = fopen(outPath.c_str(), "w");
+        if (!f)
+        {
+            fprintf(stderr, "[ScriptScenario] Cannot open output: %s\n",
+                    outPath.c_str());
+            return exitCode(ScenarioExit::OutputFailed);
+        }
+        emitReport(f);
+        fclose(f);
+    }
+
+    // --- Exit code ---
+    if (result.Pass())
+    {
+        printf("[ScriptScenario] PASS: %d frames, %zu entities, "
+               "no mismatches\n", frames, entities.size());
+        return exitCode(ScenarioExit::Pass);
+    }
+
+    if (result.scriptError)
+        fprintf(stderr, "[ScriptScenario] FAIL: script error "
+                "(live=%zu, quarantined=%zu)\n",
+                result.liveInstances, result.quarantinedInstances);
+    if (result.spawnViolation)
+        fprintf(stderr, "[ScriptScenario] FAIL: spawn violation "
+                "(forbidSpawn=true, entities %zu > authoring %zu)\n",
+                result.runtimeEntityCount, result.authoringEntityCount);
+    for (const auto& m : mismatches)
+        fprintf(stderr, "[ScriptScenario] FAIL: %s %s mismatch "
+                "(expected %s, got %s)\n",
+                m.uuid.c_str(), m.field.c_str(),
+                m.expected.c_str(), m.actual.c_str());
+    return exitCode(result.Exit());
+}
+
 int main(int argc, char** argv)
 {
     std::string scenePath;
     int steps = 60;
     std::string outPath;
     bool recoveryScenario = false;
+    std::string scriptScenarioPath;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -381,6 +778,10 @@ int main(int argc, char** argv)
         {
             recoveryScenario = true;
         }
+        else if (std::strcmp(a, "--script-scenario") == 0)
+        {
+            if (const char* v = next()) scriptScenarioPath = v;
+        }
         else if (std::strcmp(a, "--help") == 0 || std::strcmp(a, "-?") == 0)
         {
             PrintUsage();
@@ -395,6 +796,9 @@ int main(int argc, char** argv)
     if (recoveryScenario)
         return RunRecoveryScenario(outPath);
 
+    if (!scriptScenarioPath.empty())
+        return RunScriptScenario(scriptScenarioPath, outPath);
+
     if (scenePath.empty())
     {
         fprintf(stderr, "[SliceRunner] --scene is required\n");
@@ -408,9 +812,19 @@ int main(int argc, char** argv)
     authoring.SetUuidProvider(&provider);
 
     Error err;
-    if (!SceneSerializer::Load(authoring, scenePath, err))
+    SceneLoadReport loadReport;
+    if (!SceneSerializer::Load(authoring, scenePath, loadReport, err))
     {
         fprintf(stderr, "[SliceRunner] Failed to load scene: %s\n", err.Format().c_str());
+        return 2;
+    }
+    for (const auto& diagnostic : loadReport.fieldDiagnostics)
+        fprintf(stderr, "[SliceRunner] Script field diagnostic: %s\n",
+                diagnostic.message.c_str());
+    if (loadReport.droppedScriptFieldData)
+    {
+        fprintf(stderr,
+            "[SliceRunner] Refusing scene because malformed script fields were dropped\n");
         return 2;
     }
 
