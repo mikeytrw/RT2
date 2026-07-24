@@ -1,7 +1,7 @@
 # Game Loop
 
 The main loop lifecycle — from application startup through per-frame execution
-to shutdown. Includes where future scripting and physics systems hook in.
+to shutdown. Includes the implemented Lua/runtime slots and future physics.
 
 ---
 
@@ -45,7 +45,7 @@ while (window not closed):
     ├─────────────────────────────────────────────────────────┤
     │ 3. OnUpdate(ts)  — per-layer update                       │
     │    ├─ Camera::OnUpdate(ts)     — movement, rotation       │
-    │    ├─ [FUTURE] ScriptSystem::OnUpdate(ts)                 │
+    │    ├─ RuntimeSceneController update (Play/Pause/Step)     │
     │    ├─ [FUTURE] PhysicsSystem::Step(ts)                    │
     │    ├─ [FUTURE] SceneGraph::UpdateWorldTransforms()        │
     │    └─ Render()                 — GPU render submission    │
@@ -101,25 +101,48 @@ This section is the canonical ordering contract for the Edit/Play/Pause
 runtime lifecycle. `game-engine-development-plan.md` may state phase-specific
 requirements but must link here rather than define a competing order.
 
-### Implemented (vertical slice)
+### Implemented
 
-The vertical slice implements a subset of the full contract. Systems marked
-absent are placeholders for later phases.
+The runtime controller now implements the Phase 4 lifecycle and the Phase
+6A/6C Lua dispatch slots. Systems marked absent remain placeholders for
+later phases.
 
 ```text
 sample input
 accumulate clamped frame time (max 0.25s)
 while a fixed step is available, up to kMaxSubsteps (5):
-    MotionSystem::FixedUpdate (UUID-sorted entity order)
+    IRuntimeScriptDispatch::OnFixedUpdate
+    inline MotionComponent integration (UUID-sorted entity order)
     [physics step — absent, Phase 9]
 apply deferred structural changes at the defined safe point
-[variable script callbacks — absent, Phase 6]
+IRuntimeScriptDispatch::SyncScriptEnvironments
+IRuntimeScriptDispatch::OnUpdate
+    ├─ drain queued script reloads (only while Playing)  — Phase 6C
+    ├─ per-entity on_update, UUID-sorted
+    └─ fire due timers                                    — Phase 6C
 [animation evaluation — absent, Phase 10]
 update world transforms (SceneGraph)
 issue one batched transform-only GPU sync
 [audio update — absent, Phase 11]
 render
+drain debounced .lua file changes (editor only — see scripting.md)
 ```
+
+Everything above `render` is `RT2Layer::OnUpdate` → `RuntimeSceneController::
+Update`. The `.lua` drain is last because it lives in `RT2Layer::OnUIRender`,
+and Walnut calls `OnUpdate`, then `OnUIRender`, then presents
+(`Application.cpp:765, 843, 868`).
+
+**A file change therefore takes effect one frame later.** The drain in frame
+N calls `ReloadScript`, which either swaps immediately (Playing) or queues
+(Paused); either way the first callback to run against new code is in frame
+N+1. This is a real ordering property, not a rounding error: a reload can
+never disturb the simulation step that has already run this frame.
+
+Within `OnUpdate`, reloads drain at the **top**, before any callback runs, so
+a swap never happens with the outgoing environment's frame on the Lua stack.
+Timers fire at the **end**, after every `on_update`, and a timer created
+during the pass does not fire until the next frame.
 
 Constants: `kFixedDt = 1/60`, `kMaxFrameTime = 0.25s`, `kMaxSubsteps = 5`.
 If the substep cap is reached, residual accumulator time is dropped to
@@ -165,7 +188,10 @@ not run the accumulator or consume wall-clock time. Specifically:
    ments` — builds environments and fires `OnCreate` for newly applied
    entities, and erases entries for entities that are gone) — Phase 6A.
 5. Script variable callbacks (`IRuntimeScriptDispatch::OnUpdate`,
-   UUID-sorted) — Phase 6A.
+   UUID-sorted) — Phase 6A. Timers fire at the end of this stage.
+   Queued script reloads are **not** drained here: the drain is gated on
+   `Playing`, and Step runs while Paused. Stepping advances the world as
+   authored; it does not swap the code mid-freeze — Phase 6C.
 6. Update world transforms (SceneGraph).
 7. Issue one batched GPU sync (coalesced: structural > material > transform).
 8. Request one render submission.

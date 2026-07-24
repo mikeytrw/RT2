@@ -1,87 +1,30 @@
 # Future Extensions
 
-Placeholder designs for systems that will be added to RT2 as it evolves from
-a rendering engine into a minimal game engine. These are not implemented yet —
-this document defines where they would plug in and what the interfaces would
-look like.
+Design notes for systems that will extend RT2 as it evolves from a rendering
+engine into a minimal game engine. Implemented areas point to their canonical
+documentation; the remaining sections describe future integration seams.
 
 ---
 
 ## Scripting
 
-### Purpose
+Lua scripting is no longer hypothetical, and Phase 6 is complete. 6A
+implements per-entity environments, lifecycle callbacks, sandboxing, queued
+world mutation and the runtime frame slots. 6B adds app wiring, public-field
+reflection, typed authoring storage, deterministic reconciliation, schema-v3
+persistence, undoable commands and the inspector surface. 6C adds hot reload
+with a file watcher, input/light/camera/material bindings, timers, and the
+headless `--script-scenario` runner.
 
-Allow per-entity behavior logic without hardcoding into the engine. Scripts
-respond to events (spawn, update, destroy) and can modify entity transforms,
-spawn/despawn entities, and adjust material parameters.
+The canonical design and current gaps live in [scripting.md](scripting.md);
+exact callback ordering lives in [game-loop.md](game-loop.md). Do not
+reintroduce the old callback-bearing ECS design: `ScriptComponent` is pure
+authored data, while all `sol::environment` state belongs to `ScriptSystem`.
 
-### Integration Point
-
-In the game loop, scripting runs after camera input and before rendering
-(see `docs/game-loop.md`):
-
-```
-OnUpdate(ts):
-  Camera::OnUpdate(ts)
-  ScriptSystem::OnUpdate(ts)     // ← scripting hook
-  [PhysicsSystem::Step(ts)]      // ← physics (if present)
-  SceneGraph::UpdateWorldTransforms()
-  Render()
-```
-
-### ECS Component
-
-```cpp
-struct ScriptComponent
-{
-    // Callback-based (C++) or function pointer for native scripts
-    std::function<void(entt::entity, float)> onUpdate;
-    std::function<void(entt::entity)> onSpawn;
-    std::function<void(entt::entity)> onDestroy;
-};
-```
-
-### Script System
-
-```cpp
-class ScriptSystem
-{
-public:
-    void OnUpdate(entt::registry& reg, float ts)
-    {
-        auto view = reg.view<ScriptComponent>();
-        for (auto entity : view)
-        {
-            auto& script = view.get<ScriptComponent>(entity);
-            if (script.onUpdate)
-                script.onUpdate(entity, ts);
-        }
-    }
-};
-```
-
-### Future: Lua scripting
-
-For a data-driven workflow, embed Lua (or a subset) and expose:
-- Entity access (get/set Transform, MeshRef, material parameters)
-- Scene queries (find entities by name, raycast)
-- Spawn/despawn entities
-- Timer/coroutine support
-
-Lua scripts would be loaded from `.lua` files referenced by a `LuaScriptComponent`:
-
-```cpp
-struct LuaScriptComponent
-{
-    std::string scriptPath;
-    sol::table environment;  // per-entity Lua state
-};
-```
-
-### UI
-
-The outliner would show a "Add Script" option for selected entities, with a
-file picker for `.lua` scripts or a dropdown of registered native script types.
+Genuinely remaining, and deliberately out of Phase 6: bridging `set_light`
+to the GPU light list (which is built from emissive triangles, so a
+`LightComponent` write may have no visual effect), physics and animation
+bindings, and any scripting of the render pipeline itself.
 
 ---
 

@@ -3390,7 +3390,7 @@ registered. The single `SetCursorMode` call is in
 - `run_recovery_test.ps1` PASS.
 - graphify updated: 24825 nodes, 51458 edges, 945 communities.
 
-## Phase 6 — Lua scripting (planned)
+## Phase 6 — Lua scripting (completion, implemented)
 
 The Phase 6 spec above (lines 415–466) is the goal. Phase 6 is delivered in
 three sub-slices. Each sub-slice is a usable increment: 6A proves Lua drives
@@ -3655,7 +3655,7 @@ script slot that the prose at line 161 implies; 6A updates that list to
 include "fixed script callbacks" before the motion integration, matching
 the full contract at lines 130–143.
 
-### Phase 6A — Lua embedding and lifecycle (planned)
+### Phase 6A — Lua embedding and lifecycle (implemented)
 
 **Outcome.** A C++ script component drives an entity's transform during
 Play, with `OnCreate`, `OnFixedUpdate`, `OnUpdate`, and `OnDestroy`
@@ -3985,17 +3985,31 @@ unused in 6A — it is the seam 6B fills.
 - `run_recovery_test.ps1` PASS.
 - graphify updated: 32007 nodes, 68122 edges, 1273 communities.
 
-**Deferred to 6B (as planned):** public-field reflection and inspector
-UI; field-value persistence (v3 serialization); the
-`ScriptComponent.fieldValues` map exists but is empty and unused. The
-`ReloadScript(path)` API is declared on `ScriptSystem` and stubbed (empty
-body); 6C implements it.
+**Phase 6B status _as of this report_:** W0-W3 now provide app wiring,
+public-field reflection, typed storage, deterministic reconciliation, and
+schema-v3 persistence across normal open and recovery. Command integration
+and Inspector UI remain W4-W5. The `ReloadScript(path)` API is declared on
+`ScriptSystem` and stubbed (empty body); 6C implements file-watched hot
+reload.
 
 **Deferred to 6C (as planned):** hot reload (file watching via efsw);
 input/light/camera/mesh/material bindings; timers; headless JSON state
 report; `RT2SliceRunner --script-scenario` mode.
 
-### Phase 6B — Public fields, reflection, and persistence (W0+W1 implemented, W2-W6 planned)
+> **Superseded 2026-07-24.** The two paragraphs above are a point-in-time
+> snapshot, kept as a record of what this verification report covered. Both
+> 6B W4-W6 and all of 6C have since landed: `ReloadScript` is fully
+> implemented and every item under "Deferred to 6C" exists. For current
+> state see the Phase 6C verification report near the end of this document.
+
+### Phase 6B — Public fields, reflection, and persistence (implemented)
+
+> *Header corrected 2026-07-24 (during 6C/W9): this previously read
+> "W0-W3 implemented, W4-W6 planned". W4 (`SetScriptCommand` +
+> `MakeSetScriptCommandIfEffective`, `EditorPropertyCommands.h:217,331`),
+> W5 (`SceneEditorUI::RenderScriptEditor`, `SceneEditorUI.cpp:1626`) and
+> W6 (`Phase6BFieldsTests.cpp`) are all present in the tree. Note the
+> verification report below covers W0-W2 only; W3-W6 never got one.*
 
 **Outcome.** A script declares public fields with declared types and
 defaults; the inspector renders them, the user edits them, and they
@@ -4052,15 +4066,15 @@ variant and `self` table are already in place from 6A per S3/S6):**
 
 **Field-value persistence:**
 
-- `SceneSerializer` v2 → v3 with a migration path. v3 adds the
+- `SceneSerializer` v2 → v3 as a **hard format cutover**. v3 adds the
   `ScriptComponent` payload: `AssetReference` (path + sourceKey) plus
   `fieldValues` as a JSON object keyed by field name with a tagged-
-  value form (`{ "type": "float", "value": 5.0 }`). v2 read + in-memory
-  migration: a v2 scene with no `ScriptComponent` is loaded as v3 with
-  no scripts. Save always writes v3.
-- `PersistedComponents::ForEach` is updated to include
-  `ScriptComponent` (Count 11). Existing v2 fixtures continue to load
-  via the migration path.
+  value form (`{ "type": "float", "value": 5.0 }`). Save writes v3 and
+  the loader accepts v3 only; v1/v2 scenes are rejected as unsupported.
+  No migration code or legacy fixtures are required for this slice.
+- `PersistedComponents::ForEach` already includes `ScriptComponent`
+  (Count 11). W3 adds its disk representation without preserving v2
+  fixture compatibility.
 - The two-pass load (create + resolve) is unchanged; script field
   values are applied in the create pass (they are self-contained per
   entity, no cross-entity references).
@@ -4103,9 +4117,9 @@ in-memory field values against the newly declared fields).
 - Change `speed`'s declared type from `float` to `string`: the
   persisted float value is reset to the declared string default; a
   diagnostic is logged naming the entity, field, old type, new type.
-- A scene with no `ScriptComponent` saved in v2 loads cleanly in v3
-  with no scripts; a v3 scene with scripts round-trips field values
-  of every supported type.
+- A v3 scene with no `ScriptComponent` loads cleanly with no scripts;
+  a v3 scene with scripts round-trips every supported field type. v1/v2
+  inputs fail with the normal unsupported-schema diagnostic.
 - `CloneInMemory` carries field values into the runtime clone; the
   script's `OnCreate` reads the authored values.
 - Field values do not sync the GPU (they are editor/runtime-only
@@ -4167,7 +4181,7 @@ with the editor *stopped*, but `ScriptSystem`'s Lua state and instance
 map exist only during Play. A new CPU-only `ScriptFieldRegistry` owns
 **one** reusable `sol::state`, parses a `.lua` path on demand into a
 fresh sandboxed environment, and caches `std::vector<ScriptFieldDescriptor>`
-keyed by path with `(mtime, size)` invalidation. Only descriptor vectors
+keyed by path with `(mtime, size, FNV-1a source hash)` invalidation. Only descriptor vectors
 are cached — never Lua states — so the cache is tiny. `ScriptSystem::
 GetDeclaredFields(UUID)` is still added, delegating to the registry via
 the instance's asset path, so the spec's API survives; the editor calls
@@ -4207,9 +4221,9 @@ Each constructor returns
   descriptor — deferred to 6C if content authors ask for it.
 
 **D3 — Parsing is sandboxed and bounded.** The registry parses arbitrary
-user `.lua` in the editor on selection, so it opens `base/math/string/
-table` only (mirroring `ScriptSystem.cpp:32-36`), nils `dofile`/`loadfile`/
-`require`/`load`, runs the chunk under `sol::protected_function`, and
+user `.lua` in the editor on selection, so it opens the shared safe library
+set, installs throwing stubs for denied base functions, runs the chunk under
+`sol::protected_function`, and
 installs a `LUA_MASKCOUNT` hook with an instruction budget so a top-level
 `while true do end` cannot hang the editor. Callbacks are defined but
 never invoked. A parse failure yields a diagnostic and never throws.
@@ -4262,7 +4276,8 @@ already runs after load:
 // ScriptFieldReconcile.h — no Lua, no ImGui, no Vulkan
 struct FieldDiagnostic {
     enum class Kind { Added, Removed, Renamed, AmbiguousAlias,
-                      TypeChanged, ParseFailed };
+                      TypeChanged, InvalidStoredValue, MissingEntityId,
+                      InvalidAssetKind, ParseFailed };
     Kind kind; rt2::core::UUID entity;
     std::string field, fromField, message;
 };
@@ -4274,7 +4289,7 @@ ScriptFieldMap ReconcileScriptFields(
     std::vector<FieldDiagnostic>& outDiags);
 ```
 
-Five of the reconciliation tests then need neither Lua nor file I/O.
+The core reconciliation matrix then needs neither Lua nor file I/O.
 
 **D5 — Field values are stored typed.** *(Amended from the spec after
 review — the spec's implicit "type is the variant arm" model was lossy.)*
@@ -4283,19 +4298,18 @@ review — the spec's implicit "type is the variant arm" model was lossy.)*
 struct ScriptFieldEntry {
     rt2::core::ScriptFieldType type;
     rt2::core::ScriptFieldValue value;
-    friend bool operator==(const ScriptFieldEntry&,
-                           const ScriptFieldEntry&) = default;
+    bool operator==(const ScriptFieldEntry& other) const {
+        return type == other.type && value == other.value;
+    }
 };
 using ScriptFieldMap = std::unordered_map<std::string, ScriptFieldEntry>;
 ```
 
-Rationale for taking the cost now: W3 already touches the component, the
-clone path, and the serializer, so the marginal cost is small — measured,
-not assumed: `fieldValues` has exactly **five** call sites
-(`ECSComponents.h:300`, `SceneManager.cpp:1517-1523`,
-`ScriptSystem.cpp:357`, plus the two serializer sites W3 adds). That cost
-grows sharply once v3 ships an untyped on-disk format, since recovering
-the type later means a v4 migration. Storing the tag also *simplifies*
+Rationale for taking the cost now: W3 already touches the component, clone
+path, and serializer, while delaying typed storage until after v3 would
+require a v4 migration. The W2 call-site audit updated runtime injection,
+snapshot comparison, clone/duplication, and tests before any untyped disk
+format shipped. Storing the tag also *simplifies*
 D6: the on-disk tag becomes authoritative rather than derived from the
 variant arm, so `color` round-trips exactly and no arm-derivation logic
 is needed.
@@ -4404,9 +4418,10 @@ and is safe because nothing is written back until the user edits.
 - **W1 — Reflection.** `ScriptFieldDescriptor` in `ScriptFieldValue.h`;
   new `ScriptFieldRegistry.h/.cpp` (D1–D3, D10);
   `ScriptSystem::GetDeclaredFields(UUID)`.
-- **W2 — Reconciliation.** New `ScriptFieldReconcile.h/.cpp` (D4, D5);
+- **W2 — Reconciliation (implemented).** New `ScriptFieldReconcile.h/.cpp` (D4, D5);
   `ScriptFieldResolver::ResolveDocument(doc, registry, diags)` post-load
-  pass. Three implementation notes added after the W1 review:
+  seam. W3 installs the normal-open and recovery callers and owns their
+  dirty-state policy. Three implementation notes added after the W1 review:
   - The compatibility test compares **two different enums** — the
     declared `ScriptFieldDescriptor::type` and the stored
     `ScriptFieldEntry::type`. State it explicitly:
@@ -4422,14 +4437,18 @@ and is safe because nothing is written back until the user edits.
     returns `parsed == false` (D10). `ScriptSystem::GetDeclaredFields`
     returns the whole `ScriptFieldRegistry::Result` for exactly this
     reason — do not reduce it to a descriptor vector at any layer.
-- **W3 — Persistence.** `SchemaVersion 2 → 3`; `MinReadVersion` stays 1.
+- **W3 — Persistence.** `SchemaVersion 2 → 3`; set `MinReadVersion` to 3
+  as an explicit hard cutover. Reject v1/v2 rather than implementing a
+  migration path.
   Add the `script` branch to `EntityRecordToJson` (~`SceneSerializer.cpp:467`)
   and `JsonToEntityRecord` (~`:592`); `hasScript`/`script` already exist
-  on the record and are already emplaced at `:758`. v2 scenes load with
-  no scripts; save always writes v3.
+  on the record and are already emplaced at `:758`. Only v3 scenes load;
+  Save always writes v3.
 - **W4 — Command.** `SetScriptCommand` + `MakeSetScriptCommandIfEffective`
-  in `EditorPropertyCommands.*`; `SceneEditorUI::RecordScriptEdit`
-  modelled on `SceneEditorUI.cpp:186-198`.
+  in `EditorPropertyCommands.*`, kept CPU-only and proven through Execute,
+  Undo and Redo history tests. `SceneEditorUI::RecordScriptEdit` moves to W5,
+  where it has real widget callers and can submit staged canonical state through
+  history before the document is mutated.
 - **W5 — Inspector.** `RenderScriptEditor(EntityId)` following
   `RenderLightEditor`'s structure (F4), dispatched from `RenderInspector`
   (~`:937`). One `PropertyEditSession<ScriptComponent>
@@ -4457,10 +4476,10 @@ name · syntax error → last-good descriptors + diagnostic, no throw ·
 **parse failure does not reconcile** and therefore does not clobber
 authored values (D10) · runaway top-level loop terminates via the
 instruction hook (D3) · `Clear()` drops the cache and the next
-`GetDeclaredFields` re-parses · `(mtime, size)` invalidation.
+`GetDeclaredFields` re-parses · `(mtime, size, FNV-1a)` invalidation.
 
 *Serializer (W3):* v3 round-trips every supported type including `color`
-· v2 fixture loads clean as v3 with no scripts · unknown type tag dropped
+· v1/v2 files are rejected as unsupported · unknown type tag dropped
 with a diagnostic, load still succeeds · `CloneInMemory` carries field
 values into the Play clone and `OnCreate` reads the authored values.
 
@@ -4489,11 +4508,11 @@ material bindings; timers; the headless JSON state report; the
 content-browser rebind UI (Phase 7). Reload is exercised in tests via an
 explicit `ScriptSystem::ReloadScript(path)` call (D9).
 
-### Phase 6B W0+W1 verification report (implemented)
+### Phase 6B W0-W2 verification report (implemented)
 
-Commits `e2edab6` (6A hardening, prerequisite) and `0472274` (W0+W1).
-**W2-W6 are not started** — no reconciliation, no typed `ScriptFieldEntry`
-storage, no serializer v3, no `SetScriptCommand`, no inspector UI.
+W0+W1 began in commits `e2edab6` (6A hardening prerequisite) and `0472274`.
+W2 is implemented in the current tree. **W3-W6 remain**: serializer v3,
+`SetScriptCommand`, inspector UI, and their remaining acceptance coverage.
 
 **W0 — app wiring.** `ScriptSystem` was never instantiated by the app:
 `SetLifecycleObserver` / `SetScriptDispatch` were never called, so 6A
@@ -4521,9 +4540,38 @@ missing.
   constructors plus the `alias` option), sandboxed and instruction-
   bounded parsing, a `(mtime, size, FNV-1a)` cache with LRU-64 and
   `Clear()`.
-- `ScriptSystem::GetDeclaredFields(UUID)` delegating to the registry, and
-  `ResolveScriptPath` factored out of `BuildEnvironment` so the Play and
-  authoring paths resolve identically.
+- `ScriptSystem::GetDeclaredFields(UUID)` delegates to the registry. Shared
+  `ResolveScriptAssetPath` now keeps the Play and authoring paths identical.
+
+**W2 — typed storage and reconciliation.**
+
+- `ScriptFieldEntry { type, value }` and `ScriptFieldMap` replace the untyped
+  variant map. Runtime `self` injection validates the tag/payload invariant
+  and visits the stored payload.
+- `ReconcileScriptFields` is Lua-free and deterministic. It covers compatible
+  preservation, defaults/removals, one-hop aliases, target-wins semantics,
+  ambiguous aliases, incompatible types, malformed stored entries, and the
+  compatible `vec3`/`color` tag transition.
+- `ScriptFieldResolver::ResolveDocument` resolves script-bearing entities in
+  UUID order through the shared path helper. `parsed=false` preserves authored
+  values exactly and emits `ParseFailed`; the resolver intentionally leaves
+  document dirty-state policy to its W3 host. It accounts for UUID-less
+  components as skipped and rejects non-Script asset kinds explicitly.
+- Typed entries survive subtree duplication and `CloneInMemory`; a lifecycle
+  test proves an authored typed float reaches runtime `self` and drives an
+  entity during Play.
+- W3 promotes this seam to live load behavior: normal open and recovery invoke
+  `ResolveDocument` transactionally before adoption, so Play consumes the
+  reconciled typed map.
+
+**Focused verification:** `Phase6*` is 31/31 cases and 219/219 assertions;
+`Phase 6*` is 17/17 cases and 79/79 assertions (48 cases, 298 assertions
+combined). Release RT2Tests builds clean.
+
+**Current full Release suite:** 482 run, 475 passed, 7 failed, 0 skipped.
+The failures are the unchanged baseline: five `SceneGraph` cases in
+`EcsTests.cpp`, plus `SceneManager: SetTransform updates TRS and marks dirty`
+and `SceneManager: SetMaterial updates MeshRef`. No W2 test failed.
 
 **Two contracts W2 depends on, both enforced by tests:**
 
@@ -4537,14 +4585,13 @@ missing.
    clean empty set. Reporting it as "no fields" would make W2 delete
    every authored value.
 
-**Tests:** `RT2Tests/src/Phase6BFieldsTests.cpp`, 21 cases — 4 for W0
-(add/replace/remove, `SyncImpact::None`, missing-entity failure, invalid
-id) and 17 for W1 (every constructor and its declared type, name
-ordering, aliases, empty/absent declarations, syntax-error recovery,
-missing file, runaway loop, sandbox denials including `_G` and the
-environment metatable, library-poisoning isolation, malformed
-declarations, cache invalidation and `Clear()`, non-declaration entries,
-one declaration bound to two names).
+**Tests:** `RT2Tests/src/Phase6BFieldsTests.cpp`, 31 cases / 219 assertions
+cover W0-W2: authoring API and sync impact; all constructors, ordering,
+aliases, parse recovery, instruction bounds, sandbox/isolation and cache
+invalidation; pure reconciliation; UUID-ordered multi-entity resolution;
+parse-failure preservation; and typed clone/duplication. The complementary
+`Phase 6*` lifecycle filter is 17 cases / 79 assertions and includes runtime
+consumption of an authored typed value.
 
 **Suite:** 419 cases, 413 passed, 6 failed at the time of the commit —
 the same six pre-existing failures documented for Phase 2D. RT2App
@@ -4574,7 +4621,988 @@ Release builds clean.
 script in the editor, editing `speed`, Play) requires the inspector from
 W5, so it remains open.
 
-### Phase 6C — Hot reload, input, and remaining bindings (planned)
+#### Phase 6B W3 implementation — v3 persistence hard cutover (implemented 2026-07-22)
+
+**Outcome.** `.rt2scene` v3 is the first and only readable script-aware
+format. Saving writes each `ScriptComponent` and every valid typed public
+field; loading reconstructs the authored component, reports and isolates bad
+individual fields, then the RT2 app reconciles the loaded values against the
+current Lua declarations before adopting the document. This is deliberately
+not a compatibility slice: v1/v2 files and recovery snapshots are rejected.
+
+##### Grounded findings
+
+| # | Finding | Consequence for W3 |
+|---|---|---|
+| W3-F1 | `SceneSerializer::SchemaVersion` is 2 and `MinReadVersion` is 1; `Load` explicitly maps every accepted input to the current version. | Set both constants to 3 and remove the effective-version migration language/path. |
+| W3-F2 | `EntityRecord` already contains `hasScript` and `ScriptComponent`; `BuildEntityRecord`, `BuildDocumentFromRecords`, `CloneInMemory`, snapshots and duplication already copy it. | Disk JSON is the missing serializer seam; do not create a second component-copy path. |
+| W3-F3 | `AssetKindName` / `AssetKindFromName` do not recognize `Script`. | Add the `"script"` mapping before using the existing asset-reference shape. |
+| W3-F4 | `SceneSerializer::Load` exposes only `bool + Error`; it has no non-fatal diagnostic/report channel. | Add a load report so one bad public field can be dropped visibly without failing the scene. |
+| W3-F5 | Normal `.rt2scene` open already runs on a worker: `Load`, then `SceneAssetResolver::ResolveAll`, then main-thread adoption. | Run a worker-local `ScriptFieldRegistry` and `ScriptFieldResolver` in that transaction before adoption; never share the runtime Lua state across threads. |
+| W3-F6 | Recovery restore is a separate load/resolve/adopt host in `SceneRecoveryService::Restore`. | It must run the same script reconciliation and return field diagnostics; otherwise normal open and recovery diverge. |
+| W3-F7 | `RT2SliceRunner` loads scenes but intentionally does not link Lua/sol2. | Keep it as a raw v3 deserialize/clone consumer in W3. Script declaration reconciliation in the runner remains part of the 6C script-scenario work. |
+| W3-F8 | v2 serializes `metadata.sourcePath`, and `Load` trusts that stored value. `ScriptFieldResolver` resolves relative scripts from this metadata, while model resolution uses the actual opened file's parent. | In v3, source path is derived runtime state: omit it from JSON and set it from the actual load path. Recovery restores its separately recorded logical source path before resolution. |
+| W3-F9 | The normal-open completion path unconditionally calls `ClearDirty()` after adoption. | Carry separate save-required and destructive-loss signals from normalization/reconciliation; call `MarkDirty()` after the ordinary clear when the adopted document changed. |
+| W3-F10 | The committed vertical-slice scene is v2 and raw serializer tests contain v1/v2 literals whose intended assertions occur after schema validation. | Regenerate/update the committed fixture, rewrite ordinary literals to v3, and retain only explicit v1/v2 rejection tests. |
+| W3-F11 | `SceneManager::SetScriptState` currently accepts any tag/payload pair, while the W3 serializer is intentionally strict. | Add shared validation at the authoring mutation boundary so public APIs cannot create an unsaveable scene; Save retains a defensive check for raw-registry corruption. |
+| W3-F12 | Recovery envelopes have an independent `ManifestVersion = 1`. | Bump the envelope version with the schema cutover so old recovery records fail at discovery with an accurate diagnostic rather than at inner scene parsing. |
+| W3-F13 | A fresh `SceneMetadata` still defaults `schemaVersion` to 1. | Change the default to 3 in W3.0 so in-memory documents never claim an unreadable format. |
+
+##### v3 JSON contract
+
+An entity with a script writes:
+
+```json
+"script": {
+  "asset": {
+    "kind": "script",
+    "path": "scripts/move.lua",
+    "sourceKey": "lua:asset=scripts/move.lua"
+  },
+  "fields": {
+    "enabled": { "type": "bool",  "value": true },
+    "count":   { "type": "int",   "value": 3 },
+    "speed":   { "type": "float", "value": 7.5 },
+    "label":   { "type": "string", "value": "runner" },
+    "target":  { "type": "uuid",  "value": "00000000-0000-0000-0000-000000000000" },
+    "offset":  { "type": "vec3",  "value": [1.0, 2.0, 3.0] },
+    "tint":    { "type": "color", "value": [1.0, 0.5, 0.2] }
+  }
+}
+```
+
+- Reuse the asset-reference keys `kind`, `path`, and `sourceKey`; write
+  `importSettings` only for model assets, not scripts.
+- Script `sourceKey` is canonical derived data: write
+  `lua:asset=<serialized path>`. When Save As rebases the path, regenerate the
+  key from that rebased path rather than preserving a stale path-form key.
+- Field tags are exactly `bool | int | float | string | uuid | vec3 | color`.
+- UUIDs use canonical strings; the all-zero UUID is a valid unset value.
+- `vec3` and `color` have identical three-number payloads but retain distinct
+  tags. The stored tag is authoritative.
+- Script field keys are emitted lexically. Entity order remains UUID order.
+  The project's default `nlohmann::json` object type uses `std::map`, so object
+  keys are sorted; do not switch these paths to insertion-ordered
+  `ordered_json`. Explicit lexical iteration is still preferred where the
+  source container is unordered because it makes the determinism requirement
+  visible rather than relying on a later JSON-object sort.
+- An absent `script` key means no `ScriptComponent`; an absent `fields` key
+  means an empty typed map.
+
+##### Validation and failure policy
+
+**The authoring boundary and Save share one invariant.** Add a CPU-only
+`NormalizeAndValidateScriptComponent` helper that returns a canonical copy and
+call it from both `SceneManager::SetScriptState` and the serializer's pre-save
+validation. The canonical states are:
+
+- **unbound:** `asset.kind == Script`, empty path/sourceKey, and no fields;
+- **bound:** `asset.kind == Script`, non-empty path, canonical
+  `sourceKey == "lua:asset=" + path`, and every field has a recognized tag,
+  matching payload arm and finite numeric/vector value.
+
+The helper derives `sourceKey` from a non-empty path; callers never reject a
+component merely because that redundant string was stale. `SetScriptState`
+stores the canonical copy, but rejects structural or field-payload errors with
+`EditorMutationResult::Failure` before mutation, revision change or dirtying.
+W4/W5 must use this API rather than emplacing components directly. This
+preserves W2's intentional empty-path inspector state without allowing authored
+values on a script that cannot run.
+
+**Save remains strict and atomic as a defensive backstop.** Raw registry
+mutation can bypass `SetScriptState`, so Save repeats validation before writing
+the temp file. A missing/stale bound `sourceKey` is normalized only in the
+serialized copy to the rebased path; Save does not mutate the live component.
+Fill `Error` with the entity UUID and field name and leave an existing target
+file byte-for-byte unchanged.
+
+**Load distinguishes structural damage from repairable derived metadata and
+one bad field.** A non-object `script`, missing/malformed asset object,
+non-Script kind, or non-object `fields` is a hard `Error::Parse` and clears the
+temporary document. An empty path is valid only with an empty source key and
+empty fields (the canonical unbound state). A bound asset with a missing or
+non-string source key is structurally malformed. A string key that does not
+match `lua:asset=<path>` is regenerated, emits `NormalizedScriptSourceKey`,
+and does not discard authored field data.
+Within an otherwise valid `fields` object:
+
+- unknown type tag → drop that field, emit `UnknownSerializedType`;
+- recognized tag with the wrong JSON shape/range → drop that field, emit
+  `MalformedSerializedValue`;
+- valid field → construct a payload whose variant arm exactly matches its tag.
+
+Dropping a field sets `SceneLoadReport::droppedScriptFieldData = true`; other
+entities and valid sibling fields survive. Normalizing a stale-but-string
+source key instead sets `normalizedScriptMetadata = true`; it is not reported
+as field loss. No JSON exception may escape
+`SceneSerializer::Load`—field conversion helpers validate types and bounds
+before calling `get<T>()`.
+
+Add `UnknownSerializedType`, `MalformedSerializedValue`, and
+`NormalizedScriptSourceKey` to
+`FieldDiagnostic::Kind`, then add a CPU-only report:
+
+```cpp
+struct SceneLoadReport {
+    std::vector<FieldDiagnostic> fieldDiagnostics;
+    bool normalizedScriptMetadata = false;
+    bool droppedScriptFieldData = false;
+};
+```
+
+Provide a report-taking `Load` overload used by production and W3 tests; keep
+the existing three-argument overload as a convenience for raw consumers that
+do not surface non-fatal diagnostics.
+
+##### Path and source-root policy
+
+`SceneMetadata::sourcePath` is process state, not durable scene content. v3
+omits `metadata.sourcePath`; `Load(path)` always sets it to `path`. This makes
+normal script and model resolution agree on the file the user actually
+opened, even if a scene was moved.
+
+For Save As, relative references must continue to identify the same assets:
+resolve an existing relative reference against the document's current source
+directory, then relativize it against the logical output scene directory.
+Apply that shared rebasing rule to imported models, scripts and the environment
+path. If the document is untitled and the reference is already relative,
+preserve and normalize it because no old root exists. `SaveTo` continues to
+use `logicalScenePath` rather than the recovery-file directory.
+
+Absolute references preserve their target identity. Save first tries to make
+them relative to the logical output scene directory; if that is impossible
+(for example, the target is on a different Windows volume), it writes a
+normalized absolute path. This is the same fallback for models, scripts, and
+the environment and must be covered explicitly by tests.
+
+Recovery records already store `originalSourcePath` and `assetRoot`
+separately. Restore sets the temporary document's source path to the original
+logical path before asset and script resolution. An envelope with manifest v1,
+or a manifest-v2 envelope containing a scene-v1/v2 snapshot, fails its
+respective version check by design.
+
+##### Host transaction and dirty policy
+
+Normal open remains one all-or-nothing worker transaction:
+
+```text
+SceneSerializer::Load(v3, SceneLoadReport)
+  → SceneAssetResolver::ResolveAll
+  → worker-local ScriptFieldRegistry
+  → ScriptFieldResolver::ResolveDocument
+  → success: main-thread ReplaceAuthoringDocument
+  → ClearDirty
+  → classify normalization/reconciliation versus destructive field loss
+  → if either class changed the document: MarkDirty
+  → if destructive: require acknowledgement before Save/autosave
+```
+
+Serializer and field diagnostics are formatted into the existing background
+diagnostic string and logged on the main thread. `parsed=false`, missing script
+files, invalid bindings, and UUID-less components are warnings/skips; they do
+not by themselves mark the document dirty because authored data was preserved.
+
+Do not collapse every change into a single `repaired` bit. Compute two host
+signals:
+
+- **non-destructive change:** source-key normalization, added defaults, renamed
+  values, and compatible tag normalization; mark dirty and show the ordinary
+  "script fields changed; save required" status;
+- **destructive change:** a serialized field was dropped, or reconciliation
+  emitted `Removed`, `TypeChanged`, `InvalidStoredValue`, or
+  `AmbiguousAlias`; mark dirty, show an explicit entity/field warning, and set
+  `scriptRepairAcknowledgementPending`.
+
+While destructive acknowledgement is pending, suppress recovery autosnapshots
+and require an explicit acknowledgement/confirmation before ordinary Save or
+Save As. This prevents the background snapshot loop or a reflexive save from
+persisting field loss before the author has seen it. Acknowledgement permits
+persistence; it does not clear dirty state. The classifier is a small shared
+CPU helper used by normal open and recovery so their semantics cannot drift.
+
+Recovery performs the same asset/script resolution, but a successfully
+restored recovery document is already dirty regardless of reconciliation.
+Extend `SceneRecoveryService::Restore` to return `FieldDiagnostic`s alongside
+`AssetDiagnostic`s and the two change classifications so warnings and
+destructive acknowledgement requirements are not swallowed.
+
+##### Implementation order
+
+1. **W3.0 — Schema and invariant cutover.** Set both serializer constants and
+   the `SceneMetadata::schemaVersion` default to 3; bump recovery
+   `ManifestVersion` to 2; remove v1→current migration code/comments; add
+   explicit v1/v2 scene and v1 recovery-envelope rejection tests; add the
+   shared normalization/validation helper and enforce it in `SetScriptState`
+   before strict Save work lands; change ordinary raw JSON test inputs to v3;
+   regenerate
+   `assets/vertical-slice.rt2scene`; rename version-specific test wording.
+2. **W3.1 — Typed codecs and save validation.** Add Script asset-kind mapping,
+   tag conversion helpers, exact payload writers/readers, strict pre-save
+   defensive validation through the same shared helper, lexical field
+   emission, and source-root rebasing without mutating live components.
+3. **W3.2 — Entity JSON and load report.** Add the `script` branch to
+   `EntityRecordToJson` and `JsonToEntityRecord`; introduce
+   `SceneLoadReport`; implement hard component errors and non-fatal per-field
+   repair without uncaught JSON conversions, distinguishing metadata
+   normalization from dropped field data.
+4. **W3.3 — Normal-open integration.** In the background worker, pass the
+   report, resolve assets, create a worker-local registry, reconcile scripts,
+   aggregate diagnostics, classify destructive loss, and carry `requiresSave`
+   plus `requiresAcknowledgement` to the completion callback. Preserve
+   transactional adoption, mark dirty only after the existing clear, and gate
+   Save/autosnapshot while destructive acknowledgement is pending.
+5. **W3.4 — Recovery integration.** Update `Restore` and callers/tests to set
+   the logical source path before both resolvers and expose field diagnostics
+   and classifications. Confirm old recovery envelopes fail cleanly without
+   touching the live doc and destructive recovery repair cannot be
+   autosnapshotted before acknowledgement.
+6. **W3.5 — Documentation and verification.** Update serializer/scene docs
+   from v2 to v3, run focused persistence/lifecycle tests, build the Release
+   solution, run the full suite against the documented seven-failure baseline,
+   and refresh Graphify.
+
+##### Test matrix
+
+Add W3 cases primarily to `Phase6BFieldsTests.cpp` and
+`SceneSerializerTests.cpp`; update schema-specific cases in
+`Phase1ASceneAssetTests.cpp`, recovery tests, fixture tests and slice-runner
+inputs.
+
+- all seven field types round-trip, including nil/non-nil UUID and distinct
+  `vec3`/`color` tags;
+- entity with no script, canonical unbound script, and bound script with an
+  empty field map round-trip;
+- two saves with reverse `unordered_map` insertion order are byte-identical;
+- relative and absolute references for models, scripts and environment follow
+  the same target-preserving Save As rule, including different-volume absolute
+  fallback;
+- `SetScriptState` rejects malformed state without mutation, revision or dirty
+  changes; a valid accepted state remains saveable;
+- raw-registry malformed entry or invalid script asset makes Save fail
+  atomically without mutating the live component;
+- Save canonicalizes a stale raw-registry `sourceKey` only in the serialized
+  copy and leaves the live component untouched; Load canonicalizes a stale
+  string key, emits `NormalizedScriptSourceKey`, preserves every field, and is
+  classified as non-destructive;
+- unknown tag and wrong payload each drop only their field, report entity/name,
+  set `droppedScriptFieldData`, and preserve valid siblings; saving the
+  resulting valid temporary document succeeds after host acknowledgement;
+- malformed script/asset/fields containers fail the whole temporary load;
+- v1 and v2 reject with `Error::SchemaVersion`; v3 and only v3 loads;
+- post-load same-type preservation is idempotent and clean;
+- post-load add/remove/rename/type reset mutates the temporary document and
+  produces `requiresSave=true` in deterministic UUID/name order, while the
+  classifier marks add/rename non-destructive and remove/type-reset
+  destructive;
+- declaration parse failure preserves serialized fields exactly and does not
+  request a save;
+- actual opened path overrides any stale/unknown metadata and drives relative
+  script resolution;
+- normal open and recovery block Save/autosnapshot after destructive repair
+  until explicit acknowledgement, but do not block non-destructive
+  normalization;
+- recovery envelope v1 is rejected at discovery; v2 resolves scripts against
+  `originalSourcePath`, remains dirty, and does not mutate the live document on
+  any load/asset/script hard failure;
+- save→load→resolve→Play proves the persisted authored value reaches `self`;
+- committed fixture, recovery scenario and slice runner consume v3 successfully.
+
+##### W3 acceptance gate
+
+Create a v3 scene in a test with two entities bound to one relative script and
+different values for every supported field arm. Save, reopen through the same
+CPU pipeline as the app, reconcile, and Play: each entity receives only its
+own authored `self`; the clean round-trip is not dirty. Edit the declaration
+to add, rename and incompatibly change fields, reopen again, and verify the
+document is adopted dirty with deterministic diagnostics and corrected values.
+The Release solution builds, all W3/focused Phase 6 tests pass, and the full
+suite introduces no failure beyond the seven documented baseline failures.
+
+**Out of scope.** Undo commands and inspector widgets remain W4/W5. File
+watching, callback reload, input/binding expansion and SliceRunner script
+execution remain 6C. No v1/v2 scene or recovery migration utility is built.
+
+**Implementation report.** W3 is complete: scenes and recovery envelopes use
+hard-cutover versions 3 and 2 respectively; all seven public-field types have
+strict tagged codecs; script metadata is normalized and validated at the
+mutation and defensive-save boundaries; malformed fields are isolated through
+`SceneLoadReport`; Save As rebases environment, model, and script references
+from the logical source root; and normal open/recovery reconcile declarations
+before adoption. Lossless repairs require a save, while destructive repairs
+also suppress autosave and require an explicit first-Save acknowledgement.
+Runtime environments install inert `rt2.field.*` declaration constructors so
+the same declaration-bearing source accepted by reflection also executes during
+Play. The end-to-end persistence test covers save → load → reconcile → Play.
+
+**Post-review hardening.** Save validates field names and UTF-8 string payloads
+before JSON emission and catches any remaining serializer exception; reflection
+rejects defaults that cannot be persisted. Valid non-canonical UUID text is
+normalized with a lossless diagnostic. The SliceRunner now consumes
+`SceneLoadReport` and refuses snapshots that dropped fields. Registry, runtime,
+and serializer type tags share one canonical name table. The destructive-repair
+persistence gate remains active after acknowledgement until Save succeeds, so a
+recovery autosnapshot cannot silently persist loss between the first and second
+Save actions.
+
+**W3 verification:** Release solution build passes; focused W3 is 15/15 cases
+and 127/127 assertions; recovery is 23/23 cases and 140/140 assertions; both the
+60-step vertical slice and recovery scenario pass. The full Release suite is
+499 run, 492 passed, 7 failed, 0 skipped. Those seven are the unchanged baseline
+(five `SceneGraph` cases and two legacy `SceneManager` cases); no W3 case fails.
+
+**Next implementation slice:** W4 command/history integration, followed by W5
+Inspector authoring. W4 must make script assignment/removal and public-field
+edits undoable without weakening the W3 validation and destructive-repair
+contracts.
+
+#### Phase 6B W4 implementation plan — script command/history integration (planned 2026-07-22)
+
+**Outcome.** Every authored `ScriptComponent` transition can be represented by
+one UUID-keyed command and round-tripped through Execute, Undo and Redo. The
+command covers component add/remove, script-path replacement and any typed
+field-map change by storing `std::optional<ScriptComponent>` before/after
+snapshots. W4 is deliberately CPU-only: it builds and proves the command seam;
+W5 owns `RenderScriptEditor`, ImGui lifecycle and `PropertyEditSession` glue.
+
+##### Grounded findings
+
+| ID | Current fact | W4 consequence |
+|---|---|---|
+| W4-F1 | `SceneManager::SetScriptState(UUID, optional<ScriptComponent>)` validates/canonicalizes and returns `SyncImpact::None`, but currently calls `NotifyAuthoringChanged()` unconditionally—even for canonical present→same-present and absent→absent removal. | W4.0 must make canonical no-op suppression a manager invariant before W5 integration. Effective commands still call this API directly and never synthesize impact. |
+| W4-F2 | `SetMotionCommand` already proves the optional whole-component shape for add/remove/edit. | `SetScriptCommand` follows this shape rather than introducing per-field command classes. |
+| W4-F3 | `ScriptComponent` and `AssetReference` have no whole-value equality operator; `sourceKey` is derived and script `importSettings` are not persisted. | Add a script-specific canonical equality helper. Do not use raw struct/memory comparison and do not make unordered-map iteration part of equality. |
+| W4-F4 | `ScriptFieldEntry::operator==` compares the semantic type tag and exact variant payload; `ScriptFieldMap` equality is key-based and order-independent. | Exact typed-map equality is the no-op rule. `vec3` and `color` with identical vectors are still different states because their tags differ. |
+| W4-F5 | W3 validation regenerates `sourceKey`, rejects invalid names/payloads and guarantees persistable UTF-8, but the irrelevant `AssetReference::importSettings` member can still survive in memory on a script component. | Canonicalization clears script import settings to defaults so commands cannot preserve hidden state that Save discards. |
+| W4-F6 | `EditorCommandHistory::Execute` records only successful commands; failed initial Execute leaves both stacks unchanged. Failed Undo/Redo clears **both** stacks by established policy. | An invalid after-state or missing target must fail before recording, and an invalid before-snapshot must be rejected by the factory in Release as well as debug so it can never wipe the session on Undo. |
+| W4-F7 | Existing Inspector drags mutate the document per frame and later use `RecordApplied`. If a drag changes through intermediate values but returns to its exact start, those mutations already dirtied/bumped the document even though the factory suppresses the final command. Script fields need no live renderer preview. | W5 stages script edits in UI-owned working state and submits one W4 command through `EditorCommandHistory::Execute` at commit. W4 does not adopt the flawed apply-first lifecycle. |
+| W4-F8 | `EditorSyncRouter` returns immediately for `SyncImpact::None`. | Execute/Undo/Redo of a script command must produce no renderer sync and no accumulation reset. |
+| W4-F9 | The destructive-load `ScriptRepairPersistenceGate` is document-level state owned by the host, independent of ordinary authoring history. | Script commands never clear or acknowledge that gate. Undoing an edit cannot make prior destructive load loss safe to autosave. |
+| W4-F10 | `SceneEditorUI::Undo`/`Redo` currently omit `m_MotionVelocitySession` from their session-discard list; W5 will add another session if the list remains distributed. | W5 must first centralize “discard all property sessions” and include motion plus script. W4 does not add an untestable UI session or helper. |
+
+##### Command contract
+
+Add `SetScriptCommand` to `EditorPropertyCommands.h/.cpp`:
+
+```cpp
+class SetScriptCommand final : public IEditorCommand {
+public:
+    SetScriptCommand(UUID target,
+        std::optional<ScriptComponent> beforeValue,
+        std::optional<ScriptComponent> afterValue);
+
+    EditorMutationResult Execute(SceneManager& scene) override;
+    EditorMutationResult Undo(SceneManager& scene) override;
+    std::string Description() const override;
+};
+```
+
+- Execute and Redo call `scene.SetScriptState(target, afterValue)`.
+- Undo calls `scene.SetScriptState(target, beforeValue)`.
+- The command owns full value copies only. It stores no `entt::entity`, Lua
+  objects, registry pointers, file handles, descriptors or runtime callbacks.
+- Descriptions are state-aware: `Add Script`, `Remove Script`, or `Edit Script`.
+- A path change is not reconciled inside the command. The caller supplies the
+  complete already-decided after-state; commands remain deterministic and do
+  no filesystem or Lua work. W5 owns declaration lookup/reconciliation when a
+  user changes a binding.
+- Removing a script stores its complete prior typed map so Undo restores it.
+- An unbound component (`kind=Script`, empty path/source key/fields) remains a
+  valid add state. Empty path plus authored fields remains invalid by W3.
+
+Add `MakeSetScriptCommandIfEffective(target, before, after)` alongside the
+existing property-command factories. Its semantics are:
+
+1. validate and canonicalize a present before-state first. An invalid
+   before-snapshot returns null (and may emit a debug diagnostic); no command may be
+   submitted because a later failed Undo would clear the entire history under
+   the established history policy. This Release guard is required even though
+   ordinary callers obtain before-state from validated `GetScriptState` data;
+2. both absent → null;
+3. validate/canonicalize a present after-state. An invalid after-state is not
+   mistaken for a no-op: retain it in a command so
+   `EditorCommandHistory::Execute` returns the manager's actionable failure and
+   leaves history unchanged;
+4. one absent → command;
+5. both valid and present → suppress only when canonical path, derived source
+   key and exact typed map match.
+
+Before landing the factory, extend
+`NormalizeAndValidateScriptComponent` to reset `asset.importSettings` for
+`AssetKind::Script`. This is lossless canonicalization: v3 never serializes
+script import settings, and no script code consumes them.
+
+Use the same canonical comparator inside `SceneManager::SetScriptState` after
+validating the incoming value and before mutating the registry:
+
+- present→canonical-equal present returns successful `SyncImpact::None` with no
+  affected UUIDs, dirty change or revision bump;
+- absent→absent removal has the same successful no-op result;
+- one-present/one-absent or canonically different present values remain
+  effective and notify exactly once;
+- invalid input still returns the existing actionable failure before equality
+  is considered.
+
+This manager-level rule protects direct callers and discrete submissions, but it
+cannot erase intermediate mutations from a continuous apply-first drag. W5
+therefore stages continuous script edits outside the document and applies only
+the final command. A slider dragged away and back to its exact initial value
+then closes with no command, dirty bit, revision bump or recovery snapshot.
+
+##### W4/W5 boundary
+
+W4 does **not** add `RenderScriptEditor`, a `PropertyEditSession`, asset-path
+text buffers or `SceneEditorUI::RecordScriptEdit`. Those have no production
+caller until W5 and cannot be usefully exercised in the CPU suite. W5 will:
+
+1. capture the canonical before-state from `GetScriptState`;
+2. edit a UI-owned working copy without calling `SetScriptState` per frame;
+3. on discrete commit or continuous-widget release, build the W4 command from
+   before and staged after values;
+4. skip a null/no-op factory result, otherwise submit through
+   `EditorCommandHistory::Execute`, which performs the single validated manager
+   mutation and records only on success;
+5. discard staged state on Escape, selection change, entity death, Play entry,
+   document adoption, Undo or Redo;
+6. route Execute/Undo/Redo through the existing `ApplyMutation` path.
+
+The factory and manager both canonicalize, so stale derived `sourceKey` data in
+the working copy cannot become command truth. Invalid after-state is displayed
+from the failed Execute and never enters history. Net-zero staged edits never
+touch the document at all.
+
+##### Implementation order
+
+1. **W4.0 — Canonical state and manager no-op semantics.** Clear script import
+   settings in the shared W3 normalization helper; add one exact canonical
+   comparator shared by the manager and command factory; make
+   `SetScriptState` suppress canonical present→same-present and absent→absent
+   mutations before notification. Cover source-key normalization, reversed
+   field insertion order, dirty state, revision and empty affected-UUID output.
+2. **W4.1 — Command and factory.** Add `SetScriptCommand`, state-aware
+   descriptions, accessors used by tests, and the no-op-suppressing factory in
+   `EditorPropertyCommands.h/.cpp`.
+3. **W4.2 — Execute-history coverage.** Prove add, remove, path edit and typed
+   field edit through `EditorCommandHistory::Execute`, Undo and Redo. Assert
+   exact state, dirty/revision behavior, affected UUID and `SyncImpact::None`.
+4. **W4.3 — Staged-commit coverage.** Simulate the W5 lifecycle: capture before,
+   modify an off-document after copy, create the command, then Execute/Undo/Redo.
+   Include validation failure, canonical no-op and net-zero edit cases; assert
+   the document is untouched before Execute.
+5. **W4.4 — Persistence and routing checks.** Save/reopen the commanded state,
+   and route command results through a recording `EditorSyncRouter` to prove
+   zero GPU sync/reset work.
+6. **W4.5 — Documentation and verification.** Update scripting/scene docs,
+   build Release, run focused W4/Phase 6 tests, both headless scenarios, the
+   full suite against its seven-failure baseline, and refresh Graphify.
+
+##### Test matrix
+
+Add W4 cases to `RT2Tests/src/Phase6BFieldsTests.cpp`:
+
+- factory suppresses absent→absent and equal canonical present→present;
+- stale versus derived `sourceKey` with the same path is a no-op;
+- reversed `ScriptFieldMap` insertion order is a no-op;
+- same vector payload tagged `vec3` versus `color` is effective;
+- applying an identical canonical state directly through `SetScriptState` is a
+  successful no-op: clean stays clean, revision is unchanged and no UUID is
+  reported affected;
+- removing a nonexistent `ScriptComponent` directly through `SetScriptState`
+  has the same no-op semantics;
+- add bound and unbound components; Undo removes; Redo restores canonical data;
+- remove a component with all seven field types; Undo restores every type tag
+  and payload exactly;
+- edit one field, replace the script path, and replace the complete field map;
+  each transition round-trips independently;
+- Execute, Undo and Redo each bump the revision once, mark dirty, identify only
+  the target UUID and return `SyncImpact::None`;
+- no-op factory output never changes revision, dirty state or history stacks;
+- invalid type/payload, invalid UTF-8, empty name and unbound-with-fields after
+  states fail atomically and do not enter history;
+- an invalid before-snapshot is rejected by the factory and therefore cannot
+  create an Undo operation that clears existing history;
+- missing target fails gracefully and leaves both stacks unchanged;
+- staged working-copy edits do not touch dirty state, revision or live component
+  until `Execute`; a net-zero staged edit produces no command;
+- a failed Execute or null factory output does not clear the redo stack;
+- `EditorSyncRouter` records zero full/material/transform/reset calls;
+- save/reopen after Execute contains the after-state; save/reopen after Undo
+  contains the before-state.
+
+##### W4 acceptance gate
+
+Create one entity with a bound script and values for all seven supported field
+types. Through command history: edit a scalar, change a semantic tag from
+`vec3` to `color`, replace the binding/path, remove the component, then Undo all
+steps and Redo all steps. At every boundary assert the exact optional component,
+canonical source key, revision delta, dirty state and `SyncImpact::None`; no
+renderer callback fires. Save/reopen at the final Execute state and at an Undo
+state to prove command snapshots are the same data W3 persists. Invalid input
+must leave the live document and history unchanged. Include direct-manager
+present→same-present and absent→absent passes, plus a staged net-zero edit,
+proving no dirty/revision/history change. Release verification may
+introduce no failure beyond the documented seven-test baseline.
+
+**Out of scope.** Inspector widgets, edit-session lifecycle, file dialogs,
+interactive rebinding, declaration diagnostics in the Inspector and hot reload
+remain W5/6C. W4 performs no Lua evaluation and does not alter the destructive
+load-repair acknowledgement state.
+
+#### Phase 6B W4 implementation — script command/history integration (implemented 2026-07-22)
+
+**Outcome.** `SetScriptCommand` and `MakeSetScriptCommandIfEffective` cover
+component add, remove, script-path replacement, and any typed field-map change
+through one UUID-keyed command storing `std::optional<ScriptComponent>`
+before/after snapshots. Execute, Undo, and Redo round-trip through
+`EditorCommandHistory`; `SceneManager::SetScriptState` suppresses canonical
+no-ops (present→same-present and absent→absent) without bumping the revision,
+dirtying the document, or notifying observers. The factory canonicalizes both
+before and after states before comparing, so stale `sourceKey` data and reversed
+`ScriptFieldMap` insertion order are no-ops; an invalid before-snapshot is
+rejected (returns null) so it can never wipe history via a failed Undo, and an
+invalid after-state is retained so `EditorCommandHistory::Execute` surfaces the
+manager's actionable failure without recording.
+
+**W4.0 — Canonical state and manager no-op semantics.**
+`NormalizeAndValidateScriptComponent` now resets `asset.importSettings` to
+defaults for `AssetKind::Script` (v3 never serializes script import settings, so
+commands cannot preserve hidden state Save would discard).
+`ScriptComponentCanonicalEqual` compares two `std::optional<ScriptComponent>`
+for order-independent field-map equality (kind, path, derived sourceKey, and
+exact typed entries). `SetScriptState` calls it after canonicalization and
+suppresses the mutation — no `NotifyAuthoringChanged`, no revision bump, no
+dirty mark, no affected UUID — when the canonical incoming value equals the
+currently stored component (or both are absent).
+
+**W4.1 — Command and factory.** `SetScriptCommand` follows `SetMotionCommand`'s
+shape: Execute/Redo call `scene.SetScriptState(target, after)`, Undo calls
+`scene.SetScriptState(target, before)`. Descriptions are state-aware: "Add
+Script", "Remove Script", or "Edit Script". `MakeSetScriptCommandIfEffective`
+canonicalizes the before-state first (invalid → null), suppresses both-absent
+and canonically-equal-present pairs, then canonicalizes the after-state for the
+comparison (invalid after is NOT suppressed — the command is returned so
+Execute fails atomically without entering history).
+
+**W4.2-W4.4 — Tests.** 19 cases in `Phase6BFieldsTests.cpp` cover:
+- factory no-op suppression (absent→absent, canonical-equal present→present,
+  stale sourceKey, reversed insertion order);
+- vec3 vs color with same payload is effective (tags differ);
+- invalid before-snapshot rejected by factory;
+- direct-manager no-op for present→same-present and absent→absent (no revision
+  bump, no dirty, no affected UUID);
+- add/remove/field-edit/path-edit/complete-map-replacement round-trip through
+  Execute/Undo/Redo with exact state, revision delta, and `SyncImpact::None`;
+- remove with all seven field types; Undo restores every tag and payload;
+- each Execute/Undo/Redo reports `SyncImpact::None` and the target UUID;
+- no-op factory output never changes revision, dirty, or history;
+- invalid after-state fails atomically, does not enter history, does not clear
+  redo stack;
+- missing target fails gracefully, leaves both stacks unchanged;
+- staged working-copy edits do not touch document until Execute;
+  net-zero staged edit produces no command;
+- `EditorSyncRouter` records zero full/material/transform/reset calls across
+  the full add/edit/undo/redo/remove cycle;
+- save/reopen after Execute contains the after-state; after Undo contains the
+  before-state;
+- unbound component add/remove round-trips.
+
+**W4 verification:** Release solution builds clean; focused W4 is 22/22 cases
+and 196/196 assertions; the full Phase6B filter is 68/68 cases and 541/541
+assertions; the Phase 6 lifecycle filter is 17/17 cases and 79/79 assertions.
+The full Release suite is 521 run, 514 passed, 7 failed, 0 skipped — the
+unchanged seven-failure baseline (five `SceneGraph` cases and two legacy
+`SceneManager` cases). No W4 case fails.
+
+**Post-review hardening.** Three findings from the W4 review were fixed:
+
+1. **[High] Phantom history entry on factory/manager disagreement.** When the
+   factory's `before` snapshot diverged from the manager's stored state (e.g.
+   an out-of-band mutation happened between W5's capture and commit), the
+   factory emitted a command, the manager suppressed it as a no-op, but
+   `EditorCommandHistory::Execute` recorded it anyway — creating a phantom undo
+   entry and clearing the redo stack for a mutation that never happened. Fix:
+   added `bool effective = true` to `EditorMutationResult`; the two
+   `SetScriptState` no-op paths set `effective = false`; `Execute` and
+   `RecordApplied` skip recording when `success && !effective`. The flag is
+   additive — every existing command defaults to `effective = true` and is
+   unaffected. A regression test covers the crossing case (capture before →
+   out-of-band mutation → commit equal to stored → no history entry, redo
+   survives).
+
+2. **[Medium] Add-commands stored non-canonical after-snapshots.** The factory
+   canonicalized the after-state only inside the `beforeHas && afterHas`
+   branch, so add-commands (`before` absent, `after` present) stored the
+   caller's raw `sourceKey` and `importSettings`. Fix: hoisted the
+   after-canonicalization out of the guard so it runs whenever `after` is
+   present. A regression test builds an add-command with a stale `sourceKey`
+   and non-default `importSettings`, then asserts `AfterValue()` is canonical
+   and matches the stored state after Execute.
+
+3. **[Low] `Description()` mislabelled absent→absent as "Edit Script".** The
+   factory rejects this shape, but `SetScriptCommand` is publicly constructible.
+   Fix: added an explicit `"Script (no change)"` fallback so a mislabelled
+   entry is self-identifying.
+
+**Next implementation slice:** W5 Inspector authoring (`RenderScriptEditor` +
+`PropertyEditSession<ScriptComponent>`), which builds on the W4 command seam
+to submit staged canonical state through history on commit. The `effective`
+flag from the High fix protects both `Execute` and `RecordApplied` against
+phantom entries when the document moves between capture and commit.
+
+#### Phase 6B W5 implementation plan — inspector authoring (planned 2026-07-22)
+
+**Outcome.** `RenderScriptEditor(EntityId)` renders one widget per declared
+public field, typed by `ScriptFieldType`, with the asset-path field, Add/Remove
+Script buttons, a diagnostics line, and the record-on-release pattern for
+continuous edits. Every authoring action (add script, remove script, edit path,
+edit field) submits one `SetScriptCommand` through `EditorCommandHistory` and is
+undoable. The interactive acceptance gate (author a script, edit `speed`, Play,
+verify motion, Stop, verify authoring unchanged) becomes runnable.
+
+##### Grounded findings
+
+| ID | Current fact | W5 consequence |
+|---|---|---|
+| W5-F1 | `RenderLightEditor` (`SceneEditorUI.cpp:1401-1490`) is the closest structural precedent: a `PropertyEditSession<T>` with `OnActivated`/`OnEditCommitted`/`CloseDeferred`, an owning-widget-id guard, and a `Record*Edit` helper that calls `RecordApplied`. | `RenderScriptEditor` follows this shape. The session stores `ScriptComponent` (the full component, not individual fields) so the command's before/after snapshots are complete. |
+| W5-F2 | The Motion block (`:939-1003`) is inline in `RenderInspector`, not a separate `Render*Editor`. It uses the same session pattern but with immediate `SetMotionState` calls per frame and `RecordMotionEdit` on close. | `RenderScriptEditor` is a separate method like Light/Camera, not inline. The Motion block's Add/Remove button pair is the precedent for the Script Add/Remove buttons. |
+| W5-F3 | `SceneEditorUI::Undo()`/`Redo()` (`:79-103`) discard 6 sessions but miss `m_MotionVelocitySession` (W4-F10). `ResetForDocument()` (`:123-134`) correctly discards all 7. | W5 must centralize "discard all property sessions" into one private method and call it from `Undo`, `Redo`, and `ResetForDocument`, adding both the missing motion session and the new script session. |
+| W5-F4 | The inspector has no `ScriptFieldRegistry` injection. `ScriptSystem::FieldRegistry()` exists but `ScriptSystem` is lazy-created at Play (`EnsureScriptRuntimeWired`). The inspector needs declarations while STOPPED. | `WalnutApp` owns a `std::unique_ptr<rt2::core::ScriptFieldRegistry> m_InspectorFieldRegistry`, created at startup, injected into `SceneEditorUI` via `SetFieldRegistry`. Cleared on scene load/close alongside the existing `ResetForDocument` path. |
+| W5-F5 | `ResolveScriptAssetPath(document, component)` (`ScriptAssetPath.h`) is the shared scene-relative path resolver used by both the runtime and the W2/W3 resolver. | The inspector uses it to resolve the authored `ScriptComponent::asset.path` against `m_SceneMgr->AuthoringDoc()` before querying the registry. |
+| W5-F6 | `SceneManager::HasScript(EntityId)` and `GetScriptState(UUID)` (`SceneManager.h:372-374`) are the read APIs. `SetScriptState(UUID, optional<ScriptComponent>)` is the write API (W0). | The inspector reads via `GetScriptState`, writes via `SetScriptState` (per-frame for continuous edits, like Motion/Light), and records via `MakeSetScriptCommandIfEffective` + `RecordApplied` on close. |
+| W5-F7 | `ScriptFieldRegistry::Result` carries `descriptors`, `parsed`, and `diagnostic`. D10 requires that a `parsed=false` result displays the last-known-good descriptors with a warning, not an empty panel. | `RenderScriptEditor` checks `parsed` and renders a warning banner when false. Field widgets are still rendered from the last-known-good descriptors so the user can see existing values, but they are **read-only** (`BeginDisabled`) while `parsed == false` so the user cannot author values against declarations the engine has stopped trusting (review Medium finding). |
+| W5-F8 | The W4 `effective` flag on `EditorMutationResult` prevents phantom history entries when the manager suppresses a no-op. `RecordApplied` now skips recording when `success && !effective`. | The `RecordScriptEdit` helper must pass the manager's actual `EditorMutationResult` to `RecordApplied` (not a synthesized one like the Light/Motion helpers do), so the `effective` flag flows through correctly. This is a correction to the existing `Record*Edit` pattern — the Light/Motion helpers synthesize `applied` with `effective=true` and would record a phantom entry if the manager suppressed. Fixing those is out of scope for W5 but worth noting. |
+| W5-F9 | `ScriptFieldEntry::type` distinguishes `vec3` from `color` (same variant arm, different inspector widget). The widget map must dispatch on `ScriptFieldType`, not on the variant index. | Widget dispatch: `Bool→Checkbox`, `Int→DragInt`, `Float→DragFloat`, `String→InputText(EnterReturnsTrue)`, `Uuid→validated InputText`, `Vec3→DragFloat3`, `Color→ColorEdit3`. |
+| W5-F10 | The plan spec says the asset-path field is edited as text (the Rebind button is deferred to Phase 7's content-browser era). A path edit is a discrete commit (InputText with EnterReturnsTrue), not a continuous drag. | The path field uses `ImGui::InputText` with `ImGuiInputTextFlags_EnterReturnsTrue`. On Enter, capture before from `GetScriptState`, build the after-state with the new path (fields unchanged), and submit via `MakeSetScriptCommandIfEffective` + `Execute`. No session needed — it's a discrete edit like the Add/Remove buttons. |
+| W5-F11 | An unbound `ScriptComponent` (empty path, no fields) is a valid state. The inspector must render the path field and Remove button, but no field widgets and no crash. A non-empty path that does not resolve on disk renders a "script not found" diagnostic. | The empty-path guard is the first check in `RenderScriptEditor`. When the path is empty, render only the path InputText and Remove button. When the path is non-empty but `GetDeclaredFields` returns `parsed=false` with an empty descriptor list and a "file not found" diagnostic, render the diagnostic line and no field widgets. |
+| W5-F12 | Field names are sorted by name ascending (D2). The registry returns them pre-sorted. | The inspector iterates the descriptor vector in order; no re-sorting needed. |
+| W5-F13 | `PropertyEditSession<ScriptComponent>` stores the full component as the before-value. On close, `CloseDeferred` returns `{before, after}`. The after-value is the current `GetScriptState` — NOT the per-frame mutated working copy, because the per-frame mutations already wrote to the manager. | This matches the Light/Motion pattern: per-frame writes go to the manager, `CloseDeferred` reads the after from the manager, and `RecordApplied` records the command. The `effective` flag from the manager's `SetScriptState` result is passed through. |
+
+##### Command contract
+
+`RenderScriptEditor` submits commands through three paths:
+
+1. **Add Script** (discrete): capture `before = nullopt`, construct `after` as an
+   unbound `ScriptComponent` (kind=Script, empty path, no fields), call
+   `SetScriptState(target, after)`, then `MakeSetScriptCommandIfEffective(target,
+   before, after)` + `Execute`. If the factory returns null (impossible for
+   add-from-absent, but defensive), skip.
+
+2. **Remove Script** (discrete): capture `before = GetScriptState(target)`,
+   call `SetScriptState(target, nullopt)`, then
+   `MakeSetScriptCommandIfEffective(target, before, nullopt)` + `Execute`.
+
+3. **Path edit** (discrete): capture `before = GetScriptState(target)`, construct
+   `after` = `before` with the new path (fields unchanged), call
+   `SetScriptState(target, after)`, then
+   `MakeSetScriptCommandIfEffective(target, before, after)` + `Execute`.
+
+4. **Field edit** (continuous, via session): the session captures `before` on
+   widget activation. Per-frame, the inspector mutates a UI-owned working copy
+   and calls `SetScriptState` to write it to the manager (so the document
+   reflects the edit live). On `DeactivatedAfterEdit`, `CloseDeferred` reads the
+   after from `GetScriptState`, builds the command, and calls `RecordApplied`
+   with the manager's actual result (so `effective` flows through). On
+   `Deactivated` without AfterEdit (Escape), `OnCancelled` discards.
+
+   **Important:** the per-frame `SetScriptState` call for a continuous field
+   edit writes the ENTIRE `ScriptComponent` (all fields), not just the one being
+   dragged. This is because `SetScriptState` takes the whole component. The
+   working copy is the full component with one field's value updated.
+
+##### Widget dispatch
+
+```
+ScriptFieldType → ImGui widget
+  Bool   → Checkbox           (discrete: commit immediately, no session)
+  Int    → DragInt            (continuous: session)
+  Float  → DragFloat          (continuous: session)
+  String → InputText(EnterReturnsTrue) (discrete: commit on Enter)
+  Uuid   → InputText(EnterReturnsTrue) (discrete: commit on Enter, validate)
+  Vec3   → DragFloat3         (continuous: session)
+  Color  → ColorEdit3         (continuous: session)
+```
+
+Discrete widgets (Checkbox, InputText with EnterReturnsTrue) commit immediately
+via `Execute` — no session. Continuous widgets (Drag*) go through the
+`PropertyEditSession<ScriptComponent>` with the owning-widget-id guard (like
+Light's `drawLightWidget` lambda).
+
+**Text-commit on focus loss (review High finding).** `EnterReturnsTrue` fires
+only on Enter, not on focus loss. The existing entity-name field
+(`SceneEditorUI.cpp:916-924`) demonstrates the bug: it captures
+`IsItemActivated()` and discards it with `(void)`, so typing a name and
+clicking away silently loses the edit. W5 commits text fields (path, String,
+Uuid) on `IsItemDeactivatedAfterEdit()` in addition to Enter — the standard
+ImGui idiom already used for Drag* widgets elsewhere in this file. Escape-cancel
+remains correct because ImGui reverts the buffer and fires
+`IsItemDeactivated()` without `AfterEdit`. W5.0 also fixes the entity-name
+field's commit in the same pass so the two text-commit idioms do not diverge.
+
+UUID validation: parse with `UUID::Parse`. Accept nil as "unset" (W3 defines it
+as a legitimate value). Reject anything else by reverting the buffer and
+showing an error line — do not commit. This matches the loader's strictness
+(W3 drops fields that fail the `ToString()` round-trip) so the inspector cannot
+author a value that saves and then vanishes on reload.
+
+**ColorEdit3 picker popup handling (review Medium finding).** `ColorEdit3` is
+not a simple drag — clicking the swatch opens a picker popup, and
+`IsItemDeactivatedAfterEdit()` on the parent widget interacts with popup
+open/close differently from `DragFloat3`. W5.3 treats Color as its own case
+rather than folding it in with `Vec3`: the session opens on
+`IsItemActivated()`, commits on `IsItemDeactivatedAfterEdit()`, and cancels on
+`IsItemDeactivated()` without `AfterEdit`. W5.6 guard tests cover
+open-picker → edit → close as a distinct `PropertyEditSession` lifecycle.
+
+##### Session lifecycle
+
+One `PropertyEditSession<ScriptComponent> m_ScriptFieldSession` (single active
+slot). The owning-widget-id guard (`m_ScriptFieldSessionOwningWidgetId`)
+ensures only the widget that started the edit closes it (same pattern as Light).
+
+The session is discarded on:
+- `Deactivated` without AfterEdit (Escape cancel)
+- Selection change (via `ResetForDocument` or the centralized discard)
+- Entity death (guard predicate: `FindEntityByUuid(target) != entt::null`)
+- Play entry (`SetEditable(false)` disables widgets; the session is discarded)
+- Undo/Redo (via the centralized discard)
+- Document adoption (via `ResetForDocument`)
+
+##### Registry injection
+
+`WalnutApp` owns `std::unique_ptr<rt2::core::ScriptFieldRegistry>
+m_InspectorFieldRegistry`, created in the constructor. Injected into
+`SceneEditorUI` via `SetFieldRegistry(rt2::core::ScriptFieldRegistry*)`.
+Cleared (`Clear()`) on scene load and scene close, alongside
+`ResetForDocument`. The registry is CPU-only and links cleanly.
+
+The inspector resolves the script path via `ResolveScriptAssetPath(
+m_SceneMgr->AuthoringDoc(), component)` and queries
+`m_FieldRegistry->GetDeclaredFields(resolvedPath)`.
+
+When no registry is injected (tests), `RenderScriptEditor` renders the path
+field and Add/Remove buttons but no field widgets (defensive null check).
+
+**Per-frame I/O fix (review High finding).** `GetDeclaredFields` currently
+reads and hashes the entire file on every call, then consults the cache — the
+cache prevents re-parsing, not re-reading. At 60 fps with an entity selected,
+that is 60 file opens + full reads + hashes per second on the UI thread. W5.1
+adds a fast-path staleness gate in `ScriptFieldRegistry::GetDeclaredFields`:
+check `(mtime, size)` via `std::filesystem::last_write_time` + `file_size`
+first, and only read+hash when they differ or the entry is absent. This
+preserves the hash's purpose (catching same-length edits within one timestamp
+tick) at the cost of one `stat` per frame. The hash still wins on a
+same-tick same-length edit the moment the timestamp advances.
+
+##### Centralized session discard
+
+Add a private `DiscardAllPropertySessions()` method to `SceneEditorUI`:
+
+```cpp
+void DiscardAllPropertySessions()
+{
+    m_TransformSession.Discard();
+    m_NameSession.Discard();
+    m_LightSession.Discard();
+    m_CameraSession.Discard();
+    m_MaterialIndexSession.Discard();
+    m_MaterialPropertiesSession.Discard();
+    m_MotionVelocitySession.Discard();
+    m_ScriptFieldSession.Discard();
+}
+```
+
+Call it from `Undo()`, `Redo()`, and `ResetForDocument()` (replacing the
+hand-maintained lists that missed `m_MotionVelocitySession` in Undo/Redo).
+
+##### Inspector dispatch
+
+In `RenderInspector`, after the Camera editor and before/after the Motion block,
+add:
+
+```cpp
+if (m_SceneMgr->HasScript(entity))
+    RenderScriptEditor(entity);
+```
+
+Also add an "Add Script" button when the entity has no ScriptComponent (like the
+"Add Motion" button in the Motion block).
+
+##### Implementation order
+
+1. **W5.0 — Centralize session discard.** Add
+   `DiscardAllPropertySessions()`, call from `Undo`, `Redo`, and
+   `ResetForDocument`. This fixes W4-F10 (missing motion discard in Undo/Redo)
+   and adds the script session. Build and run the full suite to verify no
+   regression from the motion-discard fix.
+
+2. **W5.1 — Registry injection.** Add `SetFieldRegistry` to `SceneEditorUI`,
+   `m_InspectorFieldRegistry` to `WalnutApp`, wire in the constructor, clear on
+   scene load/close. Add `m_ScriptFieldSession` and
+   `m_ScriptFieldSessionOwningWidgetId` members to `SceneEditorUI`. Add
+   `RenderScriptEditor` declaration. Build.
+
+3. **W5.2 — `RenderScriptEditor` skeleton.** Implement the method: header text,
+   path field (InputText with EnterReturnsTrue), Add/Remove buttons, diagnostics
+   line, and the field-widget loop. Start with the empty-path guard and the
+   no-registry guard. Build and manually verify the inspector renders for a
+   scripted entity.
+
+4. **W5.3 — Field widgets.** Implement the widget dispatch for all seven types.
+   Continuous widgets go through the session; discrete widgets commit
+   immediately. Color is treated as its own case (picker popup handling). All
+   widgets are wrapped in `BeginDisabled(!m_Editable)` so authoring is blocked
+   during Play (review gap 1). Add `RecordScriptEdit` helper that calls
+   `RecordApplied` with the manager's actual result (not a synthesized one).
+   Build and manually test each widget type.
+
+5. **W5.4 — Path edit and Add/Remove.** Implement the discrete commit paths for
+   path edit, Add Script, and Remove Script. Text fields commit on
+   `IsItemDeactivatedAfterEdit()` as well as Enter (review High finding). Also
+   fix the entity-name field's commit in the same pass. Build and manually test.
+
+6. **W5.5 — Diagnostics and parse-failure banner.** When `parsed=false`, render
+   a warning banner with the diagnostic text and render the last-known-good
+   field widgets read-only (`BeginDisabled`). When the path resolves to a
+   missing file, render "script not found." When the path is empty (unbound
+   component), render only the path field and Remove button — no field widgets,
+   no diagnostics banner (review gap 2). Build and manually test with a
+   broken script and a missing path.
+
+7. **W5.6 — Inspector guard tests.** Add CPU test cases to
+   `Phase6BFieldsTests.cpp` covering: empty-path component renders no field
+   widgets, non-existent path renders a diagnostic, `parsed=false` widgets are
+   read-only, and the session lifecycle (capture/commit/cancel, including the
+   ColorEdit3 picker-popup case) through the `PropertyEditSession` state machine.
+
+8. **W5.7 — Interactive acceptance gate.** This is the Phase 6B exit gate:
+   author a script with `rt2.fields = { speed = rt2.field.float(5.0) }` that
+   moves the entity by `speed * dt`; save; reopen; verify the inspector shows
+   the saved value; edit it to 9.0; Play; verify the entity moves at 9.0
+   units/sec; Stop; verify the authoring scene is unchanged (speed is still
+   9.0, not reset to 5.0). Undo the field edit and verify the value reverts to
+   5.0. Redo and verify it returns to 9.0. This proves the full 6B stack
+   (W0 wiring → W1 reflection → W2 reconciliation → W3 persistence → W4
+   command/history → W5 inspector) end to end.
+
+9. **W5.8 — Documentation and verification.** Update scripting/scene docs, build
+   Release, run focused W5/Phase 6 tests, the full suite against its
+   seven-failure baseline, and refresh Graphify.
+
+##### Test matrix
+
+Add W5 cases to `RT2Tests/src/Phase6BFieldsTests.cpp`:
+
+- `PropertyEditSession<ScriptComponent>` lifecycle: OnActivated captures before,
+  OnEditCommitted + CloseDeferred returns {before, after}, OnCancelled discards,
+  no-commit activation discards on close.
+- Centralized session discard: Undo/Redo discards all 8 sessions including
+  motion and script (verify via a fixture that opens a motion session, calls
+  Undo, and asserts the motion session is no longer open).
+- Inspector guard (requires a minimal `SceneEditorUI` fixture or a separate
+  headless test): a `ScriptComponent` with an empty `asset.path` produces no
+  field-widget rendering path (assert the code path is taken, not pixel output).
+
+The interactive acceptance gate is manual (W5.7) and cannot be automated without
+a GLFW/ImGui test harness.
+
+##### W5 acceptance gate
+
+Author a script with `rt2.fields = { speed = rt2.field.float(5.0) }` that moves
+the entity by `speed * dt` in `on_update`. In the editor: add a ScriptComponent
+to an entity, set the path, verify the `speed` field appears in the inspector,
+edit it to 9.0, save, reopen, verify the inspector shows 9.0, Play, verify the
+entity moves at 9.0 units/sec, Stop, verify the authoring scene is unchanged
+(speed is still 9.0, not reset to 5.0). Undo the field edit and verify the value
+reverts to 5.0. Redo and verify it returns to 9.0.
+
+The Release solution builds, all W5/Phase 6 tests pass, and the full suite
+introduces no failure beyond the documented seven-test baseline.
+
+**Out of scope.** File dialogs for path browsing, interactive rebinding UI
+(Phase 7), declaration diagnostics from the registry shown inline in the
+inspector (the warning banner is the minimum), hot reload (6C), and the
+`RecordApplied`-synthesizes-`effective` issue in existing Light/Motion helpers
+(noted in W5-F8 but fixing it is a separate hardening pass — tracked here so
+it is not forgotten when Light/Motion gain no-op suppression). Per-frame
+full-component re-validation (review Medium finding) is acceptable for W5
+given typical field counts; if it shows up in profiling, the fix is to
+validate incrementally at the mutation boundary rather than re-scanning
+unchanged entries.
+
+#### Phase 6B W5 implementation — inspector authoring (implemented 2026-07-22)
+
+**Outcome.** `RenderScriptEditor(EntityId)` renders one widget per declared
+public field, typed by `ScriptFieldType`, with the asset-path field, Add/Remove
+Script buttons, a parse-failure warning banner, and the record-on-release
+session pattern for continuous edits. Every authoring action submits one
+`SetScriptCommand` through `EditorCommandHistory` and is undoable. The
+interactive acceptance gate is runnable.
+
+**W5.0 — Centralized session discard + entity-name commit fix.** Added
+`DiscardAllPropertySessions()` to `SceneEditorUI`, replacing the hand-maintained
+lists in `Undo()`, `Redo()`, and `ResetForDocument()` that missed
+`m_MotionVelocitySession` in Undo/Redo (W4-F10). The method discards all 8
+sessions including the new `m_ScriptFieldSession`. Also fixed the entity-name
+field's text-commit bug: it now commits on `IsItemDeactivatedAfterEdit()` (focus
+loss) in addition to Enter, matching the standard ImGui idiom used for Drag*
+widgets. The `(void)nameActivated` discard that silently lost edits on focus
+loss is removed.
+
+**W5.1 — Registry injection + fast-path staleness gate.** `WalnutApp` owns
+`std::unique_ptr<ScriptFieldRegistry> m_InspectorFieldRegistry`, created at
+startup, injected into `SceneEditorUI` via `SetFieldRegistry`, and cleared on
+scene load/close. The registry is independent of `ScriptSystem` (which is
+lazy-created at Play) so the inspector can query declarations while STOPPED.
+
+`ScriptFieldRegistry::GetDeclaredFields` now has a fast-path: check
+`(mtime, size)` against the cache first and return cached descriptors without
+reading or hashing the file. Only when they differ (or the entry is absent) does
+it read + hash + re-parse. The hash tiebreaker still catches same-tick
+same-size edits the moment the timestamp advances. This avoids 60 file reads +
+hashes per second when the inspector queries every frame (review High finding).
+
+**W5.2-W5.5 — RenderScriptEditor.** Follows `RenderLightEditor`'s structure:
+path field (`InputText` with `EnterReturnsTrue` + `DeactivatedAfterEdit` for
+focus-loss commit), Remove Script button, Add Script button (in `RenderInspector`
+when no ScriptComponent exists), diagnostics warning banner when `parsed=false`
+with field widgets rendered read-only (`BeginDisabled`), and the field-widget
+loop.
+
+Widget dispatch by `ScriptFieldType`:
+- `Bool→Checkbox` (discrete: immediate command via `RecordScriptEdit`)
+- `Int→DragInt`, `Float→DragFloat`, `Vec3→DragFloat3`, `Color→ColorEdit3`
+  (continuous: `PropertyEditSession<ScriptComponent>` with owning-widget-id guard)
+- `String→InputText(EnterReturnsTrue)` + `DeactivatedAfterEdit` (discrete)
+- `Uuid→InputText(EnterReturnsTrue)` + `DeactivatedAfterEdit` (discrete, validated:
+  accept nil as "unset", reject garbage by reverting)
+- Empty path (unbound): path field + Remove only, no field widgets, no banner
+
+`RecordScriptEdit` passes the manager's actual `EditorMutationResult` to
+`RecordApplied` (not a synthesized one), so the `effective` flag flows through
+correctly (W5-F8). All widgets are wrapped in `BeginDisabled(!m_Editable)` so
+authoring is blocked during Play.
+
+**W5.6 — Inspector guard tests.** 3 cases in `Phase6BFieldsTests.cpp`:
+- `PropertyEditSession<ScriptComponent>` lifecycle: open/commit/close produces
+  a record; open without commit produces none; cancel produces none; guard
+  failure produces none.
+- Registry fast-path: unchanged file returns cached descriptors without
+  re-reading; modified file (different size) re-parses.
+- Registry same-size edit: rewrite with same byte count but different content;
+  after timestamp advance, the new default is returned (hash tiebreaker).
+
+**W5 verification:** Release solution builds clean (both RT2App and RT2Tests);
+focused W5 is 3/3 cases and 28/28 assertions; the full Phase6B filter is 71/71
+cases and 569/569 assertions; the full Release suite is 524 run, 517 passed, 7
+failed, 0 skipped — the unchanged seven-failure baseline. No W5 case fails.
+
+**Remaining for W5.7 (interactive acceptance gate):** manual verification —
+author a script with `rt2.fields = { speed = rt2.field.float(5.0) }` that moves
+the entity by `speed * dt`, add a ScriptComponent via the inspector, set the
+path, edit `speed` to 9.0, save, reopen, Play, verify motion at 9.0 units/sec,
+Stop, verify authoring unchanged, Undo/Redo the field edit. This proves the
+full 6B stack end to end.
+
+### Phase 6C — Hot reload, input, and remaining bindings (implemented)
 
 **Outcome.** Editing a `.lua` file while Playing hot-reloads it without
 restarting RT2; syntax/runtime errors during reload are reported with
@@ -4673,9 +5701,14 @@ UUIDs):**
 - `ReloadScript(path)` with an added field runs the 6B compatibility
   rules; the new field receives its default; existing fields preserve
   values.
-- `ReloadScript(path)` with a syntax error quarantines all instances of
-  that source; a subsequent `ReloadScript` with valid source
-  un-quarantines (S1: `Quarantined` → `Live`).
+- `ReloadScript(path)` with a syntax error leaves every instance of that
+  source in its current state — a parse failure must NOT quarantine a
+  Live instance, because the running code is still valid and the author
+  is mid-keystroke. Only a successful parse can replace anything.
+  *(Amended in W9: this bullet previously specified the opposite. The
+  implemented behaviour is the correct one and is pinned by a test.)*
+- An instance quarantined by a **runtime** error returns to `Live` on a
+  subsequent `ReloadScript` with valid source (S1: `Quarantined` → `Live`).
 - A reload that adds an `on_update` callback (previously missing) binds
   it without re-running `on_create`.
 - A reload that removes an `on_update` callback unbinds it; subsequent
@@ -4753,6 +5786,303 @@ reload log in the console, and verify the new value takes effect
 without restarting RT2; introduce a syntax error and verify the scene
 keeps running with a useful error.
 
+#### Phase 6C implementation plan (approved 2026-07-22)
+
+Written after grounding the 6C spec against the code as it stands post-6A/6B.
+Findings C1–C10 below are the evidence base; workstreams W0–W9 follow.
+
+##### Grounded findings
+
+> **These describe the code as it stood BEFORE 6C (2026-07-22).** They are
+> the evidence base the 6C plan was built on, kept unedited so the reasoning
+> can be audited. Every "current fact" below has since been changed by the
+> work it motivated — C1's stub is now a full implementation, C3's inert
+> `input` table now has its methods, and so on. Do not read this table as a
+> description of the present tree.
+
+| ID | Fact as of 2026-07-22 (pre-6C) | 6C consequence |
+|---|---|---|
+| C1 | `ScriptSystem::ReloadScript` is a virtual stub (`ScriptSystem.h:135`) that does nothing. `BuildEnvironment` (`ScriptSystem.cpp:409-743`) constructs a fresh `sol::environment`, loads the chunk, binds callbacks, and injects `self`. | 6C must implement reload as: re-parse declarations via the registry, re-run `BuildEnvironment` into a scratch environment, reconcile field values against new declarations, copy old `self` into `rt2.previous_state`, swap the environment, and re-bind callbacks. A syntax error must leave the running instance untouched (D9 trap 2). |
+| C2 | Four items were resolved ahead of 6C (lines 5714-5761): runtime instruction budget, `world.spawn` script attachment, `OnEntitiesDestroying` ordering, and script path in the quarantine log. All four are confirmed in the code. | 6C does not re-address these. They are done. |
+| C3 | `IInputService` (`InputTypes.h:252-277`) exposes `IsPressed`, `IsDown`, `IsReleased`, `GetAxisValue`, `GetMouseDelta`, `GetScrollDelta`. `ScriptSystem::OnSceneStart` receives and stores `m_Input` (`ScriptSystem.h:122,213`). `BuildEnvironment` binds an inert `input` table (`ScriptSystem.cpp:696-704`) with no methods. | 6C adds Lua bindings to the `input` table that call through to `m_Input`. The table is already created; only the method bindings are missing. |
+| C4 | `ScriptSystem::BuildEnvironment` (`:560-628`) already binds `entity.set_position`, `entity.set_local_transform`, `entity.get_position`, `entity.get_name`, `entity.get_uuid`, `entity.is_alive`, `entity.set_visible`, `entity.get_visible`, `world.spawn`, `world.destroy`, `world.find_by_name`, `world.find_by_uuid`, `log.info`, `log.warn`, `log.error`. | 6C adds `entity.get_light`, `entity.set_light`, `entity.get_camera`, `entity.set_camera`, `entity.set_material_index` to the entity table. These route through the `RuntimeCommandSink` (for set) or read the runtime document directly (for get). |
+| C5 | `RuntimeCommandSink` (`ScriptSystem.cpp:690-820`) already implements `SetLocalTransform`, `SetPosition`, `SetName`, `SetVisible`, `IsAlive`, `FindByName`, `FindByName`, `GetLocalTransform`, `GetPosition`, `GetName`, `GetVisible`. | 6C adds `SetLight`, `GetLight`, `SetCamera`, `GetCamera`, `SetMaterialIndex` to the sink. The sink's `IsRuntimeMutable()` gate already protects against writes outside Play. |
+| C6 | `ScriptSandbox.h` already defines `InstallSandbox` (deny list + library copies) and `ScriptInstructionBudget` (RAII hook). `coroutine` is copied but inert (line 202: "no-op unless 6C re-opens it"). | If `timer.after`/`timer.every` are implemented via Lua coroutines, `coroutine` is already isolated per-environment and ready. If implemented in C++, no change needed. The plan says timers fire on the main thread in the variable-update phase — C++ timers are simpler and avoid coroutine-yield semantics in the fixed-step loop. |
+| C7 | `RT2SliceRunner` (`premake5.lua`) does NOT link Lua or sol2. It compiles a subset of CPU-only RT2App sources. The 6C `--script-scenario` mode needs Lua execution. | 6C adds Lua C sources + sol2 include path to `RT2SliceRunner/premake5.lua`, matching the pattern in `RT2Tests/premake5.lua:15-48`. It also links `ScriptSystem.cpp`, `ScriptFieldRegistry.cpp`, `ScriptAssetPath.cpp`, and `ScriptSandbox.h`. No efsw. |
+| C8 | `RuntimeSceneController::SetRuntimeUuidProvider` (`RuntimeSceneController.h:166`) exists and is used by Phase 4/6A tests. | The headless script scenario installs a `DeterministicUuidProvider` seeded from the scenario file, exactly as Phase 6A tests do (`Phase6ALifecycleTests.cpp:114`). |
+| C9 | `LuaPanic` (`ScriptSystem.cpp:53-61`) throws a C++ exception from a C `lua_atpanic` handler. The plan (line 5749-5755) flags this as UB if it ever fires, because Lua is compiled as C. | 6C should compile Lua as C++ (`LUAI_THROW`) OR replace `LuaPanic` with `std::terminate`. This is a premake/vendor change. The plan says "returning from the handler is NOT an alternative — in Lua 5.4 that calls abort()." Compiling Lua as C++ is the clean fix. |
+| C10 | `WalnutApp` owns `m_InspectorFieldRegistry` (W5) and `m_ScriptSystem` (W0). The file watcher needs to live in `WalnutApp` (the only GLFW/ImGui/Walnut owner). | 6C adds efsw to `RT2App/vendor/efsw/`, builds it as a static lib via premake, and wires it in `WalnutApp`. The watcher posts to a thread-safe queue; `WalnutApp::OnUIRender` drains it and calls `ScriptSystem::ReloadScript`. |
+
+##### Workstreams
+
+> **Naming:** Findings are C1–C10. Workstreams are W0–W9 (matching 6A/6B
+> convention). Where a workstream resolves a finding, it says "resolves
+> finding C*N*" explicitly.
+
+- **W0 — `LuaPanic` hardening (resolves finding C9; demoted from the
+  critical path per review H1).** The review found that compiling Lua as
+  C++ is a three-premake, three-vcxproj, `SOL_USING_CXX_LUA`-in-every-TU
+  detonation that gates everything behind a fix for an unreachable defect
+  (all Lua entry is protected). W0 is the two-line fix: `LuaPanic` logs the
+  message and calls `std::terminate` instead of throwing a C++ exception
+  across C frames. The throw is UB on MSVC; `std::terminate` is a clean
+  last-resort backstop. Lua-as-C++ remains a deferred option (tracked in
+  the plan's open-items section) revisited only if a panic is ever observed.
+
+- **W1 — Hot reload core (resolves finding C1).** Implement
+  `ScriptSystem::ReloadScript(path)`:
+  1. Canonicalize the path via `ResolveScriptAssetPath`-equivalent
+     normalization (review M3: efsw hands OS-native absolute paths;
+     `ScriptInstance::scriptPath` is resolved; `ScriptComponent::asset.path`
+     is scene-relative — all three must be normalized before comparison).
+  2. Re-parse declarations via `ScriptFieldRegistry::GetDeclaredFields`.
+  3. If parse fails: log the error, keep all instances of that source in
+     their current state (Quarantined stays Quarantined; Live stays Live).
+     Do NOT quarantine Live instances on a parse failure — the running code
+     is still valid; only the new source is broken.
+  4. If parse succeeds: for each instance of that source, build a scratch
+     environment via `BuildEnvironment`, reconcile field values against the
+     new declarations (reuse `ReconcileScriptFields` from 6B/W2; the
+     reconciliation target is the runtime clone's `ScriptComponent::
+     fieldValues` — reconciled values live in the clone and are discarded
+     at Stop, so adding a field mid-Play shows the default and never
+     reaches the authoring document; diagnostics go to the log, review M5),
+     copy old `self` into `rt2.previous_state` on the new environment, swap
+     the environment and re-bind callbacks.
+  5. **Cancel all timers for the instance before the swap** (review B3: a
+     `sol::protected_function` registered by `timer.every` is a closure
+     over the old environment; without cancellation, old timers keep firing
+     alongside new ones after reload). This is the third D9 trap alongside
+     "reset the four callbacks" and "build into scratch, swap on clean
+     load".
+  6. Reset all four callbacks to `sol::protected_function{}` before
+     rebinding (D9 trap 1). If the scratch build fails, leave the running
+     instance untouched (D9 trap 2).
+  7. Un-quarantine: a successful reload transitions `Quarantined` → `Live`.
+  8. **Run-state awareness (review B2):** add
+     `virtual bool IsRuntimeMutable() const` to `IRuntimeCommandSink` (the
+     sink wraps `RuntimeSceneController::IsRuntimeMutable()` but does not
+     expose it). `ReloadScript` queries the sink:
+     - **Stopped** (no sink / not mutable, `m_Instances` empty): invalidate
+       the `ScriptFieldRegistry` cache entry for the path only — the
+       inspector's next `GetDeclaredFields` re-parses. No instance work.
+     - **Playing:** reload now.
+     - **Paused:** queue; drain on Resume or next Play frame. (Review M1:
+       timers DO advance under Step — see W5.)
+
+- **W2 — File watcher (resolves finding C10).** Vendor efsw under
+  `RT2App/vendor/efsw/` (review L5: copied source, not a junction or
+  submodule; the vendor directory is committed like `vendor/lua/` and
+  `vendor/sol2/`). Add to `RT2App/premake5.lua` as a static lib. Wire in
+  `WalnutApp`: watch directories containing referenced script assets (not
+  individual files). On change, post `{path}` to a thread-safe queue.
+  **Debounce (review M4):** coalesce by path over a ~100ms quiet window —
+  atomic save (temp + rename) yields Modified + Added + Deleted for a
+  single Ctrl+S, which would reload 2–3× per save. Drain in `OnUIRender`
+  (before `EndFrame`, after the fixed-step loop) and call
+  `m_ScriptSystem->ReloadScript(path)`. `RT2Tests` and `RT2SliceRunner` do
+  NOT link efsw; tests exercise reload via explicit `ReloadScript(path)`.
+
+- **W3 — Input bindings (resolves finding C3).** Add methods to the
+  `input` table in `BuildEnvironment`:
+  - `input.is_down(action)` → `m_Input->IsDown(action)`
+  - `input.is_pressed(action)` → `m_Input->IsPressed(action)`
+  - `input.is_released(action)` → `m_Input->IsReleased(action)`
+  - `input.get_axis(axis)` → `m_Input->GetAxisValue(axis)`
+  - `input.get_mouse_delta()` → returns `{x, y}` from `m_Input->GetMouseDelta()`
+  - `input.get_scroll_delta()` → `m_Input->GetScrollDelta()`
+  All read-only. When `m_Input` is null (tests), return inert defaults
+  (false/0/zero vector).
+  **Cursor capture (review H5):** `IInputService::RequestCursorCapture` is
+  non-const, and `ScriptSystem` stores `const IInputService*`. 6C does NOT
+  widen the pointer — cursor capture is out of scope. The acceptance script
+  uses keyboard-only control. The plan's exit criterion ("drive an entity
+  using input") is met by keyboard-driven motion. Mouse-look (which needs
+  cursor lock) is a Phase 7 / future binding.
+
+- **W4 — Entity light/camera/material bindings (resolves findings C4, C5).
+  (Review H3: routes through the sink, NOT `SceneManager` — the sink writes
+  the runtime document's components directly, exactly as `SetVisible`/
+  `SetName` already do. No `SceneManager` access, per `IRuntimeCommandSink.h:40`.)**
+
+  Add to the `entity` table in `BuildEnvironment`:
+  - `entity.get_light()` → reads `LightComponent` via `try_get` (review H2:
+    `registry.get` asserts when absent — use `try_get`, return nil if
+    missing). Returns the **full** component (review H4): `{color={r,g,b},
+    intensity=N, range=N, inner_cone_angle=N, outer_cone_angle=N,
+    is_spot=bool}`.
+  - `entity.set_light(color, intensity, range, inner_cone_angle,
+    outer_cone_angle, is_spot)` → writes the **full** component via the
+    sink. Gates on `IsRuntimeMutable()`.
+  - `entity.get_camera()` → reads `CameraComponent` via `try_get`. Returns
+    the **full** component (review H4): `{fov=N, aperture=N,
+    focus_distance=N, forward={x,y,z}}` (includes `forwardDirection` — the
+    one field a script camera controller needs).
+  - `entity.set_camera(fov, aperture, focus_distance, forward_x,
+    forward_y, forward_z)` → writes the full component via the sink. Gates
+    on `IsRuntimeMutable()`.
+  - `entity.set_material_index(index)` → routes through the sink. **Bounds
+    check (review H2):** `try_get<MeshRef>` (asserts if absent → use
+    `try_get`, return false if missing); reject `index < -1` or `index >=
+    materialCount` with a log and return false. `-1` is the "use per-
+    triangle indices" sentinel (`ECSComponents.h:70-71`) and is valid.
+
+  Add the corresponding methods to `IRuntimeCommandSink` and
+  `RuntimeCommandSink`. Get methods read the runtime document directly via
+  `try_get`. Set methods gate on `IsRuntimeMutable()`.
+
+  **`get_world_position` (review L3):** close the deferral from
+  `IRuntimeCommandSink.h:86-87` — 6C does NOT implement it. State
+  explicitly that world-space position is out of scope for 6C and the
+  deferral is closed as "not needed."
+
+- **W5 — Timers.** Implement `timer.after(seconds, callback)`,
+  `timer.every(seconds, callback)`, `timer.cancel(handle)` in C++ (not Lua
+  coroutines — simpler, avoids fixed-step/coroutine-yield interaction).
+  Store timers in `ScriptSystem`, keyed by instance UUID. Fire in
+  `OnUpdate` (variable-update phase). Timers accumulate against `OnUpdate`'s
+  `dt` and **do advance under Step** (review M1: `Step()` calls
+  `OnUpdate(dt)` while Paused; suppressing timers there makes single-step
+  non-representative). Respect Pause in `Update()` only (which is a no-op
+  unless Playing). Cancel all timers on `OnSceneStop`, on entity
+  destruction, and **on reload** (review B3: before the environment swap —
+  see W1 step 5). `timer.after(0, cb)` fires on the next `OnUpdate`.
+  Return an opaque handle (integer) for cancellation. Bind a `timer` table
+  in `BuildEnvironment`.
+  **Protected-call discipline (review M2):** timer callbacks are
+  `protected_function` calls under a `ScriptInstructionBudget` (making
+  timers the 6th entry point). An error quarantines the instance. An
+  infinite loop is caught by the budget hook.
+
+- **W6 — `rt2.previous_state` and `rt2.reload()`.** On reload, copy the
+  old environment's `self` table (runtime-mutated values, not the persisted
+  ones) into the new environment's `rt2.previous_state`. Bind
+  `rt2.reload()` as a function that posts the entity's own script path to
+  the reload queue (useful for development; the watcher calls the same
+  internal path).
+
+- **W7 — Headless script scenario (resolves findings C7, C8).** Add
+  `--script-scenario <path>` mode to `RT2SliceRunner`:
+  1. Parse the scenario JSON: `{scenePath, frames, uuidSeed,
+     expectedTransforms: {uuid: {position, rotation, scale}},
+     forbidSpawn?}`.
+  2. Load the scene via the existing `SceneSerializer::Load` + resolver
+     path.
+  3. Install `DeterministicUuidProvider(uuidSeed)` via
+     `RuntimeSceneController::SetRuntimeUuidProvider`.
+  4. Play, run `frames` fixed steps, emit JSON state report
+     (`entities: [{uuid, name, position, rotation, scale, visible}]`).
+  5. Compare against `expectedTransforms`; exit non-zero on mismatch or
+     any script error.
+  6. **Drive `Update()` with a constant `frameDt`** (review M1: document
+     the value — use `kFixedDt` so the variable phase is deterministic).
+  7. Add Lua + sol2 + ScriptSystem to `RT2SliceRunner/premake5.lua`,
+     matching the `RT2Tests/premake5.lua:15-48` pattern.
+  8. Create `assets/script-scenario.rt2scene` + `assets/script-scenario.lua`
+     and `run_script_test.ps1`.
+
+- **W8 — Tests.** Two new test files:
+  - `Phase6CHotReloadTests.cpp`: reload add/remove/rename fields, syntax
+    error quarantine + un-quarantine, callback add/remove,
+    `rt2.previous_state`, pause suppression, `world.spawn` script
+    attachment during reload, **timer cancellation on reload** (B3),
+    **path canonicalization** (M3), **`IsRuntimeMutable()` gate on reload**
+    (B2).
+  - `Phase6CBindingsTests.cpp`: input bindings (mock `IInputService`),
+    timer lifecycle (after/every/cancel/pause/step-advances/stop/destroy/
+    reload-cancels), entity light/camera/material get/set, **bounds check
+    on `set_material_index`** (H2), **`try_get` for absent components**
+    (H2), **`IsRuntimeMutable()` gate on new setters** (L4), `rt2.reload()`.
+  Register both in `RT2Tests.vcxproj` + `.filters`.
+
+  *Amended in W9:* delivered as **one** file, `Phase6CScriptingTests.cpp`,
+  rather than two — the harness is shared and splitting it would duplicate
+  `Harness6C` across translation units. Coverage matches the two lists
+  above. Two pure seams were extracted first so the decisions were
+  reachable from tests at all: `ScriptScenarioCompare.h` (headless verdict
+  + the `ScenarioExit` code table) and `ScriptFileWatchPolicy.h`
+  (`DecideScriptFileChange`). Not covered, and deliberately so: the
+  watcher's member-declaration-order UAF needs a live `efsw` thread the
+  test target does not link.
+
+- **W9 — Documentation and verification.** Update scripting/scene docs,
+  build Release, run focused 6C tests, the full suite against its
+  **7 Release / 15 Debug** baseline (review L1: state both), the headless
+  script scenario regression, and refresh Graphify.
+
+##### Implementation order
+
+> **Review H1/H ordering change:** W0 (`std::terminate`) is demoted out of
+> the critical path. The order leads with W1 (hot reload) + W3 (input),
+> which de-risk everything else and need no build-system change.
+
+1. **W0** — `LuaPanic` → `std::terminate`. Two-line fix, build + verify.
+2. **W1** — Hot reload core. Implement `ReloadScript` + `IsRuntimeMutable`
+   on the sink. Tests via explicit calls (no efsw yet). Build + test.
+3. **W3** — Input bindings. Add methods to `input` table. Test with mock
+   `IInputService`.
+4. **W4** — Entity light/camera/material bindings. Add to entity table +
+   sink. Test get/set round-trip, bounds, absent-component, gate.
+5. **W5** — Timers. Implement C++ timer system in `ScriptSystem`. Test
+   after/every/cancel/pause/step-advances/stop/destroy/reload-cancels.
+6. **W6** — `rt2.previous_state` + `rt2.reload()`. Test across reload.
+7. **W2** — File watcher. Vendor efsw, wire in WalnutApp, debounce, drain
+   queue in `OnUIRender`. Interactive test only.
+8. **W7** — Headless script scenario. Add to SliceRunner, create fixture,
+   add to regression script.
+9. **W8** — Tests. Two new test files, registered in both vcxproj files.
+10. **W9** — Documentation and verification.
+
+### Phase 6C verification report (implemented)
+
+Verified 2026-07-24. All W0–W9 workstreams landed.
+
+| Check | Result |
+|---|---|
+| Release build, whole solution | RT2App, RT2Tests, RT2SliceRunner, Walnut, ImGui, GLFW all link |
+| Debug build, RT2Tests | links |
+| Focused 6C suites, Release | 29 cases / 150 assertions, all pass |
+| Focused 6C suites, Debug | 29 cases / 150 assertions, all pass |
+| Full suite, Release | 553 cases, **7 failed** (9 assertions) — matches baseline |
+| Full suite, Debug | 553 cases, **15 failed** (17 assertions) — matches baseline |
+| Headless scenario (`run_script_test.ps1`) | PASS, exit 0 |
+| Graphify | refreshed |
+
+The 7 Release / 15 Debug failures are the pre-existing set enumerated in the
+Phase 6B W0-W2 verification report above ("The honest baseline is now") —
+5 × `SceneGraph` plus 2 × `SceneManager` in both configurations, and in Debug
+additionally 7 × `OBJ Import Wizard` and 1 × `P1A Multi-Model`. They fail
+identically in isolation and are untouched by Phase 6C. Note the *total* case
+count has grown since that report (468 → 553) while the failure counts have
+not.
+
+**Defects found during W8/W9 and fixed:**
+
+1. The watcher's file-change policy was an either/or between reloading and
+   invalidating the inspector's field registry. `ScriptSystem` and the editor
+   hold **separate** `ScriptFieldRegistry` instances, so while Playing the
+   inspector kept showing declarations parsed from the pre-edit file for the
+   whole session. Now both effects are independent and the cache is
+   invalidated in every run state.
+2. `assets/script-scenario.lua` declared its field with the plain-table form
+   `{ type = "float", default = 1.0 }`, which is silently skipped as "not an
+   `rt2.field.*` declaration". The fixture only worked because the value was
+   also authored into the `.rt2scene`. Fixed, and pinned by a test asserting
+   that constructors declare and plain tables do not.
+3. `ScenarioExit::TransformMismatch` was renamed `ExpectationFailed` — a
+   spawn violation shares code 5 and is not a transform mismatch.
+4. `CompareTransforms` was iterating entities and skipping any without an
+   expectation, so a scenario whose subject the script destroyed passed
+   clean. It is now driven by the expectation list.
+
+**Known non-coverage:** the W2 watcher shutdown ordering (member declaration
+order) needs a live `efsw` thread that the CPU-only test target does not
+link. It remains guarded by a comment at the declaration site.
+
+**Caveat for CI:** `RT2Tests.exe` resolves some fixtures by relative path and
+must be run from the repository root; from another working directory a
+handful of unrelated cases fail on missing assets.
+
 ### Phase 6 exit criteria (all three sub-slices)
 
 A saved `ScriptComponent` can drive an entity using input and survive
@@ -4776,7 +6106,8 @@ and the Lua C lib is the only new link, gated per target by premake.
   If 6A's lifecycle dispatch is wrong, 6B's field persistence and 6C's
   hot reload would be built on sand.
 - 6B's reflection and persistence are independently testable via
-  explicit `ReloadScript` calls (the API is declared in 6A, stubbed);
+  explicit `ReloadScript` calls (the API was declared in 6A and stubbed
+  until 6C implemented it);
   deferring file watching to 6C means 6B does not need efsw or a
   worker thread, keeping the CPU-only test boundary intact.
 - 6C's hot reload is the feature most likely to surface race
@@ -4798,7 +6129,5 @@ and the Lua C lib is the only new link, gated per target by premake.
   sketch with the implemented `IRuntimeScriptDispatch` interface and
   the `SyncScriptEnvironments` mechanic.
 - `scene-management.md`: note `ScriptComponent` as a persisted
-  component (Count 10→11) and the v2→v3 schema migration (lands in 6B,
+  component (Count 10→11) and the v3 hard schema cutover (lands in 6B,
   but note the visitor change in 6A).
-
-
