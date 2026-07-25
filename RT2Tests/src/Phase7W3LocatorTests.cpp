@@ -201,7 +201,10 @@ TEST_CASE("W3-Locator: stale DB but matching sidecar (case 3)")
     REQUIRE(r.source == AssetResolutionSource::PathFallback);
     REQUIRE(r.effectiveId == id);
     REQUIRE_FALSE(r.identityRepairRequired);
-    REQUIRE(CountSeverity(diags, AssetDiagnostic::Missing) == 1);
+    // W3-Q5: the database-stale-but-resolved case emits Stale, not Missing.
+    // Missing documents a file not found / unreadable; here the file WAS
+    // found and resolution succeeded, so Missing would mislabel it.
+    REQUIRE(CountSeverity(diags, AssetDiagnostic::Stale) == 1);
     REQUIRE(diags[0].detail.find("database stale") != std::string::npos);
 }
 
@@ -328,7 +331,8 @@ TEST_CASE("W3-Locator: non-nil ID, no database, matching sidecar (case 3)")
     REQUIRE(r.source == AssetResolutionSource::PathFallback);
     REQUIRE(r.effectiveId == id);
     REQUIRE_FALSE(r.identityRepairRequired);
-    REQUIRE(CountSeverity(diags, AssetDiagnostic::Missing) == 1);
+    // W3-Q5: the database-stale-but-resolved case emits Stale, not Missing.
+    REQUIRE(CountSeverity(diags, AssetDiagnostic::Stale) == 1);
     REQUIRE(diags[0].detail.find("database stale") != std::string::npos);
 }
 

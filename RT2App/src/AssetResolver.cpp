@@ -253,14 +253,18 @@ AssetResolutionResult Resolve(const AssetReference& ref,
     if (sidecarId == ref.assetId)
     {
         // Case 3: database stale/missing but path sidecar claims same ID.
-        // Fallback succeeds and reports stale database state.
+        // Fallback succeeds and reports the stale database state via the
+        // Stale severity (W3-Q5): the file was found and resolution
+        // SUCCEEDED, so Missing would mislabel it; the durable identity is
+        // confirmed by the sidecar, but the database-side state needs
+        // repair by a later save/migration.
         result.success = true;
         result.resolvedPath = candidatePath;
         result.source = AssetResolutionSource::PathFallback;
         result.effectiveId = sidecarId;
         result.identityRepairRequired = false; // sidecar confirms
         diagnostics.push_back(MakeDiag(
-            AssetDiagnostic::Missing, ref.kind, ref.path,
+            AssetDiagnostic::Stale, ref.kind, ref.path,
             candidatePathStr, entityUuid, entityName, ref.sourceKey,
             "database stale; resolved by path sidecar matching requested ID"));
         return result;

@@ -1265,18 +1265,22 @@ static bool SaveInternal(const SceneDocument& doc,
     // Camera
     root["camera"] = CameraToJson(doc.ecs.camera);
 
-    // Environment (path + additive assetId; relativize path against scene dir).
-    // Phase 7 W3 step 4: assetId is written only when assigned, mirroring the
-    // model AssetReference codec. A v3 scene has no env assetId field; the
-    // loader treats absence as nil.
+    // Environment (AssetReference + decoded dimensions; relativize path against
+    // scene dir). Phase 7 W3 step 4 remediation: the environment now carries a
+    // real AssetReference (W3-Q1/D2), so the env block is serialized through
+    // the shared AssetReferenceToJson codec (no duplicate assetId handling).
+    // Additive over v3 exactly as before: the v3 fields path/width/height
+    // remain, and assetId is still written only when non-nil. The
+    // AssetReference-only fields (kind/sourceKey/importSettings) are added
+    // by the shared codec; a v3 reader ignores unknown fields and a pre-
+    // remediation reader reads only path/width/height/assetId.
     {
-        json env;
-        env["path"]   = RebasePath(doc.environment.path,
-                                    currentSceneDir, outputSceneDir);
+        AssetReference relRef = doc.environment.ref;
+        relRef.kind = AssetKind::Environment;
+        relRef.path = RebasePath(relRef.path, currentSceneDir, outputSceneDir);
+        json env = AssetReferenceToJson(relRef);
         env["width"]  = doc.environment.width;
         env["height"] = doc.environment.height;
-        if (!doc.environment.assetId.IsNull())
-            env["assetId"] = doc.environment.assetId.ToString();
         root["envMap"] = env;
     }
 
@@ -1485,17 +1489,80 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
     if (root.contains("camera"))
         camera = JsonToCamera(root["camera"]);
 
-    // Parse environment (path + additive assetId; pixels are not serialized).
-    // Phase 7 W3 step 4: assetId is optional; absence parses to nil.
+    // Parse environment (AssetReference + decoded dimensions; pixels are not
+    // serialized). Phase 7 W3 step 4 remediation: the env block is parsed
+    // through the shared JsonToAssetReference codec (no duplicate assetId
+    // handling). Additive over v3: a v3 env block {path,width,height} parses
+    // to a nil assetId; the AssetReference-only fields (kind/sourceKey/
+    // importSettings) are optional and default sensibly.
+    //
+    // Item 3 (malformed env assetId must be observable): a present-but-non-
+    // string assetId, or a string that parses to UUID::Nil(), is corrupt
+    // scene identity. Previously this was silently ignored (non-string) or
+    // parsed to nil (malformed string), then treated as a nil-ID fallback
+    // by resolution, hiding the corruption. Now it sets Error, records a
+    // SceneLoadReport field diagnostic, and fails the load loudly —
+    // silent failure is this codebase's characteristic bug class.
     EnvironmentSettings env;
     if (root.contains("envMap"))
     {
         const auto& ej = root["envMap"];
-        if (ej.contains("path"))   env.path   = ej["path"].get<std::string>();
+        // Parse the AssetReference portion through the shared codec. A
+        // malformed `kind` (unknown asset kind) is a hard parse error
+        // already reported by JsonToAssetReference; for the env block the
+        // kind is optional and defaults to Unknown, but the env invariant
+        // forces Environment below.
+        Error refErr;
+        env.ref = JsonToAssetReference(ej, refErr);
+        if (!refErr.IsOk())
+        {
+            err = refErr;
+            err.path = path.string();
+            err.detail = "malformed envMap asset reference: " + err.detail;
+            return false;
+        }
+        // Force the env invariant regardless of what was serialized.
+        env.ref.kind = AssetKind::Environment;
+
         if (ej.contains("width"))  env.width  = ej["width"].get<int>();
         if (ej.contains("height")) env.height = ej["height"].get<int>();
-        if (ej.contains("assetId") && ej["assetId"].is_string())
-            env.assetId = UUID::Parse(ej["assetId"].get<std::string>());
+
+        // Validate the assetId: present-but-non-string or unparseable-string
+        // is corrupt scene identity (item 3). UUID::Parse returns Nil for a
+        // malformed string; distinguish that from a legitimately absent
+        // field by only validating when the field is present.
+        if (ej.contains("assetId"))
+        {
+            if (!ej["assetId"].is_string())
+            {
+                err.code = Error::Parse;
+                err.path = path.string();
+                err.detail = "envMap.assetId must be a string UUID, got "
+                           + std::string(ej["assetId"].type_name());
+                FieldDiagnostic d;
+                d.kind = FieldDiagnostic::Kind::MalformedSerializedValue;
+                d.field = "envMap.assetId";
+                d.message = err.detail;
+                report.fieldDiagnostics.push_back(std::move(d));
+                return false;
+            }
+            const std::string idStr = ej["assetId"].get<std::string>();
+            const UUID parsed = UUID::Parse(idStr);
+            if (parsed.IsNull())
+            {
+                err.code = Error::Parse;
+                err.path = path.string();
+                err.detail = "envMap.assetId is not a valid UUID: \""
+                           + idStr + "\"";
+                FieldDiagnostic d;
+                d.kind = FieldDiagnostic::Kind::MalformedSerializedValue;
+                d.field = "envMap.assetId";
+                d.message = err.detail;
+                report.fieldDiagnostics.push_back(std::move(d));
+                return false;
+            }
+            env.ref.assetId = parsed;
+        }
     }
 
     // Parse metadata.

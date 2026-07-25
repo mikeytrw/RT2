@@ -42,8 +42,9 @@
 //   2. A unique ID whose file exists wins. A stale/missing reference path is
 //      observable but does not defeat successful ID resolution.
 //   3. If the database is stale/missing but the path exists and the path's
-//      sidecar claims the same ID, path fallback succeeds and reports stale
-//      database state.
+//      sidecar claims the same ID, path fallback succeeds and reports a Stale
+//      diagnostic: the durable identity is confirmed by the sidecar, but the
+//      database-side state needs repair.
 //   4. If the ID does not locate a file, the path exists, and the sidecar is
 //      absent, fallback succeeds with a sidecar Missing diagnostic and
 //      identityRepairRequired=true; explicit save/migration performs remap.
@@ -63,9 +64,9 @@
 // a diagnostic.
 //
 // AssetDiagnostic is defined here (neutral) and re-exported from
-// SceneAssetResolver.h, which now includes this header. Severity gains
-// Conflict (W3-Q5); the Walnut formatter must be made exhaustive in the same
-// change that adds a Conflict-emitting code path.
+// SceneAssetResolver.h, which now includes this header. Severity gained
+// Conflict and Stale (W3-Q5); the Walnut formatter must be made exhaustive
+// in the same change that adds a severity-emitting code path.
 // ============================================================================
 
 namespace rt2::core {
@@ -79,8 +80,16 @@ struct AssetDiagnostic
     {
         Missing,     // file not found / unreadable
         Malformed,   // file found but failed to parse
-        Unresolved,   // source key not present in the rebuilt asset
+        Unresolved,  // source key not present in the rebuilt asset
         Conflict,    // ID/path disagreement; identity not substituted (W3-Q5)
+        // Resolved successfully, but identity metadata is stale or incomplete
+        // (W3-Q5: the existing severities did not describe a successfully
+        // recovered stale path). Emitted when the locator resolved the file
+        // and the sidecar confirms the requested ID, but no database was
+        // supplied (or the database record did not locate a file): the durable
+        // identity is authoritative via the sidecar, but the database-side
+        // state is stale and should be repaired by a later save/migration.
+        Stale,
     };
     Severity        severity = Missing;
     AssetKind       kind     = AssetKind::Unknown;

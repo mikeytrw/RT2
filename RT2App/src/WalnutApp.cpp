@@ -2656,12 +2656,16 @@ public:
 		for (const auto& d : diagnostics)
 		{
 			const char* sev = nullptr;
+			// Exhaustive over every AssetDiagnostic::Severity value. A new
+			// severity must add a case here; the default is loud so a missing
+			// case is observable rather than silently mislabelled (W3-Q5).
 			switch (d.severity)
 			{
 			case rt2::core::AssetDiagnostic::Missing:    sev = "Missing";   break;
 			case rt2::core::AssetDiagnostic::Malformed:  sev = "Malformed"; break;
 			case rt2::core::AssetDiagnostic::Unresolved: sev = "Unresolved";break;
 			case rt2::core::AssetDiagnostic::Conflict:   sev = "Conflict";  break;
+			case rt2::core::AssetDiagnostic::Stale:       sev = "Stale";     break;
 			default:                                      sev = "Unknown";   break;
 			}
 			*diagStr += std::string("[Scene] Asset ") + sev +
@@ -2879,6 +2883,7 @@ public:
 			int w = 0, h = 0;
 			std::vector<float> pixels;
 			std::string error;
+			rt2::core::Error envImportErr; // sidecar read/write diagnostic
 		};
 		auto result = std::make_shared<EnvResult>();
 
@@ -2929,8 +2934,18 @@ public:
 			}
 
 			m_SceneMgr.SetEnvMapData(pathCopy, result->w, result->h,
-			                         std::move(result->pixels));
+			                         std::move(result->pixels),
+			                         /*envImportErr=*/&result->envImportErr);
 			printf("[EnvMap] Loaded %dx%d\n", result->w, result->h);
+			// Surface sidecar write/read errors through the status bar so the
+			// user sees them instead of relying on console output (item 4).
+			if (!result->envImportErr.IsOk())
+			{
+				m_LastStatusMsg = "Env loaded; identity sidecar issue: " +
+				                  result->envImportErr.Format();
+				printf("[Asset] env sidecar diagnostic: %s\n",
+				       result->envImportErr.Format().c_str());
+			}
 
 			if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
 			{

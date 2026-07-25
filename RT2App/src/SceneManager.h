@@ -78,13 +78,24 @@ struct EditorCameraPose;
 
 	// ---- Scene loading ----
 	bool LoadScene(const std::string& filepath);
-	bool LoadEnvMap(const std::string& filepath);
+	// Load an environment map and assign/match its stable asset ID via the
+	// per-asset sidecar (ResolveOrAssign). The load succeeds even when the
+	// sidecar write fails — the scene gets a session ID and the next save
+	// retries the sidecar — but `envImportErr` (if non-null) carries the
+	// structured error so callers can surface it instead of relying on
+	// console output (Phase 7 W3 step 4 remediation, item 4: silent failure
+	// is this codebase's characteristic bug class).
+	bool LoadEnvMap(const std::string& filepath,
+	                rt2::core::Error* envImportErr = nullptr);
 	void ClearEnvMap();
 
 	// Set pre-decoded environment map data (used by the async load path
 	// where the decode runs on a worker thread). Takes ownership of pixels.
+	// Like LoadEnvMap, assigns/matches the sidecar ID and reports any
+	// sidecar-write error through `envImportErr` (if non-null).
 	void SetEnvMapData(const std::string& filepath, int w, int h,
-	                   std::vector<float> pixels);
+	                   std::vector<float> pixels,
+	                   rt2::core::Error* envImportErr = nullptr);
 
 	// ---- Entity manipulation ----
 	// EntityId is a thin wrapper around entt::entity for type safety.
@@ -511,7 +522,7 @@ struct EditorCameraPose;
 
 	// Environment map (delegates to authoring document)
 	bool HasEnvMap() const { return m_Authoring.environment.HasEnvMap(); }
-	const std::string& GetEnvMapPath() const { return m_Authoring.environment.path; }
+	const std::string& GetEnvMapPath() const { return m_Authoring.environment.ref.path; }
 	int GetEnvMapWidth() const { return m_Authoring.environment.width; }
 	int GetEnvMapHeight() const { return m_Authoring.environment.height; }
 

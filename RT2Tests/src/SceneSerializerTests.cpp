@@ -959,7 +959,7 @@ TEST_CASE("Phase6B W3 Serializer: Save As rebases every durable path")
     SceneDocument doc;
     doc.SetUuidProvider(&provider);
     doc.metadata.sourcePath = oldRoot / "source.rt2scene";
-    doc.environment.path = "env/night.exr";
+    doc.environment.ref.path = "env/night.exr";
     const auto entity = doc.ecs.registry.create();
     doc.AssignNewUuid(entity);
     doc.ecs.registry.emplace<Transform>(entity);
@@ -1133,7 +1133,7 @@ TEST_CASE("Phase7 W0: relativizable asset paths are never stored absolute")
     doc.ecs.registry.emplace<ScriptComponent>(entity, script);
 
     // Environment: absolute path under the scene directory.
-    doc.environment.path = (envDir / "night.exr").generic_string();
+    doc.environment.ref.path = (envDir / "night.exr").generic_string();
 
     const auto target = sceneDir / "w0_audit.rt2scene";
     Error err;

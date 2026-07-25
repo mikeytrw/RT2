@@ -302,11 +302,17 @@ TEST_CASE("P1A RoundTrip: glTF import -> save v3 -> load + resolve")
     // W3 step 3: the locator is ID-first and read-only. With a non-nil assetId
     // (assigned at import and persisted in the scene), no AssetDatabase built
     // at scene load yet, and a matching sidecar on disk, resolution succeeds
-    // via path fallback and emits a "database stale" Missing diagnostic. That
-    // is the expected contract signal, not a real failure. A Malformed or
-    // Conflict diagnostic would be a real defect.
+    // via path fallback and emits a "database stale" Stale diagnostic. That
+    // is the expected contract signal, not a real failure. A Missing,
+    // Malformed, Conflict, or Unresolved diagnostic would be a real defect:
+    //   - Missing  : the file was not found (the file WAS found here).
+    //   - Malformed: the file failed to parse.
+    //   - Conflict : ID/path disagreement (identity not substituted).
+    //   - Unresolved: the source key was not found in the rebuilt asset.
+    // Stale is permitted (and expected with no database at scene load).
     for (const auto& d : diagnostics)
     {
+        CHECK(d.severity != AssetDiagnostic::Missing);
         CHECK(d.severity != AssetDiagnostic::Malformed);
         CHECK(d.severity != AssetDiagnostic::Conflict);
         CHECK(d.severity != AssetDiagnostic::Unresolved);
@@ -365,7 +371,7 @@ TEST_CASE("P1A Environment: save env reference -> load -> resolve reads pixels")
     DeterministicUuidProvider provider;
     SceneDocument src;
     src.SetUuidProvider(&provider);
-    src.environment.path = exrPath.string();
+    src.environment.ref.path = exrPath.string();
     // Deliberately leave floatPixels empty to simulate a freshly-loaded scene.
 
     auto scenePath = FixtureDir() / "tiny_env.rt2scene";
@@ -417,7 +423,7 @@ TEST_CASE("P1A Environment: missing environment produces diagnostic")
     DeterministicUuidProvider provider;
     SceneDocument doc;
     doc.SetUuidProvider(&provider);
-    doc.environment.path = "does_not_exist.exr";
+    doc.environment.ref.path = "does_not_exist.exr";
 
     std::vector<AssetDiagnostic> diagnostics;
     Error err;

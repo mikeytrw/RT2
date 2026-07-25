@@ -163,16 +163,20 @@ bool SceneAssetResolver::ResolveEnvironment(SceneDocument& doc,
     if (!doc.environment.HasEnvMap())
         return true; // nothing to resolve
 
-    const std::string& refPath = doc.environment.path;
+    const std::string& refPath = doc.environment.ref.path;
 
     // Phase 7 W3 step 4: resolve the environment map through the shared
     // read-only locator (ID-first, path+sidecar fallback). The locator emits
     // exactly one terminal diagnostic on failure and never mints/writes a
     // sidecar — env import owns identity repair (SceneManager::LoadEnvMap).
-    AssetReference ref;
-    ref.kind   = AssetKind::Environment;
-    ref.path   = refPath;
-    ref.assetId = doc.environment.assetId;
+    // The environment now carries a real AssetReference (W3-Q1/D2), so we
+    // resolve it directly instead of reconstructing a temporary reference.
+    // The kind invariant (AssetKind::Environment) is maintained by
+    // EnvironmentSettings' default member initializer and Clear(); set it
+    // defensively here in case a caller mutated ref.path/assetId without
+    // setting kind.
+    AssetReference& ref = doc.environment.ref;
+    ref.kind = AssetKind::Environment;
     AssetResolutionContext ctx;
     ctx.assetRoot = sceneRoot;
     ctx.database  = nullptr;
@@ -248,7 +252,7 @@ bool SceneAssetResolver::ResolveEnvironment(SceneDocument& doc,
     // document cache. Nil effective ID (absent sidecar) leaves the document
     // ID untouched — the host's next save/migration owns repair.
     if (!rr.effectiveId.IsNull())
-        doc.environment.assetId = rr.effectiveId;
+        doc.environment.ref.assetId = rr.effectiveId;
     return true;
 }
 

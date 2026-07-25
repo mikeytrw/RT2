@@ -128,7 +128,14 @@
   ],
   "envMap": {
     "height": 0,
+    "importSettings": {
+      "generateNormals": false,
+      "mergeMegaMesh": true,
+      "triangulate": true
+    },
+    "kind": "environment",
     "path": "",
+    "sourceKey": "",
     "width": 0
   },
   "materials": [
