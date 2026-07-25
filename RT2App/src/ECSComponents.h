@@ -202,12 +202,21 @@ struct ImportSettings
 // scene-relative UTF-8 path (forward slashes, normalized). It is resolved
 // relative to the .rt2scene file at load time. Absolute machine-specific
 // paths must NOT be persisted.
+//
+// assetId is the stable identity of the source asset (Phase 7 W1, per D1/D2).
+// It is the durable form of identity; path is a human-readable fallback for
+// diagnostics and hand-editing. On a v3 scene the field is absent on read and
+// left nil (additive migration, per D5); the first v4 save assigns it from
+// the asset's sidecar (.rt2meta) or mints a fresh v4 and writes the sidecar
+// (per D8). Resolution in W1/W2 still goes by path; the ID is plumbed but
+// not yet authoritative. A nil assetId means "not yet assigned".
 struct AssetReference
 {
     AssetKind               kind = AssetKind::Unknown;
     std::string             path;        // portable, scene-relative UTF-8 path
     ImportSettings          importSettings;
     std::string             sourceKey;   // stable source subresource identity
+    rt2::core::UUID         assetId;     // stable source-asset identity (Phase 7)
 
     bool IsValid() const { return kind != AssetKind::Unknown && !path.empty(); }
 };

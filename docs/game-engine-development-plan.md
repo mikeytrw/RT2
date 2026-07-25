@@ -6170,11 +6170,19 @@ document is a period record of a superseded state.**
 
 | Configuration | Result |
 |---|---|
-| **Release** | **554 run, 554 passed, 0 failed, 0 skipped** |
-| **Debug** | 554 run, 546 passed, **8 failed**, 0 skipped |
+| **Release** | **555 run, 555 passed, 0 failed, 0 skipped** |
+| **Debug** | **555 run, 555 passed, 0 failed, 0 skipped** |
 
 Run from the repository root — `RT2Tests.exe` resolves some fixtures by
 relative path and both fails and writes stray files if run from elsewhere.
+
+> **Updated 2026-07-25.** The 8 Debug-only failures recorded below were
+> diagnosed and fixed; both configurations are now 555/555. The previous
+> Debug row (554 run, 546 passed, 8 failed) is a period record of the
+> pre-fix state. The case count grew by one (554 → 555) due to unrelated
+> Phase 7 work in flight on the `phase-6-scripting` branch at the time of
+> verification. See the supersession note at the end of the "remaining 8
+> Debug-only failures" subsection for the verified root cause.
 
 **Release is green and must stay green.** A Release failure is now a real
 regression, not baseline noise. This is the change that makes the gate
@@ -6213,6 +6221,56 @@ silent failure into a loud one:
   three layers up.
 
 A clean Debug rebuild was ruled out as a cause; the failures survive it.
+
+> **Superseded 2026-07-25 — root cause found and fixed.** The unresolved
+> question above ("why does the successfully-opened stream leave no file in
+> Debug") has a code-level answer, not an environmental one. The fixture
+> structs (`TinyObjFixture`, `MultiShapeObjFixture`, `MultiMaterialShapeFixture`,
+> `DegenerateShapeFixture` in `RT2Tests/src/Phase1ASceneAssetTests.cpp`) own
+> their `.obj`/`.mtl` files via a destructor that calls `std::filesystem::remove`
+> but were **copyable** with no user-defined copy/move. The `Make*` helpers
+> return the fixture by value. MSVC's **Debug** build does not apply NRVO
+> (named return value optimization) for this case, so `return f;` copies `f`
+> into the return slot and then destroys the local `f` — running `Cleanup()`,
+> which deletes the files the caller is about to use. **Release** applies
+> NRVO, so no copy/destructor occurs and the files survive. This explains
+> every observation: files exist at the end of `MakeMultiShapeObj` but not
+> after the return; `.objx` / `.mtl`-written-at-test-scope survive (no
+> fixture destructor touches them); a clean Debug rebuild changes nothing.
+>
+> Probes that proved it (instrumentation, not reasoning): a copy-constructor
+> trace showed `COPY ctor` immediately followed by `DTOR` (with `exists=1`
+> at destructor entry) during the return, and the test body then saw
+> `exists=0`. Adding `RT_LOG` to `ParseObjAndLoadResources`'s guard
+> confirmed it refused the path as "does not exist" — the file was already
+> gone before the importer ran.
+>
+> Fix applied (`RT2Tests/src/Phase1ASceneAssetTests.cpp`): the four fixture
+> structs are now **move-only** (copy deleted; move ctor/assignment clear
+> the source's paths so the moved-from destructor's `Cleanup` is a no-op).
+> `return f;` is now a move, so the source destructor cannot delete the
+> caller's files in either configuration. Each `Make*` helper now calls
+> `RequireFixtureFile` to assert both files exist before returning — a
+> fixture that silently produces nothing now fails at the source, not three
+> layers deep in the importer.
+>
+> Secondary fix (`RT2App/src/SceneLoader.cpp`): the four silent
+> `if (filepath.empty() || !fs::exists(filepath)) return false;` guards
+> (in `LoadIntoECS`, `ImportIntoECS`, `LoadObjIntoECS`, and
+> `ParseObjAndLoadResources`) now log the refused path and the reason
+> ("empty" / "does not exist") via `RT_LOG` before returning. This is the
+> codebase's characteristic silent-failure bug class; the OBJ failures
+> were a clean instance of it.
+>
+> Verified 2026-07-25 from the repository root, both configurations built
+> clean (single-threaded for Release to avoid a `vc143.pdb` write race):
+> **Debug 555/555**, **Release 555/555**. Note: at verification time the
+> `phase-6-scripting` branch had in-flight Phase 7 edits to
+> `ECSComponents.h` (an unqualified `UUID assetId;` field that does not
+> resolve in the global namespace) that broke the build in both
+> configurations; a temporary `rt2::core::` qualification was used **only**
+> to unblock verification and was reverted immediately afterward, so the
+> Phase 7 agent's file was left exactly as found.
 
 ### Phase 6 exit criteria (all three sub-slices)
 
@@ -6364,6 +6422,112 @@ project root.
 **D7 — Watcher scope (P10).** Widen the existing efsw watcher to the asset
 root, and fix that the watch set is only rebuilt on scene open.
 
+**D5 (settled 2026-07-25, with D8) — Schema v4: additive migration, assign
+once and persist.** The v2→v3 precedent (P11) was a hard cutover; v4 breaks
+that precedent deliberately. Asset IDs cannot be invented for existing
+scenes without a scan-and-assign pass, and a hard cutover would invalidate
+every existing scene for a feature that can degrade gracefully. So `MinReadVersion`
+stays 3 while `SchemaVersion` becomes 4 (the `MinReadVersion == SchemaVersion`
+invariant at `SceneSerializer.h:112-114` is intentionally broken).
+
+The assignment mechanism is **assign-once-during-explicit-migration, written
+back on save** — not lazy minting on resolve, and not deterministic derivation
+from path. Lazy minting via `OsUuidProvider::CreateV4()` (`core/UUID.cpp:89-118`,
+`CoCreateGuid`/`UuidCreate`, random) was rejected because two machines opening
+the same v3 scene would assign divergent IDs to the same asset and fail the
+cross-machine portability exit criterion. Deterministic derivation (v5 from
+canonical project-relative path) was rejected for two reasons: (1) it couples
+identity to path, which is the rename-fragility Phase 7 exists to remove, and
+(2) `core/UUID.h:25` commits v5 to "Linked imported nodes: v5 from asset ID +
+canonical node key (future)" — v5 is already spoken for as a derivation *from*
+asset IDs, not a way to *produce* them. Under assign-once-persisted, the first
+save under a v4 editor runs an explicit scan-and-assign pass; from then on the
+scene carries stable, persisted IDs. The pass is observable (the editor reports
+"migrated N assets to v4") rather than a silent save-time mutation, per the
+loud-failure rule in AGENTS.md:53-60.
+
+The mechanism interacts with D8 (below): where the IDs *live* determines
+whether "machine B opening A's scene" binds A's IDs to local paths or mints
+new ones. See D8.
+
+**D8 (settled 2026-07-25) — Where asset identity lives: per-asset sidecars.**
+
+The roadmap says the project has "stable asset IDs, source paths, asset
+types, import settings, and dependency records" but never says *where*. That
+question has to be answered before W1 because the import flow's
+"generate at import" step writes to whichever store holds identity.
+
+Three candidates were evaluated against three failure cases the per-machine
+assumption breaks (unreferenced asset; independent import; concurrent offline
+work) plus the version-control axis that most distinguishes them:
+
+- **Per-machine database** (what a naive reading of "asset database" assumes).
+  Requires answering all three cases with a merge policy. Case 2
+  (independent import: B already holds `id_B` for the path when A's scene
+  arrives claiming `id_A`) has no good answer: either B rewrites A's scene
+  (breaks portability) or B adopts A's ID and orphans its own `id_B` record
+  (silent data loss). Rejected.
+- **Portable database** — a single file committed alongside
+  `project.rt2proj`. IDs assigned once at import, travel with the project.
+  Cases 1 and 3 become ordinary text-file merge conflicts: visible and
+  resolvable. Case 2 is a real conflict (two IDs for one path) but it is a
+  *diff you can read*, which is the version-control virtue. Most of the
+  save-time migration machinery becomes unnecessary except for legacy v3
+  scenes. Strong candidate.
+- **Per-asset sidecars** — `cube.glb.rt2meta` beside each asset, carrying its
+  ID, committed with it. This is how Unity solves the same problem. It
+  dissolves all three cases by construction: identity travels with the
+  asset, so an unreferenced asset still has its ID (case 1); a file arriving
+  from another machine arrives with its ID already assigned — there is no
+  "B already holds a different ID" because the ID is in the file, not in B's
+  database (case 2); and concurrent offline work produces two sidecars for
+  two *different* assets, or a merge conflict on the one shared sidecar
+  (case 3, visible). Moving an asset moves its identity. There is no
+  central file to conflict in. Costs: double the file count in the asset
+  tree; sidecars lost by naive file operations (copy without sidecar, or
+  delete the sidecar); and a defined behaviour when one goes missing.
+
+**Decision: per-asset sidecars.** The deciding axis is the Phase 7 exit
+criterion — a project folder copied to another machine without rewriting
+scene files. Sidecars make that case *structural* rather than procedural: the
+identity is in the folder being copied, not in a database that lives on each
+machine and has to be reconciled. A portable database file also satisfies the
+exit criterion but introduces a single chokepoint that conflicts on every
+multi-developer asset add; sidecars distribute the conflict surface so two
+developers adding *different* assets never touch the same file. The double-
+file-count cost is real but acceptable in a project that already commits
+binary `.glb`/`.obj`/`.exr`/`.lua` sources.
+
+**Missing-sidecar behaviour (must be loud, not silent).** A sidecar can be
+lost by a naive file copy that moves the asset without its `.rt2meta`, or by
+a VCS operation that ignores it. This is the same shape as Phase 6's
+characteristic silent-failure bug (AGENTS.md:53-60). The rule: a missing
+sidecar is **not** a quiet re-mint. Resolution by path proceeds; the
+`AssetDiagnostic` channel (P7, `SceneAssetResolver.h:66-82`) records a
+`Missing`-severity diagnostic with the sidecar path, and the next save writes
+a fresh sidecar with a fresh ID *and* updates the scene's reference to the new
+ID. The scene's old ID is treated as stale; the database records the remap.
+This is observable (diagnostics surface in the existing channel) and
+recoverable (next save fixes it), and it never silently leaves a reference
+pointing at an ID no sidecar claims.
+
+**How D8 changes W1/W2.**
+- W1 attaches the ID at import. Import reads the sidecar if present (stable
+  ID); mints a fresh v4 and writes the sidecar if absent (assign-once). The
+  ID lives in `AssetReference::assetId` (per D2) and in the sidecar (source
+  of truth). The sidecar is the durable record; the scene's `assetId` is a
+  cache of it.
+- W2 is the in-memory record store, *not* the sidecar files. It is built by
+  scanning sidecars (deterministic, sorted by path — see `ReconcileScriptFields`
+  at `ScriptFieldReconcile.cpp:199` for the sort-before-emit precedent). It
+  is CPU-only (per the `ScriptFieldReconcile`/`ScriptScenarioCompare`
+  precedent: pure logic, no Vulkan/ImGui/Walnut). Sidecar I/O is host
+  wiring, kept out of the CPU-only core.
+- A v3 scene (no `assetId` field) is read with nil IDs; the first v4 save
+  scans sidecars, assigns IDs from sidecars where they exist, mints+writes
+  sidecars where they don't, and persists the IDs into the scene. This is
+  the D5 scan-and-assign pass, made concrete by D8.
+
 ---
 
 ### Proposed workstreams
@@ -6432,10 +6596,11 @@ than returning empty paths.
 
 ### Notes for whoever implements this
 
-- **The test suite is green in Release (554/554) and must stay green.** A
-  Release failure is now a real regression. Debug has 8 known failures in OBJ
-  fixture generation, unrelated and documented under "Test baseline" in the
-  plan doc.
+- **The test suite is green in both configurations (555/555) and must stay
+  green.** A Release failure is now a real regression. The 8 Debug-only
+  failures in OBJ fixture generation that previously existed were diagnosed
+  and fixed on 2026-07-25 (move-only fixture structs + loud missing-file
+  logging in `SceneLoader.cpp`); see "Test baseline" in the plan doc.
 - **Run `RT2Tests.exe` from the repository root.** It resolves some fixtures
   by relative path; run elsewhere it fails extra cases *and* writes stray
   fixture files into the tree.

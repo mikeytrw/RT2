@@ -7,6 +7,7 @@
 #include "PrimitiveGeometry.h"
 #include "RTLog.h"
 #include "ScriptComponentValidation.h"
+#include "AssetIdentity.h"
 #include "stb_image.h"
 #include <tinyexr.h>
 #include <glm/glm.hpp>
@@ -89,6 +90,48 @@ void CopyAuthoredComponents(const entt::registry& sourceRegistry,
 		transform->dirty = true;
 	}
 }
+}
+
+// Fill an imported entity's source path (if empty) and assign it a stable
+// asset ID from the per-asset sidecar (.rt2meta), minting+writing the sidecar
+// when absent (Phase 7 W1, per D8). Resolution by path is unchanged; the ID
+// is plumbed but not yet authoritative. A minted ID is logged so a missing or
+// malformed sidecar is observable, not silent. Errors do not block import:
+// the scene still gets an ID for this session; the next save retries.
+void FillImportedSourcePathAndId(entt::registry& reg,
+                                 const std::string& filepath,
+                                 rt2::core::IUuidProvider& provider)
+{
+	auto mv = reg.view<ImportedMeshSourceComponent>();
+	for (auto e : mv)
+	{
+		auto& src = reg.get<ImportedMeshSourceComponent>(e);
+		if (src.model.path.empty())
+			src.model.path = filepath;
+		if (!src.model.assetId.IsNull())
+			continue; // already has a stable ID (e.g. from a loaded .rt2scene)
+
+		bool minted = false;
+		rt2::core::Error idErr;
+		const rt2::core::UUID id =
+			rt2::core::ResolveOrAssign(filepath, provider, minted, idErr);
+		src.model.assetId = id;
+		if (minted)
+		{
+			if (!idErr.IsOk())
+			{
+				printf("[Asset] %s: sidecar issue, assigned new id %s: %s\n",
+				       filepath.c_str(), id.ToString().c_str(),
+				       idErr.Format().c_str());
+			}
+			else
+			{
+				printf("[Asset] %s: assigned new id %s\n",
+				       filepath.c_str(), id.ToString().c_str());
+			}
+			fflush(stdout);
+		}
+	}
 }
 
 SceneManager::SceneManager()
@@ -237,18 +280,9 @@ bool SceneManager::LoadScene(const std::string& filepath)
 	}
 
 	// Record the source model path on imported mesh entities so the native
-	// .rt2scene serializer can persist a durable reference. The path is
-	// stored as-is; the serializer relativizes it at save time.
-	{
-		auto& reg = m_EcsScene.registry;
-		auto mv = reg.view<ImportedMeshSourceComponent>();
-		for (auto e : mv)
-		{
-			auto& src = mv.get<ImportedMeshSourceComponent>(e);
-			if (src.model.path.empty())
-				src.model.path = filepath;
-		}
-	}
+	// .rt2scene serializer can persist a durable reference, and assign each
+	// a stable asset ID from its sidecar (Phase 7 W1).
+	FillImportedSourcePathAndId(m_EcsScene.registry, filepath, *m_UuidProvider);
 
 	rt2::core::Error hierarchyError;
 	if (!SceneHierarchy::RebuildChildren(m_EcsScene.registry, hierarchyError))
@@ -353,17 +387,11 @@ SceneManager::EntityId SceneManager::ImportGltf(const std::string& filepath)
 	}
 
 	// Record the source model path on every imported mesh entity so the
-	// native .rt2scene serializer can persist a durable reference. The path
-	// is stored as-is (possibly absolute); the serializer relativizes it
-	// against the .rt2scene location at save time.
+	// native .rt2scene serializer can persist a durable reference, and
+	// assign each a stable asset ID from its sidecar (Phase 7 W1).
 	{
-		auto mv = reg.view<ImportedMeshSourceComponent>();
-		for (auto e : mv)
-		{
-			auto& src = mv.get<ImportedMeshSourceComponent>(e);
-			if (src.model.path.empty())
-				src.model.path = filepath;
-		}
+		auto& reg = m_EcsScene.registry;
+		FillImportedSourcePathAndId(reg, filepath, *m_UuidProvider);
 	}
 
 	m_EntityCacheDirty = true;
@@ -387,15 +415,10 @@ SceneManager::EntityId SceneManager::ImportObj(const std::string& filepath,
 	}
 
 	// Record the source model path on every imported mesh entity so the
-	// native .rt2scene serializer can persist a durable reference.
+	// native .rt2scene serializer can persist a durable reference, and
+	// assign each a stable asset ID from its sidecar (Phase 7 W1).
 	{
-		auto mv = reg.view<ImportedMeshSourceComponent>();
-		for (auto e : mv)
-		{
-			auto& src = mv.get<ImportedMeshSourceComponent>(e);
-			if (src.model.path.empty())
-				src.model.path = filepath;
-		}
+		FillImportedSourcePathAndId(reg, filepath, *m_UuidProvider);
 	}
 
 	m_EntityCacheDirty = true;
@@ -530,7 +553,7 @@ SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
 		}
 	}
 
-	// Copy ImportedMeshSourceComponent + fill source path.
+	// Copy ImportedMeshSourceComponent + fill source path + assign sidecar ID.
 	{
 		auto view = srcReg.view<ImportedMeshSourceComponent>();
 		for (auto e : view)
@@ -540,6 +563,22 @@ SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
 			auto srcComp = view.get<ImportedMeshSourceComponent>(e);
 			if (srcComp.model.path.empty())
 				srcComp.model.path = sourcePath;
+			if (srcComp.model.assetId.IsNull())
+			{
+				bool minted = false;
+				rt2::core::Error idErr;
+				const rt2::core::UUID id = rt2::core::ResolveOrAssign(
+					sourcePath, *m_UuidProvider, minted, idErr);
+				srcComp.model.assetId = id;
+				if (minted)
+				{
+					printf("[Asset] %s: assigned new id %s%s%s\n",
+					       sourcePath.c_str(), id.ToString().c_str(),
+					       idErr.IsOk() ? "" : ": ",
+					       idErr.IsOk() ? "" : idErr.Format().c_str());
+					fflush(stdout);
+				}
+			}
 			dstReg.emplace<ImportedMeshSourceComponent>(it->second, std::move(srcComp));
 		}
 	}

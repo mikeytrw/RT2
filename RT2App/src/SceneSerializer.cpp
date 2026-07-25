@@ -210,6 +210,10 @@ json AssetReferenceToJson(const AssetReference& a)
     j["path"]    = a.path;
     j["sourceKey"] = a.sourceKey;
     j["importSettings"] = ImportSettingsToJson(a.importSettings);
+    // assetId (Phase 7 W1, additive over v3): written only when assigned.
+    // A v3 scene has no assetId field; the loader treats absence as nil.
+    if (!a.assetId.IsNull())
+        j["assetId"] = a.assetId.ToString();
     return j;
 }
 
@@ -224,6 +228,11 @@ AssetReference JsonToAssetReference(const json& j, Error& err)
         a.sourceKey = j["sourceKey"].get<std::string>();
     if (j.contains("importSettings"))
         a.importSettings = JsonToImportSettings(j["importSettings"]);
+    // assetId is optional (v3 scenes have none). A malformed value parses to
+    // nil rather than failing the scene — the ID is not yet authoritative for
+    // resolution (W1), so a bad ID is a diagnostic, not a hard failure.
+    if (j.contains("assetId") && j["assetId"].is_string())
+        a.assetId = UUID::Parse(j["assetId"].get<std::string>());
 
     if (a.kind == AssetKind::Unknown && !a.path.empty())
     {
