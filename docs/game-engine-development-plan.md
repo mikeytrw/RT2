@@ -6612,3 +6612,196 @@ than returning empty paths.
 - `RT2Tests` and `RT2SliceRunner` are CPU-only by design — no Vulkan, ImGui or
   Walnut. Keep asset-database logic linkable into both; that constraint is why
   Phase 6's scripting core is testable at all.
+
+---
+
+## Phase 7 W3 — unified asset resolution (approved implementation plan)
+
+Grounded against commit `2e7f089ea2c6ccf7817350f19a8c04e61c6fc810`
+on 2026-07-25, after W0–W2. Reviewed and approved before production changes.
+The first incremental work item (hermetic characterization tests) is recorded
+at the end of this section.
+
+W3 is not a mechanical refactor. The four asset kinds currently have
+incomplete representations, three independent locators, and incompatible
+failure policies. The disagreements below are the design problem.
+
+### W3 grounded findings
+
+| ID | Finding | Consequence |
+|---|---|---|
+| W3-P1 | `AssetKind` has `Model`, `Texture`, `Environment`, and `Script` (`RT2App/src/ECSComponents.h:169-176`). `AssetReference` carries `assetId`, path, kind, import settings, and source key (`RT2App/src/ECSComponents.h:201-221`). | The generic contract already has the right identity pair, but only model and script component data can currently hold it. |
+| W3-P2 | `EnvironmentSettings` stores only path, dimensions, and decoded pixels (`RT2App/src/SceneDocument.h:49-66`). `SceneTexture` stores only filepath, pixels, dimensions, and colour-space state (`RT2App/src/SceneTypes.h:92-105`). | Environment and texture need durable `AssetReference` representation before they can resolve by ID. `AssetReference` cannot simply be included from `ECSComponents.h` because that header already includes `SceneTypes.h`; the common asset types need a neutral header. |
+| W3-P3 | The shared asset-reference codec reads/writes optional `assetId` (`RT2App/src/SceneSerializer.cpp:185-243`) and imported models use it (`RT2App/src/SceneSerializer.cpp:592-597`). Script serialization hand-builds only `kind`, `path`, and `sourceKey` (`RT2App/src/SceneSerializer.cpp:637-660`), and script load reads the same three fields (`RT2App/src/SceneSerializer.cpp:823-867`). Environment serialization stores only its path (`RT2App/src/SceneSerializer.cpp:1268-1275`, `:1483-1490`); native texture serialization is still an empty array (`RT2App/src/SceneSerializer.cpp:1261-1264`). | Script `assetId` is lost on every save/reopen — a shipped W1 persistence defect. Environment and texture IDs have no on-disk form. W3 cannot claim authoritative identity across reopen until these gaps are closed. |
+| W3-P4 | Production calls `AssetIdentity::ResolveOrAssign` only while importing/loading models (`RT2App/src/SceneManager.cpp:95-134`, `:285`, `:374-422`, `:556-582`). `ResolveOrAssign` reads an existing sidecar or mints and writes one when absent/malformed (`RT2App/src/AssetIdentity.cpp:157-196`). | Resolution itself must be read-only and must not call `ResolveOrAssign`; otherwise opening a scene mutates identity. Import, migration, and explicit save own sidecar writes. |
+| W3-P5 | `AssetDatabase` is pure/in-memory and the caller owns the filesystem scan (`RT2App/src/AssetDatabase.h:25-30`, `:117-126`). `FindById` and `FindByPath` are simple lookups (`RT2App/src/AssetDatabase.cpp:76-89`). On duplicate IDs, the first inserted record keeps the ID and the second is sanitized to nil (`RT2App/src/AssetDatabase.cpp:10-35`); input order is not sorted internally (`RT2App/src/AssetDatabase.cpp:106-112`). | First-wins is not valid for authoritative lookup and depends on scan order. W3 needs explicit `Missing` / `Unique` / `Ambiguous` lookup, with every duplicate claim retained and sorted. |
+| W3-P6 | `SceneAssetResolver::ResolvePath` is existence-only: empty returns empty; an existing absolute path returns as-is; a relative path tries `sceneRoot`; then it falls back to the process CWD; failure returns an empty path with no diagnostic (`RT2App/src/SceneAssetResolver.cpp:106-131`). | The shared locator must return a structured result and route terminal failures through `AssetDiagnostic`; CWD fallback must be removed after callers/tests provide an explicit root. |
+| W3-P7 | The resolver header promises that hard failure leaves the document unchanged (`RT2App/src/SceneAssetResolver.h:49-58`). In practice, a loaded model's meshes/materials/textures are appended before source-key validation (`RT2App/src/SceneAssetResolver.cpp:513-562`), and an all-unresolved batch returns false afterward (`RT2App/src/SceneAssetResolver.cpp:725-733`). | The documented transactionality contract is false. W3 must stage all resource changes and commit only after the batch's aggregate policy accepts the result. |
+| W3-P8 | Model collection uses registry iteration order and no final diagnostic sort (`RT2App/src/SceneAssetResolver.cpp:267-331`). A malformed file emits a file-level `Malformed` diagnostic (`:390-399`) and then an entity-level `Missing` diagnostic (`:494-510`). An unresolved source key emits `Unresolved` but omits `resolvedPath` (`:653-665`). | Diagnostics are duplicated/misclassified and order is not guaranteed. W3 needs one contextual terminal diagnostic per failed reference and deterministic sorting before emission. |
+| W3-P9 | `ResolveScriptAssetPath` is purely lexical and never checks existence, identity, kind, or source key (`RT2App/src/ScriptAssetPath.cpp:8-15`). `ScriptFieldResolver` sorts entities by UUID (`RT2App/src/ScriptFieldResolver.cpp:21-38`) but reports missing/malformed scripts through `FieldDiagnostic`, not `AssetDiagnostic` (`:43-67`). | Script resolution must use the shared locator while preserving reflection diagnostics as an additional domain-specific channel. Every location/parse failure must also reach `AssetDiagnostic`. |
+| W3-P10 | `ScriptSystem` reads source to an empty string on failure (`RT2App/src/ScriptSystem.cpp:684-694`) and only quarantines that empty source when `exists(path)` is false (`:740-759`). Empty scripts are intentionally legal (`RT2Tests/src/Phase6ALifecycleTests.cpp:859-878`). | An unreadable existing path can be mistaken for a valid empty script. The shared resolver/read result must distinguish empty content from failed I/O without regressing the legal-empty-script contract. |
+| W3-P11 | glTF import appends an empty `SceneTexture` when a texture source index is invalid or its decoded image is empty (`RT2App/src/SceneLoader.cpp:455-470`, duplicated at `:1211-1228`). Material texture indices are copied without range validation (`:499-506`, `:1256-1263`). | Missing/unresolved glTF textures can leave referentially valid-looking empty slots with no diagnostic. |
+| W3-P12 | The vendored glTF parser treats a missing external image as a warning and continues (`RT2App/vendor/tinygltf/tiny_gltf.h:4414-4424`), while image decoder failure returns false and can reject the whole model (`:4438-4446`, image parse at `:6424-6488`). | glTF missing and malformed texture files have different containment behaviour even though both are texture failures. W3 must prevent a bad texture from killing otherwise valid geometry. |
+| W3-P13 | OBJ texture load returns `-1` for an absent file and logs/returns `-1` for decode failure; the material simply leaves the slot unset and the model succeeds (`RT2App/src/SceneLoader.cpp:2140-2184`; same legacy path at `:1807-1856`). | OBJ silently drops missing textures and only logs malformed ones. Both need `Texture` diagnostics and a deterministic placeholder. |
+| W3-P14 | The native-scene host formats the three current severities with a ternary whose final branch is `"Unresolved"` (`RT2App/src/WalnutApp.cpp:2633-2664`). | Adding `Conflict` without making this formatter exhaustive would silently mislabel conflicts as unresolved. |
+| W3-P15 | Existing hermetic fixtures cover successful embedded GLB and EXR paths (`RT2App/src/Phase1AFixtureGenerator.h:68-105`; `RT2Tests/src/Phase1ASceneAssetTests.cpp:227-308`) and one missing environment (`RT2Tests/src/Phase1ASceneAssetTests.cpp:398-417`). Several model-path tests instead depend on `C:\Users\mikey\Downloads\*.glb` (`RT2Tests/src/BuildGpuFromEcsTests.cpp:14-205`, `RT2Tests/src/EcsSceneLoaderTests.cpp:14-155`, `RT2Tests/src/SceneManagerTests.cpp:205-265`, `:361-370`). | Green results from those machine-local tests are not portable evidence for W3. Failure coverage must use generated temporary assets. |
+
+### Current behaviour, side by side
+
+| Outcome | Models (`SceneAssetResolver`) | Environments (`SceneAssetResolver`) | Scripts (`ResolveScriptAssetPath` + consumers) | Textures (inside model import) |
+|---|---|---|---|---|
+| Success | Path exists, model stages and source key installs `MeshRef`; resources are appended (`SceneAssetResolver.cpp:378-484`, `:513-718`). | Existing HDR/EXR decodes into pixels and dimensions (`SceneAssetResolver.cpp:188-232`). | Lexical scene-relative path is returned; field registry/runtime then reads and parses it independently (`ScriptAssetPath.cpp:8-15`, `ScriptFieldRegistry.cpp:310-417`). | glTF creates one `SceneTexture` per texture and copies decoded pixels (`SceneLoader.cpp:455-470`); OBJ loads and assigns indices (`:2140-2184`). |
+| Missing file | One file-level `Missing`, then one `Missing` per entity; all unresolved is a hard `MissingAsset` (`SceneAssetResolver.cpp:366-375`, `:494-510`, `:725-733`). | One `Missing`, false, `MissingAsset`; path preserved and decoded data cleared (`SceneAssetResolver.cpp:166-185`). | Locator still returns a non-empty candidate. Field registry reports parse failure; runtime quarantines only after its separate existence check (`ScriptAssetPath.cpp:8-15`, `ScriptFieldRegistry.cpp:323-393`, `ScriptSystem.cpp:740-759`). No `AssetDiagnostic`. | Missing glTF external image warns, model succeeds, and an empty texture slot survives (`tiny_gltf.h:4414-4424`, `SceneLoader.cpp:455-470`). OBJ model succeeds and drops the texture (`SceneLoader.cpp:2140-2184`). No `AssetDiagnostic`. |
+| Malformed file | Importer returns false; resolver emits file `Malformed` plus entity `Missing`; aggregate error is still `MissingAsset` (`SceneAssetResolver.cpp:390-399`, `:494-510`, `:725-733`). | One `Malformed`, false, but error code is `MissingAsset`; decoded data cleared (`SceneAssetResolver.cpp:191-226`). | Path resolution succeeds. Field registry returns `parsed=false` with last-known-good declarations; runtime quarantines initial load, while failed hot reload preserves the live instance (`ScriptFieldRegistry.cpp:395-417`, `ScriptSystem.cpp:348-367`, `:1225-1243`). No `AssetDiagnostic`. | Malformed glTF image can fail the whole model (`tiny_gltf.h:4438-4446`); malformed OBJ texture is logged and dropped while geometry succeeds (`SceneLoader.cpp:2140-2184`). |
+| Unresolved subresource | Missing `sourceKey` emits `Unresolved`; if every entity misses, returns false after resources have already been appended (`SceneAssetResolver.cpp:513-665`, `:725-733`). | Not applicable: the current environment reference has no subresource key (`SceneDocument.h:49-66`). | Runtime locator ignores `sourceKey`; serializer normalizes it from path (`ScriptAssetPath.cpp:8-15`, `SceneSerializer.cpp:848-876`). | Invalid glTF texture source/material indices are not diagnosed; an empty slot or out-of-range material reference can survive (`SceneLoader.cpp:455-470`, `:499-506`). OBJ represents failure as an unset `-1` slot (`:2140-2184`). |
+
+### Approved unified contract
+
+Introduce one CPU-only, filesystem-aware asset locator in a neutral
+`AssetResolver.{h,cpp}`. Move (do not duplicate) `AssetDiagnostic` there and
+make `SceneAssetResolver.h` include it. Extract `AssetKind`, `ImportSettings`,
+and `AssetReference` into a neutral asset-reference header so
+`EnvironmentSettings` and `SceneTexture` can carry references without a
+`SceneTypes.h` / `ECSComponents.h` include cycle.
+
+The entry point receives an `AssetReference`, an explicit resolution context
+(asset root plus a non-owning `AssetDatabase`), and diagnostic context
+(entity UUID/name where applicable). It returns a structured result containing:
+
+- success/failure;
+- normalized absolute path;
+- resolution source (`Id` or `PathFallback`);
+- effective ID;
+- whether explicit identity repair is required.
+
+The locator is read-only. It calls `ReadSidecarId` when identity verification
+is needed; it never mints, writes a sidecar, rewrites a scene, or mutates the
+database. Import/save/migration own repair.
+
+Resolution order and disagreement policy:
+
+1. A non-nil ID is authoritative and is looked up first.
+2. A unique ID whose file exists wins. A stale/missing reference path is
+   observable but does not defeat successful ID resolution.
+3. If the database is stale/missing but the path exists and its sidecar claims
+   the same ID, path fallback succeeds and reports stale database state.
+4. If the ID does not locate a file, the path exists, and the sidecar is
+   absent, fallback succeeds with a sidecar `Missing` diagnostic and
+   `identityRepairRequired=true`; explicit save/migration performs the remap.
+5. If the path's sidecar claims a different ID, resolution fails with
+   `Conflict`; it never silently substitutes one identity for the other.
+6. If neither ID nor path locates a regular file, resolution fails `Missing`.
+7. If more than one asset claims the ID, lookup is `Ambiguous` and fails
+   `Conflict`, even when one candidate matches the fallback path. No
+   insertion-order winner is chosen.
+8. A nil ID uses path fallback. Missing/malformed sidecar state is observable;
+   later schema/migration work persists the assigned identity.
+
+The shared locator answers only "which file?". Kind-specific CPU loaders keep
+their policies but emit every failure through the same `AssetDiagnostic`
+vector:
+
+- model: unresolved entities remain without a `MeshRef`; aggregate hard
+  failure only when every imported model entity fails;
+- environment: preserve the durable reference, clear stale decoded pixels,
+  direct resolve returns false while `ResolveAll` may continue;
+- script: location/parse failure emits `AssetDiagnostic` and preserves the
+  existing quarantine, last-known-good reflection, and failed-hot-reload
+  behaviour;
+- texture: preserve valid model geometry, install a deterministic CPU
+  placeholder, and emit a `Texture` diagnostic.
+
+Batch APIs collect diagnostics locally and sort before appending by
+`(kind, refPath, entityUuid, sourceKey, severity, detail)`. Results must not
+depend on EnTT traversal, directory enumeration, or `unordered_map` order.
+Terminal failure never returns an empty path without a diagnostic.
+
+### Decisions resolved by review
+
+These were unsettled in the pre-implementation report. The recommendations
+were approved on 2026-07-25.
+
+| ID | Decision |
+|---|---|
+| W3-Q1 | **Representation:** extract neutral asset-reference types; environment and texture gain `AssetReference`; fix script `assetId` persistence. Only the additive fields required for W3 land here; W5 owns the formal v4 migration/reporting pass. |
+| W3-Q2 | **Embedded/multi-role assets:** `AssetKind` is the requested use, not an exclusive physical classification. Embedded/data-URI textures use the model's physical asset ID plus a deterministic image source key; external textures receive their own sidecars. |
+| W3-Q3 | **Pre-W4 ownership:** use an explicit resolution context owned by the current scene/recovery host. W4 replaces its root with the project asset root. No global resolver/database and no database embedded in `SceneDocument`. |
+| W3-Q4 | **Duplicate IDs:** replace W2 first-wins with `Missing` / `Unique` / `Ambiguous`, retain and sort all claimants, and fail authoritative resolution on ambiguity. |
+| W3-Q5 | **Diagnostics:** extend the existing `AssetDiagnostic::Severity` with `Conflict`; do not create another channel. Make the Walnut formatter exhaustive in the same change. |
+| W3-Q6 | **Transactionality:** a false `ResolveAll` result leaves the document unchanged. A successful partial result may commit accepted resources/placeholders. |
+| W3-Q7 | **Texture containment:** a bad texture produces a deterministic placeholder plus a `Texture` diagnostic and does not kill otherwise valid model geometry. |
+| W3-Q8 | **Path policy:** remove process-CWD fallback after tests/callers supply an explicit root. Accept legacy absolute paths in memory, but normalize the successful result and never persist a new absolute path. |
+| W3-Q9 | **Resolver purity:** resolution is read-only; sidecar mint/write/remap happens only during explicit import/save/migration. |
+
+### Incremental implementation order
+
+Each production cutover is its own commit. After every cutover commit, build
+and run the complete suite in both Release and Debug from the repository root;
+do not defer the full gate until all four kinds have moved.
+
+0. **Characterize current behaviour.** Add generated temporary fixtures for
+   all cells in the table above, including GLB/EXR, external-image glTF,
+   OBJ/MTL/PPM, and Lua. No production behaviour change.
+1. **Harden W2 lookup.** Add explicit ambiguous-ID results, retain/sort all
+   duplicate claimants, sort database construction internally, and add
+   permutation tests.
+2. **Land neutral types and the generic locator without consumers.** Add the
+   CPU-only files to RT2App, RT2Tests, and RT2SliceRunner; exhaustively test
+   ID/path disagreement and deterministic diagnostics.
+3. **Cut over models only.** Keep a compatibility `ResolvePath` adapter during
+   the transition. Resolve ID-first, remove duplicate/misclassified model
+   diagnostics, populate `resolvedPath`/importer detail, and make hard failure
+   transactional.
+4. **Cut over environments.** Cover moved assets, nil-ID fallback, missing
+   sidecar, missing file, and corrupt HDR/EXR.
+5. **Cut over scripts.** Make `ResolveScriptAssetPath` an adapter over the
+   structured locator; inject the context/diagnostic sink into field
+   resolution, runtime, watcher, and slice runner. Preserve legal empty
+   scripts, quarantine isolation, last-known-good fields, and live-instance
+   preservation after failed reload. Run `run_script_test.ps1`.
+6. **Cut over textures last.** Extract dependency enumeration/decode from
+   `SceneLoader`; resolve external glTF/OBJ images through the locator and
+   embedded images through model ID plus source key. Convert failures into
+   diagnostics/placeholders while retaining valid geometry.
+7. **Complete host wiring.** Remove legacy CWD/script-only paths only after all
+   four kinds use the shared entry point.
+8. **Final verification.** Build whole solution Release and Debug; run both
+   complete test binaries from the repository root; run the script scenario;
+   refresh Graphify; commit `GRAPH_REPORT.md` if changed; do not push.
+
+### W3 step 0 verification report — characterization complete
+
+Implemented 2026-07-25 in
+`RT2Tests/src/Phase7W3CharacterizationTests.cpp`. Nine hermetic test cases
+(149 assertions) cover:
+
+- model success, missing file, malformed file, and unresolved source key;
+- environment success, missing file, and malformed file;
+- script success, missing file, malformed file, source-key blindness, and the
+  transitional script-`assetId` persistence defect;
+- OBJ texture success/missing/malformed behaviour;
+- glTF texture success, missing external image, malformed external image, and
+  invalid texture source.
+
+No test uses `C:\Users\mikey\Downloads`. No production resolution behaviour
+changed.
+
+| Check | Result |
+|---|---|
+| Focused W3 characterization, Release | 9/9 cases, 149/149 assertions |
+| Full RT2Tests, Release | 591/591 cases, 144530/144530 assertions |
+| Focused W3 characterization, Debug | 9/9 cases, 149/149 assertions |
+| Full RT2Tests, Debug | 591/591 cases, 144530/144530 assertions |
+| Whole solution, Release | builds |
+| Phase 6C script scenario | PASS |
+| Graphify | refreshed |
+
+**Verification discrepancy found:** the whole Debug solution currently fails
+while linking `RT2App`, before the test executable is involved.
+`RT2App.vcxproj:77-92` compiles Debug with `MultiThreadedDebugDLL`
+(`MDd`, iterator debug level 2), while the only checked-in NRD/NRI libraries
+are Release-runtime binaries under `RT2App/vendor/NRD/Lib` and
+`RT2App/vendor/NRI/Lib`; the linker reports `LNK2038` (`MD`/iterator level 0
+versus `MDd`/level 2) and `LNK1319`. The Debug `RT2Tests` target builds and
+passes 591/591. This mismatch predates and is independent of the test-only W3
+step; no build-runtime policy was changed here.
