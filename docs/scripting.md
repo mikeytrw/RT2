@@ -477,9 +477,10 @@ Scripting is CPU-only — no Vulkan, ImGui or Walnut — so it links into
 `RT2Tests.exe` resolves some fixtures by relative path — run it from the
 repo root or a handful of unrelated cases fail on missing assets.
 
-The Release suite is **green**: any failure is a real regression. Debug has
-8 known failures in OBJ-import fixture generation, unrelated to scripting —
-see "Test baseline" in the development plan.
+The Release suite is **green**: any failure is a real regression. Debug is
+also green (555/555 as of 2026-07-25); the 8 prior Debug-only failures in
+OBJ-import fixture generation were fixed (move-only fixture structs + loud
+missing-file logging) — see "Test baseline" in the development plan.
 
 Two things tests cannot cover:
 

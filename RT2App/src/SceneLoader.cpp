@@ -55,6 +55,7 @@ bool DecodeImageData(tinygltf::Image *image, const int image_idx,
 
 #include "SceneGraph.h"
 #include "ECSScene.h"
+#include "RTLog.h"
 
 namespace fs = std::filesystem;
 
@@ -419,7 +420,12 @@ bool SceneLoader::Save(const ECSScene& ecsScene, const std::string& filepath)
 bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
 {
     if (filepath.empty() || !fs::exists(filepath))
+    {
+        RT_LOG("[SceneLoader] LoadIntoECS: refusing path '%s' (%s)",
+               filepath.c_str(),
+               filepath.empty() ? "empty" : "does not exist");
         return false;
+    }
 
     tinygltf::Model model;
     tinygltf::TinyGLTF loader;
@@ -1168,7 +1174,12 @@ bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
 entt::entity SceneLoader::ImportIntoECS(ECSScene& ecsScene, const std::string& filepath)
 {
     if (filepath.empty() || !fs::exists(filepath))
+    {
+        RT_LOG("[SceneLoader] ImportIntoECS: refusing path '%s' (%s)",
+               filepath.c_str(),
+               filepath.empty() ? "empty" : "does not exist");
         return entt::null;
+    }
 
     tinygltf::Model model;
     tinygltf::TinyGLTF loader;
@@ -1713,7 +1724,12 @@ entt::entity SceneLoader::ImportIntoECS(ECSScene& ecsScene, const std::string& f
 bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath)
 {
     if (filepath.empty() || !fs::exists(filepath))
+    {
+        RT_LOG("[SceneLoader] LoadObjIntoECS: refusing path '%s' (%s)",
+               filepath.c_str(),
+               filepath.empty() ? "empty" : "does not exist");
         return false;
+    }
 
     fs::path fpath(filepath);
     std::string baseDir = fpath.parent_path().string();
@@ -2042,7 +2058,12 @@ bool ParseObjAndLoadResources(ECSScene& ecsScene, const std::string& filepath,
                               ObjParseResult& out)
 {
     if (filepath.empty() || !fs::exists(filepath))
+    {
+        RT_LOG("[SceneLoader] ParseObjAndLoadResources: refusing path '%s' (%s)",
+               filepath.c_str(),
+               filepath.empty() ? "empty" : "does not exist");
         return false;
+    }
 
     fs::path fpath(filepath);
     out.baseDir = fpath.parent_path().string();

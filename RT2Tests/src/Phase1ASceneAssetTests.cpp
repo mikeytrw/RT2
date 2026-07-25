@@ -973,6 +973,18 @@ TEST_CASE("P1A CpuOnly: vertical-slice fixture still round-trips under v3")
 
 namespace {
 
+// Verify that a fixture file was actually written. A fixture generator that
+// silently produces no file is the characteristic bug here (a prior Debug-only
+// failure was caused by the fixture's copy/destructor deleting the file on
+// return when NRVO was not applied). Fail loudly at the source rather than
+// several layers deep in the importer.
+void RequireFixtureFile(const std::filesystem::path& p, const char* what)
+{
+    INFO("fixture file was not written: " << what << " path=" << p.string());
+    REQUIRE(std::filesystem::exists(p));
+    REQUIRE_FALSE(p.empty());
+}
+
 // Write a tiny OBJ + MTL with a distinctive base color into a temp dir.
 // Returns the OBJ path. The MTL has no textures (flat color) so the test
 // can verify material identity via baseColor alone, without needing image
@@ -985,11 +997,38 @@ struct TinyObjFixture
     std::string objName;     // relative name, e.g. "model_a.obj"
     glm::vec3 baseColor;     // the Kd color written into the MTL
 
+    TinyObjFixture() = default;
+    TinyObjFixture(const TinyObjFixture&) = delete;
+    TinyObjFixture& operator=(const TinyObjFixture&) = delete;
+    TinyObjFixture(TinyObjFixture&& o) noexcept
+        : dir(std::move(o.dir)), objPath(std::move(o.objPath)),
+          mtlPath(std::move(o.mtlPath)), objName(std::move(o.objName)),
+          baseColor(o.baseColor)
+    {
+        o.objPath.clear();
+        o.mtlPath.clear();
+    }
+    TinyObjFixture& operator=(TinyObjFixture&& o) noexcept
+    {
+        if (this != &o)
+        {
+            Cleanup();
+            dir = std::move(o.dir);
+            objPath = std::move(o.objPath);
+            mtlPath = std::move(o.mtlPath);
+            objName = std::move(o.objName);
+            baseColor = o.baseColor;
+            o.objPath.clear();
+            o.mtlPath.clear();
+        }
+        return *this;
+    }
     ~TinyObjFixture() { Cleanup(); }
     void Cleanup()
     {
-        std::filesystem::remove(objPath);
-        std::filesystem::remove(mtlPath);
+        std::error_code ec;
+        if (!objPath.empty()) std::filesystem::remove(objPath, ec);
+        if (!mtlPath.empty()) std::filesystem::remove(mtlPath, ec);
     }
 };
 
@@ -1025,6 +1064,8 @@ TinyObjFixture MakeTinyObj(const std::filesystem::path& dir,
             << "usemtl " << name << "_mat\n"
             << "f 1/1 2/2 3/3\n";
     }
+    RequireFixtureFile(f.mtlPath, "MTL");
+    RequireFixtureFile(f.objPath, "OBJ");
     return f;
 }
 
@@ -1168,11 +1209,38 @@ struct MultiShapeObjFixture
     std::vector<std::string> shapeNames;
     std::vector<glm::vec3>   shapeColors;
 
+    MultiShapeObjFixture() = default;
+    MultiShapeObjFixture(const MultiShapeObjFixture&) = delete;
+    MultiShapeObjFixture& operator=(const MultiShapeObjFixture&) = delete;
+    MultiShapeObjFixture(MultiShapeObjFixture&& o) noexcept
+        : dir(std::move(o.dir)), objPath(std::move(o.objPath)),
+          mtlPath(std::move(o.mtlPath)), shapeNames(std::move(o.shapeNames)),
+          shapeColors(std::move(o.shapeColors))
+    {
+        o.objPath.clear();
+        o.mtlPath.clear();
+    }
+    MultiShapeObjFixture& operator=(MultiShapeObjFixture&& o) noexcept
+    {
+        if (this != &o)
+        {
+            Cleanup();
+            dir = std::move(o.dir);
+            objPath = std::move(o.objPath);
+            mtlPath = std::move(o.mtlPath);
+            shapeNames = std::move(o.shapeNames);
+            shapeColors = std::move(o.shapeColors);
+            o.objPath.clear();
+            o.mtlPath.clear();
+        }
+        return *this;
+    }
     ~MultiShapeObjFixture() { Cleanup(); }
     void Cleanup()
     {
-        std::filesystem::remove(objPath);
-        std::filesystem::remove(mtlPath);
+        std::error_code ec;
+        if (!objPath.empty()) std::filesystem::remove(objPath, ec);
+        if (!mtlPath.empty()) std::filesystem::remove(mtlPath, ec);
     }
 };
 
@@ -1226,6 +1294,8 @@ MultiShapeObjFixture MakeMultiShapeObj(
                 << (i * 3 + 3) << "/3\n";
         }
     }
+    RequireFixtureFile(f.mtlPath, "MTL");
+    RequireFixtureFile(f.objPath, "OBJ");
     return f;
 }
 
@@ -1241,11 +1311,39 @@ struct MultiMaterialShapeFixture
     glm::vec3 colorA;
     glm::vec3 colorB;
 
+    MultiMaterialShapeFixture() = default;
+    MultiMaterialShapeFixture(const MultiMaterialShapeFixture&) = delete;
+    MultiMaterialShapeFixture& operator=(const MultiMaterialShapeFixture&) = delete;
+    MultiMaterialShapeFixture(MultiMaterialShapeFixture&& o) noexcept
+        : dir(std::move(o.dir)), objPath(std::move(o.objPath)),
+          mtlPath(std::move(o.mtlPath)), shapeName(std::move(o.shapeName)),
+          colorA(o.colorA), colorB(o.colorB)
+    {
+        o.objPath.clear();
+        o.mtlPath.clear();
+    }
+    MultiMaterialShapeFixture& operator=(MultiMaterialShapeFixture&& o) noexcept
+    {
+        if (this != &o)
+        {
+            Cleanup();
+            dir = std::move(o.dir);
+            objPath = std::move(o.objPath);
+            mtlPath = std::move(o.mtlPath);
+            shapeName = std::move(o.shapeName);
+            colorA = o.colorA;
+            colorB = o.colorB;
+            o.objPath.clear();
+            o.mtlPath.clear();
+        }
+        return *this;
+    }
     ~MultiMaterialShapeFixture() { Cleanup(); }
     void Cleanup()
     {
-        std::filesystem::remove(objPath);
-        std::filesystem::remove(mtlPath);
+        std::error_code ec;
+        if (!objPath.empty()) std::filesystem::remove(objPath, ec);
+        if (!mtlPath.empty()) std::filesystem::remove(mtlPath, ec);
     }
 };
 
@@ -1289,6 +1387,8 @@ MultiMaterialShapeFixture MakeMultiMaterialShape(
             << "usemtl mat_b\n"
             << "f 2/2 5/2 6/3\n";
     }
+    RequireFixtureFile(f.mtlPath, "MTL");
+    RequireFixtureFile(f.objPath, "OBJ");
     return f;
 }
 
@@ -1301,11 +1401,36 @@ struct DegenerateShapeFixture
     std::filesystem::path mtlPath;
     std::string validShapeName;
 
+    DegenerateShapeFixture() = default;
+    DegenerateShapeFixture(const DegenerateShapeFixture&) = delete;
+    DegenerateShapeFixture& operator=(const DegenerateShapeFixture&) = delete;
+    DegenerateShapeFixture(DegenerateShapeFixture&& o) noexcept
+        : dir(std::move(o.dir)), objPath(std::move(o.objPath)),
+          mtlPath(std::move(o.mtlPath)), validShapeName(std::move(o.validShapeName))
+    {
+        o.objPath.clear();
+        o.mtlPath.clear();
+    }
+    DegenerateShapeFixture& operator=(DegenerateShapeFixture&& o) noexcept
+    {
+        if (this != &o)
+        {
+            Cleanup();
+            dir = std::move(o.dir);
+            objPath = std::move(o.objPath);
+            mtlPath = std::move(o.mtlPath);
+            validShapeName = std::move(o.validShapeName);
+            o.objPath.clear();
+            o.mtlPath.clear();
+        }
+        return *this;
+    }
     ~DegenerateShapeFixture() { Cleanup(); }
     void Cleanup()
     {
-        std::filesystem::remove(objPath);
-        std::filesystem::remove(mtlPath);
+        std::error_code ec;
+        if (!objPath.empty()) std::filesystem::remove(objPath, ec);
+        if (!mtlPath.empty()) std::filesystem::remove(mtlPath, ec);
     }
 };
 
@@ -1338,6 +1463,8 @@ DegenerateShapeFixture MakeDegenerateShapeObj(
             << "usemtl mat_v\n"
             << "f 1/1 2/2 3/3\n";
     }
+    RequireFixtureFile(f.mtlPath, "MTL");
+    RequireFixtureFile(f.objPath, "OBJ");
     return f;
 }
 
