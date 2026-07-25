@@ -2955,7 +2955,16 @@ void SceneManager::ReconcileStoredCameraDirections()
 void SceneManager::SetMaterial(EntityId entity, int materialIndex)
 {
 	if (!entity.IsValid()) return;
-	SetMaterialIndexState(GetEntityUuid(entity), materialIndex);
+	// SetMaterialIndexState returns an authoritative EditorMutationResult and
+	// can legitimately fail — an out-of-range index is the common case, since
+	// it is bounds-checked against the material list. Dropping that result
+	// made a rejected assignment indistinguishable from an applied one.
+	// This wrapper is void by design (the inspector calls it fire-and-forget),
+	// so surface the failure rather than returning it.
+	const auto result = SetMaterialIndexState(GetEntityUuid(entity), materialIndex);
+	if (!result.success)
+		printf("[SceneManager] SetMaterial rejected: %s\n",
+		       result.error.Format().c_str());
 }
 
 std::string SceneManager::GetEntityName(EntityId entity) const
