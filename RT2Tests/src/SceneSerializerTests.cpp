@@ -13,6 +13,8 @@
 #include <filesystem>
 #include <fstream>
 #include <fstream>
+#include <functional>
+#include <vector>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -1057,3 +1059,136 @@ TEST_CASE("Phase6B W3 Serializer: cross-volume absolute path remains absolute")
     std::filesystem::remove(path);
 }
 #endif
+
+// ============================================================================
+// Phase 7 W0: no relativizable absolute path may leak into a saved .rt2scene.
+//
+// The cross-volume test above documents a deliberate escape hatch: an asset on
+// a different Windows drive cannot be made relative, so it is stored absolute
+// on purpose. This test guards the *other* case — assets that live under the
+// scene file's directory tree MUST be relativized. It walks EVERY string value
+// in the saved JSON recursively and asserts none is an absolute-looking path,
+// so a future change that adds a new path-bearing serialized field and forgets
+// to route it through RebasePath is caught without having to enumerate fields.
+//
+// Why a recursive walk is safe (no false positives):
+//   - sourceKey forms are "gltf:scene=0:...", "obj:whole-model",
+//     "lua:asset=<rel-path>", "obj:shape=...". Their ':' is at index 4, 3, 4,
+//     3 — never index 1 — so the drive-letter test does not trip. They do not
+//     start with '/' or '\\'.
+//   - sourceMaterialKey is "<sourceKey>:material" — same property.
+//   - UUIDs are hyphenated hex, no drive letter, no leading slash.
+//   - AssetKind names ("model","texture","environment","script","unknown"),
+//     PrimitiveKind names, field type names, field names: none look absolute.
+//
+// Audit (grounded against SceneSerializer.cpp at 2ebf621):
+//   - importedSource.model.path   -> rebased at SceneSerializer.cpp:586
+//   - script.asset.path           -> rebased at SceneSerializer.cpp:643
+//   - envMap.path                 -> rebased at SceneSerializer.cpp:1262
+//   - metadata                    -> only "name" (SceneSerializer.cpp:1226-1230)
+//   - textures                    -> always an empty array (SceneSerializer.cpp:1254)
+//   - sourceKey / sourceMaterialKey -> not filesystem paths (see above)
+// These three path fields are the complete current set; the walker makes the
+// test independent of that enumeration so it stays correct as fields are added.
+//
+// The fixture places every asset under the scene directory, so nothing in it is
+// legitimately absolute. If a field that MUST stay absolute is ever added,
+// exempt it explicitly by JSON path here with a comment, rather than weakening
+// the predicate.
+// ============================================================================
+TEST_CASE("Phase7 W0: relativizable asset paths are never stored absolute")
+{
+    // Build a scene whose assets all live under the scene file's own directory,
+    // but store them as absolute paths in the document (simulating an import
+    // that produced absolute refs). Save must relativize every one.
+    const auto root = std::filesystem::temp_directory_path() / "rt2_w0_audit";
+    const auto sceneDir = root / "scene";
+    const auto assetsDir = sceneDir / "assets";
+    const auto scriptsDir = sceneDir / "scripts";
+    const auto envDir = sceneDir / "env";
+    std::filesystem::create_directories(assetsDir);
+    std::filesystem::create_directories(scriptsDir);
+    std::filesystem::create_directories(envDir);
+
+    DeterministicUuidProvider provider;
+    SceneDocument doc;
+    doc.SetUuidProvider(&provider);
+
+    const auto entity = doc.ecs.registry.create();
+    doc.AssignNewUuid(entity);
+    doc.ecs.registry.emplace<Transform>(entity);
+    doc.ecs.registry.emplace<VisibleComponent>(entity);
+
+    // Imported model: absolute path under the scene directory.
+    ImportedMeshSourceComponent imported;
+    imported.model.kind = AssetKind::Model;
+    imported.model.path = (assetsDir / "cube.glb").generic_string();
+    imported.model.sourceKey = "gltf:scene=0:node=0:mesh=0:prim=0";
+    doc.ecs.registry.emplace<ImportedMeshSourceComponent>(entity, imported);
+
+    // Script: absolute path under the scene directory.
+    ScriptComponent script;
+    script.asset.kind = AssetKind::Script;
+    script.asset.path = (scriptsDir / "move.lua").generic_string();
+    doc.ecs.registry.emplace<ScriptComponent>(entity, script);
+
+    // Environment: absolute path under the scene directory.
+    doc.environment.path = (envDir / "night.exr").generic_string();
+
+    const auto target = sceneDir / "w0_audit.rt2scene";
+    Error err;
+    REQUIRE(SceneSerializer::Save(doc, target, err));
+    REQUIRE(err.IsOk());
+
+    nlohmann::json saved;
+    { std::ifstream in(target); in >> saved; }
+
+    // A path string is "portable relative" iff it has no drive letter (e.g.
+    // "C:") and does not start with a slash. This is exactly what RebasePath
+    // produces when relativization succeeds.
+    auto isPortableRelative = [](const std::string& s) -> bool
+    {
+        if (s.empty()) return true; // empty is fine (no asset)
+        if (s.size() >= 2 && s[1] == ':') return false; // drive letter
+        if (s.front() == '/' || s.front() == '\\') return false; // rooted
+        return true;
+    };
+
+    // Recursively walk every string in the saved JSON. Collect the JSON path
+    // of any absolute-looking string so the failure message points at the
+    // offending field, not just its value.
+    std::vector<std::string> offenders;
+    std::function<void(const nlohmann::json&, const std::string&)> walk =
+        [&](const nlohmann::json& node, const std::string& path)
+    {
+        switch (node.type())
+        {
+        case nlohmann::json::value_t::object:
+            for (auto it = node.begin(); it != node.end(); ++it)
+                walk(it.value(), path.empty() ? it.key() : path + "." + it.key());
+            break;
+        case nlohmann::json::value_t::array:
+            for (size_t i = 0; i < node.size(); ++i)
+                walk(node[i], path + "[" + std::to_string(i) + "]");
+            break;
+        case nlohmann::json::value_t::string:
+            if (!isPortableRelative(node.get<std::string>()))
+                offenders.push_back(path + " = " + node.get<std::string>());
+            break;
+        default:
+            break;
+        }
+    };
+    walk(saved, "");
+
+    for (const auto& o : offenders)
+        CHECK_MESSAGE(false, "absolute path leaked into saved scene: " << o);
+    CHECK_MESSAGE(offenders.empty(),
+        "no absolute paths expected; saw " << offenders.size());
+
+    // Defensive: metadata must not carry a sourcePath (the Phase 6 leak). The
+    // walker would already catch it, but this names the regression explicitly.
+    CHECK_FALSE(saved["metadata"].contains("sourcePath"));
+
+    std::filesystem::remove_all(root);
+}
