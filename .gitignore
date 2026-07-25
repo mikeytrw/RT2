@@ -40,3 +40,17 @@ graphify-out/2026-*/
 
 # Graphify cache
 graphify-out/cache/
+
+# Graphify machine-readable output. Regenerated in full by `graphify update .`
+# (AST-only, ~1-2 min, no API cost), so tracking it buys nothing and costs a
+# lot: graph.json alone is ~42MB rewritten on every refresh, and 13 revisions
+# of it dominated a 407MB .git.
+#
+# GRAPH_REPORT.md is deliberately NOT ignored — it is human-readable, useful
+# on a fresh clone, and small enough to diff.
+#
+# Note: `graphify query` needs graph.json, so a fresh clone must run
+# `graphify update .` once before querying. See AGENTS.md.
+graphify-out/graph.json
+graphify-out/manifest.json
+graphify-out/.graphify_labels.json
