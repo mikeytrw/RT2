@@ -7,124 +7,169 @@
 #include "core/UUID.h"
 #include "core/Error.h"
 
-#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 // ============================================================================
-// AssetDatabase — the in-memory record store for source-asset identity
-// (Phase 7 W2).
+// AssetDatabase — the in-memory record store for source-asset identity.
 //
-// This is the database the Phase 7 roadmap calls for: stable asset IDs,
-// source paths, asset kinds, import settings, and dependency records. Per
-// D8, the *source of truth* for identity is per-asset sidecar files
-// (.rt2meta) committed alongside the asset; this database is an in-memory
-// index/cache built from those sidecars plus the scene's AssetReferences.
+// Per Phase 7 D8, per-asset sidecars are the durable source of truth. This
+// CPU-only database is a pure index/cache built from caller-supplied sidecar
+// and reference records. It performs no filesystem I/O and links into
+// RT2Tests and RT2SliceRunner without Vulkan, ImGui, or Walnut.
 //
-// CPU-only by design (no Vulkan, ImGui, Walnut, filesystem-write access):
-// it links cleanly into RT2Tests and RT2SliceRunner, following the
-// ScriptFieldReconcile / ScriptScenarioCompare precedent of keeping logic
-// pure and putting host wiring elsewhere. Scanning the asset tree for
-// sidecars is done by the caller (who owns the filesystem); the database
-// itself only indexes records handed to it.
-//
-// Determinism: every builder path sorts by source path before recording so
-// the resulting database never depends on directory enumeration order. This
-// is the same precedent as ReconcileScriptFields (ScriptFieldReconcile.cpp:
-// sort before emit). Two scans of the same tree produce byte-identical
-// databases.
+// BuildAssetDatabase normalizes and sorts its input internally, including
+// nested dependency records. Results therefore do not depend on directory
+// enumeration, insertion order, or unordered_map iteration.
 // ============================================================================
 
 namespace rt2::core {
 
-// One record per known asset. A record exists when a sidecar claims an ID
-// for a path, or when a scene's AssetReference references a path (even with
-// a nil ID — the database records the reference so dependency tracking and
-// missing-asset diagnostics work before the ID is assigned).
+// Identity precedence for records merged at one source path. Sidecar identity
+// is authoritative per D8; a reference is a cached claim carried by a scene
+// or dependency edge.
+enum class AssetIdentityAuthority : uint8_t
+{
+    Reference = 0,
+    Sidecar   = 1,
+};
+
+// One outgoing dependency from an asset to another asset. `sourceKey`
+// identifies the dependency slot inside the owning asset (for example
+// "gltf:image=0"); assetId identifies the target and sourcePath is its
+// portable fallback. `kind` is the target's observed use on this edge, not an
+// exclusive classification of the physical file.
+struct AssetDependencyRecord
+{
+    std::string          sourceKey;
+    UUID                 assetId;
+    std::string          sourcePath;
+    AssetKind            kind = AssetKind::Unknown;
+
+    bool operator==(const AssetDependencyRecord& other) const
+    {
+        return sourceKey == other.sourceKey
+            && assetId == other.assetId
+            && sourcePath == other.sourcePath
+            && kind == other.kind;
+    }
+};
+
+// One record per known source path. A record may come from a sidecar or from
+// an unresolved scene/dependency reference with a nil ID.
 struct AssetRecord
 {
     UUID                 assetId;          // nil if not yet assigned
-    AssetKind            kind = AssetKind::Unknown;
     std::string          sourcePath;       // portable, project-relative UTF-8
     ImportSettings       importSettings;
+    AssetIdentityAuthority identityAuthority =
+        AssetIdentityAuthority::Reference;
 
-    // Dependency graph (recorded from scene references in W2). An entry in
-    // `dependents` means some scene entity references this asset. Cross-
-    // asset dependencies (a model depends on its textures) land in W3 when
-    // resolution by ID unifies the import paths.
-    std::vector<UUID>    dependents;       // entities that reference this asset
+    // A physical file may be observed in more than one role. Kept sorted and
+    // deduplicated by AddOrUpdate/BuildAssetDatabase.
+    std::vector<AssetKind> observedKinds;
+
+    // Entities that reference this asset, sorted by UUID.
+    std::vector<UUID> dependentEntities;
+
+    // Outgoing cross-asset edges, sorted by stable source key and then target
+    // identity/path. Distinct claims for one sourceKey are preserved so later
+    // resolution can diagnose rather than choose by insertion order.
+    std::vector<AssetDependencyRecord> dependencies;
 };
 
-// A diagnostic produced while building or querying the database. Routed
-// through the existing AssetDiagnostic channel by the host; kept separate
-// here so the database is CPU-only and testable without the resolver.
+// A diagnostic produced while building or querying the database. The host
+// later routes it through AssetDiagnostic; this type keeps the database
+// independent of SceneAssetResolver.
 struct AssetDatabaseDiagnostic
 {
     enum class Kind
     {
-        DuplicateId,         // two sidecars claim the same ID for different paths
-        DuplicatePath,       // two records map to the same path
-        MissingSidecarId,    // a sidecar exists but contains no valid ID
-        ConflictingId,       // a scene reference's assetId disagrees with the sidecar
+        DuplicateId,
+        DuplicatePath,
+        MissingSidecarId,
+        ConflictingId,
     };
-    Kind        kind = Kind::DuplicateId;
-    UUID        assetId;        // the ID in dispute (nil for MissingSidecarId)
-    std::string sourcePath;     // the path involved
-    std::string detail;
+
+    Kind                     kind = Kind::DuplicateId;
+    UUID                     assetId;
+    std::string              sourcePath;
+    // Every claimant when kind == DuplicateId, sorted by sourcePath.
+    std::vector<std::string> candidatePaths;
+    std::string              detail;
+};
+
+struct AssetIdLookupResult
+{
+    enum class Status
+    {
+        Missing,
+        Unique,
+        Ambiguous,
+    };
+
+    Status                    status = Status::Missing;
+    // Non-null only for Unique.
+    const AssetRecord*        record = nullptr;
+    // Populated for Unique and Ambiguous; always sorted by sourcePath.
+    std::vector<std::string>  candidatePaths;
 };
 
 class AssetDatabase
 {
 public:
-    // Add or merge a record. If a record for sourcePath already exists, the
-    // kind/importSettings are updated and the existing assetId is preserved
-    // unless the new one is non-nil and conflicts (a ConflictingId diagnostic
-    // is emitted and the sidecar's ID wins). If two different paths claim the
-    // same non-nil ID, a DuplicateId diagnostic is emitted and the first path
-    // keeps the ID; the second is left with a nil ID in its record.
-    //
-    // Returns false only on a hard internal error (none today); diagnostics
-    // are always appended to `diagnostics` regardless.
+    // Add or merge a record. Nested sets are unioned. A nil stored ID adopts
+    // a later non-nil ID; two non-nil IDs on the same path emit ConflictingId
+    // and preserve the claim with greater identityAuthority (sidecar over
+    // reference). Equal-authority conflicts preserve the stored claim and
+    // remain loud. Different paths claiming one ID all retain that ID and
+    // emit DuplicateId with sorted candidate paths.
     void AddOrUpdate(const AssetRecord& record,
                      std::vector<AssetDatabaseDiagnostic>& diagnostics);
 
-    // Record that an entity (by UUID) depends on an asset at sourcePath.
-    // Creates a placeholder record if the path is not yet known (nil ID),
-    // so dependency tracking works before sidecars are scanned.
-    void AddDependency(const std::string& sourcePath, const UUID& dependentEntity);
+    // Record that an entity depends on an asset path. Creates a nil-ID
+    // placeholder when the path is not known.
+    void AddEntityDependency(const std::string& sourcePath,
+                             const UUID& dependentEntity);
 
-    // Look up by path. Returns nullptr if not present.
+    // Record an outgoing cross-asset dependency keyed by sourceKey. Exact
+    // duplicates are idempotent; distinct claims for one sourceKey are
+    // retained in deterministic order. A target fallback path also creates
+    // or updates a target record and observes dependency.kind there.
+    void AddAssetDependency(
+        const std::string& ownerSourcePath,
+        const AssetDependencyRecord& dependency,
+        std::vector<AssetDatabaseDiagnostic>& diagnostics);
+
     const AssetRecord* FindByPath(const std::string& sourcePath) const;
 
-    // Look up by asset ID. Returns nullptr if not present (or if the ID is
-    // nil — nil IDs are not in the ID index by design).
-    const AssetRecord* FindById(const UUID& assetId) const;
+    // Nil/unclaimed IDs are Missing, one claimant is Unique, and more than
+    // one claimant is Ambiguous. Ambiguous lookup never selects a record.
+    AssetIdLookupResult LookupById(const UUID& assetId) const;
 
-    // All records, sorted by sourcePath for deterministic output. The
-    // returned vector is a snapshot; subsequent mutations do not affect it.
+    // Sorted snapshot of every outgoing claim at one stable source key.
+    std::vector<AssetDependencyRecord> FindDependenciesBySourceKey(
+        const std::string& ownerSourcePath,
+        const std::string& sourceKey) const;
+
     std::vector<AssetRecord> AllRecordsSorted() const;
 
     size_t Size() const { return m_ByPath.size(); }
 
 private:
-    // sourcePath -> record (owns the records).
     std::unordered_map<std::string, AssetRecord> m_ByPath;
-    // assetId -> sourcePath (index into m_ByPath; nil IDs are not indexed).
-    std::unordered_map<UUID, std::string> m_ById;
+    // Every claiming path is retained and kept sorted. Nil IDs are omitted.
+    std::unordered_map<UUID, std::vector<std::string>> m_ById;
 };
 
-// Build a database from a sorted, deduplicated list of records. The caller
-// is responsible for scanning sidecars in deterministic order (sorted by
-// path); this helper just inserts them. Diagnostics surface duplicate IDs
-// and paths. This is the pure core that tests exercise; the host owns the
-// filesystem scan.
-//
-// `records` is consumed by move. Sort it by sourcePath before calling for
-// deterministic results; this function does NOT re-sort (the caller has the
-// context to do so and may have a stronger ordering requirement).
-AssetDatabase BuildAssetDatabase(std::vector<AssetRecord> records,
-                                  std::vector<AssetDatabaseDiagnostic>& diagnostics);
+// Build from records in any order. The function normalizes nested sets and
+// sorts by a total deterministic key before insertion, so records,
+// diagnostics, ambiguity candidates, observed uses, and dependency edges are
+// independent of caller enumeration order.
+AssetDatabase BuildAssetDatabase(
+    std::vector<AssetRecord> records,
+    std::vector<AssetDatabaseDiagnostic>& diagnostics);
 
 } // namespace rt2::core
 

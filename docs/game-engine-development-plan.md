@@ -6805,3 +6805,46 @@ are Release-runtime binaries under `RT2App/vendor/NRD/Lib` and
 versus `MDd`/level 2) and `LNK1319`. The Debug `RT2Tests` target builds and
 passes 591/591. This mismatch predates and is independent of the test-only W3
 step; no build-runtime policy was changed here.
+
+### W3 AssetDatabase hardening verification — complete
+
+Implemented 2026-07-25, grounded against commit `a64f60f`.
+
+`AssetDatabase` now preserves every path claiming an asset ID and exposes an
+explicit `Missing` / `Unique` / `Ambiguous` lookup result. Ambiguous results
+never select a record, and their candidate paths are sorted. Database
+construction normalizes and total-sorts its inputs before insertion, including
+an explicit reference-versus-sidecar identity authority, so sidecar precedence
+does not depend on enumeration order.
+
+Records now carry sorted, deduplicated entity dependents and cross-asset
+dependency records. A cross-asset dependency is keyed by stable `sourceKey`
+and records the target ID, source path, and requested `AssetKind`. Conflicting
+claims for the same source key remain preserved and sorted for the later
+locator to diagnose; they are not silently collapsed.
+
+W3-Q2 was inseparable from that dependency representation in one limited
+respect: `AssetRecord` now stores a sorted set of observed `AssetKind` uses
+rather than one exclusive kind. Tests prove that one physical asset can be
+observed as both `Texture` and `Environment`. No texture import, scene,
+environment, or script resolution path changed in this step.
+
+Order-independence is covered by forward/reversed construction and 64 seeded
+random permutations. Each permutation shuffles both the input records and
+their nested use, entity-dependent, and asset-dependency collections, then
+compares a canonical byte serialization of all public records, ID lookups, and
+diagnostics with the baseline.
+
+| Check | Result |
+|---|---|
+| AssetDatabase focused tests, Release | 18/18 cases, 152/152 assertions |
+| AssetDatabase focused tests, Debug | 18/18 cases, 152/152 assertions |
+| W3 characterization, Release | 9/9 cases, 149/149 assertions; expectations unchanged |
+| W3 characterization, Debug | 9/9 cases, 149/149 assertions; expectations unchanged |
+| Full RT2Tests, Release | 598/598 cases, 144627/144627 assertions |
+| Full RT2Tests, Debug | 598/598 cases, 144627/144627 assertions |
+| RT2SliceRunner target, Release and Debug | builds |
+
+No project or compiler configuration changed; in particular this step did not
+touch the existing RT2Tests `/FS` option. The pre-existing full-Debug
+`RT2App` vendor-runtime link mismatch remains explicitly out of W3 scope.
