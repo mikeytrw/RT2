@@ -10,6 +10,74 @@ The intended loop is:
 create/import -> edit -> save -> play -> stop safely -> package -> run
 ```
 
+## How to read this document
+
+**It is append-only and chronological.** Sections are added as work happens
+and are not retro-edited. Two consequences that matter more than anything
+else here:
+
+1. **A completed phase's section is a period record, not current state.**
+   It describes the tree as it was when that phase landed. Figures inside it
+   ("7 failures", "W4-W5 remain", "declared and stubbed") were true then and
+   are routinely false now. Do not quote them. Where a section has been
+   superseded it carries an explicit note saying so.
+2. **Each phase appears twice.** A short scope stub in the roadmap below,
+   written before the work; and — once worked — a much longer section near
+   the end with grounded findings, decisions, workstreams and a verification
+   report. The stub is the intent; the later section is what happened.
+
+If you need current state rather than history, these are authoritative:
+
+| Question | Where |
+|---|---|
+| Which tests should pass? | **Test baseline** (near the end) — supersedes every earlier figure |
+| What does the engine do today? | The `docs/` siblings: `scripting.md`, `scene-management.md`, `game-loop.md` |
+| What is being built next? | **Phase 7 — implementation plan** (last section) |
+
+This file is also **two documents concatenated**: the phase roadmap, then
+`# First tiny vertical slice development plan` at the halfway point. The
+generic headings (`Goal`, `In scope`, `Work packages`) belong to the second.
+
+## Contents
+
+**Part 1 — Roadmap.** Scope stubs written ahead of the work.
+
+- Existing foundation · Engineering principles · Cross-phase architecture
+  contracts · Test strategy
+- Phase 1 Native scene persistence · Phase 2 Scene-building ergonomics ·
+  Phase 3 Command system, undo, redo · Phase 4 Edit/Play/Pause lifecycle ·
+  Phase 5 Input action system · Phase 6 Lua scripting · **Phase 7 Project
+  model and asset database** · Phase 8 Prefabs · Phase 9 Physics ·
+  Phase 10 Animation · Phase 11 Audio · Phase 12 Standalone runtime
+- Later backlog
+
+**Part 2 — First tiny vertical slice.** Goal · In scope · Explicitly out of
+scope · Proposed types and boundaries · Work packages · Acceptance script ·
+Merge gates.
+
+**Part 3 — Worked sections**, under "What follows immediately". Each is
+grounded against the code as it stood at the time.
+
+| Section | Status |
+|---|---|
+| Phase 1A asset-backed scene round-trip | implemented |
+| Phase 1B crash-safe authoring and recovery | implemented |
+| Phase 2A stable viewport selection | implemented |
+| Phase 2B transform editing and gizmos | implemented |
+| Phase 2C hierarchy authoring and outliner | implemented |
+| Phase 2D camera authoring workflow | implemented |
+| Phase 3A command/history foundation | implemented |
+| Phase 3B1 structural command correctness | implemented |
+| Phase 3B2 property command completion | implemented |
+| Phase 4 Edit/Play/Pause lifecycle | implemented |
+| Phase 5 Input action system | implemented |
+| Phase 6A Lua embedding and lifecycle (+ verification report) | implemented |
+| Phase 6B Public fields, reflection, persistence (+ report) | implemented |
+| Phase 6C Hot reload, input, bindings (+ report) | implemented |
+| Phase 6 exit criteria / ordering rationale | reference |
+| **Test baseline** | **current — authoritative** |
+| **Phase 7 Project model and asset database** | **implementation plan, not started** |
+
 ## Existing foundation
 
 RT2 already provides:
@@ -466,6 +534,12 @@ A saved script component can drive an entity using input and survive save/load,
 Play/Stop, and hot reload.
 
 ## Phase 7 - Project model and asset database
+
+> **This is the scope stub only.** The grounded implementation plan — what
+> already exists, the naming collisions, the seven decisions that must be
+> answered before code — is the final section of this document. Read it
+> before acting on anything below: Phase 7 is **not** greenfield, and roughly
+> half of what this stub describes already exists under other names.
 
 ### Outcome
 
@@ -6188,3 +6262,188 @@ and the Lua C lib is the only new link, gated per target by premake.
 - `scene-management.md`: note `ScriptComponent` as a persisted
   component (Count 10→11) and the v3 hard schema cutover (lands in 6B,
   but note the visitor change in 6A).
+
+---
+
+## Phase 7 — Project model and asset database (implementation plan, not started)
+
+Grounded against the tree at commit `33b777a` (2026-07-24), immediately after
+Phase 6 completed. Every claim below carries a `file:line` so it can be
+re-verified rather than trusted — the tree moves, and this section will go
+stale.
+
+The Phase 7 roadmap section earlier in this document states the goal in 39
+lines. This section is the part the roadmap does not have: what already
+exists, what collides with it, and what must be decided before code is
+written.
+
+---
+
+### Why this document exists
+
+The Phase 7 roadmap describes a greenfield asset database. **It is not
+greenfield.** Roughly half the machinery exists under other names, and two
+pieces of it use the term "project root" to mean something *different* from
+what Phase 7 means. An implementer reading only the roadmap would either
+rebuild what exists or silently conflict with it.
+
+---
+
+### Grounded findings
+
+| ID | Fact (verified in tree) | Consequence for Phase 7 |
+|---|---|---|
+| P1 | `AssetReference { AssetKind kind; std::string path; ImportSettings importSettings; std::string sourceKey; }` — `ECSComponents.h:205-213`. The `path` comment reads "portable, scene-relative UTF-8 path". **There is no asset ID field.** | This is the struct Phase 7 extends. Adding a stable ID here is the smallest change that reaches every asset kind at once. |
+| P2 | `sourceKey` already provides *stable subresource identity within a file*, with deterministic importer-defined formats documented at `ECSComponents.h:215-223` (`gltf:scene=<s>:node=<n>:mesh=<m>:primitive=<p>`, `obj:whole-model`). Builders: `SceneAssetResolver::GltfSourceKey/ObjSourceKey/GltfMaterialKey/ObjMaterialKey` (`SceneAssetResolver.h:118-125`). | Half the identity problem is solved. `sourceKey` answers "which mesh inside the file"; Phase 7's asset ID answers "which file". **Do not conflate them, and do not replace `sourceKey`.** |
+| P3 | Asset paths are already scene-relative and **already rebased on Save As**: `EntityRecordToJson(record, currentSceneDir, outputSceneDir, err)` (`SceneSerializer.cpp:548`, rebasing logic `:241-257`). | "Project moves stay portable" is partly built at the *scene* level. Phase 7 lifts it to the *project* level. |
+| P4 | v3 `metadata` serializes **only** `name` (`SceneSerializer.cpp:1226-1230`); the loader reads only `name` (`:1486-1490`). An absolute `metadata.sourcePath` used to be written and was removed during Phase 6. | The known absolute-path leak into scene files is closed. Do not reintroduce it. Audit for others rather than assuming none remain. |
+| P5 | **A `projectRoot` already exists and is NOT what Phase 7 means.** `EditorSettings.h:32-36`: "Optional editor preference used as an initial file-dialog location. **Does NOT reinterpret** the Phase 1A scene-relative asset-reference contract." Per-user, stored in the user settings file, API at `EditorSettings.h:98-100`. | Phase 7's `project.rt2proj` is a *portable, committed* file that **does** define asset resolution. Two different concepts, one name. Must be disambiguated explicitly — see D3. |
+| P6 | **The input map already lives in per-user editor settings**, not in a project file: `inputContexts` in the EditorSettings v2 schema (`EditorSettings.h:43-61`). | The roadmap says `project.rt2proj` holds the input map. That is a *move* across a per-user/per-project boundary, with a migration. See D4. |
+| P7 | `SceneAssetResolver` already owns the diagnostics story: `AssetDiagnostic { refPath, resolvedPath, entityName, sourceKey, detail }` (`SceneAssetResolver.h:76-81`), plus `ResolveAll` (`:97`), `ResolveEnvironment` (`:107`), `ResolvePath(refPath, sceneRoot)` (`:114`). | "Placeholders and diagnostics for missing/invalid/cyclic references" **extends** this type. Do not invent a parallel diagnostic channel. |
+| P8 | `AssetKind` has four members — `Model`, `Texture`, `Environment`, `Script` (`ECSComponents.h:169-176`). Only Model/Environment go through `SceneAssetResolver`; Script has its own resolver `ResolveScriptAssetPath` (`ScriptAssetPath.h:16`); Texture is resolved inside model import. | An asset database must cover all four. **Three different resolution paths exist today** — unifying them is arguably the real work of Phase 7. |
+| P9 | **No content browser exists.** No file in `RT2App/src` matches `contentbrowser`/`assetbrowser`/`browser`. | Genuinely greenfield. The only greenfield part. |
+| P10 | The efsw file watcher exists (Phase 6C) but watches only the scene directory plus directories of bound `.lua` scripts, recomputed on scene open (`WalnutApp.cpp:2711-2745`). | Phase 7's "watch source files and reimport" is the same machinery, wider scope. Note the watch set is rebuilt **only on scene open** — an asset added later is not seen. |
+| P11 | `SchemaVersion = 3`, `MinReadVersion = 3` (`SceneSerializer.h:112-114`) — a deliberate **hard cutover**, no backward compatibility. | Adding asset IDs to serialized references implies v4 and the same cutover-vs-migration decision. See D5. |
+| P12 | EditorSettings has its own independent version with a real migration: v1 → v2 adds `inputContexts`, "version is updated, inputContexts is left empty" (`EditorSettings.h:63-64, 86-87`). | A working precedent for *additive* settings migration, in contrast to the scene format's hard cutover. |
+| P13 | `rt2::core::UUID` provides `Nil()`, `IsNull()`, `ToString()`, `Parse()` (`core/UUID.h:35-59`), with a deterministic provider used throughout for entity IDs. | Asset IDs can reuse this type outright. See D1. |
+
+### Commitments earlier phases deferred *to* Phase 7
+
+These are recorded where the deferral happened, not where the work lands, so
+a spec written from the roadmap alone will miss all of them.
+
+| Where | Commitment |
+|---|---|
+| plan:985 | Asset-database migration to **global asset UUIDs** |
+| plan:3311, 3380 | The **input rebinding dialog** ("Phase 7's content-browser era") |
+| plan:4064, 5274 | The script asset **Rebind button**. Phase 6B W5 ships the asset path as a raw `InputText`; the browse/rebind affordance was explicitly deferred |
+| plan:5521 | Declaration diagnostics shown inline in the content browser |
+| plan:5901 | Cursor-lock binding |
+
+---
+
+### Decisions required before implementation
+
+Each needs an explicit answer. Defaults are recommendations, not settled.
+
+**D1 — Asset ID type.** Reuse `rt2::core::UUID` (P13), or introduce a distinct
+`AssetId`?
+*Recommend reusing `UUID`.* It already has parse/format/nil semantics, a
+deterministic provider for tests, and serializer support. A distinct type buys
+compile-time separation from entity IDs at the cost of duplicating all of that.
+
+**D2 — Where the ID lives.** Add `assetId` to `AssetReference` (P1), or keep an
+external database keyed by path and leave `AssetReference` alone?
+*Recommend adding to `AssetReference`*, keeping `path` as a human-readable
+fallback for diagnostics and hand-editing. Path-keyed external mapping
+reintroduces exactly the rename-fragility Phase 7 exists to remove.
+
+**D3 — Name collision with the existing `projectRoot` (P5).** Two concepts
+currently share one name. Options: rename the EditorSettings one (e.g.
+`lastBrowseDirectory`, which is what it actually is); or name the new one
+distinctly. **Whichever is chosen, `EditorSettings.h:32-36` must be updated in
+the same change** — that comment currently asserts project root does not affect
+asset resolution, which stops being true.
+
+**D4 — Does the input map move (P6)?** The roadmap puts it in
+`project.rt2proj`; it currently lives per-user. Moving it makes bindings
+shippable with the project but overrides per-user preference. A split (project
+provides defaults, user settings override) is more work but is the behaviour
+users expect from an editor.
+
+**D5 — Schema v4: hard cutover or migration?** P11 shows the v2→v3 precedent
+was a hard cutover. P12 shows settings do additive migration. Asset IDs cannot
+be invented for existing scenes without a scan-and-assign pass, so this
+interacts with D2.
+
+**D6 — Cache root.** The roadmap requires generated artifacts outside source
+asset folders. `SceneRecoveryService` already writes generated data somewhere —
+check where, and decide whether the cache root sits beside it or under the
+project root.
+
+**D7 — Watcher scope (P10).** Widen the existing efsw watcher to the asset
+root, and fix that the watch set is only rebuilt on scene open.
+
+---
+
+### Proposed workstreams
+
+Ordered so each is independently testable and nothing depends on unbuilt UI.
+
+- **W0 — Audit.** Find every place an absolute path can still reach serialized
+  data or the asset database. P4 closed one; assume others exist. Deliverable:
+  a list, plus a test that fails if a saved scene contains an absolute path.
+- **W1 — Asset ID plumbing.** Per D1/D2: add the ID, generate on import, thread
+  through `AssetReference`. No behaviour change yet — resolution still goes by
+  path. Fully unit-testable.
+- **W2 — Asset database.** The record store: ID, source path, kind, import
+  settings, dependency records. Pure and CPU-only, following the
+  `ScriptFieldReconcile` precedent of keeping logic Lua-free and testable.
+- **W3 — Resolution by ID, path as fallback.** Unify the three resolution paths
+  from P8 behind one entry point. **Highest-risk workstream** — it touches
+  model, texture, environment and script loading simultaneously.
+- **W4 — `project.rt2proj`.** Per D3/D4/D6: project UUID, asset root, cache
+  root, startup scene, and whatever D4 decides about the input map.
+- **W5 — Schema v4.** Per D5. Includes the scan-and-assign pass for existing
+  scenes.
+- **W6 — Content browser** (P9). Search, rename/move/delete, drag/drop,
+  reimport. Depends on W2/W3.
+- **W7 — Watching and async reimport.** Per D7, widening the Phase 6C watcher.
+- **W8 — Deferred commitments.** The Rebind button, input rebinding dialog,
+  inline declaration diagnostics, cursor-lock binding.
+- **W9 — Tests and docs.** Per the roadmap's test list, plus a baseline update.
+
+---
+
+### Test requirements
+
+From the roadmap, plus what grounding suggests:
+
+- Asset IDs survive rename/move; scene references still resolve.
+- Scanning produces the same database regardless of directory enumeration
+  order. *(Precedent: `ReconcileScriptFields` sorts before emitting so results
+  never depend on `unordered_map` iteration order — do the same here.)*
+- Dependency graphs detect missing assets and cycles.
+- Reimport updates cache metadata without changing asset identity.
+- Project relocation preserves all valid relative references.
+- Asset deletion reports dependants before committing.
+- **Added:** a saved scene contains no absolute paths (W0).
+- **Added:** all four `AssetKind` values resolve through the unified path (P8).
+
+---
+
+### Risks
+
+**W3 is the dangerous one.** Three independent resolution paths exist today
+(P8) and each has its own failure behaviour. Unifying them touches model,
+texture, environment and script loading at once, and scripting only just
+stabilised in Phase 6. Land W1/W2 first so the database is proven before
+anything depends on it for resolution.
+
+**Silent failure is this codebase's characteristic bug.** Phase 6 shipped
+three of them: a policy that left a cache stale for a whole session, a
+field-declaration form that parsed and did nothing, and a fixture generator
+whose writes were never checked. Asset resolution is the same shape of problem
+— a missing asset that resolves to "nothing" without a diagnostic will not be
+noticed. `AssetDiagnostic` (P7) exists; route every failure through it rather
+than returning empty paths.
+
+---
+
+### Notes for whoever implements this
+
+- **The test suite is green in Release (554/554) and must stay green.** A
+  Release failure is now a real regression. Debug has 8 known failures in OBJ
+  fixture generation, unrelated and documented under "Test baseline" in the
+  plan doc.
+- **Run `RT2Tests.exe` from the repository root.** It resolves some fixtures
+  by relative path; run elsewhere it fails extra cases *and* writes stray
+  fixture files into the tree.
+- `AGENTS.md` asks you to run `graphify update .` after changing code, and to
+  start codebase questions with `graphify query`. Note the graph is now
+  gitignored — on a fresh clone run `graphify update .` once before querying.
+- Build: `msbuild RT2App.sln -p:Configuration=Release -p:Platform=x64`.
+  Targets are `RT2App`, `RT2Tests`, `RT2SliceRunner`.
+- `RT2Tests` and `RT2SliceRunner` are CPU-only by design — no Vulkan, ImGui or
+  Walnut. Keep asset-database logic linkable into both; that constraint is why
+  Phase 6's scripting core is testable at all.
