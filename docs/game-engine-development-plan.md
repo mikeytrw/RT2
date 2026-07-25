@@ -6043,8 +6043,13 @@ Verified 2026-07-24. All W0–W9 workstreams landed.
 | Debug build, RT2Tests | links |
 | Focused 6C suites, Release | 29 cases / 150 assertions, all pass |
 | Focused 6C suites, Debug | 29 cases / 150 assertions, all pass |
-| Full suite, Release | 553 cases, **7 failed** (9 assertions) — matches baseline |
-| Full suite, Debug | 553 cases, **15 failed** (17 assertions) — matches baseline |
+| Full suite, Release | 553 cases, **7 failed** (9 assertions) — matched the then-current baseline |
+| Full suite, Debug | 553 cases, **15 failed** (17 assertions) — matched the then-current baseline |
+
+> **Baseline superseded 2026-07-24, after this report.** The 7 Release
+> failures were subsequently diagnosed and fixed (see "Test baseline" below);
+> Release is now **554 run, 0 failed**. Debug retains 8 failures with an
+> unrelated root cause. Do not use the two rows above as a current gate.
 | Headless scenario (`run_script_test.ps1`) | PASS, exit 0 |
 | Graphify | refreshed |
 
@@ -6082,6 +6087,58 @@ link. It remains guarded by a comment at the declaration site.
 **Caveat for CI:** `RT2Tests.exe` resolves some fixtures by relative path and
 must be run from the repository root; from another working directory a
 handful of unrelated cases fail on missing assets.
+
+### Test baseline (current — supersedes all earlier figures)
+
+Established 2026-07-24, immediately before Phase 7. **This section is the
+authoritative baseline; every earlier "7 failed" / "15 failed" figure in this
+document is a period record of a superseded state.**
+
+| Configuration | Result |
+|---|---|
+| **Release** | **554 run, 554 passed, 0 failed, 0 skipped** |
+| **Debug** | 554 run, 546 passed, **8 failed**, 0 skipped |
+
+Run from the repository root — `RT2Tests.exe` resolves some fixtures by
+relative path and both fails and writes stray files if run from elsewhere.
+
+**Release is green and must stay green.** A Release failure is now a real
+regression, not baseline noise. This is the change that makes the gate
+meaningful: previously a passing run had to be checked against a memorised
+failure count, which silently reverses the meaning of "the suite passed".
+
+#### The remaining 8 Debug-only failures
+
+All in `Phase1ASceneAssetTests.cpp`: 7 × `OBJ Import Wizard` and
+1 × `P1A Multi-Model`. Diagnosed but not fixed.
+
+They are **not** OBJ importer bugs. The chain is:
+
+1. Each test builds its fixture with `MakeMultiShapeObj`, which writes an
+   `.obj` and `.mtl` via `std::ofstream` and never checks that the write
+   succeeded.
+2. `SceneLoader::ParseObjAndLoadResources` opens with
+   `if (filepath.empty() || !fs::exists(filepath)) return false;` — before
+   any parsing or logging, so the failure is completely silent.
+3. `ImportObjIntoECS` returns `entt::null`, `ImportObj` returns an invalid
+   `EntityId`, and the test fails at `REQUIRE(rootId.IsValid())` — several
+   layers away from the cause, naming the importer rather than the fixture.
+
+Instrumentation established that in Debug the fixture files **do not exist**
+after `MakeMultiShapeObj` returns, even though the `std::ofstream` inside it
+reports `is_open() == true` and `fail() == false`, and a directly constructed
+`std::ofstream` at test scope in the same directory writes successfully. Why
+the successfully-opened stream leaves no file in Debug is unresolved.
+
+Two things worth fixing regardless of that root cause, since both convert a
+silent failure into a loud one:
+
+- `MakeMultiShapeObj` should assert the files exist before returning.
+- `ParseObjAndLoadResources` should log the missing path rather than
+  returning `false` silently — every caller currently reports the symptom
+  three layers up.
+
+A clean Debug rebuild was ruled out as a cause; the failures survive it.
 
 ### Phase 6 exit criteria (all three sub-slices)
 
