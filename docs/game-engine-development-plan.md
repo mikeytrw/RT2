@@ -6848,3 +6848,119 @@ diagnostics with the baseline.
 No project or compiler configuration changed; in particular this step did not
 touch the existing RT2Tests `/FS` option. The pre-existing full-Debug
 `RT2App` vendor-runtime link mismatch remains explicitly out of W3 scope.
+
+### W3 step 2 verification report — neutral types and generic locator landed
+
+Implemented 2026-07-25, grounded against commit `12a88c8` (immediately
+after the W2 hardening step). No production consumer was cut over in this
+step; step 3 cuts models over.
+
+**Files added (CPU-only, no Vulkan/ImGui/Walnut/entt):**
+
+- `RT2App/src/AssetReference.h` — extracts `AssetKind`, `ImportSettings`,
+  and `AssetReference` from `ECSComponents.h` into a neutral header that
+  depends only on `core/UUID.h`. The types remain in the **global
+  namespace** to match the pre-extraction source layout (verified via
+  `git show HEAD:RT2App/src/ECSComponents.h`: the originals were not inside
+  any `namespace` block). `ECSComponents.h` now includes
+  `AssetReference.h` and re-exports the names unchanged. This unblocks
+  W3-P2: `SceneTexture` and `EnvironmentSettings` can now carry an
+  `AssetReference` without a `SceneTypes.h`/`ECSComponents.h` include cycle.
+  (Adding those fields is W3 step 3+ work, not this step.)
+- `RT2App/src/AssetResolver.{h,cpp}` — the neutral read-only locator.
+  Defines `AssetDiagnostic` (moved here from `SceneAssetResolver.h`),
+  `AssetResolutionContext`, `AssetResolutionResult`,
+  `AssetResolutionSource`, `AssetBatchEntry`, `Resolve()`, `ResolveBatch()`,
+  and `AssetDiagnosticSortKey()`. `AssetDiagnostic::Severity` gains
+  `Conflict` (W3-Q5). The eight-case ID/path disagreement policy from the
+  approved contract is encoded in `Resolve()`:
+  1. unique ID + matching file → success by `Id` (case 1);
+  2. unique ID + file exists, stale ref path → success by `Id` with an
+     observable `Missing` diagnostic for the stale path (case 2);
+  3. ID not in DB, path exists, sidecar matches requested ID → fallback
+     succeeds, `Missing` diagnostic "database stale" (case 3);
+  4. ID not in DB, path exists, sidecar absent → fallback succeeds with
+     `identityRepairRequired=true` (case 4);
+  5. sidecar claims a different ID → `Conflict`, no substitution (case 5);
+  6. neither ID nor path locates a regular file → `Missing` (case 6);
+  7. ambiguous ID → `Conflict` even if fallback path matches one claimant
+     (case 7);
+  8. nil ID → path fallback; absent sidecar → repair required; present
+     sidecar → effective ID from sidecar, no repair (case 8).
+  The locator never mints, writes, or remaps (W3-Q9). Process-CWD fallback
+  is removed (W3-Q8); legacy absolute paths are accepted in memory and the
+  successful result is normalized. `ResolveBatch()` sorts appended
+  diagnostics by `(kind, refPath, entityUuid, sourceKey, severity, detail)`
+  using `AssetDiagnosticSortKey()` and a stable sort, so equal-key
+  diagnostics keep insertion order and results are independent of input
+  order.
+
+**Files modified:**
+
+- `RT2App/src/ECSComponents.h` — includes `AssetReference.h`; the
+  duplicated `AssetKind`/`ImportSettings`/`AssetReference` definitions are
+  removed (now in `AssetReference.h`). Comment block updated to record the
+  extraction.
+- `RT2App/src/SceneAssetResolver.h` — includes `AssetResolver.h` instead
+  of defining `AssetDiagnostic` inline. `AssetDiagnostic` is now re-exported
+  by include; its `Conflict` member is visible to all existing consumers.
+  The `SceneAssetResolver` class and its `ResolveAll`/`ResolveEnvironment`/
+  `ResolvePath` signatures are unchanged (step 3 will cut them over).
+- `RT2App/src/WalnutApp.cpp` — the diagnostic severity formatter is made
+  exhaustive over the four severities (`Missing`/`Malformed`/`Unresolved`/
+  `Conflict`) with a `default` arm labelled `"Unknown"`, replacing the
+  ternary whose final branch silently mislabelled anything beyond
+  `Unresolved` (W3-P14). This was called out as required in the same change
+  that adds a `Conflict`-emitting code path (W3-Q5).
+- `RT2App/RT2App.vcxproj`, `RT2Tests/RT2Tests.vcxproj` — wired
+  `AssetReference.h`, `AssetResolver.h`, and `AssetResolver.cpp` into both
+  targets. (`RT2SliceRunner/RT2SliceRunner.vcxproj` is gitignored on this
+  machine; the same edit was applied on disk and the slice runner builds in
+  both configurations.)
+
+**Tests added:** `RT2Tests/src/Phase7W3LocatorTests.cpp` — 18 cases,
+119 assertions, covering:
+
+- each of the eight ID/path disagreement cases as a distinct test;
+- read-only behaviour: no sidecar written for nil-ID missing sidecar;
+  existing sidecar untouched even on the Conflict path (file size and
+  content preserved; `ReadSidecarId` returns the original ID);
+- no process-CWD fallback (a file placed at the test runner's CWD does not
+  resolve against an unrelated asset root);
+- absolute legacy path accepted and the successful result normalized;
+- batch diagnostics sorted deterministically and independent of input
+  order (two orderings compared by refPath sequence);
+- entity UUID/name context preserved in diagnostics;
+- empty path fails with a `Missing` diagnostic (never a silent empty
+  result);
+- `AssetDiagnostic::Conflict` is a distinct severity value.
+
+Every fixture is generated below a unique temporary directory; no test
+depends on `C:\Users\mikey\Downloads` or on checked-in generated assets.
+
+**Production behaviour change:** none. The existing `SceneAssetResolver`
+model/environment/script resolution paths were not touched; the
+characterization tests (step 0) still pin the pre-W3 behaviour and pass
+unchanged. The Walnut formatter change is exhaustive-but-equivalent for
+the three pre-existing severities.
+
+| Check | Result |
+|---|---|
+| W3 locator focused tests, Release | 18/18 cases, 119/119 assertions |
+| W3 locator focused tests, Debug | 18/18 cases, 119/119 assertions |
+| W3 characterization (step 0), Release | 9/9 cases, 149/149 assertions; expectations unchanged |
+| W3 characterization (step 0), Debug | 9/9 cases, 149/149 assertions; expectations unchanged |
+| Full RT2Tests, Release | 616/616 cases, 144746/144746 assertions |
+| Full RT2Tests, Debug | 616/616 cases, 144746/144746 assertions |
+| RT2App target (Vulkan), Release | builds |
+| RT2SliceRunner target, Release and Debug | builds |
+| Phase 6C script scenario | PASS |
+| Graphify | refreshed; `GRAPH_REPORT.md` changed |
+
+**Pre-existing carryover, unchanged by this step:** the whole-Debug
+`RT2App` vendor-runtime link mismatch (`LNK2038`/`LNK1319` from
+`NRD.lib`/`NRI.lib` built with `MD`/iterator level 0 against `RT2App`'s
+`MDd`/level 2) is the same error set recorded in the W3 step 0 report and
+remains explicitly out of W3 scope. Debug `RT2Tests` and `RT2SliceRunner`
+build and pass; only Debug `RT2App` (which pulls the NRD/NRI vendor
+binaries) fails to link.

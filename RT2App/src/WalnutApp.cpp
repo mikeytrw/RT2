@@ -2653,17 +2653,23 @@ public:
 			        *resultDoc, sceneRoot, diagnostics, resolveErr);
 
 			// Format diagnostics for the completion callback to log.
-			for (const auto& d : diagnostics)
+		for (const auto& d : diagnostics)
+		{
+			const char* sev = nullptr;
+			switch (d.severity)
 			{
-				const char* sev = (d.severity == rt2::core::AssetDiagnostic::Missing)
-				                  ? "Missing" : (d.severity == rt2::core::AssetDiagnostic::Malformed)
-				                  ? "Malformed" : "Unresolved";
-				*diagStr += std::string("[Scene] Asset ") + sev +
-				    ": kind=" + std::to_string((int)d.kind) +
-				    " ref='" + d.refPath + "'" +
-				    " sourceKey='" + d.sourceKey + "'" +
-				    " detail=" + d.detail + "\n";
+			case rt2::core::AssetDiagnostic::Missing:    sev = "Missing";   break;
+			case rt2::core::AssetDiagnostic::Malformed:  sev = "Malformed"; break;
+			case rt2::core::AssetDiagnostic::Unresolved: sev = "Unresolved";break;
+			case rt2::core::AssetDiagnostic::Conflict:   sev = "Conflict";  break;
+			default:                                      sev = "Unknown";   break;
 			}
+			*diagStr += std::string("[Scene] Asset ") + sev +
+			    ": kind=" + std::to_string((int)d.kind) +
+			    " ref='" + d.refPath + "'" +
+			    " sourceKey='" + d.sourceKey + "'" +
+			    " detail=" + d.detail + "\n";
+		}
 
 			if (!resolveOk)
 			{

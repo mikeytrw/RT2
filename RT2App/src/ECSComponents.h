@@ -3,6 +3,7 @@
 #ifndef ECS_COMPONENTS_H
 #define ECS_COMPONENTS_H
 
+#include "AssetReference.h"
 #include "core/UUID.h"
 #include "SceneTypes.h"
 #include "ScriptFieldValue.h"
@@ -164,62 +165,12 @@ struct MotionComponent
 //   - Procedural PrimitiveComponent entities remain directly serializable and
 //     do NOT carry an ImportedMeshSourceComponent.
 //   - No Phase 7 global asset UUIDs or asset database is introduced here.
-// ============================================================================
-
-enum class AssetKind : uint8_t
-{
-    Unknown     = 0,
-    Model       = 1,   // .gltf / .glb / .obj
-    Texture     = 2,   // image referenced by a material
-    Environment = 3,   // .hdr / .exr environment map
-    Script      = 4,   // .lua script asset (Phase 6)
-};
-
-// Settings that affect how an asset is rebuilt on load. Only values that
-// change the resulting geometry/material/texture should be persisted; display
-// and runtime-only options are not stored here.
-struct ImportSettings
-{
-    // OBJ importer profile.
-    bool triangulate       = true;
-    bool generateNormals   = false; // true if flat normals were generated
-    bool mergeMegaMesh     = true;  // OBJ-specific: merge all shapes into one BLAS
-
-    // glTF import profile (currently no knobs that affect geometry — the
-    // source is byte-faithful — but the field is persisted for forward
-    // compatibility).
-
-    bool operator==(const ImportSettings& o) const
-    {
-        return triangulate == o.triangulate
-            && generateNormals == o.generateNormals
-            && mergeMegaMesh == o.mergeMegaMesh;
-    }
-    bool operator!=(const ImportSettings& o) const { return !(*this == o); }
-};
-
-// A durable reference to an external source asset. The path is a portable,
-// scene-relative UTF-8 path (forward slashes, normalized). It is resolved
-// relative to the .rt2scene file at load time. Absolute machine-specific
-// paths must NOT be persisted.
 //
-// assetId is the stable identity of the source asset (Phase 7 W1, per D1/D2).
-// It is the durable form of identity; path is a human-readable fallback for
-// diagnostics and hand-editing. On a v3 scene the field is absent on read and
-// left nil (additive migration, per D5); the first v4 save assigns it from
-// the asset's sidecar (.rt2meta) or mints a fresh v4 and writes the sidecar
-// (per D8). Resolution in W1/W2 still goes by path; the ID is plumbed but
-// not yet authoritative. A nil assetId means "not yet assigned".
-struct AssetReference
-{
-    AssetKind               kind = AssetKind::Unknown;
-    std::string             path;        // portable, scene-relative UTF-8 path
-    ImportSettings          importSettings;
-    std::string             sourceKey;   // stable source subresource identity
-    rt2::core::UUID         assetId;     // stable source-asset identity (Phase 7)
-
-    bool IsValid() const { return kind != AssetKind::Unknown && !path.empty(); }
-};
+// AssetKind, ImportSettings, and AssetReference live in AssetReference.h
+// (neutral, CPU-only) so runtime types such as SceneTexture and
+// EnvironmentSettings can carry an AssetReference without an
+// ECSComponents.h/entt dependency. ECSComponents.h re-exports them unchanged.
+// ============================================================================
 
 // Durable provenance for a single imported mesh entity. Identifies which
 // subresource of a source model produced this entity's geometry so the
