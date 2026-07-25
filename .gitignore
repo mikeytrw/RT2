@@ -18,13 +18,6 @@ rt2_log.txt
 regression_current.png
 test_*.png
 
-# Phase 7 per-asset identity sidecars (D8). In a real project these are
-# committed alongside the asset (identity travels with it). In this repo's
-# test/fixture trees they are regenerated on every import, so ignore them
-# there to avoid churn; a project that wants committed identity overrides
-# this with a path-scoped `!` rule.
-*.rt2meta
-
 # Renderer captures, benchmark output, logs, and Python caches are local-only.
 /artifacts/
 /baselines/
