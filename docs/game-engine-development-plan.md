@@ -7092,3 +7092,101 @@ forbid `Malformed`/`Conflict`/`Unresolved` (real defects) while allowing
 recorded in the step 0 and step 2 reports and remains explicitly out of
 W3 scope. Debug `RT2Tests` (621/621) and `RT2SliceRunner` build and pass;
 only Debug `RT2App` fails to link.
+
+### W3 step 4 verification report — environments cut over to the shared locator
+
+Implemented 2026-07-25, grounded against commit `9731f06` (immediately
+after the step 3 model cutover). Environments are the second production
+consumer of the generic `AssetResolver`; scripts and textures remain on
+their pre-W3 paths and are cut over in steps 5–6.
+
+**W3-P2 precondition landed (additive, no schema bump):**
+`EnvironmentSettings` now carries a `UUID assetId` alongside its existing
+`path`/`width`/`height`/`floatPixels`. `Clear()` resets it. `HasEnvMap()`
+stays path-based. Env serialization writes `assetId` only when non-nil and
+reads it additively (absence → nil), mirroring the model `AssetReference`
+codec (W3-Q1: only the additive fields required for W3 land here; W5 owns
+the formal v4 migration/reporting pass). No schema version bump.
+
+**Env import writes a sidecar.** `SceneManager::LoadEnvMap` and
+`SetEnvMapData` (the async-load completion path) now call
+`ResolveOrAssign` to mint or reuse a per-asset sidecar at env import,
+paralleling model import. The sidecar is the durable source of truth;
+`environment.assetId` is a cache of it. `ResolveEnvironment` reads the
+sidecar through the shared locator and never mints — env resolution is
+read-only (W3-Q9), just like model resolution.
+
+**Production change (`RT2App/src/SceneAssetResolver.cpp`):**
+`ResolveEnvironment` now builds an `AssetReference`
+(`kind=Environment`, `path=env.path`, `assetId=env.assetId`) and calls
+the shared `Resolve()` against an `AssetResolutionContext` whose
+`assetRoot` is the scene root and whose `database` is `nullptr` (W3-Q3).
+On locator failure it clears stale pixels (preserving the path and
+assetId references) and returns false; the locator's single terminal
+diagnostic is appended to the caller's vector. On locator success it
+decodes the resolved path through the existing `DecodeEnvMapFile`. If
+the locator resolved by path fallback and the sidecar supplied an
+effective ID, the ID is cached back into `doc.environment.assetId` —
+this copies an already-authoritative sidecar ID, it does not mint. A
+nil effective ID (absent sidecar) leaves the document ID untouched; the
+host's next save/migration owns repair. `ResolvePath` is no longer
+called by `ResolveEnvironment`; it remains as a compatibility adapter
+with no production callers (step 5 cuts scripts over, after which it
+can be removed in step 7).
+
+**Tests updated:** the environment characterization subcases and one
+P1A env test were rewritten to pin the post-cutover contract:
+
+- "environment success, missing, and malformed disagree on detail"
+  (3 subcases):
+  - success: was `diagnostics.empty()`; now asserts exactly one
+    `Missing` "identity repair required" diagnostic (nil env assetId,
+    no sidecar — the locator's case 8a).
+  - missing: still 1 `Missing` diagnostic (the locator's terminal
+    diagnostic for the missing path; the pre-W3 duplicate file-level
+    diagnostic is gone, same fix as the model cutover).
+  - malformed: was 1 `Malformed` diagnostic; now asserts 2 diagnostics
+    (locator `Missing` "identity repair required" + decoder
+    `Malformed` "decode failed"), both with `kind=Environment`.
+- "P1A Environment: save env reference -> load -> resolve reads
+  pixels": was `diagnostics.empty()`; now asserts exactly one
+    `Missing` "identity repair required" diagnostic.
+
+**Tests added (5 focused step-4 cases):**
+
+- non-nil env `assetId` with a matching sidecar resolves and emits
+  exactly one "database stale" `Missing` diagnostic; the effective ID is
+  cached back into the document;
+- moved env asset (stale path) without a database fails `Missing` but
+  preserves the durable `assetId` so a later database-backed resolve can
+  reattach by identity — pins that moved assets need the W4 database;
+- non-nil env `assetId` with a conflicting sidecar fails with `Conflict`
+  and never substitutes identity (the locator's case-5 contract,
+  extended in step 3 to the no-database path);
+- nil env `assetId` with a sidecar caches the effective ID from the
+  sidecar (case 8b) and emits no diagnostic;
+- env `assetId` survives a save/load round-trip (additive over v3: the
+  saved file contains the `assetId` field, and the loaded document
+  restores it).
+
+**Carryover from step 3, unchanged:** `ResolveAll`'s model section and
+the locator's no-database conflict check (the step-3 fix) are exercised
+by the new env tests with no further changes. The shared locator is
+now the resolution entry point for both models and environments.
+
+| Check | Result |
+|---|---|
+| W3 characterization (env cases), Release | post-cutover expectations; 3 subcases updated + 5 added |
+| W3 characterization (env cases), Debug | same; 3 subcases updated + 5 added |
+| Full RT2Tests, Release | 626/626 cases, 144862/144862 assertions |
+| Full RT2Tests, Debug | 626/626 cases, 144862/144862 assertions |
+| RT2App target (Vulkan), Release | builds |
+| RT2SliceRunner target, Release and Debug | builds |
+| Phase 6C script scenario | PASS |
+| Graphify | refreshed; `GRAPH_REPORT.md` changed |
+
+**Pre-existing carryover, unchanged by this step:** the whole-Debug
+`RT2App` NRD/NRI `LNK2038`/`LNK1319` mismatch is the same error set
+recorded in the step 0, 2, and 3 reports and remains explicitly out of
+W3 scope. Debug `RT2Tests` (626/626) and `RT2SliceRunner` build and pass;
+only Debug `RT2App` fails to link.

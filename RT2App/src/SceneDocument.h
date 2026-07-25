@@ -54,6 +54,12 @@ struct EnvironmentSettings
     std::vector<float> floatPixels;  // RGBA float, decoded; may be empty when
                                      // the document was loaded without re-reading
                                      // the env file (e.g. slice runner)
+    // Stable source-asset identity (Phase 7 W3 step 4). Additive over the v3
+    // env-map schema: absent on read, written only when assigned. The host
+    // assigns it at env import (SceneManager::LoadEnvMap/SetEnvMapData) via
+    // ResolveOrAssign, paralleling model assetId. W5 owns the formal v4
+    // migration/reporting pass.
+    UUID assetId;
     bool HasEnvMap() const { return !path.empty(); }
 
     void Clear()
@@ -62,6 +68,7 @@ struct EnvironmentSettings
         width = 0;
         height = 0;
         floatPixels.clear();
+        assetId = UUID::Nil();
     }
 };
 

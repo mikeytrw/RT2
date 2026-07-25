@@ -354,6 +354,27 @@ bool SceneManager::LoadEnvMap(const std::string& filepath)
 	m_Authoring.environment.width = w;
 	m_Authoring.environment.height = h;
 	m_Authoring.environment.floatPixels = std::move(pixels);
+
+	// Phase 7 W3 step 4: assign a stable env-asset ID via the per-asset
+	// sidecar, paralleling model import. The sidecar is the durable source
+	// of truth; env.assetId is a cache of it. ResolveEnvironment reads the
+	// sidecar through the shared locator and never mints.
+	if (m_UuidProvider)
+	{
+		bool minted = false;
+		rt2::core::Error idErr;
+		const rt2::core::UUID id = rt2::core::ResolveOrAssign(
+			filepath, *m_UuidProvider, minted, idErr);
+		m_Authoring.environment.assetId = id;
+		if (minted)
+		{
+			printf("[Asset] %s: assigned new id %s%s%s\n",
+			       filepath.c_str(), id.ToString().c_str(),
+			       idErr.IsOk() ? "" : ": ",
+			       idErr.IsOk() ? "" : idErr.Format().c_str());
+			fflush(stdout);
+		}
+	}
 	return true;
 }
 
@@ -369,6 +390,27 @@ void SceneManager::SetEnvMapData(const std::string& filepath, int w, int h,
 	m_Authoring.environment.width = w;
 	m_Authoring.environment.height = h;
 	m_Authoring.environment.floatPixels = std::move(pixels);
+
+	// Phase 7 W3 step 4: assign a stable env-asset ID via the sidecar. This
+	// is the async-load completion path (WalnutApp background decode); it
+	// must keep env.assetId in lockstep with LoadEnvMap so a save/reopen
+	// round-trip resolves by the same identity.
+	if (m_UuidProvider)
+	{
+		bool minted = false;
+		rt2::core::Error idErr;
+		const rt2::core::UUID id = rt2::core::ResolveOrAssign(
+			filepath, *m_UuidProvider, minted, idErr);
+		m_Authoring.environment.assetId = id;
+		if (minted)
+		{
+			printf("[Asset] %s: assigned new id %s%s%s\n",
+			       filepath.c_str(), id.ToString().c_str(),
+			       idErr.IsOk() ? "" : ": ",
+			       idErr.IsOk() ? "" : idErr.Format().c_str());
+			fflush(stdout);
+		}
+	}
 }
 
 SceneManager::EntityId SceneManager::ImportGltf(const std::string& filepath)

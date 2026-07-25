@@ -155,30 +155,43 @@ std::string SceneAssetResolver::ObjMaterialKey(int mtlIdx)
 }
 
 bool SceneAssetResolver::ResolveEnvironment(SceneDocument& doc,
-                                            const std::filesystem::path& sceneRoot,
-                                            std::vector<AssetDiagnostic>& diagnostics,
-                                            Error& err)
+                                             const std::filesystem::path& sceneRoot,
+                                             std::vector<AssetDiagnostic>& diagnostics,
+                                             Error& err)
 {
     err = Error{};
     if (!doc.environment.HasEnvMap())
         return true; // nothing to resolve
 
     const std::string& refPath = doc.environment.path;
-    fs::path resolved = ResolvePath(refPath, sceneRoot);
-    if (resolved.empty())
+
+    // Phase 7 W3 step 4: resolve the environment map through the shared
+    // read-only locator (ID-first, path+sidecar fallback). The locator emits
+    // exactly one terminal diagnostic on failure and never mints/writes a
+    // sidecar — env import owns identity repair (SceneManager::LoadEnvMap).
+    AssetReference ref;
+    ref.kind   = AssetKind::Environment;
+    ref.path   = refPath;
+    ref.assetId = doc.environment.assetId;
+    AssetResolutionContext ctx;
+    ctx.assetRoot = sceneRoot;
+    ctx.database  = nullptr;
+
+    std::vector<AssetDiagnostic> resolveDiags;
+    auto rr = Resolve(ref, ctx, UUID::Nil(), "", resolveDiags);
+    // Append locator diagnostics to the caller's vector (W3-P8: one terminal
+    // diagnostic per failed reference).
+    for (auto& d : resolveDiags)
+        diagnostics.push_back(std::move(d));
+
+    if (!rr.success)
     {
-        AssetDiagnostic d;
-        d.severity     = AssetDiagnostic::Missing;
-        d.kind         = AssetKind::Environment;
-        d.refPath      = refPath;
-        d.resolvedPath = (sceneRoot / refPath).string();
-        d.detail       = "environment map file not found";
-        diagnostics.push_back(d);
         err.code   = Error::MissingAsset;
         err.path   = refPath;
-        err.detail = "environment map not found: " + refPath;
+        err.detail = "environment map resolution failed: " + refPath;
         // Preserve the path reference; clear stale pixels so the renderer
-        // does not sample half-decoded data.
+        // does not sample half-decoded data. The durable assetId is also
+        // preserved so a later successful reload reattaches by identity.
         doc.environment.floatPixels.clear();
         doc.environment.width = 0;
         doc.environment.height = 0;
@@ -188,17 +201,17 @@ bool SceneAssetResolver::ResolveEnvironment(SceneDocument& doc,
     std::vector<float> pixels;
     int w = 0, h = 0;
     std::string decodeErr;
-    if (!DecodeEnvMapFile(resolved.string(), pixels, w, h, decodeErr))
+    if (!DecodeEnvMapFile(rr.resolvedPath.string(), pixels, w, h, decodeErr))
     {
         AssetDiagnostic d;
         d.severity     = AssetDiagnostic::Malformed;
         d.kind         = AssetKind::Environment;
         d.refPath      = refPath;
-        d.resolvedPath = resolved.string();
+        d.resolvedPath = rr.resolvedPath.string();
         d.detail       = "environment map decode failed: " + decodeErr;
         diagnostics.push_back(d);
         err.code   = Error::MissingAsset;
-        err.path   = resolved.string();
+        err.path   = rr.resolvedPath.string();
         err.detail = "environment map decode failed: " + decodeErr;
         doc.environment.floatPixels.clear();
         doc.environment.width = 0;
@@ -214,11 +227,11 @@ bool SceneAssetResolver::ResolveEnvironment(SceneDocument& doc,
         d.severity     = AssetDiagnostic::Malformed;
         d.kind         = AssetKind::Environment;
         d.refPath      = refPath;
-        d.resolvedPath = resolved.string();
+        d.resolvedPath = rr.resolvedPath.string();
         d.detail       = "environment map decoded to empty pixels";
         diagnostics.push_back(d);
         err.code   = Error::MissingAsset;
-        err.path   = resolved.string();
+        err.path   = rr.resolvedPath.string();
         err.detail = "environment map decoded to empty pixels";
         doc.environment.floatPixels.clear();
         doc.environment.width = 0;
@@ -229,6 +242,13 @@ bool SceneAssetResolver::ResolveEnvironment(SceneDocument& doc,
     doc.environment.floatPixels = std::move(pixels);
     doc.environment.width = w;
     doc.environment.height = h;
+    // If the locator resolved by path fallback and the sidecar supplied an
+    // effective ID, cache it so the next save persists it. This does not
+    // mint; it only copies an already-authoritative sidecar ID into the
+    // document cache. Nil effective ID (absent sidecar) leaves the document
+    // ID untouched — the host's next save/migration owns repair.
+    if (!rr.effectiveId.IsNull())
+        doc.environment.assetId = rr.effectiveId;
     return true;
 }
 

@@ -568,7 +568,14 @@ TEST_CASE("Phase7 W3 characterization: environment success, missing, and malform
         CHECK(SceneAssetResolver::ResolveEnvironment(
             doc, fixture.Path(), diagnostics, error));
         CHECK(error.IsOk());
-        CHECK(diagnostics.empty());
+        // W3 step 4: nil env assetId + absent sidecar -> locator resolves by
+        // path fallback and emits one "identity repair required" Missing
+        // diagnostic. The host's next save/migration persists the assigned ID.
+        REQUIRE(diagnostics.size() == 1);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+        CHECK(diagnostics[0].kind == AssetKind::Environment);
+        CHECK(diagnostics[0].detail.find("identity repair required") !=
+              std::string::npos);
         CHECK(doc.environment.width == 4);
         CHECK(doc.environment.height == 2);
         CHECK_FALSE(doc.environment.floatPixels.empty());
@@ -588,6 +595,9 @@ TEST_CASE("Phase7 W3 characterization: environment success, missing, and malform
         CHECK_FALSE(SceneAssetResolver::ResolveEnvironment(
             doc, fixture.Path(), diagnostics, error));
         CHECK(error.code == Error::MissingAsset);
+        // W3 step 4: the locator emits exactly one terminal diagnostic for
+        // the missing path. The pre-W3 duplicate file-level diagnostic is
+        // gone (same fix as the model cutover).
         REQUIRE(diagnostics.size() == 1);
         CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
         CHECK(diagnostics[0].kind == AssetKind::Environment);
@@ -610,11 +620,206 @@ TEST_CASE("Phase7 W3 characterization: environment success, missing, and malform
         CHECK_FALSE(SceneAssetResolver::ResolveEnvironment(
             doc, fixture.Path(), diagnostics, error));
         CHECK(error.code == Error::MissingAsset);
-        REQUIRE(diagnostics.size() == 1);
-        CHECK(diagnostics[0].severity == AssetDiagnostic::Malformed);
-        CHECK(diagnostics[0].kind == AssetKind::Environment);
-        CHECK_FALSE(diagnostics[0].resolvedPath.empty());
+        // W3 step 4: two diagnostics. The locator resolves the path (the
+        // malformed file exists) and emits a "identity repair required"
+        // Missing diagnostic; the EXR decoder then fails and emits a
+        // Malformed diagnostic.
+        REQUIRE(diagnostics.size() == 2);
+        CHECK(CountSeverity(diagnostics, AssetDiagnostic::Missing) == 1);
+        CHECK(CountSeverity(diagnostics, AssetDiagnostic::Malformed) == 1);
+        for (const auto& d : diagnostics)
+            CHECK(d.kind == AssetKind::Environment);
+        // The Malformed diagnostic carries the resolved path.
+        bool sawMalformedWithResolvedPath = false;
+        for (const auto& d : diagnostics)
+            if (d.severity == AssetDiagnostic::Malformed &&
+                !d.resolvedPath.empty())
+                sawMalformedWithResolvedPath = true;
+        CHECK(sawMalformedWithResolvedPath);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 W3 step 4 — environment cutover contract.
+//
+// These tests pin the post-cutover behaviour of
+// SceneAssetResolver::ResolveEnvironment. They cover moved assets (stale
+// path but matching sidecar ID), nil-ID fallback, missing sidecar, missing
+// file, and corrupt HDR/EXR — the cases the step-4 plan calls out.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Phase7 W3 step 4: non-nil env assetId with matching sidecar resolves and emits database-stale")
+{
+    TempDirectory fixture;
+    Error fixtureError;
+    REQUIRE(GenerateTinyExrEnv(fixture.Path() / "environment.exr", fixtureError));
+
+    // Write a sidecar matching the env reference's assetId. The path is also
+    // valid, so resolution succeeds via path fallback with the sidecar
+    // confirming the ID (case 3: database stale/missing but sidecar matches).
+    const UUID id = UUID::Parse("22222222-3333-4444-8555-666666666666");
+    Error sidecarErr;
+    REQUIRE(WriteSidecarId(
+        AssetSidecarPath(fixture.Path() / "environment.exr"), id, sidecarErr));
+    REQUIRE(sidecarErr.IsOk());
+
+    SceneDocument doc;
+    doc.environment.path = "environment.exr";
+    doc.environment.assetId = id;
+    std::vector<AssetDiagnostic> diagnostics;
+    Error error;
+    CHECK(SceneAssetResolver::ResolveEnvironment(
+        doc, fixture.Path(), diagnostics, error));
+    CHECK(error.IsOk());
+    // Exactly one "database stale" Missing diagnostic; no Malformed/Conflict.
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+    CHECK(diagnostics[0].detail.find("database stale") != std::string::npos);
+    CHECK(doc.environment.width > 0);
+    CHECK(doc.environment.height > 0);
+    CHECK_FALSE(doc.environment.floatPixels.empty());
+    // The locator's effective ID is cached back into the document.
+    CHECK(doc.environment.assetId == id);
+}
+
+TEST_CASE("Phase7 W3 step 4: moved env asset (stale path) without database fails Missing but preserves the ID")
+{
+    // Simulate a moved file: the scene references "old/env.exr" (gone) but a
+    // sidecar at "new/env.exr" claims the same ID. With no database at scene
+    // load, the locator cannot resolve by ID alone — the stale path fails
+    // Missing and the document is left unchanged (env clears pixels, returns
+    // false). This pins that moved assets need the W4 database to resolve by
+    // ID; the sidecar alone at the new path is not enough when the reference
+    // path is stale and no database is available.
+    TempDirectory fixture;
+    Error fixtureError;
+    std::error_code mkdirEc;
+    fs::create_directories(fixture.Path() / "new", mkdirEc);
+    REQUIRE(!mkdirEc);
+    REQUIRE(GenerateTinyExrEnv(fixture.Path() / "new/env.exr", fixtureError));
+    const UUID id = UUID::Parse("33333333-4444-4555-8666-777777777777");
+    Error sidecarErr;
+    REQUIRE(WriteSidecarId(
+        AssetSidecarPath(fixture.Path() / "new/env.exr"), id, sidecarErr));
+
+    SceneDocument doc;
+    doc.environment.path = "old/env.exr"; // stale path that does not exist
+    doc.environment.assetId = id;
+    std::vector<AssetDiagnostic> diagnostics;
+    Error error;
+    CHECK_FALSE(SceneAssetResolver::ResolveEnvironment(
+        doc, fixture.Path(), diagnostics, error));
+    CHECK(error.code == Error::MissingAsset);
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+    CHECK(doc.environment.width == 0);
+    CHECK(doc.environment.height == 0);
+    CHECK(doc.environment.floatPixels.empty());
+    // The durable assetId is preserved so a later database-backed resolve can
+    // reattach by identity.
+    CHECK(doc.environment.assetId == id);
+}
+
+TEST_CASE("Phase7 W3 step 4: non-nil env assetId with conflicting sidecar fails with Conflict")
+{
+    TempDirectory fixture;
+    Error fixtureError;
+    REQUIRE(GenerateTinyExrEnv(fixture.Path() / "environment.exr", fixtureError));
+
+    const UUID sidecarId = UUID::Parse("44444444-5555-4666-8777-888888888888");
+    const UUID refId     = UUID::Parse("99999999-8888-4777-8666-555555555555");
+    Error sidecarErr;
+    REQUIRE(WriteSidecarId(
+        AssetSidecarPath(fixture.Path() / "environment.exr"), sidecarId, sidecarErr));
+
+    SceneDocument doc;
+    doc.environment.path = "environment.exr";
+    doc.environment.assetId = refId;
+    std::vector<AssetDiagnostic> diagnostics;
+    Error error;
+    CHECK_FALSE(SceneAssetResolver::ResolveEnvironment(
+        doc, fixture.Path(), diagnostics, error));
+    CHECK(error.code == Error::MissingAsset);
+    bool sawConflict = false;
+    for (const auto& d : diagnostics)
+        if (d.severity == AssetDiagnostic::Conflict) sawConflict = true;
+    CHECK(sawConflict);
+    // No pixels decoded; path reference preserved.
+    CHECK(doc.environment.floatPixels.empty());
+    CHECK(doc.environment.path == "environment.exr");
+    // Requested assetId preserved (the locator never substitutes identity).
+    CHECK(doc.environment.assetId == refId);
+}
+
+TEST_CASE("Phase7 W3 step 4: nil env assetId with sidecar caches the effective ID")
+{
+    TempDirectory fixture;
+    Error fixtureError;
+    REQUIRE(GenerateTinyExrEnv(fixture.Path() / "environment.exr", fixtureError));
+
+    const UUID sidecarId = UUID::Parse("55555555-6666-4777-8888-999999999999");
+    Error sidecarErr;
+    REQUIRE(WriteSidecarId(
+        AssetSidecarPath(fixture.Path() / "environment.exr"), sidecarId, sidecarErr));
+
+    SceneDocument doc;
+    doc.environment.path = "environment.exr";
+    // assetId is nil; the sidecar supplies the effective ID.
+    std::vector<AssetDiagnostic> diagnostics;
+    Error error;
+    CHECK(SceneAssetResolver::ResolveEnvironment(
+        doc, fixture.Path(), diagnostics, error));
+    CHECK(error.IsOk());
+    // No diagnostic on the sidecar-supplied path fallback (case 8b).
+    CHECK(diagnostics.empty());
+    CHECK(doc.environment.assetId == sidecarId);
+    CHECK(doc.environment.width > 0);
+}
+
+TEST_CASE("Phase7 W3 step 4: env assetId survives a save/load round-trip")
+{
+    TempDirectory fixture;
+    Error fixtureError;
+    REQUIRE(GenerateTinyExrEnv(fixture.Path() / "environment.exr", fixtureError));
+    const UUID id = UUID::Parse("66666666-7777-4888-9999-AAAAAAAAAAAA");
+    // Write a sidecar so the env resolves successfully.
+    Error sidecarErr;
+    REQUIRE(WriteSidecarId(
+        AssetSidecarPath(fixture.Path() / "environment.exr"), id, sidecarErr));
+
+    // Build a source doc with the env assetId set.
+    DeterministicUuidProvider provider;
+    SceneDocument src;
+    src.SetUuidProvider(&provider);
+    src.environment.path = "environment.exr";
+    src.environment.assetId = id;
+    src.environment.width = 4;
+    src.environment.height = 2;
+
+    const auto scenePath = fixture.Path() / "env.rt2scene";
+    Error saveErr;
+    REQUIRE(SceneSerializer::Save(src, scenePath, saveErr));
+    REQUIRE(saveErr.IsOk());
+
+    // The saved file must contain the env assetId (additive over v3).
+    {
+        std::ifstream in(scenePath, std::ios::binary);
+        std::string content((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+        in.close();
+        CHECK(content.find(id.ToString()) != std::string::npos);
+        CHECK(content.find("\"assetId\"") != std::string::npos);
+    }
+
+    // Load and verify the assetId round-trips.
+    DeterministicUuidProvider provider2;
+    SceneDocument loaded;
+    loaded.SetUuidProvider(&provider2);
+    Error loadErr;
+    REQUIRE(SceneSerializer::Load(loaded, scenePath, loadErr));
+    REQUIRE(loadErr.IsOk());
+    CHECK(loaded.environment.assetId == id);
+    CHECK(loaded.environment.path == "environment.exr");
 }
 
 TEST_CASE("Phase7 W3 characterization: script path resolution is lexical and sourceKey-blind")

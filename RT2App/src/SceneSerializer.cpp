@@ -1265,13 +1265,18 @@ static bool SaveInternal(const SceneDocument& doc,
     // Camera
     root["camera"] = CameraToJson(doc.ecs.camera);
 
-    // Environment (path only; relativize against scene dir)
+    // Environment (path + additive assetId; relativize path against scene dir).
+    // Phase 7 W3 step 4: assetId is written only when assigned, mirroring the
+    // model AssetReference codec. A v3 scene has no env assetId field; the
+    // loader treats absence as nil.
     {
         json env;
         env["path"]   = RebasePath(doc.environment.path,
                                     currentSceneDir, outputSceneDir);
         env["width"]  = doc.environment.width;
         env["height"] = doc.environment.height;
+        if (!doc.environment.assetId.IsNull())
+            env["assetId"] = doc.environment.assetId.ToString();
         root["envMap"] = env;
     }
 
@@ -1480,7 +1485,8 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
     if (root.contains("camera"))
         camera = JsonToCamera(root["camera"]);
 
-    // Parse environment (path only; pixels are not serialized).
+    // Parse environment (path + additive assetId; pixels are not serialized).
+    // Phase 7 W3 step 4: assetId is optional; absence parses to nil.
     EnvironmentSettings env;
     if (root.contains("envMap"))
     {
@@ -1488,6 +1494,8 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
         if (ej.contains("path"))   env.path   = ej["path"].get<std::string>();
         if (ej.contains("width"))  env.width  = ej["width"].get<int>();
         if (ej.contains("height")) env.height = ej["height"].get<int>();
+        if (ej.contains("assetId") && ej["assetId"].is_string())
+            env.assetId = UUID::Parse(ej["assetId"].get<std::string>());
     }
 
     // Parse metadata.
