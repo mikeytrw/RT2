@@ -262,11 +262,27 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         // model+mode). The dedup key is (path, isObj, mergeMegaMesh) so the
         // same OBJ imported in both modes stages independently.
         bool        mergeMegaMesh = true;
+        // Resolution context for the first entity that referenced this model.
+        // W3 step 3: resolution is ID-first via the shared locator. The host
+        // does not build an AssetDatabase yet (step 4 / W4), so `database` is
+        // nullptr and the locator falls back to path+sidecar verification.
+        UUID        firstEntityUuid;
+        std::string firstEntityName;
     };
+
+    // W3 step 3: build the resolution context once. No database is available
+    // at scene load yet; the locator handles the no-database case by
+    // verifying the asset's sidecar against any non-nil requested ID.
+    AssetResolutionContext resolutionContext;
+    resolutionContext.assetRoot = sceneRoot;
+    resolutionContext.database  = nullptr;
 
     std::vector<ModelRef> models;
     auto findOrAddModel = [&](const std::string& refPath, bool isObj,
-                              bool mergeMegaMesh) -> int {
+                              bool mergeMegaMesh,
+                              const AssetReference& ref,
+                              const UUID& entityUuid,
+                              const std::string& entityName) -> int {
         for (size_t i = 0; i < models.size(); ++i)
             if (models[i].path == refPath &&
                 models[i].isObj == isObj &&
@@ -274,10 +290,26 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
                 return (int)i;
         ModelRef m;
         m.path = refPath;
-        m.resolved = ResolvePath(refPath, sceneRoot);
         m.isObj = isObj;
         m.mergeMegaMesh = mergeMegaMesh;
-        models.push_back(m);
+        m.firstEntityUuid = entityUuid;
+        m.firstEntityName = entityName;
+        // Resolve through the shared locator. The locator emits exactly one
+        // terminal diagnostic on failure (W3-P8: no duplicate file-level
+        // diagnostic), routed through the same AssetDiagnostic vector. We
+        // keep the resolved path for the loader; the diagnostic is owned by
+        // the caller's `diagnostics` vector and is emitted once per missing
+        // model path, not once per entity.
+        std::vector<AssetDiagnostic> resolveDiags;
+        auto rr = Resolve(ref, resolutionContext, entityUuid, entityName,
+                         resolveDiags);
+        m.resolved = rr.success ? rr.resolvedPath : fs::path{};
+        // The locator emits one diagnostic on failure (or a stale-path
+        // Missing on success-by-ID). Append it to the caller's vector; the
+        // batch sort at the end of ResolveAll orders them deterministically.
+        for (auto& d : resolveDiags)
+            diagnostics.push_back(std::move(d));
+        models.push_back(std::move(m));
         return (int)models.size() - 1;
     };
 
@@ -325,7 +357,8 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
                 pe.name = nc->name;
             bool isObj = (src.model.sourceKey.rfind("obj:", 0) == 0);
             pe.modelIdx = findOrAddModel(src.model.path, isObj,
-                                         src.model.importSettings.mergeMegaMesh);
+                                         src.model.importSettings.mergeMegaMesh,
+                                         src.model, pe.uuid, pe.name);
             pending.push_back(pe);
         }
     }
@@ -365,13 +398,9 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         s.isObj = m.isObj;
         if (m.resolved.empty())
         {
-            AssetDiagnostic d;
-            d.severity   = AssetDiagnostic::Missing;
-            d.kind       = AssetKind::Model;
-            d.refPath    = m.path;
-            d.resolvedPath = (sceneRoot / m.path).string();
-            d.detail     = "model file not found";
-            diagnostics.push_back(d);
+            // The shared locator already emitted exactly one terminal
+            // diagnostic for this missing path (W3-P8: no duplicate
+            // file-level diagnostic). Nothing to append here.
             continue;
         }
 
@@ -483,17 +512,32 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         }
     }
 
-    // ---- Merge staged models into the target document and install MeshRef ----
-    // We merge meshes/materials/textures from each staged model into
-    // doc.ecs, recording base offsets, then walk pending entities and
-    // install/repair MeshRef by matching sourceKey to a staged mesh.
+    // ---- Plan + commit: transactional model resolution ----
+    // W3-P7/W3-Q6: a false ResolveAll leaves the document unchanged. A
+    // successful partial result may commit accepted resources. We resolve
+    // every entity's target against the STAGED model's local indices first
+    // (no mutation of doc.ecs), then only commit the staged models that have
+    // at least one resolved entity. If every entity is unresolved, doc.ecs
+    // is untouched and we return false.
+    //
+    // Each plan entry records the staged model index and the LOCAL
+    // (meshIndex, materialIndex) inside that staged model; the commit pass
+    // rebases them by the staged model's base offsets once merged.
 
-    // Track unresolved entities for diagnostics.
+    struct PlanEntry
+    {
+        const PendingEntity* pe;
+        uint32_t             localMeshIndex = 0xFFFFFFFF; // staged-local
+        int                  localMaterialIndex = -1;      // staged-local
+    };
+    std::vector<PlanEntry> plan;
+    plan.reserve(pending.size());
+
     int unresolvedCount = 0;
 
-    for (auto& pe : pending)
+    for (const auto& pe : pending)
     {
-        StagedModel& s = staged[pe.modelIdx];
+        const StagedModel& s = staged[pe.modelIdx];
         if (!s.loaded)
         {
             ++unresolvedCount;
@@ -510,88 +554,27 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
             continue;
         }
 
-        // Merge this staged model into the target document once (lazily).
-        if (!s.merged && s.loaded)
-        {
-            s.merged = true;
-
-            s.meshBase = doc.ecs.meshRegistry.GetCount();
-            s.matBase  = (int)doc.ecs.materials.size();
-            s.texBase  = (int)doc.ecs.textures.size();
-
-            // Append meshes. For OBJ, offset the per-triangle material
-            // indices by matBase so they reference the correct material
-            // slots in the merged doc.ecs.materials array. Without this,
-            // a second OBJ's triangles would reference the first OBJ's
-            // material slots (0-based indices into the front of the
-            // array), producing wrong textures on wrong models.
-            // Append meshes. For OBJ, offset the per-triangle material
-            // indices by matBase so they reference the correct material
-            // slots in the merged doc.ecs.materials array. Without this,
-            // a second OBJ's triangles would reference the first OBJ's
-            // material slots (0-based indices into the front of the
-            // array), producing wrong textures on wrong models.
-            for (uint32_t i = 0; i < s.ecs.meshRegistry.GetCount(); ++i)
-            {
-                MeshData mesh = s.ecs.meshRegistry.GetMesh(i);  // copy
-                if (s.isObj && !mesh.materialIndices.empty())
-                {
-                    for (auto& mi : mesh.materialIndices)
-                        mi += static_cast<uint32_t>(s.matBase);
-                }
-                doc.ecs.meshRegistry.AddMesh(std::move(mesh));
-            }
-
-            // Append materials and remap texture indices.
-            for (const auto& sm : s.ecs.materials)
-            {
-                SceneMaterial m = sm;
-                auto remapTex = [&](int& idx) {
-                    if (idx >= 0) idx += s.texBase;
-                };
-                remapTex(m.baseColorTextureIndex);
-                remapTex(m.normalTextureIndex);
-                remapTex(m.emissiveTextureIndex);
-                remapTex(m.metallicRoughnessTextureIndex);
-                doc.ecs.materials.push_back(m);
-            }
-
-            // Append textures.
-            for (const auto& st : s.ecs.textures)
-                doc.ecs.textures.push_back(st);
-        }
-
-        // Locate the staged mesh for this entity's sourceKey.
-        uint32_t targetMeshIndex = 0xFFFFFFFF;
-        int      targetMaterialIndex = -1;
+        uint32_t localMeshIndex = 0xFFFFFFFF;
+        int      localMaterialIndex = -1;
 
         if (s.isObj)
         {
-            // OBJ: try the generic keyMap first (covers both per-shape
-            // "obj:shape=<n>:name=<...>" keys and "obj:whole-model" when
-            // the staged loader attached provenance).
             auto it = s.keyMap.find(pe.ref.sourceKey);
             if (it != s.keyMap.end())
             {
-                targetMeshIndex = s.meshBase + it->second.first;
-                // OBJ always uses per-triangle materials (materialIndex = -1).
-                targetMaterialIndex = -1;
+                localMeshIndex = it->second.first;
+                localMaterialIndex = -1;
             }
             else if (pe.ref.sourceKey == "obj:whole-model")
             {
-                // Legacy fallback: standalone LoadObjIntoECS path did not
-                // attach provenance, so use the captured mega-mesh index.
                 if (s.ecs.meshRegistry.GetCount() > 0)
                 {
-                    targetMeshIndex = s.meshBase + s.objMeshIndex;
-                    targetMaterialIndex = -1;
+                    localMeshIndex = s.objMeshIndex;
+                    localMaterialIndex = -1;
                 }
             }
             else if (pe.ref.sourceKey.rfind("obj:shape=", 0) == 0)
             {
-                // Name-based fallback: extract the name= component from the
-                // key and scan keyMap for a key whose name= component matches.
-                // This tolerates externally edited OBJs that reorder shapes.
                 auto namePos = pe.ref.sourceKey.find("name=");
                 if (namePos != std::string::npos)
                 {
@@ -602,8 +585,8 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
                         if (np != std::string::npos &&
                             kv.first.substr(np + 5) == wantName)
                         {
-                            targetMeshIndex = s.meshBase + kv.second.first;
-                            targetMaterialIndex = -1;
+                            localMeshIndex = kv.second.first;
+                            localMaterialIndex = -1;
                             break;
                         }
                     }
@@ -612,28 +595,20 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         }
         else
         {
-            // glTF: look up by sourceKey in the staged key map.
             auto it = s.keyMap.find(pe.ref.sourceKey);
             if (it != s.keyMap.end())
             {
-                targetMeshIndex = s.meshBase + it->second.first;
-                targetMaterialIndex = it->second.second + s.matBase;
+                localMeshIndex = it->second.first;
+                localMaterialIndex = it->second.second;
             }
             else
             {
-                // Fallback: match by staged mesh index encoded in the
-                // sourceKey's primitive field. This handles the common case
-                // where the first import attached provenance as
-                // "gltf:scene=0:node=N:mesh=M:primitive=P" and P equals the
-                // staged MeshRegistry registration index.
                 GltfKey gk;
                 if (ParseGltfKey(pe.ref.sourceKey, gk) && gk.prim >= 0)
                 {
                     if ((uint32_t)gk.prim < s.ecs.meshRegistry.GetCount())
                     {
-                        targetMeshIndex = s.meshBase + (uint32_t)gk.prim;
-                        // Reconstruct material index from the staged entity
-                        // whose MeshRef points at this staged mesh index.
+                        localMeshIndex = (uint32_t)gk.prim;
                         auto& sreg = s.ecs.registry;
                         auto sview = sreg.view<MeshRef>();
                         for (auto se : sview)
@@ -641,7 +616,7 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
                             const auto& sr = sview.get<MeshRef>(se);
                             if (sr.meshIndex == (uint32_t)gk.prim)
                             {
-                                targetMaterialIndex = sr.materialIndex + s.matBase;
+                                localMaterialIndex = sr.materialIndex;
                                 break;
                             }
                         }
@@ -650,7 +625,7 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
             }
         }
 
-        if (targetMeshIndex == 0xFFFFFFFF)
+        if (localMeshIndex == 0xFFFFFFFF)
         {
             ++unresolvedCount;
             AssetDiagnostic d;
@@ -665,73 +640,138 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
             continue;
         }
 
-        // Apply authored material override if present. The override stores a
-        // full material value snapshot; the resolver appends it to the
-        // document's materials array and points the entity's MeshRef at the
-        // new slot, so saved UI edits survive reopen even though the source
-        // material was re-imported.
-        //
-        // Texture index fix: the override's material was saved with texture
-        // indices from the import-time texture array, which is stale after
-        // the resolver rebuilds the texture array in a different order. The
-        // re-imported staged material (pointed to by targetMaterialIndex)
-        // has correctly remapped texture indices. We copy those indices
-        // into the override material before appending, so the override
-        // keeps its authored scalar edits (baseColor, roughness, etc.) but
-        // uses the correct texture references. This is safe because 6A
-        // does not expose texture editing in the material editor — the
-        // editor only edits scalar properties, not texture assignments.
-        auto& reg = doc.ecs.registry;
-        if (auto* ov = reg.try_get<MaterialOverrideComponent>(pe.entity))
-        {
-            if (ov->authored)
-            {
-                // Copy texture indices from the re-imported staged material.
-                if (targetMaterialIndex >= 0 &&
-                    targetMaterialIndex < (int)doc.ecs.materials.size())
-                {
-                    const auto& staged = doc.ecs.materials[targetMaterialIndex];
-                    ov->material.baseColorTextureIndex       = staged.baseColorTextureIndex;
-                    ov->material.normalTextureIndex          = staged.normalTextureIndex;
-                    ov->material.emissiveTextureIndex        = staged.emissiveTextureIndex;
-                    ov->material.metallicRoughnessTextureIndex = staged.metallicRoughnessTextureIndex;
-                }
-                int overrideIdx = (int)doc.ecs.materials.size();
-                doc.ecs.materials.push_back(ov->material);
-                ov->materialIndex = overrideIdx;
-                targetMaterialIndex = overrideIdx;
-            }
-        }
-
-        // Install or repair the MeshRef on the target entity.
-        if (auto* existingRef = reg.try_get<MeshRef>(pe.entity))
-        {
-            existingRef->meshIndex = targetMeshIndex;
-            existingRef->materialIndex = targetMaterialIndex;
-        }
-        else
-        {
-            MeshRef newRef;
-            newRef.meshIndex = targetMeshIndex;
-            newRef.materialIndex = targetMaterialIndex;
-            reg.emplace<MeshRef>(pe.entity, newRef);
-        }
+        plan.push_back({ &pe, localMeshIndex, localMaterialIndex });
     }
 
-    // Rebuild world transforms in case new MeshRef entities need their
-    // hierarchy resolved (they were already created by the serializer).
-    SceneGraph::UpdateWorldTransforms(doc.ecs.registry);
-
+    // Aggregate policy: if every imported entity failed, hard-fail with the
+    // document UNCHANGED. No staged resources have been appended to doc.ecs
+    // (the plan pass only read from staged scenes). W3-P7 transactionality.
     if (unresolvedCount > 0 && unresolvedCount == (int)pending.size())
     {
-        // Every imported entity failed — treat as a hard error so callers can
-        // surface a clear "scene referenced nothing loadable" message.
         err.code = Error::MissingAsset;
         err.detail = std::to_string(unresolvedCount)
                    + " imported entit" + (unresolvedCount == 1 ? "y" : "ies")
                    + " could not be resolved";
         return false;
     }
+
+    // ---- Commit pass: merge needed staged models and install MeshRefs ----
+    // A successful partial result may commit accepted resources/placeholders
+    // (W3-Q6). We merge only the staged models that have at least one
+    // resolved entity.
+    {
+        auto& reg = doc.ecs.registry;
+        for (auto& planEntry : plan)
+        {
+            StagedModel& s = staged[planEntry.pe->modelIdx];
+
+            // Merge this staged model into the target document once (lazily).
+            if (!s.merged)
+            {
+                s.merged = true;
+
+                s.meshBase = doc.ecs.meshRegistry.GetCount();
+                s.matBase  = (int)doc.ecs.materials.size();
+                s.texBase  = (int)doc.ecs.textures.size();
+
+                // Append meshes. For OBJ, offset the per-triangle material
+                // indices by matBase so they reference the correct material
+                // slots in the merged doc.ecs.materials array. Without this,
+                // a second OBJ's triangles would reference the first OBJ's
+                // material slots (0-based indices into the front of the
+                // array), producing wrong textures on wrong models.
+                for (uint32_t i = 0; i < s.ecs.meshRegistry.GetCount(); ++i)
+                {
+                    MeshData mesh = s.ecs.meshRegistry.GetMesh(i);  // copy
+                    if (s.isObj && !mesh.materialIndices.empty())
+                    {
+                        for (auto& mi : mesh.materialIndices)
+                            mi += static_cast<uint32_t>(s.matBase);
+                    }
+                    doc.ecs.meshRegistry.AddMesh(std::move(mesh));
+                }
+
+                // Append materials and remap texture indices.
+                for (const auto& sm : s.ecs.materials)
+                {
+                    SceneMaterial m = sm;
+                    auto remapTex = [&](int& idx) {
+                        if (idx >= 0) idx += s.texBase;
+                    };
+                    remapTex(m.baseColorTextureIndex);
+                    remapTex(m.normalTextureIndex);
+                    remapTex(m.emissiveTextureIndex);
+                    remapTex(m.metallicRoughnessTextureIndex);
+                    doc.ecs.materials.push_back(m);
+                }
+
+                // Append textures.
+                for (const auto& st : s.ecs.textures)
+                    doc.ecs.textures.push_back(st);
+            }
+
+            const uint32_t targetMeshIndex =
+                s.meshBase + planEntry.localMeshIndex;
+            int targetMaterialIndex = -1;
+            if (planEntry.localMaterialIndex >= 0)
+                targetMaterialIndex = planEntry.localMaterialIndex + s.matBase;
+
+            // Apply authored material override if present. The override stores a
+            // full material value snapshot; the resolver appends it to the
+            // document's materials array and points the entity's MeshRef at the
+            // new slot, so saved UI edits survive reopen even though the source
+            // material was re-imported.
+            //
+            // Texture index fix: the override's material was saved with texture
+            // indices from the import-time texture array, which is stale after
+            // the resolver rebuilds the texture array in a different order. The
+            // re-imported staged material (pointed to by targetMaterialIndex)
+            // has correctly remapped texture indices. We copy those indices
+            // into the override material before appending, so the override
+            // keeps its authored scalar edits (baseColor, roughness, etc.) but
+            // uses the correct texture references. This is safe because 6A
+            // does not expose texture editing in the material editor — the
+            // editor only edits scalar properties, not texture assignments.
+            if (auto* ov = reg.try_get<MaterialOverrideComponent>(planEntry.pe->entity))
+            {
+                if (ov->authored)
+                {
+                    // Copy texture indices from the re-imported staged material.
+                    if (targetMaterialIndex >= 0 &&
+                        targetMaterialIndex < (int)doc.ecs.materials.size())
+                    {
+                        const auto& staged = doc.ecs.materials[targetMaterialIndex];
+                        ov->material.baseColorTextureIndex       = staged.baseColorTextureIndex;
+                        ov->material.normalTextureIndex          = staged.normalTextureIndex;
+                        ov->material.emissiveTextureIndex        = staged.emissiveTextureIndex;
+                        ov->material.metallicRoughnessTextureIndex = staged.metallicRoughnessTextureIndex;
+                    }
+                    int overrideIdx = (int)doc.ecs.materials.size();
+                    doc.ecs.materials.push_back(ov->material);
+                    ov->materialIndex = overrideIdx;
+                    targetMaterialIndex = overrideIdx;
+                }
+            }
+
+            // Install or repair the MeshRef on the target entity.
+            if (auto* existingRef = reg.try_get<MeshRef>(planEntry.pe->entity))
+            {
+                existingRef->meshIndex = targetMeshIndex;
+                existingRef->materialIndex = targetMaterialIndex;
+            }
+            else
+            {
+                MeshRef newRef;
+                newRef.meshIndex = targetMeshIndex;
+                newRef.materialIndex = targetMaterialIndex;
+                reg.emplace<MeshRef>(planEntry.pe->entity, newRef);
+            }
+        }
+    }
+
+    // Rebuild world transforms in case new MeshRef entities need their
+    // hierarchy resolved (they were already created by the serializer).
+    SceneGraph::UpdateWorldTransforms(doc.ecs.registry);
 
     return true;
 }

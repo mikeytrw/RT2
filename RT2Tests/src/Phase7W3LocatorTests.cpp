@@ -304,6 +304,56 @@ TEST_CASE("W3-Locator: ambiguous ID -> Conflict (case 7)")
 }
 
 // ---------------------------------------------------------------------------
+// Case 3 (no-database variant): non-nil ID, no database supplied, path
+// exists, sidecar matches requested ID -> succeeds (case 3 path) with a
+// "database stale" diagnostic. This is the exact path the step-3 model
+// cutover uses at scene load: assetId is non-nil (assigned at import) but
+// no AssetDatabase has been built yet.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("W3-Locator: non-nil ID, no database, matching sidecar (case 3)")
+{
+    TempDirectory tmp;
+    const fs::path root = tmp.Path();
+    const std::string rel = "assets/model.glb";
+    const fs::path abs = CreateAssetFile(root, rel);
+    const UUID id = MakeId(0x12, 0x34);
+    WriteSidecar(abs, id);
+    // NO database supplied.
+    auto ctx = MakeCtx(root, nullptr);
+    std::vector<AssetDiagnostic> diags;
+    auto r = Resolve(MakeRef(AssetKind::Model, rel, id), ctx,
+                     UUID::Nil(), "", diags);
+    REQUIRE(r.success);
+    REQUIRE(r.source == AssetResolutionSource::PathFallback);
+    REQUIRE(r.effectiveId == id);
+    REQUIRE_FALSE(r.identityRepairRequired);
+    REQUIRE(CountSeverity(diags, AssetDiagnostic::Missing) == 1);
+    REQUIRE(diags[0].detail.find("database stale") != std::string::npos);
+}
+
+// ---------------------------------------------------------------------------
+// Case 5 (no-database variant): non-nil ID, no database, sidecar claims a
+// different ID -> Conflict. The locator must never silently substitute one
+// identity for another, even when no database is available to consult.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("W3-Locator: non-nil ID, no database, conflicting sidecar (case 5)")
+{
+    TempDirectory tmp;
+    const fs::path root = tmp.Path();
+    const std::string rel = "assets/c.glb";
+    const fs::path abs = CreateAssetFile(root, rel);
+    WriteSidecar(abs, MakeId(0x50, 0x60));
+    auto ctx = MakeCtx(root, nullptr);
+    std::vector<AssetDiagnostic> diags;
+    auto r = Resolve(MakeRef(AssetKind::Model, rel, MakeId(0x70, 0x80)),
+                     ctx, UUID::Nil(), "", diags);
+    REQUIRE_FALSE(r.success);
+    REQUIRE(CountSeverity(diags, AssetDiagnostic::Conflict) == 1);
+}
+
+// ---------------------------------------------------------------------------
 // Case 8: nil ID -> path fallback. Missing sidecar -> repair required.
 // Sidecar present -> effective ID from sidecar, no repair.
 // ---------------------------------------------------------------------------

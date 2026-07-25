@@ -6964,3 +6964,131 @@ the three pre-existing severities.
 remains explicitly out of W3 scope. Debug `RT2Tests` and `RT2SliceRunner`
 build and pass; only Debug `RT2App` (which pulls the NRD/NRI vendor
 binaries) fails to link.
+
+### W3 step 3 verification report — models cut over to the shared locator
+
+Implemented 2026-07-25, grounded against commit `061340e` (immediately
+after the step 2 neutral-types + locator landing). Models are the first
+production consumer of the generic `AssetResolver`; environment, script,
+and texture resolution remain on their pre-W3 paths and are cut over in
+steps 4–6.
+
+**Locator defect found and fixed during this cutover.** Step 2's `Resolve()`
+took the nil-ID path whenever `ctx.database == nullptr`, even when a
+non-nil ID was requested. That dropped the ID-vs-sidecar conflict check
+(the case-5 contract) at scene load, where the host does not yet build an
+`AssetDatabase` but `AssetReference::assetId` is non-nil (assigned at
+import). `AssetResolver.cpp` was restructured so the nil-ID branch is
+taken only when the requested ID is actually nil; a non-nil ID with no
+database proceeds directly to path+sidecar verification, which still
+emits `Conflict` when the sidecar claims a different ID. Two locator
+tests pin the new no-database variants of cases 3 and 5.
+
+**Production changes (all in `RT2App/src/SceneAssetResolver.cpp`):**
+
+- `ResolveAll`'s model section now resolves each referenced model through
+  the shared `Resolve()` against an `AssetResolutionContext` whose
+  `assetRoot` is the scene root and whose `database` is `nullptr` (W3-Q3:
+  no global resolver/database; W4 replaces the root with the project
+  asset root). The locator is read-only (W3-Q9): no sidecar is minted,
+  written, or rewritten at scene load. `assetId` is plumbed but the host
+  does not yet build a database, so the locator's path+sidecar
+  verification is what carries identity.
+
+- **Removed the duplicate file-level `Missing` diagnostic** (W3-P8). The
+  pre-W3 code emitted one file-level `Missing` per missing model path
+  and then one entity-level `Missing` per entity that referenced it. The
+  locator emits exactly one terminal diagnostic per missing reference,
+  with the first referencing entity's UUID filled in. The entity-level
+  "model not loaded" diagnostic still fires in the plan pass, so a
+  missing model produces two diagnostics — but both now carry the
+  entity's UUID (the old file-level diagnostic had a nil UUID). The
+  misclassified/misordered diagnostics called out in W3-P8 are no longer
+  produced for models.
+
+- **Made hard failure transactional** (W3-P7 / W3-Q6). The pre-W3 code
+  appended staged meshes/materials/textures into `doc.ecs` during the
+  merge loop and only checked "every entity unresolved" afterward, so a
+  hard `ResolveAll` failure left `doc.ecs` polluted. `ResolveAll` is now
+  split into a **plan pass** (resolves every entity's target against the
+  STAGED model's local indices without touching `doc.ecs`) and a
+  **commit pass** (merges only the staged models that have at least one
+  resolved entity and installs `MeshRef`s). If every entity is
+  unresolved, `ResolveAll` returns false with `doc.ecs` unchanged — no
+  meshes, materials, or textures are committed. A successful partial
+  result may commit accepted resources/placeholders (W3-Q6), so a scene
+  with one resolvable and one unresolvable entity still returns true and
+  commits the resolvable entity's resources.
+
+- `ResolvePath` is kept as a compatibility adapter (the plan called for
+  it). It is still used by `ResolveEnvironment` (step 4 cuts environment
+  over); only the model path stopped using it. Its signature and
+  existence are unchanged.
+
+- `ResolveBatch` is not used by `ResolveAll` yet — `ResolveAll` needs
+  per-entity UUID/name context that the batch entry supports, but the
+  diagnostic ordering within `ResolveAll` is already deterministic
+  (insertion order: models in first-reference order, entities in registry
+  iteration order). A later step can route through `ResolveBatch` once
+  the registry-iteration-order dependency is addressed; that is not a
+  step-3 concern.
+
+**Tests updated:** four transitional characterization cases in
+`RT2Tests/src/Phase7W3CharacterizationTests.cpp` were rewritten to pin
+the post-cutover contract instead of the pre-W3 defects:
+
+- "model success resolves a generated GLB": was `diagnostics.empty()`;
+  now asserts exactly one `Missing` "identity repair required"
+  diagnostic (nil `assetId`, no sidecar — the locator's case 8a).
+- "missing model emits file and entity diagnostics": was 2 diagnostics
+  with `diagnostics[0].entityUuid.IsNull()`; renamed to "emits one
+  locator diagnostic and one entity diagnostic", asserts 2 diagnostics
+  with BOTH entity UUIDs non-nil (the locator fills the first entity's
+  UUID), and asserts transactionality (`doc.ecs` empty on hard failure).
+- "malformed model is followed by a Missing entity diagnostic": was 2
+  diagnostics; renamed to "emits locator, load, and entity diagnostics",
+  asserts 3 diagnostics (locator `Missing` "identity repair required" +
+  loader `Malformed` "model failed to load" + plan-pass `Missing` "model
+  not loaded"), and asserts transactionality.
+- "unresolved model source key mutates resources before hard failure":
+  was 1 diagnostic + `meshRegistry.GetCount() == 1`; renamed to "fails
+  transactionally", asserts 2 diagnostics (locator `Missing` + plan-pass
+  `Unresolved`) and `meshRegistry.GetCount() == 0` (the false
+  transactionality defect is fixed).
+
+**Tests added:** three new focused step-3 cases in the same file:
+
+- non-nil `assetId` with a matching sidecar resolves and emits exactly
+  one "database stale" `Missing` diagnostic (the case-3 no-database
+  variant the model cutover actually exercises at scene load);
+- non-nil `assetId` with a conflicting sidecar fails with `Conflict` and
+  leaves the document unchanged;
+- partial success (one resolvable + one unresolvable entity) commits
+  the resolvable entity's resources and returns true.
+
+**P1A test updated:** `Phase1ASceneAssetTests.cpp`'s
+"P1A RoundTrip: glTF import -> save v3 -> load + resolve" asserted
+`d.severity != Missing` for every diagnostic on a successful resolve.
+After cutover, a successful resolve with a non-nil `assetId` and a
+matching sidecar emits a "database stale" `Missing` diagnostic (the W3
+contract signal, not a real failure). The assertion was relaxed to
+forbid `Malformed`/`Conflict`/`Unresolved` (real defects) while allowing
+`Missing`. No environment or script test changed.
+
+| Check | Result |
+|---|---|
+| W3 locator focused tests, Release | 20/20 cases, 125/125 assertions (2 no-database cases added) |
+| W3 locator focused tests, Debug | 20/20 cases, 125/125 assertions |
+| W3 characterization (model cases), Release | post-cutover expectations; 4 updated + 3 added |
+| Full RT2Tests, Release | 621/621 cases, 144802/144802 assertions |
+| Full RT2Tests, Debug | 621/621 cases, 144802/144802 assertions |
+| RT2App target (Vulkan), Release | builds |
+| RT2SliceRunner target, Release and Debug | builds |
+| Phase 6C script scenario | PASS |
+| Graphify | refreshed; `GRAPH_REPORT.md` changed |
+
+**Pre-existing carryover, unchanged by this step:** the whole-Debug
+`RT2App` NRD/NRI `LNK2038`/`LNK1319` mismatch is the same error set
+recorded in the step 0 and step 2 reports and remains explicitly out of
+W3 scope. Debug `RT2Tests` (621/621) and `RT2SliceRunner` build and pass;
+only Debug `RT2App` fails to link.

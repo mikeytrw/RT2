@@ -299,9 +299,18 @@ TEST_CASE("P1A RoundTrip: glTF import -> save v3 -> load + resolve")
     std::vector<AssetDiagnostic> diagnostics;
     Error resolveErr;
     REQUIRE(SceneAssetResolver::ResolveAll(loaded, FixtureDir(), diagnostics, resolveErr));
-    // Diagnostics may be empty on success.
+    // W3 step 3: the locator is ID-first and read-only. With a non-nil assetId
+    // (assigned at import and persisted in the scene), no AssetDatabase built
+    // at scene load yet, and a matching sidecar on disk, resolution succeeds
+    // via path fallback and emits a "database stale" Missing diagnostic. That
+    // is the expected contract signal, not a real failure. A Malformed or
+    // Conflict diagnostic would be a real defect.
     for (const auto& d : diagnostics)
-        CHECK(d.severity != AssetDiagnostic::Missing);
+    {
+        CHECK(d.severity != AssetDiagnostic::Malformed);
+        CHECK(d.severity != AssetDiagnostic::Conflict);
+        CHECK(d.severity != AssetDiagnostic::Unresolved);
+    }
 
     // After resolution, the document must have meshes and textures.
     CHECK(loaded.ecs.meshRegistry.GetCount() > 0);

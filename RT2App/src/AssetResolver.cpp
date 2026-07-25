@@ -101,12 +101,14 @@ AssetResolutionResult Resolve(const AssetReference& ref,
 
     const bool hasId = !ref.assetId.IsNull();
 
-    // Case 8: nil ID -> path fallback. (Also reached when ID lookup fails.)
-    if (!hasId || ctx.database == nullptr)
+    // Nil ID (case 8): pure path fallback. Sidecar state is observed but
+    // never compared against a requested ID (there is none). A present
+    // sidecar contributes the effective ID; an absent sidecar signals
+    // repair; a malformed sidecar is loud.
+    if (!hasId)
     {
         if (candidatePath.empty())
         {
-            // Case 6 (or nil-ID missing): neither locates a regular file.
             diagnostics.push_back(MakeDiag(
                 AssetDiagnostic::Missing, ref.kind, ref.path,
                 (ctx.assetRoot / ref.path).lexically_normal().string(),
@@ -114,7 +116,6 @@ AssetResolutionResult Resolve(const AssetReference& ref,
                 "asset file not found"));
             return result;
         }
-        // Path fallback for nil ID. Observe sidecar state without writing.
         Error sidecarErr;
         const UUID sidecarId = ReadSidecarId(
             AssetSidecarPath(candidatePath), sidecarErr);
@@ -150,54 +151,63 @@ AssetResolutionResult Resolve(const AssetReference& ref,
         return result;
     }
 
-    // Non-nil ID: authoritative, looked up first.
-    const AssetIdLookupResult lookup =
-        ctx.database ? ctx.database->LookupById(ref.assetId)
-                     : AssetIdLookupResult{};
-
-    if (lookup.status == AssetIdLookupResult::Status::Ambiguous)
+    // Non-nil ID: authoritative, looked up first. When no database is
+    // supplied (the pre-W4 scene-load case), ID lookup is skipped and we
+    // proceed directly to path+sidecar verification, which still detects
+    // conflicts between the requested ID and the sidecar's claim.
+    AssetIdLookupResult::Status idStatus = AssetIdLookupResult::Status::Missing;
+    std::filesystem::path dbResolvedPath;
+    const AssetRecord* idRecord = nullptr;
+    if (ctx.database != nullptr)
     {
-        // Case 7: ambiguous -> Conflict regardless of path.
-        std::string detail = "asset ID claimed by multiple records";
-        for (const auto& cp : lookup.candidatePaths)
-            detail += "; " + cp;
-        if (!candidatePath.empty())
-            detail += "; fallback path=" + candidatePathStr;
-        diagnostics.push_back(MakeDiag(
-            AssetDiagnostic::Conflict, ref.kind, ref.path, candidatePathStr,
-            entityUuid, entityName, ref.sourceKey, detail));
+        const AssetIdLookupResult lookup = ctx.database->LookupById(ref.assetId);
+        idStatus = lookup.status;
+        idRecord = lookup.record;
+        if (idStatus == AssetIdLookupResult::Status::Ambiguous)
+        {
+            // Case 7: ambiguous -> Conflict regardless of path.
+            std::string detail = "asset ID claimed by multiple records";
+            for (const auto& cp : lookup.candidatePaths)
+                detail += "; " + cp;
+            if (!candidatePath.empty())
+                detail += "; fallback path=" + candidatePathStr;
+            diagnostics.push_back(MakeDiag(
+                AssetDiagnostic::Conflict, ref.kind, ref.path, candidatePathStr,
+                entityUuid, entityName, ref.sourceKey, detail));
+            return result;
+        }
+        if (idStatus == AssetIdLookupResult::Status::Unique &&
+            idRecord != nullptr)
+        {
+            dbResolvedPath =
+                ResolvePathNoCwd(idRecord->sourcePath, ctx.assetRoot);
+        }
+    }
+
+    if (idStatus == AssetIdLookupResult::Status::Unique &&
+        !dbResolvedPath.empty())
+    {
+        // Case 1/2: unique ID whose file exists wins. Stale reference path
+        // is observable but does not defeat ID resolution.
+        result.success = true;
+        result.resolvedPath = dbResolvedPath;
+        result.source = AssetResolutionSource::Id;
+        result.effectiveId = idRecord->assetId;
+        result.identityRepairRequired = false;
+        if (!ref.path.empty() && candidatePath.empty())
+        {
+            diagnostics.push_back(MakeDiag(
+                AssetDiagnostic::Missing, ref.kind, ref.path,
+                (ctx.assetRoot / ref.path).lexically_normal().string(),
+                entityUuid, entityName, ref.sourceKey,
+                "reference path stale; resolved by asset ID"));
+        }
         return result;
     }
 
-    if (lookup.status == AssetIdLookupResult::Status::Unique &&
-        lookup.record != nullptr)
-    {
-        const std::filesystem::path dbPath =
-            ResolvePathNoCwd(lookup.record->sourcePath, ctx.assetRoot);
-        if (!dbPath.empty())
-        {
-            // Case 2: unique ID whose file exists wins. Stale reference path
-            // is observable but does not defeat ID resolution.
-            result.success = true;
-            result.resolvedPath = dbPath;
-            result.source = AssetResolutionSource::Id;
-            result.effectiveId = lookup.record->assetId;
-            result.identityRepairRequired = false;
-            if (!ref.path.empty() && candidatePath.empty())
-            {
-                diagnostics.push_back(MakeDiag(
-                    AssetDiagnostic::Missing, ref.kind, ref.path,
-                    (ctx.assetRoot / ref.path).lexically_normal().string(),
-                    entityUuid, entityName, ref.sourceKey,
-                    "reference path stale; resolved by asset ID"));
-            }
-            return result;
-        }
-        // DB record exists but file is missing on disk. Fall through to path
-        // fallback if the reference path still resolves.
-    }
-
-    // ID did not locate an existing file. Try path fallback.
+    // ID did not locate an existing file (no database, ID missing, or DB
+    // record's file gone). Try path fallback, but verify the sidecar against
+    // the requested ID.
     if (candidatePath.empty())
     {
         // Case 6: neither ID nor path locates a regular file.

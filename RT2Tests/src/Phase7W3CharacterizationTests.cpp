@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "ECSComponents.h"
+#include "AssetIdentity.h"
 #include "Phase1AFixtureGenerator.h"
 #include "SceneAssetResolver.h"
 #include "SceneDocument.h"
@@ -303,13 +304,19 @@ TEST_CASE("Phase7 W3 characterization: model success resolves a generated GLB")
     CHECK(SceneAssetResolver::ResolveAll(
         doc, fixture.Path(), diagnostics, error));
     CHECK(error.IsOk());
-    CHECK(diagnostics.empty());
+    // W3 step 3: a nil assetId with no sidecar resolves by path fallback and
+    // emits exactly one "identity repair required" Missing diagnostic. The
+    // locator is read-only; the host saves/migrates the assigned ID later.
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+    CHECK(diagnostics[0].detail.find("identity repair required") !=
+          std::string::npos);
     CHECK(doc.ecs.registry.all_of<MeshRef>(entity));
     CHECK(doc.ecs.meshRegistry.GetCount() == 1);
     CHECK(doc.ecs.textures.size() == 1);
 }
 
-TEST_CASE("Phase7 W3 characterization: missing model emits file and entity diagnostics")
+TEST_CASE("Phase7 W3 characterization: missing model emits one locator diagnostic and one entity diagnostic")
 {
     TempDirectory fixture;
     DeterministicUuidProvider ids;
@@ -323,14 +330,24 @@ TEST_CASE("Phase7 W3 characterization: missing model emits file and entity diagn
     CHECK_FALSE(SceneAssetResolver::ResolveAll(
         doc, fixture.Path(), diagnostics, error));
     CHECK(error.code == Error::MissingAsset);
+    // W3 step 3 (W3-P8): the shared locator emits exactly one terminal
+    // diagnostic per missing reference. The pre-W3 duplicate file-level
+    // diagnostic is gone. The entity-level "model not loaded" diagnostic
+    // still fires in the plan pass, so the total is 2 — but BOTH carry the
+    // entity's UUID (the locator fills it from the first referencing
+    // entity, not nil as in the pre-W3 file-level diagnostic).
     REQUIRE(diagnostics.size() == 2);
     CHECK(CountSeverity(diagnostics, AssetDiagnostic::Missing) == 2);
-    CHECK(diagnostics[0].entityUuid.IsNull());
+    CHECK_FALSE(diagnostics[0].entityUuid.IsNull());
     CHECK_FALSE(diagnostics[1].entityUuid.IsNull());
+    // W3-P7 transactionality: hard failure leaves the document unchanged.
+    CHECK(doc.ecs.meshRegistry.GetCount() == 0);
+    CHECK(doc.ecs.materials.empty());
+    CHECK(doc.ecs.textures.empty());
     CHECK_FALSE(doc.ecs.registry.all_of<MeshRef>(entity));
 }
 
-TEST_CASE("Phase7 W3 characterization: malformed model is followed by a Missing entity diagnostic")
+TEST_CASE("Phase7 W3 characterization: malformed model emits locator, load, and entity diagnostics")
 {
     TempDirectory fixture;
     REQUIRE(WriteText(fixture.Path() / "malformed.glb", "not a GLB"));
@@ -346,13 +363,24 @@ TEST_CASE("Phase7 W3 characterization: malformed model is followed by a Missing 
     CHECK_FALSE(SceneAssetResolver::ResolveAll(
         doc, fixture.Path(), diagnostics, error));
     CHECK(error.code == Error::MissingAsset);
-    REQUIRE(diagnostics.size() == 2);
+    // W3 step 3: three diagnostics, each a distinct failure layer.
+    //   1. Locator: nil ID + absent sidecar -> Missing "identity repair
+    //      required" (the path resolves, so the file is not "missing").
+    //   2. Loader: SceneLoader::LoadIntoECS fails -> Malformed "model
+    //      failed to load".
+    //   3. Plan pass: staged model not loaded -> Missing "model not loaded;
+    //      entity left without resolved mesh".
+    REQUIRE(diagnostics.size() == 3);
     CHECK(CountSeverity(diagnostics, AssetDiagnostic::Malformed) == 1);
-    CHECK(CountSeverity(diagnostics, AssetDiagnostic::Missing) == 1);
+    CHECK(CountSeverity(diagnostics, AssetDiagnostic::Missing) == 2);
+    // W3-P7 transactionality: hard failure leaves the document unchanged.
+    CHECK(doc.ecs.meshRegistry.GetCount() == 0);
+    CHECK(doc.ecs.materials.empty());
+    CHECK(doc.ecs.textures.empty());
     CHECK_FALSE(doc.ecs.registry.all_of<MeshRef>(entity));
 }
 
-TEST_CASE("Phase7 W3 characterization: unresolved model source key mutates resources before hard failure")
+TEST_CASE("Phase7 W3 characterization: unresolved model source key fails transactionally")
 {
     TempDirectory fixture;
     Error fixtureError;
@@ -370,15 +398,158 @@ TEST_CASE("Phase7 W3 characterization: unresolved model source key mutates resou
     CHECK_FALSE(SceneAssetResolver::ResolveAll(
         doc, fixture.Path(), diagnostics, error));
     CHECK(error.code == Error::MissingAsset);
-    REQUIRE(diagnostics.size() == 1);
-    CHECK(diagnostics[0].severity == AssetDiagnostic::Unresolved);
+    // W3 step 3: two diagnostics.
+    //   1. Locator: nil ID + absent sidecar -> Missing "identity repair
+    //      required" (the path resolves, so the file is not "missing").
+    //   2. Plan pass: source key not found in rebuilt model -> Unresolved.
+    REQUIRE(diagnostics.size() == 2);
+    CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+    CHECK(diagnostics[1].severity == AssetDiagnostic::Unresolved);
     CHECK_FALSE(doc.ecs.registry.all_of<MeshRef>(entity));
 
-    // Transitional characterization of the false transactionality contract:
-    // the resolver returns a hard failure after already appending resources.
+    // W3-P7/W3-Q6 transactionality: a false ResolveAll leaves the document
+    // unchanged. The pre-W3 false-transactionality defect (resources
+    // appended before the all-unresolved check) is fixed: no meshes,
+    // materials, or textures are committed when every entity is unresolved.
+    CHECK(doc.ecs.meshRegistry.GetCount() == 0);
+    CHECK(doc.ecs.materials.empty());
+    CHECK(doc.ecs.textures.empty());
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7 W3 step 3 — model cutover contract.
+//
+// These tests pin the post-cutover behaviour of SceneAssetResolver::ResolveAll
+// for models. They exercise ID-first resolution through the shared locator,
+// the removed duplicate file-level diagnostic, and transactionality on hard
+// failure. Each fixture is generated; no machine-local assets are used.
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Phase7 W3 step 3: non-nil assetId with matching sidecar resolves with a database-stale diagnostic")
+{
+    TempDirectory fixture;
+    Error fixtureError;
+    REQUIRE(GenerateTinyTexturedGlb(
+        fixture.Path() / "model.glb", fixtureError));
+
+    // Write a sidecar so the locator's path-sidecar verification matches the
+    // requested ID (case 3: database stale/missing but sidecar matches).
+    const UUID id = UUID::Parse("11111111-2222-4333-8444-555555555555");
+    Error sidecarErr;
+    REQUIRE(WriteSidecarId(
+        AssetSidecarPath(fixture.Path() / "model.glb"), id, sidecarErr));
+    REQUIRE(sidecarErr.IsOk());
+
+    DeterministicUuidProvider ids;
+    SceneDocument doc;
+    doc.SetUuidProvider(&ids);
+    const entt::entity entity = doc.ecs.registry.create();
+    doc.ecs.registry.emplace<NameComponent>(entity, "Imported");
+    doc.ecs.registry.emplace<Transform>(entity);
+    doc.ecs.registry.emplace<VisibleComponent>(entity);
+    ImportedMeshSourceComponent imported;
+    imported.model.kind = AssetKind::Model;
+    imported.model.path = "model.glb";
+    imported.model.sourceKey = SceneAssetResolver::GltfSourceKey(0, 0, 0, 0);
+    imported.model.assetId = id; // non-nil, matches sidecar
+    doc.ecs.registry.emplace<ImportedMeshSourceComponent>(entity, imported);
+    doc.AssignNewUuid(entity);
+
+    std::vector<AssetDiagnostic> diagnostics;
+    Error error;
+    CHECK(SceneAssetResolver::ResolveAll(
+        doc, fixture.Path(), diagnostics, error));
+    CHECK(error.IsOk());
+    // The locator emits exactly one "database stale" Missing diagnostic on
+    // the successful path-sidecar match. No Malformed/Unresolved/Conflict.
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+    CHECK(diagnostics[0].detail.find("database stale") != std::string::npos);
+    CHECK(doc.ecs.registry.all_of<MeshRef>(entity));
     CHECK(doc.ecs.meshRegistry.GetCount() == 1);
-    CHECK(doc.ecs.materials.size() == 1);
-    CHECK(doc.ecs.textures.size() == 1);
+}
+
+TEST_CASE("Phase7 W3 step 3: non-nil assetId with conflicting sidecar fails with Conflict")
+{
+    TempDirectory fixture;
+    Error fixtureError;
+    REQUIRE(GenerateTinyTexturedGlb(
+        fixture.Path() / "model.glb", fixtureError));
+
+    // Sidecar claims a DIFFERENT id than the reference carries.
+    const UUID sidecarId = UUID::Parse("11111111-2222-4333-8444-555555555555");
+    const UUID refId     = UUID::Parse("99999999-8888-4777-8666-555555555555");
+    Error sidecarErr;
+    REQUIRE(WriteSidecarId(
+        AssetSidecarPath(fixture.Path() / "model.glb"), sidecarId, sidecarErr));
+
+    DeterministicUuidProvider ids;
+    SceneDocument doc;
+    doc.SetUuidProvider(&ids);
+    const entt::entity entity = doc.ecs.registry.create();
+    doc.ecs.registry.emplace<NameComponent>(entity, "Imported");
+    doc.ecs.registry.emplace<Transform>(entity);
+    doc.ecs.registry.emplace<VisibleComponent>(entity);
+    ImportedMeshSourceComponent imported;
+    imported.model.kind = AssetKind::Model;
+    imported.model.path = "model.glb";
+    imported.model.sourceKey = SceneAssetResolver::GltfSourceKey(0, 0, 0, 0);
+    imported.model.assetId = refId;
+    doc.ecs.registry.emplace<ImportedMeshSourceComponent>(entity, imported);
+    doc.AssignNewUuid(entity);
+
+    std::vector<AssetDiagnostic> diagnostics;
+    Error error;
+    CHECK_FALSE(SceneAssetResolver::ResolveAll(
+        doc, fixture.Path(), diagnostics, error));
+    // The locator's Conflict diagnostic makes ResolveAll hard-fail (every
+    // entity failed because the staged model was never loaded — the locator
+    // refused to resolve the path). Transactionality: doc unchanged.
+    CHECK_FALSE(doc.ecs.registry.all_of<MeshRef>(entity));
+    CHECK(doc.ecs.meshRegistry.GetCount() == 0);
+    CHECK(doc.ecs.materials.empty());
+    CHECK(doc.ecs.textures.empty());
+    bool sawConflict = false;
+    for (const auto& d : diagnostics)
+        if (d.severity == AssetDiagnostic::Conflict) sawConflict = true;
+    CHECK(sawConflict);
+}
+
+TEST_CASE("Phase7 W3 step 3: partial success commits accepted resources and returns true")
+{
+    TempDirectory fixture;
+    Error fixtureError;
+    REQUIRE(GenerateTinyTexturedGlb(
+        fixture.Path() / "model.glb", fixtureError));
+
+    DeterministicUuidProvider ids;
+    SceneDocument doc;
+    doc.SetUuidProvider(&ids);
+
+    // Entity A: resolvable (valid source key).
+    const entt::entity a = AddImportedEntity(
+        doc, "model.glb", SceneAssetResolver::GltfSourceKey(0, 0, 0, 0));
+    // Entity B: unresolvable (bad primitive index). The model loads once;
+    // B's source key miss produces an Unresolved diagnostic, but A still
+    // resolves, so ResolveAll returns true and commits A's resources.
+    const entt::entity b = AddImportedEntity(
+        doc, "model.glb", SceneAssetResolver::GltfSourceKey(0, 0, 0, 99));
+
+    std::vector<AssetDiagnostic> diagnostics;
+    Error error;
+    CHECK(SceneAssetResolver::ResolveAll(
+        doc, fixture.Path(), diagnostics, error));
+    CHECK(error.IsOk());
+    // A has a MeshRef; B does not.
+    CHECK(doc.ecs.registry.all_of<MeshRef>(a));
+    CHECK_FALSE(doc.ecs.registry.all_of<MeshRef>(b));
+    // Partial success committed the model's resources.
+    CHECK(doc.ecs.meshRegistry.GetCount() == 1);
+    // B's Unresolved diagnostic is present alongside A's locator diagnostic.
+    bool sawUnresolved = false;
+    for (const auto& d : diagnostics)
+        if (d.severity == AssetDiagnostic::Unresolved) sawUnresolved = true;
+    CHECK(sawUnresolved);
 }
 
 TEST_CASE("Phase7 W3 characterization: environment success, missing, and malformed disagree on detail")
