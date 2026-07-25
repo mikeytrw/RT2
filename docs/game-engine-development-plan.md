@@ -6170,18 +6170,18 @@ document is a period record of a superseded state.**
 
 | Configuration | Result |
 |---|---|
-| **Release** | **555 run, 555 passed, 0 failed, 0 skipped** |
-| **Debug** | **555 run, 555 passed, 0 failed, 0 skipped** |
+| **Release** | **582 run, 582 passed, 0 failed, 0 skipped** |
+| **Debug** | **582 run, 582 passed, 0 failed, 0 skipped** |
 
 Run from the repository root — `RT2Tests.exe` resolves some fixtures by
 relative path and both fails and writes stray files if run from elsewhere.
 
 > **Updated 2026-07-25.** The 8 Debug-only failures recorded below were
-> diagnosed and fixed; both configurations are now 555/555. The previous
+> diagnosed and fixed; both configurations were 555/555 at that point. Phase
+> 7 W1 (asset ID plumbing, +16 tests) and W2 (asset database, +11 tests)
+> then raised the count to 582/582 in both Release and Debug. The previous
 > Debug row (554 run, 546 passed, 8 failed) is a period record of the
-> pre-fix state. The case count grew by one (554 → 555) due to unrelated
-> Phase 7 work in flight on the `phase-6-scripting` branch at the time of
-> verification. See the supersession note at the end of the "remaining 8
+> pre-fix state. See the supersession note at the end of the "remaining 8
 > Debug-only failures" subsection for the verified root cause.
 
 **Release is green and must stay green.** A Release failure is now a real
