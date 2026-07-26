@@ -14,9 +14,12 @@ namespace rt2::core {
 ScriptFieldResolutionResult ScriptFieldResolver::ResolveDocument(
     SceneDocument& document,
     ScriptFieldRegistry& registry,
+    const AssetResolutionContext& assetContext,
+    std::vector<AssetDiagnostic>& assetDiagnostics,
     std::vector<FieldDiagnostic>& outDiagnostics)
 {
     ScriptFieldResolutionResult resolution;
+    const size_t assetDiagnosticBase = assetDiagnostics.size();
 
     auto& ecsRegistry = document.ecs.registry;
     std::vector<std::pair<UUID, entt::entity>> entities;
@@ -40,8 +43,14 @@ ScriptFieldResolutionResult ScriptFieldResolver::ResolveDocument(
     for (const auto& [uuid, entity] : entities)
     {
         auto& component = ecsRegistry.get<ScriptComponent>(entity);
+        const auto* nameComponent =
+            ecsRegistry.try_get<NameComponent>(entity);
+        const std::string entityName =
+            nameComponent ? nameComponent->name : std::string{};
         if (component.asset.kind != AssetKind::Script)
         {
+            (void)ResolveScriptAssetPath(
+                component, assetContext, uuid, entityName, assetDiagnostics);
             ++resolution.skippedEntities;
             FieldDiagnostic diagnostic;
             diagnostic.kind = FieldDiagnostic::Kind::InvalidAssetKind;
@@ -52,10 +61,38 @@ ScriptFieldResolutionResult ScriptFieldResolver::ResolveDocument(
             continue;
         }
 
-        const auto path = ResolveScriptAssetPath(document, component);
-        const auto declarations = registry.GetDeclaredFields(path);
+        const auto resolved = ResolveScriptAssetPath(
+            component, assetContext, uuid, entityName, assetDiagnostics);
+        if (!resolved.success)
+        {
+            ++resolution.skippedEntities;
+            FieldDiagnostic diagnostic;
+            diagnostic.kind = FieldDiagnostic::Kind::ParseFailed;
+            diagnostic.entity = uuid;
+            diagnostic.message = "entity " + uuid.ToString() +
+                " script declarations were not reconciled: asset resolution failed";
+            outDiagnostics.push_back(std::move(diagnostic));
+            continue;
+        }
+
+        const auto declarations =
+            registry.GetDeclaredFields(resolved.resolvedPath);
         if (!declarations.parsed)
         {
+            AssetDiagnostic assetDiagnostic;
+            assetDiagnostic.severity =
+                declarations.diagnostic.find("failed to read script file") == 0
+                    ? AssetDiagnostic::Missing
+                    : AssetDiagnostic::Malformed;
+            assetDiagnostic.kind = AssetKind::Script;
+            assetDiagnostic.refPath = component.asset.path;
+            assetDiagnostic.resolvedPath = resolved.resolvedPath.string();
+            assetDiagnostic.entityUuid = uuid;
+            assetDiagnostic.entityName = entityName;
+            assetDiagnostic.sourceKey = component.asset.sourceKey;
+            assetDiagnostic.detail = declarations.diagnostic;
+            assetDiagnostics.push_back(std::move(assetDiagnostic));
+
             ++resolution.skippedEntities;
             FieldDiagnostic diagnostic;
             diagnostic.kind = FieldDiagnostic::Kind::ParseFailed;
@@ -88,6 +125,14 @@ ScriptFieldResolutionResult ScriptFieldResolver::ResolveDocument(
             " was not reconciled because it has no EntityIdComponent";
         outDiagnostics.push_back(std::move(diagnostic));
     }
+
+    std::stable_sort(
+        assetDiagnostics.begin() + assetDiagnosticBase,
+        assetDiagnostics.end(),
+        [](const AssetDiagnostic& left, const AssetDiagnostic& right) {
+            return AssetDiagnosticSortKey(left) <
+                   AssetDiagnosticSortKey(right);
+        });
 
     return resolution;
 }

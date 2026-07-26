@@ -1675,9 +1675,28 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 	// Query declared fields from the registry (if injected).
 	if (!m_FieldRegistry) return;
 
-	const auto resolvedPath = rt2::core::ResolveScriptAssetPath(
-		m_SceneMgr->AuthoringDoc(), *scriptState);
-	const auto result = m_FieldRegistry->GetDeclaredFields(resolvedPath);
+	const auto& document = m_SceneMgr->AuthoringDoc();
+	std::filesystem::path assetRoot =
+		document.metadata.sourcePath.parent_path();
+	if (assetRoot.empty() && m_DialogInitialDirectory)
+		assetRoot = m_DialogInitialDirectory();
+	const rt2::core::AssetResolutionContext assetContext{
+		assetRoot, nullptr};
+	std::vector<rt2::core::AssetDiagnostic> assetDiagnostics;
+	const auto resolved = rt2::core::ResolveScriptAssetPath(
+		*scriptState, assetContext, targetUuid,
+		m_SceneMgr->GetEntityName(entity), assetDiagnostics);
+	if (!resolved.success)
+	{
+		const std::string detail = assetDiagnostics.empty()
+			? "asset resolution failed"
+			: assetDiagnostics.back().detail;
+		ImGui::TextDisabled("[Warning] Script asset failed: %s",
+			detail.c_str());
+		return;
+	}
+	const auto result =
+		m_FieldRegistry->GetDeclaredFields(resolved.resolvedPath);
 
 	// Parse-failure warning banner (D10). Widgets are read-only while
 	// parsed == false so the user cannot author against stale declarations.

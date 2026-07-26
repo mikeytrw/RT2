@@ -209,7 +209,11 @@ json AssetReferenceToJson(const AssetReference& a)
     j["kind"]    = AssetKindName(a.kind);
     j["path"]    = a.path;
     j["sourceKey"] = a.sourceKey;
-    j["importSettings"] = ImportSettingsToJson(a.importSettings);
+    // Scripts deliberately retain their Phase 6 on-disk shape (no inert
+    // settings block) while still using this shared codec for identity.
+    // Other kinds keep the established shared-codec shape.
+    if (a.kind != AssetKind::Script)
+        j["importSettings"] = ImportSettingsToJson(a.importSettings);
     // assetId (Phase 7 W1, additive over v3): written only when assigned.
     // A v3 scene has no assetId field; the loader treats absence as nil.
     if (!a.assetId.IsNull())
@@ -649,14 +653,13 @@ std::optional<json> EntityRecordToJson(
             return std::nullopt;
         }
 
-        const std::string serializedPath = RebasePath(
-            canonical.asset.path, currentSceneDir, outputSceneDir);
-        json asset;
-        asset["kind"] = "script";
-        asset["path"] = serializedPath;
-        asset["sourceKey"] = serializedPath.empty()
-                           ? std::string{}
-                           : "lua:asset=" + serializedPath;
+        AssetReference serializedAsset = canonical.asset;
+        serializedAsset.path = RebasePath(
+            serializedAsset.path, currentSceneDir, outputSceneDir);
+        serializedAsset.sourceKey = serializedAsset.path.empty()
+                                  ? std::string{}
+                                  : "lua:asset=" + serializedAsset.path;
+        json asset = AssetReferenceToJson(serializedAsset);
 
         json fields = json::object();
         std::vector<std::string> names;
@@ -845,9 +848,25 @@ EntityRecord JsonToEntityRecord(const json& j, Error& err,
             return r;
         }
 
+        Error assetError;
+        AssetReference decodedAsset =
+            JsonToAssetReference(asset, assetError);
+        if (!assetError.IsOk())
+        {
+            err = assetError;
+            err.path = r.uuid.ToString();
+            return r;
+        }
+        if (decodedAsset.kind != AssetKind::Script)
+        {
+            err.code = Error::Parse;
+            err.path = r.uuid.ToString();
+            err.detail = "ScriptComponent asset kind must be script";
+            return r;
+        }
+
         r.hasScript = true;
-        r.script.asset.kind = AssetKind::Script;
-        r.script.asset.path = asset["path"].get<std::string>();
+        r.script.asset = std::move(decodedAsset);
         const std::string storedSourceKey = asset["sourceKey"].get<std::string>();
         const std::string canonicalSourceKey = r.script.asset.path.empty()
                                              ? std::string{}

@@ -25,8 +25,13 @@ namespace rt2::core {
 // ScriptSystem construction / destruction
 // ============================================================================
 
-ScriptSystem::ScriptSystem(IUuidProvider& uuidProvider)
+ScriptSystem::ScriptSystem(
+    IUuidProvider& uuidProvider,
+    const AssetResolutionContext& assetContext,
+    std::vector<AssetDiagnostic>& assetDiagnostics)
     : m_UuidProvider(uuidProvider)
+    , m_AssetContext(assetContext)
+    , m_AssetDiagnostics(assetDiagnostics)
 {
     // Open only the safe Lua libraries. os/io/debug/package are deliberately
     // NOT opened: os.exit would terminate the process, io.* gives filesystem
@@ -104,7 +109,9 @@ void ScriptSystem::OnSceneStart(const SceneDocument& runtime,
     // runtime clone. This is the "initial Play" special case of
     // SyncScriptEnvironments (G2): the registry is full, the environment
     // map is empty, so every scripted entity gets OnCreate.
+    const size_t diagnosticBase = m_AssetDiagnostics.size();
     SyncScriptEnvironments();
+    SortAssetDiagnosticsFrom(diagnosticBase);
 }
 
 void ScriptSystem::OnSceneStop(const SceneDocument& runtime)
@@ -251,7 +258,7 @@ void ScriptSystem::ReloadScript(const std::filesystem::path& path)
 {
     // Canonicalize the path for comparison with ScriptInstance::scriptPath.
     // Both the watcher (efsw, OS-native absolute paths) and BuildEnvironment
-    // (ResolveScriptAssetPath, possibly mixed separators) must normalize
+    // (the shared locator's normalized path) must normalize
     // before comparison (review M3). weakly_canonical resolves relative
     // paths and normalizes separators; lexically_normal handles the case
     // where the file doesn't exist yet (weakly_canonical would throw).
@@ -290,6 +297,8 @@ void ScriptSystem::ReloadScript(const std::filesystem::path& path)
         return;
     }
 
+    const size_t diagnosticBase = m_AssetDiagnostics.size();
+
     // Playing: reload now.
     // 1. Re-parse declarations.
     auto result = m_FieldRegistry.GetDeclaredFields(path);
@@ -300,6 +309,27 @@ void ScriptSystem::ReloadScript(const std::filesystem::path& path)
         // the new source is broken.
         printf("[Script] reload parse failed (script %s): %s\n",
                pathStr.c_str(), result.diagnostic.c_str());
+        for (const auto& [uuid, inst] : m_Instances)
+        {
+            std::error_code ec;
+            const auto canonical = std::filesystem::weakly_canonical(
+                std::filesystem::path(inst.scriptPath), ec);
+            const std::string instPathStr =
+                ec ? inst.scriptPath : canonical.string();
+            if (instPathStr != pathStr)
+                continue;
+            const entt::entity entity = m_RuntimeDoc->FindByUuid(uuid);
+            const auto* component =
+                entity == entt::null ? nullptr :
+                m_RuntimeDoc->ecs.registry.try_get<ScriptComponent>(entity);
+            if (component)
+            {
+                AppendAssetDiagnostic(
+                    *component, uuid, AssetDiagnostic::Malformed, path,
+                    result.diagnostic);
+            }
+        }
+        SortAssetDiagnosticsFrom(diagnosticBase);
         return;
     }
 
@@ -426,6 +456,7 @@ void ScriptSystem::ReloadScript(const std::filesystem::path& path)
         printf("[Script] reloaded script %s for entity %s\n",
                pathStr.c_str(), uuid.ToString().c_str());
     }
+    SortAssetDiagnosticsFrom(diagnosticBase);
 }
 
 // ============================================================================
@@ -683,14 +714,17 @@ void ScriptSystem::SyncScriptEnvironments()
 
 namespace {
 
-// Read a file into a string. Returns empty string on failure.
-std::string ReadFile(const std::filesystem::path& path)
+// Read a file into a string while keeping an empty-but-readable file distinct
+// from a failed read. Empty scripts are legal (Phase 6 Q10d).
+bool ReadFile(const std::filesystem::path& path, std::string& source)
 {
     std::ifstream f(path, std::ios::binary);
-    if (!f) return {};
+    if (!f) return false;
     std::stringstream ss;
     ss << f.rdbuf();
-    return ss.str();
+    if (f.bad()) return false;
+    source = ss.str();
+    return true;
 }
 
 } // anonymous namespace
@@ -718,8 +752,28 @@ ScriptSystem::GetDeclaredFields(const UUID& uuid)
     // The full Result propagates: on a parse failure the descriptors are the
     // registry's last known-good set (D10), and `parsed` is the only signal
     // that reconciling against them would be destructive.
-    return m_FieldRegistry.GetDeclaredFields(
-        ResolveScriptAssetPath(*m_RuntimeDoc, *sc));
+    const size_t diagnosticBase = m_AssetDiagnostics.size();
+    const auto resolved = ResolveScriptAssetPath(
+        *sc, m_AssetContext, uuid, EntityName(uuid), m_AssetDiagnostics);
+    if (!resolved.success)
+    {
+        SortAssetDiagnosticsFrom(diagnosticBase);
+        empty.diagnostic = "script asset resolution failed";
+        return empty;
+    }
+
+    auto result = m_FieldRegistry.GetDeclaredFields(resolved.resolvedPath);
+    if (!result.parsed)
+    {
+        AppendAssetDiagnostic(
+            *sc, uuid,
+            result.diagnostic.find("failed to read script file") == 0
+                ? AssetDiagnostic::Missing
+                : AssetDiagnostic::Malformed,
+            resolved.resolvedPath, result.diagnostic);
+    }
+    SortAssetDiagnosticsFrom(diagnosticBase);
+    return result;
 }
 
 bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
@@ -728,17 +782,24 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
                                     IRuntimeCommandSink* sink)
 {
     // BuildEnvironment is reached only while a Play document is installed by
-    // OnSceneStart/SyncScriptEnvironments. ResolveScriptAssetPath takes a
-    // reference, so make that lifetime precondition executable.
+    // OnSceneStart/SyncScriptEnvironments. Make that lifetime precondition
+    // executable before resolving the component through the shared locator.
     assert(m_RuntimeDoc != nullptr);
-    if (!comp.asset.IsValid() || comp.asset.kind != AssetKind::Script)
+
+    const size_t diagnosticBase = m_AssetDiagnostics.size();
+    const auto resolved = ResolveScriptAssetPath(
+        comp, m_AssetContext, inst.uuid, EntityName(inst.uuid),
+        m_AssetDiagnostics);
+    if (!resolved.success)
     {
-        Quarantine(inst, "load", "invalid or missing script asset reference");
+        if (m_AssetDiagnostics.size() > diagnosticBase)
+            inst.scriptPath =
+                m_AssetDiagnostics.back().resolvedPath;
+        SortAssetDiagnosticsFrom(diagnosticBase);
+        Quarantine(inst, "load", "script asset resolution failed");
         return false;
     }
-
-    const std::filesystem::path scriptPath =
-        ResolveScriptAssetPath(*m_RuntimeDoc, comp);
+    const std::filesystem::path scriptPath = resolved.resolvedPath;
     // Store the canonical form so ReloadScript's path comparison matches
     // by construction (review M3: efsw and ResolveScriptAssetPath can
     // produce different separator/relative forms).
@@ -748,12 +809,13 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
         inst.scriptPath = ec ? scriptPath.string() : canonical.string();
     }
 
-    std::string source = ReadFile(scriptPath);
-    // Q10d: an empty file is a legal script (no callbacks defined). Only
-    // a failed read (file missing) quarantines. ReadFile returns empty
-    // on failure, so we distinguish via filesystem::exists.
-    if (source.empty() && !std::filesystem::exists(scriptPath))
+    std::string source;
+    if (!ReadFile(scriptPath, source))
     {
+        AppendAssetDiagnostic(
+            comp, inst.uuid, AssetDiagnostic::Missing, scriptPath,
+            "failed to read script file: " + scriptPath.string());
+        SortAssetDiagnosticsFrom(diagnosticBase);
         Quarantine(inst, "load",
             "failed to read script file: " + scriptPath.string());
         return false;
@@ -1239,6 +1301,10 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
     if (!result.valid())
     {
         sol::error err = result;
+        AppendAssetDiagnostic(
+            comp, inst.uuid, AssetDiagnostic::Malformed, scriptPath,
+            err.what());
+        SortAssetDiagnosticsFrom(diagnosticBase);
         Quarantine(inst, "load", err.what());
         return false;
     }
@@ -1259,6 +1325,49 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
         inst.on_destroy = onDest.as<sol::protected_function>();
 
     return true;
+}
+
+void ScriptSystem::AppendAssetDiagnostic(
+    const ScriptComponent& component,
+    const UUID& entityUuid,
+    AssetDiagnostic::Severity severity,
+    const std::filesystem::path& resolvedPath,
+    const std::string& detail)
+{
+    AssetDiagnostic diagnostic;
+    diagnostic.severity = severity;
+    diagnostic.kind = AssetKind::Script;
+    diagnostic.refPath = component.asset.path;
+    diagnostic.resolvedPath = resolvedPath.string();
+    diagnostic.entityUuid = entityUuid;
+    diagnostic.entityName = EntityName(entityUuid);
+    diagnostic.sourceKey = component.asset.sourceKey;
+    diagnostic.detail = detail;
+    m_AssetDiagnostics.push_back(std::move(diagnostic));
+}
+
+std::string ScriptSystem::EntityName(const UUID& uuid) const
+{
+    if (!m_RuntimeDoc)
+        return {};
+    const entt::entity entity = m_RuntimeDoc->FindByUuid(uuid);
+    if (entity == entt::null || !m_RuntimeDoc->ecs.registry.valid(entity))
+        return {};
+    const auto* name =
+        m_RuntimeDoc->ecs.registry.try_get<NameComponent>(entity);
+    return name ? name->name : std::string{};
+}
+
+void ScriptSystem::SortAssetDiagnosticsFrom(size_t base)
+{
+    if (base >= m_AssetDiagnostics.size())
+        return;
+    std::stable_sort(
+        m_AssetDiagnostics.begin() + base, m_AssetDiagnostics.end(),
+        [](const AssetDiagnostic& left, const AssetDiagnostic& right) {
+            return AssetDiagnosticSortKey(left) <
+                   AssetDiagnosticSortKey(right);
+        });
 }
 
 void ScriptSystem::Quarantine(ScriptInstance& inst,

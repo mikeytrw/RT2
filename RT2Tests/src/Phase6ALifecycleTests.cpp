@@ -103,12 +103,14 @@ struct Phase6Harness
     DeterministicUuidProvider  uuidProv;
     NullSceneRenderBridge6     bridge;
     RuntimeSceneController     ctrl;
+    AssetResolutionContext     assetContext;
+    std::vector<AssetDiagnostic> assetDiagnostics;
     ScriptSystem               scriptSys;
     RuntimeCommandSink         sink;
     NullInputService6          input;
 
     Phase6Harness()
-        : scriptSys(uuidProv)
+        : scriptSys(uuidProv, assetContext, assetDiagnostics)
         , sink(ctrl)
     {
         ctrl.SetRuntimeUuidProvider(&uuidProv);
@@ -120,6 +122,8 @@ struct Phase6Harness
 
     bool Play(const SceneDocument& doc)
     {
+        assetContext.assetRoot = doc.metadata.sourcePath.parent_path();
+        assetContext.database = nullptr;
         Error err;
         return ctrl.Play(doc, bridge, err);
     }
@@ -939,9 +943,12 @@ end
         CHECK(loadReport.fieldDiagnostics.empty());
 
         ScriptFieldRegistry registry;
+        AssetResolutionContext assetContext{
+            loaded.metadata.sourcePath.parent_path(), nullptr};
+        std::vector<AssetDiagnostic> assetDiagnostics;
         std::vector<FieldDiagnostic> diagnostics;
         const auto resolution = ScriptFieldResolver::ResolveDocument(
-            loaded, registry, diagnostics);
+            loaded, registry, assetContext, assetDiagnostics, diagnostics);
         CHECK_FALSE(resolution.changed);
         CHECK(resolution.resolvedEntities == 1);
         CHECK(diagnostics.empty());

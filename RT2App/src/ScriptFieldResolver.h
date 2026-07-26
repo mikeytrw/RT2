@@ -3,6 +3,7 @@
 #ifndef RT2_CORE_SCRIPT_FIELD_RESOLVER_H
 #define RT2_CORE_SCRIPT_FIELD_RESOLVER_H
 
+#include "AssetResolver.h"
 #include "ScriptFieldReconcile.h"
 
 #include <cstddef>
@@ -35,6 +36,8 @@ public:
     static ScriptFieldResolutionResult ResolveDocument(
         SceneDocument& document,
         ScriptFieldRegistry& registry,
+        const AssetResolutionContext& assetContext,
+        std::vector<AssetDiagnostic>& assetDiagnostics,
         std::vector<FieldDiagnostic>& outDiagnostics);
 };
 

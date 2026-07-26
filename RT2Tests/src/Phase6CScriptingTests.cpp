@@ -122,12 +122,14 @@ struct Harness6C
     DeterministicUuidProvider uuidProv;
     NullRenderBridge6C        bridge;
     RuntimeSceneController    ctrl;
+    AssetResolutionContext    assetContext;
+    std::vector<AssetDiagnostic> assetDiagnostics;
     ScriptSystem              scriptSys;
     RuntimeCommandSink        sink;
     MockInputService6C        input;
 
     Harness6C()
-        : scriptSys(uuidProv)
+        : scriptSys(uuidProv, assetContext, assetDiagnostics)
         , sink(ctrl)
     {
         ctrl.SetRuntimeUuidProvider(&uuidProv);
@@ -139,6 +141,8 @@ struct Harness6C
 
     bool Play(const SceneDocument& doc)
     {
+        assetContext.assetRoot = doc.metadata.sourcePath.parent_path();
+        assetContext.database = nullptr;
         Error err;
         return ctrl.Play(doc, bridge, err);
     }

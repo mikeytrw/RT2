@@ -889,67 +889,111 @@ TEST_CASE("Phase7 W3 step 4: env assetId survives a save/load round-trip")
     fs::remove(nilScenePath);
 }
 
-TEST_CASE("Phase7 W3 characterization: script path resolution is lexical and sourceKey-blind")
+TEST_CASE("Phase7 W3 step 5: script adapter uses structured locator and validates metadata")
 {
     TempDirectory fixture;
     SceneDocument doc;
     doc.metadata.sourcePath = fixture.Path() / "scene.rt2scene";
+    const AssetResolutionContext context{fixture.Path(), nullptr};
+    const UUID entityUuid =
+        UUID::Parse("550e8400-e29b-41d4-a716-446655440000");
 
     SUBCASE("success resolves relative to the scene and parses declarations")
     {
         REQUIRE(WriteText(fixture.Path() / "script.lua",
             "rt2.fields = { speed = rt2.field.float(1.0) }\n"));
         const ScriptComponent script = ScriptAt("script.lua");
-        const fs::path resolved = ResolveScriptAssetPath(doc, script);
-        CHECK(resolved == fixture.Path() / "script.lua");
+        std::vector<AssetDiagnostic> diagnostics;
+        const auto resolved = ResolveScriptAssetPath(
+            script, context, entityUuid, "Scripted", diagnostics);
+        REQUIRE(resolved.success);
+        CHECK(resolved.resolvedPath == fixture.Path() / "script.lua");
+        REQUIRE(diagnostics.size() == 1);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+        CHECK(diagnostics[0].entityUuid == entityUuid);
+        CHECK(diagnostics[0].detail.find("identity repair required") !=
+              std::string::npos);
 
         ScriptFieldRegistry registry;
-        const auto fields = registry.GetDeclaredFields(resolved);
+        const auto fields =
+            registry.GetDeclaredFields(resolved.resolvedPath);
         CHECK(fields.parsed);
         CHECK(fields.descriptors.size() == 1);
     }
 
-    SUBCASE("missing still returns a non-empty candidate path")
+    SUBCASE("missing fails with a structured terminal diagnostic")
     {
         const ScriptComponent script = ScriptAt("missing.lua");
-        const fs::path resolved = ResolveScriptAssetPath(doc, script);
-        CHECK(resolved == fixture.Path() / "missing.lua");
-        CHECK_FALSE(resolved.empty());
-
-        ScriptFieldRegistry registry;
-        const auto fields = registry.GetDeclaredFields(resolved);
-        CHECK_FALSE(fields.parsed);
-        CHECK_FALSE(fields.diagnostic.empty());
+        std::vector<AssetDiagnostic> diagnostics;
+        const auto resolved = ResolveScriptAssetPath(
+            script, context, entityUuid, "Scripted", diagnostics);
+        CHECK_FALSE(resolved.success);
+        CHECK(resolved.resolvedPath.empty());
+        REQUIRE(diagnostics.size() == 1);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+        CHECK(diagnostics[0].resolvedPath ==
+              (fixture.Path() / "missing.lua").string());
     }
 
-    SUBCASE("malformed path resolution succeeds and parsing fails separately")
+    SUBCASE("malformed source locates successfully and parsing fails separately")
     {
         REQUIRE(WriteText(fixture.Path() / "malformed.lua",
                           "rt2.fields = {\n"));
         const ScriptComponent script = ScriptAt("malformed.lua");
-        const fs::path resolved = ResolveScriptAssetPath(doc, script);
-        CHECK(resolved == fixture.Path() / "malformed.lua");
+        std::vector<AssetDiagnostic> diagnostics;
+        const auto resolved = ResolveScriptAssetPath(
+            script, context, entityUuid, "Scripted", diagnostics);
+        REQUIRE(resolved.success);
+        CHECK(resolved.resolvedPath == fixture.Path() / "malformed.lua");
 
         ScriptFieldRegistry registry;
-        const auto fields = registry.GetDeclaredFields(resolved);
+        const auto fields =
+            registry.GetDeclaredFields(resolved.resolvedPath);
         CHECK_FALSE(fields.parsed);
         CHECK_FALSE(fields.diagnostic.empty());
     }
 
-    SUBCASE("a stale sourceKey does not participate in resolution")
+    SUBCASE("a stale sourceKey fails as unresolved")
     {
         REQUIRE(WriteText(fixture.Path() / "actual.lua", "\n"));
         ScriptComponent script = ScriptAt("actual.lua");
         script.asset.sourceKey = "lua:asset=other.lua";
 
-        const fs::path resolved = ResolveScriptAssetPath(doc, script);
-        CHECK(resolved == fixture.Path() / "actual.lua");
-        ScriptFieldRegistry registry;
-        CHECK(registry.GetDeclaredFields(resolved).parsed);
+        std::vector<AssetDiagnostic> diagnostics;
+        const auto resolved = ResolveScriptAssetPath(
+            script, context, entityUuid, "Scripted", diagnostics);
+        CHECK_FALSE(resolved.success);
+        CHECK(resolved.resolvedPath.empty());
+        REQUIRE(diagnostics.size() == 2);
+        CHECK(diagnostics.back().severity == AssetDiagnostic::Unresolved);
+        CHECK(diagnostics.back().resolvedPath ==
+              (fixture.Path() / "actual.lua").string());
+    }
+
+    SUBCASE("a conflicting sidecar rejects authoritative script identity")
+    {
+        const fs::path scriptPath = fixture.Path() / "identified.lua";
+        REQUIRE(WriteText(scriptPath, "\n"));
+        const UUID requested =
+            UUID::Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        const UUID conflicting =
+            UUID::Parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        Error sidecarError;
+        REQUIRE(WriteSidecarId(
+            AssetSidecarPath(scriptPath), conflicting, sidecarError));
+
+        ScriptComponent script = ScriptAt("identified.lua");
+        script.asset.assetId = requested;
+        std::vector<AssetDiagnostic> diagnostics;
+        const auto resolved = ResolveScriptAssetPath(
+            script, context, entityUuid, "Scripted", diagnostics);
+        CHECK_FALSE(resolved.success);
+        REQUIRE(diagnostics.size() == 1);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Conflict);
     }
 }
 
-TEST_CASE("Phase7 W3 transitional characterization: script assetId is dropped by serialization")
+TEST_CASE("Phase7 W3 step 5: script assetId survives serialization through the shared codec")
 {
     TempDirectory fixture;
     const fs::path scenePath = fixture.Path() / "scene.rt2scene";
@@ -981,7 +1025,52 @@ TEST_CASE("Phase7 W3 transitional characterization: script assetId is dropped by
 
     const auto view = loaded.ecs.registry.view<ScriptComponent>();
     REQUIRE(view.size() == 1);
-    CHECK(view.get<ScriptComponent>(*view.begin()).asset.assetId.IsNull());
+    CHECK(view.get<ScriptComponent>(*view.begin()).asset.assetId ==
+          script.asset.assetId);
+
+    nlohmann::json saved;
+    {
+        std::ifstream input(scenePath);
+        input >> saved;
+    }
+    CHECK(saved["entities"][0]["script"]["asset"]["assetId"] ==
+          script.asset.assetId.ToString());
+}
+
+TEST_CASE("Phase7 W3 step 5: binding an existing script assigns and reuses its sidecar ID")
+{
+    TempDirectory fixture;
+    const fs::path scriptPath = fixture.Path() / "bound.lua";
+    REQUIRE(WriteText(scriptPath, "\n"));
+
+    DeterministicUuidProvider ids;
+    SceneManager manager;
+    manager.SetUuidProvider(&ids);
+    manager.AuthoringDoc().metadata.sourcePath =
+        fixture.Path() / "scene.rt2scene";
+    const UUID entity =
+        manager.CreateEmpty("Scripted").affectedEntities.front();
+
+    REQUIRE(manager.SetScriptState(
+        entity, ScriptAt("bound.lua")).success);
+    const auto first = manager.GetScriptState(entity);
+    REQUIRE(first.has_value());
+    CHECK_FALSE(first->asset.assetId.IsNull());
+    CHECK(fs::is_regular_file(AssetSidecarPath(scriptPath)));
+
+    Error sidecarError;
+    const UUID sidecarId =
+        ReadSidecarId(AssetSidecarPath(scriptPath), sidecarError);
+    REQUIRE(sidecarError.IsOk());
+    CHECK(sidecarId == first->asset.assetId);
+
+    ScriptComponent edited = *first;
+    edited.fieldValues["speed"] = {
+        ScriptFieldType::Float, ScriptFieldValue{2.0}};
+    REQUIRE(manager.SetScriptState(entity, edited).success);
+    const auto second = manager.GetScriptState(entity);
+    REQUIRE(second.has_value());
+    CHECK(second->asset.assetId == first->asset.assetId);
 }
 
 TEST_CASE("Phase7 W3 characterization: OBJ texture failures do not fail valid geometry")

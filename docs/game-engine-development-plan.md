@@ -6952,7 +6952,7 @@ the three pre-existing severities.
 | W3 characterization (step 0), Debug | 9/9 cases, 149/149 assertions; expectations unchanged |
 | Full RT2Tests, Release | 616/616 cases, 144746/144746 assertions |
 | Full RT2Tests, Debug | 616/616 cases, 144746/144746 assertions |
-| RT2App target (Vulkan), Release | builds |
+| RT2App target (Vulkan), Release | built after the production changes; a redundant relink after removing one unused include was blocked by an already-running `RT2App.exe` |
 | RT2SliceRunner target, Release and Debug | builds |
 | Phase 6C script scenario | PASS |
 | Graphify | refreshed; `GRAPH_REPORT.md` changed |
@@ -7190,3 +7190,96 @@ now the resolution entry point for both models and environments.
 recorded in the step 0, 2, and 3 reports and remains explicitly out of
 W3 scope. Debug `RT2Tests` (626/626) and `RT2SliceRunner` build and pass;
 only Debug `RT2App` fails to link.
+
+### W3 step 5 verification report — scripts cut over to the shared locator
+
+Implemented 2026-07-26, grounded against commit `5e2545b` (steps 0–4
+complete). This report covers step 5 only. Textures remain on their
+pre-W3 path for step 6.
+
+**Structured script resolution:** `ResolveScriptAssetPath` is now a thin
+adapter over the shared `AssetResolver::Resolve` locator. It takes an
+explicit `AssetResolutionContext` and `AssetDiagnostic` sink, validates
+`kind=Script`, validates the canonical `lua:asset=<path>` source key, and
+inherits the locator's existence, regular-file, ID, sidecar, database,
+and conflict rules. It no longer returns an unchecked lexical candidate.
+The same caller-owned context and diagnostic sink are threaded through
+`ScriptFieldResolver`, `ScriptSystem`, the Walnut file watcher/load and
+recovery paths, and `RT2SliceRunner`. Missing files remain watchable by
+using the terminal diagnostic's candidate parent, but they cannot enter
+the live Lua VM.
+
+**Identity and persistence:** script save/load now use the shared
+`AssetReferenceToJson`/`JsonToAssetReference` codec, including non-nil
+`assetId`. The existing Phase 6 script disk shape is retained by omitting
+the irrelevant `importSettings` member for `kind=Script`; other asset
+kinds retain their established codec shape. `SceneManager::SetScriptState`
+now treats an existing script binding as the explicit import boundary and
+calls `ResolveOrAssign`, so a sidecar ID is minted or reused and stored in
+the component. A changed path cannot carry the previous script's ID.
+Missing script paths remain authorable so the existing quarantine and
+watcher-recovery behavior is preserved; no ID is minted until the file
+exists.
+
+**Phase 6 contract verification:**
+
+| Contract | How it was verified |
+|---|---|
+| Empty script is legal | Existing `Phase 6A: empty script file is legal` passed in both full configurations. The file reader now distinguishes a successful zero-byte read from an I/O failure. |
+| A script error quarantines only the affected instance | Existing `Phase 6A: syntax error quarantines only the affected instance` and runtime-error isolation cases passed in both full configurations. Locator/load failures are attached to the failing entity while other instances continue. |
+| Field reflection keeps last-known-good declarations; `parsed=false` suppresses reconciliation | Existing Phase 6B resolver/registry cases passed in both full configurations. The parse-failure case additionally asserted the new asset diagnostics while retaining the previous declarations and authored values. |
+| Failed hot reload never replaces live code | Existing `Phase 6C: a mid-edit syntax error does not kill the running instance` and reload scratch-environment cases passed in both full configurations. Resolution/read/parse failure returns before swapping the live environment. |
+| `rt2.reload()` remains deferred | Existing `Phase 6C: rt2.reload() from on_update does not re-enter` passed in both full configurations; the queueing boundary was not changed. |
+| Timers, input bindings, and entity bindings are unaffected | The existing timer scheduling/cancellation/reload tests, input-service binding tests, and entity-binding validation/lifecycle tests all passed as part of both full suites. Their implementations were not changed. |
+
+**Authorized expectation changes:**
+
+- `Phase7 W3 characterization: script path resolution is lexical and
+  sourceKey-blind` became `Phase7 W3 step 5: script adapter uses
+  structured locator and validates metadata`. Old: a missing path still
+  returned the joined candidate and a stale source key was ignored. New:
+  the missing reference returns no resolved path plus terminal `Missing`,
+  and the stale source key returns no resolved path plus terminal
+  `Unresolved`. Scope item 1 explicitly replaces the lexical,
+  non-validating implementation.
+- `Phase7 W3 transitional characterization: script assetId is dropped by
+  serialization` became `Phase7 W3 step 5: script assetId survives
+  serialization through the shared codec`. Old: the loaded script ID was
+  nil and the JSON omitted `assetId`. New: JSON contains the authored
+  non-nil ID and load restores it. Scope item 3 explicitly fixes this
+  serialization defect.
+- No Phase 6 expectation changed. The pre-step 629 cases all pass with
+  their current expectations; one new identity-assignment case brings
+  the total to 630.
+
+**Discrimination proof:** the one new case, `Phase7 W3 step 5: binding an
+existing script assigns and reuses its sidecar ID`, was proven red/green.
+Temporarily disabling the production `ResolveOrAssign` branch made it
+fail (1 case, 11 assertions: 9 passed, 2 failed — nil component ID and
+missing sidecar). Restoring the branch and rebuilding made the exact case
+pass (1/1 case, 11/11 assertions). The temporary fault was not retained.
+
+| Check | Result |
+|---|---|
+| Full RT2Tests, Release, repository root | 630/630 cases, 144934/144934 assertions |
+| Full RT2Tests, Debug, repository root | 630/630 cases, 144934/144934 assertions |
+| RT2App target (Vulkan), Release | builds |
+| RT2SliceRunner target, Release and Debug | builds |
+| `run_script_test.ps1` (Phase 6C gate) | PASS: 60 frames, 1 entity, no mismatches |
+| Graphify | refreshed after implementation |
+
+**Verified by running:** every build/test row above, both full-suite
+counts, all named Phase 6 cases as members of those full suites, and the
+red/green discrimination run. The fixture generator was also run after a
+shared-codec compatibility correction and left its tracked scene fixture
+byte-clean. The final host relink obstruction was identified as the
+already-running Release `RT2App.exe` (PID 54024); it was not terminated.
+
+**Assumed, not re-verified:** the pre-existing whole-Debug `RT2App`
+NRD/NRI link mismatch remains unchanged; per instruction, that whole-app
+target was not run. Removing the unused `<system_error>` include after
+the successful Release host build is assumed not to affect its link
+result; the exact current source was compiled and linked in both
+`RT2Tests` and `RT2SliceRunner`. No build configuration or project file
+changed. Texture behavior is assumed unchanged because step 6 was not
+started and no texture-resolution production path was modified.

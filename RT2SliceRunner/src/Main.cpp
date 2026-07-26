@@ -522,7 +522,12 @@ static int RunScriptScenario(const std::string& scenarioPath,
     // --- Wire up the script system ---
     NullSceneRenderBridge bridge;
     RuntimeSceneController ctrl;
-    ScriptSystem scriptSys(uuidProv);
+    AssetResolutionContext scriptAssetContext;
+    scriptAssetContext.assetRoot = scenePath.parent_path();
+    scriptAssetContext.database = nullptr;
+    std::vector<AssetDiagnostic> scriptAssetDiagnostics;
+    ScriptSystem scriptSys(
+        uuidProv, scriptAssetContext, scriptAssetDiagnostics);
     RuntimeCommandSink sink(ctrl);
     NullInputService input;
 
@@ -550,6 +555,17 @@ static int RunScriptScenario(const std::string& scenarioPath,
     // --- Run N fixed steps at kFixedDt (deterministic) ---
     for (int i = 0; i < frames; ++i)
         ctrl.Update(kFixedDt, bridge);
+
+    for (const auto& diagnostic : scriptAssetDiagnostics)
+    {
+        fprintf(stderr,
+                "[ScriptScenario] Asset diagnostic: severity=%d ref=%s "
+                "entity=%s detail=%s\n",
+                static_cast<int>(diagnostic.severity),
+                diagnostic.refPath.c_str(),
+                diagnostic.entityUuid.ToString().c_str(),
+                diagnostic.detail.c_str());
+    }
 
     // --- Capture runtime entity state ---
     std::vector<ScenarioEntityState> entities;

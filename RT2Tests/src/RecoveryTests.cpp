@@ -514,8 +514,9 @@ TEST_CASE("Recovery: restored script fields resolve from original source path")
 
     ScriptFieldRegistry registry;
     std::vector<FieldDiagnostic> fieldDiagnostics = loadReport.fieldDiagnostics;
+    AssetResolutionContext assetContext{records[0].assetRoot, nullptr};
     const auto resolution = ScriptFieldResolver::ResolveDocument(
-        restored, registry, fieldDiagnostics);
+        restored, registry, assetContext, assetDiagnostics, fieldDiagnostics);
     CHECK(resolution.resolvedEntities == 1);
     CHECK(resolution.skippedEntities == 0);
     CHECK_FALSE(resolution.changed);

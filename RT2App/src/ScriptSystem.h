@@ -6,6 +6,7 @@
 #include "RuntimeLifecycleObserver.h"
 #include "IRuntimeScriptDispatch.h"
 #include "IRuntimeCommandSink.h"
+#include "AssetResolver.h"
 #include "InputTypes.h"
 #include "ECSComponents.h"
 #include "ScriptFieldValue.h"
@@ -133,7 +134,9 @@ class ScriptSystem : public IRuntimeLifecycleObserver,
                      public IRuntimeScriptDispatch
 {
 public:
-    explicit ScriptSystem(IUuidProvider& uuidProvider);
+    ScriptSystem(IUuidProvider& uuidProvider,
+                 const AssetResolutionContext& assetContext,
+                 std::vector<AssetDiagnostic>& assetDiagnostics);
     ~ScriptSystem() override;
 
     ScriptSystem(const ScriptSystem&) = delete;
@@ -212,6 +215,17 @@ private:
                     const std::string& callbackName,
                     const std::string& message);
 
+    // Append a script load/location diagnostic with entity context. Runtime
+    // callback failures still use Quarantine only; this channel is for asset
+    // resolution, file I/O, and script parse/load failures.
+    void AppendAssetDiagnostic(const ScriptComponent& component,
+                               const UUID& entityUuid,
+                               AssetDiagnostic::Severity severity,
+                               const std::filesystem::path& resolvedPath,
+                               const std::string& detail);
+    std::string EntityName(const UUID& uuid) const;
+    void SortAssetDiagnosticsFrom(size_t base);
+
     // Collect ScriptComponent-bearing entities from the runtime registry,
     // sorted by UUID for deterministic iteration.
     std::vector<std::pair<UUID, entt::entity>>
@@ -241,6 +255,8 @@ private:
     const IInputService*      m_Input = nullptr;
     IRuntimeCommandSink*      m_Sink = nullptr;
     IUuidProvider&            m_UuidProvider;
+    const AssetResolutionContext& m_AssetContext;
+    std::vector<AssetDiagnostic>& m_AssetDiagnostics;
 
     // Phase 6C: queued reload paths, drained on Resume from Pause or the
     // next Play frame. Populated when ReloadScript is called while Paused.

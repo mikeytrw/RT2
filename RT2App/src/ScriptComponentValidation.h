@@ -128,6 +128,7 @@ inline bool ScriptComponentCanonicalEqual(
     const bool bHas = b.has_value();
     if (!aHas && !bHas) return true;
     if (aHas != bHas) return false;
+    if (a->asset.assetId != b->asset.assetId) return false;
     if (a->asset.kind != b->asset.kind) return false;
     if (a->asset.path != b->asset.path) return false;
     if (a->asset.sourceKey != b->asset.sourceKey) return false;

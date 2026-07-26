@@ -90,6 +90,21 @@ void CopyAuthoredComponents(const entt::registry& sourceRegistry,
 		transform->dirty = true;
 	}
 }
+
+std::filesystem::path ResolveAuthoredScriptPath(
+	const rt2::core::SceneDocument& document,
+	const std::string& storedPath)
+{
+	if (storedPath.empty())
+		return {};
+	const std::filesystem::path path(storedPath);
+	if (path.is_absolute())
+		return path.lexically_normal();
+	if (document.metadata.sourcePath.empty())
+		return {}; // no implicit process-CWD root (W3-Q8)
+	return (document.metadata.sourcePath.parent_path() / path).
+		lexically_normal();
+}
 }
 
 // Fill an imported entity's source path (if empty) and assign it a stable
@@ -3552,6 +3567,48 @@ EditorMutationResult SceneManager::SetScriptState(const rt2::core::UUID& entity,
 		std::optional<ScriptComponent> current;
 		if (m_EcsScene.registry.all_of<ScriptComponent>(e))
 			current = m_EcsScene.registry.get<ScriptComponent>(e);
+
+		// Binding a script is its explicit import operation. Assign/reuse the
+		// per-asset sidecar ID here, matching model/environment import while
+		// keeping the shared locator read-only (W3-Q9). A changed path never
+		// carries the previous file's ID. Missing paths remain bindable so the
+		// Phase 6 quarantine and watcher-recovery behavior is preserved.
+		if (canonical.asset.path.empty())
+		{
+			canonical.asset.assetId = rt2::core::UUID::Nil();
+		}
+		else
+		{
+			const bool sameBinding = current.has_value() &&
+				current->asset.path == canonical.asset.path;
+			if (!sameBinding)
+				canonical.asset.assetId = rt2::core::UUID::Nil();
+			else if (canonical.asset.assetId.IsNull())
+				canonical.asset.assetId = current->asset.assetId;
+
+			const auto physicalPath = ResolveAuthoredScriptPath(
+				m_Authoring, canonical.asset.path);
+			std::error_code pathError;
+			const bool canAssign = !physicalPath.empty() &&
+				std::filesystem::is_regular_file(physicalPath, pathError);
+			if (canAssign && canonical.asset.assetId.IsNull())
+			{
+				bool minted = false;
+				rt2::core::Error idError;
+				canonical.asset.assetId = rt2::core::ResolveOrAssign(
+					physicalPath, *m_UuidProvider, minted, idError);
+				if (minted || !idError.IsOk())
+				{
+					printf("[Asset] %s: assigned script id %s%s%s\n",
+					       physicalPath.string().c_str(),
+					       canonical.asset.assetId.ToString().c_str(),
+					       idError.IsOk() ? "" : ": ",
+					       idError.IsOk() ? "" : idError.Format().c_str());
+					fflush(stdout);
+				}
+			}
+		}
+
 		if (rt2::core::ScriptComponentCanonicalEqual(
 				current, std::optional<ScriptComponent>{canonical}))
 		{

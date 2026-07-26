@@ -1021,8 +1021,11 @@ public:
 				{
 					fieldDiags = loadReport.fieldDiagnostics;
 					rt2::core::ScriptFieldRegistry fieldRegistry;
+					rt2::core::AssetResolutionContext assetContext{
+						r.assetRoot, nullptr};
 					fieldResolution = rt2::core::ScriptFieldResolver::ResolveDocument(
-						restored, fieldRegistry, fieldDiags);
+						restored, fieldRegistry, assetContext, diags,
+						fieldDiags);
 					fieldChanges = rt2::core::ClassifyScriptFieldChanges(
 						loadReport, fieldResolution, fieldDiags);
 					for (const auto& diagnostic : fieldDiags)
@@ -1494,6 +1497,36 @@ public:
 	}
 
 private:
+	void LogScriptAssetDiagnostics(size_t base, const char* context) const
+	{
+		for (size_t i = base; i < m_ScriptAssetDiagnostics.size(); ++i)
+		{
+			const auto& diagnostic = m_ScriptAssetDiagnostics[i];
+			const char* severity = "Unknown";
+			switch (diagnostic.severity)
+			{
+			case rt2::core::AssetDiagnostic::Missing:
+				severity = "Missing"; break;
+			case rt2::core::AssetDiagnostic::Malformed:
+				severity = "Malformed"; break;
+			case rt2::core::AssetDiagnostic::Unresolved:
+				severity = "Unresolved"; break;
+			case rt2::core::AssetDiagnostic::Conflict:
+				severity = "Conflict"; break;
+			case rt2::core::AssetDiagnostic::Stale:
+				severity = "Stale"; break;
+			default:
+				break;
+			}
+			printf("[%s] Script asset %s: ref=\"%s\" entity=%s "
+			       "sourceKey=\"%s\" detail=%s\n",
+			       context, severity, diagnostic.refPath.c_str(),
+			       diagnostic.entityUuid.ToString().c_str(),
+			       diagnostic.sourceKey.c_str(),
+			       diagnostic.detail.c_str());
+		}
+	}
+
 	void EnsureRenderBridge()
 	{
 		if (!m_RenderBridge)
@@ -1523,7 +1556,8 @@ private:
 			m_SceneMgr.AuthoringDoc().GetUuidProvider();
 		if (!provider) return;
 
-		m_ScriptSystem = std::make_unique<rt2::core::ScriptSystem>(*provider);
+		m_ScriptSystem = std::make_unique<rt2::core::ScriptSystem>(
+			*provider, m_ScriptAssetContext, m_ScriptAssetDiagnostics);
 		m_ScriptSink   = std::make_unique<rt2::core::RuntimeCommandSink>(m_Runtime);
 
 		m_Runtime.SetLifecycleObserver(m_ScriptSystem.get());
@@ -2351,8 +2385,10 @@ private:
 	// after m_Runtime because the sink binds to the controller by reference.
 	// Installed lazily by EnsureScriptRuntimeWired(); null until the first
 	// Play with a valid UUID provider.
-	std::unique_ptr<rt2::core::ScriptSystem>        m_ScriptSystem;
-	std::unique_ptr<rt2::core::RuntimeCommandSink>  m_ScriptSink;
+	rt2::core::AssetResolutionContext               m_ScriptAssetContext;
+	std::vector<rt2::core::AssetDiagnostic>          m_ScriptAssetDiagnostics;
+	std::unique_ptr<rt2::core::ScriptSystem>         m_ScriptSystem;
+	std::unique_ptr<rt2::core::RuntimeCommandSink>   m_ScriptSink;
 
 	// Phase 6B/W5: inspector-side field registry. Created at startup so the
 	// inspector can query declared fields while the editor is STOPPED (the
@@ -2486,6 +2522,13 @@ private:
 	{
 		EnsureRenderBridge();
 		EnsureScriptRuntimeWired();
+		m_ScriptAssetDiagnostics.clear();
+		const auto& sourcePath =
+			m_SceneMgr.AuthoringDoc().metadata.sourcePath;
+		m_ScriptAssetContext.assetRoot = sourcePath.empty()
+			? UntitledAssetRoot()
+			: sourcePath.parent_path();
+		m_ScriptAssetContext.database = nullptr;
 
 		// Phase 4: inject the production UUID provider so the runtime document
 		// can generate fresh UUIDs for deferred-create operations. The
@@ -2498,9 +2541,11 @@ private:
 		rt2::core::Error err;
 		if (!m_Runtime.Play(m_SceneMgr.AuthoringDoc(), *m_RenderBridge, err))
 		{
+			LogScriptAssetDiagnostics(0, "Play");
 			printf("[Play] Failed to enter Play: %s\n", err.Format().c_str());
 			return;
 		}
+		LogScriptAssetDiagnostics(0, "Play");
 
 		// Snapshot the editor camera and switch to the runtime camera.
 		m_EditorCamSnapshot = m_Cam;
@@ -2648,35 +2693,42 @@ public:
 			self.SetStatus("Resolving assets (models, textures, env)...");
 			std::filesystem::path sceneRoot = std::filesystem::path(filepathCopy).parent_path();
 			std::vector<rt2::core::AssetDiagnostic> diagnostics;
+			const rt2::core::AssetResolutionContext assetContext{
+				sceneRoot, nullptr};
 			rt2::core::Error resolveErr;
 			bool resolveOk = rt2::core::SceneAssetResolver::ResolveAll(
 			        *resultDoc, sceneRoot, diagnostics, resolveErr);
 
-			// Format diagnostics for the completion callback to log.
-		for (const auto& d : diagnostics)
-		{
-			const char* sev = nullptr;
-			// Exhaustive over every AssetDiagnostic::Severity value. A new
-			// severity must add a case here; the default is loud so a missing
-			// case is observable rather than silently mislabelled (W3-Q5).
-			switch (d.severity)
-			{
-			case rt2::core::AssetDiagnostic::Missing:    sev = "Missing";   break;
-			case rt2::core::AssetDiagnostic::Malformed:  sev = "Malformed"; break;
-			case rt2::core::AssetDiagnostic::Unresolved: sev = "Unresolved";break;
-			case rt2::core::AssetDiagnostic::Conflict:   sev = "Conflict";  break;
-			case rt2::core::AssetDiagnostic::Stale:       sev = "Stale";     break;
-			default:                                      sev = "Unknown";   break;
-			}
-			*diagStr += std::string("[Scene] Asset ") + sev +
-			    ": kind=" + std::to_string((int)d.kind) +
-			    " ref='" + d.refPath + "'" +
-			    " sourceKey='" + d.sourceKey + "'" +
-			    " detail=" + d.detail + "\n";
-		}
+			auto formatAssetDiagnostics = [&]() {
+				for (const auto& d : diagnostics)
+				{
+					const char* sev = nullptr;
+					switch (d.severity)
+					{
+					case rt2::core::AssetDiagnostic::Missing:
+						sev = "Missing"; break;
+					case rt2::core::AssetDiagnostic::Malformed:
+						sev = "Malformed"; break;
+					case rt2::core::AssetDiagnostic::Unresolved:
+						sev = "Unresolved"; break;
+					case rt2::core::AssetDiagnostic::Conflict:
+						sev = "Conflict"; break;
+					case rt2::core::AssetDiagnostic::Stale:
+						sev = "Stale"; break;
+					default:
+						sev = "Unknown"; break;
+					}
+					*diagStr += std::string("[Scene] Asset ") + sev +
+						": kind=" + std::to_string((int)d.kind) +
+						" ref='" + d.refPath + "'" +
+						" sourceKey='" + d.sourceKey + "'" +
+						" detail=" + d.detail + "\n";
+				}
+			};
 
 			if (!resolveOk)
 			{
+				formatAssetDiagnostics();
 				*errorStr = "Asset resolution failed, keeping current scene: " + resolveErr.Format();
 				return false;
 			}
@@ -2685,7 +2737,9 @@ public:
 			*fieldDiagnostics = loadReport->fieldDiagnostics;
 			rt2::core::ScriptFieldRegistry fieldRegistry;
 			*fieldResolution = rt2::core::ScriptFieldResolver::ResolveDocument(
-				*resultDoc, fieldRegistry, *fieldDiagnostics);
+				*resultDoc, fieldRegistry, assetContext, diagnostics,
+				*fieldDiagnostics);
+			formatAssetDiagnostics();
 			*fieldChanges = rt2::core::ClassifyScriptFieldChanges(
 				*loadReport, *fieldResolution, *fieldDiagnostics);
 			for (const auto& diagnostic : *fieldDiagnostics)
@@ -2735,17 +2789,39 @@ public:
 					dirs.insert(sceneDir);
 
 				auto& doc = m_SceneMgr.AuthoringDoc();
+				m_ScriptAssetContext.assetRoot =
+					std::filesystem::path(filepathCopy).parent_path();
+				m_ScriptAssetContext.database = nullptr;
+				m_ScriptAssetDiagnostics.clear();
 				auto view = doc.ecs.registry.view<ScriptComponent>();
 				for (auto e : view)
 				{
 					const auto& sc = view.get<ScriptComponent>(e);
+					const auto* id =
+						doc.ecs.registry.try_get<EntityIdComponent>(e);
+					const auto* name =
+						doc.ecs.registry.try_get<NameComponent>(e);
+					const size_t diagnosticBase =
+						m_ScriptAssetDiagnostics.size();
 					auto resolved = rt2::core::ResolveScriptAssetPath(
-						doc, sc);
-					auto parent = resolved.parent_path().
+						sc, m_ScriptAssetContext,
+						id ? id->id : rt2::core::UUID::Nil(),
+						name ? name->name : std::string{},
+						m_ScriptAssetDiagnostics);
+					std::filesystem::path watchPath =
+						resolved.resolvedPath;
+					if (watchPath.empty() &&
+						m_ScriptAssetDiagnostics.size() > diagnosticBase)
+					{
+						watchPath = m_ScriptAssetDiagnostics.back().
+							resolvedPath;
+					}
+					auto parent = watchPath.parent_path().
 						lexically_normal().string();
 					if (!parent.empty())
 						dirs.insert(parent);
 				}
+				LogScriptAssetDiagnostics(0, "FileWatcher");
 
 				for (const auto& dir : dirs)
 				{

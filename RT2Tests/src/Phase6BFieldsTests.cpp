@@ -989,9 +989,12 @@ rt2.fields = {
     REQUIRE(fx.manager.SetScriptState(b, MakeScript("shared.lua", 9.0)).success);
 
     ScriptFieldRegistry registry;
+    AssetResolutionContext assetContext{dir.root, nullptr};
+    std::vector<AssetDiagnostic> assetDiagnostics;
     std::vector<FieldDiagnostic> diagnostics;
     const auto resolution = ScriptFieldResolver::ResolveDocument(
-        fx.manager.AuthoringDoc(), registry, diagnostics);
+        fx.manager.AuthoringDoc(), registry, assetContext, assetDiagnostics,
+        diagnostics);
 
     CHECK(resolution.changed);
     CHECK(resolution.resolvedEntities == 2);
@@ -1010,8 +1013,10 @@ rt2.fields = {
     CHECK(std::get<bool>(stateB->fieldValues.at("enabled").value));
 
     diagnostics.clear();
+    assetDiagnostics.clear();
     const auto secondResolution = ScriptFieldResolver::ResolveDocument(
-        fx.manager.AuthoringDoc(), registry, diagnostics);
+        fx.manager.AuthoringDoc(), registry, assetContext, assetDiagnostics,
+        diagnostics);
     CHECK_FALSE(secondResolution.changed);
     CHECK(secondResolution.resolvedEntities == 2);
     CHECK(secondResolution.skippedEntities == 0);
@@ -1036,9 +1041,13 @@ TEST_CASE("Phase6B W2: resolver accounts for invalid asset kinds and missing UUI
     registry.emplace<ScriptComponent>(unidentified, MakeScript("missing-id.lua", 2.0));
 
     ScriptFieldRegistry fields;
+    AssetResolutionContext assetContext{
+        std::filesystem::temp_directory_path(), nullptr};
+    std::vector<AssetDiagnostic> assetDiagnostics;
     std::vector<FieldDiagnostic> diagnostics;
     const auto resolution = ScriptFieldResolver::ResolveDocument(
-        fx.manager.AuthoringDoc(), fields, diagnostics);
+        fx.manager.AuthoringDoc(), fields, assetContext, assetDiagnostics,
+        diagnostics);
 
     CHECK_FALSE(resolution.changed);
     CHECK(resolution.resolvedEntities == 0);
@@ -1067,13 +1076,27 @@ TEST_CASE("Phase6B W2: resolver parse failure preserves authored values exactly"
     REQUIRE(fx.manager.SetScriptState(entity, authored).success);
 
     std::vector<FieldDiagnostic> diagnostics;
+    AssetResolutionContext assetContext{dir.root, nullptr};
+    std::vector<AssetDiagnostic> assetDiagnostics;
     const auto resolution = ScriptFieldResolver::ResolveDocument(
-        fx.manager.AuthoringDoc(), registry, diagnostics);
+        fx.manager.AuthoringDoc(), registry, assetContext, assetDiagnostics,
+        diagnostics);
     CHECK_FALSE(resolution.changed);
     CHECK(resolution.resolvedEntities == 0);
     CHECK(resolution.skippedEntities == 1);
     REQUIRE(diagnostics.size() == 1);
     CHECK(diagnostics[0].kind == FieldDiagnostic::Kind::ParseFailed);
+    REQUIRE(assetDiagnostics.size() == 2);
+    CHECK(std::count_if(
+        assetDiagnostics.begin(), assetDiagnostics.end(),
+        [](const AssetDiagnostic& diagnostic) {
+            return diagnostic.severity == AssetDiagnostic::Malformed;
+        }) == 1);
+    CHECK(std::count_if(
+        assetDiagnostics.begin(), assetDiagnostics.end(),
+        [](const AssetDiagnostic& diagnostic) {
+            return diagnostic.severity == AssetDiagnostic::Stale;
+        }) == 1);
     REQUIRE(fx.manager.GetScriptState(entity).has_value());
     CHECK(fx.manager.GetScriptState(entity)->fieldValues == authored.fieldValues);
 }
