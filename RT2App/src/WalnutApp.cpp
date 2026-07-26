@@ -61,6 +61,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 
 using namespace Walnut;
 
@@ -88,6 +89,9 @@ public:
 		rt2::core::Error settingsErr;
 		if (!m_Settings2->Load(settingsErr))
 			printf("[Settings] Failed to load: %s\n", settingsErr.Format().c_str());
+
+		// Load saved window visibility + performance detail level.
+		LoadViewConfig();
 
 		// Discover pending recovery records from a previous unclean exit.
 		// We surface these as a startup Restore/Discard modal below.
@@ -120,6 +124,7 @@ public:
 				LoadSceneInternal(a.path.string());
 				break;
 			case rt2::core::UnsavedChangesCoordinator::ActionKind::Exit:
+				SaveViewConfig();
 				Walnut::Application::Get().Close();
 				break;
 			case rt2::core::UnsavedChangesCoordinator::ActionKind::None:
@@ -350,40 +355,7 @@ public:
 			}
 		}
 
-	ImGui::Begin("Info");
-	ImGui::Text("Last Render: %.3fms", m_SmoothedFrameTime);
-	ImGui::Text("FPS: %.1f", m_SmoothedFPS);
-	if (m_RendererGPU.HasGpuTimings())
-	{
-		const auto& timings = m_RendererGPU.GetGpuTimings();
-		if (timings.validMask != 0)
-		{
-			ImGui::Text("GPU timings (frame %llu)", static_cast<unsigned long long>(timings.frameIndex));
-			for (uint32_t i = 0; i < static_cast<uint32_t>(GpuTimestampProfiler::Region::Count); i++)
-				if (timings.validMask & (1u << i))
-					ImGui::Text("  %s: %.3f ms",
-					            GpuTimestampProfiler::RegionName(static_cast<GpuTimestampProfiler::Region>(i)),
-					            timings.milliseconds[i]);
-		}
-	}
-
-	if (m_RendererGPU.HasOutput())
-		ImGui::Text("Render Res: %d x %d", m_RendererGPU.GetWidth(), m_RendererGPU.GetHeight());
-	ImGui::Separator();
-
-	ImGui::Separator();
-	ImGui::Text("Renderer");
-	bool rtSupported = Walnut::Application::IsRayTracingSupported();
-	ImGui::Text("RT Supported: %s", rtSupported ? "yes" : "no");
-
-	if (rtSupported && !m_RendererGPU.IsAvailable())
-	{
-		if (m_RendererGPU.Init())
-		{
-			m_Settings = m_RendererGPU.GetSettings();
-			m_RendererGPU.ApplySettings(m_Settings);
-		}
-	}
+	// Modal popups are always rendered (not gated by window visibility).
 	if (ImGui::BeginPopupModal("GPU Init Failed", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 	{
 		ImGui::Text("Failed to initialize GPU renderer.\nCheck that raygen.spv / miss.spv / closesthit.spv exist next to the executable.\nSee console for details.");
@@ -398,7 +370,157 @@ public:
 			ImGui::CloseCurrentPopup();
 		ImGui::EndPopup();
 	}
-	ImGui::Separator();
+
+	// RT init: happens once when the Info window would first show the
+	// renderer status. Keep it here so it runs even if Info is hidden.
+	{
+		bool rtSupported = Walnut::Application::IsRayTracingSupported();
+		if (rtSupported && !m_RendererGPU.IsAvailable())
+		{
+			if (m_RendererGPU.Init())
+			{
+				m_Settings = m_RendererGPU.GetSettings();
+				m_RendererGPU.ApplySettings(m_Settings);
+			}
+		}
+	}
+
+	if (m_ShowInfoWindow)
+	{
+		ImGui::Begin("Camera");
+		EditorCameraPose editorPose = m_Cam.GetEditorPose();
+		bool cameraPoseChanged = false;
+		const bool editCamera = m_Runtime.GetState() == rt2::core::SceneRunState::Edit;
+		ImGui::BeginDisabled(!editCamera);
+		cameraPoseChanged |= ImGui::DragFloat3("Position", &editorPose.position.x,
+			0.01f, 0.0f, 0.0f, "%.6f");
+		cameraPoseChanged |= ImGui::DragFloat3("Forward", &editorPose.forward.x,
+			0.001f, -1.0f, 1.0f, "%.6f");
+		cameraPoseChanged |= ImGui::DragFloat("Vertical FOV", &editorPose.verticalFOV,
+			0.25f, 10.0f, 170.0f, "%.1f");
+		if (ImGui::Button("Copy Camera Pose"))
+		{
+			const glm::vec3& p = editorPose.position;
+			const glm::vec3& f = editorPose.forward;
+			char pose[256];
+			std::snprintf(pose, sizeof(pose),
+			              "position=(%.6f, %.6f, %.6f) forward=(%.6f, %.6f, %.6f)",
+			              p.x, p.y, p.z, f.x, f.y, f.z);
+			ImGui::SetClipboardText(pose);
+		}
+		ImGui::SliderFloat("Move Speed", &m_Cam.m_Speed, 0.5f, 50.0f, "%.1f");
+		cameraPoseChanged |= ImGui::SliderFloat("Far Clip", &editorPose.farClip,
+			100.0f, 100000.0f, "%.0f");
+		bool rasterFirst = m_Settings.rasterFirst;
+		ImGui::BeginDisabled(rasterFirst);
+		cameraPoseChanged |= ImGui::DragFloat("Aperture", &editorPose.aperture,
+			0.001f, 0.0f, 5.0f);
+		cameraPoseChanged |= ImGui::DragFloat("Focus Distance", &editorPose.focusDistance,
+			0.1f, 0.1f, 50.0f);
+		ImGui::EndDisabled();
+		if (rasterFirst && editorPose.aperture > 0.0f)
+		{
+			editorPose.aperture = 0.0f;
+			cameraPoseChanged = true;
+		}
+		if (cameraPoseChanged)
+			ApplyEditorCameraPose(editorPose);
+		if (ImGui::Button("Frame Selected")) FrameEditorSelection(true);
+		ImGui::SameLine();
+		if (ImGui::Button("Focus Selected")) FrameEditorSelection(false);
+
+		ImGui::Text("Camera Bookmarks");
+		for (size_t slot = 0; slot < EditorSceneState::kCameraBookmarkCount; ++slot)
+		{
+			ImGui::PushID(static_cast<int>(slot));
+			ImGui::Text("%d", static_cast<int>(slot + 1));
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Store"))
+				m_EditorUI.CaptureCameraBookmark(slot, m_Cam.GetEditorPose());
+			ImGui::SameLine();
+			const EditorCameraPose* bookmark = m_EditorUI.CameraBookmark(slot);
+			ImGui::BeginDisabled(bookmark == nullptr);
+			if (ImGui::SmallButton("Recall") && bookmark)
+				ApplyEditorCameraPose(*bookmark);
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Clear"))
+				m_EditorUI.ClearCameraBookmark(slot);
+			ImGui::EndDisabled();
+			ImGui::PopID();
+		}
+		ImGui::EndDisabled();
+		ImGui::End();
+	}
+
+	// ---- Performance window ----
+	// Level 1: FPS + frametime.
+	// Level 2: + raster / ReSTIR GPU timings.
+	// Level 3: + BLAS / TLAS / BVH build times.
+	if (m_ShowPerfWindow)
+	{
+	ImGui::Begin("Performance");
+	{
+		const char* levels[] = { "1 - FPS & Frametime",
+		                         "2 - Raster & ReSTIR Timings",
+		                         "3 - Everything (incl. BLAS/TLAS/BVH)" };
+		ImGui::Combo("Detail Level", &m_PerfDetailLevel, levels, IM_ARRAYSIZE(levels));
+		ImGui::Separator();
+	}
+	ImGui::Text("Last Render: %.3fms", m_SmoothedFrameTime);
+	ImGui::Text("FPS: %.1f", m_SmoothedFPS);
+	if (m_PerfDetailLevel >= kPerfLevelPasses && m_RendererGPU.HasGpuTimings())
+	{
+		const auto& timings = m_RendererGPU.GetGpuTimings();
+		if (timings.validMask != 0)
+		{
+			ImGui::Separator();
+			if (m_PerfDetailLevel >= kPerfLevelEverything)
+				ImGui::Text("GPU timings (frame %llu)", static_cast<unsigned long long>(timings.frameIndex));
+			else
+				ImGui::Text("GPU timings");
+			for (uint32_t i = 0; i < static_cast<uint32_t>(GpuTimestampProfiler::Region::Count); i++)
+			{
+				if (!(timings.validMask & (1u << i))) continue;
+				const auto region = static_cast<GpuTimestampProfiler::Region>(i);
+				// Level 2 shows only the raster + ReSTIR pass regions.
+				// Level 3 shows every captured region, so regions added to
+				// GpuTimestampProfiler::Region later appear here with no edit.
+				if (m_PerfDetailLevel < kPerfLevelEverything && !IsPassLevelRegion(region))
+					continue;
+				ImGui::Text("  %s: %.3f ms",
+				            GpuTimestampProfiler::RegionName(region),
+				            timings.milliseconds[i]);
+			}
+		}
+	}
+	if (m_PerfDetailLevel >= kPerfLevelEverything && m_RendererGPU.HasOutput())
+	{
+		ImGui::Separator();
+		ImGui::Text("Render Res: %d x %d", m_RendererGPU.GetWidth(), m_RendererGPU.GetHeight());
+	}
+	if (m_PerfDetailLevel >= kPerfLevelEverything && m_RendererGPU.IsAvailable())
+	{
+		ImGui::Separator();
+		ImGui::Text("BLAS/TLAS Build (last rebuild)");
+		if (m_RendererGPU.GetLastAsTotalMs() < 0.0f)
+		{
+			ImGui::TextDisabled("(no build yet)");
+		}
+		else
+		{
+			ImGui::Text("  BLAS build:  %.3f ms", m_RendererGPU.GetLastBlasBuildMs());
+			ImGui::Text("  TLAS build:  %.3f ms", m_RendererGPU.GetLastTlasBuildMs());
+			ImGui::Text("  Total AS:    %.3f ms", m_RendererGPU.GetLastAsTotalMs());
+			ImGui::Text("  BLAS count:   %u", m_RendererGPU.GetBlasCount());
+		}
+	}
+	ImGui::End();
+	}
+
+	// ---- Render Settings window ----
+	if (m_ShowRenderSettingsWin)
+	{
+	ImGui::Begin("Render Settings");
 	ImGui::Text("Samples Per Pixel");
 	ImGui::BeginDisabled(m_Settings.rasterFirst);
 	if (ImGui::DragInt("SPP", &m_Settings.spp, 1.0f, 1, 1500))
@@ -418,69 +540,6 @@ public:
 		m_RendererGPU.ApplySettings(m_Settings);
 	};
 
-	ImGui::Separator();
-	ImGui::Text("Camera");
-	EditorCameraPose editorPose = m_Cam.GetEditorPose();
-	bool cameraPoseChanged = false;
-	const bool editCamera = m_Runtime.GetState() == rt2::core::SceneRunState::Edit;
-	ImGui::BeginDisabled(!editCamera);
-	cameraPoseChanged |= ImGui::DragFloat3("Position", &editorPose.position.x,
-		0.01f, 0.0f, 0.0f, "%.6f");
-	cameraPoseChanged |= ImGui::DragFloat3("Forward", &editorPose.forward.x,
-		0.001f, -1.0f, 1.0f, "%.6f");
-	cameraPoseChanged |= ImGui::DragFloat("Vertical FOV", &editorPose.verticalFOV,
-		0.25f, 10.0f, 170.0f, "%.1f");
-	if (ImGui::Button("Copy Camera Pose"))
-	{
-		const glm::vec3& p = editorPose.position;
-		const glm::vec3& f = editorPose.forward;
-		char pose[256];
-		std::snprintf(pose, sizeof(pose),
-		              "position=(%.6f, %.6f, %.6f) forward=(%.6f, %.6f, %.6f)",
-		              p.x, p.y, p.z, f.x, f.y, f.z);
-		ImGui::SetClipboardText(pose);
-	}
-	ImGui::SliderFloat("Move Speed", &m_Cam.m_Speed, 0.5f, 50.0f, "%.1f");
-	cameraPoseChanged |= ImGui::SliderFloat("Far Clip", &editorPose.farClip,
-		100.0f, 100000.0f, "%.0f");
-	bool rasterFirst = m_Settings.rasterFirst;
-	ImGui::BeginDisabled(rasterFirst);
-	cameraPoseChanged |= ImGui::DragFloat("Aperture", &editorPose.aperture,
-		0.001f, 0.0f, 5.0f);
-	cameraPoseChanged |= ImGui::DragFloat("Focus Distance", &editorPose.focusDistance,
-		0.1f, 0.1f, 50.0f);
-	ImGui::EndDisabled();
-	if (rasterFirst && editorPose.aperture > 0.0f)
-	{
-		editorPose.aperture = 0.0f;
-		cameraPoseChanged = true;
-	}
-	if (cameraPoseChanged)
-		ApplyEditorCameraPose(editorPose);
-	if (ImGui::Button("Frame Selected")) FrameEditorSelection(true);
-	ImGui::SameLine();
-	if (ImGui::Button("Focus Selected")) FrameEditorSelection(false);
-
-	ImGui::Text("Camera Bookmarks");
-	for (size_t slot = 0; slot < EditorSceneState::kCameraBookmarkCount; ++slot)
-	{
-		ImGui::PushID(static_cast<int>(slot));
-		ImGui::Text("%d", static_cast<int>(slot + 1));
-		ImGui::SameLine();
-		if (ImGui::SmallButton("Store"))
-			m_EditorUI.CaptureCameraBookmark(slot, m_Cam.GetEditorPose());
-		ImGui::SameLine();
-		const EditorCameraPose* bookmark = m_EditorUI.CameraBookmark(slot);
-		ImGui::BeginDisabled(bookmark == nullptr);
-		if (ImGui::SmallButton("Recall") && bookmark)
-			ApplyEditorCameraPose(*bookmark);
-		ImGui::SameLine();
-		if (ImGui::SmallButton("Clear"))
-			m_EditorUI.ClearCameraBookmark(slot);
-		ImGui::EndDisabled();
-		ImGui::PopID();
-	}
-	ImGui::EndDisabled();
 	ImGui::Separator();
 	if (ImGui::Checkbox("Raster-First Path", &m_Settings.rasterFirst))
 	{
@@ -645,30 +704,11 @@ public:
 		m_Settings.gbufferDebugMode = debugCombo - 1;
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
-	ImGui::Separator();
-	ImGui::Text("Environment Map");
-	if (ImGui::Button("Load HDR..."))
-	{
-		std::string path = FileDialog::OpenFile(
-			L"HDR Files (*.hdr;*.exr)\0*.hdr;*.exr\0HDR (*.hdr)\0*.hdr\0All Files (*.*)\0*.*\0",
-			DialogInitialDirectory());
-		if (!path.empty())
-			LoadEnvMap(path);
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Clear HDR"))
-	{
-		m_SceneMgr.ClearEnvMap();
-		if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
-			UploadMeshToGPU();
-		m_RendererGPU.ResetAccumulation();
-	}
-	if (m_SceneMgr.HasEnvMap())
-		ImGui::Text("Loaded: %s (%dx%d)", m_SceneMgr.GetEnvMapPath().c_str(), m_SceneMgr.GetEnvMapWidth(), m_SceneMgr.GetEnvMapHeight());
-	if (ImGui::SliderFloat("Env Intensity", &m_Settings.envIntensity, 0.0f, 10.0f, "%.2f"))
-		m_RendererGPU.ApplySettings(m_Settings);
 	ImGui::End();
+	}
 
+	if (m_ShowSceneWindow)
+	{
 	ImGui::Begin("Scene");
 	ImGui::Text("Meshes: %d", (int)m_SceneMgr.GetECS().meshRegistry.GetCount());
 	ImGui::Text("Materials: %d", (int)m_SceneMgr.GetMaterials().size());
@@ -740,7 +780,31 @@ public:
 		ImGui::TextDisabled("(%s)", stateStr);
 	}
 
+	ImGui::Separator();
+	ImGui::Text("Environment Map");
+	if (ImGui::Button("Load HDR..."))
+	{
+		std::string path = FileDialog::OpenFile(
+			L"HDR Files (*.hdr;*.exr)\0*.hdr;*.exr\0HDR (*.hdr)\0*.hdr\0All Files (*.*)\0*.*\0",
+			DialogInitialDirectory());
+		if (!path.empty())
+			LoadEnvMap(path);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Clear HDR"))
+	{
+		m_SceneMgr.ClearEnvMap();
+		if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
+			UploadMeshToGPU();
+		m_RendererGPU.ResetAccumulation();
+	}
+	if (m_SceneMgr.HasEnvMap())
+		ImGui::Text("Loaded: %s (%dx%d)", m_SceneMgr.GetEnvMapPath().c_str(), m_SceneMgr.GetEnvMapWidth(), m_SceneMgr.GetEnvMapHeight());
+	if (ImGui::SliderFloat("Env Intensity", &m_Settings.envIntensity, 0.0f, 10.0f, "%.2f"))
+		m_RendererGPU.ApplySettings(m_Settings);
+
 	ImGui::End();
+	}
 
 	if (auto pick = m_RendererGPU.ConsumePickResult())
 	{
@@ -757,6 +821,8 @@ public:
 			m_EditorUI.ClearSelection();
 	}
 
+	m_EditorUI.SetOutlinerVisible(m_ShowHierarchyWindow);
+	m_EditorUI.SetInspectorVisible(m_ShowInspectorWindow);
  	m_EditorUI.RenderPanels();
 	HandleEditorCameraShortcuts();
 	HandleUndoRedoShortcuts();
@@ -870,7 +936,8 @@ public:
 	ImGui::PopStyleVar();
 
 	// ---- Phase 1B: Session / Recovery UI ----
-	DrawSessionPanel();
+	if (m_ShowSessionWindow)
+		DrawSessionPanel();
 	DrawRecoveryPrompt();
 	DrawUnsavedChangesPrompt();
 	DrawLoadingModal();
@@ -2560,6 +2627,58 @@ private:
 	#endif
 		return std::filesystem::current_path() / "RT2Editor";
 	}
+
+	// ---- View config persistence (window visibility + perf detail) ----
+	// Saved to <AppDataRoot>/view_config.txt as plain key=value lines.
+	// Loaded once at construction; saved when a flag changes (dirty bit).
+	std::filesystem::path ViewConfigPath() const
+	{
+		return AppDataRoot() / "view_config.txt";
+	}
+
+	void LoadViewConfig()
+	{
+		std::ifstream in(ViewConfigPath());
+		if (!in) return;
+		std::string line;
+		while (std::getline(in, line))
+		{
+			auto eq = line.find('=');
+			if (eq == std::string::npos) continue;
+			std::string key = line.substr(0, eq);
+			std::string val = line.substr(eq + 1);
+			auto getBool = [&](bool& out) {
+				if (val == "1" || val == "true") out = true;
+				else if (val == "0" || val == "false") out = false;
+			};
+			if (key == "perfDetail")      m_PerfDetailLevel      = std::atoi(val.c_str());
+			else if (key == "showCamera")        getBool(m_ShowInfoWindow);
+			else if (key == "showPerformance")   getBool(m_ShowPerfWindow);
+			else if (key == "showRenderSettings")getBool(m_ShowRenderSettingsWin);
+			else if (key == "showScene")         getBool(m_ShowSceneWindow);
+			else if (key == "showSession")       getBool(m_ShowSessionWindow);
+			else if (key == "showInspector")     getBool(m_ShowInspectorWindow);
+			else if (key == "showOutliner")      getBool(m_ShowHierarchyWindow);
+		}
+	}
+
+	void SaveViewConfig()
+	{
+		auto path = ViewConfigPath();
+		std::error_code ec;
+		std::filesystem::create_directories(path.parent_path(), ec);
+		std::ofstream out(path, std::ios::trunc);
+		if (!out) return;
+		out << "perfDetail=" << m_PerfDetailLevel << "\n";
+		out << "showCamera=" << (m_ShowInfoWindow ? 1 : 0) << "\n";
+		out << "showPerformance=" << (m_ShowPerfWindow ? 1 : 0) << "\n";
+		out << "showRenderSettings=" << (m_ShowRenderSettingsWin ? 1 : 0) << "\n";
+		out << "showScene=" << (m_ShowSceneWindow ? 1 : 0) << "\n";
+		out << "showSession=" << (m_ShowSessionWindow ? 1 : 0) << "\n";
+		out << "showInspector=" << (m_ShowInspectorWindow ? 1 : 0) << "\n";
+		out << "showOutliner=" << (m_ShowHierarchyWindow ? 1 : 0) << "\n";
+	}
+
 	std::unique_ptr<rt2::core::EditorSettingsStore>      m_Settings2;
 	std::unique_ptr<rt2::core::SceneRecoveryService>      m_Recovery;
 	rt2::core::UnsavedChangesCoordinator                  m_Unsaved;
@@ -2671,6 +2790,42 @@ public:
 	std::string RedoDescription() const { return m_EditorUI.RedoDescription(); }
 	void Undo() { m_EditorUI.Undo(); }
 	void Redo() { m_EditorUI.Redo(); }
+
+	// Performance window detail levels. These are ImGui::Combo indices, so
+	// they are 0-based even though the labels read "1".."3".
+	static constexpr int kPerfLevelBasic      = 0; // FPS + frame time only
+	static constexpr int kPerfLevelPasses     = 1; // + raster/ReSTIR GPU regions
+	static constexpr int kPerfLevelEverything = 2; // + all regions, res, AS builds
+
+	// Regions shown at kPerfLevelPasses. Everything else is level-3 only, so
+	// a region added to GpuTimestampProfiler::Region shows up at level 3
+	// automatically without touching this list.
+	static bool IsPassLevelRegion(GpuTimestampProfiler::Region region)
+	{
+		switch (region)
+		{
+		case GpuTimestampProfiler::Region::Raster:
+		case GpuTimestampProfiler::Region::ReSTIRDITemporal:
+		case GpuTimestampProfiler::Region::ReSTIRDISpatial:
+		case GpuTimestampProfiler::Region::ReSTIRGITemporal:
+		case GpuTimestampProfiler::Region::ReSTIRGIHistory:
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	// View-menu window visibility + Performance detail level. Public so
+	// the menubar callback (a free function holding a RT2Layer*) can toggle
+	// them. Viewport is always shown and is not toggleable.
+	int  m_PerfDetailLevel       = kPerfLevelBasic;
+	bool m_ShowInfoWindow        = true;
+	bool m_ShowPerfWindow        = true;
+	bool m_ShowRenderSettingsWin  = true;
+	bool m_ShowSceneWindow       = true;
+	bool m_ShowSessionWindow     = true;
+	bool m_ShowInspectorWindow   = true; // SceneEditorUI Inspector panel
+	bool m_ShowHierarchyWindow   = true; // SceneEditorUI Outliner panel
 
 	void NewScene()
 	{
@@ -3151,6 +3306,21 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 				? ("Redo " + layerPtr->RedoDescription()) : "Redo";
 			if (ImGui::MenuItem(redoLabel.c_str(), "Ctrl+Shift+Z", false, layerPtr->CanRedo()))
 				layerPtr->Redo();
+			ImGui::EndMenu();
+		}
+		if (ImGui::BeginMenu("View"))
+		{
+			ImGui::TextDisabled("Windows");
+			ImGui::Separator();
+			ImGui::MenuItem("Camera", nullptr, &layerPtr->m_ShowInfoWindow);
+			ImGui::MenuItem("Performance", nullptr, &layerPtr->m_ShowPerfWindow);
+			ImGui::MenuItem("Render Settings", nullptr, &layerPtr->m_ShowRenderSettingsWin);
+			ImGui::MenuItem("Scene", nullptr, &layerPtr->m_ShowSceneWindow);
+			ImGui::MenuItem("Session", nullptr, &layerPtr->m_ShowSessionWindow);
+			ImGui::MenuItem("Outliner", nullptr, &layerPtr->m_ShowHierarchyWindow);
+			ImGui::MenuItem("Inspector", nullptr, &layerPtr->m_ShowInspectorWindow);
+			ImGui::Separator();
+			ImGui::TextDisabled("(Viewport is always shown)");
 			ImGui::EndMenu();
 		}
 	});

@@ -139,6 +139,15 @@ public:
 	int GetMarginalCDFIndex() const { return m_MarginalCDFIndex; }
 	int GetConditionalCDFIndex() const { return m_ConditionalCDFIndex; }
 
+	// Last BLAS/TLAS build timings (milliseconds), captured with
+	// std::chrono around the build calls. CPU-side wall-clock; the GPU
+	// timestamp profiler separately reports per-region GPU times.
+	// -1.0 means no build has run yet.
+	float GetLastBlasBuildMs() const { return m_LastBlasBuildMs; }
+	float GetLastTlasBuildMs()  const { return m_LastTlasBuildMs; }
+	float GetLastAsTotalMs()    const { return m_LastAsTotalMs; }
+	uint32_t GetBlasCount() const { return m_AS.GetBLASCount(); }
+
 private:
 	void CreateMaterialBuffer(const GpuDevice& dev);
 	void CreateLightBuffer(const GpuDevice& dev);
@@ -190,6 +199,16 @@ private:
 	bool m_NeedsASRebuild = false;
 	bool m_ASJustBuilt = false;
 	bool m_NeedsTransformAdvance = false;
+
+	// Last BLAS/TLAS build timings (milliseconds), captured with
+	// std::chrono around the build calls. CPU-side wall-clock; the GPU
+	// timestamp profiler separately reports per-region GPU times. These
+	// are populated by RebuildAccelerationStructures and
+	// BeginRebuildAccelerationStructures; -1.0 means no build has run yet.
+	// Public so RendererGPU can forward them to the Performance window.
+	float m_LastBlasBuildMs = -1.0f;
+	float m_LastTlasBuildMs  = -1.0f;
+	float m_LastAsTotalMs    = -1.0f;
 
 	// Async AS rebuild state (fence-based, non-blocking submit)
 	VkFence m_ASRebuildFence = VK_NULL_HANDLE;

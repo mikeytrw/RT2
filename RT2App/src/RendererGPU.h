@@ -127,6 +127,14 @@ public:
 	glm::vec2 GetNRDJitterPrev() const { return m_NRDJitterPrev; }
 	const GpuTimestampProfiler::Timings& GetGpuTimings() const { return m_GpuProfiler.GetLatest(); }
 	bool HasGpuTimings() const { return m_GpuProfiler.IsAvailable(); }
+
+	// Last BLAS/TLAS build timings (milliseconds, CPU wall-clock around the
+	// build/record calls). -1.0 means no build has run yet. Forwarded from
+	// SceneResources for the Performance window's level-3 view.
+	float GetLastBlasBuildMs() const { return m_Scene.GetLastBlasBuildMs(); }
+	float GetLastTlasBuildMs()  const { return m_Scene.GetLastTlasBuildMs(); }
+	float GetLastAsTotalMs()    const { return m_Scene.GetLastAsTotalMs(); }
+	uint32_t GetBlasCount() const { return m_Scene.GetBlasCount(); }
 	// Wait for submitted frames and collect the newest timestamp slot. Intended
 	// for headless benchmarks and explicit capture points, not the live loop.
 	void FlushGpuTimings();

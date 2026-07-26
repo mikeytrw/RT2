@@ -147,6 +147,13 @@ public:
 
 	void RenderPanels();
 
+	// Per-panel visibility (View menu toggles). The Outliner/Inspector can
+	// be hidden without affecting the other panel.
+	bool IsOutlinerVisible() const { return m_ShowOutliner; }
+	void SetOutlinerVisible(bool v) { m_ShowOutliner = v; }
+	bool IsInspectorVisible() const { return m_ShowInspector; }
+	void SetInspectorVisible(bool v) { m_ShowInspector = v; }
+
 	// Public hooks for async completion callbacks (host calls these after
 	// a background load/import finishes).
 	void OnImportComplete(SceneManager::EntityId importedRoot)
@@ -159,6 +166,7 @@ public:
 private:
 	void RenderOutliner();
 	void RenderInspector();
+
 	void RenderEntityTree(SceneManager::EntityId entity, int depth);
 	void RenderTransformEditor(SceneManager::EntityId entity);
 	void RenderMaterialEditor(SceneManager::EntityId entity);
@@ -247,6 +255,11 @@ private:
 
 	// UI state for the "Add" popup
 	bool m_ShowAddPopup = false;
+
+	// Per-panel visibility flags (driven by the app's View menu). The
+	// viewport is not toggleable and is not owned by SceneEditorUI.
+	bool m_ShowOutliner = true;
+	bool m_ShowInspector = true;
 
 	// Set when an entity was deleted during this frame's tree traversal.
 	// The outliner checks this after each RenderEntityTree call and aborts

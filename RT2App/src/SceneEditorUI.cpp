@@ -19,8 +19,8 @@
 
 void SceneEditorUI::RenderPanels()
 {
-	RenderOutliner();
-	RenderInspector();
+	if (m_ShowOutliner) RenderOutliner();
+	if (m_ShowInspector) RenderInspector();
 	DrawImportOptionsModal();
 }
 

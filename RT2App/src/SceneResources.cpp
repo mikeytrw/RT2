@@ -223,15 +223,23 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 	m_AS.SetDevice(dev);
 	dev.LogMemoryUsage("RebuildAS pre-BLAS");
 
+	// Time the BLAS + TLAS builds for the Performance window (level 3).
+	auto asTotalStart = std::chrono::steady_clock::now();
+
 	// BuildBLASes now does its own batched ImmediateSubmit calls
 	// internally (batches of 256 to cap GPU memory). The cmdBuffer
 	// parameter is unused — BLAS builds are submitted per-batch.
+	auto blasStart = std::chrono::steady_clock::now();
 	bool blasOK = m_AS.BuildBLASes(VK_NULL_HANDLE, geometries);
+	auto blasEnd = std::chrono::steady_clock::now();
+	m_LastBlasBuildMs = std::chrono::duration<float, std::milli>(
+		blasEnd - blasStart).count();
 	RT_LOG("[RebuildAS] BuildBLASes result=%d", blasOK);
 	printf("[RebuildAS] BuildBLASes done, building TLAS...\n"); fflush(stdout);
 
 	// Build TLAS in a single ImmediateSubmit (with a memory barrier
 	// between BLAS writes and TLAS read).
+	auto tlasStart = std::chrono::steady_clock::now();
 	CommandUtils::ImmediateSubmit(dev, [&](VkCommandBuffer cmd) {
 		VkMemoryBarrier blasBarrier = {};
 		blasBarrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
@@ -267,6 +275,11 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 		bool tlasOK = m_AS.BuildTLAS(cmd, instances, instanceMeshIndices);
 		RT_LOG("[RebuildAS] TLAS build result=%d instances=%d", tlasOK, (int)instances.size());
 	});
+	auto tlasEnd = std::chrono::steady_clock::now();
+	m_LastTlasBuildMs = std::chrono::duration<float, std::milli>(
+		tlasEnd - tlasStart).count();
+	m_LastAsTotalMs = std::chrono::duration<float, std::milli>(
+		std::chrono::steady_clock::now() - asTotalStart).count();
 	printf("[RebuildAS] TLAS done\n"); fflush(stdout);
 
 	printf("[RebuildAS] BuildAttributeBuffers...\n"); fflush(stdout);
@@ -351,6 +364,12 @@ bool SceneResources::BeginRebuildAccelerationStructures(const GpuDevice& dev,
 	m_AS.SetDevice(dev);
 	dev.LogMemoryUsage("RebuildAS-async pre-BLAS");
 
+	// Time the BLAS + TLAS command recording for the Performance window.
+	// Note: these are CPU-side recording/submit times; the GPU build runs
+	// asynchronously behind the fence. Good enough for the level-3 view;
+	// a GPU timestamp would need extra query-pool plumbing.
+	auto asTotalStart = std::chrono::steady_clock::now();
+
 	// Create a transient command pool + buffer + fence.
 	VkDevice device = dev.device;
 
@@ -398,7 +417,10 @@ bool SceneResources::BeginRebuildAccelerationStructures(const GpuDevice& dev,
 	beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	vkBeginCommandBuffer(m_ASRebuildCmdBuffer, &beginInfo);
 
+	auto blasStart = std::chrono::steady_clock::now();
 	bool blasOK = m_AS.BuildBLASes(m_ASRebuildCmdBuffer, geometries);
+	m_LastBlasBuildMs = std::chrono::duration<float, std::milli>(
+		std::chrono::steady_clock::now() - blasStart).count();
 	RT_LOG("[RebuildAS-async] BuildBLASes result=%d", blasOK);
 
 	VkMemoryBarrier blasBarrier = {};
@@ -432,7 +454,12 @@ bool SceneResources::BeginRebuildAccelerationStructures(const GpuDevice& dev,
 		instanceMeshIndices.push_back(gpuInst.meshIndex);
 	}
 
+	auto tlasStart = std::chrono::steady_clock::now();
 	bool tlasOK = m_AS.BuildTLAS(m_ASRebuildCmdBuffer, instances, instanceMeshIndices);
+	m_LastTlasBuildMs = std::chrono::duration<float, std::milli>(
+		std::chrono::steady_clock::now() - tlasStart).count();
+	m_LastAsTotalMs = std::chrono::duration<float, std::milli>(
+		std::chrono::steady_clock::now() - asTotalStart).count();
 	RT_LOG("[RebuildAS-async] TLAS build result=%d instances=%d", tlasOK, (int)instances.size());
 
 	vkEndCommandBuffer(m_ASRebuildCmdBuffer);
