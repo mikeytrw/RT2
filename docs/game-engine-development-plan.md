@@ -8384,3 +8384,73 @@ Two items are carried forward rather than closed:
    undetected breakage.
 
 Next: W4 project scanning and database ownership.
+
+## Phase 8 — Punctual lights (spec)
+
+Drafted 2026-07-26, grounded against `db74b4c` on `phase-6-scripting`. No
+implementation has started. This section is a spec and requires review
+before implementation begins.
+
+### Motivation
+
+The renderer supports emissive geometry only. Every other light in a scene
+is imported, stored, serialised, shown in the Outliner — and contributes
+zero illumination, silently.
+
+Two consequences observed in Intel Sponza:
+
+- The 24 lamps that light the arcade alcoves do nothing, so the alcoves are
+  black. They are present in the source glTF as `KHR_lights_punctual`.
+- Authoring a working light means raising an emissive material's intensity
+  into the thousands. That is arithmetically correct, not a bug: irradiance
+  from an emitter goes as `L · A · cos / d²`, so a small emitter needs very
+  large radiance to rival an environment map covering the whole hemisphere.
+  The problem is that the engine asks the user to author in radiance while
+  they are thinking in power. A punctual light has no area term, so it is
+  authored in intensity directly and the units problem disappears.
+
+### Grounded findings
+
+| ID | Fact at `db74b4c` | Consequence |
+|---|---|---|
+| P8-F1 | Two unrelated light representations exist. `LightComponent` (`RT2App/src/ECSComponents.h:76`) is the live editable one — created by `SceneManager::AddLight` (`SceneManager.cpp:929`), edited in the Inspector (`SceneEditorUI.cpp:1455`, `:1518`), undo/redo aware (`SceneManager.cpp:1540`), with position and direction implied by the entity's `Transform`. `ECSScene.lights` is a flat `std::vector<SceneLight>` (`ECSScene.h:33`) written *only* by the glTF loader (`SceneLoader.cpp:772`). | Pick one. `LightComponent` + `Transform` wins: transform-driven, undo-aware, already in the Inspector. `ECSScene.lights` becomes loader staging that is converted into entities, then removed. |
+| P8-F2 | Neither representation reaches the GPU. `GPUSceneData::lights` is `GPUTriangleLight` built exclusively from emissive triangles (`GPUSceneData.cpp:282-560`); nothing reads `ecsScene.lights`. `SceneResources::CreateLightBuffer` (`SceneResources.cpp:607`) uploads only triangle lights. | The name `CreateLightBuffer` already means "emissive triangle buffer". Punctual lights need their own struct, buffer, and binding; do not overload the existing one. |
+| P8-F3 | `SceneLight` (`SceneTypes.h:82`) has the full glTF punctual model — type, position, direction, colour, intensity, range, inner/outer cone. `LightComponent` has only `color`, `intensity`, `range`, cone angles and a `bool isSpot`. `LightType` (`SceneTypes.h:24`) has `Point` and `Spot` but no `Directional`. | `LightComponent` must gain a real type enum. `isSpot` appears in ~12 places including the public `SceneManager` API (`AddLight`, `GetLightProperties`, `SetLightProperties`), `EditorPropertyCommands.cpp:71`, and the Inspector — all migrate together. |
+| P8-F4 | `KHR_lights_punctual` is parsed in `LoadIntoECS` only (`SceneLoader.cpp:697`); `ImportIntoECS` does not read it. Export writes it (`SceneLoader.cpp:443`). | Importing a glTF silently drops every light. This is why a fresh Sponza import reports `Lights: 0` while the `.rt2scene` reports 24. |
+| P8-F5 | NEE already performs stochastic selection between triangle lights and the environment, dividing by the selection probability `pTri` (`restir_gi_bindings.glsl:565-595`). The estimator is unbiased: uniform triangle choice, uniform area sampling, converted to solid angle. | Punctual lights join as a third arm of the same selection. The existing `pTri`/`pEnv` split becomes a three-way split; every consumer of those probabilities must be updated together or the estimator silently biases. |
+
+### Decisions
+
+| ID | Decision |
+|---|---|
+| P8-Q1 — sampling | Stochastic single-light selection weighted by `intensity / d²`, one shadow ray per NEE event, divided by the selection probability. Scales past a handful of lights and matches the existing stochastic NEE structure. Not a deterministic loop (O(lights) shadow rays per bounce) and not ReSTIR DI reservoir integration in this phase. |
+| P8-Q2 — scope | `Point`, `Spot` and `Directional`, all zero-radius with sharp shadows. Directional gives a sun independent of the environment map. No radius/sphere-light soft shadows in this phase. |
+| P8-Q3 — representation | `LightComponent` + `Transform` is authoritative. World position is the entity's world translation; world direction is the world rotation applied to `-Z` (glTF convention). `ECSScene.lights` is converted to entities at load and then deleted. |
+| P8-Q4 — units | Follow glTF: `Point`/`Spot` intensity in candela, `Directional` in lux. Conversion to engine radiance is applied once at GPU-buffer build, documented in one place, with the existing `Emissive Boost` left untouched. |
+| P8-Q5 — ReSTIR DI | Out of scope. Punctual lights go through classic NEE only. Recorded explicitly so a later phase can add reservoir candidacy without re-deriving the contract. |
+
+### Implementation order
+
+1. `LightComponent` gains `LightType type` replacing `isSpot`; add `Directional` to `LightType`. Migrate all ~12 call sites, the public `SceneManager` light API, `EditorPropertyCommands` equality, and the Inspector. Serialisation reads `isSpot` when `type` is absent so existing scenes load unchanged.
+2. Convert `ECSScene.lights` into entities carrying `LightComponent` + `Transform` at load; delete the vector and its remaining readers.
+3. Parse `KHR_lights_punctual` in `ImportIntoECS`, sharing one helper with `LoadIntoECS`.
+4. Add `GPUPunctualLight` to `GPUSceneData.h`, built from `LightComponent` + world `Transform`, with the P8-Q4 unit conversion.
+5. Add the GPU buffer, descriptor binding, and `shader_interface.h` constant. Mirror the existing 16-byte-header buffer layout.
+6. Shader: punctual NEE with power/distance-weighted selection, spot cone attenuation, range falloff, and the three-way selection probability. Update every consumer of `pTri`/`pEnv`.
+7. Tests and discrimination proofs; then the close report.
+
+### Permanent tests and discrimination proofs
+
+| Permanent evidence | Temporary fault that must make it fail |
+|---|---|
+| A glTF with `KHR_lights_punctual` yields the same light count and per-light type/intensity/cone values through **both** `LoadIntoECS` and `ImportIntoECS`. | Remove the punctual parse from `ImportIntoECS`. |
+| Moving or rotating a light entity changes the built `GPUPunctualLight` world position/direction accordingly; a spot's direction follows the entity's rotation. | Build the buffer from the local transform instead of the world transform. |
+| Each `LightType` maps to its own GPU type value and cone/range fields survive the round trip; a scene written before the enum existed still loads with `isSpot` honoured. | Collapse `Directional` onto `Point` in the type mapping. |
+| Selection probabilities over the three NEE arms sum to 1 for representative scenes (lights only, emissives only, environment only, and all three). | Drop the punctual arm from the normalisation so the probabilities sum above 1. |
+| A scene lit by one point light converges to the analytic `I·cos/d²` irradiance at a reference point, within tolerance. | Omit the inverse-square term. |
+
+### Boundary
+
+Does not include ReSTIR DI reservoir candidacy, soft shadows/light radius,
+IES profiles, shadow-casting toggles per light, or any change to emissive
+handling or the `Emissive Boost` control.
