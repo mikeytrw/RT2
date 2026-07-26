@@ -710,6 +710,19 @@ public:
 		m_Settings.gbufferDebugMode = debugCombo - 1;
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
+
+	ImGui::Separator();
+	ImGui::Text("Diagnostics");
+	bool logMaterials = m_RendererGPU.IsMaterialTableLogging();
+	if (ImGui::Checkbox("Log material table on scene load", &logMaterials))
+		m_RendererGPU.SetMaterialTableLogging(logMaterials);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip(
+			"Writes every material's metallic/roughness factors and texture\n"
+			"indices to rt2_log.txt on each full scene upload, flagging any\n"
+			"material that is fully metallic with no metallicRoughness\n"
+			"texture to modulate it (the glTF default-1.0 trap).\n"
+			"Re-emits on structural edits, not just loads.");
 	ImGui::End();
 	}
 
@@ -1589,7 +1602,44 @@ public:
 			}
 		}
 
+		// Editor edits (delete, add, transform-structural) invalidate the AS
+		// just like a load does, but they do not go through the loading modal.
+		// Without this, the rebuild happens inside Render() via the blocking
+		// RebuildAccelerationStructures(), freezing the whole app for the
+		// entire BLAS/TLAS build — ~744 ms on Sponza's 405 meshes.
+		//
+		// Drive the same async path the modal uses. SceneResources documents
+		// that the AS is invalid while a rebuild is pending and Render() must
+		// not be called, so we return instead: the viewport holds its last
+		// frame for a few hundred ms while the UI stays live.
+		if (!DriveEditorASRebuild())
+			return;
+
 		Render();
+	}
+
+	// Returns true when it is safe to Render(). False means an async AS
+	// rebuild is in flight and this frame must skip rendering.
+	bool DriveEditorASRebuild()
+	{
+		if (!m_RendererGPU.IsAvailable())
+			return true;
+
+		if (m_RendererGPU.IsASRebuildPending())
+		{
+			if (!m_RendererGPU.PollASRebuild())
+				return false; // still building
+			m_RendererGPU.UpdateDescriptorSetAfterAS();
+			return true;
+		}
+
+		if (!m_RendererGPU.NeedsASRebuild())
+			return true;
+
+		if (!m_RendererGPU.BeginRebuildAccelerationStructures())
+			return true; // submit failed — let Render()'s blocking path recover
+
+		return false; // submitted; poll it from the next frame
 	}
 
 private:
@@ -2292,7 +2342,18 @@ private:
 
 		m_LastRenderTime = timer.ElapsedMillis();
 
-		float alpha = m_LastRenderTime / (m_LastRenderTime + 500.0f);
+		// Frame-rate-independent EMA with a 150 ms time constant. 500 ms was
+		// sluggish enough that the readout lagged visibly behind the picture.
+		//
+		// alpha is clamped because it scales with frame time: one 744 ms AS
+		// rebuild would otherwise take alpha to 0.6 and let a single hitch
+		// frame own 60% of the displayed value, leaving the counter wrong for
+		// seconds afterwards. Capping alpha keeps a stall visible as a bump
+		// rather than a step change the average takes seconds to walk back.
+		constexpr float kTimeConstantMs = 150.0f;
+		constexpr float kMaxAlpha       = 0.25f;
+		const float alpha = std::min(
+			m_LastRenderTime / (m_LastRenderTime + kTimeConstantMs), kMaxAlpha);
 		m_SmoothedFrameTime = m_SmoothedFrameTime * (1.0f - alpha) + m_LastRenderTime * alpha;
 		m_SmoothedFPS = m_SmoothedFrameTime > 0.0f ? 1000.0f / m_SmoothedFrameTime : 0.0f;
 	}
