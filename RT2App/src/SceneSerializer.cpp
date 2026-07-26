@@ -1174,8 +1174,10 @@ std::vector<EntityRecord> CollectRecords(const SceneDocument& doc)
 static bool SaveInternal(const SceneDocument& doc,
                          const std::filesystem::path& outPath,
                          const std::filesystem::path& outputSceneDir,
+                         std::vector<AssetDiagnostic>& diagnostics,
                          Error& err)
 {
+    (void)diagnostics; // Step 7.4 appends staged NonPortable advisories.
     err = Error{};
     // Pre-save validation: every entity with a MeshRef must have either a
     // PrimitiveComponent (procedural) or an ImportedMeshSourceComponent
@@ -1403,21 +1405,27 @@ static bool SaveInternal(const SceneDocument& doc,
     return true;
 }
 
-bool SceneSerializer::Save(const SceneDocument& doc, const std::filesystem::path& path, Error& err)
+bool SceneSerializer::Save(
+    const SceneDocument& doc,
+    const std::filesystem::path& path,
+    std::vector<AssetDiagnostic>& diagnostics,
+    Error& err)
 {
-    return SaveInternal(doc, path, path.parent_path(), err);
+    return SaveInternal(doc, path, path.parent_path(), diagnostics, err);
 }
 
 bool SceneSerializer::SaveTo(const SceneDocument& doc,
                             const std::filesystem::path& outPath,
                             const std::filesystem::path& logicalScenePath,
+                            std::vector<AssetDiagnostic>& diagnostics,
                             Error& err)
 {
     // Relativize asset references against the logical scene's directory,
     // not the physical output path. This is the recovery-snapshot path:
     // bytes land under the recovery directory, but durable references
     // remain resolvable against the original authoring scene's root.
-    return SaveInternal(doc, outPath, logicalScenePath.parent_path(), err);
+    return SaveInternal(
+        doc, outPath, logicalScenePath.parent_path(), diagnostics, err);
 }
 
 // ============================================================================

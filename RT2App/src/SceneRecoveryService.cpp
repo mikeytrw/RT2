@@ -273,7 +273,8 @@ bool SceneRecoveryService::WriteRecord(const std::string& docId,
         logicalScenePath = assetRoot / "__untitled__.rt2scene";
     }
 
-    if (!SceneSerializer::SaveTo(doc, capturePath, logicalScenePath, err))
+    std::vector<AssetDiagnostic> saveDiagnostics;
+    if (!SceneSerializer::SaveTo(doc, capturePath, logicalScenePath, saveDiagnostics, err))
         return false;
 
     json snapshot;

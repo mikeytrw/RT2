@@ -17,6 +17,7 @@
 #include "ScriptFieldResolver.h"
 #include "ScriptFieldChangePolicy.h"
 #include "SceneSerializer.h"
+#include "SceneSerializerTestSupport.h"
 #include "core/UUID.h"
 
 #include <chrono>
@@ -1086,7 +1087,7 @@ TEST_CASE("Phase6B W2: resolver parse failure preserves authored values exactly"
     CHECK(resolution.skippedEntities == 1);
     REQUIRE(diagnostics.size() == 1);
     CHECK(diagnostics[0].kind == FieldDiagnostic::Kind::ParseFailed);
-    REQUIRE(assetDiagnostics.size() == 2);
+    REQUIRE(assetDiagnostics.size() == 1);
     CHECK(std::count_if(
         assetDiagnostics.begin(), assetDiagnostics.end(),
         [](const AssetDiagnostic& diagnostic) {
@@ -1096,7 +1097,7 @@ TEST_CASE("Phase6B W2: resolver parse failure preserves authored values exactly"
         assetDiagnostics.begin(), assetDiagnostics.end(),
         [](const AssetDiagnostic& diagnostic) {
             return diagnostic.severity == AssetDiagnostic::Stale;
-        }) == 1);
+        }) == 0);
     REQUIRE(fx.manager.GetScriptState(entity).has_value());
     CHECK(fx.manager.GetScriptState(entity)->fieldValues == authored.fieldValues);
 }
@@ -1634,7 +1635,7 @@ TEST_CASE("Phase6B W4: save/reopen after Execute contains after-state; after Und
     // Save after Execute.
     const auto path = std::filesystem::temp_directory_path() / "rt2_w4_cmd_after.rt2scene";
     Error err;
-    REQUIRE(SceneSerializer::Save(fx.manager.AuthoringDoc(), path, err));
+    REQUIRE(SaveSceneForTest(fx.manager.AuthoringDoc(), path, err));
 
     // Reopen and verify after-state.
     SceneDocument loaded;
@@ -1652,7 +1653,7 @@ TEST_CASE("Phase6B W4: save/reopen after Execute contains after-state; after Und
     REQUIRE(history.Undo(fx.manager).success);
     CHECK_FALSE(fx.manager.HasScript(fx.EntityOf(box)));
     const auto path2 = std::filesystem::temp_directory_path() / "rt2_w4_cmd_before.rt2scene";
-    REQUIRE(SceneSerializer::Save(fx.manager.AuthoringDoc(), path2, err));
+    REQUIRE(SaveSceneForTest(fx.manager.AuthoringDoc(), path2, err));
     SceneDocument loaded2;
     loaded2.SetUuidProvider(&fx.ids);
     REQUIRE(SceneSerializer::Load(loaded2, path2, err));

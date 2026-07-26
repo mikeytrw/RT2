@@ -2,6 +2,7 @@
 
 #include "SceneRecoveryService.h"
 #include "SceneSerializer.h"
+#include "SceneSerializerTestSupport.h"
 #include "SceneDocument.h"
 #include "SceneAssetResolver.h"
 #include "SceneManager.h"
@@ -243,7 +244,7 @@ TEST_CASE("Recovery: explicit file unchanged by autosave")
         auto doc = MakePrimitiveScene(&provider);
         doc.metadata.sourcePath = scenePath.string();
         Error err;
-        REQUIRE(SceneSerializer::Save(doc, scenePath, err));
+        REQUIRE(SaveSceneForTest(doc, scenePath, err));
     }
     std::string before = ReadFileBytes(scenePath);
 
@@ -368,7 +369,7 @@ TEST_CASE("Recovery: explicit file unchanged through restore")
         auto doc = MakePrimitiveScene(&provider);
         doc.metadata.sourcePath = scenePath.string();
         Error err;
-        REQUIRE(SceneSerializer::Save(doc, scenePath, err));
+        REQUIRE(SaveSceneForTest(doc, scenePath, err));
     }
     std::string before = ReadFileBytes(scenePath);
 
@@ -404,7 +405,7 @@ TEST_CASE("Recovery: discard removes record only")
         auto doc = MakePrimitiveScene(&provider);
         doc.metadata.sourcePath = scenePath.string();
         Error err;
-        REQUIRE(SceneSerializer::Save(doc, scenePath, err));
+        REQUIRE(SaveSceneForTest(doc, scenePath, err));
     }
 
     FakeClock clk;
@@ -724,7 +725,7 @@ TEST_CASE("Recovery: asset-backed restore preserves UUIDs overrides and environm
     auto& doc = mgr.AuthoringDoc();
     doc.metadata.sourcePath = scenePath;
     doc.metadata.dirty = false;
-    REQUIRE(SceneSerializer::Save(doc, scenePath, err));
+    REQUIRE(SaveSceneForTest(doc, scenePath, err));
     const std::string explicitBytes = ReadFileBytes(scenePath);
 
     auto imported = doc.ecs.registry.view<ImportedMeshSourceComponent>();

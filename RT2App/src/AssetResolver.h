@@ -9,6 +9,7 @@
 #include "core/Error.h"
 #include "core/UUID.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -41,10 +42,10 @@
 //   1. A non-nil ID is authoritative and looked up first.
 //   2. A unique ID whose file exists wins. A stale/missing reference path is
 //      observable but does not defeat successful ID resolution.
-//   3. If the database is stale/missing but the path exists and the path's
-//      sidecar claims the same ID, path fallback succeeds and reports a Stale
-//      diagnostic: the durable identity is confirmed by the sidecar, but the
-//      database-side state needs repair.
+//   3. If a supplied database is stale but the path exists and the path's
+//      sidecar claims the same ID, path fallback succeeds and reports Stale.
+//      With no database supplied, that same verified path+sidecar state is
+//      fully healthy and emits no diagnostic.
 //   4. If the ID does not locate a file, the path exists, and the sidecar is
 //      absent, fallback succeeds with a sidecar Stale diagnostic and
 //      identityRepairRequired=true; explicit save/migration performs remap.
@@ -64,9 +65,9 @@
 // a diagnostic.
 //
 // AssetDiagnostic is defined here (neutral) and re-exported from
-// SceneAssetResolver.h, which now includes this header. Severity gained
-// Conflict and Stale (W3-Q5); the Walnut formatter must be made exhaustive
-// in the same change that adds a severity-emitting code path.
+// SceneAssetResolver.h, which now includes this header. Advisory severities
+// sort numerically below terminal failures so non-C++ consumers can enforce
+// the same threshold. Presentation uses the shared exhaustive name helper.
 // ============================================================================
 
 namespace rt2::core {
@@ -76,17 +77,20 @@ namespace rt2::core {
 // field identifies the failure. `detail` is the human-readable context.
 struct AssetDiagnostic
 {
-    enum Severity
+    enum Severity : uint8_t
     {
-        Missing,     // file not found / unreadable
-        Malformed,   // file found but failed to parse
-        Unresolved,  // source key not present in the rebuilt asset
-        Conflict,    // ID/path disagreement; identity not substituted (W3-Q5)
         // Resolved successfully, but path/identity metadata is stale or
         // incomplete (W3-Q5). Missing is reserved for failed location;
         // successful recovery through ID/path fallback, including a missing
         // identity sidecar, is Stale and may require later save/migration.
-        Stale,
+        Stale       = 0,
+        // Save/export retained a normalized absolute fallback because the
+        // reference could not be made portable relative to the output.
+        NonPortable = 1,
+        Missing     = 2, // file not found / unreadable
+        Malformed   = 3, // file found but failed to parse
+        Unresolved  = 4, // source key not present in the rebuilt asset
+        Conflict    = 5, // ID/path disagreement; identity not substituted
     };
     Severity        severity = Missing;
     AssetKind       kind     = AssetKind::Unknown;
@@ -142,8 +146,8 @@ struct AssetResolutionResult
 
 // Resolve a single AssetReference against an explicit context. Pure: no
 // filesystem mutation, no sidecar write, no database mutation. A failure
-// appends one terminal diagnostic. A success may append one Stale advisory,
-// but never Missing. This entry point does not sort; batch APIs sort.
+// appends one terminal diagnostic. A success may append an advisory, but
+// never Missing. This entry point does not sort; batch APIs sort.
 //
 // `entityUuid`/`entityName` are optional context used only to fill the
 // diagnostic; pass nil/empty for non-entity references (e.g. environment).
@@ -170,6 +174,17 @@ bool ResolveBatch(const std::vector<AssetBatchEntry>& entries,
 // Deterministic sort key for diagnostics. Exposed so callers and tests share
 // one ordering rule.
 std::string AssetDiagnosticSortKey(const AssetDiagnostic& d);
+
+// Shared presentation/threshold policy. Keep every consumer on these helpers
+// so adding a severity cannot silently degrade to "Unknown" or turn an
+// advisory into a terminal gate failure.
+const char* AssetDiagnosticSeverityName(AssetDiagnostic::Severity severity);
+bool IsTerminalAssetDiagnostic(AssetDiagnostic::Severity severity);
+
+// Empty when there is no NonPortable advisory. One warning names its ref;
+// multiple warnings report the count and first deterministically sorted ref.
+std::string FormatNonPortableAssetSummary(
+    const std::vector<AssetDiagnostic>& diagnostics);
 
 } // namespace rt2::core
 

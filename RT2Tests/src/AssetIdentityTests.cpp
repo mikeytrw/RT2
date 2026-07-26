@@ -2,6 +2,7 @@
 
 #include "AssetIdentity.h"
 #include "SceneSerializer.h"
+#include "SceneSerializerTestSupport.h"
 #include "SceneDocument.h"
 #include "ECSComponents.h"
 #include "ECSScene.h"
@@ -266,7 +267,7 @@ TEST_CASE("Phase7 W1: assetId is serialized when non-nil and omitted when nil")
 
     const auto path = std::filesystem::temp_directory_path() / "rt2_w1_serialized.rt2scene";
     Error err;
-    REQUIRE(SceneSerializer::Save(doc, path, err));
+    REQUIRE(SaveSceneForTest(doc, path, err));
     nlohmann::json saved;
     { std::ifstream in(path); in >> saved; }
     CHECK(saved["entities"][0]["importedSource"].contains("assetId"));
@@ -277,7 +278,7 @@ TEST_CASE("Phase7 W1: assetId is serialized when non-nil and omitted when nil")
     // A nil assetId is omitted (additive over v3: a v3 reader sees no field).
     imported.model.assetId = UUID::Nil();
     doc.ecs.registry.emplace_or_replace<ImportedMeshSourceComponent>(entity, imported);
-    REQUIRE(SceneSerializer::Save(doc, path, err));
+    REQUIRE(SaveSceneForTest(doc, path, err));
     { std::ifstream in(path); in >> saved; }
     CHECK_FALSE(saved["entities"][0]["importedSource"].contains("assetId"));
     std::filesystem::remove(path);
@@ -348,7 +349,7 @@ TEST_CASE("Phase7 W1: assetId survives a save/load round-trip")
 
     const auto path = std::filesystem::temp_directory_path() / "rt2_w1_roundtrip.rt2scene";
     Error err;
-    REQUIRE(SceneSerializer::Save(doc, path, err));
+    REQUIRE(SaveSceneForTest(doc, path, err));
 
     nlohmann::json saved;
     { std::ifstream in(path); in >> saved; }

@@ -3,6 +3,7 @@
 #ifndef RT2_FIXTURE_GENERATOR_H
 #define RT2_FIXTURE_GENERATOR_H
 
+#include "AssetResolver.h"
 #include "SceneSerializer.h"
 #include "SceneDocument.h"
 #include "ECSComponents.h"
@@ -70,7 +71,8 @@ inline bool GenerateSliceFixture(const std::filesystem::path& path, Error& err)
     doc.metadata.name = "vertical-slice";
     doc.metadata.sourcePath = path;
 
-    return SceneSerializer::Save(doc, path, err);
+    std::vector<AssetDiagnostic> diagnostics;
+    return SceneSerializer::Save(doc, path, diagnostics, err);
 }
 
 } // namespace rt2::core

@@ -7,6 +7,7 @@
 #include "SceneGraph.h"
 #include "SceneManager.h"
 #include "SceneSerializer.h"
+#include "SceneSerializerTestSupport.h"
 
 #include <cmath>
 #include <filesystem>
@@ -277,7 +278,7 @@ TEST_CASE("Phase 2D camera transform authority survives native save and reload")
     const auto path = std::filesystem::temp_directory_path() /
         "rt2_phase2d_camera_roundtrip.rt2scene";
     rt2::core::Error error;
-    REQUIRE(rt2::core::SceneSerializer::Save(source.AuthoringDoc(), path, error));
+    REQUIRE(SaveSceneForTest(source.AuthoringDoc(), path, error));
 
     rt2::core::SceneDocument loaded;
     loaded.SetUuidProvider(&ids);

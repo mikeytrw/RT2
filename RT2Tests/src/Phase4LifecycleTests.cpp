@@ -4,6 +4,7 @@
 #include "RuntimeLifecycleObserver.h"
 #include "RuntimeSceneMutator.h"
 #include "SceneSerializer.h"
+#include "SceneSerializerTestSupport.h"
 #include "SceneDocument.h"
 #include "ECSComponents.h"
 #include "ECSScene.h"
@@ -151,7 +152,7 @@ std::string SerializeToString(const SceneDocument& doc)
 {
     Error err;
     auto path = std::filesystem::temp_directory_path() / "rt4_serialized.rt2scene";
-    SceneSerializer::Save(doc, path, err);
+    SaveSceneForTest(doc, path, err);
     std::ifstream f(path, std::ios::binary);
     std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     f.close();

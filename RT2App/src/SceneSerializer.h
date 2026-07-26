@@ -63,6 +63,8 @@
 
 namespace rt2::core {
 
+struct AssetDiagnostic;
+
 struct SceneLoadReport
 {
     std::vector<FieldDiagnostic> fieldDiagnostics;
@@ -78,7 +80,10 @@ public:
     // ReplaceFileW/MoveFileExW. On failure, leaves the existing file intact.
     // Saves as schema v3. Paths in asset references are rebased against
     // the save `path`'s parent directory where possible.
-    static bool Save(const SceneDocument& doc, const std::filesystem::path& path, Error& err);
+    static bool Save(const SceneDocument& doc,
+                     const std::filesystem::path& path,
+                     std::vector<AssetDiagnostic>& diagnostics,
+                     Error& err);
 
     // Save a document to `outPath`, but relativize asset references against
     // `logicalScenePath`'s parent directory instead of `outPath`. This is the
@@ -88,6 +93,7 @@ public:
     static bool SaveTo(const SceneDocument& doc,
                        const std::filesystem::path& outPath,
                        const std::filesystem::path& logicalScenePath,
+                       std::vector<AssetDiagnostic>& diagnostics,
                        Error& err);
 
     // Load a v3 .rt2scene transactionally. The destination is replaced only

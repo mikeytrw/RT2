@@ -1601,25 +1601,12 @@ private:
 		for (size_t i = base; i < diagnostics.size(); ++i)
 		{
 			const auto& diagnostic = diagnostics[i];
-			const char* severity = "Unknown";
-			switch (diagnostic.severity)
-			{
-			case rt2::core::AssetDiagnostic::Missing:
-				severity = "Missing"; break;
-			case rt2::core::AssetDiagnostic::Malformed:
-				severity = "Malformed"; break;
-			case rt2::core::AssetDiagnostic::Unresolved:
-				severity = "Unresolved"; break;
-			case rt2::core::AssetDiagnostic::Conflict:
-				severity = "Conflict"; break;
-			case rt2::core::AssetDiagnostic::Stale:
-				severity = "Stale"; break;
-			default:
-				break;
-			}
 			printf("[%s] Asset %s: ref=\"%s\" entity=%s "
 			       "sourceKey=\"%s\" detail=%s\n",
-			       context, severity, diagnostic.refPath.c_str(),
+			       context,
+			       rt2::core::AssetDiagnosticSeverityName(
+				       diagnostic.severity),
+			       diagnostic.refPath.c_str(),
 			       diagnostic.entityUuid.ToString().c_str(),
 			       diagnostic.sourceKey.c_str(),
 			       diagnostic.detail.c_str());
@@ -2911,23 +2898,8 @@ public:
 			auto formatAssetDiagnostics = [&]() {
 				for (const auto& d : diagnostics)
 				{
-					const char* sev = nullptr;
-					switch (d.severity)
-					{
-					case rt2::core::AssetDiagnostic::Missing:
-						sev = "Missing"; break;
-					case rt2::core::AssetDiagnostic::Malformed:
-						sev = "Malformed"; break;
-					case rt2::core::AssetDiagnostic::Unresolved:
-						sev = "Unresolved"; break;
-					case rt2::core::AssetDiagnostic::Conflict:
-						sev = "Conflict"; break;
-					case rt2::core::AssetDiagnostic::Stale:
-						sev = "Stale"; break;
-					default:
-						sev = "Unknown"; break;
-					}
-					*diagStr += std::string("[Scene] Asset ") + sev +
+					*diagStr += std::string("[Scene] Asset ") +
+						rt2::core::AssetDiagnosticSeverityName(d.severity) +
 						": kind=" + std::to_string((int)d.kind) +
 						" ref='" + d.refPath + "'" +
 						" sourceKey='" + d.sourceKey + "'" +
@@ -3133,7 +3105,8 @@ public:
 		if (extension != ".rt2scene") target.replace_extension(".rt2scene");
 
 		rt2::core::Error err;
-		if (!rt2::core::SceneSerializer::Save(doc, target, err))
+		std::vector<rt2::core::AssetDiagnostic> saveDiagnostics;
+		if (!rt2::core::SceneSerializer::Save(doc, target, saveDiagnostics, err))
 		{
 			// The live source path is committed only after the file is safe.
 			m_LastStatusMsg = std::string("Save failed: ") + err.Format();

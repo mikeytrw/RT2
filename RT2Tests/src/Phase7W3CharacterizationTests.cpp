@@ -8,6 +8,7 @@
 #include "SceneLoader.h"
 #include "SceneManager.h"
 #include "SceneSerializer.h"
+#include "SceneSerializerTestSupport.h"
 #include "ScriptAssetPath.h"
 #include "ScriptFieldRegistry.h"
 #include "core/Error.h"
@@ -615,7 +616,7 @@ TEST_CASE("Phase7 W3 characterization: unresolved model source key fails transac
 // failure. Each fixture is generated; no machine-local assets are used.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Phase7 W3 step 3: non-nil assetId with matching sidecar resolves with a database-stale diagnostic")
+TEST_CASE("Phase7 W3 step 3: non-nil assetId with matching sidecar resolves without diagnostics")
 {
     TempDirectory fixture;
     Error fixtureError;
@@ -650,12 +651,8 @@ TEST_CASE("Phase7 W3 step 3: non-nil assetId with matching sidecar resolves with
     CHECK(SceneAssetResolver::ResolveAll(
         doc, fixture.Path(), diagnostics, error));
     CHECK(error.IsOk());
-    // The locator emits exactly one "database stale" Stale diagnostic on the
-    // successful path-sidecar match (W3-Q5: Stale, not Missing — the file was
-    // found and resolution succeeded). No Malformed/Unresolved/Conflict.
-    REQUIRE(diagnostics.size() == 1);
-    CHECK(diagnostics[0].severity == AssetDiagnostic::Stale);
-    CHECK(diagnostics[0].detail.find("database stale") != std::string::npos);
+    // A matching sidecar is fully healthy when no database was supplied.
+    CHECK(diagnostics.empty());
     CHECK(doc.ecs.registry.all_of<MeshRef>(entity));
     CHECK(doc.ecs.meshRegistry.GetCount() == 1);
 }
@@ -839,7 +836,7 @@ TEST_CASE("Phase7 W3 characterization: environment success, missing, and malform
 // file, and corrupt HDR/EXR — the cases the step-4 plan calls out.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("Phase7 W3 step 4: non-nil env assetId with matching sidecar resolves and emits database-stale")
+TEST_CASE("Phase7 W3 step 4: non-nil env assetId with matching sidecar resolves without diagnostics")
 {
     TempDirectory fixture;
     Error fixtureError;
@@ -862,12 +859,8 @@ TEST_CASE("Phase7 W3 step 4: non-nil env assetId with matching sidecar resolves 
     CHECK(SceneAssetResolver::ResolveEnvironment(
         doc, fixture.Path(), diagnostics, error));
     CHECK(error.IsOk());
-    // Exactly one "database stale" Stale diagnostic (W3-Q5: Stale, not
-    // Missing — the file was found and resolution succeeded); no
-    // Malformed/Conflict.
-    REQUIRE(diagnostics.size() == 1);
-    CHECK(diagnostics[0].severity == AssetDiagnostic::Stale);
-    CHECK(diagnostics[0].detail.find("database stale") != std::string::npos);
+    // A matching sidecar is fully healthy when no database was supplied.
+    CHECK(diagnostics.empty());
     CHECK(doc.environment.width > 0);
     CHECK(doc.environment.height > 0);
     CHECK_FALSE(doc.environment.floatPixels.empty());
@@ -1016,7 +1009,7 @@ TEST_CASE("Phase7 W3 step 4: env assetId survives a save/load round-trip")
 
     const auto scenePath = fixture.Path() / "env.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(src, scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(src, scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     // The saved file must contain the env assetId (additive over v3).
@@ -1054,7 +1047,7 @@ TEST_CASE("Phase7 W3 step 4: env assetId survives a save/load round-trip")
     srcNil.environment.height = 2;
     const auto nilScenePath = fixture.Path() / "env_nil.rt2scene";
     Error nilSaveErr;
-    REQUIRE(SceneSerializer::Save(srcNil, nilScenePath, nilSaveErr));
+    REQUIRE(SaveSceneForTest(srcNil, nilScenePath, nilSaveErr));
     REQUIRE(nilSaveErr.IsOk());
     {
         nlohmann::json nilSaved;
@@ -1204,7 +1197,7 @@ TEST_CASE("Phase7 W3 step 5: script assetId survives serialization through the s
     authored.AssignNewUuid(entity);
 
     Error saveError;
-    REQUIRE(SceneSerializer::Save(authored, scenePath, saveError));
+    REQUIRE(SaveSceneForTest(authored, scenePath, saveError));
 
     SceneDocument loaded;
     DeterministicUuidProvider loadedIds;

@@ -2,6 +2,7 @@
 
 #include "RuntimeSceneController.h"
 #include "SceneSerializer.h"
+#include "SceneSerializerTestSupport.h"
 #include "SceneDocument.h"
 #include "ECSComponents.h"
 #include "ECSScene.h"
@@ -278,7 +279,7 @@ TEST_CASE("VS-3 Runtime: Stop restores authoring state exactly")
 
     // Save the authoring document to a string before Play.
     auto path = std::filesystem::temp_directory_path() / "rt3_stop_test.rt2scene";
-    SceneSerializer::Save(authoring, path, err);
+    SaveSceneForTest(authoring, path, err);
 
     RuntimeSceneController ctrl;
     ctrl.Play(authoring, bridge, err);
@@ -291,7 +292,7 @@ TEST_CASE("VS-3 Runtime: Stop restores authoring state exactly")
 
     // Re-save the authoring document after Stop and compare bytes.
     auto path2 = std::filesystem::temp_directory_path() / "rt3_stop_after.rt2scene";
-    SceneSerializer::Save(authoring, path2, err);
+    SaveSceneForTest(authoring, path2, err);
 
     std::ifstream f1(path, std::ios::binary), f2(path2, std::ios::binary);
     std::string s1((std::istreambuf_iterator<char>(f1)), std::istreambuf_iterator<char>());

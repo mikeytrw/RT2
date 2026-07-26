@@ -9,6 +9,7 @@
 #include "IRuntimeCommandSink.h"
 #include "RuntimeSceneMutator.h"
 #include "SceneSerializer.h"
+#include "SceneSerializerTestSupport.h"
 #include "SceneDocument.h"
 #include "ECSComponents.h"
 #include "ECSScene.h"
@@ -935,7 +936,7 @@ end
         const auto scenePath = g_TempDir / "persisted_self.rt2scene";
         authored.metadata.sourcePath = scenePath;
         Error err;
-        REQUIRE(SceneSerializer::Save(authored, scenePath, err));
+        REQUIRE(SaveSceneForTest(authored, scenePath, err));
 
         SceneDocument loaded;
         SceneLoadReport loadReport;

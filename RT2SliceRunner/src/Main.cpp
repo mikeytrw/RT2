@@ -164,7 +164,8 @@ static int RunRecoveryScenario(const std::string& outPath)
     doc.metadata.sourcePath = scenePath.string();
 
     // 2. Save explicitly; record bytes.
-    if (!SceneSerializer::Save(doc, scenePath, err))
+    std::vector<AssetDiagnostic> saveDiagnostics;
+    if (!SceneSerializer::Save(doc, scenePath, saveDiagnostics, err))
     {
         ok = false;
         failReason = "explicit save failed: " + err.Format();

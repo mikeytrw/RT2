@@ -7941,6 +7941,7 @@ meaning.
 | Untitled recovery with no project root | Compatibility/empty-root forms use process CWD. | Walnut supplies an ensured absolute `%LOCALAPPDATA%\RT2\recovery` logical root; the short API is absent and the service still rejects an invalid explicit root; amended S7-Q4. |
 | Untitled relative script with no source/project root | Enter Play and watcher inherit process CWD. | Resolution is `Malformed`, no relative directory is watched, binding remains authored/unminted; S7-Q4. |
 | Relative `ReloadScript` | `weakly_canonical` interprets it against CWD. | One `Script/Malformed`, no cache clear, queue or live swap; S7-Q4. |
+| Matching non-nil ID/path sidecar with `database == nullptr` | Successful path verification also emits `Stale` `"database stale"` even though pre-W4 intentionally has no database. | Successful resolve with zero diagnostics; only a supplied database that misses the confirmed ID is stale; S7-Q7. |
 | Script scenario diagnostic gate | Any asset diagnostic line fails the gate. | `Stale`/`NonPortable` advisories are printed but do not fail; severity `Missing` or higher fails; S7-Q7. |
 | `SceneTexture::filepath` assertions | Mirror equals `ref.path`; glTF export reads the mirror. | Mirror does not exist; the same path assertions target `ref.path`, and export URI is driven by `ref.path`; step-6 S6-D1 deferral and S7-Q6. |
 

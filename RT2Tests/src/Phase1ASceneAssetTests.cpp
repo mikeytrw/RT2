@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "SceneSerializer.h"
+#include "SceneSerializerTestSupport.h"
 #include "SceneDocument.h"
 #include "SceneAssetResolver.h"
 #include "ECSComponents.h"
@@ -196,8 +197,8 @@ TEST_CASE("P1A Schema: deterministic v3 saves are byte-identical")
     auto p1 = std::filesystem::temp_directory_path() / "rt2_p1a_det1.rt2scene";
     auto p2 = std::filesystem::temp_directory_path() / "rt2_p1a_det2.rt2scene";
     Error err;
-    REQUIRE(SceneSerializer::Save(src, p1, err));
-    REQUIRE(SceneSerializer::Save(src, p2, err));
+    REQUIRE(SaveSceneForTest(src, p1, err));
+    REQUIRE(SaveSceneForTest(src, p2, err));
 
     std::ifstream f1(p1, std::ios::binary), f2(p2, std::ios::binary);
     std::string c1((std::istreambuf_iterator<char>(f1)), std::istreambuf_iterator<char>());
@@ -264,7 +265,7 @@ TEST_CASE("P1A RoundTrip: glTF import -> save v3 -> load + resolve")
     // Step 2: Save as v2 .rt2scene next to the GLB so relative paths resolve.
     auto scenePath = FixtureDir() / "tiny_textured.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(mgr.AuthoringDoc(), scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     // Verify the saved file references the GLB via a relative path.
@@ -376,7 +377,7 @@ TEST_CASE("P1A Environment: save env reference -> load -> resolve reads pixels")
 
     auto scenePath = FixtureDir() / "tiny_env.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(src, scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(src, scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     // Verify the env path was relativized.
@@ -488,7 +489,7 @@ TEST_CASE("P1A MaterialOverride: imported material edit survives save/reopen")
     // Save as v2 .rt2scene next to the GLB.
     auto scenePath = FixtureDir() / "override_test.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(mgr.AuthoringDoc(), scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     // Verify the override block was written.
@@ -760,7 +761,7 @@ TEST_CASE("P1A Transactionality: failed save leaves existing file intact")
 
     auto path = std::filesystem::temp_directory_path() / "rt2_p1a_intact.rt2scene";
     Error err;
-    REQUIRE(SceneSerializer::Save(src, path, err));
+    REQUIRE(SaveSceneForTest(src, path, err));
     std::ifstream in1(path, std::ios::binary);
     std::string original((std::istreambuf_iterator<char>(in1)),
                          std::istreambuf_iterator<char>());
@@ -781,7 +782,7 @@ TEST_CASE("P1A Transactionality: failed save leaves existing file intact")
     bad.AssignNewUuid(e);
 
     Error badErr;
-    CHECK_FALSE(SceneSerializer::Save(bad, path, badErr));
+    CHECK_FALSE(SaveSceneForTest(bad, path, badErr));
     CHECK(badErr.code == Error::UnknownPrimitive);
 
     std::ifstream in2(path, std::ios::binary);
@@ -964,7 +965,7 @@ TEST_CASE("P1A CpuOnly: vertical-slice fixture still round-trips under v3")
 
     auto p2 = std::filesystem::temp_directory_path() / "rt2_p1a_slice_v2.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(doc, p2, saveErr));
+    REQUIRE(SaveSceneForTest(doc, p2, saveErr));
 
     DeterministicUuidProvider provider2;
     SceneDocument doc2;
@@ -1138,7 +1139,7 @@ TEST_CASE("P1A Multi-Model: two OBJ models save/reload preserves material identi
     // Step 3: Save as .rt2scene next to the OBJ files.
     auto scenePath = dir / "multi_obj.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(mgr.AuthoringDoc(), scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     // Step 4: Load into a fresh document and resolve.
@@ -1652,7 +1653,7 @@ TEST_CASE("OBJ Import Wizard: per-shape save/reload/resolve round-trip")
     // Save as .rt2scene.
     auto scenePath = dir / "pershape.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(mgr.AuthoringDoc(), scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     // Load into a fresh document and resolve.
@@ -1723,7 +1724,7 @@ TEST_CASE("OBJ Import Wizard: legacy obj:whole-model scene resolves")
     // Save as .rt2scene.
     auto scenePath = dir / "legacy.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(mgr.AuthoringDoc(), scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     // Load into a fresh document and resolve.
@@ -1811,7 +1812,7 @@ TEST_CASE("OBJ Import Wizard: multi-material shape preserves per-triangle materi
     // Now save + reload + resolve and verify the materials survive.
     auto scenePath = dir / "multimat.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(mgr.AuthoringDoc(), scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     DeterministicUuidProvider provider;
@@ -1908,7 +1909,7 @@ TEST_CASE("OBJ Import Wizard: same OBJ merged and per-shape in one scene resolve
     // Save + reload + resolve.
     auto scenePath = dir / "dedup.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(mgr.AuthoringDoc(), scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     DeterministicUuidProvider provider;

@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "SceneSerializer.h"
+#include "SceneSerializerTestSupport.h"
 #include "SceneDocument.h"
 #include "ECSComponents.h"
 #include "ECSScene.h"
@@ -110,7 +111,7 @@ TEST_CASE("VS-2 Serializer: empty scene round-trips")
 
     auto path = std::filesystem::temp_directory_path() / "rt2_empty_test.rt2scene";
     Error err;
-    CHECK(SceneSerializer::Save(src, path, err));
+    CHECK(SaveSceneForTest(src, path, err));
     CHECK(err.IsOk());
 
     SceneDocument loaded;
@@ -131,7 +132,7 @@ TEST_CASE("VS-2 Serializer: slice fixture round-trips structurally")
 
     auto path = std::filesystem::temp_directory_path() / "rt2_slice_test.rt2scene";
     Error err;
-    CHECK(SceneSerializer::Save(src, path, err));
+    CHECK(SaveSceneForTest(src, path, err));
     CHECK(err.IsOk());
 
     // Load into a fresh document with a fresh provider.
@@ -214,9 +215,9 @@ TEST_CASE("VS-2 Serializer: save is deterministic (byte-identical with same prov
     auto path2 = std::filesystem::temp_directory_path() / "rt2_det2.rt2scene";
     Error err;
 
-    CHECK(SceneSerializer::Save(src, path1, err));
+    CHECK(SaveSceneForTest(src, path1, err));
     // Same document, same provider — should be byte-identical.
-    CHECK(SceneSerializer::Save(src, path2, err));
+    CHECK(SaveSceneForTest(src, path2, err));
 
     std::ifstream f1(path1, std::ios::binary), f2(path2, std::ios::binary);
     std::string c1((std::istreambuf_iterator<char>(f1)), std::istreambuf_iterator<char>());
@@ -239,7 +240,7 @@ TEST_CASE("VS-2 Serializer: failed save leaves existing file intact")
     Error err;
 
     // Save once to create the file.
-    CHECK(SceneSerializer::Save(src, path, err));
+    CHECK(SaveSceneForTest(src, path, err));
     CHECK(err.IsOk());
 
     // Read the original content.
@@ -255,7 +256,7 @@ TEST_CASE("VS-2 Serializer: failed save leaves existing file intact")
 
     SceneDocument src2;
     src2.SetUuidProvider(&provider);
-    bool result = SceneSerializer::Save(src2, path, err);
+    bool result = SaveSceneForTest(src2, path, err);
 
 #ifdef _WIN32
     // Restore attributes.
@@ -369,7 +370,7 @@ TEST_CASE("VS-2 Serializer: hierarchy resolves independent of serialized order")
 
     auto path = std::filesystem::temp_directory_path() / "rt2_hier_test.rt2scene";
     Error err;
-    CHECK(SceneSerializer::Save(src, path, err));
+    CHECK(SaveSceneForTest(src, path, err));
 
     // Load and verify hierarchy.
     DeterministicUuidProvider loadProvider;
@@ -467,7 +468,7 @@ TEST_CASE("VS-2 Serializer: materials round-trip")
 
     auto path = std::filesystem::temp_directory_path() / "rt2_mat_test.rt2scene";
     Error err;
-    CHECK(SceneSerializer::Save(src, path, err));
+    CHECK(SaveSceneForTest(src, path, err));
 
     DeterministicUuidProvider loadProvider;
     SceneDocument loaded;
@@ -499,7 +500,7 @@ TEST_CASE("VS-2 Serializer: camera round-trips")
 
     auto path = std::filesystem::temp_directory_path() / "rt2_cam_test.rt2scene";
     Error err;
-    CHECK(SceneSerializer::Save(src, path, err));
+    CHECK(SaveSceneForTest(src, path, err));
 
     DeterministicUuidProvider loadProvider;
     SceneDocument loaded;
@@ -671,7 +672,7 @@ TEST_CASE("VS-2 Serializer: save rejects entity with MeshRef but no PrimitiveCom
 
     auto path = std::filesystem::temp_directory_path() / "rt2_reject_test.rt2scene";
     Error err;
-    CHECK_FALSE(SceneSerializer::Save(doc, path, err));
+    CHECK_FALSE(SaveSceneForTest(doc, path, err));
     CHECK(err.code == Error::UnknownPrimitive);
     CHECK(err.detail.find("Imported") != std::string::npos);
 
@@ -687,7 +688,7 @@ TEST_CASE("VS-2 Serializer: save succeeds when all mesh entities have PrimitiveC
 
     auto path = std::filesystem::temp_directory_path() / "rt2_accept_test.rt2scene";
     Error err;
-    CHECK(SceneSerializer::Save(doc, path, err));
+    CHECK(SaveSceneForTest(doc, path, err));
     CHECK(err.IsOk());
     CHECK(std::filesystem::exists(path));
     std::filesystem::remove(path);
@@ -719,7 +720,7 @@ TEST_CASE("Phase6B W3 Serializer: every typed script field round-trips")
 
     const auto path = std::filesystem::temp_directory_path() / "rt2_w3_all_fields.rt2scene";
     Error err;
-    REQUIRE(SceneSerializer::Save(doc, path, err));
+    REQUIRE(SaveSceneForTest(doc, path, err));
     CHECK(doc.ecs.registry.get<ScriptComponent>(entity).asset.sourceKey == "stale-key");
 
     nlohmann::json saved;
@@ -794,7 +795,7 @@ TEST_CASE("Phase6B W3 Serializer: bad fields are isolated and reported")
 
     const auto repairedPath = std::filesystem::temp_directory_path() /
         "rt2_w3_repaired_save.rt2scene";
-    REQUIRE(SceneSerializer::Save(loaded, repairedPath, err));
+    REQUIRE(SaveSceneForTest(loaded, repairedPath, err));
     std::filesystem::remove(path);
     std::filesystem::remove(repairedPath);
 }
@@ -817,7 +818,7 @@ TEST_CASE("Phase6B W3 Serializer: invalid live script fails atomically")
     const auto path = std::filesystem::temp_directory_path() / "rt2_w3_atomic.rt2scene";
     { std::ofstream out(path); out << "sentinel"; }
     Error err;
-    CHECK_FALSE(SceneSerializer::Save(doc, path, err));
+    CHECK_FALSE(SaveSceneForTest(doc, path, err));
     CHECK(err.code == Error::InvalidArgument);
     {
         std::ifstream in(path);
@@ -847,7 +848,7 @@ TEST_CASE("Phase6B W3 Serializer: invalid UTF-8 and empty field names reject sav
         "rt2_w3_invalid_utf8.rt2scene";
     { std::ofstream out(path); out << "sentinel"; }
     Error err;
-    CHECK_FALSE(SceneSerializer::Save(doc, path, err));
+    CHECK_FALSE(SaveSceneForTest(doc, path, err));
     CHECK(err.code == Error::InvalidArgument);
     CHECK(err.detail.find("UTF-8") != std::string::npos);
     { std::ifstream in(path); CHECK(std::string((std::istreambuf_iterator<char>(in)), {}) == "sentinel"); }
@@ -856,7 +857,7 @@ TEST_CASE("Phase6B W3 Serializer: invalid UTF-8 and empty field names reject sav
     fields.clear();
     fields[""] = { ScriptFieldType::Bool, true };
     err = Error{};
-    CHECK_FALSE(SceneSerializer::Save(doc, path, err));
+    CHECK_FALSE(SaveSceneForTest(doc, path, err));
     CHECK(err.code == Error::InvalidArgument);
     CHECK(err.detail.find("must not be empty") != std::string::npos);
     { std::ifstream in(path); CHECK(std::string((std::istreambuf_iterator<char>(in)), {}) == "sentinel"); }
@@ -935,7 +936,7 @@ TEST_CASE("Phase6B W3 Serializer: unbound script round-trips")
 
     const auto path = std::filesystem::temp_directory_path() / "rt2_w3_unbound.rt2scene";
     Error err;
-    REQUIRE(SceneSerializer::Save(doc, path, err));
+    REQUIRE(SaveSceneForTest(doc, path, err));
     SceneDocument loaded;
     REQUIRE(SceneSerializer::Load(loaded, path, err));
     const auto loadedEntity = loaded.FindByUuid(id);
@@ -976,7 +977,7 @@ TEST_CASE("Phase6B W3 Serializer: Save As rebases every durable path")
 
     const auto target = newRoot / "saved.rt2scene";
     Error err;
-    REQUIRE(SceneSerializer::Save(doc, target, err));
+    REQUIRE(SaveSceneForTest(doc, target, err));
     nlohmann::json saved;
     { std::ifstream in(target); in >> saved; }
     CHECK(saved["envMap"]["path"] == "../old/env/night.exr");
@@ -1022,8 +1023,8 @@ TEST_CASE("Phase6B W3 Serializer: field insertion order does not affect bytes")
     const auto a = dir / "rt2_w3_order_a.rt2scene";
     const auto b = dir / "rt2_w3_order_b.rt2scene";
     Error err;
-    REQUIRE(SceneSerializer::Save(first, a, err));
-    REQUIRE(SceneSerializer::Save(second, b, err));
+    REQUIRE(SaveSceneForTest(first, a, err));
+    REQUIRE(SaveSceneForTest(second, b, err));
     std::ifstream inA(a, std::ios::binary), inB(b, std::ios::binary);
     const std::string bytesA((std::istreambuf_iterator<char>(inA)), {});
     const std::string bytesB((std::istreambuf_iterator<char>(inB)), {});
@@ -1051,7 +1052,7 @@ TEST_CASE("Phase6B W3 Serializer: cross-volume absolute path remains absolute")
     const auto path = std::filesystem::temp_directory_path() /
         "rt2_w3_cross_volume.rt2scene";
     Error err;
-    REQUIRE(SceneSerializer::Save(doc, path, err));
+    REQUIRE(SaveSceneForTest(doc, path, err));
     nlohmann::json saved;
     { std::ifstream in(path); in >> saved; }
     CHECK(saved["entities"][0]["script"]["asset"]["path"] ==
@@ -1137,7 +1138,7 @@ TEST_CASE("Phase7 W0: relativizable asset paths are never stored absolute")
 
     const auto target = sceneDir / "w0_audit.rt2scene";
     Error err;
-    REQUIRE(SceneSerializer::Save(doc, target, err));
+    REQUIRE(SaveSceneForTest(doc, target, err));
     REQUIRE(err.IsOk());
 
     nlohmann::json saved;

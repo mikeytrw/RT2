@@ -133,22 +133,11 @@ void LogAssetDiagnostics(
 	for (size_t i = base; i < diagnostics.size(); ++i)
 	{
 		const auto& diagnostic = diagnostics[i];
-		const char* severity = "Missing";
-		switch (diagnostic.severity)
-		{
-			case rt2::core::AssetDiagnostic::Missing:
-				severity = "Missing"; break;
-			case rt2::core::AssetDiagnostic::Malformed:
-				severity = "Malformed"; break;
-			case rt2::core::AssetDiagnostic::Unresolved:
-				severity = "Unresolved"; break;
-			case rt2::core::AssetDiagnostic::Conflict:
-				severity = "Conflict"; break;
-			case rt2::core::AssetDiagnostic::Stale:
-				severity = "Stale"; break;
-		}
 		printf("[Asset] %s %s: path=%s source=%s detail=%s\n",
-		       context, severity, diagnostic.refPath.c_str(),
+		       context,
+		       rt2::core::AssetDiagnosticSeverityName(
+			       diagnostic.severity),
+		       diagnostic.refPath.c_str(),
 		       diagnostic.sourceKey.c_str(),
 		       diagnostic.detail.c_str());
 	}

@@ -309,10 +309,8 @@ TEST_CASE("W3-Locator: ambiguous ID -> Conflict (case 7)")
 
 // ---------------------------------------------------------------------------
 // Case 3 (no-database variant): non-nil ID, no database supplied, path
-// exists, sidecar matches requested ID -> succeeds (case 3 path) with a
-// "database stale" diagnostic. This is the exact path the step-3 model
-// cutover uses at scene load: assetId is non-nil (assigned at import) but
-// no AssetDatabase has been built yet.
+// exists, sidecar matches requested ID -> fully healthy. No database was
+// promised by the context, so there is no stale database state to report.
 // ---------------------------------------------------------------------------
 
 TEST_CASE("W3-Locator: non-nil ID, no database, matching sidecar (case 3)")
@@ -332,9 +330,36 @@ TEST_CASE("W3-Locator: non-nil ID, no database, matching sidecar (case 3)")
     REQUIRE(r.source == AssetResolutionSource::PathFallback);
     REQUIRE(r.effectiveId == id);
     REQUIRE_FALSE(r.identityRepairRequired);
-    // W3-Q5: the database-stale-but-resolved case emits Stale, not Missing.
-    REQUIRE(CountSeverity(diags, AssetDiagnostic::Stale) == 1);
-    REQUIRE(diags[0].detail.find("database stale") != std::string::npos);
+    REQUIRE(diags.empty());
+}
+
+TEST_CASE("W3-Locator: healthy path and matching sidecar emit no diagnostic for every kind")
+{
+    TempDirectory tmp;
+    const fs::path root = tmp.Path();
+    const std::array<AssetKind, 4> kinds = {
+        AssetKind::Model, AssetKind::Texture,
+        AssetKind::Environment, AssetKind::Script
+    };
+
+    uint8_t discriminator = 1;
+    for (const auto kind : kinds)
+    {
+        const std::string rel =
+            "assets/healthy-" + std::to_string(discriminator) + ".asset";
+        const fs::path abs = CreateAssetFile(root, rel);
+        const UUID id = MakeId(0x40, discriminator++);
+        WriteSidecar(abs, id);
+
+        auto ctx = MakeCtx(root, nullptr);
+        std::vector<AssetDiagnostic> diags;
+        const auto result = Resolve(
+            MakeRef(kind, rel, id), ctx, UUID::Nil(), "", diags);
+
+        REQUIRE(result.success);
+        REQUIRE(result.effectiveId == id);
+        CHECK(diags.empty());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -562,6 +587,78 @@ TEST_CASE("W3-Locator: no process-CWD fallback (W3-Q8)")
     REQUIRE(CountSeverity(diags, AssetDiagnostic::Missing) == 1);
 }
 
+TEST_CASE("W3-Locator: relative candidates require an absolute root without touching CWD")
+{
+    const std::string cwdFile = "rt2_w3_invalid_root_decoy_"
+        + std::to_string(std::chrono::high_resolution_clock::now()
+                             .time_since_epoch().count());
+    REQUIRE(WriteText(cwdFile, "cwd-decoy"));
+    struct CwdFileGuard {
+        std::string name;
+        ~CwdFileGuard() { std::error_code ec; fs::remove(name, ec); }
+    } guard{ cwdFile };
+
+    for (const fs::path root : { fs::path{}, fs::path{"relative-root"} })
+    {
+        auto ctx = MakeCtx(root, nullptr);
+        std::vector<AssetDiagnostic> diags;
+        const auto result = Resolve(
+            MakeRef(AssetKind::Model, cwdFile), ctx, UUID::Nil(), "", diags);
+
+        REQUIRE_FALSE(result.success);
+        REQUIRE(result.resolvedPath.empty());
+        REQUIRE(diags.size() == 1);
+        CHECK(diags[0].severity == AssetDiagnostic::Malformed);
+        CHECK(diags[0].resolvedPath.empty());
+        CHECK(diags[0].detail ==
+              "relative asset reference requires an absolute asset root");
+    }
+}
+
+TEST_CASE("W3-Locator: ID candidates obey root contract before authored fallback")
+{
+    TempDirectory tmp;
+    const fs::path absoluteAsset =
+        CreateAssetFile(tmp.Path(), "assets/absolute.glb");
+
+    SUBCASE("relative database claimant needs an absolute root")
+    {
+        const UUID id = MakeId(0x51, 0x01);
+        std::vector<AssetDatabaseDiagnostic> dbDiags;
+        AssetDatabase db = BuildAssetDatabase(
+            { MakeDbRecord("assets/absolute.glb", id) }, dbDiags);
+        auto ctx = MakeCtx({}, &db);
+        std::vector<AssetDiagnostic> diags;
+        const auto result = Resolve(
+            MakeRef(AssetKind::Model, absoluteAsset.string(), id),
+            ctx, UUID::Nil(), "", diags);
+
+        REQUIRE_FALSE(result.success);
+        REQUIRE(diags.size() == 1);
+        CHECK(diags[0].severity == AssetDiagnostic::Malformed);
+        CHECK(diags[0].detail ==
+              "relative asset reference requires an absolute asset root");
+    }
+
+    SUBCASE("absolute unique database claimant wins with no root")
+    {
+        const UUID id = MakeId(0x51, 0x02);
+        std::vector<AssetDatabaseDiagnostic> dbDiags;
+        AssetDatabase db = BuildAssetDatabase(
+            { MakeDbRecord(absoluteAsset.string(), id) }, dbDiags);
+        auto ctx = MakeCtx({}, &db);
+        std::vector<AssetDiagnostic> diags;
+        const auto result = Resolve(
+            MakeRef(AssetKind::Model, "unused-relative-fallback.glb", id),
+            ctx, UUID::Nil(), "", diags);
+
+        REQUIRE(result.success);
+        CHECK(result.source == AssetResolutionSource::Id);
+        CHECK(result.resolvedPath == absoluteAsset.lexically_normal());
+        CHECK(diags.empty());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Absolute legacy paths are accepted in memory but the successful result is
 // normalized (W3-Q8).
@@ -699,15 +796,48 @@ TEST_CASE("W3-Locator: empty path fails with diagnostic")
 }
 
 // ---------------------------------------------------------------------------
-// AssetDiagnostic::Conflict is a distinct severity and the exhaustive
-// formatter surface (W3-Q5 / W3-P14) is exercised by the Walnut switch (built
-// by the RT2App target). Here we only assert the enum value exists and is
-// distinct from the other three.
+// Severity values are an external threshold contract used by script tooling.
 // ---------------------------------------------------------------------------
 
-TEST_CASE("W3-Locator: Conflict severity is distinct")
+TEST_CASE("W3-Locator: diagnostic severities and shared presentation are exhaustive")
 {
-    CHECK(AssetDiagnostic::Missing    != AssetDiagnostic::Conflict);
-    CHECK(AssetDiagnostic::Malformed  != AssetDiagnostic::Conflict);
-    CHECK(AssetDiagnostic::Unresolved != AssetDiagnostic::Conflict);
+    CHECK(static_cast<int>(AssetDiagnostic::Stale) == 0);
+    CHECK(static_cast<int>(AssetDiagnostic::NonPortable) == 1);
+    CHECK(static_cast<int>(AssetDiagnostic::Missing) == 2);
+    CHECK(static_cast<int>(AssetDiagnostic::Malformed) == 3);
+    CHECK(static_cast<int>(AssetDiagnostic::Unresolved) == 4);
+    CHECK(static_cast<int>(AssetDiagnostic::Conflict) == 5);
+
+    CHECK(std::string(AssetDiagnosticSeverityName(AssetDiagnostic::Stale)) == "Stale");
+    CHECK(std::string(AssetDiagnosticSeverityName(AssetDiagnostic::NonPortable)) == "NonPortable");
+    CHECK(std::string(AssetDiagnosticSeverityName(AssetDiagnostic::Missing)) == "Missing");
+    CHECK(std::string(AssetDiagnosticSeverityName(AssetDiagnostic::Malformed)) == "Malformed");
+    CHECK(std::string(AssetDiagnosticSeverityName(AssetDiagnostic::Unresolved)) == "Unresolved");
+    CHECK(std::string(AssetDiagnosticSeverityName(AssetDiagnostic::Conflict)) == "Conflict");
+
+    CHECK_FALSE(IsTerminalAssetDiagnostic(AssetDiagnostic::Stale));
+    CHECK_FALSE(IsTerminalAssetDiagnostic(AssetDiagnostic::NonPortable));
+    CHECK(IsTerminalAssetDiagnostic(AssetDiagnostic::Missing));
+    CHECK(IsTerminalAssetDiagnostic(AssetDiagnostic::Malformed));
+    CHECK(IsTerminalAssetDiagnostic(AssetDiagnostic::Unresolved));
+    CHECK(IsTerminalAssetDiagnostic(AssetDiagnostic::Conflict));
+}
+
+TEST_CASE("W3-Locator: non-portable summary is deterministic")
+{
+    AssetDiagnostic z;
+    z.severity = AssetDiagnostic::NonPortable;
+    z.kind = AssetKind::Texture;
+    z.refPath = "z.png";
+    AssetDiagnostic a = z;
+    a.refPath = "a.png";
+    AssetDiagnostic terminal = z;
+    terminal.severity = AssetDiagnostic::Missing;
+    terminal.refPath = "ignored.png";
+
+    CHECK(FormatNonPortableAssetSummary({ terminal }).empty());
+    CHECK(FormatNonPortableAssetSummary({ z }) ==
+          "non-portable asset reference: z.png");
+    CHECK(FormatNonPortableAssetSummary({ z, terminal, a }) ==
+          "2 non-portable asset references; first: a.png");
 }

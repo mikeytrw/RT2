@@ -124,22 +124,10 @@ void LogLoaderDiagnostics(
 {
     for (const auto& diagnostic : diagnostics)
     {
-        const char* severity = "Missing";
-        switch (diagnostic.severity)
-        {
-            case rt2::core::AssetDiagnostic::Missing:
-                severity = "Missing"; break;
-            case rt2::core::AssetDiagnostic::Malformed:
-                severity = "Malformed"; break;
-            case rt2::core::AssetDiagnostic::Unresolved:
-                severity = "Unresolved"; break;
-            case rt2::core::AssetDiagnostic::Conflict:
-                severity = "Conflict"; break;
-            case rt2::core::AssetDiagnostic::Stale:
-                severity = "Stale"; break;
-        }
         RT_LOG("[TextureAsset] %s: path=%s source=%s detail=%s",
-               severity, diagnostic.refPath.c_str(),
+               rt2::core::AssetDiagnosticSeverityName(
+                   diagnostic.severity),
+               diagnostic.refPath.c_str(),
                diagnostic.sourceKey.c_str(),
                diagnostic.detail.c_str());
     }

@@ -40,8 +40,14 @@ $exitMeaning = @{
     6 = "script error (quarantined, or no instance survived)"
 }
 
+$savedErrorActionPreference = $ErrorActionPreference
+# PowerShell 7 promotes redirected native stderr to ErrorRecord objects. Keep
+# those records in the captured stream so advisory Asset diagnostics can be
+# classified by severity below instead of terminating at process invocation.
+$ErrorActionPreference = "Continue"
 $scenarioOutput = @(& $exe --script-scenario $scenario --out $report 2>&1)
 $exitCode = $LASTEXITCODE
+$ErrorActionPreference = $savedErrorActionPreference
 $scenarioOutput | ForEach-Object { Write-Host $_ }
 
 if ($exitCode -ne 0) {
@@ -70,9 +76,22 @@ if ($reportContent -notmatch '"scriptError":\s*false') {
     Write-Host $reportContent
     exit 1
 }
-if (($scenarioOutput -join "`n") -match '\[ScriptScenario\] Asset diagnostic:') {
-    Write-Host "[ScriptScenario] FAIL: tracked scenario asset emitted an asset diagnostic" -ForegroundColor Red
-    exit 1
+foreach ($line in $scenarioOutput) {
+    if ($line -notmatch '\[ScriptScenario\] Asset diagnostic:') {
+        continue
+    }
+    if ($line -notmatch 'severity=(\d+)') {
+        Write-Host "[ScriptScenario] FAIL: asset diagnostic has no parseable severity" -ForegroundColor Red
+        Write-Host $line
+        exit 1
+    }
+    # AssetDiagnostic::Missing is explicitly value 2. Stale (0) and
+    # NonPortable (1) are rendered advisories, not scripting failures.
+    if ([int]$Matches[1] -ge 2) {
+        Write-Host "[ScriptScenario] FAIL: tracked scenario asset emitted a terminal asset diagnostic" -ForegroundColor Red
+        Write-Host $line
+        exit 1
+    }
 }
 
 Write-Host "[ScriptScenario] PASS" -ForegroundColor Green
