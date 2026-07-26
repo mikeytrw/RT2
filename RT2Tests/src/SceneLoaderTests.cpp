@@ -563,3 +563,90 @@ TEST_CASE("Save returns false for invalid path")
     ECSScene scene;
     CHECK_FALSE(SceneLoader::Save(scene, "Z:/nonexistent_dir/scene.gltf"));
 }
+
+// ============================================================================
+// Phase 8 step 3 — KHR_lights_punctual reaches ImportIntoECS, not just Load
+// ============================================================================
+
+TEST_CASE("Phase8 step 3: Load and Import agree on KHR_lights_punctual")
+{
+    // Before this step, ImportIntoECS never parsed the extension, so importing
+    // a glTF dropped every light without a diagnostic. This asserts the two
+    // entry points agree, so the gap cannot silently reopen.
+    const auto dir = fs::temp_directory_path() / "rt2_p8_step3";
+    fs::create_directories(dir);
+    const auto target = dir / "lights.gltf";
+
+    // Author one light of each type, then round-trip through Save, which
+    // emits KHR_lights_punctual from ecsScene.lights.
+    ECSScene authored;
+    {
+        SceneLight point;
+        point.type = LightType::Point;
+        point.color = {1.0f, 0.5f, 0.25f};
+        point.intensity = 7.5f;
+        point.range = 12.0f;
+        authored.lights.push_back(point);
+
+        SceneLight spot;
+        spot.type = LightType::Spot;
+        spot.color = {0.25f, 0.5f, 1.0f};
+        spot.intensity = 3.5f;
+        spot.innerConeAngle = 14.0f;
+        spot.outerConeAngle = 28.0f;
+        authored.lights.push_back(spot);
+
+        SceneLight directional;
+        directional.type = LightType::Directional;
+        directional.color = {1.0f, 1.0f, 0.9f};
+        directional.intensity = 2.0f;
+        authored.lights.push_back(directional);
+    }
+    REQUIRE(SceneLoader::Save(authored, target.string()));
+
+    auto checkLights = [](const ECSScene& scene, const char* which)
+    {
+        INFO("entry point: " << which);
+        REQUIRE(scene.lights.size() == 3);
+
+        CHECK(scene.lights[0].type == LightType::Point);
+        CHECK(scene.lights[0].intensity == doctest::Approx(7.5f));
+        CHECK(scene.lights[0].range == doctest::Approx(12.0f));
+
+        CHECK(scene.lights[1].type == LightType::Spot);
+        CHECK(scene.lights[1].intensity == doctest::Approx(3.5f));
+        CHECK(scene.lights[1].innerConeAngle == doctest::Approx(14.0f));
+        CHECK(scene.lights[1].outerConeAngle == doctest::Approx(28.0f));
+
+        // Directional is the value that silently became Point while the
+        // parser mapped only "spot" and defaulted everything else.
+        CHECK(scene.lights[2].type == LightType::Directional);
+        CHECK(scene.lights[2].intensity == doctest::Approx(2.0f));
+    };
+
+    std::vector<rt2::core::AssetDiagnostic> diagnostics;
+
+    ECSScene loaded;
+    REQUIRE(LoadGltfForTest(loaded, dir, target, diagnostics));
+    checkLights(loaded, "LoadIntoECS");
+
+    ECSScene imported;
+    const auto context = MakeSceneLoaderTestContext(dir, target);
+    // Extra parens: doctest's expression decomposition makes `!= entt::null`
+    // ambiguous (C2593) without them.
+    REQUIRE((SceneLoader::ImportIntoECS(imported, context, diagnostics) != entt::null));
+    checkLights(imported, "ImportIntoECS");
+
+    // The two entry points must not disagree — that divergence is the bug.
+    REQUIRE(loaded.lights.size() == imported.lights.size());
+    for (size_t i = 0; i < loaded.lights.size(); ++i)
+    {
+        INFO("light index " << i);
+        CHECK(loaded.lights[i].type == imported.lights[i].type);
+        CHECK(loaded.lights[i].intensity == doctest::Approx(imported.lights[i].intensity));
+        CHECK(loaded.lights[i].innerConeAngle == doctest::Approx(imported.lights[i].innerConeAngle));
+        CHECK(loaded.lights[i].outerConeAngle == doctest::Approx(imported.lights[i].outerConeAngle));
+    }
+
+    fs::remove(target);
+}
