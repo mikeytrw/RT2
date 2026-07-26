@@ -601,6 +601,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\SceneLoader.cpp">
+      <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">/bigobj %(AdditionalOptions)</AdditionalOptions>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

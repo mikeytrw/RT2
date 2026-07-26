@@ -269,6 +269,12 @@ project "RT2App"
       runtime "Debug"
       symbols "On"
 
+   -- SceneLoader.cpp exceeds the COFF section limit in Debug since the
+   -- Phase 7 texture pipeline landed. RT2Tests and RT2SliceRunner already
+   -- compile this same file with /bigobj.
+   filter { "configurations:Debug", "files:src/SceneLoader.cpp" }
+      buildoptions { "/bigobj" }
+
    filter "configurations:Release"
       defines { "WL_RELEASE" }
       runtime "Release"
