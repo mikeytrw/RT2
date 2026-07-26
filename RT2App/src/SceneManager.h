@@ -121,7 +121,10 @@ struct EditorCameraPose;
 	// settings.mergeMegaMesh is false, or a single mega-mesh child when true).
 	// Does NOT clear the scene. Returns the wrapper root entity, or invalid
 	// EntityId on failure.
-	EntityId ImportObj(const std::string& filepath, const ImportSettings& settings);
+	EntityId ImportObj(
+		const std::string& filepath,
+		const ImportSettings& settings,
+		std::vector<rt2::core::AssetDiagnostic>* diagnostics = nullptr);
 
 	// Merge a temporary ECSScene (produced by SceneLoader::ImportObjIntoECS
 	// or ImportIntoECS on a fresh ECSScene) into the live scene. Used by the

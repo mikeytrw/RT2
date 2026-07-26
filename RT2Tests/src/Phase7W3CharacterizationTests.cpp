@@ -15,6 +15,7 @@
 
 #include "json.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
@@ -388,6 +389,29 @@ fs::path WriteTexturedObj(const fs::path& directory,
         "newmtl material\n"
         "Kd 1 1 1\n"
         "map_Kd " + textureName + "\n"));
+    REQUIRE(WriteText(directory / "model.obj",
+        "mtllib material.mtl\n"
+        "v 0 0 0\n"
+        "v 1 0 0\n"
+        "v 0 1 0\n"
+        "vt 0 0\n"
+        "vt 1 0\n"
+        "vt 0 1\n"
+        "usemtl material\n"
+        "f 1/1 2/2 3/3\n"));
+    return directory / "model.obj";
+}
+
+fs::path WriteFourRoleObj(const fs::path& directory,
+                          const std::array<std::string, 4>& textureNames)
+{
+    REQUIRE(WriteText(directory / "material.mtl",
+        "newmtl material\n"
+        "Kd 1 1 1\n"
+        "map_Kd " + textureNames[0] + "\n"
+        "norm " + textureNames[1] + "\n"
+        "map_Ke " + textureNames[2] + "\n"
+        "map_Pr " + textureNames[3] + "\n"));
     REQUIRE(WriteText(directory / "model.obj",
         "mtllib material.mtl\n"
         "v 0 0 0\n"
@@ -1266,7 +1290,7 @@ TEST_CASE("Phase7 W3 step 6.1: committed script scenario identity resolves clean
     CHECK(diagnostics.empty());
 }
 
-TEST_CASE("Phase7 W3 characterization: OBJ texture failures do not fail valid geometry")
+TEST_CASE("Phase7 W3 step 6.4: OBJ texture failures are contained")
 {
     SUBCASE("success attaches the decoded texture")
     {
@@ -1275,27 +1299,45 @@ TEST_CASE("Phase7 W3 characterization: OBJ texture failures do not fail valid ge
         const fs::path obj = WriteTexturedObj(fixture.Path(), "valid.ppm");
 
         ECSScene scene;
-        REQUIRE(SceneLoader::LoadObjIntoECS(scene, obj.string()));
+        std::vector<AssetDiagnostic> diagnostics;
+        REQUIRE(SceneLoader::LoadObjIntoECS(
+            scene, obj.string(), ReadOnlyTextureContext(obj),
+            diagnostics));
         REQUIRE(scene.materials.size() == 1);
         CHECK(scene.meshRegistry.GetCount() == 1);
         CHECK(scene.textures.size() == 1);
         CHECK(scene.materials[0].baseColorTextureIndex == 0);
+        CHECK(scene.textures[0].ref.kind == AssetKind::Texture);
+        CHECK(scene.textures[0].ref.path == "valid.ppm");
+        CHECK(scene.textures[0].ref.sourceKey ==
+              "obj:material=0:texture=diffuse");
+        REQUIRE(diagnostics.size() == 1);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Stale);
     }
 
-    SUBCASE("missing texture is silently dropped")
+    SUBCASE("missing texture installs a placeholder")
     {
         TempDirectory fixture;
         const fs::path obj = WriteTexturedObj(fixture.Path(), "missing.ppm");
 
         ECSScene scene;
-        REQUIRE(SceneLoader::LoadObjIntoECS(scene, obj.string()));
+        std::vector<AssetDiagnostic> diagnostics;
+        REQUIRE(SceneLoader::LoadObjIntoECS(
+            scene, obj.string(), ReadOnlyTextureContext(obj),
+            diagnostics));
         REQUIRE(scene.materials.size() == 1);
         CHECK(scene.meshRegistry.GetCount() == 1);
-        CHECK(scene.textures.empty());
-        CHECK(scene.materials[0].baseColorTextureIndex == -1);
+        REQUIRE(scene.textures.size() == 1);
+        CheckExactTexturePlaceholder(scene.textures[0]);
+        CHECK(scene.materials[0].baseColorTextureIndex == 0);
+        REQUIRE(diagnostics.size() == 1);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+        CHECK(diagnostics[0].kind == AssetKind::Texture);
+        CHECK(diagnostics[0].sourceKey ==
+              "obj:material=0:texture=diffuse");
     }
 
-    SUBCASE("malformed texture is logged and dropped")
+    SUBCASE("malformed texture installs a placeholder")
     {
         TempDirectory fixture;
         REQUIRE(WriteText(fixture.Path() / "malformed.png", "not an image"));
@@ -1303,12 +1345,202 @@ TEST_CASE("Phase7 W3 characterization: OBJ texture failures do not fail valid ge
             WriteTexturedObj(fixture.Path(), "malformed.png");
 
         ECSScene scene;
-        REQUIRE(SceneLoader::LoadObjIntoECS(scene, obj.string()));
+        std::vector<AssetDiagnostic> diagnostics;
+        REQUIRE(SceneLoader::LoadObjIntoECS(
+            scene, obj.string(), ReadOnlyTextureContext(obj),
+            diagnostics));
         REQUIRE(scene.materials.size() == 1);
         CHECK(scene.meshRegistry.GetCount() == 1);
-        CHECK(scene.textures.empty());
-        CHECK(scene.materials[0].baseColorTextureIndex == -1);
+        REQUIRE(scene.textures.size() == 1);
+        CheckExactTexturePlaceholder(scene.textures[0]);
+        CHECK(scene.materials[0].baseColorTextureIndex == 0);
+        REQUIRE(diagnostics.size() == 2);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Stale);
+        CHECK(diagnostics[1].severity == AssetDiagnostic::Malformed);
+        CHECK(diagnostics[0].sourceKey ==
+              "obj:material=0:texture=diffuse");
+        CHECK(diagnostics[1].sourceKey ==
+              "obj:material=0:texture=diffuse");
     }
+}
+
+TEST_CASE("Phase7 W3 step 6.4: explicit OBJ import assigns and reuses texture identity")
+{
+    TempDirectory fixture;
+    REQUIRE(WritePpm(fixture.Path() / "valid.ppm"));
+    const fs::path obj =
+        WriteTexturedObj(fixture.Path(), "valid.ppm");
+    DeterministicUuidProvider ids;
+    auto context = ExplicitTextureContext(obj, ids);
+    ImportSettings settings;
+
+    ECSScene scene;
+    std::vector<AssetDiagnostic> diagnostics;
+    const entt::entity first = SceneLoader::ImportObjIntoECS(
+        scene, obj.string(), settings, context, diagnostics);
+    REQUIRE(first != entt::entity{entt::null});
+    REQUIRE(scene.textures.size() == 1);
+    REQUIRE(diagnostics.empty());
+    CHECK_FALSE(scene.textures[0].ref.assetId.IsNull());
+    CHECK(scene.textures[0].ref.sourceKey ==
+          "obj:material=0:texture=diffuse");
+
+    const fs::path sidecar =
+        AssetSidecarPath(fixture.Path() / "valid.ppm");
+    REQUIRE(fs::is_regular_file(sidecar));
+    Error sidecarError;
+    const UUID textureId = ReadSidecarId(sidecar, sidecarError);
+    REQUIRE(sidecarError.IsOk());
+    CHECK(scene.textures[0].ref.assetId == textureId);
+
+    const entt::entity second = SceneLoader::ImportObjIntoECS(
+        scene, obj.string(), settings, context, diagnostics);
+    REQUIRE(second != entt::entity{entt::null});
+    REQUIRE(scene.textures.size() == 2);
+    CHECK(diagnostics.empty());
+    CHECK(scene.textures[1].ref.assetId == textureId);
+}
+
+TEST_CASE("Phase7 W3 step 6.4: all OBJ texture roles retain deterministic placeholder slots")
+{
+    TempDirectory fixture;
+    REQUIRE(WriteText(fixture.Path() / "diffuse.bad", "not an image"));
+    REQUIRE(WriteText(fixture.Path() / "emissive.bad", "not an image"));
+    const fs::path obj = WriteFourRoleObj(
+        fixture.Path(),
+        { "diffuse.bad", "normal-missing.png",
+          "emissive.bad", "roughness-missing.png" });
+
+    ECSScene scene;
+    std::vector<AssetDiagnostic> diagnostics;
+    REQUIRE(SceneLoader::LoadObjIntoECS(
+        scene, obj.string(), ReadOnlyTextureContext(obj),
+        diagnostics));
+    REQUIRE(scene.materials.size() == 1);
+    REQUIRE(scene.textures.size() == 4);
+    for (const auto& texture : scene.textures)
+        CheckExactTexturePlaceholder(texture);
+
+    const auto& material = scene.materials[0];
+    CHECK(material.baseColorTextureIndex == 0);
+    CHECK(material.normalTextureIndex == 1);
+    CHECK(material.emissiveTextureIndex == 2);
+    CHECK(material.metallicRoughnessTextureIndex == 3);
+    CHECK(scene.textures[0].ref.sourceKey ==
+          "obj:material=0:texture=diffuse");
+    CHECK(scene.textures[1].ref.sourceKey ==
+          "obj:material=0:texture=normal");
+    CHECK(scene.textures[2].ref.sourceKey ==
+          "obj:material=0:texture=emissive");
+    CHECK(scene.textures[3].ref.sourceKey ==
+          "obj:material=0:texture=roughness");
+    CHECK(CountSeverity(diagnostics, AssetDiagnostic::Stale) == 2);
+    CHECK(CountSeverity(diagnostics, AssetDiagnostic::Missing) == 2);
+    CHECK(CountSeverity(diagnostics, AssetDiagnostic::Malformed) == 2);
+
+    const std::vector<AssetDiagnostic::Severity> expectedOrder = {
+        AssetDiagnostic::Stale,
+        AssetDiagnostic::Malformed,
+        AssetDiagnostic::Stale,
+        AssetDiagnostic::Malformed,
+        AssetDiagnostic::Missing,
+        AssetDiagnostic::Missing,
+    };
+    std::vector<AssetDiagnostic::Severity> actualOrder;
+    for (const auto& diagnostic : diagnostics)
+        actualOrder.push_back(diagnostic.severity);
+    CHECK(actualOrder == expectedOrder);
+}
+
+TEST_CASE("Phase7 W3 step 6.4: reversed OBJ manifest input has an identical sorted snapshot")
+{
+    TempDirectory fixture;
+    REQUIRE(WriteText(fixture.Path() / "diffuse.bad", "not an image"));
+    REQUIRE(WriteText(fixture.Path() / "emissive.bad", "not an image"));
+    const fs::path owner = fixture.Path() / "model.obj";
+    REQUIRE(WriteText(owner, "# manifest owner\n"));
+    const auto context = ReadOnlyTextureContext(owner);
+
+    TextureManifest canonical;
+    const auto append = [&](size_t slot,
+                            ObjTextureRole role,
+                            const std::string& path) {
+        TextureManifestEntry entry;
+        entry.outputSlot = slot;
+        entry.ref.kind = AssetKind::Texture;
+        entry.ref.path = path;
+        entry.ref.sourceKey = ObjTextureSourceKey(0, role);
+        entry.payloadKind = TexturePayloadKind::External;
+        entry.externalUri = path;
+        entry.materialIndex = 0;
+        entry.objRole = role;
+        canonical.push_back(std::move(entry));
+    };
+    append(0, ObjTextureRole::Diffuse, "diffuse.bad");
+    append(1, ObjTextureRole::Normal, "normal-missing.png");
+    append(2, ObjTextureRole::Emissive, "emissive.bad");
+    append(3, ObjTextureRole::Roughness, "roughness-missing.png");
+
+    TextureManifest reversed = canonical;
+    std::reverse(reversed.begin(), reversed.end());
+    SortTextureManifest(canonical);
+    SortTextureManifest(reversed);
+
+    REQUIRE(canonical.size() == reversed.size());
+    for (size_t i = 0; i < canonical.size(); ++i)
+    {
+        CHECK(canonical[i].outputSlot == reversed[i].outputSlot);
+        CHECK(canonical[i].materialIndex == reversed[i].materialIndex);
+        CHECK(canonical[i].objRole == reversed[i].objRole);
+        CHECK(canonical[i].ref.sourceKey == reversed[i].ref.sourceKey);
+    }
+
+    std::vector<AssetDiagnostic> canonicalDiagnostics;
+    std::vector<AssetDiagnostic> reversedDiagnostics;
+    const auto canonicalTextures = ResolveAndDecodeTextures(
+        canonical, context, canonicalDiagnostics);
+    const auto reversedTextures = ResolveAndDecodeTextures(
+        reversed, context, reversedDiagnostics);
+    REQUIRE(canonicalTextures.size() == reversedTextures.size());
+    for (size_t i = 0; i < canonicalTextures.size(); ++i)
+    {
+        CHECK(canonicalTextures[i].pixels == reversedTextures[i].pixels);
+        CHECK(canonicalTextures[i].width == reversedTextures[i].width);
+        CHECK(canonicalTextures[i].height == reversedTextures[i].height);
+        CHECK(canonicalTextures[i].ref.kind ==
+              reversedTextures[i].ref.kind);
+        CHECK(canonicalTextures[i].ref.path ==
+              reversedTextures[i].ref.path);
+        CHECK(canonicalTextures[i].ref.sourceKey ==
+              reversedTextures[i].ref.sourceKey);
+    }
+
+    const auto snapshot = [](const std::vector<AssetDiagnostic>& values) {
+        std::vector<std::string> result;
+        for (const auto& diagnostic : values)
+        {
+            result.push_back(
+                std::to_string(static_cast<int>(diagnostic.severity)) +
+                "|" + diagnostic.sourceKey +
+                "|" + diagnostic.refPath);
+        }
+        return result;
+    };
+    CHECK(snapshot(canonicalDiagnostics) ==
+          snapshot(reversedDiagnostics));
+
+    const std::vector<AssetDiagnostic::Severity> expectedOrder = {
+        AssetDiagnostic::Stale,
+        AssetDiagnostic::Malformed,
+        AssetDiagnostic::Stale,
+        AssetDiagnostic::Malformed,
+        AssetDiagnostic::Missing,
+        AssetDiagnostic::Missing,
+    };
+    std::vector<AssetDiagnostic::Severity> actualOrder;
+    for (const auto& diagnostic : canonicalDiagnostics)
+        actualOrder.push_back(diagnostic.severity);
+    CHECK(actualOrder == expectedOrder);
 }
 
 TEST_CASE("Phase7 W3 step 6.3: glTF texture failures are contained")

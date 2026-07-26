@@ -7593,3 +7593,124 @@ partially stage the following commit. The Step 6 implementation report must
 list all four commit hashes, the per-commit test totals, and the
 discrimination proof associated with each recovery point. Do not push, and
 stop after 6.4 rather than continuing to step 7.
+
+### W3 step 6 implementation report — texture cutover complete
+
+Completed 2026-07-26 on `phase-6-scripting`. This report closes incremental
+step 6 only. Step 7 host cleanup and every later W3 step remain unstarted.
+
+#### Delivered recovery points
+
+| Slice | Commit | Green suite at the recovery point |
+|---|---|---|
+| 6.1 carryovers | `8238e79` | Release and Debug 632/632 cases, 144961/144961 assertions |
+| 6.2 pipeline foundation | `cb54d44` | Release and Debug 635/635 cases, 144996/144996 assertions |
+| 6.3 glTF cutover | `438b330` | Release and Debug 639/639 cases, 145175/145175 assertions |
+| 6.4 OBJ cutover and close | recorded by the following commit | Release and Debug 642/642 cases, 145315/145315 assertions |
+
+Step 6 added `SceneTexture::ref`, the CPU-only
+`TextureAssetPipeline.{h,cpp}`, exact placeholder construction, glTF
+capture-then-decode, and deterministic glTF/OBJ dependency manifests.
+Both glTF and OBJ entry points now use the shared database/locator,
+sidecar-assignment, decode, containment and diagnostic-sort path. External
+textures receive their own durable IDs in explicit-import mode; embedded
+glTF textures retain owner identity and never mint child sidecars.
+`SceneAssetResolver`, `SceneManager`, Walnut's synchronous/background paths
+and the slice-runner path pass explicit resolution context and one
+diagnostic sink. The short compatibility loaders remain and call the same
+structured implementation, as required until step 7.
+
+The tracked `tiny_textured.glb` fixture was found to encode the invalid
+schema value `bufferView: -1`. Its generator now writes a real PPM data URI,
+the binary fixture was regenerated, and the existing round-trip case
+continued to pass. This was a fixture correctness repair, not an expectation
+change.
+
+One build-configuration change was required and is flagged explicitly:
+Debug compilation of the enlarged `SceneLoader.cpp` exceeded the default
+COFF section limit (`C1128`). `/bigobj` is applied only to that translation
+unit in the Debug `RT2Tests` and `RT2SliceRunner` configurations, in both
+premake sources and the tracked test vcxproj. The Release configurations and
+RT2App link settings are unchanged. The pre-existing whole-Debug RT2App
+NRD/NRI mismatch was not touched.
+
+#### Authorized expectation changes
+
+No original case was removed, skipped or weakened. Only the seven rows
+authorized by the step-6 plan changed:
+
+| Case | Old | New |
+|---|---|---|
+| OBJ valid external | one decoded texture/index 0; no structured diagnostic | same decoded texture/index; populated `Texture` ref; one read-only `Stale` |
+| OBJ missing | no texture; index `-1`; no diagnostic | exact placeholder at index 0; one `Texture/Missing` |
+| OBJ malformed | no texture; index `-1`; console log only | exact placeholder at index 0; ordered `Texture/Stale`, then `Texture/Malformed` |
+| glTF valid external | decoded slot/index 0; no structured diagnostic | same decoded slot/index; populated ref; one read-only `Stale` |
+| glTF missing external | empty slot/index 0; warning only | exact placeholder/index 0; one `Texture/Missing` |
+| glTF malformed external | whole model failed with no retained geometry/material/texture | model succeeds; geometry/material retained; exact placeholder/index 0; ordered `Texture/Stale`, then `Texture/Malformed` |
+| glTF invalid source | empty slot/index 0 | exact placeholder/index 0; one `Texture/Unresolved` keyed `gltf:texture=0` |
+
+The separately authorized carryover changed successful identity-repair
+advisories from `Missing` to `Stale`; actual unresolved files remain
+`Missing`.
+
+#### Discrimination proofs
+
+Every temporary fault was applied to production or fixture behavior with
+`apply_patch`, the affected Release target was rebuilt where required, the
+case was observed red, the one fault was removed, and the case was observed
+green:
+
+| Recovery point | Temporary fault | Red observation | Restored green |
+|---|---|---|---|
+| 6.1 | successful no-sidecar resolve emitted `Missing` | invariant 0/1 cases, 14/16 assertions | 1/1, 16/16 |
+| 6.1 | committed scenario sidecar made malformed | fixture case 0/1, 2/3; scenario gate rejected the asset diagnostic | fixture 1/1, 10/10; scenario gate PASS |
+| 6.2 | placeholder returned an empty pixel vector | 0/1, 11/12 | focused foundation set green |
+| 6.2 | manifest sort skipped | 0/1, 8/14 | focused foundation set green |
+| 6.2 | capture payload discarded | 0/1, 7/9 | focused foundation set green |
+| 6.3 | placeholder returned an empty pixel vector | 1/5 cases, 203/217 assertions | 5/5, 217/217 |
+| 6.3 | captured embedded payload discarded | 0/1, 46/49 | restored focused case green |
+| 6.3 | database dependency lookup bypassed | 0/1, 39/52 | restored focused case green |
+| 6.3 | texture `Malformed` made model-fatal | 2/5 cases, 150/153 | 5/5, 217/217 |
+| 6.3 | external explicit `ResolveOrAssign` skipped | 0/1, 6/7 | restored focused case green |
+| 6.3 | embedded child sidecar minted | 0/1, 12/13 | restored focused case green |
+| 6.3 | structured `SceneTexture::ref` cleared | 0/1, 11/14 | restored focused case green |
+| 6.4 | placeholder returned an empty pixel vector | 2/4 cases, 160/166 | 4/4, 166/166 |
+| 6.4 | external explicit `ResolveOrAssign` skipped | 0/1, 6/7 | 1/1, 16/16 |
+| 6.4 | OBJ material binding skipped | 2/4 cases, 159/166 | 4/4, 166/166 |
+| 6.4 | final texture diagnostic sort disabled | 0/1, 47/48 | 1/1, 48/48 |
+
+#### Verified by running
+
+- From the repository root, the final Release and Debug `RT2Tests`
+  executables each passed 642/642 cases and 145315/145315 assertions. Thus
+  every original 630-case step-6 baseline case remained present and green.
+- `RT2SliceRunner` built in Release and Debug. `RT2App` built in Release.
+- `run_script_test.ps1` passed: 60 frames, one entity, no mismatches, and no
+  asset diagnostic.
+- `graphify update .` completed code extraction and rebuilt the graph at
+  33664 nodes, 70884 edges and 1388 communities. Its wrapper exceeded the
+  180-second command timeout after printing completion; no Graphify/uv/Python
+  refresh process remained. `GRAPH_REPORT.md` changed and is included.
+- The Phase 6 hard contract was checked both inside both full suites and by
+  named Release cases: empty scripts remain legal; syntax failure
+  quarantines only the affected instance; last-good descriptors survived
+  parse failure (8/8); resolver parse failure preserved authored values and
+  suppressed reconciliation (12/12); a mid-edit syntax error kept the live
+  callback; `rt2:reload()` did not re-enter; self-rescheduling timers and
+  input bindings remained live. The combined named contract selection
+  passed 7/7 cases and 39/39 assertions. The 60-frame scenario additionally
+  exercised the bound entity through the slice-runner consumer.
+- `git diff --check` was clean after all temporary faults were removed.
+
+#### Assumed or intentionally not run
+
+- Whole-Debug `RT2App` was intentionally not linked because its existing
+  NRD/NRI mismatch is explicitly out of scope; no inference of a green
+  whole-Debug app is made.
+- No GPU/render-quality claim is made. CPU suites, both slice builds and the
+  Release application build verify linkage and loader behavior; they do not
+  replace an interactive GPU run.
+- No machine-local Downloads asset is used as evidence for texture
+  correctness. Such optional legacy tests may still execute when their
+  local files exist, but all new evidence uses generated or committed
+  project fixtures.

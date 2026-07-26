@@ -2,6 +2,7 @@
 
 #include "stb_image.h"
 #include "tiny_gltf.h"
+#include "tinyobjloader/tiny_obj_loader.h"
 
 #include <algorithm>
 #include <fstream>
@@ -241,6 +242,56 @@ GltfTextureManifest EnumerateGltfTextureDependencies(
     return manifest;
 }
 
+ObjTextureManifest EnumerateObjTextureDependencies(
+    const std::vector<tinyobj::material_t>& materials,
+    const TextureAssetLoadContext& context)
+{
+    ObjTextureManifest manifest;
+    size_t outputSlot = 0;
+
+    auto append = [&](size_t materialIndex,
+                      ObjTextureRole role,
+                      const std::string& textureName,
+                      bool isSRGB) {
+        if (textureName.empty())
+            return;
+
+        TextureManifestEntry entry;
+        entry.outputSlot = outputSlot++;
+        entry.ref.kind = AssetKind::Texture;
+        entry.ref.sourceKey = ObjTextureSourceKey(materialIndex, role);
+        entry.payloadKind = TexturePayloadKind::External;
+        entry.externalUri = textureName;
+        entry.materialIndex = static_cast<int>(materialIndex);
+        entry.objRole = role;
+        entry.isSRGB = isSRGB;
+
+        const auto physical =
+            (context.resolvedOwnerPath.parent_path() /
+             std::filesystem::u8path(textureName)).lexically_normal();
+        entry.ref.path =
+            PortablePathFor(physical, context.resolution.assetRoot);
+        manifest.push_back(std::move(entry));
+    };
+
+    for (size_t materialIndex = 0;
+         materialIndex < materials.size(); ++materialIndex)
+    {
+        const auto& material = materials[materialIndex];
+        append(materialIndex, ObjTextureRole::Diffuse,
+               material.diffuse_texname, true);
+        append(materialIndex, ObjTextureRole::Normal,
+               material.normal_texname, false);
+        append(materialIndex, ObjTextureRole::Emissive,
+               material.emissive_texname, true);
+        append(materialIndex, ObjTextureRole::Roughness,
+               material.roughness_texname, false);
+    }
+
+    SortTextureManifest(manifest);
+    return manifest;
+}
+
 SceneTexture MakeMissingTexturePlaceholder(const AssetReference& ref)
 {
     SceneTexture texture;
@@ -433,6 +484,10 @@ std::vector<SceneTexture> ResolveAndDecodeTextures(
                 AssetDiagnostic::Malformed, ref, context, physicalPath,
                 "external image failed to decode"));
             texture = MakeMissingTexturePlaceholder(ref);
+        }
+        else
+        {
+            texture.isSRGB = entry.isSRGB;
         }
         textures.push_back(std::move(texture));
     }

@@ -448,25 +448,27 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
             continue;
         }
 
+        TextureAssetLoadContext textureContext;
+        textureContext.resolution = resolutionContext;
+        textureContext.ownerModel = m.ownerRef;
+        textureContext.resolvedOwnerPath = m.resolved;
+        textureContext.effectiveOwnerId = m.effectiveId;
+        textureContext.entityUuid = m.firstEntityUuid;
+        textureContext.entityName = m.firstEntityName;
+        textureContext.identityMode = TextureIdentityMode::ReadOnly;
+
         bool ok = false;
         if (m.isObj)
         {
             ImportSettings iset;
             iset.mergeMegaMesh = m.mergeMegaMesh;
             entt::entity root = SceneLoader::ImportObjIntoECS(
-                s.ecs, m.resolved.string(), iset);
+                s.ecs, m.resolved.string(), iset,
+                textureContext, diagnostics);
             ok = (root != entt::null);
         }
         else
         {
-            TextureAssetLoadContext textureContext;
-            textureContext.resolution = resolutionContext;
-            textureContext.ownerModel = m.ownerRef;
-            textureContext.resolvedOwnerPath = m.resolved;
-            textureContext.effectiveOwnerId = m.effectiveId;
-            textureContext.entityUuid = m.firstEntityUuid;
-            textureContext.entityName = m.firstEntityName;
-            textureContext.identityMode = TextureIdentityMode::ReadOnly;
             ok = SceneLoader::LoadIntoECS(
                 s.ecs, m.resolved.string(), textureContext, diagnostics);
         }

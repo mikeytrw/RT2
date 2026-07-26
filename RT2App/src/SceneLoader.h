@@ -37,6 +37,11 @@ public:
 
     // Load an OBJ file (+ .mtl + textures) into the ECS scene.
     static bool LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath);
+    static bool LoadObjIntoECS(
+        ECSScene& ecsScene,
+        const std::string& filepath,
+        const rt2::core::TextureAssetLoadContext& textureContext,
+        std::vector<rt2::core::AssetDiagnostic>& diagnostics);
 
     // Import an OBJ file into an EXISTING ECSScene without clearing it.
     // Merges textures, materials (with index offset), and entities (under a
@@ -55,6 +60,12 @@ public:
     static entt::entity ImportObjIntoECS(ECSScene& ecsScene,
                                          const std::string& filepath,
                                          const ImportSettings& settings);
+    static entt::entity ImportObjIntoECS(
+        ECSScene& ecsScene,
+        const std::string& filepath,
+        const ImportSettings& settings,
+        const rt2::core::TextureAssetLoadContext& textureContext,
+        std::vector<rt2::core::AssetDiagnostic>& diagnostics);
 };
 
 #endif // !SCENE_LOADER_H

@@ -17,6 +17,10 @@ struct Image;
 class Model;
 }
 
+namespace tinyobj {
+struct material_t;
+}
+
 namespace rt2::core {
 
 enum class TextureIdentityMode : uint8_t
@@ -64,6 +68,7 @@ struct TextureManifestEntry
     std::vector<unsigned char> encodedBytes;
     int                        materialIndex = -1;
     ObjTextureRole             objRole = ObjTextureRole::Diffuse;
+    bool                       isSRGB = false;
 };
 
 using TextureManifest = std::vector<TextureManifestEntry>;
@@ -101,6 +106,10 @@ bool CaptureGltfImageData(tinygltf::Image* image,
 GltfTextureManifest EnumerateGltfTextureDependencies(
     const tinygltf::Model& model,
     const GltfImageCapture& capture,
+    const TextureAssetLoadContext& context);
+
+ObjTextureManifest EnumerateObjTextureDependencies(
+    const std::vector<tinyobj::material_t>& materials,
     const TextureAssetLoadContext& context);
 
 // Sole W3 texture containment value.

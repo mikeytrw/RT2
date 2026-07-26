@@ -1845,8 +1845,81 @@ entt::entity SceneLoader::ImportIntoECS(
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "tinyobjloader/tiny_obj_loader.h"
 
+namespace {
+
+void AssignObjTextureIndex(SceneMaterial& material,
+                           rt2::core::ObjTextureRole role,
+                           int textureIndex)
+{
+    switch (role)
+    {
+        case rt2::core::ObjTextureRole::Diffuse:
+            material.baseColorTextureIndex = textureIndex;
+            break;
+        case rt2::core::ObjTextureRole::Normal:
+            material.normalTextureIndex = textureIndex;
+            break;
+        case rt2::core::ObjTextureRole::Emissive:
+            material.emissiveTextureIndex = textureIndex;
+            break;
+        case rt2::core::ObjTextureRole::Roughness:
+            material.metallicRoughnessTextureIndex = textureIndex;
+            break;
+    }
+}
+
+size_t AppendObjTexturesAndBind(
+    ECSScene& ecsScene,
+    const std::vector<tinyobj::material_t>& materials,
+    int materialBase,
+    const rt2::core::TextureAssetLoadContext& textureContext,
+    std::vector<rt2::core::AssetDiagnostic>& diagnostics)
+{
+    const auto manifest =
+        rt2::core::EnumerateObjTextureDependencies(
+            materials, textureContext);
+    auto textures = rt2::core::ResolveAndDecodeTextures(
+        manifest, textureContext, diagnostics);
+    const size_t textureBase = ecsScene.textures.size();
+
+    ecsScene.textures.insert(
+        ecsScene.textures.end(),
+        std::make_move_iterator(textures.begin()),
+        std::make_move_iterator(textures.end()));
+
+    for (const auto& entry : manifest)
+    {
+        const int materialIndex =
+            materialBase + entry.materialIndex;
+        if (materialIndex < 0 ||
+            materialIndex >= static_cast<int>(ecsScene.materials.size()))
+            continue;
+        AssignObjTextureIndex(
+            ecsScene.materials[materialIndex], entry.objRole,
+            static_cast<int>(textureBase + entry.outputSlot));
+    }
+    return manifest.size();
+}
+
+} // namespace
+
 bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath)
 {
+    auto context = MakeCompatibilityTextureContext(filepath);
+    std::vector<rt2::core::AssetDiagnostic> diagnostics;
+    const bool loaded =
+        LoadObjIntoECS(ecsScene, filepath, context, diagnostics);
+    LogLoaderDiagnostics(diagnostics);
+    return loaded;
+}
+
+bool SceneLoader::LoadObjIntoECS(
+    ECSScene& ecsScene,
+    const std::string& filepath,
+    const rt2::core::TextureAssetLoadContext& textureContext,
+    std::vector<rt2::core::AssetDiagnostic>& diagnostics)
+{
+    const size_t diagnosticBase = diagnostics.size();
     if (filepath.empty() || !fs::exists(filepath))
     {
         RT_LOG("[SceneLoader] LoadObjIntoECS: refusing path '%s' (%s)",
@@ -1883,6 +1956,9 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
     const auto& attrib = reader.GetAttrib();
     const auto& shapes = reader.GetShapes();
     const auto& materials = reader.GetMaterials();
+    const auto effectiveTextureContext =
+        PrepareTextureContextAfterParse(
+            filepath, textureContext, diagnostics);
 
     printf("[SceneLoader] OBJ: %d verts, %d shapes, %d materials\n",
            (int)attrib.vertices.size() / 3, (int)shapes.size(), (int)materials.size());
@@ -1928,56 +2004,11 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
         matBase = 0;
     }
 
-    // Load textures
     int texBase = (int)ecsScene.textures.size();
-    auto loadTexture = [&](const std::string& texName, bool isSRGB) -> int {
-        if (texName.empty()) return -1;
-        fs::path texPath = fs::path(baseDir) / texName;
-        if (!fs::exists(texPath)) return -1;
-
-        int w, h, channels;
-        unsigned char* pixels = stbi_load(texPath.string().c_str(), &w, &h, &channels, 4);
-        if (!pixels)
-        {
-            printf("[SceneLoader] Failed to load texture: %s\n", texPath.string().c_str());
-            return -1;
-        }
-
-        SceneTexture tex;
-        tex.filepath = texPath.string();
-        tex.width = w;
-        tex.height = h;
-        tex.channels = 4;
-        tex.pixels.assign(pixels, pixels + (size_t)w * h * 4);
-        // Color textures are decoded through an sRGB image format. Data
-        // textures must preserve their stored numeric values.
-        tex.isSRGB = isSRGB;
-        stbi_image_free(pixels);
-
-        int idx = (int)ecsScene.textures.size();
-        ecsScene.textures.push_back(tex);
-        return idx;
-    };
-
-    // Assign textures to materials
-    int texCount = 0;
-    for (int mi = 0; mi < (int)materials.size(); mi++)
-    {
-        int matIdx = matBase + mi;
-        if (matIdx >= (int)ecsScene.materials.size()) break;
-
-        auto& mat = ecsScene.materials[matIdx];
-
-        if (!materials[mi].diffuse_texname.empty())
-            { int ti = loadTexture(materials[mi].diffuse_texname, true); if (ti >= 0) { mat.baseColorTextureIndex = ti; texCount++; } }
-        if (!materials[mi].normal_texname.empty())
-            { int ti = loadTexture(materials[mi].normal_texname, false); if (ti >= 0) { mat.normalTextureIndex = ti; texCount++; } }
-        if (!materials[mi].emissive_texname.empty())
-            { int ti = loadTexture(materials[mi].emissive_texname, true); if (ti >= 0) { mat.emissiveTextureIndex = ti; texCount++; } }
-        if (!materials[mi].roughness_texname.empty())
-            { int ti = loadTexture(materials[mi].roughness_texname, false); if (ti >= 0) { mat.metallicRoughnessTextureIndex = ti; texCount++; } }
-    }
-    printf("[SceneLoader] OBJ: %d textures loaded\n", texCount);
+    const size_t texCount = AppendObjTexturesAndBind(
+        ecsScene, materials, matBase, effectiveTextureContext,
+        diagnostics);
+    printf("[SceneLoader] OBJ: %zu textures loaded\n", texCount);
     fflush(stdout);
 
     // Merge all shapes into a single mega-mesh (one BLAS)
@@ -2156,6 +2187,7 @@ bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath
            (int)ecsScene.materials.size() - matBase);
     fflush(stdout);
 
+    SortLoaderDiagnostics(diagnostics, diagnosticBase);
     return true;
 }
 
@@ -2178,8 +2210,12 @@ struct ObjParseResult
     std::string stemName;
 };
 
-bool ParseObjAndLoadResources(ECSScene& ecsScene, const std::string& filepath,
-                              ObjParseResult& out)
+bool ParseObjAndLoadResources(
+    ECSScene& ecsScene,
+    const std::string& filepath,
+    const rt2::core::TextureAssetLoadContext& textureContext,
+    std::vector<rt2::core::AssetDiagnostic>& diagnostics,
+    ObjParseResult& out)
 {
     if (filepath.empty() || !fs::exists(filepath))
     {
@@ -2217,6 +2253,9 @@ bool ParseObjAndLoadResources(ECSScene& ecsScene, const std::string& filepath,
     out.attrib    = &out.reader.GetAttrib();
     out.shapes    = &out.reader.GetShapes();
     out.materials = &out.reader.GetMaterials();
+    const auto effectiveTextureContext =
+        PrepareTextureContextAfterParse(
+            filepath, textureContext, diagnostics);
 
     printf("[SceneLoader] OBJ import: %d verts, %d shapes, %d materials\n",
            (int)out.attrib->vertices.size() / 3, (int)out.shapes->size(),
@@ -2259,53 +2298,11 @@ bool ParseObjAndLoadResources(ECSScene& ecsScene, const std::string& filepath,
         out.matBase = 0;
     }
 
-    // Load textures (append to ecsScene.textures).
     out.texBase = (int)ecsScene.textures.size();
-    auto loadTexture = [&](const std::string& texName, bool isSRGB) -> int {
-        if (texName.empty()) return -1;
-        fs::path texPath = fs::path(out.baseDir) / texName;
-        if (!fs::exists(texPath)) return -1;
-
-        int w, h, channels;
-        unsigned char* pixels = stbi_load(texPath.string().c_str(), &w, &h, &channels, 4);
-        if (!pixels)
-        {
-            printf("[SceneLoader] Failed to load texture: %s\n", texPath.string().c_str());
-            return -1;
-        }
-
-        SceneTexture tex;
-        tex.filepath = texPath.string();
-        tex.width = w;
-        tex.height = h;
-        tex.channels = 4;
-        tex.pixels.assign(pixels, pixels + (size_t)w * h * 4);
-        tex.isSRGB = isSRGB;
-        stbi_image_free(pixels);
-
-        int idx = (int)ecsScene.textures.size();
-        ecsScene.textures.push_back(tex);
-        return idx;
-    };
-
-    int texCount = 0;
-    for (int mi = 0; mi < (int)out.materials->size(); mi++)
-    {
-        int matIdx = out.matBase + mi;
-        if (matIdx >= (int)ecsScene.materials.size()) break;
-
-        auto& mat = ecsScene.materials[matIdx];
-
-        if (!(*out.materials)[mi].diffuse_texname.empty())
-            { int ti = loadTexture((*out.materials)[mi].diffuse_texname, true); if (ti >= 0) { mat.baseColorTextureIndex = ti; texCount++; } }
-        if (!(*out.materials)[mi].normal_texname.empty())
-            { int ti = loadTexture((*out.materials)[mi].normal_texname, false); if (ti >= 0) { mat.normalTextureIndex = ti; texCount++; } }
-        if (!(*out.materials)[mi].emissive_texname.empty())
-            { int ti = loadTexture((*out.materials)[mi].emissive_texname, true); if (ti >= 0) { mat.emissiveTextureIndex = ti; texCount++; } }
-        if (!(*out.materials)[mi].roughness_texname.empty())
-            { int ti = loadTexture((*out.materials)[mi].roughness_texname, false); if (ti >= 0) { mat.metallicRoughnessTextureIndex = ti; texCount++; } }
-    }
-    printf("[SceneLoader] OBJ import: %d textures loaded\n", texCount);
+    const size_t texCount = AppendObjTexturesAndBind(
+        ecsScene, *out.materials, out.matBase,
+        effectiveTextureContext, diagnostics);
+    printf("[SceneLoader] OBJ import: %zu textures loaded\n", texCount);
     fflush(stdout);
 
     return true;
@@ -2402,8 +2399,25 @@ entt::entity SceneLoader::ImportObjIntoECS(ECSScene& ecsScene,
                                             const std::string& filepath,
                                             const ImportSettings& settings)
 {
+    auto context = MakeCompatibilityTextureContext(filepath);
+    std::vector<rt2::core::AssetDiagnostic> diagnostics;
+    const entt::entity root = ImportObjIntoECS(
+        ecsScene, filepath, settings, context, diagnostics);
+    LogLoaderDiagnostics(diagnostics);
+    return root;
+}
+
+entt::entity SceneLoader::ImportObjIntoECS(
+    ECSScene& ecsScene,
+    const std::string& filepath,
+    const ImportSettings& settings,
+    const rt2::core::TextureAssetLoadContext& textureContext,
+    std::vector<rt2::core::AssetDiagnostic>& diagnostics)
+{
+    const size_t diagnosticBase = diagnostics.size();
     ObjParseResult parsed;
-    if (!ParseObjAndLoadResources(ecsScene, filepath, parsed))
+    if (!ParseObjAndLoadResources(
+            ecsScene, filepath, textureContext, diagnostics, parsed))
         return entt::null;
 
     auto& reg = ecsScene.registry;
@@ -2648,5 +2662,6 @@ entt::entity SceneLoader::ImportObjIntoECS(ECSScene& ecsScene,
     SceneGraph::SetLocalDirty(reg, wrapperRoot);
     SceneGraph::UpdateWorldTransforms(reg);
 
+    SortLoaderDiagnostics(diagnostics, diagnosticBase);
     return wrapperRoot;
 }

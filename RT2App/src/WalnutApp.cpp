@@ -268,7 +268,9 @@ public:
 			{
 				self.SetStatus("Parsing file...");
 				if (isObj)
-					result->root = SceneLoader::ImportObjIntoECS(result->ecs, pathCopy, settingsCopy);
+					result->root = SceneLoader::ImportObjIntoECS(
+						result->ecs, pathCopy, settingsCopy,
+						textureContext, result->diagnostics);
 				else
 					result->root = SceneLoader::ImportIntoECS(
 						result->ecs, pathCopy, textureContext,
@@ -2279,7 +2281,9 @@ private:
 		{
 			self.SetStatus("Parsing file...");
 			if (isObj)
-				result->ok = SceneLoader::LoadObjIntoECS(result->ecs, pathCopy);
+				result->ok = SceneLoader::LoadObjIntoECS(
+					result->ecs, pathCopy, textureContext,
+					result->diagnostics);
 			else
 				result->ok = SceneLoader::LoadIntoECS(
 					result->ecs, pathCopy, textureContext,
@@ -2375,7 +2379,10 @@ private:
 			// OBJ now imports into the current scene (consistent with glTF).
 			ImportSettings settings;
 			settings.mergeMegaMesh = true;
-			auto id = m_SceneMgr.ImportObj(filepath, settings);
+			std::vector<rt2::core::AssetDiagnostic> diagnostics;
+			auto id = m_SceneMgr.ImportObj(
+				filepath, settings, &diagnostics);
+			LogAssetDiagnostics(diagnostics, 0, "Import");
 			if (id.IsValid())
 				m_PendingFullSync = true;
 			return id;
