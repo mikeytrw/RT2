@@ -7554,3 +7554,42 @@ push.
 - Do not modify renderer/Vulkan behavior or the known Debug RT2App
   NRD/NRI configuration.
 - Stop after the step-6 implementation report and commit.
+
+#### Step 6 review amendment — four independently green commits
+
+Approved 2026-07-26 after implementation-plan review. This amendment
+**supersedes only** the earlier phrases "inside the step-6 commit" and
+"commit step 6 only." The production contract, decisions, authorized
+expectation table, discrimination matrix, verification requirements,
+non-goals, and stop-before-step-7 boundary remain unchanged.
+
+Step 6 lands as four ordered commits. Do not squash them: each is a recovery
+point, must build and test independently, and must leave the branch green
+before the next begins.
+
+| Commit | Scope | Independent green gate |
+|---|---|---|
+| **6.1 — carryovers and diagnostic truth** | Reclassify all three successful locator `Missing` advisories to `Stale`; update only the mechanically authorized severity expectations; add the successful-result/no-`Missing` invariant; add and validate committed `script-scenario.lua.rt2meta`; require clean scenario output. No texture representation or loader change. | Focused locator/fixture tests; full Release and Debug `RT2Tests`; both retain every original 630 case; `run_script_test.ps1` passes and prints no asset diagnostic. |
+| **6.2 — additive texture pipeline foundation** | Add `SceneTexture::ref`, exact placeholder helper, manifest/context/result types, CPU-only `TextureAssetPipeline.{h,cpp}`, capture-only callback implementation, and build wiring for RT2App/RT2Tests/RT2SliceRunner. Add unit tests for placeholder bytes, manifest keys/order and capture payloads. Nothing in `SceneLoader` switches to the new callback or consumes the new pipeline yet. | Existing behavior and all seven transitional texture expectations remain byte-for-byte unchanged; new foundation tests pass; full Release and Debug `RT2Tests` pass; Release and Debug slice targets build; Release RT2App builds. |
+| **6.3 — glTF cutover** | Atomically switch both glTF entry points from eager decode to the already-tested capture callback; route both glTF texture loops through the pipeline; thread owner/context/diagnostics through glTF callers in SceneAssetResolver, SceneManager, Walnut and the runner path; implement external/embedded identity, database dependency selection and placeholder containment. Rewrite only the four glTF rows in the authorized expectation table and add/prove the focused glTF cases. OBJ remains on its old path. | All glTF red/green proofs recorded; full Release and Debug `RT2Tests` pass; Release and Debug slice targets build; Release RT2App builds; script gate remains clean. |
+| **6.4 — OBJ cutover and Step 6 close** | Route both OBJ entry points through the shared manifest/resolver/decode stage; thread explicit-import context through remaining OBJ callers; rewrite only the three OBJ rows; add/prove OBJ sidecar, four-slot containment and final order-independence cases; remove no compatibility API. Append the complete Step 6 verification report and refresh Graphify. | All remaining red/green proofs recorded; every original 630 case plus all new cases pass in full Release and Debug suites; both slice targets and Release RT2App build; script gate passes cleanly; Graphify refreshed and `GRAPH_REPORT.md` committed only if changed. |
+
+The capture-only callback deserves an explicit boundary rule. Adding it in
+6.2 is additive; activating it is part of 6.3. Switching `SceneLoader` to
+capture-only before the pipeline consumes captured bytes would make the
+legacy glTF loops observe undecoded `image.image` data and would not be an
+independently green scaffold commit.
+
+Within each commit:
+
+1. implement the production slice;
+2. add/update only its authorized tests;
+3. perform and revert its discrimination faults;
+4. run its complete green gate from the repository root;
+5. inspect the diff and commit before starting the next slice.
+
+If any gate is red, stop on that commit's working tree; do not begin or
+partially stage the following commit. The Step 6 implementation report must
+list all four commit hashes, the per-commit test totals, and the
+discrimination proof associated with each recovery point. Do not push, and
+stop after 6.4 rather than continuing to step 7.
