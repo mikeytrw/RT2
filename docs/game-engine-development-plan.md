@@ -7714,3 +7714,372 @@ green:
   correctness. Such optional legacy tests may still execute when their
   local files exist, but all new evidence uses generated or committed
   project fixtures.
+
+### W3 step 7 implementation plan — complete host wiring
+
+Approved with amendments 2026-07-26 and grounded against commit `591a76e` on
+`phase-6-scripting`. This is the implementation plan for incremental step 7
+only. No step-7 production code has started. The unrelated UI and render-loop
+commits `113ec7d`, `deb7ee2` and `591a76e` were allowed to land before
+grounding; concurrent UI/render work and the untracked `.claude/` directory
+are not part of this work and must not be touched.
+
+Review approved S7-Q1, S7-Q2, S7-Q3 and S7-Q6 as written; amended S7-Q4 and
+S7-Q5; and settled the remaining healthy-asset diagnostic/gate policy as
+S7-Q7. The decisions below are final implementation instructions.
+
+#### Boundary and completion claim
+
+Step 7 completes W3 host wiring and removes only the compatibility paths that
+were deliberately retained while models, environments, scripts and textures
+were cut over. It does not start step 8 final verification or W4 project
+database ownership.
+
+At completion:
+
+- a relative `AssetReference::path` can reach the filesystem only through an
+  explicit absolute `AssetResolutionContext::assetRoot`;
+- the four format-loader entry points have one context-aware form each, with
+  `TextureAssetLoadContext::resolvedOwnerPath` as the sole physical model
+  path and one required `AssetDiagnostic` sink;
+- `SceneAssetResolver::ResolvePath`, all four short `SceneLoader` adapters,
+  their CWD-derived context helper, and the recovery CWD convenience overload
+  no longer exist;
+- direct-import, recovery, script binding, runtime reload and watcher hosts
+  either provide an explicit absolute root/path or fail loudly without
+  consulting process CWD;
+- `SceneTexture::ref` is authoritative and the temporary `filepath` mirror is
+  removed;
+- native save remains available for legitimate cross-volume assets, but every
+  non-portable retained absolute reference emits a distinct `NonPortable`
+  advisory that reaches the editor status surface; glTF export never writes
+  an absolute texture URI it cannot relativize;
+- a fully healthy asset emits no diagnostic, advisory severities sort before
+  terminal failures, and the script scenario gate fails only on severity
+  `Missing` or higher;
+- every Phase 6 scripting behavior remains a hard contract.
+
+Step 8 remains separately observable work: whole-solution verification,
+final report, Graphify refresh and the final W3 close. Step 7 still runs its
+own full per-commit gates; that does not silently consume step 8.
+
+#### Grounded findings
+
+| ID | Fact at `591a76e` | Step-7 consequence |
+|---|---|---|
+| S7-F1 | `AssetResolutionContext::assetRoot` is documented as absolute and the locator says it has no CWD fallback (`RT2App/src/AssetResolver.h:101-107`), but `ResolvePathNoCwd` forms `assetRoot / p` and calls `exists`/`is_regular_file` without rejecting an empty or relative root (`RT2App/src/AssetResolver.cpp:24-47`). `Resolve` computes that candidate before ID policy (`:101-112`). The unused `NormalizeResolved` helper's comment says “Make absolute against the asset root” immediately above `return lex;`, which returns it relative (`:10-22`). | This is the codebase's characteristic silent-failure mode: names/comments promise an invariant while unchecked filesystem behavior violates it without a diagnostic. Root validation must live at the shared locator boundary; delete the misleading dead helper and record this finding explicitly in the implementation report. |
+| S7-F2 | The generic locator already has a discriminative no-CWD case for an unrelated **absolute** root and a CWD decoy (`RT2Tests/src/Phase7W3LocatorTests.cpp:526-568`), but it does not cover empty or relative roots. | Add the missing cells; the existing test is not evidence for the newly found hole. |
+| S7-F3 | `SceneAssetResolver::ResolvePath` remains declared at `RT2App/src/SceneAssetResolver.h:102-104` and defined at `RT2App/src/SceneAssetResolver.cpp:106-131`. Its final branch tries the raw relative path and calls `fs::absolute`, but `rg` finds no production or test caller. | Delete the declaration and definition. Do not preserve a forwarding wrapper around `Resolve`. |
+| S7-F4 | `SceneLoader` still exposes four short entry points beside the structured forms (`RT2App/src/SceneLoader.h:20-25`, `:31-36`, `:39-44`, `:60-68`). Their definitions call `MakeCompatibilityTextureContext` (`RT2App/src/SceneLoader.cpp:39-57`, `:508-516`, `:1278-1286`, `:1906-1914`, `:2398-2408`). | Migrate every caller first, then remove all four short declarations/definitions and the helper. |
+| S7-F5 | Even the structured loader path overwrites the supplied `resolvedOwnerPath` with `fs::absolute(filepath)` (`RT2App/src/SceneLoader.cpp:59-67`). A relative `filepath` can therefore select a CWD file while the supposedly authoritative context names another root. | Remove the redundant `filepath` parameter from structured entry points. The already-absolute context path becomes the only parse path; mismatch cannot be represented. |
+| S7-F6 | Production callers already pass structured contexts and sinks: `SceneAssetResolver` (`RT2App/src/SceneAssetResolver.cpp:451-473`), `SceneManager` (`RT2App/src/SceneManager.cpp:263-285`, `:512-568`), Walnut synchronous/background routes (`RT2App/src/WalnutApp.cpp:263-282`, `:2276-2289`, `:2392-2395`) and the recovery slice through `SceneManager` (`RT2SliceRunner/src/Main.cpp:140-154`). | The cutover is an API contraction, not a new texture behavior. These callers only need to make the context path authoritative. |
+| S7-F7 | `SceneManager::MakeExplicitTextureContext` and Walnut's duplicate helper call `std::filesystem::absolute` on the raw host input (`RT2App/src/SceneManager.cpp:109-125`; `RT2App/src/WalnutApp.cpp:1577-1593`). | Direct-import hosts must reject a relative physical path with a `Model/Malformed` diagnostic. They may lexically normalize or weakly canonicalize an already-absolute path, but may not call `absolute` to invent a root. |
+| S7-F8 | Six test files still call short loaders with repo-relative or machine-absolute strings: `RT2Tests/src/EcsSceneLoaderTests.cpp:14-127`, `GltfGeometryTests.cpp:46-336`, `GltfSaveGeometryTests.cpp:57-286`, `SceneLoaderTests.cpp:177-507`, and the optional machine-local cases in `BuildGpuFromEcsTests.cpp:17-182`. `Phase7W3CharacterizationTests.cpp:1556-1900` already demonstrates explicit contexts. | Add one test-only context builder requiring an explicit root, migrate all short calls without changing their resource assertions, and retain the machine-local cases only as optional legacy coverage—not Step-7 evidence. |
+| S7-F9 | `SceneTexture` has both `filepath` and `ref`, with a comment that the mirror lasts through step 7 (`RT2App/src/SceneTypes.h:94-99`). The pipeline writes both (`RT2App/src/TextureAssetPipeline.cpp:295-312`, `:373-390`, `:474-480`), glTF export reads only `filepath` (`RT2App/src/SceneLoader.cpp:175-185`), and seven test assertions pin the mirror (`RT2Tests/src/Phase7W3TexturePipelineTests.cpp:19-27`, `Phase7W3CharacterizationTests.cpp:1578-1609`, `SceneLoaderTests.cpp:346-349`, `:445-448`, `SceneTextureTests.cpp:16-23`). | Remove only `SceneTexture::filepath`; switch export and assertions to `ref.path`. `SceneMesh::filepath` at `SceneTypes.h:34-40` is a different, currently unused legacy field and is not authorized by this step. |
+| S7-F10 | The explicit recovery overload accepts a logical asset root, but the compatibility overload derives it from `current_path` (`RT2App/src/SceneRecoveryService.h:56-69`; `SceneRecoveryService.cpp:184-198`). The explicit implementation also falls back to `current_path` when its root is empty (`SceneRecoveryService.cpp:262-274`). Only two recovery tests still use the short overload (`RT2Tests/src/RecoveryTests.cpp:123-137`, `:186-200`); Walnut and RT2SliceRunner already pass explicit roots (`RT2App/src/WalnutApp.cpp:1544-1554`; `RT2SliceRunner/src/Main.cpp:212-221`). | Remove the short overload, migrate those two tests, and keep empty/non-absolute logical root as `InvalidArgument` for an untitled dirty snapshot. The production Walnut host must make that guard a never-happens invariant by supplying a created absolute per-user recovery asset root. Clean documents may still return “no snapshot” before validation because no filesystem work is attempted. |
+| S7-F11 | Walnut's `UntitledAssetRoot` returns the configured project root, then falls back to process CWD (`RT2App/src/WalnutApp.cpp:2597-2604`). The same helper feeds autosave (`:1547-1554`) and Enter Play's script context (`:2697-2703`), although their no-project policies now differ. The watcher accepts `resolvedPath` from either a result or the last diagnostic and adds its parent without requiring it to be absolute (`:3000-3039`). `%LOCALAPPDATA%` access already exists at `WalnutApp.cpp:2621-2627`. | Split recovery-root and script-root selection. Untitled autosave receives an ensured absolute `%LOCALAPPDATA%\RT2\recovery` root; scripts still receive only saved-scene/project root or empty. Remove the CWD fallback, reject relative watch candidates and preserve legacy absolute script references. |
+| S7-F12 | Script Inspector resolution already uses an explicit scene/dialog root and the shared adapter (`RT2App/src/SceneEditorUI.cpp:1678-1699`); background field reconciliation, runtime, watcher and the runner already share `AssetResolutionContext` and `AssetDiagnostic` sinks (`RT2App/src/WalnutApp.cpp:2902-2951`, `ScriptFieldResolver.cpp:14-89`, `ScriptSystem.cpp:755-819`, `RT2SliceRunner/src/Main.cpp:522-530`). | Preserve these routes. Step 7 is an audit/contract cleanup, not another scripting cutover. |
+| S7-F13 | Explicit script binding still uses the script-only lexical `ResolveAuthoredScriptPath` helper (`RT2App/src/SceneManager.cpp:94-107`, `:3673-3711`) before `ResolveOrAssign`. It correctly avoids CWD when the scene has no source path, but it bypasses locator kind/ID/sidecar policy. | Replace the lexical existence check with `ResolveScriptAssetPath`; mint/reuse through `ResolveOrAssign` only after successful shared resolution. Missing scripts remain bindable and unminted, preserving watcher recovery/quarantine behavior. |
+| S7-F14 | `ScriptSystem::ReloadScript` accepts any path and `weakly_canonical` therefore resolves a relative manual path through CWD (`RT2App/src/ScriptSystem.cpp:257-273`). Legitimate sources are already absolute: efsw emits absolute paths, `BuildEnvironment` stores the locator result (`:789-810`), and `rt2.reload()` queues that stored path (`:849-860`). | Reject a relative reload request with a `Script/Malformed` diagnostic and no cache/live-instance mutation. Absolute native-separator matching remains unchanged. |
+| S7-F15 | Native save still turns relative inputs into absolute paths and, when drives differ, intentionally persists the absolute result (`RT2App/src/SceneSerializer.cpp:250-280`). The Windows case explicitly expects success and `"Z:/external/move.lua"` (`RT2Tests/src/SceneSerializerTests.cpp:1037-1060`). `SceneSerializer::Save`/`SaveTo` expose only `Error&`, so a successful save has no diagnostic route (`RT2App/src/SceneSerializer.h:77-91`; `SceneSerializer.cpp:1406-1420`). Walnut reports only success/failure and overwrites the status with `"Saved"`/`"Saved As"` (`RT2App/src/WalnutApp.cpp:3107-3158`). glTF export writes a texture URI directly (`RT2App/src/SceneLoader.cpp:175-185`). | Native cross-volume save must remain successful but become visibly advisory. Add a required save diagnostic sink, a distinct `NonPortable` severity, exhaustive formatting and a Walnut status message. The glTF export rule remains stricter because export failure does not make the authoring document unsaveable. |
+| S7-F16 | The step-6 close report records Release and Debug at 642/642 cases and 145315/145315 assertions; review independently confirmed that baseline at `591a76e`. Both slice targets and Release RT2App built and the script gate passed cleanly (`docs/game-engine-development-plan.md`, “W3 step 6 implementation report”). | Every one of those 642 cases remains present and green. New totals are measured rather than predicted. |
+| S7-F17 | `AssetDiagnostic::Severity` currently uses declaration order `Missing`, `Malformed`, `Unresolved`, `Conflict`, `Stale` (`RT2App/src/AssetResolver.h:79-90`), while diagnostic sorting separately ranks `Stale` before terminal failures (`AssetResolver.cpp:83-94`). Format switches are repeated in SceneLoader, SceneManager and two Walnut paths. | Make advisory-versus-terminal ordering executable in the enum and one shared exhaustive name helper: `Stale=0`, `NonPortable=1`, `Missing=2`, `Malformed=3`, `Unresolved=4`, `Conflict=5`; both advisories receive severity rank 0. |
+| S7-F18 | `run_script_test.ps1:73-75` fails on any `[ScriptScenario] Asset diagnostic:` line, while RT2SliceRunner prints the numeric severity (`RT2SliceRunner/src/Main.cpp:559-567`). This treats a repair/portability advisory as a scripting regression. | Parse the printed severity and fail only when it is greater than or equal to `Missing`. A fully healthy scenario still emits no diagnostic; advisory-pass and terminal-fail behavior both require discrimination proofs. |
+
+#### Settled implementation decisions
+
+| ID | Approved decision |
+|---|---|
+| S7-Q1 — locator root contract | Perform ID lookup before reference-path fallback. Ambiguity remains `Conflict` regardless of root. Before sending **any relative physical candidate** to the filesystem—either a project-relative database `sourcePath` or `AssetReference::path` fallback—require a non-empty absolute `assetRoot`; otherwise fail with one contextual `Malformed` diagnostic whose detail is exactly `"relative asset reference requires an absolute asset root"`. A unique database record whose source path is already absolute may still win without consulting an unused root. Absolute legacy references remain accepted without deriving anything from CWD. Every successful result is absolute and normalized. Amend `AssetResolver.h` to describe this executable contract. |
+| S7-Q2 — one loader path | Replace each `(ecs, filepath, context, diagnostics)` form with `(ecs, context, diagnostics)` (plus `ImportSettings` where applicable). `context.resolvedOwnerPath` is the physical input passed to TinyGLTF/tinyobj. It must be non-empty and absolute before parse or identity assignment; invalid input emits one `Model/Malformed`, returns the entry point's existing failure value, and mutates no scene/sidecar. Remove all short overloads rather than marking them deprecated or deleted. |
+| S7-Q3 — host-owned direct paths | OS dialog/CLI/direct-import hosts must supply an absolute path. `SceneManager` and Walnut share a small pure context-builder in `TextureAssetPipeline.h`; it normalizes an already-absolute path, fills model ref/root/mode/provider, and appends `Model/Malformed` on invalid input. It never probes CWD or mints. Existing parse-time explicit-import code remains the sole owner of `ResolveOrAssign`. |
+| S7-Q4 — script/recovery no-root behavior | Missing script files remain legal authored bindings, but relative bindings cannot be resolved or watched until the host has a saved-scene/project root. Relative `ReloadScript` calls are rejected. Recovery and scripts use separate host-root policies: untitled recovery uses an ensured absolute `%LOCALAPPDATA%\RT2\recovery` root (an absolute configured project root still wins), while the script context remains empty without scene/project ownership. Add CPU-testable `SceneRecoveryService::EnsureUntitledRecoveryAssetRoot(localAppData, outRoot, err)`; Walnut owns environment access and passes `%LOCALAPPDATA%`, while tests pass a temp base. `MaybeSnapshot` keeps its empty/non-absolute `InvalidArgument` guard as a never-happens production invariant. Failure to obtain/create the per-user root is loud through the existing autosave `Error`/status path and never falls back to CWD. |
+| S7-Q5 — non-portable persistence | W3-Q8 governs paths the **resolver derives**; it does not make a legitimate multi-volume authoring document unsaveable. Native save keeps the existing normalized absolute fallback, succeeds atomically, and appends exactly one `NonPortable` diagnostic per offending asset reference. Change `SceneSerializer::Save` and `SaveTo` to require `std::vector<AssetDiagnostic>&`; migrate every caller rather than retaining a sink-less overload. Add tested `FormatNonPortableAssetSummary`; Walnut logs the diagnostic and, after a successful save, shows `"Saved with " + summary` in `m_LastStatusMsg` instead of overwriting it with plain `"Saved"` (one warning names the ref; multiple warnings include the count and first sorted ref). Recovery propagates save diagnostics to Walnut's autosave log/status path. glTF export still relativizes an absolute `SceneTexture::ref.path` to the output parent and returns false if it cannot; it never writes the absolute URI. |
+| S7-Q6 — compatibility representation | Remove `SceneTexture::filepath` in this step. `ref.kind == Texture` and `ref.path` are the only source identity. Placeholder bytes, decoded cache fields, material indices, colour-space flags and native scene `textures: []` behavior do not change. Do not remove `SceneMesh::filepath` or redesign native texture serialization. |
+| S7-Q7 — healthy assets and diagnostic threshold | A fully healthy asset emits zero diagnostics. `Stale` remains limited to successful resolution with actual path/identity/database repair state; `NonPortable` is limited to successful persistence of an absolute fallback. Give explicit enum values `Stale=0`, `NonPortable=1`, `Missing=2`, `Malformed=3`, `Unresolved=4`, `Conflict=5`, keep `Missing` as the default member value, and expose shared `AssetDiagnosticSeverityName`/`IsTerminalAssetDiagnostic` helpers. `AssetDiagnosticSortKey` assigns both advisories rank 0. All formatters use the shared exhaustive name helper. For every scenario diagnostic line, `run_script_test.ps1` must parse `severity=<integer>`, fail loud if the field is absent/malformed, and fail the gate only when the value is `>= Missing`; a healthy scenario still prints no asset diagnostic. |
+
+#### Exact API and implementation shape
+
+The final public loader surface is:
+
+```cpp
+static bool LoadIntoECS(
+    ECSScene&,
+    const rt2::core::TextureAssetLoadContext&,
+    std::vector<rt2::core::AssetDiagnostic>&);
+
+static entt::entity ImportIntoECS(
+    ECSScene&,
+    const rt2::core::TextureAssetLoadContext&,
+    std::vector<rt2::core::AssetDiagnostic>&);
+
+static bool LoadObjIntoECS(
+    ECSScene&,
+    const rt2::core::TextureAssetLoadContext&,
+    std::vector<rt2::core::AssetDiagnostic>&);
+
+static entt::entity ImportObjIntoECS(
+    ECSScene&,
+    const ImportSettings&,
+    const rt2::core::TextureAssetLoadContext&,
+    std::vector<rt2::core::AssetDiagnostic>&);
+```
+
+No default context, optional diagnostic pointer, implicit-root overload or
+adapter is retained. `SceneLoader::Save` remains separate because it is an
+export operation.
+
+The diagnostic severity and persistence surfaces become:
+
+```cpp
+enum Severity : uint8_t
+{
+    Stale      = 0,
+    NonPortable = 1,
+    Missing    = 2,
+    Malformed  = 3,
+    Unresolved = 4,
+    Conflict   = 5,
+};
+
+const char* AssetDiagnosticSeverityName(AssetDiagnostic::Severity);
+bool IsTerminalAssetDiagnostic(AssetDiagnostic::Severity);
+std::string FormatNonPortableAssetSummary(
+    const std::vector<AssetDiagnostic>&);
+
+static bool SceneSerializer::Save(
+    const SceneDocument&, const std::filesystem::path&,
+    std::vector<AssetDiagnostic>&, Error&);
+static bool SceneSerializer::SaveTo(
+    const SceneDocument&, const std::filesystem::path&,
+    const std::filesystem::path& logicalScenePath,
+    std::vector<AssetDiagnostic>&, Error&);
+```
+
+The sink-less serializer overloads are removed. The explicit
+`SceneRecoveryService::MaybeSnapshot` overload likewise gains a required
+`std::vector<AssetDiagnostic>&` immediately before `Error&`; it forwards the
+sink to `SaveTo`. `SaveInternal` stages its diagnostics locally and appends
+them to the caller only after the atomic save succeeds; a failed save leaves
+both the existing output and caller diagnostic prefix unchanged. The
+successful batch is stable-sorted with `AssetDiagnosticSortKey` before
+append.
+
+`RebasePath` returns both the stored path and whether the normalized absolute
+fallback was retained. Its caller has the asset/entity context and appends:
+
+```text
+severity:     NonPortable
+kind:         the AssetReference kind
+refPath:      the original authored path
+resolvedPath: the normalized absolute path written
+entity:       referring entity UUID/name, or nil/empty for environment
+sourceKey:    the original AssetReference source key
+detail:       asset path could not be made relative to the output scene;
+              saved as a normalized absolute path
+```
+
+This is one advisory per non-portable serialized reference. It does not
+change the bytes written today. Walnut calls the required sink overload,
+formats every entry through `AssetDiagnosticSeverityName`, logs it, and
+preserves the S7-Q5 warning in the visible status line after save. Autosave
+uses the same diagnostic path.
+
+The implementation is ordered as follows:
+
+1. Make severity ordering explicit, add the shared exhaustive severity-name
+   and terminal-threshold helpers, update all consumers, and change the
+   script gate to severity `>= Missing`. Pin zero diagnostics for fully
+   healthy resolution before adding either new Step-7 diagnostic path.
+2. Refactor generic `Resolve` so ID lookup does not depend on computing a
+   reference-path fallback candidate. Validate the root before any relative
+   database or fallback path reaches the filesystem, make invalid-root
+   diagnostics deterministic, and delete the unused `NormalizeResolved`.
+3. Add `RT2Tests/src/SceneLoaderTestSupport.h`. Its builder takes an explicit
+   absolute root and a model path, constructs a read-only context, and exposes
+   the diagnostics to the test. Repo-relative committed fixtures must pass
+   the repository root explicitly; generated temp fixtures use their already
+   absolute parent. Migrate every short-loader test call while adapters still
+   exist.
+4. Add the shared explicit-import context builder to the existing CPU-only
+   texture pipeline header/source. Route `SceneManager`, Walnut and the
+   slice-runner-through-manager path through it.
+5. Change all four structured loaders to consume only
+   `resolvedOwnerPath`. Validate before TinyGLTF/tinyobj parse and before
+   `ResolveOrAssign`; do not overwrite the supplied context after parse.
+6. Delete `MakeCompatibilityTextureContext`, four short loader
+   declarations/definitions and `SceneAssetResolver::ResolvePath`.
+7. Delete `SceneRecoveryService::MaybeSnapshot(doc, revision, err)` and its
+   CWD fallback; add the required diagnostic sink and the injectable
+   `EnsureUntitledRecoveryAssetRoot` helper. Split Walnut recovery-root
+   selection from script-root selection. Ensure/create the absolute
+   `%LOCALAPPDATA%\RT2\recovery` root for untitled autosave, while an
+   unsaved/no-project script context remains empty. Keep and test the
+   recovery service's invalid-root guard.
+8. Make watcher directory selection accept only absolute candidates; reject
+   relative `ReloadScript`; replace `ResolveAuthoredScriptPath` with the
+   shared script adapter before explicit ID assignment.
+9. Remove `SceneTexture::filepath`, stop writing the mirror in every pipeline
+   branch and make glTF export read/relativize `ref.path`. Add required native
+   save sinks, emit/render `NonPortable` without changing cross-volume save
+   success or bytes, and keep glTF export failure for an unrelativizable URI.
+10. Run the Step-7 close gate, append the implementation report, and stop.
+   Do not start step 8.
+
+#### Authorized old/new expectations
+
+No existing test is deleted, skipped or weakened. These are the only
+authorized changes; every assertion not listed here must retain its current
+meaning.
+
+| Surface | Old expectation | New expectation and authority |
+|---|---|---|
+| Relative ref + empty/relative root | May resolve a matching process-CWD file because `assetRoot / ref` remains relative. | Fails with one `Malformed`; W3-Q8 and S7-Q1. |
+| Short loader calls | Repo-relative `filepath` alone compiles and derives a context from CWD. | No such overload exists; tests name an explicit root/context while retaining all resource assertions; step-6 S6-D13 deferral and S7-Q2. |
+| Structured loader path mismatch | Separate `filepath` silently overwrites `context.resolvedOwnerPath`. | Mismatch is unrepresentable; the context path is authoritative; S7-Q2. |
+| Relative direct-import path | `SceneManager`/Walnut call `absolute` and select a CWD file. | Fails before parse/mint with `Model/Malformed`; S7-Q3. |
+| Untitled recovery with no project root | Compatibility/empty-root forms use process CWD. | Walnut supplies an ensured absolute `%LOCALAPPDATA%\RT2\recovery` logical root; the short API is absent and the service still rejects an invalid explicit root; amended S7-Q4. |
+| Untitled relative script with no source/project root | Enter Play and watcher inherit process CWD. | Resolution is `Malformed`, no relative directory is watched, binding remains authored/unminted; S7-Q4. |
+| Relative `ReloadScript` | `weakly_canonical` interprets it against CWD. | One `Script/Malformed`, no cache clear, queue or live swap; S7-Q4. |
+| Script scenario diagnostic gate | Any asset diagnostic line fails the gate. | `Stale`/`NonPortable` advisories are printed but do not fail; severity `Missing` or higher fails; S7-Q7. |
+| `SceneTexture::filepath` assertions | Mirror equals `ref.path`; glTF export reads the mirror. | Mirror does not exist; the same path assertions target `ref.path`, and export URI is driven by `ref.path`; step-6 S6-D1 deferral and S7-Q6. |
+
+Empty scripts, missing-script authored bindings, texture placeholder bytes,
+texture containment, material slot/index values, geometry, field values,
+reload state and diagnostic ordering are not authorized to change.
+
+The Windows cross-volume native-save expectation is deliberately **not** in
+the table because it does not change: `SceneSerializerTests.cpp:1037-1060`
+continues to require successful save and the same normalized
+`"Z:/external/move.lua"` JSON path. It gains assertions for exactly one
+`NonPortable` diagnostic with the context/detail above. Healthy same-volume
+save gains a zero-diagnostic assertion.
+
+#### Permanent tests and discrimination proofs
+
+Every new behavior gets a permanent test and a temporary production fault.
+Use `apply_patch` for each fault, build/run only the affected selection to
+observe red, revert only that fault, rerun green, and record exact
+case/assertion counts in the implementation report.
+
+| Permanent evidence | Temporary fault that must make it fail |
+|---|---|
+| Severity policy: `Stale` and `NonPortable` are below `Missing`; every terminal severity is `>= Missing`; both advisories sort at rank 0; every value has the exact shared display name. A fully healthy resolve for each asset kind appends zero diagnostics. | Classify `NonPortable` as rank 1/terminal, or append `Stale` on the healthy-success branch. |
+| Locator: relative reference/database paths with empty or relative root cannot select a same-name CWD decoy; each produces the exact `Malformed`. Ambiguous-ID behavior, an absolute database claimant and normal absolute-root cases remain green. | Remove/defer the absolute-root guard so path fallback or a relative database record reaches `exists(relative)`. |
+| Loader: an invalid/non-absolute `resolvedOwnerPath` emits one `Model/Malformed`, leaves the target ECS unchanged and writes no sidecar. | Feed the path through `fs::absolute` before validation. |
+| API removal: all migrated loader tests build only through the final signatures. | Temporarily change one migrated call back to the old short signature and record the expected compile failure; restore it and rebuild green. This is the discrimination proof for an intentionally absent API. |
+| Resolver adapter removal: the repository audit finds no declaration, definition or call to `SceneAssetResolver::ResolvePath`; generic `Resolve` tests remain green. | Temporarily restore a compile-only call to `SceneAssetResolver::ResolvePath` and record that it cannot compile after removal. |
+| Recovery service: a due untitled snapshot with empty/relative logical root fails without creating a record even when a plausible scene asset exists in CWD; an explicit absolute root succeeds. Walnut root policy returns/creates absolute `%LOCALAPPDATA%\RT2\recovery` without a project and reports environment/create failure instead of CWD fallback. | Restore the `current_path` fallback; separately make the root-policy seam return empty for the no-project case. |
+| Watch policy: absolute successful/missing candidates yield their absolute parent; relative diagnostic candidates yield no watch directory. | Accept a relative candidate in the extracted watch policy. |
+| Script binding: a real relative script under an explicit scene root is resolved by the shared adapter and receives/reuses its sidecar ID; a missing script remains bindable with nil ID; a conflict is not silently remapped. | Restore the lexical `ResolveAuthoredScriptPath` existence check. |
+| Reload: absolute native-separator reload still matches; relative reload appends `Malformed` and changes neither live callback nor field-registry state. | Reintroduce `weakly_canonical` on the relative input before the guard. |
+| Texture representation/export: placeholder and decoded textures retain the same `ref`; glTF image URI comes from `ref.path`; no `filepath` field is referenced. | Clear/ignore `ref.path` when building the exported `tinygltf::Image`. |
+| Native save: cross-volume save succeeds with byte-for-byte unchanged normalized absolute JSON and exactly one contextual `NonPortable`; same-volume save succeeds with zero diagnostics; multiple warnings are sorted; a forced atomic-write failure preserves both output and diagnostic prefix. The sink-less `Save`/`SaveTo` calls no longer compile. | Suppress the `NonPortable` append while retaining the absolute fallback; append staged warnings before the forced write failure; separately change one migrated call back to the old sink-less signature for the compile-fail proof. |
+| Save presentation: the CPU-tested summary helper formats one/many sorted `NonPortable` diagnostics exactly; the shared severity formatter returns `"NonPortable"`; Walnut uses the summary for successful Save/Save As/autosave instead of a plain success status. | Break the one/many summary helper; separately restore Walnut's unconditional plain-success assignment after diagnostics and verify the source/app build no longer satisfies the surface wiring audit. |
+| glTF export: a same-volume absolute texture ref is written relative; a cross-volume ref returns false without creating/replacing output. | Write `ref.path` directly into `tinygltf::Image::uri`. |
+| Script gate: healthy tracked sidecar produces no line and passes; temporarily absent sidecar produces `Stale` and still passes; temporarily malformed sidecar produces `Malformed` and fails. | Restore the line-presence-only PowerShell condition. |
+
+After the proof table is green, run a source audit:
+
+```powershell
+rg -n "MakeCompatibilityTextureContext|SceneAssetResolver::ResolvePath|current_path|fs::absolute|filesystem::absolute|\.filepath" RT2App/src RT2SliceRunner/src RT2Tests/src
+rg -n "switch.*severity|case .*AssetDiagnostic::" RT2App/src RT2SliceRunner/src
+```
+
+Every remaining hit must be classified in the implementation report.
+Expected non-asset-policy hits such as the AppData fallback and recovery-path
+containment are not deleted merely to make the grep empty. `SceneMesh` is
+also explicitly out of scope. The severity audit must show one exhaustive
+shared name switch plus the rank switch; production presentation code must
+not retain private severity-name switches.
+
+#### Phase 6 hard-contract verification
+
+Run the full Release and Debug suites and also report these named cases
+explicitly so a green aggregate cannot hide the delicate scripting contract:
+
+| Contract | Direct evidence |
+|---|---|
+| Empty script is legal | `Phase 6A: empty script file is legal` (`RT2Tests/src/Phase6ALifecycleTests.cpp:863`). |
+| One script error quarantines only its instance | `Phase 6A: syntax error quarantines only the affected instance` (`Phase6ALifecycleTests.cpp:353`). |
+| Reflection retains last-good declarations; `parsed=false` suppresses reconciliation | `Phase6B W1: a syntax error yields last-good descriptors, not a throw` (`RT2Tests/src/Phase6BFieldsTests.cpp:474`) and `Phase6B W2: resolver parse failure preserves authored values exactly` (`:1062`). |
+| Failed hot reload never replaces live code | `Phase 6C: a mid-edit syntax error does not kill the running instance` (`RT2Tests/src/Phase6CScriptingTests.cpp:747`). |
+| `rt2.reload()` remains deferred | `Phase 6C: rt2:reload() from on_update does not re-enter` (`Phase6CScriptingTests.cpp:498`). |
+| Timers are unaffected | `Phase 6C: self-rescheduling timers survive vector reallocation` (`Phase6CScriptingTests.cpp:460`) plus reload/Stop timer cases at `:976` and `:1257`. |
+| Input and entity/component bindings are unaffected | Input at `Phase6CScriptingTests.cpp:1142`; light at `:1184`; material at `:1223`; camera failure containment at `:573`; the 60-frame scenario exercises the bound entity through RT2SliceRunner. |
+
+`run_script_test.ps1` remains the most important Step-7 gate. It must pass
+with no terminal asset diagnostic (`severity >= Missing`). A fully healthy
+tracked scenario still emits no diagnostic at all; an advisory is rendered
+but is not a scripting failure. A scripting contract failure stops the
+current commit; later cleanup does not begin.
+
+#### Four independently green commits
+
+Do not squash these recovery points. Each commit runs from the repository
+root and is green before the next starts.
+
+| Commit | Scope | Independent green gate |
+|---|---|---|
+| **7.1 — diagnostic/root foundations and caller migration** | Set explicit advisory/terminal enum values; add shared exhaustive name/threshold helpers; require and thread still-empty `Save`/`SaveTo` sinks; change the script gate threshold and prove healthy/advisory/terminal behavior; refactor locator fallback/root validation; add empty/relative-root decoy tests; add the test-only loader context builder; migrate every short loader test while leaving compatibility APIs in place. No `NonPortable` emission yet. | Full Release and Debug `RT2Tests`; every original 642 case remains green; both slice targets build; script gate healthy/advisory/terminal proofs pass. |
+| **7.2 — loader and model/texture host contraction** | Add the explicit-import context builder; make the four structured loaders context-path-only; update SceneAssetResolver, SceneManager, Walnut and runner reachability; delete the four short adapters, compatibility context helper and `SceneAssetResolver::ResolvePath`; perform compile-fail proofs. | Full Release and Debug `RT2Tests`; Release and Debug RT2SliceRunner; Release RT2App; script gate clean. |
+| **7.3 — script, watcher and recovery CWD removal** | Remove recovery convenience/fallback; add/test the per-user untitled recovery-root helper and forward save diagnostics; keep script root empty without scene/project ownership; enforce absolute watch directories; route explicit script binding through the shared adapter; reject relative reload; add all focused tests and Phase 6 proofs. | Full Release and Debug `RT2Tests`; both slice targets; Release RT2App; named Phase 6 selection; `run_script_test.ps1` clean. |
+| **7.4 — representation and persistence close** | Remove `SceneTexture::filepath`; switch pipeline/export/tests to `ref`; emit/sort/render native `NonPortable` advisories while retaining current cross-volume save success/bytes; make glTF export relativize-or-fail; add only the authorized assertions/gate change; run the final audit, refresh Graphify and append the Step-7 implementation report. | Full Release and Debug `RT2Tests`; both slice targets; Release RT2App; script gate; Graphify refresh; `git diff --check`. Stop before step 8. |
+
+No build-configuration change is expected: Step 7 adds no production
+translation unit and removes no currently linked source. If project,
+premake, compiler or linker settings change, flag the exact old/new value
+and why before committing. Do not touch the existing whole-Debug RT2App
+NRD/NRI mismatch.
+
+#### Step-7 verification gate
+
+Run from the repository root after every commit, with the app/script portions
+at least on commits whose scope names them, and run the complete block at
+7.4:
+
+```powershell
+msbuild RT2App.sln -t:RT2Tests -p:Configuration=Release -p:Platform=x64
+.\bin\Release-windows-x86_64\RT2Tests\RT2Tests.exe
+msbuild RT2App.sln -t:RT2Tests -p:Configuration=Debug -p:Platform=x64
+.\bin\Debug-windows-x86_64\RT2Tests\RT2Tests.exe
+msbuild RT2App.sln -t:RT2SliceRunner -p:Configuration=Release -p:Platform=x64
+msbuild RT2App.sln -t:RT2SliceRunner -p:Configuration=Debug -p:Platform=x64
+msbuild RT2App.sln -t:RT2App -p:Configuration=Release -p:Platform=x64
+.\run_script_test.ps1
+graphify update .
+git diff --check
+```
+
+All 642 pre-Step-7 cases must remain present and green in both
+configurations. Record the new case/assertion totals rather than assuming
+them. Do not use machine-local Downloads assets as evidence. Step 7 does not
+claim a green whole-Debug RT2App.
+
+Run Graphify at the Step-7 close because the repository instructions require
+a refresh after code changes; step 8 will run it again as part of final W3
+verification. Commit `GRAPH_REPORT.md` only if it actually changes.
+Generated ignored graph files are not committed.
+
+#### Explicit non-goals and stop condition
+
+- Do not start W3 step 8 or W4 project scanning/database ownership.
+- Do not add `project.rt2proj`, a content browser, cache artifacts, schema v4
+  migration, texture editing UI, hot reimport or GPU texture-policy work.
+- Do not change texture placeholder bytes, decode containment, geometry,
+  material ordering, renderer/Vulkan behavior or Phase 6 scripting semantics.
+- Do not remove `SceneMesh::filepath`, AppData fallback paths, or recovery
+  record containment normalization without a separate grounded scope.
+- Do not alter, delete, skip or weaken an existing test beyond the exact
+  authorized old/new table.
+- Do not touch unrelated UI/render work or the whole-Debug NRD/NRI mismatch.
+- Stop after the Step-7 implementation report and four commits. Do not push.
+
+The implementation report must separate **verified by running** from
+**assumed/not run**, list all four commit hashes and per-commit totals, quote
+every old/new expectation actually changed, record every red/green proof and
+classify every remaining path-audit hit. It must call out S7-F1 as an
+instance of the codebase's characteristic silent-failure mode, report the
+healthy/advisory/terminal scenario-gate observations separately, and show
+how a native `NonPortable` advisory was verified at both the serializer sink
+and the visible Walnut status/log surface.
