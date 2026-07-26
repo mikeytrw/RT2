@@ -80,7 +80,19 @@ std::string AssetDiagnosticSortKey(const AssetDiagnostic& d)
     key.push_back('\0');
     key += d.sourceKey;
     key.push_back('\0');
-    key.append(reinterpret_cast<const char*>(&d.severity), sizeof(d.severity));
+    // Successful advisory context precedes the terminal/decode consequence
+    // for the same reference (for example Stale sidecar metadata followed by
+    // Malformed image bytes). The remaining severities retain enum order.
+    uint8_t severityRank = 0;
+    switch (d.severity)
+    {
+        case AssetDiagnostic::Stale:      severityRank = 0; break;
+        case AssetDiagnostic::Missing:    severityRank = 1; break;
+        case AssetDiagnostic::Malformed:  severityRank = 2; break;
+        case AssetDiagnostic::Unresolved: severityRank = 3; break;
+        case AssetDiagnostic::Conflict:   severityRank = 4; break;
+    }
+    key.push_back(static_cast<char>(severityRank));
     key.push_back('\0');
     key += d.detail;
     return key;

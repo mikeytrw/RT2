@@ -262,6 +262,19 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
                                     Error& err)
 {
     err = Error{};
+    const size_t diagnosticBase = diagnostics.size();
+    auto sortDiagnostics = [&]() {
+        if (diagnosticBase >= diagnostics.size())
+            return;
+        std::stable_sort(
+            diagnostics.begin() +
+                static_cast<std::ptrdiff_t>(diagnosticBase),
+            diagnostics.end(),
+            [](const AssetDiagnostic& a, const AssetDiagnostic& b) {
+                return AssetDiagnosticSortKey(a) <
+                       AssetDiagnosticSortKey(b);
+            });
+    };
 
     // ---- Resolve environment first (independent of model resolution) ----
     // Environment failure is recorded but does not abort model resolution.
@@ -281,6 +294,8 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
     {
         std::string path;        // original relative path
         fs::path    resolved;    // absolute path (empty if missing)
+        AssetReference ownerRef;
+        UUID        effectiveId;
         bool        isObj = false;
         // OBJ import mode (captured from the first entity referencing this
         // model+mode). The dedup key is (path, isObj, mergeMegaMesh) so the
@@ -314,6 +329,7 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
                 return (int)i;
         ModelRef m;
         m.path = refPath;
+        m.ownerRef = ref;
         m.isObj = isObj;
         m.mergeMegaMesh = mergeMegaMesh;
         m.firstEntityUuid = entityUuid;
@@ -328,8 +344,9 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         auto rr = Resolve(ref, resolutionContext, entityUuid, entityName,
                          resolveDiags);
         m.resolved = rr.success ? rr.resolvedPath : fs::path{};
+        m.effectiveId = rr.effectiveId;
         // The locator emits one diagnostic on failure (or a stale-path
-        // Missing on success-by-ID). Append it to the caller's vector; the
+        // Stale advisory on success-by-ID). Append it to the caller's vector; the
         // batch sort at the end of ResolveAll orders them deterministically.
         for (auto& d : resolveDiags)
             diagnostics.push_back(std::move(d));
@@ -388,7 +405,10 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
     }
 
     if (pending.empty())
+    {
+        sortDiagnostics();
         return true; // nothing to resolve (e.g. primitive-only scene)
+    }
 
     // ---- Load each referenced model once into a staging scene ----
     struct StagedModel
@@ -438,7 +458,18 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
             ok = (root != entt::null);
         }
         else
-            ok = SceneLoader::LoadIntoECS(s.ecs, m.resolved.string());
+        {
+            TextureAssetLoadContext textureContext;
+            textureContext.resolution = resolutionContext;
+            textureContext.ownerModel = m.ownerRef;
+            textureContext.resolvedOwnerPath = m.resolved;
+            textureContext.effectiveOwnerId = m.effectiveId;
+            textureContext.entityUuid = m.firstEntityUuid;
+            textureContext.entityName = m.firstEntityName;
+            textureContext.identityMode = TextureIdentityMode::ReadOnly;
+            ok = SceneLoader::LoadIntoECS(
+                s.ecs, m.resolved.string(), textureContext, diagnostics);
+        }
 
         if (!ok)
         {
@@ -676,6 +707,7 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         err.detail = std::to_string(unresolvedCount)
                    + " imported entit" + (unresolvedCount == 1 ? "y" : "ies")
                    + " could not be resolved";
+        sortDiagnostics();
         return false;
     }
 
@@ -797,6 +829,7 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
     // hierarchy resolved (they were already created by the serializer).
     SceneGraph::UpdateWorldTransforms(doc.ecs.registry);
 
+    sortDiagnostics();
     return true;
 }
 

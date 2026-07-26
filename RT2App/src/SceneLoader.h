@@ -5,7 +5,9 @@
 
 #include "SceneTypes.h"
 #include "ECSScene.h"
+#include "TextureAssetPipeline.h"
 #include <string>
+#include <vector>
 
 class SceneLoader
 {
@@ -16,12 +18,22 @@ public:
     // Load a glTF file into the ECSScene. Detects .gltf vs .glb from extension.
     // Populates ECSScene with object-space meshes + per-entity transforms.
     static bool LoadIntoECS(ECSScene& ecsScene, const std::string& filepath);
+    static bool LoadIntoECS(
+        ECSScene& ecsScene,
+        const std::string& filepath,
+        const rt2::core::TextureAssetLoadContext& textureContext,
+        std::vector<rt2::core::AssetDiagnostic>& diagnostics);
 
     // Import a glTF into an EXISTING ECSScene without clearing it.
     // Merges textures, materials (with index offset), and entities (with a
     // wrapper root entity parented to existing scene). Returns the wrapper
     // root entity, or entt::null on failure.
     static entt::entity ImportIntoECS(ECSScene& ecsScene, const std::string& filepath);
+    static entt::entity ImportIntoECS(
+        ECSScene& ecsScene,
+        const std::string& filepath,
+        const rt2::core::TextureAssetLoadContext& textureContext,
+        std::vector<rt2::core::AssetDiagnostic>& diagnostics);
 
     // Load an OBJ file (+ .mtl + textures) into the ECS scene.
     static bool LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath);

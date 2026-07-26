@@ -14,6 +14,7 @@
 
 namespace tinygltf {
 struct Image;
+class Model;
 }
 
 namespace rt2::core {
@@ -97,8 +98,14 @@ bool CaptureGltfImageData(tinygltf::Image* image,
                           int size,
                           void* userData);
 
+GltfTextureManifest EnumerateGltfTextureDependencies(
+    const tinygltf::Model& model,
+    const GltfImageCapture& capture,
+    const TextureAssetLoadContext& context);
+
 // Sole W3 texture containment value.
 SceneTexture MakeMissingTexturePlaceholder(const AssetReference& ref);
+bool IsMissingTexturePlaceholder(const SceneTexture& texture);
 
 // Implemented as loader formats cut over in W3 steps 6.3 and 6.4.
 std::vector<SceneTexture> ResolveAndDecodeTextures(

@@ -87,6 +87,9 @@ project "RT2SliceRunner"
        runtime "Debug"
        symbols "On"
 
+    filter { "configurations:Debug", "files:../RT2App/src/SceneLoader.cpp" }
+       buildoptions { "/bigobj" }
+
     filter "configurations:Release"
        defines { "WL_RELEASE" }
        runtime "Release"

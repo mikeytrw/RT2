@@ -67,7 +67,8 @@ inline bool GenerateTinyExrEnv(const std::filesystem::path& path, Error& err)
 
 // Generate a tiny GLB with a single textured triangle (positions, UVs,
 // indices, one material with a base color texture). Writes a small embedded
-// PNG texture. Uses tinygltf directly.
+// PPM texture. Uses an encoded data URI so TinyGLTF writes a real embedded
+// payload rather than a schema-invalid `bufferView: -1` image record.
 inline bool GenerateTinyTexturedGlb(const std::filesystem::path& path, Error& err)
 {
     err = Error{};
@@ -76,21 +77,11 @@ inline bool GenerateTinyTexturedGlb(const std::filesystem::path& path, Error& er
     model.asset.version = "2.0";
     model.asset.generator = "RT2 Phase1A Fixture Generator";
 
-    // 8x8 RGBA8 solid-color texture (a magenta swatch).
-    const int tw = 8, th = 8;
-    std::vector<unsigned char> texPixels((size_t)tw * th * 4, 0);
-    for (size_t i = 0; i < texPixels.size(); i += 4)
-    {
-        texPixels[i + 0] = 255;
-        texPixels[i + 1] = 0;
-        texPixels[i + 2] = 255;
-        texPixels[i + 3] = 255;
-    }
+    // Encoded 1x1 PPM pixel (128,64,32).
     tinygltf::Image img;
-    img.width = tw;
-    img.height = th;
-    img.component = 4;
-    img.image = texPixels;
+    img.uri =
+        "data:application/octet-stream;base64,UDYKMSAxCjI1NQqAQCA=";
+    img.mimeType = "image/x-portable-pixmap";
     model.images.push_back(img);
 
     tinygltf::Texture gtext;

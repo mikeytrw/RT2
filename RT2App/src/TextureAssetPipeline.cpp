@@ -1,6 +1,12 @@
 #include "TextureAssetPipeline.h"
 
+#include "stb_image.h"
+#include "tiny_gltf.h"
+
 #include <algorithm>
+#include <fstream>
+#include <iterator>
+#include <system_error>
 #include <tuple>
 
 namespace rt2::core {
@@ -17,6 +23,101 @@ const char* ObjTextureRoleName(ObjTextureRole role)
         case ObjTextureRole::Roughness: return "roughness";
     }
     return "diffuse";
+}
+
+AssetDiagnostic MakeTextureDiagnostic(
+    AssetDiagnostic::Severity severity,
+    const AssetReference& ref,
+    const TextureAssetLoadContext& context,
+    const std::filesystem::path& resolvedPath,
+    std::string detail)
+{
+    AssetDiagnostic diagnostic;
+    diagnostic.severity = severity;
+    diagnostic.kind = AssetKind::Texture;
+    diagnostic.refPath = ref.path;
+    diagnostic.resolvedPath = resolvedPath.string();
+    diagnostic.entityUuid = context.entityUuid;
+    diagnostic.entityName = context.entityName;
+    diagnostic.sourceKey = ref.sourceKey;
+    diagnostic.detail = std::move(detail);
+    return diagnostic;
+}
+
+bool IsDataUri(const std::string& uri)
+{
+    return uri.rfind("data:", 0) == 0;
+}
+
+std::string PortablePathFor(const std::filesystem::path& physicalPath,
+                            const std::filesystem::path& assetRoot)
+{
+    const auto relative = physicalPath.lexically_normal().lexically_relative(
+        assetRoot.lexically_normal());
+    if (!relative.empty())
+        return relative.generic_string();
+    return physicalPath.lexically_normal().generic_string();
+}
+
+std::filesystem::path PhysicalPathFor(
+    const AssetReference& ref,
+    const AssetResolutionContext& resolution)
+{
+    const std::filesystem::path stored =
+        std::filesystem::u8path(ref.path).lexically_normal();
+    return stored.is_absolute()
+        ? stored
+        : (resolution.assetRoot / stored).lexically_normal();
+}
+
+bool ReadFileBytes(const std::filesystem::path& path,
+                   std::vector<unsigned char>& bytes)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return false;
+    bytes.assign(std::istreambuf_iterator<char>(input),
+                 std::istreambuf_iterator<char>());
+    return input.good() || input.eof();
+}
+
+bool DecodeTextureBytes(const std::vector<unsigned char>& encoded,
+                        SceneTexture& texture)
+{
+    if (encoded.empty())
+        return false;
+
+    int width = 0;
+    int height = 0;
+    int sourceChannels = 0;
+    unsigned char* decoded = stbi_load_from_memory(
+        encoded.data(), static_cast<int>(encoded.size()),
+        &width, &height, &sourceChannels, 4);
+    if (!decoded)
+        return false;
+
+    texture.width = width;
+    texture.height = height;
+    texture.channels = 4;
+    texture.pixels.assign(
+        decoded, decoded + static_cast<size_t>(width * height * 4));
+    stbi_image_free(decoded);
+    texture.isHDR = false;
+    texture.floatPixels.clear();
+    texture.isSRGB = false;
+    return true;
+}
+
+void SortAppendedDiagnostics(std::vector<AssetDiagnostic>& diagnostics,
+                             size_t base)
+{
+    if (base >= diagnostics.size())
+        return;
+    std::stable_sort(diagnostics.begin() + static_cast<std::ptrdiff_t>(base),
+                     diagnostics.end(),
+        [](const AssetDiagnostic& a, const AssetDiagnostic& b) {
+            return AssetDiagnosticSortKey(a) < AssetDiagnosticSortKey(b);
+        });
 }
 
 } // namespace
@@ -81,6 +182,65 @@ bool CaptureGltfImageData(tinygltf::Image* image,
     return true;
 }
 
+GltfTextureManifest EnumerateGltfTextureDependencies(
+    const tinygltf::Model& model,
+    const GltfImageCapture& capture,
+    const TextureAssetLoadContext& context)
+{
+    GltfTextureManifest manifest;
+    manifest.reserve(model.textures.size());
+
+    for (size_t textureIndex = 0;
+         textureIndex < model.textures.size(); ++textureIndex)
+    {
+        const auto& sourceTexture = model.textures[textureIndex];
+        TextureManifestEntry entry;
+        entry.outputSlot = textureIndex;
+        entry.ref.kind = AssetKind::Texture;
+
+        if (sourceTexture.source < 0 ||
+            sourceTexture.source >= static_cast<int>(model.images.size()))
+        {
+            entry.payloadKind = TexturePayloadKind::Invalid;
+            entry.ref.sourceKey =
+                GltfInvalidTextureSourceKey(textureIndex);
+            entry.ref.path = context.ownerModel.path;
+            entry.ref.assetId = context.effectiveOwnerId;
+            manifest.push_back(std::move(entry));
+            continue;
+        }
+
+        const size_t imageIndex =
+            static_cast<size_t>(sourceTexture.source);
+        const auto& image = model.images[imageIndex];
+        entry.ref.sourceKey = GltfImageSourceKey(imageIndex);
+
+        if (image.uri.empty() || IsDataUri(image.uri))
+        {
+            entry.payloadKind = TexturePayloadKind::Embedded;
+            entry.ref.path = context.ownerModel.path;
+            entry.ref.assetId = context.effectiveOwnerId;
+            if (imageIndex < capture.encodedByImage.size())
+                entry.encodedBytes = capture.encodedByImage[imageIndex];
+        }
+        else
+        {
+            entry.payloadKind = TexturePayloadKind::External;
+            entry.externalUri = image.uri;
+            const auto physical =
+                (context.resolvedOwnerPath.parent_path() /
+                 std::filesystem::u8path(image.uri)).lexically_normal();
+            entry.ref.path =
+                PortablePathFor(physical, context.resolution.assetRoot);
+        }
+
+        manifest.push_back(std::move(entry));
+    }
+
+    SortTextureManifest(manifest);
+    return manifest;
+}
+
 SceneTexture MakeMissingTexturePlaceholder(const AssetReference& ref)
 {
     SceneTexture texture;
@@ -99,6 +259,186 @@ SceneTexture MakeMissingTexturePlaceholder(const AssetReference& ref)
     texture.floatPixels.clear();
     texture.isSRGB = false;
     return texture;
+}
+
+bool IsMissingTexturePlaceholder(const SceneTexture& texture)
+{
+    static const std::vector<unsigned char> expected = {
+        0xff, 0x00, 0xff, 0xff,
+        0x00, 0x00, 0x00, 0xff,
+        0x00, 0x00, 0x00, 0xff,
+        0xff, 0x00, 0xff, 0xff,
+    };
+    return texture.width == 2 &&
+           texture.height == 2 &&
+           texture.channels == 4 &&
+           texture.pixels == expected &&
+           !texture.isHDR &&
+           texture.floatPixels.empty() &&
+           !texture.isSRGB;
+}
+
+std::vector<SceneTexture> ResolveAndDecodeTextures(
+    const TextureManifest& manifest,
+    const TextureAssetLoadContext& context,
+    std::vector<AssetDiagnostic>& diagnostics)
+{
+    const size_t diagnosticBase = diagnostics.size();
+    std::vector<SceneTexture> textures;
+    textures.reserve(manifest.size());
+
+    const bool invalidContext =
+        context.resolution.assetRoot.empty() ||
+        !context.resolution.assetRoot.is_absolute() ||
+        context.resolvedOwnerPath.empty() ||
+        !context.resolvedOwnerPath.is_absolute() ||
+        (context.identityMode == TextureIdentityMode::ExplicitImport &&
+         context.uuidProvider == nullptr);
+
+    for (const auto& entry : manifest)
+    {
+        AssetReference ref = entry.ref;
+        ref.kind = AssetKind::Texture;
+
+        if (invalidContext)
+        {
+            diagnostics.push_back(MakeTextureDiagnostic(
+                AssetDiagnostic::Malformed, ref, context, {},
+                "invalid texture load context"));
+            textures.push_back(MakeMissingTexturePlaceholder(ref));
+            continue;
+        }
+
+        if (entry.payloadKind == TexturePayloadKind::Invalid)
+        {
+            diagnostics.push_back(MakeTextureDiagnostic(
+                AssetDiagnostic::Unresolved, ref, context,
+                context.resolvedOwnerPath,
+                "glTF texture source index is invalid"));
+            textures.push_back(MakeMissingTexturePlaceholder(ref));
+            continue;
+        }
+
+        if (entry.payloadKind == TexturePayloadKind::Embedded)
+        {
+            SceneTexture texture;
+            texture.filepath = ref.path;
+            texture.ref = ref;
+            if (!DecodeTextureBytes(entry.encodedBytes, texture))
+            {
+                const auto severity = entry.encodedBytes.empty()
+                    ? AssetDiagnostic::Unresolved
+                    : AssetDiagnostic::Malformed;
+                diagnostics.push_back(MakeTextureDiagnostic(
+                    severity, ref, context, context.resolvedOwnerPath,
+                    entry.encodedBytes.empty()
+                        ? "embedded image payload is missing"
+                        : "embedded image payload failed to decode"));
+                texture = MakeMissingTexturePlaceholder(ref);
+            }
+            textures.push_back(std::move(texture));
+            continue;
+        }
+
+        // A database dependency claim, when supplied, is authoritative over
+        // the URI-derived fallback. Multiple distinct claims are a conflict.
+        if (context.resolution.database)
+        {
+            const auto claims =
+                context.resolution.database->FindDependenciesBySourceKey(
+                    context.ownerModel.path, ref.sourceKey);
+            if (claims.size() > 1)
+            {
+                diagnostics.push_back(MakeTextureDiagnostic(
+                    AssetDiagnostic::Conflict, ref, context, {},
+                    "multiple dependency claims for texture source key"));
+                textures.push_back(MakeMissingTexturePlaceholder(ref));
+                continue;
+            }
+            if (claims.size() == 1)
+            {
+                if (claims[0].kind != AssetKind::Texture)
+                {
+                    diagnostics.push_back(MakeTextureDiagnostic(
+                        AssetDiagnostic::Conflict, ref, context, {},
+                        "dependency claim kind is not Texture"));
+                    textures.push_back(MakeMissingTexturePlaceholder(ref));
+                    continue;
+                }
+                ref.path = claims[0].sourcePath;
+                ref.assetId = claims[0].assetId;
+            }
+        }
+
+        std::vector<AssetDiagnostic> locatorDiagnostics;
+        auto resolution = Resolve(
+            ref, context.resolution, context.entityUuid,
+            context.entityName, locatorDiagnostics);
+        if (!resolution.success)
+        {
+            for (auto& diagnostic : locatorDiagnostics)
+                diagnostics.push_back(std::move(diagnostic));
+            textures.push_back(MakeMissingTexturePlaceholder(ref));
+            continue;
+        }
+
+        std::filesystem::path physicalPath = resolution.resolvedPath;
+        ref.assetId = resolution.effectiveId;
+        if (ref.assetId.IsNull() && !entry.ref.assetId.IsNull())
+            ref.assetId = entry.ref.assetId;
+
+        if (context.identityMode == TextureIdentityMode::ExplicitImport)
+        {
+            bool minted = false;
+            Error identityError;
+            const UUID assigned = ResolveOrAssign(
+                physicalPath, *context.uuidProvider, minted, identityError);
+            if (!assigned.IsNull())
+                ref.assetId = assigned;
+            ref.path = PortablePathFor(
+                physicalPath, context.resolution.assetRoot);
+
+            if (!identityError.IsOk())
+            {
+                diagnostics.push_back(MakeTextureDiagnostic(
+                    AssetDiagnostic::Stale, ref, context, physicalPath,
+                    "texture sidecar repair: " + identityError.Format()));
+            }
+
+            // Successful explicit repair supersedes the pre-repair
+            // missing-sidecar advisory. Preserve unrelated locator advisories.
+            for (auto& diagnostic : locatorDiagnostics)
+            {
+                const bool repairAdvisory =
+                    diagnostic.severity == AssetDiagnostic::Stale &&
+                    resolution.identityRepairRequired;
+                if (!repairAdvisory)
+                    diagnostics.push_back(std::move(diagnostic));
+            }
+        }
+        else
+        {
+            for (auto& diagnostic : locatorDiagnostics)
+                diagnostics.push_back(std::move(diagnostic));
+        }
+
+        std::vector<unsigned char> encoded;
+        SceneTexture texture;
+        texture.filepath = ref.path;
+        texture.ref = ref;
+        if (!ReadFileBytes(physicalPath, encoded) ||
+            !DecodeTextureBytes(encoded, texture))
+        {
+            diagnostics.push_back(MakeTextureDiagnostic(
+                AssetDiagnostic::Malformed, ref, context, physicalPath,
+                "external image failed to decode"));
+            texture = MakeMissingTexturePlaceholder(ref);
+        }
+        textures.push_back(std::move(texture));
+    }
+
+    SortAppendedDiagnostics(diagnostics, diagnosticBase);
+    return textures;
 }
 
 } // namespace rt2::core

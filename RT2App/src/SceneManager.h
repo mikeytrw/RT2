@@ -7,6 +7,7 @@
 #include "ECSScene.h"
 #include "GPUSceneData.h"
 #include "SceneDocument.h"
+#include "AssetResolver.h"
 #include "core/UUID.h"
 #include "core/Error.h"
 #include "TransformEditing.h"
@@ -77,7 +78,9 @@ struct EditorCameraPose;
 	void SetSyncKeepTexturesCallback(SyncCallback cb) { m_SyncKeepTexturesCallback = std::move(cb); }
 
 	// ---- Scene loading ----
-	bool LoadScene(const std::string& filepath);
+	bool LoadScene(
+		const std::string& filepath,
+		std::vector<rt2::core::AssetDiagnostic>* diagnostics = nullptr);
 	// Load an environment map and assign/match its stable asset ID via the
 	// per-asset sidecar (ResolveOrAssign). The load succeeds even when the
 	// sidecar write fails — the scene gets a session ID and the next save
@@ -109,7 +112,9 @@ struct EditorCameraPose;
 	// Import a glTF file into the EXISTING scene (merges meshes/materials/
 	// textures, creates a wrapper root entity). Does NOT clear the scene.
 	// Returns the wrapper root entity, or invalid EntityId on failure.
-	EntityId ImportGltf(const std::string& filepath);
+	EntityId ImportGltf(
+		const std::string& filepath,
+		std::vector<rt2::core::AssetDiagnostic>* diagnostics = nullptr);
 
 	// Import an OBJ file into the EXISTING scene (merges meshes/materials/
 	// textures, creates a wrapper root entity with one child per shape when

@@ -256,6 +256,131 @@ fs::path WriteExternalTextureGltf(const fs::path& directory,
     return path;
 }
 
+fs::path WriteDataUriTextureGltf(const fs::path& directory,
+                                 bool malformed)
+{
+    const fs::path path = WriteExternalTextureGltf(
+        directory, GltfImageCase::ValidExternal);
+    nlohmann::json gltf;
+    {
+        std::ifstream input(path);
+        REQUIRE(input.good());
+        input >> gltf;
+    }
+    gltf["images"][0]["uri"] =
+        std::string("data:application/octet-stream;base64,") +
+        (malformed ? "bm90IGFuIGltYWdl"
+                   : "UDYKMSAxCjI1NQqAQCA=");
+    REQUIRE(WriteText(path, gltf.dump(2)));
+    return path;
+}
+
+fs::path WriteEmbeddedTextureGlb(const fs::path& directory)
+{
+    const std::array<float, 9> positions = {
+        -1.0f, -1.0f, 0.0f,
+         1.0f, -1.0f, 0.0f,
+         0.0f,  1.0f, 0.0f,
+    };
+    const std::array<uint16_t, 3> indices = { 0, 1, 2 };
+    std::vector<unsigned char> binary(60, 0);
+    std::memcpy(binary.data(), positions.data(), sizeof(positions));
+    std::memcpy(binary.data() + 36, indices.data(), sizeof(indices));
+    const std::string ppmHeader = "P6\n1 1\n255\n";
+    std::memcpy(binary.data() + 44, ppmHeader.data(), ppmHeader.size());
+    binary[44 + ppmHeader.size() + 0] = 128;
+    binary[44 + ppmHeader.size() + 1] = 64;
+    binary[44 + ppmHeader.size() + 2] = 32;
+
+    nlohmann::json gltf;
+    gltf["asset"] = { { "version", "2.0" } };
+    gltf["scene"] = 0;
+    gltf["scenes"] = nlohmann::json::array({
+        { { "nodes", nlohmann::json::array({ 0 }) } }
+    });
+    gltf["nodes"] = nlohmann::json::array({ { { "mesh", 0 } } });
+    gltf["buffers"] = nlohmann::json::array({
+        { { "byteLength", 58 } }
+    });
+    gltf["bufferViews"] = nlohmann::json::array({
+        {
+            { "buffer", 0 }, { "byteOffset", 0 },
+            { "byteLength", sizeof(positions) }, { "target", 34962 },
+        },
+        {
+            { "buffer", 0 }, { "byteOffset", 36 },
+            { "byteLength", sizeof(indices) }, { "target", 34963 },
+        },
+        {
+            { "buffer", 0 }, { "byteOffset", 44 },
+            { "byteLength", ppmHeader.size() + 3 },
+        },
+    });
+    gltf["accessors"] = nlohmann::json::array({
+        {
+            { "bufferView", 0 }, { "componentType", 5126 },
+            { "count", 3 }, { "type", "VEC3" },
+            { "min", nlohmann::json::array({ -1.0, -1.0, 0.0 }) },
+            { "max", nlohmann::json::array({ 1.0, 1.0, 0.0 }) },
+        },
+        {
+            { "bufferView", 1 }, { "componentType", 5123 },
+            { "count", 3 }, { "type", "SCALAR" },
+        },
+    });
+    gltf["images"] = nlohmann::json::array({
+        { { "bufferView", 2 },
+          { "mimeType", "image/x-portable-pixmap" } }
+    });
+    gltf["textures"] = nlohmann::json::array({ { { "source", 0 } } });
+    gltf["materials"] = nlohmann::json::array({
+        {
+            { "pbrMetallicRoughness", {
+                { "baseColorTexture", { { "index", 0 } } }
+            } }
+        }
+    });
+    gltf["meshes"] = nlohmann::json::array({
+        {
+            { "primitives", nlohmann::json::array({
+                {
+                    { "attributes", { { "POSITION", 0 } } },
+                    { "indices", 1 }, { "material", 0 },
+                }
+            }) }
+        }
+    });
+
+    std::string jsonText = gltf.dump();
+    while ((jsonText.size() % 4) != 0)
+        jsonText.push_back(' ');
+    while ((binary.size() % 4) != 0)
+        binary.push_back(0);
+
+    std::vector<unsigned char> glb;
+    auto appendU32 = [&](uint32_t value) {
+        glb.push_back(static_cast<unsigned char>(value & 0xff));
+        glb.push_back(static_cast<unsigned char>((value >> 8) & 0xff));
+        glb.push_back(static_cast<unsigned char>((value >> 16) & 0xff));
+        glb.push_back(static_cast<unsigned char>((value >> 24) & 0xff));
+    };
+    const uint32_t totalLength = static_cast<uint32_t>(
+        12 + 8 + jsonText.size() + 8 + binary.size());
+    appendU32(0x46546c67);
+    appendU32(2);
+    appendU32(totalLength);
+    appendU32(static_cast<uint32_t>(jsonText.size()));
+    appendU32(0x4e4f534a);
+    glb.insert(glb.end(), jsonText.begin(), jsonText.end());
+    appendU32(static_cast<uint32_t>(binary.size()));
+    appendU32(0x004e4942);
+    glb.insert(glb.end(), binary.begin(), binary.end());
+
+    const fs::path path = directory / "embedded.glb";
+    REQUIRE(WriteBytes(path, glb));
+    return path;
+}
+
 fs::path WriteTexturedObj(const fs::path& directory,
                           const std::string& textureName)
 {
@@ -274,6 +399,45 @@ fs::path WriteTexturedObj(const fs::path& directory,
         "usemtl material\n"
         "f 1/1 2/2 3/3\n"));
     return directory / "model.obj";
+}
+
+TextureAssetLoadContext ReadOnlyTextureContext(const fs::path& modelPath)
+{
+    TextureAssetLoadContext context;
+    context.resolution.assetRoot =
+        fs::absolute(modelPath.parent_path()).lexically_normal();
+    context.ownerModel.kind = AssetKind::Model;
+    context.ownerModel.path = modelPath.filename().generic_string();
+    context.resolvedOwnerPath =
+        fs::absolute(modelPath).lexically_normal();
+    return context;
+}
+
+TextureAssetLoadContext ExplicitTextureContext(
+    const fs::path& modelPath,
+    IUuidProvider& provider)
+{
+    auto context = ReadOnlyTextureContext(modelPath);
+    context.identityMode = TextureIdentityMode::ExplicitImport;
+    context.uuidProvider = &provider;
+    return context;
+}
+
+void CheckExactTexturePlaceholder(const SceneTexture& texture)
+{
+    const std::vector<unsigned char> expected = {
+        0xff, 0x00, 0xff, 0xff,
+        0x00, 0x00, 0x00, 0xff,
+        0x00, 0x00, 0x00, 0xff,
+        0xff, 0x00, 0xff, 0xff,
+    };
+    CHECK(texture.width == 2);
+    CHECK(texture.height == 2);
+    CHECK(texture.channels == 4);
+    CHECK(texture.pixels == expected);
+    CHECK_FALSE(texture.isHDR);
+    CHECK(texture.floatPixels.empty());
+    CHECK_FALSE(texture.isSRGB);
 }
 
 ScriptComponent ScriptAt(const std::string& path)
@@ -1147,7 +1311,7 @@ TEST_CASE("Phase7 W3 characterization: OBJ texture failures do not fail valid ge
     }
 }
 
-TEST_CASE("Phase7 W3 characterization: glTF texture failures have three different outcomes")
+TEST_CASE("Phase7 W3 step 6.3: glTF texture failures are contained")
 {
     SUBCASE("success decodes the external image")
     {
@@ -1156,58 +1320,401 @@ TEST_CASE("Phase7 W3 characterization: glTF texture failures have three differen
             fixture.Path(), GltfImageCase::ValidExternal);
 
         ECSScene scene;
-        REQUIRE(SceneLoader::LoadIntoECS(scene, gltf.string()));
+        std::vector<AssetDiagnostic> diagnostics;
+        REQUIRE(SceneLoader::LoadIntoECS(
+            scene, gltf.string(), ReadOnlyTextureContext(gltf),
+            diagnostics));
         REQUIRE(scene.materials.size() == 1);
         REQUIRE(scene.textures.size() == 1);
         CHECK(scene.meshRegistry.GetCount() == 1);
         CHECK_FALSE(scene.textures[0].pixels.empty());
         CHECK(scene.materials[0].baseColorTextureIndex == 0);
+        CHECK(scene.textures[0].ref.kind == AssetKind::Texture);
+        CHECK(scene.textures[0].ref.path == "valid.ppm");
+        CHECK(scene.textures[0].ref.sourceKey == "gltf:image=0");
+        CHECK(CountSeverity(diagnostics, AssetDiagnostic::Stale) == 1);
     }
 
-    SUBCASE("missing external image preserves an empty texture slot")
+    SUBCASE("missing external image installs a placeholder")
     {
         TempDirectory fixture;
         const fs::path gltf = WriteExternalTextureGltf(
             fixture.Path(), GltfImageCase::MissingExternal);
 
         ECSScene scene;
-        REQUIRE(SceneLoader::LoadIntoECS(scene, gltf.string()));
+        std::vector<AssetDiagnostic> diagnostics;
+        REQUIRE(SceneLoader::LoadIntoECS(
+            scene, gltf.string(), ReadOnlyTextureContext(gltf),
+            diagnostics));
         REQUIRE(scene.materials.size() == 1);
         REQUIRE(scene.textures.size() == 1);
         CHECK(scene.meshRegistry.GetCount() == 1);
         CHECK(scene.textures[0].filepath == "missing.ppm");
-        CHECK(scene.textures[0].pixels.empty());
+        CHECK(scene.textures[0].ref.kind == AssetKind::Texture);
+        CHECK(scene.textures[0].ref.sourceKey == "gltf:image=0");
+        CheckExactTexturePlaceholder(scene.textures[0]);
         CHECK(scene.materials[0].baseColorTextureIndex == 0);
+        REQUIRE(diagnostics.size() == 1);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+        CHECK(diagnostics[0].kind == AssetKind::Texture);
+        CHECK(diagnostics[0].sourceKey == "gltf:image=0");
     }
 
-    SUBCASE("malformed external image fails the whole model")
+    SUBCASE("malformed external image preserves valid geometry")
     {
         TempDirectory fixture;
         const fs::path gltf = WriteExternalTextureGltf(
             fixture.Path(), GltfImageCase::MalformedExternal);
 
         ECSScene scene;
-        CHECK_FALSE(SceneLoader::LoadIntoECS(scene, gltf.string()));
-        CHECK(scene.meshRegistry.GetCount() == 0);
-        CHECK(scene.materials.empty());
-        CHECK(scene.textures.empty());
+        std::vector<AssetDiagnostic> diagnostics;
+        REQUIRE(SceneLoader::LoadIntoECS(
+            scene, gltf.string(), ReadOnlyTextureContext(gltf),
+            diagnostics));
+        CHECK(scene.meshRegistry.GetCount() == 1);
+        REQUIRE(scene.materials.size() == 1);
+        REQUIRE(scene.textures.size() == 1);
+        CHECK(scene.textures[0].filepath == "malformed.png");
+        CheckExactTexturePlaceholder(scene.textures[0]);
+        CHECK(scene.materials[0].baseColorTextureIndex == 0);
+        CHECK(CountSeverity(
+            diagnostics, AssetDiagnostic::Stale) == 1);
+        CHECK(CountSeverity(
+            diagnostics, AssetDiagnostic::Malformed) == 1);
     }
 
-    SUBCASE("invalid texture source preserves an unresolved empty slot")
+    SUBCASE("invalid texture source installs an unresolved placeholder")
     {
         TempDirectory fixture;
         const fs::path gltf = WriteExternalTextureGltf(
             fixture.Path(), GltfImageCase::InvalidTextureSource);
 
         ECSScene scene;
-        REQUIRE(SceneLoader::LoadIntoECS(scene, gltf.string()));
+        std::vector<AssetDiagnostic> diagnostics;
+        REQUIRE(SceneLoader::LoadIntoECS(
+            scene, gltf.string(), ReadOnlyTextureContext(gltf),
+            diagnostics));
         REQUIRE(scene.materials.size() == 1);
         REQUIRE(scene.textures.size() == 1);
         CHECK(scene.meshRegistry.GetCount() == 1);
-        CHECK(scene.textures[0].filepath.empty());
-        CHECK(scene.textures[0].pixels.empty());
+        CHECK(scene.textures[0].ref.kind == AssetKind::Texture);
+        CHECK(scene.textures[0].ref.sourceKey == "gltf:texture=0");
+        CheckExactTexturePlaceholder(scene.textures[0]);
         CHECK(scene.materials[0].baseColorTextureIndex == 0);
+        REQUIRE(diagnostics.size() == 1);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Unresolved);
+        CHECK(diagnostics[0].kind == AssetKind::Texture);
+        CHECK(diagnostics[0].sourceKey == "gltf:texture=0");
     }
+}
+
+TEST_CASE("Phase7 W3 step 6.3: explicit glTF import assigns and reuses external texture identity")
+{
+    TempDirectory fixture;
+    const fs::path gltf = WriteExternalTextureGltf(
+        fixture.Path(), GltfImageCase::ValidExternal);
+    const fs::path texturePath = fixture.Path() / "valid.ppm";
+    DeterministicUuidProvider ids;
+    auto context = ExplicitTextureContext(gltf, ids);
+
+    ECSScene scene;
+    std::vector<AssetDiagnostic> diagnostics;
+    const entt::entity firstRoot = SceneLoader::ImportIntoECS(
+        scene, gltf.string(), context, diagnostics);
+    REQUIRE(firstRoot != entt::entity{entt::null});
+    REQUIRE(scene.textures.size() == 1);
+    REQUIRE(diagnostics.empty());
+    CHECK_FALSE(scene.textures[0].ref.assetId.IsNull());
+    CHECK(scene.textures[0].ref.kind == AssetKind::Texture);
+    CHECK(scene.textures[0].ref.path == "valid.ppm");
+    CHECK(scene.textures[0].ref.sourceKey == "gltf:image=0");
+    REQUIRE(fs::is_regular_file(AssetSidecarPath(texturePath)));
+
+    Error sidecarError;
+    const UUID textureId = ReadSidecarId(
+        AssetSidecarPath(texturePath), sidecarError);
+    REQUIRE(sidecarError.IsOk());
+    CHECK(textureId == scene.textures[0].ref.assetId);
+
+    diagnostics.clear();
+    const entt::entity secondRoot = SceneLoader::ImportIntoECS(
+        scene, gltf.string(), context, diagnostics);
+    REQUIRE(secondRoot != entt::entity{entt::null});
+    REQUIRE(scene.textures.size() == 2);
+    CHECK(diagnostics.empty());
+    CHECK(scene.textures[1].ref.assetId == textureId);
+}
+
+TEST_CASE("Phase7 W3 step 6.3: glTF dependencies resolve by database identity or conflict")
+{
+    SUBCASE("moved external image resolves by its unique dependency ID")
+    {
+        TempDirectory fixture;
+        const fs::path gltf = WriteExternalTextureGltf(
+            fixture.Path(), GltfImageCase::ValidExternal);
+        const fs::path movedDirectory = fixture.Path() / "moved";
+        std::error_code filesystemError;
+        fs::create_directories(movedDirectory, filesystemError);
+        REQUIRE_FALSE(filesystemError);
+        const fs::path movedTexture = movedDirectory / "valid.ppm";
+        fs::rename(fixture.Path() / "valid.ppm",
+                   movedTexture, filesystemError);
+        REQUIRE_FALSE(filesystemError);
+
+        const UUID ownerId =
+            UUID::Parse("10000000-0000-4000-8000-000000000001");
+        const UUID textureId =
+            UUID::Parse("20000000-0000-4000-8000-000000000002");
+        Error sidecarError;
+        REQUIRE(WriteSidecarId(
+            AssetSidecarPath(movedTexture), textureId, sidecarError));
+        REQUIRE(sidecarError.IsOk());
+
+        AssetRecord owner;
+        owner.assetId = ownerId;
+        owner.sourcePath = "model.gltf";
+        owner.observedKinds = { AssetKind::Model };
+        owner.dependencies.push_back({
+            "gltf:image=0", textureId, "moved/valid.ppm",
+            AssetKind::Texture });
+        AssetRecord target;
+        target.assetId = textureId;
+        target.sourcePath = "moved/valid.ppm";
+        target.identityAuthority =
+            AssetIdentityAuthority::Sidecar;
+        target.observedKinds = { AssetKind::Texture };
+        std::vector<AssetDatabaseDiagnostic> databaseDiagnostics;
+        AssetDatabase database = BuildAssetDatabase(
+            { owner, target }, databaseDiagnostics);
+        REQUIRE(databaseDiagnostics.empty());
+
+        auto context = ReadOnlyTextureContext(gltf);
+        context.resolution.database = &database;
+        context.ownerModel.assetId = ownerId;
+        context.effectiveOwnerId = ownerId;
+        ECSScene scene;
+        std::vector<AssetDiagnostic> diagnostics;
+        REQUIRE(SceneLoader::LoadIntoECS(
+            scene, gltf.string(), context, diagnostics));
+        REQUIRE(scene.textures.size() == 1);
+        CHECK_FALSE(scene.textures[0].pixels.empty());
+        CHECK(scene.textures[0].ref.assetId == textureId);
+        CHECK(scene.textures[0].ref.path == "moved/valid.ppm");
+        CHECK(diagnostics.empty());
+    }
+
+    SUBCASE("two dependency claims produce Conflict and a placeholder")
+    {
+        TempDirectory fixture;
+        const fs::path gltf = WriteExternalTextureGltf(
+            fixture.Path(), GltfImageCase::ValidExternal);
+        REQUIRE(WritePpm(fixture.Path() / "other.ppm"));
+        const UUID first =
+            UUID::Parse("30000000-0000-4000-8000-000000000003");
+        const UUID second =
+            UUID::Parse("40000000-0000-4000-8000-000000000004");
+
+        AssetRecord owner;
+        owner.sourcePath = "model.gltf";
+        owner.observedKinds = { AssetKind::Model };
+        owner.dependencies = {
+            { "gltf:image=0", first, "valid.ppm",
+              AssetKind::Texture },
+            { "gltf:image=0", second, "other.ppm",
+              AssetKind::Texture },
+        };
+        std::vector<AssetDatabaseDiagnostic> databaseDiagnostics;
+        AssetDatabase database = BuildAssetDatabase(
+            { owner }, databaseDiagnostics);
+        auto context = ReadOnlyTextureContext(gltf);
+        context.resolution.database = &database;
+
+        ECSScene scene;
+        std::vector<AssetDiagnostic> diagnostics;
+        REQUIRE(SceneLoader::LoadIntoECS(
+            scene, gltf.string(), context, diagnostics));
+        REQUIRE(scene.textures.size() == 1);
+        CheckExactTexturePlaceholder(scene.textures[0]);
+        REQUIRE(diagnostics.size() == 1);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Conflict);
+        CHECK(diagnostics[0].sourceKey == "gltf:image=0");
+    }
+
+    SUBCASE("ambiguous dependency ID produces Conflict and a placeholder")
+    {
+        TempDirectory fixture;
+        const fs::path gltf = WriteExternalTextureGltf(
+            fixture.Path(), GltfImageCase::ValidExternal);
+        REQUIRE(WritePpm(fixture.Path() / "other.ppm"));
+        const UUID duplicate =
+            UUID::Parse("50000000-0000-4000-8000-000000000005");
+        Error sidecarError;
+        REQUIRE(WriteSidecarId(
+            AssetSidecarPath(fixture.Path() / "valid.ppm"),
+            duplicate, sidecarError));
+        REQUIRE(sidecarError.IsOk());
+        REQUIRE(WriteSidecarId(
+            AssetSidecarPath(fixture.Path() / "other.ppm"),
+            duplicate, sidecarError));
+        REQUIRE(sidecarError.IsOk());
+
+        AssetRecord owner;
+        owner.sourcePath = "model.gltf";
+        owner.observedKinds = { AssetKind::Model };
+        owner.dependencies = {
+            { "gltf:image=0", duplicate, "valid.ppm",
+              AssetKind::Texture },
+        };
+        AssetRecord first;
+        first.assetId = duplicate;
+        first.sourcePath = "valid.ppm";
+        first.identityAuthority = AssetIdentityAuthority::Sidecar;
+        first.observedKinds = { AssetKind::Texture };
+        AssetRecord second;
+        second.assetId = duplicate;
+        second.sourcePath = "other.ppm";
+        second.identityAuthority = AssetIdentityAuthority::Sidecar;
+        second.observedKinds = { AssetKind::Texture };
+        std::vector<AssetDatabaseDiagnostic> databaseDiagnostics;
+        AssetDatabase database = BuildAssetDatabase(
+            { owner, first, second }, databaseDiagnostics);
+        REQUIRE_FALSE(databaseDiagnostics.empty());
+        auto context = ReadOnlyTextureContext(gltf);
+        context.resolution.database = &database;
+
+        ECSScene scene;
+        std::vector<AssetDiagnostic> diagnostics;
+        REQUIRE(SceneLoader::LoadIntoECS(
+            scene, gltf.string(), context, diagnostics));
+        REQUIRE(scene.textures.size() == 1);
+        CheckExactTexturePlaceholder(scene.textures[0]);
+        REQUIRE(diagnostics.size() == 1);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Conflict);
+        CHECK(diagnostics[0].sourceKey == "gltf:image=0");
+    }
+}
+
+TEST_CASE("Phase7 W3 step 6.3: embedded glTF images use owner identity and contain decode failure")
+{
+    SUBCASE("embedded GLB uses the explicitly assigned owner ID")
+    {
+        TempDirectory fixture;
+        const fs::path glb = WriteEmbeddedTextureGlb(fixture.Path());
+        DeterministicUuidProvider ids;
+        auto context = ExplicitTextureContext(glb, ids);
+
+        ECSScene scene;
+        std::vector<AssetDiagnostic> diagnostics;
+        REQUIRE(SceneLoader::LoadIntoECS(
+            scene, glb.string(), context, diagnostics));
+        REQUIRE(scene.textures.size() == 1);
+        CHECK_FALSE(scene.textures[0].pixels.empty());
+        CHECK(scene.textures[0].ref.kind == AssetKind::Texture);
+        CHECK(scene.textures[0].ref.path == "embedded.glb");
+        CHECK(scene.textures[0].ref.sourceKey == "gltf:image=0");
+        CHECK_FALSE(scene.textures[0].ref.assetId.IsNull());
+        CHECK(diagnostics.empty());
+
+        Error sidecarError;
+        const UUID ownerId = ReadSidecarId(
+            AssetSidecarPath(glb), sidecarError);
+        REQUIRE(sidecarError.IsOk());
+        CHECK(scene.textures[0].ref.assetId == ownerId);
+        size_t sidecarCount = 0;
+        for (const auto& entry :
+             fs::directory_iterator(fixture.Path()))
+            if (entry.path().extension() == ".rt2meta")
+                ++sidecarCount;
+        CHECK(sidecarCount == 1);
+    }
+
+    SUBCASE("data URI uses a supplied owner ID and no child sidecar")
+    {
+        TempDirectory fixture;
+        const fs::path gltf =
+            WriteDataUriTextureGltf(fixture.Path(), false);
+        const UUID ownerId =
+            UUID::Parse("60000000-0000-4000-8000-000000000006");
+        Error sidecarError;
+        REQUIRE(WriteSidecarId(
+            AssetSidecarPath(gltf), ownerId, sidecarError));
+        REQUIRE(sidecarError.IsOk());
+        auto context = ReadOnlyTextureContext(gltf);
+        context.ownerModel.assetId = ownerId;
+        context.effectiveOwnerId = ownerId;
+
+        ECSScene scene;
+        std::vector<AssetDiagnostic> diagnostics;
+        REQUIRE(SceneLoader::LoadIntoECS(
+            scene, gltf.string(), context, diagnostics));
+        REQUIRE(scene.textures.size() == 1);
+        CHECK_FALSE(scene.textures[0].pixels.empty());
+        CHECK(scene.textures[0].ref.assetId == ownerId);
+        CHECK(scene.textures[0].ref.sourceKey == "gltf:image=0");
+        CHECK(diagnostics.empty());
+        CHECK_FALSE(fs::exists(
+            fixture.Path() / "data-uri-image.rt2meta"));
+    }
+
+    SUBCASE("malformed data URI preserves geometry with a placeholder")
+    {
+        TempDirectory fixture;
+        const fs::path gltf =
+            WriteDataUriTextureGltf(fixture.Path(), true);
+        auto context = ReadOnlyTextureContext(gltf);
+
+        ECSScene scene;
+        std::vector<AssetDiagnostic> diagnostics;
+        REQUIRE(SceneLoader::LoadIntoECS(
+            scene, gltf.string(), context, diagnostics));
+        CHECK(scene.meshRegistry.GetCount() == 1);
+        REQUIRE(scene.materials.size() == 1);
+        REQUIRE(scene.textures.size() == 1);
+        CheckExactTexturePlaceholder(scene.textures[0]);
+        CHECK(scene.materials[0].baseColorTextureIndex == 0);
+        REQUIRE(diagnostics.size() == 1);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Malformed);
+        CHECK(diagnostics[0].sourceKey == "gltf:image=0");
+    }
+}
+
+TEST_CASE("Phase7 W3 step 6.3: SceneAssetResolver threads texture context and diagnostics")
+{
+    TempDirectory fixture;
+    const fs::path gltf = WriteExternalTextureGltf(
+        fixture.Path(), GltfImageCase::MalformedExternal);
+    SceneDocument document;
+    DeterministicUuidProvider ids;
+    document.SetUuidProvider(&ids);
+    const entt::entity entity = AddImportedEntity(
+        document, gltf.filename().generic_string(),
+        SceneAssetResolver::GltfSourceKey(0, 0, 0, 0));
+    const UUID entityId =
+        document.ecs.registry.get<EntityIdComponent>(entity).id;
+
+    std::vector<AssetDiagnostic> diagnostics;
+    Error resolveError;
+    REQUIRE(SceneAssetResolver::ResolveAll(
+        document, fixture.Path(), diagnostics, resolveError));
+    REQUIRE(resolveError.IsOk());
+    REQUIRE(document.ecs.textures.size() == 1);
+    CheckExactTexturePlaceholder(document.ecs.textures[0]);
+
+    bool sawTextureMalformed = false;
+    bool sawTextureStale = false;
+    for (const auto& diagnostic : diagnostics)
+    {
+        if (diagnostic.kind != AssetKind::Texture)
+            continue;
+        CHECK(diagnostic.entityUuid == entityId);
+        CHECK(diagnostic.sourceKey == "gltf:image=0");
+        sawTextureMalformed |=
+            diagnostic.severity == AssetDiagnostic::Malformed;
+        sawTextureStale |=
+            diagnostic.severity == AssetDiagnostic::Stale;
+    }
+    CHECK(sawTextureMalformed);
+    CHECK(sawTextureStale);
 }
 
 // ---------------------------------------------------------------------------

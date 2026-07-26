@@ -105,6 +105,54 @@ std::filesystem::path ResolveAuthoredScriptPath(
 	return (document.metadata.sourcePath.parent_path() / path).
 		lexically_normal();
 }
+
+rt2::core::TextureAssetLoadContext MakeExplicitTextureContext(
+	const std::string& filepath,
+	rt2::core::IUuidProvider* provider)
+{
+	rt2::core::TextureAssetLoadContext context;
+	context.resolvedOwnerPath =
+		std::filesystem::absolute(std::filesystem::u8path(filepath)).
+			lexically_normal();
+	context.resolution.assetRoot =
+		context.resolvedOwnerPath.parent_path();
+	context.ownerModel.kind = AssetKind::Model;
+	context.ownerModel.path =
+		context.resolvedOwnerPath.filename().generic_string();
+	context.identityMode =
+		rt2::core::TextureIdentityMode::ExplicitImport;
+	context.uuidProvider = provider;
+	return context;
+}
+
+void LogAssetDiagnostics(
+	const std::vector<rt2::core::AssetDiagnostic>& diagnostics,
+	size_t base,
+	const char* context)
+{
+	for (size_t i = base; i < diagnostics.size(); ++i)
+	{
+		const auto& diagnostic = diagnostics[i];
+		const char* severity = "Missing";
+		switch (diagnostic.severity)
+		{
+			case rt2::core::AssetDiagnostic::Missing:
+				severity = "Missing"; break;
+			case rt2::core::AssetDiagnostic::Malformed:
+				severity = "Malformed"; break;
+			case rt2::core::AssetDiagnostic::Unresolved:
+				severity = "Unresolved"; break;
+			case rt2::core::AssetDiagnostic::Conflict:
+				severity = "Conflict"; break;
+			case rt2::core::AssetDiagnostic::Stale:
+				severity = "Stale"; break;
+		}
+		printf("[Asset] %s %s: path=%s source=%s detail=%s\n",
+		       context, severity, diagnostic.refPath.c_str(),
+		       diagnostic.sourceKey.c_str(),
+		       diagnostic.detail.c_str());
+	}
+}
 }
 
 // Fill an imported entity's source path (if empty) and assign it a stable
@@ -197,7 +245,9 @@ void SceneManager::ReplaceAuthoringDocument(rt2::core::SceneDocument&& document,
 	++m_ResourceGeneration;
 }
 
-bool SceneManager::LoadScene(const std::string& filepath)
+bool SceneManager::LoadScene(
+	const std::string& filepath,
+	std::vector<rt2::core::AssetDiagnostic>* diagnostics)
 {
 	printf("[Scene] LoadScene: '%s'\n", filepath.c_str());
 	fflush(stdout);
@@ -205,6 +255,10 @@ bool SceneManager::LoadScene(const std::string& filepath)
 	std::string ext = filepath.substr(filepath.find_last_of('.') + 1);
 	std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 	bool isObj = (ext == "obj");
+	std::vector<rt2::core::AssetDiagnostic> localDiagnostics;
+	auto& diagnosticSink =
+		diagnostics ? *diagnostics : localDiagnostics;
+	const size_t diagnosticBase = diagnosticSink.size();
 
 	if (isObj)
 	{
@@ -219,8 +273,14 @@ bool SceneManager::LoadScene(const std::string& filepath)
 	}
 	else
 	{
-		if (!SceneLoader::LoadIntoECS(m_EcsScene, filepath))
+		auto textureContext =
+			MakeExplicitTextureContext(filepath, m_UuidProvider);
+		if (!SceneLoader::LoadIntoECS(
+			    m_EcsScene, filepath, textureContext, diagnosticSink))
 		{
+			if (!diagnostics)
+				LogAssetDiagnostics(
+					diagnosticSink, diagnosticBase, "LoadScene");
 			printf("[Scene] SceneLoader::LoadIntoECS failed!\n");
 			return false;
 		}
@@ -321,6 +381,8 @@ bool SceneManager::LoadScene(const std::string& filepath)
 	m_EntityCacheDirty = true;
 	++m_DocumentGeneration;
 	++m_ResourceGeneration;
+	if (!diagnostics)
+		LogAssetDiagnostics(diagnosticSink, diagnosticBase, "LoadScene");
 	return true;
 }
 
@@ -441,11 +503,25 @@ void SceneManager::SetEnvMapData(const std::string& filepath, int w, int h,
 	}
 }
 
-SceneManager::EntityId SceneManager::ImportGltf(const std::string& filepath)
+SceneManager::EntityId SceneManager::ImportGltf(
+	const std::string& filepath,
+	std::vector<rt2::core::AssetDiagnostic>* diagnostics)
 {
-	entt::entity root = SceneLoader::ImportIntoECS(m_EcsScene, filepath);
+	std::vector<rt2::core::AssetDiagnostic> localDiagnostics;
+	auto& diagnosticSink =
+		diagnostics ? *diagnostics : localDiagnostics;
+	const size_t diagnosticBase = diagnosticSink.size();
+	auto textureContext =
+		MakeExplicitTextureContext(filepath, m_UuidProvider);
+	entt::entity root = SceneLoader::ImportIntoECS(
+		m_EcsScene, filepath, textureContext, diagnosticSink);
 	if (root == entt::null)
+	{
+		if (!diagnostics)
+			LogAssetDiagnostics(
+				diagnosticSink, diagnosticBase, "ImportGltf");
 		return EntityId{};
+	}
 
 	// Assign UUIDs to any imported entity that lacks one.
 	auto& reg = m_EcsScene.registry;
@@ -465,6 +541,9 @@ SceneManager::EntityId SceneManager::ImportGltf(const std::string& filepath)
 	}
 
 	m_EntityCacheDirty = true;
+	if (!diagnostics)
+		LogAssetDiagnostics(
+			diagnosticSink, diagnosticBase, "ImportGltf");
 	return EntityId{ root };
 }
 

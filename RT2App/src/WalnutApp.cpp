@@ -227,7 +227,9 @@ public:
 			return LoadMeshFileAsEntity(path);
 		});
 		m_EditorUI.SetOnImportGltf([this](const std::string& path) -> SceneManager::EntityId {
-			auto id = m_SceneMgr.ImportGltf(path);
+			std::vector<rt2::core::AssetDiagnostic> diagnostics;
+			auto id = m_SceneMgr.ImportGltf(path, &diagnostics);
+			LogAssetDiagnostics(diagnostics, 0, "Import");
 			if (id.IsValid())
 			{
 				m_PendingFullSync = true;
@@ -254,22 +256,28 @@ public:
 				ECSScene ecs;
 				entt::entity root = entt::null;
 				bool isObj = false;
+				std::vector<rt2::core::AssetDiagnostic> diagnostics;
 			};
 			auto result = std::make_shared<ImportResult>();
 			result->isObj = isObj;
+			auto textureContext = MakeExplicitTextureContext(pathCopy);
 
 			StartBackgroundWork(isObj ? "Importing OBJ..." : "Importing glTF...",
-				[result, pathCopy, settingsCopy, isObj](BackgroundWork& self) -> bool
+				[result, pathCopy, settingsCopy, isObj,
+				 textureContext](BackgroundWork& self) mutable -> bool
 			{
 				self.SetStatus("Parsing file...");
 				if (isObj)
 					result->root = SceneLoader::ImportObjIntoECS(result->ecs, pathCopy, settingsCopy);
 				else
-					result->root = SceneLoader::ImportIntoECS(result->ecs, pathCopy);
+					result->root = SceneLoader::ImportIntoECS(
+						result->ecs, pathCopy, textureContext,
+						result->diagnostics);
 				return result->root != entt::null;
 			},
 				[this, result, pathCopy](bool success)
 			{
+				LogAssetDiagnostics(result->diagnostics, 0, "Import");
 				if (!success)
 				{
 					printf("[Scene] Import failed: %s\n", pathCopy.c_str());
@@ -1497,11 +1505,33 @@ public:
 	}
 
 private:
-	void LogScriptAssetDiagnostics(size_t base, const char* context) const
+	rt2::core::TextureAssetLoadContext MakeExplicitTextureContext(
+		const std::string& filepath) const
 	{
-		for (size_t i = base; i < m_ScriptAssetDiagnostics.size(); ++i)
+		rt2::core::TextureAssetLoadContext context;
+		context.resolvedOwnerPath =
+			std::filesystem::absolute(std::filesystem::u8path(filepath)).
+				lexically_normal();
+		context.resolution.assetRoot =
+			context.resolvedOwnerPath.parent_path();
+		context.ownerModel.kind = AssetKind::Model;
+		context.ownerModel.path =
+			context.resolvedOwnerPath.filename().generic_string();
+		context.identityMode =
+			rt2::core::TextureIdentityMode::ExplicitImport;
+		context.uuidProvider =
+			m_SceneMgr.AuthoringDoc().GetUuidProvider();
+		return context;
+	}
+
+	void LogAssetDiagnostics(
+		const std::vector<rt2::core::AssetDiagnostic>& diagnostics,
+		size_t base,
+		const char* context) const
+	{
+		for (size_t i = base; i < diagnostics.size(); ++i)
 		{
-			const auto& diagnostic = m_ScriptAssetDiagnostics[i];
+			const auto& diagnostic = diagnostics[i];
 			const char* severity = "Unknown";
 			switch (diagnostic.severity)
 			{
@@ -1518,13 +1548,18 @@ private:
 			default:
 				break;
 			}
-			printf("[%s] Script asset %s: ref=\"%s\" entity=%s "
+			printf("[%s] Asset %s: ref=\"%s\" entity=%s "
 			       "sourceKey=\"%s\" detail=%s\n",
 			       context, severity, diagnostic.refPath.c_str(),
 			       diagnostic.entityUuid.ToString().c_str(),
 			       diagnostic.sourceKey.c_str(),
 			       diagnostic.detail.c_str());
 		}
+	}
+
+	void LogScriptAssetDiagnostics(size_t base, const char* context) const
+	{
+		LogAssetDiagnostics(m_ScriptAssetDiagnostics, base, context);
 	}
 
 	void EnsureRenderBridge()
@@ -2233,21 +2268,27 @@ private:
 		{
 			ECSScene ecs;
 			bool ok = false;
+			std::vector<rt2::core::AssetDiagnostic> diagnostics;
 		};
 		auto result = std::make_shared<LoadResult>();
+		auto textureContext = MakeExplicitTextureContext(pathCopy);
 
 		StartBackgroundWork(isObj ? "Loading OBJ scene..." : "Loading glTF scene...",
-			[result, pathCopy, isObj](BackgroundWork& self) -> bool
+			[result, pathCopy, isObj,
+			 textureContext](BackgroundWork& self) mutable -> bool
 		{
 			self.SetStatus("Parsing file...");
 			if (isObj)
 				result->ok = SceneLoader::LoadObjIntoECS(result->ecs, pathCopy);
 			else
-				result->ok = SceneLoader::LoadIntoECS(result->ecs, pathCopy);
+				result->ok = SceneLoader::LoadIntoECS(
+					result->ecs, pathCopy, textureContext,
+					result->diagnostics);
 			return result->ok;
 		},
 			[this, result, pathCopy, isObj, ext](bool success)
 		{
+			LogAssetDiagnostics(result->diagnostics, 0, "LoadScene");
 			if (!success)
 			{
 				ImGui::OpenPopup("Scene Load Failed");
@@ -2340,11 +2381,17 @@ private:
 			return id;
 		}
 
-		if (!SceneLoader::LoadIntoECS(m_SceneMgr.GetECS(), filepath))
+		std::vector<rt2::core::AssetDiagnostic> diagnostics;
+		auto textureContext = MakeExplicitTextureContext(filepath);
+		if (!SceneLoader::LoadIntoECS(
+			    m_SceneMgr.GetECS(), filepath, textureContext,
+			    diagnostics))
 		{
+			LogAssetDiagnostics(diagnostics, 0, "LoadMesh");
 			printf("[SceneEditor] Failed to load mesh: %s\n", filepath.c_str());
 			return SceneManager::EntityId{};
 		}
+		LogAssetDiagnostics(diagnostics, 0, "LoadMesh");
 
 		std::string name = filepath;
 		size_t lastSlash = name.find_last_of("/\\");
