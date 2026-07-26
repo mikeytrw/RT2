@@ -8295,3 +8295,92 @@ deferred; and timers/input/entity-component bindings are unchanged.
   the established test does; no physical second volume or machine-local
   Downloads asset was used.
 - No push was performed.
+
+### W3 step 8 — whole-solution verification and W3 close
+
+Run 2026-07-26 against `90cf7b5` plus the build fix recorded below. This is
+the final W3 step; W4 project database ownership was not started.
+
+#### Whole-solution build (the point of this step)
+
+Step 8 exists to build targets that per-step gates deliberately skipped.
+It found one regression that every prior step had missed.
+
+**RT2App Debug did not compile.** `SceneLoader.cpp` failed with
+`fatal error C1128: number of sections exceeded object file format limit:
+compile with /bigobj`. Step 6.2 added Debug-only `/bigobj` for this file to
+`RT2Tests` and `RT2SliceRunner`, but deliberately left RT2App's
+configuration alone; the texture pipeline then pushed the same translation
+unit past the COFF section limit in RT2App too.
+
+This was masked, not tolerated. The standing exclusion for whole-Debug
+RT2App is the **NRD/NRI runtime-library link mismatch**, and every step
+from 6 onward restated that exclusion without building the target — so a
+new *compile* failure sat behind a documented *link* failure and no gate
+could see it. A skipped target reports nothing, including things that are
+not the reason it was skipped.
+
+Fix: add `/bigobj` for `src/SceneLoader.cpp` under `Debug|x64` to
+`RT2App/RT2App.vcxproj`, mirroring the existing `RT2Tests` entry, and add
+the matching `filter { "configurations:Debug", "files:src/SceneLoader.cpp" }`
+to `RT2App/premake5.lua` so the hand-maintained project and the generator do
+not diverge. This is a compile option only; no link configuration, runtime
+library or dependency changed.
+
+After the fix RT2App Debug compiles fully and fails at link with
+`LNK2038`/`LNK1319` — 22 `_ITERATOR_DEBUG_LEVEL` and `RuntimeLibrary`
+mismatches from `NRD.lib`, which ships as an `MD_DynamicRelease` prebuilt
+binary. That is the pre-existing documented defect, unchanged and still out
+of scope. The regression is resolved; the known failure is now the only one
+remaining, and is reached rather than hidden.
+
+#### Verified by running
+
+| Gate | Result |
+|---|---|
+| Full solution, Release, all five targets | Built clean (exit 0) |
+| Full solution, Debug | ImGui, GLFW, Walnut, RT2SliceRunner, RT2Tests built; RT2App link-fails on the known NRD/NRI mismatch |
+| `RT2Tests` Release | 659/659 cases, 145,494/145,494 assertions |
+| `RT2Tests` Debug | 659/659 cases, 145,494/145,494 assertions |
+| `run_script_test.ps1` | PASS — 60 frames, 1 entity, no mismatches, no terminal diagnostics |
+| `graphify update .` | No code-graph topology changes; outputs left untouched |
+| `git status` | Clean before the step-8 commit |
+
+The Release and Debug suite figures were re-run independently rather than
+carried over from the step-7 report, and match it exactly.
+
+Debug emits `[sol2] An exception occurred: <name> is disabled in the RT2
+script sandbox` during the run. These are expected output from passing
+sandbox-rejection cases, not failures.
+
+#### Assumed / not verified
+
+- Whole-Debug `RT2App` still cannot link. The NRD/NRI runtime-library
+  mismatch is pre-existing, was explicitly out of scope for all of W3, and
+  is unchanged by this step.
+- No interactive GPU or render-quality claim is made. Step 8 verified
+  builds, tests and the headless gate only.
+- `graphify update .` reported no topology change, so `GRAPH_REPORT.md` was
+  neither regenerated nor committed by this step.
+
+#### W3 close
+
+W3 asset identity is complete. Asset references carry durable identity
+through `.rt2meta` sidecars and the asset database; models, environments,
+scripts and textures all resolve through the shared locator; no host
+consults the process working directory; failures are named diagnostics
+rather than silent substitution.
+
+Two items are carried forward rather than closed:
+
+1. **`SceneLoader.cpp` needs `/bigobj` in three separate projects.** The
+   flag is a workaround for translation-unit size. The remaining texture
+   and format logic should move into `TextureAssetPipeline.cpp`, after
+   which all three `/bigobj` entries should be removed together.
+2. **The whole-Debug `RT2App` NRD/NRI link mismatch** now blocks the only
+   solution-wide gate that could catch a Debug-only RT2App regression. It
+   should be fixed — by rebuilding NRD against the Debug runtime or
+   shipping both variants — before Debug RT2App accumulates further
+   undetected breakage.
+
+Next: W4 project scanning and database ownership.
