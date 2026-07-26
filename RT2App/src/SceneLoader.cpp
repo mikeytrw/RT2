@@ -36,34 +36,38 @@ namespace fs = std::filesystem;
 
 namespace {
 
-rt2::core::TextureAssetLoadContext MakeCompatibilityTextureContext(
-    const std::string& filepath)
+bool ValidateTextureContext(
+    const rt2::core::TextureAssetLoadContext& context,
+    std::vector<rt2::core::AssetDiagnostic>& diagnostics)
 {
-    rt2::core::TextureAssetLoadContext context;
-    context.resolvedOwnerPath =
-        fs::absolute(fs::u8path(filepath)).lexically_normal();
-    context.resolution.assetRoot =
-        context.resolvedOwnerPath.parent_path();
-    context.ownerModel.kind = AssetKind::Model;
-    context.ownerModel.path =
-        context.resolvedOwnerPath.filename().generic_string();
+    const auto path = context.resolvedOwnerPath.lexically_normal();
+    if (!path.empty() && path.is_absolute() &&
+        (context.identityMode !=
+             rt2::core::TextureIdentityMode::ExplicitImport ||
+         context.uuidProvider != nullptr))
+        return true;
 
-    rt2::core::Error sidecarError;
-    context.effectiveOwnerId = rt2::core::ReadSidecarId(
-        rt2::core::AssetSidecarPath(context.resolvedOwnerPath),
-        sidecarError);
-    context.ownerModel.assetId = context.effectiveOwnerId;
-    return context;
+    rt2::core::AssetDiagnostic diagnostic;
+    diagnostic.severity = rt2::core::AssetDiagnostic::Malformed;
+    diagnostic.kind = AssetKind::Model;
+    diagnostic.refPath = context.ownerModel.path;
+    diagnostic.resolvedPath = path.string();
+    diagnostic.entityUuid = context.entityUuid;
+    diagnostic.entityName = context.entityName;
+    diagnostic.sourceKey = context.ownerModel.sourceKey;
+    diagnostic.detail =
+        path.empty() || !path.is_absolute()
+            ? "model load context requires an absolute resolved owner path"
+            : "explicit model import requires a UUID provider";
+    diagnostics.push_back(std::move(diagnostic));
+    return false;
 }
 
 rt2::core::TextureAssetLoadContext PrepareTextureContextAfterParse(
-    const std::string& filepath,
     const rt2::core::TextureAssetLoadContext& supplied,
     std::vector<rt2::core::AssetDiagnostic>& diagnostics)
 {
     auto context = supplied;
-    context.resolvedOwnerPath =
-        fs::absolute(fs::u8path(filepath)).lexically_normal();
 
     if (context.ownerModel.kind == AssetKind::Unknown)
         context.ownerModel.kind = AssetKind::Model;
@@ -117,20 +121,6 @@ void SortLoaderDiagnostics(
             return rt2::core::AssetDiagnosticSortKey(a) <
                    rt2::core::AssetDiagnosticSortKey(b);
         });
-}
-
-void LogLoaderDiagnostics(
-    const std::vector<rt2::core::AssetDiagnostic>& diagnostics)
-{
-    for (const auto& diagnostic : diagnostics)
-    {
-        RT_LOG("[TextureAsset] %s: path=%s source=%s detail=%s",
-               rt2::core::AssetDiagnosticSeverityName(
-                   diagnostic.severity),
-               diagnostic.refPath.c_str(),
-               diagnostic.sourceKey.c_str(),
-               diagnostic.detail.c_str());
-    }
 }
 
 } // namespace
@@ -493,23 +483,16 @@ bool SceneLoader::Save(const ECSScene& ecsScene, const std::string& filepath)
 //
 // ============================================================================
 
-bool SceneLoader::LoadIntoECS(ECSScene& ecsScene, const std::string& filepath)
-{
-    auto context = MakeCompatibilityTextureContext(filepath);
-    std::vector<rt2::core::AssetDiagnostic> diagnostics;
-    const bool loaded =
-        LoadIntoECS(ecsScene, filepath, context, diagnostics);
-    LogLoaderDiagnostics(diagnostics);
-    return loaded;
-}
-
 bool SceneLoader::LoadIntoECS(
     ECSScene& ecsScene,
-    const std::string& filepath,
     const rt2::core::TextureAssetLoadContext& textureContext,
     std::vector<rt2::core::AssetDiagnostic>& diagnostics)
 {
     const size_t diagnosticBase = diagnostics.size();
+    if (!ValidateTextureContext(textureContext, diagnostics))
+        return false;
+    const std::string filepath =
+        textureContext.resolvedOwnerPath.lexically_normal().string();
     if (filepath.empty() || !fs::exists(filepath))
     {
         RT_LOG("[SceneLoader] LoadIntoECS: refusing path '%s' (%s)",
@@ -544,8 +527,7 @@ bool SceneLoader::LoadIntoECS(
         return false;
 
     const auto effectiveTextureContext =
-        PrepareTextureContextAfterParse(
-            filepath, textureContext, diagnostics);
+        PrepareTextureContextAfterParse(textureContext, diagnostics);
     const auto textureManifest =
         rt2::core::EnumerateGltfTextureDependencies(
             model, imageCapture, effectiveTextureContext);
@@ -1263,23 +1245,16 @@ bool SceneLoader::LoadIntoECS(
     return true;
 }
 
-entt::entity SceneLoader::ImportIntoECS(ECSScene& ecsScene, const std::string& filepath)
-{
-    auto context = MakeCompatibilityTextureContext(filepath);
-    std::vector<rt2::core::AssetDiagnostic> diagnostics;
-    const entt::entity root =
-        ImportIntoECS(ecsScene, filepath, context, diagnostics);
-    LogLoaderDiagnostics(diagnostics);
-    return root;
-}
-
 entt::entity SceneLoader::ImportIntoECS(
     ECSScene& ecsScene,
-    const std::string& filepath,
     const rt2::core::TextureAssetLoadContext& textureContext,
     std::vector<rt2::core::AssetDiagnostic>& diagnostics)
 {
     const size_t diagnosticBase = diagnostics.size();
+    if (!ValidateTextureContext(textureContext, diagnostics))
+        return entt::null;
+    const std::string filepath =
+        textureContext.resolvedOwnerPath.lexically_normal().string();
     if (filepath.empty() || !fs::exists(filepath))
     {
         RT_LOG("[SceneLoader] ImportIntoECS: refusing path '%s' (%s)",
@@ -1314,8 +1289,7 @@ entt::entity SceneLoader::ImportIntoECS(
         return entt::null;
 
     const auto effectiveTextureContext =
-        PrepareTextureContextAfterParse(
-            filepath, textureContext, diagnostics);
+        PrepareTextureContextAfterParse(textureContext, diagnostics);
     const auto textureManifest =
         rt2::core::EnumerateGltfTextureDependencies(
             model, imageCapture, effectiveTextureContext);
@@ -1891,23 +1865,16 @@ size_t AppendObjTexturesAndBind(
 
 } // namespace
 
-bool SceneLoader::LoadObjIntoECS(ECSScene& ecsScene, const std::string& filepath)
-{
-    auto context = MakeCompatibilityTextureContext(filepath);
-    std::vector<rt2::core::AssetDiagnostic> diagnostics;
-    const bool loaded =
-        LoadObjIntoECS(ecsScene, filepath, context, diagnostics);
-    LogLoaderDiagnostics(diagnostics);
-    return loaded;
-}
-
 bool SceneLoader::LoadObjIntoECS(
     ECSScene& ecsScene,
-    const std::string& filepath,
     const rt2::core::TextureAssetLoadContext& textureContext,
     std::vector<rt2::core::AssetDiagnostic>& diagnostics)
 {
     const size_t diagnosticBase = diagnostics.size();
+    if (!ValidateTextureContext(textureContext, diagnostics))
+        return false;
+    const std::string filepath =
+        textureContext.resolvedOwnerPath.lexically_normal().string();
     if (filepath.empty() || !fs::exists(filepath))
     {
         RT_LOG("[SceneLoader] LoadObjIntoECS: refusing path '%s' (%s)",
@@ -1945,8 +1912,7 @@ bool SceneLoader::LoadObjIntoECS(
     const auto& shapes = reader.GetShapes();
     const auto& materials = reader.GetMaterials();
     const auto effectiveTextureContext =
-        PrepareTextureContextAfterParse(
-            filepath, textureContext, diagnostics);
+        PrepareTextureContextAfterParse(textureContext, diagnostics);
 
     printf("[SceneLoader] OBJ: %d verts, %d shapes, %d materials\n",
            (int)attrib.vertices.size() / 3, (int)shapes.size(), (int)materials.size());
@@ -2242,8 +2208,7 @@ bool ParseObjAndLoadResources(
     out.shapes    = &out.reader.GetShapes();
     out.materials = &out.reader.GetMaterials();
     const auto effectiveTextureContext =
-        PrepareTextureContextAfterParse(
-            filepath, textureContext, diagnostics);
+        PrepareTextureContextAfterParse(textureContext, diagnostics);
 
     printf("[SceneLoader] OBJ import: %d verts, %d shapes, %d materials\n",
            (int)out.attrib->vertices.size() / 3, (int)out.shapes->size(),
@@ -2383,26 +2348,17 @@ uint32_t AppendObjCorner(const tinyobj::attrib_t& attrib,
 
 } // anonymous namespace
 
-entt::entity SceneLoader::ImportObjIntoECS(ECSScene& ecsScene,
-                                            const std::string& filepath,
-                                            const ImportSettings& settings)
-{
-    auto context = MakeCompatibilityTextureContext(filepath);
-    std::vector<rt2::core::AssetDiagnostic> diagnostics;
-    const entt::entity root = ImportObjIntoECS(
-        ecsScene, filepath, settings, context, diagnostics);
-    LogLoaderDiagnostics(diagnostics);
-    return root;
-}
-
 entt::entity SceneLoader::ImportObjIntoECS(
     ECSScene& ecsScene,
-    const std::string& filepath,
     const ImportSettings& settings,
     const rt2::core::TextureAssetLoadContext& textureContext,
     std::vector<rt2::core::AssetDiagnostic>& diagnostics)
 {
     const size_t diagnosticBase = diagnostics.size();
+    if (!ValidateTextureContext(textureContext, diagnostics))
+        return entt::null;
+    const std::string filepath =
+        textureContext.resolvedOwnerPath.lexically_normal().string();
     ObjParseResult parsed;
     if (!ParseObjAndLoadResources(
             ecsScene, filepath, textureContext, diagnostics, parsed))

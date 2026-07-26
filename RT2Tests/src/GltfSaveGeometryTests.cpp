@@ -4,6 +4,7 @@
 #include "ECSScene.h"
 #include "ECSComponents.h"
 #include "SceneLoader.h"
+#include "SceneLoaderTestSupport.h"
 
 #include <glm/glm.hpp>
 #include <filesystem>
@@ -54,7 +55,7 @@ TEST_CASE("Geometry round-trips through glTF save/load")
 
     REQUIRE(SceneLoader::Save(scene, ROUNDTRIP_GLB));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, ROUNDTRIP_GLB));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), ROUNDTRIP_GLB));
 
     CHECK(loaded.meshRegistry.GetCount() >= 1);
     const auto& m = loaded.meshRegistry.GetMesh(0);
@@ -103,7 +104,7 @@ TEST_CASE("Geometry with normals round-trips through glTF save/load")
 
     REQUIRE(SceneLoader::Save(scene, ROUNDTRIP_GLB));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, ROUNDTRIP_GLB));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), ROUNDTRIP_GLB));
 
     CHECK(loaded.meshRegistry.GetCount() >= 1);
     const auto& m = loaded.meshRegistry.GetMesh(0);
@@ -136,7 +137,7 @@ TEST_CASE("Geometry with UVs round-trips through glTF save/load")
 
     REQUIRE(SceneLoader::Save(scene, ROUNDTRIP_GLB));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, ROUNDTRIP_GLB));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), ROUNDTRIP_GLB));
 
     const auto& m = loaded.meshRegistry.GetMesh(0);
     REQUIRE(m.uvs.size() == 6);
@@ -183,7 +184,7 @@ TEST_CASE("Multiple geometry meshes round-trip through glTF save/load")
 
     REQUIRE(SceneLoader::Save(scene, ROUNDTRIP_GLB));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, ROUNDTRIP_GLB));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), ROUNDTRIP_GLB));
 
     CHECK(loaded.meshRegistry.GetCount() >= 1);
     bool foundFirstVertex0 = false;
@@ -235,7 +236,7 @@ TEST_CASE("Geometry with material assignment round-trips")
 
     REQUIRE(SceneLoader::Save(scene, ROUNDTRIP_GLB));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, ROUNDTRIP_GLB));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), ROUNDTRIP_GLB));
 
     REQUIRE(loaded.materials.size() >= 1);
     CHECK(loaded.materials[0].baseColor == glm::vec3(0.2f, 0.4f, 0.6f));
@@ -283,7 +284,7 @@ TEST_CASE("Multiple inline geometry meshes round-trip")
 
     REQUIRE(SceneLoader::Save(scene, ROUNDTRIP_GLB));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, ROUNDTRIP_GLB));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), ROUNDTRIP_GLB));
 
     auto meshView = loaded.registry.view<MeshRef, Transform>();
     size_t count = std::distance(meshView.begin(), meshView.end());

@@ -1294,8 +1294,7 @@ TEST_CASE("Phase7 W3 step 6.4: OBJ texture failures are contained")
         ECSScene scene;
         std::vector<AssetDiagnostic> diagnostics;
         REQUIRE(SceneLoader::LoadObjIntoECS(
-            scene, obj.string(), ReadOnlyTextureContext(obj),
-            diagnostics));
+            scene, ReadOnlyTextureContext(obj), diagnostics));
         REQUIRE(scene.materials.size() == 1);
         CHECK(scene.meshRegistry.GetCount() == 1);
         CHECK(scene.textures.size() == 1);
@@ -1316,8 +1315,7 @@ TEST_CASE("Phase7 W3 step 6.4: OBJ texture failures are contained")
         ECSScene scene;
         std::vector<AssetDiagnostic> diagnostics;
         REQUIRE(SceneLoader::LoadObjIntoECS(
-            scene, obj.string(), ReadOnlyTextureContext(obj),
-            diagnostics));
+            scene, ReadOnlyTextureContext(obj), diagnostics));
         REQUIRE(scene.materials.size() == 1);
         CHECK(scene.meshRegistry.GetCount() == 1);
         REQUIRE(scene.textures.size() == 1);
@@ -1340,8 +1338,7 @@ TEST_CASE("Phase7 W3 step 6.4: OBJ texture failures are contained")
         ECSScene scene;
         std::vector<AssetDiagnostic> diagnostics;
         REQUIRE(SceneLoader::LoadObjIntoECS(
-            scene, obj.string(), ReadOnlyTextureContext(obj),
-            diagnostics));
+            scene, ReadOnlyTextureContext(obj), diagnostics));
         REQUIRE(scene.materials.size() == 1);
         CHECK(scene.meshRegistry.GetCount() == 1);
         REQUIRE(scene.textures.size() == 1);
@@ -1370,7 +1367,7 @@ TEST_CASE("Phase7 W3 step 6.4: explicit OBJ import assigns and reuses texture id
     ECSScene scene;
     std::vector<AssetDiagnostic> diagnostics;
     const entt::entity first = SceneLoader::ImportObjIntoECS(
-        scene, obj.string(), settings, context, diagnostics);
+        scene, settings, context, diagnostics);
     REQUIRE(first != entt::entity{entt::null});
     REQUIRE(scene.textures.size() == 1);
     REQUIRE(diagnostics.empty());
@@ -1387,7 +1384,7 @@ TEST_CASE("Phase7 W3 step 6.4: explicit OBJ import assigns and reuses texture id
     CHECK(scene.textures[0].ref.assetId == textureId);
 
     const entt::entity second = SceneLoader::ImportObjIntoECS(
-        scene, obj.string(), settings, context, diagnostics);
+        scene, settings, context, diagnostics);
     REQUIRE(second != entt::entity{entt::null});
     REQUIRE(scene.textures.size() == 2);
     CHECK(diagnostics.empty());
@@ -1407,8 +1404,7 @@ TEST_CASE("Phase7 W3 step 6.4: all OBJ texture roles retain deterministic placeh
     ECSScene scene;
     std::vector<AssetDiagnostic> diagnostics;
     REQUIRE(SceneLoader::LoadObjIntoECS(
-        scene, obj.string(), ReadOnlyTextureContext(obj),
-        diagnostics));
+        scene, ReadOnlyTextureContext(obj), diagnostics));
     REQUIRE(scene.materials.size() == 1);
     REQUIRE(scene.textures.size() == 4);
     for (const auto& texture : scene.textures)
@@ -1547,8 +1543,7 @@ TEST_CASE("Phase7 W3 step 6.3: glTF texture failures are contained")
         ECSScene scene;
         std::vector<AssetDiagnostic> diagnostics;
         REQUIRE(SceneLoader::LoadIntoECS(
-            scene, gltf.string(), ReadOnlyTextureContext(gltf),
-            diagnostics));
+            scene, ReadOnlyTextureContext(gltf), diagnostics));
         REQUIRE(scene.materials.size() == 1);
         REQUIRE(scene.textures.size() == 1);
         CHECK(scene.meshRegistry.GetCount() == 1);
@@ -1569,8 +1564,7 @@ TEST_CASE("Phase7 W3 step 6.3: glTF texture failures are contained")
         ECSScene scene;
         std::vector<AssetDiagnostic> diagnostics;
         REQUIRE(SceneLoader::LoadIntoECS(
-            scene, gltf.string(), ReadOnlyTextureContext(gltf),
-            diagnostics));
+            scene, ReadOnlyTextureContext(gltf), diagnostics));
         REQUIRE(scene.materials.size() == 1);
         REQUIRE(scene.textures.size() == 1);
         CHECK(scene.meshRegistry.GetCount() == 1);
@@ -1594,8 +1588,7 @@ TEST_CASE("Phase7 W3 step 6.3: glTF texture failures are contained")
         ECSScene scene;
         std::vector<AssetDiagnostic> diagnostics;
         REQUIRE(SceneLoader::LoadIntoECS(
-            scene, gltf.string(), ReadOnlyTextureContext(gltf),
-            diagnostics));
+            scene, ReadOnlyTextureContext(gltf), diagnostics));
         CHECK(scene.meshRegistry.GetCount() == 1);
         REQUIRE(scene.materials.size() == 1);
         REQUIRE(scene.textures.size() == 1);
@@ -1617,8 +1610,7 @@ TEST_CASE("Phase7 W3 step 6.3: glTF texture failures are contained")
         ECSScene scene;
         std::vector<AssetDiagnostic> diagnostics;
         REQUIRE(SceneLoader::LoadIntoECS(
-            scene, gltf.string(), ReadOnlyTextureContext(gltf),
-            diagnostics));
+            scene, ReadOnlyTextureContext(gltf), diagnostics));
         REQUIRE(scene.materials.size() == 1);
         REQUIRE(scene.textures.size() == 1);
         CHECK(scene.meshRegistry.GetCount() == 1);
@@ -1645,7 +1637,7 @@ TEST_CASE("Phase7 W3 step 6.3: explicit glTF import assigns and reuses external 
     ECSScene scene;
     std::vector<AssetDiagnostic> diagnostics;
     const entt::entity firstRoot = SceneLoader::ImportIntoECS(
-        scene, gltf.string(), context, diagnostics);
+        scene, context, diagnostics);
     REQUIRE(firstRoot != entt::entity{entt::null});
     REQUIRE(scene.textures.size() == 1);
     REQUIRE(diagnostics.empty());
@@ -1663,7 +1655,7 @@ TEST_CASE("Phase7 W3 step 6.3: explicit glTF import assigns and reuses external 
 
     diagnostics.clear();
     const entt::entity secondRoot = SceneLoader::ImportIntoECS(
-        scene, gltf.string(), context, diagnostics);
+        scene, context, diagnostics);
     REQUIRE(secondRoot != entt::entity{entt::null});
     REQUIRE(scene.textures.size() == 2);
     CHECK(diagnostics.empty());
@@ -1720,7 +1712,7 @@ TEST_CASE("Phase7 W3 step 6.3: glTF dependencies resolve by database identity or
         ECSScene scene;
         std::vector<AssetDiagnostic> diagnostics;
         REQUIRE(SceneLoader::LoadIntoECS(
-            scene, gltf.string(), context, diagnostics));
+            scene, context, diagnostics));
         REQUIRE(scene.textures.size() == 1);
         CHECK_FALSE(scene.textures[0].pixels.empty());
         CHECK(scene.textures[0].ref.assetId == textureId);
@@ -1757,7 +1749,7 @@ TEST_CASE("Phase7 W3 step 6.3: glTF dependencies resolve by database identity or
         ECSScene scene;
         std::vector<AssetDiagnostic> diagnostics;
         REQUIRE(SceneLoader::LoadIntoECS(
-            scene, gltf.string(), context, diagnostics));
+            scene, context, diagnostics));
         REQUIRE(scene.textures.size() == 1);
         CheckExactTexturePlaceholder(scene.textures[0]);
         REQUIRE(diagnostics.size() == 1);
@@ -1810,7 +1802,7 @@ TEST_CASE("Phase7 W3 step 6.3: glTF dependencies resolve by database identity or
         ECSScene scene;
         std::vector<AssetDiagnostic> diagnostics;
         REQUIRE(SceneLoader::LoadIntoECS(
-            scene, gltf.string(), context, diagnostics));
+            scene, context, diagnostics));
         REQUIRE(scene.textures.size() == 1);
         CheckExactTexturePlaceholder(scene.textures[0]);
         REQUIRE(diagnostics.size() == 1);
@@ -1831,7 +1823,7 @@ TEST_CASE("Phase7 W3 step 6.3: embedded glTF images use owner identity and conta
         ECSScene scene;
         std::vector<AssetDiagnostic> diagnostics;
         REQUIRE(SceneLoader::LoadIntoECS(
-            scene, glb.string(), context, diagnostics));
+            scene, context, diagnostics));
         REQUIRE(scene.textures.size() == 1);
         CHECK_FALSE(scene.textures[0].pixels.empty());
         CHECK(scene.textures[0].ref.kind == AssetKind::Texture);
@@ -1871,7 +1863,7 @@ TEST_CASE("Phase7 W3 step 6.3: embedded glTF images use owner identity and conta
         ECSScene scene;
         std::vector<AssetDiagnostic> diagnostics;
         REQUIRE(SceneLoader::LoadIntoECS(
-            scene, gltf.string(), context, diagnostics));
+            scene, context, diagnostics));
         REQUIRE(scene.textures.size() == 1);
         CHECK_FALSE(scene.textures[0].pixels.empty());
         CHECK(scene.textures[0].ref.assetId == ownerId);
@@ -1891,7 +1883,7 @@ TEST_CASE("Phase7 W3 step 6.3: embedded glTF images use owner identity and conta
         ECSScene scene;
         std::vector<AssetDiagnostic> diagnostics;
         REQUIRE(SceneLoader::LoadIntoECS(
-            scene, gltf.string(), context, diagnostics));
+            scene, context, diagnostics));
         CHECK(scene.meshRegistry.GetCount() == 1);
         REQUIRE(scene.materials.size() == 1);
         REQUIRE(scene.textures.size() == 1);
@@ -2068,4 +2060,35 @@ TEST_CASE("Phase7 W3 step 4 item 4: sidecar read error is surfaced through the s
     const UUID repaired = ReadSidecarId(sidecar, readErr);
     CHECK(readErr.IsOk());
     CHECK(repaired == mgr.AuthoringDoc().environment.ref.assetId);
+}
+
+TEST_CASE("Phase7 W3 step 7.2: SceneManager rejects a relative direct model path before import")
+{
+    const fs::path relative = "rt2_w3_relative_direct_import.obj";
+    REQUIRE(WriteText(
+        relative,
+        "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"));
+    struct RelativeFixtureGuard {
+        fs::path path;
+        ~RelativeFixtureGuard()
+        {
+            std::error_code ec;
+            fs::remove(path, ec);
+            fs::remove(AssetSidecarPath(path), ec);
+        }
+    } guard{ relative };
+
+    DeterministicUuidProvider ids;
+    SceneManager manager;
+    manager.SetUuidProvider(&ids);
+    std::vector<AssetDiagnostic> diagnostics;
+
+    CHECK_FALSE(manager.LoadScene(relative.string(), &diagnostics));
+    CHECK(manager.GetECS().registry.view<Transform>().empty());
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics[0].kind == AssetKind::Model);
+    CHECK(diagnostics[0].severity == AssetDiagnostic::Malformed);
+    CHECK(diagnostics[0].detail == "direct model path must be absolute");
+    std::error_code ec;
+    CHECK_FALSE(fs::exists(AssetSidecarPath(relative), ec));
 }

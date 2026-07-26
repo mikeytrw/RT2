@@ -1,12 +1,72 @@
 #include <doctest/doctest.h>
 
+#include "SceneLoader.h"
 #include "TextureAssetPipeline.h"
 
 #include <array>
+#include <filesystem>
 #include <string>
 #include <vector>
 
 using namespace rt2::core;
+
+TEST_CASE("Phase7 W3 step 7.2: explicit import context rejects implicit roots")
+{
+    DeterministicUuidProvider ids;
+    for (const std::filesystem::path path :
+         { std::filesystem::path{}, std::filesystem::path{"model.glb"} })
+    {
+        TextureAssetLoadContext context;
+        std::vector<AssetDiagnostic> diagnostics;
+        CHECK_FALSE(BuildExplicitImportTextureContext(
+            path, &ids, context, diagnostics));
+        CHECK(context.resolvedOwnerPath.empty());
+        REQUIRE(diagnostics.size() == 1);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Malformed);
+        CHECK(diagnostics[0].kind == AssetKind::Model);
+        CHECK(diagnostics[0].detail == "direct model path must be absolute");
+    }
+}
+
+TEST_CASE("Phase7 W3 step 7.2: explicit import context normalizes without probing or minting")
+{
+    DeterministicUuidProvider ids;
+    const auto absolute =
+        (std::filesystem::temp_directory_path() /
+         "rt2-context-builder" / ".." / "model.glb").lexically_normal();
+    TextureAssetLoadContext context;
+    std::vector<AssetDiagnostic> diagnostics;
+
+    REQUIRE(BuildExplicitImportTextureContext(
+        absolute, &ids, context, diagnostics));
+    CHECK(diagnostics.empty());
+    CHECK(context.resolvedOwnerPath == absolute);
+    CHECK(context.resolution.assetRoot == absolute.parent_path());
+    CHECK(context.ownerModel.kind == AssetKind::Model);
+    CHECK(context.ownerModel.path == "model.glb");
+    CHECK(context.ownerModel.assetId.IsNull());
+    CHECK(context.identityMode == TextureIdentityMode::ExplicitImport);
+    CHECK(context.uuidProvider == &ids);
+}
+
+TEST_CASE("Phase7 W3 step 7.2: loader rejects a relative context before mutation")
+{
+    ECSScene scene;
+    const entt::entity existing = scene.registry.create();
+    TextureAssetLoadContext context;
+    context.resolvedOwnerPath = "model.glb";
+    context.ownerModel.kind = AssetKind::Model;
+    context.ownerModel.path = "model.glb";
+    std::vector<AssetDiagnostic> diagnostics;
+
+    CHECK_FALSE(SceneLoader::LoadIntoECS(scene, context, diagnostics));
+    CHECK(scene.registry.valid(existing));
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics[0].severity == AssetDiagnostic::Malformed);
+    CHECK(diagnostics[0].kind == AssetKind::Model);
+    CHECK(diagnostics[0].detail ==
+          "model load context requires an absolute resolved owner path");
+}
 
 TEST_CASE("Phase7 W3 step 6.2: missing texture placeholder is exact")
 {

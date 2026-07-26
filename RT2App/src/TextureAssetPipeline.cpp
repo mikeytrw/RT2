@@ -12,6 +12,45 @@
 
 namespace rt2::core {
 
+bool BuildExplicitImportTextureContext(
+    const std::filesystem::path& ownerPath,
+    IUuidProvider* uuidProvider,
+    TextureAssetLoadContext& context,
+    std::vector<AssetDiagnostic>& diagnostics)
+{
+    context = {};
+    const auto normalized = ownerPath.lexically_normal();
+    if (normalized.empty() || !normalized.is_absolute())
+    {
+        AssetDiagnostic diagnostic;
+        diagnostic.severity = AssetDiagnostic::Malformed;
+        diagnostic.kind = AssetKind::Model;
+        diagnostic.refPath = ownerPath.generic_string();
+        diagnostic.detail = "direct model path must be absolute";
+        diagnostics.push_back(std::move(diagnostic));
+        return false;
+    }
+    if (uuidProvider == nullptr)
+    {
+        AssetDiagnostic diagnostic;
+        diagnostic.severity = AssetDiagnostic::Malformed;
+        diagnostic.kind = AssetKind::Model;
+        diagnostic.refPath = normalized.filename().generic_string();
+        diagnostic.resolvedPath = normalized.string();
+        diagnostic.detail = "explicit model import requires a UUID provider";
+        diagnostics.push_back(std::move(diagnostic));
+        return false;
+    }
+
+    context.resolvedOwnerPath = normalized;
+    context.resolution.assetRoot = normalized.parent_path();
+    context.ownerModel.kind = AssetKind::Model;
+    context.ownerModel.path = normalized.filename().generic_string();
+    context.identityMode = TextureIdentityMode::ExplicitImport;
+    context.uuidProvider = uuidProvider;
+    return true;
+}
+
 namespace {
 
 const char* ObjTextureRoleName(ObjTextureRole role)

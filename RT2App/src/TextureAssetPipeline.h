@@ -41,6 +41,16 @@ struct TextureAssetLoadContext
     IUuidProvider*         uuidProvider = nullptr;
 };
 
+// Build the context for an OS-dialog/CLI/direct import. The host must already
+// have an absolute path; this helper normalizes it but never consults CWD or
+// assigns identity. Returns false and appends Model/Malformed on invalid
+// input.
+bool BuildExplicitImportTextureContext(
+    const std::filesystem::path& ownerPath,
+    IUuidProvider* uuidProvider,
+    TextureAssetLoadContext& context,
+    std::vector<AssetDiagnostic>& diagnostics);
+
 enum class TexturePayloadKind : uint8_t
 {
     External,

@@ -97,11 +97,6 @@ public:
                                    std::vector<AssetDiagnostic>& diagnostics,
                                    Error& err);
 
-    // Resolve a single relative-or-absolute asset path against sceneRoot.
-    // Returns an absolute path if the file exists, empty path otherwise.
-    static std::filesystem::path ResolvePath(const std::string& refPath,
-                                             const std::filesystem::path& sceneRoot);
-
     // Build a deterministic glTF source key.
     static std::string GltfSourceKey(int sceneIdx, int nodeIdx,
                                      int meshIdx, int primIdx);

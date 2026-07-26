@@ -265,7 +265,14 @@ public:
 			};
 			auto result = std::make_shared<ImportResult>();
 			result->isObj = isObj;
-			auto textureContext = MakeExplicitTextureContext(pathCopy);
+			rt2::core::TextureAssetLoadContext textureContext;
+			if (!MakeExplicitTextureContext(
+				    pathCopy, textureContext, result->diagnostics))
+			{
+				LogAssetDiagnostics(result->diagnostics, 0, "Import");
+				m_LastStatusMsg = "Import failed";
+				return SceneManager::EntityId{};
+			}
 
 			StartBackgroundWork(isObj ? "Importing OBJ..." : "Importing glTF...",
 				[result, pathCopy, settingsCopy, isObj,
@@ -274,12 +281,11 @@ public:
 				self.SetStatus("Parsing file...");
 				if (isObj)
 					result->root = SceneLoader::ImportObjIntoECS(
-						result->ecs, pathCopy, settingsCopy,
-						textureContext, result->diagnostics);
+						result->ecs, settingsCopy, textureContext,
+						result->diagnostics);
 				else
 					result->root = SceneLoader::ImportIntoECS(
-						result->ecs, pathCopy, textureContext,
-						result->diagnostics);
+						result->ecs, textureContext, result->diagnostics);
 				return result->root != entt::null;
 			},
 				[this, result, pathCopy](bool success)
@@ -1574,23 +1580,15 @@ public:
 	}
 
 private:
-	rt2::core::TextureAssetLoadContext MakeExplicitTextureContext(
-		const std::string& filepath) const
+	bool MakeExplicitTextureContext(
+		const std::string& filepath,
+		rt2::core::TextureAssetLoadContext& context,
+		std::vector<rt2::core::AssetDiagnostic>& diagnostics) const
 	{
-		rt2::core::TextureAssetLoadContext context;
-		context.resolvedOwnerPath =
-			std::filesystem::absolute(std::filesystem::u8path(filepath)).
-				lexically_normal();
-		context.resolution.assetRoot =
-			context.resolvedOwnerPath.parent_path();
-		context.ownerModel.kind = AssetKind::Model;
-		context.ownerModel.path =
-			context.resolvedOwnerPath.filename().generic_string();
-		context.identityMode =
-			rt2::core::TextureIdentityMode::ExplicitImport;
-		context.uuidProvider =
-			m_SceneMgr.AuthoringDoc().GetUuidProvider();
-		return context;
+		return rt2::core::BuildExplicitImportTextureContext(
+			std::filesystem::u8path(filepath),
+			m_SceneMgr.AuthoringDoc().GetUuidProvider(),
+			context, diagnostics);
 	}
 
 	void LogAssetDiagnostics(
@@ -2327,7 +2325,14 @@ private:
 			std::vector<rt2::core::AssetDiagnostic> diagnostics;
 		};
 		auto result = std::make_shared<LoadResult>();
-		auto textureContext = MakeExplicitTextureContext(pathCopy);
+		rt2::core::TextureAssetLoadContext textureContext;
+		if (!MakeExplicitTextureContext(
+			    pathCopy, textureContext, result->diagnostics))
+		{
+			LogAssetDiagnostics(result->diagnostics, 0, "LoadScene");
+			m_LastStatusMsg = "Scene load failed";
+			return;
+		}
 
 		StartBackgroundWork(isObj ? "Loading OBJ scene..." : "Loading glTF scene...",
 			[result, pathCopy, isObj,
@@ -2336,12 +2341,10 @@ private:
 			self.SetStatus("Parsing file...");
 			if (isObj)
 				result->ok = SceneLoader::LoadObjIntoECS(
-					result->ecs, pathCopy, textureContext,
-					result->diagnostics);
+					result->ecs, textureContext, result->diagnostics);
 			else
 				result->ok = SceneLoader::LoadIntoECS(
-					result->ecs, pathCopy, textureContext,
-					result->diagnostics);
+					result->ecs, textureContext, result->diagnostics);
 			return result->ok;
 		},
 			[this, result, pathCopy, isObj, ext](bool success)
@@ -2443,10 +2446,15 @@ private:
 		}
 
 		std::vector<rt2::core::AssetDiagnostic> diagnostics;
-		auto textureContext = MakeExplicitTextureContext(filepath);
+		rt2::core::TextureAssetLoadContext textureContext;
+		if (!MakeExplicitTextureContext(
+			    filepath, textureContext, diagnostics))
+		{
+			LogAssetDiagnostics(diagnostics, 0, "LoadMesh");
+			return SceneManager::EntityId{};
+		}
 		if (!SceneLoader::LoadIntoECS(
-			    m_SceneMgr.GetECS(), filepath, textureContext,
-			    diagnostics))
+			    m_SceneMgr.GetECS(), textureContext, diagnostics))
 		{
 			LogAssetDiagnostics(diagnostics, 0, "LoadMesh");
 			printf("[SceneEditor] Failed to load mesh: %s\n", filepath.c_str());

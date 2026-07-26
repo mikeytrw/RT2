@@ -103,33 +103,6 @@ bool ParseGltfKey(const std::string& key, GltfKey& out)
 
 } // anonymous namespace
 
-std::filesystem::path SceneAssetResolver::ResolvePath(const std::string& refPath,
-                                                      const std::filesystem::path& sceneRoot)
-{
-    if (refPath.empty()) return {};
-
-    fs::path p(refPath);
-    // Normalize forward slashes to platform separators for filesystem calls.
-    p.make_preferred();
-
-    if (p.is_absolute())
-    {
-        std::error_code ec;
-        if (fs::exists(p, ec)) return p;
-        return {};
-    }
-
-    fs::path resolved = sceneRoot / p;
-    std::error_code ec;
-    if (fs::exists(resolved, ec)) return resolved;
-
-    // Some fixtures may be authored relative to the working directory; try
-    // that as a last resort so tests that pass repo-relative paths still
-    // resolve. This does NOT affect what is serialized — only resolution.
-    if (fs::exists(p, ec)) return fs::absolute(p, ec);
-    return {};
-}
-
 std::string SceneAssetResolver::GltfSourceKey(int sceneIdx, int nodeIdx,
                                               int meshIdx, int primIdx)
 {
@@ -463,14 +436,13 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
             ImportSettings iset;
             iset.mergeMegaMesh = m.mergeMegaMesh;
             entt::entity root = SceneLoader::ImportObjIntoECS(
-                s.ecs, m.resolved.string(), iset,
-                textureContext, diagnostics);
+                s.ecs, iset, textureContext, diagnostics);
             ok = (root != entt::null);
         }
         else
         {
             ok = SceneLoader::LoadIntoECS(
-                s.ecs, m.resolved.string(), textureContext, diagnostics);
+                s.ecs, textureContext, diagnostics);
         }
 
         if (!ok)

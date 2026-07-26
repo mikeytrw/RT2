@@ -106,25 +106,6 @@ std::filesystem::path ResolveAuthoredScriptPath(
 		lexically_normal();
 }
 
-rt2::core::TextureAssetLoadContext MakeExplicitTextureContext(
-	const std::string& filepath,
-	rt2::core::IUuidProvider* provider)
-{
-	rt2::core::TextureAssetLoadContext context;
-	context.resolvedOwnerPath =
-		std::filesystem::absolute(std::filesystem::u8path(filepath)).
-			lexically_normal();
-	context.resolution.assetRoot =
-		context.resolvedOwnerPath.parent_path();
-	context.ownerModel.kind = AssetKind::Model;
-	context.ownerModel.path =
-		context.resolvedOwnerPath.filename().generic_string();
-	context.identityMode =
-		rt2::core::TextureIdentityMode::ExplicitImport;
-	context.uuidProvider = provider;
-	return context;
-}
-
 void LogAssetDiagnostics(
 	const std::vector<rt2::core::AssetDiagnostic>& diagnostics,
 	size_t base,
@@ -251,10 +232,18 @@ bool SceneManager::LoadScene(
 
 	if (isObj)
 	{
-		auto textureContext =
-			MakeExplicitTextureContext(filepath, m_UuidProvider);
+		rt2::core::TextureAssetLoadContext textureContext;
+		if (!rt2::core::BuildExplicitImportTextureContext(
+			    std::filesystem::u8path(filepath), m_UuidProvider,
+			    textureContext, diagnosticSink))
+		{
+			if (!diagnostics)
+				LogAssetDiagnostics(
+					diagnosticSink, diagnosticBase, "LoadScene");
+			return false;
+		}
 		if (!SceneLoader::LoadObjIntoECS(
-			    m_EcsScene, filepath, textureContext, diagnosticSink))
+			    m_EcsScene, textureContext, diagnosticSink))
 		{
 			if (!diagnostics)
 				LogAssetDiagnostics(
@@ -268,10 +257,18 @@ bool SceneManager::LoadScene(
 	}
 	else
 	{
-		auto textureContext =
-			MakeExplicitTextureContext(filepath, m_UuidProvider);
+		rt2::core::TextureAssetLoadContext textureContext;
+		if (!rt2::core::BuildExplicitImportTextureContext(
+			    std::filesystem::u8path(filepath), m_UuidProvider,
+			    textureContext, diagnosticSink))
+		{
+			if (!diagnostics)
+				LogAssetDiagnostics(
+					diagnosticSink, diagnosticBase, "LoadScene");
+			return false;
+		}
 		if (!SceneLoader::LoadIntoECS(
-			    m_EcsScene, filepath, textureContext, diagnosticSink))
+			    m_EcsScene, textureContext, diagnosticSink))
 		{
 			if (!diagnostics)
 				LogAssetDiagnostics(
@@ -506,10 +503,18 @@ SceneManager::EntityId SceneManager::ImportGltf(
 	auto& diagnosticSink =
 		diagnostics ? *diagnostics : localDiagnostics;
 	const size_t diagnosticBase = diagnosticSink.size();
-	auto textureContext =
-		MakeExplicitTextureContext(filepath, m_UuidProvider);
+	rt2::core::TextureAssetLoadContext textureContext;
+	if (!rt2::core::BuildExplicitImportTextureContext(
+		    std::filesystem::u8path(filepath), m_UuidProvider,
+		    textureContext, diagnosticSink))
+	{
+		if (!diagnostics)
+			LogAssetDiagnostics(
+				diagnosticSink, diagnosticBase, "ImportGltf");
+		return EntityId{};
+	}
 	entt::entity root = SceneLoader::ImportIntoECS(
-		m_EcsScene, filepath, textureContext, diagnosticSink);
+		m_EcsScene, textureContext, diagnosticSink);
 	if (root == entt::null)
 	{
 		if (!diagnostics)
@@ -551,10 +556,18 @@ SceneManager::EntityId SceneManager::ImportObj(
 	auto& diagnosticSink =
 		diagnostics ? *diagnostics : localDiagnostics;
 	const size_t diagnosticBase = diagnosticSink.size();
-	auto textureContext =
-		MakeExplicitTextureContext(filepath, m_UuidProvider);
+	rt2::core::TextureAssetLoadContext textureContext;
+	if (!rt2::core::BuildExplicitImportTextureContext(
+		    std::filesystem::u8path(filepath), m_UuidProvider,
+		    textureContext, diagnosticSink))
+	{
+		if (!diagnostics)
+			LogAssetDiagnostics(
+				diagnosticSink, diagnosticBase, "ImportObj");
+		return EntityId{};
+	}
 	entt::entity root = SceneLoader::ImportObjIntoECS(
-		m_EcsScene, filepath, settings, textureContext, diagnosticSink);
+		m_EcsScene, settings, textureContext, diagnosticSink);
 	if (root == entt::null)
 	{
 		if (!diagnostics)
