@@ -306,10 +306,10 @@ TEST_CASE("Phase7 W3 characterization: model success resolves a generated GLB")
         doc, fixture.Path(), diagnostics, error));
     CHECK(error.IsOk());
     // W3 step 3: a nil assetId with no sidecar resolves by path fallback and
-    // emits exactly one "identity repair required" Missing diagnostic. The
+    // emits exactly one "identity repair required" Stale diagnostic. The
     // locator is read-only; the host saves/migrates the assigned ID later.
     REQUIRE(diagnostics.size() == 1);
-    CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+    CHECK(diagnostics[0].severity == AssetDiagnostic::Stale);
     CHECK(diagnostics[0].detail.find("identity repair required") !=
           std::string::npos);
     CHECK(doc.ecs.registry.all_of<MeshRef>(entity));
@@ -365,7 +365,7 @@ TEST_CASE("Phase7 W3 characterization: malformed model emits locator, load, and 
         doc, fixture.Path(), diagnostics, error));
     CHECK(error.code == Error::MissingAsset);
     // W3 step 3: three diagnostics, each a distinct failure layer.
-    //   1. Locator: nil ID + absent sidecar -> Missing "identity repair
+    //   1. Locator: nil ID + absent sidecar -> Stale "identity repair
     //      required" (the path resolves, so the file is not "missing").
     //   2. Loader: SceneLoader::LoadIntoECS fails -> Malformed "model
     //      failed to load".
@@ -373,7 +373,8 @@ TEST_CASE("Phase7 W3 characterization: malformed model emits locator, load, and 
     //      entity left without resolved mesh".
     REQUIRE(diagnostics.size() == 3);
     CHECK(CountSeverity(diagnostics, AssetDiagnostic::Malformed) == 1);
-    CHECK(CountSeverity(diagnostics, AssetDiagnostic::Missing) == 2);
+    CHECK(CountSeverity(diagnostics, AssetDiagnostic::Stale) == 1);
+    CHECK(CountSeverity(diagnostics, AssetDiagnostic::Missing) == 1);
     // W3-P7 transactionality: hard failure leaves the document unchanged.
     CHECK(doc.ecs.meshRegistry.GetCount() == 0);
     CHECK(doc.ecs.materials.empty());
@@ -404,7 +405,7 @@ TEST_CASE("Phase7 W3 characterization: unresolved model source key fails transac
     //      required" (the path resolves, so the file is not "missing").
     //   2. Plan pass: source key not found in rebuilt model -> Unresolved.
     REQUIRE(diagnostics.size() == 2);
-    CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+    CHECK(diagnostics[0].severity == AssetDiagnostic::Stale);
     CHECK(diagnostics[1].severity == AssetDiagnostic::Unresolved);
     CHECK_FALSE(doc.ecs.registry.all_of<MeshRef>(entity));
 
@@ -571,10 +572,10 @@ TEST_CASE("Phase7 W3 characterization: environment success, missing, and malform
             doc, fixture.Path(), diagnostics, error));
         CHECK(error.IsOk());
         // W3 step 4: nil env assetId + absent sidecar -> locator resolves by
-        // path fallback and emits one "identity repair required" Missing
+        // path fallback and emits one "identity repair required" Stale
         // diagnostic. The host's next save/migration persists the assigned ID.
         REQUIRE(diagnostics.size() == 1);
-        CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Stale);
         CHECK(diagnostics[0].kind == AssetKind::Environment);
         CHECK(diagnostics[0].detail.find("identity repair required") !=
               std::string::npos);
@@ -624,10 +625,10 @@ TEST_CASE("Phase7 W3 characterization: environment success, missing, and malform
         CHECK(error.code == Error::MissingAsset);
         // W3 step 4: two diagnostics. The locator resolves the path (the
         // malformed file exists) and emits a "identity repair required"
-        // Missing diagnostic; the EXR decoder then fails and emits a
+        // Stale diagnostic; the EXR decoder then fails and emits a
         // Malformed diagnostic.
         REQUIRE(diagnostics.size() == 2);
-        CHECK(CountSeverity(diagnostics, AssetDiagnostic::Missing) == 1);
+        CHECK(CountSeverity(diagnostics, AssetDiagnostic::Stale) == 1);
         CHECK(CountSeverity(diagnostics, AssetDiagnostic::Malformed) == 1);
         for (const auto& d : diagnostics)
             CHECK(d.kind == AssetKind::Environment);
@@ -909,7 +910,7 @@ TEST_CASE("Phase7 W3 step 5: script adapter uses structured locator and validate
         REQUIRE(resolved.success);
         CHECK(resolved.resolvedPath == fixture.Path() / "script.lua");
         REQUIRE(diagnostics.size() == 1);
-        CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+        CHECK(diagnostics[0].severity == AssetDiagnostic::Stale);
         CHECK(diagnostics[0].entityUuid == entityUuid);
         CHECK(diagnostics[0].detail.find("identity repair required") !=
               std::string::npos);
@@ -1071,6 +1072,34 @@ TEST_CASE("Phase7 W3 step 5: binding an existing script assigns and reuses its s
     const auto second = manager.GetScriptState(entity);
     REQUIRE(second.has_value());
     CHECK(second->asset.assetId == first->asset.assetId);
+}
+
+TEST_CASE("Phase7 W3 step 6.1: committed script scenario identity resolves cleanly")
+{
+    const fs::path assetRoot =
+        fs::absolute("RT2App/assets").lexically_normal();
+    const fs::path scriptPath = assetRoot / "script-scenario.lua";
+    const fs::path sidecarPath = AssetSidecarPath(scriptPath);
+    REQUIRE(fs::is_regular_file(scriptPath));
+    REQUIRE(fs::is_regular_file(sidecarPath));
+
+    Error sidecarError;
+    const UUID sidecarId = ReadSidecarId(sidecarPath, sidecarError);
+    REQUIRE(sidecarError.IsOk());
+    REQUIRE_FALSE(sidecarId.IsNull());
+
+    ScriptComponent script = ScriptAt("script-scenario.lua");
+    REQUIRE(script.asset.assetId.IsNull());
+    const AssetResolutionContext context{assetRoot, nullptr};
+    std::vector<AssetDiagnostic> diagnostics;
+    const auto resolved = ResolveScriptAssetPath(
+        script, context, UUID::Nil(), "ScriptedCube", diagnostics);
+
+    REQUIRE(resolved.success);
+    CHECK(resolved.resolvedPath == scriptPath);
+    CHECK(resolved.effectiveId == sidecarId);
+    CHECK_FALSE(resolved.identityRepairRequired);
+    CHECK(diagnostics.empty());
 }
 
 TEST_CASE("Phase7 W3 characterization: OBJ texture failures do not fail valid geometry")

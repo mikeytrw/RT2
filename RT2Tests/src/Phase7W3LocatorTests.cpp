@@ -171,8 +171,9 @@ TEST_CASE("W3-Locator: unique ID with existing file wins (case 2)")
     REQUIRE(r.effectiveId == id);
     REQUIRE_FALSE(r.identityRepairRequired);
     REQUIRE(r.resolvedPath == (root / dbRel).lexically_normal());
-    // Stale reference path produced an observable Missing diagnostic.
-    REQUIRE(CountSeverity(diags, AssetDiagnostic::Missing) == 1);
+    // The file resolved successfully by ID; the cached path is Stale, not
+    // Missing.
+    REQUIRE(CountSeverity(diags, AssetDiagnostic::Stale) == 1);
     REQUIRE(diags[0].refPath == refRel);
     REQUIRE(diags[0].detail.find("stale") != std::string::npos);
 }
@@ -230,7 +231,7 @@ TEST_CASE("W3-Locator: ID missing, path exists, no sidecar (case 4)")
     REQUIRE(r.source == AssetResolutionSource::PathFallback);
     REQUIRE(r.effectiveId.IsNull());
     REQUIRE(r.identityRepairRequired);
-    REQUIRE(CountSeverity(diags, AssetDiagnostic::Missing) == 1);
+    REQUIRE(CountSeverity(diags, AssetDiagnostic::Stale) == 1);
     REQUIRE(diags[0].detail.find("identity repair required") != std::string::npos);
 }
 
@@ -358,7 +359,7 @@ TEST_CASE("W3-Locator: non-nil ID, no database, conflicting sidecar (case 5)")
 }
 
 // ---------------------------------------------------------------------------
-// Case 8: nil ID -> path fallback. Missing sidecar -> repair required.
+// Case 8: nil ID -> path fallback. Absent sidecar -> stale/repair required.
 // Sidecar present -> effective ID from sidecar, no repair.
 // ---------------------------------------------------------------------------
 
@@ -378,7 +379,7 @@ TEST_CASE("W3-Locator: nil ID path fallback with absent sidecar (case 8a)")
     REQUIRE(r.source == AssetResolutionSource::PathFallback);
     REQUIRE(r.effectiveId.IsNull());
     REQUIRE(r.identityRepairRequired);
-    REQUIRE(CountSeverity(diags, AssetDiagnostic::Missing) == 1);
+    REQUIRE(CountSeverity(diags, AssetDiagnostic::Stale) == 1);
 }
 
 TEST_CASE("W3-Locator: nil ID path fallback with sidecar (case 8b)")
@@ -425,6 +426,59 @@ TEST_CASE("W3-Locator: unique ID and path agree (case 1)")
     REQUIRE(r.effectiveId == id);
     REQUIRE_FALSE(r.identityRepairRequired);
     REQUIRE(diags.empty());
+}
+
+TEST_CASE("Phase7 W3 step 6.1: successful resolution never emits Missing")
+{
+    TempDirectory tmp;
+    const fs::path root = tmp.Path();
+
+    SUBCASE("nil ID and absent sidecar")
+    {
+        const std::string rel = "assets/nil-id.glb";
+        CreateAssetFile(root, rel);
+        auto ctx = MakeCtx(root, nullptr);
+        std::vector<AssetDiagnostic> diags;
+        const auto result = Resolve(
+            MakeRef(AssetKind::Model, rel), ctx, UUID::Nil(), "", diags);
+        REQUIRE(result.success);
+        CHECK(CountSeverity(diags, AssetDiagnostic::Stale) == 1);
+        CHECK(CountSeverity(diags, AssetDiagnostic::Missing) == 0);
+    }
+
+    SUBCASE("requested ID and absent sidecar")
+    {
+        const std::string rel = "assets/requested-id.glb";
+        CreateAssetFile(root, rel);
+        auto ctx = MakeCtx(root, nullptr);
+        std::vector<AssetDiagnostic> diags;
+        const auto result = Resolve(
+            MakeRef(AssetKind::Model, rel, MakeId(0x21, 0x22)),
+            ctx, UUID::Nil(), "", diags);
+        REQUIRE(result.success);
+        CHECK(CountSeverity(diags, AssetDiagnostic::Stale) == 1);
+        CHECK(CountSeverity(diags, AssetDiagnostic::Missing) == 0);
+    }
+
+    SUBCASE("unique ID repairs a stale reference path")
+    {
+        const std::string real = "assets/real.glb";
+        const std::string stale = "assets/stale.glb";
+        CreateAssetFile(root, real);
+        const UUID id = MakeId(0x31, 0x32);
+        std::vector<AssetDatabaseDiagnostic> dbDiags;
+        AssetDatabase db =
+            BuildAssetDatabase({ MakeDbRecord(real, id) }, dbDiags);
+        REQUIRE(dbDiags.empty());
+        auto ctx = MakeCtx(root, &db);
+        std::vector<AssetDiagnostic> diags;
+        const auto result = Resolve(
+            MakeRef(AssetKind::Model, stale, id),
+            ctx, UUID::Nil(), "", diags);
+        REQUIRE(result.success);
+        CHECK(CountSeverity(diags, AssetDiagnostic::Stale) == 1);
+        CHECK(CountSeverity(diags, AssetDiagnostic::Missing) == 0);
+    }
 }
 
 // ---------------------------------------------------------------------------

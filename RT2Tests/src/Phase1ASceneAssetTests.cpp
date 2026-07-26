@@ -403,12 +403,12 @@ TEST_CASE("P1A Environment: save env reference -> load -> resolve reads pixels")
     REQUIRE(SceneAssetResolver::ResolveEnvironment(loaded, FixtureDir(),
                                                    diagnostics, resolveErr));
     // W3 step 4: a nil env assetId with no sidecar resolves by path fallback
-    // and emits exactly one "identity repair required" Missing diagnostic.
+    // and emits exactly one "identity repair required" Stale diagnostic.
     // The locator is read-only; the host's next save/migration persists the
     // assigned ID. A Malformed/Conflict/Unresolved diagnostic would be a real
     // defect.
     REQUIRE(diagnostics.size() == 1);
-    CHECK(diagnostics[0].severity == AssetDiagnostic::Missing);
+    CHECK(diagnostics[0].severity == AssetDiagnostic::Stale);
     CHECK(diagnostics[0].detail.find("identity repair required") !=
           std::string::npos);
     CHECK(loaded.environment.width > 0);

@@ -40,8 +40,9 @@ $exitMeaning = @{
     6 = "script error (quarantined, or no instance survived)"
 }
 
-& $exe --script-scenario $scenario --out $report
+$scenarioOutput = @(& $exe --script-scenario $scenario --out $report 2>&1)
 $exitCode = $LASTEXITCODE
+$scenarioOutput | ForEach-Object { Write-Host $_ }
 
 if ($exitCode -ne 0) {
     $meaning = $exitMeaning[$exitCode]
@@ -67,6 +68,10 @@ if ($reportContent -notmatch '"spawnViolation":\s*false') {
 if ($reportContent -notmatch '"scriptError":\s*false') {
     Write-Host "[ScriptScenario] FAIL: script error (quarantined instances)" -ForegroundColor Red
     Write-Host $reportContent
+    exit 1
+}
+if (($scenarioOutput -join "`n") -match '\[ScriptScenario\] Asset diagnostic:') {
+    Write-Host "[ScriptScenario] FAIL: tracked scenario asset emitted an asset diagnostic" -ForegroundColor Red
     exit 1
 }
 

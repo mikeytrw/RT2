@@ -128,7 +128,7 @@ AssetResolutionResult Resolve(const AssetReference& ref,
             result.effectiveId = UUID::Nil();
             result.identityRepairRequired = true;
             diagnostics.push_back(MakeDiag(
-                AssetDiagnostic::Missing, ref.kind, ref.path,
+                AssetDiagnostic::Stale, ref.kind, ref.path,
                 candidatePathStr, entityUuid, entityName, ref.sourceKey,
                 "asset has no identity sidecar; identity repair required"));
             return result;
@@ -197,7 +197,7 @@ AssetResolutionResult Resolve(const AssetReference& ref,
         if (!ref.path.empty() && candidatePath.empty())
         {
             diagnostics.push_back(MakeDiag(
-                AssetDiagnostic::Missing, ref.kind, ref.path,
+                AssetDiagnostic::Stale, ref.kind, ref.path,
                 (ctx.assetRoot / ref.path).lexically_normal().string(),
                 entityUuid, entityName, ref.sourceKey,
                 "reference path stale; resolved by asset ID"));
@@ -244,7 +244,7 @@ AssetResolutionResult Resolve(const AssetReference& ref,
         result.effectiveId = UUID::Nil();
         result.identityRepairRequired = true;
         diagnostics.push_back(MakeDiag(
-            AssetDiagnostic::Missing, ref.kind, ref.path,
+            AssetDiagnostic::Stale, ref.kind, ref.path,
             candidatePathStr, entityUuid, entityName, ref.sourceKey,
             "asset ID not in database and sidecar absent; identity repair required"));
         return result;

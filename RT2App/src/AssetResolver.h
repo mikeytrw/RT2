@@ -82,13 +82,10 @@ struct AssetDiagnostic
         Malformed,   // file found but failed to parse
         Unresolved,  // source key not present in the rebuilt asset
         Conflict,    // ID/path disagreement; identity not substituted (W3-Q5)
-        // Resolved successfully, but identity metadata is stale or incomplete
-        // (W3-Q5: the existing severities did not describe a successfully
-        // recovered stale path). Emitted when the locator resolved the file
-        // and the sidecar confirms the requested ID, but no database was
-        // supplied (or the database record did not locate a file): the durable
-        // identity is authoritative via the sidecar, but the database-side
-        // state is stale and should be repaired by a later save/migration.
+        // Resolved successfully, but path/identity metadata is stale or
+        // incomplete (W3-Q5). Missing is reserved for failed location;
+        // successful recovery through ID/path fallback, including a missing
+        // identity sidecar, is Stale and may require later save/migration.
         Stale,
     };
     Severity        severity = Missing;
@@ -144,9 +141,9 @@ struct AssetResolutionResult
 };
 
 // Resolve a single AssetReference against an explicit context. Pure: no
-// filesystem mutation, no sidecar write, no database mutation. Diagnostics
-// (zero or one terminal entry on failure; zero on success) are appended to
-// `diagnostics` and are not sorted by this entry point — batch APIs sort.
+// filesystem mutation, no sidecar write, no database mutation. A failure
+// appends one terminal diagnostic. A success may append one Stale advisory,
+// but never Missing. This entry point does not sort; batch APIs sort.
 //
 // `entityUuid`/`entityName` are optional context used only to fill the
 // diagnostic; pass nil/empty for non-entity references (e.g. environment).
