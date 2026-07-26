@@ -8454,3 +8454,70 @@ Two consequences observed in Intel Sponza:
 Does not include ReSTIR DI reservoir candidacy, soft shadows/light radius,
 IES profiles, shadow-casting toggles per light, or any change to emissive
 handling or the `Emissive Boost` control.
+
+### Review amendments (2026-07-26)
+
+Reviewed by GLM 5.2 against `3a4a022`; every finding below was independently
+re-verified before being accepted. The spec above stands except as amended
+here. Amendments win where they conflict.
+
+**A1 — P8-F1 overstated the writer set.** `ECSScene.lights` is not written
+only by `SceneLoader.cpp:772`. `WalnutApp.cpp:2441` moves a loaded vector
+into the live scene (`live.lights = std::move(result->ecs.lights)`), and
+`RT2Tests/src/SceneLoaderTests.cpp:304,331,448` push to it directly. Readers
+beyond the loader: `WalnutApp.cpp:734` (the Outliner "Lights: %d" count),
+`SceneManager.cpp:357` (log), and the export path `SceneLoader.cpp:397-444`.
+The two-representation claim itself holds — no third representation exists.
+
+**A2 — step 1's migration list is incomplete, and one omission is a public
+API.** `isSpot` occupies 16 distinct sites, not ~12. The additions:
+
+- **`ScriptSystem.cpp:1107` and `:1136-1137` — the Lua `is_spot` binding**,
+  reachable from user scripts via `entity.get_light`/`set_light`. Migrating
+  `LightComponent` to an enum without this leaves scripts reading and writing
+  a stale bool while the engine has moved on: a silent semantic break in a
+  published API. This alone blocks step 1 as written.
+- **`SceneSerializer.cpp:667` — the *write* side.** The spec covered reading
+  `isSpot` for back-compat but never said what replaces the write. Decide
+  explicitly: emit `type`, or keep emitting `isSpot` for round-trip.
+- `SceneManager.cpp:1697` (`MatchesRecord`), a third equality site distinct
+  from `EditorPropertyCommands.cpp:71`.
+- Tests: `Phase3B2CommandTests.cpp:159,436`, `SceneManagerTests.cpp:83`.
+
+`RT2SliceRunner` has none. Record structs carrying `LightComponent`
+(`EditorPropertyCommands.h:159-160`, `SubtreeSnapshot.h:69`,
+`SceneSerializer.cpp:488`) migrate automatically with the struct.
+
+**A3 — P8-F5's consumer list was wrong in both directions.** `pTri` is not
+referenced at all in `restir_spatial.comp` or `restir_gi_temporal.comp`
+(0 occurrences each); both only do reservoir reuse. The actual consumers are
+`closesthit.rchit` (2), `miss.rmiss` (2), `scatter_shared.glsl` (12),
+`restir_temporal.comp` (6) and `restir_shared.glsl` (6).
+
+**A4 — the silent-bias proof was insufficient; this is the most important
+amendment.** `computePTri` is **duplicated in four files**
+(`pathtracer_shared.glsl:100`, `restir_bindings.glsl:182`,
+`restir_gi_bindings.glsl:109`, and a `gbuffer_debug.comp:60` stub). The real
+failure mode is therefore not a normalisation error but the four copies
+*disagreeing* after a partial migration — each can sum to 1 locally while
+contradicting the others, so the proposed "probabilities sum to 1" test
+passes with the bug live.
+
+Replace that proof with: **unify `computePTri` into one shared header** so a
+third arm cannot be added to some copies and not others, and make the
+discrimination fault "change one definition and not the rest" — which must
+be impossible to express once unified. Until unified, no test in this phase
+should be trusted to catch inter-shader divergence.
+
+**A5 — step ordering leaves the tree red.** Step 3 (parse
+`KHR_lights_punctual` in `ImportIntoECS`) is independent and must move
+**before** step 2. Step 2 cannot delete `ECSScene.lights` on its own: the
+same commit must also migrate `SceneLoader::Save`'s export loop
+(`:397-444`), the Outliner count (`WalnutApp.cpp:734`), the log
+(`SceneManager.cpp:357`), and the loader round-trip tests
+(`SceneLoaderTests.cpp:189,304,309,331,336,448,483-485`). Revised order:
+1, 3, 2 (with its full reader migration), then 4-7 unchanged.
+
+**A6 — minor citation drift.** The `pTri` division cited as
+`restir_gi_bindings.glsl:565-595` is at `:590`, with the environment arm's
+`direct /= (1.0 - pTri)` at `:626`, outside the cited range.
