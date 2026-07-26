@@ -164,14 +164,18 @@ bool RuntimeSceneController::Step(ISceneRenderBridge& bridge)
     }
 
     // One sync for the presentation pass: FullSync if the frame applied any
-    // structural operation, otherwise TransformSync.
-    GPUSceneData gpuData = m_Runtime->gpuCache;
-    UpdateInstancesFromECS(gpuData, m_Runtime->ecs);
-    m_Runtime->gpuCache = gpuData;
+    // structural operation, otherwise TransformSync. Updated in place — see
+    // the note in Update() on why copying GPUSceneData per frame is costly.
+    UpdateInstancesFromECS(m_Runtime->gpuCache, m_Runtime->ecs);
     if (structural)
+    {
+        GPUSceneData gpuData = m_Runtime->gpuCache;
         bridge.FullSync(gpuData);
+    }
     else
-        bridge.TransformSync(gpuData);
+    {
+        bridge.TransformSync(m_Runtime->gpuCache);
+    }
 
     // Request a render submission for the presentation pass.
     bridge.RequestRender();
@@ -301,13 +305,24 @@ void RuntimeSceneController::Update(float frameDt, ISceneRenderBridge& bridge)
     // applied this frame, otherwise TransformSync. A frame with a failed
     // validation batch (no mutation) fires TransformSync — the runtime
     // document is unchanged, so a transform-only sync is correct.
-    GPUSceneData gpuData = m_Runtime->gpuCache;
-    UpdateInstancesFromECS(gpuData, m_Runtime->ecs);
-    m_Runtime->gpuCache = gpuData;
+    //
+    // UpdateInstancesFromECS only rewrites instances[] and lights[], so the
+    // cache is updated in place. Copying GPUSceneData here would deep-copy
+    // every SceneTexture::pixels buffer and the env-map CDFs once per frame
+    // — pure CPU cost, invisible in the GPU timings, and only while playing.
+    UpdateInstancesFromECS(m_Runtime->gpuCache, m_Runtime->ecs);
     if (structural)
+    {
+        // FullSync reaches SetScene(GPUSceneData&), which moves the textures
+        // out of the argument. Hand it a copy so the cache keeps its pixels.
+        GPUSceneData gpuData = m_Runtime->gpuCache;
         bridge.FullSync(gpuData);
+    }
     else
-        bridge.TransformSync(gpuData);
+    {
+        // TransformSync takes a const ref; no copy needed.
+        bridge.TransformSync(m_Runtime->gpuCache);
+    }
 
     bridge.RequestRender();
 }
