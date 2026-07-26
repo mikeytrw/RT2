@@ -68,7 +68,7 @@ bool LightEqual(const LightComponent& a, const LightComponent& b)
 	       FloatEq(a.range, b.range) &&
 	       FloatEq(a.innerConeAngle, b.innerConeAngle) &&
 	       FloatEq(a.outerConeAngle, b.outerConeAngle) &&
-	       a.isSpot == b.isSpot;
+	       a.type == b.type;
 }
 
 bool CameraEqual(const CameraComponent& a, const CameraComponent& b)

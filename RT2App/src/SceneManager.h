@@ -170,7 +170,7 @@ struct EditorCameraPose;
 	                  const glm::vec3& position = {0, 0, 0},
 	                  const glm::vec3& color = {1, 1, 1},
 	                  float intensity = 1.0f,
-	                  bool isSpot = false);
+	                  LightType type = LightType::Point);
 
 	// Remove an entity and its children. Safe to call with invalid EntityId.
 	void RemoveEntity(EntityId entity);
@@ -296,7 +296,7 @@ struct EditorCameraPose;
 		const EditableTRS& localTRS,
 		const glm::vec3& color,
 		float intensity,
-		bool isSpot,
+		LightType type,
 		const std::optional<rt2::core::UUID>& parent = std::nullopt);
 
 	// Structured result for duplication/paste operations. `createdRoots`
@@ -400,8 +400,8 @@ struct EditorCameraPose;
 	bool GetWorldTransform(EntityId entity, EditableTRS& outTransform);
 
 	// Read/write light properties.
-	bool GetLightProperties(EntityId entity, glm::vec3& outColor, float& outIntensity, bool& outIsSpot) const;
-	void SetLightProperties(EntityId entity, const glm::vec3& color, float intensity, bool isSpot);
+	bool GetLightProperties(EntityId entity, glm::vec3& outColor, float& outIntensity, LightType& outType) const;
+	void SetLightProperties(EntityId entity, const glm::vec3& color, float intensity, LightType type);
 	bool SetCameraProperties(EntityId entity, float verticalFOV,
 		float aperture, float focusDistance);
 

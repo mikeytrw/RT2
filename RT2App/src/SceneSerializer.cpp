@@ -656,7 +656,11 @@ std::optional<json> EntityRecordToJson(
         l["range"]       = r.light.range;
         l["innerCone"]   = r.light.innerConeAngle;
         l["outerCone"]   = r.light.outerConeAngle;
-        l["isSpot"]      = r.light.isSpot;
+        // `type` is authoritative. `isSpot` is still written so a scene saved
+        // by this build still opens in one that predates the enum; readers
+        // here prefer `type` and fall back to `isSpot`.
+        l["type"]        = LightTypeName(r.light.type);
+        l["isSpot"]      = (r.light.type == LightType::Spot);
         j["light"] = l;
     }
 
@@ -833,7 +837,12 @@ EntityRecord JsonToEntityRecord(const json& j, Error& err,
         if (l.contains("range"))      r.light.range           = l["range"].get<float>();
         if (l.contains("innerCone"))  r.light.innerConeAngle  = l["innerCone"].get<float>();
         if (l.contains("outerCone"))  r.light.outerConeAngle  = l["outerCone"].get<float>();
-        if (l.contains("isSpot"))     r.light.isSpot          = l["isSpot"].get<bool>();
+        // Prefer `type`; fall back to the pre-enum `isSpot` so scenes written
+        // before this field existed keep their point/spot distinction.
+        if (l.contains("type"))
+            r.light.type = LightTypeFromName(l["type"].get<std::string>().c_str());
+        else if (l.contains("isSpot"))
+            r.light.type = l["isSpot"].get<bool>() ? LightType::Spot : LightType::Point;
     }
 
     if (j.contains("camera"))

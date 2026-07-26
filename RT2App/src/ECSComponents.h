@@ -80,7 +80,10 @@ struct LightComponent
     float range = 50.0f;
     float innerConeAngle = 30.0f;
     float outerConeAngle = 45.0f;
-    bool isSpot = false;
+    // Replaces the former `bool isSpot`. Point and Spot behave as before;
+    // Directional is a parallel-ray light whose position is ignored and
+    // whose direction comes from the entity's world rotation.
+    LightType type = LightType::Point;
 };
 
 // Camera component (only one entity should have this)

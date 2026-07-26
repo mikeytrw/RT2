@@ -58,7 +58,7 @@ struct SceneFixture
 
     rt2::core::UUID AddLight(const char* name, glm::vec3 pos = {0, 3, 0})
     {
-        const auto entity = manager.AddLight(name, pos, {1, 1, 1}, 5.0f, false);
+        const auto entity = manager.AddLight(name, pos, {1, 1, 1}, 5.0f, LightType::Point);
         return manager.GetEntityUuid(entity);
     }
 
@@ -669,7 +669,7 @@ TEST_CASE("Phase 3B1 CreateLightEntityCommand RecordApplied/Undo/Redo")
     EditableTRS trs; trs.translation = {0, 3, 0};
 
     auto applied = f.manager.CreateLightEntity(
-        uuid, "Light", trs, {1, 1, 1}, 10.0f, false);
+        uuid, "Light", trs, {1, 1, 1}, 10.0f, LightType::Point);
     REQUIRE(applied.success);
     REQUIRE(applied.syncImpact == rt2::core::SyncImpact::Structural);
     REQUIRE(f.EntityAlive(uuid));

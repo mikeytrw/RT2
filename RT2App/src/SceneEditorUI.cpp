@@ -330,7 +330,7 @@ void SceneEditorUI::CreateLightCommand(const glm::vec3& position, const glm::vec
 	const auto uuid = m_SceneMgr->ReserveKnownUuid();
 	EditableTRS trs;
 	trs.translation = position;
-	auto applied = m_SceneMgr->CreateLightEntity(uuid, "Light", trs, color, intensity, false);
+	auto applied = m_SceneMgr->CreateLightEntity(uuid, "Light", trs, color, intensity, LightType::Point);
 	if (!applied.success)
 	{
 		ApplyMutation(applied);
@@ -1441,14 +1441,14 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 
 	glm::vec3 color;
 	float intensity;
-	bool isSpot;
-	if (!m_SceneMgr->GetLightProperties(entity, color, intensity, isSpot))
+	LightType lightType;
+	if (!m_SceneMgr->GetLightProperties(entity, color, intensity, lightType))
 		return;
 
 	const auto targetUuid = m_SceneMgr->GetEntityUuid(entity);
 
 	// Read the full LightComponent for the session (the Inspector only
-	// exposes color/intensity/isSpot, but the command stores the full
+	// exposes color/intensity/type, but the command stores the full
 	// struct for forward compatibility).
 	auto& reg = const_cast<entt::registry&>(m_SceneMgr->GetECS().registry);
 	LightComponent beforeLight;
@@ -1497,8 +1497,14 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 	drawLightWidget("Intensity", [&]() {
 		return ImGui::DragFloat("Intensity", &intensity, 0.1f, 0.0f, 1000.0f, "%.1f");
 	});
-	drawLightWidget("Spot", [&]() {
-		return ImGui::Checkbox("Spot", &isSpot);
+	drawLightWidget("Type", [&]() {
+		// Order must match LightType's values (Point=0, Spot=1, Directional=2).
+		const char* kTypeNames[] = { "Point", "Spot", "Directional" };
+		int typeIndex = static_cast<int>(lightType);
+		if (!ImGui::Combo("Type", &typeIndex, kTypeNames, IM_ARRAYSIZE(kTypeNames)))
+			return false;
+		lightType = static_cast<LightType>(typeIndex);
+		return true;
 	});
 
 	ImGui::EndDisabled();
@@ -1506,7 +1512,7 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 
 	if (changed)
 	{
-		m_SceneMgr->SetLightProperties(entity, color, intensity, isSpot);
+		m_SceneMgr->SetLightProperties(entity, color, intensity, lightType);
 		NotifySceneChanged();
 	}
 

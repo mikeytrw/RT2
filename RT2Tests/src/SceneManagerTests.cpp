@@ -69,7 +69,7 @@ TEST_CASE("SceneManager: AddObjectWithGeometry registers mesh in MeshRegistry")
 TEST_CASE("SceneManager: AddLight creates entity with LightComponent")
 {
 	SceneManager mgr;
-	auto e = mgr.AddLight("Lamp", {5, 10, 2}, {1, 0, 0}, 50.0f, false);
+	auto e = mgr.AddLight("Lamp", {5, 10, 2}, {1, 0, 0}, 50.0f, LightType::Point);
 	CHECK(e.IsValid());
 	CHECK(mgr.GetEntityCount() == 1);
 
@@ -80,7 +80,7 @@ TEST_CASE("SceneManager: AddLight creates entity with LightComponent")
 	auto& light = reg.get<LightComponent>(e.id);
 	CHECK(light.color.r == 1.0f);
 	CHECK(light.intensity == 50.0f);
-	CHECK(light.isSpot == false);
+	CHECK(light.type == LightType::Point);
 }
 
 TEST_CASE("SceneManager: RemoveEntity destroys entity")

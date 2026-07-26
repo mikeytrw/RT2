@@ -51,7 +51,7 @@ inline bool GenerateSliceFixture(const std::filesystem::path& path, Error& err)
     ltf.translation = { 5.0f, 10.0f, 5.0f };
     ltf.dirty = true;
     doc.ecs.registry.emplace<VisibleComponent>(light);
-    doc.ecs.registry.emplace<LightComponent>(light, LightComponent{ { 1, 1, 1 }, 50.0f, 50.0f, 30.0f, 45.0f, false });
+    doc.ecs.registry.emplace<LightComponent>(light, LightComponent{ { 1, 1, 1 }, 50.0f, 50.0f, 30.0f, 45.0f, LightType::Point });
     doc.AssignNewUuid(light);
 
     // Camera
