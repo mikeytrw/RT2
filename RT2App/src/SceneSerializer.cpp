@@ -172,6 +172,11 @@ json ImportSettingsToJson(const ImportSettings& s)
     j["triangulate"]     = s.triangulate;
     j["generateNormals"] = s.generateNormals;
     j["mergeMegaMesh"]   = s.mergeMegaMesh;
+    // Written only when set. The reader defaults to false (spec behaviour),
+    // so omitting it keeps every existing scene byte-identical on re-save
+    // instead of adding a no-op line to each one.
+    if (s.assumeDielectricWithoutMetalRough)
+        j["assumeDielectricWithoutMetalRough"] = true;
     return j;
 }
 
@@ -181,6 +186,9 @@ ImportSettings JsonToImportSettings(const json& j)
     if (j.contains("triangulate"))     s.triangulate     = j["triangulate"].get<bool>();
     if (j.contains("generateNormals")) s.generateNormals = j["generateNormals"].get<bool>();
     if (j.contains("mergeMegaMesh"))   s.mergeMegaMesh   = j["mergeMegaMesh"].get<bool>();
+    if (j.contains("assumeDielectricWithoutMetalRough"))
+        s.assumeDielectricWithoutMetalRough =
+            j["assumeDielectricWithoutMetalRough"].get<bool>();
     return s;
 }
 

@@ -132,6 +132,26 @@ std::vector<SceneTexture> ResolveAndDecodeTextures(
     const TextureAssetLoadContext& context,
     std::vector<AssetDiagnostic>& diagnostics);
 
+// glTF defines an absent metallicFactor/roughnessFactor as 1.0, and those
+// factors multiply the metallicRoughness texture. A material shipping neither
+// is therefore, by spec, fully metallic and fully rough — a rough mirror, and
+// almost never what the author meant. Exporters hit this constantly by
+// omitting the values while assuming a dielectric default; Intel Sponza's
+// `dirt_decal` is one.
+//
+// Applied as a correction pass over materials [firstMaterial, end) after a
+// model is imported, so the loader stays spec-correct and the deviation is
+// an explicit, opt-in, per-asset choice recorded in ImportSettings. Every
+// correction appends one diagnostic — a silent fix would be worse than the
+// bug, which is at least visible.
+//
+// Returns the number of materials corrected.
+size_t ApplyDielectricDefaultCorrection(
+    std::vector<SceneMaterial>& materials,
+    size_t firstMaterial,
+    const AssetReference& owner,
+    std::vector<AssetDiagnostic>& diagnostics);
+
 } // namespace rt2::core
 
 #endif // RT2_CORE_TEXTURE_ASSET_PIPELINE_H

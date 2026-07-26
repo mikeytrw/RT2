@@ -2005,7 +2005,18 @@ void SceneEditorUI::DrawImportOptionsModal()
 		else
 		{
 			ImGui::Separator();
-			ImGui::TextDisabled("(no import options for this format)");
+			ImGui::Checkbox("Treat untextured metals as dielectric",
+			                &m_PendingImportAssumeDielectric);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip(
+					"glTF defines an absent metallicFactor as 1.0, so a material\n"
+					"with no metallicRoughness texture and no authored factor is\n"
+					"fully metallic and fully rough by spec — a rough mirror that\n"
+					"renders as a grey patch which never converges.\n\n"
+					"Exporters hit this constantly by omitting the value and\n"
+					"assuming a dielectric default. When checked, such materials\n"
+					"import as dielectric and each correction is recorded as a\n"
+					"diagnostic. Stored per asset, so it survives a reload.");
 		}
 
 		ImGui::Separator();
@@ -2013,6 +2024,8 @@ void SceneEditorUI::DrawImportOptionsModal()
 		{
 			ImportSettings settings;
 			settings.mergeMegaMesh = m_PendingImportMergeMegaMesh;
+			settings.assumeDielectricWithoutMetalRough =
+				m_PendingImportAssumeDielectric;
 			auto id = m_OnImportWithOptions(m_PendingImportPath, settings);
 			if (id.IsValid())
 			{

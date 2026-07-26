@@ -96,11 +96,13 @@ bool RecordLess(const AssetRecord& a, const AssetRecord& b)
     const auto settingsA = std::tie(
         a.importSettings.triangulate,
         a.importSettings.generateNormals,
-        a.importSettings.mergeMegaMesh);
+        a.importSettings.mergeMegaMesh,
+        a.importSettings.assumeDielectricWithoutMetalRough);
     const auto settingsB = std::tie(
         b.importSettings.triangulate,
         b.importSettings.generateNormals,
-        b.importSettings.mergeMegaMesh);
+        b.importSettings.mergeMegaMesh,
+        b.importSettings.assumeDielectricWithoutMetalRough);
     if (settingsA != settingsB)
         return settingsA < settingsB;
 

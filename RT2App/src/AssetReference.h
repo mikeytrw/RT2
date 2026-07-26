@@ -45,15 +45,27 @@ struct ImportSettings
     bool generateNormals   = false; // true if flat normals were generated
     bool mergeMegaMesh     = true;  // OBJ-specific: merge all shapes into one BLAS
 
-    // glTF import profile (currently no knobs that affect geometry — the
-    // source is byte-faithful — but the field is persisted for forward
-    // compatibility).
+    // glTF import profile. Geometry is byte-faithful; this knob only affects
+    // material factors.
+    //
+    // glTF defines an absent metallicFactor/roughnessFactor as 1.0. A material
+    // that ships neither a metallicRoughness texture nor explicit factors is
+    // therefore, by spec, a fully metallic and fully rough surface — a rough
+    // mirror. Exporters hit this constantly by omitting the values while
+    // assuming a dielectric default, so the spec-correct import renders a
+    // grey, non-converging patch (Intel Sponza's `dirt_decal` is one).
+    //
+    // When true, such a material is imported as a dielectric (metallic 0)
+    // and a diagnostic records the correction. Default false: spec behaviour,
+    // and existing assets keep their current identity.
+    bool assumeDielectricWithoutMetalRough = false;
 
     bool operator==(const ImportSettings& o) const
     {
         return triangulate == o.triangulate
             && generateNormals == o.generateNormals
-            && mergeMegaMesh == o.mergeMegaMesh;
+            && mergeMegaMesh == o.mergeMegaMesh
+            && assumeDielectricWithoutMetalRough == o.assumeDielectricWithoutMetalRough;
     }
     bool operator!=(const ImportSettings& o) const { return !(*this == o); }
 };

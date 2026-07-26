@@ -532,4 +532,38 @@ std::vector<SceneTexture> ResolveAndDecodeTextures(
     return textures;
 }
 
+size_t ApplyDielectricDefaultCorrection(
+    std::vector<SceneMaterial>& materials,
+    size_t firstMaterial,
+    const AssetReference& owner,
+    std::vector<AssetDiagnostic>& diagnostics)
+{
+    size_t corrected = 0;
+    for (size_t i = firstMaterial; i < materials.size(); ++i)
+    {
+        SceneMaterial& m = materials[i];
+
+        // Only the exact spec-default shape: fully metallic with nothing to
+        // modulate it. A material that authored metallic deliberately, or
+        // that ships a metallicRoughness texture, is left alone.
+        if (m.metallicRoughnessTextureIndex >= 0) continue;
+        if (m.metallic < 0.9f) continue;
+
+        m.metallic = 0.0f;
+
+        AssetDiagnostic d;
+        d.severity = AssetDiagnostic::Stale;
+        d.kind     = AssetKind::Model;
+        d.refPath  = owner.path;
+        d.sourceKey = owner.sourceKey;
+        d.detail =
+            "material " + std::to_string(i) +
+            ": no metallicRoughness texture and no authored metallicFactor; "
+            "imported as dielectric instead of glTF's default of 1.0";
+        diagnostics.push_back(std::move(d));
+        ++corrected;
+    }
+    return corrected;
+}
+
 } // namespace rt2::core

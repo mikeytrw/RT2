@@ -325,6 +325,9 @@ private:
 	bool        m_ImportOptionsOpen = false;
 	std::string m_PendingImportPath;
 	bool        m_PendingImportMergeMegaMesh = true;
+	// Defaults off: glTF's metallicFactor default is 1.0, and importing
+	// spec-correctly is the honest baseline. Opting in is a per-asset choice.
+	bool        m_PendingImportAssumeDielectric = false;
 };
 
 #endif // SCENE_EDITOR_UI_H
