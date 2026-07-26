@@ -128,7 +128,14 @@
   ],
   "envMap": {
     "height": 0,
+    "importSettings": {
+      "generateNormals": false,
+      "mergeMegaMesh": true,
+      "triangulate": true
+    },
+    "kind": "environment",
     "path": "",
+    "sourceKey": "",
     "width": 0
   },
   "materials": [
@@ -159,9 +166,8 @@
     }
   ],
   "metadata": {
-    "name": "vertical-slice",
-    "sourcePath": "C:\\Users\\mikey\\source\\repos\\RT2\\RT2App\\assets\\vertical-slice.rt2scene"
+    "name": "vertical-slice"
   },
   "textures": [],
-  "version": 2
+  "version": 3
 }

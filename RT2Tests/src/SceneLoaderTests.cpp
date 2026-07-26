@@ -4,6 +4,8 @@
 #include "ECSScene.h"
 #include "ECSComponents.h"
 #include "SceneLoader.h"
+#include "SceneLoaderTestSupport.h"
+#include "json.hpp"
 #include <glm/glm.hpp>
 #include <filesystem>
 #include <fstream>
@@ -21,6 +23,14 @@ namespace fs = std::filesystem;
 
 static const char* TEST_FILE = "test_scene.gltf";
 static const char* TEST_FILE_GLB = "test_scene.glb";
+
+static SceneTexture MakeTextureRef(const std::string& path)
+{
+    SceneTexture texture;
+    texture.ref.kind = AssetKind::Texture;
+    texture.ref.path = path;
+    return texture;
+}
 
 static void cleanupObjTestFiles()
 {
@@ -64,7 +74,7 @@ TEST_CASE("OBJ import flips V coordinates and converts legacy MTL shininess")
     }
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadObjIntoECS(scene, "test_scene.obj"));
+    REQUIRE(LoadObjForTest(scene, RepositoryRootForSceneLoaderTests(), "test_scene.obj"));
     REQUIRE(scene.meshRegistry.GetCount() == 1);
     const auto& mesh = scene.meshRegistry.GetMesh(0);
     REQUIRE(mesh.uvs.size() == 6);
@@ -96,7 +106,7 @@ TEST_CASE("OBJ import preserves shared indexed vertices")
     }
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadObjIntoECS(scene, "test_scene.obj"));
+    REQUIRE(LoadObjForTest(scene, RepositoryRootForSceneLoaderTests(), "test_scene.obj"));
     REQUIRE(scene.meshRegistry.GetCount() == 1);
     const auto& mesh = scene.meshRegistry.GetMesh(0);
     CHECK(mesh.vertices.size() / 3 == 4);
@@ -139,7 +149,7 @@ TEST_CASE("OBJ import classifies color and data texture color spaces")
 	}
 
 	ECSScene scene;
-	REQUIRE(SceneLoader::LoadObjIntoECS(scene, "test_scene.obj"));
+	REQUIRE(LoadObjForTest(scene, RepositoryRootForSceneLoaderTests(), "test_scene.obj"));
 	REQUIRE(scene.materials.size() == 1);
 	const SceneMaterial& material = scene.materials[0];
 	REQUIRE(material.baseColorTextureIndex >= 0);
@@ -174,7 +184,7 @@ TEST_CASE("Save and load empty scene")
     ECSScene scene;
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE));
     CHECK(loaded.meshRegistry.GetCount() == 0);
     CHECK(loaded.lights.empty());
     CHECK(loaded.textures.empty());
@@ -206,7 +216,7 @@ TEST_CASE("Mesh round-trips through glTF")
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE));
 
     auto meshView = loaded.registry.view<MeshRef, Transform>();
     size_t meshCount = std::distance(meshView.begin(), meshView.end());
@@ -240,11 +250,11 @@ TEST_CASE("Material round-trips through glTF")
     mat.baseColorTextureIndex = 0;
     scene.materials.push_back(mat);
 
-    scene.textures.push_back({"textures/albedo.png"});
+    scene.textures.push_back(MakeTextureRef("textures/albedo.png"));
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE));
     REQUIRE(loaded.materials.size() >= 1);
     const auto& m = loaded.materials[0];
     CHECK(m.type == MaterialType::Metal);
@@ -270,7 +280,7 @@ TEST_CASE("Emissive material round-trips through glTF")
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE));
     REQUIRE(loaded.materials.size() >= 1);
     const auto& m = loaded.materials[0];
     CHECK(m.type == MaterialType::Emissive);
@@ -295,7 +305,7 @@ TEST_CASE("Point light round-trips through glTF")
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE));
     REQUIRE(loaded.lights.size() >= 1);
     const auto& l = loaded.lights[0];
     CHECK(l.type == LightType::Point);
@@ -322,7 +332,7 @@ TEST_CASE("Spot light round-trips through glTF")
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE));
     REQUIRE(loaded.lights.size() >= 1);
     const auto& l = loaded.lights[0];
     CHECK(l.type == LightType::Spot);
@@ -338,15 +348,15 @@ TEST_CASE("Texture round-trips through glTF")
 {
     cleanupTestFiles();
     ECSScene scene;
-    scene.textures.push_back({"textures/albedo.png"});
-    scene.textures.push_back({"textures/normal.png"});
+    scene.textures.push_back(MakeTextureRef("textures/albedo.png"));
+    scene.textures.push_back(MakeTextureRef("textures/normal.png"));
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE));
     REQUIRE(loaded.textures.size() == 2);
-    CHECK(loaded.textures[0].filepath == "textures/albedo.png");
-    CHECK(loaded.textures[1].filepath == "textures/normal.png");
+    CHECK(loaded.textures[0].ref.path == "textures/albedo.png");
+    CHECK(loaded.textures[1].ref.path == "textures/normal.png");
     cleanupTestFiles();
 }
 
@@ -364,7 +374,7 @@ TEST_CASE("Camera round-trips through glTF")
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE));
     const auto& cam = loaded.camera;
     CHECK(cam.position == glm::vec3(3.0f, 4.0f, 5.0f));
     CHECK(cam.forwardDirection == glm::vec3(0.0f, -0.5f, -1.0f));
@@ -381,8 +391,8 @@ TEST_CASE("Full scene with multiple meshes, materials, lights round-trips")
     cleanupTestFiles();
     ECSScene scene;
 
-    scene.textures.push_back({"textures/albedo.png"});
-    scene.textures.push_back({"textures/normal.png"});
+    scene.textures.push_back(MakeTextureRef("textures/albedo.png"));
+    scene.textures.push_back(MakeTextureRef("textures/normal.png"));
 
     SceneMaterial mat0;
     mat0.type = MaterialType::Lambertian;
@@ -442,10 +452,10 @@ TEST_CASE("Full scene with multiple meshes, materials, lights round-trips")
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE));
 
     REQUIRE(loaded.textures.size() == 2);
-    CHECK(loaded.textures[0].filepath == "textures/albedo.png");
+    CHECK(loaded.textures[0].ref.path == "textures/albedo.png");
 
     REQUIRE(loaded.materials.size() >= 3);
     CHECK(loaded.materials[0].type == MaterialType::Lambertian);
@@ -493,7 +503,7 @@ TEST_CASE("Scene saves and loads as GLB (binary glTF)")
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE_GLB));
     ECSScene loaded;
-    REQUIRE(SceneLoader::LoadIntoECS(loaded, TEST_FILE_GLB));
+    REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE_GLB));
     REQUIRE(loaded.materials.size() >= 2);
     CHECK(loaded.materials[1].baseColor == glm::vec3(0.2f, 0.4f, 0.6f));
     cleanupTestFiles();
@@ -504,8 +514,47 @@ TEST_CASE("Scene saves and loads as GLB (binary glTF)")
 TEST_CASE("Load returns false for non-existent file")
 {
     ECSScene loaded;
-    CHECK_FALSE(SceneLoader::LoadIntoECS(loaded, "does_not_exist.gltf"));
+    CHECK_FALSE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), "does_not_exist.gltf"));
 }
+
+TEST_CASE("Phase7 W3 step 7.4: glTF export relativizes texture refs")
+{
+    const auto root = fs::temp_directory_path() /
+        "rt2_step7_gltf_portable";
+    const auto output = root / "scene.gltf";
+    const auto source = root / "textures" / "albedo.png";
+    fs::create_directories(source.parent_path());
+
+    ECSScene scene;
+    scene.textures.push_back(MakeTextureRef(source.generic_string()));
+    REQUIRE(SceneLoader::Save(scene, output.string()));
+
+    nlohmann::json saved;
+    { std::ifstream in(output); in >> saved; }
+    REQUIRE(saved["images"].size() == 1);
+    CHECK(saved["images"][0]["uri"] == "textures/albedo.png");
+    fs::remove_all(root);
+}
+
+#ifdef _WIN32
+TEST_CASE("Phase7 W3 step 7.4: glTF export rejects cross-volume texture refs")
+{
+    const auto root = fs::temp_directory_path() /
+        "rt2_step7_gltf_nonportable";
+    const auto output = root / "scene.gltf";
+    fs::create_directories(root);
+    { std::ofstream out(output, std::ios::binary); out << "sentinel"; }
+
+    ECSScene scene;
+    scene.textures.push_back(MakeTextureRef("Z:/external/albedo.png"));
+    CHECK_FALSE(SceneLoader::Save(scene, output.string()));
+    std::ifstream in(output, std::ios::binary);
+    CHECK(std::string((std::istreambuf_iterator<char>(in)), {}) ==
+          "sentinel");
+    in.close();
+    fs::remove_all(root);
+}
+#endif
 
 // --- Save returns false for invalid path ---
 

@@ -1,0 +1,12 @@
+{
+  "scenePath": "script-scenario.rt2scene",
+  "frames": 60,
+  "uuidSeed": 42,
+  "forbidSpawn": true,
+  "expectedTransforms": {
+    "00000000-0000-4000-8000-000000000001": {
+      "position": [1.0, 0.0, 0.0],
+      "scale": [1.0, 1.0, 1.0]
+    }
+  }
+}

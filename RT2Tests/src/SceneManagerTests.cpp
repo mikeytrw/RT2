@@ -3,6 +3,7 @@
 #include "SceneManager.h"
 #include "MeshRegistry.h"
 #include "PrimitiveGeometry.h"
+#include "SceneGraph.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -95,6 +96,38 @@ TEST_CASE("SceneManager: RemoveEntity destroys entity")
 	CHECK(mgr.GetECS().registry.valid(e2.id));
 }
 
+TEST_CASE("SceneManager: compaction tolerates a MeshRef with no backing mesh")
+{
+	// Regression. AddObject used to emplace MeshRef{meshIndex = 0}
+	// unconditionally, so on an empty mesh registry every entity carried a
+	// reference to a mesh that was never added. CompactMeshRegistry then fed
+	// that index to MeshRegistry::GetMesh, an unchecked m_Meshes[index],
+	// reading out of bounds: SIGSEGV in Release and a 0xC0000409 fastfail in
+	// Debug. The Release crash aborted the remainder of the suite, hiding 48
+	// other cases, so this is pinned directly rather than relied upon
+	// incidentally.
+	SceneManager mgr;
+	auto a = mgr.AddObject("A");
+	mgr.AddObject("B");
+	REQUIRE(mgr.GetEntityCount() == 2);
+
+	// AddObject deliberately still emplaces MeshRef{0}; with an empty
+	// registry that is a reference to a mesh which does not exist.
+	REQUIRE(mgr.GetECS().meshRegistry.GetCount() == 0);
+	REQUIRE(mgr.HasMeshRef(a));
+
+	// Must not crash, and must leave the scene intact.
+	mgr.CompactMeshRegistry();
+	CHECK(mgr.GetEntityCount() == 2);
+	CHECK(mgr.GetECS().meshRegistry.GetCount() == 0);
+
+	// An arbitrarily out-of-range index is skipped, not followed.
+	auto& reg = mgr.GetECS().registry;
+	reg.get<MeshRef>(a.id).meshIndex = 9999u;
+	mgr.CompactMeshRegistry();
+	CHECK(mgr.GetEntityCount() == 2);
+}
+
 TEST_CASE("SceneManager: RemoveEntity on invalid id is no-op")
 {
 	SceneManager mgr;
@@ -105,7 +138,7 @@ TEST_CASE("SceneManager: RemoveEntity on invalid id is no-op")
 	CHECK(mgr.GetEntityCount() == 1);
 }
 
-TEST_CASE("SceneManager: SetTransform updates TRS and marks dirty")
+TEST_CASE("SceneManager: SetTransform updates TRS and the world matrix")
 {
 	SceneManager mgr;
 	auto e = mgr.AddObject("Box", {0, 0, 0});
@@ -118,12 +151,34 @@ TEST_CASE("SceneManager: SetTransform updates TRS and marks dirty")
 	CHECK(tf.translation.y == 5.0f);
 	CHECK(tf.translation.z == 5.0f);
 	CHECK(tf.scale.x == 3.0f);
-	CHECK(tf.dirty == true);
+
+	// `dirty` is NOT observable here. SetTransform raises it via
+	// SetLocalDirty and then immediately consumes it: the same function
+	// calls RefreshCameraForwardDirections, which runs
+	// SceneGraph::UpdateWorldTransforms, which clears the flag once the
+	// world matrix is recomputed. Asserting dirty == true here was testing
+	// an intermediate state that no longer survives the call.
+	//
+	// The real, durable contract is that the world matrix reflects the new
+	// TRS by the time SetTransform returns.
+	CHECK_FALSE(tf.dirty);
+	const glm::vec3 world = SceneGraph::GetWorldPosition(reg, e.id);
+	CHECK(world.x == doctest::Approx(5.0f));
+	CHECK(world.y == doctest::Approx(5.0f));
+	CHECK(world.z == doctest::Approx(5.0f));
 }
 
 TEST_CASE("SceneManager: SetMaterial updates MeshRef")
 {
 	SceneManager mgr;
+	// SetMaterialIndexState bounds-checks against the material list, which a
+	// bare SceneManager starts empty. Without these the call is a legitimate
+	// out-of-range rejection, not a bug — which is exactly how this test
+	// used to fail.
+	mgr.AddMaterial(SceneMaterial{});
+	mgr.AddMaterial(SceneMaterial{});
+	mgr.AddMaterial(SceneMaterial{});
+
 	auto e = mgr.AddObject("Box", {}, {}, 1.0f, 0);
 
 	mgr.SetMaterial(e, 2);
@@ -131,6 +186,20 @@ TEST_CASE("SceneManager: SetMaterial updates MeshRef")
 	auto& reg = mgr.GetECS().registry;
 	auto& ref = reg.get<MeshRef>(e.id);
 	CHECK(ref.materialIndex == 2);
+}
+
+TEST_CASE("SceneManager: SetMaterial rejects an out-of-range index")
+{
+	SceneManager mgr;
+	mgr.AddMaterial(SceneMaterial{});
+	auto e = mgr.AddObject("Box", {}, {}, 1.0f, 0);
+
+	// Only index 0 is valid. The rejection must leave the existing index
+	// intact rather than writing a dangling material reference.
+	mgr.SetMaterial(e, 5);
+
+	auto& ref = mgr.GetECS().registry.get<MeshRef>(e.id);
+	CHECK(ref.materialIndex == 0);
 }
 
 TEST_CASE("SceneManager: Emissive sphere added to scene only creates lights for sphere")

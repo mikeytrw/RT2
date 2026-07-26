@@ -4,6 +4,7 @@
 #include "ECSScene.h"
 #include "ECSComponents.h"
 #include "SceneLoader.h"
+#include "SceneLoaderTestSupport.h"
 #include "GltfBuilder.h"  // helper to construct test glTF files
 
 #include <glm/glm.hpp>
@@ -43,7 +44,7 @@ TEST_CASE("Load glTF with single triangle extracts positions and indices")
     REQUIRE(builder.Write(TEST_GLB));
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadIntoECS(scene, TEST_GLB));
+    REQUIRE(LoadGltfForTest(scene, RepositoryRootForSceneLoaderTests(), TEST_GLB));
     CHECK(scene.meshRegistry.GetCount() >= 1);
 
     const auto& mesh = scene.meshRegistry.GetMesh(0);
@@ -78,7 +79,7 @@ TEST_CASE("Load glTF with normals extracts normal data")
     REQUIRE(builder.Write(TEST_GLB));
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadIntoECS(scene, TEST_GLB));
+    REQUIRE(LoadGltfForTest(scene, RepositoryRootForSceneLoaderTests(), TEST_GLB));
     CHECK(scene.meshRegistry.GetCount() >= 1);
 
     const auto& mesh = scene.meshRegistry.GetMesh(0);
@@ -102,7 +103,7 @@ TEST_CASE("Load glTF with UVs extracts texcoord data")
     REQUIRE(builder.Write(TEST_GLB));
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadIntoECS(scene, TEST_GLB));
+    REQUIRE(LoadGltfForTest(scene, RepositoryRootForSceneLoaderTests(), TEST_GLB));
     CHECK(scene.meshRegistry.GetCount() >= 1);
 
     const auto& mesh = scene.meshRegistry.GetMesh(0);
@@ -129,7 +130,7 @@ TEST_CASE("Load glTF with uint16 indices widens to uint32")
     REQUIRE(builder.Write(TEST_GLB));
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadIntoECS(scene, TEST_GLB));
+    REQUIRE(LoadGltfForTest(scene, RepositoryRootForSceneLoaderTests(), TEST_GLB));
     const auto& mesh = scene.meshRegistry.GetMesh(0);
     REQUIRE(mesh.indices.size() == 3);
     CHECK(mesh.indices[0] == 0);
@@ -149,7 +150,7 @@ TEST_CASE("Load glTF with non-indexed primitive generates sequential indices")
     REQUIRE(builder.Write(TEST_GLB));
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadIntoECS(scene, TEST_GLB));
+    REQUIRE(LoadGltfForTest(scene, RepositoryRootForSceneLoaderTests(), TEST_GLB));
     const auto& mesh = scene.meshRegistry.GetMesh(0);
     REQUIRE(mesh.vertices.size() == 9);
     REQUIRE(mesh.indices.size() == 3);
@@ -172,7 +173,7 @@ TEST_CASE("Load glTF with node transform applies translation to mesh")
     REQUIRE(builder.Write(TEST_GLB));
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadIntoECS(scene, TEST_GLB));
+    REQUIRE(LoadGltfForTest(scene, RepositoryRootForSceneLoaderTests(), TEST_GLB));
     auto meshView = scene.registry.view<MeshRef, Transform>();
     size_t count = std::distance(meshView.begin(), meshView.end());
     REQUIRE(count >= 1);
@@ -195,7 +196,7 @@ TEST_CASE("Load glTF with node scale applies scale to mesh")
     REQUIRE(builder.Write(TEST_GLB));
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadIntoECS(scene, TEST_GLB));
+    REQUIRE(LoadGltfForTest(scene, RepositoryRootForSceneLoaderTests(), TEST_GLB));
     auto meshView = scene.registry.view<MeshRef, Transform>();
     size_t count = std::distance(meshView.begin(), meshView.end());
     REQUIRE(count >= 1);
@@ -218,7 +219,7 @@ TEST_CASE("Load glTF with node rotation quaternion stores rotation")
     REQUIRE(builder.Write(TEST_GLB));
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadIntoECS(scene, TEST_GLB));
+    REQUIRE(LoadGltfForTest(scene, RepositoryRootForSceneLoaderTests(), TEST_GLB));
     auto meshView = scene.registry.view<MeshRef, Transform>();
     size_t count = std::distance(meshView.begin(), meshView.end());
     REQUIRE(count >= 1);
@@ -246,7 +247,7 @@ TEST_CASE("Load glTF with parent-child node hierarchy applies parent transform")
     REQUIRE(builder.Write(TEST_GLB));
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadIntoECS(scene, TEST_GLB));
+    REQUIRE(LoadGltfForTest(scene, RepositoryRootForSceneLoaderTests(), TEST_GLB));
     auto meshView = scene.registry.view<MeshRef, Transform>();
     size_t count = std::distance(meshView.begin(), meshView.end());
     REQUIRE(count >= 1);
@@ -275,7 +276,7 @@ TEST_CASE("Load glTF with multiple primitives in one mesh creates separate Scene
     REQUIRE(builder.Write(TEST_GLB));
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadIntoECS(scene, TEST_GLB));
+    REQUIRE(LoadGltfForTest(scene, RepositoryRootForSceneLoaderTests(), TEST_GLB));
     auto meshView = scene.registry.view<MeshRef>();
     CHECK(meshView.size() == 2);
 
@@ -295,7 +296,7 @@ TEST_CASE("Load glTF with material on primitive assigns materialIndex")
     REQUIRE(builder.Write(TEST_GLB));
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadIntoECS(scene, TEST_GLB));
+    REQUIRE(LoadGltfForTest(scene, RepositoryRootForSceneLoaderTests(), TEST_GLB));
     auto meshView = scene.registry.view<MeshRef>();
     REQUIRE(meshView.size() >= 1);
     auto entity = *meshView.begin();
@@ -315,7 +316,7 @@ TEST_CASE("Load glTF skips non-triangle primitives")
     REQUIRE(builder.Write(TEST_GLB));
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadIntoECS(scene, TEST_GLB));
+    REQUIRE(LoadGltfForTest(scene, RepositoryRootForSceneLoaderTests(), TEST_GLB));
     auto meshView = scene.registry.view<MeshRef>();
     CHECK(meshView.empty());
 
@@ -333,7 +334,7 @@ TEST_CASE("Load glTF with .gltf (ASCII) format also extracts geometry")
     REQUIRE(builder.Write(TEST_GLTF));
 
     ECSScene scene;
-    REQUIRE(SceneLoader::LoadIntoECS(scene, TEST_GLTF));
+    REQUIRE(LoadGltfForTest(scene, RepositoryRootForSceneLoaderTests(), TEST_GLTF));
     CHECK(scene.meshRegistry.GetCount() >= 1);
     REQUIRE(scene.meshRegistry.GetMesh(0).vertices.size() == 9);
 

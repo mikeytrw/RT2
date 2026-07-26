@@ -2,6 +2,7 @@
 
 #include "SceneRecoveryService.h"
 #include "SceneSerializer.h"
+#include "SceneSerializerTestSupport.h"
 #include "SceneDocument.h"
 #include "SceneAssetResolver.h"
 #include "SceneManager.h"
@@ -11,8 +12,12 @@
 #include "Phase1AFixtureGenerator.h"
 #include "FixtureGenerator.h"
 #include "UnsavedChangesCoordinator.h"
+#include "ScriptFieldRegistry.h"
+#include "ScriptFieldResolver.h"
+#include "ScriptFieldChangePolicy.h"
 #include "core/UUID.h"
 #include "core/Error.h"
+#include "json.hpp"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -60,12 +65,15 @@ static bool SnapshotAfterInterval(SceneRecoveryService& svc,
                                   const std::filesystem::path& logicalAssetRoot = {})
 {
     const auto root = logicalAssetRoot.empty()
-        ? std::filesystem::current_path()
+        ? std::filesystem::temp_directory_path()
         : logicalAssetRoot;
-    CHECK_FALSE(svc.MaybeSnapshot(doc, revision, untitledId, root, err));
+    std::vector<AssetDiagnostic> diagnostics;
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, revision, untitledId, root, diagnostics, err));
     if (!err.IsOk()) return false;
     clock.now += 60;
-    return svc.MaybeSnapshot(doc, revision, untitledId, root, err);
+    return svc.MaybeSnapshot(
+        doc, revision, untitledId, root, diagnostics, err);
 }
 
 // Build a scene with a primitive entity so it can be saved/loaded without
@@ -125,12 +133,58 @@ TEST_CASE("Recovery: clean doc writes nothing")
     auto doc = MakePrimitiveScene(&provider);
     // doc.metadata.dirty == false
     Error err;
-    CHECK_FALSE(svc.MaybeSnapshot(doc, 0, err));
+    std::vector<AssetDiagnostic> diagnostics;
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 0, "clean", dir, diagnostics, err));
     CHECK(err.IsOk());
     // No records discovered.
     auto recs = svc.Discover(err);
     CHECK(recs.empty());
     std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Recovery: untitled asset root is per-user and never CWD")
+{
+    const auto localAppData = UniqueTempDir("rcv_local_app_data");
+    std::filesystem::path root;
+    Error err;
+
+    REQUIRE(SceneRecoveryService::EnsureUntitledRecoveryAssetRoot(
+        localAppData, root, err));
+    CHECK(err.IsOk());
+    CHECK(root == (localAppData / "RT2" / "recovery").lexically_normal());
+    CHECK(root.is_absolute());
+    CHECK(std::filesystem::is_directory(root));
+
+    root.clear();
+    CHECK_FALSE(SceneRecoveryService::EnsureUntitledRecoveryAssetRoot(
+        "relative-local-app-data", root, err));
+    CHECK(root.empty());
+    CHECK(err.code == Error::InvalidArgument);
+    std::filesystem::remove_all(localAppData);
+}
+
+TEST_CASE("Recovery: due untitled snapshot rejects an invalid logical root")
+{
+    const auto recoveryDir = UniqueTempDir("rcv_invalid_asset_root");
+    FakeClock clk;
+    SceneRecoveryService svc(recoveryDir, ClockRef(clk), 8, 0.0);
+    DeterministicUuidProvider ids;
+    auto doc = MakePrimitiveScene(&ids);
+    doc.metadata.dirty = true;
+    std::vector<AssetDiagnostic> diagnostics;
+    Error err;
+
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 1, "untitled", {}, diagnostics, err));
+    CHECK(err.IsOk());
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 1, "untitled", "relative-root", diagnostics, err));
+    CHECK(err.code == Error::InvalidArgument);
+    CHECK(err.detail ==
+          "untitled recovery requires an absolute logical asset root");
+    CHECK(svc.Discover(err).empty());
+    std::filesystem::remove_all(recoveryDir);
 }
 
 // 2. Dirty document writes after the interval.
@@ -144,11 +198,15 @@ TEST_CASE("Recovery: dirty doc writes after interval")
     doc.metadata.dirty = true;
     doc.metadata.sourcePath = (dir / "scene.rt2scene").string();
     Error err;
-    CHECK_FALSE(svc.MaybeSnapshot(doc, 1, "unused", dir, err));
+    std::vector<AssetDiagnostic> diagnostics;
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 1, "unused", dir, diagnostics, err));
     clk.now = 1059;
-    CHECK_FALSE(svc.MaybeSnapshot(doc, 1, "unused", dir, err));
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 1, "unused", dir, diagnostics, err));
     clk.now = 1060;
-    CHECK(svc.MaybeSnapshot(doc, 1, "unused", dir, err));
+    CHECK(svc.MaybeSnapshot(
+        doc, 1, "unused", dir, diagnostics, err));
     CHECK(err.IsOk());
     auto recs = svc.Discover(err);
     REQUIRE(recs.size() == 1);
@@ -167,14 +225,18 @@ TEST_CASE("Recovery: injected clock controls scheduling")
     doc.metadata.dirty = true;
     doc.metadata.sourcePath = (dir / "scene.rt2scene").string();
     Error err;
+    std::vector<AssetDiagnostic> diagnostics;
     // First snapshot at t=1000.
-    CHECK_FALSE(svc.MaybeSnapshot(doc, 1, "unused", dir, err));
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 1, "unused", dir, diagnostics, err));
     // Advance by 30s — not enough.
     clk.now = 1030;
-    CHECK_FALSE(svc.MaybeSnapshot(doc, 2, "unused", dir, err)); // different revision but interval not elapsed
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 2, "unused", dir, diagnostics, err)); // different revision but interval not elapsed
     // Advance by 40s — total 70 since last, enough.
     clk.now = 1060;
-    CHECK(svc.MaybeSnapshot(doc, 2, "unused", dir, err));
+    CHECK(svc.MaybeSnapshot(
+        doc, 2, "unused", dir, diagnostics, err));
     std::filesystem::remove_all(dir);
 }
 
@@ -192,7 +254,9 @@ TEST_CASE("Recovery: unchanged revision skips write")
     REQUIRE(SnapshotAfterInterval(svc, doc, 5, clk, err));
     // Advance past interval but same revision.
     clk.now = 2000;
-    CHECK_FALSE(svc.MaybeSnapshot(doc, 5, err));
+    std::vector<AssetDiagnostic> diagnostics;
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 5, "unused", dir, diagnostics, err));
     std::filesystem::remove_all(dir);
 }
 
@@ -239,7 +303,7 @@ TEST_CASE("Recovery: explicit file unchanged by autosave")
         auto doc = MakePrimitiveScene(&provider);
         doc.metadata.sourcePath = scenePath.string();
         Error err;
-        REQUIRE(SceneSerializer::Save(doc, scenePath, err));
+        REQUIRE(SaveSceneForTest(doc, scenePath, err));
     }
     std::string before = ReadFileBytes(scenePath);
 
@@ -364,7 +428,7 @@ TEST_CASE("Recovery: explicit file unchanged through restore")
         auto doc = MakePrimitiveScene(&provider);
         doc.metadata.sourcePath = scenePath.string();
         Error err;
-        REQUIRE(SceneSerializer::Save(doc, scenePath, err));
+        REQUIRE(SaveSceneForTest(doc, scenePath, err));
     }
     std::string before = ReadFileBytes(scenePath);
 
@@ -400,7 +464,7 @@ TEST_CASE("Recovery: discard removes record only")
         auto doc = MakePrimitiveScene(&provider);
         doc.metadata.sourcePath = scenePath.string();
         Error err;
-        REQUIRE(SceneSerializer::Save(doc, scenePath, err));
+        REQUIRE(SaveSceneForTest(doc, scenePath, err));
     }
 
     FakeClock clk;
@@ -439,6 +503,91 @@ TEST_CASE("Recovery: corrupt manifest is reported")
         if (!r.valid) { foundInvalid = true; break; }
     }
     CHECK(foundInvalid);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Recovery: manifest v1 is rejected at envelope discovery")
+{
+    auto dir = UniqueTempDir("rcv_old_manifest");
+    FakeClock clk;
+    SceneRecoveryService svc(dir, ClockRef(clk), 8, 60.0);
+    OsUuidProvider provider;
+    auto doc = MakePrimitiveScene(&provider);
+    doc.metadata.dirty = true;
+    doc.metadata.sourcePath = dir / "scene.rt2scene";
+    Error err;
+    REQUIRE(SnapshotAfterInterval(svc, doc, 1, clk, err));
+
+    auto records = svc.Discover(err);
+    REQUIRE(records.size() == 1);
+    nlohmann::json envelope;
+    { std::ifstream in(records[0].recordPath); in >> envelope; }
+    envelope["version"] = 1;
+    { std::ofstream out(records[0].recordPath, std::ios::trunc); out << envelope.dump(2); }
+
+    records = svc.Discover(err);
+    REQUIRE(records.size() == 1);
+    CHECK_FALSE(records[0].valid);
+    CHECK(records[0].diagnostic.find("unsupported recovery version 1") !=
+          std::string::npos);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Recovery: restored script fields resolve from original source path")
+{
+    auto dir = UniqueTempDir("rcv_script_root");
+    std::filesystem::create_directories(dir / "scripts");
+    {
+        std::ofstream script(dir / "scripts" / "move.lua");
+        script << "rt2.fields = { speed = rt2.field.float(1.0) }\n";
+    }
+
+    FakeClock clk;
+    SceneRecoveryService svc(dir / "Recovery", ClockRef(clk), 8, 60.0);
+    OsUuidProvider provider;
+    auto doc = MakePrimitiveScene(&provider);
+    doc.metadata.dirty = true;
+    doc.metadata.sourcePath = dir / "scene.rt2scene";
+    auto entities = doc.ecs.registry.view<EntityIdComponent>();
+    REQUIRE(entities.size() == 1);
+    const auto entity = *entities.begin();
+    ScriptComponent component;
+    component.asset.kind = AssetKind::Script;
+    component.asset.path = "scripts/move.lua";
+    component.asset.sourceKey = "lua:asset=scripts/move.lua";
+    component.fieldValues["speed"] = {
+        ScriptFieldType::Float, ScriptFieldValue{5.0} };
+    doc.ecs.registry.emplace<ScriptComponent>(entity, component);
+
+    Error err;
+    REQUIRE(SnapshotAfterInterval(svc, doc, 2, clk, err));
+    auto records = svc.Discover(err);
+    REQUIRE(records.size() == 1);
+
+    SceneDocument restored;
+    restored.SetUuidProvider(&provider);
+    std::vector<AssetDiagnostic> assetDiagnostics;
+    SceneLoadReport loadReport;
+    REQUIRE(svc.Restore(
+        records[0], restored, assetDiagnostics, loadReport, err));
+    CHECK(restored.metadata.sourcePath == doc.metadata.sourcePath);
+
+    ScriptFieldRegistry registry;
+    std::vector<FieldDiagnostic> fieldDiagnostics = loadReport.fieldDiagnostics;
+    AssetResolutionContext assetContext{records[0].assetRoot, nullptr};
+    const auto resolution = ScriptFieldResolver::ResolveDocument(
+        restored, registry, assetContext, assetDiagnostics, fieldDiagnostics);
+    CHECK(resolution.resolvedEntities == 1);
+    CHECK(resolution.skippedEntities == 0);
+    CHECK_FALSE(resolution.changed);
+    CHECK(fieldDiagnostics.empty());
+
+    const auto restoredEntity = restored.FindByUuid(
+        doc.ecs.registry.get<EntityIdComponent>(entity).id);
+    REQUIRE(restoredEntity != static_cast<entt::entity>(entt::null));
+    CHECK(std::get<double>(restored.ecs.registry
+        .get<ScriptComponent>(restoredEntity).fieldValues.at("speed").value) ==
+        doctest::Approx(5.0));
     std::filesystem::remove_all(dir);
 }
 
@@ -635,7 +784,7 @@ TEST_CASE("Recovery: asset-backed restore preserves UUIDs overrides and environm
     auto& doc = mgr.AuthoringDoc();
     doc.metadata.sourcePath = scenePath;
     doc.metadata.dirty = false;
-    REQUIRE(SceneSerializer::Save(doc, scenePath, err));
+    REQUIRE(SaveSceneForTest(doc, scenePath, err));
     const std::string explicitBytes = ReadFileBytes(scenePath);
 
     auto imported = doc.ecs.registry.view<ImportedMeshSourceComponent>();

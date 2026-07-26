@@ -18,10 +18,14 @@ EditorMutationResult EditorCommandHistory::Execute(
 		return result;
 	}
 
-	// A successful, effective submission clears the redo stack. We treat
-	// "effective" as: success == true. (No-op suppression is the command's
-	// responsibility at construction time; a command that reaches here with
-	// success == true is recorded.)
+	// A successful but ineffective mutation (the manager suppressed a
+	// canonical no-op) is not recorded: the document did not change, so
+	// a phantom undo entry must not be created and the redo stack must
+	// survive.
+	if (!result.effective)
+		return result;
+
+	// A successful, effective submission clears the redo stack.
 	while (!m_RedoStack.empty()) m_RedoStack.pop();
 	PushUndo(std::move(cmd));
 	m_DocumentGeneration = scene.DocumentGeneration();
@@ -45,6 +49,11 @@ EditorMutationResult EditorCommandHistory::RecordApplied(
 		// Not effective — do not record, leave redo intact.
 		return appliedResult;
 	}
+
+	// A successful but ineffective mutation (manager suppressed a no-op)
+	// is not recorded. The redo stack survives.
+	if (!appliedResult.effective)
+		return appliedResult;
 
 	while (!m_RedoStack.empty()) m_RedoStack.pop();
 	PushUndo(std::move(cmd));

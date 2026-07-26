@@ -41,6 +41,18 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 	m_BLASes.resize(meshes.size());
 	m_TotalTriangleCount = 0;
 
+	// Track staging buffers to destroy after the batched upload completes.
+	struct StagingBuf { VkBuffer buf; VkDeviceMemory mem; };
+	std::vector<StagingBuf> stagingBufs;
+	stagingBufs.reserve(meshes.size() * 2);
+
+	// First pass: create all device-local vertex/index buffers + staging
+	// buffers (CPU-side, no GPU commands). Record all copy commands into
+	// a single ImmediateSubmit for the entire batch — avoids 2*N separate
+	// vkQueueWaitIdle calls.
+	std::vector<std::tuple<VkBuffer, VkBuffer, VkDeviceSize>> pendingCopies;
+	pendingCopies.reserve(meshes.size() * 2);
+
 	for (size_t i = 0; i < meshes.size(); i++)
 	{
 		const auto& mesh = meshes[i];
@@ -76,12 +88,8 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 			             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 			             blas.vertexBuffer, blas.vertexMemory);
 
-			VkBuffer sBuf = stagingBuf; VkDeviceMemory sMem = stagingMem; VkBuffer dB = blas.vertexBuffer; VkDeviceSize sz = vertexBufferSize;
-			CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
-				VkBufferCopy region = {}; region.size = sz;
-				vkCmdCopyBuffer(cmd, sBuf, dB, 1, &region);
-			});
-			GpuResources::DestroyBuffer(m_Device, sBuf, sMem);
+			pendingCopies.push_back({stagingBuf, blas.vertexBuffer, vertexBufferSize});
+			stagingBufs.push_back({stagingBuf, stagingMem});
 		}
 
 		// --- Index buffer (DEVICE_LOCAL + staging) ---
@@ -103,91 +111,175 @@ bool AccelerationStructure::BuildBLASes(VkCommandBuffer cmdBuffer,
 			             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
 			             blas.indexBuffer, blas.indexMemory);
 
-			VkBuffer sBuf = stagingBuf; VkDeviceMemory sMem = stagingMem; VkBuffer dB = blas.indexBuffer; VkDeviceSize sz = indexBufferSize;
-			CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
-				VkBufferCopy region = {}; region.size = sz;
-				vkCmdCopyBuffer(cmd, sBuf, dB, 1, &region);
-			});
-			GpuResources::DestroyBuffer(m_Device, sBuf, sMem);
+			pendingCopies.push_back({stagingBuf, blas.indexBuffer, indexBufferSize});
+			stagingBufs.push_back({stagingBuf, stagingMem});
 		}
-
-		// --- BLAS geometry ---
-		VkAccelerationStructureGeometryKHR geometry = {};
-		geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
-		geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-		geometry.flags = mesh.isTransparent ? 0 : VK_GEOMETRY_OPAQUE_BIT_KHR;
-
-		VkAccelerationStructureGeometryTrianglesDataKHR trianglesData = {};
-		trianglesData.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
-		trianglesData.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
-		trianglesData.vertexData.deviceAddress = m_Device.GetBufferDeviceAddress(blas.vertexBuffer);
-		trianglesData.vertexStride = 3 * sizeof(float);
-		trianglesData.maxVertex = static_cast<uint32_t>(mesh.vertices->size() / 3) - 1;
-		trianglesData.indexType = VK_INDEX_TYPE_UINT32;
-		trianglesData.indexData.deviceAddress = m_Device.GetBufferDeviceAddress(blas.indexBuffer);
-		geometry.geometry.triangles = trianglesData;
-
-		// --- Build sizes ---
-		VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {};
-		buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
-		buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-		buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
-		buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-		buildInfo.geometryCount = 1;
-		buildInfo.pGeometries = &geometry;
-
-		VkAccelerationStructureBuildSizesInfoKHR sizeInfo = {};
-		sizeInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
-
-		uint32_t primitiveCount = triCount;
-		g_RTDispatch.GetAccelerationStructureBuildSizesKHR(device,
-			VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
-			&buildInfo, &primitiveCount, &sizeInfo);
-
-		// --- BLAS buffer ---
-		GpuResources::CreateBuffer(m_Device, sizeInfo.accelerationStructureSize,
-		             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
-		             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-		             blas.blasBuffer, blas.blasMemory);
-
-		VkAccelerationStructureCreateInfoKHR createInfo = {};
-		createInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
-		createInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-		createInfo.buffer = blas.blasBuffer;
-		createInfo.size = sizeInfo.accelerationStructureSize;
-		g_RTDispatch.CreateAccelerationStructureKHR(device, &createInfo, nullptr, &blas.handle);
-
-		// --- Scratch buffer ---
-		GpuResources::CreateBuffer(m_Device, sizeInfo.buildScratchSize,
-		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-		             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-		             blas.scratchBuffer, blas.scratchMemory);
-
-		buildInfo.dstAccelerationStructure = blas.handle;
-		buildInfo.scratchData.deviceAddress = m_Device.GetBufferDeviceAddress(blas.scratchBuffer);
-
-		VkAccelerationStructureBuildRangeInfoKHR buildRangeInfo = {};
-		buildRangeInfo.primitiveCount = primitiveCount;
-		buildRangeInfo.primitiveOffset = 0;
-		buildRangeInfo.firstVertex = 0;
-		buildRangeInfo.transformOffset = 0;
-
-		VkAccelerationStructureBuildRangeInfoKHR* pBuildRangeInfos = &buildRangeInfo;
-		g_RTDispatch.CmdBuildAccelerationStructuresKHR(cmdBuffer, 1, &buildInfo, &pBuildRangeInfos);
-
-		// --- Get BLAS device address ---
-		VkAccelerationStructureDeviceAddressInfoKHR addrInfo = {};
-		addrInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
-		addrInfo.accelerationStructure = blas.handle;
-		blas.deviceAddress = g_RTDispatch.GetAccelerationStructureDeviceAddressKHR(device, &addrInfo);
-
-		// NOTE: scratch/vertex/index buffers are freed after vkQueueWaitIdle
-		// (in next BuildBLASes call or Destroy), NOT here — freeing during
-		// command buffer recording causes VK_ERROR_DEVICE_LOST on large meshes.
 	}
 
+	// Batch all staging copies into chunked ImmediateSubmit calls.
+	// Keep chunks small to avoid exhausting Vulkan memory/allocation limits.
+	RT_LOG("[BuildBLASes] batched %d staging copies (chunked)", (int)pendingCopies.size());
+	printf("[BuildBLASes] batched %d staging copies (chunked 64/submit)\n", (int)pendingCopies.size());
+	fflush(stdout);
+	{
+		size_t idx = 0;
+		int chunkNum = 0;
+		while (idx < pendingCopies.size())
+		{
+			size_t chunkEnd = std::min(idx + 64, pendingCopies.size());
+			if (chunkNum % 50 == 0)
+			{
+				printf("[BuildBLASes] staging chunk %d: copies %zu-%zu\n", chunkNum, idx, chunkEnd);
+				fflush(stdout);
+			}
+			CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+				for (size_t j = idx; j < chunkEnd; ++j)
+				{
+					const auto& [src, dst, size] = pendingCopies[j];
+					VkBufferCopy region = {};
+					region.size = size;
+					vkCmdCopyBuffer(cmd, src, dst, 1, &region);
+				}
+			});
+			// Destroy staging buffers for this chunk.
+			for (size_t j = idx; j < chunkEnd; ++j)
+			{
+				auto& sb = stagingBufs[j];
+				VkBuffer b = sb.buf; VkDeviceMemory m = sb.mem;
+				GpuResources::DestroyBuffer(m_Device, b, m);
+			}
+			idx = chunkEnd;
+			++chunkNum;
+		}
+		printf("[BuildBLASes] all %d staging chunks done\n", chunkNum);
+		fflush(stdout);
+	}
+	stagingBufs.clear();
+	pendingCopies.clear();
+
+	printf("[BuildBLASes] staging done, building BLASes in batches...\n");
+	fflush(stdout);
+
+	// Build BLASes in batches to cap peak GPU memory. Each batch:
+	//   1. Create BLAS buffer + scratch buffer (GPU memory alloc)
+	//   2. Record build command into a per-batch ImmediateSubmit
+	//   3. Wait for GPU (vkQueueWaitIdle)
+	//   4. Free scratch buffer (no longer needed after build completes)
+	// The BLAS buffer (holding the result) stays alive. This caps the
+	// number of live scratch buffers at BATCH_SIZE instead of meshes.size().
+	const size_t BLAS_BATCH = 256;
+	for (size_t batchStart = 0; batchStart < meshes.size(); batchStart += BLAS_BATCH)
+	{
+		size_t batchEnd = std::min(batchStart + BLAS_BATCH, meshes.size());
+		if (batchStart % 1024 == 0)
+		{
+			printf("[BuildBLASes] batch %zu-%zu/%zu\n", batchStart, batchEnd, meshes.size());
+			fflush(stdout);
+		}
+
+		// Track scratch buffers for this batch (freed after submit).
+		struct ScratchBuf { VkBuffer buf; VkDeviceMemory mem; };
+		std::vector<ScratchBuf> batchScratch;
+		batchScratch.reserve(batchEnd - batchStart);
+
+		CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+			for (size_t i = batchStart; i < batchEnd; i++)
+			{
+				const auto& mesh = meshes[i];
+				BLASData& blas = m_BLASes[i];
+
+				// --- BLAS geometry ---
+				VkAccelerationStructureGeometryKHR geometry = {};
+				geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+				geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+				geometry.flags = mesh.isTransparent ? 0 : VK_GEOMETRY_OPAQUE_BIT_KHR;
+
+				VkAccelerationStructureGeometryTrianglesDataKHR trianglesData = {};
+				trianglesData.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+				trianglesData.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+				trianglesData.vertexData.deviceAddress = m_Device.GetBufferDeviceAddress(blas.vertexBuffer);
+				trianglesData.vertexStride = 3 * sizeof(float);
+				trianglesData.maxVertex = static_cast<uint32_t>(mesh.vertices->size() / 3) - 1;
+				trianglesData.indexType = VK_INDEX_TYPE_UINT32;
+				trianglesData.indexData.deviceAddress = m_Device.GetBufferDeviceAddress(blas.indexBuffer);
+				geometry.geometry.triangles = trianglesData;
+
+				// --- Build sizes ---
+				VkAccelerationStructureBuildGeometryInfoKHR buildInfo = {};
+				buildInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+				buildInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+				buildInfo.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+				buildInfo.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+				buildInfo.geometryCount = 1;
+				buildInfo.pGeometries = &geometry;
+
+				VkAccelerationStructureBuildSizesInfoKHR sizeInfo = {};
+				sizeInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+
+				uint32_t primitiveCount = blas.triangleCount;
+				g_RTDispatch.GetAccelerationStructureBuildSizesKHR(device,
+					VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+					&buildInfo, &primitiveCount, &sizeInfo);
+
+				// --- BLAS buffer (stays alive — holds the result) ---
+				GpuResources::CreateBuffer(m_Device, sizeInfo.accelerationStructureSize,
+				            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+				            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+				            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				            blas.blasBuffer, blas.blasMemory);
+
+				VkAccelerationStructureCreateInfoKHR createInfo = {};
+				createInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+				createInfo.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+				createInfo.buffer = blas.blasBuffer;
+				createInfo.size = sizeInfo.accelerationStructureSize;
+				g_RTDispatch.CreateAccelerationStructureKHR(device, &createInfo, nullptr, &blas.handle);
+
+				// --- Scratch buffer (freed after batch submit) ---
+				VkBuffer scratchBuf; VkDeviceMemory scratchMem;
+				GpuResources::CreateBuffer(m_Device, sizeInfo.buildScratchSize,
+				            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+				            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+				            scratchBuf, scratchMem);
+
+				buildInfo.dstAccelerationStructure = blas.handle;
+				buildInfo.scratchData.deviceAddress = m_Device.GetBufferDeviceAddress(scratchBuf);
+
+				VkAccelerationStructureBuildRangeInfoKHR buildRangeInfo = {};
+				buildRangeInfo.primitiveCount = primitiveCount;
+				buildRangeInfo.primitiveOffset = 0;
+				buildRangeInfo.firstVertex = 0;
+				buildRangeInfo.transformOffset = 0;
+
+				VkAccelerationStructureBuildRangeInfoKHR* pBuildRangeInfos = &buildRangeInfo;
+				g_RTDispatch.CmdBuildAccelerationStructuresKHR(cmd, 1, &buildInfo, &pBuildRangeInfos);
+
+				// --- Get BLAS device address ---
+				VkAccelerationStructureDeviceAddressInfoKHR addrInfo = {};
+				addrInfo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+				addrInfo.accelerationStructure = blas.handle;
+				blas.deviceAddress = g_RTDispatch.GetAccelerationStructureDeviceAddressKHR(device, &addrInfo);
+
+				// Stash scratch for freeing after submit.
+				batchScratch.push_back({scratchBuf, scratchMem});
+			}
+		});
+
+		// Free scratch buffers for this batch — the build is done
+		// (vkQueueWaitIdle inside ImmediateSubmit guarantees completion).
+		for (auto& sb : batchScratch)
+		{
+			VkBuffer b = sb.buf; VkDeviceMemory m = sb.mem;
+			GpuResources::DestroyBuffer(m_Device, b, m);
+		}
+	}
+
+	printf("[BuildBLASes] all batches done\n");
+	fflush(stdout);
+
 	RT_LOG("[BuildBLASes] done: %d BLASes, %d total tris", (int)m_BLASes.size(), (int)m_TotalTriangleCount);
+	printf("[BuildBLASes] done: %d BLASes, %d total tris\n", (int)m_BLASes.size(), (int)m_TotalTriangleCount);
+	fflush(stdout);
 
 	return true;
 }
@@ -302,14 +394,28 @@ void AccelerationStructure::BuildAttributeBuffers()
 	RT_LOG("[BuildAttributeBuffers] material index buffer created (%zuMB)", (size_t)matIdxBufSize / (1024 * 1024));
 
 	RT_LOG("[BuildAttributeBuffers] starting chunked upload...");
+	printf("[BuildAttributeBuffers] starting batched upload...\n"); fflush(stdout);
 
-	// Chunked upload: pack float3→vec4 in a staging buffer, one BLAS at a time.
-	// This avoids building the entire vec4 array in CPU memory.
-	auto uploadPackedVec4 = [&](VkBuffer dstBuf, uint32_t dstOffsetElements,
-	                            const std::vector<float>* srcData, uint32_t elementCount,
-	                            float w, uint32_t srcStride) {
+	// Batched upload: collect all staging copies, submit in ONE
+	// ImmediateSubmit. This avoids N*4 separate vkQueueWaitIdle calls.
+	// NOTE: `region` MUST be value-initialized. Each staging buffer holds
+	// exactly one chunk starting at byte 0, so srcOffset is always 0 — but
+	// leaving it uninitialized fed garbage to vkCmdCopyBuffer, which read far
+	// outside the staging allocation and lost the device on the first flush
+	// ("progress: BLAS 0/9346" then crash).
+	struct PendingCopy {
+		VkBuffer src = VK_NULL_HANDLE;
+		VkBuffer dst = VK_NULL_HANDLE;
+		VkBufferCopy region{};
+	};
+	struct StagingBuf { VkBuffer buf; VkDeviceMemory mem; };
+	std::vector<PendingCopy> pendingCopies;
+	std::vector<StagingBuf> stagingBufs;
+
+	auto addPackedVec4 = [&](VkBuffer dstBuf, uint32_t dstOffsetElements,
+	                         const std::vector<float>* srcData, uint32_t elementCount,
+	                         float w, uint32_t srcStride) {
 		if (!srcData || srcData->empty() || elementCount == 0) return;
-		// Sub-chunk to keep HOST_VISIBLE staging small (max 16MB = 1M vec4s)
 		const uint32_t CHUNK = 1000000;
 		for (uint32_t off = 0; off < elementCount; off += CHUNK)
 		{
@@ -328,23 +434,24 @@ void AccelerationStructure::BuildAttributeBuffers()
 			{
 				if (srcStride == 3)
 					dst[i] = glm::vec4(src[i * 3], src[i * 3 + 1], src[i * 3 + 2], w);
-				else // srcStride == 2
+				else
 					dst[i] = glm::vec4(src[i * 2], src[i * 2 + 1], 0.0f, w);
 			}
 			vkUnmapMemory(device, stagingMem);
-			VkBufferCopy region = {};
-			region.size = chunkSize;
-			region.dstOffset = (VkDeviceSize)(dstOffsetElements + off) * sizeof(glm::vec4);
-			VkBuffer sBuf = stagingBuf; VkDeviceMemory sMem = stagingMem; VkBuffer dB = dstBuf; VkDeviceSize sz = chunkSize;
-			CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
-				vkCmdCopyBuffer(cmd, sBuf, dB, 1, &region);
-			});
-			GpuResources::DestroyBuffer(m_Device, sBuf, sMem);
+
+			PendingCopy pc;
+			pc.src = stagingBuf;
+			pc.dst = dstBuf;
+			pc.region.srcOffset = 0; // staging buffer holds this chunk alone
+			pc.region.size = chunkSize;
+			pc.region.dstOffset = (VkDeviceSize)(dstOffsetElements + off) * sizeof(glm::vec4);
+			pendingCopies.push_back(pc);
+			stagingBufs.push_back({stagingBuf, stagingMem});
 		}
 	};
 
-	auto uploadRaw = [&](VkBuffer dstBuf, uint32_t dstOffsetElements,
-	                     const std::vector<uint32_t>* srcData, uint32_t elementCount) {
+	auto addRaw = [&](VkBuffer dstBuf, uint32_t dstOffsetElements,
+	                  const std::vector<uint32_t>* srcData, uint32_t elementCount) {
 		if (!srcData || srcData->empty() || elementCount == 0) return;
 		const uint32_t CHUNK = 3000000;
 		for (uint32_t off = 0; off < elementCount; off += CHUNK)
@@ -360,27 +467,68 @@ void AccelerationStructure::BuildAttributeBuffers()
 			vkMapMemory(device, stagingMem, 0, chunkSize, 0, &mapped);
 			memcpy(mapped, srcData->data() + off, (size_t)chunkSize);
 			vkUnmapMemory(device, stagingMem);
-			VkBufferCopy region = {};
-			region.size = chunkSize;
-			region.dstOffset = (VkDeviceSize)(dstOffsetElements + off) * sizeof(uint32_t);
-			VkBuffer sBuf = stagingBuf; VkDeviceMemory sMem = stagingMem; VkBuffer dB = dstBuf; VkDeviceSize sz = chunkSize;
-			CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
-				vkCmdCopyBuffer(cmd, sBuf, dB, 1, &region);
-			});
-			GpuResources::DestroyBuffer(m_Device, sBuf, sMem);
+
+			PendingCopy pc;
+			pc.src = stagingBuf;
+			pc.dst = dstBuf;
+			pc.region.srcOffset = 0; // staging buffer holds this chunk alone
+			pc.region.size = chunkSize;
+			pc.region.dstOffset = (VkDeviceSize)(dstOffsetElements + off) * sizeof(uint32_t);
+			pendingCopies.push_back(pc);
+			stagingBufs.push_back({stagingBuf, stagingMem});
 		}
 	};
 
 	for (size_t b = 0; b < m_BLASes.size(); b++)
 	{
 		auto& blas = m_BLASes[b];
-		uploadPackedVec4(m_VertexBuffer, offsets[b].vert, blas.srcVertices, blas.vertexCount, 1.0f, 3);
-		uploadRaw(m_IndexBuffer, offsets[b].idx, blas.srcIndices, blas.triangleCount * 3);
+		addPackedVec4(m_VertexBuffer, offsets[b].vert, blas.srcVertices, blas.vertexCount, 1.0f, 3);
+		addRaw(m_IndexBuffer, offsets[b].idx, blas.srcIndices, blas.triangleCount * 3);
 		if (blas.srcNormals && !blas.srcNormals->empty())
-			uploadPackedVec4(m_NormalBuffer, offsets[b].norm, blas.srcNormals, blas.vertexCount, 0.0f, 3);
+			addPackedVec4(m_NormalBuffer, offsets[b].norm, blas.srcNormals, blas.vertexCount, 0.0f, 3);
 		if (blas.srcUVs && !blas.srcUVs->empty())
-			uploadPackedVec4(m_UVBuffer, offsets[b].uv, blas.srcUVs, blas.vertexCount, 0.0f, 2);
+			addPackedVec4(m_UVBuffer, offsets[b].uv, blas.srcUVs, blas.vertexCount, 0.0f, 2);
+
+		// Flush in chunks of 64 staging buffers to avoid exhausting
+		// Vulkan memory/descriptor limits.
+		if (pendingCopies.size() >= 64)
+		{
+			CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+				for (const auto& pc : pendingCopies)
+					vkCmdCopyBuffer(cmd, pc.src, pc.dst, 1, &pc.region);
+			});
+			for (auto& sb : stagingBufs) {
+				VkBuffer b2 = sb.buf; VkDeviceMemory m2 = sb.mem;
+				GpuResources::DestroyBuffer(m_Device, b2, m2);
+			}
+			pendingCopies.clear();
+			stagingBufs.clear();
+		}
+
+		if (b % 1000 == 0)
+		{
+			printf("[BuildAttributeBuffers] progress: BLAS %zu/%zu\n", b, m_BLASes.size());
+			fflush(stdout);
+		}
 	}
+
+	// Flush remaining.
+	if (!pendingCopies.empty())
+	{
+		printf("[BuildAttributeBuffers] flushing remaining %zu copies\n", pendingCopies.size());
+		fflush(stdout);
+		CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+			for (const auto& pc : pendingCopies)
+				vkCmdCopyBuffer(cmd, pc.src, pc.dst, 1, &pc.region);
+		});
+		for (auto& sb : stagingBufs) {
+			VkBuffer b2 = sb.buf; VkDeviceMemory m2 = sb.mem;
+			GpuResources::DestroyBuffer(m_Device, b2, m2);
+		}
+		stagingBufs.clear();
+		pendingCopies.clear();
+	}
+	printf("[BuildAttributeBuffers] batched upload done\n"); fflush(stdout);
 
 	// Build per-instance material index buffer.
 	// Each instance gets its own section. If the mesh has per-triangle

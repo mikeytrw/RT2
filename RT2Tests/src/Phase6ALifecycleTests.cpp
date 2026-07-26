@@ -1,12 +1,15 @@
 #include <doctest/doctest.h>
 
 #include "ScriptSystem.h"
+#include "ScriptFieldRegistry.h"
+#include "ScriptFieldResolver.h"
 #include "RuntimeSceneController.h"
 #include "RuntimeLifecycleObserver.h"
 #include "IRuntimeScriptDispatch.h"
 #include "IRuntimeCommandSink.h"
 #include "RuntimeSceneMutator.h"
 #include "SceneSerializer.h"
+#include "SceneSerializerTestSupport.h"
 #include "SceneDocument.h"
 #include "ECSComponents.h"
 #include "ECSScene.h"
@@ -25,6 +28,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_set>
 #include <vector>
 
@@ -82,14 +86,27 @@ public:
 
 namespace {
 
-std::filesystem::path g_TempDir;
+// Keep the fixture root absolute even when a single case is selected. The
+// suite-level setup case still clears and recreates it for a full run, but
+// filtered Phase 6 contract checks must not acquire an implicit CWD root.
+std::filesystem::path g_TempDir =
+    std::filesystem::temp_directory_path() / "rt2_phase6a_tests";
 
 std::filesystem::path WriteScript(const std::string& name, const std::string& source)
 {
+    std::error_code ec;
+    std::filesystem::create_directories(g_TempDir, ec);
+    if (ec)
+        throw std::runtime_error(
+            "failed to create Phase 6A fixture directory: " + ec.message());
+
     auto path = g_TempDir / name;
     std::ofstream f(path, std::ios::binary);
     f << source;
     f.close();
+    if (!f)
+        throw std::runtime_error(
+            "failed to write Phase 6A script fixture: " + path.string());
     return path;
 }
 
@@ -101,12 +118,14 @@ struct Phase6Harness
     DeterministicUuidProvider  uuidProv;
     NullSceneRenderBridge6     bridge;
     RuntimeSceneController     ctrl;
+    AssetResolutionContext     assetContext;
+    std::vector<AssetDiagnostic> assetDiagnostics;
     ScriptSystem               scriptSys;
     RuntimeCommandSink         sink;
     NullInputService6          input;
 
     Phase6Harness()
-        : scriptSys(uuidProv)
+        : scriptSys(uuidProv, assetContext, assetDiagnostics)
         , sink(ctrl)
     {
         ctrl.SetRuntimeUuidProvider(&uuidProv);
@@ -118,6 +137,8 @@ struct Phase6Harness
 
     bool Play(const SceneDocument& doc)
     {
+        assetContext.assetRoot = doc.metadata.sourcePath.parent_path();
+        assetContext.database = nullptr;
         Error err;
         return ctrl.Play(doc, bridge, err);
     }
@@ -654,11 +675,16 @@ function on_create(entity, world)
 end
 )LUA");
 
+        // The spawner spawns exactly once, so repeated frames do not pile up
+        // children and the instance count below is unambiguous.
         auto spawnerPath = WriteScript("spawner_script.lua", R"LUA(
+spawned = false
+
 function on_update(entity, dt, input, world)
-    -- Spawn an entity with a script component.
-    -- The desc table carries a "script" field with the asset path.
-    world:spawn({ name = "ChildEntity", script = "child.lua" })
+    if not spawned then
+        spawned = true
+        world:spawn({ name = "ChildEntity", script = "child.lua" })
+    end
 end
 )LUA");
 
@@ -673,29 +699,176 @@ end
         // at the safe point next frame.
         h.Update(1.0f / 60.0f);
 
-        // Frame 2: the safe point drains the queue. But wait — the
-        // world:spawn binding only reads desc["name"], not desc["script"].
-        // The ScriptComponent is not being attached! This test verifies
-        // that gap. For 6A, the spawn binding does not support script
-        // attachment via the Lua API; the RuntimeEntityCreateDesc struct
-        // supports it (for C++ callers), but the Lua binding doesn't
-        // expose it yet. This is a documented limitation — 6C will add
-        // full spawn-with-script support via the Lua API.
+        // Frame 2: the safe point drains the queue, SyncScriptEnvironments
+        // builds the child's environment, and the child's on_create fires —
+        // all in this frame, per G2.
         h.Update(1.0f / 60.0f);
 
-        // The spawned entity exists but has no script (the Lua binding
-        // doesn't pass the script field through).
         const SceneDocument* rt = h.ctrl.TryGetRuntimeScene();
         REQUIRE(rt != nullptr);
         UUID childUuid = h.sink.FindByName("ChildEntity");
         CHECK_FALSE(childUuid.IsNull());
 
-        // No second script instance was created (the child has no script).
-        CHECK(h.scriptSys.LiveInstanceCount() == 1);
+        // G2: a script spawning with desc.script produces a SCRIPTED entity.
+        // This previously asserted LiveInstanceCount() == 1 and described the
+        // inert child as a documented 6C limitation — the test enshrined the
+        // bug instead of the contract. world.spawn now reads desc.script and
+        // attaches a ScriptComponent, so the child is live and its on_create
+        // has run.
+        const auto childEntity = rt->FindByUuid(childUuid);
+        REQUIRE(childEntity != static_cast<entt::entity>(entt::null));
+        CHECK(rt->ecs.registry.all_of<ScriptComponent>(childEntity));
+        CHECK(h.scriptSys.GetInstanceState(childUuid) ==
+              ScriptInstanceState::Live);
+        CHECK(h.scriptSys.LiveInstanceCount() == 2);
 
         h.Stop(doc);
         std::filesystem::remove(childPath);
         std::filesystem::remove(spawnerPath);
+    }
+
+    // ------------------------------------------------------------------------
+    // Hardening: a non-returning callback must not hang the engine.
+    //
+    // Protected calls catch errors, not hangs — `while true do end` never
+    // returns, so no result is produced and neither sol::protected_function
+    // nor lua_atpanic can intervene. Without the LUA_MASKCOUNT budget in
+    // ScriptSandbox.h this test never returns and the whole suite hangs.
+    // ------------------------------------------------------------------------
+    TEST_CASE("Phase 6A: an infinite loop in on_update quarantines, not hangs")
+    {
+        auto scriptPath = WriteScript("hang_update.lua", R"LUA(
+function on_update(entity, dt, input, world)
+    while true do end
+end
+)LUA");
+
+        Phase6Harness h;
+        auto doc = BuildFixtureWithProvider(h, "hang_update.lua");
+        UUID uuid = GetFirstScriptUuid(doc);
+
+        REQUIRE(h.Play(doc));
+        REQUIRE(h.scriptSys.GetInstanceState(uuid) == ScriptInstanceState::Live);
+
+        h.Update(1.0f / 60.0f);
+
+        CHECK(h.scriptSys.GetInstanceState(uuid) ==
+              ScriptInstanceState::Quarantined);
+        CHECK(h.scriptSys.QuarantinedInstanceCount() == 1);
+
+        // The engine keeps running: further frames are harmless no-ops for a
+        // quarantined instance.
+        h.Update(1.0f / 60.0f);
+        CHECK(h.scriptSys.LiveInstanceCount() == 0);
+
+        h.Stop(doc);
+        std::filesystem::remove(scriptPath);
+    }
+
+    TEST_CASE("Phase 6A: an infinite loop at file scope fails the load")
+    {
+        auto scriptPath = WriteScript("hang_load.lua", R"LUA(
+while true do end
+
+function on_update(entity, dt, input, world) end
+)LUA");
+
+        Phase6Harness h;
+        auto doc = BuildFixtureWithProvider(h, "hang_load.lua");
+        UUID uuid = GetFirstScriptUuid(doc);
+
+        // Play builds environments; the chunk never returns without the load
+        // budget, so reaching this line at all is the assertion.
+        REQUIRE(h.Play(doc));
+        CHECK(h.scriptSys.GetInstanceState(uuid) ==
+              ScriptInstanceState::Quarantined);
+
+        h.Stop(doc);
+        std::filesystem::remove(scriptPath);
+    }
+
+    // ------------------------------------------------------------------------
+    // Mid-session on_destroy must run while the entity is still alive.
+    //
+    // The drain used to apply the destruction and only then fire on_destroy
+    // via SyncScriptEnvironments, so the script's final callback saw its own
+    // entity already gone. OnEntitiesDestroying fires it before removal.
+    // ------------------------------------------------------------------------
+    TEST_CASE("Phase 6A: mid-session on_destroy sees the entity still alive")
+    {
+        // Observed in C++ rather than from Lua: with _G denied there is no
+        // cross-script channel, and the victim's own environment is torn down
+        // immediately after its on_destroy returns. A decorator around the
+        // dispatch records whether the UUID still resolved in the runtime
+        // document at the moment on_destroy was invoked — which is exactly
+        // the property that regressed.
+        class RecordingDispatch final : public IRuntimeScriptDispatch
+        {
+        public:
+            RecordingDispatch(IRuntimeScriptDispatch& inner,
+                              RuntimeSceneController& ctrl)
+                : m_Inner(inner), m_Ctrl(ctrl) {}
+
+            void OnFixedUpdate(float dt) override { m_Inner.OnFixedUpdate(dt); }
+            void OnUpdate(float dt) override      { m_Inner.OnUpdate(dt); }
+            void SyncScriptEnvironments() override
+            { m_Inner.SyncScriptEnvironments(); }
+
+            void OnEntitiesDestroying(const std::vector<UUID>& uuids) override
+            {
+                notified = uuids;
+                aliveAtNotify = !uuids.empty();
+                const SceneDocument* rt = m_Ctrl.TryGetRuntimeScene();
+                for (const auto& u : uuids)
+                    if (!rt || rt->FindByUuid(u) == entt::null)
+                        aliveAtNotify = false;
+                m_Inner.OnEntitiesDestroying(uuids);
+            }
+
+            std::vector<UUID> notified;
+            bool              aliveAtNotify = false;
+
+        private:
+            IRuntimeScriptDispatch& m_Inner;
+            RuntimeSceneController& m_Ctrl;
+        };
+
+        auto victimPath = WriteScript("victim.lua", R"LUA(
+function on_destroy(entity)
+    local n = entity:get_name()
+    if n == nil or n == "" then
+        error("on_destroy ran after the entity was already removed")
+    end
+end
+)LUA");
+
+        Phase6Harness h;
+        RecordingDispatch rec(h.scriptSys, h.ctrl);
+        h.ctrl.SetScriptDispatch(&rec);
+
+        auto doc = BuildFixtureWithProvider(h, "victim.lua");
+        UUID victimUuid = GetFirstScriptUuid(doc);
+
+        REQUIRE(h.Play(doc));
+        REQUIRE(h.scriptSys.GetInstanceState(victimUuid) ==
+                ScriptInstanceState::Live);
+
+        // Destroy through the same deferred channel a script would use.
+        REQUIRE(h.sink.DestroyEntity(victimUuid).IsOk());
+        h.Update(1.0f / 60.0f);
+
+        // The notification fired, and the entity was still resolvable then.
+        REQUIRE(rec.notified.size() == 1);
+        CHECK(rec.notified[0] == victimUuid);
+        CHECK(rec.aliveAtNotify);
+
+        // on_destroy ran and did NOT error (an error would have quarantined
+        // rather than cleanly destroyed), and the instance is now gone.
+        CHECK(h.scriptSys.QuarantinedInstanceCount() == 0);
+        CHECK(h.scriptSys.LiveInstanceCount() == 0);
+
+        h.Stop(doc);
+        std::filesystem::remove(victimPath);
     }
 
     // ------------------------------------------------------------------------
@@ -719,6 +892,120 @@ end
 
         // Running a frame should not error (no callbacks to fire).
         h.Update(1.0f / 60.0f);
+        CHECK(h.scriptSys.GetInstanceState(cubeUuid) == ScriptInstanceState::Live);
+
+        h.Stop(doc);
+        std::filesystem::remove(scriptPath);
+    }
+
+    TEST_CASE("Phase 6B W2: runtime self receives the authored typed value")
+    {
+        auto scriptPath = WriteScript("typed_self.lua", R"LUA(
+function on_create(entity, world)
+    entity:set_position({ self.speed, 0, 0 })
+end
+)LUA");
+
+        Phase6Harness h;
+        auto doc = BuildFixtureWithProvider(h, "typed_self.lua");
+        const UUID cubeUuid = GetFirstScriptUuid(doc);
+        const auto cube = doc.FindByUuid(cubeUuid);
+        REQUIRE(doc.ecs.registry.valid(cube));
+        auto& component = doc.ecs.registry.get<ScriptComponent>(cube);
+        component.fieldValues["speed"] = ScriptFieldEntry{
+            ScriptFieldType::Float,
+            ScriptFieldValue{ 7.5 }
+        };
+
+        REQUIRE(h.Play(doc));
+        glm::vec3 position{};
+        REQUIRE(h.sink.GetPosition(cubeUuid, position));
+        CHECK(position.x == doctest::Approx(7.5f));
+        CHECK(h.scriptSys.GetInstanceState(cubeUuid) == ScriptInstanceState::Live);
+
+        h.Stop(doc);
+        std::filesystem::remove(scriptPath);
+    }
+
+    TEST_CASE("Phase6B W3: persisted field reaches runtime self after load and reconcile")
+    {
+        auto scriptPath = WriteScript("persisted_self.lua", R"LUA(
+rt2.fields = {
+    speed = rt2.field.float(1.0),
+}
+
+function on_create(entity, world)
+    entity:set_position({ self.speed, 0, 0 })
+end
+)LUA");
+
+        Phase6Harness h;
+        auto authored = BuildFixtureWithProvider(h, "persisted_self.lua");
+        const UUID cubeUuid = GetFirstScriptUuid(authored);
+        const auto cube = authored.FindByUuid(cubeUuid);
+        REQUIRE(authored.ecs.registry.valid(cube));
+        authored.ecs.registry.get<ScriptComponent>(cube).fieldValues["speed"] =
+            ScriptFieldEntry{ ScriptFieldType::Float, ScriptFieldValue{ 12.5 } };
+
+        const auto scenePath = g_TempDir / "persisted_self.rt2scene";
+        authored.metadata.sourcePath = scenePath;
+        Error err;
+        REQUIRE(SaveSceneForTest(authored, scenePath, err));
+
+        SceneDocument loaded;
+        SceneLoadReport loadReport;
+        REQUIRE(SceneSerializer::Load(loaded, scenePath, loadReport, err));
+        CHECK(loadReport.fieldDiagnostics.empty());
+
+        ScriptFieldRegistry registry;
+        AssetResolutionContext assetContext{
+            loaded.metadata.sourcePath.parent_path(), nullptr};
+        std::vector<AssetDiagnostic> assetDiagnostics;
+        std::vector<FieldDiagnostic> diagnostics;
+        const auto resolution = ScriptFieldResolver::ResolveDocument(
+            loaded, registry, assetContext, assetDiagnostics, diagnostics);
+        CHECK_FALSE(resolution.changed);
+        CHECK(resolution.resolvedEntities == 1);
+        CHECK(diagnostics.empty());
+
+        REQUIRE(h.Play(loaded));
+        glm::vec3 position{};
+        REQUIRE(h.sink.GetPosition(cubeUuid, position));
+        CHECK(position.x == doctest::Approx(12.5f));
+        CHECK(h.scriptSys.GetInstanceState(cubeUuid) == ScriptInstanceState::Live);
+
+        h.Stop(loaded);
+        std::filesystem::remove(scenePath);
+        std::filesystem::remove(scriptPath);
+    }
+
+    TEST_CASE("Phase 6B W2: malformed authored entries are omitted from runtime self")
+    {
+        auto scriptPath = WriteScript("malformed_self.lua", R"LUA(
+function on_create(entity, world)
+    if self.bad == nil then
+        entity:set_position({ 1, 0, 0 })
+    else
+        entity:set_position({ 2, 0, 0 })
+    end
+end
+)LUA");
+
+        Phase6Harness h;
+        auto doc = BuildFixtureWithProvider(h, "malformed_self.lua");
+        const UUID cubeUuid = GetFirstScriptUuid(doc);
+        const auto cube = doc.FindByUuid(cubeUuid);
+        REQUIRE(doc.ecs.registry.valid(cube));
+        auto& component = doc.ecs.registry.get<ScriptComponent>(cube);
+        component.fieldValues["bad"] = ScriptFieldEntry{
+            ScriptFieldType::Vec3,
+            ScriptFieldValue{ 7.5 }
+        };
+
+        REQUIRE(h.Play(doc));
+        glm::vec3 position{};
+        REQUIRE(h.sink.GetPosition(cubeUuid, position));
+        CHECK(position.x == doctest::Approx(1.0f));
         CHECK(h.scriptSys.GetInstanceState(cubeUuid) == ScriptInstanceState::Live);
 
         h.Stop(doc);

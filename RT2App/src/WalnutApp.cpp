@@ -20,6 +20,12 @@
 #include "SceneDocument.h"
 #include "SceneAssetResolver.h"
 #include "RuntimeSceneController.h"
+#include "ScriptSystem.h"
+#include "ScriptFieldRegistry.h"
+#include "ScriptFieldResolver.h"
+#include "ScriptAssetPath.h"
+#include "ScriptFieldChangePolicy.h"
+#include "ScriptFileWatchPolicy.h"
 #include "SceneRenderBridge.h"
 #include "ECSComponents.h"
 #include "EditorSettings.h"
@@ -32,6 +38,7 @@
 #include "EditorCommands.h"
 #include "EditorPropertyCommands.h"
 #include "InputService.h"
+#include "BackgroundWork.h"
 #include "core/UUID.h"
 #include "core/Error.h"
 #include "stb_image.h"
@@ -39,6 +46,7 @@
 #include "stb_image_write.h"
 #include <tinyexr.h>
 #include "NRD.h"
+#include "efsw/efsw.hpp"
 
 #include <cstdio>
 #include <cmath>
@@ -51,6 +59,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <mutex>
+#include <set>
+#include <sstream>
 
 using namespace Walnut;
 
@@ -78,6 +89,9 @@ public:
 		rt2::core::Error settingsErr;
 		if (!m_Settings2->Load(settingsErr))
 			printf("[Settings] Failed to load: %s\n", settingsErr.Format().c_str());
+
+		// Load saved window visibility + performance detail level.
+		LoadViewConfig();
 
 		// Discover pending recovery records from a previous unclean exit.
 		// We surface these as a startup Restore/Discard modal below.
@@ -110,6 +124,7 @@ public:
 				LoadSceneInternal(a.path.string());
 				break;
 			case rt2::core::UnsavedChangesCoordinator::ActionKind::Exit:
+				SaveViewConfig();
 				Walnut::Application::Get().Close();
 				break;
 			case rt2::core::UnsavedChangesCoordinator::ActionKind::None:
@@ -137,8 +152,16 @@ public:
 			// return false so the app stays open until the user resolves.
 		});
 
+		m_InspectorFieldRegistry = std::make_unique<rt2::core::ScriptFieldRegistry>();
+
+		// Phase 6C/W2: file watcher for hot reload.
+		m_FileWatchListener = std::make_unique<ScriptFileWatchListener>();
+		m_FileWatcher = std::make_unique<efsw::FileWatcher>();
+		m_FileWatcher->watch();
+
 		m_EditorUI.SetSceneMgr(&m_SceneMgr);
 		m_EditorUI.SetCommandHistory(&m_History);
+		m_EditorUI.SetFieldRegistry(m_InspectorFieldRegistry.get());
 		m_EditorUI.SetDialogInitialDirectoryProvider([this]() {
 			return DialogInitialDirectory();
 		});
@@ -209,7 +232,9 @@ public:
 			return LoadMeshFileAsEntity(path);
 		});
 		m_EditorUI.SetOnImportGltf([this](const std::string& path) -> SceneManager::EntityId {
-			auto id = m_SceneMgr.ImportGltf(path);
+			std::vector<rt2::core::AssetDiagnostic> diagnostics;
+			auto id = m_SceneMgr.ImportGltf(path, &diagnostics);
+			LogAssetDiagnostics(diagnostics, 0, "Import");
 			if (id.IsValid())
 			{
 				m_PendingFullSync = true;
@@ -220,18 +245,75 @@ public:
 			[this](const std::string& path,
 			       const ImportSettings& settings) -> SceneManager::EntityId
 		{
+			if (IsBackgroundBusy()) return SceneManager::EntityId{};
+
 			std::string ext = path.substr(path.find_last_of('.') + 1);
 			std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-			SceneManager::EntityId id;
-			if (ext == "obj")
-				id = m_SceneMgr.ImportObj(path, settings);
-			else
-				id = m_SceneMgr.ImportGltf(path);
-			if (id.IsValid())
+			const bool isObj = (ext == "obj");
+			const std::string pathCopy = path;
+			const ImportSettings settingsCopy = settings;
+
+			// The worker parses + decodes into a temp ECSScene. The
+			// completion callback (main thread) merges it into the live
+			// scene + uploads to GPU.
+			struct ImportResult
 			{
-				m_PendingFullSync = true;
+				ECSScene ecs;
+				entt::entity root = entt::null;
+				bool isObj = false;
+				std::vector<rt2::core::AssetDiagnostic> diagnostics;
+			};
+			auto result = std::make_shared<ImportResult>();
+			result->isObj = isObj;
+			rt2::core::TextureAssetLoadContext textureContext;
+			if (!MakeExplicitTextureContext(
+				    pathCopy, textureContext, result->diagnostics))
+			{
+				LogAssetDiagnostics(result->diagnostics, 0, "Import");
+				m_LastStatusMsg = "Import failed";
+				return SceneManager::EntityId{};
 			}
-			return id;
+
+			StartBackgroundWork(isObj ? "Importing OBJ..." : "Importing glTF...",
+				[result, pathCopy, settingsCopy, isObj,
+				 textureContext](BackgroundWork& self) mutable -> bool
+			{
+				self.SetStatus("Parsing file...");
+				if (isObj)
+					result->root = SceneLoader::ImportObjIntoECS(
+						result->ecs, settingsCopy, textureContext,
+						result->diagnostics);
+				else
+					result->root = SceneLoader::ImportIntoECS(
+						result->ecs, textureContext, result->diagnostics);
+				return result->root != entt::null;
+			},
+				[this, result, pathCopy](bool success)
+			{
+				LogAssetDiagnostics(result->diagnostics, 0, "Import");
+				if (!success)
+				{
+					printf("[Scene] Import failed: %s\n", pathCopy.c_str());
+					m_LastStatusMsg = "Import failed";
+					return;
+				}
+
+				auto id = m_SceneMgr.MergeImportedECS(std::move(result->ecs),
+				                                      result->root, pathCopy);
+				if (id.IsValid())
+				{
+					m_PendingFullSync = true;
+					m_GpuSyncPending = true;
+					m_EditorUI.OnImportComplete(id);
+					m_SceneMgr.MarkDirty();
+					m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
+					m_Recovery->ResetSchedule();
+					m_LastStatusMsg = "Imported (unsaved)";
+				}
+			});
+
+			// Return invalid — the completion callback handles selection.
+			return SceneManager::EntityId{};
 		});
 		m_EditorUI.SetOnDumpGPUTransforms([this]() {
 			if (m_RendererGPU.IsAvailable())
@@ -279,40 +361,7 @@ public:
 			}
 		}
 
-	ImGui::Begin("Info");
-	ImGui::Text("Last Render: %.3fms", m_SmoothedFrameTime);
-	ImGui::Text("FPS: %.1f", m_SmoothedFPS);
-	if (m_RendererGPU.HasGpuTimings())
-	{
-		const auto& timings = m_RendererGPU.GetGpuTimings();
-		if (timings.validMask != 0)
-		{
-			ImGui::Text("GPU timings (frame %llu)", static_cast<unsigned long long>(timings.frameIndex));
-			for (uint32_t i = 0; i < static_cast<uint32_t>(GpuTimestampProfiler::Region::Count); i++)
-				if (timings.validMask & (1u << i))
-					ImGui::Text("  %s: %.3f ms",
-					            GpuTimestampProfiler::RegionName(static_cast<GpuTimestampProfiler::Region>(i)),
-					            timings.milliseconds[i]);
-		}
-	}
-
-	if (m_RendererGPU.HasOutput())
-		ImGui::Text("Render Res: %d x %d", m_RendererGPU.GetWidth(), m_RendererGPU.GetHeight());
-	ImGui::Separator();
-
-	ImGui::Separator();
-	ImGui::Text("Renderer");
-	bool rtSupported = Walnut::Application::IsRayTracingSupported();
-	ImGui::Text("RT Supported: %s", rtSupported ? "yes" : "no");
-
-	if (rtSupported && !m_RendererGPU.IsAvailable())
-	{
-		if (m_RendererGPU.Init())
-		{
-			m_Settings = m_RendererGPU.GetSettings();
-			m_RendererGPU.ApplySettings(m_Settings);
-		}
-	}
+	// Modal popups are always rendered (not gated by window visibility).
 	if (ImGui::BeginPopupModal("GPU Init Failed", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 	{
 		ImGui::Text("Failed to initialize GPU renderer.\nCheck that raygen.spv / miss.spv / closesthit.spv exist next to the executable.\nSee console for details.");
@@ -327,7 +376,157 @@ public:
 			ImGui::CloseCurrentPopup();
 		ImGui::EndPopup();
 	}
-	ImGui::Separator();
+
+	// RT init: happens once when the Info window would first show the
+	// renderer status. Keep it here so it runs even if Info is hidden.
+	{
+		bool rtSupported = Walnut::Application::IsRayTracingSupported();
+		if (rtSupported && !m_RendererGPU.IsAvailable())
+		{
+			if (m_RendererGPU.Init())
+			{
+				m_Settings = m_RendererGPU.GetSettings();
+				m_RendererGPU.ApplySettings(m_Settings);
+			}
+		}
+	}
+
+	if (m_ShowInfoWindow)
+	{
+		ImGui::Begin("Camera");
+		EditorCameraPose editorPose = m_Cam.GetEditorPose();
+		bool cameraPoseChanged = false;
+		const bool editCamera = m_Runtime.GetState() == rt2::core::SceneRunState::Edit;
+		ImGui::BeginDisabled(!editCamera);
+		cameraPoseChanged |= ImGui::DragFloat3("Position", &editorPose.position.x,
+			0.01f, 0.0f, 0.0f, "%.6f");
+		cameraPoseChanged |= ImGui::DragFloat3("Forward", &editorPose.forward.x,
+			0.001f, -1.0f, 1.0f, "%.6f");
+		cameraPoseChanged |= ImGui::DragFloat("Vertical FOV", &editorPose.verticalFOV,
+			0.25f, 10.0f, 170.0f, "%.1f");
+		if (ImGui::Button("Copy Camera Pose"))
+		{
+			const glm::vec3& p = editorPose.position;
+			const glm::vec3& f = editorPose.forward;
+			char pose[256];
+			std::snprintf(pose, sizeof(pose),
+			              "position=(%.6f, %.6f, %.6f) forward=(%.6f, %.6f, %.6f)",
+			              p.x, p.y, p.z, f.x, f.y, f.z);
+			ImGui::SetClipboardText(pose);
+		}
+		ImGui::SliderFloat("Move Speed", &m_Cam.m_Speed, 0.5f, 50.0f, "%.1f");
+		cameraPoseChanged |= ImGui::SliderFloat("Far Clip", &editorPose.farClip,
+			100.0f, 100000.0f, "%.0f");
+		bool rasterFirst = m_Settings.rasterFirst;
+		ImGui::BeginDisabled(rasterFirst);
+		cameraPoseChanged |= ImGui::DragFloat("Aperture", &editorPose.aperture,
+			0.001f, 0.0f, 5.0f);
+		cameraPoseChanged |= ImGui::DragFloat("Focus Distance", &editorPose.focusDistance,
+			0.1f, 0.1f, 50.0f);
+		ImGui::EndDisabled();
+		if (rasterFirst && editorPose.aperture > 0.0f)
+		{
+			editorPose.aperture = 0.0f;
+			cameraPoseChanged = true;
+		}
+		if (cameraPoseChanged)
+			ApplyEditorCameraPose(editorPose);
+		if (ImGui::Button("Frame Selected")) FrameEditorSelection(true);
+		ImGui::SameLine();
+		if (ImGui::Button("Focus Selected")) FrameEditorSelection(false);
+
+		ImGui::Text("Camera Bookmarks");
+		for (size_t slot = 0; slot < EditorSceneState::kCameraBookmarkCount; ++slot)
+		{
+			ImGui::PushID(static_cast<int>(slot));
+			ImGui::Text("%d", static_cast<int>(slot + 1));
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Store"))
+				m_EditorUI.CaptureCameraBookmark(slot, m_Cam.GetEditorPose());
+			ImGui::SameLine();
+			const EditorCameraPose* bookmark = m_EditorUI.CameraBookmark(slot);
+			ImGui::BeginDisabled(bookmark == nullptr);
+			if (ImGui::SmallButton("Recall") && bookmark)
+				ApplyEditorCameraPose(*bookmark);
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Clear"))
+				m_EditorUI.ClearCameraBookmark(slot);
+			ImGui::EndDisabled();
+			ImGui::PopID();
+		}
+		ImGui::EndDisabled();
+		ImGui::End();
+	}
+
+	// ---- Performance window ----
+	// Level 1: FPS + frametime.
+	// Level 2: + raster / ReSTIR GPU timings.
+	// Level 3: + BLAS / TLAS / BVH build times.
+	if (m_ShowPerfWindow)
+	{
+	ImGui::Begin("Performance");
+	{
+		const char* levels[] = { "1 - FPS & Frametime",
+		                         "2 - Raster & ReSTIR Timings",
+		                         "3 - Everything (incl. BLAS/TLAS/BVH)" };
+		ImGui::Combo("Detail Level", &m_PerfDetailLevel, levels, IM_ARRAYSIZE(levels));
+		ImGui::Separator();
+	}
+	ImGui::Text("Last Render: %.3fms", m_SmoothedFrameTime);
+	ImGui::Text("FPS: %.1f", m_SmoothedFPS);
+	if (m_PerfDetailLevel >= kPerfLevelPasses && m_RendererGPU.HasGpuTimings())
+	{
+		const auto& timings = m_RendererGPU.GetGpuTimings();
+		if (timings.validMask != 0)
+		{
+			ImGui::Separator();
+			if (m_PerfDetailLevel >= kPerfLevelEverything)
+				ImGui::Text("GPU timings (frame %llu)", static_cast<unsigned long long>(timings.frameIndex));
+			else
+				ImGui::Text("GPU timings");
+			for (uint32_t i = 0; i < static_cast<uint32_t>(GpuTimestampProfiler::Region::Count); i++)
+			{
+				if (!(timings.validMask & (1u << i))) continue;
+				const auto region = static_cast<GpuTimestampProfiler::Region>(i);
+				// Level 2 shows only the raster + ReSTIR pass regions.
+				// Level 3 shows every captured region, so regions added to
+				// GpuTimestampProfiler::Region later appear here with no edit.
+				if (m_PerfDetailLevel < kPerfLevelEverything && !IsPassLevelRegion(region))
+					continue;
+				ImGui::Text("  %s: %.3f ms",
+				            GpuTimestampProfiler::RegionName(region),
+				            timings.milliseconds[i]);
+			}
+		}
+	}
+	if (m_PerfDetailLevel >= kPerfLevelEverything && m_RendererGPU.HasOutput())
+	{
+		ImGui::Separator();
+		ImGui::Text("Render Res: %d x %d", m_RendererGPU.GetWidth(), m_RendererGPU.GetHeight());
+	}
+	if (m_PerfDetailLevel >= kPerfLevelEverything && m_RendererGPU.IsAvailable())
+	{
+		ImGui::Separator();
+		ImGui::Text("BLAS/TLAS Build (last rebuild)");
+		if (m_RendererGPU.GetLastAsTotalMs() < 0.0f)
+		{
+			ImGui::TextDisabled("(no build yet)");
+		}
+		else
+		{
+			ImGui::Text("  BLAS build:  %.3f ms", m_RendererGPU.GetLastBlasBuildMs());
+			ImGui::Text("  TLAS build:  %.3f ms", m_RendererGPU.GetLastTlasBuildMs());
+			ImGui::Text("  Total AS:    %.3f ms", m_RendererGPU.GetLastAsTotalMs());
+			ImGui::Text("  BLAS count:   %u", m_RendererGPU.GetBlasCount());
+		}
+	}
+	ImGui::End();
+	}
+
+	// ---- Render Settings window ----
+	if (m_ShowRenderSettingsWin)
+	{
+	ImGui::Begin("Render Settings");
 	ImGui::Text("Samples Per Pixel");
 	ImGui::BeginDisabled(m_Settings.rasterFirst);
 	if (ImGui::DragInt("SPP", &m_Settings.spp, 1.0f, 1, 1500))
@@ -347,69 +546,6 @@ public:
 		m_RendererGPU.ApplySettings(m_Settings);
 	};
 
-	ImGui::Separator();
-	ImGui::Text("Camera");
-	EditorCameraPose editorPose = m_Cam.GetEditorPose();
-	bool cameraPoseChanged = false;
-	const bool editCamera = m_Runtime.GetState() == rt2::core::SceneRunState::Edit;
-	ImGui::BeginDisabled(!editCamera);
-	cameraPoseChanged |= ImGui::DragFloat3("Position", &editorPose.position.x,
-		0.01f, 0.0f, 0.0f, "%.6f");
-	cameraPoseChanged |= ImGui::DragFloat3("Forward", &editorPose.forward.x,
-		0.001f, -1.0f, 1.0f, "%.6f");
-	cameraPoseChanged |= ImGui::DragFloat("Vertical FOV", &editorPose.verticalFOV,
-		0.25f, 10.0f, 170.0f, "%.1f");
-	if (ImGui::Button("Copy Camera Pose"))
-	{
-		const glm::vec3& p = editorPose.position;
-		const glm::vec3& f = editorPose.forward;
-		char pose[256];
-		std::snprintf(pose, sizeof(pose),
-		              "position=(%.6f, %.6f, %.6f) forward=(%.6f, %.6f, %.6f)",
-		              p.x, p.y, p.z, f.x, f.y, f.z);
-		ImGui::SetClipboardText(pose);
-	}
-	ImGui::SliderFloat("Move Speed", &m_Cam.m_Speed, 0.5f, 50.0f, "%.1f");
-	cameraPoseChanged |= ImGui::SliderFloat("Far Clip", &editorPose.farClip,
-		100.0f, 100000.0f, "%.0f");
-	bool rasterFirst = m_Settings.rasterFirst;
-	ImGui::BeginDisabled(rasterFirst);
-	cameraPoseChanged |= ImGui::DragFloat("Aperture", &editorPose.aperture,
-		0.001f, 0.0f, 5.0f);
-	cameraPoseChanged |= ImGui::DragFloat("Focus Distance", &editorPose.focusDistance,
-		0.1f, 0.1f, 50.0f);
-	ImGui::EndDisabled();
-	if (rasterFirst && editorPose.aperture > 0.0f)
-	{
-		editorPose.aperture = 0.0f;
-		cameraPoseChanged = true;
-	}
-	if (cameraPoseChanged)
-		ApplyEditorCameraPose(editorPose);
-	if (ImGui::Button("Frame Selected")) FrameEditorSelection(true);
-	ImGui::SameLine();
-	if (ImGui::Button("Focus Selected")) FrameEditorSelection(false);
-
-	ImGui::Text("Camera Bookmarks");
-	for (size_t slot = 0; slot < EditorSceneState::kCameraBookmarkCount; ++slot)
-	{
-		ImGui::PushID(static_cast<int>(slot));
-		ImGui::Text("%d", static_cast<int>(slot + 1));
-		ImGui::SameLine();
-		if (ImGui::SmallButton("Store"))
-			m_EditorUI.CaptureCameraBookmark(slot, m_Cam.GetEditorPose());
-		ImGui::SameLine();
-		const EditorCameraPose* bookmark = m_EditorUI.CameraBookmark(slot);
-		ImGui::BeginDisabled(bookmark == nullptr);
-		if (ImGui::SmallButton("Recall") && bookmark)
-			ApplyEditorCameraPose(*bookmark);
-		ImGui::SameLine();
-		if (ImGui::SmallButton("Clear"))
-			m_EditorUI.ClearCameraBookmark(slot);
-		ImGui::EndDisabled();
-		ImGui::PopID();
-	}
-	ImGui::EndDisabled();
 	ImGui::Separator();
 	if (ImGui::Checkbox("Raster-First Path", &m_Settings.rasterFirst))
 	{
@@ -574,30 +710,11 @@ public:
 		m_Settings.gbufferDebugMode = debugCombo - 1;
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
-	ImGui::Separator();
-	ImGui::Text("Environment Map");
-	if (ImGui::Button("Load HDR..."))
-	{
-		std::string path = FileDialog::OpenFile(
-			L"HDR Files (*.hdr;*.exr)\0*.hdr;*.exr\0HDR (*.hdr)\0*.hdr\0All Files (*.*)\0*.*\0",
-			DialogInitialDirectory());
-		if (!path.empty())
-			LoadEnvMap(path);
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Clear HDR"))
-	{
-		m_SceneMgr.ClearEnvMap();
-		if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
-			UploadMeshToGPU();
-		m_RendererGPU.ResetAccumulation();
-	}
-	if (m_SceneMgr.HasEnvMap())
-		ImGui::Text("Loaded: %s (%dx%d)", m_SceneMgr.GetEnvMapPath().c_str(), m_SceneMgr.GetEnvMapWidth(), m_SceneMgr.GetEnvMapHeight());
-	if (ImGui::SliderFloat("Env Intensity", &m_Settings.envIntensity, 0.0f, 10.0f, "%.2f"))
-		m_RendererGPU.ApplySettings(m_Settings);
 	ImGui::End();
+	}
 
+	if (m_ShowSceneWindow)
+	{
 	ImGui::Begin("Scene");
 	ImGui::Text("Meshes: %d", (int)m_SceneMgr.GetECS().meshRegistry.GetCount());
 	ImGui::Text("Materials: %d", (int)m_SceneMgr.GetMaterials().size());
@@ -669,7 +786,31 @@ public:
 		ImGui::TextDisabled("(%s)", stateStr);
 	}
 
+	ImGui::Separator();
+	ImGui::Text("Environment Map");
+	if (ImGui::Button("Load HDR..."))
+	{
+		std::string path = FileDialog::OpenFile(
+			L"HDR Files (*.hdr;*.exr)\0*.hdr;*.exr\0HDR (*.hdr)\0*.hdr\0All Files (*.*)\0*.*\0",
+			DialogInitialDirectory());
+		if (!path.empty())
+			LoadEnvMap(path);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Clear HDR"))
+	{
+		m_SceneMgr.ClearEnvMap();
+		if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
+			UploadMeshToGPU();
+		m_RendererGPU.ResetAccumulation();
+	}
+	if (m_SceneMgr.HasEnvMap())
+		ImGui::Text("Loaded: %s (%dx%d)", m_SceneMgr.GetEnvMapPath().c_str(), m_SceneMgr.GetEnvMapWidth(), m_SceneMgr.GetEnvMapHeight());
+	if (ImGui::SliderFloat("Env Intensity", &m_Settings.envIntensity, 0.0f, 10.0f, "%.2f"))
+		m_RendererGPU.ApplySettings(m_Settings);
+
 	ImGui::End();
+	}
 
 	if (auto pick = m_RendererGPU.ConsumePickResult())
 	{
@@ -686,6 +827,8 @@ public:
 			m_EditorUI.ClearSelection();
 	}
 
+	m_EditorUI.SetOutlinerVisible(m_ShowHierarchyWindow);
+	m_EditorUI.SetInspectorVisible(m_ShowInspectorWindow);
  	m_EditorUI.RenderPanels();
 	HandleEditorCameraShortcuts();
 	HandleUndoRedoShortcuts();
@@ -799,9 +942,61 @@ public:
 	ImGui::PopStyleVar();
 
 	// ---- Phase 1B: Session / Recovery UI ----
-	DrawSessionPanel();
+	if (m_ShowSessionWindow)
+		DrawSessionPanel();
 	DrawRecoveryPrompt();
 	DrawUnsavedChangesPrompt();
+	DrawLoadingModal();
+
+	// Phase 6C/W2: drain file-watcher changes with debounce. Atomic save
+	// (temp + rename) yields Modified + Added + Deleted for one Ctrl+S.
+	// Coalesce by path over a ~100ms quiet window, then reload.
+	if (m_FileWatchListener)
+	{
+		{
+			std::lock_guard<std::mutex> lock(m_FileWatchListener->mutex);
+			if (!m_FileWatchListener->pendingChanges.empty())
+			{
+				for (const auto& p : m_FileWatchListener->pendingChanges)
+				{
+					// Dedupe: don't add a path already in the debounce buffer.
+					if (std::find(m_DebouncedChanges.begin(),
+					              m_DebouncedChanges.end(), p) ==
+					    m_DebouncedChanges.end())
+						m_DebouncedChanges.push_back(p);
+				}
+				m_FileWatchListener->pendingChanges.clear();
+				m_LastFileChangeTime = std::chrono::steady_clock::now();
+			}
+		}
+
+		// If no new changes for 100ms and we have pending, drain.
+		if (!m_DebouncedChanges.empty())
+		{
+			const auto now = std::chrono::steady_clock::now();
+			const auto elapsed = std::chrono::duration_cast<
+				std::chrono::milliseconds>(now - m_LastFileChangeTime);
+			if (elapsed.count() >= 100)
+			{
+				auto changes = std::move(m_DebouncedChanges);
+				m_DebouncedChanges.clear();
+				const auto action = rt2::core::DecideScriptFileChange(
+					m_Runtime.GetState(),
+					m_ScriptSystem != nullptr,
+					m_InspectorFieldRegistry != nullptr);
+				for (const auto& path : changes)
+				{
+					if (action.reloadScript)
+						m_ScriptSystem->ReloadScript(path);
+				}
+				// Once per drain, not per path: the inspector cache is
+				// whole-registry, so clearing it per file would be
+				// redundant work.
+				if (action.invalidateFieldRegistry)
+					m_InspectorFieldRegistry->Clear();
+			}
+		}
+	}
 
 	// Phase 5: EndFrame commits current → previous state, clears
 	// per-frame deltas, and applies cursor capture. Called at the end
@@ -897,19 +1092,44 @@ public:
 			{
 				rt2::core::Error err;
 				std::vector<rt2::core::AssetDiagnostic> diags;
+				rt2::core::SceneLoadReport loadReport;
+				std::vector<rt2::core::FieldDiagnostic> fieldDiags;
+				rt2::core::ScriptFieldResolutionResult fieldResolution;
+				rt2::core::ScriptFieldChangeClassification fieldChanges;
 				rt2::core::SceneDocument restored;
 				restored.SetUuidProvider(m_SceneMgr.AuthoringDoc().GetUuidProvider());
-				bool ok = m_Recovery->Restore(r, restored, diags, err);
+				bool ok = m_Recovery->Restore(
+					r, restored, diags, loadReport, err);
+				if (ok)
+				{
+					fieldDiags = loadReport.fieldDiagnostics;
+					rt2::core::ScriptFieldRegistry fieldRegistry;
+					rt2::core::AssetResolutionContext assetContext{
+						r.assetRoot, nullptr};
+					fieldResolution = rt2::core::ScriptFieldResolver::ResolveDocument(
+						restored, fieldRegistry, assetContext, diags,
+						fieldDiags);
+					fieldChanges = rt2::core::ClassifyScriptFieldChanges(
+						loadReport, fieldResolution, fieldDiags);
+					for (const auto& diagnostic : fieldDiags)
+						printf("[Recovery] Script field: %s\n", diagnostic.message.c_str());
+				}
 			if (ok)
 			{
 				// Commit the already validated document without clearing it.
 				m_SceneMgr.ReplaceAuthoringDocument(
 					std::move(restored), std::max<uint64_t>(1, r.revision));
-				m_EditorUI.ResetForDocument();
-				m_History.Clear();
+			m_EditorUI.ResetForDocument();
+			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
+			m_History.Clear();
 				CompactMeshRegistryNowAsserted();
 				m_Recovery->ResetSchedule();
-				m_LastStatusMsg = "Restored recovery";
+				m_ScriptRepairGate.Adopt(fieldChanges.destructive);
+				m_LastStatusMsg = fieldChanges.destructive
+					? "Restored recovery with discarded script field data; Save once to acknowledge"
+					: (fieldChanges.requiresSave
+						? "Restored recovery; script fields changed and need saving"
+						: "Restored recovery");
 					// Upload to GPU
 					if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
 						UploadMeshToGPU();
@@ -1009,6 +1229,231 @@ public:
 		}
 	}
 
+	// ---- Loading modal ----
+	// Shown while a BackgroundWork is running. The modal is modal (no other
+	// UI interactions possible), but the main loop keeps running so the
+	// window doesn't freeze and the status text updates each frame. When
+	// the work completes, the thread is joined and the completion callback
+	// runs on the main thread (safe for Vulkan/GPU calls).
+	void DrawLoadingModal()
+	{
+		// The modal stays open while either background work is running OR
+		// the GPU sync phase (texture upload + AS rebuild) is pending. It is
+		// also submitted for one final frame after both finish, because
+		// ImGui::CloseCurrentPopup() is only valid between BeginPopupModal()
+		// and EndPopup() — closing from outside that scope is a no-op.
+		if (!m_BackgroundWork && !m_GpuSyncPending && !m_LoadingModalOpen) return;
+
+		// Open the modal on the first frame.
+		if (!m_LoadingModalOpen)
+		{
+			m_LoadingModalOpen = true;
+			ImGui::OpenPopup("Loading...");
+			printf("[LoadingModal] opened (bgWork=%d gpuSync=%d)\n",
+			       m_BackgroundWork ? 1 : 0, m_GpuSyncPending ? 1 : 0);
+			fflush(stdout);
+		}
+
+		if (ImGui::BeginPopupModal("Loading...", nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			const char* spinner[] = { "|", "/", "-", "\\" };
+			const double time = ImGui::GetTime();
+			const int frame = static_cast<int>(time * 4.0) & 3;
+
+			const char* status = "Working...";
+			if (m_GpuSyncPending)
+				status = m_GpuSyncStatus.c_str();
+			else if (m_BackgroundWork)
+				status = m_BackgroundWork->GetStatus().c_str();
+
+			ImGui::Text("%s %s", spinner[frame], status);
+
+			const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(time) * 3.0f);
+			ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.3f, 0.6f, 1.0f, 1.0f));
+			ImGui::ProgressBar(pulse, ImVec2(200.0f, 6.0f), "");
+			ImGui::PopStyleColor();
+
+			// All work finished on a previous frame — close from inside the
+			// popup scope, the only place CloseCurrentPopup() is valid.
+			if (!m_BackgroundWork && !m_GpuSyncPending)
+			{
+				m_LoadingModalOpen = false;
+				ImGui::CloseCurrentPopup();
+			}
+
+			ImGui::EndPopup();
+		}
+
+		// Phase 1: wait for the background worker thread to finish.
+		if (m_BackgroundWork && m_BackgroundWork->JoinIfDone())
+		{
+			printf("[LoadingModal] Phase 1: worker done, running completion callback\n");
+			fflush(stdout);
+			const bool success = m_BackgroundWork->GetResult();
+			m_BackgroundWork.reset();
+			// Don't close the modal yet — the completion callback may set
+			// m_GpuSyncPending to keep it open for the GPU sync phase.
+			if (m_OnBackgroundComplete)
+			{
+				auto cb = std::move(m_OnBackgroundComplete);
+				m_OnBackgroundComplete = nullptr;
+				// Seed a status for the GPU phase so its first frame shows
+				// something meaningful rather than a stale/empty string.
+				m_GpuSyncStatus = "Preparing GPU upload...";
+				cb(success);
+			}
+			printf("[LoadingModal] Phase 1 done: gpuSyncPending=%d\n", m_GpuSyncPending ? 1 : 0);
+			fflush(stdout);
+			// If the callback didn't set m_GpuSyncPending there is nothing
+			// left to do; the popup block above closes the modal next frame.
+			return;
+		}
+
+		// Phase 2: GPU sync (texture upload + AS rebuild). This runs on the
+		// main thread (Vulkan queue ownership). The modal stays visible so
+		// the user sees feedback instead of a frozen window.
+		if (m_GpuSyncPending)
+		{
+			if (m_RendererGPU.IsAvailable())
+			{
+				// Poll async texture upload — Adopt() blocks on
+				// vkWaitForFences when the upload is complete.
+				if (m_RendererGPU.IsTextureUploadPending())
+				{
+					// Announce BEFORE blocking: the modal above already drew
+					// this frame, so doing the work now would leave the user
+					// staring at the previous status for the whole stall.
+					// Set the status, render one frame, then block next frame.
+					static const char* kTextureStatus = "Uploading textures to GPU...";
+					if (m_GpuSyncStatus != kTextureStatus)
+					{
+						m_GpuSyncStatus = kTextureStatus;
+						return;
+					}
+					printf("[LoadingModal] Phase 2: polling texture upload (pending=%d)\n",
+					       m_RendererGPU.IsTextureUploadPending() ? 1 : 0);
+					fflush(stdout);
+					m_RendererGPU.PollTextureUpload();
+					printf("[LoadingModal] Phase 2: PollTextureUpload returned (pending=%d)\n",
+					       m_RendererGPU.IsTextureUploadPending() ? 1 : 0);
+					fflush(stdout);
+					// PollTextureUpload returns true when adopted; if it
+					// did, fall through to AS rebuild check. If not yet
+					// complete, return and try again next frame.
+					if (m_RendererGPU.IsTextureUploadPending())
+						return;
+				}
+
+				// Synchronous AS rebuild. The BLAS/TLAS build blocks the main
+				// thread (hundreds of ImmediateSubmit/vkQueueWaitIdle calls for
+				// staging uploads + the build itself). The loading modal shows
+				// "Building acceleration structures..." before the freeze, so
+				// the user sees feedback instead of a blank window. Running
+				// this on a worker thread crashes because Vulkan queues are
+				// not thread-safe (the render loop also submits to the queue).
+				if (m_RendererGPU.NeedsASRebuild() || m_RendererGPU.IsASRebuildPending())
+				{
+					// Announce before the submit (the CPU-side geometry/
+					// attribute upload still costs time), then drive the
+					// GPU build through the ASYNC path: submit once with a
+					// fence and poll it each frame. The synchronous
+					// RebuildAccelerationStructures() blocks the main thread
+					// for the whole BLAS/TLAS build — with ~9k meshes that
+					// froze the UI for the entire build, which is exactly
+					// what this modal exists to avoid.
+					static const char* kASStatus = "Building acceleration structures...";
+					if (m_GpuSyncStatus != kASStatus)
+					{
+						m_GpuSyncStatus = kASStatus;
+						return;
+					}
+
+					if (!m_RendererGPU.IsASRebuildPending())
+					{
+						printf("[LoadingModal] Phase 2: beginning async AS rebuild\n");
+						fflush(stdout);
+						if (!m_RendererGPU.BeginRebuildAccelerationStructures())
+						{
+							// Could not submit the async build — fall back to
+							// the blocking path so the scene still becomes
+							// renderable (it updates descriptors itself).
+							printf("[LoadingModal] Phase 2: async submit failed, falling back to sync\n");
+							fflush(stdout);
+							m_RendererGPU.RebuildAccelerationStructures();
+						}
+					}
+
+					if (m_RendererGPU.IsASRebuildPending())
+					{
+						// Non-blocking fence check; keeps the modal animating.
+						if (!m_RendererGPU.PollASRebuild())
+							return; // still building — poll again next frame
+						printf("[LoadingModal] Phase 2: async AS rebuild complete\n");
+						fflush(stdout);
+						m_RendererGPU.UpdateDescriptorSetAfterAS();
+					}
+				}
+			}
+
+			// GPU sync complete. The popup block above closes the modal on the
+			// next frame, from inside the BeginPopupModal/EndPopup scope.
+			printf("[LoadingModal] GPU sync complete, closing modal\n");
+			fflush(stdout);
+			m_GpuSyncPending = false;
+		}
+	}
+
+	// Start a background work operation. Only one may be active at a time.
+	// The completion callback runs on the main thread after the worker
+	// joins, so it's safe to do Vulkan/GPU calls there. If work is already
+	// active, this is a no-op (the caller should check IsBackgroundBusy).
+	bool IsBackgroundBusy() const { return m_BackgroundWork != nullptr; }
+
+	// Block until any background work completes (used by headless mode
+	// where the UI loop doesn't run to poll completion). Returns the
+	// success result and runs the completion callback. Also runs the
+	// GPU sync phase (texture upload + AS rebuild) synchronously.
+	void WaitForBackgroundWork()
+	{
+		if (!m_BackgroundWork) return;
+		m_BackgroundWork->Join();
+		const bool success = m_BackgroundWork->GetResult();
+		m_BackgroundWork.reset();
+		m_LoadingModalOpen = false;
+		if (m_OnBackgroundComplete)
+		{
+			auto cb = std::move(m_OnBackgroundComplete);
+			m_OnBackgroundComplete = nullptr;
+			cb(success);
+		}
+
+		// Run the GPU sync phase synchronously (headless has no UI loop).
+		if (m_GpuSyncPending && m_RendererGPU.IsAvailable())
+		{
+			while (m_RendererGPU.IsTextureUploadPending())
+			{
+				m_RendererGPU.PollTextureUpload();
+				if (m_RendererGPU.IsTextureUploadPending())
+					std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+			// Synchronous AS rebuild (headless — no UI loop).
+			if (m_RendererGPU.NeedsASRebuild())
+				m_RendererGPU.RebuildAccelerationStructures();
+			m_GpuSyncPending = false;
+		}
+	}
+
+	void StartBackgroundWork(const std::string& initialStatus,
+		BackgroundWork::WorkFn workFn,
+		std::function<void(bool)> onComplete)
+	{
+		if (m_BackgroundWork) return;
+		m_BackgroundWork = std::make_unique<BackgroundWork>();
+		m_OnBackgroundComplete = std::move(onComplete);
+		m_BackgroundWork->Run(initialStatus, std::move(workFn));
+	}
+
 	virtual void OnUpdate(float ts) override
 	{
 		// Phase 5: sample raw input at the top of OnUpdate (before camera).
@@ -1078,6 +1523,23 @@ public:
 
 		if (!m_CLIProcessed) return;
 
+		// Skip rendering + autosave while background work is active or the
+		// GPU sync phase is running — the worker thread may be parsing files
+		// or the GPU may be uploading textures / building AS. The loading
+		// modal (drawn in OnUIRender) drives the GPU sync and keeps the UI
+		// responsive.
+		if (IsBackgroundBusy() || m_GpuSyncPending)
+		{
+			static int skipCount = 0;
+			if (skipCount++ % 60 == 0) // print once per second
+			{
+				printf("[OnUpdate] skipping Render (bgWork=%d gpuSync=%d) frame=%d\n",
+				       IsBackgroundBusy() ? 1 : 0, m_GpuSyncPending ? 1 : 0, skipCount);
+				fflush(stdout);
+			}
+			return;
+		}
+
 		// Drive the runtime controller when Playing.
 		if (m_Runtime.GetState() == rt2::core::SceneRunState::Playing && m_RenderBridge)
 		{
@@ -1088,21 +1550,35 @@ public:
 		// Only snapshot the authoring document; the runtime Play clone is
 		// never captured. Skips work entirely on clean frames or when the
 		// revision has not advanced since the last snapshot.
-		if (m_Recovery && m_Runtime.GetState() == rt2::core::SceneRunState::Edit)
+		if (m_Recovery && m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
+			!m_ScriptRepairGate.SuppressAutosave())
 		{
 			rt2::core::Error ae;
+			std::vector<rt2::core::AssetDiagnostic> autosaveDiagnostics;
 			const auto started = std::chrono::steady_clock::now();
-			const bool wrote = m_Recovery->MaybeSnapshot(
+			std::filesystem::path logicalAssetRoot;
+			bool rootReady = true;
+			if (m_SceneMgr.AuthoringDoc().metadata.sourcePath.empty())
+				rootReady = RecoveryAssetRoot(logicalAssetRoot, ae);
+			const bool wrote = rootReady && m_Recovery->MaybeSnapshot(
 				m_SceneMgr.AuthoringDoc(), m_SceneMgr.AuthoringRevision(),
-				m_UntitledRecoveryId, UntitledAssetRoot(), ae);
+				m_UntitledRecoveryId, logicalAssetRoot,
+				autosaveDiagnostics, ae);
+			LogAssetDiagnostics(
+				autosaveDiagnostics, 0, "Recovery");
+			const std::string autosaveWarning =
+				rt2::core::FormatNonPortableAssetSummary(
+					autosaveDiagnostics);
 			const double elapsedMs = std::chrono::duration<double, std::milli>(
 				std::chrono::steady_clock::now() - started).count();
 			if (wrote)
 			{
 				char status[128];
 				std::snprintf(status, sizeof(status), "Autosaved in %.2f ms", elapsedMs);
-				m_LastStatusMsg = status;
-				printf("[Recovery] %s\n", status);
+				m_LastStatusMsg = autosaveWarning.empty()
+					? std::string(status)
+					: "Autosaved with " + autosaveWarning;
+				printf("[Recovery] %s\n", m_LastStatusMsg.c_str());
 				if (elapsedMs > 10.0)
 					printf("[Recovery] Warning: main-thread autosave exceeded 10 ms guardrail\n");
 			}
@@ -1117,10 +1593,79 @@ public:
 	}
 
 private:
+	bool MakeExplicitTextureContext(
+		const std::string& filepath,
+		rt2::core::TextureAssetLoadContext& context,
+		std::vector<rt2::core::AssetDiagnostic>& diagnostics) const
+	{
+		return rt2::core::BuildExplicitImportTextureContext(
+			std::filesystem::u8path(filepath),
+			m_SceneMgr.AuthoringDoc().GetUuidProvider(),
+			context, diagnostics);
+	}
+
+	void LogAssetDiagnostics(
+		const std::vector<rt2::core::AssetDiagnostic>& diagnostics,
+		size_t base,
+		const char* context) const
+	{
+		for (size_t i = base; i < diagnostics.size(); ++i)
+		{
+			const auto& diagnostic = diagnostics[i];
+			printf("[%s] Asset %s: ref=\"%s\" entity=%s "
+			       "sourceKey=\"%s\" detail=%s\n",
+			       context,
+			       rt2::core::AssetDiagnosticSeverityName(
+				       diagnostic.severity),
+			       diagnostic.refPath.c_str(),
+			       diagnostic.entityUuid.ToString().c_str(),
+			       diagnostic.sourceKey.c_str(),
+			       diagnostic.detail.c_str());
+		}
+	}
+
+	void LogScriptAssetDiagnostics(size_t base, const char* context) const
+	{
+		LogAssetDiagnostics(m_ScriptAssetDiagnostics, base, context);
+	}
+
 	void EnsureRenderBridge()
 	{
 		if (!m_RenderBridge)
 			m_RenderBridge = new SceneRenderBridge(m_RendererGPU);
+	}
+
+	// Phase 6B/W0: install the script system into the runtime controller.
+	//
+	// Before this, ScriptSystem was never instantiated by the app at all —
+	// 6A shipped test-only, so ScriptComponent-bearing entities were inert
+	// in Play. The controller side was already fully wired (Play fires
+	// OnSceneStart, the tick fires SyncScriptEnvironments/OnFixedUpdate/
+	// OnUpdate); only the owner was missing.
+	//
+	// Lazy, idempotent, and mirrors EnsureRenderBridge. ScriptSystem takes
+	// its UUID provider by reference, so construction is deferred until the
+	// authoring document actually has one — hence unique_ptr rather than a
+	// plain member. If the provider is still null we simply stay unwired and
+	// retry on the next Play; scripts are inert, nothing else is affected.
+	void EnsureScriptRuntimeWired()
+	{
+		if (m_ScriptSystem) return;
+
+		// Reuse the authoring document's provider, for the same reason
+		// EnterPlay does: it is stateless and the UUID spaces are disjoint.
+		rt2::core::IUuidProvider* provider =
+			m_SceneMgr.AuthoringDoc().GetUuidProvider();
+		if (!provider) return;
+
+		m_ScriptSystem = std::make_unique<rt2::core::ScriptSystem>(
+			*provider, m_ScriptAssetContext, m_ScriptAssetDiagnostics);
+		m_ScriptSink   = std::make_unique<rt2::core::RuntimeCommandSink>(m_Runtime);
+
+		m_Runtime.SetLifecycleObserver(m_ScriptSystem.get());
+		m_Runtime.SetScriptDispatch(m_ScriptSystem.get());
+		m_Runtime.SetRuntimeCommandSink(m_ScriptSink.get());
+		m_Runtime.SetInputService(&m_Input);
 	}
 
 	bool ApplyEditorCameraPose(const EditorCameraPose& pose)
@@ -1416,6 +1961,10 @@ private:
 
 		if (g_CLI.hasScene())
 			LoadSceneInternal(g_CLI.scenePath);
+
+		// Headless: wait for any async loads to complete before proceeding.
+		if (g_CLI.headless)
+			WaitForBackgroundWork();
 
 		if (g_CLI.hasCameraPosition)
 			m_Cam.SetPosition(glm::vec3(g_CLI.cameraPosition[0], g_CLI.cameraPosition[1], g_CLI.cameraPosition[2]));
@@ -1777,40 +2326,118 @@ private:
 			return;
 		}
 
-		if (!m_SceneMgr.LoadScene(filepath))
+		if (IsBackgroundBusy()) return;
+
+		const std::string pathCopy = filepath;
+		const bool isObj = (ext == "obj");
+
+		struct LoadResult
 		{
-			ImGui::OpenPopup("Scene Load Failed");
+			ECSScene ecs;
+			bool ok = false;
+			std::vector<rt2::core::AssetDiagnostic> diagnostics;
+		};
+		auto result = std::make_shared<LoadResult>();
+		rt2::core::TextureAssetLoadContext textureContext;
+		if (!MakeExplicitTextureContext(
+			    pathCopy, textureContext, result->diagnostics))
+		{
+			LogAssetDiagnostics(result->diagnostics, 0, "LoadScene");
+			m_LastStatusMsg = "Scene load failed";
 			return;
 		}
-		m_EditorUI.ResetForDocument();
-		m_History.Clear();
-		CompactMeshRegistryNowAsserted();
 
-		if (ext == "obj")
+		StartBackgroundWork(isObj ? "Loading OBJ scene..." : "Loading glTF scene...",
+			[result, pathCopy, isObj,
+			 textureContext](BackgroundWork& self) mutable -> bool
 		{
-			m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData, const RenderInstanceMap& instanceMap) {
-				m_RendererGPU.SetScene(gpuData, instanceMap);
-			});
-			m_SceneMgr.SyncToGPU();
-			m_RendererGPU.ResetAccumulation();
-		}
-		else
+			self.SetStatus("Parsing file...");
+			if (isObj)
+				result->ok = SceneLoader::LoadObjIntoECS(
+					result->ecs, textureContext, result->diagnostics);
+			else
+				result->ok = SceneLoader::LoadIntoECS(
+					result->ecs, textureContext, result->diagnostics);
+			return result->ok;
+		},
+			[this, result, pathCopy, isObj, ext](bool success)
 		{
-			if (m_RendererGPU.IsAvailable())
-				UploadMeshToGPU();
-		}
+			LogAssetDiagnostics(result->diagnostics, 0, "LoadScene");
+			if (!success)
+			{
+				ImGui::OpenPopup("Scene Load Failed");
+				m_LastStatusMsg = "Scene load failed";
+				return;
+			}
 
-		const auto& cam = m_SceneMgr.GetECS().camera;
-		m_Cam.SetPosition(cam.position);
-		m_Cam.SetForwardDirection(cam.forwardDirection);
+			// Clear the live scene and adopt the loaded ECS.
+			m_SceneMgr.Clear();
+			// Move the loaded ECS resources into the live scene.
+			auto& live = m_SceneMgr.GetECS();
+			live.meshRegistry = std::move(result->ecs.meshRegistry);
+			live.materials = std::move(result->ecs.materials);
+			live.textures = std::move(result->ecs.textures);
+			live.lights = std::move(result->ecs.lights);
+			live.camera = std::move(result->ecs.camera);
+			// Move the registry: entt registries are movable.
+			live.registry = std::move(result->ecs.registry);
 
-		// Imported interchange files become an untitled native authoring
-		// document. They must be explicitly saved as .rt2scene.
-		m_SceneMgr.AuthoringDoc().metadata.sourcePath.clear();
-		m_SceneMgr.MarkDirty();
-		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
-		m_Recovery->ResetSchedule();
-		m_LastStatusMsg = "Imported scene (unsaved)";
+			// Assign UUIDs to all entities.
+			auto& reg = live.registry;
+			auto view = reg.view<Transform>();
+			for (auto entity : view)
+			{
+				if (!reg.all_of<EntityIdComponent>(entity))
+					m_SceneMgr.AuthoringDoc().AssignNewUuid(entity);
+			}
+
+			// Record source paths on imported entities.
+			{
+				auto mv = reg.view<ImportedMeshSourceComponent>();
+				for (auto e : mv)
+				{
+					auto& src = mv.get<ImportedMeshSourceComponent>(e);
+					if (src.model.path.empty())
+						src.model.path = pathCopy;
+				}
+			}
+
+			m_EditorUI.ResetForDocument();
+			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
+			m_History.Clear();
+			CompactMeshRegistryNowAsserted();
+
+			if (isObj)
+			{
+				m_SceneMgr.SetSyncCallback([this](GPUSceneData& gpuData, const RenderInstanceMap& instanceMap) {
+					m_RendererGPU.SetScene(gpuData, instanceMap);
+				});
+				m_SceneMgr.SyncToGPU();
+				m_RendererGPU.ResetAccumulation();
+				m_GpuSyncPending = true;
+			}
+			else
+			{
+				if (m_RendererGPU.IsAvailable())
+				{
+					UploadMeshToGPU();
+					m_GpuSyncPending = true;
+				}
+			}
+
+			const auto& cam = m_SceneMgr.GetECS().camera;
+			m_Cam.SetPosition(cam.position);
+			m_Cam.SetForwardDirection(cam.forwardDirection);
+
+			// Imported interchange files become an untitled native authoring
+			// document. They must be explicitly saved as .rt2scene.
+			m_SceneMgr.AuthoringDoc().metadata.sourcePath.clear();
+			m_SceneMgr.MarkDirty();
+			m_ScriptRepairGate.OnPersistedOrReset();
+			m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
+			m_Recovery->ResetSchedule();
+			m_LastStatusMsg = "Imported scene (unsaved)";
+		});
 	}
 
 	SceneManager::EntityId LoadMeshFileAsEntity(const std::string& filepath)
@@ -1822,17 +2449,31 @@ private:
 			// OBJ now imports into the current scene (consistent with glTF).
 			ImportSettings settings;
 			settings.mergeMegaMesh = true;
-			auto id = m_SceneMgr.ImportObj(filepath, settings);
+			std::vector<rt2::core::AssetDiagnostic> diagnostics;
+			auto id = m_SceneMgr.ImportObj(
+				filepath, settings, &diagnostics);
+			LogAssetDiagnostics(diagnostics, 0, "Import");
 			if (id.IsValid())
 				m_PendingFullSync = true;
 			return id;
 		}
 
-		if (!SceneLoader::LoadIntoECS(m_SceneMgr.GetECS(), filepath))
+		std::vector<rt2::core::AssetDiagnostic> diagnostics;
+		rt2::core::TextureAssetLoadContext textureContext;
+		if (!MakeExplicitTextureContext(
+			    filepath, textureContext, diagnostics))
 		{
+			LogAssetDiagnostics(diagnostics, 0, "LoadMesh");
+			return SceneManager::EntityId{};
+		}
+		if (!SceneLoader::LoadIntoECS(
+			    m_SceneMgr.GetECS(), textureContext, diagnostics))
+		{
+			LogAssetDiagnostics(diagnostics, 0, "LoadMesh");
 			printf("[SceneEditor] Failed to load mesh: %s\n", filepath.c_str());
 			return SceneManager::EntityId{};
 		}
+		LogAssetDiagnostics(diagnostics, 0, "LoadMesh");
 
 		std::string name = filepath;
 		size_t lastSlash = name.find_last_of("/\\");
@@ -1869,11 +2510,87 @@ private:
 	Camera m_EditorCamSnapshot;    // saved on Play, restored on Stop
 	bool m_RuntimeCamActive = false;
 
+	// Phase 6B/W0: the app's script system + runtime command sink. Declared
+	// after m_Runtime because the sink binds to the controller by reference.
+	// Installed lazily by EnsureScriptRuntimeWired(); null until the first
+	// Play with a valid UUID provider.
+	rt2::core::AssetResolutionContext               m_ScriptAssetContext;
+	std::vector<rt2::core::AssetDiagnostic>          m_ScriptAssetDiagnostics;
+	std::unique_ptr<rt2::core::ScriptSystem>         m_ScriptSystem;
+	std::unique_ptr<rt2::core::RuntimeCommandSink>   m_ScriptSink;
+
+	// Phase 6B/W5: inspector-side field registry. Created at startup so the
+	// inspector can query declared fields while the editor is STOPPED (the
+	// ScriptSystem's registry is lazy-created at Play). Cleared on scene
+	// load/close alongside ResetForDocument.
+	std::unique_ptr<rt2::core::ScriptFieldRegistry> m_InspectorFieldRegistry;
+
+	// Phase 6C/W2: file watcher for hot reload. efsw watches directories
+	// containing referenced script assets. On .lua file change, the path
+	// is posted to m_PendingFileChanges (thread-safe). The drain in
+	// OnUIRender debounces (~100ms) and calls ScriptSystem::ReloadScript.
+	class ScriptFileWatchListener : public efsw::FileWatchListener
+	{
+	public:
+		std::mutex mutex;
+		std::vector<std::string> pendingChanges;
+
+		void handleFileAction(efsw::WatchID watchid, const std::string& dir,
+		                      const std::string& filename, efsw::Action action,
+		                      const std::string& oldFilename) override
+		{
+			(void)watchid; (void)oldFilename;
+			// Only react to .lua file modifications and adds (atomic save =
+			// delete + add, so catch both). Delete alone means the file is
+			// gone — no reload needed.
+			if (action == efsw::Actions::Delete) return;
+
+			// Only .lua files (case-insensitive on Windows).
+			if (filename.size() < 5) return;
+			auto ext = filename.substr(filename.size() - 4);
+			std::transform(ext.begin(), ext.end(), ext.begin(),
+				[](unsigned char c) { return std::tolower(c); });
+			if (ext != ".lua") return;
+
+			// Build the full path. efsw gives dir + filename separately;
+			// normalize to a single path.
+			std::filesystem::path full = std::filesystem::path(dir) / filename;
+			std::lock_guard<std::mutex> lock(mutex);
+			pendingChanges.push_back(full.string());
+		}
+	};
+
+	// Declaration order matters: m_FileWatchListener must outlive
+	// m_FileWatcher so that efsw's watch thread (stopped by
+	// ~FileWatcher) never calls handleFileAction on a destroyed
+	// listener. Members destroy in reverse declaration order, so
+	// the watcher is declared second and dies first.
+	std::unique_ptr<ScriptFileWatchListener>    m_FileWatchListener;
+	std::unique_ptr<efsw::FileWatcher>          m_FileWatcher;
+	std::vector<efsw::WatchID>                  m_ActiveWatchIds;
+	std::vector<std::string>                    m_DebouncedChanges;
+	std::chrono::steady_clock::time_point       m_LastFileChangeTime;
+
 	// Phase 5 input service — owns the context stack and frame phasing.
 	rt2::core::InputService m_Input;
 	bool m_InputDefaultsLoaded = false;
 	bool m_ViewportHoveredThisFrame = false;
 	bool m_GizmoConsumesMouseThisFrame = false;
+
+	// ---- Background async work (scene load / import / env map decode) ----
+	// Only one BackgroundWork may be active at a time. The loading modal
+	// is modal — it blocks all other UI interactions until the work done.
+	// The completion callback runs on the main thread after the worker
+	// thread joins, so Vulkan/GPU calls are safe there.
+	std::unique_ptr<BackgroundWork> m_BackgroundWork;
+	std::function<void(bool)> m_OnBackgroundComplete;
+	bool m_LoadingModalOpen = false;
+	// GPU sync phase: after the async worker completes, the completion
+	// callback may set this to keep the modal open while the GPU uploads
+	// textures + builds acceleration structures. The modal polls each
+	// frame and runs the GPU sync, then clears the flag.
+	bool m_GpuSyncPending = false;
+	std::string m_GpuSyncStatus;
 
 	// ---- Phase 1B: editor settings, recovery, unsaved-changes coordinator ----
 	std::filesystem::path DialogInitialDirectory() const
@@ -1885,13 +2602,47 @@ private:
 		return {};
 	}
 
-	std::filesystem::path UntitledAssetRoot() const
+	std::filesystem::path ScriptAssetRoot() const
 	{
-		if (m_Settings2 && !m_Settings2->GetProjectRoot().empty())
-			return m_Settings2->GetProjectRoot();
-		std::error_code ec;
-		auto cwd = std::filesystem::current_path(ec);
-		return ec ? std::filesystem::path{} : cwd;
+		if (m_Settings2)
+		{
+			const auto root = m_Settings2->GetProjectRoot().
+				lexically_normal();
+			if (!root.empty() && root.is_absolute())
+				return root;
+		}
+		return {};
+	}
+
+	bool RecoveryAssetRoot(
+		std::filesystem::path& root,
+		rt2::core::Error& err) const
+	{
+		root = ScriptAssetRoot();
+		if (!root.empty())
+		{
+			err = rt2::core::Error{};
+			return true;
+		}
+#ifdef _WIN32
+		const wchar_t* localAppData = _wgetenv(L"LOCALAPPDATA");
+		const std::filesystem::path base =
+			localAppData ? std::filesystem::path(localAppData)
+			             : std::filesystem::path{};
+#else
+		const char* localAppData = std::getenv("LOCALAPPDATA");
+		const std::filesystem::path base =
+			localAppData ? std::filesystem::path(localAppData)
+			             : std::filesystem::path{};
+#endif
+		if (base.empty())
+		{
+			err.code = rt2::core::Error::InvalidArgument;
+			err.detail = "LOCALAPPDATA is unavailable for untitled recovery";
+			return false;
+		}
+		return rt2::core::SceneRecoveryService::
+			EnsureUntitledRecoveryAssetRoot(base, root, err);
 	}
 
 	bool PersistEditorSettings(const char* context)
@@ -1918,6 +2669,58 @@ private:
 	#endif
 		return std::filesystem::current_path() / "RT2Editor";
 	}
+
+	// ---- View config persistence (window visibility + perf detail) ----
+	// Saved to <AppDataRoot>/view_config.txt as plain key=value lines.
+	// Loaded once at construction; saved when a flag changes (dirty bit).
+	std::filesystem::path ViewConfigPath() const
+	{
+		return AppDataRoot() / "view_config.txt";
+	}
+
+	void LoadViewConfig()
+	{
+		std::ifstream in(ViewConfigPath());
+		if (!in) return;
+		std::string line;
+		while (std::getline(in, line))
+		{
+			auto eq = line.find('=');
+			if (eq == std::string::npos) continue;
+			std::string key = line.substr(0, eq);
+			std::string val = line.substr(eq + 1);
+			auto getBool = [&](bool& out) {
+				if (val == "1" || val == "true") out = true;
+				else if (val == "0" || val == "false") out = false;
+			};
+			if (key == "perfDetail")      m_PerfDetailLevel      = std::atoi(val.c_str());
+			else if (key == "showCamera")        getBool(m_ShowInfoWindow);
+			else if (key == "showPerformance")   getBool(m_ShowPerfWindow);
+			else if (key == "showRenderSettings")getBool(m_ShowRenderSettingsWin);
+			else if (key == "showScene")         getBool(m_ShowSceneWindow);
+			else if (key == "showSession")       getBool(m_ShowSessionWindow);
+			else if (key == "showInspector")     getBool(m_ShowInspectorWindow);
+			else if (key == "showOutliner")      getBool(m_ShowHierarchyWindow);
+		}
+	}
+
+	void SaveViewConfig()
+	{
+		auto path = ViewConfigPath();
+		std::error_code ec;
+		std::filesystem::create_directories(path.parent_path(), ec);
+		std::ofstream out(path, std::ios::trunc);
+		if (!out) return;
+		out << "perfDetail=" << m_PerfDetailLevel << "\n";
+		out << "showCamera=" << (m_ShowInfoWindow ? 1 : 0) << "\n";
+		out << "showPerformance=" << (m_ShowPerfWindow ? 1 : 0) << "\n";
+		out << "showRenderSettings=" << (m_ShowRenderSettingsWin ? 1 : 0) << "\n";
+		out << "showScene=" << (m_ShowSceneWindow ? 1 : 0) << "\n";
+		out << "showSession=" << (m_ShowSessionWindow ? 1 : 0) << "\n";
+		out << "showInspector=" << (m_ShowInspectorWindow ? 1 : 0) << "\n";
+		out << "showOutliner=" << (m_ShowHierarchyWindow ? 1 : 0) << "\n";
+	}
+
 	std::unique_ptr<rt2::core::EditorSettingsStore>      m_Settings2;
 	std::unique_ptr<rt2::core::SceneRecoveryService>      m_Recovery;
 	rt2::core::UnsavedChangesCoordinator                  m_Unsaved;
@@ -1926,12 +2729,21 @@ private:
 	bool                                                  m_RecoveryPromptOpen = false;
 	std::string                                           m_UntitledRecoveryId; // stable per session
 	std::string                                           m_LastStatusMsg;
+	rt2::core::ScriptRepairPersistenceGate                m_ScriptRepairGate;
 
 	// ---- Runtime lifecycle ----
 
 	void EnterPlay()
 	{
 		EnsureRenderBridge();
+		EnsureScriptRuntimeWired();
+		m_ScriptAssetDiagnostics.clear();
+		const auto& sourcePath =
+			m_SceneMgr.AuthoringDoc().metadata.sourcePath;
+		m_ScriptAssetContext.assetRoot = sourcePath.empty()
+			? ScriptAssetRoot()
+			: sourcePath.parent_path();
+		m_ScriptAssetContext.database = nullptr;
 
 		// Phase 4: inject the production UUID provider so the runtime document
 		// can generate fresh UUIDs for deferred-create operations. The
@@ -1944,9 +2756,11 @@ private:
 		rt2::core::Error err;
 		if (!m_Runtime.Play(m_SceneMgr.AuthoringDoc(), *m_RenderBridge, err))
 		{
+			LogScriptAssetDiagnostics(0, "Play");
 			printf("[Play] Failed to enter Play: %s\n", err.Format().c_str());
 			return;
 		}
+		LogScriptAssetDiagnostics(0, "Play");
 
 		// Snapshot the editor camera and switch to the runtime camera.
 		m_EditorCamSnapshot = m_Cam;
@@ -2019,6 +2833,42 @@ public:
 	void Undo() { m_EditorUI.Undo(); }
 	void Redo() { m_EditorUI.Redo(); }
 
+	// Performance window detail levels. These are ImGui::Combo indices, so
+	// they are 0-based even though the labels read "1".."3".
+	static constexpr int kPerfLevelBasic      = 0; // FPS + frame time only
+	static constexpr int kPerfLevelPasses     = 1; // + raster/ReSTIR GPU regions
+	static constexpr int kPerfLevelEverything = 2; // + all regions, res, AS builds
+
+	// Regions shown at kPerfLevelPasses. Everything else is level-3 only, so
+	// a region added to GpuTimestampProfiler::Region shows up at level 3
+	// automatically without touching this list.
+	static bool IsPassLevelRegion(GpuTimestampProfiler::Region region)
+	{
+		switch (region)
+		{
+		case GpuTimestampProfiler::Region::Raster:
+		case GpuTimestampProfiler::Region::ReSTIRDITemporal:
+		case GpuTimestampProfiler::Region::ReSTIRDISpatial:
+		case GpuTimestampProfiler::Region::ReSTIRGITemporal:
+		case GpuTimestampProfiler::Region::ReSTIRGIHistory:
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	// View-menu window visibility + Performance detail level. Public so
+	// the menubar callback (a free function holding a RT2Layer*) can toggle
+	// them. Viewport is always shown and is not toggleable.
+	int  m_PerfDetailLevel       = kPerfLevelBasic;
+	bool m_ShowInfoWindow        = true;
+	bool m_ShowPerfWindow        = true;
+	bool m_ShowRenderSettingsWin  = true;
+	bool m_ShowSceneWindow       = true;
+	bool m_ShowSessionWindow     = true;
+	bool m_ShowInspectorWindow   = true; // SceneEditorUI Inspector panel
+	bool m_ShowHierarchyWindow   = true; // SceneEditorUI Outliner panel
+
 	void NewScene()
 	{
 		m_Unsaved.Request({rt2::core::UnsavedChangesCoordinator::ActionKind::New, {}});
@@ -2027,10 +2877,12 @@ public:
 	void NewSceneInternal()
 	{
 		m_SceneMgr.Clear();
-		m_EditorUI.ResetForDocument();
-		m_History.Clear();
+			m_EditorUI.ResetForDocument();
+			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
+			m_History.Clear();
 		m_SceneMgr.CompactMeshRegistryNow();
 		m_SceneMgr.ClearDirty();
+		m_ScriptRepairGate.OnPersistedOrReset();
 		m_Recovery->ResetSchedule();
 		// New untitled doc gets a fresh recovery id for this session.
 		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
@@ -2055,87 +2907,220 @@ public:
 
 	void OpenRt2SceneInternal(const std::string& filepath)
 	{
-		rt2::core::Error err;
-		// Load + resolve into a temporary document first. Only on success do
-		// we swap it into the live authoring document and GPU-sync. This
-		// preserves the transactional guarantee: a parse, schema, or hard
-		// resolution failure cannot partially replace the currently open
-		// authoring scene.
-		rt2::core::SceneDocument tempDoc;
-		tempDoc.SetUuidProvider(m_SceneMgr.AuthoringDoc().GetUuidProvider());
+		if (IsBackgroundBusy()) return;
 
-		if (!rt2::core::SceneSerializer::Load(tempDoc, filepath, err))
+		// The CPU-heavy work (JSON parse + asset re-import + texture decode)
+		// runs on a worker thread. The result SceneDocument is captured in
+		// a shared_ptr so the worker can fill it and the completion callback
+		// (on the main thread) can adopt it + upload to GPU.
+		auto resultDoc = std::make_shared<rt2::core::SceneDocument>();
+		auto errorStr = std::make_shared<std::string>();
+		auto diagStr = std::make_shared<std::string>();
+		auto loadReport = std::make_shared<rt2::core::SceneLoadReport>();
+		auto fieldDiagnostics =
+			std::make_shared<std::vector<rt2::core::FieldDiagnostic>>();
+		auto fieldResolution =
+			std::make_shared<rt2::core::ScriptFieldResolutionResult>();
+		auto fieldChanges =
+			std::make_shared<rt2::core::ScriptFieldChangeClassification>();
+		const std::string filepathCopy = filepath;
+		auto uuidProvider = m_SceneMgr.AuthoringDoc().GetUuidProvider();
+
+		StartBackgroundWork("Loading scene...",
+			[resultDoc, errorStr, diagStr, loadReport, fieldDiagnostics,
+			 fieldResolution, fieldChanges, filepathCopy, uuidProvider](BackgroundWork& self) -> bool
 		{
-			printf("[Scene] Failed to load .rt2scene: %s\n", err.Format().c_str());
-			ImGui::OpenPopup("Scene Load Failed");
-			m_LastStatusMsg = std::string("Open failed: ") + err.Format();
-			return;
-		}
+			self.SetStatus("Parsing scene file...");
+			resultDoc->SetUuidProvider(uuidProvider);
 
-		// Resolve durable asset references into the temporary document. The
-		// serializer persists durable refs only; the resolver rebuilds
-		// transient mesh/texture/material/environment state from the source
-		// files. Missing assets produce diagnostics, not crashes.
-		std::filesystem::path sceneRoot = std::filesystem::path(filepath).parent_path();
-		std::vector<rt2::core::AssetDiagnostic> diagnostics;
-		rt2::core::Error resolveErr;
-		bool resolveOk = rt2::core::SceneAssetResolver::ResolveAll(
-		        tempDoc, sceneRoot, diagnostics, resolveErr);
+			rt2::core::Error err;
+			if (!rt2::core::SceneSerializer::Load(
+					*resultDoc, filepathCopy, *loadReport, err))
+			{
+				*errorStr = "Failed to load .rt2scene: " + err.Format();
+				return false;
+			}
 
-		for (const auto& d : diagnostics)
+			self.SetStatus("Resolving assets (models, textures, env)...");
+			std::filesystem::path sceneRoot = std::filesystem::path(filepathCopy).parent_path();
+			std::vector<rt2::core::AssetDiagnostic> diagnostics;
+			const rt2::core::AssetResolutionContext assetContext{
+				sceneRoot, nullptr};
+			rt2::core::Error resolveErr;
+			bool resolveOk = rt2::core::SceneAssetResolver::ResolveAll(
+			        *resultDoc, sceneRoot, diagnostics, resolveErr);
+
+			auto formatAssetDiagnostics = [&]() {
+				for (const auto& d : diagnostics)
+				{
+					*diagStr += std::string("[Scene] Asset ") +
+						rt2::core::AssetDiagnosticSeverityName(d.severity) +
+						": kind=" + std::to_string((int)d.kind) +
+						" ref='" + d.refPath + "'" +
+						" sourceKey='" + d.sourceKey + "'" +
+						" detail=" + d.detail + "\n";
+				}
+			};
+
+			if (!resolveOk)
+			{
+				formatAssetDiagnostics();
+				*errorStr = "Asset resolution failed, keeping current scene: " + resolveErr.Format();
+				return false;
+			}
+
+			self.SetStatus("Reconciling script fields...");
+			*fieldDiagnostics = loadReport->fieldDiagnostics;
+			rt2::core::ScriptFieldRegistry fieldRegistry;
+			*fieldResolution = rt2::core::ScriptFieldResolver::ResolveDocument(
+				*resultDoc, fieldRegistry, assetContext, diagnostics,
+				*fieldDiagnostics);
+			formatAssetDiagnostics();
+			*fieldChanges = rt2::core::ClassifyScriptFieldChanges(
+				*loadReport, *fieldResolution, *fieldDiagnostics);
+			for (const auto& diagnostic : *fieldDiagnostics)
+			{
+				*diagStr += "[Scene] Script field: " + diagnostic.message + "\n";
+			}
+
+			return true;
+		},
+			[this, resultDoc, errorStr, diagStr, fieldChanges,
+			 filepathCopy](bool success)
 		{
-			const char* sev = (d.severity == rt2::core::AssetDiagnostic::Missing)
-			                  ? "Missing" : (d.severity == rt2::core::AssetDiagnostic::Malformed)
-			                  ? "Malformed" : "Unresolved";
-			printf("[Scene] Asset %s: kind=%d ref='%s' resolved='%s' entity=%s%s%s"
-			       " sourceKey='%s' detail=%s\n",
-			       sev, (int)d.kind, d.refPath.c_str(), d.resolvedPath.c_str(),
-			       d.entityUuid.IsNull() ? "(env)" : d.entityUuid.ToString().c_str(),
-			       d.entityName.empty() ? "" : " (",
-			       d.entityName.empty() ? "" : d.entityName.c_str(),
-			       d.sourceKey.c_str(), d.detail.c_str());
-		}
+			// Main thread: log diagnostics.
+			if (!diagStr->empty())
+				printf("%s", diagStr->c_str());
 
-		if (!resolveOk)
-		{
-			// Hard resolution failure: every imported entity was unresolvable.
-			// Preserve the currently open authoring document — do not swap in
-			// a document that cannot render its imported content.
-			printf("[Scene] Asset resolution failed, keeping current scene: %s\n",
-			       resolveErr.Format().c_str());
-			ImGui::OpenPopup("Scene Load Failed");
-			m_LastStatusMsg = std::string("Open failed (resolution): ") + resolveErr.Format();
-			return;
-		}
+			if (!success)
+			{
+				printf("[Scene] %s\n", errorStr->c_str());
+				ImGui::OpenPopup("Scene Load Failed");
+				m_LastStatusMsg = *errorStr;
+				return;
+			}
 
-		// Adopt the resolved document without an intermediate cleared live state.
-		m_SceneMgr.ReplaceAuthoringDocument(std::move(tempDoc));
-		m_EditorUI.ResetForDocument();
-		m_History.Clear();
-		CompactMeshRegistryNowAsserted();
-		m_SceneMgr.ClearDirty();
-		m_Recovery->ResetSchedule();
-		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
+			// Adopt the resolved document.
+			printf("[OpenRt2Scene] adopting document...\n"); fflush(stdout);
+			m_SceneMgr.ReplaceAuthoringDocument(std::move(*resultDoc));
+			m_EditorUI.ResetForDocument();
+			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 
-		// Upload to GPU
-		if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
-			UploadMeshToGPU();
+			// Phase 6C/W2: watch directories containing referenced
+			// script assets for .lua file changes. The scene's parent
+			// directory covers scene-relative scripts; we also walk
+			// every ScriptComponent to catch absolute paths or shared
+			// script folders outside the scene tree. All watches are
+			// recursive and deduped by directory path.
+			if (m_FileWatcher && m_FileWatchListener)
+			{
+				for (efsw::WatchID wid : m_ActiveWatchIds)
+					m_FileWatcher->removeWatch(wid);
+				m_ActiveWatchIds.clear();
 
-		m_RendererGPU.ResetAccumulation();
+				std::set<std::string> dirs;
+				const auto sceneDir =
+					rt2::core::ScriptWatchDirectoryForCandidate(
+						std::filesystem::path(filepathCopy));
+				if (!sceneDir.empty())
+					dirs.insert(sceneDir.string());
 
-		// Adopt the scene camera
-		const auto& cam = m_SceneMgr.GetECS().camera;
-		m_Cam.SetPosition(cam.position);
-		m_Cam.SetForwardDirection(cam.forwardDirection);
+				auto& doc = m_SceneMgr.AuthoringDoc();
+				m_ScriptAssetContext.assetRoot =
+					std::filesystem::path(filepathCopy).parent_path();
+				m_ScriptAssetContext.database = nullptr;
+				m_ScriptAssetDiagnostics.clear();
+				auto view = doc.ecs.registry.view<ScriptComponent>();
+				for (auto e : view)
+				{
+					const auto& sc = view.get<ScriptComponent>(e);
+					const auto* id =
+						doc.ecs.registry.try_get<EntityIdComponent>(e);
+					const auto* name =
+						doc.ecs.registry.try_get<NameComponent>(e);
+					const size_t diagnosticBase =
+						m_ScriptAssetDiagnostics.size();
+					auto resolved = rt2::core::ResolveScriptAssetPath(
+						sc, m_ScriptAssetContext,
+						id ? id->id : rt2::core::UUID::Nil(),
+						name ? name->name : std::string{},
+						m_ScriptAssetDiagnostics);
+					std::filesystem::path watchPath =
+						resolved.resolvedPath;
+					if (watchPath.empty() &&
+						m_ScriptAssetDiagnostics.size() > diagnosticBase)
+					{
+						watchPath = m_ScriptAssetDiagnostics.back().
+							resolvedPath;
+					}
+					const auto parent =
+						rt2::core::ScriptWatchDirectoryForCandidate(
+							watchPath);
+					if (!parent.empty())
+						dirs.insert(parent.string());
+				}
+				LogScriptAssetDiagnostics(0, "FileWatcher");
 
-		// Update recents.
-		if (m_Settings2)
-		{
-			m_Settings2->AddRecentScene(filepath);
-			PersistEditorSettings("recent scenes");
-		}
-		printf("[Scene] Loaded .rt2scene: %s\n", filepath.c_str());
-		m_LastStatusMsg = "Opened";
+				for (const auto& dir : dirs)
+				{
+					efsw::WatchID wid =
+						m_FileWatcher->addWatch(dir,
+							m_FileWatchListener.get(), true);
+					if (wid < 0)
+						printf("[FileWatcher] addWatch failed for "
+							"\"%s\" (id=%d)\n", dir.c_str(),
+							static_cast<int>(wid));
+					else
+						m_ActiveWatchIds.push_back(wid);
+				}
+			}
+
+			m_History.Clear();
+			CompactMeshRegistryNowAsserted();
+			m_SceneMgr.ClearDirty();
+			if (fieldChanges->requiresSave)
+				m_SceneMgr.MarkDirty();
+			m_ScriptRepairGate.Adopt(fieldChanges->destructive);
+			m_Recovery->ResetSchedule();
+			m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
+
+			// Upload to GPU.
+			if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
+			{
+				printf("[OpenRt2Scene] UploadMeshToGPU...\n"); fflush(stdout);
+				UploadMeshToGPU();
+				printf("[OpenRt2Scene] UploadMeshToGPU done, setting gpuSyncPending\n"); fflush(stdout);
+				m_GpuSyncPending = true;
+			}
+			else
+			{
+				printf("[OpenRt2Scene] no GPU upload needed (meshes=%d available=%d)\n",
+				       (int)m_SceneMgr.GetECS().meshRegistry.GetCount(),
+				       m_RendererGPU.IsAvailable() ? 1 : 0);
+				fflush(stdout);
+			}
+
+			m_RendererGPU.ResetAccumulation();
+
+			// Adopt the scene camera.
+			const auto& cam = m_SceneMgr.GetECS().camera;
+			m_Cam.SetPosition(cam.position);
+			m_Cam.SetForwardDirection(cam.forwardDirection);
+
+			// Update recents.
+			if (m_Settings2)
+			{
+				m_Settings2->AddRecentScene(filepathCopy);
+				PersistEditorSettings("recent scenes");
+			}
+			printf("[Scene] Loaded .rt2scene: %s\n", filepathCopy.c_str());
+			if (fieldChanges->destructive)
+				m_LastStatusMsg = "Opened with discarded script field data; Save once to acknowledge";
+			else if (fieldChanges->requiresSave)
+				m_LastStatusMsg = "Opened; script fields changed and the scene needs saving";
+			else
+				m_LastStatusMsg = "Opened";
+		});
 	}
 
 	void SaveRt2Scene()
@@ -2150,6 +3135,14 @@ public:
 
 	bool SaveCurrentScene(bool forceSaveAs)
 	{
+		if (m_ScriptRepairGate.ConsumeSaveAcknowledgement())
+		{
+			m_LastStatusMsg =
+				"Script field data was discarded during load; repeat Save to confirm persistence";
+			printf("[Scene] %s\n", m_LastStatusMsg.c_str());
+			return false;
+		}
+
 		auto& doc = m_SceneMgr.AuthoringDoc();
 		const std::filesystem::path oldSourcePath = doc.metadata.sourcePath;
 		const std::string oldDocId = rt2::core::SceneRecoveryService::DocIdFor(
@@ -2169,16 +3162,21 @@ public:
 		if (extension != ".rt2scene") target.replace_extension(".rt2scene");
 
 		rt2::core::Error err;
-		if (!rt2::core::SceneSerializer::Save(doc, target, err))
+		std::vector<rt2::core::AssetDiagnostic> saveDiagnostics;
+		if (!rt2::core::SceneSerializer::Save(doc, target, saveDiagnostics, err))
 		{
 			// The live source path is committed only after the file is safe.
 			m_LastStatusMsg = std::string("Save failed: ") + err.Format();
 			printf("[Scene] %s\n", m_LastStatusMsg.c_str());
 			return false;
 		}
+		LogAssetDiagnostics(saveDiagnostics, 0, "Scene");
+		const std::string saveWarning =
+			rt2::core::FormatNonPortableAssetSummary(saveDiagnostics);
 
 		doc.metadata.sourcePath = target;
 		m_SceneMgr.ClearDirty();
+		m_ScriptRepairGate.OnPersistedOrReset();
 		const std::string newDocId = rt2::core::SceneRecoveryService::DocIdFor(
 			doc, m_UntitledRecoveryId);
 		if (oldDocId == newDocId) m_Recovery->DiscardForDoc(newDocId);
@@ -2188,18 +3186,103 @@ public:
 		if (m_Settings2) m_Settings2->AddRecentScene(target);
 		const bool settingsSaved = PersistEditorSettings("recent scenes");
 		if (settingsSaved)
-			m_LastStatusMsg = (forceSaveAs || oldSourcePath.empty()) ? "Saved As" : "Saved";
+		{
+			const std::string saved =
+				(forceSaveAs || oldSourcePath.empty()) ? "Saved As" : "Saved";
+			m_LastStatusMsg = saveWarning.empty()
+				? saved
+				: saved + " with " + saveWarning;
+		}
 		printf("[Scene] Saved .rt2scene: %s\n", target.u8string().c_str());
 		return true;
 	}
 
 	void LoadEnvMap(const std::string& filepath)
 	{
-		if (!m_SceneMgr.LoadEnvMap(filepath))
-			return;
-		if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
-			m_SceneMgr.SyncToGPU();
-		m_RendererGPU.ResetAccumulation();
+		if (IsBackgroundBusy()) return;
+
+		const std::string pathCopy = filepath;
+		struct EnvResult
+		{
+			int w = 0, h = 0;
+			std::vector<float> pixels;
+			std::string error;
+			rt2::core::Error envImportErr; // sidecar read/write diagnostic
+		};
+		auto result = std::make_shared<EnvResult>();
+
+		StartBackgroundWork("Loading environment map...",
+			[result, pathCopy](BackgroundWork& self) -> bool
+		{
+			self.SetStatus("Decoding HDR/EXR...");
+			bool isEXR = pathCopy.size() >= 4 &&
+			             (pathCopy.compare(pathCopy.size() - 4, 4, ".exr") == 0 ||
+			              pathCopy.compare(pathCopy.size() - 4, 4, ".EXR") == 0);
+
+			if (isEXR)
+			{
+				float* outRGBA = nullptr;
+				const char* err = nullptr;
+				int ret = LoadEXR(&outRGBA, &result->w, &result->h, pathCopy.c_str(), &err);
+				if (ret != TINYEXR_SUCCESS || !outRGBA)
+				{
+					result->error = err ? err : "unknown EXR decode error";
+					if (err) free((void*)err);
+					return false;
+				}
+				result->pixels.assign(outRGBA, outRGBA + (size_t)result->w * result->h * 4);
+				free(outRGBA);
+				if (err) free((void*)err);
+			}
+			else
+			{
+				int channels;
+				float* data = stbi_loadf(pathCopy.c_str(), &result->w, &result->h, &channels, 4);
+				if (!data)
+				{
+					result->error = "stbi_loadf failed";
+					return false;
+				}
+				result->pixels.assign(data, data + (size_t)result->w * result->h * 4);
+				stbi_image_free(data);
+			}
+			return true;
+		},
+			[this, result, pathCopy](bool success)
+		{
+			if (!success)
+			{
+				printf("[EnvMap] Failed: %s\n", result->error.c_str());
+				m_LastStatusMsg = "Env map load failed";
+				return;
+			}
+
+			m_SceneMgr.SetEnvMapData(pathCopy, result->w, result->h,
+			                         std::move(result->pixels),
+			                         /*envImportErr=*/&result->envImportErr);
+			printf("[EnvMap] Loaded %dx%d\n", result->w, result->h);
+			// Surface sidecar write/read errors through the status bar so the
+			// user sees them instead of relying on console output (item 4).
+			if (!result->envImportErr.IsOk())
+			{
+				m_LastStatusMsg = "Env loaded; identity sidecar issue: " +
+				                  result->envImportErr.Format();
+				printf("[Asset] env sidecar diagnostic: %s\n",
+				       result->envImportErr.Format().c_str());
+			}
+
+			if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
+			{
+				// SyncToGPU() is a silent no-op unless a sync callback has
+				// been installed (SceneManager guards on `if (m_SyncCallback)`).
+				// Calling it bare meant the env map never reached the GPU
+				// unless some earlier operation happened to install one.
+				UploadMeshToGPU();
+				m_GpuSyncPending = true;
+			}
+			m_RendererGPU.ResetAccumulation();
+			m_LastStatusMsg = "Env map loaded";
+		});
 	}
 
 private:
@@ -2262,6 +3345,21 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 				? ("Redo " + layerPtr->RedoDescription()) : "Redo";
 			if (ImGui::MenuItem(redoLabel.c_str(), "Ctrl+Shift+Z", false, layerPtr->CanRedo()))
 				layerPtr->Redo();
+			ImGui::EndMenu();
+		}
+		if (ImGui::BeginMenu("View"))
+		{
+			ImGui::TextDisabled("Windows");
+			ImGui::Separator();
+			ImGui::MenuItem("Camera", nullptr, &layerPtr->m_ShowInfoWindow);
+			ImGui::MenuItem("Performance", nullptr, &layerPtr->m_ShowPerfWindow);
+			ImGui::MenuItem("Render Settings", nullptr, &layerPtr->m_ShowRenderSettingsWin);
+			ImGui::MenuItem("Scene", nullptr, &layerPtr->m_ShowSceneWindow);
+			ImGui::MenuItem("Session", nullptr, &layerPtr->m_ShowSessionWindow);
+			ImGui::MenuItem("Outliner", nullptr, &layerPtr->m_ShowHierarchyWindow);
+			ImGui::MenuItem("Inspector", nullptr, &layerPtr->m_ShowInspectorWindow);
+			ImGui::Separator();
+			ImGui::TextDisabled("(Viewport is always shown)");
 			ImGui::EndMenu();
 		}
 	});

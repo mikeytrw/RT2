@@ -22,6 +22,23 @@ project "RT2App"
         "vendor/lua/onelua.c",
         "vendor/lua/testes/**",
         "vendor/lua/manual/**",
+        -- efsw: exclude non-Windows platform backends, test sources, and
+        -- the C wrapper (we use the C++ API only).
+        "vendor/efsw/src/efsw/WatcherKqueue.cpp",
+        "vendor/efsw/src/efsw/WatcherFSEvents.cpp",
+        "vendor/efsw/src/efsw/WatcherInotify.cpp",
+        "vendor/efsw/src/efsw/FileWatcherKqueue.cpp",
+        "vendor/efsw/src/efsw/FileWatcherInotify.cpp",
+        "vendor/efsw/src/efsw/FileWatcherFSEvents.cpp",
+        "vendor/efsw/src/efsw/WatcherKqueue.cpp",
+        "vendor/efsw/src/efsw/WatcherFSEvents.cpp",
+        "vendor/efsw/src/efsw/WatcherInotify.cpp",
+        "vendor/efsw/src/efsw/FileWatcherCWrapper.cpp",
+        "vendor/efsw/src/test/**",
+        "vendor/efsw/src/unit_tests/**",
+        "vendor/efsw/.ecode/**",
+        "vendor/efsw/.github/**",
+        "vendor/efsw/src/efsw/platform/posix/**",  -- Windows only
     }
 
     -- Shader source files (compiled via custom build rules below)
@@ -188,6 +205,8 @@ project "RT2App"
        "vendor/entt/src",
        "vendor/sol2/include",          -- Phase 6: sol2 header-only bindings
        "vendor/lua",                   -- Phase 6: Lua 5.4 public headers
+       "vendor/efsw/include",          -- Phase 6C: efsw file watcher
+       "vendor/efsw/src",              -- Phase 6C: efsw internal headers
        "vendor/NRD/Include",
        "vendor/NRD/Integration",
        "vendor/NRI/Include",
@@ -249,6 +268,12 @@ project "RT2App"
       defines { "WL_DEBUG" }
       runtime "Debug"
       symbols "On"
+
+   -- SceneLoader.cpp exceeds the COFF section limit in Debug since the
+   -- Phase 7 texture pipeline landed. RT2Tests and RT2SliceRunner already
+   -- compile this same file with /bigobj.
+   filter { "configurations:Debug", "files:src/SceneLoader.cpp" }
+      buildoptions { "/bigobj" }
 
    filter "configurations:Release"
       defines { "WL_RELEASE" }

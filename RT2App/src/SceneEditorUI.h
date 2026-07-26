@@ -16,6 +16,8 @@
 #include <optional>
 #include <string>
 
+namespace rt2::core { class ScriptFieldRegistry; }
+
 // ============================================================================
 // SceneEditorUI — ImGui panels for scene editing (outliner + inspector).
 //
@@ -97,6 +99,8 @@ public:
 	// Undo/Redo below share one history instance.
 	void SetCommandHistory(EditorCommandHistory* history) { m_CommandHistory = history; }
 
+	void SetFieldRegistry(rt2::core::ScriptFieldRegistry* registry) { m_FieldRegistry = registry; }
+
 	// Phase 3A: public undo/redo entry points. Each runs the history and
 	// routes the returned mutation result through the existing private
 	// ApplyMutation() — one sync path, one m_MutationError display. These
@@ -124,13 +128,7 @@ public:
 	{
 		m_State.ResetForDocument();
 		m_SearchBuffer[0] = '\0';
-		m_TransformSession.Discard();
-		m_NameSession.Discard();
-		m_LightSession.Discard();
-		m_CameraSession.Discard();
-		m_MaterialIndexSession.Discard();
-		m_MaterialPropertiesSession.Discard();
-		m_MotionVelocitySession.Discard();
+		DiscardAllPropertySessions();
 	}
 	EditorSelection& Selection() { return m_State.Selection(); }
 	const EditorSelection& Selection() const { return m_State.Selection(); }
@@ -149,14 +147,32 @@ public:
 
 	void RenderPanels();
 
+	// Per-panel visibility (View menu toggles). The Outliner/Inspector can
+	// be hidden without affecting the other panel.
+	bool IsOutlinerVisible() const { return m_ShowOutliner; }
+	void SetOutlinerVisible(bool v) { m_ShowOutliner = v; }
+	bool IsInspectorVisible() const { return m_ShowInspector; }
+	void SetInspectorVisible(bool v) { m_ShowInspector = v; }
+
+	// Public hooks for async completion callbacks (host calls these after
+	// a background load/import finishes).
+	void OnImportComplete(SceneManager::EntityId importedRoot)
+	{
+		if (importedRoot.IsValid())
+			SelectEntity(importedRoot);
+		NotifySceneChanged();
+	}
+
 private:
 	void RenderOutliner();
 	void RenderInspector();
+
 	void RenderEntityTree(SceneManager::EntityId entity, int depth);
 	void RenderTransformEditor(SceneManager::EntityId entity);
 	void RenderMaterialEditor(SceneManager::EntityId entity);
 	void RenderLightEditor(SceneManager::EntityId entity);
 	void RenderCameraEditor(SceneManager::EntityId entity);
+	void RenderScriptEditor(SceneManager::EntityId entity);
 	void DrawImportOptionsModal();
 
 	void NotifySceneChanged();
@@ -186,6 +202,11 @@ private:
 	void RecordMotionEdit(const rt2::core::UUID& target,
 	                      const std::optional<MotionComponent>& before,
 	                      const std::optional<MotionComponent>& after);
+	void RecordScriptEdit(const rt2::core::UUID& target,
+	                      const std::optional<ScriptComponent>& before,
+	                      const std::optional<ScriptComponent>& after,
+	                      const EditorMutationResult& applied);
+	void DiscardAllPropertySessions();
 	// Capture the current MaterialOverrideComponent state of every imported
 	// entity referencing `slotIndex` (UUID -> override). Used to snapshot
 	// the before-overrides when a material-properties session opens and the
@@ -235,6 +256,11 @@ private:
 	// UI state for the "Add" popup
 	bool m_ShowAddPopup = false;
 
+	// Per-panel visibility flags (driven by the app's View menu). The
+	// viewport is not toggleable and is not owned by SceneEditorUI.
+	bool m_ShowOutliner = true;
+	bool m_ShowInspector = true;
+
 	// Set when an entity was deleted during this frame's tree traversal.
 	// The outliner checks this after each RenderEntityTree call and aborts
 	// the remaining traversal (stale entity IDs would crash entt).
@@ -264,8 +290,10 @@ private:
 	using MaterialIndexSession = PropertyEditSession<int>;
 	using MaterialPropertiesSession = PropertyEditSession<SceneMaterial>;
 	using MotionSession = PropertyEditSession<MotionComponent>;
+	using ScriptSession = PropertyEditSession<ScriptComponent>;
 
 	EditorCommandHistory* m_CommandHistory = nullptr;
+	rt2::core::ScriptFieldRegistry* m_FieldRegistry = nullptr;
 
 	TransformSession             m_TransformSession;
 	NameSession                  m_NameSession;
@@ -274,6 +302,7 @@ private:
 	MaterialIndexSession         m_MaterialIndexSession;
 	MaterialPropertiesSession    m_MaterialPropertiesSession;
 	MotionSession                m_MotionVelocitySession;
+	ScriptSession                m_ScriptFieldSession;
 	// ImGui widget IDs that opened each multi-widget session (so the
 	// deactivation close only fires for the owning widget). ImGui IDs are
 	// stored as unsigned int to avoid depending on ImGui headers here.
@@ -281,6 +310,7 @@ private:
 	unsigned int m_LightSessionOwningWidgetId = 0;
 	unsigned int m_CameraSessionOwningWidgetId = 0;
 	unsigned int m_MaterialPropertiesSessionOwningWidgetId = 0;
+	unsigned int m_ScriptFieldSessionOwningWidgetId = 0;
 	// Before-override snapshot captured when the material-properties session
 	// opens. The after-overrides are read live at close time. The session
 	// itself stores the SceneMaterial before/after; this stores the

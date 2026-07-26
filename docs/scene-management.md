@@ -75,6 +75,13 @@ Tangents are NOT stored — they are computed in the shader from UV gradients.
 
 ## Scene Loading
 
+> **These pipelines describe what loading *produces*, not when it runs.**
+> In the app, loading and importing execute on a background worker thread
+> with a two-phase loading modal, and the GPU upload that follows is split
+> across frames. See [async-loading.md](async-loading.md). The functions
+> below are called from the worker thread and must stay free of Vulkan and
+> ImGui.
+
 ### glTF Path (.gltf / .glb)
 
 ```
@@ -124,6 +131,25 @@ SceneLoader::ImportIntoECS(ecsScene, filepath)
   — Offsets material and texture indices to avoid collisions
   — Creates a wrapper root entity parented to the existing scene
 ```
+
+### Async import merge
+
+The async path cannot import directly into the live scene: the worker
+thread must not touch the scene the main thread is rendering. It parses
+into a **fresh temporary `ECSScene`**, and the main thread then merges it:
+
+```
+SceneManager::MergeImportedECS(std::move(src), srcRoot, sourcePath)
+  — Appends meshes (offsetting per-triangle material indices by matBase)
+  — Appends materials (remapping texture indices) and textures
+  — Re-parents the wrapper root under the live scene root
+  — Assigns UUIDs to imported entities and fills source paths
+  — Returns the wrapper root in the live scene, or invalid on failure
+```
+
+`SceneManager::SetEnvMapData(path, w, h, pixels)` is the equivalent seam
+for environment maps: the worker decodes the HDR/EXR pixels, the main
+thread installs the already-decoded buffer.
 
 ---
 
@@ -262,25 +288,15 @@ The `.rt2scene` format is RT2's native authoring format, distinct from glTF
 (which remains the interchange/export path). It is a versioned JSON file
 handled by `SceneSerializer`.
 
-### Schema version 1 (vertical slice — read-only migration input)
+### Schema version 3 (Phase 6B W3 — typed Lua field persistence)
 
-- **Version field**: `{"version": 1, ...}`. v1 scenes are accepted by the
-  loader and migrated in memory to the v2 representation without changing
-  entity UUIDs, hierarchy UUID references, transforms, material identity, or
-  camera. The serializer always writes v2 on save, so v1 inputs are migrated
-  on the next save.
-- v1 supports primitive meshes only (`PrimitiveComponent`). Non-primitive
-  meshes were rejected with `Error{UnknownPrimitive}`.
-
-### Schema version 2 (Phase 1A — asset-backed native scene round-trip)
-
-- **Version field**: `{"version": 2, ...}`. Unsupported versions fail with
-  `Error{SchemaVersion}`. Supported read range is `1..2`.
+- **Version field**: `{"version": 3, ...}`. v3 is the only readable and
+  writable native format; v1/v2 fail with `Error{SchemaVersion}`.
 - **Entities**: serialized by UUID, sorted for deterministic output. Each
   entity carries: `uuid`, `name`, `parent` (UUID or empty), `transform`
   (translation, quaternion xyzw, scale), `visible`, and optional component
   blocks (`primitive`, `meshRef`, `importedSource`, `materialOverride`,
-  `light`, `camera`, `motion`).
+  `light`, `camera`, `motion`, `script`).
 - **Procedural meshes**: `PrimitiveComponent` entities are directly
   serializable. The serializer rebuilds their geometry on load.
 - **Imported meshes**: durable provenance is stored in an
@@ -317,23 +333,32 @@ handled by `SceneSerializer`.
 - **Textures**: the schema includes the array for forward-compatibility; the
   slice does not serialize texture pixel data. Textures are rebuilt from the
   source model by the resolver.
+- **Scripts**: a `script` block stores a Script `AssetReference` and a
+  deterministic field object. Each field has an explicit
+  `{ "type": ..., "value": ... }` entry for `bool`, `int`, `float`,
+  `string`, `uuid`, `vec3`, or `color`. Script `sourceKey` is regenerated from
+  the serialized path; it is derived metadata, not independent identity.
 - **Paths**: asset reference paths and the environment path are stored as
   portable, scene-relative UTF-8 (forward slashes, normalized) wherever
   possible. They are resolved relative to the `.rt2scene` file's directory at
   load time. Absolute machine-specific paths are NOT persisted unless the
   asset is on a different drive and cannot be relativized.
 
-### Save validation (v2)
+### Save validation (v3)
 
 The serializer rejects scenes that cannot reopen: every entity with a
 `MeshRef` must have either a `PrimitiveComponent` (procedural) or an
 `ImportedMeshSourceComponent` (durable asset reference). Entities with
 neither produce `Error{UnknownPrimitive}` listing the offending UUIDs. This
 prevents silently saving a native scene that cannot be loaded back.
+`ScriptComponent` values pass the same CPU-only normalization/validation used
+by `SceneManager::SetScriptState`. Invalid tag/payload pairs fail atomically;
+stale derived source keys are canonicalized in the serialized copy without
+mutating the live document.
 
 ### Load (two-pass, transactional, resolution-decoupled)
 
-1. Parse JSON, check schema version (accepts v1 and v2).
+1. Parse JSON and require schema version 3.
 2. Parse entity records (pass 0 — no entity creation).
 3. Pass 1: create entities + components by UUID, build UUID index.
 4. Pass 2: resolve parent UUIDs to `Hierarchy`. Missing parent →
@@ -341,7 +366,9 @@ prevents silently saving a native scene that cannot be loaded back.
 5. Load into a temporary document; only on success does the caller swap it
    in as the live authoring scene. A parse/schema failure cannot corrupt the
    live scene.
-6. The serializer does NOT resolve external assets. After a successful load,
+6. The serializer reports non-fatal per-field script repairs separately from
+   hard component errors. A bad field is dropped without losing valid siblings.
+7. The serializer does NOT resolve external assets. After a successful load,
    the caller runs `SceneAssetResolver::ResolveAll` to rebuild meshes,
    textures, and materials from durable references, and
    `SceneAssetResolver::ResolveEnvironment` to decode the environment map.
@@ -373,6 +400,31 @@ clone the authoring `SceneDocument` into a runtime document.
 - `SceneMetadata metadata` — schema version, source path, dirty flag, name
 - `UuidIndex uuidIndex` — UUID → entity lookup, maintained alongside the registry
 - `GPUSceneData gpuCache` — per-document CPU cache (no Vulkan types)
+
+### Script authoring state (Phase 6B W3)
+
+`ScriptComponent` is pure document data: a script `AssetReference` plus a
+`ScriptFieldMap`. Each field entry stores both `ScriptFieldType` and its
+`ScriptFieldValue` payload, so semantic types such as `vec3` and `color`
+remain distinct even though they share a variant arm. Lua environments and
+callback handles remain transient `ScriptSystem` state and are never stored
+in `SceneDocument`.
+
+Subtree snapshot/duplication, `SceneSerializer::CloneInMemory`, and schema-v3
+save/load copy typed entries. Every field is encoded as an explicit type tag
+plus a validated payload. Field names must be non-empty valid UTF-8, and string
+payloads must also be valid UTF-8. A malformed individual field is dropped with
+a diagnostic; malformed component structure remains a transactional load error.
+
+Normal open and recovery both run `ScriptFieldResolver` before document
+adoption. It resolves paths relative to the actual logical source path, walks
+entities in UUID order, and applies deterministic reconciliation. A declaration
+parse failure preserves the complete authored map. Lossless normalization marks
+the adopted document dirty; destructive repair additionally blocks autosave and
+requires an explicit first Save acknowledgement before a second Save persists
+the repaired document. Recovery autosave remains suppressed after the first
+acknowledgement and resumes only after persistence succeeds or the document is
+replaced.
 
 ### Dirty tracking
 
@@ -505,7 +557,7 @@ Storage layout: one `<fnv1a64(docId)>.rt2recovery` JSON envelope directly
 under `recoveryRoot`. Hashing the complete normalized document identity avoids
 long-path truncation collisions; discovery validates that the stored `docId`
 hash matches the filename. The file contains both the recovery metadata and a
-nested schema-v2 scene snapshot. Asset references are still relativized
+nested schema-v3 scene snapshot. Asset references are still relativized
 against the ORIGINAL logical scene root via `SceneSerializer::SaveTo`, not
 against the recovery directory.
 
@@ -514,14 +566,14 @@ object, not a second file):
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "docId": "<normalized case-folded absolute path or untitled:id>",
   "untitled": false,
   "originalSourcePath": "<empty when untitled>",
   "assetRoot": "<directory asset references were relativized against>",
   "revision": 0,
   "createdAt": 0,
-  "snapshot": { "schemaVersion": 2, "...": "..." }
+  "snapshot": { "version": 3, "...": "..." }
 }
 ```
 
@@ -533,6 +585,8 @@ Autosave scheduling (`MaybeSnapshot`):
   injectable) after the first dirty observation, and revision changed since
   the last snapshot. The first dirty frame starts the timer; it does not write
   immediately. No work occurs on clean frames or unchanged revisions.
+- Autosave is suppressed while destructive script-field repair awaits explicit
+  user acknowledgement, preventing silent persistence of lost authored values.
 - Does NOT clear dirty state, change `sourcePath`, update recents, or reset
   UUIDs. Never overwrites the explicit `.rt2scene`.
 - Writes one temp sibling and atomically replaces the envelope with
@@ -544,13 +598,15 @@ Autosave scheduling (`MaybeSnapshot`):
 
 Restore (`Restore(record, outDoc, diagnostics, err)`):
 
-- Transactional: loads + resolves into a temporary document using the
-  recorded `assetRoot` (NOT the recovery directory). Only on success does
-  it swap into `outDoc`.
+- Transactional: loads into a temporary document using the recorded `assetRoot`
+  (NOT the recovery directory), restores the recorded logical source path, and
+  resolves assets and script fields before adoption. Only on success does it
+  swap into `outDoc`.
 - The restored document is marked dirty.
 - Preserves `metadata.sourcePath` from the record (empty when untitled).
 - UUIDs, hierarchy, components, camera, lights, environment references,
-  imported model references, and material overrides are preserved.
+  imported model references, material overrides, scripts, and valid typed
+  script fields are preserved. Field repairs are returned as diagnostics.
 - On failure (parse, resolution, or IO), the live document is untouched and
   the recovery record remains available.
 
@@ -937,3 +993,10 @@ assertions). Full RT2Tests: 354 cases, 348 passed, 6 pre-existing failures
 RemoveEntity destroys entity`), 48 skipped. Slice runner, recovery
 scenario, and `RuntimeSceneControllerTests` all pass. WalnutApp injects
 the production UUID provider via one line in `EnterPlay`.
+
+> Those counts were a truncated run — the SIGSEGV aborted the process and
+> the 48 "skipped" cases simply never executed. Fixed in `b19512b`; the
+> current pre-W2 baseline was 468 run / 0 skipped / 7 failed (Release) and
+> 15 failed (Debug). See the Phase 6B verification report in
+> `game-engine-development-plan.md` for the current 482-case Release run and
+> failure breakdown.

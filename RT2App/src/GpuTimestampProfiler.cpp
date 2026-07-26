@@ -98,9 +98,19 @@ void GpuTimestampProfiler::ReadCompletedSlot(VkDevice device, uint32_t frameSlot
 			continue;
 
 		uint64_t values[2] = {};
+		// VK_QUERY_RESULT_WAIT_BIT: the fence for this frame slot has
+		// already signaled (the command buffer completed), but timestamp
+		// writes may land in a later pipeline stage than the fence's
+		// signaling stage. Without WAIT, vkGetQueryPoolResults can return
+		// VK_NOT_READY for a region whose timestamps haven't propagated
+		// yet, causing that region's timing to silently disappear from
+		// m_Latest — observed as ReSTIR/raster timings "stalling" every
+		// few frames. The wait is sub-millisecond because the GPU work
+		// is already done.
 		VkResult result = vkGetQueryPoolResults(device, m_QueryPool,
 			QueryIndex(frameSlot, static_cast<Region>(region), false), 2,
-			sizeof(values), values, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+			sizeof(values), values, sizeof(uint64_t),
+			VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
 		if (result != VK_SUCCESS)
 		{
 			RT_LOG("[GpuTiming] query read failed for region %u: %d", region, result);
@@ -110,11 +120,33 @@ void GpuTimestampProfiler::ReadCompletedSlot(VkDevice device, uint32_t frameSlot
 		timings.validMask |= 1u << region;
 		timings.milliseconds[region] = float(TickDelta(values[0], values[1]) * double(m_TimestampPeriod) / 1000000.0);
 	}
-	// Flushing more than one completed frame slot can encounter them out of
-	// ring order. Never let an older slot replace a newer measurement.
+	// Merge per-region values into m_Latest instead of replacing it
+	// wholesale. ReSTIR/GI passes use a parity scheme (alternating frames),
+	// so a completed slot may have only a subset of regions issued. A full
+	// replace would wipe the missing regions' last-known values, making the
+	// ReSTIR timings flicker off every other frame. Merging keeps each
+	// region's value from the most recent frame that issued it.
+	//
+	// Ordering uses the monotonic submitOrder (never resets) instead of
+	// frameIndex (which resets to 1 on scene change / Play / Stop /
+	// accumulation reset). Using frameIndex broke the merge after Play:
+	// the post-Play frame had frameIndex=1, which is < the pre-Play
+	// m_Latest.frameIndex (e.g. 500), so the merge was skipped and the
+	// timings froze until the frame counter climbed past the old value.
 	if (timings.validMask != 0 &&
-	    (m_Latest.validMask == 0 || timings.frameIndex >= m_Latest.frameIndex))
-		m_Latest = timings;
+	    (m_Latest.validMask == 0 || slot.submitOrder >= m_LatestSubmitOrder))
+	{
+		for (uint32_t r = 0; r < RegionCount; r++)
+		{
+			if (timings.validMask & (1u << r))
+			{
+				m_Latest.validMask |= 1u << r;
+				m_Latest.milliseconds[r] = timings.milliseconds[r];
+			}
+		}
+		m_Latest.frameIndex = timings.frameIndex;
+		m_LatestSubmitOrder = slot.submitOrder;
+	}
 	slot.submitted = false;
 }
 
@@ -139,6 +171,7 @@ void GpuTimestampProfiler::EndFrame(uint32_t frameSlot)
 	if (slot.activeMask != 0)
 		RT_LOG("[GpuTiming] frame ended with active timestamp regions: 0x%x", slot.activeMask);
 	slot.activeMask = 0;
+	slot.submitOrder = ++m_SubmitCounter; // monotonic; never resets
 	slot.submitted = true;
 }
 

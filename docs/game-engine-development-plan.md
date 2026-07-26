@@ -10,6 +10,74 @@ The intended loop is:
 create/import -> edit -> save -> play -> stop safely -> package -> run
 ```
 
+## How to read this document
+
+**It is append-only and chronological.** Sections are added as work happens
+and are not retro-edited. Two consequences that matter more than anything
+else here:
+
+1. **A completed phase's section is a period record, not current state.**
+   It describes the tree as it was when that phase landed. Figures inside it
+   ("7 failures", "W4-W5 remain", "declared and stubbed") were true then and
+   are routinely false now. Do not quote them. Where a section has been
+   superseded it carries an explicit note saying so.
+2. **Each phase appears twice.** A short scope stub in the roadmap below,
+   written before the work; and — once worked — a much longer section near
+   the end with grounded findings, decisions, workstreams and a verification
+   report. The stub is the intent; the later section is what happened.
+
+If you need current state rather than history, these are authoritative:
+
+| Question | Where |
+|---|---|
+| Which tests should pass? | **Test baseline** (near the end) — supersedes every earlier figure |
+| What does the engine do today? | The `docs/` siblings: `scripting.md`, `scene-management.md`, `game-loop.md` |
+| What is being built next? | **Phase 7 — implementation plan** (last section) |
+
+This file is also **two documents concatenated**: the phase roadmap, then
+`# First tiny vertical slice development plan` at the halfway point. The
+generic headings (`Goal`, `In scope`, `Work packages`) belong to the second.
+
+## Contents
+
+**Part 1 — Roadmap.** Scope stubs written ahead of the work.
+
+- Existing foundation · Engineering principles · Cross-phase architecture
+  contracts · Test strategy
+- Phase 1 Native scene persistence · Phase 2 Scene-building ergonomics ·
+  Phase 3 Command system, undo, redo · Phase 4 Edit/Play/Pause lifecycle ·
+  Phase 5 Input action system · Phase 6 Lua scripting · **Phase 7 Project
+  model and asset database** · Phase 8 Prefabs · Phase 9 Physics ·
+  Phase 10 Animation · Phase 11 Audio · Phase 12 Standalone runtime
+- Later backlog
+
+**Part 2 — First tiny vertical slice.** Goal · In scope · Explicitly out of
+scope · Proposed types and boundaries · Work packages · Acceptance script ·
+Merge gates.
+
+**Part 3 — Worked sections**, under "What follows immediately". Each is
+grounded against the code as it stood at the time.
+
+| Section | Status |
+|---|---|
+| Phase 1A asset-backed scene round-trip | implemented |
+| Phase 1B crash-safe authoring and recovery | implemented |
+| Phase 2A stable viewport selection | implemented |
+| Phase 2B transform editing and gizmos | implemented |
+| Phase 2C hierarchy authoring and outliner | implemented |
+| Phase 2D camera authoring workflow | implemented |
+| Phase 3A command/history foundation | implemented |
+| Phase 3B1 structural command correctness | implemented |
+| Phase 3B2 property command completion | implemented |
+| Phase 4 Edit/Play/Pause lifecycle | implemented |
+| Phase 5 Input action system | implemented |
+| Phase 6A Lua embedding and lifecycle (+ verification report) | implemented |
+| Phase 6B Public fields, reflection, persistence (+ report) | implemented |
+| Phase 6C Hot reload, input, bindings (+ report) | implemented |
+| Phase 6 exit criteria / ordering rationale | reference |
+| **Test baseline** | **current — authoritative** |
+| **Phase 7 Project model and asset database** | **implementation plan, not started** |
+
 ## Existing foundation
 
 RT2 already provides:
@@ -466,6 +534,12 @@ A saved script component can drive an entity using input and survive save/load,
 Play/Stop, and hot reload.
 
 ## Phase 7 - Project model and asset database
+
+> **This is the scope stub only.** The grounded implementation plan — what
+> already exists, the naming collisions, the seven decisions that must be
+> answered before code — is the final section of this document. Read it
+> before acting on anything below: Phase 7 is **not** greenfield, and roughly
+> half of what this stub describes already exists under other names.
 
 ### Outcome
 
@@ -3390,7 +3464,7 @@ registered. The single `SetCursorMode` call is in
 - `run_recovery_test.ps1` PASS.
 - graphify updated: 24825 nodes, 51458 edges, 945 communities.
 
-## Phase 6 — Lua scripting (planned)
+## Phase 6 — Lua scripting (completion, implemented)
 
 The Phase 6 spec above (lines 415–466) is the goal. Phase 6 is delivered in
 three sub-slices. Each sub-slice is a usable increment: 6A proves Lua drives
@@ -3655,7 +3729,7 @@ script slot that the prose at line 161 implies; 6A updates that list to
 include "fixed script callbacks" before the motion integration, matching
 the full contract at lines 130–143.
 
-### Phase 6A — Lua embedding and lifecycle (planned)
+### Phase 6A — Lua embedding and lifecycle (implemented)
 
 **Outcome.** A C++ script component drives an entity's transform during
 Play, with `OnCreate`, `OnFixedUpdate`, `OnUpdate`, and `OnDestroy`
@@ -3985,17 +4059,31 @@ unused in 6A — it is the seam 6B fills.
 - `run_recovery_test.ps1` PASS.
 - graphify updated: 32007 nodes, 68122 edges, 1273 communities.
 
-**Deferred to 6B (as planned):** public-field reflection and inspector
-UI; field-value persistence (v3 serialization); the
-`ScriptComponent.fieldValues` map exists but is empty and unused. The
-`ReloadScript(path)` API is declared on `ScriptSystem` and stubbed (empty
-body); 6C implements it.
+**Phase 6B status _as of this report_:** W0-W3 now provide app wiring,
+public-field reflection, typed storage, deterministic reconciliation, and
+schema-v3 persistence across normal open and recovery. Command integration
+and Inspector UI remain W4-W5. The `ReloadScript(path)` API is declared on
+`ScriptSystem` and stubbed (empty body); 6C implements file-watched hot
+reload.
 
 **Deferred to 6C (as planned):** hot reload (file watching via efsw);
 input/light/camera/mesh/material bindings; timers; headless JSON state
 report; `RT2SliceRunner --script-scenario` mode.
 
-### Phase 6B — Public fields, reflection, and persistence (planned)
+> **Superseded 2026-07-24.** The two paragraphs above are a point-in-time
+> snapshot, kept as a record of what this verification report covered. Both
+> 6B W4-W6 and all of 6C have since landed: `ReloadScript` is fully
+> implemented and every item under "Deferred to 6C" exists. For current
+> state see the Phase 6C verification report near the end of this document.
+
+### Phase 6B — Public fields, reflection, and persistence (implemented)
+
+> *Header corrected 2026-07-24 (during 6C/W9): this previously read
+> "W0-W3 implemented, W4-W6 planned". W4 (`SetScriptCommand` +
+> `MakeSetScriptCommandIfEffective`, `EditorPropertyCommands.h:217,331`),
+> W5 (`SceneEditorUI::RenderScriptEditor`, `SceneEditorUI.cpp:1626`) and
+> W6 (`Phase6BFieldsTests.cpp`) are all present in the tree. Note the
+> verification report below covers W0-W2 only; W3-W6 never got one.*
 
 **Outcome.** A script declares public fields with declared types and
 defaults; the inspector renders them, the user edits them, and they
@@ -4024,30 +4112,43 @@ variant and `self` table are already in place from 6A per S3/S6):**
   `std::vector<ScriptFieldDescriptor>`; used by the inspector and the
   serializer.
 - `SceneEditorUI::RenderScriptEditor(SceneManager::EntityId)` —
-  mirrors the existing `Render*Editor` dispatch pattern (the model is
-  `RenderMotionEditor` at `SceneEditorUI.cpp:944-1003`, including the
-  "Add Component" / "Remove Component" button pair); renders one
-  widget per declared field, typed by `ScriptFieldType`, with the
-  `PropertyEditSession<T>` record-on-release pattern for continuous
-  edits (drag/slider). Reads/writes
+  mirrors the existing `Render*Editor` dispatch pattern. **Amended
+  (F4):** the cited `RenderMotionEditor at SceneEditorUI.cpp:944-1003`
+  does not exist — Motion is an inline block inside `RenderInspector`
+  (`SceneEditorUI.cpp:939-1003`). The real dispatch precedent is
+  `RenderTransformEditor` / `RenderMaterialEditor` / `RenderLightEditor`
+  / `RenderCameraEditor` (`SceneEditorUI.cpp:1009/1243/1401/1492`);
+  `RenderScriptEditor` follows `RenderLightEditor`'s structure, and
+  takes the "Add Component" / "Remove Component" button pair from the
+  Motion block. Renders one widget per declared field, typed by
+  `ScriptFieldType`, with the `PropertyEditSession<T>` record-on-release
+  pattern for continuous edits (drag/slider). Reads/writes
   `ScriptComponent::fieldValues[fieldName]`; on release, records a
-  `SetScriptFieldCommand` (Phase 3 command, undoable, `Structural`
-  sync impact since it changes authored component state).
+  command. **Amended (D7):** the command is a single `SetScriptCommand`
+  with `std::optional<ScriptComponent>` before/after (covering add,
+  remove, path edit, and field edit), not a per-field
+  `SetScriptFieldCommand` — this is the proven `SetMotionCommand` shape
+  (`EditorPropertyCommands.h:186-208`), and `PropertyEditSession`
+  already yields exactly one record per drag so per-field granularity
+  buys nothing. **Amended (D8):** sync impact is `SyncImpact::None`, not
+  `Structural`. Evidence: the analogous `SceneManager::SetMotionState`
+  returns `None` (`SceneManager.cpp:3387`), and 6B's own test plan below
+  requires that field edits produce no GPU sync.
 - The inspector lists the bound script asset path with a "Rebind" button
   (deferred to Phase 7's content-browser era; 6B edits the path as
   text).
 
 **Field-value persistence:**
 
-- `SceneSerializer` v2 → v3 with a migration path. v3 adds the
+- `SceneSerializer` v2 → v3 as a **hard format cutover**. v3 adds the
   `ScriptComponent` payload: `AssetReference` (path + sourceKey) plus
   `fieldValues` as a JSON object keyed by field name with a tagged-
-  value form (`{ "type": "float", "value": 5.0 }`). v2 read + in-memory
-  migration: a v2 scene with no `ScriptComponent` is loaded as v3 with
-  no scripts. Save always writes v3.
-- `PersistedComponents::ForEach` is updated to include
-  `ScriptComponent` (Count 11). Existing v2 fixtures continue to load
-  via the migration path.
+  value form (`{ "type": "float", "value": 5.0 }`). Save writes v3 and
+  the loader accepts v3 only; v1/v2 scenes are rejected as unsupported.
+  No migration code or legacy fixtures are required for this slice.
+- `PersistedComponents::ForEach` already includes `ScriptComponent`
+  (Count 11). W3 adds its disk representation without preserving v2
+  fixture compatibility.
 - The two-pass load (create + resolve) is unchanged; script field
   values are applied in the create pass (they are self-contained per
   entity, no cross-entity references).
@@ -4090,9 +4191,9 @@ in-memory field values against the newly declared fields).
 - Change `speed`'s declared type from `float` to `string`: the
   persisted float value is reset to the declared string default; a
   diagnostic is logged naming the entity, field, old type, new type.
-- A scene with no `ScriptComponent` saved in v2 loads cleanly in v3
-  with no scripts; a v3 scene with scripts round-trips field values
-  of every supported type.
+- A v3 scene with no `ScriptComponent` loads cleanly with no scripts;
+  a v3 scene with scripts round-trips every supported field type. v1/v2
+  inputs fail with the normal unsupported-schema diagnostic.
 - `CloneInMemory` carries field values into the runtime clone; the
   script's `OnCreate` reads the authored values.
 - Field values do not sync the GPU (they are editor/runtime-only
@@ -4107,6 +4208,11 @@ in-memory field values against the newly declared fields).
   inspector renders `tint` with a color picker widget and `offset`
   with a `DragFloat3`. A type change `float` → `vec3` on an existing
   field triggers the incompatible-type rule (default + diagnostic).
+  **Amended (D5):** `vec3` → `color` is a *compatible* change by rule
+  (same variant arm) — the value is preserved and the stored type tag
+  is updated. This is a deliberate rule, not an undetectable accident,
+  because field values are stored typed (see D5 in the implementation
+  plan below).
 
 **Verification gates (6B):** same as 6A plus an interactive acceptance
 check: author a script with `rt2.fields = { speed = rt2.field.float(5.0) }`
@@ -4120,7 +4226,1457 @@ input/light/camera/mesh/material bindings; timers; headless JSON state
 report; the interactive rebinding UI (Phase 7). Reload is exercised in
 tests via an explicit `ScriptSystem::ReloadScript(path)` call.
 
-### Phase 6C — Hot reload, input, and remaining bindings (planned)
+#### Phase 6B implementation plan (approved 2026-07-21)
+
+Written after grounding the 6B spec against the code as it actually
+stands post-6A. Findings F1–F8 below are the evidence base; design
+decisions D1–D9 follow from them. Where a decision contradicts the 6B
+spec text above, the spec has been amended in place with a pointer to
+the finding, so this decision is not reopened by the next reader.
+
+##### Findings (verified against the tree, not assumed)
+
+| # | Finding | Evidence |
+|---|---|---|
+| F1 | **Scripting is unreachable from the app.** `ScriptSystem` is never instantiated in `WalnutApp.cpp`; `SetLifecycleObserver` / `SetScriptDispatch` are never called. 6A is test-only. | `RuntimeSceneController.h:174,185`; no owner in any `.cpp` |
+| F2 | **No editor path to a `ScriptComponent`.** `SceneManager.h` contains zero `Script` symbols. | `SceneManager.h` |
+| F3 | **`GetDeclaredFields(UUID)` as specced is Play-only.** `m_Instances` is populated at `OnSceneStart` and cleared at `OnSceneStop`; the inspector needs declarations while *editing*. | `ScriptSystem.cpp:67-85, 87` |
+| F4 | **The spec's cited model function does not exist** (see amendment above). | `SceneEditorUI.cpp:939-1003, 1009, 1243, 1401, 1492` |
+| F5 | **The spec's `Structural` sync impact is wrong.** The analogous `SetMotionState` returns `None`. | `SceneManager.cpp:3387` |
+| F6 | **`self` injection already exists** from 6A; 6B only reconciles `fieldValues` before that loop. | `ScriptSystem.cpp:352-379` |
+| F7 | `ScriptFieldType` (7 labels) and the 6-arm `ScriptFieldValue` variant already exist. Only `ScriptFieldDescriptor` is missing. | `ScriptFieldValue.h:40-60` |
+| F8 | Serializer is at v2, `MinReadVersion = 1`; `ScriptComponent` is already in `PersistedComponents` (Count 11) and already survives `CloneInMemory`. Only disk read/write is missing. | `SceneSerializer.h:102`; `PersistedComponents.h:20,35`; `SceneSerializer.cpp:384-390, 753-759` |
+
+##### Design decisions
+
+**D1 — Declarations live in a standalone `ScriptFieldRegistry`, not in
+`ScriptSystem` (resolves F3).** The inspector must show declared fields
+with the editor *stopped*, but `ScriptSystem`'s Lua state and instance
+map exist only during Play. A new CPU-only `ScriptFieldRegistry` owns
+**one** reusable `sol::state`, parses a `.lua` path on demand into a
+fresh sandboxed environment, and caches `std::vector<ScriptFieldDescriptor>`
+keyed by path with `(mtime, size, FNV-1a source hash)` invalidation. Only descriptor vectors
+are cached — never Lua states — so the cache is tiny. `ScriptSystem::
+GetDeclaredFields(UUID)` is still added, delegating to the registry via
+the instance's asset path, so the spec's API survives; the editor calls
+the registry directly.
+
+**D2 — The field-declaration DSL.**
+
+```lua
+rt2.fields = {
+  speed   = rt2.field.float(5.0),
+  enabled = rt2.field.bool(true),
+  count   = rt2.field.int(3),
+  label   = rt2.field.string("cube"),
+  offset  = rt2.field.vec3(0, 0, 0),
+  tint    = rt2.field.color(1, 1, 1),
+  target  = rt2.field.uuid(),
+  vel     = rt2.field.float(1.0, { alias = "speed" }),   -- rename
+}
+```
+
+Each constructor returns
+`{ __rt2_field = true, type = <int>, default = <value>, alias = <string|nil> }`.
+
+- **Alias direction (confirmed):** the alias names the *old* field. Given
+  persisted `speed` and declared `vel` with `alias = "speed"`, the value
+  migrates `speed` → `vel`. Migration is one hop only — alias chains are
+  not followed. If `vel` is already present in the persisted map, no
+  migration occurs (the persisted `vel` wins and `speed` is dropped as a
+  removed field). If two declared fields alias the same old name, the
+  migration is ambiguous: **neither** migrates, both take their declared
+  defaults, and one diagnostic names both claimants.
+- **Field order: sorted by name ascending.** The spec omits ordering, and
+  Lua table iteration is unordered, which would reshuffle the inspector
+  between frames. Name-sorting is deterministic and testable. Known UX
+  wart: renaming a field relocates it in the inspector. Authoring order
+  would require an array-form declaration and a sequence index in the
+  descriptor — deferred to 6C if content authors ask for it.
+
+**D3 — Parsing is sandboxed and bounded.** The registry parses arbitrary
+user `.lua` in the editor on selection, so it opens the shared safe library
+set, installs throwing stubs for denied base functions, runs the chunk under
+`sol::protected_function`, and
+installs a `LUA_MASKCOUNT` hook with an instruction budget so a top-level
+`while true do end` cannot hang the editor. Callbacks are defined but
+never invoked. A parse failure yields a diagnostic and never throws.
+
+> **Amended after review (2026-07-21).** "Open safe libraries and shadow
+> the dangerous names" is **not sufficient**, and it took two rounds of
+> review to establish why. Both sandboxes now go through a single
+> `InstallSandbox` in `ScriptSandbox.h`. Three distinct escapes were
+> closed, each proven by a test before it was fixed:
+>
+> 1. **`sol::nil` does not shadow.** Assigning nil to a table key removes
+>    it, restoring the environment's `__index` fallback to globals.
+>    `dofile`, `loadfile` and `load` were reachable from every script;
+>    `loadfile` and `load` do not even raise, so it was silent. A
+>    throwing stub stores a real value and genuinely shadows.
+> 2. **`getmetatable(_ENV).__index` IS the globals table.** An
+>    environment built on a globals fallback exposes its own metatable, so
+>    one line retrieves the real `loadfile`/`dofile`/`load` regardless of
+>    any name-level shadow. `getmetatable("")` likewise yields the shared
+>    string metatable. `getmetatable` is now denied. An intermediate fix
+>    kept it, reasoning it was harmless once `_G` was denied — that
+>    reasoning was wrong.
+> 3. **Library tables are shared mutable state.** `math`, `string`,
+>    `table` and `utf8` resolve through the fallback to tables shared by
+>    every script in the Lua state, so `math.floor = ...` in one entity's
+>    script poisons every other script and every later field parse. Each
+>    environment now gets a shallow copy.
+>
+> The durable lesson for 6C: a globals-fallback environment is an
+> **allowlist** problem wearing a denylist's clothes. Every binding,
+> library or capability 6C adds must be checked for a path back to the
+> globals table, and every escape found needs a regression test. If 6C's
+> surface grows much further, replace the fallback with a sealed
+> allowlist environment rather than extending the deny list again.
+
+**D10 also covers structurally malformed declarations, not just Lua
+errors.** A script that never assigns `rt2.fields` declares nothing and
+parses cleanly. A script that replaced the injected `rt2` table, or set
+`rt2.fields` to a non-table (`rt2.fields = "unfinished"` mid-edit), is
+**a parse failure**. Reporting that as a clean empty set would defeat D10
+completely: W2 would read it as "the author deleted every field" and
+destroy the authored values — the exact outcome D10 exists to prevent.
+
+**D4 — Reconciliation is a pure free function; the serializer stays
+Lua-free.** `SceneSerializer` reads and writes `fieldValues` verbatim.
+Reconciliation runs as a post-load pass, the way `SceneAssetResolver`
+already runs after load:
+
+```cpp
+// ScriptFieldReconcile.h — no Lua, no ImGui, no Vulkan
+struct FieldDiagnostic {
+    enum class Kind { Added, Removed, Renamed, AmbiguousAlias,
+                      TypeChanged, InvalidStoredValue, MissingEntityId,
+                      InvalidAssetKind, ParseFailed };
+    Kind kind; rt2::core::UUID entity;
+    std::string field, fromField, message;
+};
+
+ScriptFieldMap ReconcileScriptFields(
+    const ScriptFieldMap& persisted,
+    const std::vector<ScriptFieldDescriptor>& declared,
+    const rt2::core::UUID& entity,
+    std::vector<FieldDiagnostic>& outDiags);
+```
+
+The core reconciliation matrix then needs neither Lua nor file I/O.
+
+**D5 — Field values are stored typed.** *(Amended from the spec after
+review — the spec's implicit "type is the variant arm" model was lossy.)*
+
+```cpp
+struct ScriptFieldEntry {
+    rt2::core::ScriptFieldType type;
+    rt2::core::ScriptFieldValue value;
+    bool operator==(const ScriptFieldEntry& other) const {
+        return type == other.type && value == other.value;
+    }
+};
+using ScriptFieldMap = std::unordered_map<std::string, ScriptFieldEntry>;
+```
+
+Rationale for taking the cost now: W3 already touches the component, clone
+path, and serializer, while delaying typed storage until after v3 would
+require a v4 migration. The W2 call-site audit updated runtime injection,
+snapshot comparison, clone/duplication, and tests before any untyped disk
+format shipped. Storing the tag also *simplifies*
+D6: the on-disk tag becomes authoritative rather than derived from the
+variant arm, so `color` round-trips exactly and no arm-derivation logic
+is needed.
+
+Compatibility rule with typed storage: **two types are compatible iff
+they share a variant arm.** Therefore `vec3` ↔ `color` preserves the
+value and updates the stored tag (a deliberate rule with a test that
+asserts *desired* behavior), while `float` → `vec3` and `float` →
+`string` still reset to the declared default with a diagnostic, exactly
+as the spec requires.
+
+Note on the reviewed `vec3 → float → vec3` concern: that sequence loses
+the value at the first step regardless of how types are stored, because
+the declared type genuinely changed across variant arms. Each step emits
+a `TypeChanged` diagnostic naming the entity, field, old type, and new
+type, so it is reported rather than silent. It is not a D5 artifact.
+
+**D6 — Tagged JSON, with the stored tag written directly.**
+
+```json
+"script": {
+  "asset":  { "path": "scripts/spin.lua",
+              "sourceKey": "lua:asset=scripts/spin.lua" },
+  "fields": { "speed": { "type": "float", "value": 7.0 },
+              "tint":  { "type": "color", "value": [1, 1, 1] } }
+}
+```
+
+Tags: `bool | int | float | string | uuid | vec3 | color`. An unknown tag
+drops that field with a diagnostic (forward compatibility). A tag whose
+value payload fails to parse is likewise dropped with a diagnostic —
+never a load failure, since one bad field must not cost the user a scene.
+
+**D7 — One `SetScriptCommand`, not a per-field command.** See the
+amendment in the spec above for the rationale.
+
+**D8 — Sync impact is `None`.** `SceneManager::SetScriptState` mirrors
+`SetMotionState` (`SceneManager.cpp:3370-3390`) exactly. See the spec
+amendment.
+
+**D9 — `ReloadScript` gets a partial 6B body.** It re-parses declarations
+for the path and re-reconciles + re-injects `self` on bound instances. It
+does **not** watch files — that remains 6C. This is the minimum needed to
+run the spec's reload tests.
+
+> **Amended after review (2026-07-21).** The original wording said reload
+> "does not rebind callbacks", which is not achievable. `BuildEnvironment`
+> constructs a *fresh* `sol::environment` and extracts the four callback
+> handles from it; re-injecting `self` means replacing the environment,
+> and the new environment's callbacks must therefore be re-bound. The
+> rebind-and-swap shape is the right one and the current code supports it
+> — the callbacks read `inst.env["entity"]` / `["world"]` at *call* time
+> (`ScriptSystem.cpp` `OnUpdate`/`OnFixedUpdate`), not at bind time, so
+> swapping the environment does not strand them. What D9 actually
+> excludes is **re-running `on_create`** (the entity already exists).
+>
+> Two traps for the implementer, both live in the current code:
+>
+> 1. **Callback removal must explicitly clear.** The bind block only
+>    assigns when the global is present, so a callback deleted from the
+>    source leaves the previous handle in place and it keeps being
+>    called. Reset all four to `sol::protected_function{}` before
+>    rebinding.
+> 2. **Build into a scratch instance and swap only on clean load.** A
+>    syntax error must leave the running instance untouched — that is
+>    what makes "the scene keeps running" true rather than aspirational.
+
+**D10 — A parse failure never reconciles.** If the registry cannot parse
+a script, it returns the **last known-good** descriptors for that path
+plus a warning, and the resolver **skips reconciliation entirely** for
+entities bound to it. Reconciling against zero declarations would treat
+every field as removed and delete the user's authored values on a
+transient syntax error. The inspector shows the stale-but-last-good
+widgets with a warning banner, which is more useful than an empty panel
+and is safe because nothing is written back until the user edits.
+
+##### Open behavioral decisions, now settled
+
+- **Empty or invalid script path.** A `ScriptComponent` with an empty
+  `asset.path` renders the path field, the text "No script bound", and
+  the Remove button — no declarations, no field widgets, no crash. A
+  non-empty path that does not resolve on disk renders the same, with a
+  "script not found" diagnostic line.
+- **`rt2.field.uuid()` default and validation.** Default is the zero
+  `UUID`, meaning "unset". Validation is **format-only** (canonical
+  string form, or empty). It deliberately does *not* require the UUID to
+  reference a live entity: a script may legitimately reference an entity
+  spawned at runtime, and load-order effects would make an existence
+  check flaky. The inspector shows a non-blocking "not found in scene"
+  hint when the UUID is well-formed but unresolved.
+- **Registry eviction.** `ScriptFieldRegistry::Clear()` is called on
+  scene close and scene load, plus an LRU cap of 64 cached descriptor
+  vectors. Because the registry caches descriptors and not `sol::state`s
+  (D1), steady-state memory is negligible.
+
+##### Workstreams
+
+- **W0 — App wiring (enabling; resolves F1/F2).** `WalnutApp` owns a
+  `ScriptSystem` + `RuntimeCommandSink` and calls `SetLifecycleObserver`
+  / `SetScriptDispatch`. Add `SceneManager::SetScriptState(uuid,
+  std::optional<ScriptComponent>)` → `SyncImpact::None`, plus
+  `HasScript(entity)` / `GetScriptState(uuid)`. **Included in 6B
+  deliberately:** without it the acceptance gate is unrunnable and 6B's
+  "it works" claim would rest on unit tests alone, with two scripting
+  phases shipped and no in-app path to use them.
+- **W1 — Reflection.** `ScriptFieldDescriptor` in `ScriptFieldValue.h`;
+  new `ScriptFieldRegistry.h/.cpp` (D1–D3, D10);
+  `ScriptSystem::GetDeclaredFields(UUID)`.
+- **W2 — Reconciliation (implemented).** New `ScriptFieldReconcile.h/.cpp` (D4, D5);
+  `ScriptFieldResolver::ResolveDocument(doc, registry, diags)` post-load
+  seam. W3 installs the normal-open and recovery callers and owns their
+  dirty-state policy. Three implementation notes added after the W1 review:
+  - The compatibility test compares **two different enums** — the
+    declared `ScriptFieldDescriptor::type` and the stored
+    `ScriptFieldEntry::type`. State it explicitly:
+    `compatible = ScriptFieldArmIndex(declared.type) ==
+    ScriptFieldArmIndex(stored.type)`, which `ScriptFieldTypesCompatible`
+    (added in W1, `ScriptFieldValue.h`) already expresses.
+  - The largest single edit for D5's typed storage is **not** a
+    signature change: it is the `std::visit` block in
+    `ScriptSystem::BuildEnvironment` that injects `self` from
+    `fieldValues`. It must read `.value`, and should assert `.type`
+    against the descriptor.
+  - Reconciliation must be **skipped entirely** when the registry
+    returns `parsed == false` (D10). `ScriptSystem::GetDeclaredFields`
+    returns the whole `ScriptFieldRegistry::Result` for exactly this
+    reason — do not reduce it to a descriptor vector at any layer.
+- **W3 — Persistence.** `SchemaVersion 2 → 3`; set `MinReadVersion` to 3
+  as an explicit hard cutover. Reject v1/v2 rather than implementing a
+  migration path.
+  Add the `script` branch to `EntityRecordToJson` (~`SceneSerializer.cpp:467`)
+  and `JsonToEntityRecord` (~`:592`); `hasScript`/`script` already exist
+  on the record and are already emplaced at `:758`. Only v3 scenes load;
+  Save always writes v3.
+- **W4 — Command.** `SetScriptCommand` + `MakeSetScriptCommandIfEffective`
+  in `EditorPropertyCommands.*`, kept CPU-only and proven through Execute,
+  Undo and Redo history tests. `SceneEditorUI::RecordScriptEdit` moves to W5,
+  where it has real widget callers and can submit staged canonical state through
+  history before the document is mutated.
+- **W5 — Inspector.** `RenderScriptEditor(EntityId)` following
+  `RenderLightEditor`'s structure (F4), dispatched from `RenderInspector`
+  (~`:937`). One `PropertyEditSession<ScriptComponent>
+  m_ScriptFieldSession` (single active slot, per that header's contract).
+  Widget map: `bool→Checkbox`, `int→DragInt`, `float→DragFloat`,
+  `string→InputText(EnterReturnsTrue)`, `uuid→validated InputText`,
+  `vec3→DragFloat3`, `color→ColorEdit3`. Continuous widgets (`Drag*`) go
+  through the session; discrete ones record immediately. Plus the asset
+  path field, Add/Remove Script buttons, and the diagnostics line.
+- **W6 — Tests.** `RT2Tests/src/Phase6BFieldsTests.cpp`, registered in
+  **both** `RT2Tests.vcxproj` and `RT2Tests.vcxproj.filters` (the 6A file
+  is in both).
+
+##### Test plan
+
+*Pure, no Lua (W2):* value preserved on same name + type · added →
+default + warning · removed → dropped + warning · alias migration
+`speed` → `vel` · alias no-op when the target is already present ·
+ambiguous alias → both default + one diagnostic · `float` → `string`
+reset + diagnostic · `float` → `vec3` reset + diagnostic · `vec3` →
+`color` **preserved with the tag updated** (asserts the D5 rule).
+
+*Registry (W1):* all seven constructors parse · descriptors sorted by
+name · syntax error → last-good descriptors + diagnostic, no throw ·
+**parse failure does not reconcile** and therefore does not clobber
+authored values (D10) · runaway top-level loop terminates via the
+instruction hook (D3) · `Clear()` drops the cache and the next
+`GetDeclaredFields` re-parses · `(mtime, size, FNV-1a)` invalidation.
+
+*Serializer (W3):* v3 round-trips every supported type including `color`
+· v1/v2 files are rejected as unsupported · unknown type tag dropped
+with a diagnostic, load still succeeds · `CloneInMemory` carries field
+values into the Play clone and `OnCreate` reads the authored values.
+
+*Runtime and command (W0/W4):* two entities sharing one script with
+different values have isolated `self` holding the **persisted** values,
+not the defaults · a script that reads `speed` and calls
+`entity.set_position` produces exactly one **Transform** sync per frame
+and **zero Structural** syncs · `SetScriptCommand` Undo/Redo for add,
+remove, and field edit, with no-op suppression.
+
+*Inspector guard (W5):* a `ScriptComponent` with an empty `asset.path`
+renders no field widgets and does not crash the inspector.
+
+##### Verification gates
+
+The 6A gates, plus the interactive acceptance check (requires W0): author
+`rt2.fields = { speed = rt2.field.float(5.0) }` in a script that moves
+the entity by `speed * dt`; save; reopen; the inspector shows the saved
+value; edit it; Play; the entity moves at the edited speed; Stop; the
+authoring scene is unchanged.
+
+##### Explicitly out of scope for 6B
+
+Hot reload and file watching (`efsw`); input, light, camera, mesh, and
+material bindings; timers; the headless JSON state report; the
+content-browser rebind UI (Phase 7). Reload is exercised in tests via an
+explicit `ScriptSystem::ReloadScript(path)` call (D9).
+
+### Phase 6B W0-W2 verification report (implemented)
+
+W0+W1 began in commits `e2edab6` (6A hardening prerequisite) and `0472274`.
+W2 is implemented in the current tree. **W3-W6 remain**: serializer v3,
+`SetScriptCommand`, inspector UI, and their remaining acceptance coverage.
+
+**W0 — app wiring.** `ScriptSystem` was never instantiated by the app:
+`SetLifecycleObserver` / `SetScriptDispatch` were never called, so 6A
+shipped test-only and `ScriptComponent`-bearing entities were inert in
+Play. The controller side was already fully wired; only the owner was
+missing.
+
+- `WalnutApp` owns a `ScriptSystem` + `RuntimeCommandSink` and installs
+  all four controller seams from `EnsureScriptRuntimeWired()` — lazy and
+  idempotent, mirroring `EnsureRenderBridge`, called from `EnterPlay`.
+  They are `unique_ptr` because `ScriptSystem` takes its UUID provider by
+  reference, so construction must wait until the authoring document has
+  one; if it is still null the app stays unwired and retries next Play.
+- `SceneManager::HasScript` / `GetScriptState` / `SetScriptState`. The
+  mutator mirrors `SetMotionState` exactly and reports
+  `SyncImpact::None` (D8).
+
+**W1 — reflection.**
+
+- `ScriptFieldDescriptor` in `ScriptFieldValue.h`, plus
+  `ScriptFieldArmIndex` / `ScriptFieldTypesCompatible` /
+  `ScriptFieldTypeName`. `ScriptFieldTypesCompatible` is the single
+  expression of D5's rule and is what W2 must use.
+- `ScriptFieldRegistry.h/.cpp` — the `rt2.fields` DSL (all seven
+  constructors plus the `alias` option), sandboxed and instruction-
+  bounded parsing, a `(mtime, size, FNV-1a)` cache with LRU-64 and
+  `Clear()`.
+- `ScriptSystem::GetDeclaredFields(UUID)` delegates to the registry. Shared
+  `ResolveScriptAssetPath` now keeps the Play and authoring paths identical.
+
+**W2 — typed storage and reconciliation.**
+
+- `ScriptFieldEntry { type, value }` and `ScriptFieldMap` replace the untyped
+  variant map. Runtime `self` injection validates the tag/payload invariant
+  and visits the stored payload.
+- `ReconcileScriptFields` is Lua-free and deterministic. It covers compatible
+  preservation, defaults/removals, one-hop aliases, target-wins semantics,
+  ambiguous aliases, incompatible types, malformed stored entries, and the
+  compatible `vec3`/`color` tag transition.
+- `ScriptFieldResolver::ResolveDocument` resolves script-bearing entities in
+  UUID order through the shared path helper. `parsed=false` preserves authored
+  values exactly and emits `ParseFailed`; the resolver intentionally leaves
+  document dirty-state policy to its W3 host. It accounts for UUID-less
+  components as skipped and rejects non-Script asset kinds explicitly.
+- Typed entries survive subtree duplication and `CloneInMemory`; a lifecycle
+  test proves an authored typed float reaches runtime `self` and drives an
+  entity during Play.
+- W3 promotes this seam to live load behavior: normal open and recovery invoke
+  `ResolveDocument` transactionally before adoption, so Play consumes the
+  reconciled typed map.
+
+**Focused verification:** `Phase6*` is 31/31 cases and 219/219 assertions;
+`Phase 6*` is 17/17 cases and 79/79 assertions (48 cases, 298 assertions
+combined). Release RT2Tests builds clean.
+
+**Current full Release suite:** 482 run, 475 passed, 7 failed, 0 skipped.
+The failures are the unchanged baseline: five `SceneGraph` cases in
+`EcsTests.cpp`, plus `SceneManager: SetTransform updates TRS and marks dirty`
+and `SceneManager: SetMaterial updates MeshRef`. No W2 test failed.
+
+**Two contracts W2 depends on, both enforced by tests:**
+
+1. A failed parse returns the **last known-good** descriptors with
+   `parsed=false` and does not stamp mtime/size, so fixing a syntax error
+   recovers on the next query. `GetDeclaredFields` returns the whole
+   `Result` rather than a descriptor vector precisely so this flag cannot
+   be dropped — W2 must skip reconciliation when it is false.
+2. A **malformed** declaration structure (a replaced `rt2` table, or
+   `rt2.fields` set to a non-table mid-edit) is a parse *failure*, not a
+   clean empty set. Reporting it as "no fields" would make W2 delete
+   every authored value.
+
+**Tests:** `RT2Tests/src/Phase6BFieldsTests.cpp`, 31 cases / 219 assertions
+cover W0-W2: authoring API and sync impact; all constructors, ordering,
+aliases, parse recovery, instruction bounds, sandbox/isolation and cache
+invalidation; pure reconciliation; UUID-ordered multi-entity resolution;
+parse-failure preservation; and typed clone/duplication. The complementary
+`Phase 6*` lifecycle filter is 17 cases / 79 assertions and includes runtime
+consumption of an authored typed value.
+
+**Suite:** 419 cases, 413 passed, 6 failed at the time of the commit —
+the same six pre-existing failures documented for Phase 2D. RT2App
+Release builds clean.
+
+> **That figure, and every "6 failed / 48 skipped" in the verification
+> reports above, was a truncated run.** The SIGSEGV in `SceneManager:
+> RemoveEntity destroys entity` did not merely fail — it took the process
+> down mid-run, so Release abandoned the 48 cases after it and Debug could
+> not complete a run at all. Fixed in `b19512b` (an unchecked
+> `m_Meshes[index]` in `CompactMeshRegistry`). The honest baseline is now:
+>
+> - **Release: 468 run, 0 skipped, 7 failed** — 5 × `SceneGraph`
+>   (`EcsTests.cpp:93-193`) plus `SceneManager: SetTransform updates TRS
+>   and marks dirty` and `SceneManager: SetMaterial updates MeshRef`. The
+>   last two are long-standing test/implementation drift that the crash
+>   had been hiding.
+> - **Debug: 468 run, 0 skipped, 15 failed** — the 7 above plus 7 ×
+>   `OBJ Import Wizard` and 1 × `P1A Multi-Model`, which fail only in
+>   Debug.
+>
+> Compare regressions against those numbers, not against 6. The earlier
+> reports are left as written because they were accurate measurements of
+> what the suite reported at the time.
+
+**Not done in W0/W1:** the interactive acceptance gate (authoring a
+script in the editor, editing `speed`, Play) requires the inspector from
+W5, so it remains open.
+
+#### Phase 6B W3 implementation — v3 persistence hard cutover (implemented 2026-07-22)
+
+**Outcome.** `.rt2scene` v3 is the first and only readable script-aware
+format. Saving writes each `ScriptComponent` and every valid typed public
+field; loading reconstructs the authored component, reports and isolates bad
+individual fields, then the RT2 app reconciles the loaded values against the
+current Lua declarations before adopting the document. This is deliberately
+not a compatibility slice: v1/v2 files and recovery snapshots are rejected.
+
+##### Grounded findings
+
+| # | Finding | Consequence for W3 |
+|---|---|---|
+| W3-F1 | `SceneSerializer::SchemaVersion` is 2 and `MinReadVersion` is 1; `Load` explicitly maps every accepted input to the current version. | Set both constants to 3 and remove the effective-version migration language/path. |
+| W3-F2 | `EntityRecord` already contains `hasScript` and `ScriptComponent`; `BuildEntityRecord`, `BuildDocumentFromRecords`, `CloneInMemory`, snapshots and duplication already copy it. | Disk JSON is the missing serializer seam; do not create a second component-copy path. |
+| W3-F3 | `AssetKindName` / `AssetKindFromName` do not recognize `Script`. | Add the `"script"` mapping before using the existing asset-reference shape. |
+| W3-F4 | `SceneSerializer::Load` exposes only `bool + Error`; it has no non-fatal diagnostic/report channel. | Add a load report so one bad public field can be dropped visibly without failing the scene. |
+| W3-F5 | Normal `.rt2scene` open already runs on a worker: `Load`, then `SceneAssetResolver::ResolveAll`, then main-thread adoption. | Run a worker-local `ScriptFieldRegistry` and `ScriptFieldResolver` in that transaction before adoption; never share the runtime Lua state across threads. |
+| W3-F6 | Recovery restore is a separate load/resolve/adopt host in `SceneRecoveryService::Restore`. | It must run the same script reconciliation and return field diagnostics; otherwise normal open and recovery diverge. |
+| W3-F7 | `RT2SliceRunner` loads scenes but intentionally does not link Lua/sol2. | Keep it as a raw v3 deserialize/clone consumer in W3. Script declaration reconciliation in the runner remains part of the 6C script-scenario work. |
+| W3-F8 | v2 serializes `metadata.sourcePath`, and `Load` trusts that stored value. `ScriptFieldResolver` resolves relative scripts from this metadata, while model resolution uses the actual opened file's parent. | In v3, source path is derived runtime state: omit it from JSON and set it from the actual load path. Recovery restores its separately recorded logical source path before resolution. |
+| W3-F9 | The normal-open completion path unconditionally calls `ClearDirty()` after adoption. | Carry separate save-required and destructive-loss signals from normalization/reconciliation; call `MarkDirty()` after the ordinary clear when the adopted document changed. |
+| W3-F10 | The committed vertical-slice scene is v2 and raw serializer tests contain v1/v2 literals whose intended assertions occur after schema validation. | Regenerate/update the committed fixture, rewrite ordinary literals to v3, and retain only explicit v1/v2 rejection tests. |
+| W3-F11 | `SceneManager::SetScriptState` currently accepts any tag/payload pair, while the W3 serializer is intentionally strict. | Add shared validation at the authoring mutation boundary so public APIs cannot create an unsaveable scene; Save retains a defensive check for raw-registry corruption. |
+| W3-F12 | Recovery envelopes have an independent `ManifestVersion = 1`. | Bump the envelope version with the schema cutover so old recovery records fail at discovery with an accurate diagnostic rather than at inner scene parsing. |
+| W3-F13 | A fresh `SceneMetadata` still defaults `schemaVersion` to 1. | Change the default to 3 in W3.0 so in-memory documents never claim an unreadable format. |
+
+##### v3 JSON contract
+
+An entity with a script writes:
+
+```json
+"script": {
+  "asset": {
+    "kind": "script",
+    "path": "scripts/move.lua",
+    "sourceKey": "lua:asset=scripts/move.lua"
+  },
+  "fields": {
+    "enabled": { "type": "bool",  "value": true },
+    "count":   { "type": "int",   "value": 3 },
+    "speed":   { "type": "float", "value": 7.5 },
+    "label":   { "type": "string", "value": "runner" },
+    "target":  { "type": "uuid",  "value": "00000000-0000-0000-0000-000000000000" },
+    "offset":  { "type": "vec3",  "value": [1.0, 2.0, 3.0] },
+    "tint":    { "type": "color", "value": [1.0, 0.5, 0.2] }
+  }
+}
+```
+
+- Reuse the asset-reference keys `kind`, `path`, and `sourceKey`; write
+  `importSettings` only for model assets, not scripts.
+- Script `sourceKey` is canonical derived data: write
+  `lua:asset=<serialized path>`. When Save As rebases the path, regenerate the
+  key from that rebased path rather than preserving a stale path-form key.
+- Field tags are exactly `bool | int | float | string | uuid | vec3 | color`.
+- UUIDs use canonical strings; the all-zero UUID is a valid unset value.
+- `vec3` and `color` have identical three-number payloads but retain distinct
+  tags. The stored tag is authoritative.
+- Script field keys are emitted lexically. Entity order remains UUID order.
+  The project's default `nlohmann::json` object type uses `std::map`, so object
+  keys are sorted; do not switch these paths to insertion-ordered
+  `ordered_json`. Explicit lexical iteration is still preferred where the
+  source container is unordered because it makes the determinism requirement
+  visible rather than relying on a later JSON-object sort.
+- An absent `script` key means no `ScriptComponent`; an absent `fields` key
+  means an empty typed map.
+
+##### Validation and failure policy
+
+**The authoring boundary and Save share one invariant.** Add a CPU-only
+`NormalizeAndValidateScriptComponent` helper that returns a canonical copy and
+call it from both `SceneManager::SetScriptState` and the serializer's pre-save
+validation. The canonical states are:
+
+- **unbound:** `asset.kind == Script`, empty path/sourceKey, and no fields;
+- **bound:** `asset.kind == Script`, non-empty path, canonical
+  `sourceKey == "lua:asset=" + path`, and every field has a recognized tag,
+  matching payload arm and finite numeric/vector value.
+
+The helper derives `sourceKey` from a non-empty path; callers never reject a
+component merely because that redundant string was stale. `SetScriptState`
+stores the canonical copy, but rejects structural or field-payload errors with
+`EditorMutationResult::Failure` before mutation, revision change or dirtying.
+W4/W5 must use this API rather than emplacing components directly. This
+preserves W2's intentional empty-path inspector state without allowing authored
+values on a script that cannot run.
+
+**Save remains strict and atomic as a defensive backstop.** Raw registry
+mutation can bypass `SetScriptState`, so Save repeats validation before writing
+the temp file. A missing/stale bound `sourceKey` is normalized only in the
+serialized copy to the rebased path; Save does not mutate the live component.
+Fill `Error` with the entity UUID and field name and leave an existing target
+file byte-for-byte unchanged.
+
+**Load distinguishes structural damage from repairable derived metadata and
+one bad field.** A non-object `script`, missing/malformed asset object,
+non-Script kind, or non-object `fields` is a hard `Error::Parse` and clears the
+temporary document. An empty path is valid only with an empty source key and
+empty fields (the canonical unbound state). A bound asset with a missing or
+non-string source key is structurally malformed. A string key that does not
+match `lua:asset=<path>` is regenerated, emits `NormalizedScriptSourceKey`,
+and does not discard authored field data.
+Within an otherwise valid `fields` object:
+
+- unknown type tag → drop that field, emit `UnknownSerializedType`;
+- recognized tag with the wrong JSON shape/range → drop that field, emit
+  `MalformedSerializedValue`;
+- valid field → construct a payload whose variant arm exactly matches its tag.
+
+Dropping a field sets `SceneLoadReport::droppedScriptFieldData = true`; other
+entities and valid sibling fields survive. Normalizing a stale-but-string
+source key instead sets `normalizedScriptMetadata = true`; it is not reported
+as field loss. No JSON exception may escape
+`SceneSerializer::Load`—field conversion helpers validate types and bounds
+before calling `get<T>()`.
+
+Add `UnknownSerializedType`, `MalformedSerializedValue`, and
+`NormalizedScriptSourceKey` to
+`FieldDiagnostic::Kind`, then add a CPU-only report:
+
+```cpp
+struct SceneLoadReport {
+    std::vector<FieldDiagnostic> fieldDiagnostics;
+    bool normalizedScriptMetadata = false;
+    bool droppedScriptFieldData = false;
+};
+```
+
+Provide a report-taking `Load` overload used by production and W3 tests; keep
+the existing three-argument overload as a convenience for raw consumers that
+do not surface non-fatal diagnostics.
+
+##### Path and source-root policy
+
+`SceneMetadata::sourcePath` is process state, not durable scene content. v3
+omits `metadata.sourcePath`; `Load(path)` always sets it to `path`. This makes
+normal script and model resolution agree on the file the user actually
+opened, even if a scene was moved.
+
+For Save As, relative references must continue to identify the same assets:
+resolve an existing relative reference against the document's current source
+directory, then relativize it against the logical output scene directory.
+Apply that shared rebasing rule to imported models, scripts and the environment
+path. If the document is untitled and the reference is already relative,
+preserve and normalize it because no old root exists. `SaveTo` continues to
+use `logicalScenePath` rather than the recovery-file directory.
+
+Absolute references preserve their target identity. Save first tries to make
+them relative to the logical output scene directory; if that is impossible
+(for example, the target is on a different Windows volume), it writes a
+normalized absolute path. This is the same fallback for models, scripts, and
+the environment and must be covered explicitly by tests.
+
+Recovery records already store `originalSourcePath` and `assetRoot`
+separately. Restore sets the temporary document's source path to the original
+logical path before asset and script resolution. An envelope with manifest v1,
+or a manifest-v2 envelope containing a scene-v1/v2 snapshot, fails its
+respective version check by design.
+
+##### Host transaction and dirty policy
+
+Normal open remains one all-or-nothing worker transaction:
+
+```text
+SceneSerializer::Load(v3, SceneLoadReport)
+  → SceneAssetResolver::ResolveAll
+  → worker-local ScriptFieldRegistry
+  → ScriptFieldResolver::ResolveDocument
+  → success: main-thread ReplaceAuthoringDocument
+  → ClearDirty
+  → classify normalization/reconciliation versus destructive field loss
+  → if either class changed the document: MarkDirty
+  → if destructive: require acknowledgement before Save/autosave
+```
+
+Serializer and field diagnostics are formatted into the existing background
+diagnostic string and logged on the main thread. `parsed=false`, missing script
+files, invalid bindings, and UUID-less components are warnings/skips; they do
+not by themselves mark the document dirty because authored data was preserved.
+
+Do not collapse every change into a single `repaired` bit. Compute two host
+signals:
+
+- **non-destructive change:** source-key normalization, added defaults, renamed
+  values, and compatible tag normalization; mark dirty and show the ordinary
+  "script fields changed; save required" status;
+- **destructive change:** a serialized field was dropped, or reconciliation
+  emitted `Removed`, `TypeChanged`, `InvalidStoredValue`, or
+  `AmbiguousAlias`; mark dirty, show an explicit entity/field warning, and set
+  `scriptRepairAcknowledgementPending`.
+
+While destructive acknowledgement is pending, suppress recovery autosnapshots
+and require an explicit acknowledgement/confirmation before ordinary Save or
+Save As. This prevents the background snapshot loop or a reflexive save from
+persisting field loss before the author has seen it. Acknowledgement permits
+persistence; it does not clear dirty state. The classifier is a small shared
+CPU helper used by normal open and recovery so their semantics cannot drift.
+
+Recovery performs the same asset/script resolution, but a successfully
+restored recovery document is already dirty regardless of reconciliation.
+Extend `SceneRecoveryService::Restore` to return `FieldDiagnostic`s alongside
+`AssetDiagnostic`s and the two change classifications so warnings and
+destructive acknowledgement requirements are not swallowed.
+
+##### Implementation order
+
+1. **W3.0 — Schema and invariant cutover.** Set both serializer constants and
+   the `SceneMetadata::schemaVersion` default to 3; bump recovery
+   `ManifestVersion` to 2; remove v1→current migration code/comments; add
+   explicit v1/v2 scene and v1 recovery-envelope rejection tests; add the
+   shared normalization/validation helper and enforce it in `SetScriptState`
+   before strict Save work lands; change ordinary raw JSON test inputs to v3;
+   regenerate
+   `assets/vertical-slice.rt2scene`; rename version-specific test wording.
+2. **W3.1 — Typed codecs and save validation.** Add Script asset-kind mapping,
+   tag conversion helpers, exact payload writers/readers, strict pre-save
+   defensive validation through the same shared helper, lexical field
+   emission, and source-root rebasing without mutating live components.
+3. **W3.2 — Entity JSON and load report.** Add the `script` branch to
+   `EntityRecordToJson` and `JsonToEntityRecord`; introduce
+   `SceneLoadReport`; implement hard component errors and non-fatal per-field
+   repair without uncaught JSON conversions, distinguishing metadata
+   normalization from dropped field data.
+4. **W3.3 — Normal-open integration.** In the background worker, pass the
+   report, resolve assets, create a worker-local registry, reconcile scripts,
+   aggregate diagnostics, classify destructive loss, and carry `requiresSave`
+   plus `requiresAcknowledgement` to the completion callback. Preserve
+   transactional adoption, mark dirty only after the existing clear, and gate
+   Save/autosnapshot while destructive acknowledgement is pending.
+5. **W3.4 — Recovery integration.** Update `Restore` and callers/tests to set
+   the logical source path before both resolvers and expose field diagnostics
+   and classifications. Confirm old recovery envelopes fail cleanly without
+   touching the live doc and destructive recovery repair cannot be
+   autosnapshotted before acknowledgement.
+6. **W3.5 — Documentation and verification.** Update serializer/scene docs
+   from v2 to v3, run focused persistence/lifecycle tests, build the Release
+   solution, run the full suite against the documented seven-failure baseline,
+   and refresh Graphify.
+
+##### Test matrix
+
+Add W3 cases primarily to `Phase6BFieldsTests.cpp` and
+`SceneSerializerTests.cpp`; update schema-specific cases in
+`Phase1ASceneAssetTests.cpp`, recovery tests, fixture tests and slice-runner
+inputs.
+
+- all seven field types round-trip, including nil/non-nil UUID and distinct
+  `vec3`/`color` tags;
+- entity with no script, canonical unbound script, and bound script with an
+  empty field map round-trip;
+- two saves with reverse `unordered_map` insertion order are byte-identical;
+- relative and absolute references for models, scripts and environment follow
+  the same target-preserving Save As rule, including different-volume absolute
+  fallback;
+- `SetScriptState` rejects malformed state without mutation, revision or dirty
+  changes; a valid accepted state remains saveable;
+- raw-registry malformed entry or invalid script asset makes Save fail
+  atomically without mutating the live component;
+- Save canonicalizes a stale raw-registry `sourceKey` only in the serialized
+  copy and leaves the live component untouched; Load canonicalizes a stale
+  string key, emits `NormalizedScriptSourceKey`, preserves every field, and is
+  classified as non-destructive;
+- unknown tag and wrong payload each drop only their field, report entity/name,
+  set `droppedScriptFieldData`, and preserve valid siblings; saving the
+  resulting valid temporary document succeeds after host acknowledgement;
+- malformed script/asset/fields containers fail the whole temporary load;
+- v1 and v2 reject with `Error::SchemaVersion`; v3 and only v3 loads;
+- post-load same-type preservation is idempotent and clean;
+- post-load add/remove/rename/type reset mutates the temporary document and
+  produces `requiresSave=true` in deterministic UUID/name order, while the
+  classifier marks add/rename non-destructive and remove/type-reset
+  destructive;
+- declaration parse failure preserves serialized fields exactly and does not
+  request a save;
+- actual opened path overrides any stale/unknown metadata and drives relative
+  script resolution;
+- normal open and recovery block Save/autosnapshot after destructive repair
+  until explicit acknowledgement, but do not block non-destructive
+  normalization;
+- recovery envelope v1 is rejected at discovery; v2 resolves scripts against
+  `originalSourcePath`, remains dirty, and does not mutate the live document on
+  any load/asset/script hard failure;
+- save→load→resolve→Play proves the persisted authored value reaches `self`;
+- committed fixture, recovery scenario and slice runner consume v3 successfully.
+
+##### W3 acceptance gate
+
+Create a v3 scene in a test with two entities bound to one relative script and
+different values for every supported field arm. Save, reopen through the same
+CPU pipeline as the app, reconcile, and Play: each entity receives only its
+own authored `self`; the clean round-trip is not dirty. Edit the declaration
+to add, rename and incompatibly change fields, reopen again, and verify the
+document is adopted dirty with deterministic diagnostics and corrected values.
+The Release solution builds, all W3/focused Phase 6 tests pass, and the full
+suite introduces no failure beyond the seven documented baseline failures.
+
+**Out of scope.** Undo commands and inspector widgets remain W4/W5. File
+watching, callback reload, input/binding expansion and SliceRunner script
+execution remain 6C. No v1/v2 scene or recovery migration utility is built.
+
+**Implementation report.** W3 is complete: scenes and recovery envelopes use
+hard-cutover versions 3 and 2 respectively; all seven public-field types have
+strict tagged codecs; script metadata is normalized and validated at the
+mutation and defensive-save boundaries; malformed fields are isolated through
+`SceneLoadReport`; Save As rebases environment, model, and script references
+from the logical source root; and normal open/recovery reconcile declarations
+before adoption. Lossless repairs require a save, while destructive repairs
+also suppress autosave and require an explicit first-Save acknowledgement.
+Runtime environments install inert `rt2.field.*` declaration constructors so
+the same declaration-bearing source accepted by reflection also executes during
+Play. The end-to-end persistence test covers save → load → reconcile → Play.
+
+**Post-review hardening.** Save validates field names and UTF-8 string payloads
+before JSON emission and catches any remaining serializer exception; reflection
+rejects defaults that cannot be persisted. Valid non-canonical UUID text is
+normalized with a lossless diagnostic. The SliceRunner now consumes
+`SceneLoadReport` and refuses snapshots that dropped fields. Registry, runtime,
+and serializer type tags share one canonical name table. The destructive-repair
+persistence gate remains active after acknowledgement until Save succeeds, so a
+recovery autosnapshot cannot silently persist loss between the first and second
+Save actions.
+
+**W3 verification:** Release solution build passes; focused W3 is 15/15 cases
+and 127/127 assertions; recovery is 23/23 cases and 140/140 assertions; both the
+60-step vertical slice and recovery scenario pass. The full Release suite is
+499 run, 492 passed, 7 failed, 0 skipped. Those seven are the unchanged baseline
+(five `SceneGraph` cases and two legacy `SceneManager` cases); no W3 case fails.
+
+**Next implementation slice:** W4 command/history integration, followed by W5
+Inspector authoring. W4 must make script assignment/removal and public-field
+edits undoable without weakening the W3 validation and destructive-repair
+contracts.
+
+#### Phase 6B W4 implementation plan — script command/history integration (planned 2026-07-22)
+
+**Outcome.** Every authored `ScriptComponent` transition can be represented by
+one UUID-keyed command and round-tripped through Execute, Undo and Redo. The
+command covers component add/remove, script-path replacement and any typed
+field-map change by storing `std::optional<ScriptComponent>` before/after
+snapshots. W4 is deliberately CPU-only: it builds and proves the command seam;
+W5 owns `RenderScriptEditor`, ImGui lifecycle and `PropertyEditSession` glue.
+
+##### Grounded findings
+
+| ID | Current fact | W4 consequence |
+|---|---|---|
+| W4-F1 | `SceneManager::SetScriptState(UUID, optional<ScriptComponent>)` validates/canonicalizes and returns `SyncImpact::None`, but currently calls `NotifyAuthoringChanged()` unconditionally—even for canonical present→same-present and absent→absent removal. | W4.0 must make canonical no-op suppression a manager invariant before W5 integration. Effective commands still call this API directly and never synthesize impact. |
+| W4-F2 | `SetMotionCommand` already proves the optional whole-component shape for add/remove/edit. | `SetScriptCommand` follows this shape rather than introducing per-field command classes. |
+| W4-F3 | `ScriptComponent` and `AssetReference` have no whole-value equality operator; `sourceKey` is derived and script `importSettings` are not persisted. | Add a script-specific canonical equality helper. Do not use raw struct/memory comparison and do not make unordered-map iteration part of equality. |
+| W4-F4 | `ScriptFieldEntry::operator==` compares the semantic type tag and exact variant payload; `ScriptFieldMap` equality is key-based and order-independent. | Exact typed-map equality is the no-op rule. `vec3` and `color` with identical vectors are still different states because their tags differ. |
+| W4-F5 | W3 validation regenerates `sourceKey`, rejects invalid names/payloads and guarantees persistable UTF-8, but the irrelevant `AssetReference::importSettings` member can still survive in memory on a script component. | Canonicalization clears script import settings to defaults so commands cannot preserve hidden state that Save discards. |
+| W4-F6 | `EditorCommandHistory::Execute` records only successful commands; failed initial Execute leaves both stacks unchanged. Failed Undo/Redo clears **both** stacks by established policy. | An invalid after-state or missing target must fail before recording, and an invalid before-snapshot must be rejected by the factory in Release as well as debug so it can never wipe the session on Undo. |
+| W4-F7 | Existing Inspector drags mutate the document per frame and later use `RecordApplied`. If a drag changes through intermediate values but returns to its exact start, those mutations already dirtied/bumped the document even though the factory suppresses the final command. Script fields need no live renderer preview. | W5 stages script edits in UI-owned working state and submits one W4 command through `EditorCommandHistory::Execute` at commit. W4 does not adopt the flawed apply-first lifecycle. |
+| W4-F8 | `EditorSyncRouter` returns immediately for `SyncImpact::None`. | Execute/Undo/Redo of a script command must produce no renderer sync and no accumulation reset. |
+| W4-F9 | The destructive-load `ScriptRepairPersistenceGate` is document-level state owned by the host, independent of ordinary authoring history. | Script commands never clear or acknowledge that gate. Undoing an edit cannot make prior destructive load loss safe to autosave. |
+| W4-F10 | `SceneEditorUI::Undo`/`Redo` currently omit `m_MotionVelocitySession` from their session-discard list; W5 will add another session if the list remains distributed. | W5 must first centralize “discard all property sessions” and include motion plus script. W4 does not add an untestable UI session or helper. |
+
+##### Command contract
+
+Add `SetScriptCommand` to `EditorPropertyCommands.h/.cpp`:
+
+```cpp
+class SetScriptCommand final : public IEditorCommand {
+public:
+    SetScriptCommand(UUID target,
+        std::optional<ScriptComponent> beforeValue,
+        std::optional<ScriptComponent> afterValue);
+
+    EditorMutationResult Execute(SceneManager& scene) override;
+    EditorMutationResult Undo(SceneManager& scene) override;
+    std::string Description() const override;
+};
+```
+
+- Execute and Redo call `scene.SetScriptState(target, afterValue)`.
+- Undo calls `scene.SetScriptState(target, beforeValue)`.
+- The command owns full value copies only. It stores no `entt::entity`, Lua
+  objects, registry pointers, file handles, descriptors or runtime callbacks.
+- Descriptions are state-aware: `Add Script`, `Remove Script`, or `Edit Script`.
+- A path change is not reconciled inside the command. The caller supplies the
+  complete already-decided after-state; commands remain deterministic and do
+  no filesystem or Lua work. W5 owns declaration lookup/reconciliation when a
+  user changes a binding.
+- Removing a script stores its complete prior typed map so Undo restores it.
+- An unbound component (`kind=Script`, empty path/source key/fields) remains a
+  valid add state. Empty path plus authored fields remains invalid by W3.
+
+Add `MakeSetScriptCommandIfEffective(target, before, after)` alongside the
+existing property-command factories. Its semantics are:
+
+1. validate and canonicalize a present before-state first. An invalid
+   before-snapshot returns null (and may emit a debug diagnostic); no command may be
+   submitted because a later failed Undo would clear the entire history under
+   the established history policy. This Release guard is required even though
+   ordinary callers obtain before-state from validated `GetScriptState` data;
+2. both absent → null;
+3. validate/canonicalize a present after-state. An invalid after-state is not
+   mistaken for a no-op: retain it in a command so
+   `EditorCommandHistory::Execute` returns the manager's actionable failure and
+   leaves history unchanged;
+4. one absent → command;
+5. both valid and present → suppress only when canonical path, derived source
+   key and exact typed map match.
+
+Before landing the factory, extend
+`NormalizeAndValidateScriptComponent` to reset `asset.importSettings` for
+`AssetKind::Script`. This is lossless canonicalization: v3 never serializes
+script import settings, and no script code consumes them.
+
+Use the same canonical comparator inside `SceneManager::SetScriptState` after
+validating the incoming value and before mutating the registry:
+
+- present→canonical-equal present returns successful `SyncImpact::None` with no
+  affected UUIDs, dirty change or revision bump;
+- absent→absent removal has the same successful no-op result;
+- one-present/one-absent or canonically different present values remain
+  effective and notify exactly once;
+- invalid input still returns the existing actionable failure before equality
+  is considered.
+
+This manager-level rule protects direct callers and discrete submissions, but it
+cannot erase intermediate mutations from a continuous apply-first drag. W5
+therefore stages continuous script edits outside the document and applies only
+the final command. A slider dragged away and back to its exact initial value
+then closes with no command, dirty bit, revision bump or recovery snapshot.
+
+##### W4/W5 boundary
+
+W4 does **not** add `RenderScriptEditor`, a `PropertyEditSession`, asset-path
+text buffers or `SceneEditorUI::RecordScriptEdit`. Those have no production
+caller until W5 and cannot be usefully exercised in the CPU suite. W5 will:
+
+1. capture the canonical before-state from `GetScriptState`;
+2. edit a UI-owned working copy without calling `SetScriptState` per frame;
+3. on discrete commit or continuous-widget release, build the W4 command from
+   before and staged after values;
+4. skip a null/no-op factory result, otherwise submit through
+   `EditorCommandHistory::Execute`, which performs the single validated manager
+   mutation and records only on success;
+5. discard staged state on Escape, selection change, entity death, Play entry,
+   document adoption, Undo or Redo;
+6. route Execute/Undo/Redo through the existing `ApplyMutation` path.
+
+The factory and manager both canonicalize, so stale derived `sourceKey` data in
+the working copy cannot become command truth. Invalid after-state is displayed
+from the failed Execute and never enters history. Net-zero staged edits never
+touch the document at all.
+
+##### Implementation order
+
+1. **W4.0 — Canonical state and manager no-op semantics.** Clear script import
+   settings in the shared W3 normalization helper; add one exact canonical
+   comparator shared by the manager and command factory; make
+   `SetScriptState` suppress canonical present→same-present and absent→absent
+   mutations before notification. Cover source-key normalization, reversed
+   field insertion order, dirty state, revision and empty affected-UUID output.
+2. **W4.1 — Command and factory.** Add `SetScriptCommand`, state-aware
+   descriptions, accessors used by tests, and the no-op-suppressing factory in
+   `EditorPropertyCommands.h/.cpp`.
+3. **W4.2 — Execute-history coverage.** Prove add, remove, path edit and typed
+   field edit through `EditorCommandHistory::Execute`, Undo and Redo. Assert
+   exact state, dirty/revision behavior, affected UUID and `SyncImpact::None`.
+4. **W4.3 — Staged-commit coverage.** Simulate the W5 lifecycle: capture before,
+   modify an off-document after copy, create the command, then Execute/Undo/Redo.
+   Include validation failure, canonical no-op and net-zero edit cases; assert
+   the document is untouched before Execute.
+5. **W4.4 — Persistence and routing checks.** Save/reopen the commanded state,
+   and route command results through a recording `EditorSyncRouter` to prove
+   zero GPU sync/reset work.
+6. **W4.5 — Documentation and verification.** Update scripting/scene docs,
+   build Release, run focused W4/Phase 6 tests, both headless scenarios, the
+   full suite against its seven-failure baseline, and refresh Graphify.
+
+##### Test matrix
+
+Add W4 cases to `RT2Tests/src/Phase6BFieldsTests.cpp`:
+
+- factory suppresses absent→absent and equal canonical present→present;
+- stale versus derived `sourceKey` with the same path is a no-op;
+- reversed `ScriptFieldMap` insertion order is a no-op;
+- same vector payload tagged `vec3` versus `color` is effective;
+- applying an identical canonical state directly through `SetScriptState` is a
+  successful no-op: clean stays clean, revision is unchanged and no UUID is
+  reported affected;
+- removing a nonexistent `ScriptComponent` directly through `SetScriptState`
+  has the same no-op semantics;
+- add bound and unbound components; Undo removes; Redo restores canonical data;
+- remove a component with all seven field types; Undo restores every type tag
+  and payload exactly;
+- edit one field, replace the script path, and replace the complete field map;
+  each transition round-trips independently;
+- Execute, Undo and Redo each bump the revision once, mark dirty, identify only
+  the target UUID and return `SyncImpact::None`;
+- no-op factory output never changes revision, dirty state or history stacks;
+- invalid type/payload, invalid UTF-8, empty name and unbound-with-fields after
+  states fail atomically and do not enter history;
+- an invalid before-snapshot is rejected by the factory and therefore cannot
+  create an Undo operation that clears existing history;
+- missing target fails gracefully and leaves both stacks unchanged;
+- staged working-copy edits do not touch dirty state, revision or live component
+  until `Execute`; a net-zero staged edit produces no command;
+- a failed Execute or null factory output does not clear the redo stack;
+- `EditorSyncRouter` records zero full/material/transform/reset calls;
+- save/reopen after Execute contains the after-state; save/reopen after Undo
+  contains the before-state.
+
+##### W4 acceptance gate
+
+Create one entity with a bound script and values for all seven supported field
+types. Through command history: edit a scalar, change a semantic tag from
+`vec3` to `color`, replace the binding/path, remove the component, then Undo all
+steps and Redo all steps. At every boundary assert the exact optional component,
+canonical source key, revision delta, dirty state and `SyncImpact::None`; no
+renderer callback fires. Save/reopen at the final Execute state and at an Undo
+state to prove command snapshots are the same data W3 persists. Invalid input
+must leave the live document and history unchanged. Include direct-manager
+present→same-present and absent→absent passes, plus a staged net-zero edit,
+proving no dirty/revision/history change. Release verification may
+introduce no failure beyond the documented seven-test baseline.
+
+**Out of scope.** Inspector widgets, edit-session lifecycle, file dialogs,
+interactive rebinding, declaration diagnostics in the Inspector and hot reload
+remain W5/6C. W4 performs no Lua evaluation and does not alter the destructive
+load-repair acknowledgement state.
+
+#### Phase 6B W4 implementation — script command/history integration (implemented 2026-07-22)
+
+**Outcome.** `SetScriptCommand` and `MakeSetScriptCommandIfEffective` cover
+component add, remove, script-path replacement, and any typed field-map change
+through one UUID-keyed command storing `std::optional<ScriptComponent>`
+before/after snapshots. Execute, Undo, and Redo round-trip through
+`EditorCommandHistory`; `SceneManager::SetScriptState` suppresses canonical
+no-ops (present→same-present and absent→absent) without bumping the revision,
+dirtying the document, or notifying observers. The factory canonicalizes both
+before and after states before comparing, so stale `sourceKey` data and reversed
+`ScriptFieldMap` insertion order are no-ops; an invalid before-snapshot is
+rejected (returns null) so it can never wipe history via a failed Undo, and an
+invalid after-state is retained so `EditorCommandHistory::Execute` surfaces the
+manager's actionable failure without recording.
+
+**W4.0 — Canonical state and manager no-op semantics.**
+`NormalizeAndValidateScriptComponent` now resets `asset.importSettings` to
+defaults for `AssetKind::Script` (v3 never serializes script import settings, so
+commands cannot preserve hidden state Save would discard).
+`ScriptComponentCanonicalEqual` compares two `std::optional<ScriptComponent>`
+for order-independent field-map equality (kind, path, derived sourceKey, and
+exact typed entries). `SetScriptState` calls it after canonicalization and
+suppresses the mutation — no `NotifyAuthoringChanged`, no revision bump, no
+dirty mark, no affected UUID — when the canonical incoming value equals the
+currently stored component (or both are absent).
+
+**W4.1 — Command and factory.** `SetScriptCommand` follows `SetMotionCommand`'s
+shape: Execute/Redo call `scene.SetScriptState(target, after)`, Undo calls
+`scene.SetScriptState(target, before)`. Descriptions are state-aware: "Add
+Script", "Remove Script", or "Edit Script". `MakeSetScriptCommandIfEffective`
+canonicalizes the before-state first (invalid → null), suppresses both-absent
+and canonically-equal-present pairs, then canonicalizes the after-state for the
+comparison (invalid after is NOT suppressed — the command is returned so
+Execute fails atomically without entering history).
+
+**W4.2-W4.4 — Tests.** 19 cases in `Phase6BFieldsTests.cpp` cover:
+- factory no-op suppression (absent→absent, canonical-equal present→present,
+  stale sourceKey, reversed insertion order);
+- vec3 vs color with same payload is effective (tags differ);
+- invalid before-snapshot rejected by factory;
+- direct-manager no-op for present→same-present and absent→absent (no revision
+  bump, no dirty, no affected UUID);
+- add/remove/field-edit/path-edit/complete-map-replacement round-trip through
+  Execute/Undo/Redo with exact state, revision delta, and `SyncImpact::None`;
+- remove with all seven field types; Undo restores every tag and payload;
+- each Execute/Undo/Redo reports `SyncImpact::None` and the target UUID;
+- no-op factory output never changes revision, dirty, or history;
+- invalid after-state fails atomically, does not enter history, does not clear
+  redo stack;
+- missing target fails gracefully, leaves both stacks unchanged;
+- staged working-copy edits do not touch document until Execute;
+  net-zero staged edit produces no command;
+- `EditorSyncRouter` records zero full/material/transform/reset calls across
+  the full add/edit/undo/redo/remove cycle;
+- save/reopen after Execute contains the after-state; after Undo contains the
+  before-state;
+- unbound component add/remove round-trips.
+
+**W4 verification:** Release solution builds clean; focused W4 is 22/22 cases
+and 196/196 assertions; the full Phase6B filter is 68/68 cases and 541/541
+assertions; the Phase 6 lifecycle filter is 17/17 cases and 79/79 assertions.
+The full Release suite is 521 run, 514 passed, 7 failed, 0 skipped — the
+unchanged seven-failure baseline (five `SceneGraph` cases and two legacy
+`SceneManager` cases). No W4 case fails.
+
+**Post-review hardening.** Three findings from the W4 review were fixed:
+
+1. **[High] Phantom history entry on factory/manager disagreement.** When the
+   factory's `before` snapshot diverged from the manager's stored state (e.g.
+   an out-of-band mutation happened between W5's capture and commit), the
+   factory emitted a command, the manager suppressed it as a no-op, but
+   `EditorCommandHistory::Execute` recorded it anyway — creating a phantom undo
+   entry and clearing the redo stack for a mutation that never happened. Fix:
+   added `bool effective = true` to `EditorMutationResult`; the two
+   `SetScriptState` no-op paths set `effective = false`; `Execute` and
+   `RecordApplied` skip recording when `success && !effective`. The flag is
+   additive — every existing command defaults to `effective = true` and is
+   unaffected. A regression test covers the crossing case (capture before →
+   out-of-band mutation → commit equal to stored → no history entry, redo
+   survives).
+
+2. **[Medium] Add-commands stored non-canonical after-snapshots.** The factory
+   canonicalized the after-state only inside the `beforeHas && afterHas`
+   branch, so add-commands (`before` absent, `after` present) stored the
+   caller's raw `sourceKey` and `importSettings`. Fix: hoisted the
+   after-canonicalization out of the guard so it runs whenever `after` is
+   present. A regression test builds an add-command with a stale `sourceKey`
+   and non-default `importSettings`, then asserts `AfterValue()` is canonical
+   and matches the stored state after Execute.
+
+3. **[Low] `Description()` mislabelled absent→absent as "Edit Script".** The
+   factory rejects this shape, but `SetScriptCommand` is publicly constructible.
+   Fix: added an explicit `"Script (no change)"` fallback so a mislabelled
+   entry is self-identifying.
+
+**Next implementation slice:** W5 Inspector authoring (`RenderScriptEditor` +
+`PropertyEditSession<ScriptComponent>`), which builds on the W4 command seam
+to submit staged canonical state through history on commit. The `effective`
+flag from the High fix protects both `Execute` and `RecordApplied` against
+phantom entries when the document moves between capture and commit.
+
+#### Phase 6B W5 implementation plan — inspector authoring (planned 2026-07-22)
+
+**Outcome.** `RenderScriptEditor(EntityId)` renders one widget per declared
+public field, typed by `ScriptFieldType`, with the asset-path field, Add/Remove
+Script buttons, a diagnostics line, and the record-on-release pattern for
+continuous edits. Every authoring action (add script, remove script, edit path,
+edit field) submits one `SetScriptCommand` through `EditorCommandHistory` and is
+undoable. The interactive acceptance gate (author a script, edit `speed`, Play,
+verify motion, Stop, verify authoring unchanged) becomes runnable.
+
+##### Grounded findings
+
+| ID | Current fact | W5 consequence |
+|---|---|---|
+| W5-F1 | `RenderLightEditor` (`SceneEditorUI.cpp:1401-1490`) is the closest structural precedent: a `PropertyEditSession<T>` with `OnActivated`/`OnEditCommitted`/`CloseDeferred`, an owning-widget-id guard, and a `Record*Edit` helper that calls `RecordApplied`. | `RenderScriptEditor` follows this shape. The session stores `ScriptComponent` (the full component, not individual fields) so the command's before/after snapshots are complete. |
+| W5-F2 | The Motion block (`:939-1003`) is inline in `RenderInspector`, not a separate `Render*Editor`. It uses the same session pattern but with immediate `SetMotionState` calls per frame and `RecordMotionEdit` on close. | `RenderScriptEditor` is a separate method like Light/Camera, not inline. The Motion block's Add/Remove button pair is the precedent for the Script Add/Remove buttons. |
+| W5-F3 | `SceneEditorUI::Undo()`/`Redo()` (`:79-103`) discard 6 sessions but miss `m_MotionVelocitySession` (W4-F10). `ResetForDocument()` (`:123-134`) correctly discards all 7. | W5 must centralize "discard all property sessions" into one private method and call it from `Undo`, `Redo`, and `ResetForDocument`, adding both the missing motion session and the new script session. |
+| W5-F4 | The inspector has no `ScriptFieldRegistry` injection. `ScriptSystem::FieldRegistry()` exists but `ScriptSystem` is lazy-created at Play (`EnsureScriptRuntimeWired`). The inspector needs declarations while STOPPED. | `WalnutApp` owns a `std::unique_ptr<rt2::core::ScriptFieldRegistry> m_InspectorFieldRegistry`, created at startup, injected into `SceneEditorUI` via `SetFieldRegistry`. Cleared on scene load/close alongside the existing `ResetForDocument` path. |
+| W5-F5 | `ResolveScriptAssetPath(document, component)` (`ScriptAssetPath.h`) is the shared scene-relative path resolver used by both the runtime and the W2/W3 resolver. | The inspector uses it to resolve the authored `ScriptComponent::asset.path` against `m_SceneMgr->AuthoringDoc()` before querying the registry. |
+| W5-F6 | `SceneManager::HasScript(EntityId)` and `GetScriptState(UUID)` (`SceneManager.h:372-374`) are the read APIs. `SetScriptState(UUID, optional<ScriptComponent>)` is the write API (W0). | The inspector reads via `GetScriptState`, writes via `SetScriptState` (per-frame for continuous edits, like Motion/Light), and records via `MakeSetScriptCommandIfEffective` + `RecordApplied` on close. |
+| W5-F7 | `ScriptFieldRegistry::Result` carries `descriptors`, `parsed`, and `diagnostic`. D10 requires that a `parsed=false` result displays the last-known-good descriptors with a warning, not an empty panel. | `RenderScriptEditor` checks `parsed` and renders a warning banner when false. Field widgets are still rendered from the last-known-good descriptors so the user can see existing values, but they are **read-only** (`BeginDisabled`) while `parsed == false` so the user cannot author values against declarations the engine has stopped trusting (review Medium finding). |
+| W5-F8 | The W4 `effective` flag on `EditorMutationResult` prevents phantom history entries when the manager suppresses a no-op. `RecordApplied` now skips recording when `success && !effective`. | The `RecordScriptEdit` helper must pass the manager's actual `EditorMutationResult` to `RecordApplied` (not a synthesized one like the Light/Motion helpers do), so the `effective` flag flows through correctly. This is a correction to the existing `Record*Edit` pattern — the Light/Motion helpers synthesize `applied` with `effective=true` and would record a phantom entry if the manager suppressed. Fixing those is out of scope for W5 but worth noting. |
+| W5-F9 | `ScriptFieldEntry::type` distinguishes `vec3` from `color` (same variant arm, different inspector widget). The widget map must dispatch on `ScriptFieldType`, not on the variant index. | Widget dispatch: `Bool→Checkbox`, `Int→DragInt`, `Float→DragFloat`, `String→InputText(EnterReturnsTrue)`, `Uuid→validated InputText`, `Vec3→DragFloat3`, `Color→ColorEdit3`. |
+| W5-F10 | The plan spec says the asset-path field is edited as text (the Rebind button is deferred to Phase 7's content-browser era). A path edit is a discrete commit (InputText with EnterReturnsTrue), not a continuous drag. | The path field uses `ImGui::InputText` with `ImGuiInputTextFlags_EnterReturnsTrue`. On Enter, capture before from `GetScriptState`, build the after-state with the new path (fields unchanged), and submit via `MakeSetScriptCommandIfEffective` + `Execute`. No session needed — it's a discrete edit like the Add/Remove buttons. |
+| W5-F11 | An unbound `ScriptComponent` (empty path, no fields) is a valid state. The inspector must render the path field and Remove button, but no field widgets and no crash. A non-empty path that does not resolve on disk renders a "script not found" diagnostic. | The empty-path guard is the first check in `RenderScriptEditor`. When the path is empty, render only the path InputText and Remove button. When the path is non-empty but `GetDeclaredFields` returns `parsed=false` with an empty descriptor list and a "file not found" diagnostic, render the diagnostic line and no field widgets. |
+| W5-F12 | Field names are sorted by name ascending (D2). The registry returns them pre-sorted. | The inspector iterates the descriptor vector in order; no re-sorting needed. |
+| W5-F13 | `PropertyEditSession<ScriptComponent>` stores the full component as the before-value. On close, `CloseDeferred` returns `{before, after}`. The after-value is the current `GetScriptState` — NOT the per-frame mutated working copy, because the per-frame mutations already wrote to the manager. | This matches the Light/Motion pattern: per-frame writes go to the manager, `CloseDeferred` reads the after from the manager, and `RecordApplied` records the command. The `effective` flag from the manager's `SetScriptState` result is passed through. |
+
+##### Command contract
+
+`RenderScriptEditor` submits commands through three paths:
+
+1. **Add Script** (discrete): capture `before = nullopt`, construct `after` as an
+   unbound `ScriptComponent` (kind=Script, empty path, no fields), call
+   `SetScriptState(target, after)`, then `MakeSetScriptCommandIfEffective(target,
+   before, after)` + `Execute`. If the factory returns null (impossible for
+   add-from-absent, but defensive), skip.
+
+2. **Remove Script** (discrete): capture `before = GetScriptState(target)`,
+   call `SetScriptState(target, nullopt)`, then
+   `MakeSetScriptCommandIfEffective(target, before, nullopt)` + `Execute`.
+
+3. **Path edit** (discrete): capture `before = GetScriptState(target)`, construct
+   `after` = `before` with the new path (fields unchanged), call
+   `SetScriptState(target, after)`, then
+   `MakeSetScriptCommandIfEffective(target, before, after)` + `Execute`.
+
+4. **Field edit** (continuous, via session): the session captures `before` on
+   widget activation. Per-frame, the inspector mutates a UI-owned working copy
+   and calls `SetScriptState` to write it to the manager (so the document
+   reflects the edit live). On `DeactivatedAfterEdit`, `CloseDeferred` reads the
+   after from `GetScriptState`, builds the command, and calls `RecordApplied`
+   with the manager's actual result (so `effective` flows through). On
+   `Deactivated` without AfterEdit (Escape), `OnCancelled` discards.
+
+   **Important:** the per-frame `SetScriptState` call for a continuous field
+   edit writes the ENTIRE `ScriptComponent` (all fields), not just the one being
+   dragged. This is because `SetScriptState` takes the whole component. The
+   working copy is the full component with one field's value updated.
+
+##### Widget dispatch
+
+```
+ScriptFieldType → ImGui widget
+  Bool   → Checkbox           (discrete: commit immediately, no session)
+  Int    → DragInt            (continuous: session)
+  Float  → DragFloat          (continuous: session)
+  String → InputText(EnterReturnsTrue) (discrete: commit on Enter)
+  Uuid   → InputText(EnterReturnsTrue) (discrete: commit on Enter, validate)
+  Vec3   → DragFloat3         (continuous: session)
+  Color  → ColorEdit3         (continuous: session)
+```
+
+Discrete widgets (Checkbox, InputText with EnterReturnsTrue) commit immediately
+via `Execute` — no session. Continuous widgets (Drag*) go through the
+`PropertyEditSession<ScriptComponent>` with the owning-widget-id guard (like
+Light's `drawLightWidget` lambda).
+
+**Text-commit on focus loss (review High finding).** `EnterReturnsTrue` fires
+only on Enter, not on focus loss. The existing entity-name field
+(`SceneEditorUI.cpp:916-924`) demonstrates the bug: it captures
+`IsItemActivated()` and discards it with `(void)`, so typing a name and
+clicking away silently loses the edit. W5 commits text fields (path, String,
+Uuid) on `IsItemDeactivatedAfterEdit()` in addition to Enter — the standard
+ImGui idiom already used for Drag* widgets elsewhere in this file. Escape-cancel
+remains correct because ImGui reverts the buffer and fires
+`IsItemDeactivated()` without `AfterEdit`. W5.0 also fixes the entity-name
+field's commit in the same pass so the two text-commit idioms do not diverge.
+
+UUID validation: parse with `UUID::Parse`. Accept nil as "unset" (W3 defines it
+as a legitimate value). Reject anything else by reverting the buffer and
+showing an error line — do not commit. This matches the loader's strictness
+(W3 drops fields that fail the `ToString()` round-trip) so the inspector cannot
+author a value that saves and then vanishes on reload.
+
+**ColorEdit3 picker popup handling (review Medium finding).** `ColorEdit3` is
+not a simple drag — clicking the swatch opens a picker popup, and
+`IsItemDeactivatedAfterEdit()` on the parent widget interacts with popup
+open/close differently from `DragFloat3`. W5.3 treats Color as its own case
+rather than folding it in with `Vec3`: the session opens on
+`IsItemActivated()`, commits on `IsItemDeactivatedAfterEdit()`, and cancels on
+`IsItemDeactivated()` without `AfterEdit`. W5.6 guard tests cover
+open-picker → edit → close as a distinct `PropertyEditSession` lifecycle.
+
+##### Session lifecycle
+
+One `PropertyEditSession<ScriptComponent> m_ScriptFieldSession` (single active
+slot). The owning-widget-id guard (`m_ScriptFieldSessionOwningWidgetId`)
+ensures only the widget that started the edit closes it (same pattern as Light).
+
+The session is discarded on:
+- `Deactivated` without AfterEdit (Escape cancel)
+- Selection change (via `ResetForDocument` or the centralized discard)
+- Entity death (guard predicate: `FindEntityByUuid(target) != entt::null`)
+- Play entry (`SetEditable(false)` disables widgets; the session is discarded)
+- Undo/Redo (via the centralized discard)
+- Document adoption (via `ResetForDocument`)
+
+##### Registry injection
+
+`WalnutApp` owns `std::unique_ptr<rt2::core::ScriptFieldRegistry>
+m_InspectorFieldRegistry`, created in the constructor. Injected into
+`SceneEditorUI` via `SetFieldRegistry(rt2::core::ScriptFieldRegistry*)`.
+Cleared (`Clear()`) on scene load and scene close, alongside
+`ResetForDocument`. The registry is CPU-only and links cleanly.
+
+The inspector resolves the script path via `ResolveScriptAssetPath(
+m_SceneMgr->AuthoringDoc(), component)` and queries
+`m_FieldRegistry->GetDeclaredFields(resolvedPath)`.
+
+When no registry is injected (tests), `RenderScriptEditor` renders the path
+field and Add/Remove buttons but no field widgets (defensive null check).
+
+**Per-frame I/O fix (review High finding).** `GetDeclaredFields` currently
+reads and hashes the entire file on every call, then consults the cache — the
+cache prevents re-parsing, not re-reading. At 60 fps with an entity selected,
+that is 60 file opens + full reads + hashes per second on the UI thread. W5.1
+adds a fast-path staleness gate in `ScriptFieldRegistry::GetDeclaredFields`:
+check `(mtime, size)` via `std::filesystem::last_write_time` + `file_size`
+first, and only read+hash when they differ or the entry is absent. This
+preserves the hash's purpose (catching same-length edits within one timestamp
+tick) at the cost of one `stat` per frame. The hash still wins on a
+same-tick same-length edit the moment the timestamp advances.
+
+##### Centralized session discard
+
+Add a private `DiscardAllPropertySessions()` method to `SceneEditorUI`:
+
+```cpp
+void DiscardAllPropertySessions()
+{
+    m_TransformSession.Discard();
+    m_NameSession.Discard();
+    m_LightSession.Discard();
+    m_CameraSession.Discard();
+    m_MaterialIndexSession.Discard();
+    m_MaterialPropertiesSession.Discard();
+    m_MotionVelocitySession.Discard();
+    m_ScriptFieldSession.Discard();
+}
+```
+
+Call it from `Undo()`, `Redo()`, and `ResetForDocument()` (replacing the
+hand-maintained lists that missed `m_MotionVelocitySession` in Undo/Redo).
+
+##### Inspector dispatch
+
+In `RenderInspector`, after the Camera editor and before/after the Motion block,
+add:
+
+```cpp
+if (m_SceneMgr->HasScript(entity))
+    RenderScriptEditor(entity);
+```
+
+Also add an "Add Script" button when the entity has no ScriptComponent (like the
+"Add Motion" button in the Motion block).
+
+##### Implementation order
+
+1. **W5.0 — Centralize session discard.** Add
+   `DiscardAllPropertySessions()`, call from `Undo`, `Redo`, and
+   `ResetForDocument`. This fixes W4-F10 (missing motion discard in Undo/Redo)
+   and adds the script session. Build and run the full suite to verify no
+   regression from the motion-discard fix.
+
+2. **W5.1 — Registry injection.** Add `SetFieldRegistry` to `SceneEditorUI`,
+   `m_InspectorFieldRegistry` to `WalnutApp`, wire in the constructor, clear on
+   scene load/close. Add `m_ScriptFieldSession` and
+   `m_ScriptFieldSessionOwningWidgetId` members to `SceneEditorUI`. Add
+   `RenderScriptEditor` declaration. Build.
+
+3. **W5.2 — `RenderScriptEditor` skeleton.** Implement the method: header text,
+   path field (InputText with EnterReturnsTrue), Add/Remove buttons, diagnostics
+   line, and the field-widget loop. Start with the empty-path guard and the
+   no-registry guard. Build and manually verify the inspector renders for a
+   scripted entity.
+
+4. **W5.3 — Field widgets.** Implement the widget dispatch for all seven types.
+   Continuous widgets go through the session; discrete widgets commit
+   immediately. Color is treated as its own case (picker popup handling). All
+   widgets are wrapped in `BeginDisabled(!m_Editable)` so authoring is blocked
+   during Play (review gap 1). Add `RecordScriptEdit` helper that calls
+   `RecordApplied` with the manager's actual result (not a synthesized one).
+   Build and manually test each widget type.
+
+5. **W5.4 — Path edit and Add/Remove.** Implement the discrete commit paths for
+   path edit, Add Script, and Remove Script. Text fields commit on
+   `IsItemDeactivatedAfterEdit()` as well as Enter (review High finding). Also
+   fix the entity-name field's commit in the same pass. Build and manually test.
+
+6. **W5.5 — Diagnostics and parse-failure banner.** When `parsed=false`, render
+   a warning banner with the diagnostic text and render the last-known-good
+   field widgets read-only (`BeginDisabled`). When the path resolves to a
+   missing file, render "script not found." When the path is empty (unbound
+   component), render only the path field and Remove button — no field widgets,
+   no diagnostics banner (review gap 2). Build and manually test with a
+   broken script and a missing path.
+
+7. **W5.6 — Inspector guard tests.** Add CPU test cases to
+   `Phase6BFieldsTests.cpp` covering: empty-path component renders no field
+   widgets, non-existent path renders a diagnostic, `parsed=false` widgets are
+   read-only, and the session lifecycle (capture/commit/cancel, including the
+   ColorEdit3 picker-popup case) through the `PropertyEditSession` state machine.
+
+8. **W5.7 — Interactive acceptance gate.** This is the Phase 6B exit gate:
+   author a script with `rt2.fields = { speed = rt2.field.float(5.0) }` that
+   moves the entity by `speed * dt`; save; reopen; verify the inspector shows
+   the saved value; edit it to 9.0; Play; verify the entity moves at 9.0
+   units/sec; Stop; verify the authoring scene is unchanged (speed is still
+   9.0, not reset to 5.0). Undo the field edit and verify the value reverts to
+   5.0. Redo and verify it returns to 9.0. This proves the full 6B stack
+   (W0 wiring → W1 reflection → W2 reconciliation → W3 persistence → W4
+   command/history → W5 inspector) end to end.
+
+9. **W5.8 — Documentation and verification.** Update scripting/scene docs, build
+   Release, run focused W5/Phase 6 tests, the full suite against its
+   seven-failure baseline, and refresh Graphify.
+
+##### Test matrix
+
+Add W5 cases to `RT2Tests/src/Phase6BFieldsTests.cpp`:
+
+- `PropertyEditSession<ScriptComponent>` lifecycle: OnActivated captures before,
+  OnEditCommitted + CloseDeferred returns {before, after}, OnCancelled discards,
+  no-commit activation discards on close.
+- Centralized session discard: Undo/Redo discards all 8 sessions including
+  motion and script (verify via a fixture that opens a motion session, calls
+  Undo, and asserts the motion session is no longer open).
+- Inspector guard (requires a minimal `SceneEditorUI` fixture or a separate
+  headless test): a `ScriptComponent` with an empty `asset.path` produces no
+  field-widget rendering path (assert the code path is taken, not pixel output).
+
+The interactive acceptance gate is manual (W5.7) and cannot be automated without
+a GLFW/ImGui test harness.
+
+##### W5 acceptance gate
+
+Author a script with `rt2.fields = { speed = rt2.field.float(5.0) }` that moves
+the entity by `speed * dt` in `on_update`. In the editor: add a ScriptComponent
+to an entity, set the path, verify the `speed` field appears in the inspector,
+edit it to 9.0, save, reopen, verify the inspector shows 9.0, Play, verify the
+entity moves at 9.0 units/sec, Stop, verify the authoring scene is unchanged
+(speed is still 9.0, not reset to 5.0). Undo the field edit and verify the value
+reverts to 5.0. Redo and verify it returns to 9.0.
+
+The Release solution builds, all W5/Phase 6 tests pass, and the full suite
+introduces no failure beyond the documented seven-test baseline.
+
+**Out of scope.** File dialogs for path browsing, interactive rebinding UI
+(Phase 7), declaration diagnostics from the registry shown inline in the
+inspector (the warning banner is the minimum), hot reload (6C), and the
+`RecordApplied`-synthesizes-`effective` issue in existing Light/Motion helpers
+(noted in W5-F8 but fixing it is a separate hardening pass — tracked here so
+it is not forgotten when Light/Motion gain no-op suppression). Per-frame
+full-component re-validation (review Medium finding) is acceptable for W5
+given typical field counts; if it shows up in profiling, the fix is to
+validate incrementally at the mutation boundary rather than re-scanning
+unchanged entries.
+
+#### Phase 6B W5 implementation — inspector authoring (implemented 2026-07-22)
+
+**Outcome.** `RenderScriptEditor(EntityId)` renders one widget per declared
+public field, typed by `ScriptFieldType`, with the asset-path field, Add/Remove
+Script buttons, a parse-failure warning banner, and the record-on-release
+session pattern for continuous edits. Every authoring action submits one
+`SetScriptCommand` through `EditorCommandHistory` and is undoable. The
+interactive acceptance gate is runnable.
+
+**W5.0 — Centralized session discard + entity-name commit fix.** Added
+`DiscardAllPropertySessions()` to `SceneEditorUI`, replacing the hand-maintained
+lists in `Undo()`, `Redo()`, and `ResetForDocument()` that missed
+`m_MotionVelocitySession` in Undo/Redo (W4-F10). The method discards all 8
+sessions including the new `m_ScriptFieldSession`. Also fixed the entity-name
+field's text-commit bug: it now commits on `IsItemDeactivatedAfterEdit()` (focus
+loss) in addition to Enter, matching the standard ImGui idiom used for Drag*
+widgets. The `(void)nameActivated` discard that silently lost edits on focus
+loss is removed.
+
+**W5.1 — Registry injection + fast-path staleness gate.** `WalnutApp` owns
+`std::unique_ptr<ScriptFieldRegistry> m_InspectorFieldRegistry`, created at
+startup, injected into `SceneEditorUI` via `SetFieldRegistry`, and cleared on
+scene load/close. The registry is independent of `ScriptSystem` (which is
+lazy-created at Play) so the inspector can query declarations while STOPPED.
+
+`ScriptFieldRegistry::GetDeclaredFields` now has a fast-path: check
+`(mtime, size)` against the cache first and return cached descriptors without
+reading or hashing the file. Only when they differ (or the entry is absent) does
+it read + hash + re-parse. The hash tiebreaker still catches same-tick
+same-size edits the moment the timestamp advances. This avoids 60 file reads +
+hashes per second when the inspector queries every frame (review High finding).
+
+**W5.2-W5.5 — RenderScriptEditor.** Follows `RenderLightEditor`'s structure:
+path field (`InputText` with `EnterReturnsTrue` + `DeactivatedAfterEdit` for
+focus-loss commit), Remove Script button, Add Script button (in `RenderInspector`
+when no ScriptComponent exists), diagnostics warning banner when `parsed=false`
+with field widgets rendered read-only (`BeginDisabled`), and the field-widget
+loop.
+
+Widget dispatch by `ScriptFieldType`:
+- `Bool→Checkbox` (discrete: immediate command via `RecordScriptEdit`)
+- `Int→DragInt`, `Float→DragFloat`, `Vec3→DragFloat3`, `Color→ColorEdit3`
+  (continuous: `PropertyEditSession<ScriptComponent>` with owning-widget-id guard)
+- `String→InputText(EnterReturnsTrue)` + `DeactivatedAfterEdit` (discrete)
+- `Uuid→InputText(EnterReturnsTrue)` + `DeactivatedAfterEdit` (discrete, validated:
+  accept nil as "unset", reject garbage by reverting)
+- Empty path (unbound): path field + Remove only, no field widgets, no banner
+
+`RecordScriptEdit` passes the manager's actual `EditorMutationResult` to
+`RecordApplied` (not a synthesized one), so the `effective` flag flows through
+correctly (W5-F8). All widgets are wrapped in `BeginDisabled(!m_Editable)` so
+authoring is blocked during Play.
+
+**W5.6 — Inspector guard tests.** 3 cases in `Phase6BFieldsTests.cpp`:
+- `PropertyEditSession<ScriptComponent>` lifecycle: open/commit/close produces
+  a record; open without commit produces none; cancel produces none; guard
+  failure produces none.
+- Registry fast-path: unchanged file returns cached descriptors without
+  re-reading; modified file (different size) re-parses.
+- Registry same-size edit: rewrite with same byte count but different content;
+  after timestamp advance, the new default is returned (hash tiebreaker).
+
+**W5 verification:** Release solution builds clean (both RT2App and RT2Tests);
+focused W5 is 3/3 cases and 28/28 assertions; the full Phase6B filter is 71/71
+cases and 569/569 assertions; the full Release suite is 524 run, 517 passed, 7
+failed, 0 skipped — the unchanged seven-failure baseline. No W5 case fails.
+
+**Remaining for W5.7 (interactive acceptance gate):** manual verification —
+author a script with `rt2.fields = { speed = rt2.field.float(5.0) }` that moves
+the entity by `speed * dt`, add a ScriptComponent via the inspector, set the
+path, edit `speed` to 9.0, save, reopen, Play, verify motion at 9.0 units/sec,
+Stop, verify authoring unchanged, Undo/Redo the field edit. This proves the
+full 6B stack end to end.
+
+### Phase 6C — Hot reload, input, and remaining bindings (implemented)
 
 **Outcome.** Editing a `.lua` file while Playing hot-reloads it without
 restarting RT2; syntax/runtime errors during reload are reported with
@@ -4219,9 +5775,14 @@ UUIDs):**
 - `ReloadScript(path)` with an added field runs the 6B compatibility
   rules; the new field receives its default; existing fields preserve
   values.
-- `ReloadScript(path)` with a syntax error quarantines all instances of
-  that source; a subsequent `ReloadScript` with valid source
-  un-quarantines (S1: `Quarantined` → `Live`).
+- `ReloadScript(path)` with a syntax error leaves every instance of that
+  source in its current state — a parse failure must NOT quarantine a
+  Live instance, because the running code is still valid and the author
+  is mid-keystroke. Only a successful parse can replace anything.
+  *(Amended in W9: this bullet previously specified the opposite. The
+  implemented behaviour is the correct one and is pinned by a test.)*
+- An instance quarantined by a **runtime** error returns to `Live` on a
+  subsequent `ReloadScript` with valid source (S1: `Quarantined` → `Live`).
 - A reload that adds an `on_update` callback (previously missing) binds
   it without re-running `on_create`.
 - A reload that removes an `on_update` callback unbinds it; subsequent
@@ -4243,12 +5804,473 @@ UUIDs):**
 - The headless `--script-scenario` runner emits the expected JSON
   report for the checked-in fixture and exits zero.
 
+**Resolved ahead of 6C (2026-07-21).** Four gaps found by review were
+fixed immediately rather than deferred, because three were reachable by
+any user script and the fourth broke a documented contract:
+
+- **Runtime instruction budget — DONE.** Protected calls catch *errors*,
+  not *hangs*: a callback containing `while true do end` never returns,
+  so no result is produced and neither `sol::protected_function` nor
+  `lua_atpanic` can intervene; S1 quarantine cannot help because
+  quarantine requires the call to return. All five runtime Lua entry
+  points (chunk load plus the four callbacks) now run under a
+  `ScriptInstructionBudget` (`ScriptSandbox.h`), whose `LUA_MASKCOUNT`
+  hook routes an exhausted budget through the ordinary error path into
+  Quarantine. Two tests cover it; without the fix they hang the suite.
+- **`world.spawn` script attachment — DONE.** The binding read only
+  `desc.name` and silently dropped `desc.script`, so G2's "scripts spawn
+  scripted entities" was unmet by the Lua API even though
+  `RuntimeEntityCreateDesc::script` and `RuntimeSceneMutator` supported
+  it. Worse, the 6A test "spawn with ScriptComponent produces scripted
+  entity" asserted `LiveInstanceCount() == 1` — it *enshrined* the bug
+  under a name claiming the opposite. Binding fixed; test rewritten to
+  assert the child is live and its `on_create` ran.
+- **Mid-session `on_destroy` ordering — DONE.** The drain applied the
+  destruction and only then fired `on_destroy` via
+  `SyncScriptEnvironments`, so a script's final callback saw its own
+  entity already removed (`entity:get_name()` returned empty). New
+  `IRuntimeScriptDispatch::OnEntitiesDestroying(uuids)` fires from inside
+  `ApplyDeferredStructuralChanges`, immediately *before* the removal,
+  with the subtree in post-order (children first). Defaulted to a no-op
+  so other dispatch implementations are unaffected.
+- **Script path in the quarantine log — DONE.** `ScriptInstance` now
+  carries its resolved path and `Quarantine` logs it. Note the stack
+  trace was never actually missing: sol's default handler builds one with
+  `luaL_traceback`, which is in `lauxlib` and needs no `debug` library —
+  an early review claim to the contrary was wrong.
+
+**Still open for 6C:** `LuaPanic` throws a C++ exception from a handler
+invoked by C-compiled Lua. Every Lua entry is protected so it should be
+unreachable, but if it fires the throw crosses C frames reached via
+longjmp, which is undefined on MSVC. The sound fix is compiling Lua as
+C++ (`LUAI_THROW` then throws), a premake/vendor change that deserves its
+own commit. Returning from the handler is NOT an alternative — in Lua 5.4
+that calls `abort()`.
+
+Also for consideration in 6C: `sol::lib::coroutine` was opened in 6A with
+nothing using it and no sandboxing story, and has since been closed. If
+`timer.after`/`timer.every` are implemented on coroutines, re-open it
+deliberately and revisit the deny list in `ScriptSandbox.h` at the same
+time.
+
 **Verification gates (6C):** same as 6A/6B plus the headless script
 scenario regression; interactive acceptance: edit a Playing script's
 `speed` field declaration in the `.lua` file, save it, observe the
 reload log in the console, and verify the new value takes effect
 without restarting RT2; introduce a syntax error and verify the scene
 keeps running with a useful error.
+
+#### Phase 6C implementation plan (approved 2026-07-22)
+
+Written after grounding the 6C spec against the code as it stands post-6A/6B.
+Findings C1–C10 below are the evidence base; workstreams W0–W9 follow.
+
+##### Grounded findings
+
+> **These describe the code as it stood BEFORE 6C (2026-07-22).** They are
+> the evidence base the 6C plan was built on, kept unedited so the reasoning
+> can be audited. Every "current fact" below has since been changed by the
+> work it motivated — C1's stub is now a full implementation, C3's inert
+> `input` table now has its methods, and so on. Do not read this table as a
+> description of the present tree.
+
+| ID | Fact as of 2026-07-22 (pre-6C) | 6C consequence |
+|---|---|---|
+| C1 | `ScriptSystem::ReloadScript` is a virtual stub (`ScriptSystem.h:135`) that does nothing. `BuildEnvironment` (`ScriptSystem.cpp:409-743`) constructs a fresh `sol::environment`, loads the chunk, binds callbacks, and injects `self`. | 6C must implement reload as: re-parse declarations via the registry, re-run `BuildEnvironment` into a scratch environment, reconcile field values against new declarations, copy old `self` into `rt2.previous_state`, swap the environment, and re-bind callbacks. A syntax error must leave the running instance untouched (D9 trap 2). |
+| C2 | Four items were resolved ahead of 6C (lines 5714-5761): runtime instruction budget, `world.spawn` script attachment, `OnEntitiesDestroying` ordering, and script path in the quarantine log. All four are confirmed in the code. | 6C does not re-address these. They are done. |
+| C3 | `IInputService` (`InputTypes.h:252-277`) exposes `IsPressed`, `IsDown`, `IsReleased`, `GetAxisValue`, `GetMouseDelta`, `GetScrollDelta`. `ScriptSystem::OnSceneStart` receives and stores `m_Input` (`ScriptSystem.h:122,213`). `BuildEnvironment` binds an inert `input` table (`ScriptSystem.cpp:696-704`) with no methods. | 6C adds Lua bindings to the `input` table that call through to `m_Input`. The table is already created; only the method bindings are missing. |
+| C4 | `ScriptSystem::BuildEnvironment` (`:560-628`) already binds `entity.set_position`, `entity.set_local_transform`, `entity.get_position`, `entity.get_name`, `entity.get_uuid`, `entity.is_alive`, `entity.set_visible`, `entity.get_visible`, `world.spawn`, `world.destroy`, `world.find_by_name`, `world.find_by_uuid`, `log.info`, `log.warn`, `log.error`. | 6C adds `entity.get_light`, `entity.set_light`, `entity.get_camera`, `entity.set_camera`, `entity.set_material_index` to the entity table. These route through the `RuntimeCommandSink` (for set) or read the runtime document directly (for get). |
+| C5 | `RuntimeCommandSink` (`ScriptSystem.cpp:690-820`) already implements `SetLocalTransform`, `SetPosition`, `SetName`, `SetVisible`, `IsAlive`, `FindByName`, `FindByName`, `GetLocalTransform`, `GetPosition`, `GetName`, `GetVisible`. | 6C adds `SetLight`, `GetLight`, `SetCamera`, `GetCamera`, `SetMaterialIndex` to the sink. The sink's `IsRuntimeMutable()` gate already protects against writes outside Play. |
+| C6 | `ScriptSandbox.h` already defines `InstallSandbox` (deny list + library copies) and `ScriptInstructionBudget` (RAII hook). `coroutine` is copied but inert (line 202: "no-op unless 6C re-opens it"). | If `timer.after`/`timer.every` are implemented via Lua coroutines, `coroutine` is already isolated per-environment and ready. If implemented in C++, no change needed. The plan says timers fire on the main thread in the variable-update phase — C++ timers are simpler and avoid coroutine-yield semantics in the fixed-step loop. |
+| C7 | `RT2SliceRunner` (`premake5.lua`) does NOT link Lua or sol2. It compiles a subset of CPU-only RT2App sources. The 6C `--script-scenario` mode needs Lua execution. | 6C adds Lua C sources + sol2 include path to `RT2SliceRunner/premake5.lua`, matching the pattern in `RT2Tests/premake5.lua:15-48`. It also links `ScriptSystem.cpp`, `ScriptFieldRegistry.cpp`, `ScriptAssetPath.cpp`, and `ScriptSandbox.h`. No efsw. |
+| C8 | `RuntimeSceneController::SetRuntimeUuidProvider` (`RuntimeSceneController.h:166`) exists and is used by Phase 4/6A tests. | The headless script scenario installs a `DeterministicUuidProvider` seeded from the scenario file, exactly as Phase 6A tests do (`Phase6ALifecycleTests.cpp:114`). |
+| C9 | `LuaPanic` (`ScriptSystem.cpp:53-61`) throws a C++ exception from a C `lua_atpanic` handler. The plan (line 5749-5755) flags this as UB if it ever fires, because Lua is compiled as C. | 6C should compile Lua as C++ (`LUAI_THROW`) OR replace `LuaPanic` with `std::terminate`. This is a premake/vendor change. The plan says "returning from the handler is NOT an alternative — in Lua 5.4 that calls abort()." Compiling Lua as C++ is the clean fix. |
+| C10 | `WalnutApp` owns `m_InspectorFieldRegistry` (W5) and `m_ScriptSystem` (W0). The file watcher needs to live in `WalnutApp` (the only GLFW/ImGui/Walnut owner). | 6C adds efsw to `RT2App/vendor/efsw/`, builds it as a static lib via premake, and wires it in `WalnutApp`. The watcher posts to a thread-safe queue; `WalnutApp::OnUIRender` drains it and calls `ScriptSystem::ReloadScript`. |
+
+##### Workstreams
+
+> **Naming:** Findings are C1–C10. Workstreams are W0–W9 (matching 6A/6B
+> convention). Where a workstream resolves a finding, it says "resolves
+> finding C*N*" explicitly.
+
+- **W0 — `LuaPanic` hardening (resolves finding C9; demoted from the
+  critical path per review H1).** The review found that compiling Lua as
+  C++ is a three-premake, three-vcxproj, `SOL_USING_CXX_LUA`-in-every-TU
+  detonation that gates everything behind a fix for an unreachable defect
+  (all Lua entry is protected). W0 is the two-line fix: `LuaPanic` logs the
+  message and calls `std::terminate` instead of throwing a C++ exception
+  across C frames. The throw is UB on MSVC; `std::terminate` is a clean
+  last-resort backstop. Lua-as-C++ remains a deferred option (tracked in
+  the plan's open-items section) revisited only if a panic is ever observed.
+
+- **W1 — Hot reload core (resolves finding C1).** Implement
+  `ScriptSystem::ReloadScript(path)`:
+  1. Canonicalize the path via `ResolveScriptAssetPath`-equivalent
+     normalization (review M3: efsw hands OS-native absolute paths;
+     `ScriptInstance::scriptPath` is resolved; `ScriptComponent::asset.path`
+     is scene-relative — all three must be normalized before comparison).
+  2. Re-parse declarations via `ScriptFieldRegistry::GetDeclaredFields`.
+  3. If parse fails: log the error, keep all instances of that source in
+     their current state (Quarantined stays Quarantined; Live stays Live).
+     Do NOT quarantine Live instances on a parse failure — the running code
+     is still valid; only the new source is broken.
+  4. If parse succeeds: for each instance of that source, build a scratch
+     environment via `BuildEnvironment`, reconcile field values against the
+     new declarations (reuse `ReconcileScriptFields` from 6B/W2; the
+     reconciliation target is the runtime clone's `ScriptComponent::
+     fieldValues` — reconciled values live in the clone and are discarded
+     at Stop, so adding a field mid-Play shows the default and never
+     reaches the authoring document; diagnostics go to the log, review M5),
+     copy old `self` into `rt2.previous_state` on the new environment, swap
+     the environment and re-bind callbacks.
+  5. **Cancel all timers for the instance before the swap** (review B3: a
+     `sol::protected_function` registered by `timer.every` is a closure
+     over the old environment; without cancellation, old timers keep firing
+     alongside new ones after reload). This is the third D9 trap alongside
+     "reset the four callbacks" and "build into scratch, swap on clean
+     load".
+  6. Reset all four callbacks to `sol::protected_function{}` before
+     rebinding (D9 trap 1). If the scratch build fails, leave the running
+     instance untouched (D9 trap 2).
+  7. Un-quarantine: a successful reload transitions `Quarantined` → `Live`.
+  8. **Run-state awareness (review B2):** add
+     `virtual bool IsRuntimeMutable() const` to `IRuntimeCommandSink` (the
+     sink wraps `RuntimeSceneController::IsRuntimeMutable()` but does not
+     expose it). `ReloadScript` queries the sink:
+     - **Stopped** (no sink / not mutable, `m_Instances` empty): invalidate
+       the `ScriptFieldRegistry` cache entry for the path only — the
+       inspector's next `GetDeclaredFields` re-parses. No instance work.
+     - **Playing:** reload now.
+     - **Paused:** queue; drain on Resume or next Play frame. (Review M1:
+       timers DO advance under Step — see W5.)
+
+- **W2 — File watcher (resolves finding C10).** Vendor efsw under
+  `RT2App/vendor/efsw/` (review L5: copied source, not a junction or
+  submodule; the vendor directory is committed like `vendor/lua/` and
+  `vendor/sol2/`). Add to `RT2App/premake5.lua` as a static lib. Wire in
+  `WalnutApp`: watch directories containing referenced script assets (not
+  individual files). On change, post `{path}` to a thread-safe queue.
+  **Debounce (review M4):** coalesce by path over a ~100ms quiet window —
+  atomic save (temp + rename) yields Modified + Added + Deleted for a
+  single Ctrl+S, which would reload 2–3× per save. Drain in `OnUIRender`
+  (before `EndFrame`, after the fixed-step loop) and call
+  `m_ScriptSystem->ReloadScript(path)`. `RT2Tests` and `RT2SliceRunner` do
+  NOT link efsw; tests exercise reload via explicit `ReloadScript(path)`.
+
+- **W3 — Input bindings (resolves finding C3).** Add methods to the
+  `input` table in `BuildEnvironment`:
+  - `input.is_down(action)` → `m_Input->IsDown(action)`
+  - `input.is_pressed(action)` → `m_Input->IsPressed(action)`
+  - `input.is_released(action)` → `m_Input->IsReleased(action)`
+  - `input.get_axis(axis)` → `m_Input->GetAxisValue(axis)`
+  - `input.get_mouse_delta()` → returns `{x, y}` from `m_Input->GetMouseDelta()`
+  - `input.get_scroll_delta()` → `m_Input->GetScrollDelta()`
+  All read-only. When `m_Input` is null (tests), return inert defaults
+  (false/0/zero vector).
+  **Cursor capture (review H5):** `IInputService::RequestCursorCapture` is
+  non-const, and `ScriptSystem` stores `const IInputService*`. 6C does NOT
+  widen the pointer — cursor capture is out of scope. The acceptance script
+  uses keyboard-only control. The plan's exit criterion ("drive an entity
+  using input") is met by keyboard-driven motion. Mouse-look (which needs
+  cursor lock) is a Phase 7 / future binding.
+
+- **W4 — Entity light/camera/material bindings (resolves findings C4, C5).
+  (Review H3: routes through the sink, NOT `SceneManager` — the sink writes
+  the runtime document's components directly, exactly as `SetVisible`/
+  `SetName` already do. No `SceneManager` access, per `IRuntimeCommandSink.h:40`.)**
+
+  Add to the `entity` table in `BuildEnvironment`:
+  - `entity.get_light()` → reads `LightComponent` via `try_get` (review H2:
+    `registry.get` asserts when absent — use `try_get`, return nil if
+    missing). Returns the **full** component (review H4): `{color={r,g,b},
+    intensity=N, range=N, inner_cone_angle=N, outer_cone_angle=N,
+    is_spot=bool}`.
+  - `entity.set_light(color, intensity, range, inner_cone_angle,
+    outer_cone_angle, is_spot)` → writes the **full** component via the
+    sink. Gates on `IsRuntimeMutable()`.
+  - `entity.get_camera()` → reads `CameraComponent` via `try_get`. Returns
+    the **full** component (review H4): `{fov=N, aperture=N,
+    focus_distance=N, forward={x,y,z}}` (includes `forwardDirection` — the
+    one field a script camera controller needs).
+  - `entity.set_camera(fov, aperture, focus_distance, forward_x,
+    forward_y, forward_z)` → writes the full component via the sink. Gates
+    on `IsRuntimeMutable()`.
+  - `entity.set_material_index(index)` → routes through the sink. **Bounds
+    check (review H2):** `try_get<MeshRef>` (asserts if absent → use
+    `try_get`, return false if missing); reject `index < -1` or `index >=
+    materialCount` with a log and return false. `-1` is the "use per-
+    triangle indices" sentinel (`ECSComponents.h:70-71`) and is valid.
+
+  Add the corresponding methods to `IRuntimeCommandSink` and
+  `RuntimeCommandSink`. Get methods read the runtime document directly via
+  `try_get`. Set methods gate on `IsRuntimeMutable()`.
+
+  **`get_world_position` (review L3):** close the deferral from
+  `IRuntimeCommandSink.h:86-87` — 6C does NOT implement it. State
+  explicitly that world-space position is out of scope for 6C and the
+  deferral is closed as "not needed."
+
+- **W5 — Timers.** Implement `timer.after(seconds, callback)`,
+  `timer.every(seconds, callback)`, `timer.cancel(handle)` in C++ (not Lua
+  coroutines — simpler, avoids fixed-step/coroutine-yield interaction).
+  Store timers in `ScriptSystem`, keyed by instance UUID. Fire in
+  `OnUpdate` (variable-update phase). Timers accumulate against `OnUpdate`'s
+  `dt` and **do advance under Step** (review M1: `Step()` calls
+  `OnUpdate(dt)` while Paused; suppressing timers there makes single-step
+  non-representative). Respect Pause in `Update()` only (which is a no-op
+  unless Playing). Cancel all timers on `OnSceneStop`, on entity
+  destruction, and **on reload** (review B3: before the environment swap —
+  see W1 step 5). `timer.after(0, cb)` fires on the next `OnUpdate`.
+  Return an opaque handle (integer) for cancellation. Bind a `timer` table
+  in `BuildEnvironment`.
+  **Protected-call discipline (review M2):** timer callbacks are
+  `protected_function` calls under a `ScriptInstructionBudget` (making
+  timers the 6th entry point). An error quarantines the instance. An
+  infinite loop is caught by the budget hook.
+
+- **W6 — `rt2.previous_state` and `rt2.reload()`.** On reload, copy the
+  old environment's `self` table (runtime-mutated values, not the persisted
+  ones) into the new environment's `rt2.previous_state`. Bind
+  `rt2.reload()` as a function that posts the entity's own script path to
+  the reload queue (useful for development; the watcher calls the same
+  internal path).
+
+- **W7 — Headless script scenario (resolves findings C7, C8).** Add
+  `--script-scenario <path>` mode to `RT2SliceRunner`:
+  1. Parse the scenario JSON: `{scenePath, frames, uuidSeed,
+     expectedTransforms: {uuid: {position, rotation, scale}},
+     forbidSpawn?}`.
+  2. Load the scene via the existing `SceneSerializer::Load` + resolver
+     path.
+  3. Install `DeterministicUuidProvider(uuidSeed)` via
+     `RuntimeSceneController::SetRuntimeUuidProvider`.
+  4. Play, run `frames` fixed steps, emit JSON state report
+     (`entities: [{uuid, name, position, rotation, scale, visible}]`).
+  5. Compare against `expectedTransforms`; exit non-zero on mismatch or
+     any script error.
+  6. **Drive `Update()` with a constant `frameDt`** (review M1: document
+     the value — use `kFixedDt` so the variable phase is deterministic).
+  7. Add Lua + sol2 + ScriptSystem to `RT2SliceRunner/premake5.lua`,
+     matching the `RT2Tests/premake5.lua:15-48` pattern.
+  8. Create `assets/script-scenario.rt2scene` + `assets/script-scenario.lua`
+     and `run_script_test.ps1`.
+
+- **W8 — Tests.** Two new test files:
+  - `Phase6CHotReloadTests.cpp`: reload add/remove/rename fields, syntax
+    error quarantine + un-quarantine, callback add/remove,
+    `rt2.previous_state`, pause suppression, `world.spawn` script
+    attachment during reload, **timer cancellation on reload** (B3),
+    **path canonicalization** (M3), **`IsRuntimeMutable()` gate on reload**
+    (B2).
+  - `Phase6CBindingsTests.cpp`: input bindings (mock `IInputService`),
+    timer lifecycle (after/every/cancel/pause/step-advances/stop/destroy/
+    reload-cancels), entity light/camera/material get/set, **bounds check
+    on `set_material_index`** (H2), **`try_get` for absent components**
+    (H2), **`IsRuntimeMutable()` gate on new setters** (L4), `rt2.reload()`.
+  Register both in `RT2Tests.vcxproj` + `.filters`.
+
+  *Amended in W9:* delivered as **one** file, `Phase6CScriptingTests.cpp`,
+  rather than two — the harness is shared and splitting it would duplicate
+  `Harness6C` across translation units. Coverage matches the two lists
+  above. Two pure seams were extracted first so the decisions were
+  reachable from tests at all: `ScriptScenarioCompare.h` (headless verdict
+  + the `ScenarioExit` code table) and `ScriptFileWatchPolicy.h`
+  (`DecideScriptFileChange`). Not covered, and deliberately so: the
+  watcher's member-declaration-order UAF needs a live `efsw` thread the
+  test target does not link.
+
+- **W9 — Documentation and verification.** Update scripting/scene docs,
+  build Release, run focused 6C tests, the full suite against its
+  **7 Release / 15 Debug** baseline (review L1: state both), the headless
+  script scenario regression, and refresh Graphify.
+
+##### Implementation order
+
+> **Review H1/H ordering change:** W0 (`std::terminate`) is demoted out of
+> the critical path. The order leads with W1 (hot reload) + W3 (input),
+> which de-risk everything else and need no build-system change.
+
+1. **W0** — `LuaPanic` → `std::terminate`. Two-line fix, build + verify.
+2. **W1** — Hot reload core. Implement `ReloadScript` + `IsRuntimeMutable`
+   on the sink. Tests via explicit calls (no efsw yet). Build + test.
+3. **W3** — Input bindings. Add methods to `input` table. Test with mock
+   `IInputService`.
+4. **W4** — Entity light/camera/material bindings. Add to entity table +
+   sink. Test get/set round-trip, bounds, absent-component, gate.
+5. **W5** — Timers. Implement C++ timer system in `ScriptSystem`. Test
+   after/every/cancel/pause/step-advances/stop/destroy/reload-cancels.
+6. **W6** — `rt2.previous_state` + `rt2.reload()`. Test across reload.
+7. **W2** — File watcher. Vendor efsw, wire in WalnutApp, debounce, drain
+   queue in `OnUIRender`. Interactive test only.
+8. **W7** — Headless script scenario. Add to SliceRunner, create fixture,
+   add to regression script.
+9. **W8** — Tests. Two new test files, registered in both vcxproj files.
+10. **W9** — Documentation and verification.
+
+### Phase 6C verification report (implemented)
+
+Verified 2026-07-24. All W0–W9 workstreams landed.
+
+| Check | Result |
+|---|---|
+| Release build, whole solution | RT2App, RT2Tests, RT2SliceRunner, Walnut, ImGui, GLFW all link |
+| Debug build, RT2Tests | links |
+| Focused 6C suites, Release | 29 cases / 150 assertions, all pass |
+| Focused 6C suites, Debug | 29 cases / 150 assertions, all pass |
+| Full suite, Release | 553 cases, **7 failed** (9 assertions) — matched the then-current baseline |
+| Full suite, Debug | 553 cases, **15 failed** (17 assertions) — matched the then-current baseline |
+
+> **Baseline superseded 2026-07-24, after this report.** The 7 Release
+> failures were subsequently diagnosed and fixed (see "Test baseline" below);
+> Release is now **554 run, 0 failed**. Debug retains 8 failures with an
+> unrelated root cause. Do not use the two rows above as a current gate.
+| Headless scenario (`run_script_test.ps1`) | PASS, exit 0 |
+| Graphify | refreshed |
+
+The 7 Release / 15 Debug failures are the pre-existing set enumerated in the
+Phase 6B W0-W2 verification report above ("The honest baseline is now") —
+5 × `SceneGraph` plus 2 × `SceneManager` in both configurations, and in Debug
+additionally 7 × `OBJ Import Wizard` and 1 × `P1A Multi-Model`. They fail
+identically in isolation and are untouched by Phase 6C. Note the *total* case
+count has grown since that report (468 → 553) while the failure counts have
+not.
+
+**Defects found during W8/W9 and fixed:**
+
+1. The watcher's file-change policy was an either/or between reloading and
+   invalidating the inspector's field registry. `ScriptSystem` and the editor
+   hold **separate** `ScriptFieldRegistry` instances, so while Playing the
+   inspector kept showing declarations parsed from the pre-edit file for the
+   whole session. Now both effects are independent and the cache is
+   invalidated in every run state.
+2. `assets/script-scenario.lua` declared its field with the plain-table form
+   `{ type = "float", default = 1.0 }`, which is silently skipped as "not an
+   `rt2.field.*` declaration". The fixture only worked because the value was
+   also authored into the `.rt2scene`. Fixed, and pinned by a test asserting
+   that constructors declare and plain tables do not.
+3. `ScenarioExit::TransformMismatch` was renamed `ExpectationFailed` — a
+   spawn violation shares code 5 and is not a transform mismatch.
+4. `CompareTransforms` was iterating entities and skipping any without an
+   expectation, so a scenario whose subject the script destroyed passed
+   clean. It is now driven by the expectation list.
+
+**Known non-coverage:** the W2 watcher shutdown ordering (member declaration
+order) needs a live `efsw` thread that the CPU-only test target does not
+link. It remains guarded by a comment at the declaration site.
+
+**Caveat for CI:** `RT2Tests.exe` resolves some fixtures by relative path and
+must be run from the repository root; from another working directory a
+handful of unrelated cases fail on missing assets.
+
+### Test baseline (current — supersedes all earlier figures)
+
+Established 2026-07-24, immediately before Phase 7. **This section is the
+authoritative baseline; every earlier "7 failed" / "15 failed" figure in this
+document is a period record of a superseded state.**
+
+| Configuration | Result |
+|---|---|
+| **Release** | **582 run, 582 passed, 0 failed, 0 skipped** |
+| **Debug** | **582 run, 582 passed, 0 failed, 0 skipped** |
+
+Run from the repository root — `RT2Tests.exe` resolves some fixtures by
+relative path and both fails and writes stray files if run from elsewhere.
+
+> **Updated 2026-07-25.** The 8 Debug-only failures recorded below were
+> diagnosed and fixed; both configurations were 555/555 at that point. Phase
+> 7 W1 (asset ID plumbing, +16 tests) and W2 (asset database, +11 tests)
+> then raised the count to 582/582 in both Release and Debug. The previous
+> Debug row (554 run, 546 passed, 8 failed) is a period record of the
+> pre-fix state. See the supersession note at the end of the "remaining 8
+> Debug-only failures" subsection for the verified root cause.
+
+**Release is green and must stay green.** A Release failure is now a real
+regression, not baseline noise. This is the change that makes the gate
+meaningful: previously a passing run had to be checked against a memorised
+failure count, which silently reverses the meaning of "the suite passed".
+
+#### The remaining 8 Debug-only failures
+
+All in `Phase1ASceneAssetTests.cpp`: 7 × `OBJ Import Wizard` and
+1 × `P1A Multi-Model`. Diagnosed but not fixed.
+
+They are **not** OBJ importer bugs. The chain is:
+
+1. Each test builds its fixture with `MakeMultiShapeObj`, which writes an
+   `.obj` and `.mtl` via `std::ofstream` and never checks that the write
+   succeeded.
+2. `SceneLoader::ParseObjAndLoadResources` opens with
+   `if (filepath.empty() || !fs::exists(filepath)) return false;` — before
+   any parsing or logging, so the failure is completely silent.
+3. `ImportObjIntoECS` returns `entt::null`, `ImportObj` returns an invalid
+   `EntityId`, and the test fails at `REQUIRE(rootId.IsValid())` — several
+   layers away from the cause, naming the importer rather than the fixture.
+
+Instrumentation established that in Debug the fixture files **do not exist**
+after `MakeMultiShapeObj` returns, even though the `std::ofstream` inside it
+reports `is_open() == true` and `fail() == false`, and a directly constructed
+`std::ofstream` at test scope in the same directory writes successfully. Why
+the successfully-opened stream leaves no file in Debug is unresolved.
+
+Two things worth fixing regardless of that root cause, since both convert a
+silent failure into a loud one:
+
+- `MakeMultiShapeObj` should assert the files exist before returning.
+- `ParseObjAndLoadResources` should log the missing path rather than
+  returning `false` silently — every caller currently reports the symptom
+  three layers up.
+
+A clean Debug rebuild was ruled out as a cause; the failures survive it.
+
+> **Superseded 2026-07-25 — root cause found and fixed.** The unresolved
+> question above ("why does the successfully-opened stream leave no file in
+> Debug") has a code-level answer, not an environmental one. The fixture
+> structs (`TinyObjFixture`, `MultiShapeObjFixture`, `MultiMaterialShapeFixture`,
+> `DegenerateShapeFixture` in `RT2Tests/src/Phase1ASceneAssetTests.cpp`) own
+> their `.obj`/`.mtl` files via a destructor that calls `std::filesystem::remove`
+> but were **copyable** with no user-defined copy/move. The `Make*` helpers
+> return the fixture by value. MSVC's **Debug** build does not apply NRVO
+> (named return value optimization) for this case, so `return f;` copies `f`
+> into the return slot and then destroys the local `f` — running `Cleanup()`,
+> which deletes the files the caller is about to use. **Release** applies
+> NRVO, so no copy/destructor occurs and the files survive. This explains
+> every observation: files exist at the end of `MakeMultiShapeObj` but not
+> after the return; `.objx` / `.mtl`-written-at-test-scope survive (no
+> fixture destructor touches them); a clean Debug rebuild changes nothing.
+>
+> Probes that proved it (instrumentation, not reasoning): a copy-constructor
+> trace showed `COPY ctor` immediately followed by `DTOR` (with `exists=1`
+> at destructor entry) during the return, and the test body then saw
+> `exists=0`. Adding `RT_LOG` to `ParseObjAndLoadResources`'s guard
+> confirmed it refused the path as "does not exist" — the file was already
+> gone before the importer ran.
+>
+> Fix applied (`RT2Tests/src/Phase1ASceneAssetTests.cpp`): the four fixture
+> structs are now **move-only** (copy deleted; move ctor/assignment clear
+> the source's paths so the moved-from destructor's `Cleanup` is a no-op).
+> `return f;` is now a move, so the source destructor cannot delete the
+> caller's files in either configuration. Each `Make*` helper now calls
+> `RequireFixtureFile` to assert both files exist before returning — a
+> fixture that silently produces nothing now fails at the source, not three
+> layers deep in the importer.
+>
+> Secondary fix (`RT2App/src/SceneLoader.cpp`): the four silent
+> `if (filepath.empty() || !fs::exists(filepath)) return false;` guards
+> (in `LoadIntoECS`, `ImportIntoECS`, `LoadObjIntoECS`, and
+> `ParseObjAndLoadResources`) now log the refused path and the reason
+> ("empty" / "does not exist") via `RT_LOG` before returning. This is the
+> codebase's characteristic silent-failure bug class; the OBJ failures
+> were a clean instance of it.
+>
+> Verified 2026-07-25 from the repository root, both configurations built
+> clean (single-threaded for Release to avoid a `vc143.pdb` write race):
+> **Debug 555/555**, **Release 555/555**. Note: at verification time the
+> `phase-6-scripting` branch had in-flight Phase 7 edits to
+> `ECSComponents.h` (an unqualified `UUID assetId;` field that does not
+> resolve in the global namespace) that broke the build in both
+> configurations; a temporary `rt2::core::` qualification was used **only**
+> to unblock verification and was reverted immediately afterward, so the
+> Phase 7 agent's file was left exactly as found.
 
 ### Phase 6 exit criteria (all three sub-slices)
 
@@ -4273,7 +6295,8 @@ and the Lua C lib is the only new link, gated per target by premake.
   If 6A's lifecycle dispatch is wrong, 6B's field persistence and 6C's
   hot reload would be built on sand.
 - 6B's reflection and persistence are independently testable via
-  explicit `ReloadScript` calls (the API is declared in 6A, stubbed);
+  explicit `ReloadScript` calls (the API was declared in 6A and stubbed
+  until 6C implemented it);
   deferring file watching to 6C means 6B does not need efsw or a
   worker thread, keeping the CPU-only test boundary intact.
 - 6C's hot reload is the feature most likely to surface race
@@ -4295,7 +6318,2069 @@ and the Lua C lib is the only new link, gated per target by premake.
   sketch with the implemented `IRuntimeScriptDispatch` interface and
   the `SyncScriptEnvironments` mechanic.
 - `scene-management.md`: note `ScriptComponent` as a persisted
-  component (Count 10→11) and the v2→v3 schema migration (lands in 6B,
+  component (Count 10→11) and the v3 hard schema cutover (lands in 6B,
   but note the visitor change in 6A).
 
+---
 
+## Phase 7 — Project model and asset database (implementation plan, not started)
+
+Grounded against the tree at commit `33b777a` (2026-07-24), immediately after
+Phase 6 completed. Every claim below carries a `file:line` so it can be
+re-verified rather than trusted — the tree moves, and this section will go
+stale.
+
+The Phase 7 roadmap section earlier in this document states the goal in 39
+lines. This section is the part the roadmap does not have: what already
+exists, what collides with it, and what must be decided before code is
+written.
+
+---
+
+### Why this document exists
+
+The Phase 7 roadmap describes a greenfield asset database. **It is not
+greenfield.** Roughly half the machinery exists under other names, and two
+pieces of it use the term "project root" to mean something *different* from
+what Phase 7 means. An implementer reading only the roadmap would either
+rebuild what exists or silently conflict with it.
+
+---
+
+### Grounded findings
+
+| ID | Fact (verified in tree) | Consequence for Phase 7 |
+|---|---|---|
+| P1 | `AssetReference { AssetKind kind; std::string path; ImportSettings importSettings; std::string sourceKey; }` — `ECSComponents.h:205-213`. The `path` comment reads "portable, scene-relative UTF-8 path". **There is no asset ID field.** | This is the struct Phase 7 extends. Adding a stable ID here is the smallest change that reaches every asset kind at once. |
+| P2 | `sourceKey` already provides *stable subresource identity within a file*, with deterministic importer-defined formats documented at `ECSComponents.h:215-223` (`gltf:scene=<s>:node=<n>:mesh=<m>:primitive=<p>`, `obj:whole-model`). Builders: `SceneAssetResolver::GltfSourceKey/ObjSourceKey/GltfMaterialKey/ObjMaterialKey` (`SceneAssetResolver.h:118-125`). | Half the identity problem is solved. `sourceKey` answers "which mesh inside the file"; Phase 7's asset ID answers "which file". **Do not conflate them, and do not replace `sourceKey`.** |
+| P3 | Asset paths are already scene-relative and **already rebased on Save As**: `EntityRecordToJson(record, currentSceneDir, outputSceneDir, err)` (`SceneSerializer.cpp:548`, rebasing logic `:241-257`). | "Project moves stay portable" is partly built at the *scene* level. Phase 7 lifts it to the *project* level. |
+| P4 | v3 `metadata` serializes **only** `name` (`SceneSerializer.cpp:1226-1230`); the loader reads only `name` (`:1486-1490`). An absolute `metadata.sourcePath` used to be written and was removed during Phase 6. | The known absolute-path leak into scene files is closed. Do not reintroduce it. Audit for others rather than assuming none remain. |
+| P5 | **A `projectRoot` already exists and is NOT what Phase 7 means.** `EditorSettings.h:32-36`: "Optional editor preference used as an initial file-dialog location. **Does NOT reinterpret** the Phase 1A scene-relative asset-reference contract." Per-user, stored in the user settings file, API at `EditorSettings.h:98-100`. | Phase 7's `project.rt2proj` is a *portable, committed* file that **does** define asset resolution. Two different concepts, one name. Must be disambiguated explicitly — see D3. |
+| P6 | **The input map already lives in per-user editor settings**, not in a project file: `inputContexts` in the EditorSettings v2 schema (`EditorSettings.h:43-61`). | The roadmap says `project.rt2proj` holds the input map. That is a *move* across a per-user/per-project boundary, with a migration. See D4. |
+| P7 | `SceneAssetResolver` already owns the diagnostics story: `AssetDiagnostic { refPath, resolvedPath, entityName, sourceKey, detail }` (`SceneAssetResolver.h:76-81`), plus `ResolveAll` (`:97`), `ResolveEnvironment` (`:107`), `ResolvePath(refPath, sceneRoot)` (`:114`). | "Placeholders and diagnostics for missing/invalid/cyclic references" **extends** this type. Do not invent a parallel diagnostic channel. |
+| P8 | `AssetKind` has four members — `Model`, `Texture`, `Environment`, `Script` (`ECSComponents.h:169-176`). Only Model/Environment go through `SceneAssetResolver`; Script has its own resolver `ResolveScriptAssetPath` (`ScriptAssetPath.h:16`); Texture is resolved inside model import. | An asset database must cover all four. **Three different resolution paths exist today** — unifying them is arguably the real work of Phase 7. |
+| P9 | **No content browser exists.** No file in `RT2App/src` matches `contentbrowser`/`assetbrowser`/`browser`. | Genuinely greenfield. The only greenfield part. |
+| P10 | The efsw file watcher exists (Phase 6C) but watches only the scene directory plus directories of bound `.lua` scripts, recomputed on scene open (`WalnutApp.cpp:2711-2745`). | Phase 7's "watch source files and reimport" is the same machinery, wider scope. Note the watch set is rebuilt **only on scene open** — an asset added later is not seen. |
+| P11 | `SchemaVersion = 3`, `MinReadVersion = 3` (`SceneSerializer.h:112-114`) — a deliberate **hard cutover**, no backward compatibility. | Adding asset IDs to serialized references implies v4 and the same cutover-vs-migration decision. See D5. |
+| P12 | EditorSettings has its own independent version with a real migration: v1 → v2 adds `inputContexts`, "version is updated, inputContexts is left empty" (`EditorSettings.h:63-64, 86-87`). | A working precedent for *additive* settings migration, in contrast to the scene format's hard cutover. |
+| P13 | `rt2::core::UUID` provides `Nil()`, `IsNull()`, `ToString()`, `Parse()` (`core/UUID.h:35-59`), with a deterministic provider used throughout for entity IDs. | Asset IDs can reuse this type outright. See D1. |
+
+### Commitments earlier phases deferred *to* Phase 7
+
+These are recorded where the deferral happened, not where the work lands, so
+a spec written from the roadmap alone will miss all of them.
+
+| Where | Commitment |
+|---|---|
+| plan:985 | Asset-database migration to **global asset UUIDs** |
+| plan:3311, 3380 | The **input rebinding dialog** ("Phase 7's content-browser era") |
+| plan:4064, 5274 | The script asset **Rebind button**. Phase 6B W5 ships the asset path as a raw `InputText`; the browse/rebind affordance was explicitly deferred |
+| plan:5521 | Declaration diagnostics shown inline in the content browser |
+| plan:5901 | Cursor-lock binding |
+
+---
+
+### Decisions required before implementation
+
+Each needs an explicit answer. Defaults are recommendations, not settled.
+
+**D1 — Asset ID type.** Reuse `rt2::core::UUID` (P13), or introduce a distinct
+`AssetId`?
+*Recommend reusing `UUID`.* It already has parse/format/nil semantics, a
+deterministic provider for tests, and serializer support. A distinct type buys
+compile-time separation from entity IDs at the cost of duplicating all of that.
+
+**D2 — Where the ID lives.** Add `assetId` to `AssetReference` (P1), or keep an
+external database keyed by path and leave `AssetReference` alone?
+*Recommend adding to `AssetReference`*, keeping `path` as a human-readable
+fallback for diagnostics and hand-editing. Path-keyed external mapping
+reintroduces exactly the rename-fragility Phase 7 exists to remove.
+
+**D3 — Name collision with the existing `projectRoot` (P5).** Two concepts
+currently share one name. Options: rename the EditorSettings one (e.g.
+`lastBrowseDirectory`, which is what it actually is); or name the new one
+distinctly. **Whichever is chosen, `EditorSettings.h:32-36` must be updated in
+the same change** — that comment currently asserts project root does not affect
+asset resolution, which stops being true.
+
+**D4 — Does the input map move (P6)?** The roadmap puts it in
+`project.rt2proj`; it currently lives per-user. Moving it makes bindings
+shippable with the project but overrides per-user preference. A split (project
+provides defaults, user settings override) is more work but is the behaviour
+users expect from an editor.
+
+**D5 — Schema v4: hard cutover or migration?** P11 shows the v2→v3 precedent
+was a hard cutover. P12 shows settings do additive migration. Asset IDs cannot
+be invented for existing scenes without a scan-and-assign pass, so this
+interacts with D2.
+
+**D6 — Cache root.** The roadmap requires generated artifacts outside source
+asset folders. `SceneRecoveryService` already writes generated data somewhere —
+check where, and decide whether the cache root sits beside it or under the
+project root.
+
+**D7 — Watcher scope (P10).** Widen the existing efsw watcher to the asset
+root, and fix that the watch set is only rebuilt on scene open.
+
+**D5 (settled 2026-07-25, with D8) — Schema v4: additive migration, assign
+once and persist.** The v2→v3 precedent (P11) was a hard cutover; v4 breaks
+that precedent deliberately. Asset IDs cannot be invented for existing
+scenes without a scan-and-assign pass, and a hard cutover would invalidate
+every existing scene for a feature that can degrade gracefully. So `MinReadVersion`
+stays 3 while `SchemaVersion` becomes 4 (the `MinReadVersion == SchemaVersion`
+invariant at `SceneSerializer.h:112-114` is intentionally broken).
+
+The assignment mechanism is **assign-once-during-explicit-migration, written
+back on save** — not lazy minting on resolve, and not deterministic derivation
+from path. Lazy minting via `OsUuidProvider::CreateV4()` (`core/UUID.cpp:89-118`,
+`CoCreateGuid`/`UuidCreate`, random) was rejected because two machines opening
+the same v3 scene would assign divergent IDs to the same asset and fail the
+cross-machine portability exit criterion. Deterministic derivation (v5 from
+canonical project-relative path) was rejected for two reasons: (1) it couples
+identity to path, which is the rename-fragility Phase 7 exists to remove, and
+(2) `core/UUID.h:25` commits v5 to "Linked imported nodes: v5 from asset ID +
+canonical node key (future)" — v5 is already spoken for as a derivation *from*
+asset IDs, not a way to *produce* them. Under assign-once-persisted, the first
+save under a v4 editor runs an explicit scan-and-assign pass; from then on the
+scene carries stable, persisted IDs. The pass is observable (the editor reports
+"migrated N assets to v4") rather than a silent save-time mutation, per the
+loud-failure rule in AGENTS.md:53-60.
+
+The mechanism interacts with D8 (below): where the IDs *live* determines
+whether "machine B opening A's scene" binds A's IDs to local paths or mints
+new ones. See D8.
+
+**D8 (settled 2026-07-25) — Where asset identity lives: per-asset sidecars.**
+
+The roadmap says the project has "stable asset IDs, source paths, asset
+types, import settings, and dependency records" but never says *where*. That
+question has to be answered before W1 because the import flow's
+"generate at import" step writes to whichever store holds identity.
+
+Three candidates were evaluated against three failure cases the per-machine
+assumption breaks (unreferenced asset; independent import; concurrent offline
+work) plus the version-control axis that most distinguishes them:
+
+- **Per-machine database** (what a naive reading of "asset database" assumes).
+  Requires answering all three cases with a merge policy. Case 2
+  (independent import: B already holds `id_B` for the path when A's scene
+  arrives claiming `id_A`) has no good answer: either B rewrites A's scene
+  (breaks portability) or B adopts A's ID and orphans its own `id_B` record
+  (silent data loss). Rejected.
+- **Portable database** — a single file committed alongside
+  `project.rt2proj`. IDs assigned once at import, travel with the project.
+  Cases 1 and 3 become ordinary text-file merge conflicts: visible and
+  resolvable. Case 2 is a real conflict (two IDs for one path) but it is a
+  *diff you can read*, which is the version-control virtue. Most of the
+  save-time migration machinery becomes unnecessary except for legacy v3
+  scenes. Strong candidate.
+- **Per-asset sidecars** — `cube.glb.rt2meta` beside each asset, carrying its
+  ID, committed with it. This is how Unity solves the same problem. It
+  dissolves all three cases by construction: identity travels with the
+  asset, so an unreferenced asset still has its ID (case 1); a file arriving
+  from another machine arrives with its ID already assigned — there is no
+  "B already holds a different ID" because the ID is in the file, not in B's
+  database (case 2); and concurrent offline work produces two sidecars for
+  two *different* assets, or a merge conflict on the one shared sidecar
+  (case 3, visible). Moving an asset moves its identity. There is no
+  central file to conflict in. Costs: double the file count in the asset
+  tree; sidecars lost by naive file operations (copy without sidecar, or
+  delete the sidecar); and a defined behaviour when one goes missing.
+
+**Decision: per-asset sidecars.** The deciding axis is the Phase 7 exit
+criterion — a project folder copied to another machine without rewriting
+scene files. Sidecars make that case *structural* rather than procedural: the
+identity is in the folder being copied, not in a database that lives on each
+machine and has to be reconciled. A portable database file also satisfies the
+exit criterion but introduces a single chokepoint that conflicts on every
+multi-developer asset add; sidecars distribute the conflict surface so two
+developers adding *different* assets never touch the same file. The double-
+file-count cost is real but acceptable in a project that already commits
+binary `.glb`/`.obj`/`.exr`/`.lua` sources.
+
+**Missing-sidecar behaviour (must be loud, not silent).** A sidecar can be
+lost by a naive file copy that moves the asset without its `.rt2meta`, or by
+a VCS operation that ignores it. This is the same shape as Phase 6's
+characteristic silent-failure bug (AGENTS.md:53-60). The rule: a missing
+sidecar is **not** a quiet re-mint. Resolution by path proceeds; the
+`AssetDiagnostic` channel (P7, `SceneAssetResolver.h:66-82`) records a
+`Missing`-severity diagnostic with the sidecar path, and the next save writes
+a fresh sidecar with a fresh ID *and* updates the scene's reference to the new
+ID. The scene's old ID is treated as stale; the database records the remap.
+This is observable (diagnostics surface in the existing channel) and
+recoverable (next save fixes it), and it never silently leaves a reference
+pointing at an ID no sidecar claims.
+
+**How D8 changes W1/W2.**
+- W1 attaches the ID at import. Import reads the sidecar if present (stable
+  ID); mints a fresh v4 and writes the sidecar if absent (assign-once). The
+  ID lives in `AssetReference::assetId` (per D2) and in the sidecar (source
+  of truth). The sidecar is the durable record; the scene's `assetId` is a
+  cache of it.
+- W2 is the in-memory record store, *not* the sidecar files. It is built by
+  scanning sidecars (deterministic, sorted by path — see `ReconcileScriptFields`
+  at `ScriptFieldReconcile.cpp:199` for the sort-before-emit precedent). It
+  is CPU-only (per the `ScriptFieldReconcile`/`ScriptScenarioCompare`
+  precedent: pure logic, no Vulkan/ImGui/Walnut). Sidecar I/O is host
+  wiring, kept out of the CPU-only core.
+- A v3 scene (no `assetId` field) is read with nil IDs; the first v4 save
+  scans sidecars, assigns IDs from sidecars where they exist, mints+writes
+  sidecars where they don't, and persists the IDs into the scene. This is
+  the D5 scan-and-assign pass, made concrete by D8.
+
+---
+
+### Proposed workstreams
+
+Ordered so each is independently testable and nothing depends on unbuilt UI.
+
+- **W0 — Audit.** Find every place an absolute path can still reach serialized
+  data or the asset database. P4 closed one; assume others exist. Deliverable:
+  a list, plus a test that fails if a saved scene contains an absolute path.
+- **W1 — Asset ID plumbing.** Per D1/D2: add the ID, generate on import, thread
+  through `AssetReference`. No behaviour change yet — resolution still goes by
+  path. Fully unit-testable.
+- **W2 — Asset database.** The record store: ID, source path, kind, import
+  settings, dependency records. Pure and CPU-only, following the
+  `ScriptFieldReconcile` precedent of keeping logic Lua-free and testable.
+- **W3 — Resolution by ID, path as fallback.** Unify the three resolution paths
+  from P8 behind one entry point. **Highest-risk workstream** — it touches
+  model, texture, environment and script loading simultaneously.
+- **W4 — `project.rt2proj`.** Per D3/D4/D6: project UUID, asset root, cache
+  root, startup scene, and whatever D4 decides about the input map.
+- **W5 — Schema v4.** Per D5. Includes the scan-and-assign pass for existing
+  scenes.
+- **W6 — Content browser** (P9). Search, rename/move/delete, drag/drop,
+  reimport. Depends on W2/W3.
+- **W7 — Watching and async reimport.** Per D7, widening the Phase 6C watcher.
+- **W8 — Deferred commitments.** The Rebind button, input rebinding dialog,
+  inline declaration diagnostics, cursor-lock binding.
+- **W9 — Tests and docs.** Per the roadmap's test list, plus a baseline update.
+
+---
+
+### Test requirements
+
+From the roadmap, plus what grounding suggests:
+
+- Asset IDs survive rename/move; scene references still resolve.
+- Scanning produces the same database regardless of directory enumeration
+  order. *(Precedent: `ReconcileScriptFields` sorts before emitting so results
+  never depend on `unordered_map` iteration order — do the same here.)*
+- Dependency graphs detect missing assets and cycles.
+- Reimport updates cache metadata without changing asset identity.
+- Project relocation preserves all valid relative references.
+- Asset deletion reports dependants before committing.
+- **Added:** a saved scene contains no absolute paths (W0).
+- **Added:** all four `AssetKind` values resolve through the unified path (P8).
+
+---
+
+### Risks
+
+**W3 is the dangerous one.** Three independent resolution paths exist today
+(P8) and each has its own failure behaviour. Unifying them touches model,
+texture, environment and script loading at once, and scripting only just
+stabilised in Phase 6. Land W1/W2 first so the database is proven before
+anything depends on it for resolution.
+
+**Silent failure is this codebase's characteristic bug.** Phase 6 shipped
+three of them: a policy that left a cache stale for a whole session, a
+field-declaration form that parsed and did nothing, and a fixture generator
+whose writes were never checked. Asset resolution is the same shape of problem
+— a missing asset that resolves to "nothing" without a diagnostic will not be
+noticed. `AssetDiagnostic` (P7) exists; route every failure through it rather
+than returning empty paths.
+
+---
+
+### Notes for whoever implements this
+
+- **The test suite is green in both configurations (555/555) and must stay
+  green.** A Release failure is now a real regression. The 8 Debug-only
+  failures in OBJ fixture generation that previously existed were diagnosed
+  and fixed on 2026-07-25 (move-only fixture structs + loud missing-file
+  logging in `SceneLoader.cpp`); see "Test baseline" in the plan doc.
+- **Run `RT2Tests.exe` from the repository root.** It resolves some fixtures
+  by relative path; run elsewhere it fails extra cases *and* writes stray
+  fixture files into the tree.
+- `AGENTS.md` asks you to run `graphify update .` after changing code, and to
+  start codebase questions with `graphify query`. Note the graph is now
+  gitignored — on a fresh clone run `graphify update .` once before querying.
+- Build: `msbuild RT2App.sln -p:Configuration=Release -p:Platform=x64`.
+  Targets are `RT2App`, `RT2Tests`, `RT2SliceRunner`.
+- `RT2Tests` and `RT2SliceRunner` are CPU-only by design — no Vulkan, ImGui or
+  Walnut. Keep asset-database logic linkable into both; that constraint is why
+  Phase 6's scripting core is testable at all.
+
+---
+
+## Phase 7 W3 — unified asset resolution (approved implementation plan)
+
+Grounded against commit `2e7f089ea2c6ccf7817350f19a8c04e61c6fc810`
+on 2026-07-25, after W0–W2. Reviewed and approved before production changes.
+The first incremental work item (hermetic characterization tests) is recorded
+at the end of this section.
+
+W3 is not a mechanical refactor. The four asset kinds currently have
+incomplete representations, three independent locators, and incompatible
+failure policies. The disagreements below are the design problem.
+
+### W3 grounded findings
+
+| ID | Finding | Consequence |
+|---|---|---|
+| W3-P1 | `AssetKind` has `Model`, `Texture`, `Environment`, and `Script` (`RT2App/src/ECSComponents.h:169-176`). `AssetReference` carries `assetId`, path, kind, import settings, and source key (`RT2App/src/ECSComponents.h:201-221`). | The generic contract already has the right identity pair, but only model and script component data can currently hold it. |
+| W3-P2 | `EnvironmentSettings` stores only path, dimensions, and decoded pixels (`RT2App/src/SceneDocument.h:49-66`). `SceneTexture` stores only filepath, pixels, dimensions, and colour-space state (`RT2App/src/SceneTypes.h:92-105`). | Environment and texture need durable `AssetReference` representation before they can resolve by ID. `AssetReference` cannot simply be included from `ECSComponents.h` because that header already includes `SceneTypes.h`; the common asset types need a neutral header. |
+| W3-P3 | The shared asset-reference codec reads/writes optional `assetId` (`RT2App/src/SceneSerializer.cpp:185-243`) and imported models use it (`RT2App/src/SceneSerializer.cpp:592-597`). Script serialization hand-builds only `kind`, `path`, and `sourceKey` (`RT2App/src/SceneSerializer.cpp:637-660`), and script load reads the same three fields (`RT2App/src/SceneSerializer.cpp:823-867`). Environment serialization stores only its path (`RT2App/src/SceneSerializer.cpp:1268-1275`, `:1483-1490`); native texture serialization is still an empty array (`RT2App/src/SceneSerializer.cpp:1261-1264`). | Script `assetId` is lost on every save/reopen — a shipped W1 persistence defect. Environment and texture IDs have no on-disk form. W3 cannot claim authoritative identity across reopen until these gaps are closed. |
+| W3-P4 | Production calls `AssetIdentity::ResolveOrAssign` only while importing/loading models (`RT2App/src/SceneManager.cpp:95-134`, `:285`, `:374-422`, `:556-582`). `ResolveOrAssign` reads an existing sidecar or mints and writes one when absent/malformed (`RT2App/src/AssetIdentity.cpp:157-196`). | Resolution itself must be read-only and must not call `ResolveOrAssign`; otherwise opening a scene mutates identity. Import, migration, and explicit save own sidecar writes. |
+| W3-P5 | `AssetDatabase` is pure/in-memory and the caller owns the filesystem scan (`RT2App/src/AssetDatabase.h:25-30`, `:117-126`). `FindById` and `FindByPath` are simple lookups (`RT2App/src/AssetDatabase.cpp:76-89`). On duplicate IDs, the first inserted record keeps the ID and the second is sanitized to nil (`RT2App/src/AssetDatabase.cpp:10-35`); input order is not sorted internally (`RT2App/src/AssetDatabase.cpp:106-112`). | First-wins is not valid for authoritative lookup and depends on scan order. W3 needs explicit `Missing` / `Unique` / `Ambiguous` lookup, with every duplicate claim retained and sorted. |
+| W3-P6 | `SceneAssetResolver::ResolvePath` is existence-only: empty returns empty; an existing absolute path returns as-is; a relative path tries `sceneRoot`; then it falls back to the process CWD; failure returns an empty path with no diagnostic (`RT2App/src/SceneAssetResolver.cpp:106-131`). | The shared locator must return a structured result and route terminal failures through `AssetDiagnostic`; CWD fallback must be removed after callers/tests provide an explicit root. |
+| W3-P7 | The resolver header promises that hard failure leaves the document unchanged (`RT2App/src/SceneAssetResolver.h:49-58`). In practice, a loaded model's meshes/materials/textures are appended before source-key validation (`RT2App/src/SceneAssetResolver.cpp:513-562`), and an all-unresolved batch returns false afterward (`RT2App/src/SceneAssetResolver.cpp:725-733`). | The documented transactionality contract is false. W3 must stage all resource changes and commit only after the batch's aggregate policy accepts the result. |
+| W3-P8 | Model collection uses registry iteration order and no final diagnostic sort (`RT2App/src/SceneAssetResolver.cpp:267-331`). A malformed file emits a file-level `Malformed` diagnostic (`:390-399`) and then an entity-level `Missing` diagnostic (`:494-510`). An unresolved source key emits `Unresolved` but omits `resolvedPath` (`:653-665`). | Diagnostics are duplicated/misclassified and order is not guaranteed. W3 needs one contextual terminal diagnostic per failed reference and deterministic sorting before emission. |
+| W3-P9 | `ResolveScriptAssetPath` is purely lexical and never checks existence, identity, kind, or source key (`RT2App/src/ScriptAssetPath.cpp:8-15`). `ScriptFieldResolver` sorts entities by UUID (`RT2App/src/ScriptFieldResolver.cpp:21-38`) but reports missing/malformed scripts through `FieldDiagnostic`, not `AssetDiagnostic` (`:43-67`). | Script resolution must use the shared locator while preserving reflection diagnostics as an additional domain-specific channel. Every location/parse failure must also reach `AssetDiagnostic`. |
+| W3-P10 | `ScriptSystem` reads source to an empty string on failure (`RT2App/src/ScriptSystem.cpp:684-694`) and only quarantines that empty source when `exists(path)` is false (`:740-759`). Empty scripts are intentionally legal (`RT2Tests/src/Phase6ALifecycleTests.cpp:859-878`). | An unreadable existing path can be mistaken for a valid empty script. The shared resolver/read result must distinguish empty content from failed I/O without regressing the legal-empty-script contract. |
+| W3-P11 | glTF import appends an empty `SceneTexture` when a texture source index is invalid or its decoded image is empty (`RT2App/src/SceneLoader.cpp:455-470`, duplicated at `:1211-1228`). Material texture indices are copied without range validation (`:499-506`, `:1256-1263`). | Missing/unresolved glTF textures can leave referentially valid-looking empty slots with no diagnostic. |
+| W3-P12 | The vendored glTF parser treats a missing external image as a warning and continues (`RT2App/vendor/tinygltf/tiny_gltf.h:4414-4424`), while image decoder failure returns false and can reject the whole model (`:4438-4446`, image parse at `:6424-6488`). | glTF missing and malformed texture files have different containment behaviour even though both are texture failures. W3 must prevent a bad texture from killing otherwise valid geometry. |
+| W3-P13 | OBJ texture load returns `-1` for an absent file and logs/returns `-1` for decode failure; the material simply leaves the slot unset and the model succeeds (`RT2App/src/SceneLoader.cpp:2140-2184`; same legacy path at `:1807-1856`). | OBJ silently drops missing textures and only logs malformed ones. Both need `Texture` diagnostics and a deterministic placeholder. |
+| W3-P14 | The native-scene host formats the three current severities with a ternary whose final branch is `"Unresolved"` (`RT2App/src/WalnutApp.cpp:2633-2664`). | Adding `Conflict` without making this formatter exhaustive would silently mislabel conflicts as unresolved. |
+| W3-P15 | Existing hermetic fixtures cover successful embedded GLB and EXR paths (`RT2App/src/Phase1AFixtureGenerator.h:68-105`; `RT2Tests/src/Phase1ASceneAssetTests.cpp:227-308`) and one missing environment (`RT2Tests/src/Phase1ASceneAssetTests.cpp:398-417`). Several model-path tests instead depend on `C:\Users\mikey\Downloads\*.glb` (`RT2Tests/src/BuildGpuFromEcsTests.cpp:14-205`, `RT2Tests/src/EcsSceneLoaderTests.cpp:14-155`, `RT2Tests/src/SceneManagerTests.cpp:205-265`, `:361-370`). | Green results from those machine-local tests are not portable evidence for W3. Failure coverage must use generated temporary assets. |
+
+### Current behaviour, side by side
+
+| Outcome | Models (`SceneAssetResolver`) | Environments (`SceneAssetResolver`) | Scripts (`ResolveScriptAssetPath` + consumers) | Textures (inside model import) |
+|---|---|---|---|---|
+| Success | Path exists, model stages and source key installs `MeshRef`; resources are appended (`SceneAssetResolver.cpp:378-484`, `:513-718`). | Existing HDR/EXR decodes into pixels and dimensions (`SceneAssetResolver.cpp:188-232`). | Lexical scene-relative path is returned; field registry/runtime then reads and parses it independently (`ScriptAssetPath.cpp:8-15`, `ScriptFieldRegistry.cpp:310-417`). | glTF creates one `SceneTexture` per texture and copies decoded pixels (`SceneLoader.cpp:455-470`); OBJ loads and assigns indices (`:2140-2184`). |
+| Missing file | One file-level `Missing`, then one `Missing` per entity; all unresolved is a hard `MissingAsset` (`SceneAssetResolver.cpp:366-375`, `:494-510`, `:725-733`). | One `Missing`, false, `MissingAsset`; path preserved and decoded data cleared (`SceneAssetResolver.cpp:166-185`). | Locator still returns a non-empty candidate. Field registry reports parse failure; runtime quarantines only after its separate existence check (`ScriptAssetPath.cpp:8-15`, `ScriptFieldRegistry.cpp:323-393`, `ScriptSystem.cpp:740-759`). No `AssetDiagnostic`. | Missing glTF external image warns, model succeeds, and an empty texture slot survives (`tiny_gltf.h:4414-4424`, `SceneLoader.cpp:455-470`). OBJ model succeeds and drops the texture (`SceneLoader.cpp:2140-2184`). No `AssetDiagnostic`. |
+| Malformed file | Importer returns false; resolver emits file `Malformed` plus entity `Missing`; aggregate error is still `MissingAsset` (`SceneAssetResolver.cpp:390-399`, `:494-510`, `:725-733`). | One `Malformed`, false, but error code is `MissingAsset`; decoded data cleared (`SceneAssetResolver.cpp:191-226`). | Path resolution succeeds. Field registry returns `parsed=false` with last-known-good declarations; runtime quarantines initial load, while failed hot reload preserves the live instance (`ScriptFieldRegistry.cpp:395-417`, `ScriptSystem.cpp:348-367`, `:1225-1243`). No `AssetDiagnostic`. | Malformed glTF image can fail the whole model (`tiny_gltf.h:4438-4446`); malformed OBJ texture is logged and dropped while geometry succeeds (`SceneLoader.cpp:2140-2184`). |
+| Unresolved subresource | Missing `sourceKey` emits `Unresolved`; if every entity misses, returns false after resources have already been appended (`SceneAssetResolver.cpp:513-665`, `:725-733`). | Not applicable: the current environment reference has no subresource key (`SceneDocument.h:49-66`). | Runtime locator ignores `sourceKey`; serializer normalizes it from path (`ScriptAssetPath.cpp:8-15`, `SceneSerializer.cpp:848-876`). | Invalid glTF texture source/material indices are not diagnosed; an empty slot or out-of-range material reference can survive (`SceneLoader.cpp:455-470`, `:499-506`). OBJ represents failure as an unset `-1` slot (`:2140-2184`). |
+
+### Approved unified contract
+
+Introduce one CPU-only, filesystem-aware asset locator in a neutral
+`AssetResolver.{h,cpp}`. Move (do not duplicate) `AssetDiagnostic` there and
+make `SceneAssetResolver.h` include it. Extract `AssetKind`, `ImportSettings`,
+and `AssetReference` into a neutral asset-reference header so
+`EnvironmentSettings` and `SceneTexture` can carry references without a
+`SceneTypes.h` / `ECSComponents.h` include cycle.
+
+The entry point receives an `AssetReference`, an explicit resolution context
+(asset root plus a non-owning `AssetDatabase`), and diagnostic context
+(entity UUID/name where applicable). It returns a structured result containing:
+
+- success/failure;
+- normalized absolute path;
+- resolution source (`Id` or `PathFallback`);
+- effective ID;
+- whether explicit identity repair is required.
+
+The locator is read-only. It calls `ReadSidecarId` when identity verification
+is needed; it never mints, writes a sidecar, rewrites a scene, or mutates the
+database. Import/save/migration own repair.
+
+Resolution order and disagreement policy:
+
+1. A non-nil ID is authoritative and is looked up first.
+2. A unique ID whose file exists wins. A stale/missing reference path is
+   observable but does not defeat successful ID resolution.
+3. If the database is stale/missing but the path exists and its sidecar claims
+   the same ID, path fallback succeeds and reports stale database state.
+4. If the ID does not locate a file, the path exists, and the sidecar is
+   absent, fallback succeeds with a sidecar `Missing` diagnostic and
+   `identityRepairRequired=true`; explicit save/migration performs the remap.
+5. If the path's sidecar claims a different ID, resolution fails with
+   `Conflict`; it never silently substitutes one identity for the other.
+6. If neither ID nor path locates a regular file, resolution fails `Missing`.
+7. If more than one asset claims the ID, lookup is `Ambiguous` and fails
+   `Conflict`, even when one candidate matches the fallback path. No
+   insertion-order winner is chosen.
+8. A nil ID uses path fallback. Missing/malformed sidecar state is observable;
+   later schema/migration work persists the assigned identity.
+
+The shared locator answers only "which file?". Kind-specific CPU loaders keep
+their policies but emit every failure through the same `AssetDiagnostic`
+vector:
+
+- model: unresolved entities remain without a `MeshRef`; aggregate hard
+  failure only when every imported model entity fails;
+- environment: preserve the durable reference, clear stale decoded pixels,
+  direct resolve returns false while `ResolveAll` may continue;
+- script: location/parse failure emits `AssetDiagnostic` and preserves the
+  existing quarantine, last-known-good reflection, and failed-hot-reload
+  behaviour;
+- texture: preserve valid model geometry, install a deterministic CPU
+  placeholder, and emit a `Texture` diagnostic.
+
+Batch APIs collect diagnostics locally and sort before appending by
+`(kind, refPath, entityUuid, sourceKey, severity, detail)`. Results must not
+depend on EnTT traversal, directory enumeration, or `unordered_map` order.
+Terminal failure never returns an empty path without a diagnostic.
+
+### Decisions resolved by review
+
+These were unsettled in the pre-implementation report. The recommendations
+were approved on 2026-07-25.
+
+| ID | Decision |
+|---|---|
+| W3-Q1 | **Representation:** extract neutral asset-reference types; environment and texture gain `AssetReference`; fix script `assetId` persistence. Only the additive fields required for W3 land here; W5 owns the formal v4 migration/reporting pass. |
+| W3-Q2 | **Embedded/multi-role assets:** `AssetKind` is the requested use, not an exclusive physical classification. Embedded/data-URI textures use the model's physical asset ID plus a deterministic image source key; external textures receive their own sidecars. |
+| W3-Q3 | **Pre-W4 ownership:** use an explicit resolution context owned by the current scene/recovery host. W4 replaces its root with the project asset root. No global resolver/database and no database embedded in `SceneDocument`. |
+| W3-Q4 | **Duplicate IDs:** replace W2 first-wins with `Missing` / `Unique` / `Ambiguous`, retain and sort all claimants, and fail authoritative resolution on ambiguity. |
+| W3-Q5 | **Diagnostics:** extend the existing `AssetDiagnostic::Severity` with `Conflict`; do not create another channel. Make the Walnut formatter exhaustive in the same change. |
+| W3-Q6 | **Transactionality:** a false `ResolveAll` result leaves the document unchanged. A successful partial result may commit accepted resources/placeholders. |
+| W3-Q7 | **Texture containment:** a bad texture produces a deterministic placeholder plus a `Texture` diagnostic and does not kill otherwise valid model geometry. |
+| W3-Q8 | **Path policy:** remove process-CWD fallback after tests/callers supply an explicit root. Accept legacy absolute paths in memory, but normalize the successful result and never persist a new absolute path. |
+| W3-Q9 | **Resolver purity:** resolution is read-only; sidecar mint/write/remap happens only during explicit import/save/migration. |
+
+### Incremental implementation order
+
+Each production cutover is its own commit. After every cutover commit, build
+and run the complete suite in both Release and Debug from the repository root;
+do not defer the full gate until all four kinds have moved.
+
+0. **Characterize current behaviour.** Add generated temporary fixtures for
+   all cells in the table above, including GLB/EXR, external-image glTF,
+   OBJ/MTL/PPM, and Lua. No production behaviour change.
+1. **Harden W2 lookup.** Add explicit ambiguous-ID results, retain/sort all
+   duplicate claimants, sort database construction internally, and add
+   permutation tests.
+2. **Land neutral types and the generic locator without consumers.** Add the
+   CPU-only files to RT2App, RT2Tests, and RT2SliceRunner; exhaustively test
+   ID/path disagreement and deterministic diagnostics.
+3. **Cut over models only.** Keep a compatibility `ResolvePath` adapter during
+   the transition. Resolve ID-first, remove duplicate/misclassified model
+   diagnostics, populate `resolvedPath`/importer detail, and make hard failure
+   transactional.
+4. **Cut over environments.** Cover moved assets, nil-ID fallback, missing
+   sidecar, missing file, and corrupt HDR/EXR.
+5. **Cut over scripts.** Make `ResolveScriptAssetPath` an adapter over the
+   structured locator; inject the context/diagnostic sink into field
+   resolution, runtime, watcher, and slice runner. Preserve legal empty
+   scripts, quarantine isolation, last-known-good fields, and live-instance
+   preservation after failed reload. Run `run_script_test.ps1`.
+6. **Cut over textures last.** Extract dependency enumeration/decode from
+   `SceneLoader`; resolve external glTF/OBJ images through the locator and
+   embedded images through model ID plus source key. Convert failures into
+   diagnostics/placeholders while retaining valid geometry.
+7. **Complete host wiring.** Remove legacy CWD/script-only paths only after all
+   four kinds use the shared entry point.
+8. **Final verification.** Build whole solution Release and Debug; run both
+   complete test binaries from the repository root; run the script scenario;
+   refresh Graphify; commit `GRAPH_REPORT.md` if changed; do not push.
+
+### W3 step 0 verification report — characterization complete
+
+Implemented 2026-07-25 in
+`RT2Tests/src/Phase7W3CharacterizationTests.cpp`. Nine hermetic test cases
+(149 assertions) cover:
+
+- model success, missing file, malformed file, and unresolved source key;
+- environment success, missing file, and malformed file;
+- script success, missing file, malformed file, source-key blindness, and the
+  transitional script-`assetId` persistence defect;
+- OBJ texture success/missing/malformed behaviour;
+- glTF texture success, missing external image, malformed external image, and
+  invalid texture source.
+
+No test uses `C:\Users\mikey\Downloads`. No production resolution behaviour
+changed.
+
+| Check | Result |
+|---|---|
+| Focused W3 characterization, Release | 9/9 cases, 149/149 assertions |
+| Full RT2Tests, Release | 591/591 cases, 144530/144530 assertions |
+| Focused W3 characterization, Debug | 9/9 cases, 149/149 assertions |
+| Full RT2Tests, Debug | 591/591 cases, 144530/144530 assertions |
+| Whole solution, Release | builds |
+| Phase 6C script scenario | PASS |
+| Graphify | refreshed |
+
+**Verification discrepancy found:** the whole Debug solution currently fails
+while linking `RT2App`, before the test executable is involved.
+`RT2App.vcxproj:77-92` compiles Debug with `MultiThreadedDebugDLL`
+(`MDd`, iterator debug level 2), while the only checked-in NRD/NRI libraries
+are Release-runtime binaries under `RT2App/vendor/NRD/Lib` and
+`RT2App/vendor/NRI/Lib`; the linker reports `LNK2038` (`MD`/iterator level 0
+versus `MDd`/level 2) and `LNK1319`. The Debug `RT2Tests` target builds and
+passes 591/591. This mismatch predates and is independent of the test-only W3
+step; no build-runtime policy was changed here.
+
+### W3 AssetDatabase hardening verification — complete
+
+Implemented 2026-07-25, grounded against commit `a64f60f`.
+
+`AssetDatabase` now preserves every path claiming an asset ID and exposes an
+explicit `Missing` / `Unique` / `Ambiguous` lookup result. Ambiguous results
+never select a record, and their candidate paths are sorted. Database
+construction normalizes and total-sorts its inputs before insertion, including
+an explicit reference-versus-sidecar identity authority, so sidecar precedence
+does not depend on enumeration order.
+
+Records now carry sorted, deduplicated entity dependents and cross-asset
+dependency records. A cross-asset dependency is keyed by stable `sourceKey`
+and records the target ID, source path, and requested `AssetKind`. Conflicting
+claims for the same source key remain preserved and sorted for the later
+locator to diagnose; they are not silently collapsed.
+
+W3-Q2 was inseparable from that dependency representation in one limited
+respect: `AssetRecord` now stores a sorted set of observed `AssetKind` uses
+rather than one exclusive kind. Tests prove that one physical asset can be
+observed as both `Texture` and `Environment`. No texture import, scene,
+environment, or script resolution path changed in this step.
+
+Order-independence is covered by forward/reversed construction and 64 seeded
+random permutations. Each permutation shuffles both the input records and
+their nested use, entity-dependent, and asset-dependency collections, then
+compares a canonical byte serialization of all public records, ID lookups, and
+diagnostics with the baseline.
+
+| Check | Result |
+|---|---|
+| AssetDatabase focused tests, Release | 18/18 cases, 152/152 assertions |
+| AssetDatabase focused tests, Debug | 18/18 cases, 152/152 assertions |
+| W3 characterization, Release | 9/9 cases, 149/149 assertions; expectations unchanged |
+| W3 characterization, Debug | 9/9 cases, 149/149 assertions; expectations unchanged |
+| Full RT2Tests, Release | 598/598 cases, 144627/144627 assertions |
+| Full RT2Tests, Debug | 598/598 cases, 144627/144627 assertions |
+| RT2SliceRunner target, Release and Debug | builds |
+
+No project or compiler configuration changed; in particular this step did not
+touch the existing RT2Tests `/FS` option. The pre-existing full-Debug
+`RT2App` vendor-runtime link mismatch remains explicitly out of W3 scope.
+
+### W3 step 2 verification report — neutral types and generic locator landed
+
+Implemented 2026-07-25, grounded against commit `12a88c8` (immediately
+after the W2 hardening step). No production consumer was cut over in this
+step; step 3 cuts models over.
+
+**Files added (CPU-only, no Vulkan/ImGui/Walnut/entt):**
+
+- `RT2App/src/AssetReference.h` — extracts `AssetKind`, `ImportSettings`,
+  and `AssetReference` from `ECSComponents.h` into a neutral header that
+  depends only on `core/UUID.h`. The types remain in the **global
+  namespace** to match the pre-extraction source layout (verified via
+  `git show HEAD:RT2App/src/ECSComponents.h`: the originals were not inside
+  any `namespace` block). `ECSComponents.h` now includes
+  `AssetReference.h` and re-exports the names unchanged. This unblocks
+  W3-P2: `SceneTexture` and `EnvironmentSettings` can now carry an
+  `AssetReference` without a `SceneTypes.h`/`ECSComponents.h` include cycle.
+  (Adding those fields is W3 step 3+ work, not this step.)
+- `RT2App/src/AssetResolver.{h,cpp}` — the neutral read-only locator.
+  Defines `AssetDiagnostic` (moved here from `SceneAssetResolver.h`),
+  `AssetResolutionContext`, `AssetResolutionResult`,
+  `AssetResolutionSource`, `AssetBatchEntry`, `Resolve()`, `ResolveBatch()`,
+  and `AssetDiagnosticSortKey()`. `AssetDiagnostic::Severity` gains
+  `Conflict` (W3-Q5). The eight-case ID/path disagreement policy from the
+  approved contract is encoded in `Resolve()`:
+  1. unique ID + matching file → success by `Id` (case 1);
+  2. unique ID + file exists, stale ref path → success by `Id` with an
+     observable `Missing` diagnostic for the stale path (case 2);
+  3. ID not in DB, path exists, sidecar matches requested ID → fallback
+     succeeds, `Missing` diagnostic "database stale" (case 3);
+  4. ID not in DB, path exists, sidecar absent → fallback succeeds with
+     `identityRepairRequired=true` (case 4);
+  5. sidecar claims a different ID → `Conflict`, no substitution (case 5);
+  6. neither ID nor path locates a regular file → `Missing` (case 6);
+  7. ambiguous ID → `Conflict` even if fallback path matches one claimant
+     (case 7);
+  8. nil ID → path fallback; absent sidecar → repair required; present
+     sidecar → effective ID from sidecar, no repair (case 8).
+  The locator never mints, writes, or remaps (W3-Q9). Process-CWD fallback
+  is removed (W3-Q8); legacy absolute paths are accepted in memory and the
+  successful result is normalized. `ResolveBatch()` sorts appended
+  diagnostics by `(kind, refPath, entityUuid, sourceKey, severity, detail)`
+  using `AssetDiagnosticSortKey()` and a stable sort, so equal-key
+  diagnostics keep insertion order and results are independent of input
+  order.
+
+**Files modified:**
+
+- `RT2App/src/ECSComponents.h` — includes `AssetReference.h`; the
+  duplicated `AssetKind`/`ImportSettings`/`AssetReference` definitions are
+  removed (now in `AssetReference.h`). Comment block updated to record the
+  extraction.
+- `RT2App/src/SceneAssetResolver.h` — includes `AssetResolver.h` instead
+  of defining `AssetDiagnostic` inline. `AssetDiagnostic` is now re-exported
+  by include; its `Conflict` member is visible to all existing consumers.
+  The `SceneAssetResolver` class and its `ResolveAll`/`ResolveEnvironment`/
+  `ResolvePath` signatures are unchanged (step 3 will cut them over).
+- `RT2App/src/WalnutApp.cpp` — the diagnostic severity formatter is made
+  exhaustive over the four severities (`Missing`/`Malformed`/`Unresolved`/
+  `Conflict`) with a `default` arm labelled `"Unknown"`, replacing the
+  ternary whose final branch silently mislabelled anything beyond
+  `Unresolved` (W3-P14). This was called out as required in the same change
+  that adds a `Conflict`-emitting code path (W3-Q5).
+- `RT2App/RT2App.vcxproj`, `RT2Tests/RT2Tests.vcxproj` — wired
+  `AssetReference.h`, `AssetResolver.h`, and `AssetResolver.cpp` into both
+  targets. (`RT2SliceRunner/RT2SliceRunner.vcxproj` is gitignored on this
+  machine; the same edit was applied on disk and the slice runner builds in
+  both configurations.)
+
+**Tests added:** `RT2Tests/src/Phase7W3LocatorTests.cpp` — 18 cases,
+119 assertions, covering:
+
+- each of the eight ID/path disagreement cases as a distinct test;
+- read-only behaviour: no sidecar written for nil-ID missing sidecar;
+  existing sidecar untouched even on the Conflict path (file size and
+  content preserved; `ReadSidecarId` returns the original ID);
+- no process-CWD fallback (a file placed at the test runner's CWD does not
+  resolve against an unrelated asset root);
+- absolute legacy path accepted and the successful result normalized;
+- batch diagnostics sorted deterministically and independent of input
+  order (two orderings compared by refPath sequence);
+- entity UUID/name context preserved in diagnostics;
+- empty path fails with a `Missing` diagnostic (never a silent empty
+  result);
+- `AssetDiagnostic::Conflict` is a distinct severity value.
+
+Every fixture is generated below a unique temporary directory; no test
+depends on `C:\Users\mikey\Downloads` or on checked-in generated assets.
+
+**Production behaviour change:** none. The existing `SceneAssetResolver`
+model/environment/script resolution paths were not touched; the
+characterization tests (step 0) still pin the pre-W3 behaviour and pass
+unchanged. The Walnut formatter change is exhaustive-but-equivalent for
+the three pre-existing severities.
+
+| Check | Result |
+|---|---|
+| W3 locator focused tests, Release | 18/18 cases, 119/119 assertions |
+| W3 locator focused tests, Debug | 18/18 cases, 119/119 assertions |
+| W3 characterization (step 0), Release | 9/9 cases, 149/149 assertions; expectations unchanged |
+| W3 characterization (step 0), Debug | 9/9 cases, 149/149 assertions; expectations unchanged |
+| Full RT2Tests, Release | 616/616 cases, 144746/144746 assertions |
+| Full RT2Tests, Debug | 616/616 cases, 144746/144746 assertions |
+| RT2App target (Vulkan), Release | built after the production changes; a redundant relink after removing one unused include was blocked by an already-running `RT2App.exe` |
+| RT2SliceRunner target, Release and Debug | builds |
+| Phase 6C script scenario | PASS |
+| Graphify | refreshed; `GRAPH_REPORT.md` changed |
+
+**Pre-existing carryover, unchanged by this step:** the whole-Debug
+`RT2App` vendor-runtime link mismatch (`LNK2038`/`LNK1319` from
+`NRD.lib`/`NRI.lib` built with `MD`/iterator level 0 against `RT2App`'s
+`MDd`/level 2) is the same error set recorded in the W3 step 0 report and
+remains explicitly out of W3 scope. Debug `RT2Tests` and `RT2SliceRunner`
+build and pass; only Debug `RT2App` (which pulls the NRD/NRI vendor
+binaries) fails to link.
+
+### W3 step 3 verification report — models cut over to the shared locator
+
+Implemented 2026-07-25, grounded against commit `061340e` (immediately
+after the step 2 neutral-types + locator landing). Models are the first
+production consumer of the generic `AssetResolver`; environment, script,
+and texture resolution remain on their pre-W3 paths and are cut over in
+steps 4–6.
+
+**Locator defect found and fixed during this cutover.** Step 2's `Resolve()`
+took the nil-ID path whenever `ctx.database == nullptr`, even when a
+non-nil ID was requested. That dropped the ID-vs-sidecar conflict check
+(the case-5 contract) at scene load, where the host does not yet build an
+`AssetDatabase` but `AssetReference::assetId` is non-nil (assigned at
+import). `AssetResolver.cpp` was restructured so the nil-ID branch is
+taken only when the requested ID is actually nil; a non-nil ID with no
+database proceeds directly to path+sidecar verification, which still
+emits `Conflict` when the sidecar claims a different ID. Two locator
+tests pin the new no-database variants of cases 3 and 5.
+
+**Production changes (all in `RT2App/src/SceneAssetResolver.cpp`):**
+
+- `ResolveAll`'s model section now resolves each referenced model through
+  the shared `Resolve()` against an `AssetResolutionContext` whose
+  `assetRoot` is the scene root and whose `database` is `nullptr` (W3-Q3:
+  no global resolver/database; W4 replaces the root with the project
+  asset root). The locator is read-only (W3-Q9): no sidecar is minted,
+  written, or rewritten at scene load. `assetId` is plumbed but the host
+  does not yet build a database, so the locator's path+sidecar
+  verification is what carries identity.
+
+- **Removed the duplicate file-level `Missing` diagnostic** (W3-P8). The
+  pre-W3 code emitted one file-level `Missing` per missing model path
+  and then one entity-level `Missing` per entity that referenced it. The
+  locator emits exactly one terminal diagnostic per missing reference,
+  with the first referencing entity's UUID filled in. The entity-level
+  "model not loaded" diagnostic still fires in the plan pass, so a
+  missing model produces two diagnostics — but both now carry the
+  entity's UUID (the old file-level diagnostic had a nil UUID). The
+  misclassified/misordered diagnostics called out in W3-P8 are no longer
+  produced for models.
+
+- **Made hard failure transactional** (W3-P7 / W3-Q6). The pre-W3 code
+  appended staged meshes/materials/textures into `doc.ecs` during the
+  merge loop and only checked "every entity unresolved" afterward, so a
+  hard `ResolveAll` failure left `doc.ecs` polluted. `ResolveAll` is now
+  split into a **plan pass** (resolves every entity's target against the
+  STAGED model's local indices without touching `doc.ecs`) and a
+  **commit pass** (merges only the staged models that have at least one
+  resolved entity and installs `MeshRef`s). If every entity is
+  unresolved, `ResolveAll` returns false with `doc.ecs` unchanged — no
+  meshes, materials, or textures are committed. A successful partial
+  result may commit accepted resources/placeholders (W3-Q6), so a scene
+  with one resolvable and one unresolvable entity still returns true and
+  commits the resolvable entity's resources.
+
+- `ResolvePath` is kept as a compatibility adapter (the plan called for
+  it). It is still used by `ResolveEnvironment` (step 4 cuts environment
+  over); only the model path stopped using it. Its signature and
+  existence are unchanged.
+
+- `ResolveBatch` is not used by `ResolveAll` yet — `ResolveAll` needs
+  per-entity UUID/name context that the batch entry supports, but the
+  diagnostic ordering within `ResolveAll` is already deterministic
+  (insertion order: models in first-reference order, entities in registry
+  iteration order). A later step can route through `ResolveBatch` once
+  the registry-iteration-order dependency is addressed; that is not a
+  step-3 concern.
+
+**Tests updated:** four transitional characterization cases in
+`RT2Tests/src/Phase7W3CharacterizationTests.cpp` were rewritten to pin
+the post-cutover contract instead of the pre-W3 defects:
+
+- "model success resolves a generated GLB": was `diagnostics.empty()`;
+  now asserts exactly one `Missing` "identity repair required"
+  diagnostic (nil `assetId`, no sidecar — the locator's case 8a).
+- "missing model emits file and entity diagnostics": was 2 diagnostics
+  with `diagnostics[0].entityUuid.IsNull()`; renamed to "emits one
+  locator diagnostic and one entity diagnostic", asserts 2 diagnostics
+  with BOTH entity UUIDs non-nil (the locator fills the first entity's
+  UUID), and asserts transactionality (`doc.ecs` empty on hard failure).
+- "malformed model is followed by a Missing entity diagnostic": was 2
+  diagnostics; renamed to "emits locator, load, and entity diagnostics",
+  asserts 3 diagnostics (locator `Missing` "identity repair required" +
+  loader `Malformed` "model failed to load" + plan-pass `Missing` "model
+  not loaded"), and asserts transactionality.
+- "unresolved model source key mutates resources before hard failure":
+  was 1 diagnostic + `meshRegistry.GetCount() == 1`; renamed to "fails
+  transactionally", asserts 2 diagnostics (locator `Missing` + plan-pass
+  `Unresolved`) and `meshRegistry.GetCount() == 0` (the false
+  transactionality defect is fixed).
+
+**Tests added:** three new focused step-3 cases in the same file:
+
+- non-nil `assetId` with a matching sidecar resolves and emits exactly
+  one "database stale" `Missing` diagnostic (the case-3 no-database
+  variant the model cutover actually exercises at scene load);
+- non-nil `assetId` with a conflicting sidecar fails with `Conflict` and
+  leaves the document unchanged;
+- partial success (one resolvable + one unresolvable entity) commits
+  the resolvable entity's resources and returns true.
+
+**P1A test updated:** `Phase1ASceneAssetTests.cpp`'s
+"P1A RoundTrip: glTF import -> save v3 -> load + resolve" asserted
+`d.severity != Missing` for every diagnostic on a successful resolve.
+After cutover, a successful resolve with a non-nil `assetId` and a
+matching sidecar emits a "database stale" `Missing` diagnostic (the W3
+contract signal, not a real failure). The assertion was relaxed to
+forbid `Malformed`/`Conflict`/`Unresolved` (real defects) while allowing
+`Missing`. No environment or script test changed.
+
+| Check | Result |
+|---|---|
+| W3 locator focused tests, Release | 20/20 cases, 125/125 assertions (2 no-database cases added) |
+| W3 locator focused tests, Debug | 20/20 cases, 125/125 assertions |
+| W3 characterization (model cases), Release | post-cutover expectations; 4 updated + 3 added |
+| Full RT2Tests, Release | 621/621 cases, 144802/144802 assertions |
+| Full RT2Tests, Debug | 621/621 cases, 144802/144802 assertions |
+| RT2App target (Vulkan), Release | builds |
+| RT2SliceRunner target, Release and Debug | builds |
+| Phase 6C script scenario | PASS |
+| Graphify | refreshed; `GRAPH_REPORT.md` changed |
+
+**Pre-existing carryover, unchanged by this step:** the whole-Debug
+`RT2App` NRD/NRI `LNK2038`/`LNK1319` mismatch is the same error set
+recorded in the step 0 and step 2 reports and remains explicitly out of
+W3 scope. Debug `RT2Tests` (621/621) and `RT2SliceRunner` build and pass;
+only Debug `RT2App` fails to link.
+
+### W3 step 4 verification report — environments cut over to the shared locator
+
+Implemented 2026-07-25, grounded against commit `9731f06` (immediately
+after the step 3 model cutover). Environments are the second production
+consumer of the generic `AssetResolver`; scripts and textures remain on
+their pre-W3 paths and are cut over in steps 5–6.
+
+**W3-P2 precondition landed (additive, no schema bump):**
+`EnvironmentSettings` now carries a `UUID assetId` alongside its existing
+`path`/`width`/`height`/`floatPixels`. `Clear()` resets it. `HasEnvMap()`
+stays path-based. Env serialization writes `assetId` only when non-nil and
+reads it additively (absence → nil), mirroring the model `AssetReference`
+codec (W3-Q1: only the additive fields required for W3 land here; W5 owns
+the formal v4 migration/reporting pass). No schema version bump.
+
+**Env import writes a sidecar.** `SceneManager::LoadEnvMap` and
+`SetEnvMapData` (the async-load completion path) now call
+`ResolveOrAssign` to mint or reuse a per-asset sidecar at env import,
+paralleling model import. The sidecar is the durable source of truth;
+`environment.assetId` is a cache of it. `ResolveEnvironment` reads the
+sidecar through the shared locator and never mints — env resolution is
+read-only (W3-Q9), just like model resolution.
+
+**Production change (`RT2App/src/SceneAssetResolver.cpp`):**
+`ResolveEnvironment` now builds an `AssetReference`
+(`kind=Environment`, `path=env.path`, `assetId=env.assetId`) and calls
+the shared `Resolve()` against an `AssetResolutionContext` whose
+`assetRoot` is the scene root and whose `database` is `nullptr` (W3-Q3).
+On locator failure it clears stale pixels (preserving the path and
+assetId references) and returns false; the locator's single terminal
+diagnostic is appended to the caller's vector. On locator success it
+decodes the resolved path through the existing `DecodeEnvMapFile`. If
+the locator resolved by path fallback and the sidecar supplied an
+effective ID, the ID is cached back into `doc.environment.assetId` —
+this copies an already-authoritative sidecar ID, it does not mint. A
+nil effective ID (absent sidecar) leaves the document ID untouched; the
+host's next save/migration owns repair. `ResolvePath` is no longer
+called by `ResolveEnvironment`; it remains as a compatibility adapter
+with no production callers (step 5 cuts scripts over, after which it
+can be removed in step 7).
+
+**Tests updated:** the environment characterization subcases and one
+P1A env test were rewritten to pin the post-cutover contract:
+
+- "environment success, missing, and malformed disagree on detail"
+  (3 subcases):
+  - success: was `diagnostics.empty()`; now asserts exactly one
+    `Missing` "identity repair required" diagnostic (nil env assetId,
+    no sidecar — the locator's case 8a).
+  - missing: still 1 `Missing` diagnostic (the locator's terminal
+    diagnostic for the missing path; the pre-W3 duplicate file-level
+    diagnostic is gone, same fix as the model cutover).
+  - malformed: was 1 `Malformed` diagnostic; now asserts 2 diagnostics
+    (locator `Missing` "identity repair required" + decoder
+    `Malformed` "decode failed"), both with `kind=Environment`.
+- "P1A Environment: save env reference -> load -> resolve reads
+  pixels": was `diagnostics.empty()`; now asserts exactly one
+    `Missing` "identity repair required" diagnostic.
+
+**Tests added (5 focused step-4 cases):**
+
+- non-nil env `assetId` with a matching sidecar resolves and emits
+  exactly one "database stale" `Missing` diagnostic; the effective ID is
+  cached back into the document;
+- moved env asset (stale path) without a database fails `Missing` but
+  preserves the durable `assetId` so a later database-backed resolve can
+  reattach by identity — pins that moved assets need the W4 database;
+- non-nil env `assetId` with a conflicting sidecar fails with `Conflict`
+  and never substitutes identity (the locator's case-5 contract,
+  extended in step 3 to the no-database path);
+- nil env `assetId` with a sidecar caches the effective ID from the
+  sidecar (case 8b) and emits no diagnostic;
+- env `assetId` survives a save/load round-trip (additive over v3: the
+  saved file contains the `assetId` field, and the loaded document
+  restores it).
+
+**Carryover from step 3, unchanged:** `ResolveAll`'s model section and
+the locator's no-database conflict check (the step-3 fix) are exercised
+by the new env tests with no further changes. The shared locator is
+now the resolution entry point for both models and environments.
+
+| Check | Result |
+|---|---|
+| W3 characterization (env cases), Release | post-cutover expectations; 3 subcases updated + 5 added |
+| W3 characterization (env cases), Debug | same; 3 subcases updated + 5 added |
+| Full RT2Tests, Release | 626/626 cases, 144862/144862 assertions |
+| Full RT2Tests, Debug | 626/626 cases, 144862/144862 assertions |
+| RT2App target (Vulkan), Release | builds |
+| RT2SliceRunner target, Release and Debug | builds |
+| Phase 6C script scenario | PASS |
+| Graphify | refreshed; `GRAPH_REPORT.md` changed |
+
+**Pre-existing carryover, unchanged by this step:** the whole-Debug
+`RT2App` NRD/NRI `LNK2038`/`LNK1319` mismatch is the same error set
+recorded in the step 0, 2, and 3 reports and remains explicitly out of
+W3 scope. Debug `RT2Tests` (626/626) and `RT2SliceRunner` build and pass;
+only Debug `RT2App` fails to link.
+
+### W3 step 5 verification report — scripts cut over to the shared locator
+
+Implemented 2026-07-26, grounded against commit `5e2545b` (steps 0–4
+complete). This report covers step 5 only. Textures remain on their
+pre-W3 path for step 6.
+
+**Structured script resolution:** `ResolveScriptAssetPath` is now a thin
+adapter over the shared `AssetResolver::Resolve` locator. It takes an
+explicit `AssetResolutionContext` and `AssetDiagnostic` sink, validates
+`kind=Script`, validates the canonical `lua:asset=<path>` source key, and
+inherits the locator's existence, regular-file, ID, sidecar, database,
+and conflict rules. It no longer returns an unchecked lexical candidate.
+The same caller-owned context and diagnostic sink are threaded through
+`ScriptFieldResolver`, `ScriptSystem`, the Walnut file watcher/load and
+recovery paths, and `RT2SliceRunner`. Missing files remain watchable by
+using the terminal diagnostic's candidate parent, but they cannot enter
+the live Lua VM.
+
+**Identity and persistence:** script save/load now use the shared
+`AssetReferenceToJson`/`JsonToAssetReference` codec, including non-nil
+`assetId`. The existing Phase 6 script disk shape is retained by omitting
+the irrelevant `importSettings` member for `kind=Script`; other asset
+kinds retain their established codec shape. `SceneManager::SetScriptState`
+now treats an existing script binding as the explicit import boundary and
+calls `ResolveOrAssign`, so a sidecar ID is minted or reused and stored in
+the component. A changed path cannot carry the previous script's ID.
+Missing script paths remain authorable so the existing quarantine and
+watcher-recovery behavior is preserved; no ID is minted until the file
+exists.
+
+**Phase 6 contract verification:**
+
+| Contract | How it was verified |
+|---|---|
+| Empty script is legal | Existing `Phase 6A: empty script file is legal` passed in both full configurations. The file reader now distinguishes a successful zero-byte read from an I/O failure. |
+| A script error quarantines only the affected instance | Existing `Phase 6A: syntax error quarantines only the affected instance` and runtime-error isolation cases passed in both full configurations. Locator/load failures are attached to the failing entity while other instances continue. |
+| Field reflection keeps last-known-good declarations; `parsed=false` suppresses reconciliation | Existing Phase 6B resolver/registry cases passed in both full configurations. The parse-failure case additionally asserted the new asset diagnostics while retaining the previous declarations and authored values. |
+| Failed hot reload never replaces live code | Existing `Phase 6C: a mid-edit syntax error does not kill the running instance` and reload scratch-environment cases passed in both full configurations. Resolution/read/parse failure returns before swapping the live environment. |
+| `rt2.reload()` remains deferred | Existing `Phase 6C: rt2.reload() from on_update does not re-enter` passed in both full configurations; the queueing boundary was not changed. |
+| Timers, input bindings, and entity bindings are unaffected | The existing timer scheduling/cancellation/reload tests, input-service binding tests, and entity-binding validation/lifecycle tests all passed as part of both full suites. Their implementations were not changed. |
+
+**Authorized expectation changes:**
+
+- `Phase7 W3 characterization: script path resolution is lexical and
+  sourceKey-blind` became `Phase7 W3 step 5: script adapter uses
+  structured locator and validates metadata`. Old: a missing path still
+  returned the joined candidate and a stale source key was ignored. New:
+  the missing reference returns no resolved path plus terminal `Missing`,
+  and the stale source key returns no resolved path plus terminal
+  `Unresolved`. Scope item 1 explicitly replaces the lexical,
+  non-validating implementation.
+- `Phase7 W3 transitional characterization: script assetId is dropped by
+  serialization` became `Phase7 W3 step 5: script assetId survives
+  serialization through the shared codec`. Old: the loaded script ID was
+  nil and the JSON omitted `assetId`. New: JSON contains the authored
+  non-nil ID and load restores it. Scope item 3 explicitly fixes this
+  serialization defect.
+- No Phase 6 expectation changed. The pre-step 629 cases all pass with
+  their current expectations; one new identity-assignment case brings
+  the total to 630.
+
+**Discrimination proof:** the one new case, `Phase7 W3 step 5: binding an
+existing script assigns and reuses its sidecar ID`, was proven red/green.
+Temporarily disabling the production `ResolveOrAssign` branch made it
+fail (1 case, 11 assertions: 9 passed, 2 failed — nil component ID and
+missing sidecar). Restoring the branch and rebuilding made the exact case
+pass (1/1 case, 11/11 assertions). The temporary fault was not retained.
+
+| Check | Result |
+|---|---|
+| Full RT2Tests, Release, repository root | 630/630 cases, 144934/144934 assertions |
+| Full RT2Tests, Debug, repository root | 630/630 cases, 144934/144934 assertions |
+| RT2App target (Vulkan), Release | builds |
+| RT2SliceRunner target, Release and Debug | builds |
+| `run_script_test.ps1` (Phase 6C gate) | PASS: 60 frames, 1 entity, no mismatches |
+| Graphify | refreshed after implementation |
+
+**Verified by running:** every build/test row above, both full-suite
+counts, all named Phase 6 cases as members of those full suites, and the
+red/green discrimination run. The fixture generator was also run after a
+shared-codec compatibility correction and left its tracked scene fixture
+byte-clean. The final host relink obstruction was identified as the
+already-running Release `RT2App.exe` (PID 54024); it was not terminated.
+
+**Assumed, not re-verified:** the pre-existing whole-Debug `RT2App`
+NRD/NRI link mismatch remains unchanged; per instruction, that whole-app
+target was not run. Removing the unused `<system_error>` include after
+the successful Release host build is assumed not to affect its link
+result; the exact current source was compiled and linked in both
+`RT2Tests` and `RT2SliceRunner`. No build configuration or project file
+changed. Texture behavior is assumed unchanged because step 6 was not
+started and no texture-resolution production path was modified.
+
+### W3 step 6 grounded implementation plan — textures cut over last
+
+Planned 2026-07-26 and grounded against commit `1c04753` (W3 steps 0–5
+complete). This section expands incremental-order step 6; it does not
+rewrite the approved W3 record above. It is a documentation-only planning
+change. Step 7 host cleanup and step 8 final verification are explicitly
+out of this dispatch.
+
+**Starting baseline:** Release and Debug `RT2Tests` both pass 630/630
+cases and 144934/144934 assertions from the repository root.
+`RT2SliceRunner` builds in both configurations and
+`run_script_test.ps1` passes. The whole-Debug `RT2App` NRD/NRI mismatch
+remains a pre-existing out-of-scope link defect.
+
+#### Step 5 carryovers folded into this dispatch
+
+These corrections are intentionally folded into step 6 rather than
+interrupting the incremental sequence:
+
+1. `AssetDiagnostic::Stale` already exists
+   (`RT2App/src/AssetResolver.h:79-96`), but three successful `Resolve`
+   branches still emit `Missing`:
+   - nil ID + existing file + no sidecar
+     (`RT2App/src/AssetResolver.cpp:104-120`);
+   - unique ID resolves an existing file while the cached reference path
+     is stale (`:187-204`);
+   - non-nil ID + existing fallback path + no sidecar (`:237-252`).
+   Reclassify all three as `Stale`. `Missing` is reserved for a resolution
+   that returns `success=false` because no readable regular file was found.
+   Add one locator invariant test: every successful result has zero
+   `Missing` diagnostics. Update every existing expectation that currently
+   calls an identity-repair success `Missing`; real missing-file
+   expectations remain `Missing`.
+2. `RT2App/assets/script-scenario.lua` is a tracked project asset but has
+   no committed `script-scenario.lua.rt2meta`; consequently the scenario
+   emits "asset has no identity sidecar; identity repair required" on every
+   run (`RT2SliceRunner/src/Main.cpp:393-394`, `:559-590`;
+   `RT2App/assets/script-scenario.rt2scene:25-34`). Generate one valid v4
+   UUID once, commit the one-line sidecar beside the Lua file, and leave the
+   scene's cached `assetId` absent. Nil reference ID + authoritative
+   sidecar then resolves cleanly without a false database-stale advisory.
+   Add a focused committed-fixture test and require the scenario gate output
+   to contain no asset diagnostic.
+
+#### Grounded step-6 findings
+
+| ID | Finding at `1c04753` | Implementation consequence |
+|---|---|---|
+| S6-F1 | `SceneTexture` carries only `filepath`, decoded dimensions/pixels and colour-space flags (`RT2App/src/SceneTypes.h:92-105`), although W3-Q1 requires a texture `AssetReference`. | Add `AssetReference ref` without removing `filepath`; step 7 owns removal of compatibility fields. |
+| S6-F2 | Native scene save always writes an empty texture array (`RT2App/src/SceneSerializer.cpp:1280-1282`) and load does not reconstruct standalone texture records. Imported textures are derived by rebuilding their owner models. | Do not invent a second standalone texture graph or schema in step 6. Rebuild `SceneTexture::ref` deterministically from the model plus sidecars on every import/reopen. W4 persists/indexes dependency records; W5 owns formal v4 schema work. |
+| S6-F3 | TinyGLTF invokes `DecodeImageData`, which immediately decodes bytes and returns false on malformed data (`RT2App/src/SceneLoader.cpp:16-36`). TinyGLTF can therefore reject valid geometry before RT2 can contain the texture failure. | Replace the callback with a capture-only callback that never makes image decode a model-parse failure. Decode in the extracted texture stage after structural model parsing. |
+| S6-F4 | The glTF texture-copy loop is duplicated in standalone load and append import (`RT2App/src/SceneLoader.cpp:455-470`, `:1212-1228`). Invalid sources create empty slots; decoded bytes are copied directly. | Both paths must consume one shared manifest/resolution/decode result. No duplicate texture policy remains in `SceneLoader`. |
+| S6-F5 | OBJ texture resolution/decode/material assignment is duplicated in standalone load and import (`RT2App/src/SceneLoader.cpp:1807-1856`, `:2138-2184`). Both use `baseDir / texName`, call `stbi_load` directly, and return `-1` on failure. | Both OBJ paths must use the same manifest and pipeline as glTF, with one deterministic material-slot order. |
+| S6-F6 | `SceneLoader` exposes four two/three-argument entry points with no resolution context or diagnostic sink (`RT2App/src/SceneLoader.h:12-45`). | Add context-aware overloads used by every production caller. Retain compatibility adapters only until step 7; adapters still use the structured pipeline and log every diagnostic. |
+| S6-F7 | Native-scene resolution stages OBJ/glTF through `SceneLoader` (`RT2App/src/SceneAssetResolver.cpp:431-452`) but currently discards the model locator's effective ID after storing only the resolved path (`:289-342`). | Retain the owner `AssetReference` and `effectiveId` in `ModelRef`, then pass them, the same `AssetResolutionContext`, first entity UUID/name, and the same diagnostic sink into texture loading. |
+| S6-F8 | Direct editor loads/imports call the four legacy loader APIs (`RT2App/src/SceneManager.cpp:194-234`, `:444-482`) and assign the model sidecar only after loading (`:303-307`, `:458-464`, `:486-489`). | Mark these calls as explicit-import mode. Once structural model parse succeeds, establish/reuse the model ID before decoding embedded images, then reuse that ID for mesh provenance. |
+| S6-F9 | The database already represents sorted cross-asset dependencies by stable `sourceKey`, target ID/path and requested kind (`RT2App/src/AssetDatabase.h:38-57`, `:73-80`, `:136-154`). Existing tests and comments establish `gltf:image=<index>` (`RT2Tests/src/AssetDatabaseTests.cpp:366-372`). | Query a supplied database for the owner model's dependency claim before resolving an external texture. Zero claims uses URI/path fallback; one claim supplies authoritative ID/path; multiple distinct claims emit `Conflict` and produce a placeholder. |
+| S6-F10 | Empty texture slots are skipped during GPU upload (`RT2App/src/AsyncTextureLoader.cpp:243-250`, `:338-345`). | A containment placeholder must contain valid pixels and dimensions, not merely retain an empty vector slot. No Vulkan/GPU code change is required. |
+| S6-F11 | Material indices already preserve glTF texture-slot indices and OBJ assigns the returned loader index (`RT2App/src/SceneLoader.cpp:499-507`, `:1256-1264`, `:1844-1856`, `:2172-2184`). | Preserve valid indices on failure: glTF always yields one output slot per glTF texture; every referenced OBJ material slot receives a real or placeholder texture index. |
+| S6-F12 | Transitional tests pin the inconsistent pre-cutover outcomes: OBJ drops missing/malformed textures (`RT2Tests/src/Phase7W3CharacterizationTests.cpp:1076-1119`); glTF keeps an empty missing slot, fails the whole model on malformed external data, and keeps an empty invalid-source slot (`:1121-1182`). | Rewrite only these authorized expectations to the W3-Q7 contract and add focused identity/diagnostic tests. |
+| S6-F13 | `SceneAssetResolver::ResolveAll` appends staged textures transactionally only when a model has an accepted entity (`RT2App/src/SceneAssetResolver.cpp:809-859`), but does not perform a final diagnostic sort before returning (`:775-916`). | Texture failure remains soft and stages a placeholder; hard model failure remains transactional. Stable-sort only the newly appended diagnostic slice at the public boundary. |
+| S6-F14 | Walnut has exhaustive `Stale` formatting in both script and scene diagnostic paths (`RT2App/src/WalnutApp.cpp:1504-1519`, `:2704-2719`), but direct model imports receive no texture diagnostic sink (`:229-231`, `:2337-2341`). | Reuse one exhaustive formatter and surface direct-import texture diagnostics instead of console-only failure. |
+| S6-F15 | RT2App, RT2Tests and RT2SliceRunner all compile `SceneLoader`, but the CPU targets enumerate source files explicitly (`RT2Tests/premake5.lua:13`; `RT2SliceRunner/premake5.lua:10-39`; generated vcxproj entries at `RT2Tests/RT2Tests.vcxproj:253` and `RT2SliceRunner/RT2SliceRunner.vcxproj:194`). | The extracted CPU-only source requires build-file wiring. This is an expected build-configuration change and must be flagged in the implementation report. No Vulkan/Walnut dependency may enter it. |
+
+#### Settled implementation decisions
+
+These are direct implementations of approved W3-Q1/Q2/Q3/Q5/Q6/Q7/Q8/Q9;
+no new product-policy question remains open.
+
+| ID | Decision |
+|---|---|
+| S6-D1 — representation | Add `AssetReference ref` to `SceneTexture`. `ref.kind` is always `Texture`. `filepath` remains a compatibility mirror of `ref.path` through step 7. Decoded pixels are cache data and are never serialized. The existing empty native `textures` JSON array stays unchanged in step 6. |
+| S6-D2 — extracted CPU stage | Add CPU-only `TextureAssetPipeline.{h,cpp}`. It owns capture payloads, format manifests, external reference construction, database dependency selection, locator calls, sidecar assignment in explicit-import mode, decode, placeholder construction and diagnostic sorting. It may include tinygltf/tinyobj/stb headers but may not include renderer, Vulkan, Walnut, ImGui, GLFW, NRD or NRI headers. |
+| S6-D3 — loader context | Introduce `TextureAssetLoadContext` containing the caller's `AssetResolutionContext`, owner-model `AssetReference`, absolute resolved owner path, owner effective ID, entity UUID/name, `ReadOnly` versus `ExplicitImport` mode, and a nullable `IUuidProvider` that is required only for `ExplicitImport`. Every context-aware loader overload also requires `std::vector<AssetDiagnostic>&`. Invalid combinations are loud `Malformed` diagnostics. |
+| S6-D4 — canonical keys | Valid glTF image dependencies use exactly `gltf:image=<imageIndex>`. An invalid glTF texture source uses `gltf:texture=<textureIndex>` and reports the invalid source index in `detail`. OBJ edges use exactly `obj:material=<materialIndex>:texture=<diffuse|normal|emissive|roughness>`, enumerated in that slot order. |
+| S6-D5 — external paths | Resolve an external glTF URI or OBJ MTL texture name against the resolved owner model's parent, lexically normalize it, and express `ref.path` relative to `context.resolution.assetRoot` when possible. Legacy absolute input remains in memory only. Do not fall back to process CWD and do not persist a newly created absolute path. |
+| S6-D6 — embedded identity | A bufferView/data-URI/GLB image uses the owner model's physical path and effective model ID with `kind=Texture` and `sourceKey=gltf:image=<n>`. It never receives a child sidecar. A nil owner ID is legal in read-only legacy load; the texture remains usable with nil cached ID and the owner locator's single `Stale` repair signal. |
+| S6-D7 — external identity | An external glTF/OBJ image is a separate physical asset and uses its own sidecar. Read-only resolution never writes. Explicit import first verifies the dependency is a regular file, then calls `ResolveOrAssign`, and finally resolves/decodes through the same locator path. Successful repair replaces the pre-repair advisory; a sidecar parse/write problem is surfaced as `Stale` while decoded content remains usable. Missing files never receive sidecars. |
+| S6-D8 — capture then decode | TinyGLTF's image callback copies encoded bytes by image index and returns success without decoding. Structural glTF parse errors still fail the model. External images ignore TinyGLTF's opportunistic bytes and are reread only from the locator's `resolvedPath`; embedded images decode only from captured bytes. Thus malformed image bytes cannot reject valid geometry. |
+| S6-D9 — placeholder | The sole CPU placeholder is a 2×2 RGBA8 magenta/black checker, row-major bytes `ff 00 ff ff`, `00 00 00 ff`, `00 00 00 ff`, `ff 00 ff ff`; `width=2`, `height=2`, `channels=4`, `isHDR=false`, `isSRGB=false`, and `floatPixels` empty. It retains the failed dependency's `AssetReference` and compatibility `filepath`. |
+| S6-D10 — index containment | glTF emits exactly one `SceneTexture` per `model.textures` entry in source order. OBJ emits one entry per non-empty referenced material slot in material-index order and the fixed slot order from S6-D4. Missing, malformed, unresolved and conflicting dependencies all consume their normal slot and install the placeholder, so material indices remain in range. No cross-slot deduplication is introduced. |
+| S6-D11 — diagnostics | Locator failure preserves its terminal `Missing`/`Malformed`/`Conflict`. Successful locator advisories are `Stale`, never `Missing`. Decode failure adds one `Malformed`; missing/invalid embedded payload adds one `Unresolved`. All texture diagnostics use `kind=Texture`, the canonical source key, the first dependent entity context when available, and the attempted physical path. Public APIs stable-sort only their appended slice with `AssetDiagnosticSortKey`. |
+| S6-D12 — return policy | A texture failure never makes an otherwise structurally valid glTF/OBJ load return false. It produces a diagnostic plus placeholder. Model syntax/geometry failure remains a model `Malformed` hard failure. `ResolveAll=false` still leaves the input document unchanged; accepted partial/model results may commit real textures and placeholders under W3-Q6. |
+| S6-D13 — compatibility | Keep the current short `SceneLoader` overloads until step 7. Each creates a read-only context rooted at the model parent, invokes the same structured implementation, stable-sorts diagnostics, and logs every diagnostic. It contains no lexical/direct decode fallback. Production `SceneManager` and `SceneAssetResolver` must use the explicit overloads in step 6. |
+| S6-D14 — schema boundary | Do not bump schema v3 and do not populate the native top-level `textures` array. External identity is durable in its per-file sidecar; embedded identity is durable in the owner model sidecar plus source key. W4 builds/persists the project dependency index and W5 owns the v4 migration/reporting pass. |
+
+#### Concrete API and data flow
+
+`TextureAssetPipeline.h` will expose neutral manifest/result types plus:
+
+```cpp
+enum class TextureIdentityMode : uint8_t { ReadOnly, ExplicitImport };
+
+struct TextureAssetLoadContext
+{
+    AssetResolutionContext resolution;
+    AssetReference         ownerModel;
+    std::filesystem::path  resolvedOwnerPath;
+    UUID                   effectiveOwnerId;
+    UUID                   entityUuid;
+    std::string            entityName;
+    TextureIdentityMode    identityMode = TextureIdentityMode::ReadOnly;
+    IUuidProvider*         uuidProvider = nullptr;
+};
+```
+
+The public stage functions append results/diagnostics rather than mutating
+global state:
+
+```cpp
+GltfTextureManifest EnumerateGltfTextureDependencies(...);
+ObjTextureManifest  EnumerateObjTextureDependencies(...);
+std::vector<SceneTexture> ResolveAndDecodeTextures(
+    const TextureManifest&,
+    const TextureAssetLoadContext&,
+    std::vector<AssetDiagnostic>&);
+SceneTexture MakeMissingTexturePlaceholder(const AssetReference&);
+```
+
+The exact tinygltf/tinyobj parameter types may remain in the `.cpp` through
+format-specific adapters; the public header must remain CPU-only and must
+not expose renderer types. Manifest entries contain output slot, canonical
+source key, external URI or embedded encoded bytes, and the OBJ material
+binding where applicable.
+
+The four context-aware `SceneLoader` entry points keep their existing return
+types and add `const TextureAssetLoadContext&` plus
+`std::vector<AssetDiagnostic>&`. Their order is:
+
+1. parse model structure and capture encoded glTF image payloads;
+2. in explicit-import mode, establish/reuse the owner model sidecar ID after
+   structural parse succeeds and before embedded references are built;
+3. enumerate a deterministic texture manifest;
+4. resolve identities/paths and decode each entry into a real texture or
+   placeholder;
+5. install materials/texture indices, then build geometry/entities;
+6. return false only for a model-level failure.
+
+`SceneAssetResolver::ModelRef` retains the original owner reference and
+locator `effectiveId`. Its staged load uses `ReadOnly`, passes the existing
+scene-root context and first entity context, and appends texture diagnostics
+to the same caller vector. `SceneManager::{LoadScene,ImportGltf,ImportObj}`
+uses `ExplicitImport`, passes its UUID provider, and surfaces the returned
+diagnostics through Walnut's exhaustive formatter. RT2SliceRunner receives
+the behavior through `SceneAssetResolver`; no GPU dependency is added.
+
+#### Exact post-cutover characterization changes
+
+Only the transitional texture expectations are authorized to change:
+
+| Existing case | Old value | New value |
+|---|---|---|
+| OBJ valid external texture | one decoded texture, material index 0, no structured diagnostic | same decoded texture/index; populated `Texture` ref; read-only no-sidecar fixture emits one `Stale` |
+| OBJ missing texture | `textures.empty()`, material index `-1`, no diagnostic | one exact placeholder, material index `0`, one `Texture/Missing` |
+| OBJ malformed texture | `textures.empty()`, material index `-1`, console log only | one exact placeholder, material index `0`, ordered `Texture/Stale` then `Texture/Malformed` for the no-sidecar read-only fixture |
+| glTF valid external image | decoded slot/index 0, no structured diagnostic | same decoded slot/index; populated ref; one `Texture/Stale` for the no-sidecar read-only fixture |
+| glTF missing external image | one empty slot, index 0, warning only | one exact placeholder, index 0, one `Texture/Missing` |
+| glTF malformed external image | whole model returns false; no geometry/material/texture | model returns true; geometry/material retained; one exact placeholder at index 0; ordered `Texture/Stale` then `Texture/Malformed` |
+| glTF invalid texture source | one empty slot at index 0 | one exact placeholder at index 0 and one `Texture/Unresolved` keyed `gltf:texture=0` |
+
+The carryover expectation changes are mechanical and separately authorized:
+successful identity-repair/stale-path cases change only
+`AssetDiagnostic::Missing` → `AssetDiagnostic::Stale`; failure return values,
+resolved paths and real missing-file `Missing` expectations do not change.
+
+#### Focused tests to add
+
+Add focused CPU-only cases (prefer
+`RT2Tests/src/Phase7W3CharacterizationTests.cpp`, with locator-only cases in
+`Phase7W3LocatorTests.cpp`):
+
+1. successful locator cases 2, 4 and 8a emit `Stale` and zero `Missing`;
+   one table-driven invariant covers every successful locator result;
+2. the exact 2×2 placeholder bytes and all metadata/ref fields are stable;
+3. explicit import of an external glTF texture assigns a sidecar ID, stores
+   it in `SceneTexture::ref`, and reuses it on the second import;
+4. explicit OBJ import follows the same sidecar/reuse contract;
+5. a moved external texture resolves by the unique dependency ID when a
+   database is supplied, while a conflicting or ambiguous dependency claim
+   produces `Conflict` plus a placeholder;
+6. embedded GLB and data-URI images use the owner model ID plus
+   `gltf:image=0`, decode successfully, and create no child `.rt2meta`;
+7. malformed embedded bytes preserve valid geometry and produce one
+   `Malformed` placeholder;
+8. reversed manifest/dependency input produces byte-identical textures,
+   bindings and sorted diagnostic snapshots;
+9. the committed `script-scenario.lua.rt2meta` is a valid non-nil UUID and
+   the scenario's nil-ID reference resolves with zero diagnostics;
+10. all four material roles retain in-range texture indices when their OBJ
+    files are missing or malformed.
+
+Every fixture write must be `REQUIRE`d. Tests run from the repository root;
+no machine-local Downloads asset is evidence for this step.
+
+#### Discrimination proofs required
+
+Every new case must be shown red against a deliberate temporary production
+or fixture fault, then green after restoration. A compact proof matrix is
+acceptable when one fault discriminates several cases:
+
+| Temporary fault | Cases that must fail |
+|---|---|
+| Change one successful locator advisory back to `Missing` | successful-result invariant and affected characterization |
+| Return an empty placeholder pixel vector | exact placeholder plus every missing/malformed containment case |
+| Make malformed image decode return model failure | glTF external/embedded containment cases |
+| Bypass `Resolve` and open the URI directly | moved-ID and conflict/ambiguity cases |
+| Mint a child sidecar for an embedded image | embedded owner-identity/no-child-sidecar case |
+| Temporarily remove/rename `script-scenario.lua.rt2meta` | committed-fixture case and clean scenario-output check |
+| Reverse or skip final diagnostic sorting | order-independence snapshot |
+
+Use `apply_patch` for every temporary source fault, revert only that fault,
+rebuild the affected target, and record failing/passing case and assertion
+counts in the step-6 verification report. No existing test may be deleted,
+skipped or weakened.
+
+#### Implementation order inside the step-6 commit
+
+1. Land the two step-5 carryovers and their focused tests; confirm
+   `run_script_test.ps1` remains green and emits no asset diagnostic.
+2. Add `SceneTexture::ref`, placeholder helper and the CPU-only pipeline
+   types; wire the new source into tracked premake/vcxproj files and the
+   generated local slice vcxproj.
+3. Replace TinyGLTF eager decode with capture-only payload collection.
+4. Implement glTF manifest enumeration, locator/dependency selection,
+   decode and placeholder containment; route both glTF loader paths through
+   it.
+5. Implement OBJ manifest enumeration and route both OBJ loader paths
+   through the same resolver/decode stage.
+6. Thread explicit contexts/sinks through `SceneAssetResolver`,
+   `SceneManager`, Walnut and RT2SliceRunner; retain only the structured
+   compatibility adapters.
+7. Rewrite the seven authorized characterization expectations, add focused
+   identity/ordering/placeholder tests, and perform every red/green proof.
+8. Run the complete verification gate, append the step-6 implementation
+   report, refresh Graphify, and commit step 6 only. Stop before step 7.
+
+#### Verification gate
+
+Run from the repository root and record observed counts:
+
+```powershell
+msbuild RT2App.sln -t:RT2Tests -p:Configuration=Release -p:Platform=x64
+.\bin\Release-windows-x86_64\RT2Tests\RT2Tests.exe
+msbuild RT2App.sln -t:RT2Tests -p:Configuration=Debug -p:Platform=x64
+.\bin\Debug-windows-x86_64\RT2Tests\RT2Tests.exe
+msbuild RT2App.sln -t:RT2SliceRunner -p:Configuration=Release -p:Platform=x64
+msbuild RT2App.sln -t:RT2SliceRunner -p:Configuration=Debug -p:Platform=x64
+.\run_script_test.ps1
+graphify update .
+```
+
+Also build the Release `RT2App` target so the interactive direct-import
+wiring is compiled. Do not touch the pre-existing whole-Debug RT2App
+NRD/NRI mismatch. The original 630 cases must remain green with only the
+explicit old/new expectation changes above; report the new total and both
+assertion counts. `run_script_test.ps1` must pass and print no asset
+diagnostic. Commit `GRAPH_REPORT.md` only if Graphify changes it. Do not
+push.
+
+#### Explicit non-goals
+
+- Do not remove `SceneAssetResolver::ResolvePath`, legacy `filepath`, or the
+  short `SceneLoader` adapters; that is step 7.
+- Do not build the W4 project scan/database owner or content browser.
+- Do not introduce schema v4, cache artifacts, texture editing UI, texture
+  deduplication, colour-space redesign, mip generation, GPU placeholder
+  logic, or hot reimport.
+- Do not modify renderer/Vulkan behavior or the known Debug RT2App
+  NRD/NRI configuration.
+- Stop after the step-6 implementation report and commit.
+
+#### Step 6 review amendment — four independently green commits
+
+Approved 2026-07-26 after implementation-plan review. This amendment
+**supersedes only** the earlier phrases "inside the step-6 commit" and
+"commit step 6 only." The production contract, decisions, authorized
+expectation table, discrimination matrix, verification requirements,
+non-goals, and stop-before-step-7 boundary remain unchanged.
+
+Step 6 lands as four ordered commits. Do not squash them: each is a recovery
+point, must build and test independently, and must leave the branch green
+before the next begins.
+
+| Commit | Scope | Independent green gate |
+|---|---|---|
+| **6.1 — carryovers and diagnostic truth** | Reclassify all three successful locator `Missing` advisories to `Stale`; update only the mechanically authorized severity expectations; add the successful-result/no-`Missing` invariant; add and validate committed `script-scenario.lua.rt2meta`; require clean scenario output. No texture representation or loader change. | Focused locator/fixture tests; full Release and Debug `RT2Tests`; both retain every original 630 case; `run_script_test.ps1` passes and prints no asset diagnostic. |
+| **6.2 — additive texture pipeline foundation** | Add `SceneTexture::ref`, exact placeholder helper, manifest/context/result types, CPU-only `TextureAssetPipeline.{h,cpp}`, capture-only callback implementation, and build wiring for RT2App/RT2Tests/RT2SliceRunner. Add unit tests for placeholder bytes, manifest keys/order and capture payloads. Nothing in `SceneLoader` switches to the new callback or consumes the new pipeline yet. | Existing behavior and all seven transitional texture expectations remain byte-for-byte unchanged; new foundation tests pass; full Release and Debug `RT2Tests` pass; Release and Debug slice targets build; Release RT2App builds. |
+| **6.3 — glTF cutover** | Atomically switch both glTF entry points from eager decode to the already-tested capture callback; route both glTF texture loops through the pipeline; thread owner/context/diagnostics through glTF callers in SceneAssetResolver, SceneManager, Walnut and the runner path; implement external/embedded identity, database dependency selection and placeholder containment. Rewrite only the four glTF rows in the authorized expectation table and add/prove the focused glTF cases. OBJ remains on its old path. | All glTF red/green proofs recorded; full Release and Debug `RT2Tests` pass; Release and Debug slice targets build; Release RT2App builds; script gate remains clean. |
+| **6.4 — OBJ cutover and Step 6 close** | Route both OBJ entry points through the shared manifest/resolver/decode stage; thread explicit-import context through remaining OBJ callers; rewrite only the three OBJ rows; add/prove OBJ sidecar, four-slot containment and final order-independence cases; remove no compatibility API. Append the complete Step 6 verification report and refresh Graphify. | All remaining red/green proofs recorded; every original 630 case plus all new cases pass in full Release and Debug suites; both slice targets and Release RT2App build; script gate passes cleanly; Graphify refreshed and `GRAPH_REPORT.md` committed only if changed. |
+
+The capture-only callback deserves an explicit boundary rule. Adding it in
+6.2 is additive; activating it is part of 6.3. Switching `SceneLoader` to
+capture-only before the pipeline consumes captured bytes would make the
+legacy glTF loops observe undecoded `image.image` data and would not be an
+independently green scaffold commit.
+
+Within each commit:
+
+1. implement the production slice;
+2. add/update only its authorized tests;
+3. perform and revert its discrimination faults;
+4. run its complete green gate from the repository root;
+5. inspect the diff and commit before starting the next slice.
+
+If any gate is red, stop on that commit's working tree; do not begin or
+partially stage the following commit. The Step 6 implementation report must
+list all four commit hashes, the per-commit test totals, and the
+discrimination proof associated with each recovery point. Do not push, and
+stop after 6.4 rather than continuing to step 7.
+
+### W3 step 6 implementation report — texture cutover complete
+
+Completed 2026-07-26 on `phase-6-scripting`. This report closes incremental
+step 6 only. Step 7 host cleanup and every later W3 step remain unstarted.
+
+#### Delivered recovery points
+
+| Slice | Commit | Green suite at the recovery point |
+|---|---|---|
+| 6.1 carryovers | `8238e79` | Release and Debug 632/632 cases, 144961/144961 assertions |
+| 6.2 pipeline foundation | `cb54d44` | Release and Debug 635/635 cases, 144996/144996 assertions |
+| 6.3 glTF cutover | `438b330` | Release and Debug 639/639 cases, 145175/145175 assertions |
+| 6.4 OBJ cutover and close | recorded by the following commit | Release and Debug 642/642 cases, 145315/145315 assertions |
+
+Step 6 added `SceneTexture::ref`, the CPU-only
+`TextureAssetPipeline.{h,cpp}`, exact placeholder construction, glTF
+capture-then-decode, and deterministic glTF/OBJ dependency manifests.
+Both glTF and OBJ entry points now use the shared database/locator,
+sidecar-assignment, decode, containment and diagnostic-sort path. External
+textures receive their own durable IDs in explicit-import mode; embedded
+glTF textures retain owner identity and never mint child sidecars.
+`SceneAssetResolver`, `SceneManager`, Walnut's synchronous/background paths
+and the slice-runner path pass explicit resolution context and one
+diagnostic sink. The short compatibility loaders remain and call the same
+structured implementation, as required until step 7.
+
+The tracked `tiny_textured.glb` fixture was found to encode the invalid
+schema value `bufferView: -1`. Its generator now writes a real PPM data URI,
+the binary fixture was regenerated, and the existing round-trip case
+continued to pass. This was a fixture correctness repair, not an expectation
+change.
+
+One build-configuration change was required and is flagged explicitly:
+Debug compilation of the enlarged `SceneLoader.cpp` exceeded the default
+COFF section limit (`C1128`). `/bigobj` is applied only to that translation
+unit in the Debug `RT2Tests` and `RT2SliceRunner` configurations, in both
+premake sources and the tracked test vcxproj. The Release configurations and
+RT2App link settings are unchanged. The pre-existing whole-Debug RT2App
+NRD/NRI mismatch was not touched.
+
+#### Authorized expectation changes
+
+No original case was removed, skipped or weakened. Only the seven rows
+authorized by the step-6 plan changed:
+
+| Case | Old | New |
+|---|---|---|
+| OBJ valid external | one decoded texture/index 0; no structured diagnostic | same decoded texture/index; populated `Texture` ref; one read-only `Stale` |
+| OBJ missing | no texture; index `-1`; no diagnostic | exact placeholder at index 0; one `Texture/Missing` |
+| OBJ malformed | no texture; index `-1`; console log only | exact placeholder at index 0; ordered `Texture/Stale`, then `Texture/Malformed` |
+| glTF valid external | decoded slot/index 0; no structured diagnostic | same decoded slot/index; populated ref; one read-only `Stale` |
+| glTF missing external | empty slot/index 0; warning only | exact placeholder/index 0; one `Texture/Missing` |
+| glTF malformed external | whole model failed with no retained geometry/material/texture | model succeeds; geometry/material retained; exact placeholder/index 0; ordered `Texture/Stale`, then `Texture/Malformed` |
+| glTF invalid source | empty slot/index 0 | exact placeholder/index 0; one `Texture/Unresolved` keyed `gltf:texture=0` |
+
+The separately authorized carryover changed successful identity-repair
+advisories from `Missing` to `Stale`; actual unresolved files remain
+`Missing`.
+
+#### Discrimination proofs
+
+Every temporary fault was applied to production or fixture behavior with
+`apply_patch`, the affected Release target was rebuilt where required, the
+case was observed red, the one fault was removed, and the case was observed
+green:
+
+| Recovery point | Temporary fault | Red observation | Restored green |
+|---|---|---|---|
+| 6.1 | successful no-sidecar resolve emitted `Missing` | invariant 0/1 cases, 14/16 assertions | 1/1, 16/16 |
+| 6.1 | committed scenario sidecar made malformed | fixture case 0/1, 2/3; scenario gate rejected the asset diagnostic | fixture 1/1, 10/10; scenario gate PASS |
+| 6.2 | placeholder returned an empty pixel vector | 0/1, 11/12 | focused foundation set green |
+| 6.2 | manifest sort skipped | 0/1, 8/14 | focused foundation set green |
+| 6.2 | capture payload discarded | 0/1, 7/9 | focused foundation set green |
+| 6.3 | placeholder returned an empty pixel vector | 1/5 cases, 203/217 assertions | 5/5, 217/217 |
+| 6.3 | captured embedded payload discarded | 0/1, 46/49 | restored focused case green |
+| 6.3 | database dependency lookup bypassed | 0/1, 39/52 | restored focused case green |
+| 6.3 | texture `Malformed` made model-fatal | 2/5 cases, 150/153 | 5/5, 217/217 |
+| 6.3 | external explicit `ResolveOrAssign` skipped | 0/1, 6/7 | restored focused case green |
+| 6.3 | embedded child sidecar minted | 0/1, 12/13 | restored focused case green |
+| 6.3 | structured `SceneTexture::ref` cleared | 0/1, 11/14 | restored focused case green |
+| 6.4 | placeholder returned an empty pixel vector | 2/4 cases, 160/166 | 4/4, 166/166 |
+| 6.4 | external explicit `ResolveOrAssign` skipped | 0/1, 6/7 | 1/1, 16/16 |
+| 6.4 | OBJ material binding skipped | 2/4 cases, 159/166 | 4/4, 166/166 |
+| 6.4 | final texture diagnostic sort disabled | 0/1, 47/48 | 1/1, 48/48 |
+
+#### Verified by running
+
+- From the repository root, the final Release and Debug `RT2Tests`
+  executables each passed 642/642 cases and 145315/145315 assertions. Thus
+  every original 630-case step-6 baseline case remained present and green.
+- `RT2SliceRunner` built in Release and Debug. `RT2App` built in Release.
+- `run_script_test.ps1` passed: 60 frames, one entity, no mismatches, and no
+  asset diagnostic.
+- `graphify update .` completed code extraction and rebuilt the graph at
+  33664 nodes, 70884 edges and 1388 communities. Its wrapper exceeded the
+  180-second command timeout after printing completion; no Graphify/uv/Python
+  refresh process remained. `GRAPH_REPORT.md` changed and is included.
+- The Phase 6 hard contract was checked both inside both full suites and by
+  named Release cases: empty scripts remain legal; syntax failure
+  quarantines only the affected instance; last-good descriptors survived
+  parse failure (8/8); resolver parse failure preserved authored values and
+  suppressed reconciliation (12/12); a mid-edit syntax error kept the live
+  callback; `rt2:reload()` did not re-enter; self-rescheduling timers and
+  input bindings remained live. The combined named contract selection
+  passed 7/7 cases and 39/39 assertions. The 60-frame scenario additionally
+  exercised the bound entity through the slice-runner consumer.
+- `git diff --check` was clean after all temporary faults were removed.
+
+#### Assumed or intentionally not run
+
+- Whole-Debug `RT2App` was intentionally not linked because its existing
+  NRD/NRI mismatch is explicitly out of scope; no inference of a green
+  whole-Debug app is made.
+- No GPU/render-quality claim is made. CPU suites, both slice builds and the
+  Release application build verify linkage and loader behavior; they do not
+  replace an interactive GPU run.
+- No machine-local Downloads asset is used as evidence for texture
+  correctness. Such optional legacy tests may still execute when their
+  local files exist, but all new evidence uses generated or committed
+  project fixtures.
+
+### W3 step 7 implementation plan — complete host wiring
+
+Approved with amendments 2026-07-26 and grounded against commit `591a76e` on
+`phase-6-scripting`. This is the implementation plan for incremental step 7
+only. No step-7 production code has started. The unrelated UI and render-loop
+commits `113ec7d`, `deb7ee2` and `591a76e` were allowed to land before
+grounding; concurrent UI/render work and the untracked `.claude/` directory
+are not part of this work and must not be touched.
+
+Review approved S7-Q1, S7-Q2, S7-Q3 and S7-Q6 as written; amended S7-Q4 and
+S7-Q5; and settled the remaining healthy-asset diagnostic/gate policy as
+S7-Q7. The decisions below are final implementation instructions.
+
+#### Boundary and completion claim
+
+Step 7 completes W3 host wiring and removes only the compatibility paths that
+were deliberately retained while models, environments, scripts and textures
+were cut over. It does not start step 8 final verification or W4 project
+database ownership.
+
+At completion:
+
+- a relative `AssetReference::path` can reach the filesystem only through an
+  explicit absolute `AssetResolutionContext::assetRoot`;
+- the four format-loader entry points have one context-aware form each, with
+  `TextureAssetLoadContext::resolvedOwnerPath` as the sole physical model
+  path and one required `AssetDiagnostic` sink;
+- `SceneAssetResolver::ResolvePath`, all four short `SceneLoader` adapters,
+  their CWD-derived context helper, and the recovery CWD convenience overload
+  no longer exist;
+- direct-import, recovery, script binding, runtime reload and watcher hosts
+  either provide an explicit absolute root/path or fail loudly without
+  consulting process CWD;
+- `SceneTexture::ref` is authoritative and the temporary `filepath` mirror is
+  removed;
+- native save remains available for legitimate cross-volume assets, but every
+  non-portable retained absolute reference emits a distinct `NonPortable`
+  advisory that reaches the editor status surface; glTF export never writes
+  an absolute texture URI it cannot relativize;
+- a fully healthy asset emits no diagnostic, advisory severities sort before
+  terminal failures, and the script scenario gate fails only on severity
+  `Missing` or higher;
+- every Phase 6 scripting behavior remains a hard contract.
+
+Step 8 remains separately observable work: whole-solution verification,
+final report, Graphify refresh and the final W3 close. Step 7 still runs its
+own full per-commit gates; that does not silently consume step 8.
+
+#### Grounded findings
+
+| ID | Fact at `591a76e` | Step-7 consequence |
+|---|---|---|
+| S7-F1 | `AssetResolutionContext::assetRoot` is documented as absolute and the locator says it has no CWD fallback (`RT2App/src/AssetResolver.h:101-107`), but `ResolvePathNoCwd` forms `assetRoot / p` and calls `exists`/`is_regular_file` without rejecting an empty or relative root (`RT2App/src/AssetResolver.cpp:24-47`). `Resolve` computes that candidate before ID policy (`:101-112`). The unused `NormalizeResolved` helper's comment says “Make absolute against the asset root” immediately above `return lex;`, which returns it relative (`:10-22`). | This is the codebase's characteristic silent-failure mode: names/comments promise an invariant while unchecked filesystem behavior violates it without a diagnostic. Root validation must live at the shared locator boundary; delete the misleading dead helper and record this finding explicitly in the implementation report. |
+| S7-F2 | The generic locator already has a discriminative no-CWD case for an unrelated **absolute** root and a CWD decoy (`RT2Tests/src/Phase7W3LocatorTests.cpp:526-568`), but it does not cover empty or relative roots. | Add the missing cells; the existing test is not evidence for the newly found hole. |
+| S7-F3 | `SceneAssetResolver::ResolvePath` remains declared at `RT2App/src/SceneAssetResolver.h:102-104` and defined at `RT2App/src/SceneAssetResolver.cpp:106-131`. Its final branch tries the raw relative path and calls `fs::absolute`, but `rg` finds no production or test caller. | Delete the declaration and definition. Do not preserve a forwarding wrapper around `Resolve`. |
+| S7-F4 | `SceneLoader` still exposes four short entry points beside the structured forms (`RT2App/src/SceneLoader.h:20-25`, `:31-36`, `:39-44`, `:60-68`). Their definitions call `MakeCompatibilityTextureContext` (`RT2App/src/SceneLoader.cpp:39-57`, `:508-516`, `:1278-1286`, `:1906-1914`, `:2398-2408`). | Migrate every caller first, then remove all four short declarations/definitions and the helper. |
+| S7-F5 | Even the structured loader path overwrites the supplied `resolvedOwnerPath` with `fs::absolute(filepath)` (`RT2App/src/SceneLoader.cpp:59-67`). A relative `filepath` can therefore select a CWD file while the supposedly authoritative context names another root. | Remove the redundant `filepath` parameter from structured entry points. The already-absolute context path becomes the only parse path; mismatch cannot be represented. |
+| S7-F6 | Production callers already pass structured contexts and sinks: `SceneAssetResolver` (`RT2App/src/SceneAssetResolver.cpp:451-473`), `SceneManager` (`RT2App/src/SceneManager.cpp:263-285`, `:512-568`), Walnut synchronous/background routes (`RT2App/src/WalnutApp.cpp:263-282`, `:2276-2289`, `:2392-2395`) and the recovery slice through `SceneManager` (`RT2SliceRunner/src/Main.cpp:140-154`). | The cutover is an API contraction, not a new texture behavior. These callers only need to make the context path authoritative. |
+| S7-F7 | `SceneManager::MakeExplicitTextureContext` and Walnut's duplicate helper call `std::filesystem::absolute` on the raw host input (`RT2App/src/SceneManager.cpp:109-125`; `RT2App/src/WalnutApp.cpp:1577-1593`). | Direct-import hosts must reject a relative physical path with a `Model/Malformed` diagnostic. They may lexically normalize or weakly canonicalize an already-absolute path, but may not call `absolute` to invent a root. |
+| S7-F8 | Six test files still call short loaders with repo-relative or machine-absolute strings: `RT2Tests/src/EcsSceneLoaderTests.cpp:14-127`, `GltfGeometryTests.cpp:46-336`, `GltfSaveGeometryTests.cpp:57-286`, `SceneLoaderTests.cpp:177-507`, and the optional machine-local cases in `BuildGpuFromEcsTests.cpp:17-182`. `Phase7W3CharacterizationTests.cpp:1556-1900` already demonstrates explicit contexts. | Add one test-only context builder requiring an explicit root, migrate all short calls without changing their resource assertions, and retain the machine-local cases only as optional legacy coverage—not Step-7 evidence. |
+| S7-F9 | `SceneTexture` has both `filepath` and `ref`, with a comment that the mirror lasts through step 7 (`RT2App/src/SceneTypes.h:94-99`). The pipeline writes both (`RT2App/src/TextureAssetPipeline.cpp:295-312`, `:373-390`, `:474-480`), glTF export reads only `filepath` (`RT2App/src/SceneLoader.cpp:175-185`), and seven test assertions pin the mirror (`RT2Tests/src/Phase7W3TexturePipelineTests.cpp:19-27`, `Phase7W3CharacterizationTests.cpp:1578-1609`, `SceneLoaderTests.cpp:346-349`, `:445-448`, `SceneTextureTests.cpp:16-23`). | Remove only `SceneTexture::filepath`; switch export and assertions to `ref.path`. `SceneMesh::filepath` at `SceneTypes.h:34-40` is a different, currently unused legacy field and is not authorized by this step. |
+| S7-F10 | The explicit recovery overload accepts a logical asset root, but the compatibility overload derives it from `current_path` (`RT2App/src/SceneRecoveryService.h:56-69`; `SceneRecoveryService.cpp:184-198`). The explicit implementation also falls back to `current_path` when its root is empty (`SceneRecoveryService.cpp:262-274`). Only two recovery tests still use the short overload (`RT2Tests/src/RecoveryTests.cpp:123-137`, `:186-200`); Walnut and RT2SliceRunner already pass explicit roots (`RT2App/src/WalnutApp.cpp:1544-1554`; `RT2SliceRunner/src/Main.cpp:212-221`). | Remove the short overload, migrate those two tests, and keep empty/non-absolute logical root as `InvalidArgument` for an untitled dirty snapshot. The production Walnut host must make that guard a never-happens invariant by supplying a created absolute per-user recovery asset root. Clean documents may still return “no snapshot” before validation because no filesystem work is attempted. |
+| S7-F11 | Walnut's `UntitledAssetRoot` returns the configured project root, then falls back to process CWD (`RT2App/src/WalnutApp.cpp:2597-2604`). The same helper feeds autosave (`:1547-1554`) and Enter Play's script context (`:2697-2703`), although their no-project policies now differ. The watcher accepts `resolvedPath` from either a result or the last diagnostic and adds its parent without requiring it to be absolute (`:3000-3039`). `%LOCALAPPDATA%` access already exists at `WalnutApp.cpp:2621-2627`. | Split recovery-root and script-root selection. Untitled autosave receives an ensured absolute `%LOCALAPPDATA%\RT2\recovery` root; scripts still receive only saved-scene/project root or empty. Remove the CWD fallback, reject relative watch candidates and preserve legacy absolute script references. |
+| S7-F12 | Script Inspector resolution already uses an explicit scene/dialog root and the shared adapter (`RT2App/src/SceneEditorUI.cpp:1678-1699`); background field reconciliation, runtime, watcher and the runner already share `AssetResolutionContext` and `AssetDiagnostic` sinks (`RT2App/src/WalnutApp.cpp:2902-2951`, `ScriptFieldResolver.cpp:14-89`, `ScriptSystem.cpp:755-819`, `RT2SliceRunner/src/Main.cpp:522-530`). | Preserve these routes. Step 7 is an audit/contract cleanup, not another scripting cutover. |
+| S7-F13 | Explicit script binding still uses the script-only lexical `ResolveAuthoredScriptPath` helper (`RT2App/src/SceneManager.cpp:94-107`, `:3673-3711`) before `ResolveOrAssign`. It correctly avoids CWD when the scene has no source path, but it bypasses locator kind/ID/sidecar policy. | Replace the lexical existence check with `ResolveScriptAssetPath`; mint/reuse through `ResolveOrAssign` only after successful shared resolution. Missing scripts remain bindable and unminted, preserving watcher recovery/quarantine behavior. |
+| S7-F14 | `ScriptSystem::ReloadScript` accepts any path and `weakly_canonical` therefore resolves a relative manual path through CWD (`RT2App/src/ScriptSystem.cpp:257-273`). Legitimate sources are already absolute: efsw emits absolute paths, `BuildEnvironment` stores the locator result (`:789-810`), and `rt2.reload()` queues that stored path (`:849-860`). | Reject a relative reload request with a `Script/Malformed` diagnostic and no cache/live-instance mutation. Absolute native-separator matching remains unchanged. |
+| S7-F15 | Native save still turns relative inputs into absolute paths and, when drives differ, intentionally persists the absolute result (`RT2App/src/SceneSerializer.cpp:250-280`). The Windows case explicitly expects success and `"Z:/external/move.lua"` (`RT2Tests/src/SceneSerializerTests.cpp:1037-1060`). `SceneSerializer::Save`/`SaveTo` expose only `Error&`, so a successful save has no diagnostic route (`RT2App/src/SceneSerializer.h:77-91`; `SceneSerializer.cpp:1406-1420`). Walnut reports only success/failure and overwrites the status with `"Saved"`/`"Saved As"` (`RT2App/src/WalnutApp.cpp:3107-3158`). glTF export writes a texture URI directly (`RT2App/src/SceneLoader.cpp:175-185`). | Native cross-volume save must remain successful but become visibly advisory. Add a required save diagnostic sink, a distinct `NonPortable` severity, exhaustive formatting and a Walnut status message. The glTF export rule remains stricter because export failure does not make the authoring document unsaveable. |
+| S7-F16 | The step-6 close report records Release and Debug at 642/642 cases and 145315/145315 assertions; review independently confirmed that baseline at `591a76e`. Both slice targets and Release RT2App built and the script gate passed cleanly (`docs/game-engine-development-plan.md`, “W3 step 6 implementation report”). | Every one of those 642 cases remains present and green. New totals are measured rather than predicted. |
+| S7-F17 | `AssetDiagnostic::Severity` currently uses declaration order `Missing`, `Malformed`, `Unresolved`, `Conflict`, `Stale` (`RT2App/src/AssetResolver.h:79-90`), while diagnostic sorting separately ranks `Stale` before terminal failures (`AssetResolver.cpp:83-94`). Format switches are repeated in SceneLoader, SceneManager and two Walnut paths. | Make advisory-versus-terminal ordering executable in the enum and one shared exhaustive name helper: `Stale=0`, `NonPortable=1`, `Missing=2`, `Malformed=3`, `Unresolved=4`, `Conflict=5`; both advisories receive severity rank 0. |
+| S7-F18 | `run_script_test.ps1:73-75` fails on any `[ScriptScenario] Asset diagnostic:` line, while RT2SliceRunner prints the numeric severity (`RT2SliceRunner/src/Main.cpp:559-567`). This treats a repair/portability advisory as a scripting regression. | Parse the printed severity and fail only when it is greater than or equal to `Missing`. A fully healthy scenario still emits no diagnostic; advisory-pass and terminal-fail behavior both require discrimination proofs. |
+
+#### Settled implementation decisions
+
+| ID | Approved decision |
+|---|---|
+| S7-Q1 — locator root contract | Perform ID lookup before reference-path fallback. Ambiguity remains `Conflict` regardless of root. Before sending **any relative physical candidate** to the filesystem—either a project-relative database `sourcePath` or `AssetReference::path` fallback—require a non-empty absolute `assetRoot`; otherwise fail with one contextual `Malformed` diagnostic whose detail is exactly `"relative asset reference requires an absolute asset root"`. A unique database record whose source path is already absolute may still win without consulting an unused root. Absolute legacy references remain accepted without deriving anything from CWD. Every successful result is absolute and normalized. Amend `AssetResolver.h` to describe this executable contract. |
+| S7-Q2 — one loader path | Replace each `(ecs, filepath, context, diagnostics)` form with `(ecs, context, diagnostics)` (plus `ImportSettings` where applicable). `context.resolvedOwnerPath` is the physical input passed to TinyGLTF/tinyobj. It must be non-empty and absolute before parse or identity assignment; invalid input emits one `Model/Malformed`, returns the entry point's existing failure value, and mutates no scene/sidecar. Remove all short overloads rather than marking them deprecated or deleted. |
+| S7-Q3 — host-owned direct paths | OS dialog/CLI/direct-import hosts must supply an absolute path. `SceneManager` and Walnut share a small pure context-builder in `TextureAssetPipeline.h`; it normalizes an already-absolute path, fills model ref/root/mode/provider, and appends `Model/Malformed` on invalid input. It never probes CWD or mints. Existing parse-time explicit-import code remains the sole owner of `ResolveOrAssign`. |
+| S7-Q4 — script/recovery no-root behavior | Missing script files remain legal authored bindings, but relative bindings cannot be resolved or watched until the host has a saved-scene/project root. Relative `ReloadScript` calls are rejected. Recovery and scripts use separate host-root policies: untitled recovery uses an ensured absolute `%LOCALAPPDATA%\RT2\recovery` root (an absolute configured project root still wins), while the script context remains empty without scene/project ownership. Add CPU-testable `SceneRecoveryService::EnsureUntitledRecoveryAssetRoot(localAppData, outRoot, err)`; Walnut owns environment access and passes `%LOCALAPPDATA%`, while tests pass a temp base. `MaybeSnapshot` keeps its empty/non-absolute `InvalidArgument` guard as a never-happens production invariant. Failure to obtain/create the per-user root is loud through the existing autosave `Error`/status path and never falls back to CWD. |
+| S7-Q5 — non-portable persistence | W3-Q8 governs paths the **resolver derives**; it does not make a legitimate multi-volume authoring document unsaveable. Native save keeps the existing normalized absolute fallback, succeeds atomically, and appends exactly one `NonPortable` diagnostic per offending asset reference. Change `SceneSerializer::Save` and `SaveTo` to require `std::vector<AssetDiagnostic>&`; migrate every caller rather than retaining a sink-less overload. Add tested `FormatNonPortableAssetSummary`; Walnut logs the diagnostic and, after a successful save, shows `"Saved with " + summary` in `m_LastStatusMsg` instead of overwriting it with plain `"Saved"` (one warning names the ref; multiple warnings include the count and first sorted ref). Recovery propagates save diagnostics to Walnut's autosave log/status path. glTF export still relativizes an absolute `SceneTexture::ref.path` to the output parent and returns false if it cannot; it never writes the absolute URI. |
+| S7-Q6 — compatibility representation | Remove `SceneTexture::filepath` in this step. `ref.kind == Texture` and `ref.path` are the only source identity. Placeholder bytes, decoded cache fields, material indices, colour-space flags and native scene `textures: []` behavior do not change. Do not remove `SceneMesh::filepath` or redesign native texture serialization. |
+| S7-Q7 — healthy assets and diagnostic threshold | A fully healthy asset emits zero diagnostics. `Stale` remains limited to successful resolution with actual path/identity/database repair state; `NonPortable` is limited to successful persistence of an absolute fallback. Give explicit enum values `Stale=0`, `NonPortable=1`, `Missing=2`, `Malformed=3`, `Unresolved=4`, `Conflict=5`, keep `Missing` as the default member value, and expose shared `AssetDiagnosticSeverityName`/`IsTerminalAssetDiagnostic` helpers. `AssetDiagnosticSortKey` assigns both advisories rank 0. All formatters use the shared exhaustive name helper. For every scenario diagnostic line, `run_script_test.ps1` must parse `severity=<integer>`, fail loud if the field is absent/malformed, and fail the gate only when the value is `>= Missing`; a healthy scenario still prints no asset diagnostic. |
+
+#### Exact API and implementation shape
+
+The final public loader surface is:
+
+```cpp
+static bool LoadIntoECS(
+    ECSScene&,
+    const rt2::core::TextureAssetLoadContext&,
+    std::vector<rt2::core::AssetDiagnostic>&);
+
+static entt::entity ImportIntoECS(
+    ECSScene&,
+    const rt2::core::TextureAssetLoadContext&,
+    std::vector<rt2::core::AssetDiagnostic>&);
+
+static bool LoadObjIntoECS(
+    ECSScene&,
+    const rt2::core::TextureAssetLoadContext&,
+    std::vector<rt2::core::AssetDiagnostic>&);
+
+static entt::entity ImportObjIntoECS(
+    ECSScene&,
+    const ImportSettings&,
+    const rt2::core::TextureAssetLoadContext&,
+    std::vector<rt2::core::AssetDiagnostic>&);
+```
+
+No default context, optional diagnostic pointer, implicit-root overload or
+adapter is retained. `SceneLoader::Save` remains separate because it is an
+export operation.
+
+The diagnostic severity and persistence surfaces become:
+
+```cpp
+enum Severity : uint8_t
+{
+    Stale      = 0,
+    NonPortable = 1,
+    Missing    = 2,
+    Malformed  = 3,
+    Unresolved = 4,
+    Conflict   = 5,
+};
+
+const char* AssetDiagnosticSeverityName(AssetDiagnostic::Severity);
+bool IsTerminalAssetDiagnostic(AssetDiagnostic::Severity);
+std::string FormatNonPortableAssetSummary(
+    const std::vector<AssetDiagnostic>&);
+
+static bool SceneSerializer::Save(
+    const SceneDocument&, const std::filesystem::path&,
+    std::vector<AssetDiagnostic>&, Error&);
+static bool SceneSerializer::SaveTo(
+    const SceneDocument&, const std::filesystem::path&,
+    const std::filesystem::path& logicalScenePath,
+    std::vector<AssetDiagnostic>&, Error&);
+```
+
+The sink-less serializer overloads are removed. The explicit
+`SceneRecoveryService::MaybeSnapshot` overload likewise gains a required
+`std::vector<AssetDiagnostic>&` immediately before `Error&`; it forwards the
+sink to `SaveTo`. `SaveInternal` stages its diagnostics locally and appends
+them to the caller only after the atomic save succeeds; a failed save leaves
+both the existing output and caller diagnostic prefix unchanged. The
+successful batch is stable-sorted with `AssetDiagnosticSortKey` before
+append.
+
+`RebasePath` returns both the stored path and whether the normalized absolute
+fallback was retained. Its caller has the asset/entity context and appends:
+
+```text
+severity:     NonPortable
+kind:         the AssetReference kind
+refPath:      the original authored path
+resolvedPath: the normalized absolute path written
+entity:       referring entity UUID/name, or nil/empty for environment
+sourceKey:    the original AssetReference source key
+detail:       asset path could not be made relative to the output scene;
+              saved as a normalized absolute path
+```
+
+This is one advisory per non-portable serialized reference. It does not
+change the bytes written today. Walnut calls the required sink overload,
+formats every entry through `AssetDiagnosticSeverityName`, logs it, and
+preserves the S7-Q5 warning in the visible status line after save. Autosave
+uses the same diagnostic path.
+
+The implementation is ordered as follows:
+
+1. Make severity ordering explicit, add the shared exhaustive severity-name
+   and terminal-threshold helpers, update all consumers, and change the
+   script gate to severity `>= Missing`. Pin zero diagnostics for fully
+   healthy resolution before adding either new Step-7 diagnostic path.
+2. Refactor generic `Resolve` so ID lookup does not depend on computing a
+   reference-path fallback candidate. Validate the root before any relative
+   database or fallback path reaches the filesystem, make invalid-root
+   diagnostics deterministic, and delete the unused `NormalizeResolved`.
+3. Add `RT2Tests/src/SceneLoaderTestSupport.h`. Its builder takes an explicit
+   absolute root and a model path, constructs a read-only context, and exposes
+   the diagnostics to the test. Repo-relative committed fixtures must pass
+   the repository root explicitly; generated temp fixtures use their already
+   absolute parent. Migrate every short-loader test call while adapters still
+   exist.
+4. Add the shared explicit-import context builder to the existing CPU-only
+   texture pipeline header/source. Route `SceneManager`, Walnut and the
+   slice-runner-through-manager path through it.
+5. Change all four structured loaders to consume only
+   `resolvedOwnerPath`. Validate before TinyGLTF/tinyobj parse and before
+   `ResolveOrAssign`; do not overwrite the supplied context after parse.
+6. Delete `MakeCompatibilityTextureContext`, four short loader
+   declarations/definitions and `SceneAssetResolver::ResolvePath`.
+7. Delete `SceneRecoveryService::MaybeSnapshot(doc, revision, err)` and its
+   CWD fallback; add the required diagnostic sink and the injectable
+   `EnsureUntitledRecoveryAssetRoot` helper. Split Walnut recovery-root
+   selection from script-root selection. Ensure/create the absolute
+   `%LOCALAPPDATA%\RT2\recovery` root for untitled autosave, while an
+   unsaved/no-project script context remains empty. Keep and test the
+   recovery service's invalid-root guard.
+8. Make watcher directory selection accept only absolute candidates; reject
+   relative `ReloadScript`; replace `ResolveAuthoredScriptPath` with the
+   shared script adapter before explicit ID assignment.
+9. Remove `SceneTexture::filepath`, stop writing the mirror in every pipeline
+   branch and make glTF export read/relativize `ref.path`. Add required native
+   save sinks, emit/render `NonPortable` without changing cross-volume save
+   success or bytes, and keep glTF export failure for an unrelativizable URI.
+10. Run the Step-7 close gate, append the implementation report, and stop.
+   Do not start step 8.
+
+#### Authorized old/new expectations
+
+No existing test is deleted, skipped or weakened. These are the only
+authorized changes; every assertion not listed here must retain its current
+meaning.
+
+| Surface | Old expectation | New expectation and authority |
+|---|---|---|
+| Relative ref + empty/relative root | May resolve a matching process-CWD file because `assetRoot / ref` remains relative. | Fails with one `Malformed`; W3-Q8 and S7-Q1. |
+| Short loader calls | Repo-relative `filepath` alone compiles and derives a context from CWD. | No such overload exists; tests name an explicit root/context while retaining all resource assertions; step-6 S6-D13 deferral and S7-Q2. |
+| Structured loader path mismatch | Separate `filepath` silently overwrites `context.resolvedOwnerPath`. | Mismatch is unrepresentable; the context path is authoritative; S7-Q2. |
+| Relative direct-import path | `SceneManager`/Walnut call `absolute` and select a CWD file. | Fails before parse/mint with `Model/Malformed`; S7-Q3. |
+| Untitled recovery with no project root | Compatibility/empty-root forms use process CWD. | Walnut supplies an ensured absolute `%LOCALAPPDATA%\RT2\recovery` logical root; the short API is absent and the service still rejects an invalid explicit root; amended S7-Q4. |
+| Untitled relative script with no source/project root | Enter Play and watcher inherit process CWD. | Resolution is `Malformed`, no relative directory is watched, binding remains authored/unminted; S7-Q4. |
+| Relative `ReloadScript` | `weakly_canonical` interprets it against CWD. | One `Script/Malformed`, no cache clear, queue or live swap; S7-Q4. |
+| Matching non-nil ID/path sidecar with `database == nullptr` | Successful path verification also emits `Stale` `"database stale"` even though pre-W4 intentionally has no database. | Successful resolve with zero diagnostics; only a supplied database that misses the confirmed ID is stale; S7-Q7. |
+| Script scenario diagnostic gate | Any asset diagnostic line fails the gate. | `Stale`/`NonPortable` advisories are printed but do not fail; severity `Missing` or higher fails; S7-Q7. |
+| `SceneTexture::filepath` assertions | Mirror equals `ref.path`; glTF export reads the mirror. | Mirror does not exist; the same path assertions target `ref.path`, and export URI is driven by `ref.path`; step-6 S6-D1 deferral and S7-Q6. |
+
+Empty scripts, missing-script authored bindings, texture placeholder bytes,
+texture containment, material slot/index values, geometry, field values,
+reload state and diagnostic ordering are not authorized to change.
+
+The Windows cross-volume native-save expectation is deliberately **not** in
+the table because it does not change: `SceneSerializerTests.cpp:1037-1060`
+continues to require successful save and the same normalized
+`"Z:/external/move.lua"` JSON path. It gains assertions for exactly one
+`NonPortable` diagnostic with the context/detail above. Healthy same-volume
+save gains a zero-diagnostic assertion.
+
+#### Permanent tests and discrimination proofs
+
+Every new behavior gets a permanent test and a temporary production fault.
+Use `apply_patch` for each fault, build/run only the affected selection to
+observe red, revert only that fault, rerun green, and record exact
+case/assertion counts in the implementation report.
+
+| Permanent evidence | Temporary fault that must make it fail |
+|---|---|
+| Severity policy: `Stale` and `NonPortable` are below `Missing`; every terminal severity is `>= Missing`; both advisories sort at rank 0; every value has the exact shared display name. A fully healthy resolve for each asset kind appends zero diagnostics. | Classify `NonPortable` as rank 1/terminal, or append `Stale` on the healthy-success branch. |
+| Locator: relative reference/database paths with empty or relative root cannot select a same-name CWD decoy; each produces the exact `Malformed`. Ambiguous-ID behavior, an absolute database claimant and normal absolute-root cases remain green. | Remove/defer the absolute-root guard so path fallback or a relative database record reaches `exists(relative)`. |
+| Loader: an invalid/non-absolute `resolvedOwnerPath` emits one `Model/Malformed`, leaves the target ECS unchanged and writes no sidecar. | Feed the path through `fs::absolute` before validation. |
+| API removal: all migrated loader tests build only through the final signatures. | Temporarily change one migrated call back to the old short signature and record the expected compile failure; restore it and rebuild green. This is the discrimination proof for an intentionally absent API. |
+| Resolver adapter removal: the repository audit finds no declaration, definition or call to `SceneAssetResolver::ResolvePath`; generic `Resolve` tests remain green. | Temporarily restore a compile-only call to `SceneAssetResolver::ResolvePath` and record that it cannot compile after removal. |
+| Recovery service: a due untitled snapshot with empty/relative logical root fails without creating a record even when a plausible scene asset exists in CWD; an explicit absolute root succeeds. Walnut root policy returns/creates absolute `%LOCALAPPDATA%\RT2\recovery` without a project and reports environment/create failure instead of CWD fallback. | Restore the `current_path` fallback; separately make the root-policy seam return empty for the no-project case. |
+| Watch policy: absolute successful/missing candidates yield their absolute parent; relative diagnostic candidates yield no watch directory. | Accept a relative candidate in the extracted watch policy. |
+| Script binding: a real relative script under an explicit scene root is resolved by the shared adapter and receives/reuses its sidecar ID; a missing script remains bindable with nil ID; a conflict is not silently remapped. | Restore the lexical `ResolveAuthoredScriptPath` existence check. |
+| Reload: absolute native-separator reload still matches; relative reload appends `Malformed` and changes neither live callback nor field-registry state. | Reintroduce `weakly_canonical` on the relative input before the guard. |
+| Texture representation/export: placeholder and decoded textures retain the same `ref`; glTF image URI comes from `ref.path`; no `filepath` field is referenced. | Clear/ignore `ref.path` when building the exported `tinygltf::Image`. |
+| Native save: cross-volume save succeeds with byte-for-byte unchanged normalized absolute JSON and exactly one contextual `NonPortable`; same-volume save succeeds with zero diagnostics; multiple warnings are sorted; a forced atomic-write failure preserves both output and diagnostic prefix. The sink-less `Save`/`SaveTo` calls no longer compile. | Suppress the `NonPortable` append while retaining the absolute fallback; append staged warnings before the forced write failure; separately change one migrated call back to the old sink-less signature for the compile-fail proof. |
+| Save presentation: the CPU-tested summary helper formats one/many sorted `NonPortable` diagnostics exactly; the shared severity formatter returns `"NonPortable"`; Walnut uses the summary for successful Save/Save As/autosave instead of a plain success status. | Break the one/many summary helper; separately restore Walnut's unconditional plain-success assignment after diagnostics and verify the source/app build no longer satisfies the surface wiring audit. |
+| glTF export: a same-volume absolute texture ref is written relative; a cross-volume ref returns false without creating/replacing output. | Write `ref.path` directly into `tinygltf::Image::uri`. |
+| Script gate: healthy tracked sidecar produces no line and passes; temporarily absent sidecar produces `Stale` and still passes; temporarily malformed sidecar produces `Malformed` and fails. | Restore the line-presence-only PowerShell condition. |
+
+After the proof table is green, run a source audit:
+
+```powershell
+rg -n "MakeCompatibilityTextureContext|SceneAssetResolver::ResolvePath|current_path|fs::absolute|filesystem::absolute|\.filepath" RT2App/src RT2SliceRunner/src RT2Tests/src
+rg -n "switch.*severity|case .*AssetDiagnostic::" RT2App/src RT2SliceRunner/src
+```
+
+Every remaining hit must be classified in the implementation report.
+Expected non-asset-policy hits such as the AppData fallback and recovery-path
+containment are not deleted merely to make the grep empty. `SceneMesh` is
+also explicitly out of scope. The severity audit must show one exhaustive
+shared name switch plus the rank switch; production presentation code must
+not retain private severity-name switches.
+
+#### Phase 6 hard-contract verification
+
+Run the full Release and Debug suites and also report these named cases
+explicitly so a green aggregate cannot hide the delicate scripting contract:
+
+| Contract | Direct evidence |
+|---|---|
+| Empty script is legal | `Phase 6A: empty script file is legal` (`RT2Tests/src/Phase6ALifecycleTests.cpp:863`). |
+| One script error quarantines only its instance | `Phase 6A: syntax error quarantines only the affected instance` (`Phase6ALifecycleTests.cpp:353`). |
+| Reflection retains last-good declarations; `parsed=false` suppresses reconciliation | `Phase6B W1: a syntax error yields last-good descriptors, not a throw` (`RT2Tests/src/Phase6BFieldsTests.cpp:474`) and `Phase6B W2: resolver parse failure preserves authored values exactly` (`:1062`). |
+| Failed hot reload never replaces live code | `Phase 6C: a mid-edit syntax error does not kill the running instance` (`RT2Tests/src/Phase6CScriptingTests.cpp:747`). |
+| `rt2.reload()` remains deferred | `Phase 6C: rt2:reload() from on_update does not re-enter` (`Phase6CScriptingTests.cpp:498`). |
+| Timers are unaffected | `Phase 6C: self-rescheduling timers survive vector reallocation` (`Phase6CScriptingTests.cpp:460`) plus reload/Stop timer cases at `:976` and `:1257`. |
+| Input and entity/component bindings are unaffected | Input at `Phase6CScriptingTests.cpp:1142`; light at `:1184`; material at `:1223`; camera failure containment at `:573`; the 60-frame scenario exercises the bound entity through RT2SliceRunner. |
+
+`run_script_test.ps1` remains the most important Step-7 gate. It must pass
+with no terminal asset diagnostic (`severity >= Missing`). A fully healthy
+tracked scenario still emits no diagnostic at all; an advisory is rendered
+but is not a scripting failure. A scripting contract failure stops the
+current commit; later cleanup does not begin.
+
+#### Four independently green commits
+
+Do not squash these recovery points. Each commit runs from the repository
+root and is green before the next starts.
+
+| Commit | Scope | Independent green gate |
+|---|---|---|
+| **7.1 — diagnostic/root foundations and caller migration** | Set explicit advisory/terminal enum values; add shared exhaustive name/threshold helpers; require and thread still-empty `Save`/`SaveTo` sinks; change the script gate threshold and prove healthy/advisory/terminal behavior; refactor locator fallback/root validation; add empty/relative-root decoy tests; add the test-only loader context builder; migrate every short loader test while leaving compatibility APIs in place. No `NonPortable` emission yet. | Full Release and Debug `RT2Tests`; every original 642 case remains green; both slice targets build; script gate healthy/advisory/terminal proofs pass. |
+| **7.2 — loader and model/texture host contraction** | Add the explicit-import context builder; make the four structured loaders context-path-only; update SceneAssetResolver, SceneManager, Walnut and runner reachability; delete the four short adapters, compatibility context helper and `SceneAssetResolver::ResolvePath`; perform compile-fail proofs. | Full Release and Debug `RT2Tests`; Release and Debug RT2SliceRunner; Release RT2App; script gate clean. |
+| **7.3 — script, watcher and recovery CWD removal** | Remove recovery convenience/fallback; add/test the per-user untitled recovery-root helper and forward save diagnostics; keep script root empty without scene/project ownership; enforce absolute watch directories; route explicit script binding through the shared adapter; reject relative reload; add all focused tests and Phase 6 proofs. | Full Release and Debug `RT2Tests`; both slice targets; Release RT2App; named Phase 6 selection; `run_script_test.ps1` clean. |
+| **7.4 — representation and persistence close** | Remove `SceneTexture::filepath`; switch pipeline/export/tests to `ref`; emit/sort/render native `NonPortable` advisories while retaining current cross-volume save success/bytes; make glTF export relativize-or-fail; add only the authorized assertions/gate change; run the final audit, refresh Graphify and append the Step-7 implementation report. | Full Release and Debug `RT2Tests`; both slice targets; Release RT2App; script gate; Graphify refresh; `git diff --check`. Stop before step 8. |
+
+No build-configuration change is expected: Step 7 adds no production
+translation unit and removes no currently linked source. If project,
+premake, compiler or linker settings change, flag the exact old/new value
+and why before committing. Do not touch the existing whole-Debug RT2App
+NRD/NRI mismatch.
+
+#### Step-7 verification gate
+
+Run from the repository root after every commit, with the app/script portions
+at least on commits whose scope names them, and run the complete block at
+7.4:
+
+```powershell
+msbuild RT2App.sln -t:RT2Tests -p:Configuration=Release -p:Platform=x64
+.\bin\Release-windows-x86_64\RT2Tests\RT2Tests.exe
+msbuild RT2App.sln -t:RT2Tests -p:Configuration=Debug -p:Platform=x64
+.\bin\Debug-windows-x86_64\RT2Tests\RT2Tests.exe
+msbuild RT2App.sln -t:RT2SliceRunner -p:Configuration=Release -p:Platform=x64
+msbuild RT2App.sln -t:RT2SliceRunner -p:Configuration=Debug -p:Platform=x64
+msbuild RT2App.sln -t:RT2App -p:Configuration=Release -p:Platform=x64
+.\run_script_test.ps1
+graphify update .
+git diff --check
+```
+
+All 642 pre-Step-7 cases must remain present and green in both
+configurations. Record the new case/assertion totals rather than assuming
+them. Do not use machine-local Downloads assets as evidence. Step 7 does not
+claim a green whole-Debug RT2App.
+
+Run Graphify at the Step-7 close because the repository instructions require
+a refresh after code changes; step 8 will run it again as part of final W3
+verification. Commit `GRAPH_REPORT.md` only if it actually changes.
+Generated ignored graph files are not committed.
+
+#### Explicit non-goals and stop condition
+
+- Do not start W3 step 8 or W4 project scanning/database ownership.
+- Do not add `project.rt2proj`, a content browser, cache artifacts, schema v4
+  migration, texture editing UI, hot reimport or GPU texture-policy work.
+- Do not change texture placeholder bytes, decode containment, geometry,
+  material ordering, renderer/Vulkan behavior or Phase 6 scripting semantics.
+- Do not remove `SceneMesh::filepath`, AppData fallback paths, or recovery
+  record containment normalization without a separate grounded scope.
+- Do not alter, delete, skip or weaken an existing test beyond the exact
+  authorized old/new table.
+- Do not touch unrelated UI/render work or the whole-Debug NRD/NRI mismatch.
+- Stop after the Step-7 implementation report and four commits. Do not push.
+
+The implementation report must separate **verified by running** from
+**assumed/not run**, list all four commit hashes and per-commit totals, quote
+every old/new expectation actually changed, record every red/green proof and
+classify every remaining path-audit hit. It must call out S7-F1 as an
+instance of the codebase's characteristic silent-failure mode, report the
+healthy/advisory/terminal scenario-gate observations separately, and show
+how a native `NonPortable` advisory was verified at both the serializer sink
+and the visible Walnut status/log surface.
+
+### Phase 7 W3 step 7 implementation report (2026-07-26)
+
+Grounded and implemented on `phase-6-scripting`, beginning at `591a76e`.
+This report closes step 7 only. Step 8 and W4 were not started.
+
+#### Delivered commits and independently green boundaries
+
+| Slice | Commit | Release / Debug result at its boundary |
+|---|---|---|
+| 7.1 — diagnostic/root foundations | `67f4951` | 646/646, 145,374 assertions in each configuration |
+| 7.2 — loader/host contraction | `fd18e7b` | 650/650, 145,409 assertions in each configuration |
+| 7.3 — script/watcher/recovery CWD removal | `5b0664d` | 655/655, 145,463 assertions in each configuration |
+| 7.4 — representation/persistence close | This report's commit (the Step-7 closing `HEAD`) | 659/659, 145,494 assertions in each configuration |
+
+The approved plan itself was recorded separately in `ec62842`. No build,
+project, premake, compiler or linker configuration changed.
+
+#### What changed
+
+- The generic locator now performs ID-first resolution and refuses to send a
+  relative database or fallback candidate to the filesystem without a
+  non-empty absolute asset root. Successful results are absolute and
+  normalized. The misleading `NormalizeResolved`, compatibility loader
+  context and `SceneAssetResolver::ResolvePath` paths were removed.
+- All four structured model loaders now take only an explicit
+  `TextureAssetLoadContext`; `resolvedOwnerPath` is the single physical
+  owner path. SceneManager, Walnut, RT2SliceRunner reachability and all tests
+  use the same explicit-import context builder. Relative direct-import
+  inputs fail before parse, mutation or sidecar assignment.
+- Diagnostic severity is an executable external contract:
+  `Stale=0`, `NonPortable=1`, `Missing=2`, `Malformed=3`,
+  `Unresolved=4`, `Conflict=5`. Presentation and terminal-threshold checks
+  are shared; healthy matching sidecars with no database emit no diagnostic.
+- Untitled recovery and scripting no longer share a process-CWD policy.
+  Recovery uses an ensured absolute `%LOCALAPPDATA%\RT2\recovery` logical
+  root (or an absolute configured project root); unsaved relative scripts
+  retain an empty root, remain authored/unminted, and are neither resolved
+  nor watched. Relative reload requests are rejected without clearing
+  reflection state, queueing work or swapping code.
+- Script binding now uses `ResolveScriptAssetPath` before identity assignment.
+  Existing sidecar identity is reused, missing files remain legal nil-ID
+  bindings, and conflicts are rejected rather than silently remapped.
+- `SceneTexture::filepath` was removed. `SceneTexture::ref` is the only
+  texture source identity in the CPU pipeline and glTF exporter. Export
+  writes relative normalized image URIs and fails before writing when an
+  absolute texture ref cannot be relativized to the output parent.
+- Native scene save still succeeds across Windows volumes and writes the
+  same normalized absolute JSON path, but now stages and, only after atomic
+  success, appends one contextual `NonPortable` advisory per offending
+  reference. Diagnostics are deterministically sorted. Recovery forwards
+  the same sink.
+- Walnut logs save/recovery diagnostics through the shared severity
+  formatter and preserves `"Saved[ As] with " + summary` or
+  `"Autosaved with " + summary` in the visible status rather than
+  overwriting the advisory with a plain success message.
+- The Phase 6A fixture writer was found to depend on its suite-order setup
+  test. A filtered empty-script run therefore wrote to a nonexistent
+  directory without checking the stream and then quarantined the instance.
+  The fixture root is now initialized absolutely, created on demand, and
+  every directory/file write fails loudly. The production empty-script
+  expectation was not changed.
+
+S7-F1 is a textbook instance of this codebase's characteristic silent
+failure mode: `ResolvePathNoCwd` was named and documented as prohibiting CWD
+fallback, while `assetRoot / ref` with an empty root silently performed
+exactly that lookup; `NormalizeResolved` was similarly documented as making
+a path absolute immediately above a lexical-only return. The fix made the
+promised invariant executable rather than relying on the name/comment.
+
+#### Authorized expectation changes actually made
+
+No existing case was deleted, skipped or weakened. The following old/new
+changes are the complete set:
+
+| Old | New |
+|---|---|
+| A relative ref with an empty/relative root could select a CWD file. | It fails with one contextual `Malformed`: `"relative asset reference requires an absolute asset root"`. |
+| Short loader calls accepted a filepath and derived ownership from CWD. | Those overloads do not exist; callers provide an explicit context/root. |
+| A separate loader filepath silently overwrote `context.resolvedOwnerPath`. | The duplicate parameter is removed, so mismatch is unrepresentable. |
+| Relative direct-import paths were made absolute against CWD. | They fail with `Model/Malformed` before parse/mint/mutation. |
+| Untitled recovery without a project used CWD. | Walnut supplies the ensured per-user recovery root; the service rejects an invalid explicit root. |
+| Untitled relative scripts inherited CWD for Play/watch. | They remain authored with nil identity and no watch directory until ownership exists. |
+| Relative `ReloadScript` was canonicalized against CWD. | It emits one `Script/Malformed` and changes no cache, queue or live code. |
+| Matching non-nil sidecar identity with `database == nullptr` emitted `Stale`. | It is a healthy successful resolve with zero diagnostics. |
+| Any script-scenario asset diagnostic failed the PowerShell gate. | `Stale`/`NonPortable` are advisory; `Missing` and above fail. |
+| Texture assertions/export used the `filepath` compatibility mirror. | The same path assertions and export URI use `ref.path`; the mirror is absent. |
+
+The cross-volume native-save value did **not** change:
+`"Z:/external/move.lua"` remains `"Z:/external/move.lua"` and save still
+returns true. The test only gained assertions for one contextual
+`NonPortable` advisory. No Phase 6 runtime expectation changed.
+
+#### Discrimination proofs
+
+Every temporary fault was applied with `apply_patch` (to production except
+for the intentional compile-only removed-API probes), observed red, reverted,
+and observed green:
+
+- 7.1: removing the absolute-root guard selected a CWD decoy; restoring
+  `Stale` on a healthy matching sidecar violated the zero-diagnostic case;
+  classifying `NonPortable` as terminal violated the threshold case.
+  Healthy scenario output passed with no diagnostic; a temporarily absent
+  sidecar printed `Stale` and passed; a malformed sidecar printed
+  `Malformed` and failed. All faults were reverted and the full boundary
+  returned to 646/646.
+- 7.2: feeding an invalid owner through CWD absolutization mutated the
+  invalid-context behavior; a temporary old two-argument loader call failed
+  compilation with C2660; a temporary
+  `SceneAssetResolver::ResolvePath` call failed with C2039. The final API
+  and full boundary returned green at 650/650.
+- 7.3: restoring recovery's CWD fallback made the invalid-root recovery case
+  write a record (four assertions red); returning an empty per-user recovery
+  root broke three helper assertions; accepting a relative watch candidate
+  broke the absolute-only watch case; restoring lexical script binding
+  minted a CWD-decoy sidecar; canonicalizing relative reload before the
+  guard swapped live code from v1 to v2. Each was reverted. The focused
+  Step-7.3 selection was 3/3 and 40 assertions green; recovery-root
+  selections were 2/2 and 16 assertions plus 1/1 and 6 assertions green.
+- 7.4: ignoring `ref.path` made both glTF export cases fail (2/2 red,
+  three failed assertions), including replacement of the sentinel output;
+  restored code passed 2/2 and 5 assertions. Suppressing persistence
+  advisories made the one-warning case fail at 0 versus 1 and the
+  three-warning case fail at 0 versus 3; restored selections passed 1/1
+  with 12 and 10 assertions. Publishing staged diagnostics before the
+  atomic replace made the prefix test fail at 2 versus 1; restored it passed
+  1/1 and 6 assertions. Warning on successful same-volume rebasing made the
+  healthy-save assertion fail; restored it passed 1/1 and 5 assertions. A
+  sink-less `Save` call failed compilation with C2660, then rebuilt green
+  after restoration. Corrupting the one-warning summary failed 1/1 at one
+  assertion; restoration passed 1/1 and 3 assertions. Restoring Walnut's
+  unconditional plain-save assignment made the save-warning source wiring
+  audit red; restoration found both Save/Save As and autosave summary
+  assignments. The complete new Step-7.4 selection passed 4/4 and 21
+  assertions.
+
+#### Phase 6 hard-contract verification
+
+The final Release named selections were executed independently, so aggregate
+order could not mask the scripting contract:
+
+- Empty script legal: 1/1, 4/4 assertions.
+- Syntax error quarantines only the affected instance: 1/1, 7/7.
+- Last-known-good declarations: 1/1, 8/8.
+- `parsed=false` preserves authored values and suppresses reconciliation:
+  1/1, 12/12.
+- Failed hot reload does not replace live code: 1/1, 5/5.
+- `rt2.reload()` remains deferred: 1/1, 4/4.
+- Timers: self-reschedule 4/4, reload cancellation 4/4, Stop containment
+  5/5.
+- Bindings: input 3/3, camera failure containment 6/6, light 3/3 and
+  material bounds containment 3/3.
+- `run_script_test.ps1`: PASS, 60 frames, one entity, no mismatches and no
+  asset diagnostic.
+
+This explicitly verifies that empty source remains legal; quarantine remains
+per-instance; failed reflection retains last-known-good data without
+reconciliation; failed reload never swaps live code; reload remains
+deferred; and timers/input/entity-component bindings are unchanged.
+
+#### Source-audit classification
+
+- `MakeCompatibilityTextureContext`, `SceneAssetResolver::ResolvePath` and
+  `.filepath` have zero hits in the Step-7 source/test audit.
+- `current_path` in `FixtureTests`, `Phase1ASceneAssetTests` and
+  `SceneLoaderTestSupport` names explicit repository-root test fixtures.
+  Phase 6C `absolute/current_path` hits construct explicit test inputs and
+  CWD decoys; they are not production fallback.
+- `SceneRecoveryService` absolute/canonical hits create document IDs and
+  enforce recovery-record containment. They do not choose an asset root.
+- `SceneSerializer` absolute hits preserve the existing native-save
+  rebasing/byte contract, including the advisory cross-volume fallback; they
+  are persistence behavior, not resolver fallback.
+- Walnut's remaining `current_path()/RT2Editor` is the explicitly out-of-
+  scope non-asset editor-settings fallback.
+- The severity audit contains exactly the shared exhaustive display-name
+  switch and the deterministic sort-rank switch; no private presentation
+  switch remains.
+- `SceneMesh::filepath` remains declared and untouched as explicitly
+  required; no `SceneTexture::filepath` declaration or use remains.
+
+#### Verified by running
+
+- Release: RT2App, RT2Tests and RT2SliceRunner built; RT2Tests passed
+  659/659 and 145,494/145,494 assertions from repository root.
+- Debug: RT2Tests and RT2SliceRunner built; RT2Tests passed 659/659 and
+  145,494/145,494 assertions from repository root.
+- The named Phase 6 selections and 60-frame scripting scenario above.
+- All red/green discrimination proofs described above.
+- Native `NonPortable` at the serializer sink: unchanged successful
+  cross-volume JSON plus exact severity/kind/ref/resolved/entity/source/detail;
+  deterministic three-warning order; zero warnings for healthy same-volume;
+  no publication on locked-target failure.
+- Walnut presentation at the source/build surface: the shared formatter is
+  called after successful save/recovery, diagnostics are logged, the warning
+  assignments survive the source audit, and Release RT2App links.
+- `graphify update .`: 33,768 nodes, 71,052 edges, 1,389 communities;
+  tracked `GRAPH_REPORT.md` changed and is included.
+- `git diff --check` was clean at close.
+
+#### Assumed / not run
+
+- Whole-Debug RT2App was intentionally not built; the pre-existing NRD/NRI
+  mismatch was not touched.
+- No interactive Walnut GUI session was launched. Visible status behavior is
+  verified by focused formatter tests, source-wiring discrimination and the
+  Release app build, not by a manual click-through.
+- The Windows cross-volume condition uses an unmounted `Z:` lexical path, as
+  the established test does; no physical second volume or machine-local
+  Downloads asset was used.
+- No push was performed.
+
+### W3 step 8 — whole-solution verification and W3 close
+
+Run 2026-07-26 against `90cf7b5` plus the build fix recorded below. This is
+the final W3 step; W4 project database ownership was not started.
+
+#### Whole-solution build (the point of this step)
+
+Step 8 exists to build targets that per-step gates deliberately skipped.
+It found one regression that every prior step had missed.
+
+**RT2App Debug did not compile.** `SceneLoader.cpp` failed with
+`fatal error C1128: number of sections exceeded object file format limit:
+compile with /bigobj`. Step 6.2 added Debug-only `/bigobj` for this file to
+`RT2Tests` and `RT2SliceRunner`, but deliberately left RT2App's
+configuration alone; the texture pipeline then pushed the same translation
+unit past the COFF section limit in RT2App too.
+
+This was masked, not tolerated. The standing exclusion for whole-Debug
+RT2App is the **NRD/NRI runtime-library link mismatch**, and every step
+from 6 onward restated that exclusion without building the target — so a
+new *compile* failure sat behind a documented *link* failure and no gate
+could see it. A skipped target reports nothing, including things that are
+not the reason it was skipped.
+
+Fix: add `/bigobj` for `src/SceneLoader.cpp` under `Debug|x64` to
+`RT2App/RT2App.vcxproj`, mirroring the existing `RT2Tests` entry, and add
+the matching `filter { "configurations:Debug", "files:src/SceneLoader.cpp" }`
+to `RT2App/premake5.lua` so the hand-maintained project and the generator do
+not diverge. This is a compile option only; no link configuration, runtime
+library or dependency changed.
+
+After the fix RT2App Debug compiles fully and fails at link with
+`LNK2038`/`LNK1319` — 22 `_ITERATOR_DEBUG_LEVEL` and `RuntimeLibrary`
+mismatches from `NRD.lib`, which ships as an `MD_DynamicRelease` prebuilt
+binary. That is the pre-existing documented defect, unchanged and still out
+of scope. The regression is resolved; the known failure is now the only one
+remaining, and is reached rather than hidden.
+
+#### Verified by running
+
+| Gate | Result |
+|---|---|
+| Full solution, Release, all five targets | Built clean (exit 0) |
+| Full solution, Debug | ImGui, GLFW, Walnut, RT2SliceRunner, RT2Tests built; RT2App link-fails on the known NRD/NRI mismatch |
+| `RT2Tests` Release | 659/659 cases, 145,494/145,494 assertions |
+| `RT2Tests` Debug | 659/659 cases, 145,494/145,494 assertions |
+| `run_script_test.ps1` | PASS — 60 frames, 1 entity, no mismatches, no terminal diagnostics |
+| `graphify update .` | No code-graph topology changes; outputs left untouched |
+| `git status` | Clean before the step-8 commit |
+
+The Release and Debug suite figures were re-run independently rather than
+carried over from the step-7 report, and match it exactly.
+
+Debug emits `[sol2] An exception occurred: <name> is disabled in the RT2
+script sandbox` during the run. These are expected output from passing
+sandbox-rejection cases, not failures.
+
+#### Assumed / not verified
+
+- Whole-Debug `RT2App` still cannot link. The NRD/NRI runtime-library
+  mismatch is pre-existing, was explicitly out of scope for all of W3, and
+  is unchanged by this step.
+- No interactive GPU or render-quality claim is made. Step 8 verified
+  builds, tests and the headless gate only.
+- `graphify update .` reported no topology change, so `GRAPH_REPORT.md` was
+  neither regenerated nor committed by this step.
+
+#### W3 close
+
+W3 asset identity is complete. Asset references carry durable identity
+through `.rt2meta` sidecars and the asset database; models, environments,
+scripts and textures all resolve through the shared locator; no host
+consults the process working directory; failures are named diagnostics
+rather than silent substitution.
+
+Two items are carried forward rather than closed:
+
+1. **`SceneLoader.cpp` needs `/bigobj` in three separate projects.** The
+   flag is a workaround for translation-unit size. The remaining texture
+   and format logic should move into `TextureAssetPipeline.cpp`, after
+   which all three `/bigobj` entries should be removed together.
+2. **The whole-Debug `RT2App` NRD/NRI link mismatch** now blocks the only
+   solution-wide gate that could catch a Debug-only RT2App regression. It
+   should be fixed — by rebuilding NRD against the Debug runtime or
+   shipping both variants — before Debug RT2App accumulates further
+   undetected breakage.
+
+Next: W4 project scanning and database ownership.

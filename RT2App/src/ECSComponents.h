@@ -3,6 +3,7 @@
 #ifndef ECS_COMPONENTS_H
 #define ECS_COMPONENTS_H
 
+#include "AssetReference.h"
 #include "core/UUID.h"
 #include "SceneTypes.h"
 #include "ScriptFieldValue.h"
@@ -164,53 +165,12 @@ struct MotionComponent
 //   - Procedural PrimitiveComponent entities remain directly serializable and
 //     do NOT carry an ImportedMeshSourceComponent.
 //   - No Phase 7 global asset UUIDs or asset database is introduced here.
+//
+// AssetKind, ImportSettings, and AssetReference live in AssetReference.h
+// (neutral, CPU-only) so runtime types such as SceneTexture and
+// EnvironmentSettings can carry an AssetReference without an
+// ECSComponents.h/entt dependency. ECSComponents.h re-exports them unchanged.
 // ============================================================================
-
-enum class AssetKind : uint8_t
-{
-    Unknown     = 0,
-    Model       = 1,   // .gltf / .glb / .obj
-    Texture     = 2,   // image referenced by a material
-    Environment = 3,   // .hdr / .exr environment map
-    Script      = 4,   // .lua script asset (Phase 6)
-};
-
-// Settings that affect how an asset is rebuilt on load. Only values that
-// change the resulting geometry/material/texture should be persisted; display
-// and runtime-only options are not stored here.
-struct ImportSettings
-{
-    // OBJ importer profile.
-    bool triangulate       = true;
-    bool generateNormals   = false; // true if flat normals were generated
-    bool mergeMegaMesh     = true;  // OBJ-specific: merge all shapes into one BLAS
-
-    // glTF import profile (currently no knobs that affect geometry — the
-    // source is byte-faithful — but the field is persisted for forward
-    // compatibility).
-
-    bool operator==(const ImportSettings& o) const
-    {
-        return triangulate == o.triangulate
-            && generateNormals == o.generateNormals
-            && mergeMegaMesh == o.mergeMegaMesh;
-    }
-    bool operator!=(const ImportSettings& o) const { return !(*this == o); }
-};
-
-// A durable reference to an external source asset. The path is a portable,
-// scene-relative UTF-8 path (forward slashes, normalized). It is resolved
-// relative to the .rt2scene file at load time. Absolute machine-specific
-// paths must NOT be persisted.
-struct AssetReference
-{
-    AssetKind               kind = AssetKind::Unknown;
-    std::string             path;        // portable, scene-relative UTF-8 path
-    ImportSettings          importSettings;
-    std::string             sourceKey;   // stable source subresource identity
-
-    bool IsValid() const { return kind != AssetKind::Unknown && !path.empty(); }
-};
 
 // Durable provenance for a single imported mesh entity. Identifies which
 // subresource of a source model produced this entity's geometry so the
@@ -275,15 +235,11 @@ struct MaterialOverrideComponent
 // free of Lua state, exactly as SceneDocument.h documents ("script VM state"
 // is explicitly NOT part of the document).
 //
-// The fieldValues map is the seam Phase 6B fills: the script's `rt2.fields`
-// DSL declares fields with types and defaults; the inspector edits
-// fieldValues; the serializer persists them; the runtime clone carries them
-// into the per-entity sol2 environment as `self` on OnCreate.
-//
-// Phase 6A: ScriptComponent is declared and registered in
-// PersistedComponents (Count 10->11) so cloning + the serializer visitor
-// account for it, but fieldValues is empty and unused. The live Lua state is
-// what 6A proves; persistence of fieldValues is 6B.
+// The fieldValues map is the Phase 6B seam: the script's `rt2.fields` DSL
+// declares types/defaults, W2 reconciles authored values against those
+// declarations, and the runtime clone injects the typed values into the
+// per-entity sol2 environment as `self`. W3 adds the on-disk v3 form and W5
+// adds inspector editing; no Lua objects ever enter the document.
 // ============================================================================
 
 struct ScriptComponent
@@ -295,9 +251,9 @@ struct ScriptComponent
     AssetReference asset;
 
     // User-authored public field values, keyed by the field name declared in
-    // the script's rt2.fields block. Phase 6B populates this from the
-    // inspector and the serializer; Phase 6A leaves it empty.
-    std::unordered_map<std::string, rt2::core::ScriptFieldValue> fieldValues;
+    // the script's rt2.fields block. The explicit tag preserves distinctions
+    // such as vec3 versus color even though they share a variant payload arm.
+    rt2::core::ScriptFieldMap fieldValues;
 };
 
 #endif // ECS_COMPONENTS_H

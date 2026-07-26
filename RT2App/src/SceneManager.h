@@ -7,6 +7,7 @@
 #include "ECSScene.h"
 #include "GPUSceneData.h"
 #include "SceneDocument.h"
+#include "AssetResolver.h"
 #include "core/UUID.h"
 #include "core/Error.h"
 #include "TransformEditing.h"
@@ -77,9 +78,27 @@ struct EditorCameraPose;
 	void SetSyncKeepTexturesCallback(SyncCallback cb) { m_SyncKeepTexturesCallback = std::move(cb); }
 
 	// ---- Scene loading ----
-	bool LoadScene(const std::string& filepath);
-	bool LoadEnvMap(const std::string& filepath);
+	bool LoadScene(
+		const std::string& filepath,
+		std::vector<rt2::core::AssetDiagnostic>* diagnostics = nullptr);
+	// Load an environment map and assign/match its stable asset ID via the
+	// per-asset sidecar (ResolveOrAssign). The load succeeds even when the
+	// sidecar write fails — the scene gets a session ID and the next save
+	// retries the sidecar — but `envImportErr` (if non-null) carries the
+	// structured error so callers can surface it instead of relying on
+	// console output (Phase 7 W3 step 4 remediation, item 4: silent failure
+	// is this codebase's characteristic bug class).
+	bool LoadEnvMap(const std::string& filepath,
+	                rt2::core::Error* envImportErr = nullptr);
 	void ClearEnvMap();
+
+	// Set pre-decoded environment map data (used by the async load path
+	// where the decode runs on a worker thread). Takes ownership of pixels.
+	// Like LoadEnvMap, assigns/matches the sidecar ID and reports any
+	// sidecar-write error through `envImportErr` (if non-null).
+	void SetEnvMapData(const std::string& filepath, int w, int h,
+	                   std::vector<float> pixels,
+	                   rt2::core::Error* envImportErr = nullptr);
 
 	// ---- Entity manipulation ----
 	// EntityId is a thin wrapper around entt::entity for type safety.
@@ -93,14 +112,30 @@ struct EditorCameraPose;
 	// Import a glTF file into the EXISTING scene (merges meshes/materials/
 	// textures, creates a wrapper root entity). Does NOT clear the scene.
 	// Returns the wrapper root entity, or invalid EntityId on failure.
-	EntityId ImportGltf(const std::string& filepath);
+	EntityId ImportGltf(
+		const std::string& filepath,
+		std::vector<rt2::core::AssetDiagnostic>* diagnostics = nullptr);
 
 	// Import an OBJ file into the EXISTING scene (merges meshes/materials/
 	// textures, creates a wrapper root entity with one child per shape when
 	// settings.mergeMegaMesh is false, or a single mega-mesh child when true).
 	// Does NOT clear the scene. Returns the wrapper root entity, or invalid
 	// EntityId on failure.
-	EntityId ImportObj(const std::string& filepath, const ImportSettings& settings);
+	EntityId ImportObj(
+		const std::string& filepath,
+		const ImportSettings& settings,
+		std::vector<rt2::core::AssetDiagnostic>* diagnostics = nullptr);
+
+	// Merge a temporary ECSScene (produced by SceneLoader::ImportObjIntoECS
+	// or ImportIntoECS on a fresh ECSScene) into the live scene. Used by the
+	// async import path: the worker thread parses into a temp scene, then
+	// the main thread merges it here. Appends meshes (offsetting per-triangle
+	// material indices by matBase), materials (remapping texture indices),
+	// textures, and entities (re-parenting the wrapper root under the live
+	// scene root). Assigns UUIDs to imported entities and fills source paths.
+	// Returns the wrapper root entity in the live scene, or invalid on failure.
+	EntityId MergeImportedECS(ECSScene&& src, entt::entity srcRoot,
+	                          const std::string& sourcePath);
 
 	// ---- Full GPU re-upload (rebuilds GPUSceneData from scene state) ----
 	void SyncToGPU();
@@ -352,6 +387,10 @@ struct EditorCameraPose;
 	bool HasLight(EntityId entity) const;
 	bool HasCamera(EntityId entity) const;
 	bool HasTransform(EntityId entity) const;
+	// Phase 6B/W0: script component presence + read access for the inspector.
+	bool HasScript(EntityId entity) const;
+	// Returns nullopt when the entity is invalid or carries no ScriptComponent.
+	std::optional<ScriptComponent> GetScriptState(const rt2::core::UUID& entity) const;
 
 	// Read transform as euler degrees (for UI sliders). Returns false if no Transform.
 	bool GetTransform(EntityId entity, glm::vec3& outPosition, glm::vec3& outRotationEuler, float& outScale) const;
@@ -428,6 +467,12 @@ struct EditorCameraPose;
 	                                           int afterIndex);
 	EditorMutationResult SetMotionState(const rt2::core::UUID& entity,
 	                                    const std::optional<MotionComponent>& value);
+	// Phase 6B/W0: add, remove, or replace an entity's ScriptComponent.
+	// nullopt removes. SyncImpact is None — script bindings and field values
+	// are authored/runtime state that never touches the GPU scene (see the
+	// Phase 6B plan, D8; mirrors SetMotionState exactly).
+	EditorMutationResult SetScriptState(const rt2::core::UUID& entity,
+	                                    const std::optional<ScriptComponent>& value);
 	EditorMutationResult SetCameraPoseState(const rt2::core::UUID& entity,
 	                                        const EditableTRS& local,
 	                                        const CameraComponent& props);
@@ -485,7 +530,7 @@ struct EditorCameraPose;
 
 	// Environment map (delegates to authoring document)
 	bool HasEnvMap() const { return m_Authoring.environment.HasEnvMap(); }
-	const std::string& GetEnvMapPath() const { return m_Authoring.environment.path; }
+	const std::string& GetEnvMapPath() const { return m_Authoring.environment.ref.path; }
 	int GetEnvMapWidth() const { return m_Authoring.environment.width; }
 	int GetEnvMapHeight() const { return m_Authoring.environment.height; }
 

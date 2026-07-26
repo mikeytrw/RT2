@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "SceneLoader.h"
+#include "SceneLoaderTestSupport.h"
 #include "ECSScene.h"
 #include "ECSComponents.h"
 #include "SceneGraph.h"
@@ -16,7 +17,7 @@ TEST_CASE("LoadIntoECS: sofa_and_lamp.glb loads successfully")
     ECSScene ecsScene;
     const char* scenePath = "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb";
 
-    bool ok = SceneLoader::LoadIntoECS(ecsScene, scenePath);
+    bool ok = LoadGltfForTest(ecsScene, RepositoryRootForSceneLoaderTests(), scenePath);
     CHECK(ok);
     if (!ok) return;
 
@@ -47,7 +48,7 @@ TEST_CASE("LoadIntoECS: world transforms are resolved")
     ECSScene ecsScene;
     const char* scenePath = "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb";
 
-    bool ok = SceneLoader::LoadIntoECS(ecsScene, scenePath);
+    bool ok = LoadGltfForTest(ecsScene, RepositoryRootForSceneLoaderTests(), scenePath);
     CHECK(ok);
     if (!ok) return;
 
@@ -69,7 +70,7 @@ TEST_CASE("LoadIntoECS: ABeautifulGame.glb loads with many meshes")
     ECSScene ecsScene;
     const char* scenePath = "C:\\Users\\mikey\\Downloads\\ABeautifulGame.glb";
 
-    bool ok = SceneLoader::LoadIntoECS(ecsScene, scenePath);
+    bool ok = LoadGltfForTest(ecsScene, RepositoryRootForSceneLoaderTests(), scenePath);
     CHECK(ok);
     if (!ok) return;
 
@@ -104,7 +105,7 @@ TEST_CASE("LoadIntoECS: mesh deduplication works")
     ECSScene ecsScene;
     const char* scenePath = "C:\\Users\\mikey\\Downloads\\ABeautifulGame.glb";
 
-    bool ok = SceneLoader::LoadIntoECS(ecsScene, scenePath);
+    bool ok = LoadGltfForTest(ecsScene, RepositoryRootForSceneLoaderTests(), scenePath);
     CHECK(ok);
     if (!ok) return;
 
@@ -124,7 +125,7 @@ TEST_CASE("LoadIntoECS: mesh geometry is in object space")
     ECSScene ecsScene;
     const char* scenePath = "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb";
 
-    bool ok = SceneLoader::LoadIntoECS(ecsScene, scenePath);
+    bool ok = LoadGltfForTest(ecsScene, RepositoryRootForSceneLoaderTests(), scenePath);
     CHECK(ok);
     if (!ok) return;
 

@@ -5,6 +5,7 @@
 
 #include "ECSScene.h"
 #include "GPUSceneData.h"
+#include "AssetReference.h"
 #include "core/UUID.h"
 #include "core/Error.h"
 
@@ -48,17 +49,27 @@ namespace rt2::core {
 
 struct EnvironmentSettings
 {
-    std::string        path;          // absolute or project-relative; empty = none
-    int                width = 0;
-    int                height = 0;
+    // Stable source-asset identity (Phase 7 W3 step 4, converted to a real
+    // AssetReference in the step-4 remediation per W3-Q1/D2). The reference's
+    // `kind` is AssetKind::Environment; `path` is the env map path (absolute
+    // or project-relative, empty = none); `assetId` is the durable source
+    // identity (additive over the v3 env-map schema: absent on read, written
+    // only when assigned). `width`/`height`/`floatPixels` are the decoded
+    // pixel cache, never serialized. The host assigns the ID at env import
+    // (SceneManager::LoadEnvMap/SetEnvMapData) via ResolveOrAssign,
+    // paralleling model assetId. W5 owns the formal v4 migration/reporting
+    // pass.
+    AssetReference   ref{ AssetKind::Environment, {}, {}, {}, UUID::Nil() };
+    int             width = 0;
+    int             height = 0;
     std::vector<float> floatPixels;  // RGBA float, decoded; may be empty when
                                      // the document was loaded without re-reading
                                      // the env file (e.g. slice runner)
-    bool HasEnvMap() const { return !path.empty(); }
+    bool HasEnvMap() const { return !ref.path.empty(); }
 
     void Clear()
     {
-        path.clear();
+        ref = AssetReference{ AssetKind::Environment, {}, {}, {}, UUID::Nil() };
         width = 0;
         height = 0;
         floatPixels.clear();
@@ -67,7 +78,7 @@ struct EnvironmentSettings
 
 struct SceneMetadata
 {
-    uint32_t                    schemaVersion = 1;  // .rt2scene format version
+    uint32_t                    schemaVersion = 3;  // .rt2scene format version
     std::filesystem::path       sourcePath;         // file this document was loaded from / saved to
     std::string                 name;               // display name (defaults to filename stem)
     bool                        dirty = false;      // unsaved authoring changes

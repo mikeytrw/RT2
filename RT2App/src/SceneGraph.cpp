@@ -67,7 +67,11 @@ void SceneGraph::UpdateNode(entt::registry& registry, entt::entity entity,
 		t->dirty = false;
 	}
 
-	// Find children — scan all entities with Hierarchy whose parent is this entity
+	// Recurse into the cached children list. NOTE: this does NOT scan the
+	// registry for entities whose parent is this one — `children` is derived
+	// state, rebuilt from the parent links by SceneHierarchy::RebuildChildren.
+	// Anything that sets Hierarchy.parent must call that before expecting the
+	// traversal to reach the child.
 	if (const auto* hierarchy = registry.try_get<Hierarchy>(entity))
 		for (const auto child : hierarchy->children)
 			if (registry.valid(child))

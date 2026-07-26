@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "SceneSerializer.h"
+#include "SceneSerializerTestSupport.h"
 #include "SceneDocument.h"
 #include "SceneAssetResolver.h"
 #include "ECSComponents.h"
@@ -106,78 +107,28 @@ TEST_CASE("P1A UUID: glTF load assigns UUIDs to every entity")
 }
 
 // ----------------------------------------------------------------------------
-// 2. Schema — v1 migration, malformed refs, deterministic v2.
+// 2. Schema — v3 hard cutover, malformed refs, deterministic saves.
 // ----------------------------------------------------------------------------
 
-TEST_CASE("P1A Schema: v1 primitive fixture loads and writes valid v2")
+TEST_CASE("P1A Schema: v1 and v2 scenes are rejected by the v3 hard cutover")
 {
-    // Use the existing slice fixture generator to produce a v1 file.
-    auto v1Path = std::filesystem::temp_directory_path() / "rt2_p1a_v1.rt2scene";
-    Error genErr;
-    REQUIRE(GenerateSliceFixture(v1Path, genErr));
-    REQUIRE(genErr.IsOk());
-
-    // Load the v1 file.
-    DeterministicUuidProvider provider;
-    SceneDocument doc;
-    doc.SetUuidProvider(&provider);
-    Error loadErr;
-    REQUIRE(SceneSerializer::Load(doc, v1Path, loadErr));
-    REQUIRE(loadErr.IsOk());
-
-    // Snapshot UUIDs, transforms, materials, camera.
-    std::set<UUID> uuidsBefore;
-    glm::vec3 camPosBefore = doc.ecs.camera.position;
-    size_t matCountBefore = doc.ecs.materials.size();
+    for (const uint32_t version : {1u, 2u})
     {
-        auto view = doc.ecs.registry.view<EntityIdComponent>();
-        for (auto e : view)
-            uuidsBefore.insert(view.get<EntityIdComponent>(e).id);
+        auto path = WriteTempFile(
+            std::string("{\"version\":") + std::to_string(version) +
+            ",\"entities\":[]}");
+        SceneDocument doc;
+        Error err;
+        CHECK_FALSE(SceneSerializer::Load(doc, path, err));
+        CHECK(err.code == Error::SchemaVersion);
+        std::filesystem::remove(path);
     }
-
-    // Save as v2.
-    auto v2Path = std::filesystem::temp_directory_path() / "rt2_p1a_v1_to_v2.rt2scene";
-    Error saveErr;
-    REQUIRE(SceneSerializer::Save(doc, v2Path, saveErr));
-    REQUIRE(saveErr.IsOk());
-
-    // The saved file must declare version 2.
-    {
-        std::ifstream in(v2Path, std::ios::binary);
-        std::string content((std::istreambuf_iterator<char>(in)),
-                            std::istreambuf_iterator<char>());
-        in.close();
-        CHECK(content.find("\"version\": 2") != std::string::npos);
-    }
-
-    // Load the v2 file and verify UUIDs/hierarchy/transforms/materials/camera.
-    DeterministicUuidProvider provider2;
-    SceneDocument doc2;
-    doc2.SetUuidProvider(&provider2);
-    Error loadErr2;
-    REQUIRE(SceneSerializer::Load(doc2, v2Path, loadErr2));
-    REQUIRE(loadErr2.IsOk());
-
-    std::set<UUID> uuidsAfter;
-    {
-        auto view = doc2.ecs.registry.view<EntityIdComponent>();
-        for (auto e : view)
-            uuidsAfter.insert(view.get<EntityIdComponent>(e).id);
-    }
-    CHECK(uuidsBefore == uuidsAfter);
-    CHECK(doc2.ecs.materials.size() == matCountBefore);
-    CHECK(doc2.ecs.camera.position.x == doctest::Approx(camPosBefore.x));
-    CHECK(doc2.ecs.camera.position.y == doctest::Approx(camPosBefore.y));
-    CHECK(doc2.ecs.camera.position.z == doctest::Approx(camPosBefore.z));
-
-    std::filesystem::remove(v1Path);
-    std::filesystem::remove(v2Path);
 }
 
-TEST_CASE("P1A Schema: malformed v2 importedSource reference produces error")
+TEST_CASE("P1A Schema: malformed v3 importedSource reference produces error")
 {
     auto path = WriteTempFile(R"({
-        "version": 2,
+        "version": 3,
         "entities": [
             {"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"Bad","parent":"","visible":true,
              "transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
@@ -200,7 +151,7 @@ TEST_CASE("P1A Schema: malformed v2 importedSource reference produces error")
 TEST_CASE("P1A Schema: malformed importedSource missing path")
 {
     auto path = WriteTempFile(R"({
-        "version": 2,
+        "version": 3,
         "entities": [
             {"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"Bad","parent":"","visible":true,
              "transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
@@ -220,7 +171,7 @@ TEST_CASE("P1A Schema: malformed importedSource missing path")
     std::filesystem::remove(path);
 }
 
-TEST_CASE("P1A Schema: deterministic v2 saves are byte-identical")
+TEST_CASE("P1A Schema: deterministic v3 saves are byte-identical")
 {
     DeterministicUuidProvider provider;
     SceneDocument src;
@@ -246,8 +197,8 @@ TEST_CASE("P1A Schema: deterministic v2 saves are byte-identical")
     auto p1 = std::filesystem::temp_directory_path() / "rt2_p1a_det1.rt2scene";
     auto p2 = std::filesystem::temp_directory_path() / "rt2_p1a_det2.rt2scene";
     Error err;
-    REQUIRE(SceneSerializer::Save(src, p1, err));
-    REQUIRE(SceneSerializer::Save(src, p2, err));
+    REQUIRE(SaveSceneForTest(src, p1, err));
+    REQUIRE(SaveSceneForTest(src, p2, err));
 
     std::ifstream f1(p1, std::ios::binary), f2(p2, std::ios::binary);
     std::string c1((std::istreambuf_iterator<char>(f1)), std::istreambuf_iterator<char>());
@@ -274,7 +225,7 @@ TEST_CASE("P1A Fixture: generate tiny textured GLB")
     CHECK(std::filesystem::exists(glbPath));
 }
 
-TEST_CASE("P1A RoundTrip: glTF import -> save v2 -> load + resolve")
+TEST_CASE("P1A RoundTrip: glTF import -> save v3 -> load + resolve")
 {
     auto glbPath = FixtureDir() / "tiny_textured.glb";
     if (!std::filesystem::exists(glbPath))
@@ -314,7 +265,7 @@ TEST_CASE("P1A RoundTrip: glTF import -> save v2 -> load + resolve")
     // Step 2: Save as v2 .rt2scene next to the GLB so relative paths resolve.
     auto scenePath = FixtureDir() / "tiny_textured.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(mgr.AuthoringDoc(), scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     // Verify the saved file references the GLB via a relative path.
@@ -323,7 +274,7 @@ TEST_CASE("P1A RoundTrip: glTF import -> save v2 -> load + resolve")
         std::string content((std::istreambuf_iterator<char>(in)),
                             std::istreambuf_iterator<char>());
         in.close();
-        CHECK(content.find("\"version\": 2") != std::string::npos);
+        CHECK(content.find("\"version\": 3") != std::string::npos);
         CHECK(content.find("tiny_textured.glb") != std::string::npos);
         CHECK(content.find("\"importedSource\"") != std::string::npos);
     }
@@ -349,9 +300,24 @@ TEST_CASE("P1A RoundTrip: glTF import -> save v2 -> load + resolve")
     std::vector<AssetDiagnostic> diagnostics;
     Error resolveErr;
     REQUIRE(SceneAssetResolver::ResolveAll(loaded, FixtureDir(), diagnostics, resolveErr));
-    // Diagnostics may be empty on success.
+    // W3 step 3: the locator is ID-first and read-only. With a non-nil assetId
+    // (assigned at import and persisted in the scene), no AssetDatabase built
+    // at scene load yet, and a matching sidecar on disk, resolution succeeds
+    // via path fallback and emits a "database stale" Stale diagnostic. That
+    // is the expected contract signal, not a real failure. A Missing,
+    // Malformed, Conflict, or Unresolved diagnostic would be a real defect:
+    //   - Missing  : the file was not found (the file WAS found here).
+    //   - Malformed: the file failed to parse.
+    //   - Conflict : ID/path disagreement (identity not substituted).
+    //   - Unresolved: the source key was not found in the rebuilt asset.
+    // Stale is permitted (and expected with no database at scene load).
     for (const auto& d : diagnostics)
+    {
         CHECK(d.severity != AssetDiagnostic::Missing);
+        CHECK(d.severity != AssetDiagnostic::Malformed);
+        CHECK(d.severity != AssetDiagnostic::Conflict);
+        CHECK(d.severity != AssetDiagnostic::Unresolved);
+    }
 
     // After resolution, the document must have meshes and textures.
     CHECK(loaded.ecs.meshRegistry.GetCount() > 0);
@@ -406,12 +372,12 @@ TEST_CASE("P1A Environment: save env reference -> load -> resolve reads pixels")
     DeterministicUuidProvider provider;
     SceneDocument src;
     src.SetUuidProvider(&provider);
-    src.environment.path = exrPath.string();
+    src.environment.ref.path = exrPath.string();
     // Deliberately leave floatPixels empty to simulate a freshly-loaded scene.
 
     auto scenePath = FixtureDir() / "tiny_env.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(src, scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(src, scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     // Verify the env path was relativized.
@@ -437,7 +403,15 @@ TEST_CASE("P1A Environment: save env reference -> load -> resolve reads pixels")
     Error resolveErr;
     REQUIRE(SceneAssetResolver::ResolveEnvironment(loaded, FixtureDir(),
                                                    diagnostics, resolveErr));
-    CHECK(diagnostics.empty());
+    // W3 step 4: a nil env assetId with no sidecar resolves by path fallback
+    // and emits exactly one "identity repair required" Stale diagnostic.
+    // The locator is read-only; the host's next save/migration persists the
+    // assigned ID. A Malformed/Conflict/Unresolved diagnostic would be a real
+    // defect.
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics[0].severity == AssetDiagnostic::Stale);
+    CHECK(diagnostics[0].detail.find("identity repair required") !=
+          std::string::npos);
     CHECK(loaded.environment.width > 0);
     CHECK(loaded.environment.height > 0);
     CHECK(!loaded.environment.floatPixels.empty());
@@ -450,7 +424,7 @@ TEST_CASE("P1A Environment: missing environment produces diagnostic")
     DeterministicUuidProvider provider;
     SceneDocument doc;
     doc.SetUuidProvider(&provider);
-    doc.environment.path = "does_not_exist.exr";
+    doc.environment.ref.path = "does_not_exist.exr";
 
     std::vector<AssetDiagnostic> diagnostics;
     Error err;
@@ -515,7 +489,7 @@ TEST_CASE("P1A MaterialOverride: imported material edit survives save/reopen")
     // Save as v2 .rt2scene next to the GLB.
     auto scenePath = FixtureDir() / "override_test.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(mgr.AuthoringDoc(), scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     // Verify the override block was written.
@@ -647,7 +621,7 @@ TEST_CASE("P1A Transactionality: duplicate-UUID load into temp preserves live do
     // temp is cleared but the live document (loaded into a separate temp)
     // must remain intact.
     auto path = WriteTempFile(R"({
-        "version": 2,
+        "version": 3,
         "entities": [
             {"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"A","parent":"","visible":true,
              "transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}},
@@ -692,7 +666,7 @@ TEST_CASE("P1A Transactionality: missing-parent load into temp preserves live do
     // resolution), after entities are created in the temp. The temp is
     // cleared, but the live document must survive.
     auto path = WriteTempFile(R"({
-        "version": 2,
+        "version": 3,
         "entities": [
             {"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"Orphan","parent":"660e8400-e29b-41d4-a716-446655440001","visible":true,
              "transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}}
@@ -740,7 +714,7 @@ TEST_CASE("P1A Transactionality: resolution failure into temp preserves live doc
     // A .rt2scene that references a missing model — every imported entity is
     // unresolvable, so ResolveAll returns false.
     auto path = WriteTempFile(R"({
-        "version": 2,
+        "version": 3,
         "entities": [
             {"uuid":"550e8400-e29b-41d4-a716-446655440000","name":"Missing","parent":"","visible":true,
              "transform":{"translation":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
@@ -787,7 +761,7 @@ TEST_CASE("P1A Transactionality: failed save leaves existing file intact")
 
     auto path = std::filesystem::temp_directory_path() / "rt2_p1a_intact.rt2scene";
     Error err;
-    REQUIRE(SceneSerializer::Save(src, path, err));
+    REQUIRE(SaveSceneForTest(src, path, err));
     std::ifstream in1(path, std::ios::binary);
     std::string original((std::istreambuf_iterator<char>(in1)),
                          std::istreambuf_iterator<char>());
@@ -808,7 +782,7 @@ TEST_CASE("P1A Transactionality: failed save leaves existing file intact")
     bad.AssignNewUuid(e);
 
     Error badErr;
-    CHECK_FALSE(SceneSerializer::Save(bad, path, badErr));
+    CHECK_FALSE(SaveSceneForTest(bad, path, badErr));
     CHECK(badErr.code == Error::UnknownPrimitive);
 
     std::ifstream in2(path, std::ios::binary);
@@ -970,7 +944,7 @@ TEST_CASE("P1A RuntimeBoundary: Play/Stop clone preserves imported mesh registry
 //      dependency, RT2SliceRunner would fail to link.)
 // ----------------------------------------------------------------------------
 
-TEST_CASE("P1A CpuOnly: vertical-slice fixture still round-trips under v2")
+TEST_CASE("P1A CpuOnly: vertical-slice fixture still round-trips under v3")
 {
     auto path = std::filesystem::current_path() / "RT2App" / "assets" /
                 "vertical-slice.rt2scene";
@@ -991,7 +965,7 @@ TEST_CASE("P1A CpuOnly: vertical-slice fixture still round-trips under v2")
 
     auto p2 = std::filesystem::temp_directory_path() / "rt2_p1a_slice_v2.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(doc, p2, saveErr));
+    REQUIRE(SaveSceneForTest(doc, p2, saveErr));
 
     DeterministicUuidProvider provider2;
     SceneDocument doc2;
@@ -1023,6 +997,18 @@ TEST_CASE("P1A CpuOnly: vertical-slice fixture still round-trips under v2")
 
 namespace {
 
+// Verify that a fixture file was actually written. A fixture generator that
+// silently produces no file is the characteristic bug here (a prior Debug-only
+// failure was caused by the fixture's copy/destructor deleting the file on
+// return when NRVO was not applied). Fail loudly at the source rather than
+// several layers deep in the importer.
+void RequireFixtureFile(const std::filesystem::path& p, const char* what)
+{
+    INFO("fixture file was not written: " << what << " path=" << p.string());
+    REQUIRE(std::filesystem::exists(p));
+    REQUIRE_FALSE(p.empty());
+}
+
 // Write a tiny OBJ + MTL with a distinctive base color into a temp dir.
 // Returns the OBJ path. The MTL has no textures (flat color) so the test
 // can verify material identity via baseColor alone, without needing image
@@ -1035,11 +1021,38 @@ struct TinyObjFixture
     std::string objName;     // relative name, e.g. "model_a.obj"
     glm::vec3 baseColor;     // the Kd color written into the MTL
 
+    TinyObjFixture() = default;
+    TinyObjFixture(const TinyObjFixture&) = delete;
+    TinyObjFixture& operator=(const TinyObjFixture&) = delete;
+    TinyObjFixture(TinyObjFixture&& o) noexcept
+        : dir(std::move(o.dir)), objPath(std::move(o.objPath)),
+          mtlPath(std::move(o.mtlPath)), objName(std::move(o.objName)),
+          baseColor(o.baseColor)
+    {
+        o.objPath.clear();
+        o.mtlPath.clear();
+    }
+    TinyObjFixture& operator=(TinyObjFixture&& o) noexcept
+    {
+        if (this != &o)
+        {
+            Cleanup();
+            dir = std::move(o.dir);
+            objPath = std::move(o.objPath);
+            mtlPath = std::move(o.mtlPath);
+            objName = std::move(o.objName);
+            baseColor = o.baseColor;
+            o.objPath.clear();
+            o.mtlPath.clear();
+        }
+        return *this;
+    }
     ~TinyObjFixture() { Cleanup(); }
     void Cleanup()
     {
-        std::filesystem::remove(objPath);
-        std::filesystem::remove(mtlPath);
+        std::error_code ec;
+        if (!objPath.empty()) std::filesystem::remove(objPath, ec);
+        if (!mtlPath.empty()) std::filesystem::remove(mtlPath, ec);
     }
 };
 
@@ -1075,6 +1088,8 @@ TinyObjFixture MakeTinyObj(const std::filesystem::path& dir,
             << "usemtl " << name << "_mat\n"
             << "f 1/1 2/2 3/3\n";
     }
+    RequireFixtureFile(f.mtlPath, "MTL");
+    RequireFixtureFile(f.objPath, "OBJ");
     return f;
 }
 
@@ -1124,7 +1139,7 @@ TEST_CASE("P1A Multi-Model: two OBJ models save/reload preserves material identi
     // Step 3: Save as .rt2scene next to the OBJ files.
     auto scenePath = dir / "multi_obj.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(mgr.AuthoringDoc(), scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     // Step 4: Load into a fresh document and resolve.
@@ -1218,11 +1233,38 @@ struct MultiShapeObjFixture
     std::vector<std::string> shapeNames;
     std::vector<glm::vec3>   shapeColors;
 
+    MultiShapeObjFixture() = default;
+    MultiShapeObjFixture(const MultiShapeObjFixture&) = delete;
+    MultiShapeObjFixture& operator=(const MultiShapeObjFixture&) = delete;
+    MultiShapeObjFixture(MultiShapeObjFixture&& o) noexcept
+        : dir(std::move(o.dir)), objPath(std::move(o.objPath)),
+          mtlPath(std::move(o.mtlPath)), shapeNames(std::move(o.shapeNames)),
+          shapeColors(std::move(o.shapeColors))
+    {
+        o.objPath.clear();
+        o.mtlPath.clear();
+    }
+    MultiShapeObjFixture& operator=(MultiShapeObjFixture&& o) noexcept
+    {
+        if (this != &o)
+        {
+            Cleanup();
+            dir = std::move(o.dir);
+            objPath = std::move(o.objPath);
+            mtlPath = std::move(o.mtlPath);
+            shapeNames = std::move(o.shapeNames);
+            shapeColors = std::move(o.shapeColors);
+            o.objPath.clear();
+            o.mtlPath.clear();
+        }
+        return *this;
+    }
     ~MultiShapeObjFixture() { Cleanup(); }
     void Cleanup()
     {
-        std::filesystem::remove(objPath);
-        std::filesystem::remove(mtlPath);
+        std::error_code ec;
+        if (!objPath.empty()) std::filesystem::remove(objPath, ec);
+        if (!mtlPath.empty()) std::filesystem::remove(mtlPath, ec);
     }
 };
 
@@ -1276,6 +1318,8 @@ MultiShapeObjFixture MakeMultiShapeObj(
                 << (i * 3 + 3) << "/3\n";
         }
     }
+    RequireFixtureFile(f.mtlPath, "MTL");
+    RequireFixtureFile(f.objPath, "OBJ");
     return f;
 }
 
@@ -1291,11 +1335,39 @@ struct MultiMaterialShapeFixture
     glm::vec3 colorA;
     glm::vec3 colorB;
 
+    MultiMaterialShapeFixture() = default;
+    MultiMaterialShapeFixture(const MultiMaterialShapeFixture&) = delete;
+    MultiMaterialShapeFixture& operator=(const MultiMaterialShapeFixture&) = delete;
+    MultiMaterialShapeFixture(MultiMaterialShapeFixture&& o) noexcept
+        : dir(std::move(o.dir)), objPath(std::move(o.objPath)),
+          mtlPath(std::move(o.mtlPath)), shapeName(std::move(o.shapeName)),
+          colorA(o.colorA), colorB(o.colorB)
+    {
+        o.objPath.clear();
+        o.mtlPath.clear();
+    }
+    MultiMaterialShapeFixture& operator=(MultiMaterialShapeFixture&& o) noexcept
+    {
+        if (this != &o)
+        {
+            Cleanup();
+            dir = std::move(o.dir);
+            objPath = std::move(o.objPath);
+            mtlPath = std::move(o.mtlPath);
+            shapeName = std::move(o.shapeName);
+            colorA = o.colorA;
+            colorB = o.colorB;
+            o.objPath.clear();
+            o.mtlPath.clear();
+        }
+        return *this;
+    }
     ~MultiMaterialShapeFixture() { Cleanup(); }
     void Cleanup()
     {
-        std::filesystem::remove(objPath);
-        std::filesystem::remove(mtlPath);
+        std::error_code ec;
+        if (!objPath.empty()) std::filesystem::remove(objPath, ec);
+        if (!mtlPath.empty()) std::filesystem::remove(mtlPath, ec);
     }
 };
 
@@ -1339,6 +1411,8 @@ MultiMaterialShapeFixture MakeMultiMaterialShape(
             << "usemtl mat_b\n"
             << "f 2/2 5/2 6/3\n";
     }
+    RequireFixtureFile(f.mtlPath, "MTL");
+    RequireFixtureFile(f.objPath, "OBJ");
     return f;
 }
 
@@ -1351,11 +1425,36 @@ struct DegenerateShapeFixture
     std::filesystem::path mtlPath;
     std::string validShapeName;
 
+    DegenerateShapeFixture() = default;
+    DegenerateShapeFixture(const DegenerateShapeFixture&) = delete;
+    DegenerateShapeFixture& operator=(const DegenerateShapeFixture&) = delete;
+    DegenerateShapeFixture(DegenerateShapeFixture&& o) noexcept
+        : dir(std::move(o.dir)), objPath(std::move(o.objPath)),
+          mtlPath(std::move(o.mtlPath)), validShapeName(std::move(o.validShapeName))
+    {
+        o.objPath.clear();
+        o.mtlPath.clear();
+    }
+    DegenerateShapeFixture& operator=(DegenerateShapeFixture&& o) noexcept
+    {
+        if (this != &o)
+        {
+            Cleanup();
+            dir = std::move(o.dir);
+            objPath = std::move(o.objPath);
+            mtlPath = std::move(o.mtlPath);
+            validShapeName = std::move(o.validShapeName);
+            o.objPath.clear();
+            o.mtlPath.clear();
+        }
+        return *this;
+    }
     ~DegenerateShapeFixture() { Cleanup(); }
     void Cleanup()
     {
-        std::filesystem::remove(objPath);
-        std::filesystem::remove(mtlPath);
+        std::error_code ec;
+        if (!objPath.empty()) std::filesystem::remove(objPath, ec);
+        if (!mtlPath.empty()) std::filesystem::remove(mtlPath, ec);
     }
 };
 
@@ -1388,6 +1487,8 @@ DegenerateShapeFixture MakeDegenerateShapeObj(
             << "usemtl mat_v\n"
             << "f 1/1 2/2 3/3\n";
     }
+    RequireFixtureFile(f.mtlPath, "MTL");
+    RequireFixtureFile(f.objPath, "OBJ");
     return f;
 }
 
@@ -1552,7 +1653,7 @@ TEST_CASE("OBJ Import Wizard: per-shape save/reload/resolve round-trip")
     // Save as .rt2scene.
     auto scenePath = dir / "pershape.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(mgr.AuthoringDoc(), scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     // Load into a fresh document and resolve.
@@ -1623,7 +1724,7 @@ TEST_CASE("OBJ Import Wizard: legacy obj:whole-model scene resolves")
     // Save as .rt2scene.
     auto scenePath = dir / "legacy.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(mgr.AuthoringDoc(), scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     // Load into a fresh document and resolve.
@@ -1711,7 +1812,7 @@ TEST_CASE("OBJ Import Wizard: multi-material shape preserves per-triangle materi
     // Now save + reload + resolve and verify the materials survive.
     auto scenePath = dir / "multimat.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(mgr.AuthoringDoc(), scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     DeterministicUuidProvider provider;
@@ -1808,7 +1909,7 @@ TEST_CASE("OBJ Import Wizard: same OBJ merged and per-shape in one scene resolve
     // Save + reload + resolve.
     auto scenePath = dir / "dedup.rt2scene";
     Error saveErr;
-    REQUIRE(SceneSerializer::Save(mgr.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(SaveSceneForTest(mgr.AuthoringDoc(), scenePath, saveErr));
     REQUIRE(saveErr.IsOk());
 
     DeterministicUuidProvider provider;

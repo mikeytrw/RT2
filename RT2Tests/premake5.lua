@@ -1,4 +1,4 @@
-project "RT2Tests"
+﻿project "RT2Tests"
    kind "ConsoleApp"
    language "C++"
    cppdialect "C++17"
@@ -10,7 +10,7 @@ project "RT2Tests"
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 
     -- Include source files from RT2App for testing
-    files { "../RT2App/src/SceneLoader.cpp", "../RT2App/src/GPUSceneData.cpp", "../RT2App/src/SceneGraph.cpp", "../RT2App/src/SceneHierarchy.cpp", "../RT2App/src/SceneVisibility.cpp", "../RT2App/src/SceneManager.cpp", "../RT2App/src/PrimitiveGeometry.cpp", "../RT2App/src/TinyEXRLoader.cpp", "../RT2App/src/SceneDocument.cpp", "../RT2App/src/SceneSerializer.cpp", "../RT2App/src/SceneAssetResolver.cpp", "../RT2App/src/RuntimeSceneController.cpp", "../RT2App/src/RuntimeSceneMutator.cpp", "../RT2App/src/InputStateMachine.cpp", "../RT2App/src/EditorSettings.cpp", "../RT2App/src/SceneRecoveryService.cpp", "../RT2App/src/UnsavedChangesCoordinator.cpp", "../RT2App/src/EditorSelection.cpp", "../RT2App/src/EditorSceneState.cpp", "../RT2App/src/EditorCameraWorkflow.cpp", "../RT2App/src/EditorCommandHistory.cpp", "../RT2App/src/EditorCommands.cpp", "../RT2App/src/EditorStructuralCommands.cpp", "../RT2App/src/EditorPropertyCommands.cpp", "../RT2App/src/EditorSyncRouter.cpp", "../RT2App/src/ViewportCoordinates.cpp", "../RT2App/src/TransformEditing.cpp", "../RT2App/src/ScriptSystem.cpp", "../RT2App/src/core/UUID.cpp", "../RT2App/src/core/Error.cpp" }
+    files { "../RT2App/src/SceneLoader.cpp", "../RT2App/src/TextureAssetPipeline.cpp", "../RT2App/src/GPUSceneData.cpp", "../RT2App/src/SceneGraph.cpp", "../RT2App/src/SceneHierarchy.cpp", "../RT2App/src/SceneVisibility.cpp", "../RT2App/src/SceneManager.cpp", "../RT2App/src/PrimitiveGeometry.cpp", "../RT2App/src/TinyEXRLoader.cpp", "../RT2App/src/SceneDocument.cpp", "../RT2App/src/SceneSerializer.cpp", "../RT2App/src/SceneAssetResolver.cpp", "../RT2App/src/RuntimeSceneController.cpp", "../RT2App/src/RuntimeSceneMutator.cpp", "../RT2App/src/InputStateMachine.cpp", "../RT2App/src/EditorSettings.cpp", "../RT2App/src/SceneRecoveryService.cpp", "../RT2App/src/UnsavedChangesCoordinator.cpp", "../RT2App/src/EditorSelection.cpp", "../RT2App/src/EditorSceneState.cpp", "../RT2App/src/EditorCameraWorkflow.cpp", "../RT2App/src/EditorCommandHistory.cpp", "../RT2App/src/EditorCommands.cpp", "../RT2App/src/EditorStructuralCommands.cpp", "../RT2App/src/EditorPropertyCommands.cpp", "../RT2App/src/EditorSyncRouter.cpp", "../RT2App/src/ViewportCoordinates.cpp", "../RT2App/src/TransformEditing.cpp", "../RT2App/src/ScriptAssetPath.cpp", "../RT2App/src/ScriptFieldReconcile.cpp", "../RT2App/src/ScriptFieldRegistry.cpp", "../RT2App/src/ScriptFieldResolver.cpp",         "../RT2App/src/ScriptSystem.cpp", "../RT2App/src/AssetIdentity.cpp", "../RT2App/src/AssetDatabase.cpp", "../RT2App/src/core/UUID.cpp", "../RT2App/src/core/Error.cpp" }
 
     -- Phase 6: Lua 5.4 C sources compiled into the test target so the
     -- CPU-only ScriptSystem tests can execute Lua without an external
@@ -59,6 +59,9 @@ project "RT2Tests"
        defines { "WL_DEBUG" }
        runtime "Debug"
        symbols "On"
+
+    filter { "configurations:Debug", "files:../RT2App/src/SceneLoader.cpp" }
+       buildoptions { "/bigobj" }
 
     filter "configurations:Release"
        defines { "WL_RELEASE" }

@@ -22,6 +22,7 @@ project "RT2SliceRunner"
         "../RT2App/src/SceneVisibility.cpp",
         "../RT2App/src/TransformEditing.cpp",
         "../RT2App/src/SceneLoader.cpp",
+        "../RT2App/src/TextureAssetPipeline.cpp",
         "../RT2App/src/GPUSceneData.cpp",
         "../RT2App/src/PrimitiveGeometry.cpp",
         "../RT2App/src/TinyEXRLoader.cpp",
@@ -30,6 +31,36 @@ project "RT2SliceRunner"
         "../RT2App/src/UnsavedChangesCoordinator.cpp",
         "../RT2App/src/core/UUID.cpp",
         "../RT2App/src/core/Error.cpp",
+        "../RT2App/src/AssetIdentity.cpp",
+        "../RT2App/src/AssetDatabase.cpp",
+        -- Phase 6C/W7: scripting sources for --script-scenario mode.
+        "../RT2App/src/ScriptSystem.cpp",
+        "../RT2App/src/ScriptAssetPath.cpp",
+        "../RT2App/src/ScriptFieldReconcile.cpp",
+        "../RT2App/src/ScriptFieldRegistry.cpp",
+        "../RT2App/src/ScriptFieldResolver.cpp",
+    }
+
+    -- Phase 6C/W7: Lua 5.4 C sources compiled directly into the target
+    -- (same source set as RT2Tests; no lua.c/luac.c/onelua.c/testes).
+    files {
+        "../RT2App/vendor/lua/lapi.c", "../RT2App/vendor/lua/lauxlib.c",
+        "../RT2App/vendor/lua/lbaselib.c", "../RT2App/vendor/lua/lcode.c",
+        "../RT2App/vendor/lua/lcorolib.c", "../RT2App/vendor/lua/lctype.c",
+        "../RT2App/vendor/lua/ldblib.c", "../RT2App/vendor/lua/ldebug.c",
+        "../RT2App/vendor/lua/ldo.c", "../RT2App/vendor/lua/ldump.c",
+        "../RT2App/vendor/lua/lfunc.c", "../RT2App/vendor/lua/lgc.c",
+        "../RT2App/vendor/lua/linit.c", "../RT2App/vendor/lua/liolib.c",
+        "../RT2App/vendor/lua/ljumptab.h", "../RT2App/vendor/lua/llex.c",
+        "../RT2App/vendor/lua/lmathlib.c", "../RT2App/vendor/lua/lmem.c",
+        "../RT2App/vendor/lua/loadlib.c", "../RT2App/vendor/lua/lobject.c",
+        "../RT2App/vendor/lua/lopcodes.c", "../RT2App/vendor/lua/loslib.c",
+        "../RT2App/vendor/lua/lparser.c", "../RT2App/vendor/lua/lstate.c",
+        "../RT2App/vendor/lua/lstring.c", "../RT2App/vendor/lua/lstrlib.c",
+        "../RT2App/vendor/lua/ltable.c", "../RT2App/vendor/lua/ltablib.c",
+        "../RT2App/vendor/lua/ltests.c", "../RT2App/vendor/lua/ltm.c",
+        "../RT2App/vendor/lua/lundump.c", "../RT2App/vendor/lua/lutf8lib.c",
+        "../RT2App/vendor/lua/lvm.c", "../RT2App/vendor/lua/lzio.c",
     }
 
     includedirs
@@ -38,6 +69,8 @@ project "RT2SliceRunner"
         "../RT2App/vendor",
         "../RT2App/vendor/tinygltf",
         "../RT2App/vendor/entt/src",
+        "../RT2App/vendor/sol2/include",   -- Phase 6C/W7: sol2 header-only bindings
+        "../RT2App/vendor/lua",            -- Phase 6C/W7: Lua 5.4 public headers
         "../Walnut/vendor/glm",
         "../Walnut/vendor/stb_image",
     }
@@ -53,6 +86,9 @@ project "RT2SliceRunner"
        defines { "WL_DEBUG" }
        runtime "Debug"
        symbols "On"
+
+    filter { "configurations:Debug", "files:../RT2App/src/SceneLoader.cpp" }
+       buildoptions { "/bigobj" }
 
     filter "configurations:Release"
        defines { "WL_RELEASE" }

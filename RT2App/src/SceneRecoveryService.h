@@ -16,13 +16,15 @@
 
 namespace rt2::core {
 
+struct SceneLoadReport;
+
 // Crash recovery is deliberately one atomic envelope per logical document,
 // not version history. Each .rt2recovery file contains its manifest and the
-// complete schema-v2 scene JSON. Tests inject the storage root and clock.
+// complete schema-v3 scene JSON. Tests inject the storage root and clock.
 class SceneRecoveryService
 {
 public:
-    static constexpr uint32_t ManifestVersion = 1;
+    static constexpr uint32_t ManifestVersion = 2;
     static constexpr size_t   kDefaultMaxRecords = 8;
     static constexpr double   kDefaultIntervalSeconds = 60.0;
 
@@ -58,13 +60,15 @@ public:
                        uint64_t currentRevision,
                        const std::string& untitledRecoveryId,
                        const std::filesystem::path& logicalAssetRoot,
+                       std::vector<AssetDiagnostic>& diagnostics,
                        Error& err);
 
-    // Compatibility/test convenience: uses metadata.name as the untitled id
-    // and current_path as the untitled logical asset root.
-    bool MaybeSnapshot(const SceneDocument& doc,
-                       uint64_t currentRevision,
-                       Error& err);
+    // Build the no-project recovery asset root without consulting CWD.
+    // `localAppData` is supplied by the host so this stays CPU-testable.
+    static bool EnsureUntitledRecoveryAssetRoot(
+        const std::filesystem::path& localAppData,
+        std::filesystem::path& outRoot,
+        Error& err);
 
     std::vector<RecoveryRecord> Discover(Error& err) const;
 
@@ -74,6 +78,12 @@ public:
     bool Restore(const RecoveryRecord& record,
                  SceneDocument& outDoc,
                  std::vector<AssetDiagnostic>& diagnostics,
+                 Error& err) const;
+
+    bool Restore(const RecoveryRecord& record,
+                 SceneDocument& outDoc,
+                 std::vector<AssetDiagnostic>& diagnostics,
+                 SceneLoadReport& loadReport,
                  Error& err) const;
 
     bool Discard(const RecoveryRecord& record, Error& err) const;
@@ -114,6 +124,7 @@ private:
                      const std::filesystem::path& logicalAssetRoot,
                      uint64_t revision,
                      int64_t createdAt,
+                     std::vector<AssetDiagnostic>& diagnostics,
                      Error& err);
     bool ParseRecord(const std::filesystem::path& path,
                      RecoveryRecord& out) const;

@@ -61,8 +61,27 @@ public:
 	// build raster vertex buffers + draw data.
 	// rasterPass is a callback that receives the GpuDevice + sceneData
 	// to call RasterPass::CreateVertexBuffers/CreateDrawData.
+	//
+	// Synchronous version — blocks on vkQueueWaitIdle. Kept for the
+	// Render() path (which expects AS to be valid when it returns).
 	void RebuildAccelerationStructures(const GpuDevice& dev,
 		std::function<void(const GpuDevice&, const GPUSceneData&)> rasterPassBuild);
+
+	// Async AS rebuild — submit the BLAS/TLAS build command buffer with a
+	// fence and return immediately. The caller polls PollASRebuild() each
+	// frame until it returns true. While pending, the AS is not valid and
+	// Render() must not be called.
+	bool BeginRebuildAccelerationStructures(const GpuDevice& dev,
+		std::function<void(const GpuDevice&, const GPUSceneData&)> rasterPassBuild);
+
+	// Returns true if the async AS rebuild fence has signalled (build done).
+	// Cleans up the command buffer + fence on success. Returns false if
+	// still in progress or no rebuild was submitted.
+	bool PollASRebuild();
+
+	// True if an async AS rebuild is in progress (fence submitted, not
+	// yet signalled).
+	bool IsASRebuildPending() const { return m_ASRebuildFence != VK_NULL_HANDLE; }
 
 	// Update instances (TLAS rebuild only) + transform/light buffers.
 	void UpdateInstances(const GpuDevice& dev, const GPUSceneData& sceneData);
@@ -120,6 +139,15 @@ public:
 	int GetMarginalCDFIndex() const { return m_MarginalCDFIndex; }
 	int GetConditionalCDFIndex() const { return m_ConditionalCDFIndex; }
 
+	// Last BLAS/TLAS build timings (milliseconds), captured with
+	// std::chrono around the build calls. CPU-side wall-clock; the GPU
+	// timestamp profiler separately reports per-region GPU times.
+	// -1.0 means no build has run yet.
+	float GetLastBlasBuildMs() const { return m_LastBlasBuildMs; }
+	float GetLastTlasBuildMs()  const { return m_LastTlasBuildMs; }
+	float GetLastAsTotalMs()    const { return m_LastAsTotalMs; }
+	uint32_t GetBlasCount() const { return m_AS.GetBLASCount(); }
+
 private:
 	void CreateMaterialBuffer(const GpuDevice& dev);
 	void CreateLightBuffer(const GpuDevice& dev);
@@ -171,6 +199,21 @@ private:
 	bool m_NeedsASRebuild = false;
 	bool m_ASJustBuilt = false;
 	bool m_NeedsTransformAdvance = false;
+
+	// Last BLAS/TLAS build timings (milliseconds), captured with
+	// std::chrono around the build calls. CPU-side wall-clock; the GPU
+	// timestamp profiler separately reports per-region GPU times. These
+	// are populated by RebuildAccelerationStructures and
+	// BeginRebuildAccelerationStructures; -1.0 means no build has run yet.
+	// Public so RendererGPU can forward them to the Performance window.
+	float m_LastBlasBuildMs = -1.0f;
+	float m_LastTlasBuildMs  = -1.0f;
+	float m_LastAsTotalMs    = -1.0f;
+
+	// Async AS rebuild state (fence-based, non-blocking submit)
+	VkFence m_ASRebuildFence = VK_NULL_HANDLE;
+	VkCommandBuffer m_ASRebuildCmdBuffer = VK_NULL_HANDLE;
+	VkCommandPool m_ASRebuildCmdPool = VK_NULL_HANDLE;
 
 	// Current scene data (CPU-side mirror)
 	GPUSceneData m_CurrentScene;

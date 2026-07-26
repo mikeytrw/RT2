@@ -6,6 +6,9 @@
 #include "PersistedComponents.h"
 #include "PrimitiveGeometry.h"
 #include "RTLog.h"
+#include "ScriptComponentValidation.h"
+#include "ScriptAssetPath.h"
+#include "AssetIdentity.h"
 #include "stb_image.h"
 #include <tinyexr.h>
 #include <glm/glm.hpp>
@@ -88,6 +91,66 @@ void CopyAuthoredComponents(const entt::registry& sourceRegistry,
 		transform->dirty = true;
 	}
 }
+
+void LogAssetDiagnostics(
+	const std::vector<rt2::core::AssetDiagnostic>& diagnostics,
+	size_t base,
+	const char* context)
+{
+	for (size_t i = base; i < diagnostics.size(); ++i)
+	{
+		const auto& diagnostic = diagnostics[i];
+		printf("[Asset] %s %s: path=%s source=%s detail=%s\n",
+		       context,
+		       rt2::core::AssetDiagnosticSeverityName(
+			       diagnostic.severity),
+		       diagnostic.refPath.c_str(),
+		       diagnostic.sourceKey.c_str(),
+		       diagnostic.detail.c_str());
+	}
+}
+}
+
+// Fill an imported entity's source path (if empty) and assign it a stable
+// asset ID from the per-asset sidecar (.rt2meta), minting+writing the sidecar
+// when absent (Phase 7 W1, per D8). Resolution by path is unchanged; the ID
+// is plumbed but not yet authoritative. A minted ID is logged so a missing or
+// malformed sidecar is observable, not silent. Errors do not block import:
+// the scene still gets an ID for this session; the next save retries.
+void FillImportedSourcePathAndId(entt::registry& reg,
+                                 const std::string& filepath,
+                                 rt2::core::IUuidProvider& provider)
+{
+	auto mv = reg.view<ImportedMeshSourceComponent>();
+	for (auto e : mv)
+	{
+		auto& src = reg.get<ImportedMeshSourceComponent>(e);
+		if (src.model.path.empty())
+			src.model.path = filepath;
+		if (!src.model.assetId.IsNull())
+			continue; // already has a stable ID (e.g. from a loaded .rt2scene)
+
+		bool minted = false;
+		rt2::core::Error idErr;
+		const rt2::core::UUID id =
+			rt2::core::ResolveOrAssign(filepath, provider, minted, idErr);
+		src.model.assetId = id;
+		if (minted)
+		{
+			if (!idErr.IsOk())
+			{
+				printf("[Asset] %s: sidecar issue, assigned new id %s: %s\n",
+				       filepath.c_str(), id.ToString().c_str(),
+				       idErr.Format().c_str());
+			}
+			else
+			{
+				printf("[Asset] %s: assigned new id %s\n",
+				       filepath.c_str(), id.ToString().c_str());
+			}
+			fflush(stdout);
+		}
+	}
 }
 
 SceneManager::SceneManager()
@@ -138,7 +201,9 @@ void SceneManager::ReplaceAuthoringDocument(rt2::core::SceneDocument&& document,
 	++m_ResourceGeneration;
 }
 
-bool SceneManager::LoadScene(const std::string& filepath)
+bool SceneManager::LoadScene(
+	const std::string& filepath,
+	std::vector<rt2::core::AssetDiagnostic>* diagnostics)
 {
 	printf("[Scene] LoadScene: '%s'\n", filepath.c_str());
 	fflush(stdout);
@@ -146,11 +211,29 @@ bool SceneManager::LoadScene(const std::string& filepath)
 	std::string ext = filepath.substr(filepath.find_last_of('.') + 1);
 	std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 	bool isObj = (ext == "obj");
+	std::vector<rt2::core::AssetDiagnostic> localDiagnostics;
+	auto& diagnosticSink =
+		diagnostics ? *diagnostics : localDiagnostics;
+	const size_t diagnosticBase = diagnosticSink.size();
 
 	if (isObj)
 	{
-		if (!SceneLoader::LoadObjIntoECS(m_EcsScene, filepath))
+		rt2::core::TextureAssetLoadContext textureContext;
+		if (!rt2::core::BuildExplicitImportTextureContext(
+			    std::filesystem::u8path(filepath), m_UuidProvider,
+			    textureContext, diagnosticSink))
 		{
+			if (!diagnostics)
+				LogAssetDiagnostics(
+					diagnosticSink, diagnosticBase, "LoadScene");
+			return false;
+		}
+		if (!SceneLoader::LoadObjIntoECS(
+			    m_EcsScene, textureContext, diagnosticSink))
+		{
+			if (!diagnostics)
+				LogAssetDiagnostics(
+					diagnosticSink, diagnosticBase, "LoadScene");
 			printf("[Scene] LoadObjIntoECS failed!\n");
 			return false;
 		}
@@ -160,8 +243,22 @@ bool SceneManager::LoadScene(const std::string& filepath)
 	}
 	else
 	{
-		if (!SceneLoader::LoadIntoECS(m_EcsScene, filepath))
+		rt2::core::TextureAssetLoadContext textureContext;
+		if (!rt2::core::BuildExplicitImportTextureContext(
+			    std::filesystem::u8path(filepath), m_UuidProvider,
+			    textureContext, diagnosticSink))
 		{
+			if (!diagnostics)
+				LogAssetDiagnostics(
+					diagnosticSink, diagnosticBase, "LoadScene");
+			return false;
+		}
+		if (!SceneLoader::LoadIntoECS(
+			    m_EcsScene, textureContext, diagnosticSink))
+		{
+			if (!diagnostics)
+				LogAssetDiagnostics(
+					diagnosticSink, diagnosticBase, "LoadScene");
 			printf("[Scene] SceneLoader::LoadIntoECS failed!\n");
 			return false;
 		}
@@ -236,18 +333,9 @@ bool SceneManager::LoadScene(const std::string& filepath)
 	}
 
 	// Record the source model path on imported mesh entities so the native
-	// .rt2scene serializer can persist a durable reference. The path is
-	// stored as-is; the serializer relativizes it at save time.
-	{
-		auto& reg = m_EcsScene.registry;
-		auto mv = reg.view<ImportedMeshSourceComponent>();
-		for (auto e : mv)
-		{
-			auto& src = mv.get<ImportedMeshSourceComponent>(e);
-			if (src.model.path.empty())
-				src.model.path = filepath;
-		}
-	}
+	// .rt2scene serializer can persist a durable reference, and assign each
+	// a stable asset ID from its sidecar (Phase 7 W1).
+	FillImportedSourcePathAndId(m_EcsScene.registry, filepath, *m_UuidProvider);
 
 	rt2::core::Error hierarchyError;
 	if (!SceneHierarchy::RebuildChildren(m_EcsScene.registry, hierarchyError))
@@ -271,10 +359,13 @@ bool SceneManager::LoadScene(const std::string& filepath)
 	m_EntityCacheDirty = true;
 	++m_DocumentGeneration;
 	++m_ResourceGeneration;
+	if (!diagnostics)
+		LogAssetDiagnostics(diagnosticSink, diagnosticBase, "LoadScene");
 	return true;
 }
 
-bool SceneManager::LoadEnvMap(const std::string& filepath)
+bool SceneManager::LoadEnvMap(const std::string& filepath,
+                                rt2::core::Error* envImportErr)
 {
 	printf("[EnvMap] Loading '%s'\n", filepath.c_str());
 
@@ -315,10 +406,37 @@ bool SceneManager::LoadEnvMap(const std::string& filepath)
 		printf("[EnvMap] Loaded %dx%d HDR\n", w, h);
 	}
 
-	m_Authoring.environment.path = filepath;
+	m_Authoring.environment.ref.kind = AssetKind::Environment;
+	m_Authoring.environment.ref.path = filepath;
 	m_Authoring.environment.width = w;
 	m_Authoring.environment.height = h;
 	m_Authoring.environment.floatPixels = std::move(pixels);
+
+	// Phase 7 W3 step 4: assign a stable env-asset ID via the per-asset
+	// sidecar, paralleling model import. The sidecar is the durable source
+	// of truth; env.ref.assetId is a cache of it. ResolveEnvironment reads
+	// the sidecar through the shared locator and never mints.
+	if (m_UuidProvider)
+	{
+		bool minted = false;
+		rt2::core::Error idErr;
+		const rt2::core::UUID id = rt2::core::ResolveOrAssign(
+			filepath, *m_UuidProvider, minted, idErr);
+		m_Authoring.environment.ref.assetId = id;
+		if (minted)
+		{
+			printf("[Asset] %s: assigned new id %s%s%s\n",
+			       filepath.c_str(), id.ToString().c_str(),
+			       idErr.IsOk() ? "" : ": ",
+			       idErr.IsOk() ? "" : idErr.Format().c_str());
+			fflush(stdout);
+		}
+		// Retain a structured diagnostic for sidecar read/write errors
+		// (item 4): the load still succeeds, but the caller can surface
+		// the error instead of relying on console output.
+		if (envImportErr)
+			*envImportErr = idErr;
+	}
 	return true;
 }
 
@@ -327,11 +445,69 @@ void SceneManager::ClearEnvMap()
 	m_Authoring.environment.Clear();
 }
 
-SceneManager::EntityId SceneManager::ImportGltf(const std::string& filepath)
+void SceneManager::SetEnvMapData(const std::string& filepath, int w, int h,
+                                 std::vector<float> pixels,
+                                 rt2::core::Error* envImportErr)
 {
-	entt::entity root = SceneLoader::ImportIntoECS(m_EcsScene, filepath);
-	if (root == entt::null)
+	m_Authoring.environment.ref.kind = AssetKind::Environment;
+	m_Authoring.environment.ref.path = filepath;
+	m_Authoring.environment.width = w;
+	m_Authoring.environment.height = h;
+	m_Authoring.environment.floatPixels = std::move(pixels);
+
+	// Phase 7 W3 step 4: assign a stable env-asset ID via the sidecar. This
+	// is the async-load completion path (WalnutApp background decode); it
+	// must keep env.ref.assetId in lockstep with LoadEnvMap so a save/reopen
+	// round-trip resolves by the same identity.
+	if (m_UuidProvider)
+	{
+		bool minted = false;
+		rt2::core::Error idErr;
+		const rt2::core::UUID id = rt2::core::ResolveOrAssign(
+			filepath, *m_UuidProvider, minted, idErr);
+		m_Authoring.environment.ref.assetId = id;
+		if (minted)
+		{
+			printf("[Asset] %s: assigned new id %s%s%s\n",
+			       filepath.c_str(), id.ToString().c_str(),
+			       idErr.IsOk() ? "" : ": ",
+			       idErr.IsOk() ? "" : idErr.Format().c_str());
+			fflush(stdout);
+		}
+		// Retain a structured diagnostic for sidecar read/write errors
+		// (item 4).
+		if (envImportErr)
+			*envImportErr = idErr;
+	}
+}
+
+SceneManager::EntityId SceneManager::ImportGltf(
+	const std::string& filepath,
+	std::vector<rt2::core::AssetDiagnostic>* diagnostics)
+{
+	std::vector<rt2::core::AssetDiagnostic> localDiagnostics;
+	auto& diagnosticSink =
+		diagnostics ? *diagnostics : localDiagnostics;
+	const size_t diagnosticBase = diagnosticSink.size();
+	rt2::core::TextureAssetLoadContext textureContext;
+	if (!rt2::core::BuildExplicitImportTextureContext(
+		    std::filesystem::u8path(filepath), m_UuidProvider,
+		    textureContext, diagnosticSink))
+	{
+		if (!diagnostics)
+			LogAssetDiagnostics(
+				diagnosticSink, diagnosticBase, "ImportGltf");
 		return EntityId{};
+	}
+	entt::entity root = SceneLoader::ImportIntoECS(
+		m_EcsScene, textureContext, diagnosticSink);
+	if (root == entt::null)
+	{
+		if (!diagnostics)
+			LogAssetDiagnostics(
+				diagnosticSink, diagnosticBase, "ImportGltf");
+		return EntityId{};
+	}
 
 	// Assign UUIDs to any imported entity that lacks one.
 	auto& reg = m_EcsScene.registry;
@@ -343,29 +519,48 @@ SceneManager::EntityId SceneManager::ImportGltf(const std::string& filepath)
 	}
 
 	// Record the source model path on every imported mesh entity so the
-	// native .rt2scene serializer can persist a durable reference. The path
-	// is stored as-is (possibly absolute); the serializer relativizes it
-	// against the .rt2scene location at save time.
+	// native .rt2scene serializer can persist a durable reference, and
+	// assign each a stable asset ID from its sidecar (Phase 7 W1).
 	{
-		auto mv = reg.view<ImportedMeshSourceComponent>();
-		for (auto e : mv)
-		{
-			auto& src = mv.get<ImportedMeshSourceComponent>(e);
-			if (src.model.path.empty())
-				src.model.path = filepath;
-		}
+		auto& reg = m_EcsScene.registry;
+		FillImportedSourcePathAndId(reg, filepath, *m_UuidProvider);
 	}
 
 	m_EntityCacheDirty = true;
+	if (!diagnostics)
+		LogAssetDiagnostics(
+			diagnosticSink, diagnosticBase, "ImportGltf");
 	return EntityId{ root };
 }
 
-SceneManager::EntityId SceneManager::ImportObj(const std::string& filepath,
-                                                const ImportSettings& settings)
+SceneManager::EntityId SceneManager::ImportObj(
+	const std::string& filepath,
+	const ImportSettings& settings,
+	std::vector<rt2::core::AssetDiagnostic>* diagnostics)
 {
-	entt::entity root = SceneLoader::ImportObjIntoECS(m_EcsScene, filepath, settings);
-	if (root == entt::null)
+	std::vector<rt2::core::AssetDiagnostic> localDiagnostics;
+	auto& diagnosticSink =
+		diagnostics ? *diagnostics : localDiagnostics;
+	const size_t diagnosticBase = diagnosticSink.size();
+	rt2::core::TextureAssetLoadContext textureContext;
+	if (!rt2::core::BuildExplicitImportTextureContext(
+		    std::filesystem::u8path(filepath), m_UuidProvider,
+		    textureContext, diagnosticSink))
+	{
+		if (!diagnostics)
+			LogAssetDiagnostics(
+				diagnosticSink, diagnosticBase, "ImportObj");
 		return EntityId{};
+	}
+	entt::entity root = SceneLoader::ImportObjIntoECS(
+		m_EcsScene, settings, textureContext, diagnosticSink);
+	if (root == entt::null)
+	{
+		if (!diagnostics)
+			LogAssetDiagnostics(
+				diagnosticSink, diagnosticBase, "ImportObj");
+		return EntityId{};
+	}
 
 	// Assign UUIDs to any imported entity that lacks one.
 	auto& reg = m_EcsScene.registry;
@@ -377,24 +572,203 @@ SceneManager::EntityId SceneManager::ImportObj(const std::string& filepath,
 	}
 
 	// Record the source model path on every imported mesh entity so the
-	// native .rt2scene serializer can persist a durable reference.
+	// native .rt2scene serializer can persist a durable reference, and
+	// assign each a stable asset ID from its sidecar (Phase 7 W1).
 	{
-		auto mv = reg.view<ImportedMeshSourceComponent>();
-		for (auto e : mv)
-		{
-			auto& src = mv.get<ImportedMeshSourceComponent>(e);
-			if (src.model.path.empty())
-				src.model.path = filepath;
-		}
+		FillImportedSourcePathAndId(reg, filepath, *m_UuidProvider);
 	}
 
 	m_EntityCacheDirty = true;
+	if (!diagnostics)
+		LogAssetDiagnostics(
+			diagnosticSink, diagnosticBase, "ImportObj");
 	return EntityId{ root };
 }
 
-// ============================================================================
-// GPU sync — build GPUSceneData from current scene state and push to renderer
-// ============================================================================
+SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
+                                                       entt::entity srcRoot,
+                                                       const std::string& sourcePath)
+{
+	if (srcRoot == entt::null || !src.registry.valid(srcRoot))
+		return EntityId{};
+
+	auto& dst = m_EcsScene;
+	auto& dstReg = dst.registry;
+	auto& srcReg = src.registry;
+
+	// Record base offsets in the destination scene.
+	const uint32_t meshBase = dst.meshRegistry.GetCount();
+	const int matBase = (int)dst.materials.size();
+	const int texBase = (int)dst.textures.size();
+
+	// Append meshes. OBJ meshes use per-triangle materialIndices that must
+	// be offset by matBase so they reference the correct material slots.
+	for (uint32_t i = 0; i < src.meshRegistry.GetCount(); ++i)
+	{
+		MeshData mesh = src.meshRegistry.GetMesh(i); // copy
+		if (!mesh.materialIndices.empty())
+		{
+			for (auto& mi : mesh.materialIndices)
+				mi += static_cast<uint32_t>(matBase);
+		}
+		dst.meshRegistry.AddMesh(std::move(mesh));
+	}
+
+	// Append materials, remapping texture indices.
+	for (const auto& sm : src.materials)
+	{
+		SceneMaterial m = sm;
+		auto remapTex = [&](int& idx) { if (idx >= 0) idx += texBase; };
+		remapTex(m.baseColorTextureIndex);
+		remapTex(m.normalTextureIndex);
+		remapTex(m.emissiveTextureIndex);
+		remapTex(m.metallicRoughnessTextureIndex);
+		dst.materials.push_back(m);
+	}
+
+	// Append textures.
+	for (auto& st : src.textures)
+		dst.textures.push_back(std::move(st));
+
+	// Map src entities to dst entities.
+	std::unordered_map<entt::entity, entt::entity> entityMap;
+
+	// First pass: create all dst entities and copy simple components.
+	{
+		auto view = srcReg.view<Transform>();
+		for (auto e : view)
+		{
+			entt::entity dstE = dstReg.create();
+			entityMap[e] = dstE;
+
+			const auto& srcTf = view.get<Transform>(e);
+			Transform& dstTf = dstReg.emplace<Transform>(dstE);
+			dstTf.translation = srcTf.translation;
+			dstTf.rotation = srcTf.rotation;
+			dstTf.scale = srcTf.scale;
+			dstTf.dirty = true;
+		}
+	}
+
+	// Copy MeshRef (remap meshIndex by meshBase).
+	{
+		auto view = srcReg.view<MeshRef>();
+		for (auto e : view)
+		{
+			auto it = entityMap.find(e);
+			if (it == entityMap.end()) continue;
+			const auto& srcRef = view.get<MeshRef>(e);
+			MeshRef dstRef;
+			dstRef.meshIndex = srcRef.meshIndex + meshBase;
+			dstRef.materialIndex = srcRef.materialIndex;
+			dstReg.emplace<MeshRef>(it->second, dstRef);
+		}
+	}
+
+	// Copy NameComponent.
+	{
+		auto view = srcReg.view<NameComponent>();
+		for (auto e : view)
+		{
+			auto it = entityMap.find(e);
+			if (it == entityMap.end()) continue;
+			dstReg.emplace<NameComponent>(it->second, view.get<NameComponent>(e));
+		}
+	}
+
+	// Copy VisibleComponent.
+	{
+		auto view = srcReg.view<VisibleComponent>();
+		for (auto e : view)
+		{
+			auto it = entityMap.find(e);
+			if (it == entityMap.end()) continue;
+			dstReg.emplace<VisibleComponent>(it->second, view.get<VisibleComponent>(e));
+		}
+	}
+
+	// Copy Hierarchy (remap parent + children via entityMap).
+	{
+		auto view = srcReg.view<Hierarchy>();
+		for (auto e : view)
+		{
+			auto it = entityMap.find(e);
+			if (it == entityMap.end()) continue;
+			const auto& srcHier = view.get<Hierarchy>(e);
+			Hierarchy dstHier;
+			if (srcHier.parent != entt::null)
+			{
+				auto pit = entityMap.find(srcHier.parent);
+				dstHier.parent = (pit != entityMap.end()) ? pit->second : entt::null;
+			}
+			else
+				dstHier.parent = entt::null;
+			for (auto child : srcHier.children)
+			{
+				auto cit = entityMap.find(child);
+				if (cit != entityMap.end())
+					dstHier.children.push_back(cit->second);
+			}
+			dstReg.emplace<Hierarchy>(it->second, std::move(dstHier));
+		}
+	}
+
+	// Copy ImportedMeshSourceComponent + fill source path + assign sidecar ID.
+	{
+		auto view = srcReg.view<ImportedMeshSourceComponent>();
+		for (auto e : view)
+		{
+			auto it = entityMap.find(e);
+			if (it == entityMap.end()) continue;
+			auto srcComp = view.get<ImportedMeshSourceComponent>(e);
+			if (srcComp.model.path.empty())
+				srcComp.model.path = sourcePath;
+			if (srcComp.model.assetId.IsNull())
+			{
+				bool minted = false;
+				rt2::core::Error idErr;
+				const rt2::core::UUID id = rt2::core::ResolveOrAssign(
+					sourcePath, *m_UuidProvider, minted, idErr);
+				srcComp.model.assetId = id;
+				if (minted)
+				{
+					printf("[Asset] %s: assigned new id %s%s%s\n",
+					       sourcePath.c_str(), id.ToString().c_str(),
+					       idErr.IsOk() ? "" : ": ",
+					       idErr.IsOk() ? "" : idErr.Format().c_str());
+					fflush(stdout);
+				}
+			}
+			dstReg.emplace<ImportedMeshSourceComponent>(it->second, std::move(srcComp));
+		}
+	}
+
+	// Assign UUIDs to all imported entities that lack one.
+	{
+		auto view = dstReg.view<Transform>();
+		for (auto entity : view)
+		{
+			if (!dstReg.all_of<EntityIdComponent>(entity))
+				m_Authoring.AssignNewUuid(entity);
+		}
+	}
+
+	// Find the wrapper root in the destination.
+	entt::entity dstRoot = entt::null;
+	auto rootIt = entityMap.find(srcRoot);
+	if (rootIt != entityMap.end())
+		dstRoot = rootIt->second;
+
+	// Update world transforms for the imported hierarchy.
+	if (dstRoot != entt::null)
+	{
+		SceneGraph::SetLocalDirty(dstReg, dstRoot);
+		SceneGraph::UpdateWorldTransforms(dstReg);
+	}
+
+	m_EntityCacheDirty = true;
+	return EntityId{ dstRoot };
+}
 
 void SceneManager::SyncToGPU()
 {
@@ -484,6 +858,18 @@ SceneManager::EntityId SceneManager::AddObject(const std::string& name,
 	tf.rotation = glm::quat(glm::radians(rotation));
 	tf.scale = {scale, scale, scale};
 	m_EcsScene.registry.emplace<Transform>(entity, tf);
+
+	// NOTE: this references mesh 0 even when the registry is empty, which is
+	// a dangling reference until geometry arrives. It is deliberate and
+	// depended upon: the production caller (WalnutApp's model-load path)
+	// calls this straight after SceneLoader::LoadIntoECS, when index 0 is
+	// valid, and test fixtures treat AddObject as "add a renderable object"
+	// and read the MeshRef back. Making it conditional breaks both.
+	//
+	// The reference is inert because every consumer bounds-checks it before
+	// indexing: CompactMeshRegistry skips out-of-range indices, and
+	// GPUSceneData guards at :292 and :451. Anything new that indexes
+	// meshRegistry by a MeshRef must do the same.
 	m_EcsScene.registry.emplace<MeshRef>(entity, 0u, materialIndex);
 
 	if (!name.empty())
@@ -2768,7 +3154,16 @@ void SceneManager::ReconcileStoredCameraDirections()
 void SceneManager::SetMaterial(EntityId entity, int materialIndex)
 {
 	if (!entity.IsValid()) return;
-	SetMaterialIndexState(GetEntityUuid(entity), materialIndex);
+	// SetMaterialIndexState returns an authoritative EditorMutationResult and
+	// can legitimately fail — an out-of-range index is the common case, since
+	// it is bounds-checked against the material list. Dropping that result
+	// made a rejected assignment indistinguishable from an applied one.
+	// This wrapper is void by design (the inspector calls it fire-and-forget),
+	// so surface the failure rather than returning it.
+	const auto result = SetMaterialIndexState(GetEntityUuid(entity), materialIndex);
+	if (!result.success)
+		printf("[SceneManager] SetMaterial rejected: %s\n",
+		       result.error.Format().c_str());
 }
 
 std::string SceneManager::GetEntityName(EntityId entity) const
@@ -2839,6 +3234,24 @@ bool SceneManager::HasLight(EntityId entity) const
 	if (!entity.IsValid()) return false;
 	if (!m_EcsScene.registry.valid(entity.id)) return false;
 	return m_EcsScene.registry.try_get<LightComponent>(entity.id) != nullptr;
+}
+
+bool SceneManager::HasScript(EntityId entity) const
+{
+	if (!entity.IsValid()) return false;
+	if (!m_EcsScene.registry.valid(entity.id)) return false;
+	return m_EcsScene.registry.try_get<ScriptComponent>(entity.id) != nullptr;
+}
+
+std::optional<ScriptComponent>
+SceneManager::GetScriptState(const rt2::core::UUID& entity) const
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return std::nullopt;
+	if (auto* sc = m_EcsScene.registry.try_get<ScriptComponent>(e))
+		return *sc;
+	return std::nullopt;
 }
 
 bool SceneManager::HasTransform(EntityId entity) const
@@ -3215,6 +3628,138 @@ EditorMutationResult SceneManager::SetMotionState(const rt2::core::UUID& entity,
 	return result;
 }
 
+EditorMutationResult SceneManager::SetScriptState(const rt2::core::UUID& entity,
+                                                  const std::optional<ScriptComponent>& value)
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			entity.ToString(), "SetScriptState: entity not present");
+	if (value.has_value())
+	{
+		ScriptComponent canonical;
+		std::string detail;
+		std::string field;
+		if (!rt2::core::NormalizeAndValidateScriptComponent(
+				*value, canonical, detail, &field))
+		{
+			return EditorMutationResult::Failure(
+				rt2::core::Error::InvalidArgument,
+				field.empty() ? entity.ToString()
+				              : entity.ToString() + ":" + field,
+				"SetScriptState: " + detail);
+		}
+
+		// Suppress canonical no-ops: present→same-present must not dirty the
+		// document, bump the revision, or notify observers (W4-F1). The
+		// caller's value has already been canonicalized above, so compare
+		// against the currently stored component.
+		std::optional<ScriptComponent> current;
+		if (m_EcsScene.registry.all_of<ScriptComponent>(e))
+			current = m_EcsScene.registry.get<ScriptComponent>(e);
+
+		// Binding a script is its explicit import operation. Assign/reuse the
+		// per-asset sidecar ID here, matching model/environment import while
+		// keeping the shared locator read-only (W3-Q9). A changed path never
+		// carries the previous file's ID. Missing paths remain bindable so the
+		// Phase 6 quarantine and watcher-recovery behavior is preserved.
+		if (canonical.asset.path.empty())
+		{
+			canonical.asset.assetId = rt2::core::UUID::Nil();
+		}
+		else
+		{
+			const bool sameBinding = current.has_value() &&
+				current->asset.path == canonical.asset.path;
+			if (!sameBinding)
+				canonical.asset.assetId = rt2::core::UUID::Nil();
+			else if (canonical.asset.assetId.IsNull())
+				canonical.asset.assetId = current->asset.assetId;
+
+			rt2::core::AssetResolutionContext context;
+			if (!m_Authoring.metadata.sourcePath.empty())
+				context.assetRoot =
+					m_Authoring.metadata.sourcePath.parent_path().
+						lexically_normal();
+			std::vector<rt2::core::AssetDiagnostic> diagnostics;
+			const auto resolved = rt2::core::ResolveScriptAssetPath(
+				canonical, context, entity,
+				GetEntityName({ e }), diagnostics);
+
+			const bool conflict = std::any_of(
+				diagnostics.begin(), diagnostics.end(),
+				[](const rt2::core::AssetDiagnostic& diagnostic) {
+					return diagnostic.severity ==
+						rt2::core::AssetDiagnostic::Conflict;
+				});
+			if (conflict)
+			{
+				return EditorMutationResult::Failure(
+					rt2::core::Error::InvalidArgument,
+					canonical.asset.path,
+					"SetScriptState: script asset identity conflict");
+			}
+
+			if (resolved.success &&
+				!resolved.effectiveId.IsNull())
+				canonical.asset.assetId = resolved.effectiveId;
+
+			if (resolved.success &&
+				resolved.identityRepairRequired &&
+				canonical.asset.assetId.IsNull())
+			{
+				bool minted = false;
+				rt2::core::Error idError;
+				canonical.asset.assetId = rt2::core::ResolveOrAssign(
+					resolved.resolvedPath, *m_UuidProvider,
+					minted, idError);
+				if (minted || !idError.IsOk())
+				{
+					printf("[Asset] %s: assigned script id %s%s%s\n",
+					       resolved.resolvedPath.string().c_str(),
+					       canonical.asset.assetId.ToString().c_str(),
+					       idError.IsOk() ? "" : ": ",
+					       idError.IsOk() ? "" : idError.Format().c_str());
+					fflush(stdout);
+				}
+			}
+		}
+
+		if (rt2::core::ScriptComponentCanonicalEqual(
+				current, std::optional<ScriptComponent>{canonical}))
+		{
+			EditorMutationResult result;
+			result.success = true;
+			result.effective = false;
+			result.syncImpact = rt2::core::SyncImpact::None;
+			return result;
+		}
+
+		m_EcsScene.registry.emplace_or_replace<ScriptComponent>(e,
+			std::move(canonical));
+	}
+	else
+	{
+		// Suppress absent→absent removal (W4-F1).
+		if (!m_EcsScene.registry.all_of<ScriptComponent>(e))
+		{
+			EditorMutationResult result;
+			result.success = true;
+			result.effective = false;
+			result.syncImpact = rt2::core::SyncImpact::None;
+			return result;
+		}
+		m_EcsScene.registry.remove<ScriptComponent>(e);
+	}
+	NotifyAuthoringChanged();
+	EditorMutationResult result;
+	result.success = true;
+	// D8: script bindings and field values never reach the GPU scene.
+	result.syncImpact = rt2::core::SyncImpact::None;
+	result.affectedEntities.push_back(entity);
+	return result;
+}
+
 EditorMutationResult SceneManager::SetCameraPoseState(const rt2::core::UUID& entity,
                                                       const EditableTRS& local,
                                                       const CameraComponent& props)
@@ -3288,13 +3833,23 @@ bool SceneManager::CompactMeshRegistry()
 	auto& reg = m_EcsScene.registry;
 	auto& meshReg = m_EcsScene.meshRegistry;
 
-	// Find which mesh indices are still referenced by alive entities
+	// Find which mesh indices are still referenced by alive entities.
+	//
+	// A MeshRef may name an index the registry does not have — a stale
+	// reference left by an entity built before its mesh was added, or one
+	// that outlived a registry shrink. Such an index must NOT be treated as
+	// live: it would flow into GetMesh() below, which is an unchecked
+	// m_Meshes[index], and read out of bounds (SIGSEGV in Release, a
+	// __fastfail on Debug's iterator checks). Skipping it is also correct
+	// on the merits — a mesh that does not exist cannot be keeping anything
+	// alive. GPUSceneData applies the same guard before indexing meshes.
 	std::set<uint32_t> referenced;
 	auto view = reg.view<MeshRef>();
 	for (auto entity : view)
 	{
 		if (!reg.valid(entity)) continue;
 		const auto& ref = view.get<MeshRef>(entity);
+		if (ref.meshIndex >= meshReg.GetCount()) continue;
 		referenced.insert(ref.meshIndex);
 	}
 

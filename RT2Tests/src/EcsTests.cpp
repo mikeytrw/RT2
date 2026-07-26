@@ -3,6 +3,8 @@
 #include <entt/entt.hpp>
 #include "ECSComponents.h"
 #include "SceneGraph.h"
+#include "SceneHierarchy.h"
+#include "core/Error.h"
 #include "MeshRegistry.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -11,6 +13,21 @@
 // ============================================================================
 // ECS + SceneGraph tests
 // ============================================================================
+
+// ----------------------------------------------------------------------------
+// Hierarchy.children is DERIVED from Hierarchy.parent, never maintained by
+// hand. SceneManager and SceneSerializer both call RebuildChildren after
+// touching parentage, and SceneGraph's traversal walks `children` — so a test
+// that sets only `parent` builds a half-linked graph the traversal cannot
+// reach. These cases used to fail with every world position reading zero for
+// exactly that reason.
+// ----------------------------------------------------------------------------
+static void LinkHierarchy(entt::registry& registry)
+{
+    rt2::core::Error err;
+    REQUIRE(SceneHierarchy::RebuildChildren(registry, err));
+}
+
 
 TEST_CASE("ECS: registry creates and destroys entities")
 {
@@ -86,6 +103,7 @@ TEST_CASE("SceneGraph: child inherits parent transform")
     auto& hier = registry.emplace<Hierarchy>(child);
     hier.parent = parent;
 
+    LinkHierarchy(registry);
     SceneGraph::UpdateWorldTransforms(registry);
 
     // Child world position = parent translation + child translation = (11, 0, 0)
@@ -117,6 +135,7 @@ TEST_CASE("SceneGraph: grandchild inherits concatenated transforms")
         h.parent = child;
     }
 
+    LinkHierarchy(registry);
     SceneGraph::UpdateWorldTransforms(registry);
 
     // Expected world: (10, 5, 2)
@@ -141,6 +160,7 @@ TEST_CASE("SceneGraph: scale affects child positions")
         h.parent = parent;
     }
 
+    LinkHierarchy(registry);
     SceneGraph::UpdateWorldTransforms(registry);
 
     // Parent scales by 2, child at local (1,0,0) → world (2,0,0)
@@ -164,6 +184,7 @@ TEST_CASE("SceneGraph: rotation affects child positions")
         h.parent = parent;
     }
 
+    LinkHierarchy(registry);
     SceneGraph::UpdateWorldTransforms(registry);
 
     // 90° Y rotation of (1,0,0) → (0,0,-1)
@@ -188,6 +209,7 @@ TEST_CASE("SceneGraph: MarkDirty propagates to children")
     }
 
     // First update — both get world matrices
+    LinkHierarchy(registry);
     SceneGraph::UpdateWorldTransforms(registry);
     CHECK(!registry.get<Transform>(parent).dirty);
     CHECK(!registry.get<Transform>(child).dirty);

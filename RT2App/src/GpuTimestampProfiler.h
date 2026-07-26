@@ -53,6 +53,7 @@ private:
 	struct Slot
 	{
 		uint64_t frameIndex = 0;
+		uint64_t submitOrder = 0; // monotonically increasing; never resets
 		uint32_t issuedMask = 0;
 		uint32_t activeMask = 0;
 		bool submitted = false;
@@ -64,6 +65,8 @@ private:
 	VkQueryPool m_QueryPool = VK_NULL_HANDLE;
 	std::array<Slot, 2> m_Slots = {};
 	Timings m_Latest = {};
+	uint64_t m_LatestSubmitOrder = 0; // monotonic; guards merge ordering
+	uint64_t m_SubmitCounter = 0;     // monotonic; assigned to each EndFrame
 	uint32_t m_FrameSlotCount = 0;
 	uint32_t m_ActiveFrameSlot = 0;
 	uint32_t m_TimestampValidBits = 0;

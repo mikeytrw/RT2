@@ -232,6 +232,29 @@ EditorMutationResult SetMotionCommand::Undo(SceneManager& scene)
 	return scene.SetMotionState(m_Target, m_BeforeValue);
 }
 
+// ---- SetScriptCommand ----
+
+EditorMutationResult SetScriptCommand::Execute(SceneManager& scene)
+{
+	return scene.SetScriptState(m_Target, m_AfterValue);
+}
+
+EditorMutationResult SetScriptCommand::Undo(SceneManager& scene)
+{
+	return scene.SetScriptState(m_Target, m_BeforeValue);
+}
+
+std::string SetScriptCommand::Description() const
+{
+	if (!m_BeforeValue.has_value() && m_AfterValue.has_value())
+		return "Add Script";
+	if (m_BeforeValue.has_value() && !m_AfterValue.has_value())
+		return "Remove Script";
+	if (!m_BeforeValue.has_value() && !m_AfterValue.has_value())
+		return "Script (no change)";
+	return "Edit Script";
+}
+
 // ---- AlignCameraCommand ----
 
 EditorMutationResult AlignCameraCommand::Execute(SceneManager& scene)
@@ -321,6 +344,62 @@ std::unique_ptr<IEditorCommand> MakeSetMotionCommandIfEffective(
 	if (beforeHas && afterHas && MotionEqual(*beforeValue, *afterValue))
 		return nullptr;
 	return std::make_unique<SetMotionCommand>(target,
+		std::move(beforeValue), std::move(afterValue));
+}
+
+std::unique_ptr<IEditorCommand> MakeSetScriptCommandIfEffective(
+	rt2::core::UUID target,
+	std::optional<ScriptComponent> beforeValue,
+	std::optional<ScriptComponent> afterValue)
+{
+	const bool beforeHas = beforeValue.has_value();
+	const bool afterHas = afterValue.has_value();
+
+	// Validate/canonicalize a present before-state first. An invalid
+	// before-snapshot returns null — it must never enter history because a
+	// later failed Undo would clear the entire history under the established
+	// policy (W4-F6).
+	if (beforeHas)
+	{
+		ScriptComponent canonical;
+		std::string detail;
+		std::string field;
+		if (!rt2::core::NormalizeAndValidateScriptComponent(
+				*beforeValue, canonical, detail, &field))
+		{
+			return nullptr;
+		}
+		beforeValue = std::move(canonical);
+	}
+
+	// Both absent → no-op.
+	if (!beforeHas && !afterHas) return nullptr;
+
+	// Validate/canonicalize a present after-state. An invalid after-state
+	// is NOT suppressed: the command is returned so EditorCommandHistory::
+	// Execute surfaces the manager's actionable failure without recording.
+	// When valid, the canonical form replaces the raw input so the command
+	// stores exactly what the manager will store (no stale sourceKey or
+	// non-default importSettings on the add path).
+	bool afterValid = false;
+	if (afterHas)
+	{
+		ScriptComponent canonicalAfter;
+		std::string detail;
+		std::string field;
+		afterValid = rt2::core::NormalizeAndValidateScriptComponent(
+				*afterValue, canonicalAfter, detail, &field);
+		if (afterValid)
+			afterValue = std::move(canonicalAfter);
+	}
+
+	// Both present and canonically equal → no-op. Only checked when both
+	// are valid (before was validated above; after was just validated).
+	if (beforeHas && afterHas && afterValid &&
+	    rt2::core::ScriptComponentCanonicalEqual(beforeValue, afterValue))
+		return nullptr;
+
+	return std::make_unique<SetScriptCommand>(target,
 		std::move(beforeValue), std::move(afterValue));
 }
 

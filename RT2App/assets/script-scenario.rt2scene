@@ -1,0 +1,67 @@
+{
+  "version": 3,
+  "metadata": {
+    "name": "script-scenario"
+  },
+  "entities": [
+    {
+      "uuid": "00000000-0000-4000-8000-000000000001",
+      "name": "ScriptedCube",
+      "transform": {
+        "translation": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "visible": true,
+      "primitive": {
+        "kind": "cube",
+        "size": 1.0,
+        "segments": 24,
+        "rings": 16
+      },
+      "meshRef": {
+        "materialIndex": 0
+      },
+      "script": {
+        "asset": {
+          "kind": "script",
+          "path": "script-scenario.lua",
+          "sourceKey": "lua:asset=script-scenario.lua"
+        },
+        "fields": {
+          "speed": {
+            "type": "float",
+            "value": 1.0
+          }
+        }
+      }
+    }
+  ],
+  "materials": [
+    {
+      "type": 0,
+      "baseColor": [0.8, 0.2, 0.2],
+      "baseAlpha": 1.0,
+      "metallic": 0.0,
+      "roughness": 0.5,
+      "emissiveColor": [0.0, 0.0, 0.0],
+      "emissiveIntensity": 0.0,
+      "alphaMode": "OPAQUE",
+      "alphaCutoff": 0.5,
+      "transmission": 0.0,
+      "ior": 1.5,
+      "baseColorTex": -1,
+      "metallicRoughTex": -1,
+      "normalTex": -1,
+      "emissiveTex": -1
+    }
+  ],
+  "textures": [],
+  "camera": {
+    "fov": 60.0,
+    "nearPlane": 0.1,
+    "farPlane": 1000.0,
+    "position": [5.0, 5.0, 5.0],
+    "forward": [-0.577, -0.577, -0.577]
+  }
+}

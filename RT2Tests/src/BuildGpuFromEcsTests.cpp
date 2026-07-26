@@ -5,6 +5,7 @@
 #include "ECSComponents.h"
 #include "SceneGraph.h"
 #include "SceneLoader.h"
+#include "SceneLoaderTestSupport.h"
 #include <glm/glm.hpp>
 
 // ============================================================================
@@ -14,7 +15,7 @@
 TEST_CASE("BuildGPUSceneDataFromECS: produces meshes + instances")
 {
     ECSScene ecsScene;
-    bool ok = SceneLoader::LoadIntoECS(ecsScene, "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
+    bool ok = LoadGltfForTest(ecsScene, RepositoryRootForSceneLoaderTests(), "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
     CHECK(ok);
     if (!ok) return;
 
@@ -32,7 +33,7 @@ TEST_CASE("BuildGPUSceneDataFromECS: produces meshes + instances")
 TEST_CASE("BuildGPUSceneDataFromECS: instances have world transforms")
 {
     ECSScene ecsScene;
-    bool ok = SceneLoader::LoadIntoECS(ecsScene, "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
+    bool ok = LoadGltfForTest(ecsScene, RepositoryRootForSceneLoaderTests(), "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
     CHECK(ok);
     if (!ok) return;
 
@@ -54,7 +55,7 @@ TEST_CASE("BuildGPUSceneDataFromECS: instances have world transforms")
 TEST_CASE("BuildGPUSceneDataFromECS: object-space mesh vertices")
 {
     ECSScene ecsScene;
-    bool ok = SceneLoader::LoadIntoECS(ecsScene, "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
+    bool ok = LoadGltfForTest(ecsScene, RepositoryRootForSceneLoaderTests(), "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
     CHECK(ok);
     if (!ok) return;
 
@@ -73,7 +74,7 @@ TEST_CASE("BuildGPUSceneDataFromECS: object-space mesh vertices")
 TEST_CASE("BuildGPUSceneDataFromECS: ABG instancing reduces BLAS count")
 {
     ECSScene ecsScene;
-    bool ok = SceneLoader::LoadIntoECS(ecsScene, "C:\\Users\\mikey\\Downloads\\ABeautifulGame.glb");
+    bool ok = LoadGltfForTest(ecsScene, RepositoryRootForSceneLoaderTests(), "C:\\Users\\mikey\\Downloads\\ABeautifulGame.glb");
     CHECK(ok);
     if (!ok) return;
 
@@ -89,7 +90,7 @@ TEST_CASE("BuildGPUSceneDataFromECS: ABG instancing reduces BLAS count")
 TEST_CASE("BuildGPUSceneDataFromECS: emissive lights from instances")
 {
     ECSScene ecsScene;
-    bool ok = SceneLoader::LoadIntoECS(ecsScene, "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
+    bool ok = LoadGltfForTest(ecsScene, RepositoryRootForSceneLoaderTests(), "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
     CHECK(ok);
     if (!ok) return;
 
@@ -111,7 +112,7 @@ TEST_CASE("BuildGPUSceneDataFromECS: emissive lights from instances")
 TEST_CASE("UpdateInstancesFromECS: updates world matrices after transform change")
 {
     ECSScene ecsScene;
-    bool ok = SceneLoader::LoadIntoECS(ecsScene, "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
+    bool ok = LoadGltfForTest(ecsScene, RepositoryRootForSceneLoaderTests(), "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
     CHECK(ok);
     if (!ok) return;
 
@@ -155,7 +156,7 @@ TEST_CASE("UpdateInstancesFromECS: updates world matrices after transform change
 TEST_CASE("UpdateInstancesFromECS: preserves mesh and material arrays")
 {
     ECSScene ecsScene;
-    bool ok = SceneLoader::LoadIntoECS(ecsScene, "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
+    bool ok = LoadGltfForTest(ecsScene, RepositoryRootForSceneLoaderTests(), "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
     CHECK(ok);
     if (!ok) return;
 
@@ -179,7 +180,7 @@ TEST_CASE("UpdateInstancesFromECS: preserves mesh and material arrays")
 TEST_CASE("UpdateInstancesFromECS: light areas update with transform")
 {
     ECSScene ecsScene;
-    bool ok = SceneLoader::LoadIntoECS(ecsScene, "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
+    bool ok = LoadGltfForTest(ecsScene, RepositoryRootForSceneLoaderTests(), "C:\\Users\\mikey\\Downloads\\sofa_and_lamp.glb");
     CHECK(ok);
     if (!ok) return;
 

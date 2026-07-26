@@ -5,6 +5,7 @@
 
 #include "SceneDocument.h"
 #include "ECSComponents.h"
+#include "AssetResolver.h"
 #include "core/Error.h"
 #include "core/UUID.h"
 
@@ -63,23 +64,10 @@
 
 namespace rt2::core {
 
-struct AssetDiagnostic
-{
-    enum Severity
-    {
-        Missing,      // file not found / unreadable
-        Malformed,    // file found but failed to parse
-        Unresolved,   // source key not present in the rebuilt asset
-    };
-    Severity        severity = Missing;
-    AssetKind       kind     = AssetKind::Unknown;
-    std::string     refPath;        // the AssetReference::path that failed
-    std::string     resolvedPath;   // absolute path the resolver tried
-    UUID            entityUuid;     // referring entity (nil if env)
-    std::string     entityName;
-    std::string     sourceKey;      // subresource identity, if applicable
-    std::string     detail;         // human-readable context
-};
+// AssetDiagnostic is now defined in AssetResolver.h (neutral, CPU-only) and
+// re-exported here by include. Phase 7 W3 step 2 moved it so EnvironmentSettings
+// and SceneTexture can carry references without a SceneTypes.h / ECSComponents.h
+// include cycle (W3-P2). Severity gained Conflict (W3-Q5).
 
 class SceneAssetResolver
 {
@@ -108,11 +96,6 @@ public:
                                    const std::filesystem::path& sceneRoot,
                                    std::vector<AssetDiagnostic>& diagnostics,
                                    Error& err);
-
-    // Resolve a single relative-or-absolute asset path against sceneRoot.
-    // Returns an absolute path if the file exists, empty path otherwise.
-    static std::filesystem::path ResolvePath(const std::string& refPath,
-                                             const std::filesystem::path& sceneRoot);
 
     // Build a deterministic glTF source key.
     static std::string GltfSourceKey(int sceneIdx, int nodeIdx,
