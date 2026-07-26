@@ -7283,3 +7283,274 @@ result; the exact current source was compiled and linked in both
 `RT2Tests` and `RT2SliceRunner`. No build configuration or project file
 changed. Texture behavior is assumed unchanged because step 6 was not
 started and no texture-resolution production path was modified.
+
+### W3 step 6 grounded implementation plan — textures cut over last
+
+Planned 2026-07-26 and grounded against commit `1c04753` (W3 steps 0–5
+complete). This section expands incremental-order step 6; it does not
+rewrite the approved W3 record above. It is a documentation-only planning
+change. Step 7 host cleanup and step 8 final verification are explicitly
+out of this dispatch.
+
+**Starting baseline:** Release and Debug `RT2Tests` both pass 630/630
+cases and 144934/144934 assertions from the repository root.
+`RT2SliceRunner` builds in both configurations and
+`run_script_test.ps1` passes. The whole-Debug `RT2App` NRD/NRI mismatch
+remains a pre-existing out-of-scope link defect.
+
+#### Step 5 carryovers folded into this dispatch
+
+These corrections are intentionally folded into step 6 rather than
+interrupting the incremental sequence:
+
+1. `AssetDiagnostic::Stale` already exists
+   (`RT2App/src/AssetResolver.h:79-96`), but three successful `Resolve`
+   branches still emit `Missing`:
+   - nil ID + existing file + no sidecar
+     (`RT2App/src/AssetResolver.cpp:104-120`);
+   - unique ID resolves an existing file while the cached reference path
+     is stale (`:187-204`);
+   - non-nil ID + existing fallback path + no sidecar (`:237-252`).
+   Reclassify all three as `Stale`. `Missing` is reserved for a resolution
+   that returns `success=false` because no readable regular file was found.
+   Add one locator invariant test: every successful result has zero
+   `Missing` diagnostics. Update every existing expectation that currently
+   calls an identity-repair success `Missing`; real missing-file
+   expectations remain `Missing`.
+2. `RT2App/assets/script-scenario.lua` is a tracked project asset but has
+   no committed `script-scenario.lua.rt2meta`; consequently the scenario
+   emits "asset has no identity sidecar; identity repair required" on every
+   run (`RT2SliceRunner/src/Main.cpp:393-394`, `:559-590`;
+   `RT2App/assets/script-scenario.rt2scene:25-34`). Generate one valid v4
+   UUID once, commit the one-line sidecar beside the Lua file, and leave the
+   scene's cached `assetId` absent. Nil reference ID + authoritative
+   sidecar then resolves cleanly without a false database-stale advisory.
+   Add a focused committed-fixture test and require the scenario gate output
+   to contain no asset diagnostic.
+
+#### Grounded step-6 findings
+
+| ID | Finding at `1c04753` | Implementation consequence |
+|---|---|---|
+| S6-F1 | `SceneTexture` carries only `filepath`, decoded dimensions/pixels and colour-space flags (`RT2App/src/SceneTypes.h:92-105`), although W3-Q1 requires a texture `AssetReference`. | Add `AssetReference ref` without removing `filepath`; step 7 owns removal of compatibility fields. |
+| S6-F2 | Native scene save always writes an empty texture array (`RT2App/src/SceneSerializer.cpp:1280-1282`) and load does not reconstruct standalone texture records. Imported textures are derived by rebuilding their owner models. | Do not invent a second standalone texture graph or schema in step 6. Rebuild `SceneTexture::ref` deterministically from the model plus sidecars on every import/reopen. W4 persists/indexes dependency records; W5 owns formal v4 schema work. |
+| S6-F3 | TinyGLTF invokes `DecodeImageData`, which immediately decodes bytes and returns false on malformed data (`RT2App/src/SceneLoader.cpp:16-36`). TinyGLTF can therefore reject valid geometry before RT2 can contain the texture failure. | Replace the callback with a capture-only callback that never makes image decode a model-parse failure. Decode in the extracted texture stage after structural model parsing. |
+| S6-F4 | The glTF texture-copy loop is duplicated in standalone load and append import (`RT2App/src/SceneLoader.cpp:455-470`, `:1212-1228`). Invalid sources create empty slots; decoded bytes are copied directly. | Both paths must consume one shared manifest/resolution/decode result. No duplicate texture policy remains in `SceneLoader`. |
+| S6-F5 | OBJ texture resolution/decode/material assignment is duplicated in standalone load and import (`RT2App/src/SceneLoader.cpp:1807-1856`, `:2138-2184`). Both use `baseDir / texName`, call `stbi_load` directly, and return `-1` on failure. | Both OBJ paths must use the same manifest and pipeline as glTF, with one deterministic material-slot order. |
+| S6-F6 | `SceneLoader` exposes four two/three-argument entry points with no resolution context or diagnostic sink (`RT2App/src/SceneLoader.h:12-45`). | Add context-aware overloads used by every production caller. Retain compatibility adapters only until step 7; adapters still use the structured pipeline and log every diagnostic. |
+| S6-F7 | Native-scene resolution stages OBJ/glTF through `SceneLoader` (`RT2App/src/SceneAssetResolver.cpp:431-452`) but currently discards the model locator's effective ID after storing only the resolved path (`:289-342`). | Retain the owner `AssetReference` and `effectiveId` in `ModelRef`, then pass them, the same `AssetResolutionContext`, first entity UUID/name, and the same diagnostic sink into texture loading. |
+| S6-F8 | Direct editor loads/imports call the four legacy loader APIs (`RT2App/src/SceneManager.cpp:194-234`, `:444-482`) and assign the model sidecar only after loading (`:303-307`, `:458-464`, `:486-489`). | Mark these calls as explicit-import mode. Once structural model parse succeeds, establish/reuse the model ID before decoding embedded images, then reuse that ID for mesh provenance. |
+| S6-F9 | The database already represents sorted cross-asset dependencies by stable `sourceKey`, target ID/path and requested kind (`RT2App/src/AssetDatabase.h:38-57`, `:73-80`, `:136-154`). Existing tests and comments establish `gltf:image=<index>` (`RT2Tests/src/AssetDatabaseTests.cpp:366-372`). | Query a supplied database for the owner model's dependency claim before resolving an external texture. Zero claims uses URI/path fallback; one claim supplies authoritative ID/path; multiple distinct claims emit `Conflict` and produce a placeholder. |
+| S6-F10 | Empty texture slots are skipped during GPU upload (`RT2App/src/AsyncTextureLoader.cpp:243-250`, `:338-345`). | A containment placeholder must contain valid pixels and dimensions, not merely retain an empty vector slot. No Vulkan/GPU code change is required. |
+| S6-F11 | Material indices already preserve glTF texture-slot indices and OBJ assigns the returned loader index (`RT2App/src/SceneLoader.cpp:499-507`, `:1256-1264`, `:1844-1856`, `:2172-2184`). | Preserve valid indices on failure: glTF always yields one output slot per glTF texture; every referenced OBJ material slot receives a real or placeholder texture index. |
+| S6-F12 | Transitional tests pin the inconsistent pre-cutover outcomes: OBJ drops missing/malformed textures (`RT2Tests/src/Phase7W3CharacterizationTests.cpp:1076-1119`); glTF keeps an empty missing slot, fails the whole model on malformed external data, and keeps an empty invalid-source slot (`:1121-1182`). | Rewrite only these authorized expectations to the W3-Q7 contract and add focused identity/diagnostic tests. |
+| S6-F13 | `SceneAssetResolver::ResolveAll` appends staged textures transactionally only when a model has an accepted entity (`RT2App/src/SceneAssetResolver.cpp:809-859`), but does not perform a final diagnostic sort before returning (`:775-916`). | Texture failure remains soft and stages a placeholder; hard model failure remains transactional. Stable-sort only the newly appended diagnostic slice at the public boundary. |
+| S6-F14 | Walnut has exhaustive `Stale` formatting in both script and scene diagnostic paths (`RT2App/src/WalnutApp.cpp:1504-1519`, `:2704-2719`), but direct model imports receive no texture diagnostic sink (`:229-231`, `:2337-2341`). | Reuse one exhaustive formatter and surface direct-import texture diagnostics instead of console-only failure. |
+| S6-F15 | RT2App, RT2Tests and RT2SliceRunner all compile `SceneLoader`, but the CPU targets enumerate source files explicitly (`RT2Tests/premake5.lua:13`; `RT2SliceRunner/premake5.lua:10-39`; generated vcxproj entries at `RT2Tests/RT2Tests.vcxproj:253` and `RT2SliceRunner/RT2SliceRunner.vcxproj:194`). | The extracted CPU-only source requires build-file wiring. This is an expected build-configuration change and must be flagged in the implementation report. No Vulkan/Walnut dependency may enter it. |
+
+#### Settled implementation decisions
+
+These are direct implementations of approved W3-Q1/Q2/Q3/Q5/Q6/Q7/Q8/Q9;
+no new product-policy question remains open.
+
+| ID | Decision |
+|---|---|
+| S6-D1 — representation | Add `AssetReference ref` to `SceneTexture`. `ref.kind` is always `Texture`. `filepath` remains a compatibility mirror of `ref.path` through step 7. Decoded pixels are cache data and are never serialized. The existing empty native `textures` JSON array stays unchanged in step 6. |
+| S6-D2 — extracted CPU stage | Add CPU-only `TextureAssetPipeline.{h,cpp}`. It owns capture payloads, format manifests, external reference construction, database dependency selection, locator calls, sidecar assignment in explicit-import mode, decode, placeholder construction and diagnostic sorting. It may include tinygltf/tinyobj/stb headers but may not include renderer, Vulkan, Walnut, ImGui, GLFW, NRD or NRI headers. |
+| S6-D3 — loader context | Introduce `TextureAssetLoadContext` containing the caller's `AssetResolutionContext`, owner-model `AssetReference`, absolute resolved owner path, owner effective ID, entity UUID/name, `ReadOnly` versus `ExplicitImport` mode, and a nullable `IUuidProvider` that is required only for `ExplicitImport`. Every context-aware loader overload also requires `std::vector<AssetDiagnostic>&`. Invalid combinations are loud `Malformed` diagnostics. |
+| S6-D4 — canonical keys | Valid glTF image dependencies use exactly `gltf:image=<imageIndex>`. An invalid glTF texture source uses `gltf:texture=<textureIndex>` and reports the invalid source index in `detail`. OBJ edges use exactly `obj:material=<materialIndex>:texture=<diffuse|normal|emissive|roughness>`, enumerated in that slot order. |
+| S6-D5 — external paths | Resolve an external glTF URI or OBJ MTL texture name against the resolved owner model's parent, lexically normalize it, and express `ref.path` relative to `context.resolution.assetRoot` when possible. Legacy absolute input remains in memory only. Do not fall back to process CWD and do not persist a newly created absolute path. |
+| S6-D6 — embedded identity | A bufferView/data-URI/GLB image uses the owner model's physical path and effective model ID with `kind=Texture` and `sourceKey=gltf:image=<n>`. It never receives a child sidecar. A nil owner ID is legal in read-only legacy load; the texture remains usable with nil cached ID and the owner locator's single `Stale` repair signal. |
+| S6-D7 — external identity | An external glTF/OBJ image is a separate physical asset and uses its own sidecar. Read-only resolution never writes. Explicit import first verifies the dependency is a regular file, then calls `ResolveOrAssign`, and finally resolves/decodes through the same locator path. Successful repair replaces the pre-repair advisory; a sidecar parse/write problem is surfaced as `Stale` while decoded content remains usable. Missing files never receive sidecars. |
+| S6-D8 — capture then decode | TinyGLTF's image callback copies encoded bytes by image index and returns success without decoding. Structural glTF parse errors still fail the model. External images ignore TinyGLTF's opportunistic bytes and are reread only from the locator's `resolvedPath`; embedded images decode only from captured bytes. Thus malformed image bytes cannot reject valid geometry. |
+| S6-D9 — placeholder | The sole CPU placeholder is a 2×2 RGBA8 magenta/black checker, row-major bytes `ff 00 ff ff`, `00 00 00 ff`, `00 00 00 ff`, `ff 00 ff ff`; `width=2`, `height=2`, `channels=4`, `isHDR=false`, `isSRGB=false`, and `floatPixels` empty. It retains the failed dependency's `AssetReference` and compatibility `filepath`. |
+| S6-D10 — index containment | glTF emits exactly one `SceneTexture` per `model.textures` entry in source order. OBJ emits one entry per non-empty referenced material slot in material-index order and the fixed slot order from S6-D4. Missing, malformed, unresolved and conflicting dependencies all consume their normal slot and install the placeholder, so material indices remain in range. No cross-slot deduplication is introduced. |
+| S6-D11 — diagnostics | Locator failure preserves its terminal `Missing`/`Malformed`/`Conflict`. Successful locator advisories are `Stale`, never `Missing`. Decode failure adds one `Malformed`; missing/invalid embedded payload adds one `Unresolved`. All texture diagnostics use `kind=Texture`, the canonical source key, the first dependent entity context when available, and the attempted physical path. Public APIs stable-sort only their appended slice with `AssetDiagnosticSortKey`. |
+| S6-D12 — return policy | A texture failure never makes an otherwise structurally valid glTF/OBJ load return false. It produces a diagnostic plus placeholder. Model syntax/geometry failure remains a model `Malformed` hard failure. `ResolveAll=false` still leaves the input document unchanged; accepted partial/model results may commit real textures and placeholders under W3-Q6. |
+| S6-D13 — compatibility | Keep the current short `SceneLoader` overloads until step 7. Each creates a read-only context rooted at the model parent, invokes the same structured implementation, stable-sorts diagnostics, and logs every diagnostic. It contains no lexical/direct decode fallback. Production `SceneManager` and `SceneAssetResolver` must use the explicit overloads in step 6. |
+| S6-D14 — schema boundary | Do not bump schema v3 and do not populate the native top-level `textures` array. External identity is durable in its per-file sidecar; embedded identity is durable in the owner model sidecar plus source key. W4 builds/persists the project dependency index and W5 owns the v4 migration/reporting pass. |
+
+#### Concrete API and data flow
+
+`TextureAssetPipeline.h` will expose neutral manifest/result types plus:
+
+```cpp
+enum class TextureIdentityMode : uint8_t { ReadOnly, ExplicitImport };
+
+struct TextureAssetLoadContext
+{
+    AssetResolutionContext resolution;
+    AssetReference         ownerModel;
+    std::filesystem::path  resolvedOwnerPath;
+    UUID                   effectiveOwnerId;
+    UUID                   entityUuid;
+    std::string            entityName;
+    TextureIdentityMode    identityMode = TextureIdentityMode::ReadOnly;
+    IUuidProvider*         uuidProvider = nullptr;
+};
+```
+
+The public stage functions append results/diagnostics rather than mutating
+global state:
+
+```cpp
+GltfTextureManifest EnumerateGltfTextureDependencies(...);
+ObjTextureManifest  EnumerateObjTextureDependencies(...);
+std::vector<SceneTexture> ResolveAndDecodeTextures(
+    const TextureManifest&,
+    const TextureAssetLoadContext&,
+    std::vector<AssetDiagnostic>&);
+SceneTexture MakeMissingTexturePlaceholder(const AssetReference&);
+```
+
+The exact tinygltf/tinyobj parameter types may remain in the `.cpp` through
+format-specific adapters; the public header must remain CPU-only and must
+not expose renderer types. Manifest entries contain output slot, canonical
+source key, external URI or embedded encoded bytes, and the OBJ material
+binding where applicable.
+
+The four context-aware `SceneLoader` entry points keep their existing return
+types and add `const TextureAssetLoadContext&` plus
+`std::vector<AssetDiagnostic>&`. Their order is:
+
+1. parse model structure and capture encoded glTF image payloads;
+2. in explicit-import mode, establish/reuse the owner model sidecar ID after
+   structural parse succeeds and before embedded references are built;
+3. enumerate a deterministic texture manifest;
+4. resolve identities/paths and decode each entry into a real texture or
+   placeholder;
+5. install materials/texture indices, then build geometry/entities;
+6. return false only for a model-level failure.
+
+`SceneAssetResolver::ModelRef` retains the original owner reference and
+locator `effectiveId`. Its staged load uses `ReadOnly`, passes the existing
+scene-root context and first entity context, and appends texture diagnostics
+to the same caller vector. `SceneManager::{LoadScene,ImportGltf,ImportObj}`
+uses `ExplicitImport`, passes its UUID provider, and surfaces the returned
+diagnostics through Walnut's exhaustive formatter. RT2SliceRunner receives
+the behavior through `SceneAssetResolver`; no GPU dependency is added.
+
+#### Exact post-cutover characterization changes
+
+Only the transitional texture expectations are authorized to change:
+
+| Existing case | Old value | New value |
+|---|---|---|
+| OBJ valid external texture | one decoded texture, material index 0, no structured diagnostic | same decoded texture/index; populated `Texture` ref; read-only no-sidecar fixture emits one `Stale` |
+| OBJ missing texture | `textures.empty()`, material index `-1`, no diagnostic | one exact placeholder, material index `0`, one `Texture/Missing` |
+| OBJ malformed texture | `textures.empty()`, material index `-1`, console log only | one exact placeholder, material index `0`, ordered `Texture/Stale` then `Texture/Malformed` for the no-sidecar read-only fixture |
+| glTF valid external image | decoded slot/index 0, no structured diagnostic | same decoded slot/index; populated ref; one `Texture/Stale` for the no-sidecar read-only fixture |
+| glTF missing external image | one empty slot, index 0, warning only | one exact placeholder, index 0, one `Texture/Missing` |
+| glTF malformed external image | whole model returns false; no geometry/material/texture | model returns true; geometry/material retained; one exact placeholder at index 0; ordered `Texture/Stale` then `Texture/Malformed` |
+| glTF invalid texture source | one empty slot at index 0 | one exact placeholder at index 0 and one `Texture/Unresolved` keyed `gltf:texture=0` |
+
+The carryover expectation changes are mechanical and separately authorized:
+successful identity-repair/stale-path cases change only
+`AssetDiagnostic::Missing` → `AssetDiagnostic::Stale`; failure return values,
+resolved paths and real missing-file `Missing` expectations do not change.
+
+#### Focused tests to add
+
+Add focused CPU-only cases (prefer
+`RT2Tests/src/Phase7W3CharacterizationTests.cpp`, with locator-only cases in
+`Phase7W3LocatorTests.cpp`):
+
+1. successful locator cases 2, 4 and 8a emit `Stale` and zero `Missing`;
+   one table-driven invariant covers every successful locator result;
+2. the exact 2×2 placeholder bytes and all metadata/ref fields are stable;
+3. explicit import of an external glTF texture assigns a sidecar ID, stores
+   it in `SceneTexture::ref`, and reuses it on the second import;
+4. explicit OBJ import follows the same sidecar/reuse contract;
+5. a moved external texture resolves by the unique dependency ID when a
+   database is supplied, while a conflicting or ambiguous dependency claim
+   produces `Conflict` plus a placeholder;
+6. embedded GLB and data-URI images use the owner model ID plus
+   `gltf:image=0`, decode successfully, and create no child `.rt2meta`;
+7. malformed embedded bytes preserve valid geometry and produce one
+   `Malformed` placeholder;
+8. reversed manifest/dependency input produces byte-identical textures,
+   bindings and sorted diagnostic snapshots;
+9. the committed `script-scenario.lua.rt2meta` is a valid non-nil UUID and
+   the scenario's nil-ID reference resolves with zero diagnostics;
+10. all four material roles retain in-range texture indices when their OBJ
+    files are missing or malformed.
+
+Every fixture write must be `REQUIRE`d. Tests run from the repository root;
+no machine-local Downloads asset is evidence for this step.
+
+#### Discrimination proofs required
+
+Every new case must be shown red against a deliberate temporary production
+or fixture fault, then green after restoration. A compact proof matrix is
+acceptable when one fault discriminates several cases:
+
+| Temporary fault | Cases that must fail |
+|---|---|
+| Change one successful locator advisory back to `Missing` | successful-result invariant and affected characterization |
+| Return an empty placeholder pixel vector | exact placeholder plus every missing/malformed containment case |
+| Make malformed image decode return model failure | glTF external/embedded containment cases |
+| Bypass `Resolve` and open the URI directly | moved-ID and conflict/ambiguity cases |
+| Mint a child sidecar for an embedded image | embedded owner-identity/no-child-sidecar case |
+| Temporarily remove/rename `script-scenario.lua.rt2meta` | committed-fixture case and clean scenario-output check |
+| Reverse or skip final diagnostic sorting | order-independence snapshot |
+
+Use `apply_patch` for every temporary source fault, revert only that fault,
+rebuild the affected target, and record failing/passing case and assertion
+counts in the step-6 verification report. No existing test may be deleted,
+skipped or weakened.
+
+#### Implementation order inside the step-6 commit
+
+1. Land the two step-5 carryovers and their focused tests; confirm
+   `run_script_test.ps1` remains green and emits no asset diagnostic.
+2. Add `SceneTexture::ref`, placeholder helper and the CPU-only pipeline
+   types; wire the new source into tracked premake/vcxproj files and the
+   generated local slice vcxproj.
+3. Replace TinyGLTF eager decode with capture-only payload collection.
+4. Implement glTF manifest enumeration, locator/dependency selection,
+   decode and placeholder containment; route both glTF loader paths through
+   it.
+5. Implement OBJ manifest enumeration and route both OBJ loader paths
+   through the same resolver/decode stage.
+6. Thread explicit contexts/sinks through `SceneAssetResolver`,
+   `SceneManager`, Walnut and RT2SliceRunner; retain only the structured
+   compatibility adapters.
+7. Rewrite the seven authorized characterization expectations, add focused
+   identity/ordering/placeholder tests, and perform every red/green proof.
+8. Run the complete verification gate, append the step-6 implementation
+   report, refresh Graphify, and commit step 6 only. Stop before step 7.
+
+#### Verification gate
+
+Run from the repository root and record observed counts:
+
+```powershell
+msbuild RT2App.sln -t:RT2Tests -p:Configuration=Release -p:Platform=x64
+.\bin\Release-windows-x86_64\RT2Tests\RT2Tests.exe
+msbuild RT2App.sln -t:RT2Tests -p:Configuration=Debug -p:Platform=x64
+.\bin\Debug-windows-x86_64\RT2Tests\RT2Tests.exe
+msbuild RT2App.sln -t:RT2SliceRunner -p:Configuration=Release -p:Platform=x64
+msbuild RT2App.sln -t:RT2SliceRunner -p:Configuration=Debug -p:Platform=x64
+.\run_script_test.ps1
+graphify update .
+```
+
+Also build the Release `RT2App` target so the interactive direct-import
+wiring is compiled. Do not touch the pre-existing whole-Debug RT2App
+NRD/NRI mismatch. The original 630 cases must remain green with only the
+explicit old/new expectation changes above; report the new total and both
+assertion counts. `run_script_test.ps1` must pass and print no asset
+diagnostic. Commit `GRAPH_REPORT.md` only if Graphify changes it. Do not
+push.
+
+#### Explicit non-goals
+
+- Do not remove `SceneAssetResolver::ResolvePath`, legacy `filepath`, or the
+  short `SceneLoader` adapters; that is step 7.
+- Do not build the W4 project scan/database owner or content browser.
+- Do not introduce schema v4, cache artifacts, texture editing UI, texture
+  deduplication, colour-space redesign, mip generation, GPU placeholder
+  logic, or hot reimport.
+- Do not modify renderer/Vulkan behavior or the known Debug RT2App
+  NRD/NRI configuration.
+- Stop after the step-6 implementation report and commit.
