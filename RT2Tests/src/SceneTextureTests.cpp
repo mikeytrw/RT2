@@ -20,7 +20,7 @@ TEST_CASE("SceneTexture has pixel data fields")
     CHECK(tex.height == 0);
     CHECK(tex.channels == 4); // RGBA8
     CHECK(tex.pixels.empty());
-    CHECK(tex.filepath.empty());
+    CHECK(tex.ref.path.empty());
 }
 
 TEST_CASE("SceneTexture stores decoded RGBA8 pixels")

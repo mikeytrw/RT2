@@ -1052,11 +1052,106 @@ TEST_CASE("Phase6B W3 Serializer: cross-volume absolute path remains absolute")
     const auto path = std::filesystem::temp_directory_path() /
         "rt2_w3_cross_volume.rt2scene";
     Error err;
-    REQUIRE(SaveSceneForTest(doc, path, err));
+    std::vector<AssetDiagnostic> diagnostics;
+    REQUIRE(SceneSerializer::Save(doc, path, diagnostics, err));
     nlohmann::json saved;
     { std::ifstream in(path); in >> saved; }
     CHECK(saved["entities"][0]["script"]["asset"]["path"] ==
           "Z:/external/move.lua");
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics[0].severity == AssetDiagnostic::NonPortable);
+    CHECK(diagnostics[0].kind == AssetKind::Script);
+    CHECK(diagnostics[0].refPath == "Z:/external/move.lua");
+    CHECK(diagnostics[0].resolvedPath == "Z:/external/move.lua");
+    CHECK(diagnostics[0].entityUuid ==
+          UUID::Parse("550e8400-e29b-41d4-a716-446655440000"));
+    CHECK(diagnostics[0].entityName.empty());
+    CHECK(diagnostics[0].sourceKey.empty());
+    CHECK(diagnostics[0].detail ==
+          "asset path could not be made relative to the output scene; "
+          "saved as a normalized absolute path");
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("Phase7 W3 step 7.4: native save sorts multiple non-portable advisories")
+{
+    SceneDocument doc;
+    const auto entity = doc.ecs.registry.create();
+    const UUID entityId =
+        UUID::Parse("550e8400-e29b-41d4-a716-446655440000");
+    REQUIRE(doc.AssignKnownUuid(entity, entityId));
+    doc.ecs.registry.emplace<NameComponent>(entity, "PortableAudit");
+    doc.ecs.registry.emplace<Transform>(entity);
+    doc.ecs.registry.emplace<VisibleComponent>(entity);
+
+    ImportedMeshSourceComponent imported;
+    imported.model.kind = AssetKind::Model;
+    imported.model.path = "Z:/external/model.glb";
+    imported.model.sourceKey = "gltf:scene=0";
+    doc.ecs.registry.emplace<ImportedMeshSourceComponent>(entity, imported);
+
+    ScriptComponent script;
+    script.asset.kind = AssetKind::Script;
+    script.asset.path = "Z:/external/run.lua";
+    script.asset.sourceKey = "lua:asset=Z:/external/run.lua";
+    doc.ecs.registry.emplace<ScriptComponent>(entity, script);
+
+    doc.environment.ref.kind = AssetKind::Environment;
+    doc.environment.ref.path = "Z:/external/night.exr";
+    doc.environment.ref.sourceKey = "environment:main";
+
+    const auto path = std::filesystem::temp_directory_path() /
+        "rt2_w3_multiple_cross_volume.rt2scene";
+    Error err;
+    std::vector<AssetDiagnostic> diagnostics;
+    REQUIRE(SceneSerializer::Save(doc, path, diagnostics, err));
+    REQUIRE(diagnostics.size() == 3);
+    CHECK(diagnostics[0].kind == AssetKind::Model);
+    CHECK(diagnostics[0].refPath == "Z:/external/model.glb");
+    CHECK(diagnostics[1].kind == AssetKind::Environment);
+    CHECK(diagnostics[1].refPath == "Z:/external/night.exr");
+    CHECK(diagnostics[2].kind == AssetKind::Script);
+    CHECK(diagnostics[2].refPath == "Z:/external/run.lua");
+    CHECK(FormatNonPortableAssetSummary(diagnostics) ==
+          "3 non-portable asset references; first: Z:/external/model.glb");
+    std::filesystem::remove(path);
+}
+
+TEST_CASE("Phase7 W3 step 7.4: failed atomic save does not publish advisories")
+{
+    SceneDocument doc;
+    const auto entity = doc.ecs.registry.create();
+    REQUIRE(doc.AssignKnownUuid(
+        entity, UUID::Parse("550e8400-e29b-41d4-a716-446655440000")));
+    doc.ecs.registry.emplace<Transform>(entity);
+    doc.ecs.registry.emplace<VisibleComponent>(entity);
+    ScriptComponent script;
+    script.asset.kind = AssetKind::Script;
+    script.asset.path = "Z:/external/locked.lua";
+    doc.ecs.registry.emplace<ScriptComponent>(entity, script);
+
+    const auto path = std::filesystem::temp_directory_path() /
+        "rt2_w3_locked_nonportable.rt2scene";
+    { std::ofstream out(path, std::ios::binary); out << "sentinel"; }
+    HANDLE lock = CreateFileW(
+        path.wstring().c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    REQUIRE(lock != INVALID_HANDLE_VALUE);
+
+    AssetDiagnostic prefix;
+    prefix.severity = AssetDiagnostic::Missing;
+    prefix.refPath = "keep-prefix";
+    std::vector<AssetDiagnostic> diagnostics{ prefix };
+    Error err;
+    CHECK_FALSE(SceneSerializer::Save(doc, path, diagnostics, err));
+    CloseHandle(lock);
+
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics[0].refPath == "keep-prefix");
+    std::ifstream in(path, std::ios::binary);
+    CHECK(std::string((std::istreambuf_iterator<char>(in)), {}) ==
+          "sentinel");
+    in.close();
     std::filesystem::remove(path);
 }
 #endif
@@ -1138,8 +1233,10 @@ TEST_CASE("Phase7 W0: relativizable asset paths are never stored absolute")
 
     const auto target = sceneDir / "w0_audit.rt2scene";
     Error err;
-    REQUIRE(SaveSceneForTest(doc, target, err));
+    std::vector<AssetDiagnostic> diagnostics;
+    REQUIRE(SceneSerializer::Save(doc, target, diagnostics, err));
     REQUIRE(err.IsOk());
+    CHECK(diagnostics.empty());
 
     nlohmann::json saved;
     { std::ifstream in(target); in >> saved; }

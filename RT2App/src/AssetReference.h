@@ -60,8 +60,10 @@ struct ImportSettings
 
 // A durable reference to an external source asset. The path is a portable,
 // scene-relative UTF-8 path (forward slashes, normalized). It is resolved
-// relative to the .rt2scene file at load time. Absolute machine-specific
-// paths must NOT be persisted.
+// relative to the .rt2scene file at load time. Native save retains a
+// normalized absolute path only when it cannot be relativized (for example,
+// across Windows volumes) and reports that exceptional persistence as a
+// NonPortable advisory.
 //
 // assetId is the stable identity of the source asset (Phase 7 W1, per D1/D2).
 // It is the durable form of identity; path is a human-readable fallback for

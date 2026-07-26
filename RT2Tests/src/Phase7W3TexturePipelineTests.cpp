@@ -84,7 +84,7 @@ TEST_CASE("Phase7 W3 step 6.2: missing texture placeholder is exact")
         0xff, 0x00, 0xff, 0xff,
     };
 
-    CHECK(texture.filepath == ref.path);
+    CHECK(texture.ref.path == ref.path);
     CHECK(texture.ref.kind == AssetKind::Texture);
     CHECK(texture.ref.path == ref.path);
     CHECK(texture.ref.sourceKey == ref.sourceKey);

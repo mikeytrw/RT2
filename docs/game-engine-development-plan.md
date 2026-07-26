@@ -8084,3 +8084,214 @@ instance of the codebase's characteristic silent-failure mode, report the
 healthy/advisory/terminal scenario-gate observations separately, and show
 how a native `NonPortable` advisory was verified at both the serializer sink
 and the visible Walnut status/log surface.
+
+### Phase 7 W3 step 7 implementation report (2026-07-26)
+
+Grounded and implemented on `phase-6-scripting`, beginning at `591a76e`.
+This report closes step 7 only. Step 8 and W4 were not started.
+
+#### Delivered commits and independently green boundaries
+
+| Slice | Commit | Release / Debug result at its boundary |
+|---|---|---|
+| 7.1 — diagnostic/root foundations | `67f4951` | 646/646, 145,374 assertions in each configuration |
+| 7.2 — loader/host contraction | `fd18e7b` | 650/650, 145,409 assertions in each configuration |
+| 7.3 — script/watcher/recovery CWD removal | `5b0664d` | 655/655, 145,463 assertions in each configuration |
+| 7.4 — representation/persistence close | This report's commit (the Step-7 closing `HEAD`) | 659/659, 145,494 assertions in each configuration |
+
+The approved plan itself was recorded separately in `ec62842`. No build,
+project, premake, compiler or linker configuration changed.
+
+#### What changed
+
+- The generic locator now performs ID-first resolution and refuses to send a
+  relative database or fallback candidate to the filesystem without a
+  non-empty absolute asset root. Successful results are absolute and
+  normalized. The misleading `NormalizeResolved`, compatibility loader
+  context and `SceneAssetResolver::ResolvePath` paths were removed.
+- All four structured model loaders now take only an explicit
+  `TextureAssetLoadContext`; `resolvedOwnerPath` is the single physical
+  owner path. SceneManager, Walnut, RT2SliceRunner reachability and all tests
+  use the same explicit-import context builder. Relative direct-import
+  inputs fail before parse, mutation or sidecar assignment.
+- Diagnostic severity is an executable external contract:
+  `Stale=0`, `NonPortable=1`, `Missing=2`, `Malformed=3`,
+  `Unresolved=4`, `Conflict=5`. Presentation and terminal-threshold checks
+  are shared; healthy matching sidecars with no database emit no diagnostic.
+- Untitled recovery and scripting no longer share a process-CWD policy.
+  Recovery uses an ensured absolute `%LOCALAPPDATA%\RT2\recovery` logical
+  root (or an absolute configured project root); unsaved relative scripts
+  retain an empty root, remain authored/unminted, and are neither resolved
+  nor watched. Relative reload requests are rejected without clearing
+  reflection state, queueing work or swapping code.
+- Script binding now uses `ResolveScriptAssetPath` before identity assignment.
+  Existing sidecar identity is reused, missing files remain legal nil-ID
+  bindings, and conflicts are rejected rather than silently remapped.
+- `SceneTexture::filepath` was removed. `SceneTexture::ref` is the only
+  texture source identity in the CPU pipeline and glTF exporter. Export
+  writes relative normalized image URIs and fails before writing when an
+  absolute texture ref cannot be relativized to the output parent.
+- Native scene save still succeeds across Windows volumes and writes the
+  same normalized absolute JSON path, but now stages and, only after atomic
+  success, appends one contextual `NonPortable` advisory per offending
+  reference. Diagnostics are deterministically sorted. Recovery forwards
+  the same sink.
+- Walnut logs save/recovery diagnostics through the shared severity
+  formatter and preserves `"Saved[ As] with " + summary` or
+  `"Autosaved with " + summary` in the visible status rather than
+  overwriting the advisory with a plain success message.
+- The Phase 6A fixture writer was found to depend on its suite-order setup
+  test. A filtered empty-script run therefore wrote to a nonexistent
+  directory without checking the stream and then quarantined the instance.
+  The fixture root is now initialized absolutely, created on demand, and
+  every directory/file write fails loudly. The production empty-script
+  expectation was not changed.
+
+S7-F1 is a textbook instance of this codebase's characteristic silent
+failure mode: `ResolvePathNoCwd` was named and documented as prohibiting CWD
+fallback, while `assetRoot / ref` with an empty root silently performed
+exactly that lookup; `NormalizeResolved` was similarly documented as making
+a path absolute immediately above a lexical-only return. The fix made the
+promised invariant executable rather than relying on the name/comment.
+
+#### Authorized expectation changes actually made
+
+No existing case was deleted, skipped or weakened. The following old/new
+changes are the complete set:
+
+| Old | New |
+|---|---|
+| A relative ref with an empty/relative root could select a CWD file. | It fails with one contextual `Malformed`: `"relative asset reference requires an absolute asset root"`. |
+| Short loader calls accepted a filepath and derived ownership from CWD. | Those overloads do not exist; callers provide an explicit context/root. |
+| A separate loader filepath silently overwrote `context.resolvedOwnerPath`. | The duplicate parameter is removed, so mismatch is unrepresentable. |
+| Relative direct-import paths were made absolute against CWD. | They fail with `Model/Malformed` before parse/mint/mutation. |
+| Untitled recovery without a project used CWD. | Walnut supplies the ensured per-user recovery root; the service rejects an invalid explicit root. |
+| Untitled relative scripts inherited CWD for Play/watch. | They remain authored with nil identity and no watch directory until ownership exists. |
+| Relative `ReloadScript` was canonicalized against CWD. | It emits one `Script/Malformed` and changes no cache, queue or live code. |
+| Matching non-nil sidecar identity with `database == nullptr` emitted `Stale`. | It is a healthy successful resolve with zero diagnostics. |
+| Any script-scenario asset diagnostic failed the PowerShell gate. | `Stale`/`NonPortable` are advisory; `Missing` and above fail. |
+| Texture assertions/export used the `filepath` compatibility mirror. | The same path assertions and export URI use `ref.path`; the mirror is absent. |
+
+The cross-volume native-save value did **not** change:
+`"Z:/external/move.lua"` remains `"Z:/external/move.lua"` and save still
+returns true. The test only gained assertions for one contextual
+`NonPortable` advisory. No Phase 6 runtime expectation changed.
+
+#### Discrimination proofs
+
+Every temporary fault was applied with `apply_patch` (to production except
+for the intentional compile-only removed-API probes), observed red, reverted,
+and observed green:
+
+- 7.1: removing the absolute-root guard selected a CWD decoy; restoring
+  `Stale` on a healthy matching sidecar violated the zero-diagnostic case;
+  classifying `NonPortable` as terminal violated the threshold case.
+  Healthy scenario output passed with no diagnostic; a temporarily absent
+  sidecar printed `Stale` and passed; a malformed sidecar printed
+  `Malformed` and failed. All faults were reverted and the full boundary
+  returned to 646/646.
+- 7.2: feeding an invalid owner through CWD absolutization mutated the
+  invalid-context behavior; a temporary old two-argument loader call failed
+  compilation with C2660; a temporary
+  `SceneAssetResolver::ResolvePath` call failed with C2039. The final API
+  and full boundary returned green at 650/650.
+- 7.3: restoring recovery's CWD fallback made the invalid-root recovery case
+  write a record (four assertions red); returning an empty per-user recovery
+  root broke three helper assertions; accepting a relative watch candidate
+  broke the absolute-only watch case; restoring lexical script binding
+  minted a CWD-decoy sidecar; canonicalizing relative reload before the
+  guard swapped live code from v1 to v2. Each was reverted. The focused
+  Step-7.3 selection was 3/3 and 40 assertions green; recovery-root
+  selections were 2/2 and 16 assertions plus 1/1 and 6 assertions green.
+- 7.4: ignoring `ref.path` made both glTF export cases fail (2/2 red,
+  three failed assertions), including replacement of the sentinel output;
+  restored code passed 2/2 and 5 assertions. Suppressing persistence
+  advisories made the one-warning case fail at 0 versus 1 and the
+  three-warning case fail at 0 versus 3; restored selections passed 1/1
+  with 12 and 10 assertions. Publishing staged diagnostics before the
+  atomic replace made the prefix test fail at 2 versus 1; restored it passed
+  1/1 and 6 assertions. Warning on successful same-volume rebasing made the
+  healthy-save assertion fail; restored it passed 1/1 and 5 assertions. A
+  sink-less `Save` call failed compilation with C2660, then rebuilt green
+  after restoration. Corrupting the one-warning summary failed 1/1 at one
+  assertion; restoration passed 1/1 and 3 assertions. Restoring Walnut's
+  unconditional plain-save assignment made the save-warning source wiring
+  audit red; restoration found both Save/Save As and autosave summary
+  assignments. The complete new Step-7.4 selection passed 4/4 and 21
+  assertions.
+
+#### Phase 6 hard-contract verification
+
+The final Release named selections were executed independently, so aggregate
+order could not mask the scripting contract:
+
+- Empty script legal: 1/1, 4/4 assertions.
+- Syntax error quarantines only the affected instance: 1/1, 7/7.
+- Last-known-good declarations: 1/1, 8/8.
+- `parsed=false` preserves authored values and suppresses reconciliation:
+  1/1, 12/12.
+- Failed hot reload does not replace live code: 1/1, 5/5.
+- `rt2.reload()` remains deferred: 1/1, 4/4.
+- Timers: self-reschedule 4/4, reload cancellation 4/4, Stop containment
+  5/5.
+- Bindings: input 3/3, camera failure containment 6/6, light 3/3 and
+  material bounds containment 3/3.
+- `run_script_test.ps1`: PASS, 60 frames, one entity, no mismatches and no
+  asset diagnostic.
+
+This explicitly verifies that empty source remains legal; quarantine remains
+per-instance; failed reflection retains last-known-good data without
+reconciliation; failed reload never swaps live code; reload remains
+deferred; and timers/input/entity-component bindings are unchanged.
+
+#### Source-audit classification
+
+- `MakeCompatibilityTextureContext`, `SceneAssetResolver::ResolvePath` and
+  `.filepath` have zero hits in the Step-7 source/test audit.
+- `current_path` in `FixtureTests`, `Phase1ASceneAssetTests` and
+  `SceneLoaderTestSupport` names explicit repository-root test fixtures.
+  Phase 6C `absolute/current_path` hits construct explicit test inputs and
+  CWD decoys; they are not production fallback.
+- `SceneRecoveryService` absolute/canonical hits create document IDs and
+  enforce recovery-record containment. They do not choose an asset root.
+- `SceneSerializer` absolute hits preserve the existing native-save
+  rebasing/byte contract, including the advisory cross-volume fallback; they
+  are persistence behavior, not resolver fallback.
+- Walnut's remaining `current_path()/RT2Editor` is the explicitly out-of-
+  scope non-asset editor-settings fallback.
+- The severity audit contains exactly the shared exhaustive display-name
+  switch and the deterministic sort-rank switch; no private presentation
+  switch remains.
+- `SceneMesh::filepath` remains declared and untouched as explicitly
+  required; no `SceneTexture::filepath` declaration or use remains.
+
+#### Verified by running
+
+- Release: RT2App, RT2Tests and RT2SliceRunner built; RT2Tests passed
+  659/659 and 145,494/145,494 assertions from repository root.
+- Debug: RT2Tests and RT2SliceRunner built; RT2Tests passed 659/659 and
+  145,494/145,494 assertions from repository root.
+- The named Phase 6 selections and 60-frame scripting scenario above.
+- All red/green discrimination proofs described above.
+- Native `NonPortable` at the serializer sink: unchanged successful
+  cross-volume JSON plus exact severity/kind/ref/resolved/entity/source/detail;
+  deterministic three-warning order; zero warnings for healthy same-volume;
+  no publication on locked-target failure.
+- Walnut presentation at the source/build surface: the shared formatter is
+  called after successful save/recovery, diagnostics are logged, the warning
+  assignments survive the source audit, and Release RT2App links.
+- `graphify update .`: 33,768 nodes, 71,052 edges, 1,389 communities;
+  tracked `GRAPH_REPORT.md` changed and is included.
+- `git diff --check` was clean at close.
+
+#### Assumed / not run
+
+- Whole-Debug RT2App was intentionally not built; the pre-existing NRD/NRI
+  mismatch was not touched.
+- No interactive Walnut GUI session was launched. Visible status behavior is
+  verified by focused formatter tests, source-wiring discrimination and the
+  Release app build, not by a manual click-through.
+- The Windows cross-volume condition uses an unmounted `Z:` lexical path, as
+  the established test does; no physical second volume or machine-local
+  Downloads asset was used.
+- No push was performed.

@@ -123,6 +123,34 @@ void SortLoaderDiagnostics(
         });
 }
 
+bool PortableTextureUri(const AssetReference& ref,
+                        const fs::path& outputPath,
+                        std::string& uri)
+{
+    uri.clear();
+    if (ref.path.empty())
+        return true;
+
+    const fs::path source(ref.path);
+    if (!source.is_absolute())
+    {
+        uri = source.lexically_normal().generic_string();
+        return true;
+    }
+
+    const fs::path outputDir = outputPath.parent_path().lexically_normal();
+    if (outputDir.empty() || !outputDir.is_absolute())
+        return false;
+
+    const fs::path relative =
+        source.lexically_normal().lexically_relative(outputDir);
+    if (relative.empty() || relative.is_absolute())
+        return false;
+
+    uri = relative.lexically_normal().generic_string();
+    return true;
+}
+
 } // namespace
 
 // ============================================================================
@@ -154,7 +182,8 @@ bool SceneLoader::Save(const ECSScene& ecsScene, const std::string& filepath)
     for (const auto& tex : ecsScene.textures)
     {
         tinygltf::Image image;
-        image.uri = tex.filepath;
+        if (!PortableTextureUri(tex.ref, p, image.uri))
+            return false;
         model.images.push_back(image);
 
         tinygltf::Texture gtext;

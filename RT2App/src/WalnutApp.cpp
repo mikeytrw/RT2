@@ -1566,14 +1566,19 @@ public:
 				autosaveDiagnostics, ae);
 			LogAssetDiagnostics(
 				autosaveDiagnostics, 0, "Recovery");
+			const std::string autosaveWarning =
+				rt2::core::FormatNonPortableAssetSummary(
+					autosaveDiagnostics);
 			const double elapsedMs = std::chrono::duration<double, std::milli>(
 				std::chrono::steady_clock::now() - started).count();
 			if (wrote)
 			{
 				char status[128];
 				std::snprintf(status, sizeof(status), "Autosaved in %.2f ms", elapsedMs);
-				m_LastStatusMsg = status;
-				printf("[Recovery] %s\n", status);
+				m_LastStatusMsg = autosaveWarning.empty()
+					? std::string(status)
+					: "Autosaved with " + autosaveWarning;
+				printf("[Recovery] %s\n", m_LastStatusMsg.c_str());
 				if (elapsedMs > 10.0)
 					printf("[Recovery] Warning: main-thread autosave exceeded 10 ms guardrail\n");
 			}
@@ -3165,6 +3170,9 @@ public:
 			printf("[Scene] %s\n", m_LastStatusMsg.c_str());
 			return false;
 		}
+		LogAssetDiagnostics(saveDiagnostics, 0, "Scene");
+		const std::string saveWarning =
+			rt2::core::FormatNonPortableAssetSummary(saveDiagnostics);
 
 		doc.metadata.sourcePath = target;
 		m_SceneMgr.ClearDirty();
@@ -3178,7 +3186,13 @@ public:
 		if (m_Settings2) m_Settings2->AddRecentScene(target);
 		const bool settingsSaved = PersistEditorSettings("recent scenes");
 		if (settingsSaved)
-			m_LastStatusMsg = (forceSaveAs || oldSourcePath.empty()) ? "Saved As" : "Saved";
+		{
+			const std::string saved =
+				(forceSaveAs || oldSourcePath.empty()) ? "Saved As" : "Saved";
+			m_LastStatusMsg = saveWarning.empty()
+				? saved
+				: saved + " with " + saveWarning;
+		}
 		printf("[Scene] Saved .rt2scene: %s\n", target.u8string().c_str());
 		return true;
 	}

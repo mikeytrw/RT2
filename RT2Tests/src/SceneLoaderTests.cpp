@@ -5,6 +5,7 @@
 #include "ECSComponents.h"
 #include "SceneLoader.h"
 #include "SceneLoaderTestSupport.h"
+#include "json.hpp"
 #include <glm/glm.hpp>
 #include <filesystem>
 #include <fstream>
@@ -22,6 +23,14 @@ namespace fs = std::filesystem;
 
 static const char* TEST_FILE = "test_scene.gltf";
 static const char* TEST_FILE_GLB = "test_scene.glb";
+
+static SceneTexture MakeTextureRef(const std::string& path)
+{
+    SceneTexture texture;
+    texture.ref.kind = AssetKind::Texture;
+    texture.ref.path = path;
+    return texture;
+}
 
 static void cleanupObjTestFiles()
 {
@@ -241,7 +250,7 @@ TEST_CASE("Material round-trips through glTF")
     mat.baseColorTextureIndex = 0;
     scene.materials.push_back(mat);
 
-    scene.textures.push_back({"textures/albedo.png"});
+    scene.textures.push_back(MakeTextureRef("textures/albedo.png"));
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
     ECSScene loaded;
@@ -339,15 +348,15 @@ TEST_CASE("Texture round-trips through glTF")
 {
     cleanupTestFiles();
     ECSScene scene;
-    scene.textures.push_back({"textures/albedo.png"});
-    scene.textures.push_back({"textures/normal.png"});
+    scene.textures.push_back(MakeTextureRef("textures/albedo.png"));
+    scene.textures.push_back(MakeTextureRef("textures/normal.png"));
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
     ECSScene loaded;
     REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE));
     REQUIRE(loaded.textures.size() == 2);
-    CHECK(loaded.textures[0].filepath == "textures/albedo.png");
-    CHECK(loaded.textures[1].filepath == "textures/normal.png");
+    CHECK(loaded.textures[0].ref.path == "textures/albedo.png");
+    CHECK(loaded.textures[1].ref.path == "textures/normal.png");
     cleanupTestFiles();
 }
 
@@ -382,8 +391,8 @@ TEST_CASE("Full scene with multiple meshes, materials, lights round-trips")
     cleanupTestFiles();
     ECSScene scene;
 
-    scene.textures.push_back({"textures/albedo.png"});
-    scene.textures.push_back({"textures/normal.png"});
+    scene.textures.push_back(MakeTextureRef("textures/albedo.png"));
+    scene.textures.push_back(MakeTextureRef("textures/normal.png"));
 
     SceneMaterial mat0;
     mat0.type = MaterialType::Lambertian;
@@ -446,7 +455,7 @@ TEST_CASE("Full scene with multiple meshes, materials, lights round-trips")
     REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE));
 
     REQUIRE(loaded.textures.size() == 2);
-    CHECK(loaded.textures[0].filepath == "textures/albedo.png");
+    CHECK(loaded.textures[0].ref.path == "textures/albedo.png");
 
     REQUIRE(loaded.materials.size() >= 3);
     CHECK(loaded.materials[0].type == MaterialType::Lambertian);
@@ -507,6 +516,45 @@ TEST_CASE("Load returns false for non-existent file")
     ECSScene loaded;
     CHECK_FALSE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), "does_not_exist.gltf"));
 }
+
+TEST_CASE("Phase7 W3 step 7.4: glTF export relativizes texture refs")
+{
+    const auto root = fs::temp_directory_path() /
+        "rt2_step7_gltf_portable";
+    const auto output = root / "scene.gltf";
+    const auto source = root / "textures" / "albedo.png";
+    fs::create_directories(source.parent_path());
+
+    ECSScene scene;
+    scene.textures.push_back(MakeTextureRef(source.generic_string()));
+    REQUIRE(SceneLoader::Save(scene, output.string()));
+
+    nlohmann::json saved;
+    { std::ifstream in(output); in >> saved; }
+    REQUIRE(saved["images"].size() == 1);
+    CHECK(saved["images"][0]["uri"] == "textures/albedo.png");
+    fs::remove_all(root);
+}
+
+#ifdef _WIN32
+TEST_CASE("Phase7 W3 step 7.4: glTF export rejects cross-volume texture refs")
+{
+    const auto root = fs::temp_directory_path() /
+        "rt2_step7_gltf_nonportable";
+    const auto output = root / "scene.gltf";
+    fs::create_directories(root);
+    { std::ofstream out(output, std::ios::binary); out << "sentinel"; }
+
+    ECSScene scene;
+    scene.textures.push_back(MakeTextureRef("Z:/external/albedo.png"));
+    CHECK_FALSE(SceneLoader::Save(scene, output.string()));
+    std::ifstream in(output, std::ios::binary);
+    CHECK(std::string((std::istreambuf_iterator<char>(in)), {}) ==
+          "sentinel");
+    in.close();
+    fs::remove_all(root);
+}
+#endif
 
 // --- Save returns false for invalid path ---
 

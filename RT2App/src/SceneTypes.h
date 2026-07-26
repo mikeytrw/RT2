@@ -93,9 +93,8 @@ struct SceneLight
 
 struct SceneTexture
 {
-    std::string filepath;
-    // Structured source identity. `filepath` remains a compatibility mirror
-    // through W3 step 7; decoded pixels are cache data, not serialized state.
+    // Structured source identity; decoded pixels are cache data, not
+    // serialized state.
     AssetReference ref;
 
     int width = 0;

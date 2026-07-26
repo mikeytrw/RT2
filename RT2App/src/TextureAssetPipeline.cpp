@@ -334,7 +334,6 @@ ObjTextureManifest EnumerateObjTextureDependencies(
 SceneTexture MakeMissingTexturePlaceholder(const AssetReference& ref)
 {
     SceneTexture texture;
-    texture.filepath = ref.path;
     texture.ref = ref;
     texture.width = 2;
     texture.height = 2;
@@ -412,7 +411,6 @@ std::vector<SceneTexture> ResolveAndDecodeTextures(
         if (entry.payloadKind == TexturePayloadKind::Embedded)
         {
             SceneTexture texture;
-            texture.filepath = ref.path;
             texture.ref = ref;
             if (!DecodeTextureBytes(entry.encodedBytes, texture))
             {
@@ -514,7 +512,6 @@ std::vector<SceneTexture> ResolveAndDecodeTextures(
 
         std::vector<unsigned char> encoded;
         SceneTexture texture;
-        texture.filepath = ref.path;
         texture.ref = ref;
         if (!ReadFileBytes(physicalPath, encoded) ||
             !DecodeTextureBytes(encoded, texture))

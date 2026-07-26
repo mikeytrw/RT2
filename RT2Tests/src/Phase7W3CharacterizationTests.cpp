@@ -1659,7 +1659,7 @@ TEST_CASE("Phase7 W3 step 6.3: glTF texture failures are contained")
         REQUIRE(scene.materials.size() == 1);
         REQUIRE(scene.textures.size() == 1);
         CHECK(scene.meshRegistry.GetCount() == 1);
-        CHECK(scene.textures[0].filepath == "missing.ppm");
+        CHECK(scene.textures[0].ref.path == "missing.ppm");
         CHECK(scene.textures[0].ref.kind == AssetKind::Texture);
         CHECK(scene.textures[0].ref.sourceKey == "gltf:image=0");
         CheckExactTexturePlaceholder(scene.textures[0]);
@@ -1683,7 +1683,7 @@ TEST_CASE("Phase7 W3 step 6.3: glTF texture failures are contained")
         CHECK(scene.meshRegistry.GetCount() == 1);
         REQUIRE(scene.materials.size() == 1);
         REQUIRE(scene.textures.size() == 1);
-        CHECK(scene.textures[0].filepath == "malformed.png");
+        CHECK(scene.textures[0].ref.path == "malformed.png");
         CheckExactTexturePlaceholder(scene.textures[0]);
         CHECK(scene.materials[0].baseColorTextureIndex == 0);
         CHECK(CountSeverity(

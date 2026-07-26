@@ -6,6 +6,7 @@
 #include "SceneHierarchy.h"
 #include "PersistedComponents.h"
 #include "ScriptComponentValidation.h"
+#include "AssetResolver.h"
 
 #include "json.hpp"
 
@@ -17,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <sstream>
@@ -247,10 +249,17 @@ AssetReference JsonToAssetReference(const json& j, Error& err)
     return a;
 }
 
+struct RebasedPath
+{
+    std::string storedPath;
+    bool retainedAbsolute = false;
+};
+
 // Relativize an absolute or relative path against the .rt2scene directory.
 // Stores a portable UTF-8 path with forward slashes. If the path cannot be
-// made relative (different drive on Windows), stores it as-is.
-std::string RebasePath(const std::string& stored,
+// made relative (different drive on Windows), stores the normalized absolute
+// path and reports that advisory state to the caller.
+RebasedPath RebasePath(const std::string& stored,
                        const std::filesystem::path& currentSceneDir,
                        const std::filesystem::path& outputSceneDir)
 {
@@ -261,12 +270,13 @@ std::string RebasePath(const std::string& stored,
     if (!p.is_absolute())
     {
         // Already relative — normalize separators and return.
-        if (currentSceneDir.empty()) return p.generic_string();
+        if (currentSceneDir.empty()) return { p.generic_string(), false };
         const auto combined = currentSceneDir / p;
         p = std::filesystem::absolute(combined, ec);
         if (ec) p = combined.lexically_normal();
     }
-    if (outputSceneDir.empty()) return p.generic_string();
+    if (outputSceneDir.empty())
+        return { p.generic_string(), p.is_absolute() };
     std::filesystem::path base = outputSceneDir.lexically_normal();
     if (!base.is_absolute())
     {
@@ -276,8 +286,32 @@ std::string RebasePath(const std::string& stored,
     }
     const std::filesystem::path rel = p.lexically_relative(base);
     if (rel.empty())
-        return p.generic_string(); // fallback: keep absolute portable form
-    return rel.lexically_normal().generic_string();
+        return { p.generic_string(), p.is_absolute() };
+    return { rel.lexically_normal().generic_string(), false };
+}
+
+void AppendNonPortableDiagnostic(
+    const AssetReference& original,
+    const RebasedPath& rebased,
+    const UUID& entityUuid,
+    const std::string& entityName,
+    std::vector<AssetDiagnostic>& diagnostics)
+{
+    if (!rebased.retainedAbsolute)
+        return;
+
+    AssetDiagnostic diagnostic;
+    diagnostic.severity = AssetDiagnostic::NonPortable;
+    diagnostic.kind = original.kind;
+    diagnostic.refPath = original.path;
+    diagnostic.resolvedPath = rebased.storedPath;
+    diagnostic.entityUuid = entityUuid;
+    diagnostic.entityName = entityName;
+    diagnostic.sourceKey = original.sourceKey;
+    diagnostic.detail =
+        "asset path could not be made relative to the output scene; "
+        "saved as a normalized absolute path";
+    diagnostics.push_back(std::move(diagnostic));
 }
 
 bool ScriptFieldTypeFromName(const std::string& name, ScriptFieldType& out)
@@ -560,6 +594,7 @@ std::optional<json> EntityRecordToJson(
                         const EntityRecord& r,
                         const std::filesystem::path& currentSceneDir,
                         const std::filesystem::path& outputSceneDir,
+                        std::vector<AssetDiagnostic>& diagnostics,
                         Error& err)
 {
     json j;
@@ -596,7 +631,11 @@ std::optional<json> EntityRecordToJson(
     if (r.hasImportedSource)
     {
         AssetReference relRef = r.importedSource.model;
-        relRef.path = RebasePath(relRef.path, currentSceneDir, outputSceneDir);
+        const auto rebased =
+            RebasePath(relRef.path, currentSceneDir, outputSceneDir);
+        AppendNonPortableDiagnostic(
+            r.importedSource.model, rebased, r.uuid, r.name, diagnostics);
+        relRef.path = rebased.storedPath;
         j["importedSource"] = AssetReferenceToJson(relRef);
     }
 
@@ -654,8 +693,11 @@ std::optional<json> EntityRecordToJson(
         }
 
         AssetReference serializedAsset = canonical.asset;
-        serializedAsset.path = RebasePath(
+        const auto rebased = RebasePath(
             serializedAsset.path, currentSceneDir, outputSceneDir);
+        AppendNonPortableDiagnostic(
+            r.script.asset, rebased, r.uuid, r.name, diagnostics);
+        serializedAsset.path = rebased.storedPath;
         serializedAsset.sourceKey = serializedAsset.path.empty()
                                   ? std::string{}
                                   : "lua:asset=" + serializedAsset.path;
@@ -1177,8 +1219,8 @@ static bool SaveInternal(const SceneDocument& doc,
                          std::vector<AssetDiagnostic>& diagnostics,
                          Error& err)
 {
-    (void)diagnostics; // Step 7.4 appends staged NonPortable advisories.
     err = Error{};
+    std::vector<AssetDiagnostic> stagedDiagnostics;
     // Pre-save validation: every entity with a MeshRef must have either a
     // PrimitiveComponent (procedural) or an ImportedMeshSourceComponent
     // (durable asset reference). Entities with neither cannot reopen —
@@ -1266,7 +1308,7 @@ static bool SaveInternal(const SceneDocument& doc,
     for (const auto& r : records)
     {
         auto serialized = EntityRecordToJson(
-            r, currentSceneDir, outputSceneDir, err);
+            r, currentSceneDir, outputSceneDir, stagedDiagnostics, err);
         if (!serialized) return false;
         entitiesArray.push_back(std::move(*serialized));
     }
@@ -1298,7 +1340,13 @@ static bool SaveInternal(const SceneDocument& doc,
     {
         AssetReference relRef = doc.environment.ref;
         relRef.kind = AssetKind::Environment;
-        relRef.path = RebasePath(relRef.path, currentSceneDir, outputSceneDir);
+        const AssetReference originalRef = relRef;
+        const auto rebased =
+            RebasePath(relRef.path, currentSceneDir, outputSceneDir);
+        AppendNonPortableDiagnostic(
+            originalRef, rebased, UUID::Nil(), {},
+            stagedDiagnostics);
+        relRef.path = rebased.storedPath;
         json env = AssetReferenceToJson(relRef);
         env["width"]  = doc.environment.width;
         env["height"] = doc.environment.height;
@@ -1402,6 +1450,16 @@ static bool SaveInternal(const SceneDocument& doc,
     }
 #endif
 
+    std::stable_sort(
+        stagedDiagnostics.begin(), stagedDiagnostics.end(),
+        [](const AssetDiagnostic& left, const AssetDiagnostic& right) {
+            return AssetDiagnosticSortKey(left) <
+                   AssetDiagnosticSortKey(right);
+        });
+    diagnostics.insert(
+        diagnostics.end(),
+        std::make_move_iterator(stagedDiagnostics.begin()),
+        std::make_move_iterator(stagedDiagnostics.end()));
     return true;
 }
 
