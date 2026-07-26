@@ -152,9 +152,9 @@ bool PortableTextureUri(const AssetReference& ref,
 }
 
 
-// Parse KHR_lights_punctual into ecsScene.lights. Shared by LoadIntoECS and
-// ImportIntoECS so an imported glTF keeps its lights instead of silently
-// dropping them (Phase 8 step 3). Appends; never clears.
+// Parse KHR_lights_punctual into light entities (LightComponent + Transform).
+// Shared by LoadIntoECS and ImportIntoECS so an imported glTF keeps its lights
+// instead of silently dropping them (Phase 8 step 3). Appends; never clears.
 void ParsePunctualLights(const tinygltf::Model& model, ECSScene& ecsScene)
 {
     auto lightsIt = model.extensions.find("KHR_lights_punctual");
@@ -232,7 +232,35 @@ void ParsePunctualLights(const tinygltf::Model& model, ECSScene& ecsScene)
                 if (lightObj.Has("outerConeAngleDeg"))
                     light.outerConeAngle = (float)lightObj.Get("outerConeAngleDeg").GetNumberAsDouble();
 
-                ecsScene.lights.push_back(light);
+                // A light becomes a first-class entity: its place and aim live
+                // in a Transform, so selecting, moving, parenting, undo/redo,
+                // the Inspector and the Lua API all work on it for free. The
+                // former flat ECSScene::lights vector could do none of that,
+                // and being a second representation is what let a whole
+                // scene's lights go unnoticed.
+                const entt::entity e = ecsScene.registry.create();
+
+                Transform tf;
+                tf.translation = light.position;
+                tf.rotation = LightDirectionToRotation(light.direction);
+                tf.dirty = true;
+                ecsScene.registry.emplace<Transform>(e, tf);
+
+                LightComponent lc;
+                lc.type = light.type;
+                lc.color = light.color;
+                lc.intensity = light.intensity;
+                lc.range = light.range;
+                lc.innerConeAngle = light.innerConeAngle;
+                lc.outerConeAngle = light.outerConeAngle;
+                ecsScene.registry.emplace<LightComponent>(e, lc);
+
+                ecsScene.registry.emplace<VisibleComponent>(e);
+
+                auto& name = ecsScene.registry.emplace<NameComponent>(e);
+                name.name = lightObj.Has("name")
+                    ? lightObj.Get("name").Get<std::string>()
+                    : ("Light_" + std::to_string(i));
             }
         }
     }
@@ -480,14 +508,34 @@ bool SceneLoader::Save(const ECSScene& ecsScene, const std::string& filepath)
     }
 
     // --- Lights ---
-    if (!ecsScene.lights.empty())
+    // Exported from LightComponent entities. Position and aim come from the
+    // entity's Transform, matching how node transforms are written above:
+    // local TRS, not world. Lights parented under another entity would need
+    // world decomposition, which this flat light list has no way to express.
     {
+        auto lightView = ecsScene.registry.view<const LightComponent, const Transform>();
         tinygltf::Value::Object lightsExtObj;
         std::vector<tinygltf::Value> lightsArray;
 
-        for (const auto& light : ecsScene.lights)
+        for (auto entity : lightView)
         {
+            const auto& lc = lightView.get<const LightComponent>(entity);
+            const auto& tf = lightView.get<const Transform>(entity);
+
+            // Local alias so the body below reads unchanged.
+            SceneLight light;
+            light.type = lc.type;
+            light.color = lc.color;
+            light.intensity = lc.intensity;
+            light.range = lc.range;
+            light.innerConeAngle = lc.innerConeAngle;
+            light.outerConeAngle = lc.outerConeAngle;
+            light.position = tf.translation;
+            light.direction = LightRotationToDirection(tf.rotation);
+
             tinygltf::Value::Object lightObj;
+            if (const auto* nc = ecsScene.registry.try_get<NameComponent>(entity))
+                lightObj["name"] = tinygltf::Value(nc->name);
             lightObj["color"] = tinygltf::Value(tinygltf::Value::Array({
                 tinygltf::Value(light.color.r),
                 tinygltf::Value(light.color.g),
@@ -527,9 +575,15 @@ bool SceneLoader::Save(const ECSScene& ecsScene, const std::string& filepath)
             lightsArray.push_back(tinygltf::Value(lightObj));
         }
 
-        lightsExtObj["lights"] = tinygltf::Value(lightsArray);
-        model.extensions["KHR_lights_punctual"] = tinygltf::Value(lightsExtObj);
-        model.extensionsUsed.push_back("KHR_lights_punctual");
+        // Only declare the extension when the scene actually has lights;
+        // the previous code guarded on the vector being non-empty and an
+        // always-on empty extension would be a gratuitous export change.
+        if (!lightsArray.empty())
+        {
+            lightsExtObj["lights"] = tinygltf::Value(lightsArray);
+            model.extensions["KHR_lights_punctual"] = tinygltf::Value(lightsExtObj);
+            model.extensionsUsed.push_back("KHR_lights_punctual");
+        }
     }
 
     // --- Camera ---

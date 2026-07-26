@@ -731,7 +731,8 @@ public:
 	ImGui::Begin("Scene");
 	ImGui::Text("Meshes: %d", (int)m_SceneMgr.GetECS().meshRegistry.GetCount());
 	ImGui::Text("Materials: %d", (int)m_SceneMgr.GetMaterials().size());
-	ImGui::Text("Lights: %d", (int)m_SceneMgr.GetECS().lights.size());
+	ImGui::Text("Lights: %d",
+	            (int)m_SceneMgr.GetECS().registry.view<const LightComponent>().size());
 	ImGui::Text("Textures: %d", (int)m_SceneMgr.GetECS().textures.size());
 	if (m_SceneMgr.IsDirty())
 		ImGui::TextColored(ImVec4(1, 0.8f, 0, 1), "Unsaved changes");
@@ -2438,7 +2439,8 @@ private:
 			live.meshRegistry = std::move(result->ecs.meshRegistry);
 			live.materials = std::move(result->ecs.materials);
 			live.textures = std::move(result->ecs.textures);
-			live.lights = std::move(result->ecs.lights);
+			// Lights need no move of their own any more â they are entities,
+			// carried by the registry move below.
 			live.camera = std::move(result->ecs.camera);
 			// Move the registry: entt registries are movable.
 			live.registry = std::move(result->ecs.registry);

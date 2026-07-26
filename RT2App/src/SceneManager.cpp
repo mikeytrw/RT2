@@ -354,7 +354,8 @@ bool SceneManager::LoadScene(
 
 	printf("[Scene] Loaded %d meshes, %d materials, %d lights, %d textures\n",
 	       (int)m_EcsScene.meshRegistry.GetCount(), (int)m_EcsScene.materials.size(),
-	       (int)m_EcsScene.lights.size(), (int)m_EcsScene.textures.size());
+	       (int)m_EcsScene.registry.view<const LightComponent>().size(),
+	       (int)m_EcsScene.textures.size());
 
 	m_EntityCacheDirty = true;
 	++m_DocumentGeneration;

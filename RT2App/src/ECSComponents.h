@@ -11,6 +11,8 @@
 #include <entt/entt.hpp>
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/constants.hpp>
+#include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
 #include <unordered_map>
 #include <vector>
@@ -85,6 +87,38 @@ struct LightComponent
     // whose direction comes from the entity's world rotation.
     LightType type = LightType::Point;
 };
+
+// A light entity's aim lives in its Transform's rotation, not in the light
+// component — that is the point of making lights entities, so moving or
+// parenting one just works. glTF punctual lights emit along local -Z, so
+// these convert between that convention and a rotation.
+//
+// Round-tripping direction -> rotation -> direction is exact for any unit
+// direction; the reverse (rotation -> direction -> rotation) discards roll,
+// which a light has no use for.
+inline glm::quat LightDirectionToRotation(const glm::vec3& direction)
+{
+    const glm::vec3 forward(0.0f, 0.0f, -1.0f);
+    const float len = glm::length(direction);
+    if (len < 1e-8f)
+        return glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // degenerate: keep identity
+
+    const glm::vec3 d = direction / len;
+    const float dot = glm::dot(forward, d);
+    if (dot > 1.0f - 1e-6f)
+        return glm::quat(1.0f, 0.0f, 0.0f, 0.0f); // already pointing down -Z
+    if (dot < -1.0f + 1e-6f)
+        // Exactly reversed: the rotation axis is ambiguous, so pick one.
+        return glm::angleAxis(glm::pi<float>(), glm::vec3(0.0f, 1.0f, 0.0f));
+
+    return glm::angleAxis(std::acos(dot),
+                          glm::normalize(glm::cross(forward, d)));
+}
+
+inline glm::vec3 LightRotationToDirection(const glm::quat& rotation)
+{
+    return glm::normalize(rotation * glm::vec3(0.0f, 0.0f, -1.0f));
+}
 
 // Camera component (only one entity should have this)
 struct CameraComponent

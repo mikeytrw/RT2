@@ -30,7 +30,10 @@ struct ECSScene
 
     std::vector<SceneMaterial> materials;
     std::vector<SceneTexture>  textures;
-    std::vector<SceneLight>    lights;
+    // Lights are entities (LightComponent + Transform), not a side table.
+    // The former `std::vector<SceneLight> lights` could not be selected,
+    // moved, parented, undone or scripted, and being a second
+    // representation is how a scene's lights went unnoticed entirely.
     SceneCamera                camera;
 
     void Clear()
@@ -39,7 +42,6 @@ struct ECSScene
         meshRegistry.Clear();
         materials.clear();
         textures.clear();
-        lights.clear();
         camera = SceneCamera{};
     }
 };
