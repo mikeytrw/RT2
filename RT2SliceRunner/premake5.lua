@@ -22,6 +22,7 @@ project "RT2SliceRunner"
         "../RT2App/src/SceneVisibility.cpp",
         "../RT2App/src/TransformEditing.cpp",
         "../RT2App/src/SceneLoader.cpp",
+        "../RT2App/src/TextureAssetPipeline.cpp",
         "../RT2App/src/GPUSceneData.cpp",
         "../RT2App/src/PrimitiveGeometry.cpp",
         "../RT2App/src/TinyEXRLoader.cpp",

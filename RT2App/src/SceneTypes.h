@@ -3,6 +3,8 @@
 #ifndef SCENE_TYPES_H
 #define SCENE_TYPES_H
 
+#include "AssetReference.h"
+
 #include <glm/glm.hpp>
 #include <string>
 #include <vector>
@@ -92,6 +94,9 @@ struct SceneLight
 struct SceneTexture
 {
     std::string filepath;
+    // Structured source identity. `filepath` remains a compatibility mirror
+    // through W3 step 7; decoded pixels are cache data, not serialized state.
+    AssetReference ref;
 
     int width = 0;
     int height = 0;

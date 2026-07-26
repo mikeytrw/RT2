@@ -46,7 +46,7 @@
 //      diagnostic: the durable identity is confirmed by the sidecar, but the
 //      database-side state needs repair.
 //   4. If the ID does not locate a file, the path exists, and the sidecar is
-//      absent, fallback succeeds with a sidecar Missing diagnostic and
+//      absent, fallback succeeds with a sidecar Stale diagnostic and
 //      identityRepairRequired=true; explicit save/migration performs remap.
 //   5. If the path's sidecar claims a different ID, resolution fails with
 //      Conflict; it never silently substitutes one identity for the other.
