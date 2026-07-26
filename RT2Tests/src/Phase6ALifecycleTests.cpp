@@ -28,6 +28,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_set>
 #include <vector>
 
@@ -85,14 +86,27 @@ public:
 
 namespace {
 
-std::filesystem::path g_TempDir;
+// Keep the fixture root absolute even when a single case is selected. The
+// suite-level setup case still clears and recreates it for a full run, but
+// filtered Phase 6 contract checks must not acquire an implicit CWD root.
+std::filesystem::path g_TempDir =
+    std::filesystem::temp_directory_path() / "rt2_phase6a_tests";
 
 std::filesystem::path WriteScript(const std::string& name, const std::string& source)
 {
+    std::error_code ec;
+    std::filesystem::create_directories(g_TempDir, ec);
+    if (ec)
+        throw std::runtime_error(
+            "failed to create Phase 6A fixture directory: " + ec.message());
+
     auto path = g_TempDir / name;
     std::ofstream f(path, std::ios::binary);
     f << source;
     f.close();
+    if (!f)
+        throw std::runtime_error(
+            "failed to write Phase 6A script fixture: " + path.string());
     return path;
 }
 

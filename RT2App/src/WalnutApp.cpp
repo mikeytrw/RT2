@@ -1554,10 +1554,18 @@ public:
 			!m_ScriptRepairGate.SuppressAutosave())
 		{
 			rt2::core::Error ae;
+			std::vector<rt2::core::AssetDiagnostic> autosaveDiagnostics;
 			const auto started = std::chrono::steady_clock::now();
-			const bool wrote = m_Recovery->MaybeSnapshot(
+			std::filesystem::path logicalAssetRoot;
+			bool rootReady = true;
+			if (m_SceneMgr.AuthoringDoc().metadata.sourcePath.empty())
+				rootReady = RecoveryAssetRoot(logicalAssetRoot, ae);
+			const bool wrote = rootReady && m_Recovery->MaybeSnapshot(
 				m_SceneMgr.AuthoringDoc(), m_SceneMgr.AuthoringRevision(),
-				m_UntitledRecoveryId, UntitledAssetRoot(), ae);
+				m_UntitledRecoveryId, logicalAssetRoot,
+				autosaveDiagnostics, ae);
+			LogAssetDiagnostics(
+				autosaveDiagnostics, 0, "Recovery");
 			const double elapsedMs = std::chrono::duration<double, std::milli>(
 				std::chrono::steady_clock::now() - started).count();
 			if (wrote)
@@ -2589,13 +2597,47 @@ private:
 		return {};
 	}
 
-	std::filesystem::path UntitledAssetRoot() const
+	std::filesystem::path ScriptAssetRoot() const
 	{
-		if (m_Settings2 && !m_Settings2->GetProjectRoot().empty())
-			return m_Settings2->GetProjectRoot();
-		std::error_code ec;
-		auto cwd = std::filesystem::current_path(ec);
-		return ec ? std::filesystem::path{} : cwd;
+		if (m_Settings2)
+		{
+			const auto root = m_Settings2->GetProjectRoot().
+				lexically_normal();
+			if (!root.empty() && root.is_absolute())
+				return root;
+		}
+		return {};
+	}
+
+	bool RecoveryAssetRoot(
+		std::filesystem::path& root,
+		rt2::core::Error& err) const
+	{
+		root = ScriptAssetRoot();
+		if (!root.empty())
+		{
+			err = rt2::core::Error{};
+			return true;
+		}
+#ifdef _WIN32
+		const wchar_t* localAppData = _wgetenv(L"LOCALAPPDATA");
+		const std::filesystem::path base =
+			localAppData ? std::filesystem::path(localAppData)
+			             : std::filesystem::path{};
+#else
+		const char* localAppData = std::getenv("LOCALAPPDATA");
+		const std::filesystem::path base =
+			localAppData ? std::filesystem::path(localAppData)
+			             : std::filesystem::path{};
+#endif
+		if (base.empty())
+		{
+			err.code = rt2::core::Error::InvalidArgument;
+			err.detail = "LOCALAPPDATA is unavailable for untitled recovery";
+			return false;
+		}
+		return rt2::core::SceneRecoveryService::
+			EnsureUntitledRecoveryAssetRoot(base, root, err);
 	}
 
 	bool PersistEditorSettings(const char* context)
@@ -2694,7 +2736,7 @@ private:
 		const auto& sourcePath =
 			m_SceneMgr.AuthoringDoc().metadata.sourcePath;
 		m_ScriptAssetContext.assetRoot = sourcePath.empty()
-			? UntitledAssetRoot()
+			? ScriptAssetRoot()
 			: sourcePath.parent_path();
 		m_ScriptAssetContext.database = nullptr;
 
@@ -2972,10 +3014,11 @@ public:
 				m_ActiveWatchIds.clear();
 
 				std::set<std::string> dirs;
-				auto sceneDir = std::filesystem::path(filepathCopy).
-					parent_path().lexically_normal().string();
+				const auto sceneDir =
+					rt2::core::ScriptWatchDirectoryForCandidate(
+						std::filesystem::path(filepathCopy));
 				if (!sceneDir.empty())
-					dirs.insert(sceneDir);
+					dirs.insert(sceneDir.string());
 
 				auto& doc = m_SceneMgr.AuthoringDoc();
 				m_ScriptAssetContext.assetRoot =
@@ -3005,10 +3048,11 @@ public:
 						watchPath = m_ScriptAssetDiagnostics.back().
 							resolvedPath;
 					}
-					auto parent = watchPath.parent_path().
-						lexically_normal().string();
+					const auto parent =
+						rt2::core::ScriptWatchDirectoryForCandidate(
+							watchPath);
 					if (!parent.empty())
-						dirs.insert(parent);
+						dirs.insert(parent.string());
 				}
 				LogScriptAssetDiagnostics(0, "FileWatcher");
 

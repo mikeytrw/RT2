@@ -1255,6 +1255,97 @@ TEST_CASE("Phase7 W3 step 5: binding an existing script assigns and reuses its s
     CHECK(second->asset.assetId == first->asset.assetId);
 }
 
+TEST_CASE("Phase7 W3 step 7.3: script binding respects explicit ownership roots")
+{
+    SUBCASE("a missing script remains a legal nil-ID authored binding")
+    {
+        TempDirectory fixture;
+        DeterministicUuidProvider ids;
+        SceneManager manager;
+        manager.SetUuidProvider(&ids);
+        manager.AuthoringDoc().metadata.sourcePath =
+            fixture.Path() / "scene.rt2scene";
+        const UUID entity =
+            manager.CreateEmpty("MissingScript").affectedEntities.front();
+
+        REQUIRE(manager.SetScriptState(
+            entity, ScriptAt("missing.lua")).success);
+        const auto stored = manager.GetScriptState(entity);
+        REQUIRE(stored.has_value());
+        CHECK(stored->asset.path == "missing.lua");
+        CHECK(stored->asset.assetId.IsNull());
+        std::error_code ec;
+        CHECK_FALSE(fs::exists(
+            AssetSidecarPath(fixture.Path() / "missing.lua"), ec));
+    }
+
+    SUBCASE("an untitled relative binding does not claim a CWD file")
+    {
+        const fs::path cwdScript = "rt2_w3_untitled_binding.lua";
+        REQUIRE(WriteText(cwdScript, "\n"));
+        struct CwdScriptGuard {
+            fs::path path;
+            ~CwdScriptGuard()
+            {
+                std::error_code ec;
+                fs::remove(path, ec);
+                fs::remove(AssetSidecarPath(path), ec);
+            }
+        } guard{ cwdScript };
+
+        DeterministicUuidProvider ids;
+        SceneManager manager;
+        manager.SetUuidProvider(&ids);
+        const UUID entity =
+            manager.CreateEmpty("UntitledScript").affectedEntities.front();
+
+        REQUIRE(manager.SetScriptState(
+            entity, ScriptAt(cwdScript.generic_string())).success);
+        const auto stored = manager.GetScriptState(entity);
+        REQUIRE(stored.has_value());
+        CHECK(stored->asset.assetId.IsNull());
+        std::error_code ec;
+        CHECK_FALSE(fs::exists(AssetSidecarPath(cwdScript), ec));
+    }
+
+    SUBCASE("a conflicting sidecar is not silently remapped")
+    {
+        TempDirectory fixture;
+        const fs::path scriptPath = fixture.Path() / "conflict.lua";
+        REQUIRE(WriteText(scriptPath, "\n"));
+
+        DeterministicUuidProvider ids;
+        SceneManager manager;
+        manager.SetUuidProvider(&ids);
+        manager.AuthoringDoc().metadata.sourcePath =
+            fixture.Path() / "scene.rt2scene";
+        const UUID entity =
+            manager.CreateEmpty("ConflictScript").affectedEntities.front();
+        REQUIRE(manager.SetScriptState(
+            entity, ScriptAt("conflict.lua")).success);
+        const auto original = manager.GetScriptState(entity);
+        REQUIRE(original.has_value());
+        REQUIRE_FALSE(original->asset.assetId.IsNull());
+
+        const UUID conflictingId =
+            UUID::Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        REQUIRE(conflictingId != original->asset.assetId);
+        Error sidecarError;
+        REQUIRE(WriteSidecarId(
+            AssetSidecarPath(scriptPath), conflictingId, sidecarError));
+        ScriptComponent binding = *original;
+        binding.fieldValues["speed"] = {
+            ScriptFieldType::Float, ScriptFieldValue{2.0}};
+
+        CHECK_FALSE(manager.SetScriptState(entity, binding).success);
+        REQUIRE(manager.GetScriptState(entity).has_value());
+        CHECK(manager.GetScriptState(entity)->asset.assetId ==
+              original->asset.assetId);
+        CHECK(ReadSidecarId(
+            AssetSidecarPath(scriptPath), sidecarError) == conflictingId);
+    }
+}
+
 TEST_CASE("Phase7 W3 step 6.1: committed script scenario identity resolves cleanly")
 {
     const fs::path assetRoot =

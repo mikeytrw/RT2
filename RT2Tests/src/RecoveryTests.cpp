@@ -65,12 +65,15 @@ static bool SnapshotAfterInterval(SceneRecoveryService& svc,
                                   const std::filesystem::path& logicalAssetRoot = {})
 {
     const auto root = logicalAssetRoot.empty()
-        ? std::filesystem::current_path()
+        ? std::filesystem::temp_directory_path()
         : logicalAssetRoot;
-    CHECK_FALSE(svc.MaybeSnapshot(doc, revision, untitledId, root, err));
+    std::vector<AssetDiagnostic> diagnostics;
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, revision, untitledId, root, diagnostics, err));
     if (!err.IsOk()) return false;
     clock.now += 60;
-    return svc.MaybeSnapshot(doc, revision, untitledId, root, err);
+    return svc.MaybeSnapshot(
+        doc, revision, untitledId, root, diagnostics, err);
 }
 
 // Build a scene with a primitive entity so it can be saved/loaded without
@@ -130,12 +133,58 @@ TEST_CASE("Recovery: clean doc writes nothing")
     auto doc = MakePrimitiveScene(&provider);
     // doc.metadata.dirty == false
     Error err;
-    CHECK_FALSE(svc.MaybeSnapshot(doc, 0, err));
+    std::vector<AssetDiagnostic> diagnostics;
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 0, "clean", dir, diagnostics, err));
     CHECK(err.IsOk());
     // No records discovered.
     auto recs = svc.Discover(err);
     CHECK(recs.empty());
     std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Recovery: untitled asset root is per-user and never CWD")
+{
+    const auto localAppData = UniqueTempDir("rcv_local_app_data");
+    std::filesystem::path root;
+    Error err;
+
+    REQUIRE(SceneRecoveryService::EnsureUntitledRecoveryAssetRoot(
+        localAppData, root, err));
+    CHECK(err.IsOk());
+    CHECK(root == (localAppData / "RT2" / "recovery").lexically_normal());
+    CHECK(root.is_absolute());
+    CHECK(std::filesystem::is_directory(root));
+
+    root.clear();
+    CHECK_FALSE(SceneRecoveryService::EnsureUntitledRecoveryAssetRoot(
+        "relative-local-app-data", root, err));
+    CHECK(root.empty());
+    CHECK(err.code == Error::InvalidArgument);
+    std::filesystem::remove_all(localAppData);
+}
+
+TEST_CASE("Recovery: due untitled snapshot rejects an invalid logical root")
+{
+    const auto recoveryDir = UniqueTempDir("rcv_invalid_asset_root");
+    FakeClock clk;
+    SceneRecoveryService svc(recoveryDir, ClockRef(clk), 8, 0.0);
+    DeterministicUuidProvider ids;
+    auto doc = MakePrimitiveScene(&ids);
+    doc.metadata.dirty = true;
+    std::vector<AssetDiagnostic> diagnostics;
+    Error err;
+
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 1, "untitled", {}, diagnostics, err));
+    CHECK(err.IsOk());
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 1, "untitled", "relative-root", diagnostics, err));
+    CHECK(err.code == Error::InvalidArgument);
+    CHECK(err.detail ==
+          "untitled recovery requires an absolute logical asset root");
+    CHECK(svc.Discover(err).empty());
+    std::filesystem::remove_all(recoveryDir);
 }
 
 // 2. Dirty document writes after the interval.
@@ -149,11 +198,15 @@ TEST_CASE("Recovery: dirty doc writes after interval")
     doc.metadata.dirty = true;
     doc.metadata.sourcePath = (dir / "scene.rt2scene").string();
     Error err;
-    CHECK_FALSE(svc.MaybeSnapshot(doc, 1, "unused", dir, err));
+    std::vector<AssetDiagnostic> diagnostics;
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 1, "unused", dir, diagnostics, err));
     clk.now = 1059;
-    CHECK_FALSE(svc.MaybeSnapshot(doc, 1, "unused", dir, err));
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 1, "unused", dir, diagnostics, err));
     clk.now = 1060;
-    CHECK(svc.MaybeSnapshot(doc, 1, "unused", dir, err));
+    CHECK(svc.MaybeSnapshot(
+        doc, 1, "unused", dir, diagnostics, err));
     CHECK(err.IsOk());
     auto recs = svc.Discover(err);
     REQUIRE(recs.size() == 1);
@@ -172,14 +225,18 @@ TEST_CASE("Recovery: injected clock controls scheduling")
     doc.metadata.dirty = true;
     doc.metadata.sourcePath = (dir / "scene.rt2scene").string();
     Error err;
+    std::vector<AssetDiagnostic> diagnostics;
     // First snapshot at t=1000.
-    CHECK_FALSE(svc.MaybeSnapshot(doc, 1, "unused", dir, err));
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 1, "unused", dir, diagnostics, err));
     // Advance by 30s — not enough.
     clk.now = 1030;
-    CHECK_FALSE(svc.MaybeSnapshot(doc, 2, "unused", dir, err)); // different revision but interval not elapsed
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 2, "unused", dir, diagnostics, err)); // different revision but interval not elapsed
     // Advance by 40s — total 70 since last, enough.
     clk.now = 1060;
-    CHECK(svc.MaybeSnapshot(doc, 2, "unused", dir, err));
+    CHECK(svc.MaybeSnapshot(
+        doc, 2, "unused", dir, diagnostics, err));
     std::filesystem::remove_all(dir);
 }
 
@@ -197,7 +254,9 @@ TEST_CASE("Recovery: unchanged revision skips write")
     REQUIRE(SnapshotAfterInterval(svc, doc, 5, clk, err));
     // Advance past interval but same revision.
     clk.now = 2000;
-    CHECK_FALSE(svc.MaybeSnapshot(doc, 5, err));
+    std::vector<AssetDiagnostic> diagnostics;
+    CHECK_FALSE(svc.MaybeSnapshot(
+        doc, 5, "unused", dir, diagnostics, err));
     std::filesystem::remove_all(dir);
 }
 

@@ -60,13 +60,15 @@ public:
                        uint64_t currentRevision,
                        const std::string& untitledRecoveryId,
                        const std::filesystem::path& logicalAssetRoot,
+                       std::vector<AssetDiagnostic>& diagnostics,
                        Error& err);
 
-    // Compatibility/test convenience: uses metadata.name as the untitled id
-    // and current_path as the untitled logical asset root.
-    bool MaybeSnapshot(const SceneDocument& doc,
-                       uint64_t currentRevision,
-                       Error& err);
+    // Build the no-project recovery asset root without consulting CWD.
+    // `localAppData` is supplied by the host so this stays CPU-testable.
+    static bool EnsureUntitledRecoveryAssetRoot(
+        const std::filesystem::path& localAppData,
+        std::filesystem::path& outRoot,
+        Error& err);
 
     std::vector<RecoveryRecord> Discover(Error& err) const;
 
@@ -122,6 +124,7 @@ private:
                      const std::filesystem::path& logicalAssetRoot,
                      uint64_t revision,
                      int64_t createdAt,
+                     std::vector<AssetDiagnostic>& diagnostics,
                      Error& err);
     bool ParseRecord(const std::filesystem::path& path,
                      RecoveryRecord& out) const;

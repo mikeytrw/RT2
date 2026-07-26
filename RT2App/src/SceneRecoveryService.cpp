@@ -181,20 +181,42 @@ std::filesystem::path SceneRecoveryService::RecordPath(const std::string& docId)
     return m_RecoveryRoot / (HexKey(Fnv1a64(docId)) + ".rt2recovery");
 }
 
-bool SceneRecoveryService::MaybeSnapshot(const SceneDocument& doc,
-                                         uint64_t currentRevision,
-                                         Error& err)
+bool SceneRecoveryService::EnsureUntitledRecoveryAssetRoot(
+    const std::filesystem::path& localAppData,
+    std::filesystem::path& outRoot,
+    Error& err)
 {
+    outRoot.clear();
+    err = Error{};
+    if (localAppData.empty() || !localAppData.is_absolute())
+    {
+        err.code = Error::InvalidArgument;
+        err.path = localAppData.string();
+        err.detail = "LOCALAPPDATA root must be absolute";
+        return false;
+    }
+
+    const auto root =
+        (localAppData / "RT2" / "recovery").lexically_normal();
     std::error_code ec;
-    auto root = std::filesystem::current_path(ec);
-    if (ec) root.clear();
-    return MaybeSnapshot(doc, currentRevision, doc.metadata.name, root, err);
+    std::filesystem::create_directories(root, ec);
+    if (ec)
+    {
+        err.code = Error::Io;
+        err.path = root.string();
+        err.detail = "failed to create untitled recovery asset root: " +
+                     ec.message();
+        return false;
+    }
+    outRoot = root;
+    return true;
 }
 
 bool SceneRecoveryService::MaybeSnapshot(const SceneDocument& doc,
                                          uint64_t currentRevision,
                                          const std::string& untitledRecoveryId,
                                          const std::filesystem::path& logicalAssetRoot,
+                                         std::vector<AssetDiagnostic>& diagnostics,
                                          Error& err)
 {
     err = Error{};
@@ -225,8 +247,20 @@ bool SceneRecoveryService::MaybeSnapshot(const SceneDocument& doc,
     if (m_HasWrittenSnapshot && currentRevision == m_LastWrittenRevision)
         return false;
 
+    if (doc.metadata.sourcePath.empty() &&
+        (logicalAssetRoot.empty() || !logicalAssetRoot.is_absolute()))
+    {
+        err.code = Error::InvalidArgument;
+        err.path = logicalAssetRoot.string();
+        err.detail =
+            "untitled recovery requires an absolute logical asset root";
+        return false;
+    }
+
     const std::string docId = DocIdFor(doc, untitledRecoveryId);
-    if (!WriteRecord(docId, doc, logicalAssetRoot, currentRevision, now, err))
+    if (!WriteRecord(
+            docId, doc, logicalAssetRoot, currentRevision, now,
+            diagnostics, err))
         return false;
 
     const auto keepPath = RecordPath(docId);
@@ -243,6 +277,7 @@ bool SceneRecoveryService::WriteRecord(const std::string& docId,
                                        const std::filesystem::path& logicalAssetRoot,
                                        uint64_t revision,
                                        int64_t createdAt,
+                                       std::vector<AssetDiagnostic>& diagnostics,
                                        Error& err)
 {
     std::error_code ec;
@@ -269,12 +304,11 @@ bool SceneRecoveryService::WriteRecord(const std::string& docId,
     else
     {
         assetRoot = logicalAssetRoot;
-        if (assetRoot.empty()) assetRoot = std::filesystem::current_path(ec);
         logicalScenePath = assetRoot / "__untitled__.rt2scene";
     }
 
-    std::vector<AssetDiagnostic> saveDiagnostics;
-    if (!SceneSerializer::SaveTo(doc, capturePath, logicalScenePath, saveDiagnostics, err))
+    if (!SceneSerializer::SaveTo(
+            doc, capturePath, logicalScenePath, diagnostics, err))
         return false;
 
     json snapshot;

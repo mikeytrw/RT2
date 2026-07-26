@@ -439,6 +439,20 @@ TEST_SUITE("Phase 6C file watch policy")
         CHECK_FALSE(noRegistry.reloadScript);
         CHECK_FALSE(noRegistry.invalidateFieldRegistry);
     }
+
+    TEST_CASE("Phase7 W3 step 7.3: only absolute script candidates are watched")
+    {
+        const auto absolute =
+            (std::filesystem::temp_directory_path() /
+             "scripts" / "watched.lua").lexically_normal();
+        CHECK(ScriptWatchDirectoryForCandidate(absolute) ==
+              absolute.parent_path());
+        CHECK(ScriptWatchDirectoryForCandidate(
+                  absolute.parent_path() / "missing.lua") ==
+              absolute.parent_path());
+        CHECK(ScriptWatchDirectoryForCandidate("scripts/watched.lua").empty());
+        CHECK(ScriptWatchDirectoryForCandidate({}).empty());
+    }
 }
 
 // ============================================================================
@@ -1129,6 +1143,62 @@ end
         CHECK(h.scriptSys.QuarantinedInstanceCount() == 0);
         CHECK(h.scriptSys.LiveInstanceCount() == 1);
         CHECK(RuntimeName(h, cube) == "v2");
+
+        h.Stop(doc);
+    }
+
+    TEST_CASE("Phase7 W3 step 7.3: relative ReloadScript is rejected without a live swap")
+    {
+        auto scriptPath = WriteScript6C("relative_reload.lua", R"LUA(
+rt2.fields = { speed = rt2.field.float(1.0) }
+function on_create(entity, world) end
+function on_update(entity, dt, input, world)
+    entity:set_name("v1")
+end
+)LUA");
+
+        Harness6C h;
+        const auto cached =
+            h.scriptSys.FieldRegistry().GetDeclaredFields(scriptPath);
+        REQUIRE(cached.parsed);
+        REQUIRE(cached.descriptors.size() == 1);
+        CHECK(std::get<double>(cached.descriptors[0].defaultValue) ==
+              doctest::Approx(1.0));
+
+        auto doc = BuildScriptedCube(h, "relative_reload.lua");
+        const UUID cube = FirstScriptUuid(doc);
+        REQUIRE(h.Play(doc));
+        h.Update(1.0f / 60.0f);
+        REQUIRE(RuntimeName(h, cube) == "v1");
+
+        WriteScript6C("relative_reload.lua", R"LUA(
+rt2.fields = { speed = rt2.field.float(2.0) }
+function on_create(entity, world) end
+function on_update(entity, dt, input, world)
+    entity:set_name("v2")
+end
+)LUA");
+
+        std::error_code ec;
+        const auto relative =
+            std::filesystem::relative(scriptPath,
+                                      std::filesystem::current_path(), ec);
+        REQUIRE_FALSE(ec);
+        REQUIRE_FALSE(relative.is_absolute());
+        const size_t diagnosticBase = h.assetDiagnostics.size();
+
+        h.scriptSys.ReloadScript(relative);
+        h.Update(1.0f / 60.0f);
+
+        CHECK(RuntimeName(h, cube) == "v1");
+        CHECK(h.scriptSys.LiveInstanceCount() == 1);
+        CHECK(h.scriptSys.QuarantinedInstanceCount() == 0);
+        REQUIRE(h.assetDiagnostics.size() == diagnosticBase + 1);
+        CHECK(h.assetDiagnostics.back().severity ==
+              AssetDiagnostic::Malformed);
+        CHECK(h.assetDiagnostics.back().kind == AssetKind::Script);
+        CHECK(h.assetDiagnostics.back().detail ==
+              "script reload path must be absolute");
 
         h.Stop(doc);
     }

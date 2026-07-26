@@ -256,21 +256,24 @@ void ScriptSystem::CancelTimersForInstance(const UUID& uuid)
 // ============================================================================
 void ScriptSystem::ReloadScript(const std::filesystem::path& path)
 {
-    // Canonicalize the path for comparison with ScriptInstance::scriptPath.
-    // Both the watcher (efsw, OS-native absolute paths) and BuildEnvironment
-    // (the shared locator's normalized path) must normalize
-    // before comparison (review M3). weakly_canonical resolves relative
-    // paths and normalizes separators; lexically_normal handles the case
-    // where the file doesn't exist yet (weakly_canonical would throw).
-    std::string pathStr;
+    if (path.empty() || !path.is_absolute())
     {
-        std::error_code ec;
-        auto canonical = std::filesystem::weakly_canonical(path, ec);
-        if (ec)
-            pathStr = path.string();
-        else
-            pathStr = canonical.string();
+        const size_t diagnosticBase = m_AssetDiagnostics.size();
+        AssetDiagnostic diagnostic;
+        diagnostic.severity = AssetDiagnostic::Malformed;
+        diagnostic.kind = AssetKind::Script;
+        diagnostic.refPath = path.generic_string();
+        diagnostic.detail = "script reload path must be absolute";
+        m_AssetDiagnostics.push_back(std::move(diagnostic));
+        SortAssetDiagnosticsFrom(diagnosticBase);
+        return;
     }
+
+    // Both the watcher (efsw, OS-native absolute paths) and BuildEnvironment
+    // (the shared locator's normalized path) supply absolute paths. Lexical
+    // normalization preserves missing-file diagnostics without consulting
+    // process CWD.
+    const std::string pathStr = path.lexically_normal().string();
 
     // Stopped (Edit): no instances exist. Invalidate the registry cache so
     // the inspector's next GetDeclaredFields re-parses (review B2).

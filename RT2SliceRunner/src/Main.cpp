@@ -210,7 +210,9 @@ static int RunRecoveryScenario(const std::string& outPath)
     int64_t fakeNow = 1000;
     SceneRecoveryService svc(recoveryRoot,
         [&fakeNow]() { return fakeNow; }, 8, 60.0);
-    if (svc.MaybeSnapshot(doc, revision, "unused", workDir, err))
+    std::vector<AssetDiagnostic> recoveryDiagnostics;
+    if (svc.MaybeSnapshot(
+            doc, revision, "unused", workDir, recoveryDiagnostics, err))
     {
         ok = false;
         failReason = "autosave wrote before the configured interval";
@@ -219,7 +221,8 @@ static int RunRecoveryScenario(const std::string& outPath)
         return 1;
     }
     fakeNow += 60;
-    if (!svc.MaybeSnapshot(doc, revision, "unused", workDir, err))
+    if (!svc.MaybeSnapshot(
+            doc, revision, "unused", workDir, recoveryDiagnostics, err))
     {
         ok = false;
         failReason = "autosave failed: " + err.Format();

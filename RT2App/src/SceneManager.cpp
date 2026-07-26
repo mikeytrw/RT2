@@ -7,6 +7,7 @@
 #include "PrimitiveGeometry.h"
 #include "RTLog.h"
 #include "ScriptComponentValidation.h"
+#include "ScriptAssetPath.h"
 #include "AssetIdentity.h"
 #include "stb_image.h"
 #include <tinyexr.h>
@@ -89,21 +90,6 @@ void CopyAuthoredComponents(const entt::registry& sourceRegistry,
 		transform->prevWorldMatrix = glm::mat4(1.0f);
 		transform->dirty = true;
 	}
-}
-
-std::filesystem::path ResolveAuthoredScriptPath(
-	const rt2::core::SceneDocument& document,
-	const std::string& storedPath)
-{
-	if (storedPath.empty())
-		return {};
-	const std::filesystem::path path(storedPath);
-	if (path.is_absolute())
-		return path.lexically_normal();
-	if (document.metadata.sourcePath.empty())
-		return {}; // no implicit process-CWD root (W3-Q8)
-	return (document.metadata.sourcePath.parent_path() / path).
-		lexically_normal();
 }
 
 void LogAssetDiagnostics(
@@ -3690,21 +3676,47 @@ EditorMutationResult SceneManager::SetScriptState(const rt2::core::UUID& entity,
 			else if (canonical.asset.assetId.IsNull())
 				canonical.asset.assetId = current->asset.assetId;
 
-			const auto physicalPath = ResolveAuthoredScriptPath(
-				m_Authoring, canonical.asset.path);
-			std::error_code pathError;
-			const bool canAssign = !physicalPath.empty() &&
-				std::filesystem::is_regular_file(physicalPath, pathError);
-			if (canAssign && canonical.asset.assetId.IsNull())
+			rt2::core::AssetResolutionContext context;
+			if (!m_Authoring.metadata.sourcePath.empty())
+				context.assetRoot =
+					m_Authoring.metadata.sourcePath.parent_path().
+						lexically_normal();
+			std::vector<rt2::core::AssetDiagnostic> diagnostics;
+			const auto resolved = rt2::core::ResolveScriptAssetPath(
+				canonical, context, entity,
+				GetEntityName({ e }), diagnostics);
+
+			const bool conflict = std::any_of(
+				diagnostics.begin(), diagnostics.end(),
+				[](const rt2::core::AssetDiagnostic& diagnostic) {
+					return diagnostic.severity ==
+						rt2::core::AssetDiagnostic::Conflict;
+				});
+			if (conflict)
+			{
+				return EditorMutationResult::Failure(
+					rt2::core::Error::InvalidArgument,
+					canonical.asset.path,
+					"SetScriptState: script asset identity conflict");
+			}
+
+			if (resolved.success &&
+				!resolved.effectiveId.IsNull())
+				canonical.asset.assetId = resolved.effectiveId;
+
+			if (resolved.success &&
+				resolved.identityRepairRequired &&
+				canonical.asset.assetId.IsNull())
 			{
 				bool minted = false;
 				rt2::core::Error idError;
 				canonical.asset.assetId = rt2::core::ResolveOrAssign(
-					physicalPath, *m_UuidProvider, minted, idError);
+					resolved.resolvedPath, *m_UuidProvider,
+					minted, idError);
 				if (minted || !idError.IsOk())
 				{
 					printf("[Asset] %s: assigned script id %s%s%s\n",
-					       physicalPath.string().c_str(),
+					       resolved.resolvedPath.string().c_str(),
 					       canonical.asset.assetId.ToString().c_str(),
 					       idError.IsOk() ? "" : ": ",
 					       idError.IsOk() ? "" : idError.Format().c_str());

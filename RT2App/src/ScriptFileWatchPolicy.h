@@ -5,6 +5,8 @@
 
 #include "SceneRunState.h"
 
+#include <filesystem>
+
 // ============================================================================
 // ScriptFileWatchPolicy — Phase 6C/W2 file-watcher dispatch decision.
 //
@@ -59,6 +61,18 @@ inline ScriptFileChangeAction DecideScriptFileChange(SceneRunState state,
     action.reloadScript = running && hasScriptSystem;
     action.invalidateFieldRegistry = hasFieldRegistry;
     return action;
+}
+
+// A watcher must never interpret a relative diagnostic candidate against
+// process CWD. Successful and missing candidates are both watchable when the
+// resolver supplied an absolute physical path.
+inline std::filesystem::path ScriptWatchDirectoryForCandidate(
+    const std::filesystem::path& candidate)
+{
+    const auto normalized = candidate.lexically_normal();
+    if (normalized.empty() || !normalized.is_absolute())
+        return {};
+    return normalized.parent_path();
 }
 
 } // namespace rt2::core
