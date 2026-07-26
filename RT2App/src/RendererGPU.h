@@ -45,6 +45,13 @@ public:
 	void OnResize(uint32_t width, uint32_t height);
 	void Render(const Camera& camera);
 	void SetScene(GPUSceneData& sceneData, const RenderInstanceMap& instanceMap = {});
+	// Diagnostic: dump every material's metallic/roughness factors and texture
+	// indices to the log, flagging fully-metallic materials that have no
+	// metallicRoughness texture to modulate them. Off by default; enabled from
+	// Render Settings > Diagnostics, and emitted on each full scene upload.
+	static void LogMaterialTable(const GPUSceneData& sceneData);
+	void SetMaterialTableLogging(bool enabled) { m_LogMaterialTable = enabled; }
+	bool IsMaterialTableLogging() const { return m_LogMaterialTable; }
 
 	// Update scene data WITHOUT re-uploading textures. Use when only
 	// entities/transforms/materials changed (add/delete entity, material edit).
@@ -190,6 +197,7 @@ private:
 	uint32_t m_FrameIndex = 1; // non-NRD temporal accumulation frame counter (resets on camera move)
 	uint32_t m_NRDFrameIndex = 1; // NRD frame counter (continuously increments, resets only on explicit ResetAccumulation)
 	bool m_NRDNeedsReset = true; // triggers NRD CLEAR_AND_RESTART on next frame (set on init/scene change/reset)
+	bool m_LogMaterialTable = false; // Render Settings > Diagnostics
 	glm::vec3 m_PrevCameraPos = glm::vec3(0.0f);
 	glm::vec3 m_PrevCameraForward = glm::vec3(0.0f, 0.0f, -1.0f);
 	bool m_HasPrevCamera = false;

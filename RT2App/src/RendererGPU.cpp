@@ -476,6 +476,47 @@ void RendererGPU::SetSceneKeepTextures(const GPUSceneData& sceneData, const Rend
 	RT_LOG("[SetSceneKeepTextures] done");
 }
 
+// One-shot material table dump, written on every full scene upload.
+//
+// In glTF, metallicFactor/roughnessFactor MULTIPLY the metallicRoughness
+// texture's B/G channels, and both default to 1.0 when the source does not
+// author them. A material with no metallicRoughness texture therefore lands
+// on metallic=1, roughness=1 — a rough mirror, which is the noisiest thing
+// a path tracer can integrate and renders as a stippled grey patch that
+// never converges. This table makes that combination visible per material
+// instead of requiring a click on every surface.
+void RendererGPU::LogMaterialTable(const GPUSceneData& sceneData)
+{
+	const size_t count = sceneData.materials.size();
+	RT_LOG("[Materials] %zu materials  (idx metallic roughness mrTex baseTex normTex baseColor)", count);
+
+	int suspectCount = 0;
+	for (size_t i = 0; i < count; i++)
+	{
+		const GPUMaterial& m = sceneData.materials[i];
+		const float metallic  = m.baseColor_metallic.w;
+		const float roughness = m.emissive_roughness.w;
+		const bool  hasMRTex  = m.metallicRoughnessTextureIndex >= 0;
+
+		// Fully metallic with nothing to modulate it: the glTF default that
+		// produces a rough mirror. Flagged, not corrected — the fix depends
+		// on whether the source asset or the conversion dropped the factors.
+		const bool suspect = !hasMRTex && metallic >= 0.9f;
+		if (suspect)
+			suspectCount++;
+
+		RT_LOG("[Materials]   %3zu  %.3f  %.3f  %4d  %4d  %4d  (%.3f %.3f %.3f)%s",
+		       i, metallic, roughness,
+		       m.metallicRoughnessTextureIndex,
+		       m.textureIndices.x, m.textureIndices.y,
+		       m.baseColor_metallic.x, m.baseColor_metallic.y, m.baseColor_metallic.z,
+		       suspect ? "  <== SUSPECT: metallic>=0.9 with no mrTex" : "");
+	}
+
+	RT_LOG("[Materials] %d of %zu are fully metallic with no metallicRoughness texture",
+	       suspectCount, count);
+}
+
 void RendererGPU::SetScene(GPUSceneData& sceneData, const RenderInstanceMap& instanceMap)
 {
 	m_RenderInstanceMap = instanceMap;
@@ -485,6 +526,8 @@ void RendererGPU::SetScene(GPUSceneData& sceneData, const RenderInstanceMap& ins
 	fflush(stdout);
 	RT_LOG("[SetScene] enter: meshes=%zu instances=%zu lights=%zu",
 	       sceneData.meshes.size(), sceneData.instances.size(), sceneData.lights.size());
+	if (m_LogMaterialTable)
+		LogMaterialTable(sceneData);
 	m_Scene.SetScene(m_Device, sceneData);
 	printf("[RendererGPU::SetScene] SceneResources::SetScene returned\n"); fflush(stdout);
 	m_FrameIndex = 1;
