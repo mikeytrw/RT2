@@ -1531,6 +1531,14 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 		return widgetId;
 	};
 
+	// Range and the cone angles live on the component but were previously
+	// unreachable from the Inspector; edit them through a working copy so a
+	// single SetLightComponent carries every field.
+	LightComponent edited = beforeLight;
+	edited.color = color;
+	edited.intensity = intensity;
+	edited.type = lightType;
+
 	drawLightWidget("Color", [&]() {
 		return ImGui::ColorEdit3("Color", &color[0]);
 	});
@@ -1546,13 +1554,54 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 		lightType = static_cast<LightType>(typeIndex);
 		return true;
 	});
+	edited.color = color;
+	edited.intensity = intensity;
+	edited.type = lightType;
+
+	// Directional lights are parallel rays with no origin, so distance
+	// falloff never applies and range is meaningless for them.
+	if (lightType != LightType::Directional)
+	{
+		drawLightWidget("Range", [&]() {
+			return ImGui::DragFloat("Range", &edited.range, 0.5f, 0.0f, 10000.0f,
+				edited.range <= 0.0f ? "Unbounded" : "%.1f");
+		});
+		if (ImGui::IsItemHovered())
+			ImGui::SetTooltip("Distance at which the light fades to zero. 0 = unbounded.");
+		edited.range = std::max(edited.range, 0.0f);
+	}
+
+	if (lightType == LightType::Spot)
+	{
+		drawLightWidget("InnerCone", [&]() {
+			return ImGui::DragFloat("Inner Cone", &edited.innerConeAngle, 0.5f,
+				0.0f, 90.0f, "%.1f deg");
+		});
+		drawLightWidget("OuterCone", [&]() {
+			return ImGui::DragFloat("Outer Cone", &edited.outerConeAngle, 0.5f,
+				0.0f, 90.0f, "%.1f deg");
+		});
+		// The GPU builder already clamps and orders these, so an inverted cone
+		// renders as if swapped. Enforce the ordering here instead, otherwise
+		// the authored value silently disagrees with what is drawn: push the
+		// *other* angle so the one being dragged keeps the value typed into it.
+		edited.innerConeAngle = glm::clamp(edited.innerConeAngle, 0.0f, 90.0f);
+		edited.outerConeAngle = glm::clamp(edited.outerConeAngle, 0.0f, 90.0f);
+		if (edited.innerConeAngle > edited.outerConeAngle)
+		{
+			if (owningWidgetId == ImGui::GetID("InnerCone"))
+				edited.outerConeAngle = edited.innerConeAngle;
+			else
+				edited.innerConeAngle = edited.outerConeAngle;
+		}
+	}
 
 	ImGui::EndDisabled();
 	ImGui::PopID();
 
 	if (changed)
 	{
-		m_SceneMgr->SetLightProperties(entity, color, intensity, lightType);
+		m_SceneMgr->SetLightComponent(entity, edited);
 		NotifySceneChanged();
 	}
 

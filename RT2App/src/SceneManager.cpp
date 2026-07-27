@@ -3341,6 +3341,22 @@ void SceneManager::SetLightProperties(EntityId entity, const glm::vec3& color, f
 	SetLightPropertiesState(GetEntityUuid(entity), value);
 }
 
+bool SceneManager::GetLightComponent(EntityId entity, LightComponent& outValue) const
+{
+	if (!entity.IsValid()) return false;
+	if (!m_EcsScene.registry.valid(entity.id)) return false;
+	auto* light = m_EcsScene.registry.try_get<LightComponent>(entity.id);
+	if (!light) return false;
+	outValue = *light;
+	return true;
+}
+
+void SceneManager::SetLightComponent(EntityId entity, const LightComponent& value)
+{
+	if (!entity.IsValid()) return;
+	SetLightPropertiesState(GetEntityUuid(entity), value);
+}
+
 bool SceneManager::SetCameraProperties(EntityId entity, float verticalFOV,
 	float aperture, float focusDistance)
 {
