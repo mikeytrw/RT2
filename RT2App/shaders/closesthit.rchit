@@ -296,6 +296,12 @@ void main()
 
     payload.b.xyz += nee.radiance;
 
+    // Punctual lights contribute a separate additive term. Independent of the
+    // triangle/env selection above, so it needs no MIS weight and cannot
+    // perturb those probabilities.
+    payload.b.xyz += payload.a.xyz *
+        samplePunctualNEE(wo, n, hitPoint, baseColor, metallic, rngState);
+
     float nextBsdfPdf = nee.nextBsdfPdf;
 
     // Update throughput

@@ -354,7 +354,8 @@ bool SceneManager::LoadScene(
 
 	printf("[Scene] Loaded %d meshes, %d materials, %d lights, %d textures\n",
 	       (int)m_EcsScene.meshRegistry.GetCount(), (int)m_EcsScene.materials.size(),
-	       (int)m_EcsScene.lights.size(), (int)m_EcsScene.textures.size());
+	       (int)m_EcsScene.registry.view<const LightComponent>().size(),
+	       (int)m_EcsScene.textures.size());
 
 	m_EntityCacheDirty = true;
 	++m_DocumentGeneration;
@@ -914,7 +915,7 @@ SceneManager::EntityId SceneManager::AddLight(const std::string& name,
                                               const glm::vec3& position,
                                               const glm::vec3& color,
                                               float intensity,
-                                              bool isSpot)
+                                              LightType type)
 {
 	auto entity = m_EcsScene.registry.create();
 
@@ -925,7 +926,7 @@ SceneManager::EntityId SceneManager::AddLight(const std::string& name,
 	LightComponent light;
 	light.color = color;
 	light.intensity = intensity;
-	light.isSpot = isSpot;
+	light.type = type;
 	m_EcsScene.registry.emplace<LightComponent>(entity, light);
 
 	if (!name.empty())
@@ -1694,7 +1695,7 @@ bool EntityMatchesRecord(const entt::registry& reg, entt::entity e,
 		if (std::fabs(live.range - record.light.range) > eps) return false;
 		if (std::fabs(live.innerConeAngle - record.light.innerConeAngle) > eps) return false;
 		if (std::fabs(live.outerConeAngle - record.light.outerConeAngle) > eps) return false;
-		if (live.isSpot != record.light.isSpot) return false;
+		if (live.type != record.light.type) return false;
 	}
 
 	if (reg.all_of<CameraComponent>(e) != record.hasCamera) return false;
@@ -2387,7 +2388,7 @@ EditorMutationResult SceneManager::CreateLightEntity(
 	const EditableTRS& localTRS,
 	const glm::vec3& color,
 	float intensity,
-	bool isSpot,
+	LightType type,
 	const std::optional<rt2::core::UUID>& parentUuid)
 {
 	auto& registry = m_EcsScene.registry;
@@ -2414,7 +2415,7 @@ EditorMutationResult SceneManager::CreateLightEntity(
 	LightComponent light;
 	light.color = color;
 	light.intensity = intensity;
-	light.isSpot = isSpot;
+	light.type = type;
 	registry.emplace<LightComponent>(entity, light);
 	if (!name.empty())
 		registry.emplace<NameComponent>(entity, name);
@@ -3316,7 +3317,7 @@ bool SceneManager::GetWorldTransform(EntityId entity, EditableTRS& outTransform)
 	return transform && TryDecomposeEditableTRS(transform->worldMatrix, outTransform);
 }
 
-bool SceneManager::GetLightProperties(EntityId entity, glm::vec3& outColor, float& outIntensity, bool& outIsSpot) const
+bool SceneManager::GetLightProperties(EntityId entity, glm::vec3& outColor, float& outIntensity, LightType& outType) const
 {
 	if (!entity.IsValid()) return false;
 	if (!m_EcsScene.registry.valid(entity.id)) return false;
@@ -3324,11 +3325,11 @@ bool SceneManager::GetLightProperties(EntityId entity, glm::vec3& outColor, floa
 	if (!light) return false;
 	outColor = light->color;
 	outIntensity = light->intensity;
-	outIsSpot = light->isSpot;
+	outType = light->type;
 	return true;
 }
 
-void SceneManager::SetLightProperties(EntityId entity, const glm::vec3& color, float intensity, bool isSpot)
+void SceneManager::SetLightProperties(EntityId entity, const glm::vec3& color, float intensity, LightType type)
 {
 	if (!entity.IsValid()) return;
 	LightComponent value;
@@ -3336,7 +3337,7 @@ void SceneManager::SetLightProperties(EntityId entity, const glm::vec3& color, f
 		value = *light;
 	value.color = color;
 	value.intensity = intensity;
-	value.isSpot = isSpot;
+	value.type = type;
 	SetLightPropertiesState(GetEntityUuid(entity), value);
 }
 

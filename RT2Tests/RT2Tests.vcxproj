@@ -175,6 +175,11 @@
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="..\RT2App\src\EditorViewportIcons.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="..\RT2App\src\EditorSettings.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -527,6 +532,11 @@
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\EcsTests.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\EditorViewportIconsTests.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

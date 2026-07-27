@@ -163,3 +163,87 @@ TEST_CASE("Phase7 W3 step 6.2: capture callback preserves indexed encoded payloa
     CHECK(error.empty());
     CHECK(warning.empty());
 }
+
+// ============================================================================
+// Dielectric-default correction — opt-in workaround for glTF's metallicFactor
+// ============================================================================
+
+TEST_CASE("Dielectric correction only touches untextured fully-metallic materials")
+{
+    std::vector<SceneMaterial> materials;
+
+    // 0: the target — spec default, no metallicRoughness texture.
+    SceneMaterial defaulted;
+    defaulted.metallic = 1.0f;
+    defaulted.roughness = 1.0f;
+    defaulted.metallicRoughnessTextureIndex = -1;
+    materials.push_back(defaulted);
+
+    // 1: fully metallic but textured — the texture modulates it, so the
+    //    factor of 1.0 is meaningful and must be left alone.
+    SceneMaterial textured;
+    textured.metallic = 1.0f;
+    textured.metallicRoughnessTextureIndex = 7;
+    materials.push_back(textured);
+
+    // 2: deliberately authored metal, untextured. Not the default shape.
+    SceneMaterial authored;
+    authored.metallic = 0.5f;
+    authored.metallicRoughnessTextureIndex = -1;
+    materials.push_back(authored);
+
+    // 3: already dielectric — nothing to do.
+    SceneMaterial dielectric;
+    dielectric.metallic = 0.0f;
+    dielectric.metallicRoughnessTextureIndex = -1;
+    materials.push_back(dielectric);
+
+    AssetReference owner;
+    owner.kind = AssetKind::Model;
+    owner.path = "models/sponza.gltf";
+
+    std::vector<AssetDiagnostic> diagnostics;
+    const size_t corrected =
+        ApplyDielectricDefaultCorrection(materials, 0, owner, diagnostics);
+
+    CHECK(corrected == 1);
+    CHECK(materials[0].metallic == doctest::Approx(0.0f));
+    CHECK(materials[1].metallic == doctest::Approx(1.0f));
+    CHECK(materials[2].metallic == doctest::Approx(0.5f));
+    CHECK(materials[3].metallic == doctest::Approx(0.0f));
+
+    // A silent fix would be worse than the bug it fixes.
+    REQUIRE(diagnostics.size() == 1);
+    CHECK(diagnostics[0].severity == AssetDiagnostic::Stale);
+    CHECK(diagnostics[0].kind == AssetKind::Model);
+    CHECK(diagnostics[0].refPath == "models/sponza.gltf");
+    CHECK(diagnostics[0].detail.find("dielectric") != std::string::npos);
+}
+
+TEST_CASE("Dielectric correction skips materials before the import's first index")
+{
+    // Import appends to an existing scene, so the pass must not reach back
+    // into materials that were already there and correct them retroactively.
+    std::vector<SceneMaterial> materials;
+    SceneMaterial preexisting;
+    preexisting.metallic = 1.0f;
+    preexisting.metallicRoughnessTextureIndex = -1;
+    materials.push_back(preexisting);
+
+    SceneMaterial imported;
+    imported.metallic = 1.0f;
+    imported.metallicRoughnessTextureIndex = -1;
+    materials.push_back(imported);
+
+    AssetReference owner;
+    owner.kind = AssetKind::Model;
+    owner.path = "models/added.gltf";
+
+    std::vector<AssetDiagnostic> diagnostics;
+    const size_t corrected =
+        ApplyDielectricDefaultCorrection(materials, 1, owner, diagnostics);
+
+    CHECK(corrected == 1);
+    CHECK(materials[0].metallic == doctest::Approx(1.0f)); // untouched
+    CHECK(materials[1].metallic == doctest::Approx(0.0f));
+}

@@ -21,11 +21,38 @@ enum class MaterialType
     Emissive = 3
 };
 
+// The three glTF KHR_lights_punctual types. Values are persisted (scene JSON
+// and the Lua binding round-trip through them), so they are explicit and
+// must not be renumbered.
 enum class LightType
 {
-    Point = 0,
-    Spot = 1
+    Point       = 0,
+    Spot        = 1,
+    Directional = 2
 };
+
+// Stable names for serialization, the Lua binding and the Inspector. Kept
+// next to the enum so a new type cannot be added without a name.
+inline const char* LightTypeName(LightType t)
+{
+    switch (t)
+    {
+    case LightType::Spot:        return "spot";
+    case LightType::Directional: return "directional";
+    case LightType::Point:
+    default:                     return "point";
+    }
+}
+
+inline LightType LightTypeFromName(const char* name, LightType fallback = LightType::Point)
+{
+    if (!name) return fallback;
+    const std::string s(name);
+    if (s == "spot")        return LightType::Spot;
+    if (s == "directional") return LightType::Directional;
+    if (s == "point")       return LightType::Point;
+    return fallback;
+}
 
 // ============================================================================
 // Scene data structures (POD structs — no Vulkan/CPU-renderer dependencies)

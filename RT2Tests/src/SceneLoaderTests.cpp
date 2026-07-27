@@ -186,7 +186,7 @@ TEST_CASE("Save and load empty scene")
     ECSScene loaded;
     REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE));
     CHECK(loaded.meshRegistry.GetCount() == 0);
-    CHECK(loaded.lights.empty());
+    CHECK(CollectLightsForTest(loaded).empty());
     CHECK(loaded.textures.empty());
     cleanupTestFiles();
 }
@@ -301,13 +301,14 @@ TEST_CASE("Point light round-trips through glTF")
     light.color = {1.0f, 0.5f, 0.2f};
     light.intensity = 50.0f;
     light.range = 30.0f;
-    scene.lights.push_back(light);
+    AddLightEntityForTest(scene, light, "L0");
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
     ECSScene loaded;
     REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE));
-    REQUIRE(loaded.lights.size() >= 1);
-    const auto& l = loaded.lights[0];
+    const auto loadedLights = CollectLightsForTest(loaded);
+    REQUIRE(loadedLights.size() >= 1);
+    const auto& l = loadedLights[0];
     CHECK(l.type == LightType::Point);
     CHECK(l.position == glm::vec3(5.0f, 10.0f, 0.0f));
     CHECK(l.color == glm::vec3(1.0f, 0.5f, 0.2f));
@@ -328,15 +329,22 @@ TEST_CASE("Spot light round-trips through glTF")
     light.intensity = 20.0f;
     light.innerConeAngle = 25.0f;
     light.outerConeAngle = 40.0f;
-    scene.lights.push_back(light);
+    AddLightEntityForTest(scene, light, "L0");
 
     REQUIRE(SceneLoader::Save(scene, TEST_FILE));
     ECSScene loaded;
     REQUIRE(LoadGltfForTest(loaded, RepositoryRootForSceneLoaderTests(), TEST_FILE));
-    REQUIRE(loaded.lights.size() >= 1);
-    const auto& l = loaded.lights[0];
+    const auto loadedLights = CollectLightsForTest(loaded);
+    REQUIRE(loadedLights.size() >= 1);
+    const auto& l = loadedLights[0];
     CHECK(l.type == LightType::Spot);
-    CHECK(l.direction == glm::vec3(0.0f, -1.0f, 0.0f));
+    // Aim now lives in the entity's Transform rotation, so direction makes a
+    // round trip through a quaternion and is no longer bit-exact. The values
+    // are unchanged; only the representation is. Components near zero need an
+    // absolute tolerance — doctest::Approx is relative and cannot bound them.
+    CHECK(std::fabs(l.direction.x - 0.0f) < 1e-5f);
+    CHECK(std::fabs(l.direction.y - (-1.0f)) < 1e-5f);
+    CHECK(std::fabs(l.direction.z - 0.0f) < 1e-5f);
     CHECK(l.innerConeAngle == doctest::Approx(25.0f).epsilon(0.001));
     CHECK(l.outerConeAngle == doctest::Approx(40.0f).epsilon(0.001));
     cleanupTestFiles();
@@ -445,7 +453,7 @@ TEST_CASE("Full scene with multiple meshes, materials, lights round-trips")
     light.type = LightType::Point;
     light.position = {5.0f, 10.0f, 5.0f};
     light.intensity = 30.0f;
-    scene.lights.push_back(light);
+    AddLightEntityForTest(scene, light, "L0");
 
     scene.camera.position = {2.0f, 2.0f, 8.0f};
     scene.camera.verticalFOV = 50.0f;
@@ -480,9 +488,10 @@ TEST_CASE("Full scene with multiple meshes, materials, lights round-trips")
     }
     CHECK(foundScale001);
 
-    REQUIRE(loaded.lights.size() >= 1);
-    CHECK(loaded.lights[0].type == LightType::Point);
-    CHECK(loaded.lights[0].position == glm::vec3(5.0f, 10.0f, 5.0f));
+    const auto reloadedLights = CollectLightsForTest(loaded);
+    REQUIRE(reloadedLights.size() >= 1);
+    CHECK(reloadedLights[0].type == LightType::Point);
+    CHECK(reloadedLights[0].position == glm::vec3(5.0f, 10.0f, 5.0f));
 
     CHECK(loaded.camera.position == glm::vec3(2.0f, 2.0f, 8.0f));
     CHECK(loaded.camera.verticalFOV == doctest::Approx(50.0f).epsilon(0.001));
@@ -562,4 +571,158 @@ TEST_CASE("Save returns false for invalid path")
 {
     ECSScene scene;
     CHECK_FALSE(SceneLoader::Save(scene, "Z:/nonexistent_dir/scene.gltf"));
+}
+
+// ============================================================================
+// Phase 8 step 3 — KHR_lights_punctual reaches ImportIntoECS, not just Load
+// ============================================================================
+
+TEST_CASE("Phase8 step 3: Load and Import agree on KHR_lights_punctual")
+{
+    // Before this step, ImportIntoECS never parsed the extension, so importing
+    // a glTF dropped every light without a diagnostic. This asserts the two
+    // entry points agree, so the gap cannot silently reopen.
+    const auto dir = fs::temp_directory_path() / "rt2_p8_step3";
+    fs::create_directories(dir);
+    const auto target = dir / "lights.gltf";
+
+    // Author one light of each type, then round-trip through Save, which
+    // emits KHR_lights_punctual from the scene's light entities.
+    ECSScene authored;
+    {
+        SceneLight point;
+        point.type = LightType::Point;
+        point.color = {1.0f, 0.5f, 0.25f};
+        point.intensity = 7.5f;
+        point.range = 12.0f;
+        AddLightEntityForTest(authored, point, "L0_point");
+
+        SceneLight spot;
+        spot.type = LightType::Spot;
+        spot.color = {0.25f, 0.5f, 1.0f};
+        spot.intensity = 3.5f;
+        spot.innerConeAngle = 14.0f;
+        spot.outerConeAngle = 28.0f;
+        AddLightEntityForTest(authored, spot, "L1_spot");
+
+        SceneLight directional;
+        directional.type = LightType::Directional;
+        directional.color = {1.0f, 1.0f, 0.9f};
+        directional.intensity = 2.0f;
+        AddLightEntityForTest(authored, directional, "L2_directional");
+    }
+    REQUIRE(SceneLoader::Save(authored, target.string()));
+
+    auto checkLights = [](const ECSScene& scene, const char* which)
+    {
+        INFO("entry point: " << which);
+        const auto lights = CollectLightsForTest(scene);
+        REQUIRE(lights.size() == 3);
+
+        CHECK(lights[0].type == LightType::Point);
+        CHECK(lights[0].intensity == doctest::Approx(7.5f));
+        CHECK(lights[0].range == doctest::Approx(12.0f));
+
+        CHECK(lights[1].type == LightType::Spot);
+        CHECK(lights[1].intensity == doctest::Approx(3.5f));
+        CHECK(lights[1].innerConeAngle == doctest::Approx(14.0f));
+        CHECK(lights[1].outerConeAngle == doctest::Approx(28.0f));
+
+        // Directional is the value that silently became Point while the
+        // parser mapped only "spot" and defaulted everything else.
+        CHECK(lights[2].type == LightType::Directional);
+        CHECK(lights[2].intensity == doctest::Approx(2.0f));
+    };
+
+    std::vector<rt2::core::AssetDiagnostic> diagnostics;
+
+    ECSScene loaded;
+    REQUIRE(LoadGltfForTest(loaded, dir, target, diagnostics));
+    checkLights(loaded, "LoadIntoECS");
+
+    ECSScene imported;
+    const auto context = MakeSceneLoaderTestContext(dir, target);
+    // Extra parens: doctest's expression decomposition makes `!= entt::null`
+    // ambiguous (C2593) without them.
+    REQUIRE((SceneLoader::ImportIntoECS(imported, context, diagnostics) != entt::null));
+    checkLights(imported, "ImportIntoECS");
+
+    // The two entry points must not disagree — that divergence is the bug.
+    const auto loadedLights   = CollectLightsForTest(loaded);
+    const auto importedLights = CollectLightsForTest(imported);
+    REQUIRE(loadedLights.size() == importedLights.size());
+    for (size_t i = 0; i < loadedLights.size(); ++i)
+    {
+        INFO("light index " << i);
+        CHECK(loadedLights[i].type == importedLights[i].type);
+        CHECK(loadedLights[i].intensity == doctest::Approx(importedLights[i].intensity));
+        CHECK(loadedLights[i].innerConeAngle == doctest::Approx(importedLights[i].innerConeAngle));
+        CHECK(loadedLights[i].outerConeAngle == doctest::Approx(importedLights[i].outerConeAngle));
+    }
+
+    fs::remove(target);
+}
+
+TEST_CASE("Phase8 step 2: an imported light is a transform-driven entity")
+{
+    // The point of making lights entities rather than a flat side table: a
+    // light has a Transform, so moving or aiming it is an ordinary entity
+    // edit and export reflects it. The old ECSScene::lights vector carried
+    // its own position/direction that nothing kept in sync with anything.
+    const auto dir = fs::temp_directory_path() / "rt2_p8_step2";
+    fs::create_directories(dir);
+    const auto target = dir / "spot.gltf";
+
+    ECSScene authored;
+    SceneLight spec;
+    spec.type = LightType::Spot;
+    spec.position = {1.0f, 2.0f, 3.0f};
+    spec.direction = {0.0f, -1.0f, 0.0f};
+    spec.intensity = 9.0f;
+    AddLightEntityForTest(authored, spec, "Lamp");
+    REQUIRE(SceneLoader::Save(authored, target.string()));
+
+    ECSScene loaded;
+    REQUIRE(LoadGltfForTest(loaded, dir, target));
+
+    // It is a real entity carrying both components, not a row in an array.
+    auto view = loaded.registry.view<const LightComponent, const Transform>();
+    std::vector<entt::entity> lightEntities(view.begin(), view.end());
+    REQUIRE(lightEntities.size() == 1);
+    const entt::entity lightEntity = lightEntities.front();
+
+    // Its place and aim come from the Transform.
+    {
+        const auto& tf = loaded.registry.get<Transform>(lightEntity);
+        CHECK(tf.translation.x == doctest::Approx(1.0f));
+        CHECK(tf.translation.y == doctest::Approx(2.0f));
+        CHECK(tf.translation.z == doctest::Approx(3.0f));
+        CHECK(std::fabs(LightRotationToDirection(tf.rotation).y - (-1.0f)) < 1e-5f);
+    }
+
+    // Move and re-aim it as any other entity, then export: the new pose must
+    // be what lands in the file. Under the old flat vector this edit would
+    // have gone nowhere, because the vector held the coordinates.
+    {
+        auto& tf = loaded.registry.get<Transform>(lightEntity);
+        tf.translation = {-4.0f, 8.0f, 0.5f};
+        tf.rotation = LightDirectionToRotation(glm::vec3(1.0f, 0.0f, 0.0f));
+        tf.dirty = true;
+    }
+
+    const auto moved = dir / "spot_moved.gltf";
+    REQUIRE(SceneLoader::Save(loaded, moved.string()));
+
+    ECSScene reloaded;
+    REQUIRE(LoadGltfForTest(reloaded, dir, moved));
+    const auto reloadedLights = CollectLightsForTest(reloaded);
+    REQUIRE(reloadedLights.size() == 1);
+    CHECK(reloadedLights[0].position.x == doctest::Approx(-4.0f));
+    CHECK(reloadedLights[0].position.y == doctest::Approx(8.0f));
+    CHECK(reloadedLights[0].position.z == doctest::Approx(0.5f));
+    CHECK(std::fabs(reloadedLights[0].direction.x - 1.0f) < 1e-5f);
+    CHECK(reloadedLights[0].intensity == doctest::Approx(9.0f));
+
+    fs::remove(target);
+    fs::remove(moved);
 }

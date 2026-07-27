@@ -212,6 +212,45 @@ void BuildEnvMapCDF(const std::vector<float>& floatPixels, int width, int height
     }
 }
 
+void BuildPunctualLightsFromECS(const ECSScene& ecsScene,
+                                std::vector<GPUPunctualLight>& out)
+{
+    out.clear();
+    auto view = ecsScene.registry.view<const LightComponent, const Transform>();
+    for (auto e : view)
+    {
+        const auto& lc = view.get<const LightComponent>(e);
+        const auto& tf = view.get<const Transform>(e);
+
+        GPUPunctualLight g;
+
+        // World position is the translation column of the world matrix, so a
+        // light parented under a moving entity follows it.
+        const glm::vec3 worldPos = glm::vec3(tf.worldMatrix[3]);
+
+        // Direction is the world matrix's rotation applied to local -Z (the
+        // glTF punctual convention). Normalising after the transform keeps a
+        // non-uniformly scaled parent from skewing the aim.
+        const glm::vec3 worldDir = glm::normalize(
+            glm::mat3(tf.worldMatrix) * glm::vec3(0.0f, 0.0f, -1.0f));
+
+        g.position_range  = glm::vec4(worldPos, lc.range);
+        g.direction_type  = glm::vec4(worldDir, static_cast<float>(lc.type));
+        g.color_intensity = glm::vec4(lc.color, lc.intensity);
+
+        // Pre-cosined so the shader compares against dot products directly.
+        // Clamped so a malformed cone (inner > outer) cannot invert the
+        // falloff and light the whole hemisphere.
+        const float inner = glm::radians(glm::clamp(lc.innerConeAngle, 0.0f, 90.0f));
+        const float outer = glm::radians(glm::clamp(lc.outerConeAngle, 0.0f, 90.0f));
+        const float cosInner = std::cos(glm::min(inner, outer));
+        const float cosOuter = std::cos(glm::max(inner, outer));
+        g.cone = glm::vec4(cosInner, cosOuter, 0.0f, 0.0f);
+
+        out.push_back(g);
+    }
+}
+
 GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene,
                                      RenderInstanceMap* instanceMap)
 {
@@ -246,6 +285,8 @@ GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene,
 
         gpu.meshes.push_back(std::move(geo));
     }
+
+    BuildPunctualLightsFromECS(ecsScene, gpu.punctualLights);
 
     // Build instance list: one GPUInstance per entity with MeshRef
     // World matrices come from Transform (already resolved by SceneGraph)

@@ -1104,7 +1104,11 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
             t["range"] = lc.range;
             t["inner_cone_angle"] = lc.innerConeAngle;
             t["outer_cone_angle"] = lc.outerConeAngle;
-            t["is_spot"] = lc.isSpot;
+            t["type"] = LightTypeName(lc.type);
+            // Retained for scripts written before `type` existed. Directional
+            // reports false, same as point — those scripts had no way to
+            // express it, so this cannot lose information they could observe.
+            t["is_spot"] = (lc.type == LightType::Spot);
             return t;
         };
         entity["set_light"] = [self, instUuid](sol::object, sol::table lt) -> bool {
@@ -1133,8 +1137,14 @@ bool ScriptSystem::BuildEnvironment(ScriptInstance& inst,
             if (innerCone) lc.innerConeAngle = *innerCone;
             sol::optional<float> outerCone = lt["outer_cone_angle"];
             if (outerCone) lc.outerConeAngle = *outerCone;
+            // `type` wins when both are supplied; `is_spot` remains honoured
+            // for scripts written before the enum existed.
+            sol::optional<std::string> typeName = lt["type"];
             sol::optional<bool> isSpot = lt["is_spot"];
-            if (isSpot) lc.isSpot = *isSpot;
+            if (typeName)
+                lc.type = LightTypeFromName(typeName->c_str(), lc.type);
+            else if (isSpot)
+                lc.type = *isSpot ? LightType::Spot : LightType::Point;
             return s->SetLight(instUuid, lc);
         };
 

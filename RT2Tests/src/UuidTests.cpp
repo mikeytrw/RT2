@@ -59,7 +59,7 @@ TEST_CASE("VS-1 UUID: AddObjectWithGeometry assigns EntityIdComponent")
 TEST_CASE("VS-1 UUID: AddLight assigns EntityIdComponent")
 {
 	SceneManager mgr;
-	auto e = mgr.AddLight("Lamp", {5, 10, 2}, {1, 0, 0}, 50.0f, false);
+	auto e = mgr.AddLight("Lamp", {5, 10, 2}, {1, 0, 0}, 50.0f, LightType::Point);
 
 	auto& reg = mgr.GetECS().registry;
 	CHECK(reg.all_of<EntityIdComponent>(e.id));

@@ -32,6 +32,7 @@ void SceneResources::Destroy()
 	DestroyTextures();
 	GpuResources::DestroyBuffer(*m_Device, m_MaterialBuffer, m_MaterialBufferMemory);
 	GpuResources::DestroyBuffer(*m_Device, m_LightBuffer, m_LightBufferMemory);
+	GpuResources::DestroyBuffer(*m_Device, m_PunctualLightBuffer, m_PunctualLightBufferMemory);
 	GpuResources::DestroyBuffer(*m_Device, m_InstanceTransformBuffer, m_InstanceTransformBufferMemory);
 	GpuResources::DestroyBuffer(*m_Device, m_InstanceTransformPrevBuffer, m_InstanceTransformPrevBufferMemory);
 	GpuResources::DestroyBuffer(*m_Device, m_InstanceMaterialIndexBuffer, m_InstanceMaterialIndexBufferMemory);
@@ -302,6 +303,7 @@ void SceneResources::RebuildAccelerationStructures(const GpuDevice& dev,
 	printf("[RebuildAS] CreateLightBuffer...\n"); fflush(stdout);
 	RT_LOG("[RebuildAS] creating light buffer");
 	CreateLightBuffer(dev);
+	CreatePunctualLightBuffer(dev);
 	printf("[RebuildAS] CreateLightBuffer done\n"); fflush(stdout);
 
 	printf("[RebuildAS] CreateInstanceTransformBuffer...\n"); fflush(stdout);
@@ -504,6 +506,7 @@ bool SceneResources::BeginRebuildAccelerationStructures(const GpuDevice& dev,
 	CreateMaterialBuffer(dev);
 	printf("[RebuildAS-async] CreateLightBuffer...\n"); fflush(stdout);
 	CreateLightBuffer(dev);
+	CreatePunctualLightBuffer(dev);
 	printf("[RebuildAS-async] CreateInstanceTransformBuffer...\n"); fflush(stdout);
 	CreateInstanceTransformBuffer(dev, false);
 	printf("[RebuildAS-async] CPU-side buffers done, waiting for GPU fence\n"); fflush(stdout);
@@ -578,6 +581,7 @@ void SceneResources::UpdateInstances(const GpuDevice& dev, const GPUSceneData& s
 
 	CreateInstanceTransformBuffer(dev, true);
 	CreateLightBuffer(dev);
+	CreatePunctualLightBuffer(dev);
 
 	RT_LOG("[UpdateInstances] done: instances=%d lights=%d",
 	       (int)m_CurrentScene.instances.size(), (int)m_CurrentScene.lights.size());
@@ -602,6 +606,37 @@ void SceneResources::CreateMaterialBuffer(const GpuDevice& dev)
 	vkMapMemory(device, m_MaterialBufferMemory, 0, bufferSize, 0, &data);
 	memcpy(data, m_CurrentScene.materials.data(), bufferSize);
 	vkUnmapMemory(device, m_MaterialBufferMemory);
+}
+
+// Punctual lights (Phase 8). Same 16-byte header + packed array shape as the
+// triangle light buffer, so the shader reads both the same way. Always
+// allocated, even when empty: a VK_NULL_HANDLE in a descriptor write is a
+// validation error, and an empty scene is the common case.
+void SceneResources::CreatePunctualLightBuffer(const GpuDevice& dev)
+{
+	GpuResources::DestroyBuffer(dev, m_PunctualLightBuffer, m_PunctualLightBufferMemory);
+
+	const size_t count = m_CurrentScene.punctualLights.size();
+	VkDeviceSize bufferSize = 16 + count * sizeof(GPUPunctualLight);
+	if (bufferSize < 16) bufferSize = 16;
+
+	GpuResources::CreateBuffer(dev, bufferSize,
+	             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+	             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+	             m_PunctualLightBuffer, m_PunctualLightBufferMemory);
+
+	std::vector<uint8_t> bufData(bufferSize, 0);
+	const uint32_t n = static_cast<uint32_t>(count);
+	memcpy(bufData.data(), &n, sizeof(uint32_t));
+	if (count > 0)
+		memcpy(bufData.data() + 16, m_CurrentScene.punctualLights.data(),
+		       count * sizeof(GPUPunctualLight));
+
+	void* mapped = nullptr;
+	vkMapMemory(dev.device, m_PunctualLightBufferMemory, 0, bufferSize, 0, &mapped);
+	memcpy(mapped, bufData.data(), bufferSize);
+	vkUnmapMemory(dev.device, m_PunctualLightBufferMemory);
+	RT_LOG("[PunctualLights] uploaded %u lights", n);
 }
 
 void SceneResources::CreateLightBuffer(const GpuDevice& dev)

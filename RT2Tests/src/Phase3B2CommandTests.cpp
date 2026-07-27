@@ -60,7 +60,7 @@ struct SceneFixture
 
     rt2::core::UUID AddLight(const char* name, glm::vec3 pos = {0, 3, 0})
     {
-        const auto entity = manager.AddLight(name, pos, {1, 1, 1}, 5.0f, false);
+        const auto entity = manager.AddLight(name, pos, {1, 1, 1}, 5.0f, LightType::Point);
         return manager.GetEntityUuid(entity);
     }
 
@@ -156,7 +156,7 @@ bool LightEq(const LightComponent& a, const LightComponent& b)
         return std::fabs(x.x - y.x) <= eps && std::fabs(x.y - y.y) <= eps && std::fabs(x.z - y.z) <= eps;
     };
     return vEq(a.color, b.color) && std::fabs(a.intensity - b.intensity) <= eps &&
-           std::fabs(a.range - b.range) <= eps && a.isSpot == b.isSpot;
+           std::fabs(a.range - b.range) <= eps && a.type == b.type;
 }
 
 bool CameraEq(const CameraComponent& a, const CameraComponent& b)
@@ -422,7 +422,7 @@ TEST_CASE("Phase 3B2 SetMaterialPropertiesCommand override restore on imported e
 }
 
 // ---------------------------------------------------------------------------
-// SetLightCommand: Execute/Undo/Redo restores color/intensity/isSpot (full
+// SetLightCommand: Execute/Undo/Redo restores color/intensity/type (full
 // LightComponent); Material impact.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 3B2 SetLightCommand Execute/Undo/Redo restores light")
@@ -433,7 +433,7 @@ TEST_CASE("Phase 3B2 SetLightCommand Execute/Undo/Redo restores light")
     LightComponent after = before;
     after.color = {0.2f, 0.4f, 0.6f};
     after.intensity = 42.0f;
-    after.isSpot = true;
+    after.type = LightType::Spot;
 
     auto cmd = MakeSetLightCommandIfEffective(e, before, after);
     REQUIRE(cmd);

@@ -151,6 +151,120 @@ bool PortableTextureUri(const AssetReference& ref,
     return true;
 }
 
+
+// Parse KHR_lights_punctual into light entities (LightComponent + Transform).
+// Shared by LoadIntoECS and ImportIntoECS so an imported glTF keeps its lights
+// instead of silently dropping them (Phase 8 step 3). Appends; never clears.
+void ParsePunctualLights(const tinygltf::Model& model, ECSScene& ecsScene)
+{
+    auto lightsIt = model.extensions.find("KHR_lights_punctual");
+    if (lightsIt != model.extensions.end() && lightsIt->second.IsObject())
+    {
+        const tinygltf::Value& lightsExt = lightsIt->second;
+        if (lightsExt.Has("lights") && lightsExt.Get("lights").IsArray())
+        {
+            const tinygltf::Value& lightsArray = lightsExt.Get("lights");
+            for (size_t i = 0; i < lightsArray.ArrayLen(); i++)
+            {
+                const tinygltf::Value& lightObj = lightsArray.Get(i);
+                if (!lightObj.IsObject())
+                    continue;
+
+                SceneLight light;
+                // "directional" used to fall through to Point because the enum
+                // had no such value; LightTypeFromName now maps all three.
+                const std::string typeStr = lightObj.Has("type")
+                    ? lightObj.Get("type").Get<std::string>() : "point";
+                light.type = LightTypeFromName(typeStr.c_str(), LightType::Point);
+
+                if (lightObj.Has("color") && lightObj.Get("color").IsArray())
+                {
+                    const tinygltf::Value& colArr = lightObj.Get("color");
+                    if (colArr.ArrayLen() >= 3)
+                    {
+                        light.color = {
+                            (float)colArr.Get(0).GetNumberAsDouble(),
+                            (float)colArr.Get(1).GetNumberAsDouble(),
+                            (float)colArr.Get(2).GetNumberAsDouble()
+                        };
+                    }
+                }
+                if (lightObj.Has("intensity"))
+                    light.intensity = (float)lightObj.Get("intensity").GetNumberAsDouble();
+                if (lightObj.Has("range"))
+                    light.range = (float)lightObj.Get("range").GetNumberAsDouble();
+
+                if (lightObj.Has("position") && lightObj.Get("position").IsArray())
+                {
+                    const tinygltf::Value& posArr = lightObj.Get("position");
+                    if (posArr.ArrayLen() >= 3)
+                    {
+                        light.position = {
+                            (float)posArr.Get(0).GetNumberAsDouble(),
+                            (float)posArr.Get(1).GetNumberAsDouble(),
+                            (float)posArr.Get(2).GetNumberAsDouble()
+                        };
+                    }
+                }
+                if (lightObj.Has("direction") && lightObj.Get("direction").IsArray())
+                {
+                    const tinygltf::Value& dirArr = lightObj.Get("direction");
+                    if (dirArr.ArrayLen() >= 3)
+                    {
+                        light.direction = {
+                            (float)dirArr.Get(0).GetNumberAsDouble(),
+                            (float)dirArr.Get(1).GetNumberAsDouble(),
+                            (float)dirArr.Get(2).GetNumberAsDouble()
+                        };
+                    }
+                }
+
+                if (light.type == LightType::Spot && lightObj.Has("spot") && lightObj.Get("spot").IsObject())
+                {
+                    const tinygltf::Value& spotObj = lightObj.Get("spot");
+                    if (spotObj.Has("innerConeAngle"))
+                        light.innerConeAngle = glm::degrees((float)spotObj.Get("innerConeAngle").GetNumberAsDouble());
+                    if (spotObj.Has("outerConeAngle"))
+                        light.outerConeAngle = glm::degrees((float)spotObj.Get("outerConeAngle").GetNumberAsDouble());
+                }
+                if (lightObj.Has("innerConeAngleDeg"))
+                    light.innerConeAngle = (float)lightObj.Get("innerConeAngleDeg").GetNumberAsDouble();
+                if (lightObj.Has("outerConeAngleDeg"))
+                    light.outerConeAngle = (float)lightObj.Get("outerConeAngleDeg").GetNumberAsDouble();
+
+                // A light becomes a first-class entity: its place and aim live
+                // in a Transform, so selecting, moving, parenting, undo/redo,
+                // the Inspector and the Lua API all work on it for free. The
+                // former flat ECSScene::lights vector could do none of that,
+                // and being a second representation is what let a whole
+                // scene's lights go unnoticed.
+                const entt::entity e = ecsScene.registry.create();
+
+                Transform tf;
+                tf.translation = light.position;
+                tf.rotation = LightDirectionToRotation(light.direction);
+                tf.dirty = true;
+                ecsScene.registry.emplace<Transform>(e, tf);
+
+                LightComponent lc;
+                lc.type = light.type;
+                lc.color = light.color;
+                lc.intensity = light.intensity;
+                lc.range = light.range;
+                lc.innerConeAngle = light.innerConeAngle;
+                lc.outerConeAngle = light.outerConeAngle;
+                ecsScene.registry.emplace<LightComponent>(e, lc);
+
+                ecsScene.registry.emplace<VisibleComponent>(e);
+
+                auto& name = ecsScene.registry.emplace<NameComponent>(e);
+                name.name = lightObj.Has("name")
+                    ? lightObj.Get("name").Get<std::string>()
+                    : ("Light_" + std::to_string(i));
+            }
+        }
+    }
+}
 } // namespace
 
 // ============================================================================
@@ -394,22 +508,44 @@ bool SceneLoader::Save(const ECSScene& ecsScene, const std::string& filepath)
     }
 
     // --- Lights ---
-    if (!ecsScene.lights.empty())
+    // Exported from LightComponent entities. Position and aim come from the
+    // entity's Transform, matching how node transforms are written above:
+    // local TRS, not world. Lights parented under another entity would need
+    // world decomposition, which this flat light list has no way to express.
     {
+        auto lightView = ecsScene.registry.view<const LightComponent, const Transform>();
         tinygltf::Value::Object lightsExtObj;
         std::vector<tinygltf::Value> lightsArray;
 
-        for (const auto& light : ecsScene.lights)
+        for (auto entity : lightView)
         {
+            const auto& lc = lightView.get<const LightComponent>(entity);
+            const auto& tf = lightView.get<const Transform>(entity);
+
+            // Local alias so the body below reads unchanged.
+            SceneLight light;
+            light.type = lc.type;
+            light.color = lc.color;
+            light.intensity = lc.intensity;
+            light.range = lc.range;
+            light.innerConeAngle = lc.innerConeAngle;
+            light.outerConeAngle = lc.outerConeAngle;
+            light.position = tf.translation;
+            light.direction = LightRotationToDirection(tf.rotation);
+
             tinygltf::Value::Object lightObj;
+            if (const auto* nc = ecsScene.registry.try_get<NameComponent>(entity))
+                lightObj["name"] = tinygltf::Value(nc->name);
             lightObj["color"] = tinygltf::Value(tinygltf::Value::Array({
                 tinygltf::Value(light.color.r),
                 tinygltf::Value(light.color.g),
                 tinygltf::Value(light.color.b)
             }));
 
-            std::string typeStr = (light.type == LightType::Spot) ? "spot" : "point";
-            lightObj["type"] = tinygltf::Value(typeStr);
+            // Was a two-way spot/point test, which silently exported
+            // Directional as "point". LightTypeName covers all three and
+            // cannot omit a type added later.
+            lightObj["type"] = tinygltf::Value(std::string(LightTypeName(light.type)));
             lightObj["intensity"] = tinygltf::Value(light.intensity);
             lightObj["range"] = tinygltf::Value(light.range);
 
@@ -439,9 +575,15 @@ bool SceneLoader::Save(const ECSScene& ecsScene, const std::string& filepath)
             lightsArray.push_back(tinygltf::Value(lightObj));
         }
 
-        lightsExtObj["lights"] = tinygltf::Value(lightsArray);
-        model.extensions["KHR_lights_punctual"] = tinygltf::Value(lightsExtObj);
-        model.extensionsUsed.push_back("KHR_lights_punctual");
+        // Only declare the extension when the scene actually has lights;
+        // the previous code guarded on the vector being non-empty and an
+        // always-on empty extension would be a gratuitous export change.
+        if (!lightsArray.empty())
+        {
+            lightsExtObj["lights"] = tinygltf::Value(lightsArray);
+            model.extensions["KHR_lights_punctual"] = tinygltf::Value(lightsExtObj);
+            model.extensionsUsed.push_back("KHR_lights_punctual");
+        }
     }
 
     // --- Camera ---
@@ -694,85 +836,7 @@ bool SceneLoader::LoadIntoECS(
     }
 
     // --- Lights (KHR_lights_punctual) ---
-    auto lightsIt = model.extensions.find("KHR_lights_punctual");
-    if (lightsIt != model.extensions.end() && lightsIt->second.IsObject())
-    {
-        const tinygltf::Value& lightsExt = lightsIt->second;
-        if (lightsExt.Has("lights") && lightsExt.Get("lights").IsArray())
-        {
-            const tinygltf::Value& lightsArray = lightsExt.Get("lights");
-            for (size_t i = 0; i < lightsArray.ArrayLen(); i++)
-            {
-                const tinygltf::Value& lightObj = lightsArray.Get(i);
-                if (!lightObj.IsObject())
-                    continue;
-
-                SceneLight light;
-                std::string typeStr = lightObj.Has("type") ? lightObj.Get("type").Get<std::string>() : "point";
-                if (typeStr == "spot")
-                    light.type = LightType::Spot;
-                else
-                    light.type = LightType::Point;
-
-                if (lightObj.Has("color") && lightObj.Get("color").IsArray())
-                {
-                    const tinygltf::Value& colArr = lightObj.Get("color");
-                    if (colArr.ArrayLen() >= 3)
-                    {
-                        light.color = {
-                            (float)colArr.Get(0).GetNumberAsDouble(),
-                            (float)colArr.Get(1).GetNumberAsDouble(),
-                            (float)colArr.Get(2).GetNumberAsDouble()
-                        };
-                    }
-                }
-                if (lightObj.Has("intensity"))
-                    light.intensity = (float)lightObj.Get("intensity").GetNumberAsDouble();
-                if (lightObj.Has("range"))
-                    light.range = (float)lightObj.Get("range").GetNumberAsDouble();
-
-                if (lightObj.Has("position") && lightObj.Get("position").IsArray())
-                {
-                    const tinygltf::Value& posArr = lightObj.Get("position");
-                    if (posArr.ArrayLen() >= 3)
-                    {
-                        light.position = {
-                            (float)posArr.Get(0).GetNumberAsDouble(),
-                            (float)posArr.Get(1).GetNumberAsDouble(),
-                            (float)posArr.Get(2).GetNumberAsDouble()
-                        };
-                    }
-                }
-                if (lightObj.Has("direction") && lightObj.Get("direction").IsArray())
-                {
-                    const tinygltf::Value& dirArr = lightObj.Get("direction");
-                    if (dirArr.ArrayLen() >= 3)
-                    {
-                        light.direction = {
-                            (float)dirArr.Get(0).GetNumberAsDouble(),
-                            (float)dirArr.Get(1).GetNumberAsDouble(),
-                            (float)dirArr.Get(2).GetNumberAsDouble()
-                        };
-                    }
-                }
-
-                if (light.type == LightType::Spot && lightObj.Has("spot") && lightObj.Get("spot").IsObject())
-                {
-                    const tinygltf::Value& spotObj = lightObj.Get("spot");
-                    if (spotObj.Has("innerConeAngle"))
-                        light.innerConeAngle = glm::degrees((float)spotObj.Get("innerConeAngle").GetNumberAsDouble());
-                    if (spotObj.Has("outerConeAngle"))
-                        light.outerConeAngle = glm::degrees((float)spotObj.Get("outerConeAngle").GetNumberAsDouble());
-                }
-                if (lightObj.Has("innerConeAngleDeg"))
-                    light.innerConeAngle = (float)lightObj.Get("innerConeAngleDeg").GetNumberAsDouble();
-                if (lightObj.Has("outerConeAngleDeg"))
-                    light.outerConeAngle = (float)lightObj.Get("outerConeAngleDeg").GetNumberAsDouble();
-
-                ecsScene.lights.push_back(light);
-            }
-        }
-    }
+    ParsePunctualLights(model, ecsScene);
 
     // --- Helper: extract local TRS from a glTF node ---
     auto extractLocalTRS = [](const tinygltf::Node& node, glm::vec3& outT, glm::quat& outR, glm::vec3& outS) {
@@ -1430,6 +1494,14 @@ entt::entity SceneLoader::ImportIntoECS(
                 ecsScene.textures[mat.emissiveTextureIndex]))
             ecsScene.textures[mat.emissiveTextureIndex].isSRGB = true;
     }
+
+    // --- Lights (KHR_lights_punctual) ---
+    // Import appends to whatever the destination scene already holds, unlike
+    // Load which starts from an empty ECS. Before this, importing a glTF
+    // dropped every light silently: the file's lights were parsed by
+    // LoadIntoECS only, so a Sponza import reported zero lights while the
+    // same asset opened as a scene reported 24.
+    ParsePunctualLights(model, ecsScene);
 
     // --- Helpers (same as LoadIntoECS) ---
     auto extractLocalTRS = [](const tinygltf::Node& node, glm::vec3& outT, glm::quat& outR, glm::vec3& outS) {

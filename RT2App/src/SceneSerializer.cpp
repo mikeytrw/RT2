@@ -172,6 +172,11 @@ json ImportSettingsToJson(const ImportSettings& s)
     j["triangulate"]     = s.triangulate;
     j["generateNormals"] = s.generateNormals;
     j["mergeMegaMesh"]   = s.mergeMegaMesh;
+    // Written only when set. The reader defaults to false (spec behaviour),
+    // so omitting it keeps every existing scene byte-identical on re-save
+    // instead of adding a no-op line to each one.
+    if (s.assumeDielectricWithoutMetalRough)
+        j["assumeDielectricWithoutMetalRough"] = true;
     return j;
 }
 
@@ -181,6 +186,9 @@ ImportSettings JsonToImportSettings(const json& j)
     if (j.contains("triangulate"))     s.triangulate     = j["triangulate"].get<bool>();
     if (j.contains("generateNormals")) s.generateNormals = j["generateNormals"].get<bool>();
     if (j.contains("mergeMegaMesh"))   s.mergeMegaMesh   = j["mergeMegaMesh"].get<bool>();
+    if (j.contains("assumeDielectricWithoutMetalRough"))
+        s.assumeDielectricWithoutMetalRough =
+            j["assumeDielectricWithoutMetalRough"].get<bool>();
     return s;
 }
 
@@ -656,7 +664,11 @@ std::optional<json> EntityRecordToJson(
         l["range"]       = r.light.range;
         l["innerCone"]   = r.light.innerConeAngle;
         l["outerCone"]   = r.light.outerConeAngle;
-        l["isSpot"]      = r.light.isSpot;
+        // `type` is authoritative. `isSpot` is still written so a scene saved
+        // by this build still opens in one that predates the enum; readers
+        // here prefer `type` and fall back to `isSpot`.
+        l["type"]        = LightTypeName(r.light.type);
+        l["isSpot"]      = (r.light.type == LightType::Spot);
         j["light"] = l;
     }
 
@@ -833,7 +845,12 @@ EntityRecord JsonToEntityRecord(const json& j, Error& err,
         if (l.contains("range"))      r.light.range           = l["range"].get<float>();
         if (l.contains("innerCone"))  r.light.innerConeAngle  = l["innerCone"].get<float>();
         if (l.contains("outerCone"))  r.light.outerConeAngle  = l["outerCone"].get<float>();
-        if (l.contains("isSpot"))     r.light.isSpot          = l["isSpot"].get<bool>();
+        // Prefer `type`; fall back to the pre-enum `isSpot` so scenes written
+        // before this field existed keep their point/spot distinction.
+        if (l.contains("type"))
+            r.light.type = LightTypeFromName(l["type"].get<std::string>().c_str());
+        else if (l.contains("isSpot"))
+            r.light.type = l["isSpot"].get<bool>() ? LightType::Spot : LightType::Point;
     }
 
     if (j.contains("camera"))

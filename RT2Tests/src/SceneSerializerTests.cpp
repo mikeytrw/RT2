@@ -65,7 +65,7 @@ SceneDocument BuildSliceFixture(IUuidProvider* provider)
     ltf.translation = { 5.0f, 10.0f, 5.0f };
     ltf.dirty = true;
     doc.ecs.registry.emplace<VisibleComponent>(light);
-    doc.ecs.registry.emplace<LightComponent>(light, LightComponent{ { 1, 1, 1 }, 50.0f, 50.0f, 30.0f, 45.0f, false });
+    doc.ecs.registry.emplace<LightComponent>(light, LightComponent{ { 1, 1, 1 }, 50.0f, 50.0f, 30.0f, 45.0f, LightType::Point });
     doc.AssignNewUuid(light);
 
     // Camera entity
@@ -1289,4 +1289,141 @@ TEST_CASE("Phase7 W0: relativizable asset paths are never stored absolute")
     CHECK_FALSE(saved["metadata"].contains("sourcePath"));
 
     std::filesystem::remove_all(root);
+}
+
+// ============================================================================
+// Phase 8 step 1 — LightComponent::type replaces the former `bool isSpot`
+// ============================================================================
+
+TEST_CASE("Phase8 step 1: every LightType survives a save/load round trip")
+{
+    // Directional is the value the old `bool isSpot` could not express, so a
+    // round trip that collapses it to Point would be invisible to any test
+    // written against the pre-enum schema.
+    const auto dir = std::filesystem::temp_directory_path() / "rt2_p8_lighttype";
+    std::filesystem::create_directories(dir);
+
+    struct Case { LightType type; const char* label; };
+    const Case cases[] = {
+        { LightType::Point,       "point"       },
+        { LightType::Spot,        "spot"        },
+        { LightType::Directional, "directional" },
+    };
+
+    for (const auto& c : cases)
+    {
+        DeterministicUuidProvider provider;
+        SceneDocument doc;
+        doc.SetUuidProvider(&provider);
+
+        const auto e = doc.ecs.registry.create();
+        doc.AssignNewUuid(e);
+        doc.ecs.registry.emplace<Transform>(e);
+        doc.ecs.registry.emplace<VisibleComponent>(e);
+        LightComponent light;
+        light.color = { 0.25f, 0.5f, 0.75f };
+        light.intensity = 12.5f;
+        light.innerConeAngle = 11.0f;
+        light.outerConeAngle = 22.0f;
+        light.type = c.type;
+        doc.ecs.registry.emplace<LightComponent>(e, light);
+
+        const auto target = dir / (std::string("light_") + c.label + ".rt2scene");
+        Error err;
+        std::vector<AssetDiagnostic> diagnostics;
+        REQUIRE(SceneSerializer::Save(doc, target, diagnostics, err));
+        REQUIRE(err.IsOk());
+
+        // The stable name, not the raw enum value, is what lands on disk.
+        nlohmann::json saved;
+        { std::ifstream in(target); in >> saved; }
+        bool foundType = false;
+        for (const auto& ent : saved["entities"])
+        {
+            if (!ent.contains("light")) continue;
+            CHECK(ent["light"]["type"].get<std::string>() == std::string(c.label));
+            foundType = true;
+        }
+        CHECK(foundType);
+
+        SceneDocument loaded;
+        DeterministicUuidProvider loadProvider;
+        loaded.SetUuidProvider(&loadProvider);
+        Error loadErr;
+        REQUIRE(SceneSerializer::Load(loaded, target, loadErr));
+        REQUIRE(loadErr.IsOk());
+
+        int lightCount = 0;
+        for (auto le : loaded.ecs.registry.view<LightComponent>())
+        {
+            const auto& lc = loaded.ecs.registry.get<LightComponent>(le);
+            CHECK(lc.type == c.type);
+            CHECK(lc.intensity == doctest::Approx(12.5f));
+            CHECK(lc.innerConeAngle == doctest::Approx(11.0f));
+            CHECK(lc.outerConeAngle == doctest::Approx(22.0f));
+            lightCount++;
+        }
+        CHECK(lightCount == 1);
+
+        std::filesystem::remove(target);
+    }
+}
+
+TEST_CASE("Phase8 step 1: a pre-enum scene loads its isSpot flag as a type")
+{
+    // Scenes written before LightComponent::type existed carry only `isSpot`.
+    // Those must keep their point/spot distinction rather than silently
+    // defaulting to Point, so the reader falls back when `type` is absent.
+    const auto dir = std::filesystem::temp_directory_path() / "rt2_p8_legacy";
+    std::filesystem::create_directories(dir);
+
+    // Produce a real scene, then strip `type` from its light to reproduce the
+    // old on-disk schema exactly rather than hand-writing a whole scene file.
+    DeterministicUuidProvider provider;
+    SceneDocument doc;
+    doc.SetUuidProvider(&provider);
+    const auto e = doc.ecs.registry.create();
+    doc.AssignNewUuid(e);
+    doc.ecs.registry.emplace<Transform>(e);
+    doc.ecs.registry.emplace<VisibleComponent>(e);
+    LightComponent light;
+    light.type = LightType::Spot;
+    doc.ecs.registry.emplace<LightComponent>(e, light);
+
+    const auto target = dir / "legacy_light.rt2scene";
+    Error err;
+    std::vector<AssetDiagnostic> diagnostics;
+    REQUIRE(SceneSerializer::Save(doc, target, diagnostics, err));
+    REQUIRE(err.IsOk());
+
+    nlohmann::json saved;
+    { std::ifstream in(target); in >> saved; }
+    bool stripped = false;
+    for (auto& ent : saved["entities"])
+    {
+        if (!ent.contains("light")) continue;
+        REQUIRE(ent["light"].contains("isSpot"));
+        CHECK(ent["light"]["isSpot"].get<bool>() == true);
+        ent["light"].erase("type");   // pre-enum schema
+        stripped = true;
+    }
+    REQUIRE(stripped);
+    { std::ofstream out(target); out << saved.dump(2); }
+
+    SceneDocument loaded;
+    DeterministicUuidProvider loadProvider;
+    loaded.SetUuidProvider(&loadProvider);
+    Error loadErr;
+    REQUIRE(SceneSerializer::Load(loaded, target, loadErr));
+    REQUIRE(loadErr.IsOk());
+
+    int lightCount = 0;
+    for (auto le : loaded.ecs.registry.view<LightComponent>())
+    {
+        CHECK(loaded.ecs.registry.get<LightComponent>(le).type == LightType::Spot);
+        lightCount++;
+    }
+    CHECK(lightCount == 1);
+
+    std::filesystem::remove(target);
 }

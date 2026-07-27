@@ -33,6 +33,7 @@
 #include "UnsavedChangesCoordinator.h"
 #include "ViewportCoordinates.h"
 #include "EditorTransformGizmo.h"
+#include "EditorViewportIcons.h"
 #include "EditorCommandHistory.h"
 #include "EditorSyncRouter.h"
 #include "EditorCommands.h"
@@ -710,6 +711,19 @@ public:
 		m_Settings.gbufferDebugMode = debugCombo - 1;
 		m_RendererGPU.ApplySettings(m_Settings);
 	}
+
+	ImGui::Separator();
+	ImGui::Text("Diagnostics");
+	bool logMaterials = m_RendererGPU.IsMaterialTableLogging();
+	if (ImGui::Checkbox("Log material table on scene load", &logMaterials))
+		m_RendererGPU.SetMaterialTableLogging(logMaterials);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip(
+			"Writes every material's metallic/roughness factors and texture\n"
+			"indices to rt2_log.txt on each full scene upload, flagging any\n"
+			"material that is fully metallic with no metallicRoughness\n"
+			"texture to modulate it (the glTF default-1.0 trap).\n"
+			"Re-emits on structural edits, not just loads.");
 	ImGui::End();
 	}
 
@@ -718,7 +732,8 @@ public:
 	ImGui::Begin("Scene");
 	ImGui::Text("Meshes: %d", (int)m_SceneMgr.GetECS().meshRegistry.GetCount());
 	ImGui::Text("Materials: %d", (int)m_SceneMgr.GetMaterials().size());
-	ImGui::Text("Lights: %d", (int)m_SceneMgr.GetECS().lights.size());
+	ImGui::Text("Lights: %d",
+	            (int)m_SceneMgr.GetECS().registry.view<const LightComponent>().size());
 	ImGui::Text("Textures: %d", (int)m_SceneMgr.GetECS().textures.size());
 	if (m_SceneMgr.IsDirty())
 		ImGui::TextColored(ImVec4(1, 0.8f, 0, 1), "Unsaved changes");
@@ -897,9 +912,37 @@ public:
 			}
 		}
 
+		// Editor icon overlay. Lights and cameras have no geometry, so the
+		// GPU picker cannot reach them; this hit test is their only route to
+		// selection from the viewport, and it must run before the GPU pick
+		// request. An icon is drawn on top of whatever is behind it, and the
+		// GPU pick resolves asynchronously, so firing both would select the
+		// wall behind the light a frame later.
+		const bool editorMode = m_Runtime.GetState() == rt2::core::SceneRunState::Edit;
+		const bool clickPressed = m_Input.IsPressed("viewport_pick");
+		EditorIconOverlayResult iconOverlay;
+		if (editorMode && m_ShowEditorIcons)
+		{
+			const auto icons = BuildEditorIconPlacements(
+				m_SceneMgr, m_EditorUI.Selection(),
+				m_Cam.GetProjection() * m_Cam.GetView(),
+				{ imageMin.x, imageMin.y }, { imageSize.x, imageSize.y });
+			const ImVec2 mouse = ImGui::GetMousePos();
+			iconOverlay = DrawEditorViewportIcons(icons, { mouse.x, mouse.y },
+				imageHovered && !gizmo.consumesMouse && !m_Input.IsDown("look"),
+				clickPressed);
+		}
+		if (iconOverlay.clicked)
+		{
+			if (ImGui::GetIO().KeyCtrl)
+				m_EditorUI.Selection().Toggle(iconOverlay.clickedEntity);
+			else
+				m_EditorUI.SelectUuid(iconOverlay.clickedEntity);
+		}
+
 		const bool ordinaryPickClick = imageHovered && !gizmo.consumesMouse &&
-			m_Input.IsPressed("viewport_pick");
-		const bool canPick = m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
+			!iconOverlay.consumesMouse && clickPressed;
+		const bool canPick = editorMode && !iconOverlay.consumesMouse &&
 			(ordinaryPickClick || gizmo.pickThrough) &&
 			!m_Input.IsDown("look");
 		if (imageHovered && m_Input.IsPressed("viewport_pick"))
@@ -1589,7 +1632,44 @@ public:
 			}
 		}
 
+		// Editor edits (delete, add, transform-structural) invalidate the AS
+		// just like a load does, but they do not go through the loading modal.
+		// Without this, the rebuild happens inside Render() via the blocking
+		// RebuildAccelerationStructures(), freezing the whole app for the
+		// entire BLAS/TLAS build — ~744 ms on Sponza's 405 meshes.
+		//
+		// Drive the same async path the modal uses. SceneResources documents
+		// that the AS is invalid while a rebuild is pending and Render() must
+		// not be called, so we return instead: the viewport holds its last
+		// frame for a few hundred ms while the UI stays live.
+		if (!DriveEditorASRebuild())
+			return;
+
 		Render();
+	}
+
+	// Returns true when it is safe to Render(). False means an async AS
+	// rebuild is in flight and this frame must skip rendering.
+	bool DriveEditorASRebuild()
+	{
+		if (!m_RendererGPU.IsAvailable())
+			return true;
+
+		if (m_RendererGPU.IsASRebuildPending())
+		{
+			if (!m_RendererGPU.PollASRebuild())
+				return false; // still building
+			m_RendererGPU.UpdateDescriptorSetAfterAS();
+			return true;
+		}
+
+		if (!m_RendererGPU.NeedsASRebuild())
+			return true;
+
+		if (!m_RendererGPU.BeginRebuildAccelerationStructures())
+			return true; // submit failed — let Render()'s blocking path recover
+
+		return false; // submitted; poll it from the next frame
 	}
 
 private:
@@ -2292,7 +2372,18 @@ private:
 
 		m_LastRenderTime = timer.ElapsedMillis();
 
-		float alpha = m_LastRenderTime / (m_LastRenderTime + 500.0f);
+		// Frame-rate-independent EMA with a 150 ms time constant. 500 ms was
+		// sluggish enough that the readout lagged visibly behind the picture.
+		//
+		// alpha is clamped because it scales with frame time: one 744 ms AS
+		// rebuild would otherwise take alpha to 0.6 and let a single hitch
+		// frame own 60% of the displayed value, leaving the counter wrong for
+		// seconds afterwards. Capping alpha keeps a stall visible as a bump
+		// rather than a step change the average takes seconds to walk back.
+		constexpr float kTimeConstantMs = 150.0f;
+		constexpr float kMaxAlpha       = 0.25f;
+		const float alpha = std::min(
+			m_LastRenderTime / (m_LastRenderTime + kTimeConstantMs), kMaxAlpha);
 		m_SmoothedFrameTime = m_SmoothedFrameTime * (1.0f - alpha) + m_LastRenderTime * alpha;
 		m_SmoothedFPS = m_SmoothedFrameTime > 0.0f ? 1000.0f / m_SmoothedFrameTime : 0.0f;
 	}
@@ -2377,7 +2468,8 @@ private:
 			live.meshRegistry = std::move(result->ecs.meshRegistry);
 			live.materials = std::move(result->ecs.materials);
 			live.textures = std::move(result->ecs.textures);
-			live.lights = std::move(result->ecs.lights);
+			// Lights need no move of their own any more â they are entities,
+			// carried by the registry move below.
 			live.camera = std::move(result->ecs.camera);
 			// Move the registry: entt registries are movable.
 			live.registry = std::move(result->ecs.registry);
@@ -2869,6 +2961,11 @@ public:
 	bool m_ShowInspectorWindow   = true; // SceneEditorUI Inspector panel
 	bool m_ShowHierarchyWindow   = true; // SceneEditorUI Outliner panel
 
+	// Editor-only viewport overlay: light and camera icons. Never drawn in
+	// Play, regardless of this flag — it exists so the editor can be
+	// uncluttered for a screenshot, not to change what the game shows.
+	bool m_ShowEditorIcons       = true;
+
 	void NewScene()
 	{
 		m_Unsaved.Request({rt2::core::UnsavedChangesCoordinator::ActionKind::New, {}});
@@ -3359,6 +3456,9 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 			ImGui::MenuItem("Outliner", nullptr, &layerPtr->m_ShowHierarchyWindow);
 			ImGui::MenuItem("Inspector", nullptr, &layerPtr->m_ShowInspectorWindow);
 			ImGui::Separator();
+			ImGui::TextDisabled("Viewport");
+			ImGui::Separator();
+			ImGui::MenuItem("Light / Camera Icons", nullptr, &layerPtr->m_ShowEditorIcons);
 			ImGui::TextDisabled("(Viewport is always shown)");
 			ImGui::EndMenu();
 		}

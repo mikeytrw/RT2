@@ -95,6 +95,109 @@ layout(set = 0, binding = SI_BINDING_LIGHT_BUFFER, std430) readonly buffer Light
     TriangleLight lights[];
 };
 
+// Punctual lights (Phase 8) — point, spot and directional. Deliberately NOT
+// part of the triangle-vs-env stochastic selection above.
+//
+// That selection exists because both of those arms draw a random sample and
+// need MIS to combine. A punctual light has no area: given a shading point
+// there is exactly one direction to it, so its contribution is a
+// deterministic, zero-variance term. Making it a third arm of computePTri
+// would mean touching every consumer of pTri across four shader files that
+// each carry their own copy — and missing one biases the estimator silently,
+// producing a plausible-looking picture with the wrong energy.
+//
+// Adding it as an independent term instead cannot double-count: punctual
+// lights appear in neither the triangle light list nor the environment map.
+struct PunctualLight
+{
+    vec4 position_range;   // xyz = world position, w = range (0 = unbounded)
+    vec4 direction_type;   // xyz = world direction (unit), w = type
+    vec4 color_intensity;  // xyz = colour, w = intensity
+    vec4 cone;             // x = cos(inner), y = cos(outer), zw = pad
+};
+
+layout(set = 0, binding = SI_BINDING_PUNCTUAL_LIGHT_BUFFER, std430) readonly buffer PunctualLightBuffer
+{
+    uint  punctualLightCount;
+    uint  _punctualPad0;
+    uint  _punctualPad1;
+    uint  _punctualPad2;
+    PunctualLight punctualLights[];
+};
+
+// Direction to the light, its distance, and the intensity arriving before
+// visibility. Distance is +inf for directional lights so the shadow ray runs
+// to the far plane.
+struct PunctualSample
+{
+    vec3  toLight;    // unit direction from the shading point to the light
+    float distance;   // shadow ray length
+    vec3  radiance;   // colour * intensity * falloff, before visibility
+    bool  valid;
+};
+
+PunctualSample evalPunctualLight(uint index, vec3 worldPos)
+{
+    PunctualSample s;
+    s.toLight = vec3(0.0, 1.0, 0.0);
+    s.distance = 0.0;
+    s.radiance = vec3(0.0);
+    s.valid = false;
+
+    PunctualLight L = punctualLights[index];
+    float type = L.direction_type.w;
+    vec3 intensity = L.color_intensity.xyz * L.color_intensity.w;
+
+    if (type == SI_LIGHT_TYPE_DIRECTIONAL)
+    {
+        // Parallel rays: no position, no distance falloff.
+        s.toLight = normalize(-L.direction_type.xyz);
+        s.distance = 1e30;
+        s.radiance = intensity;
+        s.valid = true;
+        return s;
+    }
+
+    vec3 delta = L.position_range.xyz - worldPos;
+    float dist2 = dot(delta, delta);
+    if (dist2 < 1e-12) return s;   // shading point coincides with the light
+
+    float dist = sqrt(dist2);
+    s.toLight = delta / dist;
+    s.distance = dist;
+
+    // Inverse-square falloff. This is why a small emissive needs a radiance in
+    // the thousands to rival an environment map, and why a punctual light —
+    // authored as intensity, with no area term — does not.
+    vec3 radiance = intensity / dist2;
+
+    float range = L.position_range.w;
+    if (range > 0.0)
+    {
+        if (dist >= range) return s;
+        // Windowed falloff (glTF): fades to exactly zero at `range` rather
+        // than clipping, so a light does not end in a visible hard edge.
+        float t = dist / range;
+        float window = clamp(1.0 - t * t * t * t, 0.0, 1.0);
+        radiance *= window * window;
+    }
+
+    if (type == SI_LIGHT_TYPE_SPOT)
+    {
+        // cone.x = cos(inner) >= cone.y = cos(outer), clamped CPU-side so a
+        // malformed cone cannot invert this and light the whole hemisphere.
+        float cosAngle = dot(normalize(L.direction_type.xyz), -s.toLight);
+        float denom = max(L.cone.x - L.cone.y, 1e-4);
+        float spot = clamp((cosAngle - L.cone.y) / denom, 0.0, 1.0);
+        if (spot <= 0.0) return s;
+        radiance *= spot * spot;
+    }
+
+    s.radiance = radiance;
+    s.valid = true;
+    return s;
+}
+
 // Probability of selecting triangle NEE (vs env NEE) in stochastic NEE.
 // Returns 1.0 if only triangle lights, 0.0 if only env, 0.5 if both.
 float computePTri()

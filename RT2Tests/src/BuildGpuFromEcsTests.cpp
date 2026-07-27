@@ -206,3 +206,127 @@ TEST_CASE("UpdateInstancesFromECS: light areas update with transform")
     CHECK(gpu.lights.size() > 0);
     CHECK(gpu.totalLightArea > 0.0f);
 }
+
+// ============================================================================
+// Phase 8 step 4 — punctual lights reach the GPU scene from light entities
+// ============================================================================
+
+TEST_CASE("Phase8 step 4: punctual lights build from entity world transforms")
+{
+    ECSScene scene;
+
+    // A spot parented under a mover. Its world pose must follow the parent —
+    // the entire reason lights are entities rather than a flat table.
+    const auto parent = scene.registry.create();
+    {
+        Transform tf;
+        tf.translation = {10.0f, 0.0f, 0.0f};
+        tf.dirty = true;
+        scene.registry.emplace<Transform>(parent, tf);
+    }
+
+    const auto child = scene.registry.create();
+    {
+        Transform tf;
+        tf.translation = {0.0f, 5.0f, 0.0f};          // local
+        tf.rotation = LightDirectionToRotation({0.0f, -1.0f, 0.0f});
+        tf.dirty = true;
+        scene.registry.emplace<Transform>(child, tf);
+
+        LightComponent lc;
+        lc.type = LightType::Spot;
+        lc.color = {0.5f, 0.25f, 0.125f};
+        lc.intensity = 17.0f;
+        lc.range = 40.0f;
+        lc.innerConeAngle = 20.0f;
+        lc.outerConeAngle = 35.0f;
+        scene.registry.emplace<LightComponent>(child, lc);
+
+        Hierarchy h;
+        h.parent = parent;
+        scene.registry.emplace<Hierarchy>(child, h);
+        scene.registry.emplace<Hierarchy>(parent).children.push_back(child);
+    }
+
+    SceneGraph::UpdateWorldTransforms(scene.registry);
+
+    std::vector<GPUPunctualLight> lights;
+    BuildPunctualLightsFromECS(scene, lights);
+    REQUIRE(lights.size() == 1);
+    const auto& g = lights[0];
+
+    // World position = parent translation + local translation.
+    CHECK(g.position_range.x == doctest::Approx(10.0f));
+    CHECK(g.position_range.y == doctest::Approx(5.0f));
+    CHECK(g.position_range.z == doctest::Approx(0.0f));
+    CHECK(g.position_range.w == doctest::Approx(40.0f));
+
+    // Aim survives the transform.
+    CHECK(std::fabs(g.direction_type.y - (-1.0f)) < 1e-5f);
+    CHECK(g.direction_type.w == doctest::Approx(static_cast<float>(LightType::Spot)));
+
+    CHECK(g.color_intensity.x == doctest::Approx(0.5f));
+    CHECK(g.color_intensity.w == doctest::Approx(17.0f));
+
+    // Cone angles arrive pre-cosined, inner >= outer as cosines.
+    CHECK(g.cone.x == doctest::Approx(std::cos(glm::radians(20.0f))));
+    CHECK(g.cone.y == doctest::Approx(std::cos(glm::radians(35.0f))));
+    CHECK(g.cone.x > g.cone.y);
+}
+
+TEST_CASE("Phase8 step 4: an inverted spot cone cannot invert the falloff")
+{
+    // A malformed cone (inner wider than outer) must not produce cosInner <
+    // cosOuter, which a shader doing smoothstep(cosOuter, cosInner, x) would
+    // read as a light covering the entire hemisphere.
+    ECSScene scene;
+    const auto e = scene.registry.create();
+    Transform tf;
+    tf.dirty = true;
+    scene.registry.emplace<Transform>(e, tf);
+
+    LightComponent lc;
+    lc.type = LightType::Spot;
+    lc.innerConeAngle = 60.0f;   // wider than the outer cone
+    lc.outerConeAngle = 15.0f;
+    scene.registry.emplace<LightComponent>(e, lc);
+
+    SceneGraph::UpdateWorldTransforms(scene.registry);
+
+    std::vector<GPUPunctualLight> lights;
+    BuildPunctualLightsFromECS(scene, lights);
+    REQUIRE(lights.size() == 1);
+    CHECK(lights[0].cone.x >= lights[0].cone.y);
+}
+
+TEST_CASE("Phase8 step 4: every LightType maps to its own GPU type value")
+{
+    ECSScene scene;
+    const LightType types[] = {
+        LightType::Point, LightType::Spot, LightType::Directional };
+
+    for (auto type : types)
+    {
+        const auto e = scene.registry.create();
+        Transform tf;
+        tf.dirty = true;
+        scene.registry.emplace<Transform>(e, tf);
+        LightComponent lc;
+        lc.type = type;
+        scene.registry.emplace<LightComponent>(e, lc);
+    }
+    SceneGraph::UpdateWorldTransforms(scene.registry);
+
+    std::vector<GPUPunctualLight> lights;
+    BuildPunctualLightsFromECS(scene, lights);
+    REQUIRE(lights.size() == 3);
+
+    // Collapsing two types onto one value would silently make a directional
+    // light behave as a point light at the origin.
+    std::vector<float> seen;
+    for (const auto& g : lights) seen.push_back(g.direction_type.w);
+    std::sort(seen.begin(), seen.end());
+    CHECK(seen[0] == doctest::Approx(0.0f));
+    CHECK(seen[1] == doctest::Approx(1.0f));
+    CHECK(seen[2] == doctest::Approx(2.0f));
+}

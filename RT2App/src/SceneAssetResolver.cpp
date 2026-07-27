@@ -5,6 +5,7 @@
 #include "ECSScene.h"
 #include "SceneTypes.h"
 #include "MeshRegistry.h"
+#include "TextureAssetPipeline.h"
 #include "RTLog.h"
 
 #include "stb_image.h"
@@ -274,6 +275,10 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         // model+mode). The dedup key is (path, isObj, mergeMegaMesh) so the
         // same OBJ imported in both modes stages independently.
         bool        mergeMegaMesh = true;
+        // Per-asset opt-in: import materials with no metallicRoughness
+        // texture and no authored factor as dielectric rather than as
+        // glTF's fully-metallic default.
+        bool        assumeDielectric = false;
         // Resolution context for the first entity that referenced this model.
         // W3 step 3: resolution is ID-first via the shared locator. The host
         // does not build an AssetDatabase yet (step 4 / W4), so `database` is
@@ -305,6 +310,7 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         m.ownerRef = ref;
         m.isObj = isObj;
         m.mergeMegaMesh = mergeMegaMesh;
+        m.assumeDielectric = ref.importSettings.assumeDielectricWithoutMetalRough;
         m.firstEntityUuid = entityUuid;
         m.firstEntityName = entityName;
         // Resolve through the shared locator. The locator emits exactly one
@@ -441,8 +447,15 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         }
         else
         {
+            const size_t materialBase = s.ecs.materials.size();
             ok = SceneLoader::LoadIntoECS(
                 s.ecs, textureContext, diagnostics);
+            // Correction runs at the call site rather than inside the loader,
+            // which keeps the loader spec-correct and leaves the W3 step 7
+            // signature contraction intact.
+            if (ok && m.assumeDielectric)
+                ApplyDielectricDefaultCorrection(
+                    s.ecs.materials, materialBase, m.ownerRef, diagnostics);
         }
 
         if (!ok)

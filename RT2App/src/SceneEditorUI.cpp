@@ -323,14 +323,16 @@ void SceneEditorUI::CreatePrimitiveCommand(PrimitiveComponent::Kind kind, float 
 	ApplyMutation(applied, true);
 }
 
-void SceneEditorUI::CreateLightCommand(const glm::vec3& position, const glm::vec3& color,
-                                      float intensity)
+void SceneEditorUI::CreateLightCommand(const char* name, LightType type,
+                                      const glm::vec3& position, const glm::vec3& direction,
+                                      const glm::vec3& color, float intensity)
 {
 	if (!m_SceneMgr || !m_CommandHistory) return;
 	const auto uuid = m_SceneMgr->ReserveKnownUuid();
 	EditableTRS trs;
 	trs.translation = position;
-	auto applied = m_SceneMgr->CreateLightEntity(uuid, "Light", trs, color, intensity, false);
+	trs.rotation = LightDirectionToRotation(direction);
+	auto applied = m_SceneMgr->CreateLightEntity(uuid, name, trs, color, intensity, type);
 	if (!applied.success)
 	{
 		ApplyMutation(applied);
@@ -557,9 +559,38 @@ void SceneEditorUI::RenderOutliner()
 			CreateEmptyCommand(selectedParent);
 		ImGui::EndDisabled();
 		ImGui::Separator();
-		if (ImGui::MenuItem("Emissive Light"))
+		if (ImGui::BeginMenu("Light"))
 		{
-			CreatePrimitiveCommand(PrimitiveComponent::Sphere, 0.4f, "Light", {0, 3, 0});
+			// Punctual defaults. Point/spot intensity is candela and goes
+			// through inverse-square falloff, so 50 cd at a few metres reads
+			// as a normal room light. A directional light has no falloff at
+			// all — its intensity is the arriving radiance — which is why it
+			// needs a far smaller number to sit at the same exposure.
+			if (ImGui::MenuItem("Point"))
+			{
+				CreateLightCommand("Point Light", LightType::Point,
+				                   {0, 3, 0}, {0, 0, -1}, {1, 1, 1}, 50.0f);
+			}
+			if (ImGui::MenuItem("Spot"))
+			{
+				CreateLightCommand("Spot Light", LightType::Spot,
+				                   {0, 3, 0}, {0, -1, 0}, {1, 1, 1}, 50.0f);
+			}
+			if (ImGui::MenuItem("Directional"))
+			{
+				CreateLightCommand("Directional Light", LightType::Directional,
+				                   {0, 5, 0}, {0, -1, 0}, {1, 1, 1}, 3.0f);
+			}
+			ImGui::Separator();
+			// Not a punctual light: an emissive sphere, which is real geometry
+			// sampled by NEE as a triangle light. Kept because it is the only
+			// light with visible area, and so the only one that casts soft
+			// shadows.
+			if (ImGui::MenuItem("Emissive Sphere"))
+			{
+				CreatePrimitiveCommand(PrimitiveComponent::Sphere, 0.4f, "Light", {0, 3, 0});
+			}
+			ImGui::EndMenu();
 		}
 		ImGui::Separator();
 		if (ImGui::MenuItem("Cube"))
@@ -1349,6 +1380,11 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 	{
 		SceneMaterial mat = m_SceneMgr->GetMaterial(current);
 		bool matChanged = false;
+		// Applied only once the edit is committed (focus lost, Enter, or drag
+		// released), never per keystroke. Each apply runs a material sync that
+		// currently marks the acceleration structure dirty, so editing live
+		// rebuilt every BLAS on every character typed and locked the UI.
+		bool matCommitted = false;
 
 		unsigned int owningWidgetId = m_MaterialPropertiesSession.IsOpen()
 			? m_MaterialPropertiesSessionOwningWidgetId : 0;
@@ -1375,6 +1411,10 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 				m_MaterialPropertiesSession.OnEditCommitted();
 			if (ImGui::IsItemDeactivatedAfterEdit())
 			{
+				// `mat` holds this widget's live value on every frame it is
+				// drawn, so on the deactivation frame it already carries the
+				// final committed value.
+				matCommitted = true;
 				if (m_MaterialPropertiesSession.IsOpen() && owningWidgetId == widgetId)
 					pendingCloseWidgetId = widgetId;
 			}
@@ -1405,7 +1445,7 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 			return ImGui::DragFloat("Emissive Intensity", &mat.emissiveIntensity, 0.1f, 0.0f, 100.0f, "%.1f");
 		});
 
-		if (matChanged)
+		if (matCommitted)
 		{
 			m_SceneMgr->SetMaterialProperties(current, mat);
 			NotifySceneChanged();
@@ -1441,14 +1481,14 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 
 	glm::vec3 color;
 	float intensity;
-	bool isSpot;
-	if (!m_SceneMgr->GetLightProperties(entity, color, intensity, isSpot))
+	LightType lightType;
+	if (!m_SceneMgr->GetLightProperties(entity, color, intensity, lightType))
 		return;
 
 	const auto targetUuid = m_SceneMgr->GetEntityUuid(entity);
 
 	// Read the full LightComponent for the session (the Inspector only
-	// exposes color/intensity/isSpot, but the command stores the full
+	// exposes color/intensity/type, but the command stores the full
 	// struct for forward compatibility).
 	auto& reg = const_cast<entt::registry&>(m_SceneMgr->GetECS().registry);
 	LightComponent beforeLight;
@@ -1497,8 +1537,14 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 	drawLightWidget("Intensity", [&]() {
 		return ImGui::DragFloat("Intensity", &intensity, 0.1f, 0.0f, 1000.0f, "%.1f");
 	});
-	drawLightWidget("Spot", [&]() {
-		return ImGui::Checkbox("Spot", &isSpot);
+	drawLightWidget("Type", [&]() {
+		// Order must match LightType's values (Point=0, Spot=1, Directional=2).
+		const char* kTypeNames[] = { "Point", "Spot", "Directional" };
+		int typeIndex = static_cast<int>(lightType);
+		if (!ImGui::Combo("Type", &typeIndex, kTypeNames, IM_ARRAYSIZE(kTypeNames)))
+			return false;
+		lightType = static_cast<LightType>(typeIndex);
+		return true;
 	});
 
 	ImGui::EndDisabled();
@@ -1506,7 +1552,7 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 
 	if (changed)
 	{
-		m_SceneMgr->SetLightProperties(entity, color, intensity, isSpot);
+		m_SceneMgr->SetLightProperties(entity, color, intensity, lightType);
 		NotifySceneChanged();
 	}
 
@@ -1999,7 +2045,18 @@ void SceneEditorUI::DrawImportOptionsModal()
 		else
 		{
 			ImGui::Separator();
-			ImGui::TextDisabled("(no import options for this format)");
+			ImGui::Checkbox("Treat untextured metals as dielectric",
+			                &m_PendingImportAssumeDielectric);
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip(
+					"glTF defines an absent metallicFactor as 1.0, so a material\n"
+					"with no metallicRoughness texture and no authored factor is\n"
+					"fully metallic and fully rough by spec — a rough mirror that\n"
+					"renders as a grey patch which never converges.\n\n"
+					"Exporters hit this constantly by omitting the value and\n"
+					"assuming a dielectric default. When checked, such materials\n"
+					"import as dielectric and each correction is recorded as a\n"
+					"diagnostic. Stored per asset, so it survives a reload.");
 		}
 
 		ImGui::Separator();
@@ -2007,6 +2064,8 @@ void SceneEditorUI::DrawImportOptionsModal()
 		{
 			ImportSettings settings;
 			settings.mergeMegaMesh = m_PendingImportMergeMegaMesh;
+			settings.assumeDielectricWithoutMetalRough =
+				m_PendingImportAssumeDielectric;
 			auto id = m_OnImportWithOptions(m_PendingImportPath, settings);
 			if (id.IsValid())
 			{

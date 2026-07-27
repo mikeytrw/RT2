@@ -113,6 +113,29 @@ struct GPUTriangleLight
     {}
 };
 
+// A punctual light — point, spot or directional. 64 bytes, four vec4s, std430.
+//
+// Distinct from GPUTriangleLight, which is emissive geometry. A punctual light
+// has no area: it is a point (or a direction) with an intensity, which is why
+// it is authored in candela/lux rather than radiance and why it costs one
+// deterministic shadow ray instead of a sampled point on a surface.
+//
+// Cone angles are stored pre-cosined so the shader never calls trig.
+struct GPUPunctualLight
+{
+    glm::vec4 position_range;   // xyz = world position, w = range (0 = unbounded)
+    glm::vec4 direction_type;   // xyz = world direction (unit), w = LightType as float
+    glm::vec4 color_intensity;  // xyz = colour, w = intensity
+    glm::vec4 cone;             // x = cos(inner), y = cos(outer), zw = pad
+
+    GPUPunctualLight()
+        : position_range(0.0f)
+        , direction_type(0.0f, 0.0f, -1.0f, 0.0f)
+        , color_intensity(1.0f)
+        , cone(1.0f, 0.0f, 0.0f, 0.0f)
+    {}
+};
+
 // Coarse conservative occupancy for an emissive texture. Each entry in the
 // summed-area table represents an 8x8 texel block containing at least one
 // non-black RGB texel. It is CPU-only and is used to reject UV triangles whose
@@ -132,6 +155,10 @@ struct GPUSceneData
     std::vector<GPUMaterial>      materials;
     std::vector<SceneTexture>     textures;
     std::vector<GPUTriangleLight> lights;  // emissive triangles for NEE
+    // Punctual lights (Phase 8). Separate array from `lights`: emissive
+    // triangles and punctual lights are sampled differently and share
+    // nothing but the word "light".
+    std::vector<GPUPunctualLight> punctualLights;
     std::vector<EmissiveTextureOccupancy> emissiveTextureOccupancy;
     float                         totalLightArea = 0.0f;  // sum of all light triangle areas
     uint32_t sourceEmissiveTriangleCount = 0;
@@ -152,6 +179,14 @@ struct GPUSceneData
 // Convert an ECSScene into GPUSceneData: one GPUMeshGeometry per unique mesh
 // in the MeshRegistry, one GPUInstance per entity with MeshRef. World matrices
 // are read from Transform components (must be updated by SceneGraph first).
+// Build the punctual light array from entities carrying LightComponent plus
+// Transform. World position and direction come from the entity's world
+// matrix, so moving or parenting a light just works — that being the reason
+// lights are entities. Requires world matrices to be current
+// (SceneGraph::UpdateWorldTransforms).
+void BuildPunctualLightsFromECS(const ECSScene& ecsScene,
+                                std::vector<GPUPunctualLight>& out);
+
 GPUSceneData BuildGPUSceneDataFromECS(const ECSScene& ecsScene,
                                      RenderInstanceMap* instanceMap = nullptr);
 
