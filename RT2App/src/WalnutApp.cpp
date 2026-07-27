@@ -573,6 +573,16 @@ public:
 	}
 	if (ImGui::Checkbox("Show Background", &m_Settings.showBackground))
 		m_RendererGPU.ApplySettings(m_Settings);
+	if (ImGui::IsItemHovered())
+		ImGui::SetTooltip("Editor only. In Play a ray that hits nothing stays black,\n"
+		                  "whatever this is set to.");
+	// The checkbox keeps showing the authored value in Play; say why it has
+	// no effect there rather than let it look broken.
+	if (m_Settings.showBackground && !IsEditorPresentation())
+	{
+		ImGui::SameLine();
+		ImGui::TextDisabled("(hidden in Play)");
+	}
 	if (ImGui::SliderFloat("Emissive Boost", &m_Settings.emissiveBoost, 0.0f, 50.0f, "%.1f"))
 		m_RendererGPU.ApplySettings(m_Settings);
 
@@ -918,7 +928,7 @@ public:
 		// request. An icon is drawn on top of whatever is behind it, and the
 		// GPU pick resolves asynchronously, so firing both would select the
 		// wall behind the light a frame later.
-		const bool editorMode = m_Runtime.GetState() == rt2::core::SceneRunState::Edit;
+		const bool editorMode = IsEditorPresentation();
 		const bool clickPressed = m_Input.IsPressed("viewport_pick");
 		EditorIconOverlayResult iconOverlay;
 		if (editorMode && m_ShowEditorIcons)
@@ -2368,7 +2378,13 @@ private:
 		Timer timer;
 
 		if (m_RendererGPU.IsAvailable())
+		{
+			// Set every frame rather than on the Play/Stop transitions: it is
+			// idempotent, and there is no way to enter or leave Play without
+			// passing through here, so it cannot go stale.
+			m_RendererGPU.SetEditorPresentation(IsEditorPresentation());
 			m_RendererGPU.Render(m_RuntimeCamActive ? m_RuntimeCam : m_Cam);
+		}
 
 		m_LastRenderTime = timer.ElapsedMillis();
 
@@ -2965,6 +2981,17 @@ public:
 	// Play, regardless of this flag — it exists so the editor can be
 	// uncluttered for a screenshot, not to change what the game shows.
 	bool m_ShowEditorIcons       = true;
+
+	// One question behind every editor-only visual: the transform gizmo, the
+	// light/camera icons, and the viewport background. Each of those is
+	// scaffolding for authoring, not part of the game, so Play must show none
+	// of them. Their individual toggles mean "may show"; this decides "does
+	// show". Anything editor-only added later should ask this rather than
+	// re-deriving the run state and risking a fourth inconsistent answer.
+	bool IsEditorPresentation() const
+	{
+		return m_Runtime.GetState() == rt2::core::SceneRunState::Edit;
+	}
 
 	void NewScene()
 	{

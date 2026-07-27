@@ -401,3 +401,67 @@ TEST_CASE("SceneManager: Delete all mesh entities + compact produces empty GPU s
 	CHECK(mgr.GetCurrentGpuScene().meshes.empty());
 	CHECK(mgr.GetCurrentGpuScene().instances.empty());
 }
+
+// ============================================================================
+// Whole-component light access. The Inspector edits range and the spot cone
+// angles through these; the narrower three-value setter has to leave them
+// alone, or changing a light's colour would quietly reset its cone.
+// ============================================================================
+TEST_CASE("SceneManager: GetLightComponent/SetLightComponent round-trip every field")
+{
+	SceneManager mgr;
+	const auto entity = mgr.AddLight("Spot", {0, 3, 0}, {1, 1, 1}, 50.0f, LightType::Spot);
+
+	LightComponent value;
+	REQUIRE(mgr.GetLightComponent(entity, value));
+	CHECK(value.type == LightType::Spot);
+
+	value.range = 17.5f;
+	value.innerConeAngle = 12.0f;
+	value.outerConeAngle = 33.0f;
+	value.intensity = 75.0f;
+	mgr.SetLightComponent(entity, value);
+
+	LightComponent readBack;
+	REQUIRE(mgr.GetLightComponent(entity, readBack));
+	CHECK(readBack.range == doctest::Approx(17.5f));
+	CHECK(readBack.innerConeAngle == doctest::Approx(12.0f));
+	CHECK(readBack.outerConeAngle == doctest::Approx(33.0f));
+	CHECK(readBack.intensity == doctest::Approx(75.0f));
+}
+
+TEST_CASE("SceneManager: SetLightProperties preserves range and cone angles")
+{
+	SceneManager mgr;
+	const auto entity = mgr.AddLight("Spot", {0, 3, 0}, {1, 1, 1}, 50.0f, LightType::Spot);
+
+	LightComponent value;
+	REQUIRE(mgr.GetLightComponent(entity, value));
+	value.range = 9.0f;
+	value.innerConeAngle = 20.0f;
+	value.outerConeAngle = 40.0f;
+	mgr.SetLightComponent(entity, value);
+
+	// Change only colour/intensity/type through the narrow setter.
+	mgr.SetLightProperties(entity, {0.5f, 0.25f, 0.125f}, 8.0f, LightType::Point);
+
+	LightComponent after;
+	REQUIRE(mgr.GetLightComponent(entity, after));
+	CHECK(after.type == LightType::Point);
+	CHECK(after.intensity == doctest::Approx(8.0f));
+	CHECK(after.range == doctest::Approx(9.0f));
+	CHECK(after.innerConeAngle == doctest::Approx(20.0f));
+	CHECK(after.outerConeAngle == doctest::Approx(40.0f));
+}
+
+TEST_CASE("SceneManager: GetLightComponent rejects a non-light entity")
+{
+	SceneManager mgr;
+	mgr.AddMaterial(SceneMaterial{});
+	const auto box = mgr.AddObjectWithGeometry(
+		"Box", PrimitiveGeometry::CreateCube(1.0f), {0, 0, 0}, {}, 1.0f, 0);
+
+	LightComponent value;
+	CHECK_FALSE(mgr.GetLightComponent(box, value));
+	CHECK_FALSE(mgr.GetLightComponent(SceneManager::EntityId{}, value));
+}

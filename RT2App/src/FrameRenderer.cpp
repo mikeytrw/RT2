@@ -308,8 +308,13 @@ void FrameRenderer::RecordReSTIRGIPass(VkCommandBuffer cmd, Context& ctx)
 	VkDeviceSize historyRegionSize    = ctx.giReservoirs.GetReceiverHistoryRegionSize();
 	VkDeviceSize totalSize            = ctx.giReservoirs.GetTotalSize();
 
+	// Both regions must be masked to the parity bit. `giFrameIndex ^ 1u`
+	// only happens to equal the other region for frame indices 0 and 1; from
+	// frame 2 on it returns 3, 5, 7... and the barriers below then covered
+	// ranges past the end of the buffer instead of the previous region, so
+	// the real previous reservoir was never synchronised at all.
 	uint32_t curRegion  = ctx.giFrameIndex & 1u;
-	uint32_t prevRegion = ctx.giFrameIndex ^ 1u;
+	uint32_t prevRegion = curRegion ^ 1u;
 
 	VkDeviceSize curReservoirOffset  = ctx.giReservoirs.GetReservoirRegionOffset(curRegion);
 	VkDeviceSize prevReservoirOffset = ctx.giReservoirs.GetReservoirRegionOffset(prevRegion);

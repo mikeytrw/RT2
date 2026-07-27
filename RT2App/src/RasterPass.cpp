@@ -5,6 +5,7 @@
 #include "GpuResources.h"
 #include "CommandUtils.h"
 #include "ShaderManager.h"
+#include "Walnut/RTDispatch.h"
 #include <cstring>
 #include <vector>
 
@@ -460,7 +461,14 @@ void RasterPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 	renderingInfo.pColorAttachments = colorAttachments;
 	renderingInfo.pDepthAttachment = &depthAttachment;
 
-	vkCmdBeginRendering(cmd, &renderingInfo);
+	// KHR entry point, not the core 1.3 name: the instance is Vulkan 1.2 and
+	// gets dynamic rendering from VK_KHR_dynamic_rendering. See RTDispatch.h.
+	if (!g_RTDispatch.CmdBeginRenderingKHR || !g_RTDispatch.CmdEndRenderingKHR)
+	{
+		RT_LOG("[RasterPass] ERROR: dynamic rendering entry points not loaded");
+		return;
+	}
+	g_RTDispatch.CmdBeginRenderingKHR(cmd, &renderingInfo);
 
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
@@ -504,5 +512,5 @@ void RasterPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 		vkCmdDrawIndexedIndirect(cmd, m_MaskedDrawBuffer, 0, m_MaskedDrawCount, sizeof(VkDrawIndexedIndirectCommand));
 	}
 
-	vkCmdEndRendering(cmd);
+	g_RTDispatch.CmdEndRenderingKHR(cmd);
 }

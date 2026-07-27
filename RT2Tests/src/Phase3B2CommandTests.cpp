@@ -155,8 +155,14 @@ bool LightEq(const LightComponent& a, const LightComponent& b)
     auto vEq = [eps](const glm::vec3& x, const glm::vec3& y) {
         return std::fabs(x.x - y.x) <= eps && std::fabs(x.y - y.y) <= eps && std::fabs(x.z - y.z) <= eps;
     };
+    // Cone angles are part of the component and are compared by the
+    // production LightEqual, so they belong here too: without them a command
+    // that silently dropped the spot cone would satisfy every assertion.
     return vEq(a.color, b.color) && std::fabs(a.intensity - b.intensity) <= eps &&
-           std::fabs(a.range - b.range) <= eps && a.type == b.type;
+           std::fabs(a.range - b.range) <= eps &&
+           std::fabs(a.innerConeAngle - b.innerConeAngle) <= eps &&
+           std::fabs(a.outerConeAngle - b.outerConeAngle) <= eps &&
+           a.type == b.type;
 }
 
 bool CameraEq(const CameraComponent& a, const CameraComponent& b)
@@ -449,6 +455,57 @@ TEST_CASE("Phase 3B2 SetLightCommand Execute/Undo/Redo restores light")
     auto r2 = f.history.Redo(f.manager);
     REQUIRE(r2.success);
     REQUIRE(LightEq(f.GetLight(e), after));
+}
+
+// The Inspector gained Range and the spot cone angles, which reach the
+// command through the same whole-component path. Covered separately because
+// the case above only moves colour, intensity and type.
+TEST_CASE("Phase 3B2 SetLightCommand carries range and spot cone angles")
+{
+    SceneFixture f;
+    const auto e = f.AddLight("Spot");
+    LightComponent before = f.GetLight(e);
+    LightComponent after = before;
+    after.type = LightType::Spot;
+    after.range = 12.5f;
+    after.innerConeAngle = 18.0f;
+    after.outerConeAngle = 47.5f;
+
+    auto cmd = MakeSetLightCommandIfEffective(e, before, after);
+    REQUIRE(cmd);
+    auto r = f.history.Execute(std::move(cmd), f.manager);
+    REQUIRE(r.success);
+    REQUIRE(LightEq(f.GetLight(e), after));
+    CHECK(f.GetLight(e).innerConeAngle == doctest::Approx(18.0f));
+    CHECK(f.GetLight(e).outerConeAngle == doctest::Approx(47.5f));
+    CHECK(f.GetLight(e).range == doctest::Approx(12.5f));
+
+    REQUIRE(f.history.Undo(f.manager).success);
+    REQUIRE(LightEq(f.GetLight(e), before));
+    REQUIRE(f.history.Redo(f.manager).success);
+    REQUIRE(LightEq(f.GetLight(e), after));
+}
+
+// A cone-only edit must still produce a command. It would not if the no-op
+// check ignored the angles, and the Inspector would then appear to accept a
+// cone change that never reached the scene.
+TEST_CASE("Phase 3B2 SetLightCommand is not suppressed for a cone-only change")
+{
+    SceneFixture f;
+    const auto e = f.AddLight("Spot");
+    LightComponent before = f.GetLight(e);
+
+    LightComponent innerOnly = before;
+    innerOnly.innerConeAngle = before.innerConeAngle + 5.0f;
+    CHECK(MakeSetLightCommandIfEffective(e, before, innerOnly));
+
+    LightComponent outerOnly = before;
+    outerOnly.outerConeAngle = before.outerConeAngle + 5.0f;
+    CHECK(MakeSetLightCommandIfEffective(e, before, outerOnly));
+
+    LightComponent rangeOnly = before;
+    rangeOnly.range = before.range + 5.0f;
+    CHECK(MakeSetLightCommandIfEffective(e, before, rangeOnly));
 }
 
 TEST_CASE("Phase 3B2 SetLightCommand no-op suppression for equal values")

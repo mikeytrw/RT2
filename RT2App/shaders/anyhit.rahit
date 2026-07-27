@@ -1,6 +1,5 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
-#extension GL_NV_ray_tracing : require
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_nonuniform_qualifier : require
 
@@ -10,7 +9,7 @@
 // Any-hit shader for alpha-blended/cutout materials (primary + BSDF rays).
 // Reads base color texture alpha and uses Russian roulette (BLEND) or
 // hard cutoff (MASK) to decide pass/absorb.
-// Accept = return (do nothing). Reject = ignoreIntersectionNV().
+// Accept = return (do nothing). Reject = ignoreIntersectionEXT.
 layout(location = 0) rayPayloadInEXT RayPayload payload;
 
 // Hardware-provided barycentric hit attributes (core GL_EXT_ray_tracing).
@@ -54,7 +53,7 @@ void main()
     if (mat.alphaMode < 1.5)
     {
         if (alpha < mat.alphaCutoff)
-            ignoreIntersectionNV();
+            ignoreIntersectionEXT;
         // else: accept (return)
         return;
     }
@@ -65,6 +64,6 @@ void main()
     payload.a.w = uintBitsToFloat(rngState);
 
     if (r >= alpha)
-        ignoreIntersectionNV();
+        ignoreIntersectionEXT;
     // else: accept (return)
 }

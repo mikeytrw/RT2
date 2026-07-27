@@ -402,6 +402,11 @@ struct EditorCameraPose;
 	// Read/write light properties.
 	bool GetLightProperties(EntityId entity, glm::vec3& outColor, float& outIntensity, LightType& outType) const;
 	void SetLightProperties(EntityId entity, const glm::vec3& color, float intensity, LightType type);
+	// Whole-component read/write, for callers that need range and the spot
+	// cone angles too. The three-value overload above preserves whatever it
+	// does not name, so both are safe to mix.
+	bool GetLightComponent(EntityId entity, LightComponent& outValue) const;
+	void SetLightComponent(EntityId entity, const LightComponent& value);
 	bool SetCameraProperties(EntityId entity, float verticalFOV,
 		float aperture, float focusDistance);
 

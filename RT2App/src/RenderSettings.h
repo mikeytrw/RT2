@@ -81,3 +81,20 @@ struct RenderSettings
 	// RendererGPU::Render() checks this, calls ResetAccumulation, clears it.
 	bool  dirty = false;
 };
+
+// Whether the viewport background is actually drawn this frame.
+//
+// `showBackground` is authored state: it says the user wants a background in
+// the editor viewport, where it helps you tell "nothing is there" from "the
+// light is not reaching it". It is editor scaffolding, so Play must not show
+// it whatever the flag says — a ray that hits nothing there should read as
+// the game's own background.
+//
+// Kept as a free function, and out of RendererGPU, for two reasons: the host
+// reads RendererGPU's settings back into its authored copy, so the derived
+// value must never live in the struct where that readback could overwrite the
+// user's choice; and the rule is then testable without a GPU.
+inline bool IsBackgroundVisible(const RenderSettings& settings, bool editorPresentation)
+{
+	return settings.showBackground && editorPresentation;
+}

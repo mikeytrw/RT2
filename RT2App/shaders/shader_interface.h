@@ -52,8 +52,13 @@
 #define SI_BINDING_LIGHT_BUFFER          9
 #define SI_BINDING_INSTANCE_TRANSFORMS   10
 #define SI_BINDING_GI_DATA                 11  // ReSTIR GI monolithic buffer (reservoir A/B + receiver history prev/cur)
-#define SI_BINDING_TEXTURE_ARRAY         18
-#define SI_BINDING_PUNCTUAL_LIGHT_BUFFER 19  // point/spot/directional lights (Phase 8)
+// The texture array is the only variable-count binding, and Vulkan requires
+// VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT to sit on the *highest*
+// binding number in the set. So it has to stay last: any new binding must take
+// a number below it, and adding one above it is a spec violation the driver
+// will not necessarily complain about outside validation.
+#define SI_BINDING_PUNCTUAL_LIGHT_BUFFER 18  // point/spot/directional lights (Phase 8)
+#define SI_BINDING_TEXTURE_ARRAY         19  // must remain the highest binding
 #define SI_BINDING_INSTANCE_TRANSFORMS_PREV 12
 #define SI_BINDING_INSTANCE_MATERIAL_INDICES 13
 #define SI_BINDING_RESERVOIR_HISTORY       14  // previous frame's final reservoir (read by temporal, written by spatial)
