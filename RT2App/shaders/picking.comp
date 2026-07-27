@@ -39,7 +39,10 @@ layout(set = 0, binding = 17, std430) readonly buffer InstanceMatOffsetBuffer
 {
     uint instanceMatOffsets[];
 };
-layout(set = 0, binding = 18) uniform sampler2D textures[];
+// NOTE: this shader hardcodes its binding numbers rather than including
+// shader_interface.h, so it does not follow renumbering automatically. 19 is
+// SI_BINDING_TEXTURE_ARRAY, which must stay the set's highest binding.
+layout(set = 0, binding = 19) uniform sampler2D textures[];
 
 layout(set = 1, binding = 0, std430) buffer PickOutput
 {

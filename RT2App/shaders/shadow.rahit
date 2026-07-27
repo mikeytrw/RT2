@@ -1,6 +1,5 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
-#extension GL_NV_ray_tracing : require
 #extension GL_EXT_scalar_block_layout : require
 #extension GL_EXT_nonuniform_qualifier : require
 
@@ -9,7 +8,7 @@
 
 // Any-hit shader for shadow rays on alpha-blended/cutout materials.
 // Accept = return (do nothing) → ray terminates, surface blocks light.
-// Reject = ignoreIntersectionNV() → ray continues through.
+// Reject = ignoreIntersectionEXT → ray continues through.
 layout(location = 2) rayPayloadInEXT float shadowVisible;
 
 // Hardware-provided barycentric hit attributes (core GL_EXT_ray_tracing).
@@ -53,7 +52,7 @@ void main()
     if (mat.alphaMode < 1.5)
     {
         if (alpha < mat.alphaCutoff)
-            ignoreIntersectionNV();  // transparent → ray continues
+            ignoreIntersectionEXT;  // transparent → ray continues
         // else: accept (return) → blocks light
         return;
     }
@@ -68,6 +67,6 @@ void main()
     float r = float(hash) / 4294967295.0;
 
     if (r >= alpha)
-        ignoreIntersectionNV();  // passes through
+        ignoreIntersectionEXT;  // passes through
     // else: accept (return) → probabilistic occluder
 }
