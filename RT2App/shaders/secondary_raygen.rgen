@@ -199,6 +199,14 @@ void main()
         vec3(1.0), rngState, useReSTIR, jointLobeEstimator, pixelLinear);
 
     vec3 directLighting = nee.radiance;
+
+    // Punctual lights, as an independent additive term. Needed here as well as
+    // in closesthit: with raster-first (the default) this shades the primary
+    // visible surface, while closesthit only handles bounces. Throughput is
+    // 1.0 at the primary hit, matching the computeNEE call above.
+    directLighting += samplePunctualNEE(
+        wo, n, worldPos, baseColor, metallic, rngState);
+
     float nextBsdfPdf = nee.nextBsdfPdf;
 
     // ---- Trace secondary ray (depth=1, closesthit handles bounces) ----

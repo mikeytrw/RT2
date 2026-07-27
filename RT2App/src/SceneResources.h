@@ -106,6 +106,7 @@ public:
 	// Buffer accessors (for descriptor set updates)
 	VkBuffer GetMaterialBuffer() const { return m_MaterialBuffer; }
 	VkBuffer GetLightBuffer() const { return m_LightBuffer; }
+	VkBuffer GetPunctualLightBuffer() const { return m_PunctualLightBuffer; }
 	VkBuffer GetInstanceTransformBuffer() const { return m_InstanceTransformBuffer; }
 	VkBuffer GetInstanceTransformPrevBuffer() const { return m_InstanceTransformPrevBuffer; }
 	VkBuffer GetInstanceMaterialIndexBuffer() const { return m_InstanceMaterialIndexBuffer; }
@@ -151,6 +152,7 @@ public:
 private:
 	void CreateMaterialBuffer(const GpuDevice& dev);
 	void CreateLightBuffer(const GpuDevice& dev);
+	void CreatePunctualLightBuffer(const GpuDevice& dev);
 	// Full scene rebuilds initialize current and previous from the new scene;
 	// transform-only updates may preserve a size-compatible previous buffer.
 	void CreateInstanceTransformBuffer(const GpuDevice& dev, bool preservePrevious);
@@ -168,6 +170,8 @@ private:
 	// Light buffer (std430: 16-byte header + GPUTriangleLight[])
 	VkBuffer m_LightBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_LightBufferMemory = VK_NULL_HANDLE;
+	VkBuffer m_PunctualLightBuffer = VK_NULL_HANDLE;
+	VkDeviceMemory m_PunctualLightBufferMemory = VK_NULL_HANDLE;
 
 	// Instance transforms (current + prev)
 	VkBuffer m_InstanceTransformBuffer = VK_NULL_HANDLE;

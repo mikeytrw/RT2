@@ -616,6 +616,92 @@ struct NEEDispatchResult
     float nextBsdfPdf;
 };
 
+// Direct lighting from punctual lights (Phase 8).
+//
+// Independent of the triangle-vs-env stochastic selection, so it needs no
+// share of pTri and cannot bias it. One light is chosen per shading point,
+// weighted by its unshadowed contribution, and the estimator divides by that
+// selection probability — so this stays one shadow ray regardless of how many
+// lights the scene has, and remains unbiased.
+vec3 samplePunctualNEE(
+    vec3 wo, vec3 N, vec3 P,
+    vec3 baseColor, float metallic,
+    inout uint rngState)
+{
+    if (punctualLightCount == 0u)
+        return vec3(0.0);
+
+    // Pass 1: weight each light by the luminance it would deliver here,
+    // ignoring visibility. A light behind the surface or outside its spot
+    // cone weighs zero and is never chosen.
+    const uint kMaxConsidered = 64u;
+    uint count = min(punctualLightCount, kMaxConsidered);
+
+    float weights[kMaxConsidered];
+    float total = 0.0;
+    for (uint i = 0u; i < count; i++)
+    {
+        PunctualSample ps = evalPunctualLight(i, P);
+        float w = 0.0;
+        if (ps.valid)
+        {
+            float NdotL = dot(N, ps.toLight);
+            if (NdotL > 0.0)
+                w = dot(ps.radiance, vec3(0.2126, 0.7152, 0.0722)) * NdotL;
+        }
+        weights[i] = max(w, 0.0);
+        total += weights[i];
+    }
+
+    if (total <= 0.0)
+        return vec3(0.0);
+
+    // Pass 2: pick one proportionally.
+    float r = randomFloat(rngState) * total;
+    uint chosen = count - 1u;
+    float running = 0.0;
+    for (uint i = 0u; i < count; i++)
+    {
+        running += weights[i];
+        if (r <= running) { chosen = i; break; }
+    }
+
+    float selectPdf = weights[chosen] / total;
+    if (selectPdf <= 0.0)
+        return vec3(0.0);
+
+    PunctualSample ps = evalPunctualLight(chosen, P);
+    if (!ps.valid)
+        return vec3(0.0);
+
+    float NdotL = dot(N, ps.toLight);
+    if (NdotL <= 0.0)
+        return vec3(0.0);
+
+    vec3 brdf = evalDiffuseBRDF(wo, ps.toLight, N, baseColor, metallic);
+    if (dot(brdf, brdf) <= 0.0)
+        return vec3(0.0);
+
+    // Shadow ray stops just short of the light so the light's own geometry,
+    // if any, does not occlude it.
+    float tmax = (ps.distance > 1e29) ? 1e9 : (ps.distance - 0.002);
+    if (tmax <= 0.001)
+        return vec3(0.0);
+
+    shadowVisible = 0.0;
+    traceRayEXT(topLevelAS,
+                gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,
+                0xFF, 2, 1, 1,
+                P + N * 0.001, 0.001, ps.toLight, tmax, 2);
+
+    if (shadowVisible < 0.5)
+        return vec3(0.0);
+
+    // No MIS weight: a punctual light is a delta distribution, so a BSDF
+    // sample can never hit it and there is no second strategy to balance.
+    return brdf * ps.radiance * NdotL / selectPdf;
+}
+
 NEEDispatchResult computeNEE(
     ScatterResult scatter,
     vec3 wo, vec3 n, vec3 hitPoint,

@@ -53,6 +53,7 @@
 #define SI_BINDING_INSTANCE_TRANSFORMS   10
 #define SI_BINDING_GI_DATA                 11  // ReSTIR GI monolithic buffer (reservoir A/B + receiver history prev/cur)
 #define SI_BINDING_TEXTURE_ARRAY         18
+#define SI_BINDING_PUNCTUAL_LIGHT_BUFFER 19  // point/spot/directional lights (Phase 8)
 #define SI_BINDING_INSTANCE_TRANSFORMS_PREV 12
 #define SI_BINDING_INSTANCE_MATERIAL_INDICES 13
 #define SI_BINDING_RESERVOIR_HISTORY       14  // previous frame's final reservoir (read by temporal, written by spatial)
@@ -129,6 +130,25 @@ struct SITriangleLight
     SI_VEC4  emission_area;  // xyz = emissiveColor*intensity (flat fallback), w = area
     SI_UVEC4 ids;            // x = instanceID, y = primitiveID, z = materialIndex, w = emissiveTexIdx
 };
+
+// ============================================================================
+// PunctualLight — 64 bytes (4 x vec4), std430. Used in PunctualLightBuffer
+// after a 16-byte header. Distinct from SITriangleLight: this has no area,
+// so it is sampled with one deterministic shadow ray rather than by picking
+// a point on a surface.
+// ============================================================================
+struct SIPunctualLight
+{
+    SI_VEC4 position_range;   // xyz = world position, w = range (0 = unbounded)
+    SI_VEC4 direction_type;   // xyz = world direction (unit), w = type as float
+    SI_VEC4 color_intensity;  // xyz = colour, w = intensity
+    SI_VEC4 cone;             // x = cos(inner), y = cos(outer), zw = pad
+};
+
+// Punctual light types. Must match LightType in SceneTypes.h.
+#define SI_LIGHT_TYPE_POINT       0.0
+#define SI_LIGHT_TYPE_SPOT        1.0
+#define SI_LIGHT_TYPE_DIRECTIONAL 2.0
 
 // ============================================================================
 // Reservoir — per-pixel ReSTIR DI reservoir. 32 bytes (2 × uvec4), std430.
