@@ -33,6 +33,7 @@
 #include "UnsavedChangesCoordinator.h"
 #include "ViewportCoordinates.h"
 #include "EditorTransformGizmo.h"
+#include "EditorViewportIcons.h"
 #include "EditorCommandHistory.h"
 #include "EditorSyncRouter.h"
 #include "EditorCommands.h"
@@ -911,9 +912,37 @@ public:
 			}
 		}
 
+		// Editor icon overlay. Lights and cameras have no geometry, so the
+		// GPU picker cannot reach them; this hit test is their only route to
+		// selection from the viewport, and it must run before the GPU pick
+		// request. An icon is drawn on top of whatever is behind it, and the
+		// GPU pick resolves asynchronously, so firing both would select the
+		// wall behind the light a frame later.
+		const bool editorMode = m_Runtime.GetState() == rt2::core::SceneRunState::Edit;
+		const bool clickPressed = m_Input.IsPressed("viewport_pick");
+		EditorIconOverlayResult iconOverlay;
+		if (editorMode && m_ShowEditorIcons)
+		{
+			const auto icons = BuildEditorIconPlacements(
+				m_SceneMgr, m_EditorUI.Selection(),
+				m_Cam.GetProjection() * m_Cam.GetView(),
+				{ imageMin.x, imageMin.y }, { imageSize.x, imageSize.y });
+			const ImVec2 mouse = ImGui::GetMousePos();
+			iconOverlay = DrawEditorViewportIcons(icons, { mouse.x, mouse.y },
+				imageHovered && !gizmo.consumesMouse && !m_Input.IsDown("look"),
+				clickPressed);
+		}
+		if (iconOverlay.clicked)
+		{
+			if (ImGui::GetIO().KeyCtrl)
+				m_EditorUI.Selection().Toggle(iconOverlay.clickedEntity);
+			else
+				m_EditorUI.SelectUuid(iconOverlay.clickedEntity);
+		}
+
 		const bool ordinaryPickClick = imageHovered && !gizmo.consumesMouse &&
-			m_Input.IsPressed("viewport_pick");
-		const bool canPick = m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
+			!iconOverlay.consumesMouse && clickPressed;
+		const bool canPick = editorMode && !iconOverlay.consumesMouse &&
 			(ordinaryPickClick || gizmo.pickThrough) &&
 			!m_Input.IsDown("look");
 		if (imageHovered && m_Input.IsPressed("viewport_pick"))
@@ -2932,6 +2961,11 @@ public:
 	bool m_ShowInspectorWindow   = true; // SceneEditorUI Inspector panel
 	bool m_ShowHierarchyWindow   = true; // SceneEditorUI Outliner panel
 
+	// Editor-only viewport overlay: light and camera icons. Never drawn in
+	// Play, regardless of this flag — it exists so the editor can be
+	// uncluttered for a screenshot, not to change what the game shows.
+	bool m_ShowEditorIcons       = true;
+
 	void NewScene()
 	{
 		m_Unsaved.Request({rt2::core::UnsavedChangesCoordinator::ActionKind::New, {}});
@@ -3422,6 +3456,9 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 			ImGui::MenuItem("Outliner", nullptr, &layerPtr->m_ShowHierarchyWindow);
 			ImGui::MenuItem("Inspector", nullptr, &layerPtr->m_ShowInspectorWindow);
 			ImGui::Separator();
+			ImGui::TextDisabled("Viewport");
+			ImGui::Separator();
+			ImGui::MenuItem("Light / Camera Icons", nullptr, &layerPtr->m_ShowEditorIcons);
 			ImGui::TextDisabled("(Viewport is always shown)");
 			ImGui::EndMenu();
 		}
