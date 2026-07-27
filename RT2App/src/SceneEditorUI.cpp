@@ -323,14 +323,16 @@ void SceneEditorUI::CreatePrimitiveCommand(PrimitiveComponent::Kind kind, float 
 	ApplyMutation(applied, true);
 }
 
-void SceneEditorUI::CreateLightCommand(const glm::vec3& position, const glm::vec3& color,
-                                      float intensity)
+void SceneEditorUI::CreateLightCommand(const char* name, LightType type,
+                                      const glm::vec3& position, const glm::vec3& direction,
+                                      const glm::vec3& color, float intensity)
 {
 	if (!m_SceneMgr || !m_CommandHistory) return;
 	const auto uuid = m_SceneMgr->ReserveKnownUuid();
 	EditableTRS trs;
 	trs.translation = position;
-	auto applied = m_SceneMgr->CreateLightEntity(uuid, "Light", trs, color, intensity, LightType::Point);
+	trs.rotation = LightDirectionToRotation(direction);
+	auto applied = m_SceneMgr->CreateLightEntity(uuid, name, trs, color, intensity, type);
 	if (!applied.success)
 	{
 		ApplyMutation(applied);
@@ -557,9 +559,38 @@ void SceneEditorUI::RenderOutliner()
 			CreateEmptyCommand(selectedParent);
 		ImGui::EndDisabled();
 		ImGui::Separator();
-		if (ImGui::MenuItem("Emissive Light"))
+		if (ImGui::BeginMenu("Light"))
 		{
-			CreatePrimitiveCommand(PrimitiveComponent::Sphere, 0.4f, "Light", {0, 3, 0});
+			// Punctual defaults. Point/spot intensity is candela and goes
+			// through inverse-square falloff, so 50 cd at a few metres reads
+			// as a normal room light. A directional light has no falloff at
+			// all — its intensity is the arriving radiance — which is why it
+			// needs a far smaller number to sit at the same exposure.
+			if (ImGui::MenuItem("Point"))
+			{
+				CreateLightCommand("Point Light", LightType::Point,
+				                   {0, 3, 0}, {0, 0, -1}, {1, 1, 1}, 50.0f);
+			}
+			if (ImGui::MenuItem("Spot"))
+			{
+				CreateLightCommand("Spot Light", LightType::Spot,
+				                   {0, 3, 0}, {0, -1, 0}, {1, 1, 1}, 50.0f);
+			}
+			if (ImGui::MenuItem("Directional"))
+			{
+				CreateLightCommand("Directional Light", LightType::Directional,
+				                   {0, 5, 0}, {0, -1, 0}, {1, 1, 1}, 3.0f);
+			}
+			ImGui::Separator();
+			// Not a punctual light: an emissive sphere, which is real geometry
+			// sampled by NEE as a triangle light. Kept because it is the only
+			// light with visible area, and so the only one that casts soft
+			// shadows.
+			if (ImGui::MenuItem("Emissive Sphere"))
+			{
+				CreatePrimitiveCommand(PrimitiveComponent::Sphere, 0.4f, "Light", {0, 3, 0});
+			}
+			ImGui::EndMenu();
 		}
 		ImGui::Separator();
 		if (ImGui::MenuItem("Cube"))

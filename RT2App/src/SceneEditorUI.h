@@ -223,8 +223,13 @@ private:
 	void CreateEmptyCommand(const std::optional<rt2::core::UUID>& parent);
 	void CreatePrimitiveCommand(PrimitiveComponent::Kind kind, float size,
 	                            const char* name, const glm::vec3& position);
-	void CreateLightCommand(const glm::vec3& position, const glm::vec3& color,
-	                        float intensity);
+	// Punctual light creation. `type` picks Point/Spot/Directional. A spot's
+	// aim and a directional's direction both live in the entity's rotation,
+	// not the light component, so `direction` is converted to a rotation on
+	// the way in and is meaningless for a point light.
+	void CreateLightCommand(const char* name, LightType type,
+	                        const glm::vec3& position, const glm::vec3& direction,
+	                        const glm::vec3& color, float intensity);
 	// Delete the selection as a single RemoveSubtreesCommand.
 	void DeleteSelectionCommand();
 	// Duplicate the selection as a single DuplicateSubtreesCommand.
