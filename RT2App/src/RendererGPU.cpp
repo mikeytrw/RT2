@@ -661,6 +661,19 @@ void RendererGPU::InvalidateGIHistory()
 	m_NRDNeedsReset = true;
 }
 
+void RendererGPU::SetEditorPresentation(bool editorPresentation)
+{
+	if (m_EditorPresentation == editorPresentation) return;
+	// Only the effective value matters. With showBackground already off,
+	// entering or leaving Play changes nothing on screen, so discarding the
+	// accumulated samples would just be a free flicker.
+	const bool wasVisible = IsBackgroundVisible(m_Settings, m_EditorPresentation);
+	m_EditorPresentation = editorPresentation;
+	const bool nowVisible = IsBackgroundVisible(m_Settings, m_EditorPresentation);
+	if (wasVisible != nowVisible)
+		ResetAccumulation();
+}
+
 void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 {
 	bool wasRestirEnabled = m_Settings.restirEnabled;
@@ -819,7 +832,8 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	const int bounceLimit = (int)m_PathTracePass.GetMaxRecursionDepth() - 1;
 	if (maxBouncesClamped > bounceLimit) maxBouncesClamped = bounceLimit;
 	ubo.viewportSPP = glm::vec4((float)m_Width, (float)m_Height, (float)m_Settings.spp, (float)maxBouncesClamped);
-	ubo.apertureFocal = glm::vec4(camera.m_Aperture, camera.m_FocusDistance, m_Settings.showBackground ? 1.0f : 0.0f, m_Settings.emissiveBoost);
+	const bool backgroundVisible = IsBackgroundVisible(m_Settings, m_EditorPresentation);
+	ubo.apertureFocal = glm::vec4(camera.m_Aperture, camera.m_FocusDistance, backgroundVisible ? 1.0f : 0.0f, m_Settings.emissiveBoost);
 	ubo.envMap = glm::vec4((float)m_Scene.GetEnvMapIndex(), m_Settings.envIntensity, (float)m_Scene.GetMarginalCDFIndex(), (float)m_Scene.GetConditionalCDFIndex());
 	ubo.inverseProjection = camera.GetInverseProjection();
 	ubo.inverseView = camera.GetInverseView();

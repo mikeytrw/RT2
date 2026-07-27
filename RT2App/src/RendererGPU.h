@@ -128,6 +128,19 @@ public:
 	RenderSettings GetSettings() const { return m_Settings; }
 	void ApplySettings(const RenderSettings& newSettings);
 
+	// Editor presentation gate. Some settings describe an editor affordance
+	// rather than something the game should render: `showBackground` orients
+	// you in the viewport, but in Play a ray that hits nothing should read as
+	// the game's own background, not a debug colour.
+	//
+	// This is deliberately separate from RenderSettings. The host reads
+	// GetSettings() back into its authored copy, so folding the run state
+	// into the settings struct would let the derived value overwrite what the
+	// user actually chose the first time they entered Play. The authored flag
+	// means "may show"; this decides "does show".
+	void SetEditorPresentation(bool editorPresentation);
+	bool GetEditorPresentation() const { return m_EditorPresentation; }
+
 	// Camera jitter for NRD temporal AA (Halton sequence) — internal,
 	// computed each frame from settings.nrdJitterEnabled + nrdJitterScale.
 	glm::vec2 GetNRDJitter() const { return m_NRDJitter; }
@@ -223,6 +236,9 @@ private:
 	// ReSTIR DI (Reservoir-based Resampling for Direct Illumination) pass + resources
 	ReSTIRPass m_ReSTIRPass;
 	ReservoirResources m_Reservoirs;
+	// Defaults true so headless and any other non-editor host, which never
+	// calls SetEditorPresentation, behaves exactly as before.
+	bool m_EditorPresentation = true;
 	bool m_ReSTIRHistoryInvalidated = true;  // set on resize/scene change/enable toggle
 	uint32_t m_ReSTIRFrameIndex = 1;         // independent of m_FrameIndex — monotonically increasing
 	uint32_t m_ReSTIRHistoryVersion = 0;     // incremented on each InvalidateReSTIRHistory()

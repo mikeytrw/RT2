@@ -69,3 +69,36 @@ TEST_CASE("RenderSettings: field mutation is independent between instances")
 	b.maxBounces = 32;
 	CHECK(a.maxBounces == 8); // a unchanged
 }
+// ============================================================================
+// Editor presentation gating.
+//
+// `showBackground` is authored state that only applies while authoring. The
+// rule is small but the failure it prevents is not: shipping a game whose
+// sky is a debug colour, or -- worse the other way -- having Play silently
+// rewrite the user's setting so it stays off after they stop.
+// ============================================================================
+TEST_CASE("RenderSettings: background is visible only in editor presentation")
+{
+	RenderSettings settings;
+
+	settings.showBackground = true;
+	CHECK(IsBackgroundVisible(settings, true));
+	CHECK_FALSE(IsBackgroundVisible(settings, false));
+
+	settings.showBackground = false;
+	CHECK_FALSE(IsBackgroundVisible(settings, true));
+	CHECK_FALSE(IsBackgroundVisible(settings, false));
+}
+
+TEST_CASE("RenderSettings: gating derives from the flag and never mutates it")
+{
+	RenderSettings settings;
+	settings.showBackground = true;
+
+	// Entering and leaving Play must leave the authored value untouched --
+	// the whole reason this is a free function rather than a field.
+	(void)IsBackgroundVisible(settings, false);
+	CHECK(settings.showBackground);
+	(void)IsBackgroundVisible(settings, true);
+	CHECK(settings.showBackground);
+}
