@@ -130,3 +130,71 @@ TEST_CASE("Import: a model imported after a delete keeps its own textures")
 
 	std::filesystem::remove_all(dir);
 }
+
+// ============================================================================
+// The actual defect behind the report.
+//
+// A merged mega-mesh OBJ stores per-triangle material indices and sets
+// MeshRef::materialIndex to -1, so those per-triangle values are the only
+// thing addressing a material. They are written straight from tinyobj, which
+// numbers materials from 0 within the file being read -- with no matBase
+// added for materials already in the scene.
+//
+// So the second OBJ imported into a scene indexes the FIRST import's
+// materials, and renders with its textures. The glTF path gets this right
+// (SceneLoader.cpp: "Offset material index by matBase"); only OBJ does not.
+//
+// Deleting the first model's entity is what makes it obvious rather than
+// necessary: the orphaned material stays in the table, so the survivor on
+// screen is wearing the deleted model's texture.
+// ============================================================================
+TEST_CASE("Import: a second OBJ's triangles reference its own materials")
+{
+	const auto dir = std::filesystem::temp_directory_path() / "rt2_import_obj_matbase";
+	std::filesystem::remove_all(dir);
+
+	const auto modelA = MakeTexturedObj(dir, "modelA", 255, 0, 0);
+	const auto modelB = MakeTexturedObj(dir, "modelB", 0, 0, 255);
+
+	SceneManager mgr;
+	ImportSettings settings;
+	settings.mergeMegaMesh = true;
+
+	REQUIRE(mgr.ImportObj(modelA.string(), settings).IsValid());
+	const auto rootB = mgr.ImportObj(modelB.string(), settings);
+	REQUIRE(rootB.IsValid());
+
+	const auto& ecs = mgr.GetECS();
+	auto& reg = const_cast<entt::registry&>(ecs.registry);
+	MESSAGE("tables: " << DescribeTables(mgr));
+
+	// Find B's mesh via its subtree.
+	uint32_t meshIdx = UINT32_MAX;
+	std::vector<entt::entity> stack{ rootB.id };
+	while (!stack.empty())
+	{
+		const auto e = stack.back();
+		stack.pop_back();
+		if (!reg.valid(e)) continue;
+		if (auto* mr = reg.try_get<MeshRef>(e)) { meshIdx = mr->meshIndex; break; }
+		if (auto* h = reg.try_get<Hierarchy>(e))
+			for (auto c : h->children) stack.push_back(c);
+	}
+	REQUIRE(meshIdx != UINT32_MAX);
+
+	const auto& mesh = ecs.meshRegistry.GetMesh(meshIdx);
+	REQUIRE_FALSE(mesh.materialIndices.empty());
+
+	for (uint32_t matIdx : mesh.materialIndices)
+	{
+		REQUIRE(matIdx < ecs.materials.size());
+		const int texIdx = ecs.materials[matIdx].baseColorTextureIndex;
+		REQUIRE(texIdx >= 0);
+		REQUIRE(texIdx < (int)ecs.textures.size());
+		const std::string path = ecs.textures[texIdx].ref.path;
+		INFO("B triangle -> material " << matIdx << " -> " << path);
+		CHECK(path.find("modelB") != std::string::npos);
+	}
+
+	std::filesystem::remove_all(dir);
+}

@@ -2540,7 +2540,15 @@ entt::entity SceneLoader::ImportObjIntoECS(
                                                        megaUVs, vertexCache);
                     megaIndices.push_back(unified);
                 }
-                megaMaterialIds.push_back(static_cast<uint32_t>(shapeMatIdx));
+                // tinyobj numbers materials from 0 within the file being read.
+                // MeshRef is created with materialIndex -1, so these per-triangle
+                // values are the only thing addressing a material -- they have to
+                // be scene-global, or a second import indexes the first import's
+                // materials and renders with its textures. (The glTF path does the
+                // same rebase; see "Offset material index by matBase" above.)
+                // With no materials in the file, index 0 is the default material.
+                megaMaterialIds.push_back(materialCount > 0
+                    ? static_cast<uint32_t>(matBase + shapeMatIdx) : 0u);
             }
         }
 
@@ -2641,7 +2649,9 @@ entt::entity SceneLoader::ImportObjIntoECS(
                                                        verts, normals, uvs, cache);
                     indices.push_back(unified);
                 }
-                materialIds.push_back(static_cast<uint32_t>(shapeMatIdx));
+                // Scene-global, for the same reason as the merged branch above.
+                materialIds.push_back(materialCount > 0
+                    ? static_cast<uint32_t>(matBase + shapeMatIdx) : 0u);
             }
 
             // Compute bbox center from the accumulated vertices.
