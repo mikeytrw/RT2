@@ -553,6 +553,12 @@ void SceneResources::UpdateInstances(const GpuDevice& dev, const GPUSceneData& s
 	m_CurrentScene.instances = sceneData.instances;
 	m_CurrentScene.lights = sceneData.lights;
 	m_CurrentScene.totalLightArea = sceneData.totalLightArea;
+	// Punctual lights move with their entity's transform, so they belong in
+	// the transform-update path too. CreatePunctualLightBuffer below uploads
+	// from m_CurrentScene, so without this copy it re-uploaded the same stale
+	// positions and a light dragged in the editor cast from where it used to
+	// be until something forced a full sync.
+	m_CurrentScene.punctualLights = sceneData.punctualLights;
 
 	std::vector<BLASInstance> instances;
 	std::vector<uint32_t> instanceMeshIndices;

@@ -480,6 +480,13 @@ void UpdateInstancesFromECS(GPUSceneData& gpu, const ECSScene& ecsScene,
 		}
     }
 
+    // Punctual lights are entities with a Transform but no MeshRef, so the
+    // renderable loop above never sees them. Their position and aim come
+    // straight from the world matrix, which is exactly what just changed, so
+    // rebuild them here or a light dragged in the editor keeps casting from
+    // its old position until a full sync happens to run.
+    BuildPunctualLightsFromECS(ecsScene, gpu.punctualLights);
+
     // Rebuild light list (areas change with transforms)
     gpu.lights.clear();
     gpu.totalLightArea = 0.0f;

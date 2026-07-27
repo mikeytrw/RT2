@@ -676,3 +676,60 @@ TEST_CASE("Alpha-blended material does NOT trigger transmission")
     CHECK(gm.baseAlpha == 0.5f); // opacity
     CHECK(glm::intBitsToFloat(gm.textureIndices.w) == 0.0f);  // no transmission
 }
+
+// ============================================================================
+// Punctual lights must follow the transform-only sync path.
+//
+// A light is an entity with a Transform and no MeshRef, so it never appears in
+// the renderable loop that UpdateInstancesFromECS iterates. Its position and
+// aim come straight from the world matrix -- exactly what a transform edit
+// changes -- so if this path does not rebuild them, dragging a light in the
+// editor leaves it casting from where it used to be until some unrelated full
+// sync happens to run.
+// ============================================================================
+TEST_CASE("UpdateInstancesFromECS moves punctual lights with their transform")
+{
+    ECSScene scene;
+    scene.materials.push_back(SceneMaterial{});
+
+    // One renderable, so there are instances to update at all.
+    {
+        MeshData mesh;
+        mesh.vertices = {0,0,0, 1,0,0, 0,1,0};
+        mesh.indices = {0, 1, 2};
+        const uint32_t meshIdx = scene.meshRegistry.AddMesh(std::move(mesh));
+        const auto e = scene.registry.create();
+        scene.registry.emplace<Transform>(e);
+        scene.registry.emplace<MeshRef>(e, meshIdx, 0);
+        scene.registry.emplace<VisibleComponent>(e);
+    }
+
+    const auto lightEntity = scene.registry.create();
+    {
+        Transform tf;
+        tf.translation = {1.0f, 2.0f, 3.0f};
+        scene.registry.emplace<Transform>(lightEntity, tf);
+        LightComponent light;
+        light.type = LightType::Point;
+        light.intensity = 50.0f;
+        scene.registry.emplace<LightComponent>(lightEntity, light);
+        scene.registry.emplace<VisibleComponent>(lightEntity);
+    }
+
+    SceneGraph::UpdateWorldTransforms(scene.registry);
+    GPUSceneData gpu = BuildGPUSceneDataFromECS(scene, nullptr);
+    REQUIRE(gpu.punctualLights.size() == 1);
+    CHECK(gpu.punctualLights[0].position_range.x == doctest::Approx(1.0f));
+    CHECK(gpu.punctualLights[0].position_range.z == doctest::Approx(3.0f));
+
+    // Move the light, then run only the transform-sync path.
+    scene.registry.get<Transform>(lightEntity).translation = {-4.0f, 5.0f, 6.0f};
+    SceneGraph::MarkDirty(scene.registry, lightEntity);
+    SceneGraph::UpdateWorldTransforms(scene.registry);
+    UpdateInstancesFromECS(gpu, scene, nullptr);
+
+    REQUIRE(gpu.punctualLights.size() == 1);
+    CHECK(gpu.punctualLights[0].position_range.x == doctest::Approx(-4.0f));
+    CHECK(gpu.punctualLights[0].position_range.y == doctest::Approx(5.0f));
+    CHECK(gpu.punctualLights[0].position_range.z == doctest::Approx(6.0f));
+}
