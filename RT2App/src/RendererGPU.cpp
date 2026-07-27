@@ -348,6 +348,16 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 	if (!m_PathTracePass.IsAvailable()) return;
 	if (!m_Scene.IsValid()) { RT_LOG("[UpdateDS] skip: AS not valid"); return; }
 
+	// The output image is created by OnResize, which can happen after the
+	// first AS rebuild — headless is the clear case, where the rebuild runs
+	// before the viewport is ever sized. Writing the set here would bind a
+	// VK_NULL_HANDLE image, which is invalid without the nullDescriptor
+	// feature. It survives in practice only because a later update rewrites
+	// the set with real handles, so the fault is invisible until the
+	// validation layers are enabled — at which point they report it and the
+	// run dies. Skip instead; OnResize re-drives this once the image exists.
+	if (!HasOutput()) { RT_LOG("[UpdateDS] skip: output image not created yet"); return; }
+
 	// Create camera UBO if needed
 	if (!m_CameraUBO)
 	{

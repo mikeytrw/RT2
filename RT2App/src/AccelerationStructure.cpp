@@ -376,7 +376,13 @@ void AccelerationStructure::BuildAttributeBuffers()
 
 	// Create DEVICE_LOCAL mega-buffers
 	auto createDeviceLocal = [&](VkBuffer& buf, VkDeviceMemory& mem, VkDeviceSize size) {
-		if (size == 0) return;
+		// Never skip. These buffers are written into the descriptor set
+		// unconditionally, and a VK_NULL_HANDLE there is invalid without the
+		// nullDescriptor feature (not enabled). A scene whose meshes carry no
+		// UVs at all — vertical-slice's untextured cube is one — would leave
+		// a null handle bound. Allocate a minimal placeholder instead; the
+		// shader keys off per-mesh offsets and never reads it.
+		if (size == 0) size = sizeof(glm::vec4);
 		GpuResources::CreateBuffer(m_Device, size,
 		             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
 		             VK_BUFFER_USAGE_TRANSFER_DST_BIT,

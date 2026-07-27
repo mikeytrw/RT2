@@ -1349,6 +1349,11 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 	{
 		SceneMaterial mat = m_SceneMgr->GetMaterial(current);
 		bool matChanged = false;
+		// Applied only once the edit is committed (focus lost, Enter, or drag
+		// released), never per keystroke. Each apply runs a material sync that
+		// currently marks the acceleration structure dirty, so editing live
+		// rebuilt every BLAS on every character typed and locked the UI.
+		bool matCommitted = false;
 
 		unsigned int owningWidgetId = m_MaterialPropertiesSession.IsOpen()
 			? m_MaterialPropertiesSessionOwningWidgetId : 0;
@@ -1375,6 +1380,10 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 				m_MaterialPropertiesSession.OnEditCommitted();
 			if (ImGui::IsItemDeactivatedAfterEdit())
 			{
+				// `mat` holds this widget's live value on every frame it is
+				// drawn, so on the deactivation frame it already carries the
+				// final committed value.
+				matCommitted = true;
 				if (m_MaterialPropertiesSession.IsOpen() && owningWidgetId == widgetId)
 					pendingCloseWidgetId = widgetId;
 			}
@@ -1405,7 +1414,7 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 			return ImGui::DragFloat("Emissive Intensity", &mat.emissiveIntensity, 0.1f, 0.0f, 100.0f, "%.1f");
 		});
 
-		if (matChanged)
+		if (matCommitted)
 		{
 			m_SceneMgr->SetMaterialProperties(current, mat);
 			NotifySceneChanged();
