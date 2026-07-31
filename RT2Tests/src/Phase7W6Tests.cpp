@@ -162,6 +162,13 @@ TEST_CASE("Phase7 W6 move keeps the pair together and rejects containment violat
     CHECK(HasDiagnosticDetail(report, "no rollback"));
 
     tree.AddAsset("models/boundary.glb", kModelId);
+    const auto alternateVolume = tree.assets.root_name() == "C:"
+        ? std::filesystem::path("Z:\\rt2_phase7_w6_destination")
+        : std::filesystem::path("C:\\rt2_phase7_w6_destination");
+    CHECK_FALSE(MoveContentBrowserAsset(
+        tree.assets, Record("models/boundary.glb", kModelId),
+        alternateVolume, report, error));
+    CHECK(error.code == Error::InvalidArgument);
     const auto outside = tree.assets / ".." / "outside";
     CHECK_FALSE(MoveContentBrowserAsset(
         tree.assets, Record("models/boundary.glb", kModelId),
