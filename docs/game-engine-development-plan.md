@@ -9588,3 +9588,72 @@ the scanner independently reports it as `Stale`.
 
 Grounding commit for this amendment: `17292d6`. Also supersedes the spec
 header's grounding commit `7ec974b`, which predates W0–W5 landing in the tree.
+
+## Phase 7 W6 verification report (2026-07-31)
+
+W6 was implemented on branch `codex/phase7-w6-content-browser`, grounded
+against `3f21f49` plus the W6-A1 amendment. The implementation commits are
+`29c0ff6` (CPU operations), `c0bbf33` (Content Browser host and drag/drop),
+`3e4495b` and `7f9066b` (acceptance proof refinements), and `140a948`
+(cross-volume discrimination coverage).
+
+### Built
+
+- `RT2App/src/ContentBrowserOperations.{h,cpp}:24-515` is the CPU-only
+  operation seam. It searches the immutable sorted database snapshot, derives
+  dependants from `CollectSceneAssetReferences`, validates containment and
+  reparse boundaries, moves source/sidecar pairs source-first, reports
+  non-rolled-back partial failures, deletes source-first per W6-A1, and
+  verifies reimport identity remains equal to the durable sidecar ID.
+- `RT2App/src/WalnutApp.cpp:1201-1400,3407,4175` adds the project-only
+  Content Browser panel, View-menu registration, search, rename/move/delete/
+  reimport actions, dependant confirmation, refresh-after-success policy, and
+  the absolute `RT2_ASSET_PATH` drag source.
+- `RT2App/src/SceneEditorUI.{h,cpp}:27-43,762-780` and
+  `RT2App/src/WalnutApp.cpp:896-1045` add viewport/outliner drop targets that
+  dispatch through the existing glTF/OBJ import callbacks.
+- `RT2Tests/src/Phase7W6Tests.cpp:78-389` covers search, live-scene
+  dependants, pair rename/move, containment and cross-volume rejection,
+  source-first delete failure states, scanner Stale reporting, reimport ID
+  preservation, standalone policy, and the referenced mesh/script acceptance
+  exercise. All filesystem tests use temporary trees.
+
+The original W6 text still contains historical “sidecar then source” wording
+in its permanent-test/checklist prose. W6-A1 is the controlling amendment and
+the shipped implementation and tests are source-first: a locked source leaves
+the pair untouched; a sidecar failure leaves a named orphan and the scanner
+reports it as Stale.
+
+### Measured gates
+
+- Release solution build: pass.
+- Debug solution build: pass.
+- Release `RT2Tests.exe` from the repository root: **712/712 cases,
+  146,075/146,075 assertions, 0 failed**.
+- Debug `RT2Tests.exe` from the repository root: **712/712 cases,
+  146,075/146,075 assertions, 0 failed**.
+- Focused W6 tests: **8/8 cases, 111/111 assertions** in both Release and
+  Debug.
+- `run_script_test.ps1`: pass (60 frames, 1 entity, no mismatches).
+- `run_slice_test.ps1`: pass; standalone and explicit project-context slice
+  runs both completed 60 steps with authoring intact.
+- Release headless render smoke: pass, 8 frames at 640×360 with ReSTIR and
+  NRD; screenshot and GPU timing readback completed.
+- `graphify update .`: pass; final graph refresh reported 34,295 nodes,
+  72,169 edges and 1,490 communities, with no topology change on the final
+  test-only refresh.
+
+### Acceptance and discrimination evidence
+
+The acceptance fixture creates a temporary project scene referencing a mesh
+and script, renames the mesh and moves the script through the same CPU seam
+used by the browser, reloads the unchanged scene, and confirms both durable
+IDs remain attached while ID-first resolution reaches the new mesh path. The
+permanent red-path probes inject sidecar move failure, locked-source delete,
+sidecar-delete failure, wrong-volume/escape destinations, and a reimport that
+tries to replace the sidecar ID; each produces the expected refusal, partial
+state, diagnostic, or restoration, and the final tree is green in both
+configurations.
+
+No W7 filesystem watcher or async reimport was added, and standalone content
+browser operations remain disabled as specified.
