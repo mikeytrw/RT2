@@ -82,7 +82,7 @@
       <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
-      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
