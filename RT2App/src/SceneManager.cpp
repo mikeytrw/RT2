@@ -109,6 +109,108 @@ void LogAssetDiagnostics(
 		       diagnostic.detail.c_str());
 	}
 }
+
+// All resource indices stored in ECSScene pass through this walk. Import
+// merging uses bases; compaction supplies old-to-new maps. Keeping both
+// operations on the same field list makes a new index-bearing field visible
+// at the one place that must be updated for both operations.
+struct IndexRebase
+{
+	uint32_t meshBase = 0;
+	int materialBase = 0;
+	int textureBase = 0;
+	const std::map<uint32_t, uint32_t>* meshRemap = nullptr;
+	const std::map<int, int>* materialRemap = nullptr;
+	const std::map<int, int>* textureRemap = nullptr;
+
+	uint32_t Mesh(uint32_t index) const
+	{
+		if (!meshRemap)
+			return index + meshBase;
+		const auto it = meshRemap->find(index);
+		return it != meshRemap->end() ? it->second : index;
+	}
+
+	int Material(int index) const
+	{
+		if (index < 0)
+			return index;
+		if (!materialRemap)
+			return index + materialBase;
+		const auto it = materialRemap->find(index);
+		return it != materialRemap->end() ? it->second : index;
+	}
+
+	int MaterialOverride(int index) const
+	{
+		if (index < 0)
+			return index;
+		if (!materialRemap)
+			return index + materialBase;
+		const auto it = materialRemap->find(index);
+		return it != materialRemap->end() ? it->second : -1;
+	}
+
+	int Texture(int index) const
+	{
+		if (index < 0)
+			return index;
+		if (!textureRemap)
+			return index + textureBase;
+		const auto it = textureRemap->find(index);
+		return it != textureRemap->end() ? it->second : -1;
+	}
+};
+
+void RebaseIndices(ECSScene& scene, const IndexRebase& rebase)
+{
+	// This is the complete list of scene-resource index fields. Keep all
+	// additions here so merge and compaction cannot silently diverge.
+	auto rebaseMaterialTextures = [&](SceneMaterial& material)
+	{
+		material.baseColorTextureIndex =
+			rebase.Texture(material.baseColorTextureIndex);
+		material.normalTextureIndex =
+			rebase.Texture(material.normalTextureIndex);
+		material.emissiveTextureIndex =
+			rebase.Texture(material.emissiveTextureIndex);
+		material.metallicRoughnessTextureIndex =
+			rebase.Texture(material.metallicRoughnessTextureIndex);
+	};
+
+	for (uint32_t meshIndex = 0;
+	     meshIndex < scene.meshRegistry.GetCount();
+	     ++meshIndex)
+	{
+		auto& mesh = scene.meshRegistry.GetMesh(meshIndex);
+		for (auto& materialIndex : mesh.materialIndices)
+		{
+			const int remapped = rebase.Material(static_cast<int>(materialIndex));
+			if (remapped >= 0)
+				materialIndex = static_cast<uint32_t>(remapped);
+		}
+	}
+
+	for (auto& material : scene.materials)
+		rebaseMaterialTextures(material);
+
+	auto meshRefView = scene.registry.view<MeshRef>();
+	for (const auto entity : meshRefView)
+	{
+		auto& ref = meshRefView.get<MeshRef>(entity);
+		ref.meshIndex = rebase.Mesh(ref.meshIndex);
+		ref.materialIndex = rebase.Material(ref.materialIndex);
+	}
+
+	auto overrideView = scene.registry.view<MaterialOverrideComponent>();
+	for (const auto entity : overrideView)
+	{
+		auto& materialOverride = overrideView.get<MaterialOverrideComponent>(entity);
+		rebaseMaterialTextures(materialOverride.material);
+		materialOverride.materialIndex =
+			rebase.MaterialOverride(materialOverride.materialIndex);
+	}
+}
 }
 
 // Fill an imported entity's source path (if empty) and assign it a stable
@@ -601,31 +703,19 @@ SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
 	const uint32_t meshBase = dst.meshRegistry.GetCount();
 	const int matBase = (int)dst.materials.size();
 	const int texBase = (int)dst.textures.size();
+	IndexRebase rebase;
+	rebase.meshBase = meshBase;
+	rebase.materialBase = matBase;
+	rebase.textureBase = texBase;
+	RebaseIndices(src, rebase);
 
-	// Append meshes. OBJ meshes use per-triangle materialIndices that must
-	// be offset by matBase so they reference the correct material slots.
+	// Append meshes after the complete source scene has been rebased.
 	for (uint32_t i = 0; i < src.meshRegistry.GetCount(); ++i)
-	{
-		MeshData mesh = src.meshRegistry.GetMesh(i); // copy
-		if (!mesh.materialIndices.empty())
-		{
-			for (auto& mi : mesh.materialIndices)
-				mi += static_cast<uint32_t>(matBase);
-		}
-		dst.meshRegistry.AddMesh(std::move(mesh));
-	}
+		dst.meshRegistry.AddMesh(src.meshRegistry.GetMesh(i));
 
-	// Append materials, remapping texture indices.
+	// Append materials after their texture indices have been rebased.
 	for (const auto& sm : src.materials)
-	{
-		SceneMaterial m = sm;
-		auto remapTex = [&](int& idx) { if (idx >= 0) idx += texBase; };
-		remapTex(m.baseColorTextureIndex);
-		remapTex(m.normalTextureIndex);
-		remapTex(m.emissiveTextureIndex);
-		remapTex(m.metallicRoughnessTextureIndex);
-		dst.materials.push_back(m);
-	}
+		dst.materials.push_back(sm);
 
 	// Append textures.
 	for (auto& st : src.textures)
@@ -651,16 +741,8 @@ SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
 		}
 	}
 
-	// Copy MeshRef (remap meshIndex by meshBase, materialIndex by matBase).
-	//
-	// materialIndex needs rebasing for exactly the same reason as the
-	// per-triangle indices above: the source scene numbered its materials
-	// from 0, and they land after the destination's. A mesh with no
-	// per-triangle material data selects its material solely through this
-	// field, so leaving it alone made every imported model render with the
-	// material -- and textures -- of whatever was imported first.
-	//
-	// -1 is the "use per-triangle indices" sentinel and must survive intact.
+	// Copy MeshRef after the complete source index walk. -1 remains the
+	// "use per-triangle indices" sentinel.
 	{
 		auto view = srcReg.view<MeshRef>();
 		for (auto e : view)
@@ -668,11 +750,7 @@ SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
 			auto it = entityMap.find(e);
 			if (it == entityMap.end()) continue;
 			const auto& srcRef = view.get<MeshRef>(e);
-			MeshRef dstRef;
-			dstRef.meshIndex = srcRef.meshIndex + meshBase;
-			dstRef.materialIndex = (srcRef.materialIndex >= 0)
-				? srcRef.materialIndex + matBase : srcRef.materialIndex;
-			dstReg.emplace<MeshRef>(it->second, dstRef);
+			dstReg.emplace<MeshRef>(it->second, srcRef);
 		}
 	}
 
@@ -695,6 +773,21 @@ SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
 			auto it = entityMap.find(e);
 			if (it == entityMap.end()) continue;
 			dstReg.emplace<VisibleComponent>(it->second, view.get<VisibleComponent>(e));
+		}
+	}
+
+	// Material overrides are authored data rather than loader output today,
+	// but they are valid ECSScene components and carry the same resource
+	// indices. Copy the already-rebased value so this path cannot lose it if a
+	// temporary import scene contains an override.
+	{
+		auto view = srcReg.view<MaterialOverrideComponent>();
+		for (auto e : view)
+		{
+			auto it = entityMap.find(e);
+			if (it == entityMap.end()) continue;
+			dstReg.emplace<MaterialOverrideComponent>(
+				it->second, view.get<MaterialOverrideComponent>(e));
 		}
 	}
 
@@ -3911,15 +4004,9 @@ bool SceneManager::CompactMeshRegistry()
 		for (auto& mesh : newMeshes)
 			meshReg.AddMesh(std::move(mesh));
 
-		// Remap all MeshRef components
-		for (auto entity : view)
-		{
-			if (!reg.valid(entity)) continue;
-			auto& ref = view.get<MeshRef>(entity);
-			auto it = remap.find(ref.meshIndex);
-			if (it != remap.end())
-				ref.meshIndex = it->second;
-		}
+		IndexRebase rebase;
+		rebase.meshRemap = &remap;
+		RebaseIndices(m_EcsScene, rebase);
 
 		printf("[Scene] Compacted mesh registry: %d -> %d meshes\n",
 		       (int)meshReg.GetCount(), (int)referenced.size());
@@ -3971,37 +4058,9 @@ bool SceneManager::CompactMeshRegistry()
 		}
 		m_EcsScene.materials = std::move(newMaterials);
 
-		// Remap MeshRef.materialIndex
-		for (auto entity : view)
-		{
-			if (!reg.valid(entity)) continue;
-			auto& ref = view.get<MeshRef>(entity);
-			auto it = matRemap.find(ref.materialIndex);
-			if (it != matRemap.end())
-				ref.materialIndex = it->second;
-		}
-
-		// Remap per-triangle materialIndices in meshes
-		for (uint32_t m = 0; m < meshReg.GetCount(); m++)
-		{
-			auto& mesh = meshReg.GetMesh(m);
-			for (auto& idx : mesh.materialIndices)
-			{
-				auto it = matRemap.find(idx);
-				if (it != matRemap.end())
-					idx = it->second;
-			}
-		}
-
-		// The durable override value survives compaction, but its transient
-		// material slot must follow the same remap as MeshRef.
-		auto overrideView = reg.view<MaterialOverrideComponent>();
-		for (const auto entity : overrideView)
-		{
-			auto& materialOverride = overrideView.get<MaterialOverrideComponent>(entity);
-			const auto it = matRemap.find(materialOverride.materialIndex);
-			materialOverride.materialIndex = it != matRemap.end() ? it->second : -1;
-		}
+		IndexRebase rebase;
+		rebase.materialRemap = &matRemap;
+		RebaseIndices(m_EcsScene, rebase);
 
 		printf("[Scene] Compacted materials: %zu -> %zu\n",
 		       m_EcsScene.materials.size() + matRemap.size(), matRemap.size());
@@ -4041,33 +4100,9 @@ bool SceneManager::CompactMeshRegistry()
 		}
 		m_EcsScene.textures = std::move(newTextures);
 
-		// Remap texture indices in materials
-		auto remapTex = [&texRemap](int& idx) {
-			if (idx >= 0)
-			{
-				auto it = texRemap.find(idx);
-				if (it != texRemap.end())
-					idx = it->second;
-				else
-					idx = -1; // orphaned texture reference
-			}
-		};
-		for (auto& mat : m_EcsScene.materials)
-		{
-			remapTex(mat.baseColorTextureIndex);
-			remapTex(mat.normalTextureIndex);
-			remapTex(mat.emissiveTextureIndex);
-			remapTex(mat.metallicRoughnessTextureIndex);
-		}
-		auto overrideView = reg.view<MaterialOverrideComponent>();
-		for (const auto entity : overrideView)
-		{
-			auto& mat = overrideView.get<MaterialOverrideComponent>(entity).material;
-			remapTex(mat.baseColorTextureIndex);
-			remapTex(mat.normalTextureIndex);
-			remapTex(mat.emissiveTextureIndex);
-			remapTex(mat.metallicRoughnessTextureIndex);
-		}
+		IndexRebase rebase;
+		rebase.textureRemap = &texRemap;
+		RebaseIndices(m_EcsScene, rebase);
 
 		printf("[Scene] Compacted textures: %zu -> %zu\n",
 		       texRemap.size() + (m_EcsScene.textures.size() - texRemap.size()),
