@@ -198,3 +198,77 @@ TEST_CASE("Import: a second OBJ's triangles reference its own materials")
 
 	std::filesystem::remove_all(dir);
 }
+
+// ============================================================================
+// The defect actually behind the report.
+//
+// The import dialog loads a model into a *fresh* ECSScene -- where its
+// material legitimately sits at index 0 -- and then merges that scene into the
+// live one. MergeImportedECS rebases nearly everything on the way in: mesh
+// indices by meshBase, per-triangle material indices by matBase, and each
+// material's texture indices by texBase. It did not rebase
+// MeshRef::materialIndex, which is how a mesh with no per-triangle material
+// data selects its material.
+//
+// So the second model imported kept materialIndex 0 and rendered with the
+// first model's material -- and therefore its textures. The first model looked
+// correct only because its material really was index 0.
+// ============================================================================
+TEST_CASE("MergeImportedECS rebases MeshRef::materialIndex onto the merged table")
+{
+	SceneManager mgr;
+
+	// An existing model already occupies material slot 0.
+	mgr.AddMaterial(SceneMaterial{});
+	{
+		MeshData existing;
+		existing.vertices = {0,0,0, 1,0,0, 0,1,0};
+		existing.indices = {0, 1, 2};
+		mgr.GetECS().meshRegistry.AddMesh(std::move(existing));
+	}
+	REQUIRE(mgr.GetECS().materials.size() == 1);
+
+	// A freshly loaded import: one material at its own index 0, one mesh
+	// whose MeshRef names that material.
+	ECSScene src;
+	SceneMaterial imported;
+	imported.baseColor = {0.1f, 0.2f, 0.3f};
+	src.materials.push_back(imported);
+
+	MeshData mesh;
+	mesh.vertices = {0,0,0, 1,0,0, 0,1,0};
+	mesh.indices = {0, 1, 2};
+	const uint32_t srcMesh = src.meshRegistry.AddMesh(std::move(mesh));
+
+	const auto srcRoot = src.registry.create();
+	src.registry.emplace<Transform>(srcRoot);
+	src.registry.emplace<NameComponent>(srcRoot, std::string("ImportedRoot"));
+
+	const auto srcChild = src.registry.create();
+	src.registry.emplace<Transform>(srcChild);
+	src.registry.emplace<MeshRef>(srcChild, srcMesh, 0);
+	src.registry.emplace<VisibleComponent>(srcChild);
+	src.registry.emplace<NameComponent>(srcChild, std::string("ImportedMesh"));
+	src.registry.emplace<Hierarchy>(srcRoot).children.push_back(srcChild);
+	src.registry.emplace<Hierarchy>(srcChild).parent = srcRoot;
+
+	const auto merged = mgr.MergeImportedECS(std::move(src), srcRoot, "imported.glb");
+	REQUIRE(merged.IsValid());
+
+	const auto& ecs = mgr.GetECS();
+	REQUIRE(ecs.materials.size() == 2);
+
+	// The imported mesh must name the slot its material actually landed in.
+	auto& reg = const_cast<entt::registry&>(ecs.registry);
+	int found = 0;
+	auto view = reg.view<MeshRef>();
+	for (auto e : view)
+	{
+		const auto& ref = view.get<MeshRef>(e);
+		if (ref.meshIndex == 0) continue;  // the pre-existing mesh
+		INFO("imported MeshRef: mesh=" << ref.meshIndex << " material=" << ref.materialIndex);
+		CHECK(ref.materialIndex == 1);
+		++found;
+	}
+	CHECK(found == 1);
+}

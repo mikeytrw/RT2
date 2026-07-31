@@ -127,6 +127,20 @@ void SceneResources::SetScene(const GpuDevice& dev, GPUSceneData& sceneData)
 		}
 	}
 
+	// Per-instance material selection. 0xFFFFFFFF means "use the mesh's
+	// per-triangle indices"; if the mesh has none, the AS build falls back to
+	// material 0, which belongs to whatever was imported first.
+	{
+		const int kMaxLoggedInstances = 24;
+		const int instCount = (int)sceneData.instances.size();
+		for (int i = 0; i < instCount && i < kMaxLoggedInstances; ++i)
+		{
+			const auto& inst = sceneData.instances[i];
+			RT_LOG("[SetScene]   inst[%d]: mesh=%u material=%d", i, inst.meshIndex,
+			       inst.materialIndex == 0xFFFFFFFFu ? -1 : (int)inst.materialIndex);
+		}
+	}
+
 	printf("[SetScene] enter: textures=%d meshes=%d, calling vkDeviceWaitIdle...\n",
 	       (int)sceneData.textures.size(), (int)sceneData.meshes.size());
 	fflush(stdout);

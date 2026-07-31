@@ -651,7 +651,16 @@ SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
 		}
 	}
 
-	// Copy MeshRef (remap meshIndex by meshBase).
+	// Copy MeshRef (remap meshIndex by meshBase, materialIndex by matBase).
+	//
+	// materialIndex needs rebasing for exactly the same reason as the
+	// per-triangle indices above: the source scene numbered its materials
+	// from 0, and they land after the destination's. A mesh with no
+	// per-triangle material data selects its material solely through this
+	// field, so leaving it alone made every imported model render with the
+	// material -- and textures -- of whatever was imported first.
+	//
+	// -1 is the "use per-triangle indices" sentinel and must survive intact.
 	{
 		auto view = srcReg.view<MeshRef>();
 		for (auto e : view)
@@ -661,7 +670,8 @@ SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
 			const auto& srcRef = view.get<MeshRef>(e);
 			MeshRef dstRef;
 			dstRef.meshIndex = srcRef.meshIndex + meshBase;
-			dstRef.materialIndex = srcRef.materialIndex;
+			dstRef.materialIndex = (srcRef.materialIndex >= 0)
+				? srcRef.materialIndex + matBase : srcRef.materialIndex;
 			dstReg.emplace<MeshRef>(it->second, dstRef);
 		}
 	}
