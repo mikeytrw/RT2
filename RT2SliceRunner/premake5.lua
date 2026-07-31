@@ -14,6 +14,7 @@ project "RT2SliceRunner"
         "../RT2App/src/SceneSerializer.cpp",
         "../RT2App/src/SceneAssetReferenceVisitor.cpp",
         "../RT2App/src/SceneAssetMigration.cpp",
+        "../RT2App/src/ContentBrowserOperations.cpp",
         "../RT2App/src/AssetResolver.cpp",
         "../RT2App/src/SceneAssetResolver.cpp",
         "../RT2App/src/RuntimeSceneController.cpp",

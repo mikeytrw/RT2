@@ -204,6 +204,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="shaders\shader_interface.h" />
     <ClInclude Include="src\AccelerationStructure.h" />
     <ClInclude Include="src\AssetDatabase.h" />
+    <ClInclude Include="src\ContentBrowserOperations.h" />
     <ClInclude Include="src\AssetIdentity.h" />
     <ClInclude Include="src\AssetReference.h" />
     <ClInclude Include="src\AssetResolver.h" />
@@ -670,6 +671,9 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\SceneAssetMigration.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\ContentBrowserOperations.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\SceneVisibility.cpp">
