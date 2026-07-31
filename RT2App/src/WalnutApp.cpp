@@ -41,6 +41,7 @@
 #include "InputService.h"
 #include "ProjectContext.h"
 #include "SceneAssetMigration.h"
+#include "ContentBrowserOperations.h"
 #include "BackgroundWork.h"
 #include "core/UUID.h"
 #include "core/Error.h"
@@ -63,6 +64,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <sstream>
 
@@ -894,6 +896,22 @@ public:
 		                       (float)m_RendererGPU.GetHeight());
 		ImGui::Image((ImTextureID)m_RendererGPU.GetOutputDescriptorSet(),
 		             imageSize);
+		if (ImGui::BeginDragDropTarget())
+		{
+			if (const ImGuiPayload* payload =
+					ImGui::AcceptDragDropPayload("RT2_ASSET_PATH"))
+			{
+				if (payload->Data && payload->DataSize > 1)
+				{
+					const char* text = static_cast<const char*>(payload->Data);
+					const size_t length = static_cast<size_t>(payload->DataSize - 1);
+					const std::string path(text, length);
+					RT_LOG("[ContentBrowser] viewport drop path=%s", path.c_str());
+					m_EditorUI.ImportAssetPathFromDrop(path);
+				}
+			}
+			ImGui::EndDragDropTarget();
+		}
 		const bool imageHovered = ImGui::IsItemHovered();
 		const TransformGizmoResult gizmo = m_TransformGizmo.Draw(
 			m_SceneMgr, m_EditorUI.Selection(), m_Cam,
@@ -1006,6 +1024,24 @@ public:
 		m_ViewportHoveredThisFrame = imageHovered;
 		m_GizmoConsumesMouseThisFrame = gizmo.consumesMouse;
 	}
+	else
+	{
+		ImGui::TextDisabled("Renderer output unavailable");
+		if (ImGui::BeginDragDropTarget())
+		{
+			if (const ImGuiPayload* payload =
+					ImGui::AcceptDragDropPayload("RT2_ASSET_PATH"))
+			{
+				if (payload->Data && payload->DataSize > 1)
+				{
+					const char* text = static_cast<const char*>(payload->Data);
+					const size_t length = static_cast<size_t>(payload->DataSize - 1);
+					m_EditorUI.ImportAssetPathFromDrop(std::string(text, length));
+				}
+			}
+			ImGui::EndDragDropTarget();
+		}
+	}
 
 	ImGui::End();
 	ImGui::PopStyleVar();
@@ -1013,6 +1049,8 @@ public:
 	// ---- Phase 1B: Session / Recovery UI ----
 	if (m_ShowSessionWindow)
 		DrawSessionPanel();
+	if (m_ShowContentBrowserWindow)
+		DrawContentBrowserPanel();
 	DrawRecoveryPrompt();
 	DrawUnsavedChangesPrompt();
 	DrawLoadingModal();
@@ -1156,6 +1194,211 @@ public:
 					}
 				}
 			}
+		}
+		ImGui::End();
+	}
+
+	void DrawContentBrowserPanel()
+	{
+		ImGui::Begin("Content Browser", &m_ShowContentBrowserWindow);
+		const bool canOperate = rt2::core::ContentBrowserCanOperate(
+			m_ProjectContext != nullptr);
+		if (!canOperate)
+		{
+			ImGui::TextDisabled("No project is open");
+			ImGui::TextWrapped("Open a project to browse and mutate project assets.");
+			ImGui::End();
+			return;
+		}
+
+		ImGui::InputText("Search", m_ContentBrowserSearch,
+			sizeof(m_ContentBrowserSearch));
+		ImGui::SameLine();
+		if (ImGui::Button("Refresh"))
+			RefreshProjectAssets();
+		ImGui::Separator();
+
+		const auto records = rt2::core::SearchContentBrowserAssets(
+			*m_ProjectContext->database, m_ContentBrowserSearch);
+		if (records.empty())
+			ImGui::TextDisabled("No matching assets");
+		for (const auto& record : records)
+		{
+			ImGui::PushID(record.sourcePath.c_str());
+			const bool selected = m_ContentBrowserPendingRecord &&
+				m_ContentBrowserPendingRecord->sourcePath == record.sourcePath;
+			ImGui::Selectable(record.sourcePath.c_str(), selected,
+				ImGuiSelectableFlags_AllowDoubleClick);
+			if (ImGui::BeginDragDropSource())
+			{
+				const auto absolute = m_ProjectContext->project.assetRoot /
+					std::filesystem::u8path(record.sourcePath);
+				const std::string payload = absolute.u8string();
+				ImGui::SetDragDropPayload("RT2_ASSET_PATH", payload.c_str(),
+					payload.size() + 1);
+				ImGui::TextUnformatted(record.sourcePath.c_str());
+				ImGui::EndDragDropSource();
+			}
+			if (ImGui::BeginPopupContextItem("AssetContext"))
+			{
+				m_ContentBrowserPendingRecord = record;
+				if (ImGui::MenuItem("Rename..."))
+				{
+					const auto filename = std::filesystem::u8path(record.sourcePath)
+						.filename().u8string();
+					std::snprintf(m_ContentBrowserRenameBuffer,
+						sizeof(m_ContentBrowserRenameBuffer), "%s", filename.c_str());
+					ImGui::OpenPopup("Rename Asset");
+				}
+				if (ImGui::MenuItem("Move..."))
+				{
+					m_ContentBrowserMoveBuffer[0] = '\0';
+					ImGui::OpenPopup("Move Asset");
+				}
+				if (ImGui::MenuItem("Reimport"))
+				{
+					rt2::core::ContentBrowserOperationReport report;
+					rt2::core::Error error;
+					const bool ok = rt2::core::ReimportContentBrowserAsset(
+						m_ProjectContext->project.assetRoot, record,
+						[this](const rt2::core::AssetRecord& sourceRecord,
+						       const std::filesystem::path& source,
+						       std::vector<rt2::core::AssetDiagnostic>& diagnostics,
+						       rt2::core::Error& importError) {
+							const std::string path = source.u8string();
+							SceneManager::EntityId imported;
+							std::string extension = source.extension().u8string();
+							std::transform(extension.begin(), extension.end(), extension.begin(),
+								[](unsigned char c) {
+									return static_cast<char>(std::tolower(c));
+								});
+							if (extension == ".obj")
+								imported = m_SceneMgr.ImportObj(
+									path, sourceRecord.importSettings, &diagnostics);
+							else
+								imported = m_SceneMgr.ImportGltf(path, &diagnostics);
+							if (!imported.IsValid())
+							{
+								importError.code = rt2::core::Error::InvalidArgument;
+								importError.path = path;
+								importError.detail = "existing scene import path rejected the asset";
+								return false;
+							}
+							m_SceneMgr.MarkDirty();
+							m_PendingFullSync = true;
+							m_GpuSyncPending = true;
+							m_EditorUI.OnImportComplete(imported);
+							return true;
+						}, report, error);
+					if (ok && RefreshProjectAssets())
+						m_LastStatusMsg = "Asset reimported";
+					else if (!ok)
+						m_LastStatusMsg = "Asset reimport failed: " + error.Format();
+				}
+				if (ImGui::MenuItem("Delete..."))
+				{
+					m_ContentBrowserDeleteConfirmed = false;
+					m_ContentBrowserDeleteDependants =
+						rt2::core::FindContentBrowserDependants(
+							m_SceneMgr.AuthoringDoc(), record,
+							m_ProjectContext->project.assetRoot);
+					ImGui::OpenPopup("Delete Asset");
+				}
+				ImGui::EndPopup();
+			}
+			ImGui::PopID();
+		}
+
+		if (ImGui::BeginPopupModal("Rename Asset", nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::InputText("New name", m_ContentBrowserRenameBuffer,
+				sizeof(m_ContentBrowserRenameBuffer));
+			if (ImGui::Button("Rename") && m_ContentBrowserPendingRecord)
+			{
+				rt2::core::ContentBrowserOperationReport report;
+				rt2::core::Error error;
+				const bool ok = rt2::core::RenameContentBrowserAsset(
+					m_ProjectContext->project.assetRoot,
+					*m_ContentBrowserPendingRecord,
+					m_ContentBrowserRenameBuffer, report, error);
+				if (ok && RefreshProjectAssets())
+					m_LastStatusMsg = "Asset renamed";
+				else if (!ok)
+					m_LastStatusMsg = "Asset rename failed: " + error.Format();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+		}
+
+		if (ImGui::BeginPopupModal("Move Asset", nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::InputText("Destination folder", m_ContentBrowserMoveBuffer,
+				sizeof(m_ContentBrowserMoveBuffer));
+			if (ImGui::Button("Choose..."))
+			{
+				const std::string folder = FileDialog::OpenFolder(
+					m_ProjectContext->project.assetRoot);
+				if (!folder.empty())
+					std::snprintf(m_ContentBrowserMoveBuffer,
+						sizeof(m_ContentBrowserMoveBuffer), "%s", folder.c_str());
+			}
+			if (ImGui::Button("Move") && m_ContentBrowserPendingRecord)
+			{
+				rt2::core::ContentBrowserOperationReport report;
+				rt2::core::Error error;
+				const bool ok = rt2::core::MoveContentBrowserAsset(
+					m_ProjectContext->project.assetRoot,
+					*m_ContentBrowserPendingRecord,
+					std::filesystem::u8path(m_ContentBrowserMoveBuffer),
+					report, error);
+				if (ok && RefreshProjectAssets())
+					m_LastStatusMsg = "Asset moved";
+				else if (!ok)
+					m_LastStatusMsg = "Asset move failed: " + error.Format();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
+		}
+
+		if (ImGui::BeginPopupModal("Delete Asset", nullptr,
+			ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::TextWrapped("Delete the source and its identity sidecar? This does not rewrite the scene.");
+			if (!m_ContentBrowserDeleteDependants.empty())
+			{
+				ImGui::Text("Dependants in the current scene:");
+				for (const auto& dependant : m_ContentBrowserDeleteDependants)
+					ImGui::BulletText("%s (%s)",
+						dependant.entityName.empty() ? "Environment" : dependant.entityName.c_str(),
+						dependant.sourceKey.c_str());
+			}
+			ImGui::Checkbox("I understand references may become unresolved",
+				&m_ContentBrowserDeleteConfirmed);
+			if (ImGui::Button("Delete") && m_ContentBrowserPendingRecord &&
+				rt2::core::ContentBrowserDeleteAllowed(
+					m_ContentBrowserDeleteConfirmed,
+					m_ContentBrowserDeleteDependants.size()))
+			{
+				rt2::core::ContentBrowserOperationReport report;
+				rt2::core::Error error;
+				const bool ok = rt2::core::DeleteContentBrowserAsset(
+					m_ProjectContext->project.assetRoot,
+					*m_ContentBrowserPendingRecord, report, error);
+				if (ok && RefreshProjectAssets())
+					m_LastStatusMsg = "Asset deleted";
+				else if (!ok)
+					m_LastStatusMsg = "Asset delete failed: " + error.Format();
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+			ImGui::EndPopup();
 		}
 		ImGui::End();
 	}
@@ -3161,8 +3404,15 @@ public:
 	bool m_ShowRenderSettingsWin  = true;
 	bool m_ShowSceneWindow       = true;
 	bool m_ShowSessionWindow     = true;
+	bool m_ShowContentBrowserWindow = false;
 	bool m_ShowInspectorWindow   = true; // SceneEditorUI Inspector panel
 	bool m_ShowHierarchyWindow   = true; // SceneEditorUI Outliner panel
+	char m_ContentBrowserSearch[256]{};
+	char m_ContentBrowserRenameBuffer[256]{};
+	char m_ContentBrowserMoveBuffer[512]{};
+	std::optional<rt2::core::AssetRecord> m_ContentBrowserPendingRecord;
+	std::vector<rt2::core::ContentBrowserDependant> m_ContentBrowserDeleteDependants;
+	bool m_ContentBrowserDeleteConfirmed = false;
 
 	// Editor-only viewport overlay: light and camera icons. Never drawn in
 	// Play, regardless of this flag — it exists so the editor can be
@@ -3922,6 +4172,7 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 			ImGui::MenuItem("Render Settings", nullptr, &layerPtr->m_ShowRenderSettingsWin);
 			ImGui::MenuItem("Scene", nullptr, &layerPtr->m_ShowSceneWindow);
 			ImGui::MenuItem("Session", nullptr, &layerPtr->m_ShowSessionWindow);
+			ImGui::MenuItem("Content Browser", nullptr, &layerPtr->m_ShowContentBrowserWindow);
 			ImGui::MenuItem("Outliner", nullptr, &layerPtr->m_ShowHierarchyWindow);
 			ImGui::MenuItem("Inspector", nullptr, &layerPtr->m_ShowInspectorWindow);
 			ImGui::Separator();

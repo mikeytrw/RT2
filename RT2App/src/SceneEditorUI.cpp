@@ -24,6 +24,24 @@ void SceneEditorUI::RenderPanels()
 	DrawImportOptionsModal();
 }
 
+void SceneEditorUI::ImportAssetPathFromDrop(const std::string& path)
+{
+	const std::string extension = std::filesystem::u8path(path).extension().u8string();
+	std::string folded = extension;
+	std::transform(folded.begin(), folded.end(), folded.begin(),
+		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	if (folded == ".obj")
+	{
+		if (m_OnImportWithOptions)
+			m_OnImportWithOptions(path, ImportSettings{});
+	}
+	else if (folded == ".glb" || folded == ".gltf")
+	{
+		if (m_OnImportGltf)
+			m_OnImportGltf(path);
+	}
+}
+
 void SceneEditorUI::NotifySceneChanged()
 {
 	if (m_OnSceneChanged)
@@ -650,6 +668,7 @@ void SceneEditorUI::RenderOutliner()
 	if (count == 0)
 	{
 		ImGui::TextDisabled("  (empty â€” load a scene or add an entity)");
+		RenderAssetDropTarget();
 		ImGui::End();
 		return;
 	}
@@ -712,6 +731,7 @@ void SceneEditorUI::RenderOutliner()
 
 	if (!m_MutationError.empty())
 		ImGui::TextWrapped("%s", m_MutationError.c_str());
+	RenderAssetDropTarget();
 
 	const auto& io = ImGui::GetIO();
 	if (m_Editable && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
@@ -737,6 +757,25 @@ void SceneEditorUI::RenderOutliner()
 	}
 
 	ImGui::End();
+}
+
+void SceneEditorUI::RenderAssetDropTarget()
+{
+	ImGui::Separator();
+	ImGui::TextDisabled("Drop a .glb, .gltf or .obj from Content Browser to import");
+	if (!ImGui::BeginDragDropTarget())
+		return;
+	if (const ImGuiPayload* payload =
+			ImGui::AcceptDragDropPayload("RT2_ASSET_PATH"))
+	{
+		if (payload->Data && payload->DataSize > 1)
+		{
+			const char* text = static_cast<const char*>(payload->Data);
+			const size_t length = static_cast<size_t>(payload->DataSize - 1);
+			ImportAssetPathFromDrop(std::string(text, length));
+		}
+	}
+	ImGui::EndDragDropTarget();
 }
 
 void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
