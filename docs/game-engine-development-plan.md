@@ -32,7 +32,12 @@ If you need current state rather than history, these are authoritative:
 |---|---|
 | Which tests should pass? | **Test baseline** (near the end) — supersedes every earlier figure |
 | What does the engine do today? | The `docs/` siblings: `scripting.md`, `scene-management.md`, `game-loop.md` |
-| What is being built next? | **Phase 7 — implementation plan** (last section) |
+| What is being built next? | **Phase 7 — implementation plan**; W0–W3 are closed, **W4 is the next unstarted roadmap work** |
+| What does this term mean? | `docs/glossary.md` — terms that have caused a defect, and the four context boundaries indices are translated across. Unlike this file it is corrected in place. |
+
+**A number means a roadmap phase and nothing else.** Off-roadmap work gets a
+name. Two sections were once both called "Phase 8"; see the glossary entry for
+`Phase N`.
 
 This file is also **two documents concatenated**: the phase roadmap, then
 `# First tiny vertical slice development plan` at the halfway point. The
@@ -8385,7 +8390,30 @@ Two items are carried forward rather than closed:
 
 Next: W4 project scanning and database ownership.
 
-## Phase 8 — Punctual lights (spec)
+## Punctual lights (spec) — renderer work, not a roadmap phase
+
+> **Retitled 2026-07-31. This section was originally headed "Phase 8 —
+> Punctual lights", which collided with the roadmap's Phase 8 (Prefabs,
+> `:581`) — two different Phase 8s in one append-only document. The roadmap
+> numbering is authoritative; this is off-roadmap renderer work and should
+> never have taken a number. Header corrected under the "correct headers
+> freely" rule; the body below is left as written.**
+>
+> **Status superseding the "no implementation has started" line below:
+> implemented and shipped 2026-07-27** (PR #3, merged at `77626a3`). Steps
+> 1–6 landed; step 7 (close report) was never written. Scope explicitly not
+> taken: ReSTIR DI reservoir candidacy for punctual lights (P8-Q5).
+>
+> Follow-on work landed after the spec: editor viewport icons for lights and
+> cameras, Inspector fields for range and spot cone angles, and run-state
+> gating of editor-only visuals. Two defects found afterwards and fixed —
+> punctual lights were absent from the transform-only sync path (a moved
+> light kept casting from its old position until Play), and the descriptor
+> binding this spec added was placed above the variable-count texture array,
+> which is a Vulkan spec violation.
+>
+> Terms used here — "light", "punctual", "triangle light" — are defined in
+> `docs/glossary.md`.
 
 Drafted 2026-07-26, grounded against `db74b4c` on `phase-6-scripting`. No
 implementation has started. This section is a spec and requires review
