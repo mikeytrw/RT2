@@ -6,6 +6,7 @@
 #include "ProjectAssetScanner.h"
 #include "SceneAssetReferenceVisitor.h"
 #include "SceneDocument.h"
+#include "SceneSerializer.h"
 #include "core/UUID.h"
 
 #include <algorithm>
@@ -308,4 +309,89 @@ TEST_CASE("Phase7 W6 host policy disables standalone operations and requires con
     CHECK_FALSE(ContentBrowserDeleteAllowed(false, 0));
     CHECK(ContentBrowserDeleteAllowed(true, 1));
     CHECK(ContentBrowserDeleteAllowed(true, 0));
+}
+
+TEST_CASE("Phase7 W6 acceptance: moving referenced mesh and script preserves IDs and scene bytes")
+{
+    TempTree tree;
+    tree.AddAsset("models/hero.glb", kModelId);
+    tree.AddAsset("scripts/main.lua", kScriptId);
+
+    SceneDocument document;
+    document.metadata.schemaVersion = SceneSerializer::SchemaVersion;
+    document.metadata.projectId = UUID::Parse(
+        "550e8400-e29b-41d4-a716-446655440110");
+    document.metadata.assetRoot = tree.assets;
+    document.metadata.sourcePath = tree.assets / "Scenes" / "main.rt2scene";
+    const auto entity = document.ecs.registry.create();
+    REQUIRE(document.AssignKnownUuid(entity, kEntityId));
+    document.ecs.registry.emplace<NameComponent>(entity, "Hero");
+    ImportedMeshSourceComponent imported;
+    imported.model.kind = AssetKind::Model;
+    imported.model.path = "models/hero.glb";
+    imported.model.assetId = kModelId;
+    imported.model.sourceKey = "gltf:scene=0";
+    document.ecs.registry.emplace<ImportedMeshSourceComponent>(entity, imported);
+    ScriptComponent script;
+    script.asset.kind = AssetKind::Script;
+    script.asset.path = "scripts/main.lua";
+    script.asset.assetId = kScriptId;
+    script.asset.sourceKey = "lua:asset=scripts/main.lua";
+    document.ecs.registry.emplace<ScriptComponent>(entity, script);
+
+    Error error;
+    std::vector<AssetDiagnostic> diagnostics;
+    REQUIRE(SceneSerializer::Save(
+        document, document.metadata.sourcePath, diagnostics, error));
+    std::ifstream beforeInput(document.metadata.sourcePath, std::ios::binary);
+    const std::string before(
+        (std::istreambuf_iterator<char>(beforeInput)), {});
+
+    ContentBrowserOperationReport report;
+    REQUIRE(MoveContentBrowserAsset(
+        tree.assets, Record("models/hero.glb", kModelId),
+        tree.assets / "moved", report, error));
+    REQUIRE(MoveContentBrowserAsset(
+        tree.assets, Record("scripts/main.lua", kScriptId),
+        tree.assets / "moved", report, error));
+
+    std::ifstream afterInput(document.metadata.sourcePath, std::ios::binary);
+    CHECK(std::string((std::istreambuf_iterator<char>(afterInput)), {}) == before);
+
+    ProjectAssetScanResult scan;
+    REQUIRE(ScanProjectAssets(tree.assets, scan, error));
+    const auto* movedMesh = scan.database->FindByPath("moved/hero.glb");
+    const auto* movedScript = scan.database->FindByPath("moved/main.lua");
+    REQUIRE(movedMesh != nullptr);
+    REQUIRE(movedScript != nullptr);
+    CHECK(movedMesh->assetId == kModelId);
+    CHECK(movedScript->assetId == kScriptId);
+
+    SceneDocument reloaded;
+    SceneLoadReport loadReport;
+    REQUIRE(SceneSerializer::Load(
+        reloaded, document.metadata.sourcePath, loadReport, error));
+    const auto references = CollectSceneAssetReferences(reloaded);
+    REQUIRE(references.size() == 2);
+    CHECK(std::any_of(references.begin(), references.end(),
+        [](const auto& slot) {
+            return slot.reference && slot.reference->assetId == kModelId &&
+                   slot.reference->path == "models/hero.glb";
+        }));
+    CHECK(std::any_of(references.begin(), references.end(),
+        [](const auto& slot) {
+            return slot.reference && slot.reference->assetId == kScriptId &&
+                   slot.reference->path == "scripts/main.lua";
+        }));
+
+    AssetReference staleReference;
+    staleReference.kind = AssetKind::Model;
+    staleReference.path = "models/hero.glb";
+    staleReference.assetId = kModelId;
+    std::vector<AssetDiagnostic> resolveDiagnostics;
+    const auto resolved = Resolve(
+        staleReference, AssetResolutionContext{tree.assets, scan.database.get()},
+        kEntityId, "Hero", resolveDiagnostics);
+    REQUIRE(resolved.success);
+    CHECK(resolved.resolvedPath == tree.assets / "moved" / "hero.glb");
 }
