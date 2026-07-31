@@ -7,6 +7,7 @@
 #include "PersistedComponents.h"
 #include "ScriptComponentValidation.h"
 #include "AssetResolver.h"
+#include "SceneAssetReferenceVisitor.h"
 
 #include "json.hpp"
 
@@ -231,22 +232,74 @@ json AssetReferenceToJson(const AssetReference& a)
     return j;
 }
 
-AssetReference JsonToAssetReference(const json& j, Error& err)
+AssetReference JsonToAssetReference(const json& j,
+                                    uint32_t schemaVersion,
+                                    SceneLoadReport* report,
+                                    const UUID& entityUuid,
+                                    const std::string& entityName,
+                                    Error& err)
 {
     AssetReference a;
-    if (j.contains("kind"))
+    if (j.contains("kind") && j["kind"].is_string())
         a.kind = AssetKindFromName(j["kind"].get<std::string>());
-    if (j.contains("path"))
+    if (j.contains("path") && j["path"].is_string())
         a.path = j["path"].get<std::string>();
-    if (j.contains("sourceKey"))
+    if (j.contains("sourceKey") && j["sourceKey"].is_string())
         a.sourceKey = j["sourceKey"].get<std::string>();
     if (j.contains("importSettings"))
         a.importSettings = JsonToImportSettings(j["importSettings"]);
-    // assetId is optional (v3 scenes have none). A malformed value parses to
-    // nil rather than failing the scene — the ID is not yet authoritative for
-    // resolution (W1), so a bad ID is a diagnostic, not a hard failure.
+    // assetId is optional on legacy v3 input. A malformed v3 value is kept
+    // observable as a migration diagnostic; the same malformed value in v4
+    // is a structural parse failure because v4 identity is authoritative.
     if (j.contains("assetId") && j["assetId"].is_string())
         a.assetId = UUID::Parse(j["assetId"].get<std::string>());
+
+    auto recordAssetDiagnostic = [&](AssetDiagnostic::Severity severity,
+                                     const std::string& detail) {
+        if (!report) return;
+        AssetDiagnostic diagnostic;
+        diagnostic.severity = severity;
+        diagnostic.kind = a.kind;
+        diagnostic.refPath = a.path;
+        diagnostic.resolvedPath = a.path;
+        diagnostic.entityUuid = entityUuid;
+        diagnostic.entityName = entityName;
+        diagnostic.sourceKey = a.sourceKey;
+        diagnostic.detail = detail;
+        report->assetDiagnostics.push_back(std::move(diagnostic));
+    };
+
+    if (!a.path.empty() && std::filesystem::u8path(a.path).is_absolute())
+    {
+        if (report) report->hasNonPortableAsset = true;
+        recordAssetDiagnostic(AssetDiagnostic::NonPortable,
+                              "asset reference uses an absolute path");
+    }
+
+    if (!j.contains("assetId") && !a.path.empty())
+    {
+        if (report) report->requiresAssetMigration = true;
+        recordAssetDiagnostic(AssetDiagnostic::Stale,
+                              "asset reference has no durable sidecar ID");
+    }
+    else if (j.contains("assetId"))
+    {
+        const bool valid = j["assetId"].is_string() &&
+            !UUID::Parse(j["assetId"].get<std::string>()).IsNull();
+        if (!valid)
+        {
+            const std::string detail =
+                "assetId must be a valid UUID when present";
+            if (schemaVersion >= SceneSerializer::SchemaVersion)
+            {
+                err.code = Error::Parse;
+                err.detail = detail;
+                return a;
+            }
+            if (report) report->requiresAssetMigration = true;
+            recordAssetDiagnostic(AssetDiagnostic::Malformed, detail);
+        }
+    }
 
     if (a.kind == AssetKind::Unknown && !a.path.empty())
     {
@@ -743,7 +796,8 @@ std::optional<json> EntityRecordToJson(
 }
 
 // Parse an entity from JSON into a record (pass 1 — no entity creation yet).
-EntityRecord JsonToEntityRecord(const json& j, Error& err,
+EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
+                                Error& err,
                                 SceneLoadReport* report)
 {
     EntityRecord r;
@@ -811,7 +865,8 @@ EntityRecord JsonToEntityRecord(const json& j, Error& err,
     if (j.contains("importedSource"))
     {
         r.hasImportedSource = true;
-        r.importedSource.model = JsonToAssetReference(j["importedSource"], err);
+        r.importedSource.model = JsonToAssetReference(
+            j["importedSource"], schemaVersion, report, r.uuid, r.name, err);
         if (!err.IsOk())
         {
             err.path = r.uuid.ToString();
@@ -909,7 +964,8 @@ EntityRecord JsonToEntityRecord(const json& j, Error& err,
 
         Error assetError;
         AssetReference decodedAsset =
-            JsonToAssetReference(asset, assetError);
+            JsonToAssetReference(asset, schemaVersion, report, r.uuid, r.name,
+                                 assetError);
         if (!assetError.IsOk())
         {
             err = assetError;
@@ -1234,10 +1290,24 @@ static bool SaveInternal(const SceneDocument& doc,
                          const std::filesystem::path& outPath,
                          const std::filesystem::path& outputSceneDir,
                          std::vector<AssetDiagnostic>& diagnostics,
-                         Error& err)
+                         Error& err,
+                         uint32_t outputVersion)
 {
     err = Error{};
     std::vector<AssetDiagnostic> stagedDiagnostics;
+    // Keep serializer validation on the same durable-reference coverage as
+    // migration and portability reporting. A non-empty reference with no
+    // kind would otherwise serialize into a scene that cannot be loaded back.
+    for (const auto& slot : CollectSceneAssetReferences(doc))
+    {
+        if (!slot.reference || slot.reference->path.empty() ||
+            slot.reference->kind != AssetKind::Unknown)
+            continue;
+        err.code = Error::InvalidArgument;
+        err.path = slot.reference->path;
+        err.detail = "asset reference has a path but no asset kind";
+        return false;
+    }
     // Pre-save validation: every entity with a MeshRef must have either a
     // PrimitiveComponent (procedural) or an ImportedMeshSourceComponent
     // (durable asset reference). Entities with neither cannot reopen —
@@ -1307,15 +1377,27 @@ static bool SaveInternal(const SceneDocument& doc,
         doc.metadata.sourcePath.empty()
             ? std::filesystem::path{}
             : doc.metadata.sourcePath.parent_path();
+    const std::filesystem::path currentReferenceRoot =
+        doc.metadata.schemaVersion >= SceneSerializer::SchemaVersion &&
+        !doc.metadata.assetRoot.empty()
+            ? doc.metadata.assetRoot : currentSceneDir;
+    const std::filesystem::path outputReferenceRoot =
+        outputVersion >= SceneSerializer::SchemaVersion &&
+        !doc.metadata.projectId.IsNull() &&
+        !doc.metadata.assetRoot.empty()
+            ? doc.metadata.assetRoot : outputSceneDir;
 
     // Build the JSON document.
     json root;
-    root["version"] = SceneSerializer::SchemaVersion;
+    root["version"] = outputVersion;
 
     // Metadata
     {
         json meta;
         meta["name"]       = doc.metadata.name;
+        if (outputVersion >= SceneSerializer::SchemaVersion &&
+            !doc.metadata.projectId.IsNull())
+            meta["projectId"] = doc.metadata.projectId.ToString();
         root["metadata"]   = meta;
     }
 
@@ -1325,7 +1407,8 @@ static bool SaveInternal(const SceneDocument& doc,
     for (const auto& r : records)
     {
         auto serialized = EntityRecordToJson(
-            r, currentSceneDir, outputSceneDir, stagedDiagnostics, err);
+            r, currentReferenceRoot, outputReferenceRoot,
+            stagedDiagnostics, err);
         if (!serialized) return false;
         entitiesArray.push_back(std::move(*serialized));
     }
@@ -1359,7 +1442,8 @@ static bool SaveInternal(const SceneDocument& doc,
         relRef.kind = AssetKind::Environment;
         const AssetReference originalRef = relRef;
         const auto rebased =
-            RebasePath(relRef.path, currentSceneDir, outputSceneDir);
+            RebasePath(relRef.path, currentReferenceRoot,
+                       outputReferenceRoot);
         AppendNonPortableDiagnostic(
             originalRef, rebased, UUID::Nil(), {},
             stagedDiagnostics);
@@ -1486,7 +1570,8 @@ bool SceneSerializer::Save(
     std::vector<AssetDiagnostic>& diagnostics,
     Error& err)
 {
-    return SaveInternal(doc, path, path.parent_path(), diagnostics, err);
+    return SaveInternal(doc, path, path.parent_path(), diagnostics, err,
+                        SceneSerializer::SchemaVersion);
 }
 
 bool SceneSerializer::SaveTo(const SceneDocument& doc,
@@ -1500,7 +1585,9 @@ bool SceneSerializer::SaveTo(const SceneDocument& doc,
     // bytes land under the recovery directory, but durable references
     // remain resolvable against the original authoring scene's root.
     return SaveInternal(
-        doc, outPath, logicalScenePath.parent_path(), diagnostics, err);
+        doc, outPath, logicalScenePath.parent_path(), diagnostics, err,
+        doc.metadata.schemaVersion < SceneSerializer::SchemaVersion
+            ? doc.metadata.schemaVersion : SceneSerializer::SchemaVersion);
 }
 
 // ============================================================================
@@ -1545,7 +1632,7 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
         return false;
     }
 
-    // W3 is a deliberate hard cutover: only schema version 3 is readable.
+    // W5 retains v3 as the explicit migration input and writes v4.
     if (!root.contains("version") || !root["version"].is_number_unsigned())
     {
         err.code = Error::Parse;
@@ -1554,12 +1641,14 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
         return false;
     }
     uint32_t version = root["version"].get<uint32_t>();
-    if (version != SchemaVersion)
+    report.sourceVersion = version;
+    if (version < MinReadVersion || version > SchemaVersion)
     {
         err.code = Error::SchemaVersion;
         err.path = path.string();
         err.detail = "unsupported schema version " + std::to_string(version) +
-                     " (supported " + std::to_string(SchemaVersion) + ")";
+                     " (supported " + std::to_string(MinReadVersion) +
+                     " through " + std::to_string(SchemaVersion) + ")";
         return false;
     }
     // Parse entities into records (pass 0 — no entity creation).
@@ -1568,7 +1657,7 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
     {
         for (const auto& ej : root["entities"])
         {
-            EntityRecord r = JsonToEntityRecord(ej, err, &report);
+            EntityRecord r = JsonToEntityRecord(ej, version, err, &report);
             if (!err.IsOk())
             {
                 err.path = path.string();
@@ -1615,7 +1704,8 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
         // kind is optional and defaults to Unknown, but the env invariant
         // forces Environment below.
         Error refErr;
-        env.ref = JsonToAssetReference(ej, refErr);
+        env.ref = JsonToAssetReference(
+            ej, version, &report, UUID::Nil(), {}, refErr);
         if (!refErr.IsOk())
         {
             err = refErr;
@@ -1629,50 +1719,31 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
         if (ej.contains("width"))  env.width  = ej["width"].get<int>();
         if (ej.contains("height")) env.height = ej["height"].get<int>();
 
-        // Validate the assetId: present-but-non-string or unparseable-string
-        // is corrupt scene identity (item 3). UUID::Parse returns Nil for a
-        // malformed string; distinguish that from a legitimately absent
-        // field by only validating when the field is present.
-        if (ej.contains("assetId"))
-        {
-            if (!ej["assetId"].is_string())
-            {
-                err.code = Error::Parse;
-                err.path = path.string();
-                err.detail = "envMap.assetId must be a string UUID, got "
-                           + std::string(ej["assetId"].type_name());
-                FieldDiagnostic d;
-                d.kind = FieldDiagnostic::Kind::MalformedSerializedValue;
-                d.field = "envMap.assetId";
-                d.message = err.detail;
-                report.fieldDiagnostics.push_back(std::move(d));
-                return false;
-            }
-            const std::string idStr = ej["assetId"].get<std::string>();
-            const UUID parsed = UUID::Parse(idStr);
-            if (parsed.IsNull())
-            {
-                err.code = Error::Parse;
-                err.path = path.string();
-                err.detail = "envMap.assetId is not a valid UUID: \""
-                           + idStr + "\"";
-                FieldDiagnostic d;
-                d.kind = FieldDiagnostic::Kind::MalformedSerializedValue;
-                d.field = "envMap.assetId";
-                d.message = err.detail;
-                report.fieldDiagnostics.push_back(std::move(d));
-                return false;
-            }
-            env.ref.assetId = parsed;
-        }
     }
 
     // Parse metadata.
     std::string sceneName;
+    UUID projectId;
     if (root.contains("metadata"))
     {
         const auto& mj = root["metadata"];
         if (mj.contains("name"))       sceneName  = mj["name"].get<std::string>();
+        if (mj.contains("projectId"))
+        {
+            const bool valid = mj["projectId"].is_string() &&
+                !UUID::Parse(mj["projectId"].get<std::string>()).IsNull();
+            if (!valid && version >= SchemaVersion)
+            {
+                err.code = Error::Parse;
+                err.path = path.string();
+                err.detail = "metadata.projectId must be a valid UUID";
+                return false;
+            }
+            if (valid) projectId = UUID::Parse(
+                mj["projectId"].get<std::string>());
+            else
+                report.requiresAssetMigration = true;
+        }
     }
 
     // Build into a temporary and adopt only after every pass succeeds. This
@@ -1684,6 +1755,8 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
         return false;
 
     temp.metadata.name = sceneName;
+    temp.metadata.projectId = projectId;
+    temp.metadata.assetRoot = path.parent_path();
     doc = std::move(temp);
     return true;
 }
@@ -1724,6 +1797,8 @@ bool SceneSerializer::CloneInMemory(const SceneDocument& src, SceneDocument& dst
 
     // Copy the scene name (metadata.sourcePath is already set by BuildDocument).
     dst.metadata.name = src.metadata.name;
+    dst.metadata.projectId = src.metadata.projectId;
+    dst.metadata.assetRoot = src.metadata.assetRoot;
 
     // Do NOT copy:
     //   - gpuCache (per-document; runtime builds its own)

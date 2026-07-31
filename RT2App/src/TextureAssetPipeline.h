@@ -48,6 +48,7 @@ struct TextureAssetLoadContext
 bool BuildExplicitImportTextureContext(
     const std::filesystem::path& ownerPath,
     IUuidProvider* uuidProvider,
+    const AssetResolutionContext& resolution,
     TextureAssetLoadContext& context,
     std::vector<AssetDiagnostic>& diagnostics);
 

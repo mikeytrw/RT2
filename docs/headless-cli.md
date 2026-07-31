@@ -28,6 +28,7 @@ Python comparison harness.
 | Option | Meaning |
 |---|---|
 | `--scene <path>`, `-s <path>` | Load a `.glb`, `.gltf`, or `.obj` scene. |
+| `--project <path.rt2proj>`, `-p <path.rt2proj>` | Load a portable project and its startup scene. With `--scene`, the scene is an asset-root-relative `.rt2scene` locator. |
 | `--env <path>`, `-e <path>` | Load an HDR or EXR environment map. |
 | `--output <path>`, `-o <path>` | Save the display PNG. |
 | `--output-hdr <path>` | Save the linear HDR image as EXR or PFM. |
@@ -111,6 +112,11 @@ file, enters Play, runs N fixed update steps, Stops, and verifies that the
 authoring scene is unchanged. It emits a JSON report with per-entity final
 runtime transforms and exits non-zero on failure.
 
+It also accepts a project context. `--project` without `--scene` requires the
+project's `startupScene`; when both are supplied, `--scene` is interpreted
+relative to the project asset root and cannot escape it. Standalone
+`--scene` remains an ordinary filesystem path.
+
 ```powershell
 .\bin\Release-windows-x86_64\RT2SliceRunner\RT2SliceRunner.exe `
   --scene RT2App\assets\vertical-slice.rt2scene `
@@ -121,6 +127,7 @@ runtime transforms and exits non-zero on failure.
 | Option | Meaning |
 |---|---|
 | `--scene <path>` | `.rt2scene` file to load and run. |
+| `--project <path>` | Load `.rt2proj`; use its startup scene or interpret `--scene` below its asset root. |
 | `--steps <N>` | Number of fixed update steps (default 60). |
 | `--out <path>` | Write JSON report to file instead of stdout. |
 | `--help` | Print usage. |

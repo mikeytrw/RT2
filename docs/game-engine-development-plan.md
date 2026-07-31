@@ -6169,14 +6169,15 @@ handful of unrelated cases fail on missing assets.
 
 ### Test baseline (current — supersedes all earlier figures)
 
-Established 2026-07-24, immediately before Phase 7. **This section is the
+Established 2026-07-24 and last measured 2026-07-31 after Phase 7 W4.
+**This section is the
 authoritative baseline; every earlier "7 failed" / "15 failed" figure in this
 document is a period record of a superseded state.**
 
 | Configuration | Result |
 |---|---|
-| **Release** | **582 run, 582 passed, 0 failed, 0 skipped** |
-| **Debug** | **582 run, 582 passed, 0 failed, 0 skipped** |
+| **Release** | **700 run, 700 passed, 0 failed, 0 skipped; 145,911 assertions** |
+| **Debug** | **700 run, 700 passed, 0 failed, 0 skipped; 145,911 assertions** |
 
 Run from the repository root — `RT2Tests.exe` resolves some fixtures by
 relative path and both fails and writes stray files if run from elsewhere.
@@ -6188,6 +6189,11 @@ relative path and both fails and writes stray files if run from elsewhere.
 > Debug row (554 run, 546 passed, 8 failed) is a period record of the
 > pre-fix state. See the supersession note at the end of the "remaining 8
 > Debug-only failures" subsection for the verified root cause.
+
+> **Updated 2026-07-31.** Subsequent Phase 7 W3/W4 work raised both
+> configurations to the measured 700/700 shown above. The 582/582 figure is
+> now another period record; the W4 implementation report at the document end
+> records the complete build/test/script/slice gate.
 
 **Release is green and must stay green.** A Release failure is now a real
 regression, not baseline noise. This is the change that makes the gate
@@ -8549,3 +8555,640 @@ same commit must also migrate `SceneLoader::Save`'s export loop
 **A6 — minor citation drift.** The `pTri` division cited as
 `restir_gi_bindings.glsl:565-595` is at `:590`, with the environment arm's
 `direct /= (1.0 - pTri)` at `:626`, outside the cited range.
+
+## Phase 7 W4–W5 — project ownership and schema-v4 migration (implementation spec)
+
+Drafted 2026-07-31 and grounded against commit
+`7ec974b7f12db686ae0c9addb7b0da61549422e6`. This section supersedes the
+unsettled D3, D4 and D6 questions in the Phase 7 plan at `:6404-6425`; it does
+not rewrite that chronological record. W0–W3 already exist in the tree. W4
+and W5 are not greenfield and no implementation described below has started.
+
+This spec must be reviewed before implementation. Review amendments are
+appended here; implementation does not reinterpret an unsettled point from
+memory.
+
+### Scope and exit
+
+W4 introduces the portable `.rt2proj` document, gives the existing W2
+`AssetDatabase` a production owner, scans the W1/D8 sidecars into immutable
+database snapshots, and cuts every production resolver over to an explicit
+project-or-standalone context. W5 makes scene schema v4 the durable form,
+migrates existing v3 references observably, and persists asset-root-relative
+paths plus the IDs already defined by sidecars.
+
+The combined exit is stronger than “a project file parses”: copy a project
+folder to another absolute location, open its `.rt2proj`, and resolve the same
+startup scene, models, external textures, environment and scripts by the same
+IDs without rewriting the scene. Missing, malformed, ambiguous or stale
+identity never becomes an empty path or an implicit replacement.
+
+Not in W4/W5: the content browser (W6), watcher expansion/reimport (W7), or
+the rebinding, Rebind-button, declaration-browser and cursor-lock UI deferred
+to W8. W4 owns input storage and composition, not the rebinding UI.
+
+### Grounded findings at `7ec974b7`
+
+| ID | Current fact | Consequence |
+|---|---|---|
+| W45-F1 | `EditorSettings` still serializes an absolute `projectRoot`, exposes `Get/Set/ClearProjectRoot`, and stores `inputContexts` in schema v2 (`RT2App/src/EditorSettings.h:38-65,76,98-100,124-150`; `RT2App/src/EditorSettings.cpp:104-129,153-217,242-294`). | W4 must migrate an existing per-user schema. It must not add a second value with the same name and different authority. |
+| W45-F2 | The header says that `projectRoot` is only a file-dialog preference (`RT2App/src/EditorSettings.h:32-36`), but the host now also uses it as the asset root for scripts and untitled recovery (`RT2App/src/WalnutApp.cpp:2704-2754`), injects it into Play when the document is untitled (`:2849-2855`), and labels it “Project Root” in the Session UI (`:1069-1091`). | The old Phase 7 P5 finding is stale in an important direction: one setting now has three meanings. D3 must separate them and remove the semantic fallback, not merely update a comment. |
+| W45-F3 | `InputService::LoadDefaults` constructs the editor, viewport, look and runtime maps in code (`RT2App/src/InputService.cpp:105-178`). `WalnutApp` calls only `LoadDefaults` and pushes the editor context (`RT2App/src/WalnutApp.cpp:1514-1518`); it never applies the `EditorSettings::inputContexts` records. | The per-user input data exists but is inert in production. D4 must define and wire composition rather than “move” JSON that currently changes nothing. |
+| W45-F4 | `AssetDatabase` is deliberately a pure in-memory index with no filesystem I/O (`RT2App/src/AssetDatabase.h:15-24`) and already has deterministic `BuildAssetDatabase` plus ID/path/dependency APIs (`:61-80,128-172`). At this commit production code has no owner or builder call; resolver contexts therefore carry null databases. | W4 supplies the missing filesystem scan and lifetime-owning host. It extends W2 instead of creating a competing database. |
+| W45-F5 | `AssetResolutionContext` already contains an absolute `assetRoot` and a non-owning database pointer (`RT2App/src/AssetResolver.h:107-116`). The locator is read-only and explicitly leaves sidecar mutation to import/save/migration (`:18-37,148-150`). | Keep this seam. W4 changes context construction and lifetime, not resolver purity and not `SceneDocument` ownership. |
+| W45-F6 | `SceneAssetResolver` still accepts `sceneRoot`, constructs two internal contexts with `database = nullptr`, and calls the environment path separately (`RT2App/src/SceneAssetResolver.h:76-98`; `RT2App/src/SceneAssetResolver.cpp:131-159,233-295`). Other null-context sites remain in Play/open/watcher (`RT2App/src/WalnutApp.cpp:2849-2855,3068-3075,3152-3155`), recovery (`RT2App/src/SceneRecoveryService.cpp:483-486`), and the slice runner (`RT2SliceRunner/src/Main.cpp:529-531`). | W4 must change the aggregate resolver API to require one explicit context and audit every host. Leaving even one internal null construction makes ID-first behavior depend on the entry point. |
+| W45-F7 | Database record paths are documented as project-relative (`RT2App/src/AssetDatabase.h:61-80`), and ID lookup resolves them beneath `AssetResolutionContext::assetRoot` (`RT2App/src/AssetResolver.cpp:168-218`). | The database’s path base is specifically the project **asset root**, not the project-file directory and not the current scene directory. W4 makes that invariant executable. |
+| W45-F8 | Sidecars are already the durable identity source. `AssetSidecarPath`, `ReadSidecarId`, atomic `WriteSidecarId`, and `ResolveOrAssign` exist in a CPU-only module (`RT2App/src/AssetIdentity.h:15-73`; `RT2App/src/AssetIdentity.cpp:23-91,164-194`). | The scanner reads these sidecars; it does not invent another metadata format. W5 reuses `ResolveOrAssign` only in its explicit mutation phase. |
+| W45-F9 | Durable asset references already contain `assetId`, but their path contract and comments remain scene-relative/v3 (`RT2App/src/AssetReference.h:73-97`). The persistent owners are imported models (`RT2App/src/ECSComponents.h:221-223`), scripts (`:282-288`) and the environment (`RT2App/src/SceneDocument.h:50-62`). Native top-level textures are deliberately serialized as an empty array (`RT2App/src/SceneSerializer.cpp:1339-1344`); imported textures are reconstructed from their owner model. | W5 changes the path base once at the shared reference boundary. It migrates model/script/environment references and does not invent a second standalone texture graph. |
+| W45-F10 | The shared v3 asset-reference writer already emits non-nil IDs, while its reader silently turns a malformed or non-string ID into nil (`RT2App/src/SceneSerializer.cpp:216-257`). Model and script paths are rebased from the current scene directory to the output scene directory on every save (`:639-647,692-716`), and the environment follows the same scene-relative rule (`:1348-1367`). | Existing “v3” files can contain no IDs, all IDs, or a mixture. W5 must migrate all three cases and end Save-As path rebasing for project-bound v4 scenes. Malformed identity can no longer disappear silently. |
+| W45-F11 | `SceneSerializer` reads and writes only schema 3 (`RT2App/src/SceneSerializer.h:16-54,79-120`; `RT2App/src/SceneSerializer.cpp:1548-1563`). `SceneLoadReport` currently reports only script-field normalization/drop state (`RT2App/src/SceneSerializer.h:68-74`). | W5 raises `SchemaVersion` to 4, keeps `MinReadVersion` at 3 as D5 already decided, and makes migration state part of the load report. |
+| W45-F12 | Recovery bytes live below `%LOCALAPPDATA%\\RT2\\Editor\\Recovery` (`RT2App/src/WalnutApp.cpp:80-87,2766-2779`). Each recovery envelope persists an absolute logical `assetRoot` and later resolves with it and no database (`RT2App/src/SceneRecoveryService.cpp:297-307,336,389-390,483-486`). | Recovery is generated per-user session data, not the project cache. A project recovery record must identify and reopen its project context; it must not silently resolve a moved project through an obsolete absolute root. |
+| W45-F13 | There is no `.rt2proj`, project model or project CLI argument. The app CLI has only `scenePath` and parses `--scene` (`RT2App/src/CLIArgs.h:9-56,67-70`); the slice runner likewise requires `--scene` (`RT2SliceRunner/src/Main.cpp:91-93,785-824`). The native open filter has scene/model types only (`RT2App/src/WalnutApp.cpp:759-760`). | W4 includes application, CLI and CPU-runner entry points. A project type that only unit tests can load is not a production owner. |
+| W45-F14 | The roadmap mentions “default runtime settings”, but the tree has no project-owned runtime-settings model. The fixed-step values are compile-time constants (`RT2App/src/RuntimeSceneController.h:79-81`), while render settings are renderer/UI state and CLI overrides are applied directly (`RT2App/src/WalnutApp.cpp:1999-2040`). | W4 does not serialize an unconsumed `runtimeDefaults` bag. Adding project-owned runtime/render defaults is deferred until a concrete owner and precedence contract are specified. Input defaults are the only runtime default with an existing neutral model. |
+
+### Recovered Phase 7 commitments
+
+The earlier deferrals remain real, but their landing workstream matters:
+
+| Source | Commitment | W4/W5 treatment |
+|---|---|---|
+| `docs/game-engine-development-plan.md:985` | Migrate to global asset UUIDs. | W5 closes the legacy-scene half by assigning/reusing sidecar IDs and persisting them in v4. |
+| `:3311,3380` | Input rebinding dialog. | W4 provides project defaults, user overrides and composition; W8 owns UI. |
+| `:4064,5274` | Script asset Rebind button. | No W4/W5 UI. W4/W5 make the underlying ID/path context stable; W8 owns the button. |
+| `:5521` | Declaration diagnostics in content browser. | W6/W8; no browser exists yet. |
+| `:5901` | Cursor-lock binding. | W4’s composition supports it later; W8 authors it. |
+
+### Decisions — answered before code
+
+These are the settled answers for this spec. Review may amend them before
+implementation; implementation does not choose a different answer locally.
+
+#### D3 — split the existing `projectRoot` by responsibility
+
+**Decision:** rename the per-user setting and introduce distinct project
+terms. There will be no new field or API simply named `projectRoot`.
+
+- `EditorSettings` schema v3 renames `projectRoot` to
+  `lastBrowseDirectory`. The v2 reader migrates the old value; the v3 writer
+  emits only the new key. The API and Session UI use “Last Browse Directory”.
+- `lastBrowseDirectory` is dialog state only. Asset resolution, script Play,
+  recovery and Save never consult it.
+- The portable project model owns `projectFile`, derived absolute
+  `projectDirectory`, derived absolute `assetRoot`, derived absolute
+  `cacheRoot`, `projectId`, optional `startupScene`, input defaults and the
+  current immutable asset-database snapshot.
+- A loaded project supplies its asset root and database to every asset
+  operation. A standalone saved scene retains a deliberate compatibility
+  context: scene parent as the implicit asset root and no project database.
+  An untitled standalone scene has no general asset root; its existing
+  synthetic recovery root is recovery-only, not a hidden project.
+- `SceneDocument` does not own a database or global project singleton. This
+  preserves W3-Q3 (`docs/game-engine-development-plan.md:6731-6734`).
+
+This is a behavior migration, not just a rename: removing the current
+`ScriptAssetRoot()` fallback at `RT2App/src/WalnutApp.cpp:2713-2723` is part
+of D3 acceptance.
+
+#### D4 — split shippable defaults from per-user overrides
+
+**Decision:** project input data provides defaults; per-user settings provide
+overrides. Neither replaces the built-in safety map.
+
+Composition is one CPU-only function and has one deterministic order:
+
+1. `InputService::LoadDefaults()` supplies the built-in editor, viewport,
+   viewport-look and runtime mappings (`RT2App/src/InputService.cpp:105-178`).
+2. Project `inputContexts` overlays allowed runtime/gameplay mappings by
+   `(contextId, mapping.name)`.
+3. Per-user `inputOverrides` overlays the result by the same key. An explicit
+   unbound override removes that action’s binding; absence means inherit.
+
+Project files may define `runtime` and future gameplay contexts. They may not
+override the editor-owned `editor`, `viewport` or `viewport.look` contexts;
+load rejects those records with a named diagnostic. This keeps a malformed or
+hostile project from disabling the editor’s escape/navigation controls.
+
+`EditorSettings` schema v3 renames v2 `inputContexts` to `inputOverrides`.
+The v2 reader preserves each record as an override, and the v3 writer emits
+only `inputOverrides`. Duplicate context/action keys, unknown binding types,
+or contradictory entries fail validation; the composer never chooses by
+JSON/insertion order. The shared mapping JSON codec is extracted from
+`EditorSettings.cpp:153-217,251-294` so project and settings serialization
+cannot drift.
+
+W4 wires the composed maps into `InputService` before its context stack is
+first sampled. W8 owns authoring UI. This distinction matters because the
+current stored `inputContexts` are never consumed by `WalnutApp` (W45-F3).
+
+#### D6 — portable locator, generated local contents, separate recovery
+
+**Decision:** `cacheRoot` is stored as a project-directory-relative locator,
+defaulting to `.rt2/cache`. Its contents are generated, replaceable and not
+part of asset identity.
+
+- `assetRoot` and `cacheRoot` are normalized forward-slash paths relative to
+  the `.rt2proj` parent. `startupScene` is relative to `assetRoot`. Absolute
+  paths, empty `assetRoot`, `..` escape, and paths that escape after
+  canonical/reparse-point checks are load errors.
+- Cache and asset roots may not overlap in either direction. The scanner also
+  refuses directory symlink/reparse-point traversal, so generated files or an
+  external tree cannot re-enter the asset scan through an alias.
+- The cache directory may be absent and is created lazily by the first cache
+  producer. W4 creates no cache artifact merely by opening a project.
+- The project file never stores a machine-specific absolute cache path. A
+  future per-user cache override requires a separate settings field and is
+  not implied by D6.
+- Crash-recovery bytes remain below the per-user app-data recovery directory
+  at `RT2App/src/WalnutApp.cpp:80-87`; they are not cache entries and are not
+  moved under the project.
+- A project-bound recovery envelope stores `projectId`, the project-file
+  locator and the logical scene locator. Restore reloads/validates the
+  project and rebuilds its database before resolving assets. A missing or
+  mismatched project is a loud restore failure, not a fallback to the stale
+  absolute `assetRoot` currently stored at
+  `RT2App/src/SceneRecoveryService.cpp:336`.
+
+### W4 contract — `.rt2proj`, scan and production ownership
+
+#### Project document v1
+
+The initial portable form is:
+
+```json
+{
+  "version": 1,
+  "projectId": "<non-nil UUID>",
+  "assetRoot": "Assets",
+  "cacheRoot": ".rt2/cache",
+  "startupScene": "Scenes/main.rt2scene",
+  "inputContexts": []
+}
+```
+
+`startupScene` is optional/empty; when present it is relative to `assetRoot`,
+contained by it, and has a `.rt2scene` extension. Unknown fields are ignored
+for additive compatibility, while an unknown `version`, invalid UUID or
+invalid path is terminal. Save is atomic and deterministic. Derived absolute
+paths are runtime state and are never serialized.
+
+No `runtimeDefaults` object is emitted in v1 for W45-F14. This is an explicit
+scope correction to the roadmap stub, not an accidental omission.
+
+#### Scanner and database snapshot
+
+Add a CPU-only scanner beside `AssetDatabase`, not in Walnut UI code:
+
+1. Validate and canonicalize the absolute asset root once.
+2. Recursively enumerate regular `*.rt2meta` files without following
+   directory symlinks/reparse points; normalize their paths relative to the
+   asset root and sort before reading.
+3. Strip the single `.rt2meta` suffix to identify the source asset. A sidecar
+   without a regular source file is a stale diagnostic, not a record.
+4. Read each sidecar through `ReadSidecarId`. Missing/malformed/nil IDs,
+   duplicate IDs and conflicting path claims are routed through the existing
+   asset-diagnostic surface; nothing is silently skipped.
+5. Emit one sidecar-authoritative `AssetRecord` per valid source path and call
+   the existing deterministic `BuildAssetDatabase`.
+
+The scan does not mint or rewrite sidecars, infer an exclusive `AssetKind`
+from extension, decode assets, or populate cache. `observedKinds` and
+dependency/entity edges are merged from known scene/import records as those
+sources are available; a physical file can still be observed in multiple
+roles (`RT2App/src/AssetDatabase.h:30-80`).
+
+The production project context owns a `shared_ptr<const AssetDatabase>`
+snapshot. Refresh builds a complete replacement off to the side and swaps it
+only after success; asynchronous scene/import jobs capture the shared snapshot
+so the non-owning pointer inside their `AssetResolutionContext` cannot dangle.
+A failed scan leaves the previous project/context live and reports the sorted
+diagnostics.
+
+Until W7 watches the whole asset tree, W4 refreshes explicitly after project
+open, successful explicit import/sidecar assignment, and successful W5
+migration. File-system changes made externally after open require an explicit
+Refresh Assets action; this limitation is visible in status, not represented
+as a live database.
+
+#### Host and API cutover
+
+- Change `SceneAssetResolver::ResolveAll` and `ResolveEnvironment` to require
+  the caller’s `AssetResolutionContext`; remove their internal `sceneRoot` /
+  null-database construction at `RT2App/src/SceneAssetResolver.cpp:131-159,
+  233-295`.
+- Add transactional project open to `WalnutApp`: parse, validate, scan and
+  compose input maps before replacing the current context. A failed open
+  preserves the current project, scene and input map.
+- Add `.rt2proj` to the native open flow and a distinct Open Project command.
+  Opening a scene/model remains separate. The Session panel displays the
+  loaded project file, ID, asset root and cache root; it no longer edits a
+  semantic “Project Root” text field.
+- Add `--project <path.rt2proj>` to `CLIArgs` and the slice runner. When both
+  `--project` and `--scene` are supplied, the scene locator is interpreted
+  below the project asset root and must be contained by it; without `--scene`,
+  the project startup scene is required. Existing standalone `--scene`
+  behavior remains.
+- Construct one project/standalone context for native open, Play, script
+  inspector/runtime, texture import, recovery and slice execution. Audit the
+  null sites in W45-F6. A project-active call with `database == nullptr` is a
+  programming error and must fail loudly in Release as well as Debug.
+- Project switching is blocked while a destructive load/import is in flight;
+  ordinary immutable database snapshots remain safe for readers already in
+  flight.
+
+### W5 contract — schema v4 and explicit legacy migration
+
+#### Schema and path semantics
+
+- Set `SceneSerializer::SchemaVersion = 4` and
+  `MinReadVersion = 3`. Load accepts the inclusive range and reports the
+  source version in `SceneLoadReport`.
+- A project-bound v4 scene stores the owning `projectId` in metadata. A
+  standalone v4 scene omits it/nil. A project host requires a matching
+  non-nil ID; nil is accepted only in explicit standalone mode. Loading under
+  a different project ID is a terminal `Conflict`; it must never probe that
+  project’s database and happen to bind matching paths.
+- Every v4 `AssetReference::path` is relative to the active asset root. For a
+  project scene that is the project’s `assetRoot`; for a standalone scene it
+  is the scene parent. Save As inside one project therefore does not rewrite
+  asset paths. A save outside the project is rejected unless the user first
+  converts to a standalone scene through an explicit future operation.
+- Existing W3 absolute-path fallback remains readable in memory and produces a
+  `NonPortable` diagnostic. It is not described as portable merely because
+  v4 was written; the combined portability gate is green only when no
+  nonportable/unresolved reference remains.
+- Present malformed IDs are diagnostics in v3 and terminal parse errors in
+  v4. Missing IDs remain representable so missing assets can load with
+  placeholders, but `SceneLoadReport` marks migration/repair incomplete.
+
+Introduce one neutral visitor over every durable scene `AssetReference`.
+Serializer validation, migration and portability reporting all use it. Its
+initial set is imported model, script and environment (W45-F9); derived
+`SceneTexture::ref` is intentionally excluded from native persistence.
+
+#### Explicit migration algorithm
+
+Loading v3 is read-only. It sets `requiresAssetMigration` and records mixed,
+nil, malformed and nonportable reference state; it does not write sidecars,
+change the document, or acknowledge persistence.
+
+The first explicit Save/Migrate action runs one transactional service:
+
+1. Clone the authoring document and collect durable references through the
+   shared visitor. Resolve each v3 path against the legacy scene directory,
+   then sort by normalized physical path, kind, entity UUID and source key.
+2. Convert each locator to the active asset-root-relative path. Containment
+   failure retains the successful absolute locator only as a `NonPortable`
+   advisory and leaves the portability gate incomplete.
+3. If a reference has a non-nil ID, verify it against the sidecar and database.
+   A different sidecar ID or ambiguous database ID is `Conflict` and aborts;
+   migration never picks one claimant.
+4. Reuse a valid sidecar ID. For an existing source with an absent or
+   malformed sidecar, call `ResolveOrAssign` with the injected UUID provider,
+   emit the repair diagnostic, and update every reference to that physical
+   source with the one assigned ID. A repeated reference never mints twice.
+5. A missing source remains unresolved and emits `Missing`/`Stale`; it does
+   not receive an ID. Migration may save a structurally valid v4 scene with
+   placeholders, but the report says “migrated N; M unresolved” and the
+   portability/repair gate stays armed.
+6. Rebuild the project database from sidecars, validate every staged
+   reference against that snapshot, atomically write schema v4, and only then
+   replace the live document/context and clear the migration-persistence gate.
+
+The document and scene file remain unchanged if any sidecar write, rescan,
+validation or scene write fails. Sidecars successfully created before a later
+failure are not deleted; they are durable assign-once facts, and retry must
+reuse them. This makes partial external progress idempotent instead of trying
+to roll back identity with another risky write.
+
+#### Save, autosave and recovery boundary
+
+W5 adds a document-level `AssetMigrationPersistenceGate`, analogous in
+ownership to the existing script repair gate at
+`RT2App/src/WalnutApp.cpp:2839-2842`. Ordinary edits, undo and recovery do not
+clear it.
+
+Autosave/recovery never initiates migration and never mints or repairs a
+sidecar. The recovery-only `SaveTo` path preserves a v3 document as schema 3
+with its legacy scene-relative path base; it does not route through the normal
+v4 writer. The recovery envelope also preserves the source version and logical
+context, so restore still reports that explicit migration is required. A
+recovered project document reloads the project/database per D6 before
+resolution. Only a successful explicit migration plus atomic scene save
+acknowledges the gate.
+
+### Implementation order
+
+Each step keeps `RT2Tests` and `RT2SliceRunner` CPU-only and ends with focused
+tests before the next host cutover.
+
+1. **W4.0 — Neutral project/input models and codecs.** Add project v1
+   load/save/path validation, extract the shared input-mapping codec, and add
+   deterministic input composition. No Walnut ownership yet.
+2. **W4.1 — D3/D4 settings migration.** Raise EditorSettings to v3; migrate
+   `projectRoot` → `lastBrowseDirectory` and `inputContexts` →
+   `inputOverrides`; prove old files survive and new files contain no old
+   semantic keys.
+3. **W4.2 — Sidecar scanner and immutable snapshot.** Build sorted records via
+   W1/W2 APIs, add diagnostic adaptation, prove scan determinism and
+   transactionality.
+4. **W4.3 — Resolver API cutover.** Require explicit contexts in aggregate
+   resolution and migrate native load, script, Play, recovery and slice-runner
+   call sites together. Do not leave a compatibility overload that recreates
+   a null database internally.
+5. **W4.4 — Project host/CLI.** Transactional Open Project, startup scene,
+   `.rt2proj` filter, `--project`, Session status, input composition and
+   explicit refresh. Re-run standalone-scene behavior as a separate mode.
+6. **W5.0 — v3/v4 codec and shared reference visitor.** Read 3–4, write 4,
+   strict v4 ID parsing, project-ID metadata, asset-root-relative paths and
+   migration reporting. Still no sidecar mutation on load.
+7. **W5.1 — Explicit migration service/gate.** Implement sorted assign-once
+   staging, database refresh, atomic scene persistence, idempotent retry and
+   recovery/autosave exclusion.
+8. **W5.2 — Host workflow and documentation.** Observable migration status,
+   unresolved/nonportable gate state, project relocation exercise, Release
+   and Debug verification, then append the measured close report.
+
+### Permanent tests and discrimination proofs
+
+| Permanent evidence | Temporary fault that must make it fail |
+|---|---|
+| EditorSettings v2 migrates both old fields; v3 writes only `lastBrowseDirectory` and `inputOverrides`. Asset resolution is unchanged when only the browse directory changes. | Feed `lastBrowseDirectory` into the script/scene context. |
+| Input composition is identical under permuted JSON order; project runtime defaults are overlaid by user overrides, an explicit unbind removes one action, and project editor-context records are rejected. | Swap project/user precedence or let a project replace `editor`. |
+| Project codec rejects absolute/escaping roots, cache/asset overlap, nil IDs, bad startup-scene containment and unknown versions. Copying the project tree changes only derived absolute paths. | Resolve one stored path against process CWD. |
+| Scanner records and diagnostics are byte-for-byte identical under permuted enumeration; orphan/malformed/duplicate sidecars are loud and directory links are not traversed. | Insert records in raw enumeration order or follow a linked directory. |
+| With a project active, model, external texture, environment and script resolution all receive the same asset root/database snapshot; standalone scenes receive their explicit fallback. | Restore the internal `database=nullptr` construction in `SceneAssetResolver`. |
+| Failed project parse/scan/startup load leaves the prior project, scene, input maps and database snapshot intact. | Clear the current project before validating the replacement. |
+| A v3 scene with no IDs, mixed IDs and all IDs migrates to the same canonical v4 result when sidecar state is the same. Duplicate references to one file call the UUID provider once. | Assign per reference instead of per physical asset. |
+| Valid sidecars are reused; absent/malformed sidecars are assigned loudly; ID conflicts/ambiguity abort without changing the live document or scene file. | Prefer the scene ID over a conflicting sidecar. |
+| Moving the whole project preserves project ID, sidecar IDs, v4 scene bytes and successful resolution. Save As inside the project does not rewrite reference paths. | Rebase a v4 path against the output scene directory. |
+| v3 malformed IDs load with migration diagnostics; v4 malformed IDs fail structurally; versions below 3 and above 4 fail. | Reuse the current silent `JsonToAssetReference` nil conversion for v4. |
+| A forced sidecar-write or scene-write failure leaves the live document/file unchanged; retry reuses sidecars already assigned before the failure. | Mutate the live document before the atomic scene write succeeds. |
+| Autosave/recovery of a v3 document does not call the UUID provider, write sidecars or clear the migration gate; restore still requires explicit migration. | Route recovery through the explicit migration entry point. |
+| A scene carrying project A’s ID fails under project B before asset lookup. | Ignore scene metadata and let fallback paths bind under project B. |
+
+Every new permanent test gets its discrimination fault exercised before the
+implementation report calls it protective. The final gate builds the Release
+and Debug solutions, runs `RT2Tests.exe` from the repository root, runs the
+scripting regression gate and both project/standalone slice-runner scenarios,
+and records the actual counts measured then. No count is copied from an older
+completed phase.
+
+### Review checklist and boundary
+
+A reviewer must verify at least: all context-producing call sites in W45-F6;
+the D3 removal of browse-directory asset semantics; D4 precedence and reserved
+editor contexts; D6 containment/recovery behavior; project-database snapshot
+lifetime across async work; the complete durable-reference visitor; and the
+failure ordering in W5 migration. Any accepted correction is appended as a
+dated review amendment.
+
+W4/W5 do not add content-browser UI, rename/move/delete operations, broad
+watching/reimport, cache artifact formats, input rebinding UI, script Rebind,
+or project-owned render/fixed-step settings. Those boundaries prevent W4 from
+depending on W6/W7/W8 and keep W5’s high-risk persistence change behind a
+fully established project context.
+
+### Review amendments (2026-07-31 — approved before implementation)
+
+Reviewed against `7ec974b7`. The reviewer approved the spec with the six
+amendments below. Each finding was re-checked against the tree and accepted.
+These amendments override the draft where they conflict; no W4/W5 code has
+started.
+
+#### W45-A1 — inert editor input records do not become live on migration
+
+W45-F3 means v2 `EditorSettings::inputContexts` records have never been
+consumed by `WalnutApp` (`RT2App/src/WalnutApp.cpp:1514-1518`). The original
+D4 migration would therefore have activated previously dead data, including
+editor navigation bindings, merely by upgrading the settings file.
+
+Amended decision: the v2 → v3 migration discards records whose context ID is
+`editor`, `viewport` or `viewport.look`; it emits a settings-migration
+diagnostic naming every dropped context and action. It never promotes those
+records to `inputOverrides`. Non-reserved runtime/gameplay records may migrate
+to `inputOverrides`, but their count and keys are also returned in the
+migration report and surfaced in host status before the composed map is first
+used. Thus no dead record becomes live without an observable report.
+
+Permanent test amendment: a v2 fixture containing all three reserved contexts
+plus `runtime` must produce only the runtime override, sorted dropped-record
+diagnostics, and a promoted-record report. The discrimination fault is to copy
+one reserved record into v3 overrides; the test must fail.
+
+#### W45-A2 — migration transactionality is scoped
+
+The W5 guarantee is **transactional over the live `SceneDocument` and the
+`.rt2scene` file, not over the asset tree**. If a later sidecar write, rescan,
+validation or scene write fails, the live document and scene file remain
+unchanged. Any `.rt2meta` files successfully created earlier in that attempt
+remain visible in the asset tree by design. They are durable assign-once facts,
+are not rolled back, and the next attempt must reuse them. UI failure status
+reports both the failed stage and the number/paths of sidecars already created.
+
+This scoped wording replaces every unqualified use of “transactional
+migration” in the draft. The idempotent retry proof remains mandatory.
+
+#### W45-A3 — declared safe stopping points
+
+Passing a focused test is not by itself a shippable checkpoint. The eight
+implementation steps form two integration tranches:
+
+1. **W4 tranche: W4.0–W4.4.** Every intermediate commit must build and pass its
+   focused tests, but there is no release/handoff checkpoint after W4.1,
+   W4.2 or especially W4.3. The first safe stop is after W4.4, when settings
+   migration, resolver API cutover, project ownership, standalone fallback,
+   CLI and the full Release/Debug/CPU regression gates are all green.
+2. **W5 tranche: W5.0–W5.2.** There is no release/handoff checkpoint after
+   W5.0: accepting v3 while writing v4 is not shippable until explicit
+   migration, persistence gating and recovery behavior exist. The second safe
+   stop is after W5.2 and the full combined gate.
+
+If work is interrupted inside a tranche, the branch is reported as
+in-progress from the preceding safe checkpoint; a green focused test does not
+authorize release or handoff. W4.3 and W4.4 should be reviewed as one host
+cutover even if split into buildable commits.
+
+#### W45-A4 — Phase 7 scope/exit amendment for runtime defaults
+
+W45-F14 is an intentional amendment to the Phase 7 roadmap scope at
+`docs/game-engine-development-plan.md:554-564`: W4 v1 does **not** ship
+project-owned fixed-step or render defaults, and Phase 7 completion is not
+blocked on an unconsumed `runtimeDefaults` field. The Phase 7 exit at
+`:575-581` is evaluated using the portable project fields that have concrete
+owners: project ID, asset/cache/startup locators and input defaults.
+
+Carry-forward **P7-R1**: when a later phase introduces a neutral,
+project-owned runtime-settings model and a precedence/consumer contract, it
+must add the corresponding `.rt2proj` field, migration and relocation tests.
+It must not deserialize directly into `WalnutApp` renderer/UI state or the
+compile-time constants at `RT2App/src/RuntimeSceneController.h:79-81`.
+
+#### W45-A5 — injectable resolver discrimination fault
+
+Replace the resolver fault in the permanent-tests table with:
+
+> Construct a default-initialized `AssetResolutionContext` inside
+> `SceneAssetResolver` instead of using the caller-supplied context.
+
+`database` already defaults to null at `RT2App/src/AssetResolver.h:113-116`;
+the current aggregate resolver’s defect is that its internal contexts never
+set the field (`RT2App/src/SceneAssetResolver.cpp:154-156,293-295`). The
+amended fault is directly injectable and must make the four-kind host-context
+test fail.
+
+#### W45-A6 — glossary is part of the D3 vocabulary contract
+
+The contested-term entry in `docs/glossary.md:112-126` is updated with the
+current three-way collision and D3’s settled names. New W4 code and prose use:
+
+- `lastBrowseDirectory` for the per-user dialog-only preference;
+- `projectDirectory` for the `.rt2proj` parent;
+- `assetRoot` for the base of portable asset locators; and
+- `cacheRoot` for generated cache contents.
+
+Bare `projectRoot` is legacy vocabulary and is not introduced in the new
+project model. The glossary is the current-state vocabulary source; this
+append-only plan records why the choice was made.
+
+### Phase 7 W4 implementation report (2026-07-31)
+
+Grounded and implemented from commit
+`7ec974b7f12db686ae0c9addb7b0da61549422e6`. This is the first safe stopping
+point declared by W45-A3; W5 remains unimplemented.
+
+- **W4.0/W4.1:** `.rt2proj` v1 and portable-path validation live in
+  `RT2App/src/Project.h:16-51` and `Project.cpp:137-283`. The shared input
+  codec/composer is `InputConfig.h:14-49` and `InputConfig.cpp:199-346`.
+  `EditorSettings` is schema v3 at `EditorSettings.h:38-74`; its v2 reader
+  drops inert editor-owned records and reports promoted runtime overrides at
+  `EditorSettings.cpp:150-193`. Production composition is applied by
+  `InputService.cpp:180-230` and the host before input sampling.
+- **W4.2:** the read-only, deterministic sidecar scan is
+  `ProjectAssetScanner.cpp:71-238`. It refuses directory links/reparse points,
+  sorts before reading, uses `ReadSidecarId`, routes findings through
+  `AssetDiagnostic`, and builds the existing `AssetDatabase`. Transactional
+  project/context construction is `ProjectContext.cpp:5-19`; the immutable
+  snapshot is owned by `ProjectContext.h:14-30`.
+- **W4.3:** `SceneAssetResolver::ResolveAll` and `ResolveEnvironment` require
+  the caller context (`SceneAssetResolver.h:76-98`;
+  `SceneAssetResolver.cpp:131-229`). SceneManager, direct texture import,
+  native open, Play, scripts, recovery and the CPU runner now receive explicit
+  project or standalone contexts. A project context without a database throws
+  in Release as an invariant violation (`ProjectContext.h:21-28`).
+- **W4.4:** transactional project open, startup/CLI scene containment,
+  standalone native open, Session status and explicit refresh are in
+  `WalnutApp.cpp:2890-2914,3196-3396`. `--project` is parsed by
+  `CLIArgs.h:11-76`; the CPU runner implements the same project/scene contract
+  at `RT2SliceRunner/src/Main.cpp:771-910`. Project-bound recovery envelope v3
+  stores project ID/file/scene locator and refuses stale-root fallback
+  (`SceneRecoveryService.h:27-107`; `SceneRecoveryService.cpp:331-539`). The
+  checked-in runnable project is `RT2App/vertical-slice.rt2proj`.
+
+Permanent W4 coverage is nine cases at
+`RT2Tests/src/Phase7W4Tests.cpp:94-448`: deterministic input precedence and
+unbind, reserved editor rejection, inert-data migration, relocation and path
+validation, deterministic/loud scan, failed-context transactionality,
+project-bound recovery, and aggregate resolver database propagation. The
+temporary discrimination pass made all nine fail: reversed project/user
+precedence; accepted project editor input; promoted inert editor records;
+CWD-rooted project locators; disabled root-overlap rejection; skipped malformed
+sidecars; premature live-context clearing; stale recovery-root fallback; and a
+default-initialized aggregate resolver context. Each fault was removed before
+the final gate.
+
+Measured verification from the repository root:
+
+- Release solution built; `RT2Tests.exe --no-skip`: **700/700 cases** and
+  **145,911/145,911 assertions**.
+- Debug solution built; `RT2Tests.exe --no-skip`: **700/700 cases** and
+  **145,911/145,911 assertions**. This supersedes older Debug baseline claims.
+- `run_script_test.ps1`: 60-frame script scenario passed with no mismatches.
+- Release and Debug `RT2SliceRunner` both passed standalone
+  `--scene RT2App/assets/vertical-slice.rt2scene` and project
+  `--project RT2App/vertical-slice.rt2proj` modes.
+- `graphify update .` completed: 34,070 nodes, 71,702 edges and 1,380
+  communities. Its generated report retains the generator's whitespace.
+
+Defects found and corrected during the tranche: generated projects initially
+omitted new CPU sources; recovery briefly applied a project root to standalone
+records; CLI environment import could race project context establishment;
+native scene open could accidentally retain the previous project; Windows
+junctions needed explicit reparse-point detection; and scanner findings first
+used a parallel diagnostic type instead of the shared asset surface. Focused
+and whole-suite tests were rerun after each correction.
+
+### Phase 7 W5 implementation report (2026-07-31)
+
+This append-only report supersedes the W4 period record above where it says
+W5 remains unimplemented and where it records the 700-case test counts. W5
+was implemented against the reviewed W45 spec and the post-W4 worktree; the
+earlier report remains unchanged as its historical record.
+
+- **W5.0 — codec and coverage boundary:** `SceneSerializer` now reads schema
+  versions 3–4 and writes v4 (`RT2App/src/SceneSerializer.h:105-126`,
+  `SceneSerializer.cpp:235-310,1622-1748`). The shared reference visitor
+  covers imported models, scripts and the environment while excluding derived
+  texture references (`SceneAssetReferenceVisitor.h:19-41`,
+  `SceneAssetReferenceVisitor.cpp:31-71`). v3 malformed IDs are diagnostic
+  migration inputs; v4 malformed IDs and project IDs fail structurally.
+- **W5.1 — explicit migration:** `MigrateSceneAssetReferences` stages a
+  canonical v4 document, groups duplicate references by normalized physical
+  source, preflights conflicts before sidecar writes, assigns/reuses IDs in
+  deterministic order, converts paths to project-root-relative form, and
+  reports missing/nonportable sources (`SceneAssetMigration.cpp:130-360`).
+  Sidecars written before a later failure remain as durable assign-once facts;
+  the live document and scene file are changed only after the staged scene
+  save succeeds. `AssetMigrationPersistenceGate` suppresses autosave until a
+  complete migration is persisted (`SceneAssetMigration.h:38-62`).
+- **W5.2 — host, recovery and status:** native open records migration state,
+  project-bound v4 scenes are checked against the active project before asset
+  lookup, and Save/Save As runs the migration transaction with observable
+  failure/incomplete status (`WalnutApp.cpp:3362-3429,3605-3751`). Recovery
+  continues to serialize v3 snapshots without invoking migration or writing
+  sidecars (`SceneRecoveryService.h:21-24`, `SceneRecoveryService.cpp:276-350`).
+  The final host correction rereads the adopted document after replacement
+  before updating recovery identity (`WalnutApp.cpp:3728-3732`).
+- **Permanent W5 evidence:** four cases in
+  `RT2Tests/src/Phase7W5Tests.cpp:97-255` cover one-ID-per-physical-source,
+  v4 malformed-ID rejection, sidecar conflict transactionality, and v3
+  recovery/autosave exclusion. CPU build wiring is present in
+  `RT2App/RT2App.vcxproj:669-674`, `RT2Tests/RT2Tests.vcxproj:300-305,696`,
+  and `RT2SliceRunner/RT2SliceRunner.vcxproj:250-255`.
+
+Measured verification from the repository root after the final edits:
+
+- Release solution built; `RT2Tests.exe --no-skip`: **704/704 cases** and
+  **145,960/145,960 assertions**.
+- Debug solution built; `RT2Tests.exe --no-skip`: **704/704 cases** and
+  **145,960/145,960 assertions**.
+- `run_script_test.ps1`: 60-frame script scenario passed with no mismatches.
+- Release and Debug `RT2SliceRunner` each passed both standalone
+  `--scene RT2App/assets/vertical-slice.rt2scene` and project
+  `--project RT2App/vertical-slice.rt2proj` scenarios.
+- `graphify update .` completed: 34,192 nodes, 71,887 edges and 1,404
+  communities.
+
+Defects found and corrected during W5 included stale v3 expectations after
+the schema bump, missing permanent recovery exclusion coverage, and a host
+use-after-replacement risk when Save adopted the staged document. No W5
+Release or Debug test failures remain.
+
+Graphify supersession note (2026-07-31): the final post-validation refresh
+completed at **34,194 nodes, 71,899 edges and 1,432 communities**; this
+supersedes the intermediate graph count recorded immediately above.
+
+W5 recovery-policy correction (2026-07-31): migration pending is an explicit
+Save acknowledgement state, not a recovery-suppression state. The host still
+allows `MaybeSnapshot`/`SaveTo` for a loaded v3 document, while the migration
+gate remains pending until a successful explicit migration and scene save.
+
+Final verification supersession (2026-07-31): the recovery-policy test added
+two assertions. Release and Debug now pass **704/704 cases** and
+**145,962/145,962 assertions**. Script and all four slice-runner scenarios
+remain green. The final graph refresh reports **34,194 nodes, 71,899 edges
+and 1,441 communities**.
+
+Final host-policy supersession (2026-07-31): the CPU-only recovery predicate
+is now shared by WalnutApp and the permanent W5 test. Release and Debug remain
+at **704/704 cases** and **145,964/145,964 assertions**; the final Graphify
+refresh reports **34,195 nodes, 71,902 edges and 1,389 communities**.

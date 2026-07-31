@@ -1,6 +1,21 @@
 # Input system (Phase 5, implemented)
 
-## Current state (pre-Phase-5)
+## Current state after Phase 7 W4
+
+Bindings are composed deterministically by the CPU-only `InputConfig` codec:
+built-in safety mappings, then project `inputContexts`, then per-user
+`inputOverrides`. Project v1 may override only `runtime`; editor-owned
+`editor`, `viewport`, and `viewport.look` records are rejected. A user override
+with no bindings explicitly unbinds an inherited action.
+
+`EditorSettingsStore` schema v3 stores `inputOverrides`. Its v2 reader drops
+the previously inert editor-owned `inputContexts` records with diagnostics and
+promotes only runtime records, so upgrading cannot silently make dead editor
+bindings live. A `.rt2proj` stores portable runtime defaults. `InputService`
+applies the complete composition before the editor samples its context stack.
+Interactive rebinding remains deferred.
+
+## Historical baseline (pre-Phase-5)
 
 RT2 has two parallel, uncoordinated input paths and no runtime/gameplay
 input layer:
@@ -136,15 +151,17 @@ key contracts:
   request via `Walnut::Input::SetCursorMode`. The camera no longer
   calls `SetCursorMode` directly. Focus loss / context transitions
   force `CursorMode::Normal` for one frame.
-- **Serialization in `EditorSettingsStore` v2.** New optional
-  `inputContexts` field: a list of contexts, each with `contextId` and
+- **Serialization (superseded by Phase 7 W4).** Phase 5 introduced the
+  `EditorSettingsStore` v2 `inputContexts` field: a list of contexts, each with `contextId` and
   a `mappings` list. `device` field disambiguates keyboard/mouse/
   gamepad. Loader already ignores unknown optional fields, so v1
   files load cleanly and the service falls back to built-in defaults
   (`LoadDefaults()`, mirroring current hardcoded bindings + default
   runtime gamepad mappings). Rebinding is verified via JSON editing
   or the test-only `SetMapping` API; the interactive rebinding dialog
-  is deferred to Phase 7's content-browser era.
+  was deferred. Phase 7 W4 subsequently split this into project
+  `inputContexts` defaults and per-user v3 `inputOverrides`, as described in
+  the current-state section above.
 - **Runtime input routing.** During Play the runtime context is
   active; editor shortcuts are unmapped in the runtime context, so
   Ctrl+Z/Delete/etc. are inert. Phase 6 adds `IInputService&` to the

@@ -725,7 +725,7 @@ TEST_CASE("Phase6B W3 Serializer: every typed script field round-trips")
 
     nlohmann::json saved;
     { std::ifstream in(path); in >> saved; }
-    CHECK(saved["version"].get<uint32_t>() == 3);
+    CHECK(saved["version"].get<uint32_t>() == 4);
     CHECK_FALSE(saved["metadata"].contains("sourcePath"));
     CHECK_FALSE(saved["entities"][0]["script"]["asset"].contains("importSettings"));
 

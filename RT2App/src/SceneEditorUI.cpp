@@ -611,7 +611,7 @@ void SceneEditorUI::RenderOutliner()
 			const auto initialDirectory = m_DialogInitialDirectory
 				? m_DialogInitialDirectory() : std::filesystem::path{};
 			std::string path = FileDialog::OpenFile(
-				L"glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0",
+				L"Model Files (*.glb;*.gltf;*.obj)\0*.glb;*.gltf;*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0",
 				initialDirectory);
 			if (!path.empty() && m_OnImportWithOptions)
 			{
@@ -625,7 +625,7 @@ void SceneEditorUI::RenderOutliner()
 			const auto initialDirectory = m_DialogInitialDirectory
 				? m_DialogInitialDirectory() : std::filesystem::path{};
 			std::string path = FileDialog::OpenFile(
-				L"OBJ Files (*.obj)\0*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0",
+				L"Model Files (*.glb;*.gltf;*.obj)\0*.glb;*.gltf;*.obj\0OBJ Files (*.obj)\0*.obj\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0All Files (*.*)\0*.*\0",
 				initialDirectory);
 			if (!path.empty() && m_OnImportWithOptions)
 			{
@@ -1771,12 +1771,7 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 	if (!m_FieldRegistry) return;
 
 	const auto& document = m_SceneMgr->AuthoringDoc();
-	std::filesystem::path assetRoot =
-		document.metadata.sourcePath.parent_path();
-	if (assetRoot.empty() && m_DialogInitialDirectory)
-		assetRoot = m_DialogInitialDirectory();
-	const rt2::core::AssetResolutionContext assetContext{
-		assetRoot, nullptr};
+	const auto& assetContext = m_SceneMgr->AssetContext();
 	std::vector<rt2::core::AssetDiagnostic> assetDiagnostics;
 	const auto resolved = rt2::core::ResolveScriptAssetPath(
 		*scriptState, assetContext, targetUuid,

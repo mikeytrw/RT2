@@ -29,10 +29,10 @@ that use the same word for different things**:
 None was a hard problem. Each was invisible because the boundary had no name,
 so nothing said which side of it an index belonged to.
 
-The same shape shows up in prose: `projectRoot` means two different things, and
-the Phase 7 plan spends a finding (P5) disambiguating it. Two sections were
-numbered "Phase 8". These are cheap to fix once named and expensive to keep
-rediscovering.
+The same shape shows up in prose: legacy `projectRoot` has acquired three
+different meanings, and the Phase 7 W4/W5 spec spends a finding (W45-F2)
+disambiguating it. Two sections were numbered "Phase 8". These are cheap to
+fix once named and expensive to keep rediscovering.
 
 ---
 
@@ -109,21 +109,31 @@ Not "no material" — it means **"use the mesh's per-triangle material indices"*
 to material 0 in the acceleration-structure build, which is whatever was
 imported first. Preserve `-1` through any rebasing; never treat it as absent.
 
-### `projectRoot`
+### Legacy `projectRoot` and the Phase 7 root terms
 
-Two unrelated concepts sharing a name. Phase 7 finding P5 records this.
+Before Phase 7 W4, one `projectRoot` setting had acquired three meanings:
+dialog state, script/recovery asset base, and a misleading Session label.
+W45-F2 records that historical collision. W4 removed the API and serialized
+key; schema-v1/v2 settings now migrate it to `lastBrowseDirectory`.
 
-- **`EditorSettings::GetProjectRoot`** (`EditorSettings.h:98`, serialized at
-  `:41`) — a **per-user editor preference**, the initial location for file
-  dialogs. Absolute, machine-specific, never committed. Does **not** affect how
-  asset references resolve.
-- **Phase 7 `project.rt2proj`** — a **portable, committed** file that *does*
-  define asset resolution, and is the root that scene-relative paths resolve
-  against.
+Phase 7 D3 settles four distinct terms
+(`docs/game-engine-development-plan.md:8620-8644`, amended by W45-A6):
 
-They must not be merged or renamed into each other. When Phase 7 lands, the
-editor-settings one is a candidate for renaming to something like
-`dialogStartDirectory` to end the collision.
+- **`lastBrowseDirectory`** — the per-user, absolute,
+  machine-specific dialog preference. It never participates in asset
+  resolution.
+- **`projectDirectory`** — the derived absolute parent directory of the
+  portable, committed `.rt2proj` file.
+- **`assetRoot`** — the derived absolute base for portable asset locators and
+  `AssetDatabase::sourcePath` (`AssetResolver.h:107-116`;
+  `AssetDatabase.h:61-80`).
+- **`cacheRoot`** — the derived absolute location for generated,
+  replaceable cache contents; the project stores only its portable relative
+  locator.
+
+Bare `projectRoot` is legacy vocabulary and must not be reintroduced. Current
+project-model and host code use the four settled terms above; asset resolution
+and recovery do not consult `lastBrowseDirectory`.
 
 ### `sourceKey` vs asset ID
 

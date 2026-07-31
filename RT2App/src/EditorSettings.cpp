@@ -2,53 +2,45 @@
 
 #include "json.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
-#include <algorithm>
 #include <system_error>
 
 #ifdef _WIN32
 #  include <windows.h>
 #endif
 
-using json = nlohmann::json;
-
 namespace rt2::core {
 
-// ----------------------------------------------------------------------------
-// Path helpers
-// ----------------------------------------------------------------------------
+using json = nlohmann::json;
 
-std::filesystem::path EditorSettingsStore::Normalize(const std::filesystem::path& p)
+std::filesystem::path EditorSettingsStore::Normalize(
+    const std::filesystem::path& path)
 {
-    if (p.empty()) return {};
+    if (path.empty()) return {};
     std::error_code ec;
-    std::filesystem::path abs = std::filesystem::weakly_canonical(p, ec);
-    if (ec) abs = p;
-    // Strip trailing separator for stable comparison/storage.
-    std::string s = abs.generic_u8string();
-    while (s.size() > 1 && s.back() == '/') s.pop_back();
-    return std::filesystem::u8path(s);
+    auto normalized = std::filesystem::weakly_canonical(path, ec);
+    if (ec) normalized = path.lexically_normal();
+    std::string value = normalized.generic_u8string();
+    while (value.size() > 1 && value.back() == '/') value.pop_back();
+    return std::filesystem::u8path(value);
 }
 
-std::string EditorSettingsStore::FoldKey(const std::filesystem::path& p)
+std::string EditorSettingsStore::FoldKey(
+    const std::filesystem::path& path)
 {
-    std::string s = Normalize(p).generic_u8string();
+    std::string value = Normalize(path).generic_u8string();
 #ifdef _WIN32
-    std::transform(s.begin(), s.end(), s.begin(),
+    std::transform(value.begin(), value.end(), value.begin(),
                    [](unsigned char c) { return static_cast<char>(::tolower(c)); });
 #endif
-    return s;
+    return value;
 }
-
-// ----------------------------------------------------------------------------
-// Construction
-// ----------------------------------------------------------------------------
 
 EditorSettingsStore::EditorSettingsStore(std::filesystem::path appDataRoot,
                                          size_t maxRecents)
-    : m_AppDataRoot(std::move(appDataRoot))
-    , m_MaxRecents(maxRecents)
+    : m_AppDataRoot(std::move(appDataRoot)), m_MaxRecents(maxRecents)
 {
 }
 
@@ -57,80 +49,92 @@ std::filesystem::path EditorSettingsStore::SettingsFilePath() const
     return m_AppDataRoot / "settings.json";
 }
 
-// ----------------------------------------------------------------------------
-// Load
-// ----------------------------------------------------------------------------
-
 bool EditorSettingsStore::Load(Error& err)
 {
-    err = Error{};
-    // Defaults remain in place; only overwrite on a successful parse.
-    std::filesystem::path fp = SettingsFilePath();
-    if (!std::filesystem::exists(fp))
-        return true; // missing file is not an error
+    EditorSettingsLoadReport ignored;
+    return Load(ignored, err);
+}
 
-    std::ifstream in(fp, std::ios::binary);
-    if (!in)
+bool EditorSettingsStore::Load(EditorSettingsLoadReport& report, Error& err)
+{
+    err = Error{};
+    report = EditorSettingsLoadReport{};
+    const auto file = SettingsFilePath();
+    if (!std::filesystem::exists(file)) return true;
+
+    std::ifstream input(file, std::ios::binary);
+    if (!input)
     {
         err.code = Error::Io;
-        err.path = fp.string();
+        err.path = file.u8string();
         err.detail = "failed to open settings file for reading";
         return false;
     }
-    std::stringstream ss;
-    ss << in.rdbuf();
-    std::string content = ss.str();
+    std::stringstream stream;
+    stream << input.rdbuf();
 
     json root;
     try
     {
-        root = json::parse(content);
+        root = json::parse(stream.str());
     }
-    catch (const std::exception& e)
+    catch (const std::exception& exception)
     {
         err.code = Error::Parse;
-        err.path = fp.string();
-        err.detail = std::string("settings JSON parse error: ") + e.what();
+        err.path = file.u8string();
+        err.detail = std::string("settings JSON parse error: ") +
+                     exception.what();
         return false;
     }
-
-    if (!root.contains("version") || !root["version"].is_number_unsigned())
+    if (!root.is_object() || !root.contains("version") ||
+        !root["version"].is_number_unsigned())
     {
         err.code = Error::Parse;
-        err.path = fp.string();
+        err.path = file.u8string();
         err.detail = "settings missing or invalid version field";
         return false;
     }
-    uint32_t version = root["version"].get<uint32_t>();
-    // v1 → v2 migration: v1 files have no inputContexts field. We
-    // accept v1 and treat it as v2 with empty input contexts (caller
-    // falls back to InputService::LoadDefaults()). Any other version
-    // is rejected.
-    const bool isV1 = (version == kSupportedLegacyVersion);
-    if (version != SettingsVersion && !isV1)
+
+    const uint32_t version = root["version"].get<uint32_t>();
+    report.sourceVersion = version;
+    report.migrated = version != SettingsVersion;
+    if (version < kOldestSupportedVersion || version > SettingsVersion)
     {
         err.code = Error::SchemaVersion;
-        err.path = fp.string();
-        err.detail = "unsupported settings version " + std::to_string(version) +
-                     " (supported " + std::to_string(SettingsVersion) +
-                     ", legacy " + std::to_string(kSupportedLegacyVersion) + ")";
+        err.path = file.u8string();
+        err.detail = "unsupported settings version " +
+                     std::to_string(version) + " (supported 1-" +
+                     std::to_string(SettingsVersion) + ")";
         return false;
     }
 
-    std::filesystem::path parsedProjectRoot;
-    std::vector<std::filesystem::path> parsedRecents;
-
-    // projectRoot — optional. Unknown fields ignored.
-    if (root.contains("projectRoot") && root["projectRoot"].is_string())
+    const char* browseKey = version >= 3
+        ? "lastBrowseDirectory" : "projectRoot";
+    std::filesystem::path parsedBrowse;
+    if (root.contains(browseKey))
     {
-        std::string s = root["projectRoot"].get<std::string>();
-        parsedProjectRoot = s.empty() ? std::filesystem::path{}
-                                      : Normalize(std::filesystem::u8path(s));
+        if (!root[browseKey].is_string())
+        {
+            err.code = Error::Parse;
+            err.path = file.u8string();
+            err.detail = std::string(browseKey) + " must be a string";
+            return false;
+        }
+        const std::string value = root[browseKey].get<std::string>();
+        if (!value.empty())
+            parsedBrowse = Normalize(std::filesystem::u8path(value));
     }
 
-    // recentScenes — optional array of strings.
-    if (root.contains("recentScenes") && root["recentScenes"].is_array())
+    std::vector<std::filesystem::path> parsedRecents;
+    if (root.contains("recentScenes"))
     {
+        if (!root["recentScenes"].is_array())
+        {
+            err.code = Error::Parse;
+            err.path = file.u8string();
+            err.detail = "recentScenes must be an array";
+            return false;
+        }
         for (const auto& entry : root["recentScenes"])
         {
             if (!entry.is_string() || entry.get<std::string>().empty()) continue;
@@ -139,268 +143,194 @@ bool EditorSettingsStore::Load(Error& err)
             const auto key = FoldKey(normalized);
             const bool duplicate = std::any_of(
                 parsedRecents.begin(), parsedRecents.end(),
-                [&](const std::filesystem::path& existing) {
-                    return FoldKey(existing) == key;
-                });
+                [&](const auto& existing) { return FoldKey(existing) == key; });
             if (!duplicate && parsedRecents.size() < m_MaxRecents)
                 parsedRecents.push_back(normalized);
         }
     }
 
-    m_ProjectRoot = std::move(parsedProjectRoot);
-    m_RecentScenes = std::move(parsedRecents);
-
-    // inputContexts — optional array (v2+). v1 files have no such
-    // field; the caller falls back to InputService::LoadDefaults().
-    m_InputContexts.clear();
-    if (!isV1 && root.contains("inputContexts") && root["inputContexts"].is_array())
+    std::vector<InputContextRecord> parsedOverrides;
+    if (version == 2 && root.contains("inputContexts"))
     {
-        for (const auto& ctxJson : root["inputContexts"])
+        std::vector<InputContextRecord> legacy;
+        Error inputError;
+        if (!ParseInputContextRecords(root["inputContexts"],
+                                      InputConfigScope::UserOverrides,
+                                      legacy, inputError))
         {
-            if (!ctxJson.is_object() || !ctxJson.contains("contextId") ||
-                !ctxJson["contextId"].is_string())
-                continue;
-            InputContextRecord rec;
-            rec.contextId = ctxJson["contextId"].get<std::string>();
-            if (ctxJson.contains("mappings") && ctxJson["mappings"].is_array())
+            err = inputError;
+            err.path = file.u8string() + ":" + err.path;
+            return false;
+        }
+        for (auto& record : legacy)
+        {
+            const bool drop = IsEditorOwnedInputContext(record.contextId);
+            if (!drop) parsedOverrides.push_back(record);
+            if (record.mappings.empty())
             {
-                for (const auto& mJson : ctxJson["mappings"])
-                {
-                    if (!mJson.is_object() || !mJson.contains("name") ||
-                        !mJson["name"].is_string())
-                        continue;
-                    InputMapping m;
-                    m.name = mJson["name"].get<std::string>();
-                    m.isAxis = mJson.value("isAxis", false);
-
-                    if (mJson.contains("actions") && mJson["actions"].is_array())
-                    {
-                        for (const auto& aJson : mJson["actions"])
-                        {
-                            if (!aJson.is_object()) continue;
-                            ActionBinding b;
-                            b.device = static_cast<InputDeviceKind>(
-                                aJson.value("device", 0));
-                            b.code = static_cast<uint16_t>(
-                                aJson.value("code", 0));
-                            b.modifiers = static_cast<ModifierBits>(
-                                aJson.value("modifiers", 0));
-                            b.gamepadSlot = aJson.value("gamepadSlot", -1);
-                            m.actions.push_back(b);
-                        }
-                    }
-                    if (mJson.contains("axes") && mJson["axes"].is_array())
-                    {
-                        for (const auto& aJson : mJson["axes"])
-                        {
-                            if (!aJson.is_object()) continue;
-                            AxisBinding b;
-                            b.device = static_cast<InputDeviceKind>(
-                                aJson.value("device", 0));
-                            b.code = static_cast<uint16_t>(
-                                aJson.value("code", 0));
-                            b.positive = static_cast<uint16_t>(
-                                aJson.value("positive", 0));
-                            b.negative = static_cast<uint16_t>(
-                                aJson.value("negative", 0));
-                            b.gamepadSlot = aJson.value("gamepadSlot", -1);
-                            b.deadZone = aJson.value("deadZone", 0.15f);
-                            b.invert = aJson.value("invert", false);
-                            m.axes.push_back(b);
-                        }
-                    }
-                    rec.mappings.push_back(std::move(m));
-                }
+                report.diagnostics.push_back({
+                    drop ? EditorSettingsMigrationDiagnostic::Kind::DroppedReservedContext
+                         : EditorSettingsMigrationDiagnostic::Kind::PromotedOverride,
+                    record.contextId, {}});
             }
-            m_InputContexts.push_back(std::move(rec));
+            for (const auto& mapping : record.mappings)
+            {
+                report.diagnostics.push_back({
+                    drop ? EditorSettingsMigrationDiagnostic::Kind::DroppedReservedContext
+                         : EditorSettingsMigrationDiagnostic::Kind::PromotedOverride,
+                    record.contextId, mapping.name});
+            }
         }
     }
+    else if (version >= 3 && root.contains("inputOverrides"))
+    {
+        Error inputError;
+        if (!ParseInputContextRecords(root["inputOverrides"],
+                                      InputConfigScope::UserOverrides,
+                                      parsedOverrides, inputError))
+        {
+            err = inputError;
+            err.path = file.u8string() + ":" + err.path;
+            return false;
+        }
+    }
+    std::sort(report.diagnostics.begin(), report.diagnostics.end(),
+              [](const auto& a, const auto& b) {
+                  if (a.kind != b.kind) return a.kind < b.kind;
+                  if (a.contextId != b.contextId)
+                      return a.contextId < b.contextId;
+                  return a.mappingName < b.mappingName;
+              });
 
+    m_LastBrowseDirectory = std::move(parsedBrowse);
+    m_RecentScenes = std::move(parsedRecents);
+    m_InputOverrides = std::move(parsedOverrides);
     return true;
 }
-
-// ----------------------------------------------------------------------------
-// Save (atomic)
-// ----------------------------------------------------------------------------
 
 bool EditorSettingsStore::Save(Error& err) const
 {
     err = Error{};
-    std::filesystem::path fp = SettingsFilePath();
-
-    // Ensure directory exists.
+    const auto file = SettingsFilePath();
     std::error_code ec;
     std::filesystem::create_directories(m_AppDataRoot, ec);
     if (ec)
     {
         err.code = Error::Io;
-        err.path = m_AppDataRoot.string();
+        err.path = m_AppDataRoot.u8string();
         err.detail = "failed to create settings directory: " + ec.message();
+        return false;
+    }
+
+    // Reparse through the shared codec before writing so invalid in-memory
+    // overrides cannot be persisted silently.
+    const json overrideJson = InputContextRecordsToJson(m_InputOverrides);
+    std::vector<InputContextRecord> validated;
+    Error inputError;
+    if (!ParseInputContextRecords(overrideJson,
+                                  InputConfigScope::UserOverrides,
+                                  validated, inputError))
+    {
+        err = inputError;
+        err.path = file.u8string() + ":" + err.path;
         return false;
     }
 
     json root;
     root["version"] = SettingsVersion;
-    root["projectRoot"] = m_ProjectRoot.empty() ? std::string{} : m_ProjectRoot.generic_u8string();
+    root["lastBrowseDirectory"] = m_LastBrowseDirectory.empty()
+        ? std::string{} : m_LastBrowseDirectory.generic_u8string();
+    root["recentScenes"] = json::array();
+    for (const auto& recent : m_RecentScenes)
+        root["recentScenes"].push_back(recent.generic_u8string());
+    root["inputOverrides"] = InputContextRecordsToJson(validated);
 
-    json recents = json::array();
-    for (const auto& p : m_RecentScenes)
-        recents.push_back(p.generic_u8string());
-    root["recentScenes"] = recents;
-
-    // inputContexts (Phase 5 v2). Empty array if no custom mappings;
-    // the caller (InputService) falls back to LoadDefaults() on empty.
-    json ctxList = json::array();
-    for (const auto& rec : m_InputContexts)
+    const std::string content = root.dump(2);
+    auto temp = file;
+    temp += ".tmp";
     {
-        json ctxJson;
-        ctxJson["contextId"] = rec.contextId;
-        json mappings = json::array();
-        for (const InputMapping& m : rec.mappings)
-        {
-            json mJson;
-            mJson["name"] = m.name;
-            mJson["isAxis"] = m.isAxis;
-            json actions = json::array();
-            for (const ActionBinding& b : m.actions)
-            {
-                actions.push_back({
-                    { "device",      static_cast<int>(b.device) },
-                    { "code",        static_cast<int>(b.code) },
-                    { "modifiers",   static_cast<int>(b.modifiers) },
-                    { "gamepadSlot", b.gamepadSlot },
-                });
-            }
-            json axes = json::array();
-            for (const AxisBinding& b : m.axes)
-            {
-                axes.push_back({
-                    { "device",      static_cast<int>(b.device) },
-                    { "code",        static_cast<int>(b.code) },
-                    { "positive",    static_cast<int>(b.positive) },
-                    { "negative",    static_cast<int>(b.negative) },
-                    { "gamepadSlot", b.gamepadSlot },
-                    { "deadZone",    b.deadZone },
-                    { "invert",      b.invert },
-                });
-            }
-            mJson["actions"] = actions;
-            mJson["axes"] = axes;
-            mappings.push_back(mJson);
-        }
-        ctxJson["mappings"] = mappings;
-        ctxList.push_back(ctxJson);
-    }
-    root["inputContexts"] = ctxList;
-
-    std::string content = root.dump(2);
-
-    std::filesystem::path tmp = fp;
-    tmp += ".tmp";
-
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (!out)
+        std::ofstream output(temp, std::ios::binary | std::ios::trunc);
+        if (!output)
         {
             err.code = Error::Io;
-            err.path = tmp.string();
+            err.path = temp.u8string();
             err.detail = "failed to open settings temp file for writing";
             return false;
         }
-        out.write(content.data(), static_cast<std::streamsize>(content.size()));
-        if (!out)
+        output.write(content.data(), static_cast<std::streamsize>(content.size()));
+        output.flush();
+        if (!output)
         {
+            output.close();
+            std::filesystem::remove(temp, ec);
             err.code = Error::Io;
-            err.path = tmp.string();
+            err.path = temp.u8string();
             err.detail = "failed while writing settings temp file";
-            out.close();
-            std::filesystem::remove(tmp, ec);
             return false;
         }
-        out.close();
     }
 
 #ifdef _WIN32
-    std::wstring wTarget = fp.wstring();
-    std::wstring wTmp    = tmp.wstring();
-    if (std::filesystem::exists(fp))
+    const std::wstring target = file.wstring();
+    const std::wstring source = temp.wstring();
+    if (std::filesystem::exists(file))
     {
-        if (!ReplaceFileW(wTarget.c_str(), wTmp.c_str(), nullptr,
-                          REPLACEFILE_WRITE_THROUGH, nullptr, nullptr))
+        if (!ReplaceFileW(target.c_str(), source.c_str(), nullptr,
+                          REPLACEFILE_WRITE_THROUGH, nullptr, nullptr) &&
+            !MoveFileExW(source.c_str(), target.c_str(),
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         {
-            if (!MoveFileExW(wTmp.c_str(), wTarget.c_str(),
-                             MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-            {
-                err.code = Error::Io;
-                err.path = fp.string();
-                err.detail = "settings ReplaceFileW and MoveFileExW both failed";
-                std::filesystem::remove(tmp, ec);
-                return false;
-            }
-        }
-    }
-    else
-    {
-        if (!MoveFileExW(wTmp.c_str(), wTarget.c_str(), MOVEFILE_WRITE_THROUGH))
-        {
+            std::filesystem::remove(temp, ec);
             err.code = Error::Io;
-            err.path = fp.string();
-            err.detail = "settings MoveFileExW failed for new file";
-            std::filesystem::remove(tmp, ec);
+            err.path = file.u8string();
+            err.detail = "failed to atomically replace settings file";
             return false;
         }
     }
+    else if (!MoveFileExW(source.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH))
+    {
+        std::filesystem::remove(temp, ec);
+        err.code = Error::Io;
+        err.path = file.u8string();
+        err.detail = "failed to atomically create settings file";
+        return false;
+    }
 #else
-    std::filesystem::rename(tmp, fp, ec);
+    std::filesystem::rename(temp, file, ec);
     if (ec)
     {
+        std::filesystem::remove(temp, ec);
         err.code = Error::Io;
-        err.path = fp.string();
-        err.detail = "settings rename failed: " + ec.message();
-        std::filesystem::remove(tmp, ec);
+        err.path = file.u8string();
+        err.detail = "failed to rename settings temp file: " + ec.message();
         return false;
     }
 #endif
-
     return true;
 }
-
-// ----------------------------------------------------------------------------
-// Recents
-// ----------------------------------------------------------------------------
 
 void EditorSettingsStore::AddRecentScene(const std::filesystem::path& path)
 {
     if (path.empty()) return;
-    std::filesystem::path norm = Normalize(path);
-    std::string key = FoldKey(norm);
-
-    // Remove any existing equivalent entry.
-    for (auto it = m_RecentScenes.begin(); it != m_RecentScenes.end(); ++it)
-    {
-        if (FoldKey(*it) == key)
-        {
-            m_RecentScenes.erase(it);
-            break;
-        }
-    }
-
-    m_RecentScenes.insert(m_RecentScenes.begin(), norm);
+    const auto normalized = Normalize(path);
+    const auto key = FoldKey(normalized);
+    const auto it = std::find_if(
+        m_RecentScenes.begin(), m_RecentScenes.end(),
+        [&](const auto& existing) { return FoldKey(existing) == key; });
+    if (it != m_RecentScenes.end()) m_RecentScenes.erase(it);
+    m_RecentScenes.insert(m_RecentScenes.begin(), normalized);
     if (m_RecentScenes.size() > m_MaxRecents)
         m_RecentScenes.resize(m_MaxRecents);
 }
 
-void EditorSettingsStore::RemoveRecentScene(const std::filesystem::path& path)
+void EditorSettingsStore::RemoveRecentScene(
+    const std::filesystem::path& path)
 {
-    std::string key = FoldKey(path);
-    for (auto it = m_RecentScenes.begin(); it != m_RecentScenes.end(); ++it)
-    {
-        if (FoldKey(*it) == key)
-        {
-            m_RecentScenes.erase(it);
-            return;
-        }
-    }
+    const auto key = FoldKey(path);
+    const auto it = std::find_if(
+        m_RecentScenes.begin(), m_RecentScenes.end(),
+        [&](const auto& existing) { return FoldKey(existing) == key; });
+    if (it != m_RecentScenes.end()) m_RecentScenes.erase(it);
 }
 
 } // namespace rt2::core

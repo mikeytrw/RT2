@@ -516,6 +516,23 @@ references, so no resolution is needed for them.
 
 ## Editor settings, recovery, and session lifecycle (Phase 1B)
 
+### Project context (Phase 7 W4)
+
+A portable `.rt2proj` v1 owns a non-nil project UUID and relative
+`assetRoot`, `cacheRoot`, optional asset-root-relative `startupScene`, and
+runtime `inputContexts`. Derived absolute paths are never serialized. Project
+load validates containment and cache/asset non-overlap, performs a read-only
+sorted scan of `.rt2meta` sidecars, and owns the resulting immutable
+`AssetDatabase` snapshot.
+
+Project open is transactional across project parse, path validation, sidecar
+scan, input composition, and startup-scene load. A failed replacement leaves
+the prior scene, project, input maps, and database snapshot live. Native scene
+open remains an explicit standalone mode using the scene parent and no project
+database. The Session panel exposes project identity/roots and an explicit
+Refresh Assets action; external filesystem edits are not watched until the
+later asset-watch phase.
+
 ### EditorSettingsStore
 
 Per-user editor preferences stored as a versioned JSON file under
@@ -523,13 +540,14 @@ Per-user editor preferences stored as a versioned JSON file under
 Tests inject a temporary directory so they never touch the developer's
 LocalAppData.
 
-Schema (version 1):
+Current schema (version 3):
 
 ```json
 {
-  "version": 1,
-  "projectRoot": "<absolute path or empty>",
-  "recentScenes": ["<absolute .rt2scene path>", ...]
+  "version": 3,
+  "lastBrowseDirectory": "<absolute path or empty>",
+  "recentScenes": ["<absolute .rt2scene path>", ...],
+  "inputOverrides": []
 }
 ```
 
@@ -539,9 +557,10 @@ Schema (version 1):
   (default 10), normalized + deduplicated case-insensitively on Windows.
   Updated only after a successful native open or save. Failed/cancelled
   operations do not change the list.
-- Project root: optional editor preference used as an initial file-dialog
-  location. Does NOT reinterpret the Phase 1A scene-relative asset-reference
-  contract.
+- Last browse directory is dialog state only and never participates in asset
+  resolution, Play, Save, or recovery. The v1/v2 `projectRoot` key migrates to
+  this field. Schema-v2 runtime input records migrate to overrides; inert
+  editor-owned records are dropped with diagnostics.
 - Unsupported versions and malformed files produce useful diagnostics and
   safe defaults. Unknown optional fields are ignored.
 
@@ -566,11 +585,14 @@ object, not a second file):
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "docId": "<normalized case-folded absolute path or untitled:id>",
   "untitled": false,
   "originalSourcePath": "<empty when untitled>",
-  "assetRoot": "<directory asset references were relativized against>",
+  "assetRoot": "<standalone records only>",
+  "projectId": "<project records only>",
+  "projectFile": "<project records only>",
+  "sceneLocator": "<asset-root-relative; project records only>",
   "revision": 0,
   "createdAt": 0,
   "snapshot": { "version": 3, "...": "..." }
@@ -598,10 +620,12 @@ Autosave scheduling (`MaybeSnapshot`):
 
 Restore (`Restore(record, outDoc, diagnostics, err)`):
 
-- Transactional: loads into a temporary document using the recorded `assetRoot`
-  (NOT the recovery directory), restores the recorded logical source path, and
-  resolves assets and script fields before adoption. Only on success does it
-  swap into `outDoc`.
+- Transactional: standalone records use their recorded `assetRoot`. A
+  project-bound record instead reloads and rescans `projectFile`, verifies
+  `projectId`, reconstructs the logical source from `sceneLocator`, and uses
+  that project's current root/database. Missing or mismatched projects fail
+  loudly; project recovery never falls back to a stale stored absolute root.
+  Only after asset and script-field resolution succeeds is `outDoc` replaced.
 - The restored document is marked dirty.
 - Preserves `metadata.sourcePath` from the record (empty when untitled).
 - UUIDs, hierarchy, components, camera, lights, environment references,

@@ -129,7 +129,7 @@ std::string SceneAssetResolver::ObjMaterialKey(int mtlIdx)
 }
 
 bool SceneAssetResolver::ResolveEnvironment(SceneDocument& doc,
-                                             const std::filesystem::path& sceneRoot,
+                                             const AssetResolutionContext& context,
                                              std::vector<AssetDiagnostic>& diagnostics,
                                              Error& err)
 {
@@ -151,12 +151,8 @@ bool SceneAssetResolver::ResolveEnvironment(SceneDocument& doc,
     // setting kind.
     AssetReference& ref = doc.environment.ref;
     ref.kind = AssetKind::Environment;
-    AssetResolutionContext ctx;
-    ctx.assetRoot = sceneRoot;
-    ctx.database  = nullptr;
-
     std::vector<AssetDiagnostic> resolveDiags;
-    auto rr = Resolve(ref, ctx, UUID::Nil(), "", resolveDiags);
+    auto rr = Resolve(ref, context, UUID::Nil(), "", resolveDiags);
     // Append locator diagnostics to the caller's vector (W3-P8: one terminal
     // diagnostic per failed reference).
     for (auto& d : resolveDiags)
@@ -231,7 +227,7 @@ bool SceneAssetResolver::ResolveEnvironment(SceneDocument& doc,
 }
 
 bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
-                                    const std::filesystem::path& sceneRoot,
+                                    const AssetResolutionContext& context,
                                     std::vector<AssetDiagnostic>& diagnostics,
                                     Error& err)
 {
@@ -255,7 +251,7 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
     if (doc.environment.HasEnvMap() && doc.environment.floatPixels.empty())
     {
         Error envErr;
-        ResolveEnvironment(doc, sceneRoot, diagnostics, envErr);
+        ResolveEnvironment(doc, context, diagnostics, envErr);
         // Continue regardless; env failure is a diagnostic, not fatal here.
     }
 
@@ -280,19 +276,9 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         // glTF's fully-metallic default.
         bool        assumeDielectric = false;
         // Resolution context for the first entity that referenced this model.
-        // W3 step 3: resolution is ID-first via the shared locator. The host
-        // does not build an AssetDatabase yet (step 4 / W4), so `database` is
-        // nullptr and the locator falls back to path+sidecar verification.
         UUID        firstEntityUuid;
         std::string firstEntityName;
     };
-
-    // W3 step 3: build the resolution context once. No database is available
-    // at scene load yet; the locator handles the no-database case by
-    // verifying the asset's sidecar against any non-nil requested ID.
-    AssetResolutionContext resolutionContext;
-    resolutionContext.assetRoot = sceneRoot;
-    resolutionContext.database  = nullptr;
 
     std::vector<ModelRef> models;
     auto findOrAddModel = [&](const std::string& refPath, bool isObj,
@@ -320,7 +306,7 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         // the caller's `diagnostics` vector and is emitted once per missing
         // model path, not once per entity.
         std::vector<AssetDiagnostic> resolveDiags;
-        auto rr = Resolve(ref, resolutionContext, entityUuid, entityName,
+        auto rr = Resolve(ref, context, entityUuid, entityName,
                          resolveDiags);
         m.resolved = rr.success ? rr.resolvedPath : fs::path{};
         m.effectiveId = rr.effectiveId;
@@ -428,7 +414,7 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         }
 
         TextureAssetLoadContext textureContext;
-        textureContext.resolution = resolutionContext;
+        textureContext.resolution = context;
         textureContext.ownerModel = m.ownerRef;
         textureContext.resolvedOwnerPath = m.resolved;
         textureContext.effectiveOwnerId = m.effectiveId;

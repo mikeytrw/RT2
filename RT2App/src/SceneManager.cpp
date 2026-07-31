@@ -370,12 +370,16 @@ bool SceneManager::LoadScene(
 	auto& diagnosticSink =
 		diagnostics ? *diagnostics : localDiagnostics;
 	const size_t diagnosticBase = diagnosticSink.size();
+	rt2::core::AssetResolutionContext importContext = m_AssetResolutionContext;
+	if (importContext.assetRoot.empty())
+		importContext.assetRoot = std::filesystem::u8path(filepath).parent_path();
 
 	if (isObj)
 	{
 		rt2::core::TextureAssetLoadContext textureContext;
 		if (!rt2::core::BuildExplicitImportTextureContext(
 			    std::filesystem::u8path(filepath), m_UuidProvider,
+			    importContext,
 			    textureContext, diagnosticSink))
 		{
 			if (!diagnostics)
@@ -401,6 +405,7 @@ bool SceneManager::LoadScene(
 		rt2::core::TextureAssetLoadContext textureContext;
 		if (!rt2::core::BuildExplicitImportTextureContext(
 			    std::filesystem::u8path(filepath), m_UuidProvider,
+			    importContext,
 			    textureContext, diagnosticSink))
 		{
 			if (!diagnostics)
@@ -645,9 +650,13 @@ SceneManager::EntityId SceneManager::ImportGltf(
 	auto& diagnosticSink =
 		diagnostics ? *diagnostics : localDiagnostics;
 	const size_t diagnosticBase = diagnosticSink.size();
+	rt2::core::AssetResolutionContext importContext = m_AssetResolutionContext;
+	if (importContext.assetRoot.empty())
+		importContext.assetRoot = std::filesystem::u8path(filepath).parent_path();
 	rt2::core::TextureAssetLoadContext textureContext;
 	if (!rt2::core::BuildExplicitImportTextureContext(
 		    std::filesystem::u8path(filepath), m_UuidProvider,
+		    importContext,
 		    textureContext, diagnosticSink))
 	{
 		if (!diagnostics)
@@ -698,9 +707,13 @@ SceneManager::EntityId SceneManager::ImportObj(
 	auto& diagnosticSink =
 		diagnostics ? *diagnostics : localDiagnostics;
 	const size_t diagnosticBase = diagnosticSink.size();
+	rt2::core::AssetResolutionContext importContext = m_AssetResolutionContext;
+	if (importContext.assetRoot.empty())
+		importContext.assetRoot = std::filesystem::u8path(filepath).parent_path();
 	rt2::core::TextureAssetLoadContext textureContext;
 	if (!rt2::core::BuildExplicitImportTextureContext(
 		    std::filesystem::u8path(filepath), m_UuidProvider,
+		    importContext,
 		    textureContext, diagnosticSink))
 	{
 		if (!diagnostics)
@@ -3849,11 +3862,11 @@ EditorMutationResult SceneManager::SetScriptState(const rt2::core::UUID& entity,
 			else if (canonical.asset.assetId.IsNull())
 				canonical.asset.assetId = current->asset.assetId;
 
-			rt2::core::AssetResolutionContext context;
-			if (!m_Authoring.metadata.sourcePath.empty())
-				context.assetRoot =
-					m_Authoring.metadata.sourcePath.parent_path().
-						lexically_normal();
+			rt2::core::AssetResolutionContext context = m_AssetResolutionContext;
+			if (context.assetRoot.empty() &&
+				!m_Authoring.metadata.sourcePath.empty())
+				context.assetRoot = m_Authoring.metadata.sourcePath.
+					parent_path().lexically_normal();
 			std::vector<rt2::core::AssetDiagnostic> diagnostics;
 			const auto resolved = rt2::core::ResolveScriptAssetPath(
 				canonical, context, entity,

@@ -20,11 +20,11 @@ struct SceneLoadReport;
 
 // Crash recovery is deliberately one atomic envelope per logical document,
 // not version history. Each .rt2recovery file contains its manifest and the
-// complete schema-v3 scene JSON. Tests inject the storage root and clock.
+// complete schema-v3/v4 scene JSON. Tests inject the storage root and clock.
 class SceneRecoveryService
 {
 public:
-    static constexpr uint32_t ManifestVersion = 2;
+    static constexpr uint32_t ManifestVersion = 3;
     static constexpr size_t   kDefaultMaxRecords = 8;
     static constexpr double   kDefaultIntervalSeconds = 60.0;
 
@@ -36,6 +36,9 @@ public:
         bool                  untitled = false;
         std::filesystem::path originalSourcePath;
         std::filesystem::path assetRoot;
+        UUID                  projectId;
+        std::filesystem::path projectFile;
+        std::string           sceneLocator;
         uint64_t              revision = 0;
         int64_t               createdAtUnix = 0;
         bool                  valid = false;
@@ -47,6 +50,13 @@ public:
     };
 
     using ClockNow = std::function<int64_t()>;
+
+    struct ProjectBinding
+    {
+        UUID                  projectId;
+        std::filesystem::path projectFile;
+        std::string           sceneLocator;
+    };
 
     explicit SceneRecoveryService(std::filesystem::path recoveryRoot,
                                   ClockNow clock = nullptr,
@@ -61,7 +71,9 @@ public:
                        const std::string& untitledRecoveryId,
                        const std::filesystem::path& logicalAssetRoot,
                        std::vector<AssetDiagnostic>& diagnostics,
-                       Error& err);
+                       Error& err,
+                       const std::optional<ProjectBinding>& project =
+                           std::nullopt);
 
     // Build the no-project recovery asset root without consulting CWD.
     // `localAppData` is supplied by the host so this stays CPU-testable.
@@ -81,6 +93,16 @@ public:
                  Error& err) const;
 
     bool Restore(const RecoveryRecord& record,
+                 SceneDocument& outDoc,
+                 std::vector<AssetDiagnostic>& diagnostics,
+                 SceneLoadReport& loadReport,
+                 Error& err) const;
+
+    // Project-bound recovery must use the freshly reloaded project's
+    // asset-root/database context. The legacy overload above deliberately
+    // refuses project records instead of falling back to stored absolutes.
+    bool Restore(const RecoveryRecord& record,
+                 const AssetResolutionContext& context,
                  SceneDocument& outDoc,
                  std::vector<AssetDiagnostic>& diagnostics,
                  SceneLoadReport& loadReport,
@@ -125,7 +147,8 @@ private:
                      uint64_t revision,
                      int64_t createdAt,
                      std::vector<AssetDiagnostic>& diagnostics,
-                     Error& err);
+                     Error& err,
+                     const std::optional<ProjectBinding>& project);
     bool ParseRecord(const std::filesystem::path& path,
                      RecoveryRecord& out) const;
     void EvictExcess(const std::filesystem::path& keepPath) const;

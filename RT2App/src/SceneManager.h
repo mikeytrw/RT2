@@ -61,6 +61,11 @@ struct EditorCameraPose;
 	// The authoring scene document (ECS + UUID index + metadata).
 	rt2::core::SceneDocument& AuthoringDoc() { return m_Authoring; }
 	const rt2::core::SceneDocument& AuthoringDoc() const { return m_Authoring; }
+	void SetAssetResolutionContext(
+		const rt2::core::AssetResolutionContext& context)
+	{ m_AssetResolutionContext = context; }
+	const rt2::core::AssetResolutionContext& AssetContext() const
+	{ return m_AssetResolutionContext; }
 
 	// Atomically adopt a fully constructed authoring document. This is the
 	// only supported path for transactional open/recovery commits: the
@@ -568,6 +573,7 @@ private:
 	// UUID provider for entity creation. Default is an internal OsUuidProvider.
 	rt2::core::OsUuidProvider      m_DefaultProvider;
 	rt2::core::IUuidProvider*      m_UuidProvider = &m_DefaultProvider;
+	rt2::core::AssetResolutionContext m_AssetResolutionContext;
 
 	SyncCallback       m_SyncCallback;
 	SyncCallback       m_InstanceSyncCallback;

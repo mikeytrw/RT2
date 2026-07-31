@@ -19,7 +19,7 @@ TEST_CASE("Phase7 W3 step 7.2: explicit import context rejects implicit roots")
         TextureAssetLoadContext context;
         std::vector<AssetDiagnostic> diagnostics;
         CHECK_FALSE(BuildExplicitImportTextureContext(
-            path, &ids, context, diagnostics));
+            path, &ids, AssetResolutionContext{}, context, diagnostics));
         CHECK(context.resolvedOwnerPath.empty());
         REQUIRE(diagnostics.size() == 1);
         CHECK(diagnostics[0].severity == AssetDiagnostic::Malformed);
@@ -38,7 +38,9 @@ TEST_CASE("Phase7 W3 step 7.2: explicit import context normalizes without probin
     std::vector<AssetDiagnostic> diagnostics;
 
     REQUIRE(BuildExplicitImportTextureContext(
-        absolute, &ids, context, diagnostics));
+        absolute, &ids,
+        AssetResolutionContext{ absolute.parent_path(), nullptr },
+        context, diagnostics));
     CHECK(diagnostics.empty());
     CHECK(context.resolvedOwnerPath == absolute);
     CHECK(context.resolution.assetRoot == absolute.parent_path());

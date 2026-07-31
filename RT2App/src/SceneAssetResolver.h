@@ -56,10 +56,9 @@
 //     diagnostic, leaves the affected entity without a MeshRef (or with a
 //     placeholder), and preserves the UUID/entity hierarchy.
 //
-// Path resolution:
-//   - AssetReference::path is a portable, scene-relative UTF-8 path. It is
-//     resolved relative to the .rt2scene file's directory (sceneRoot). If
-//     the path is already absolute and exists, it is used directly.
+// Path resolution is supplied explicitly by the host through one
+// AssetResolutionContext. Project hosts provide the project asset root and
+// database snapshot; standalone hosts provide the scene parent and no DB.
 // ============================================================================
 
 namespace rt2::core {
@@ -73,8 +72,8 @@ class SceneAssetResolver
 {
 public:
     // Resolve all imported model references and the environment map in `doc`.
-    // `sceneRoot` is the directory of the .rt2scene file (or an explicit
-    // project root) used to resolve relative paths. On success, returns true
+    // `context` owns the path base and optional database snapshot. On success,
+    // returns true
     // and `doc` has rebuilt MeshRef/material/texture state. On failure,
     // returns false and fills `err`; `doc` is unchanged on hard failure.
     // Missing assets produce diagnostics but do not cause failure unless
@@ -83,7 +82,7 @@ public:
     // `diagnostics` always receives one entry per failing reference even when
     // the function returns true (partial success).
     static bool ResolveAll(SceneDocument& doc,
-                           const std::filesystem::path& sceneRoot,
+                           const AssetResolutionContext& context,
                            std::vector<AssetDiagnostic>& diagnostics,
                            Error& err);
 
@@ -93,7 +92,7 @@ public:
     // reference (path/dims are preserved so a later successful reload can
     // reattach). Pixels are cleared on failure.
     static bool ResolveEnvironment(SceneDocument& doc,
-                                   const std::filesystem::path& sceneRoot,
+                                   const AssetResolutionContext& context,
                                    std::vector<AssetDiagnostic>& diagnostics,
                                    Error& err);
 

@@ -78,9 +78,13 @@ struct EnvironmentSettings
 
 struct SceneMetadata
 {
-    uint32_t                    schemaVersion = 3;  // .rt2scene format version
+    uint32_t                    schemaVersion = 4;  // .rt2scene format version
     std::filesystem::path       sourcePath;         // file this document was loaded from / saved to
     std::string                 name;               // display name (defaults to filename stem)
+    // Runtime-only project binding. v4 writes projectId when non-nil; the
+    // absolute assetRoot is never serialized and is supplied by the host.
+    UUID                        projectId;
+    std::filesystem::path       assetRoot;
     bool                        dirty = false;      // unsaved authoring changes
 };
 

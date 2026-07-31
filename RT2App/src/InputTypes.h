@@ -237,6 +237,7 @@ public:
     }
     bool HasMapping(const std::string& name) const
     { return m_Mappings.count(name) != 0; }
+    void RemoveMapping(const std::string& name) { m_Mappings.erase(name); }
     void Clear() { m_Mappings.clear(); }
     const std::unordered_map<std::string, InputMapping>& All() const
     { return m_Mappings; }

@@ -47,7 +47,7 @@ TEST_CASE("EditorSettings: defaults when no file exists")
     Error err;
     REQUIRE(s.Load(err));
     REQUIRE(err.IsOk());
-    CHECK(s.GetProjectRoot().empty());
+    CHECK(s.GetLastBrowseDirectory().empty());
     CHECK(s.GetRecentScenes().empty());
     std::filesystem::remove_all(dir);
 }
@@ -57,17 +57,20 @@ TEST_CASE("EditorSettings: load/save round trip")
 {
     auto dir = UniqueTempDir("es_roundtrip");
     EditorSettingsStore s(dir);
-    s.SetProjectRoot("C:/Projects/RT2");
+    s.SetLastBrowseDirectory("C:/Projects/RT2");
     s.AddRecentScene("C:/Scenes/a.rt2scene");
     s.AddRecentScene("C:/Scenes/b.rt2scene");
     Error err;
     REQUIRE(s.Save(err));
     REQUIRE(err.IsOk());
+    const std::string serialized = ReadFileBytes(dir / "settings.json");
+    CHECK(serialized.find("lastBrowseDirectory") != std::string::npos);
+    CHECK(serialized.find("projectRoot") == std::string::npos);
 
     EditorSettingsStore s2(dir);
     REQUIRE(s2.Load(err));
     REQUIRE(err.IsOk());
-    CHECK(s2.GetProjectRoot().string() == "C:/Projects/RT2");
+    CHECK(s2.GetLastBrowseDirectory().string() == "C:/Projects/RT2");
     REQUIRE(s2.GetRecentScenes().size() == 2);
     CHECK(s2.GetRecentScenes()[0].string() == "C:/Scenes/b.rt2scene");
     CHECK(s2.GetRecentScenes()[1].string() == "C:/Scenes/a.rt2scene");
@@ -81,12 +84,12 @@ TEST_CASE("EditorSettings: malformed JSON fails safely")
     std::filesystem::create_directories(dir);
     std::ofstream(dir / "settings.json") << "{ not valid json";
     EditorSettingsStore s(dir);
-    s.SetProjectRoot("C:/existing-project");
+    s.SetLastBrowseDirectory("C:/existing-project");
     s.AddRecentScene("C:/existing.rt2scene");
     Error err;
     CHECK_FALSE(s.Load(err));
     CHECK(err.code == Error::Parse);
-    CHECK(s.GetProjectRoot().string() == "C:/existing-project");
+    CHECK(s.GetLastBrowseDirectory().string() == "C:/existing-project");
     REQUIRE(s.GetRecentScenes().size() == 1);
     CHECK(s.GetRecentScenes()[0].string() == "C:/existing.rt2scene");
     std::filesystem::remove_all(dir);
@@ -115,7 +118,7 @@ TEST_CASE("EditorSettings: unknown fields ignored")
     Error err;
     REQUIRE(s.Load(err));
     REQUIRE(err.IsOk());
-    CHECK(s.GetProjectRoot().string() == "C:/X");
+    CHECK(s.GetLastBrowseDirectory().string() == "C:/X");
     std::filesystem::remove_all(dir);
 }
 
@@ -144,7 +147,7 @@ TEST_CASE("EditorSettings: failed atomic replacement preserves valid settings")
 #ifdef _WIN32
     auto dir = UniqueTempDir("es_atomic_locked");
     EditorSettingsStore store(dir);
-    store.SetProjectRoot("C:/before");
+    store.SetLastBrowseDirectory("C:/before");
     Error err;
     REQUIRE(store.Save(err));
     const auto settingsPath = dir / "settings.json";
@@ -154,7 +157,7 @@ TEST_CASE("EditorSettings: failed atomic replacement preserves valid settings")
                               0, nullptr, OPEN_EXISTING,
                               FILE_ATTRIBUTE_NORMAL, nullptr);
     REQUIRE(lock != INVALID_HANDLE_VALUE);
-    store.SetProjectRoot("C:/after");
+    store.SetLastBrowseDirectory("C:/after");
     CHECK_FALSE(store.Save(err));
     CloseHandle(lock);
 
@@ -271,14 +274,14 @@ TEST_CASE("EditorSettings: unicode paths round trip losslessly")
     const std::filesystem::path unicodePath(
         L"C:\\Scenes\\\u573A\u666F\\\u591C.rt2scene");
     EditorSettingsStore writer(dir);
-    writer.SetProjectRoot(unicodePath.parent_path());
+    writer.SetLastBrowseDirectory(unicodePath.parent_path());
     writer.AddRecentScene(unicodePath);
     Error err;
     REQUIRE(writer.Save(err));
 
     EditorSettingsStore reader(dir);
     REQUIRE(reader.Load(err));
-    CHECK(reader.GetProjectRoot() == unicodePath.parent_path());
+    CHECK(reader.GetLastBrowseDirectory() == unicodePath.parent_path());
     REQUIRE(reader.GetRecentScenes().size() == 1);
     CHECK(reader.GetRecentScenes()[0] == unicodePath);
     std::filesystem::remove_all(dir);

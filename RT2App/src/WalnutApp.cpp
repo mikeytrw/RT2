@@ -39,6 +39,8 @@
 #include "EditorCommands.h"
 #include "EditorPropertyCommands.h"
 #include "InputService.h"
+#include "ProjectContext.h"
+#include "SceneAssetMigration.h"
 #include "BackgroundWork.h"
 #include "core/UUID.h"
 #include "core/Error.h"
@@ -88,8 +90,20 @@ public:
 		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
 
 		rt2::core::Error settingsErr;
-		if (!m_Settings2->Load(settingsErr))
+		rt2::core::EditorSettingsLoadReport settingsReport;
+		if (!m_Settings2->Load(settingsReport, settingsErr))
 			printf("[Settings] Failed to load: %s\n", settingsErr.Format().c_str());
+		else if (settingsReport.migrated)
+		{
+			for (const auto& diagnostic : settingsReport.diagnostics)
+			{
+				printf("[Settings] Migrated v%u: %s %s/%s\n",
+					settingsReport.sourceVersion,
+					diagnostic.kind == rt2::core::EditorSettingsMigrationDiagnostic::Kind::DroppedReservedContext
+						? "dropped reserved input" : "promoted input override",
+					diagnostic.contextId.c_str(), diagnostic.mappingName.c_str());
+			}
+		}
 
 		// Load saved window visibility + performance detail level.
 		LoadViewConfig();
@@ -239,6 +253,7 @@ public:
 			if (id.IsValid())
 			{
 				m_PendingFullSync = true;
+				if (m_ProjectContext) RefreshProjectAssets();
 			}
 			return id;
 		});
@@ -309,7 +324,8 @@ public:
 					m_SceneMgr.MarkDirty();
 					m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
 					m_Recovery->ResetSchedule();
-					m_LastStatusMsg = "Imported (unsaved)";
+					if (!m_ProjectContext || RefreshProjectAssets())
+						m_LastStatusMsg = "Imported (unsaved)";
 				}
 			});
 
@@ -756,7 +772,7 @@ public:
 	if (ImGui::Button("Open..."))
 	{
 		std::string path = FileDialog::OpenFile(
-			L"RT2 Scene (*.rt2scene)\0*.rt2scene\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0",
+			L"RT2 Project, Scene and Model Files (*.rt2proj;*.rt2scene;*.glb;*.gltf;*.obj)\0*.rt2proj;*.rt2scene;*.glb;*.gltf;*.obj\0RT2 Project (*.rt2proj)\0*.rt2proj\0RT2 Scene (*.rt2scene)\0*.rt2scene\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0All Files (*.*)\0*.*\0",
 			DialogInitialDirectory());
 		if (!path.empty())
 			RequestOpenScene(path);
@@ -1068,26 +1084,44 @@ public:
 		ImGui::Separator();
 		if (m_Settings2)
 		{
-			ImGui::Text("Project Root");
-			auto pr = m_Settings2->GetProjectRoot();
+			if (m_ProjectContext)
+			{
+				ImGui::Text("Project: %s",
+					m_ProjectContext->project.projectFile.u8string().c_str());
+				ImGui::Text("Project ID: %s",
+					m_ProjectContext->project.projectId.ToString().c_str());
+				ImGui::Text("Asset Root: %s",
+					m_ProjectContext->project.assetRoot.u8string().c_str());
+				ImGui::Text("Cache Root: %s",
+					m_ProjectContext->project.cacheRoot.u8string().c_str());
+				if (ImGui::Button("Refresh Assets"))
+					RefreshProjectAssets();
+			}
+			else
+			{
+				ImGui::Text("Project: (standalone scene)");
+			}
+			ImGui::Separator();
+			ImGui::Text("Last Browse Directory");
+			auto pr = m_Settings2->GetLastBrowseDirectory();
 			char buf[512];
 			std::snprintf(buf, sizeof(buf), "%s", pr.empty() ? "(none)" : pr.string().c_str());
-			ImGui::InputText("##ProjectRoot", buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
+			ImGui::InputText("##LastBrowseDirectory", buf, sizeof(buf), ImGuiInputTextFlags_ReadOnly);
 			ImGui::SameLine();
 			if (ImGui::Button("Browse..."))
 			{
 				std::string folder = FileDialog::OpenFolder(DialogInitialDirectory());
 				if (!folder.empty())
 				{
-					m_Settings2->SetProjectRoot(std::filesystem::path(folder));
-					PersistEditorSettings("project root");
+					m_Settings2->SetLastBrowseDirectory(std::filesystem::path(folder));
+					PersistEditorSettings("last browse directory");
 				}
 			}
 			ImGui::SameLine();
 			if (ImGui::Button("Clear"))
 			{
-				m_Settings2->ClearProjectRoot();
-				PersistEditorSettings("project root");
+				m_Settings2->ClearLastBrowseDirectory();
+				PersistEditorSettings("last browse directory");
 			}
 		}
 		ImGui::Separator();
@@ -1151,14 +1185,33 @@ public:
 				rt2::core::ScriptFieldChangeClassification fieldChanges;
 				rt2::core::SceneDocument restored;
 				restored.SetUuidProvider(m_SceneMgr.AuthoringDoc().GetUuidProvider());
-				bool ok = m_Recovery->Restore(
-					r, restored, diags, loadReport, err);
+				std::shared_ptr<rt2::core::ProjectContext> recoveryProject;
+				rt2::core::AssetResolutionContext assetContext{
+					r.assetRoot, nullptr};
+				bool ok = true;
+				if (!r.projectId.IsNull())
+				{
+					recoveryProject =
+						std::make_shared<rt2::core::ProjectContext>();
+					ok = rt2::core::LoadProjectContext(
+						r.projectFile, *recoveryProject, err);
+					if (ok && recoveryProject->project.projectId != r.projectId)
+					{
+						err.code = rt2::core::Error::InvalidArgument;
+						err.path = r.projectFile.u8string();
+						err.detail =
+							"recovery projectId does not match project file";
+						ok = false;
+					}
+					if (ok) assetContext = recoveryProject->Assets();
+				}
+				if (ok)
+					ok = m_Recovery->Restore(
+						r, assetContext, restored, diags, loadReport, err);
 				if (ok)
 				{
 					fieldDiags = loadReport.fieldDiagnostics;
 					rt2::core::ScriptFieldRegistry fieldRegistry;
-					rt2::core::AssetResolutionContext assetContext{
-						r.assetRoot, nullptr};
 					fieldResolution = rt2::core::ScriptFieldResolver::ResolveDocument(
 						restored, fieldRegistry, assetContext, diags,
 						fieldDiags);
@@ -1169,6 +1222,10 @@ public:
 				}
 			if (ok)
 			{
+				m_ProjectContext = std::move(recoveryProject);
+				m_SceneMgr.SetAssetResolutionContext(assetContext);
+				m_ScriptAssetContext = assetContext;
+				ApplyActiveInputConfiguration();
 				// Commit the already validated document without clearing it.
 				m_SceneMgr.ReplaceAuthoringDocument(
 					std::move(restored), std::max<uint64_t>(1, r.revision));
@@ -1178,11 +1235,14 @@ public:
 				CompactMeshRegistryNowAsserted();
 				m_Recovery->ResetSchedule();
 				m_ScriptRepairGate.Adopt(fieldChanges.destructive);
+				m_AssetMigrationGate.Adopt(loadReport.requiresAssetMigration);
 				m_LastStatusMsg = fieldChanges.destructive
 					? "Restored recovery with discarded script field data; Save once to acknowledge"
+					: (loadReport.requiresAssetMigration
+						? "Restored recovery; asset identity migration required — Save to migrate"
 					: (fieldChanges.requiresSave
 						? "Restored recovery; script fields changed and need saving"
-						: "Restored recovery");
+						: "Restored recovery"));
 					// Upload to GPU
 					if (m_RendererGPU.IsAvailable() && m_SceneMgr.GetECS().meshRegistry.GetCount() > 0)
 						UploadMeshToGPU();
@@ -1344,6 +1404,10 @@ public:
 			printf("[LoadingModal] Phase 1: worker done, running completion callback\n");
 			fflush(stdout);
 			const bool success = m_BackgroundWork->GetResult();
+			// Reset before the callback: post-import completion handlers
+			// synchronously refresh the project database, and
+			// RefreshProjectAssets() must see idle work. WaitForBackgroundWork()
+			// below intentionally preserves the same ordering.
 			m_BackgroundWork.reset();
 			// Don't close the modal yet — the completion callback may set
 			// m_GpuSyncPending to keep it open for the GPU sync phase.
@@ -1472,6 +1536,8 @@ public:
 		if (!m_BackgroundWork) return;
 		m_BackgroundWork->Join();
 		const bool success = m_BackgroundWork->GetResult();
+		// Keep the same reset-before-callback ordering as the UI polling path
+		// above; headless completion handlers may also refresh the database.
 		m_BackgroundWork.reset();
 		m_LoadingModalOpen = false;
 		if (m_OnBackgroundComplete)
@@ -1513,9 +1579,12 @@ public:
 		// ResolveUI runs later in OnUIRender after ImGui::NewFrame.
 		if (!m_InputDefaultsLoaded)
 		{
-			m_Input.LoadDefaults();
-			m_Input.PushContext(&m_Input.EditorContext());
-			m_InputDefaultsLoaded = true;
+			if (!ApplyActiveInputConfiguration())
+			{
+				m_Input.LoadDefaults();
+				m_Input.PushContext(&m_Input.EditorContext());
+				m_InputDefaultsLoaded = true;
+			}
 		}
 		m_Input.SampleRaw();
 
@@ -1604,19 +1673,37 @@ public:
 		// never captured. Skips work entirely on clean frames or when the
 		// revision has not advanced since the last snapshot.
 		if (m_Recovery && m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
-			!m_ScriptRepairGate.SuppressAutosave())
+			rt2::core::ShouldCaptureRecoverySnapshot(
+				m_ScriptRepairGate.SuppressAutosave(), m_AssetMigrationGate))
 		{
 			rt2::core::Error ae;
 			std::vector<rt2::core::AssetDiagnostic> autosaveDiagnostics;
 			const auto started = std::chrono::steady_clock::now();
 			std::filesystem::path logicalAssetRoot;
 			bool rootReady = true;
-			if (m_SceneMgr.AuthoringDoc().metadata.sourcePath.empty())
+			if (m_ProjectContext)
+				logicalAssetRoot = m_ProjectContext->project.assetRoot;
+			else if (m_SceneMgr.AuthoringDoc().metadata.sourcePath.empty())
 				rootReady = RecoveryAssetRoot(logicalAssetRoot, ae);
+			std::optional<rt2::core::SceneRecoveryService::ProjectBinding>
+				projectBinding;
+			if (m_ProjectContext)
+			{
+				projectBinding.emplace();
+				projectBinding->projectId =
+					m_ProjectContext->project.projectId;
+				projectBinding->projectFile =
+					m_ProjectContext->project.projectFile;
+				const auto& source =
+					m_SceneMgr.AuthoringDoc().metadata.sourcePath;
+				if (!source.empty())
+					projectBinding->sceneLocator = source.lexically_relative(
+						m_ProjectContext->project.assetRoot).generic_u8string();
+			}
 			const bool wrote = rootReady && m_Recovery->MaybeSnapshot(
 				m_SceneMgr.AuthoringDoc(), m_SceneMgr.AuthoringRevision(),
 				m_UntitledRecoveryId, logicalAssetRoot,
-				autosaveDiagnostics, ae);
+				autosaveDiagnostics, ae, projectBinding);
 			LogAssetDiagnostics(
 				autosaveDiagnostics, 0, "Recovery");
 			const std::string autosaveWarning =
@@ -1688,9 +1775,15 @@ private:
 		rt2::core::TextureAssetLoadContext& context,
 		std::vector<rt2::core::AssetDiagnostic>& diagnostics) const
 	{
+		auto resolution = CurrentAssetContext(
+			std::filesystem::u8path(filepath));
+		if (resolution.assetRoot.empty())
+			resolution.assetRoot =
+				std::filesystem::u8path(filepath).parent_path();
 		return rt2::core::BuildExplicitImportTextureContext(
 			std::filesystem::u8path(filepath),
 			m_SceneMgr.AuthoringDoc().GetUuidProvider(),
+			resolution,
 			context, diagnostics);
 	}
 
@@ -1990,8 +2083,9 @@ private:
 
 		if (g_CLI.listScenes)
 		{
-			printf("[CLI] --list mode: would load scene='%s' env='%s'\n",
-			       g_CLI.scenePath.c_str(), g_CLI.envMapPath.c_str());
+			printf("[CLI] --list mode: would load project='%s' scene='%s' env='%s'\n",
+			       g_CLI.projectPath.c_str(), g_CLI.scenePath.c_str(),
+			       g_CLI.envMapPath.c_str());
 			Walnut::Application::Get().Close();
 			return;
 		}
@@ -2046,13 +2140,17 @@ private:
 			}
 		}
 
-		if (g_CLI.hasEnvMap())
-			LoadEnvMap(g_CLI.envMapPath);
-
-		if (g_CLI.hasScene())
+		if (g_CLI.hasProject())
+			OpenProjectInternal(g_CLI.projectPath, g_CLI.scenePath, true);
+		else if (g_CLI.hasScene())
 			LoadSceneInternal(g_CLI.scenePath);
 
-		// Headless: wait for any async loads to complete before proceeding.
+		// Project/scene must establish the asset context before an explicit
+		// environment override is imported into it.
+		if (g_CLI.headless)
+			WaitForBackgroundWork();
+		if (g_CLI.hasEnvMap())
+			LoadEnvMap(g_CLI.envMapPath);
 		if (g_CLI.headless)
 			WaitForBackgroundWork();
 
@@ -2432,6 +2530,11 @@ private:
 			OpenRt2SceneInternal(filepath);
 			return;
 		}
+		if (ext == "rt2proj")
+		{
+			OpenProjectInternal(filepath);
+			return;
+		}
 
 		if (IsBackgroundBusy()) return;
 
@@ -2539,12 +2642,22 @@ private:
 
 			// Imported interchange files become an untitled native authoring
 			// document. They must be explicitly saved as .rt2scene.
-			m_SceneMgr.AuthoringDoc().metadata.sourcePath.clear();
+			auto& importedDocument = m_SceneMgr.AuthoringDoc();
+			importedDocument.metadata.sourcePath.clear();
+			if (m_ProjectContext)
+			{
+				importedDocument.metadata.projectId =
+					m_ProjectContext->project.projectId;
+				importedDocument.metadata.assetRoot =
+					m_ProjectContext->project.assetRoot;
+			}
 			m_SceneMgr.MarkDirty();
 			m_ScriptRepairGate.OnPersistedOrReset();
+			m_AssetMigrationGate.OnPersistedOrReset();
 			m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
 			m_Recovery->ResetSchedule();
-			m_LastStatusMsg = "Imported scene (unsaved)";
+			if (!m_ProjectContext || RefreshProjectAssets())
+				m_LastStatusMsg = "Imported scene (unsaved)";
 		});
 	}
 
@@ -2562,7 +2675,10 @@ private:
 				filepath, settings, &diagnostics);
 			LogAssetDiagnostics(diagnostics, 0, "Import");
 			if (id.IsValid())
+			{
 				m_PendingFullSync = true;
+				if (m_ProjectContext) RefreshProjectAssets();
+			}
 			return id;
 		}
 
@@ -2582,6 +2698,7 @@ private:
 			return SceneManager::EntityId{};
 		}
 		LogAssetDiagnostics(diagnostics, 0, "LoadMesh");
+		if (m_ProjectContext) RefreshProjectAssets();
 
 		std::string name = filepath;
 		size_t lastSlash = name.find_last_of("/\\");
@@ -2705,28 +2822,32 @@ private:
 	{
 		const auto& source = m_SceneMgr.AuthoringDoc().metadata.sourcePath;
 		if (!source.empty()) return source.parent_path();
-		if (m_Settings2 && !m_Settings2->GetProjectRoot().empty())
-			return m_Settings2->GetProjectRoot();
+		if (m_ProjectContext)
+			return m_ProjectContext->project.projectDirectory;
+		if (m_Settings2 && !m_Settings2->GetLastBrowseDirectory().empty())
+			return m_Settings2->GetLastBrowseDirectory();
 		return {};
 	}
 
-	std::filesystem::path ScriptAssetRoot() const
+	rt2::core::AssetResolutionContext CurrentAssetContext(
+		const std::filesystem::path& scenePath = {}) const
 	{
-		if (m_Settings2)
-		{
-			const auto root = m_Settings2->GetProjectRoot().
-				lexically_normal();
-			if (!root.empty() && root.is_absolute())
-				return root;
-		}
-		return {};
+		if (m_ProjectContext) return m_ProjectContext->Assets();
+		std::filesystem::path logicalScene = scenePath;
+		if (logicalScene.empty())
+			logicalScene = m_SceneMgr.AuthoringDoc().metadata.sourcePath;
+		if (logicalScene.empty()) return {};
+		return rt2::core::AssetResolutionContext{
+			logicalScene.parent_path().lexically_normal(), nullptr };
 	}
 
 	bool RecoveryAssetRoot(
 		std::filesystem::path& root,
 		rt2::core::Error& err) const
 	{
-		root = ScriptAssetRoot();
+		root = m_ProjectContext
+			? m_ProjectContext->project.assetRoot
+			: std::filesystem::path{};
 		if (!root.empty())
 		{
 			err = rt2::core::Error{};
@@ -2751,6 +2872,75 @@ private:
 		}
 		return rt2::core::SceneRecoveryService::
 			EnsureUntitledRecoveryAssetRoot(base, root, err);
+	}
+
+	bool ApplyActiveInputConfiguration()
+	{
+		const std::vector<rt2::core::InputContextRecord> empty;
+		const auto& projectDefaults = m_ProjectContext
+			? m_ProjectContext->project.inputContexts : empty;
+		const auto& userOverrides = m_Settings2
+			? m_Settings2->GetInputOverrides() : empty;
+		rt2::core::Error err;
+		if (!m_Input.ApplyConfiguration(
+			projectDefaults, userOverrides, err))
+		{
+			m_LastStatusMsg = "Input configuration failed: " + err.Format();
+			printf("[Input] %s\n", m_LastStatusMsg.c_str());
+			return false;
+		}
+		m_Input.ClearContextStack();
+		m_Input.PushContext(&m_Input.EditorContext());
+		m_InputDefaultsLoaded = true;
+		return true;
+	}
+
+	void LogProjectScanDiagnostics(
+		const rt2::core::ProjectContext& context) const
+	{
+		for (const auto& diagnostic : context.scanDiagnostics)
+		{
+			printf("[Project] Asset scan %s: ref='%s' sourceKey='%s' detail=%s\n",
+				rt2::core::AssetDiagnosticSeverityName(diagnostic.severity),
+				diagnostic.refPath.c_str(), diagnostic.sourceKey.c_str(),
+				diagnostic.detail.c_str());
+		}
+	}
+
+	bool RefreshProjectAssets()
+	{
+		if (!m_ProjectContext)
+		{
+			m_LastStatusMsg = "Asset refresh unavailable: no project is open";
+			printf("[Project] %s\n", m_LastStatusMsg.c_str());
+			return false;
+		}
+		if (IsBackgroundBusy())
+		{
+			m_LastStatusMsg =
+				"Asset refresh deferred: background work is in progress";
+			printf("[Project] %s\n", m_LastStatusMsg.c_str());
+			return false;
+		}
+		auto refreshed = std::make_shared<rt2::core::ProjectContext>();
+		refreshed->project = m_ProjectContext->project;
+		rt2::core::Error err;
+		rt2::core::ProjectAssetScanResult scan;
+		if (!rt2::core::ScanProjectAssets(
+				m_ProjectContext->project.assetRoot, scan, err))
+		{
+			m_LastStatusMsg = "Asset refresh failed: " + err.Format();
+			printf("[Project] %s\n", m_LastStatusMsg.c_str());
+			return false;
+		}
+		refreshed->database = std::move(scan.database);
+		refreshed->scanDiagnostics = std::move(scan.diagnostics);
+		m_ProjectContext = std::move(refreshed);
+		m_SceneMgr.SetAssetResolutionContext(m_ProjectContext->Assets());
+		m_ScriptAssetContext = m_ProjectContext->Assets();
+		LogProjectScanDiagnostics(*m_ProjectContext);
+		m_LastStatusMsg = "Project assets refreshed";
+		return true;
 	}
 
 	bool PersistEditorSettings(const char* context)
@@ -2830,6 +3020,7 @@ private:
 	}
 
 	std::unique_ptr<rt2::core::EditorSettingsStore>      m_Settings2;
+	std::shared_ptr<const rt2::core::ProjectContext>      m_ProjectContext;
 	std::unique_ptr<rt2::core::SceneRecoveryService>      m_Recovery;
 	rt2::core::UnsavedChangesCoordinator                  m_Unsaved;
 	std::vector<rt2::core::SceneRecoveryService::RecoveryRecord> m_PendingRecovery;
@@ -2838,6 +3029,7 @@ private:
 	std::string                                           m_UntitledRecoveryId; // stable per session
 	std::string                                           m_LastStatusMsg;
 	rt2::core::ScriptRepairPersistenceGate                m_ScriptRepairGate;
+	rt2::core::AssetMigrationPersistenceGate              m_AssetMigrationGate;
 
 	// ---- Runtime lifecycle ----
 
@@ -2846,12 +3038,7 @@ private:
 		EnsureRenderBridge();
 		EnsureScriptRuntimeWired();
 		m_ScriptAssetDiagnostics.clear();
-		const auto& sourcePath =
-			m_SceneMgr.AuthoringDoc().metadata.sourcePath;
-		m_ScriptAssetContext.assetRoot = sourcePath.empty()
-			? ScriptAssetRoot()
-			: sourcePath.parent_path();
-		m_ScriptAssetContext.database = nullptr;
+		m_ScriptAssetContext = CurrentAssetContext();
 
 		// Phase 4: inject the production UUID provider so the runtime document
 		// can generate fresh UUIDs for deferred-create operations. The
@@ -3001,12 +3188,24 @@ public:
 	void NewSceneInternal()
 	{
 		m_SceneMgr.Clear();
+		if (m_ProjectContext)
+		{
+			auto& document = m_SceneMgr.AuthoringDoc();
+			document.metadata.projectId = m_ProjectContext->project.projectId;
+			document.metadata.assetRoot = m_ProjectContext->project.assetRoot;
+		}
+		const auto assetContext = m_ProjectContext
+			? m_ProjectContext->Assets()
+			: rt2::core::AssetResolutionContext{};
+		m_SceneMgr.SetAssetResolutionContext(assetContext);
+		m_ScriptAssetContext = assetContext;
 			m_EditorUI.ResetForDocument();
 			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 			m_History.Clear();
 		m_SceneMgr.CompactMeshRegistryNow();
 		m_SceneMgr.ClearDirty();
 		m_ScriptRepairGate.OnPersistedOrReset();
+		m_AssetMigrationGate.OnPersistedOrReset();
 		m_Recovery->ResetSchedule();
 		// New untitled doc gets a fresh recovery id for this session.
 		m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
@@ -3029,9 +3228,110 @@ public:
 		RequestOpenScene(filepath);
 	}
 
-	void OpenRt2SceneInternal(const std::string& filepath)
+	void OpenProject(const std::string& filepath)
+	{
+		RequestOpenScene(filepath);
+	}
+
+	void OpenProjectInternal(
+		const std::string& filepath,
+		const std::string& sceneLocator = {},
+		bool requireStartupScene = false)
 	{
 		if (IsBackgroundBusy()) return;
+		auto staged = std::make_shared<rt2::core::ProjectContext>();
+		rt2::core::Error err;
+		if (!rt2::core::LoadProjectContext(
+				std::filesystem::u8path(filepath), *staged, err))
+		{
+			m_LastStatusMsg = "Project open failed: " + err.Format();
+			printf("[Project] %s\n", m_LastStatusMsg.c_str());
+			ImGui::OpenPopup("Scene Load Failed");
+			return;
+		}
+		LogProjectScanDiagnostics(*staged);
+		{
+			rt2::core::InputService preview;
+			const std::vector<rt2::core::InputContextRecord> empty;
+			const auto& overrides = m_Settings2
+				? m_Settings2->GetInputOverrides() : empty;
+			if (!preview.ApplyConfiguration(
+					staged->project.inputContexts, overrides, err))
+			{
+				m_LastStatusMsg =
+					"Project input configuration failed: " + err.Format();
+				printf("[Project] %s\n", m_LastStatusMsg.c_str());
+				return;
+			}
+		}
+		std::filesystem::path scenePath = staged->project.startupScene;
+		if (!sceneLocator.empty())
+		{
+			const auto locator = std::filesystem::u8path(sceneLocator);
+			if (locator.is_absolute() || locator.has_root_name() ||
+				locator.has_root_directory())
+			{
+				m_LastStatusMsg =
+					"--scene must be relative when --project is used";
+				printf("[Project] %s\n", m_LastStatusMsg.c_str());
+				return;
+			}
+			for (const auto& part : locator)
+			{
+				if (part == "..")
+				{
+					m_LastStatusMsg =
+						"--scene may not escape the project asset root";
+					printf("[Project] %s\n", m_LastStatusMsg.c_str());
+					return;
+				}
+			}
+			scenePath = (staged->project.assetRoot / locator).
+				lexically_normal();
+		}
+		if (scenePath.empty())
+		{
+			if (requireStartupScene)
+			{
+				m_LastStatusMsg =
+					"Project has no startup scene; pass --scene";
+				printf("[Project] %s\n", m_LastStatusMsg.c_str());
+				return;
+			}
+			m_ProjectContext = staged;
+			NewSceneInternal();
+			ApplyActiveInputConfiguration();
+			m_LastStatusMsg = "Project opened (no startup scene)";
+			return;
+		}
+		OpenRt2SceneInternal(
+			scenePath.u8string(), staged);
+	}
+
+	void OpenRt2SceneInternal(
+		const std::string& filepath,
+		std::shared_ptr<const rt2::core::ProjectContext> stagedProject = {})
+	{
+		if (IsBackgroundBusy()) return;
+		auto projectSnapshot = stagedProject;
+		const std::filesystem::path scenePath =
+			std::filesystem::u8path(filepath).lexically_normal();
+		if (projectSnapshot)
+		{
+			const auto relative = scenePath.lexically_relative(
+				projectSnapshot->project.assetRoot);
+			if (relative.empty() || *relative.begin() == "..")
+			{
+				m_LastStatusMsg = "Project scene is outside assetRoot";
+				printf("[Project] %s: %s\n", m_LastStatusMsg.c_str(),
+					filepath.c_str());
+				return;
+			}
+		}
+		const rt2::core::AssetResolutionContext assetContext = projectSnapshot
+			? projectSnapshot->Assets()
+			: rt2::core::AssetResolutionContext{
+				scenePath.parent_path(), nullptr };
 
 		// The CPU-heavy work (JSON parse + asset re-import + texture decode)
 		// runs on a worker thread. The result SceneDocument is captured in
@@ -3052,7 +3352,8 @@ public:
 
 		StartBackgroundWork("Loading scene...",
 			[resultDoc, errorStr, diagStr, loadReport, fieldDiagnostics,
-			 fieldResolution, fieldChanges, filepathCopy, uuidProvider](BackgroundWork& self) -> bool
+			 fieldResolution, fieldChanges, filepathCopy, uuidProvider,
+			 assetContext, projectSnapshot](BackgroundWork& self) -> bool
 		{
 			self.SetStatus("Parsing scene file...");
 			resultDoc->SetUuidProvider(uuidProvider);
@@ -3065,14 +3366,52 @@ public:
 				return false;
 			}
 
+			if (projectSnapshot)
+			{
+				if (loadReport->sourceVersion >= rt2::core::SceneSerializer::SchemaVersion &&
+					(resultDoc->metadata.projectId.IsNull() ||
+					 resultDoc->metadata.projectId !=
+						 projectSnapshot->project.projectId))
+				{
+					err.code = rt2::core::Error::InvalidArgument;
+					err.path = filepathCopy;
+					err.detail = resultDoc->metadata.projectId.IsNull()
+						? "v4 project scene is missing metadata.projectId"
+						: "scene projectId does not match the active project";
+					*errorStr = "Scene project binding failed: " + err.Format();
+					return false;
+				}
+				resultDoc->metadata.projectId = projectSnapshot->project.projectId;
+				resultDoc->metadata.assetRoot = projectSnapshot->project.assetRoot;
+			}
+			else
+			{
+				if (!resultDoc->metadata.projectId.IsNull())
+				{
+					err.code = rt2::core::Error::InvalidArgument;
+					err.path = filepathCopy;
+					err.detail =
+						"project-bound v4 scene requires an active project";
+					*errorStr = "Scene project binding failed: " + err.Format();
+					return false;
+				}
+				resultDoc->metadata.assetRoot =
+					std::filesystem::u8path(filepathCopy).parent_path();
+			}
+
+			for (const auto& diagnostic : loadReport->assetDiagnostics)
+			{
+				*diagStr += std::string("[Scene] Asset ") +
+					rt2::core::AssetDiagnosticSeverityName(diagnostic.severity) +
+					": ref='" + diagnostic.refPath + "' detail=" +
+					diagnostic.detail + "\n";
+			}
+
 			self.SetStatus("Resolving assets (models, textures, env)...");
-			std::filesystem::path sceneRoot = std::filesystem::path(filepathCopy).parent_path();
 			std::vector<rt2::core::AssetDiagnostic> diagnostics;
-			const rt2::core::AssetResolutionContext assetContext{
-				sceneRoot, nullptr};
 			rt2::core::Error resolveErr;
 			bool resolveOk = rt2::core::SceneAssetResolver::ResolveAll(
-			        *resultDoc, sceneRoot, diagnostics, resolveErr);
+			        *resultDoc, assetContext, diagnostics, resolveErr);
 
 			auto formatAssetDiagnostics = [&]() {
 				for (const auto& d : diagnostics)
@@ -3109,8 +3448,8 @@ public:
 
 			return true;
 		},
-			[this, resultDoc, errorStr, diagStr, fieldChanges,
-			 filepathCopy](bool success)
+			[this, resultDoc, errorStr, diagStr, loadReport, fieldChanges,
+				 filepathCopy, assetContext, projectSnapshot](bool success)
 		{
 			// Main thread: log diagnostics.
 			if (!diagStr->empty())
@@ -3126,6 +3465,10 @@ public:
 
 			// Adopt the resolved document.
 			printf("[OpenRt2Scene] adopting document...\n"); fflush(stdout);
+			m_ProjectContext = projectSnapshot;
+			ApplyActiveInputConfiguration();
+			m_SceneMgr.SetAssetResolutionContext(assetContext);
+			m_ScriptAssetContext = assetContext;
 			m_SceneMgr.ReplaceAuthoringDocument(std::move(*resultDoc));
 			m_EditorUI.ResetForDocument();
 			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
@@ -3150,9 +3493,7 @@ public:
 					dirs.insert(sceneDir.string());
 
 				auto& doc = m_SceneMgr.AuthoringDoc();
-				m_ScriptAssetContext.assetRoot =
-					std::filesystem::path(filepathCopy).parent_path();
-				m_ScriptAssetContext.database = nullptr;
+				m_ScriptAssetContext = assetContext;
 				m_ScriptAssetDiagnostics.clear();
 				auto view = doc.ecs.registry.view<ScriptComponent>();
 				for (auto e : view)
@@ -3205,6 +3546,7 @@ public:
 			if (fieldChanges->requiresSave)
 				m_SceneMgr.MarkDirty();
 			m_ScriptRepairGate.Adopt(fieldChanges->destructive);
+			m_AssetMigrationGate.Adopt(loadReport->requiresAssetMigration);
 			m_Recovery->ResetSchedule();
 			m_UntitledRecoveryId = rt2::core::OsUuidProvider{}.CreateV4().ToString();
 
@@ -3216,6 +3558,9 @@ public:
 				printf("[OpenRt2Scene] UploadMeshToGPU done, setting gpuSyncPending\n"); fflush(stdout);
 				m_GpuSyncPending = true;
 			}
+			else if (loadReport->requiresAssetMigration)
+				m_LastStatusMsg =
+					"Opened; asset identity migration required — Save to migrate";
 			else
 			{
 				printf("[OpenRt2Scene] no GPU upload needed (meshes=%d available=%d)\n",
@@ -3285,9 +3630,61 @@ public:
 		std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
 		if (extension != ".rt2scene") target.replace_extension(".rt2scene");
 
+		if (m_ProjectContext)
+		{
+			std::error_code containmentError;
+			const auto projectRoot = std::filesystem::weakly_canonical(
+				m_ProjectContext->project.assetRoot, containmentError);
+			const auto targetDirectory = std::filesystem::weakly_canonical(
+				target.parent_path(), containmentError);
+			const auto relative = targetDirectory.lexically_relative(projectRoot);
+			if (containmentError || relative.empty() || relative.is_absolute() ||
+				*relative.begin() == "..")
+			{
+				m_LastStatusMsg =
+					"Save As outside the project asset root is not supported";
+				printf("[Scene] %s\n", m_LastStatusMsg.c_str());
+				return false;
+			}
+		}
+
 		rt2::core::Error err;
 		std::vector<rt2::core::AssetDiagnostic> saveDiagnostics;
-		if (!rt2::core::SceneSerializer::Save(doc, target, saveDiagnostics, err))
+		rt2::core::SceneDocument stagedDocument;
+		rt2::core::SceneAssetMigrationReport migrationReport;
+		const bool needsAssetMigration =
+			m_AssetMigrationGate.Pending() ||
+			doc.metadata.schemaVersion < rt2::core::SceneSerializer::SchemaVersion;
+		if (needsAssetMigration)
+		{
+			const auto migrationRoot = m_ProjectContext
+				? m_ProjectContext->project.assetRoot
+				: target.parent_path();
+			const auto* existingDatabase = m_ProjectContext
+				? m_ProjectContext->database.get() : nullptr;
+			const auto projectId = m_ProjectContext
+				? m_ProjectContext->project.projectId
+				: rt2::core::UUID::Nil();
+			const rt2::core::SceneAssetMigrationOptions migrationOptions{
+				migrationRoot, projectId, doc.GetUuidProvider(), existingDatabase};
+			if (!rt2::core::MigrateSceneAssetReferences(
+					doc, stagedDocument, migrationOptions, migrationReport, err))
+			{
+				m_LastStatusMsg = "Asset migration failed: " + err.Format();
+				printf("[Scene] %s\n", m_LastStatusMsg.c_str());
+				return false;
+			}
+			LogAssetDiagnostics(migrationReport.diagnostics, 0, "AssetMigration");
+			if (!rt2::core::SceneSerializer::Save(
+					stagedDocument, target, saveDiagnostics, err))
+			{
+				m_LastStatusMsg = "Asset migration save failed: " + err.Format();
+				printf("[Scene] %s\n", m_LastStatusMsg.c_str());
+				return false;
+			}
+		}
+		else if (!rt2::core::SceneSerializer::Save(doc, target,
+												 saveDiagnostics, err))
 		{
 			// The live source path is committed only after the file is safe.
 			m_LastStatusMsg = std::string("Save failed: ") + err.Format();
@@ -3298,11 +3695,40 @@ public:
 		const std::string saveWarning =
 			rt2::core::FormatNonPortableAssetSummary(saveDiagnostics);
 
-		doc.metadata.sourcePath = target;
+		if (needsAssetMigration)
+		{
+			stagedDocument.metadata.sourcePath = target;
+			stagedDocument.metadata.dirty = false;
+			if (m_ProjectContext && migrationReport.database)
+			{
+				auto refreshed = std::make_shared<rt2::core::ProjectContext>(
+					*m_ProjectContext);
+				refreshed->database = migrationReport.database;
+				refreshed->scanDiagnostics = migrationReport.diagnostics;
+				m_ProjectContext = std::move(refreshed);
+				m_SceneMgr.SetAssetResolutionContext(m_ProjectContext->Assets());
+				m_ScriptAssetContext = m_ProjectContext->Assets();
+			}
+			m_SceneMgr.ReplaceAuthoringDocument(
+				std::move(stagedDocument), m_SceneMgr.AuthoringRevision());
+			m_History.Clear();
+			m_PendingFullSync = true;
+		}
+		else
+			doc.metadata.sourcePath = target;
 		m_SceneMgr.ClearDirty();
 		m_ScriptRepairGate.OnPersistedOrReset();
+		if (needsAssetMigration)
+		{
+			if (migrationReport.incomplete)
+				m_AssetMigrationGate.Adopt(true);
+			else
+				m_AssetMigrationGate.OnPersistedOrReset();
+		}
+		// ReplaceAuthoringDocument above may have invalidated the pre-save `doc`
+		// reference. Re-read the adopted document before updating recovery state.
 		const std::string newDocId = rt2::core::SceneRecoveryService::DocIdFor(
-			doc, m_UntitledRecoveryId);
+			m_SceneMgr.AuthoringDoc(), m_UntitledRecoveryId);
 		if (oldDocId == newDocId) m_Recovery->DiscardForDoc(newDocId);
 		else m_Recovery->OnSaveAs(oldDocId, newDocId);
 		m_Recovery->ResetSchedule();
@@ -3313,9 +3739,15 @@ public:
 		{
 			const std::string saved =
 				(forceSaveAs || oldSourcePath.empty()) ? "Saved As" : "Saved";
-			m_LastStatusMsg = saveWarning.empty()
-				? saved
-				: saved + " with " + saveWarning;
+			if (needsAssetMigration && migrationReport.incomplete)
+			{
+				m_LastStatusMsg = saved + "; asset migration incomplete (" +
+					std::to_string(migrationReport.unresolvedReferenceCount) +
+					" unresolved)";
+			}
+			else
+				m_LastStatusMsg = saveWarning.empty()
+					? saved : saved + " with " + saveWarning;
 		}
 		printf("[Scene] Saved .rt2scene: %s\n", target.u8string().c_str());
 		return true;
@@ -3384,6 +3816,8 @@ public:
 			m_SceneMgr.SetEnvMapData(pathCopy, result->w, result->h,
 			                         std::move(result->pixels),
 			                         /*envImportErr=*/&result->envImportErr);
+			if (result->envImportErr.IsOk() && m_ProjectContext)
+				RefreshProjectAssets();
 			printf("[EnvMap] Loaded %dx%d\n", result->w, result->h);
 			// Surface sidecar write/read errors through the status bar so the
 			// user sees them instead of relying on console output (item 4).
@@ -3439,10 +3873,18 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 			if (ImGui::MenuItem("Open..."))
 			{
 				std::string filepath = FileDialog::OpenFile(
-					L"RT2 Scene (*.rt2scene)\0*.rt2scene\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0",
+					L"RT2 Project, Scene and Model Files (*.rt2proj;*.rt2scene;*.glb;*.gltf;*.obj)\0*.rt2proj;*.rt2scene;*.glb;*.gltf;*.obj\0RT2 Project (*.rt2proj)\0*.rt2proj\0RT2 Scene (*.rt2scene)\0*.rt2scene\0glTF Binary (*.glb)\0*.glb\0glTF JSON (*.gltf)\0*.gltf\0OBJ Files (*.obj)\0*.obj\0",
 					layerPtr->GetDialogInitialDirectory());
 				if (!filepath.empty())
 					layerPtr->OpenRt2Scene(filepath);
+			}
+			if (ImGui::MenuItem("Open Project..."))
+			{
+				std::string filepath = FileDialog::OpenFile(
+					L"RT2 Project (*.rt2proj)\0*.rt2proj\0",
+					layerPtr->GetDialogInitialDirectory());
+				if (!filepath.empty())
+					layerPtr->OpenProject(filepath);
 			}
 			if (ImGui::MenuItem("Save"))
 			{
