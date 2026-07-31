@@ -348,9 +348,9 @@ TEST_CASE("Phase7 W6 acceptance: moving referenced mesh and script preserves IDs
         (std::istreambuf_iterator<char>(beforeInput)), {});
 
     ContentBrowserOperationReport report;
-    REQUIRE(MoveContentBrowserAsset(
+    REQUIRE(RenameContentBrowserAsset(
         tree.assets, Record("models/hero.glb", kModelId),
-        tree.assets / "moved", report, error));
+        "hero-renamed.glb", report, error));
     REQUIRE(MoveContentBrowserAsset(
         tree.assets, Record("scripts/main.lua", kScriptId),
         tree.assets / "moved", report, error));
@@ -360,7 +360,7 @@ TEST_CASE("Phase7 W6 acceptance: moving referenced mesh and script preserves IDs
 
     ProjectAssetScanResult scan;
     REQUIRE(ScanProjectAssets(tree.assets, scan, error));
-    const auto* movedMesh = scan.database->FindByPath("moved/hero.glb");
+    const auto* movedMesh = scan.database->FindByPath("models/hero-renamed.glb");
     const auto* movedScript = scan.database->FindByPath("moved/main.lua");
     REQUIRE(movedMesh != nullptr);
     REQUIRE(movedScript != nullptr);
@@ -393,5 +393,5 @@ TEST_CASE("Phase7 W6 acceptance: moving referenced mesh and script preserves IDs
         staleReference, AssetResolutionContext{tree.assets, scan.database.get()},
         kEntityId, "Hero", resolveDiagnostics);
     REQUIRE(resolved.success);
-    CHECK(resolved.resolvedPath == tree.assets / "moved" / "hero.glb");
+    CHECK(resolved.resolvedPath == tree.assets / "models" / "hero-renamed.glb");
 }
