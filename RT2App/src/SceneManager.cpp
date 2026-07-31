@@ -114,51 +114,90 @@ void LogAssetDiagnostics(
 // merging uses bases; compaction supplies old-to-new maps. Keeping both
 // operations on the same field list makes a new index-bearing field visible
 // at the one place that must be updated for both operations.
+enum class IndexRebaseMode
+{
+	None,
+	Base,
+	Remap,
+};
+
+template <typename Index>
+class IndexRebaseAxis
+{
+public:
+	void SetBase(Index base)
+	{
+		m_mode = IndexRebaseMode::Base;
+		m_base = base;
+		m_remap = nullptr;
+	}
+
+	void SetRemap(const std::map<Index, Index>& remap)
+	{
+		m_mode = IndexRebaseMode::Remap;
+		m_remap = &remap;
+	}
+
+	bool IsActive() const { return m_mode != IndexRebaseMode::None; }
+
+	Index Apply(Index index, Index unmapped) const
+	{
+		switch (m_mode)
+		{
+			case IndexRebaseMode::None:
+				return index;
+			case IndexRebaseMode::Base:
+				return index + m_base;
+			case IndexRebaseMode::Remap:
+			{
+				const auto it = m_remap->find(index);
+				return it != m_remap->end() ? it->second : unmapped;
+			}
+		}
+		return index;
+	}
+
+private:
+	IndexRebaseMode m_mode = IndexRebaseMode::None;
+	Index m_base = 0;
+	const std::map<Index, Index>* m_remap = nullptr;
+};
+
 struct IndexRebase
 {
-	uint32_t meshBase = 0;
-	int materialBase = 0;
-	int textureBase = 0;
-	const std::map<uint32_t, uint32_t>* meshRemap = nullptr;
-	const std::map<int, int>* materialRemap = nullptr;
-	const std::map<int, int>* textureRemap = nullptr;
+	IndexRebaseAxis<uint32_t> mesh;
+	IndexRebaseAxis<int> material;
+	IndexRebaseAxis<int> texture;
 
 	uint32_t Mesh(uint32_t index) const
 	{
-		if (!meshRemap)
-			return index + meshBase;
-		const auto it = meshRemap->find(index);
-		return it != meshRemap->end() ? it->second : index;
+		return mesh.Apply(index, index);
 	}
 
 	int Material(int index) const
 	{
 		if (index < 0)
 			return index;
-		if (!materialRemap)
-			return index + materialBase;
-		const auto it = materialRemap->find(index);
-		return it != materialRemap->end() ? it->second : index;
+		// Ordinary material references historically remain unchanged when a
+		// compaction map has no entry for them; preserve that behavior.
+		return material.Apply(index, index);
 	}
 
 	int MaterialOverride(int index) const
 	{
 		if (index < 0)
 			return index;
-		if (!materialRemap)
-			return index + materialBase;
-		const auto it = materialRemap->find(index);
-		return it != materialRemap->end() ? it->second : -1;
+		// The old compaction pass invalidated a transient override slot when
+		// its material was removed; this deliberate asymmetry must remain.
+		return material.Apply(index, -1);
 	}
 
 	int Texture(int index) const
 	{
 		if (index < 0)
 			return index;
-		if (!textureRemap)
-			return index + textureBase;
-		const auto it = textureRemap->find(index);
-		return it != textureRemap->end() ? it->second : -1;
+		// Compaction historically invalidated orphaned texture references.
+		return texture.Apply(index, -1);
 	}
 };
 
@@ -178,37 +217,51 @@ void RebaseIndices(ECSScene& scene, const IndexRebase& rebase)
 			rebase.Texture(material.metallicRoughnessTextureIndex);
 	};
 
-	for (uint32_t meshIndex = 0;
-	     meshIndex < scene.meshRegistry.GetCount();
-	     ++meshIndex)
+	if (rebase.material.IsActive())
 	{
-		auto& mesh = scene.meshRegistry.GetMesh(meshIndex);
-		for (auto& materialIndex : mesh.materialIndices)
+		for (uint32_t meshIndex = 0;
+		     meshIndex < scene.meshRegistry.GetCount();
+		     ++meshIndex)
 		{
-			const int remapped = rebase.Material(static_cast<int>(materialIndex));
-			if (remapped >= 0)
-				materialIndex = static_cast<uint32_t>(remapped);
+			auto& mesh = scene.meshRegistry.GetMesh(meshIndex);
+			for (auto& materialIndex : mesh.materialIndices)
+			{
+				const int remapped = rebase.Material(static_cast<int>(materialIndex));
+				if (remapped >= 0)
+					materialIndex = static_cast<uint32_t>(remapped);
+			}
 		}
 	}
 
-	for (auto& material : scene.materials)
-		rebaseMaterialTextures(material);
+	if (rebase.texture.IsActive())
+		for (auto& material : scene.materials)
+			rebaseMaterialTextures(material);
 
-	auto meshRefView = scene.registry.view<MeshRef>();
-	for (const auto entity : meshRefView)
+	if (rebase.mesh.IsActive() || rebase.material.IsActive())
 	{
-		auto& ref = meshRefView.get<MeshRef>(entity);
-		ref.meshIndex = rebase.Mesh(ref.meshIndex);
-		ref.materialIndex = rebase.Material(ref.materialIndex);
+		auto meshRefView = scene.registry.view<MeshRef>();
+		for (const auto entity : meshRefView)
+		{
+			auto& ref = meshRefView.get<MeshRef>(entity);
+			if (rebase.mesh.IsActive())
+				ref.meshIndex = rebase.Mesh(ref.meshIndex);
+			if (rebase.material.IsActive())
+				ref.materialIndex = rebase.Material(ref.materialIndex);
+		}
 	}
 
-	auto overrideView = scene.registry.view<MaterialOverrideComponent>();
-	for (const auto entity : overrideView)
+	if (rebase.material.IsActive() || rebase.texture.IsActive())
 	{
-		auto& materialOverride = overrideView.get<MaterialOverrideComponent>(entity);
-		rebaseMaterialTextures(materialOverride.material);
-		materialOverride.materialIndex =
-			rebase.MaterialOverride(materialOverride.materialIndex);
+		auto overrideView = scene.registry.view<MaterialOverrideComponent>();
+		for (const auto entity : overrideView)
+		{
+			auto& materialOverride = overrideView.get<MaterialOverrideComponent>(entity);
+			if (rebase.texture.IsActive())
+				rebaseMaterialTextures(materialOverride.material);
+			if (rebase.material.IsActive())
+				materialOverride.materialIndex =
+					rebase.MaterialOverride(materialOverride.materialIndex);
+		}
 	}
 }
 }
@@ -704,9 +757,9 @@ SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
 	const int matBase = (int)dst.materials.size();
 	const int texBase = (int)dst.textures.size();
 	IndexRebase rebase;
-	rebase.meshBase = meshBase;
-	rebase.materialBase = matBase;
-	rebase.textureBase = texBase;
+	rebase.mesh.SetBase(meshBase);
+	rebase.material.SetBase(matBase);
+	rebase.texture.SetBase(texBase);
 	RebaseIndices(src, rebase);
 
 	// Append meshes after the complete source scene has been rebased.
@@ -4005,7 +4058,7 @@ bool SceneManager::CompactMeshRegistry()
 			meshReg.AddMesh(std::move(mesh));
 
 		IndexRebase rebase;
-		rebase.meshRemap = &remap;
+		rebase.mesh.SetRemap(remap);
 		RebaseIndices(m_EcsScene, rebase);
 
 		printf("[Scene] Compacted mesh registry: %d -> %d meshes\n",
@@ -4059,7 +4112,7 @@ bool SceneManager::CompactMeshRegistry()
 		m_EcsScene.materials = std::move(newMaterials);
 
 		IndexRebase rebase;
-		rebase.materialRemap = &matRemap;
+		rebase.material.SetRemap(matRemap);
 		RebaseIndices(m_EcsScene, rebase);
 
 		printf("[Scene] Compacted materials: %zu -> %zu\n",
@@ -4101,7 +4154,7 @@ bool SceneManager::CompactMeshRegistry()
 		m_EcsScene.textures = std::move(newTextures);
 
 		IndexRebase rebase;
-		rebase.textureRemap = &texRemap;
+		rebase.texture.SetRemap(texRemap);
 		RebaseIndices(m_EcsScene, rebase);
 
 		printf("[Scene] Compacted textures: %zu -> %zu\n",
