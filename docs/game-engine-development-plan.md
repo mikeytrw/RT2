@@ -9192,3 +9192,399 @@ Final host-policy supersession (2026-07-31): the CPU-only recovery predicate
 is now shared by WalnutApp and the permanent W5 test. Release and Debug remain
 at **704/704 cases** and **145,964/145,964 assertions**; the final Graphify
 refresh reports **34,195 nodes, 71,902 edges and 1,389 communities**.
+
+## Phase 7 W6 — content browser (implementation spec)
+
+Drafted 2026-07-31 and grounded against commit
+`17292d6` (W0–W5 landed there; the earlier `7ec974b7` predates those files).
+W0–W5 are implemented in the working tree; this spec must be reviewed before
+implementation. Review
+amendments are appended here; implementation does not reinterpret an
+unsettled point from memory.
+
+### Scope and exit
+
+W6 introduces the content browser: a project-scoped panel that searches the
+asset tree, displays asset records from the immutable database snapshot, and
+performs rename, move, delete, reimport and drag/drop-to-import. It is the
+first UI that mutates the asset tree and the first UI that browses the
+database produced by W4's scanner.
+
+The combined exit is stronger than "a file list renders": rename and move a
+referenced mesh and script through the content browser, reload the scene, and
+confirm both still resolve by ID without rewriting the scene file. Delete an
+asset that has dependants and confirm the browser reports them before
+committing. Reimport a source asset and confirm its identity is preserved
+while its decoded cache is rebuilt. External file-system changes made after
+open require an explicit Refresh Assets action; W6 does not watch the tree.
+
+Not in W6: filesystem watching or async reimport (W7, per D7 at `:6433`),
+the rebinding UI, script Rebind button, declaration diagnostics and
+cursor-lock binding (W8). W6 does not add cache artifact formats, project-
+owned render/fixed-step settings, or a standalone-scene content browser. The
+content browser is project-only; standalone scenes have no `assetRoot` to
+browse and no database snapshot to read.
+
+### Grounded findings at `17292d6`
+
+| ID | Current fact | Consequence |
+|---|---|---|
+| W6-F1 | No content browser exists. No file in `RT2App/src` matches `contentbrowser`/`assetbrowser`/`browser` (P9, `:6373`). The existing UI panels are Scene, Session, Outliner, Inspector, Camera, Performance, Render Settings — all registered as `m_Show*Window` booleans and toggled from the View menu (`WalnutApp.cpp:3159-3165,3916-3932`). | W6 is genuinely greenfield UI. It follows the existing panel pattern: a `m_ShowContentBrowserWindow` boolean, a `DrawContentBrowserPanel()` method called from `OnUIRender`, and a View-menu item. |
+| W6-F2 | `AssetDatabase` is a pure in-memory index with `FindByPath`, `LookupById`, `AllRecordsSorted`, `FindDependenciesBySourceKey`, `AddEntityDependency` and `AddAssetDependency` (`AssetDatabase.h:119-172`). `BuildAssetDatabase` normalizes and sorts internally so results are enumeration-order-independent (`AssetDatabase.h:166-172`). | The database has the query APIs W6 needs for search and display. `AllRecordsSorted` returns every record sorted by `sourcePath` — the natural display order for a browser. |
+| W6-F3 | `AddEntityDependency` and `AddAssetDependency` are **only called in tests** (`RT2Tests/src/AssetDatabaseTests.cpp:173,310,326-327,342-343,364,391,393,405,410,432`). No production code path — not the scanner, not the resolver, not the serializer, not `SceneManager` — populates `dependentEntities` or `dependencies` in the live database. The scanner (`ProjectAssetScanner.cpp:218-222`) creates records with only `assetId`, `sourcePath` and `identityAuthority=Sidecar`. | The database today **cannot** answer "who depends on this asset?" from its own state. W6 must build the dependants query from the live scene document, not from the database. The `SceneAssetReferenceVisitor` (W6-F9) is the seam. |
+| W6-F4 | The immutable snapshot is a `shared_ptr<const AssetDatabase>` owned by `ProjectContext` (`ProjectContext.h:18`). `RefreshProjectAssets()` (`WalnutApp.cpp:2910-2943`) builds a complete replacement via `ScanProjectAssets`, swaps it into `m_ProjectContext`, and pushes the new `AssetResolutionContext` to `m_SceneMgr` and `m_ScriptAssetContext`. It refuses while `IsBackgroundBusy()` is true. | W6 mutations (rename, move, delete, reimport) call `RefreshProjectAssets()` after the filesystem operation succeeds. Readers already in flight hold their `shared_ptr` and see the old snapshot until they re-fetch — this is the existing W4 lifetime contract and W6 does not change it. |
+| W6-F5 | Sidecars are the durable identity source. `AssetSidecarPath` appends `.rt2meta` to the full filename (`AssetIdentity.cpp:14-21`). `ReadSidecarId` returns nil for absent sidecars (normal) and fills `err` for malformed ones (`AssetIdentity.cpp:23-62`). `WriteSidecarId` is atomic: temp file + `ReplaceFileW`/`MoveFileExW` on Windows (`AssetIdentity.cpp:64-155`). `ResolveOrAssign` reads-or-mints and is called only by import/migration, never by the read-only resolver (`AssetIdentity.h:52-68`; W3-P4 at `:6647`). | Moving `foo.glb` without `foo.glb.rt2meta` destroys that asset's identity: the scanner sees no sidecar, the asset gets a new ID on next import, and every scene reference to the old ID becomes stale. W6 must move the source file and its sidecar as one atomic unit. |
+| W6-F6 | The scanner identifies source assets by stripping the `.rt2meta` suffix from sidecar filenames (`ProjectAssetScanner.cpp:174-177`). A sidecar without a regular source file is a `Stale` diagnostic, not a record (`ProjectAssetScanner.cpp:180-191`). | After a move, the scanner finds the sidecar at the new location and records the new `sourcePath`. After a delete, the scanner no longer finds the sidecar and the record disappears. The database refresh is the mechanism that makes moves and deletes visible. |
+| W6-F7 | Resolution is ID-first with path fallback (`AssetResolver.h:39-59`). `Resolve` checks the database by `assetId` first; if the ID locates a unique file that exists, resolution succeeds even when the stored `path` is stale (`AssetResolver.cpp:159-218`). Path fallback reads the sidecar at the resolved path and checks for ID agreement (`AssetResolver.cpp:220-330`). | This is the reason rename and move must **not** touch scene files. If a mesh is moved (with its sidecar), the ID stays the same. After a database refresh, `LookupById` returns the new `sourcePath`. The scene's `AssetReference::path` is stale but the ID is authoritative, so resolution succeeds with a `Stale` advisory. The scene file is unchanged. |
+| W6-F8 | `AssetReference::path` in a v4 project scene is relative to the active `assetRoot` (`AssetReference.h:73-80`; `SceneSerializer.h:22-32`). Save As inside a project does not rewrite reference paths (W45 spec at `:8810-8814`). The path is a human-readable fallback; `assetId` is the durable identity. | After a move, the scene's stored path is stale relative to the new filesystem location. This is observable as a `Stale` diagnostic on next resolution, not a broken reference. The path is not rewritten until the next explicit Save, which may optionally update it. W6 does not force a Save after move. |
+| W6-F9 | `CollectSceneAssetReferences` walks every entity with `ImportedMeshSourceComponent` or `ScriptComponent`, plus the environment, and returns `AssetReference*` slots in stable order sorted by `(entityUuid, kind, sourceKey, path)` (`SceneAssetReferenceVisitor.h:19-41`; `SceneAssetReferenceVisitor.cpp:31-71`). A const overload returns `const AssetReference*`. | This is the seam for the dependants query. W6 calls `CollectSceneAssetReferences` on the live `SceneDocument`, filters by `assetId` or `sourcePath`, and reports the matching entities. No database mutation is needed. |
+| W6-F10 | `ImportedMeshSourceComponent::model` is an `AssetReference` with `kind=Model`, `path` (portable, scene-relative), `sourceKey` (e.g. `gltf:scene=0:node=3:mesh=1:primitive=0`), and `assetId` (`ECSComponents.h:221-223`). `ScriptComponent::asset` is an `AssetReference` with `kind=Script`, `sourceKey` `lua:asset=<path>`, and `assetId` (`ECSComponents.h:282-288`). `EnvironmentSettings::ref` is an `AssetReference` with `kind=Environment` (`SceneDocument.h:50-62`). | The dependants query covers three asset kinds. A single physical file may be referenced by multiple entities (e.g. a glTF with many meshes) and in multiple roles (a model that is also a script owner is unlikely, but a file observed in multiple `sourceKey` slots is normal). The query reports all of them. |
+| W6-F11 | The existing import flow calls `SceneManager::ImportGltf`/`ImportObj` (`SceneManager.h:120-132`), which call `FillImportedSourcePathAndId` (`SceneManager.cpp:275-309`) to assign/reuse sidecar IDs via `ResolveOrAssign`. After import, `WalnutApp` calls `RefreshProjectAssets()` (`WalnutApp.cpp:256,2680,2701,3820`). | Reimport reuses this path. The source asset's sidecar already exists, so `ResolveOrAssign` returns the stable ID (`AssetIdentity.cpp:168-169`). Reimport re-decodes the asset through the same import path, preserving identity while rebuilding cache entries. |
+| W6-F12 | Drag/drop exists in `SceneEditorUI.cpp:769-806` using `ImGui::BeginDragDropSource`/`BeginDragDropTarget` with a `RT2_ENTITY_UUID` payload type. The outliner uses it for entity reparenting. | W6 drag/drop-to-import follows the same ImGui pattern: `BeginDragDropSource` on a browser item with an `RT2_ASSET_PATH` payload, `BeginDragDropTarget` on the viewport or outliner to receive it. The host's existing import callback is invoked. |
+| W6-F13 | `ProjectContext::Assets()` throws `std::logic_error` if the database is null (`ProjectContext.h:21-28`). A project-active call with `database == nullptr` is a Release invariant violation (W45 spec at `:8793`). | The content browser is only available when `m_ProjectContext` is non-null. In standalone mode the panel shows "No project is open" and all operations are disabled. This mirrors the Session panel's project/standalone split (`WalnutApp.cpp:1087-1103`). |
+| W6-F14 | `WriteSidecarId` creates parent directories if needed (`AssetIdentity.cpp:76-83`). `std::filesystem::rename` on Windows uses `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` for the sidecar's atomic write path (`AssetIdentity.cpp:120-141`), but the source asset file itself has no atomic-move helper. | W6 must provide its own filesystem operations for moving and deleting source asset files. The source file move is not atomic across volumes; W6 must detect cross-volume moves and report them as unsupported rather than failing silently. |
+| W6-F15 | The `AssetMigrationPersistenceGate` (`SceneAssetMigration.h:42-54`) tracks whether asset migration is pending. Autosave/recovery never initiates migration (`SceneAssetMigration.h:48-50`). `ShouldCaptureRecoverySnapshot` (`SceneAssetMigration.h:58-63`) allows recovery while migration is pending. | W6 operations do not interact with the migration gate. Rename, move, delete and reimport are asset-tree mutations, not scene-document migrations. The gate remains in whatever state it was before the operation. |
+| W6-F16 | The efsw file watcher watches only the scene directory and directories of bound `.lua` scripts, rebuilt on scene open (P10, `:6374`). It does not watch the asset tree. | W6 does not depend on filesystem watching. After any W6 mutation, the database is refreshed explicitly. External changes require the existing "Refresh Assets" button (`WalnutApp.cpp:1097-1098`). W7 owns widening the watcher. |
+
+### Recovered Phase 7 commitments
+
+| Source | Commitment | W6 treatment |
+|---|---|---|
+| `:560` | Add a content browser with search, rename/move/delete, drag/drop, and reimport. | W6 implements all five. |
+| `:573` | Asset deletion reports dependants before committing the change. | W6 builds a live-document dependants query (W6-F3, W6-F9) and blocks delete until the user acknowledges. |
+| `:577` | Move and rename a referenced mesh and script through the content browser; reload the scene and confirm both still resolve. | W6 exit criterion. The acceptance exercise is part of the implementation report. |
+| `:579` | Modify a source texture and verify reimport updates the viewport safely. | Deferred to W7. W6 reimport re-decodes through the existing import path; W7 owns the async/watched variant. W6's reimport is explicit and synchronous. |
+| `:5521` | Declaration diagnostics shown inline in the content browser. | W8. W6 displays the asset list and supports search/rename/move/delete/reimport, but does not add declaration diagnostics. |
+| `:8618` | Declaration diagnostics in content browser. | W6/W8; W6 builds the browser, W8 adds diagnostics. |
+
+### Decisions — answered before code
+
+These are the settled answers for this spec. Review may amend them before
+implementation; implementation does not choose a different answer locally.
+
+#### D-W6-1 — the atomic unit of move is the source file plus its sidecar
+
+**Decision:** rename and move operate on the pair `{source, sidecar}` as one
+atomic unit. The content browser constructs both destination paths, moves the
+source file first, then moves the sidecar. If the source move succeeds and
+the sidecar move fails, the operation is a **partial failure**: the source
+file is at its new location but its identity sidecar is at the old one. W6
+reports this loudly through `AssetDiagnostic` with `Conflict` severity, names
+both paths, and does not attempt to move the source back (a rollback move is
+another risky filesystem operation). The user is told to move the sidecar
+manually or reimport.
+
+Rationale: `WriteSidecarId` is atomic (`AssetIdentity.cpp:64-155`), but the
+source asset file has no atomic-move helper (W6-F14). `std::filesystem::rename`
+is atomic on the same volume but not across volumes. W6 rejects cross-volume
+moves up front rather than discovering the failure mid-operation. Within one
+volume, both `rename` calls are atomic individually; the pair is not
+transactional, but the failure window is narrow and the partial state is
+diagnosable.
+
+#### D-W6-2 — rename and move must not touch scene files
+
+**Decision:** rename and move are asset-tree operations only. They do not
+rewrite, save, or mark dirty any `.rt2scene` file. After a successful move,
+the database is refreshed and the scene's `AssetReference::path` is stale.
+Resolution still succeeds by ID (`AssetResolver.h:42-44`) and emits a `Stale`
+advisory. The path is corrected on the next explicit Save, which is the
+existing W4/W5 contract.
+
+This is the payoff of W1–W5. If moving a referenced mesh required rewriting
+every scene that uses it, the phase failed. The acceptance exercise proves
+this: move a referenced mesh and script, reload the scene, and confirm both
+resolve by the same IDs without a scene-file rewrite between the move and
+the reload.
+
+#### D-W6-3 — delete reports dependants from the live scene document, not from the database
+
+**Decision:** the dependants query is built from `CollectSceneAssetReferences`
+on the live `SceneDocument` (W6-F9), not from `AssetDatabase::dependentEntities`
+(which is never populated in production — W6-F3). The query matches by
+`assetId` when non-nil, falling back to `sourcePath` when nil. It returns one
+entry per referencing entity, including entity UUID, name, asset kind and
+source key. The browser displays the list and requires explicit
+acknowledgement before deleting.
+
+The query is a read-only operation against the live document. It does not
+mutate the database or the document. If the scene is unsaved, the query
+reflects the current authoring state, not the last-saved file. This is
+correct: the user needs to know what will break *now*, not what would have
+broken at last save.
+
+**Limitation:** the query covers only the currently open scene. If another
+scene in the project references the asset, W6 cannot see it. This is
+documented in the delete confirmation dialog: "X entities in the current
+scene reference this asset. Other scenes in this project may also reference
+it." This is not a silent failure; it is a stated limitation of a
+single-scene editor. A project-wide dependants query would require scanning
+every scene file, which is out of scope for W6.
+
+#### D-W6-4 — refresh after every mutation, readers in flight see the old snapshot
+
+**Decision:** after every successful rename, move, delete or reimport, W6
+calls `RefreshProjectAssets()` (`WalnutApp.cpp:2910-2943`). The existing
+lifetime contract applies: the `shared_ptr<const AssetDatabase>` held by
+async workers remains valid until they complete; the next resolver call
+fetches the new snapshot via `m_ProjectContext->Assets()`.
+
+W6 does not refresh on every UI frame. The browser displays records from the
+snapshot captured at the last refresh. If the user suspects external changes,
+they click "Refresh Assets" (the existing button, `WalnutApp.cpp:1097`). W6
+does not add a second refresh path.
+
+#### D-W6-5 — reimport is explicit and synchronous, identity is preserved
+
+**Decision:** reimport re-decodes the source asset through the existing
+import path (`SceneManager::ImportGltf`/`ImportObj`, W6-F11). The asset's
+sidecar already exists, so `ResolveOrAssign` returns the stable ID
+(`AssetIdentity.cpp:168-169`). Reimport does not mint a new ID, write a new
+sidecar, or change the scene's `AssetReference::assetId`. It rebuilds the
+decoded geometry/material/texture cache entries and syncs to GPU.
+
+Reimport is a user-initiated action on a single asset. It is synchronous
+within the existing background-work framework (`StartBackgroundWork`,
+`WalnutApp.cpp:293-340`): the worker thread decodes the asset, the
+completion callback merges it into the live scene, and the database is
+refreshed. W7 owns async/watched reimport; W6 does not watch for external
+file changes.
+
+#### D-W6-6 — CPU-only operations module, ImGui panel in WalnutApp
+
+**Decision:** the content browser's non-UI logic — search, dependants query,
+move/rename/delete filesystem operations, and the reimport dispatch — lives
+in a new CPU-only module (`ContentBrowserOperations.{h,cpp}`) beside
+`AssetDatabase` and `ProjectAssetScanner`. It links into `RT2Tests` and
+`RT2SliceRunner` without Vulkan, ImGui or Walnut. The ImGui panel
+(`DrawContentBrowserPanel`) lives in `WalnutApp.cpp` and calls the CPU-only
+operations through callbacks, following the `SceneEditorUI` precedent.
+
+### W6 contract — content browser capabilities
+
+#### Search and display
+
+The browser panel is project-only. When `m_ProjectContext` is null, it shows
+"No project is open" and all controls are disabled. When a project is open,
+it displays a flat or tree-ordered list of `AssetRecord` entries from
+`AllRecordsSorted()`, each showing:
+
+- Source path (relative to `assetRoot`, forward slashes).
+- Asset ID (short form, first 8 characters with ellipsis if longer).
+- Observed kinds (from `AssetRecord::observedKinds`, which may be empty for
+  sidecar-only records).
+- A sidecar status icon: present, absent, or malformed (from the last scan
+  diagnostics).
+
+A search filter (`ImGui::InputText`) filters by substring match on
+`sourcePath` or `assetId.ToString()`. The filter is case-insensitive on
+Windows. Filtering is client-side against the current snapshot; it does not
+re-scan.
+
+#### Rename
+
+Rename changes the filename of the source asset and its sidecar within the
+same directory. It does not change the directory or the asset ID. The
+operation:
+
+1. Validate the new name: non-empty, no path separators, no `..`, must end
+   with the same extension as the original (renaming `cube.glb` to
+   `cube.obj` is a format change, not a rename — reject it).
+2. Construct old and new paths for both source and sidecar.
+3. Check that the new source path does not already exist (a collision is a
+   loud `Conflict`, not a silent overwrite).
+4. Move source file, then move sidecar (D-W6-1).
+5. On success, `RefreshProjectAssets()`.
+6. On partial failure, report loudly and do not refresh (the old snapshot is
+   stale but the user needs to see the diagnostic).
+
+Rename does not touch any scene file (D-W6-2).
+
+#### Move
+
+Move changes the directory of the source asset and its sidecar within the
+`assetRoot`. The operation:
+
+1. Validate the destination directory: must be contained by `assetRoot`
+   (same containment check as W4's path validation, `Project.cpp:137-283`),
+   must not escape via `..` or reparse points, must not be the same as the
+   current directory.
+2. Reject cross-volume moves up front (D-W6-1).
+3. Create the destination directory if it does not exist.
+4. Construct old and new paths for both source and sidecar.
+5. Check that the new source path does not already exist.
+6. Move source file, then move sidecar (D-W6-1).
+7. On success, `RefreshProjectAssets()`.
+8. On partial failure, report loudly and do not refresh.
+
+Move does not touch any scene file (D-W6-2). After move, the scene's
+`AssetReference::path` is stale. Resolution by ID succeeds with a `Stale`
+advisory (W6-F7). The path is corrected on the next explicit Save.
+
+#### Delete
+
+Delete removes the source asset file and its sidecar. The operation:
+
+1. Build the dependants query (D-W6-3): call
+   `CollectSceneAssetReferences` on the live `SceneDocument`, filter by
+   `assetId` (when non-nil) or `sourcePath` (when nil). Collect entity
+   UUIDs, names, asset kinds and source keys.
+2. Display the dependants list in a confirmation dialog. If dependants are
+   non-empty, the dialog says: "N entities in the current scene reference
+   this asset. Deleting it will cause those references to break on next
+   resolve. Other scenes in this project may also reference it." The user
+   must explicitly confirm.
+3. If the user confirms, delete the sidecar first, then the source file.
+   Deleting the sidecar first means a partial failure (source delete fails)
+   leaves the asset resolvable by path with a `Stale` diagnostic, rather
+   than leaving an orphaned sidecar.
+4. On success, `RefreshProjectAssets()`.
+5. On partial failure (source deleted, sidecar remains), report loudly. The
+   orphaned sidecar is a `Stale` diagnostic on next scan
+   (`ProjectAssetScanner.cpp:180-191`).
+
+Delete does not modify the scene document. Referencing entities remain in
+the scene with their `AssetReference` intact. On next resolve, the missing
+asset produces a `Missing` diagnostic (`AssetResolver.h:54`). The user may
+then remove the entity or rebind the reference (W8 owns the rebind UI).
+
+#### Reimport
+
+Reimport re-decodes the source asset through the existing import path. The
+operation:
+
+1. The asset must have a valid sidecar (otherwise reimport is an import, not
+   a reimport — direct the user to the existing Import button).
+2. Call `SceneManager::ImportGltf` or `ImportObj` (dispatched by extension)
+   with the asset's absolute path. `FillImportedSourcePathAndId`
+   (`SceneManager.cpp:275-309`) calls `ResolveOrAssign`, which reads the
+   existing sidecar and returns the stable ID (`AssetIdentity.cpp:168-169`).
+3. The import replaces the entity's mesh/material/texture state with freshly
+   decoded data. `ImportedMeshSourceComponent::model.assetId` is unchanged.
+4. After import, `RefreshProjectAssets()` (the existing post-import pattern,
+   `WalnutApp.cpp:256`).
+5. GPU sync is the existing `m_PendingFullSync` path.
+
+Reimport does not change asset identity, write a new sidecar, or touch the
+scene file's `assetId` fields. It may update `ImportSettings` if the user
+changed import options (e.g. toggling `assumeDielectricWithoutMetalRough`).
+
+#### Drag/drop to import
+
+The browser supports dragging an asset from the list and dropping it on the
+viewport or outliner. The drag source sets an `RT2_ASSET_PATH` ImGui payload
+containing the asset's absolute path. The drop target calls the existing
+import callback (`SceneEditorUI::SetOnImportGltf`/`SetOnImportWithOptions`,
+`SceneEditorUI.h:68-77`). This is not a new import path; it is a new entry
+point to the existing one.
+
+Drag/drop does not move or delete assets. It is import-only. Moving assets
+within the browser tree is a rename or move operation initiated through the
+context menu or keyboard shortcut, not through drag/drop.
+
+### Implementation order
+
+Each step keeps `RT2Tests` and `RT2SliceRunner` CPU-only and ends with
+focused tests before the next host cutover.
+
+1. **W6.0 — CPU-only operations module.** Add `ContentBrowserOperations.{h,cpp}`
+   with: search/filter against `AssetDatabase::AllRecordsSorted`, dependants
+   query via `CollectSceneAssetReferences`, rename (same-directory move of
+   source + sidecar), move (cross-directory move of source + sidecar),
+   delete (sidecar-then-source removal), and reimport dispatch (calls
+   existing `SceneManager` import APIs). No Walnut/ImGui. Focused tests:
+   search determinism, dependants query correctness, rename/move/delete
+   filesystem operations with temp directories, partial-failure reporting,
+   cross-volume rejection.
+
+2. **W6.1 — ImGui panel.** Add `DrawContentBrowserPanel()` to `WalnutApp`,
+   register `m_ShowContentBrowserWindow`, add View-menu item. Display the
+   asset list from the current `m_ProjectContext->database` snapshot. Wire
+   search filter. Wire rename/move/delete/reimport to the CPU-only
+   operations through callbacks. Add the delete-confirmation dialog with
+   dependants list. Add drag/drop source. No drop target yet.
+
+3. **W6.2 — Drop target and acceptance exercise.** Add drop targets on the
+   viewport and outliner for `RT2_ASSET_PATH` payloads. Wire to the existing
+   import callbacks. Run the acceptance exercise: move and rename a
+   referenced mesh and script, reload the scene, confirm both resolve by ID.
+   Delete an asset with dependants, confirm the dialog reports them. Reimport
+   a source asset, confirm identity is preserved. Release and Debug
+   verification, then append the measured close report.
+
+### Permanent tests and discrimination proofs
+
+| Permanent evidence | Temporary fault that must make it fail |
+|---|---|
+| Search returns records matching a substring on `sourcePath` or `assetId`, sorted by `sourcePath`, independent of scan enumeration order. | Return records in raw `unordered_map` iteration order instead of sorted. |
+| Rename moves both source and sidecar to the new name within the same directory. After refresh, the database records the new `sourcePath` and the same `assetId`. | Move the source file without moving the sidecar; the refresh must produce a `MissingSidecarId`/`Stale` diagnostic and a different `assetId` on next import. |
+| Move relocates source and sidecar to a new directory within `assetRoot`. After refresh, `LookupById` returns the new `sourcePath`. A scene reference with the old path and the stable ID resolves successfully with a `Stale` advisory. | Move the source without the sidecar; `LookupById` must fail `Missing` because the sidecar is gone and no record claims the ID. |
+| Move rejects cross-volume destinations, `..` escape, reparse points, and destinations outside `assetRoot`. | Disable the containment check and allow a move outside `assetRoot`; the refreshed database must not contain the record. |
+| Delete with dependants reports every referencing entity (UUID, name, kind, source key) from the live scene document before committing. | Populate `AssetDatabase::dependentEntities` instead of querying the live document; the test must fail because production code never populates that field. |
+| Delete removes sidecar then source. A forced source-delete failure leaves the sidecar as an orphaned `Stale` diagnostic on next scan, not a silent success. | Delete the source first and skip the sidecar; the scan must report the orphaned sidecar. |
+| After rename or move, no `.rt2scene` file is modified. The scene's `AssetReference::path` is stale but `assetId` is unchanged; resolution by ID succeeds with `Stale`. | Rewrite the scene file's paths after move; the test must fail because the scene file's modification time changed. |
+| Reimport preserves the asset's sidecar ID and `AssetReference::assetId`. The decoded geometry is replaced; identity is unchanged. | Call `ResolveOrAssign` with a fresh UUID provider that mints a different ID; the test must fail because the asset ID changed. |
+| Drag/drop payload carries the absolute asset path and triggers the existing import callback. | Dispatch to a new import path instead of the existing `SceneManager::ImportGltf`/`ImportObj`; the test must fail because the import did not go through the production path. |
+| The browser panel is disabled when no project is open. All operations are no-ops. | Enable operations in standalone mode; the test must fail because `m_ProjectContext` is null and `Assets()` throws. |
+
+Every new permanent test gets its discrimination fault exercised before the
+implementation report calls it protective. The final gate builds the Release
+and Debug solutions, runs `RT2Tests.exe` from the repository root, runs the
+scripting regression gate and both project/standalone slice-runner scenarios,
+and records the actual counts measured then. No count is copied from an older
+completed phase.
+
+### Review checklist and boundary
+
+A reviewer must verify at least: the atomic-unit move contract (D-W6-1);
+the no-scene-rewrite contract (D-W6-2); the dependants query source
+(D-W6-3, live document not database); the refresh timing (D-W6-4); the
+reimport identity-preservation (D-W6-5); the CPU-only/UI split (D-W6-6);
+the partial-failure reporting for rename, move and delete; the delete
+ordering (sidecar first, then source); the cross-volume rejection; the
+search determinism; and the acceptance exercise (move and rename a
+referenced mesh and script, reload, confirm both resolve). Any accepted
+correction is appended as a dated review amendment.
+
+W6 does not add filesystem watching or async reimport (W7), the rebinding
+UI, script Rebind button, declaration diagnostics or cursor-lock binding
+(W8), cache artifact formats, project-owned render/fixed-step settings, or
+a standalone-scene content browser. W6's dependants query covers only the
+currently open scene; a project-wide query is out of scope. W6's reimport is
+synchronous and explicit; watched reimport is W7. These boundaries prevent
+W6 from depending on W7/W8 and keep the asset-tree mutations behind the
+established W4/W5 project context.
+
+#### Review amendment W6-A1 (2026-07-31) — delete order is source first
+
+Raised during implementation. The delete contract contradicted itself: step 3
+mandated sidecar-first ("rather than leaving an orphaned sidecar"), while step
+5 described the partial-failure state as "source deleted, sidecar remains" —
+which only sidecar-second can produce. The permanent-test row repeated the same
+inconsistency, claiming "removes sidecar then source" and then asserting the
+source-first failure state.
+
+**Resolution: delete the source first, then the sidecar.** Step 3 is amended;
+steps 4 and 5 and the test row were already written against this ordering and
+stand unchanged.
+
+The original rationale had the risk backwards. The failure that actually
+happens is the *source* delete — a mesh or texture may be held open by the
+renderer or locked by the OS, while a small JSON sidecar effectively always
+deletes. Under sidecar-first, that common failure destroys the durable identity
+of an asset which still exists on disk, so the user's delete fails *and* every
+scene referencing it needs identity repair. Under source-first the same failure
+occurs before anything irreversible: nothing is damaged and the operation is a
+clean abort.
+
+This also matches the W5 contract that sidecars are durable assign-once facts
+and are never destroyed speculatively before an operation is known to have
+succeeded.
+
+The residual risk of source-first is a surviving orphan sidecar later claiming
+its old ID for a different asset imported to the same path. Step 5's loud
+report must therefore name the orphaned sidecar path so it can be cleaned up;
+the scanner independently reports it as `Stale`.
+
+Grounding commit for this amendment: `17292d6`. Also supersedes the spec
+header's grounding commit `7ec974b`, which predates W0–W5 landing in the tree.
