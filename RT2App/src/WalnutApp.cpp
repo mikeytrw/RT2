@@ -1248,6 +1248,9 @@ public:
 			*m_ProjectContext->database, m_ContentBrowserSearch);
 		if (records.empty())
 			ImGui::TextDisabled("No matching assets");
+		bool openRename = false;
+		bool openMove = false;
+		bool openDelete = false;
 		for (const auto& record : records)
 		{
 			ImGui::PushID(record.sourcePath.c_str());
@@ -1274,12 +1277,12 @@ public:
 						.filename().u8string();
 					std::snprintf(m_ContentBrowserRenameBuffer,
 						sizeof(m_ContentBrowserRenameBuffer), "%s", filename.c_str());
-					ImGui::OpenPopup("Rename Asset");
+					openRename = true;
 				}
 				if (ImGui::MenuItem("Move..."))
 				{
 					m_ContentBrowserMoveBuffer[0] = '\0';
-					ImGui::OpenPopup("Move Asset");
+					openMove = true;
 				}
 				if (ImGui::MenuItem("Reimport"))
 				{
@@ -1334,12 +1337,18 @@ public:
 						rt2::core::FindContentBrowserDependants(
 							m_SceneMgr.AuthoringDoc(), record,
 							m_ProjectContext->project.assetRoot);
-					ImGui::OpenPopup("Delete Asset");
+					openDelete = true;
 				}
 				ImGui::EndPopup();
 			}
 			ImGui::PopID();
 		}
+		if (openRename)
+			ImGui::OpenPopup("Rename Asset");
+		if (openMove)
+			ImGui::OpenPopup("Move Asset");
+		if (openDelete)
+			ImGui::OpenPopup("Delete Asset");
 
 		if (ImGui::BeginPopupModal("Rename Asset", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize))

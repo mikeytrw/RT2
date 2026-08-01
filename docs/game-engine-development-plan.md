@@ -10512,3 +10512,31 @@ and explicit Refresh. They are useful regression checks but are not behavioural
 proofs of the host call sites. The CPU behavioural tests are the evidence for
 classification, suppression publication, queue coalescing, busy decisions,
 missed-event decisions, scene exclusion, and W6 suppression-path composition.
+
+### W7 follow-up — content-browser popup scope (2026-08-01)
+
+The W6 content-browser UI had a popup-scope defect in `RT2App/src/WalnutApp.cpp`:
+Rename, Move, and Delete called `OpenPopup` inside each record's per-record
+and context-popup ID scopes, while their `BeginPopupModal` calls ran outside
+both scopes. The CPU operations were fully tested, but all three UI paths were
+unreachable. The fix captures `openRename`, `openMove`, and `openDelete` inside
+the loop and opens the matching popups after the loop beside the modal bodies.
+No modal body, suppression wiring, or CPU operation was changed.
+
+Interactive acceptance with the watcher active then showed:
+
+- Rename opened, changed `cube.obj` to `cube_renamed.obj`, retained its
+  sidecar identity, showed `Status: Asset renamed`, and did not show a
+  redundant project-refresh status.
+- Move opened, moved the renamed asset into `phase1a-fixtures`, showed
+  `Status: Asset moved`, and did not show a redundant project-refresh status.
+  The asset was then moved back for cleanup.
+- Delete opened for `script-scenario.lua`, which is referenced by the open
+  scene. The warning and confirmation controls appeared, so deletion required
+  explicit confirmation. The upper part of this modal was clipped off-screen,
+  preventing the dependant list from being fully observed; no deletion was
+  confirmed. This is a remaining UI defect.
+
+Release and Debug both measured 732/732 tests and 146428/146428 assertions;
+script, slice, and `--validate` gates passed. The host-dispatch extraction gap
+described above remains out of scope.
