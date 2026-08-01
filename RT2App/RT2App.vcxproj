@@ -293,6 +293,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\ScriptFieldRegistry.h" />
     <ClInclude Include="src\ScriptFieldResolver.h" />
     <ClInclude Include="src\ScriptFieldValue.h" />
+    <ClInclude Include="src\AssetWatchPolicy.h" />
     <ClInclude Include="src\ScriptFileWatchPolicy.h" />
     <ClInclude Include="src\ScriptSandbox.h" />
     <ClInclude Include="src\ScriptScenarioCompare.h" />
@@ -674,6 +675,9 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\ContentBrowserOperations.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\AssetWatchPolicy.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\SceneVisibility.cpp">
