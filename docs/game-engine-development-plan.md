@@ -9657,3 +9657,451 @@ configurations.
 
 No W7 filesystem watcher or async reimport was added, and standalone content
 browser operations remain disabled as specified.
+
+## Phase 7 W7 — watching and async reimport (implementation spec)
+
+Drafted 2026-08-01 and grounded against commit
+`9008290`. W0–W6 are implemented in the working tree; this spec must be
+reviewed before implementation. Review amendments are appended here;
+implementation does not reinterpret an unsettled point from memory.
+
+### Scope and exit
+
+W7 widens the existing efsw file watcher from script-only directories to the
+entire `assetRoot`, fixes the defect that the watch set is rebuilt only on
+scene open (D7, `:6433`), and defines which asset kinds may be auto-reimported
+"where safe." It is the first workstream that reacts to external filesystem
+changes on the asset tree.
+
+The combined exit is stronger than "the watcher runs": an externally modified
+`.lua` script is hot-reloaded through the existing `ScriptSystem::ReloadScript`
+path without user intervention. An externally added or deleted asset file
+appears in or disappears from the content browser after an automatic database
+refresh. A W6 rename, move or delete does not fight the watcher —
+self-inflicted events are suppressed. An `ReadDirectoryChangesW` buffer
+overflow is reported, not silently dropped. Explicit Refresh remains a
+supported backstop for every case the watcher cannot cover.
+
+Not in W7: the rebinding UI, script Rebind button, declaration diagnostics
+and cursor-lock binding (W8). W7 does not auto-reimport models, textures or
+environment maps — those rebuild GPU resources and require explicit user
+action through the W6 content browser. W7 does not auto-reload `.rt2scene`
+files that change on disk while open and dirty; that is explicitly out of
+scope. W7 does not add a new watcher implementation — it widens and refines
+the existing efsw watcher.
+
+### Grounded findings at `9008290`
+
+| ID | Current fact | Consequence |
+|---|---|---|
+| W7-F1 | The watcher is `ScriptFileWatchListener` (`WalnutApp.cpp:3000-3029`), created once in the constructor alongside `efsw::FileWatcher` (`:174-177`). The listener overrides `handleFileAction` but does **not** override `handleMissedFileActions` — the efsw default is a no-op (`efsw.hpp:265`). | W7 must override `handleMissedFileActions` to surface buffer-overflow events. The current listener silently drops them. |
+| W7-F2 | `handleFileAction` filters to `.lua` files only (case-insensitive on Windows) and ignores `Delete` actions (`WalnutApp.cpp:3014-3021`). It builds the full path from `dir + filename` and pushes to `pendingChanges` under a mutex (`:3023-3027`). | W7 widens the filter: `.lua` → script reload path; `.glb`/`.gltf`/`.obj`/`.hdr`/`.exr`/`.rt2meta` → database refresh; everything else → ignored. The existing mutex/pendingChanges pattern is reused but the listener must classify by file type, not just extension. |
+| W7-F3 | The watch set is rebuilt **only on scene open** (`WalnutApp.cpp:3726-3791`). It removes all active watch IDs, walks `ScriptComponent` entities to find script directories, and adds recursive watches deduped by directory path. D7 (`:6433`) calls this a defect: "the watch set is only rebuilt on scene open." | W7 must add the `assetRoot` as a single recursive watch at project open, not per-script-directory at scene open. The script-directory walk is removed — the `assetRoot` watch covers all scripts. The watch is added when `m_ProjectContext` is established and removed when it is cleared. |
+| W7-F4 | The debounce drain runs in `OnUIRender` (`WalnutApp.cpp:1058-1106`). It locks the mutex, moves `pendingChanges` into `m_DebouncedChanges` (deduplicating by path), waits a 100 ms quiet window, then calls `ScriptSystem::ReloadScript` for each path and optionally clears the inspector field registry. The 100 ms window exists because an atomic save (temp + rename) produces Modified + Added + Deleted for one Ctrl+S (`:1058-1060`). | Widening from a few script directories to the whole `assetRoot` multiplies event volume. The debounce window must remain, but the coalescing must be by operation class (script reload vs database refresh), not just by path. A single external `git checkout` can produce hundreds of events; the drain must coalesce them into one database refresh, not 100 individual refreshes. |
+| W7-F5 | `RefreshProjectAssets()` (`WalnutApp.cpp:3153-3187`) returns `false` when `IsBackgroundBusy()` is true, with the status message "Asset refresh deferred: background work is in progress" (`:3161-3166`). It does not queue the refresh for later. | Under W7, watcher events arrive while background work (import, scene load, env decode) is running. The current silent-defer path goes from rare to routine. W7 must queue events during background work and drain them into a single refresh when work completes, rather than silently dropping them. |
+| W7-F6 | `IsBackgroundBusy()` returns `m_BackgroundWork != nullptr` (`WalnutApp.cpp:1771`). Only one `BackgroundWork` may be active at a time (`BackgroundWork.h:36-38`). The completion callback runs on the main thread after the worker joins (`WalnutApp.cpp:1645-1654`). `WaitForBackgroundWork()` is the headless synchronous drain (`:1777-1807`). | The watcher runs on its own efsw thread; `BackgroundWork` runs on a dedicated worker thread; the drain and completion run on the main thread. The suppression registry and the event queue must be thread-safe. The completion callback is the safe point to drain queued events. |
+| W7-F7 | W6 operations (rename, move, delete, reimport) all call `RefreshProjectAssets()` after success (`WalnutApp.cpp:1293,1325,1358,1393`). Each operation touches the filesystem — rename moves source + sidecar, move relocates them, delete removes them, reimport re-reads the source. Every one of these fires efsw events on the `assetRoot`. | Without suppression, W6 and W7 fight: a rename fires Modified + Add + Delete, the watcher queues a database refresh, `RefreshProjectAssets()` is called redundantly, and the cycle repeats for every W6 operation. The suppression registry (D-W7-1) is the mechanism that prevents this. |
+| W7-F8 | `ResolveOrAssign` is called only at `SceneManager.cpp:291,584,627,900,3899`, `SceneLoader.cpp:80`, `SceneAssetMigration.cpp:333`, and `TextureAssetPipeline.cpp:498`. Every call site is in an explicit import or migration path — never in the read-only resolver, never in the watcher, never in the scanner. | The watcher must never call `ResolveOrAssign`. It may call `ReadSidecarId` for diagnostic purposes, but it never mints, writes, or repairs a sidecar. This is the W5 identity contract: sidecars are assign-once and durable; only import, migration, and explicit W6 reimport touch them. |
+| W7-F9 | efsw on Windows uses `ReadDirectoryChangesW` (`WatcherWin32.cpp:209-211`) with a default buffer of 63 KB (`FileWatcherWin32.cpp:55-56`). When `dwNumberOfBytesTransfered == 0`, the buffer overflowed; efsw calls `handleMissedFileActions` and then `RefreshWatch` to re-register (`WatcherWin32.cpp:164-170`). The `WinBufferSize` option (`efsw.hpp:128-133`) allows a larger buffer, but "a buffer larger than 64K will fail the folder being watched" for network drives (`efsw.hpp:130-132`). | Event loss on Windows is a normal condition, not an exception. W7 overrides `handleMissedFileActions` to post a "missed" marker that triggers an explicit `RefreshProjectAssets()` on the next drain. The user is told. W7 does not increase the buffer size for network drives; it increases it for local drives only, using `WinBufferSize`. |
+| W7-F10 | `ScriptFileWatchPolicy` (`ScriptFileWatchPolicy.h:10-80`) provides `DecideScriptFileChange` (run-state dispatch: Playing/Paused → reload, Edit → invalidate cache) and `ScriptWatchDirectoryForCandidate` (normalize to absolute parent). It is CPU-only and tested from `RT2Tests`. | W7 follows this precedent: the new `AssetWatchPolicy` module is CPU-only, testable, and lifted out of `WalnutApp::OnUIRender`. The existing `DecideScriptFileChange` is reused unchanged; `ScriptWatchDirectoryForCandidate` is no longer needed for watch-set construction (the `assetRoot` covers all scripts) but remains for path normalization. |
+| W7-F11 | `ScriptSystem::ReloadScript` (`ScriptSystem.cpp:257-356`) has a three-way run-state branch: Playing reloads now, Paused queues for drain on Resume, Edit invalidates the field registry cache only. It requires an absolute path (`:259-269`) and normalizes lexically (`:276`). | The watcher's script-reload path already works. W7 does not change `ReloadScript`; it feeds it the same absolute paths from the wider watch. The 100 ms debounce is retained. |
+| W7-F12 | `ProjectContext` (`ProjectContext.h:15-29`) owns a `shared_ptr<const AssetDatabase>` snapshot. `RefreshProjectAssets()` builds a complete replacement, swaps it, and pushes the new `AssetResolutionContext` to `m_SceneMgr` and `m_ScriptAssetContext` (`WalnutApp.cpp:3168-3184`). The scan is read-only and deterministic (`ProjectAssetScanner.cpp:71-237`). | The database refresh after watcher events uses the existing `RefreshProjectAssets()` path. The immutable-snapshot contract is unchanged: readers in flight hold their `shared_ptr` and see the old snapshot until the next call. |
+| W7-F13 | The content browser panel (`WalnutApp.cpp:1201-1400`) displays records from `m_ProjectContext->database` and has a "Refresh" button (`:1217-1218`) that calls `RefreshProjectAssets()`. After a W6 operation, the panel calls `RefreshProjectAssets()` and updates its display from the new snapshot. | The content browser is a consumer of the database snapshot. After a watcher-triggered refresh, the browser's next frame renders from the new snapshot automatically (it queries `m_ProjectContext->database` each frame). No explicit notification to the browser is needed. |
+| W7-F14 | The `efsw::FileWatcher` is constructed once and `watch()` is called once in the WalnutApp constructor (`WalnutApp.cpp:176-177`). `addWatch` returns a `WatchID` (`efsw.hpp:195`); `removeWatch` by ID is O(log n) (`efsw.hpp:210`). The watcher runs on its own thread after `watch()` is called. | W7 adds the `assetRoot` watch at project open and removes it at project close/switch. The existing `m_ActiveWatchIds` vector (`WalnutApp.cpp:3038`) is replaced by a single watch ID for the `assetRoot`. The per-script-directory watches are removed. |
+| W7-F15 | The `AssetMigrationPersistenceGate` (`SceneAssetMigration.h:42-54`) tracks pending migration. `ShouldCaptureRecoverySnapshot` (`:58-63`) allows recovery while migration is pending. | W7 does not interact with the migration gate. Watcher-triggered refreshes are database scans, not scene migrations. The gate remains in whatever state it was before. |
+
+### Recovered Phase 7 commitments
+
+| Source | Commitment | W7 treatment |
+|---|---|---|
+| `:561` | Watch source files and reimport asynchronously where safe. | W7 watches the `assetRoot` and auto-reimports `.lua` scripts. Models/textures/env are "not safe" and require explicit W6 reimport. |
+| `:579` | Modify a source texture and verify reimport updates the viewport safely. | W7 does not auto-reimport textures. The acceptance exercise is: modify a `.lua` script externally and verify hot reload; add/delete an asset file and verify the browser updates after automatic refresh. Texture reimport remains an explicit W6 operation. |
+| `:6374` (P10) | The efsw watcher watches only the scene directory plus bound `.lua` script directories, rebuilt on scene open. | W7 widens to the `assetRoot` and rebuilds at project open, not scene open. |
+| `:6433` (D7) | Widen the existing efsw watcher to the asset root, and fix that the watch set is only rebuilt on scene open. | W7 implements D7 directly. |
+| `:9658` (W6 report) | No W7 filesystem watcher or async reimport was added. | W7 adds it. |
+
+### Decisions — answered before code
+
+These are the settled answers for this spec. Review may amend them before
+implementation; implementation does not choose a different answer locally.
+
+#### D-W7-1 — self-inflicted events are suppressed by an operation registry
+
+**Decision:** W7 introduces a thread-safe suppression registry. Before any W6
+operation (rename, move, delete, reimport) touches the filesystem, it
+registers the absolute paths it will modify (source file, sidecar, and their
+destination paths). The watcher listener checks incoming events against the
+registry and suppresses matching ones. After the operation completes and
+`RefreshProjectAssets()` returns, the registry entries are cleared.
+
+The registry is a `std::unordered_set<std::string>` of normalized absolute
+paths, guarded by a mutex (the same mutex that guards `pendingChanges`). It
+is populated by the host before the filesystem operation and cleared after
+the refresh. The listener's `handleFileAction` checks the registry before
+posting to `pendingChanges`; a matching path is silently dropped.
+
+This hazard is newly created by W6 and did not exist when D7 was written.
+Without suppression, a rename triggers Modified + Add + Delete events, the
+watcher queues a refresh, `RefreshProjectAssets()` runs redundantly, and the
+cycle repeats for every operation. The registry is the single mechanism that
+prevents W6 and W7 from fighting.
+
+The registry is best-effort, not transactional: if a W6 operation fails
+partially (W6-A1), the registered source paths may not have changed. The
+clear-after-refresh pattern means stale entries are cleaned up on the next
+drain cycle. A stale entry suppresses one real external event at most — the
+explicit Refresh button is the backstop.
+
+#### D-W7-2 — "where safe" means only `.lua` scripts auto-reimport
+
+**Decision:** the watcher auto-reimports only `.lua` script files through the
+existing `ScriptSystem::ReloadScript` path. Models (`.glb`/`.gltf`/`.obj`),
+textures, and environment maps (`.hdr`/`.exr`) are **not** auto-reimported.
+Their reimport rebuilds GPU resources (BLAS, textures, materials) and must not
+happen automatically from a watcher event.
+
+The rule: auto-reimport is safe only for assets whose reload does not touch
+the GPU scene. Script reload is safe because it only touches the Lua VM and
+the field registry (`ScriptSystem.cpp:257-356`). Model reimport rebuilds
+geometry/materials/textures and requires a full GPU sync
+(`SceneManager.cpp:645-700`). Texture reimport may change material appearance
+and requires a texture re-upload. Environment reimport re-decodes an HDR/EXR
+and uploads new pixels.
+
+External changes to non-`.lua` asset files (add, delete, modify) trigger a
+**database refresh** only, not a reimport. The content browser updates its
+display, but the live scene's meshes, textures and environment are unchanged.
+The user must explicitly reimport through the content browser to rebuild GPU
+resources.
+
+`.rt2meta` sidecar files are treated as database-refresh triggers: a new
+sidecar means a new asset identity; a deleted sidecar means a lost identity;
+a modified sidecar means a changed ID. All three trigger a database refresh
+and surface as scan diagnostics. The watcher never writes or repairs sidecars
+(D-W7-3).
+
+#### D-W7-3 — the watcher never mints identity
+
+**Decision:** the watcher never calls `ResolveOrAssign`. It may call
+`ReadSidecarId` for diagnostic purposes (to report a stale or changed
+sidecar), but it never mints, writes, or repairs a sidecar. The only paths
+that touch sidecars are import (`SceneManager.cpp:291,584,627,900,3899`;
+`SceneLoader.cpp:80`; `TextureAssetPipeline.cpp:498`), migration
+(`SceneAssetMigration.cpp:333`), and explicit W6 reimport
+(`ContentBrowserOperations.cpp:570-574`). All are user-initiated.
+
+This is the W5 identity contract. The watcher is a read-only observer of the
+asset tree. A missing sidecar seen by the watcher is a scan diagnostic
+(`ProjectAssetScanner.cpp:206-216`), not a mint. A changed sidecar is a
+database refresh, not a repair.
+
+#### D-W7-4 — queue events during background work, drain on completion
+
+**Decision:** when `IsBackgroundBusy()` is true, watcher events are queued,
+not dropped. The queue is a simple vector of `(path, action)` pairs,
+coalesced by path (same as the existing debounce buffer). When background
+work completes, the completion callback (`WalnutApp.cpp:1645-1654`) drains
+the queue: script events go through the existing `ReloadScript` path; all
+other events trigger a single `RefreshProjectAssets()` call.
+
+The user is told: "N asset changes queued; refreshing…" in the status bar.
+If the queue grows beyond a threshold (100 unique paths), it is truncated to
+the most recent 100 and the user is told: "Asset change queue overflowed; use
+Refresh for a full scan." This is not a silent failure — it is a stated
+limitation of a single-threaded background work model.
+
+`RefreshProjectAssets()` itself is unchanged: it still returns false when
+`IsBackgroundBusy()` is true. But the watcher no longer relies on
+`RefreshProjectAssets()` during background work — it queues events and drains
+them after. The explicit Refresh button remains available when no background
+work is running.
+
+#### D-W7-5 — event loss is normal; `handleMissedFileActions` triggers refresh
+
+**Decision:** W7 overrides `handleMissedFileActions` to post a "missed"
+marker that triggers an explicit `RefreshProjectAssets()` on the next drain.
+The user is told: "File system events may have been missed; refreshing the
+asset database."
+
+On Windows, `ReadDirectoryChangesW` buffer overflow is a normal condition
+(`WatcherWin32.cpp:164-170`). The default `handleMissedFileActions` is a
+no-op (`efsw.hpp:265`); the current listener silently drops these events. W7
+makes them loud.
+
+W7 also increases the Windows buffer size for local drives using
+`WinBufferSize` (`efsw.hpp:128-133`) to 256 KB, reducing the overflow
+window. It does not increase the buffer for network drives (a buffer larger
+than 64 KB fails the watch on network drives, `efsw.hpp:130-132`). If the
+`assetRoot` is on a network drive, W7 uses the default 63 KB buffer and
+relies on the missed-events handler.
+
+Explicit Refresh remains a supported backstop. It is not removed as
+redundant. The status bar says "Last refresh: watcher + explicit" when the
+last refresh was watcher-triggered, and "Last refresh: manual" when the user
+clicked Refresh. This makes the backstop visible.
+
+#### D-W7-6 — watch the entire `assetRoot`; `.rt2scene` is out of scope
+
+**Decision:** the watcher adds a single recursive watch on the `assetRoot`
+at project open, replacing the per-script-directory watches. The watch is
+removed at project close/switch. The listener dispatches by file type:
+
+- `.lua` → script reload path (existing debounce + `ScriptSystem::ReloadScript`).
+- `.glb`/`.gltf`/`.obj`/`.hdr`/`.exr`/`.rt2meta` → database refresh (coalesced).
+- Everything else → ignored.
+
+`.rt2scene` files changing on disk while open and dirty is **explicitly out of
+scope**. A scene file is not an asset — it is the document the user is
+editing. Auto-reloading a dirty scene from disk would destroy unsaved work.
+The user must reload manually through the existing Open flow. The watcher
+does not watch the scene's parent directory for scene-file changes; it
+watches the `assetRoot` for asset-file changes. If the scene file is inside
+the `assetRoot` (the normal case), the watcher sees the event but ignores it
+because `.rt2scene` is not in the dispatch table.
+
+#### D-W7-7 — CPU-only `AssetWatchPolicy` module, testable without efsw
+
+**Decision:** the event classification, suppression registry, coalescing
+queue, and missed-events handling live in a new CPU-only module
+(`AssetWatchPolicy.{h,cpp}`) beside `ScriptFileWatchPolicy.h`. It provides:
+
+- `ClassifyAssetFileEvent(path, action)` → `AssetFileEventKind` (ScriptReload,
+  DatabaseRefresh, Ignore).
+- `AssetWatchSuppressionRegistry` — thread-safe set of suppressed paths.
+- `AssetWatchEventQueue` — coalescing queue for events during background work.
+- `DecideWatchRefreshAction(hasMissedEvents, queueSize, backgroundBusy)` →
+  whether to refresh now, queue, or truncate.
+
+The ImGui/efsw wiring (listener, debounce drain, `RefreshProjectAssets()`
+calls, `handleMissedFileActions` override) stays in `WalnutApp.cpp`. The
+module is testable without a real filesystem or efsw, following the
+`ContentBrowserOperations` precedent from W6 and the
+`ScriptFileWatchPolicy` precedent from Phase 6C.
+
+### W7 contract — watcher capabilities
+
+#### Watch establishment
+
+At project open (`OpenProjectInternal`, `WalnutApp.cpp:3236`), after
+`m_ProjectContext` is established:
+
+1. Remove all existing watch IDs from `m_ActiveWatchIds`.
+2. Add a single recursive watch on `m_ProjectContext->project.assetRoot`.
+3. Use `WinBufferSize` = 256 KB for local drives; default for network drives.
+4. Store the watch ID in `m_ActiveWatchIds` (now a single-element vector).
+
+At project close/switch, remove the watch. In standalone mode (no project),
+no watch is active — the watcher is idle. This mirrors the content browser's
+project-only gate (W6-F13).
+
+The existing per-script-directory walk at scene open
+(`WalnutApp.cpp:3726-3791`) is removed. The `assetRoot` watch covers all
+script directories.
+
+#### Event classification and dispatch
+
+The listener's `handleFileAction` classifies each event:
+
+1. Build the full path from `dir + filename` (existing pattern,
+   `WalnutApp.cpp:3025`).
+2. Check the suppression registry (D-W7-1). If the path is registered,
+   silently drop.
+3. Classify by extension:
+   - `.lua` → `ScriptReload`: push to `pendingChanges` (existing path).
+   - `.glb`/`.gltf`/`.obj`/`.hdr`/`.exr`/`.rt2meta` → `DatabaseRefresh`:
+     push to a separate `pendingRefreshPaths` vector.
+   - Everything else → `Ignore`.
+4. `Delete` actions on `.lua` files are no longer ignored — a deleted script
+   is a database refresh (the asset record disappears), and the script
+   reload path handles the missing-file case (`ScriptSystem.cpp:308-336`
+   reports a parse failure, not a crash). The existing `Delete` skip
+   (`WalnutApp.cpp:3014`) is removed for `.lua` files.
+
+#### Debounce and drain
+
+The drain in `OnUIRender` (`WalnutApp.cpp:1058-1106`) is extended:
+
+1. Lock the mutex. Move `pendingChanges` into `m_DebouncedChanges` (existing
+   dedup by path). Move `pendingRefreshPaths` into `m_DebouncedRefreshPaths`
+   (dedup by path).
+2. If `IsBackgroundBusy()`: do not drain. Events remain in the debounce
+   buffer. The completion callback will drain them.
+3. If not busy and the 100 ms quiet window has elapsed:
+   - For each `.lua` path in `m_DebouncedChanges`: call
+     `ScriptSystem::ReloadScript` (existing path).
+   - If `m_DebouncedRefreshPaths` is non-empty: call
+     `RefreshProjectAssets()` once (not per path).
+   - Clear both buffers.
+4. If `handleMissedFileActions` was called since the last drain: call
+   `RefreshProjectAssets()` once, regardless of the quiet window, and clear
+   the missed marker.
+
+The 100 ms window is retained. Widening from a few script directories to the
+whole `assetRoot` does not change the per-event volume — efsw coalesces within
+its own buffer before calling `handleFileAction`. The drain's dedup-by-path
+ensures that a `git checkout` producing 100 Modified events results in one
+`RefreshProjectAssets()` call, not 100.
+
+#### Suppression registry
+
+Before any W6 filesystem operation (rename, move, delete, reimport), the host
+registers the paths that will be touched:
+
+```
+suppressionRegistry.Register(sourcePath);
+suppressionRegistry.Register(sidecarPath);
+suppressionRegistry.Register(destSourcePath); // for rename/move
+suppressionRegistry.Register(destSidecarPath);
+```
+
+After `RefreshProjectAssets()` returns, the host clears the registry:
+
+```
+suppressionRegistry.Clear();
+```
+
+The registry is thread-safe (mutex-guarded). The listener checks it under the
+same lock as `pendingChanges`. A registered path is silently dropped — it is
+not posted to any queue.
+
+#### Missed-events handling
+
+`handleMissedFileActions` sets a `m_MissedEvents` flag and pushes the
+directory path to `pendingRefreshPaths`. On the next drain, the flag triggers
+an immediate `RefreshProjectAssets()` regardless of the quiet window. The user
+is told: "File system events may have been missed; refreshing the asset
+database."
+
+#### Background-work completion drain
+
+The completion callback (`WalnutApp.cpp:1645-1654`) is extended: after the
+existing `m_OnBackgroundComplete` callback runs, check the debounce buffers.
+If non-empty, drain them as in the normal drain path. This is the point where
+queued events are processed — `IsBackgroundBusy()` is now false, so
+`RefreshProjectAssets()` will succeed.
+
+### Implementation order
+
+Each step keeps `RT2Tests` and `RT2SliceRunner` CPU-only and ends with
+focused tests before the next host cutover.
+
+1. **W7.0 — CPU-only `AssetWatchPolicy` module.** Add
+   `AssetWatchPolicy.{h,cpp}` with: `ClassifyAssetFileEvent`,
+   `AssetWatchSuppressionRegistry`, `AssetWatchEventQueue`, and
+   `DecideWatchRefreshAction`. No efsw, no ImGui, no Walnut. Focused tests:
+   classification by extension, suppression registry add/check/clear, queue
+   coalescing and truncation, missed-events decision, background-busy
+   decision.
+
+2. **W7.1 — Widen the efsw listener and watch scope.** Replace
+   `ScriptFileWatchListener` with `AssetWatchListener` that classifies by
+   file type, checks the suppression registry, and overrides
+   `handleMissedFileActions`. Add the `assetRoot` watch at project open
+   instead of per-script-directory at scene open. Remove the
+   script-directory walk. Use `WinBufferSize` = 256 KB for local drives.
+   Focused tests: integration test with a temp directory and a real efsw
+   watcher, verifying that `.lua` events go to script reload,
+   `.glb`/`.rt2meta` events go to database refresh, and suppressed paths are
+   dropped.
+
+3. **W7.2 — Debounce drain, background-work queue, and acceptance exercise.**
+   Extend the `OnUIRender` drain to handle both `pendingChanges` and
+   `pendingRefreshPaths`. Add the background-work completion drain. Add the
+   missed-events flag. Wire the suppression registry into W6 operations.
+   Run the acceptance exercise: modify a `.lua` script externally and verify
+   hot reload; add/delete an asset file and verify the browser updates after
+   automatic refresh; perform a W6 rename and verify no redundant refresh;
+   simulate a missed-events marker and verify explicit refresh. Release and
+   Debug verification, then append the measured close report.
+
+### Permanent tests and discrimination proofs
+
+| Permanent evidence | Temporary fault that must make it fail |
+|---|---|
+| `ClassifyAssetFileEvent` returns `ScriptReload` for `.lua`, `DatabaseRefresh` for `.glb`/`.gltf`/`.obj`/`.hdr`/`.exr`/`.rt2meta`, and `Ignore` for everything else, regardless of action (Add/Modified/Delete/Moved). | Return `ScriptReload` for a `.glb` file; the test must fail because a model reload was dispatched to the script path. |
+| The suppression registry suppresses events whose path matches a registered entry, and clears after `Clear()`. A W6 rename that registers source, sidecar, and destination paths produces zero watcher-posted events. | Disable the suppression registry check in `handleFileAction`; the test must fail because the rename's events reached `pendingChanges`. |
+| The event queue coalesces by path: 100 Modified events for the same path produce one `RefreshProjectAssets()` call, not 100. | Remove the dedup-by-path from the drain; the test must fail because `RefreshProjectAssets()` was called 100 times. |
+| When `IsBackgroundBusy()` is true, events are queued and not dropped. On completion, the queue is drained into one `RefreshProjectAssets()` call. | Drop events when `IsBackgroundBusy()` is true instead of queuing; the test must fail because the refresh never happened after work completed. |
+| `handleMissedFileActions` sets the missed flag and triggers an immediate `RefreshProjectAssets()` on the next drain, regardless of the quiet window. | Leave `handleMissedFileActions` as the default no-op; the test must fail because the missed events were silently dropped. |
+| The watcher never calls `ResolveOrAssign`. A missing sidecar seen by the watcher produces a scan diagnostic, not a minted ID. | Call `ResolveOrAssign` from the watcher's database-refresh path; the test must fail because a new sidecar was written. |
+| The `assetRoot` watch is added at project open and removed at project close. In standalone mode, no watch is active. | Add the watch at scene open instead of project open; the test must fail because a scene opened without a project has an active watch. |
+| `.rt2scene` file changes inside the `assetRoot` are ignored by the watcher, not auto-reloaded. | Classify `.rt2scene` as `DatabaseRefresh`; the test must fail because the scene was reloaded from disk. |
+| A W6 rename, move or delete does not trigger a redundant `RefreshProjectAssets()` call from the watcher. The suppression registry covers source, sidecar, and destination paths. | Register only the source path, not the sidecar; the test must fail because the sidecar's Modified event reached `pendingRefreshPaths`. |
+| The Windows buffer size is 256 KB for local drives and 63 KB (default) for network drives. A local drive watch does not fail with `WatcherFailed`. | Set the buffer to 256 KB on a network drive; the test must fail because `addWatch` returned `WatcherFailed`. |
+| The 100 ms debounce window is retained. A single atomic save (temp + rename) producing Modified + Add + Delete results in one drain, not three. | Remove the debounce window; the test must fail because three drains were produced for one save. |
+| Explicit Refresh remains a supported backstop. After a missed-events marker, the user can click Refresh and get a full scan even if the watcher has not yet drained. | Remove the Refresh button or make it a no-op when the watcher is active; the test must fail because the user could not force a refresh. |
+
+Every new permanent test gets its discrimination fault exercised before the
+implementation report calls it protective. The final gate builds the Release
+and Debug solutions, runs `RT2Tests.exe` from the repository root, runs the
+scripting regression gate and both project/standalone slice-runner scenarios,
+and records the actual counts measured then. No count is copied from an older
+completed phase.
+
+### Review checklist and boundary
+
+A reviewer must verify at least: the suppression registry contract (D-W7-1)
+and its thread-safety; the "where safe" rule (D-W7-2) and that no model/
+texture/env auto-reimport path exists; the identity-non-minting contract
+(D-W7-3) verified against all `ResolveOrAssign` call sites; the queue-then-
+drain contract (D-W7-4) and the completion-callback drain; the
+`handleMissedFileActions` override (D-W7-5) and the Windows buffer sizing; the
+watch scope (D-W7-6) and the `.rt2scene` exclusion; the CPU-only module
+(D-W7-7) and its testability without efsw; the removal of the
+per-script-directory walk; the debounce retention; and the acceptance
+exercise (modify a script externally, add/delete an asset, perform a W6
+rename without redundant refresh). Any accepted correction is appended as a
+dated review amendment.
+
+W7 does not add the rebinding UI, script Rebind button, declaration
+diagnostics or cursor-lock binding (W8). W7 does not auto-reimport models,
+textures or environment maps — those rebuild GPU resources and require
+explicit W6 reimport. W7 does not auto-reload `.rt2scene` files that change on
+disk while open and dirty. W7 does not add a new watcher implementation — it
+widens and refines the existing efsw watcher. W7 does not watch the
+`cacheRoot` — cache contents are generated, replaceable, and not part of asset
+identity (D6, `:8683-8700`). W7 does not add project-owned render/fixed-step
+settings. These boundaries prevent W7 from depending on W8 and keep the
+watcher behind the established W4/W5 project context and W6 content-browser
+operations.
+
+#### Review amendment W7-A1 (2026-08-01) — texture auto-reimport is out of scope, signed off
+
+D-W7-2 restricts automatic reimport to `.lua` scripts. Models, textures and
+environments trigger a database refresh only; rebuilding GPU resources remains
+an explicit W6 operation.
+
+**This changes Phase 7's stated runtime acceptance and was signed off
+knowingly.** The roadmap (`:579`) lists "Modify a source texture and verify
+reimport updates the viewport safely". Phase 7 will close with that criterion
+substituted rather than met: the acceptance exercise becomes modifying a `.lua`
+script externally and verifying hot reload, plus adding or deleting an asset
+file and verifying the browser updates after automatic refresh.
+
+The reasoning is that "where safe" was the roadmap's own qualifier, and a
+texture that is live on the GPU is not safe to swap from a watcher thread —
+it means descriptor updates against in-flight frames and interaction with the
+async upload path, for no authoring benefit that an explicit reimport does not
+already provide. Automatic model and texture reimport remains available to a
+later workstream if it earns its risk.
+
+#### Review amendment W7-A2 (2026-08-01) — clear the suppression registry one drain later
+
+D-W7-1 clears registry entries once the W6 operation completes and
+`RefreshProjectAssets()` returns. Filesystem events are asynchronous and can
+arrive after that point, so a rename's own events can land once its entries are
+already gone, defeating suppression and causing a second redundant scan. The
+registry is described as "the single mechanism that prevents W6 and W7 from
+fighting"; this is the one path where they still can.
+
+**Resolution: clear registered entries on the next drain cycle after the
+refresh, not immediately.** This grants roughly one debounce window of grace
+using machinery that already exists, and adds no timer and no new failure mode
+beyond the one D-W7-1 already documents — a stale entry suppresses at most one
+real external event, with the explicit Refresh as backstop.
+
+If a late event still slips through, the outcome is one redundant scan.
+`RefreshProjectAssets()` is transactional, so that is wasteful rather than
+harmful, and is accepted.
+
+Grounding commit for both amendments: `9008290`.
