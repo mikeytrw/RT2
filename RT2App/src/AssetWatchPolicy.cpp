@@ -121,6 +121,13 @@ void AssetWatchSuppressionRegistry::RegisterLocked(
         m_Paths.push_back(normalized);
 }
 
+void AssetWatchSuppressionRegistry::RegisterManyLocked(
+    const std::vector<std::filesystem::path>& paths)
+{
+    for (const auto& path : paths)
+        RegisterLocked(path);
+}
+
 bool AssetWatchSuppressionRegistry::IsSuppressedLocked(
     const std::filesystem::path& path) const
 {

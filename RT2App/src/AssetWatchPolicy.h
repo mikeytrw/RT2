@@ -55,6 +55,7 @@ public:
     // These methods require the caller to hold the mutex passed to the
     // constructor. They are the listener's atomic check/update seam.
     void RegisterLocked(const std::filesystem::path& path);
+    void RegisterManyLocked(const std::vector<std::filesystem::path>& paths);
     bool IsSuppressedLocked(const std::filesystem::path& path) const;
     void ClearLocked();
     size_t SizeLocked() const;
@@ -66,6 +67,20 @@ private:
 };
 
 constexpr size_t kAssetWatchQueueLimit = 100;
+constexpr int kAssetWatchDebounceMilliseconds = 100;
+
+enum class AssetWatchDriveKind
+{
+    Local,
+    Network,
+};
+
+// efsw's Windows default is 63 KiB. A larger buffer is safe for local
+// drives, but Windows rejects it for network shares.
+constexpr size_t AssetWatchBufferSize(AssetWatchDriveKind drive)
+{
+    return drive == AssetWatchDriveKind::Local ? 256u * 1024u : 63u * 1024u;
+}
 
 struct AssetWatchEvent
 {

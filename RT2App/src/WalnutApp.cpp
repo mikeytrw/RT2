@@ -26,6 +26,8 @@
 #include "ScriptAssetPath.h"
 #include "ScriptFieldChangePolicy.h"
 #include "ScriptFileWatchPolicy.h"
+#include "AssetWatchPolicy.h"
+#include "AssetIdentity.h"
 #include "SceneRenderBridge.h"
 #include "ECSComponents.h"
 #include "EditorSettings.h"
@@ -65,8 +67,14 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <set>
 #include <sstream>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 using namespace Walnut;
 
@@ -172,7 +180,7 @@ public:
 		m_InspectorFieldRegistry = std::make_unique<rt2::core::ScriptFieldRegistry>();
 
 		// Phase 6C/W2: file watcher for hot reload.
-		m_FileWatchListener = std::make_unique<ScriptFileWatchListener>();
+		m_FileWatchListener = std::make_unique<AssetWatchListener>();
 		m_FileWatcher = std::make_unique<efsw::FileWatcher>();
 		m_FileWatcher->watch();
 
@@ -1055,55 +1063,10 @@ public:
 	DrawUnsavedChangesPrompt();
 	DrawLoadingModal();
 
-	// Phase 6C/W2: drain file-watcher changes with debounce. Atomic save
-	// (temp + rename) yields Modified + Added + Deleted for one Ctrl+S.
-	// Coalesce by path over a ~100ms quiet window, then reload.
-	if (m_FileWatchListener)
-	{
-		{
-			std::lock_guard<std::mutex> lock(m_FileWatchListener->mutex);
-			if (!m_FileWatchListener->pendingChanges.empty())
-			{
-				for (const auto& p : m_FileWatchListener->pendingChanges)
-				{
-					// Dedupe: don't add a path already in the debounce buffer.
-					if (std::find(m_DebouncedChanges.begin(),
-					              m_DebouncedChanges.end(), p) ==
-					    m_DebouncedChanges.end())
-						m_DebouncedChanges.push_back(p);
-				}
-				m_FileWatchListener->pendingChanges.clear();
-				m_LastFileChangeTime = std::chrono::steady_clock::now();
-			}
-		}
-
-		// If no new changes for 100ms and we have pending, drain.
-		if (!m_DebouncedChanges.empty())
-		{
-			const auto now = std::chrono::steady_clock::now();
-			const auto elapsed = std::chrono::duration_cast<
-				std::chrono::milliseconds>(now - m_LastFileChangeTime);
-			if (elapsed.count() >= 100)
-			{
-				auto changes = std::move(m_DebouncedChanges);
-				m_DebouncedChanges.clear();
-				const auto action = rt2::core::DecideScriptFileChange(
-					m_Runtime.GetState(),
-					m_ScriptSystem != nullptr,
-					m_InspectorFieldRegistry != nullptr);
-				for (const auto& path : changes)
-				{
-					if (action.reloadScript)
-						m_ScriptSystem->ReloadScript(path);
-				}
-				// Once per drain, not per path: the inspector cache is
-				// whole-registry, so clearing it per file would be
-				// redundant work.
-				if (action.invalidateFieldRegistry)
-					m_InspectorFieldRegistry->Clear();
-			}
-		}
-	}
+	// The efsw callback only publishes classified events under its mutex.
+	// Filesystem scans, script reloads, and status work happen outside that
+	// critical section on the main thread.
+	DrainAssetWatchChanges(false);
 
 	// Phase 5: EndFrame commits current → previous state, clears
 	// per-frame deltas, and applies cursor capture. Called at the end
@@ -1259,6 +1222,8 @@ public:
 				{
 					rt2::core::ContentBrowserOperationReport report;
 					rt2::core::Error error;
+					RegisterAssetWatchPaths(
+						m_ProjectContext->project.assetRoot, record);
 					const bool ok = rt2::core::ReimportContentBrowserAsset(
 						m_ProjectContext->project.assetRoot, record,
 						[this](const rt2::core::AssetRecord& sourceRecord,
@@ -1290,7 +1255,9 @@ public:
 							m_EditorUI.OnImportComplete(imported);
 							return true;
 						}, report, error);
-					if (ok && RefreshProjectAssets())
+					const bool refreshed = ok && RefreshProjectAssets();
+					ScheduleAssetWatchSuppressionClear();
+					if (refreshed)
 						m_LastStatusMsg = "Asset reimported";
 					else if (!ok)
 						m_LastStatusMsg = "Asset reimport failed: " + error.Format();
@@ -1318,11 +1285,22 @@ public:
 			{
 				rt2::core::ContentBrowserOperationReport report;
 				rt2::core::Error error;
+				const auto source = m_ProjectContext->project.assetRoot /
+					std::filesystem::u8path(
+						m_ContentBrowserPendingRecord->sourcePath);
+				const auto destination = source.parent_path() /
+					std::filesystem::u8path(m_ContentBrowserRenameBuffer);
+				RegisterAssetWatchPaths(
+					m_ProjectContext->project.assetRoot,
+					*m_ContentBrowserPendingRecord,
+					{destination, rt2::core::AssetSidecarPath(destination)});
 				const bool ok = rt2::core::RenameContentBrowserAsset(
 					m_ProjectContext->project.assetRoot,
 					*m_ContentBrowserPendingRecord,
 					m_ContentBrowserRenameBuffer, report, error);
-				if (ok && RefreshProjectAssets())
+				const bool refreshed = ok && RefreshProjectAssets();
+				ScheduleAssetWatchSuppressionClear();
+				if (refreshed)
 					m_LastStatusMsg = "Asset renamed";
 				else if (!ok)
 					m_LastStatusMsg = "Asset rename failed: " + error.Format();
@@ -1350,12 +1328,24 @@ public:
 			{
 				rt2::core::ContentBrowserOperationReport report;
 				rt2::core::Error error;
+				const auto source = m_ProjectContext->project.assetRoot /
+					std::filesystem::u8path(
+						m_ContentBrowserPendingRecord->sourcePath);
+				const auto destinationDirectory =
+					std::filesystem::u8path(m_ContentBrowserMoveBuffer);
+				const auto destination = destinationDirectory / source.filename();
+				RegisterAssetWatchPaths(
+					m_ProjectContext->project.assetRoot,
+					*m_ContentBrowserPendingRecord,
+					{destination, rt2::core::AssetSidecarPath(destination)});
 				const bool ok = rt2::core::MoveContentBrowserAsset(
 					m_ProjectContext->project.assetRoot,
 					*m_ContentBrowserPendingRecord,
 					std::filesystem::u8path(m_ContentBrowserMoveBuffer),
 					report, error);
-				if (ok && RefreshProjectAssets())
+				const bool refreshed = ok && RefreshProjectAssets();
+				ScheduleAssetWatchSuppressionClear();
+				if (refreshed)
 					m_LastStatusMsg = "Asset moved";
 				else if (!ok)
 					m_LastStatusMsg = "Asset move failed: " + error.Format();
@@ -1387,10 +1377,15 @@ public:
 			{
 				rt2::core::ContentBrowserOperationReport report;
 				rt2::core::Error error;
+				RegisterAssetWatchPaths(
+					m_ProjectContext->project.assetRoot,
+					*m_ContentBrowserPendingRecord);
 				const bool ok = rt2::core::DeleteContentBrowserAsset(
 					m_ProjectContext->project.assetRoot,
 					*m_ContentBrowserPendingRecord, report, error);
-				if (ok && RefreshProjectAssets())
+				const bool refreshed = ok && RefreshProjectAssets();
+				ScheduleAssetWatchSuppressionClear();
+				if (refreshed)
 					m_LastStatusMsg = "Asset deleted";
 				else if (!ok)
 					m_LastStatusMsg = "Asset delete failed: " + error.Format();
@@ -1466,6 +1461,9 @@ public:
 			if (ok)
 			{
 				m_ProjectContext = std::move(recoveryProject);
+				ConfigureAssetRootWatch(m_ProjectContext
+					? m_ProjectContext->project.assetRoot
+					: std::filesystem::path{});
 				m_SceneMgr.SetAssetResolutionContext(assetContext);
 				m_ScriptAssetContext = assetContext;
 				ApplyActiveInputConfiguration();
@@ -1663,6 +1661,9 @@ public:
 				m_GpuSyncStatus = "Preparing GPU upload...";
 				cb(success);
 			}
+			// The worker is idle now; process events queued during the
+			// operation without waiting for another debounce window.
+			DrainAssetWatchChanges(true);
 			printf("[LoadingModal] Phase 1 done: gpuSyncPending=%d\n", m_GpuSyncPending ? 1 : 0);
 			fflush(stdout);
 			// If the callback didn't set m_GpuSyncPending there is nothing
@@ -1789,6 +1790,7 @@ public:
 			m_OnBackgroundComplete = nullptr;
 			cb(success);
 		}
+		DrainAssetWatchChanges(true);
 
 		// Run the GPU sync phase synchronously (headless has no UI loop).
 		if (m_GpuSyncPending && m_RendererGPU.IsAvailable())
@@ -2993,38 +2995,70 @@ private:
 	// load/close alongside ResetForDocument.
 	std::unique_ptr<rt2::core::ScriptFieldRegistry> m_InspectorFieldRegistry;
 
-	// Phase 6C/W2: file watcher for hot reload. efsw watches directories
-	// containing referenced script assets. On .lua file change, the path
-	// is posted to m_PendingFileChanges (thread-safe). The drain in
-	// OnUIRender debounces (~100ms) and calls ScriptSystem::ReloadScript.
-	class ScriptFileWatchListener : public efsw::FileWatchListener
+	// Phase 7: the assetRoot watcher classifies script, database, and ignored
+	// paths before publishing them to the main-thread drain.
+	class AssetWatchListener : public efsw::FileWatchListener
 	{
 	public:
 		std::mutex mutex;
-		std::vector<std::string> pendingChanges;
+		rt2::core::AssetWatchSuppressionRegistry suppressionRegistry;
+		rt2::core::AssetWatchEventQueue pendingEvents;
+		bool missedEvents = false;
+		std::string missedDirectory;
+
+		AssetWatchListener()
+			: suppressionRegistry(&mutex), pendingEvents(&mutex) {}
 
 		void handleFileAction(efsw::WatchID watchid, const std::string& dir,
 		                      const std::string& filename, efsw::Action action,
 		                      const std::string& oldFilename) override
 		{
 			(void)watchid; (void)oldFilename;
+			rt2::core::AssetFileAction assetAction;
+			switch (action)
+			{
+			case efsw::Actions::Add:
+				assetAction = rt2::core::AssetFileAction::Add;
+				break;
+			case efsw::Actions::Modified:
+				assetAction = rt2::core::AssetFileAction::Modified;
+				break;
+			case efsw::Actions::Delete:
+				assetAction = rt2::core::AssetFileAction::Delete;
+				break;
+			case efsw::Actions::Moved:
+				assetAction = rt2::core::AssetFileAction::Moved;
+				break;
+			default:
+				return;
+			}
 			// Only react to .lua file modifications and adds (atomic save =
 			// delete + add, so catch both). Delete alone means the file is
 			// gone — no reload needed.
-			if (action == efsw::Actions::Delete) return;
 
 			// Only .lua files (case-insensitive on Windows).
-			if (filename.size() < 5) return;
-			auto ext = filename.substr(filename.size() - 4);
-			std::transform(ext.begin(), ext.end(), ext.begin(),
-				[](unsigned char c) { return std::tolower(c); });
-			if (ext != ".lua") return;
+			const std::filesystem::path full =
+				std::filesystem::path(dir) / std::filesystem::u8path(filename);
+			if (rt2::core::ClassifyAssetFileEvent(full, assetAction) ==
+				rt2::core::AssetFileEventKind::Ignore)
+				return;
 
-			// Build the full path. efsw gives dir + filename separately;
-			// normalize to a single path.
-			std::filesystem::path full = std::filesystem::path(dir) / filename;
+			// Registry lookup and event publication are atomic. No filesystem
+			// or scan work is allowed while this mutex is held.
 			std::lock_guard<std::mutex> lock(mutex);
-			pendingChanges.push_back(full.string());
+			if (suppressionRegistry.IsSuppressedLocked(full))
+				return;
+			pendingEvents.EnqueueLocked(full, assetAction);
+		}
+
+		void handleMissedFileActions(efsw::WatchID watchid,
+		                             const std::string& dir) override
+		{
+			(void)watchid;
+			std::lock_guard<std::mutex> lock(mutex);
+			missedEvents = true;
+			missedDirectory = rt2::core::NormalizeWatchPath(
+				std::filesystem::u8path(dir));
 		}
 	};
 
@@ -3033,11 +3067,15 @@ private:
 	// ~FileWatcher) never calls handleFileAction on a destroyed
 	// listener. Members destroy in reverse declaration order, so
 	// the watcher is declared second and dies first.
-	std::unique_ptr<ScriptFileWatchListener>    m_FileWatchListener;
+	std::unique_ptr<AssetWatchListener>        m_FileWatchListener;
 	std::unique_ptr<efsw::FileWatcher>          m_FileWatcher;
-	std::vector<efsw::WatchID>                  m_ActiveWatchIds;
+	std::optional<efsw::WatchID>                m_ActiveWatchId;
 	std::vector<std::string>                    m_DebouncedChanges;
+	std::vector<std::string>                    m_DebouncedRefreshPaths;
 	std::chrono::steady_clock::time_point       m_LastFileChangeTime;
+	bool                                        m_AssetWatchMissedEvents = false;
+	std::string                                 m_AssetWatchMissedDirectory;
+	bool                                        m_AssetWatchClearSuppressionNextDrain = false;
 
 	// Phase 5 input service — owns the context stack and frame phasing.
 	rt2::core::InputService m_Input;
@@ -3148,6 +3186,221 @@ private:
 				diagnostic.refPath.c_str(), diagnostic.sourceKey.c_str(),
 				diagnostic.detail.c_str());
 		}
+	}
+
+	void RegisterAssetWatchPaths(
+		const std::filesystem::path& assetRoot,
+		const rt2::core::AssetRecord& record,
+		const std::vector<std::filesystem::path>& additional = {})
+	{
+		if (!m_FileWatchListener || assetRoot.empty() ||
+			record.sourcePath.empty())
+			return;
+		const auto source = (assetRoot /
+			std::filesystem::u8path(record.sourcePath)).lexically_normal();
+		std::vector<std::filesystem::path> paths{
+			source, rt2::core::AssetSidecarPath(source)};
+		paths.insert(paths.end(), additional.begin(), additional.end());
+		std::lock_guard<std::mutex> lock(m_FileWatchListener->mutex);
+		m_FileWatchListener->suppressionRegistry.RegisterManyLocked(paths);
+	}
+
+	void ScheduleAssetWatchSuppressionClear()
+	{
+		// W7-A2: leave the entries installed through the drain that follows the
+		// W6 refresh, because efsw may deliver the operation's events late.
+		m_AssetWatchClearSuppressionNextDrain = true;
+	}
+
+	void DrainAssetWatchChanges(bool force)
+	{
+		if (!m_FileWatchListener)
+			return;
+
+		std::vector<rt2::core::AssetWatchEvent> events;
+		bool overflowed = false;
+		{
+			// The listener owns both the registry and queue under this mutex.
+			// Move only already-published data out; all filesystem and scan work
+			// below happens after the lock is released.
+			std::lock_guard<std::mutex> lock(m_FileWatchListener->mutex);
+			events = m_FileWatchListener->pendingEvents.DrainLocked();
+			overflowed = m_FileWatchListener->pendingEvents.TakeOverflowedLocked();
+			if (m_FileWatchListener->missedEvents)
+			{
+				m_AssetWatchMissedEvents = true;
+				m_AssetWatchMissedDirectory =
+					m_FileWatchListener->missedDirectory;
+				m_FileWatchListener->missedEvents = false;
+				m_FileWatchListener->missedDirectory.clear();
+			}
+			// Clear only after taking this cycle's events so late delivery from
+			// the W6 operation remains suppressed for one complete drain.
+			if (m_AssetWatchClearSuppressionNextDrain)
+			{
+				m_FileWatchListener->suppressionRegistry.ClearLocked();
+				m_AssetWatchClearSuppressionNextDrain = false;
+			}
+		}
+
+		if (overflowed)
+		{
+			m_AssetWatchMissedEvents = true;
+			m_LastStatusMsg =
+				"Asset change queue overflowed; use Refresh for a full scan";
+			printf("[FileWatcher] Asset change queue overflowed; forcing a full scan\n");
+		}
+
+		for (const auto& event : events)
+		{
+			if (event.kind == rt2::core::AssetFileEventKind::ScriptReload &&
+				std::find(m_DebouncedChanges.begin(), m_DebouncedChanges.end(),
+					event.path) == m_DebouncedChanges.end())
+				m_DebouncedChanges.push_back(event.path);
+			if (event.refreshDatabase &&
+				std::find(m_DebouncedRefreshPaths.begin(),
+				          m_DebouncedRefreshPaths.end(), event.path) ==
+					m_DebouncedRefreshPaths.end())
+				m_DebouncedRefreshPaths.push_back(event.path);
+		}
+		if (!events.empty())
+			m_LastFileChangeTime = std::chrono::steady_clock::now();
+
+		// Keep the main-thread debounce buffers bounded as well as the listener
+		// queue. Losing an event promotes the cycle to a full scan.
+		while (m_DebouncedChanges.size() + m_DebouncedRefreshPaths.size() >
+			rt2::core::kAssetWatchQueueLimit)
+		{
+			if (!m_DebouncedRefreshPaths.empty())
+				m_DebouncedRefreshPaths.erase(m_DebouncedRefreshPaths.begin());
+			else
+				m_DebouncedChanges.erase(m_DebouncedChanges.begin());
+			m_AssetWatchMissedEvents = true;
+		}
+
+		const size_t pendingCount = m_DebouncedChanges.size() +
+			m_DebouncedRefreshPaths.size();
+		const auto decision = rt2::core::DecideWatchRefreshAction(
+			m_AssetWatchMissedEvents, pendingCount, IsBackgroundBusy());
+		if (decision == rt2::core::AssetWatchRefreshAction::Queue ||
+			decision == rt2::core::AssetWatchRefreshAction::Truncate)
+		{
+			if (pendingCount > 0 || m_AssetWatchMissedEvents)
+			{
+				m_LastStatusMsg = decision ==
+					rt2::core::AssetWatchRefreshAction::Truncate
+					? "Asset changes queued; oldest events were truncated"
+					: "Asset changes queued; waiting for background work to finish";
+			}
+			return;
+		}
+		if (decision == rt2::core::AssetWatchRefreshAction::NoOp)
+			return;
+
+		const auto now = std::chrono::steady_clock::now();
+		const auto elapsed = std::chrono::duration_cast<
+			std::chrono::milliseconds>(now - m_LastFileChangeTime);
+		if (!force && !m_AssetWatchMissedEvents &&
+			elapsed.count() < rt2::core::kAssetWatchDebounceMilliseconds)
+			return;
+
+		auto scriptChanges = std::move(m_DebouncedChanges);
+		m_DebouncedChanges.clear();
+		auto refreshPaths = std::move(m_DebouncedRefreshPaths);
+		m_DebouncedRefreshPaths.clear();
+		const auto scriptAction = rt2::core::DecideScriptFileChange(
+			m_Runtime.GetState(), m_ScriptSystem != nullptr,
+			m_InspectorFieldRegistry != nullptr);
+		for (const auto& path : scriptChanges)
+		{
+			if (scriptAction.reloadScript && m_ScriptSystem)
+				m_ScriptSystem->ReloadScript(path);
+		}
+		if (scriptAction.invalidateFieldRegistry && m_InspectorFieldRegistry)
+			m_InspectorFieldRegistry->Clear();
+
+		if (m_AssetWatchMissedEvents || !refreshPaths.empty())
+		{
+			if (m_AssetWatchMissedEvents)
+			{
+				m_LastStatusMsg =
+					"File system events may have been missed; refreshing the asset database";
+				printf("[FileWatcher] %s (%s)\n", m_LastStatusMsg.c_str(),
+					m_AssetWatchMissedDirectory.c_str());
+			}
+			RefreshProjectAssets();
+		}
+		if (!scriptChanges.empty() && refreshPaths.empty() &&
+			!m_AssetWatchMissedEvents)
+			m_LastStatusMsg = "Scripts reloaded";
+		m_AssetWatchMissedEvents = false;
+		m_AssetWatchMissedDirectory.clear();
+	}
+
+	bool IsNetworkWatchRoot(const std::filesystem::path& assetRoot) const
+	{
+#ifdef _WIN32
+		std::wstring root = assetRoot.root_path().wstring();
+		if (!root.empty() && root.back() != L'\\')
+			root.push_back(L'\\');
+		return !root.empty() && GetDriveTypeW(root.c_str()) == DRIVE_REMOTE;
+#else
+		(void)assetRoot;
+		return false;
+#endif
+	}
+
+	void ConfigureAssetRootWatch(const std::filesystem::path& assetRoot)
+	{
+		if (!m_FileWatchListener || !m_FileWatcher)
+			return;
+		if (m_ActiveWatchId)
+		{
+			m_FileWatcher->removeWatch(*m_ActiveWatchId);
+			m_ActiveWatchId.reset();
+		}
+		{
+			std::lock_guard<std::mutex> lock(m_FileWatchListener->mutex);
+			m_FileWatchListener->pendingEvents.DrainLocked();
+			m_FileWatchListener->pendingEvents.TakeOverflowedLocked();
+			m_FileWatchListener->suppressionRegistry.ClearLocked();
+			m_FileWatchListener->missedEvents = false;
+			m_FileWatchListener->missedDirectory.clear();
+		}
+		m_DebouncedChanges.clear();
+		m_DebouncedRefreshPaths.clear();
+		m_AssetWatchMissedEvents = false;
+		m_AssetWatchMissedDirectory.clear();
+		m_AssetWatchClearSuppressionNextDrain = false;
+		if (assetRoot.empty())
+			return;
+
+		std::error_code ec;
+		const auto absoluteRoot = std::filesystem::absolute(assetRoot, ec).
+			lexically_normal();
+		if (ec)
+		{
+			m_LastStatusMsg = "Asset watcher root failed: " + ec.message();
+			printf("[FileWatcher] %s\n", m_LastStatusMsg.c_str());
+			return;
+		}
+		std::vector<efsw::WatcherOption> options;
+		if (!IsNetworkWatchRoot(absoluteRoot))
+			options.emplace_back(efsw::Options::WinBufferSize,
+				static_cast<int>(rt2::core::AssetWatchBufferSize(
+					rt2::core::AssetWatchDriveKind::Local)));
+		const auto watchId = m_FileWatcher->addWatch(
+			absoluteRoot.u8string(), m_FileWatchListener.get(), true, options);
+		if (watchId < 0)
+		{
+			printf("[FileWatcher] assetRoot addWatch failed for \"%s\" (id=%d)\n",
+				absoluteRoot.u8string().c_str(), static_cast<int>(watchId));
+			m_LastStatusMsg = "Asset watcher failed to start";
+			return;
+		}
+		m_ActiveWatchId = watchId;
+		printf("[FileWatcher] watching assetRoot \"%s\" recursively\n",
+			absoluteRoot.u8string().c_str());
 	}
 
 	bool RefreshProjectAssets()
@@ -3548,12 +3801,14 @@ public:
 				printf("[Project] %s\n", m_LastStatusMsg.c_str());
 				return;
 			}
+			ConfigureAssetRootWatch(staged->project.assetRoot);
 			m_ProjectContext = staged;
 			NewSceneInternal();
 			ApplyActiveInputConfiguration();
 			m_LastStatusMsg = "Project opened (no startup scene)";
 			return;
 		}
+		ConfigureAssetRootWatch(staged->project.assetRoot);
 		OpenRt2SceneInternal(
 			scenePath.u8string(), staged);
 	}
@@ -3708,6 +3963,9 @@ public:
 			if (!success)
 			{
 				printf("[Scene] %s\n", errorStr->c_str());
+				ConfigureAssetRootWatch(m_ProjectContext
+					? m_ProjectContext->project.assetRoot
+					: std::filesystem::path{});
 				ImGui::OpenPopup("Scene Load Failed");
 				m_LastStatusMsg = *errorStr;
 				return;
@@ -3723,72 +3981,11 @@ public:
 			m_EditorUI.ResetForDocument();
 			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 
-			// Phase 6C/W2: watch directories containing referenced
-			// script assets for .lua file changes. The scene's parent
-			// directory covers scene-relative scripts; we also walk
-			// every ScriptComponent to catch absolute paths or shared
-			// script folders outside the scene tree. All watches are
-			// recursive and deduped by directory path.
-			if (m_FileWatcher && m_FileWatchListener)
-			{
-				for (efsw::WatchID wid : m_ActiveWatchIds)
-					m_FileWatcher->removeWatch(wid);
-				m_ActiveWatchIds.clear();
-
-				std::set<std::string> dirs;
-				const auto sceneDir =
-					rt2::core::ScriptWatchDirectoryForCandidate(
-						std::filesystem::path(filepathCopy));
-				if (!sceneDir.empty())
-					dirs.insert(sceneDir.string());
-
-				auto& doc = m_SceneMgr.AuthoringDoc();
-				m_ScriptAssetContext = assetContext;
-				m_ScriptAssetDiagnostics.clear();
-				auto view = doc.ecs.registry.view<ScriptComponent>();
-				for (auto e : view)
-				{
-					const auto& sc = view.get<ScriptComponent>(e);
-					const auto* id =
-						doc.ecs.registry.try_get<EntityIdComponent>(e);
-					const auto* name =
-						doc.ecs.registry.try_get<NameComponent>(e);
-					const size_t diagnosticBase =
-						m_ScriptAssetDiagnostics.size();
-					auto resolved = rt2::core::ResolveScriptAssetPath(
-						sc, m_ScriptAssetContext,
-						id ? id->id : rt2::core::UUID::Nil(),
-						name ? name->name : std::string{},
-						m_ScriptAssetDiagnostics);
-					std::filesystem::path watchPath =
-						resolved.resolvedPath;
-					if (watchPath.empty() &&
-						m_ScriptAssetDiagnostics.size() > diagnosticBase)
-					{
-						watchPath = m_ScriptAssetDiagnostics.back().
-							resolvedPath;
-					}
-					const auto parent =
-						rt2::core::ScriptWatchDirectoryForCandidate(
-							watchPath);
-					if (!parent.empty())
-						dirs.insert(parent.string());
-				}
-				LogScriptAssetDiagnostics(0, "FileWatcher");
-
-				for (const auto& dir : dirs)
-				{
-					efsw::WatchID wid =
-						m_FileWatcher->addWatch(dir,
-							m_FileWatchListener.get(), true);
-					if (wid < 0)
-						printf("[FileWatcher] addWatch failed for "
-							"\"%s\" (id=%d)\n", dir.c_str(),
-							static_cast<int>(wid));
-					else
-						m_ActiveWatchIds.push_back(wid);
-				}
-			}
+			// W7 watches the project asset root, not directories inferred from
+			// the currently open scene. Standalone scenes have no active watch.
+			ConfigureAssetRootWatch(projectSnapshot
+				? projectSnapshot->project.assetRoot
+				: std::filesystem::path{});
 
 			m_History.Clear();
 			CompactMeshRegistryNowAsserted();
