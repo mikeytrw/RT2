@@ -161,24 +161,55 @@ TEST_CASE("Phase7 W7 shared mutex makes suppression and enqueue atomic")
     std::lock_guard<std::mutex> lock(mutex);
     registry.RegisterLocked(path);
     CHECK(registry.IsSuppressedLocked(path));
-    CHECK(queue.EnqueueLocked(path, AssetFileAction::Modified));
-    // The host checks suppression before enqueue; this queue call models the
-    // subsequent publication while the same mutex is still held.
+    CHECK_FALSE(PublishAssetWatchEventLocked(
+        registry, queue, path, AssetFileAction::Modified));
+    CHECK(queue.SizeLocked() == 0);
+    registry.ClearLocked();
+    CHECK(PublishAssetWatchEventLocked(
+        registry, queue, path, AssetFileAction::Modified));
     CHECK(queue.SizeLocked() == 1);
 }
 
-TEST_CASE("Phase7 W7 host checks suppression before publishing watcher events")
+TEST_CASE("Phase7 W7 W6 operations register paths before filesystem callbacks")
 {
-    const auto source = WalnutAppSource();
-    const auto listener = SourceSlice(
-        source, "class AssetWatchListener", "// Declaration order matters");
-    CHECK(listener.find("IsSuppressedLocked") != std::string::npos);
-    CHECK(listener.find("EnqueueLocked") != std::string::npos);
-    CHECK(listener.find("handleMissedFileActions") != std::string::npos);
-    CHECK(listener.find("ResolveOrAssign") == std::string::npos);
+    const auto source = kRoot / "model.glb";
+    const auto destination = kRoot / "moved" / "model.glb";
+    struct OperationCase
+    {
+        AssetWatchOperationKind kind;
+        std::filesystem::path destination;
+        size_t expectedPathCount;
+    };
+    const std::vector<OperationCase> operations{
+        {AssetWatchOperationKind::Reimport, {}, 2},
+        {AssetWatchOperationKind::Rename, destination, 4},
+        {AssetWatchOperationKind::Move, destination, 4},
+        {AssetWatchOperationKind::Delete, {}, 2},
+    };
+
+    AssetWatchSuppressionRegistry registry;
+    for (const auto& operation : operations)
+    {
+        const auto expectedPaths = AssetWatchSuppressionPaths(
+            operation.kind, source, operation.destination);
+        REQUIRE(expectedPaths.size() == operation.expectedPathCount);
+        bool invoked = false;
+        bool unsuppressedEventObserved = false;
+        CHECK(RunSuppressedAssetOperation(
+            registry, operation.kind, source, operation.destination, [&]() {
+            invoked = true;
+            for (const auto& path : expectedPaths)
+                unsuppressedEventObserved =
+                    unsuppressedEventObserved || !registry.IsSuppressed(path);
+            return true;
+        }));
+        CHECK(invoked);
+        CHECK_FALSE(unsuppressedEventObserved);
+        registry.Clear();
+    }
 }
 
-TEST_CASE("Phase7 W7 host drains duplicate asset paths through one refresh")
+TEST_CASE("Phase7 W7 static check: host drains duplicate asset paths through one refresh")
 {
     const auto source = WalnutAppSource();
     const auto drain = SourceSlice(
@@ -189,7 +220,7 @@ TEST_CASE("Phase7 W7 host drains duplicate asset paths through one refresh")
     CHECK(drain.find("kAssetWatchQueueLimit") != std::string::npos);
 }
 
-TEST_CASE("Phase7 W7 host queues watcher events during background work")
+TEST_CASE("Phase7 W7 static check: host queues watcher events during background work")
 {
     const auto source = WalnutAppSource();
     const auto drain = SourceSlice(
@@ -200,7 +231,7 @@ TEST_CASE("Phase7 W7 host queues watcher events during background work")
     CHECK(source.find("DrainAssetWatchChanges(true);") != std::string::npos);
 }
 
-TEST_CASE("Phase7 W7 missed watcher events force an immediate host refresh")
+TEST_CASE("Phase7 W7 static check: missed watcher events force an immediate host refresh")
 {
     const auto source = WalnutAppSource();
     const auto listener = SourceSlice(
@@ -214,7 +245,7 @@ TEST_CASE("Phase7 W7 missed watcher events force an immediate host refresh")
     CHECK(drain.find("m_AssetWatchMissedEvents") != std::string::npos);
 }
 
-TEST_CASE("Phase7 W7 watcher scope is project assetRoot only")
+TEST_CASE("Phase7 W7 static check: watcher scope is project assetRoot only")
 {
     const auto source = WalnutAppSource();
     CHECK(source.find("ConfigureAssetRootWatch(staged->project.assetRoot)") !=
@@ -222,15 +253,6 @@ TEST_CASE("Phase7 W7 watcher scope is project assetRoot only")
     CHECK(source.find("std::optional<efsw::WatchID>") != std::string::npos);
     CHECK(source.find("m_ActiveWatchId") != std::string::npos);
     CHECK(source.find("ScriptWatchDirectoryForCandidate") == std::string::npos);
-}
-
-TEST_CASE("Phase7 W7 watcher never performs identity assignment")
-{
-    const auto source = WalnutAppSource();
-    const auto drain = SourceSlice(
-        source, "void DrainAssetWatchChanges", "bool IsNetworkWatchRoot");
-    CHECK(drain.find("ResolveOrAssign") == std::string::npos);
-    CHECK(drain.find("RefreshProjectAssets") != std::string::npos);
 }
 
 TEST_CASE("Phase7 W7 scene files stay outside automatic reload policy")
@@ -243,26 +265,16 @@ TEST_CASE("Phase7 W7 scene files stay outside automatic reload policy")
     CHECK(source.find("OpenRt2SceneInternal") != std::string::npos);
 }
 
-TEST_CASE("Phase7 W7 W6 operations register source sidecar and destinations")
+TEST_CASE("Phase7 W7 static check: watcher never performs identity assignment")
 {
-    AssetWatchSuppressionRegistry registry;
-    const auto source = kRoot / "model.glb";
-    const auto sidecar = source.string() + ".rt2meta";
-    const auto destination = kRoot / "moved" / "model.glb";
-    registry.RegisterMany({source, sidecar, destination,
-                           destination.string() + ".rt2meta"});
-    CHECK(registry.IsSuppressed(source));
-    CHECK(registry.IsSuppressed(sidecar));
-    CHECK(registry.IsSuppressed(destination));
-    CHECK(registry.IsSuppressed(destination.string() + ".rt2meta"));
-
-    const auto app = WalnutAppSource();
-    CHECK(app.find("RegisterAssetWatchPaths") != std::string::npos);
-    CHECK(app.find("ScheduleAssetWatchSuppressionClear") !=
-          std::string::npos);
+    const auto source = WalnutAppSource();
+    const auto drain = SourceSlice(
+        source, "void DrainAssetWatchChanges", "bool IsNetworkWatchRoot");
+    CHECK(drain.find("ResolveOrAssign") == std::string::npos);
+    CHECK(drain.find("RefreshProjectAssets") != std::string::npos);
 }
 
-TEST_CASE("Phase7 W7 local and network watcher buffers are distinct")
+TEST_CASE("Phase7 W7 static check: local and network watcher buffers are distinct")
 {
     CHECK(AssetWatchBufferSize(AssetWatchDriveKind::Local) == 256u * 1024u);
     CHECK(AssetWatchBufferSize(AssetWatchDriveKind::Network) == 63u * 1024u);
@@ -271,7 +283,7 @@ TEST_CASE("Phase7 W7 local and network watcher buffers are distinct")
     CHECK(source.find("Options::WinBufferSize") != std::string::npos);
 }
 
-TEST_CASE("Phase7 W7 atomic save events retain the debounce window")
+TEST_CASE("Phase7 W7 static check: atomic save events retain the debounce window")
 {
     AssetWatchEventQueue queue;
     REQUIRE(queue.Enqueue(kRoot / "script.lua", AssetFileAction::Modified));
@@ -283,7 +295,7 @@ TEST_CASE("Phase7 W7 atomic save events retain the debounce window")
     CHECK(source.find("kAssetWatchDebounceMilliseconds") != std::string::npos);
 }
 
-TEST_CASE("Phase7 W7 explicit Refresh remains available as a backstop")
+TEST_CASE("Phase7 W7 static check: explicit Refresh remains available as a backstop")
 {
     const auto source = WalnutAppSource();
     CHECK(source.find("Refresh Assets") != std::string::npos);

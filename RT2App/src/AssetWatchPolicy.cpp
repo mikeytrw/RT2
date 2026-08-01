@@ -1,5 +1,7 @@
 #include "AssetWatchPolicy.h"
 
+#include "AssetIdentity.h"
+
 #include <algorithm>
 #include <cctype>
 #include <system_error>
@@ -218,6 +220,56 @@ bool AssetWatchEventQueue::TakeOverflowedLocked()
 size_t AssetWatchEventQueue::SizeLocked() const
 {
     return m_Events.size();
+}
+
+bool PublishAssetWatchEventLocked(
+    AssetWatchSuppressionRegistry& suppressionRegistry,
+    AssetWatchEventQueue& pendingEvents,
+    const std::filesystem::path& path,
+    AssetFileAction action)
+{
+    if (suppressionRegistry.IsSuppressedLocked(path))
+        return false;
+    return pendingEvents.EnqueueLocked(path, action);
+}
+
+std::vector<std::filesystem::path> AssetWatchSuppressionPaths(
+    AssetWatchOperationKind operation,
+    const std::filesystem::path& sourcePath,
+    const std::filesystem::path& destinationPath)
+{
+    if (sourcePath.empty())
+        return {};
+
+    std::vector<std::filesystem::path> paths{
+        sourcePath, AssetSidecarPath(sourcePath)};
+    switch (operation)
+    {
+    case AssetWatchOperationKind::Rename:
+    case AssetWatchOperationKind::Move:
+        if (!destinationPath.empty())
+        {
+            paths.push_back(destinationPath);
+            paths.push_back(AssetSidecarPath(destinationPath));
+        }
+        break;
+    case AssetWatchOperationKind::Reimport:
+    case AssetWatchOperationKind::Delete:
+        break;
+    }
+    return paths;
+}
+
+bool RunSuppressedAssetOperation(
+    AssetWatchSuppressionRegistry& suppressionRegistry,
+    AssetWatchOperationKind operationKind,
+    const std::filesystem::path& sourcePath,
+    const std::filesystem::path& destinationPath,
+    const AssetWatchSuppressedOperation& callback)
+{
+    suppressionRegistry.RegisterMany(AssetWatchSuppressionPaths(
+        operationKind, sourcePath, destinationPath));
+    return callback ? callback() : false;
 }
 
 AssetWatchRefreshAction DecideWatchRefreshAction(

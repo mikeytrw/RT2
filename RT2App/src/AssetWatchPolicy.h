@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -115,6 +116,40 @@ private:
     std::vector<AssetWatchEvent> m_Events;
     bool m_Overflowed = false;
 };
+
+// The watcher thread must make the suppression check and queue publication
+// one operation under the host's shared mutex. No filesystem or scan work is
+// performed by this seam.
+bool PublishAssetWatchEventLocked(
+    AssetWatchSuppressionRegistry& suppressionRegistry,
+    AssetWatchEventQueue& pendingEvents,
+    const std::filesystem::path& path,
+    AssetFileAction action);
+
+enum class AssetWatchOperationKind
+{
+    Reimport,
+    Rename,
+    Move,
+    Delete,
+};
+
+std::vector<std::filesystem::path> AssetWatchSuppressionPaths(
+    AssetWatchOperationKind operation,
+    const std::filesystem::path& sourcePath,
+    const std::filesystem::path& destinationPath = {});
+
+using AssetWatchSuppressedOperation = std::function<bool()>;
+
+// Register the paths before invoking the operation, then leave the entries
+// installed for the host's W7-A2 delayed clear. The callback is deliberately
+// injected so CPU-only tests can observe the registry during the operation.
+bool RunSuppressedAssetOperation(
+    AssetWatchSuppressionRegistry& suppressionRegistry,
+    AssetWatchOperationKind operationKind,
+    const std::filesystem::path& sourcePath,
+    const std::filesystem::path& destinationPath,
+    const AssetWatchSuppressedOperation& callback);
 
 enum class AssetWatchRefreshAction
 {

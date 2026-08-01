@@ -64,6 +64,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -77,6 +78,26 @@
 #endif
 
 using namespace Walnut;
+
+namespace {
+
+std::filesystem::path ExecutableDirectory()
+{
+#ifdef _WIN32
+	std::wstring buffer(32768, L'\0');
+	const DWORD length = GetModuleFileNameW(nullptr, buffer.data(),
+		static_cast<DWORD>(buffer.size()));
+	if (length > 0 && length < buffer.size())
+	{
+		buffer.resize(length);
+		return std::filesystem::path(buffer).parent_path();
+	}
+#endif
+	printf("[ImGui] Could not determine the executable directory; portable imgui.ini fallback is unavailable\n");
+	return {};
+}
+
+} // namespace
 
 static CLIArgs g_CLI;
 
@@ -360,6 +381,48 @@ public:
 
 	virtual void OnUIRender() override
 	{
+		// ImGui's default is a cwd-relative path. Keep writes in the user's
+		// application-data directory, while accepting an executable-local file
+		// as a read-only seed for portable installs.
+		if (!m_ImGuiIniConfigured)
+		{
+			const auto userIniPath = AppDataRoot() / "imgui.ini";
+			m_ImGuiIniPath = userIniPath.string();
+			std::error_code directoryError;
+			std::filesystem::create_directories(userIniPath.parent_path(),
+				directoryError);
+			if (directoryError)
+				printf("[ImGui] Failed to create config directory \"%s\": %s\n",
+					userIniPath.parent_path().u8string().c_str(),
+					directoryError.message().c_str());
+
+			std::filesystem::path loadIniPath = userIniPath;
+			std::error_code userIniError;
+			const bool hasUserIni = std::filesystem::is_regular_file(
+				userIniPath, userIniError) && !userIniError;
+			if (!hasUserIni)
+			{
+				const auto executableDirectory = ExecutableDirectory();
+				if (!executableDirectory.empty())
+				{
+					const auto portableIniPath = executableDirectory / "imgui.ini";
+					std::error_code portableIniError;
+					if (std::filesystem::is_regular_file(
+							portableIniPath, portableIniError) && !portableIniError)
+					{
+						loadIniPath = portableIniPath;
+						printf("[ImGui] Seeding user layout from portable config \"%s\"\n",
+							portableIniPath.u8string().c_str());
+					}
+				}
+			}
+
+			ImGui::GetIO().IniFilename = m_ImGuiIniPath.c_str();
+			const auto loadIniString = loadIniPath.string();
+			ImGui::LoadIniSettingsFromDisk(loadIniString.c_str());
+			m_ImGuiIniConfigured = true;
+		}
+
 		// Phase 5: ResolveUI applies ImGui suppression and viewport
 		// sub-context push/pop. The viewport hover / gizmo-consumes-mouse
 		// state from the PREVIOUS frame is used here (we don't know
@@ -1222,39 +1285,41 @@ public:
 				{
 					rt2::core::ContentBrowserOperationReport report;
 					rt2::core::Error error;
-					RegisterAssetWatchPaths(
-						m_ProjectContext->project.assetRoot, record);
-					const bool ok = rt2::core::ReimportContentBrowserAsset(
+					const bool ok = RunAssetWatchSuppressedOperation(
 						m_ProjectContext->project.assetRoot, record,
-						[this](const rt2::core::AssetRecord& sourceRecord,
-						       const std::filesystem::path& source,
-						       std::vector<rt2::core::AssetDiagnostic>& diagnostics,
-						       rt2::core::Error& importError) {
-							const std::string path = source.u8string();
-							SceneManager::EntityId imported;
-							std::string extension = source.extension().u8string();
-							std::transform(extension.begin(), extension.end(), extension.begin(),
-								[](unsigned char c) {
-									return static_cast<char>(std::tolower(c));
-								});
-							if (extension == ".obj")
-								imported = m_SceneMgr.ImportObj(
-									path, sourceRecord.importSettings, &diagnostics);
-							else
-								imported = m_SceneMgr.ImportGltf(path, &diagnostics);
-							if (!imported.IsValid())
-							{
-								importError.code = rt2::core::Error::InvalidArgument;
-								importError.path = path;
-								importError.detail = "existing scene import path rejected the asset";
-								return false;
-							}
-							m_SceneMgr.MarkDirty();
-							m_PendingFullSync = true;
-							m_GpuSyncPending = true;
-							m_EditorUI.OnImportComplete(imported);
-							return true;
-						}, report, error);
+						rt2::core::AssetWatchOperationKind::Reimport, {}, [&]() {
+							return rt2::core::ReimportContentBrowserAsset(
+								m_ProjectContext->project.assetRoot, record,
+								[this](const rt2::core::AssetRecord& sourceRecord,
+								       const std::filesystem::path& source,
+								       std::vector<rt2::core::AssetDiagnostic>& diagnostics,
+								       rt2::core::Error& importError) {
+									const std::string path = source.u8string();
+									SceneManager::EntityId imported;
+									std::string extension = source.extension().u8string();
+									std::transform(extension.begin(), extension.end(), extension.begin(),
+										[](unsigned char c) {
+											return static_cast<char>(std::tolower(c));
+										});
+									if (extension == ".obj")
+										imported = m_SceneMgr.ImportObj(
+											path, sourceRecord.importSettings, &diagnostics);
+									else
+										imported = m_SceneMgr.ImportGltf(path, &diagnostics);
+									if (!imported.IsValid())
+									{
+										importError.code = rt2::core::Error::InvalidArgument;
+										importError.path = path;
+										importError.detail = "existing scene import path rejected the asset";
+										return false;
+									}
+									m_SceneMgr.MarkDirty();
+									m_PendingFullSync = true;
+									m_GpuSyncPending = true;
+									m_EditorUI.OnImportComplete(imported);
+									return true;
+								}, report, error);
+						});
 					const bool refreshed = ok && RefreshProjectAssets();
 					ScheduleAssetWatchSuppressionClear();
 					if (refreshed)
@@ -1290,14 +1355,15 @@ public:
 						m_ContentBrowserPendingRecord->sourcePath);
 				const auto destination = source.parent_path() /
 					std::filesystem::u8path(m_ContentBrowserRenameBuffer);
-				RegisterAssetWatchPaths(
+				const bool ok = RunAssetWatchSuppressedOperation(
 					m_ProjectContext->project.assetRoot,
 					*m_ContentBrowserPendingRecord,
-					{destination, rt2::core::AssetSidecarPath(destination)});
-				const bool ok = rt2::core::RenameContentBrowserAsset(
-					m_ProjectContext->project.assetRoot,
-					*m_ContentBrowserPendingRecord,
-					m_ContentBrowserRenameBuffer, report, error);
+					rt2::core::AssetWatchOperationKind::Rename, destination, [&]() {
+						return rt2::core::RenameContentBrowserAsset(
+							m_ProjectContext->project.assetRoot,
+							*m_ContentBrowserPendingRecord,
+							m_ContentBrowserRenameBuffer, report, error);
+					});
 				const bool refreshed = ok && RefreshProjectAssets();
 				ScheduleAssetWatchSuppressionClear();
 				if (refreshed)
@@ -1334,15 +1400,16 @@ public:
 				const auto destinationDirectory =
 					std::filesystem::u8path(m_ContentBrowserMoveBuffer);
 				const auto destination = destinationDirectory / source.filename();
-				RegisterAssetWatchPaths(
+				const bool ok = RunAssetWatchSuppressedOperation(
 					m_ProjectContext->project.assetRoot,
 					*m_ContentBrowserPendingRecord,
-					{destination, rt2::core::AssetSidecarPath(destination)});
-				const bool ok = rt2::core::MoveContentBrowserAsset(
-					m_ProjectContext->project.assetRoot,
-					*m_ContentBrowserPendingRecord,
-					std::filesystem::u8path(m_ContentBrowserMoveBuffer),
-					report, error);
+					rt2::core::AssetWatchOperationKind::Move, destination, [&]() {
+						return rt2::core::MoveContentBrowserAsset(
+							m_ProjectContext->project.assetRoot,
+							*m_ContentBrowserPendingRecord,
+							std::filesystem::u8path(m_ContentBrowserMoveBuffer),
+							report, error);
+					});
 				const bool refreshed = ok && RefreshProjectAssets();
 				ScheduleAssetWatchSuppressionClear();
 				if (refreshed)
@@ -1377,12 +1444,14 @@ public:
 			{
 				rt2::core::ContentBrowserOperationReport report;
 				rt2::core::Error error;
-				RegisterAssetWatchPaths(
+				const bool ok = RunAssetWatchSuppressedOperation(
 					m_ProjectContext->project.assetRoot,
-					*m_ContentBrowserPendingRecord);
-				const bool ok = rt2::core::DeleteContentBrowserAsset(
-					m_ProjectContext->project.assetRoot,
-					*m_ContentBrowserPendingRecord, report, error);
+					*m_ContentBrowserPendingRecord,
+					rt2::core::AssetWatchOperationKind::Delete, {}, [&]() {
+						return rt2::core::DeleteContentBrowserAsset(
+							m_ProjectContext->project.assetRoot,
+							*m_ContentBrowserPendingRecord, report, error);
+					});
 				const bool refreshed = ok && RefreshProjectAssets();
 				ScheduleAssetWatchSuppressionClear();
 				if (refreshed)
@@ -2972,6 +3041,8 @@ private:
 	bool m_PendingFullSync = false;
 	Camera m_Cam;
 	bool m_CLIProcessed = false;
+	bool m_ImGuiIniConfigured = false;
+	std::string m_ImGuiIniPath;
 
 	// Runtime lifecycle
 	SceneRenderBridge* m_RenderBridge = nullptr;
@@ -3046,9 +3117,8 @@ private:
 			// Registry lookup and event publication are atomic. No filesystem
 			// or scan work is allowed while this mutex is held.
 			std::lock_guard<std::mutex> lock(mutex);
-			if (suppressionRegistry.IsSuppressedLocked(full))
-				return;
-			pendingEvents.EnqueueLocked(full, assetAction);
+			rt2::core::PublishAssetWatchEventLocked(
+				suppressionRegistry, pendingEvents, full, assetAction);
 		}
 
 		void handleMissedFileActions(efsw::WatchID watchid,
@@ -3188,21 +3258,21 @@ private:
 		}
 	}
 
-	void RegisterAssetWatchPaths(
+	bool RunAssetWatchSuppressedOperation(
 		const std::filesystem::path& assetRoot,
 		const rt2::core::AssetRecord& record,
-		const std::vector<std::filesystem::path>& additional = {})
+		rt2::core::AssetWatchOperationKind operationKind,
+		const std::filesystem::path& destination,
+		const rt2::core::AssetWatchSuppressedOperation& callback)
 	{
-		if (!m_FileWatchListener || assetRoot.empty() ||
-			record.sourcePath.empty())
-			return;
+		if (!m_FileWatchListener)
+			return callback ? callback() : false;
 		const auto source = (assetRoot /
 			std::filesystem::u8path(record.sourcePath)).lexically_normal();
-		std::vector<std::filesystem::path> paths{
-			source, rt2::core::AssetSidecarPath(source)};
-		paths.insert(paths.end(), additional.begin(), additional.end());
-		std::lock_guard<std::mutex> lock(m_FileWatchListener->mutex);
-		m_FileWatchListener->suppressionRegistry.RegisterManyLocked(paths);
+		return rt2::core::RunSuppressedAssetOperation(
+			m_FileWatchListener->suppressionRegistry,
+			operationKind, source, destination,
+			callback);
 	}
 
 	void ScheduleAssetWatchSuppressionClear()
