@@ -19,6 +19,8 @@
 #include "IRuntimeScriptDispatch.h"
 #include "RuntimeLifecycleObserver.h"
 #include "InputTypes.h"
+#include "ProjectContext.h"
+#include "SceneAssetResolver.h"
 
 #include <cstdio>
 #include <cstring>
@@ -88,9 +90,10 @@ void PrintTransformJSON(FILE* out, const glm::vec3& t, const glm::quat& r, const
 void PrintUsage()
 {
     printf("RT2SliceRunner — CPU-only vertical slice verification\n");
-    printf("Usage: RT2SliceRunner --scene <path.rt2scene> [--steps <N>] [--out <report.json>]\n");
+    printf("Usage: RT2SliceRunner [--project <path.rt2proj>] [--scene <path.rt2scene>] [--steps <N>] [--out <report.json>]\n");
     printf("Options:\n");
     printf("  --scene <path>         .rt2scene file to load and run\n");
+    printf("  --project <path>       Project context; --scene then names an asset-root-relative scene\n");
     printf("  --steps <N>            Number of fixed update steps (default 60)\n");
     printf("  --out <path>           Write JSON report to file instead of stdout\n");
     printf("  --recovery-scenario    Run the Phase 1B recovery regression scenario\n");
@@ -526,9 +529,8 @@ static int RunScriptScenario(const std::string& scenarioPath,
     // --- Wire up the script system ---
     NullSceneRenderBridge bridge;
     RuntimeSceneController ctrl;
-    AssetResolutionContext scriptAssetContext;
-    scriptAssetContext.assetRoot = scenePath.parent_path();
-    scriptAssetContext.database = nullptr;
+    AssetResolutionContext scriptAssetContext{
+        scenePath.parent_path(), nullptr};
     std::vector<AssetDiagnostic> scriptAssetDiagnostics;
     ScriptSystem scriptSys(
         uuidProv, scriptAssetContext, scriptAssetDiagnostics);
@@ -769,6 +771,7 @@ static int RunScriptScenario(const std::string& scenarioPath,
 int main(int argc, char** argv)
 {
     std::string scenePath;
+    std::string projectPath;
     int steps = 60;
     std::string outPath;
     bool recoveryScenario = false;
@@ -785,6 +788,10 @@ int main(int argc, char** argv)
         if (std::strcmp(a, "--scene") == 0)
         {
             if (const char* v = next()) scenePath = v;
+        }
+        else if (std::strcmp(a, "--project") == 0)
+        {
+            if (const char* v = next()) projectPath = v;
         }
         else if (std::strcmp(a, "--steps") == 0)
         {
@@ -819,11 +826,68 @@ int main(int argc, char** argv)
     if (!scriptScenarioPath.empty())
         return RunScriptScenario(scriptScenarioPath, outPath);
 
+    ProjectContext projectContext;
+    AssetResolutionContext assetContext;
+    if (!projectPath.empty())
+    {
+        Error projectErr;
+        if (!LoadProjectContext(projectPath, projectContext, projectErr))
+        {
+            fprintf(stderr, "[SliceRunner] Failed to load project: %s\n",
+                    projectErr.Format().c_str());
+            return 1;
+        }
+        if (scenePath.empty())
+        {
+            if (projectContext.project.startupScene.empty())
+            {
+                fprintf(stderr,
+                    "[SliceRunner] Project has no startup scene; pass --scene\n");
+                return 1;
+            }
+            scenePath = projectContext.project.startupScene.u8string();
+        }
+        else
+        {
+            const std::filesystem::path locator =
+                std::filesystem::u8path(scenePath);
+            bool escapes = false;
+            for (const auto& part : locator)
+                escapes = escapes || part == "..";
+            if (locator.is_absolute() || locator.has_root_name() ||
+                locator.has_root_directory() || escapes)
+            {
+                fprintf(stderr,
+                    "[SliceRunner] --scene must be contained and relative when --project is used\n");
+                return 1;
+            }
+            scenePath = (projectContext.project.assetRoot / locator).
+                lexically_normal().u8string();
+        }
+        assetContext = projectContext.Assets();
+    }
+
     if (scenePath.empty())
     {
         fprintf(stderr, "[SliceRunner] --scene is required\n");
         PrintUsage();
         return 1;
+    }
+
+    if (projectPath.empty())
+    {
+        std::error_code pathError;
+        const auto absoluteScene = std::filesystem::absolute(
+            std::filesystem::u8path(scenePath), pathError).lexically_normal();
+        if (pathError)
+        {
+            fprintf(stderr, "[SliceRunner] Cannot resolve scene path: %s\n",
+                    pathError.message().c_str());
+            return 1;
+        }
+        scenePath = absoluteScene.u8string();
+        assetContext = AssetResolutionContext{
+            absoluteScene.parent_path(), nullptr};
     }
 
     // --- Load the scene ---
@@ -836,6 +900,14 @@ int main(int argc, char** argv)
     if (!SceneSerializer::Load(authoring, scenePath, loadReport, err))
     {
         fprintf(stderr, "[SliceRunner] Failed to load scene: %s\n", err.Format().c_str());
+        return 2;
+    }
+    std::vector<AssetDiagnostic> assetDiagnostics;
+    if (!SceneAssetResolver::ResolveAll(
+            authoring, assetContext, assetDiagnostics, err))
+    {
+        fprintf(stderr, "[SliceRunner] Asset resolution failed: %s\n",
+                err.Format().c_str());
         return 2;
     }
     for (const auto& diagnostic : loadReport.fieldDiagnostics)

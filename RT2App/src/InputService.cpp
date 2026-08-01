@@ -177,6 +177,59 @@ void InputService::LoadDefaults()
     m_RuntimeContext.SetMapping(MakeGamepadAction("primary_action", GamepadButton::X,      -1));
 }
 
+bool InputService::ApplyConfiguration(
+    const std::vector<InputContextRecord>& projectDefaults,
+    const std::vector<InputContextRecord>& userOverrides,
+    Error& err)
+{
+    LoadDefaults();
+
+    std::vector<InputContextRecord> builtIns;
+    const auto append = [&](const InputContext& context) {
+        InputContextRecord record;
+        record.contextId = context.Id();
+        for (const auto& [name, mapping] : context.All())
+        {
+            (void)name;
+            record.mappings.push_back(mapping);
+        }
+        builtIns.push_back(std::move(record));
+    };
+    append(m_EditorContext);
+    append(m_ViewportContext);
+    append(m_ViewportLookContext);
+    append(m_RuntimeContext);
+
+    std::vector<InputContextRecord> composed;
+    if (!ComposeInputContexts(builtIns, projectDefaults, userOverrides,
+                              composed, err))
+        return false;
+
+    m_EditorContext.Clear();
+    m_ViewportContext.Clear();
+    m_ViewportLookContext.Clear();
+    m_RuntimeContext.Clear();
+    for (auto& record : composed)
+    {
+        InputContext* context = nullptr;
+        if (record.contextId == "editor") context = &m_EditorContext;
+        else if (record.contextId == "viewport") context = &m_ViewportContext;
+        else if (record.contextId == "viewport.look")
+            context = &m_ViewportLookContext;
+        else if (record.contextId == "runtime") context = &m_RuntimeContext;
+        else
+        {
+            err.code = Error::InvalidArgument;
+            err.path = record.contextId;
+            err.detail = "input context has no runtime owner";
+            return false;
+        }
+        for (auto& mapping : record.mappings)
+            context->SetMapping(std::move(mapping));
+    }
+    return true;
+}
+
 // ============================================================================
 // Frame phasing
 // ============================================================================

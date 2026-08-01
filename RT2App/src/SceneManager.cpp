@@ -109,6 +109,161 @@ void LogAssetDiagnostics(
 		       diagnostic.detail.c_str());
 	}
 }
+
+// All resource indices stored in ECSScene pass through this walk. Import
+// merging uses bases; compaction supplies old-to-new maps. Keeping both
+// operations on the same field list makes a new index-bearing field visible
+// at the one place that must be updated for both operations.
+enum class IndexRebaseMode
+{
+	None,
+	Base,
+	Remap,
+};
+
+template <typename Index>
+class IndexRebaseAxis
+{
+public:
+	void SetBase(Index base)
+	{
+		m_mode = IndexRebaseMode::Base;
+		m_base = base;
+		m_remap = nullptr;
+	}
+
+	void SetRemap(const std::map<Index, Index>& remap)
+	{
+		m_mode = IndexRebaseMode::Remap;
+		m_remap = &remap;
+	}
+
+	bool IsActive() const { return m_mode != IndexRebaseMode::None; }
+
+	Index Apply(Index index, Index unmapped) const
+	{
+		switch (m_mode)
+		{
+			case IndexRebaseMode::None:
+				return index;
+			case IndexRebaseMode::Base:
+				return index + m_base;
+			case IndexRebaseMode::Remap:
+			{
+				const auto it = m_remap->find(index);
+				return it != m_remap->end() ? it->second : unmapped;
+			}
+		}
+		return index;
+	}
+
+private:
+	IndexRebaseMode m_mode = IndexRebaseMode::None;
+	Index m_base = 0;
+	const std::map<Index, Index>* m_remap = nullptr;
+};
+
+struct IndexRebase
+{
+	IndexRebaseAxis<uint32_t> mesh;
+	IndexRebaseAxis<int> material;
+	IndexRebaseAxis<int> texture;
+
+	uint32_t Mesh(uint32_t index) const
+	{
+		return mesh.Apply(index, index);
+	}
+
+	int Material(int index) const
+	{
+		if (index < 0)
+			return index;
+		// Ordinary material references historically remain unchanged when a
+		// compaction map has no entry for them; preserve that behavior.
+		return material.Apply(index, index);
+	}
+
+	int MaterialOverride(int index) const
+	{
+		if (index < 0)
+			return index;
+		// The old compaction pass invalidated a transient override slot when
+		// its material was removed; this deliberate asymmetry must remain.
+		return material.Apply(index, -1);
+	}
+
+	int Texture(int index) const
+	{
+		if (index < 0)
+			return index;
+		// Compaction historically invalidated orphaned texture references.
+		return texture.Apply(index, -1);
+	}
+};
+
+void RebaseIndices(ECSScene& scene, const IndexRebase& rebase)
+{
+	// This is the complete list of scene-resource index fields. Keep all
+	// additions here so merge and compaction cannot silently diverge.
+	auto rebaseMaterialTextures = [&](SceneMaterial& material)
+	{
+		material.baseColorTextureIndex =
+			rebase.Texture(material.baseColorTextureIndex);
+		material.normalTextureIndex =
+			rebase.Texture(material.normalTextureIndex);
+		material.emissiveTextureIndex =
+			rebase.Texture(material.emissiveTextureIndex);
+		material.metallicRoughnessTextureIndex =
+			rebase.Texture(material.metallicRoughnessTextureIndex);
+	};
+
+	if (rebase.material.IsActive())
+	{
+		for (uint32_t meshIndex = 0;
+		     meshIndex < scene.meshRegistry.GetCount();
+		     ++meshIndex)
+		{
+			auto& mesh = scene.meshRegistry.GetMesh(meshIndex);
+			for (auto& materialIndex : mesh.materialIndices)
+			{
+				const int remapped = rebase.Material(static_cast<int>(materialIndex));
+				if (remapped >= 0)
+					materialIndex = static_cast<uint32_t>(remapped);
+			}
+		}
+	}
+
+	if (rebase.texture.IsActive())
+		for (auto& material : scene.materials)
+			rebaseMaterialTextures(material);
+
+	if (rebase.mesh.IsActive() || rebase.material.IsActive())
+	{
+		auto meshRefView = scene.registry.view<MeshRef>();
+		for (const auto entity : meshRefView)
+		{
+			auto& ref = meshRefView.get<MeshRef>(entity);
+			if (rebase.mesh.IsActive())
+				ref.meshIndex = rebase.Mesh(ref.meshIndex);
+			if (rebase.material.IsActive())
+				ref.materialIndex = rebase.Material(ref.materialIndex);
+		}
+	}
+
+	if (rebase.material.IsActive() || rebase.texture.IsActive())
+	{
+		auto overrideView = scene.registry.view<MaterialOverrideComponent>();
+		for (const auto entity : overrideView)
+		{
+			auto& materialOverride = overrideView.get<MaterialOverrideComponent>(entity);
+			if (rebase.texture.IsActive())
+				rebaseMaterialTextures(materialOverride.material);
+			if (rebase.material.IsActive())
+				materialOverride.materialIndex =
+					rebase.MaterialOverride(materialOverride.materialIndex);
+		}
+	}
+}
 }
 
 // Fill an imported entity's source path (if empty) and assign it a stable
@@ -215,12 +370,16 @@ bool SceneManager::LoadScene(
 	auto& diagnosticSink =
 		diagnostics ? *diagnostics : localDiagnostics;
 	const size_t diagnosticBase = diagnosticSink.size();
+	rt2::core::AssetResolutionContext importContext = m_AssetResolutionContext;
+	if (importContext.assetRoot.empty())
+		importContext.assetRoot = std::filesystem::u8path(filepath).parent_path();
 
 	if (isObj)
 	{
 		rt2::core::TextureAssetLoadContext textureContext;
 		if (!rt2::core::BuildExplicitImportTextureContext(
 			    std::filesystem::u8path(filepath), m_UuidProvider,
+			    importContext,
 			    textureContext, diagnosticSink))
 		{
 			if (!diagnostics)
@@ -246,6 +405,7 @@ bool SceneManager::LoadScene(
 		rt2::core::TextureAssetLoadContext textureContext;
 		if (!rt2::core::BuildExplicitImportTextureContext(
 			    std::filesystem::u8path(filepath), m_UuidProvider,
+			    importContext,
 			    textureContext, diagnosticSink))
 		{
 			if (!diagnostics)
@@ -490,9 +650,13 @@ SceneManager::EntityId SceneManager::ImportGltf(
 	auto& diagnosticSink =
 		diagnostics ? *diagnostics : localDiagnostics;
 	const size_t diagnosticBase = diagnosticSink.size();
+	rt2::core::AssetResolutionContext importContext = m_AssetResolutionContext;
+	if (importContext.assetRoot.empty())
+		importContext.assetRoot = std::filesystem::u8path(filepath).parent_path();
 	rt2::core::TextureAssetLoadContext textureContext;
 	if (!rt2::core::BuildExplicitImportTextureContext(
 		    std::filesystem::u8path(filepath), m_UuidProvider,
+		    importContext,
 		    textureContext, diagnosticSink))
 	{
 		if (!diagnostics)
@@ -543,9 +707,13 @@ SceneManager::EntityId SceneManager::ImportObj(
 	auto& diagnosticSink =
 		diagnostics ? *diagnostics : localDiagnostics;
 	const size_t diagnosticBase = diagnosticSink.size();
+	rt2::core::AssetResolutionContext importContext = m_AssetResolutionContext;
+	if (importContext.assetRoot.empty())
+		importContext.assetRoot = std::filesystem::u8path(filepath).parent_path();
 	rt2::core::TextureAssetLoadContext textureContext;
 	if (!rt2::core::BuildExplicitImportTextureContext(
 		    std::filesystem::u8path(filepath), m_UuidProvider,
+		    importContext,
 		    textureContext, diagnosticSink))
 	{
 		if (!diagnostics)
@@ -601,31 +769,19 @@ SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
 	const uint32_t meshBase = dst.meshRegistry.GetCount();
 	const int matBase = (int)dst.materials.size();
 	const int texBase = (int)dst.textures.size();
+	IndexRebase rebase;
+	rebase.mesh.SetBase(meshBase);
+	rebase.material.SetBase(matBase);
+	rebase.texture.SetBase(texBase);
+	RebaseIndices(src, rebase);
 
-	// Append meshes. OBJ meshes use per-triangle materialIndices that must
-	// be offset by matBase so they reference the correct material slots.
+	// Append meshes after the complete source scene has been rebased.
 	for (uint32_t i = 0; i < src.meshRegistry.GetCount(); ++i)
-	{
-		MeshData mesh = src.meshRegistry.GetMesh(i); // copy
-		if (!mesh.materialIndices.empty())
-		{
-			for (auto& mi : mesh.materialIndices)
-				mi += static_cast<uint32_t>(matBase);
-		}
-		dst.meshRegistry.AddMesh(std::move(mesh));
-	}
+		dst.meshRegistry.AddMesh(src.meshRegistry.GetMesh(i));
 
-	// Append materials, remapping texture indices.
+	// Append materials after their texture indices have been rebased.
 	for (const auto& sm : src.materials)
-	{
-		SceneMaterial m = sm;
-		auto remapTex = [&](int& idx) { if (idx >= 0) idx += texBase; };
-		remapTex(m.baseColorTextureIndex);
-		remapTex(m.normalTextureIndex);
-		remapTex(m.emissiveTextureIndex);
-		remapTex(m.metallicRoughnessTextureIndex);
-		dst.materials.push_back(m);
-	}
+		dst.materials.push_back(sm);
 
 	// Append textures.
 	for (auto& st : src.textures)
@@ -651,7 +807,8 @@ SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
 		}
 	}
 
-	// Copy MeshRef (remap meshIndex by meshBase).
+	// Copy MeshRef after the complete source index walk. -1 remains the
+	// "use per-triangle indices" sentinel.
 	{
 		auto view = srcReg.view<MeshRef>();
 		for (auto e : view)
@@ -659,10 +816,7 @@ SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
 			auto it = entityMap.find(e);
 			if (it == entityMap.end()) continue;
 			const auto& srcRef = view.get<MeshRef>(e);
-			MeshRef dstRef;
-			dstRef.meshIndex = srcRef.meshIndex + meshBase;
-			dstRef.materialIndex = srcRef.materialIndex;
-			dstReg.emplace<MeshRef>(it->second, dstRef);
+			dstReg.emplace<MeshRef>(it->second, srcRef);
 		}
 	}
 
@@ -685,6 +839,21 @@ SceneManager::EntityId SceneManager::MergeImportedECS(ECSScene&& src,
 			auto it = entityMap.find(e);
 			if (it == entityMap.end()) continue;
 			dstReg.emplace<VisibleComponent>(it->second, view.get<VisibleComponent>(e));
+		}
+	}
+
+	// Material overrides are authored data rather than loader output today,
+	// but they are valid ECSScene components and carry the same resource
+	// indices. Copy the already-rebased value so this path cannot lose it if a
+	// temporary import scene contains an override.
+	{
+		auto view = srcReg.view<MaterialOverrideComponent>();
+		for (auto e : view)
+		{
+			auto it = entityMap.find(e);
+			if (it == entityMap.end()) continue;
+			dstReg.emplace<MaterialOverrideComponent>(
+				it->second, view.get<MaterialOverrideComponent>(e));
 		}
 	}
 
@@ -3693,11 +3862,11 @@ EditorMutationResult SceneManager::SetScriptState(const rt2::core::UUID& entity,
 			else if (canonical.asset.assetId.IsNull())
 				canonical.asset.assetId = current->asset.assetId;
 
-			rt2::core::AssetResolutionContext context;
-			if (!m_Authoring.metadata.sourcePath.empty())
-				context.assetRoot =
-					m_Authoring.metadata.sourcePath.parent_path().
-						lexically_normal();
+			rt2::core::AssetResolutionContext context = m_AssetResolutionContext;
+			if (context.assetRoot.empty() &&
+				!m_Authoring.metadata.sourcePath.empty())
+				context.assetRoot = m_Authoring.metadata.sourcePath.
+					parent_path().lexically_normal();
 			std::vector<rt2::core::AssetDiagnostic> diagnostics;
 			const auto resolved = rt2::core::ResolveScriptAssetPath(
 				canonical, context, entity,
@@ -3901,15 +4070,9 @@ bool SceneManager::CompactMeshRegistry()
 		for (auto& mesh : newMeshes)
 			meshReg.AddMesh(std::move(mesh));
 
-		// Remap all MeshRef components
-		for (auto entity : view)
-		{
-			if (!reg.valid(entity)) continue;
-			auto& ref = view.get<MeshRef>(entity);
-			auto it = remap.find(ref.meshIndex);
-			if (it != remap.end())
-				ref.meshIndex = it->second;
-		}
+		IndexRebase rebase;
+		rebase.mesh.SetRemap(remap);
+		RebaseIndices(m_EcsScene, rebase);
 
 		printf("[Scene] Compacted mesh registry: %d -> %d meshes\n",
 		       (int)meshReg.GetCount(), (int)referenced.size());
@@ -3961,37 +4124,9 @@ bool SceneManager::CompactMeshRegistry()
 		}
 		m_EcsScene.materials = std::move(newMaterials);
 
-		// Remap MeshRef.materialIndex
-		for (auto entity : view)
-		{
-			if (!reg.valid(entity)) continue;
-			auto& ref = view.get<MeshRef>(entity);
-			auto it = matRemap.find(ref.materialIndex);
-			if (it != matRemap.end())
-				ref.materialIndex = it->second;
-		}
-
-		// Remap per-triangle materialIndices in meshes
-		for (uint32_t m = 0; m < meshReg.GetCount(); m++)
-		{
-			auto& mesh = meshReg.GetMesh(m);
-			for (auto& idx : mesh.materialIndices)
-			{
-				auto it = matRemap.find(idx);
-				if (it != matRemap.end())
-					idx = it->second;
-			}
-		}
-
-		// The durable override value survives compaction, but its transient
-		// material slot must follow the same remap as MeshRef.
-		auto overrideView = reg.view<MaterialOverrideComponent>();
-		for (const auto entity : overrideView)
-		{
-			auto& materialOverride = overrideView.get<MaterialOverrideComponent>(entity);
-			const auto it = matRemap.find(materialOverride.materialIndex);
-			materialOverride.materialIndex = it != matRemap.end() ? it->second : -1;
-		}
+		IndexRebase rebase;
+		rebase.material.SetRemap(matRemap);
+		RebaseIndices(m_EcsScene, rebase);
 
 		printf("[Scene] Compacted materials: %zu -> %zu\n",
 		       m_EcsScene.materials.size() + matRemap.size(), matRemap.size());
@@ -4031,33 +4166,9 @@ bool SceneManager::CompactMeshRegistry()
 		}
 		m_EcsScene.textures = std::move(newTextures);
 
-		// Remap texture indices in materials
-		auto remapTex = [&texRemap](int& idx) {
-			if (idx >= 0)
-			{
-				auto it = texRemap.find(idx);
-				if (it != texRemap.end())
-					idx = it->second;
-				else
-					idx = -1; // orphaned texture reference
-			}
-		};
-		for (auto& mat : m_EcsScene.materials)
-		{
-			remapTex(mat.baseColorTextureIndex);
-			remapTex(mat.normalTextureIndex);
-			remapTex(mat.emissiveTextureIndex);
-			remapTex(mat.metallicRoughnessTextureIndex);
-		}
-		auto overrideView = reg.view<MaterialOverrideComponent>();
-		for (const auto entity : overrideView)
-		{
-			auto& mat = overrideView.get<MaterialOverrideComponent>(entity).material;
-			remapTex(mat.baseColorTextureIndex);
-			remapTex(mat.normalTextureIndex);
-			remapTex(mat.emissiveTextureIndex);
-			remapTex(mat.metallicRoughnessTextureIndex);
-		}
+		IndexRebase rebase;
+		rebase.texture.SetRemap(texRemap);
+		RebaseIndices(m_EcsScene, rebase);
 
 		printf("[Scene] Compacted textures: %zu -> %zu\n",
 		       texRemap.size() + (m_EcsScene.textures.size() - texRemap.size()),

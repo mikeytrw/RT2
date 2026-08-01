@@ -70,19 +70,20 @@ struct ImportSettings
     bool operator!=(const ImportSettings& o) const { return !(*this == o); }
 };
 
-// A durable reference to an external source asset. The path is a portable,
-// scene-relative UTF-8 path (forward slashes, normalized). It is resolved
-// relative to the .rt2scene file at load time. Native save retains a
-// normalized absolute path only when it cannot be relativized (for example,
-// across Windows volumes) and reports that exceptional persistence as a
-// NonPortable advisory.
+// A durable reference to an external source asset. In v4 project scenes the
+// path is relative to the active asset root; standalone scenes use the scene
+// parent where possible. Legacy v3 paths remain readable and are resolved
+// relative to the scene that contains them. Native save retains a normalized
+// absolute path only when it cannot be relativized (for example, across
+// Windows volumes) and reports that exceptional persistence as a NonPortable
+// advisory.
 //
 // assetId is the stable identity of the source asset (Phase 7 W1, per D1/D2).
 // It is the durable form of identity; path is a human-readable fallback for
-// diagnostics and hand-editing. On a v3 scene the field is absent on read and
-// left nil (additive migration, per D5); the first v4 save assigns it from
-// the asset's sidecar (.rt2meta) or mints a fresh v4 and writes the sidecar
-// (per D8). A nil assetId means "not yet assigned".
+// diagnostics and hand-editing. A v3 scene may omit the field or carry an
+// older additive value; absent or malformed identity is repaired only by the
+// explicit W5 migration. A v4 scene requires a valid ID whenever the field
+// is present. A nil assetId means "not yet assigned".
 //
 // W3 step 2 introduces the generic read-only locator (AssetResolver) that
 // resolves an AssetReference against an explicit root and an AssetDatabase.

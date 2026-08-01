@@ -9,6 +9,7 @@
 struct CLIArgs
 {
 	std::string scenePath;
+	std::string projectPath;
 	std::string envMapPath;
 	std::string outputPath;       // screenshot PNG path
 	std::string outputHDRPath;    // linear HDR output (.exr or .pfm)
@@ -50,6 +51,7 @@ struct CLIArgs
 	uint32_t sceneSeed = 0;            // deterministic sampling seed
 
 	bool hasScene() const { return !scenePath.empty(); }
+	bool hasProject() const { return !projectPath.empty(); }
 	bool hasEnvMap() const { return !envMapPath.empty(); }
 	bool hasOutput() const { return !outputPath.empty() || !outputHDRPath.empty(); }
 
@@ -67,6 +69,10 @@ struct CLIArgs
 			if (strcmp(a, "--scene") == 0 || strcmp(a, "-s") == 0)
 			{
 				if (const char* v = next()) args.scenePath = v;
+			}
+			else if (strcmp(a, "--project") == 0 || strcmp(a, "-p") == 0)
+			{
+				if (const char* v = next()) args.projectPath = v;
 			}
 			else if (strcmp(a, "--env") == 0 || strcmp(a, "-e") == 0)
 			{
@@ -227,6 +233,7 @@ struct CLIArgs
 				printf("Usage: RT2App [options]\n");
 				printf("Options:\n");
 				printf("  --scene <path>       Load scene (.glb/.gltf/.obj) on startup\n");
+				printf("  --project <path>     Load a portable .rt2proj project\n");
 				printf("  --env <path>         Load HDR env map (.hdr/.exr) on startup\n");
 			printf("  --output <path>      Save tonemapped PNG after rendering\n");
 			printf("  --output-hdr <path>  Save linear HDR output (.exr or .pfm)\n");
@@ -282,6 +289,7 @@ struct CLIArgs
 	void Print() const
 	{
 		printf("[CLI] scene     = %s\n", scenePath.empty() ? "(none)" : scenePath.c_str());
+		printf("[CLI] project   = %s\n", projectPath.empty() ? "(none)" : projectPath.c_str());
 		printf("[CLI] env       = %s\n", envMapPath.empty() ? "(none)" : envMapPath.c_str());
 		printf("[CLI] output    = %s\n", outputPath.empty() ? "(none)" : outputPath.c_str());
 		printf("[CLI] outputHDR = %s\n", outputHDRPath.empty() ? "(none)" : outputHDRPath.c_str());

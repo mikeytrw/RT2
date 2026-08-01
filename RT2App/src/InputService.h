@@ -4,6 +4,7 @@
 #define RT2_CORE_INPUT_SERVICE_H
 
 #include "InputTypes.h"
+#include "InputConfig.h"
 #include "InputStateMachine.h"
 #include "DesktopInputBackend.h"
 
@@ -75,6 +76,13 @@ public:
     // gamepad mappings). Called when EditorSettingsStore has no
     // inputContexts field.
     void LoadDefaults();
+
+    // Reset to built-ins, then apply project defaults and per-user overrides
+    // through the deterministic CPU-only composer.
+    bool ApplyConfiguration(
+        const std::vector<InputContextRecord>& projectDefaults,
+        const std::vector<InputContextRecord>& userOverrides,
+        Error& err);
 
     // ---- IInputService ----
 

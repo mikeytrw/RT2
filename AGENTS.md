@@ -22,6 +22,13 @@ Rules:
 - For current state, prefer: **Test baseline** (in the plan, authoritative
   and supersedes every earlier figure) · `docs/scripting.md`,
   `docs/scene-management.md`, `docs/game-loop.md` for what the engine does.
+- **`docs/glossary.md` before naming anything or touching a resource index.**
+  It records only terms that have already caused a defect, plus the four
+  context boundaries (Asset / Authoring / Scene / GPU) that resource indices
+  are translated across — four defects in July 2026 were all missed
+  translations at one of them. It is corrected in place, not append-only.
+- **`Phase N` refers to a roadmap phase and nothing else.** Off-roadmap work
+  gets a name, never a number.
 - When you find a stale claim in a completed section, **add a dated
   supersession note; do not rewrite it.** Those sections are the audit trail
   for why decisions were made. Correct headers and forward-looking specs

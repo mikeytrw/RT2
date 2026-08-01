@@ -90,6 +90,57 @@ void SceneResources::SetScene(const GpuDevice& dev, GPUSceneData& sceneData)
 	RT_LOG("[SetScene] enter: textures=%d, envMapIndex=%d, meshes=%d, materials=%d",
 	       (int)sceneData.textures.size(), sceneData.envMapIndex,
 	       (int)sceneData.meshes.size(), (int)sceneData.materials.size());
+	// Material -> texture mapping. Counts alone cannot distinguish "the second
+	// import's textures loaded but its materials point at the first import's
+	// slots" from a genuine texture-array problem, and that distinction is
+	// the whole question when a model renders with another model's textures.
+	// Capped so a heavy scene does not flood the log.
+	{
+		const int kMaxLoggedMaterials = 24;
+		const int matCount = (int)sceneData.materials.size();
+		for (int i = 0; i < matCount && i < kMaxLoggedMaterials; ++i)
+		{
+			const auto& t = sceneData.materials[i].textureIndices;
+			RT_LOG("[SetScene]   mat[%d]: baseColor=%d normal=%d emissive=%d",
+			       i, t.x, t.y, t.z);
+		}
+		if (matCount > kMaxLoggedMaterials)
+			RT_LOG("[SetScene]   ... %d more materials", matCount - kMaxLoggedMaterials);
+
+		// Per-mesh range of per-triangle material indices. A merged OBJ
+		// addresses materials only through these, so a mesh whose range sits
+		// entirely inside an earlier import's materials is the smoking gun.
+		const int kMaxLoggedMeshes = 24;
+		const int meshCount = (int)sceneData.meshes.size();
+		for (int i = 0; i < meshCount && i < kMaxLoggedMeshes; ++i)
+		{
+			const auto& mesh = sceneData.meshes[i];
+			if (!mesh.materialIndices || mesh.materialIndices->empty())
+			{
+				RT_LOG("[SetScene]   mesh[%d]: no per-triangle materials", i);
+				continue;
+			}
+			uint32_t lo = UINT32_MAX, hi = 0;
+			for (uint32_t mi : *mesh.materialIndices) { lo = std::min(lo, mi); hi = std::max(hi, mi); }
+			RT_LOG("[SetScene]   mesh[%d]: perTriMat range %u..%u (%zu tris)",
+			       i, lo, hi, mesh.materialIndices->size());
+		}
+	}
+
+	// Per-instance material selection. 0xFFFFFFFF means "use the mesh's
+	// per-triangle indices"; if the mesh has none, the AS build falls back to
+	// material 0, which belongs to whatever was imported first.
+	{
+		const int kMaxLoggedInstances = 24;
+		const int instCount = (int)sceneData.instances.size();
+		for (int i = 0; i < instCount && i < kMaxLoggedInstances; ++i)
+		{
+			const auto& inst = sceneData.instances[i];
+			RT_LOG("[SetScene]   inst[%d]: mesh=%u material=%d", i, inst.meshIndex,
+			       inst.materialIndex == 0xFFFFFFFFu ? -1 : (int)inst.materialIndex);
+		}
+	}
+
 	printf("[SetScene] enter: textures=%d meshes=%d, calling vkDeviceWaitIdle...\n",
 	       (int)sceneData.textures.size(), (int)sceneData.meshes.size());
 	fflush(stdout);
@@ -553,6 +604,12 @@ void SceneResources::UpdateInstances(const GpuDevice& dev, const GPUSceneData& s
 	m_CurrentScene.instances = sceneData.instances;
 	m_CurrentScene.lights = sceneData.lights;
 	m_CurrentScene.totalLightArea = sceneData.totalLightArea;
+	// Punctual lights move with their entity's transform, so they belong in
+	// the transform-update path too. CreatePunctualLightBuffer below uploads
+	// from m_CurrentScene, so without this copy it re-uploaded the same stale
+	// positions and a light dragged in the editor cast from where it used to
+	// be until something forced a full sync.
+	m_CurrentScene.punctualLights = sceneData.punctualLights;
 
 	std::vector<BLASInstance> instances;
 	std::vector<uint32_t> instanceMeshIndices;

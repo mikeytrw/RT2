@@ -274,7 +274,7 @@ TEST_CASE("P1A RoundTrip: glTF import -> save v3 -> load + resolve")
         std::string content((std::istreambuf_iterator<char>(in)),
                             std::istreambuf_iterator<char>());
         in.close();
-        CHECK(content.find("\"version\": 3") != std::string::npos);
+    CHECK(content.find("\"version\": 4") != std::string::npos);
         CHECK(content.find("tiny_textured.glb") != std::string::npos);
         CHECK(content.find("\"importedSource\"") != std::string::npos);
     }
@@ -299,7 +299,8 @@ TEST_CASE("P1A RoundTrip: glTF import -> save v3 -> load + resolve")
     // Resolve external assets.
     std::vector<AssetDiagnostic> diagnostics;
     Error resolveErr;
-    REQUIRE(SceneAssetResolver::ResolveAll(loaded, FixtureDir(), diagnostics, resolveErr));
+    REQUIRE(SceneAssetResolver::ResolveAll(loaded,
+        AssetResolutionContext{ FixtureDir(), nullptr }, diagnostics, resolveErr));
     // W3 step 3: the locator is ID-first and read-only. With a non-nil assetId
     // (assigned at import and persisted in the scene), no AssetDatabase built
     // at scene load yet, and a matching sidecar on disk, resolution succeeds
@@ -401,7 +402,8 @@ TEST_CASE("P1A Environment: save env reference -> load -> resolve reads pixels")
 
     std::vector<AssetDiagnostic> diagnostics;
     Error resolveErr;
-    REQUIRE(SceneAssetResolver::ResolveEnvironment(loaded, FixtureDir(),
+    REQUIRE(SceneAssetResolver::ResolveEnvironment(loaded,
+                                                   AssetResolutionContext{ FixtureDir(), nullptr },
                                                    diagnostics, resolveErr));
     // W3 step 4: a nil env assetId with no sidecar resolves by path fallback
     // and emits exactly one "identity repair required" Stale diagnostic.
@@ -428,7 +430,8 @@ TEST_CASE("P1A Environment: missing environment produces diagnostic")
 
     std::vector<AssetDiagnostic> diagnostics;
     Error err;
-    bool ok = SceneAssetResolver::ResolveEnvironment(doc, FixtureDir(),
+    bool ok = SceneAssetResolver::ResolveEnvironment(doc,
+                                                     AssetResolutionContext{ FixtureDir(), nullptr },
                                                      diagnostics, err);
     CHECK_FALSE(ok);
     CHECK(err.code == Error::MissingAsset);
@@ -512,7 +515,8 @@ TEST_CASE("P1A MaterialOverride: imported material edit survives save/reopen")
 
     std::vector<AssetDiagnostic> diagnostics;
     Error resolveErr;
-    REQUIRE(SceneAssetResolver::ResolveAll(loaded, FixtureDir(), diagnostics, resolveErr));
+    REQUIRE(SceneAssetResolver::ResolveAll(loaded,
+        AssetResolutionContext{ FixtureDir(), nullptr }, diagnostics, resolveErr));
 
     // The override must survive: find the imported entity by its UUID and
     // verify its material is the edited green, not the re-imported source.
@@ -734,7 +738,8 @@ TEST_CASE("P1A Transactionality: resolution failure into temp preserves live doc
 
     std::vector<AssetDiagnostic> diagnostics;
     Error resolveErr;
-    bool resolveOk = SceneAssetResolver::ResolveAll(temp, FixtureDir(),
+    bool resolveOk = SceneAssetResolver::ResolveAll(temp,
+                                                    AssetResolutionContext{ FixtureDir(), nullptr },
                                                     diagnostics, resolveErr);
     CHECK_FALSE(resolveOk);
     CHECK(resolveErr.code == Error::MissingAsset);
@@ -1152,7 +1157,8 @@ TEST_CASE("P1A Multi-Model: two OBJ models save/reload preserves material identi
 
     std::vector<AssetDiagnostic> diagnostics;
     Error resolveErr;
-    REQUIRE(SceneAssetResolver::ResolveAll(loaded, dir, diagnostics, resolveErr));
+    REQUIRE(SceneAssetResolver::ResolveAll(loaded,
+        AssetResolutionContext{ dir, nullptr }, diagnostics, resolveErr));
     REQUIRE(resolveErr.IsOk());
 
     // Step 5: Verify each entity's per-triangle material index maps to the
@@ -1666,7 +1672,8 @@ TEST_CASE("OBJ Import Wizard: per-shape save/reload/resolve round-trip")
 
     std::vector<AssetDiagnostic> diagnostics;
     Error resolveErr;
-    REQUIRE(SceneAssetResolver::ResolveAll(loaded, dir, diagnostics, resolveErr));
+    REQUIRE(SceneAssetResolver::ResolveAll(loaded,
+        AssetResolutionContext{ dir, nullptr }, diagnostics, resolveErr));
     REQUIRE(resolveErr.IsOk());
 
     // Verify each child entity's MeshRef points at a valid mesh with the
@@ -1737,7 +1744,8 @@ TEST_CASE("OBJ Import Wizard: legacy obj:whole-model scene resolves")
 
     std::vector<AssetDiagnostic> diagnostics;
     Error resolveErr;
-    REQUIRE(SceneAssetResolver::ResolveAll(loaded, dir, diagnostics, resolveErr));
+    REQUIRE(SceneAssetResolver::ResolveAll(loaded,
+        AssetResolutionContext{ dir, nullptr }, diagnostics, resolveErr));
     REQUIRE(resolveErr.IsOk());
 
     // The legacy scene should have exactly one imported entity with
@@ -1824,7 +1832,8 @@ TEST_CASE("OBJ Import Wizard: multi-material shape preserves per-triangle materi
 
     std::vector<AssetDiagnostic> diagnostics;
     Error resolveErr;
-    REQUIRE(SceneAssetResolver::ResolveAll(loaded, dir, diagnostics, resolveErr));
+    REQUIRE(SceneAssetResolver::ResolveAll(loaded,
+        AssetResolutionContext{ dir, nullptr }, diagnostics, resolveErr));
     REQUIRE(resolveErr.IsOk());
 
     // Find the child entity by sourceKey.
@@ -1921,7 +1930,8 @@ TEST_CASE("OBJ Import Wizard: same OBJ merged and per-shape in one scene resolve
 
     std::vector<AssetDiagnostic> diagnostics;
     Error resolveErr;
-    REQUIRE(SceneAssetResolver::ResolveAll(loaded, dir, diagnostics, resolveErr));
+    REQUIRE(SceneAssetResolver::ResolveAll(loaded,
+        AssetResolutionContext{ dir, nullptr }, diagnostics, resolveErr));
     REQUIRE(resolveErr.IsOk());
 
     // After resolve, all three imported entities should have valid MeshRefs.

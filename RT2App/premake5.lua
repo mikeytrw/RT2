@@ -266,7 +266,15 @@ project "RT2App"
 
    filter "configurations:Debug"
       defines { "WL_DEBUG" }
-      runtime "Debug"
+      -- Release CRT deliberately, not "Debug". NRD.lib and the four NRI libs
+      -- ship as prebuilt /MD binaries with _ITERATOR_DEBUG_LEVEL=0, and only
+      -- this target links them; runtime "Debug" makes RT2App Debug fail to
+      -- link with 22 LNK2038 mismatches, which is why the app had no
+      -- debuggable configuration at all. Optimization stays off and symbols
+      -- stay on, so this is still a debug build -- it loses iterator
+      -- debugging and the debug heap, which RT2Tests keeps (it does not link
+      -- NRD). assert() is unaffected: it keys off NDEBUG, not _DEBUG.
+      runtime "Release"
       symbols "On"
 
    -- SceneLoader.cpp exceeds the COFF section limit in Debug since the

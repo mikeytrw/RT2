@@ -1,0 +1,8 @@
+{
+  "assetRoot": "assets",
+  "cacheRoot": ".rt2/cache",
+  "inputContexts": [],
+  "projectId": "7d20a4ec-6fc9-4d7f-9f74-69fb0ad3432b",
+  "startupScene": "vertical-slice.rt2scene",
+  "version": 1
+}

@@ -492,7 +492,7 @@ TEST_CASE("Phase7 W3 characterization: model success resolves a generated GLB")
     std::vector<AssetDiagnostic> diagnostics;
     Error error;
     CHECK(SceneAssetResolver::ResolveAll(
-        doc, fixture.Path(), diagnostics, error));
+        doc, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, error));
     CHECK(error.IsOk());
     // W3 step 3: a nil assetId with no sidecar resolves by path fallback and
     // emits exactly one "identity repair required" Stale diagnostic. The
@@ -518,7 +518,7 @@ TEST_CASE("Phase7 W3 characterization: missing model emits one locator diagnosti
     std::vector<AssetDiagnostic> diagnostics;
     Error error;
     CHECK_FALSE(SceneAssetResolver::ResolveAll(
-        doc, fixture.Path(), diagnostics, error));
+        doc, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, error));
     CHECK(error.code == Error::MissingAsset);
     // W3 step 3 (W3-P8): the shared locator emits exactly one terminal
     // diagnostic per missing reference. The pre-W3 duplicate file-level
@@ -551,7 +551,7 @@ TEST_CASE("Phase7 W3 characterization: malformed model emits locator, load, and 
     std::vector<AssetDiagnostic> diagnostics;
     Error error;
     CHECK_FALSE(SceneAssetResolver::ResolveAll(
-        doc, fixture.Path(), diagnostics, error));
+        doc, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, error));
     CHECK(error.code == Error::MissingAsset);
     // W3 step 3: three diagnostics, each a distinct failure layer.
     //   1. Locator: nil ID + absent sidecar -> Stale "identity repair
@@ -587,7 +587,7 @@ TEST_CASE("Phase7 W3 characterization: unresolved model source key fails transac
     std::vector<AssetDiagnostic> diagnostics;
     Error error;
     CHECK_FALSE(SceneAssetResolver::ResolveAll(
-        doc, fixture.Path(), diagnostics, error));
+        doc, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, error));
     CHECK(error.code == Error::MissingAsset);
     // W3 step 3: two diagnostics.
     //   1. Locator: nil ID + absent sidecar -> Missing "identity repair
@@ -649,7 +649,7 @@ TEST_CASE("Phase7 W3 step 3: non-nil assetId with matching sidecar resolves with
     std::vector<AssetDiagnostic> diagnostics;
     Error error;
     CHECK(SceneAssetResolver::ResolveAll(
-        doc, fixture.Path(), diagnostics, error));
+        doc, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, error));
     CHECK(error.IsOk());
     // A matching sidecar is fully healthy when no database was supplied.
     CHECK(diagnostics.empty());
@@ -689,7 +689,7 @@ TEST_CASE("Phase7 W3 step 3: non-nil assetId with conflicting sidecar fails with
     std::vector<AssetDiagnostic> diagnostics;
     Error error;
     CHECK_FALSE(SceneAssetResolver::ResolveAll(
-        doc, fixture.Path(), diagnostics, error));
+        doc, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, error));
     // The locator's Conflict diagnostic makes ResolveAll hard-fail (every
     // entity failed because the staged model was never loaded — the locator
     // refused to resolve the path). Transactionality: doc unchanged.
@@ -726,7 +726,7 @@ TEST_CASE("Phase7 W3 step 3: partial success commits accepted resources and retu
     std::vector<AssetDiagnostic> diagnostics;
     Error error;
     CHECK(SceneAssetResolver::ResolveAll(
-        doc, fixture.Path(), diagnostics, error));
+        doc, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, error));
     CHECK(error.IsOk());
     // A has a MeshRef; B does not.
     CHECK(doc.ecs.registry.all_of<MeshRef>(a));
@@ -754,7 +754,7 @@ TEST_CASE("Phase7 W3 characterization: environment success, missing, and malform
         std::vector<AssetDiagnostic> diagnostics;
         Error error;
         CHECK(SceneAssetResolver::ResolveEnvironment(
-            doc, fixture.Path(), diagnostics, error));
+            doc, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, error));
         CHECK(error.IsOk());
         // W3 step 4: nil env assetId + absent sidecar -> locator resolves by
         // path fallback and emits one "identity repair required" Stale
@@ -781,7 +781,7 @@ TEST_CASE("Phase7 W3 characterization: environment success, missing, and malform
         std::vector<AssetDiagnostic> diagnostics;
         Error error;
         CHECK_FALSE(SceneAssetResolver::ResolveEnvironment(
-            doc, fixture.Path(), diagnostics, error));
+            doc, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, error));
         CHECK(error.code == Error::MissingAsset);
         // W3 step 4: the locator emits exactly one terminal diagnostic for
         // the missing path. The pre-W3 duplicate file-level diagnostic is
@@ -806,7 +806,7 @@ TEST_CASE("Phase7 W3 characterization: environment success, missing, and malform
         std::vector<AssetDiagnostic> diagnostics;
         Error error;
         CHECK_FALSE(SceneAssetResolver::ResolveEnvironment(
-            doc, fixture.Path(), diagnostics, error));
+            doc, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, error));
         CHECK(error.code == Error::MissingAsset);
         // W3 step 4: two diagnostics. The locator resolves the path (the
         // malformed file exists) and emits a "identity repair required"
@@ -857,7 +857,7 @@ TEST_CASE("Phase7 W3 step 4: non-nil env assetId with matching sidecar resolves 
     std::vector<AssetDiagnostic> diagnostics;
     Error error;
     CHECK(SceneAssetResolver::ResolveEnvironment(
-        doc, fixture.Path(), diagnostics, error));
+        doc, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, error));
     CHECK(error.IsOk());
     // A matching sidecar is fully healthy when no database was supplied.
     CHECK(diagnostics.empty());
@@ -916,7 +916,7 @@ TEST_CASE("Phase7 W3 step 4: moved env asset (stale path) without database fails
     std::vector<AssetDiagnostic> diagnostics;
     Error error;
     CHECK_FALSE(SceneAssetResolver::ResolveEnvironment(
-        doc, fixture.Path(), diagnostics, error));
+        doc, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, error));
     CHECK(error.code == Error::MissingAsset);
     REQUIRE(diagnostics.size() == 1);
     // W3 case 5: the sidecar at the resolved path claims a different ID —
@@ -949,7 +949,7 @@ TEST_CASE("Phase7 W3 step 4: non-nil env assetId with conflicting sidecar fails 
     std::vector<AssetDiagnostic> diagnostics;
     Error error;
     CHECK_FALSE(SceneAssetResolver::ResolveEnvironment(
-        doc, fixture.Path(), diagnostics, error));
+        doc, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, error));
     CHECK(error.code == Error::MissingAsset);
     bool sawConflict = false;
     for (const auto& d : diagnostics)
@@ -979,7 +979,7 @@ TEST_CASE("Phase7 W3 step 4: nil env assetId with sidecar caches the effective I
     std::vector<AssetDiagnostic> diagnostics;
     Error error;
     CHECK(SceneAssetResolver::ResolveEnvironment(
-        doc, fixture.Path(), diagnostics, error));
+        doc, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, error));
     CHECK(error.IsOk());
     // No diagnostic on the sidecar-supplied path fallback (case 8b).
     CHECK(diagnostics.empty());
@@ -2003,7 +2003,7 @@ TEST_CASE("Phase7 W3 step 6.3: SceneAssetResolver threads texture context and di
     std::vector<AssetDiagnostic> diagnostics;
     Error resolveError;
     REQUIRE(SceneAssetResolver::ResolveAll(
-        document, fixture.Path(), diagnostics, resolveError));
+        document, AssetResolutionContext{ fixture.Path(), nullptr }, diagnostics, resolveError));
     REQUIRE(resolveError.IsOk());
     REQUIRE(document.ecs.textures.size() == 1);
     CheckExactTexturePlaceholder(document.ecs.textures[0]);
@@ -2091,7 +2091,7 @@ TEST_CASE("Phase7 W3 step 4 item 4: SetEnvMapData (async path) mints a sidecar v
         tmp.environment.ref.path = exr.string();
         std::vector<AssetDiagnostic> diags;
         REQUIRE(SceneAssetResolver::ResolveEnvironment(
-            tmp, fixture.Path(), diags, decodeErr));
+            tmp, AssetResolutionContext{ fixture.Path(), nullptr }, diags, decodeErr));
         w = tmp.environment.width;
         h = tmp.environment.height;
         pixels = std::move(tmp.environment.floatPixels);

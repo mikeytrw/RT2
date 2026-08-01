@@ -15,6 +15,7 @@ namespace rt2::core {
 bool BuildExplicitImportTextureContext(
     const std::filesystem::path& ownerPath,
     IUuidProvider* uuidProvider,
+    const AssetResolutionContext& resolution,
     TextureAssetLoadContext& context,
     std::vector<AssetDiagnostic>& diagnostics)
 {
@@ -41,11 +42,26 @@ bool BuildExplicitImportTextureContext(
         diagnostics.push_back(std::move(diagnostic));
         return false;
     }
+    if (resolution.assetRoot.empty() || !resolution.assetRoot.is_absolute())
+    {
+        AssetDiagnostic diagnostic;
+        diagnostic.severity = AssetDiagnostic::Malformed;
+        diagnostic.kind = AssetKind::Model;
+        diagnostic.refPath = normalized.generic_string();
+        diagnostic.detail = "explicit import requires an absolute asset root";
+        diagnostics.push_back(std::move(diagnostic));
+        return false;
+    }
 
     context.resolvedOwnerPath = normalized;
-    context.resolution.assetRoot = normalized.parent_path();
+    context.resolution = resolution;
     context.ownerModel.kind = AssetKind::Model;
-    context.ownerModel.path = normalized.filename().generic_string();
+    const auto relative = normalized.lexically_relative(
+        resolution.assetRoot.lexically_normal());
+    context.ownerModel.path = relative.empty() ||
+        (!relative.empty() && *relative.begin() == "..")
+        ? normalized.generic_u8string()
+        : relative.generic_u8string();
     context.identityMode = TextureIdentityMode::ExplicitImport;
     context.uuidProvider = uuidProvider;
     return true;

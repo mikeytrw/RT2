@@ -217,7 +217,8 @@ bool SceneRecoveryService::MaybeSnapshot(const SceneDocument& doc,
                                          const std::string& untitledRecoveryId,
                                          const std::filesystem::path& logicalAssetRoot,
                                          std::vector<AssetDiagnostic>& diagnostics,
-                                         Error& err)
+                                         Error& err,
+                                         const std::optional<ProjectBinding>& project)
 {
     err = Error{};
     if (!doc.metadata.dirty)
@@ -260,7 +261,7 @@ bool SceneRecoveryService::MaybeSnapshot(const SceneDocument& doc,
     const std::string docId = DocIdFor(doc, untitledRecoveryId);
     if (!WriteRecord(
             docId, doc, logicalAssetRoot, currentRevision, now,
-            diagnostics, err))
+            diagnostics, err, project))
         return false;
 
     const auto keepPath = RecordPath(docId);
@@ -278,7 +279,8 @@ bool SceneRecoveryService::WriteRecord(const std::string& docId,
                                        uint64_t revision,
                                        int64_t createdAt,
                                        std::vector<AssetDiagnostic>& diagnostics,
-                                       Error& err)
+                                       Error& err,
+                                       const std::optional<ProjectBinding>& project)
 {
     std::error_code ec;
     std::filesystem::create_directories(m_RecoveryRoot, ec);
@@ -299,7 +301,7 @@ bool SceneRecoveryService::WriteRecord(const std::string& docId,
     if (!doc.metadata.sourcePath.empty())
     {
         logicalScenePath = doc.metadata.sourcePath;
-        assetRoot = logicalScenePath.parent_path();
+        assetRoot = project ? logicalAssetRoot : logicalScenePath.parent_path();
     }
     else
     {
@@ -333,7 +335,14 @@ bool SceneRecoveryService::WriteRecord(const std::string& docId,
     envelope["docId"] = docId;
     envelope["untitled"] = doc.metadata.sourcePath.empty();
     envelope["originalSourcePath"] = doc.metadata.sourcePath.generic_u8string();
-    envelope["assetRoot"] = assetRoot.generic_u8string();
+    if (!project)
+        envelope["assetRoot"] = assetRoot.generic_u8string();
+    else
+    {
+        envelope["projectId"] = project->projectId.ToString();
+        envelope["projectFile"] = project->projectFile.generic_u8string();
+        envelope["sceneLocator"] = project->sceneLocator;
+    }
     envelope["revision"] = revision;
     envelope["createdAt"] = createdAt;
     envelope["snapshot"] = std::move(snapshot);
@@ -365,7 +374,7 @@ bool SceneRecoveryService::ParseRecord(const std::filesystem::path& path,
         return false;
     }
     out.version = root["version"].get<uint32_t>();
-    if (out.version != ManifestVersion)
+    if (out.version < 2 || out.version > ManifestVersion)
     {
         out.diagnostic = "unsupported recovery version " + std::to_string(out.version);
         return false;
@@ -388,6 +397,19 @@ bool SceneRecoveryService::ParseRecord(const std::filesystem::path& path,
         out.originalSourcePath = std::filesystem::u8path(root["originalSourcePath"].get<std::string>());
     if (root.contains("assetRoot") && root["assetRoot"].is_string())
         out.assetRoot = std::filesystem::u8path(root["assetRoot"].get<std::string>());
+    if (root.contains("projectId") && root["projectId"].is_string())
+        out.projectId = UUID::Parse(root["projectId"].get<std::string>());
+    if (root.contains("projectFile") && root["projectFile"].is_string())
+        out.projectFile = std::filesystem::u8path(
+            root["projectFile"].get<std::string>());
+    if (root.contains("sceneLocator") && root["sceneLocator"].is_string())
+        out.sceneLocator = root["sceneLocator"].get<std::string>();
+    if (out.version >= 3 && root.contains("projectId") &&
+        (out.projectId.IsNull() || out.projectFile.empty()))
+    {
+        out.diagnostic = "project recovery has invalid project identity";
+        return false;
+    }
     out.revision = root.value("revision", uint64_t(0));
     out.createdAtUnix = root.value("createdAt", int64_t(0));
     out.snapshotJson = root["snapshot"].dump(2);
@@ -441,7 +463,34 @@ bool SceneRecoveryService::Restore(const RecoveryRecord& record,
                                    SceneLoadReport& loadReport,
                                    Error& err) const
 {
+	if (!record.projectId.IsNull())
+	{
+		err.code = Error::InvalidArgument;
+		err.path = record.projectFile.u8string();
+		err.detail =
+			"project-bound recovery requires a reloaded project context";
+		return false;
+	}
+	const AssetResolutionContext context{ record.assetRoot, nullptr };
+	return Restore(record, context, outDoc, diagnostics, loadReport, err);
+}
+
+bool SceneRecoveryService::Restore(const RecoveryRecord& record,
+                                   const AssetResolutionContext& context,
+                                   SceneDocument& outDoc,
+                                   std::vector<AssetDiagnostic>& diagnostics,
+                                   SceneLoadReport& loadReport,
+                                   Error& err) const
+{
     err = Error{};
+    if (!record.projectId.IsNull() && context.database == nullptr)
+    {
+        err.code = Error::InvalidArgument;
+        err.path = record.projectFile.u8string();
+        err.detail =
+            "project-bound recovery requires a database snapshot";
+        return false;
+    }
     if (!record.valid || record.snapshotJson.empty())
     {
         err.code = Error::Parse;
@@ -482,8 +531,14 @@ bool SceneRecoveryService::Restore(const RecoveryRecord& record,
     // Script resolution uses metadata.sourcePath, so restore the logical path
     // before either resolver runs. Asset resolution still receives assetRoot
     // explicitly for untitled recovery records.
-    temp.metadata.sourcePath = record.originalSourcePath;
-    if (!SceneAssetResolver::ResolveAll(temp, record.assetRoot, diagnostics, err))
+    temp.metadata.sourcePath = !record.projectId.IsNull() &&
+        !record.sceneLocator.empty()
+        ? (context.assetRoot / std::filesystem::u8path(record.sceneLocator)).
+            lexically_normal()
+        : record.originalSourcePath;
+    temp.metadata.projectId = record.projectId;
+    temp.metadata.assetRoot = context.assetRoot;
+    if (!SceneAssetResolver::ResolveAll(temp, context, diagnostics, err))
         return false;
 
     temp.metadata.dirty = true;

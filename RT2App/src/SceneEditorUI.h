@@ -147,6 +147,11 @@ public:
 
 	void RenderPanels();
 
+	// Dispatch a browser asset drop through the existing import callbacks.
+	// The browser owns the payload; this class only owns the established
+	// scene-import callback path.
+	void ImportAssetPathFromDrop(const std::string& path);
+
 	// Per-panel visibility (View menu toggles). The Outliner/Inspector can
 	// be hidden without affecting the other panel.
 	bool IsOutlinerVisible() const { return m_ShowOutliner; }
@@ -166,6 +171,7 @@ public:
 private:
 	void RenderOutliner();
 	void RenderInspector();
+	void RenderAssetDropTarget();
 
 	void RenderEntityTree(SceneManager::EntityId entity, int depth);
 	void RenderTransformEditor(SceneManager::EntityId entity);
