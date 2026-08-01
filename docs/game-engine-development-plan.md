@@ -10312,3 +10312,203 @@ check. `--recovery-scenario` passed, and `run_script_test.ps1` passed with 60
 frames, one entity, and no mismatches. The Release solution build completed
 successfully before the Release suite; the Debug solution build completed
 successfully before the Debug suite.
+
+## Phase 7 W7 verification report (2026-08-01)
+
+This report records the W7 discrimination pass against `3973e9c`. No
+production changes were retained; only this report is committed.
+
+### Measured gates
+
+The Release solution built successfully. Release `RT2Tests.exe` reported:
+
+```text
+[doctest] test cases:    732 |    732 passed | 0 failed | 0 skipped
+[doctest] assertions: 146428 | 146428 passed | 0 failed |
+[doctest] Status: SUCCESS!
+```
+
+The Debug solution built successfully. Debug `RT2Tests.exe` reported the same
+measured result: 732/732 test cases and 146428/146428 assertions, with status
+SUCCESS.
+
+The remaining gates passed:
+
+- `run_script_test.ps1`: `PASS: 60 frames, 1 entities, no mismatches`.
+- `run_slice_test.ps1`: `PASS: 60 steps, authoring intact`; final cube X
+  `0.999999702`.
+- `run_punctual_light_test.ps1`: `lit samples: 48, peak luminance: 42.7`,
+  `PASS`.
+- Release `--headless --validate` exited 0 with zero validation messages.
+  The existing CLI also reported that `--out artifacts/v.png` is unknown and
+  saved `screenshot.png`; this did not change the zero exit or validation
+  result.
+
+### Interactive acceptance
+
+The external `.lua` edit was performed while the editor was open; the Session
+panel reported `Scripts reloaded`, confirming hot reload.
+
+An asset was added externally and appeared after the automatic `Project assets
+refreshed` status. The same temporary asset was deleted externally; the
+Content Browser then showed `No matching assets` after the automatic refresh.
+
+The W6 rename exercise was attempted with the watcher active. The Content
+Browser context menu opened, but selecting `Rename...` did not open the rename
+modal, so no rename was actually performed and no end-to-end observation of a
+rename without a redundant scan was established. This remains an acceptance
+gap, not a claimed pass.
+
+### Discrimination proofs
+
+Each fault below was injected temporarily, followed by a Release build and
+the named test only; it was then reverted, rebuilt, and the named test passed.
+
+1. **`.glb` classified as `ScriptReload`.**
+
+   ```text
+   Phase7W7Tests.cpp(55): ERROR: CHECK( ClassifyAssetFileEvent(kRoot / "model.glb", action) == AssetFileEventKind::DatabaseRefresh ) is NOT correct!
+     values: CHECK( 2 == 1 )
+   ```
+   The error occurred four times. Summary: `38 assertions: 34 passed, 4
+   failed`. Reverted result: `1 passed`, `38/38` assertions.
+
+2. **Suppression check disabled in event publication.**
+
+   ```text
+   Phase7W7Tests.cpp(165): ERROR: CHECK_FALSE( PublishAssetWatchEventLocked( registry, queue, path, AssetFileAction::Modified) ) is NOT correct!
+     values: CHECK_FALSE( true )
+   Phase7W7Tests.cpp(166): ERROR: CHECK( queue.SizeLocked() == 0 ) is NOT correct!
+     values: CHECK( 1 == 0 )
+   ```
+   Summary: `5 assertions: 3 passed, 2 failed`. Reverted result: `1 passed`,
+   `5/5` assertions.
+
+3. **Path deduplication removed.**
+
+   ```text
+   Phase7W7Tests.cpp(122): FATAL ERROR: REQUIRE( events.size() == 1 ) is NOT correct!
+     values: REQUIRE( 100 == 1 )
+   ```
+   Summary: `101 assertions: 100 passed, 1 failed`. Reverted result: `1
+   passed`, `102/102` assertions.
+
+4. **Busy watcher events dropped instead of queued.**
+
+   ```text
+   Phase7W7Tests.cpp(138): ERROR: CHECK( DecideWatchRefreshAction(false, 1, true) == AssetWatchRefreshAction::Queue ) is NOT correct!
+     values: CHECK( 0 == 2 )
+   Phase7W7Tests.cpp(140): ERROR: CHECK( DecideWatchRefreshAction(false, kAssetWatchQueueLimit, true) == AssetWatchRefreshAction::Truncate ) is NOT correct!
+     values: CHECK( 0 == 3 )
+   ```
+   Summary: `4 assertions: 2 passed, 2 failed`. Reverted result: `1 passed`,
+   `4/4` assertions.
+
+5. **Missed-event handler left as a no-op.**
+
+   ```text
+   Phase7W7Tests.cpp(148): ERROR: CHECK( DecideWatchRefreshAction(true, 0, false) == AssetWatchRefreshAction::RefreshNow ) is NOT correct!
+     values: CHECK( 0 == 1 )
+   ```
+   Summary: `3 assertions: 2 passed, 1 failed`. Reverted result: `1 passed`,
+   `3/3` assertions.
+
+6. **Watcher performs identity assignment.**
+
+   ```text
+   Phase7W7Tests.cpp(273): ERROR: CHECK( drain.find("ResolveOrAssign") == std::string::npos ) is NOT correct!
+     values: CHECK( 2662 == 18446744073709551615 )
+   ```
+   Summary: `5 assertions: 4 passed, 1 failed`. Reverted result: `1 passed`,
+   `5/5` assertions.
+
+7. **Watcher scope widened to the script-candidate walk.**
+
+   ```text
+   Phase7W7Tests.cpp(255): ERROR: CHECK( source.find("ScriptWatchDirectoryForCandidate") == std::string::npos ) is NOT correct!
+     values: CHECK( 140005 == 18446744073709551615 )
+   ```
+   Summary: `5 assertions: 4 passed, 1 failed`. Reverted result: `1 passed`,
+   `5/5` assertions.
+
+8. **`.rt2scene` classified as `DatabaseRefresh`.**
+
+   ```text
+   Phase7W7Tests.cpp(262): ERROR: CHECK( ClassifyAssetFileEvent(kRoot / "open.rt2scene", action) == AssetFileEventKind::Ignore ) is NOT correct!
+     values: CHECK( 1 == 2 )
+   ```
+   The error occurred four times. Summary: `7 assertions: 3 passed, 4
+   failed`. Reverted result: `1 passed`, `7/7` assertions.
+
+9. **Destination sidecar omitted from W6 suppression paths.**
+
+   ```text
+   Phase7W7Tests.cpp(195): FATAL ERROR: REQUIRE( expectedPaths.size() == operation.expectedPathCount ) is NOT correct!
+     values: REQUIRE( 3 == 4 )
+   ```
+   Summary: `5 assertions: 4 passed, 1 failed`. Reverted result: `1 passed`,
+   `16/16` assertions.
+
+10. **Network watcher buffer widened to 256 KiB.**
+
+   ```text
+   Phase7W7Tests.cpp(129): ERROR: CHECK( AssetWatchBufferSize(AssetWatchDriveKind::Network) == 63u * 1024u ) is NOT correct!
+     values: CHECK( 262144 == 64512 )
+   ```
+   Summary: `3 assertions: 2 passed, 1 failed`. Reverted result: `1 passed`,
+   `3/3` assertions.
+
+11. **Debounce window removed.**
+
+   ```text
+   Phase7W7Tests.cpp(293): ERROR: CHECK( kAssetWatchDebounceMilliseconds == 100 ) is NOT correct!
+     values: CHECK( 0 == 100 )
+   ```
+   Summary: `7 assertions: 6 passed, 1 failed`. Reverted result: `1 passed`,
+   `7/7` assertions.
+
+12. **Explicit Refresh label/backstop removed.**
+
+   ```text
+   Phase7W7Tests.cpp(301): ERROR: CHECK( source.find("Refresh Assets") != std::string::npos ) is NOT correct!
+     values: CHECK( 18446744073709551615 != 18446744073709551615 )
+   ```
+   Summary: `4 assertions: 3 passed, 1 failed`. Reverted result: `1 passed`,
+   `4/4` assertions.
+
+The two critical proofs were run before this pass. Registering suppression
+paths after the callback produced:
+
+```text
+Phase7W7Tests.cpp(207): ERROR: CHECK_FALSE( unsuppressedEventObserved ) is NOT correct!
+  values: CHECK_FALSE( true )
+[doctest] test cases: 1 | 0 passed | 1 failed | 731 skipped
+[doctest] assertions: 16 | 12 passed | 4 failed |
+```
+
+The same test was green after reverting: `1 passed`, `16/16` assertions.
+Commenting out a literal `RunAssetWatchSuppressedOperation` call in
+`WalnutApp.cpp` stayed green: `1 passed`, `16/16` assertions. That fault was
+restored and was not counted as a protective proof.
+
+### Known host-dispatch limitation
+
+The seam's ordering contract is proven by the behavioural test. The host's use
+of the seam is not proven, because `RT2Tests` compiles no RT2App sources and
+does not include `WalnutApp.cpp`. Commenting out one of the four host calls
+(`WalnutApp.cpp:1288`, `:1358`, `:1403`, or `:1447`) leaves the suite green.
+
+If that host wiring regresses, suppression fails and a W6 rename triggers a
+redundant scan. `RefreshProjectAssets` is transactional and read-only, so the
+consequence is wasted work, not corruption or data loss. The same gap exists
+for W5's `ShouldCaptureRecoverySnapshot` and W6's `ContentBrowserCanOperate`.
+Closing it requires extracting host dispatch into the CPU module; that work is
+deliberately out of scope for W7.
+
+The remaining tests named `static check: ...` are source-text guardrails for
+host wiring and configuration: duplicate-path drain, busy queueing, missed
+events, watcher scope, identity non-minting, buffer configuration, debounce,
+and explicit Refresh. They are useful regression checks but are not behavioural
+proofs of the host call sites. The CPU behavioural tests are the evidence for
+classification, suppression publication, queue coalescing, busy decisions,
+missed-event decisions, scene exclusion, and W6 suppression-path composition.
