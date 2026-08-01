@@ -10,6 +10,7 @@
 #include "ScriptAssetPath.h"
 #include "ScriptFieldRegistry.h"
 #include "ScriptFieldValue.h"
+#include "ContentBrowserOperations.h"
 #include "RTLog.h"
 #include "imgui.h"
 #include <cstdio>
@@ -26,20 +27,24 @@ void SceneEditorUI::RenderPanels()
 
 void SceneEditorUI::ImportAssetPathFromDrop(const std::string& path)
 {
-	const std::string extension = std::filesystem::u8path(path).extension().u8string();
-	std::string folded = extension;
-	std::transform(folded.begin(), folded.end(), folded.begin(),
-		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-	if (folded == ".obj")
-	{
-		if (m_OnImportWithOptions)
-			m_OnImportWithOptions(path, ImportSettings{});
-	}
-	else if (folded == ".glb" || folded == ".gltf")
-	{
-		if (m_OnImportGltf)
-			m_OnImportGltf(path);
-	}
+    rt2::core::ContentBrowserDropCallbacks callbacks;
+    if (m_OnImportWithOptions)
+    {
+        callbacks.importObj = [this](const std::string& droppedPath,
+                                      const ImportSettings& settings) {
+            (void)m_OnImportWithOptions(droppedPath, settings);
+        };
+    }
+    if (m_OnImportGltf)
+    {
+        callbacks.importGltf = [this](const std::string& droppedPath) {
+            (void)m_OnImportGltf(droppedPath);
+        };
+    }
+
+    rt2::core::Error error;
+    if (!rt2::core::DispatchContentBrowserAssetDrop(path, callbacks, error))
+        RT_LOG("Content Browser asset drop rejected: %s", error.Format().c_str());
 }
 
 void SceneEditorUI::NotifySceneChanged()

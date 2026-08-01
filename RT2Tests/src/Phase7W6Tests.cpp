@@ -90,6 +90,41 @@ TEST_CASE("Phase7 W6 search is snapshot based and matches path or ID")
     CHECK(SearchContentBrowserAssets(database, kScriptId.ToString()).size() == 1);
 }
 
+TEST_CASE("Phase7 W6 drop dispatch uses the existing import callback")
+{
+    const auto absoluteRoot = std::filesystem::absolute("drop-assets");
+    const std::string gltfPath =
+        (absoluteRoot / "hero.GLB").u8string();
+    const std::string objPath =
+        (absoluteRoot / "props.OBJ").u8string();
+    bool gltfCalled = false;
+    bool objCalled = false;
+    std::string receivedGltf;
+    std::string receivedObj;
+    ImportSettings receivedSettings;
+
+    ContentBrowserDropCallbacks callbacks;
+    callbacks.importGltf = [&](const std::string& path) {
+        gltfCalled = true;
+        receivedGltf = path;
+    };
+    callbacks.importObj = [&](const std::string& path,
+                              const ImportSettings& settings) {
+        objCalled = true;
+        receivedObj = path;
+        receivedSettings = settings;
+    };
+
+    Error error;
+    REQUIRE(DispatchContentBrowserAssetDrop(gltfPath, callbacks, error));
+    REQUIRE(DispatchContentBrowserAssetDrop(objPath, callbacks, error));
+    CHECK(gltfCalled);
+    CHECK(objCalled);
+    CHECK(receivedGltf == gltfPath);
+    CHECK(receivedObj == objPath);
+    CHECK(receivedSettings == ImportSettings{});
+}
+
 TEST_CASE("Phase7 W6 rename moves source and sidecar without rewriting scene")
 {
     TempTree tree;
@@ -162,17 +197,24 @@ TEST_CASE("Phase7 W6 move keeps the pair together and rejects containment violat
     CHECK(HasDiagnosticDetail(report, "no rollback"));
 
     tree.AddAsset("models/boundary.glb", kModelId);
+    ContentBrowserIoHooks boundaryHooks;
+    boundaryHooks.createDirectories = [&](const auto& path, Error& hookError) {
+        hookError.code = Error::Io;
+        hookError.path = path.u8string();
+        hookError.detail = "injected destination creation after boundary bypass";
+        return false;
+    };
     const auto alternateVolume = tree.assets.root_name() == "C:"
         ? std::filesystem::path("Z:\\rt2_phase7_w6_destination")
         : std::filesystem::path("C:\\rt2_phase7_w6_destination");
     CHECK_FALSE(MoveContentBrowserAsset(
         tree.assets, Record("models/boundary.glb", kModelId),
-        alternateVolume, report, error));
+        alternateVolume, report, error, boundaryHooks));
     CHECK(error.code == Error::InvalidArgument);
     const auto outside = tree.assets / ".." / "outside";
     CHECK_FALSE(MoveContentBrowserAsset(
         tree.assets, Record("models/boundary.glb", kModelId),
-        outside, report, error));
+        outside, report, error, boundaryHooks));
     CHECK(error.code == Error::InvalidArgument);
 }
 
@@ -316,6 +358,16 @@ TEST_CASE("Phase7 W6 host policy disables standalone operations and requires con
     CHECK_FALSE(ContentBrowserDeleteAllowed(false, 0));
     CHECK(ContentBrowserDeleteAllowed(true, 1));
     CHECK(ContentBrowserDeleteAllowed(true, 0));
+}
+
+TEST_CASE("Phase7 W6 host consults content-browser policy")
+{
+    std::ifstream input("RT2App/src/WalnutApp.cpp");
+    REQUIRE(input.good());
+    const std::string source(
+        (std::istreambuf_iterator<char>(input)), {});
+    CHECK(source.find("ContentBrowserCanOperate(") != std::string::npos);
+    CHECK(source.find("ContentBrowserDeleteAllowed(") != std::string::npos);
 }
 
 TEST_CASE("Phase7 W6 acceptance: moving referenced mesh and script preserves IDs and scene bytes")

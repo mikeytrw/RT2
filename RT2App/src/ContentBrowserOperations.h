@@ -55,6 +55,20 @@ using ContentBrowserReimportCallback = std::function<bool(
     std::vector<AssetDiagnostic>& diagnostics,
     Error& error)>;
 
+// The browser's drag payload is dispatched through the existing scene-import
+// callbacks. Keeping this seam CPU-only makes the payload contract permanent
+// and testable without constructing ImGui or Walnut.
+struct ContentBrowserDropCallbacks
+{
+    std::function<void(const std::string&)> importGltf;
+    std::function<void(const std::string&, const ImportSettings&)> importObj;
+};
+
+bool DispatchContentBrowserAssetDrop(
+    std::string_view path,
+    const ContentBrowserDropCallbacks& callbacks,
+    Error& error);
+
 // Host policy is intentionally a small CPU seam so standalone mode and
 // confirmation gates cannot be accidentally bypassed by UI call sites.
 bool ContentBrowserCanOperate(bool projectActive);

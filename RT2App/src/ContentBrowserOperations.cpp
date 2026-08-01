@@ -333,6 +333,53 @@ bool ContentBrowserCanOperate(bool projectActive)
     return projectActive;
 }
 
+bool DispatchContentBrowserAssetDrop(
+    std::string_view path,
+    const ContentBrowserDropCallbacks& callbacks,
+    Error& error)
+{
+    error = Error{};
+    if (path.empty())
+    {
+        error.code = Error::InvalidArgument;
+        error.detail = "content-browser asset drop path is required";
+        return false;
+    }
+
+    const std::string pathString(path);
+    const std::string extension =
+        Fold(std::filesystem::u8path(pathString).extension().u8string());
+    if (extension == ".obj")
+    {
+        if (!callbacks.importObj)
+        {
+            error.code = Error::InvalidArgument;
+            error.path = pathString;
+            error.detail = "OBJ drop has no import callback";
+            return false;
+        }
+        callbacks.importObj(pathString, ImportSettings{});
+        return true;
+    }
+    if (extension == ".glb" || extension == ".gltf")
+    {
+        if (!callbacks.importGltf)
+        {
+            error.code = Error::InvalidArgument;
+            error.path = pathString;
+            error.detail = "glTF drop has no import callback";
+            return false;
+        }
+        callbacks.importGltf(pathString);
+        return true;
+    }
+
+    error.code = Error::InvalidArgument;
+    error.path = pathString;
+    error.detail = "unsupported content-browser asset drop extension";
+    return false;
+}
+
 bool ContentBrowserDeleteAllowed(bool confirmed, size_t dependantCount)
 {
     (void)dependantCount;
