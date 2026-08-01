@@ -10105,3 +10105,210 @@ If a late event still slips through, the outcome is one redundant scan.
 harmful, and is accepted.
 
 Grounding commit for both amendments: `9008290`.
+
+## W6 discrimination proof report (2026-08-01)
+
+This is an append-only verification record for the W6 permanent-test table.
+The work was performed on branch `codex/phase7-w6-discrimination-proofs`,
+from master at `9008290`. Each temporary fault was built in Release, the
+named permanent test was run and made red, the fault was reverted, and the
+same test was rebuilt and run green. The delete-order proof uses the amended
+W6-A1 contract: source first, then sidecar.
+
+1. **Search remains sorted by portable path.** Fault: reverse the vector
+   returned by `AllRecordsSorted()` before filtering in
+   `RT2App/src/ContentBrowserOperations.cpp:398`.
+
+   Actual red output:
+
+   ```text
+   Phase7W6Tests.cpp(87): ERROR: CHECK( all[0].sourcePath == "a/hero.obj" ) is NOT correct!
+     values: CHECK( z/model.glb == a/hero.obj )
+   Phase7W6Tests.cpp(88): ERROR: CHECK( all[1].sourcePath == "z/model.glb" ) is NOT correct!
+     values: CHECK( a/hero.obj == z/model.glb )
+   [doctest] test cases: 1 | 0 passed | 1 failed
+   [doctest] assertions: 5 | 3 passed | 2 failed |
+   ```
+
+   Revert build exited 0; green output: `test cases: 1 | 1 passed`,
+   `assertions: 5 | 5 passed`.
+
+2. **Rename moves source and sidecar together.** Fault: return after the
+   source move in `ExecutePairMove`, skipping the sidecar.
+
+   Actual red output:
+
+   ```text
+   Phase7W6Tests.cpp(147): ERROR: CHECK_FALSE( std::filesystem::exists(AssetSidecarPath(source)) ) is NOT correct!
+     values: CHECK_FALSE( true )
+   Phase7W6Tests.cpp(150): ERROR: CHECK( ReadSidecarId(AssetSidecarPath(renamed), error) == kModelId ) is NOT correct!
+     values: CHECK( {?} == {?} )
+   Phase7W6Tests.cpp(158): FATAL ERROR: REQUIRE( scan.database->FindByPath("models/hero-renamed.glb") != nullptr ) is NOT correct!
+     values: REQUIRE( nullptr != nullptr )
+   [doctest] test cases: 1 | 0 passed | 1 failed
+   [doctest] assertions: 16 | 13 passed | 3 failed |
+   ```
+
+   Revert build exited 0; green output: `test cases: 1 | 1 passed`,
+   `assertions: 17 | 17 passed`.
+
+3. **Move keeps source and sidecar together.** Fault: return after the
+   source move in `MoveContentBrowserAsset`, skipping the sidecar.
+
+   Actual red output:
+
+   ```text
+   Phase7W6Tests.cpp(173): ERROR: CHECK( std::filesystem::exists(destination / "hero.glb.rt2meta") ) is NOT correct!
+     values: CHECK( false )
+   [doctest] test cases: 1 | 0 passed | 1 failed
+   [doctest] assertions: 19 | 18 passed | 1 failed |
+   ```
+
+   Revert build exited 0; green output: `test cases: 1 | 1 passed`,
+   `assertions: 19 | 19 passed`.
+
+4. **Destination containment and traversal guards hold.** Fault: disable
+   both the `..`-component and `IsContained` checks in
+   `ValidateDestination`. The permanent test uses a failing directory-create
+   hook so the unsafe path cannot mutate a real outside directory.
+
+   Actual red output:
+
+   ```text
+   Phase7W6Tests.cpp(218): ERROR: CHECK( error.code == Error::InvalidArgument ) is NOT correct!
+     values: CHECK( 1 == 12 )
+   [doctest] test cases: 1 | 0 passed | 1 failed
+   [doctest] assertions: 19 | 18 passed | 1 failed |
+   ```
+
+   Revert build exited 0; green output: `test cases: 1 | 1 passed`,
+   `assertions: 19 | 19 passed`.
+
+5. **Dependants come from live scene references.** Fault: return an empty
+   dependant list before `CollectSceneAssetReferences()`.
+
+   Actual red output:
+
+   ```text
+   Phase7W6Tests.cpp(302): FATAL ERROR: REQUIRE( modelDependants.size() == 2 ) is NOT correct!
+     values: REQUIRE( 0 == 2 )
+   [doctest] test cases: 1 | 0 passed | 1 failed
+   [doctest] assertions: 5 | 4 passed | 1 failed |
+   ```
+
+   Revert build exited 0; green output: `test cases: 1 | 1 passed`,
+   `assertions: 11 | 11 passed`.
+
+6. **Delete is source-first and exposes an orphan sidecar.** Fault: delete
+   the sidecar first and then attempt the source, bypassing the W6-A1
+   partial-failure diagnostic.
+
+   Actual red output:
+
+   ```text
+   Phase7W6Tests.cpp(262): ERROR: CHECK( report.partialFailure ) is NOT correct!
+     values: CHECK( false )
+   Phase7W6Tests.cpp(263): ERROR: CHECK_FALSE( std::filesystem::exists(tree.assets / "models" / "orphan.glb") ) is NOT correct!
+     values: CHECK_FALSE( true )
+   Phase7W6Tests.cpp(265): ERROR: CHECK( std::filesystem::exists(orphanSidecar) ) is NOT correct!
+     values: CHECK( false )
+   Phase7W6Tests.cpp(266): ERROR: CHECK( HasDiagnosticDetail(report, orphanSidecar.u8string()) ) is NOT correct!
+     values: CHECK( false )
+   Phase7W6Tests.cpp(274): ERROR: CHECK( std::any_of(scan.diagnostics.begin(), scan.diagnostics.end(), ...) ) is NOT correct!
+     values: CHECK( false )
+   [doctest] test cases: 1 | 0 passed | 1 failed
+   [doctest] assertions: 19 | 14 passed | 5 failed |
+   ```
+
+   Revert build exited 0; green output: `test cases: 1 | 1 passed`,
+   `assertions: 19 | 19 passed`.
+
+7. **Rename does not rewrite scene files.** Fault: append bytes to
+   `Assets/Scenes/main.rt2scene` after a successful rename.
+
+   Actual red output:
+
+   ```text
+   Phase7W6Tests.cpp(153): ERROR: CHECK( std::string((std::istreambuf_iterator<char>(input)), {}) == sceneBytes ) is NOT correct!
+     values: CHECK( scene bytes that must not changediscrimination fault == scene bytes that must not change )
+   Phase7W6Tests.cpp(154): ERROR: CHECK( std::filesystem::last_write_time(scene, timeError) == sceneTime ) is NOT correct!
+     values: CHECK( {?} == {?} )
+   [doctest] test cases: 1 | 0 passed | 1 failed
+   [doctest] assertions: 17 | 15 passed | 2 failed |
+   ```
+
+   Revert build exited 0; green output: `test cases: 1 | 1 passed`,
+   `assertions: 17 | 17 passed`.
+
+8. **Reimport preserves the durable sidecar ID.** Fault: return success
+   immediately after the reimport callback, bypassing the post-callback ID
+   read, conflict diagnostic and restore.
+
+   Actual red output:
+
+   ```text
+   Phase7W6Tests.cpp(334): ERROR: CHECK( report.changed ) is NOT correct!
+     values: CHECK( false )
+   Phase7W6Tests.cpp(346): ERROR: CHECK_FALSE( ReimportContentBrowserAsset(...) ) is NOT correct!
+     values: CHECK_FALSE( true )
+   Phase7W6Tests.cpp(347): ERROR: CHECK( error.code == Error::InvalidArgument ) is NOT correct!
+     values: CHECK( 0 == 12 )
+   Phase7W6Tests.cpp(348): ERROR: CHECK( HasDiagnosticDetail(report, "changed the durable asset ID") ) is NOT correct!
+     values: CHECK( false )
+   Phase7W6Tests.cpp(351): ERROR: CHECK( ReadSidecarId(...) == kModelId ) is NOT correct!
+     values: CHECK( {?} == {?} )
+   [doctest] test cases: 1 | 0 passed | 1 failed
+   [doctest] assertions: 14 | 9 passed | 5 failed |
+   ```
+
+   Revert build exited 0; green output: `test cases: 1 | 1 passed`,
+   `assertions: 14 | 14 passed`.
+
+9. **Drag/drop dispatch uses the existing import callback and exact path.**
+   The CPU-only seam is `ContentBrowserDropCallbacks` and
+   `DispatchContentBrowserAssetDrop` (`RT2App/src/ContentBrowserOperations.h:61-71`);
+   `SceneEditorUI` calls it at `RT2App/src/SceneEditorUI.cpp:30-47`. Fault:
+   append `.wrong` to the path sent to both callbacks.
+
+   Actual red output:
+
+   ```text
+   Phase7W6Tests.cpp(123): ERROR: CHECK( receivedGltf == gltfPath ) is NOT correct!
+     values: CHECK( C:\Users\mikey\source\repos\RT2\drop-assets\hero.GLB.wrong == C:\Users\mikey\source\repos\RT2\drop-assets\hero.GLB )
+   Phase7W6Tests.cpp(124): ERROR: CHECK( receivedObj == objPath ) is NOT correct!
+     values: CHECK( C:\Users\mikey\source\repos\RT2\drop-assets\props.OBJ.wrong == C:\Users\mikey\source\repos\RT2\drop-assets\props.OBJ )
+   [doctest] test cases: 1 | 0 passed | 1 failed
+   [doctest] assertions: 7 | 5 passed | 2 failed |
+   ```
+
+   Revert build exited 0; green output: `test cases: 1 | 1 passed`,
+   `assertions: 7 | 7 passed`.
+
+10. **The Walnut host consults both content-browser policy seams.** The
+    permanent source guard is `RT2Tests/src/Phase7W6Tests.cpp:363-371` and
+    covers the app callsites at `RT2App/src/WalnutApp.cpp:1204-1205` and
+    `:1383-1386`. This optional host-callsite guard was added because the
+    discrimination pass showed that the existing pure-predicate test could
+    not detect a bypass. Fault: replace the delete-policy call with the raw
+    confirmation boolean.
+
+    Actual red output:
+
+    ```text
+    Phase7W6Tests.cpp(370): ERROR: CHECK( source.find("ContentBrowserDeleteAllowed(") != std::string::npos ) is NOT correct!
+      values: CHECK( 18446744073709551615 != 18446744073709551615 )
+    [doctest] test cases: 1 | 0 passed | 1 failed
+    [doctest] assertions: 3 | 2 passed | 1 failed |
+    ```
+
+    Revert build exited 0; green output: `test cases: 1 | 1 passed`,
+    `assertions: 3 | 3 passed`.
+
+The permanent W6 suite then passed in both configurations: Release and Debug
+`RT2Tests.exe` each reported `714` test cases and `146085` assertions, all
+passing. `run_slice_test.ps1` passed with 60 steps, authoring intact, and cube
+X `0.999999702`; the project-mode slice runner also passed the same 60-step
+check. `--recovery-scenario` passed, and `run_script_test.ps1` passed with 60
+frames, one entity, and no mismatches. The Release solution build completed
+successfully before the Release suite; the Debug solution build completed
+successfully before the Debug suite.
