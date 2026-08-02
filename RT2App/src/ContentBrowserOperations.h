@@ -80,8 +80,9 @@ std::vector<AssetRecord> SearchContentBrowserAssets(
     const AssetDatabase& database, std::string_view query);
 
 // Dependants are derived from the live scene, not AssetDatabase's optional
-// cached dependency fields. ID is authoritative when present; sourcePath is
-// the fallback for nil-ID legacy references.
+// cached dependency fields. IDs match exactly when both sides have one;
+// sourcePath is the fallback when the scene has a nil or conflicting ID so
+// this safety warning cannot under-report a dependant.
 std::vector<ContentBrowserDependant> FindContentBrowserDependants(
     const SceneDocument& document,
     const AssetRecord& record,

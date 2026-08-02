@@ -417,8 +417,12 @@ std::vector<ContentBrowserDependant> FindContentBrowserDependants(
         if (!slot.reference)
             continue;
         const bool matchesId = !record.assetId.IsNull() &&
+                               !slot.reference->assetId.IsNull() &&
                                slot.reference->assetId == record.assetId;
-        const bool matchesPath = record.assetId.IsNull() &&
+        // This is an advisory safety query, not the resolver: when IDs are
+        // absent or disagree, the same source path is still worth reporting
+        // so the delete confirmation cannot under-report a dependant.
+        const bool matchesPath = !matchesId &&
             ReferenceKey(slot.reference->path, assetRoot) == recordPath;
         if (!matchesId && !matchesPath)
             continue;

@@ -10540,3 +10540,48 @@ Interactive acceptance with the watcher active then showed:
 Release and Debug both measured 732/732 tests and 146428/146428 assertions;
 script, slice, and `--validate` gates passed. The host-dispatch extraction gap
 described above remains out of scope.
+
+## 2026-08-02 — W7/W6 interactive dependant-query follow-up
+
+Interactive acceptance found a third W6 defect after the unopenable modals and
+the clipped confirmation dialog. `FindContentBrowserDependants`
+(`RT2App/src/ContentBrowserOperations.cpp:407-434`) gated `matchesPath` on
+the database record having a nil ID, but scanned records always carry a
+non-nil sidecar ID (`ProjectAssetScanner.cpp:210-216`). Path fallback was
+therefore unreachable for unmigrated v3 scene references. The safety
+consequence was material: the delete warning could claim there were no
+dependants, even though `ContentBrowserDeleteAllowed` does not block deletion
+(`ContentBrowserOperations.cpp:383-389`) and the list is the only warning
+mechanism.
+
+The fix makes ID matching require two non-nil, equal IDs, then uses the
+canonical source path whenever the ID match fails. Because this is an
+advisory destructive-action query rather than the resolver, same-path
+references with a conflicting ID are reported instead of being silently
+trusted. Four CPU-only tests cover nil-ID path matching, different-path
+non-matching, conflicting-ID same-path reporting, and mixed legacy/current
+references (`RT2Tests/src/Phase7W6Tests.cpp:319-412`).
+
+The delete acceptance was repeated in the editor with a temporary project
+fixture and temporary asset, both restored afterwards. A legacy script scene
+reference produced a readable one-entry dependant list; pressing Delete with
+the confirmation checkbox clear left the modal open. An unreferenced asset
+produced the compact modal with the checkbox and buttons visible. Deleting a
+temporary unreferenced asset with the watcher active removed it from the
+browser and showed `Asset deleted`; after the debounce interval there was no
+second `Project assets refreshed` status, so the delete suppression path did
+not trigger a redundant refresh.
+
+This is the third W6 defect found only through interactive acceptance while
+the CPU operations remained green throughout. It is further evidence that the
+host-dispatch extraction should land before more UI-heavy work: the CPU seam
+was correct enough to test, but the real modal and host integration were not
+observable from `RT2Tests` alone.
+
+Final verification after the fix measured 736/736 tests and 146453/146453
+assertions in both Release and Debug. Release and Debug builds passed;
+`run_script_test.ps1` passed its 60-frame scenario; `run_slice_test.ps1`
+passed its 60-step authoring-preservation scenario; and the Release headless
+`--validate` run exited 0 with no validation messages. The headless CLI still
+prints its pre-existing `--out` unknown-argument notice and saves its default
+`screenshot.png`; this follow-up did not change that behavior.

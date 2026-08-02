@@ -55,6 +55,7 @@
 #include "efsw/efsw.hpp"
 
 #include <cstdio>
+#include <cfloat>
 #include <cmath>
 #include <thread>
 #include <chrono>
@@ -1432,17 +1433,25 @@ public:
 			ImGui::EndPopup();
 		}
 
+		ImGui::SetNextWindowSizeConstraints(ImVec2(420, 0),
+			ImVec2(FLT_MAX, 400));
 		if (ImGui::BeginPopupModal("Delete Asset", nullptr,
 			ImGuiWindowFlags_AlwaysAutoResize))
 		{
-			ImGui::TextWrapped("Delete the source and its identity sidecar? This does not rewrite the scene.");
+			ImGui::PushTextWrapPos(400.0f);
+			ImGui::TextWrapped("Delete the source and its identity sidecar? "
+				"This does not rewrite the scene.");
+			ImGui::PopTextWrapPos();
 			if (!m_ContentBrowserDeleteDependants.empty())
 			{
-				ImGui::Text("Dependants in the current scene:");
+				ImGui::Text("Dependants in the current scene (%zu):",
+					m_ContentBrowserDeleteDependants.size());
+				ImGui::BeginChild("DeleteDependants", ImVec2(0, 150), true);
 				for (const auto& dependant : m_ContentBrowserDeleteDependants)
 					ImGui::BulletText("%s (%s)",
 						dependant.entityName.empty() ? "Environment" : dependant.entityName.c_str(),
 						dependant.sourceKey.c_str());
+				ImGui::EndChild();
 			}
 			ImGui::Checkbox("I understand references may become unresolved",
 				&m_ContentBrowserDeleteConfirmed);
