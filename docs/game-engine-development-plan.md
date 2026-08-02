@@ -10935,3 +10935,401 @@ The rule that follows: a citation copied from an earlier section is a claim
 about the current file and must be re-verified like any other, exactly as
 AGENTS.md already requires for counts and status claims. The commitments
 themselves were all real and correctly identified; only the coordinates drifted.
+
+## Host dispatch extraction (implementation spec)
+
+Drafted 2026-08-02 and grounded against commit `a4406de` on `master`. This
+is a refactor, not a roadmap phase. It has no phase number and no workstream
+letter. It must not change behaviour; test counts must not fall.
+
+### The problem
+
+`RT2Tests` compiles zero `WalnutApp.cpp` sources. It links 46 RT2App `.cpp`
+files (`premake5.lua:13`) but never the 4,472-line host
+(`WalnutApp.cpp:1-4472`). Three workstreams hit the same wall:
+
+| Workstream | CPU-only module tested | Host wiring not tested |
+|---|---|---|
+| W5 | `ShouldCaptureRecoverySnapshot` (`SceneAssetMigration.h:58-63`) | that the host consults it at `WalnutApp.cpp:2008` |
+| W6 | `ContentBrowserCanOperate` / `ContentBrowserDeleteAllowed` (`ContentBrowserOperations.h:74-75`) | that the host calls them at `WalnutApp.cpp:1231,1459` |
+| W7 | `RunSuppressedAssetOperation` (`AssetWatchPolicy.h:147-152`) | that the host routes through it at `WalnutApp.cpp:3290` |
+
+The existing W6 and W7 tests work around this with **source-text probes** —
+they open `WalnutApp.cpp` as a text file and grep for function names
+(`Phase7W6Tests.cpp:459-464`; `Phase7W7Tests.cpp:26-44,212-275`). A text
+probe proves the string is present, not that the code is reachable. A
+deliberate fault commenting out one of the four suppression registrations
+left the entire suite green.
+
+Three W6 defects reached master behind a green suite and were found only by
+driving the UI by hand: the rename/move/delete modals never opened (ImGui
+ID-stack bug), the delete confirmation clipped its dependants list, and the
+dependants query reported nothing for unmigrated scenes. In all three the CPU
+operations underneath were correct and fully unit-tested.
+
+### Scope and acceptance criterion
+
+**What this extraction proves:** the dispatch *sequence* — register
+suppression paths before the filesystem operation, with the correct paths
+for each operation kind — becomes link-time testable. A test calls the
+extracted dispatch with a fake registry and a fake operation, and asserts
+the registry was populated with the right paths before the operation ran.
+
+**What it does not prove:** whether the host *invokes* the dispatch for each
+of the four content-browser operations. After the extraction, the host still
+has four call sites to `DispatchContentBrowserOperation` inside
+`DrawContentBrowserPanel`. RT2Tests cannot link `WalnutApp.cpp` (it includes
+ImGui, Walnut, Vulkan, efsw, tinyexr, NRD — HD-F6), so commenting out one of
+those four call sites leaves the suite green. The gap shrinks — the
+untestable surface goes from "the whole register-then-operate sequence" to
+"does the host call one function" — but it does not close.
+
+This is stated plainly because the original acceptance criterion — "the
+green fault turns red" — was wrong. The fault that stayed green was
+commenting out a `RunAssetWatchSuppressedOperation(...)` call site in
+`WalnutApp.cpp`, not commenting out `RegisterMany` in the CPU-only
+`AssetWatchPolicy.cpp` (which was already link-time testable and already
+tested red by W7 at `Phase7W7Tests.cpp:207`). The extraction moves the call
+site up one level — from `RunSuppressedAssetOperation` to
+`DispatchContentBrowserOperation` — but the host invocation of either is
+equally untestable. A stated limitation is worth more than an overstated
+guarantee, and this phase has produced three defects that hid behind exactly
+that difference.
+
+The extraction covers three dispatch gaps:
+
+1. **W7 gap:** the four content-browser dispatches (reimport, rename, move,
+   delete) — the register-then-operate *sequence* becomes link-time testable.
+   Whether the host *invokes* it for each operation remains untestable.
+2. **W6 gap:** `ContentBrowserCanOperate` and `ContentBrowserDeleteAllowed`
+   become link-time testable through dispatch wrappers. Whether the host
+   *consults* the wrappers remains untestable.
+3. **W5 gap:** `ShouldCaptureRecoverySnapshot` becomes link-time testable
+   through a dispatch wrapper. Whether the host *consults* it remains
+   untestable.
+
+All three land in one change. The extraction is small enough to land
+together because the dispatch logic for all three is the same shape: check a
+policy, register suppression, call an operation, clear suppression, refresh.
+
+### Residual gap
+
+The residual gap — whether the host invokes the extracted dispatch — is the
+same gap that W6 and W7 source-text probes attempted to close. The
+source-text probes at `Phase7W6Tests.cpp:457-465` and
+`Phase7W7Tests.cpp:212-275` prove the string is present, not that the code is
+called. After this extraction, those probes can be strengthened to grep for
+`DispatchContentBrowserOperation` instead of `RunAssetWatchSuppressedOperation`
+— but they remain text probes, not link-time tests.
+
+Closing the residual gap fully would require making `DrawContentBrowserPanel`
+itself testable — for example, by injecting the dispatch as a callable
+parameter so a test can assert the panel invokes it for each action. That
+touches ImGui rendering code and is a larger change than this spec proposes.
+It is noted here as a follow-up, not designed.
+
+The practical mitigation for the residual gap is the same one W6 and W7
+already rely on: interactive acceptance exercises. The implementation report
+must record that each of the four content-browser operations was driven
+through the UI and produced the expected filesystem change and database
+refresh. This is a first-class deliverable, not a postscript.
+
+### Grounded findings at `a4406de`
+
+| ID | Current fact (verified at `a4406de`) | Consequence |
+|---|---|---|
+| HD-F1 | The four content-browser dispatches are inline in `DrawContentBrowserPanel` (`WalnutApp.cpp:1228-1486`). Each follows the same pattern: build report/error, construct source/destination paths, call `RunAssetWatchSuppressedOperation` with a lambda that calls the CPU operation, call `RefreshProjectAssets`, call `ScheduleAssetWatchSuppressionClear`, set status. The pattern is at `:1290-1332` (reimport), `:1361-1383` (rename), `:1405-1429` (move), `:1463-1479` (delete). | The dispatch logic is identical in shape across all four. It can be extracted into one function parameterised by operation kind, record, destination, and the CPU operation callback. |
+| HD-F2 | `RunAssetWatchSuppressedOperation` (`WalnutApp.cpp:3279-3294`) is a host method that: (a) checks `m_FileWatchListener` is non-null, (b) constructs the source path from `assetRoot + record.sourcePath`, (c) calls `rt2::core::RunSuppressedAssetOperation` with the listener's `suppressionRegistry`, and (d) returns the callback's result. | This is the seam. It is already a named function with a clear contract. The extraction moves it out of `WalnutApp` into a CPU-only module and makes the host supply the registry as a collaborator. |
+| HD-F3 | `ScheduleAssetWatchSuppressionClear` (`WalnutApp.cpp:3296-3301`) sets a `bool m_AssetWatchClearSuppressionNextDrain = true` flag. The flag is consumed by `DrainAssetWatchChanges` (`:3327-3331`), which clears the registry under the listener's mutex. | The delayed-clear mechanism is host-specific because it crosses into the drain loop. The extraction must either expose the flag as a collaborator or move the clear-into-drain ordering into the module. |
+| HD-F4 | `ContentBrowserCanOperate` is called at `WalnutApp.cpp:1231` and gates the entire panel. `ContentBrowserDeleteAllowed` is called at `:1459` inside the Delete modal's button condition. Both are pure CPU functions (`ContentBrowserOperations.cpp:331-336,383-388`). | The host *consults* these functions at specific call sites. The extraction must make the consultation testable — a test must be able to prove the host calls `ContentBrowserCanOperate` before allowing any operation and `ContentBrowserDeleteAllowed` before committing a delete. |
+| HD-F5 | `ShouldCaptureRecoverySnapshot` is called at `WalnutApp.cpp:2008` inside the autosave block. Its two arguments are `m_ScriptRepairGate.SuppressAutosave()` and `m_AssetMigrationGate`. The function is a pure CPU predicate (`SceneAssetMigration.h:58-63`). | The host *consults* this predicate before capturing a recovery snapshot. The extraction must make the consultation testable — a test must be able to prove the host calls it and respects its result. |
+| HD-F6 | `RT2Tests` compiles `ContentBrowserOperations.cpp`, `AssetWatchPolicy.cpp`, `SceneAssetMigration.cpp`, `ProjectContext.cpp`, `ProjectAssetScanner.cpp`, `SceneManager.cpp`, and 40 other RT2App sources (`premake5.lua:13`; `RT2Tests.vcxproj:306-311`). It does not compile `WalnutApp.cpp`, `SceneEditorUI.cpp`, `InputService.cpp`, `RendererGPU.cpp`, or any file that includes `Walnut/Application.h`, `imgui.h`, `efsw/efsw.hpp`, `tinyexr.h`, `NRD.h`, or `stb_image.h`. | The extracted module must not include or depend on any ImGui/Walnut/Vulkan/efsw/tinyexr/NRD header. It may depend on `ContentBrowserOperations.h`, `AssetWatchPolicy.h`, `SceneAssetMigration.h`, `AssetDatabase.h`, `ProjectContext.h`, `core/Error.h`, and the standard library — all of which are already linkable into RT2Tests. |
+| HD-F7 | `WalnutApp.cpp` includes 55 headers at `:1-55`, including `Walnut/Application.h`, `RendererGPU.h`, `NRD.h`, `efsw/efsw.hpp`, `stb_image.h`, `tinyexr.h`, and `imgui.h` (via `SceneEditorUI.h`). The extracted dispatch logic must not transitively pull in any of these. | The dispatch logic's only dependencies are: `ContentBrowserOperations.h` (for the CPU operations and policy predicates), `AssetWatchPolicy.h` (for `RunSuppressedAssetOperation` and `AssetWatchSuppressionRegistry`), `SceneAssetMigration.h` (for `ShouldCaptureRecoverySnapshot` and `AssetMigrationPersistenceGate`), `ProjectContext.h` (for `AssetResolutionContext`), and `core/Error.h`. All are CPU-only and already in RT2Tests. |
+| HD-F8 | The existing W7 source-text probes (`Phase7W7Tests.cpp:26-44`) read `WalnutApp.cpp` as text and grep for strings like `"ConfigureAssetRootWatch(staged->project.assetRoot)"` and `"handleMissedFileActions"`. These tests prove the string is present but not that the code is called. | The extraction replaces some source-text probes with link-time tests for the dispatch *sequence*. Whether the host *invokes* the dispatch remains a text-probe or interactive-acceptance matter — see the residual-gap section. |
+| HD-F9 | `RunSuppressedAssetOperation` in `AssetWatchPolicy.cpp:263-273` calls `suppressionRegistry.RegisterMany(...)` then `callback()`. The registration happens before the callback. But the host's wrapper at `WalnutApp.cpp:3290` constructs the source path *before* calling `RunSuppressedAssetOperation`, and the CPU operation (e.g. `RenameContentBrowserAsset`) is inside the callback. | The ordering invariant is: (1) register suppression paths, (2) call the filesystem operation, (3) refresh, (4) schedule clear. If step 1 is skipped or moved after step 2, the watcher fires on self-inflicted events. The extraction must make this ordering testable. |
+| HD-F10 | `DrainAssetWatchChanges` (`WalnutApp.cpp:3303-3426`) is the drain loop. It calls `RefreshProjectAssets()` at `:3419` when the debounce window elapses. The drain is host-specific because it touches `m_DebouncedChanges`, `m_DebouncedRefreshPaths`, `m_ScriptSystem`, `m_InspectorFieldRegistry`, and `m_Runtime`. | The drain stays in the host. The extraction does not move the drain. It moves only the dispatch: the "register → operate → refresh → schedule clear" sequence that is currently inline in `DrawContentBrowserPanel`. |
+
+### Approaches evaluated
+
+#### A. Dispatch module — **chosen**
+
+A new CPU-only module (`ContentBrowserDispatch.{h,cpp}`) owns the "for this
+action, register these paths, then run this operation, then refresh, then
+schedule clear" sequence. `WalnutApp` is reduced to supplying the UI event,
+the real `AssetWatchSuppressionRegistry`, and the real CPU operation
+callback. The module is linkable into `RT2Tests` because it depends only on
+`ContentBrowserOperations.h`, `AssetWatchPolicy.h`, and `core/Error.h`.
+
+The host supplies the registry as a reference parameter. A test supplies a
+fake registry and a fake operation callback, then asserts the registry was
+populated before the callback ran and the refresh was called after.
+
+**Why chosen:** it is the same move already applied one level down by
+`ContentBrowserOperations` (W6) and `AssetWatchPolicy` (W7). It is small
+(the dispatch is ~20 lines per operation, and all four share one parameterised
+function). It does not require adding any RT2App source to RT2Tests. It makes
+the dispatch *sequence* link-time testable. It does not make the host's
+*invocation* of the dispatch testable — see the residual-gap section.
+
+#### B. Add selected RT2App sources to RT2Tests.vcxproj — **rejected**
+
+The relevant code is in `WalnutApp.cpp`, which includes `Walnut/Application.h`
+(`:1`), `RendererGPU.h` (`:6`), `NRD.h` (`:54`), `efsw/efsw.hpp` (`:55`),
+`stb_image.h` (`:50`), and `tinyexr.h` (`:53`). These headers pull in Vulkan,
+GLFW, ImGui, and the NRD shader compiler. RT2Tests is CPU-only by design
+(`AGENTS.md:79-81`) and cannot link these.
+
+Even if the dispatch logic were extracted to a separate `.cpp` file, that
+file would need to call `RefreshProjectAssets()` (which touches
+`m_ProjectContext`, `m_SceneMgr`, and `m_ScriptAssetContext`) and
+`ScheduleAssetWatchSuppressionClear()` (which touches
+`m_AssetWatchClearSuppressionNextDrain`). These are host members. A source
+file that calls host methods cannot be compiled into RT2Tests without the
+host class definition, which pulls in the full include graph.
+
+**Rejected** because the dispatch logic cannot be separated from its host
+collaborators without extracting it to a module that receives them as
+parameters — which is approach A.
+
+#### C. Separate static library — **rejected**
+
+A static library linked by both RT2App and RT2Tests would solve the link
+problem but introduces a build-system change that affects every target. The
+existing precedent (`ContentBrowserOperations`, `AssetWatchPolicy`,
+`InputConfig`, `Project`, `SceneAssetMigration`) adds `.cpp` files directly
+to RT2Tests via `premake5.lua:13` and `RT2Tests.vcxproj`. A static library
+is more machinery for the same result.
+
+**Rejected** because the existing pattern of adding the `.cpp` to
+`premake5.lua` and `RT2Tests.vcxproj` is proven and cheaper. If the project
+later adopts a static library for other reasons, the extracted module moves
+into it without interface change.
+
+### Decisions — answered before code
+
+#### D-HD-1 — one parameterised dispatch function for all four operations
+
+**Decision:** the module exposes one function:
+
+```cpp
+struct ContentBrowserDispatchContext {
+    std::filesystem::path assetRoot;
+    AssetWatchSuppressionRegistry* suppressionRegistry;
+    ContentBrowserOperationReport* report;
+    Error* error;
+};
+
+bool DispatchContentBrowserOperation(
+    const ContentBrowserDispatchContext& ctx,
+    const AssetRecord& record,
+    AssetWatchOperationKind operationKind,
+    const std::filesystem::path& destination,
+    const ContentBrowserSuppressedOperation& operation);
+```
+
+The function: (1) constructs source/destination paths, (2) calls
+`RunSuppressedAssetOperation` with the registry, operation kind, paths, and
+the callback, (3) returns the callback's result. The host is responsible
+for calling `RefreshProjectAssets` and `ScheduleAssetWatchSuppressionClear`
+afterwards — those are host-specific because they touch `m_ProjectContext`
+and the drain loop.
+
+The ordering invariant — register before operate — is inside
+`RunSuppressedAssetOperation` (`AssetWatchPolicy.cpp:270-272`), which is
+already tested. The extraction makes the *dispatch sequence* (path
+construction + register + operate) link-time testable as a unit. Whether the
+host *invokes* the dispatch for each operation remains untestable — see the
+residual-gap section.
+
+#### D-HD-2 — policy consultation is tested through a dispatch wrapper
+
+**Decision:** the module exposes two additional functions that wrap the
+policy checks:
+
+```cpp
+bool CanOperateContentBrowser(bool projectActive);
+bool AllowDeleteContentBrowser(bool confirmed, size_t dependantCount);
+```
+
+These are trivial wrappers around `ContentBrowserCanOperate` and
+`ContentBrowserDeleteAllowed` that exist so the dispatch module is the single
+entry point for all content-browser host decisions. A test that calls
+`DispatchContentBrowserOperation` with a null project context must fail at
+the policy check before reaching the operation.
+
+The host calls `CanOperateContentBrowser` at the panel gate and
+`AllowDeleteContentBrowser` at the delete button. The wrappers themselves
+are link-time testable. Whether the host *consults* them remains untestable
+— see the residual-gap section.
+
+#### D-HD-3 — recovery-snapshot consultation is tested through a dispatch wrapper
+
+**Decision:** the module exposes:
+
+```cpp
+bool ShouldCaptureRecovery(
+    bool scriptRepairPending,
+    const AssetMigrationPersistenceGate& migrationGate);
+```
+
+This is a wrapper around `ShouldCaptureRecoverySnapshot` that exists so the
+host's consultation of it is routed through the dispatch module. A test that
+calls `ShouldCaptureRecovery` with `scriptRepairPending=true` must get
+`false`; a test with `scriptRepairPending=false` and a non-pending gate must
+get `true`.
+
+The host's autosave block calls `ShouldCaptureRecovery` instead of
+`ShouldCaptureRecoverySnapshot` directly. This is a one-line change in
+`WalnutApp.cpp:2008`.
+
+#### D-HD-4 — the host supplies the registry; the module does not own it
+
+**Decision:** the `AssetWatchSuppressionRegistry` is supplied by the host
+through the `ContentBrowserDispatchContext`. The module does not construct
+or own it. A test supplies a `AssetWatchSuppressionRegistry` created with
+its own mutex (`AssetWatchPolicy.h:48`). The host supplies the listener's
+`suppressionRegistry` member (`WalnutApp.cpp:3093`).
+
+This keeps the module CPU-only and testable. The registry is already
+CPU-only (`AssetWatchPolicy.h:42-68`).
+
+### Contract
+
+#### ContentBrowserDispatch module
+
+The module (`ContentBrowserDispatch.{h,cpp}`) provides:
+
+1. `ContentBrowserDispatchContext` — a struct holding the asset root, a
+   non-owning `AssetWatchSuppressionRegistry*`, and the report/error outputs.
+   The registry pointer may be null (standalone mode — no suppression).
+
+2. `DispatchContentBrowserOperation` — the parameterised dispatch. It:
+   (a) constructs the source path from `assetRoot + record.sourcePath`;
+   (b) if `suppressionRegistry` is non-null, calls
+       `RunSuppressedAssetOperation` with the registry, operation kind,
+       source, destination, and the callback;
+   (c) if `suppressionRegistry` is null, calls the callback directly;
+   (d) returns the callback's result.
+
+3. `CanOperateContentBrowser(bool projectActive)` — wraps
+   `ContentBrowserCanOperate`.
+
+4. `AllowDeleteContentBrowser(bool confirmed, size_t dependantCount)` — wraps
+   `ContentBrowserDeleteAllowed`.
+
+5. `ShouldCaptureRecovery(bool, const AssetMigrationPersistenceGate&)` —
+   wraps `ShouldCaptureRecoverySnapshot`.
+
+The module depends on: `ContentBrowserOperations.h`,
+`AssetWatchPolicy.h`, `SceneAssetMigration.h`, `AssetDatabase.h`,
+`core/Error.h`, and the standard library. It does not include ImGui, Walnut,
+Vulkan, efsw, tinyexr, NRD, or stb_image.
+
+#### Host changes
+
+`WalnutApp.cpp` changes are minimal:
+
+- `DrawContentBrowserPanel` calls `DispatchContentBrowserOperation` instead
+  of `RunAssetWatchSuppressedOperation` + inline path construction.
+- The panel gate calls `CanOperateContentBrowser` instead of
+  `ContentBrowserCanOperate`.
+- The delete button calls `AllowDeleteContentBrowser` instead of
+  `ContentBrowserDeleteAllowed`.
+- The autosave block calls `ShouldCaptureRecovery` instead of
+  `ShouldCaptureRecoverySnapshot`.
+- `RunAssetWatchSuppressedOperation` and `ScheduleAssetWatchSuppressionClear`
+  remain in the host (they own the listener and drain flag).
+
+No behaviour changes. The host's `RefreshProjectAssets` and
+`ScheduleAssetWatchSuppressionClear` calls remain after the dispatch returns,
+exactly as they are today.
+
+### Implementation order
+
+Each step builds and leaves the tree green.
+
+1. **HD.0 — Add `ContentBrowserDispatch` module.** Add
+   `ContentBrowserDispatch.{h,cpp}` with the five functions above. Add
+   `ContentBrowserDispatch.cpp` to `premake5.lua` and `RT2Tests.vcxproj`.
+   No host changes yet. Focused tests: dispatch with a fake registry and
+   fake operation asserts the registry was populated before the operation
+   ran; dispatch with a null registry calls the operation directly; policy
+   wrappers return the same results as the underlying functions; recovery
+   wrapper returns the same result as `ShouldCaptureRecoverySnapshot`.
+
+2. **HD.1 — Route host through the module.** Replace the four inline
+   dispatches in `DrawContentBrowserPanel` with calls to
+   `DispatchContentBrowserOperation`. Replace the panel gate and delete
+   button with `CanOperateContentBrowser` and `AllowDeleteContentBrowser`.
+   Replace the autosave call with `ShouldCaptureRecovery`. Build and run
+   the full suite. No new tests yet — the existing W6/W7 source-text probes
+   still pass because the strings they grep for are still present (the host
+   still calls `RefreshProjectAssets` and `ScheduleAssetWatchSuppressionClear`).
+
+3. **HD.2 — Replace source-text probes with link-time tests.** Add permanent
+   tests that call `DispatchContentBrowserOperation` with a fake registry
+   and a fake operation, and assert the ordering invariant. Remove the W6
+   source-text probe at `Phase7W6Tests.cpp:457-465` and the W7 source-text
+   probes at `Phase7W7Tests.cpp:212-275` that are now superseded by link-time
+   tests. The remaining W7 source-text probes (those that test the drain
+   loop and the listener, which stay in the host) remain. Run the full gate.
+
+### Permanent tests and discrimination proofs
+
+| Permanent evidence | Temporary fault that must make it fail |
+|---|---|
+| `DispatchContentBrowserOperation` with a fake registry and a fake Rename operation: the registry contains the source and destination paths before the operation callback runs. | Move the path construction or `RunSuppressedAssetOperation` call to after the callback in `DispatchContentBrowserOperation`; the test must fail because the registry is empty when the callback checks it. |
+| `DispatchContentBrowserOperation` with a fake registry and a fake Move operation: the registry contains both source and destination paths. | Register only the source path, not the destination; the test must fail because the destination path is missing from the registry. |
+| `DispatchContentBrowserOperation` with a fake registry and a fake Delete operation: the registry contains the source and sidecar paths. | Register only the source path, not the sidecar; the test must fail because the sidecar path is missing from the registry. |
+| `DispatchContentBrowserOperation` with a null registry: the operation callback runs and returns its result. | Refuse to call the callback when the registry is null; the test must fail because the operation never ran. |
+| `CanOperateContentBrowser(false)` returns false; `CanOperateContentBrowser(true)` returns true. | Invert the predicate; the test must fail. |
+| `AllowDeleteContentBrowser(false, 0)` returns false; `AllowDeleteContentBrowser(true, 1)` returns true. | Remove the confirmation check; the test must fail because delete is allowed without confirmation. |
+| `ShouldCaptureRecovery(true, gate)` returns false regardless of gate state; `ShouldCaptureRecovery(false, gate)` returns true when gate is not pending. | Ignore the `scriptRepairPending` argument; the test must fail because recovery is captured during script-repair loss. |
+
+**What the link-time tests do not cover:** whether the host invokes
+`DispatchContentBrowserOperation` for each of the four content-browser
+operations. Commenting out one of the four call sites in
+`DrawContentBrowserPanel` leaves the suite green because RT2Tests cannot
+link `WalnutApp.cpp`. This is the residual gap described in the scope
+section. The implementation report must record interactive acceptance
+exercises for all four operations as first-class evidence.
+
+Every new permanent test gets its discrimination fault exercised before the
+implementation report calls it protective. The final gate builds the Release
+and Debug solutions, runs `RT2Tests.exe` from the repository root, runs the
+scripting regression gate, and records the actual counts measured then.
+
+### Review checklist and boundary
+
+A reviewer must verify at least: the dispatch module has no ImGui/Walnut/
+Vulkan/efsw/tinyexr/NRD/stb_image includes; the module is added to
+`premake5.lua` and `RT2Tests.vcxproj`; the host's four dispatch call sites
+route through the module; the host's panel gate and delete button route
+through the module's policy wrappers; the host's autosave block routes
+through the module's recovery wrapper; the ordering invariant
+(register-before-operate) is proven by a link-time test; the residual gap
+(host invocation of the dispatch) is stated in the spec and covered by
+interactive acceptance exercises in the implementation report; and the
+source-text probes that are superseded by link-time tests are removed, while
+those that test host-only code (drain, listener) remain.
+
+**Boundary.** This extraction moves only the content-browser dispatch and
+the three policy consultations. It does not move the drain loop, the
+watcher listener, the ImGui panel rendering, the recovery service, the
+project-open flow, or any other host logic. It does not fix the three W6
+defects (they are already fixed). It does not address the
+machine-locked test fixtures (17 tests loading 284 MB from
+`C:\Users\mikey\Downloads`). It does not add the host-dispatch extraction for
+W8's input-bindings panel or script-rebind button — those are W8's own
+extraction, to be done after this one lands. It does not change the
+`WalnutApp.cpp` god-object problem in general; it extracts exactly the
+dispatch logic that was untestable, and no more. It does not close the
+residual gap — whether the host *invokes* the dispatch — which is stated in
+the scope section and covered by interactive acceptance, not by link-time
+test.
+
+**Sequencing note for W8.** The W8 spec (`:10859-10869`) notes that W8
+would be materially safer if this extraction landed first. This spec
+confirms that: the `ContentBrowserDispatch` module is the seam W8's
+input-bindings panel and script-rebind button would route through. W8
+should land after this extraction.
