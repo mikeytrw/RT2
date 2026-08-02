@@ -22,6 +22,7 @@ namespace {
 const UUID kModelId = UUID::Parse("550e8400-e29b-41d4-a716-446655440101");
 const UUID kScriptId = UUID::Parse("550e8400-e29b-41d4-a716-446655440102");
 const UUID kEntityId = UUID::Parse("550e8400-e29b-41d4-a716-446655440103");
+const UUID kOtherEntityId = UUID::Parse("550e8400-e29b-41d4-a716-446655440104");
 
 struct TempTree
 {
@@ -314,6 +315,99 @@ TEST_CASE("Phase7 W6 dependants come from live scene references")
     CHECK(scriptDependants[0].entityUuid == kEntityId);
     CHECK(scriptDependants[0].entityName == "Hero");
     CHECK(scriptDependants[0].kind == AssetKind::Script);
+}
+
+TEST_CASE("Phase7 W6 dependants match nil-ID references by path")
+{
+    TempTree tree;
+    SceneDocument document;
+    const auto entity = document.ecs.registry.create();
+    REQUIRE(document.AssignKnownUuid(entity, kEntityId));
+    document.ecs.registry.emplace<NameComponent>(entity, "LegacyHero");
+    ImportedMeshSourceComponent imported;
+    imported.model.kind = AssetKind::Model;
+    imported.model.path = "models/hero.glb";
+    imported.model.sourceKey = "gltf:scene=0";
+    imported.model.assetId = UUID::Nil();
+    document.ecs.registry.emplace<ImportedMeshSourceComponent>(entity, imported);
+
+    const auto dependants = FindContentBrowserDependants(
+        document, Record("models/hero.glb", kModelId), tree.assets);
+    REQUIRE(dependants.size() == 1);
+    CHECK(dependants[0].entityUuid == kEntityId);
+    CHECK(dependants[0].sourcePath == "models/hero.glb");
+}
+
+TEST_CASE("Phase7 W6 dependants do not match nil-ID references by a different path")
+{
+    TempTree tree;
+    SceneDocument document;
+    const auto entity = document.ecs.registry.create();
+    REQUIRE(document.AssignKnownUuid(entity, kEntityId));
+    ImportedMeshSourceComponent imported;
+    imported.model.kind = AssetKind::Model;
+    imported.model.path = "models/other.glb";
+    imported.model.sourceKey = "gltf:scene=0";
+    imported.model.assetId = UUID::Nil();
+    document.ecs.registry.emplace<ImportedMeshSourceComponent>(entity, imported);
+
+    const auto dependants = FindContentBrowserDependants(
+        document, Record("models/hero.glb", kModelId), tree.assets);
+    CHECK(dependants.empty());
+}
+
+TEST_CASE("Phase7 W6 dependants report same-path references with a conflicting ID")
+{
+    TempTree tree;
+    SceneDocument document;
+    const auto entity = document.ecs.registry.create();
+    REQUIRE(document.AssignKnownUuid(entity, kEntityId));
+    ImportedMeshSourceComponent imported;
+    imported.model.kind = AssetKind::Model;
+    imported.model.path = "models/hero.glb";
+    imported.model.sourceKey = "gltf:scene=0";
+    imported.model.assetId = kScriptId;
+    document.ecs.registry.emplace<ImportedMeshSourceComponent>(entity, imported);
+
+    // The query is a destructive-action warning, so same-path disagreement
+    // is reported rather than silently trusting the conflicting identity.
+    const auto dependants = FindContentBrowserDependants(
+        document, Record("models/hero.glb", kModelId), tree.assets);
+    REQUIRE(dependants.size() == 1);
+    CHECK(dependants[0].entityUuid == kEntityId);
+}
+
+TEST_CASE("Phase7 W6 dependants report mixed ID and legacy references")
+{
+    TempTree tree;
+    SceneDocument document;
+    const auto withId = document.ecs.registry.create();
+    REQUIRE(document.AssignKnownUuid(withId, kEntityId));
+    document.ecs.registry.emplace<NameComponent>(withId, "ImportedHero");
+    ImportedMeshSourceComponent imported;
+    imported.model.kind = AssetKind::Model;
+    imported.model.path = "models/hero.glb";
+    imported.model.sourceKey = "gltf:scene=0";
+    imported.model.assetId = kModelId;
+    document.ecs.registry.emplace<ImportedMeshSourceComponent>(withId, imported);
+
+    const auto legacy = document.ecs.registry.create();
+    REQUIRE(document.AssignKnownUuid(legacy, kOtherEntityId));
+    document.ecs.registry.emplace<NameComponent>(legacy, "LegacyHero");
+    ImportedMeshSourceComponent legacyImported;
+    legacyImported.model.kind = AssetKind::Model;
+    legacyImported.model.path = "models/hero.glb";
+    legacyImported.model.sourceKey = "gltf:scene=1";
+    legacyImported.model.assetId = UUID::Nil();
+    document.ecs.registry.emplace<ImportedMeshSourceComponent>(legacy, legacyImported);
+
+    const auto dependants = FindContentBrowserDependants(
+        document, Record("models/hero.glb", kModelId), tree.assets);
+    REQUIRE(dependants.size() == 2);
+    CHECK(std::all_of(dependants.begin(), dependants.end(),
+        [](const ContentBrowserDependant& dependant) {
+            return dependant.sourcePath == "models/hero.glb";
+        }));
 }
 
 TEST_CASE("Phase7 W6 reimport dispatch preserves sidecar identity")

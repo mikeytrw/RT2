@@ -8613,7 +8613,7 @@ The earlier deferrals remain real, but their landing workstream matters:
 | Source | Commitment | W4/W5 treatment |
 |---|---|---|
 | `docs/game-engine-development-plan.md:985` | Migrate to global asset UUIDs. | W5 closes the legacy-scene half by assigning/reusing sidecar IDs and persisting them in v4. |
-| `:3311,3380` | Input rebinding dialog. | W4 provides project defaults, user overrides and composition; W8 owns UI. |
+| `:3389-3390,3458-3459` | Input rebinding dialog. | W4 provides project defaults, user overrides and composition; W8 owns UI. |
 | `:4064,5274` | Script asset Rebind button. | No W4/W5 UI. W4/W5 make the underlying ID/path context stable; W8 owns the button. |
 | `:5521` | Declaration diagnostics in content browser. | W6/W8; no browser exists yet. |
 | `:5901` | Cursor-lock binding. | W4’s composition supports it later; W8 authors it. |
@@ -10312,3 +10312,626 @@ check. `--recovery-scenario` passed, and `run_script_test.ps1` passed with 60
 frames, one entity, and no mismatches. The Release solution build completed
 successfully before the Release suite; the Debug solution build completed
 successfully before the Debug suite.
+
+## Phase 7 W7 verification report (2026-08-01)
+
+This report records the W7 discrimination pass against `3973e9c`. No
+production changes were retained; only this report is committed.
+
+### Measured gates
+
+The Release solution built successfully. Release `RT2Tests.exe` reported:
+
+```text
+[doctest] test cases:    732 |    732 passed | 0 failed | 0 skipped
+[doctest] assertions: 146428 | 146428 passed | 0 failed |
+[doctest] Status: SUCCESS!
+```
+
+The Debug solution built successfully. Debug `RT2Tests.exe` reported the same
+measured result: 732/732 test cases and 146428/146428 assertions, with status
+SUCCESS.
+
+The remaining gates passed:
+
+- `run_script_test.ps1`: `PASS: 60 frames, 1 entities, no mismatches`.
+- `run_slice_test.ps1`: `PASS: 60 steps, authoring intact`; final cube X
+  `0.999999702`.
+- `run_punctual_light_test.ps1`: `lit samples: 48, peak luminance: 42.7`,
+  `PASS`.
+- Release `--headless --validate` exited 0 with zero validation messages.
+  The existing CLI also reported that `--out artifacts/v.png` is unknown and
+  saved `screenshot.png`; this did not change the zero exit or validation
+  result.
+
+### Interactive acceptance
+
+The external `.lua` edit was performed while the editor was open; the Session
+panel reported `Scripts reloaded`, confirming hot reload.
+
+An asset was added externally and appeared after the automatic `Project assets
+refreshed` status. The same temporary asset was deleted externally; the
+Content Browser then showed `No matching assets` after the automatic refresh.
+
+The W6 rename exercise was attempted with the watcher active. The Content
+Browser context menu opened, but selecting `Rename...` did not open the rename
+modal, so no rename was actually performed and no end-to-end observation of a
+rename without a redundant scan was established. This remains an acceptance
+gap, not a claimed pass.
+
+### Discrimination proofs
+
+Each fault below was injected temporarily, followed by a Release build and
+the named test only; it was then reverted, rebuilt, and the named test passed.
+
+1. **`.glb` classified as `ScriptReload`.**
+
+   ```text
+   Phase7W7Tests.cpp(55): ERROR: CHECK( ClassifyAssetFileEvent(kRoot / "model.glb", action) == AssetFileEventKind::DatabaseRefresh ) is NOT correct!
+     values: CHECK( 2 == 1 )
+   ```
+   The error occurred four times. Summary: `38 assertions: 34 passed, 4
+   failed`. Reverted result: `1 passed`, `38/38` assertions.
+
+2. **Suppression check disabled in event publication.**
+
+   ```text
+   Phase7W7Tests.cpp(165): ERROR: CHECK_FALSE( PublishAssetWatchEventLocked( registry, queue, path, AssetFileAction::Modified) ) is NOT correct!
+     values: CHECK_FALSE( true )
+   Phase7W7Tests.cpp(166): ERROR: CHECK( queue.SizeLocked() == 0 ) is NOT correct!
+     values: CHECK( 1 == 0 )
+   ```
+   Summary: `5 assertions: 3 passed, 2 failed`. Reverted result: `1 passed`,
+   `5/5` assertions.
+
+3. **Path deduplication removed.**
+
+   ```text
+   Phase7W7Tests.cpp(122): FATAL ERROR: REQUIRE( events.size() == 1 ) is NOT correct!
+     values: REQUIRE( 100 == 1 )
+   ```
+   Summary: `101 assertions: 100 passed, 1 failed`. Reverted result: `1
+   passed`, `102/102` assertions.
+
+4. **Busy watcher events dropped instead of queued.**
+
+   ```text
+   Phase7W7Tests.cpp(138): ERROR: CHECK( DecideWatchRefreshAction(false, 1, true) == AssetWatchRefreshAction::Queue ) is NOT correct!
+     values: CHECK( 0 == 2 )
+   Phase7W7Tests.cpp(140): ERROR: CHECK( DecideWatchRefreshAction(false, kAssetWatchQueueLimit, true) == AssetWatchRefreshAction::Truncate ) is NOT correct!
+     values: CHECK( 0 == 3 )
+   ```
+   Summary: `4 assertions: 2 passed, 2 failed`. Reverted result: `1 passed`,
+   `4/4` assertions.
+
+5. **Missed-event handler left as a no-op.**
+
+   ```text
+   Phase7W7Tests.cpp(148): ERROR: CHECK( DecideWatchRefreshAction(true, 0, false) == AssetWatchRefreshAction::RefreshNow ) is NOT correct!
+     values: CHECK( 0 == 1 )
+   ```
+   Summary: `3 assertions: 2 passed, 1 failed`. Reverted result: `1 passed`,
+   `3/3` assertions.
+
+6. **Watcher performs identity assignment.**
+
+   ```text
+   Phase7W7Tests.cpp(273): ERROR: CHECK( drain.find("ResolveOrAssign") == std::string::npos ) is NOT correct!
+     values: CHECK( 2662 == 18446744073709551615 )
+   ```
+   Summary: `5 assertions: 4 passed, 1 failed`. Reverted result: `1 passed`,
+   `5/5` assertions.
+
+7. **Watcher scope widened to the script-candidate walk.**
+
+   ```text
+   Phase7W7Tests.cpp(255): ERROR: CHECK( source.find("ScriptWatchDirectoryForCandidate") == std::string::npos ) is NOT correct!
+     values: CHECK( 140005 == 18446744073709551615 )
+   ```
+   Summary: `5 assertions: 4 passed, 1 failed`. Reverted result: `1 passed`,
+   `5/5` assertions.
+
+8. **`.rt2scene` classified as `DatabaseRefresh`.**
+
+   ```text
+   Phase7W7Tests.cpp(262): ERROR: CHECK( ClassifyAssetFileEvent(kRoot / "open.rt2scene", action) == AssetFileEventKind::Ignore ) is NOT correct!
+     values: CHECK( 1 == 2 )
+   ```
+   The error occurred four times. Summary: `7 assertions: 3 passed, 4
+   failed`. Reverted result: `1 passed`, `7/7` assertions.
+
+9. **Destination sidecar omitted from W6 suppression paths.**
+
+   ```text
+   Phase7W7Tests.cpp(195): FATAL ERROR: REQUIRE( expectedPaths.size() == operation.expectedPathCount ) is NOT correct!
+     values: REQUIRE( 3 == 4 )
+   ```
+   Summary: `5 assertions: 4 passed, 1 failed`. Reverted result: `1 passed`,
+   `16/16` assertions.
+
+10. **Network watcher buffer widened to 256 KiB.**
+
+   ```text
+   Phase7W7Tests.cpp(129): ERROR: CHECK( AssetWatchBufferSize(AssetWatchDriveKind::Network) == 63u * 1024u ) is NOT correct!
+     values: CHECK( 262144 == 64512 )
+   ```
+   Summary: `3 assertions: 2 passed, 1 failed`. Reverted result: `1 passed`,
+   `3/3` assertions.
+
+11. **Debounce window removed.**
+
+   ```text
+   Phase7W7Tests.cpp(293): ERROR: CHECK( kAssetWatchDebounceMilliseconds == 100 ) is NOT correct!
+     values: CHECK( 0 == 100 )
+   ```
+   Summary: `7 assertions: 6 passed, 1 failed`. Reverted result: `1 passed`,
+   `7/7` assertions.
+
+12. **Explicit Refresh label/backstop removed.**
+
+   ```text
+   Phase7W7Tests.cpp(301): ERROR: CHECK( source.find("Refresh Assets") != std::string::npos ) is NOT correct!
+     values: CHECK( 18446744073709551615 != 18446744073709551615 )
+   ```
+   Summary: `4 assertions: 3 passed, 1 failed`. Reverted result: `1 passed`,
+   `4/4` assertions.
+
+The two critical proofs were run before this pass. Registering suppression
+paths after the callback produced:
+
+```text
+Phase7W7Tests.cpp(207): ERROR: CHECK_FALSE( unsuppressedEventObserved ) is NOT correct!
+  values: CHECK_FALSE( true )
+[doctest] test cases: 1 | 0 passed | 1 failed | 731 skipped
+[doctest] assertions: 16 | 12 passed | 4 failed |
+```
+
+The same test was green after reverting: `1 passed`, `16/16` assertions.
+Commenting out a literal `RunAssetWatchSuppressedOperation` call in
+`WalnutApp.cpp` stayed green: `1 passed`, `16/16` assertions. That fault was
+restored and was not counted as a protective proof.
+
+### Known host-dispatch limitation
+
+The seam's ordering contract is proven by the behavioural test. The host's use
+of the seam is not proven, because `RT2Tests` compiles no RT2App sources and
+does not include `WalnutApp.cpp`. Commenting out one of the four host calls
+(`WalnutApp.cpp:1288`, `:1358`, `:1403`, or `:1447`) leaves the suite green.
+
+If that host wiring regresses, suppression fails and a W6 rename triggers a
+redundant scan. `RefreshProjectAssets` is transactional and read-only, so the
+consequence is wasted work, not corruption or data loss. The same gap exists
+for W5's `ShouldCaptureRecoverySnapshot` and W6's `ContentBrowserCanOperate`.
+Closing it requires extracting host dispatch into the CPU module; that work is
+deliberately out of scope for W7.
+
+The remaining tests named `static check: ...` are source-text guardrails for
+host wiring and configuration: duplicate-path drain, busy queueing, missed
+events, watcher scope, identity non-minting, buffer configuration, debounce,
+and explicit Refresh. They are useful regression checks but are not behavioural
+proofs of the host call sites. The CPU behavioural tests are the evidence for
+classification, suppression publication, queue coalescing, busy decisions,
+missed-event decisions, scene exclusion, and W6 suppression-path composition.
+
+### W7 follow-up — content-browser popup scope (2026-08-01)
+
+The W6 content-browser UI had a popup-scope defect in `RT2App/src/WalnutApp.cpp`:
+Rename, Move, and Delete called `OpenPopup` inside each record's per-record
+and context-popup ID scopes, while their `BeginPopupModal` calls ran outside
+both scopes. The CPU operations were fully tested, but all three UI paths were
+unreachable. The fix captures `openRename`, `openMove`, and `openDelete` inside
+the loop and opens the matching popups after the loop beside the modal bodies.
+No modal body, suppression wiring, or CPU operation was changed.
+
+Interactive acceptance with the watcher active then showed:
+
+- Rename opened, changed `cube.obj` to `cube_renamed.obj`, retained its
+  sidecar identity, showed `Status: Asset renamed`, and did not show a
+  redundant project-refresh status.
+- Move opened, moved the renamed asset into `phase1a-fixtures`, showed
+  `Status: Asset moved`, and did not show a redundant project-refresh status.
+  The asset was then moved back for cleanup.
+- Delete opened for `script-scenario.lua`, which is referenced by the open
+  scene. The warning and confirmation controls appeared, so deletion required
+  explicit confirmation. The upper part of this modal was clipped off-screen,
+  preventing the dependant list from being fully observed; no deletion was
+  confirmed. This is a remaining UI defect.
+
+Release and Debug both measured 732/732 tests and 146428/146428 assertions;
+script, slice, and `--validate` gates passed. The host-dispatch extraction gap
+described above remains out of scope.
+
+## 2026-08-02 — W7/W6 interactive dependant-query follow-up
+
+Interactive acceptance found a third W6 defect after the unopenable modals and
+the clipped confirmation dialog. `FindContentBrowserDependants`
+(`RT2App/src/ContentBrowserOperations.cpp:407-434`) gated `matchesPath` on
+the database record having a nil ID, but scanned records always carry a
+non-nil sidecar ID (`ProjectAssetScanner.cpp:210-216`). Path fallback was
+therefore unreachable for unmigrated v3 scene references. The safety
+consequence was material: the delete warning could claim there were no
+dependants, even though `ContentBrowserDeleteAllowed` does not block deletion
+(`ContentBrowserOperations.cpp:383-389`) and the list is the only warning
+mechanism.
+
+The fix makes ID matching require two non-nil, equal IDs, then uses the
+canonical source path whenever the ID match fails. Because this is an
+advisory destructive-action query rather than the resolver, same-path
+references with a conflicting ID are reported instead of being silently
+trusted. Four CPU-only tests cover nil-ID path matching, different-path
+non-matching, conflicting-ID same-path reporting, and mixed legacy/current
+references (`RT2Tests/src/Phase7W6Tests.cpp:319-412`).
+
+The delete acceptance was repeated in the editor with a temporary project
+fixture and temporary asset, both restored afterwards. A legacy script scene
+reference produced a readable one-entry dependant list; pressing Delete with
+the confirmation checkbox clear left the modal open. An unreferenced asset
+produced the compact modal with the checkbox and buttons visible. Deleting a
+temporary unreferenced asset with the watcher active removed it from the
+browser and showed `Asset deleted`; after the debounce interval there was no
+second `Project assets refreshed` status, so the delete suppression path did
+not trigger a redundant refresh.
+
+This is the third W6 defect found only through interactive acceptance while
+the CPU operations remained green throughout. It is further evidence that the
+host-dispatch extraction should land before more UI-heavy work: the CPU seam
+was correct enough to test, but the real modal and host integration were not
+observable from `RT2Tests` alone.
+
+Final verification after the fix measured 736/736 tests and 146453/146453
+assertions in both Release and Debug. Release and Debug builds passed;
+`run_script_test.ps1` passed its 60-frame scenario; `run_slice_test.ps1`
+passed its 60-step authoring-preservation scenario; and the Release headless
+`--validate` run exited 0 with no validation messages. The headless CLI still
+prints its pre-existing `--out` unknown-argument notice and saves its default
+`screenshot.png`; this follow-up did not change that behavior.
+
+## Phase 7 W8 — deferred commitments (implementation spec)
+
+Drafted 2026-08-02 and grounded against branch
+`codex/phase7-w7-watching-async-reimport` at commit `8d8a361`. W0–W7 are
+implemented in the working tree (W7 is on this branch, not yet merged to
+master). This spec must be reviewed before implementation. Review amendments
+are appended here; implementation does not reinterpret an unsettled point
+from memory.
+
+### Scope and exit
+
+W8 is the deferred-commitments bucket: the four items that earlier phases
+explicitly pushed to Phase 7 because they were UI or needed the project model
+to exist first. Each is small, and they are independent. This spec decides
+which are worth building, which are worth deferring again, and which should be
+dropped.
+
+The combined exit is: a user can rebind a runtime input action through a UI
+panel and see the new binding take effect on the next Play; a user can rebind
+a script asset through a file dialog and the `assetId` is preserved; a user
+can see script declaration diagnostics in the content browser for `.lua`
+assets; and cursor-lock is bound to an input action so a runtime script can
+request it.
+
+Not in W8: the host-dispatch extraction (scheduled but unstarted — see
+boundary). W8 does not add new asset operations, new watcher capabilities, or
+new scene-schema versions.
+
+### Grounded findings at `8d8a361`
+
+| ID | Current fact | Consequence |
+|---|---|---|
+| W8-F1 | `InputConfig` provides `ParseInputContextRecords`, `ComposeInputContexts`, `InputContextRecordsToJson`, and `IsEditorOwnedInputContext` (`InputConfig.h:35-53`). Composition is deterministic: built-ins → project defaults → user overrides, with empty bindings as explicit unbind (`InputConfig.h:43-51`; `InputConfig.cpp:322-352`). | The data model is complete. W8's input rebinding UI is purely an authoring surface over `InputConfig`. The CPU-only composition, validation, and serialization already exist and are tested. |
+| W8-F2 | `InputService::ApplyConfiguration` (`InputService.cpp:180-231`) rebuilds all four owned contexts (`editor`, `viewport`, `viewport.look`, `runtime`) from composed records. It is called at project open (`WalnutApp.cpp:3258-3265,3303`), at standalone scene open (`:3200-3201`), and on input-settings save. | The runtime already consumes composed input. W8's rebinding UI calls `ApplyConfiguration` after editing overrides, exactly as the existing settings-save path does. No new runtime wiring is needed. |
+| W8-F3 | `EditorSettingsStore` owns `m_InputOverrides` (`EditorSettings.h:62-66,76`) and serializes them as `inputOverrides` in schema v3 (`EditorSettings.cpp:227-246`). The v2 → v3 migration drops editor-owned records and promotes runtime records (`EditorSettings.cpp:152-207`). | User overrides already persist. W8's rebinding UI edits `m_InputOverrides` and calls `Save`, reusing the existing persistence path. No new serialization is needed. |
+| W8-F4 | `IsEditorOwnedInputContext` returns true for `editor`, `viewport`, `viewport.look` (`InputConfig.cpp:194-198`). `ValidateScope` rejects project defaults for editor-owned contexts and restricts project v1 to the `runtime` context only (`InputConfig.cpp:136-155`). User overrides accept editor-owned contexts when explicitly authored in v3. | The rebinding UI must refuse to let the user rebind editor-owned contexts through the project defaults panel. It may allow rebinding editor-owned contexts through user overrides (the existing v3 contract), but this is a user preference, not a project-shippable binding. |
+| W8-F5 | The `runtime` context is populated by `LoadDefaults` with: `move_forward` (W/S), `move_right` (D/A), `move_up` (E/Q), `look` (right mouse), `jump` (Space), `primary_action` (F), plus gamepad axes (`InputService.cpp:161-178`). These are the bindings a user can rebind. | The rebinding UI lists the `runtime` context's mappings and lets the user edit each one's action bindings (keyboard, mouse, gamepad) or axis bindings. The built-in defaults are the starting point; the user's overrides replace specific mappings. |
+| W8-F6 | `InputTypes.h` defines `ActionBinding` (device, code, modifiers, gamepadSlot) and `AxisBinding` (device, code, positive, negative, gamepadSlot, deadZone, invert) (`InputTypes.h:177-230`). `InputMapping` holds a name, an `isAxis` flag, and vectors of action/axis bindings. | The rebinding UI must capture a new `InputMapping` for the action being rebound. For an action mapping, the user presses a key / mouse button / gamepad button; for an axis mapping, the user provides positive/negative keys or a gamepad axis. The UI does not need to support modifier combinations initially — a single key press is the common case. |
+| W8-F7 | The script inspector (`SceneEditorUI::RenderScriptEditor`, `SceneEditorUI.cpp:1765-1812`) edits the script asset path as a raw `InputText` with `EnterReturnsTrue`. On Enter or `DeactivatedAfterEdit`, it builds a before/after `ScriptComponent` and calls `SetScriptState` (`:1784-1796`). The path is the only field edited — `assetId` and `sourceKey` are not touched by the path edit. | The "Rebind" button is a file-dialog replacement for the raw `InputText`. It opens a file dialog filtered to `.lua`, sets the path, and submits the same `SetScriptState` command. The `assetId` is preserved because `SetScriptState` calls `NormalizeAndValidateScriptComponent` (`SceneManager.cpp:3826-3829`), which derives `sourceKey` from `path` but does not touch `assetId` (`ScriptComponentValidation.h:48`). |
+| W8-F8 | `NormalizeAndValidateScriptComponent` (`ScriptComponentValidation.h:17-113`) sets `output.asset.sourceKey = "lua:asset=" + output.asset.path` when the path is non-empty (`:48`). It does not modify `assetId`. `ScriptComponentCanonicalEqual` (`:123-136`) compares `assetId`, `kind`, `path`, `sourceKey`, and `fieldValues`. | A script rebind changes `path` and `sourceKey` but preserves `assetId`. This is the W5 identity contract: the sidecar is the source of truth, and `assetId` is a cache of it. Rebinding does not mint identity. If the new path points to a different physical file with a different sidecar, the resolver will report a `Conflict` on next resolve (`AssetResolver.h:52-53`). |
+| W8-F9 | The content browser panel (`WalnutApp.cpp:1228-1460`) lists `AssetRecord` entries from the database snapshot. It shows source path, supports search, and has context-menu items for rename/move/delete/reimport. It does not display any declaration or field information for `.lua` assets. | Declaration diagnostics for `.lua` assets can be surfaced in the content browser by querying `ScriptFieldRegistry::GetDeclaredFields` for each `.lua` record and displaying the parse status (parsed/failed) and diagnostic message. The registry is already injected into `WalnutApp` (`m_InspectorFieldRegistry`, `WalnutApp.cpp:172`). |
+| W8-F10 | `ScriptFieldRegistry::GetDeclaredFields` (`ScriptFieldRegistry.h:77-84`) returns a `Result` with `descriptors`, `parsed` (bool), and `diagnostic` (string). It caches by path and invalidates on mtime/size/hash change. A missing file yields `parsed=false`; an empty file is legal (`parsed=true`, zero descriptors). | The content browser can call `GetDeclaredFields` for each `.lua` asset record and display a status icon: green (parsed), red (parse failed + diagnostic), grey (missing file). The cache means repeated browser frames do not re-parse. |
+| W8-F11 | `FieldDiagnostic` (`ScriptFieldReconcile.h:14-38`) has 13 kinds covering field-level reconciliation issues (Added, Removed, Renamed, TypeChanged, ParseFailed, etc.). `ScriptFieldResolver` (`ScriptFieldResolver.cpp:19-122`) produces field diagnostics during scene load. These are load-time diagnostics, not browser-time diagnostics. | The content browser's declaration diagnostics are simpler than `FieldDiagnostic`: they are per-asset (does this `.lua` file parse?), not per-field. The browser displays the `ScriptFieldRegistry::Result.diagnostic` string, not individual `FieldDiagnostic` entries. Per-field diagnostics remain in the inspector, where they already exist (`SceneEditorUI.cpp:1837-1841`). |
+| W8-F12 | `IInputService::RequestCursorCapture(bool)` (`InputTypes.h:273-277`) is the cursor-lock API. `InputService::EndFrame` applies it via `Walnut::Input::SetCursorMode` (`InputService.cpp:320-336`). `Camera::OnUpdate` calls `RequestCursorCapture(true)` when the `look` action is held and `false` otherwise (`Camera.cpp:58,63`). | Cursor lock is already wired for the editor camera. The deferred commitment ("cursor-lock binding") is about making it available to runtime scripts, not about adding the mechanism. The `look` action in the `runtime` context already triggers cursor lock through the same `RequestCursorCapture` path — `Camera::OnUpdate` is editor-only, but a runtime script calling `input.request_cursor_capture(true)` would need the same API exposed to Lua. |
+| W8-F13 | `ScriptSystem` stores `const IInputService*` (`ScriptSystem.h:117`), and `IInputService::RequestCursorCapture` is non-const (`InputTypes.h:276`). Phase 6C W3 explicitly deferred cursor capture: "6C does NOT widen the pointer — cursor capture is out of scope" (`:5975-5980`). | The cursor-lock binding requires widening `ScriptSystem`'s pointer from `const IInputService*` to `IInputService*`, or providing a separate non-const cursor-capture callback. This is a small interface change with test implications: `ScriptSystem` is constructed with `const IInputService*` in production (`ScriptSystem.h:117`). |
+| W8-F14 | `RuntimeSceneController` pushes the `runtime` context on Play (`WalnutApp.cpp:3041`) and pops it on Stop. The runtime context contains the `look` action (right mouse, `InputService.cpp:167`). During Play, the editor camera is not updated; the runtime scene's camera entity is used instead. | The cursor-lock binding for runtime is: expose `RequestCursorCapture` to Lua so a runtime script can lock the cursor for mouse-look, matching what the editor camera already does. The `look` action binding already exists in the runtime context. |
+| W8-F15 | No input rebinding UI exists in `WalnutApp.cpp` or `SceneEditorUI.cpp`. The Session panel shows project status and `lastBrowseDirectory` (`WalnutApp.cpp:1078-1124`). There is no "Input" or "Bindings" panel. The View menu lists Camera, Performance, Render Settings, Scene, Session, Content Browser, Outliner, Inspector (`:4170-4177`). | W8 adds a new "Input Bindings" panel, following the existing pattern: `m_ShowInputBindingsWindow`, a `DrawInputBindingsPanel()` method, a View-menu item. |
+| W8-F16 | `RT2Tests` compiles zero `RT2App/src` files. It includes `InputConfig.h`, `ScriptFieldReconcile.h`, `ScriptComponentValidation.h`, `AssetWatchPolicy.h`, `ContentBrowserOperations.h`, and other CPU-only headers, but never `WalnutApp.cpp`, `SceneEditorUI.cpp`, or `InputService.cpp`. | All W8 UI logic is untestable by construction. CPU-only logic must be pushed into modules to be testable. The host-dispatch extraction (scheduled but unstarted) would make host wiring testable; until it lands, W8's testable surface is limited to the CPU-only modules. |
+
+### Recovered deferred commitments
+
+All four items were found in the Phase 7 commitments table (`:6379-6390`)
+and re-tracked through the W4/W5, W6, and W7 specs. None has been silently
+implemented.
+
+| Source | Commitment | W8 treatment |
+|---|---|---|
+| `:3311,3380` | Input rebinding dialog. | **Build.** The data model (W4) and composition (W4) are complete. W8 adds the authoring UI. |
+| `:4142` | Script asset Rebind button. | **Build.** The `InputText` path edit exists (`SceneEditorUI.cpp:1781`). W8 adds a "Browse…" button that opens a file dialog. |
+| `:5600` | Declaration diagnostics in content browser. | **Build.** The content browser exists (W6). `ScriptFieldRegistry` exists. W8 connects them. |
+| `:5980` | Cursor-lock binding. | **Defer again.** See D-W8-4. The mechanism exists (`RequestCursorCapture`), but exposing it to Lua requires widening `ScriptSystem`'s pointer, which is an interface change with test implications that should land separately. |
+
+### Decisions — answered before code
+
+These are the settled answers for this spec. Review may amend them before
+implementation; implementation does not choose a different answer locally.
+
+#### D-W8-1 — input rebinding UI edits user overrides, not project defaults
+
+**Decision:** the rebinding UI edits `EditorSettingsStore::m_InputOverrides`
+(`EditorSettings.h:62-66`). It does not edit project `inputContexts` — those
+are authored in the `.rt2proj` file by hand or by a future project-settings
+editor. The UI lists the composed result (built-ins + project + user) so the
+user sees the effective bindings, but edits only the user override layer.
+
+The UI lists the `runtime` context's mappings by default, since that is what
+a gameplay author rebinds. Editor-owned contexts (`editor`, `viewport`,
+`viewport.look`) are shown in a separate read-only section with a note that
+they can be overridden in the settings file but not through the project. This
+matches the W4 contract: project defaults may not target editor-owned contexts
+(`InputConfig.cpp:142-145`), and the v2 → v3 migration drops inert editor
+records (`EditorSettings.cpp:167`).
+
+Rebinding a mapping captures a new `InputMapping` and writes it to
+`m_InputOverrides`. An empty binding (no actions, no axes) is an explicit
+unbind that removes the inherited mapping (`InputConfig.cpp:182-184`). The UI
+supports both "rebind to a new key" and "unbind" actions. After editing, the
+UI calls `ApplyConfiguration` and `Save`, reusing the existing path.
+
+**What a user can rebind:** any `runtime` mapping's action bindings (keyboard
+key, mouse button, gamepad button) or axis bindings (keyboard pair, gamepad
+axis). **What is refused:** editing project `inputContexts` through this UI
+(not an override), and editing editor-owned contexts through project defaults
+(rejected by `ValidateScope`).
+
+**How a conflicting assignment is shown:** if the user binds the same key to
+two actions in the same context, the UI shows a warning but does not prevent
+it — the input system resolves disjunctively (any binding firing fires the
+action), so two actions on the same key both fire. This is documented
+behaviour, not a defect.
+
+#### D-W8-2 — script Rebind button is a file dialog, not a path mint
+
+**Decision:** the Rebind button opens a file dialog filtered to `.lua` files,
+rooted at the active `assetRoot` (or `lastBrowseDirectory` in standalone
+mode). On selection, it sets `ScriptComponent::asset.path` to the
+asset-root-relative path and calls `SetScriptState`, exactly as the existing
+`InputText` path edit does (`SceneEditorUI.cpp:1784-1796`).
+
+The button does **not** touch `assetId`. `NormalizeAndValidateScriptComponent`
+derives `sourceKey` from `path` but preserves `assetId`
+(`ScriptComponentValidation.h:48`). This is the W5 identity contract: the
+sidecar is the source of truth, and `assetId` is a cache of it. Rebinding
+does not mint identity.
+
+If the new path points to a different physical file with a different sidecar,
+the resolver will report a `Conflict` on next resolve
+(`AssetResolver.h:52-53`). This is correct behaviour: the user changed the
+script asset, and if the new asset has a different identity, the scene's
+`assetId` is stale and needs migration. The Rebind button does not silently
+fix this; it surfaces the diagnostic.
+
+The Rebind button replaces the `InputText` for the path field. The
+`InputText` is retained as a fallback for manual path entry, but the primary
+interaction is the file dialog. The button label is "Browse…" to match the
+existing `lastBrowseDirectory` dialog pattern (`WalnutApp.cpp:1111`).
+
+#### D-W8-3 — declaration diagnostics in the content browser use ScriptFieldRegistry
+
+**Decision:** the content browser queries `ScriptFieldRegistry::GetDeclaredFields`
+for each `.lua` asset record and displays a status indicator beside the
+asset's source path:
+
+- **Green dot:** `parsed == true` — the script parses cleanly.
+- **Red dot:** `parsed == false` — the script failed to parse. The
+  `diagnostic` string is shown in a tooltip on hover.
+- **Grey dot:** the file is missing or unreadable. `GetDeclaredFields` returns
+  `parsed == false` with a "failed to read script file" diagnostic
+  (`ScriptFieldRegistry.cpp:391`).
+
+The query is per-frame for visible records only (not the entire database).
+The registry's cache (`ScriptFieldRegistry.h:77-84`) means repeated frames do
+not re-parse. The cache invalidates on mtime/size/hash change, so a W7
+watcher-triggered refresh after an external `.lua` edit automatically
+re-parses on the next frame.
+
+The source of truth for declaration diagnostics is `ScriptFieldRegistry`, not
+`FieldDiagnostic`. Per-field diagnostics (Added, Removed, TypeChanged, etc.)
+remain in the inspector, where they already exist
+(`SceneEditorUI.cpp:1837-1841`). The browser shows only the per-asset parse
+status, not per-field reconciliation.
+
+This is a read-only display. The browser does not edit declarations or field
+values. Editing remains in the inspector.
+
+#### D-W8-4 — cursor-lock binding is deferred again
+
+**Decision:** the cursor-lock binding is deferred to a follow-up task, not
+included in W8.
+
+**Rationale:** the mechanism exists (`RequestCursorCapture`,
+`InputService.cpp:320-336`). The editor camera already uses it
+(`Camera.cpp:58,63`). But the deferred commitment was about making it
+available to **runtime scripts**, which requires widening `ScriptSystem`'s
+pointer from `const IInputService*` to `IInputService*`
+(`ScriptSystem.h:117`; `InputTypes.h:276`). Phase 6C W3 explicitly deferred
+this: "6C does NOT widen the pointer — cursor capture is out of scope"
+(`:5975-5980`).
+
+Widening the pointer is a small interface change, but it has test
+implications: `ScriptSystem` is constructed with `const IInputService*` in
+production, and the test harness would need a non-const mock. It also
+requires a Lua binding (`input.request_cursor_capture(bool)`) and a runtime
+acceptance exercise. This is more than a UI button — it is a runtime API
+addition that touches the script system, the input system, and the Lua
+binding layer.
+
+Given that W8 is the last Phase 7 workstream and the other three items are
+purely UI, mixing in a runtime API change changes the character of the
+workstream. The cursor-lock binding should land as a named follow-up task
+("cursor-lock runtime binding") rather than being squeezed into the
+deferred-UI bucket.
+
+**Carry-forward:** P7-R2: when a later phase introduces cursor-lock binding
+for runtime scripts, it must widen `ScriptSystem`'s `IInputService` pointer
+to non-const, add the Lua binding, and provide a runtime acceptance exercise
+that verifies mouse-look during Play. It must not add a second cursor-capture
+mechanism parallel to `RequestCursorCapture`.
+
+#### D-W8-5 — CPU-only `InputBindingEditor` module for rebind logic
+
+**Decision:** the rebinding logic — capturing a key press into an
+`InputMapping`, validating it against `ValidateScope`, building the override
+record, and composing the result — lives in a new CPU-only module
+(`InputBindingEditor.{h,cpp}`) beside `InputConfig`. It provides:
+
+- `CaptureActionBinding(device, code, modifiers, gamepadSlot)` →
+  `ActionBinding`.
+- `CaptureAxisBinding(device, code, positive, negative, gamepadSlot, deadZone,
+  invert)` → `AxisBinding`.
+- `BuildOverrideRecord(contextId, mappingName, isAxis, bindings)` →
+  `InputContextRecord`.
+- `DescribeMapping(const InputMapping&)` → human-readable string (e.g.
+  "W (Keyboard)", "Right Mouse", "Gamepad A").
+- `FindConflicts(const std::vector<InputContextRecord>&)` → list of
+  same-context mappings sharing a binding.
+
+The ImGui panel (`DrawInputBindingsPanel`) lives in `WalnutApp.cpp` and calls
+the CPU-only module through callbacks, following the `ContentBrowserOperations`
+precedent from W6.
+
+### Test-provable properties vs interactive acceptance
+
+This section is required because W8 is almost entirely UI, and the host
+wiring is not testable (W8-F16). The distinction is stated explicitly rather
+than presenting a predicate test as evidence that a feature works.
+
+#### Test-provable (CPU-only modules, RT2Tests)
+
+| Property | How it is proven |
+|---|---|
+| `BuildOverrideRecord` produces a valid `InputContextRecord` that passes `ParseInputContextRecords` with `UserOverrides` scope. | Unit test: build a record, round-trip through JSON, parse, assert equality. |
+| `ComposeInputContexts` with the new override produces the expected composed mapping (override wins over built-in). | Unit test: compose built-ins + override, assert the overridden mapping's bindings match. |
+| An explicit unbind (empty bindings) removes the inherited mapping from the composed result. | Unit test: compose built-ins + unbind override, assert the mapping is absent. |
+| `FindConflicts` detects two mappings in the same context sharing a binding. | Unit test: two mappings with the same key, assert conflict is reported. |
+| `DescribeMapping` produces the expected string for each device kind. | Unit test: keyboard, mouse, gamepad button, gamepad axis. |
+| Script rebind preserves `assetId`: `NormalizeAndValidateScriptComponent` with a new path but old `assetId` leaves `assetId` unchanged. | Unit test: construct a `ScriptComponent` with a non-nil `assetId`, change `path`, normalize, assert `assetId` is unchanged. |
+| Script rebind derives `sourceKey` from the new path: `"lua:asset=" + newPath`. | Unit test: same setup, assert `sourceKey` matches. |
+
+#### Interactive acceptance only (WalnutApp/SceneEditorUI, not testable)
+
+| Property | Acceptance exercise | Observable pass condition |
+|---|---|---|
+| The Input Bindings panel opens, lists runtime mappings, and lets the user rebind one. | Open the panel, rebind `move_forward` from W to Up arrow, enter Play. | The entity moves with Up arrow, not W. |
+| The rebinding takes effect on the next Play without restarting. | Rebind, enter Play, verify, Stop, rebind back, enter Play again. | The second Play uses the restored binding. |
+| The script Rebind button opens a file dialog and sets the path. | Select a scripted entity, click "Browse…", pick a different `.lua` file. | The inspector shows the new path; the field registry updates; on Play the new script runs. |
+| The script `assetId` is preserved after rebind. | Rebind a script, save, reopen the scene. | The `assetId` in the reopened scene matches the pre-rebind `assetId` (verified by diagnostic output or by the resolver not reporting a Conflict). |
+| Declaration diagnostics appear in the content browser for `.lua` assets. | Open the content browser, observe a `.lua` asset with a syntax error. | A red dot appears beside the asset; hovering shows the parse error message. |
+| Declaration diagnostics update after external edit (W7 watcher). | With the browser open, externally edit a `.lua` file to introduce a syntax error. | The dot turns red within the W7 refresh window (100 ms debounce + refresh). |
+| The Input Bindings panel shows editor-owned contexts as read-only. | Open the panel, observe the editor/viewport section. | The editor/viewport mappings are displayed but not editable; a note says they can be overridden in the settings file. |
+| The unbind action removes a mapping. | Select a runtime mapping, click "Unbind". | The mapping disappears from the composed list; on Play, that action does nothing. |
+
+### Implementation order
+
+Each step keeps `RT2Tests` and `RT2SliceRunner` CPU-only and ends with
+focused tests or interactive acceptance before the next step.
+
+1. **W8.0 — CPU-only `InputBindingEditor` module.** Add
+   `InputBindingEditor.{h,cpp}` with: `BuildOverrideRecord`,
+   `CaptureActionBinding`, `CaptureAxisBinding`, `DescribeMapping`,
+   `FindConflicts`. No ImGui, no Walnut. Focused tests: override record
+   round-trip, composition with override, explicit unbind, conflict
+   detection, describe-mapping for all device kinds, script-rebind
+   `assetId` preservation.
+
+2. **W8.1 — Input Bindings panel.** Add `DrawInputBindingsPanel()` to
+   `WalnutApp`, register `m_ShowInputBindingsWindow`, add View-menu item.
+   Display the composed runtime mappings. Wire "Rebind" to a key-capture
+   modal (press any key). Wire "Unbind". On edit, call `ApplyConfiguration`
+   and `Save`. Interactive acceptance: rebind `move_forward`, enter Play,
+   verify.
+
+3. **W8.2 — Script Rebind button.** Add a "Browse…" button beside the
+   script path `InputText` in `RenderScriptEditor`. On click, open a file
+   dialog filtered to `.lua`, rooted at the active `assetRoot`. On
+   selection, build the after-state with the new path (same `assetId`),
+   call `SetScriptState`. Interactive acceptance: rebind a script, save,
+   reopen, verify `assetId` is preserved.
+
+4. **W8.3 — Declaration diagnostics in content browser.** Extend
+   `DrawContentBrowserPanel` to query `ScriptFieldRegistry::GetDeclaredFields`
+   for visible `.lua` records and display a status dot. Tooltip shows the
+   diagnostic on hover. Interactive acceptance: observe green/red/grey dots
+   for valid/invalid/missing scripts; externally edit a `.lua` file and
+   verify the dot updates.
+
+### Permanent tests and discrimination proofs
+
+| Permanent evidence | Temporary fault that must make it fail |
+|---|---|
+| `BuildOverrideRecord` produces a record that round-trips through `InputContextRecordsToJson` → `ParseInputContextRecords(UserOverrides)` and matches the input. | Omit the `contextId` from the record; the test must fail because `ParseInputContextRecords` rejects a missing contextId. |
+| `ComposeInputContexts` with a user override for `runtime.move_forward` produces a composed mapping whose bindings match the override, not the built-in. | Swap the overlay order (user before built-in); the test must fail because the built-in wins. |
+| An explicit unbind (empty bindings in the override) removes `runtime.move_forward` from the composed result. | Treat empty bindings as "inherit" instead of "unbind"; the test must fail because the built-in mapping survives. |
+| `FindConflicts` reports two `runtime` mappings that share the same keyboard code. | Compare only within the same mapping name instead of the same context; the test must fail because the conflict is missed. |
+| `DescribeMapping` returns "W (Keyboard)" for `KeyCode::W` on `KeyboardKey`, "Right Mouse" for `MouseButton::Button1` on `MouseButton`, "Gamepad A" for `GamepadButton::A` on `GamepadButton`. | Return the numeric code as a string; the test must fail because the description is not human-readable. |
+| `NormalizeAndValidateScriptComponent` with a new `path` but old `assetId` leaves `assetId` unchanged and sets `sourceKey = "lua:asset=" + newPath`. | Clear `assetId` when `path` changes; the test must fail because identity was destroyed. |
+
+Every new permanent test gets its discrimination fault exercised before the
+implementation report calls it protective. Interactive acceptance exercises
+are first-class deliverables and must be completed and recorded before the
+implementation report claims W8 is done. The final gate builds the Release
+and Debug solutions, runs `RT2Tests.exe` from the repository root, runs the
+scripting regression gate and both project/standalone slice-runner scenarios,
+and records the actual counts measured then. No count is copied from an older
+completed phase.
+
+### Review checklist and boundary
+
+A reviewer must verify at least: the override-only editing contract (D-W8-1)
+and that project defaults are not editable through the UI; the identity
+preservation contract (D-W8-2) verified against
+`NormalizeAndValidateScriptComponent`; the declaration-diagnostics source
+(D-W8-3) is `ScriptFieldRegistry`, not `FieldDiagnostic`; the cursor-lock
+deferral (D-W8-4) and its carry-forward note; the CPU-only module (D-W8-5)
+and its testability; the test-provable vs interactive-acceptance split; and
+all interactive acceptance exercises. Any accepted correction is appended as
+a dated review amendment.
+
+W8 does not add the host-dispatch extraction (scheduled but unstarted). W8
+does not add cursor-lock runtime binding (deferred again as P7-R2). W8 does
+not edit project `inputContexts` through the UI (override-only). W8 does not
+add per-field diagnostics to the content browser (those remain in the
+inspector). W8 does not add new asset operations, new watcher capabilities, or
+new scene-schema versions.
+
+**Materially safer if the host-dispatch extraction landed first.** W8 is the
+third workstream in a row (after W6 and W7) where the host wiring is not
+testable. The W6 rename/move/delete modals had an ImGui ID-stack bug that
+left them non-functional while CPU tests were green; the W7 suppression
+ordering was proven but the host's call-site routing was not. If the
+host-dispatch extraction landed before W8, the Input Bindings panel's call to
+`ApplyConfiguration` and `Save`, the Rebind button's call to `SetScriptState`,
+and the browser's call to `GetDeclaredFields` would all be testable host
+wiring. This is a genuine input to sequencing: the extraction is not blocking
+W8, but it would materially reduce the risk of another green-tests-broken-UI
+
+#### Review amendment W8-A1 (2026-08-02) — commitment citations corrected
+
+The commitments table originally cited `:3311,3380`, `:4064,5274,4142`,
+`:5521,5600` and `:5901,5980`. Five of those nine line numbers pointed at
+unrelated content — `:4064` at a recovery-test result, `:5274` at command
+sync-impact, `:5521` at a blank line, `:5901` at LuaPanic hardening.
+
+The cause is worth recording, because it defeats an assumption this document
+relies on. The numbers were inherited from the W4/W5 spec's own commitments
+table, where they were correct when written. **Append-only does not guarantee
+stable line numbers**: two earlier edits — the navigation-table addition in the
+preamble and the Phase 8 heading correction — inserted lines *above* them and
+shifted everything below by roughly twenty-five lines.
+
+Corrected to the verified locations: input rebinding at `:3389-3390` and
+`:3458-3459`, the script Rebind button at `:4142`, declaration diagnostics at
+`:5600`, cursor-lock at `:5980`. Each was located by content, not by
+arithmetic.
+
+The rule that follows: a citation copied from an earlier section is a claim
+about the current file and must be re-verified like any other, exactly as
+AGENTS.md already requires for counts and status claims. The commitments
+themselves were all real and correctly identified; only the coordinates drifted.
