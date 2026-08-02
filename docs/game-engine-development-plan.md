@@ -11333,3 +11333,88 @@ would be materially safer if this extraction landed first. This spec
 confirms that: the `ContentBrowserDispatch` module is the seam W8's
 input-bindings panel and script-rebind button would route through. W8
 should land after this extraction.
+
+### Host dispatch extraction — verification report
+
+Implemented on branch `host-dispatch-extraction` against `a4406de`. Three
+commits, one per step:
+
+- **HD.0** (`8e2801a`) — added `RT2App/src/ContentBrowserDispatch.{h,cpp}`
+  with `DispatchContentBrowserOperation`, `CanOperateContentBrowser`,
+  `AllowDeleteContentBrowser` and `ShouldCaptureRecovery`, plus
+  `RT2Tests/src/ContentBrowserDispatchTests.cpp`. Added the module to
+  `RT2App.vcxproj`, `RT2Tests.vcxproj` and `RT2Tests/premake5.lua`
+  (`RT2App/premake5.lua` already globs `src/**.cpp`). No host changes.
+- **HD.1** (`e647dcf`) — routed the four content-browser dispatches in
+  `DrawContentBrowserPanel` (reimport, rename, move, delete) through
+  `DispatchContentBrowserOperation`, supplying the host's
+  `AssetWatchSuppressionRegistry` as a collaborator. Routed the panel
+  gate, the delete-button gate and the autosave predicate through the
+  dispatch module's three wrappers. The host keeps `RefreshProjectAssets`,
+  `ScheduleAssetWatchSuppressionClear` and `RunAssetWatchSuppressedOperation`
+  (owning the listener and drain flag).
+- **HD.2** (this section) — the W6 source-text probe that grepped
+  `WalnutApp.cpp` for `ContentBrowserCanOperate(`/`ContentBrowserDeleteAllowed(`
+  was removed; the HD.0 link-time tests are its replacement. No W7
+  source-text probe was superseded: the probes at `Phase7W7Tests.cpp:212-275`
+  all test the drain loop, the listener and the watch scope — host-only code
+  that stays — so they all remain. The residual gap (whether the host
+  *invokes* the dispatch) is unchanged and remains a text-probe /
+  interactive-acceptance matter, as the scope section states.
+
+**Spec deviation, recorded:** the HD.1 step expected the W6 source-text
+probe to still pass after routing, because the strings it greps for would
+"still be present." That was wrong: the probe greps for the *underlying*
+policy function names, and HD.1 routes the host through the *wrapper*
+names. The probe went red after HD.1. To keep HD.1 green, the probe was
+removed in HD.1 rather than HD.2 — pulled forward one step. The link-time
+replacement (HD.0) was already in place, so no coverage was lost; the
+ordering change is the only deviation.
+
+**Forbidden includes.** `ContentBrowserDispatch.{h,cpp}` include only
+`AssetDatabase.h`, `AssetWatchPolicy.h`, `ContentBrowserOperations.h`,
+`SceneAssetMigration.h`, `core/Error.h` and `<filesystem>`/`<cstddef>`. No
+ImGui, Walnut, Vulkan, efsw, NRD, tinyexr or stb_image include is needed.
+The only mention of "WalnutApp.cpp" in the module is a file-path reference
+in a comment.
+
+**Measured counts.** Baseline on `master` (`a4406de`): Release 736/736
+cases, 146453 assertions. After the extraction: Release and Debug both
+743/743 cases, 146476 assertions. The case count fell by one (the removed
+W6 source-text probe) and rose by eight (the HD.0 link-time tests), net
++7. Assertion count rose by 23 (the HD.0 tests) and fell by 3 (the removed
+probe's three assertions), net +20. No pre-existing test was removed or
+weakened except the single superseded source-text probe.
+
+**Discrimination proofs.** Each new permanent test had its fault injected,
+built, and confirmed red with actual assertion output, then reverted and
+confirmed green:
+
+| Test | Fault | Red output |
+|---|---|---|
+| registers suppression paths before the rename operation runs | call the callback before `RunSuppressedAssetOperation` | `CHECK( 2 == 1 )`, `CHECK( false )` |
+| registers both source and destination for a move | pass empty destination to `RunSuppressedAssetOperation` | `CHECK( false )` |
+| registers source and sidecar for a delete | pass empty source for the Delete kind | `CHECK( false )`, `CHECK( false )` |
+| with null registry runs the operation directly | return false without calling the callback when the registry is null | `CHECK( false )`, `CHECK( false )` |
+| CanOperateContentBrowser mirrors ContentBrowserCanOperate | invert the wrapper predicate | `CHECK_FALSE( true )`, `CHECK( false )` |
+| AllowDeleteContentBrowser mirrors ContentBrowserDeleteAllowed | always return true | `CHECK_FALSE( true )` (twice) |
+| ShouldCaptureRecovery mirrors ShouldCaptureRecoverySnapshot | ignore `scriptRepairPending` (pass false) | `CHECK_FALSE( true )` (twice) |
+
+**Final gate** (measured 2026-08-02 on `host-dispatch-extraction`):
+
+| Gate | Result |
+|---|---|
+| Release build | green |
+| Debug build | green |
+| `RT2Tests.exe` Release | 743/743 cases, 146476 assertions, 0 failed |
+| `RT2Tests.exe` Debug | 743/743 cases, 146476 assertions, 0 failed |
+| `run_script_test.ps1` | `[ScriptScenario] PASS` |
+| `run_slice_test.ps1` | `[Slice] PASS` |
+| `--validate --frames 8` | exit 0, zero validation messages |
+
+**Interactive acceptance.** Not performed in this session — the host UI
+requires a desktop session. The residual gap (whether the host invokes
+the dispatch for each of the four operations) remains, as the scope
+section states, and is covered by interactive acceptance, not by
+link-time test. This report records that gap rather than overstating it;
+the earlier review caught exactly that overstatement once before.
