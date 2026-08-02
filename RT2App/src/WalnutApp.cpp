@@ -44,6 +44,7 @@
 #include "ProjectContext.h"
 #include "SceneAssetMigration.h"
 #include "ContentBrowserOperations.h"
+#include "ContentBrowserDispatch.h"
 #include "BackgroundWork.h"
 #include "core/UUID.h"
 #include "core/Error.h"
@@ -1228,7 +1229,7 @@ public:
 	void DrawContentBrowserPanel()
 	{
 		ImGui::Begin("Content Browser", &m_ShowContentBrowserWindow);
-		const bool canOperate = rt2::core::ContentBrowserCanOperate(
+		const bool canOperate = rt2::core::CanOperateContentBrowser(
 			m_ProjectContext != nullptr);
 		if (!canOperate)
 		{
@@ -1289,8 +1290,14 @@ public:
 				{
 					rt2::core::ContentBrowserOperationReport report;
 					rt2::core::Error error;
-					const bool ok = RunAssetWatchSuppressedOperation(
-						m_ProjectContext->project.assetRoot, record,
+					rt2::core::ContentBrowserDispatchContext dispatchCtx{
+						m_ProjectContext->project.assetRoot,
+						m_FileWatchListener
+							? &m_FileWatchListener->suppressionRegistry
+							: nullptr,
+						&report, &error};
+					const bool ok = rt2::core::DispatchContentBrowserOperation(
+						dispatchCtx, record,
 						rt2::core::AssetWatchOperationKind::Reimport, {}, [&]() {
 							return rt2::core::ReimportContentBrowserAsset(
 								m_ProjectContext->project.assetRoot, record,
@@ -1365,9 +1372,14 @@ public:
 						m_ContentBrowserPendingRecord->sourcePath);
 				const auto destination = source.parent_path() /
 					std::filesystem::u8path(m_ContentBrowserRenameBuffer);
-				const bool ok = RunAssetWatchSuppressedOperation(
+				rt2::core::ContentBrowserDispatchContext dispatchCtx{
 					m_ProjectContext->project.assetRoot,
-					*m_ContentBrowserPendingRecord,
+					m_FileWatchListener
+						? &m_FileWatchListener->suppressionRegistry
+						: nullptr,
+					&report, &error};
+				const bool ok = rt2::core::DispatchContentBrowserOperation(
+					dispatchCtx, *m_ContentBrowserPendingRecord,
 					rt2::core::AssetWatchOperationKind::Rename, destination, [&]() {
 						return rt2::core::RenameContentBrowserAsset(
 							m_ProjectContext->project.assetRoot,
@@ -1410,9 +1422,14 @@ public:
 				const auto destinationDirectory =
 					std::filesystem::u8path(m_ContentBrowserMoveBuffer);
 				const auto destination = destinationDirectory / source.filename();
-				const bool ok = RunAssetWatchSuppressedOperation(
+				rt2::core::ContentBrowserDispatchContext dispatchCtx{
 					m_ProjectContext->project.assetRoot,
-					*m_ContentBrowserPendingRecord,
+					m_FileWatchListener
+						? &m_FileWatchListener->suppressionRegistry
+						: nullptr,
+					&report, &error};
+				const bool ok = rt2::core::DispatchContentBrowserOperation(
+					dispatchCtx, *m_ContentBrowserPendingRecord,
 					rt2::core::AssetWatchOperationKind::Move, destination, [&]() {
 						return rt2::core::MoveContentBrowserAsset(
 							m_ProjectContext->project.assetRoot,
@@ -1456,15 +1473,20 @@ public:
 			ImGui::Checkbox("I understand references may become unresolved",
 				&m_ContentBrowserDeleteConfirmed);
 			if (ImGui::Button("Delete") && m_ContentBrowserPendingRecord &&
-				rt2::core::ContentBrowserDeleteAllowed(
+				rt2::core::AllowDeleteContentBrowser(
 					m_ContentBrowserDeleteConfirmed,
 					m_ContentBrowserDeleteDependants.size()))
 			{
 				rt2::core::ContentBrowserOperationReport report;
 				rt2::core::Error error;
-				const bool ok = RunAssetWatchSuppressedOperation(
+				rt2::core::ContentBrowserDispatchContext dispatchCtx{
 					m_ProjectContext->project.assetRoot,
-					*m_ContentBrowserPendingRecord,
+					m_FileWatchListener
+						? &m_FileWatchListener->suppressionRegistry
+						: nullptr,
+					&report, &error};
+				const bool ok = rt2::core::DispatchContentBrowserOperation(
+					dispatchCtx, *m_ContentBrowserPendingRecord,
 					rt2::core::AssetWatchOperationKind::Delete, {}, [&]() {
 						return rt2::core::DeleteContentBrowserAsset(
 							m_ProjectContext->project.assetRoot,
@@ -2005,7 +2027,7 @@ public:
 		// never captured. Skips work entirely on clean frames or when the
 		// revision has not advanced since the last snapshot.
 		if (m_Recovery && m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
-			rt2::core::ShouldCaptureRecoverySnapshot(
+			rt2::core::ShouldCaptureRecovery(
 				m_ScriptRepairGate.SuppressAutosave(), m_AssetMigrationGate))
 		{
 			rt2::core::Error ae;
