@@ -454,16 +454,6 @@ TEST_CASE("Phase7 W6 host policy disables standalone operations and requires con
     CHECK(ContentBrowserDeleteAllowed(true, 0));
 }
 
-TEST_CASE("Phase7 W6 host consults content-browser policy")
-{
-    std::ifstream input("RT2App/src/WalnutApp.cpp");
-    REQUIRE(input.good());
-    const std::string source(
-        (std::istreambuf_iterator<char>(input)), {});
-    CHECK(source.find("ContentBrowserCanOperate(") != std::string::npos);
-    CHECK(source.find("ContentBrowserDeleteAllowed(") != std::string::npos);
-}
-
 TEST_CASE("Phase7 W6 acceptance: moving referenced mesh and script preserves IDs and scene bytes")
 {
     TempTree tree;
