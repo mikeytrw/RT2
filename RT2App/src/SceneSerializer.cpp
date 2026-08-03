@@ -108,8 +108,12 @@ json MaterialToJson(const SceneMaterial& m)
     j["alphaMode"]        = m.alphaMode;
     j["alphaCutoff"]      = m.alphaCutoff;
     // Durable source identity (Phase 8 pre-work 2): the loader-minted
-    // material key. Additive over v4; absent for author-created materials.
-    j["sourceKey"]        = m.sourceKey;
+    // material key. Additive over v4; omitted entirely for author-created
+    // materials, which have no source. Writing it unconditionally added
+    // "sourceKey": "" to every material block, so any save rewrote every
+    // committed scene asset — churn the fixtures cannot afford.
+    if (!m.sourceKey.empty())
+        j["sourceKey"]    = m.sourceKey;
     // Texture indices are schema-complete but unused in the slice (no textures).
     j["baseColorTex"]     = m.baseColorTextureIndex;
     j["normalTex"]        = m.normalTextureIndex;
