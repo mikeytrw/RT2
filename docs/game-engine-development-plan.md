@@ -12359,3 +12359,23 @@ someone with the app open.
 
 `RecordMaterialPropertiesEdit` (correct, the model), the resolver's override
 precedence, the command history, and `CompactMeshRegistry` are untouched.
+
+### Material-index undo — interactive acceptance closed (2026-08-03)
+
+The one acceptance item reported BLOCKED in the verification report above has
+been performed and **passed**. Recorded here so the blocked entry is not read
+later as still outstanding.
+
+- **Check:** on an imported entity, change the material, undo, save, reopen,
+  confirm the entity has the pre-edit material.
+- **Result:** passed.
+- **Performed by:** the repo owner, driving the desktop editor by hand. The
+  implementing model correctly reported it as blocked rather than as passed or
+  as covered by the automated tests; it is not covered by them.
+
+Automated test 3 (`MaterialIndexUndoOverrideTests.cpp`) proves the **document**
+round-trips correctly through save, load and `SceneAssetResolver::ResolveAll`.
+This check proves the **editor** does — the inspector reflects the reverted
+material and nothing in the host layer re-derives the override on load. The
+Phase 7 popup-scope defects all lived in exactly that untested host layer, so
+the two are not interchangeable.
