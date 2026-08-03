@@ -204,7 +204,9 @@ private:
 	void RecordCameraEdit(const rt2::core::UUID& target,
 	                      const CameraComponent& before, const CameraComponent& after);
 	void RecordMaterialIndexEdit(const rt2::core::UUID& target,
-	                             int beforeIndex, int afterIndex);
+	                             int beforeIndex, int afterIndex,
+	                             const std::optional<MaterialOverrideComponent>& beforeOverride,
+	                             const std::optional<MaterialOverrideComponent>& afterOverride);
 	void RecordMaterialPropertiesEdit(int slotIndex,
 	                                 const SceneMaterial& before,
 	                                 const SceneMaterial& after);

@@ -279,9 +279,10 @@ std::unique_ptr<IEditorCommand> MakeSetNameCommandIfEffective(
 	std::string afterName);
 
 // Returns null if beforeIndex == afterIndex AND beforeOverride == afterOverride.
-// The host captures the before-override from SceneManager::GetMaterialOverride
-// at construction time and the after-override by calling SetMaterialIndexState
-// then GetMaterialOverride (or by constructing it from the known new material).
+// The host captures both overrides from SceneManager's SetMaterialIndexState
+// capture out-params (the before captured inside the mutation before the
+// index write, the after immediately after) — see the 2026-08-03
+// material-index undo defect.
 std::unique_ptr<IEditorCommand> MakeSetMaterialIndexCommandIfEffective(
 	rt2::core::UUID target,
 	int beforeIndex,
