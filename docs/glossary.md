@@ -135,6 +135,45 @@ Bare `projectRoot` is legacy vocabulary and must not be reintroduced. Current
 project-model and host code use the four settled terms above; asset resolution
 and recovery do not consult `lastBrowseDirectory`.
 
+### ImGui `OpenPopup` and `BeginPopupModal` must share an ID scope
+
+**Four defects in Phase 7, all identical, none visible to any test.** This is a
+convention, not a curiosity.
+
+ImGui resolves a popup name against the current ID stack. `OpenPopup` called
+inside a `PushID` block or inside `BeginPopupContextItem` registers the popup
+under a *nested* ID. A `BeginPopupModal` outside that scope computes the ID at
+the parent level, the two never match, and **the modal silently never opens**.
+Clicking a `MenuItem` also closes its containing popup, which makes the symptom
+read as "the button just closed the menu".
+
+The rule: **hoist the open out of every `PushID` and popup scope**, into the
+same scope as `BeginPopupModal`. Set a flag inside the loop, open after it.
+
+The corrected pattern is in the content browser
+(`RT2App/src/WalnutApp.cpp:1505-1507` declares the flags, `:1569`, `:1574` and
+`:1635` set them inside the per-record `PushID`, `:1641-1642` open afterwards).
+
+Instances found, all by driving the UI by hand and never by the suite:
+
+| Modal | Cause | Status |
+|---|---|---|
+| Rename Asset | `OpenPopup` inside per-record `PushID` **and** `BeginPopupContextItem` | fixed |
+| Move Asset | same | fixed |
+| Delete Asset | same | fixed |
+| Capture Input (W8 rebinding) | `OpenPopup` inside per-mapping `PushID` | outstanding |
+
+The first three made the content browser's rename, move and delete
+**unreachable in the application** while their CPU operations were fully
+unit-tested and green. The fourth makes the input rebinding dialog unable to
+capture a binding, which is the entire purpose of the feature.
+
+Why the tests cannot catch it: `RT2Tests` compiles no RT2App sources and cannot
+link `WalnutApp.cpp`, so no test executes this code. The host dispatch
+extraction narrowed that gap for the content-browser dispatch but does not
+cover ImGui layout. **Interactive acceptance is the only cover, which is why it
+is a first-class deliverable rather than a postscript.**
+
 ### `sourceKey` vs asset ID
 
 Not interchangeable, and the distinction is load-bearing (Phase 7 finding P2).
