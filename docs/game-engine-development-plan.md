@@ -11997,3 +11997,178 @@ a live slot; the compaction guard above is unrelated) — it is a durable-value
 capture-order quirk on imported entities, pre-existing, and outside this
 spec's boundary. Flagged for the owner.
 
+
+## Material-index undo restores the wrong override (implementation spec)
+
+Written 2026-08-03, found during Phase 8 pre-work review and deliberately left
+out of that change's scope. This is an authoring data-loss defect, independent
+of prefabs and of compaction.
+
+### The problem
+
+`SceneEditorUI::RecordMaterialIndexEdit`
+(`RT2App/src/SceneEditorUI.cpp:162-177`) captures the command's before- and
+after-override with **the same call, made twice, both after the mutation has
+already happened**:
+
+```cpp
+const auto beforeOverride = m_SceneMgr->GetMaterialOverride(target);
+// The after-override is what the manager just recorded via
+// SetMaterialIndexState's RecordMaterialOverride side effect.
+const auto afterOverride = m_SceneMgr->GetMaterialOverride(target);
+```
+
+The call site (`:1405-1409`) runs `SetMaterial(entity, current)` **first**, and
+`SetMaterial` recreates the entity's `MaterialOverrideComponent` from the newly
+selected slot (`SceneManager.cpp:3656-3665`). By the time either line above
+runs, the override already holds the *after* value. The two snapshots are
+therefore identical by construction, and `m_BeforeOverride` is a copy of the
+after-state.
+
+`SetMaterialIndexCommand::Undo` (`EditorPropertyCommands.cpp:144-150`) restores
+the index and then installs that snapshot:
+
+```cpp
+auto result = scene.SetMaterialIndexState(m_Target, m_BeforeIndex);
+if (!result.success) return result;
+scene.InstallMaterialOverride(m_Target, m_BeforeOverride);
+```
+
+So undo restores `MeshRef::materialIndex` correctly and then writes back the
+**post-edit** durable override.
+
+### Why the effectiveness guard does not mask it
+
+`MakeSetMaterialIndexCommandIfEffective` (`EditorPropertyCommands.cpp:282-301`)
+compares the two overrides only inside `if (beforeIndex == afterIndex)`. The
+call site records only when `indexChanged` is true (`:1405`), so the indices
+always differ and the equality branch is never reached. The command is created
+every time, carrying a before-snapshot that equals its after-snapshot.
+
+### Why it is silent until reopen
+
+This is the part that makes it expensive. Immediately after undo the viewport
+looks correct: `MeshRef` points at the old slot, `m_EcsScene.materials` is
+untouched, and the entity renders with the original material. Nothing is
+visibly wrong in the session.
+
+The override is the **durable** record. On save and reopen the resolver applies
+any `authored` override on top of the rebuilt source materials — it appends
+`override.material` to `doc.ecs.materials` and repoints `MeshRef` at it
+(`ECSComponents.h:226-241`, resolver at `SceneAssetResolver.cpp:764-783`). The
+entity therefore comes back with the **post-edit** material, and the undo is
+silently reverted across the document boundary.
+
+The user's experience is: change a material on an imported entity, undo it, see
+the undo work, save, reopen, and find the change back. Nothing connects that to
+the undo.
+
+### The correct pattern is thirteen lines below
+
+`RecordMaterialPropertiesEdit` (`:179-199`) solves exactly this problem
+correctly. It does not read the before-state after the mutation; it uses
+`m_PendingMaterialPropertiesBeforeOverrides`, a member captured at
+`ImGui::IsItemActivated()` time (`:1449`) and cleared when the session closes
+(`:1516`).
+
+Its comment is visibly the author reasoning the problem out in place — "the
+session stores `SceneMaterial`, not the override list… For simplicity here,
+capture before-overrides at activation". **The author identified the hazard,
+solved it for the properties path, and did not carry the solution to the index
+path.** The index path has no session — it is a discrete combo-box change, not
+a drag — so there was no obvious place to hang the cache, and the two identical
+`GetMaterialOverride` calls went in instead.
+
+This is the same shape as the Phase 7 popup-scope finding: a correct pattern
+and a broken one adjacent in the same file. Cite the correct one when fixing.
+
+### The testability constraint — decide this before writing code
+
+`RT2Tests` compiles `EditorPropertyCommands.cpp` but **not**
+`SceneEditorUI.cpp` (`RT2Tests/premake5.lua:17`). The command layer is fully
+testable; the capture site is not. A fix placed entirely in
+`RecordMaterialIndexEdit` is therefore unverifiable by the suite, which is how
+this class of defect survived Phase 7 four times over.
+
+**D1 — where the before-capture lives.** Two options:
+
+- **(a) Cache member in `SceneEditorUI`.** Capture the override before calling
+  `SetMaterial` at `:1405`, hold it in a member, pass it to
+  `RecordMaterialIndexEdit`. Mirrors the properties path exactly. Smallest
+  change; **entirely untestable**.
+- **(b) Capture in a testable seam.** Have the mutation return, or a helper
+  compute, the before-override so the ordering is enforced by a signature
+  rather than by call-site discipline — e.g. `SetMaterial` returning the
+  displaced override, or a `SceneManager` helper that performs
+  capture-then-mutate as one operation. Larger change; the ordering becomes
+  impossible to get wrong and is coverable by a `SceneManager` test.
+
+**Recommendation: (b).** The defect is precisely a call-ordering mistake, and
+(a) preserves the property that a correct fix depends on remembering the
+ordering. (b) is also the only option that produces a regression test. If (b)
+proves disproportionate after reading the code, take (a) and say why — but do
+not take (a) merely because it is shorter.
+
+### Findings to establish before code
+
+- **F1.** Confirm the exact guard under which `SetMaterial` creates or replaces
+  a `MaterialOverrideComponent`. `SceneManager.cpp:3656-3665` derives
+  `sourceMaterialKey` from `ImportedMeshSourceComponent` but appears to emplace
+  the component unconditionally, while `:3749` describes propagation to
+  "every imported entity". Establish whether a non-imported entity can acquire
+  an override, since that determines the defect's blast radius and the test
+  fixtures.
+- **F2.** Establish whether `SetMaterialIndexCommand::Redo` has the mirrored
+  problem. If `m_AfterOverride` is also the post-mutation value it is
+  accidentally correct, and the asymmetry should be stated in the fix rather
+  than left for the next reader to rediscover.
+- **F3.** Check whether any other `Record*Edit` in `SceneEditorUI.cpp` reads
+  its before-state after the mutation. `RecordMaterialPropertiesEdit` and
+  `RecordMotionEdit` are correct; the rest are unaudited. Report the audit
+  result either way — a clean audit is a useful finding.
+
+### Tests and discrimination proofs
+
+Under D1(b), in `RT2Tests`:
+
+1. **Undo restores the pre-edit override.** Build an imported entity with an
+   authored override, change its material index, undo, and assert the entity's
+   `MaterialOverrideComponent::material` equals the pre-edit value — not merely
+   that `MeshRef::materialIndex` was restored.
+   *Discriminating fault:* capture the before-override after the mutation, i.e.
+   reintroduce the present defect. The material comes back as the after-value
+   while the index is correct.
+2. **Redo still reaches the post-edit override.** Undo then redo returns both
+   index and override to the after-state.
+3. **Round-trip through the resolver.** The case that makes this user-visible:
+   after undo, serialize and reload, and assert the entity resolves to the
+   pre-edit material. This is the assertion that would have caught the defect,
+   because the in-session state looks correct without it.
+   *Discriminating fault:* the same reintroduction as (1). This test goes red
+   where an in-session-only assertion stays green — which is the point.
+
+Every proof runs fault-first: inject, confirm red, revert, confirm green, and
+record both. If a named fault does not go red, report that rather than
+adjusting the test — that happened in the Phase 8 pre-work and the report was
+more valuable than the fix.
+
+### Acceptance
+
+- Both configurations build and the full suite passes. Baseline at `ab3c852`
+  is 752/752 and 146,525 assertions; state measured counts, do not copy these.
+- Script, slice and `--headless --validate` gates green.
+- D1 decided in writing with reasoning; F1-F3 answered with `file:line`
+  evidence.
+- All discrimination proofs recorded red-then-green.
+- **Interactive check, required under either D1 option:** on an imported
+  entity, change the material, undo, save, reopen, and confirm the entity has
+  the pre-edit material. This is the only check that exercises the full path
+  the user actually walks.
+- No fixture modifications in `git status`.
+
+### Boundary
+
+This spec fixes the before-capture for material-index edits. It does not
+restructure the command history, does not change the resolver's override
+precedence, and does not alter `RecordMaterialPropertiesEdit`, which is already
+correct and is the model to follow.
