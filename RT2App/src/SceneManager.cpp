@@ -201,20 +201,29 @@ struct IndexRebase
 	}
 };
 
+// The four texture indices on a SceneMaterial are the complete field list
+// for texture marking and rebasing. RebaseIndices and the texture pass of
+// CompactMeshRegistry (including MaterialOverrideComponent snapshots) must
+// enumerate exactly these; visiting them through this helper keeps the
+// field list in one place so the passes cannot silently diverge.
+template <typename MaterialT, typename Fn>
+void ForEachMaterialTextureIndex(MaterialT& material, Fn&& fn)
+{
+	fn(material.baseColorTextureIndex);
+	fn(material.normalTextureIndex);
+	fn(material.emissiveTextureIndex);
+	fn(material.metallicRoughnessTextureIndex);
+}
+
 void RebaseIndices(ECSScene& scene, const IndexRebase& rebase)
 {
 	// This is the complete list of scene-resource index fields. Keep all
 	// additions here so merge and compaction cannot silently diverge.
 	auto rebaseMaterialTextures = [&](SceneMaterial& material)
 	{
-		material.baseColorTextureIndex =
-			rebase.Texture(material.baseColorTextureIndex);
-		material.normalTextureIndex =
-			rebase.Texture(material.normalTextureIndex);
-		material.emissiveTextureIndex =
-			rebase.Texture(material.emissiveTextureIndex);
-		material.metallicRoughnessTextureIndex =
-			rebase.Texture(material.metallicRoughnessTextureIndex);
+		ForEachMaterialTextureIndex(material, [&](int& index) {
+			index = rebase.Texture(index);
+		});
 	};
 
 	if (rebase.material.IsActive())
@@ -4135,12 +4144,24 @@ bool SceneManager::CompactMeshRegistry()
 	// ---- Compact textures ----
 	// Collect all referenced texture indices from remaining materials.
 	std::set<int> referencedTexs;
-	for (const auto& mat : m_EcsScene.materials)
+	for (auto& mat : m_EcsScene.materials)
 	{
-		if (mat.baseColorTextureIndex >= 0)        referencedTexs.insert(mat.baseColorTextureIndex);
-		if (mat.normalTextureIndex >= 0)          referencedTexs.insert(mat.normalTextureIndex);
-		if (mat.emissiveTextureIndex >= 0)         referencedTexs.insert(mat.emissiveTextureIndex);
-		if (mat.metallicRoughnessTextureIndex >= 0) referencedTexs.insert(mat.metallicRoughnessTextureIndex);
+		ForEachMaterialTextureIndex(mat, [&](const int& index) {
+			if (index >= 0) referencedTexs.insert(index);
+		});
+	}
+
+	// Overrides carry a full material snapshot, so their textures are live
+	// references even when no entry in m_EcsScene.materials mirrors them.
+	// Prefab overrides are authored against an asset, not a live slot, so
+	// the mirror cannot be assumed. See Phase 8 pre-work spec.
+	auto overrideView = m_EcsScene.registry.view<MaterialOverrideComponent>();
+	for (const auto entity : overrideView)
+	{
+		const auto& mat = overrideView.get<MaterialOverrideComponent>(entity).material;
+		ForEachMaterialTextureIndex(mat, [&](const int& index) {
+			if (index >= 0) referencedTexs.insert(index);
+		});
 	}
 
 	// Build texture remap: old index -> new index

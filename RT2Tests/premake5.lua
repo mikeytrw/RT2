@@ -6,6 +6,10 @@
 
     files { "src/**.h", "src/**.cpp", "vendor/**.h", "vendor/**.cpp" }
 
+    -- Phase 8 pre-work: override-aware compaction tests (listed explicitly
+    -- alongside the glob so a hand-maintained vcxproj regen cannot drop it).
+    files { "src/OverrideAwareCompactionTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 

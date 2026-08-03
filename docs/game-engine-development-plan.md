@@ -11835,3 +11835,165 @@ This spec does not implement prefabs, does not change the resolver, and does
 not change the material or mesh marking passes. It makes one sweep locally
 correct so that Phase 8 can introduce unmirrored overrides without a silent
 data-loss path waiting for them.
+
+## Phase 8 pre-work — override-aware compaction (verification report)
+
+Written 2026-08-03 against master `cce93a7`, committed on the Phase 8 pre-work
+branch. Every line reference below is the tree as committed on this branch;
+the spec's citations were to the pre-change tree (`SceneManager.cpp` moved by
+~9 lines after the shared-helper extraction).
+
+### Findings, answered before any code
+
+**F1 — No: the undo/redo path cannot install a stale override today.** The
+spec's framing holds; the defect is reachable only once Phase 8 breaks the
+mirror invariant. Evidence:
+
+- `InstallMaterialOverride` emplaces the snapshot verbatim with no resolver
+  pass and no rebase (`SceneManager.cpp:4001-4012`). It is called only from
+  `SetMaterialIndexCommand`/`SetMaterialPropertiesCommand` Execute/Undo
+  (`EditorPropertyCommands.cpp:140,148,163,174,184,194`) and its snapshots
+  are captured at command construction (`SceneEditorUI.cpp:162-178`). A
+  snapshot's texture indices therefore become stale only if a compaction runs
+  between capture and restore.
+- Compaction cannot run in that window. The host's automatic compaction is
+  deferred while any undo or redo entry exists: `historyLive` at
+  `WalnutApp.cpp:304`, guard at `:306-307`. Every other compaction site runs
+  only after `m_History.Clear()` (`WalnutApp.cpp:1874-1875, 3262-3263,
+  4152-4153, 4435-4436`) or asserts history empty (`:2715-2719`).
+- `RemoveSubtrees` compacts unconditionally (`SceneManager.cpp:1333`), but its
+  only caller is `RemoveEntity` (`:1119-1121`), which has no app caller — the
+  UI delete path is `RemoveSubtreesCommand` → `RemoveSubtreesNoCompact`
+  (`SceneEditorUI.cpp:382`, `EditorStructuralCommands.cpp:53-56`), which
+  explicitly does not compact (`SceneManager.cpp:2080`).
+- `EditorCommandHistory::Execute` pushes the command only after a successful
+  effective execute (`EditorCommandHistory.cpp:14` then `:30`), and the host
+  fires its scene-changed notification after history Execute returns
+  (`SceneEditorUI.cpp:286-287, 109-110`), so the guard always sees a resident
+  command when compaction could run. Undo/Redo move the command between
+  stacks before any notification (`EditorCommandHistory.cpp:74-88, 102-116`).
+  Snapshots are destroyed (capacity eviction `:156-166`, generation rebind
+  `:139-154`, failure policy `:78-84, 106-112`) before compaction is allowed.
+- `RebaseIndices` does rebase live overrides (`SceneManager.cpp:264-274`) — but
+  only components in the registry, never the command-held copies.
+
+The compaction is therefore masked twice, exactly as the spec says: the
+resolver re-establishes the mirror on every resolve (`SceneAssetResolver.cpp:
+764-783`, appending the override as its own live slot), and the Phase 3B1
+resource-lifetime invariant (`docs/scene-management.md:860-868`) blocks
+compaction for the whole lifetime of any snapshot.
+
+**F2 — No: the copy is scene-global, and the mirror survives.** The override
+goes through `RebaseIndices` on the import path (`SceneManager.cpp:785`): its
+four texture fields are rebased by the texture base (`:259-260` with the
+`< 0` guard inside `IndexRebase::Texture`, `:195-201` preserving `-1`) and its
+`materialIndex` by the material base (`:261-263`). Since `MergeImportedECS`
+appends all source materials/textures wholesale (`:783-788`) and the bases are
+`dst` sizes taken before appending (`:769-776`), the copied override's indices
+are dst-global, not file-local. The override's `materialIndex` and the
+entity's `MeshRef.materialIndex` are both offset by the same `matBase`
+(`:246-249`), so the mirror is preserved if it held in the source scene.
+Note that loader output never contains overrides; they are authored data
+(comment at `:849-852`).
+
+### What changed
+
+One file, `RT2App/src/SceneManager.cpp`, texture pass only:
+
+- **Extracted the shared helper — yes.** `ForEachMaterialTextureIndex`
+  (`SceneManager.cpp:204-216`) enumerates the four texture fields once and is
+  now used by all three enumerations: `rebaseMaterialTextures`
+  (`:222-227`), the materials texture-marking loop (`:4146-4152`) and the new
+  override marking loop (`:4154-4165`). The codebase already treats the
+  texture-field list as a load-bearing single place ("This is the complete
+  list of scene-resource index fields. Keep all additions here so merge and
+  compaction cannot silently diverge", `:220-221`; glossary `index` entry).
+  A third literal copy is the exact point at which a fifth texture field
+  would silently diverge the mark and rebase passes, so the helper is the
+  smaller risk. Marking passes guard `>= 0` inside their closures; the rebase
+  closure relies on `IndexRebase::Texture`'s own `-1` pass-through.
+- **The material pass is untouched.** The override is marked into
+  `referencedTexs` only; nothing changed in the mesh or material passes, and
+  `MaterialOverrideComponent::materialIndex` invalidation (the deliberate
+  asymmetry at `SceneManager.cpp:186-193`) is preserved — test 3 pins it.
+- No change to `RebaseIndices`, the resolver, the serializer, or the host.
+
+### Tests and discrimination proofs
+
+Three cases in `RT2Tests/src/OverrideAwareCompactionTests.cpp` (registered in
+`RT2Tests/RT2Tests.vcxproj` and `RT2Tests/premake5.lua`). Fixtures build
+textures/materials/entities directly on the ECS (SceneManager.cpp compiles
+into RT2Tests). Every proof ran fault-first on the Release build.
+
+1. **Unmirrored override retains its texture** — fixture: entity whose
+   MeshRef points at a live slot while its override snapshot mirrors a second,
+   unreferenced textured slot; compact; assert the override's
+   `baseColorTextureIndex` still resolves to `albedo.png`.
+   - Fault (spec's): delete the new marking loop.
+   - RED: `REQUIRE(ov.material.baseColorTextureIndex >= 0)` failed, value
+     `-1` — exactly the spec's predicted symptom (the texture is swept and the
+     rebase maps the index to `-1`).
+   - Revert → GREEN.
+2. **Mirrored override compacts identically** — fixture: the ordinary
+   SetMaterial shape (override mirrors the entity's own live slot; the slot
+   index deliberately differs from its texture index); assert table sizes,
+   paths and remapped indices equal the no-override result.
+   - **Finding on the spec's named fault.** Removing the `>= 0` guard so `-1`
+     enters `referencedTexs` does **not** go red: the remap loop's range check
+     (`SceneManager.cpp:4170-4173`) absorbs `-1` (`old >= 0` is false), so the
+     remap cannot shift from a `-1` mark. The spec's claimed mechanism
+     ("the remap shifts") is not observable in the current implementation.
+     Reported rather than forcing the proof; the test was then proven with a
+     discriminating fault of the same class — a wrong-field slip that marks
+     the override's transient `materialIndex` into `referencedTexs`.
+   - Fault (spec's): unguarded marking → GREEN (finding above, recorded).
+   - Fault (discriminating): garbage mark of `materialIndex` → RED with the
+     spec's predicted observable: `textures.size() == 2` (was 1),
+     `textures[0].path == "x.png"` (was "z.png"), remapped indices shifted.
+   - Revert → GREEN.
+3. **Material-slot asymmetry is preserved** — same fixture as 1; after
+   compaction the swept slot must leave `ov.materialIndex == -1`.
+   - Fault (spec's): add the override to `referencedMats` in the material
+     pass.
+   - RED: `CHECK(ov.materialIndex == -1)` failed, value `0` — the slot
+     survives the sweep and the deliberate asymmetry is gone. (In this
+     fixture the fault also keeps the whole material table from being
+     compacted, so test 1 fails as well — same mechanism.)
+   - Revert → GREEN.
+
+### Measured results (both configurations, run from the repository root)
+
+| Configuration | Result |
+|---|---|
+| **Release** | **752 run, 752 passed, 0 failed, 0 skipped; 146,525 assertions** |
+| **Debug** | **752 run, 752 passed, 0 failed, 0 skipped; 146,525 assertions** |
+
+Baseline at `cce93a7` was 749/749, 146,510; the three new cases add 15
+assertions (5 + 7 + 2, the fixtures' `REQUIRE(e.IsValid())` counting per
+case). Debug shows no failures; the "8 known Debug failures in OBJ fixture
+generation" note in AGENTS.md is stale — the plan's Test baseline
+(`:6170-6199`) records them diagnosed and fixed on 2026-07-25, and this run
+measured 752/752.
+
+### Gates
+
+- `run_script_test.ps1` — PASS (60 frames, 1 entity, no mismatches).
+- `run_slice_test.ps1` — PASS (60 steps, authoring intact; Cube x≈1.0).
+- `RT2App.exe --headless --validate` on `vertical-slice.rt2scene`, 8 frames —
+  PASS, screenshot written.
+- `git status` — no fixture modifications (script-scenario and
+  vertical-slice untouched).
+
+### Observation, out of scope (recorded, not fixed)
+
+`RecordMaterialIndexEdit` captures the command's before-override *after*
+`SetMaterial` has already replaced the override
+(`SceneEditorUI.cpp:1405-1409, 162-169`), so the stored `m_BeforeOverride`
+equals `m_AfterOverride` (both post-mutation mirrors of the new slot) and
+`SetMaterialIndexCommand::Undo` (`EditorPropertyCommands.cpp:144-150`)
+overwrites the correctly re-derived before-override with the after value.
+This does not create unmirrored texture indices (the snapshot always mirrors
+a live slot; the compaction guard above is unrelated) — it is a durable-value
+capture-order quirk on imported entities, pre-existing, and outside this
+spec's boundary. Flagged for the owner.
+
