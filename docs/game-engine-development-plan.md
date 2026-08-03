@@ -12676,3 +12676,221 @@ rename/miss case, but per the spec this is reported blocked, not passed.
   key-string mutation seam instead, as the spec's fixture notes require.
 - `git status` at commit: sources, tests, project files, and this document;
   `graphify-out/GRAPH_REPORT.md` left unstaged (pre-existing dirty state).
+
+## Phase 8 — Prefabs (implementation spec)
+
+Written 2026-08-03 from `docs/phase8-prefabs-grounding-findings.md`, grounded
+at `697d3c9` and current at `e7cb72d`. Supersedes nothing; the roadmap stub
+(`:586-620`) remains the statement of intent, and this is how it gets built.
+
+Both pre-works are merged: override-aware compaction (`ab3c852`) and
+source-material identity (`e7cb72d`). Baseline is 761/761 and 146,716
+assertions.
+
+### What a prefab is, in RT2 terms
+
+A prefab is an **entity subtree saved as an asset**, instantiated many times,
+where each instance keeps a link to the source and a sparse set of deltas.
+Editing the source updates every instance except where an instance has
+deliberately diverged.
+
+The engine already has the shape in miniature: `ImportedMeshSourceComponent`
+is a source link and `MaterialOverrideComponent` is a durable override with
+precedence (`ECSComponents.h:221-261`). Phase 8 generalises source-link +
+override from *one property class on imported meshes* to *any authored
+component on any subtree*.
+
+**It does not already have the identity half.** There is exactly one identity
+in the tree — the document-global UUID on `EntityIdComponent`
+(`ECSComponents.h:144-152`) — and grep for `localId|instanceId` across the
+whole tree returns zero matches (findings Q1). The roadmap's "stable local
+IDs" are net-new.
+
+### Decisions — answer before code
+
+**D1 — instance identity model.** An instance must map each of its entities
+back to the template entity it came from, or overrides cannot reattach.
+
+**Recommendation: two components, no per-instance maps.**
+
+- `PrefabInstanceComponent` on the instance root: the prefab `AssetReference`
+  and an `instanceId` UUID.
+- `PrefabMemberComponent` on every entity of the instance: `instanceId` plus
+  `templateId` — the entity's identity *inside the prefab asset*.
+
+`templateId` is the prefab-local identity Q1 says does not exist. Mint it once
+when the prefab asset is created, freeze it in the file, and never regenerate
+it. Scene UUIDs stay fresh per instance, exactly as duplication already does.
+
+This keeps identity in the ECS where every other identity lives, serializes
+through the existing per-component machinery, and needs no side table that can
+desync — the argument that overturned D2 in pre-work 2.
+
+**D2 — override granularity.** The roadmap says "property-level overrides"
+(`:597`). RT2 has no property reflection outside `ScriptFieldRegistry`, and
+`MaterialOverrideComponent` is a whole-value snapshot, not per-property
+(findings, Contradictions 2).
+
+**Recommendation: component-level granularity for Phase 8.** An authored
+component on an instance entity is either **inherited** from the template or
+**overridden** wholesale. The override set is a subset of
+`PersistedComponents` (`PersistedComponents.h:20-36`) — the list the
+serializer and duplication already agree on, with a `static_assert` keeping
+them honest.
+
+This is a real reduction from the roadmap and must be recorded as one.
+Per-property granularity means building a reflection layer over every
+authored component; that is a phase of its own and would dominate this one.
+Component granularity delivers the actual user need — move one instance,
+retint one instance, keep the rest tracking — at a fraction of the cost.
+Revisit if it proves too coarse in use, not before.
+
+**D3 — script `Uuid` field remapping.** `ScriptFieldValue` has a `Uuid` arm
+(`ScriptFieldValue.h:119-126`) serialized as an opaque string. **Nothing in
+the engine resolves it to an entity** (findings Q2), and duplication copies it
+verbatim, so a duplicated subtree whose script references a sibling points at
+the original (findings Q3). No test pins this, and intent could not be
+determined.
+
+**Recommendation: remap on instantiate when the value names an entity inside
+the subtree; leave it untouched otherwise.** A reference into the subtree is
+structurally part of the prefab; a reference out of it is a scene-level fact
+the instance should not rewrite.
+
+**And fix duplication with the same remapper.** Duplication has the identical
+defect today. Building instantiation's remapper separately would implement the
+same logic twice and leave the existing bug in place. One remapper, two
+callers, with the duplication case as a regression test. This is a behaviour
+change to duplication — record it as intentional.
+
+**D4 — prefab file format.** No subtree serializer exists; `SaveInternal`
+emits whole documents and `SubtreeSnapshot` is in-memory only (findings Q5).
+
+**Recommendation:** a new `.rt2prefab` JSON file whose entity records reuse the
+`SubtreeSnapshot`/`EntityRecord` shape (`SubtreeSnapshot.h:43-83`), with its
+**own version constant** independent of `.rt2scene`. Reusing the record shape
+means one set of component codecs; an independent version means prefab format
+changes do not force a scene schema bump.
+
+**Transient indices must never be written.** `MeshRef::meshIndex` and
+`MaterialOverrideComponent::materialIndex` are transient by design, and
+override *texture* indices are serialized raw and repaired only from a
+currently-staged material (findings, Fragility 1). A prefab instance whose
+source is not materialised has nothing to repair from. Prefab files carry
+asset references and source keys, never resource-table indices.
+
+**D5 — `.rt2scene` schema version.** New components on serialized entities
+change the document. Determine whether v4 → v5 is required, and state it
+explicitly. Note the reader consequence from findings Q5: **an unknown
+`AssetKind` with a non-empty path is a hard parse error**
+(`SceneSerializer.cpp:304-309`), so older builds cannot load scenes that
+reference prefabs. That is acceptable but must be deliberate.
+
+**D6 — structural deltas.** A child added to or deleted from an instance, or
+from the template after instances exist, is a structural delta rather than a
+value one. This is where prefab systems get genuinely ugly.
+
+**Recommendation: out of scope for Phase 8, with a loud guard.** Detect the
+case and raise an `AssetDiagnostic`; do not silently mis-merge. The roadmap's
+"deleted or added prefab children merge predictably" moves to a follow-on
+workstream. Nested prefabs stay deferred per the roadmap (`:600`).
+
+Deferring this is the single largest scope call in the spec. Say so plainly in
+the phase's closure rather than letting it read as delivered.
+
+### Workstreams
+
+Each lands separately with its own tests, on its own branch, verified before
+the next begins.
+
+**W0 — prefab asset kind and file format.** `AssetKind::Prefab` through the
+enum, name codec both ways, reader acceptance, watcher extension list, sidecar
+minting, and the content-browser reimport policy (findings Q5 enumerates
+every site). `ImportSettings` is a fixed type — either add an arm or accept
+that prefabs carry none, and say which.
+
+**W1 — create prefab from subtree, and instantiate.** `CaptureSubtreeSnapshot`
+(`SceneManager.cpp:2364`) already produces the right shape; W1 serializes it,
+mints `templateId`s, and instantiates with fresh scene UUIDs and remapped
+hierarchy. No overrides yet — an instance is a faithful copy plus a link.
+Reuse `RebuildChildren` (`SceneHierarchy.cpp`) rather than hand-wiring the
+dual parent/children representation (findings, Fragility 3).
+
+**W2 — reference remapping, shared with duplication.** Per D3. Delivers the
+duplication fix as well as instantiation.
+
+**W3 — overrides.** Per D2: mark a component overridden, serialize the
+override set, and apply overrides on top of template values at load. This is
+where `MaterialOverrideComponent`'s precedence model generalises.
+
+**W4 — propagation.** Editing the prefab source updates every instance's
+non-overridden components. This is the workstream that makes the feature
+worth having, and the one the roadmap's runtime acceptance exercises.
+
+**W5 — revert, apply, unpack.** Revert drops an override. Apply pushes an
+instance's override into the source. Unpack severs the link, leaving ordinary
+entities.
+
+**W6 — content browser and inspector surfacing.** Overrides must be *visible*
+and revertable, per the exit criterion (`:619`). An override the user cannot
+see is a bug they cannot diagnose.
+
+### Constraints that apply to every workstream
+
+- **Commands carry complete state at construction.** `EditorCommand.h:19-21`
+  is a hard contract, and the `697d3c9` defect was exactly its violation.
+  Follow the structural precedent: capture pre-mutation, or use the
+  `RecordApplied` + authoritative post-mutation snapshot pattern. Never
+  read-after-mutate.
+- **Snapshots depend on the no-compaction invariant.** Compaction is deferred
+  while history is live (`WalnutApp.cpp:304-307`). Prefab commands holding
+  snapshots inherit that dependency; do not weaken it.
+- **Names are not unique.** Duplication appends `" Copy"` and
+  `RuntimeCommandSink::FindByName` picks the first in UUID order
+  (`ScriptSystem.cpp:1661-1683`). Prefab instance naming will collide with
+  this; decide the naming scheme in W1 and state the collision behaviour.
+- **New authored components go in `PersistedComponents`**
+  (`PersistedComponents.h:20-36`). The `static_assert` makes serializer and
+  duplication coverage fail together if they are not.
+
+### Tests
+
+Per workstream, in `RT2Tests` — `SceneManager.cpp`, `SceneSerializer.cpp` and
+`SceneAssetResolver.cpp` are all compiled into the test project, so the
+mechanism is fully testable. The host UI is not; W6 is the workstream whose
+acceptance is necessarily interactive.
+
+The roadmap's test list (`:602-608`) is the floor, not the ceiling:
+
+- Multiple instances get unique scene UUIDs with correct internal references.
+- Source updates propagate to non-overridden components.
+- Overrides survive save/load and source updates.
+- Apply/revert produces deterministic serialized output.
+- **Plus, from the findings:** a duplicated subtree's script `Uuid` field
+  pointing at a sibling resolves to the copy (the W2 regression); a prefab
+  file never contains a resource-table index; a structural delta raises a
+  diagnostic rather than mis-merging (D6).
+
+Every test gets a discrimination proof with a named fault: inject, confirm
+red, revert, confirm green, record both. If a named fault does not
+discriminate, report it rather than adjusting the test — that has happened
+twice in this project and both reports were worth more than the fix.
+
+### Acceptance
+
+The roadmap's runtime acceptance is the phase's spine (`:612-614`): create a
+light fixture hierarchy, instantiate it several times, override one material,
+update the source, and verify the expected propagation. **Build toward that
+specific scenario from W1 and let it drive the design**, rather than
+implementing the full operation set and testing it at the end.
+
+Phase exit (`:617-619`): common hierarchy reuse no longer requires
+copy/paste, and overrides are visible and recoverable.
+
+### Boundary
+
+Phase 8 delivers single-level prefabs with component-granularity overrides.
+It does not deliver nested prefabs (roadmap-deferred), per-property override
+granularity (D2), or structural delta merging (D6). Each is a recorded
+decision with a stated reason, and each must appear in the phase closure as
+*not delivered* rather than being quietly absorbed into "prefabs, done".
