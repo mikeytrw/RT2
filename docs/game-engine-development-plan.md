@@ -11601,3 +11601,86 @@ interactive acceptance; this Capture Input defect was the fourth.
 The scene fixtures were not modified by the acceptance exercise. The only
 temporary persisted editor setting was the `jump` override, restored to an
 empty `inputOverrides` array before closing the editor.
+
+## Phase 7 — closure (2026-08-03)
+
+Phase 7 is complete at `27d5173` on `codex/phase7-w8-deferred-commitments`:
+**749/749 tests and 146,510 assertions in both Release and Debug**, the script
+and slice gates green, and `--headless --validate` exiting 0 with no validation
+messages. The tree carries no fixture modifications.
+
+This section is the phase boundary. It states what the phase delivers, what it
+deliberately does not, and what it leaves reachable for Phase 8. It supersedes
+no earlier section — the per-workstream reports remain authoritative for their
+own detail.
+
+### Against the roadmap exit criterion
+
+> *A project folder can be copied to another machine/location without
+> rewriting scene files manually.*
+
+Met. `project.rt2proj` stores portable relative locators; `projectDirectory`,
+`assetRoot` and `cacheRoot` are all derived from the opened file's location
+rather than serialized absolutely, and `lastBrowseDirectory` — the one setting
+that is legitimately machine-specific — never participates in asset
+resolution. Round-trip and relocation are covered by
+`Phase7W4Tests.cpp:178`.
+
+The stub's other listed outcomes: asset IDs survive rename and move (W1/W2),
+resolution is by ID with path as fallback (W3), the content browser has
+search, rename/move/delete, drag-drop and reimport (W6), sources are watched
+with async database refresh (W7), and the deferred input and script-rebind
+commitments are closed (W8).
+
+### What the phase does not deliver
+
+Each of these is a recorded decision, not an oversight:
+
+- **Automatic model/texture/environment reimport on source change** (W7-A1).
+  Deliberately substituted with database refresh. Watching a source and
+  refreshing its record is done; rebuilding the GPU-side resource from a
+  changed file in place is not.
+- **The runtime cursor-lock binding** (D-W8-4 / P7-R2), deferred by decision.
+- **Host-invocation coverage.** `RT2Tests` compiles neither `WalnutApp.cpp`
+  nor `SceneEditorUI.cpp`, so wherever the host *calls* a W5–W8 seam, the
+  cover is an interactive check rather than a link-time test. The host
+  dispatch extraction narrowed this for the content-browser register-then-
+  operate sequence; it did not close it.
+
+### The finding this phase should be remembered for
+
+**Four ImGui popup-scope defects reached a fully green CPU suite and were
+caught only by driving the UI by hand.** Rename, Move and Delete were
+*unreachable in the application* while their operations were unit-tested and
+passing; Capture Input could not capture a binding, which was the entire point
+of the feature. All four are fixed, and the rule is recorded in
+`docs/glossary.md` under "ImGui `OpenPopup` and `BeginPopupModal` must share
+an ID scope".
+
+The structural cause is the host-invocation gap above: a suite that cannot
+link the host cannot observe that the host's UI never reaches the code the
+suite is proving. **Interactive acceptance is therefore load-bearing, not a
+postscript** — it is currently the only instrument that can see this class of
+defect at all. Phases that budget it as an afterthought will ship the same bug
+again.
+
+### Carried into Phase 8
+
+- **The suite is machine-locked.** Four test files hold 16 absolute-path
+  references into `C:\Users\mikey\Downloads` — `sofa_and_lamp.glb` (243 MB,
+  13 references) and `ABeautifulGame.glb` (41 MB, 4). They dominate the
+  runtime and mean the suite cannot run on any other machine or in CI. Fixing
+  this is a prerequisite for the suite being a shared artifact rather than a
+  local one.
+- **Compaction drops override-only material and texture references.**
+  Pre-existing and currently unreachable, because nothing yet holds a
+  reference that exists only as an override. **Phase 8 is Prefabs, which is
+  precisely the feature that creates them.** Address it inside Phase 8's
+  scope, before prefab overrides ship, not after.
+- **File-local and scene-global indices remain the same type** (`int` /
+  `uint32_t`), so nothing prevents assigning one to the other. Four defects
+  came from this in July; distinct types would make the class
+  unrepresentable. Still open.
+- **One W6 negative-case test has no recorded discriminating fault.** The
+  correct fault is `const bool matchesPath = !matchesId;` — dropping the
+  `ReferenceKey` comparison. Record it when next touching that file.
