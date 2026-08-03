@@ -1796,6 +1796,76 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 	}
 	ImGui::EndDisabled();
 
+	// W8: Rebind is a file-dialog affordance over the existing path edit. The
+	// SceneManager remains the identity authority: changing path deliberately
+	// adopts the selected file's sidecar ID (W8-A2), and may assign one when
+	// the selected file has no sidecar.
+	ImGui::SameLine();
+	ImGui::BeginDisabled(!m_Editable);
+	if (ImGui::Button("Browse..."))
+	{
+		m_ScriptRebindDiagnostic.clear();
+		const auto initialDirectory = m_ScriptDialogInitialDirectory
+			? m_ScriptDialogInitialDirectory() : std::filesystem::path{};
+		const std::string selected = FileDialog::OpenFile(
+			L"Lua Scripts (*.lua)\0*.lua\0", initialDirectory);
+		if (!selected.empty())
+		{
+			const auto selectedPath = std::filesystem::u8path(selected);
+			std::string extension = selectedPath.extension().u8string();
+			std::transform(extension.begin(), extension.end(), extension.begin(),
+				[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+			if (extension != ".lua")
+			{
+				m_ScriptRebindDiagnostic =
+					"Rebind requires a .lua script";
+			}
+			else
+			{
+				const auto root = m_SceneMgr->AssetContext().assetRoot;
+				std::filesystem::path relative = selectedPath;
+				std::error_code containmentError;
+				if (!root.empty())
+				{
+					const auto canonicalRoot = std::filesystem::weakly_canonical(
+						root, containmentError);
+					const auto canonicalSelected = std::filesystem::weakly_canonical(
+						selectedPath, containmentError);
+					const auto candidate = canonicalSelected.lexically_relative(
+						canonicalRoot);
+					if (containmentError || candidate.empty() ||
+						candidate.is_absolute() ||
+						(!candidate.empty() && *candidate.begin() == ".."))
+					{
+						m_ScriptRebindDiagnostic =
+							"Selected script is outside the active assetRoot";
+					}
+					else
+						relative = candidate;
+				}
+
+				if (m_ScriptRebindDiagnostic.empty())
+				{
+					auto before = *scriptState;
+					auto after = *scriptState;
+					after.asset.path = relative.generic_u8string();
+					const auto r = m_SceneMgr->SetScriptState(
+						targetUuid, after);
+					if (!r.success)
+						m_ScriptRebindDiagnostic = r.error.Format();
+					else
+					{
+						RecordScriptEdit(targetUuid, before, after, r);
+						scriptState = m_SceneMgr->GetScriptState(targetUuid);
+					}
+				}
+			}
+		}
+	}
+	ImGui::EndDisabled();
+	if (!m_ScriptRebindDiagnostic.empty())
+		ImGui::TextDisabled("[Rebind] %s", m_ScriptRebindDiagnostic.c_str());
+
 	// Remove Script button.
 	ImGui::SameLine();
 	ImGui::BeginDisabled(!m_Editable);
