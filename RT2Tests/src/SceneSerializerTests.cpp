@@ -1172,7 +1172,10 @@ TEST_CASE("Phase7 W3 step 7.4: failed atomic save does not publish advisories")
 //     "lua:asset=<rel-path>", "obj:shape=...". Their ':' is at index 4, 3, 4,
 //     3 — never index 1 — so the drive-letter test does not trip. They do not
 //     start with '/' or '\\'.
-//   - sourceMaterialKey is "<sourceKey>:material" — same property.
+//   - sourceMaterialKey (and the material-block sourceKey, Phase 8 pre-work 2)
+//     are "gltf:material:name=..." / "gltf:material:index=..." /
+//     "obj:material:name=..." — same property ('-' can be part of a name, but
+//     the ':' is at index 4 or 3, never index 1).
 //   - UUIDs are hyphenated hex, no drive letter, no leading slash.
 //   - AssetKind names ("model","texture","environment","script","unknown"),
 //     PrimitiveKind names, field type names, field names: none look absolute.

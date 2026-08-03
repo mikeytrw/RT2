@@ -12555,3 +12555,124 @@ This spec does not implement prefabs, does not add per-property override
 granularity (the override remains a whole-`SceneMaterial` snapshot), and does
 not change the compaction passes. It makes source-to-override reattachment
 identity-based so that Phase 8 can generalise a mechanism that is correct.
+
+## Phase 8 pre-work 2 — verification report (material-key identity, 2026-08-03)
+
+Implementation spec above; grounded at `master` `827eb8c` (755/755, 146,579
+assertions, Release). All work landed on branch `phase8-prework2-material-key`
+off that commit.
+
+### What was built
+
+- `SceneMaterial::sourceKey` (`SceneTypes.h`): loader-minted durable identity,
+  travels with the value (D2, overturning the parallel table — the string
+  cannot desync from its material).
+- Key minting in all four loader loops (`SceneLoader.cpp`): glTF load
+  (`~:725`), glTF import (`~:1428`), OBJ load (`~:2060`), OBJ import
+  (`~:2368`), each with a name-count pre-pass; name form preferred,
+  `gltf:material:name=<n>` / `obj:material:name=<n>`, index form only when the
+  name is absent or duplicated (D1).
+- `RecordMaterialOverride` (`SceneManager.cpp:3657`) mints the override key
+  from the live `materials[materialIndex].sourceKey` (empty for author-created
+  materials → resolver slot behavior, no diagnostic).
+- Resolver (`SceneAssetResolver.cpp`): `IsNewFormMaterialKey` /
+  `IsLegacyMaterialKey` helpers beside `ParseGltfKey`; plan-pass key match
+  against the staged materials' `sourceKey` before the slot fallback (D3:
+  `Stale` diagnostic on a miss, never fatal); legacy `<meshKey>:material`
+  keys rebased in the commit pass only for committed models, so a rejected
+  resolve never mutates authored state (D4). OBJ legacy keys
+  (`obj:whole-model:material`) stay legacy — per-triangle materials have no
+  concrete slot to rebase to, and the key remains entity-wide historical
+  semantics (obsolete, not a miss, no diagnostic).
+- Serializer: additive `j["sourceKey"]` on every material block
+  (`SceneSerializer.cpp:112/135`) — accepted drift (D2).
+- Removed the dead `GltfMaterialKey`/`ObjMaterialKey` helpers
+  (`SceneAssetResolver.h/.cpp`) that emitted a now-ambiguous `gltf:material=<i>`
+  form; corrected the `MaterialOverrideComponent::sourceMaterialKey` comment
+  (`ECSComponents.h`) and the W0 path-walker comment
+  (`SceneSerializerTests.cpp`) — comments only, no assertion changes.
+- Tests: `RT2Tests/src/Phase8Prework2MaterialKeyTests.cpp` (6 cases,
+  registered in `RT2Tests.vcxproj` and `premake5.lua`).
+
+### Measurements
+
+- Release: **761/761, 146,716 assertions** (baseline 755/755, 146,579; +6
+  tests, +137 assertions).
+- Debug: **761/761, 146,716 assertions** — the "8 known failures in OBJ
+  fixture generation" recorded in the test baseline did not reproduce at this
+  commit; the measured Debug run is fully green.
+- `run_script_test.ps1`: PASS. `run_slice_test.ps1`: PASS.
+- `--headless --validate --scene vertical-slice.rt2scene --frames 8`:
+  PASS (rendered `artifacts/v.png`).
+- No fixture modifications: `RT2App/assets/script-scenario.rt2scene` and
+  `RT2App/assets/vertical-slice.rt2scene` both clean in `git status`. One
+  expected consequence observed and restored: the validate run rewrites
+  checked-in scenes with the additive `"sourceKey": ""` field — the
+  accepted D2 drift.
+
+### Discrimination proofs (fault first, then revert)
+
+All proofs ran against the six new tests only; the 755 pre-existing tests
+were untouched (no existing expectation moved) and the final full suites are
+green.
+
+1. **C1 serializer round trip** — fault: strip the `j["sourceKey"]` write in
+   `MaterialToJson`. RED: C1 failed, exactly the two material-block
+   assertions (`Phase8Prework2MaterialKeyTests.cpp:375-376`); the other four
+   tests stayed green. Reverted → green.
+2. **C2 loader surface** — fault: disable the OBJ-import mint block
+   (`SceneLoader.cpp ~:2368`). RED: C2 failed, exactly the two
+   `obj:material:name=` assertions (`:450-451`); the OBJ mutation-seam
+   assertions stayed green (they prove `RecordMaterialOverride` reads the
+   live value, which is independent of the mint). Reverted → green.
+3. **C3 cross-path resolver matching** — fault: `IsNewFormMaterialKey`
+   returns false (slot-only matching). RED: C3 failed — a `Stale` diagnostic
+   appeared and the override adopted the slot-0 texture instead of the
+   key-matched one (`:383`, `:528`); C5 also red (same mechanism). Reverted →
+   green.
+4. **C4 D3 miss diagnostic** — fault: remove the diagnostic push in the
+   new-form miss branch. RED: C4 failed, exactly the `CountStale == 1`
+   assertion (`:581`) — the miss went silent; slot fallback still applied.
+   Reverted → green.
+5. **C5 shared-mesh name matching** — fault: mint index-form keys in the
+   glTF load loop. RED: all five glTF tests red (the load-path mint is
+   shared); C5's fatal was the name-form key assertion at `:629` — the
+   override keyed `gltf:material:index=0` silently re-binds to whatever
+   definition sits at slot 0 after the swap. Reverted → green.
+6. **D4 legacy-key rebase** — fault: disable the rebase assignment in the
+   commit pass. RED: the D4 test failed, exactly the glTF rebase assertion
+   (`:661`); the OBJ keep-as-is sub-case stayed green (no rebase is expected
+   there). Reverted → green.
+
+### Interactive check
+
+**Blocked.** The desktop application cannot be driven from this environment.
+The identical walk (import two-material model → override one → save → reorder
+source materials → reopen → override follows its material) is executed
+headlessly by C3 (single override, definition-swap reorder, texture-copy
+observable) and C5 (both overrides, shared-mesh reorder) and by C4's
+rename/miss case, but per the spec this is reported blocked, not passed.
+
+### Defects found along the way
+
+- Dead `GltfMaterialKey`/`ObjMaterialKey` helpers emitted a misleading
+  `gltf:material=<i>` key form that matched neither the new nor the legacy
+  shape — removed (would have routed every such key through the D3
+  "unrecognized form" branch).
+- The additive material-block field silently rewrites checked-in scene
+  assets on save/validate — expected and accepted under D2; assets restored
+  for this commit.
+- `graphify update .` initially failed to swap `graph.json` (WinError 32
+  rename lock on the 42 MB file); `--force` completed the swap. Note for
+  future runs on this machine.
+
+### Notes
+
+- The OBJ resolve key-match path is the same code as glTF (single match loop
+  over staged materials); the OBJ surface is proven by C2's mint assertions
+  and the mutation seam, and the D4 OBJ keep-as-is sub-case. The OBJ
+  reorder-at-the-loader-surface case cannot discriminate (per-triangle
+  material indices ride through reorders unchanged), so it is proven by the
+  key-string mutation seam instead, as the spec's fixture notes require.
+- `git status` at commit: sources, tests, project files, and this document;
+  `graphify-out/GRAPH_REPORT.md` left unstaged (pre-existing dirty state).

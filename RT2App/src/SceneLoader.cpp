@@ -709,9 +709,23 @@ bool SceneLoader::LoadIntoECS(
     ecsScene.textures = std::move(loadedTextures);
 
     // --- Materials (same as Load) ---
+    // Mint a durable per-material source identity: prefer the glTF material
+    // name when present and unique in this file, else the positional index.
+    // The key form is self-describing so a later mismatch can say what it
+    // matched on (Phase 8 pre-work 2 D1).
+    std::unordered_map<std::string, int> gltfNameCounts;
     for (const auto& gmat : model.materials)
+        if (!gmat.name.empty())
+            ++gltfNameCounts[gmat.name];
+    for (size_t matIndex = 0; matIndex < model.materials.size(); ++matIndex)
     {
+        const auto& gmat = model.materials[matIndex];
         SceneMaterial mat;
+
+        if (!gmat.name.empty() && gltfNameCounts[gmat.name] == 1)
+            mat.sourceKey = "gltf:material:name=" + gmat.name;
+        else
+            mat.sourceKey = "gltf:material:index=" + std::to_string(matIndex);
 
         if (gmat.pbrMetallicRoughness.baseColorFactor.size() >= 4)
         {
@@ -1400,9 +1414,21 @@ entt::entity SceneLoader::ImportIntoECS(
         std::make_move_iterator(loadedTextures.end()));
 
     // --- Materials (append with index offset) ---
+    // Mint durable per-material source identity, same convention as Load
+    // (name when present and unique, else index; Phase 8 pre-work 2 D1).
+    std::unordered_map<std::string, int> gltfImportNameCounts;
     for (const auto& gmat : model.materials)
+        if (!gmat.name.empty())
+            ++gltfImportNameCounts[gmat.name];
+    for (size_t matIndex = 0; matIndex < model.materials.size(); ++matIndex)
     {
+        const auto& gmat = model.materials[matIndex];
         SceneMaterial mat;
+
+        if (!gmat.name.empty() && gltfImportNameCounts[gmat.name] == 1)
+            mat.sourceKey = "gltf:material:name=" + gmat.name;
+        else
+            mat.sourceKey = "gltf:material:index=" + std::to_string(matIndex);
 
         if (gmat.pbrMetallicRoughness.baseColorFactor.size() >= 4)
         {
@@ -2019,11 +2045,22 @@ bool SceneLoader::LoadObjIntoECS(
            (int)attrib.vertices.size() / 3, (int)shapes.size(), (int)materials.size());
     fflush(stdout);
 
-    // Convert MTL materials to SceneMaterial
-    int matBase = (int)ecsScene.materials.size();
+    // Convert MTL materials to SceneMaterial. Mint a durable per-material
+    // source identity from the MTL name (newmtl), falling back to the index
+    // when names collide in the file (Phase 8 pre-work 2 D1).
+    std::unordered_map<std::string, int> objNameCounts;
     for (const auto& mtl : materials)
+        if (!mtl.name.empty())
+            ++objNameCounts[mtl.name];
+    int matBase = (int)ecsScene.materials.size();
+    for (size_t matIndex = 0; matIndex < materials.size(); ++matIndex)
     {
+        const auto& mtl = materials[matIndex];
         SceneMaterial mat;
+        if (!mtl.name.empty() && objNameCounts[mtl.name] == 1)
+            mat.sourceKey = "obj:material:name=" + mtl.name;
+        else
+            mat.sourceKey = "obj:material:index=" + std::to_string(matIndex);
         mat.baseColor = {mtl.diffuse[0], mtl.diffuse[1], mtl.diffuse[2]};
         mat.baseAlpha = (mtl.dissolve > 0.0f) ? mtl.dissolve : 1.0f;
         mat.metallic = 0.0f;
@@ -2317,10 +2354,21 @@ bool ParseObjAndLoadResources(
     fflush(stdout);
 
     // Convert MTL materials to SceneMaterial (append to ecsScene.materials).
-    out.matBase = (int)ecsScene.materials.size();
+    // Mint durable per-material source identity from the MTL name, same
+    // convention as LoadObjIntoECS (Phase 8 pre-work 2 D1).
+    std::unordered_map<std::string, int> objImportNameCounts;
     for (const auto& mtl : *out.materials)
+        if (!mtl.name.empty())
+            ++objImportNameCounts[mtl.name];
+    out.matBase = (int)ecsScene.materials.size();
+    for (size_t matIndex = 0; matIndex < out.materials->size(); ++matIndex)
     {
+        const auto& mtl = (*out.materials)[matIndex];
         SceneMaterial mat;
+        if (!mtl.name.empty() && objImportNameCounts[mtl.name] == 1)
+            mat.sourceKey = "obj:material:name=" + mtl.name;
+        else
+            mat.sourceKey = "obj:material:index=" + std::to_string(matIndex);
         mat.baseColor = {mtl.diffuse[0], mtl.diffuse[1], mtl.diffuse[2]};
         mat.baseAlpha = (mtl.dissolve > 0.0f) ? mtl.dissolve : 1.0f;
         mat.metallic = 0.0f;

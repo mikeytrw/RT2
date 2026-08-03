@@ -104,6 +104,17 @@ struct SceneMaterial
 
     std::string alphaMode = "OPAQUE";
     float alphaCutoff = 0.5f;
+
+    // Durable source identity: which material inside the source asset this
+    // value came from. Minted by the loaders (SceneLoader.cpp) as
+    // "gltf:material:name=<n>" / "gltf:material:index=<i>" / "obj:material:
+    // name=<n>" / "obj:material:index=<i>" (name form preferred when the
+    // name is present and unique in the file). Empty for author-created
+    // materials. This is the source-side identity the resolver matches
+    // MaterialOverrideComponent::sourceMaterialKey against; it travels with
+    // the value, so it can never desync from it (Phase 8 pre-work 2 D2,
+    // overturned from a parallel table for that reason).
+    std::string sourceKey;
 };
 
 struct SceneLight

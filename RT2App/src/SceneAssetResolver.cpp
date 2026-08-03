@@ -102,6 +102,28 @@ bool ParseGltfKey(const std::string& key, GltfKey& out)
     return ok;
 }
 
+// Phase 8 pre-work 2: source-material identity key forms.
+// New-form keys are self-describing about what they matched on:
+//   "gltf:material:name=<n>"  | "gltf:material:index=<i>"
+//   "obj:material:name=<n>"   | "obj:material:index=<i>"
+bool IsNewFormMaterialKey(const std::string& key)
+{
+    return key.rfind("gltf:material:", 0) == 0 ||
+           key.rfind("obj:material:", 0) == 0;
+}
+
+// Legacy keys (authored before pre-work 2) are "<meshSourceKey>:material" —
+// slot position encoded as a key. Recognizable by the ":material" suffix on
+// a mesh key; never matches a new-form key.
+bool IsLegacyMaterialKey(const std::string& key)
+{
+    if (IsNewFormMaterialKey(key)) return false;
+    constexpr const char* suffix = ":material";
+    constexpr size_t suffixLen = 9; // sizeof(":material") - 1
+    return key.size() >= suffixLen &&
+           key.compare(key.size() - suffixLen, suffixLen, suffix) == 0;
+}
+
 } // anonymous namespace
 
 std::string SceneAssetResolver::GltfSourceKey(int sceneIdx, int nodeIdx,
@@ -116,16 +138,6 @@ std::string SceneAssetResolver::GltfSourceKey(int sceneIdx, int nodeIdx,
 std::string SceneAssetResolver::ObjSourceKey()
 {
     return "obj:whole-model";
-}
-
-std::string SceneAssetResolver::GltfMaterialKey(int materialIdx)
-{
-    return "gltf:material=" + std::to_string(materialIdx);
-}
-
-std::string SceneAssetResolver::ObjMaterialKey(int mtlIdx)
-{
-    return "obj:material=" + std::to_string(mtlIdx);
 }
 
 bool SceneAssetResolver::ResolveEnvironment(SceneDocument& doc,
@@ -557,6 +569,11 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
         const PendingEntity* pe;
         uint32_t             localMeshIndex = 0xFFFFFFFF; // staged-local
         int                  localMaterialIndex = -1;      // staged-local
+        // D4 migration: when the override carries a legacy
+        // "<meshKey>:material" key, the new-form key of the material at its
+        // historical slot. Empty = no rewrite. Applied in the commit pass so
+        // a rejected resolve never mutates authored state.
+        std::string          legacyRebaseKey;
     };
     std::vector<PlanEntry> plan;
     plan.reserve(pending.size());
@@ -668,7 +685,88 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
             continue;
         }
 
-        plan.push_back({ &pe, localMeshIndex, localMaterialIndex });
+        // ---- Key-based override material matching (Phase 8 pre-work 2) ----
+        // The override carries a durable source material key minted from the
+        // loader-surfaced material identity. Match it against the staged
+        // materials by key; the resolved slot (localMaterialIndex) is only
+        // the D3 fallback. Legacy "<meshKey>:material" keys are rebased to
+        // the new-form key of the material at their historical slot (D4).
+        std::string legacyRebaseKey;
+        if (auto* ov = doc.ecs.registry.try_get<MaterialOverrideComponent>(
+                pe.entity))
+        {
+            if (ov->authored && !ov->sourceMaterialKey.empty())
+            {
+                if (IsNewFormMaterialKey(ov->sourceMaterialKey))
+                {
+                    int keyMatch = -1;
+                    for (size_t mi = 0; mi < s.ecs.materials.size(); ++mi)
+                    {
+                        if (s.ecs.materials[mi].sourceKey == ov->sourceMaterialKey)
+                        {
+                            keyMatch = static_cast<int>(mi);
+                            break;
+                        }
+                    }
+                    if (keyMatch >= 0)
+                    {
+                        localMaterialIndex = keyMatch;
+                    }
+                    else
+                    {
+                        // D3: the identity is gone from the rebuilt source
+                        // (renamed/removed). Keep today's slot behaviour, but
+                        // make the miss loud instead of silent.
+                        AssetDiagnostic d;
+                        d.severity   = AssetDiagnostic::Stale;
+                        d.kind       = AssetKind::Model;
+                        d.refPath    = pe.ref.path;
+                        d.entityUuid = pe.uuid;
+                        d.entityName = pe.name;
+                        d.sourceKey  = ov->sourceMaterialKey;
+                        d.detail     = "source material key not found in "
+                                       "rebuilt model; override re-bound by "
+                                       "slot position";
+                        diagnostics.push_back(d);
+                    }
+                }
+                else if (IsLegacyMaterialKey(ov->sourceMaterialKey))
+                {
+                    // D4 migration. glTF: the legacy key encodes the mesh's
+                    // historical material slot; rewrite the override key to
+                    // the identity of the material now at that slot, so the
+                    // file migrates in place on its next save. OBJ: no
+                    // concrete slot (per-triangle materials, -1), so the key
+                    // stays legacy — it keeps its historical entity-wide
+                    // semantics and no diagnostic is raised (it is obsolete,
+                    // not a miss).
+                    if (!s.isObj && localMaterialIndex >= 0 &&
+                        localMaterialIndex < (int)s.ecs.materials.size() &&
+                        !s.ecs.materials[localMaterialIndex].sourceKey.empty())
+                    {
+                        legacyRebaseKey =
+                            s.ecs.materials[localMaterialIndex].sourceKey;
+                    }
+                }
+                else
+                {
+                    // Unrecognized key form: treat as a miss (D3).
+                    AssetDiagnostic d;
+                    d.severity   = AssetDiagnostic::Stale;
+                    d.kind       = AssetKind::Model;
+                    d.refPath    = pe.ref.path;
+                    d.entityUuid = pe.uuid;
+                    d.entityName = pe.name;
+                    d.sourceKey  = ov->sourceMaterialKey;
+                    d.detail     = "source material key not found in rebuilt "
+                                   "model; override re-bound by slot position";
+                    diagnostics.push_back(d);
+                }
+            }
+        }
+
+        plan.push_back({ &pe, localMeshIndex, localMaterialIndex,
+                         std::move(legacyRebaseKey) });
     }
 
     // Aggregate policy: if every imported entity failed, hard-fail with the
@@ -737,6 +835,17 @@ bool SceneAssetResolver::ResolveAll(SceneDocument& doc,
                 // Append textures.
                 for (const auto& st : s.ecs.textures)
                     doc.ecs.textures.push_back(st);
+            }
+
+            // D4 legacy-key migration: rewrite the override's stored key to
+            // the new-form identity computed in the plan pass. Done only for
+            // committed models, so a rejected resolve never mutates authored
+            // state.
+            if (!planEntry.legacyRebaseKey.empty())
+            {
+                if (auto* ovr = reg.try_get<MaterialOverrideComponent>(
+                        planEntry.pe->entity))
+                    ovr->sourceMaterialKey = planEntry.legacyRebaseKey;
             }
 
             const uint32_t targetMeshIndex =
