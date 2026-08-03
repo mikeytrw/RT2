@@ -11684,3 +11684,154 @@ again.
 - **One W6 negative-case test has no recorded discriminating fault.** The
   correct fault is `const bool matchesPath = !matchesId;` — dropping the
   `ReferenceKey` comparison. Record it when next touching that file.
+
+## Phase 8 pre-work — override-aware compaction (implementation spec)
+
+Written 2026-08-03, before Phase 8 (Prefabs) begins. This is a correctness
+prerequisite, not a feature: the compaction sweep is currently correct only
+because of an invariant maintained in another file, and Prefabs is the feature
+that breaks that invariant.
+
+### The problem
+
+`SceneManager::CompactMeshRegistry` (`RT2App/src/SceneManager.cpp:4017`) is
+mark-and-sweep over three resource tables. Each pass decides what counts as a
+live reference:
+
+| Pass | Marks from | Lines |
+|---|---|---|
+| Meshes | `MeshRef::meshIndex` on live entities | `:4032-4039` |
+| Materials | `MeshRef::materialIndex`, plus per-triangle `mesh.materialIndices` | `:4085-4096` |
+| Textures | the four texture indices on each entry of `m_EcsScene.materials` | `:4137-4143` |
+
+`MaterialOverrideComponent` (`RT2App/src/ECSComponents.h:241`) is marked by
+none of them, and it holds a **full `SceneMaterial` value snapshot** with its
+own `baseColorTextureIndex`, `normalTextureIndex`, `emissiveTextureIndex` and
+`metallicRoughnessTextureIndex`. It is therefore a second place texture
+indices live, invisible to the pass that sweeps them.
+
+Two consequences, and they are not the same thing:
+
+- **The material-slot invalidation is deliberate.** `materialIndex` on the
+  override is explicitly transient — filled by the resolver, not serialized as
+  identity. When its slot is swept, `RebaseIndices` maps it to `-1` and
+  `SceneManager.cpp:190-192` states the asymmetry must remain. The resolver
+  refills it. **Do not change this.**
+- **The texture handling is a latent defect.** A texture reachable only
+  through an override snapshot is not marked, is swept from
+  `m_EcsScene.textures`, and then `rebaseMaterialTextures` (`:255-262`)
+  rewrites the override's index to `-1`. The override survives; its texture
+  pointers are silently nulled. An authored material returns untextured with
+  no diagnostic.
+
+### Why nothing hits it today
+
+`SetMaterial` constructs the override by **copying a live material slot** —
+`ov.material = m_EcsScene.materials[materialIndex]` (`:3661`) — and `MeshRef`
+points at that same slot. The override's textures are consequently marked via
+the mirror, never via the override itself.
+
+**The sweep is not correct; it is masked.** Its safety depends on "every
+authored override is mirrored by a live entry in `m_EcsScene.materials`" — an
+invariant established in the resolver and in `SetMaterial`, stated nowhere in
+the compaction code, and asserted by no test.
+
+### Why Phase 8 breaks it
+
+A prefab override is authored against an asset, not against a live
+instantiated material slot. A prefab instance overriding a texture on a
+variant not currently materialised in `m_EcsScene.materials` is exactly the
+unmirrored case. The failure is silent at the point of failure: compaction
+runs automatically on scene change (`:1324`, `:2387`, `WalnutApp.cpp:307`), so
+the texture is lost during an operation the user did not initiate and notices
+later, in another session, as "my prefab lost its texture". Nothing connects
+the symptom to the sweep.
+
+### Findings to establish before code
+
+- **F1.** `InstallMaterialOverride` (`:3992`) installs an arbitrary override
+  snapshot with no resolver pass and no mirroring. It is the command
+  capture/restore path (`:1705`, `:3994-4003`). **Determine whether an
+  undo/redo sequence interleaved with a compaction can already install an
+  override whose texture indices do not match any live material.** If it can,
+  this defect is reachable today and this spec's framing as pre-work is wrong —
+  say so rather than proceeding.
+- **F2.** `MergeImportedECS` copies overrides between registries (`:850-856`).
+  Confirm whether the copy preserves the mirror or can produce an override
+  whose indices are file-local. Import already rebases; the question is
+  whether the override goes through `RebaseIndices` on that path.
+
+Answer both from the code before writing the fix, and record the answers.
+
+### The change
+
+Add a fourth marking loop to the **texture** pass only, so an override marks
+its own textures rather than relying on being mirrored:
+
+```cpp
+// Overrides carry a full material snapshot, so their textures are live
+// references even when no entry in m_EcsScene.materials mirrors them.
+// Prefab overrides are authored against an asset, not a live slot, so
+// the mirror cannot be assumed. See Phase 8 pre-work spec.
+auto overrideView = m_EcsScene.registry.view<MaterialOverrideComponent>();
+for (const auto entity : overrideView)
+{
+    const auto& mat = overrideView.get<MaterialOverrideComponent>(entity).material;
+    if (mat.baseColorTextureIndex >= 0)         referencedTexs.insert(mat.baseColorTextureIndex);
+    if (mat.normalTextureIndex >= 0)            referencedTexs.insert(mat.normalTextureIndex);
+    if (mat.emissiveTextureIndex >= 0)          referencedTexs.insert(mat.emissiveTextureIndex);
+    if (mat.metallicRoughnessTextureIndex >= 0) referencedTexs.insert(mat.metallicRoughnessTextureIndex);
+}
+```
+
+**Scope boundary — the material pass is not changed.** Marking the override's
+`materialIndex` would defeat the deliberate invalidation at `:190-192` and
+change resolver behaviour. This spec touches the texture pass only.
+
+Extract the four-field test into a shared helper if it reads better than
+repeating it; `rebaseMaterialTextures` (`:208-217`) already enumerates the same
+four fields, and a third copy is the point at which they can diverge. One
+helper naming the four fields, used by mark and rebase alike, is preferable.
+
+### Tests and discrimination proofs
+
+Add to `RT2Tests`. `SceneManager.cpp` **is** compiled into the test project, so
+unlike the Phase 7 UI defects this class is fully reachable by automated test.
+
+1. **Unmirrored override retains its texture.** Build a scene with a textured
+   material, attach a `MaterialOverrideComponent` whose snapshot references
+   that texture, remove every entity referencing the material so no live
+   `m_EcsScene.materials` entry mirrors it, compact, and assert the override's
+   `baseColorTextureIndex` still resolves to the same texture path.
+   *Discriminating fault:* delete the new marking loop. The index becomes
+   `-1`.
+2. **Mirrored override is unchanged.** The ordinary `SetMaterial` path still
+   compacts identically — same table sizes, same remapped indices — proving
+   the fix adds marks without retaining garbage.
+   *Discriminating fault:* mark unconditionally without the `>= 0` guard, so
+   `-1` enters `referencedTexs` and the remap shifts.
+3. **The material-slot asymmetry is preserved.** An override whose material
+   slot is swept still has `materialIndex == -1` afterwards.
+   *Discriminating fault:* add the override to `referencedMats`. The index
+   survives and the deliberate asymmetry is gone.
+
+Every proof runs fault-first: inject, confirm red, revert, confirm green, and
+record both outcomes. A test that has never been seen to fail has not been
+shown to test anything.
+
+### Acceptance
+
+- Both configurations build and the full suite passes. Baseline before this
+  work is 749/749 and 146,510 assertions at `bc9d7f1`; three new cases are
+  expected, so state the measured counts rather than copying these.
+- Script, slice and `--headless --validate` gates green.
+- F1 and F2 answered in writing, with file:line evidence.
+- All three discrimination proofs recorded red-then-green.
+- No fixture modifications in `git status`.
+
+### Boundary
+
+This spec does not implement prefabs, does not change the resolver, and does
+not change the material or mesh marking passes. It makes one sweep locally
+correct so that Phase 8 can introduce unmirrored overrides without a silent
+data-loss path waiting for them.
