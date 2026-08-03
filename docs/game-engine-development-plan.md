@@ -12379,3 +12379,179 @@ This check proves the **editor** does — the inspector reflects the reverted
 material and nothing in the host layer re-derives the override on load. The
 Phase 7 popup-scope defects all lived in exactly that untested host layer, so
 the two are not interchangeable.
+
+## Phase 8 pre-work 2 — source-material identity and key-based override matching (implementation spec)
+
+Written 2026-08-03 from the grounding findings
+(`docs/phase8-prefabs-grounding-findings.md`, Q4). Second correctness
+prerequisite for Prefabs, after override-aware compaction (`ab3c852`).
+
+This one is not latent. It is a live defect in the imported-model path today.
+
+### The problem
+
+An authored `MaterialOverrideComponent` binds to its source material **by slot
+position**, not by identity. The resolver matches the entity's mesh
+`sourceKey` against the rebuilt model's `keyMap`
+(`SceneAssetResolver.cpp:495-517, 590`), obtains `(meshIndex, materialIndex)`,
+and applies the override against whatever material now sits at that index
+(`:764-783`).
+
+So when a source file is re-exported with its materials **reordered, or one
+removed**, the entity still resolves — mesh identity is unchanged — and the
+override silently re-binds to a different material. Texture indices are
+repaired from the new occupant (`:768-777`). No diagnostic is raised. The user
+sees an authored material land on the wrong surface, with nothing connecting it
+to the re-export.
+
+`sourceMaterialKey` exists to prevent exactly this and **does not work**:
+
+- The component comment (`ECSComponents.h:253-256`) claims it lets the resolver
+  "match it against a rebuilt source material", and gives the form
+  `"gltf:material=<index>"`.
+- **The resolver never reads it.** Across `RT2App` it is written once
+  (`SceneManager.cpp:3677`), serialized (`SceneSerializer.cpp:707, 889`), and
+  compared for equality (`SceneManager.cpp:1846`,
+  `EditorPropertyCommands.cpp:91`). Nothing consumes it for matching.
+- The value written is `src->model.sourceKey + ":material"`
+  (`SceneManager.cpp:3670-3672`) — the **mesh** key plus a literal suffix. It
+  does not identify a material and cannot distinguish two materials on one
+  mesh. The documented `"gltf:material=<index>"` form never occurs.
+
+The field is currently dead weight that actively misleads readers. It misled
+the author of the Phase 8 pre-work review, who cited the comment rather than
+checking the code.
+
+### Why this blocks prefabs
+
+A prefab instance is a source reference plus a sparse set of property deltas
+reattached to the source on load. **Reattachment is identity matching.** If we
+build prefab overrides on the current material system, they inherit
+match-by-position, and the same silent rebinding appears in a feature whose
+entire purpose is surviving source edits.
+
+The material path is also the only worked example of source-to-instance
+override reconciliation in the tree. It is what the Phase 8 spec will
+generalise from. It should be correct before it is generalised.
+
+### What does not exist yet
+
+`SceneMaterial` (`SceneTypes.h:86-107`) carries **no source identity** — no
+name, no source index, nothing durable. `keyMap`
+(`SceneAssetResolver.cpp:390`) is keyed by mesh `sourceKey` and its value is a
+`(meshIndex, materialIndex)` pair. So the source side has nothing to match
+against, and minting a real key requires the loader to surface material
+identity that it currently discards.
+
+That is the substance of this work. The resolver change is small once the
+identity exists.
+
+### Decisions — answer before code
+
+**D1 — the form of a source material identity.** Both loaders must produce a
+key that survives re-export.
+
+- glTF: materials have an optional `name` and a positional index. Names are
+  more durable across re-export; indices reorder. Names may be absent or
+  duplicated.
+- OBJ: `.mtl` materials are named by construction (`newmtl <name>`), and the
+  name is the natural durable identity.
+
+**Recommendation:** prefer the name when present and unique, fall back to the
+index, and make the key self-describing about which was used — e.g.
+`gltf:material:name=Brass` versus `gltf:material:index=3`. A key that does not
+say what it matched on cannot be reasoned about when it later fails to match.
+Reject this if the encoding proves unwieldy, but do not silently choose index
+alone: index-only matching is what we already have, wearing a key.
+
+**D2 — where the source-side identity lives.** The override carries its key on
+the component. The *source* side needs the same identity available at resolve
+time.
+
+**Recommendation:** a parallel per-material key table on the staged/imported
+model, alongside the existing `keyMap`, rather than a new field on
+`SceneMaterial`. `SceneMaterial` is a GPU-adjacent value type that is
+serialized verbatim inside every authored override; adding identity to it
+changes the serialized shape of every override and couples value to identity.
+Argue for the field on `SceneMaterial` if the parallel table proves awkward,
+but state the serialization consequence if you do.
+
+**D3 — what happens when the key does not match.** Existing scenes carry the
+old bogus `"<meshKey>:material"` value, and a genuinely renamed source material
+will also miss.
+
+**Recommendation:** fall back to the current slot-position behaviour **and
+raise a diagnostic**. Do not fail the load and do not drop the override —
+either would be destructive for a case that is often benign. The existing
+`AssetDiagnostic` channel (`SceneAssetResolver.cpp:656-669`) is the right
+vehicle. The point of this work is that the silent case becomes loud, not that
+it becomes fatal.
+
+**D4 — migration of existing keys.** Old-format keys are recognisable
+(they end in `:material` and equal the mesh key plus that suffix). Decide
+whether to migrate them on load, treat them as unmatched under D3, or reject
+them. Note that any decision here interacts with the schema version; say
+explicitly whether a bump is required and why.
+
+### The change, in order
+
+1. Loader surfaces a durable per-material source identity for glTF and OBJ,
+   per D1.
+2. Staged/imported models carry that identity per material, per D2.
+3. `SceneManager` mints `sourceMaterialKey` from the real identity instead of
+   `model.sourceKey + ":material"` (`:3670-3677`).
+4. The resolver matches the override to the rebuilt material **by key**, using
+   the resolved slot only as the D3 fallback (`SceneAssetResolver.cpp:764-783`).
+5. Diagnostics on miss, per D3.
+6. Migration, per D4.
+7. Correct the `MaterialOverrideComponent` comment
+   (`ECSComponents.h:253-256`) so it describes what the code does. It has been
+   wrong since it was written and has already misled one reader.
+
+### Tests and discrimination proofs
+
+`SceneManager.cpp`, `SceneAssetResolver.cpp` and `SceneLoader.cpp` are all
+compiled into `RT2Tests`, so every case below is automatable.
+
+1. **Reordered source materials keep the override on its own material.**
+   Import a model with two distinct materials, override one, rewrite the source
+   with the materials in the opposite order, re-resolve, and assert the
+   override still applies to the same *material*, not the same slot.
+   *Discriminating fault:* match by slot index instead of key. The override
+   lands on the wrong material — the present behaviour.
+2. **A removed source material raises a diagnostic and does not silently
+   rebind.** Per D3.
+   *Discriminating fault:* drop the diagnostic; the test sees a silent
+   fallback.
+3. **Round trip.** A minted key survives save, load and re-resolve unchanged.
+4. **Legacy key handling** per D4 — whichever behaviour is chosen, pin it.
+5. **Two materials on one mesh are distinguishable.** The current key cannot
+   express this at all; the new one must.
+   *Discriminating fault:* revert to the mesh-key-plus-suffix form; both
+   materials collide on one key.
+
+Every proof runs fault-first: inject, confirm red, revert, confirm green,
+record both. If a named fault does not discriminate, report that rather than
+adjusting the test — that has already happened once in this phase and the
+report was worth more than the fix.
+
+### Acceptance
+
+- Both configurations build; full suite passes. Baseline at `c6200ca` is
+  755/755 and 146,579 assertions. State measured counts; do not copy these.
+- Script, slice and `--headless --validate` gates green.
+- D1-D4 answered in writing with reasoning.
+- All discrimination proofs recorded red-then-green.
+- **Interactive check:** import a model with at least two materials, override
+  one in the inspector, save, edit the source file so the materials are
+  reordered, reopen, and confirm the override is still on its own material.
+  If you cannot drive the desktop application, report this as **blocked** —
+  not as passed, not as covered by the automated tests.
+- No fixture modifications in `git status`.
+
+### Boundary
+
+This spec does not implement prefabs, does not add per-property override
+granularity (the override remains a whole-`SceneMaterial` snapshot), and does
+not change the compaction passes. It makes source-to-override reattachment
+identity-based so that Phase 8 can generalise a mechanism that is correct.
