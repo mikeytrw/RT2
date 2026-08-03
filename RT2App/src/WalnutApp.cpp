@@ -41,6 +41,7 @@
 #include "EditorCommands.h"
 #include "EditorPropertyCommands.h"
 #include "InputService.h"
+#include "InputBindingEditor.h"
 #include "ProjectContext.h"
 #include "SceneAssetMigration.h"
 #include "ContentBrowserOperations.h"
@@ -97,6 +98,78 @@ std::filesystem::path ExecutableDirectory()
 #endif
 	printf("[ImGui] Could not determine the executable directory; portable imgui.ini fallback is unavailable\n");
 	return {};
+}
+
+std::optional<rt2::core::ActionBinding> CapturePressedDesktopBinding()
+{
+    using rt2::core::KeyCode;
+    using rt2::core::InputDeviceKind;
+    using rt2::core::ModifierBits;
+
+    struct KeyCandidate { ImGuiKey key; KeyCode code; };
+    static const KeyCandidate keys[] = {
+        {ImGuiKey_Space, KeyCode::Space},
+        {ImGuiKey_Enter, KeyCode::Enter},
+        {ImGuiKey_Escape, KeyCode::Escape},
+        {ImGuiKey_Tab, KeyCode::Tab},
+        {ImGuiKey_Backspace, KeyCode::Backspace},
+        {ImGuiKey_Delete, KeyCode::Delete},
+        {ImGuiKey_LeftArrow, KeyCode::Left},
+        {ImGuiKey_RightArrow, KeyCode::Right},
+        {ImGuiKey_UpArrow, KeyCode::Up},
+        {ImGuiKey_DownArrow, KeyCode::Down},
+        {ImGuiKey_PageUp, KeyCode::PageUp},
+        {ImGuiKey_PageDown, KeyCode::PageDown},
+        {ImGuiKey_Home, KeyCode::Home},
+        {ImGuiKey_End, KeyCode::End},
+        {ImGuiKey_A, KeyCode::A}, {ImGuiKey_B, KeyCode::B},
+        {ImGuiKey_C, KeyCode::C}, {ImGuiKey_D, KeyCode::D},
+        {ImGuiKey_E, KeyCode::E}, {ImGuiKey_F, KeyCode::F},
+        {ImGuiKey_G, KeyCode::G}, {ImGuiKey_H, KeyCode::H},
+        {ImGuiKey_I, KeyCode::I}, {ImGuiKey_J, KeyCode::J},
+        {ImGuiKey_K, KeyCode::K}, {ImGuiKey_L, KeyCode::L},
+        {ImGuiKey_M, KeyCode::M}, {ImGuiKey_N, KeyCode::N},
+        {ImGuiKey_O, KeyCode::O}, {ImGuiKey_P, KeyCode::P},
+        {ImGuiKey_Q, KeyCode::Q}, {ImGuiKey_R, KeyCode::R},
+        {ImGuiKey_S, KeyCode::S}, {ImGuiKey_T, KeyCode::T},
+        {ImGuiKey_U, KeyCode::U}, {ImGuiKey_V, KeyCode::V},
+        {ImGuiKey_W, KeyCode::W}, {ImGuiKey_X, KeyCode::X},
+        {ImGuiKey_Y, KeyCode::Y}, {ImGuiKey_Z, KeyCode::Z},
+        {ImGuiKey_0, KeyCode::D0}, {ImGuiKey_1, KeyCode::D1},
+        {ImGuiKey_2, KeyCode::D2}, {ImGuiKey_3, KeyCode::D3},
+        {ImGuiKey_4, KeyCode::D4}, {ImGuiKey_5, KeyCode::D5},
+        {ImGuiKey_6, KeyCode::D6}, {ImGuiKey_7, KeyCode::D7},
+        {ImGuiKey_8, KeyCode::D8}, {ImGuiKey_9, KeyCode::D9},
+        {ImGuiKey_F1, KeyCode::F1}, {ImGuiKey_F2, KeyCode::F2},
+        {ImGuiKey_F3, KeyCode::F3}, {ImGuiKey_F4, KeyCode::F4},
+        {ImGuiKey_F5, KeyCode::F5}, {ImGuiKey_F6, KeyCode::F6},
+        {ImGuiKey_F7, KeyCode::F7}, {ImGuiKey_F8, KeyCode::F8},
+        {ImGuiKey_F9, KeyCode::F9}, {ImGuiKey_F10, KeyCode::F10},
+        {ImGuiKey_F11, KeyCode::F11}, {ImGuiKey_F12, KeyCode::F12},
+    };
+
+    ModifierBits modifiers = ModifierBits::None;
+    const auto& io = ImGui::GetIO();
+    if (io.KeyCtrl) modifiers = modifiers | ModifierBits::Ctrl;
+    if (io.KeyShift) modifiers = modifiers | ModifierBits::Shift;
+    if (io.KeyAlt) modifiers = modifiers | ModifierBits::Alt;
+    if (io.KeySuper) modifiers = modifiers | ModifierBits::Super;
+
+    for (const auto& candidate : keys)
+    {
+        if (ImGui::IsKeyPressed(candidate.key, false))
+            return rt2::core::CaptureActionBinding(
+                InputDeviceKind::KeyboardKey,
+                static_cast<uint16_t>(candidate.code), modifiers);
+    }
+    for (int button = 0; button <= 4; ++button)
+    {
+        if (ImGui::IsMouseClicked(button))
+            return rt2::core::CaptureActionBinding(
+                InputDeviceKind::MouseButton,
+                static_cast<uint16_t>(button));
+    }
+    return std::nullopt;
 }
 
 } // namespace
@@ -211,6 +284,13 @@ public:
 		m_EditorUI.SetCommandHistory(&m_History);
 		m_EditorUI.SetFieldRegistry(m_InspectorFieldRegistry.get());
 		m_EditorUI.SetDialogInitialDirectoryProvider([this]() {
+			return DialogInitialDirectory();
+		});
+		m_EditorUI.SetScriptDialogInitialDirectoryProvider([this]() {
+			if (m_ProjectContext)
+				return m_ProjectContext->project.assetRoot;
+			if (m_Settings2 && !m_Settings2->GetLastBrowseDirectory().empty())
+				return m_Settings2->GetLastBrowseDirectory();
 			return DialogInitialDirectory();
 		});
 		m_EditorUI.SetOnSceneChanged([this]() {
@@ -1122,6 +1202,8 @@ public:
 	// ---- Phase 1B: Session / Recovery UI ----
 	if (m_ShowSessionWindow)
 		DrawSessionPanel();
+	if (m_ShowInputBindingsWindow)
+		DrawInputBindingsPanel();
 	if (m_ShowContentBrowserWindow)
 		DrawContentBrowserPanel();
 	DrawRecoveryPrompt();
@@ -1226,6 +1308,179 @@ public:
 		ImGui::End();
 	}
 
+	void DrawInputBindingsPanel()
+	{
+		ImGui::Begin("Input Bindings", &m_ShowInputBindingsWindow);
+		if (!m_Settings2)
+		{
+			ImGui::TextDisabled("Editor settings are unavailable");
+			ImGui::End();
+			return;
+		}
+
+		ImGui::TextDisabled("Edits are stored as per-user overrides.");
+		ImGui::TextWrapped(
+			"Runtime mappings are editable here; project input defaults are not.");
+		ImGui::Separator();
+		ImGui::Text("Runtime");
+
+		// Keep explicit empty overrides visible. Composition removes an
+		// inherited mapping for an unbind, but the editor must still expose
+		// that row so the user can rebind it without editing JSON by hand.
+		std::map<std::string, rt2::core::InputMapping> runtimeMappings;
+		for (const auto& [name, mapping] : m_Input.RuntimeContext().All())
+			runtimeMappings.emplace(name, mapping);
+		for (const auto& record : m_Settings2->GetInputOverrides())
+		{
+			if (record.contextId != "runtime")
+				continue;
+			for (const auto& mapping : record.mappings)
+			{
+				if (mapping.actions.empty() && mapping.axes.empty())
+					runtimeMappings[mapping.name] = mapping;
+				else if (!runtimeMappings.count(mapping.name))
+					runtimeMappings.emplace(mapping.name, mapping);
+			}
+		}
+		bool openCapture = false;
+		for (auto& [name, mapping] : runtimeMappings)
+		{
+			(void)name;
+			ImGui::PushID(mapping.name.c_str());
+			ImGui::Text("%s", mapping.name.c_str());
+			ImGui::SameLine(190.0f);
+			ImGui::TextDisabled("%s",
+				rt2::core::DescribeMapping(mapping).c_str());
+			ImGui::SameLine();
+			if (ImGui::Button("Rebind"))
+			{
+				m_InputCaptureMapping = mapping.name;
+				m_InputCaptureTemplate = mapping;
+				m_InputCaptureIsAxis = mapping.isAxis;
+				m_InputCaptureSkipFrame = true;
+				m_InputCaptureActive = true;
+				openCapture = true;
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Unbind"))
+			{
+				const auto record = mapping.isAxis
+					? rt2::core::BuildOverrideRecord(
+						"runtime", mapping.name, true,
+						std::vector<rt2::core::AxisBinding>{})
+					: rt2::core::BuildOverrideRecord(
+						"runtime", mapping.name, false,
+						std::vector<rt2::core::ActionBinding>{});
+				ApplyInputOverrideRecord(record);
+			}
+			ImGui::PopID();
+		}
+		if (openCapture)
+			ImGui::OpenPopup("Capture Input");
+
+		const auto conflicts = rt2::core::FindConflicts(
+			m_Settings2->GetInputOverrides());
+		if (!conflicts.empty())
+		{
+			ImGui::Separator();
+			ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f),
+				"Warning: duplicate input assignments");
+			for (const auto& conflict : conflicts)
+				ImGui::TextWrapped("%s: %s and %s share %s",
+					conflict.contextId.c_str(), conflict.mappingName.c_str(),
+					conflict.conflictingMappingName.c_str(),
+					conflict.bindingDescription.c_str());
+		}
+
+		ImGui::Separator();
+		ImGui::Text("Editor-owned contexts (read-only)");
+		ImGui::TextWrapped(
+			"These contexts can only be overridden in the settings file; this panel never edits project defaults.");
+		const auto drawReadOnlyContext = [](const char* label,
+			const rt2::core::InputContext& context) {
+			ImGui::Text("%s", label);
+			std::vector<const rt2::core::InputMapping*> mappings;
+			for (const auto& [name, mapping] : context.All())
+			{
+				(void)name;
+				mappings.push_back(&mapping);
+			}
+			std::sort(mappings.begin(), mappings.end(),
+				[](const auto* a, const auto* b) { return a->name < b->name; });
+			for (const auto* mapping : mappings)
+				ImGui::BulletText("%s: %s", mapping->name.c_str(),
+					rt2::core::DescribeMapping(*mapping).c_str());
+		};
+		drawReadOnlyContext("editor", m_Input.EditorContext());
+		drawReadOnlyContext("viewport", m_Input.ViewportContext());
+		drawReadOnlyContext("viewport.look", m_Input.ViewportLookContext());
+
+		if (m_InputCaptureActive &&
+			ImGui::BeginPopupModal("Capture Input", &m_InputCaptureActive,
+				ImGuiWindowFlags_AlwaysAutoResize))
+		{
+			ImGui::Text("Press a keyboard key or mouse button for %s",
+				m_InputCaptureMapping.c_str());
+			if (m_InputCaptureIsAxis)
+				ImGui::TextDisabled("For an axis, this replaces the positive key and keeps the negative key.");
+			ImGui::TextDisabled("Escape cancels this capture.");
+			if (m_InputCaptureSkipFrame)
+				m_InputCaptureSkipFrame = false;
+			else if (ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+			{
+				m_InputCaptureActive = false;
+				ImGui::CloseCurrentPopup();
+			}
+			else if (const auto binding = CapturePressedDesktopBinding())
+			{
+				const auto* liveMapping = m_Input.RuntimeContext().FindMapping(
+					m_InputCaptureMapping);
+				const auto& mapping = liveMapping ? *liveMapping : m_InputCaptureTemplate;
+				if (!mapping.name.empty())
+				{
+					rt2::core::InputContextRecord record;
+					if (mapping.isAxis &&
+						binding->device == rt2::core::InputDeviceKind::KeyboardKey)
+					{
+						auto axes = mapping.axes;
+						if (axes.empty())
+							axes.push_back(rt2::core::CaptureAxisBinding(
+								 rt2::core::InputDeviceKind::KeyboardKey, 0,
+								 binding->code, 0, -1, 0.0f, false));
+						else
+							axes.front().positive = binding->code;
+						record = rt2::core::BuildOverrideRecord(
+							"runtime", mapping.name, true, axes);
+					}
+					else if (!mapping.isAxis)
+					{
+						record = rt2::core::BuildOverrideRecord(
+							"runtime", mapping.name, false,
+							std::vector<rt2::core::ActionBinding>{*binding});
+					}
+					else
+					{
+						m_LastStatusMsg =
+							"Axis rebind requires a keyboard key";
+					}
+					if (!record.contextId.empty())
+					{
+						ApplyInputOverrideRecord(record);
+						m_InputCaptureActive = false;
+						ImGui::CloseCurrentPopup();
+					}
+				}
+			}
+			if (ImGui::Button("Cancel"))
+			{
+				m_InputCaptureActive = false;
+				ImGui::CloseCurrentPopup();
+			}
+			ImGui::EndPopup();
+		}
+		ImGui::End();
+	}
+
 	void DrawContentBrowserPanel()
 	{
 		ImGui::Begin("Content Browser", &m_ShowContentBrowserWindow);
@@ -1256,6 +1511,41 @@ public:
 		for (const auto& record : records)
 		{
 			ImGui::PushID(record.sourcePath.c_str());
+			std::optional<rt2::core::ScriptFieldRegistry::Result> declarationResult;
+			bool declarationMissing = false;
+			std::string recordExtension =
+				std::filesystem::u8path(record.sourcePath).extension().u8string();
+			std::transform(recordExtension.begin(), recordExtension.end(),
+				recordExtension.begin(), [](unsigned char c) {
+					return static_cast<char>(std::tolower(c));
+				});
+			if (recordExtension == ".lua" && m_InspectorFieldRegistry)
+			{
+				const auto absolute = m_ProjectContext->project.assetRoot /
+					std::filesystem::u8path(record.sourcePath);
+				declarationMissing = !std::filesystem::exists(absolute);
+				declarationResult =
+					m_InspectorFieldRegistry->GetDeclaredFields(absolute);
+				const ImVec4 color = declarationMissing
+					? ImVec4(0.55f, 0.55f, 0.55f, 1.0f)
+					: declarationResult->parsed
+						? ImVec4(0.35f, 0.9f, 0.45f, 1.0f)
+						: ImVec4(0.95f, 0.3f, 0.3f, 1.0f);
+				ImGui::TextColored(color, "●");
+				if (ImGui::IsItemHovered())
+				{
+					ImGui::BeginTooltip();
+					ImGui::TextUnformatted(
+						declarationMissing ? "Script file is missing" :
+						declarationResult->parsed ? "Script declarations parsed" :
+							"Script declaration parse failed");
+					if (!declarationResult->diagnostic.empty())
+						ImGui::TextWrapped("%s",
+							declarationResult->diagnostic.c_str());
+					ImGui::EndTooltip();
+				}
+				ImGui::SameLine();
+			}
 			const bool selected = m_ContentBrowserPendingRecord &&
 				m_ContentBrowserPendingRecord->sourcePath == record.sourcePath;
 			ImGui::Selectable(record.sourcePath.c_str(), selected,
@@ -3286,6 +3576,45 @@ private:
 		return true;
 	}
 
+	bool ApplyInputOverrideRecord(
+		const rt2::core::InputContextRecord& replacement)
+	{
+		if (!m_Settings2) return false;
+		const auto previous = m_Settings2->GetInputOverrides();
+		auto updated = previous;
+		auto context = std::find_if(updated.begin(), updated.end(),
+			[&](const auto& record) {
+				return record.contextId == replacement.contextId;
+			});
+		if (context == updated.end())
+		{
+			updated.push_back(replacement);
+		}
+		else
+		{
+			for (const auto& mapping : replacement.mappings)
+			{
+				auto existing = std::find_if(context->mappings.begin(),
+					context->mappings.end(), [&](const auto& candidate) {
+						return candidate.name == mapping.name;
+					});
+				if (existing == context->mappings.end())
+					context->mappings.push_back(mapping);
+				else
+					*existing = mapping;
+			}
+		}
+
+		m_Settings2->SetInputOverrides(std::move(updated));
+		if (!ApplyActiveInputConfiguration())
+		{
+			m_Settings2->SetInputOverrides(previous);
+			ApplyActiveInputConfiguration();
+			return false;
+		}
+		return PersistEditorSettings("input bindings");
+	}
+
 	void LogProjectScanDiagnostics(
 		const rt2::core::ProjectContext& context) const
 	{
@@ -3767,9 +4096,15 @@ public:
 	bool m_ShowRenderSettingsWin  = true;
 	bool m_ShowSceneWindow       = true;
 	bool m_ShowSessionWindow     = true;
+	bool m_ShowInputBindingsWindow = false;
 	bool m_ShowContentBrowserWindow = false;
 	bool m_ShowInspectorWindow   = true; // SceneEditorUI Inspector panel
 	bool m_ShowHierarchyWindow   = true; // SceneEditorUI Outliner panel
+	bool m_InputCaptureActive = false;
+	bool m_InputCaptureSkipFrame = false;
+	bool m_InputCaptureIsAxis = false;
+	std::string m_InputCaptureMapping;
+	rt2::core::InputMapping m_InputCaptureTemplate;
 	char m_ContentBrowserSearch[256]{};
 	char m_ContentBrowserRenameBuffer[256]{};
 	char m_ContentBrowserMoveBuffer[512]{};
@@ -4479,6 +4814,7 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 			ImGui::MenuItem("Render Settings", nullptr, &layerPtr->m_ShowRenderSettingsWin);
 			ImGui::MenuItem("Scene", nullptr, &layerPtr->m_ShowSceneWindow);
 			ImGui::MenuItem("Session", nullptr, &layerPtr->m_ShowSessionWindow);
+			ImGui::MenuItem("Input Bindings", nullptr, &layerPtr->m_ShowInputBindingsWindow);
 			ImGui::MenuItem("Content Browser", nullptr, &layerPtr->m_ShowContentBrowserWindow);
 			ImGui::MenuItem("Outliner", nullptr, &layerPtr->m_ShowHierarchyWindow);
 			ImGui::MenuItem("Inspector", nullptr, &layerPtr->m_ShowInspectorWindow);

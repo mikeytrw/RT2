@@ -79,6 +79,9 @@ public:
 	void SetDialogInitialDirectoryProvider(
 		std::function<std::filesystem::path()> provider)
 	{ m_DialogInitialDirectory = std::move(provider); }
+	void SetScriptDialogInitialDirectoryProvider(
+		std::function<std::filesystem::path()> provider)
+	{ m_ScriptDialogInitialDirectory = std::move(provider); }
 
 	// Called when user clicks "Dump GPU Transforms" — host should call
 	// RendererGPU::DumpInstanceTransforms().
@@ -259,10 +262,12 @@ private:
 	std::function<SceneManager::EntityId(const std::string&)> m_OnImportGltf;
 	std::function<SceneManager::EntityId(const std::string&, const ImportSettings&)> m_OnImportWithOptions;
 	std::function<std::filesystem::path()> m_DialogInitialDirectory;
+	std::function<std::filesystem::path()> m_ScriptDialogInitialDirectory;
 	std::function<void()> m_OnDumpGPUTransforms;
 	std::function<void()> m_OnDumpNEEBuffers;
 	std::function<void(const rt2::core::UUID&)> m_OnViewThroughCamera;
 	std::function<void(const rt2::core::UUID&)> m_OnAlignCameraToView;
+	std::string m_ScriptRebindDiagnostic;
 
 	// UI state for the "Add" popup
 	bool m_ShowAddPopup = false;
