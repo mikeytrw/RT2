@@ -150,22 +150,25 @@ read as "the button just closed the menu".
 The rule: **hoist the open out of every `PushID` and popup scope**, into the
 same scope as `BeginPopupModal`. Set a flag inside the loop, open after it.
 
-The corrected pattern is in the content browser
-(`RT2App/src/WalnutApp.cpp:1505-1507` declares the flags, `:1569`, `:1574` and
-`:1635` set them inside the per-record `PushID`, `:1641-1642` open afterwards).
+The corrected shape, in the input panel: `bool openCapture` is declared at
+`RT2App/src/WalnutApp.cpp:1345`, set at `:1362` inside the per-mapping
+`PushID`, and the open happens at `:1378-1379` — the same scope as the
+`BeginPopupModal` at `:1419`. The content browser does the same with three
+flags (`:1508` onward, opened at `:1645`).
 
-Instances found, all by driving the UI by hand and never by the suite:
+All four instances have been fixed. Every one was found by driving the UI by
+hand; none was visible to the suite:
 
-| Modal | Cause | Status |
-|---|---|---|
-| Rename Asset | `OpenPopup` inside per-record `PushID` **and** `BeginPopupContextItem` | fixed |
-| Move Asset | same | fixed |
-| Delete Asset | same | fixed |
-| Capture Input (W8 rebinding) | `OpenPopup` inside per-mapping `PushID` | outstanding |
+| Modal | Cause |
+|---|---|
+| Rename Asset | `OpenPopup` inside per-record `PushID` **and** `BeginPopupContextItem` |
+| Move Asset | same |
+| Delete Asset | same |
+| Capture Input (W8 rebinding) | `OpenPopup` inside per-mapping `PushID` |
 
 The first three made the content browser's rename, move and delete
 **unreachable in the application** while their CPU operations were fully
-unit-tested and green. The fourth makes the input rebinding dialog unable to
+unit-tested and green. The fourth left the input rebinding dialog unable to
 capture a binding, which is the entire purpose of the feature.
 
 Why the tests cannot catch it: `RT2Tests` compiles no RT2App sources and cannot
