@@ -32,6 +32,7 @@ project "RT2SliceRunner"
         "../RT2App/src/TinyEXRLoader.cpp",
         "../RT2App/src/EditorSettings.cpp",
         "../RT2App/src/InputConfig.cpp",
+        "../RT2App/src/InputBindingEditor.cpp",
         "../RT2App/src/Project.cpp",
         "../RT2App/src/ProjectAssetScanner.cpp",
         "../RT2App/src/ProjectContext.cpp",
