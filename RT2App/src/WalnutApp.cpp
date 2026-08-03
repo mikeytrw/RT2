@@ -1324,26 +1324,38 @@ public:
 		ImGui::Separator();
 		ImGui::Text("Runtime");
 
-		std::vector<const rt2::core::InputMapping*> runtimeMappings;
+		// Keep explicit empty overrides visible. Composition removes an
+		// inherited mapping for an unbind, but the editor must still expose
+		// that row so the user can rebind it without editing JSON by hand.
+		std::map<std::string, rt2::core::InputMapping> runtimeMappings;
 		for (const auto& [name, mapping] : m_Input.RuntimeContext().All())
+			runtimeMappings.emplace(name, mapping);
+		for (const auto& record : m_Settings2->GetInputOverrides())
+		{
+			if (record.contextId != "runtime")
+				continue;
+			for (const auto& mapping : record.mappings)
+			{
+				if (mapping.actions.empty() && mapping.axes.empty())
+					runtimeMappings[mapping.name] = mapping;
+				else if (!runtimeMappings.count(mapping.name))
+					runtimeMappings.emplace(mapping.name, mapping);
+			}
+		}
+		for (auto& [name, mapping] : runtimeMappings)
 		{
 			(void)name;
-			runtimeMappings.push_back(&mapping);
-		}
-		std::sort(runtimeMappings.begin(), runtimeMappings.end(),
-			[](const auto* a, const auto* b) { return a->name < b->name; });
-		for (const auto* mapping : runtimeMappings)
-		{
-			ImGui::PushID(mapping->name.c_str());
-			ImGui::Text("%s", mapping->name.c_str());
+			ImGui::PushID(mapping.name.c_str());
+			ImGui::Text("%s", mapping.name.c_str());
 			ImGui::SameLine(190.0f);
 			ImGui::TextDisabled("%s",
-				rt2::core::DescribeMapping(*mapping).c_str());
+				rt2::core::DescribeMapping(mapping).c_str());
 			ImGui::SameLine();
 			if (ImGui::Button("Rebind"))
 			{
-				m_InputCaptureMapping = mapping->name;
-				m_InputCaptureIsAxis = mapping->isAxis;
+				m_InputCaptureMapping = mapping.name;
+				m_InputCaptureTemplate = mapping;
+				m_InputCaptureIsAxis = mapping.isAxis;
 				m_InputCaptureSkipFrame = true;
 				m_InputCaptureActive = true;
 				ImGui::OpenPopup("Capture Input");
@@ -1351,12 +1363,12 @@ public:
 			ImGui::SameLine();
 			if (ImGui::Button("Unbind"))
 			{
-				const auto record = mapping->isAxis
+				const auto record = mapping.isAxis
 					? rt2::core::BuildOverrideRecord(
-						"runtime", mapping->name, true,
+						"runtime", mapping.name, true,
 						std::vector<rt2::core::AxisBinding>{})
 					: rt2::core::BuildOverrideRecord(
-						"runtime", mapping->name, false,
+						"runtime", mapping.name, false,
 						std::vector<rt2::core::ActionBinding>{});
 				ApplyInputOverrideRecord(record);
 			}
@@ -1418,15 +1430,16 @@ public:
 			}
 			else if (const auto binding = CapturePressedDesktopBinding())
 			{
-				const auto* mapping = m_Input.RuntimeContext().FindMapping(
+				const auto* liveMapping = m_Input.RuntimeContext().FindMapping(
 					m_InputCaptureMapping);
-				if (mapping)
+				const auto& mapping = liveMapping ? *liveMapping : m_InputCaptureTemplate;
+				if (!mapping.name.empty())
 				{
 					rt2::core::InputContextRecord record;
-					if (mapping->isAxis &&
+					if (mapping.isAxis &&
 						binding->device == rt2::core::InputDeviceKind::KeyboardKey)
 					{
-						auto axes = mapping->axes;
+						auto axes = mapping.axes;
 						if (axes.empty())
 							axes.push_back(rt2::core::CaptureAxisBinding(
 								 rt2::core::InputDeviceKind::KeyboardKey, 0,
@@ -1434,12 +1447,12 @@ public:
 						else
 							axes.front().positive = binding->code;
 						record = rt2::core::BuildOverrideRecord(
-							"runtime", mapping->name, true, axes);
+							"runtime", mapping.name, true, axes);
 					}
-					else if (!mapping->isAxis)
+					else if (!mapping.isAxis)
 					{
 						record = rt2::core::BuildOverrideRecord(
-							"runtime", mapping->name, false,
+							"runtime", mapping.name, false,
 							std::vector<rt2::core::ActionBinding>{*binding});
 					}
 					else
@@ -4088,6 +4101,7 @@ public:
 	bool m_InputCaptureSkipFrame = false;
 	bool m_InputCaptureIsAxis = false;
 	std::string m_InputCaptureMapping;
+	rt2::core::InputMapping m_InputCaptureTemplate;
 	char m_ContentBrowserSearch[256]{};
 	char m_ContentBrowserRenameBuffer[256]{};
 	char m_ContentBrowserMoveBuffer[512]{};

@@ -11454,3 +11454,83 @@ asset's path while deliberately keeping its identity. That is a different
 operation with different semantics and is not part of W8.
 
 Grounding commit for this amendment: `5c44dba`.
+
+### Phase 7 W8 — verification report (2026-08-03)
+
+Implemented on branch `codex/phase7-w8-deferred-commitments`, from
+`dbb2d4a`, with implementation commits `0ee5fca` and `ea1fef8`.
+
+**Implementation.** W8.0 adds the CPU-only `InputBindingEditor` module and
+registers it for the test and slice targets (`RT2App/src/InputBindingEditor.h:1`,
+`RT2App/src/InputBindingEditor.cpp:1`, `RT2Tests/src/Phase7W8Tests.cpp:59`,
+`RT2Tests/premake5.lua:13`, `RT2Tests/RT2Tests.vcxproj:224`). It constructs
+action/axis bindings, serializes override records, describes bindings, and
+finds same-context conflicts. W8.1 adds the View-menu Input Bindings panel
+(`RT2App/src/WalnutApp.cpp:1311`, `:4814`), edits user overrides only, applies
+the composed configuration, and supports rebind/unbind (`:1354-1467`). An
+explicit empty override remains visible so an unbound mapping can be rebound
+again (`:1320-1348`, `:1430-1465`). W8.2 adds the `.lua` Browse button and
+submits the selected asset through the existing `SetScriptState` path
+(`RT2App/src/SceneEditorUI.cpp:1799-1867`). Per review amendment W8-A2, a
+different script adopts the different file's identity; the permanent test
+asserts the new sidecar ID (`RT2Tests/src/Phase7W8Tests.cpp:160-196`). W8.3
+adds per-asset declaration status and diagnostics using
+`ScriptFieldRegistry::GetDeclaredFields` (`RT2App/src/WalnutApp.cpp:1481-1542`).
+Cursor-lock runtime binding remains deferred as P7-R2; no second cursor-capture
+mechanism was added.
+
+**Measured final gate.** Release and Debug builds both completed successfully.
+Running the tests from the repository root produced the same measured result
+in both configurations:
+
+| Gate | Result |
+|---|---|
+| Release `RT2Tests.exe` | 749/749 cases, 146510 assertions, 0 failed |
+| Debug `RT2Tests.exe` | 749/749 cases, 146510 assertions, 0 failed |
+| `run_script_test.ps1` | `ScriptScenario PASS: 60 frames, 1 entities, no mismatches` |
+| `run_slice_test.ps1` | `SliceRunner PASS: 60 steps, authoring intact`; `Slice PASS` |
+| `run_punctual_light_test.ps1` | `PunctualLight PASS` |
+| `--headless --validate ... --frames 8` | exit 0, zero validation messages |
+
+The requested headless command also printed that `--out` was an unknown
+argument and wrote its default `screenshot.png`; that generated file was
+removed. It also printed the pre-existing recent-scenes settings temp-file
+warning and a Vulkan loader debug-layer warning. Neither produced a validation
+message or non-zero exit.
+
+**Discrimination proofs.** Each permanent W8 test was faulted, rebuilt and
+run alone, then restored and rerun green. The actual red outputs were:
+
+| Test | Temporary fault | Actual red output |
+|---|---|---|
+| `Phase7 W8 InputBindingEditor builds and round-trips an override` | omit `contextId` | `Phase7W8Tests.cpp(69): FATAL ERROR: REQUIRE( ParseInputContextRecords( InputContextRecordsToJson({record}), InputConfigScope::UserOverrides, parsed, error) ) is NOT correct!` — 0 passed, 1 failed; 0 passed, 1 failed assertions |
+| `Phase7 W8 user input override wins over built-in composition` | overlay built-ins after user overrides | `Phase7W8Tests.cpp(96): ERROR: CHECK( ...positive == static_cast<uint16_t>(KeyCode::Up) ) is NOT correct! values: CHECK( 87 == 265 )` — 3 passed, 1 failed assertions |
+| `Phase7 W8 explicit unbind removes inherited mapping` | treat empty bindings as inherit | `Phase7W8Tests.cpp(110): ERROR: CHECK( composed.front().mappings.empty() ) is NOT correct! values: CHECK( false )` — 2 passed, 1 failed assertions |
+| `Phase7 W8 FindConflicts detects shared bindings in one context` | compare only within one mapping name | `Phase7W8Tests.cpp(131): FATAL ERROR: REQUIRE( conflicts.size() == 1 ) is NOT correct! values: REQUIRE( 0 == 1 )` — 0 passed, 1 failed assertions |
+| `Phase7 W8 DescribeMapping names keyboard mouse and gamepad bindings` | return numeric code text | `Phase7W8Tests.cpp(143): ERROR: CHECK( DescribeMapping(keyboard) == "W (Keyboard)" ) is NOT correct! values: CHECK( Key 87 (Keyboard) == W (Keyboard) )` — 2 passed, 1 failed assertions |
+| `Phase7 W8 script rebind resolves the new file identity` | stop resolving the selected file's sidecar identity | `Phase7W8Tests.cpp(183): FATAL ERROR: REQUIRE( result.success ) is NOT correct! values: REQUIRE( false )` — 6 passed, 1 failed assertions |
+
+After each fault was reverted, its focused test passed. The six restored
+focused runs were green: 7/7, 4/4, 3/3, 4/4, 3/3 and 13/13 assertions,
+respectively. The final full Release and Debug runs above also passed all six.
+
+**Interactive acceptance status.** The editor acceptance exercise was not
+completed in this session. The computer-controlled editor session was stopped
+because the Windows desktop became unresponsive before the Input Bindings,
+script Rebind, declaration-diagnostic refresh, and next-Play checks could be
+performed. An attempted project open also exposed a fixture problem rather
+than a W8 result: `vertical-slice.rt2scene` was rejected because it is missing
+`metadata.projectId` for project binding. No interactive pass is claimed here;
+the remaining acceptance work is to verify the Input Bindings rebind/unbind
+flows, script rebind/save/reopen to the new identity, declaration status and
+external-edit refresh, and editor-owned contexts being read-only.
+
+**Test boundary and static assertions.** The W8 permanent tests deliberately
+cover the CPU-only module and the `SceneManager` identity behavior. `RT2Tests`
+does not compile `WalnutApp.cpp` or `SceneEditorUI.cpp` (`W8-F16`), so the UI
+calls to `ApplyConfiguration`, `Save`, `SetScriptState`, and
+`GetDeclaredFields` are not host-wiring tests. No source-text test was added
+to pretend otherwise; the host paths are recorded as pending interactive
+acceptance. The existing W5/W6/W7 host-dispatch gaps remain subject to the
+same boundary and are not silently converted into guarantees by these W8
+tests.
