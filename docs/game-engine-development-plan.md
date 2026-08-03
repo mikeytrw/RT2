@@ -12894,3 +12894,171 @@ It does not deliver nested prefabs (roadmap-deferred), per-property override
 granularity (D2), or structural delta merging (D6). Each is a recorded
 decision with a stated reason, and each must appear in the phase closure as
 *not delivered* rather than being quietly absorbed into "prefabs, done".
+
+## Phase 8 W0 — verification report (prefab asset kind and file envelope, 2026-08-03)
+
+Implementation spec above (W0), grounded at `master` `38a98af` (761/761,
+146,716 assertions). Landed on branch `phase8-w0-prefab-kind` off that commit.
+
+### Every Q5 site touched
+
+1. **Enum arm** — `AssetReference.h:29-37`: `AssetKind::Prefab = 5`.
+2. **Name codec, both directions** — `AssetKindName`/`AssetKindFromName` were
+   file-local in `SceneSerializer.cpp`'s anonymous namespace (TU-internal,
+   the anon namespace closes at `:1287`); they are now `inline` functions in
+   `AssetReference.h` (the neutral, CPU-only home of `AssetKind`) with the
+   `"prefab"` arm. This makes the codec testable from RT2Tests — it was not,
+   before.
+3. **Reader acceptance** — no code change needed: the hard parse error for an
+   unknown kind with a non-empty path (`SceneSerializer.cpp:312`) now never
+   fires for `"prefab"` because the codec returns `AssetKind::Prefab`. The
+   genuinely-unknown path is unchanged (verified by test).
+4. **Watcher extension list** — `AssetWatchPolicy.cpp:23-27`: `.rt2prefab`
+   added to `DatabaseRefresh`.
+5. **Sidecar minting via `ResolveOrAssign`** — no code change: it is
+   kind-agnostic (`AssetSidecarPath` appends `.rt2meta` to any path), so a
+   `.rt2prefab` gets a sidecar and the assign-once property automatically.
+   Proven by test (deterministic provider, two imports, stable ID).
+6. **Content-browser reimport policy** — `ContentBrowserOperations.cpp:552`:
+   a `.rt2prefab` reimport is now recognized and rejected with an explicit
+   prefab-specific diagnostic ("re-import/propagation is a later workstream")
+   instead of the generic ".glb/.gltf/.obj only" message.
+
+Sites examined and deliberately **not** changed in W0 (findings' reach but
+out of W0's boundary, recorded so W1 knows they exist):
+- `DispatchContentBrowserAssetDrop` (`ContentBrowserOperations.cpp:336`) — a
+  prefab drop today returns the generic "unsupported extension" error, which
+  is honest for W0; instantiation-from-drop is W1.
+- Loader/import dispatch (`SceneLoader.cpp`, `SceneManager.cpp`) — prefabs
+  are not imported into the scene in W0, so no loader site needs a prefab
+  branch yet.
+- `AssetReferenceToJson` IS touched (see ImportSettings decision below): it is
+  where the fixed-type `ImportSettings` block is either written or omitted.
+
+Findings Q5 that needed no change because they were already generic:
+`AssetRecord`/`observedKinds` (a sorted, deduplicated `std::vector<AssetKind>`),
+the scanner ("an asset is a file with a sidecar"), and the content-browser
+listing (no kind filter — a prefab with a sidecar lists by name).
+
+### Decisions
+
+**D4 — envelope approach confirmed.** The `.rt2prefab` envelope is a `json`
+document with `header: "rt2prefab"`, its **own** `version` constant
+(`PrefabSerializer::FormatVersion = 1`, independent of
+`SceneSerializer::SchemaVersion = 4`), and an `entities` array that reuses
+`SubtreeEntityRecord` (`SubtreeSnapshot.h:43-83`) so W1's record codec shares
+component codecs with scene serialization. W0's Save/Load round-trips an
+empty record list and **refuses a non-empty one loudly** (`InvalidArgument`
+on save, `Parse` on load, both naming W1) — this is the seam W1 fills without
+touching format plumbing, and it is the "prefer loud failure" character rule:
+W0 never silently drops or invents records.
+**Hard rule honored:** the W0 envelope contains no resource-table index field
+of any kind. `SubtreeEntityRecord` carries `meshIndex`/`materialIndex`
+(TU-transient), so W1's record codec must strip them and the override's
+texture indices (repairable only from a materialised source) — flagged for W1.
+
+**D5 — no `.rt2scene` v4 → v5 for W0. Verified, not assumed.** W0 adds no
+components to scenes, no new serialized entity data, and — crucially —
+nothing in W0 writes a prefab `AssetReference` into a scene (no instantiation,
+no propagation). The kind codec change is purely additive over existing
+bytes. The reader consequence the spec calls out (an unknown kind with a
+non-empty path is a hard parse error at `SceneSerializer.cpp:312`, so older
+builds cannot load scenes that reference prefabs) becomes live only once a
+scene first references a prefab — that moment is W1 (instantiation) or W4
+(propagation), and it is where the v4→v5 decision must be made deliberately.
+Nothing in W0 brings it forward.
+
+**`ImportSettings` — prefabs carry none, and the codec says so.** The fixed
+type (`AssetReference.h`) has no prefab meaning; adding an arm would invent
+settings. `AssetReferenceToJson` (`SceneSerializer.cpp:207`) now omits the
+`importSettings` block for `Prefab` exactly as it already does for `Script`
+(the established no-inert-settings-block precedent), so a future reader
+cannot mistake defaulted knobs for real prefab settings.
+
+### What was built
+
+- `AssetKind::Prefab` + inline name codec (`AssetReference.h`).
+- `.rt2prefab` in the watcher's refresh list (`AssetWatchPolicy.cpp`).
+- Prefab-aware reimport rejection (`ContentBrowserOperations.cpp`).
+- `PrefabSerializer.h/.cpp` (new): `PrefabDocument`, `PrefabSerializer::Save`
+  /`Load`, `FormatVersion`, atomic tmp+replace write, deterministic `dump(2)`
+  output, transactional Load (dest unchanged on any failure). Registered in
+  `RT2App.vcxproj`, `RT2Tests.vcxproj`, and `RT2Tests/premake5.lua`.
+- `RT2Tests/src/Phase8W0PrefabKindTests.cpp` (6 tests) registered in both
+  test project files.
+
+### Measurements
+
+- Release: **767/767, 146,760 assertions** (baseline 761/761, 146,716; +6
+  tests, +44 assertions).
+- Debug: **767/767, 146,760 assertions.**
+- `run_script_test.ps1`: PASS. `run_slice_test.ps1`: PASS.
+- `--headless --validate --scene vertical-slice.rt2scene --frames 8`:
+  PASS.
+- No fixture modifications in `git status` after the validate run (the run
+  rewrites `vertical-slice.rt2scene` byte-identically; only an EOL-normalization
+  marker appears, and the authoritative bytes are restored; `8314bdd` already
+  prevents the empty-sourceKey field churn).
+
+### Discrimination proofs (fault first, then revert)
+
+All ran against the six W0 tests; the 761 pre-existing tests were untouched
+and the full suites stayed green.
+
+1. **C1 kind codec** — fault: drop the `"prefab"` arm from
+   `AssetKindFromName`. RED: exactly the two Prefab round-trip assertions
+   (`Phase8W0PrefabKindTests.cpp:71-72`); the unknown-rejection and
+   other-kind checks stayed green. Reverted → green.
+2. **C2 envelope round-trip** — fault: omit the `entities` array in Save.
+   RED: `Load` rejected the file (missing-array check), exactly the Load
+   REQUIRE (`:111`). Reverted → green.
+3. **C3 sidecar assign-once** — fault: remove the reuse-existing-sidecar
+   early return in `AssetIdentity.cpp` (`ResolveOrAssign`). RED: exactly the
+   `id2 == id1` and `minted2 == false` assertions (`:149-150`); first-import
+   behavior stayed green. (Collateral: two pre-existing AssetIdentityTests
+   pinning the same reuse property also went red — expected, the fault is a
+   real behaviour change.) Reverted → green.
+4. **C4 watcher classification** — fault: drop `.rt2prefab` from the watch
+   list. RED: exactly the `.rt2prefab` classify + needs-refresh assertions
+   (`:164-165`); the `.rt2meta` sidecar and existing-extension checks stayed
+   green. Reverted → green.
+5. **C5 version mismatch** — fault: remove the version-range check in Load.
+   RED: the version-99 load was silently accepted, failing `:193-196`; the
+   header check stayed green (it is a separate check). Reverted → green.
+6. **C6 reimport policy** — fault: omit the `.rt2prefab` reimport branch.
+   RED: exactly the prefab-diagnostic content assertion (`:239`) — the
+   generic message does not mention prefab; the rejection itself and its
+   `InvalidArgument` code stayed green (both paths reject, only the message
+   discriminates). Reverted → green.
+
+### Interactive check
+
+**Blocked.** The desktop application cannot be driven from this environment,
+so "place a `.rt2prefab` in the asset root and confirm the content browser
+lists it without error" was not performed. The listing is sidecar-gated and
+kind-filter-free by existing design (`SearchContentBrowserAssets` filters by
+name only), so a prefab with a sidecar would list, but per the task this is
+reported blocked, not passed and not "expected to pass".
+
+### Anything W1 will need that W0 did not provide
+
+- **The record codec.** W0 refuses non-empty `entities` at both Save and
+  Load; W1 replaces both rejections with a `SubtreeEntityRecord` → JSON
+  writer/reader. Reuse the scene component codecs (in `SceneSerializer.cpp`'s
+  now-shrunk internal helpers) rather than re-serialising components.
+- **Strip transient indices in that codec.** `meshIndex`,
+  `materialIndex`, and override texture indices must not reach the file
+  (hard rule). SubtreeEntityRecord carries them in memory; W1 chooses the
+  explicit omit.
+- **`templateId`.** `SubtreeEntityRecord` has `uuid` (the *document* UUID).
+  W1 must mint and freeze a prefab-local `templateId` on creation
+  (spec D1) and add it to the record shape — the current struct has no slot
+  for it.
+- **A prefab import path** that calls `ResolveOrAssign` with the
+  `.rt2prefab` path (the primitive is proven assign-once; no engine wiring
+  exists yet) and a scene-side `AssetReference` of kind Prefab.
+- **The deliberate v4→v5 decision** becomes due the moment a scene first
+  contains a prefab reference (unknown-kind-with-path is a hard parse error
+  for older builds).
+- **Naming.** Prefab instances inherit the "names are not unique" constraint
+  (spec); the W1 naming scheme is not touched by W0.

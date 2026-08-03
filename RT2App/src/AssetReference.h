@@ -33,7 +33,36 @@ enum class AssetKind : uint8_t
     Texture     = 2,   // image referenced by a material
     Environment = 3,   // .hdr / .exr environment map
     Script      = 4,   // .lua script asset (Phase 6)
+    Prefab      = 5,   // .rt2prefab entity-subtree asset (Phase 8 W0)
 };
+
+// Asset kind name codec — the serialized "kind" tag. Defined inline in this
+// neutral, CPU-only header so RT2Tests can call it directly and the serializer
+// and watcher share one source of truth for the names. Unknown names map to
+// AssetKind::Unknown (the reader rejects an unknown kind with a non-empty path
+// as a hard parse error, SceneSerializer.cpp).
+inline const char* AssetKindName(AssetKind k)
+{
+    switch (k)
+    {
+        case AssetKind::Model:       return "model";
+        case AssetKind::Texture:     return "texture";
+        case AssetKind::Environment: return "environment";
+        case AssetKind::Script:      return "script";
+        case AssetKind::Prefab:      return "prefab";
+        default:                     return "unknown";
+    }
+}
+
+inline AssetKind AssetKindFromName(const std::string& s)
+{
+    if (s == "model")       return AssetKind::Model;
+    if (s == "texture")     return AssetKind::Texture;
+    if (s == "environment") return AssetKind::Environment;
+    if (s == "script")      return AssetKind::Script;
+    if (s == "prefab")      return AssetKind::Prefab;
+    return AssetKind::Unknown;
+}
 
 // Settings that affect how an asset is rebuilt on load. Only values that
 // change the resulting geometry/material/texture should be persisted; display
