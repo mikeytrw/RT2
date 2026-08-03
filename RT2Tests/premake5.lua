@@ -13,6 +13,9 @@
     -- Material-index undo override-capture tests (same rationale).
     files { "src/MaterialIndexUndoOverrideTests.cpp" }
 
+    -- Phase 8 pre-work 2: source-material key tests (same rationale).
+    files { "src/Phase8Prework2MaterialKeyTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 

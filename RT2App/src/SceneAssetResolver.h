@@ -101,10 +101,6 @@ public:
                                      int meshIdx, int primIdx);
     // Build a deterministic OBJ whole-model source key.
     static std::string ObjSourceKey();
-    // Build a deterministic glTF source material key.
-    static std::string GltfMaterialKey(int materialIdx);
-    // Build a deterministic OBJ source material key.
-    static std::string ObjMaterialKey(int mtlIdx);
 };
 
 } // namespace rt2::core

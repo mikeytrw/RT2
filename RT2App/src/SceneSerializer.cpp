@@ -107,6 +107,9 @@ json MaterialToJson(const SceneMaterial& m)
     j["emissiveIntensity"]= m.emissiveIntensity;
     j["alphaMode"]        = m.alphaMode;
     j["alphaCutoff"]      = m.alphaCutoff;
+    // Durable source identity (Phase 8 pre-work 2): the loader-minted
+    // material key. Additive over v4; absent for author-created materials.
+    j["sourceKey"]        = m.sourceKey;
     // Texture indices are schema-complete but unused in the slice (no textures).
     j["baseColorTex"]     = m.baseColorTextureIndex;
     j["normalTex"]        = m.normalTextureIndex;
@@ -129,6 +132,7 @@ SceneMaterial JsonToMaterial(const json& j)
     if (j.contains("emissiveIntensity"))m.emissiveIntensity= j["emissiveIntensity"].get<float>();
     if (j.contains("alphaMode"))        m.alphaMode        = j["alphaMode"].get<std::string>();
     if (j.contains("alphaCutoff"))      m.alphaCutoff      = j["alphaCutoff"].get<float>();
+    if (j.contains("sourceKey"))        m.sourceKey        = j["sourceKey"].get<std::string>();
     if (j.contains("baseColorTex"))     m.baseColorTextureIndex = j["baseColorTex"].get<int>();
     if (j.contains("normalTex"))        m.normalTextureIndex    = j["normalTex"].get<int>();
     if (j.contains("emissiveTex"))      m.emissiveTextureIndex  = j["emissiveTex"].get<int>();

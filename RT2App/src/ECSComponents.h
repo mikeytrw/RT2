@@ -251,8 +251,17 @@ struct MaterialOverrideComponent
     bool authored = false;
 
     // The durable source material identity this override applies to, so the
-    // resolver can match it against a rebuilt source material. For glTF this
-    // is "gltf:material=<index>"; for OBJ, "obj:material=<mtl_index>".
+    // resolver can match it against a rebuilt source material. Minted by
+    // RecordMaterialOverride (SceneManager.cpp) from the material's own
+    // loader-surfaced identity (SceneMaterial::sourceKey): "gltf:material:
+    // name=<n>" / "gltf:material:index=<i>" / "obj:material:name=<n>" /
+    // "obj:material:index=<i>". Empty for author-created materials (the
+    // resolver falls back to slot position with no diagnostic). Legacy
+    // "<meshSourceKey>:material" values from before Phase 8 pre-work 2 are
+    // rewritten to the new form at resolve time (D4). The resolver matches
+    // this key against the rebuilt staged materials by key and only falls
+    // back to the resolved slot when the key does not match, raising a Stale
+    // diagnostic in that case (D3).
     std::string sourceMaterialKey;
 
     // Transient: index into doc.ecs.materials of the override slot the

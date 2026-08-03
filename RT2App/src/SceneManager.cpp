@@ -3661,15 +3661,13 @@ void SceneManager::RecordMaterialOverride(entt::entity entity, int materialIndex
 	if (materialIndex < 0 || materialIndex >= (int)m_EcsScene.materials.size())
 		return;
 
-	// Derive the durable source material key from the imported source, if
-	// available. For glTF primitives the sourceKey encodes the primitive; the
-	// material key is separate and not currently recoverable from the loader
-	// without deeper integration, so we use a generic stable key derived from
-	// the model source key + the current material slot. This is durable
-	// enough to match the override back to the rebuilt source material slot.
-	std::string sourceMatKey;
-	if (auto* src = reg.try_get<ImportedMeshSourceComponent>(entity))
-		sourceMatKey = src->model.sourceKey + ":material";
+	// Mint the durable source material key from the material's loader-
+	// surfaced identity (SceneMaterial::sourceKey; Phase 8 pre-work 2 D1).
+	// Author-created materials carry no identity, so the key is empty and
+	// the resolver falls back to slot-position behavior without a
+	// diagnostic — D3's diagnostic is for a key that exists but does not
+	// match, not for an absent one.
+	const std::string sourceMatKey = m_EcsScene.materials[materialIndex].sourceKey;
 
 	MaterialOverrideComponent ov;
 	ov.material        = m_EcsScene.materials[materialIndex];
