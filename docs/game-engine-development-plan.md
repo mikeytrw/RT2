@@ -11418,3 +11418,39 @@ the dispatch for each of the four operations) remains, as the scope
 section states, and is covered by interactive acceptance, not by
 link-time test. This report records that gap rather than overstating it;
 the earlier review caught exactly that overstatement once before.
+
+#### Review amendment W8-A2 (2026-08-02) — D-W8-2 corrected: Rebind adopts the new asset's identity
+
+Raised during implementation, before any code was written. D-W8-2 stated that
+the Rebind button "does not touch `assetId`", grounded on
+`NormalizeAndValidateScriptComponent` preserving it. That check was correct but
+one layer too shallow: `SetScriptState` clears `assetId` whenever the path
+changes (`SceneManager.cpp:3859-3862`), then resolves and, where identity
+repair is required, mints through `ResolveOrAssign` (`:3889-3901`).
+
+**Resolution: the existing behaviour is correct and stands unchanged. D-W8-2 is
+amended, not the code.** No separate rebind path is introduced.
+
+Rebind means pointing an entity at a *different* script file. A different file
+is a different asset and must carry that file's identity. Preserving the old
+`assetId` against a new path would produce a reference claiming identity A
+while resolving to file B — exactly the state `AssetResolver` case 5 rejects as
+`Conflict`, and which it explicitly refuses to resolve by silent substitution.
+D-W8-2 as written would have manufactured that conflict on every rebind.
+
+Minting is also within the W5 contract. The rule is that the *watcher* never
+mints (D-W7-3); user-initiated import and migration may, and all eight
+production `ResolveOrAssign` call sites are user-initiated. A button click is
+user-initiated. Rebinding to a script whose sidecar is absent should assign one,
+exactly as importing that script would.
+
+The Rebind button therefore remains a thin affordance over the existing path
+edit: open a `.lua` file dialog, set the asset-root-relative path, call
+`SetScriptState`. Its permanent test asserts that after a rebind the reference
+resolves to the *new* file's identity — not that the old `assetId` survived.
+
+Distinguish this from a future *relink* operation, which repairs a moved
+asset's path while deliberately keeping its identity. That is a different
+operation with different semantics and is not part of W8.
+
+Grounding commit for this amendment: `5c44dba`.
