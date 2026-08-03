@@ -1342,6 +1342,7 @@ public:
 					runtimeMappings.emplace(mapping.name, mapping);
 			}
 		}
+		bool openCapture = false;
 		for (auto& [name, mapping] : runtimeMappings)
 		{
 			(void)name;
@@ -1358,7 +1359,7 @@ public:
 				m_InputCaptureIsAxis = mapping.isAxis;
 				m_InputCaptureSkipFrame = true;
 				m_InputCaptureActive = true;
-				ImGui::OpenPopup("Capture Input");
+				openCapture = true;
 			}
 			ImGui::SameLine();
 			if (ImGui::Button("Unbind"))
@@ -1374,6 +1375,8 @@ public:
 			}
 			ImGui::PopID();
 		}
+		if (openCapture)
+			ImGui::OpenPopup("Capture Input");
 
 		const auto conflicts = rt2::core::FindConflicts(
 			m_Settings2->GetInputOverrides());

@@ -11534,3 +11534,70 @@ to pretend otherwise; the host paths are recorded as pending interactive
 acceptance. The existing W5/W6/W7 host-dispatch gaps remain subject to the
 same boundary and are not silently converted into guarantees by these W8
 tests.
+
+### Phase 7 W8 — popup-scope correction and acceptance completion (2026-08-03)
+
+This append-only note supersedes the preceding report's statement that the
+interactive acceptance was incomplete. The remaining editor checks were
+performed after fixing a fourth instance of the ImGui popup-scope defect.
+
+**Popup-scope fix.** `RT2App/src/WalnutApp.cpp:1345-1379` now records a
+Rebind request while the per-mapping `PushID` scope is active, then calls
+`OpenPopup("Capture Input")` at `:1379`, in the same parent scope used by
+`BeginPopupModal("Capture Input")` at `:1419`. Previously the open call was
+inside the mapping ID scope and the modal was outside it, so the dialog never
+opened and the feature could not capture or save a binding. The audit of every
+`OpenPopup` in `WalnutApp.cpp` found no additional mismatched popup/modal pair;
+the content-browser opens are hoisted after their per-item scopes and the
+remaining modal pairs share their parent scope.
+
+**Acceptance performed.**
+
+- In View → Input Bindings, Rebind on `jump` opened the Capture Input modal.
+  After waiting for the opening click to be consumed, the first real `Space`
+  keypress closed the modal and the row displayed `Space (Keyboard)`. The
+  persisted settings record contained the runtime `jump` mapping. The
+  `m_InputCaptureSkipFrame` path therefore did not swallow the first real
+  keypress. The temporary user override was removed after the exercise.
+- Without restarting the editor, Play was entered from the Scene panel and
+  showed `(Playing)` with Pause and Stop enabled. `Space` was sent while Play
+  was active; the viewport continued rendering and the editor remained in
+  `(Playing)`, then returned to `(Edit)` after Stop. The vertical-slice fixture
+  has no visible `jump` consumer, so this confirms the live composition/input
+  route and Play continuity rather than a scene-specific jump animation.
+- The four earlier interactive checks also stand: editor-owned contexts were
+  read-only; explicit unbind removed the mapping; Browse → save → reopen
+  resolved a script reference to the new file's identity; and declaration
+  diagnostics changed from invalid to valid after an external `.lua` edit.
+
+**Measured gates.** The Release and Debug builds completed successfully. Tests
+run from the repository root measured:
+
+| Gate | Result |
+|---|---|
+| Release `RT2Tests.exe` | 749/749 cases, 146510 assertions, 0 failed |
+| Debug `RT2Tests.exe` | 749/749 cases, 146510 assertions, 0 failed |
+| `run_script_test.ps1` | `ScriptScenario PASS: 60 frames, 1 entities, no mismatches` |
+| `run_slice_test.ps1` | `SliceRunner PASS: 60 steps, authoring intact`; `Slice PASS` |
+| `--headless --validate ... --frames 8` | exit 0, zero validation messages |
+
+The requested headless command also reported that `--out` is not a supported
+argument and wrote its default `screenshot.png`; that generated file was
+removed. This did not produce a validation message or non-zero exit. The
+punctual-light gate recorded in the preceding W8 verification run remained
+passing; no production code changed after that gate.
+
+**Phase 7 boundary.** W8 completes the deferred input-binding, script-rebind,
+and declaration-diagnostic commitments. It does not add the W7-A1
+model/texture/environment automatic reimport that was deliberately
+substituted with database refresh, and it does not add the deferred runtime
+cursor-lock binding (D-W8-4/P7-R2). The host-invocation boundary also remains:
+`RT2Tests` does not compile `WalnutApp.cpp` or `SceneEditorUI.cpp`, so the
+host's use of the W8 seams is covered by the interactive checks rather than a
+link-time test; the analogous W5/W6/W7 host-dispatch gaps remain. Four UI
+popup-scope defects reached a green CPU suite and were caught only by
+interactive acceptance; this Capture Input defect was the fourth.
+
+The scene fixtures were not modified by the acceptance exercise. The only
+temporary persisted editor setting was the `jump` override, restored to an
+empty `inputOverrides` array before closing the editor.
