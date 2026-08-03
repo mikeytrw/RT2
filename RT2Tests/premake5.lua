@@ -10,6 +10,9 @@
     -- alongside the glob so a hand-maintained vcxproj regen cannot drop it).
     files { "src/OverrideAwareCompactionTests.cpp" }
 
+    -- Material-index undo override-capture tests (same rationale).
+    files { "src/MaterialIndexUndoOverrideTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 

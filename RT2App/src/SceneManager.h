@@ -374,7 +374,15 @@ struct EditorCameraPose;
 		const rt2::core::UUID& cameraEntity, const EditorCameraPose& pose);
 
 	// Update an entity's material index (which material from the materials array).
-	void SetMaterial(EntityId entity, int materialIndex);
+	//
+	// The optional out-params capture the displaced durable
+	// MaterialOverrideComponent (before) and the freshly recorded one
+	// (after) as one atomic operation, so callers cannot capture the
+	// before-state after the mutation (the 2026-08-03 material-index undo
+	// defect). Both are left untouched when the call fails.
+	void SetMaterial(EntityId entity, int materialIndex,
+	                 std::optional<MaterialOverrideComponent>* outBeforeOverride = nullptr,
+	                 std::optional<MaterialOverrideComponent>* outAfterOverride = nullptr);
 
 	// Get/set entity name (for UI outliner).
 	std::string GetEntityName(EntityId entity) const;
@@ -473,8 +481,17 @@ struct EditorCameraPose;
 	                                              const CameraComponent& value);
 	EditorMutationResult SetMaterialPropertiesState(int slotIndex,
 	                                                const SceneMaterial& value);
+	// Applies the index edit AND captures the displaced durable override
+	// (before) and the freshly recorded one (after) inside the mutation,
+	// so the before-state is read before the index write replaces it and
+	// the after-state immediately after. The out-params (both optional,
+	// both untouched on failure) make the capture ordering impossible to
+	// invert at the call site — see the 2026-08-03 material-index undo
+	// defect. Pass nullptr for captures you do not need.
 	EditorMutationResult SetMaterialIndexState(const rt2::core::UUID& entity,
-	                                           int afterIndex);
+	                                           int afterIndex,
+	                                           std::optional<MaterialOverrideComponent>* outBeforeOverride = nullptr,
+	                                           std::optional<MaterialOverrideComponent>* outAfterOverride = nullptr);
 	EditorMutationResult SetMotionState(const rt2::core::UUID& entity,
 	                                    const std::optional<MotionComponent>& value);
 	// Phase 6B/W0: add, remove, or replace an entity's ScriptComponent.

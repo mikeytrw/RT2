@@ -160,13 +160,17 @@ void SceneEditorUI::RecordCameraEdit(const rt2::core::UUID& target,
 }
 
 void SceneEditorUI::RecordMaterialIndexEdit(const rt2::core::UUID& target,
-                                            int beforeIndex, int afterIndex)
+                                            int beforeIndex, int afterIndex,
+                                            const std::optional<MaterialOverrideComponent>& beforeOverride,
+                                            const std::optional<MaterialOverrideComponent>& afterOverride)
 {
 	if (!m_CommandHistory) return;
-	const auto beforeOverride = m_SceneMgr->GetMaterialOverride(target);
-	// The after-override is what the manager just recorded via
-	// SetMaterialIndexState's RecordMaterialOverride side effect.
-	const auto afterOverride = m_SceneMgr->GetMaterialOverride(target);
+	// The before/after overrides come from SceneManager::SetMaterialIndexState
+	// (or SetMaterial), which captures the displaced override before the
+	// index write and the freshly recorded one after it — inside the
+	// mutation, so this call site cannot invert the ordering. This replaces
+	// the 2026-08-03 defect where both were read after the mutation, making
+	// the two snapshots identical by construction.
 	auto cmd = MakeSetMaterialIndexCommandIfEffective(target, beforeIndex,
 	                                                  afterIndex, beforeOverride, afterOverride);
 	if (!cmd) return;
@@ -1405,8 +1409,14 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 	if (indexChanged)
 	{
 		const int beforeIndex = matIdx;
-		m_SceneMgr->SetMaterial(entity, current);
-		RecordMaterialIndexEdit(targetUuid, beforeIndex, current);
+		// Capture the displaced override before the mutation and the freshly
+		// recorded one after it — both inside SetMaterial, so the ordering
+		// cannot be inverted here (2026-08-03 material-index undo defect).
+		std::optional<MaterialOverrideComponent> beforeOverride;
+		std::optional<MaterialOverrideComponent> afterOverride;
+		m_SceneMgr->SetMaterial(entity, current, &beforeOverride, &afterOverride);
+		RecordMaterialIndexEdit(targetUuid, beforeIndex, current,
+		                        beforeOverride, afterOverride);
 		if (duplicatePressed)
 			NotifySceneChanged();
 		else

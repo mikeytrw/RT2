@@ -12172,3 +12172,190 @@ This spec fixes the before-capture for material-index edits. It does not
 restructure the command history, does not change the resolver's override
 precedence, and does not alter `RecordMaterialPropertiesEdit`, which is already
 correct and is the model to follow.
+
+## Material-index undo restores the wrong override (verification report)
+
+Written 2026-08-03. Implements the spec section immediately above (commit 80f7faf). Branch: phase8-material-index-undo-override-fix.
+### D1 — where the before-capture lives: decided (b), the testable seam
+
+The spec's recommendation proved proportionate after reading the code, so (b) was taken.
+
+Why (a) was rejected, beyond shortness: (a) preserves the exact property that
+produced this defect — the capture ordering lives at the call site as
+discipline, not as structure. The correct pattern already existed just below
+the defect (`RecordMaterialPropertiesEdit`, SceneEditorUI.cpp:184), and the
+failure mode of the file was precisely "the author knew the right
+pattern and did not carry it over". (a) would have left `GetMaterialOverride`
+reads in the UI where one ordering mistake recreates the bug, and — because
+RT2Tests does not compile SceneEditorUI.cpp (RT2Tests/premake5.lua:17) — no
+regression test, meaning only the interactive check could ever catch a
+reintroduction. The spec's fear of (b) — "drags in the resolver, the command
+history, or a signature change that ripples further than the defect warrants"
+— did not materialize: measured against the tree, the seam is two defaulted
+optional out-params on the single mutation function plus one UI call site.
+
+What (b) actually costs:
+- `SetMaterialIndexState` (`SceneManager.h:491`, `SceneManager.cpp:3784`)
+  gains two `std::optional<MaterialOverrideComponent>*` out-params with
+  nullptr defaults. Existing callers compile unchanged: the `SetMaterial`
+  wrapper (`SceneManager.cpp:3333`), `SetMaterialIndexCommand::Execute`/`Undo`
+  (`EditorPropertyCommands.cpp:134/146`), and
+  `RuntimeCommandSink::SetMaterialIndex` (`ScriptSystem.cpp:1630`) — which
+  mutates the runtime SceneDocument directly and does not call the state API
+  at all. The resolver, the command history, `EditorMutationResult`, and
+  `ScriptSystem` are untouched.
+- `SetMaterial` (`SceneManager.h:383`) forwards the out-params.
+- The UI call site (`SceneEditorUI.cpp:1409-1419`) captures via `SetMaterial`
+  and `RecordMaterialIndexEdit` (`.h:206`, `.cpp:162`) takes both overrides
+  as parameters. The UI makes **zero** `GetMaterialOverride` reads on this
+  path anymore.
+
+The ordering is now enforced by the mutation itself: `SetMaterialIndexState`
+reads the displaced component before the index write and the freshly recorded
+one immediately after `RecordMaterialOverride` — inside one function, where
+"before" and "after" cannot be swapped. Test 3 (the round-trip) is the
+regression test this defect had been missing.
+
+### F1 — guard under which SetMaterial creates/replaces the override
+
+`SetMaterialIndexState` records the override only when the entity carries an
+`ImportedMeshSourceComponent`: `if (m_EcsScene.registry.all_of<ImportedMeshSourceComponent>(e)) RecordMaterialOverride(e, afterIndex);` (`SceneManager.cpp:3810-3811`). The properties path propagates only over
+`reg.view<ImportedMeshSourceComponent>()` (`SceneManager.cpp:3768`).
+`RecordMaterialOverride` itself (`SceneManager.cpp:3657-3680`) emplaces
+unconditionally (`reg.emplace_or_replace<MaterialOverrideComponent>(entity, ov)`, `:3679`) but its only two callers are the guarded sites above (`:3768`,
+`:3810`) — a non-imported entity **cannot** acquire an override through any
+editor mutation path, so the defect's blast radius is imported entities only,
+and the test fixtures must be imported entities (they are).
+
+Latent trap worth recording: the guard lives at the call sites, not inside
+`RecordMaterialOverride`. An unguarded future caller would silently give a
+non-imported entity a durable override. The function signature is the natural
+place for that guard; left as-is (out of scope).
+
+### F2 — Redo has no mirrored problem; the asymmetry is structural
+
+`SetMaterialIndexCommand::Execute` (the redo path; `EditorPropertyCommands.cpp:132-142`) calls `SetMaterialIndexState(m_Target, m_AfterIndex)` and then
+`InstallMaterialOverride(m_Target, m_AfterOverride)`. `m_AfterOverride` was
+read post-mutation at the capture site, so it genuinely IS the after value —
+Execute/Redo is accidentally correct. The asymmetry is not a coincidence of
+the capture site but structural: the mutation destroys the before-state and
+produces the after-state, so "before" must be captured inside the mutation and
+"after" is its output. The fix makes that explicit — `SetMaterialIndexState`
+captures both — and the comments at `SceneManager.h:491` and
+`SceneManager.cpp:3784` state it, so the next reader does not rediscover it.
+
+### F3 — audit of the remaining Record*Edit functions: clean
+
+All in `SceneEditorUI.cpp` (current line numbers). Before-states are captured
+before any mutation in every case except the fixed one:
+
+- `RecordNameEdit` (:121-132): `name` read at :998, mutation at :1019.
+  Correct.
+- `RecordLightEdit` (:134-146): `beforeLight` read :1550 before any mutation;
+  session activation :1568, mutation :1658. Correct.
+- `RecordCameraEdit` (:148-160): `beforeCamera` read :1688, mutation :1749;
+  session activation :1706. Correct.
+- `RecordMaterialIndexEdit` (:162-182): the defect — both overrides read
+  :166-169 (pre-fix numbering, as cited in the spec) after `SetMaterial`
+  (pre-fix :1408) had already replaced the component. **Fixed in this
+  change.**
+- `RecordMaterialPropertiesEdit` (:184-206): activation-captured member
+  (`m_PendingMaterialPropertiesBeforeOverrides`, :1459, cleared :1526).
+  Correct (spec: known correct).
+- `RecordMotionEdit` (:206-218): session `rec->before`; explicit `before`
+  read :1084 before `SetMotionState` :1085. Correct.
+- `RecordScriptEdit` (:220-229): before captured :1799/:1859/:1884 before each
+  `SetScriptState`; session-based at :2125 and :2153. Correct.
+
+Result: the audit is clean except the one defect this change fixes.
+
+### What changed
+
+- `RT2App/src/SceneManager.h`: `SetMaterial` (:383) and `SetMaterialIndexState`
+  (:491) gained defaulted capture out-params with explanatory comments.
+- `RT2App/src/SceneManager.cpp`: `SetMaterialIndexState` (:3784) captures the
+  displaced override before the index write and the freshly recorded one
+  after `RecordMaterialOverride`; failure paths leave the out-params
+  untouched. `SetMaterial` (:3333) forwards them.
+- `RT2App/src/SceneEditorUI.cpp` + `.h`: the call site (:1409-1419) captures
+  via `SetMaterial`; `RecordMaterialIndexEdit` (:162, `.h:206`) takes both
+  overrides as parameters and no longer reads live override state.
+- `RT2App/src/EditorPropertyCommands.h`: corrected the factory comment, which
+  still described the old capture protocol.
+- `RT2Tests/src/MaterialIndexUndoOverrideTests.cpp` (new; registered in
+  `RT2Tests/RT2Tests.vcxproj` and `RT2Tests/premake5.lua`): the three spec
+  tests, in-memory fixture (tests 1-2) and GLB round-trip via
+  `SceneSerializer` + `SceneAssetResolver::ResolveAll` (test 3).
+
+### Discrimination proofs (all run fault-first, red then green)
+
+**Proof A — the spec's named fault, in production code**: the before-capture
+in `SetMaterialIndexState` moved AFTER the mutation (i.e., the present defect
+reintroduced at the seam). Result:
+
+- Test 1 RED: `before` came back as the after-value
+  (`MaterialIndexUndoOverrideTests.cpp:158`) and after undo the durable
+  override was the post-edit value while the index was correct (:178) — the
+  spec's exact "material comes back as the after-value while the index is
+  correct".
+- Test 2 RED at its intermediate undo-state assertion (:203) — see note below.
+- Test 3 RED both in-session (:254, :265) and — the point of the test — after
+  save/reopen: the resolved material was the post-edit green, not the pre-edit
+  red (:296-297). The save-and-reopen resurrection the spec predicts.
+- Reverted: all three GREEN (755/755).
+
+Note on test 2: the spec describes test 2's final-state claim ("redo still
+reaches the post-edit override") as holding under the defect, since the
+after-capture is genuinely the after state. My test 2 additionally asserts the
+intermediate undo state (same assertion as test 1), so under proof A it went
+red at that assertion before reaching redo. Deliberate strengthening, not a
+spec contradiction — the final-state claim is still covered and passes on the
+fixed code (below). On the fixed code all three pass.
+
+**Proof B — test 2's redo sensitivity**: the only way redo can install the
+wrong durable record is a corrupted after-override at construction, so the
+fault was injected there (after = before). Result: exactly one failure — test
+2's redo assertion (observed at :211 during the injected run, which is :209 in
+the final file: after undo+redo the override was the before-value while the
+index was correct). The redo assertion is a real check, not vacuous. Reverted:
+GREEN.
+
+**Test-shaping findings recorded while proving**:
+1. The resolver rewrites the override's texture indices from the re-imported
+   staged material (`SceneAssetResolver.cpp:768-777`), so the round-trip
+   assertion must compare the authored scalars (type/baseColor/metallic/
+   roughness/ior/emissive) — a full-material comparison can never pass across
+   the round-trip. `AuthoredScalarEq` in the test file.
+2. `REQUIRE(le != entt::null)` is ambiguous between doctest's
+   `Expression_lhs` and entt's `operator!=`; the bool is computed outside the
+   macro.
+
+### Measured counts and gates
+
+- Baseline at 80f7faf (before any change): Release 752/752 tests, 146,525
+  assertions.
+- After the fix and tests: **Release 755/755, 146,579 assertions; Debug
+  755/755, 146,579 assertions** (both full-suite runs from the repo root).
+- `run_script_test.ps1`: PASS (60 frames, no mismatches).
+- `run_slice_test.ps1`: PASS (60 steps, authoring intact).
+- `--headless --validate` (vertical-slice, 8 frames, 320x200): exit 0.
+- `git status`: no fixture modifications (only the five RT2App sources, the
+  two test-project files, the new test file, and the generated
+  graphify-out/GRAPH_REPORT.md).
+
+### Interactive check — BLOCKED, not performed
+
+The acceptance check — on an imported entity, change the material, undo,
+**save, reopen**, and confirm the entity has the pre-edit material — cannot be
+performed from this environment: it requires driving the desktop application
+(ImGui inspector, mouse/keyboard). It is reported as **blocked**, not as
+passed and not as "expected to pass". Test 3 is the automated analogue of the
+same walk (it serializes and re-resolves through the same resolver the save/
+reopen path uses), and it is the assertion that fails under the reintroduced
+defect, but the on-screen interaction remains unperformed and must be run by
+someone with the app open.
+
+### Out of scope, unchanged
+
+`RecordMaterialPropertiesEdit` (correct, the model), the resolver's override
+precedence, the command history, and `CompactMeshRegistry` are untouched.

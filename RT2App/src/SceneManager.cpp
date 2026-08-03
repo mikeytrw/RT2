@@ -3330,7 +3330,9 @@ void SceneManager::ReconcileStoredCameraDirections()
 	RefreshCameraForwardDirections(cameras);
 }
 
-void SceneManager::SetMaterial(EntityId entity, int materialIndex)
+void SceneManager::SetMaterial(EntityId entity, int materialIndex,
+                               std::optional<MaterialOverrideComponent>* outBeforeOverride,
+                               std::optional<MaterialOverrideComponent>* outAfterOverride)
 {
 	if (!entity.IsValid()) return;
 	// SetMaterialIndexState returns an authoritative EditorMutationResult and
@@ -3338,8 +3340,11 @@ void SceneManager::SetMaterial(EntityId entity, int materialIndex)
 	// it is bounds-checked against the material list. Dropping that result
 	// made a rejected assignment indistinguishable from an applied one.
 	// This wrapper is void by design (the inspector calls it fire-and-forget),
-	// so surface the failure rather than returning it.
-	const auto result = SetMaterialIndexState(GetEntityUuid(entity), materialIndex);
+	// so surface the failure rather than returning it. The capture out-params
+	// come from SetMaterialIndexState so the before/after override ordering
+	// is enforced inside the mutation, not at this call site.
+	const auto result = SetMaterialIndexState(GetEntityUuid(entity), materialIndex,
+	                                          outBeforeOverride, outAfterOverride);
 	if (!result.success)
 		printf("[SceneManager] SetMaterial rejected: %s\n",
 		       result.error.Format().c_str());
@@ -3777,7 +3782,9 @@ EditorMutationResult SceneManager::SetMaterialPropertiesState(int slotIndex,
 }
 
 EditorMutationResult SceneManager::SetMaterialIndexState(const rt2::core::UUID& entity,
-                                                         int afterIndex)
+                                                         int afterIndex,
+                                                         std::optional<MaterialOverrideComponent>* outBeforeOverride,
+                                                         std::optional<MaterialOverrideComponent>* outAfterOverride)
 {
 	const auto e = m_Authoring.FindByUuid(entity);
 	if (e == entt::null || !m_EcsScene.registry.valid(e))
@@ -3790,9 +3797,27 @@ EditorMutationResult SceneManager::SetMaterialIndexState(const rt2::core::UUID& 
 	if (afterIndex < 0 || afterIndex >= (int)m_EcsScene.materials.size())
 		return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
 			std::to_string(afterIndex), "SetMaterialIndexState: material index out of range");
+	// Capture the displaced durable override BEFORE the mutation: the index
+	// write below replaces it, so any read after this point sees the
+	// after-state. This ordering is the fix for the 2026-08-03 material-index
+	// undo defect — the host UI used to read the before-override after
+	// SetMaterial had already run, making the command's two snapshots
+	// identical and Undo restore the post-edit record.
+	std::optional<MaterialOverrideComponent> beforeCapture;
+	if (auto* ov = m_EcsScene.registry.try_get<MaterialOverrideComponent>(e))
+		beforeCapture = *ov;
 	ref->materialIndex = afterIndex;
 	if (m_EcsScene.registry.all_of<ImportedMeshSourceComponent>(e))
 		RecordMaterialOverride(e, afterIndex);
+	if (outBeforeOverride)
+		*outBeforeOverride = std::move(beforeCapture);
+	if (outAfterOverride)
+	{
+		if (auto* ov = m_EcsScene.registry.try_get<MaterialOverrideComponent>(e))
+			*outAfterOverride = *ov;
+		else
+			*outAfterOverride = std::nullopt;
+	}
 	NotifyAuthoringChanged();
 	EditorMutationResult result;
 	result.success = true;
