@@ -1,9 +1,11 @@
 #include <doctest/doctest.h>
 
+#include "AssetIdentity.h"
 #include "EditorCommandHistory.h"
 #include "EditorStructuralCommands.h"
 #include "MeshRegistry.h"
 #include "PrefabSerializer.h"
+#include "SceneAssetReferenceVisitor.h"
 #include "SceneAssetResolver.h"
 #include "SceneManager.h"
 #include "SceneSerializer.h"
@@ -488,7 +490,7 @@ TEST_CASE("Phase 8 W1: CreatePrefabCommand Undo restores prior contents, Redo re
 	REQUIRE(created.ok);
 	REQUIRE(ReadFileBinary(prefabPath) != stale); // overwritten by the create
 
-	auto cmd = MakeCreatePrefabCommand(prefabPath, created, before);
+	auto cmd = MakeCreatePrefabCommand(prefabPath, created, before, true);
 	REQUIRE(cmd);
 
 	EditorCommandHistory history;
@@ -533,7 +535,7 @@ TEST_CASE("Phase 8 W1: CreatePrefabCommand Undo removes a never-present file")
 	REQUIRE(created.ok);
 	REQUIRE(std::filesystem::exists(prefabPath));
 
-	auto cmd = MakeCreatePrefabCommand(prefabPath, created, {});
+	auto cmd = MakeCreatePrefabCommand(prefabPath, created, {}, false);
 	REQUIRE(cmd);
 
 	EditorCommandHistory history;
@@ -593,7 +595,333 @@ TEST_CASE("Phase 8 W1 B2: instantiating a primitive registers its mesh")
 }
 
 // ---------------------------------------------------------------------------
-// Contract: the flat-UUID-list validation reuses the duplication contract.
+// P1 REGRESSION: a sidecar WRITE failure must fail CreatePrefabFromSubtree —
+// never report success with a session-only identity. Because create already
+// wrote the .rt2prefab before the identity step, the fix ROLLS BACK the asset
+// file so create is atomic (asset+sidecar both commit, or neither).
+//
+// Fault for red: ignore idErr from ResolveOrAssign in CreatePrefabFromSubtree
+// (the W1 shipped code) — create then reports ok=true with the prefab file
+// present and no committed sidecar.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W1 P1: create fails atomically when the asset sidecar cannot be committed")
+{
+	PrefabFixture f;
+	const auto [root, child] = f.RootWithChild("NoSidecar");
+	const auto dir = UniqueTempDir("p8w1_p1_create_fail");
+	const auto prefabPath = dir / "blocked.rt2prefab";
+
+	// Inject the failure: occupy the sidecar path with a directory so both
+	// the read and the atomic replace fail inside AssetIdentity.
+	const auto sidecarPath = AssetSidecarPath(prefabPath);
+	{
+		std::error_code ec;
+		std::filesystem::create_directory(sidecarPath, ec);
+		REQUIRE_FALSE(ec);
+	}
+
+	const auto created = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	// Fault for red: W1 reported ok=true here.
+	CHECK_FALSE(created.ok);
+	CHECK(created.assetId.IsNull());
+	// The asset file was rolled back (atomic create).
+	CHECK_FALSE(std::filesystem::exists(prefabPath));
+	// The scene is untouched.
+	CHECK(f.manager.GetEntityCount() == 2);
+
+	std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// P1 REGRESSION: a sidecar failure at INSTANTIATE must fail before any scene
+// mutation. The instance carries the prefab's durable identity, so an
+// unresolvable identity is a hard pre-mutation failure.
+//
+// Fault for red: resolve the sidecar identity inline at the link step (W1
+// shipped code) — the failure is detected AFTER entities/resources were
+// merged, leaving a successful-looking mutation with a session-only ID.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W1 P1: instantiate fails before mutation when the sidecar is unreadable")
+{
+	PrefabFixture f;
+	const auto [root, child] = f.RootWithChild("InstBlocked");
+	const auto dir = UniqueTempDir("p8w1_p1_inst_fail");
+	const auto prefabPath = dir / "blocked2.rt2prefab";
+
+	// Create a valid prefab (commits a sidecar), then sabotage the sidecar.
+	const auto created = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	REQUIRE(created.ok);
+	const auto sidecarPath = AssetSidecarPath(prefabPath);
+	{
+		std::error_code ec;
+		std::filesystem::remove(sidecarPath, ec);
+		std::filesystem::create_directory(sidecarPath, ec);
+		REQUIRE_FALSE(ec);
+	}
+
+	const auto beforeEntities = f.manager.GetEntityCount();
+	const auto beforeMeshes = f.manager.GetECS().meshRegistry.GetCount();
+	std::vector<AssetDiagnostic> diags;
+	const auto uuids = f.manager.ReserveKnownUuids(2);
+	const auto inst = f.manager.InstantiatePrefabWithUuids(prefabPath, uuids, diags);
+	// Fault for red: W1 reported success (identity swallowed at the link step).
+	CHECK_FALSE(inst.mutation.success);
+	CHECK_FALSE(f.EntityAlive(uuids[0]));
+	CHECK(f.manager.GetEntityCount() == beforeEntities);
+	CHECK(f.manager.GetECS().meshRegistry.GetCount() == beforeMeshes);
+
+	std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// P1 REGRESSION: transactional rollback of a failed instantiate restores the
+// appended mesh/material/texture rows to their pre-merge bases. The shipped
+// rollback only destroyed entities + UUID index, leaking the merged resource
+// rows. A post-merge failure is injected by a hierarchy cycle in the live
+// scene that the instance merge then trips on at dst RebuildChildren.
+//
+// Fault for red: keep rollbackCreated limited to entity destruction (W1
+// shipped code) — after a failed instantiate the mesh/material/texture counts
+// stay inflated by the aborted merge.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W1 P1: failed instantiate rolls back merged resource rows")
+{
+	PrefabFixture f;
+	const auto cube = f.CreateCube(); // primitive -> registers a mesh row
+	const auto dir = UniqueTempDir("p8w1_p1_rollback");
+	const auto prefabPath = dir / "res.rt2prefab";
+	const auto created = f.manager.CreatePrefabFromSubtree({ cube }, prefabPath);
+	REQUIRE(created.ok);
+
+	// Inject a hierarchy cycle into the LIVE scene so the instance merge's
+	// dst RebuildChildren fails AFTER resources were appended.
+	{
+		const auto a = f.manager.CreateEmpty("CycleA").affectedEntities.front();
+		const auto b = f.manager.CreateEmpty("CycleB").affectedEntities.front();
+		const auto ha = f.manager.FindEntityByUuid(a);
+		const auto hb = f.manager.FindEntityByUuid(b);
+		REQUIRE(static_cast<uint32_t>(ha) != static_cast<uint32_t>(entt::null));
+		REQUIRE(static_cast<uint32_t>(hb) != static_cast<uint32_t>(entt::null));
+		auto& reg = f.manager.GetECS().registry;
+		reg.emplace_or_replace<Hierarchy>(ha).parent = hb;
+		reg.emplace_or_replace<Hierarchy>(hb).parent = ha;
+	}
+
+	const auto beforeEntities = f.manager.GetEntityCount();
+	const auto meshBase = f.manager.GetECS().meshRegistry.GetCount();
+	const auto matBase = (int)f.manager.GetECS().materials.size();
+	const auto texBase = (int)f.manager.GetECS().textures.size();
+	// The cube must actually append a row on the (aborted) merge.
+	REQUIRE(meshBase >= 1);
+
+	std::vector<AssetDiagnostic> diags;
+	const auto instUuid = f.manager.ReserveKnownUuid();
+	const auto inst = f.manager.InstantiatePrefabWithUuids(
+		prefabPath, { instUuid }, diags);
+	CHECK_FALSE(inst.mutation.success);
+
+	// Fault for red: shipped rollback left the merged rows behind.
+	CHECK(f.manager.GetEntityCount() == beforeEntities);
+	CHECK(f.manager.GetECS().meshRegistry.GetCount() == meshBase);
+	CHECK((int)f.manager.GetECS().materials.size() == matBase);
+	CHECK((int)f.manager.GetECS().textures.size() == texBase);
+
+	std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// P2 REGRESSION: a prefab must have EXACTLY ONE top-level root. Multi-root
+// input is rejected with a structured diagnostic BEFORE any file write or
+// sidecar commit. Children beneath a single root remain fully supported
+// (covered by every W1 test above, which use root+child).
+//
+// Fault for red: skip the one-root check in CreatePrefabFromSubtree (W1
+// shipped code) — a two-sibling input creates a prefab whose instantiation
+// root/link placement is ill-defined.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W1 P2: multi-root create is rejected before any write")
+{
+	PrefabFixture f;
+	const auto a = f.manager.CreateEmpty("RootA").affectedEntities.front();
+	const auto b = f.manager.CreateEmpty("RootB").affectedEntities.front();
+	const auto dir = UniqueTempDir("p8w1_p2_multiroot");
+	const auto prefabPath = dir / "multi.rt2prefab";
+	REQUIRE_FALSE(std::filesystem::exists(prefabPath));
+
+	const auto created = f.manager.CreatePrefabFromSubtree({ a, b }, prefabPath);
+	// Fault for red: W1 wrote the prefab with two roots and reported ok.
+	CHECK_FALSE(created.ok);
+	CHECK(created.error.code == rt2::core::Error::InvalidEntity);
+	CHECK_FALSE(created.error.detail.empty());
+	CHECK_FALSE(std::filesystem::exists(prefabPath));
+	CHECK(f.manager.GetEntityCount() == 2);
+
+	std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// P2 REGRESSION: instantiate rejects a file with multiple top-level roots
+// before any mutation. Hand-authored or corrupted prefab files are covered.
+//
+// Fault for red: assume the first record in the file is the root and link the
+// instance there (W1 shipped code) — a two-root file instantiates "fine" but
+// the PrefabInstanceComponent sits on the wrong entity.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W1 P2: instantiate rejects a multi-root prefab file")
+{
+	PrefabFixture f;
+	const auto dir = UniqueTempDir("p8w1_p2_multiroot_file");
+	const auto prefabPath = dir / "tworoots.rt2prefab";
+
+	// Build a two-root prefab document directly (both records nil-parent).
+	PrefabDocument doc;
+	for (int i = 0; i < 2; ++i)
+	{
+		PrefabEntityRecord rec;
+		rec.templateId = f.ids.CreateV4();
+		rec.record.uuid = f.ids.CreateV4();
+		rec.record.name = "Root";
+		rec.record.visible = true;
+		doc.entities.push_back(std::move(rec));
+	}
+	Error saveErr;
+	REQUIRE(PrefabSerializer::Save(doc, prefabPath, saveErr));
+	REQUIRE(saveErr.IsOk());
+
+	const auto beforeEntities = f.manager.GetEntityCount();
+	std::vector<AssetDiagnostic> diags;
+	const auto uuids = f.manager.ReserveKnownUuids(2);
+	const auto inst = f.manager.InstantiatePrefabWithUuids(prefabPath, uuids, diags);
+	CHECK_FALSE(inst.mutation.success);
+	CHECK_FALSE(f.EntityAlive(uuids[0]));
+	CHECK(f.manager.GetEntityCount() == beforeEntities);
+
+	std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// P3 REGRESSION: CreatePrefabCommand must distinguish a pre-existing zero-byte
+// file from an absent file. An empty before-contents vector is ambiguous; the
+// fileExistedBefore flag disambiguates. Undo of a create over a pre-existing
+// zero-byte file restores that file (still zero bytes) — it must NOT be
+// removed.
+//
+// Fault for red: gate Undo on m_BeforeContents.empty() (W1 shipped code) —
+// Undo removes the file, destroying the pre-existing zero-byte asset.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W1 P3: Undo restores a pre-existing zero-byte file rather than removing it")
+{
+	PrefabFixture f;
+	const auto [root, child] = f.RootWithChild("ZeroByte");
+	const auto dir = UniqueTempDir("p8w1_p3_zerobyte");
+	const auto prefabPath = dir / "zero.rt2prefab";
+
+	// Pre-existing zero-byte file: contents are empty, but the file EXISTS.
+	WriteRaw(prefabPath, "");
+	REQUIRE(std::filesystem::exists(prefabPath));
+	REQUIRE(std::filesystem::file_size(prefabPath) == 0);
+	const std::vector<uint8_t> beforeEmpty; // captured before-contents: empty
+
+	const auto created = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	REQUIRE(created.ok);
+	REQUIRE(std::filesystem::file_size(prefabPath) > 0); // overwritten by create
+
+	auto cmd = MakeCreatePrefabCommand(prefabPath, created, beforeEmpty, true);
+	REQUIRE(cmd);
+
+	EditorCommandHistory history;
+	REQUIRE(history.Execute(std::move(cmd), f.manager).success);
+	REQUIRE(history.Undo(f.manager).success);
+	// Fault for red: W1 removed the file here because before-contents was empty.
+	CHECK(std::filesystem::exists(prefabPath));
+	CHECK(std::filesystem::file_size(prefabPath) == 0);
+
+	std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// P3 REGRESSION: CreatePrefabCommand::Undo surfaces a failed file REMOVAL as a
+// loud Failure (never a silent success). The remove branch is injected by
+// turning the prefab path into a non-empty directory so remove() fails.
+//
+// Fault for red: W1 shipped Undo ignored the remove error code and returned
+// success even when the file could not be removed.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W1 P3: Undo surfaces a failed file removal")
+{
+	PrefabFixture f;
+	const auto [root, child] = f.RootWithChild("Removal");
+	const auto dir = UniqueTempDir("p8w1_p3_remove_fail");
+	const auto prefabPath = dir / "removefail.rt2prefab";
+
+	const auto created = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	REQUIRE(created.ok);
+	auto cmd = MakeCreatePrefabCommand(prefabPath, created, {}, false);
+	REQUIRE(cmd);
+
+	EditorCommandHistory history;
+	REQUIRE(history.Execute(std::move(cmd), f.manager).success);
+
+	// Sabotage removal: replace the file with a non-empty directory.
+	{
+		std::error_code ec;
+		std::filesystem::remove(prefabPath, ec);
+		std::filesystem::create_directories(prefabPath / "junk", ec);
+		REQUIRE_FALSE(ec);
+	}
+
+	const auto undoResult = history.Undo(f.manager);
+	// Fault for red: W1 returned success while the file was left behind.
+	CHECK_FALSE(undoResult.success);
+	CHECK(undoResult.error.code == rt2::core::Error::Io);
+
+	std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// P4 REGRESSION: SceneAssetReferenceVisitor must collect the prefab reference
+// carried by PrefabInstanceComponent.prefab, alongside imported/script slots.
+//
+// Fault for red: W1 shipped visitor only handled ImportedMeshSourceComponent
+// and ScriptComponent — a scene whose only reference is a prefab instance
+// came back empty.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W1 P4: visitor collects the PrefabInstanceComponent.prefab reference")
+{
+	PrefabFixture f;
+	const auto [root, child] = f.RootWithChild("PrefabRef");
+	const auto dir = UniqueTempDir("p8w1_p4_visitor");
+	const auto prefabPath = dir / "visitor.rt2prefab";
+	const auto created = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	REQUIRE(created.ok);
+
+	// Instantiate so the live authoring scene carries a PrefabInstanceComponent.
+	std::vector<AssetDiagnostic> diags;
+	const auto uuids = f.manager.ReserveKnownUuids(2);
+	const auto inst = f.manager.InstantiatePrefabWithUuids(prefabPath, uuids, diags);
+	REQUIRE(inst.mutation.success);
+
+	const auto& doc = f.manager.AuthoringDoc();
+	const auto slots = CollectSceneAssetReferences(doc);
+
+	// The prefab reference must be collected exactly once (on the root).
+	std::size_t prefabSlots = 0;
+	const AssetReference* found = nullptr;
+	for (const auto& slot : slots)
+	{
+		if (slot.reference && slot.reference->kind == AssetKind::Prefab)
+		{
+			++prefabSlots;
+			found = slot.reference;
+		}
+	}
+	CHECK(prefabSlots == 1);
+	REQUIRE(found);
+	CHECK(found->path == prefabPath.string());
+	CHECK_FALSE(found->assetId.IsNull());
+
+	std::filesystem::remove_all(dir);
+}
 // A UUID-count mismatch, or duplicate/nil/already-present UUIDs, fails
 // atomically with zero mutation.
 //

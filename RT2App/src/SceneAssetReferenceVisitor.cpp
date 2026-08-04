@@ -47,6 +47,9 @@ std::vector<Slot> Collect(Document& document)
         if (auto* script =
                 document.ecs.registry.template try_get<ScriptComponent>(entity))
             result.push_back(Slot{&script->asset, id, name});
+        if (auto* instance =
+                document.ecs.registry.template try_get<PrefabInstanceComponent>(entity))
+            result.push_back(Slot{&instance->prefab, id, name});
     }
 
     if (!document.environment.ref.path.empty())

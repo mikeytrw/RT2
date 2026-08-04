@@ -2550,6 +2550,22 @@ SceneManager::PrefabCreationResult SceneManager::CreatePrefabFromSubtree(
 		return out;
 	}
 
+	// One-root invariant: a prefab must have EXACTLY one top-level root.
+	// This is a structural contract, not a guess: the canonical roots (after
+	// ancestor dedup, so {root, descendant} collapses to {root}) must be a
+	// single top-level entity. Multi-root input is rejected BEFORE any file
+	// write or sidecar commit — never a partial prefab produced then failed.
+	// Children beneath the single root remain fully supported.
+	if (out.sourceSnapshot.rootUuids.size() != 1)
+	{
+		out.error.code = rt2::core::Error::InvalidEntity;
+		out.error.detail = "CreatePrefabFromSubtree: a prefab must have exactly one top-level root; "
+			"supplied roots resolve to " + std::to_string(out.sourceSnapshot.rootUuids.size()) +
+			" top-level roots";
+		return out;
+	}
+	const rt2::core::UUID prefabRootUuid = out.sourceSnapshot.rootUuids.front();
+
 	// Mint ONE fresh templateId per captured entity, parallel to
 	// sourceSnapshot.entities in the same pre-order. templateId is frozen in
 	// the file and NEVER derived from the entity's scene UUID (amendment A1).
@@ -2572,12 +2588,43 @@ SceneManager::PrefabCreationResult SceneManager::CreatePrefabFromSubtree(
 		return out;
 	}
 
-	// Mint/read the sidecar asset identity. A sidecar write failure does not
-	// abort the save (the scene still gets a usable session-or-durable ID),
-	// matching the existing import/load pattern.
+	// Mint/read the sidecar asset identity. A sidecar WRITE failure is a hard
+	// failure here, NOT the tolerated import/load behaviour: a prefab asset
+	// with no durable identity is unusable, and reporting success would leave
+	// a .rt2prefab with no committed sidecar. To preserve asset+sidecar
+	// atomicity, roll back the freshly-written prefab file when the sidecar
+	// could not be durably committed. ResolveOrAssign mints+returns a fresh ID
+	// even on write failure, so the durable check is "can a valid sidecar be
+	// read right now".
 	bool minted = false;
 	rt2::core::Error idErr;
 	out.assetId = rt2::core::ResolveOrAssign(prefabPath, *m_UuidProvider, minted, idErr);
+
+	rt2::core::Error durableErr;
+	const rt2::core::UUID committed =
+		rt2::core::ReadSidecarId(rt2::core::AssetSidecarPath(prefabPath), durableErr);
+	if (committed.IsNull() || !durableErr.IsOk())
+	{
+		// No durable identity committed. Roll back the asset file so create
+		// either fully succeeds (asset + sidecar) or fully fails.
+		std::error_code rmEc;
+		if (std::filesystem::exists(prefabPath, rmEc))
+			std::filesystem::remove(prefabPath, rmEc);
+		out.assetId = rt2::core::UUID::Nil();
+		out.ok = false;
+		if (!idErr.IsOk())
+		{
+			out.error = idErr;
+		}
+		else
+		{
+			out.error.code = rt2::core::Error::Io;
+			out.error.path = rt2::core::AssetSidecarPath(prefabPath).string();
+			out.error.detail = "CreatePrefabFromSubtree: asset identity sidecar could not be committed";
+		}
+		return out;
+	}
+	out.assetId = committed;
 
 	out.ok = true;
 	return out;
@@ -2635,6 +2682,59 @@ SceneManager::InstantiationResult SceneManager::InstantiatePrefabWithUuids(
 			out.mutation = EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
 				uuid.ToString(),
 				"InstantiatePrefabWithUuids: known UUID is nil, duplicate, or already present");
+			return out;
+		}
+	}
+
+	// One-root invariant: the prefab must have EXACTLY one top-level root.
+	// A top-level root is a record whose parent is nil or external to the
+	// prefab. This replaces the old "first record in the file is the root"
+	// assumption that would silently give PrefabInstanceComponent to the
+	// wrong entity on a multi-root file. Rejected BEFORE the sidecar resolve
+	// and any scene mutation.
+	{
+		std::unordered_set<rt2::core::UUID> templateUuids;
+		templateUuids.reserve(doc.entities.size());
+		for (const auto& rec : doc.entities)
+			if (!rec.record.uuid.IsNull())
+				templateUuids.insert(rec.record.uuid);
+		std::size_t rootCount = 0;
+		for (const auto& rec : doc.entities)
+		{
+			if (rec.record.parentUuid.IsNull() ||
+			    !templateUuids.count(rec.record.parentUuid))
+				++rootCount;
+		}
+		if (rootCount != 1)
+		{
+			out.mutation = EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+				prefabPath.string(),
+				"InstantiatePrefabWithUuids: prefab must have exactly one top-level root; file has " +
+					std::to_string(rootCount));
+			return out;
+		}
+	}
+
+	// Resolve the prefab's durable asset identity BEFORE any scene mutation.
+	// A sidecar that cannot be committed is a hard failure here (not the
+	// tolerated import/load behaviour): the instance would otherwise carry a
+	// session-only ID and report success. Doing this before the plan build
+	// means identity failure mutates nothing.
+	bool minted = false;
+	rt2::core::Error idErr;
+	const rt2::core::UUID prefabAssetId =
+		rt2::core::ResolveOrAssign(prefabPath, *m_UuidProvider, minted, idErr);
+	{
+		rt2::core::Error durableErr;
+		const rt2::core::UUID committed =
+			rt2::core::ReadSidecarId(rt2::core::AssetSidecarPath(prefabPath), durableErr);
+		if (committed.IsNull() || !durableErr.IsOk())
+		{
+			out.mutation = EditorMutationResult::Failure(
+				idErr.IsOk() ? rt2::core::Error::Io : idErr.code,
+				rt2::core::AssetSidecarPath(prefabPath).string(),
+				"InstantiatePrefabWithUuids: prefab has no durable asset identity (sidecar could not be committed): " +
+					idErr.detail);
 			return out;
 		}
 	}
@@ -2763,6 +2863,13 @@ SceneManager::InstantiationResult SceneManager::InstantiatePrefabWithUuids(
 				m_Authoring.uuidIndex.Erase(idc->id);
 			dstReg.destroy(e);
 		}
+		// Roll back the appended resource-table rows (meshes/materials/
+		// textures) to their pre-merge bases. Without this the instance's
+		// entities are removed but its subnet of the mesh/material/texture
+		// registries is left behind, leaking rows on a failed instantiate.
+		dst.meshRegistry.Truncate(meshBase);
+		dst.materials.resize(matBase);
+		dst.textures.resize(texBase);
 		liveEntities.clear();
 		entityMap.clear();
 	};
@@ -2821,12 +2928,12 @@ SceneManager::InstantiationResult SceneManager::InstantiatePrefabWithUuids(
 	const rt2::core::UUID instanceId = ReserveKnownUuid();
 	if (!liveEntities.empty())
 	{
-		bool minted = false;
-		rt2::core::Error idErr;
+		// The prefab's durable identity was resolved before any mutation, so
+		// this cannot fail here; reuse the committed ID.
 		auto& inst = dstReg.emplace<PrefabInstanceComponent>(liveEntities[0]);
 		inst.prefab = AssetReference{ AssetKind::Prefab,
 			prefabPath.string(), {}, {},
-			rt2::core::ResolveOrAssign(prefabPath, *m_UuidProvider, minted, idErr) };
+			prefabAssetId };
 		inst.instanceId = instanceId;
 	}
 	for (std::size_t i = 0; i < tempEntities.size(); ++i)

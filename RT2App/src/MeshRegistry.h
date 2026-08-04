@@ -70,6 +70,15 @@ public:
 
     void Clear() { m_Meshes.clear(); }
 
+    // Truncate the registry to `count` meshes. Used by the transactional
+    // prefab-instantiate rollback to undo a partial resource merge. No-op
+    // when count >= current size.
+    void Truncate(uint32_t count)
+    {
+        if (count < m_Meshes.size())
+            m_Meshes.resize(count);
+    }
+
 private:
     static void ComputeBounds(MeshData& mesh)
     {

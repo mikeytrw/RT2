@@ -13504,3 +13504,87 @@ instantiate/reload sanity drive is **not directly exercisable** without adding
 a new CLI scenario — reported as blocked rather than passed. The identical
 headless instantiate → save → reload → verify-link round-trip is covered by
 the permanent W1-D test in the CPU-only suite (test 4 above).
+
+----
+
+## Phase 8 W1 — cold-review repair (2026-08-04)
+
+Supersession note: the W1 verification report above (781/781) was the state at
+commit 18c1ad7. A cold review of that commit (artifact phase8-w1-review)
+found six findings (P0, P1 sidecar, P1 rollback, P2 one-root, P3 command
+semantics, P4 visitor). All were repaired in a bounded follow-up commit. This
+note records the repair; it does not rewrite the historical W1 report.
+
+### Repairs and where they landed
+
+- **P0 — slice source list.** RT2SliceRunner/premake5.lua never registered
+  PrefabSerializer.cpp (the gitignored RT2SliceRunner.vcxproj was the only
+  place that had it, and premake is source-of-truth). Added it. The regenerated
+  slice builds and links in both Release and Debug. AssetWatchPolicy.cpp was
+  considered for the slice but **rejected as ungrounded**: its only includers
+  (WalnutApp.cpp, ContentBrowserDispatch.cpp) are not slice sources, so a
+  fresh slice target has no reference to it.
+- **RT2Tests premake parity.** RT2Tests/premake5.lua was missing
+  AssetWatchPolicy.cpp even though the tracked RT2Tests.vcxproj had it at
+  line 327 — a fresh premake regeneration would drop the symbol and reproduce
+  the reviewer's 21-symbol unresolved failure. Added it for parity.
+- **P1 — sidecar failure is loud.** CreatePrefabFromSubtree now treats a
+  sidecar that cannot be committed as a hard failure: it rolls back the just-
+  written .rt2prefab file (asset+sidecar atomic) and returns ok=false.
+  InstantiatePrefabWithUuids resolves the sidecar identity BEFORE any scene
+  mutation and fails pre-mutation when it is unreadable; the link step reuses
+  the committed ID instead of re-resolving inline.
+- **P1 — transactional resource rollback.** On a failed instantiate, the
+  rollback path now truncates the appended mesh/material/texture rows back to
+  their pre-merge bases (dst.meshRegistry.Truncate(meshBase) +
+  materials.resize(matBase) + 	extures.resize(texBase)). Added
+  MeshRegistry::Truncate.
+- **P2 — one-root invariant.** A prefab must have exactly one top-level root.
+  CreatePrefabFromSubtree rejects multi-root input (canonical roots != 1)
+  with a structured InvalidEntity diagnostic before any write; instantiate
+  rejects a file with != 1 top-level root before any mutation.
+- **P3 — command semantics.** CreatePrefabCommand now carries an explicit
+  ileExistedBefore flag so a pre-existing zero-byte file is restored on Undo
+  (not removed, which the old eforeContents.empty() heuristic got wrong).
+  Undo also surfaces a failed file removal as a loud Io Failure instead of a
+  silent success. Factory signature updated; both call sites updated.
+- **P4 — visitor coverage.** SceneAssetReferenceVisitor now collects
+  PrefabInstanceComponent.prefab alongside imported/script slots.
+
+### Regression tests added (Phase8W1PrefabTests.cpp, all with fault-to-red)
+
+- P1 create-sidecar failure: create fails atomically, asset file rolled back.
+- P1 instantiate-sidecar failure: fails before mutation, zero entity/mesh delta.
+- P1 resource rollback: red confirmed in-session — with Truncate disabled,
+  meshRegistry.GetCount() == 2 vs base 1 after a failed instantiate;
+  green with the fix.
+- P2 multi-root create rejected before any file write; multi-root file
+  rejected at instantiate before mutation.
+- P3 zero-byte pre-existing file restored on Undo (still exists, size 0);
+  failed removal surfaces as Io Failure.
+- P4 visitor finds the prefab reference exactly once on the instance root.
+
+### Verification (measured this session, after repair)
+
+- **Release full RT2Tests** (run from repo root): **789/789 cases**,
+  **147,008/147,008 assertions**; passed.
+- **Debug full RT2Tests** (run from repo root): **789/789 cases**,
+  **147,008/147,008 assertions**; passed.
+- **powershell -File run_script_test.ps1**: passed — 60 frames, 1 entity, no
+  mismatches.
+- **powershell -File run_slice_test.ps1**: passed — 60 steps, authoring
+  intact, cube x=0.999999702.
+- **powershell -File run_recovery_test.ps1**: passed.
+- **Slice build** (regenerated from the repaired premake): Release + Debug both
+  link RT2SliceRunner.exe successfully.
+- **graphify update .**: graph rebuilt (34,808 nodes); tracked
+  graphify-out/GRAPH_REPORT.md restored to HEAD (generated churn, no
+  functional delta).
+
+### Caveats
+
+- The transient Release TestWorker failure from the W1 report remains
+  unresolved (not reproduced by W1; untouched by this repair).
+- The reviewer's statement that the RT2Tests link failure involves the slice
+  was inaccurate: the slice has no AssetWatchPolicy reference; the RT2Tests
+  premake parity gap is the reproducible 21-symbol path.

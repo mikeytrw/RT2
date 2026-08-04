@@ -217,8 +217,11 @@ private:
 //     .rt2prefab file from sourceSnapshot + templateIds via
 //     PrefabSerializer::Save.
 //   - `beforeFileContents` is the file's byte content captured BEFORE the
-//     create; empty means the file did not exist. Undo restores those bytes,
-//     or removes the file when it did not exist.
+//     create (may be empty for a pre-existing zero-byte file).
+//   - `fileExistedBefore` disambiguates an absent file (remove on Undo) from
+//     a pre-existing zero-byte file (restore verbatim on Undo). An empty
+//     contents vector alone is ambiguous between the two.
+// Undo restores those bytes, or removes the file when it did not exist.
 // The sidecar (asset identity) minted by CreatePrefabFromSubtree is left in
 // place by both Undo and Redo: identity is assign-once per asset path, so an
 // orphaned sidecar for a deleted asset is the established asset-system
@@ -228,10 +231,12 @@ class CreatePrefabCommand final : public IEditorCommand
 public:
 	CreatePrefabCommand(std::filesystem::path prefabPath,
 	                    SceneManager::PrefabCreationResult result,
-	                    std::vector<uint8_t> beforeFileContents)
+	                    std::vector<uint8_t> beforeFileContents,
+	                    bool fileExistedBefore)
 		: m_PrefabPath(std::move(prefabPath))
 		, m_Result(std::move(result))
-		, m_BeforeContents(std::move(beforeFileContents)) {}
+		, m_BeforeContents(std::move(beforeFileContents))
+		, m_FileExistedBefore(fileExistedBefore) {}
 
 	EditorMutationResult Execute(SceneManager& scene) override;
 	EditorMutationResult Undo(SceneManager& scene) override;
@@ -241,6 +246,7 @@ private:
 	std::filesystem::path              m_PrefabPath;
 	SceneManager::PrefabCreationResult m_Result;
 	std::vector<uint8_t>               m_BeforeContents;
+	bool                               m_FileExistedBefore = false;
 };
 
 // ---- Reparent command ----
@@ -314,7 +320,8 @@ std::unique_ptr<IEditorCommand> MakePasteSubtreesCommand(
 std::unique_ptr<IEditorCommand> MakeCreatePrefabCommand(
 	std::filesystem::path prefabPath,
 	SceneManager::PrefabCreationResult result,
-	std::vector<uint8_t> beforeFileContents);
+	std::vector<uint8_t> beforeFileContents,
+	bool fileExistedBefore);
 
 // MakeInstantiatePrefabCommand mirrors the duplication factory: the host has
 // ALREADY applied InstantiatePrefabWithUuids and captured the resulting

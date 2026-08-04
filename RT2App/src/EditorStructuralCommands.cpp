@@ -137,13 +137,19 @@ EditorMutationResult CreatePrefabCommand::Execute(SceneManager& scene)
 
 EditorMutationResult CreatePrefabCommand::Undo(SceneManager& scene)
 {
-	// Empty before-contents means the file did not exist before the create:
-	// Undo removes it. Otherwise restore the prior bytes. Writes are checked
-	// (never a silent no-op); a restore failure surfaces as a loud Failure.
-	if (m_BeforeContents.empty())
+	// If the file did not exist before the create, Undo removes the file;
+	// otherwise (including a pre-existing zero-byte file, which an empty
+	// contents vector alone cannot distinguish) it restores the prior bytes
+	// verbatim. Writes and removals are checked (never a silent no-op); a
+	// restore or removal failure surfaces as a loud Failure.
+	if (!m_FileExistedBefore)
 	{
 		std::error_code ec;
 		std::filesystem::remove(m_PrefabPath, ec);
+		if (ec)
+			return EditorMutationResult::Failure(rt2::core::Error::Io,
+				m_PrefabPath.string(),
+				"CreatePrefabCommand::Undo: failed to remove the created prefab file: " + ec.message());
 		EditorMutationResult result;
 		result.syncImpact = rt2::core::SyncImpact::None;
 		return result;
@@ -240,7 +246,8 @@ std::unique_ptr<IEditorCommand> MakePasteSubtreesCommand(
 std::unique_ptr<IEditorCommand> MakeCreatePrefabCommand(
 	std::filesystem::path prefabPath,
 	SceneManager::PrefabCreationResult result,
-	std::vector<uint8_t> beforeFileContents)
+	std::vector<uint8_t> beforeFileContents,
+	bool fileExistedBefore)
 {
 	if (prefabPath.empty() || !result.ok) return nullptr;
 	if (result.sourceSnapshot.entities.size() != result.templateIds.size())
@@ -248,7 +255,8 @@ std::unique_ptr<IEditorCommand> MakeCreatePrefabCommand(
 	if (result.sourceSnapshot.entities.empty()) return nullptr;
 	return std::make_unique<CreatePrefabCommand>(std::move(prefabPath),
 	                                             std::move(result),
-	                                             std::move(beforeFileContents));
+	                                             std::move(beforeFileContents),
+	                                             fileExistedBefore);
 }
 
 std::unique_ptr<IEditorCommand> MakeInstantiatePrefabCommand(
