@@ -63,7 +63,8 @@ are deliberately not recorded as settled decisions.
 7. **The Phase 9 stub is under-scoped.** It does not address the persisted
    `MotionComponent` that already writes transforms in the fixed slot
    (`RT2App/src/ECSComponents.h:175-182`;
-   `RT2App/src/RuntimeSceneController.cpp:565-600`), schema-v4 migration,
+   `RT2App/src/RuntimeSceneController.cpp:565-600`), the schema-version
+   handoff from Phase 8,
    Phase-8 prefab component codecs, physics-aware runtime spawning, lifecycle
    teardown hooks, interpolation storage, or the real TLAS cost. Those are
    prerequisites, not polish.
@@ -75,7 +76,7 @@ are deliberately not recorded as settled decisions.
 | `docs/future-extensions.md` recommends starting with a built-in physics engine (`docs/future-extensions.md:82-101`), while the roadmap requires Jolt (`docs/game-engine-development-plan.md:620-645`). | Treat the roadmap's Jolt requirement as current intent; retire or supersede the older future-extension recommendation when the spec is written. |
 | The canonical runtime is 1/60 s with one controller accumulator (`RT2App/src/RuntimeSceneController.h:76-81,251-264`), while the physics extension sketch proposes a separate accumulator and “e.g. 1/120 s” (`docs/game-loop.md:400-411`). | Recommend one controller-owned 1/60 s clock initially. A multi-rate solver is a separate, measured decision, not the default. |
 | `SyncImpact::Transform` promises no TLAS rebuild (`RT2App/src/ISceneRenderBridge.h:17-21`), while `RebuildTLASOnly` destroys and rebuilds the TLAS (`RT2App/src/AccelerationStructure.cpp:845-950`). | Correct the contract and measure the actual transform presentation path before setting dynamic-body budgets. |
-| `docs/scene-management.md` describes schema v3 (`docs/scene-management.md:285-347`), but the code writes v4 and reads v3-v4 (`RT2App/src/SceneSerializer.h:85-126`). | Ground new physics serialization against schema v4. Recommend schema v5 so older binaries reject instead of silently dropping unknown physics blocks on resave. |
+| `docs/scene-management.md` describes schema v3 (`docs/scene-management.md:285-347`), but the grounded code writes v4 and reads v3-v4 (`RT2App/src/SceneSerializer.h:85-126`). Phase 8 assigns the v4→v5 decision to the first serialized prefab-reference work (`docs/game-engine-development-plan.md:12782-12786,13060-13062`), and the active W1 integration has selected v5. | Reverify the merged Phase 8 schema before Phase 9 starts, then allocate the **next** schema version for physics (expected v6 if W1 lands as designed). Do not reuse v5 for two independently evolving formats. |
 | The roadmap's current Test baseline says 700/700 (`docs/game-engine-development-plan.md:6170-6196`), while `AGENTS.md` says 554/554 and eight Debug failures (`AGENTS.md:69-81`). | Both are stale at this commit. Direct builds/runs measured **772/772, 146,801 assertions** in both Release and Debug. See “Verification performed” below. |
 | `Transform` sync timings exposed in the Performance window are populated only by full/async AS builds (`RT2App/src/SceneResources.cpp:278-331,420-513`; `RT2App/src/WalnutApp.cpp:683-691`), not the per-frame TLAS-only path (`RT2App/src/SceneResources.cpp:596-644`). | Add separate transform-sync CPU wait, TLAS-only GPU/CPU, DTO/light rebuild, and buffer-upload metrics before physics acceptance. |
 | `RebuildTLASOnly` returns `bool` (`RT2App/src/AccelerationStructure.cpp:824-833,949-950`), but `UpdateInstances` ignores it (`RT2App/src/SceneResources.cpp:635-637`). | This is an existing swallowed-return example. Phase 9 must not repeat it with Jolt body/shape creation, add/remove, step, or cache writes. |
@@ -242,8 +243,10 @@ Use pure-data, handle-free components with stable JSON keys:
 | `PhysicsMaterialComponent` | friction, restitution, density (only if density is the chosen mass policy) | `physicsMaterial` |
 | `PhysicsSettings` on `SceneDocument` | gravity and the reviewed fixed-step policy | top-level `physics` |
 
-Recommend schema v5, reading v3/v4 with absent physics defaults and writing v5.
-The version bump makes an older binary reject the file instead of opening it,
+Recommend the next schema version after the merged Phase 8 result (expected
+v6 because active W1 has selected v5), retaining the final Phase 8 readable
+range with absent physics defaults. The version bump makes a pre-physics binary
+reject the file instead of opening it,
 discarding unknown physics keys, and resaving. `SceneMetadata` currently embeds
 the v4 default and would need to move with the codec
 (`RT2App/src/SceneDocument.h:79-89`).
@@ -468,7 +471,8 @@ The first end-to-end increment should be CPU-only and contain exactly:
 
 1. a pinned Jolt static library linked into RT2App, RT2Tests, and
    RT2SliceRunner;
-2. schema-v5 handle-free body/collider/material data for root box shapes;
+2. next-version handle-free body/collider/material data for root box shapes
+   (expected schema v6 after Phase 8's v5);
 3. transactional Play construction of one static floor and one dynamic box in
    stable UUID order;
 4. one controller-owned 1/60 s fixed step, dynamic pose publication, Pause,
@@ -483,7 +487,8 @@ then layers on the same CPU route (`docs/game-engine-development-plan.md:647-663
 
 ### Required test surfaces
 
-- Pure validation/codecs: enum/key stability, v4→v5 defaults, malformed-field
+- Pure validation/codecs: enum/key stability, pre-physics→physics defaults,
+  malformed-field
   isolation versus hard body/collider errors, deterministic output, full
   scene/recovery/subtree/prefab round-trip, duplicate/undo/redo, and proof that
   runtime handles never serialize. Existing component coverage is split across
@@ -520,7 +525,8 @@ then layers on the same CPU route (`docs/game-engine-development-plan.md:647-663
 2. **Renderer truth/instrumentation:** correct the `Transform` contract, add
    dirty-frame suppression and TLAS-only metrics before physics makes the path
    hot. Preserve current behavior until measurements justify optimization.
-3. **Authored data and shared codecs:** settle schema v5, components, material,
+3. **Authored data and shared codecs:** settle the next schema version after
+   Phase 8, components, material,
    shape source, `MotionComponent` conflict, and Phase-8 prefab integration;
    land fault-driven persistence/duplicate/undo/recovery tests.
 4. **Primitive runtime vertical slice:** transactional Play/Step/Stop, root
@@ -545,7 +551,7 @@ then layers on the same CPU route (`docs/game-engine-development-plan.md:647-663
 | P9-D2 | Fixed clock: reuse 1/60 controller tick, separate 1/120 physics accumulator, or deliberate multi-rate integer subdivision. | Reuse the sole 1/60 controller tick first. | Controller already owns pause/step/catch-up semantics (`RT2App/src/RuntimeSceneController.h:76-81,251-264`). |
 | P9-D3 | `MotionComponent` with rigid bodies: allow ordering, translate to kinematic drive, or reject/deprecate. | Reject dynamic+Motion, retain Motion only for non-dynamic legacy fixtures, then deprecate. | Both would write Transform in the same fixed tick (`RT2App/src/ECSComponents.h:175-182`; `RT2App/src/RuntimeSceneController.cpp:565-600`). |
 | P9-D4 | Runtime integration: replace singular lifecycle observer, composite it, or add explicit physics dispatch. | Add explicit ordered `IRuntimePhysicsDispatch`/`PhysicsSystem` injection; keep script observer semantics intact. | Singular observer is occupied (`RT2App/src/RuntimeSceneController.h:163-180,257-263`; `RT2App/src/WalnutApp.cpp:2490-2495`). |
-| P9-D5 | Scene schema: additive v4 keys vs v5. | v5, read v3-v5, absent physics defaults. | v4 readers ignore unknown component blocks and support only up to v4 (`RT2App/src/SceneSerializer.cpp:825-921,1628-1645`). |
+| P9-D5 | Scene schema: reuse Phase 8's output version or allocate the next version for physics. | Reverify the merged Phase 8 constants, then allocate the next version (expected v6 after W1's v5), retain the final supported read range, and default absent physics. | Grounded v4 readers ignore unknown component blocks (`RT2App/src/SceneSerializer.cpp:825-921,1628-1645`), while Phase 8 makes its own v4→v5 decision when prefab references first serialize (`docs/game-engine-development-plan.md:12782-12786,13060-13062`). |
 | P9-D6 | Physics material: inline component vs shared resource/asset. | Inline values first; assetize only when reuse/workflow is proven. | Every new index crosses four contexts and needs explicit translation (`docs/glossary.md:27-48`). |
 | P9-D7 | Multiple colliders/compound bodies: one collider per body, child colliders, or an authored collider array. | One body + one collider per entity for the vertical slice; decide compound representation before convex/mesh work. | Existing ECS uses one component type per entity and hierarchy is already authoritative (`RT2App/src/ECSComponents.h:38-75`). Product requirement is under-specified. |
 | P9-D8 | Parented bodies and non-uniform scale. | Root dynamic/kinematic; parented static only after strict world-TRS validation; loud per-shape scale rules. | SceneGraph/local conversion constraints (`RT2App/src/SceneGraph.cpp:21-78`; `RT2App/src/TransformEditing.cpp:36-100`). Exact backend support is Jolt-doc-dependent. |
