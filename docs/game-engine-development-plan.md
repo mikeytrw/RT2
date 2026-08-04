@@ -13062,3 +13062,47 @@ reported blocked, not passed and not "expected to pass".
   for older builds).
 - **Naming.** Prefab instances inherit the "names are not unique" constraint
   (spec); the W1 naming scheme is not touched by W0.
+
+### Phase 8 amendment A1 — prefab records wrap `SubtreeEntityRecord` (2026-08-03)
+
+**Raised by:** the W0 handover list. `SubtreeEntityRecord`
+(`SubtreeSnapshot.h:43-83`) has nowhere to put `templateId`, the prefab-local
+identity D1 requires. The Phase 8 spec assumed the record shape could carry it
+and it cannot.
+
+**Decision: W1 introduces a prefab-specific record that *wraps*
+`SubtreeEntityRecord` rather than extending it.**
+
+Shape, approximately — W1 owns the details:
+
+```
+struct PrefabEntityRecord
+{
+    rt2::core::UUID     templateId;   // prefab-local identity, frozen at creation
+    SubtreeEntityRecord record;       // the existing per-entity payload
+};
+```
+
+**Why not extend `SubtreeEntityRecord`.** It is the in-memory record type for
+undo snapshots — every structural command holds a `SubtreeSnapshot` built from
+it (`EditorStructuralCommands`, findings Q6). Adding `templateId` to it would
+put a prefab-only field on every duplicate, paste, delete and reparent
+snapshot in the history, where it would be meaningless, unset, and eventually
+mistaken for meaningful by someone reading a snapshot in a debugger. It would
+also couple the undo system's record shape to the prefab file format, so a
+prefab format change would touch undo.
+
+Wrapping keeps prefab identity in the prefab layer and leaves the shared
+payload shared. The cost is one level of indirection in the prefab codec,
+which is a fair price for not putting an unused field on every command in the
+history.
+
+**Constraint carried forward:** `templateId` is minted once when the prefab
+asset is created and frozen in the file. It is never regenerated, and it is
+never derived from a scene UUID at instantiate time — that would make it an
+instance property rather than a template one, and overrides would stop
+reattaching after the first source edit.
+
+This amends D1 in the Phase 8 spec. D1's two-component instance model
+(`PrefabInstanceComponent`, `PrefabMemberComponent`) is unchanged; only the
+file-side record shape is settled here.
