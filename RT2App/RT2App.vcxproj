@@ -285,6 +285,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\SceneResources.h" />
     <ClInclude Include="src\SceneRunState.h" />
     <ClInclude Include="src\SceneSerializer.h" />
+    <ClInclude Include="src\PrefabSerializer.h" />
     <ClInclude Include="src\SceneTypes.h" />
     <ClInclude Include="src\SceneVisibility.h" />
     <ClInclude Include="src\ScriptAssetPath.h" />
@@ -663,6 +664,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\SceneResources.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PrefabSerializer.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

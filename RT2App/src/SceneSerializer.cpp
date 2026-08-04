@@ -201,26 +201,8 @@ ImportSettings JsonToImportSettings(const json& j)
     return s;
 }
 
-const char* AssetKindName(AssetKind k)
-{
-    switch (k)
-    {
-        case AssetKind::Model:       return "model";
-        case AssetKind::Texture:     return "texture";
-        case AssetKind::Environment: return "environment";
-        case AssetKind::Script:      return "script";
-        default:                     return "unknown";
-    }
-}
-
-AssetKind AssetKindFromName(const std::string& s)
-{
-    if (s == "model")       return AssetKind::Model;
-    if (s == "texture")     return AssetKind::Texture;
-    if (s == "environment") return AssetKind::Environment;
-    if (s == "script")      return AssetKind::Script;
-    return AssetKind::Unknown;
-}
+// The asset-kind name codec is inline in AssetReference.h (the neutral CPU-only
+// home of AssetKind) so tests and the serializer share one source of truth.
 
 json AssetReferenceToJson(const AssetReference& a)
 {
@@ -230,8 +212,11 @@ json AssetReferenceToJson(const AssetReference& a)
     j["sourceKey"] = a.sourceKey;
     // Scripts deliberately retain their Phase 6 on-disk shape (no inert
     // settings block) while still using this shared codec for identity.
+    // Prefabs likewise carry no import settings (Phase 8 W0 decision: the
+    // fixed ImportSettings type has no prefab meaning; an inert block would
+    // invite a future reader to treat defaulted knobs as meaningful).
     // Other kinds keep the established shared-codec shape.
-    if (a.kind != AssetKind::Script)
+    if (a.kind != AssetKind::Script && a.kind != AssetKind::Prefab)
         j["importSettings"] = ImportSettingsToJson(a.importSettings);
     // assetId (Phase 7 W1, additive over v3): written only when assigned.
     // A v3 scene has no assetId field; the loader treats absence as nil.
