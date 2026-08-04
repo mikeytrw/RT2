@@ -8,6 +8,7 @@
 #include "ScriptComponentValidation.h"
 #include "AssetResolver.h"
 #include "SceneAssetReferenceVisitor.h"
+#include "PrefabSerializer.h"
 
 #include "json.hpp"
 
