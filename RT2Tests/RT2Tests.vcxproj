@@ -140,6 +140,7 @@
   <ItemGroup>
     <ClInclude Include="..\RT2App\src\Phase1AFixtureGenerator.h" />
     <ClInclude Include="..\RT2App\src\PrefabSerializer.h" />
+    <ClInclude Include="..\RT2App\src\EntityReferenceRemapper.h" />
     <ClInclude Include="..\RT2App\vendor\lua\ljumptab.h" />
     <ClInclude Include="src\GltfBuilder.h" />
     <ClInclude Include="src\SceneLoaderTestSupport.h" />
@@ -287,6 +288,11 @@
       <AdditionalOptions Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <ClCompile Include="..\RT2App\src\SceneManager.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="..\RT2App\src\EntityReferenceRemapper.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -642,6 +648,11 @@
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\Phase8W0PrefabKindTests.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\Phase8W2EntityReferenceTests.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
