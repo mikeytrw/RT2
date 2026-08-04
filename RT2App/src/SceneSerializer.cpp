@@ -818,6 +818,8 @@ std::optional<json> EntityRecordToJson(
         AssetReference relRef = r.prefabInstance.prefab;
         const auto rebased =
             RebasePath(relRef.path, currentSceneDir, outputSceneDir);
+        AppendNonPortableDiagnostic(
+            r.prefabInstance.prefab, rebased, r.uuid, r.name, diagnostics);
         relRef.path = rebased.storedPath;
         json pi;
         pi["asset"]      = AssetReferenceToJson(relRef);
@@ -1632,6 +1634,31 @@ static bool SaveInternal(const SceneDocument& doc,
         err.path = slot.reference->path;
         err.detail = "asset reference has a path but no asset kind";
         return false;
+    }
+    // Prefab instance links must carry a VALID prefab reference. The reader
+    // rejects both wrong-kind and invalid (empty-path / unknown-kind) prefab
+    // references (JsonToEntityRecord), so a save that wrote either would
+    // produce a scene that cannot be loaded back. The generic check above
+    // only rejects Unknown-kind non-empty paths, so prefab semantics need
+    // their own pre-save validation.
+    {
+        auto& reg = doc.ecs.registry;
+        auto view = reg.view<PrefabInstanceComponent>();
+        for (auto e : view)
+        {
+            const auto& prefabRef = view.get<PrefabInstanceComponent>(e).prefab;
+            if (prefabRef.kind == AssetKind::Prefab && prefabRef.IsValid())
+                continue;
+            err.code = Error::InvalidArgument;
+            err.path = prefabRef.path;
+            const std::string kindName =
+                prefabRef.path.empty() ? "(empty path)" : prefabRef.path;
+            (void)kindName;
+            err.detail = std::string("prefab instance asset must be a valid prefab "
+                                     "reference (kind=prefab, non-empty path); got kind=") +
+                         AssetKindName(prefabRef.kind);
+            return false;
+        }
     }
     // Pre-save validation: every entity with a MeshRef must have either a
     // PrimitiveComponent (procedural) or an ImportedMeshSourceComponent

@@ -80,6 +80,23 @@ public:
     // The .rt2prefab format version, independent of .rt2scene's schema.
     static constexpr uint32_t FormatVersion = kPrefabFormatVersion;
 
+    // Deterministically serialize a document to the exact bytes Save would
+    // write (envelope + record codec + dump(2)). Shared by Save and by
+    // callers that must compare against the file's current bytes before an
+    // undo/redo or rollback (external-change guard). `content` is untouched
+    // on failure.
+    static bool Serialize(const PrefabDocument& doc,
+                          std::string& content,
+                          Error& err);
+
+    // Atomically replace `path` with the given raw bytes (tmp + replace).
+    // On failure the existing file is left intact (never truncated first).
+    // Shared by Save and by the create rollback / undo restore paths so a
+    // failed write cannot destroy recoverable state.
+    static bool WriteBytesAtomic(const std::filesystem::path& path,
+                                 const std::string& content,
+                                 Error& err);
+
     // Write a prefab file (envelope + record codec). Atomic tmp+replace.
     static bool Save(const PrefabDocument& doc,
                      const std::filesystem::path& path,

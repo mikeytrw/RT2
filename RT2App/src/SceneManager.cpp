@@ -22,6 +22,9 @@
 #include <set>
 #include <map>
 #include <string>
+#include <sstream>
+#include <fstream>
+#include <vector>
 #include <unordered_map>
 #include <unordered_set>
 #include <algorithm>
@@ -2581,6 +2584,28 @@ SceneManager::PrefabCreationResult SceneManager::CreatePrefabFromSubtree(
 		record.record     = out.sourceSnapshot.entities[i];
 		doc.entities.push_back(std::move(record));
 	}
+	// Capture the EXACT prior durable state of the target BEFORE it is
+	// replaced, so a later sidecar failure can restore it verbatim. This is
+	// the transactional guard against destroying a pre-existing prefab: a
+	// create that commits the asset but fails its sidecar must restore the
+	// prior asset + identity atomically, never remove the user's work.
+	const bool targetExistedBefore =
+		std::filesystem::exists(prefabPath);
+	std::vector<uint8_t> priorBytes;
+	if (targetExistedBefore)
+	{
+		std::error_code readEc;
+		std::ifstream in(prefabPath, std::ios::binary);
+		if (in)
+		{
+			std::stringstream ss;
+			ss << in.rdbuf();
+			const std::string raw = ss.str();
+			priorBytes.assign(raw.begin(), raw.end());
+		}
+		(void)readEc;
+	}
+
 	rt2::core::Error saveErr;
 	if (!rt2::core::PrefabSerializer::Save(doc, prefabPath, saveErr))
 	{
@@ -2606,23 +2631,62 @@ SceneManager::PrefabCreationResult SceneManager::CreatePrefabFromSubtree(
 	if (committed.IsNull() || !durableErr.IsOk())
 	{
 		// No durable identity committed. Roll back the asset file so create
-		// either fully succeeds (asset + sidecar) or fully fails.
-		std::error_code rmEc;
-		if (std::filesystem::exists(prefabPath, rmEc))
-			std::filesystem::remove(prefabPath, rmEc);
+		// either fully succeeds (asset + sidecar) or fully fails. Two cases:
+		//   - the target existed before: restore its EXACT prior bytes
+		//     atomically (never remove the user's pre-existing prefab);
+		//   - the target was absent before: checked-remove the file we wrote.
+		// A rollback failure is surfaced as the PRIMARY recovery error (it
+		// means durable partial state remains and callers must know), not
+		// swallowed beneath the original sidecar error.
 		out.assetId = rt2::core::UUID::Nil();
 		out.ok = false;
-		if (!idErr.IsOk())
+
+		const auto failure = [&](const rt2::core::Error& cause) {
+			out.error = cause;
+			return out;
+		};
+
+		if (targetExistedBefore)
 		{
-			out.error = idErr;
+			rt2::core::Error restoreErr;
+			const std::string priorString(priorBytes.begin(), priorBytes.end());
+			if (!rt2::core::PrefabSerializer::WriteBytesAtomic(
+				    prefabPath, priorString, restoreErr))
+			{
+				restoreErr.detail =
+					"CreatePrefabFromSubtree: asset+sidecar commit failed AND "
+					"rollback restore of the pre-existing prefab failed: " +
+					restoreErr.detail;
+				return failure(restoreErr);
+			}
 		}
 		else
 		{
-			out.error.code = rt2::core::Error::Io;
-			out.error.path = rt2::core::AssetSidecarPath(prefabPath).string();
-			out.error.detail = "CreatePrefabFromSubtree: asset identity sidecar could not be committed";
+			std::error_code rmEc;
+			std::filesystem::remove(prefabPath, rmEc);
+			if (rmEc)
+			{
+				rt2::core::Error rmErr;
+				rmErr.code = rt2::core::Error::Io;
+				rmErr.path = prefabPath.string();
+				rmErr.detail =
+					"CreatePrefabFromSubtree: asset+sidecar commit failed AND "
+					"rollback removal of the partly-written prefab failed: " +
+					rmEc.message();
+				return failure(rmErr);
+			}
 		}
-		return out;
+
+		if (!idErr.IsOk())
+		{
+			return failure(idErr);
+		}
+		rt2::core::Error sidecarErr;
+		sidecarErr.code = rt2::core::Error::Io;
+		sidecarErr.path = rt2::core::AssetSidecarPath(prefabPath).string();
+		sidecarErr.detail =
+			"CreatePrefabFromSubtree: asset identity sidecar could not be committed";
+		return failure(sidecarErr);
 	}
 	out.assetId = committed;
 
@@ -2646,6 +2710,11 @@ SceneManager::InstantiationResult SceneManager::InstantiatePrefabWithUuids(
 	std::vector<rt2::core::AssetDiagnostic>& diagnostics)
 {
 	InstantiationResult out;
+
+	// Canonical root record index within doc.entities, derived from the
+	// one-root validation below and used to install PrefabInstanceComponent
+	// on the ACTUAL root entity (not necessarily record 0).
+	std::size_t canonicalRootIndex = 0;
 
 	// Load the prefab. A missing/invalid file is a hard failure — never a
 	// silent empty instance.
@@ -2691,19 +2760,42 @@ SceneManager::InstantiationResult SceneManager::InstantiatePrefabWithUuids(
 	// prefab. This replaces the old "first record in the file is the root"
 	// assumption that would silently give PrefabInstanceComponent to the
 	// wrong entity on a multi-root file. Rejected BEFORE the sidecar resolve
-	// and any scene mutation.
+	// and any scene mutation. The ROOT RECORD INDEX is captured so the link
+	// is installed on the actual canonical root entity — a hand-authored
+	// [child, root] file has exactly one root but it is record 1, and the
+	// instance link must land there (Sol P1), never on liveEntities[0].
 	{
 		std::unordered_set<rt2::core::UUID> templateUuids;
 		templateUuids.reserve(doc.entities.size());
-		for (const auto& rec : doc.entities)
-			if (!rec.record.uuid.IsNull())
-				templateUuids.insert(rec.record.uuid);
-		std::size_t rootCount = 0;
+		std::unordered_set<rt2::core::UUID> templateIds;
+		templateIds.reserve(doc.entities.size());
 		for (const auto& rec : doc.entities)
 		{
-			if (rec.record.parentUuid.IsNull() ||
-			    !templateUuids.count(rec.record.parentUuid))
+			if (!rec.record.uuid.IsNull())
+				templateUuids.insert(rec.record.uuid);
+			// templateId is prefab-local identity; it must be unique across
+			// the document. A duplicate would give two members the same
+			// identity on instantiate (two entities mapping to one template).
+			if (!templateIds.insert(rec.templateId).second)
+			{
+				out.mutation = EditorMutationResult::Failure(rt2::core::Error::Parse,
+					prefabPath.string(),
+					"InstantiatePrefabWithUuids: prefab contains duplicate templateId " +
+						rec.templateId.ToString());
+				return out;
+			}
+		}
+		std::size_t rootCount = 0;
+		std::size_t rootIndex = 0;
+		for (std::size_t i = 0; i < doc.entities.size(); ++i)
+		{
+			const auto& rec = doc.entities[i].record;
+			if (rec.parentUuid.IsNull() ||
+			    !templateUuids.count(rec.parentUuid))
+			{
 				++rootCount;
+				rootIndex = i;
+			}
 		}
 		if (rootCount != 1)
 		{
@@ -2713,6 +2805,7 @@ SceneManager::InstantiationResult SceneManager::InstantiatePrefabWithUuids(
 					std::to_string(rootCount));
 			return out;
 		}
+		canonicalRootIndex = rootIndex;
 	}
 
 	// Resolve the prefab's durable asset identity BEFORE any scene mutation.
@@ -2921,16 +3014,19 @@ SceneManager::InstantiationResult SceneManager::InstantiatePrefabWithUuids(
 	// sibling inside the prefab resolves to that sibling's instance.
 	RemapCopiedScriptFields(templateToInstance, liveEntities, dstReg);
 
-	// Link the instance. PrefabInstanceComponent sits on the instance root
-	// (the first record in the file, i.e. the pre-order root); every member
-	// carries instanceId + the frozen templateId from the file. The prefab
-	// reference carries the sidecar identity via ResolveOrAssign.
+	// Link the instance. PrefabInstanceComponent sits on the ACTUAL instance
+	// root (the canonical root record derived in one-root validation, which
+	// may not be record 0 — a hand-authored [child, root] file has its root
+	// at a later index); every member carries instanceId + the frozen
+	// templateId from the file. The prefab reference carries the sidecar
+	// identity via ResolveOrAssign.
 	const rt2::core::UUID instanceId = ReserveKnownUuid();
-	if (!liveEntities.empty())
 	{
 		// The prefab's durable identity was resolved before any mutation, so
-		// this cannot fail here; reuse the committed ID.
-		auto& inst = dstReg.emplace<PrefabInstanceComponent>(liveEntities[0]);
+		// this cannot fail here; reuse the committed ID. The instance root
+		// entity is liveEntities[canonicalRootIndex] — parallel to
+		// doc.entities, not to the file's first record.
+		auto& inst = dstReg.emplace<PrefabInstanceComponent>(liveEntities[canonicalRootIndex]);
 		inst.prefab = AssetReference{ AssetKind::Prefab,
 			prefabPath.string(), {}, {},
 			prefabAssetId };

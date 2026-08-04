@@ -221,7 +221,12 @@ private:
 //   - `fileExistedBefore` disambiguates an absent file (remove on Undo) from
 //     a pre-existing zero-byte file (restore verbatim on Undo). An empty
 //     contents vector alone is ambiguous between the two.
-// Undo restores those bytes, or removes the file when it did not exist.
+// Undo restores those bytes, or removes the file when it did not exist,
+// through the SAME atomic tmp+replace path as create — a failed restore never
+// truncates the recoverable file first. Undo/Redo also verify the file's
+// current bytes match the state this command last left it in before touching
+// the file (an "out-of-band external edit" is a loud conflict Failure, never
+// a silent clobber).
 // The sidecar (asset identity) minted by CreatePrefabFromSubtree is left in
 // place by both Undo and Redo: identity is assign-once per asset path, so an
 // orphaned sidecar for a deleted asset is the established asset-system
@@ -236,7 +241,10 @@ public:
 		: m_PrefabPath(std::move(prefabPath))
 		, m_Result(std::move(result))
 		, m_BeforeContents(std::move(beforeFileContents))
-		, m_FileExistedBefore(fileExistedBefore) {}
+		, m_FileExistedBefore(fileExistedBefore)
+	{
+		ComputeAfterContents();
+	}
 
 	EditorMutationResult Execute(SceneManager& scene) override;
 	EditorMutationResult Undo(SceneManager& scene) override;
@@ -247,6 +255,23 @@ private:
 	SceneManager::PrefabCreationResult m_Result;
 	std::vector<uint8_t>               m_BeforeContents;
 	bool                               m_FileExistedBefore = false;
+	std::vector<uint8_t>               m_AfterContents;
+
+	// The byte state this command last wrote the file to ("after" after a
+	// successful Execute/Redo, "before"/absent after a successful Undo). Used
+	// to detect an out-of-band external edit before Undo/Redo touches the file.
+	bool m_FileIsAfterState = true;
+
+	// Pre-serialize the deterministic AFTER bytes from m_Result.
+	void ComputeAfterContents();
+
+	// True when the file on disk matches the given expected bytes verbatim
+	// (an absent file matches an empty expected vector).
+	bool FileMatches(const std::vector<uint8_t>& expected) const;
+	// Atomically write contents, or checked-remove when the target is absent,
+	// leaving the file intact on any failure.
+	EditorMutationResult WriteAfter();
+	EditorMutationResult RestoreBefore();
 };
 
 // ---- Reparent command ----

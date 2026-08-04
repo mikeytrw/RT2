@@ -18,10 +18,13 @@ namespace {
 
 constexpr const char* kPrefabHeader = "rt2prefab";
 
-bool WriteFileAtomic(const std::filesystem::path& path,
-                     const std::string& content,
-                     Error& err)
+} // namespace
+
+bool PrefabSerializer::WriteBytesAtomic(const std::filesystem::path& path,
+                                        const std::string& content,
+                                        Error& err)
 {
+    err = Error{};
     std::filesystem::path tmpPath = path;
     tmpPath += ".tmp";
     {
@@ -73,11 +76,9 @@ bool WriteFileAtomic(const std::filesystem::path& path,
     return true;
 }
 
-} // namespace
-
-bool PrefabSerializer::Save(const PrefabDocument& doc,
-                            const std::filesystem::path& path,
-                            Error& err)
+bool PrefabSerializer::Serialize(const PrefabDocument& doc,
+                                 std::string& content,
+                                 Error& err)
 {
     err = Error{};
     if (doc.version != FormatVersion)
@@ -102,14 +103,13 @@ bool PrefabSerializer::Save(const PrefabDocument& doc,
         json j;
         if (!PrefabRecordToJson(record, droppedDiagnostics, err, j))
         {
-            err.path = path.string() + ":" + err.path;
+            err.path = ":" + err.path;
             return false;
         }
         entityArray.push_back(std::move(j));
     }
     root["entities"] = std::move(entityArray);
 
-    std::string content;
     try
     {
         content = root.dump(2);
@@ -117,12 +117,25 @@ bool PrefabSerializer::Save(const PrefabDocument& doc,
     catch (const std::exception& e)
     {
         err.code = Error::InvalidArgument;
-        err.path = path.string();
         err.detail = std::string("prefab contains text that cannot be "
                                  "serialized: ") + e.what();
         return false;
     }
-    return WriteFileAtomic(path, content, err);
+    return true;
+}
+
+bool PrefabSerializer::Save(const PrefabDocument& doc,
+                            const std::filesystem::path& path,
+                            Error& err)
+{
+    err = Error{};
+    std::string content;
+    if (!PrefabSerializer::Serialize(doc, content, err))
+    {
+        err.path = path.string() + err.path;
+        return false;
+    }
+    return PrefabSerializer::WriteBytesAtomic(path, content, err);
 }
 
 bool PrefabSerializer::Load(PrefabDocument& doc,

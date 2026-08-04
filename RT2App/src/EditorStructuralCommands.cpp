@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <fstream>
+#include <sstream>
 #include <string>
 
 namespace
@@ -113,21 +114,87 @@ EditorMutationResult InstantiatePrefabCommand::Undo(SceneManager& scene)
 
 EditorMutationResult CreatePrefabCommand::Execute(SceneManager& scene)
 {
-	// Regenerate the file deterministically from the authoritative
-	// post-mutation result. PrefabSerializer::Save is atomic (tmp+replace)
-	// and dump(2) is deterministic, so Redo reproduces the exact bytes the
-	// initial create wrote.
-	rt2::core::PrefabDocument doc;
-	doc.entities.reserve(m_Result.sourceSnapshot.entities.size());
-	for (std::size_t i = 0; i < m_Result.sourceSnapshot.entities.size(); ++i)
+	// Execute is both the first apply (the host already wrote the AFTER file
+	// via CreatePrefabFromSubtree) and Redo (which returns the file to the
+	// AFTER state from a prior Undo's BEFORE/absent state).
+	//
+	// if m_FileIsAfterState is true the file is already the AFTER bytes this
+	// command owns — a first apply or a redundant Execute. Verify the file is
+	// still those bytes (an out-of-band edit is a conflict), then re-write
+	// them deterministically.
+	//
+	// if m_FileIsAfterState is false the previous operation was an Undo (file
+	// is in the BEFORE/absent state). This is a Redo: verify the file is still
+	// the BEFORE state, then write the AFTER bytes — an external edit between
+	// Undo and Redo must be a loud conflict, never a silent clobber.
+	if (m_FileIsAfterState)
 	{
-		rt2::core::PrefabEntityRecord record;
-		record.templateId = m_Result.templateIds[i];
-		record.record     = m_Result.sourceSnapshot.entities[i];
-		doc.entities.push_back(std::move(record));
+		if (!FileMatches(m_AfterContents))
+			return EditorMutationResult::Failure(rt2::core::Error::Io,
+				m_PrefabPath.string(),
+				"CreatePrefabCommand::Execute: the prefab file changed out-of-band; "
+				"refusing to overwrite external edits");
 	}
+	else
+	{
+		if (m_FileExistedBefore)
+		{
+			if (!FileMatches(m_BeforeContents))
+				return EditorMutationResult::Failure(rt2::core::Error::Io,
+					m_PrefabPath.string(),
+					"CreatePrefabCommand::Execute: the prefab file changed out-of-band since Undo; "
+					"refusing to overwrite external edits");
+		}
+		else if (std::filesystem::exists(m_PrefabPath))
+		{
+			return EditorMutationResult::Failure(rt2::core::Error::Io,
+				m_PrefabPath.string(),
+				"CreatePrefabCommand::Execute: the prefab file reappeared out-of-band; "
+				"refusing to overwrite external edits");
+		}
+	}
+
+	EditorMutationResult written = WriteAfter();
+	if (written.success)
+		m_FileIsAfterState = true;
+	return written;
+}
+
+EditorMutationResult CreatePrefabCommand::Undo(SceneManager& scene)
+{
+	// Undo moves the file from its AFTER state back to its BEFORE/absent
+	// state. Verify the file is still the "after" bytes this command wrote —
+	// an external edit after create must surface as a loud conflict, never a
+	// silent truncation of external work.
+	if (!FileMatches(m_AfterContents))
+		return EditorMutationResult::Failure(rt2::core::Error::Io,
+			m_PrefabPath.string(),
+			"CreatePrefabCommand::Undo: the prefab file changed out-of-band since create; "
+			"refusing to overwrite external edits");
+
+	EditorMutationResult restored = RestoreBefore();
+	if (restored.success)
+		m_FileIsAfterState = false;
+	return restored;
+}
+
+bool CreatePrefabCommand::FileMatches(const std::vector<uint8_t>& expected) const
+{
+	std::ifstream in(m_PrefabPath, std::ios::binary);
+	if (!in)
+		return expected.empty();
+	std::stringstream ss;
+	ss << in.rdbuf();
+	const std::string raw = ss.str();
+	return std::equal(raw.begin(), raw.end(), expected.begin(), expected.end()) &&
+	       raw.size() == expected.size();
+}
+
+EditorMutationResult CreatePrefabCommand::WriteAfter()
+{
 	rt2::core::Error err;
-	if (!rt2::core::PrefabSerializer::Save(doc, m_PrefabPath, err))
+	const std::string after(m_AfterContents.begin(), m_AfterContents.end());
+	if (!rt2::core::PrefabSerializer::WriteBytesAtomic(m_PrefabPath, after, err))
 		return EditorMutationResult::Failure(err.code, err.path,
 			"CreatePrefabCommand::Execute: " + err.detail);
 	EditorMutationResult result;
@@ -135,13 +202,14 @@ EditorMutationResult CreatePrefabCommand::Execute(SceneManager& scene)
 	return result;
 }
 
-EditorMutationResult CreatePrefabCommand::Undo(SceneManager& scene)
+EditorMutationResult CreatePrefabCommand::RestoreBefore()
 {
 	// If the file did not exist before the create, Undo removes the file;
 	// otherwise (including a pre-existing zero-byte file, which an empty
 	// contents vector alone cannot distinguish) it restores the prior bytes
-	// verbatim. Writes and removals are checked (never a silent no-op); a
-	// restore or removal failure surfaces as a loud Failure.
+	// verbatim. Writes and removals are checked (never a silent no-op) and
+	// both go through the same atomic path as create, so a failure leaves the
+	// recoverable file intact rather than truncating it first.
 	if (!m_FileExistedBefore)
 	{
 		std::error_code ec;
@@ -154,23 +222,31 @@ EditorMutationResult CreatePrefabCommand::Undo(SceneManager& scene)
 		result.syncImpact = rt2::core::SyncImpact::None;
 		return result;
 	}
-	{
-		std::ofstream out(m_PrefabPath, std::ios::binary | std::ios::trunc);
-		if (!out)
-			return EditorMutationResult::Failure(rt2::core::Error::Io,
-				m_PrefabPath.string(),
-				"CreatePrefabCommand::Undo: failed to open file to restore prior contents");
-		out.write(reinterpret_cast<const char*>(m_BeforeContents.data()),
-		          static_cast<std::streamsize>(m_BeforeContents.size()));
-		out.flush();
-		if (!out)
-			return EditorMutationResult::Failure(rt2::core::Error::Io,
-				m_PrefabPath.string(),
-				"CreatePrefabCommand::Undo: failed to restore prior file contents");
-	}
+	rt2::core::Error err;
+	const std::string prior(m_BeforeContents.begin(), m_BeforeContents.end());
+	if (!rt2::core::PrefabSerializer::WriteBytesAtomic(m_PrefabPath, prior, err))
+		return EditorMutationResult::Failure(err.code, err.path,
+			"CreatePrefabCommand::Undo: failed to restore prior prefab contents: " + err.detail);
 	EditorMutationResult result;
 	result.syncImpact = rt2::core::SyncImpact::None;
 	return result;
+}
+
+void CreatePrefabCommand::ComputeAfterContents()
+{
+	rt2::core::PrefabDocument doc;
+	doc.entities.reserve(m_Result.sourceSnapshot.entities.size());
+	for (std::size_t i = 0; i < m_Result.sourceSnapshot.entities.size(); ++i)
+	{
+		rt2::core::PrefabEntityRecord record;
+		record.templateId = m_Result.templateIds[i];
+		record.record     = m_Result.sourceSnapshot.entities[i];
+		doc.entities.push_back(std::move(record));
+	}
+	std::string afterBytes;
+	rt2::core::Error sErr;
+	if (rt2::core::PrefabSerializer::Serialize(doc, afterBytes, sErr))
+		m_AfterContents.assign(afterBytes.begin(), afterBytes.end());
 }
 
 // ============================================================================
