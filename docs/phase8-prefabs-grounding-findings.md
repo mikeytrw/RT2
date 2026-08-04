@@ -53,6 +53,16 @@ suffice) built from nothing that exists.
 
 ## Q2 — Every site that stores an entity reference
 
+> **Correction (2026-08-04, from Phase 8 W2).** The claim below that "nothing
+> in the engine ever resolves these to entities" is **wrong as written**. The
+> Lua runtime exposes `world.find_by_uuid(uuidStr)`
+> (`ScriptSystem.cpp:943-951`), which parses the UUID, checks `IsAlive` and
+> returns an entity handle. Nothing resolves them *automatically*, but the
+> resolution primitive exists, so a UUID-valued script field is a usable entity
+> reference. This error propagated into the Phase 8 spec's D3 rationale and
+> into the W2 prompt before it was caught; the remapping W2 implements is
+> meaningful, not speculative.
+
 Search method: (a) `graphify query` orientation (BFS depth 2 around
 `SceneDocument`/`EditorSceneState`/`SubtreeSnapshot`/`EntityRecord`); (b) grep
 `entt::entity` across `RT2App/src` excluding vendored dirs; (c) grep
