@@ -129,7 +129,7 @@ EditorMutationResult CreatePrefabCommand::Execute(SceneManager& scene)
 	// Undo and Redo must be a loud conflict, never a silent clobber.
 	if (m_FileIsAfterState)
 	{
-		if (!FileMatches(m_AfterContents))
+		if (!FileMatches(true, m_AfterContents))
 			return EditorMutationResult::Failure(rt2::core::Error::Io,
 				m_PrefabPath.string(),
 				"CreatePrefabCommand::Execute: the prefab file changed out-of-band; "
@@ -139,13 +139,13 @@ EditorMutationResult CreatePrefabCommand::Execute(SceneManager& scene)
 	{
 		if (m_FileExistedBefore)
 		{
-			if (!FileMatches(m_BeforeContents))
+			if (!FileMatches(true, m_BeforeContents))
 				return EditorMutationResult::Failure(rt2::core::Error::Io,
 					m_PrefabPath.string(),
 					"CreatePrefabCommand::Execute: the prefab file changed out-of-band since Undo; "
 					"refusing to overwrite external edits");
 		}
-		else if (std::filesystem::exists(m_PrefabPath))
+		else if (!FileMatches(false, {}))
 		{
 			return EditorMutationResult::Failure(rt2::core::Error::Io,
 				m_PrefabPath.string(),
@@ -166,7 +166,7 @@ EditorMutationResult CreatePrefabCommand::Undo(SceneManager& scene)
 	// state. Verify the file is still the "after" bytes this command wrote —
 	// an external edit after create must surface as a loud conflict, never a
 	// silent truncation of external work.
-	if (!FileMatches(m_AfterContents))
+	if (!FileMatches(true, m_AfterContents))
 		return EditorMutationResult::Failure(rt2::core::Error::Io,
 			m_PrefabPath.string(),
 			"CreatePrefabCommand::Undo: the prefab file changed out-of-band since create; "
@@ -178,16 +178,28 @@ EditorMutationResult CreatePrefabCommand::Undo(SceneManager& scene)
 	return restored;
 }
 
-bool CreatePrefabCommand::FileMatches(const std::vector<uint8_t>& expected) const
+bool CreatePrefabCommand::FileMatches(bool expectedExists,
+                                      const std::vector<uint8_t>& expectedBytes) const
 {
+	// Checked existence is authoritative and is kept DISJOINT from the bytes:
+	// a missing file is a different state from an existing zero-byte file, and
+	// an existing zero-byte file is a different state from an expected absence.
+	std::error_code ec;
+	const bool exists = std::filesystem::exists(m_PrefabPath, ec);
+	if (ec)
+		return false; // cannot even stat the file — loud mismatch
+	if (!exists)
+		return !expectedExists; // absent matches only an expected-absent state
+	if (!expectedExists)
+		return false; // present, but we expect absence
 	std::ifstream in(m_PrefabPath, std::ios::binary);
 	if (!in)
-		return expected.empty();
+		return false; // exists but unreadable — loud mismatch
 	std::stringstream ss;
 	ss << in.rdbuf();
 	const std::string raw = ss.str();
-	return std::equal(raw.begin(), raw.end(), expected.begin(), expected.end()) &&
-	       raw.size() == expected.size();
+	return raw.size() == expectedBytes.size() &&
+	       std::equal(raw.begin(), raw.end(), expectedBytes.begin(), expectedBytes.end());
 }
 
 EditorMutationResult CreatePrefabCommand::WriteAfter()

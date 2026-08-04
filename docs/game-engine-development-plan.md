@@ -13708,3 +13708,107 @@ the same tests confirmed green.
 - The headless-RT2App instantiate/reload CLI drive remains blocked as before;
   the identical instantiate → save → reload → verify-link round-trip is covered
   by the CPU-only permanent tests.
+
+## Phase 8 W1 — third cold-review repair (2026-08-05)
+
+Supersession note: the state at commit `7869451` (second repair, section above)
+was reviewed cold again (Sol artifact `phase8-w1-sol-followup-review`, verdict
+"NOT SAFE TO MERGE at 7869451"). Two P1 transactional-state defects and two P2
+proof gaps were repaired in a bounded follow-up. This note records the third
+repair; it does not rewrite the W1 report or the two prior repair notes.
+
+### 3R-1 (P1) — CreatePrefabCommand represents expected existence separately from bytes
+
+`FileMatches` previously returned `expected.empty()` when the stream could not
+open (`EditorStructuralCommands.cpp`, W1), collapsing a MISSING file into an
+EXISTING zero-byte one: Redo over a pre-existing zero-byte file whose out-of-band
+deletion had removed it saw "still matches" and silently recreated the prefab.
+`FileMatches` now takes `(bool expectedExists, const std::vector<uint8_t>&
+expectedBytes)` and is authoritative + disjoint on existence:
+`expectedExists=true` requires a present regular file whose bytes match exactly
+(a missing file never matches, even with empty bytes); `expectedExists=false`
+requires absence (an existing zero-byte file never matches). A stat/open/read
+failure is a loud mismatch, never a silent "empty matches". All three Undo/Redo
+call sites pass the correct existence plus bytes
+(`EditorStructuralCommands.h` ~281; `.cpp` ~132/142/148/169/181).
+
+### 3R-2 (P1) — CreatePrefabFromSubtree captures prior bytes with loud failure
+
+Prior capture used throwing `exists` plus an unopened `ifstream` that silently
+left `priorBytes` empty (`readEc` unused), so a pre-existing-but-unreadable
+target's rollback could substitute empty bytes. The create now, BEFORE any asset
+or sidecar mutation, does a non-throwing `status`; treats a stat error on an
+existing path as a hard Io failure; refuses a non-regular target; and requires a
+checked complete read of the prior bytes. Any capture failure returns an Io
+error without writing. `priorBytes` never carries an empty vector as a
+read-failure sentinel. (`SceneManager.cpp` create-transactional block.)
+
+### 3R-3 (P2) — C3b proves the prefab portability diagnostic
+
+C3b's W1-era portability claim discarded `saveDiags` and used a same-directory
+relativizable ref. The test now (a) asserts the relative, relocatable save emits
+ZERO NonPortable advisories, then (b) repoints the instance prefab ref at a
+syntactically cross-volume absolute path (Q: vs the C: temp scene dir) and
+asserts exactly one NonPortable diagnostic from production
+`SceneSerializer::Save` with `kind == Prefab`, the original/stored path, and the
+entity UUID/name. (`Phase8W1PrefabTests.cpp` C3b.)
+
+### 3R-4 (P2) — C5 asserts the generation/UUID state named by the rollback contract
+
+C5 now captures and compares `DocumentGeneration()` and `ResourceGeneration()`
+around the failed instantiate — both unchanged, because the failure returns
+before `NotifyAuthoringChanged` and the rollback truncates the staged rows;
+generations advance only on whole-scene Load/Adopt/Compact, so equality is the
+invariant rather than a monotonic counter to preserve. It also asserts the
+attempted instance UUID is absent from `uuidIndex` after rollback.
+
+### Regression tests added (Phase8W1PrefabTests.cpp)
+
+- C1c: create over a non-regular/unreadable target fails at the prior-state
+  precondition (detail names "not a regular file") before any asset/sidecar
+  mutation; the target directory and sidecar are untouched.
+- C4d: pre-existing zero-byte → create → Undo → external delete → Redo fails
+  `Error::Io` and leaves the path absent.
+- C4e: absent-before → create → Undo → external zero-byte file appears → Redo
+  fails and preserves the zero-byte file (the inverse existence-vs-bytes
+  discrimination).
+- C3b/C5 strengthened as above (30 `Phase 8 W1 C*` cases; file grew to 1726
+  lines).
+
+In-session fault-to-red evidence, one per correction, each reverted and confirmed
+green:
+- 3R-1: reverting `FileMatches` to the W1 empty-match sentinel — C4d red (Redo
+  succeeded and recreated the deleted file).
+- 3R-2: removing the up-front regular-file precondition — C1c red (the
+  "not a regular file" precondition detail never appeared).
+- 3R-3: disabling `AppendNonPortableDiagnostic` in the prefab block — C3b red
+  (`nonPortable == 1` got 0).
+- 3R-4: injecting `++m_ResourceGeneration` into `rollbackCreated` — C5 red
+  (`ResourceGeneration() == beforeResource`, 3 != 2).
+
+### Verification (measured this session, after third repair)
+
+- **Release full RT2Tests** (run from repo root): **802/802 cases**,
+  **147,145/147,145 assertions**; passed.
+- **Debug full RT2Tests** (run from repo root): **802/802 cases**,
+  **147,145/147,145 assertions**; passed.
+- **Phase 8 W1 C\* target run** (Debug): 13/13 cases, 137/137 assertions; passed.
+- **powershell -File run_script_test.ps1**: passed — 60 frames, 1 entity, no
+  mismatches.
+- **powershell -File run_slice_test.ps1**: passed — 60 steps, authoring intact,
+  cube x=0.999999702.
+- **powershell -File run_recovery_test.ps1**: passed.
+- **premake5 vs2022** regenerated cleanly; generated RT2App/RT2Tests vcxproj
+  churn restored to HEAD (ClCompile source sets identical to tracked, 0 diff
+  lines each).
+- **graphify update .**: graph rebuilt; generated churn restored.
+
+### Caveats
+
+- The transient Release TestWorker failure reported in the W1 report remains
+  unresolved and is untouched by this repair.
+- 3R-2 removes the empty-vector read-failure sentinel and adds the non-regular
+  precondition test but does not add a filesystem-seam test for a
+  replaceable-but-unreadable REGULAR file (reads fail, rename succeeds), which
+  is not reliably constructible on Windows with the standard library.
+- The headless-RT2App instantiate/reload CLI drive remains blocked as before.

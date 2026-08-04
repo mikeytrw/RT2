@@ -2589,21 +2589,69 @@ SceneManager::PrefabCreationResult SceneManager::CreatePrefabFromSubtree(
 	// the transactional guard against destroying a pre-existing prefab: a
 	// create that commits the asset but fails its sidecar must restore the
 	// prior asset + identity atomically, never remove the user's work.
-	const bool targetExistedBefore =
-		std::filesystem::exists(prefabPath);
+	//
+	// Capture is a checked, loud step and happens BEFORE any asset or sidecar
+	// mutation. We stat with a non-throwing status; a stat that cannot be
+	// determined is a hard Io failure, an existing target that is not a regular
+	// file (e.g. a directory) is refused, and an existing target whose complete
+	// prior bytes cannot be read is a hard Io failure. `priorBytes` must NEVER
+	// carry an empty vector as a read-failure sentinel (empty is the valid
+	// prior state of a zero-byte file), so any capture failure returns before
+	// Save rather than substituting empty bytes on a later rollback.
+	std::error_code statEc;
+	const std::filesystem::file_status st =
+		std::filesystem::status(prefabPath, statEc);
+	const std::filesystem::file_type stType = st.type();
+	const bool targetExistedBefore = stType != std::filesystem::file_type::not_found;
+	// An absent path reports file_type::not_found — that is the ordinary "did
+	// not exist before" case. A status ERROR on a path that actually exists
+	// (or whose type cannot be determined) is a hard failure: never proceed
+	// with an unknown prior state.
+	if (targetExistedBefore && statEc)
+	{
+		out.error.code = rt2::core::Error::Io;
+		out.error.path = prefabPath.string();
+		out.error.detail =
+			"CreatePrefabFromSubtree: could not stat the pre-existing target " +
+			prefabPath.string() + ": " + statEc.message();
+		return out;
+	}
 	std::vector<uint8_t> priorBytes;
 	if (targetExistedBefore)
 	{
-		std::error_code readEc;
-		std::ifstream in(prefabPath, std::ios::binary);
-		if (in)
+		if (!std::filesystem::is_regular_file(st))
 		{
-			std::stringstream ss;
-			ss << in.rdbuf();
-			const std::string raw = ss.str();
-			priorBytes.assign(raw.begin(), raw.end());
+			out.error.code = rt2::core::Error::Io;
+			out.error.path = prefabPath.string();
+			out.error.detail =
+				"CreatePrefabFromSubtree: pre-existing target is not a regular file; "
+				"refusing to replace it: " + prefabPath.string();
+			return out;
 		}
-		(void)readEc;
+		std::ifstream in(prefabPath, std::ios::binary);
+		if (!in)
+		{
+			out.error.code = rt2::core::Error::Io;
+			out.error.path = prefabPath.string();
+			out.error.detail =
+				"CreatePrefabFromSubtree: pre-existing target could not be opened for reading; "
+				"refusing to replace it: " + prefabPath.string();
+			return out;
+		}
+		std::stringstream ss;
+		ss << in.rdbuf();
+		in.peek();
+		if (in.bad())
+		{
+			out.error.code = rt2::core::Error::Io;
+			out.error.path = prefabPath.string();
+			out.error.detail =
+				"CreatePrefabFromSubtree: read failure capturing pre-existing target "
+				"contents; refusing to replace it: " + prefabPath.string();
+			return out;
+		}
+		const std::string raw = ss.str();
+		priorBytes.assign(raw.begin(), raw.end());
 	}
 
 	rt2::core::Error saveErr;

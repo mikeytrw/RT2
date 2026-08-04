@@ -265,9 +265,21 @@ private:
 	// Pre-serialize the deterministic AFTER bytes from m_Result.
 	void ComputeAfterContents();
 
-	// True when the file on disk matches the given expected bytes verbatim
-	// (an absent file matches an empty expected vector).
-	bool FileMatches(const std::vector<uint8_t>& expected) const;
+	// True when the file on disk is in the expected state. `expectedExists` is
+	// the authoritative existence expectation and is disjoint from the bytes:
+	//   - expectedExists=true  the file MUST exist (as a regular file) and its
+	//                          bytes must equal `expectedBytes` verbatim. A
+	//                          missing file never matches, even when
+	//                          expectedBytes is empty.
+	//   - expectedExists=false the file MUST be absent. An existing file never
+	//                          matches, even an empty (zero-byte) one.
+	// This delineates "missing" from "existing zero-byte" and "existing
+	// zero-byte" from "expected absence", which an empty bytes vector alone
+	// conflates. A stat/open/read failure is a loud MISMATCH (false), never a
+	// silent "empty expected bytes", so an out-of-band deletion or an
+	// unreadable file surfaces as a conflict rather than a clobber.
+	bool FileMatches(bool expectedExists,
+	                 const std::vector<uint8_t>& expectedBytes) const;
 	// Atomically write contents, or checked-remove when the target is absent,
 	// leaving the file intact on any failure.
 	EditorMutationResult WriteAfter();

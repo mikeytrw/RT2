@@ -18,6 +18,7 @@
 
 #include <glm/glm.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -1064,6 +1065,53 @@ TEST_CASE("Phase 8 W1 C1b: a create that cannot commit its asset fails loudly")
 }
 
 // ---------------------------------------------------------------------------
+// C1c (Sol follow-up P1): CreatePrefabFromSubtree must capture the EXACT prior
+// bytes of a pre-existing target BEFORE any asset or sidecar mutation, and
+// fail LOUDLY when that capture cannot succeed — it must never substitute an
+// empty vector as a read-failure sentinel (an empty vector is the valid prior
+// state of a zero-byte file). A non-regular, unreadable target (a directory)
+// must be refused at the prior-state precondition, before Save.
+//
+// Fault for red: W1 shipped a silent capture — `std::filesystem::exists`
+// (throwing), an unopened ifstream leaving priorBytes empty, and an unused
+// readEc — with no up-front regular-file requirement. A directory target was
+// only rejected downstream by Save's own report, so the precondition detail
+// below never appeared and empty prior bytes remained substitutable on a
+// later rollback.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W1 C1c: create over an unreadable/non-regular target fails before mutation")
+{
+	PrefabFixture f;
+	const auto [root, child] = f.RootWithChild("LoudCapture");
+	const auto dir = UniqueTempDir("p8w1_c1c_unreadable");
+	const auto prefabPath = dir / "loudcapture.rt2prefab";
+
+	// A non-empty directory has no readable byte contents and is not a regular
+	// file; a create over it must fail during prior-state capture, BEFORE any
+	// asset replace or sidecar commit.
+	{
+		std::error_code ec;
+		std::filesystem::create_directories(prefabPath / "occupied", ec);
+		REQUIRE_FALSE(ec);
+	}
+
+	const auto created = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	CHECK_FALSE(created.ok);
+	CHECK(created.error.code == rt2::core::Error::Io);
+	CHECK_FALSE(created.error.detail.empty());
+	// Fault for red: W1 never checked the precondition, so the detail below
+	// could not appear; the failure would have come from Save instead.
+	CHECK(created.error.detail.find("not a regular file") != std::string::npos);
+
+	// Neither the asset target nor its asset identity sidecar was mutated: the
+	// directory still exists and no sibling sidecar/temp was committed.
+	CHECK(std::filesystem::is_directory(prefabPath));
+	CHECK_FALSE(std::filesystem::exists(AssetSidecarPath(prefabPath)));
+
+	std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
 // C2a (Sol P1): instantiate links PrefabInstanceComponent to the ACTUAL
 // canonical root — a hand-authored [child, root] file (root at record 1)
 // must get the link on the root, not on liveEntities[0].
@@ -1273,15 +1321,57 @@ TEST_CASE("Phase 8 W1 C3b: valid prefab reference saves, reloads, and reports po
 		CHECK(pi.prefab.path.find("goodref.rt2prefab") != std::string::npos);
 	}
 
-	// Portability: save the SAME document to a path in an unrelated directory
-	// (different drive would be required to fail Relativize; use a sibling
-	// subdir so a non-relative ref still relativizes). A prefab path that
-	// cannot be relativized must appear in save diagnostics like other asset
-	// kinds. We force that by moving the prefab out of the resolution root —
-	// covered by the AppendNonPortableDiagnostic presence, which the reload
-	// path exercises via the rebase above; the concrete unrelativizable case
-	// is asserted in C3a's sibling test.
-	(void)saveDiags;
+	// The relative save above must NOT warn: a relocatable prefab ref stays
+	// portable. Assert zero NonPortable advisories so the portability case
+	// below is not confounded by unrelated warnings.
+	{
+		const auto nonPortable = std::count_if(saveDiags.begin(), saveDiags.end(),
+			[](const AssetDiagnostic& d) { return d.severity == AssetDiagnostic::NonPortable; });
+		CHECK(nonPortable == 0);
+	}
+
+	// Portability: repoint the SAME instance's prefab ref at a syntactically
+	// cross-volume absolute path (Q: vs the C: temp scene dir). RebasePath
+	// cannot relativize across volumes (lexically_relative of two different
+	// drives is empty), so production SceneSerializer::Save must emit exactly
+	// one NonPortable advisory for the prefab kind carrying the original/
+	// stored path and the entity identity, exactly like the other durable
+	// reference kinds.
+	{
+		auto& reg = f.manager.AuthoringDoc().ecs.registry;
+		auto view = reg.view<PrefabInstanceComponent>();
+		REQUIRE(view.size() == 1);
+		const entt::entity instEnt = *view.begin();
+		auto& pi = view.get<PrefabInstanceComponent>(instEnt);
+
+		rt2::core::UUID rootUuid;
+		std::string rootName;
+		if (auto* idc = reg.try_get<EntityIdComponent>(instEnt)) rootUuid = idc->id;
+		if (auto* nc = reg.try_get<NameComponent>(instEnt))     rootName = nc->name;
+
+		pi.prefab.kind = AssetKind::Prefab;
+		pi.prefab.path = "Q:/synthetic/goodref.rt2prefab";
+
+		std::vector<AssetDiagnostic> crossDiags;
+		Error crossErr;
+		REQUIRE(SceneSerializer::Save(doc, dir / "crossvol.rt2scene", crossDiags, crossErr));
+		REQUIRE(crossErr.IsOk());
+
+		const auto nonPortable = std::count_if(crossDiags.begin(), crossDiags.end(),
+			[](const AssetDiagnostic& d) { return d.severity == AssetDiagnostic::NonPortable; });
+		// Fault for red (W1 shipped test): the diagnostic was never asserted
+		// (saveDiags was discarded), so the prefab portability advisory was
+		// unproven despite the verification report claiming it.
+		REQUIRE(nonPortable == 1);
+		const auto prefabDiag = std::find_if(crossDiags.begin(), crossDiags.end(),
+			[](const AssetDiagnostic& d) { return d.severity == AssetDiagnostic::NonPortable; });
+		REQUIRE(prefabDiag != crossDiags.end());
+		CHECK(prefabDiag->kind == AssetKind::Prefab);
+		CHECK(prefabDiag->refPath == "Q:/synthetic/goodref.rt2prefab");
+		CHECK(prefabDiag->resolvedPath.find("goodref.rt2prefab") != std::string::npos);
+		CHECK(prefabDiag->entityUuid == rootUuid);
+		CHECK(prefabDiag->entityName == rootName);
+	}
 
 	std::filesystem::remove_all(dir);
 }
@@ -1427,6 +1517,110 @@ TEST_CASE("Phase 8 W1 C4c: Undo restore surfaces a failed overwrite and keeps pr
 }
 
 // ---------------------------------------------------------------------------
+// C4d (Sol follow-up P1): CreatePrefabCommand must represent expected
+// existence SEPARATELY from bytes. A pre-existing zero-byte file is restored
+// to a zero-byte file on Undo (exists), so Redo's BEFORE-state check expects an
+// EXISTING file with empty bytes. When another process DELETES that file
+// between Undo and Redo, the file is now MISSING — a different state that must
+// NOT satisfy the existing-empty expectation. Redo must fail loudly (Io) and
+// leave the path absent, never silently recreate the prefab.
+//
+// Fault for red: W1 shipped FileMatches returning expected.empty() when the
+// stream could not open, so a missing file whose expected bytes are empty was
+// treated as "still matches" and Redo silently wrote the AFTER bytes over the
+// out-of-band deletion.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W1 C4d: Redo refuses when a pre-existing zero-byte file is deleted out-of-band")
+{
+	PrefabFixture f;
+	const auto [root, child] = f.RootWithChild("GuardRedoZero");
+	const auto dir = UniqueTempDir("p8w1_c4d_redo_delete_zerobyte");
+	const auto prefabPath = dir / "guardredo_zero.rt2prefab";
+
+	// Pre-existing zero-byte file: an empty bytes vector alone cannot
+	// distinguish it from an absent file; fileExistedBefore=true carries the
+	// distinction.
+	WriteRaw(prefabPath, "");
+	CHECK(std::filesystem::exists(prefabPath));
+	CHECK(std::filesystem::file_size(prefabPath) == 0);
+	const std::vector<uint8_t> beforeEmpty;
+
+	const auto created = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	REQUIRE(created.ok);
+	auto cmd = MakeCreatePrefabCommand(prefabPath, created, beforeEmpty, true);
+	REQUIRE(cmd);
+
+	EditorCommandHistory history;
+	REQUIRE(history.Execute(std::move(cmd), f.manager).success);
+	REQUIRE(history.Undo(f.manager).success);
+	// Undo restored the zero-byte file — it lives on as an EXISTING empty file.
+	CHECK(std::filesystem::exists(prefabPath));
+	CHECK(std::filesystem::file_size(prefabPath) == 0);
+
+	// Out-of-band deletion between Undo and Redo.
+	{
+		std::error_code ec;
+		std::filesystem::remove(prefabPath, ec);
+		REQUIRE_FALSE(ec);
+	}
+	CHECK_FALSE(std::filesystem::exists(prefabPath));
+
+	// Fault for red (W1 shipped code): an unopenable file with empty expected
+	// bytes was treated as a match, so this Redo succeeded and recreated the
+	// deleted prefab instead of surfacing the out-of-band deletion.
+	const auto redoResult = history.Redo(f.manager);
+	CHECK_FALSE(redoResult.success);
+	CHECK(redoResult.error.code == rt2::core::Error::Io);
+	// The out-of-band deletion stands — Redo never recreated the file.
+	CHECK_FALSE(std::filesystem::exists(prefabPath));
+
+	std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// C4e (Sol follow-up P1): the inverse discrimination. When a create began from
+// an ABSENT target, Undo removes the file and Redo expects ABSENCE. An
+// out-of-band ZERO-BYTE file created after Undo is EXISTING state and must NOT
+// satisfy the expected-absence expectation — Redo must fail and preserve the
+// external zero-byte file. This guards existence vs bytes in the other
+// direction (an existing zero-byte file is not an expected absence).
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W1 C4e: Redo refuses when an expected-absent path gains a zero-byte file")
+{
+	PrefabFixture f;
+	const auto [root, child] = f.RootWithChild("GuardRedoAbsent");
+	const auto dir = UniqueTempDir("p8w1_c4e_redo_zerobyte_absent");
+	const auto prefabPath = dir / "guardredo_absent.rt2prefab";
+
+	const auto created = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	REQUIRE(created.ok);
+	auto cmd = MakeCreatePrefabCommand(prefabPath, created, {}, false); // absent before
+	REQUIRE(cmd);
+
+	EditorCommandHistory history;
+	REQUIRE(history.Execute(std::move(cmd), f.manager).success);
+	REQUIRE(history.Undo(f.manager).success);
+	CHECK_FALSE(std::filesystem::exists(prefabPath)); // Undo removed it
+
+	// Out-of-band re-creation of a ZERO-BYTE file between Undo and Redo — the
+	// inverse discrimination: an existing empty file is NOT an expected
+	// absence and must not be treated as one.
+	WriteRaw(prefabPath, "");
+	CHECK(std::filesystem::exists(prefabPath));
+	CHECK(std::filesystem::file_size(prefabPath) == 0);
+
+	const auto redoResult = history.Redo(f.manager);
+	CHECK_FALSE(redoResult.success);
+	CHECK(redoResult.error.code == rt2::core::Error::Io);
+	// The external zero-byte file is preserved (never clobbered, never treated
+	// as the expected absent state).
+	CHECK(std::filesystem::exists(prefabPath));
+	CHECK(std::filesystem::file_size(prefabPath) == 0);
+
+	std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
 // C5 (Sol P2): failed-instantiate rollback proves FULL state restoration for
 // a post-merge failure that actually stages a mesh AND a material AND a
 // texture. Asserts entity count, UUID-index consistency, all three resource
@@ -1484,6 +1678,8 @@ TEST_CASE("Phase 8 W1 C5: rollback restores mesh+material+texture rows, UUID ind
 
 	const auto beforeEntities = f.manager.GetEntityCount();
 	const auto beforeUuids = f.manager.AuthoringDoc().uuidIndex.Size();
+	const auto beforeDocument = f.manager.DocumentGeneration();
+	const auto beforeResource = f.manager.ResourceGeneration();
 	const auto meshBase = f.manager.GetECS().meshRegistry.GetCount();
 	const auto matBase = (int)f.manager.GetECS().materials.size();
 	const auto texBase = (int)f.manager.GetECS().textures.size();
@@ -1516,6 +1712,15 @@ TEST_CASE("Phase 8 W1 C5: rollback restores mesh+material+texture rows, UUID ind
 	// Revision/dirty unchanged by a failed (rolled-back) operation.
 	CHECK(f.manager.AuthoringRevision() == beforeRevision);
 	CHECK(f.manager.IsDirty() == beforeDirty);
+	// Generation state named by the rollback contract: a fully rolled-back,
+	// failed instantiate returns before NotifyAuthoringChanged and the
+	// rollback truncates the staged resource rows, so the document and
+	// resource generations (advanced only by whole-scene Load/Adopt/Compact)
+	// are unchanged. The attempted instance UUID was reserved but never
+	// survives the rollback into the document UUID index.
+	CHECK(f.manager.DocumentGeneration() == beforeDocument);
+	CHECK(f.manager.ResourceGeneration() == beforeResource);
+	CHECK_FALSE(f.manager.AuthoringDoc().uuidIndex.Contains(instUuid));
 
 	std::filesystem::remove_all(dir);
 }
