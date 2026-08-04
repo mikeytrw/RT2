@@ -13106,3 +13106,175 @@ reattaching after the first source edit.
 This amends D1 in the Phase 8 spec. D1's two-component instance model
 (`PrefabInstanceComponent`, `PrefabMemberComponent`) is unchanged; only the
 file-side record shape is settled here.
+
+### Phase 8 W2 — shared entity-reference remapper (duplication half) verification report (2026-08-04)
+
+**Implementation branch:** `codex/phase8-w2-entity-reference-remapper`, based
+on `master` at `aff20c1`.
+
+W2 adds the CPU-only remapper declared in
+`RT2App/src/EntityReferenceRemapper.h:20-26` and implemented in
+`RT2App/src/EntityReferenceRemapper.cpp:8-33`. Its input is a durable
+source-UUID → destination-UUID map plus opaque `ScriptComponent*` views; it
+does not depend on an entt registry or SceneManager internals. It rewrites
+only a `ScriptFieldType::Uuid` entry whose value is a non-nil UUID present in
+the map. External references, stale UUIDs, nil UUIDs, malformed variant/type
+pairs, and non-UUID fields are left unchanged.
+
+`SceneManager` now converts each copy plan to that UUID map and invokes the
+shared remapper after all destination UUIDs have been assigned in the legacy
+duplicate/paste paths (`RT2App/src/SceneManager.cpp:1487,1579`) and the
+UUID-supplied duplicate/paste paths (`RT2App/src/SceneManager.cpp:2740,2887`).
+The W1 prefab-instantiation path is not implemented or changed here. W1 will
+build its complete prefab-local-template-UUID → instance-UUID map, collect the
+copied `ScriptComponent` views, and call this same function only after the
+instance UUID assignment pass is complete.
+
+#### Decision reconciliation
+
+The stale-UUID decision is to preserve the value. A UUID absent from the
+copy map does not establish whether the target was deleted, belongs to another
+scene, or is intentional authored data; clearing or substituting it would lose
+information. This is tested directly at
+`RT2Tests/src/Phase8W2EntityReferenceTests.cpp:159-172`.
+
+The current tree also clarifies an outdated phrase in the Phase 8 grounding
+notes that said no engine code resolves UUID-valued script fields. The script
+runtime exposes UUID lookup through `ScriptSystem.cpp:943-951`, so a typed UUID
+script field is a usable entity reference even though W2 deliberately keeps
+the remapper generic and CPU-only. No new authored component was added;
+`PersistedComponents` remains the existing component set.
+
+#### Permanent tests and discrimination proofs
+
+All five permanent W2 tests were fault-injected one at a time. For each, the
+Release solution was built, the named test was run alone, the actual red
+output was recorded, the fault was reverted, Release was rebuilt, and the same
+test was confirmed green.
+
+1. **Duplicate internal UUID remapping** — temporary removal of the remapper
+   call from `DuplicateSubtreesWithUuids` (`SceneManager.cpp:2740`):
+
+   ```text
+   Phase8W2EntityReferenceTests.cpp(104): ERROR: CHECK( FieldUuid(*duplicateScript, "sibling") == duplicateChild ) is NOT correct!
+     values: CHECK( {?} == {?} )
+   Phase8W2EntityReferenceTests.cpp(105): ERROR: CHECK( FieldUuid(*duplicateScript, "sibling") != fixture.child ) is NOT correct!
+     values: CHECK( {?} != {?} )
+   [doctest] test cases:  1 | 0 passed | 1 failed | 771 skipped
+   [doctest] assertions: 11 | 9 passed | 2 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+   Reverted result:
+
+   ```text
+   [doctest] test cases:  1 | 1 passed | 0 failed | 771 skipped
+   [doctest] assertions: 11 | 11 passed | 0 failed |
+   [doctest] Status: SUCCESS!
+   ```
+
+2. **Duplicate external UUID preservation** — temporary unconditional
+   rewrite of UUID fields in `EntityReferenceRemapper.cpp:26-30`:
+
+   ```text
+   Phase8W2EntityReferenceTests.cpp(123): ERROR: CHECK( FieldUuid(*duplicateScript, "external") == fixture.external ) is NOT correct!
+     values: CHECK( {?} == {?} )
+   [doctest] test cases: 1 | 0 passed | 1 failed | 771 skipped
+   [doctest] assertions: 7 | 6 passed | 1 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+   Reverted result:
+
+   ```text
+   [doctest] test cases: 1 | 1 passed | 0 failed | 771 skipped
+   [doctest] assertions: 7 | 7 passed | 0 failed |
+   [doctest] Status: SUCCESS!
+   ```
+
+3. **Paste internal remapping and external preservation** — temporary removal
+   of the remapper call from `PasteSubtreesWithUuids` (`SceneManager.cpp:2887`):
+
+   ```text
+   Phase8W2EntityReferenceTests.cpp(151): ERROR: CHECK( FieldUuid(*pastedScript, "internal") == pastedChild ) is NOT correct!
+     values: CHECK( {?} == {?} )
+   [doctest] test cases:  1 | 0 passed | 1 failed | 771 skipped
+   [doctest] assertions: 14 | 13 passed | 1 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+   Reverted result:
+
+   ```text
+   [doctest] test cases:  1 | 1 passed | 0 failed | 771 skipped
+   [doctest] assertions: 14 | 14 passed | 0 failed |
+   [doctest] Status: SUCCESS!
+   ```
+
+4. **Stale UUID preservation** — temporary clearing of any UUID absent from
+   the remap:
+
+   ```text
+   Phase8W2EntityReferenceTests.cpp(172): ERROR: CHECK( FieldUuid(script, "stale") == stale ) is NOT correct!
+     values: CHECK( {?} == {?} )
+   [doctest] test cases:  1 | 0 passed | 1 failed | 771 skipped
+   [doctest] assertions: 6 | 5 passed | 1 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+   Reverted result:
+
+   ```text
+   [doctest] test cases: 1 | 1 passed | 0 failed | 771 skipped
+   [doctest] assertions: 6 | 6 passed | 0 failed |
+   [doctest] Status: SUCCESS!
+   ```
+
+5. **Non-UUID field preservation** — temporary acceptance of a UUID variant
+   without its `Uuid` semantic type tag:
+
+   ```text
+   Phase8W2EntityReferenceTests.cpp(196): ERROR: CHECK( script.fieldValues == before ) is NOT correct!
+     values: CHECK( {{mismatched, {?}}, {string, {?}}, {color, {?}}, {float, {?}}} == {{color, {?}}, {string, {?}}, {mismatched, {?}}, {float, {?}}} )
+   [doctest] test cases: 1 | 0 passed | 1 failed | 771 skipped
+   [doctest] assertions: 3 | 2 passed | 1 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+   Reverted result:
+
+   ```text
+   [doctest] test cases: 1 | 1 passed | 0 failed | 771 skipped
+   [doctest] assertions: 3 | 3 passed | 0 failed |
+   [doctest] Status: SUCCESS!
+   ```
+
+The tests are registered in the CPU-only RT2Tests target at
+`RT2Tests/src/Phase8W2EntityReferenceTests.cpp:90-196`; the remapper source
+is also included in RT2Tests and RT2SliceRunner so neither target depends on
+Vulkan, ImGui, Walnut, or the editor host.
+
+#### Verification
+
+- Release solution build: passed, 0 warnings, 0 errors.
+- Debug solution build: passed, 0 errors; 42 warnings, including the known
+  existing runtime-library warning in the Debug app target.
+- Release full RT2Tests: **772/772 cases**, **146,801/146,801 assertions**;
+  passed.
+- Debug full RT2Tests: **772/772 cases**, **146,801/146,801 assertions**;
+  passed.
+- `powershell -File run_script_test.ps1`: passed — 60 frames, 1 entity, no
+  mismatches.
+- `powershell -File run_slice_test.ps1`: passed — 60 steps, authoring intact;
+  cube final x `0.999999702` against approximately `1.0`.
+- Headless validation using the built executable at
+  `bin/Release-windows-x86_64/RT2App/RT2App.exe`: exited 0, rendered all 8
+  frames, saved the 320×200 screenshot, and emitted zero validation messages.
+  The temporary `screenshot.png` and `artifacts/v.png` outputs were removed
+  after verification.
+- `graphify update .` completed after the source changes. Its generated
+  `graphify-out/GRAPH_REPORT.md` remains intentionally unstaged.
+
+No W2 defect was revealed. The intentional behavior change is that copied
+typed entity references now follow the copied subtree; references outside it
+remain pointed at their original UUIDs. Prefab instantiation remains W1 work.

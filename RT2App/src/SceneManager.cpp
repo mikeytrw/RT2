@@ -3,6 +3,7 @@
 #include "SceneGraph.h"
 #include "SceneHierarchy.h"
 #include "EditorCameraWorkflow.h"
+#include "EntityReferenceRemapper.h"
 #include "PersistedComponents.h"
 #include "PrimitiveGeometry.h"
 #include "RTLog.h"
@@ -90,6 +91,31 @@ void CopyAuthoredComponents(const entt::registry& sourceRegistry,
 		transform->prevWorldMatrix = glm::mat4(1.0f);
 		transform->dirty = true;
 	}
+}
+
+void RemapCopiedScriptFields(
+	const std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>>& sourceToDestination,
+	const std::vector<entt::entity>& destinations,
+	entt::registry& registry)
+{
+	// Convert the transient registry copy plan to the durable UUID-keyed
+	// contract at this boundary. The remapper itself never sees entt handles.
+	rt2::core::EntityUuidRemap uuidRemap;
+	uuidRemap.reserve(sourceToDestination.size());
+	for (const auto& [source, destination] : sourceToDestination)
+	{
+		if (!source.IsNull() && !destination.IsNull())
+			uuidRemap.emplace(source, destination);
+	}
+
+	std::vector<ScriptComponent*> scripts;
+	scripts.reserve(destinations.size());
+	for (const auto destination : destinations)
+	{
+		if (auto* script = registry.try_get<ScriptComponent>(destination))
+			scripts.push_back(script);
+	}
+	rt2::core::RemapEntityReferences(uuidRemap, scripts);
 }
 
 void LogAssetDiagnostics(
@@ -1442,15 +1468,23 @@ EditorMutationResult SceneManager::DuplicateSubtrees(
 		SceneHierarchy::CollectSubtreePreOrder(registry, root, sources);
 
 	std::unordered_map<entt::entity, entt::entity> remap;
+	std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>> sourceToDuplicate;
+	std::vector<entt::entity> duplicates;
+	sourceToDuplicate.reserve(sources.size());
+	duplicates.reserve(sources.size());
 	bool duplicatesRenderable = false;
 	for (const auto source : sources)
 	{
 		const auto duplicate = registry.create();
 		remap.emplace(source, duplicate);
 		CopyAuthoredComponents(registry, source, registry, duplicate);
-		m_Authoring.AssignNewUuid(duplicate);
+		const auto sourceUuid = GetEntityUuid({ source });
+		const auto duplicateUuid = m_Authoring.AssignNewUuid(duplicate);
+		sourceToDuplicate.emplace_back(sourceUuid, duplicateUuid);
+		duplicates.push_back(duplicate);
 		duplicatesRenderable = duplicatesRenderable || registry.all_of<MeshRef>(duplicate);
 	}
+	RemapCopiedScriptFields(sourceToDuplicate, duplicates, registry);
 	for (const auto source : sources)
 	{
 		const auto duplicate = remap.at(source);
@@ -1526,15 +1560,23 @@ EditorMutationResult SceneManager::PasteSubtreesFrom(
 	}
 
 	std::unordered_map<entt::entity, entt::entity> remap;
+	std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>> sourceToPaste;
+	std::vector<entt::entity> pastes;
+	sourceToPaste.reserve(sources.size());
+	pastes.reserve(sources.size());
 	bool pastesRenderable = false;
 	for (const auto source : sources)
 	{
 		const auto pasted = destination.create();
 		remap.emplace(source, pasted);
 		CopyAuthoredComponents(snapshot.ecs.registry, source, destination, pasted);
-		m_Authoring.AssignNewUuid(pasted);
+		const auto* sourceIdc = snapshot.ecs.registry.try_get<EntityIdComponent>(source);
+		const auto pastedUuid = m_Authoring.AssignNewUuid(pasted);
+		sourceToPaste.emplace_back(sourceIdc ? sourceIdc->id : rt2::core::UUID{}, pastedUuid);
+		pastes.push_back(pasted);
 		pastesRenderable = pastesRenderable || destination.all_of<MeshRef>(pasted);
 	}
+	RemapCopiedScriptFields(sourceToPaste, pastes, destination);
 	for (const auto source : sources)
 	{
 		const auto pasted = remap.at(source);
@@ -2713,7 +2755,9 @@ SceneManager::DuplicationResult SceneManager::DuplicateSubtreesWithUuids(
 	// Build the complete duplication plan before mutating.
 	std::unordered_map<entt::entity, entt::entity> remap;
 	std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>> sourceToDuplicate;
+	std::vector<entt::entity> duplicates;
 	sourceToDuplicate.reserve(sources.size());
+	duplicates.reserve(sources.size());
 	for (std::size_t i = 0; i < sources.size(); ++i)
 	{
 		const auto source = sources[i];
@@ -2737,7 +2781,9 @@ SceneManager::DuplicationResult SceneManager::DuplicateSubtreesWithUuids(
 		const auto* sourceIdc = registry.try_get<EntityIdComponent>(source);
 		sourceToDuplicate.emplace_back(sourceIdc ? sourceIdc->id : rt2::core::UUID{},
 		                               knownDuplicateUuids[i]);
+		duplicates.push_back(duplicate);
 	}
+	RemapCopiedScriptFields(sourceToDuplicate, duplicates, registry);
 
 	// Wire Hierarchy among duplicates.
 	bool duplicatesRenderable = false;
@@ -2854,7 +2900,9 @@ SceneManager::DuplicationResult SceneManager::PasteSubtreesWithUuids(
 	// Build the complete paste plan before mutating.
 	std::unordered_map<entt::entity, entt::entity> remap;
 	std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>> sourceToDuplicate;
+	std::vector<entt::entity> pastes;
 	sourceToDuplicate.reserve(sources.size());
+	pastes.reserve(sources.size());
 	bool pastesRenderable = false;
 	for (std::size_t i = 0; i < sources.size(); ++i)
 	{
@@ -2880,7 +2928,9 @@ SceneManager::DuplicationResult SceneManager::PasteSubtreesWithUuids(
 		const auto* sourceIdc = clipboard.ecs.registry.try_get<EntityIdComponent>(source);
 		sourceToDuplicate.emplace_back(sourceIdc ? sourceIdc->id : rt2::core::UUID{},
 		                                knownPastedUuids[i]);
+		pastes.push_back(pasted);
 	}
+	RemapCopiedScriptFields(sourceToDuplicate, pastes, destination);
 
 	// Wire Hierarchy among pastes and to the destination parent.
 	for (const auto source : sources)

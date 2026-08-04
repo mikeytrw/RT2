@@ -20,6 +20,7 @@ project "RT2SliceRunner"
         "../RT2App/src/RuntimeSceneController.cpp",
         "../RT2App/src/RuntimeSceneMutator.cpp",
         "../RT2App/src/SceneManager.cpp",
+        "../RT2App/src/EntityReferenceRemapper.cpp",
         "../RT2App/src/EditorCameraWorkflow.cpp",
         "../RT2App/src/SceneGraph.cpp",
         "../RT2App/src/SceneHierarchy.cpp",

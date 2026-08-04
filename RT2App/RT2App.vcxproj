@@ -231,6 +231,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\EditorSyncRouter.h" />
     <ClInclude Include="src\EditorTransformGizmo.h" />
     <ClInclude Include="src\EditorViewportIcons.h" />
+    <ClInclude Include="src\EntityReferenceRemapper.h" />
     <ClInclude Include="src\FileDialog.h" />
     <ClInclude Include="src\FixtureGenerator.h" />
     <ClInclude Include="src\FrameContext.h" />
@@ -465,6 +466,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\EditorViewportIcons.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\EntityReferenceRemapper.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
