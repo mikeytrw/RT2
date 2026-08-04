@@ -3,39 +3,52 @@
 #ifndef RT2_CORE_PREFAB_SERIALIZER_H
 #define RT2_CORE_PREFAB_SERIALIZER_H
 
+#include "AssetResolver.h"
 #include "SubtreeSnapshot.h"
 #include "core/Error.h"
+#include "json.hpp"
 
 #include <filesystem>
 #include <vector>
 
 // ============================================================================
-// PrefabSerializer — .rt2prefab native format (Phase 8 W0).
+// PrefabSerializer — .rt2prefab native format (Phase 8).
 //
-// A prefab is an entity subtree saved as an asset. W0 delivers the asset kind
-// and the file ENVELOPE: header + version + an empty record list. Subtree
-// capture and entity records are W1.
+// A prefab is an entity subtree saved as an asset. W0 delivered the asset kind
+// and the file ENVELOPE (header + version + record list) with loud rejections
+// for non-empty records; W1 replaces those rejections with the record codec.
 //
 // Format summary (version 1):
 //   {
 //     "header":   "rt2prefab",
 //     "version":  1,
-//     "entities": []
+//     "entities": [
+//       {
+//         "templateId": "<uuid>",
+//         "record": { ...scene component payload... }
+//       }, ...
+//     ]
 //   }
 //
 // - The version constant is INDEPENDENT of SceneSerializer::SchemaVersion
 //   (D5): changes to the .rt2prefab format must not force a .rt2scene schema
 //   bump, and vice versa.
-// - The record shape reuses SubtreeEntityRecord (SubtreeSnapshot.h) so W1's
-//   record codec shares the component codecs with scene serialization (D4).
-// - HARD RULE: prefab files must never contain resource-table indices.
-//   MeshRef::meshIndex and MaterialOverrideComponent::materialIndex are
-//   transient by design, and override texture indices are repaired only from
-//   a currently-staged material. The W1 record codec must strip them; the W0
-//   envelope contains no such fields at all.
-// - W0 boundary: Save refuses a non-empty record list and Load refuses to
-//   decode one, loudly — never silently drop or invent records. W1 replaces
-//   those rejections with the real codec.
+// - Per-record identity is PrefabEntityRecord::templateId — minted once when
+//   the prefab asset is created and frozen in the file (amendment A1). It is
+//   never regenerated and never derived from a scene UUID at instantiate time.
+// - The record payload reuses SubtreeEntityRecord (SubtreeSnapshot.h); the
+//   JSON codec is defined in SceneSerializer.cpp so it shares the per-
+//   component codecs with scene serialization (D4).
+// - HARD RULE: prefab files never contain resource-table indices.
+//   MeshRef::meshIndex, MeshRef::materialIndex and
+//   MaterialOverrideComponent::materialIndex are transient by design, and
+//   override texture indices are repaired only from a currently-staged
+//   material. The record codec strips them (verified by test).
+// - The record payload NEVER carries PrefabInstanceComponent/
+//   PrefabMemberComponent: those are scene-side components. A prefab file
+//   holds template entities; template identity is the templateId field.
+// - Record asset paths are stored verbatim (W1): no rebasing pass, and
+//   instantiate resolves them relative to the destination scene.
 //
 // Atomic save: write to "<path>.tmp" then replace, so a crash never leaves a
 // half-written prefab.
@@ -46,12 +59,19 @@ namespace rt2::core {
 // Independent file-format version for .rt2prefab (0 = none reserved).
 inline constexpr uint32_t kPrefabFormatVersion = 1;
 
-// A prefab asset document. For W0 the record list is always empty; W1 fills
-// it from a captured SubtreeSnapshot.
+// One entity in a prefab asset. templateId is the prefab-local identity
+// (frozen at creation); record is the shared per-entity payload.
+struct PrefabEntityRecord
+{
+    rt2::core::UUID     templateId;
+    SubtreeEntityRecord record;
+};
+
+// A prefab asset document.
 struct PrefabDocument
 {
     uint32_t version = kPrefabFormatVersion;
-    std::vector<SubtreeEntityRecord> entities;
+    std::vector<PrefabEntityRecord> entities;
 };
 
 class PrefabSerializer
@@ -60,19 +80,46 @@ public:
     // The .rt2prefab format version, independent of .rt2scene's schema.
     static constexpr uint32_t FormatVersion = kPrefabFormatVersion;
 
-    // Write a prefab file. W0 writes the envelope with an empty record list;
-    // a non-empty record list is rejected loudly (the codec is W1's).
+    // Write a prefab file (envelope + record codec). Atomic tmp+replace.
     static bool Save(const PrefabDocument& doc,
                      const std::filesystem::path& path,
                      Error& err);
 
     // Read a prefab file transactionally. Dest is replaced only on a fully
-    // valid header+version; a wrong header or version is a hard error. A
-    // non-empty record list is rejected loudly (decode is W1's).
+    // valid header+version+records; any failure leaves dest unchanged.
     static bool Load(PrefabDocument& doc,
                      const std::filesystem::path& path,
                      Error& err);
 };
+
+// ---- Record codec (defined in SceneSerializer.cpp) ----
+//
+// These reuse the scene per-component codecs. They are separate from
+// PrefabSerializer's envelope plumbing because the component codecs live in
+// SceneSerializer.cpp's internal helpers (W0 handover: reuse, don't
+// re-serialise components).
+//
+// Write: the payload is written exactly like a scene entity record, then the
+// transient resource-table indices are stripped (hard rule):
+//   - "meshRef.materialIndex"      (MeshRef::materialIndex is transient)
+//   - "materialOverride.material.*TextureIndex"  (repair needs a staged
+//     material; a prefab has none)
+// "meshIndex" is never written by the scene codec either.
+//
+// Read: the payload is decoded like a scene entity record. Stripped fields
+// are absent, so they default (meshIndex=0, materialIndex=-1) and the
+// instantiate path re-resolves them from source keys.
+
+// Serialize one prefab entity record. On failure returns false with `err`
+// filled; `out` is untouched on failure.
+bool PrefabRecordToJson(const PrefabEntityRecord& record,
+                        std::vector<AssetDiagnostic>& diagnostics,
+                        Error& err,
+                        json& out);
+
+// Parse one prefab entity record. On failure returns false with `err` filled;
+// `out` is untouched on failure.
+bool JsonToPrefabRecord(const json& j, Error& err, PrefabEntityRecord& out);
 
 } // namespace rt2::core
 

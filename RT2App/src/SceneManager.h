@@ -337,6 +337,57 @@ struct EditorCameraPose;
 		const std::optional<rt2::core::UUID>& parent,
 		const std::vector<rt2::core::UUID>& knownPastedUuids);
 
+	// ---- Phase 8 W1 prefab APIs ----
+
+	// Create a .rt2prefab asset from the given subtree roots (Phase 8 W1).
+	// The scene itself is NOT mutated — this is an asset-side operation, so
+	// its undo command stores the file-rewrite state rather than a scene
+	// snapshot. Captures the canonical subtree, mints ONE templateId per
+	// entity (frozen in the file, never regenerated), writes the file
+	// atomically, and mints/reads the sidecar identity via ResolveOrAssign.
+	// The templateIds are parallel to sourceSnapshot.entities (pre-order).
+	// On failure, ok=false with `error` filled and no file written.
+	struct PrefabCreationResult
+	{
+		bool ok = false;
+		rt2::core::Error error;
+		std::filesystem::path prefabPath;
+		rt2::core::UUID     assetId;                    // sidecar identity
+		SubtreeSnapshot     sourceSnapshot;             // captured subtree
+		std::vector<rt2::core::UUID> templateIds;       // per captured entity
+	};
+	PrefabCreationResult CreatePrefabFromSubtree(
+		const std::vector<rt2::core::UUID>& roots,
+		const std::filesystem::path& prefabPath);
+
+	// Instantiate a .rt2prefab asset into the live scene (Phase 8 W1).
+	// Same flat-UUID-list contract as DuplicateSubtreesWithUuids: the host
+	// reserves exactly CountCanonicalPrefabEntities(prefabPath) fresh UUIDs
+	// and the manager validates the count. Builds the instance into a temp
+	// document, resolves imported assets (SceneAssetResolver) there, merges
+	// the resolved resources into the live scene with base-offset rebasing,
+	// wires hierarchy through SceneHierarchy::RebuildChildren, and links the
+	// instance (PrefabInstanceComponent on the root, PrefabMemberComponent on
+	// every member, one fresh instanceId). Root names get the duplication
+	// " Copy" suffix (names are not identity). W1: instance = faithful copy
+	// plus a link; nothing distinguishes overridden vs inherited yet (W3).
+	// `diagnostics` receives resolver diagnostics for unresolvable assets.
+	struct InstantiationResult
+	{
+		EditorMutationResult mutation;
+		std::vector<rt2::core::UUID> createdRoots;
+		std::optional<rt2::core::UUID> instanceId;
+	};
+	InstantiationResult InstantiatePrefabWithUuids(
+		const std::filesystem::path& prefabPath,
+		const std::vector<rt2::core::UUID>& knownInstanceUuids,
+		std::vector<rt2::core::AssetDiagnostic>& diagnostics);
+
+	// The exact entity count a prefab will instantiate, used by the host to
+	// reserve UUIDs. Fails with an Error result when the file is invalid.
+	rt2::core::Result<size_t> CountCanonicalPrefabEntities(
+		const std::filesystem::path& prefabPath) const;
+
 	// Atomic multi-entity local-transform edit. Validates ALL UUIDs
 	// resolve, applies all local TRS in one pass, marks dirty once,
 	// refreshes affected camera subtrees once, bumps the revision ONCE,

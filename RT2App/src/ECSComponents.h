@@ -302,4 +302,46 @@ struct ScriptComponent
     rt2::core::ScriptFieldMap fieldValues;
 };
 
+// ============================================================================
+// Phase 8 — prefab instance components
+//
+// D1 (Phase 8 spec): an instance maps each of its entities back to the
+// template entity it came from, or overrides cannot reattach. Identity lives
+// in the ECS, serializes through the per-component machinery, and needs no
+// side table that can desync.
+//
+// PrefabInstanceComponent sits on the instance ROOT only: the durable
+// AssetReference to the .rt2prefab asset plus the per-instance instanceId
+// (fresh per instantiate, never shared between instances).
+//
+// PrefabMemberComponent sits on EVERY entity of the instance: instanceId
+// (grouped with the root's) plus templateId — the entity's identity inside
+// the prefab asset. templateId is minted once when the prefab asset is
+// created and frozen in the file; it is never regenerated and never derived
+// from a scene UUID at instantiate time (amendment A1).
+//
+// W1 scope note: an instance is a faithful copy plus a link. Nothing yet
+// distinguishes an overridden component from an inherited one (W3).
+// ============================================================================
+
+struct PrefabInstanceComponent
+{
+    // Durable reference to the .rt2prefab asset. kind must be
+    // AssetKind::Prefab. assetId is the sidecar identity (ResolveOrAssign).
+    AssetReference prefab;
+
+    // Per-instance identity, fresh per instantiate.
+    rt2::core::UUID instanceId;
+};
+
+struct PrefabMemberComponent
+{
+    // Groups this entity with the instance root's PrefabInstanceComponent.
+    rt2::core::UUID instanceId;
+
+    // The entity's identity inside the prefab asset — matches the
+    // PrefabEntityRecord::templateId frozen in the .rt2prefab file.
+    rt2::core::UUID templateId;
+};
+
 #endif // ECS_COMPONENTS_H

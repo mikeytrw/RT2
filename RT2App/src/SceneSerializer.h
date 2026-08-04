@@ -121,7 +121,7 @@ public:
     static bool CloneInMemory(const SceneDocument& src, SceneDocument& dst, Error& err);
 
     // Current schema version (written by Save).
-    static constexpr uint32_t SchemaVersion = 4;
+    static constexpr uint32_t SchemaVersion = 5;
     // Lowest readable schema version; v3 remains readable for migration.
     static constexpr uint32_t MinReadVersion = 3;
 };

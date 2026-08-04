@@ -88,20 +88,26 @@ bool PrefabSerializer::Save(const PrefabDocument& doc,
                      std::to_string(FormatVersion) + ")";
         return false;
     }
-    if (!doc.entities.empty())
-    {
-        // W0 boundary: do not silently drop records we cannot encode.
-        err.code = Error::InvalidArgument;
-        err.detail = "prefab record serialization is not implemented in "
-                     "Phase 8 W0 (the envelope is delivered now; the record "
-                     "codec lands in W1)";
-        return false;
-    }
 
     json root;
     root["header"]  = kPrefabHeader;
     root["version"] = doc.version;
-    root["entities"] = json::array();
+    json entityArray = json::array();
+    // The record codec emits advisory asset diagnostics (e.g. absolute
+    // paths); PrefabSerializer::Save has no diagnostics channel (W1 —
+    // recorded in the W1 report). Loud failures still propagate via err.
+    std::vector<rt2::core::AssetDiagnostic> droppedDiagnostics;
+    for (const auto& record : doc.entities)
+    {
+        json j;
+        if (!PrefabRecordToJson(record, droppedDiagnostics, err, j))
+        {
+            err.path = path.string() + ":" + err.path;
+            return false;
+        }
+        entityArray.push_back(std::move(j));
+    }
+    root["entities"] = std::move(entityArray);
 
     std::string content;
     try
@@ -179,19 +185,24 @@ bool PrefabSerializer::Load(PrefabDocument& doc,
         err.detail = "missing or invalid prefab entities array";
         return false;
     }
-    if (!root["entities"].empty())
+
+    // Parse every record before touching `doc` (transactional load).
+    PrefabDocument parsed;
+    parsed.version = version;
+    parsed.entities.reserve(root["entities"].size());
+    for (const auto& j : root["entities"])
     {
-        // W0 boundary: never silently drop records we cannot decode.
-        err.code = Error::Parse;
-        err.path = path.string();
-        err.detail = "prefab record decoding is not implemented in Phase 8 "
-                     "W0 (the envelope is delivered now; the record codec "
-                     "lands in W1)";
-        return false;
+        PrefabEntityRecord record;
+        if (!JsonToPrefabRecord(j, err, record))
+        {
+            err.path = path.string() + ":" + err.path;
+            return false;
+        }
+        parsed.entities.push_back(std::move(record));
     }
 
-    doc.version = version;
-    doc.entities.clear();
+    doc.version = parsed.version;
+    doc.entities = std::move(parsed.entities);
     return true;
 }
 

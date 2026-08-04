@@ -1664,6 +1664,19 @@ SubtreeEntityRecord BuildSubtreeRecord(const entt::registry& reg, entt::entity e
 		r.script    = *sc;
 	}
 
+	// Phase 8 W1: prefab instance link components (scene-side).
+	if (const auto* pic = reg.try_get<PrefabInstanceComponent>(e))
+	{
+		r.hasPrefabInstance = true;
+		r.prefabInstance    = *pic;
+	}
+
+	if (const auto* pmc = reg.try_get<PrefabMemberComponent>(e))
+	{
+		r.hasPrefabMember = true;
+		r.prefabMember    = *pmc;
+	}
+
 	return r;
 }
 
@@ -1734,6 +1747,17 @@ void ApplySubtreeRecord(const SubtreeEntityRecord& record, entt::registry& reg,
 		reg.emplace_or_replace<ScriptComponent>(e, record.script);
 	else
 		reg.remove<ScriptComponent>(e);
+
+	// Phase 8 W1: prefab instance link components (scene-side).
+	if (record.hasPrefabInstance)
+		reg.emplace_or_replace<PrefabInstanceComponent>(e, record.prefabInstance);
+	else
+		reg.remove<PrefabInstanceComponent>(e);
+
+	if (record.hasPrefabMember)
+		reg.emplace_or_replace<PrefabMemberComponent>(e, record.prefabMember);
+	else
+		reg.remove<PrefabMemberComponent>(e);
 }
 
 // Compare authored component state on an entity against a record. Returns
@@ -1912,6 +1936,28 @@ bool EntityMatchesRecord(const entt::registry& reg, entt::entity e,
 			if (it == live.fieldValues.end()) return false;
 			if (!(it->second == v)) return false;
 		}
+	}
+
+	// Phase 8 W1: prefab instance link components. Exact compare — the link
+	// is authored state that Undo/Redo must restore verbatim.
+	if (reg.all_of<PrefabInstanceComponent>(e) != record.hasPrefabInstance) return false;
+	if (record.hasPrefabInstance)
+	{
+		const auto& live = *reg.try_get<PrefabInstanceComponent>(e);
+		if (!(live.instanceId == record.prefabInstance.instanceId)) return false;
+		if (!(live.prefab.kind == record.prefabInstance.prefab.kind &&
+		      live.prefab.path == record.prefabInstance.prefab.path &&
+		      live.prefab.sourceKey == record.prefabInstance.prefab.sourceKey &&
+		      live.prefab.assetId == record.prefabInstance.prefab.assetId))
+			return false;
+	}
+
+	if (reg.all_of<PrefabMemberComponent>(e) != record.hasPrefabMember) return false;
+	if (record.hasPrefabMember)
+	{
+		const auto& live = *reg.try_get<PrefabMemberComponent>(e);
+		if (!(live.instanceId == record.prefabMember.instanceId)) return false;
+		if (!(live.templateId == record.prefabMember.templateId)) return false;
 	}
 
 	return true;
