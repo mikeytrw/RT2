@@ -111,15 +111,18 @@ public:
 // instantiate path re-resolves them from source keys.
 
 // Serialize one prefab entity record. On failure returns false with `err`
-// filled; `out` is untouched on failure.
+// filled; `out` is untouched on failure. `json` is nlohmann::json — the
+// using-declaration lives only in .cpp files, so the header names it fully.
 bool PrefabRecordToJson(const PrefabEntityRecord& record,
                         std::vector<AssetDiagnostic>& diagnostics,
                         Error& err,
-                        json& out);
+                        nlohmann::json& out);
 
 // Parse one prefab entity record. On failure returns false with `err` filled;
 // `out` is untouched on failure.
-bool JsonToPrefabRecord(const json& j, Error& err, PrefabEntityRecord& out);
+bool JsonToPrefabRecord(const nlohmann::json& j,
+                        Error& err,
+                        PrefabEntityRecord& out);
 
 } // namespace rt2::core
 

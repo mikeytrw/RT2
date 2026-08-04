@@ -13278,3 +13278,229 @@ Vulkan, ImGui, Walnut, or the editor host.
 No W2 defect was revealed. The intentional behavior change is that copied
 typed entity references now follow the copied subtree; references outside it
 remain pointed at their original UUIDs. Prefab instantiation remains W1 work.
+
+### Phase 8 W1 — prefab create-from-subtree and instantiate verification report (2026-08-04)
+
+**Grounded against commit `89ed336`** on branch
+`phase8-w1-prefab-create-instantiate`, master merged in. This report reflects
+the tree at commit time; the working tree additionally carries the W1
+implementation described below.
+
+#### Grounding findings that changed the intended scope
+
+Half of W1 already existed before this work was speced from the roadmap's
+"Phase 8 W2" text. Reading the tree rather than the roadmap found:
+
+- The prefab file codec is **not** in PrefabSerializer.cpp as the W0-era
+  comments claim; `PrefabSerializer::Save`/`Load` delegate record
+  serialization to `PrefabRecordToJson`/`JsonToPrefabRecord`, which live in
+  **SceneSerializer.cpp** (they reuse the scene per-component codec). The
+  HARD-RULE strip of transient resource indices
+  (`MeshRef::materialIndex`, `materialOverride.material.*TextureIndex`) is in
+  `StripTransientIndices` at `SceneSerializer.cpp:1494-1510` (a HARD RULE only
+  if that exclusion is on the write side of a scene save; on the prefab side it
+  is unconditional), and prefab nodes are staged from the same primitives as
+  the scene load path via `RegisterPrimitiveMesh` (`SceneSerializer.cpp:1403`).
+- The two record-codec declarations in `PrefabSerializer.h:118,122` used bare
+  `json` where only the `.cpp` file carries `using json = nlohmann::json`;
+  qualified them as `nlohmann::json` (no header using-declaration).
+- `SceneSerializer.cpp` schema is now **v5** (`SceneSerializer.h:
+  SchemaVersion 4 -> 5`). The `static_assert(PersistedComponents::Count == 11)`
+  fired because the two prefab components raised `Count` to 13; after verifying
+  EntityRecord serialization covers both end-to-end, the assert was updated to
+  `13` (`SceneSerializer.cpp:39`).
+- Existing v4-era assertion literals were stale: `Phase1ASceneAssetTests.cpp`,
+  `Phase7W5Tests.cpp`, `SceneSerializerTests.cpp` hard-coded
+  `"version": 4`/`== 4`; corrected to use `SceneSerializer::SchemaVersion` (or
+  the `5` literal where a fixture is written) and the `vertical-slice` asset
+  was bumped to version 5.
+
+#### What was built (implementation scope from TASK.md section A)
+
+- `SceneManager::CreatePrefabFromSubtree(roots, prefabPath)` — asset-side,
+  no live-scene mutation. Captures via the existing `CaptureSubtreeSnapshot`,
+  mints **one fresh templateId per captured entity** via `ReserveKnownUuids`
+  (parallel to `sourceSnapshot.entities`, pre-order — **not** derived from any
+  scene UUID, per amendment A1), writes the `.rt2prefab` atomically via
+  `PrefabSerializer::Save`, and resolves the sidecar asset identity via
+  `ResolveOrAssign`. Fills `PrefabCreationResult` per the header contract.
+  (`SceneManager.cpp:2529`)
+- `SceneManager::CountCanonicalPrefabEntities(prefabPath)` — mirrors
+  `CountCanonicalSubtreeEntities`: loads the file and returns the record count,
+  failing with an `Error` on an invalid file. (`SceneManager.cpp`)
+- `SceneManager::InstantiatePrefabWithUuids(prefabPath, knownInstanceUuids,
+  diagnostics)` — flat-UUID-list contract mirroring
+  `DuplicateSubtreesWithUuids`: validate count against
+  `CountCanonicalPrefabEntities`, validate non-nil/unique/absent from the live
+  document, then build the full plan in a temp `SceneDocument` before any
+  mutation; on failure roll back cleanly. Loads via `PrefabSerializer::Load`,
+  builds instances via the shared `ApplySubtreeRecord`, resolves imported
+  assets in the temp doc through `SceneAssetResolver` (diagnostics
+  out-param), merges resolved resources with base-offset rebasing, and wires
+  the hierarchy via `SceneHierarchy::RebuildChildren` (reused, not a hand-wired
+  parent/children loop). Links the instance: `PrefabInstanceComponent` on the
+  root (fresh instanceId + `AssetReference` to the prefab) and
+  `PrefabMemberComponent` on every member (same instanceId, templateId from
+  the file). Root name gets the locked `" Copy"` suffix. After UUID assignment
+  it invokes the shared W2 `EntityReferenceRemapper`, building the
+  template-scene-UUID → instance-UUID map from the file's own
+  `SubtreeEntityRecord.uuid` fields plus the copied `ScriptComponent` views, so
+  a script `Uuid` field pointing at a sibling inside the prefab resolves to
+  that sibling's instance — **not** the template and **not** a sibling
+  instance. (`SceneManager.cpp:2596`)
+- Undo/redo commands (`EditorStructuralCommands.h/.cpp`): asset-side
+  `CreatePrefabCommand` (scene never mutated; Undo restores prior file bytes or
+  removes a never-present file, Redo deterministically regenerates) and
+  scene-side `InstantiatePrefabCommand` (Undo `RemoveSubtreesExact`, Redo
+  `RestoreSubtrees` — same stored UUIDs, link verbatim). Both follow
+  `EditorCommand.h`'s carry-state-at-construction contract and the
+  no-compaction-while-history-live invariant.
+
+#### Permanent tests and discrimination proofs
+
+Nine permanent tests in the CPU-only target at
+`RT2Tests/src/Phase8W1PrefabTests.cpp` (registered in both `RT2Tests.vcxproj`
+and `premake5.lua`). For each the Debug solution was built, the named test was
+run alone, the actual red output was recorded, the fault was reverted, Debug
+was rebuilt, and the same test was confirmed green.
+
+1. **Multiple instances get unique UUIDs and remapped internal refs** — fault:
+   temporarily removed the `RemapCopiedScriptFields` call at
+   `SceneManager.cpp:2815`. Red (correct discrimination — sibling script refs
+   pointed at the template, not the instance):
+
+   ```text
+   Phase8W1PrefabTests.cpp(128): ERROR: CHECK( FieldUuid(*s1, "sibling") == inst1Child ) is NOT correct!
+   Phase8W1PrefabTests.cpp(129): ERROR: CHECK( FieldUuid(*s1, "sibling") != child ) is NOT correct!
+   ... (also 150, 152)
+   [doctest] test cases:  1 |  0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 37 | 33 passed | 4 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+2. **Prefab file never contains a resource-table index** — fault: disabled the
+   `materialIndex` erase in `StripTransientIndices`
+   (`SceneSerializer.cpp:1498`). Red:
+
+   ```text
+   Phase8W1PrefabTests.cpp(138): ERROR: CHECK( raw.find("materialIndex") == std::string::npos ) is NOT correct!
+   Phase8W1PrefabTests.cpp(154): ERROR: CHECK( rec.materialIndex == -1 ) is NOT correct!
+   [doctest] test cases:  1 |  0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 14 | 12 passed | 2 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+3. **templateIds stable, not derived from scene UUIDs** — fault: derived
+   templateIds from the capture's scene UUIDs instead of fresh `ReserveKnownUuids`
+   (`SceneManager.cpp:2556`). Red:
+
+   ```text
+   Phase8W1PrefabTests.cpp(163): ERROR: CHECK( created.templateIds[0] != root ) is NOT correct!
+   Phase8W1PrefabTests.cpp(166): ERROR: CHECK( created.templateIds[1] != child ) is NOT correct!
+   [doctest] test cases:  1 |  0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 25 | 23 passed | 2 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+4. **Instance link components survive scene round-trip** — fault: suppressed
+   the `prefabMember` write (`SceneSerializer.cpp:828`). Red:
+
+   ```text
+   Phase8W1PrefabTests.cpp(209): FATAL ERROR: REQUIRE( msg0 ) is NOT correct!
+   [doctest] test cases:  1 |  0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 11 | 10 passed | 1 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+5. **InstantiatePrefabCommand Undo/Redo restores the link** — fault: suppressed
+   the `PrefabInstance`/`PrefabMember` writes in `ApplySubtreeRecord`
+   (`SceneManager.cpp:1797-1805`) that `RestoreSubtrees` uses on Redo. Red:
+
+   ```text
+   [doctest] test cases:  1 |  0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 14 | 13 passed | 1 failed |
+   [doctest] Status: FAILURE!   (REQUIRE( instComp ) after Redo — link absent)
+   ```
+
+6. **CreatePrefabCommand Undo restores prior contents, Redo regenerates** —
+   fault: suppressed the before-contents write in `CreatePrefabCommand::Undo`
+   (`EditorStructuralCommands.cpp`). Red:
+
+   ```text
+   Phase8W1PrefabTests.cpp(241): ERROR: CHECK( ReadFileBinary(prefabPath) == stale ) is NOT correct!
+   [doctest] test cases:  1 |  0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 13 | 12 passed | 1 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+7. **CreatePrefabCommand Undo removes a never-present file** — fault: in the
+   empty-prior branch, `Undo` no longer removed the file. Red:
+
+   ```text
+   Phase8W1PrefabTests.cpp(270): ERROR: CHECK_FALSE( std::filesystem::exists(prefabPath) ) is NOT correct!
+   [doctest] test cases: 1 | 0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 7 | 6 passed | 1 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+8. **B2 regression: instantiating a primitive registers its mesh** — fault:
+   replaced `RegisterPrimitiveMesh` at `SceneManager.cpp:2663` with a
+   zeroed `meshIndex` (no registration). Red:
+
+   ```text
+   Phase8W1PrefabTests.cpp(307): FATAL ERROR: REQUIRE( ref->meshIndex < countAfter ) is NOT correct!
+   [doctest] test cases: 1 | 0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 7 | 6 passed | 1 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+9. **Instantiate validates UUID count/uniqueness atomically** — fault: disabled
+   the count check and the seen-set duplicate check in
+   `InstantiatePrefabWithUuids` (`SceneManager.cpp:2622`). Red — the guard is
+   load-bearing; with it removed a wrong UUID count proceeds and aborts:
+
+   ```text
+   (no assertion summary — process aborted)
+   : Assertion failed: vector subscript out of range
+   TEST EXIT=-1073740791 (abort)
+   ```
+
+Every fault reverted byte-for-byte and the full suites re-run green. No fault
+that was expected to discriminate failed to go red; no test was adjusted to
+make a fault pass.
+
+#### Verification (measured this session)
+
+- **Release solution build**: passed, 0 errors.
+- **Debug solution build**: passed, 0 errors.
+- **Release full RT2Tests** (run from repo root): **781/781 cases**,
+  **146,955/146,955 assertions**; passed.
+- **Debug full RT2Tests** (run from repo root): **781/781 cases**,
+  **146,955/146,955 assertions**; passed. (Baseline before W1, from the W2
+  report: 772/772, 146,801 — W1 adds 9 test cases and 154 assertions.)
+- **`powershell -File run_script_test.ps1`**: passed — 60 frames, 1 entity, no
+  mismatches.
+- **`powershell -File run_slice_test.ps1`**: passed — 60 steps, authoring
+  intact (exercises the v5-bumped `vertical-slice.rt2scene`).
+- **`powershell -File run_recovery_test.ps1`**: passed — recovery regression.
+
+#### Defects found
+
+- The transient Release test-worker failure reported at the start of this
+  phase (anchor: "Assertion failed" during occasional Release TestWorker runs)
+  was **investigated but not reproduced**: 16 consecutive green Release runs
+  (sequential, concurrent Release+Debug, and Release-while-Debug-rebuild) with
+  no capture from the one failing run, so no cause was isolable and it is left
+  **unresolved** rather than mislabeled as fixed. No W1 code path touches the
+  TestWorker; shipping W1 does not claim to have addressed it.
+- The transient resource-index exclusion plus the stale v4 static-assert and
+  the stale test literals above were grounded and corrected, not assumed.
+
+#### Headless note
+
+The RT2App executable's headless CLI (`--headless`) can load and render scenes
+but exposes **no prefab create/instantiate action**, so a headless-RT2App
+instantiate/reload sanity drive is **not directly exercisable** without adding
+a new CLI scenario — reported as blocked rather than passed. The identical
+headless instantiate → save → reload → verify-link round-trip is covered by
+the permanent W1-D test in the CPU-only suite (test 4 above).

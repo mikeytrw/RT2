@@ -22,6 +22,9 @@
     -- Phase 8 W2: shared entity-reference remapper tests (same rationale).
     files { "src/Phase8W2EntityReferenceTests.cpp" }
 
+    -- Phase 8 W1: prefab create-from-subtree + instantiate tests (same rationale).
+    files { "src/Phase8W1PrefabTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 

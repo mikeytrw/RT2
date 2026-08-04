@@ -36,7 +36,7 @@ using json = nlohmann::json;
 
 namespace rt2::core {
 
-static_assert(PersistedComponents::Count == 11,
+static_assert(PersistedComponents::Count == 13,
               "Update EntityRecord serialization when authored component coverage changes");
 
 // ============================================================================
@@ -1175,7 +1175,7 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
 
 // Reconstruct mesh geometry from a primitive and register it.
 // Returns the mesh index in the registry.
-uint32_t RegisterPrimitiveMesh(MeshRegistry& meshReg, const PrimitiveComponent& prim)
+uint32_t RegisterPrimitiveMeshImpl(MeshRegistry& meshReg, const PrimitiveComponent& prim)
 {
     MeshData meshData;
     switch (prim.kind)
@@ -1399,6 +1399,14 @@ std::vector<EntityRecord> CollectRecords(const SceneDocument& doc)
 }
 
 } // anonymous namespace
+
+// Public wrapper (declared in SceneSerializer.h): shares the exact primitive
+// geometry rebuild between the scene load path and the prefab instantiate
+// path in SceneManager.cpp.
+uint32_t RegisterPrimitiveMesh(MeshRegistry& meshReg, const PrimitiveComponent& prim)
+{
+    return RegisterPrimitiveMeshImpl(meshReg, prim);
+}
 
 // ============================================================================
 // Prefab record codec (Phase 8 W1)

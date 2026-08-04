@@ -1,6 +1,11 @@
 #include "EditorStructuralCommands.h"
 
+#include "PrefabSerializer.h"
+
 #include <algorithm>
+#include <cstdint>
+#include <fstream>
+#include <string>
 
 namespace
 {
@@ -86,6 +91,83 @@ EditorMutationResult PasteSubtreesCommand::Undo(SceneManager& scene)
 }
 
 // ============================================================================
+// Phase 8 W1 prefab commands.
+//
+// InstantiatePrefabCommand is the scene-side command: Execute/Redo restore
+// the captured instance snapshot (same stored UUIDs, PrefabInstance/
+// PrefabMember link verbatim), Undo removes it exactly. CreatePrefabCommand
+// is the asset-side command: the scene is never mutated, so Execute/Redo
+// deterministically regenerate the .rt2prefab file from the authoritative
+// post-mutation result, and Undo restores the pre-mutation file contents.
+// ============================================================================
+
+EditorMutationResult InstantiatePrefabCommand::Execute(SceneManager& scene)
+{
+	return scene.RestoreSubtrees(m_Snapshot);
+}
+
+EditorMutationResult InstantiatePrefabCommand::Undo(SceneManager& scene)
+{
+	return scene.RemoveSubtreesExact(m_Snapshot);
+}
+
+EditorMutationResult CreatePrefabCommand::Execute(SceneManager& scene)
+{
+	// Regenerate the file deterministically from the authoritative
+	// post-mutation result. PrefabSerializer::Save is atomic (tmp+replace)
+	// and dump(2) is deterministic, so Redo reproduces the exact bytes the
+	// initial create wrote.
+	rt2::core::PrefabDocument doc;
+	doc.entities.reserve(m_Result.sourceSnapshot.entities.size());
+	for (std::size_t i = 0; i < m_Result.sourceSnapshot.entities.size(); ++i)
+	{
+		rt2::core::PrefabEntityRecord record;
+		record.templateId = m_Result.templateIds[i];
+		record.record     = m_Result.sourceSnapshot.entities[i];
+		doc.entities.push_back(std::move(record));
+	}
+	rt2::core::Error err;
+	if (!rt2::core::PrefabSerializer::Save(doc, m_PrefabPath, err))
+		return EditorMutationResult::Failure(err.code, err.path,
+			"CreatePrefabCommand::Execute: " + err.detail);
+	EditorMutationResult result;
+	result.syncImpact = rt2::core::SyncImpact::None;
+	return result;
+}
+
+EditorMutationResult CreatePrefabCommand::Undo(SceneManager& scene)
+{
+	// Empty before-contents means the file did not exist before the create:
+	// Undo removes it. Otherwise restore the prior bytes. Writes are checked
+	// (never a silent no-op); a restore failure surfaces as a loud Failure.
+	if (m_BeforeContents.empty())
+	{
+		std::error_code ec;
+		std::filesystem::remove(m_PrefabPath, ec);
+		EditorMutationResult result;
+		result.syncImpact = rt2::core::SyncImpact::None;
+		return result;
+	}
+	{
+		std::ofstream out(m_PrefabPath, std::ios::binary | std::ios::trunc);
+		if (!out)
+			return EditorMutationResult::Failure(rt2::core::Error::Io,
+				m_PrefabPath.string(),
+				"CreatePrefabCommand::Undo: failed to open file to restore prior contents");
+		out.write(reinterpret_cast<const char*>(m_BeforeContents.data()),
+		          static_cast<std::streamsize>(m_BeforeContents.size()));
+		out.flush();
+		if (!out)
+			return EditorMutationResult::Failure(rt2::core::Error::Io,
+				m_PrefabPath.string(),
+				"CreatePrefabCommand::Undo: failed to restore prior file contents");
+	}
+	EditorMutationResult result;
+	result.syncImpact = rt2::core::SyncImpact::None;
+	return result;
+}
+
+// ============================================================================
 // Reparent command — Execute/Redo apply after-edits, Undo applies before-edits
 // with PreserveLocal (the command stored the exact before-local TRS).
 // ============================================================================
@@ -153,6 +235,29 @@ std::unique_ptr<IEditorCommand> MakePasteSubtreesCommand(
 	if (createdRoots.empty()) return nullptr;
 	return std::make_unique<PasteSubtreesCommand>(std::move(snapshot),
 	                                              std::move(createdRoots));
+}
+
+std::unique_ptr<IEditorCommand> MakeCreatePrefabCommand(
+	std::filesystem::path prefabPath,
+	SceneManager::PrefabCreationResult result,
+	std::vector<uint8_t> beforeFileContents)
+{
+	if (prefabPath.empty() || !result.ok) return nullptr;
+	if (result.sourceSnapshot.entities.size() != result.templateIds.size())
+		return nullptr;
+	if (result.sourceSnapshot.entities.empty()) return nullptr;
+	return std::make_unique<CreatePrefabCommand>(std::move(prefabPath),
+	                                             std::move(result),
+	                                             std::move(beforeFileContents));
+}
+
+std::unique_ptr<IEditorCommand> MakeInstantiatePrefabCommand(
+	SubtreeSnapshot snapshot,
+	std::vector<rt2::core::UUID> createdRoots)
+{
+	if (createdRoots.empty()) return nullptr;
+	return std::make_unique<InstantiatePrefabCommand>(std::move(snapshot),
+	                                                  std::move(createdRoots));
 }
 
 std::unique_ptr<IEditorCommand> MakeReparentCommandIfEffective(

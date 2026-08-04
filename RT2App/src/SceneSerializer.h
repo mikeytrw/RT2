@@ -67,6 +67,12 @@ namespace rt2::core {
 
 struct AssetDiagnostic;
 
+// Reconstruct mesh geometry from a primitive and register it in the given
+// mesh registry. Returns the new mesh index, or 0 on an unknown primitive
+// kind. Shared by the scene load path (BuildDocumentFromRecords) and the
+// prefab instantiate path so both rebuild primitive geometry identically.
+uint32_t RegisterPrimitiveMesh(MeshRegistry& meshReg, const PrimitiveComponent& prim);
+
 struct SceneLoadReport
 {
     uint32_t sourceVersion = 0;

@@ -10,6 +10,9 @@
 #include "ScriptComponentValidation.h"
 #include "ScriptAssetPath.h"
 #include "AssetIdentity.h"
+#include "PrefabSerializer.h"
+#include "SceneSerializer.h"
+#include "SceneAssetResolver.h"
 #include "stb_image.h"
 #include <tinyexr.h>
 #include <glm/glm.hpp>
@@ -2517,6 +2520,346 @@ rt2::core::Result<size_t> SceneManager::CountCanonicalSubtreeEntities(
 		count += subtree.size();
 	}
 	return rt2::core::Result<size_t>::Ok(count);
+}
+
+// ============================================================================
+// Phase 8 W1 prefab APIs
+// ============================================================================
+
+SceneManager::PrefabCreationResult SceneManager::CreatePrefabFromSubtree(
+	const std::vector<rt2::core::UUID>& roots,
+	const std::filesystem::path& prefabPath)
+{
+	PrefabCreationResult out;
+	out.prefabPath = prefabPath;
+	if (roots.empty())
+	{
+		out.error.code = rt2::core::Error::InvalidEntity;
+		out.error.detail = "CreatePrefabFromSubtree: no roots supplied";
+		return out;
+	}
+
+	// Capture the canonical subtree via the existing structural-command
+	// capture path. An empty capture is a hard failure — never a silent
+	// empty prefab file.
+	out.sourceSnapshot = CaptureSubtreeSnapshot(roots);
+	if (out.sourceSnapshot.entities.empty())
+	{
+		out.error.code = rt2::core::Error::InvalidEntity;
+		out.error.detail = "CreatePrefabFromSubtree: no entities captured from the supplied roots";
+		return out;
+	}
+
+	// Mint ONE fresh templateId per captured entity, parallel to
+	// sourceSnapshot.entities in the same pre-order. templateId is frozen in
+	// the file and NEVER derived from the entity's scene UUID (amendment A1).
+	out.templateIds = ReserveKnownUuids(out.sourceSnapshot.entities.size());
+
+	// Build the document and write it atomically (tmp+replace).
+	rt2::core::PrefabDocument doc;
+	doc.entities.reserve(out.sourceSnapshot.entities.size());
+	for (std::size_t i = 0; i < out.sourceSnapshot.entities.size(); ++i)
+	{
+		rt2::core::PrefabEntityRecord record;
+		record.templateId = out.templateIds[i];
+		record.record     = out.sourceSnapshot.entities[i];
+		doc.entities.push_back(std::move(record));
+	}
+	rt2::core::Error saveErr;
+	if (!rt2::core::PrefabSerializer::Save(doc, prefabPath, saveErr))
+	{
+		out.error = saveErr;
+		return out;
+	}
+
+	// Mint/read the sidecar asset identity. A sidecar write failure does not
+	// abort the save (the scene still gets a usable session-or-durable ID),
+	// matching the existing import/load pattern.
+	bool minted = false;
+	rt2::core::Error idErr;
+	out.assetId = rt2::core::ResolveOrAssign(prefabPath, *m_UuidProvider, minted, idErr);
+
+	out.ok = true;
+	return out;
+}
+
+rt2::core::Result<size_t> SceneManager::CountCanonicalPrefabEntities(
+	const std::filesystem::path& prefabPath) const
+{
+	rt2::core::PrefabDocument doc;
+	rt2::core::Error err;
+	if (!rt2::core::PrefabSerializer::Load(doc, prefabPath, err))
+		return rt2::core::Result<size_t>::Fail(err.code, err.path, err.detail);
+	return rt2::core::Result<size_t>::Ok(doc.entities.size());
+}
+
+SceneManager::InstantiationResult SceneManager::InstantiatePrefabWithUuids(
+	const std::filesystem::path& prefabPath,
+	const std::vector<rt2::core::UUID>& knownInstanceUuids,
+	std::vector<rt2::core::AssetDiagnostic>& diagnostics)
+{
+	InstantiationResult out;
+
+	// Load the prefab. A missing/invalid file is a hard failure — never a
+	// silent empty instance.
+	rt2::core::PrefabDocument doc;
+	rt2::core::Error loadErr;
+	if (!rt2::core::PrefabSerializer::Load(doc, prefabPath, loadErr))
+	{
+		out.mutation = EditorMutationResult::Failure(loadErr.code, loadErr.path,
+			"InstantiatePrefabWithUuids: failed to load prefab: " + loadErr.detail);
+		return out;
+	}
+	if (doc.entities.empty())
+	{
+		out.mutation = EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			prefabPath.string(),
+			"InstantiatePrefabWithUuids: prefab file contains no entities");
+		return out;
+	}
+
+	// Validate the UUID count exactly matches the prefab's entity count.
+	if (knownInstanceUuids.size() != doc.entities.size())
+	{
+		out.mutation = EditorMutationResult::Failure(rt2::core::Error::InvalidEntity,
+			{}, "InstantiatePrefabWithUuids: known UUID count does not match the prefab entity count");
+		return out;
+	}
+
+	// Validate all supplied UUIDs are non-nil/unique/absent from the document.
+	std::unordered_set<rt2::core::UUID> seen;
+	for (const auto& uuid : knownInstanceUuids)
+	{
+		if (uuid.IsNull() || m_Authoring.uuidIndex.Contains(uuid) || !seen.insert(uuid).second)
+		{
+			out.mutation = EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+				uuid.ToString(),
+				"InstantiatePrefabWithUuids: known UUID is nil, duplicate, or already present");
+			return out;
+		}
+	}
+
+	// ---- Build the complete plan in a temp document before mutating. ----
+	// Each record's SubtreeEntityRecord.uuid is the template entity's ORIGINAL
+	// scene UUID as captured at prefab creation; it is the key for hierarchy
+	// wiring inside the instance and for the script-reference remap below.
+	rt2::core::SceneDocument temp;
+	std::unordered_map<rt2::core::UUID, entt::entity> templateUuidToTempEntity;
+	std::vector<entt::entity> tempEntities;
+	tempEntities.reserve(doc.entities.size());
+	templateUuidToTempEntity.reserve(doc.entities.size());
+	for (std::size_t i = 0; i < doc.entities.size(); ++i)
+	{
+		const auto& record = doc.entities[i].record;
+		const auto entity = temp.ecs.registry.create();
+		ApplySubtreeRecord(record, temp.ecs.registry, entity);
+		// Primitive geometry is rebuilt at instantiate, exactly as the scene
+		// load path does (RegisterPrimitiveMesh in BuildDocumentFromRecords):
+		// the prefab file carries the PrimitiveComponent but never resource
+		// indices, so the mesh must be re-registered here. The index is
+		// rebased into the live scene's registry by the merge below.
+		if (record.hasPrimitive)
+		{
+			const uint32_t primMeshIdx = rt2::core::RegisterPrimitiveMesh(
+				temp.ecs.meshRegistry, record.primitive);
+			if (auto* ref = temp.ecs.registry.try_get<MeshRef>(entity))
+				ref->meshIndex = primMeshIdx;
+			else
+				temp.ecs.registry.emplace<MeshRef>(entity, primMeshIdx, -1);
+		}
+		if (!temp.AssignKnownUuid(entity, knownInstanceUuids[i]))
+		{
+			// Cannot happen (validated unique/absent), but keep it loud.
+			out.mutation = EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+				knownInstanceUuids[i].ToString(),
+				"InstantiatePrefabWithUuids: failed to assign known UUID in the staging document");
+			return out;
+		}
+		if (!record.uuid.IsNull())
+		{
+			if (!templateUuidToTempEntity.emplace(record.uuid, entity).second)
+			{
+				out.mutation = EditorMutationResult::Failure(rt2::core::Error::Parse,
+					record.uuid.ToString(),
+					"InstantiatePrefabWithUuids: prefab contains duplicate template scene UUID");
+				return out;
+			}
+		}
+		tempEntities.push_back(entity);
+	}
+
+	// Wire hierarchy inside the staging document. Parents are template scene
+	// UUIDs; entities whose parent lies outside the prefab become instance
+	// roots. RebuildChildren validates the prefab's internal topology.
+	for (std::size_t i = 0; i < doc.entities.size(); ++i)
+	{
+		const auto& record = doc.entities[i].record;
+		if (record.parentUuid.IsNull())
+			continue;
+		const auto parentIt = templateUuidToTempEntity.find(record.parentUuid);
+		if (parentIt == templateUuidToTempEntity.end())
+			continue; // external parent — entity is an instance root
+		temp.ecs.registry.emplace<Hierarchy>(tempEntities[i]).parent = parentIt->second;
+	}
+	{
+		rt2::core::Error hierErr;
+		if (!SceneHierarchy::RebuildChildren(temp.ecs.registry, hierErr))
+		{
+			out.mutation = EditorMutationResult::Failure(hierErr.code, hierErr.path,
+				"InstantiatePrefabWithUuids: prefab hierarchy is invalid: " + hierErr.detail);
+			return out;
+		}
+	}
+
+	// Resolve imported assets in the staging document. Missing assets emit
+	// diagnostics but do not fail unless every imported entity is
+	// unresolvable (SceneAssetResolver contract).
+	{
+		rt2::core::Error resolveErr;
+		if (!rt2::core::SceneAssetResolver::ResolveAll(temp, m_AssetResolutionContext, diagnostics, resolveErr))
+		{
+			out.mutation = EditorMutationResult::Failure(resolveErr.code, resolveErr.path,
+				"InstantiatePrefabWithUuids: asset resolution failed: " + resolveErr.detail);
+			return out;
+		}
+	}
+
+	// ---- Merge the resolved resources into the live scene ----
+	// Base-offset rebasing mirrors MergeImportedECS: rebase the staging
+	// scene's resource indices, then append its resources to the live scene.
+	auto& dst = m_EcsScene;
+	auto& dstReg = dst.registry;
+
+	const uint32_t meshBase = dst.meshRegistry.GetCount();
+	const int matBase = (int)dst.materials.size();
+	const int texBase = (int)dst.textures.size();
+	{
+		IndexRebase rebase;
+		rebase.mesh.SetBase(meshBase);
+		rebase.material.SetBase(matBase);
+		rebase.texture.SetBase(texBase);
+		RebaseIndices(temp.ecs, rebase);
+	}
+	for (uint32_t i = 0; i < temp.ecs.meshRegistry.GetCount(); ++i)
+		dst.meshRegistry.AddMesh(temp.ecs.meshRegistry.GetMesh(i));
+	for (const auto& sm : temp.ecs.materials)
+		dst.materials.push_back(sm);
+	for (auto& st : temp.ecs.textures)
+		dst.textures.push_back(std::move(st));
+
+	// Create live entities, copy authored components, assign known UUIDs.
+	// AssignKnownUuid cannot fail here (all validated above); the rollback
+	// destroys created entities + index entries on any unexpected failure.
+	std::unordered_map<entt::entity, entt::entity> entityMap;
+	std::vector<entt::entity> liveEntities;
+	std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>> templateToInstance;
+	liveEntities.reserve(tempEntities.size());
+	entityMap.reserve(tempEntities.size());
+	bool instanceRenderable = false;
+	auto rollbackCreated = [&]() {
+		for (const auto e : liveEntities)
+		{
+			if (const auto* idc = dstReg.try_get<EntityIdComponent>(e))
+				m_Authoring.uuidIndex.Erase(idc->id);
+			dstReg.destroy(e);
+		}
+		liveEntities.clear();
+		entityMap.clear();
+	};
+	for (std::size_t i = 0; i < tempEntities.size(); ++i)
+	{
+		const auto live = dstReg.create();
+		entityMap.emplace(tempEntities[i], live);
+		CopyAuthoredComponents(temp.ecs.registry, tempEntities[i], dstReg, live);
+		if (!m_Authoring.AssignKnownUuid(live, knownInstanceUuids[i]))
+		{
+			rollbackCreated();
+			out.mutation = EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+				knownInstanceUuids[i].ToString(),
+				"InstantiatePrefabWithUuids: failed to assign known UUID");
+			return out;
+		}
+		liveEntities.push_back(live);
+		templateToInstance.emplace_back(doc.entities[i].record.uuid, knownInstanceUuids[i]);
+		instanceRenderable = instanceRenderable || dstReg.all_of<MeshRef>(live);
+	}
+
+	// Wire hierarchy in the live scene from the staging hierarchy, then let
+	// RebuildChildren reconstruct every children cache (NOT a hand-wired
+	// parent/children loop — the header contract).
+	for (std::size_t i = 0; i < tempEntities.size(); ++i)
+	{
+		const auto* srcHier = temp.ecs.registry.try_get<Hierarchy>(tempEntities[i]);
+		if (!srcHier || srcHier->parent == entt::null)
+			continue;
+		const auto parentIt = entityMap.find(srcHier->parent);
+		if (parentIt == entityMap.end())
+			continue;
+		dstReg.emplace<Hierarchy>(liveEntities[i]).parent = parentIt->second;
+	}
+	{
+		rt2::core::Error hierErr;
+		if (!SceneHierarchy::RebuildChildren(dstReg, hierErr))
+		{
+			rollbackCreated();
+			out.mutation = EditorMutationResult::Failure(hierErr.code, hierErr.path,
+				"InstantiatePrefabWithUuids: failed to wire instance hierarchy: " + hierErr.detail);
+			return out;
+		}
+	}
+
+	// Remap UUID-typed script fields exactly as the duplication sibling paths
+	// do: template scene UUID -> freshly assigned instance UUID, plus the
+	// copied ScriptComponent views, so a script Uuid field pointing at a
+	// sibling inside the prefab resolves to that sibling's instance.
+	RemapCopiedScriptFields(templateToInstance, liveEntities, dstReg);
+
+	// Link the instance. PrefabInstanceComponent sits on the instance root
+	// (the first record in the file, i.e. the pre-order root); every member
+	// carries instanceId + the frozen templateId from the file. The prefab
+	// reference carries the sidecar identity via ResolveOrAssign.
+	const rt2::core::UUID instanceId = ReserveKnownUuid();
+	if (!liveEntities.empty())
+	{
+		bool minted = false;
+		rt2::core::Error idErr;
+		auto& inst = dstReg.emplace<PrefabInstanceComponent>(liveEntities[0]);
+		inst.prefab = AssetReference{ AssetKind::Prefab,
+			prefabPath.string(), {}, {},
+			rt2::core::ResolveOrAssign(prefabPath, *m_UuidProvider, minted, idErr) };
+		inst.instanceId = instanceId;
+	}
+	for (std::size_t i = 0; i < tempEntities.size(); ++i)
+	{
+		auto& member = dstReg.emplace<PrefabMemberComponent>(liveEntities[i]);
+		member.instanceId = instanceId;
+		member.templateId = doc.entities[i].templateId;
+	}
+
+	// Collect created roots (entities whose parent is external or nil) and
+	// append the duplication " Copy" suffix to root names (names are not
+	// identity).
+	for (std::size_t i = 0; i < doc.entities.size(); ++i)
+	{
+		const auto& record = doc.entities[i].record;
+		if (!record.parentUuid.IsNull() &&
+		    templateUuidToTempEntity.count(record.parentUuid) != 0)
+			continue; // not a root of the instance
+		out.createdRoots.push_back(knownInstanceUuids[i]);
+		if (auto* name = dstReg.try_get<NameComponent>(liveEntities[i]))
+			name->name += " Copy";
+		SceneGraph::MarkDirty(dstReg, liveEntities[i]);
+	}
+
+	NotifyAuthoringChanged();
+	m_EntityCacheDirty = true;
+	out.instanceId = instanceId;
+	out.mutation.success = true;
+	out.mutation.syncImpact = instanceRenderable
+		? rt2::core::SyncImpact::Structural : rt2::core::SyncImpact::None;
+	for (const auto& root : out.createdRoots)
+		out.mutation.affectedEntities.push_back(root);
+	return out;
 }
 
 EditorMutationResult SceneManager::CreateEmptyWithUuid(
