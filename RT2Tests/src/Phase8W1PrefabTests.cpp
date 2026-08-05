@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -380,6 +381,44 @@ TEST_CASE("Phase 8 W1: logical-commit manifest residue is recovered idempotently
 	std::filesystem::remove_all(dir);
 }
 
+TEST_CASE("Phase 8 W1 recovery binds a case-alias root to a genuine rollback residue")
+{
+	const auto dir = UniqueTempDir("p8w1_recovery_case_alias");
+	const auto path = dir / "case_alias.rt2prefab";
+	WriteRaw(path, "before\n");
+	auto tx = PrefabFileTransaction::Begin(path, {}, false);
+	REQUIRE(tx.IsOk());
+	REQUIRE(tx.value->CapturePair().IsOk());
+	SetPathTransactionFaultForTests(PathTransactionFaultPoint::RollbackRestore);
+	auto failedRollback = tx.value->Rollback();
+	ClearPathTransactionFaultForTests();
+	REQUIRE_FALSE(failedRollback.IsOk());
+	// Keep the durable pre-commit manifest and backup through destruction; the
+	// next recovery call is the crash-equivalent owner of restoration.
+	SetPathTransactionFaultForTests(PathTransactionFaultPoint::RollbackRestore);
+	tx.value.reset();
+	ClearPathTransactionFaultForTests();
+
+	auto aliasText = dir.wstring();
+	std::transform(aliasText.begin(), aliasText.end(), aliasText.begin(),
+		[](wchar_t c) { return std::towlower(c); });
+	const std::filesystem::path alias(aliasText);
+	REQUIRE(PrefabFileTransaction::RecoverDirectory(alias).IsOk());
+	CHECK(ReadFileBinary(path) == "before\n");
+	bool manifestRemains = false;
+	bool backupRemains = false;
+	for (const auto& entry : std::filesystem::directory_iterator(dir))
+	{
+		manifestRemains = manifestRemains || entry.path().extension() == ".manifest";
+		backupRemains = backupRemains || entry.path().extension() == ".bak";
+	}
+	CHECK_FALSE(manifestRemains);
+	CHECK_FALSE(backupRemains);
+	REQUIRE(PrefabFileTransaction::RecoverDirectory(alias).IsOk());
+	CHECK(ReadFileBinary(path) == "before\n");
+	std::filesystem::remove_all(dir);
+}
+
 TEST_CASE("Phase 8 W1 recovery quarantines truncated and relocated manifests")
 {
 	const auto dir = UniqueTempDir("p8w1_recovery_corrupt_manifest");
@@ -416,9 +455,15 @@ TEST_CASE("Phase 8 W1 recovery quarantines truncated and relocated manifests")
 		out.write(reinterpret_cast<const char*>(image.data()), image.size());
 	}
 	REQUIRE(PrefabFileTransaction::RecoverDirectory(dir).IsOk());
-	CHECK_FALSE(std::filesystem::exists(planted));
-	CHECK(std::filesystem::exists(dir / ".rt2txn-planted.manifest.corrupt"));
+	CHECK(std::filesystem::exists(planted));
+	CHECK_FALSE(std::filesystem::exists(dir / ".rt2txn-planted.manifest.corrupt"));
 	CHECK(ReadFileBinary(externalAsset) == "DO NOT TOUCH\n");
+	REQUIRE(PrefabFileTransaction::RecoverDirectory(dir).IsOk());
+	CHECK(std::filesystem::exists(planted));
+	CHECK(ReadFileBinary(externalAsset) == "DO NOT TOUCH\n");
+	auto unrelatedAfterMismatch = PrefabFileTransaction::Begin(dir / "unrelated-after-mismatch.rt2prefab", {}, false);
+	REQUIRE(unrelatedAfterMismatch.IsOk());
+	unrelatedAfterMismatch.value.reset();
 	std::filesystem::remove_all(external);
 	std::filesystem::remove_all(dir);
 }

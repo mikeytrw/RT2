@@ -13843,3 +13843,14 @@ project open remain available. Recovery also rejects manifests whose recorded
 asset/sidecar parent is not the directory being scanned before touching any
 recorded path. CreatePrefabCommand remains the approved asset-only replay; the
 coordinated asset+sidecar path remains owned by CreatePrefabFromSubtree.
+
+### Parent-identity recovery supersession note (2026-08-05)
+
+Recovery now opens each manifest-recorded asset/sidecar parent with a
+non-following directory handle and compares its `FILE_ID_INFO` pair
+(`VolumeSerialNumber` plus 128-bit `FileId`) with the held scanned-root
+identity. Case, 8.3, and equivalent path aliases are therefore accepted when
+they resolve to the same directory. A CRC-valid manifest whose parent cannot
+be opened or whose identity differs is left intact with a structured warning;
+it is never terminally renamed or allowed to drive path mutation. Corrupt or
+truncated manifests retain the existing `.corrupt` quarantine policy.

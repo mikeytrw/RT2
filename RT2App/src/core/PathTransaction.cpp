@@ -900,8 +900,35 @@ Result<void> PrefabFileTransaction::RecoverDirectory(const std::filesystem::path
 {
     const auto root = std::filesystem::absolute(directory).lexically_normal();
     std::error_code ec;
-    if (!std::filesystem::is_directory(root, ec) || ec)
+    if (!IsLocalNtfs(root) || !std::filesystem::is_directory(root, ec) || ec)
         return Result<void>::Fail(Error::Io, root.string(), "recovery root is not accessible");
+    HANDLE rootRaw = CreateFileW(root.wstring().c_str(),
+                                 FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 nullptr, OPEN_EXISTING,
+                                 FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                                 nullptr);
+    if (rootRaw == INVALID_HANDLE_VALUE)
+        return Result<void>::Fail(Error::Io, root.string(), "recovery root identity is not accessible");
+    Handle rootHandle(rootRaw);
+    FileKey rootKey{};
+    if (IsReparse(rootHandle.value) || !ReadKey(rootHandle.value, rootKey))
+        return Result<void>::Fail(Error::Io, root.string(), "recovery root is a reparse point or has no stable identity");
+    auto parentMatchesRoot = [&](const std::filesystem::path& recordedParent) -> bool
+    {
+        const auto candidate = std::filesystem::absolute(recordedParent).lexically_normal();
+        HANDLE raw = CreateFileW(candidate.wstring().c_str(),
+                                 FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                 nullptr, OPEN_EXISTING,
+                                 FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                                 nullptr);
+        if (raw == INVALID_HANDLE_VALUE) return false;
+        Handle held(raw);
+        FileKey candidateKey{};
+        return !IsReparse(held.value) && ReadKey(held.value, candidateKey) &&
+               SameKey(candidateKey, rootKey);
+    };
     for (const auto& entry : std::filesystem::directory_iterator(root, ec))
     {
         if (ec) return Result<void>::Fail(Error::Io, root.string(), "failed to enumerate transaction residues");
@@ -982,24 +1009,22 @@ Result<void> PrefabFileTransaction::RecoverDirectory(const std::filesystem::path
             continue;
         }
         const auto assetPath = std::filesystem::path(assetIt->second);
-        const auto parent = assetPath.parent_path();
-        if (parent.lexically_normal() != root)
+        const auto parent = std::filesystem::absolute(assetPath.parent_path()).lexically_normal();
+        if (!parentMatchesRoot(parent))
         {
-            if (!quarantine(".corrupt"))
-                return Result<void>::Fail(Error::Io, entry.path().string(), "manifest asset parent mismatch; residue preserved");
             std::fprintf(stderr,
-                "[PrefabRecovery] warning: quarantined manifest with mismatched asset parent: %s\n",
-                entry.path().string().c_str());
+                "[PrefabRecovery] warning: valid manifest asset parent identity is unavailable or differs; "
+                "leaving manifest and residue untouched: %s (parent=%s)\n",
+                entry.path().string().c_str(), parent.string().c_str());
             continue;
         }
         const auto sidecarIt = fields.find("sidecar");
         if (sidecarIt != fields.end() && !sidecarIt->second.empty() &&
-            std::filesystem::path(sidecarIt->second).parent_path().lexically_normal() != root)
+            !parentMatchesRoot(std::filesystem::absolute(std::filesystem::path(sidecarIt->second).parent_path()).lexically_normal()))
         {
-            if (!quarantine(".corrupt"))
-                return Result<void>::Fail(Error::Io, entry.path().string(), "manifest sidecar parent mismatch; residue preserved");
             std::fprintf(stderr,
-                "[PrefabRecovery] warning: quarantined manifest with mismatched sidecar parent: %s\n",
+                "[PrefabRecovery] warning: valid manifest sidecar parent identity is unavailable or differs; "
+                "leaving manifest and residue untouched: %s\n",
                 entry.path().string().c_str());
             continue;
         }
