@@ -1,4 +1,5 @@
 #include "PathTransaction.h"
+#include "../AssetIdentity.h"
 
 #include <algorithm>
 #include <array>
@@ -9,6 +10,7 @@
 #include <string>
 #include <system_error>
 #include <iomanip>
+#include <map>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -137,6 +139,25 @@ Error WinError(const std::filesystem::path& path, const char* operation)
     return e;
 }
 
+bool ParseKeyText(const std::string& text, FileKey& out)
+{
+    const auto colon = text.find(':');
+    if (colon == std::string::npos) return false;
+    try { out.volume = std::stoull(text.substr(0, colon), nullptr, 16); }
+    catch (...) { return false; }
+    const std::string hex = text.substr(colon + 1);
+    if (hex.size() != sizeof(out.id) * 2) return false;
+    auto nibble = [](char c) -> int { if (c >= '0' && c <= '9') return c - '0'; if (c >= 'a' && c <= 'f') return c - 'a' + 10; if (c >= 'A' && c <= 'F') return c - 'A' + 10; return -1; };
+    auto* bytes = reinterpret_cast<uint8_t*>(&out.id);
+    for (size_t i = 0; i < sizeof(out.id); ++i)
+    {
+        const int hi = nibble(hex[i * 2]), lo = nibble(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0) return false;
+        bytes[i] = static_cast<uint8_t>((hi << 4) | lo);
+    }
+    return true;
+}
+
 bool SameKey(const FileKey& a, const FileKey& b)
 {
     return a.volume == b.volume && std::memcmp(&a.id, &b.id, sizeof(a.id)) == 0;
@@ -250,30 +271,41 @@ bool ParentContains(HANDLE parent, const std::filesystem::path& leaf,
                     const FileKey& expected)
 {
     std::array<uint8_t, 64 * 1024> buffer{};
-    if (!GetFileInformationByHandleEx(parent, FileIdBothDirectoryRestartInfo,
-                                      buffer.data(), static_cast<DWORD>(buffer.size())))
-        return false;
     const std::wstring wanted = leaf.filename().wstring();
-    for (DWORD offset = 0; ; )
+    bool restart = true;
+    for (;;)
     {
-        const auto* info = reinterpret_cast<const FILE_ID_BOTH_DIR_INFO*>(buffer.data() + offset);
-        if (info->FileNameLength / sizeof(wchar_t) == wanted.size() &&
-            _wcsnicmp(info->FileName, wanted.c_str(), wanted.size()) == 0)
+        if (!GetFileInformationByHandleEx(parent,
+                restart ? FileIdBothDirectoryRestartInfo : FileIdBothDirectoryInfo,
+                buffer.data(), static_cast<DWORD>(buffer.size())))
         {
-            // FILE_ID_BOTH_DIR_INFO exposes the NTFS file-id low 64 bits;
-            // compare that directory binding and then retain the full
-            // FILE_ID_INFO key from the opened handle for all ownership checks.
-            uint64_t listedLow = 0;
-            std::memcpy(&listedLow, &info->FileId, sizeof(listedLow));
-            uint64_t expectedLow = 0;
-            std::memcpy(&expectedLow, &expected.id, sizeof(expectedLow));
-            return listedLow == expectedLow;
+            return GetLastError() == ERROR_NO_MORE_FILES ? false : false;
         }
-        if (info->NextEntryOffset == 0) break;
-        offset += info->NextEntryOffset;
-        if (offset >= buffer.size()) break;
+        restart = false;
+        bool sawEntry = false;
+        for (DWORD offset = 0; offset < buffer.size(); )
+        {
+            const auto* info = reinterpret_cast<const FILE_ID_BOTH_DIR_INFO*>(buffer.data() + offset);
+            const size_t headerBytes = offsetof(FILE_ID_BOTH_DIR_INFO, FileName);
+            if (offset > buffer.size() - headerBytes ||
+                info->FileNameLength > buffer.size() - offset - headerBytes)
+                return false;
+            sawEntry = true;
+            if (info->FileNameLength / sizeof(wchar_t) == wanted.size() &&
+                _wcsnicmp(info->FileName, wanted.c_str(), wanted.size()) == 0)
+            {
+                uint64_t listedLow = 0;
+                std::memcpy(&listedLow, &info->FileId, sizeof(listedLow));
+                uint64_t expectedLow = 0;
+                std::memcpy(&expectedLow, &expected.id, sizeof(expectedLow));
+                return listedLow == expectedLow;
+            }
+            if (info->NextEntryOffset == 0) break;
+            if (info->NextEntryOffset > buffer.size() - offset) return false;
+            offset += info->NextEntryOffset;
+        }
+        if (!sawEntry) return false;
     }
-    return false;
 }
 
 bool PathEntryExists(const std::filesystem::path& path, WIN32_FIND_DATAW* data)
@@ -314,6 +346,11 @@ Result<Slot> OpenAndCapture(const std::filesystem::path& path,
     slot.handle = Handle(raw);
     if (IsReparse(slot.handle.value))
         return Result<Slot>::Fail(Error::Io, path.string(), "target is a reparse point");
+    FILE_BASIC_INFO basic{};
+    if (!GetFileInformationByHandleEx(slot.handle.value, FileBasicInfo, &basic, sizeof(basic)))
+        return Result<Slot>::Fail(Error::Io, path.string(), "target attributes are inaccessible");
+    if ((basic.FileAttributes & FILE_ATTRIBUTE_READONLY) != 0)
+        return Result<Slot>::Fail(Error::Io, path.string(), "target is FILE_ATTRIBUTE_READONLY; refusing overwrite");
     FILE_STANDARD_INFO standard{};
     if (!GetFileInformationByHandleEx(slot.handle.value, FileStandardInfo,
                                       &standard, sizeof(standard)) || standard.Directory)
@@ -454,6 +491,7 @@ struct PrefabFileTransaction::Impl
     Manifest manifest;
     Slot asset;
     Slot sidecar;
+    bool inspected = false;
     bool captured = false;
     bool committed = false;
     bool logicalCommitted = false;
@@ -503,12 +541,35 @@ struct PrefabFileTransaction::Impl
             return error;
         }
         transactionId = OsUuidProvider{}.CreateV4();
-        std::filesystem::path manifestPath = parent / (".rt2txn-" + transactionId.ToString() + ".manifest");
-        if (!manifest.Create(manifestPath) || !WriteManifest("Prepared"))
+        const std::filesystem::path manifestPath = parent / (".rt2txn-" + transactionId.ToString() + ".manifest");
+        const std::filesystem::path pendingPath = parent / (".rt2txn-" + transactionId.ToString() + ".manifest.pending");
+        const bool created = manifest.Create(pendingPath);
+        if (!created || !WriteManifest("Prepared"))
         {
-            error = WinError(manifestPath, "create transaction manifest");
+            error = WinError(pendingPath, "create transaction manifest");
+            // A failed first write must not publish an all-zero discoverable
+            // manifest.  Publish only after a valid, flushed Prepared slot;
+            // leave an opaque .pending/.failed residue if cleanup is blocked.
+            if (created)
+            {
+                manifest.handle.Reset();
+                if (!MoveFileExW(pendingPath.wstring().c_str(),
+                                 (pendingPath.wstring() + L".failed").c_str(),
+                                 MOVEFILE_WRITE_THROUGH))
+                    (void)DeleteFileW(pendingPath.wstring().c_str());
+            }
             return error;
         }
+        if (!RenameHandle(manifest.handle.value, manifestPath))
+        {
+            error = WinError(manifestPath, "publish transaction manifest");
+            manifest.handle.Reset();
+            (void)MoveFileExW(pendingPath.wstring().c_str(),
+                              (pendingPath.wstring() + L".failed").c_str(),
+                              MOVEFILE_WRITE_THROUGH);
+            return error;
+        }
+        manifest.path = manifestPath;
         return {};
     }
 
@@ -666,7 +727,9 @@ Result<std::unique_ptr<PrefabFileTransaction>> PrefabFileTransaction::Begin(
 {
     auto impl = std::make_unique<Impl>();
     impl->assetPath = std::move(assetPath);
-    impl->sidecarPath = std::move(sidecarPath);
+    impl->sidecarPath = sidecarPath.empty() && manageSidecar
+        ? AssetSidecarPath(impl->assetPath)
+        : std::move(sidecarPath);
     impl->manageSidecar = manageSidecar && !impl->sidecarPath.empty();
     Error error = impl->Prepare();
     if (!error.IsOk()) return Result<std::unique_ptr<PrefabFileTransaction>>::Fail(error.code, error.path, error.detail);
@@ -677,6 +740,15 @@ Result<std::unique_ptr<PrefabFileTransaction>> PrefabFileTransaction::Begin(
 Result<PrefabPairSnapshot> PrefabFileTransaction::InspectCurrent() const
 {
     if (!m_Impl) return FailPair({}, "invalid transaction");
+    if (m_Impl->inspected)
+    {
+        PrefabPairSnapshot pair;
+        pair.asset.exists = m_Impl->asset.existed;
+        pair.asset.bytes = m_Impl->asset.bytes;
+        pair.sidecar.exists = m_Impl->sidecar.existed;
+        pair.sidecar.bytes = m_Impl->sidecar.bytes;
+        return Result<PrefabPairSnapshot>::Ok(std::move(pair));
+    }
     Error error;
     auto asset = OpenAndCapture(m_Impl->assetPath, m_Impl->chain);
     if (!asset.IsOk()) return Result<PrefabPairSnapshot>::Fail(asset.error.code, asset.error.path, asset.error.detail);
@@ -687,22 +759,39 @@ Result<PrefabPairSnapshot> PrefabFileTransaction::InspectCurrent() const
         auto sidecar = OpenAndCapture(m_Impl->sidecarPath, m_Impl->chain);
         if (!sidecar.IsOk()) return Result<PrefabPairSnapshot>::Fail(sidecar.error.code, sidecar.error.path, sidecar.error.detail);
         pair.sidecar.exists = sidecar.value.existed; pair.sidecar.bytes = sidecar.value.bytes;
+        m_Impl->sidecar = std::move(sidecar.value);
     }
+    m_Impl->asset = std::move(asset.value);
+    m_Impl->inspected = true;
     return Result<PrefabPairSnapshot>::Ok(std::move(pair));
 }
 
 Result<PrefabPairSnapshot> PrefabFileTransaction::CapturePair()
 {
+    return CapturePair(std::nullopt, {});
+}
+
+Result<PrefabPairSnapshot> PrefabFileTransaction::CapturePair(
+    std::optional<bool> expectedExists, const std::vector<uint8_t>& expectedBytes)
+{
     if (!m_Impl) return FailPair({}, "invalid transaction");
-    auto asset = OpenAndCapture(m_Impl->assetPath, m_Impl->chain);
-    if (!asset.IsOk()) return Result<PrefabPairSnapshot>::Fail(asset.error.code, asset.error.path, asset.error.detail);
-    m_Impl->asset = std::move(asset.value);
-    if (m_Impl->manageSidecar)
+    if (!m_Impl->inspected)
     {
-        auto sidecar = OpenAndCapture(m_Impl->sidecarPath, m_Impl->chain);
-        if (!sidecar.IsOk()) return Result<PrefabPairSnapshot>::Fail(sidecar.error.code, sidecar.error.path, sidecar.error.detail);
-        m_Impl->sidecar = std::move(sidecar.value);
+        auto asset = OpenAndCapture(m_Impl->assetPath, m_Impl->chain);
+        if (!asset.IsOk()) return Result<PrefabPairSnapshot>::Fail(asset.error.code, asset.error.path, asset.error.detail);
+        m_Impl->asset = std::move(asset.value);
+        if (m_Impl->manageSidecar)
+        {
+            auto sidecar = OpenAndCapture(m_Impl->sidecarPath, m_Impl->chain);
+            if (!sidecar.IsOk()) return Result<PrefabPairSnapshot>::Fail(sidecar.error.code, sidecar.error.path, sidecar.error.detail);
+            m_Impl->sidecar = std::move(sidecar.value);
+        }
+        m_Impl->inspected = true;
     }
+    if (expectedExists.has_value() &&
+        (m_Impl->asset.existed != *expectedExists ||
+        (*expectedExists && m_Impl->asset.bytes != expectedBytes)))
+        return Result<PrefabPairSnapshot>::Fail(Error::Io, m_Impl->assetPath.string(), "expected prefab state changed before quarantine");
     if (!m_Impl->WriteManifest("Captured")) return Result<PrefabPairSnapshot>::Fail(Error::Io, m_Impl->assetPath.string(), "failed to flush Captured manifest state");
     Error error = m_Impl->Quarantine(m_Impl->asset);
     if (!error.IsOk()) return Result<PrefabPairSnapshot>::Fail(error.code, error.path, error.detail);
@@ -769,7 +858,15 @@ Result<void> PrefabFileTransaction::Rollback()
     if (error.IsOk() && m_Impl->manageSidecar) error = m_Impl->RestoreSlot(m_Impl->sidecar);
     if (error.IsOk()) error = m_Impl->CleanupSlot(m_Impl->asset);
     if (error.IsOk() && m_Impl->manageSidecar) error = m_Impl->CleanupSlot(m_Impl->sidecar);
-    if (error.IsOk()) { m_Impl->manifest.handle.Reset(); m_Impl->manifest.Remove(); m_Impl->committed = true; return Result<void>::Ok(); }
+    if (error.IsOk())
+    {
+        m_Impl->manifest.handle.Reset();
+        if (!m_Impl->manifest.Remove())
+            return Result<void>::Fail(Error::Io, m_Impl->manifest.path.string(),
+                "rollback completed but manifest cleanup failed; recovery residue preserved");
+        m_Impl->committed = true;
+        return Result<void>::Ok();
+    }
     return Result<void>::Fail(error.code, error.path, "rollback failed; recovery manifest/residue preserved: " + error.detail);
 }
 
@@ -791,11 +888,25 @@ Result<TransactionCommitOutcome> PrefabFileTransaction::ApplySingle(
     if (current.value.asset.exists == desiredExists &&
         (!desiredExists || current.value.asset.bytes == desiredBytes))
         return tx.value->Finalize(); // logical no-op: effective caller remains true
-    auto captured = tx.value->CapturePair();
+    auto captured = tx.value->CapturePair(expectedExists, expectedBytes);
     if (!captured.IsOk()) return Result<TransactionCommitOutcome>::Fail(captured.error.code, captured.error.path, captured.error.detail);
+    if (manageSidecar && !captured.value.sidecar.exists)
+    {
+        (void)tx.value->Rollback();
+        return Result<TransactionCommitOutcome>::Fail(
+            Error::Io, path.string(),
+            "prefab command requires an existing durable sidecar; refusing asset-only replay");
+    }
     std::optional<std::vector<uint8_t>> desired;
     if (desiredExists) desired = desiredBytes;
-    auto staged = tx.value->Stage(std::nullopt, desired);
+    // Command replay changes the prefab bytes but must carry the captured
+    // durable sidecar through every transition.  This keeps the command's
+    // asset-only before/after contract from exposing an asset without its
+    // identity sidecar; an absent sidecar remains absent.
+    std::optional<std::vector<uint8_t>> desiredSidecar;
+    if (captured.value.sidecar.exists)
+        desiredSidecar = captured.value.sidecar.bytes;
+    auto staged = tx.value->Stage(desiredSidecar, desired);
     if (!staged.IsOk()) { (void)tx.value->Rollback(); return Result<TransactionCommitOutcome>::Fail(staged.error.code, staged.error.path, staged.error.detail); }
     auto installed = tx.value->InstallSidecarThenAsset();
     if (!installed.IsOk()) { (void)tx.value->Rollback(); return Result<TransactionCommitOutcome>::Fail(installed.error.code, installed.error.path, installed.error.detail); }
@@ -836,17 +947,111 @@ Result<void> PrefabFileTransaction::RecoverDirectory(const std::filesystem::path
             bestGeneration = header.generation;
             bestState.assign(reinterpret_cast<const char*>(payload), header.length);
         }
-        if (bestGeneration == 0)
-            return Result<void>::Fail(Error::Io, entry.path().string(), "transaction manifest has no valid CRC slot; residue preserved");
-        if (bestState.rfind("LogicalCommitted", 0) == 0)
+        auto quarantine = [&](const char* suffix) -> bool
         {
             manifest.Reset();
-            if (!DeleteFileW(entry.path().wstring().c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND)
-                return Result<void>::Fail(Error::Io, entry.path().string(), "committed transaction manifest cleanup blocked");
+            const auto destination = entry.path().wstring() + std::wstring(suffix, suffix + std::strlen(suffix));
+            return MoveFileExW(entry.path().wstring().c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
+        };
+        if (bestGeneration == 0)
+        {
+            if (!quarantine(".corrupt"))
+                return Result<void>::Fail(Error::Io, entry.path().string(), "transaction manifest has no valid CRC slot; residue preserved");
             continue;
         }
-        return Result<void>::Fail(Error::Io, entry.path().string(),
-            "incomplete prefab transaction requires recovery; manifest and owned residue preserved");
+
+        std::map<std::string, std::string> fields;
+        size_t begin = bestState.find('\n');
+        const std::string state = bestState.substr(0, begin == std::string::npos ? bestState.size() : begin);
+        while (begin != std::string::npos)
+        {
+            const size_t end = bestState.find('\n', begin + 1);
+            const std::string line = bestState.substr(begin + 1, end == std::string::npos ? end : end - begin - 1);
+            const size_t eq = line.find('=');
+            if (eq != std::string::npos) fields[line.substr(0, eq)] = line.substr(eq + 1);
+            begin = end;
+        }
+        const auto assetIt = fields.find("asset");
+        if (assetIt == fields.end())
+        {
+            if (!quarantine(".corrupt")) return Result<void>::Fail(Error::Io, entry.path().string(), "manifest lacks asset path; residue preserved");
+            continue;
+        }
+        const auto assetPath = std::filesystem::path(assetIt->second);
+        const auto parent = assetPath.parent_path();
+        const auto idName = entry.path().stem().wstring();
+        const auto txName = idName.rfind(L".rt2txn-", 0) == 0 ? idName.substr(8) : L"unknown";
+        bool blocked = false;
+        auto ownedHandle = [&](const std::filesystem::path& path, const std::string& keyText, bool remove, const std::filesystem::path& destination) -> bool
+        {
+            FileKey expected{};
+            if (!ParseKeyText(keyText, expected)) return false;
+            HANDLE h = CreateFileW(path.wstring().c_str(), GENERIC_READ | DELETE | FILE_READ_ATTRIBUTES,
+                                   FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+            if (h == INVALID_HANDLE_VALUE) return false;
+            Handle owned(h);
+            FileKey actual{};
+            if (!ReadKey(owned.value, actual) || !SameKey(actual, expected) || IsReparse(owned.value)) return false;
+            if (remove) return DeleteHandle(owned.value);
+            if (destination.empty()) return false;
+            if (!RenameHandle(owned.value, destination)) return false;
+            return true;
+        };
+        auto recoverSlot = [&](const std::string& prefix, const std::filesystem::path& original) -> bool
+        {
+            const auto backup = parent / (L".rt2txn-" + txName + (prefix == "asset" ? L".asset.bak" : L".sidecar.bak"));
+            const auto stage = parent / (L".rt2txn-" + txName + (prefix == "asset" ? L".asset.stage" : L".sidecar.stage"));
+            const auto installedKey = fields[prefix + ".installed"];
+            const auto stageKey = fields[prefix + ".stage"];
+            const auto backupKey = fields[prefix + ".backup"];
+            std::error_code existsEc;
+            if (!stageKey.empty() && std::filesystem::exists(stage, existsEc))
+                if (!ownedHandle(stage, stageKey, true, {})) blocked = true;
+            if (!installedKey.empty())
+            {
+                if (std::filesystem::exists(original, existsEc))
+                {
+                    HANDLE h = CreateFileW(original.wstring().c_str(), GENERIC_READ | FILE_READ_ATTRIBUTES,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+                    FileKey actual{};
+                    if (h != INVALID_HANDLE_VALUE) { Handle held(h); ReadKey(held.value, actual); }
+                    // Never delete an entry whose identity cannot be proven owned.
+                    FileKey expected{};
+                    if (!ParseKeyText(installedKey, expected) || h == INVALID_HANDLE_VALUE || !SameKey(actual, expected)) blocked = true;
+                    else if (!ownedHandle(original, installedKey, true, {})) blocked = true;
+                }
+            }
+            if (!backupKey.empty() && std::filesystem::exists(backup, existsEc))
+            {
+                if (std::filesystem::exists(original, existsEc)) blocked = true;
+                else if (!ownedHandle(backup, backupKey, false, original)) blocked = true;
+            }
+            return !blocked;
+        };
+        bool recovered = true;
+        if (state != "LogicalCommitted") recovered = recoverSlot("asset", assetPath);
+        auto sidecarIt = fields.find("sidecar");
+        if (state != "LogicalCommitted" && sidecarIt != fields.end() && !sidecarIt->second.empty()) recovered = recoverSlot("sidecar", std::filesystem::path(sidecarIt->second)) && recovered;
+        const auto cleanup = [&](const std::wstring& suffix) -> bool
+        {
+            const auto p = parent / (L".rt2txn-" + txName + suffix);
+            std::error_code e; if (!std::filesystem::exists(p, e)) return true;
+            const bool assetResidue = suffix.rfind(L".asset.", 0) == 0;
+            const bool backupResidue = suffix.rfind(L".bak", suffix.size() - 4) != std::wstring::npos;
+            const auto key = fields[(assetResidue ? "asset" : "sidecar") + std::string(backupResidue ? ".backup" : ".stage")];
+            return !key.empty() && ownedHandle(p, key, true, {});
+        };
+        if (state == "LogicalCommitted")
+        {
+            recovered = cleanup(L".asset.bak") && recovered;
+            if (sidecarIt != fields.end()) recovered = cleanup(L".sidecar.bak") && recovered;
+            recovered = cleanup(L".asset.stage") && recovered;
+            if (sidecarIt != fields.end()) recovered = cleanup(L".sidecar.stage") && recovered;
+        }
+        manifest.Reset();
+        if (recovered && DeleteFileW(entry.path().wstring().c_str())) continue;
+        if (!recovered && !quarantine(".recovery"))
+            return Result<void>::Fail(Error::Io, entry.path().string(), "transaction recovery blocked; owned residue preserved");
     }
     return Result<void>::Ok();
 }
@@ -864,6 +1069,7 @@ static Result<std::unique_ptr<PrefabFileTransaction>> Unsupported()
 Result<std::unique_ptr<PrefabFileTransaction>> PrefabFileTransaction::Begin(std::filesystem::path, std::filesystem::path, bool) { return Unsupported(); }
 Result<PrefabPairSnapshot> PrefabFileTransaction::InspectCurrent() const { return Result<PrefabPairSnapshot>::Fail(Error::Io, {}, "prefab transactions require Windows NTFS"); }
 Result<PrefabPairSnapshot> PrefabFileTransaction::CapturePair() { return Result<PrefabPairSnapshot>::Fail(Error::Io, {}, "prefab transactions require Windows NTFS"); }
+Result<PrefabPairSnapshot> PrefabFileTransaction::CapturePair(std::optional<bool>, const std::vector<uint8_t>&) { return Result<PrefabPairSnapshot>::Fail(Error::Io, {}, "prefab transactions require Windows NTFS"); }
 Result<void> PrefabFileTransaction::Stage(const std::optional<std::vector<uint8_t>>&, const std::optional<std::vector<uint8_t>>&) { return Result<void>::Fail(Error::Io, {}, "prefab transactions require Windows NTFS"); }
 Result<void> PrefabFileTransaction::InstallSidecarThenAsset() { return Result<void>::Fail(Error::Io, {}, "prefab transactions require Windows NTFS"); }
 Result<TransactionCommitOutcome> PrefabFileTransaction::Finalize() { return Result<TransactionCommitOutcome>::Fail(Error::Io, {}, "prefab transactions require Windows NTFS"); }

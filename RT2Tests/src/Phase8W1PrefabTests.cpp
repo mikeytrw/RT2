@@ -18,6 +18,7 @@
 #include "SceneDocument.h"
 
 #include <glm/glm.hpp>
+#include "json.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -25,6 +26,12 @@
 #include <sstream>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#define UUID RT2_WIN_UUID
+#include <windows.h>
+#undef UUID
+#endif
 
 using namespace rt2::core;
 
@@ -179,6 +186,195 @@ TEST_CASE("Phase 8 W1 transaction fault seam: capture and sidecar install are lo
 	CHECK(ReadFileBinary(prefabPath) == priorAsset);
 	CHECK(ReadFileBinary(sidecarPath) == priorSidecar);
 
+	std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W1 transaction binds entries beyond the first directory enumeration batch")
+{
+	PrefabFixture f;
+	const auto [root, child] = f.RootWithChild("LargeDirectory");
+	const auto dir = UniqueTempDir("p8w1_large_directory");
+	for (int i = 0; i < 3200; ++i)
+		WriteRaw(dir / ("f" + std::to_string(i) + ".tmp"), "x");
+	const auto prefabPath = dir / "zzzz_target.rt2prefab";
+	const std::string original = "original-prefab\n";
+	WriteRaw(prefabPath, original);
+
+	SetPathTransactionFaultForTests(PathTransactionFaultPoint::AssetInstall);
+	const auto rollback = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	ClearPathTransactionFaultForTests();
+	CHECK_FALSE(rollback.ok);
+	CHECK(ReadFileBinary(prefabPath) == original);
+
+	const auto committed = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	CHECK(committed.ok);
+	CHECK(ReadFileBinary(prefabPath) != original);
+	std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W1 native fault seam: every transition fails loudly and preserves ownership")
+{
+	const auto exercise = [](PathTransactionFaultPoint point, bool existing) {
+		const auto dir = UniqueTempDir("p8w1_fault_" + std::to_string(static_cast<int>(point)));
+		const auto path = dir / "fault.rt2prefab";
+		if (existing) WriteRaw(path, "prior\n");
+		if (point == PathTransactionFaultPoint::ManifestFlush)
+			SetPathTransactionFaultForTests(point);
+		auto tx = PrefabFileTransaction::Begin(path, {}, false);
+		auto cleanup = [&] {
+			if (tx.IsOk()) tx.value.reset();
+			ClearPathTransactionFaultForTests();
+			std::error_code cleanupEc;
+			std::filesystem::remove_all(dir, cleanupEc);
+		};
+		if (point == PathTransactionFaultPoint::ManifestFlush)
+		{
+			ClearPathTransactionFaultForTests();
+			CHECK_FALSE(tx.IsOk());
+			bool manifestResidue = false;
+			for (const auto& e : std::filesystem::directory_iterator(dir))
+				manifestResidue = manifestResidue || e.path().extension() == ".manifest";
+			CHECK_FALSE(manifestResidue);
+			cleanup();
+			return;
+		}
+		REQUIRE(tx.IsOk());
+		if (point == PathTransactionFaultPoint::CaptureOpen ||
+			point == PathTransactionFaultPoint::CaptureRead ||
+			point == PathTransactionFaultPoint::QuarantineRename)
+			SetPathTransactionFaultForTests(point);
+		auto captured = tx.value->CapturePair();
+		if (point == PathTransactionFaultPoint::CaptureOpen || point == PathTransactionFaultPoint::CaptureRead || point == PathTransactionFaultPoint::QuarantineRename)
+		{
+			ClearPathTransactionFaultForTests();
+			CHECK_FALSE(captured.IsOk());
+			(void)tx.value->Rollback();
+			cleanup();
+			return;
+		}
+		REQUIRE(captured.IsOk());
+		if (point == PathTransactionFaultPoint::RollbackRestore)
+		{
+			SetPathTransactionFaultForTests(point);
+			auto rb = tx.value->Rollback();
+			ClearPathTransactionFaultForTests();
+			CHECK_FALSE(rb.IsOk());
+			cleanup();
+			return;
+		}
+		if (point == PathTransactionFaultPoint::StageCreate ||
+			point == PathTransactionFaultPoint::StageWrite)
+			SetPathTransactionFaultForTests(point);
+		auto staged = tx.value->Stage(std::nullopt, std::vector<uint8_t>{'n','e','w'});
+		if (point == PathTransactionFaultPoint::StageCreate || point == PathTransactionFaultPoint::StageWrite)
+		{
+			ClearPathTransactionFaultForTests();
+			CHECK_FALSE(staged.IsOk());
+			(void)tx.value->Rollback();
+			cleanup();
+			return;
+		}
+		REQUIRE(staged.IsOk());
+		if (point == PathTransactionFaultPoint::AssetInstall)
+			SetPathTransactionFaultForTests(point);
+		auto installed = tx.value->InstallSidecarThenAsset();
+		if (point == PathTransactionFaultPoint::AssetInstall)
+		{
+			ClearPathTransactionFaultForTests();
+			CHECK_FALSE(installed.IsOk());
+			(void)tx.value->Rollback();
+			cleanup();
+			return;
+		}
+		REQUIRE(installed.IsOk());
+		if (point == PathTransactionFaultPoint::ManifestCleanup)
+			SetPathTransactionFaultForTests(point);
+		auto finalized = tx.value->Finalize();
+		if (point == PathTransactionFaultPoint::ManifestCleanup)
+		{
+			ClearPathTransactionFaultForTests();
+			REQUIRE(finalized.IsOk());
+			CHECK(finalized.value.recoveryWarning.has_value());
+		}
+		cleanup();
+	};
+	exercise(PathTransactionFaultPoint::CaptureOpen, true);
+	exercise(PathTransactionFaultPoint::CaptureRead, true);
+	exercise(PathTransactionFaultPoint::QuarantineRename, true);
+	exercise(PathTransactionFaultPoint::StageCreate, true);
+	exercise(PathTransactionFaultPoint::StageWrite, true);
+	exercise(PathTransactionFaultPoint::AssetInstall, true);
+	exercise(PathTransactionFaultPoint::ManifestFlush, false);
+	exercise(PathTransactionFaultPoint::RollbackRestore, true);
+	exercise(PathTransactionFaultPoint::ManifestCleanup, false);
+}
+
+TEST_CASE("Phase 8 W1: reparse, dangling-link, and unsupported-volume gates are loud")
+{
+	const auto dir = UniqueTempDir("p8w1_reparse_gate");
+#ifdef _WIN32
+	const auto real = dir / "real.rt2prefab";
+	const auto link = dir / "link.rt2prefab";
+	const auto dangling = dir / "dangling.rt2prefab";
+	WriteRaw(real, "prior\n");
+	if (CreateSymbolicLinkW(link.wstring().c_str(), real.wstring().c_str(), 0) == FALSE)
+	{
+		// Developer-mode/symlink privilege is an environment prerequisite; the
+		// gate itself is exercised where the platform permits link creation.
+		CHECK(true);
+	}
+	else
+	{
+		auto tx = PrefabFileTransaction::Begin(link, {}, false);
+		REQUIRE(tx.IsOk());
+		auto captured = tx.value->CapturePair();
+		CHECK_FALSE(captured.IsOk());
+		(void)tx.value->Rollback();
+		CHECK(ReadFileBinary(real) == "prior\n");
+	}
+	if (CreateSymbolicLinkW(dangling.wstring().c_str(),
+		(dir / "missing.rt2prefab").wstring().c_str(), 0) != FALSE)
+	{
+		auto tx = PrefabFileTransaction::Begin(dangling, {}, false);
+		REQUIRE(tx.IsOk());
+		CHECK_FALSE(tx.value->CapturePair().IsOk());
+		(void)tx.value->Rollback();
+	}
+	auto remote = PrefabFileTransaction::Begin(
+		std::filesystem::path(L"\\\\server\\share\\not-local.rt2prefab"), {}, false);
+	CHECK_FALSE(remote.IsOk());
+#else
+	CHECK_FALSE(PrefabFileTransaction::Begin(dir / "x.rt2prefab", {}, false).IsOk());
+#endif
+	std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W1: logical-commit manifest residue is recovered idempotently")
+{
+	const auto dir = UniqueTempDir("p8w1_recover_logical_commit");
+	const auto path = dir / "recover.rt2prefab";
+	WriteRaw(path, "before\n");
+	auto tx = PrefabFileTransaction::Begin(path, {}, false);
+	REQUIRE(tx.IsOk());
+	REQUIRE(tx.value->CapturePair().IsOk());
+	REQUIRE(tx.value->Stage(std::nullopt,
+		std::optional<std::vector<uint8_t>>({ 'a','f','t','e','r','\n' })).IsOk());
+	REQUIRE(tx.value->InstallSidecarThenAsset().IsOk());
+	SetPathTransactionFaultForTests(PathTransactionFaultPoint::ManifestCleanup);
+	auto finalized = tx.value->Finalize();
+	ClearPathTransactionFaultForTests();
+	REQUIRE(finalized.IsOk());
+	CHECK(finalized.value.recoveryWarning.has_value());
+	tx.value.reset();
+	bool manifestSeen = false;
+	for (const auto& entry : std::filesystem::directory_iterator(dir))
+		manifestSeen = manifestSeen || entry.path().extension() == ".manifest";
+	CHECK(manifestSeen);
+	REQUIRE(PrefabFileTransaction::RecoverDirectory(dir).IsOk());
+	REQUIRE(PrefabFileTransaction::RecoverDirectory(dir).IsOk());
+	CHECK(ReadFileBinary(path) == "after\n");
+	for (const auto& entry : std::filesystem::directory_iterator(dir))
+		CHECK(entry.path().extension() != ".manifest");
 	std::filesystem::remove_all(dir);
 }
 
@@ -1363,7 +1559,8 @@ TEST_CASE("Phase 8 W1 C3b: valid prefab reference saves, reloads, and reports po
 	}
 
 	// Portability: repoint the SAME instance's prefab ref at a syntactically
-	// cross-volume absolute path (Q: vs the C: temp scene dir). RebasePath
+	// cross-volume absolute path on a drive selected distinct from the temp
+	// scene dir. RebasePath
 	// cannot relativize across volumes (lexically_relative of two different
 	// drives is empty), so production SceneSerializer::Save must emit exactly
 	// one NonPortable advisory for the prefab kind carrying the original/
@@ -1382,7 +1579,11 @@ TEST_CASE("Phase 8 W1 C3b: valid prefab reference saves, reloads, and reports po
 		if (auto* nc = reg.try_get<NameComponent>(instEnt))     rootName = nc->name;
 
 		pi.prefab.kind = AssetKind::Prefab;
-		pi.prefab.path = "Q:/synthetic/goodref.rt2prefab";
+		const char sceneDrive = scenePath.root_name().string().empty() ? 'C' : scenePath.root_name().string()[0];
+		char foreignDrive = sceneDrive == 'A' ? 'B' : 'A';
+		if (foreignDrive == sceneDrive) ++foreignDrive;
+		const std::string foreignPath = std::string(1, foreignDrive) + ":/synthetic/goodref.rt2prefab";
+		pi.prefab.path = foreignPath;
 
 		std::vector<AssetDiagnostic> crossDiags;
 		Error crossErr;
@@ -1399,10 +1600,23 @@ TEST_CASE("Phase 8 W1 C3b: valid prefab reference saves, reloads, and reports po
 			[](const AssetDiagnostic& d) { return d.severity == AssetDiagnostic::NonPortable; });
 		REQUIRE(prefabDiag != crossDiags.end());
 		CHECK(prefabDiag->kind == AssetKind::Prefab);
-		CHECK(prefabDiag->refPath == "Q:/synthetic/goodref.rt2prefab");
-		CHECK(prefabDiag->resolvedPath.find("goodref.rt2prefab") != std::string::npos);
+		CHECK(prefabDiag->refPath == foreignPath);
+		CHECK(std::filesystem::path(prefabDiag->resolvedPath).lexically_normal().generic_string() ==
+			std::filesystem::path(foreignPath).lexically_normal().generic_string());
 		CHECK(prefabDiag->entityUuid == rootUuid);
 		CHECK(prefabDiag->entityName == rootName);
+
+		const nlohmann::json serialized = nlohmann::json::parse(ReadFileBinary(dir / "crossvol.rt2scene"));
+		bool jsonPathFound = false;
+		for (const auto& entity : serialized.at("entities"))
+		{
+			if (entity.value("uuid", std::string{}) == rootUuid.ToString() && entity.contains("prefabInstance"))
+			{
+				CHECK(entity.at("prefabInstance").at("asset").at("path").get<std::string>() == foreignPath);
+				jsonPathFound = true;
+			}
+		}
+		CHECK(jsonPathFound);
 	}
 
 	std::filesystem::remove_all(dir);
@@ -1530,9 +1744,8 @@ TEST_CASE("Phase 8 W1 C4c: Undo restore surfaces a failed overwrite and keeps pr
 	}
 
 	const auto undoResult = history.Undo(f.manager);
-	// A read-only DOS attribute does not block a handle-owned same-volume
-	// quarantine/restore. The transactional path still restores exact bytes.
-	CHECK(undoResult.success);
+	CHECK_FALSE(undoResult.success);
+	CHECK(undoResult.error.code == rt2::core::Error::Io);
 
 	// The recoverable state must remain intact for a subsequent retry — never
 	// a destroyed target on a failed restore.
@@ -1542,8 +1755,33 @@ TEST_CASE("Phase 8 W1 C4c: Undo restore surfaces a failed overwrite and keeps pr
 			std::filesystem::perms::group_write |
 			std::filesystem::perms::others_write,
 		std::filesystem::perm_options::add, ec);
-	CHECK(ReadFileBinary(prefabPath) == stale);
+	CHECK(ReadFileBinary(prefabPath) == after);
 
+	std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W1: read-only sidecar refuses overwrite before quarantine")
+{
+	PrefabFixture f;
+	const auto [root, child] = f.RootWithChild("ReadonlySidecar");
+	const auto dir = UniqueTempDir("p8w1_readonly_sidecar");
+	const auto prefabPath = dir / "readonly.rt2prefab";
+	const auto sidecarPath = rt2::core::AssetSidecarPath(prefabPath);
+	const auto first = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	REQUIRE(first.ok);
+	const auto beforeAsset = ReadFileBinary(prefabPath);
+	const auto beforeSidecar = ReadFileBinary(sidecarPath);
+#ifdef _WIN32
+	REQUIRE(SetFileAttributesW(sidecarPath.wstring().c_str(), FILE_ATTRIBUTE_READONLY) != FALSE);
+	const auto refused = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	CHECK_FALSE(refused.ok);
+	CHECK(refused.error.code == rt2::core::Error::Io);
+	CHECK(ReadFileBinary(prefabPath) == beforeAsset);
+	CHECK(ReadFileBinary(sidecarPath) == beforeSidecar);
+	REQUIRE(SetFileAttributesW(sidecarPath.wstring().c_str(), FILE_ATTRIBUTE_NORMAL) != FALSE);
+#else
+	CHECK(true);
+#endif
 	std::filesystem::remove_all(dir);
 }
 

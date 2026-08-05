@@ -2597,8 +2597,16 @@ SceneManager::PrefabCreationResult SceneManager::CreatePrefabFromSubtree(
 	auto transaction = rt2::core::PrefabFileTransaction::Begin(
 		prefabPath, sidecarPath, true);
 	if (!transaction.IsOk()) { out.error = transaction.error; return out; }
+	auto failTransaction = [&](const rt2::core::Error& original) -> PrefabCreationResult
+	{
+		out.error = original;
+		auto rollback = transaction.value->Rollback();
+		if (!rollback.IsOk())
+			out.error.detail += "; rollback failed and recovery residue was preserved: " + rollback.error.detail;
+		return out;
+	};
 	auto captured = transaction.value->CapturePair();
-	if (!captured.IsOk()) { out.error = captured.error; return out; }
+	if (!captured.IsOk()) return failTransaction(captured.error);
 
 	// A valid existing sidecar is retained byte-for-byte. Missing or malformed
 	// bytes mint a new durable identity, but the captured malformed bytes remain
@@ -2623,11 +2631,11 @@ SceneManager::PrefabCreationResult SceneManager::CreatePrefabFromSubtree(
 	auto staged = transaction.value->Stage(
 		std::optional<std::vector<uint8_t>>(std::move(sidecarBytes)),
 		std::optional<std::vector<uint8_t>>(std::vector<uint8_t>(assetBytes.begin(), assetBytes.end())));
-	if (!staged.IsOk()) { out.error = staged.error; return out; }
+	if (!staged.IsOk()) return failTransaction(staged.error);
 	auto installed = transaction.value->InstallSidecarThenAsset();
-	if (!installed.IsOk()) { out.error = installed.error; return out; }
+	if (!installed.IsOk()) return failTransaction(installed.error);
 	auto committed = transaction.value->Finalize();
-	if (!committed.IsOk()) { out.error = committed.error; return out; }
+	if (!committed.IsOk()) return failTransaction(committed.error);
 	out.recoveryWarning = committed.value.recoveryWarning;
 	out.assetId = assetId;
 	out.ok = true;

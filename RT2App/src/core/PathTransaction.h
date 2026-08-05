@@ -66,6 +66,8 @@ public:
 
     Result<PrefabPairSnapshot> InspectCurrent() const;
     Result<PrefabPairSnapshot> CapturePair();
+    Result<PrefabPairSnapshot> CapturePair(std::optional<bool> expectedExists,
+                                            const std::vector<uint8_t>& expectedBytes);
     Result<void> Stage(const std::optional<std::vector<uint8_t>>& sidecarBytes,
                        const std::optional<std::vector<uint8_t>>& assetBytes);
     Result<void> InstallSidecarThenAsset();

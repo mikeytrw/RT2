@@ -10,11 +10,19 @@ bool LoadProjectContext(const std::filesystem::path& projectFile,
     ProjectContext staged;
     if (!ProjectStore::Load(projectFile, staged.project, err))
         return false;
-    auto recovered = PrefabFileTransaction::RecoverDirectory(staged.project.assetRoot);
-    if (!recovered.IsOk())
+    // A missing asset root is reported by the normal scanner as MissingAsset;
+    // recovery is attempted when the configured root is actually present so
+    // an unrelated absent project directory is not made permanently
+    // unopenable by the transaction journal.
+    std::error_code rootEc;
+    if (std::filesystem::is_directory(staged.project.assetRoot, rootEc) && !rootEc)
     {
-        err = recovered.error;
-        return false;
+        auto recovered = PrefabFileTransaction::RecoverDirectory(staged.project.assetRoot);
+        if (!recovered.IsOk())
+        {
+            err = recovered.error;
+            return false;
+        }
     }
     ProjectAssetScanResult scan;
     if (!ScanProjectAssets(staged.project.assetRoot, scan, err))

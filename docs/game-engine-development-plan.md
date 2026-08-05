@@ -13826,3 +13826,11 @@ installation, explicit logical commit/rollback, and scoped residue recovery.
 exact-AFTER first Execute remains effective and is recorded for Undo. Current
 verification numbers must be regenerated from the checked-in tree after the
 implementation gates, not copied from the historical section above.
+
+### Corrective supersession note (2026-08-05)
+
+The historical C* sentence above was an interim report claim, not a current
+test census. The measured pre-transaction Phase 8 W1 baseline was **13 C*
+cases**; later transaction/recovery cases are additive and must be counted
+from the checked-in test binary. This note supersedes the historical 30-case
+overclaim without rewriting that audit record.
