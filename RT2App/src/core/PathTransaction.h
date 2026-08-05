@@ -81,8 +81,7 @@ public:
         bool expectedExists,
         const std::vector<uint8_t>& expectedBytes,
         bool desiredExists,
-        const std::vector<uint8_t>& desiredBytes,
-        bool manageSidecar = false);
+        const std::vector<uint8_t>& desiredBytes);
 
     // Recovery is deliberately scoped to a touched directory. Startup/load
     // callers may scan project asset roots; arbitrary external directories

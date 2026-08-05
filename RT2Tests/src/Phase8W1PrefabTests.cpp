@@ -21,6 +21,8 @@
 #include "json.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -375,6 +377,66 @@ TEST_CASE("Phase 8 W1: logical-commit manifest residue is recovered idempotently
 	CHECK(ReadFileBinary(path) == "after\n");
 	for (const auto& entry : std::filesystem::directory_iterator(dir))
 		CHECK(entry.path().extension() != ".manifest");
+	std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W1 recovery quarantines truncated and relocated manifests")
+{
+	const auto dir = UniqueTempDir("p8w1_recovery_corrupt_manifest");
+	const auto truncated = dir / ".rt2txn-truncated.manifest";
+	WriteRaw(truncated, "123456789");
+	REQUIRE(PrefabFileTransaction::RecoverDirectory(dir).IsOk());
+	CHECK_FALSE(std::filesystem::exists(truncated));
+	CHECK(std::filesystem::exists(dir / ".rt2txn-truncated.manifest.corrupt"));
+	REQUIRE(PrefabFileTransaction::RecoverDirectory(dir).IsOk());
+	auto unrelated = PrefabFileTransaction::Begin(dir / "unrelated.rt2prefab", {}, false);
+	REQUIRE(unrelated.IsOk());
+	unrelated.value.reset();
+
+	const auto external = UniqueTempDir("p8w1_recovery_parent_mismatch_external");
+	const auto externalAsset = external / "outside.rt2prefab";
+	WriteRaw(externalAsset, "DO NOT TOUCH\n");
+	const auto planted = dir / ".rt2txn-planted.manifest";
+	const std::string payload = "Prepared\nasset=" + externalAsset.string() + "\nsidecar=\n";
+	std::array<uint8_t, 8192> image{};
+	struct Header { uint32_t magic; uint32_t version; uint64_t generation; uint32_t length; uint32_t crc; };
+	Header header{0x32544A52u, 1u, 1u, static_cast<uint32_t>(payload.size()), 0u};
+	uint32_t crc = 0xffffffffu;
+	for (unsigned char byte : payload)
+	{
+		crc ^= byte;
+		for (int bit = 0; bit < 8; ++bit)
+			crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
+	}
+	header.crc = ~crc;
+	std::memcpy(image.data(), &header, sizeof(header));
+	std::memcpy(image.data() + sizeof(header), payload.data(), payload.size());
+	{
+		std::ofstream out(planted, std::ios::binary | std::ios::trunc);
+		out.write(reinterpret_cast<const char*>(image.data()), image.size());
+	}
+	REQUIRE(PrefabFileTransaction::RecoverDirectory(dir).IsOk());
+	CHECK_FALSE(std::filesystem::exists(planted));
+	CHECK(std::filesystem::exists(dir / ".rt2txn-planted.manifest.corrupt"));
+	CHECK(ReadFileBinary(externalAsset) == "DO NOT TOUCH\n");
+	std::filesystem::remove_all(external);
+	std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W1 recovery skips a busy live manifest")
+{
+	const auto dir = UniqueTempDir("p8w1_recovery_busy");
+	const auto firstPath = dir / "first.rt2prefab";
+	const auto secondPath = dir / "second.rt2prefab";
+	WriteRaw(firstPath, "first\n");
+	auto first = PrefabFileTransaction::Begin(firstPath, {}, false);
+	REQUIRE(first.IsOk());
+	REQUIRE(first.value->CapturePair().IsOk());
+	auto second = PrefabFileTransaction::Begin(secondPath, {}, false);
+	REQUIRE(second.IsOk());
+	second.value.reset();
+	first.value.reset();
+	CHECK(ReadFileBinary(firstPath) == "first\n");
 	std::filesystem::remove_all(dir);
 }
 
@@ -1698,9 +1760,9 @@ TEST_CASE("Phase 8 W1 C4b: Redo refuses to clobber an out-of-band file edit")
 // ---------------------------------------------------------------------------
 // C4c (Sol P1): CreatePrefabCommand Undo's RESTORE (the existing-file branch)
 // surfaces a failed write as a loud Io Failure, never a silent success. The
-// overwrite branch is injected by making the target read-only so the atomic
-// tmp+replace fails (MoveFileExW / rename cannot replace a read-only target),
-// while the file still reads back as the expected after state.
+// overwrite branch is injected by setting FILE_ATTRIBUTE_READONLY; the
+// transaction's explicit captured-handle attribute guard refuses before
+// quarantine, while the file still reads back as the expected after state.
 //
 // Fault for red: W1 opened the target with trunc and wrote in place, reporting
 // the failure only AFTER already destroying the prior target — the Undo must
@@ -1729,9 +1791,9 @@ TEST_CASE("Phase 8 W1 C4c: Undo restore surfaces a failed overwrite and keeps pr
 	const std::string after = ReadFileBinary(prefabPath);
 	REQUIRE(after != stale);
 
-	// Make the target read-only so the restoration's atomic replace fails
-	// (MoveFileExW/rename cannot replace a read-only file), while reads still
-	// succeed so FileMatches(After) passes and we reach the restore branch.
+	// Make the target read-only. The explicit captured-handle attribute guard
+	// must refuse before quarantine, while reads still succeed and the after
+	// bytes remain intact.
 	{
 		std::error_code ec;
 		std::filesystem::permissions(
@@ -1782,6 +1844,26 @@ TEST_CASE("Phase 8 W1: read-only sidecar refuses overwrite before quarantine")
 #else
 	CHECK(true);
 #endif
+	std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W1: command surfaces post-commit recovery warning")
+{
+	PrefabFixture f;
+	const auto [root, child] = f.RootWithChild("RecoveryWarning");
+	const auto dir = UniqueTempDir("p8w1_command_recovery_warning");
+	const auto prefabPath = dir / "warning.rt2prefab";
+	const auto created = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	REQUIRE(created.ok);
+	auto command = MakeCreatePrefabCommand(prefabPath, created, {}, false);
+	REQUIRE(command);
+	EditorCommandHistory history;
+	SetPathTransactionFaultForTests(PathTransactionFaultPoint::ManifestCleanup);
+	const auto result = history.Execute(std::move(command), f.manager);
+	ClearPathTransactionFaultForTests();
+	CHECK(result.success);
+	CHECK(result.effective);
+	CHECK(result.recoveryWarning.has_value());
 	std::filesystem::remove_all(dir);
 }
 

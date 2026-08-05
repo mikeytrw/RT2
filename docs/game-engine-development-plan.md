@@ -13834,3 +13834,12 @@ test census. The measured pre-transaction Phase 8 W1 baseline was **13 C*
 cases**; later transaction/recovery cases are additive and must be counted
 from the checked-in test binary. This note supersedes the historical 30-case
 overclaim without rewriting that audit record.
+
+### Final recovery supersession note (2026-08-05)
+
+Prefab recovery now quarantines short/invalid manifests and skips live
+transaction manifests with a warning, so unrelated project transactions and
+project open remain available. Recovery also rejects manifests whose recorded
+asset/sidecar parent is not the directory being scanned before touching any
+recorded path. CreatePrefabCommand remains the approved asset-only replay; the
+coordinated asset+sidecar path remains owned by CreatePrefabFromSubtree.

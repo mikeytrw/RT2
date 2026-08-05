@@ -1,6 +1,4 @@
 #include "PathTransaction.h"
-#include "../AssetIdentity.h"
-
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -11,6 +9,7 @@
 #include <system_error>
 #include <iomanip>
 #include <map>
+#include <cstdio>
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -279,7 +278,7 @@ bool ParentContains(HANDLE parent, const std::filesystem::path& leaf,
                 restart ? FileIdBothDirectoryRestartInfo : FileIdBothDirectoryInfo,
                 buffer.data(), static_cast<DWORD>(buffer.size())))
         {
-            return GetLastError() == ERROR_NO_MORE_FILES ? false : false;
+            return false;
         }
         restart = false;
         bool sawEntry = false;
@@ -727,9 +726,7 @@ Result<std::unique_ptr<PrefabFileTransaction>> PrefabFileTransaction::Begin(
 {
     auto impl = std::make_unique<Impl>();
     impl->assetPath = std::move(assetPath);
-    impl->sidecarPath = sidecarPath.empty() && manageSidecar
-        ? AssetSidecarPath(impl->assetPath)
-        : std::move(sidecarPath);
+    impl->sidecarPath = std::move(sidecarPath);
     impl->manageSidecar = manageSidecar && !impl->sidecarPath.empty();
     Error error = impl->Prepare();
     if (!error.IsOk()) return Result<std::unique_ptr<PrefabFileTransaction>>::Fail(error.code, error.path, error.detail);
@@ -873,9 +870,9 @@ Result<void> PrefabFileTransaction::Rollback()
 Result<TransactionCommitOutcome> PrefabFileTransaction::ApplySingle(
     const std::filesystem::path& path, bool expectedExists,
     const std::vector<uint8_t>& expectedBytes, bool desiredExists,
-    const std::vector<uint8_t>& desiredBytes, bool manageSidecar)
+    const std::vector<uint8_t>& desiredBytes)
 {
-    auto tx = Begin(path, {}, manageSidecar);
+    auto tx = Begin(path, {}, false);
     if (!tx.IsOk()) return Result<TransactionCommitOutcome>::Fail(tx.error.code, tx.error.path, tx.error.detail);
     auto current = tx.value->InspectCurrent();
     if (!current.IsOk()) return Result<TransactionCommitOutcome>::Fail(current.error.code, current.error.path, current.error.detail);
@@ -890,23 +887,9 @@ Result<TransactionCommitOutcome> PrefabFileTransaction::ApplySingle(
         return tx.value->Finalize(); // logical no-op: effective caller remains true
     auto captured = tx.value->CapturePair(expectedExists, expectedBytes);
     if (!captured.IsOk()) return Result<TransactionCommitOutcome>::Fail(captured.error.code, captured.error.path, captured.error.detail);
-    if (manageSidecar && !captured.value.sidecar.exists)
-    {
-        (void)tx.value->Rollback();
-        return Result<TransactionCommitOutcome>::Fail(
-            Error::Io, path.string(),
-            "prefab command requires an existing durable sidecar; refusing asset-only replay");
-    }
     std::optional<std::vector<uint8_t>> desired;
     if (desiredExists) desired = desiredBytes;
-    // Command replay changes the prefab bytes but must carry the captured
-    // durable sidecar through every transition.  This keeps the command's
-    // asset-only before/after contract from exposing an asset without its
-    // identity sidecar; an absent sidecar remains absent.
-    std::optional<std::vector<uint8_t>> desiredSidecar;
-    if (captured.value.sidecar.exists)
-        desiredSidecar = captured.value.sidecar.bytes;
-    auto staged = tx.value->Stage(desiredSidecar, desired);
+    auto staged = tx.value->Stage(std::nullopt, desired);
     if (!staged.IsOk()) { (void)tx.value->Rollback(); return Result<TransactionCommitOutcome>::Fail(staged.error.code, staged.error.path, staged.error.detail); }
     auto installed = tx.value->InstallSidecarThenAsset();
     if (!installed.IsOk()) { (void)tx.value->Rollback(); return Result<TransactionCommitOutcome>::Fail(installed.error.code, installed.error.path, installed.error.detail); }
@@ -928,12 +911,39 @@ Result<void> PrefabFileTransaction::RecoverDirectory(const std::filesystem::path
                                  FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                  FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
         if (raw == INVALID_HANDLE_VALUE)
+        {
+            const DWORD openError = GetLastError();
+            if (openError == ERROR_SHARING_VIOLATION ||
+                openError == ERROR_LOCK_VIOLATION ||
+                openError == ERROR_ACCESS_DENIED)
+            {
+                std::fprintf(stderr,
+                    "[PrefabRecovery] warning: transaction manifest is busy; "
+                    "leaving it untouched: %s (win32=%lu)\n",
+                    entry.path().string().c_str(),
+                    static_cast<unsigned long>(openError));
+                continue;
+            }
             return Result<void>::Fail(Error::Io, entry.path().string(), "transaction manifest is inaccessible; residue preserved");
+        }
         Handle manifest(raw);
+        auto quarantine = [&](const char* suffix) -> bool
+        {
+            manifest.Reset();
+            const auto destination = entry.path().wstring() + std::wstring(suffix, suffix + std::strlen(suffix));
+            return MoveFileExW(entry.path().wstring().c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
+        };
         std::array<uint8_t, kManifestSlotSize * 2> bytes{};
         DWORD read = 0;
         if (!ReadFile(manifest.value, bytes.data(), static_cast<DWORD>(bytes.size()), &read, nullptr) || read != bytes.size())
-            return Result<void>::Fail(Error::Io, entry.path().string(), "transaction manifest is truncated/corrupt; residue preserved");
+        {
+            if (!quarantine(".corrupt"))
+                return Result<void>::Fail(Error::Io, entry.path().string(), "transaction manifest is truncated/corrupt; residue preserved");
+            std::fprintf(stderr,
+                "[PrefabRecovery] warning: quarantined truncated manifest: %s\n",
+                entry.path().string().c_str());
+            continue;
+        }
         uint64_t bestGeneration = 0;
         std::string bestState;
         for (size_t offset = 0; offset < bytes.size(); offset += kManifestSlotSize)
@@ -947,12 +957,6 @@ Result<void> PrefabFileTransaction::RecoverDirectory(const std::filesystem::path
             bestGeneration = header.generation;
             bestState.assign(reinterpret_cast<const char*>(payload), header.length);
         }
-        auto quarantine = [&](const char* suffix) -> bool
-        {
-            manifest.Reset();
-            const auto destination = entry.path().wstring() + std::wstring(suffix, suffix + std::strlen(suffix));
-            return MoveFileExW(entry.path().wstring().c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
-        };
         if (bestGeneration == 0)
         {
             if (!quarantine(".corrupt"))
@@ -979,6 +983,26 @@ Result<void> PrefabFileTransaction::RecoverDirectory(const std::filesystem::path
         }
         const auto assetPath = std::filesystem::path(assetIt->second);
         const auto parent = assetPath.parent_path();
+        if (parent.lexically_normal() != root)
+        {
+            if (!quarantine(".corrupt"))
+                return Result<void>::Fail(Error::Io, entry.path().string(), "manifest asset parent mismatch; residue preserved");
+            std::fprintf(stderr,
+                "[PrefabRecovery] warning: quarantined manifest with mismatched asset parent: %s\n",
+                entry.path().string().c_str());
+            continue;
+        }
+        const auto sidecarIt = fields.find("sidecar");
+        if (sidecarIt != fields.end() && !sidecarIt->second.empty() &&
+            std::filesystem::path(sidecarIt->second).parent_path().lexically_normal() != root)
+        {
+            if (!quarantine(".corrupt"))
+                return Result<void>::Fail(Error::Io, entry.path().string(), "manifest sidecar parent mismatch; residue preserved");
+            std::fprintf(stderr,
+                "[PrefabRecovery] warning: quarantined manifest with mismatched sidecar parent: %s\n",
+                entry.path().string().c_str());
+            continue;
+        }
         const auto idName = entry.path().stem().wstring();
         const auto txName = idName.rfind(L".rt2txn-", 0) == 0 ? idName.substr(8) : L"unknown";
         bool blocked = false;
@@ -1030,7 +1054,6 @@ Result<void> PrefabFileTransaction::RecoverDirectory(const std::filesystem::path
         };
         bool recovered = true;
         if (state != "LogicalCommitted") recovered = recoverSlot("asset", assetPath);
-        auto sidecarIt = fields.find("sidecar");
         if (state != "LogicalCommitted" && sidecarIt != fields.end() && !sidecarIt->second.empty()) recovered = recoverSlot("sidecar", std::filesystem::path(sidecarIt->second)) && recovered;
         const auto cleanup = [&](const std::wstring& suffix) -> bool
         {
@@ -1074,7 +1097,7 @@ Result<void> PrefabFileTransaction::Stage(const std::optional<std::vector<uint8_
 Result<void> PrefabFileTransaction::InstallSidecarThenAsset() { return Result<void>::Fail(Error::Io, {}, "prefab transactions require Windows NTFS"); }
 Result<TransactionCommitOutcome> PrefabFileTransaction::Finalize() { return Result<TransactionCommitOutcome>::Fail(Error::Io, {}, "prefab transactions require Windows NTFS"); }
 Result<void> PrefabFileTransaction::Rollback() { return Result<void>::Ok(); }
-Result<TransactionCommitOutcome> PrefabFileTransaction::ApplySingle(const std::filesystem::path&, bool, const std::vector<uint8_t>&, bool, const std::vector<uint8_t>&, bool)
+Result<TransactionCommitOutcome> PrefabFileTransaction::ApplySingle(const std::filesystem::path&, bool, const std::vector<uint8_t>&, bool, const std::vector<uint8_t>&)
 { return Result<TransactionCommitOutcome>::Fail(Error::Io, {}, "prefab transactions require Windows NTFS"); }
 Result<void> PrefabFileTransaction::RecoverDirectory(const std::filesystem::path&)
 { return Result<void>::Fail(Error::Io, {}, "prefab transactions require Windows NTFS"); }
