@@ -2574,7 +2574,8 @@ SceneManager::PrefabCreationResult SceneManager::CreatePrefabFromSubtree(
 	// the file and NEVER derived from the entity's scene UUID (amendment A1).
 	out.templateIds = ReserveKnownUuids(out.sourceSnapshot.entities.size());
 
-	// Build the document and write it atomically (tmp+replace).
+	// Build the document and serialize it before opening the filesystem
+	// transaction. Serialization is CPU-only and cannot mutate either entry.
 	rt2::core::PrefabDocument doc;
 	doc.entities.reserve(out.sourceSnapshot.entities.size());
 	for (std::size_t i = 0; i < out.sourceSnapshot.entities.size(); ++i)
@@ -2584,160 +2585,51 @@ SceneManager::PrefabCreationResult SceneManager::CreatePrefabFromSubtree(
 		record.record     = out.sourceSnapshot.entities[i];
 		doc.entities.push_back(std::move(record));
 	}
-	// Capture the EXACT prior durable state of the target BEFORE it is
-	// replaced, so a later sidecar failure can restore it verbatim. This is
-	// the transactional guard against destroying a pre-existing prefab: a
-	// create that commits the asset but fails its sidecar must restore the
-	// prior asset + identity atomically, never remove the user's work.
-	//
-	// Capture is a checked, loud step and happens BEFORE any asset or sidecar
-	// mutation. We stat with a non-throwing status; a stat that cannot be
-	// determined is a hard Io failure, an existing target that is not a regular
-	// file (e.g. a directory) is refused, and an existing target whose complete
-	// prior bytes cannot be read is a hard Io failure. `priorBytes` must NEVER
-	// carry an empty vector as a read-failure sentinel (empty is the valid
-	// prior state of a zero-byte file), so any capture failure returns before
-	// Save rather than substituting empty bytes on a later rollback.
-	std::error_code statEc;
-	const std::filesystem::file_status st =
-		std::filesystem::status(prefabPath, statEc);
-	const std::filesystem::file_type stType = st.type();
-	const bool targetExistedBefore = stType != std::filesystem::file_type::not_found;
-	// An absent path reports file_type::not_found — that is the ordinary "did
-	// not exist before" case. A status ERROR on a path that actually exists
-	// (or whose type cannot be determined) is a hard failure: never proceed
-	// with an unknown prior state.
-	if (targetExistedBefore && statEc)
+	rt2::core::Error serializeErr;
+	std::string assetBytes;
+	if (!rt2::core::PrefabSerializer::Serialize(doc, assetBytes, serializeErr))
 	{
-		out.error.code = rt2::core::Error::Io;
-		out.error.path = prefabPath.string();
-		out.error.detail =
-			"CreatePrefabFromSubtree: could not stat the pre-existing target " +
-			prefabPath.string() + ": " + statEc.message();
-		return out;
-	}
-	std::vector<uint8_t> priorBytes;
-	if (targetExistedBefore)
-	{
-		if (!std::filesystem::is_regular_file(st))
-		{
-			out.error.code = rt2::core::Error::Io;
-			out.error.path = prefabPath.string();
-			out.error.detail =
-				"CreatePrefabFromSubtree: pre-existing target is not a regular file; "
-				"refusing to replace it: " + prefabPath.string();
-			return out;
-		}
-		std::ifstream in(prefabPath, std::ios::binary);
-		if (!in)
-		{
-			out.error.code = rt2::core::Error::Io;
-			out.error.path = prefabPath.string();
-			out.error.detail =
-				"CreatePrefabFromSubtree: pre-existing target could not be opened for reading; "
-				"refusing to replace it: " + prefabPath.string();
-			return out;
-		}
-		std::stringstream ss;
-		ss << in.rdbuf();
-		in.peek();
-		if (in.bad())
-		{
-			out.error.code = rt2::core::Error::Io;
-			out.error.path = prefabPath.string();
-			out.error.detail =
-				"CreatePrefabFromSubtree: read failure capturing pre-existing target "
-				"contents; refusing to replace it: " + prefabPath.string();
-			return out;
-		}
-		const std::string raw = ss.str();
-		priorBytes.assign(raw.begin(), raw.end());
-	}
-
-	rt2::core::Error saveErr;
-	if (!rt2::core::PrefabSerializer::Save(doc, prefabPath, saveErr))
-	{
-		out.error = saveErr;
+		out.error = serializeErr;
 		return out;
 	}
 
-	// Mint/read the sidecar asset identity. A sidecar WRITE failure is a hard
-	// failure here, NOT the tolerated import/load behaviour: a prefab asset
-	// with no durable identity is unusable, and reporting success would leave
-	// a .rt2prefab with no committed sidecar. To preserve asset+sidecar
-	// atomicity, roll back the freshly-written prefab file when the sidecar
-	// could not be durably committed. ResolveOrAssign mints+returns a fresh ID
-	// even on write failure, so the durable check is "can a valid sidecar be
-	// read right now".
-	bool minted = false;
-	rt2::core::Error idErr;
-	out.assetId = rt2::core::ResolveOrAssign(prefabPath, *m_UuidProvider, minted, idErr);
+	const auto sidecarPath = rt2::core::AssetSidecarPath(prefabPath);
+	auto transaction = rt2::core::PrefabFileTransaction::Begin(
+		prefabPath, sidecarPath, true);
+	if (!transaction.IsOk()) { out.error = transaction.error; return out; }
+	auto captured = transaction.value->CapturePair();
+	if (!captured.IsOk()) { out.error = captured.error; return out; }
 
-	rt2::core::Error durableErr;
-	const rt2::core::UUID committed =
-		rt2::core::ReadSidecarId(rt2::core::AssetSidecarPath(prefabPath), durableErr);
-	if (committed.IsNull() || !durableErr.IsOk())
+	// A valid existing sidecar is retained byte-for-byte. Missing or malformed
+	// bytes mint a new durable identity, but the captured malformed bytes remain
+	// transaction-owned rollback data.
+	rt2::core::UUID assetId = rt2::core::UUID::Nil();
+	if (captured.value.sidecar.exists)
 	{
-		// No durable identity committed. Roll back the asset file so create
-		// either fully succeeds (asset + sidecar) or fully fails. Two cases:
-		//   - the target existed before: restore its EXACT prior bytes
-		//     atomically (never remove the user's pre-existing prefab);
-		//   - the target was absent before: checked-remove the file we wrote.
-		// A rollback failure is surfaced as the PRIMARY recovery error (it
-		// means durable partial state remains and callers must know), not
-		// swallowed beneath the original sidecar error.
-		out.assetId = rt2::core::UUID::Nil();
-		out.ok = false;
-
-		const auto failure = [&](const rt2::core::Error& cause) {
-			out.error = cause;
-			return out;
-		};
-
-		if (targetExistedBefore)
-		{
-			rt2::core::Error restoreErr;
-			const std::string priorString(priorBytes.begin(), priorBytes.end());
-			if (!rt2::core::PrefabSerializer::WriteBytesAtomic(
-				    prefabPath, priorString, restoreErr))
-			{
-				restoreErr.detail =
-					"CreatePrefabFromSubtree: asset+sidecar commit failed AND "
-					"rollback restore of the pre-existing prefab failed: " +
-					restoreErr.detail;
-				return failure(restoreErr);
-			}
-		}
-		else
-		{
-			std::error_code rmEc;
-			std::filesystem::remove(prefabPath, rmEc);
-			if (rmEc)
-			{
-				rt2::core::Error rmErr;
-				rmErr.code = rt2::core::Error::Io;
-				rmErr.path = prefabPath.string();
-				rmErr.detail =
-					"CreatePrefabFromSubtree: asset+sidecar commit failed AND "
-					"rollback removal of the partly-written prefab failed: " +
-					rmEc.message();
-				return failure(rmErr);
-			}
-		}
-
-		if (!idErr.IsOk())
-		{
-			return failure(idErr);
-		}
-		rt2::core::Error sidecarErr;
-		sidecarErr.code = rt2::core::Error::Io;
-		sidecarErr.path = rt2::core::AssetSidecarPath(prefabPath).string();
-		sidecarErr.detail =
-			"CreatePrefabFromSubtree: asset identity sidecar could not be committed";
-		return failure(sidecarErr);
+		std::string text(captured.value.sidecar.bytes.begin(), captured.value.sidecar.bytes.end());
+		while (!text.empty() && (text.back() == '\r' || text.back() == '\n' || text.back() == ' ' || text.back() == '\t')) text.pop_back();
+		assetId = rt2::core::UUID::Parse(text);
 	}
-	out.assetId = committed;
+	std::vector<uint8_t> sidecarBytes;
+	if (assetId.IsNull())
+	{
+		assetId = m_UuidProvider->CreateV4();
+		const std::string text = assetId.ToString() + "\n";
+		sidecarBytes.assign(text.begin(), text.end());
+	}
+	else
+		sidecarBytes = captured.value.sidecar.bytes;
 
+	auto staged = transaction.value->Stage(
+		std::optional<std::vector<uint8_t>>(std::move(sidecarBytes)),
+		std::optional<std::vector<uint8_t>>(std::vector<uint8_t>(assetBytes.begin(), assetBytes.end())));
+	if (!staged.IsOk()) { out.error = staged.error; return out; }
+	auto installed = transaction.value->InstallSidecarThenAsset();
+	if (!installed.IsOk()) { out.error = installed.error; return out; }
+	auto committed = transaction.value->Finalize();
+	if (!committed.IsOk()) { out.error = committed.error; return out; }
+	out.recoveryWarning = committed.value.recoveryWarning;
+	out.assetId = assetId;
 	out.ok = true;
 	return out;
 }

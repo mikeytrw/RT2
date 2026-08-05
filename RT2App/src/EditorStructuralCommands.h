@@ -278,12 +278,6 @@ private:
 	// conflates. A stat/open/read failure is a loud MISMATCH (false), never a
 	// silent "empty expected bytes", so an out-of-band deletion or an
 	// unreadable file surfaces as a conflict rather than a clobber.
-	bool FileMatches(bool expectedExists,
-	                 const std::vector<uint8_t>& expectedBytes) const;
-	// Atomically write contents, or checked-remove when the target is absent,
-	// leaving the file intact on any failure.
-	EditorMutationResult WriteAfter();
-	EditorMutationResult RestoreBefore();
 };
 
 // ---- Reparent command ----

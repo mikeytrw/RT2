@@ -1,11 +1,10 @@
 #include "EditorStructuralCommands.h"
 
 #include "PrefabSerializer.h"
+#include "core/PathTransaction.h"
 
 #include <algorithm>
 #include <cstdint>
-#include <fstream>
-#include <sstream>
 #include <string>
 
 namespace
@@ -114,6 +113,22 @@ EditorMutationResult InstantiatePrefabCommand::Undo(SceneManager& scene)
 
 EditorMutationResult CreatePrefabCommand::Execute(SceneManager& scene)
 {
+	(void)scene;
+	const bool expectedExists = m_FileIsAfterState ? true : m_FileExistedBefore;
+	const auto& expectedBytes = m_FileIsAfterState ? m_AfterContents : m_BeforeContents;
+	auto result = rt2::core::PrefabFileTransaction::ApplySingle(
+		m_PrefabPath, expectedExists, expectedBytes, true, m_AfterContents);
+	if (!result.IsOk())
+		return EditorMutationResult::Failure(result.error.code, result.error.path,
+			"CreatePrefabCommand::Execute: " + result.error.detail);
+	m_FileIsAfterState = true;
+	EditorMutationResult out;
+	out.syncImpact = rt2::core::SyncImpact::None;
+	out.effective = true;
+	out.recoveryWarning = result.value.recoveryWarning;
+	return out;
+}
+#if 0
 	// Execute is both the first apply (the host already wrote the AFTER file
 	// via CreatePrefabFromSubtree) and Redo (which returns the file to the
 	// AFTER state from a prior Undo's BEFORE/absent state).
@@ -159,9 +174,25 @@ EditorMutationResult CreatePrefabCommand::Execute(SceneManager& scene)
 		m_FileIsAfterState = true;
 	return written;
 }
+#endif
 
 EditorMutationResult CreatePrefabCommand::Undo(SceneManager& scene)
 {
+	(void)scene;
+	auto result = rt2::core::PrefabFileTransaction::ApplySingle(
+		m_PrefabPath, true, m_AfterContents, m_FileExistedBefore,
+		m_BeforeContents);
+	if (!result.IsOk())
+		return EditorMutationResult::Failure(result.error.code, result.error.path,
+			"CreatePrefabCommand::Undo: " + result.error.detail);
+	m_FileIsAfterState = false;
+	EditorMutationResult out;
+	out.syncImpact = rt2::core::SyncImpact::None;
+	out.effective = true;
+	out.recoveryWarning = result.value.recoveryWarning;
+	return out;
+}
+#if 0
 	// Undo moves the file from its AFTER state back to its BEFORE/absent
 	// state. Verify the file is still the "after" bytes this command wrote —
 	// an external edit after create must surface as a loud conflict, never a
@@ -177,7 +208,9 @@ EditorMutationResult CreatePrefabCommand::Undo(SceneManager& scene)
 		m_FileIsAfterState = false;
 	return restored;
 }
+#endif
 
+#if 0 // superseded by PrefabFileTransaction; retained only as historical context
 bool CreatePrefabCommand::FileMatches(bool expectedExists,
                                       const std::vector<uint8_t>& expectedBytes) const
 {
@@ -243,6 +276,8 @@ EditorMutationResult CreatePrefabCommand::RestoreBefore()
 	result.syncImpact = rt2::core::SyncImpact::None;
 	return result;
 }
+
+#endif
 
 void CreatePrefabCommand::ComputeAfterContents()
 {

@@ -8,6 +8,7 @@
 #include "core/UUID.h"
 
 #include <vector>
+#include <optional>
 
 enum class ReparentMode
 {
@@ -25,6 +26,7 @@ struct EditorMutationResult
     // to false for a real mutation.
     bool effective = true;
     rt2::core::Error error;
+    std::optional<rt2::core::Error> recoveryWarning;
     rt2::core::SyncImpact syncImpact = rt2::core::SyncImpact::None;
     std::vector<rt2::core::UUID> affectedEntities;
 

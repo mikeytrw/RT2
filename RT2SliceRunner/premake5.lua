@@ -10,6 +10,7 @@ project "RT2SliceRunner"
     -- link Walnut, ImGui, GLFW, Vulkan, NRD, or NRI. If it fails to link,
     -- a transitive dependency has leaked into scene core code.
     files {
+        "../RT2App/src/core/PathTransaction.cpp",
         "../RT2App/src/SceneDocument.cpp",
         "../RT2App/src/SceneSerializer.cpp",
         "../RT2App/src/SceneAssetReferenceVisitor.cpp",

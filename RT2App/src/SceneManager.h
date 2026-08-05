@@ -13,6 +13,7 @@
 #include "TransformEditing.h"
 #include "SceneMutation.h"
 #include "SubtreeSnapshot.h"
+#include "core/PathTransaction.h"
 #include <string>
 #include <vector>
 #include <functional>
@@ -351,6 +352,7 @@ struct EditorCameraPose;
 	{
 		bool ok = false;
 		rt2::core::Error error;
+		std::optional<rt2::core::Error> recoveryWarning;
 		std::filesystem::path prefabPath;
 		rt2::core::UUID     assetId;                    // sidecar identity
 		SubtreeSnapshot     sourceSnapshot;             // captured subtree

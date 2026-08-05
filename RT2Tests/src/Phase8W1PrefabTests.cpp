@@ -13,6 +13,7 @@
 #include "SubtreeSnapshot.h"
 #include "Phase1AFixtureGenerator.h"
 #include "core/Error.h"
+#include "core/PathTransaction.h"
 #include "core/UUID.h"
 #include "SceneDocument.h"
 
@@ -149,6 +150,37 @@ UUID FieldUuid(const ScriptComponent& script, const char* name)
 }
 
 } // namespace
+
+TEST_CASE("Phase 8 W1 transaction fault seam: capture and sidecar install are loud and recover exact bytes")
+{
+	PrefabFixture f;
+	const auto [root, child] = f.RootWithChild("FaultSeam");
+	const auto dir = UniqueTempDir("p8w1_fault_seam");
+	const auto prefabPath = dir / "fault.rt2prefab";
+	const auto sidecarPath = AssetSidecarPath(prefabPath);
+	const std::string stale = "stale-bytes\n";
+	WriteRaw(prefabPath, stale);
+
+	SetPathTransactionFaultForTests(PathTransactionFaultPoint::CaptureRead);
+	const auto captureFail = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	ClearPathTransactionFaultForTests();
+	CHECK_FALSE(captureFail.ok);
+	CHECK(captureFail.error.code == Error::Io);
+	CHECK(ReadFileBinary(prefabPath) == stale);
+	CHECK_FALSE(std::filesystem::exists(sidecarPath));
+
+	WriteRaw(sidecarPath, "11111111-1111-4111-8111-111111111111\n");
+	const std::string priorAsset = ReadFileBinary(prefabPath);
+	const std::string priorSidecar = ReadFileBinary(sidecarPath);
+	SetPathTransactionFaultForTests(PathTransactionFaultPoint::SidecarInstall);
+	const auto installFail = f.manager.CreatePrefabFromSubtree({ root }, prefabPath);
+	ClearPathTransactionFaultForTests();
+	CHECK_FALSE(installFail.ok);
+	CHECK(ReadFileBinary(prefabPath) == priorAsset);
+	CHECK(ReadFileBinary(sidecarPath) == priorSidecar);
+
+	std::filesystem::remove_all(dir);
+}
 
 // ---------------------------------------------------------------------------
 // W1-A: instantiating a prefab multiple times produces unique scene UUIDs, and
@@ -1498,10 +1530,9 @@ TEST_CASE("Phase 8 W1 C4c: Undo restore surfaces a failed overwrite and keeps pr
 	}
 
 	const auto undoResult = history.Undo(f.manager);
-	// Fault for red: W1 would either report success or have already truncated
-	// the file. Here Undo fails loudly AND leaves the after bytes readable.
-	CHECK_FALSE(undoResult.success);
-	CHECK(undoResult.error.code == rt2::core::Error::Io);
+	// A read-only DOS attribute does not block a handle-owned same-volume
+	// quarantine/restore. The transactional path still restores exact bytes.
+	CHECK(undoResult.success);
 
 	// The recoverable state must remain intact for a subsequent retry — never
 	// a destroyed target on a failed restore.
@@ -1511,7 +1542,7 @@ TEST_CASE("Phase 8 W1 C4c: Undo restore surfaces a failed overwrite and keeps pr
 			std::filesystem::perms::group_write |
 			std::filesystem::perms::others_write,
 		std::filesystem::perm_options::add, ec);
-	CHECK(ReadFileBinary(prefabPath) == after);
+	CHECK(ReadFileBinary(prefabPath) == stale);
 
 	std::filesystem::remove_all(dir);
 }

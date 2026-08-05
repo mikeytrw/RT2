@@ -13812,3 +13812,17 @@ green:
   replaceable-but-unreadable REGULAR file (reads fail, rename succeeds), which
   is not reliably constructible on Windows with the standard library.
 - The headless-RT2App instantiate/reload CLI drive remains blocked as before.
+
+### Phase 8 W1 transactional filesystem implementation supersession (2026-08-05)
+
+The period-record counts above describe the pre-transaction implementation and
+are superseded for current state. W1 now routes prefab asset/sidecar mutation
+through the CPU-only Windows fixed-NTFS `PrefabFileTransaction`: held
+non-following ancestor handles, restrictive leaf capture/read before
+quarantine, full-absolute `SetFileInformationByHandle(FileRenameInfo)` with
+no-replace semantics, two-slot CRC manifests, sidecar-first/asset-last
+installation, explicit logical commit/rollback, and scoped residue recovery.
+`CreatePrefabCommand` uses the same transaction for Execute/Undo/Redo; an
+exact-AFTER first Execute remains effective and is recorded for Undo. Current
+verification numbers must be regenerated from the checked-in tree after the
+implementation gates, not copied from the historical section above.
