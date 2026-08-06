@@ -25,6 +25,9 @@
     -- Phase 8 W1: prefab create-from-subtree + instantiate tests (same rationale).
     files { "src/Phase8W1PrefabTests.cpp" }
 
+    -- Phase 8 W3 S1: prefab component classification table tests (same rationale).
+    files { "src/Phase8W3OverrideTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 
