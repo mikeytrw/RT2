@@ -13864,3 +13864,376 @@ opening must not be blocked by attempting recovery. `Begin`/`Prepare` retains
 the loud local-fixed-NTFS capability refusal before any mutation, with the
 diagnostic naming that requirement. Supported NTFS roots retain the held
 non-following identity/reparse checks and alias recovery protocol.
+
+## Phase 8 W3 — overrides (implementation spec, 2026-08-06)
+
+Grounded against `master` at `d674817` (the Phase 8 W1 merge) — the first
+commit where the instance model exists. Inputs: the read-only grounding
+findings on branches `phase8-w3-grounding` (`62d0eb4`,
+`docs/phase8-w3-overrides-grounding-findings.md`) and `phase8-w4-grounding`
+(`4b35cc8`, `docs/phase8-w4-propagation-grounding-findings.md`), plus the
+Phase 8 spec decisions D1-D6 (`:12709-12799`) and amendment A1 (`:13066-13108`).
+
+Both grounding docs predate W1 and cite an older tree in which
+`SceneManager.cpp` was ~540 lines shorter; their line numbers past `:2532` no
+longer resolve. Every citation in this section was verified individually
+against `d674817`.
+
+This spec was pressure-tested by an independent review before being written in
+(the "Get the spec reviewed before implementing" step). That round returned
+three blockers and six P1s against the first draft; what follows is the
+amended version. The substantive corrections are recorded at the end of this
+section, because the errors are instructive.
+
+### What W1 landing settles
+
+The W3 grounding closed with seven items it could not settle before W1 landed.
+Six are now code facts:
+
+- **The scene keeps full copied values (Option A).** `CopyAuthoredComponents`
+  copies every `PersistedComponents` entry (`SceneManager.cpp:83-100`, `:2921`);
+  the scene codec captures all value payloads (`SceneSerializer.cpp:576-654`)
+  and writes them (`:672-810`). An instance is self-sufficient in `.rt2scene`,
+  so a missing `.rt2prefab` degrades to a diagnostic rather than data loss.
+  W4 inherits the cost: it must actively rewrite non-overridden components.
+- **The prefab record codec** is `PrefabEntityRecord{templateId,
+  SubtreeEntityRecord}` and strips transient indices (`PrefabSerializer.h:42-51,64-68`).
+- **Load order** is records -> components (`SceneSerializer.cpp:1335-1338`) ->
+  parent wiring and `RebuildChildren` (`:1341-1365`); resolution is separate.
+- **v5 fields** are `prefabInstance{asset, instanceId}` and
+  `prefabMember{instanceId, templateId}` (`SceneSerializer.cpp:818-835,1102-1170`);
+  schema is v5 with `MinReadVersion` 3 (`SceneSerializer.h:130-132`).
+- **The command seam** is the `Set*State` family returning
+  `EditorMutationResult` (`SceneManager.cpp:4284-4470`; `SceneMutation.h:19-31`)
+  — but it is not the only mutation entry point, which is where the first
+  draft went wrong. See W3-D5.
+- **The runtime acceptance path remains open**; it needs W4.
+
+One structural consequence of W1 matters throughout: **both prefab components
+are inside `PersistedComponents::ForEach`** (`PersistedComponents.h:20-38`,
+`Count = 13`). That is correct for serialization and undo, but it means every
+copy-shaped path now copies the prefab link verbatim (W3-D8).
+
+The instantiate pipeline (`SceneManager.cpp:2655-2988`) runs: load prefab ->
+build a temp document -> rebuild primitive geometry (`:2802-2810`) -> wire
+hierarchy and `RebuildChildren` -> `ResolveAll` on the **staging** document
+(`:2855-2866`) -> rebase and append resources -> `CopyAuthoredComponents` into
+live entities (`:2921`) -> remap script fields (`:2963`) -> install the link
+components (`:2977-2988`). Note the ordering: **resolution runs before the link
+components exist**, so at `ResolveAll` time no entity is yet a prefab member.
+That single fact is why W3-D7 could not be settled.
+
+### Decisions
+
+**W3-D1 - instances stay value-complete (Option A). Settled by code**, not by
+recommendation, per the evidence above.
+
+**W3-D2 - the override set lives on `PrefabMemberComponent`** as a sorted,
+unique `std::vector<PrefabComponentKey>`; empty means fully inherited. A
+separate component would be a side table with extra steps, which is what D1
+rejected; a bitmask invites serializing bit positions, the fragile identity the
+grounding warned about.
+
+Snapshot **capture** (`SceneManager.cpp:1716-1727`) and **apply** (`:1799-1808`)
+carry the whole component and need no change. Snapshot **verify** does not:
+`EntityMatchesRecord` compares only `instanceId`, `templateId` and the prefab
+reference (`:1991-2010`). `RemoveSubtreesExact` (`:2182-2200`) relies on that
+comparison before destroying entities, so an override-set change is invisible
+to it: duplicate an instance, edit the duplicate's overrides, undo the
+duplication, and the verifier still matches and destroys the edited copy. A
+guard that no longer guards is this codebase's signature defect.
+`EntityMatchesRecord` must therefore compare the override vector.
+
+**W3-D3 - one frozen classification table covering all 13 persisted
+components**, in `PersistedComponents::ForEach` order, each entry carrying its
+wire key and an `overridable` bit. The wire strings are the names the scene
+codec already writes (`SceneSerializer.cpp:672-810`), so there is one component
+identity rather than two; a parallel numeric enum was rejected because a
+renumbering would silently remap overrides. Two assertions are required:
+`size == PersistedComponents::Count` (13) and `overridable count == 8`. The
+first fails when a component is added, the second when its overridability is
+left unconsidered.
+
+The table is explicit and hand-maintained — never derived from `typeid`, EnTT
+storage order, or `ForEach` order at runtime. An unknown key is a **diagnostic,
+not a silent drop**: dropping it converts "this instance diverged" into "this
+instance tracks the source", and W4 then overwrites user data. W3 must be
+louder here than the surrounding serializer, which ignores unknown members by
+design (`SceneSerializer.cpp:792-885`).
+
+**W3-D4 - eight components are overridable**: `NameComponent`, `Transform`,
+`VisibleComponent`, `MaterialOverrideComponent`, `LightComponent`,
+`CameraComponent`, `MotionComponent`, `ScriptComponent`.
+
+Five are not. `MeshRef` carries transient resource indices that prefab files
+may not contain (`PrefabSerializer.h:42-46`). `ImportedMeshSourceComponent`
+rebinding re-resolves geometry identity and can invalidate the member/template
+relationship; no rebind policy exists. `PrefabInstanceComponent` and
+`PrefabMemberComponent` are the link itself. And **`PrimitiveComponent` is
+deferred to W4**: it is durable recipe data, but changing it must re-run
+`RegisterPrimitiveMesh` (`SceneManager.cpp:2802-2810`), and W3 has no apply
+pass to run that in. Marking it without rebuilding would ship a visible lie —
+the user overrides a primitive and nothing happens.
+
+**W3-D5 - an edit marks the override automatically, in the same command.** The
+explicit "override this component" alternative was rejected because its failure
+mode is an edit silently disappearing when the source next changes.
+
+Two corrections to the obvious reading of this:
+
+*The `Set*State` family is not where the UI edits transforms.* The inspector
+applies local transforms through `SetLocalTransform` and world transforms
+through `TrySetWorldTransform` (`SceneEditorUI.cpp:1307-1315`), which are
+direct mutators with no `EditorMutationResult` and no marker seam
+(`SceneManager.cpp:3693-3814`). `SetCameraPoseState` (`:4571-4599`) mutates
+local TRS *and* camera properties, so one alignment needs two membership
+changes while its command carries only the two values (`EditorCommands.cpp:70-106`;
+`EditorPropertyCommands.h:241-270`). The full entry-point inventory that must
+be covered is: the two direct transform mutators, `SetLocalTransformStates`
+(`:3471`), `SetVisibility`/`SetVisibilityStates` (`:1373`, `:1406`),
+`SetEntityNameState` (`:4284`), `SetLightPropertiesState` (`:4303`),
+`SetCameraPropertiesState` (`:4323`), `SetCameraPoseState` (`:4571`),
+`SetMotionState` (`:4417`), `SetScriptState` (`:4439`),
+`SetMaterialPropertiesState` (`:4343-4369`) and `SetMaterialIndexState` (`:4372`).
+
+*`effective == false` is not a property of the current API.*
+`EditorMutationResult` defaults `effective = true` (`SceneMutation.h:19-31`).
+Only visibility actually compares before writing (`SceneManager.cpp:1435-1451`);
+light, camera, name, motion and the transform state path write and notify
+unconditionally — `SetLightPropertiesState` assigns `*light = value` with no
+comparison (`:4303-4321`). **The authoritative effective-change boundary is
+therefore the command factory, not the setter.** The factory already holds
+complete before and after state at construction, compares them, and includes a
+membership edit only when the value actually differs. Adding no-op detection to
+eight setters would change eight existing behaviours and their sync-impact
+reporting — a larger and riskier diff than deciding it once where both values
+already exist.
+
+Before state includes "marker absent" and after includes "marker present", both
+captured before the value write; this is the `697d3c9` defect shape, and
+`SetMaterialIndexState` captures its displaced override before mutating for
+exactly that reason (`:4388-4394`). Continuous edits mark on activation, in the
+same snapshot as the before value.
+
+**W3-D6 - `.rt2scene` goes to v6, and `metadata.schemaVersion` upgrades on the
+first override.** An additive field inside v5 would let a W1-era binary open
+the scene, ignore the field, and destroy it on save (`SceneSerializer.cpp:792-885`).
+v6 makes that loud via the version ceiling; `MinReadVersion` stays 3, and a v5
+scene loads with every override set empty, which is the correct meaning.
+
+The path that makes the version bump insufficient on its own: `Load` records
+the source schema into `doc.metadata.schemaVersion` (`SceneSerializer.cpp:1367-1379`),
+and while `Save` always writes the current version, **`SaveTo` deliberately
+preserves an older one** — it passes `min(doc.metadata.schemaVersion,
+SchemaVersion)` (`:1929-1942`), which `SaveInternal` writes verbatim
+(`:1616-1621`, `:1742-1753`). Its sole production caller is recovery capture
+(`SceneRecoveryService.cpp:295-314`), and an audit of every scene write path
+confirms it is the only below-current emitter. So without a rule: open a v5
+scene, mark an override, and the crash-recovery snapshot is written as v5,
+dropping the override set — the exact silent loss v6 was chosen to prevent,
+through a different door.
+
+The operation that adds the first override to a document therefore sets
+`doc.metadata.schemaVersion = SceneSerializer::SchemaVersion` in the same
+atomic mutation, and that upgrade is part of the command's before/after state
+so undo restores the prior version. An untouched v5 scene keeps writing v5
+recovery snapshots exactly as today. This reuses the established idiom —
+`SceneAssetMigration.cpp:295` already stages the same assignment. Making
+`SaveTo` always write the current schema was rejected: it changes recovery
+semantics for every scene and would break the Phase 7 W5 migration test
+(`Phase7W5Tests.cpp:98-150`), which exists to pin that preservation.
+
+**W3-D7 - material precedence is OPEN, not settled.** The working proposal is
+source asset material -> template's `MaterialOverrideComponent` -> instance's
+override if marked -> exactly one resolver append and `MeshRef` installation.
+It cannot be called settled: there is no template-to-instance layering path in
+the tree at all, and the resolver applies a `MaterialOverrideComponent` only
+while processing imported-model entities (`SceneAssetResolver.cpp:688-769,857-905`).
+The instantiate ordering works against it — resolution precedes link
+installation, and by W3-D9 every override set is empty at instantiate — so no
+ordinary pipeline input presents an instance override to `ResolveAll`. Any test
+of the order needs a purpose-built fixture injecting one pre-resolution.
+
+`authored == false` is likewise unsettled. The distinction is *representable*:
+override-set membership is orthogonal to the component's `authored` flag
+(`ECSComponents.h:248-251`), so "diverged, and deliberately restored to source"
+is expressible. But whether that means restore the *asset source* or restore
+the *template's override* is a W4 semantic decision, because only W4 has a
+template value to fall back to. **W3 delivers the data distinction and its
+round-trip, nothing more.**
+
+**W3-D8 - a fresh `instanceId` on every copy path.** Confirmed defect at
+`d674817`: `CopyAuthoredComponents` iterates all 13 persisted components
+(`SceneManager.cpp:88-93`), so duplicating a prefab instance copies
+`PrefabInstanceComponent` verbatim and the copy shares the original's
+`instanceId`. Nothing re-mints. Harmless in W1 because nothing consumes
+`instanceId`; it breaks W3's per-instance grouping directly.
+
+All four call sites must be covered — `DuplicateEntities` (`:1486`),
+`PasteSubtreesFrom` (`:1578`), **`DuplicateSubtreesWithUuids` (`:3260`)** and
+`PasteSubtreesWithUuids` (`:3406`). The third is the one the editor actually
+uses (`SceneEditorUI.cpp:396-414`) and the first draft of this spec missed it.
+
+A copied subtree containing a `PrefabInstanceComponent` gets one fresh
+`instanceId` propagated to every member; `templateId`s are preserved verbatim,
+being template identity rather than instance identity; override sets are
+preserved, so a copy of a diverged instance is diverged the same way.
+**Structural restore is not a copy** — undo/redo reinstates the recorded
+`instanceId` exactly, never mints, or undo of a delete produces an instance the
+override data no longer groups with. A copied subtree carrying member
+components but no instance root is **not** an instance: strip both prefab
+components and the override set, produce ordinary entities, and diagnose;
+inventing a root would fabricate a link the user never made. Multi-root copies
+apply the rule per root subtree.
+
+**W3-D9 - instantiate pre-marks nothing.** Every override set starts empty,
+including the instance root's `Transform`. Marking it automatically would stop
+a source root-transform change ever reaching an untouched instance, defeating
+the sparse set's meaning.
+
+**W3-D10 - the marker payload is an explicit membership delta**:
+`{member, key, beforePresent, afterPresent}`. A `keyAdded`-only list cannot
+undo correctly, because a material edit can change a value on a member whose
+marker already existed. Every command that can mutate an overridable component
+carries a vector of these, captured before mutation and applied atomically with
+the component values; execute applies the after state, undo restores the
+before.
+
+The material fan-out **extends `SetMaterialPropertiesCommand`** rather than
+adding a new command: one slot edit records an override on every imported
+entity pointing at that slot (`SceneManager.cpp:4343-4369`, especially
+`:4351-4362`), so the marker edits must travel with the material snapshots it
+already stores (`EditorPropertyCommands.h:105-137`) and apply in the same step.
+A separate command could not keep the two atomic. A shared marker-edit helper
+serves the other setter commands and the composite camera path; extending only
+the material command does not solve automatic marking globally. Computing
+membership after a command is constructed would violate the
+complete-state-at-construction contract (`EditorCommand.h:19-21`).
+
+### Work steps
+
+1. **S1** - `PersistedComponentKey`, the 13-entry classification table, both
+   assertions, and the overridable predicate. Pure CPU, no callers.
+2. **S2** - the `overrides` field, the scene codec at v6, and the
+   `metadata.schemaVersion` upgrade rule with its `SaveTo` consequence.
+3. **S3** - extend `EntityMatchesRecord` with override-vector equality.
+4. **S4** - fresh `instanceId` across all four copy paths; snapshot restore
+   preserves the recorded ID; partial and multi-root policy.
+5. **S5** - the query and mutation API, the `PrefabMarkerEdit` payload, and the
+   shared marker helper.
+6. **S6** - wire automatic marking into every entry point in W3-D5's inventory,
+   including the direct transform mutators, `SetCameraPoseState` and the
+   material fan-out. The largest and most defect-prone step.
+7. **S7** - verification report, with measured Release and Debug counts.
+
+S3 precedes S4 deliberately: until the verifier can see the override vector,
+every structural-undo assertion in S4 tests a broken premise. S4 precedes S6
+for the same reason — instance grouping must be trustworthy before marking
+behaviour is asserted against it.
+
+### Tests
+
+Every test carries a discrimination proof: inject a named fault, confirm red,
+revert, confirm green, record both. If a named fault does not discriminate,
+report it rather than adjusting the test. Each entry below states what it must
+assert to avoid passing while the feature is broken — the first draft's list
+was not uniformly discriminating.
+
+Data model: (1) the override set round-trips save/load/save byte-identically,
+asserting the vector's contents rather than merely that scene JSON round-trips;
+(2) a v5 scene loads with every set empty; (3) **v5 load -> mark an override ->
+recovery `SaveTo` -> assert v6 output and the override survives**, with the
+fault being removal of the `metadata.schemaVersion` upgrade; (4) an unknown
+component key raises an observable diagnostic and leaves the destination
+transactional; (5) both compile-time assertions, recorded rather than run;
+(6) a real prefab *record* carrying every material and resource shape still
+contains no scene-side link or override data — asserting only that a prefab
+asset exists is vacuous.
+
+Marking: (7) for **each** of the eight overridable components, a first edit
+marks, through the concrete setter the UI uses — one representative test would
+let `transform`, `camera`, `name` or `motion` go unmarked while green; (8) per
+component, a no-op edit does not mark, exercising the command factory's
+comparison; (9) undo removes both value and marker, redo reinstates both;
+(10) **structural undo after a post-copy edit** — duplicate, edit the copy's
+override set, undo the duplication, and assert the edited copy is not
+destroyed, with the fault being omission of the override vector from
+`EntityMatchesRecord`; (11) a transform drag through
+`SetLocalTransform`/`TrySetWorldTransform` marks once, on activation;
+(12) `SetCameraPoseState` records two membership edits and undo restores both;
+(13) a material fan-out across several members and two instances applies
+complete before/after membership atomically with the snapshots and undoes both,
+including a member whose material snapshot already existed but whose marker did
+not.
+
+Identity: (14) duplicating an instance yields a distinct `instanceId` through
+**both** the ordinary and UUID-aware paths, with `templateId`s unchanged;
+(15) duplicating a diverged instance preserves the override set; (16) snapshot
+restore reinstates the recorded `instanceId` rather than minting; (17) a
+partial copy strips the link and diagnoses, and a multi-root copy gives each
+instance root its own fresh ID.
+
+Boundary: (18) no **direct mutation entry point** can insert an excluded key,
+not merely that the predicate returns false.
+
+Because W3-D7 is open, no test asserts material precedence at runtime; W3 tests
+only that the `authored == false` distinction round-trips.
+
+### Acceptance
+
+Instantiate the fixture hierarchy several times, retint one instance's
+material, save, reload, and confirm that instance alone carries a
+`materialOverride` override while the others remain inherited. Per the
+grounding's warning, a test comparing only component scalars can pass while
+texture and material indices are wrong: acceptance must assert the resolved
+`MeshRef::materialIndex` and the material-table extent, not just the authored
+snapshot. The propagation half is W4's and is not provable in W3.
+
+### Boundary — not delivered by W3
+
+Each must appear in the phase closure as *not delivered* rather than absorbed
+into "overrides, done": propagation (W4); revert/apply/unpack (W5) — nothing
+removes an override except undo; any UI (W6), so an override is invisible until
+then; **material precedence and `authored == false` runtime semantics**
+(W3-D7, newly deferred); **`PrimitiveComponent` overrides** (W3-D4, newly
+deferred); `ImportedMeshSourceComponent` rebinding; per-property granularity
+(D2); structural deltas (D6); and **nested prefabs**, deferred by the roadmap
+(`:600`) and by the Phase 8 boundary (`:12892-12895`).
+
+### Open — to settle before or during implementation
+
+1. The material precedence order and where effective-value materialization
+   lives (W3-D7). Needs a fixture injecting an instance override before
+   `ResolveAll`, since the ordinary pipeline cannot produce one.
+2. `authored == false` runtime semantics — restore asset source, or the
+   template's override? A W4 decision W3 must not foreclose.
+3. Whether material overrides are valid for primitive/author-created geometry
+   or only imported members; the resolver currently repairs override snapshots
+   only on the imported path (`SceneAssetResolver.cpp:857-905`).
+4. Whether the direct transform mutators gain command wrappers or are routed
+   through existing ones (W3-D5). This changes S6's shape materially.
+5. Diagnostic severity for an unknown component key — block that entity's load,
+   or warn and preserve? Preserving would require the serializer to retain
+   unknown members, which it deliberately does not.
+
+### What the review round corrected
+
+Recorded because the errors are the instructive part, and because two of them
+are the codebase's characteristic silent-failure shape:
+
+- The first draft called the override set "free" through snapshot
+  capture/apply/verify. Verify was not free, and the consequence was a guard
+  that stops guarding (W3-D2).
+- It wired marking into "every `Set*State` path", missing that the inspector
+  edits transforms through direct mutators — so a real drag would go unmarked
+  and be silently reverted by W4 (W3-D5).
+- It treated the v6 bump as sufficient, missing `SaveTo`'s schema preservation
+  and therefore a recovery snapshot that drops overrides (W3-D6).
+- It asserted a material precedence order as though W1 had enabled it; W1's
+  resolve-before-link ordering means it had not (W3-D7).
+- It named three copy paths and missed the one the editor uses (W3-D8).
+- It required "a complete set of `(member, key)` pairs" — a shape that cannot
+  undo correctly (W3-D10).
+- Several citations pointed at the right subsystem but not the asserted
+  operation. That reads as verified and is worse than a missing citation; all
+  citations here were re-checked individually.
