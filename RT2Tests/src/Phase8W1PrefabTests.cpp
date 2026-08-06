@@ -5,6 +5,7 @@
 #include "EditorStructuralCommands.h"
 #include "MeshRegistry.h"
 #include "PrefabSerializer.h"
+#include "ProjectContext.h"
 #include "SceneAssetReferenceVisitor.h"
 #include "SceneAssetResolver.h"
 #include "SceneManager.h"
@@ -66,6 +67,20 @@ std::filesystem::path UniqueTempDir(const std::string& tag)
 	std::filesystem::create_directories(dir, ec);
 	return dir;
 }
+
+#ifdef _WIN32
+std::filesystem::path LocalUncAliasIfAvailable(const std::filesystem::path& local)
+{
+	const auto absolute = std::filesystem::absolute(local).lexically_normal();
+	const auto text = absolute.wstring();
+	if (text.size() < 3 || text[1] != L':' || text[2] != L'\\') return {};
+	const auto uncText = std::wstring(L"\\\\localhost\\") + text.substr(0, 1) +
+		L"$" + text.substr(2);
+	const std::filesystem::path unc(uncText);
+	std::error_code ec;
+	return std::filesystem::is_directory(unc, ec) && !ec ? unc : std::filesystem::path{};
+}
+#endif
 
 std::string ReadFileBinary(const std::filesystem::path& p)
 {
@@ -348,6 +363,40 @@ TEST_CASE("Phase 8 W1: reparse, dangling-link, and unsupported-volume gates are 
 	CHECK_FALSE(remote.IsOk());
 #else
 	CHECK_FALSE(PrefabFileTransaction::Begin(dir / "x.rt2prefab", {}, false).IsOk());
+#endif
+	std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W1: unsupported recovery roots are no-scan but Begin remains loud")
+{
+	const auto dir = UniqueTempDir("p8w1_unsupported_recovery");
+#ifdef _WIN32
+	const auto unc = LocalUncAliasIfAvailable(dir);
+	if (unc.empty())
+	{
+		WARN("local UNC administrative-share alias is unavailable; skipping compatibility probe");
+		std::filesystem::remove_all(dir);
+		return;
+	}
+	std::filesystem::create_directories(dir / "Assets");
+	ProjectDocument project;
+	project.projectId = UUID::Parse("11111111-2222-4333-8444-555555555555");
+	Error err;
+	REQUIRE(ProjectStore::Save(project, dir / "game.rt2proj", err));
+
+	CHECK(PrefabFileTransaction::RecoverDirectory(unc / "Assets").IsOk());
+	ProjectContext context;
+	CHECK(LoadProjectContext(unc / "game.rt2proj", context, err));
+
+	const auto unsupportedPrefab = unc / "Assets" / "unsupported.rt2prefab";
+	auto begin = PrefabFileTransaction::Begin(unsupportedPrefab, {}, false);
+	CHECK_FALSE(begin.IsOk());
+	CHECK(begin.error.detail.find("local fixed NTFS") != std::string::npos);
+	CHECK_FALSE(std::filesystem::exists(unsupportedPrefab));
+#else
+	CHECK(PrefabFileTransaction::RecoverDirectory(dir).IsOk());
+	auto begin = PrefabFileTransaction::Begin(dir / "unsupported.rt2prefab", {}, false);
+	CHECK_FALSE(begin.IsOk());
 #endif
 	std::filesystem::remove_all(dir);
 }

@@ -13854,3 +13854,13 @@ they resolve to the same directory. A CRC-valid manifest whose parent cannot
 be opened or whose identity differs is left intact with a structured warning;
 it is never terminally renamed or allowed to drive path mutation. Corrupt or
 truncated manifests retain the existing `.corrupt` quarantine policy.
+
+### Unsupported-root recovery compatibility supersession note (2026-08-06)
+
+`RecoverDirectory` now treats an existing remote, removable, non-NTFS, ReFS,
+or otherwise unsupported root as a safe no-scan result (`Ok`): the transaction
+preparation gate cannot have produced a valid manifest there, and project
+opening must not be blocked by attempting recovery. `Begin`/`Prepare` retains
+the loud local-fixed-NTFS capability refusal before any mutation, with the
+diagnostic naming that requirement. Supported NTFS roots retain the held
+non-following identity/reparse checks and alias recovery protocol.

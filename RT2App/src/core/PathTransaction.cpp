@@ -900,7 +900,12 @@ Result<void> PrefabFileTransaction::RecoverDirectory(const std::filesystem::path
 {
     const auto root = std::filesystem::absolute(directory).lexically_normal();
     std::error_code ec;
-    if (!IsLocalNtfs(root) || !std::filesystem::is_directory(root, ec) || ec)
+    // Unsupported storage cannot contain a manifest produced by Prepare(),
+    // and recovery must never make an otherwise healthy project unopenable.
+    // Keep Begin()/Prepare() as the loud capability gate; recovery is a safe
+    // no-scan on remote, removable, or non-NTFS roots.
+    if (!IsLocalNtfs(root)) return Result<void>::Ok();
+    if (!std::filesystem::is_directory(root, ec) || ec)
         return Result<void>::Fail(Error::Io, root.string(), "recovery root is not accessible");
     HANDLE rootRaw = CreateFileW(root.wstring().c_str(),
                                  FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
@@ -1125,7 +1130,7 @@ Result<void> PrefabFileTransaction::Rollback() { return Result<void>::Ok(); }
 Result<TransactionCommitOutcome> PrefabFileTransaction::ApplySingle(const std::filesystem::path&, bool, const std::vector<uint8_t>&, bool, const std::vector<uint8_t>&)
 { return Result<TransactionCommitOutcome>::Fail(Error::Io, {}, "prefab transactions require Windows NTFS"); }
 Result<void> PrefabFileTransaction::RecoverDirectory(const std::filesystem::path&)
-{ return Result<void>::Fail(Error::Io, {}, "prefab transactions require Windows NTFS"); }
+{ return Result<void>::Ok(); }
 
 #endif
 
