@@ -147,7 +147,7 @@ TEST_CASE("Phase7 W5 migration assigns once per physical source and writes v4")
         staged, migratedPath, saveDiagnostics, err));
     nlohmann::json saved;
     { std::ifstream input(migratedPath); input >> saved; }
-    CHECK(saved["version"].get<uint32_t>() == 4);
+    CHECK(saved["version"].get<uint32_t>() == SceneSerializer::SchemaVersion);
     CHECK(saved["metadata"]["projectId"].get<std::string>() ==
           projectId.ToString());
 
@@ -160,13 +160,13 @@ TEST_CASE("Phase7 W5 migration assigns once per physical source and writes v4")
     CHECK(provider.calls == 3);
 }
 
-TEST_CASE("Phase7 W5 v4 rejects malformed asset identity")
+TEST_CASE("Phase7 W5 current schema rejects malformed asset identity")
 {
     const auto path = std::filesystem::temp_directory_path() /
         "rt2_phase7_w5_bad_id.rt2scene";
     std::ofstream output(path);
     output << R"({
-      "version":4,
+      "version":5,
       "metadata":{"projectId":"550e8400-e29b-41d4-a716-446655440010"},
       "entities":[{"uuid":"550e8400-e29b-41d4-a716-446655440001",
         "name":"Model","parent":"","visible":true,
@@ -184,7 +184,7 @@ TEST_CASE("Phase7 W5 v4 rejects malformed asset identity")
     Error err;
     CHECK_FALSE(SceneSerializer::Load(document, path, report, err));
     CHECK(err.code == Error::Parse);
-    CHECK(report.sourceVersion == 4);
+    CHECK(report.sourceVersion == SceneSerializer::SchemaVersion);
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }

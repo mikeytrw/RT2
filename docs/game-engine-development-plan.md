@@ -13278,3 +13278,589 @@ Vulkan, ImGui, Walnut, or the editor host.
 No W2 defect was revealed. The intentional behavior change is that copied
 typed entity references now follow the copied subtree; references outside it
 remain pointed at their original UUIDs. Prefab instantiation remains W1 work.
+
+### Phase 8 W1 — prefab create-from-subtree and instantiate verification report (2026-08-04)
+
+**Grounded against commit `89ed336`** on branch
+`phase8-w1-prefab-create-instantiate`, master merged in. This report reflects
+the tree at commit time; the working tree additionally carries the W1
+implementation described below.
+
+#### Grounding findings that changed the intended scope
+
+Half of W1 already existed before this work was speced from the roadmap's
+"Phase 8 W2" text. Reading the tree rather than the roadmap found:
+
+- The prefab file codec is **not** in PrefabSerializer.cpp as the W0-era
+  comments claim; `PrefabSerializer::Save`/`Load` delegate record
+  serialization to `PrefabRecordToJson`/`JsonToPrefabRecord`, which live in
+  **SceneSerializer.cpp** (they reuse the scene per-component codec). The
+  HARD-RULE strip of transient resource indices
+  (`MeshRef::materialIndex`, `materialOverride.material.*TextureIndex`) is in
+  `StripTransientIndices` at `SceneSerializer.cpp:1494-1510` (a HARD RULE only
+  if that exclusion is on the write side of a scene save; on the prefab side it
+  is unconditional), and prefab nodes are staged from the same primitives as
+  the scene load path via `RegisterPrimitiveMesh` (`SceneSerializer.cpp:1403`).
+- The two record-codec declarations in `PrefabSerializer.h:118,122` used bare
+  `json` where only the `.cpp` file carries `using json = nlohmann::json`;
+  qualified them as `nlohmann::json` (no header using-declaration).
+- `SceneSerializer.cpp` schema is now **v5** (`SceneSerializer.h:
+  SchemaVersion 4 -> 5`). The `static_assert(PersistedComponents::Count == 11)`
+  fired because the two prefab components raised `Count` to 13; after verifying
+  EntityRecord serialization covers both end-to-end, the assert was updated to
+  `13` (`SceneSerializer.cpp:39`).
+- Existing v4-era assertion literals were stale: `Phase1ASceneAssetTests.cpp`,
+  `Phase7W5Tests.cpp`, `SceneSerializerTests.cpp` hard-coded
+  `"version": 4`/`== 4`; corrected to use `SceneSerializer::SchemaVersion` (or
+  the `5` literal where a fixture is written) and the `vertical-slice` asset
+  was bumped to version 5.
+
+#### What was built (implementation scope from TASK.md section A)
+
+- `SceneManager::CreatePrefabFromSubtree(roots, prefabPath)` — asset-side,
+  no live-scene mutation. Captures via the existing `CaptureSubtreeSnapshot`,
+  mints **one fresh templateId per captured entity** via `ReserveKnownUuids`
+  (parallel to `sourceSnapshot.entities`, pre-order — **not** derived from any
+  scene UUID, per amendment A1), writes the `.rt2prefab` atomically via
+  `PrefabSerializer::Save`, and resolves the sidecar asset identity via
+  `ResolveOrAssign`. Fills `PrefabCreationResult` per the header contract.
+  (`SceneManager.cpp:2529`)
+- `SceneManager::CountCanonicalPrefabEntities(prefabPath)` — mirrors
+  `CountCanonicalSubtreeEntities`: loads the file and returns the record count,
+  failing with an `Error` on an invalid file. (`SceneManager.cpp`)
+- `SceneManager::InstantiatePrefabWithUuids(prefabPath, knownInstanceUuids,
+  diagnostics)` — flat-UUID-list contract mirroring
+  `DuplicateSubtreesWithUuids`: validate count against
+  `CountCanonicalPrefabEntities`, validate non-nil/unique/absent from the live
+  document, then build the full plan in a temp `SceneDocument` before any
+  mutation; on failure roll back cleanly. Loads via `PrefabSerializer::Load`,
+  builds instances via the shared `ApplySubtreeRecord`, resolves imported
+  assets in the temp doc through `SceneAssetResolver` (diagnostics
+  out-param), merges resolved resources with base-offset rebasing, and wires
+  the hierarchy via `SceneHierarchy::RebuildChildren` (reused, not a hand-wired
+  parent/children loop). Links the instance: `PrefabInstanceComponent` on the
+  root (fresh instanceId + `AssetReference` to the prefab) and
+  `PrefabMemberComponent` on every member (same instanceId, templateId from
+  the file). Root name gets the locked `" Copy"` suffix. After UUID assignment
+  it invokes the shared W2 `EntityReferenceRemapper`, building the
+  template-scene-UUID → instance-UUID map from the file's own
+  `SubtreeEntityRecord.uuid` fields plus the copied `ScriptComponent` views, so
+  a script `Uuid` field pointing at a sibling inside the prefab resolves to
+  that sibling's instance — **not** the template and **not** a sibling
+  instance. (`SceneManager.cpp:2596`)
+- Undo/redo commands (`EditorStructuralCommands.h/.cpp`): asset-side
+  `CreatePrefabCommand` (scene never mutated; Undo restores prior file bytes or
+  removes a never-present file, Redo deterministically regenerates) and
+  scene-side `InstantiatePrefabCommand` (Undo `RemoveSubtreesExact`, Redo
+  `RestoreSubtrees` — same stored UUIDs, link verbatim). Both follow
+  `EditorCommand.h`'s carry-state-at-construction contract and the
+  no-compaction-while-history-live invariant.
+
+#### Permanent tests and discrimination proofs
+
+Nine permanent tests in the CPU-only target at
+`RT2Tests/src/Phase8W1PrefabTests.cpp` (registered in both `RT2Tests.vcxproj`
+and `premake5.lua`). For each the Debug solution was built, the named test was
+run alone, the actual red output was recorded, the fault was reverted, Debug
+was rebuilt, and the same test was confirmed green.
+
+1. **Multiple instances get unique UUIDs and remapped internal refs** — fault:
+   temporarily removed the `RemapCopiedScriptFields` call at
+   `SceneManager.cpp:2815`. Red (correct discrimination — sibling script refs
+   pointed at the template, not the instance):
+
+   ```text
+   Phase8W1PrefabTests.cpp(128): ERROR: CHECK( FieldUuid(*s1, "sibling") == inst1Child ) is NOT correct!
+   Phase8W1PrefabTests.cpp(129): ERROR: CHECK( FieldUuid(*s1, "sibling") != child ) is NOT correct!
+   ... (also 150, 152)
+   [doctest] test cases:  1 |  0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 37 | 33 passed | 4 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+2. **Prefab file never contains a resource-table index** — fault: disabled the
+   `materialIndex` erase in `StripTransientIndices`
+   (`SceneSerializer.cpp:1498`). Red:
+
+   ```text
+   Phase8W1PrefabTests.cpp(138): ERROR: CHECK( raw.find("materialIndex") == std::string::npos ) is NOT correct!
+   Phase8W1PrefabTests.cpp(154): ERROR: CHECK( rec.materialIndex == -1 ) is NOT correct!
+   [doctest] test cases:  1 |  0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 14 | 12 passed | 2 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+3. **templateIds stable, not derived from scene UUIDs** — fault: derived
+   templateIds from the capture's scene UUIDs instead of fresh `ReserveKnownUuids`
+   (`SceneManager.cpp:2556`). Red:
+
+   ```text
+   Phase8W1PrefabTests.cpp(163): ERROR: CHECK( created.templateIds[0] != root ) is NOT correct!
+   Phase8W1PrefabTests.cpp(166): ERROR: CHECK( created.templateIds[1] != child ) is NOT correct!
+   [doctest] test cases:  1 |  0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 25 | 23 passed | 2 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+4. **Instance link components survive scene round-trip** — fault: suppressed
+   the `prefabMember` write (`SceneSerializer.cpp:828`). Red:
+
+   ```text
+   Phase8W1PrefabTests.cpp(209): FATAL ERROR: REQUIRE( msg0 ) is NOT correct!
+   [doctest] test cases:  1 |  0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 11 | 10 passed | 1 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+5. **InstantiatePrefabCommand Undo/Redo restores the link** — fault: suppressed
+   the `PrefabInstance`/`PrefabMember` writes in `ApplySubtreeRecord`
+   (`SceneManager.cpp:1797-1805`) that `RestoreSubtrees` uses on Redo. Red:
+
+   ```text
+   [doctest] test cases:  1 |  0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 14 | 13 passed | 1 failed |
+   [doctest] Status: FAILURE!   (REQUIRE( instComp ) after Redo — link absent)
+   ```
+
+6. **CreatePrefabCommand Undo restores prior contents, Redo regenerates** —
+   fault: suppressed the before-contents write in `CreatePrefabCommand::Undo`
+   (`EditorStructuralCommands.cpp`). Red:
+
+   ```text
+   Phase8W1PrefabTests.cpp(241): ERROR: CHECK( ReadFileBinary(prefabPath) == stale ) is NOT correct!
+   [doctest] test cases:  1 |  0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 13 | 12 passed | 1 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+7. **CreatePrefabCommand Undo removes a never-present file** — fault: in the
+   empty-prior branch, `Undo` no longer removed the file. Red:
+
+   ```text
+   Phase8W1PrefabTests.cpp(270): ERROR: CHECK_FALSE( std::filesystem::exists(prefabPath) ) is NOT correct!
+   [doctest] test cases: 1 | 0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 7 | 6 passed | 1 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+8. **B2 regression: instantiating a primitive registers its mesh** — fault:
+   replaced `RegisterPrimitiveMesh` at `SceneManager.cpp:2663` with a
+   zeroed `meshIndex` (no registration). Red:
+
+   ```text
+   Phase8W1PrefabTests.cpp(307): FATAL ERROR: REQUIRE( ref->meshIndex < countAfter ) is NOT correct!
+   [doctest] test cases: 1 | 0 passed | 1 failed | 780 skipped
+   [doctest] assertions: 7 | 6 passed | 1 failed |
+   [doctest] Status: FAILURE!
+   ```
+
+9. **Instantiate validates UUID count/uniqueness atomically** — fault: disabled
+   the count check and the seen-set duplicate check in
+   `InstantiatePrefabWithUuids` (`SceneManager.cpp:2622`). Red — the guard is
+   load-bearing; with it removed a wrong UUID count proceeds and aborts:
+
+   ```text
+   (no assertion summary — process aborted)
+   : Assertion failed: vector subscript out of range
+   TEST EXIT=-1073740791 (abort)
+   ```
+
+Every fault reverted byte-for-byte and the full suites re-run green. No fault
+that was expected to discriminate failed to go red; no test was adjusted to
+make a fault pass.
+
+#### Verification (measured this session)
+
+- **Release solution build**: passed, 0 errors.
+- **Debug solution build**: passed, 0 errors.
+- **Release full RT2Tests** (run from repo root): **781/781 cases**,
+  **146,955/146,955 assertions**; passed.
+- **Debug full RT2Tests** (run from repo root): **781/781 cases**,
+  **146,955/146,955 assertions**; passed. (Baseline before W1, from the W2
+  report: 772/772, 146,801 — W1 adds 9 test cases and 154 assertions.)
+- **`powershell -File run_script_test.ps1`**: passed — 60 frames, 1 entity, no
+  mismatches.
+- **`powershell -File run_slice_test.ps1`**: passed — 60 steps, authoring
+  intact (exercises the v5-bumped `vertical-slice.rt2scene`).
+- **`powershell -File run_recovery_test.ps1`**: passed — recovery regression.
+
+#### Defects found
+
+- The transient Release test-worker failure reported at the start of this
+  phase (anchor: "Assertion failed" during occasional Release TestWorker runs)
+  was **investigated but not reproduced**: 16 consecutive green Release runs
+  (sequential, concurrent Release+Debug, and Release-while-Debug-rebuild) with
+  no capture from the one failing run, so no cause was isolable and it is left
+  **unresolved** rather than mislabeled as fixed. No W1 code path touches the
+  TestWorker; shipping W1 does not claim to have addressed it.
+- The transient resource-index exclusion plus the stale v4 static-assert and
+  the stale test literals above were grounded and corrected, not assumed.
+
+#### Headless note
+
+The RT2App executable's headless CLI (`--headless`) can load and render scenes
+but exposes **no prefab create/instantiate action**, so a headless-RT2App
+instantiate/reload sanity drive is **not directly exercisable** without adding
+a new CLI scenario — reported as blocked rather than passed. The identical
+headless instantiate → save → reload → verify-link round-trip is covered by
+the permanent W1-D test in the CPU-only suite (test 4 above).
+
+----
+
+## Phase 8 W1 — cold-review repair (2026-08-04)
+
+Supersession note: the W1 verification report above (781/781) was the state at
+commit 18c1ad7. A cold review of that commit (artifact phase8-w1-review)
+found six findings (P0, P1 sidecar, P1 rollback, P2 one-root, P3 command
+semantics, P4 visitor). All were repaired in a bounded follow-up commit. This
+note records the repair; it does not rewrite the historical W1 report.
+
+### Repairs and where they landed
+
+- **P0 — slice source list.** RT2SliceRunner/premake5.lua never registered
+  PrefabSerializer.cpp (the gitignored RT2SliceRunner.vcxproj was the only
+  place that had it, and premake is source-of-truth). Added it. The regenerated
+  slice builds and links in both Release and Debug. AssetWatchPolicy.cpp was
+  considered for the slice but **rejected as ungrounded**: its only includers
+  (WalnutApp.cpp, ContentBrowserDispatch.cpp) are not slice sources, so a
+  fresh slice target has no reference to it.
+- **RT2Tests premake parity.** RT2Tests/premake5.lua was missing
+  AssetWatchPolicy.cpp even though the tracked RT2Tests.vcxproj had it at
+  line 327 — a fresh premake regeneration would drop the symbol and reproduce
+  the reviewer's 21-symbol unresolved failure. Added it for parity.
+- **P1 — sidecar failure is loud.** CreatePrefabFromSubtree now treats a
+  sidecar that cannot be committed as a hard failure: it rolls back the just-
+  written .rt2prefab file (asset+sidecar atomic) and returns ok=false.
+  InstantiatePrefabWithUuids resolves the sidecar identity BEFORE any scene
+  mutation and fails pre-mutation when it is unreadable; the link step reuses
+  the committed ID instead of re-resolving inline.
+- **P1 — transactional resource rollback.** On a failed instantiate, the
+  rollback path now truncates the appended mesh/material/texture rows back to
+  their pre-merge bases (dst.meshRegistry.Truncate(meshBase) +
+  materials.resize(matBase) + 	extures.resize(texBase)). Added
+  MeshRegistry::Truncate.
+- **P2 — one-root invariant.** A prefab must have exactly one top-level root.
+  CreatePrefabFromSubtree rejects multi-root input (canonical roots != 1)
+  with a structured InvalidEntity diagnostic before any write; instantiate
+  rejects a file with != 1 top-level root before any mutation.
+- **P3 — command semantics.** CreatePrefabCommand now carries an explicit
+  ileExistedBefore flag so a pre-existing zero-byte file is restored on Undo
+  (not removed, which the old eforeContents.empty() heuristic got wrong).
+  Undo also surfaces a failed file removal as a loud Io Failure instead of a
+  silent success. Factory signature updated; both call sites updated.
+- **P4 — visitor coverage.** SceneAssetReferenceVisitor now collects
+  PrefabInstanceComponent.prefab alongside imported/script slots.
+
+### Regression tests added (Phase8W1PrefabTests.cpp, all with fault-to-red)
+
+- P1 create-sidecar failure: create fails atomically, asset file rolled back.
+- P1 instantiate-sidecar failure: fails before mutation, zero entity/mesh delta.
+- P1 resource rollback: red confirmed in-session — with Truncate disabled,
+  meshRegistry.GetCount() == 2 vs base 1 after a failed instantiate;
+  green with the fix.
+- P2 multi-root create rejected before any file write; multi-root file
+  rejected at instantiate before mutation.
+- P3 zero-byte pre-existing file restored on Undo (still exists, size 0);
+  failed removal surfaces as Io Failure.
+- P4 visitor finds the prefab reference exactly once on the instance root.
+
+### Verification (measured this session, after repair)
+
+- **Release full RT2Tests** (run from repo root): **789/789 cases**,
+  **147,008/147,008 assertions**; passed.
+- **Debug full RT2Tests** (run from repo root): **789/789 cases**,
+  **147,008/147,008 assertions**; passed.
+- **powershell -File run_script_test.ps1**: passed — 60 frames, 1 entity, no
+  mismatches.
+- **powershell -File run_slice_test.ps1**: passed — 60 steps, authoring
+  intact, cube x=0.999999702.
+- **powershell -File run_recovery_test.ps1**: passed.
+- **Slice build** (regenerated from the repaired premake): Release + Debug both
+  link RT2SliceRunner.exe successfully.
+- **graphify update .**: graph rebuilt (34,808 nodes); tracked
+  graphify-out/GRAPH_REPORT.md restored to HEAD (generated churn, no
+  functional delta).
+
+### Caveats
+
+- The transient Release TestWorker failure from the W1 report remains
+  unresolved (not reproduced by W1; untouched by this repair).
+- The reviewer's statement that the RT2Tests link failure involves the slice
+  was inaccurate: the slice has no AssetWatchPolicy reference; the RT2Tests
+  premake parity gap is the reproducible 21-symbol path.
+
+----
+
+## Phase 8 W1 — second cold-review repair (2026-08-04)
+
+Supersession note: the first cold-review repair above was the state at commit
+`c9dfea6`. A second bounded cold review of that commit (Sol artifact
+`phase8-w1-sol-merge-assessment`, verdict "NOT SAFE TO MERGE at c9dfea6 over
+master 0df3175") returned five safe contracts. All five were repaired in a
+bounded follow-up commit plus fault-to-red regression tests. This note records
+the second repair; it does not rewrite the W1 report or the first repair note.
+
+### The five contracts and where each landed
+
+- **C1 — CreatePrefabFromSubtree is transactional (asset + sidecar).** On the
+  existing-asset branch the create now pre-captures target existence and prior
+  bytes (`SceneManager.cpp`, create-transactional block ~2529-2694). If
+  committing the sidecar asset fails, the previously written `.rt2prefab` is
+  rolled back atomically — either restored to the captured prior bytes via the
+  shared atomic `WriteBytesAtomic` replace, or checked-removed when no prior
+  target existed. A rollback failure is surfaced as the primary error (loud),
+  never swallowed. Raised `rt2::core::Error` via member assignment to stay
+  valid under the C++17 test build (no designated initializers).
+- **C2 — InstantiatePrefabWithUuids attaches the canonical root.** The
+  `PrefabInstanceComponent` is linked to the ACTUAL one-root entity found by
+  scanning the loaded prefab records, NOT to `liveEntities[0]` / `uuids[1]`.
+  Duplicate `templateId` is rejected pre-mutation; a file with zero or more
+  than one top-level root is rejected pre-mutation (see P2). (`SceneManager.cpp`
+  ~2716-3028.)
+- **C3 — production SceneSerializer::Save pre-save rejects bad prefab refs.**
+  A prefab reference that is invalid or the wrong kind fails Save with
+  `Error::InvalidArgument` before writing; a valid, resolvable reference saves
+  and reloads, and a non-zero-multi-mount case emits a portability diagnostic.
+  (`SceneSerializer.cpp` prefab pre-save validation ~1644; portability
+  diagnostic in the prefab block ~821.)
+- **C4 — CreatePrefabCommand undo/redo refuses to clobber out-of-band edits.**
+  Undo verifies the file still matches the command's expected after state
+  before restoring prior bytes, and Redo verifies the expected before/absent
+  state before regenerating; any divergence fails loudly with
+  `Error::Io`, never silently overwriting an external edit.
+  (`EditorStructuralCommands.h/.cpp`, `FileMatches`/`WriteAfter`/
+  `RestoreBefore`; added `<sstream>` for the new diagnostics.)
+- **C5 — rollback discrimination for instantiate failure.** A failed
+  instantiate of an imported textured prefab (injected hierarchy cycle) after
+  staging mesh+material+texture rows proves full state restoration: entity
+  count, UUID-index size, all three resource-table counts, dirty/revision
+  state, and no surviving `PrefabInstanceComponent`.
+
+### Windows replace-probe that shaped C1/C4
+
+`MoveFileExW(..., MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)` succeeds
+over a writable target and fails (err=5) over a **read-only** target. Save and
+rollback-restore share the same atomic tmp+replace primitive on the same path,
+so a rollback-**restore** failure cannot be isolated from a Save failure for
+the existing-file branch; the genuinely injectable distinct failures are the
+**remove** branch (a parked non-empty directory blocks removal) and a
+**force-failed atomic replace** (a read-only target makes the restore's replace
+fail while reads still succeed, so FileMatches passes and the restore branch is
+exercised). The regression tests use exactly these two injectable failure
+classes.
+
+### Regression tests added (Phase8W1PrefabTests.cpp, all with fault-to-red)
+
+Ten `Phase 8 W1 C*` test cases now append the originals (file grew to 1454
+lines):
+
+- C1a: a create over a pre-existing prefab whose sidecar commit fails restores
+  the prior asset bytes.
+- C1b: a create that cannot commit its asset (non-empty directory parked at the
+  asset path blocks the atomic replace) fails loudly with `Error::Io` and
+  leaves the blocker untouched.
+- C2a: a `[child, root]` capture links `uuids[1]` as the instance root, not
+  `uuids[0]`; checks createdRoots, PrefabMember templateIds, and instanceId.
+- C2b: a duplicate `templateId` is rejected before any mutation (UUID index and
+  entity count unchanged).
+- C3a: wrong-kind (Script) and empty-path Prefab references both fail Save with
+  `Error::InvalidArgument`; uses `reg.view<PrefabInstanceComponent>()` for the
+  root handle, not the old `uuids[1]` assumption.
+- C3b: valid prefab reference saves, reloads, link survives, path reports
+  portability.
+- C4a: Undo refuses to clobber an out-of-band edit.
+- C4b: Redo refuses to clobber a re-created file after Undo.
+- C4c: Undo RESTORE surfaces a failed overwrite (read-only target makes the
+  atomic replace fail) loudly while leaving the recoverable after-state
+  readable — a fault-to-red paired with the existing P3 failed-remove test.
+- C5: failed-instantiate rollback proves full mesh+material+texture restoration
+  and dirty/revision state (requires matBase/texBase >= 1).
+
+In-session red evidence: with the root linked at `uuids[1]` instead of the
+canonical root, C2a went red and C3a aborted (`entt/entity/sparse_set.hpp:752`
+— a SIGABRT from indexing a wrong entity); with the commit-failure injection,
+C1b went red on a swallowed (reported-success) write. All faults reverted and
+the same tests confirmed green.
+
+### Verification (measured this session, after second repair)
+
+- **Release full RT2Tests** (run from repo root): **799/799 cases**,
+  **147,100/147,100 assertions**; passed.
+- **Debug full RT2Tests** (run from repo root): **799/799 cases**,
+  **147,100/147,100 assertions**; passed.
+- **Phase 8 W1 C\* target run** (Debug): 10/10 cases, 92/92 assertions; passed.
+- **powershell -File run_script_test.ps1**: passed — 60 frames, 1 entity, no
+  mismatches.
+- **powershell -File run_slice_test.ps1**: passed — 60 steps, authoring intact,
+  cube x=0.999999702.
+- **powershell -File run_recovery_test.ps1**: passed.
+- **premake5 regenerated** the solutions cleanly; generated vcxproj churn was
+  restored to HEAD (the tracked vcxprojs already reference the pt source; the
+  regeneration delta was reorder/formatting only).
+- **graphify update .**: graph rebuilt (34,820 nodes); tracked
+  graphify-out/GRAPH_REPORT.md restored to HEAD (generated churn).
+
+### Caveats
+
+- The transient Release TestWorker failure reported in the W1 report remains
+  unresolved (first noted at the start of this phase; not reproduced and
+  untouched by either repair).
+- The headless-RT2App instantiate/reload CLI drive remains blocked as before;
+  the identical instantiate → save → reload → verify-link round-trip is covered
+  by the CPU-only permanent tests.
+
+## Phase 8 W1 — third cold-review repair (2026-08-05)
+
+Supersession note: the state at commit `7869451` (second repair, section above)
+was reviewed cold again (Sol artifact `phase8-w1-sol-followup-review`, verdict
+"NOT SAFE TO MERGE at 7869451"). Two P1 transactional-state defects and two P2
+proof gaps were repaired in a bounded follow-up. This note records the third
+repair; it does not rewrite the W1 report or the two prior repair notes.
+
+### 3R-1 (P1) — CreatePrefabCommand represents expected existence separately from bytes
+
+`FileMatches` previously returned `expected.empty()` when the stream could not
+open (`EditorStructuralCommands.cpp`, W1), collapsing a MISSING file into an
+EXISTING zero-byte one: Redo over a pre-existing zero-byte file whose out-of-band
+deletion had removed it saw "still matches" and silently recreated the prefab.
+`FileMatches` now takes `(bool expectedExists, const std::vector<uint8_t>&
+expectedBytes)` and is authoritative + disjoint on existence:
+`expectedExists=true` requires a present regular file whose bytes match exactly
+(a missing file never matches, even with empty bytes); `expectedExists=false`
+requires absence (an existing zero-byte file never matches). A stat/open/read
+failure is a loud mismatch, never a silent "empty matches". All three Undo/Redo
+call sites pass the correct existence plus bytes
+(`EditorStructuralCommands.h` ~281; `.cpp` ~132/142/148/169/181).
+
+### 3R-2 (P1) — CreatePrefabFromSubtree captures prior bytes with loud failure
+
+Prior capture used throwing `exists` plus an unopened `ifstream` that silently
+left `priorBytes` empty (`readEc` unused), so a pre-existing-but-unreadable
+target's rollback could substitute empty bytes. The create now, BEFORE any asset
+or sidecar mutation, does a non-throwing `status`; treats a stat error on an
+existing path as a hard Io failure; refuses a non-regular target; and requires a
+checked complete read of the prior bytes. Any capture failure returns an Io
+error without writing. `priorBytes` never carries an empty vector as a
+read-failure sentinel. (`SceneManager.cpp` create-transactional block.)
+
+### 3R-3 (P2) — C3b proves the prefab portability diagnostic
+
+C3b's W1-era portability claim discarded `saveDiags` and used a same-directory
+relativizable ref. The test now (a) asserts the relative, relocatable save emits
+ZERO NonPortable advisories, then (b) repoints the instance prefab ref at a
+syntactically cross-volume absolute path (Q: vs the C: temp scene dir) and
+asserts exactly one NonPortable diagnostic from production
+`SceneSerializer::Save` with `kind == Prefab`, the original/stored path, and the
+entity UUID/name. (`Phase8W1PrefabTests.cpp` C3b.)
+
+### 3R-4 (P2) — C5 asserts the generation/UUID state named by the rollback contract
+
+C5 now captures and compares `DocumentGeneration()` and `ResourceGeneration()`
+around the failed instantiate — both unchanged, because the failure returns
+before `NotifyAuthoringChanged` and the rollback truncates the staged rows;
+generations advance only on whole-scene Load/Adopt/Compact, so equality is the
+invariant rather than a monotonic counter to preserve. It also asserts the
+attempted instance UUID is absent from `uuidIndex` after rollback.
+
+### Regression tests added (Phase8W1PrefabTests.cpp)
+
+- C1c: create over a non-regular/unreadable target fails at the prior-state
+  precondition (detail names "not a regular file") before any asset/sidecar
+  mutation; the target directory and sidecar are untouched.
+- C4d: pre-existing zero-byte → create → Undo → external delete → Redo fails
+  `Error::Io` and leaves the path absent.
+- C4e: absent-before → create → Undo → external zero-byte file appears → Redo
+  fails and preserves the zero-byte file (the inverse existence-vs-bytes
+  discrimination).
+- C3b/C5 strengthened as above (30 `Phase 8 W1 C*` cases; file grew to 1726
+  lines).
+
+In-session fault-to-red evidence, one per correction, each reverted and confirmed
+green:
+- 3R-1: reverting `FileMatches` to the W1 empty-match sentinel — C4d red (Redo
+  succeeded and recreated the deleted file).
+- 3R-2: removing the up-front regular-file precondition — C1c red (the
+  "not a regular file" precondition detail never appeared).
+- 3R-3: disabling `AppendNonPortableDiagnostic` in the prefab block — C3b red
+  (`nonPortable == 1` got 0).
+- 3R-4: injecting `++m_ResourceGeneration` into `rollbackCreated` — C5 red
+  (`ResourceGeneration() == beforeResource`, 3 != 2).
+
+### Verification (measured this session, after third repair)
+
+- **Release full RT2Tests** (run from repo root): **802/802 cases**,
+  **147,145/147,145 assertions**; passed.
+- **Debug full RT2Tests** (run from repo root): **802/802 cases**,
+  **147,145/147,145 assertions**; passed.
+- **Phase 8 W1 C\* target run** (Debug): 13/13 cases, 137/137 assertions; passed.
+- **powershell -File run_script_test.ps1**: passed — 60 frames, 1 entity, no
+  mismatches.
+- **powershell -File run_slice_test.ps1**: passed — 60 steps, authoring intact,
+  cube x=0.999999702.
+- **powershell -File run_recovery_test.ps1**: passed.
+- **premake5 vs2022** regenerated cleanly; generated RT2App/RT2Tests vcxproj
+  churn restored to HEAD (ClCompile source sets identical to tracked, 0 diff
+  lines each).
+- **graphify update .**: graph rebuilt; generated churn restored.
+
+### Caveats
+
+- The transient Release TestWorker failure reported in the W1 report remains
+  unresolved and is untouched by this repair.
+- 3R-2 removes the empty-vector read-failure sentinel and adds the non-regular
+  precondition test but does not add a filesystem-seam test for a
+  replaceable-but-unreadable REGULAR file (reads fail, rename succeeds), which
+  is not reliably constructible on Windows with the standard library.
+- The headless-RT2App instantiate/reload CLI drive remains blocked as before.
+
+### Phase 8 W1 transactional filesystem implementation supersession (2026-08-05)
+
+The period-record counts above describe the pre-transaction implementation and
+are superseded for current state. W1 now routes prefab asset/sidecar mutation
+through the CPU-only Windows fixed-NTFS `PrefabFileTransaction`: held
+non-following ancestor handles, restrictive leaf capture/read before
+quarantine, full-absolute `SetFileInformationByHandle(FileRenameInfo)` with
+no-replace semantics, two-slot CRC manifests, sidecar-first/asset-last
+installation, explicit logical commit/rollback, and scoped residue recovery.
+`CreatePrefabCommand` uses the same transaction for Execute/Undo/Redo; an
+exact-AFTER first Execute remains effective and is recorded for Undo. Current
+verification numbers must be regenerated from the checked-in tree after the
+implementation gates, not copied from the historical section above.
+
+### Corrective supersession note (2026-08-05)
+
+The historical C* sentence above was an interim report claim, not a current
+test census. The measured pre-transaction Phase 8 W1 baseline was **13 C*
+cases**; later transaction/recovery cases are additive and must be counted
+from the checked-in test binary. This note supersedes the historical 30-case
+overclaim without rewriting that audit record.
+
+### Final recovery supersession note (2026-08-05)
+
+Prefab recovery now quarantines short/invalid manifests and skips live
+transaction manifests with a warning, so unrelated project transactions and
+project open remain available. Recovery also rejects manifests whose recorded
+asset/sidecar parent is not the directory being scanned before touching any
+recorded path. CreatePrefabCommand remains the approved asset-only replay; the
+coordinated asset+sidecar path remains owned by CreatePrefabFromSubtree.
+
+### Parent-identity recovery supersession note (2026-08-05)
+
+Recovery now opens each manifest-recorded asset/sidecar parent with a
+non-following directory handle and compares its `FILE_ID_INFO` pair
+(`VolumeSerialNumber` plus 128-bit `FileId`) with the held scanned-root
+identity. Case, 8.3, and equivalent path aliases are therefore accepted when
+they resolve to the same directory. A CRC-valid manifest whose parent cannot
+be opened or whose identity differs is left intact with a structured warning;
+it is never terminally renamed or allowed to drive path mutation. Corrupt or
+truncated manifests retain the existing `.corrupt` quarantine policy.
+
+### Unsupported-root recovery compatibility supersession note (2026-08-06)
+
+`RecoverDirectory` now treats an existing remote, removable, non-NTFS, ReFS,
+or otherwise unsupported root as a safe no-scan result (`Ok`): the transaction
+preparation gate cannot have produced a valid manifest there, and project
+opening must not be blocked by attempting recovery. `Begin`/`Prepare` retains
+the loud local-fixed-NTFS capability refusal before any mutation, with the
+diagnostic naming that requirement. Supported NTFS roots retain the held
+non-following identity/reparse checks and alias recovery protocol.

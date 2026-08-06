@@ -8,6 +8,7 @@
 #include "ScriptComponentValidation.h"
 #include "AssetResolver.h"
 #include "SceneAssetReferenceVisitor.h"
+#include "PrefabSerializer.h"
 
 #include "json.hpp"
 
@@ -35,7 +36,7 @@ using json = nlohmann::json;
 
 namespace rt2::core {
 
-static_assert(PersistedComponents::Count == 11,
+static_assert(PersistedComponents::Count == 13,
               "Update EntityRecord serialization when authored component coverage changes");
 
 // ============================================================================
@@ -545,6 +546,17 @@ struct EntityRecord
     // EntityRecord path, so the component also survives Play/Stop.
     bool hasScript = false;
     ScriptComponent script{};
+
+    // Phase 8 W1: prefab instance link components (v5 schema). The instance
+    // root carries PrefabInstanceComponent; every member carries
+    // PrefabMemberComponent. Both are authored scene-side components — they
+    // are NOT written into .rt2prefab files, whose records carry
+    // PrefabEntityRecord::templateId instead.
+    bool hasPrefabInstance = false;
+    PrefabInstanceComponent prefabInstance{};
+
+    bool hasPrefabMember = false;
+    PrefabMemberComponent prefabMember{};
 };
 
 std::vector<SerializedEntity> CollectEntitiesSorted(const entt::registry& reg)
@@ -639,6 +651,19 @@ EntityRecord BuildEntityRecord(const entt::registry& reg, entt::entity e, const 
     {
         r.hasScript = true;
         r.script    = *sc;
+    }
+
+    // Phase 8 W1: carry the prefab instance link components.
+    if (auto* pic = reg.try_get<PrefabInstanceComponent>(e))
+    {
+        r.hasPrefabInstance = true;
+        r.prefabInstance    = *pic;
+    }
+
+    if (auto* pmc = reg.try_get<PrefabMemberComponent>(e))
+    {
+        r.hasPrefabMember = true;
+        r.prefabMember    = *pmc;
     }
 
     return r;
@@ -783,6 +808,31 @@ std::optional<json> EntityRecordToJson(
         script["asset"] = std::move(asset);
         script["fields"] = std::move(fields);
         j["script"] = std::move(script);
+    }
+
+    // Phase 8 W1 (v5 schema): prefab instance link components. The prefab
+    // reference is rebased like every other asset reference so the link
+    // survives scene relocation.
+    if (r.hasPrefabInstance)
+    {
+        AssetReference relRef = r.prefabInstance.prefab;
+        const auto rebased =
+            RebasePath(relRef.path, currentSceneDir, outputSceneDir);
+        AppendNonPortableDiagnostic(
+            r.prefabInstance.prefab, rebased, r.uuid, r.name, diagnostics);
+        relRef.path = rebased.storedPath;
+        json pi;
+        pi["asset"]      = AssetReferenceToJson(relRef);
+        pi["instanceId"] = r.prefabInstance.instanceId.ToString();
+        j["prefabInstance"] = std::move(pi);
+    }
+
+    if (r.hasPrefabMember)
+    {
+        json pm;
+        pm["instanceId"] = r.prefabMember.instanceId.ToString();
+        pm["templateId"] = r.prefabMember.templateId.ToString();
+        j["prefabMember"] = std::move(pm);
     }
 
     return j;
@@ -1048,12 +1098,86 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         }
     }
 
+    // Phase 8 W1 (v5 schema): prefab instance link components.
+    if (j.contains("prefabInstance"))
+    {
+        const auto& pi = j["prefabInstance"];
+        if (!pi.is_object() || !pi.contains("asset") || !pi["asset"].is_object() ||
+            !pi.contains("instanceId") || !pi["instanceId"].is_string())
+        {
+            err.code = Error::Parse;
+            err.path = r.uuid.ToString();
+            err.detail = "prefabInstance must contain an asset object and an "
+                         "instanceId string";
+            return r;
+        }
+
+        Error assetError;
+        AssetReference decodedPrefab =
+            JsonToAssetReference(pi["asset"], schemaVersion, report, r.uuid,
+                                 r.name, assetError);
+        if (!assetError.IsOk())
+        {
+            err = assetError;
+            err.path = r.uuid.ToString();
+            return r;
+        }
+        if (decodedPrefab.kind != AssetKind::Prefab || !decodedPrefab.IsValid())
+        {
+            err.code = Error::Parse;
+            err.path = r.uuid.ToString();
+            err.detail = "prefabInstance asset must be a valid prefab reference";
+            return r;
+        }
+
+        r.hasPrefabInstance = true;
+        r.prefabInstance.prefab = std::move(decodedPrefab);
+        r.prefabInstance.instanceId =
+            UUID::Parse(pi["instanceId"].get<std::string>());
+        if (r.prefabInstance.instanceId.IsNull())
+        {
+            err.code = Error::Parse;
+            err.path = r.uuid.ToString();
+            err.detail = "prefabInstance has malformed instanceId";
+            return r;
+        }
+    }
+
+    if (j.contains("prefabMember"))
+    {
+        const auto& pm = j["prefabMember"];
+        if (!pm.is_object() || !pm.contains("instanceId") ||
+            !pm["instanceId"].is_string() || !pm.contains("templateId") ||
+            !pm["templateId"].is_string())
+        {
+            err.code = Error::Parse;
+            err.path = r.uuid.ToString();
+            err.detail = "prefabMember must contain instanceId and templateId "
+                         "strings";
+            return r;
+        }
+
+        r.hasPrefabMember = true;
+        r.prefabMember.instanceId =
+            UUID::Parse(pm["instanceId"].get<std::string>());
+        r.prefabMember.templateId =
+            UUID::Parse(pm["templateId"].get<std::string>());
+        if (r.prefabMember.instanceId.IsNull() ||
+            r.prefabMember.templateId.IsNull())
+        {
+            err.code = Error::Parse;
+            err.path = r.uuid.ToString();
+            err.detail = "prefabMember has malformed instanceId or templateId";
+            return r;
+        }
+    }
+
     return r;
 }
 
 // Reconstruct mesh geometry from a primitive and register it.
 // Returns the mesh index in the registry.
-uint32_t RegisterPrimitiveMesh(MeshRegistry& meshReg, const PrimitiveComponent& prim)
+uint32_t RegisterPrimitiveMeshImpl(MeshRegistry& meshReg, const PrimitiveComponent& prim)
 {
     MeshData meshData;
     switch (prim.kind)
@@ -1205,6 +1329,13 @@ bool BuildDocumentFromRecords(SceneDocument& doc,
         // Script component shared by v3 load and the in-memory Play clone.
         if (r.hasScript)
             doc.ecs.registry.emplace<ScriptComponent>(e, r.script);
+
+        // Prefab instance link components (Phase 8 W1, v5 schema).
+        if (r.hasPrefabInstance)
+            doc.ecs.registry.emplace<PrefabInstanceComponent>(e, r.prefabInstance);
+
+        if (r.hasPrefabMember)
+            doc.ecs.registry.emplace<PrefabMemberComponent>(e, r.prefabMember);
     }
 
     // --- Pass 2: resolve parent UUIDs to Hierarchy ---
@@ -1271,6 +1402,209 @@ std::vector<EntityRecord> CollectRecords(const SceneDocument& doc)
 
 } // anonymous namespace
 
+// Public wrapper (declared in SceneSerializer.h): shares the exact primitive
+// geometry rebuild between the scene load path and the prefab instantiate
+// path in SceneManager.cpp.
+uint32_t RegisterPrimitiveMesh(MeshRegistry& meshReg, const PrimitiveComponent& prim)
+{
+    return RegisterPrimitiveMeshImpl(meshReg, prim);
+}
+
+// ============================================================================
+// Prefab record codec (Phase 8 W1)
+//
+// Defined here — not in PrefabSerializer.cpp — so it reuses the scene
+// per-component codecs above (W0 handover: reuse, don't re-serialise
+// components). The envelope plumbing (header/version/atomic write) stays in
+// PrefabSerializer.cpp.
+//
+// HARD RULE: prefab files never contain resource-table indices. After the
+// payload is written like a scene entity, the transient fields are stripped:
+//   - "meshRef.materialIndex" — MeshRef::materialIndex is transient by design
+//   - "materialOverride.material.*TextureIndex" — override texture indices
+//     are repaired only from a currently-staged material; a prefab has none
+// ("meshIndex" is never written by the scene codec either).
+// ============================================================================
+
+namespace {
+
+// SubtreeEntityRecord <-> EntityRecord are field-for-field isomorphic payload
+// records; the conversions are mechanical and keep the prefab file shape
+// (PrefabEntityRecord wrapping SubtreeEntityRecord, per amendment A1) aligned
+// with the shared scene codecs.
+
+EntityRecord ToSceneRecord(const SubtreeEntityRecord& s)
+{
+    EntityRecord r;
+    r.uuid           = s.uuid;
+    r.name           = s.name;
+    r.parentUuid     = s.parentUuid;
+    r.translation    = s.translation;
+    r.rotation       = s.rotation;
+    r.scale          = s.scale;
+    r.visible        = s.visible;
+    r.hasMeshRef     = s.hasMeshRef;
+    r.meshIndex      = s.meshIndex;
+    r.materialIndex  = s.materialIndex;
+    r.hasPrimitive   = s.hasPrimitive;
+    r.primitive      = s.primitive;
+    r.hasImportedSource = s.hasImportedSource;
+    r.importedSource    = s.importedSource;
+    r.hasMaterialOverride = s.hasMaterialOverride;
+    r.materialOverride    = s.materialOverride;
+    r.hasLight       = s.hasLight;
+    r.light          = s.light;
+    r.hasCamera      = s.hasCamera;
+    r.camera         = s.camera;
+    r.hasMotion      = s.hasMotion;
+    r.motion         = s.motion;
+    r.hasScript      = s.hasScript;
+    r.script         = s.script;
+    return r;
+}
+
+SubtreeEntityRecord ToSubtreeRecord(const EntityRecord& r)
+{
+    SubtreeEntityRecord s;
+    s.uuid           = r.uuid;
+    s.name           = r.name;
+    s.parentUuid     = r.parentUuid;
+    s.translation    = r.translation;
+    s.rotation       = r.rotation;
+    s.scale          = r.scale;
+    s.visible        = r.visible;
+    s.hasMeshRef     = r.hasMeshRef;
+    s.meshIndex      = r.meshIndex;
+    s.materialIndex  = r.materialIndex;
+    s.hasPrimitive   = r.hasPrimitive;
+    s.primitive      = r.primitive;
+    s.hasImportedSource = r.hasImportedSource;
+    s.importedSource    = r.importedSource;
+    s.hasMaterialOverride = r.hasMaterialOverride;
+    s.materialOverride    = r.materialOverride;
+    s.hasLight       = r.hasLight;
+    s.light          = r.light;
+    s.hasCamera      = r.hasCamera;
+    s.camera         = r.camera;
+    s.hasMotion      = r.hasMotion;
+    s.motion         = r.motion;
+    s.hasScript      = r.hasScript;
+    s.script         = r.script;
+    return s;
+}
+
+// The scene codec's texture-index keys inside a material-override material.
+void StripTransientIndices(json& recordJson)
+{
+    if (recordJson.contains("meshRef") && recordJson["meshRef"].is_object())
+        recordJson["meshRef"].erase("materialIndex");
+
+    if (!recordJson.contains("materialOverride") ||
+        !recordJson["materialOverride"].is_object())
+        return;
+    auto& mat = recordJson["materialOverride"]["material"];
+    if (!mat.is_object())
+        return;
+    mat.erase("baseColorTextureIndex");
+    mat.erase("normalTextureIndex");
+    mat.erase("emissiveTextureIndex");
+    mat.erase("metallicRoughnessTextureIndex");
+}
+
+} // namespace
+
+bool PrefabRecordToJson(const PrefabEntityRecord& record,
+                        std::vector<AssetDiagnostic>& diagnostics,
+                        Error& err,
+                        json& out)
+{
+    err = Error{};
+    if (record.templateId.IsNull())
+    {
+        err.code = Error::InvalidArgument;
+        err.detail = "prefab entity record has a nil templateId";
+        return false;
+    }
+
+    // The instance-link components are scene-side state. A template entity
+    // inside a prefab file never carries them; refuse loudly rather than
+    // inventing template semantics for instance data.
+    if (record.record.hasPrefabInstance || record.record.hasPrefabMember)
+    {
+        err.code = Error::InvalidArgument;
+        err.path = record.templateId.ToString();
+        err.detail = "prefab entity record must not carry scene-side prefab "
+                     "instance components";
+        return false;
+    }
+
+    // Empty dirs: paths are stored verbatim (W1). Absolute paths still get
+    // the advisory NonPortable diagnostic via the scene codec.
+    const EntityRecord sceneRecord = ToSceneRecord(record.record);
+    const auto payload = EntityRecordToJson(
+        sceneRecord, std::filesystem::path{}, std::filesystem::path{},
+        diagnostics, err);
+    if (!payload)
+    {
+        if (err.path.empty())
+            err.path = record.templateId.ToString();
+        return false;
+    }
+
+    json recordJson = *payload;
+    StripTransientIndices(recordJson);
+
+    json j;
+    j["templateId"] = record.templateId.ToString();
+    j["record"]     = std::move(recordJson);
+    out = std::move(j);
+    return true;
+}
+
+bool JsonToPrefabRecord(const json& j, Error& err, PrefabEntityRecord& out)
+{
+    err = Error{};
+    if (!j.is_object() || !j.contains("templateId") ||
+        !j["templateId"].is_string())
+    {
+        err.code = Error::Parse;
+        err.detail = "prefab entity missing templateId field";
+        return false;
+    }
+    const UUID templateId = UUID::Parse(j["templateId"].get<std::string>());
+    if (templateId.IsNull())
+    {
+        err.code = Error::Parse;
+        err.detail = "prefab entity has malformed templateId";
+        return false;
+    }
+    if (!j.contains("record") || !j["record"].is_object())
+    {
+        err.code = Error::Parse;
+        err.path = templateId.ToString();
+        err.detail = "prefab entity missing record object";
+        return false;
+    }
+
+    // The scene reader at the current schema version. Stripped indices are
+    // simply absent, so meshIndex/materialIndex default (0 / -1).
+    const EntityRecord sceneRecord =
+        JsonToEntityRecord(j["record"], SceneSerializer::SchemaVersion, err,
+                           nullptr);
+    if (!err.IsOk())
+    {
+        if (err.path.empty())
+            err.path = templateId.ToString();
+        return false;
+    }
+
+    PrefabEntityRecord parsed;
+    parsed.templateId = templateId;
+    parsed.record     = ToSubtreeRecord(sceneRecord);
+    out = std::move(parsed);
+    return true;
+}
+
 // ============================================================================
 // Save
 // ============================================================================
@@ -1300,6 +1634,31 @@ static bool SaveInternal(const SceneDocument& doc,
         err.path = slot.reference->path;
         err.detail = "asset reference has a path but no asset kind";
         return false;
+    }
+    // Prefab instance links must carry a VALID prefab reference. The reader
+    // rejects both wrong-kind and invalid (empty-path / unknown-kind) prefab
+    // references (JsonToEntityRecord), so a save that wrote either would
+    // produce a scene that cannot be loaded back. The generic check above
+    // only rejects Unknown-kind non-empty paths, so prefab semantics need
+    // their own pre-save validation.
+    {
+        auto& reg = doc.ecs.registry;
+        auto view = reg.view<PrefabInstanceComponent>();
+        for (auto e : view)
+        {
+            const auto& prefabRef = view.get<PrefabInstanceComponent>(e).prefab;
+            if (prefabRef.kind == AssetKind::Prefab && prefabRef.IsValid())
+                continue;
+            err.code = Error::InvalidArgument;
+            err.path = prefabRef.path;
+            const std::string kindName =
+                prefabRef.path.empty() ? "(empty path)" : prefabRef.path;
+            (void)kindName;
+            err.detail = std::string("prefab instance asset must be a valid prefab "
+                                     "reference (kind=prefab, non-empty path); got kind=") +
+                         AssetKindName(prefabRef.kind);
+            return false;
+        }
     }
     // Pre-save validation: every entity with a MeshRef must have either a
     // PrimitiveComponent (procedural) or an ImportedMeshSourceComponent

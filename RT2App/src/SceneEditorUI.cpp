@@ -67,6 +67,8 @@ void SceneEditorUI::ApplyMutation(const EditorMutationResult& result, bool selec
 		return;
 	}
 	m_MutationError.clear();
+	if (result.recoveryWarning)
+		m_MutationError = "Warning: " + result.recoveryWarning->Format();
 	if (selectAffected && !result.affectedEntities.empty())
 	{
 		m_State.Selection().Clear();

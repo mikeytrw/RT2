@@ -311,6 +311,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\ViewportCoordinates.h" />
     <ClInclude Include="src\VulkanUtils.h" />
     <ClInclude Include="src\core\Error.h" />
+    <ClInclude Include="src\core\PathTransaction.h" />
     <ClInclude Include="src\core\UUID.h" />
     <ClInclude Include="vendor\NRD\Include\NRD.h" />
     <ClInclude Include="vendor\NRD\Include\NRDDescs.h" />
@@ -775,6 +776,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\core\Error.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\core\PathTransaction.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

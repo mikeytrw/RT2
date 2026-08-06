@@ -80,6 +80,17 @@ struct SubtreeEntityRecord
 	// persistence.
 	bool      hasScript = false;
 	ScriptComponent script{};
+
+	// Phase 8 W1: prefab instance link components. Carried through subtree
+	// snapshots so Undo/Redo of an instance (delete, instantiate, reparent)
+	// preserves the link exactly. The prefab FILE format does not use these —
+	// template entities carry PrefabEntityRecord::templateId instead; the
+	// components exist on scene-side instance entities only.
+	bool      hasPrefabInstance = false;
+	PrefabInstanceComponent prefabInstance{};
+
+	bool      hasPrefabMember = false;
+	PrefabMemberComponent prefabMember{};
 };
 
 struct RootSiblingAnchor

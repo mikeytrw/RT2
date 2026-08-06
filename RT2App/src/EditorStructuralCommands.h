@@ -12,6 +12,8 @@
 
 #include <glm/glm.hpp>
 
+#include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -179,6 +181,105 @@ private:
 	std::vector<rt2::core::UUID>    m_CreatedRoots;
 };
 
+// ---- Phase 8 W1 prefab commands ----
+
+// Scene-side instantiation command. Mirrors DuplicateSubtreesCommand: the
+// host has ALREADY applied InstantiatePrefabWithUuids and captured the
+// resulting SubtreeSnapshot of the created instance. Execute/Redo call
+// RestoreSubtrees(snapshot) (re-creates with stored UUIDs, restoring the
+// PrefabInstance/PrefabMember link verbatim); Undo calls
+// RemoveSubtreesExact(snapshot).
+class InstantiatePrefabCommand final : public IEditorCommand
+{
+public:
+	InstantiatePrefabCommand(SubtreeSnapshot snapshot,
+	                         std::vector<rt2::core::UUID> createdRoots)
+		: m_Snapshot(std::move(snapshot))
+		, m_CreatedRoots(std::move(createdRoots)) {}
+
+	const SubtreeSnapshot& Snapshot() const { return m_Snapshot; }
+	const std::vector<rt2::core::UUID>& CreatedRoots() const { return m_CreatedRoots; }
+
+	EditorMutationResult Execute(SceneManager& scene) override;
+	EditorMutationResult Undo(SceneManager& scene) override;
+	std::string Description() const override { return "Instantiate Prefab"; }
+
+private:
+	SubtreeSnapshot                  m_Snapshot;
+	std::vector<rt2::core::UUID>    m_CreatedRoots;
+};
+
+// Asset-side creation command. The scene is NOT mutated by
+// CreatePrefabFromSubtree, so this command stores the FILE-REWRITE state
+// rather than a scene snapshot:
+//   - `result` is the authoritative post-mutation state from
+//     CreatePrefabFromSubtree; Execute/Redo deterministically regenerate the
+//     .rt2prefab file from sourceSnapshot + templateIds via
+//     PrefabSerializer::Save.
+//   - `beforeFileContents` is the file's byte content captured BEFORE the
+//     create (may be empty for a pre-existing zero-byte file).
+//   - `fileExistedBefore` disambiguates an absent file (remove on Undo) from
+//     a pre-existing zero-byte file (restore verbatim on Undo). An empty
+//     contents vector alone is ambiguous between the two.
+// Undo restores those bytes, or removes the file when it did not exist,
+// through the SAME atomic tmp+replace path as create — a failed restore never
+// truncates the recoverable file first. Undo/Redo also verify the file's
+// current bytes match the state this command last left it in before touching
+// the file (an "out-of-band external edit" is a loud conflict Failure, never
+// a silent clobber).
+// The sidecar (asset identity) minted by CreatePrefabFromSubtree is left in
+// place by both Undo and Redo: identity is assign-once per asset path, so an
+// orphaned sidecar for a deleted asset is the established asset-system
+// behaviour and is not a per-instance mutation to unwind.
+class CreatePrefabCommand final : public IEditorCommand
+{
+public:
+	CreatePrefabCommand(std::filesystem::path prefabPath,
+	                    SceneManager::PrefabCreationResult result,
+	                    std::vector<uint8_t> beforeFileContents,
+	                    bool fileExistedBefore)
+		: m_PrefabPath(std::move(prefabPath))
+		, m_Result(std::move(result))
+		, m_BeforeContents(std::move(beforeFileContents))
+		, m_FileExistedBefore(fileExistedBefore)
+	{
+		ComputeAfterContents();
+	}
+
+	EditorMutationResult Execute(SceneManager& scene) override;
+	EditorMutationResult Undo(SceneManager& scene) override;
+	std::string Description() const override { return "Create Prefab"; }
+
+private:
+	std::filesystem::path              m_PrefabPath;
+	SceneManager::PrefabCreationResult m_Result;
+	std::vector<uint8_t>               m_BeforeContents;
+	bool                               m_FileExistedBefore = false;
+	std::vector<uint8_t>               m_AfterContents;
+
+	// The byte state this command last wrote the file to ("after" after a
+	// successful Execute/Redo, "before"/absent after a successful Undo). Used
+	// to detect an out-of-band external edit before Undo/Redo touches the file.
+	bool m_FileIsAfterState = true;
+
+	// Pre-serialize the deterministic AFTER bytes from m_Result.
+	void ComputeAfterContents();
+
+	// True when the file on disk is in the expected state. `expectedExists` is
+	// the authoritative existence expectation and is disjoint from the bytes:
+	//   - expectedExists=true  the file MUST exist (as a regular file) and its
+	//                          bytes must equal `expectedBytes` verbatim. A
+	//                          missing file never matches, even when
+	//                          expectedBytes is empty.
+	//   - expectedExists=false the file MUST be absent. An existing file never
+	//                          matches, even an empty (zero-byte) one.
+	// This delineates "missing" from "existing zero-byte" and "existing
+	// zero-byte" from "expected absence", which an empty bytes vector alone
+	// conflates. A stat/open/read failure is a loud MISMATCH (false), never a
+	// silent "empty expected bytes", so an out-of-band deletion or an
+	// unreadable file surfaces as a conflict rather than a clobber.
+};
+
 // ---- Reparent command ----
 
 class ReparentCommand final : public IEditorCommand
@@ -236,6 +337,27 @@ std::unique_ptr<IEditorCommand> MakeDuplicateSubtreesCommand(
 	SubtreeSnapshot snapshot,
 	std::vector<rt2::core::UUID> createdRoots);
 std::unique_ptr<IEditorCommand> MakePasteSubtreesCommand(
+	SubtreeSnapshot snapshot,
+	std::vector<rt2::core::UUID> createdRoots);
+
+// Phase 8 W1 prefab command factories.
+//
+// MakeCreatePrefabCommand wraps the authoritative post-mutation
+// PrefabCreationResult (regenerated deterministically on Redo) plus the
+// pre-mutation file contents (empty = file absent) captured by the host
+// BEFORE calling CreatePrefabFromSubtree. Returns null when the result is
+// not ok or the after-state cannot be regenerated (templateIds/snapshot
+// mismatch — that would be a silent-file corruption on Redo).
+std::unique_ptr<IEditorCommand> MakeCreatePrefabCommand(
+	std::filesystem::path prefabPath,
+	SceneManager::PrefabCreationResult result,
+	std::vector<uint8_t> beforeFileContents,
+	bool fileExistedBefore);
+
+// MakeInstantiatePrefabCommand mirrors the duplication factory: the host has
+// ALREADY applied InstantiatePrefabWithUuids and captured the resulting
+// SubtreeSnapshot. Returns null if createdRoots is empty.
+std::unique_ptr<IEditorCommand> MakeInstantiatePrefabCommand(
 	SubtreeSnapshot snapshot,
 	std::vector<rt2::core::UUID> createdRoots);
 
