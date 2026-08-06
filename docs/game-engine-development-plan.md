@@ -14112,7 +14112,7 @@ complete-state-at-construction contract (`EditorCommand.h:19-21`).
 
 ### Work steps
 
-1. **S1** - `PersistedComponentKey`, the 13-entry classification table, both
+1. **S1** - `PrefabComponentKey`, the 13-entry classification table, both
    assertions, and the overridable predicate. Pure CPU, no callers.
 2. **S2** - the `overrides` field, the scene codec at v6, and the
    `metadata.schemaVersion` upgrade rule with its `SaveTo` consequence.
