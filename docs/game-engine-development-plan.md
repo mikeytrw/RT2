@@ -14212,9 +14212,28 @@ deferred); `ImportedMeshSourceComponent` rebinding; per-property granularity
    only on the imported path (`SceneAssetResolver.cpp:857-905`).
 4. Whether the direct transform mutators gain command wrappers or are routed
    through existing ones (W3-D5). This changes S6's shape materially.
-5. Diagnostic severity for an unknown component key — block that entity's load,
-   or warn and preserve? Preserving would require the serializer to retain
-   unknown members, which it deliberately does not.
+5. ~~Diagnostic severity for an unknown component key.~~ **Settled 2026-08-06
+   during S2 review: an unrecognised — or non-overridable — component key is a
+   hard `Error::Parse` that fails the whole document load, transactionally.**
+
+   The cost this item was weighing does not exist. `Load` already rejects
+   `version > SchemaVersion` (`SceneSerializer.cpp:2079`), so a future build
+   adding a 14th component bumps the schema and this build refuses the file at
+   the version ceiling before override parsing is reached. "A future scene
+   becomes unloadable" is foreclosed independently of the strictness.
+
+   There is also direct precedent in the same function family:
+   `JsonToAssetReference` hard-fails `Error::Parse` for malformed authoritative
+   identity **at the current schema** and degrades to an `AssetDiagnostic` only
+   below-current; `metadata.projectId` does the same. The override set is at
+   current schema by construction — the read gate only admits it at v6 — so the
+   lenient half of that precedent has no branch to occupy here.
+
+   As this item itself noted, "warn and preserve" would need the serializer to
+   retain unknown members, which it deliberately does not. The real alternative
+   was therefore "warn and drop" — the exact silent divergence-to-tracking
+   conversion W3-D3 exists to prevent. S3-S6 and W4 inherit this decision
+   rather than re-deriving it.
 
 ### What the review round corrected
 
