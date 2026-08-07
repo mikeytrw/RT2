@@ -2006,6 +2006,31 @@ bool EntityMatchesRecord(const entt::registry& reg, entt::entity e,
 		const auto& live = *reg.try_get<PrefabMemberComponent>(e);
 		if (!(live.instanceId == record.prefabMember.instanceId)) return false;
 		if (!(live.templateId == record.prefabMember.templateId)) return false;
+
+		// Phase 8 W3, S3: the override set is authored state the verifier must
+		// see, or a post-copy edit to a duplicate's overrides is invisible to
+		// RemoveSubtreesExact and Undo destroys the edited copy. Compare it as
+		// a SET (order-insensitive).
+		//
+		// The codec sorts and de-duplicates on both read and write, so any
+		// vector that has passed through a file round-trip is in canonical
+		// order. But an in-memory vector need not be: the S5/S6 marking path
+		// records in edit order, and tests/tools may build one unsorted (the
+		// S2 write-sort test deliberately does, relying on the writer to
+		// canonicalize). An order-sensitive compare would then report a
+		// mismatch for two logically-equal sets, spuriously failing the guard
+		// and breaking structural undo. Order-insensitive still catches every
+		// real divergence (a different set of keys), which is the only thing
+		// that matters — the guard exists to stop an override-set change from
+		// being destroyed unseen.
+		if (live.overrides.size() != record.prefabMember.overrides.size()) return false;
+		for (const auto& key : live.overrides)
+		{
+			if (std::find(record.prefabMember.overrides.begin(),
+			              record.prefabMember.overrides.end(), key) ==
+			    record.prefabMember.overrides.end())
+				return false;
+		}
 	}
 
 	return true;
