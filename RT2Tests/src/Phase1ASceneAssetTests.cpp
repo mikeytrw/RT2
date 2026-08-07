@@ -274,7 +274,7 @@ TEST_CASE("P1A RoundTrip: glTF import -> save v3 -> load + resolve")
         std::string content((std::istreambuf_iterator<char>(in)),
                             std::istreambuf_iterator<char>());
         in.close();
-    CHECK(content.find("\"version\": 5") != std::string::npos);
+    CHECK(content.find("\"version\": 6") != std::string::npos);
         CHECK(content.find("tiny_textured.glb") != std::string::npos);
         CHECK(content.find("\"importedSource\"") != std::string::npos);
     }

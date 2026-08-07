@@ -5,6 +5,7 @@
 
 #include "AssetReference.h"
 #include "core/UUID.h"
+#include "PrefabComponentKeyBase.h"
 #include "SceneTypes.h"
 #include "ScriptFieldValue.h"
 
@@ -18,6 +19,14 @@
 #include <vector>
 #include <string>
 #include <cstdint>
+
+// PrefabComponentKey is defined in PrefabComponentKeyBase.h (included at the
+// top of this header). The frozen classification table and the
+// PrefabComponentKeyFor specializations — which need PersistedComponents —
+// live in PrefabComponentKey.h. The vector member below needs only the bare
+// key class, so this header pulls in the dependency-free base alone, avoiding
+// the include cycle that a bottom-of-file PrefabComponentKey.h include used to
+// create (PrefabComponentKey.h -> PersistedComponents.h -> ECSComponents.h).
 
 // ============================================================================
 // ECS Components
@@ -342,6 +351,17 @@ struct PrefabMemberComponent
     // The entity's identity inside the prefab asset — matches the
     // PrefabEntityRecord::templateId frozen in the .rt2prefab file.
     rt2::core::UUID templateId;
+
+    // Sorted, unique set of the components whose values this member diverges
+    // from the template (W3-D2). Empty means fully inherited. Every entry is
+    // a PrefabComponentKey resolved through the frozen table — the keys live
+    // in static constexpr storage and are safe to hold indefinitely. Never
+    // construct a key from a transient buffer (e.g. a parsed JSON string): a
+    // key built from a short-lived string_view dangles once the buffer dies,
+    // and would very likely pass every test before crashing somewhere
+    // unrelated. The scene codec builds these only from FindComponentByWire,
+    // which resolves through kPrefabTable.
+    std::vector<PrefabComponentKey> overrides;
 };
 
 #endif // ECS_COMPONENTS_H
