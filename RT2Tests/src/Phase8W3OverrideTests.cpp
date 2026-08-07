@@ -1,7 +1,7 @@
 #include <doctest/doctest.h>
 
-#include "PrefabComponentKey.h"
 #include "PersistedComponents.h"
+#include "PrefabComponentKey.h"
 #include "PrefabSerializer.h"
 #include "SceneManager.h"
 #include "SceneSerializer.h"
@@ -241,14 +241,19 @@ PrefabComponentKey S2Key(const char* wire)
 //   Sequence b) read path fault: parse "overrides" into r.prefabMember.overrides
 //   but never copy it into the emplaced component (drop it in
 //   BuildDocumentFromRecords) — the loaded member's vector is empty -> RED.
-//   Sequence c) read path fault: don't sort the parsed overrides — after one
-//   reload round the ordering is non-canonical and round 2's bytes differ from
-//   round 1, so the byte-identical assertion fails -> RED.
+//   Sequence c) read path fault: don't sort the parsed overrides. NOTE — the
+//   byte-identical check below does NOT discriminate this fault (the live
+//   vectors at the top are set already-sorted, so load preserves a canonical
+//   order and rounds 1 and 2 still match). It is the `unsorted-v6` fixture
+//   further down that actually proves the sort: a hand-written file whose
+//   overrides are out of wire order must load into canonical [name, transform]
+//   order, not the file's order. The byte-identical assertion proves
+//   save -> load -> save idempotence; the unsorted fixture proves the sort.
 //   Sequence d) read path fault: write "overrides" only when the version is
 //   current but read it for any version, with a stray overrides set on a v5
 //   file — not part of this test (spec test 2 covers the gate).
 // ---------------------------------------------------------------------------
-TEST_CASE("Phase 8 W3 S2: override set round-trips and loads with the exact contents")
+TEST_CASE("Phase 8 W3: override set round-trips and loads with the exact contents")
 {
     S2Fixture f;
     const auto dir = S2UniqueTempDir("p8w3_s2_roundtrip");
@@ -330,7 +335,8 @@ TEST_CASE("Phase 8 W3 S2: override set round-trips and loads with the exact cont
     const auto unsortedPath = dir / "unsorted-v6.rt2scene";
     S2WriteMemberScene(unsortedPath, 6, {"transform", "name"});
     SceneDocument docU;
-    docU.SetUuidProvider(&DeterministicUuidProvider());
+    DeterministicUuidProvider idsU;
+    docU.SetUuidProvider(&idsU);
     Error loadErrU;
     REQUIRE(SceneSerializer::Load(docU, unsortedPath, loadErrU));
     const auto uh = docU.FindByUuid(
@@ -356,14 +362,15 @@ TEST_CASE("Phase 8 W3 S2: override set round-trips and loads with the exact cont
 // JsonToEntityRecord and parse "overrides" regardless of version — the loaded
 // member's set then pops as ["transform","script"], RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
-TEST_CASE("S2: a v5 scene loads with every override set empty")
+TEST_CASE("Phase 8 W3: a v5 scene loads with every override set empty")
 {
     const auto dir = S2UniqueTempDir("p8w3_s2_v5_empty");
     const auto scenePath = dir / "v5.rt2scene";
     S2WriteMemberScene(scenePath, 5, {"transform", "script"});
 
     SceneDocument doc;
-    doc.SetUuidProvider(&DeterministicUuidProvider());
+    DeterministicUuidProvider idsV5;
+    doc.SetUuidProvider(&idsV5);
     Error err;
     SceneLoadReport report;
     REQUIRE(SceneSerializer::Load(doc, scenePath, report, err));
@@ -395,14 +402,15 @@ TEST_CASE("S2: a v5 scene loads with every override set empty")
 // writes version 5, and the recovery output has no "overrides" — RED on both
 // the schema-version check and the override-presence check. Revert -> GREEN.
 // ---------------------------------------------------------------------------
-TEST_CASE("S2: recovery SaveTo writes v6 and keeps an added override (upgrade rule)")
+TEST_CASE("Phase 8 W3: recovery SaveTo writes v6 and keeps an added override (upgrade rule)")
 {
     const auto dir = S2UniqueTempDir("p8w3_s2_recovery_upgrade");
     const auto scenePath = dir / "v5.rt2scene";
     S2WriteMemberScene(scenePath, 5, {});
 
     SceneDocument scene;
-    scene.SetUuidProvider(&DeterministicUuidProvider());
+    DeterministicUuidProvider idsScene;
+    scene.SetUuidProvider(&idsScene);
     Error loadErr;
     REQUIRE(SceneSerializer::Load(scene, scenePath, loadErr));
     REQUIRE(scene.metadata.schemaVersion == 5);
@@ -643,7 +651,7 @@ TEST_CASE("Phase 8 W3: unrecognised wire names are loudly unresolvable")
 // the destination is replaced, so REQUIRE_FALSE(Load) fails -> RED. Revert ->
 // GREEN.
 // ---------------------------------------------------------------------------
-TEST_CASE("S2: an unknown override component key fails loudly and leaves the destination untouched")
+TEST_CASE("Phase 8 W3: an unknown override component key fails loudly and leaves the destination untouched")
 {
     const auto dir = S2UniqueTempDir("p8w3_s2_unknown_key");
 
@@ -662,7 +670,8 @@ TEST_CASE("S2: an unknown override component key fails loudly and leaves the des
     }
 
     SceneDocument doc;
-    doc.SetUuidProvider(&DeterministicUuidProvider());
+    DeterministicUuidProvider idsGood;
+    doc.SetUuidProvider(&idsGood);
     Error goodErr;
     REQUIRE(SceneSerializer::Load(doc, goodPath, goodErr));
     REQUIRE(static_cast<uint32_t>(doc.FindByUuid(
@@ -714,7 +723,7 @@ TEST_CASE("S2: an unknown override component key fails loudly and leaves the des
 //   PrefabRecordToJson — the linked record serializes instead of failing ->
 //   RED.
 // ---------------------------------------------------------------------------
-TEST_CASE("S2: a prefab record with all shapes carries no scene-side link or override data")
+TEST_CASE("Phase 8 W3: a prefab record with all shapes carries no scene-side link or override data")
 {
     // A prefab record carrying every material/resource shape (all of the
     // durable component payloads a prefab file is allowed to hold).
@@ -800,4 +809,315 @@ TEST_CASE("S2: a prefab record with all shapes carries no scene-side link or ove
     // in PrefabRecordToJson — this then serializes and REQUIRE_FALSE fails.
     REQUIRE_FALSE(PrefabRecordToJson(linked, diags, linkedErr, linkedOut));
     CHECK(linkedErr.code == Error::InvalidArgument);
+}
+
+
+// ---------------------------------------------------------------------------
+// Spec test 4b (Fix 2, S2 review finding 1) — a v6 scene whose override set
+// names a component the table classifies as NEVER overridable ("meshRef") is
+// rejected loudly and leaves the destination transactional. The reader was
+// checking "is the name known" but not "is the name overridable", so
+// ["meshRef"] installed a forbidden key the classification table explicitly
+// excludes — the same silent-divergence class the unknown-key branch guards
+// against, with the asymmetry that a name the table has never heard of fails
+// while a name the table forbids passes.
+//
+// Discrimination fault: remove the `!key->overridable()` branch in
+// JsonToEntityRecord — the load then succeeds and the destination is replaced,
+// so REQUIRE_FALSE(Load) fails -> RED. Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: a non-overridable override component key fails loudly and leaves the destination untouched")
+{
+    const auto dir = S2UniqueTempDir("p8w3_s2_non_overridable_key");
+
+    // Pre-populate the destination with a VALID v6 scene whose member has a
+    // DISTINCT uuid (4444...). The bad scene targets a different uuid (1111...),
+    // so "unchanged" means the 4444 entity is still alive and the 1111 one is
+    // not present.
+    const auto goodPath = dir / "good.rt2scene";
+    S2WriteMemberScene(goodPath, 6, {});
+    {
+        nlohmann::json j; { std::ifstream in(goodPath); in >> j; }
+        j["entities"][0]["uuid"] = "44444444-4444-4444-8444-444444444444";
+        std::ofstream out(goodPath, std::ios::trunc); out << j.dump(2);
+    }
+
+    SceneDocument doc;
+    DeterministicUuidProvider idsBad;
+    doc.SetUuidProvider(&idsBad);
+    Error goodErr;
+    REQUIRE(SceneSerializer::Load(doc, goodPath, goodErr));
+    REQUIRE(static_cast<uint32_t>(doc.FindByUuid(
+        UUID::Parse("44444444-4444-4444-8444-444444444444"))) != static_cast<uint32_t>(entt::null));
+
+    // The bad scene: an override naming the NEVER-overridable "meshRef".
+    const auto badPath = dir / "bad.rt2scene";
+    S2WriteMemberScene(badPath, 6, {"transform", "meshRef"});
+
+    Error err;
+    SceneLoadReport report;
+    // Fault for red: removing the overridable() branch lets this REQUIRE
+    // succeed (load returns true) -> RED.
+    REQUIRE_FALSE(SceneSerializer::Load(doc, badPath, report, err));
+    CHECK(err.code == Error::Parse);
+    CHECK(err.detail.find("meshRef") != std::string::npos);
+
+    // Transactional: the destination is byte-for-byte the pre-populated scene.
+    CHECK(static_cast<uint32_t>(doc.FindByUuid(
+        UUID::Parse("44444444-4444-4444-8444-444444444444"))) != static_cast<uint32_t>(entt::null));
+    CHECK(static_cast<uint32_t>(doc.FindByUuid(
+        UUID::Parse("11111111-1111-4111-8111-111111111111"))) == static_cast<uint32_t>(entt::null));
+
+    std::filesystem::remove_all(dir);
+}
+
+
+// ---------------------------------------------------------------------------
+// Fix 8 (S2 review finding 8) — the reader de-duplicates the parsed set. A v6
+// file with ["transform","transform"] must load into a single canonical
+// "transform" entry, telling "this diverged on transform" once rather than
+// twice (a duplicate would corrupt the invariant that the override vector is a
+// SET).
+//
+// Discrimination fault: delete the `std::unique` in JsonToEntityRecord — the
+// loaded set then keeps both copies and the size/contents checks fail -> RED.
+// Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: duplicate override names are de-duplicated on read")
+{
+    const auto dir = S2UniqueTempDir("p8w3_s2_dedup");
+    const auto scenePath = dir / "dedup.rt2scene";
+    S2WriteMemberScene(scenePath, 6, {"transform", "transform"});
+
+    DeterministicUuidProvider idsDedup;
+    SceneDocument doc;
+    doc.SetUuidProvider(&idsDedup);
+    Error err;
+    REQUIRE(SceneSerializer::Load(doc, scenePath, err));
+    const auto handle = doc.FindByUuid(UUID::Parse("11111111-1111-4111-8111-111111111111"));
+    REQUIRE(static_cast<uint32_t>(handle) != static_cast<uint32_t>(entt::null));
+    const auto* member = doc.ecs.registry.try_get<PrefabMemberComponent>(handle);
+    REQUIRE(member);
+    // Fault for red: without std::unique the set keeps both "transform" copies.
+    REQUIRE(member->overrides.size() == 1);
+    CHECK(member->overrides[0] == S2Key("transform"));
+
+    std::filesystem::remove_all(dir);
+}
+
+
+// ---------------------------------------------------------------------------
+// Fix 8 (S2 review finding 8) — the malformed-input branches: an array entry
+// that is not a string (a number). Rejected loudly with Error::Parse.
+//
+// Discrimination fault: drop the `!item.is_string()` branch in
+// JsonToEntityRecord — the load then succeeds on a numeric entry -> RED.
+// Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: a non-string override array entry is rejected")
+{
+    const auto dir = S2UniqueTempDir("p8w3_s2_non_string_override");
+    const auto p = dir / "non-string.rt2scene";
+    {
+        std::string body =
+            "{\n"
+            " \"version\":6,\n"
+            " \"metadata\":{\"name\":\"s2member\"},\n"
+            " \"entities\":[\n"
+            "  {\"uuid\":\"11111111-1111-4111-8111-111111111111\","
+            "   \"name\":\"Member\",\"parent\":\"\",\"visible\":true,\n"
+            "   \"prefabMember\":{\"instanceId\":\"22222222-2222-4222-8222-222222222222\","
+            "                       \"templateId\":\"33333333-3333-4333-8333-333333333333\",\n"
+            "                       \"overrides\":[\"transform\", 7]}}\n"
+            " ],\n"
+            " \"materials\":[],\n"
+            " \"textures\":[]\n"
+            "}\n";
+        S2WriteRaw(p, body);
+    }
+    SceneDocument doc;
+    DeterministicUuidProvider idsNS;
+    doc.SetUuidProvider(&idsNS);
+    Error err;
+    REQUIRE_FALSE(SceneSerializer::Load(doc, p, err));
+    CHECK(err.code == Error::Parse);
+
+    std::filesystem::remove_all(dir);
+}
+
+
+// ---------------------------------------------------------------------------
+// Fix 8 (S2 review finding 8) — the malformed-input branch: "overrides" present
+// but not an array (here an object whose VALUES are all valid wire strings).
+// Rejected loudly with Error::Parse.
+//
+// Discrimination fault: drop the `!ov.is_array()` branch in JsonToEntityRecord —
+// the load then iterates the object's string values as if they were array
+// entries and succeeds -> RED (REQUIRE_FALSE fails). Revert -> GREEN. An object
+// whose values were non-strings would fall through to the non-string branch and
+// error regardless, so the values MUST be valid wires for the branch to be
+// actually load-bearing here.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: a non-array overrides member is rejected")
+{
+    const auto dir = S2UniqueTempDir("p8w3_s2_non_array_override");
+    const auto p = dir / "non-array.rt2scene";
+    {
+        std::string body =
+            "{\n"
+            " \"version\":6,\n"
+            " \"metadata\":{\"name\":\"s2member\"},\n"
+            " \"entities\":[\n"
+            "  {\"uuid\":\"11111111-1111-4111-8111-111111111111\","
+            "   \"name\":\"Member\",\"parent\":\"\",\"visible\":true,\n"
+            "   \"prefabMember\":{\"instanceId\":\"22222222-2222-4222-8222-222222222222\","
+            "                       \"templateId\":\"33333333-3333-4333-8333-333333333333\",\n"
+            "                       \"overrides\":{\"first\":\"name\",\"second\":\"transform\"}}}\n"
+            " ],\n"
+            " \"materials\":[],\n"
+            " \"textures\":[]\n"
+            "}\n";
+        S2WriteRaw(p, body);
+    }
+    SceneDocument doc;
+    DeterministicUuidProvider idsNA;
+    doc.SetUuidProvider(&idsNA);
+    Error err;
+    REQUIRE_FALSE(SceneSerializer::Load(doc, p, err));
+    CHECK(err.code == Error::Parse);
+
+    std::filesystem::remove_all(dir);
+}
+
+
+// ---------------------------------------------------------------------------
+// Fix 8 (S2 review finding 8) — CloneInMemory preserves the override set.
+// CloneInMemory never touches JSON: it goes CollectRecords ->
+// BuildDocumentFromRecords, both of which copy the whole PrefabMemberComponent,
+// so overrides survive regardless of schemaVersion. Nothing proved this; this
+// test pins it (S5 relies on the Play-mode clone carrying overrides).
+//
+// Discrimination fault: drop the override set in BuildDocumentFromRecords when
+// it copies the record's PrefabMemberComponent into the emplacement — the
+// cloned member then has an empty set -> RED. Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: CloneInMemory preserves the override set")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s2_clone_overrides");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    auto* rootMember = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(rootMember);
+    rootMember->overrides = { S2Key("name"), S2Key("transform") };
+
+    SceneDocument clone;
+    DeterministicUuidProvider idsClone;
+    clone.SetUuidProvider(&idsClone);
+    Error cloneErr;
+    REQUIRE(SceneSerializer::CloneInMemory(f.manager.AuthoringDoc(), clone, cloneErr));
+    const auto ch = clone.FindByUuid(reg.get<EntityIdComponent>(rootHandle).id);
+    REQUIRE(static_cast<uint32_t>(ch) != static_cast<uint32_t>(entt::null));
+    const auto* cMember = clone.ecs.registry.try_get<PrefabMemberComponent>(ch);
+    REQUIRE(cMember);
+    // Fault for red: dropping the override set in the clone path leaves this empty.
+    REQUIRE(cMember->overrides.size() == 2);
+    CHECK(cMember->overrides[0] == S2Key("name"));
+    CHECK(cMember->overrides[1] == S2Key("transform"));
+
+    std::filesystem::remove_all(dir);
+}
+
+
+// ---------------------------------------------------------------------------
+// Spec test 3b (Fix 3, S2 review finding 2) — the save choke point. A below-
+// current output (v5) that would DROP a non-empty override set must fail the
+// save loudly, not silently write v5 and lose the set. This is the invariant
+// PromoteSchemaVersion maintains; SaveInternal enforces it so the eleven W3-D5
+// mutation entry points don't each have to remember to call Promote.
+//
+// Discrimination fault: remove the new validation block in SaveInternal — the
+// recovery-path SaveTo then succeeds on the below-current doc and writes v5,
+// silently dropping the override set -> RED. Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: a save that would drop a non-empty override set fails")
+{
+    const auto dir = S2UniqueTempDir("p8w3_s2_save_guard");
+    const auto scenePath = dir / "v5.rt2scene";
+    S2WriteMemberScene(scenePath, 5, {});
+
+    // Load a v5 doc (schemaVersion == 5), then add an override WITHOUT calling
+    // PromoteSchemaVersion — the state PromoteSchemaVersion is meant to
+    // prevent. SaveTo (recovery path) preserves the below-current version, so
+    // outputVersion = 5 < SchemaVersion with a non-empty set -> must fail.
+    SceneDocument doc;
+    DeterministicUuidProvider idsSav;
+    doc.SetUuidProvider(&idsSav);
+    Error loadErr;
+    REQUIRE(SceneSerializer::Load(doc, scenePath, loadErr));
+    REQUIRE(doc.metadata.schemaVersion == 5);
+    const auto handle = doc.FindByUuid(UUID::Parse("11111111-1111-4111-8111-111111111111"));
+    REQUIRE(static_cast<uint32_t>(handle) != static_cast<uint32_t>(entt::null));
+    auto* member = doc.ecs.registry.try_get<PrefabMemberComponent>(handle);
+    REQUIRE(member);
+    member->overrides = { S2Key("script") };
+
+    const auto out = dir / "out.rt2scene";
+    std::vector<AssetDiagnostic> diag;
+    Error e;
+    // Fault for red: without the SaveInternal guard this REQUIRE succeeds and
+    // the output is v5 with the override dropped -> RED.
+    REQUIRE_FALSE(SceneSerializer::SaveTo(doc, out, scenePath, diag, e));
+    CHECK(e.code == Error::InvalidArgument);
+
+    std::filesystem::remove_all(dir);
+}
+
+
+// ---------------------------------------------------------------------------
+// Spec test 1b (Fix 5, S2 review finding 5) — the writer canonicalizes the
+// override set, so memory->file matches the canonical wire order the reader
+// produces file->memory. S5 will populate vectors in edit order; without the
+// write-side sort the same logical scene writes different bytes depending on
+// who populated the vector, breaking the save -> load -> save byte-identity
+// that spec test 1 asserts. The vectors here are deliberately set UNSORTED
+// (transform before name) — the sorted-set invariant is a codec guarantee, not
+// a caller contract.
+//
+// Discrimination fault: remove the sort in EntityRecordToJson's override
+// emission — the stored wire list then keeps the in-memory ["transform","name"]
+// order instead of the canonical ["name","transform"] -> RED. Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: the writer stores the override set in canonical wire order")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s2_write_sort");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    auto* rootMember = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(rootMember);
+    // Deliberately unsorted in memory: the writer must canonicalize.
+    rootMember->overrides = { S2Key("transform"), S2Key("name") };
+
+    const auto scenePath = dir / "scene.rt2scene";
+    Error saveErr;
+    REQUIRE(SaveSceneForTest(f.manager.AuthoringDoc(), scenePath, saveErr));
+    nlohmann::json saved;
+    { std::ifstream in(scenePath); in >> saved; }
+    bool foundCanonical = false;
+    for (auto& e : saved["entities"])
+    {
+        if (!e.contains("prefabMember")) continue;
+        const auto& pm = e["prefabMember"];
+        if (!pm.contains("overrides")) continue;
+        std::vector<std::string> names;
+        for (auto& n : pm["overrides"]) names.push_back(n);
+        if (names.size() == 2 && names[0] == "name" && names[1] == "transform")
+            foundCanonical = true;
+    }
+    // Fault for red: without the write-side sort the stored order is the
+    // in-memory ["transform","name"] and this fails.
+    REQUIRE(foundCanonical);
+
+    std::filesystem::remove_all(dir);
 }

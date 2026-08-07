@@ -4,6 +4,7 @@
 #define RT2_PREFAB_COMPONENT_KEY_H
 
 #include "PersistedComponents.h"
+#include "PrefabComponentKeyBase.h"
 
 #include <array>
 #include <cstddef>
@@ -12,6 +13,12 @@
 
 // ============================================================================
 // PrefabComponentKey and the frozen classification table (Phase 8 W3, D3).
+//
+// The bare PrefabComponentKey class lives in PrefabComponentKeyBase.h
+// (dependency-free, included by ECSComponents.h at the top). This header holds
+// everything that needs the persisted component types and
+// PersistedComponents::Count: the wire constants, the frozen classification
+// table, and the PrefabComponentKeyFor specializations.
 //
 // One identity per persisted component. Each table entry carries the wire
 // string the scene codec already writes for that component (the top-level
@@ -33,34 +40,6 @@
 // the swallowed-failure bug class this header exists to prevent — it would
 // convert "this instance diverged" into "this instance tracks the source".
 // ============================================================================
-
-class PrefabComponentKey
-{
-public:
-    constexpr PrefabComponentKey() = default;
-
-    constexpr PrefabComponentKey(std::string_view wire, bool overridable) noexcept
-        : m_wire(wire), m_overridable(overridable)
-    {
-    }
-
-    constexpr std::string_view wire() const noexcept { return m_wire; }
-    constexpr bool overridable() const noexcept { return m_overridable; }
-    constexpr bool valid() const noexcept { return !m_wire.empty(); }
-
-    friend bool operator==(const PrefabComponentKey& a, const PrefabComponentKey& b) noexcept
-    {
-        return a.m_wire == b.m_wire && a.m_overridable == b.m_overridable;
-    }
-    friend bool operator!=(const PrefabComponentKey& a, const PrefabComponentKey& b) noexcept
-    {
-        return !(a == b);
-    }
-
-private:
-    std::string_view m_wire;
-    bool m_overridable = false;
-};
 
 // Wire strings, one per component. These are the exact member names
 // EntityRecordToJson writes (SceneSerializer.cpp). Never rename one without

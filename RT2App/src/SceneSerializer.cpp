@@ -844,8 +844,18 @@ std::optional<json> EntityRecordToJson(
         if (outputVersion >= SceneSerializer::SchemaVersion &&
             !r.prefabMember.overrides.empty())
         {
+            // The read path sorts and de-duplicates, so file->memory is
+            // canonical; the writer must match so memory->file is canonical
+            // too, otherwise the same logical scene writes different bytes
+            // depending on the order the vector was populated (S5 marks in
+            // edit order). Sorting by wire() is deterministic and stable under
+            // table reordering — the same criterion the read side chose.
+            std::vector<PrefabComponentKey> sorted = r.prefabMember.overrides;
+            std::sort(sorted.begin(), sorted.end(),
+                      [](const PrefabComponentKey& a, const PrefabComponentKey& b)
+                      { return a.wire() < b.wire(); });
             json ov = json::array();
-            for (const auto& key : r.prefabMember.overrides)
+            for (const auto& key : sorted)
                 ov.push_back(std::string(key.wire()));
             pm["overrides"] = std::move(ov);
         }
@@ -1228,6 +1238,22 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
                     err.path = r.uuid.ToString();
                     err.detail = "prefabMember override refers to an unknown "
                                  "component: " + item.get<std::string>();
+                    return r;
+                }
+                // The table classifies some components as never overridable
+                // (W3-D4: transient resource indices such as MeshRef, and the
+                // prefab link components themselves). A name the table has
+                // never heard of fails above; a name the table explicitly
+                // forbids must fail likewise — the asymmetry is the defect. An
+                // accepted forbidden key (e.g. "meshRef") would install an
+                // override W4 trusts as "diverged" when the semantics of that
+                // component cannot be overridden.
+                if (!key->overridable())
+                {
+                    err.code = Error::Parse;
+                    err.path = r.uuid.ToString();
+                    err.detail = "prefabMember override refers to a "
+                                 "non-overridable component: " + item.get<std::string>();
                     return r;
                 }
                 r.prefabMember.overrides.push_back(*key);
@@ -1803,6 +1829,47 @@ static bool SaveInternal(const SceneDocument& doc,
                     std::to_string(entt::to_integral(entity));
             if (!field.empty()) err.path += ":" + field;
             err.detail = "invalid ScriptComponent: " + detail;
+            return false;
+        }
+    }
+
+    // Prefab override sets exist only at the current schema (v6): the reader
+    // gates them on schemaVersion, so anything written at a below-current
+    // output would be silently dropped on reload. W3-D6's upgrade rule
+    // (PromoteSchemaVersion) keeps a doc that gained overrides at v6, but
+    // nothing but that convention enforces it — write here, at the single
+    // pre-save choke point, the same invariant: an output below current
+    // carrying a non-empty override set is a scene that cannot be loaded back,
+    // so fail loudly rather than drop the set.
+    if (outputVersion < SceneSerializer::SchemaVersion)
+    {
+        auto& reg = doc.ecs.registry;
+        std::string offenders;
+        int count = 0;
+        auto members = reg.view<PrefabMemberComponent>();
+        for (auto e : members)
+        {
+            if (members.get<PrefabMemberComponent>(e).overrides.empty())
+                continue;
+            ++count;
+            if (auto* idc = reg.try_get<EntityIdComponent>(e))
+            {
+                if (!offenders.empty()) offenders += ", ";
+                offenders += idc->id.ToString();
+            }
+        }
+        if (count > 0)
+        {
+            err.code = Error::InvalidArgument;
+            err.path = outPath.string();
+            err.detail = std::to_string(count) + " prefab member entit" +
+                         (count == 1 ? "y" : "ies") +
+                         " carry a non-empty override set, which a below-current "
+                         "output (" + std::to_string(outputVersion) + ") could not "
+                         "write: " + offenders +
+                         ". The scene must be saved at schema v" +
+                         std::to_string(SceneSerializer::SchemaVersion) +
+                         " (PromoteSchemaVersion) to preserve overrides.";
             return false;
         }
     }

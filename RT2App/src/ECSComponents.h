@@ -5,6 +5,7 @@
 
 #include "AssetReference.h"
 #include "core/UUID.h"
+#include "PrefabComponentKeyBase.h"
 #include "SceneTypes.h"
 #include "ScriptFieldValue.h"
 
@@ -19,13 +20,13 @@
 #include <string>
 #include <cstdint>
 
-// Forward declaration only. PrefabComponentKey is defined in
-// PrefabComponentKey.h, which is included at the bottom of this header (after
-// every persisted component struct is defined) to break the include cycle:
-// PrefabComponentKey.h -> PersistedComponents.h -> ECSComponents.h. The vector
-// member below needs only the declaration here; its special members are
-// instantiated later, by which point the header is complete.
-class PrefabComponentKey;
+// PrefabComponentKey is defined in PrefabComponentKeyBase.h (included at the
+// top of this header). The frozen classification table and the
+// PrefabComponentKeyFor specializations — which need PersistedComponents —
+// live in PrefabComponentKey.h. The vector member below needs only the bare
+// key class, so this header pulls in the dependency-free base alone, avoiding
+// the include cycle that a bottom-of-file PrefabComponentKey.h include used to
+// create (PrefabComponentKey.h -> PersistedComponents.h -> ECSComponents.h).
 
 // ============================================================================
 // ECS Components
@@ -362,7 +363,5 @@ struct PrefabMemberComponent
     // which resolves through kPrefabTable.
     std::vector<PrefabComponentKey> overrides;
 };
-
-#include "PrefabComponentKey.h"
 
 #endif // ECS_COMPONENTS_H
