@@ -166,7 +166,7 @@ TEST_CASE("Phase7 W5 current schema rejects malformed asset identity")
         "rt2_phase7_w5_bad_id.rt2scene";
     std::ofstream output(path);
     output << R"({
-      "version":5,
+      "version":6,
       "metadata":{"projectId":"550e8400-e29b-41d4-a716-446655440010"},
       "entities":[{"uuid":"550e8400-e29b-41d4-a716-446655440001",
         "name":"Model","parent":"","visible":true,

@@ -9,6 +9,7 @@
 #include "AssetResolver.h"
 #include "SceneAssetReferenceVisitor.h"
 #include "PrefabSerializer.h"
+#include "PrefabComponentKey.h"
 
 #include "json.hpp"
 
@@ -673,6 +674,7 @@ std::optional<json> EntityRecordToJson(
                         const EntityRecord& r,
                         const std::filesystem::path& currentSceneDir,
                         const std::filesystem::path& outputSceneDir,
+                        uint32_t outputVersion,
                         std::vector<AssetDiagnostic>& diagnostics,
                         Error& err)
 {
@@ -832,6 +834,21 @@ std::optional<json> EntityRecordToJson(
         json pm;
         pm["instanceId"] = r.prefabMember.instanceId.ToString();
         pm["templateId"] = r.prefabMember.templateId.ToString();
+
+        // Each entry is a wire NAME string (the component identity), never an
+        // index or bit position (W3-D2). Written only at the current schema:
+        // v6 is where overrides exist, and a v5 output is by construction an
+        // untouched document with an empty set. This mirrors the projectId
+        // precedent (:1750) — a below-current emitter never carries a field
+        // its reader cannot understand.
+        if (outputVersion >= SceneSerializer::SchemaVersion &&
+            !r.prefabMember.overrides.empty())
+        {
+            json ov = json::array();
+            for (const auto& key : r.prefabMember.overrides)
+                ov.push_back(std::string(key.wire()));
+            pm["overrides"] = std::move(ov);
+        }
         j["prefabMember"] = std::move(pm);
     }
 
@@ -1170,6 +1187,62 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
             err.detail = "prefabMember has malformed instanceId or templateId";
             return r;
         }
+
+        // Overrides exist only at the current schema. A v5 (or older) scene
+        // loads with every override set empty, which is the correct meaning —
+        // not a migration failure. The member is only parsed at v6+, so a
+        // stray "overrides" block inside an older scene file is ignored
+        // structurally rather than by luck.
+        if (schemaVersion >= SceneSerializer::SchemaVersion &&
+            pm.contains("overrides"))
+        {
+            const auto& ov = pm["overrides"];
+            if (!ov.is_array())
+            {
+                err.code = Error::Parse;
+                err.path = r.uuid.ToString();
+                err.detail = "prefabMember overrides must be an array of "
+                             "component wire names";
+                return r;
+            }
+            // Resolve every wire name through the frozen table. An unknown
+            // name is a loud parse failure — never a silent drop, which would
+            // convert "this instance diverged" into "this instance tracks the
+            // source" and let W4 overwrite user data. The keys obtained from
+            // FindComponentByWire point into the table's static storage and
+            // are safe to store indefinitely (no dangling string_view).
+            r.prefabMember.overrides.reserve(ov.size());
+            for (const auto& item : ov)
+            {
+                if (!item.is_string())
+                {
+                    err.code = Error::Parse;
+                    err.path = r.uuid.ToString();
+                    err.detail = "prefabMember override entry must be a string";
+                    return r;
+                }
+                const auto key = FindComponentByWire(item.get<std::string>());
+                if (!key)
+                {
+                    err.code = Error::Parse;
+                    err.path = r.uuid.ToString();
+                    err.detail = "prefabMember override refers to an unknown "
+                                 "component: " + item.get<std::string>();
+                    return r;
+                }
+                r.prefabMember.overrides.push_back(*key);
+            }
+            std::sort(r.prefabMember.overrides.begin(),
+                      r.prefabMember.overrides.end(),
+                      [](const PrefabComponentKey& a,
+                         const PrefabComponentKey& b) { return a.wire() < b.wire(); });
+            r.prefabMember.overrides.erase(
+                std::unique(r.prefabMember.overrides.begin(),
+                            r.prefabMember.overrides.end(),
+                            [](const PrefabComponentKey& a,
+                               const PrefabComponentKey& b) { return a == b; }),
+                r.prefabMember.overrides.end());
+        }
     }
 
     return r;
@@ -1410,6 +1483,15 @@ uint32_t RegisterPrimitiveMesh(MeshRegistry& meshReg, const PrimitiveComponent& 
     return RegisterPrimitiveMeshImpl(meshReg, prim);
 }
 
+// W3-D6. See the declaration in SceneSerializer.h.
+bool SceneSerializer::PromoteSchemaVersion(SceneDocument& doc)
+{
+    if (doc.metadata.schemaVersion >= SceneSerializer::SchemaVersion)
+        return false;
+    doc.metadata.schemaVersion = SceneSerializer::SchemaVersion;
+    return true;
+}
+
 // ============================================================================
 // Prefab record codec (Phase 8 W1)
 //
@@ -1543,7 +1625,7 @@ bool PrefabRecordToJson(const PrefabEntityRecord& record,
     const EntityRecord sceneRecord = ToSceneRecord(record.record);
     const auto payload = EntityRecordToJson(
         sceneRecord, std::filesystem::path{}, std::filesystem::path{},
-        diagnostics, err);
+        SceneSerializer::SchemaVersion, diagnostics, err);
     if (!payload)
     {
         if (err.path.empty())
@@ -1759,7 +1841,7 @@ static bool SaveInternal(const SceneDocument& doc,
     for (const auto& r : records)
     {
         auto serialized = EntityRecordToJson(
-            r, currentReferenceRoot, outputReferenceRoot,
+            r, currentReferenceRoot, outputReferenceRoot, outputVersion,
             stagedDiagnostics, err);
         if (!serialized) return false;
         entitiesArray.push_back(std::move(*serialized));

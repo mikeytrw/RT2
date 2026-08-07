@@ -127,9 +127,28 @@ public:
     static bool CloneInMemory(const SceneDocument& src, SceneDocument& dst, Error& err);
 
     // Current schema version (written by Save).
-    static constexpr uint32_t SchemaVersion = 5;
+    static constexpr uint32_t SchemaVersion = 6;
     // Lowest readable schema version; v3 remains readable for migration.
     static constexpr uint32_t MinReadVersion = 3;
+
+    // W3-D6: promote a document to the current schema the moment the first
+    // override is added, as part of the same atomic mutation. Load records the
+    // source schema into doc.metadata.schemaVersion, and SaveTo deliberately
+    // preserves an older one (it passes min(doc.metadata.schemaVersion,
+    // SchemaVersion)), which is how a recovery snapshot would otherwise be
+    // written as v5 with the override set silently dropped. Calling this makes
+    // the subsequent recovery capture write v6 so the override set survives.
+    //
+    // The marking path (S5/S6) calls this only when it is actually adding an
+    // override, so an untouched older-schema document keeps writing older-
+    // schema recovery snapshots exactly as today (pinned by Phase7W5Tests).
+    // Pass the document's before/after schemaVersion through the command's
+    // undo state so undo can restore the prior version.
+    //
+    // Returns true if the document was promoted (was below the current
+    // schema), false if it was already current (a no-op, also used to detect
+    // "no upgrade needed").
+    static bool PromoteSchemaVersion(SceneDocument& doc);
 };
 
 } // namespace rt2::core
