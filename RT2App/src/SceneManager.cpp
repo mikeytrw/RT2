@@ -2006,6 +2006,38 @@ bool EntityMatchesRecord(const entt::registry& reg, entt::entity e,
 		const auto& live = *reg.try_get<PrefabMemberComponent>(e);
 		if (!(live.instanceId == record.prefabMember.instanceId)) return false;
 		if (!(live.templateId == record.prefabMember.templateId)) return false;
+
+		// Phase 8 W3, S3: the override set is authored state the verifier must
+		// see, or a post-copy edit to a duplicate's overrides is invisible to
+		// RemoveSubtreesExact and Undo destroys the edited copy.
+		//
+		// Compare the vectors as MULTISETS: sorted copies compared element-wise.
+		// This is order-insensitive AND duplicate-correct. Neither the codec's
+		// sortedness nor its uniqueness invariant is trusted here, because both
+		// hold only for vectors that have passed through a file round-trip — an
+		// in-memory vector need not have (the S5/S6 marking path records in edit
+		// order; S2's write-sort test deliberately builds one unsorted). A
+		// one-directional containment would be fooled by duplicates: size-gate
+		// then "every key in live is in record" accepts `{transform, transform}`
+		// (live) against `{transform, light}` (record) as equal when they are
+		// not. Sorting both sides and comparing position-by-position catches that
+		// (and the symmetric `{a,a,b}` vs `{a,b,b}` case, which even bidirectional
+		// containment + equal size misses because counts can differ while coverage
+		// is identical). No product code materialises a duplicate today — the
+		// codec de-duplicates on read and S5/S6 do not exist yet — but S5 starts
+		// building these vectors in memory and makes this guard load-bearing, so
+		// the compare must not trust uniqueness.
+		if (live.overrides.size() != record.prefabMember.overrides.size()) return false;
+		std::vector<PrefabComponentKey> liveSorted = live.overrides;
+		std::vector<PrefabComponentKey> recSorted = record.prefabMember.overrides;
+		std::sort(liveSorted.begin(), liveSorted.end(),
+		          [](const PrefabComponentKey& a, const PrefabComponentKey& b)
+		          { return a.wire() < b.wire(); });
+		std::sort(recSorted.begin(), recSorted.end(),
+		          [](const PrefabComponentKey& a, const PrefabComponentKey& b)
+		          { return a.wire() < b.wire(); });
+		for (std::size_t i = 0; i < liveSorted.size(); ++i)
+			if (!(liveSorted[i] == recSorted[i])) return false;
 	}
 
 	return true;

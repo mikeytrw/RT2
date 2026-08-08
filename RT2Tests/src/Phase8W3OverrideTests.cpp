@@ -1121,3 +1121,186 @@ TEST_CASE("Phase 8 W3: the writer stores the override set in canonical wire orde
 
     std::filesystem::remove_all(dir);
 }
+
+
+// ============================================================================
+// Phase 8 W3, S3 — the snapshot verifier sees the override set
+// (implementation spec, W3-D2; Work step S3).
+//
+// EntityMatchesRecord (SceneManager.cpp:1815) is the guard that
+// RemoveSubtreesExact (SceneManager.cpp:2182) runs over every entity before
+// destroying anything, failing the whole operation on a mismatch (:2197-2200).
+// Pre-S3 it compared only instanceId + templateId on the PrefabMemberComponent
+// branch, so an override-set change was invisible to it: duplicate an
+// instance, edit the duplicate's overrides, undo the duplication, and the
+// verifier still matched and destroyed the edited copy — a guard that had
+// stopped guarding.
+//
+// S3 extends the comparison to the override vector. Order decision: compare as
+// a SET (order-insensitive). The codec sorts and de-duplicates on read and
+// write (SceneSerializer.cpp:853-856, :1261-1270), so any vector that has
+// passed through a file round-trip is canonical — but an in-memory vector has
+// not necessarily been through the codec (the S5/S6 marking path records in
+// edit order; S2's write-sort test deliberately builds {transform, name}
+// unsorted and relies on the writer to canonicalize). An order-sensitive
+// compare would report a false mismatch for two logically-equal sets and
+// break legitimate structural undo. Set comparison still catches every real
+// divergence, which is all the guard exists to catch. EntityMatchesRecord is
+// file-local (not in a header), so these tests drive the guard through
+// RemoveSubtreesExact — the exact proof the brief requires.
+//
+// Discrimination fault (recorded in the verification report):
+//   revert EntityMatchesRecord's PrefabMember branch to compare instanceId +
+//   templateId only (drop the override comparison) — the mutate-then-remove
+//   case below then reports a MATCH and DESTROYS the edited entity -> RED on
+//   "must fail and leave the entity intact". Reverting to the final form turns
+//   both cases GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: verifier sees an override-set change and refuses to remove")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s3_mismatch");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+
+    auto& reg = f.manager.GetECS().registry;
+    auto* rootMember = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(rootMember);
+    // Non-empty before capture: an empty->non-empty jump would only prove the
+    // guard sees presence. Non-empty->different proves it sees the SET.
+    rootMember->overrides = { S2Key("name"), S2Key("transform") };
+
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    REQUIRE(rootUuid != UUID::Nil());
+
+    // Capture exactly the shape the duplicate/delete commands capture.
+    auto snapshot = f.manager.CaptureSubtreeSnapshot({ rootUuid });
+    REQUIRE(snapshot.entities.size() == 2);
+    const auto snapRoot = std::find_if(
+        snapshot.entities.begin(), snapshot.entities.end(),
+        [&](const SubtreeEntityRecord& r) { return r.uuid == rootUuid; });
+    REQUIRE(snapRoot != snapshot.entities.end());
+    REQUIRE(snapRoot->prefabMember.overrides.size() == 2);
+
+    // Post-copy edit: the live override set now differs from the snapshot.
+    rootMember->overrides = { S2Key("name"), S2Key("transform"), S2Key("light") };
+
+    // The guard must refuse: authored override state no longer matches.
+    const auto result = f.manager.RemoveSubtreesExact(snapshot);
+    REQUIRE_FALSE(result.success);
+    REQUIRE(result.error.code == Error::InvalidEntity);
+    REQUIRE(result.error.detail.find("authored state does not match")
+            != std::string::npos);
+
+    // Zero mutation on failure (:2189-2201 contract): the entity must still
+    // exist and its override set must be the edited value, untouched by the
+    // failed operation.
+    const auto liveHandle = f.manager.FindEntityByUuid(rootUuid);
+    REQUIRE(static_cast<uint32_t>(liveHandle)
+            != static_cast<uint32_t>(entt::null));
+    REQUIRE(reg.valid(liveHandle));
+    const auto* liveMember = reg.try_get<PrefabMemberComponent>(liveHandle);
+    REQUIRE(liveMember);
+    REQUIRE(liveMember->overrides.size() == 3);
+    CHECK(liveMember->overrides[2] == S2Key("light"));
+    CHECK(std::find(liveMember->overrides.begin(), liveMember->overrides.end(),
+                    S2Key("light")) != liveMember->overrides.end());
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// The mirror case: an UNCHANGED override set must still verify and remove.
+// This is what proves S3 did not simply make the verifier reject everything.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: an unchanged override set still verifies and removes")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s3_match");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+
+    auto& reg = f.manager.GetECS().registry;
+    auto* rootMember = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(rootMember);
+    rootMember->overrides = { S2Key("name"), S2Key("transform") };
+
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    REQUIRE(rootUuid != UUID::Nil());
+
+    auto snapshot = f.manager.CaptureSubtreeSnapshot({ rootUuid });
+    REQUIRE(snapshot.entities.size() == 2);
+
+    // No edit since capture: the guard must still match and the remove goes
+    // through.
+    const auto result = f.manager.RemoveSubtreesExact(snapshot);
+    REQUIRE(result.success);
+
+    // Entities were really removed (the guard passed and destruction ran).
+    REQUIRE_FALSE(reg.valid(rootHandle));
+    REQUIRE_FALSE(reg.valid(childHandle));
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// S3 review-fix: a duplicate in one side must not let the verifier report a
+// match for genuinely different sets. The first S3 draft compared sizes then
+// checked, one-directionally, that every key in `live` appears in `record`.
+// That is true set equality only when both sides are duplicate-free. Here
+// `live = {transform, transform}` against the captured `record =
+// {transform, light}`: sizes match at 2 and every live key exists in the
+// record, so the one-directional compare reports MATCH — and would destroy
+// the edited entity, exactly the failure S3 exists to prevent. The S3 fix
+// compares as multisets (sorted copies, element-wise), so this must be
+// REFUSED.
+//
+// Discrimination fault (recorded in the verification report):
+//   revert to the one-directional containment form (drop the sorted
+//   element-wise compare) — this case then reports a MATCH and DESTROYS the
+//   edited entity -> RED on "must fail and leave the entity intact". Reverting
+//   to the multiset compare turns it GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s3_dup");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+
+    auto& reg = f.manager.GetECS().registry;
+    auto* rootMember = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(rootMember);
+
+    // Capture first with two distinct keys...
+    rootMember->overrides = { S2Key("transform"), S2Key("light") };
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    REQUIRE(rootUuid != UUID::Nil());
+    auto snapshot = f.manager.CaptureSubtreeSnapshot({ rootUuid });
+    REQUIRE(snapshot.entities.size() == 2);
+    const auto snapRoot = std::find_if(
+        snapshot.entities.begin(), snapshot.entities.end(),
+        [&](const SubtreeEntityRecord& r) { return r.uuid == rootUuid; });
+    REQUIRE(snapRoot != snapshot.entities.end());
+
+    // ...then mutate the live set to a same-size set the one-directional
+    // compare cannot distinguish: {transform, transform} vs captured
+    // {transform, light}.
+    rootMember->overrides = { S2Key("transform"), S2Key("transform") };
+
+    const auto result = f.manager.RemoveSubtreesExact(snapshot);
+    REQUIRE_FALSE(result.success);
+    REQUIRE(result.error.code == Error::InvalidEntity);
+    REQUIRE(result.error.detail.find("authored state does not match")
+            != std::string::npos);
+
+    // Zero mutation on failure: the duplicate-valued entity survives intact.
+    const auto liveHandle = f.manager.FindEntityByUuid(rootUuid);
+    REQUIRE(static_cast<uint32_t>(liveHandle)
+            != static_cast<uint32_t>(entt::null));
+    REQUIRE(reg.valid(liveHandle));
+    const auto* liveMember = reg.try_get<PrefabMemberComponent>(liveHandle);
+    REQUIRE(liveMember);
+    REQUIRE(liveMember->overrides.size() == 2);
+    CHECK(liveMember->overrides[0] == S2Key("transform"));
+    CHECK(liveMember->overrides[1] == S2Key("transform"));
+
+    std::filesystem::remove_all(dir);
+}
