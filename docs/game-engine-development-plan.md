@@ -6179,6 +6179,19 @@ document is a period record of a superseded state.**
 | **Release** | **700 run, 700 passed, 0 failed, 0 skipped; 145,911 assertions** |
 | **Debug** | **700 run, 700 passed, 0 failed, 0 skipped; 145,911 assertions** |
 
+> **Updated 2026-08-09 — Phase 8 W3 S4 closure measurement.** Full measured
+> run from the repository root after the S4 test groups landed
+> (`RT2Tests/src/Phase8W3OverrideTests.cpp`, commits `411ee5c`, `dcb96b4`,
+> `68d67c1`). Both configurations now measure **840 run / 840 passed /
+> 0 failed / 0 skipped; 147,865 assertions**. Debug measured 2/2 runs clean;
+> Release measured clean in 14 consecutive runs with one observed intermittent
+> failure of `Phase6B W5: registry fast-path with same-size edit re-parses on
+> hash mismatch` (`RT2Tests/src/Phase6BFieldsTests.cpp:1956`) — a
+> file-timestamp-granularity timing test unrelated to S4 (file untouched by all
+> S4 commits). The 700/700 rows above are the period record as of 2026-07-31
+> and do not include the Phase 8 W1/W2 test additions; the 840/840 figures
+> supersede them.
+
 Run from the repository root — `RT2Tests.exe` resolves some fixtures by
 relative path and both fails and writes stray files if run from elsewhere.
 
@@ -14256,3 +14269,138 @@ are the codebase's characteristic silent-failure shape:
 - Several citations pointed at the right subsystem but not the asserted
   operation. That reads as verified and is worse than a missing citation; all
   citations here were re-checked individually.
+
+### Phase 8 W3 S4 — verification report (2026-08-09)
+
+**Scope of this report.** S4 is the W3-D8 half of the work step S4 — "fresh
+`instanceId` across all four copy paths; snapshot restore preserves the
+recorded ID; partial and multi-root policy" (`:14120-14121`). The marking half
+of the step (S5/S6) is out of scope and not delivered here. This report is the
+so-far-normative record for the S4 identity work; the grounded spec above and
+the "Test baseline" section below both supersede nothing on their own, this
+report records what was actually measured on 2026-08-09.
+
+**Implementation.** One commit, `f72d0e1` ("WIP Phase 8 W3 S4: mint a fresh
+instanceId on the four copy paths"), grounded against the S4 spec above
+(paragraphs :1313-1336 in this file, and `RT2App/src/SceneManager.cpp:130-230`).
+The change adds a single shared helper, `MintCopiedPrefabLinks`
+(`SceneManager.cpp:164-230`), and calls it from all three copy-shaped entry
+points that reach copied subtrees — `DuplicateSubtrees` (`:1603`),
+`DuplicateSubtreesWithUuids` (`:3457`), `PasteSubtreesFrom` (`:1712`) and
+`PasteSubtreesWithUuids` (`:3620`). Not reached through the helper, by design:
+`InstantiatePrefabWithUuids` mints its own fresh identity at link-install time
+(`:3003`) and `RestoreSubtrees` reinstates the recorded identity verbatim
+(`ApplySubtreeRecord`, `:1874-1947`) — undo/redo is not a copy path.
+
+The helper's contract, per its header comment and the spec:
+
+- **Full instance copy** — the copied subtree's root carries a
+  `PrefabInstanceComponent` in the destination. One fresh `instanceId` is
+  minted per copied tree and pushed onto every copied `PrefabMemberComponent`
+  and onto the copied `PrefabInstanceComponent`. `templateId`s and each
+  member's override vector are left untouched, so a copy of a diverged
+  instance stays diverged (W3-D4).
+- **Partial copy** — the copied subtree carries `PrefabMemberComponent`s but
+  no `PrefabInstanceComponent` root. Both prefab components are stripped from
+  every copied entity, the members become ordinary entities, and the helper
+  returns a count the caller uses to raise an `EditorMutationResult`
+  `recoveryWarning` (`Error::InvalidHierarchy`) rather than fabricating an
+  instance root the user never made. The operation itself still succeeds.
+- **Multi-root copy** — one fresh mint per copied *tree* (per root), never one
+  shared id across roots and never one per member.
+
+**Test commits (all in `RT2Tests/src/Phase8W3OverrideTests.cpp`):**
+
+| Commit | Group | Tests added |
+|---|---|---|
+| `411ee5c` | 1 — duplicate paths | tests 1-2 |
+| `dcb96b4` | 2 — paste paths + diverged | tests 3-5 |
+| `68d67c1` | 3 — restore/partial/multi-root | tests 6-8 |
+
+All eight tests drive a **real instance** (`S2Fixture::MakeInstance`, which
+instantiates an actual `.rt2prefab` through `InstantiatePrefabWithUuids` and
+returns the growing registry's member handles). Tests 1-5 pre-read a
+`PrefabInstanceComponent`/`PrefabMemberComponent` set; tests 6-8 additionally
+exercise snapshot capture/remove/restore and multi-instance fixtures. Each
+test resolves its copied entities through `S4SubtreeEntities`
+(`SceneHierarchy::CollectSubtreePreOrder` on the live registry), reads member
+`instanceId`/`templateId`, the root `PrefabInstanceComponent`, and the
+`overrides` vectors via the `S2Key` table-resolved helper. A summary of the
+eight discrimination proofs (fault injected, RED asserted at the named report
+line, fault reverted, GREEN re-verified) is in this file's S4 section header.
+**Test-filter note (doctest quirk):** repeated `--test-case` flags override
+each other — the comma-joined form `--test-case=A,B` is required to select
+multiple cases.
+
+#### The eight discrimination proofs
+
+All RED/GREEN proofs were executed from the repository root in Release x64
+after touching `RT2App/src/SceneManager.cpp`, then reverting the identical
+file via `git checkout -- RT2App/src/SceneManager.cpp`. Line numbers the
+assertions only; do not read them as a stable API contract.
+
+| Test | Behavior pinned | RED fault | RED line (failure) | Revert |
+|---|---|---|---|---|
+| 1 | ordinary `DuplicateSubtrees` mints one fresh id per subtree; members share it; templateIds preserved; source untouched | remove the `MintCopiedPrefabLinks` call at `:1603` | `CHECK(dupRootId != srcInstanceId)` (1413/1480) | `git checkout -- RT2App/src/SceneManager.cpp` -> GREEN |
+| 2 | editor `DuplicateSubtreesWithUuids` (the undoable command path) mints a fresh id | remove the call at `:3457` | same assertion (1480) | GREEN |
+| 3 | ordinary `PasteSubtreesFrom` mints a fresh id from a clipboard doc | remove the call at `:1712` | `CHECK(pastedRootId != srcInstanceId)` (1585) | GREEN |
+| 4 | editor `PasteSubtreesWithUuids` mints a fresh id | remove the call at `:3620` | `CHECK(pastedRootId != srcInstanceId)` (1668) | GREEN |
+| 5 | diverged instance stays diverged — mangled `overrides` must not survive copy | in `MintCopiedPrefabLinks`' full-instance branch, clear each copied member's `overrides` (`:200-201`) | `CHECK(pastedRootMember->overrides == srcRoot->overrides)` (1767) | GREEN |
+| 6 | structural restore reinstates the recorded `instanceId`, not a fresh one | mint onto every restored member inside `RestoreSubtrees`, right after `ApplySubtreeRecord` (`:2533`) | `CHECK(restoredRootId == recordedId)` (1868) | GREEN |
+| 7 | partial copy strips both prefab components and raises `recoveryWarning` (`Error::InvalidHierarchy`) | remove `destinationRegistry.remove<PrefabMemberComponent>` in the partial branch (`:220-226`) | `CHECK_FALSE(reg.all_of<PrefabMemberComponent>(copiedEntity))` (1940) | GREEN |
+| 8 | multi-root copy mints one distinct fresh id per subtree | hoist `mint()` out of the loop so every root reuses the same id (`:195`) | `CHECK(copiedARootId != copiedBRootId)` (2028) | GREEN |
+
+**RED/GREEN outcomes.** Every fault produced a RED run failing exactly at the
+intended assertion; the stored log in the S4 section header and the three
+group commits reproduce each fault verbatim. No test passed while the feature
+was broken (no non-discriminating fault was encountered).
+
+**Frequency measured.** After the tests landed, the full Release suite was run
+many times from the repository root. It passed 14 of the runs; a 15th
+failed 1 case, `Phase6B W5: registry fast-path with same-size edit re-parses on
+hash mismatch` (`RT2Tests/src/Phase6BFieldsTests.cpp:1956`), a
+timestamp-granularity timing test **unrelated to S4** (file last touched at
+`67f4951`, a Phase 7 commit, and not modified by any S4 change). See the
+"Test baseline" section below for the Debug-side note. No S4 test ever flaked.
+
+#### What S4 does not deliver (carried to W4/W5)
+
+Matching the W3 boundary (`:14192-14201`): propagation remains W4; nothing
+removes an override except undo (W5); reverting/apply are not in this phase;
+no UI (W6). The `instanceId` re-mint covers scene-side copies only — it does
+not re-key any authored asset reference, and `InstantiatePrefabWithUuids`
+still mints its own identity. Nothing here changes the serializer, the prefab
+file format, or the schema version; the override data model and codec were
+S2's deliverable.
+
+#### Build / gate outcomes (2026-08-09)
+
+- **Release x64 full solution** — MSBuild `RT2App.sln -p:Configuration=Release
+  -p:Platform=x64` built clean; `RT2Tests`, `RT2SliceRunner`, `RT2App`.
+- **Debug x64 full solution** — same, all three targets clean.
+- **`RT2Tests.exe` from repo root, Release** — run repeatedly; 14×
+  `840 run / 840 passed / 0 failed / 0 skipped`, 147,865 assertions, plus one
+  run with the Phase6B timing flake noted above (see "Test baseline").
+- **`RT2Tests.exe` from repo root, Debug** — 2× `840 run / 840 passed /
+  0 failed / 0 skipped`, 147,865 assertions.
+- **`run_script_test.ps1`** — `[ScriptScenario] PASS: 60 frames, 1 entities,
+  no mismatches` (exit 0).
+- **`run_slice_test.ps1`** — `[Slice] Cube final x=0.999999702 (expected ~1.0)`,
+  `[Slice] PASS` (exit 0); `RT2App/assets/vertical-slice.rt2scene` restored
+  afterward.
+- **`run_recovery_test.ps1`** — `[RecoveryScenario] PASS`, `[Recovery] PASS`
+  (exit 0).
+- **`graphify update .`** — rebuilt graph (2082+ files, 35,047 nodes, 73,736
+  edges, 1478 communities); graph.json is generated/ignored (not committed),
+  `graphify-out/GRAPH_REPORT.md` is the tracked refresh and is included in
+  this closure commit.
+
+**Test count reconciliation.** The suite measured on this branch is 840 test
+cases / 147,865 assertions in both configurations. Immediately before the S4
+test groups landed the suite measured 832 / 147,586 (the count that precedes
+group 1 in the group-1 briefing); the S4 groups 1-3 then added 8 test cases
+and 279 assertions. The authoritative "Test baseline" section still records a
+2026-07-31 figure of 700 run / 700 passed / 145,911 assertions — that is a
+period record of the Phase 7 W4 state and does not include the Phase 8 W1/W2
+test additions that landed between that measurement and this S4 work.
+See "Test baseline" below for the updated current-state entry.
