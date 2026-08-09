@@ -125,73 +125,100 @@ void RemapCopiedScriptFields(
 	rt2::core::RemapEntityReferences(uuidRemap, scripts);
 }
 
-// Phase 8 W3, S4 / W3-D8 — mint a fresh instanceId for every copied instance
-// GROUP. The selection may cut a prefab instance at an arbitrary point (an
+// Phase 8 W3, S4 / W3-D8 + review fix 2 — a copy/paste of a prefab instance is
+// a NEW instance: every copied instance GROUP gets ONE fresh instanceId,
+// reserved BEFORE any destination mutation and applied only after the create
+// loop. The selection may cut a prefab instance at an arbitrary point (an
 // ordinary folder above it, a member fragment left below, or both), so the
 // unit of classification is the FOREST of copied entities, not each selected
 // root in isolation.
 //
 // CopyAuthoredComponents copies all 13 persisted components verbatim
-// (SceneManager.cpp:89-93), so a copy of a prefab instance currently shares
-// the SOURCE's instanceId: duplicating an instance produces two entities (and
-// two member groups) claiming the same instance identity. W3 groups overrides
-// by instanceId, so that sharing would merge two instances into one group
-// (W3-D8). Each copied group must mint ONE fresh instanceId shared by every
-// copied member of that group.
+// (SceneManager.cpp:89-93), so a copy of a prefab instance would share the
+// SOURCE's instanceId: duplicating an instance produces two entities (and two
+// member groups) claiming the same instance identity. W3 groups overrides by
+// instanceId, so that sharing would merge two instances into one group
+// (W3-D8). Fresh instanceIds are drawn from the SAME UUID provider the manager
+// uses everywhere.
 //
-// This runs per copy/paste operation, AFTER the copy loop has built the remap
-// but BEFORE any derived state is computed. It inspects the freshly created
-// destination entities only. Classification, forest-wide:
+// The classification is SPLIT so the provider is consumed before mutation and
+// no provider draw can happen after the destination starts changing:
 //
-//  * A copied group with at least one copied root carrying
-//    PrefabInstanceComponent is a FULL instance copy: mint one fresh
-//    instanceId (the provided mint callback — the same UUID provider the
-//    manager uses everywhere) and assign it to that group's root AND to every
-//    copied PrefabMemberComponent carrying the same original instanceId.
-//    templateIds and override vectors are copied verbatim by
-//    CopyAuthoredComponents and must NOT be touched: a copy of a diverged
-//    instance stays diverged (W3-D4). A nested full instance is handled
-//    per-component: the inner instance's root keeps its own group's fresh id
-//    on its PrefabInstanceComponent and the enclosing group's fresh id on its
-//    PrefabMemberComponent — nesting is never merged into the outer group.
+//   1. PLAN — PlanCopiedPrefabLinks(sourceRegistry, roots) inspects the SOURCE
+//      forest only (never the destination):
+//        * a group with at least one source root carrying
+//          PrefabInstanceComponent is a COMPLETE instance: it gets ONE fresh
+//          instanceId, shared by that group's copied root(s) AND every copied
+//          PrefabMemberComponent carrying the same original instanceId.
+//          templateIds and override vectors are copied verbatim by
+//          CopyAuthoredComponents and must NOT be touched: a copy of a
+//          diverged instance stays diverged (W3-D4). A nested full instance is
+//          handled per-component: the inner instance's root keeps its own
+//          group's fresh id on its PrefabInstanceComponent and the enclosing
+//          group's fresh id on its PrefabMemberComponent — nesting is never
+//          merged into the outer group.
+//        * a member whose original instanceId has NO source root in the forest
+//          is an ORPHAN member fragment: this is NOT an instance. Fabricating
+//          an instance here would invent a link the user never made, so the
+//          PrefabMemberComponent is stripped at apply time (and its
+//          PrefabInstanceComponent when that id also has no fresh mapping) and
+//          the entity becomes ordinary. The plan counts the stripped entities
+//          so the caller raises a recovery warning (never a hard failure;
+//          duplicate/paste of a partial selection stays a valid operation).
+//        * two source roots sharing one original instanceId is malformed
+//          ambiguous input; it is diagnosed via ambiguousGroups so the caller
+//          can surface it, and the group is kept as ONE reminted group (never
+//          split or merged).
+//        * everything else (no prefab components): untouched, reserves nothing.
 //
-//  * A copied member whose original instanceId has NO copied root in the
-//    forest is an ORPHAN member fragment: this is NOT an instance. Fabricating
-//    an instance here would invent a link the user never made, so the
-//    PrefabMemberComponent is stripped (and its PrefabInstanceComponent when
-//    that id also has no copied root) and the entity becomes ordinary. The
-//    outcome counts the stripped entities so the caller raises a recovery
-//    warning (never a hard failure; duplicate/paste of a partial selection
-//    stays a valid operation).
+//   2. RESERVE — ReserveFreshInstanceId draws ONE id per complete group from
+//      the provider, ALL BEFORE any destination mutation. Each draw must be
+//      non-nil and absent from every entity UUID in the authoring document,
+//      every live PrefabInstanceComponent/PrefabMemberComponent instanceId in
+//      the destination registry, every live instanceId in the SOURCE registry
+//      when the source is a DISTINCT document (paste from a
+//      snapshot/clipboard), and every earlier reservation in the same
+//      operation. A hostile provider that yields nil or colliding ids retries
+//      up to kFreshInstanceIdMaxAttempts; exhaustion fails the operation with
+//      a DuplicateUuid diagnostic and ZERO destination change.
 //
-//  * Two copied roots sharing one original instanceId is malformed ambiguous
-//    input; it is diagnosed via ambiguousGroups so the caller can surface it,
-//    and the group is kept as ONE reminted group (never split or merged).
+//   3. APPLY — ApplyCopiedPrefabLinks runs after the create loop and consumes
+//      ONLY the pre-reserved freshIdByOriginalId plan: it assigns each
+//      group's fresh id to its copied roots and members and strips orphan
+//      fragments. It never calls the UUID provider.
 //
-//  * Everything else (no prefab components): untouched, and mints nothing.
-//
-// Structural restore (ApplySubtreeRecord, SceneManager.cpp:1800-1808) must
-// NOT call this — undo/redo reinstates the recorded instanceId verbatim
-// (W3-D4). InstantiatePrefabWithUuids also must not call it; it mints its own
-// fresh instanceId at link-install time (:3003).
-struct CopiedPrefabOutcome
+// All four copy paths (DuplicateSubtrees, PasteSubtreesFrom,
+// DuplicateSubtreesWithUuids, PasteSubtreesWithUuids) chain
+// plan -> reserve -> create -> apply. Structural restore (ApplySubtreeRecord,
+// SceneManager.cpp:1800-1808) must NOT call these — undo/redo reinstates the
+// recorded instanceId verbatim (W3-D4). InstantiatePrefabWithUuids reserves
+// its single fresh instanceId through the same helper BEFORE it mutates
+// resource tables or the registry.
+struct CopiedPrefabPlan
 {
-	// Copied member entities whose original instanceId had no copied root in
-	// the forest; their prefab links were stripped (recovery warning).
+	// Source entities carrying PrefabInstanceComponent, keyed by their
+	// original instanceId. Each key names a COMPLETE instance group that gets
+	// one fresh instanceId.
+	std::unordered_map<rt2::core::UUID, std::vector<entt::entity>> rootsByGroup;
+	// Source entities carrying PrefabMemberComponent, keyed by their original
+	// instanceId. Member groups whose id is absent from rootsByGroup are
+	// ORPHAN fragments (stripped at apply; recovery warning).
+	std::unordered_map<rt2::core::UUID, std::vector<entt::entity>> membersByGroup;
+	// Member fragments whose original instanceId had no source root in the
+	// forest (recovery warning).
 	std::size_t orphanFragments = 0;
-	// Original instance groups with more than one copied root (diagnosed).
+	// Original instance groups with more than one source root (diagnosed).
 	std::size_t ambiguousGroups = 0;
 };
 
-CopiedPrefabOutcome MintCopiedPrefabLinks(
+CopiedPrefabPlan PlanCopiedPrefabLinks(
 	const entt::registry& sourceRegistry,
-	const std::unordered_map<entt::entity, entt::entity>& remap,
-	const std::vector<entt::entity>& roots,
-	entt::registry& destinationRegistry,
-	const std::function<rt2::core::UUID()>& mint)
+	const std::vector<entt::entity>& roots)
 {
-	// Collect the whole copied forest: every remapped copy reachable from any
-	// selected root's subtree.
+	CopiedPrefabPlan plan;
+
+	// Collect the whole source forest: every entity reachable from any
+	// selected root's subtree. No destination state is touched.
 	std::vector<entt::entity> forest;
 	{
 		std::unordered_set<entt::entity> seen;
@@ -200,52 +227,134 @@ CopiedPrefabOutcome MintCopiedPrefabLinks(
 			std::vector<entt::entity> subtree;
 			SceneHierarchy::CollectSubtreePreOrder(sourceRegistry, root, subtree);
 			for (const auto source : subtree)
-			{
-				const auto it = remap.find(source);
-				if (it != remap.end() && seen.insert(it->second).second)
-					forest.push_back(it->second);
-			}
+				if (seen.insert(source).second)
+					forest.push_back(source);
 		}
 	}
 
-	// Group the copied entities by their ORIGINAL instanceId. Roots (entities
+	// Group the SOURCE entities by their ORIGINAL instanceId. Roots (entities
 	// carrying PrefabInstanceComponent) anchor a group; members (entities
 	// carrying PrefabMemberComponent) belong to whatever group their id names.
-	std::unordered_map<rt2::core::UUID, std::vector<entt::entity>> rootsByGroup;
-	std::unordered_map<rt2::core::UUID, std::vector<entt::entity>> membersByGroup;
 	for (const auto entity : forest)
 	{
-		if (const auto* pic = destinationRegistry.try_get<PrefabInstanceComponent>(entity))
-			rootsByGroup[pic->instanceId].push_back(entity);
-		if (const auto* member = destinationRegistry.try_get<PrefabMemberComponent>(entity))
-			membersByGroup[member->instanceId].push_back(entity);
+		if (const auto* pic = sourceRegistry.try_get<PrefabInstanceComponent>(entity))
+			plan.rootsByGroup[pic->instanceId].push_back(entity);
+		if (const auto* member = sourceRegistry.try_get<PrefabMemberComponent>(entity))
+			plan.membersByGroup[member->instanceId].push_back(entity);
 	}
 
-	// Mint ONE fresh id per group that actually has a copied root. A member
-	// fragment whose id has no root in the forest gets no fresh id; it is
-	// orphaned below.
-	std::unordered_map<rt2::core::UUID, rt2::core::UUID> freshByGroup;
-	for (const auto& group : rootsByGroup)
-		freshByGroup.emplace(group.first, mint());
+	for (const auto& group : plan.membersByGroup)
+		if (plan.rootsByGroup.find(group.first) == plan.rootsByGroup.end())
+			plan.orphanFragments += group.second.size();
+	for (const auto& group : plan.rootsByGroup)
+		if (group.second.size() > 1)
+			++plan.ambiguousGroups;
+	return plan;
+}
 
-	CopiedPrefabOutcome outcome;
-	for (const auto& group : membersByGroup)
+// Finite attempt budget for fresh instance-ID reservation. A degraded/hostile
+// UUID provider — nil draws, draws colliding with a live instance/member, or
+// draws repeated within one operation — exhausts this budget and the operation
+// FAILS loudly (DuplicateUuid) BEFORE any destination mutation.
+constexpr int kFreshInstanceIdMaxAttempts = 16;
+
+// Every UUID a freshly reserved instanceId must NOT equal: every entity UUID
+// in the authoring document, every live destination PrefabInstanceComponent/
+// PrefabMemberComponent instanceId, and — when the source is a DISTINCT
+// document (paste from a snapshot/clipboard) — every live source instanceId,
+// so a pasted instance never claims an identity still held by the fragment it
+// was copied from. Duplicate copies pass source == &destination (the copy
+// source is the same registry), which adds nothing twice.
+std::unordered_set<rt2::core::UUID> FreshInstanceIdForbiddenSet(
+	const rt2::core::SceneDocument& authoring,
+	const entt::registry& destination,
+	const entt::registry* source)
+{
+	std::unordered_set<rt2::core::UUID> forbidden;
+	for (const auto& entry : authoring.uuidIndex.All())
+		forbidden.insert(entry.first);
+	const auto collectLiveInstanceIds = [&forbidden](const entt::registry& reg) {
+		auto picView = reg.view<PrefabInstanceComponent>();
+		for (const auto e : picView)
+		{
+			const auto& id = picView.get<PrefabInstanceComponent>(e).instanceId;
+			if (!id.IsNull())
+				forbidden.insert(id);
+		}
+		auto memberView = reg.view<PrefabMemberComponent>();
+		for (const auto e : memberView)
+		{
+			const auto& id = memberView.get<PrefabMemberComponent>(e).instanceId;
+			if (!id.IsNull())
+				forbidden.insert(id);
+		}
+	};
+	collectLiveInstanceIds(destination);
+	if (source && source != &destination)
+		collectLiveInstanceIds(*source);
+	return forbidden;
+}
+
+// Draw ONE fresh instanceId from `produce` that is collision-free against
+// `forbidden` and distinct from every id already reserved in this operation
+// (`operationLocal`). Retries up to kFreshInstanceIdMaxAttempts; on exhaustion
+// fills `err` with a DuplicateUuid diagnostic naming the offending (last)
+// draw and returns nullopt. The caller MUST have no destination mutation in
+// flight when this fails — the whole point of reserving before creating.
+std::optional<rt2::core::UUID> ReserveFreshInstanceId(
+	const std::function<rt2::core::UUID()>& produce,
+	const std::unordered_set<rt2::core::UUID>& forbidden,
+	std::unordered_set<rt2::core::UUID>& operationLocal,
+	rt2::core::Error& err)
+{
+	rt2::core::UUID lastAttempt;
+	for (int attempt = 0; attempt < kFreshInstanceIdMaxAttempts; ++attempt)
 	{
-		const auto freshIt = freshByGroup.find(group.first);
-		if (freshIt == freshByGroup.end())
+		lastAttempt = produce();
+		if (lastAttempt.IsNull())
+			continue;                    // nil draw: retry (broken provider)
+		if (forbidden.count(lastAttempt) != 0)
+			continue;                    // live entity/instance/member id
+		if (!operationLocal.insert(lastAttempt).second)
+			continue;                    // same id drawn twice this operation
+		return lastAttempt;
+	}
+	err.code = rt2::core::Error::DuplicateUuid;
+	err.path = lastAttempt.ToString();
+	err.detail = "exceeded " + std::to_string(kFreshInstanceIdMaxAttempts) +
+		" fresh instance-ID reservation attempts before mutation (the UUID "
+		"provider yielded nil, a live instance/member id, or a repeat)";
+	return std::nullopt;
+}
+
+// Apply the PRE-RESERVED plan to the freshly created copies. Consumes only
+// freshIdByOriginalId (built entirely by ReserveFreshInstanceId BEFORE the
+// create loop) — never calls the UUID provider. Orphan member fragments are
+// stripped here (their original id has no fresh mapping).
+void ApplyCopiedPrefabLinks(
+	entt::registry& destinationRegistry,
+	const CopiedPrefabPlan& plan,
+	const std::unordered_map<entt::entity, entt::entity>& remap,
+	const std::unordered_map<rt2::core::UUID, rt2::core::UUID>& freshIdByOriginalId)
+{
+	for (const auto& group : plan.membersByGroup)
+	{
+		const auto freshIt = freshIdByOriginalId.find(group.first);
+		if (freshIt == freshIdByOriginalId.end())
 		{
 			// Orphan member fragment: no copied root carries this original id.
-			// Strip the member link; if the entity's own PrefabInstanceComponent
-			// names an id that also has no copied root, strip that too.
-			for (const auto entity : group.second)
+			// Strip the member link; if the entity's own
+			// PrefabInstanceComponent names an id that also has no fresh
+			// mapping, strip that too.
+			for (const auto source : group.second)
 			{
+				const auto entity = remap.at(source);
 				if (destinationRegistry.try_get<PrefabMemberComponent>(entity))
 					destinationRegistry.remove<PrefabMemberComponent>(entity);
 				const auto* pic = destinationRegistry.try_get<PrefabInstanceComponent>(entity);
-				if (pic && freshByGroup.find(pic->instanceId) == freshByGroup.end())
+				if (pic && freshIdByOriginalId.find(pic->instanceId) == freshIdByOriginalId.end())
 					destinationRegistry.remove<PrefabInstanceComponent>(entity);
 			}
-			outcome.orphanFragments += group.second.size();
 			continue;
 		}
 		// Full-instance members: propagate the group's single fresh id. A root
@@ -253,50 +362,49 @@ CopiedPrefabOutcome MintCopiedPrefabLinks(
 		// enclosing group); its member record gets the ENCLOSING group's id,
 		// which is correct — its own PrefabInstanceComponent is assigned its own
 		// group's id below.
-		for (const auto entity : group.second)
+		for (const auto source : group.second)
 		{
+			const auto entity = remap.at(source);
 			if (auto* member = destinationRegistry.try_get<PrefabMemberComponent>(entity))
 				member->instanceId = freshIt->second;
 		}
 	}
 
-	for (const auto& group : rootsByGroup)
+	for (const auto& group : plan.rootsByGroup)
 	{
-		const rt2::core::UUID& fresh = freshByGroup.at(group.first);
-		for (const auto entity : group.second)
+		const rt2::core::UUID& fresh = freshIdByOriginalId.at(group.first);
+		for (const auto source : group.second)
 		{
+			const auto entity = remap.at(source);
 			if (auto* pic = destinationRegistry.try_get<PrefabInstanceComponent>(entity))
 				pic->instanceId = fresh;
 		}
-		if (group.second.size() > 1)
-			++outcome.ambiguousGroups;
 	}
-	return outcome;
 }
 
-// Build the recovery-warning text for a MintCopiedPrefabLinks outcome, or
-// std::nullopt when nothing needed to be repaired. Never a hard failure.
+// Build the recovery-warning text for a CopiedPrefabPlan, or std::nullopt when
+// nothing needed to be repaired. Never a hard failure.
 // operation is a short lowercase verb ("duplicate", "paste") used in the
 // detail, matching the pre-existing warning wording.
 std::optional<rt2::core::Error> MakeCopiedPrefabRecoveryWarning(
 	const char* operation,
-	const CopiedPrefabOutcome& outcome)
+	const CopiedPrefabPlan& plan)
 {
-	if (outcome.orphanFragments == 0 && outcome.ambiguousGroups == 0)
+	if (plan.orphanFragments == 0 && plan.ambiguousGroups == 0)
 		return std::nullopt;
 
 	std::string detail = std::string(operation) + ": ";
-	if (outcome.orphanFragments > 0)
+	if (plan.orphanFragments > 0)
 	{
-		detail += std::to_string(outcome.orphanFragments) +
+		detail += std::to_string(plan.orphanFragments) +
 			" copied member(s) had no instance root in the copied set; "
 			"prefab links were stripped (ordinary entities)";
 	}
-	if (outcome.ambiguousGroups > 0)
+	if (plan.ambiguousGroups > 0)
 	{
-		if (outcome.orphanFragments > 0)
+		if (plan.orphanFragments > 0)
 			detail += " ";
-		detail += std::to_string(outcome.ambiguousGroups) +
+		detail += std::to_string(plan.ambiguousGroups) +
 			" instance group(s) had multiple copied roots sharing one "
 			"instanceId; kept as one reminted group";
 	}
@@ -1656,30 +1764,82 @@ EditorMutationResult SceneManager::DuplicateSubtrees(
 	for (const auto root : roots)
 		SceneHierarchy::CollectSubtreePreOrder(registry, root, sources);
 
+	// Phase 8 W3, S4 (review fix 2): PLAN the copied-forest prefab
+	// classification from the SOURCE forest BEFORE any destination mutation,
+	// then reserve every fresh instanceId. A copy is a NEW instance, never a
+	// verbatim share of the source's instanceId (W3-D8).
+	const CopiedPrefabPlan copiedPrefabs = PlanCopiedPrefabLinks(registry, roots);
+	std::unordered_map<rt2::core::UUID, rt2::core::UUID> freshIdByOriginalId;
+
+	// Stage the whole copy's entity UUIDs first. Provider-consumption order is
+	// therefore deterministic and pinned by the fixup tests: every entity UUID
+	// (sources.size() draws) comes first, then one fresh instanceId per
+	// complete instance group. The create loop below consumes no provider.
+	std::vector<rt2::core::UUID> duplicateUuids = ReserveKnownUuids(sources.size());
+
+	// Reserve ONE fresh instanceId per complete instance group, ALL before
+	// mutation. The collision set is the authoring uuidIndex + live destination
+	// PIC/PMIC instanceIds (source == destination for a duplicate) + the staged
+	// entity UUIDs. ApplyCopiedPrefabLinks below makes zero provider calls;
+	// failure here is transactional because nothing has been created yet.
+	{
+		std::unordered_set<rt2::core::UUID> forbidden =
+			FreshInstanceIdForbiddenSet(m_Authoring, registry, &registry);
+		for (const auto& uuid : duplicateUuids)
+			forbidden.insert(uuid);
+		std::unordered_set<rt2::core::UUID> operationLocal;
+		freshIdByOriginalId.reserve(copiedPrefabs.rootsByGroup.size());
+		for (const auto& group : copiedPrefabs.rootsByGroup)
+		{
+			rt2::core::Error reserveErr;
+			auto fresh = ReserveFreshInstanceId(
+				[this] { return ReserveKnownUuid(); }, forbidden, operationLocal, reserveErr);
+			if (!fresh)
+			{
+				return EditorMutationResult::Failure(reserveErr.code, reserveErr.path,
+					reserveErr.detail);
+			}
+			freshIdByOriginalId.emplace(group.first, *fresh);
+		}
+	}
+
 	std::unordered_map<entt::entity, entt::entity> remap;
 	std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>> sourceToDuplicate;
 	std::vector<entt::entity> duplicates;
 	sourceToDuplicate.reserve(sources.size());
 	duplicates.reserve(sources.size());
 	bool duplicatesRenderable = false;
-	for (const auto source : sources)
+	for (std::size_t i = 0; i < sources.size(); ++i)
 	{
+		const auto source = sources[i];
 		const auto duplicate = registry.create();
 		remap.emplace(source, duplicate);
 		CopyAuthoredComponents(registry, source, registry, duplicate);
 		const auto sourceUuid = GetEntityUuid({ source });
-		const auto duplicateUuid = m_Authoring.AssignNewUuid(duplicate);
-		sourceToDuplicate.emplace_back(sourceUuid, duplicateUuid);
+		if (!m_Authoring.AssignKnownUuid(duplicate, duplicateUuids[i]))
+		{
+			// Rollback (staged entity UUIDs are validated pre-staging, so this
+			// is defensive): destroy everything created so far.
+			for (const auto& [s, d] : remap)
+			{
+				if (const auto* idc = registry.try_get<EntityIdComponent>(d))
+					m_Authoring.uuidIndex.Erase(idc->id);
+				registry.destroy(d);
+			}
+			return EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+				duplicateUuids[i].ToString(),
+				"DuplicateSubtrees: failed to assign staged duplicate UUID");
+		}
+		sourceToDuplicate.emplace_back(sourceUuid, duplicateUuids[i]);
 		duplicates.push_back(duplicate);
 		duplicatesRenderable = duplicatesRenderable || registry.all_of<MeshRef>(duplicate);
 	}
 	RemapCopiedScriptFields(sourceToDuplicate, duplicates, registry);
 
-	// Phase 8 W3, S4 — a copy is a NEW instance, not a verbatim share of the
-	// source's instanceId (W3-D8). This must run after every entity is created
-	// and copied so it sees the complete subtree.
-	const CopiedPrefabOutcome copiedPrefabs = MintCopiedPrefabLinks(
-		registry, remap, roots, registry, [this] { return ReserveKnownUuid(); });
+	// APPLY the pre-reserved plan: every copied root and member of a complete
+	// instance group gets its group's single fresh instanceId; orphan member
+	// fragments are stripped. Zero provider calls.
+	ApplyCopiedPrefabLinks(registry, copiedPrefabs, remap, freshIdByOriginalId);
 
 	for (const auto source : sources)
 	{
@@ -1757,32 +1917,79 @@ EditorMutationResult SceneManager::PasteSubtreesFrom(
 		}
 	}
 
+	// Phase 8 W3, S4 (review fix 2): PLAN the copied-forest classification from
+	// the SOURCE (clipboard) forest BEFORE any destination mutation, then
+	// reserve every fresh instanceId. A paste is a NEW instance, never a
+	// verbatim share of the clipboard's instanceId (W3-D8).
+	const CopiedPrefabPlan copiedPrefabs = PlanCopiedPrefabLinks(snapshot.ecs.registry, roots);
+	std::unordered_map<rt2::core::UUID, rt2::core::UUID> freshIdByOriginalId;
+
+	// Stage the whole paste's entity UUIDs first. Provider-consumption order is
+	// deterministic and pinned by the fixup tests: every entity UUID
+	// (sources.size() draws) first, then one fresh instanceId per complete
+	// instance group. The create loop below consumes no provider.
+	std::vector<rt2::core::UUID> pastedUuids = ReserveKnownUuids(sources.size());
+
+	// Reserve ONE fresh instanceId per complete group against the authoring
+	// uuidIndex + live destination PIC/PMIC instanceIds + the clipboard's live
+	// PIC/PMIC instanceIds (the source is a DISTINCT document) + the staged
+	// entity UUIDs. Zero provider calls after this point.
+	{
+		std::unordered_set<rt2::core::UUID> forbidden =
+			FreshInstanceIdForbiddenSet(m_Authoring, destination, &snapshot.ecs.registry);
+		for (const auto& uuid : pastedUuids)
+			forbidden.insert(uuid);
+		std::unordered_set<rt2::core::UUID> operationLocal;
+		freshIdByOriginalId.reserve(copiedPrefabs.rootsByGroup.size());
+		for (const auto& group : copiedPrefabs.rootsByGroup)
+		{
+			rt2::core::Error reserveErr;
+			auto fresh = ReserveFreshInstanceId(
+				[this] { return ReserveKnownUuid(); }, forbidden, operationLocal, reserveErr);
+			if (!fresh)
+			{
+				return EditorMutationResult::Failure(reserveErr.code, reserveErr.path,
+					reserveErr.detail);
+			}
+			freshIdByOriginalId.emplace(group.first, *fresh);
+		}
+	}
+
 	std::unordered_map<entt::entity, entt::entity> remap;
 	std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>> sourceToPaste;
 	std::vector<entt::entity> pastes;
 	sourceToPaste.reserve(sources.size());
 	pastes.reserve(sources.size());
 	bool pastesRenderable = false;
-	for (const auto source : sources)
+	for (std::size_t i = 0; i < sources.size(); ++i)
 	{
+		const auto source = sources[i];
 		const auto pasted = destination.create();
 		remap.emplace(source, pasted);
 		CopyAuthoredComponents(snapshot.ecs.registry, source, destination, pasted);
 		const auto* sourceIdc = snapshot.ecs.registry.try_get<EntityIdComponent>(source);
-		const auto pastedUuid = m_Authoring.AssignNewUuid(pasted);
-		sourceToPaste.emplace_back(sourceIdc ? sourceIdc->id : rt2::core::UUID{}, pastedUuid);
+		if (!m_Authoring.AssignKnownUuid(pasted, pastedUuids[i]))
+		{
+			// Rollback (staged entity UUIDs are validated pre-staging, so this
+			// is defensive): destroy everything created so far.
+			for (const auto& [s, d] : remap)
+			{
+				if (const auto* idc = destination.try_get<EntityIdComponent>(d))
+					m_Authoring.uuidIndex.Erase(idc->id);
+				destination.destroy(d);
+			}
+			return EditorMutationResult::Failure(rt2::core::Error::DuplicateUuid,
+				pastedUuids[i].ToString(),
+				"PasteSubtreesFrom: failed to assign staged paste UUID");
+		}
+		sourceToPaste.emplace_back(sourceIdc ? sourceIdc->id : rt2::core::UUID{}, pastedUuids[i]);
 		pastes.push_back(pasted);
 		pastesRenderable = pastesRenderable || destination.all_of<MeshRef>(pasted);
 	}
 	RemapCopiedScriptFields(sourceToPaste, pastes, destination);
 
-	// Phase 8 W3, S4 — a paste is a NEW instance, not a verbatim share of the
-	// clipboard's instanceId (W3-D8). Mint per copied subtree; a partial paste
-	// (members without an instance root) becomes ordinary entities with a
-	// recovery warning.
-	const CopiedPrefabOutcome copiedPrefabs = MintCopiedPrefabLinks(
-		snapshot.ecs.registry, remap, roots, destination,
-		[this] { return ReserveKnownUuid(); });
+	// APPLY the pre-reserved plan. Zero provider calls.
+	ApplyCopiedPrefabLinks(destination, copiedPrefabs, remap, freshIdByOriginalId);
 
 	for (const auto source : sources)
 	{
@@ -2899,6 +3106,12 @@ SceneManager::InstantiationResult SceneManager::InstantiatePrefabWithUuids(
 	// on the ACTUAL root entity (not necessarily record 0).
 	std::size_t canonicalRootIndex = 0;
 
+	// The instance's single fresh instanceId (review fix 2). Reserved AFTER
+	// input/file validation but BEFORE any destination mutation — see the
+	// reservation block below. Provider draws in this function: the one
+	// asset-identity draw in ResolveOrAssign, then this single draw.
+	rt2::core::UUID instanceId = rt2::core::UUID::Nil();
+
 	// Load the prefab. A missing/invalid file is a hard failure — never a
 	// silent empty instance.
 	rt2::core::PrefabDocument doc;
@@ -3100,6 +3313,32 @@ SceneManager::InstantiationResult SceneManager::InstantiatePrefabWithUuids(
 		}
 	}
 
+	// Phase 8 W3, S4 (review fix 2) — reserve the instance's single fresh
+	// instanceId BEFORE any destination mutation (resource merge or entity
+	// creation). The supplied entity UUIDs and the loaded prefab file have all
+	// been validated at this point. The reserved id must be non-nil and absent
+	// from every entity UUID, every live destination PIC/PMIC instanceId, and
+	// the supplier's knownInstanceUuids. Exhaustion fails the operation
+	// transactionally: no resource rows, no entities, no authoring
+	// notification.
+	{
+		std::unordered_set<rt2::core::UUID> forbidden =
+			FreshInstanceIdForbiddenSet(m_Authoring, m_EcsScene.registry, nullptr);
+		for (const auto& uuid : knownInstanceUuids)
+			forbidden.insert(uuid);
+		std::unordered_set<rt2::core::UUID> operationLocal;
+		rt2::core::Error reserveErr;
+		auto reserved = ReserveFreshInstanceId(
+			[this] { return ReserveKnownUuid(); }, forbidden, operationLocal, reserveErr);
+		if (!reserved)
+		{
+			out.mutation = EditorMutationResult::Failure(reserveErr.code, reserveErr.path,
+				reserveErr.detail);
+			return out;
+		}
+		instanceId = *reserved;
+	}
+
 	// ---- Merge the resolved resources into the live scene ----
 	// Base-offset rebasing mirrors MergeImportedECS: rebase the staging
 	// scene's resource indices, then append its resources to the live scene.
@@ -3203,12 +3442,13 @@ SceneManager::InstantiationResult SceneManager::InstantiatePrefabWithUuids(
 	// at a later index); every member carries instanceId + the frozen
 	// templateId from the file. The prefab reference carries the sidecar
 	// identity via ResolveOrAssign.
-	const rt2::core::UUID instanceId = ReserveKnownUuid();
 	{
-		// The prefab's durable identity was resolved before any mutation, so
-		// this cannot fail here; reuse the committed ID. The instance root
-		// entity is liveEntities[canonicalRootIndex] — parallel to
-		// doc.entities, not to the file's first record.
+		// instanceId was reserved BEFORE any destination mutation (the review
+		// fix 2 reservation block above) — reusing it here makes zero provider
+		// calls. The prefab's durable identity was resolved before any
+		// mutation, so this cannot fail here; reuse the committed ID. The
+		// instance root entity is liveEntities[canonicalRootIndex] — parallel
+		// to doc.entities, not to the file's first record.
 		auto& inst = dstReg.emplace<PrefabInstanceComponent>(liveEntities[canonicalRootIndex]);
 		inst.prefab = AssetReference{ AssetKind::Prefab,
 			prefabPath.string(), {}, {},
@@ -3481,6 +3721,40 @@ SceneManager::DuplicationResult SceneManager::DuplicateSubtreesWithUuids(
 		}
 	}
 
+	// Phase 8 W3, S4 (review fix 2): PLAN the copied-forest classification
+	// from the SOURCE forest BEFORE any destination mutation. The known entity
+	// UUIDs are caller-supplied (consumed before this path, no provider draw),
+	// so provider order here is exactly: one fresh instanceId per complete
+	// instance group, all before the create loop.
+	const CopiedPrefabPlan copiedPrefabs = PlanCopiedPrefabLinks(registry, roots);
+	std::unordered_map<rt2::core::UUID, rt2::core::UUID> freshIdByOriginalId;
+
+	// Reserve ONE fresh instanceId per complete instance group against the
+	// authoring uuidIndex + live destination PIC/PMIC instanceIds (source ==
+	// destination for a duplicate) + the caller-supplied knownDuplicateUuids.
+	// Failure here is transactional: no entity has been created yet.
+	{
+		std::unordered_set<rt2::core::UUID> forbidden =
+			FreshInstanceIdForbiddenSet(m_Authoring, registry, &registry);
+		for (const auto& uuid : knownDuplicateUuids)
+			forbidden.insert(uuid);
+		std::unordered_set<rt2::core::UUID> operationLocal;
+		freshIdByOriginalId.reserve(copiedPrefabs.rootsByGroup.size());
+		for (const auto& group : copiedPrefabs.rootsByGroup)
+		{
+			rt2::core::Error reserveErr;
+			auto fresh = ReserveFreshInstanceId(
+				[this] { return ReserveKnownUuid(); }, forbidden, operationLocal, reserveErr);
+			if (!fresh)
+			{
+				out.mutation = EditorMutationResult::Failure(reserveErr.code, reserveErr.path,
+					reserveErr.detail);
+				return out;
+			}
+			freshIdByOriginalId.emplace(group.first, *fresh);
+		}
+	}
+
 	// Build the complete duplication plan before mutating.
 	std::unordered_map<entt::entity, entt::entity> remap;
 	std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>> sourceToDuplicate;
@@ -3514,12 +3788,8 @@ SceneManager::DuplicationResult SceneManager::DuplicateSubtreesWithUuids(
 	}
 	RemapCopiedScriptFields(sourceToDuplicate, duplicates, registry);
 
-	// Phase 8 W3, S4 — a duplicate is a NEW instance, not a verbatim share of
-	// the source's instanceId (W3-D8). Mint per copied subtree; a partial
-	// duplicate (members without an instance root) becomes ordinary entities
-	// with a recovery warning.
-	const CopiedPrefabOutcome copiedPrefabs = MintCopiedPrefabLinks(
-		registry, remap, roots, registry, [this] { return ReserveKnownUuid(); });
+	// APPLY the pre-reserved plan. Zero provider calls.
+	ApplyCopiedPrefabLinks(registry, copiedPrefabs, remap, freshIdByOriginalId);
 
 	// Wire Hierarchy among duplicates.
 	bool duplicatesRenderable = false;
@@ -3635,6 +3905,41 @@ SceneManager::DuplicationResult SceneManager::PasteSubtreesWithUuids(
 		}
 	}
 
+	// Phase 8 W3, S4 (review fix 2): PLAN the copied-forest classification from
+	// the SOURCE (clipboard) forest BEFORE any destination mutation. The known
+	// entity UUIDs are caller-supplied (no provider draw), so provider order
+	// here is exactly: one fresh instanceId per complete instance group, all
+	// before the create loop.
+	const CopiedPrefabPlan copiedPrefabs = PlanCopiedPrefabLinks(clipboard.ecs.registry, roots);
+	std::unordered_map<rt2::core::UUID, rt2::core::UUID> freshIdByOriginalId;
+
+	// Reserve ONE fresh instanceId per complete group against the authoring
+	// uuidIndex + live destination PIC/PMIC instanceIds + the clipboard's live
+	// PIC/PMIC instanceIds (the source is a DISTINCT document) + the supplied
+	// knownPastedUuids. Failure here is transactional: no entity has been
+	// created yet.
+	{
+		std::unordered_set<rt2::core::UUID> forbidden =
+			FreshInstanceIdForbiddenSet(m_Authoring, destination, &clipboard.ecs.registry);
+		for (const auto& uuid : knownPastedUuids)
+			forbidden.insert(uuid);
+		std::unordered_set<rt2::core::UUID> operationLocal;
+		freshIdByOriginalId.reserve(copiedPrefabs.rootsByGroup.size());
+		for (const auto& group : copiedPrefabs.rootsByGroup)
+		{
+			rt2::core::Error reserveErr;
+			auto fresh = ReserveFreshInstanceId(
+				[this] { return ReserveKnownUuid(); }, forbidden, operationLocal, reserveErr);
+			if (!fresh)
+			{
+				out.mutation = EditorMutationResult::Failure(reserveErr.code, reserveErr.path,
+					reserveErr.detail);
+				return out;
+			}
+			freshIdByOriginalId.emplace(group.first, *fresh);
+		}
+	}
+
 	// Build the complete paste plan before mutating.
 	std::unordered_map<entt::entity, entt::entity> remap;
 	std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>> sourceToDuplicate;
@@ -3670,13 +3975,8 @@ SceneManager::DuplicationResult SceneManager::PasteSubtreesWithUuids(
 	}
 	RemapCopiedScriptFields(sourceToDuplicate, pastes, destination);
 
-	// Phase 8 W3, S4 — a paste is a NEW instance, not a verbatim share of the
-	// clipboard's instanceId (W3-D8). Mint per copied subtree; a partial paste
-	// (members without an instance root) becomes ordinary entities with a
-	// recovery warning.
-	const CopiedPrefabOutcome copiedPrefabs = MintCopiedPrefabLinks(
-		clipboard.ecs.registry, remap, roots, destination,
-		[this] { return ReserveKnownUuid(); });
+	// APPLY the pre-reserved plan. Zero provider calls.
+	ApplyCopiedPrefabLinks(destination, copiedPrefabs, remap, freshIdByOriginalId);
 
 	// Wire Hierarchy among pastes and to the destination parent.
 	for (const auto source : sources)
