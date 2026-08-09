@@ -6203,6 +6203,19 @@ document is a period record of a superseded state.**
 > closure before the review fixup and is superseded by the 850/850 figures. The
 > 700/700 rows remain the 2026-07-31 period record.
 
+> **Updated 2026-08-10 — S4 re-review fix closure measurement (supersedes the
+> 850/850 note above).** Full measured run from the repository root after the
+> re-review fixup landed (`2f7e88d` — validated entity-UUID reservation for the
+> ordinary duplicate and paste paths, review fix 3). Both configurations now
+> measure **854 run / 854 passed / 0 failed / 0 skipped; 148,576 assertions**.
+> Release and Debug each recorded one clean full run with no failure
+> reproduced; the Phase6B file-timestamp-granularity timing test did not flake.
+> The scripting, slice and recovery gates passed: script PASS 60 frames / 1
+> entity; slice PASS Cube final x=0.999999702; recovery PASS. The 850/850
+> figure is the recorded measurement of the S4 review-fix closure before the
+> re-review fixup and is superseded by the 854/854 figures. The 700/700 rows
+> remain the 2026-07-31 period record.
+
 Run from the repository root — `RT2Tests.exe` resolves some fixtures by
 relative path and both fails and writes stray files if run from elsewhere.
 
@@ -14522,3 +14535,83 @@ comparison uses those pre-copied values (`:1920-1925`).
 **S5/S6 remain.** The marking half of work step S4 — automatic marking (S5/S6)
 — is still not delivered and is carried to later work; this note closes only
 the S4 identity-policy review findings.
+
+#### Supersession / correction note (2026-08-10, S4 re-review fix closure)
+
+The 2026-08-09 note above was reviewed again against the tree at `0232706` in
+[Phase 8 W3 S4 repaired architecture re-review]
+(`artifacts/phase8-w3-s4-final-rereview/index.md`, review range
+`2732577..0232706`). That re-review found one adjacent P1 regression the
+original review missed and two P2 problems in the 2026-08-09 note itself; the
+P1 and one P2 were addressed by the fixup commit below. This note is the
+second dated correction the append-only rule requires; both earlier records
+(the `f72d0e1` report and the 2026-08-09 note) remain period records and are
+NOT rewritten. All code references below are grounded against the tree at
+`2f7e88d` (HEAD at the time of writing); line numbers in this file account for
+the 2026-08-10 Test-base supersession block at `:6206-6218` above.
+
+**Fixup commit (re-review fix 3).**
+
+- `2f7e88d` — validated entity-UUID reservation for the ordinary duplicate and
+  paste paths. Replaces the raw `ReserveKnownUuids` staging in
+  `DuplicateSubtrees`/`PasteSubtreesFrom` (`SceneManager.cpp:1874`, `:2045`)
+  with `ReserveValidEntityUuids` (`SceneManager.cpp:341-381`), sharing the
+  same `kUuidReservationMaxAttempts = 16` (`:264`) exhausted by
+  `ReserveFreshInstanceId`. The finite, pre-mutation entity reservation
+  rejects nil draws, live authoring-`uuidIndex` ids, distinct-source ids on
+  paste, and operation-local repeats, preserving the settled entity-before-
+  instance provider order; exhaustion fails with a stage-specific
+  `DuplicateUuid` before any entity/instance, UUID-index, hierarchy, resource,
+  revision, notification or sync-impact change.
+
+**Corrected citations (the 2026-08-09 note's "fresh references" are again
+inaccurate).** The 2026-08-09 note's first two corrected references were
+superseded by the S4 review-fix closure's Test-baseline insertion and were
+stale even when written: at `0232706` S4 the *work step* is `:14144-14145`,
+not `:14133-14134`, and the settled D8 text is `:14089-14111`, not
+`:14078-14100`. The 2026-08-10 baseline block above shifts them once more.
+Final, stable anchors in THIS file:
+
+- S4 the *work step* is at `:14157-14158`.
+- The settled D8 text this implementation was planned against is at
+  `:14102-14124`.
+
+These anchors are stable because this note is appended AFTER every
+file reference it makes and nothing below the baseline block moves again.
+
+**T17 provider-order overclaim corrected (re-review P2).** The 2026-08-09
+note's claim that "T17 pins instantiate's ResolveOrAssign-then-reservation
+draw order" (`:14508-14509` above, "the one asset-identity draw in
+`ResolveOrAssign`, then this single draw" at `:14512-14513`) overstates what
+T17 proves. `ResolveOrAssign` draws from the provider ONLY when the sidecar is
+absent or malformed; with an existing valid sidecar it returns the committed
+id without calling the provider (`AssetIdentity.cpp:167-169`). T17's fixture
+`MakeInstance` (`Phase8W3OverrideTests.cpp:160`) calls
+`CreatePrefabFromSubtree`, which commits a valid sidecar via
+`PrefabFileTransaction` before instantiating (`SceneManager.cpp:3158-3199`), so
+during T17's `InstantiatePrefabWithUuids` call `ResolveOrAssign` consumes ZERO
+provider draws and the whole scripted log `{srcAId, Nil, validId}`
+(`Phase8W3OverrideTests.cpp:2851-2863`) is consumed by the instance-ID
+reservation retries alone. T17 proves only the subsequent instance-ID
+retry/reservation order; a missing-sidecar draw-order proof does not exist and
+is not invented here. The source note that provoked the misreading has moved
+from the cited `SceneManager.cpp:3109-3113` to the comment at
+`SceneManager.cpp:3231-3232`.
+
+**Tests (T19-T22, re-review P1 coverage).** `2f7e88d` added hostile/counting
+tests for BOTH ordinary paths:
+
+- T19 ordinary-duplicate retry (`Phase8W3OverrideTests.cpp:3016`),
+- T20 ordinary-duplicate exhaustion, zero destination change (`:3123`),
+- T21 ordinary-paste retry incl. distinct-source (`:3173`),
+- T22 ordinary-paste exhaustion, zero destination change (`:3295`).
+
+Each ran RED against raw staging and GREEN against `ReserveValidEntityUuids`;
+exact draw logs and zero-mutation snapshots are asserted. The re-review's
+stale-comment finding was also fixed in `2f7e88d`: every
+`MintCopiedPrefabLinks` reference in `Phase8W3OverrideTests.cpp` now reads
+`PlanCopiedPrefabLinks` (the name is gone from the file).
+
+**S5/S6 remain.** The marking half of work step S4 — automatic marking (S5/S6)
+— is still not delivered and is carried to later work; this note closes only
+the re-review's P1 regression and both P2 findings.
