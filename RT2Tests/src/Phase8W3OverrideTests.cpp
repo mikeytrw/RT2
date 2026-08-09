@@ -1319,12 +1319,29 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 // PrefabMemberComponent, leaving templateIds and override vectors untouched
 // (a copy of a diverged instance stays diverged, W3-D4).
 //
-// This section covers the duplicate side of S4. Test 1 drives the ordinary
-// non-command DuplicateSubtrees path; test 2 drives the UUID-aware
-// DuplicateSubtreesWithUuids path — the one the editor's undoable
-// DuplicateSelectionCommand actually uses (SceneEditorUI.cpp:396-415). A test
-// covering only the ordinary path would pass while the editor's real path
-// stayed broken, so both must be pinned.
+// This section covers the duplicate AND paste sides of S4. Tests 1-2 drive
+// the duplicate paths — the ordinary non-command DuplicateSubtrees path and
+// the UUID-aware DuplicateSubtreesWithUuids path (the one the editor's
+// undoable DuplicateSelectionCommand uses, SceneEditorUI.cpp:396-415). Tests
+// 3-5 drive the paste paths — the ordinary non-command PasteSubtreesFrom path
+// and the UUID-aware PasteSubtreesWithUuids path (the one the editor's
+// PasteCommand uses, SceneEditorUI.cpp:417-449). A test covering only one path
+// would pass while the editor's real path stayed broken, so both must be
+// pinned on each side.
+//
+// All four copy-shaped paths funnel through the SAME shared helper
+// MintCopiedPrefabLinks (SceneManager.cpp:164): it mints ONE fresh instanceId
+// per copied subtree, pushes it onto every copied PrefabMemberComponent and
+// PrefabInstanceComponent, and leaves templateIds and override vectors
+// untouched (a copy of a diverged instance stays diverged, W3-D4).
+//
+// The diverged-override case (test 5) is covered on the editor paste path
+// (PasteSubtreesWithUuids) because that is the strongest discriminator for
+// the shared helper: the source comes from a genuinely separate clipboard
+// document (SceneSerializer::CloneInMemory), so the test proves the override
+// set survives the whole chain — authoring doc -> clipboard clone -> paste
+// copy -> mint — verbatim. That is exactly the W3-D4 compiler-failure mode;
+// any mint or copy step that drops the set goes red.
 //
 // Discrimination faults (recorded in the verification report), per test:
 //   test 1 fault: delete the MintCopiedPrefabLinks call inside
@@ -1334,6 +1351,18 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 //   test 2 fault: delete the MintCopiedPrefabLinks call inside
 //   SceneManager::DuplicateSubtreesWithUuids (SceneManager.cpp:3457) — same
 //   failure on the editor's command path -> RED. Revert -> GREEN.
+//   test 3 fault: delete the MintCopiedPrefabLinks call inside
+//   SceneManager::PasteSubtreesFrom (SceneManager.cpp:1712) — the pasted
+//   member then keeps the clipboard's instanceId, so CHECK(pastedRootId !=
+//   srcInstanceId) fails -> RED. Revert -> GREEN.
+//   test 4 fault: delete the MintCopiedPrefabLinks call inside
+//   SceneManager::PasteSubtreesWithUuids (SceneManager.cpp:3620) — same
+//   failure on the editor's paste path -> RED. Revert -> GREEN.
+//   test 5 fault: in MintCopiedPrefabLinks, in the full-instance branch,
+//   clear each copied member's override vector when setting the fresh
+//   instanceId (SceneManager.cpp:200-201) — the pasted diverged member then
+//   has an empty set, so CHECK(pastedRootMember->overrides == srcRoot->overrides)
+//   fails -> RED. Revert -> GREEN.
 // ============================================================================
 
 namespace
@@ -1493,6 +1522,250 @@ TEST_CASE("Phase 8 W3: the command duplicate path mints a fresh instanceId for t
     const auto* srcRootAfter = reg.try_get<PrefabMemberComponent>(rootHandle);
     REQUIRE(srcRootAfter);
     CHECK(srcRootAfter->instanceId == srcInstanceId);
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test 3 — the ordinary non-command paste path (PasteSubtreesFrom) mints ONE
+// fresh instanceId for the whole pasted instance. The clipboard document is a
+// whole-scene clone (SceneSerializer::CloneInMemory), exactly as
+// EditorSceneState::Copy fills the clipboard. Root UUIDs resolve AGAINST THE
+// CLIPBOARD, not the live scene — the fixture's instance lives in both, so the
+// same UUID works. templateIds are preserved and neither the live source nor
+// the clipboard source is mutated.
+//
+// Fault for red: delete the MintCopiedPrefabLinks call inside
+// SceneManager::PasteSubtreesFrom — the pasted members then keep the
+// clipboard's instanceId and CHECK(pastedRootId != srcInstanceId) fails ->
+// RED. Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: a pasted instance gets a fresh instanceId shared by all copied members")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s4_paste_ordinary");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcRoot = reg.try_get<PrefabMemberComponent>(rootHandle);
+    const auto* srcChild = reg.try_get<PrefabMemberComponent>(childHandle);
+    REQUIRE(srcRoot);
+    REQUIRE(srcChild);
+    const UUID srcInstanceId = srcRoot->instanceId;
+    REQUIRE(srcInstanceId != UUID::Nil());
+    CHECK(srcChild->instanceId == srcInstanceId);
+    const auto rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    // Clipboard = a whole-scene clone of the authoring doc (mirrors
+    // EditorSceneState::Copy -> ClipboardDocument). UUIDs survive cloning.
+    SceneDocument clipboard;
+    DeterministicUuidProvider idsClip;
+    clipboard.SetUuidProvider(&idsClip);
+    Error cloneErr;
+    REQUIRE(SceneSerializer::CloneInMemory(f.manager.AuthoringDoc(), clipboard, cloneErr));
+    const auto clipRoot = clipboard.FindByUuid(rootUuid);
+    REQUIRE(static_cast<uint32_t>(clipRoot) != static_cast<uint32_t>(entt::null));
+    const auto* clipMember =
+        clipboard.ecs.registry.try_get<PrefabMemberComponent>(clipRoot);
+    REQUIRE(clipMember);
+    CHECK(clipMember->instanceId == srcInstanceId); // clipboard carries the live id
+
+    const auto result = f.manager.PasteSubtreesFrom(clipboard, { rootUuid });
+    REQUIRE(result.success);
+    REQUIRE_FALSE(result.recoveryWarning.has_value());
+    REQUIRE(result.affectedEntities.size() == 1);
+    const auto pastedRootUuid = result.affectedEntities.front();
+    REQUIRE(pastedRootUuid != rootUuid);
+
+    const auto pastedEntities = S4SubtreeEntities(f.manager, pastedRootUuid);
+    REQUIRE(pastedEntities.size() == 2);
+
+    const auto pastedRootId = S4MemberInstanceId(f.manager, pastedEntities[0]);
+    const auto pastedChildId = S4MemberInstanceId(f.manager, pastedEntities[1]);
+    CHECK(pastedRootId != srcInstanceId);
+    CHECK(pastedChildId == pastedRootId);
+
+    const auto* pastedPic =
+        reg.try_get<PrefabInstanceComponent>(pastedEntities[0]);
+    REQUIRE(pastedPic);
+    CHECK(pastedPic->instanceId == pastedRootId);
+
+    CHECK(S4MemberTemplateId(f.manager, pastedEntities[1]) == srcChild->templateId);
+    CHECK(S4MemberTemplateId(f.manager, pastedEntities[0]) == srcRoot->templateId);
+
+    // Neither the live source nor the clipboard source is mutated.
+    const auto* srcRootAfter = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(srcRootAfter);
+    CHECK(srcRootAfter->instanceId == srcInstanceId);
+    const auto* clipMemberAfter =
+        clipboard.ecs.registry.try_get<PrefabMemberComponent>(clipRoot);
+    REQUIRE(clipMemberAfter);
+    CHECK(clipMemberAfter->instanceId == srcInstanceId);
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test 4 — the UUID-aware paste path (PasteSubtreesWithUuids, the editor's
+// undoable PasteCommand) mints ONE fresh instanceId for the whole pasted
+// instance. Mirrors SceneEditorUI::PasteCommand: count the clipboard subtree
+// by walking the clipboard document itself (clipboard roots live in the
+// clipboard, not the live scene, so CountCanonicalSubtreeEntities would fail),
+// reserve exactly that many known UUIDs, pass them in.
+//
+// Fault for red: delete the MintCopiedPrefabLinks call inside
+// SceneManager::PasteSubtreesWithUuids — the pasted members then keep the
+// clipboard's instanceId and CHECK(pastedRootId != srcInstanceId) fails ->
+// RED. Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: the command paste path mints a fresh instanceId for the pasted instance")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s4_paste_uuids");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcRoot = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(srcRoot);
+    const UUID srcInstanceId = srcRoot->instanceId;
+    REQUIRE(srcInstanceId != UUID::Nil());
+    const auto rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    SceneDocument clipboard;
+    DeterministicUuidProvider idsClip;
+    clipboard.SetUuidProvider(&idsClip);
+    Error cloneErr;
+    REQUIRE(SceneSerializer::CloneInMemory(f.manager.AuthoringDoc(), clipboard, cloneErr));
+
+    // Host pattern (SceneEditorUI.cpp:438-446): count the clipboard subtree by
+    // walking the clipboard document, then reserve known UUIDs for the paste.
+    std::size_t count = 0;
+    {
+        const auto clipRoot = clipboard.FindByUuid(rootUuid);
+        REQUIRE(static_cast<uint32_t>(clipRoot) != static_cast<uint32_t>(entt::null));
+        std::vector<entt::entity> subtree;
+        SceneHierarchy::CollectSubtreePreOrder(
+            clipboard.ecs.registry, clipRoot, subtree);
+        count = subtree.size();
+    }
+    REQUIRE(count == 2);
+    const auto known = f.manager.ReserveKnownUuids(count);
+    REQUIRE(known.size() == 2);
+
+    auto paste = f.manager.PasteSubtreesWithUuids(
+        clipboard, { rootUuid }, std::nullopt, known);
+    REQUIRE(paste.mutation.success);
+    REQUIRE_FALSE(paste.mutation.recoveryWarning.has_value());
+    REQUIRE(paste.createdRoots.size() == 1);
+    const auto pastedRootUuid = paste.createdRoots.front();
+    REQUIRE(pastedRootUuid != rootUuid);
+
+    const auto pastedEntities = S4SubtreeEntities(f.manager, pastedRootUuid);
+    REQUIRE(pastedEntities.size() == 2);
+
+    const auto pastedRootId = S4MemberInstanceId(f.manager, pastedEntities[0]);
+    const auto pastedChildId = S4MemberInstanceId(f.manager, pastedEntities[1]);
+    CHECK(pastedRootId != srcInstanceId);
+    CHECK(pastedChildId == pastedRootId);
+
+    const auto* pastedPic =
+        reg.try_get<PrefabInstanceComponent>(pastedEntities[0]);
+    REQUIRE(pastedPic);
+    CHECK(pastedPic->instanceId == pastedRootId);
+
+    const auto* srcChild = reg.try_get<PrefabMemberComponent>(childHandle);
+    REQUIRE(srcChild);
+    CHECK(S4MemberTemplateId(f.manager, pastedEntities[1]) == srcChild->templateId);
+    CHECK(S4MemberTemplateId(f.manager, pastedEntities[0]) == srcRoot->templateId);
+
+    const auto* srcRootAfter = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(srcRootAfter);
+    CHECK(srcRootAfter->instanceId == srcInstanceId);
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test 5 — a copy of a diverged instance stays diverged (W3-D4). The live
+// source member carries a non-empty override set; it survives the clipboard
+// clone (Fix 8), gets copied verbatim into the paste, and MintCopiedPrefabLinks
+// must leave it untouched while still minting a fresh instanceId. Covered on
+// the editor paste path because that is the strongest discriminator for the
+// shared helper: the override set must survive the FULL chain — authoring doc
+// -> clipboard clone -> paste copy -> mint.
+//
+// Fault for red: in MintCopiedPrefabLinks, in the full-instance branch, clear
+// each copied member's override vector when setting the fresh instanceId
+// (SceneManager.cpp:200-201) — the pasted diverged member then has an empty
+// set, so CHECK(pastedRootMember->overrides == srcRoot->overrides) fails ->
+// RED. Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: a pasted diverged instance keeps its overrides while minting a fresh instanceId")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s4_paste_diverged");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+
+    // Diverge the live source root member BEFORE cloning to the clipboard.
+    auto* srcRoot = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(srcRoot);
+    srcRoot->overrides = { S2Key("name"), S2Key("transform") };
+    const auto* srcChild = reg.try_get<PrefabMemberComponent>(childHandle);
+    REQUIRE(srcChild);
+    const UUID srcInstanceId = srcRoot->instanceId;
+    REQUIRE(srcInstanceId != UUID::Nil());
+    const auto rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    SceneDocument clipboard;
+    DeterministicUuidProvider idsClip;
+    clipboard.SetUuidProvider(&idsClip);
+    Error cloneErr;
+    REQUIRE(SceneSerializer::CloneInMemory(f.manager.AuthoringDoc(), clipboard, cloneErr));
+    const auto clipRoot = clipboard.FindByUuid(rootUuid);
+    REQUIRE(static_cast<uint32_t>(clipRoot) != static_cast<uint32_t>(entt::null));
+    const auto* clipMember = clipboard.ecs.registry.try_get<PrefabMemberComponent>(clipRoot);
+    REQUIRE(clipMember);
+    CHECK(clipMember->overrides.size() == 2); // clone carried the set (Fix 8)
+
+    std::size_t count = 0;
+    {
+        std::vector<entt::entity> subtree;
+        SceneHierarchy::CollectSubtreePreOrder(
+            clipboard.ecs.registry, clipRoot, subtree);
+        count = subtree.size();
+    }
+    REQUIRE(count == 2);
+    const auto known = f.manager.ReserveKnownUuids(count);
+
+    auto paste = f.manager.PasteSubtreesWithUuids(
+        clipboard, { rootUuid }, std::nullopt, known);
+    REQUIRE(paste.mutation.success);
+    REQUIRE_FALSE(paste.mutation.recoveryWarning.has_value());
+    REQUIRE(paste.createdRoots.size() == 1);
+    const auto pastedRootUuid = paste.createdRoots.front();
+    REQUIRE(pastedRootUuid != rootUuid);
+
+    const auto pastedEntities = S4SubtreeEntities(f.manager, pastedRootUuid);
+    REQUIRE(pastedEntities.size() == 2);
+
+    // Fresh instance identity on the diverged copy...
+    const auto pastedRootId = S4MemberInstanceId(f.manager, pastedEntities[0]);
+    const auto pastedChildId = S4MemberInstanceId(f.manager, pastedEntities[1]);
+    CHECK(pastedRootId != srcInstanceId);
+    CHECK(pastedChildId == pastedRootId);
+    const auto* pastedPic =
+        reg.try_get<PrefabInstanceComponent>(pastedEntities[0]);
+    REQUIRE(pastedPic);
+    CHECK(pastedPic->instanceId == pastedRootId);
+
+    // ...while the divergence is preserved VERBATIM: the pasted root member
+    // carries exactly the source's override set, and templateId is untouched.
+    const auto* pastedRootMember =
+        reg.try_get<PrefabMemberComponent>(pastedEntities[0]);
+    REQUIRE(pastedRootMember);
+    CHECK(pastedRootMember->overrides == srcRoot->overrides);
+    CHECK(S4MemberTemplateId(f.manager, pastedEntities[0]) == srcRoot->templateId);
 
     std::filesystem::remove_all(dir);
 }
