@@ -125,35 +125,48 @@ void RemapCopiedScriptFields(
 	rt2::core::RemapEntityReferences(uuidRemap, scripts);
 }
 
-// Phase 8 W3, S4 / W3-D8 — mint a fresh instanceId for every copied subtree.
+// Phase 8 W3, S4 / W3-D8 — mint a fresh instanceId for every copied instance
+// GROUP. The selection may cut a prefab instance at an arbitrary point (an
+// ordinary folder above it, a member fragment left below, or both), so the
+// unit of classification is the FOREST of copied entities, not each selected
+// root in isolation.
 //
 // CopyAuthoredComponents copies all 13 persisted components verbatim
 // (SceneManager.cpp:89-93), so a copy of a prefab instance currently shares
 // the SOURCE's instanceId: duplicating an instance produces two entities (and
 // two member groups) claiming the same instance identity. W3 groups overrides
 // by instanceId, so that sharing would merge two instances into one group
-// (W3-D8). Each copy must mint ONE fresh instanceId for the whole subtree and
-// propagate it to every member.
+// (W3-D8). Each copied group must mint ONE fresh instanceId shared by every
+// copied member of that group.
 //
 // This runs per copy/paste operation, AFTER the copy loop has built the remap
 // but BEFORE any derived state is computed. It inspects the freshly created
-// destination entities only. Policy, per copied subtree root:
+// destination entities only. Classification, forest-wide:
 //
-//  * The root copy carries PrefabInstanceComponent (a FULL instance copy):
-//    mint one fresh instanceId (the provided mint callback — the same UUID
-//    provider the manager uses everywhere), assign it to the root's
-//    PrefabInstanceComponent AND to every copied PrefabMemberComponent in the
-//    subtree. templateIds and override vectors are copied verbatim by
+//  * A copied group with at least one copied root carrying
+//    PrefabInstanceComponent is a FULL instance copy: mint one fresh
+//    instanceId (the provided mint callback — the same UUID provider the
+//    manager uses everywhere) and assign it to that group's root AND to every
+//    copied PrefabMemberComponent carrying the same original instanceId.
+//    templateIds and override vectors are copied verbatim by
 //    CopyAuthoredComponents and must NOT be touched: a copy of a diverged
-//    instance stays diverged (W3-D4).
+//    instance stays diverged (W3-D4). A nested full instance is handled
+//    per-component: the inner instance's root keeps its own group's fresh id
+//    on its PrefabInstanceComponent and the enclosing group's fresh id on its
+//    PrefabMemberComponent — nesting is never merged into the outer group.
 //
-//  * The subtree carries PrefabMemberComponent members but NO
-//    PrefabInstanceComponent root (a PARTIAL copy — the instance root is not
-//    part of the copied set): this is NOT an instance. Fabricating an
-//    instance here would invent a link the user never made, so both prefab
-//    components are stripped and the members become ordinary entities. The
-//    function returns 1 so the caller raises a recovery warning (never a hard
-//    failure; duplicate/paste of a partial selection stays a valid operation).
+//  * A copied member whose original instanceId has NO copied root in the
+//    forest is an ORPHAN member fragment: this is NOT an instance. Fabricating
+//    an instance here would invent a link the user never made, so the
+//    PrefabMemberComponent is stripped (and its PrefabInstanceComponent when
+//    that id also has no copied root) and the entity becomes ordinary. The
+//    outcome counts the stripped entities so the caller raises a recovery
+//    warning (never a hard failure; duplicate/paste of a partial selection
+//    stays a valid operation).
+//
+//  * Two copied roots sharing one original instanceId is malformed ambiguous
+//    input; it is diagnosed via ambiguousGroups so the caller can surface it,
+//    and the group is kept as ONE reminted group (never split or merged).
 //
 //  * Everything else (no prefab components): untouched, and mints nothing.
 //
@@ -161,72 +174,137 @@ void RemapCopiedScriptFields(
 // NOT call this — undo/redo reinstates the recorded instanceId verbatim
 // (W3-D4). InstantiatePrefabWithUuids also must not call it; it mints its own
 // fresh instanceId at link-install time (:3003).
-std::size_t MintCopiedPrefabLinks(
+struct CopiedPrefabOutcome
+{
+	// Copied member entities whose original instanceId had no copied root in
+	// the forest; their prefab links were stripped (recovery warning).
+	std::size_t orphanFragments = 0;
+	// Original instance groups with more than one copied root (diagnosed).
+	std::size_t ambiguousGroups = 0;
+};
+
+CopiedPrefabOutcome MintCopiedPrefabLinks(
 	const entt::registry& sourceRegistry,
 	const std::unordered_map<entt::entity, entt::entity>& remap,
 	const std::vector<entt::entity>& roots,
 	entt::registry& destinationRegistry,
 	const std::function<rt2::core::UUID()>& mint)
 {
-	std::size_t partialCopies = 0;
-	for (const auto root : roots)
+	// Collect the whole copied forest: every remapped copy reachable from any
+	// selected root's subtree.
+	std::vector<entt::entity> forest;
 	{
-		std::vector<entt::entity> subtree;
-		SceneHierarchy::CollectSubtreePreOrder(sourceRegistry, root, subtree);
-
-		std::vector<entt::entity> copies;
-		copies.reserve(subtree.size());
-		for (const auto source : subtree)
+		std::unordered_set<entt::entity> seen;
+		for (const auto root : roots)
 		{
-			const auto it = remap.find(source);
-			if (it != remap.end())
-				copies.push_back(it->second);
-		}
-
-		const auto rootCopyIt = remap.find(root);
-		const auto rootCopy = rootCopyIt != remap.end() ? rootCopyIt->second : entt::null;
-		const bool isInstanceRoot =
-			rootCopy != entt::null &&
-			destinationRegistry.try_get<PrefabInstanceComponent>(rootCopy) != nullptr;
-
-		if (isInstanceRoot)
-		{
-			// Full instance copy: one fresh id for the whole subtree.
-			const rt2::core::UUID fresh = mint();
-			for (const auto entity : copies)
+			std::vector<entt::entity> subtree;
+			SceneHierarchy::CollectSubtreePreOrder(sourceRegistry, root, subtree);
+			for (const auto source : subtree)
 			{
-				if (auto* inst = destinationRegistry.try_get<PrefabInstanceComponent>(entity))
-					inst->instanceId = fresh;
-				if (auto* member = destinationRegistry.try_get<PrefabMemberComponent>(entity))
-					member->instanceId = fresh;
+				const auto it = remap.find(source);
+				if (it != remap.end() && seen.insert(it->second).second)
+					forest.push_back(it->second);
 			}
+		}
+	}
+
+	// Group the copied entities by their ORIGINAL instanceId. Roots (entities
+	// carrying PrefabInstanceComponent) anchor a group; members (entities
+	// carrying PrefabMemberComponent) belong to whatever group their id names.
+	std::unordered_map<rt2::core::UUID, std::vector<entt::entity>> rootsByGroup;
+	std::unordered_map<rt2::core::UUID, std::vector<entt::entity>> membersByGroup;
+	for (const auto entity : forest)
+	{
+		if (const auto* pic = destinationRegistry.try_get<PrefabInstanceComponent>(entity))
+			rootsByGroup[pic->instanceId].push_back(entity);
+		if (const auto* member = destinationRegistry.try_get<PrefabMemberComponent>(entity))
+			membersByGroup[member->instanceId].push_back(entity);
+	}
+
+	// Mint ONE fresh id per group that actually has a copied root. A member
+	// fragment whose id has no root in the forest gets no fresh id; it is
+	// orphaned below.
+	std::unordered_map<rt2::core::UUID, rt2::core::UUID> freshByGroup;
+	for (const auto& group : rootsByGroup)
+		freshByGroup.emplace(group.first, mint());
+
+	CopiedPrefabOutcome outcome;
+	for (const auto& group : membersByGroup)
+	{
+		const auto freshIt = freshByGroup.find(group.first);
+		if (freshIt == freshByGroup.end())
+		{
+			// Orphan member fragment: no copied root carries this original id.
+			// Strip the member link; if the entity's own PrefabInstanceComponent
+			// names an id that also has no copied root, strip that too.
+			for (const auto entity : group.second)
+			{
+				if (destinationRegistry.try_get<PrefabMemberComponent>(entity))
+					destinationRegistry.remove<PrefabMemberComponent>(entity);
+				const auto* pic = destinationRegistry.try_get<PrefabInstanceComponent>(entity);
+				if (pic && freshByGroup.find(pic->instanceId) == freshByGroup.end())
+					destinationRegistry.remove<PrefabInstanceComponent>(entity);
+			}
+			outcome.orphanFragments += group.second.size();
 			continue;
 		}
-
-		// Not an instance root. Is the subtree even a member fragment?
-		bool hasMembers = false;
-		for (const auto entity : copies)
+		// Full-instance members: propagate the group's single fresh id. A root
+		// entity may appear here too (a nested instance is also a member of the
+		// enclosing group); its member record gets the ENCLOSING group's id,
+		// which is correct — its own PrefabInstanceComponent is assigned its own
+		// group's id below.
+		for (const auto entity : group.second)
 		{
-			if (destinationRegistry.try_get<PrefabMemberComponent>(entity))
-			{
-				hasMembers = true;
-				break;
-			}
+			if (auto* member = destinationRegistry.try_get<PrefabMemberComponent>(entity))
+				member->instanceId = freshIt->second;
 		}
-		if (!hasMembers)
-			continue; // plain subtree, nothing to do
-
-		// Partial: strip the fabricated link, keep the ordinary entities.
-		for (const auto entity : copies)
-		{
-			if (destinationRegistry.try_get<PrefabMemberComponent>(entity))
-				destinationRegistry.remove<PrefabMemberComponent>(entity);
-			if (destinationRegistry.try_get<PrefabInstanceComponent>(entity))
-				destinationRegistry.remove<PrefabInstanceComponent>(entity);
-		}
-		++partialCopies;
 	}
-	return partialCopies;
+
+	for (const auto& group : rootsByGroup)
+	{
+		const rt2::core::UUID& fresh = freshByGroup.at(group.first);
+		for (const auto entity : group.second)
+		{
+			if (auto* pic = destinationRegistry.try_get<PrefabInstanceComponent>(entity))
+				pic->instanceId = fresh;
+		}
+		if (group.second.size() > 1)
+			++outcome.ambiguousGroups;
+	}
+	return outcome;
+}
+
+// Build the recovery-warning text for a MintCopiedPrefabLinks outcome, or
+// std::nullopt when nothing needed to be repaired. Never a hard failure.
+// operation is a short lowercase verb ("duplicate", "paste") used in the
+// detail, matching the pre-existing warning wording.
+std::optional<rt2::core::Error> MakeCopiedPrefabRecoveryWarning(
+	const char* operation,
+	const CopiedPrefabOutcome& outcome)
+{
+	if (outcome.orphanFragments == 0 && outcome.ambiguousGroups == 0)
+		return std::nullopt;
+
+	std::string detail = std::string(operation) + ": ";
+	if (outcome.orphanFragments > 0)
+	{
+		detail += std::to_string(outcome.orphanFragments) +
+			" copied member(s) had no instance root in the copied set; "
+			"prefab links were stripped (ordinary entities)";
+	}
+	if (outcome.ambiguousGroups > 0)
+	{
+		if (outcome.orphanFragments > 0)
+			detail += " ";
+		detail += std::to_string(outcome.ambiguousGroups) +
+			" instance group(s) had multiple copied roots sharing one "
+			"instanceId; kept as one reminted group";
+	}
+
+	rt2::core::Error warning;
+	warning.code = rt2::core::Error::InvalidHierarchy;
+	warning.detail = std::move(detail);
+	return warning;
 }
 
 void LogAssetDiagnostics(
@@ -1600,7 +1678,7 @@ EditorMutationResult SceneManager::DuplicateSubtrees(
 	// Phase 8 W3, S4 — a copy is a NEW instance, not a verbatim share of the
 	// source's instanceId (W3-D8). This must run after every entity is created
 	// and copied so it sees the complete subtree.
-	const std::size_t partialCopies = MintCopiedPrefabLinks(
+	const CopiedPrefabOutcome copiedPrefabs = MintCopiedPrefabLinks(
 		registry, remap, roots, registry, [this] { return ReserveKnownUuid(); });
 
 	for (const auto source : sources)
@@ -1628,15 +1706,8 @@ EditorMutationResult SceneManager::DuplicateSubtrees(
 		result.affectedEntities.push_back(GetEntityUuid({ duplicate }));
 		SceneGraph::MarkDirty(registry, duplicate);
 	}
-	if (partialCopies > 0)
-	{
-		rt2::core::Error warning;
-		warning.code = rt2::core::Error::InvalidHierarchy;
-		warning.detail = "duplicate: " + std::to_string(partialCopies) +
-			" copied subtree(s) carried prefab members without an instance root; "
-			"prefab links were stripped (ordinary entities)";
-		result.recoveryWarning = warning;
-	}
+	if (const auto warning = MakeCopiedPrefabRecoveryWarning("duplicate", copiedPrefabs))
+		result.recoveryWarning = *warning;
 	NotifyAuthoringChanged();
 	m_EntityCacheDirty = true;
 	result.syncImpact = duplicatesRenderable
@@ -1709,7 +1780,7 @@ EditorMutationResult SceneManager::PasteSubtreesFrom(
 	// clipboard's instanceId (W3-D8). Mint per copied subtree; a partial paste
 	// (members without an instance root) becomes ordinary entities with a
 	// recovery warning.
-	const std::size_t partialCopies = MintCopiedPrefabLinks(
+	const CopiedPrefabOutcome copiedPrefabs = MintCopiedPrefabLinks(
 		snapshot.ecs.registry, remap, roots, destination,
 		[this] { return ReserveKnownUuid(); });
 
@@ -1742,15 +1813,8 @@ EditorMutationResult SceneManager::PasteSubtreesFrom(
 		result.affectedEntities.push_back(GetEntityUuid({ pasted }));
 		SceneGraph::MarkDirty(destination, pasted);
 	}
-	if (partialCopies > 0)
-	{
-		rt2::core::Error warning;
-		warning.code = rt2::core::Error::InvalidHierarchy;
-		warning.detail = "paste: " + std::to_string(partialCopies) +
-			" pasted subtree(s) carried prefab members without an instance root; "
-			"prefab links were stripped (ordinary entities)";
-		result.recoveryWarning = warning;
-	}
+	if (const auto warning = MakeCopiedPrefabRecoveryWarning("paste", copiedPrefabs))
+		result.recoveryWarning = *warning;
 	NotifyAuthoringChanged();
 	m_EntityCacheDirty = true;
 	result.syncImpact = pastesRenderable
@@ -3454,7 +3518,7 @@ SceneManager::DuplicationResult SceneManager::DuplicateSubtreesWithUuids(
 	// the source's instanceId (W3-D8). Mint per copied subtree; a partial
 	// duplicate (members without an instance root) becomes ordinary entities
 	// with a recovery warning.
-	const std::size_t partialCopies = MintCopiedPrefabLinks(
+	const CopiedPrefabOutcome copiedPrefabs = MintCopiedPrefabLinks(
 		registry, remap, roots, registry, [this] { return ReserveKnownUuid(); });
 
 	// Wire Hierarchy among duplicates.
@@ -3485,15 +3549,8 @@ SceneManager::DuplicationResult SceneManager::DuplicateSubtreesWithUuids(
 		out.createdRoots.push_back(GetEntityUuid({ duplicate }));
 		SceneGraph::MarkDirty(registry, duplicate);
 	}
-	if (partialCopies > 0)
-	{
-		rt2::core::Error warning;
-		warning.code = rt2::core::Error::InvalidHierarchy;
-		warning.detail = "duplicate: " + std::to_string(partialCopies) +
-			" duplicated subtree(s) carried prefab members without an instance root; "
-			"prefab links were stripped (ordinary entities)";
-		out.mutation.recoveryWarning = warning;
-	}
+	if (const auto warning = MakeCopiedPrefabRecoveryWarning("duplicate", copiedPrefabs))
+		out.mutation.recoveryWarning = *warning;
 
 	NotifyAuthoringChanged();
 	m_EntityCacheDirty = true;
@@ -3617,7 +3674,7 @@ SceneManager::DuplicationResult SceneManager::PasteSubtreesWithUuids(
 	// clipboard's instanceId (W3-D8). Mint per copied subtree; a partial paste
 	// (members without an instance root) becomes ordinary entities with a
 	// recovery warning.
-	const std::size_t partialCopies = MintCopiedPrefabLinks(
+	const CopiedPrefabOutcome copiedPrefabs = MintCopiedPrefabLinks(
 		clipboard.ecs.registry, remap, roots, destination,
 		[this] { return ReserveKnownUuid(); });
 
@@ -3651,15 +3708,8 @@ SceneManager::DuplicationResult SceneManager::PasteSubtreesWithUuids(
 		out.createdRoots.push_back(GetEntityUuid({ pasted }));
 		SceneGraph::MarkDirty(destination, pasted);
 	}
-	if (partialCopies > 0)
-	{
-		rt2::core::Error warning;
-		warning.code = rt2::core::Error::InvalidHierarchy;
-		warning.detail = "paste: " + std::to_string(partialCopies) +
-			" pasted subtree(s) carried prefab members without an instance root; "
-			"prefab links were stripped (ordinary entities)";
-		out.mutation.recoveryWarning = warning;
-	}
+	if (const auto warning = MakeCopiedPrefabRecoveryWarning("paste", copiedPrefabs))
+		out.mutation.recoveryWarning = *warning;
 
 	NotifyAuthoringChanged();
 	m_EntityCacheDirty = true;

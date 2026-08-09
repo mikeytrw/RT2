@@ -1331,10 +1331,17 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 // non-minting / different-policy sides; test 8 pins multi-root isolation.
 //
 // All four copy-shaped paths funnel through the SAME shared helper
-// MintCopiedPrefabLinks (SceneManager.cpp:164): it mints ONE fresh instanceId
-// per copied subtree, pushes it onto every copied PrefabMemberComponent and
-// PrefabInstanceComponent, and leaves templateIds and override vectors
-// untouched (a copy of a diverged instance stays diverged, W3-D4).
+// MintCopiedPrefabLinks (SceneManager.cpp:191). It mints ONE fresh instanceId
+// per COMPLETE COPIED INSTANCE and pushes it onto every copied
+// PrefabMemberComponent and PrefabInstanceComponent belonging to that
+// instance's original group, leaving templateIds and override vectors
+// untouched (a copy of a diverged instance stays diverged, W3-D4). Groups are
+// classified from the ACTUAL copied instance roots inside the forest, not from
+// the selected scene-hierarchy root: a complete instance nested under an
+// ordinary container or under another copied root is a first-class instance of
+// its own and is reminted independently, never merged into the enclosing
+// group. Member fragments whose original instanceId has no copied root are
+// stripped (orphan fragments) — never a fabricated instance (test 7).
 //
 // The diverged-override case (test 5) is covered on the editor paste path
 // (PasteSubtreesWithUuids) because that is the strongest discriminator for
@@ -1350,6 +1357,15 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 // prefab components and surface a recoveryWarning instead of fabricating an
 // instance root. Multi-root copies (test 8) mint per subtree, never one shared
 // id and never one per member.
+//
+// Tests 9-12 pin the forest-wide classification fix (S4 review fix 1): an
+// ordinary folder holding a complete instance duplicates (9) and pastes (10)
+// with the folder staying ordinary and the instance gaining ONE fresh coherent
+// id; a mixed tree with a complete instance under an ordinary root plus an
+// orphan member fragment (11) preserves and remints the complete instance and
+// strips only the fragment (with an explicit 1-fragment recovery warning); two
+// distinct complete instance roots — one nested under a member of the other
+// (12) — each receive their own distinct fresh id rather than being merged.
 //
 // Discrimination faults (recorded in the verification report), per test:
 //   test 1 fault: delete the MintCopiedPrefabLinks call inside
@@ -1384,6 +1400,23 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 //   minted id for every root — the two copied subtrees then share a single
 //   instanceId, so CHECK(copiedARootId != copiedBRootId) fails -> RED.
 //   Revert -> GREEN.
+//   test 9 fault: in MintCopiedPrefabLinks, go back to classifying from the
+//   SELECTED root copy (the old `isInstanceRoot` check): an ordinary folder
+//   copy has no PrefabInstanceComponent, so the instance below it is treated
+//   as a member fragment and BOTH prefab components are stripped from the copy
+//   — CHECK(copiedRootId != UUID::Nil()) and CHECK(copied[s] is member) fail
+//   -> RED. Revert -> GREEN.
+//   test 10 fault: same selected-root regression on the command paste path —
+//   the pasted instance under an ordinary folder gets stripped the same way ->
+//   RED. Revert -> GREEN.
+//   test 11 fault: same selected-root regression on a MIXED forest (ordinary
+//   container holding BOTH a complete instance and an orphan member fragment)
+//   — the complete instance's copy is stripped too (not reminted), so
+//   CHECK(copiedCompleteRoot has PIC) fails -> RED. Revert -> GREEN.
+//   test 12 fault: in MintCopiedPrefabLinks, fall back to ONE id for the whole
+//   selected subtree (the old full-instance branch): a nested complete
+//   instance under the outer instance gets the OUTER's fresh id, so
+//   CHECK(copiedNestedId != copiedOuterRootId) fails -> RED. Revert -> GREEN.
 // ============================================================================
 
 namespace
@@ -1830,10 +1863,19 @@ TEST_CASE("Phase 8 W3: structural restore reinstates the exact recorded instance
     const auto rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
     const auto childUuid = reg.get<EntityIdComponent>(childHandle).id;
 
+    // Snapshot the expected member payloads NOW, as VALUES, before any entity
+    // is destroyed: RemoveSubtreesExact destroys the registry entities below,
+    // and the restored components may reuse the same storage. Retaining EnTT
+    // component pointers across entity destruction is undefined behaviour, so
+    // every post-restore comparison must use these pre-copied values.
+    const UUID expectedRootTemplateId = srcRoot->templateId;
+    const UUID expectedChildTemplateId = srcChild->templateId;
+
     // Diverge the source before capturing: the divergence must survive.
     auto* rootMemberLive = reg.try_get<PrefabMemberComponent>(rootHandle);
     REQUIRE(rootMemberLive);
     rootMemberLive->overrides = { S2Key("name"), S2Key("transform") };
+    const auto expectedRootOverrides = rootMemberLive->overrides; // a value copy
 
     // Capture the instance to a structural snapshot (the Undo record).
     const auto snapshot = f.manager.CaptureSubtreeSnapshot({ rootUuid });
@@ -1869,17 +1911,18 @@ TEST_CASE("Phase 8 W3: structural restore reinstates the exact recorded instance
     CHECK(restoredChildId == recordedId);
 
     // The restored link is internally coherent: root PIC agrees, templateIds
-    // are preserved, and the divergence survived verbatim.
+    // are preserved, and the divergence survived verbatim. All expected values
+    // were copied before RemoveSubtreesExact destroyed the source entities.
     const auto* restoredPic =
         reg.try_get<PrefabInstanceComponent>(restoredEntities[0]);
     REQUIRE(restoredPic);
     CHECK(restoredPic->instanceId == recordedId);
-    CHECK(S4MemberTemplateId(f.manager, restoredEntities[1]) == srcChild->templateId);
-    CHECK(S4MemberTemplateId(f.manager, restoredEntities[0]) == srcRoot->templateId);
+    CHECK(S4MemberTemplateId(f.manager, restoredEntities[1]) == expectedChildTemplateId);
+    CHECK(S4MemberTemplateId(f.manager, restoredEntities[0]) == expectedRootTemplateId);
     const auto* restoredRootMember =
         reg.try_get<PrefabMemberComponent>(restoredEntities[0]);
     REQUIRE(restoredRootMember);
-    CHECK(restoredRootMember->overrides == rootMemberLive->overrides);
+    CHECK(restoredRootMember->overrides == expectedRootOverrides);
 
     std::filesystem::remove_all(dir);
 }
@@ -2055,6 +2098,363 @@ TEST_CASE("Phase 8 W3: a multi-root copy mints one distinct fresh instanceId per
     REQUIRE(copiedBRootMember);
     CHECK(copiedARootMember->overrides == rootAMember->overrides);
     CHECK(copiedBRootMember->overrides == rootBMember->overrides);
+
+    std::filesystem::remove_all(dirA);
+    std::filesystem::remove_all(dirB);
+}
+
+// ---------------------------------------------------------------------------
+// Test 9 — the S4 review fix 1 shape, on the editor's UUID-aware duplicate
+// path: an ordinary container (Folder) holding a COMPLETE instance. The copied
+// forest must be classified from the ACTUAL instance root inside it, so the
+// folder copy stays ordinary and the contained instance is preserved and
+// reminted as ONE group — not stripped as if it were a member fragment.
+//
+// Fault for red (old selected-root classification): in MintCopiedPrefabLinks,
+// gate classification on the SELECTED root copy (the old `isInstanceRoot`
+// check). The folder copy has no PrefabInstanceComponent, so the whole tree is
+// treated as a member fragment and BOTH prefab components are stripped from
+// every copy — CHECK(copiedPic->instanceId != UUID::Nil()) fails -> RED.
+// Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: UUID-aware duplicate of an ordinary folder preserves and remints its contained instance")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s4_folder_dup");
+    const auto folderUuid = f.CreateEmpty("Folder");
+    REQUIRE(folderUuid != UUID::Nil());
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcRoot = reg.try_get<PrefabMemberComponent>(rootHandle);
+    const auto* srcChild = reg.try_get<PrefabMemberComponent>(childHandle);
+    REQUIRE(srcRoot);
+    REQUIRE(srcChild);
+    const UUID srcInstanceId = srcRoot->instanceId;
+    REQUIRE(srcInstanceId != UUID::Nil());
+
+    // Nest the complete instance UNDER the ordinary folder (editor-supported).
+    const auto rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    REQUIRE(f.manager.Reparent({ rootUuid }, folderUuid, ReparentMode::PreserveLocal).success);
+
+    auto count = f.manager.CountCanonicalSubtreeEntities({ folderUuid });
+    REQUIRE(count.IsOk());
+    REQUIRE(count.value == 3); // folder + instance root + instance child
+    const auto known = f.manager.ReserveKnownUuids(count.value);
+    REQUIRE(known.size() == 3);
+
+    auto dup = f.manager.DuplicateSubtreesWithUuids({ folderUuid }, known);
+    REQUIRE(dup.mutation.success);
+    REQUIRE_FALSE(dup.mutation.recoveryWarning.has_value());
+    REQUIRE(dup.createdRoots.size() == 1);
+    const auto copiedFolderUuid = dup.createdRoots.front();
+
+    const auto copied = S4SubtreeEntities(f.manager, copiedFolderUuid);
+    REQUIRE(copied.size() == 3);
+
+    // The copied folder stays ORDINARY — no fabricated prefab link.
+    CHECK_FALSE(reg.all_of<PrefabInstanceComponent>(copied[0]));
+    CHECK_FALSE(reg.all_of<PrefabMemberComponent>(copied[0]));
+
+    // The contained complete instance is preserved and reminted as ONE group.
+    const auto* copiedPic = reg.try_get<PrefabInstanceComponent>(copied[1]);
+    REQUIRE(copiedPic);
+    REQUIRE(copiedPic->instanceId != UUID::Nil());
+    CHECK(copiedPic->instanceId != srcInstanceId);
+    CHECK(S4MemberInstanceId(f.manager, copied[1]) == copiedPic->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, copied[2]) == copiedPic->instanceId);
+    CHECK(S4MemberTemplateId(f.manager, copied[2]) == srcChild->templateId);
+    CHECK(S4MemberTemplateId(f.manager, copied[1]) == srcRoot->templateId);
+
+    // Source untouched.
+    const auto* srcRootAfter = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(srcRootAfter);
+    CHECK(srcRootAfter->instanceId == srcInstanceId);
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test 10 — the same shape on the editor's UUID-aware PASTE path
+// (PasteSubtreesWithUuids).
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: UUID-aware paste of an ordinary folder preserves and remints its contained instance")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s4_folder_paste");
+    const auto folderUuid = f.CreateEmpty("Folder");
+    REQUIRE(folderUuid != UUID::Nil());
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcRoot = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(srcRoot);
+    const UUID srcInstanceId = srcRoot->instanceId;
+    REQUIRE(srcInstanceId != UUID::Nil());
+
+    const auto rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    REQUIRE(f.manager.Reparent({ rootUuid }, folderUuid, ReparentMode::PreserveLocal).success);
+
+    // Clipboard clone of the authoring doc (includes the folder tree).
+    SceneDocument clipboard;
+    DeterministicUuidProvider idsClip;
+    clipboard.SetUuidProvider(&idsClip);
+    Error cloneErr;
+    REQUIRE(SceneSerializer::CloneInMemory(f.manager.AuthoringDoc(), clipboard, cloneErr));
+
+    // Host pattern: walk the clipboard subtree to count.
+    std::size_t count = 0;
+    {
+        const auto clipFolder = clipboard.FindByUuid(folderUuid);
+        REQUIRE(static_cast<uint32_t>(clipFolder) != static_cast<uint32_t>(entt::null));
+        std::vector<entt::entity> subtree;
+        SceneHierarchy::CollectSubtreePreOrder(clipboard.ecs.registry, clipFolder, subtree);
+        count = subtree.size();
+    }
+    REQUIRE(count == 3);
+    const auto known = f.manager.ReserveKnownUuids(count);
+    REQUIRE(known.size() == 3);
+
+    auto paste = f.manager.PasteSubtreesWithUuids(
+        clipboard, { folderUuid }, std::nullopt, known);
+    REQUIRE(paste.mutation.success);
+    REQUIRE_FALSE(paste.mutation.recoveryWarning.has_value());
+    REQUIRE(paste.createdRoots.size() == 1);
+    const auto pastedFolderUuid = paste.createdRoots.front();
+
+    const auto pasted = S4SubtreeEntities(f.manager, pastedFolderUuid);
+    REQUIRE(pasted.size() == 3);
+
+    // The pasted folder stays ordinary; the contained instance is reminted.
+    CHECK_FALSE(reg.all_of<PrefabInstanceComponent>(pasted[0]));
+    CHECK_FALSE(reg.all_of<PrefabMemberComponent>(pasted[0]));
+    const auto* pastedPic = reg.try_get<PrefabInstanceComponent>(pasted[1]);
+    REQUIRE(pastedPic);
+    REQUIRE(pastedPic->instanceId != UUID::Nil());
+    CHECK(pastedPic->instanceId != srcInstanceId);
+    CHECK(S4MemberInstanceId(f.manager, pasted[1]) == pastedPic->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, pasted[2]) == pastedPic->instanceId);
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test 11 — a MIXED copied forest: an ordinary folder holding BOTH a complete
+// instance AND an orphan member fragment. The complete instance is preserved
+// and reminted as one group; only the orphan fragment (instance B's child,
+// whose root is NOT part of the copied set) is stripped of both prefab
+// components. The recovery warning must surface with an explicit count of 1
+// orphaned member.
+//
+// Fault for red (old selected-root classification): the folder copy has no
+// PrefabInstanceComponent, so the old code treats the WHOLE tree as a member
+// fragment and strips the complete instance copy too — CHECK(copiedAPic has
+// PIC) fails -> RED. Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: a mixed forest keeps its complete instance and strips only the orphan member fragment")
+{
+    S2Fixture f;
+    const auto dirA = S2UniqueTempDir("p8w3_s4_mixed_a");
+    const auto dirB = S2UniqueTempDir("p8w3_s4_mixed_b");
+    const auto folderUuid = f.CreateEmpty("Folder");
+    REQUIRE(folderUuid != UUID::Nil());
+    const auto [rootA, childA] = f.MakeInstance(dirA);
+    const auto [rootB, childB] = f.MakeInstance(dirB);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcRootA = reg.try_get<PrefabMemberComponent>(rootA);
+    REQUIRE(srcRootA);
+    const UUID srcAId = srcRootA->instanceId;
+    REQUIRE(srcAId != UUID::Nil());
+    const auto* srcChildB = reg.try_get<PrefabMemberComponent>(childB);
+    REQUIRE(srcChildB);
+
+    const auto rootAUuid = reg.get<EntityIdComponent>(rootA).id;
+    const auto childBUuid = reg.get<EntityIdComponent>(childB).id;
+
+    // Complete instance A nested under the folder.
+    REQUIRE(f.manager.Reparent({ rootAUuid }, folderUuid, ReparentMode::PreserveLocal).success);
+    // Orphan fragment: ONLY instance B's child member lands under the folder;
+    // instance B's root stays OUTSIDE the copied forest.
+    REQUIRE(f.manager.Reparent({ childBUuid }, folderUuid, ReparentMode::PreserveLocal).success);
+
+    auto count = f.manager.CountCanonicalSubtreeEntities({ folderUuid });
+    REQUIRE(count.IsOk());
+    REQUIRE(count.value == 4); // folder + rootA + childA + childB
+    const auto known = f.manager.ReserveKnownUuids(count.value);
+    REQUIRE(known.size() == 4);
+
+    auto dup = f.manager.DuplicateSubtreesWithUuids({ folderUuid }, known);
+    REQUIRE(dup.mutation.success);
+    // The orphan fragment is stripped -> one recovery warning, explicit count.
+    REQUIRE(dup.mutation.recoveryWarning.has_value());
+    CHECK(dup.mutation.recoveryWarning->code == rt2::core::Error::InvalidHierarchy);
+    CHECK(dup.mutation.recoveryWarning->detail.find("1 copied member") != std::string::npos);
+    REQUIRE(dup.createdRoots.size() == 1);
+    const auto copiedFolderUuid = dup.createdRoots.front();
+
+    const auto copied = S4SubtreeEntities(f.manager, copiedFolderUuid);
+    REQUIRE(copied.size() == 4);
+
+    // The folder copy stays ordinary.
+    CHECK_FALSE(reg.all_of<PrefabInstanceComponent>(copied[0]));
+    CHECK_FALSE(reg.all_of<PrefabMemberComponent>(copied[0]));
+
+    // The COMPLETE instance A copy is preserved and reminted as one group.
+    const auto* copiedAPic = reg.try_get<PrefabInstanceComponent>(copied[1]);
+    REQUIRE(copiedAPic);
+    REQUIRE(copiedAPic->instanceId != UUID::Nil());
+    CHECK(copiedAPic->instanceId != srcAId);
+    CHECK(S4MemberInstanceId(f.manager, copied[1]) == copiedAPic->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, copied[2]) == copiedAPic->instanceId);
+
+    // The ORPHAN member fragment lost BOTH prefab components.
+    CHECK_FALSE(reg.all_of<PrefabMemberComponent>(copied[3]));
+    CHECK_FALSE(reg.all_of<PrefabInstanceComponent>(copied[3]));
+
+    std::filesystem::remove_all(dirA);
+    std::filesystem::remove_all(dirB);
+}
+
+// ---------------------------------------------------------------------------
+// Test 12 — TWO distinct complete instance roots, one nested under the other
+// (the inverse shape from the review): the outer instance-root tree contains
+// a second complete instance. Each copied instance gets its OWN distinct fresh
+// id — the nested copy is never merged into the outer's remint.
+//
+// Fault for red (old full-instance branch): fall back to minting ONE id for
+// the whole selected subtree — the nested root copy then carries the OUTER's
+// fresh id, so CHECK(copiedNestedId != copiedOuterId) fails -> RED.
+// Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: nested complete instances each receive their own distinct fresh instanceId")
+{
+    S2Fixture f;
+    const auto dirA = S2UniqueTempDir("p8w3_s4_nested_a");
+    const auto dirB = S2UniqueTempDir("p8w3_s4_nested_b");
+    const auto [rootA, childA] = f.MakeInstance(dirA);
+    const auto [rootB, childB] = f.MakeInstance(dirB);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcRootA = reg.try_get<PrefabMemberComponent>(rootA);
+    const auto* srcRootB = reg.try_get<PrefabMemberComponent>(rootB);
+    REQUIRE(srcRootA);
+    REQUIRE(srcRootB);
+    const UUID srcAId = srcRootA->instanceId;
+    const UUID srcBId = srcRootB->instanceId;
+    REQUIRE(srcAId != srcBId);
+
+    const auto rootAUuid = reg.get<EntityIdComponent>(rootA).id;
+    const auto childAUuid = reg.get<EntityIdComponent>(childA).id;
+    const auto rootBUuid = reg.get<EntityIdComponent>(rootB).id;
+
+    // Nest instance B's ROOT under instance A's member subtree.
+    REQUIRE(f.manager.Reparent({ rootBUuid }, childAUuid, ReparentMode::PreserveLocal).success);
+
+    auto count = f.manager.CountCanonicalSubtreeEntities({ rootAUuid });
+    REQUIRE(count.IsOk());
+    REQUIRE(count.value == 4); // rootA + childA + rootB + childB
+    const auto known = f.manager.ReserveKnownUuids(count.value);
+    REQUIRE(known.size() == 4);
+
+    auto dup = f.manager.DuplicateSubtreesWithUuids({ rootAUuid }, known);
+    REQUIRE(dup.mutation.success);
+    REQUIRE_FALSE(dup.mutation.recoveryWarning.has_value());
+    REQUIRE(dup.createdRoots.size() == 1);
+
+    const auto copied = S4SubtreeEntities(f.manager, dup.createdRoots.front());
+    REQUIRE(copied.size() == 4);
+
+    const auto* copiedOuterPic = reg.try_get<PrefabInstanceComponent>(copied[0]);
+    const auto* copiedNestedRootPic = reg.try_get<PrefabInstanceComponent>(copied[2]);
+    REQUIRE(copiedOuterPic);
+    REQUIRE(copiedNestedRootPic);
+    REQUIRE(copiedOuterPic->instanceId != UUID::Nil());
+    REQUIRE(copiedNestedRootPic->instanceId != UUID::Nil());
+    const UUID copiedOuterId = copiedOuterPic->instanceId;
+    const UUID copiedNestedId = copiedNestedRootPic->instanceId;
+
+    // Both reminted: differ from every source id AND differ from each other.
+    CHECK(copiedOuterId != srcAId);
+    CHECK(copiedNestedId != srcBId);
+    CHECK(copiedOuterId != copiedNestedId);
+
+    // Members agree with their own copied group.
+    CHECK(S4MemberInstanceId(f.manager, copied[1]) == copiedOuterId); // A's child
+    CHECK(S4MemberInstanceId(f.manager, copied[2]) == copiedNestedId); // B's root member
+    CHECK(S4MemberInstanceId(f.manager, copied[3]) == copiedNestedId); // B's child
+
+    std::filesystem::remove_all(dirA);
+    std::filesystem::remove_all(dirB);
+}
+
+// ---------------------------------------------------------------------------
+// Test 13 — malformed copied data with ambiguous group ownership: TWO copied
+// instance roots claim the SAME original instanceId. MintCopiedPrefabLinks
+// does NOT silently guess — it diagnoses loudly (recovery warning naming the
+// ambiguous group) and remints the shared group as ONE coherent fresh id, so
+// the copies never keep the malformed source id and never split arbitrarily.
+//
+// Fault for red: skip the ambiguous-group detection (drop the ambiguousGroups
+// counter) — the operation then succeeds WITHOUT the diagnosis -> CHECK(warning
+// has_value) fails -> RED. Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: duplicate roots sharing one original instanceId are diagnosed and kept as one reminted group")
+{
+    S2Fixture f;
+    const auto dirA = S2UniqueTempDir("p8w3_s4_amb_a");
+    const auto dirB = S2UniqueTempDir("p8w3_s4_amb_b");
+    const auto folderUuid = f.CreateEmpty("Folder");
+    REQUIRE(folderUuid != UUID::Nil());
+    const auto [rootA, childA] = f.MakeInstance(dirA);
+    const auto [rootB, childB] = f.MakeInstance(dirB);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcRootA = reg.try_get<PrefabMemberComponent>(rootA);
+    REQUIRE(srcRootA);
+    const UUID srcAId = srcRootA->instanceId;
+    REQUIRE(srcAId != UUID::Nil());
+
+    // Malformed source: force instance B's components to claim instance A's id.
+    reg.get<PrefabInstanceComponent>(rootB).instanceId = srcAId;
+    reg.get<PrefabMemberComponent>(rootB).instanceId = srcAId;
+    reg.get<PrefabMemberComponent>(childB).instanceId = srcAId;
+
+    const auto rootAUuid = reg.get<EntityIdComponent>(rootA).id;
+    const auto rootBUuid = reg.get<EntityIdComponent>(rootB).id;
+    REQUIRE(f.manager.Reparent({ rootAUuid }, folderUuid, ReparentMode::PreserveLocal).success);
+    REQUIRE(f.manager.Reparent({ rootBUuid }, folderUuid, ReparentMode::PreserveLocal).success);
+
+    auto count = f.manager.CountCanonicalSubtreeEntities({ folderUuid });
+    REQUIRE(count.IsOk());
+    REQUIRE(count.value == 5); // folder + rootA + childA + rootB + childB
+    const auto known = f.manager.ReserveKnownUuids(count.value);
+    REQUIRE(known.size() == 5);
+
+    auto dup = f.manager.DuplicateSubtreesWithUuids({ folderUuid }, known);
+    REQUIRE(dup.mutation.success);
+    // Loud diagnosis: never a silent success.
+    REQUIRE(dup.mutation.recoveryWarning.has_value());
+    CHECK(dup.mutation.recoveryWarning->code == rt2::core::Error::InvalidHierarchy);
+    CHECK(dup.mutation.recoveryWarning->detail.find("multiple copied roots") != std::string::npos);
+    REQUIRE(dup.createdRoots.size() == 1);
+
+    const auto copied = S4SubtreeEntities(f.manager, dup.createdRoots.front());
+    REQUIRE(copied.size() == 5);
+
+    // Both copied roots share ONE fresh id (never the malformed source id).
+    const auto* copiedAPic = reg.try_get<PrefabInstanceComponent>(copied[1]);
+    const auto* copiedBPic = reg.try_get<PrefabInstanceComponent>(copied[3]);
+    REQUIRE(copiedAPic);
+    REQUIRE(copiedBPic);
+    CHECK(copiedAPic->instanceId == copiedBPic->instanceId);
+    CHECK(copiedAPic->instanceId != srcAId);
+    CHECK(copiedAPic->instanceId != UUID::Nil());
+    // All four members agree with the shared fresh id.
+    CHECK(S4MemberInstanceId(f.manager, copied[1]) == copiedAPic->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, copied[2]) == copiedAPic->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, copied[3]) == copiedAPic->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, copied[4]) == copiedAPic->instanceId);
 
     std::filesystem::remove_all(dirA);
     std::filesystem::remove_all(dirB);
