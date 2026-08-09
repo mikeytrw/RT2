@@ -4,6 +4,7 @@
 #include "PrefabComponentKey.h"
 #include "PrefabSerializer.h"
 #include "SceneManager.h"
+#include "SceneHierarchy.h"
 #include "SceneSerializer.h"
 #include "SceneSerializerTestSupport.h"
 #include "SubtreeSnapshot.h"
@@ -1301,6 +1302,197 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
     REQUIRE(liveMember->overrides.size() == 2);
     CHECK(liveMember->overrides[0] == S2Key("transform"));
     CHECK(liveMember->overrides[1] == S2Key("transform"));
+
+    std::filesystem::remove_all(dir);
+}
+
+
+// ============================================================================
+// Phase 8 W3, S4 — duplicating an instance creates a NEW instance identity
+// (implementation spec, W3-D8; Work step S4).
+//
+// CopyAuthoredComponents copies all 13 persisted components verbatim, so a
+// copy of an instance shares the SOURCE's instanceId. W3 groups overrides by
+// instanceId; two instances sharing one id would merge into a single override
+// group (W3-D8). S4 runs MintCopiedPrefabLinks on every copy path: each copied
+// subtree mints ONE fresh instanceId and pushes it onto every copied
+// PrefabMemberComponent, leaving templateIds and override vectors untouched
+// (a copy of a diverged instance stays diverged, W3-D4).
+//
+// This section covers the duplicate side of S4. Test 1 drives the ordinary
+// non-command DuplicateSubtrees path; test 2 drives the UUID-aware
+// DuplicateSubtreesWithUuids path — the one the editor's undoable
+// DuplicateSelectionCommand actually uses (SceneEditorUI.cpp:396-415). A test
+// covering only the ordinary path would pass while the editor's real path
+// stayed broken, so both must be pinned.
+//
+// Discrimination faults (recorded in the verification report), per test:
+//   test 1 fault: delete the MintCopiedPrefabLinks call inside
+//   SceneManager::DuplicateSubtrees (SceneManager.cpp:1603) — the copied
+//   member then keeps the source's instanceId, so CHECK(dupRootId !=
+//   srcInstanceId) fails -> RED. Revert -> GREEN.
+//   test 2 fault: delete the MintCopiedPrefabLinks call inside
+//   SceneManager::DuplicateSubtreesWithUuids (SceneManager.cpp:3457) — same
+//   failure on the editor's command path -> RED. Revert -> GREEN.
+// ============================================================================
+
+namespace
+{
+
+// Collect every entity of the subtree rooted at a UUID (pre-order), via the
+// live registry. Used to enumerate the freshly created duplicate members.
+std::vector<entt::entity> S4SubtreeEntities(SceneManager& manager,
+                                            const UUID& rootUuid)
+{
+    const auto root = manager.FindEntityByUuid(rootUuid);
+    REQUIRE(static_cast<uint32_t>(root) != static_cast<uint32_t>(entt::null));
+    std::vector<entt::entity> out;
+    SceneHierarchy::CollectSubtreePreOrder(
+        manager.GetECS().registry, root, out);
+    return out;
+}
+
+UUID S4MemberInstanceId(SceneManager& manager, entt::entity e)
+{
+    const auto* m = manager.GetECS().registry.try_get<PrefabMemberComponent>(e);
+    REQUIRE(m);
+    return m->instanceId;
+}
+
+UUID S4MemberTemplateId(SceneManager& manager, entt::entity e)
+{
+    const auto* m = manager.GetECS().registry.try_get<PrefabMemberComponent>(e);
+    REQUIRE(m);
+    return m->templateId;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Test 1 — ordinary DuplicateSubtrees mints ONE fresh instanceId for the whole
+// copied instance, every copied member carries it, and templateIds are
+// preserved positionally. The source instance's own identity is untouched.
+//
+// Fault for red: delete the MintCopiedPrefabLinks call inside
+// SceneManager::DuplicateSubtrees — the duplicated members then keep the
+// source's instanceId and CHECK(dupRootId != srcInstanceId) fails -> RED.
+// Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: a duplicated instance gets a fresh instanceId shared by all copied members")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s4_dup_ordinary");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcRoot = reg.try_get<PrefabMemberComponent>(rootHandle);
+    const auto* srcChild = reg.try_get<PrefabMemberComponent>(childHandle);
+    REQUIRE(srcRoot);
+    REQUIRE(srcChild);
+    const UUID srcInstanceId = srcRoot->instanceId;
+    REQUIRE(srcInstanceId != UUID::Nil());
+    // Sanity: one instance, one identity — both members share it.
+    CHECK(srcChild->instanceId == srcInstanceId);
+
+    const auto rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto result = f.manager.DuplicateSubtrees({ rootUuid });
+    REQUIRE(result.success);
+    REQUIRE_FALSE(result.recoveryWarning.has_value());
+
+    // The duplicate root is the sole new root.
+    REQUIRE(result.affectedEntities.size() == 1);
+    const auto dupRootUuid = result.affectedEntities.front();
+    REQUIRE(dupRootUuid != rootUuid);
+
+    const auto dupEntities = S4SubtreeEntities(f.manager, dupRootUuid);
+    REQUIRE(dupEntities.size() == 2);
+
+    // Every copied member carries the same FRESH instanceId.
+    const auto dupRootId = S4MemberInstanceId(f.manager, dupEntities[0]);
+    const auto dupChildId = S4MemberInstanceId(f.manager, dupEntities[1]);
+    CHECK(dupRootId != srcInstanceId);
+    CHECK(dupChildId == dupRootId);
+
+    // The duplicate root still carries a PrefabInstanceComponent, grouped
+    // under the SAME fresh id its members carry.
+    const auto* dupPic =
+        reg.try_get<PrefabInstanceComponent>(dupEntities[0]);
+    REQUIRE(dupPic);
+    CHECK(dupPic->instanceId == dupRootId);
+
+    // templateIds preserved positionally: the child copy keeps the source
+    // child's templateId, the root copy keeps the source root's.
+    CHECK(S4MemberTemplateId(f.manager, dupEntities[1]) == srcChild->templateId);
+    CHECK(S4MemberTemplateId(f.manager, dupEntities[0]) == srcRoot->templateId);
+
+    // The source instance is untouched — still its own id.
+    const auto* srcRootAfter = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(srcRootAfter);
+    CHECK(srcRootAfter->instanceId == srcInstanceId);
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test 2 — DuplicateSubtreesWithUuids (the editor's undoable command path)
+// mints ONE fresh instanceId for the whole copied instance, every copied
+// member carries it, templateIds are preserved, and the source is untouched.
+// Mirrors SceneEditorUI::DuplicateSelectionCommand: count the canonical
+// subtree, reserve exactly that many known UUIDs, pass them in.
+//
+// Fault for red: delete the MintCopiedPrefabLinks call inside
+// SceneManager::DuplicateSubtreesWithUuids — the duplicated members then keep
+// the source's instanceId and CHECK(dupRootId != srcInstanceId) fails -> RED.
+// Revert -> GREEN.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: the command duplicate path mints a fresh instanceId for the copied instance")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s4_dup_uuids");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcRoot = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(srcRoot);
+    const UUID srcInstanceId = srcRoot->instanceId;
+    REQUIRE(srcInstanceId != UUID::Nil());
+    const auto rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    // Host pattern (SceneEditorUI.cpp:401-404): count, reserve, pass known.
+    auto count = f.manager.CountCanonicalSubtreeEntities({ rootUuid });
+    REQUIRE(count.IsOk());
+    REQUIRE(count.value == 2);
+    const auto known = f.manager.ReserveKnownUuids(count.value);
+    REQUIRE(known.size() == 2);
+
+    auto dup = f.manager.DuplicateSubtreesWithUuids({ rootUuid }, known);
+    REQUIRE(dup.mutation.success);
+    REQUIRE_FALSE(dup.mutation.recoveryWarning.has_value());
+    REQUIRE(dup.createdRoots.size() == 1);
+    const auto dupRootUuid = dup.createdRoots.front();
+    REQUIRE(dupRootUuid != rootUuid);
+
+    const auto dupEntities = S4SubtreeEntities(f.manager, dupRootUuid);
+    REQUIRE(dupEntities.size() == 2);
+
+    const auto dupRootId = S4MemberInstanceId(f.manager, dupEntities[0]);
+    const auto dupChildId = S4MemberInstanceId(f.manager, dupEntities[1]);
+    CHECK(dupRootId != srcInstanceId);
+    CHECK(dupChildId == dupRootId);
+
+    const auto* dupPic =
+        reg.try_get<PrefabInstanceComponent>(dupEntities[0]);
+    REQUIRE(dupPic);
+    CHECK(dupPic->instanceId == dupRootId);
+
+    const auto* srcChild = reg.try_get<PrefabMemberComponent>(childHandle);
+    REQUIRE(srcChild);
+    CHECK(S4MemberTemplateId(f.manager, dupEntities[1]) == srcChild->templateId);
+    CHECK(S4MemberTemplateId(f.manager, dupEntities[0]) == srcRoot->templateId);
+
+    const auto* srcRootAfter = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(srcRootAfter);
+    CHECK(srcRootAfter->instanceId == srcInstanceId);
 
     std::filesystem::remove_all(dir);
 }
