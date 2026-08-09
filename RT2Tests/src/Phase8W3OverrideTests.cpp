@@ -2459,3 +2459,508 @@ TEST_CASE("Phase 8 W3: duplicate roots sharing one original instanceId are diagn
     std::filesystem::remove_all(dirA);
     std::filesystem::remove_all(dirB);
 }
+
+// ============================================================================
+// Phase 8 W3, S4 — review fix 2, hostile UUID providers
+// (implementation spec, docs/game-engine-development-plan.md "Phase 8 W3";
+// S4 review finding 2). The copy/instantiate paths must reserve every fresh
+// instanceId BEFORE any destination mutation, retry hostile provider output
+// (nil, live-ID collision, operation-local duplicate) with a finite budget,
+// and fail loudly and transactionally on exhaustion.
+//
+// Tests T14-T18 drive those guarantees with a SCRIPTED, call-logging provider:
+// the provider queue is finite and its over-consumption fails the test loudly
+// via REQUIRE, so "exactly N provider calls" is enforced by construction, not
+// hand-waved. Every scenario uses caller-supplied entity UUIDs (WithUuids
+// paths) or a pre-staged reserve (ordinary path) so the SCRIPT is consumed
+// ONLY by the instance-ID reservation under test.
+//
+// Discrimination faults (recorded in the verification report), per test:
+//   test T14 fault: in ReserveFreshInstanceId (SceneManager.cpp) delete the
+//   `if (forbidden.count(lastAttempt) != 0) continue;` line — the FIRST draw
+//   (the source's own instanceId) is then accepted, so the copied group claims
+//   the SOURCE's identity and CHECK(copiedRootId == validId) fails -> RED.
+//   Revert -> GREEN.
+//   test T15 fault: in ReserveFreshInstanceId delete the
+//   `if (!operationLocal.insert(lastAttempt).second) continue;` line — the
+//   second draw (a repeat of the first group's fresh id) is accepted for a
+//   second group, so two copied groups share one id and
+//   CHECK(cA->instanceId != cB->instanceId) fails -> RED. Revert -> GREEN.
+//   test T16 fault: set kFreshInstanceIdMaxAttempts to 2 (attempt-limit
+//   bypass) — exhaustion stops after 2 provider draws, so the "exactly 16"
+//   assertion fails and the operation partially consumed the hostile queue
+//   -> RED on both the duplicate and the paste scenario. Revert -> GREEN.
+//   test T17 fault: same attempt-limit bypass (kFreshInstanceIdMaxAttempts
+//   = 2) — the success half is robbed of its 3 retries, failing the
+//   successful instantiate -> RED. Revert -> GREEN.
+//   test T18 fault: in SceneManager::DuplicateSubtrees move the instance-ID
+//   reservation block ABOVE the `duplicateUuids = ReserveKnownUuids(...)`
+//   staging line (provider-order swap) — the provider then draws the instance
+//   id FIRST, so the staged entity UUIDs land shifted and
+//   CHECK(copied[0].id == e0) fails -> RED. Revert -> GREEN.
+// ============================================================================
+
+namespace
+{
+
+// Finite scripted v4 queue + full call log. Fails loudly (doctest REQUIRE,
+// propagating an exception through the manager into the test) if the code
+// under test draws MORE ids than the script provides — that is how the exact
+// provider-call expectations are enforced rather than assumed.
+struct ScriptedUuidProvider final : IUuidProvider
+{
+    std::vector<UUID> script;
+    std::size_t cursor = 0;
+    std::vector<UUID> log;
+
+    UUID CreateV4() override
+    {
+        REQUIRE(cursor < script.size());
+        const auto value = script[cursor++];
+        log.push_back(value);
+        return value;
+    }
+};
+
+// Everything a failing operation must leave unchanged: entity/component
+// counts, the entity UUID index, the authoring revision (NotifyAuthoringChanged
+// bumps it), and the resource-table sizes. Equality is the transactional
+// zero-mutation proof.
+struct S4SceneSnapshot
+{
+    std::size_t entities = 0;
+    std::size_t uuidIndex = 0;
+    std::size_t hierarchy = 0;
+    std::size_t pic = 0;
+    std::size_t pmic = 0;
+    std::size_t meshes = 0;
+    std::size_t materials = 0;
+    std::size_t textures = 0;
+    uint64_t revision = 0;
+
+    friend bool operator==(const S4SceneSnapshot& a, const S4SceneSnapshot& b)
+    {
+        return a.entities == b.entities && a.uuidIndex == b.uuidIndex &&
+               a.hierarchy == b.hierarchy && a.pic == b.pic &&
+               a.pmic == b.pmic && a.meshes == b.meshes &&
+               a.materials == b.materials && a.textures == b.textures &&
+               a.revision == b.revision;
+    }
+};
+
+S4SceneSnapshot S4Snapshot(SceneManager& manager)
+{
+    const auto& reg = manager.GetECS().registry;
+    S4SceneSnapshot s;
+    s.entities = reg.view<EntityIdComponent>().size();
+    s.uuidIndex = manager.AuthoringDoc().uuidIndex.Size();
+    s.hierarchy = reg.view<Hierarchy>().size();
+    s.pic = reg.view<PrefabInstanceComponent>().size();
+    s.pmic = reg.view<PrefabMemberComponent>().size();
+    s.meshes = manager.GetECS().meshRegistry.GetCount();
+    s.materials = manager.GetECS().materials.size();
+    s.textures = manager.GetECS().textures.size();
+    s.revision = manager.AuthoringRevision();
+    return s;
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Test T14 — a hostile provider yields (source instanceId, nil, another live
+// instanceId, valid). The reservation must reject the first three draws and
+// accept only the valid one, install it coherently on the copied group, and
+// leave the source and the other live instance untouched. Provider consumption
+// is asserted exactly: 4 draws, logged in order.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: hostile collision queue on duplicate reservation retries to a valid fresh instanceId")
+{
+    S2Fixture f;
+    const auto dirA = S2UniqueTempDir("p8w3_s4_t14_a");
+    const auto dirB = S2UniqueTempDir("p8w3_s4_t14_b");
+    const auto [rootA, childA] = f.MakeInstance(dirA);
+    const auto [rootB, childB] = f.MakeInstance(dirB);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcA = reg.try_get<PrefabMemberComponent>(rootA);
+    const auto* srcB = reg.try_get<PrefabMemberComponent>(rootB);
+    REQUIRE(srcA);
+    REQUIRE(srcB);
+    const UUID srcAId = srcA->instanceId;
+    const UUID srcBId = srcB->instanceId;
+    REQUIRE(srcAId != UUID::Nil());
+    REQUIRE(srcBId != UUID::Nil());
+    REQUIRE(srcAId != srcBId);
+
+    const auto rootAUuid = reg.get<EntityIdComponent>(rootA).id;
+
+    auto count = f.manager.CountCanonicalSubtreeEntities({ rootAUuid });
+    REQUIRE(count.IsOk());
+    REQUIRE(count.value == 2);
+    const auto known = f.manager.ReserveKnownUuids(count.value);
+    REQUIRE(known.size() == 2);
+    const auto validId = f.manager.ReserveKnownUuid();
+    REQUIRE(validId != UUID::Nil());
+
+    ScriptedUuidProvider hostile;
+    hostile.script = { srcAId, UUID::Nil(), srcBId, validId };
+    f.manager.SetUuidProvider(&hostile);
+
+    auto dup = f.manager.DuplicateSubtreesWithUuids({ rootAUuid }, known);
+    REQUIRE(dup.mutation.success);
+    REQUIRE_FALSE(dup.mutation.recoveryWarning.has_value());
+    REQUIRE(dup.createdRoots.size() == 1);
+
+    // Exact provider consumption: 4 draws, fully consuming the queue in order.
+    REQUIRE(hostile.cursor == 4);
+    CHECK(hostile.log.size() == 4);
+    CHECK(hostile.log[0] == srcAId);    // collides with a live source==dest id
+    CHECK(hostile.log[1] == UUID::Nil());
+    CHECK(hostile.log[2] == srcBId);    // collides with another live instance
+    CHECK(hostile.log[3] == validId);
+
+    const auto copied = S4SubtreeEntities(f.manager, dup.createdRoots.front());
+    REQUIRE(copied.size() == 2);
+    const auto copiedRootId = S4MemberInstanceId(f.manager, copied[0]);
+    const auto copiedChildId = S4MemberInstanceId(f.manager, copied[1]);
+    CHECK(copiedRootId == validId);     // the first non-colliding draw won
+    CHECK(copiedChildId == validId);
+    const auto* copiedPic = reg.try_get<PrefabInstanceComponent>(copied[0]);
+    REQUIRE(copiedPic);
+    CHECK(copiedPic->instanceId == validId);
+
+    // Source and the other live instance are untouched.
+    const auto* srcAAfter = reg.try_get<PrefabMemberComponent>(rootA);
+    REQUIRE(srcAAfter);
+    CHECK(srcAAfter->instanceId == srcAId);
+    const auto* srcBAfter = reg.try_get<PrefabMemberComponent>(rootB);
+    REQUIRE(srcBAfter);
+    CHECK(srcBAfter->instanceId == srcBId);
+
+    std::filesystem::remove_all(dirA);
+    std::filesystem::remove_all(dirB);
+}
+
+// ---------------------------------------------------------------------------
+// Test T15 — two complete groups in one operation; the provider returns a
+// valid id, then the SAME id again, then a second valid id. The second draw
+// must be rejected as an operation-local duplicate and retried, so the two
+// copied groups get DISTINCT fresh ids (one each from the script).
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: operation-local duplicate draws are retried per group")
+{
+    S2Fixture f;
+    const auto dirA = S2UniqueTempDir("p8w3_s4_t15_a");
+    const auto dirB = S2UniqueTempDir("p8w3_s4_t15_b");
+    const auto folderUuid = f.CreateEmpty("Folder");
+    REQUIRE(folderUuid != UUID::Nil());
+    const auto [rootA, childA] = f.MakeInstance(dirA);
+    const auto [rootB, childB] = f.MakeInstance(dirB);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcA = reg.try_get<PrefabMemberComponent>(rootA);
+    const auto* srcB = reg.try_get<PrefabMemberComponent>(rootB);
+    REQUIRE(srcA);
+    REQUIRE(srcB);
+    const UUID srcAId = srcA->instanceId;
+    const UUID srcBId = srcB->instanceId;
+    REQUIRE(srcAId != srcBId);
+
+    const auto rootAUuid = reg.get<EntityIdComponent>(rootA).id;
+    const auto rootBUuid = reg.get<EntityIdComponent>(rootB).id;
+    REQUIRE(f.manager.Reparent({ rootAUuid }, folderUuid, ReparentMode::PreserveLocal).success);
+    REQUIRE(f.manager.Reparent({ rootBUuid }, folderUuid, ReparentMode::PreserveLocal).success);
+
+    auto count = f.manager.CountCanonicalSubtreeEntities({ folderUuid });
+    REQUIRE(count.IsOk());
+    REQUIRE(count.value == 5); // folder + A(root+child) + B(root+child)
+    const auto known = f.manager.ReserveKnownUuids(count.value);
+    REQUIRE(known.size() == 5);
+    const auto x = f.manager.ReserveKnownUuid();
+    const auto y = f.manager.ReserveKnownUuid();
+    REQUIRE(x != y);
+
+    ScriptedUuidProvider hostile;
+    hostile.script = { x, x, y };   // x reserved, x repeated -> retry, y
+    f.manager.SetUuidProvider(&hostile);
+
+    auto dup = f.manager.DuplicateSubtreesWithUuids({ folderUuid }, known);
+    REQUIRE(dup.mutation.success);
+    REQUIRE_FALSE(dup.mutation.recoveryWarning.has_value());
+    REQUIRE(dup.createdRoots.size() == 1);
+
+    REQUIRE(hostile.cursor == 3);
+    CHECK(hostile.log.size() == 3);
+    CHECK(hostile.log[0] == x);
+    CHECK(hostile.log[1] == x);     // the operation-local repeat was rejected
+    CHECK(hostile.log[2] == y);
+
+    const auto copied = S4SubtreeEntities(f.manager, dup.createdRoots.front());
+    REQUIRE(copied.size() == 5);
+
+    // The folder copy stays ordinary; both copied instance roots reminted.
+    CHECK_FALSE(reg.all_of<PrefabInstanceComponent>(copied[0]));
+    CHECK_FALSE(reg.all_of<PrefabMemberComponent>(copied[0]));
+    const auto* cA = reg.try_get<PrefabInstanceComponent>(copied[1]);
+    const auto* cB = reg.try_get<PrefabInstanceComponent>(copied[3]);
+    REQUIRE(cA);
+    REQUIRE(cB);
+    CHECK(cA->instanceId != UUID::Nil());
+    CHECK(cB->instanceId != UUID::Nil());
+    CHECK(cA->instanceId != cB->instanceId);
+    CHECK(cA->instanceId != srcAId);
+    CHECK(cB->instanceId != srcAId);
+    CHECK(cA->instanceId != srcBId);
+    CHECK(cB->instanceId != srcBId);
+    // One group got x, the other y (iteration order over the group map is
+    // unspecified, but the pair of fresh ids must be exactly {x, y}).
+    CHECK(((cA->instanceId == x) || (cA->instanceId == y)));   // each got x or y
+    CHECK(((cB->instanceId == x) || (cB->instanceId == y)));   // and the two differ
+    CHECK(cA->instanceId != cB->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, copied[2]) == cA->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, copied[4]) == cB->instanceId);
+
+    std::filesystem::remove_all(dirA);
+    std::filesystem::remove_all(dirB);
+}
+
+// ---------------------------------------------------------------------------
+// Test T16 — an always-nil provider exhausts the reservation on BOTH
+// UUID-aware paths (duplicate and paste). Result: DuplicateUuid naming the
+// exhaustion, EXACTLY 16 provider attempts, zero created entities, unchanged
+// entity UUID index / hierarchy / component counts / authoring revision /
+// sync impact, and the clipboard (source) untouched.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: instance-ID reservation exhaustion on duplicate+paste leaves zero destination change")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s4_t16");
+    const auto [rootA, childA] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcA = reg.try_get<PrefabMemberComponent>(rootA);
+    REQUIRE(srcA);
+    const UUID srcAId = srcA->instanceId;
+    const auto rootAUuid = reg.get<EntityIdComponent>(rootA).id;
+
+    const auto pre = S4Snapshot(f.manager);
+    REQUIRE(pre.pic == 1);
+
+    // Duplicate path: caller-supplied entity UUIDs pre-drawn, then the
+    // provider is swapped to an always-nil script.
+    auto count = f.manager.CountCanonicalSubtreeEntities({ rootAUuid });
+    REQUIRE(count.IsOk());
+    REQUIRE(count.value == 2);
+    const auto knownDup = f.manager.ReserveKnownUuids(count.value);
+    REQUIRE(knownDup.size() == 2);
+
+    // Clipboard for the paste path, cloned and counted BEFORE the swap; its
+    // entity UUIDs are caller-supplied and pre-drawn from the manager.
+    SceneDocument clipboard;
+    DeterministicUuidProvider idsClip;
+    clipboard.SetUuidProvider(&idsClip);
+    Error cloneErr;
+    REQUIRE(SceneSerializer::CloneInMemory(f.manager.AuthoringDoc(), clipboard, cloneErr));
+    const auto clipRoot = clipboard.FindByUuid(rootAUuid);
+    REQUIRE(static_cast<uint32_t>(clipRoot) != static_cast<uint32_t>(entt::null));
+    std::vector<entt::entity> clipSources;
+    SceneHierarchy::CollectSubtreePreOrder(clipboard.ecs.registry, clipRoot, clipSources);
+    REQUIRE(clipSources.size() == 2);
+    const auto knownPaste = f.manager.ReserveKnownUuids(clipSources.size());
+    REQUIRE(knownPaste.size() == 2);
+    const auto clipPicBefore = clipboard.ecs.registry.view<PrefabInstanceComponent>().size();
+    const auto clipPmicBefore = clipboard.ecs.registry.view<PrefabMemberComponent>().size();
+
+    ScriptedUuidProvider hostile1;
+    hostile1.script.assign(16, UUID::Nil());
+    f.manager.SetUuidProvider(&hostile1);
+
+    auto dup = f.manager.DuplicateSubtreesWithUuids({ rootAUuid }, knownDup);
+    REQUIRE_FALSE(dup.mutation.success);
+    CHECK(dup.mutation.error.code == rt2::core::Error::DuplicateUuid);
+    CHECK(dup.mutation.error.detail.find("16") != std::string::npos);
+    CHECK(hostile1.cursor == 16);       // exactly 16 attempts, queue consumed
+    CHECK(hostile1.log.size() == 16);
+    for (const auto& id : hostile1.log)
+        CHECK(id.IsNull());
+    CHECK(dup.createdRoots.empty());
+    CHECK(dup.mutation.affectedEntities.empty());
+    CHECK(dup.mutation.syncImpact == rt2::core::SyncImpact::None);
+    REQUIRE(S4Snapshot(f.manager) == pre);   // zero mutation
+
+    ScriptedUuidProvider hostile2;
+    hostile2.script.assign(16, UUID::Nil());
+    f.manager.SetUuidProvider(&hostile2);
+
+    auto paste = f.manager.PasteSubtreesWithUuids(
+        clipboard, { rootAUuid }, std::nullopt, knownPaste);
+    REQUIRE_FALSE(paste.mutation.success);
+    CHECK(paste.mutation.error.code == rt2::core::Error::DuplicateUuid);
+    CHECK(paste.mutation.error.detail.find("16") != std::string::npos);
+    CHECK(hostile2.cursor == 16);
+    CHECK(paste.createdRoots.empty());
+    CHECK(paste.mutation.affectedEntities.empty());
+    CHECK(paste.mutation.syncImpact == rt2::core::SyncImpact::None);
+    REQUIRE(S4Snapshot(f.manager) == pre);   // still zero mutation
+
+    // Clipboard (the paste source) untouched.
+    CHECK(clipboard.ecs.registry.view<PrefabInstanceComponent>().size() == clipPicBefore);
+    CHECK(clipboard.ecs.registry.view<PrefabMemberComponent>().size() == clipPmicBefore);
+    const auto* clipRootAfter = clipboard.ecs.registry.try_get<PrefabMemberComponent>(clipRoot);
+    REQUIRE(clipRootAfter);
+    CHECK(clipRootAfter->instanceId == srcAId);
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test T17 — InstantiatePrefabWithUuids. Success half: the reservation
+// retries past a live instanceId and nil to a valid id, installed coherently.
+// Exhaustion half: an always-nil provider fails BEFORE any resource/entity
+// mutation — prefab file bytes, entity/component counts, UUID index,
+// mesh/material/texture table sizes, diagnostics and authoring revision are
+// all unchanged.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: instantiate reservation retries to a valid id and exhausts before mutation")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s4_t17");
+    const auto [rootA, childA] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const auto* srcA = reg.try_get<PrefabMemberComponent>(rootA);
+    REQUIRE(srcA);
+    const UUID srcAId = srcA->instanceId;
+    const auto prefabPath = dir / "s2.rt2prefab";
+
+    // Pre-draw ALL caller-supplied entity UUIDs before swapping the provider,
+    // so the scripted scripts are consumed only by instance-ID reservation.
+    const auto knownEnt = f.manager.ReserveKnownUuids(2);
+    REQUIRE(knownEnt.size() == 2);
+    const auto validId = f.manager.ReserveKnownUuid();
+    const auto knownEnt2 = f.manager.ReserveKnownUuids(2);
+    REQUIRE(knownEnt2.size() == 2);
+
+    // Success half: collide with the live instance id, yield nil, then valid.
+    ScriptedUuidProvider hostile;
+    hostile.script = { srcAId, UUID::Nil(), validId };
+    f.manager.SetUuidProvider(&hostile);
+
+    std::vector<AssetDiagnostic> diags;
+    auto inst = f.manager.InstantiatePrefabWithUuids(prefabPath, knownEnt, diags);
+    REQUIRE(inst.mutation.success);
+    REQUIRE(inst.instanceId.has_value());
+    CHECK(*inst.instanceId == validId);
+    CHECK(hostile.cursor == 3);
+    CHECK(hostile.log.size() == 3);
+    CHECK(hostile.log[0] == srcAId);
+    CHECK(hostile.log[1] == UUID::Nil());
+    CHECK(hostile.log[2] == validId);
+
+    const auto newRoot = f.manager.FindEntityByUuid(knownEnt[0]);
+    REQUIRE(static_cast<uint32_t>(newRoot) != static_cast<uint32_t>(entt::null));
+    REQUIRE(reg.all_of<PrefabInstanceComponent>(newRoot));
+    CHECK(reg.get<PrefabInstanceComponent>(newRoot).instanceId == validId);
+    CHECK(S4MemberInstanceId(f.manager, newRoot) == validId);
+    const auto newChild = f.manager.FindEntityByUuid(knownEnt[1]);
+    REQUIRE(static_cast<uint32_t>(newChild) != static_cast<uint32_t>(entt::null));
+    CHECK(S4MemberInstanceId(f.manager, newChild) == validId);
+
+    // MakeInstance leaves the prefab SOURCE entities (root+child) in the scene
+    // plus one instantiated copy (root+child): 4 entities, 1 instance. The
+    // successful instantiate adds another 2-member instance -> 6/2.
+    const auto afterSuccess = S4Snapshot(f.manager);
+    REQUIRE(afterSuccess.entities == 6);
+    REQUIRE(afterSuccess.pic == 2);
+    const auto diagsBeforeExhaust = diags.size();
+    const std::string prefabBytes = S2ReadFile(prefabPath);
+    REQUIRE(!prefabBytes.empty());
+
+    // Exhaustion half: always-nil provider -> fail before resource/entity
+    // mutation; prefab file bytes and every table stay byte-identical.
+    ScriptedUuidProvider hostile2;
+    hostile2.script.assign(16, UUID::Nil());
+    f.manager.SetUuidProvider(&hostile2);
+
+    std::vector<AssetDiagnostic> diags2;
+    auto inst2 = f.manager.InstantiatePrefabWithUuids(prefabPath, knownEnt2, diags2);
+    REQUIRE_FALSE(inst2.mutation.success);
+    CHECK(inst2.mutation.error.code == rt2::core::Error::DuplicateUuid);
+    CHECK(inst2.mutation.error.detail.find("16") != std::string::npos);
+    CHECK(hostile2.cursor == 16);
+    CHECK(hostile2.log.size() == 16);
+    CHECK(inst2.createdRoots.empty());
+    CHECK(inst2.mutation.affectedEntities.empty());
+    CHECK(inst2.mutation.syncImpact == rt2::core::SyncImpact::None);
+    CHECK(diags2.size() == diagsBeforeExhaust);
+    CHECK(S2ReadFile(prefabPath) == prefabBytes); // file untouched
+    REQUIRE(S4Snapshot(f.manager) == afterSuccess); // zero resource/entity change
+
+    // The pre-existing source instance is still intact.
+    const auto* srcAAfter = reg.try_get<PrefabMemberComponent>(rootA);
+    REQUIRE(srcAAfter);
+    CHECK(srcAAfter->instanceId == srcAId);
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test T18 — the ORDINARY DuplicateSubtrees path must consume the provider in
+// the documented exact order: N staged entity-UUID draws first, then G
+// instance-ID draws (G == number of complete instance groups in the forest).
+// A scripted provider pins the order by value: the first N ids become the
+// copies' entity UUIDs, the final G ids become the copied instance's id.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: ordinary duplicate provider order is entity UUIDs then instance IDs")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s4_t18");
+    const auto [rootA, childA] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcA = reg.try_get<PrefabMemberComponent>(rootA);
+    REQUIRE(srcA);
+    const UUID srcAId = srcA->instanceId;
+    const auto rootAUuid = reg.get<EntityIdComponent>(rootA).id;
+
+    // Pre-draw the exact provider order the ordinary path MUST follow:
+    // entity UUIDs first (root copy, child copy), then the instance id.
+    const auto e0 = f.manager.ReserveKnownUuid();
+    const auto e1 = f.manager.ReserveKnownUuid();
+    const auto iid = f.manager.ReserveKnownUuid();
+    REQUIRE(e0 != e1);
+    REQUIRE(e1 != iid);
+    REQUIRE(iid != srcAId);
+
+    ScriptedUuidProvider hostile;
+    hostile.script = { e0, e1, iid };
+    f.manager.SetUuidProvider(&hostile);
+
+    auto result = f.manager.DuplicateSubtrees({ rootAUuid });
+    REQUIRE(result.success);
+    REQUIRE_FALSE(result.recoveryWarning.has_value());
+
+    // Exact provider-consumption order: 2 entity UUIDs, then 1 instance id.
+    REQUIRE(hostile.cursor == 3);
+    CHECK(hostile.log.size() == 3);
+    CHECK(hostile.log[0] == e0);
+    CHECK(hostile.log[1] == e1);
+    CHECK(hostile.log[2] == iid);
+
+    REQUIRE(result.affectedEntities.size() == 1);
+    const auto copied = S4SubtreeEntities(f.manager, result.affectedEntities.front());
+    REQUIRE(copied.size() == 2);
+    CHECK(reg.get<EntityIdComponent>(copied[0]).id == e0);
+    CHECK(reg.get<EntityIdComponent>(copied[1]).id == e1);
+    CHECK(S4MemberInstanceId(f.manager, copied[0]) == iid);
+    CHECK(S4MemberInstanceId(f.manager, copied[1]) == iid);
+    const auto* copiedPic = reg.try_get<PrefabInstanceComponent>(copied[0]);
+    REQUIRE(copiedPic);
+    CHECK(copiedPic->instanceId == iid);
+
+    // Source untouched.
+    const auto* srcAAfter = reg.try_get<PrefabMemberComponent>(rootA);
+    REQUIRE(srcAAfter);
+    CHECK(srcAAfter->instanceId == srcAId);
+
+    std::filesystem::remove_all(dir);
+}
