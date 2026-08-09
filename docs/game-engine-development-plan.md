@@ -6192,6 +6192,17 @@ document is a period record of a superseded state.**
 > and do not include the Phase 8 W1/W2 test additions; the 840/840 figures
 > supersede them.
 
+> **Updated 2026-08-09 — S4 review-fix closure measurement (supersedes the
+> 840/840 note above).** Full measured run from the repository root after the
+> S4 review-fix commits landed (`45d6386`, `b1be897`, `7d25e8e`). Both
+> configurations now measure **850 run / 850 passed / 0 failed / 0 skipped;
+> 148,319 assertions**. Release recorded 3 consecutive clean full runs and Debug
+> 2 clean full runs with no failure reproduced; the Phase6B
+> file-timestamp-granularity timing test noted above did not flake in any of
+> these runs. The 840/840 figure above is the recorded measurement of the S4
+> closure before the review fixup and is superseded by the 850/850 figures. The
+> 700/700 rows remain the 2026-07-31 period record.
+
 Run from the repository root — `RT2Tests.exe` resolves some fixtures by
 relative path and both fails and writes stray files if run from elsewhere.
 
@@ -14404,3 +14415,110 @@ and 279 assertions. The authoritative "Test baseline" section still records a
 period record of the Phase 7 W4 state and does not include the Phase 8 W1/W2
 test additions that landed between that measurement and this S4 work.
 See "Test baseline" below for the updated current-state entry.
+
+#### Supersession / correction note (2026-08-09, S4 review fixup closure)
+
+The report above was reviewed against the tree as it stood at `8f01c53` in
+[Phase 8 W3 S4 final code review]
+(`artifacts/phase8-w3-s4-final-review/index.md`, review range
+`2732577..8f01c53`). The review found two P1 identity-policy defects and two P2
+problems in the code and in this report; all four were addressed by the
+fixup commits below. This note is the dated correction the append-only rule
+requires; the report above remains the audit record for the original
+`f72d0e1` work.
+
+**Fixup commits (all on `phase8-w3-overrides`).**
+
+- `45d6386` — forest-wide prefab-group classification for copies (review fix 1).
+- `b1be897` — pre-mutation instance-ID reservation for copies and instantiate
+  (review fix 2).
+- `7d25e8e` — hostile UUID-provider discrimination suite (T14-T18).
+
+**Corrected citations.** The report's grounding references were written
+against the pre-fix tree and several no longer resolve. Fresh references:
+
+- S4 the *work step* is at `:14133-14134` in this file, not `:14120-14121`
+  (those lines discuss the material fan-out command).
+- The settled D8 text this implementation was planned against is at
+  `:14078-14100`, not `:1313-1336`.
+- There are **four** copy-shaped entry points that reach copied subtrees —
+  `DuplicateSubtrees`, `PasteSubtreesFrom`, `DuplicateSubtreesWithUuids`,
+  `PasteSubtreesWithUuids` — not three. All four now chain
+  plan -> reserve -> create -> apply (`SceneManager.cpp:190-196`).
+- The report cited instantiate minting at `SceneManager.cpp:3003`. As of this
+  note, `InstantiatePrefabWithUuids` (`:3097`) reserves its single fresh
+  `instanceId` at `SceneManager.cpp:3316-3340`
+  (reserve call at `:3331`), after input/file validation and before any
+  destination mutation.
+
+**Superseded contract description.** The report's "helper's contract" section
+describes the pre-fix `MintCopiedPrefabLinks` selected-root rule. The review
+(showing code lines above) established that rule is *narrower than* grounded
+D8 and loses complete instances that sit below an ordinary selected root. The
+contract delivered by the fixup is:
+
+- **Forest-wide group classification.** `PlanCopiedPrefabLinks`
+  (`SceneManager.cpp:214-253`) classifies the whole copied FOREST — every
+  entity reachable from any selected root (`SceneHierarchy::CollectSubtreePreOrder`,
+  `:220-233`) — grouped by the source entities' **original** `instanceId`,
+  never by the selected scene-hierarchy root. A group holding a copy of a
+  `PrefabInstanceComponent` is one COMPLETE instance and gets one fresh id
+  shared by that group's copied roots and members (`:240-244`). Nested complete
+  instances are handled per component: the inner instance's root keeps its own
+  group's fresh id on its `PrefabInstanceComponent` and the enclosing group's
+  fresh id on its `PrefabMemberComponent` (`:154-159`).
+- **Orphan diagnostics.** A member whose original id has no copied root is an
+  orphan member fragment: both prefab components are stripped at apply time and
+  the entity becomes ordinary, counted so the caller raises a `recoveryWarning`
+  (`Error::InvalidHierarchy`) — never a hard failure, never a fabricated link
+  (`:160-167`, stripped in `ApplyCopiedPrefabLinks` at `:340-358`).
+- **Ambiguous grouping.** Two copied roots sharing one original id is diagnosed
+  (`ambiguousGroups`, `:249-251`) via the recovery warning and kept as ONE
+  reminted group, never split or merged arbitrarily.
+- **Pre-mutation collision-safe reservation.** `ReserveFreshInstanceId`
+  (`SceneManager.cpp:304-328`) draws one id per complete group BEFORE any
+  destination mutation via `FreshInstanceIdForbiddenSet`
+  (`:268-296`), which forbids nil draws, every entity UUID in the authoring
+  `uuidIndex`, every live `PrefabInstanceComponent`/`PrefabMemberComponent`
+  `instanceId` in the destination registry, every live source `instanceId`
+  when the source is a distinct document, and every id already reserved in this
+  operation (`operationLocal`). A hostile provider (nil, live-id collision,
+  operation-local repeat) retries up to `kFreshInstanceIdMaxAttempts = 16`
+  (`:259`); exhaustion fails the operation loudly with a `DuplicateUuid`
+  diagnostic (`:322-327`) and **zero destination change** — no entities, no
+  UUID-index residue, no partially changed resource tables.
+- **Deterministic provider-consumption order.** The ordinary copy paths stage
+  the copy's entity UUIDs FIRST (`ReserveKnownUuids(sources.size())` at
+  `:1778`), then draw one fresh instanceId per complete group; the UUID-aware
+  editor paths receive caller-supplied entity UUIDs and draw only the fresh
+  instanceIds. Test T18 pins the entity-before-instance order on the ordinary
+  `DuplicateSubtrees` with a scripted provider; T17 pins instantiate's
+  ResolveOrAssign-then-reservation draw order.
+- **Instantiate shares the guarantee.** `InstantiatePrefabWithUuids`
+  (`:3097`) reserves through the same helper before the resource merge or
+  entity creation (block at `:3316-3340`, provider-draw note at `:3109-3113`:
+  the one asset-identity draw in `ResolveOrAssign`, then this single draw).
+- **Restore is still not a copy.** `RestoreSubtrees` (`:2709`) reinstates the
+  recorded identity verbatim through `ApplySubtreeRecord` (`:2145`, invoked at
+  `:2804`); it never calls the reservation path.
+
+**Tests.** The review-fix suite added ten cases in
+`RT2Tests/src/Phase8W3OverrideTests.cpp`: tests 9-12 plus the ambiguous-group
+case (13) in `45d6386`, and T14-T18 in `7d25e8e`. Tests 9-12 cover the
+ordinary folder holding a complete instance on duplicate and paste, the mixed
+forest (complete instance + orphan fragment), and nested distinct instances;
+test 13 pins the ambiguous-group diagnosis; T14-T18 drive the reservation with
+a finite, call-logging `ScriptedUuidProvider` that fails the test loudly on
+over-consumption (`:2510-2527`) — exact provider-draw counts are enforced by
+construction. The fault-injection map for all ten is documented in the file's
+S4 section headers.
+
+**Review P2 also fixed.** Test 6's stale-pointer problem (dereferencing EnTT
+component pointers across `RemoveSubtreesExact` entity destruction) was fixed
+in `45d6386`: expected `templateId` and override values are now copied as
+values before any entity is destroyed (`:1866-1878`) and every post-restore
+comparison uses those pre-copied values (`:1920-1925`).
+
+**S5/S6 remain.** The marking half of work step S4 — automatic marking (S5/S6)
+— is still not delivered and is carried to later work; this note closes only
+the S4 identity-policy review findings.
