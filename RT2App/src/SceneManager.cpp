@@ -171,16 +171,20 @@ void RemapCopiedScriptFields(
 //          split or merged).
 //        * everything else (no prefab components): untouched, reserves nothing.
 //
-//   2. RESERVE — ReserveFreshInstanceId draws ONE id per complete group from
-//      the provider, ALL BEFORE any destination mutation. Each draw must be
-//      non-nil and absent from every entity UUID in the authoring document,
-//      every live PrefabInstanceComponent/PrefabMemberComponent instanceId in
-//      the destination registry, every live instanceId in the SOURCE registry
-//      when the source is a DISTINCT document (paste from a
-//      snapshot/clipboard), and every earlier reservation in the same
-//      operation. A hostile provider that yields nil or colliding ids retries
-//      up to kFreshInstanceIdMaxAttempts; exhaustion fails the operation with
-//      a DuplicateUuid diagnostic and ZERO destination change.
+//   2. RESERVE — BEFORE any destination mutation, the destination entity UUIDs
+//      (sources.size() draws, all first — validated non-nil, absent from the
+//      authoring document, absent from the source entities' ids when the
+//      source is a DISTINCT document, and distinct within the operation) and
+//      then ONE instanceId per complete group are drawn from the provider.
+//      Each instanceId draw must be non-nil and absent from every entity UUID
+//      in the authoring document, every live
+//      PrefabInstanceComponent/PrefabMemberComponent instanceId in the
+//      destination registry, every live instanceId in the SOURCE registry when
+//      the source is a DISTINCT document (paste from a snapshot/clipboard),
+//      and every earlier reservation in the same operation. A hostile provider
+//      that yields nil or colliding ids retries up to
+//      kUuidReservationMaxAttempts; exhaustion fails the operation with a
+//      stage-specific DuplicateUuid diagnostic and ZERO destination change.
 //
 //   3. APPLY — ApplyCopiedPrefabLinks runs after the create loop and consumes
 //      ONLY the pre-reserved freshIdByOriginalId plan: it assigns each
@@ -252,11 +256,12 @@ CopiedPrefabPlan PlanCopiedPrefabLinks(
 	return plan;
 }
 
-// Finite attempt budget for fresh instance-ID reservation. A degraded/hostile
-// UUID provider — nil draws, draws colliding with a live instance/member, or
-// draws repeated within one operation — exhausts this budget and the operation
-// FAILS loudly (DuplicateUuid) BEFORE any destination mutation.
-constexpr int kFreshInstanceIdMaxAttempts = 16;
+// Finite attempt budget for BOTH pre-mutation UUID reservations (entity UUIDs
+// and fresh instance-IDs). A degraded/hostile UUID provider — nil draws, draws
+// colliding with a live entity/instance/member, or draws repeated within one
+// operation — exhausts this budget and the operation FAILS loudly
+// (DuplicateUuid) BEFORE any destination mutation.
+constexpr int kUuidReservationMaxAttempts = 16;
 
 // Every UUID a freshly reserved instanceId must NOT equal: every entity UUID
 // in the authoring document, every live destination PrefabInstanceComponent/
@@ -295,9 +300,89 @@ std::unordered_set<rt2::core::UUID> FreshInstanceIdForbiddenSet(
 	return forbidden;
 }
 
+// Every entity UUID a freshly reserved entity id must NOT equal: every entity
+// UUID indexed in the authoring document, and — when the source is a DISTINCT
+// document (a paste from a snapshot/clipboard) — every source entity's id, so
+// a pasted entity never adopts the identity of the entity it was copied from.
+// A duplicate passes source == &destination (the copied forest lives in the
+// same registry), whose entity ids the authoring index already covers.
+std::unordered_set<rt2::core::UUID> EntityUuidForbiddenSet(
+	const rt2::core::SceneDocument& authoring,
+	const entt::registry& destination,
+	const entt::registry* source)
+{
+	std::unordered_set<rt2::core::UUID> forbidden;
+	for (const auto& entry : authoring.uuidIndex.All())
+		forbidden.insert(entry.first);
+	if (source && source != &destination)
+	{
+		auto view = source->view<EntityIdComponent>();
+		for (const auto e : view)
+		{
+			const auto& id = view.get<EntityIdComponent>(e).id;
+			if (!id.IsNull())
+				forbidden.insert(id);
+		}
+	}
+	return forbidden;
+}
+
+// Reserve `count` entity UUIDs destined for freshly created entities, drawing
+// from `produce`. Each draw survives three rejection rules before it is staged:
+// a nil draw is a broken provider; a draw equal to any id in `forbidden` would
+// collide with a live entity (the authoring index) or — for a paste from a
+// distinct document — with the source entity it was copied from; a draw already
+// in `operationLocal` would make two destinations in this operation share one
+// id. Retries up to kUuidReservationMaxAttempts per draw (the same finite
+// budget as fresh instance-ID reservation); on exhaustion fills `err` with a
+// stage-specific DuplicateUuid naming the offending (last) draw, stages
+// NOTHING, and returns false. The caller MUST run this before any destination
+// mutation, so failure here is transactional.
+bool ReserveValidEntityUuids(
+	const std::function<rt2::core::UUID()>& produce,
+	const std::unordered_set<rt2::core::UUID>& forbidden,
+	std::unordered_set<rt2::core::UUID>& operationLocal,
+	size_t count,
+	const std::string& stage,
+	std::vector<rt2::core::UUID>& out,
+	rt2::core::Error& err)
+{
+	out.reserve(count);
+	rt2::core::UUID lastDraw;
+	for (size_t i = 0; i < count; ++i)
+	{
+		bool staged = false;
+		for (int attempt = 0; attempt < kUuidReservationMaxAttempts; ++attempt)
+		{
+			lastDraw = produce();
+			if (lastDraw.IsNull())
+				continue;                    // nil draw: retry (broken provider)
+			if (forbidden.count(lastDraw) != 0)
+				continue;                    // live entity / source-entity id
+			if (!operationLocal.insert(lastDraw).second)
+				continue;                    // same id drawn twice this operation
+			out.push_back(lastDraw);
+			staged = true;
+			break;
+		}
+		if (!staged)
+		{
+			err.code = rt2::core::Error::DuplicateUuid;
+			err.path = lastDraw.ToString();
+			err.detail = stage + ": exceeded " +
+				std::to_string(kUuidReservationMaxAttempts) +
+				" entity-UUID reservation attempts before mutation (the UUID "
+				"provider yielded nil, an id already indexed in the authoring "
+				"document, a source entity's id, or a repeat)";
+			return false;
+		}
+	}
+	return true;
+}
+
 // Draw ONE fresh instanceId from `produce` that is collision-free against
 // `forbidden` and distinct from every id already reserved in this operation
-// (`operationLocal`). Retries up to kFreshInstanceIdMaxAttempts; on exhaustion
+// (`operationLocal`). Retries up to kUuidReservationMaxAttempts; on exhaustion
 // fills `err` with a DuplicateUuid diagnostic naming the offending (last)
 // draw and returns nullopt. The caller MUST have no destination mutation in
 // flight when this fails — the whole point of reserving before creating.
@@ -308,7 +393,7 @@ std::optional<rt2::core::UUID> ReserveFreshInstanceId(
 	rt2::core::Error& err)
 {
 	rt2::core::UUID lastAttempt;
-	for (int attempt = 0; attempt < kFreshInstanceIdMaxAttempts; ++attempt)
+	for (int attempt = 0; attempt < kUuidReservationMaxAttempts; ++attempt)
 	{
 		lastAttempt = produce();
 		if (lastAttempt.IsNull())
@@ -321,7 +406,7 @@ std::optional<rt2::core::UUID> ReserveFreshInstanceId(
 	}
 	err.code = rt2::core::Error::DuplicateUuid;
 	err.path = lastAttempt.ToString();
-	err.detail = "exceeded " + std::to_string(kFreshInstanceIdMaxAttempts) +
+	err.detail = "exceeded " + std::to_string(kUuidReservationMaxAttempts) +
 		" fresh instance-ID reservation attempts before mutation (the UUID "
 		"provider yielded nil, a live instance/member id, or a repeat)";
 	return std::nullopt;
@@ -1775,7 +1860,24 @@ EditorMutationResult SceneManager::DuplicateSubtrees(
 	// therefore deterministic and pinned by the fixup tests: every entity UUID
 	// (sources.size() draws) comes first, then one fresh instanceId per
 	// complete instance group. The create loop below consumes no provider.
-	std::vector<rt2::core::UUID> duplicateUuids = ReserveKnownUuids(sources.size());
+	// Every staged UUID is validated BEFORE any destination mutation — nil,
+	// already indexed in the authoring document (source == destination here, so
+	// the source entities' ids ARE the authoring index), or repeated within
+	// this operation — so a hostile provider trips a stage-specific
+	// DuplicateUuid here, never midway through the create loop.
+	std::vector<rt2::core::UUID> duplicateUuids;
+	{
+		const std::unordered_set<rt2::core::UUID> forbidden =
+			EntityUuidForbiddenSet(m_Authoring, registry, &registry);
+		std::unordered_set<rt2::core::UUID> operationLocal;
+		rt2::core::Error reserveErr;
+		if (!ReserveValidEntityUuids([this] { return ReserveKnownUuid(); }, forbidden,
+			operationLocal, sources.size(), "DuplicateSubtrees", duplicateUuids, reserveErr))
+		{
+			return EditorMutationResult::Failure(reserveErr.code, reserveErr.path,
+				reserveErr.detail);
+		}
+	}
 
 	// Reserve ONE fresh instanceId per complete instance group, ALL before
 	// mutation. The collision set is the authoring uuidIndex + live destination
@@ -1928,7 +2030,25 @@ EditorMutationResult SceneManager::PasteSubtreesFrom(
 	// deterministic and pinned by the fixup tests: every entity UUID
 	// (sources.size() draws) first, then one fresh instanceId per complete
 	// instance group. The create loop below consumes no provider.
-	std::vector<rt2::core::UUID> pastedUuids = ReserveKnownUuids(sources.size());
+	// Every staged UUID is validated BEFORE any destination mutation — nil,
+	// already indexed in the authoring document, equal to a SOURCE entity's id
+	// (the clipboard is a DISTINCT document, so a pasted entity must never
+	// adopt the identity it was copied from), or repeated within this
+	// operation — so a hostile provider trips a stage-specific DuplicateUuid
+	// here, never midway through the create loop.
+	std::vector<rt2::core::UUID> pastedUuids;
+	{
+		const std::unordered_set<rt2::core::UUID> forbidden =
+			EntityUuidForbiddenSet(m_Authoring, destination, &snapshot.ecs.registry);
+		std::unordered_set<rt2::core::UUID> operationLocal;
+		rt2::core::Error reserveErr;
+		if (!ReserveValidEntityUuids([this] { return ReserveKnownUuid(); }, forbidden,
+			operationLocal, sources.size(), "PasteSubtreesFrom", pastedUuids, reserveErr))
+		{
+			return EditorMutationResult::Failure(reserveErr.code, reserveErr.path,
+				reserveErr.detail);
+		}
+	}
 
 	// Reserve ONE fresh instanceId per complete group against the authoring
 	// uuidIndex + live destination PIC/PMIC instanceIds + the clipboard's live

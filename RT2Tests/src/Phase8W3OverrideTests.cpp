@@ -1314,10 +1314,12 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 // CopyAuthoredComponents copies all 13 persisted components verbatim, so a
 // copy of an instance shares the SOURCE's instanceId. W3 groups overrides by
 // instanceId; two instances sharing one id would merge into a single override
-// group (W3-D8). S4 runs MintCopiedPrefabLinks on every copy path: each copied
-// subtree mints ONE fresh instanceId and pushes it onto every copied
-// PrefabMemberComponent, leaving templateIds and override vectors untouched
-// (a copy of a diverged instance stays diverged, W3-D4).
+// group (W3-D8). S4 runs the plan -> reserve -> apply pipeline (PlanCopiedPrefabLinks,
+// ReserveValidEntityUuids/ReserveFreshInstanceId, ApplyCopiedPrefabLinks) on
+// every copy path: each copied subtree reserves ONE fresh instanceId and APPLY
+// pushes it onto every copied PrefabMemberComponent, leaving templateIds and
+// override vectors untouched (a copy of a diverged instance stays diverged,
+// W3-D4).
 //
 // This section covers the duplicate, paste, restore and partial sides of S4.
 // Tests 1-2 drive the duplicate paths — the ordinary non-command
@@ -1330,18 +1332,22 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 // broken, so both must be pinned on each side. Tests 6-7 pin the two
 // non-minting / different-policy sides; test 8 pins multi-root isolation.
 //
-// All four copy-shaped paths funnel through the SAME shared helper
-// MintCopiedPrefabLinks (SceneManager.cpp:191). It mints ONE fresh instanceId
-// per COMPLETE COPIED INSTANCE and pushes it onto every copied
-// PrefabMemberComponent and PrefabInstanceComponent belonging to that
-// instance's original group, leaving templateIds and override vectors
-// untouched (a copy of a diverged instance stays diverged, W3-D4). Groups are
-// classified from the ACTUAL copied instance roots inside the forest, not from
-// the selected scene-hierarchy root: a complete instance nested under an
-// ordinary container or under another copied root is a first-class instance of
-// its own and is reminted independently, never merged into the enclosing
-// group. Member fragments whose original instanceId has no copied root are
-// stripped (orphan fragments) — never a fabricated instance (test 7).
+// All four copy-shaped paths chain the SAME plan -> reserve -> apply pipeline:
+// PLAN (PlanCopiedPrefabLinks, SceneManager.cpp:214) classifies the copied
+// forest into complete instance groups from the ACTUAL copied instance roots —
+// a complete instance nested under an ordinary container or under another
+// copied root is a first-class instance of its own and is reminted
+// independently, never merged into the enclosing group; member fragments whose
+// original instanceId has no copied root are classified as orphan fragments
+// (never a fabricated instance, test 7). RESERVE (ReserveValidEntityUuids +
+// ReserveFreshInstanceId, SceneManager.cpp:304) draws ONE validated
+// non-colliding entity UUID per copied entity and ONE fresh instanceId per
+// COMPLETE COPIED INSTANCE, ALL BEFORE any destination mutation. APPLY
+// (ApplyCopiedPrefabLinks, SceneManager.cpp:334) then stamps each group's
+// fresh instanceId onto every copied PrefabMemberComponent and
+// PrefabInstanceComponent belonging to that instance's original group and
+// strips the orphan fragments, leaving templateIds and override vectors
+// untouched (a copy of a diverged instance stays diverged, W3-D4).
 //
 // The diverged-override case (test 5) is covered on the editor paste path
 // (PasteSubtreesWithUuids) because that is the strongest discriminator for
@@ -1353,7 +1359,7 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 //
 // Structural restore (test 6) is deliberately NOT a copy path: ApplySubtreeRecord
 // reinstates the recorded instanceId verbatim (W3-D4), so restore must never
-// collide with MintCopiedPrefabLinks. Partial copies (test 7) strip both
+// collide with the plan/reserve/apply prefab-link pipeline. Partial copies (test 7) strip both
 // prefab components and surface a recoveryWarning instead of fabricating an
 // instance root. Multi-root copies (test 8) mint per subtree, never one shared
 // id and never one per member.
@@ -1368,39 +1374,39 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 // (12) — each receive their own distinct fresh id rather than being merged.
 //
 // Discrimination faults (recorded in the verification report), per test:
-//   test 1 fault: delete the MintCopiedPrefabLinks call inside
-//   SceneManager::DuplicateSubtrees (SceneManager.cpp:1603) — the copied
-//   member then keeps the source's instanceId, so CHECK(dupRootId !=
-//   srcInstanceId) fails -> RED. Revert -> GREEN.
-//   test 2 fault: delete the MintCopiedPrefabLinks call inside
-//   SceneManager::DuplicateSubtreesWithUuids (SceneManager.cpp:3457) — same
-//   failure on the editor's command path -> RED. Revert -> GREEN.
-//   test 3 fault: delete the MintCopiedPrefabLinks call inside
-//   SceneManager::PasteSubtreesFrom (SceneManager.cpp:1712) — the pasted
-//   member then keeps the clipboard's instanceId, so CHECK(pastedRootId !=
-//   srcInstanceId) fails -> RED. Revert -> GREEN.
-//   test 4 fault: delete the MintCopiedPrefabLinks call inside
-//   SceneManager::PasteSubtreesWithUuids (SceneManager.cpp:3620) — same
-//   failure on the editor's paste path -> RED. Revert -> GREEN.
-//   test 5 fault: in MintCopiedPrefabLinks, in the full-instance branch,
+//   test 1 fault: delete the ApplyCopiedPrefabLinks call inside
+//   SceneManager::DuplicateSubtrees — the copied member then keeps the
+//   source's instanceId, so CHECK(dupRootId != srcInstanceId) fails -> RED.
+//   Revert -> GREEN.
+//   test 2 fault: delete the ApplyCopiedPrefabLinks call inside
+//   SceneManager::DuplicateSubtreesWithUuids — same failure on the editor's
+//   command path -> RED. Revert -> GREEN.
+//   test 3 fault: delete the ApplyCopiedPrefabLinks call inside
+//   SceneManager::PasteSubtreesFrom — the pasted member then keeps the
+//   clipboard's instanceId, so CHECK(pastedRootId != srcInstanceId) fails ->
+//   RED. Revert -> GREEN.
+//   test 4 fault: delete the ApplyCopiedPrefabLinks call inside
+//   SceneManager::PasteSubtreesWithUuids — same failure on the editor's paste
+//   path -> RED. Revert -> GREEN.
+//   test 5 fault: in ApplyCopiedPrefabLinks, in the full-instance branch,
 //   clear each copied member's override vector when setting the fresh
-//   instanceId (SceneManager.cpp:200-201) — the pasted diverged member then
-//   has an empty set, so CHECK(pastedRootMember->overrides == srcRoot->overrides)
-//   fails -> RED. Revert -> GREEN.
+//   instanceId — the pasted diverged member then has an empty set, so
+//   CHECK(pastedRootMember->overrides == srcRoot->overrides) fails -> RED.
+//   Revert -> GREEN.
 //   test 6 fault: in RestoreSubtrees, right after ApplySubtreeRecord
 //   (SceneManager.cpp:2533), mint a fresh instanceId onto every restored
 //   PrefabMemberComponent — the restored members then diverge from the
 //   recorded id, so CHECK(restoredRootId == recordedId) fails -> RED.
 //   Revert -> GREEN.
-//   test 7 fault: delete the two component removals in MintCopiedPrefabLinks'
-//   partial branch (SceneManager.cpp:220-226) — the copied member then keeps
-//   its PrefabMemberComponent, so CHECK(copied has no PrefabMemberComponent)
+//   test 7 fault: delete the two component removals in ApplyCopiedPrefabLinks'
+//   orphan-fragment branch — the copied member then keeps its
+//   PrefabMemberComponent, so CHECK(copied has no PrefabMemberComponent)
 //   fails -> RED. Revert -> GREEN.
-//   test 8 fault: in MintCopiedPrefabLinks (SceneManager.cpp:195), reuse ONE
-//   minted id for every root — the two copied subtrees then share a single
-//   instanceId, so CHECK(copiedARootId != copiedBRootId) fails -> RED.
-//   Revert -> GREEN.
-//   test 9 fault: in MintCopiedPrefabLinks, go back to classifying from the
+//   test 8 fault: in the DuplicateSubtrees instance-ID reservation loop,
+//   reuse ONE reserved id for every group — the two copied subtrees then
+//   share a single instanceId, so CHECK(copiedARootId != copiedBRootId)
+//   fails -> RED. Revert -> GREEN.
+//   test 9 fault: in PlanCopiedPrefabLinks, go back to classifying from the
 //   SELECTED root copy (the old `isInstanceRoot` check): an ordinary folder
 //   copy has no PrefabInstanceComponent, so the instance below it is treated
 //   as a member fragment and BOTH prefab components are stripped from the copy
@@ -1413,7 +1419,7 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 //   container holding BOTH a complete instance and an orphan member fragment)
 //   — the complete instance's copy is stripped too (not reminted), so
 //   CHECK(copiedCompleteRoot has PIC) fails -> RED. Revert -> GREEN.
-//   test 12 fault: in MintCopiedPrefabLinks, fall back to ONE id for the whole
+//   test 12 fault: in PlanCopiedPrefabLinks, fall back to ONE id for the whole
 //   selected subtree (the old full-instance branch): a nested complete
 //   instance under the outer instance gets the OUTER's fresh id, so
 //   CHECK(copiedNestedId != copiedOuterRootId) fails -> RED. Revert -> GREEN.
@@ -1456,7 +1462,7 @@ UUID S4MemberTemplateId(SceneManager& manager, entt::entity e)
 // copied instance, every copied member carries it, and templateIds are
 // preserved positionally. The source instance's own identity is untouched.
 //
-// Fault for red: delete the MintCopiedPrefabLinks call inside
+// Fault for red: delete the ApplyCopiedPrefabLinks call inside
 // SceneManager::DuplicateSubtrees — the duplicated members then keep the
 // source's instanceId and CHECK(dupRootId != srcInstanceId) fails -> RED.
 // Revert -> GREEN.
@@ -1523,7 +1529,7 @@ TEST_CASE("Phase 8 W3: a duplicated instance gets a fresh instanceId shared by a
 // Mirrors SceneEditorUI::DuplicateSelectionCommand: count the canonical
 // subtree, reserve exactly that many known UUIDs, pass them in.
 //
-// Fault for red: delete the MintCopiedPrefabLinks call inside
+// Fault for red: delete the ApplyCopiedPrefabLinks call inside
 // SceneManager::DuplicateSubtreesWithUuids — the duplicated members then keep
 // the source's instanceId and CHECK(dupRootId != srcInstanceId) fails -> RED.
 // Revert -> GREEN.
@@ -1589,7 +1595,7 @@ TEST_CASE("Phase 8 W3: the command duplicate path mints a fresh instanceId for t
 // same UUID works. templateIds are preserved and neither the live source nor
 // the clipboard source is mutated.
 //
-// Fault for red: delete the MintCopiedPrefabLinks call inside
+// Fault for red: delete the ApplyCopiedPrefabLinks call inside
 // SceneManager::PasteSubtreesFrom — the pasted members then keep the
 // clipboard's instanceId and CHECK(pastedRootId != srcInstanceId) fails ->
 // RED. Revert -> GREEN.
@@ -1667,7 +1673,7 @@ TEST_CASE("Phase 8 W3: a pasted instance gets a fresh instanceId shared by all c
 // clipboard, not the live scene, so CountCanonicalSubtreeEntities would fail),
 // reserve exactly that many known UUIDs, pass them in.
 //
-// Fault for red: delete the MintCopiedPrefabLinks call inside
+// Fault for red: delete the ApplyCopiedPrefabLinks call inside
 // SceneManager::PasteSubtreesWithUuids — the pasted members then keep the
 // clipboard's instanceId and CHECK(pastedRootId != srcInstanceId) fails ->
 // RED. Revert -> GREEN.
@@ -1742,17 +1748,17 @@ TEST_CASE("Phase 8 W3: the command paste path mints a fresh instanceId for the p
 // ---------------------------------------------------------------------------
 // Test 5 — a copy of a diverged instance stays diverged (W3-D4). The live
 // source member carries a non-empty override set; it survives the clipboard
-// clone (Fix 8), gets copied verbatim into the paste, and MintCopiedPrefabLinks
-// must leave it untouched while still minting a fresh instanceId. Covered on
+// clone (Fix 8), gets copied verbatim into the paste, and ApplyCopiedPrefabLinks
+// must leave it untouched while still stamping a fresh instanceId. Covered on
 // the editor paste path because that is the strongest discriminator for the
 // shared helper: the override set must survive the FULL chain — authoring doc
-// -> clipboard clone -> paste copy -> mint.
+// -> clipboard clone -> paste copy -> apply.
 //
-// Fault for red: in MintCopiedPrefabLinks, in the full-instance branch, clear
-// each copied member's override vector when setting the fresh instanceId
-// (SceneManager.cpp:200-201) — the pasted diverged member then has an empty
-// set, so CHECK(pastedRootMember->overrides == srcRoot->overrides) fails ->
-// RED. Revert -> GREEN.
+// Fault for red: in ApplyCopiedPrefabLinks, in the full-instance branch, clear
+// each copied member's override vector when setting the fresh instanceId —
+// the pasted diverged member then has an empty set, so
+// CHECK(pastedRootMember->overrides == srcRoot->overrides) fails -> RED.
+// Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: a pasted diverged instance keeps its overrides while minting a fresh instanceId")
 {
@@ -1938,9 +1944,9 @@ TEST_CASE("Phase 8 W3: structural restore reinstates the exact recorded instance
 // override payload — the mutation succeeds, and a recoveryWarning with the
 // InvalidHierarchy diagnostic is surfaced (SceneManager.cpp:3488-3496).
 //
-// Fault for red: delete the two removal calls in MintCopiedPrefabLinks'
-// partial branch (SceneManager.cpp:220-226) — the copied member then keeps
-// its PrefabMemberComponent, so CHECK(copied has no PrefabMemberComponent)
+// Fault for red: delete the two removal calls in ApplyCopiedPrefabLinks'
+// orphan-fragment branch — the copied member then keeps its
+// PrefabMemberComponent, so CHECK(copied has no PrefabMemberComponent)
 // fails -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: a partial copy strips prefab links and surfaces a recovery warning")
@@ -1998,10 +2004,10 @@ TEST_CASE("Phase 8 W3: a partial copy strips prefab links and surfaces a recover
 // both source ids, every member agrees with its own copied root, and
 // templateIds plus override sets remain intact.
 //
-// Fault for red: in MintCopiedPrefabLinks (SceneManager.cpp:195), replace
-// `const UUID fresh = mint()` with a single id minted once and reused for
-// every root — the two copied subtrees then SHARE one instanceId, so
-// CHECK(copiedARootId != copiedBRootId) fails -> RED. Revert -> GREEN.
+// Fault for red: in the DuplicateSubtrees instance-ID reservation loop, reuse
+// ONE reserved id for every group — the two copied subtrees then SHARE one
+// instanceId, so CHECK(copiedARootId != copiedBRootId) fails -> RED. Revert
+// -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: a multi-root copy mints one distinct fresh instanceId per subtree")
 {
@@ -2110,7 +2116,7 @@ TEST_CASE("Phase 8 W3: a multi-root copy mints one distinct fresh instanceId per
 // folder copy stays ordinary and the contained instance is preserved and
 // reminted as ONE group — not stripped as if it were a member fragment.
 //
-// Fault for red (old selected-root classification): in MintCopiedPrefabLinks,
+// Fault for red (old selected-root classification): in PlanCopiedPrefabLinks,
 // gate classification on the SELECTED root copy (the old `isInstanceRoot`
 // check). The folder copy has no PrefabInstanceComponent, so the whole tree is
 // treated as a member fragment and BOTH prefab components are stripped from
@@ -2390,7 +2396,7 @@ TEST_CASE("Phase 8 W3: nested complete instances each receive their own distinct
 
 // ---------------------------------------------------------------------------
 // Test 13 — malformed copied data with ambiguous group ownership: TWO copied
-// instance roots claim the SAME original instanceId. MintCopiedPrefabLinks
+// instance roots claim the SAME original instanceId. PlanCopiedPrefabLinks
 // does NOT silently guess — it diagnoses loudly (recovery warning naming the
 // ambiguous group) and remints the shared group as ONE coherent fresh id, so
 // the copies never keep the malformed source id and never split arbitrarily.
@@ -2961,6 +2967,379 @@ TEST_CASE("Phase 8 W3: ordinary duplicate provider order is entity UUIDs then in
     const auto* srcAAfter = reg.try_get<PrefabMemberComponent>(rootA);
     REQUIRE(srcAAfter);
     CHECK(srcAAfter->instanceId == srcAId);
+
+    std::filesystem::remove_all(dir);
+}
+
+// ============================================================================
+// Tests T19-T22 close the S4 REVIEW FIX 3 gap (ordinary-paste/duplicate entity
+// UUID reservation). T14-T18 exercise ONLY the WithUuids paths — the ORDINARY
+// DuplicateSubtrees / PasteSubtreesFrom paths staged their destination entity
+// UUIDs via the unvalidated `ReserveKnownUuids`, so a degraded/hostile
+// provider could hand the create loop a nil, an id already live in the
+// authoring index, a repeat, or (for a paste) the source entity's own id, and
+// the operation either died midway in the create-loop rollback or — worse —
+// adopted a live identity. Fix 3 routes BOTH ordinary paths through the same
+// validated, finite pre-mutation reservation the WithUuids paths already used
+// (ReserveValidEntityUuids), preserving the pinned provider order from T18:
+// all entity UUIDs first, then one instanceId per complete group.
+//
+// Discrimination faults (recorded in the verification report), per test:
+//   test T19 fault: in SceneManager::DuplicateSubtrees replace the validated
+//   entity staging with the old raw `ReserveKnownUuids(sources.size())` — a
+//   staged nil then trips the create-loop rollback -> REQUIRE(success) fails
+//   -> RED. Revert -> GREEN.
+//   test T20 fault: same raw-staging bypass on the duplicate path — the
+//   operation then consumes its full script through the instance-ID stage (2
+//   entity draws + 16 instance-ID draws) and the scripted provider's loud
+//   over-consumption REQUIRE throws before CHECK(cursor == 16) -> RED. Revert
+//   -> GREEN.
+//   test T21 fault: in SceneManager::PasteSubtreesFrom use
+//   FreshInstanceIdForbiddenSet (dropping the distinct-source entity-ids
+//   rule) for entity staging — a provider draw of the clipboard's re-stamped
+//   id is then accepted, so the pasted root adopts the clipboard's identity
+//   and REQUIRE(success)/the entity-id CHECK fails -> RED. Revert -> GREEN.
+//   test T22 fault: same raw-staging bypass on the paste path — the paste
+//   over-consumes the hostile script through the instance-ID stage and the
+//   loud REQUIRE throws -> RED. Revert -> GREEN.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// Test T19 — the ORDINARY DuplicateSubtrees path validates its staged entity
+// UUIDs before mutation: a nil draw, the source root's own live id, and a
+// staged-id repeat are all rejected and retried to valid ids, then per-group
+// instance IDs follow with an operation-local repeat — in the documented
+// entity-UUIDs-first provider order. The copy gets EXACTLY the staged entity
+// ids and coherent per-group fresh instance ids; the source forest is
+// untouched.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: ordinary duplicate retries staged entity UUIDs past nil, live and repeated draws")
+{
+    S2Fixture f;
+    const auto dirA = S2UniqueTempDir("p8w3_s4_t19_a");
+    const auto dirB = S2UniqueTempDir("p8w3_s4_t19_b");
+    const auto folderUuid = f.CreateEmpty("Folder");
+    REQUIRE(folderUuid != UUID::Nil());
+    const auto [rootA, childA] = f.MakeInstance(dirA);
+    const auto [rootB, childB] = f.MakeInstance(dirB);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto srcAId = reg.get<PrefabMemberComponent>(rootA).instanceId;
+    const auto srcBId = reg.get<PrefabMemberComponent>(rootB).instanceId;
+    REQUIRE(srcAId != srcBId);
+    const auto rootAUuid = reg.get<EntityIdComponent>(rootA).id;
+    REQUIRE(f.manager.Reparent({ rootAUuid }, folderUuid, ReparentMode::PreserveLocal).success);
+    const auto rootBUuid = reg.get<EntityIdComponent>(rootB).id;
+    REQUIRE(f.manager.Reparent({ rootBUuid }, folderUuid, ReparentMode::PreserveLocal).success);
+
+    // Pre-draw every VALID id the script hands out, so none of them is nil,
+    // live, or otherwise colliding when the reservation accepts them.
+    const auto X = f.manager.ReserveKnownUuid();
+    const auto e0 = f.manager.ReserveKnownUuid();
+    const auto e1 = f.manager.ReserveKnownUuid();
+    const auto e2 = f.manager.ReserveKnownUuid();
+    const auto e3 = f.manager.ReserveKnownUuid();
+    const auto iidA = f.manager.ReserveKnownUuid();
+    const auto iidB = f.manager.ReserveKnownUuid();
+    REQUIRE(iidA != iidB);
+
+    // 5 entities, 2 complete groups: entity UUIDs first, then instance ids.
+    ScriptedUuidProvider hostile;
+    hostile.script = {
+        UUID::Nil(), rootAUuid, X, X,   // nil, live collision, staged, repeat
+        e0, e1, e2, e3,                 // the remaining 4 staged entity uuids
+        iidA, iidA, iidB                // per-group instance ids, one repeat
+    };
+    f.manager.SetUuidProvider(&hostile);
+
+    auto result = f.manager.DuplicateSubtrees({ folderUuid });
+    REQUIRE(result.success);
+    REQUIRE_FALSE(result.recoveryWarning.has_value());
+
+    // Exact provider-consumption order: nil+live rejected, X staged, X repeat
+    // rejected, e0..e3 staged, then iidA accepted, iidA repeat rejected, iidB.
+    REQUIRE(hostile.cursor == 11);
+    CHECK(hostile.log.size() == 11);
+    CHECK(hostile.log[0] == UUID::Nil());
+    CHECK(hostile.log[1] == rootAUuid);
+    CHECK(hostile.log[2] == X);
+    CHECK(hostile.log[3] == X);
+    CHECK(hostile.log[4] == e0);
+    CHECK(hostile.log[5] == e1);
+    CHECK(hostile.log[6] == e2);
+    CHECK(hostile.log[7] == e3);
+    CHECK(hostile.log[8] == iidA);
+    CHECK(hostile.log[9] == iidA);
+    CHECK(hostile.log[10] == iidB);
+
+    REQUIRE(result.affectedEntities.size() == 1);
+    const auto copied = S4SubtreeEntities(f.manager, result.affectedEntities.front());
+    REQUIRE(copied.size() == 5);
+    // Entity UUIDs land in the exact staged order (folder, A root, A child,
+    // B root, B child).
+    CHECK(reg.get<EntityIdComponent>(copied[0]).id == X);
+    CHECK(reg.get<EntityIdComponent>(copied[1]).id == e0);
+    CHECK(reg.get<EntityIdComponent>(copied[2]).id == e1);
+    CHECK(reg.get<EntityIdComponent>(copied[3]).id == e2);
+    CHECK(reg.get<EntityIdComponent>(copied[4]).id == e3);
+
+    // The folder copy stays ordinary; both instances are reminted, each member
+    // agreeing with its own root, the two groups DIFFERENT and never the
+    // source identities.
+    CHECK_FALSE(reg.all_of<PrefabInstanceComponent>(copied[0]));
+    CHECK_FALSE(reg.all_of<PrefabMemberComponent>(copied[0]));
+    const auto* cA = reg.try_get<PrefabInstanceComponent>(copied[1]);
+    const auto* cB = reg.try_get<PrefabInstanceComponent>(copied[3]);
+    REQUIRE(cA);
+    REQUIRE(cB);
+    CHECK(cA->instanceId != srcAId);
+    CHECK(cA->instanceId != srcBId);
+    CHECK(cB->instanceId != srcAId);
+    CHECK(cB->instanceId != srcBId);
+    CHECK(((cA->instanceId == iidA) || (cA->instanceId == iidB)));   // one per group
+    CHECK(((cB->instanceId == iidA) || (cB->instanceId == iidB)));
+    CHECK(cA->instanceId != cB->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, copied[1]) == cA->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, copied[2]) == cA->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, copied[3]) == cB->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, copied[4]) == cB->instanceId);
+
+    // Source forest untouched.
+    CHECK(reg.get<PrefabMemberComponent>(rootA).instanceId == srcAId);
+    CHECK(reg.get<PrefabMemberComponent>(rootB).instanceId == srcBId);
+
+    std::filesystem::remove_all(dirA);
+    std::filesystem::remove_all(dirB);
+}
+
+// ---------------------------------------------------------------------------
+// Test T20 — the ORDINARY DuplicateSubtrees entity-UUID reservation exhausts
+// its finite budget against an always-colliding provider (every draw is the
+// source root's own live id) and fails with a stage-specific DuplicateUuid
+// BEFORE any destination mutation: EXACTLY 16 provider attempts, zero created
+// entities, unchanged entity UUID index / hierarchy / component counts /
+// authoring revision / sync impact, and the source untouched.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: ordinary duplicate entity-UUID reservation exhaustion leaves zero destination change")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s4_t20");
+    const auto [rootA, childA] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcA = reg.try_get<PrefabMemberComponent>(rootA);
+    REQUIRE(srcA);
+    const UUID srcAId = srcA->instanceId;
+    const auto rootAUuid = reg.get<EntityIdComponent>(rootA).id;
+
+    const auto pre = S4Snapshot(f.manager);
+    REQUIRE(pre.pic == 1);
+
+    ScriptedUuidProvider hostile;
+    hostile.script.assign(16, rootAUuid);   // live collision, every draw
+    f.manager.SetUuidProvider(&hostile);
+
+    auto result = f.manager.DuplicateSubtrees({ rootAUuid });
+    REQUIRE_FALSE(result.success);
+    CHECK(result.error.code == rt2::core::Error::DuplicateUuid);
+    CHECK(result.error.detail.find("DuplicateSubtrees") != std::string::npos);
+    CHECK(result.error.detail.find("16") != std::string::npos);
+    CHECK(hostile.cursor == 16);            // exactly 16 attempts, queue consumed
+    CHECK(hostile.log.size() == 16);
+    for (const auto& id : hostile.log)
+        CHECK(id == rootAUuid);
+    CHECK(result.affectedEntities.empty());
+    CHECK(result.syncImpact == rt2::core::SyncImpact::None);
+    REQUIRE(S4Snapshot(f.manager) == pre);  // zero mutation
+
+    // Source untouched.
+    const auto* srcAAfter = reg.try_get<PrefabMemberComponent>(rootA);
+    REQUIRE(srcAAfter);
+    CHECK(srcAAfter->instanceId == srcAId);
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test T21 — the ORDINARY PasteSubtreesFrom path validates its staged entity
+// UUIDs before mutation, INCLUDING the distinct-source rule: a provider draw
+// equal to a CLIPBOARD (source document) entity's id is rejected even though
+// that id is absent from the destination authoring index. Script: nil, the
+// source root's own live id, the clipboard root's re-stamped id, a staged-id
+// repeat, then the valid ids, then per-group instance ids with a repeat — all
+// in the documented entity-UUIDs-first order. The pasted forest gets coherent
+// per-group fresh instance ids and the clipboard source is untouched.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: ordinary paste retries staged entity UUIDs past nil, live and distinct-source draws")
+{
+    S2Fixture f;
+    const auto dirA = S2UniqueTempDir("p8w3_s4_t21_a");
+    const auto dirB = S2UniqueTempDir("p8w3_s4_t21_b");
+    const auto folderUuid = f.CreateEmpty("Folder");
+    REQUIRE(folderUuid != UUID::Nil());
+    const auto [rootA, childA] = f.MakeInstance(dirA);
+    const auto [rootB, childB] = f.MakeInstance(dirB);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto srcAId = reg.get<PrefabMemberComponent>(rootA).instanceId;
+    const auto srcBId = reg.get<PrefabMemberComponent>(rootB).instanceId;
+    REQUIRE(srcAId != srcBId);
+    const auto rootAUuid = reg.get<EntityIdComponent>(rootA).id;
+    REQUIRE(f.manager.Reparent({ rootAUuid }, folderUuid, ReparentMode::PreserveLocal).success);
+    const auto rootBUuid = reg.get<EntityIdComponent>(rootB).id;
+    REQUIRE(f.manager.Reparent({ rootBUuid }, folderUuid, ReparentMode::PreserveLocal).success);
+
+    // Clipboard = whole-scene clone. Re-stamp the clipboard ROOT entity's id
+    // with a fresh UUID that exists NOWHERE in the destination, so a provider
+    // draw of that value is a DISTINCT-SOURCE collision only (the destination
+    // authoring index does not contain it).
+    SceneDocument clipboard;
+    DeterministicUuidProvider idsClip;
+    clipboard.SetUuidProvider(&idsClip);
+    Error cloneErr;
+    REQUIRE(SceneSerializer::CloneInMemory(f.manager.AuthoringDoc(), clipboard, cloneErr));
+    const auto clipFolder = clipboard.FindByUuid(folderUuid);
+    REQUIRE(static_cast<uint32_t>(clipFolder) != static_cast<uint32_t>(entt::null));
+    const auto faceUuid = f.manager.ReserveKnownUuid();
+    clipboard.ecs.registry.get<EntityIdComponent>(clipFolder).id = faceUuid;
+    const auto clipPicBefore = clipboard.ecs.registry.view<PrefabInstanceComponent>().size();
+    const auto clipPmicBefore = clipboard.ecs.registry.view<PrefabMemberComponent>().size();
+    const auto clipRootA = clipboard.FindByUuid(rootAUuid);
+    REQUIRE(static_cast<uint32_t>(clipRootA) != static_cast<uint32_t>(entt::null));
+    const auto clipARootId = clipboard.ecs.registry.get<PrefabMemberComponent>(clipRootA).instanceId;
+
+    const auto X = f.manager.ReserveKnownUuid();
+    const auto e0 = f.manager.ReserveKnownUuid();
+    const auto e1 = f.manager.ReserveKnownUuid();
+    const auto e2 = f.manager.ReserveKnownUuid();
+    const auto e3 = f.manager.ReserveKnownUuid();
+    const auto iidA = f.manager.ReserveKnownUuid();
+    const auto iidB = f.manager.ReserveKnownUuid();
+    REQUIRE(iidA != iidB);
+    REQUIRE(faceUuid != rootAUuid);
+
+    ScriptedUuidProvider hostile;
+    hostile.script = {
+        UUID::Nil(), rootAUuid, faceUuid, X, X,
+        e0, e1, e2, e3,
+        iidA, iidA, iidB
+    };
+    f.manager.SetUuidProvider(&hostile);
+
+    auto result = f.manager.PasteSubtreesFrom(clipboard, { folderUuid }, std::nullopt);
+    REQUIRE(result.success);
+    REQUIRE_FALSE(result.recoveryWarning.has_value());
+
+    // nil and the two distinct rejections, then X staged, X repeat rejected,
+    // e0..e3 staged, then per-group instance ids with one repeat.
+    REQUIRE(hostile.cursor == 12);
+    CHECK(hostile.log.size() == 12);
+    CHECK(hostile.log[0] == UUID::Nil());
+    CHECK(hostile.log[1] == rootAUuid);
+    CHECK(hostile.log[2] == faceUuid);
+    CHECK(hostile.log[3] == X);
+    CHECK(hostile.log[4] == X);
+    CHECK(hostile.log[5] == e0);
+    CHECK(hostile.log[6] == e1);
+    CHECK(hostile.log[7] == e2);
+    CHECK(hostile.log[8] == e3);
+    CHECK(hostile.log[9] == iidA);
+    CHECK(hostile.log[10] == iidA);
+    CHECK(hostile.log[11] == iidB);
+
+    REQUIRE(result.affectedEntities.size() == 1);
+    const auto pasted = S4SubtreeEntities(f.manager, result.affectedEntities.front());
+    REQUIRE(pasted.size() == 5);
+    CHECK(reg.get<EntityIdComponent>(pasted[0]).id == X);
+    CHECK(reg.get<EntityIdComponent>(pasted[1]).id == e0);
+    CHECK(reg.get<EntityIdComponent>(pasted[2]).id == e1);
+    CHECK(reg.get<EntityIdComponent>(pasted[3]).id == e2);
+    CHECK(reg.get<EntityIdComponent>(pasted[4]).id == e3);
+
+    CHECK_FALSE(reg.all_of<PrefabInstanceComponent>(pasted[0]));
+    CHECK_FALSE(reg.all_of<PrefabMemberComponent>(pasted[0]));
+    const auto* pA = reg.try_get<PrefabInstanceComponent>(pasted[1]);
+    const auto* pB = reg.try_get<PrefabInstanceComponent>(pasted[3]);
+    REQUIRE(pA);
+    REQUIRE(pB);
+    CHECK(pA->instanceId != srcAId);
+    CHECK(pA->instanceId != srcBId);
+    CHECK(pB->instanceId != srcAId);
+    CHECK(pB->instanceId != srcBId);
+    CHECK(((pA->instanceId == iidA) || (pA->instanceId == iidB)));
+    CHECK(((pB->instanceId == iidA) || (pB->instanceId == iidB)));
+    CHECK(pA->instanceId != pB->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, pasted[1]) == pA->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, pasted[2]) == pA->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, pasted[3]) == pB->instanceId);
+    CHECK(S4MemberInstanceId(f.manager, pasted[4]) == pB->instanceId);
+
+    // Clipboard (source) untouched — pic/pmic counts and instance roots intact.
+    CHECK(clipboard.ecs.registry.view<PrefabInstanceComponent>().size() == clipPicBefore);
+    CHECK(clipboard.ecs.registry.view<PrefabMemberComponent>().size() == clipPmicBefore);
+    CHECK(clipboard.ecs.registry.get<PrefabMemberComponent>(clipRootA).instanceId == clipARootId);
+
+    std::filesystem::remove_all(dirA);
+    std::filesystem::remove_all(dirB);
+}
+
+// ---------------------------------------------------------------------------
+// Test T22 — the ORDINARY PasteSubtreesFrom entity-UUID reservation exhausts
+// its finite budget against an always-colliding provider (every draw is the
+// source root's own live id — double-forbidden since the clipboard root
+// carries the same id and it is already in the destination index) and fails
+// with a stage-specific DuplicateUuid BEFORE any destination mutation: EXACTLY
+// 16 provider attempts, zero created entities, unchanged destination snapshot,
+// clipboard untouched.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: ordinary paste entity-UUID reservation exhaustion leaves zero destination change")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s4_t22");
+    const auto [rootA, childA] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+
+    const auto* srcA = reg.try_get<PrefabMemberComponent>(rootA);
+    REQUIRE(srcA);
+    const UUID srcAId = srcA->instanceId;
+    const auto rootAUuid = reg.get<EntityIdComponent>(rootA).id;
+
+    SceneDocument clipboard;
+    DeterministicUuidProvider idsClip;
+    clipboard.SetUuidProvider(&idsClip);
+    Error cloneErr;
+    REQUIRE(SceneSerializer::CloneInMemory(f.manager.AuthoringDoc(), clipboard, cloneErr));
+    const auto clipRoot = clipboard.FindByUuid(rootAUuid);
+    REQUIRE(static_cast<uint32_t>(clipRoot) != static_cast<uint32_t>(entt::null));
+
+    const auto pre = S4Snapshot(f.manager);
+    REQUIRE(pre.pic == 1);
+    const auto clipPicBefore = clipboard.ecs.registry.view<PrefabInstanceComponent>().size();
+    const auto clipPmicBefore = clipboard.ecs.registry.view<PrefabMemberComponent>().size();
+
+    ScriptedUuidProvider hostile;
+    hostile.script.assign(16, rootAUuid);
+    f.manager.SetUuidProvider(&hostile);
+
+    auto result = f.manager.PasteSubtreesFrom(clipboard, { rootAUuid }, std::nullopt);
+    REQUIRE_FALSE(result.success);
+    CHECK(result.error.code == rt2::core::Error::DuplicateUuid);
+    CHECK(result.error.detail.find("PasteSubtreesFrom") != std::string::npos);
+    CHECK(result.error.detail.find("16") != std::string::npos);
+    CHECK(hostile.cursor == 16);
+    CHECK(hostile.log.size() == 16);
+    for (const auto& id : hostile.log)
+        CHECK(id == rootAUuid);
+    CHECK(result.affectedEntities.empty());
+    CHECK(result.syncImpact == rt2::core::SyncImpact::None);
+    REQUIRE(S4Snapshot(f.manager) == pre);  // zero destination mutation
+
+    // Clipboard (source) untouched.
+    CHECK(clipboard.ecs.registry.view<PrefabInstanceComponent>().size() == clipPicBefore);
+    CHECK(clipboard.ecs.registry.view<PrefabMemberComponent>().size() == clipPmicBefore);
+    const auto* clipRootAfter = clipboard.ecs.registry.try_get<PrefabMemberComponent>(clipRoot);
+    REQUIRE(clipRootAfter);
+    CHECK(clipRootAfter->instanceId == srcAId);
 
     std::filesystem::remove_all(dir);
 }
