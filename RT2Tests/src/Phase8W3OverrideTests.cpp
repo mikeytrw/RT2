@@ -3878,6 +3878,25 @@ UUID S5NonMemberUuid(S2Fixture& f)
     return f.CreateEmpty("Folk");
 }
 
+// Adopt a GENUINE v5 .rt2scene (one prefab member, no overrides) into a bare
+// manager. The scene-registered member keeps its durable UUID and the document
+// keeps schemaVersion == 5 — the state a pre-override (W3-D6) authored file
+// has on disk. Returns the member's durable UUID.
+UUID S5AdoptV5MemberScene(SceneManager& mgr, const std::filesystem::path& dir,
+                          const std::string& tag)
+{
+    const auto p = dir / "v5.rt2scene";
+    S2WriteMemberScene(p, 5, {});
+    SceneDocument doc;
+    DeterministicUuidProvider ids;
+    doc.SetUuidProvider(&ids);
+    Error err;
+    REQUIRE(SceneSerializer::Load(doc, p, err));
+    REQUIRE(doc.metadata.schemaVersion == 5);
+    mgr.ReplaceAuthoringDocument(std::move(doc), 0);
+    return UUID::Parse("11111111-1111-4111-8111-111111111111");
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -4270,12 +4289,14 @@ TEST_CASE("Phase 8 W3: marker helper canonicalizes keys and rejects forged class
     REQUIRE(f.manager.IsDirty() == dirtyBefore);
     REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
 
-    // A valid wire with a forged-false bit canonicalizes: the committed raw
+// A valid wire with a forged-false bit canonicalizes: the committed raw
     // vector holds the table-derived transform entry, not a falsely
-    // non-overridable copy of the caller's key.
+    // non-overridable copy of the caller's key. The FIRST marker must land at
+    // the schema version that can represent overrides (SchemaVersion), so the
+    // add rides the v5->v6 transition even though the caller forged the bit.
     auto forged = f.manager.PreparePrefabMarkerEdits({
         { rootUuid, PrefabComponentKey(std::string_view("transform"), false), false, true },
-    }, PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+    }, PrefabMarkerDirection::After, schemaBefore, SceneSerializer::SchemaVersion);
     REQUIRE(forged.IsOk());
     REQUIRE(forged.value.anyStateChange);
     REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(forged.value)).anyStateChange);
@@ -4283,6 +4304,7 @@ TEST_CASE("Phase 8 W3: marker helper canonicalizes keys and rejects forged class
     REQUIRE(pm);
     REQUIRE(pm->overrides.size() == 1);
     CHECK(pm->overrides[0] == S2Key("transform")); // table-derived bit (true)
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
 }
 // ---------------------------------------------------------------------------
 // Test S5-E - a batch mixing a valid edit with a bad one fails atomically in
@@ -4392,12 +4414,12 @@ TEST_CASE("Phase 8 W3: marker helper validates the directional source presence w
     REQUIRE(f.manager.IsDirty() == dirtyBefore);
     REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
 
-    // Bring the member up to {name, transform} legitimately (After, source
-    // verified absent).
+// Bring the member up to {name, transform} legitimately (After, source
+    // verified absent, riding the fresh-doc -> SchemaVersion promotion).
     auto addPlan = f.manager.PreparePrefabMarkerEdits({
         { rootUuid, name, false, true },
         { rootUuid, transform, false, true },
-    }, PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+    }, PrefabMarkerDirection::After, schemaBefore, SceneSerializer::SchemaVersion);
     REQUIRE(addPlan.IsOk());
     REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(addPlan.value)).anyStateChange);
     const auto schemaMid = f.manager.AuthoringDoc().metadata.schemaVersion;
@@ -4451,15 +4473,17 @@ TEST_CASE("Phase 8 W3: marker helper coalesces exact duplicates and rejects cont
     auto& reg = f.manager.GetECS().registry;
     const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
 
-    const auto schemaAfter = f.manager.AuthoringDoc().metadata.schemaVersion;
+const auto schemaBefore = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto schemaAfter = SceneSerializer::SchemaVersion;
     const auto transform = S2Key("transform");
     const auto name = S2Key("name");
 
     // Byte-identical duplicates coalesce: one transition, unique committed set.
+    // The first marker rides the fresh-doc -> SchemaVersion promotion.
     auto dup = f.manager.PreparePrefabMarkerEdits({
         { rootUuid, transform, false, true },
         { rootUuid, transform, false, true },
-    }, PrefabMarkerDirection::After, schemaAfter, schemaAfter);
+    }, PrefabMarkerDirection::After, schemaBefore, schemaAfter);
     REQUIRE(dup.IsOk());
     REQUIRE(dup.value.members.size() == 1);
     REQUIRE(dup.value.members[0].target.size() == 1);
@@ -4554,15 +4578,18 @@ TEST_CASE("Phase 8 W3: marker helper normalizes canonicalizable stored vectors e
     REQUIRE(excludedRaw.error.code == rt2::core::Error::InvalidArgument);
     REQUIRE(excludedRaw.error.detail.find("meshRef") != std::string::npos);
 
-    // (c) Unsorted raw vector + membership no-op: normalization is a real state
-    // change and the committed RAW registry vector becomes canonical.
+// (c) Unsorted raw vector + membership no-op: normalization is a real state
+    // change and the committed RAW registry vector becomes canonical. The no-op
+    // rides the fresh-doc -> SchemaVersion promotion because the (non-empty)
+    // stored set cannot live at the below-current schema.
     reg.try_get<PrefabMemberComponent>(rootHandle)->overrides = { transform, name }; // reverse wire order
     auto sortNoop = f.manager.PreparePrefabMarkerEdits({
         { rootUuid, transform, true, true },
-    }, PrefabMarkerDirection::After, schema, schema);
+    }, PrefabMarkerDirection::After, schema, SceneSerializer::SchemaVersion);
     REQUIRE(sortNoop.IsOk());
     REQUIRE(sortNoop.value.anyStateChange); // raw != canonical: detected
     REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(sortNoop.value)).anyStateChange);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
     auto sortedRaw = reg.try_get<PrefabMemberComponent>(rootHandle);
     REQUIRE(sortedRaw);
     REQUIRE(sortedRaw->overrides.size() == 2);
@@ -4573,7 +4600,7 @@ TEST_CASE("Phase 8 W3: marker helper normalizes canonicalizable stored vectors e
     reg.try_get<PrefabMemberComponent>(rootHandle)->overrides = { transform, transform };
     auto dupNoop = f.manager.PreparePrefabMarkerEdits({
         { rootUuid, transform, true, true },
-    }, PrefabMarkerDirection::After, schema, schema);
+    }, PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
     REQUIRE(dupNoop.IsOk());
     REQUIRE(dupNoop.value.anyStateChange);
     REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(dupNoop.value)).anyStateChange);
@@ -4587,7 +4614,7 @@ TEST_CASE("Phase 8 W3: marker helper normalizes canonicalizable stored vectors e
         { PrefabComponentKey(std::string_view("transform"), false) };
     auto forgedRawNoop = f.manager.PreparePrefabMarkerEdits({
         { rootUuid, transform, true, true },
-    }, PrefabMarkerDirection::After, schema, schema);
+    }, PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
     REQUIRE(forgedRawNoop.IsOk());
     REQUIRE(forgedRawNoop.value.anyStateChange);
     REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(forgedRawNoop.value)).anyStateChange);
@@ -4595,4 +4622,611 @@ TEST_CASE("Phase 8 W3: marker helper normalizes canonicalizable stored vectors e
     REQUIRE(canonicalRaw);
     REQUIRE(canonicalRaw->overrides.size() == 1);
     CHECK(canonicalRaw->overrides[0] == transform); // table-derived bit (true)
+}
+
+// ===========================================================================
+// Checkpoint B - reversible schema and stale/forged-plan integrity
+// ===========================================================================
+// The plan/commit split carries the command-captured before/after schema pair
+// through the SAME staged operation (W3 D3.6/D3.10): the After direction
+// targets the command-after schema (execute) and the Before direction targets
+// the command-before schema (undo/restore), so undoing a first add restores
+// the captured prior version. The cases below pin the schema-transition rules
+// (source==live, marker-version floor, downgrade only when no override
+// remains anywhere) and that Commit re-validates the WHOLE plan against live
+// state before any write, because every PrefabMarkerPlan field is public and
+// a hand-forged or stale plan must fail loudly with zero mutation.
+
+// ---------------------------------------------------------------------------
+// Test S5-I - the reversible first-marker cycle on a GENUINE v5 document.
+// After applies the first marker and promotes v5 -> v6 in one atomic commit;
+// Before then applies the inverse presence side of the SAME payload and
+// restores the captured v5. The raw registry vector, schema version, dirty
+// flag, and authoring revision are asserted across both commits.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) directional fault: swap the source/target schema transport in Prepare
+//   (SceneManager.cpp:5540-5543) so Before targets the command-after schema -
+//   the undo leaves the document at v6 and REQUIRE(undo.afterSchemaVersion
+//   == 5) / the schema CHECK below goes RED.
+//   b) inverse-side fault: apply afterPresent instead of beforePresent for the
+//   Before direction (SceneManager.cpp:5642) - the undone key stays present
+//   and REQUIRE(afterUndo->overrides.empty()) goes RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper undo of a first add restores the captured v5")
+{
+    SceneManager mgr;
+    const auto dir = S2UniqueTempDir("p8w3_s5_v5cycle");
+    const UUID memberUuid = S5AdoptV5MemberScene(mgr, dir, "p8w3_s5_v5cycle");
+    auto& reg = mgr.GetECS().registry;
+    const auto handle = mgr.FindEntityByUuid(memberUuid);
+    REQUIRE(static_cast<uint32_t>(handle) != static_cast<uint32_t>(entt::null));
+    REQUIRE(reg.all_of<PrefabMemberComponent>(handle));
+
+    const auto transform = S2Key("transform");
+    const auto revision0 = mgr.AuthoringRevision();
+    const bool dirty0 = mgr.IsDirty();
+
+    // Execute: After direction applies afterPresent=true; the first marker
+    // must land at the schema version that can represent overrides (v6).
+    auto execPlan = mgr.PreparePrefabMarkerEdits({
+        { memberUuid, transform, false, true },
+    }, PrefabMarkerDirection::After, /*before*/ 5,
+      /*after*/ SceneSerializer::SchemaVersion);
+    REQUIRE(execPlan.IsOk());
+    PrefabMarkerApplyResult exec = mgr.CommitPrefabMarkerPlan(std::move(execPlan.value));
+    REQUIRE(exec.anyStateChange);
+    REQUIRE(exec.appliedMembers == 1);
+    REQUIRE(exec.beforeSchemaVersion == 5);
+    REQUIRE(exec.afterSchemaVersion == SceneSerializer::SchemaVersion);
+
+    const auto* raw = reg.try_get<PrefabMemberComponent>(handle);
+    REQUIRE(raw);
+    REQUIRE(raw->overrides.size() == 1);
+    CHECK(raw->overrides[0] == transform);
+    CHECK(mgr.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(mgr.IsDirty());
+    CHECK(mgr.AuthoringRevision() == revision0 + 1); // exactly one revision bump
+    auto q = mgr.IsOverridden(memberUuid, transform);
+    REQUIRE(q.IsOk());
+    CHECK(q.value);
+
+    // Undo: the SAME payload with Before direction applies beforePresent=false
+    // (removes the key) and targets the captured command-before schema (v5).
+    auto undoPlan = mgr.PreparePrefabMarkerEdits({
+        { memberUuid, transform, false, true },
+    }, PrefabMarkerDirection::Before, /*before*/ 5,
+      /*after*/ SceneSerializer::SchemaVersion);
+    REQUIRE(undoPlan.IsOk());
+    REQUIRE(undoPlan.value.targetSchemaVersion == 5);
+    PrefabMarkerApplyResult undo = mgr.CommitPrefabMarkerPlan(std::move(undoPlan.value));
+    REQUIRE(undo.anyStateChange);
+    REQUIRE(undo.beforeSchemaVersion == SceneSerializer::SchemaVersion);
+    REQUIRE(undo.afterSchemaVersion == 5);
+
+    auto afterUndo = reg.try_get<PrefabMemberComponent>(handle);
+    REQUIRE(afterUndo);
+    REQUIRE(afterUndo->overrides.empty());
+    REQUIRE(mgr.AuthoringDoc().metadata.schemaVersion == 5); // captured v5 restored
+    CHECK(mgr.AuthoringRevision() == revision0 + 2);         // exactly one more bump
+    CHECK(mgr.IsDirty());
+    q = mgr.IsOverridden(memberUuid, transform);
+    REQUIRE(q.IsOk());
+    CHECK_FALSE(q.value);
+    auto g = mgr.GetOverrides(memberUuid);
+    REQUIRE(g.IsOk());
+    REQUIRE(g.value.empty());
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-J - Prepare rejects every schema-transition violation it is asked to
+// police, all with zero change: (a) a caller-supplied directional source
+// schema that differs from the live document (stale or hand-forged schema
+// pair); (b) an empty edit list cannot drive a schema-only transition;
+// (c) a non-empty override target cannot be stored below SceneSerializer::
+// SchemaVersion, so a first marker cannot target a below-current schema; and
+// (d) a downgrade below the live schema is valid only when NO override remains
+// anywhere in the document after the batch applies.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) drop the Prepare source-schema equality return (SceneManager.cpp:
+//   5550-5555) - the mismatch case below returns Ok and REQUIRE_FALSE goes RED.
+//   b) drop the empty-edit guard (SceneManager.cpp:5561-5564) - an empty list
+//   with a non-constant schema pair stages silently; REQUIRE_FALSE goes RED.
+//   c) drop the marker-version floor check (SceneManager.cpp:5445-5452) - the
+//   below-floor add stages; the schema/override zero-change CHECKs go RED.
+//   d) drop the S5RemainingOverrides gate (SceneManager.cpp:5454-5466) - the
+//   outside-override downgrade stages; the schema CHECK below goes RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: Prepare rejects schema-transition violations with zero change")
+{
+    SceneManager mgr;
+    const auto dir = S2UniqueTempDir("p8w3_s5_schema");
+    const UUID memberUuid = S5AdoptV5MemberScene(mgr, dir, "p8w3_s5_schema");
+    auto& reg = mgr.GetECS().registry;
+    const auto handle = mgr.FindEntityByUuid(memberUuid);
+    REQUIRE(static_cast<uint32_t>(handle) != static_cast<uint32_t>(entt::null));
+    REQUIRE(reg.all_of<PrefabMemberComponent>(handle));
+
+    const auto transform = S2Key("transform");
+    const auto schema0 = mgr.AuthoringDoc().metadata.schemaVersion; // 5
+    REQUIRE(schema0 == 5);
+    const bool dirty0 = mgr.IsDirty();
+    const auto revision0 = mgr.AuthoringRevision();
+    const auto checkZeroChange = [&] {
+        CHECK(mgr.AuthoringDoc().metadata.schemaVersion == schema0);
+        CHECK(mgr.IsDirty() == dirty0);
+        CHECK(mgr.AuthoringRevision() == revision0);
+        auto g = mgr.GetOverrides(memberUuid);
+        REQUIRE(g.IsOk());
+        REQUIRE(g.value.empty());
+    };
+
+    // (a) live/source schema mismatch: claimed source (v6) != live (v5).
+    auto mismatch = mgr.PreparePrefabMarkerEdits({
+        { memberUuid, transform, false, true },
+    }, PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+      SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(mismatch.IsOk());
+    REQUIRE(mismatch.error.code == rt2::core::Error::SchemaVersion);
+    checkZeroChange();
+
+    // (b) an empty edit list cannot drive a schema-only transition.
+    auto emptyOnly = mgr.PreparePrefabMarkerEdits({}, PrefabMarkerDirection::After,
+        5, SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(emptyOnly.IsOk());
+    REQUIRE(emptyOnly.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(emptyOnly.error.detail.find("empty edit list") != std::string::npos);
+    checkZeroChange();
+
+    // (c) first marker below the marker schema: a non-empty target at v5.
+    auto belowFloor = mgr.PreparePrefabMarkerEdits({
+        { memberUuid, transform, false, true },
+    }, PrefabMarkerDirection::After, /*before*/ 5, /*after*/ 5);
+    REQUIRE_FALSE(belowFloor.IsOk());
+    REQUIRE(belowFloor.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(belowFloor.error.detail.find("at least") != std::string::npos);
+    checkZeroChange();
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-J(2) - the downgrade gate: a Before undo that targets the captured
+// before schema is rejected while ANY override remains elsewhere in the
+// document, and the SAME undo succeeds once the outside member is reverted
+// too - proving the gate is "no override remains anywhere", not "downgrades
+// are always illegal".
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: Prepare rejects a downgrade while an override remains elsewhere")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_downgrade");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID childUuid = reg.get<EntityIdComponent>(childHandle).id;
+    const auto name = S2Key("name");
+    const auto script = S2Key("script");
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    // Build genuine v6 state: root = {name}, child = {script}.
+    auto a = f.manager.PreparePrefabMarkerEdits({ { rootUuid, name, false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(a.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(a.value)).anyStateChange);
+    auto b = f.manager.PreparePrefabMarkerEdits({ { childUuid, script, false, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(b.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(b.value)).anyStateChange);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    const bool dirty6 = f.manager.IsDirty();
+    const auto revision6 = f.manager.AuthoringRevision();
+
+    // Undo root at the captured before schema (v5): the child still holds
+    // {script}, so the downgrade would strand-and-drop that marker.
+    auto blocked = f.manager.PreparePrefabMarkerEdits({ { rootUuid, name, false, true } },
+        PrefabMarkerDirection::Before, /*before*/ 5, /*after*/ SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(blocked.IsOk());
+    REQUIRE(blocked.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(blocked.error.detail.find("remains elsewhere") != std::string::npos);
+
+    // Zero change: schema, revision, dirty, and BOTH override sets untouched.
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revision6);
+    CHECK(f.manager.IsDirty() == dirty6);
+    auto rootG = f.manager.GetOverrides(rootUuid);
+    REQUIRE(rootG.IsOk());
+    REQUIRE(rootG.value.size() == 1);
+    auto childG = f.manager.GetOverrides(childUuid);
+    REQUIRE(childG.IsOk());
+    REQUIRE(childG.value.size() == 1);
+
+    // Control: revert the outside member first (constant-schema removal), then
+    // the same undo succeeds and restores v5.
+    auto childUndo = f.manager.PreparePrefabMarkerEdits({ { childUuid, script, false, true } },
+        PrefabMarkerDirection::Before, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(childUndo.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(childUndo.value)).anyStateChange);
+    auto rootUndo = f.manager.PreparePrefabMarkerEdits({ { rootUuid, name, false, true } },
+        PrefabMarkerDirection::Before, /*before*/ 5, /*after*/ SceneSerializer::SchemaVersion);
+    REQUIRE(rootUndo.IsOk());
+    REQUIRE(rootUndo.value.targetSchemaVersion == 5);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(rootUndo.value)).anyStateChange);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+    auto rootG2 = f.manager.GetOverrides(rootUuid);
+    REQUIRE(rootG2.IsOk());
+    REQUIRE(rootG2.value.empty());
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-K - Commit is infallible only against the SAME document the plan was
+// prepared against. A plan made stale by an INDEPENDENT change - a member
+// override vector moved by another commit, or the document schema rewritten
+// underneath - fails loudly with zero mutation, before any write.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) drop the Commit source==live re-derivation (SceneManager.cpp:5780-5789)
+//   - the independently-moved member writes the stale target; overrides stays
+//   {name} below goes RED.
+//   b) drop the Commit schema re-validation (SceneManager.cpp:5816-5819) - the
+//   schema-rewritten commit writes the child marker; REQUIRE(r2.error.code ==
+//   SchemaVersion) below goes RED (and the schema/override CHECKs go RED).
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: Commit rejects a stale plan with zero mutation")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_stale");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID childUuid = reg.get<EntityIdComponent>(childHandle).id;
+    const auto name = S2Key("name");
+    const auto script = S2Key("script");
+    const auto transform = S2Key("transform");
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    // (a) member vector moved independently between staging and commit.
+    auto p1 = f.manager.PreparePrefabMarkerEdits({ { rootUuid, transform, false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(p1.IsOk());
+    auto pInd = f.manager.PreparePrefabMarkerEdits({ { rootUuid, name, false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(pInd.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(pInd.value)).anyStateChange);
+    const auto revisionA = f.manager.AuthoringRevision();
+    const bool dirtyA = f.manager.IsDirty();
+
+    PrefabMarkerApplyResult r = f.manager.CommitPrefabMarkerPlan(std::move(p1.value));
+    REQUIRE_FALSE(r.error.IsOk());
+    REQUIRE(r.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(r.error.detail.find("changed since the plan was prepared") != std::string::npos);
+    // Zero mutation: the independent {name} survives, schema not moved, no bump.
+    const auto* rawA = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(rawA);
+    REQUIRE(rawA->overrides.size() == 1);
+    CHECK(rawA->overrides[0] == name);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revisionA);
+    CHECK(f.manager.IsDirty() == dirtyA);
+
+    // (b) document schema rewritten independently between staging and commit.
+    auto p2 = f.manager.PreparePrefabMarkerEdits({ { childUuid, script, false, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(p2.IsOk());
+    f.manager.AuthoringDoc().metadata.schemaVersion = 4; // external rewrite underneath
+    const auto revisionB = f.manager.AuthoringRevision();
+    const bool dirtyB = f.manager.IsDirty();
+    PrefabMarkerApplyResult r2 = f.manager.CommitPrefabMarkerPlan(std::move(p2.value));
+    REQUIRE_FALSE(r2.error.IsOk());
+    REQUIRE(r2.error.code == rt2::core::Error::SchemaVersion);
+    // Zero mutation: the child marker was never written, revision untouched.
+    auto childRaw = reg.try_get<PrefabMemberComponent>(childHandle);
+    REQUIRE(childRaw);
+    REQUIRE(childRaw->overrides.empty());
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(f.manager.AuthoringRevision() == revisionB);
+    CHECK(f.manager.IsDirty() == dirtyB);
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-L - PrefabMarkerPlan fields are PUBLIC, so Commit must treat every
+// plan as untrusted and re-validate the WHOLE thing against live state: a
+// forged target holding an excluded or unknown wire, a non-canonical target, a
+// forged source, and an arbitrary (fabricated) schema pair all fail loudly
+// with zero mutation. Commit also re-derives anyStateChange: a forged
+// anyStateChange=true on a genuine no-op still commits nothing and notifies
+// zero times.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) accept forged targets: drop the Commit target re-canonicalization /
+//   identity check (SceneManager.cpp:5795-5804) - the meshRef and noSuchWire
+//   targets below commit and REQUIRE_FALSE(r.error.IsOk()) goes RED.
+//   b) trust forged source: drop the Commit source check
+//   (SceneManager.cpp:5780-5789) - the forged-source plan writes {transform};
+//   REQUIRE(rawForge->overrides.empty()) goes RED.
+//   c) trust fabricated schema: drop the Commit schema-only re-check
+//   (SceneManager.cpp:5828-5830) - the fabricated 4->6 promotion with no
+//   member change bumps schema; the schema CHECK goes RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: Commit rejects forged plan fields with zero mutation")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_forge");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const bool dirty0 = f.manager.IsDirty();
+    const auto revision0 = f.manager.AuthoringRevision();
+
+    const auto forge = [&](std::vector<PrefabComponentKey> source,
+                           std::vector<PrefabComponentKey> target,
+                           std::uint32_t sourceSchema,
+                           std::uint32_t targetSchema)
+    {
+        PrefabMarkerPlan plan;
+        plan.direction = PrefabMarkerDirection::After;
+        plan.sourceSchemaVersion = sourceSchema;
+        plan.targetSchemaVersion = targetSchema;
+        plan.anyStateChange = target != source || sourceSchema != targetSchema;
+        PrefabMarkerPlan::MemberTransition t;
+        t.member = rootUuid;
+        t.source = std::move(source);
+        t.target = std::move(target);
+        plan.members.push_back(std::move(t));
+        return f.manager.CommitPrefabMarkerPlan(std::move(plan));
+    };
+    const auto checkZero = [&] {
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == schema0);
+        CHECK(f.manager.IsDirty() == dirty0);
+        CHECK(f.manager.AuthoringRevision() == revision0);
+        auto g = f.manager.GetOverrides(rootUuid);
+        REQUIRE(g.IsOk());
+        REQUIRE(g.value.empty());
+    };
+
+    // (a) forged excluded target wire.
+    auto r1 = forge({}, { S2Key("meshRef") }, schema0, schema0);
+    REQUIRE_FALSE(r1.error.IsOk());
+    REQUIRE(r1.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(r1.error.detail.find("meshRef") != std::string::npos);
+    checkZero();
+
+    // (b) forged unknown target wire.
+    auto r2 = forge({}, { PrefabComponentKey(std::string_view("noSuchWire"), true) },
+        schema0, schema0);
+    REQUIRE_FALSE(r2.error.IsOk());
+    REQUIRE(r2.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(r2.error.detail.find("noSuchWire") != std::string::npos);
+    checkZero();
+
+    // (c) non-canonical target (both wires real, so it canonicalizes, but the
+    // staged order is not the canonical one).
+    auto r3 = forge({}, { S2Key("transform"), S2Key("name") }, schema0, schema0);
+    REQUIRE_FALSE(r3.error.IsOk());
+    REQUIRE(r3.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(r3.error.detail.find("not canonical") != std::string::npos);
+    checkZero();
+
+    // (d) forged source: claims {name} was the pre-batch set; live is empty,
+    // and the forged target {transform} WOULD have written a marker.
+    auto r4 = forge({ S2Key("name") }, { S2Key("transform") }, schema0, schema0);
+    REQUIRE_FALSE(r4.error.IsOk());
+    REQUIRE(r4.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(r4.error.detail.find("changed since the plan was prepared") != std::string::npos);
+    checkZero();
+
+    // (e) fabricated schema pair with no member change: a 4->6 promotion whose
+    // target is byte-identical to every live vector.
+    auto r5 = forge({}, {}, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(r5.error.IsOk());
+    REQUIRE(r5.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(r5.error.detail.find("schema-only transition") != std::string::npos);
+    checkZero();
+
+    // (f) source-schema pair that does not match the live document.
+    auto r6 = forge({}, { S2Key("transform") }, SceneSerializer::SchemaVersion,
+        SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(r6.error.IsOk());
+    REQUIRE(r6.error.code == rt2::core::Error::SchemaVersion);
+    checkZero();
+
+    // (g) a forged anyStateChange=true on a genuine no-op: Commit re-derives
+    // the decision and commits nothing, notifies zero times.
+    auto p = f.manager.PreparePrefabMarkerEdits({ { rootUuid, S2Key("motion"), false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(p.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(p.value)).anyStateChange);
+    const auto revisionAfter = f.manager.AuthoringRevision();
+    auto noop = f.manager.PreparePrefabMarkerEdits({ { rootUuid, S2Key("motion"), true, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(noop.IsOk());
+    REQUIRE_FALSE(noop.value.anyStateChange);
+    noop.value.anyStateChange = true; // forged
+    PrefabMarkerApplyResult r7 = f.manager.CommitPrefabMarkerPlan(std::move(noop.value));
+    REQUIRE_FALSE(r7.anyStateChange); // decision re-derived, not trusted
+    REQUIRE(f.manager.AuthoringRevision() == revisionAfter);
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-M - notification/revision accounting. A genuine no-op commits zero
+// revision, dirty, schema, and notification changes. A successful two-member
+// plan changes BOTH members with EXACTLY ONE revision bump (NotifyAuthoring
+// Changed fires once). A stale/failed plan bumps zero times (covered per-case
+// in S5-K/S5-L too; re-pinned here end-to-end).
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) notify-per-member: call NotifyAuthoringChanged() inside the commit write
+//   loop (SceneManager.cpp:5835-5840) - the two-member plan below bumps twice
+//   and REQUIRE(... == revBefore + 1) goes RED.
+//   b) notify-noop: remove the Commit no-op early return (SceneManager.cpp:
+//   5831-5832) - the genuine no-op below notifies and CHECK(revision unchanged)
+//   goes RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper two-member plan bumps the revision exactly once; no-op bumps zero")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_rev");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID childUuid = reg.get<EntityIdComponent>(childHandle).id;
+    const auto name = S2Key("name");
+    const auto script = S2Key("script");
+    const auto transform = S2Key("transform");
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    // Bring the doc to v6 with {name} on the root.
+    auto first = f.manager.PreparePrefabMarkerEdits({ { rootUuid, name, false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(first.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(first.value)).anyStateChange);
+    const auto revisionAfterAdd = f.manager.AuthoringRevision();
+    const bool dirtyAfterAdd = f.manager.IsDirty();
+
+    // (a) genuine no-op: re-mark name at the current schema.
+    auto noop = f.manager.PreparePrefabMarkerEdits({ { rootUuid, name, true, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(noop.IsOk());
+    REQUIRE_FALSE(noop.value.anyStateChange);
+    PrefabMarkerApplyResult rn = f.manager.CommitPrefabMarkerPlan(std::move(noop.value));
+    REQUIRE_FALSE(rn.anyStateChange);
+    REQUIRE(rn.appliedMembers == 0);
+    REQUIRE(rn.beforeSchemaVersion == SceneSerializer::SchemaVersion);
+    REQUIRE(rn.afterSchemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revisionAfterAdd);
+    CHECK(f.manager.IsDirty() == dirtyAfterAdd);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    auto noopG = f.manager.GetOverrides(rootUuid);
+    REQUIRE(noopG.IsOk());
+    REQUIRE(noopG.value.size() == 1);
+
+    // (b) one plan, two members, exactly one revision bump and one notification.
+    const auto revisionBeforeTwo = f.manager.AuthoringRevision();
+    auto two = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, false, true },
+        { childUuid, script, false, true },
+    }, PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(two.IsOk());
+    REQUIRE(two.value.members.size() == 2);
+    PrefabMarkerApplyResult rt = f.manager.CommitPrefabMarkerPlan(std::move(two.value));
+    REQUIRE(rt.anyStateChange);
+    REQUIRE(rt.appliedMembers == 2);
+    REQUIRE(f.manager.AuthoringRevision() == revisionBeforeTwo + 1);
+    REQUIRE(f.manager.IsDirty());
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    auto rootT = f.manager.GetOverrides(rootUuid);
+    REQUIRE(rootT.IsOk());
+    REQUIRE(rootT.value.size() == 2);
+    CHECK(rootT.value[0] == name);
+    CHECK(rootT.value[1] == transform);
+    auto childT = f.manager.GetOverrides(childUuid);
+    REQUIRE(childT.IsOk());
+    REQUIRE(childT.value.size() == 1);
+    CHECK(childT.value[0] == script);
+
+    // (c) a failed (stale) commit bumps zero times: stage a plan, move the
+    // member underneath with an unrelated commit, then commit the stale plan -
+    // it fails and the revision is unchanged from the unrelated commit.
+    const auto motion = S2Key("motion");
+    auto stale = f.manager.PreparePrefabMarkerEdits({ { rootUuid, motion, false, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(stale.IsOk());
+    auto mover = f.manager.PreparePrefabMarkerEdits({ { rootUuid, S2Key("light"), false, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(mover.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(mover.value)).anyStateChange);
+    const auto revisionAfterMover = f.manager.AuthoringRevision();
+    PrefabMarkerApplyResult rs = f.manager.CommitPrefabMarkerPlan(std::move(stale.value));
+    REQUIRE_FALSE(rs.error.IsOk());
+    REQUIRE(rs.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(f.manager.AuthoringRevision() == revisionAfterMover); // zero bump
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-N - raw source/target normalization re-confirmed through the Commit
+// revalidation seam. A stored vector that is malformed but canonicalizable
+// (unsorted, duplicated, or carrying a forged classification bit) makes a
+// membership no-op a REAL state change: the raw registry vector is normalized
+// to the canonical wire-sorted, de-duplicated form on commit, because the
+// writer emits the raw vector verbatim. The staged plan's source is the
+// CANONICAL pre-batch set and the committed target is canonical, so the
+// revalidation still accepts the normalization-only plan and rewrites only the
+// stored bytes.
+//
+// Discrimination fault (RED observed, then restored GREEN): drop the Commit
+// per-member rawLive != target detection (SceneManager.cpp:5824-5826) and the
+// normalization-only plans below report no state change; REQUIRE(commit
+// .anyStateChange) and the raw-order CHECKs go RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: Commit normalizes raw originals through plan revalidation")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_norm");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto motion = S2Key("motion");
+    const auto name = S2Key("name");
+    const auto transform = S2Key("transform");
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    // Promote the document to the marker schema first.
+    auto first = f.manager.PreparePrefabMarkerEdits({ { rootUuid, motion, false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(first.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(first.value)).anyStateChange);
+    const auto revisionAfter = f.manager.AuthoringRevision();
+
+    // (a) unsorted raw vector + membership no-op: rewrites in canonical order.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides = { transform, motion };
+    auto sortNoop = f.manager.PreparePrefabMarkerEdits({ { rootUuid, motion, true, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(sortNoop.IsOk());
+    REQUIRE(sortNoop.value.anyStateChange);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(sortNoop.value)).anyStateChange);
+    auto sortedRaw = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(sortedRaw);
+    REQUIRE(sortedRaw->overrides.size() == 2);
+    CHECK(sortedRaw->overrides[0] == motion);
+    CHECK(sortedRaw->overrides[1] == transform);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // (b) duplicated raw vector collapses to a unique set.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides = { motion, transform, motion };
+    auto dupNoop = f.manager.PreparePrefabMarkerEdits({ { rootUuid, motion, true, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(dupNoop.IsOk());
+    REQUIRE(dupNoop.value.anyStateChange);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(dupNoop.value)).anyStateChange);
+    auto dedupRaw = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(dedupRaw);
+    REQUIRE(dedupRaw->overrides.size() == 2);
+    CHECK(dedupRaw->overrides[0] == motion);
+    CHECK(dedupRaw->overrides[1] == transform);
+
+    // (c) forged classification bit re-derives the frozen-table entry.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides =
+        { PrefabComponentKey(std::string_view("transform"), false), motion };
+    auto forgedNoop = f.manager.PreparePrefabMarkerEdits({ { rootUuid, motion, true, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(forgedNoop.IsOk());
+    REQUIRE(forgedNoop.value.anyStateChange);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(forgedNoop.value)).anyStateChange);
+    auto canonicalRaw = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(canonicalRaw);
+    REQUIRE(canonicalRaw->overrides.size() == 2);
+    CHECK(canonicalRaw->overrides[0] == motion);
+    CHECK(canonicalRaw->overrides[1] == transform); // table-derived bit (true)
+
+    // Every normalization above is one real change with one revision bump.
+    CHECK(f.manager.AuthoringRevision() == revisionAfter + 3);
+    std::filesystem::remove_all(dir);
 }

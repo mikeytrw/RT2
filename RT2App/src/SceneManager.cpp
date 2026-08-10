@@ -5363,6 +5363,109 @@ bool S5CanonicalizeVector(const std::vector<PrefabComponentKey>& raw,
 	          out.end());
 	return true;
 }
+
+// True when, AFTER applying `targets` (durable member UUID -> canonical target
+// override vector) to the document, ANY prefab member anywhere still carries a
+// non-empty override set. Members not named by `targets` keep their current
+// stored vector (canonicalized). Gates the schema-downgrade rule: a document
+// schema that predates overrides (below SchemaVersion) can only be the target
+// of an undo when no override remains anywhere. A stored vector that cannot be
+// canonicalized fills `err` and returns false — the state cannot be decided, so
+// the downgrade fails loudly rather than silently dropping a marker.
+bool S5RemainingOverrides(const rt2::core::SceneDocument& document,
+                          const std::vector<PrefabMarkerPlan::MemberTransition>& targets,
+                          bool& remaining,
+                          rt2::core::Error& err)
+{
+	remaining = false;
+	std::unordered_map<rt2::core::UUID, const std::vector<PrefabComponentKey>*> planned;
+	planned.reserve(targets.size());
+	for (const auto& t : targets)
+		planned.emplace(t.member, &t.target);
+
+	auto& registry = document.ecs.registry;
+	auto view = registry.view<PrefabMemberComponent>();
+	for (auto e : view)
+	{
+		const auto& pm = view.get<PrefabMemberComponent>(e);
+		const auto* id = registry.try_get<EntityIdComponent>(e);
+		if (!id)
+			continue; // a member without a durable uuid is not addressable by a plan
+		const auto it = planned.find(id->id);
+		const auto& effective = (it != planned.end()) ? *it->second : pm.overrides;
+		if (effective.empty())
+			continue;
+		std::vector<PrefabComponentKey> canonical;
+		if (!S5CanonicalizeVector(effective, canonical, err))
+			return false; // undecidable stored state: fail loudly
+		if (!canonical.empty())
+		{
+			remaining = true;
+			return true;
+		}
+	}
+	return true;
+}
+
+// Validate the schema transition implied by a marker plan against live state and
+// the resulting member sets. Shared by Prepare (cheap, zero-mutation) and Commit
+// (re-evaluated so a hand-forged or stale plan cannot smuggle a schema change):
+//
+//  1. The live document schema must equal the plan's directional source schema
+//     (source = command-before version for After, command-after version for
+//     Before). A plan prepared against a different baseline is stale or forged.
+//  2. A non-empty override target cannot be stored below SceneSerializer::
+//     SchemaVersion — the version overrides live in. A first marker therefore
+//     cannot target a below-current schema: it must land at a version that can
+//     represent it.
+//  3. A downgrade below the live schema is valid only when no override target
+//     remains ANYWHERE in the document after the batch applies — otherwise the
+//     downgrade would silently strand (and then drop) a marker on save.
+//
+// On failure fills `err` and returns false.
+bool S5ValidateSchemaTransition(
+	const rt2::core::SceneDocument& document,
+	std::uint32_t sourceSchemaVersion,
+	std::uint32_t targetSchemaVersion,
+	const std::vector<PrefabMarkerPlan::MemberTransition>& transitions,
+	rt2::core::Error& err)
+{
+	if (document.metadata.schemaVersion != sourceSchemaVersion)
+	{
+		err.code = rt2::core::Error::SchemaVersion;
+		err.detail = "document schema (" + std::to_string(document.metadata.schemaVersion)
+			+ ") does not match the plan's source schema ("
+			+ std::to_string(sourceSchemaVersion) + ")";
+		return false;
+	}
+
+	bool anyNonEmptyTarget = false;
+	for (const auto& t : transitions)
+		if (!t.target.empty()) { anyNonEmptyTarget = true; break; }
+	if (anyNonEmptyTarget && targetSchemaVersion < rt2::core::SceneSerializer::SchemaVersion)
+	{
+		err.code = rt2::core::Error::InvalidArgument;
+		err.detail = "override targets require a document schema of at least "
+			+ std::to_string(rt2::core::SceneSerializer::SchemaVersion)
+			+ " (cannot be stored at " + std::to_string(targetSchemaVersion) + ")";
+		return false;
+	}
+
+	if (targetSchemaVersion < document.metadata.schemaVersion)
+	{
+		bool remaining = false;
+		if (!S5RemainingOverrides(document, transitions, remaining, err))
+			return false; // malformed stored state elsewhere: fail loudly
+		if (remaining)
+		{
+			err.code = rt2::core::Error::InvalidArgument;
+			err.detail = "cannot downgrade the document schema below the live schema"
+				" while an override remains elsewhere in the document";
+			return false;
+		}
+	}
+	return true;
+}
 } // namespace
 
 rt2::core::Result<bool> SceneManager::IsOverridden(
@@ -5440,6 +5543,25 @@ rt2::core::Result<PrefabMarkerPlan> SceneManager::PreparePrefabMarkerEdits(
 		? afterSchemaVersion : beforeSchemaVersion;
 
 	const bool targetAfter = (direction == PrefabMarkerDirection::After);
+
+	// Directional source-schema integrity: the command-captured source side must
+	// equal the live document schema. A payload prepared against a different
+	// baseline is stale or hand-forged and fails loudly with zero change.
+	if (m_Authoring.metadata.schemaVersion != plan.sourceSchemaVersion)
+		return rt2::core::Result<PrefabMarkerPlan>::Fail(
+			rt2::core::Error::SchemaVersion, "",
+			"document schema (" + std::to_string(m_Authoring.metadata.schemaVersion)
+				+ ") does not match the expected directional source schema ("
+				+ std::to_string(plan.sourceSchemaVersion) + ")");
+
+	// An empty edit list cannot fabricate a schema-only transition: the schema
+	// always rides on a real member-state (or stored-vector normalization)
+	// change. A no-op with no edits at all is allowed only when the schema pair
+	// is constant.
+	if (edits.empty() && plan.sourceSchemaVersion != plan.targetSchemaVersion)
+		return rt2::core::Result<PrefabMarkerPlan>::Fail(
+			rt2::core::Error::InvalidArgument, "",
+			"empty edit list cannot drive a schema-only transition");
 
 	struct Staged
 	{
@@ -5540,6 +5662,7 @@ rt2::core::Result<PrefabMarkerPlan> SceneManager::PreparePrefabMarkerEdits(
 
 	// Build the durable per-member transitions from the canonical snapshot.
 	plan.anyStateChange = false;
+	bool anyVectorChange = false;
 	for (const auto& member : staged)
 	{
 		std::vector<PrefabComponentKey> after = member.live;
@@ -5575,11 +5698,30 @@ rt2::core::Result<PrefabMarkerPlan> SceneManager::PreparePrefabMarkerEdits(
 		// is a real state change, never silently left malformed.
 		if (member.raw != member.live)
 			plan.anyStateChange = true;
+		if (transition.source != transition.target || member.raw != member.live)
+			anyVectorChange = true;
 		plan.members.push_back(std::move(transition));
 	}
 
 	if (plan.sourceSchemaVersion != plan.targetSchemaVersion)
 		plan.anyStateChange = true;
+
+	// A schema transition must ride on a real member-state change (markers added
+	// or removed, or a stored-vector normalization). A batch that changes only
+	// the schema — the degenerate empty-edit case included — is a fabricated
+	// schema-only transition and fails loudly.
+	if (plan.sourceSchemaVersion != plan.targetSchemaVersion && !anyVectorChange)
+		return rt2::core::Result<PrefabMarkerPlan>::Fail(
+			rt2::core::Error::InvalidArgument, "",
+			"a schema transition cannot be fabricated without a member-state change");
+
+	// Schema transition rules (source==live, marker-version floor, downgrade
+	// without any remaining override), shared with Commit and re-validated there.
+	rt2::core::Error schemaErr;
+	if (!S5ValidateSchemaTransition(m_Authoring, plan.sourceSchemaVersion,
+		plan.targetSchemaVersion, plan.members, schemaErr))
+		return rt2::core::Result<PrefabMarkerPlan>::Fail(
+			schemaErr.code, "", schemaErr.detail);
 
 	return rt2::core::Result<PrefabMarkerPlan>::Ok(std::move(plan));
 }
@@ -5590,40 +5732,110 @@ PrefabMarkerApplyResult SceneManager::CommitPrefabMarkerPlan(PrefabMarkerPlan pl
 	result.beforeSchemaVersion = m_Authoring.metadata.schemaVersion;
 	result.afterSchemaVersion = result.beforeSchemaVersion;
 
-	// Re-resolve every durable member UUID. Commit is infallible only when
-	// applied to the same document the plan was prepared against; a stale plan
-	// (a member removed or un-made in between) fails loudly with zero mutation
-	// rather than partially writing.
-	std::vector<entt::entity> resolved;
-	resolved.reserve(plan.members.size());
+	// ---- Validate the WHOLE plan against live state before any write ----
+	// Commit is infallible only when applied to the same document the plan was
+	// prepared against. Everything below re-derives the live state and compares
+	// it to the staged plan; any divergence — a member removed or un-made, a
+	// changed override vector, a changed schema, or a hand-forged target/schema
+	// — fails loudly with zero mutation rather than partially writing.
+
+	const auto failMember = [&](rt2::core::Error::Code code,
+	                            const rt2::core::UUID& member,
+	                            const std::string& detail)
+	{
+		result.error = S5QueryError(code, member, detail);
+		return result;
+	};
+	const auto failDoc = [&](rt2::core::Error::Code code, const std::string& detail)
+	{
+		result.error.code = code;
+		result.error.detail = detail;
+		return result;
+	};
+
+	struct Validated
+	{
+		entt::entity entity = entt::null;
+		std::vector<PrefabComponentKey> rawLive; // registry vector as stored now
+		std::vector<PrefabComponentKey> target;  // canonical target to write
+	};
+	std::vector<Validated> validated;
+	validated.reserve(plan.members.size());
+
 	for (const auto& transition : plan.members)
 	{
+		// Member identity: durable UUID resolved through the authoring index.
 		const auto e = m_Authoring.FindByUuid(transition.member);
 		if (e == entt::null || !m_EcsScene.registry.valid(e))
-		{
-			result.error = S5QueryError(rt2::core::Error::InvalidEntity,
+			return failMember(rt2::core::Error::InvalidEntity,
 				transition.member, "stale marker plan: member no longer present");
-			return result;
-		}
 		if (!m_EcsScene.registry.all_of<PrefabMemberComponent>(e))
-		{
-			result.error = S5QueryError(rt2::core::Error::NotPrefabMember,
+			return failMember(rt2::core::Error::NotPrefabMember,
 				transition.member, "stale marker plan: member is no longer a prefab member");
-			return result;
-		}
-		resolved.push_back(e);
+		const auto* pm = m_EcsScene.registry.try_get<PrefabMemberComponent>(e);
+
+		// Source: the staged source must equal the member's CURRENT canonical
+		// override set. A vector changed since the plan was prepared (or a
+		// hand-forged source) is a stale plan.
+		std::vector<PrefabComponentKey> live;
+		rt2::core::Error vecErr;
+		if (!S5CanonicalizeVector(pm->overrides, live, vecErr))
+			return failMember(rt2::core::Error::InvalidArgument,
+				transition.member,
+				"stale marker plan: stored override vector is malformed: " + vecErr.detail);
+		if (transition.source != live)
+			return failMember(rt2::core::Error::InvalidArgument,
+				transition.member,
+				"stale marker plan: member override set changed since the plan was prepared");
+
+		// Target: must already be canonical (wire-sorted, de-duplicated, with
+		// table-derived classification bits). Re-canonicalizing and requiring
+		// identity rejects a forged target holding an excluded/unknown wire or a
+		// forged classification bit.
+		std::vector<PrefabComponentKey> targetCheck;
+		if (!S5CanonicalizeVector(transition.target, targetCheck, vecErr))
+			return failMember(rt2::core::Error::InvalidArgument,
+				transition.member,
+				"forged marker plan: target holds an unknown or excluded wire: "
+				+ vecErr.detail);
+		if (targetCheck != transition.target)
+			return failMember(rt2::core::Error::InvalidArgument,
+				transition.member,
+				"forged marker plan: target is not canonical (sorted, de-duplicated, table-derived bits)");
+
+		Validated v;
+		v.entity = e;
+		v.rawLive = pm->overrides;
+		v.target = std::move(targetCheck);
+		validated.push_back(std::move(v));
 	}
 
-	// Genuine no-op: nothing changes, zero notifications (no revision/dirty/schema
-	// churn). A valid plan with anyStateChange false targets identical state.
-	if (!plan.anyStateChange)
-		return result;
+	// Schema transition: the same rules Prepare applies, re-evaluated against
+	// live state so a stale or hand-forged schema pair cannot pass.
+	rt2::core::Error schemaErr;
+	if (!S5ValidateSchemaTransition(m_Authoring, plan.sourceSchemaVersion,
+		plan.targetSchemaVersion, plan.members, schemaErr))
+		return failDoc(schemaErr.code,
+			"stale or forged marker plan: " + schemaErr.detail);
 
-	// Apply all staged member vectors and the schema transition in one step.
-	for (std::size_t i = 0; i < plan.members.size(); ++i)
+	// Decide the actual change WITHOUT trusting plan.anyStateChange (a caller
+	// can forge it): a genuine no-op — every target byte-identical to the stored
+	// vectors and the schema unchanged — commits nothing and notifies zero times.
+	bool anyVectorChange = false;
+	for (const auto& v : validated)
+		if (v.rawLive != v.target) { anyVectorChange = true; break; }
+	const bool schemaChange = (plan.targetSchemaVersion != result.beforeSchemaVersion);
+	if (schemaChange && !anyVectorChange)
+		return failDoc(rt2::core::Error::InvalidArgument,
+			"forged marker plan: schema-only transition without any member-state change");
+	if (!anyVectorChange && !schemaChange)
+		return result; // genuine no-op: zero mutation, zero notification
+
+	// ---- Apply atomically ----
+	for (std::size_t i = 0; i < validated.size(); ++i)
 	{
-		auto* pm = m_EcsScene.registry.try_get<PrefabMemberComponent>(resolved[i]);
-		pm->overrides = plan.members[i].target;
+		auto* pm = m_EcsScene.registry.try_get<PrefabMemberComponent>(validated[i].entity);
+		pm->overrides = std::move(validated[i].target);
 		++result.appliedMembers;
 	}
 	m_Authoring.metadata.schemaVersion = plan.targetSchemaVersion;

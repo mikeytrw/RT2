@@ -694,28 +694,39 @@ struct PrefabMarkerPlan
 	//
 	// PreparePrefabMarkerEdits validates an entire batch against one pre-batch
 	// snapshot and returns a staged PrefabMarkerPlan; it performs zero
-	// mutation. Validation: keys are canonicalized by resolving key.wire()
-	// through the frozen table (the caller's overridable bit is never trusted;
-	// the canonical table entry is what gets stored); byte-identical duplicate
-	// edits for the same (member, canonical wire) coalesce; contradictory
-	// duplicates fail; malformed stored vectors (unknown/excluded wire) fail;
-	// and the presence on the non-target side must match the pre-batch
-	// snapshot. The caller supplies the command-captured before/after schema
-	// versions (D3.6/D3.10); the After direction targets the after version
-	// (execute) and the Before direction targets the before version
-	// (undo/restore), so undoing a first add restores the captured value.
+	// mutation. Validation: the caller-supplied directional source schema must
+	// equal the live document schema (a stale or hand-forged schema pair fails
+	// with Error::SchemaVersion); keys are canonicalized by resolving
+	// key.wire() through the frozen table (the caller's overridable bit is
+	// never trusted; the canonical table entry is what gets stored);
+	// byte-identical duplicate edits for the same (member, canonical wire)
+	// coalesce; contradictory duplicates fail; malformed stored vectors
+	// (unknown/excluded wire) fail; and the presence on the non-target side
+	// must match the pre-batch snapshot. A schema transition must ride on a
+	// real member-state change (empty edits cannot fabricate a schema-only
+	// transition); a non-empty override target must land at a schema version
+	// that can hold overrides; and a downgrade below the live schema is valid
+	// only when no override remains anywhere in the document. The caller
+	// supplies the command-captured before/after schema versions (D3.6/D3.10);
+	// the After direction targets the after version (execute) and the Before
+	// direction targets the before version (undo/restore), so undoing a first
+	// add restores the captured value.
 	//
-	// CommitPrefabMarkerPlan applies a validated plan: it re-resolves each
-	// member UUID (failing loudly with zero mutation if the plan is stale),
-	// writes every staged member's canonical target vector, always sets the
-	// document schema to the plan's targetSchemaVersion, and calls
-	// NotifyAuthoringChanged() at most once (only when anyStateChange — a
-	// genuine no-op notifies zero times). anyStateChange is also true when a
-	// staged member's stored vector is malformed-but-canonicalizable (unsorted,
-	// duplicated, or carrying a forged classification bit): commit writes the
-	// canonical target into the raw registry vector even when the membership
-	// edit alone would be a no-op, normalizing the stored state rather than
-	// silently leaving it malformed.
+	// CommitPrefabMarkerPlan re-validates the entire plan against live state
+	// before any write — the staged source must equal each member's current
+	// canonical override set and each staged target must already be canonical —
+	// then applies it atomically: it writes every member's canonical target
+	// vector, always sets the document schema to the plan's targetSchemaVersion,
+	// and calls NotifyAuthoringChanged() at most once. A stale or hand-forged
+	// plan (a member removed or un-made, an override vector or schema changed
+	// since staging, or a target with excluded/unknown/non-canonical keys) fails
+	// loudly with zero mutation. A genuine no-op (targets identical to the stored
+	// vectors, schema unchanged) commits nothing and notifies zero times.
+	// anyStateChange is also true when a staged member's stored vector is
+	// malformed-but-canonicalizable (unsorted, duplicated, or carrying a forged
+	// classification bit): commit writes the canonical target into the raw
+	// registry vector even when the membership edit alone would be a no-op,
+	// normalizing the stored state rather than silently leaving it malformed.
 	rt2::core::Result<bool> IsOverridden(
 		const rt2::core::UUID& member,
 		const PrefabComponentKey& key) const;
