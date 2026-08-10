@@ -6216,6 +6216,20 @@ document is a period record of a superseded state.**
 > re-review fixup and is superseded by the 854/854 figures. The 700/700 rows
 > remain the 2026-07-31 period record.
 
+> **Updated 2026-08-10 — S4 final fresh re-review fix closure measurement
+> (supersedes the 854/854 note above).** Full measured run from the repository
+> root after the final re-review-2 fixup landed (`fc1cef6` — shared
+> `EditorSceneState` clipboard-generation paste guard for the undoable editor
+> paste path, tests T23-T26). Both configurations now measure **858 run /
+> 858 passed / 0 failed / 0 skipped; 148,651 assertions**. Release and Debug
+> each recorded one clean full run with no failure reproduced; the Phase6B
+> file-timestamp-granularity timing test did not flake. The scripting, slice
+> and recovery gates passed: script PASS 60 frames / 1 entity; slice PASS Cube
+> final x=0.999999702; recovery PASS. The 854/854 figure is the recorded
+> measurement of the S4 re-review fix closure before this final fixup and is
+> superseded by the 858/858 figures. The 700/700 rows remain the 2026-07-31
+> period record.
+
 Run from the repository root — `RT2Tests.exe` resolves some fixtures by
 relative path and both fails and writes stray files if run from elsewhere.
 
@@ -14615,3 +14629,64 @@ stale-comment finding was also fixed in `2f7e88d`: every
 **S5/S6 remain.** The marking half of work step S4 — automatic marking (S5/S6)
 — is still not delivered and is carried to later work; this note closes only
 the re-review's P1 regression and both P2 findings.
+
+#### Supersession / correction note (2026-08-10, S4 final re-review-2 fix closure)
+
+The two notes above were reviewed one more time against the tree at `9948e02`
+in the [Phase 8 W3 S4 final fresh re-review]
+(`artifacts/phase8-w3-s4-final-rereview-2/index.md`, review range
+`2732577..9948e02`). That final re-review confirmed every prior finding is
+closed and found one new, constructible P1 clipboard-integrity defect: the
+editor's undoable `SceneEditorUI::PasteCommand` bypassed `EditorSceneState`'s
+captured-generation guards entirely — it read the raw clipboard document and
+called `PasteSubtreesWithUuids` directly, trusting only the manager's numeric
+range checks, which cannot detect an in-range-but-stale resource index after a
+`CompactMeshRegistry` table remap. The P1 was addressed by the fixup commit
+below. This note is the third dated correction the append-only rule requires;
+all earlier records (the `f72d0e1` report and the 2026-08-09 and 2026-08-10
+notes above) remain period records and are NOT rewritten. All code references
+below are grounded against the tree at `fc1cef6` (HEAD at the time of writing).
+
+**Fixup commit (final re-review-2 P1).**
+
+- `fc1cef6` — shared `EditorSceneState` clipboard-generation paste guard for the
+  undoable editor paste path. Adds `ValidateClipboardPaste`
+  (`EditorSceneState.cpp:65-80`), one shared validator now used by BOTH paste
+  paths that fails `ClipboardStale`, with zero manager mutation and zero UUID
+  reservation, on an empty clipboard, a document-generation mismatch, or a
+  resource-generation mismatch; ordinary `Paste` (`EditorSceneState.cpp:82-85`)
+  now routes through it. Adds `PasteWithUuidsForCommand`
+  (`EditorSceneState.cpp:87-123`), the state-level, CPU-linkable preparation the
+  UI now calls: existing clipboard validation → per-root clipboard-document
+  subtree count → `ReserveKnownUuids` only after validation →
+  `PasteSubtreesWithUuids`, returning the full `DuplicationResult` for undo.
+  `SceneEditorUI::PasteCommand` (`SceneEditorUI.cpp:417-441`) is rewired to it:
+  a validation failure goes through `ApplyMutation` BEFORE any snapshot,
+  command construction, or history mutation; the UI no longer counts or reserves
+  UUIDs itself and contains no generation checks.
+
+**Tests (T23-T26, final re-review-2 P1 coverage).** `fc1cef6` added four
+hostile/stale regressions to `RT2Tests/src/Phase8W3OverrideTests.cpp`:
+
+- T23 the discriminating in-range stale-material case (materials A/B/C, copied
+  on B; compaction drops B and remaps C onto the stale-but-in-range index 1),
+- T24 texture-only resource-generation change (braided indices all untouched),
+- T25 document-generation change,
+- T26 valid-path control (created roots + source mapping preserved for undo).
+
+Each stale case asserts `ClipboardStale`, ZERO UUID draws (an empty
+`ScriptedUuidProvider` fails loudly on any draw), no history entry, and an
+unchanged destination — entity count, UUID-index, hierarchy, mesh/material/
+texture tables, revisions, and document- and resource-generation. RED evidence
+was captured twice: with the shared validator bypassed and the provider empty,
+T23 reached `ReserveKnownUuids` and failed on a draw (`REQUIRE( 0 < 0 )`); with
+the validator bypassed and one scripted UUID, the unguarded paste returned
+`success=true` and silently bound the pasted entity to C (silent rebind
+reproduced) before both experiment edits were reverted. T23 also re-invokes the
+unguarded manager paste directly to permanently document the hole this guard
+closes. After the guard restoration the focused T23-T26 pass 4/4, 75/75 in both
+configurations.
+
+**S5/S6 remain.** The marking half of work step S4 — automatic marking (S5/S6)
+— is still not delivered and is carried to later work; this note closes only
+the final re-review-2 P1 clipboard-generation defect.
