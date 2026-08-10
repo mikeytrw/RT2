@@ -41,14 +41,62 @@ struct PrefabMarkerEdit
 	bool               afterPresent;
 };
 
-// Result of applying a batch of PrefabMarkerEdits. The helper is not
-// fail-atomic: an edit whose member is not a prefab member (or does not
-// exist) is rejected and reported here with its payload intact, while the
-// remaining edits still apply. `rejected` is empty on full success.
+// Which side of the membership delta is the target state. Execute applies
+// After (encode `afterPresent`); undo/restore applies Before (encode
+// `beforePresent`). The other side is validated against the pre-batch
+// snapshot, so a stale or forged payload fails loudly instead of silently
+// ignoring one boolean.
+enum class PrefabMarkerDirection
+{
+	Before,
+	After,
+};
+
+// Result of committing a validated PrefabMarkerPlan. CommitPrefabMarkerPlan is
+// infallible after a successful PreparePrefabMarkerEdits: every staged member
+// is written and the schema transition is applied in one step, then
+// NotifyAuthoringChanged() is called at most once (only when anyStateChange).
 struct PrefabMarkerApplyResult
 {
-	std::size_t                applied = 0;
-	std::vector<PrefabMarkerEdit> rejected;
+	std::size_t    appliedMembers = 0;       // members whose set was written
+	std::uint32_t  beforeSchemaVersion = 0;  // document schema before the batch
+	std::uint32_t  afterSchemaVersion = 0;   // schema the document was left at
+	bool           anyStateChange = false;   // false => genuine no-op (no notify)
+};
+
+// A fully validated, staged marker batch. PreparePrefabMarkerEdits resolves
+// every member UUID and every key wire through the frozen table, validates the
+// directionally selected presence against one pre-batch snapshot, coalesces
+// byte-identical duplicate edits per (member, canonical wire) while rejecting
+// contradictory duplicates, and rejects malformed raw vectors — all WITHOUT
+// touching live state. CommitPrefabMarkerPlan then applies the staged member
+// vectors and schema transition atomically.
+//
+// The plan holds only durable member UUIDs and canonical override vectors (no
+// entt handles or pointers), so a command can store it between staging and
+// commit, and S6 composes it atomically with component-value mutations.
+struct PrefabMarkerPlan
+{
+	// Canonical before/after override set for one member. Each vector is in
+	// wire-sorted, de-duplicated order (the shape the scene codec writes).
+	struct MemberTransition
+	{
+		rt2::core::UUID member;
+		std::vector<PrefabComponentKey> before;
+		std::vector<PrefabComponentKey> after;
+	};
+
+	PrefabMarkerDirection direction = PrefabMarkerDirection::After;
+	// Schema versions captured by the command (D3.6/D3.10): commit leaves the
+	// document at afterSchemaVersion, so undoing a first add restores the
+	// captured beforeSchemaVersion and nothing ever downgrades below what the
+	// command captured.
+	std::uint32_t beforeSchemaVersion = 0;
+	std::uint32_t afterSchemaVersion = 0;
+	// True when any member vector or the schema differs between before and
+	// after; a genuine no-op is false and fires no notification.
+	bool anyStateChange = false;
+	std::vector<MemberTransition> members;
 };
 
 // ============================================================================
@@ -620,32 +668,49 @@ struct PrefabMarkerApplyResult
 		const rt2::core::UUID& entity,
 		const std::optional<MaterialOverrideComponent>& override);
 
-	// ---- Phase 8 W3 S5: prefab override query + marker helper ----
+	// ---- Phase 8 W3 S5: prefab override query + staged marker helper ----
 	//
 	// IsOverridden reports whether `key` is currently present in the prefab
-	// member `uuid`'s override set. Returns false for a non-member entity or
-	// an absent component (never raises).
+	// member `uuid`'s override set. GetOverrides returns the full set in
+	// canonical (wire-sorted, de-duplicated) order. Both return
+	// rt2::core::Result so the failure classes are distinguishable instead of
+	// collapsing into false/empty:
+	//   - a valid member with an empty set is a successful false / empty value;
+	//   - a missing or absent UUID fails with Error::InvalidEntity;
+	//   - an ordinary entity fails with Error::NotPrefabMember;
+	//   - a key that does not resolve through the frozen table, or resolves to
+	//     one of the five excluded wires, fails with a structured key error
+	//     (InvalidArgument whose detail names the wire).
+	// Queries canonicalize stored vectors by wire identity and fail loudly
+	// when a stored wire is unknown or non-overridable — never silently
+	// surfacing a forged classification.
 	//
-	// GetOverrides returns the member's override set in canonical (wire-sorted,
-	// de-duplicated) order. Returns an empty vector if the entity does not
-	// exist or is not a prefab member.
+	// PreparePrefabMarkerEdits validates an entire batch against one pre-batch
+	// snapshot and returns a staged PrefabMarkerPlan; it performs zero
+	// mutation. Validation: keys are canonicalized by resolving key.wire()
+	// through the frozen table (the caller's overridable bit is never trusted;
+	// the canonical table entry is what gets stored); byte-identical duplicate
+	// edits for the same (member, canonical wire) coalesce; contradictory
+	// duplicates fail; malformed stored vectors (unknown/excluded wire) fail;
+	// and the presence on the non-target side must match the pre-batch
+	// snapshot. The caller supplies the captured before/after schema versions
+	// (D3.6/D3.10) so undo of a first add restores the captured value.
 	//
-	// ApplyPrefabMarkerEdits applies a batch of membership deltas to their
-	// members' override sets, maintaining the canonical sorted-unique
-	// invariant. Marking operations also promote the document schema version
-	// (SchemaVersion::PromoteSchemaVersion) the first time an override appears
-	// on a member it was previously absent from, so a recovery SaveTo writes v6
-	// and the set survives. Calls NotifyAuthoringChanged() once when anything
-	// applied. Edits whose member is not a prefab member are skipped and
-	// returned in result.rejected (see PrefabMarkerApplyResult) — the caller's
-	// command layer owns transactional rollback, not this helper.
-	// Returns the number of edits applied.
-	bool IsOverridden(const rt2::core::UUID& member,
-	                  const PrefabComponentKey& key) const;
-	std::vector<PrefabComponentKey> GetOverrides(
+	// CommitPrefabMarkerPlan applies a validated plan: it writes every staged
+	// member's canonical after vector, sets the document schema to the plan's
+	// afterSchemaVersion, and calls NotifyAuthoringChanged() at most once
+	// (only when anyStateChange — a genuine no-op notifies zero times).
+	rt2::core::Result<bool> IsOverridden(
+		const rt2::core::UUID& member,
+		const PrefabComponentKey& key) const;
+	rt2::core::Result<std::vector<PrefabComponentKey>> GetOverrides(
 		const rt2::core::UUID& member) const;
-	PrefabMarkerApplyResult ApplyPrefabMarkerEdits(
-		const std::vector<PrefabMarkerEdit>& edits);
+	rt2::core::Result<PrefabMarkerPlan> PreparePrefabMarkerEdits(
+		const std::vector<PrefabMarkerEdit>& edits,
+		PrefabMarkerDirection direction,
+		std::uint32_t beforeSchemaVersion,
+		std::uint32_t afterSchemaVersion);
+	PrefabMarkerApplyResult CommitPrefabMarkerPlan(PrefabMarkerPlan plan);
 
 	// ---- Dirty tracking ----
 	bool IsDirty() const { return m_Authoring.metadata.dirty; }
