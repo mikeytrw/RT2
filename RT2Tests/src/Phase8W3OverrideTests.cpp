@@ -3847,28 +3847,26 @@ TEST_CASE("Phase 8 W3: overlapping parent+child and duplicate-root clipboard sel
 }
 
 // ============================================================================
-// Phase 8 W3, S5 — the overrides query + marker-edit helper API
+// Phase 8 W3, S5 — the typed overrides query + marker-plan API
 // (implementation spec, W3 D3.10 and D6; Work step S5).
 //
-// S5 delivers the query API (IsOverridden / GetOverrides) and the shared
-// marker helper (ApplyPrefabMarkerEdits) that every S6 command factory will
-// call, WITHOUT wiring any setter yet. Its tests therefore assert the three
-// contracts the wiring depends on:
+// S5 delivers the query API (IsOverridden / GetOverrides) and the prepare /
+// commit marker-plan contract that later S6 command factories will use,
+// WITHOUT wiring any editor entry point yet. Its tests therefore assert the
+// three contracts the wiring depends on:
 //
 //   1. Query correctness on a real instance: empty set until marked, and
 //      never falsely marked by existence of the member component alone.
 //   2. The helper maintains the canonical (wire-sorted, de-duplicated) order
 //      the codec writes and the reader normalizes, and promotes the document
 //      schema version (D6) the first time a marker actually appears.
-//   3. Loud rejection: an edit whose member is not a prefab member, does not
-//      exist, or carries a non-overridable key is rejected (reported in the
-//      result) while valid edits still apply — the fail-atomic contract the
-//      S6 command layer builds transactional undo on top of.
+//   3. Loud, fail-atomic rejection: an edit whose member is not a prefab
+//      member, does not exist, or carries a non-overridable key rejects the
+//      whole prepared plan before any marker/schema mutation.
 //
-// The no-op/undo/redo breadth (spec tests 8, 9 and the SetCameraPoseState
-// two-marker case, test 12) belongs to S6, where the concrete setters are
-// wired and command construction computes the edits; S5 proves the helper the
-// commands will call.
+// The no-op/undo/redo breadth for concrete setters and the SetCameraPoseState
+// two-marker case belongs to S6, where editor entry points are wired and
+// command construction computes the edits; S5 proves the public plan contract.
 // ============================================================================
 
 namespace
@@ -3950,8 +3948,8 @@ TEST_CASE("Phase 8 W3: override queries are empty until marked")
 }
 
 // ---------------------------------------------------------------------------
-// Test S5-A — ApplyPrefabMarkerEdits adds markers in canonical order, dedups
-// re-marks, and promotes the document schema on the first add (D6). The RAW
+// Test S5-A — marker plans add markers in canonical order, dedup re-marks,
+// and promote the document schema on the first add (D6). The RAW
 // registry vector (what the writer emits verbatim) must be wire-sorted and
 // unique even though the batch was supplied in a different order: the writer
 // only sorts at SceneSerializer.cpp:853-856, it does NOT de-duplicate, so a
@@ -4149,9 +4147,9 @@ TEST_CASE("Phase 8 W3: marker helper removal restores membership and respects th
 // ---------------------------------------------------------------------------
 // Test S5-C — loud rejection, fail-atomic by construction. A batch mixing a
 // valid edit with (a) an absent member UUID, (b) a member that is not a prefab
-// member, and (c) a non-overridable key fails the WHOLE batch in Prepare: the
-// valid prefix does not land, and membership, schema, dirty flag, and authoring
-// revision stay unchanged.
+// member, and (c) a non-overridable key fails the WHOLE prepared plan: no
+// marker lands, and membership, schema, dirty flag, and authoring revision
+// stay unchanged.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: marker helper rejects bad members and non-overridable keys loudly, atomically")
 {
@@ -4178,7 +4176,7 @@ TEST_CASE("Phase 8 W3: marker helper rejects bad members and non-overridable key
     REQUIRE_FALSE(plan.IsOk());
     REQUIRE(plan.error.code == rt2::core::Error::InvalidEntity); // first bad edit
 
-    // The valid prefix did NOT land: zero partial mutation.
+    // The valid edit did NOT land: zero partial mutation.
     auto overrides = f.manager.GetOverrides(rootUuid);
     REQUIRE(overrides.IsOk());
     REQUIRE(overrides.value.empty());
@@ -4227,7 +4225,7 @@ TEST_CASE("Phase 8 W3: override queries reject unknown and excluded keys as stru
 // as a WHOLE batch. The cases below pin each guarantee's discriminating
 // assertion. Rule: every canonical wire keeps its table-derived overridable
 // bit regardless of what the caller supplied; a batch fails on the first bad
-// edit and neither its valid prefix nor any silent worsening of live state
+// edit and neither its valid edit nor any silent worsening of live state
 // survives; duplicate edits never produce a duplicated raw vector; and a
 // stored vector that is malformed but canonicalizable is normalized into the
 // committed raw registry vector rather than silently left malformed.
@@ -4312,11 +4310,11 @@ TEST_CASE("Phase 8 W3: marker helper canonicalizes keys and rejects forged class
 // Test S5-E - a batch mixing a valid edit with a bad one fails atomically in
 // EITHER input order with an identical structured error, and the scene's
 // markers, schema, dirty flag, and authoring revision stay byte-identical to
-// the pre-batch snapshot: the valid prefix never lands.
+// the pre-batch snapshot: the valid edit never lands.
 //
 // Discrimination faults (RED observed, then restored GREEN):
 //   a) partial-land fault: remove the Prepare-fail return for the bad edit so
-//   the staged valid prefix is committed - the overrides/revision asserts
+//   the staged valid edit is committed - the overrides/revision asserts
 //   below go RED (transform would have landed, schema would have bumped).
 //   b) order-dependence fault: keep the bad-key rejection only when the key
 //   appears before a member is staged (reject at SceneManager.cpp:5473 but

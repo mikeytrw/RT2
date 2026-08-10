@@ -6263,6 +6263,16 @@ document is a period record of a superseded state.**
 > superseded by the 863/863 figures. The 700/700 rows remain the 2026-07-31
 > period record.
 
+> **Updated 2026-08-10 — Phase 8 W3 S5 final closure measurement (supersedes
+> the 863/863 note above).** Grounded at `369e750`, the complete repaired S5
+> range measures **889 run / 889 passed / 0 failed / 0 skipped; 149,712
+> assertions** in both Release and Debug from the repository root. The
+> increase over 863/148,806 is 26 cases and 906 assertions from the typed
+> composite transaction, direction, write-set, resource, identity, and
+> regression coverage. The fixture was restored to its tracked clean blob
+> after each full run. This is the authoritative current baseline; all older
+> baseline rows remain period records.
+
 Run from the repository root — `RT2Tests.exe` resolves some fixtures by
 relative path and both fails and writes stray files if run from elsewhere.
 
@@ -14892,3 +14902,54 @@ material fan-out is S6 (`:14208-14210`), as is undo/redo wiring of the marker
 vectors and command undo-state schemaVersion transport
 (`SceneSerializer.h:145-147`). Propagation (W4), revert/apply (W5), and UI
 (W6) remain out of phase.
+
+### Phase 8 W3 S5 — repaired final closure supersession (2026-08-10)
+
+This dated entry supersedes the S5 period report immediately above. It is
+grounded at `369e750` (`Phase 8 W3 S5 fixup: close script identity and fan-out
+undo`) and the complete repair/review chain:
+`b7742d8` → `f0333b9` → `e6fa3f5` → `6333fee` → `eb2ad50` → `d73e266` →
+`2e036fe` → `b7a05af` → `1939c1c` → `73e9e7b` → `b9632a7` → `48a8afc` →
+`369e750`, including the C1/C2/C3A/C3B and final-clean/post-fix independent
+reviews. The original S5 contract is explicitly rejected: the draft
+`ApplyPrefabMarkerEdits` helper that applied valid prefixes while reporting
+rejections, and the draft claim that S5 stopped at a non-transactional helper,
+are not the shipped contract. The public API is instead staged, typed, and
+validated before mutation.
+
+**Delivered contract.** S5 delivers typed `IsOverridden` / `GetOverrides`
+queries, canonical marker plans with Prepare/Commit, and typed composite
+value+marker transactions. Both `After` and `Before` carry directional source
+and target payloads and execute/undo/redo against the corresponding live
+state. Schema transitions are bounded to the serializer read/write range and
+require a real marker-vector change; document generation and material resource
+generation reject stale or same-looking replacement plans. Duplicate marker
+members, forged value kinds, contradictory write sets, and invalid canonical
+values fail before writes. Material index and material-slot operations derive
+and validate complete live fan-out UUID sets, cardinality, durable identities,
+source bytes, canonical After targets, and exact Before snapshots. Script
+operations share ordinary/composite binding staging: resolver failures and
+malformed sidecars are structured errors, missing/unrooted references retain
+the intentional unbound behavior, explicit destination IDs persist exactly,
+and Commit performs no identity writes. Every failed validation is
+fail-atomic; a successful value+marker transaction emits one notification and
+revision, while a combined no-op emits neither and does not dirty or refresh
+unaffected value state.
+
+**Discrimination evidence.** Named RED/GREEN proofs covered canonical marker
+ordering, duplicate and stale-plan rejection, downgrade/schema bounds,
+duplicate public plans, document/resource generation, write-set conflicts,
+directional source/target reversal, invalid kinds and non-finite canonical
+values, marker-only no-op accounting, material fan-out exactness/staleness,
+script identity staging and sidecar-write failures, malformed-sidecar
+ordinary/composite rejection, explicit-ID persistence, and exact material
+Before restoration. The final three closure faults were independently
+observed RED and restored byte-exact: resolver rejection removal failed the
+ordinary malformed-sidecar assertion; explicit sidecar write removal failed
+the exact-ID and Commit checks; and forced canonical derivation for Before
+failed the historical/absent fan-out undo assertion. Release and Debug both
+measured 889/889 cases and 149,712/149,712 assertions; script, slice, and
+recovery gates passed.
+
+S5 is delivered. S6 and S7 remain roadmap follow-ons; no editor/UI/command
+entry-point wiring is included in this closure.
