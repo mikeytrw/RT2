@@ -417,36 +417,10 @@ void SceneEditorUI::DuplicateSelectionCommand()
 void SceneEditorUI::PasteCommand(const std::optional<rt2::core::UUID>& parent)
 {
 	if (!m_SceneMgr || !m_CommandHistory) return;
-	if (!m_State.HasClipboard()) return;
-	const auto& clipboardRoots = m_State.ClipboardRoots();
-	auto countResult = m_SceneMgr->CountCanonicalSubtreeEntities(clipboardRoots);
-	// The clipboard roots are in the clipboard document, not the live scene.
-	// CountCanonicalSubtreeEntities walks the live scene, so it will fail for
-	// clipboard roots. We need to count from the clipboard document instead.
-	// For now, use the clipboard roots size as a lower bound and let the
-	// manager's PasteSubtreesWithUuids validate the exact count.
-	(void)countResult;
-	// Count the entities in the clipboard document by walking it.
-	std::size_t count = 0;
-	{
-		const auto* clip = m_State.ClipboardDocument();
-		if (!clip) return;
-		rt2::core::Error err;
-		// Use the same canonicalization as paste by counting the clipboard
-		// document's subtree entities. We approximate by counting all
-		// entities under the clipboard roots in the clipboard document.
-		for (const auto& root : clipboardRoots)
-		{
-			const auto rootEntity = clip->FindByUuid(root);
-			if (rootEntity == entt::null) continue;
-			std::vector<entt::entity> subtree;
-			SceneHierarchy::CollectSubtreePreOrder(clip->ecs.registry, rootEntity, subtree);
-			count += subtree.size();
-		}
-	}
-	auto knownUuids = m_SceneMgr->ReserveKnownUuids(count);
-	auto paste = m_SceneMgr->PasteSubtreesWithUuids(
-		*m_State.ClipboardDocument(), clipboardRoots, parent, knownUuids);
+	// All clipboard-generation validation lives in EditorSceneState. The UI
+	// never duplicates generation checks: a stale clipboard is surfaced as a
+	// mutation error BEFORE any snapshot, command, or history mutation.
+	auto paste = m_State.PasteWithUuidsForCommand(*m_SceneMgr, parent);
 	if (!paste.mutation.success)
 	{
 		ApplyMutation(paste.mutation);

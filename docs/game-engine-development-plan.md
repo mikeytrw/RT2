@@ -6179,6 +6179,71 @@ document is a period record of a superseded state.**
 | **Release** | **700 run, 700 passed, 0 failed, 0 skipped; 145,911 assertions** |
 | **Debug** | **700 run, 700 passed, 0 failed, 0 skipped; 145,911 assertions** |
 
+> **Updated 2026-08-09 — Phase 8 W3 S4 closure measurement.** Full measured
+> run from the repository root after the S4 test groups landed
+> (`RT2Tests/src/Phase8W3OverrideTests.cpp`, commits `411ee5c`, `dcb96b4`,
+> `68d67c1`). Both configurations now measure **840 run / 840 passed /
+> 0 failed / 0 skipped; 147,865 assertions**. Debug measured 2/2 runs clean;
+> Release measured clean in 14 consecutive runs with one observed intermittent
+> failure of `Phase6B W5: registry fast-path with same-size edit re-parses on
+> hash mismatch` (`RT2Tests/src/Phase6BFieldsTests.cpp:1956`) — a
+> file-timestamp-granularity timing test unrelated to S4 (file untouched by all
+> S4 commits). The 700/700 rows above are the period record as of 2026-07-31
+> and do not include the Phase 8 W1/W2 test additions; the 840/840 figures
+> supersede them.
+
+> **Updated 2026-08-09 — S4 review-fix closure measurement (supersedes the
+> 840/840 note above).** Full measured run from the repository root after the
+> S4 review-fix commits landed (`45d6386`, `b1be897`, `7d25e8e`). Both
+> configurations now measure **850 run / 850 passed / 0 failed / 0 skipped;
+> 148,319 assertions**. Release recorded 3 consecutive clean full runs and Debug
+> 2 clean full runs with no failure reproduced; the Phase6B
+> file-timestamp-granularity timing test noted above did not flake in any of
+> these runs. The 840/840 figure above is the recorded measurement of the S4
+> closure before the review fixup and is superseded by the 850/850 figures. The
+> 700/700 rows remain the 2026-07-31 period record.
+
+> **Updated 2026-08-10 — S4 re-review fix closure measurement (supersedes the
+> 850/850 note above).** Full measured run from the repository root after the
+> re-review fixup landed (`2f7e88d` — validated entity-UUID reservation for the
+> ordinary duplicate and paste paths, review fix 3). Both configurations now
+> measure **854 run / 854 passed / 0 failed / 0 skipped; 148,576 assertions**.
+> Release and Debug each recorded one clean full run with no failure
+> reproduced; the Phase6B file-timestamp-granularity timing test did not flake.
+> The scripting, slice and recovery gates passed: script PASS 60 frames / 1
+> entity; slice PASS Cube final x=0.999999702; recovery PASS. The 850/850
+> figure is the recorded measurement of the S4 review-fix closure before the
+> re-review fixup and is superseded by the 854/854 figures. The 700/700 rows
+> remain the 2026-07-31 period record.
+
+> **Updated 2026-08-10 — S4 final fresh re-review fix closure measurement
+> (supersedes the 854/854 note above).** Full measured run from the repository
+> root after the final re-review-2 fixup landed (`fc1cef6` — shared
+> `EditorSceneState` clipboard-generation paste guard for the undoable editor
+> paste path, tests T23-T26). Both configurations now measure **858 run /
+> 858 passed / 0 failed / 0 skipped; 148,651 assertions**. Release and Debug
+> each recorded one clean full run with no failure reproduced; the Phase6B
+> file-timestamp-granularity timing test did not flake. The scripting, slice
+> and recovery gates passed: script PASS 60 frames / 1 entity; slice PASS Cube
+> final x=0.999999702; recovery PASS. The 854/854 figure is the recorded
+> measurement of the S4 re-review fix closure before this final fixup and is
+> superseded by the 858/858 figures. The 700/700 rows remain the 2026-07-31
+> period record.
+
+> **Updated 2026-08-10 - S4 independent final re-review 3 fix closure
+> measurement (supersedes the 858/858 note above).** Full measured run from the
+> repository root after the re-review-3 fixup landed (`48cd17f` - canonical
+> clipboard-forest count for `PasteWithUuidsForCommand` plus the conditional
+> `ResolveOrAssign` comment correction; test T27). Both configurations now
+> measure **859 run / 859 passed / 0 failed / 0 skipped; 148,708 assertions**.
+> Release and Debug each recorded one clean full run with no failure
+> reproduced; the Phase6B file-timestamp-granularity timing test did not flake.
+> The scripting, slice and recovery gates passed: script PASS 60 frames / 1
+> entity; slice PASS Cube final x=0.999999702; recovery PASS. The 858/858
+> figure is the recorded measurement of the final re-review-2 fix closure
+> before the re-review-3 fixup and is superseded by the 859/859 figures. The
+> 700/700 rows remain the 2026-07-31 period record.
+
 Run from the repository root — `RT2Tests.exe` resolves some fixtures by
 relative path and both fails and writes stray files if run from elsewhere.
 
@@ -14256,3 +14321,460 @@ are the codebase's characteristic silent-failure shape:
 - Several citations pointed at the right subsystem but not the asserted
   operation. That reads as verified and is worse than a missing citation; all
   citations here were re-checked individually.
+
+### Phase 8 W3 S4 — verification report (2026-08-09)
+
+**Scope of this report.** S4 is the W3-D8 half of the work step S4 — "fresh
+`instanceId` across all four copy paths; snapshot restore preserves the
+recorded ID; partial and multi-root policy" (`:14120-14121`). The marking half
+of the step (S5/S6) is out of scope and not delivered here. This report is the
+so-far-normative record for the S4 identity work; the grounded spec above and
+the "Test baseline" section below both supersede nothing on their own, this
+report records what was actually measured on 2026-08-09.
+
+**Implementation.** One commit, `f72d0e1` ("WIP Phase 8 W3 S4: mint a fresh
+instanceId on the four copy paths"), grounded against the S4 spec above
+(paragraphs :1313-1336 in this file, and `RT2App/src/SceneManager.cpp:130-230`).
+The change adds a single shared helper, `MintCopiedPrefabLinks`
+(`SceneManager.cpp:164-230`), and calls it from all three copy-shaped entry
+points that reach copied subtrees — `DuplicateSubtrees` (`:1603`),
+`DuplicateSubtreesWithUuids` (`:3457`), `PasteSubtreesFrom` (`:1712`) and
+`PasteSubtreesWithUuids` (`:3620`). Not reached through the helper, by design:
+`InstantiatePrefabWithUuids` mints its own fresh identity at link-install time
+(`:3003`) and `RestoreSubtrees` reinstates the recorded identity verbatim
+(`ApplySubtreeRecord`, `:1874-1947`) — undo/redo is not a copy path.
+
+The helper's contract, per its header comment and the spec:
+
+- **Full instance copy** — the copied subtree's root carries a
+  `PrefabInstanceComponent` in the destination. One fresh `instanceId` is
+  minted per copied tree and pushed onto every copied `PrefabMemberComponent`
+  and onto the copied `PrefabInstanceComponent`. `templateId`s and each
+  member's override vector are left untouched, so a copy of a diverged
+  instance stays diverged (W3-D4).
+- **Partial copy** — the copied subtree carries `PrefabMemberComponent`s but
+  no `PrefabInstanceComponent` root. Both prefab components are stripped from
+  every copied entity, the members become ordinary entities, and the helper
+  returns a count the caller uses to raise an `EditorMutationResult`
+  `recoveryWarning` (`Error::InvalidHierarchy`) rather than fabricating an
+  instance root the user never made. The operation itself still succeeds.
+- **Multi-root copy** — one fresh mint per copied *tree* (per root), never one
+  shared id across roots and never one per member.
+
+**Test commits (all in `RT2Tests/src/Phase8W3OverrideTests.cpp`):**
+
+| Commit | Group | Tests added |
+|---|---|---|
+| `411ee5c` | 1 — duplicate paths | tests 1-2 |
+| `dcb96b4` | 2 — paste paths + diverged | tests 3-5 |
+| `68d67c1` | 3 — restore/partial/multi-root | tests 6-8 |
+
+All eight tests drive a **real instance** (`S2Fixture::MakeInstance`, which
+instantiates an actual `.rt2prefab` through `InstantiatePrefabWithUuids` and
+returns the growing registry's member handles). Tests 1-5 pre-read a
+`PrefabInstanceComponent`/`PrefabMemberComponent` set; tests 6-8 additionally
+exercise snapshot capture/remove/restore and multi-instance fixtures. Each
+test resolves its copied entities through `S4SubtreeEntities`
+(`SceneHierarchy::CollectSubtreePreOrder` on the live registry), reads member
+`instanceId`/`templateId`, the root `PrefabInstanceComponent`, and the
+`overrides` vectors via the `S2Key` table-resolved helper. A summary of the
+eight discrimination proofs (fault injected, RED asserted at the named report
+line, fault reverted, GREEN re-verified) is in this file's S4 section header.
+**Test-filter note (doctest quirk):** repeated `--test-case` flags override
+each other — the comma-joined form `--test-case=A,B` is required to select
+multiple cases.
+
+#### The eight discrimination proofs
+
+All RED/GREEN proofs were executed from the repository root in Release x64
+after touching `RT2App/src/SceneManager.cpp`, then reverting the identical
+file via `git checkout -- RT2App/src/SceneManager.cpp`. Line numbers the
+assertions only; do not read them as a stable API contract.
+
+| Test | Behavior pinned | RED fault | RED line (failure) | Revert |
+|---|---|---|---|---|
+| 1 | ordinary `DuplicateSubtrees` mints one fresh id per subtree; members share it; templateIds preserved; source untouched | remove the `MintCopiedPrefabLinks` call at `:1603` | `CHECK(dupRootId != srcInstanceId)` (1413/1480) | `git checkout -- RT2App/src/SceneManager.cpp` -> GREEN |
+| 2 | editor `DuplicateSubtreesWithUuids` (the undoable command path) mints a fresh id | remove the call at `:3457` | same assertion (1480) | GREEN |
+| 3 | ordinary `PasteSubtreesFrom` mints a fresh id from a clipboard doc | remove the call at `:1712` | `CHECK(pastedRootId != srcInstanceId)` (1585) | GREEN |
+| 4 | editor `PasteSubtreesWithUuids` mints a fresh id | remove the call at `:3620` | `CHECK(pastedRootId != srcInstanceId)` (1668) | GREEN |
+| 5 | diverged instance stays diverged — mangled `overrides` must not survive copy | in `MintCopiedPrefabLinks`' full-instance branch, clear each copied member's `overrides` (`:200-201`) | `CHECK(pastedRootMember->overrides == srcRoot->overrides)` (1767) | GREEN |
+| 6 | structural restore reinstates the recorded `instanceId`, not a fresh one | mint onto every restored member inside `RestoreSubtrees`, right after `ApplySubtreeRecord` (`:2533`) | `CHECK(restoredRootId == recordedId)` (1868) | GREEN |
+| 7 | partial copy strips both prefab components and raises `recoveryWarning` (`Error::InvalidHierarchy`) | remove `destinationRegistry.remove<PrefabMemberComponent>` in the partial branch (`:220-226`) | `CHECK_FALSE(reg.all_of<PrefabMemberComponent>(copiedEntity))` (1940) | GREEN |
+| 8 | multi-root copy mints one distinct fresh id per subtree | hoist `mint()` out of the loop so every root reuses the same id (`:195`) | `CHECK(copiedARootId != copiedBRootId)` (2028) | GREEN |
+
+**RED/GREEN outcomes.** Every fault produced a RED run failing exactly at the
+intended assertion; the stored log in the S4 section header and the three
+group commits reproduce each fault verbatim. No test passed while the feature
+was broken (no non-discriminating fault was encountered).
+
+**Frequency measured.** After the tests landed, the full Release suite was run
+many times from the repository root. It passed 14 of the runs; a 15th
+failed 1 case, `Phase6B W5: registry fast-path with same-size edit re-parses on
+hash mismatch` (`RT2Tests/src/Phase6BFieldsTests.cpp:1956`), a
+timestamp-granularity timing test **unrelated to S4** (file last touched at
+`67f4951`, a Phase 7 commit, and not modified by any S4 change). See the
+"Test baseline" section below for the Debug-side note. No S4 test ever flaked.
+
+#### What S4 does not deliver (carried to W4/W5)
+
+Matching the W3 boundary (`:14192-14201`): propagation remains W4; nothing
+removes an override except undo (W5); reverting/apply are not in this phase;
+no UI (W6). The `instanceId` re-mint covers scene-side copies only — it does
+not re-key any authored asset reference, and `InstantiatePrefabWithUuids`
+still mints its own identity. Nothing here changes the serializer, the prefab
+file format, or the schema version; the override data model and codec were
+S2's deliverable.
+
+#### Build / gate outcomes (2026-08-09)
+
+- **Release x64 full solution** — MSBuild `RT2App.sln -p:Configuration=Release
+  -p:Platform=x64` built clean; `RT2Tests`, `RT2SliceRunner`, `RT2App`.
+- **Debug x64 full solution** — same, all three targets clean.
+- **`RT2Tests.exe` from repo root, Release** — run repeatedly; 14×
+  `840 run / 840 passed / 0 failed / 0 skipped`, 147,865 assertions, plus one
+  run with the Phase6B timing flake noted above (see "Test baseline").
+- **`RT2Tests.exe` from repo root, Debug** — 2× `840 run / 840 passed /
+  0 failed / 0 skipped`, 147,865 assertions.
+- **`run_script_test.ps1`** — `[ScriptScenario] PASS: 60 frames, 1 entities,
+  no mismatches` (exit 0).
+- **`run_slice_test.ps1`** — `[Slice] Cube final x=0.999999702 (expected ~1.0)`,
+  `[Slice] PASS` (exit 0); `RT2App/assets/vertical-slice.rt2scene` restored
+  afterward.
+- **`run_recovery_test.ps1`** — `[RecoveryScenario] PASS`, `[Recovery] PASS`
+  (exit 0).
+- **`graphify update .`** — rebuilt graph (2082+ files, 35,047 nodes, 73,736
+  edges, 1478 communities); graph.json is generated/ignored (not committed),
+  `graphify-out/GRAPH_REPORT.md` is the tracked refresh and is included in
+  this closure commit.
+
+**Test count reconciliation.** The suite measured on this branch is 840 test
+cases / 147,865 assertions in both configurations. Immediately before the S4
+test groups landed the suite measured 832 / 147,586 (the count that precedes
+group 1 in the group-1 briefing); the S4 groups 1-3 then added 8 test cases
+and 279 assertions. The authoritative "Test baseline" section still records a
+2026-07-31 figure of 700 run / 700 passed / 145,911 assertions — that is a
+period record of the Phase 7 W4 state and does not include the Phase 8 W1/W2
+test additions that landed between that measurement and this S4 work.
+See "Test baseline" below for the updated current-state entry.
+
+#### Supersession / correction note (2026-08-09, S4 review fixup closure)
+
+The report above was reviewed against the tree as it stood at `8f01c53` in
+[Phase 8 W3 S4 final code review]
+(`artifacts/phase8-w3-s4-final-review/index.md`, review range
+`2732577..8f01c53`). The review found two P1 identity-policy defects and two P2
+problems in the code and in this report; all four were addressed by the
+fixup commits below. This note is the dated correction the append-only rule
+requires; the report above remains the audit record for the original
+`f72d0e1` work.
+
+**Fixup commits (all on `phase8-w3-overrides`).**
+
+- `45d6386` — forest-wide prefab-group classification for copies (review fix 1).
+- `b1be897` — pre-mutation instance-ID reservation for copies and instantiate
+  (review fix 2).
+- `7d25e8e` — hostile UUID-provider discrimination suite (T14-T18).
+
+**Corrected citations.** The report's grounding references were written
+against the pre-fix tree and several no longer resolve. Fresh references:
+
+- S4 the *work step* is at `:14133-14134` in this file, not `:14120-14121`
+  (those lines discuss the material fan-out command).
+- The settled D8 text this implementation was planned against is at
+  `:14078-14100`, not `:1313-1336`.
+- There are **four** copy-shaped entry points that reach copied subtrees —
+  `DuplicateSubtrees`, `PasteSubtreesFrom`, `DuplicateSubtreesWithUuids`,
+  `PasteSubtreesWithUuids` — not three. All four now chain
+  plan -> reserve -> create -> apply (`SceneManager.cpp:190-196`).
+- The report cited instantiate minting at `SceneManager.cpp:3003`. As of this
+  note, `InstantiatePrefabWithUuids` (`:3097`) reserves its single fresh
+  `instanceId` at `SceneManager.cpp:3316-3340`
+  (reserve call at `:3331`), after input/file validation and before any
+  destination mutation.
+
+**Superseded contract description.** The report's "helper's contract" section
+describes the pre-fix `MintCopiedPrefabLinks` selected-root rule. The review
+(showing code lines above) established that rule is *narrower than* grounded
+D8 and loses complete instances that sit below an ordinary selected root. The
+contract delivered by the fixup is:
+
+- **Forest-wide group classification.** `PlanCopiedPrefabLinks`
+  (`SceneManager.cpp:214-253`) classifies the whole copied FOREST — every
+  entity reachable from any selected root (`SceneHierarchy::CollectSubtreePreOrder`,
+  `:220-233`) — grouped by the source entities' **original** `instanceId`,
+  never by the selected scene-hierarchy root. A group holding a copy of a
+  `PrefabInstanceComponent` is one COMPLETE instance and gets one fresh id
+  shared by that group's copied roots and members (`:240-244`). Nested complete
+  instances are handled per component: the inner instance's root keeps its own
+  group's fresh id on its `PrefabInstanceComponent` and the enclosing group's
+  fresh id on its `PrefabMemberComponent` (`:154-159`).
+- **Orphan diagnostics.** A member whose original id has no copied root is an
+  orphan member fragment: both prefab components are stripped at apply time and
+  the entity becomes ordinary, counted so the caller raises a `recoveryWarning`
+  (`Error::InvalidHierarchy`) — never a hard failure, never a fabricated link
+  (`:160-167`, stripped in `ApplyCopiedPrefabLinks` at `:340-358`).
+- **Ambiguous grouping.** Two copied roots sharing one original id is diagnosed
+  (`ambiguousGroups`, `:249-251`) via the recovery warning and kept as ONE
+  reminted group, never split or merged arbitrarily.
+- **Pre-mutation collision-safe reservation.** `ReserveFreshInstanceId`
+  (`SceneManager.cpp:304-328`) draws one id per complete group BEFORE any
+  destination mutation via `FreshInstanceIdForbiddenSet`
+  (`:268-296`), which forbids nil draws, every entity UUID in the authoring
+  `uuidIndex`, every live `PrefabInstanceComponent`/`PrefabMemberComponent`
+  `instanceId` in the destination registry, every live source `instanceId`
+  when the source is a distinct document, and every id already reserved in this
+  operation (`operationLocal`). A hostile provider (nil, live-id collision,
+  operation-local repeat) retries up to `kFreshInstanceIdMaxAttempts = 16`
+  (`:259`); exhaustion fails the operation loudly with a `DuplicateUuid`
+  diagnostic (`:322-327`) and **zero destination change** — no entities, no
+  UUID-index residue, no partially changed resource tables.
+- **Deterministic provider-consumption order.** The ordinary copy paths stage
+  the copy's entity UUIDs FIRST (`ReserveKnownUuids(sources.size())` at
+  `:1778`), then draw one fresh instanceId per complete group; the UUID-aware
+  editor paths receive caller-supplied entity UUIDs and draw only the fresh
+  instanceIds. Test T18 pins the entity-before-instance order on the ordinary
+  `DuplicateSubtrees` with a scripted provider; T17 pins instantiate's
+  ResolveOrAssign-then-reservation draw order.
+- **Instantiate shares the guarantee.** `InstantiatePrefabWithUuids`
+  (`:3097`) reserves through the same helper before the resource merge or
+  entity creation (block at `:3316-3340`, provider-draw note at `:3109-3113`:
+  the one asset-identity draw in `ResolveOrAssign`, then this single draw).
+- **Restore is still not a copy.** `RestoreSubtrees` (`:2709`) reinstates the
+  recorded identity verbatim through `ApplySubtreeRecord` (`:2145`, invoked at
+  `:2804`); it never calls the reservation path.
+
+**Tests.** The review-fix suite added ten cases in
+`RT2Tests/src/Phase8W3OverrideTests.cpp`: tests 9-12 plus the ambiguous-group
+case (13) in `45d6386`, and T14-T18 in `7d25e8e`. Tests 9-12 cover the
+ordinary folder holding a complete instance on duplicate and paste, the mixed
+forest (complete instance + orphan fragment), and nested distinct instances;
+test 13 pins the ambiguous-group diagnosis; T14-T18 drive the reservation with
+a finite, call-logging `ScriptedUuidProvider` that fails the test loudly on
+over-consumption (`:2510-2527`) — exact provider-draw counts are enforced by
+construction. The fault-injection map for all ten is documented in the file's
+S4 section headers.
+
+**Review P2 also fixed.** Test 6's stale-pointer problem (dereferencing EnTT
+component pointers across `RemoveSubtreesExact` entity destruction) was fixed
+in `45d6386`: expected `templateId` and override values are now copied as
+values before any entity is destroyed (`:1866-1878`) and every post-restore
+comparison uses those pre-copied values (`:1920-1925`).
+
+**S5/S6 remain.** The marking half of work step S4 — automatic marking (S5/S6)
+— is still not delivered and is carried to later work; this note closes only
+the S4 identity-policy review findings.
+
+#### Supersession / correction note (2026-08-10, S4 re-review fix closure)
+
+The 2026-08-09 note above was reviewed again against the tree at `0232706` in
+[Phase 8 W3 S4 repaired architecture re-review]
+(`artifacts/phase8-w3-s4-final-rereview/index.md`, review range
+`2732577..0232706`). That re-review found one adjacent P1 regression the
+original review missed and two P2 problems in the 2026-08-09 note itself; the
+P1 and one P2 were addressed by the fixup commit below. This note is the
+second dated correction the append-only rule requires; both earlier records
+(the `f72d0e1` report and the 2026-08-09 note) remain period records and are
+NOT rewritten. All code references below are grounded against the tree at
+`2f7e88d` (HEAD at the time of writing); line numbers in this file account for
+the 2026-08-10 Test-base supersession block at `:6206-6218` above.
+
+**Fixup commit (re-review fix 3).**
+
+- `2f7e88d` — validated entity-UUID reservation for the ordinary duplicate and
+  paste paths. Replaces the raw `ReserveKnownUuids` staging in
+  `DuplicateSubtrees`/`PasteSubtreesFrom` (`SceneManager.cpp:1874`, `:2045`)
+  with `ReserveValidEntityUuids` (`SceneManager.cpp:341-381`), sharing the
+  same `kUuidReservationMaxAttempts = 16` (`:264`) exhausted by
+  `ReserveFreshInstanceId`. The finite, pre-mutation entity reservation
+  rejects nil draws, live authoring-`uuidIndex` ids, distinct-source ids on
+  paste, and operation-local repeats, preserving the settled entity-before-
+  instance provider order; exhaustion fails with a stage-specific
+  `DuplicateUuid` before any entity/instance, UUID-index, hierarchy, resource,
+  revision, notification or sync-impact change.
+
+**Corrected citations (the 2026-08-09 note's "fresh references" are again
+inaccurate).** The 2026-08-09 note's first two corrected references were
+superseded by the S4 review-fix closure's Test-baseline insertion and were
+stale even when written: at `0232706` S4 the *work step* is `:14144-14145`,
+not `:14133-14134`, and the settled D8 text is `:14089-14111`, not
+`:14078-14100`. The 2026-08-10 baseline block above shifts them once more.
+Final, stable anchors in THIS file:
+
+- S4 the *work step* is at `:14157-14158`.
+- The settled D8 text this implementation was planned against is at
+  `:14102-14124`.
+
+These anchors are stable because this note is appended AFTER every
+file reference it makes and nothing below the baseline block moves again.
+
+**T17 provider-order overclaim corrected (re-review P2).** The 2026-08-09
+note's claim that "T17 pins instantiate's ResolveOrAssign-then-reservation
+draw order" (`:14508-14509` above, "the one asset-identity draw in
+`ResolveOrAssign`, then this single draw" at `:14512-14513`) overstates what
+T17 proves. `ResolveOrAssign` draws from the provider ONLY when the sidecar is
+absent or malformed; with an existing valid sidecar it returns the committed
+id without calling the provider (`AssetIdentity.cpp:167-169`). T17's fixture
+`MakeInstance` (`Phase8W3OverrideTests.cpp:160`) calls
+`CreatePrefabFromSubtree`, which commits a valid sidecar via
+`PrefabFileTransaction` before instantiating (`SceneManager.cpp:3158-3199`), so
+during T17's `InstantiatePrefabWithUuids` call `ResolveOrAssign` consumes ZERO
+provider draws and the whole scripted log `{srcAId, Nil, validId}`
+(`Phase8W3OverrideTests.cpp:2851-2863`) is consumed by the instance-ID
+reservation retries alone. T17 proves only the subsequent instance-ID
+retry/reservation order; a missing-sidecar draw-order proof does not exist and
+is not invented here. The source note that provoked the misreading has moved
+from the cited `SceneManager.cpp:3109-3113` to the comment at
+`SceneManager.cpp:3231-3232`.
+
+**Tests (T19-T22, re-review P1 coverage).** `2f7e88d` added hostile/counting
+tests for BOTH ordinary paths:
+
+- T19 ordinary-duplicate retry (`Phase8W3OverrideTests.cpp:3016`),
+- T20 ordinary-duplicate exhaustion, zero destination change (`:3123`),
+- T21 ordinary-paste retry incl. distinct-source (`:3173`),
+- T22 ordinary-paste exhaustion, zero destination change (`:3295`).
+
+Each ran RED against raw staging and GREEN against `ReserveValidEntityUuids`;
+exact draw logs and zero-mutation snapshots are asserted. The re-review's
+stale-comment finding was also fixed in `2f7e88d`: every
+`MintCopiedPrefabLinks` reference in `Phase8W3OverrideTests.cpp` now reads
+`PlanCopiedPrefabLinks` (the name is gone from the file).
+
+**S5/S6 remain.** The marking half of work step S4 — automatic marking (S5/S6)
+— is still not delivered and is carried to later work; this note closes only
+the re-review's P1 regression and both P2 findings.
+
+#### Supersession / correction note (2026-08-10, S4 final re-review-2 fix closure)
+
+The two notes above were reviewed one more time against the tree at `9948e02`
+in the [Phase 8 W3 S4 final fresh re-review]
+(`artifacts/phase8-w3-s4-final-rereview-2/index.md`, review range
+`2732577..9948e02`). That final re-review confirmed every prior finding is
+closed and found one new, constructible P1 clipboard-integrity defect: the
+editor's undoable `SceneEditorUI::PasteCommand` bypassed `EditorSceneState`'s
+captured-generation guards entirely — it read the raw clipboard document and
+called `PasteSubtreesWithUuids` directly, trusting only the manager's numeric
+range checks, which cannot detect an in-range-but-stale resource index after a
+`CompactMeshRegistry` table remap. The P1 was addressed by the fixup commit
+below. This note is the third dated correction the append-only rule requires;
+all earlier records (the `f72d0e1` report and the 2026-08-09 and 2026-08-10
+notes above) remain period records and are NOT rewritten. All code references
+below are grounded against the tree at `fc1cef6` (HEAD at the time of writing).
+
+**Fixup commit (final re-review-2 P1).**
+
+- `fc1cef6` — shared `EditorSceneState` clipboard-generation paste guard for the
+  undoable editor paste path. Adds `ValidateClipboardPaste`
+  (`EditorSceneState.cpp:65-80`), one shared validator now used by BOTH paste
+  paths that fails `ClipboardStale`, with zero manager mutation and zero UUID
+  reservation, on an empty clipboard, a document-generation mismatch, or a
+  resource-generation mismatch; ordinary `Paste` (`EditorSceneState.cpp:82-85`)
+  now routes through it. Adds `PasteWithUuidsForCommand`
+  (`EditorSceneState.cpp:87-123`), the state-level, CPU-linkable preparation the
+  UI now calls: existing clipboard validation → per-root clipboard-document
+  subtree count → `ReserveKnownUuids` only after validation →
+  `PasteSubtreesWithUuids`, returning the full `DuplicationResult` for undo.
+  `SceneEditorUI::PasteCommand` (`SceneEditorUI.cpp:417-441`) is rewired to it:
+  a validation failure goes through `ApplyMutation` BEFORE any snapshot,
+  command construction, or history mutation; the UI no longer counts or reserves
+  UUIDs itself and contains no generation checks.
+
+**Tests (T23-T26, final re-review-2 P1 coverage).** `fc1cef6` added four
+hostile/stale regressions to `RT2Tests/src/Phase8W3OverrideTests.cpp`:
+
+- T23 the discriminating in-range stale-material case (materials A/B/C, copied
+  on B; compaction drops B and remaps C onto the stale-but-in-range index 1),
+- T24 texture-only resource-generation change (braided indices all untouched),
+- T25 document-generation change,
+- T26 valid-path control (created roots + source mapping preserved for undo).
+
+Each stale case asserts `ClipboardStale`, ZERO UUID draws (an empty
+`ScriptedUuidProvider` fails loudly on any draw), no history entry, and an
+unchanged destination — entity count, UUID-index, hierarchy, mesh/material/
+texture tables, revisions, and document- and resource-generation. RED evidence
+was captured twice: with the shared validator bypassed and the provider empty,
+T23 reached `ReserveKnownUuids` and failed on a draw (`REQUIRE( 0 < 0 )`); with
+the validator bypassed and one scripted UUID, the unguarded paste returned
+`success=true` and silently bound the pasted entity to C (silent rebind
+reproduced) before both experiment edits were reverted. T23 also re-invokes the
+unguarded manager paste directly to permanently document the hole this guard
+closes. After the guard restoration the focused T23-T26 pass 4/4, 75/75 in both
+configurations.
+
+**S5/S6 remain.** The marking half of work step S4 — automatic marking (S5/S6)
+— is still not delivered and is carried to later work; this note closes only
+the final re-review-2 P1 clipboard-generation defect.
+
+#### Supersession / correction note (2026-08-10, S4 independent final re-review 3 fix closure)
+
+The note above was reviewed again against the tree at `bbe1d5e` in the
+[Phase 8 W3 S4 independent final re-review 3]
+(`artifacts/phase8-w3-s4-final-rereview-3/index.md`, review range
+`2732577..bbe1d5e`). That independent review confirmed the clipboard-generation
+integrity defect stays closed and the earlier identity/reservation findings
+remain closed, and found two problems this note supersedes: a P1 where the
+guarded editor paste still rejected a normal multi-selection shape, and two P2
+record-accuracy gaps. This is the fourth dated correction the append-only rule
+requires; all earlier records remain period records and are NOT rewritten. All
+code references below are grounded against the tree at `48cd17f` (HEAD at the
+time of writing); line numbers in this file account for the 2026-08-10
+Test-base supersession block at `:6233-6245` above, which shifts every later
+anchor.
+
+**Current anchors (stable as of THIS note; the preceding note's "final, stable"
+anchors at `:14587-14594` no longer resolve because the new baseline block above
+shifted every line below it).** The settled D8 text this implementation was
+planned against is at `:14130-14152`; S4 the *work step* is at `:14185-14186`.
+
+**T23-T25 claims narrowed (re-review 3 P2).** The preceding note said each
+stale case asserts "no history entry" and an unchanged hierarchy/resource
+state. That overstates the tests: T23-T25 create no `EditorCommandHistory` and
+therefore cannot assert its size, and their `S4SceneSnapshot` compares table
+and component CARDINALITIES plus the document/resource generations and the
+authoring revision — not hierarchy or resource CONTENTS
+(`RT2Tests/src/Phase8W3OverrideTests.cpp:2538-2579,3380-3599`). The production
+wiring does return before command construction and history mutation
+(`SceneEditorUI.cpp:423-432`), so this is an inaccurate test claim, not a
+surviving runtime bypass. Corrected claim: each stale case asserts
+`ClipboardStale`, zero UUID draws, zero manager mutation (entity/UUID-index/
+hierarchy/pic/pmic cardinalities, mesh/material/texture table sizes, revision,
+document- and resource-generation), and no created roots.
+
+**Fixup commit (re-review 3 P1 + P2).**
+
+- `48cd17f` — canonical clipboard-forest count for the guarded editor paste.
+  `PasteWithUuidsForCommand` previously summed every RAW clipboard root's
+  subtree (`EditorSceneState.cpp:102-115`), so a selected `{parent, child}`
+  reserved 2 + 1 = 3 UUIDs while `PasteSubtreesWithUuids` canonicalizes the
+  same roots — duplicate roots deduplicated, a covered descendant removed
+  (`SceneManager.cpp:35-71,3965-3988`) — and requires the count to equal the
+  smaller canonical forest (`SceneManager.cpp:4009-4014`), failing the paste
+  with "known UUID count does not match the canonical subtree size". The
+  preparation now counts through the new document-parameterized
+  `CountCanonicalDocumentSubtreeEntities` (`SceneManager.cpp:3075-3094`), which
+  applies the SAME validation-first canonicalization and pre-order traversal as
+  `PasteSubtreesWithUuids`, so the reserved count always equals the canonical
+  forest; `CountCanonicalSubtreeEntities` delegates to it for the authoring
+  scene. The P2 ordinary comment at `SceneManager.cpp:3235-3240` now states the
+  `ResolveOrAssign` asset-identity draw is conditional (an existing valid
+  sidecar consumes zero draws), matching the second note's correction.
+
+**Tests (T27, re-review 3 P1 coverage).** `48cd17f` added one discriminating
+test (`RT2Tests/src/Phase8W3OverrideTests.cpp:3714-3845`, section header at
+`:3679`) that drives a
+`{parent, child}` selection through the real `EditorSceneState::Copy` +
+`PasteWithUuidsForCommand` path, plus a duplicate-root (`{parent, parent,
+child}`) phase. It proves success, exact provider draws equal to the canonical
+entity count (2 per 2-entity forest, asserted via a two-slot script whose
+over-consumption hard-fails), one canonical created root, the complete parent
+and child source mapping, hierarchy wiring (pasted child under pasted parent),
+and a recorded `EditorCommandHistory` command that undoes both pasted entities.
+RED evidence: temporarily restoring the old raw-root counting made T27 draw a
+third UUID, immediately failing the script's `REQUIRE(cursor < script.size())`
+at `REQUIRE( 2 < 2 )` — captured and then reverted to GREEN (46/46 Phase 8 W3
+tests, 1,466/1,466 assertions per configuration).
+
+**S5/S6 remain.** The marking half of work step S4 — automatic marking (S5/S6)
+— is still not delivered and is carried to later work; this note closes only
+the re-review 3 P1 overlapping-root reservation defect and its two P2
+record-accuracy gaps.

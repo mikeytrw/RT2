@@ -59,9 +59,8 @@ bool EditorSceneState::Copy(const SceneManager& manager,
     return true;
 }
 
-EditorMutationResult EditorSceneState::Paste(
-    SceneManager& manager,
-    const std::optional<rt2::core::UUID>& parent) const
+EditorMutationResult EditorSceneState::ValidateClipboardPaste(
+    const SceneManager& manager) const
 {
     if (!HasClipboard())
         return EditorMutationResult::Failure(rt2::core::Error::ClipboardStale,
@@ -72,7 +71,51 @@ EditorMutationResult EditorSceneState::Paste(
     if (manager.ResourceGeneration() != m_ClipboardResourceGeneration)
         return EditorMutationResult::Failure(rt2::core::Error::ClipboardStale,
             {}, "scene resources changed after copy; copy the selection again");
+    return {};
+}
+
+EditorMutationResult EditorSceneState::Paste(
+    SceneManager& manager,
+    const std::optional<rt2::core::UUID>& parent) const
+{
+    auto validation = ValidateClipboardPaste(manager);
+    if (!validation.success) return validation;
     return manager.PasteSubtreesFrom(*m_Clipboard, m_ClipboardRoots, parent);
+}
+
+SceneManager::DuplicationResult EditorSceneState::PasteWithUuidsForCommand(
+    SceneManager& manager,
+    const std::optional<rt2::core::UUID>& parent) const
+{
+    SceneManager::DuplicationResult out;
+    // Shared guard BEFORE any counting, reservation, or mutation. The manager's
+    // own resource checks inside PasteSubtreesWithUuids are range-only and
+    // cannot see an in-range-but-stale index after compaction; the generation
+    // check here is the only defense.
+    auto validation = ValidateClipboardPaste(manager);
+    if (!validation.success)
+    {
+        out.mutation = validation;
+        return out;
+    }
+    // Canonical-count the clipboard document's subtree entities using the SAME
+    // root canonicalization PasteSubtreesWithUuids applies: duplicate roots are
+    // deduplicated and a selected descendant covered by a selected ancestor is
+    // removed before traversal. Counting the raw roots would over-reserve (a
+    // {parent, child} clipboard counts 2 + 1) and the paste then fails on the
+    // manager's canonical-count validation. CountCanonicalSubtreeEntities is
+    // not usable here because it walks the authoring scene, not the clipboard.
+    auto countResult =
+        manager.CountCanonicalDocumentSubtreeEntities(*m_Clipboard, m_ClipboardRoots);
+    if (!countResult.IsOk())
+    {
+        out.mutation = EditorMutationResult::Failure(
+            countResult.error.code, countResult.error.path, countResult.error.detail);
+        return out;
+    }
+    auto knownUuids = manager.ReserveKnownUuids(countResult.value);
+    return manager.PasteSubtreesWithUuids(
+        *m_Clipboard, m_ClipboardRoots, parent, knownUuids);
 }
 
 bool EditorSceneState::CaptureCameraBookmark(size_t slot,

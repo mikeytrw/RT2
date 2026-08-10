@@ -271,6 +271,17 @@ struct EditorCameraPose;
 	rt2::core::Result<size_t> CountCanonicalSubtreeEntities(
 		const std::vector<rt2::core::UUID>& roots) const;
 
+	// Return the exact canonical entity count for a multi-root selection
+	// taken from an arbitrary document (e.g. a clipboard document before
+	// paste). Uses the SAME root canonicalization (duplicate roots are
+	// deduplicated and selected descendants covered by a selected ancestor
+	// are removed) and deterministic pre-order traversal as
+	// PasteSubtreesWithUuids, so the reserved count always equals what the
+	// paste consumes. Missing/invalid roots return a failure result.
+	rt2::core::Result<size_t> CountCanonicalDocumentSubtreeEntities(
+		const rt2::core::SceneDocument& document,
+		const std::vector<rt2::core::UUID>& roots) const;
+
 	// Create an empty entity with a caller-supplied UUID at a known sibling
 	// position. The host reserves the UUID, calls this, captures the
 	// resulting SubtreeSnapshot, and constructs the creation command. If
