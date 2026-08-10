@@ -35,6 +35,31 @@
 
 namespace
 {
+bool TryResolveAuthoredWorldMatrix(const entt::registry& registry,
+	entt::entity entity, glm::mat4& outWorld)
+{
+	std::unordered_set<entt::entity> resolving;
+	std::function<bool(entt::entity, glm::mat4&)> resolve;
+	resolve = [&](entt::entity current, glm::mat4& out) -> bool
+	{
+		if (!registry.valid(current) || !registry.all_of<Transform>(current)
+			|| !resolving.insert(current).second)
+			return false;
+		glm::mat4 parentWorld(1.0f);
+		if (const auto* hierarchy = registry.try_get<Hierarchy>(current);
+			hierarchy && hierarchy->parent != entt::null
+			&& !resolve(hierarchy->parent, parentWorld))
+		{
+			resolving.erase(current);
+			return false;
+		}
+		out = parentWorld * registry.get<Transform>(current).localMatrix();
+		resolving.erase(current);
+		return true;
+	};
+	return resolve(entity, outWorld);
+}
+
 std::vector<entt::entity> ResolveCanonicalRoots(
 	const rt2::core::SceneDocument& document,
 	const std::vector<rt2::core::UUID>& uuids,
@@ -4496,6 +4521,7 @@ bool SceneManager::TrySetWorldTransforms(
 {
 	const auto staged = StageWorldTransforms(desiredWorldTransforms);
 	if (!staged.IsOk()) return false;
+	if (staged.value.localStates.empty()) return true;
 	auto& registry = m_EcsScene.registry;
 	std::vector<entt::entity> changedEntities;
 	changedEntities.reserve(staged.value.localStates.size());
@@ -4548,19 +4574,9 @@ rt2::core::Result<PrefabCameraPoseValue> SceneManager::StageCameraPose(
 		return rt2::core::Result<PrefabCameraPoseValue>::Fail(
 			rt2::core::Error::InvalidEntity, cameraEntity.ToString(),
 			"selected entity is not a camera");
-	std::function<bool(entt::entity, glm::mat4&)> worldOf;
-	worldOf = [&](entt::entity current, glm::mat4& out) -> bool
-	{
-		if (!registry.valid(current) || !registry.all_of<Transform>(current)) return false;
-		glm::mat4 parent(1.0f);
-		if (const auto* h = registry.try_get<Hierarchy>(current);
-			h && h->parent != entt::null && !worldOf(h->parent, parent)) return false;
-		out = parent * registry.get<Transform>(current).localMatrix();
-		return true;
-	};
 	glm::mat4 currentWorldMatrix(1.0f);
 	EditableTRS currentWorld;
-	if (!worldOf(entity, currentWorldMatrix)
+	if (!TryResolveAuthoredWorldMatrix(registry, entity, currentWorldMatrix)
 		|| !TryDecomposeEditableTRS(currentWorldMatrix, currentWorld))
 		return rt2::core::Result<PrefabCameraPoseValue>::Fail(
 			rt2::core::Error::InvalidTransform, cameraEntity.ToString(),
@@ -4585,8 +4601,7 @@ rt2::core::Result<PrefabCameraPoseValue> SceneManager::StageCameraPose(
 	result.camera.verticalFOV = pose.verticalFOV;
 	result.camera.aperture = pose.aperture;
 	result.camera.focusDistance = pose.focusDistance;
-	result.camera.forwardDirection =
-		glm::normalize(result.local.rotation * glm::vec3(0.0f, 0.0f, -1.0f));
+	result.camera.forwardDirection = pose.forward;
 	return rt2::core::Result<PrefabCameraPoseValue>::Ok(std::move(result));
 }
 
@@ -5212,11 +5227,19 @@ rt2::core::Result<PrefabMaterialSlotStage> SceneManager::StageMaterialSlot(
 		canonical.authored = true;
 		canonical.sourceMaterialKey = material.sourceKey;
 		canonical.materialIndex = slotIndex;
-		result.overrides.emplace_back(id->id, std::optional<MaterialOverrideComponent>{
-			std::move(canonical)});
+		std::optional<MaterialOverrideComponent> before;
+		if (const auto* current = registry.try_get<MaterialOverrideComponent>(e))
+			before = *current;
+		result.beforeOverrides.emplace_back(id->id, std::move(before));
+		result.afterOverrides.emplace_back(id->id,
+			std::optional<MaterialOverrideComponent>{ std::move(canonical) });
 	}
-	std::sort(result.overrides.begin(), result.overrides.end(),
-		[](const auto& lhs, const auto& rhs) { return lhs.first.ToString() < rhs.first.ToString(); });
+	const auto orderByUuid = [](const auto& lhs, const auto& rhs) {
+		return lhs.first.ToString() < rhs.first.ToString();
+	};
+	std::sort(result.beforeOverrides.begin(), result.beforeOverrides.end(), orderByUuid);
+	std::sort(result.afterOverrides.begin(), result.afterOverrides.end(), orderByUuid);
+	result.overrides = result.afterOverrides;
 	return rt2::core::Result<PrefabMaterialSlotStage>::Ok(std::move(result));
 }
 
@@ -6517,8 +6540,23 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 				canonicalAfter.local = S5CanonicalTRS(canonicalAfter.local);
 				canonicalBefore.camera = S5CanonicalCamera(canonicalBefore.camera);
 				canonicalAfter.camera = S5CanonicalCamera(canonicalAfter.camera);
-				canonicalBefore.camera.forwardDirection = glm::normalize(canonicalBefore.local.rotation * glm::vec3(0.0f, 0.0f, -1.0f));
-				canonicalAfter.camera.forwardDirection = glm::normalize(canonicalAfter.local.rotation * glm::vec3(0.0f, 0.0f, -1.0f));
+				glm::mat4 parentWorld(1.0f);
+				if (const auto* hierarchy = registry.try_get<Hierarchy>(entity);
+					hierarchy && hierarchy->parent != entt::null
+					&& !TryResolveAuthoredWorldMatrix(registry, hierarchy->parent, parentWorld))
+					return fail(rt2::core::Error::InvalidTransform, edit.entity.ToString(),
+						"camera-pose parent world transform is not representable");
+				const auto worldForward = [&](const EditableTRS& local,
+					glm::vec3& forward) {
+					EditableTRS world;
+					if (!TryDecomposeEditableTRS(parentWorld * local.Matrix(), world)) return false;
+					forward = glm::normalize(world.rotation * glm::vec3(0.0f, 0.0f, -1.0f));
+					return glm::dot(forward, forward) > 1e-8f;
+				};
+				if (!worldForward(canonicalBefore.local, canonicalBefore.camera.forwardDirection)
+					|| !worldForward(canonicalAfter.local, canonicalAfter.camera.forwardDirection))
+					return fail(rt2::core::Error::InvalidTransform, edit.entity.ToString(),
+						"camera-pose world rotation is not representable");
 				op.source = canonicalBefore;
 				op.target = canonicalAfter;
 				const auto& tf = registry.get<Transform>(entity); EditableTRS current{tf.translation, S5CanonicalRotation(tf.rotation), tf.scale};
@@ -6552,7 +6590,8 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 				if (!before || !after || after->materialIndex < 0 || after->materialIndex >= static_cast<int>(m_EcsScene.materials.size())) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "material-index payload is invalid");
 				const auto& ref = registry.get<MeshRef>(entity); std::optional<MaterialOverrideComponent> current; if (const auto* ov = registry.try_get<MaterialOverrideComponent>(entity)) current = *ov;
 				if (ref.materialIndex != before->materialIndex || !S5EqualOverride(current, before->override)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "material-index source differs from live state");
-				if (registry.all_of<ImportedMeshSourceComponent>(entity))
+				if (direction == PrefabMarkerDirection::After
+					&& registry.all_of<ImportedMeshSourceComponent>(entity))
 				{
 					auto canonical = StageMaterialIndex(edit.entity, after->materialIndex);
 					if (!canonical.IsOk() || !S5EqualOverride(canonical.value.override, after->override))

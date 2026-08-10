@@ -6503,3 +6503,227 @@ TEST_CASE("Phase 8 W3 S6-A: visibility and validate-only staging are reversible"
     CHECK(f.manager.AuthoringRevision() == revisionBeforeMaterialStage);
     std::filesystem::remove_all(dir);
 }
+
+// RED proof: removing any one of the typed visibility checks below makes the
+// corresponding malformed/contradictory or stale-plan assertion go green.
+TEST_CASE("Phase 8 W3 S6-A: visibility discrimination and adapter failures")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6a_visibility_matrix");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    reg.remove<VisibleComponent>(rootHandle); // absent is canonical true
+
+    auto absent = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            true, false } }, {}, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(absent.IsOk());
+    const auto applied = f.manager.CommitPrefabCompositePlan(std::move(absent.value));
+    REQUIRE(applied.error.IsOk());
+    CHECK_FALSE(reg.get<VisibleComponent>(rootHandle).visible);
+
+    auto malformed = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            std::string("true"), false } }, {}, PrefabMarkerDirection::After,
+        schema, schema);
+    REQUIRE_FALSE(malformed.IsOk());
+    CHECK(ToEditorMutationResult(malformed.error).error.code == malformed.error.code);
+
+    auto duplicate = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            false, true },
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            false, true } }, {}, PrefabMarkerDirection::After, schema, schema);
+    CHECK(duplicate.IsOk());
+    auto contradictory = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            false, true },
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            false, false } }, {}, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(contradictory.IsOk());
+
+    auto stale = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            false, true } }, {}, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(stale.IsOk());
+    reg.get<VisibleComponent>(rootHandle).visible = true;
+    const auto staleResult = f.manager.CommitPrefabCompositePlan(std::move(stale.value));
+    REQUIRE_FALSE(staleResult.error.IsOk());
+    CHECK_FALSE(ToEditorMutationResult(staleResult).success);
+    CHECK(reg.get<VisibleComponent>(rootHandle).visible == true);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: deleting the early return or replacing predicted parent-world
+// resolution with the live parent matrix makes the empty/no-parent-child
+// invariants fail.
+TEST_CASE("Phase 8 W3 S6-A: world staging predicts parent and preserves empty raw no-op")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6a_world_matrix");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID child = reg.get<EntityIdComponent>(childHandle).id;
+    const auto rootWorld = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 0.0f, 0.0f))
+        * glm::rotate(glm::mat4(1.0f), glm::radians(45.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const auto childWorld = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 0.0f, 2.0f));
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const auto stage = f.manager.StageWorldTransforms({
+        { SceneManager::EntityId{rootHandle}, rootWorld },
+        { SceneManager::EntityId{childHandle}, childWorld } });
+    REQUIRE(stage.IsOk());
+    REQUIRE(stage.value.localStates.size() == 2);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+    CHECK(reg.get<Transform>(rootHandle).translation == glm::vec3(0.0f));
+
+    const auto duplicate = f.manager.StageWorldTransforms({
+        { SceneManager::EntityId{rootHandle}, rootWorld },
+        { SceneManager::EntityId{rootHandle}, rootWorld } });
+    REQUIRE_FALSE(duplicate.IsOk());
+    const auto missing = f.manager.StageWorldTransforms({
+        { SceneManager::EntityId{entt::null}, rootWorld } });
+    REQUIRE_FALSE(missing.IsOk());
+    REQUIRE(f.manager.TrySetWorldTransforms({}));
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+
+    REQUIRE(f.manager.TrySetWorldTransforms({
+        { SceneManager::EntityId{rootHandle}, rootWorld },
+        { SceneManager::EntityId{childHandle}, childWorld } }));
+    for (const auto& [uuid, expected] : stage.value.localStates)
+    {
+        const auto e = f.manager.FindEntityByUuid(uuid);
+        const auto& tf = reg.get<Transform>(e);
+        CHECK(tf.translation == expected.translation);
+        CHECK(tf.scale == expected.scale);
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: deriving camera forward from local rotation rather than the
+// requested world forward makes this rotated-parent parity check fail.
+TEST_CASE("Phase 8 W3 S6-A: camera staging uses world forward under rotated parent")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6a_camera_world");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID child = reg.get<EntityIdComponent>(childHandle).id;
+    auto& parentTransform = reg.get<Transform>(rootHandle);
+    parentTransform.rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    reg.emplace_or_replace<CameraComponent>(childHandle, CameraComponent{});
+    EditorCameraPose requested;
+    requested.position = { 4.0f, 2.0f, 1.0f };
+    requested.forward = { 1.0f, 0.0f, 0.0f };
+    const auto stage = f.manager.StageCameraPose(child, requested);
+    REQUIRE(stage.IsOk());
+    CHECK(glm::length(stage.value.camera.forwardDirection - requested.forward) < 1e-5f);
+    const auto revisionBeforeAlign = f.manager.AuthoringRevision();
+    REQUIRE(f.manager.AlignCameraEntityToView(child, requested).success);
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeAlign + 1);
+    CHECK(glm::length(reg.get<CameraComponent>(childHandle).forwardDirection
+        - requested.forward) < 1e-5f);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: dropping either live-before capture or UUID sorting makes the
+// exact optional fan-out assertions fail.
+TEST_CASE("Phase 8 W3 S6-A: material stages capture exact ordered optionals")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6a_material_matrix");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID child = reg.get<EntityIdComponent>(childHandle).id;
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<MeshRef>(childHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(childHandle);
+    MaterialOverrideComponent historical;
+    historical.material = f.manager.GetMaterial(0);
+    historical.authored = false;
+    historical.sourceMaterialKey = "historical";
+    historical.materialIndex = 0;
+    reg.emplace_or_replace<MaterialOverrideComponent>(childHandle, historical);
+    auto afterMaterial = f.manager.GetMaterial(0);
+    afterMaterial.sourceKey = "after";
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const auto stage = f.manager.StageMaterialSlot(0, afterMaterial);
+    REQUIRE(stage.IsOk());
+    REQUIRE(stage.value.beforeOverrides.size() == 2);
+    REQUIRE(stage.value.afterOverrides.size() == 2);
+    REQUIRE(stage.value.beforeOverrides[0].first.ToString()
+        < stage.value.beforeOverrides[1].first.ToString());
+    const auto findBefore = [&](const UUID& uuid) -> const auto& {
+        return *std::find_if(stage.value.beforeOverrides.begin(),
+            stage.value.beforeOverrides.end(), [&](const auto& item) {
+                return item.first == uuid;
+            });
+    };
+    CHECK_FALSE(findBefore(root).second.has_value());
+    REQUIRE(findBefore(child).second.has_value());
+    CHECK(findBefore(child).second->sourceMaterialKey == "historical");
+    CHECK(stage.value.afterOverrides[0].second.has_value());
+    CHECK(stage.value.afterOverrides[1].second.has_value());
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+
+    reg.remove<EntityIdComponent>(rootHandle);
+    const auto missingIdentity = f.manager.StageMaterialSlot(0, afterMaterial);
+    REQUIRE_FALSE(missingIdentity.IsOk());
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+
+    const auto ordinary = f.manager.StageMaterialIndex(child, 0);
+    REQUIRE(ordinary.IsOk());
+    const auto outOfRange = f.manager.StageMaterialIndex(child, 99);
+    REQUIRE_FALSE(outOfRange.IsOk());
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: applying canonical After validation to the Before target makes
+// the first imported assignment's exact absent snapshot fail on Undo.
+TEST_CASE("Phase 8 W3 S6-A: imported material index preserves exact Before")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6a_index_before");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    f.manager.AddMaterial(SceneMaterial{});
+    const auto canonical = f.manager.StageMaterialIndex(root, 1);
+    REQUIRE(canonical.IsOk());
+    REQUIRE(canonical.value.override.has_value());
+    const auto schemaBefore = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const PrefabValueEdit edit{ PrefabValueKind::MaterialIndex, root,
+        PrefabMarkerDirection::After,
+        PrefabMaterialIndexValue{ 0, std::nullopt }, canonical.value };
+    const PrefabMarkerEdit marker{ root, S2Key("materialOverride"), false, true };
+    auto execute = f.manager.PreparePrefabCompositeEdits({ edit }, { marker },
+        PrefabMarkerDirection::After, schemaBefore, SceneSerializer::SchemaVersion);
+    REQUIRE(execute.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(execute.value)).error.IsOk());
+    REQUIRE(reg.get<MaterialOverrideComponent>(rootHandle).materialIndex == 1);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    auto undoEdit = edit;
+    undoEdit.direction = PrefabMarkerDirection::Before;
+    auto undo = f.manager.PreparePrefabCompositeEdits({ undoEdit }, { marker },
+        PrefabMarkerDirection::Before, schemaBefore, SceneSerializer::SchemaVersion);
+    REQUIRE(undo.IsOk());
+    const auto undoResult = f.manager.CommitPrefabCompositePlan(std::move(undo.value));
+    REQUIRE(undoResult.error.IsOk());
+    CHECK_FALSE(reg.all_of<MaterialOverrideComponent>(rootHandle));
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 0);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == schemaBefore);
+
+    auto redo = f.manager.PreparePrefabCompositeEdits({ edit }, { marker },
+        PrefabMarkerDirection::After, schemaBefore, SceneSerializer::SchemaVersion);
+    REQUIRE(redo.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(redo.value)).error.IsOk());
+    CHECK(reg.get<MaterialOverrideComponent>(rootHandle).materialIndex == 1);
+    std::filesystem::remove_all(dir);
+}

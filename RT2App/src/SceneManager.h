@@ -223,6 +223,13 @@ struct PrefabMaterialSlotStage
 {
 	int slotIndex = -1;
 	SceneMaterial material;
+	// Exact live snapshots captured before the edit and canonical targets
+	// derived from `material`, in deterministic durable-UUID order.
+	std::vector<std::pair<rt2::core::UUID,
+		std::optional<MaterialOverrideComponent>>> beforeOverrides;
+	std::vector<std::pair<rt2::core::UUID,
+		std::optional<MaterialOverrideComponent>>> afterOverrides;
+	// Compatibility alias for callers that only need the canonical After set.
 	std::vector<std::pair<rt2::core::UUID,
 		std::optional<MaterialOverrideComponent>>> overrides;
 };
