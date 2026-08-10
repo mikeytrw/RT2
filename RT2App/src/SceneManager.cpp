@@ -31,6 +31,7 @@
 #include <type_traits>
 #include <functional>
 #include <algorithm>
+#include <cmath>
 
 namespace
 {
@@ -5155,10 +5156,11 @@ SceneManager::ScriptBindingStage SceneManager::StageScriptBinding(
 	if (!sameBinding)
 	{
 		// A changed path with no identity starts unbound and may be assigned
-		// below.  Preserve an explicitly supplied identity so the read-only
-		// resolver can diagnose a path/sidecar conflict instead of silently
-		// clearing the caller's evidence.
-		if (stage.canonical.asset.assetId.IsNull())
+		// below. A copied component carries the old path's identity; clear that
+		// exact ID before resolving the destination. A genuinely different
+		// explicit destination ID remains available for conflict validation.
+		if (current.has_value() &&
+			stage.canonical.asset.assetId == current->asset.assetId)
 			stage.canonical.asset.assetId = rt2::core::UUID::Nil();
 	}
 	else if (stage.canonical.asset.assetId.IsNull())
@@ -5606,6 +5608,34 @@ EditableTRS S5CanonicalTRS(EditableTRS value)
 {
 	value.rotation = glm::normalize(value.rotation);
 	return value;
+}
+
+bool S5FiniteVec3(const glm::vec3& value)
+{
+	return std::isfinite(value.x) && std::isfinite(value.y)
+		&& std::isfinite(value.z);
+}
+
+bool S5ValidQuaternion(const glm::quat& value)
+{
+	if (!std::isfinite(value.w) || !std::isfinite(value.x)
+		|| !std::isfinite(value.y) || !std::isfinite(value.z))
+		return false;
+	const float lengthSquared = glm::dot(value, value);
+	return std::isfinite(lengthSquared) && lengthSquared > 1e-12f;
+}
+
+bool S5ValidTRS(const EditableTRS& value)
+{
+	return S5FiniteVec3(value.translation) && S5FiniteVec3(value.scale)
+		&& S5ValidQuaternion(value.rotation);
+}
+
+bool S5ValidCamera(const CameraComponent& value)
+{
+	return std::isfinite(value.verticalFOV) && std::isfinite(value.aperture)
+		&& std::isfinite(value.focusDistance)
+		&& S5FiniteVec3(value.forwardDirection);
 }
 
 glm::quat S5CanonicalRotation(glm::quat value)
@@ -6108,10 +6138,16 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 		return { e, {} };
 	};
 
+	rt2::core::Error fanoutError;
 	const auto makeMaterialSlot = [&](int slot, const SceneMaterial& material,
 		const std::vector<std::pair<rt2::core::UUID,
 		std::optional<MaterialOverrideComponent>>>& supplied, bool derive)
 	{
+		const auto reject = [&](rt2::core::Error::Code code,
+			const std::string& path, const std::string& detail) {
+			fanoutError = { code, path, detail };
+			return PrefabMaterialSlotValue{};
+		};
 		PrefabMaterialSlotValue out;
 		out.slotIndex = slot;
 		out.material = material;
@@ -6127,11 +6163,14 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 			// an ID that can be resolved again at Commit time.  Do not silently
 			// omit an unresolvable member from the transaction.
 			if (!id || id->id.IsNull())
-				return PrefabMaterialSlotValue{};
+				return reject(rt2::core::Error::InvalidEntity, "material-slot",
+					"material fan-out member is missing a durable EntityIdComponent");
 			if (m_Authoring.FindByUuid(id->id) != e)
-				return PrefabMaterialSlotValue{};
+				return reject(rt2::core::Error::InvalidEntity, id->id.ToString(),
+					"material fan-out member UUID does not resolve to its live entity");
 			if (std::any_of(live.begin(), live.end(), [&](const LiveMember& member) { return member.uuid == id->id; }))
-				return PrefabMaterialSlotValue{};
+				return reject(rt2::core::Error::InvalidArgument, id->id.ToString(),
+					"material fan-out contains duplicate live UUIDs");
 			std::optional<MaterialOverrideComponent> current;
 			if (const auto* ov = registry.try_get<MaterialOverrideComponent>(e)) current = *ov;
 			live.push_back({ id->id, e, std::move(current) });
@@ -6142,9 +6181,12 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 		std::unordered_map<rt2::core::UUID, std::optional<MaterialOverrideComponent>> suppliedByUuid;
 		for (const auto& pair : supplied)
 			if (!suppliedByUuid.emplace(pair.first, pair.second).second || pair.first.IsNull())
-				return PrefabMaterialSlotValue{};
+				return reject(rt2::core::Error::InvalidArgument, pair.first.ToString(),
+					pair.first.IsNull() ? "material fan-out contains a nil UUID"
+					: "material fan-out contains duplicate UUIDs");
 		if (!supplied.empty() && suppliedByUuid.size() != live.size())
-			return PrefabMaterialSlotValue{};
+			return reject(rt2::core::Error::InvalidArgument, "material-slot",
+				"material fan-out UUID set cardinality differs from the live set");
 		for (const auto& member : live)
 		{
 			std::optional<MaterialOverrideComponent> value;
@@ -6164,20 +6206,33 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 			else
 			{
 				auto it = suppliedByUuid.find(member.uuid);
-				if (it == suppliedByUuid.end()) return PrefabMaterialSlotValue{};
+				if (it == suppliedByUuid.end())
+					return reject(rt2::core::Error::InvalidArgument, member.uuid.ToString(),
+						"material fan-out is missing a live member UUID");
 				value = it->second;
 				if (!derive && !S5EqualOverride(member.overrideValue, value))
-					return PrefabMaterialSlotValue{};
-				if (derive && value.has_value() &&
-					(value->materialIndex != slot || !S5EqualMaterial(value->material, material)))
-					return PrefabMaterialSlotValue{};
+					return reject(rt2::core::Error::InvalidArgument, member.uuid.ToString(),
+						"material fan-out source override differs from live bytes");
+				if (derive)
+				{
+					MaterialOverrideComponent canonical;
+					canonical.material = material;
+					canonical.authored = true;
+					canonical.sourceMaterialKey = material.sourceKey;
+					canonical.materialIndex = slot;
+					if (!value.has_value() || !S5EqualOverride(value, canonical))
+						return reject(rt2::core::Error::InvalidArgument, member.uuid.ToString(),
+							"material fan-out target override is not canonical for the slot");
+					value = canonical;
+				}
 			}
 			out.overrides.emplace_back(member.uuid, std::move(value));
 		}
 		if (!supplied.empty())
 			for (const auto& pair : suppliedByUuid)
 				if (!std::any_of(live.begin(), live.end(), [&](const LiveMember& member) { return member.uuid == pair.first; }))
-					return PrefabMaterialSlotValue{};
+					return reject(rt2::core::Error::InvalidArgument, pair.first.ToString(),
+						"material fan-out contains an extra UUID");
 		return out;
 	};
 
@@ -6209,10 +6264,17 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 				return fail(rt2::core::Error::InvalidArgument, std::to_string(source->slotIndex),
 					"material slot source differs from live state");
 			auto sourceFanout = makeMaterialSlot(source->slotIndex, source->material, source->overrides, false);
+			if (sourceFanout.slotIndex < 0)
+				return fail(fanoutError.code == rt2::core::Error::None
+					? rt2::core::Error::InvalidArgument : fanoutError.code,
+					fanoutError.path.empty() ? "material-slot" : fanoutError.path,
+					fanoutError.detail.empty() ? "material fan-out validation failed" : fanoutError.detail);
 			auto targetFanout = makeMaterialSlot(target->slotIndex, target->material, target->overrides, true);
-			if (sourceFanout.slotIndex < 0 || targetFanout.slotIndex < 0)
-				return fail(rt2::core::Error::InvalidEntity, "material-slot",
-					"imported material fan-out member has no durable uniquely resolvable EntityIdComponent");
+			if (targetFanout.slotIndex < 0)
+				return fail(fanoutError.code == rt2::core::Error::None
+					? rt2::core::Error::InvalidArgument : fanoutError.code,
+					fanoutError.path.empty() ? "material-slot" : fanoutError.path,
+					fanoutError.detail.empty() ? "material fan-out validation failed" : fanoutError.detail);
 			op.source = std::move(sourceFanout);
 			op.target = std::move(targetFanout);
 		}
@@ -6241,6 +6303,9 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 			{
 				const auto* before = std::get_if<CameraComponent>(&sourcePayload); const auto* after = std::get_if<CameraComponent>(&targetPayload);
 				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "camera payload is malformed");
+				if (!S5ValidCamera(*before) || !S5ValidCamera(*after))
+					return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(),
+						"camera payload contains non-finite values");
 				op.source = S5CanonicalCamera(*before);
 				op.target = S5CanonicalCamera(*after);
 				if (!S5EqualCamera(S5CanonicalCamera(registry.get<CameraComponent>(entity)),
@@ -6250,6 +6315,9 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 			{
 				const auto* before = std::get_if<EditableTRS>(&sourcePayload); const auto* after = std::get_if<EditableTRS>(&targetPayload);
 				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "transform payload is malformed");
+				if (!S5ValidTRS(*before) || !S5ValidTRS(*after))
+					return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(),
+						"transform payload contains non-finite or degenerate values");
 				op.source = S5CanonicalTRS(*before);
 				op.target = S5CanonicalTRS(*after);
 				const auto& tf = registry.get<Transform>(entity); EditableTRS current{tf.translation, S5CanonicalRotation(tf.rotation), tf.scale};
@@ -6259,6 +6327,10 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 			{
 				const auto* before = std::get_if<PrefabCameraPoseValue>(&sourcePayload); const auto* after = std::get_if<PrefabCameraPoseValue>(&targetPayload);
 				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "camera-pose payload is malformed");
+				if (!S5ValidTRS(before->local) || !S5ValidTRS(after->local)
+					|| !S5ValidCamera(before->camera) || !S5ValidCamera(after->camera))
+					return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(),
+						"camera-pose payload contains non-finite or degenerate values");
 				PrefabCameraPoseValue canonicalBefore = *before;
 				PrefabCameraPoseValue canonicalAfter = *after;
 				canonicalBefore.local = S5CanonicalTRS(canonicalBefore.local);
@@ -6448,6 +6520,8 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 	// validate-only: no setter is called, so a marker failure cannot leave a
 	// value write behind.
 	std::vector<PrefabValueEdit> valueEdits;
+	std::vector<bool> operationChanges;
+	operationChanges.reserve(plan.values.operations.size());
 	valueEdits.reserve(plan.values.operations.size());
 	for (const auto& op : plan.values.operations)
 	{
@@ -6467,6 +6541,8 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 			if (!S5EqualPayload(checked.value.values.operations[i].source, plan.values.operations[i].source)
 				|| !S5EqualPayload(checked.value.values.operations[i].target, plan.values.operations[i].target))
 				return fail(rt2::core::Error::InvalidArgument, "", "stale composite value source or fan-out changed");
+		for (const auto& operation : checked.value.values.operations)
+			operationChanges.push_back(!S5EqualPayload(operation.source, operation.target));
 	}
 
 	struct MarkerWrite { entt::entity entity; std::vector<PrefabComponentKey> raw; std::vector<PrefabComponentKey> target; };
@@ -6495,6 +6571,12 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 	if (!S5ValidateSchemaTransition(m_Authoring, plan.markers.sourceSchemaVersion,
 		plan.markers.targetSchemaVersion, plan.markers.members, schemaErr))
 		return fail(schemaErr.code, "", schemaErr.detail);
+	bool markerVectorChange = false;
+	for (const auto& write : markerWrites)
+		if (write.raw != write.target) { markerVectorChange = true; break; }
+	if (!markerVectorChange && plan.markers.sourceSchemaVersion != plan.markers.targetSchemaVersion)
+		return fail(rt2::core::Error::InvalidArgument, "",
+			"composite schema change requires a canonical marker-vector change");
 	for (const auto& op : plan.values.operations)
 	{
 		if (op.kind != PrefabValueKind::MaterialSlotProperties) continue;
@@ -6518,9 +6600,8 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 		}
 	}
 
-	bool valueChange = false;
-	for (const auto& op : plan.values.operations)
-		if (!S5EqualPayload(op.source, op.target)) { valueChange = true; break; }
+	bool valueChange = std::any_of(operationChanges.begin(), operationChanges.end(),
+		[](bool changed) { return changed; });
 	bool markerChange = false;
 	for (const auto& write : markerWrites)
 		if (write.raw != write.target) { markerChange = true; break; }
@@ -6534,8 +6615,10 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 	const auto addAffected = [&](const rt2::core::UUID& uuid) {
 		if (std::find(result.affectedEntities.begin(), result.affectedEntities.end(), uuid) == result.affectedEntities.end()) result.affectedEntities.push_back(uuid);
 	};
-	for (const auto& op : plan.values.operations)
+	for (std::size_t operationIndex = 0; operationIndex < plan.values.operations.size(); ++operationIndex)
 	{
+		if (!operationChanges[operationIndex]) continue;
+		const auto& op = plan.values.operations[operationIndex];
 		const auto e = op.kind == PrefabValueKind::MaterialSlotProperties ? entt::null : m_Authoring.FindByUuid(op.entity);
 		if (op.kind != PrefabValueKind::MaterialSlotProperties && (e == entt::null || !m_EcsScene.registry.valid(e))) return fail(rt2::core::Error::InvalidEntity, op.entity.ToString(), "composite value target disappeared");
 		std::visit([&](const auto& target) {
