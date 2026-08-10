@@ -14953,3 +14953,39 @@ recovery gates passed.
 
 S5 is delivered. S6 and S7 remain roadmap follow-ons; no editor/UI/command
 entry-point wiring is included in this closure.
+
+### Phase 8 W3 S5 — closure grounding addendum (2026-08-10)
+
+This addendum is grounded at the pre-addendum code commit `cdafc30`; the
+following anchors were re-resolved against that tree before this note was
+written:
+
+- Typed marker queries are implemented by `IsOverridden` and `GetOverrides`
+  (`RT2App/src/SceneManager.cpp:5689-5742`). Marker plans are built by
+  `PreparePrefabMarkerEdits` (`:5744-5956`) and validated/applied by
+  `CommitPrefabMarkerPlan` (`:5958-6084`), including generation, schema,
+  duplicate-member, canonical-vector, and no-op guards.
+- Typed composite transactions are prepared by
+  `PreparePrefabCompositeEdits` / `PreparePrefabCompositeEditsInternal`
+  (`RT2App/src/SceneManager.cpp:6091-6530`) and committed by
+  `CommitPrefabCompositePlan` (`:6532-6693`). Commit revalidates document and
+  resource generations, schema transitions, source payloads, write sets, and
+  marker vectors before the change-mask-driven apply; the single apply path
+  and one notification are at `:6658-6693`.
+- Ordinary and composite script operations share `StageScriptBinding`
+  (`RT2App/src/SceneManager.cpp:5124-5252`), with the ordinary setter using it
+  before authoring mutation at `:5254-5304` and composite Prepare/Commit paths
+  invoking the same identity staging/revalidation at `:6402-6407` and
+  `:6509-6525`.
+- Material fan-out is derived and validated by `makeMaterialSlot`
+  (`RT2App/src/SceneManager.cpp:6177-6273`); directional source/target
+  selection, including canonical After versus exact Before snapshots, is at
+  `:6303-6319`, with resolved Commit-time member checks at `:6625-6640`.
+- Focused tests ground the real behavior at
+  `RT2Tests/src/Phase8W3OverrideTests.cpp:5636` (atomic material fan-out),
+  `:5826` (script durable identity), `:6037` (typed After/Before cycles), and
+  `:6178` (multi-member material absent/historical Before restore and redo).
+
+These anchors document the repaired implementation rather than the earlier
+period contract. **S5 is delivered; W3 remains incomplete. S6 automatic
+entry-point wiring and S7 final W3 verification remain.**
