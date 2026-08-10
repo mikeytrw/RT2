@@ -3912,9 +3912,25 @@ TEST_CASE("Phase 8 W3: override queries are empty until marked")
 
 // ---------------------------------------------------------------------------
 // Test S5-A — ApplyPrefabMarkerEdits adds markers in canonical order, dedups
-// re-marks, and promotes the document schema on the first add (D6). The
-// vector must come back exactly as the codec writes it (wire-sorted, unique)
-// even though the batch was supplied in a different order.
+// re-marks, and promotes the document schema on the first add (D6). The RAW
+// registry vector (what the writer emits verbatim) must be wire-sorted and
+// unique even though the batch was supplied in a different order: the writer
+// only sorts at SceneSerializer.cpp:853-856, it does NOT de-duplicate, so a
+// duplicate in the raw vector would survive into the saved file and break the
+// save -> load -> save byte round-trip below. Reading through GetOverrides
+// would NOT discriminate (it normalises on read), so the assertions here read
+// the component directly.
+//
+// Discrimination faults:
+//   Sequence a) insertion fault: insert via push_back instead of the sorted
+//   lower_bound insert — the raw vector is not in wire order -> is_sorted
+//   CHECK below goes RED. (Inserting a duplicate while keeping sorted order
+//   is caught by the byte round-trip at the end.)
+//   Sequence b) promotion fault: remove the PromoteSchemaVersion call — the
+//   schemaVersion stays below current -> the D6 REQUIRE goes RED.
+//   Sequence c) dedup fault: drop the alreadyPresent guard — a re-mark
+//   duplicates the key, the raw size check goes RED (and the byte round-trip
+//   also fails on reload).
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: marker helper maintains canonical order and promotes schema on first add")
 {
@@ -3938,15 +3954,23 @@ TEST_CASE("Phase 8 W3: marker helper maintains canonical order and promotes sche
     REQUIRE(r.rejected.empty());
     REQUIRE(r.applied == 3);
 
-    // Canonical result (wire-sorted): motion < name < transform.
-    const auto overrides = f.manager.GetOverrides(rootUuid);
-    REQUIRE(overrides.size() == 3);
-    CHECK(overrides[0] == motion);
-    CHECK(overrides[1] == name);
-    CHECK(overrides[2] == transform);
+    // RAW vector must already be canonical — the writer emits it verbatim.
+    const auto* raw = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(raw);
+    REQUIRE(raw->overrides.size() == 3);
+    CHECK(std::is_sorted(raw->overrides.begin(), raw->overrides.end(),
+          [](const PrefabComponentKey& a, const PrefabComponentKey& b)
+          { return a.wire() < b.wire(); }));
+    CHECK(raw->overrides[0] == motion);
+    CHECK(raw->overrides[1] == name);
+    CHECK(raw->overrides[2] == transform);
     CHECK(f.manager.IsOverridden(rootUuid, transform));
     CHECK(f.manager.IsOverridden(rootUuid, name));
     CHECK(f.manager.IsOverridden(rootUuid, motion));
+
+    // The same order is what the query API reports.
+    const auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides == raw->overrides);
 
     // D6: the document was promoted the moment a marker first appeared.
     REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
@@ -3960,9 +3984,26 @@ TEST_CASE("Phase 8 W3: marker helper maintains canonical order and promotes sche
     });
     REQUIRE(r2.rejected.empty());
     REQUIRE(r2.applied == 1);
-    REQUIRE(f.manager.GetOverrides(rootUuid).size() == 3);
+    REQUIRE(reg.try_get<PrefabMemberComponent>(rootHandle)->overrides.size() == 3);
     REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
     REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // Byte round-trip: a raw vector with a duplicate (the write path does not
+    // dedup) would write the duplicate, and the reloaded doc would differ once
+    // the reader de-duplicates — so save -> load -> save must be byte-equal.
+    const auto scenePath0 = dir / "s5a0.rt2scene";
+    Error saveErr0;
+    REQUIRE(SaveSceneForTest(f.manager.AuthoringDoc(), scenePath0, saveErr0));
+    DeterministicUuidProvider p2;
+    SceneDocument loaded;
+    loaded.SetUuidProvider(&p2);
+    Error loadErr;
+    REQUIRE(SceneSerializer::Load(loaded, scenePath0, loadErr));
+    const auto scenePath1 = dir / "s5a1.rt2scene";
+    Error saveErr1;
+    std::vector<AssetDiagnostic> diag1;
+    REQUIRE(SceneSerializer::Save(loaded, scenePath1, diag1, saveErr1));
+    REQUIRE(S2ReadFile(scenePath0) == S2ReadFile(scenePath1));
 
     // Marking a second member independently is a second genuine add.
     const UUID childUuid = reg.get<EntityIdComponent>(childHandle).id;
