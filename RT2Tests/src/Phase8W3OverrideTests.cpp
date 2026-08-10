@@ -7,6 +7,7 @@
 #include "EditorSceneState.h"
 #include "EditorStructuralCommands.h"
 #include "SceneManager.h"
+#include "EditorCameraWorkflow.h"
 #include "SceneHierarchy.h"
 #include "SceneSerializer.h"
 #include "SceneSerializerTestSupport.h"
@@ -6418,5 +6419,87 @@ TEST_CASE("Phase 8 W3: composite transform payloads reject non-finite values")
             poseBefore, poseAfter } }, {},
         PrefabMarkerDirection::After, schema, schema);
     REQUIRE_FALSE(posePlan.IsOk());
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: before S6-A there was no typed visibility payload or manager
+// staging seam; this test exercises the reversible After/Before transaction,
+// canonical no-op, and zero-churn calculator contracts.
+TEST_CASE("Phase 8 W3 S6-A: visibility and validate-only staging are reversible")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6a_foundation");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    reg.emplace_or_replace<VisibleComponent>(rootHandle, VisibleComponent{true});
+
+    const auto revisionBefore = f.manager.AuthoringRevision();
+    const auto visibility = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            true, false } }, {}, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(visibility.IsOk());
+    const auto applied = f.manager.CommitPrefabCompositePlan(std::move(visibility.value));
+    REQUIRE(applied.error.IsOk());
+    CHECK(applied.anyStateChange);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::Structural);
+    CHECK(applied.affectedEntities == std::vector<UUID>{root});
+    CHECK(reg.get<VisibleComponent>(rootHandle).visible == false);
+    CHECK(f.manager.AuthoringRevision() == revisionBefore + 1);
+    CHECK(ToEditorMutationResult(applied).effective);
+
+    auto noOp = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            false, false } }, {}, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(noOp.IsOk());
+    const auto noOpResult = f.manager.CommitPrefabCompositePlan(std::move(noOp.value));
+    REQUIRE(noOpResult.error.IsOk());
+    CHECK_FALSE(noOpResult.anyStateChange);
+    CHECK_FALSE(ToEditorMutationResult(noOpResult).effective);
+    CHECK(f.manager.AuthoringRevision() == revisionBefore + 1);
+
+    auto before = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::Before,
+            true, false } }, {}, PrefabMarkerDirection::Before, schema, schema);
+    REQUIRE(before.IsOk());
+    const auto restored = f.manager.CommitPrefabCompositePlan(std::move(before.value));
+    REQUIRE(restored.error.IsOk());
+    CHECK(reg.get<VisibleComponent>(rootHandle).visible);
+
+    const auto localBefore = reg.get<Transform>(rootHandle).translation;
+    const auto revisionBeforeStage = f.manager.AuthoringRevision();
+    const auto worldStage = f.manager.StageWorldTransforms({
+        { SceneManager::EntityId{rootHandle},
+            reg.get<Transform>(rootHandle).localMatrix() * glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 0.0f, 0.0f)) } });
+    REQUIRE(worldStage.IsOk());
+    REQUIRE(worldStage.value.localStates.size() == 1);
+    CHECK(worldStage.value.localStates.front().second.translation.x != localBefore.x);
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeStage);
+    CHECK(reg.get<Transform>(rootHandle).translation == localBefore);
+
+    reg.emplace_or_replace<CameraComponent>(rootHandle, CameraComponent{});
+    EditorCameraPose cameraPose;
+    cameraPose.position = { 2.0f, 3.0f, 4.0f };
+    cameraPose.forward = { 0.0f, 0.0f, -1.0f };
+    const auto cameraStage = f.manager.StageCameraPose(root, cameraPose);
+    REQUIRE(cameraStage.IsOk());
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeStage);
+
+    const int materialIndex = f.manager.AddMaterial(SceneMaterial{});
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, materialIndex });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    const auto revisionBeforeMaterialStage = f.manager.AuthoringRevision();
+    const auto materialStage = f.manager.StageMaterialIndex(root, materialIndex);
+    REQUIRE(materialStage.IsOk());
+    REQUIRE(materialStage.value.override.has_value());
+    CHECK(materialStage.value.override->materialIndex == materialIndex);
+    const auto slotStage = f.manager.StageMaterialSlot(materialIndex,
+        f.manager.GetMaterial(materialIndex));
+    REQUIRE(slotStage.IsOk());
+    REQUIRE(slotStage.value.overrides.size() == 1);
+    CHECK(slotStage.value.overrides.front().first == root);
+    CHECK(slotStage.value.overrides.front().second.has_value());
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeMaterialStage);
     std::filesystem::remove_all(dir);
 }

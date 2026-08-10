@@ -114,6 +114,7 @@ struct PrefabMarkerPlan
 enum class PrefabValueKind
 {
 	EntityName,
+	Visibility,
 	LightProperties,
 	CameraProperties,
 	LocalTransform,
@@ -147,6 +148,7 @@ struct PrefabMaterialIndexValue
 using PrefabValuePayload = std::variant<
 	std::monostate,
 	std::string,
+	bool,
 	LightComponent,
 	CameraComponent,
 	EditableTRS,
@@ -201,6 +203,28 @@ struct PrefabCompositeApplyResult
 	std::uint32_t beforeSchemaVersion = 0;
 	std::uint32_t afterSchemaVersion = 0;
 	bool anyStateChange = false;
+};
+
+// Convert one composite commit outcome to the editor-facing structured
+// mutation contract. This is deliberately the only adapter used by editor
+// command/session code: prepare/commit diagnostics are preserved verbatim,
+// successful no-ops remain success=true/effective=false, and a changed
+// composite reports its authoritative impact and affected UUID union.
+EditorMutationResult ToEditorMutationResult(
+	const PrefabCompositeApplyResult& result);
+EditorMutationResult ToEditorMutationResult(const rt2::core::Error& error);
+
+struct PrefabWorldTransformStage
+{
+	std::vector<std::pair<rt2::core::UUID, EditableTRS>> localStates;
+};
+
+struct PrefabMaterialSlotStage
+{
+	int slotIndex = -1;
+	SceneMaterial material;
+	std::vector<std::pair<rt2::core::UUID,
+		std::optional<MaterialOverrideComponent>>> overrides;
 };
 
 // ============================================================================
@@ -614,6 +638,16 @@ struct PrefabCompositeApplyResult
 	bool TrySetWorldTransform(EntityId entity, const glm::mat4& desiredWorld);
 	bool TrySetWorldTransforms(
 		const std::vector<std::pair<EntityId, glm::mat4>>& desiredWorldTransforms);
+	// Validate-only world-space staging. The returned UUID-keyed local TRS
+	// batch uses the same predicted parent+child algorithm as
+	// TrySetWorldTransforms, but performs no scene, revision, notification,
+	// resource, schema, or history mutation.
+	rt2::core::Result<PrefabWorldTransformStage> StageWorldTransforms(
+		const std::vector<std::pair<EntityId, glm::mat4>>& desiredWorldTransforms) const;
+	// Validate-only camera alignment staging. Derives the canonical local TRS
+	// and camera target without invoking a mutator.
+	rt2::core::Result<PrefabCameraPoseValue> StageCameraPose(
+		const rt2::core::UUID& cameraEntity, const EditorCameraPose& requested) const;
 	EditorMutationResult AlignCameraEntityToView(
 		const rt2::core::UUID& cameraEntity, const EditorCameraPose& pose);
 
@@ -736,6 +770,15 @@ struct PrefabCompositeApplyResult
 	                                           int afterIndex,
 	                                           std::optional<MaterialOverrideComponent>* outBeforeOverride = nullptr,
 	                                           std::optional<MaterialOverrideComponent>* outAfterOverride = nullptr);
+	// Validate-only canonical material-index staging. For imported members the
+	// optional override is fully derived from the selected durable material;
+	// ordinary entities return explicit absence. No ECS/resource mutation occurs.
+	rt2::core::Result<PrefabMaterialIndexValue> StageMaterialIndex(
+		const rt2::core::UUID& entity, int afterIndex) const;
+	// Validate-only complete imported-member fan-out. The result is ordered by
+	// durable UUID and includes explicit nullopt entries for absent overrides.
+	rt2::core::Result<PrefabMaterialSlotStage> StageMaterialSlot(
+		int slotIndex, const SceneMaterial& material) const;
 	EditorMutationResult SetMotionState(const rt2::core::UUID& entity,
 	                                    const std::optional<MotionComponent>& value);
 	// Phase 6B/W0: add, remove, or replace an entity's ScriptComponent.
