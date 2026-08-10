@@ -11,6 +11,7 @@
 #include "SceneSerializer.h"
 #include "SceneSerializerTestSupport.h"
 #include "SubtreeSnapshot.h"
+#include "AssetIdentity.h"
 #include "core/Error.h"
 #include "core/UUID.h"
 #include "json.hpp"
@@ -5709,6 +5710,234 @@ TEST_CASE("Phase 8 W3: typed composite material-slot fan-out is atomic")
     CHECK(f.manager.AuthoringRevision() == revisionBeforeFailure);
     CHECK(f.manager.GetMaterial(0).baseColor == materialBeforeFailure.baseColor);
     CHECK(reg.try_get<MaterialOverrideComponent>(rootHandle) != nullptr);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: bypassing the duplicate-UUID insertion guard makes the first
+// duplicate-order REQUIRE_FALSE below fail; restore the guard before GREEN.
+TEST_CASE("Phase 8 W3: material fan-out plans require an exact live UUID set and bytes")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c3b_material_exact");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID child = reg.get<EntityIdComponent>(childHandle).id;
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<MeshRef>(childHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(childHandle);
+
+    const auto before = f.manager.GetMaterial(0);
+    auto after = before;
+    after.baseColor = { 0.15f, 0.35f, 0.85f };
+    auto makeOverride = [&](const SceneMaterial& material) {
+        MaterialOverrideComponent value;
+        value.material = material;
+        value.authored = true;
+        value.materialIndex = 0;
+        return std::optional<MaterialOverrideComponent>{ value };
+    };
+    const auto sourceMembers = std::vector<std::pair<UUID,
+        std::optional<MaterialOverrideComponent>>>{ { root, std::nullopt },
+        { child, std::nullopt } };
+    const auto targetMembers = std::vector<std::pair<UUID,
+        std::optional<MaterialOverrideComponent>>>{ { root, makeOverride(after) },
+        { child, makeOverride(after) } };
+    const auto makeEdit = [&](const auto& source, const auto& target) {
+        return PrefabValueEdit{ PrefabValueKind::MaterialSlotProperties, {},
+            PrefabMarkerDirection::After,
+            PrefabMaterialSlotValue{ 0, before, source },
+            PrefabMaterialSlotValue{ 0, after, target } };
+    };
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    auto duplicate = sourceMembers;
+    duplicate.push_back({ root, std::nullopt });
+    auto duplicateFirst = f.manager.PreparePrefabCompositeEdits(
+        { makeEdit(duplicate, targetMembers) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(duplicateFirst.IsOk());
+    auto duplicateLast = sourceMembers;
+    duplicateLast.insert(duplicateLast.begin(), { root, std::nullopt });
+    auto duplicateSecond = f.manager.PreparePrefabCompositeEdits(
+        { makeEdit(duplicateLast, targetMembers) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(duplicateSecond.IsOk());
+
+    auto missing = std::vector<std::pair<UUID,
+        std::optional<MaterialOverrideComponent>>>{ { root, std::nullopt } };
+    auto missingResult = f.manager.PreparePrefabCompositeEdits(
+        { makeEdit(missing, targetMembers) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(missingResult.IsOk());
+    auto extra = sourceMembers;
+    extra.push_back({ UUID::Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), std::nullopt });
+    auto extraResult = f.manager.PreparePrefabCompositeEdits(
+        { makeEdit(extra, targetMembers) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(extraResult.IsOk());
+
+    // RED proof: bypassing source-byte comparison makes the stale commit
+    // REQUIRE_FALSE below fail; restore the comparison before GREEN.
+    auto valid = f.manager.PreparePrefabCompositeEdits(
+        { makeEdit(sourceMembers, targetMembers) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(valid.IsOk());
+    auto* childOverride = reg.try_get<MaterialOverrideComponent>(childHandle);
+    REQUIRE(childOverride == nullptr);
+    auto staleOverride = makeOverride(before);
+    reg.emplace_or_replace<MaterialOverrideComponent>(childHandle, *staleOverride);
+    const auto materialBefore = f.manager.GetMaterial(0);
+    const auto revisionBefore = f.manager.AuthoringRevision();
+    const auto stale = f.manager.CommitPrefabCompositePlan(std::move(valid.value));
+    REQUIRE_FALSE(stale.error.IsOk());
+    CHECK(f.manager.GetMaterial(0).baseColor == materialBefore.baseColor);
+    CHECK(f.manager.AuthoringRevision() == revisionBefore);
+    reg.remove<MaterialOverrideComponent>(childHandle);
+
+    auto changed = f.manager.PreparePrefabCompositeEdits(
+        { makeEdit(sourceMembers, targetMembers) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(changed.IsOk());
+    reg.get<MeshRef>(childHandle).materialIndex = 1;
+    const auto revisionBeforeMeshChange = f.manager.AuthoringRevision();
+    const auto changedResult = f.manager.CommitPrefabCompositePlan(std::move(changed.value));
+    REQUIRE_FALSE(changedResult.error.IsOk());
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeMeshChange);
+    CHECK(f.manager.GetMaterial(0).baseColor == materialBefore.baseColor);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: bypassing the resolver's sidecar-conflict diagnostic makes the
+// conflict REQUIRE_FALSE below fail; restore it before the focused GREEN run.
+TEST_CASE("Phase 8 W3: composite script binding stages durable identity before commit")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c3b_script_binding");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    const UUID root = f.manager.GetECS().registry.get<EntityIdComponent>(rootHandle).id;
+    rt2::core::AssetResolutionContext context;
+    context.assetRoot = dir;
+    f.manager.SetAssetResolutionContext(context);
+    const auto scriptAPath = dir / "first.lua";
+    const auto scriptBPath = dir / "second.lua";
+    const auto scriptCPath = dir / "conflict.lua";
+    S2WriteRaw(scriptAPath, "return 1\n");
+    S2WriteRaw(scriptBPath, "return 2\n");
+    S2WriteRaw(scriptCPath, "return 3\n");
+    ScriptComponent scriptA;
+    scriptA.asset.kind = AssetKind::Script;
+    scriptA.asset.path = "first.lua";
+    scriptA.asset.sourceKey = "lua:asset=first.lua";
+    ScriptComponent scriptB = scriptA;
+    scriptB.asset.path = "second.lua";
+    scriptB.asset.sourceKey = "lua:asset=second.lua";
+    ScriptComponent scriptC = scriptA;
+    scriptC.asset.path = "conflict.lua";
+    scriptC.asset.sourceKey = "lua:asset=conflict.lua";
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto absent = std::optional<ScriptComponent>{};
+    const auto revisionBeforeAdd = f.manager.AuthoringRevision();
+    const auto sidecarA = rt2::core::AssetSidecarPath(scriptAPath);
+    auto invalidMarker = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            absent, std::optional<ScriptComponent>{ scriptA } } },
+        { PrefabMarkerEdit{ root, S2Key("meshRef"), false, true } },
+        PrefabMarkerDirection::After, schema, SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(invalidMarker.IsOk());
+    CHECK_FALSE(std::filesystem::exists(sidecarA));
+    auto add = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            absent, std::optional<ScriptComponent>{ scriptA } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(add.IsOk());
+    REQUIRE(std::filesystem::exists(sidecarA));
+    Error sidecarError;
+    const auto assignedA = rt2::core::ReadSidecarId(sidecarA, sidecarError);
+    REQUIRE(sidecarError.IsOk());
+    REQUIRE_FALSE(assignedA.IsNull());
+    const auto addResult = f.manager.CommitPrefabCompositePlan(std::move(add.value));
+    REQUIRE(addResult.error.IsOk());
+    REQUIRE(f.manager.AuthoringRevision() == revisionBeforeAdd + 1);
+    REQUIRE(f.manager.GetECS().registry.get<ScriptComponent>(rootHandle).asset.assetId == assignedA);
+    scriptA.asset.assetId = assignedA;
+
+    const auto revisionAfterAdd = f.manager.AuthoringRevision();
+    auto noop = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            std::optional<ScriptComponent>{ f.manager.GetECS().registry.get<ScriptComponent>(rootHandle) },
+            std::optional<ScriptComponent>{ scriptA } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(noop.IsOk());
+    const auto noopResult = f.manager.CommitPrefabCompositePlan(std::move(noop.value));
+    REQUIRE(noopResult.error.IsOk());
+    CHECK_FALSE(noopResult.anyStateChange);
+    CHECK(f.manager.AuthoringRevision() == revisionAfterAdd);
+
+    auto remove = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            std::optional<ScriptComponent>{ f.manager.GetECS().registry.get<ScriptComponent>(rootHandle) },
+            absent } }, {}, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(remove.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(remove.value)).error.IsOk());
+
+    auto rebind = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            absent, std::optional<ScriptComponent>{ scriptB } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(rebind.IsOk());
+    const auto sidecarB = rt2::core::AssetSidecarPath(scriptBPath);
+    REQUIRE(std::filesystem::exists(sidecarB));
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(rebind.value)).error.IsOk());
+    const auto assignedB = f.manager.GetECS().registry.get<ScriptComponent>(rootHandle).asset.assetId;
+    REQUIRE_FALSE(assignedB.IsNull());
+
+    auto samePath = scriptB;
+    samePath.asset.assetId = UUID::Nil();
+    auto reuse = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            std::optional<ScriptComponent>{ f.manager.GetECS().registry.get<ScriptComponent>(rootHandle) },
+            std::optional<ScriptComponent>{ samePath } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(reuse.IsOk());
+    CHECK(std::get<std::optional<ScriptComponent>>(
+        reuse.value.values.operations.front().target).value().asset.assetId == assignedB);
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(reuse.value)).error.IsOk());
+    CHECK(f.manager.GetECS().registry.get<ScriptComponent>(rootHandle).asset.assetId == assignedB);
+
+    UUID conflictingId = f.manager.ReserveKnownUuid();
+    Error writeError;
+    REQUIRE(rt2::core::WriteSidecarId(rt2::core::AssetSidecarPath(scriptCPath), conflictingId, writeError));
+    scriptC.asset.assetId = assignedB;
+    const auto revisionBeforeConflict = f.manager.AuthoringRevision();
+    auto conflict = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            std::optional<ScriptComponent>{ f.manager.GetECS().registry.get<ScriptComponent>(rootHandle) },
+            std::optional<ScriptComponent>{ scriptC } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(conflict.IsOk());
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeConflict);
+
+    auto removeB = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            std::optional<ScriptComponent>{ f.manager.GetECS().registry.get<ScriptComponent>(rootHandle) },
+            absent } }, {}, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(removeB.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(removeB.value)).error.IsOk());
+    auto beforeUndo = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            absent, std::optional<ScriptComponent>{ scriptA } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(beforeUndo.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(beforeUndo.value)).error.IsOk());
+    auto before = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::Before,
+            absent, std::optional<ScriptComponent>{ scriptA } } }, {},
+        PrefabMarkerDirection::Before, schema, schema);
+    REQUIRE(before.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(before.value)).error.IsOk());
+    CHECK_FALSE(f.manager.GetECS().registry.all_of<ScriptComponent>(rootHandle));
     std::filesystem::remove_all(dir);
 }
 

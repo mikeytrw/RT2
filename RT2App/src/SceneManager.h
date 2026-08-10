@@ -891,6 +891,26 @@ private:
 	void RefreshCameraForwardDirections(const std::vector<entt::entity>& roots);
 	void ReconcileStoredCameraDirections();
 
+	struct ScriptBindingStage
+	{
+		bool success = false;
+		ScriptComponent canonical;
+		rt2::core::Error error;
+	};
+	ScriptBindingStage StageScriptBinding(
+		const rt2::core::UUID& entity,
+		const std::optional<ScriptComponent>& value,
+		const std::optional<ScriptComponent>& current,
+		bool allowIdentityWrites,
+		bool deferIdentityWrites);
+	rt2::core::Result<PrefabCompositePlan> PreparePrefabCompositeEditsInternal(
+		const std::vector<PrefabValueEdit>& values,
+		const std::vector<PrefabMarkerEdit>& markers,
+		PrefabMarkerDirection direction,
+		std::uint32_t beforeSchemaVersion,
+		std::uint32_t afterSchemaVersion,
+		bool allowIdentityWrites);
+
 	// Record a durable MaterialOverrideComponent on an imported entity for the
 	// material currently at `materialIndex`. Captures the material value
 	// snapshot so the override survives save/reopen regardless of how the
