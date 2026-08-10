@@ -4451,7 +4451,9 @@ rt2::core::Result<PrefabWorldTransformStage> SceneManager::StageWorldTransforms(
 		return rt2::core::Result<PrefabWorldTransformStage>::Ok(std::move(stage));
 	const auto& registry = m_EcsScene.registry;
 	std::unordered_map<entt::entity, glm::mat4> desiredByEntity;
+	std::unordered_map<entt::entity, rt2::core::UUID> durableUuidByEntity;
 	desiredByEntity.reserve(desiredWorldTransforms.size());
+	durableUuidByEntity.reserve(desiredWorldTransforms.size());
 	for (const auto& edit : desiredWorldTransforms)
 	{
 		if (!edit.first.IsValid() || !registry.valid(edit.first.id)
@@ -4460,6 +4462,13 @@ rt2::core::Result<PrefabWorldTransformStage> SceneManager::StageWorldTransforms(
 			return rt2::core::Result<PrefabWorldTransformStage>::Fail(
 				rt2::core::Error::InvalidEntity, "world-transform",
 				"world-transform staging contains an invalid, duplicate, or non-transform entity");
+		const auto* identity = registry.try_get<EntityIdComponent>(edit.first.id);
+		if (!identity || identity->id.IsNull()
+			|| m_Authoring.FindByUuid(identity->id) != edit.first.id)
+			return rt2::core::Result<PrefabWorldTransformStage>::Fail(
+				rt2::core::Error::InvalidEntity, "world-transform",
+				"world-transform staging requires a nonnil EntityIdComponent that round-trips to the entity");
+		durableUuidByEntity.emplace(edit.first.id, identity->id);
 	}
 	std::unordered_map<entt::entity, glm::mat4> predictedWorldCache;
 	std::unordered_set<entt::entity> resolving;
@@ -4511,7 +4520,7 @@ rt2::core::Result<PrefabWorldTransformStage> SceneManager::StageWorldTransforms(
 			return rt2::core::Result<PrefabWorldTransformStage>::Fail(
 				 rt2::core::Error::InvalidTransform, GetEntityUuid(edit.first).ToString(),
 				"world-transform staging rejected a singular, sheared, or non-finite target");
-		stage.localStates.emplace_back(GetEntityUuid(edit.first), local);
+		stage.localStates.emplace_back(durableUuidByEntity.at(edit.first.id), local);
 	}
 	return rt2::core::Result<PrefabWorldTransformStage>::Ok(std::move(stage));
 }
@@ -4523,11 +4532,22 @@ bool SceneManager::TrySetWorldTransforms(
 	if (!staged.IsOk()) return false;
 	if (staged.value.localStates.empty()) return true;
 	auto& registry = m_EcsScene.registry;
-	std::vector<entt::entity> changedEntities;
-	changedEntities.reserve(staged.value.localStates.size());
+	std::vector<entt::entity> entities;
+	entities.reserve(staged.value.localStates.size());
 	for (const auto& edit : staged.value.localStates)
 	{
 		const auto entity = m_Authoring.FindByUuid(edit.first);
+		if (entity == entt::null || !registry.valid(entity)
+			|| !registry.all_of<Transform>(entity))
+			return false;
+		entities.push_back(entity);
+	}
+	std::vector<entt::entity> changedEntities;
+	changedEntities.reserve(staged.value.localStates.size());
+	for (std::size_t i = 0; i < staged.value.localStates.size(); ++i)
+	{
+		const auto& edit = staged.value.localStates[i];
+		const auto entity = entities[i];
 		auto& transform = registry.get<Transform>(entity);
 		transform.translation = edit.second.translation;
 		transform.rotation = glm::normalize(edit.second.rotation);
@@ -6560,7 +6580,12 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 				op.source = canonicalBefore;
 				op.target = canonicalAfter;
 				const auto& tf = registry.get<Transform>(entity); EditableTRS current{tf.translation, S5CanonicalRotation(tf.rotation), tf.scale};
-				if (!S5EqualTRS(current, canonicalBefore.local) || !S5EqualCamera(S5CanonicalCamera(registry.get<CameraComponent>(entity)), canonicalBefore.camera)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "camera-pose source differs from live state");
+				if (!S5EqualTRS(current, canonicalBefore.local))
+					return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(),
+						"camera-pose transform source differs from live state");
+				if (!S5EqualCamera(S5CanonicalCamera(registry.get<CameraComponent>(entity)), canonicalBefore.camera))
+					return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(),
+						"camera-pose camera source differs from live state");
 			}
 			else if (edit.kind == PrefabValueKind::MotionState)
 			{

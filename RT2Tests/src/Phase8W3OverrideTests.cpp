@@ -6556,6 +6556,64 @@ TEST_CASE("Phase 8 W3 S6-A: visibility discrimination and adapter failures")
     std::filesystem::remove_all(dir);
 }
 
+TEST_CASE("Phase 8 W3 S6-A: adapter contract and visibility marker UUID union")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6a_adapter_union");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID child = reg.get<EntityIdComponent>(childHandle).id;
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    const auto plan = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            true, false } },
+        { PrefabMarkerEdit{ child, S2Key("transform"), false, true } },
+        PrefabMarkerDirection::After, schema, SceneSerializer::SchemaVersion);
+    REQUIRE(plan.IsOk());
+    const auto committed = f.manager.CommitPrefabCompositePlan(std::move(plan.value));
+    REQUIRE(committed.error.IsOk());
+    const auto adapted = ToEditorMutationResult(committed);
+    CHECK(adapted.success);
+    CHECK(adapted.effective);
+    CHECK(adapted.syncImpact == rt2::core::SyncImpact::Structural);
+    REQUIRE(adapted.affectedEntities.size() == 2);
+    CHECK(std::find(adapted.affectedEntities.begin(), adapted.affectedEntities.end(), root)
+        != adapted.affectedEntities.end());
+    CHECK(std::find(adapted.affectedEntities.begin(), adapted.affectedEntities.end(), child)
+        != adapted.affectedEntities.end());
+
+    PrefabCompositeApplyResult noOp;
+    noOp.syncImpact = rt2::core::SyncImpact::Material;
+    noOp.affectedEntities = { root };
+    const auto adaptedNoOp = ToEditorMutationResult(noOp);
+    CHECK(adaptedNoOp.success);
+    CHECK_FALSE(adaptedNoOp.effective);
+    CHECK(adaptedNoOp.syncImpact == rt2::core::SyncImpact::None);
+    CHECK(adaptedNoOp.affectedEntities.empty());
+
+    PrefabCompositeApplyResult failure;
+    failure.error = rt2::core::Error{ rt2::core::Error::InvalidArgument,
+        "adapter/path", "adapter detail must survive" };
+    const auto adaptedFailure = ToEditorMutationResult(failure);
+    CHECK_FALSE(adaptedFailure.success);
+    CHECK_FALSE(adaptedFailure.effective);
+    CHECK(adaptedFailure.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(adaptedFailure.error.path == "adapter/path");
+    CHECK(adaptedFailure.error.detail == "adapter detail must survive");
+    CHECK(adaptedFailure.syncImpact == rt2::core::SyncImpact::None);
+    CHECK(adaptedFailure.affectedEntities.empty());
+
+    const rt2::core::Error prepareError{ rt2::core::Error::InvalidEntity,
+        "prepare/path", "prepare detail must survive" };
+    const auto adaptedPrepareFailure = ToEditorMutationResult(prepareError);
+    CHECK_FALSE(adaptedPrepareFailure.success);
+    CHECK(adaptedPrepareFailure.error.path == "prepare/path");
+    CHECK(adaptedPrepareFailure.error.detail == "prepare detail must survive");
+    std::filesystem::remove_all(dir);
+}
+
 // RED proof: deleting the early return or replacing predicted parent-world
 // resolution with the live parent matrix makes the empty/no-parent-child
 // invariants fail.
@@ -6579,6 +6637,21 @@ TEST_CASE("Phase 8 W3 S6-A: world staging predicts parent and preserves empty ra
     CHECK(f.manager.AuthoringRevision() == beforeRevision);
     CHECK(reg.get<Transform>(rootHandle).translation == glm::vec3(0.0f));
 
+    EditableTRS expectedChild;
+    REQUIRE(TryDecomposeEditableTRS(glm::inverse(rootWorld) * childWorld,
+        expectedChild));
+    const auto stagedChild = std::find_if(stage.value.localStates.begin(),
+        stage.value.localStates.end(), [&](const auto& item) { return item.first == child; });
+    REQUIRE(stagedChild != stage.value.localStates.end());
+    CHECK(glm::length(stagedChild->second.translation - expectedChild.translation) < 1e-5f);
+    CHECK(std::abs(glm::dot(glm::normalize(stagedChild->second.rotation),
+        glm::normalize(expectedChild.rotation))) > 1.0f - 1e-5f);
+    CHECK(glm::length(stagedChild->second.scale - expectedChild.scale) < 1e-5f);
+    const auto predictedChildWorld = rootWorld * stagedChild->second.Matrix();
+    for (int column = 0; column < 4; ++column)
+        for (int row = 0; row < 4; ++row)
+            CHECK(std::abs(predictedChildWorld[column][row] - childWorld[column][row]) < 1e-4f);
+
     const auto duplicate = f.manager.StageWorldTransforms({
         { SceneManager::EntityId{rootHandle}, rootWorld },
         { SceneManager::EntityId{rootHandle}, rootWorld } });
@@ -6586,6 +6659,21 @@ TEST_CASE("Phase 8 W3 S6-A: world staging predicts parent and preserves empty ra
     const auto missing = f.manager.StageWorldTransforms({
         { SceneManager::EntityId{entt::null}, rootWorld } });
     REQUIRE_FALSE(missing.IsOk());
+    const auto missingIdentityTransform = reg.get<Transform>(childHandle);
+    const auto missingIdentityRevision = f.manager.AuthoringRevision();
+    const auto missingIdentityDirty = f.manager.AuthoringDoc().metadata.dirty;
+    reg.remove<EntityIdComponent>(childHandle);
+    const auto missingIdentity = f.manager.StageWorldTransforms({
+        { SceneManager::EntityId{childHandle}, childWorld } });
+    REQUIRE_FALSE(missingIdentity.IsOk());
+    CHECK(f.manager.AuthoringRevision() == missingIdentityRevision);
+    CHECK(f.manager.AuthoringDoc().metadata.dirty == missingIdentityDirty);
+    CHECK(reg.get<Transform>(childHandle).translation == missingIdentityTransform.translation);
+    CHECK_FALSE(f.manager.TrySetWorldTransforms({
+        { SceneManager::EntityId{childHandle}, childWorld } }));
+    CHECK(f.manager.AuthoringRevision() == missingIdentityRevision);
+    CHECK(reg.get<Transform>(childHandle).translation == missingIdentityTransform.translation);
+    reg.emplace<EntityIdComponent>(childHandle, child);
     REQUIRE(f.manager.TrySetWorldTransforms({}));
     CHECK(f.manager.AuthoringRevision() == beforeRevision);
 
@@ -6612,14 +6700,48 @@ TEST_CASE("Phase 8 W3 S6-A: camera staging uses world forward under rotated pare
     auto& reg = f.manager.GetECS().registry;
     const UUID child = reg.get<EntityIdComponent>(childHandle).id;
     auto& parentTransform = reg.get<Transform>(rootHandle);
-    parentTransform.rotation = glm::angleAxis(glm::radians(90.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    parentTransform.rotation = glm::angleAxis(glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
     reg.emplace_or_replace<CameraComponent>(childHandle, CameraComponent{});
+    EditableTRS initialWorld;
+    REQUIRE(TryDecomposeEditableTRS(parentTransform.localMatrix()
+        * reg.get<Transform>(childHandle).localMatrix(), initialWorld));
+    reg.get<CameraComponent>(childHandle).forwardDirection =
+        glm::normalize(initialWorld.rotation * glm::vec3(0.0f, 0.0f, -1.0f));
     EditorCameraPose requested;
     requested.position = { 4.0f, 2.0f, 1.0f };
     requested.forward = { 1.0f, 0.0f, 0.0f };
     const auto stage = f.manager.StageCameraPose(child, requested);
     REQUIRE(stage.IsOk());
     CHECK(glm::length(stage.value.camera.forwardDirection - requested.forward) < 1e-5f);
+
+    const auto& liveTransform = reg.get<Transform>(childHandle);
+    const PrefabCameraPoseValue beforePose{
+        EditableTRS{ liveTransform.translation, liveTransform.rotation, liveTransform.scale },
+        reg.get<CameraComponent>(childHandle) };
+    const PrefabValueEdit poseEdit{ PrefabValueKind::CameraPose, child,
+        PrefabMarkerDirection::After, beforePose, stage.value };
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    auto compositeAfter = f.manager.PreparePrefabCompositeEdits({ poseEdit }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(compositeAfter.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(compositeAfter.value)).error.IsOk());
+    CHECK(glm::length(reg.get<CameraComponent>(childHandle).forwardDirection
+        - requested.forward) < 1e-5f);
+    auto poseUndoEdit = poseEdit;
+    poseUndoEdit.direction = PrefabMarkerDirection::Before;
+    auto compositeBefore = f.manager.PreparePrefabCompositeEdits({ poseUndoEdit }, {},
+        PrefabMarkerDirection::Before, schema, schema);
+    REQUIRE(compositeBefore.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(compositeBefore.value)).error.IsOk());
+    CHECK(glm::length(reg.get<CameraComponent>(childHandle).forwardDirection
+        - beforePose.camera.forwardDirection) < 1e-5f);
+    auto compositeRedo = f.manager.PreparePrefabCompositeEdits({ poseEdit }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(compositeRedo.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(compositeRedo.value)).error.IsOk());
+    CHECK(glm::length(reg.get<CameraComponent>(childHandle).forwardDirection
+        - requested.forward) < 1e-5f);
+
     const auto revisionBeforeAlign = f.manager.AuthoringRevision();
     REQUIRE(f.manager.AlignCameraEntityToView(child, requested).success);
     CHECK(f.manager.AuthoringRevision() == revisionBeforeAlign + 1);
@@ -6675,8 +6797,11 @@ TEST_CASE("Phase 8 W3 S6-A: material stages capture exact ordered optionals")
     REQUIRE_FALSE(missingIdentity.IsOk());
     CHECK(f.manager.AuthoringRevision() == beforeRevision);
 
+    reg.remove<ImportedMeshSourceComponent>(childHandle);
     const auto ordinary = f.manager.StageMaterialIndex(child, 0);
     REQUIRE(ordinary.IsOk());
+    CHECK_FALSE(ordinary.value.override.has_value());
+    reg.emplace<ImportedMeshSourceComponent>(childHandle);
     const auto outOfRange = f.manager.StageMaterialIndex(child, 99);
     REQUIRE_FALSE(outOfRange.IsOk());
     std::filesystem::remove_all(dir);
@@ -6691,39 +6816,73 @@ TEST_CASE("Phase 8 W3 S6-A: imported material index preserves exact Before")
     const auto [rootHandle, childHandle] = f.MakeInstance(dir);
     auto& reg = f.manager.GetECS().registry;
     const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID child = reg.get<EntityIdComponent>(childHandle).id;
     reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<MeshRef>(childHandle, MeshRef{ 0, 0 });
     reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(childHandle);
+    MaterialOverrideComponent historical;
+    historical.material = f.manager.GetMaterial(0);
+    historical.authored = false;
+    historical.sourceMaterialKey = "historical-before";
+    historical.materialIndex = 0;
+    reg.emplace_or_replace<MaterialOverrideComponent>(childHandle, historical);
     f.manager.AddMaterial(SceneMaterial{});
-    const auto canonical = f.manager.StageMaterialIndex(root, 1);
-    REQUIRE(canonical.IsOk());
-    REQUIRE(canonical.value.override.has_value());
+    const auto rootCanonical = f.manager.StageMaterialIndex(root, 1);
+    const auto childCanonical = f.manager.StageMaterialIndex(child, 1);
+    REQUIRE(rootCanonical.IsOk());
+    REQUIRE(childCanonical.IsOk());
+    REQUIRE(rootCanonical.value.override.has_value());
+    REQUIRE(childCanonical.value.override.has_value());
     const auto schemaBefore = f.manager.AuthoringDoc().metadata.schemaVersion;
-    const PrefabValueEdit edit{ PrefabValueKind::MaterialIndex, root,
+    const PrefabValueEdit rootEdit{ PrefabValueKind::MaterialIndex, root,
         PrefabMarkerDirection::After,
-        PrefabMaterialIndexValue{ 0, std::nullopt }, canonical.value };
-    const PrefabMarkerEdit marker{ root, S2Key("materialOverride"), false, true };
-    auto execute = f.manager.PreparePrefabCompositeEdits({ edit }, { marker },
+        PrefabMaterialIndexValue{ 0, std::nullopt }, rootCanonical.value };
+    const PrefabValueEdit childEdit{ PrefabValueKind::MaterialIndex, child,
+        PrefabMarkerDirection::After,
+        PrefabMaterialIndexValue{ 0, historical }, childCanonical.value };
+    const PrefabMarkerEdit rootMarker{ root, S2Key("materialOverride"), false, true };
+    const PrefabMarkerEdit childMarker{ child, S2Key("materialOverride"), false, true };
+    auto execute = f.manager.PreparePrefabCompositeEdits({ rootEdit, childEdit },
+        { rootMarker, childMarker },
         PrefabMarkerDirection::After, schemaBefore, SceneSerializer::SchemaVersion);
     REQUIRE(execute.IsOk());
     REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(execute.value)).error.IsOk());
     REQUIRE(reg.get<MaterialOverrideComponent>(rootHandle).materialIndex == 1);
+    REQUIRE(reg.get<MaterialOverrideComponent>(childHandle).materialIndex == 1);
     CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
 
-    auto undoEdit = edit;
-    undoEdit.direction = PrefabMarkerDirection::Before;
-    auto undo = f.manager.PreparePrefabCompositeEdits({ undoEdit }, { marker },
+    auto undoRootEdit = rootEdit;
+    undoRootEdit.direction = PrefabMarkerDirection::Before;
+    auto undoChildEdit = childEdit;
+    undoChildEdit.direction = PrefabMarkerDirection::Before;
+    auto undo = f.manager.PreparePrefabCompositeEdits({ undoRootEdit, undoChildEdit },
+        { rootMarker, childMarker },
         PrefabMarkerDirection::Before, schemaBefore, SceneSerializer::SchemaVersion);
     REQUIRE(undo.IsOk());
     const auto undoResult = f.manager.CommitPrefabCompositePlan(std::move(undo.value));
     REQUIRE(undoResult.error.IsOk());
     CHECK_FALSE(reg.all_of<MaterialOverrideComponent>(rootHandle));
     CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 0);
+    const auto* restoredHistorical = reg.try_get<MaterialOverrideComponent>(childHandle);
+    REQUIRE(restoredHistorical);
+    CHECK_FALSE(restoredHistorical->authored);
+    CHECK(restoredHistorical->sourceMaterialKey == historical.sourceMaterialKey);
+    CHECK(restoredHistorical->material.baseColor == historical.material.baseColor);
+    CHECK(restoredHistorical->materialIndex == historical.materialIndex);
+    CHECK(reg.get<MeshRef>(childHandle).materialIndex == 0);
     CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == schemaBefore);
 
-    auto redo = f.manager.PreparePrefabCompositeEdits({ edit }, { marker },
+    auto redoRootEdit = rootEdit;
+    redoRootEdit.direction = PrefabMarkerDirection::After;
+    auto redoChildEdit = childEdit;
+    redoChildEdit.direction = PrefabMarkerDirection::After;
+    auto redo = f.manager.PreparePrefabCompositeEdits({ redoRootEdit, redoChildEdit },
+        { rootMarker, childMarker },
         PrefabMarkerDirection::After, schemaBefore, SceneSerializer::SchemaVersion);
     REQUIRE(redo.IsOk());
     REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(redo.value)).error.IsOk());
     CHECK(reg.get<MaterialOverrideComponent>(rootHandle).materialIndex == 1);
+    CHECK(reg.get<MaterialOverrideComponent>(childHandle).materialIndex == 1);
     std::filesystem::remove_all(dir);
 }
