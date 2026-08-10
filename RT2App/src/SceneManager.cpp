@@ -11,6 +11,7 @@
 #include "ScriptAssetPath.h"
 #include "AssetIdentity.h"
 #include "PrefabSerializer.h"
+#include "PrefabComponentKey.h"
 #include "SceneSerializer.h"
 #include "SceneAssetResolver.h"
 #include "stb_image.h"
@@ -5307,115 +5308,320 @@ void SceneManager::InstallMaterialOverride(
 }
 
 // ============================================================================
-// Phase 8 W3 S5: prefab override query + marker helper
+// Phase 8 W3 S5: prefab override query + staged marker helper
 // ============================================================================
 
-bool SceneManager::IsOverridden(const rt2::core::UUID& member,
-                                const PrefabComponentKey& key) const
+namespace
+{
+rt2::core::Error S5QueryError(rt2::core::Error::Code code,
+                              const rt2::core::UUID& member,
+                              const std::string& detail)
+{
+	rt2::core::Error err;
+	err.code = code;
+	err.path = member.ToString();
+	err.detail = detail;
+	return err;
+}
+
+// Canonicalize a raw override vector by frozen-table identity. Every stored key
+// is re-resolved through the frozen table (the stored classification bit is
+// never trusted), then sorted by wire and de-duplicated by wire. Unknown or
+// non-overridable (excluded) stored wires are a loud failure: returns false and
+// fills `err` without modifying `out` — the malformed-vector policy.
+bool S5CanonicalizeVector(const std::vector<PrefabComponentKey>& raw,
+                          std::vector<PrefabComponentKey>& out,
+                          rt2::core::Error& err)
+{
+	out.clear();
+	out.reserve(raw.size());
+	for (const auto& key : raw)
+	{
+		const auto canonical = FindComponentByWire(key.wire());
+		if (!canonical)
+		{
+			err.code = rt2::core::Error::InvalidArgument;
+			err.detail = "stored override key wire '" + std::string(key.wire())
+				+ "' is unknown (not in the frozen table)";
+			return false;
+		}
+		if (!canonical->overridable())
+		{
+			err.code = rt2::core::Error::InvalidArgument;
+			err.detail = "stored override key wire '" + std::string(key.wire())
+				+ "' is non-overridable (excluded from override marking)";
+			return false;
+		}
+		out.push_back(*canonical); // canonical table entry, bit re-derived
+	}
+	std::sort(out.begin(), out.end(),
+	          [](const PrefabComponentKey& a, const PrefabComponentKey& b)
+	          { return a.wire() < b.wire(); });
+	out.erase(std::unique(out.begin(), out.end(),
+	           [](const PrefabComponentKey& a, const PrefabComponentKey& b)
+	           { return a.wire() == b.wire(); }),
+	          out.end());
+	return true;
+}
+} // namespace
+
+rt2::core::Result<bool> SceneManager::IsOverridden(
+	const rt2::core::UUID& member, const PrefabComponentKey& key) const
 {
 	const auto e = m_Authoring.FindByUuid(member);
 	if (e == entt::null || !m_EcsScene.registry.valid(e))
-		return false;
+		return rt2::core::Result<bool>::Fail(rt2::core::Error::InvalidEntity,
+			member.ToString(), "entity UUID is not present in the authoring scene");
 	const auto* pm = m_EcsScene.registry.try_get<PrefabMemberComponent>(e);
 	if (!pm)
-		return false;
-	for (const auto& existing : pm->overrides)
-		if (existing == key)
-			return true;
-	return false;
+		return rt2::core::Result<bool>::Fail(rt2::core::Error::NotPrefabMember,
+			member.ToString(), "entity is not a prefab member");
+
+	const auto canonical = FindComponentByWire(key.wire());
+	if (!canonical)
+		return rt2::core::Result<bool>::Fail(rt2::core::Error::InvalidArgument,
+			member.ToString(),
+			"unknown override key wire '" + std::string(key.wire()) + "'");
+	if (!canonical->overridable())
+		return rt2::core::Result<bool>::Fail(rt2::core::Error::InvalidArgument,
+			member.ToString(),
+			"non-overridable (excluded) override key wire '"
+			+ std::string(key.wire()) + "'");
+
+	rt2::core::Error vecErr;
+	std::vector<PrefabComponentKey> set;
+	if (!S5CanonicalizeVector(pm->overrides, set, vecErr))
+		return rt2::core::Result<bool>::Fail(vecErr.code, member.ToString(),
+			vecErr.detail);
+
+	const bool present = std::find(set.begin(), set.end(), *canonical) != set.end();
+	return rt2::core::Result<bool>::Ok(present);
 }
 
-std::vector<PrefabComponentKey> SceneManager::GetOverrides(
+rt2::core::Result<std::vector<PrefabComponentKey>> SceneManager::GetOverrides(
 	const rt2::core::UUID& member) const
 {
 	const auto e = m_Authoring.FindByUuid(member);
 	if (e == entt::null || !m_EcsScene.registry.valid(e))
-		return {};
+		return rt2::core::Result<std::vector<PrefabComponentKey>>::Fail(
+			rt2::core::Error::InvalidEntity, member.ToString(),
+			"entity UUID is not present in the authoring scene");
 	const auto* pm = m_EcsScene.registry.try_get<PrefabMemberComponent>(e);
 	if (!pm)
-		return {};
+		return rt2::core::Result<std::vector<PrefabComponentKey>>::Fail(
+			rt2::core::Error::NotPrefabMember, member.ToString(),
+			"entity is not a prefab member");
 
-	// Canonical order: the in-memory vector must NOT be trusted to already be
-	// sorted/unique (see the EntityMatchesRecord guard at line ~2545 — vectors
-	// built by hand or in edit order need not have passed through the codec).
-	// Normalise a copy so callers observe the same order the codec writes.
-	std::vector<PrefabComponentKey> out = pm->overrides;
-	std::sort(out.begin(), out.end(),
-	          [](const PrefabComponentKey& a, const PrefabComponentKey& b)
-	          { return a.wire() < b.wire(); });
-	out.erase(std::unique(out.begin(), out.end()), out.end());
-	return out;
+	rt2::core::Error vecErr;
+	std::vector<PrefabComponentKey> set;
+	if (!S5CanonicalizeVector(pm->overrides, set, vecErr))
+		return rt2::core::Result<std::vector<PrefabComponentKey>>::Fail(
+			vecErr.code, member.ToString(), vecErr.detail);
+	return rt2::core::Result<std::vector<PrefabComponentKey>>::Ok(std::move(set));
 }
 
-PrefabMarkerApplyResult SceneManager::ApplyPrefabMarkerEdits(
-	const std::vector<PrefabMarkerEdit>& edits)
+rt2::core::Result<PrefabMarkerPlan> SceneManager::PreparePrefabMarkerEdits(
+	const std::vector<PrefabMarkerEdit>& edits,
+	PrefabMarkerDirection direction,
+	std::uint32_t beforeSchemaVersion,
+	std::uint32_t afterSchemaVersion)
 {
-	// The helper is not fail-atomic by design: an edit whose member is not a
-	// prefab member (or does not exist) is rejected and reported in the result
-	// while the remaining edits still apply. Transactionality across the whole
-	// command is the caller's job (the S6 command layer rolls the component
-	// value and marker vectors back together via before/after state).
-	PrefabMarkerApplyResult result;
-	bool membershipChanged = false;
-	bool promoted = false;
+	// Zero-mutation staging: everything below reads and validates live state
+	// into a durable plan; nothing is written until CommitPrefabMarkerPlan.
+	PrefabMarkerPlan plan;
+	plan.direction = direction;
+	// Directional transport of the command-captured schema pair: the After
+	// direction targets the command-after schema (execute), the Before
+	// direction targets the command-before schema (undo/restore). Commit always
+	// writes targetSchemaVersion.
+	plan.sourceSchemaVersion = (direction == PrefabMarkerDirection::After)
+		? beforeSchemaVersion : afterSchemaVersion;
+	plan.targetSchemaVersion = (direction == PrefabMarkerDirection::After)
+		? afterSchemaVersion : beforeSchemaVersion;
+
+	const bool targetAfter = (direction == PrefabMarkerDirection::After);
+
+	struct Staged
+	{
+		rt2::core::UUID member;
+		entt::entity entity = entt::null;
+		std::vector<PrefabComponentKey> live;      // canonical pre-batch set
+		std::vector<PrefabComponentKey> pendingKeys;
+		std::vector<bool>                 pendingPresent; // target presence per key
+	};
+	std::vector<Staged> staged;
+	std::unordered_map<entt::entity, std::size_t> memberIndex;
+
 	for (const auto& edit : edits)
 	{
+		// Member identity: durable UUID resolved through the authoring index.
 		const auto e = m_Authoring.FindByUuid(edit.member);
 		if (e == entt::null || !m_EcsScene.registry.valid(e))
-		{
-			result.rejected.push_back(edit);
-			continue;
-		}
-		auto* pm = m_EcsScene.registry.try_get<PrefabMemberComponent>(e);
+			return rt2::core::Result<PrefabMarkerPlan>::Fail(
+				rt2::core::Error::InvalidEntity, edit.member.ToString(),
+				"entity UUID is not present in the authoring scene");
+		const auto* pm = m_EcsScene.registry.try_get<PrefabMemberComponent>(e);
 		if (!pm)
-		{
-			result.rejected.push_back(edit);
-			continue;
-		}
-		// Loud guard, consistent with the table header's philosophy: a marker
-		// for a component that isn't overridable (or an un-resolved default
-		// key) must never land in the set, or the reader would treat it as a
-		// real divergence.
-		if (!edit.key.overridable())
-		{
-			result.rejected.push_back(edit);
-			continue;
-		}
+			return rt2::core::Result<PrefabMarkerPlan>::Fail(
+				rt2::core::Error::NotPrefabMember, edit.member.ToString(),
+				"entity is not a prefab member");
 
-		if (edit.afterPresent)
+		// Canonical key: resolve the wire through the frozen table. The caller's
+		// overridable bit is never trusted and the caller's object is never
+		// stored — the resolved table entry is what gets staged.
+		const auto canonical = FindComponentByWire(edit.key.wire());
+		if (!canonical)
+			return rt2::core::Result<PrefabMarkerPlan>::Fail(
+				rt2::core::Error::InvalidArgument, edit.member.ToString(),
+				"unknown override key wire '" + std::string(edit.key.wire()) + "'");
+		if (!canonical->overridable())
+			return rt2::core::Result<PrefabMarkerPlan>::Fail(
+				rt2::core::Error::InvalidArgument, edit.member.ToString(),
+				"non-overridable (excluded) override key wire '"
+				+ std::string(edit.key.wire()) + "'");
+
+		// Lazily canonicalize the member's raw vector (with loud malformed
+		// rejection) once per member.
+		auto it = memberIndex.find(e);
+		std::size_t mi = 0;
+		if (it == memberIndex.end())
 		{
-			bool alreadyPresent = false;
-			for (const auto& existing : pm->overrides)
-				if (existing == edit.key) { alreadyPresent = true; break; }
-			if (!alreadyPresent)
-			{
-				auto it = std::lower_bound(pm->overrides.begin(), pm->overrides.end(),
-					edit.key,
-					[](const PrefabComponentKey& a, const PrefabComponentKey& b)
-					{ return a.wire() < b.wire(); });
-				pm->overrides.insert(it, edit.key);
-				membershipChanged = true;
-				// D6: promote the document the first time an override is added,
-				// so a recovery SaveTo writes v6 and the set survives. Called
-				// once per batch, only when a key actually appears.
-				if (!promoted && rt2::core::SceneSerializer::PromoteSchemaVersion(m_Authoring))
-					promoted = true;
-			}
+			rt2::core::Error vecErr;
+			std::vector<PrefabComponentKey> live;
+			if (!S5CanonicalizeVector(pm->overrides, live, vecErr))
+				return rt2::core::Result<PrefabMarkerPlan>::Fail(
+					vecErr.code, edit.member.ToString(),
+					"malformed stored override vector: " + vecErr.detail);
+			mi = staged.size();
+			memberIndex.emplace(e, mi);
+			staged.push_back(Staged{ edit.member, e, std::move(live), {}, {} });
 		}
 		else
+			mi = it->second;
+		Staged& member = staged[mi];
+
+		const bool livePresent = std::find(member.live.begin(), member.live.end(),
+			*canonical) != member.live.end();
+
+		// Directional source validation: the non-target side of the payload must
+		// equal the one pre-batch snapshot, so a stale or hand-forged payload is
+		// a loud zero-change failure rather than a silently ignored boolean.
+		const bool expectedSource = targetAfter ? edit.beforePresent : edit.afterPresent;
+		if (expectedSource != livePresent)
+			return rt2::core::Result<PrefabMarkerPlan>::Fail(
+				rt2::core::Error::InvalidArgument, edit.member.ToString(),
+				std::string(targetAfter ? "beforePresent" : "afterPresent")
+				+ " does not match live membership (expected "
+				+ (expectedSource ? "present" : "absent")
+				+ ", live " + (livePresent ? "present" : "absent")
+				+ ") for wire '" + std::string(canonical->wire()) + "'");
+
+		const bool targetPresent = targetAfter ? edit.afterPresent : edit.beforePresent;
+
+		// Duplicate policy, input-order-independent: byte-identical duplicates
+		// for the same (member, canonical wire) coalesce; a contradictory
+		// duplicate fails the whole batch regardless of the input order.
+		const auto existing = std::find_if(member.pendingKeys.begin(), member.pendingKeys.end(),
+			[&](const PrefabComponentKey& k) { return k == *canonical; });
+		if (existing != member.pendingKeys.end())
 		{
-			auto it = std::remove(pm->overrides.begin(), pm->overrides.end(), edit.key);
-			if (it != pm->overrides.end())
-			{
-				pm->overrides.erase(it, pm->overrides.end());
-				membershipChanged = true;
-			}
+			const std::size_t idx = static_cast<std::size_t>(existing - member.pendingKeys.begin());
+			if (member.pendingPresent[idx] != targetPresent)
+				return rt2::core::Result<PrefabMarkerPlan>::Fail(
+					rt2::core::Error::InvalidArgument, edit.member.ToString(),
+					"contradictory duplicate edits for wire '"
+					+ std::string(canonical->wire()) + "' (target presence differs)");
+			continue; // byte-identical duplicate: coalesce
 		}
-		++result.applied;
+		member.pendingKeys.push_back(*canonical);
+		member.pendingPresent.push_back(targetPresent);
 	}
 
-	if (membershipChanged)
-		NotifyAuthoringChanged();
+	// Build the durable per-member transitions from the canonical snapshot.
+	plan.anyStateChange = false;
+	for (const auto& member : staged)
+	{
+		std::vector<PrefabComponentKey> after = member.live;
+		for (std::size_t i = 0; i < member.pendingKeys.size(); ++i)
+		{
+			const PrefabComponentKey& key = member.pendingKeys[i];
+			if (member.pendingPresent[i])
+			{
+				auto pos = std::lower_bound(after.begin(), after.end(), key,
+					[](const PrefabComponentKey& a, const PrefabComponentKey& b)
+					{ return a.wire() < b.wire(); });
+				if (pos == after.end() || pos->wire() != key.wire())
+					after.insert(pos, key);
+			}
+			else
+			{
+				auto it2 = std::remove(after.begin(), after.end(), key);
+				if (it2 != after.end())
+					after.erase(it2, after.end());
+			}
+		}
+
+		PrefabMarkerPlan::MemberTransition transition;
+		transition.member = member.member;
+		transition.source = member.live;
+		transition.target = std::move(after);
+		if (transition.source != transition.target)
+			plan.anyStateChange = true;
+		plan.members.push_back(std::move(transition));
+	}
+
+	if (plan.sourceSchemaVersion != plan.targetSchemaVersion)
+		plan.anyStateChange = true;
+
+	return rt2::core::Result<PrefabMarkerPlan>::Ok(std::move(plan));
+}
+
+PrefabMarkerApplyResult SceneManager::CommitPrefabMarkerPlan(PrefabMarkerPlan plan)
+{
+	PrefabMarkerApplyResult result;
+	result.beforeSchemaVersion = m_Authoring.metadata.schemaVersion;
+	result.afterSchemaVersion = result.beforeSchemaVersion;
+
+	// Re-resolve every durable member UUID. Commit is infallible only when
+	// applied to the same document the plan was prepared against; a stale plan
+	// (a member removed or un-made in between) fails loudly with zero mutation
+	// rather than partially writing.
+	std::vector<entt::entity> resolved;
+	resolved.reserve(plan.members.size());
+	for (const auto& transition : plan.members)
+	{
+		const auto e = m_Authoring.FindByUuid(transition.member);
+		if (e == entt::null || !m_EcsScene.registry.valid(e))
+		{
+			result.error = S5QueryError(rt2::core::Error::InvalidEntity,
+				transition.member, "stale marker plan: member no longer present");
+			return result;
+		}
+		if (!m_EcsScene.registry.all_of<PrefabMemberComponent>(e))
+		{
+			result.error = S5QueryError(rt2::core::Error::NotPrefabMember,
+				transition.member, "stale marker plan: member is no longer a prefab member");
+			return result;
+		}
+		resolved.push_back(e);
+	}
+
+	// Genuine no-op: nothing changes, zero notifications (no revision/dirty/schema
+	// churn). A valid plan with anyStateChange false targets identical state.
+	if (!plan.anyStateChange)
+		return result;
+
+	// Apply all staged member vectors and the schema transition in one step.
+	for (std::size_t i = 0; i < plan.members.size(); ++i)
+	{
+		auto* pm = m_EcsScene.registry.try_get<PrefabMemberComponent>(resolved[i]);
+		pm->overrides = plan.members[i].target;
+		++result.appliedMembers;
+	}
+	m_Authoring.metadata.schemaVersion = plan.targetSchemaVersion;
+	result.afterSchemaVersion = m_Authoring.metadata.schemaVersion;
+	result.anyStateChange = true;
+	NotifyAuthoringChanged(); // exactly once
 	return result;
 }
 

@@ -53,15 +53,19 @@ enum class PrefabMarkerDirection
 };
 
 // Result of committing a validated PrefabMarkerPlan. CommitPrefabMarkerPlan is
-// infallible after a successful PreparePrefabMarkerEdits: every staged member
-// is written and the schema transition is applied in one step, then
-// NotifyAuthoringChanged() is called at most once (only when anyStateChange).
+// infallible after a successful PreparePrefabMarkerEdits AGAINST THE SAME
+// DOCUMENT the plan was prepared for: every staged member is written and the
+// schema transition is applied in one step, then NotifyAuthoringChanged() is
+// called at most once (only when anyStateChange). A stale plan (a member
+// removed or un-made in between) fails loudly with zero mutation and `error`
+// filled rather than partially writing.
 struct PrefabMarkerApplyResult
 {
-	std::size_t    appliedMembers = 0;       // members whose set was written
-	std::uint32_t  beforeSchemaVersion = 0;  // document schema before the batch
-	std::uint32_t  afterSchemaVersion = 0;   // schema the document was left at
-	bool           anyStateChange = false;   // false => genuine no-op (no notify)
+	rt2::core::Error error;                 // stale-plan failure only (ok => IsOk())
+	std::size_t    appliedMembers = 0;      // members whose set was written
+	std::uint32_t  beforeSchemaVersion = 0; // document schema before the batch
+	std::uint32_t  afterSchemaVersion = 0;  // schema the document was left at
+	bool           anyStateChange = false;  // false => genuine no-op (no notify)
 };
 
 // A fully validated, staged marker batch. PreparePrefabMarkerEdits resolves
@@ -70,31 +74,34 @@ struct PrefabMarkerApplyResult
 // byte-identical duplicate edits per (member, canonical wire) while rejecting
 // contradictory duplicates, and rejects malformed raw vectors — all WITHOUT
 // touching live state. CommitPrefabMarkerPlan then applies the staged member
-// vectors and schema transition atomically.
+// source->target transitions and the schema transition atomically.
 //
 // The plan holds only durable member UUIDs and canonical override vectors (no
 // entt handles or pointers), so a command can store it between staging and
 // commit, and S6 composes it atomically with component-value mutations.
 struct PrefabMarkerPlan
 {
-	// Canonical before/after override set for one member. Each vector is in
-	// wire-sorted, de-duplicated order (the shape the scene codec writes).
+	// Canonical source (pre-batch) and target (post-commit) override set for
+	// one member. Each vector is in wire-sorted, de-duplicated order (the
+	// shape the scene codec writes).
 	struct MemberTransition
 	{
 		rt2::core::UUID member;
-		std::vector<PrefabComponentKey> before;
-		std::vector<PrefabComponentKey> after;
+		std::vector<PrefabComponentKey> source;
+		std::vector<PrefabComponentKey> target;
 	};
 
 	PrefabMarkerDirection direction = PrefabMarkerDirection::After;
-	// Schema versions captured by the command (D3.6/D3.10): commit leaves the
-	// document at afterSchemaVersion, so undoing a first add restores the
-	// captured beforeSchemaVersion and nothing ever downgrades below what the
-	// command captured.
-	std::uint32_t beforeSchemaVersion = 0;
-	std::uint32_t afterSchemaVersion = 0;
-	// True when any member vector or the schema differs between before and
-	// after; a genuine no-op is false and fires no notification.
+	// Directional schema transport of the command-captured schema pair
+	// (D3.6/D3.10). The After direction targets the command-after schema
+	// (execute); the Before direction targets the command-before schema
+	// (undo/restore). Commit always writes targetSchemaVersion, so undoing a
+	// first add restores the captured prior version and nothing ever
+	// downgrades below what the command captured.
+	std::uint32_t sourceSchemaVersion = 0;
+	std::uint32_t targetSchemaVersion = 0;
+	// True when any member source/target vector or the schema differs; a
+	// genuine no-op is false and commits with no mutation and no notification.
 	bool anyStateChange = false;
 	std::vector<MemberTransition> members;
 };
@@ -693,13 +700,17 @@ struct PrefabMarkerPlan
 	// edits for the same (member, canonical wire) coalesce; contradictory
 	// duplicates fail; malformed stored vectors (unknown/excluded wire) fail;
 	// and the presence on the non-target side must match the pre-batch
-	// snapshot. The caller supplies the captured before/after schema versions
-	// (D3.6/D3.10) so undo of a first add restores the captured value.
+	// snapshot. The caller supplies the command-captured before/after schema
+	// versions (D3.6/D3.10); the After direction targets the after version
+	// (execute) and the Before direction targets the before version
+	// (undo/restore), so undoing a first add restores the captured value.
 	//
-	// CommitPrefabMarkerPlan applies a validated plan: it writes every staged
-	// member's canonical after vector, sets the document schema to the plan's
-	// afterSchemaVersion, and calls NotifyAuthoringChanged() at most once
-	// (only when anyStateChange — a genuine no-op notifies zero times).
+	// CommitPrefabMarkerPlan applies a validated plan: it re-resolves each
+	// member UUID (failing loudly with zero mutation if the plan is stale),
+	// writes every staged member's canonical target vector, always sets the
+	// document schema to the plan's targetSchemaVersion, and calls
+	// NotifyAuthoringChanged() at most once (only when anyStateChange — a
+	// genuine no-op notifies zero times).
 	rt2::core::Result<bool> IsOverridden(
 		const rt2::core::UUID& member,
 		const PrefabComponentKey& key) const;
