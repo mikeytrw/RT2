@@ -6230,6 +6230,20 @@ document is a period record of a superseded state.**
 > superseded by the 858/858 figures. The 700/700 rows remain the 2026-07-31
 > period record.
 
+> **Updated 2026-08-10 - S4 independent final re-review 3 fix closure
+> measurement (supersedes the 858/858 note above).** Full measured run from the
+> repository root after the re-review-3 fixup landed (`48cd17f` - canonical
+> clipboard-forest count for `PasteWithUuidsForCommand` plus the conditional
+> `ResolveOrAssign` comment correction; test T27). Both configurations now
+> measure **859 run / 859 passed / 0 failed / 0 skipped; 148,708 assertions**.
+> Release and Debug each recorded one clean full run with no failure
+> reproduced; the Phase6B file-timestamp-granularity timing test did not flake.
+> The scripting, slice and recovery gates passed: script PASS 60 frames / 1
+> entity; slice PASS Cube final x=0.999999702; recovery PASS. The 858/858
+> figure is the recorded measurement of the final re-review-2 fix closure
+> before the re-review-3 fixup and is superseded by the 859/859 figures. The
+> 700/700 rows remain the 2026-07-31 period record.
+
 Run from the repository root — `RT2Tests.exe` resolves some fixtures by
 relative path and both fails and writes stray files if run from elsewhere.
 
@@ -14690,3 +14704,77 @@ configurations.
 **S5/S6 remain.** The marking half of work step S4 — automatic marking (S5/S6)
 — is still not delivered and is carried to later work; this note closes only
 the final re-review-2 P1 clipboard-generation defect.
+
+#### Supersession / correction note (2026-08-10, S4 independent final re-review 3 fix closure)
+
+The note above was reviewed again against the tree at `bbe1d5e` in the
+[Phase 8 W3 S4 independent final re-review 3]
+(`artifacts/phase8-w3-s4-final-rereview-3/index.md`, review range
+`2732577..bbe1d5e`). That independent review confirmed the clipboard-generation
+integrity defect stays closed and the earlier identity/reservation findings
+remain closed, and found two problems this note supersedes: a P1 where the
+guarded editor paste still rejected a normal multi-selection shape, and two P2
+record-accuracy gaps. This is the fourth dated correction the append-only rule
+requires; all earlier records remain period records and are NOT rewritten. All
+code references below are grounded against the tree at `48cd17f` (HEAD at the
+time of writing); line numbers in this file account for the 2026-08-10
+Test-base supersession block at `:6233-6245` above, which shifts every later
+anchor.
+
+**Current anchors (stable as of THIS note; the preceding note's "final, stable"
+anchors at `:14587-14594` no longer resolve because the new baseline block above
+shifted every line below it).** The settled D8 text this implementation was
+planned against is at `:14130-14152`; S4 the *work step* is at `:14185-14186`.
+
+**T23-T25 claims narrowed (re-review 3 P2).** The preceding note said each
+stale case asserts "no history entry" and an unchanged hierarchy/resource
+state. That overstates the tests: T23-T25 create no `EditorCommandHistory` and
+therefore cannot assert its size, and their `S4SceneSnapshot` compares table
+and component CARDINALITIES plus the document/resource generations and the
+authoring revision — not hierarchy or resource CONTENTS
+(`RT2Tests/src/Phase8W3OverrideTests.cpp:2538-2579,3380-3599`). The production
+wiring does return before command construction and history mutation
+(`SceneEditorUI.cpp:423-432`), so this is an inaccurate test claim, not a
+surviving runtime bypass. Corrected claim: each stale case asserts
+`ClipboardStale`, zero UUID draws, zero manager mutation (entity/UUID-index/
+hierarchy/pic/pmic cardinalities, mesh/material/texture table sizes, revision,
+document- and resource-generation), and no created roots.
+
+**Fixup commit (re-review 3 P1 + P2).**
+
+- `48cd17f` — canonical clipboard-forest count for the guarded editor paste.
+  `PasteWithUuidsForCommand` previously summed every RAW clipboard root's
+  subtree (`EditorSceneState.cpp:102-115`), so a selected `{parent, child}`
+  reserved 2 + 1 = 3 UUIDs while `PasteSubtreesWithUuids` canonicalizes the
+  same roots — duplicate roots deduplicated, a covered descendant removed
+  (`SceneManager.cpp:35-71,3965-3988`) — and requires the count to equal the
+  smaller canonical forest (`SceneManager.cpp:4009-4014`), failing the paste
+  with "known UUID count does not match the canonical subtree size". The
+  preparation now counts through the new document-parameterized
+  `CountCanonicalDocumentSubtreeEntities` (`SceneManager.cpp:3075-3094`), which
+  applies the SAME validation-first canonicalization and pre-order traversal as
+  `PasteSubtreesWithUuids`, so the reserved count always equals the canonical
+  forest; `CountCanonicalSubtreeEntities` delegates to it for the authoring
+  scene. The P2 ordinary comment at `SceneManager.cpp:3235-3240` now states the
+  `ResolveOrAssign` asset-identity draw is conditional (an existing valid
+  sidecar consumes zero draws), matching the second note's correction.
+
+**Tests (T27, re-review 3 P1 coverage).** `48cd17f` added one discriminating
+test (`RT2Tests/src/Phase8W3OverrideTests.cpp:3714-3845`, section header at
+`:3679`) that drives a
+`{parent, child}` selection through the real `EditorSceneState::Copy` +
+`PasteWithUuidsForCommand` path, plus a duplicate-root (`{parent, parent,
+child}`) phase. It proves success, exact provider draws equal to the canonical
+entity count (2 per 2-entity forest, asserted via a two-slot script whose
+over-consumption hard-fails), one canonical created root, the complete parent
+and child source mapping, hierarchy wiring (pasted child under pasted parent),
+and a recorded `EditorCommandHistory` command that undoes both pasted entities.
+RED evidence: temporarily restoring the old raw-root counting made T27 draw a
+third UUID, immediately failing the script's `REQUIRE(cursor < script.size())`
+at `REQUIRE( 2 < 2 )` — captured and then reverted to GREEN (46/46 Phase 8 W3
+tests, 1,466/1,466 assertions per configuration).
+
+**S5/S6 remain.** The marking half of work step S4 — automatic marking (S5/S6)
+— is still not delivered and is carried to later work; this note closes only
+the re-review 3 P1 overlapping-root reservation defect and its two P2
+record-accuracy gaps.
