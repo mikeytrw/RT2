@@ -3069,19 +3069,25 @@ std::vector<rt2::core::UUID> SceneManager::ReserveKnownUuids(size_t count)
 rt2::core::Result<size_t> SceneManager::CountCanonicalSubtreeEntities(
 	const std::vector<rt2::core::UUID>& rootUuids) const
 {
+	return CountCanonicalDocumentSubtreeEntities(m_Authoring, rootUuids);
+}
+
+rt2::core::Result<size_t> SceneManager::CountCanonicalDocumentSubtreeEntities(
+	const rt2::core::SceneDocument& document,
+	const std::vector<rt2::core::UUID>& rootUuids) const
+{
 	if (rootUuids.empty())
 		return rt2::core::Result<size_t>::Ok(0);
 	rt2::core::Error error;
-	auto roots = ResolveCanonicalRoots(m_Authoring, rootUuids, error);
+	auto roots = ResolveCanonicalRoots(document, rootUuids, error);
 	if (!error.IsOk())
 		return rt2::core::Result<size_t>::Fail(error.code, error.path, error.detail);
 
 	size_t count = 0;
-	auto& registry = m_EcsScene.registry;
 	for (const auto root : roots)
 	{
 		std::vector<entt::entity> subtree;
-		SceneHierarchy::CollectSubtreePreOrder(registry, root, subtree);
+		SceneHierarchy::CollectSubtreePreOrder(document.ecs.registry, root, subtree);
 		count += subtree.size();
 	}
 	return rt2::core::Result<size_t>::Ok(count);
@@ -3228,8 +3234,10 @@ SceneManager::InstantiationResult SceneManager::InstantiatePrefabWithUuids(
 
 	// The instance's single fresh instanceId (review fix 2). Reserved AFTER
 	// input/file validation but BEFORE any destination mutation — see the
-	// reservation block below. Provider draws in this function: the one
-	// asset-identity draw in ResolveOrAssign, then this single draw.
+	// reservation block below. Provider draws in this function: ResolveOrAssign
+	// consumes an asset-identity draw ONLY when identity cannot be resolved
+	// from a valid sidecar (an existing valid sidecar consumes ZERO draws; see
+	// the corrected note), then this single draw.
 	rt2::core::UUID instanceId = rt2::core::UUID::Nil();
 
 	// Load the prefab. A missing/invalid file is a hard failure — never a

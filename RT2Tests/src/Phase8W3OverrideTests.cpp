@@ -3674,3 +3674,172 @@ TEST_CASE("Phase 8 W3: valid clipboard paste reserves exactly, creates roots, an
             == static_cast<uint32_t>(entt::null));
     REQUIRE(S4Snapshot(manager).entities == pre.entities);
 }
+
+// ============================================================================
+// Phase 8 W3, S4 FIXUP 2 (re-review 3, P1) — the overlapping-duplicate-root
+// reservation gap.
+//
+// PasteWithUuidsForCommand used to count each RAW clipboard root's subtree and
+// sum them (EditorSceneState.cpp:102-115), then reserve that total and hand it
+// to PasteSubtreesWithUuids. The manager canonicalizes the same roots first —
+// duplicate roots are deduplicated and a selected descendant covered by a
+// selected ancestor is removed (SceneManager.cpp:35-71, 3965-3988) — and
+// requires the supplied UUID count to equal that smaller canonical forest
+// (SceneManager.cpp:4009-4014). For a {parent, child} two-entity tree the old
+// counting reserved 2 + 1 = 3 UUIDs while the manager found 2 sources and
+// failed with "known UUID count does not match the canonical subtree size",
+// rejecting a valid multi-selection paste in the editor.
+//
+// Fix: PasteWithUuidsForCommand now counts through the manager's
+// document-parameterized CountCanonicalDocumentSubtreeEntities, which applies
+// the SAME validation-first canonicalization and pre-order traversal as
+// PasteSubtreesWithUuids, so the reserved count always equals the canonical
+// forest exactly.
+//
+// T27 drives a {parent, child} selection through the real
+// EditorSceneState::Copy + PasteWithUuidsForCommand path, plus a duplicate-root
+// input, and asserts success, exact provider draws == canonical entity count,
+// one created root, the complete source mapping, and a working undo command.
+// The old raw-root counting is RED-injected per the verification report: with
+// a two-slot script, the over-reservation draws a third UUID and the script's
+// REQUIRE(cursor < script.size()) fails the test loudly.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// Test T27 — overlapping {parent, child} and duplicate-root selections paste
+// via the SAME state-level method the UI calls: the reservation uses the
+// canonical forest count (2), one canonical root is created, the full parent +
+// child source mapping comes back for undo, and the recorded command undoes.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: overlapping parent+child and duplicate-root clipboard selections reserve the canonical count and undo")
+{
+    SceneManager manager;
+    DeterministicUuidProvider ids;
+    manager.SetUuidProvider(&ids);
+    auto& reg = manager.GetECS().registry;
+
+    SceneMaterial defaultMat;
+    const int m0 = manager.AddMaterial(defaultMat);
+    REQUIRE(m0 == 0);
+
+    // Parent + child primitive hierarchy (both reserved, so ranks are stable).
+    const UUID parentUuid = ids.CreateV4();
+    EditableTRS trs;
+    const auto parentResult = manager.CreatePrimitiveEntity(
+        parentUuid, "Parent", PrimitiveComponent::Cube, 1.0f, trs, m0);
+    REQUIRE(parentResult.success);
+    const UUID childUuid = ids.CreateV4();
+    const auto childResult = manager.CreatePrimitiveEntity(
+        childUuid, "Child", PrimitiveComponent::Sphere, 0.5f, trs, m0, parentUuid);
+    REQUIRE(childResult.success);
+
+    const auto parentEntity = manager.FindEntityByUuid(parentUuid);
+    REQUIRE(static_cast<uint32_t>(parentEntity) != static_cast<uint32_t>(entt::null));
+    const auto childEntity = manager.FindEntityByUuid(childUuid);
+    REQUIRE(static_cast<uint32_t>(childEntity) != static_cast<uint32_t>(entt::null));
+    const auto* childHier = reg.try_get<Hierarchy>(childEntity);
+    REQUIRE(childHier);
+    CHECK(childHier->parent == parentEntity);
+
+    const auto pre = S4Snapshot(manager);
+
+    // Copy BOTH selected roots: the child is covered by the parent.
+    EditorSceneState state;
+    rt2::core::Error err;
+    INFO(err.Format());
+    REQUIRE(state.Copy(manager, {parentUuid, childUuid}, err));
+
+    // Scripted provider serving exactly TWO fresh UUIDs (the canonical forest
+    // of a parent + child tree). Raw-root counting would demand a third draw
+    // and blow up the script here -> loud RED.
+    const UUID freshParent = ids.CreateV4();
+    const UUID freshChild = ids.CreateV4();
+    ScriptedUuidProvider scripted;
+    scripted.script = { freshParent, freshChild };
+    manager.SetUuidProvider(&scripted);
+
+    const auto paste = state.PasteWithUuidsForCommand(manager);
+    REQUIRE(paste.mutation.success);
+    CHECK(paste.mutation.error.IsOk());
+    REQUIRE(paste.createdRoots.size() == 1);        // only the canonical parent
+    REQUIRE(paste.sourceToDuplicate.size() == 2);   // parent AND child mapped
+    CHECK(paste.sourceToDuplicate[0].first == parentUuid);
+    CHECK(paste.sourceToDuplicate[0].second == freshParent);
+    CHECK(paste.sourceToDuplicate[1].first == childUuid);
+    CHECK(paste.sourceToDuplicate[1].second == freshChild);
+    CHECK(scripted.cursor == 2);        // exact reservation: canonical count, not raw sum
+    CHECK(scripted.log.size() == 2);
+    CHECK(scripted.log[0] == freshParent);
+    CHECK(scripted.log[1] == freshChild);
+    CHECK(paste.createdRoots[0] == freshParent);
+
+    // Both pasted entities exist; the pasted child is wired under the pasted
+    // parent.
+    const auto pastedParent = manager.FindEntityByUuid(freshParent);
+    REQUIRE(static_cast<uint32_t>(pastedParent) != static_cast<uint32_t>(entt::null));
+    const auto pastedChild = manager.FindEntityByUuid(freshChild);
+    REQUIRE(static_cast<uint32_t>(pastedChild) != static_cast<uint32_t>(entt::null));
+    const auto* pastedChildHier = reg.try_get<Hierarchy>(pastedChild);
+    REQUIRE(pastedChildHier);
+    CHECK(pastedChildHier->parent == pastedParent);
+    REQUIRE(S4Snapshot(manager).entities == pre.entities + 2);
+    // Pasted child wires under the pasted parent; wiring a child also adds a
+    // Hierarchy container on the pasted parent (SceneManager.cpp:4113-4119).
+    REQUIRE(S4Snapshot(manager).hierarchy == pre.hierarchy + 2);
+
+    // Undo wiring mirrors SceneEditorUI::PasteCommand: capture + build the
+    // command + RecordApplied, then undo removes both pasted entities.
+    auto snapshot = manager.CaptureSubtreeSnapshot(paste.createdRoots);
+    REQUIRE_FALSE(snapshot.entities.empty());
+    auto cmd = MakePasteSubtreesCommand(std::move(snapshot), paste.createdRoots);
+    REQUIRE(cmd != nullptr);
+    EditorCommandHistory history;
+    history.RecordApplied(std::move(cmd), manager, paste.mutation);
+    REQUIRE(history.CanUndo());
+
+    const auto undoResult = history.Undo(manager);
+    REQUIRE(undoResult.success);
+    REQUIRE(static_cast<uint32_t>(manager.FindEntityByUuid(freshParent))
+            == static_cast<uint32_t>(entt::null));
+    REQUIRE(static_cast<uint32_t>(manager.FindEntityByUuid(freshChild))
+            == static_cast<uint32_t>(entt::null));
+    // Undo restores the structural state; the authoring revision is monotonic
+    // (T26 asserts the same entities-only equality).
+    const auto afterUndo = S4Snapshot(manager);
+    REQUIRE(afterUndo.entities == pre.entities);
+    REQUIRE(afterUndo.uuidIndex == pre.uuidIndex);
+    REQUIRE(afterUndo.hierarchy == pre.hierarchy);
+    REQUIRE(afterUndo.pic == pre.pic);
+    REQUIRE(afterUndo.pmic == pre.pmic);
+    REQUIRE(afterUndo.meshes == pre.meshes);
+    REQUIRE(afterUndo.materials == pre.materials);
+    REQUIRE(afterUndo.textures == pre.textures);
+    REQUIRE(afterUndo.docGen == pre.docGen);
+    REQUIRE(afterUndo.resourceGen == pre.resourceGen);
+
+    // Duplicate-root phase: {parent, parent, child} dedups to {parent} and the
+    // canonical forest is still 2 entities. A fresh clipboard plus a fresh
+    // two-slot script must paste cleanly again.
+    REQUIRE(state.Copy(manager, {parentUuid, parentUuid, childUuid}, err));
+
+    const UUID freshParent2 = ids.CreateV4();
+    const UUID freshChild2 = ids.CreateV4();
+    ScriptedUuidProvider scripted2;
+    scripted2.script = { freshParent2, freshChild2 };
+    manager.SetUuidProvider(&scripted2);
+
+    const auto paste2 = state.PasteWithUuidsForCommand(manager);
+    REQUIRE(paste2.mutation.success);
+    REQUIRE(paste2.createdRoots.size() == 1);
+    REQUIRE(paste2.sourceToDuplicate.size() == 2);
+    CHECK(paste2.sourceToDuplicate[0].second == freshParent2);
+    CHECK(paste2.sourceToDuplicate[1].second == freshChild2);
+    CHECK(scripted2.cursor == 2);
+    REQUIRE(static_cast<uint32_t>(manager.FindEntityByUuid(freshParent2))
+            != static_cast<uint32_t>(entt::null));
+    REQUIRE(static_cast<uint32_t>(manager.FindEntityByUuid(freshChild2))
+            != static_cast<uint32_t>(entt::null));
+    REQUIRE(S4Snapshot(manager).entities == pre.entities + 2);
+
+    (void)reg;
+}

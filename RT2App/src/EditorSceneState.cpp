@@ -1,5 +1,4 @@
 #include "EditorSceneState.h"
-#include "SceneHierarchy.h"
 #include "SceneSerializer.h"
 
 bool EditorSceneState::IsLocked(const rt2::core::UUID& entity) const
@@ -99,20 +98,22 @@ SceneManager::DuplicationResult EditorSceneState::PasteWithUuidsForCommand(
         out.mutation = validation;
         return out;
     }
-    // Count the clipboard document's subtree entities. The clipboard roots live
-    // in the clipboard document, not the live scene, so they cannot be counted
-    // via CountCanonicalSubtreeEntities (which walks the authoring scene).
-    std::size_t count = 0;
-    for (const auto& root : m_ClipboardRoots)
+    // Canonical-count the clipboard document's subtree entities using the SAME
+    // root canonicalization PasteSubtreesWithUuids applies: duplicate roots are
+    // deduplicated and a selected descendant covered by a selected ancestor is
+    // removed before traversal. Counting the raw roots would over-reserve (a
+    // {parent, child} clipboard counts 2 + 1) and the paste then fails on the
+    // manager's canonical-count validation. CountCanonicalSubtreeEntities is
+    // not usable here because it walks the authoring scene, not the clipboard.
+    auto countResult =
+        manager.CountCanonicalDocumentSubtreeEntities(*m_Clipboard, m_ClipboardRoots);
+    if (!countResult.IsOk())
     {
-        const auto rootEntity = m_Clipboard->FindByUuid(root);
-        if (rootEntity == entt::null) continue;
-        std::vector<entt::entity> subtree;
-        SceneHierarchy::CollectSubtreePreOrder(
-            m_Clipboard->ecs.registry, rootEntity, subtree);
-        count += subtree.size();
+        out.mutation = EditorMutationResult::Failure(
+            countResult.error.code, countResult.error.path, countResult.error.detail);
+        return out;
     }
-    auto knownUuids = manager.ReserveKnownUuids(count);
+    auto knownUuids = manager.ReserveKnownUuids(countResult.value);
     return manager.PasteSubtreesWithUuids(
         *m_Clipboard, m_ClipboardRoots, parent, knownUuids);
 }
