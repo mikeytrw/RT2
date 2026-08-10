@@ -6244,6 +6244,25 @@ document is a period record of a superseded state.**
 > before the re-review-3 fixup and is superseded by the 859/859 figures. The
 > 700/700 rows remain the 2026-07-31 period record.
 
+> **Updated 2026-08-10 — Phase 8 W3 S5 closure measurement (supersedes the
+> 859/859 note above).** Full measured run from the repository root after S5
+> landed (`b7742d8` — the overrides query + marker-edit helper API, and
+> `f0333b9` — test strengthened to read the raw registry vector; the only
+> authoring-side changes are `SceneManager.h/.cpp`, `core/Error.h/.cpp`).
+> Both configurations now measure **863 run / 863 passed / 0 failed /
+> 0 skipped; 148,806 assertions** (the +4 cases / +98 assertions vs the
+> 859/859 baseline are the four S5 TEST_CASEs in
+> `RT2Tests/src/Phase8W3OverrideTests.cpp`). Release and Debug each recorded
+> one clean full run with no failure reproduced; the Phase6B
+> file-timestamp-granularity timing test did not flake. Seven S5
+> discrimination passes were each confirmed RED then reverted GREEN (insertion
+> order, dedup guard, schema promotion, overridable-key rejection, removal
+> no-op, query-membership, revision-noop) — see the S4-style verification
+> report at the end of the Phase 8 W3 section. The 859/859 figure is the
+> recorded measurement of the S4 re-review-3 closure before S5 and is
+> superseded by the 863/863 figures. The 700/700 rows remain the 2026-07-31
+> period record.
+
 Run from the repository root — `RT2Tests.exe` resolves some fixtures by
 relative path and both fails and writes stray files if run from elsewhere.
 
@@ -14778,3 +14797,98 @@ tests, 1,466/1,466 assertions per configuration).
 — is still not delivered and is carried to later work; this note closes only
 the re-review 3 P1 overlapping-root reservation defect and its two P2
 record-accuracy gaps.
+
+### Phase 8 W3 S5 — verification report (2026-08-10)
+
+**Scope of this report.** S5 is the W3-D10 work step S5 — "query + mutation
+API: `IsOverridden`, `GetOverrides`, the `PrefabMarkerEdit` payload and the
+shared marker helper" (`:14206-14207`). It delivers the helper layer the S6
+command factories call, without wiring any setter. The note immediately above
+("S5/S6 remain") predates this work and is superseded for S5 alone; S6 (wiring
+marking into every entry point, `:14208-14210`) remains a separate later step.
+
+**Implementation.** Two commits on `phase8-w3-overrides`:
+
+| Commit | Change |
+|---|---|
+| `b7742d8` | S5 API: `PrefabMarkerEdit` / `PrefabMarkerApplyResult` structs, `SceneManager::IsOverridden` / `GetOverrides` / `ApplyPrefabMarkerEdits`, and new `Error::NotPrefabMember`. Authoring-side files: `RT2App/src/SceneManager.h`, `SceneManager.cpp`, `core/Error.h`, `core/Error.cpp`. |
+| `f0333b9` | Test strengthened to read the **raw registry vector** (see discrimination note 2 below). |
+
+**Design points (as implemented, per D3.10 / D6).**
+
+- The payload is an explicit membership delta (`beforePresent` / `afterPresent`
+  per `(member, key)`), because a material edit can re-mark an already-present
+  key and a keyAdded-only list cannot undo correctly (`index.md:363-380`).
+- `ApplyPrefabMarkerEdits` is the shared helper every setter command and the
+  composite `SetCameraPoseState` path will call (`index.md:394-397`). It is
+  **not fail-atomic by design**: a bad edit (absent member, non-member entity,
+  non-overridable key) is rejected into the result's `rejected` vector while
+  valid edits still apply, and the S6 command layer owns transactional
+  rollback. This is the loud-rejection guarantee the table header's philosophy
+  demands (an unknown/non-overridable key must never be treated as a real
+  divergence).
+- Canonical-order contract: `GetOverrides` returns the wire-sorted,
+  de-duplicated set, and the helper maintains that invariant in the **raw**
+  registry vector because the writer sorts but does not de-duplicate
+  (`SceneSerializer.cpp:853-856`) — a duplicate in the raw vector would
+  survive into the saved file.
+- D6 promotion: the helper calls `SceneSerializer::PromoteSchemaVersion`
+  (`SceneSerializer.cpp:1512-1519`) once per batch only when a key actually
+  appears, so an untouched older-schema document keeps writing v5 recovery
+  snapshots exactly as today (pinned by Phase 7 W5 tests) whereas a marked one
+  writes v6.
+
+**Tests (all in `RT2Tests/src/Phase8W3OverrideTests.cpp`, section at `:3851-4110`).**
+
+| Test | Pins |
+|---|---|
+| S5-Q | D3.9 — a fresh real instance is empty until marked; non-member and absent entities answer false/empty. |
+| S5-A | canonical raw order + de-dup of re-marks + D6 promotion on first add + save→load→save byte-identity. |
+| S5-B | `afterPresent=false` unmarks; undo (inverse delta) restores membership; removal of an absent key mutates nothing (no revision bump, no schema churn). |
+| S5-C | loud rejection: absent member, non-member entity and non-overridable key all land in `rejected` while the valid edit applies. |
+
+**Seven discrimination proofs** (each: inject fault, confirm RED at the named
+assertion, `git checkout -- RT2App/src/SceneManager.cpp` back to the commit,
+confirm GREEN).
+
+| Fault | RED assertion |
+|---|---|
+| push_back instead of sorted lower_bound insert | raw-vector `is_sorted` / element-equality checks (`Phase8W3OverrideTests.cpp:3960-3964`) |
+| drop the alreadyPresent dedup guard (re-mark duplicates) | raw size 4 != 3 (`:3987`) |
+| remove the `PromoteSchemaVersion` call | schemaVersion 4 != 6 (`:3976`) |
+| disable the `overridable()` rejection | `r.applied == 1` fails (2 vs 1) (`:4098`) |
+| make removal a no-op (erase nothing) | `overrides.size() == 1` fails (2 vs 1) (`:4048`) |
+| `IsOverridden` answers true for any member | S5-Q `REQUIRE_FALSE(...)` fails (`:3900`) |
+| bump the revision even when removal was a no-op | `AuthoringRevision() == revisionBefore` fails (8 vs 7) (`:4069`) |
+
+No non-discriminating fault was found among the seven (the first draft of S5-A
+read through `GetOverrides`, which normalizes on read, and could NOT see an
+insertion-order fault — that is why the commit `f0333b9` rewrote the
+assertions to read the raw component; the push_back RED proof above exercises
+that strengthened form).
+
+**Test count reconciliation.** The suite measured on this branch is **863 test
+cases / 148,806 assertions in both Release and Debug**. Before S5 the suite
+measured 859 / 148,708; S5 adds 4 test cases and 98 assertions. See the
+"Test baseline" section above for the dated 863/863 entry which supersedes the
+859/859 figure.
+
+**Build / gate outcomes (2026-08-10).**
+
+- **Release x64** full solution — built clean; `RT2Tests` on this branch,
+  `RT2SliceRunner` and `RT2App` untouched by S5 and left as-is.
+- **Debug x64** `RT2Tests` — built clean; full run green (863/863, 148,806
+  assertions).
+- **`RT2Tests.exe` from repo root, Release** — `863 run / 863 passed / 0
+  failed / 0 skipped`, 148,806 assertions.
+- **`RT2Tests.exe` from repo root, Debug** — `863 run / 863 passed / 0
+  failed / 0 skipped`, 148,806 assertions. No Debug-only failure reproduced
+  (the Phase 7 OBJ fixture failures were fixed on 2026-07-25, per the
+  superseded note above).
+
+**S5 does not deliver (carried to later steps).** Automatic marking in the
+concrete setters / direct transform mutators / `SetCameraPoseState` / the
+material fan-out is S6 (`:14208-14210`), as is undo/redo wiring of the marker
+vectors and command undo-state schemaVersion transport
+(`SceneSerializer.h:145-147`). Propagation (W4), revert/apply (W5), and UI
+(W6) remain out of phase.
