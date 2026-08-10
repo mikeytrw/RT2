@@ -3,6 +3,9 @@
 #include "PersistedComponents.h"
 #include "PrefabComponentKey.h"
 #include "PrefabSerializer.h"
+#include "EditorCommandHistory.h"
+#include "EditorSceneState.h"
+#include "EditorStructuralCommands.h"
 #include "SceneManager.h"
 #include "SceneHierarchy.h"
 #include "SceneSerializer.h"
@@ -2543,6 +2546,8 @@ struct S4SceneSnapshot
     std::size_t materials = 0;
     std::size_t textures = 0;
     uint64_t revision = 0;
+    uint64_t docGen = 0;
+    uint64_t resourceGen = 0;
 
     friend bool operator==(const S4SceneSnapshot& a, const S4SceneSnapshot& b)
     {
@@ -2550,7 +2555,8 @@ struct S4SceneSnapshot
                a.hierarchy == b.hierarchy && a.pic == b.pic &&
                a.pmic == b.pmic && a.meshes == b.meshes &&
                a.materials == b.materials && a.textures == b.textures &&
-               a.revision == b.revision;
+               a.revision == b.revision && a.docGen == b.docGen &&
+               a.resourceGen == b.resourceGen;
     }
 };
 
@@ -2567,6 +2573,8 @@ S4SceneSnapshot S4Snapshot(SceneManager& manager)
     s.materials = manager.GetECS().materials.size();
     s.textures = manager.GetECS().textures.size();
     s.revision = manager.AuthoringRevision();
+    s.docGen = manager.DocumentGeneration();
+    s.resourceGen = manager.ResourceGeneration();
     return s;
 }
 
@@ -3342,4 +3350,327 @@ TEST_CASE("Phase 8 W3: ordinary paste entity-UUID reservation exhaustion leaves 
     CHECK(clipRootAfter->instanceId == srcAId);
 
     std::filesystem::remove_all(dir);
+}
+
+// ============================================================================
+// Phase 8 W3, S4 FIXUP — the shared clipboard-generation paste guard.
+//
+// SceneEditorUI::PasteCommand used to bypass EditorSceneState's clipboard
+// guards entirely: it read the raw clipboard document + roots and called
+// SceneManager::PasteSubtreesWithUuids directly. That path only range-checks
+// resource indices (SceneManager.cpp:3985-4005), so after CompactMeshRegistry
+// renames an in-range index the paste silently binds the wrong material. The
+// fix: one shared EditorSceneState validator used by BOTH paste paths, plus a
+// CPU-linkable PasteWithUuidsForCommand that SceneEditorUI::PasteCommand now
+// routes through.
+//
+// Each stale preparation below must return ClipboardStale with ZERO provider
+// UUID draws (an empty script hard-fails on any draw, so zero draws is
+// enforced), no history entry, and an untouched destination.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// Test T23 — the discriminating P1 case: materials A/B/C, copy the object on
+// B (index 1), delete it, and compaction remaps C onto index 1. Index 1 is
+// now IN RANGE but names C. The shared guard must reject via ClipboardStale
+// (resource generation changed) with zero draws and zero mutation. A direct,
+// unguarded manager paste then demonstrates the hole the guard closes: it
+// succeeds and silently rebinds the pasted object to C.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: shared paste guard rejects an in-range stale material index after compaction (A/B/C)")
+{
+    SceneManager manager;
+    DeterministicUuidProvider ids;
+    manager.SetUuidProvider(&ids);
+    auto& reg = manager.GetECS().registry;
+
+    SceneMaterial matA;
+    matA.sourceKey = "A";
+    const int mA = manager.AddMaterial(matA);
+    SceneMaterial matB;
+    matB.sourceKey = "B";
+    const int mB = manager.AddMaterial(matB);
+    SceneMaterial matC;
+    matC.sourceKey = "C";
+    const int mC = manager.AddMaterial(matC);
+    REQUIRE(mA == 0);
+    REQUIRE(mB == 1);
+    REQUIRE(mC == 2);
+
+    // Use CreatePrimitiveEntity (not AddObjectWithGeometry): CloneInMemory /
+    // EditorSceneState::Copy needs a PrimitiveComponent or importedSource.
+    const auto makeCube = [&](const char* name, int matIdx) {
+        const UUID uuid = ids.CreateV4();
+        EditableTRS trs;
+        const auto r = manager.CreatePrimitiveEntity(
+            uuid, name, PrimitiveComponent::Cube, 1.0f, trs, matIdx);
+        REQUIRE(r.success);
+        return uuid;
+    };
+    const UUID eaUuid = makeCube("A", mA);
+    const UUID ebUuid = makeCube("B", mB);
+    const UUID ecUuid = makeCube("C", mC);
+
+    // Before the delete, index 1 is B.
+    REQUIRE(manager.GetECS().materials[1].sourceKey == "B");
+
+    EditorSceneState state;
+    rt2::core::Error err;
+    INFO(err.Format());
+    REQUIRE(state.Copy(manager, {ebUuid}, err));
+
+    // Delete B's object -> compaction drops material B, C remaps to index 1,
+    // and index 1 is now IN RANGE but names C.
+    const auto removeResult = manager.RemoveSubtrees({ebUuid});
+    REQUIRE(removeResult.success);
+    REQUIRE(manager.GetECS().materials.size() == 2);
+    REQUIRE(manager.GetECS().materials[0].sourceKey == "A");
+    REQUIRE(manager.GetECS().materials[1].sourceKey == "C");
+
+    // Hostile provider with an EMPTY script: any UUID draw is an instant hard
+    // failure (REQUIRE inside CreateV4), so "zero draws" is enforced.
+    ScriptedUuidProvider hostile;
+    manager.SetUuidProvider(&hostile);
+
+    const auto pre = S4Snapshot(manager);
+    const uint64_t resourceGenBefore = manager.ResourceGeneration();
+
+    const auto paste = state.PasteWithUuidsForCommand(manager);
+    REQUIRE_FALSE(paste.mutation.success);
+    CHECK(paste.mutation.error.code == rt2::core::Error::ClipboardStale);
+    CHECK(paste.createdRoots.empty());
+    CHECK(hostile.cursor == 0);                 // zero UUID draws
+    REQUIRE(S4Snapshot(manager) == pre);        // zero destination mutation
+    CHECK(manager.ResourceGeneration() == resourceGenBefore);
+
+    // The hole the shared guard closes: the manager's own range check cannot
+    // see an in-range stale index. A direct paste of the same clipboard binds
+    // material index 1 — which now names C, not B.
+    manager.SetUuidProvider(&ids);
+    std::size_t clipCount = 0;
+    {
+        const auto* clip = state.ClipboardDocument();
+        REQUIRE(clip);
+        const auto clipRoot = clip->FindByUuid(ebUuid);
+        REQUIRE(static_cast<uint32_t>(clipRoot) != static_cast<uint32_t>(entt::null));
+        std::vector<entt::entity> subtree;
+        SceneHierarchy::CollectSubtreePreOrder(clip->ecs.registry, clipRoot, subtree);
+        clipCount = subtree.size();
+    }
+    REQUIRE(clipCount == 1);
+    const auto direct = manager.PasteSubtreesWithUuids(
+        *state.ClipboardDocument(), state.ClipboardRoots(), std::nullopt,
+        manager.ReserveKnownUuids(clipCount));
+    REQUIRE(direct.mutation.success);           // range check passes...
+    REQUIRE(direct.createdRoots.size() == 1);   // ...so the paste succeeds
+    const auto pasted = manager.FindEntityByUuid(direct.createdRoots.front());
+    REQUIRE(static_cast<uint32_t>(pasted) != static_cast<uint32_t>(entt::null));
+    const auto* pastedRef = reg.try_get<MeshRef>(pasted);
+    REQUIRE(pastedRef);
+    REQUIRE(pastedRef->materialIndex >= 0);
+    REQUIRE(static_cast<size_t>(pastedRef->materialIndex) < manager.GetECS().materials.size());
+    CHECK(manager.GetECS().materials[pastedRef->materialIndex].sourceKey == "C"); // silent rebind
+}
+
+// ---------------------------------------------------------------------------
+// Test T24 — a texture-only resource change (meshes and materials untouched,
+// every material texture index still in range) must ALSO invalidate the
+// clipboard. The manager's range checks cannot see it: they validate material
+// INDICES, never the clipboard material's texture references. The shared
+// generation guard is the only protection.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: texture-only resource generation change invalidates the clipboard paste")
+{
+    SceneManager manager;
+    DeterministicUuidProvider ids;
+    manager.SetUuidProvider(&ids);
+
+    auto& scene = manager.GetECS();
+    scene.textures.resize(4);
+    for (size_t i = 0; i < scene.textures.size(); ++i)
+        scene.textures[i].ref.path = "texture" + std::to_string(i);
+
+    // All four textures referenced so the pruned texture is only the added one.
+    SceneMaterial matA;
+    matA.baseColorTextureIndex = 0;
+    matA.normalTextureIndex = 1;
+    const int mA = manager.AddMaterial(matA);
+    SceneMaterial matB;
+    matB.baseColorTextureIndex = 2;
+    matB.metallicRoughnessTextureIndex = 3;
+    const int mB = manager.AddMaterial(matB);
+    REQUIRE(mA == 0);
+    REQUIRE(mB == 1);
+
+    // Use CreatePrimitiveEntity (not AddObjectWithGeometry): CloneInMemory /
+    // EditorSceneState::Copy needs a PrimitiveComponent or importedSource.
+    const auto makeCube = [&](const char* name, int matIdx) {
+        const UUID uuid = ids.CreateV4();
+        EditableTRS trs;
+        const auto r = manager.CreatePrimitiveEntity(
+            uuid, name, PrimitiveComponent::Cube, 1.0f, trs, matIdx);
+        REQUIRE(r.success);
+        return uuid;
+    };
+    const UUID eaUuid = makeCube("A", mA);
+    const UUID ebUuid = makeCube("B", mB);
+
+    EditorSceneState state;
+    rt2::core::Error err;
+    INFO(err.Format());
+    REQUIRE(state.Copy(manager, {ebUuid}, err));
+
+    const uint64_t resourceGenBefore = manager.ResourceGeneration();
+
+    // Texture-only change: add an unreferenced texture, then compact. Meshes
+    // and materials are untouched (indices unrebased); only the texture table
+    // prunes and the resource generation bumps.
+    scene.textures.push_back(SceneTexture{});
+    scene.textures.back().ref.path = "texture-unreferenced";
+    REQUIRE(manager.CompactMeshRegistry());
+    REQUIRE(manager.ResourceGeneration() == resourceGenBefore + 1);
+    REQUIRE(manager.GetECS().materials.size() == 2);
+    REQUIRE(manager.GetECS().materials[0].baseColorTextureIndex == 0);
+    REQUIRE(manager.GetECS().materials[1].baseColorTextureIndex == 2);
+    REQUIRE(manager.GetECS().textures.size() == 4);
+
+    ScriptedUuidProvider hostile;
+    manager.SetUuidProvider(&hostile);
+
+    // Zero-mutation baseline is captured AFTER the resource change and BEFORE
+    // the paste: the paste must leave the (already-changed) scene untouched.
+    const auto pre = S4Snapshot(manager);
+    const auto paste = state.PasteWithUuidsForCommand(manager);
+    REQUIRE_FALSE(paste.mutation.success);
+    CHECK(paste.mutation.error.code == rt2::core::Error::ClipboardStale);
+    CHECK(paste.createdRoots.empty());
+    CHECK(hostile.cursor == 0);                 // zero UUID draws
+    REQUIRE(S4Snapshot(manager) == pre);        // zero destination mutation
+}
+
+// ---------------------------------------------------------------------------
+// Test T25 — a document generation change (the whole authoring document is
+// replaced) invalidates the clipboard via the document-generation branch of
+// the shared guard.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: document generation change invalidates the clipboard paste")
+{
+    SceneManager manager;
+    DeterministicUuidProvider ids;
+    manager.SetUuidProvider(&ids);
+    auto& reg = manager.GetECS().registry;
+
+    SceneMaterial defaultMat;
+    const int m0 = manager.AddMaterial(defaultMat);
+    REQUIRE(m0 == 0);
+    SceneMaterial matB;
+    matB.sourceKey = "B";
+    const int mB = manager.AddMaterial(matB); // index 1
+    REQUIRE(mB == 1);
+
+    // Use CreatePrimitiveEntity (not AddObjectWithGeometry): CloneInMemory /
+    // EditorSceneState::Copy needs a PrimitiveComponent or importedSource.
+    const UUID ebUuid = ids.CreateV4();
+    EditableTRS trs;
+    const auto createResult = manager.CreatePrimitiveEntity(
+        ebUuid, "B", PrimitiveComponent::Cube, 1.0f, trs, mB);
+    REQUIRE(createResult.success);
+    (void)reg;
+
+    EditorSceneState state;
+    rt2::core::Error err;
+    INFO(err.Format());
+    REQUIRE(state.Copy(manager, {ebUuid}, err));
+
+    // Replace the document (Clear() bumps DocumentGeneration AND
+    // ResourceGeneration); the guard rejects on the document branch first.
+    manager.Clear();
+
+    ScriptedUuidProvider hostile;
+    manager.SetUuidProvider(&hostile);
+
+    const auto pre = S4Snapshot(manager);
+    const auto paste = state.PasteWithUuidsForCommand(manager);
+    REQUIRE_FALSE(paste.mutation.success);
+    CHECK(paste.mutation.error.code == rt2::core::Error::ClipboardStale);
+    CHECK(paste.createdRoots.empty());
+    CHECK(hostile.cursor == 0);                 // zero UUID draws
+    REQUIRE(S4Snapshot(manager) == pre);        // zero destination mutation
+}
+
+// ---------------------------------------------------------------------------
+// Test T26 — the valid-path control: a fresh clipboard pastes via the SAME
+// state-level method the UI calls. createdRoots and sourceToDuplicate come
+// back for undo, exactly one UUID is reserved, and the result records into an
+// EditorCommandHistory and undoes.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: valid clipboard paste reserves exactly, creates roots, and records undo")
+{
+    SceneManager manager;
+    DeterministicUuidProvider ids;
+    manager.SetUuidProvider(&ids);
+    auto& reg = manager.GetECS().registry;
+
+    SceneMaterial defaultMat;
+    const int m0 = manager.AddMaterial(defaultMat);
+    REQUIRE(m0 == 0);
+    SceneMaterial matB;
+    matB.sourceKey = "B";
+    const int mB = manager.AddMaterial(matB);
+    REQUIRE(mB == 1);
+
+    // Use CreatePrimitiveEntity (not AddObjectWithGeometry): CloneInMemory /
+    // EditorSceneState::Copy needs a PrimitiveComponent or importedSource.
+    const UUID ebUuid = ids.CreateV4();
+    EditableTRS trs;
+    const auto createResult = manager.CreatePrimitiveEntity(
+        ebUuid, "B", PrimitiveComponent::Cube, 1.0f, trs, mB);
+    REQUIRE(createResult.success);
+    (void)reg;
+
+    EditorSceneState state;
+    rt2::core::Error err;
+    INFO(err.Format());
+    REQUIRE(state.Copy(manager, {ebUuid}, err));
+
+    const auto pre = S4Snapshot(manager);
+
+    // Scripted provider serving exactly one fresh UUID (the clipboard subtree
+    // is one entity). The guarded path must reserve exactly that one.
+    const UUID freshUuid = ids.CreateV4();
+    ScriptedUuidProvider scripted;
+    scripted.script = { freshUuid };
+    manager.SetUuidProvider(&scripted);
+
+    const auto paste = state.PasteWithUuidsForCommand(manager);
+    REQUIRE(paste.mutation.success);
+    CHECK(paste.mutation.error.IsOk());
+    REQUIRE(paste.createdRoots.size() == 1);
+    REQUIRE(paste.sourceToDuplicate.size() == 1);
+    CHECK(paste.sourceToDuplicate[0].first == ebUuid);   // clipboard-doc source
+    CHECK(paste.sourceToDuplicate[0].second == freshUuid);
+    CHECK(scripted.cursor == 1);                // exact reservation: one entity
+    CHECK(scripted.log.size() == 1);
+    CHECK(scripted.log[0] == freshUuid);
+
+    // The pasted entity really exists with the reserved UUID.
+    const auto pasted = manager.FindEntityByUuid(freshUuid);
+    REQUIRE(static_cast<uint32_t>(pasted) != static_cast<uint32_t>(entt::null));
+    REQUIRE(S4Snapshot(manager).entities == pre.entities + 1);
+
+    // Undo wiring mirrors SceneEditorUI::PasteCommand: capture + build the
+    // command + RecordApplied, then undo removes the pasted entity.
+    auto snapshot = manager.CaptureSubtreeSnapshot(paste.createdRoots);
+    REQUIRE_FALSE(snapshot.entities.empty());
+    auto cmd = MakePasteSubtreesCommand(std::move(snapshot), paste.createdRoots);
+    REQUIRE(cmd != nullptr);
+    EditorCommandHistory history;
+    history.RecordApplied(std::move(cmd), manager, paste.mutation);
+    REQUIRE(history.CanUndo());
+
+    const auto undoResult = history.Undo(manager);
+    REQUIRE(undoResult.success);
+    REQUIRE(static_cast<uint32_t>(manager.FindEntityByUuid(freshUuid))
+            == static_cast<uint32_t>(entt::null));
+    REQUIRE(S4Snapshot(manager).entities == pre.entities);
 }

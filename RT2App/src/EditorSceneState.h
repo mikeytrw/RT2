@@ -35,6 +35,25 @@ public:
         const std::optional<rt2::core::UUID>& parent = std::nullopt) const;
     bool HasClipboard() const { return m_Clipboard != nullptr && !m_ClipboardRoots.empty(); }
 
+    // Shared clipboard-generation validation for BOTH paste paths. An empty
+    // clipboard or a document/resource generation mismatch returns a
+    // ClipboardStale failure; otherwise success. No manager mutation, no UUID
+    // reservation. Ordinary Paste and PasteWithUuidsForCommand must both route
+    // through this guard so the undoable editor path cannot silently rebind an
+    // in-range but stale resource index after CompactMeshRegistry.
+    EditorMutationResult ValidateClipboardPaste(const SceneManager& manager) const;
+
+    // UUID-aware paste preparation used by SceneEditorUI::PasteCommand.
+    // Runs ValidateClipboardPaste FIRST, canonical-counts the clipboard
+    // document's subtree entities, reserves destination UUIDs only after
+    // validation, then calls SceneManager::PasteSubtreesWithUuids. Returns the
+    // full DuplicationResult the host needs to build the undo snapshot and
+    // command. On a validation failure the mutation is the ClipboardStale
+    // result, with zero UUIDs consumed and nothing mutated.
+    SceneManager::DuplicationResult PasteWithUuidsForCommand(
+        SceneManager& manager,
+        const std::optional<rt2::core::UUID>& parent = std::nullopt) const;
+
     // Phase 3B1: read-only access to the clipboard document and roots for
     // command construction (PasteSubtreesWithUuids needs the clipboard
     // document). Returns nullptr when the clipboard is empty.

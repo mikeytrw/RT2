@@ -1,4 +1,5 @@
 #include "EditorSceneState.h"
+#include "SceneHierarchy.h"
 #include "SceneSerializer.h"
 
 bool EditorSceneState::IsLocked(const rt2::core::UUID& entity) const
@@ -59,9 +60,8 @@ bool EditorSceneState::Copy(const SceneManager& manager,
     return true;
 }
 
-EditorMutationResult EditorSceneState::Paste(
-    SceneManager& manager,
-    const std::optional<rt2::core::UUID>& parent) const
+EditorMutationResult EditorSceneState::ValidateClipboardPaste(
+    const SceneManager& manager) const
 {
     if (!HasClipboard())
         return EditorMutationResult::Failure(rt2::core::Error::ClipboardStale,
@@ -72,7 +72,49 @@ EditorMutationResult EditorSceneState::Paste(
     if (manager.ResourceGeneration() != m_ClipboardResourceGeneration)
         return EditorMutationResult::Failure(rt2::core::Error::ClipboardStale,
             {}, "scene resources changed after copy; copy the selection again");
+    return {};
+}
+
+EditorMutationResult EditorSceneState::Paste(
+    SceneManager& manager,
+    const std::optional<rt2::core::UUID>& parent) const
+{
+    auto validation = ValidateClipboardPaste(manager);
+    if (!validation.success) return validation;
     return manager.PasteSubtreesFrom(*m_Clipboard, m_ClipboardRoots, parent);
+}
+
+SceneManager::DuplicationResult EditorSceneState::PasteWithUuidsForCommand(
+    SceneManager& manager,
+    const std::optional<rt2::core::UUID>& parent) const
+{
+    SceneManager::DuplicationResult out;
+    // Shared guard BEFORE any counting, reservation, or mutation. The manager's
+    // own resource checks inside PasteSubtreesWithUuids are range-only and
+    // cannot see an in-range-but-stale index after compaction; the generation
+    // check here is the only defense.
+    auto validation = ValidateClipboardPaste(manager);
+    if (!validation.success)
+    {
+        out.mutation = validation;
+        return out;
+    }
+    // Count the clipboard document's subtree entities. The clipboard roots live
+    // in the clipboard document, not the live scene, so they cannot be counted
+    // via CountCanonicalSubtreeEntities (which walks the authoring scene).
+    std::size_t count = 0;
+    for (const auto& root : m_ClipboardRoots)
+    {
+        const auto rootEntity = m_Clipboard->FindByUuid(root);
+        if (rootEntity == entt::null) continue;
+        std::vector<entt::entity> subtree;
+        SceneHierarchy::CollectSubtreePreOrder(
+            m_Clipboard->ecs.registry, rootEntity, subtree);
+        count += subtree.size();
+    }
+    auto knownUuids = manager.ReserveKnownUuids(count);
+    return manager.PasteSubtreesWithUuids(
+        *m_Clipboard, m_ClipboardRoots, parent, knownUuids);
 }
 
 bool EditorSceneState::CaptureCameraBookmark(size_t slot,
