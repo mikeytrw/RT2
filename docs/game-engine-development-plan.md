@@ -14989,3 +14989,11 @@ written:
 These anchors document the repaired implementation rather than the earlier
 period contract. **S5 is delivered; W3 remains incomplete. S6 automatic
 entry-point wiring and S7 final W3 verification remain.**
+
+### Phase 8 W3 S5 — final citation correction (2026-08-10)
+
+For citation precision, composite Commit's script revalidation is additionally
+grounded at `RT2App/src/SceneManager.cpp:6575-6585`, and the material-slot
+directional source/target selection is grounded across
+`RT2App/src/SceneManager.cpp:6284-6319` (including the After/Before payload
+selection before fan-out staging).
