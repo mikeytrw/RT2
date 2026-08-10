@@ -710,7 +710,12 @@ struct PrefabMarkerPlan
 	// writes every staged member's canonical target vector, always sets the
 	// document schema to the plan's targetSchemaVersion, and calls
 	// NotifyAuthoringChanged() at most once (only when anyStateChange — a
-	// genuine no-op notifies zero times).
+	// genuine no-op notifies zero times). anyStateChange is also true when a
+	// staged member's stored vector is malformed-but-canonicalizable (unsorted,
+	// duplicated, or carrying a forged classification bit): commit writes the
+	// canonical target into the raw registry vector even when the membership
+	// edit alone would be a no-op, normalizing the stored state rather than
+	// silently leaving it malformed.
 	rt2::core::Result<bool> IsOverridden(
 		const rt2::core::UUID& member,
 		const PrefabComponentKey& key) const;

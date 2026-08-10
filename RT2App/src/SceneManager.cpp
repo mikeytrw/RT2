@@ -5445,6 +5445,7 @@ rt2::core::Result<PrefabMarkerPlan> SceneManager::PreparePrefabMarkerEdits(
 	{
 		rt2::core::UUID member;
 		entt::entity entity = entt::null;
+		std::vector<PrefabComponentKey> raw;       // raw live vector (unsorted/dup/forged bit ok)
 		std::vector<PrefabComponentKey> live;      // canonical pre-batch set
 		std::vector<PrefabComponentKey> pendingKeys;
 		std::vector<bool>                 pendingPresent; // target presence per key
@@ -5494,7 +5495,7 @@ rt2::core::Result<PrefabMarkerPlan> SceneManager::PreparePrefabMarkerEdits(
 					"malformed stored override vector: " + vecErr.detail);
 			mi = staged.size();
 			memberIndex.emplace(e, mi);
-			staged.push_back(Staged{ edit.member, e, std::move(live), {}, {} });
+			staged.push_back(Staged{ edit.member, e, pm->overrides, std::move(live), {}, {} });
 		}
 		else
 			mi = it->second;
@@ -5566,6 +5567,13 @@ rt2::core::Result<PrefabMarkerPlan> SceneManager::PreparePrefabMarkerEdits(
 		transition.source = member.live;
 		transition.target = std::move(after);
 		if (transition.source != transition.target)
+			plan.anyStateChange = true;
+		// Malformed-but-canonicalizable stored vector: the raw registry vector
+		// is unsorted, duplicated, or carries a forged classification bit. The
+		// membership edit may be a genuine no-op, but the stored vector itself
+		// must still be normalized into the canonical target on commit — so this
+		// is a real state change, never silently left malformed.
+		if (member.raw != member.live)
 			plan.anyStateChange = true;
 		plan.members.push_back(std::move(transition));
 	}

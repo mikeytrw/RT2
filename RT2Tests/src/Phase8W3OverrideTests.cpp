@@ -4198,3 +4198,401 @@ TEST_CASE("Phase 8 W3: override queries reject unknown and excluded keys as stru
         REQUIRE(q.error.detail.find(wire) != std::string::npos);
     }
 }
+
+// ===========================================================================
+// Checkpoint A - canonical keys and atomic batch discrimination
+// ===========================================================================
+// The helper guarantees every decision is made against the frozen table and
+// as a WHOLE batch. The cases below pin each guarantee's discriminating
+// assertion. Rule: every canonical wire keeps its table-derived overridable
+// bit regardless of what the caller supplied; a batch fails on the first bad
+// edit and neither its valid prefix nor any silent worsening of live state
+// survives; duplicate edits never produce a duplicated raw vector; and a
+// stored vector that is malformed but canonicalizable is normalized into the
+// committed raw registry vector rather than silently left malformed.
+
+// ---------------------------------------------------------------------------
+// Test S5-D - key canonicalization in the mutation API. An edit whose wire is
+// not in the frozen table, or whose wire canonicalizes to one of the five
+// excluded components, fails the WHOLE batch with a structured InvalidArgument
+// whose detail names the wire - regardless of the caller's classification bit.
+// A valid wire whose bit was forged false must canonicalize (NOT be rejected):
+// the committed raw vector carries the table-derived entry.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) rejection fault: drop the !canonical->overridable() guard in
+//   PreparePrefabMarkerEdits (SceneManager.cpp:5478-5482) - the five excluded
+//   wires stage silently and REQUIRE_FALSE(plan.IsOk()) below goes RED.
+//   b) structured-code fault: change the key-rejection Error to InvalidEntity
+//   (SceneManager.cpp:5473-5482) - REQUIRE(plan.error.code == InvalidArgument)
+//   below goes RED (excluded and unknown wires collapse into the member code).
+//   c) canonicalization fault: store edit.key instead of *canonical
+//   (SceneManager.cpp:5537-5538) - the forged-transform CHECK below goes RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper canonicalizes keys and rejects forged classification loudly")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_keys");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    const auto schemaBefore = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const bool dirtyBefore = f.manager.IsDirty();
+    const auto revisionBefore = f.manager.AuthoringRevision();
+
+    // Every excluded wire is rejected even with the overridable bit forged to
+    // true: the bit is never trusted.
+    for (const char* wire : { "meshRef", "primitive", "importedSource",
+                              "prefabInstance", "prefabMember" })
+    {
+        auto plan = f.manager.PreparePrefabMarkerEdits({
+            { rootUuid, PrefabComponentKey(std::string_view(wire), true), false, true },
+        }, PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+        REQUIRE_FALSE(plan.IsOk());
+        REQUIRE(plan.error.code == rt2::core::Error::InvalidArgument);
+        REQUIRE(plan.error.detail.find(wire) != std::string::npos);
+    }
+
+    // Unknown wire (not in the frozen table) is rejected identically.
+    auto unknown = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, PrefabComponentKey(std::string_view("noSuchWire"), true), false, true },
+    }, PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+    REQUIRE_FALSE(unknown.IsOk());
+    REQUIRE(unknown.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(unknown.error.detail.find("noSuchWire") != std::string::npos);
+
+    // All six rejections above are zero-mutation.
+    auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides.IsOk());
+    REQUIRE(overrides.value.empty());
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == schemaBefore);
+    REQUIRE(f.manager.IsDirty() == dirtyBefore);
+    REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
+
+    // A valid wire with a forged-false bit canonicalizes: the committed raw
+    // vector holds the table-derived transform entry, not a falsely
+    // non-overridable copy of the caller's key.
+    auto forged = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, PrefabComponentKey(std::string_view("transform"), false), false, true },
+    }, PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+    REQUIRE(forged.IsOk());
+    REQUIRE(forged.value.anyStateChange);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(forged.value)).anyStateChange);
+    const auto* pm = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(pm);
+    REQUIRE(pm->overrides.size() == 1);
+    CHECK(pm->overrides[0] == S2Key("transform")); // table-derived bit (true)
+}
+// ---------------------------------------------------------------------------
+// Test S5-E - a batch mixing a valid edit with a bad one fails atomically in
+// EITHER input order with an identical structured error, and the scene's
+// markers, schema, dirty flag, and authoring revision stay byte-identical to
+// the pre-batch snapshot: the valid prefix never lands.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) partial-land fault: remove the Prepare-fail return for the bad edit so
+//   the staged valid prefix is committed - the overrides/revision asserts
+//   below go RED (transform would have landed, schema would have bumped).
+//   b) order-dependence fault: keep the bad-key rejection only when the key
+//   appears before a member is staged (reject at SceneManager.cpp:5473 but
+//   tolerate a bad key reaching an already-staged member) - REQUIRE_FALSE
+//   (planA.IsOk()) for the valid-first order goes RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper fails a mixed valid+invalid batch atomically in either order")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_atomic");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    const auto schemaBefore = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const bool dirtyBefore = f.manager.IsDirty();
+    const auto revisionBefore = f.manager.AuthoringRevision();
+
+    const PrefabMarkerEdit valid = { rootUuid, S2Key("transform"), false, true };
+    const PrefabMarkerEdit invalid = { rootUuid, S2Key("meshRef"), false, true }; // excluded
+
+    auto planA = f.manager.PreparePrefabMarkerEdits({ valid, invalid },
+        PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+    REQUIRE_FALSE(planA.IsOk());
+    REQUIRE(planA.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(planA.error.detail.find("meshRef") != std::string::npos);
+
+    auto planB = f.manager.PreparePrefabMarkerEdits({ invalid, valid },
+        PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+    REQUIRE_FALSE(planB.IsOk());
+    REQUIRE(planB.error.code == planA.error.code);
+    REQUIRE(planB.error.path == planA.error.path);
+    REQUIRE(planB.error.detail == planA.error.detail);
+
+    // Byte-identical zero change after both attempts: no marker landed, the
+    // schema was not promoted, dirty/revision are untouched.
+    auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides.IsOk());
+    REQUIRE(overrides.value.empty());
+    auto q1 = f.manager.IsOverridden(rootUuid, S2Key("transform"));
+    REQUIRE(q1.IsOk());
+    REQUIRE_FALSE(q1.value);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == schemaBefore);
+    REQUIRE(f.manager.IsDirty() == dirtyBefore);
+    REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-F - the directional source presence is validated against the live
+// pre-batch snapshot. For the After direction the SOURCE side is
+// beforePresent; for the Before direction it is afterPresent. A payload whose
+// source side contradicts live membership (claiming present when absent, or
+// absent when present) fails loudly with zero change - a stale or hand-forged
+// boolean is never silently ignored.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) direction fault: use edit.afterPresent (the target side) as the source
+//   for After at SceneManager.cpp:5510 - the After-absent rejection below goes
+//   RED (the stale add is treated as a valid add).
+//   b) silent-ignore fault: remove the expectedSource mismatch return
+//   (SceneManager.cpp:5511-5518) and feed targetPresent straight through -
+//   both the absent-claim and the present-claim rejections below go RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper validates the directional source presence with zero change")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_dir");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    const auto schemaBefore = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const bool dirtyBefore = f.manager.IsDirty();
+    const auto revisionBefore = f.manager.AuthoringRevision();
+    const auto transform = S2Key("transform");
+    const auto name = S2Key("name");
+
+    // ABSENT live set: an After edit claiming beforePresent=true is stale on
+    // the source side.
+    auto afterAbsent = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, true },
+    }, PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+    REQUIRE_FALSE(afterAbsent.IsOk());
+    REQUIRE(afterAbsent.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(afterAbsent.error.detail.find("beforePresent") != std::string::npos);
+
+    // ABSENT live set: a Before edit claiming afterPresent=true is stale.
+    auto beforeAbsent = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, false, true },
+    }, PrefabMarkerDirection::Before, schemaBefore, schemaBefore);
+    REQUIRE_FALSE(beforeAbsent.IsOk());
+    REQUIRE(beforeAbsent.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(beforeAbsent.error.detail.find("afterPresent") != std::string::npos);
+
+    // Zero change from the two failures.
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == schemaBefore);
+    REQUIRE(f.manager.IsDirty() == dirtyBefore);
+    REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
+
+    // Bring the member up to {name, transform} legitimately (After, source
+    // verified absent).
+    auto addPlan = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, name, false, true },
+        { rootUuid, transform, false, true },
+    }, PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+    REQUIRE(addPlan.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(addPlan.value)).anyStateChange);
+    const auto schemaMid = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const bool dirtyMid = f.manager.IsDirty();
+    const auto revisionMid = f.manager.AuthoringRevision();
+
+    // PRESENT live set: After edit claiming beforePresent=false is stale.
+    auto afterPresentNow = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, false, true },
+    }, PrefabMarkerDirection::After, schemaMid, schemaMid);
+    REQUIRE_FALSE(afterPresentNow.IsOk());
+    REQUIRE(afterPresentNow.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(afterPresentNow.error.detail.find("beforePresent") != std::string::npos);
+
+    // PRESENT live set: Before edit claiming afterPresent=false is stale.
+    auto beforePresentNow = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, false },
+    }, PrefabMarkerDirection::Before, schemaMid, schemaMid);
+    REQUIRE_FALSE(beforePresentNow.IsOk());
+    REQUIRE(beforePresentNow.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(beforePresentNow.error.detail.find("afterPresent") != std::string::npos);
+
+    // Zero change from the two post-add failures, and neither touched the set.
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == schemaMid);
+    REQUIRE(f.manager.IsDirty() == dirtyMid);
+    REQUIRE(f.manager.AuthoringRevision() == revisionMid);
+    auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides.IsOk());
+    REQUIRE(overrides.value.size() == 2);
+}
+// ---------------------------------------------------------------------------
+// Test S5-G - duplicate policy, input-order-independent. Byte-identical
+// duplicate edits for the same (member, canonical wire) coalesce into one
+// pending entry; a contradictory duplicate (same wire, different target
+// presence) fails the WHOLE batch with an identical structured error in either
+// input order, leaving zero change.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) contradiction fault: drop the member.pendingPresent[idx] != targetPresent
+//   check at SceneManager.cpp:5530 (coalesce everything) - REQUIRE_FALSE
+//   (planA.IsOk()) for the contradictory order goes RED.
+//   b) duplicate-land fault: drop the already-present guard so a re-mark
+//   appends a second pending entry - the members[0].target.size() REQUIRE
+//   below goes RED (the raw writer would emit the duplicate).
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper coalesces exact duplicates and rejects contradictory ones order-independently")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_dup");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    const auto schemaAfter = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto transform = S2Key("transform");
+    const auto name = S2Key("name");
+
+    // Byte-identical duplicates coalesce: one transition, unique committed set.
+    auto dup = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, false, true },
+        { rootUuid, transform, false, true },
+    }, PrefabMarkerDirection::After, schemaAfter, schemaAfter);
+    REQUIRE(dup.IsOk());
+    REQUIRE(dup.value.members.size() == 1);
+    REQUIRE(dup.value.members[0].target.size() == 1);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(dup.value)).anyStateChange);
+    auto afterStart = f.manager.GetOverrides(rootUuid);
+    REQUIRE(afterStart.IsOk());
+    REQUIRE(afterStart.value.size() == 1);
+    const auto revisionAfterAdd = f.manager.AuthoringRevision();
+    const bool dirtyAfterAdd = f.manager.IsDirty();
+
+    // Contradictory duplicates fail in BOTH orders with the identical
+    // structured error (same code, path, and detail). The source side of both
+    // edits matches live state (absent, beforePresent=false); only the target
+    // presence differs, so the contradiction check -- not the directional
+    // source check -- is what rejects the batch.
+    auto planA = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, name, false, true },
+        { rootUuid, name, false, false },
+    }, PrefabMarkerDirection::After, schemaAfter, schemaAfter);
+    REQUIRE_FALSE(planA.IsOk());
+    REQUIRE(planA.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(planA.error.path == rootUuid.ToString());
+    REQUIRE(planA.error.detail.find("contradictory") != std::string::npos);
+
+    auto planB = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, name, false, false },
+        { rootUuid, name, false, true },
+    }, PrefabMarkerDirection::After, schemaAfter, schemaAfter);
+    REQUIRE_FALSE(planB.IsOk());
+    REQUIRE(planB.error.code == planA.error.code);
+    REQUIRE(planB.error.path == planA.error.path);
+    REQUIRE(planB.error.detail == planA.error.detail);
+
+    // Zero change: neither contradictory attempt mutated or bumped anything.
+    auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides.IsOk());
+    REQUIRE(overrides.value.size() == 1); // only the coalesced transform
+    REQUIRE(f.manager.AuthoringRevision() == revisionAfterAdd);
+    REQUIRE(f.manager.IsDirty() == dirtyAfterAdd);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == schemaAfter);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-H - stored raw-vector policy. A stored vector containing an unknown
+// or excluded wire fails Prepare LOUDLY (the malformed state is never silently
+// read through). A stored vector that is malformed but CANONICALIZABLE -
+// unsorted, duplicated, or carrying a forged classification bit - normalizes
+// into the committed raw registry vector even when the requested membership
+// edit is otherwise a no-op: anyStateChange is true, commit writes the
+// canonical target, and no malformed raw state is left unchanged.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) loud-fail fault: remove the S5CanonicalizeVector failure propagation in
+//   Prepare (SceneManager.cpp:5492-5495) - the unknown and excluded raw-wire
+//   REQUIRE_FALSE(plan.IsOk()) blocks below go RED.
+//   b) silent-normalize fault: delete the member.raw != member.live
+//   anyStateChange line (SceneManager.cpp:5576-5577) - every no-op edit below
+//   reports anyStateChange=false and the committed raw vector stays malformed:
+//   the REQUIRE(plan.value.anyStateChange) and the raw-size/order CHECKs go RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper normalizes canonicalizable stored vectors even on a membership no-op")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_raw");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto transform = S2Key("transform");
+    const auto name = S2Key("name");
+    // The membership edit below is a no-op everywhere: transform is present in
+    // each seeded vector after canonicalization, so anyStateChange can only be
+    // true when the raw stored vector itself needs normalization.
+
+    // (a) Unknown raw wire: loud failure, zero change.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides =
+        { PrefabComponentKey(std::string_view("noSuchWire"), true) };
+    auto unknownRaw = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, true },
+    }, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(unknownRaw.IsOk());
+    REQUIRE(unknownRaw.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(unknownRaw.error.detail.find("noSuchWire") != std::string::npos);
+
+    // (b) Excluded raw wire: loud failure, zero change.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides = { S2Key("meshRef") };
+    auto excludedRaw = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, true },
+    }, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(excludedRaw.IsOk());
+    REQUIRE(excludedRaw.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(excludedRaw.error.detail.find("meshRef") != std::string::npos);
+
+    // (c) Unsorted raw vector + membership no-op: normalization is a real state
+    // change and the committed RAW registry vector becomes canonical.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides = { transform, name }; // reverse wire order
+    auto sortNoop = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, true },
+    }, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(sortNoop.IsOk());
+    REQUIRE(sortNoop.value.anyStateChange); // raw != canonical: detected
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(sortNoop.value)).anyStateChange);
+    auto sortedRaw = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(sortedRaw);
+    REQUIRE(sortedRaw->overrides.size() == 2);
+    CHECK(sortedRaw->overrides[0] == name);       // canonical sort restored
+    CHECK(sortedRaw->overrides[1] == transform);
+
+    // (d) Duplicated raw vector collapses to a unique set.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides = { transform, transform };
+    auto dupNoop = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, true },
+    }, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(dupNoop.IsOk());
+    REQUIRE(dupNoop.value.anyStateChange);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(dupNoop.value)).anyStateChange);
+    auto dedupRaw = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(dedupRaw);
+    REQUIRE(dedupRaw->overrides.size() == 1);
+    CHECK(dedupRaw->overrides[0] == transform);
+
+    // (e) Forged classification bit re-derives from the frozen table.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides =
+        { PrefabComponentKey(std::string_view("transform"), false) };
+    auto forgedRawNoop = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, true },
+    }, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(forgedRawNoop.IsOk());
+    REQUIRE(forgedRawNoop.value.anyStateChange);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(forgedRawNoop.value)).anyStateChange);
+    auto canonicalRaw = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(canonicalRaw);
+    REQUIRE(canonicalRaw->overrides.size() == 1);
+    CHECK(canonicalRaw->overrides[0] == transform); // table-derived bit (true)
+}
