@@ -5182,10 +5182,35 @@ SceneManager::ScriptBindingStage SceneManager::StageScriptBinding(
 			stage.canonical.asset.path, "SetScriptState: script asset identity conflict" };
 		return stage;
 	}
+	// A missing source file remains an authorable (nil-identity) reference, but
+	// every other failed resolution is a hard, structured validation error. In
+	// particular, never let a malformed/unreadable sidecar fall through to an
+	// authoring write or an identity repair.
+	const bool missingOnly = !resolved.success && !diagnostics.empty()
+		&& std::all_of(diagnostics.begin(), diagnostics.end(),
+			[](const rt2::core::AssetDiagnostic& diagnostic) {
+				// An unrooted relative reference is intentionally preserved as a
+				// missing/unbound authoring reference (the resolver cannot use CWD).
+				return diagnostic.severity == rt2::core::AssetDiagnostic::Missing
+					|| (diagnostic.severity == rt2::core::AssetDiagnostic::Malformed
+						&& diagnostic.detail.find("absolute asset root") != std::string::npos);
+			});
+	if (!resolved.success && !missingOnly)
+	{
+		const auto failed = std::find_if(diagnostics.begin(), diagnostics.end(),
+			[](const rt2::core::AssetDiagnostic& diagnostic) {
+				return diagnostic.severity >= rt2::core::AssetDiagnostic::Malformed;
+			});
+		const std::string detail = failed == diagnostics.end()
+			? "script asset resolution failed"
+			: "script asset resolution failed: " + failed->detail;
+		stage.error = { rt2::core::Error::InvalidArgument,
+			stage.canonical.asset.path, "SetScriptState: " + detail };
+		return stage;
+	}
 	if (resolved.success && !resolved.effectiveId.IsNull())
 		stage.canonical.asset.assetId = resolved.effectiveId;
-	if (resolved.success && resolved.identityRepairRequired &&
-		stage.canonical.asset.assetId.IsNull())
+	if (resolved.success && resolved.identityRepairRequired)
 	{
 		if (deferIdentityWrites)
 		{
@@ -5199,10 +5224,20 @@ SceneManager::ScriptBindingStage SceneManager::StageScriptBinding(
 				"script binding plan requires a durable sidecar identity" };
 			return stage;
 		}
-		bool minted = false;
 		rt2::core::Error idError;
-		stage.canonical.asset.assetId = rt2::core::ResolveOrAssign(
-			resolved.resolvedPath, *m_UuidProvider, minted, idError);
+		if (stage.canonical.asset.assetId.IsNull())
+		{
+			bool minted = false;
+			stage.canonical.asset.assetId = rt2::core::ResolveOrAssign(
+				resolved.resolvedPath, *m_UuidProvider, minted, idError);
+		}
+		else if (!rt2::core::WriteSidecarId(
+			rt2::core::AssetSidecarPath(resolved.resolvedPath),
+			stage.canonical.asset.assetId, idError))
+		{
+			// Preserve the caller's explicit destination identity only when its
+			// durable sidecar write succeeds.
+		}
 		if (!idError.IsOk() || stage.canonical.asset.assetId.IsNull())
 		{
 			stage.error = idError.IsOk()
@@ -6141,7 +6176,8 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 	rt2::core::Error fanoutError;
 	const auto makeMaterialSlot = [&](int slot, const SceneMaterial& material,
 		const std::vector<std::pair<rt2::core::UUID,
-		std::optional<MaterialOverrideComponent>>>& supplied, bool derive)
+		std::optional<MaterialOverrideComponent>>>& supplied, bool derive,
+		bool validateAgainstLive)
 	{
 		const auto reject = [&](rt2::core::Error::Code code,
 			const std::string& path, const std::string& detail) {
@@ -6210,7 +6246,8 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 					return reject(rt2::core::Error::InvalidArgument, member.uuid.ToString(),
 						"material fan-out is missing a live member UUID");
 				value = it->second;
-				if (!derive && !S5EqualOverride(member.overrideValue, value))
+				if (!derive && validateAgainstLive
+					&& !S5EqualOverride(member.overrideValue, value))
 					return reject(rt2::core::Error::InvalidArgument, member.uuid.ToString(),
 						"material fan-out source override differs from live bytes");
 				if (derive)
@@ -6263,13 +6300,16 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 			if (!S5EqualMaterial(m_EcsScene.materials[source->slotIndex], source->material))
 				return fail(rt2::core::Error::InvalidArgument, std::to_string(source->slotIndex),
 					"material slot source differs from live state");
-			auto sourceFanout = makeMaterialSlot(source->slotIndex, source->material, source->overrides, false);
+			auto sourceFanout = makeMaterialSlot(source->slotIndex, source->material,
+				source->overrides, false, true);
 			if (sourceFanout.slotIndex < 0)
 				return fail(fanoutError.code == rt2::core::Error::None
 					? rt2::core::Error::InvalidArgument : fanoutError.code,
 					fanoutError.path.empty() ? "material-slot" : fanoutError.path,
 					fanoutError.detail.empty() ? "material fan-out validation failed" : fanoutError.detail);
-			auto targetFanout = makeMaterialSlot(target->slotIndex, target->material, target->overrides, true);
+			const bool deriveTarget = direction == PrefabMarkerDirection::After;
+			auto targetFanout = makeMaterialSlot(target->slotIndex, target->material,
+				target->overrides, deriveTarget, false);
 			if (targetFanout.slotIndex < 0)
 				return fail(fanoutError.code == rt2::core::Error::None
 					? rt2::core::Error::InvalidArgument : fanoutError.code,

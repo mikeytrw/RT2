@@ -5968,6 +5968,56 @@ TEST_CASE("Phase 8 W3: composite script binding stages durable identity before c
     REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(missingPlan.value)).error.IsOk());
     CHECK_FALSE(std::filesystem::exists(missingSidecar));
     CHECK(f.manager.GetECS().registry.get<ScriptComponent>(rootHandle).asset.assetId.IsNull());
+    REQUIRE(f.manager.SetScriptState(root, absent).error.IsOk());
+
+    // A malformed sidecar is a resolver failure, not a missing source file:
+    // ordinary and composite paths must reject it before authoring mutation.
+    const auto malformedAsset = dir / "malformed.lua";
+    S2WriteRaw(malformedAsset, "return 6\n");
+    const auto malformedSidecar = rt2::core::AssetSidecarPath(malformedAsset);
+    S2WriteRaw(malformedSidecar, "not-a-uuid\n");
+    ScriptComponent malformedScript = scriptA;
+    malformedScript.asset.path = "malformed.lua";
+    malformedScript.asset.sourceKey = "lua:asset=malformed.lua";
+    malformedScript.asset.assetId = UUID::Nil();
+    const auto malformedRevision = f.manager.AuthoringRevision();
+    const auto ordinaryMalformed = f.manager.SetScriptState(root,
+        std::optional<ScriptComponent>{ malformedScript });
+    REQUIRE_FALSE(ordinaryMalformed.error.IsOk());
+    CHECK(ordinaryMalformed.error.detail.find("resolution failed") != std::string::npos);
+    CHECK_FALSE(f.manager.GetECS().registry.all_of<ScriptComponent>(rootHandle));
+    CHECK(f.manager.AuthoringRevision() == malformedRevision);
+    auto compositeMalformed = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            absent, std::optional<ScriptComponent>{ malformedScript } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(compositeMalformed.IsOk());
+    CHECK(compositeMalformed.error.detail.find("resolution failed") != std::string::npos);
+    CHECK_FALSE(f.manager.GetECS().registry.all_of<ScriptComponent>(rootHandle));
+    CHECK(f.manager.AuthoringRevision() == malformedRevision);
+
+    // A genuinely different explicit destination ID is durable even when the
+    // destination has no sidecar; Commit must then be read-only for identity.
+    const auto explicitAsset = dir / "explicit.lua";
+    S2WriteRaw(explicitAsset, "return 7\n");
+    ScriptComponent explicitScript = scriptA;
+    explicitScript.asset.path = "explicit.lua";
+    explicitScript.asset.sourceKey = "lua:asset=explicit.lua";
+    const UUID explicitId = f.manager.ReserveKnownUuid();
+    explicitScript.asset.assetId = explicitId;
+    const auto explicitSidecar = rt2::core::AssetSidecarPath(explicitAsset);
+    auto explicitPlan = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            absent, std::optional<ScriptComponent>{ explicitScript } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(explicitPlan.IsOk());
+    Error explicitReadError;
+    CHECK(rt2::core::ReadSidecarId(explicitSidecar, explicitReadError) == explicitId);
+    REQUIRE(explicitReadError.IsOk());
+    const auto explicitSidecarBytes = S2ReadFile(explicitSidecar);
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(explicitPlan.value)).error.IsOk());
+    CHECK(f.manager.GetECS().registry.get<ScriptComponent>(rootHandle).asset.assetId == explicitId);
+    CHECK(S2ReadFile(explicitSidecar) == explicitSidecarBytes);
 
     const auto writeFailAsset = dir / "write-fail.lua";
     S2WriteRaw(writeFailAsset, "return 5\n");
@@ -6120,6 +6170,80 @@ TEST_CASE("Phase 8 W3: composite direction reverses typed value source and targe
     CHECK(f.manager.GetMaterial(0).baseAlpha == slotBefore.baseAlpha);
     CHECK(reg.get<MaterialOverrideComponent>(rootHandle).material.baseAlpha == slotBefore.baseAlpha);
     CHECK(reg.get<MaterialOverrideComponent>(childHandle).material.baseAlpha == slotBefore.baseAlpha);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: forcing the MaterialSlot Before target through canonical After
+// derivation makes the undo REQUIRE_FALSE below fail; restore direction-aware
+// target staging before the GREEN run.  The captured snapshot deliberately
+// includes an absent override and an authored=false historical override.
+TEST_CASE("Phase 8 W3: material-slot Before restores exact captured fan-out snapshots")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_material_before_exact");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID child = reg.get<EntityIdComponent>(childHandle).id;
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<MeshRef>(childHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(childHandle);
+
+    const auto beforeMaterial = f.manager.GetMaterial(0);
+    auto afterMaterial = beforeMaterial;
+    afterMaterial.sourceKey = "canonical-after";
+    afterMaterial.baseColor = { 0.31f, 0.42f, 0.53f };
+    MaterialOverrideComponent historical;
+    historical.material = beforeMaterial;
+    historical.authored = false;
+    historical.sourceMaterialKey = "historical-source";
+    historical.materialIndex = 0;
+    MaterialOverrideComponent canonical;
+    canonical.material = afterMaterial;
+    canonical.authored = true;
+    canonical.sourceMaterialKey = afterMaterial.sourceKey;
+    canonical.materialIndex = 0;
+    const std::vector<std::pair<UUID, std::optional<MaterialOverrideComponent>>> capturedBefore{
+        { root, std::nullopt }, { child, historical } };
+    const std::vector<std::pair<UUID, std::optional<MaterialOverrideComponent>>> capturedAfter{
+        { root, canonical }, { child, canonical } };
+    reg.emplace_or_replace<MaterialOverrideComponent>(childHandle, historical);
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const PrefabValueEdit edit{ PrefabValueKind::MaterialSlotProperties, {},
+        PrefabMarkerDirection::After,
+        PrefabMaterialSlotValue{ 0, beforeMaterial, capturedBefore },
+        PrefabMaterialSlotValue{ 0, afterMaterial, capturedAfter } };
+
+    auto execute = f.manager.PreparePrefabCompositeEdits({ edit }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(execute.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(execute.value)).error.IsOk());
+    REQUIRE(reg.get<MaterialOverrideComponent>(rootHandle).authored);
+    REQUIRE(reg.get<MaterialOverrideComponent>(childHandle).authored);
+
+    auto undoEdit = edit;
+    undoEdit.direction = PrefabMarkerDirection::Before;
+    auto undo = f.manager.PreparePrefabCompositeEdits({ undoEdit }, {},
+        PrefabMarkerDirection::Before, schema, schema);
+    REQUIRE(undo.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(undo.value)).error.IsOk());
+    CHECK_FALSE(reg.all_of<MaterialOverrideComponent>(rootHandle));
+    const auto* restored = reg.try_get<MaterialOverrideComponent>(childHandle);
+    REQUIRE(restored);
+    CHECK_FALSE(restored->authored);
+    CHECK(restored->sourceMaterialKey == historical.sourceMaterialKey);
+    CHECK(restored->material.baseColor == historical.material.baseColor);
+    CHECK(restored->materialIndex == historical.materialIndex);
+
+    auto redo = f.manager.PreparePrefabCompositeEdits({ edit }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(redo.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(redo.value)).error.IsOk());
+    CHECK(reg.get<MaterialOverrideComponent>(rootHandle).authored);
+    CHECK(reg.get<MaterialOverrideComponent>(childHandle).authored);
+    CHECK(reg.get<MaterialOverrideComponent>(childHandle).sourceMaterialKey
+        == afterMaterial.sourceKey);
     std::filesystem::remove_all(dir);
 }
 
