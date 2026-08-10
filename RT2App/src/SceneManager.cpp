@@ -5389,8 +5389,13 @@ bool S5RemainingOverrides(const rt2::core::SceneDocument& document,
 	{
 		const auto& pm = view.get<PrefabMemberComponent>(e);
 		const auto* id = registry.try_get<EntityIdComponent>(e);
-		if (!id)
-			continue; // a member without a durable uuid is not addressable by a plan
+		if (!id || id->id.IsNull() || document.FindByUuid(id->id) != e)
+		{
+			err.code = rt2::core::Error::InvalidEntity;
+			err.path = id ? id->id.ToString() : "";
+			err.detail = "prefab member lacks a durable, uniquely resolvable EntityIdComponent";
+			return false;
+		}
 		const auto it = planned.find(id->id);
 		const auto& effective = (it != planned.end()) ? *it->second : pm.overrides;
 		if (effective.empty())
@@ -5430,6 +5435,22 @@ bool S5ValidateSchemaTransition(
 	const std::vector<PrefabMarkerPlan::MemberTransition>& transitions,
 	rt2::core::Error& err)
 {
+	const auto inSupportedRange = [](std::uint32_t version)
+	{
+		return version >= rt2::core::SceneSerializer::MinReadVersion
+			&& version <= rt2::core::SceneSerializer::SchemaVersion;
+	};
+	if (!inSupportedRange(sourceSchemaVersion) || !inSupportedRange(targetSchemaVersion))
+	{
+		err.code = rt2::core::Error::SchemaVersion;
+		err.detail = "marker plan schema transport must be within ["
+			+ std::to_string(rt2::core::SceneSerializer::MinReadVersion) + ", "
+			+ std::to_string(rt2::core::SceneSerializer::SchemaVersion) + "] (source "
+			+ std::to_string(sourceSchemaVersion) + ", target "
+			+ std::to_string(targetSchemaVersion) + ")";
+		return false;
+	}
+
 	if (document.metadata.schemaVersion != sourceSchemaVersion)
 	{
 		err.code = rt2::core::Error::SchemaVersion;
@@ -5533,6 +5554,7 @@ rt2::core::Result<PrefabMarkerPlan> SceneManager::PreparePrefabMarkerEdits(
 	// into a durable plan; nothing is written until CommitPrefabMarkerPlan.
 	PrefabMarkerPlan plan;
 	plan.direction = direction;
+	plan.documentGeneration = DocumentGeneration();
 	// Directional transport of the command-captured schema pair: the After
 	// direction targets the command-after schema (execute), the Before
 	// direction targets the command-before schema (undo/restore). Commit always
@@ -5541,6 +5563,16 @@ rt2::core::Result<PrefabMarkerPlan> SceneManager::PreparePrefabMarkerEdits(
 		? beforeSchemaVersion : afterSchemaVersion;
 	plan.targetSchemaVersion = (direction == PrefabMarkerDirection::After)
 		? afterSchemaVersion : beforeSchemaVersion;
+
+	if (plan.sourceSchemaVersion < rt2::core::SceneSerializer::MinReadVersion
+		|| plan.sourceSchemaVersion > rt2::core::SceneSerializer::SchemaVersion
+		|| plan.targetSchemaVersion < rt2::core::SceneSerializer::MinReadVersion
+		|| plan.targetSchemaVersion > rt2::core::SceneSerializer::SchemaVersion)
+		return rt2::core::Result<PrefabMarkerPlan>::Fail(
+			rt2::core::Error::SchemaVersion, "",
+			"marker plan schema transport must be within ["
+				+ std::to_string(rt2::core::SceneSerializer::MinReadVersion) + ", "
+				+ std::to_string(rt2::core::SceneSerializer::SchemaVersion) + "]");
 
 	const bool targetAfter = (direction == PrefabMarkerDirection::After);
 
@@ -5761,9 +5793,19 @@ PrefabMarkerApplyResult SceneManager::CommitPrefabMarkerPlan(PrefabMarkerPlan pl
 	};
 	std::vector<Validated> validated;
 	validated.reserve(plan.members.size());
+	std::unordered_set<rt2::core::UUID> seenMembers;
+	seenMembers.reserve(plan.members.size());
+
+	if (plan.documentGeneration != DocumentGeneration())
+		return failDoc(rt2::core::Error::InvalidArgument,
+			"stale marker plan: document generation changed since the plan was prepared");
 
 	for (const auto& transition : plan.members)
 	{
+		if (!seenMembers.insert(transition.member).second)
+			return failMember(rt2::core::Error::InvalidArgument,
+				transition.member,
+				"duplicate member transition in marker plan");
 		// Member identity: durable UUID resolved through the authoring index.
 		const auto e = m_Authoring.FindByUuid(transition.member);
 		if (e == entt::null || !m_EcsScene.registry.valid(e))

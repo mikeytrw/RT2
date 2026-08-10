@@ -100,6 +100,10 @@ struct PrefabMarkerPlan
 	// downgrades below what the command captured.
 	std::uint32_t sourceSchemaVersion = 0;
 	std::uint32_t targetSchemaVersion = 0;
+	// Identity of the authoring document observed while preparing this plan.
+	// ReplaceAuthoringDocument increments this generation, so a plan cannot be
+	// replayed against a same-looking replacement document.
+	std::uint64_t documentGeneration = 0;
 	// True when any member source/target vector or the schema differs; a
 	// genuine no-op is false and commits with no mutation and no notification.
 	bool anyStateChange = false;

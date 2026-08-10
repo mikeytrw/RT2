@@ -4973,6 +4973,7 @@ TEST_CASE("Phase 8 W3: Commit rejects forged plan fields with zero mutation")
         plan.direction = PrefabMarkerDirection::After;
         plan.sourceSchemaVersion = sourceSchema;
         plan.targetSchemaVersion = targetSchema;
+        plan.documentGeneration = f.manager.DocumentGeneration();
         plan.anyStateChange = target != source || sourceSchema != targetSchema;
         PrefabMarkerPlan::MemberTransition t;
         t.member = rootUuid;
@@ -5228,5 +5229,286 @@ TEST_CASE("Phase 8 W3: Commit normalizes raw originals through plan revalidation
 
     // Every normalization above is one real change with one revision bump.
     CHECK(f.manager.AuthoringRevision() == revisionAfter + 3);
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test C1-1 - Commit treats the public plan member list as a set of durable
+// identities. Duplicate transitions are rejected before the downgrade scan or
+// any write, in either order. This includes a forged 6 -> 5 plan whose first
+// transition would otherwise make the document appear marker-free.
+//
+// Discrimination fault (RED observed, then restored GREEN): remove the
+// Commit `seenMembers` duplicate guard (SceneManager.cpp:5793-5799). The first
+// order downgrades with the marker left by the second write; the zero-change
+// schema/marker assertions below go RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper rejects duplicate public member transitions")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c1_duplicates");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto transform = S2Key("transform");
+
+    auto add = f.manager.PreparePrefabMarkerEdits({ { rootUuid, transform, false, true } },
+        PrefabMarkerDirection::After, f.manager.AuthoringDoc().metadata.schemaVersion,
+        SceneSerializer::SchemaVersion);
+    REQUIRE(add.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(add.value)).anyStateChange);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    const auto revision0 = f.manager.AuthoringRevision();
+    const bool dirty0 = f.manager.IsDirty();
+    const auto generation = f.manager.DocumentGeneration();
+    const auto checkZero = [&] {
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+        CHECK(f.manager.AuthoringRevision() == revision0);
+        CHECK(f.manager.IsDirty() == dirty0);
+        auto current = f.manager.GetOverrides(rootUuid);
+        REQUIRE(current.IsOk());
+        REQUIRE(current.value.size() == 1);
+        CHECK(current.value[0] == transform);
+    };
+    const auto attempt = [&](bool emptyFirst) {
+        PrefabMarkerPlan plan;
+        plan.direction = PrefabMarkerDirection::Before;
+        plan.sourceSchemaVersion = SceneSerializer::SchemaVersion;
+        plan.targetSchemaVersion = 5;
+        plan.documentGeneration = generation;
+        plan.anyStateChange = true;
+        PrefabMarkerPlan::MemberTransition empty;
+        empty.member = rootUuid;
+        empty.source = { transform };
+        empty.target = {};
+        PrefabMarkerPlan::MemberTransition keep;
+        keep.member = rootUuid;
+        keep.source = { transform };
+        keep.target = { transform };
+        if (emptyFirst)
+            plan.members = { empty, keep };
+        else
+            plan.members = { keep, empty };
+        const auto result = f.manager.CommitPrefabMarkerPlan(std::move(plan));
+        REQUIRE_FALSE(result.error.IsOk());
+        REQUIRE(result.error.code == rt2::core::Error::InvalidArgument);
+        CHECK(result.error.detail.find("duplicate member") != std::string::npos);
+        checkZero();
+    };
+
+    attempt(true);
+    attempt(false);
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test C1-2 - a downgrade cannot prove that no marker remains when a prefab
+// member is not durably addressable. Both Prepare's shared scan and Commit's
+// revalidation fail loudly with zero marker/schema/dirty/revision change.
+//
+// Discrimination fault (RED observed, then restored GREEN): restore the old
+// `if (!id) continue` in S5RemainingOverrides (SceneManager.cpp:5392-5397).
+// The downgrade succeeds despite the malformed member and the schema check
+// below goes RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper downgrade rejects an unaddressable prefab member")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c1_unaddressable");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto transform = S2Key("transform");
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    auto add = f.manager.PreparePrefabMarkerEdits({ { rootUuid, transform, false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(add.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(add.value)).anyStateChange);
+
+    // This prefab member has a non-empty marker set but no durable entity UUID.
+    const auto malformed = reg.create();
+    auto& malformedMember = reg.emplace<PrefabMemberComponent>(malformed);
+    malformedMember.overrides = { transform };
+
+    const auto revision0 = f.manager.AuthoringRevision();
+    const bool dirty0 = f.manager.IsDirty();
+    const auto checkZero = [&] {
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+        CHECK(f.manager.AuthoringRevision() == revision0);
+        CHECK(f.manager.IsDirty() == dirty0);
+        auto current = f.manager.GetOverrides(rootUuid);
+        REQUIRE(current.IsOk());
+        REQUIRE(current.value.size() == 1);
+        CHECK(current.value[0] == transform);
+    };
+
+    auto prepare = f.manager.PreparePrefabMarkerEdits(
+        { { rootUuid, transform, false, true } }, PrefabMarkerDirection::Before,
+        5, SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(prepare.IsOk());
+    REQUIRE(prepare.error.code == rt2::core::Error::InvalidEntity);
+    CHECK(prepare.error.detail.find("uniquely resolvable") != std::string::npos);
+    checkZero();
+
+    PrefabMarkerPlan forged;
+    forged.direction = PrefabMarkerDirection::Before;
+    forged.sourceSchemaVersion = SceneSerializer::SchemaVersion;
+    forged.targetSchemaVersion = 5;
+    forged.documentGeneration = f.manager.DocumentGeneration();
+    forged.anyStateChange = true;
+    PrefabMarkerPlan::MemberTransition transition;
+    transition.member = rootUuid;
+    transition.source = { transform };
+    transition.target = {};
+    forged.members.push_back(std::move(transition));
+    const auto committed = f.manager.CommitPrefabMarkerPlan(std::move(forged));
+    REQUIRE_FALSE(committed.error.IsOk());
+    REQUIRE(committed.error.code == rt2::core::Error::InvalidEntity);
+    CHECK(committed.error.detail.find("uniquely resolvable") != std::string::npos);
+    checkZero();
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test C1-3 - a plan prepared against document A cannot be applied to a
+// same-looking replacement document B. UUIDs, schema, and markers match, but
+// ReplaceAuthoringDocument advances the generation token.
+//
+// Discrimination fault (RED observed, then restored GREEN): remove the Commit
+// document-generation equality check (SceneManager.cpp:5789-5791). The plan
+// removes the marker from replacement B and the zero-change checks go RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: Commit rejects a plan from a replaced document")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c1_generation");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto transform = S2Key("transform");
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    auto add = f.manager.PreparePrefabMarkerEdits({ { rootUuid, transform, false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(add.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(add.value)).anyStateChange);
+
+    auto removal = f.manager.PreparePrefabMarkerEdits({ { rootUuid, transform, true, false } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+        SceneSerializer::SchemaVersion);
+    REQUIRE(removal.IsOk());
+
+    SceneDocument replacement;
+    DeterministicUuidProvider replacementIds;
+    replacement.SetUuidProvider(&replacementIds);
+    Error cloneError;
+    REQUIRE(SceneSerializer::CloneInMemory(f.manager.AuthoringDoc(), replacement, cloneError));
+    f.manager.ReplaceAuthoringDocument(std::move(replacement), f.manager.AuthoringRevision());
+    const auto generationB = f.manager.DocumentGeneration();
+    const auto revisionB = f.manager.AuthoringRevision();
+    const bool dirtyB = f.manager.IsDirty();
+
+    const auto committed = f.manager.CommitPrefabMarkerPlan(std::move(removal.value));
+    REQUIRE_FALSE(committed.error.IsOk());
+    REQUIRE(committed.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(committed.error.detail.find("generation changed") != std::string::npos);
+    CHECK(f.manager.DocumentGeneration() == generationB);
+    CHECK(f.manager.AuthoringRevision() == revisionB);
+    CHECK(f.manager.IsDirty() == dirtyB);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    auto current = f.manager.GetOverrides(rootUuid);
+    REQUIRE(current.IsOk());
+    REQUIRE(current.value.size() == 1);
+    CHECK(current.value[0] == transform);
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test C1-4 - both directional schema fields are bounded at the public seam.
+// Prepare rejects ordinary unsupported command-captured versions; Commit
+// rejects forged source/target values before any member, schema, dirty, or
+// revision write.
+//
+// Discrimination fault (RED observed, then restored GREEN): remove the
+// inSupportedRange guard in S5ValidateSchemaTransition (SceneManager.cpp:
+// 5438-5452). The above-current and below-readable cases stage or commit and
+// the SchemaVersion assertions below go RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: Prepare and Commit reject schema bounds tampering")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c1_schema_bounds");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto transform = S2Key("transform");
+    const auto liveSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto above = SceneSerializer::SchemaVersion + 1;
+    const auto below = SceneSerializer::MinReadVersion - 1;
+    const auto revision0 = f.manager.AuthoringRevision();
+    const bool dirty0 = f.manager.IsDirty();
+    const auto generation0 = f.manager.DocumentGeneration();
+    const auto checkZero = [&] {
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == liveSchema);
+        CHECK(f.manager.AuthoringRevision() == revision0);
+        CHECK(f.manager.IsDirty() == dirty0);
+        CHECK(f.manager.DocumentGeneration() == generation0);
+        auto current = f.manager.GetOverrides(rootUuid);
+        REQUIRE(current.IsOk());
+        CHECK(current.value.empty());
+    };
+
+    auto prepareAbove = f.manager.PreparePrefabMarkerEdits(
+        { { rootUuid, transform, false, true } }, PrefabMarkerDirection::After,
+        liveSchema, above);
+    REQUIRE_FALSE(prepareAbove.IsOk());
+    REQUIRE(prepareAbove.error.code == rt2::core::Error::SchemaVersion);
+    checkZero();
+
+    auto prepareBelow = f.manager.PreparePrefabMarkerEdits(
+        { { rootUuid, transform, false, true } }, PrefabMarkerDirection::After,
+        liveSchema, below);
+    REQUIRE_FALSE(prepareBelow.IsOk());
+    REQUIRE(prepareBelow.error.code == rt2::core::Error::SchemaVersion);
+    checkZero();
+
+    auto emptyAbove = f.manager.PreparePrefabMarkerEdits(
+        {}, PrefabMarkerDirection::After, liveSchema, above);
+    REQUIRE_FALSE(emptyAbove.IsOk());
+    REQUIRE(emptyAbove.error.code == rt2::core::Error::SchemaVersion);
+    auto emptyBelow = f.manager.PreparePrefabMarkerEdits(
+        {}, PrefabMarkerDirection::After, liveSchema, below);
+    REQUIRE_FALSE(emptyBelow.IsOk());
+    REQUIRE(emptyBelow.error.code == rt2::core::Error::SchemaVersion);
+    checkZero();
+
+    const auto forge = [&](std::uint32_t source, std::uint32_t target) {
+        PrefabMarkerPlan plan;
+        plan.direction = PrefabMarkerDirection::After;
+        plan.sourceSchemaVersion = source;
+        plan.targetSchemaVersion = target;
+        plan.documentGeneration = generation0;
+        plan.anyStateChange = true;
+        PrefabMarkerPlan::MemberTransition t;
+        t.member = rootUuid;
+        t.source = {};
+        t.target = { transform };
+        plan.members.push_back(std::move(t));
+        return f.manager.CommitPrefabMarkerPlan(std::move(plan));
+    };
+    for (const auto [source, target] : {
+             std::pair<std::uint32_t, std::uint32_t>{ liveSchema, above },
+             { liveSchema, below },
+             { above, liveSchema },
+             { below, liveSchema },
+         })
+    {
+        const auto committed = forge(source, target);
+        REQUIRE_FALSE(committed.error.IsOk());
+        REQUIRE(committed.error.code == rt2::core::Error::SchemaVersion);
+        checkZero();
+    }
     std::filesystem::remove_all(dir);
 }
