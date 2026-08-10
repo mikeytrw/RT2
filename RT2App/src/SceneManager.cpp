@@ -5307,6 +5307,119 @@ void SceneManager::InstallMaterialOverride(
 }
 
 // ============================================================================
+// Phase 8 W3 S5: prefab override query + marker helper
+// ============================================================================
+
+bool SceneManager::IsOverridden(const rt2::core::UUID& member,
+                                const PrefabComponentKey& key) const
+{
+	const auto e = m_Authoring.FindByUuid(member);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return false;
+	const auto* pm = m_EcsScene.registry.try_get<PrefabMemberComponent>(e);
+	if (!pm)
+		return false;
+	for (const auto& existing : pm->overrides)
+		if (existing == key)
+			return true;
+	return false;
+}
+
+std::vector<PrefabComponentKey> SceneManager::GetOverrides(
+	const rt2::core::UUID& member) const
+{
+	const auto e = m_Authoring.FindByUuid(member);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return {};
+	const auto* pm = m_EcsScene.registry.try_get<PrefabMemberComponent>(e);
+	if (!pm)
+		return {};
+
+	// Canonical order: the in-memory vector must NOT be trusted to already be
+	// sorted/unique (see the EntityMatchesRecord guard at line ~2545 — vectors
+	// built by hand or in edit order need not have passed through the codec).
+	// Normalise a copy so callers observe the same order the codec writes.
+	std::vector<PrefabComponentKey> out = pm->overrides;
+	std::sort(out.begin(), out.end(),
+	          [](const PrefabComponentKey& a, const PrefabComponentKey& b)
+	          { return a.wire() < b.wire(); });
+	out.erase(std::unique(out.begin(), out.end()), out.end());
+	return out;
+}
+
+PrefabMarkerApplyResult SceneManager::ApplyPrefabMarkerEdits(
+	const std::vector<PrefabMarkerEdit>& edits)
+{
+	// The helper is not fail-atomic by design: an edit whose member is not a
+	// prefab member (or does not exist) is rejected and reported in the result
+	// while the remaining edits still apply. Transactionality across the whole
+	// command is the caller's job (the S6 command layer rolls the component
+	// value and marker vectors back together via before/after state).
+	PrefabMarkerApplyResult result;
+	bool membershipChanged = false;
+	bool promoted = false;
+	for (const auto& edit : edits)
+	{
+		const auto e = m_Authoring.FindByUuid(edit.member);
+		if (e == entt::null || !m_EcsScene.registry.valid(e))
+		{
+			result.rejected.push_back(edit);
+			continue;
+		}
+		auto* pm = m_EcsScene.registry.try_get<PrefabMemberComponent>(e);
+		if (!pm)
+		{
+			result.rejected.push_back(edit);
+			continue;
+		}
+		// Loud guard, consistent with the table header's philosophy: a marker
+		// for a component that isn't overridable (or an un-resolved default
+		// key) must never land in the set, or the reader would treat it as a
+		// real divergence.
+		if (!edit.key.overridable())
+		{
+			result.rejected.push_back(edit);
+			continue;
+		}
+
+		if (edit.afterPresent)
+		{
+			bool alreadyPresent = false;
+			for (const auto& existing : pm->overrides)
+				if (existing == edit.key) { alreadyPresent = true; break; }
+			if (!alreadyPresent)
+			{
+				auto it = std::lower_bound(pm->overrides.begin(), pm->overrides.end(),
+					edit.key,
+					[](const PrefabComponentKey& a, const PrefabComponentKey& b)
+					{ return a.wire() < b.wire(); });
+				pm->overrides.insert(it, edit.key);
+				membershipChanged = true;
+				// D6: promote the document the first time an override is added,
+				// so a recovery SaveTo writes v6 and the set survives. Called
+				// once per batch, only when a key actually appears.
+				if (!promoted && rt2::core::SceneSerializer::PromoteSchemaVersion(m_Authoring))
+					promoted = true;
+			}
+		}
+		else
+		{
+			auto it = std::remove(pm->overrides.begin(), pm->overrides.end(), edit.key);
+			if (it != pm->overrides.end())
+			{
+				pm->overrides.erase(it, pm->overrides.end());
+				membershipChanged = true;
+			}
+		}
+		++result.applied;
+	}
+
+	if (membershipChanged)
+		NotifyAuthoringChanged();
+	return result;
+}
+
+// ============================================================================
 // Stats + misc
 // ============================================================================
 

@@ -3843,3 +3843,226 @@ TEST_CASE("Phase 8 W3: overlapping parent+child and duplicate-root clipboard sel
 
     (void)reg;
 }
+
+// ============================================================================
+// Phase 8 W3, S5 — the overrides query + marker-edit helper API
+// (implementation spec, W3 D3.10 and D6; Work step S5).
+//
+// S5 delivers the query API (IsOverridden / GetOverrides) and the shared
+// marker helper (ApplyPrefabMarkerEdits) that every S6 command factory will
+// call, WITHOUT wiring any setter yet. Its tests therefore assert the three
+// contracts the wiring depends on:
+//
+//   1. Query correctness on a real instance: empty set until marked, and
+//      never falsely marked by existence of the member component alone.
+//   2. The helper maintains the canonical (wire-sorted, de-duplicated) order
+//      the codec writes and the reader normalizes, and promotes the document
+//      schema version (D6) the first time a marker actually appears.
+//   3. Loud rejection: an edit whose member is not a prefab member, does not
+//      exist, or carries a non-overridable key is rejected (reported in the
+//      result) while valid edits still apply — the fail-atomic contract the
+//      S6 command layer builds transactional undo on top of.
+//
+// The no-op/undo/redo breadth (spec tests 8, 9 and the SetCameraPoseState
+// two-marker case, test 12) belongs to S6, where the concrete setters are
+// wired and command construction computes the edits; S5 proves the helper the
+// commands will call.
+// ============================================================================
+
+namespace
+{
+
+UUID S5NonMemberUuid(S2Fixture& f)
+{
+    // A plain entity with no PrefabMemberComponent.
+    return f.CreateEmpty("Folk");
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Test S5-Q — the query API answers empty/false on a fresh real instance, on
+// a non-member entity, and on an absent UUID. The D3.9 contract requires that
+// no member starts marked; the query API must not treat "has a member
+// component" as "is overridden".
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: override queries are empty until marked")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_query");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID childUuid = reg.get<EntityIdComponent>(childHandle).id;
+    REQUIRE(rootUuid != UUID::Nil());
+    REQUIRE(childUuid != UUID::Nil());
+
+    REQUIRE_FALSE(f.manager.IsOverridden(rootUuid, S2Key("transform")));
+    REQUIRE(f.manager.GetOverrides(rootUuid).empty());
+    REQUIRE_FALSE(f.manager.IsOverridden(childUuid, S2Key("name")));
+    REQUIRE(f.manager.GetOverrides(childUuid).empty());
+
+    const UUID folkUuid = S5NonMemberUuid(f);
+    REQUIRE(f.manager.GetOverrides(folkUuid).empty());
+    REQUIRE_FALSE(f.manager.IsOverridden(folkUuid, S2Key("transform")));
+
+    REQUIRE(f.manager.GetOverrides(UUID::Nil()).empty());
+    REQUIRE_FALSE(f.manager.IsOverridden(UUID::Nil(), S2Key("transform")));
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-A — ApplyPrefabMarkerEdits adds markers in canonical order, dedups
+// re-marks, and promotes the document schema on the first add (D6). The
+// vector must come back exactly as the codec writes it (wire-sorted, unique)
+// even though the batch was supplied in a different order.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper maintains canonical order and promotes schema on first add")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_apply");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto beforeVersion = f.manager.AuthoringDoc().metadata.schemaVersion;
+    REQUIRE(beforeVersion < SceneSerializer::SchemaVersion);
+
+    // Deliberately supplied NOT in wire order (transform > name > motion).
+    const auto transform = S2Key("transform");
+    const auto name = S2Key("name");
+    const auto motion = S2Key("motion");
+    PrefabMarkerApplyResult r = f.manager.ApplyPrefabMarkerEdits({
+        { rootUuid, transform, false, true },
+        { rootUuid, name,     false, true },
+        { rootUuid, motion,   false, true },
+    });
+    REQUIRE(r.rejected.empty());
+    REQUIRE(r.applied == 3);
+
+    // Canonical result (wire-sorted): motion < name < transform.
+    const auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides.size() == 3);
+    CHECK(overrides[0] == motion);
+    CHECK(overrides[1] == name);
+    CHECK(overrides[2] == transform);
+    CHECK(f.manager.IsOverridden(rootUuid, transform));
+    CHECK(f.manager.IsOverridden(rootUuid, name));
+    CHECK(f.manager.IsOverridden(rootUuid, motion));
+
+    // D6: the document was promoted the moment a marker first appeared.
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // Re-marking an already-present key is a no-op membership change: the
+    // vector does not duplicate, the revision does not bump, and the schema
+    // is not re-promoted.
+    const auto revisionBefore = f.manager.AuthoringRevision();
+    PrefabMarkerApplyResult r2 = f.manager.ApplyPrefabMarkerEdits({
+        { rootUuid, transform, true, true },
+    });
+    REQUIRE(r2.rejected.empty());
+    REQUIRE(r2.applied == 1);
+    REQUIRE(f.manager.GetOverrides(rootUuid).size() == 3);
+    REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // Marking a second member independently is a second genuine add.
+    const UUID childUuid = reg.get<EntityIdComponent>(childHandle).id;
+    PrefabMarkerApplyResult r3 = f.manager.ApplyPrefabMarkerEdits({
+        { childUuid, S2Key("script"), false, true },
+    });
+    REQUIRE(r3.rejected.empty());
+    REQUIRE(r3.applied == 1);
+    auto childOverrides = f.manager.GetOverrides(childUuid);
+    REQUIRE(childOverrides.size() == 1);
+    CHECK(childOverrides[0] == S2Key("script"));
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-B — removal edits (afterPresent=false) unmark, and undo semantics
+// of the payload are satisfied at the helper level: applying the inverse
+// presence delta restores the prior membership. A removal of an absent key is
+// accepted but mutates nothing (no revision bump, no schema promotion).
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper removal restores membership and respects the presence delta")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_remove");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    const auto transform = S2Key("transform");
+    const auto name = S2Key("name");
+    REQUIRE(f.manager.ApplyPrefabMarkerEdits({
+        { rootUuid, transform, false, true },
+        { rootUuid, name,     false, true },
+    }).applied == 2);
+
+    // Remove only `transform`: name survives, transform gone.
+    PrefabMarkerApplyResult r = f.manager.ApplyPrefabMarkerEdits({
+        { rootUuid, transform, true, false },
+    });
+    REQUIRE(r.rejected.empty());
+    REQUIRE(r.applied == 1);
+    const auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides.size() == 1);
+    CHECK(overrides[0] == name);
+    CHECK_FALSE(f.manager.IsOverridden(rootUuid, transform));
+    CHECK(f.manager.IsOverridden(rootUuid, name));
+
+    // Undo of that removal (the S6 layer's restore-beforePresent step): the
+    // same key reappears exactly once.
+    PrefabMarkerApplyResult re = f.manager.ApplyPrefabMarkerEdits({
+        { rootUuid, transform, false, true },
+    });
+    REQUIRE(re.applied == 1);
+    REQUIRE(f.manager.GetOverrides(rootUuid).size() == 2);
+
+    // Removal of an absent key is accepted (afterPresent already true) but is
+    // a no-op: no revision bump, no further schema churn.
+    const auto revisionBefore = f.manager.AuthoringRevision();
+    PrefabMarkerApplyResult r2 = f.manager.ApplyPrefabMarkerEdits({
+        { rootUuid, S2Key("motion"), false, false },
+    });
+    REQUIRE(r2.rejected.empty());
+    REQUIRE(r2.applied == 1);
+    REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
+    REQUIRE(f.manager.GetOverrides(rootUuid).size() == 2);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-C — loud rejection, non-atomic by design. A batch mixing valid edits
+// with (a) an absent member UUID, (b) a member that is not a prefab member,
+// and (c) a non-overridable key applies the valid ones and reports the rest
+// in rejected. This is the complete-state-at-construction contract the S6
+// commands need: the helper never silently swallows a bad marker.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper rejects bad members and non-overridable keys loudly while applying valid edits")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_reject");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID folkUuid = S5NonMemberUuid(f);
+
+    const auto transform = S2Key("transform");
+    const auto script = S2Key("script");
+    const auto meshRef = S2Key("meshRef"); // overridable bit is false
+    PrefabMarkerApplyResult r = f.manager.ApplyPrefabMarkerEdits({
+        { rootUuid, transform, false, true },   // valid
+        { UUID::Nil(), script, false, true },   // absent member entity
+        { folkUuid, script, false, true },      // not a prefab member
+        { rootUuid, meshRef, false, true },     // not overridable
+    });
+    REQUIRE(r.applied == 1);                  // only the transform edit landed
+    REQUIRE(r.rejected.size() == 3);
+    CHECK(r.rejected[0].member == UUID::Nil());
+    CHECK(r.rejected[0].key == script);
+    CHECK(r.rejected[1].member == folkUuid);
+    CHECK(r.rejected[2].key == meshRef);
+
+    const auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides.size() == 1);
+    CHECK(overrides[0] == transform);
+    CHECK_FALSE(f.manager.IsOverridden(rootUuid, script));
+}

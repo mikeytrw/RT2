@@ -21,6 +21,7 @@ const char* Error::CodeName(Code c)
         case InvalidArgument:      return "invalid_argument";
         case LockedEntity:         return "locked_entity";
         case ClipboardStale:       return "clipboard_stale";
+        case NotPrefabMember:      return "not_prefab_member";
         case InvalidRuntimeState:  return "invalid_runtime_state";
     }
     return "unknown";

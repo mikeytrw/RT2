@@ -41,6 +41,8 @@ struct Error
         InvalidArgument,
         LockedEntity,
         ClipboardStale,
+        // Prefab overrides (Phase 8 W3)
+        NotPrefabMember,
         // Runtime
         InvalidRuntimeState,
     };

@@ -24,6 +24,34 @@
 struct EditorCameraPose;
 
 // ============================================================================
+// Prefab override membership delta (Phase 8 W3, D3.10).
+//
+// A material edit can change a value on a member whose marker already exists,
+// so a keyAdded-only list cannot undo correctly. The payload is an explicit
+// membership delta: execute applies `afterPresent` and undo restores
+// `beforePresent` for each entry. Commands that can mutate an overridable
+// component carry a vector of these, captured before mutation and applied
+// atomically with the component values.
+// ============================================================================
+struct PrefabMarkerEdit
+{
+	rt2::core::UUID    member;
+	PrefabComponentKey key;
+	bool               beforePresent;
+	bool               afterPresent;
+};
+
+// Result of applying a batch of PrefabMarkerEdits. The helper is not
+// fail-atomic: an edit whose member is not a prefab member (or does not
+// exist) is rejected and reported here with its payload intact, while the
+// remaining edits still apply. `rejected` is empty on full success.
+struct PrefabMarkerApplyResult
+{
+	std::size_t                applied = 0;
+	std::vector<PrefabMarkerEdit> rejected;
+};
+
+// ============================================================================
 // SceneManager — owns all scene state + provides entity manipulation APIs.
 //
 // Owns:
@@ -591,6 +619,33 @@ struct EditorCameraPose;
 	void InstallMaterialOverride(
 		const rt2::core::UUID& entity,
 		const std::optional<MaterialOverrideComponent>& override);
+
+	// ---- Phase 8 W3 S5: prefab override query + marker helper ----
+	//
+	// IsOverridden reports whether `key` is currently present in the prefab
+	// member `uuid`'s override set. Returns false for a non-member entity or
+	// an absent component (never raises).
+	//
+	// GetOverrides returns the member's override set in canonical (wire-sorted,
+	// de-duplicated) order. Returns an empty vector if the entity does not
+	// exist or is not a prefab member.
+	//
+	// ApplyPrefabMarkerEdits applies a batch of membership deltas to their
+	// members' override sets, maintaining the canonical sorted-unique
+	// invariant. Marking operations also promote the document schema version
+	// (SchemaVersion::PromoteSchemaVersion) the first time an override appears
+	// on a member it was previously absent from, so a recovery SaveTo writes v6
+	// and the set survives. Calls NotifyAuthoringChanged() once when anything
+	// applied. Edits whose member is not a prefab member are skipped and
+	// returned in result.rejected (see PrefabMarkerApplyResult) — the caller's
+	// command layer owns transactional rollback, not this helper.
+	// Returns the number of edits applied.
+	bool IsOverridden(const rt2::core::UUID& member,
+	                  const PrefabComponentKey& key) const;
+	std::vector<PrefabComponentKey> GetOverrides(
+		const rt2::core::UUID& member) const;
+	PrefabMarkerApplyResult ApplyPrefabMarkerEdits(
+		const std::vector<PrefabMarkerEdit>& edits);
 
 	// ---- Dirty tracking ----
 	bool IsDirty() const { return m_Authoring.metadata.dirty; }
