@@ -77,6 +77,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>vendor;vendor\doctest;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\RT2App\vendor;..\RT2App\vendor\tinygltf;..\RT2App\vendor\entt\src;..\RT2App\vendor\sol2\include;..\RT2App\vendor\lua;..\RT2App\src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>

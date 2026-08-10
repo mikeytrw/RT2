@@ -177,6 +177,7 @@ struct PrefabValuePlan
 {
 	PrefabMarkerDirection direction = PrefabMarkerDirection::After;
 	std::uint64_t documentGeneration = 0;
+	std::uint64_t resourceGeneration = 0;
 	bool anyStateChange = false;
 	std::vector<PrefabValueOperation> operations;
 };
@@ -185,6 +186,7 @@ struct PrefabCompositePlan
 {
 	PrefabMarkerDirection direction = PrefabMarkerDirection::After;
 	std::uint64_t documentGeneration = 0;
+	std::uint64_t resourceGeneration = 0;
 	PrefabValuePlan values;
 	PrefabMarkerPlan markers;
 };

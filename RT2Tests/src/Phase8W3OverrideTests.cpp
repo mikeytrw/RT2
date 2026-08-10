@@ -5711,3 +5711,198 @@ TEST_CASE("Phase 8 W3: typed composite material-slot fan-out is atomic")
     CHECK(reg.try_get<MaterialOverrideComponent>(rootHandle) != nullptr);
     std::filesystem::remove_all(dir);
 }
+
+TEST_CASE("Phase 8 W3: composite direction reverses typed value source and target")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c3a_direction");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    auto cycle = [&](PrefabValueEdit edit) {
+        edit.direction = PrefabMarkerDirection::After;
+        auto execute = f.manager.PreparePrefabCompositeEdits({ edit }, {},
+            PrefabMarkerDirection::After, schema, schema);
+        REQUIRE(execute.IsOk());
+        REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(execute.value)).error.IsOk());
+        edit.direction = PrefabMarkerDirection::Before;
+        auto undo = f.manager.PreparePrefabCompositeEdits({ edit }, {},
+            PrefabMarkerDirection::Before, schema, schema);
+        REQUIRE(undo.IsOk());
+        REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(undo.value)).error.IsOk());
+    };
+
+    const auto name = f.manager.GetEntityName({ rootHandle });
+    cycle({ PrefabValueKind::EntityName, root, PrefabMarkerDirection::After,
+        name, std::string("direction-name") });
+    CHECK(f.manager.GetEntityName({ rootHandle }) == name);
+
+    LightComponent lightBefore;
+    reg.emplace_or_replace<LightComponent>(rootHandle, lightBefore);
+    auto lightAfter = lightBefore; lightAfter.intensity = 3.0f;
+    cycle({ PrefabValueKind::LightProperties, root, PrefabMarkerDirection::After,
+        lightBefore, lightAfter });
+    CHECK(reg.get<LightComponent>(rootHandle).intensity == lightBefore.intensity);
+
+    CameraComponent cameraBefore;
+    reg.emplace_or_replace<CameraComponent>(rootHandle, cameraBefore);
+    auto cameraAfter = cameraBefore; cameraAfter.verticalFOV = 63.0f;
+    cycle({ PrefabValueKind::CameraProperties, root, PrefabMarkerDirection::After,
+        cameraBefore, cameraAfter });
+    CHECK(reg.get<CameraComponent>(rootHandle).verticalFOV == cameraBefore.verticalFOV);
+
+    const auto& tf = reg.get<Transform>(rootHandle);
+    EditableTRS localBefore{ tf.translation, tf.rotation, tf.scale };
+    auto localAfter = localBefore; localAfter.translation.x = 2.0f;
+    cycle({ PrefabValueKind::LocalTransform, root, PrefabMarkerDirection::After,
+        localBefore, localAfter });
+    CHECK(reg.get<Transform>(rootHandle).translation == localBefore.translation);
+
+    PrefabCameraPoseValue poseBefore{ localBefore, cameraBefore };
+    auto poseAfter = poseBefore; poseAfter.local.translation.y = 4.0f;
+    cycle({ PrefabValueKind::CameraPose, root, PrefabMarkerDirection::After,
+        poseBefore, poseAfter });
+    CHECK(reg.get<Transform>(rootHandle).translation == localBefore.translation);
+
+    std::optional<MotionComponent> motionBefore;
+    auto motionAfter = MotionComponent{}; motionAfter.linearVelocity = { 1.0f, 2.0f, 3.0f };
+    cycle({ PrefabValueKind::MotionState, root, PrefabMarkerDirection::After,
+        motionBefore, std::optional<MotionComponent>{ motionAfter } });
+    CHECK_FALSE(reg.all_of<MotionComponent>(rootHandle));
+
+    // Script absence is a valid typed state; C3B owns binding/asset semantics.
+    std::optional<ScriptComponent> script;
+    cycle({ PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+        script, script });
+
+    f.manager.AddMaterial(SceneMaterial{});
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    PrefabMaterialIndexValue indexBefore{ 0, std::nullopt };
+    PrefabMaterialIndexValue indexAfter{ 1, std::nullopt };
+    cycle({ PrefabValueKind::MaterialIndex, root, PrefabMarkerDirection::After,
+        indexBefore, indexAfter });
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 0);
+
+    const auto slotBefore = f.manager.GetMaterial(0);
+    auto slotAfter = slotBefore; slotAfter.baseAlpha = 0.8f;
+    cycle({ PrefabValueKind::MaterialSlotProperties, {}, PrefabMarkerDirection::After,
+        PrefabMaterialSlotValue{ 0, slotBefore, {} },
+        PrefabMaterialSlotValue{ 0, slotAfter, {} } });
+    CHECK(f.manager.GetMaterial(0).baseAlpha == slotBefore.baseAlpha);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3: composite schema and canonical write-set invariants")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c3a_writes");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto name = f.manager.GetEntityName({ rootHandle });
+    const auto noChange = EditableTRS{ reg.get<Transform>(rootHandle).translation,
+        reg.get<Transform>(rootHandle).rotation, reg.get<Transform>(rootHandle).scale };
+	reg.emplace_or_replace<CameraComponent>(rootHandle, CameraComponent{});
+
+    auto valueSchema = f.manager.PreparePrefabCompositeEdits(
+        { PrefabValueEdit{ PrefabValueKind::EntityName, root,
+            PrefabMarkerDirection::After, name, std::string("value") } }, {},
+        PrefabMarkerDirection::After, schema, schema + 1);
+    REQUIRE_FALSE(valueSchema.IsOk());
+    REQUIRE(valueSchema.error.code == rt2::core::Error::InvalidArgument);
+
+    const auto poseBefore = PrefabCameraPoseValue{ noChange, CameraComponent{} };
+    auto poseAfter = poseBefore; poseAfter.local.translation.x = 1.0f;
+    auto cameraAfter = poseAfter.camera; cameraAfter.verticalFOV = 50.0f;
+    const auto camera = PrefabValueEdit{ PrefabValueKind::CameraProperties, root,
+        PrefabMarkerDirection::After, poseBefore.camera, cameraAfter };
+    const auto pose = PrefabValueEdit{ PrefabValueKind::CameraPose, root,
+        PrefabMarkerDirection::After, poseBefore, poseAfter };
+    auto conflict = f.manager.PreparePrefabCompositeEdits({ camera, pose }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(conflict.IsOk());
+    REQUIRE(conflict.error.code == rt2::core::Error::InvalidArgument);
+    auto reverseConflict = f.manager.PreparePrefabCompositeEdits({ pose, camera }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(reverseConflict.IsOk());
+
+    f.manager.AddMaterial(SceneMaterial{});
+    const auto material0 = f.manager.GetMaterial(0);
+    const auto material1 = f.manager.GetMaterial(1);
+    auto material0After = material0; material0After.baseAlpha = 0.5f;
+    auto material1After = material1; material1After.baseAlpha = 0.25f;
+    const auto slot0 = PrefabValueEdit{ PrefabValueKind::MaterialSlotProperties,
+        {}, PrefabMarkerDirection::After, PrefabMaterialSlotValue{ 0, material0, {} },
+        PrefabMaterialSlotValue{ 0, material0After, {} } };
+    const auto slot1 = PrefabValueEdit{ PrefabValueKind::MaterialSlotProperties,
+        {}, PrefabMarkerDirection::After, PrefabMaterialSlotValue{ 1, material1, {} },
+        PrefabMaterialSlotValue{ 1, material1After, {} } };
+    auto disjoint = f.manager.PreparePrefabCompositeEdits({ slot0, slot1 }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(disjoint.IsOk());
+    const auto disjointResult = f.manager.CommitPrefabCompositePlan(std::move(disjoint.value));
+    REQUIRE(disjointResult.error.IsOk());
+    CHECK(f.manager.GetMaterial(0).baseAlpha == material0After.baseAlpha);
+    CHECK(f.manager.GetMaterial(1).baseAlpha == material1After.baseAlpha);
+
+    PrefabValueEdit forged{ PrefabValueKind::EntityName, root,
+        PrefabMarkerDirection::After, name, std::string("forged") };
+    auto valid = f.manager.PreparePrefabCompositeEdits({ forged }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(valid.IsOk());
+    valid.value.values.operations[0].kind = static_cast<PrefabValueKind>(255);
+    const auto forgedResult = f.manager.CommitPrefabCompositePlan(std::move(valid.value));
+    REQUIRE_FALSE(forgedResult.error.IsOk());
+    REQUIRE(forgedResult.error.code == rt2::core::Error::InvalidArgument);
+
+    // Material-bearing plans pin the resource generation independently of
+    // document bytes. Compaction of an unreferenced mesh invalidates it.
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    f.manager.GetECS().meshRegistry.AddMesh(MeshData{});
+    f.manager.GetECS().meshRegistry.AddMesh(MeshData{});
+    MaterialOverrideComponent overrideValue;
+    overrideValue.material = f.manager.GetMaterial(0);
+    auto materialPlan = f.manager.PreparePrefabCompositeEdits(
+        { PrefabValueEdit{ PrefabValueKind::MaterialIndex, root,
+            PrefabMarkerDirection::After,
+            PrefabMaterialIndexValue{ 0, std::nullopt },
+            PrefabMaterialIndexValue{ 0, overrideValue } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(materialPlan.IsOk());
+    const auto resourceBefore = f.manager.ResourceGeneration();
+    REQUIRE(f.manager.CompactMeshRegistry());
+    REQUIRE(f.manager.ResourceGeneration() != resourceBefore);
+    const auto resourceRevision = f.manager.AuthoringRevision();
+    const auto resourceResult = f.manager.CommitPrefabCompositePlan(std::move(materialPlan.value));
+    REQUIRE_FALSE(resourceResult.error.IsOk());
+    CHECK(f.manager.AuthoringRevision() == resourceRevision);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3: composite canonical no-op does not dirty transform during marker change")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c3a_canonical");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    auto& tf = reg.get<Transform>(rootHandle);
+    tf.dirty = false;
+    const EditableTRS nonCanonical{ tf.translation, glm::quat(2.0f, 0.0f, 0.0f, 0.0f), tf.scale };
+    PrefabValueEdit noop{ PrefabValueKind::LocalTransform, root,
+        PrefabMarkerDirection::After, nonCanonical, nonCanonical };
+    auto plan = f.manager.PreparePrefabCompositeEdits({ noop },
+        { PrefabMarkerEdit{ root, S2Key("transform"), false, true } },
+        PrefabMarkerDirection::After, schema, SceneSerializer::SchemaVersion);
+    REQUIRE(plan.IsOk());
+    const auto result = f.manager.CommitPrefabCompositePlan(std::move(plan.value));
+    REQUIRE(result.error.IsOk());
+    REQUIRE(result.anyStateChange);
+    CHECK_FALSE(reg.get<Transform>(rootHandle).dirty);
+    CHECK(reg.get<Transform>(rootHandle).rotation == glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    std::filesystem::remove_all(dir);
+}

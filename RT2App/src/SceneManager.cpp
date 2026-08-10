@@ -5586,6 +5586,24 @@ bool S5EqualPayload(const PrefabValuePayload& a, const PrefabValuePayload& b)
 		else return false;
 	}, a, b);
 }
+
+EditableTRS S5CanonicalTRS(EditableTRS value)
+{
+	value.rotation = glm::normalize(value.rotation);
+	return value;
+}
+
+glm::quat S5CanonicalRotation(glm::quat value)
+{
+	return glm::normalize(value);
+}
+
+CameraComponent S5CanonicalCamera(CameraComponent value)
+{
+	if (glm::dot(value.forwardDirection, value.forwardDirection) > 1e-8f)
+		value.forwardDirection = glm::normalize(value.forwardDirection);
+	return value;
+}
 } // namespace
 
 rt2::core::Result<bool> SceneManager::IsOverridden(
@@ -6000,8 +6018,10 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 	PrefabCompositePlan composite;
 	composite.direction = direction;
 	composite.documentGeneration = DocumentGeneration();
+	composite.resourceGeneration = ResourceGeneration();
 	composite.values.direction = direction;
 	composite.values.documentGeneration = composite.documentGeneration;
+	composite.values.resourceGeneration = composite.resourceGeneration;
 
 	const auto fail = [](rt2::core::Error::Code code, const std::string& path,
 		const std::string& detail) {
@@ -6009,6 +6029,16 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 	};
 	const auto& registry = m_EcsScene.registry;
 	std::unordered_map<std::string, std::size_t> operationByKey;
+	struct WriteSetValue { PrefabValuePayload source; PrefabValuePayload target; };
+	std::unordered_map<std::string, WriteSetValue> writeSet;
+	const auto registerWrite = [&](const std::string& key,
+		const PrefabValuePayload& source, const PrefabValuePayload& target)
+		-> bool {
+		auto [it, inserted] = writeSet.emplace(key, WriteSetValue{ source, target });
+		if (inserted) return true;
+		return S5EqualPayload(it->second.source, source)
+			&& S5EqualPayload(it->second.target, target);
+	};
 
 	const auto resolve = [&](const rt2::core::UUID& uuid,
 		PrefabValueKind kind) -> std::pair<entt::entity, rt2::core::Error> {
@@ -6044,6 +6074,9 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 			break;
 		case PrefabValueKind::MaterialSlotProperties:
 			break;
+		default:
+			return { e, rt2::core::Error{ rt2::core::Error::InvalidArgument,
+				uuid.ToString(), "invalid composite PrefabValueKind" } };
 		}
 		return { e, {} };
 	};
@@ -6098,23 +6131,27 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 		PrefabValueOperation op;
 		op.kind = edit.kind;
 		op.entity = edit.entity;
-		op.source = edit.before;
-		op.target = edit.after;
+		const auto& sourcePayload = direction == PrefabMarkerDirection::After
+			? edit.before : edit.after;
+		const auto& targetPayload = direction == PrefabMarkerDirection::After
+			? edit.after : edit.before;
+		op.source = sourcePayload;
+		op.target = targetPayload;
 		if (edit.kind == PrefabValueKind::MaterialSlotProperties)
 		{
-			const auto* before = std::get_if<PrefabMaterialSlotValue>(&edit.before);
-			const auto* after = std::get_if<PrefabMaterialSlotValue>(&edit.after);
-			if (!before || !after || before->slotIndex != after->slotIndex)
+			const auto* source = std::get_if<PrefabMaterialSlotValue>(&sourcePayload);
+			const auto* target = std::get_if<PrefabMaterialSlotValue>(&targetPayload);
+			if (!source || !target || source->slotIndex != target->slotIndex)
 				return fail(rt2::core::Error::InvalidArgument, "material-slot",
 					"material-slot payloads are malformed");
-			if (before->slotIndex < 0 || before->slotIndex >= static_cast<int>(m_EcsScene.materials.size()))
-				return fail(rt2::core::Error::InvalidArgument, std::to_string(before->slotIndex),
+			if (source->slotIndex < 0 || source->slotIndex >= static_cast<int>(m_EcsScene.materials.size()))
+				return fail(rt2::core::Error::InvalidArgument, std::to_string(source->slotIndex),
 					"material slot index out of range");
-			if (!S5EqualMaterial(m_EcsScene.materials[before->slotIndex], before->material))
-				return fail(rt2::core::Error::InvalidArgument, std::to_string(before->slotIndex),
+			if (!S5EqualMaterial(m_EcsScene.materials[source->slotIndex], source->material))
+				return fail(rt2::core::Error::InvalidArgument, std::to_string(source->slotIndex),
 					"material slot source differs from live state");
-			auto sourceFanout = makeMaterialSlot(before->slotIndex, before->material, before->overrides, false);
-			auto targetFanout = makeMaterialSlot(after->slotIndex, after->material, after->overrides, true);
+			auto sourceFanout = makeMaterialSlot(source->slotIndex, source->material, source->overrides, false);
+			auto targetFanout = makeMaterialSlot(target->slotIndex, target->material, target->overrides, true);
 			if (sourceFanout.slotIndex < 0 || targetFanout.slotIndex < 0)
 				return fail(rt2::core::Error::InvalidEntity, "material-slot",
 					"imported material fan-out member has no durable uniquely resolvable EntityIdComponent");
@@ -6128,8 +6165,8 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 				return fail(error.code, error.path, error.detail);
 			if (edit.kind == PrefabValueKind::EntityName)
 			{
-				const auto* before = std::get_if<std::string>(&edit.before);
-				const auto* after = std::get_if<std::string>(&edit.after);
+				const auto* before = std::get_if<std::string>(&sourcePayload);
+				const auto* after = std::get_if<std::string>(&targetPayload);
 				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "name payload is malformed");
 				op.source = *before; op.target = *after;
 				const auto* current = registry.try_get<NameComponent>(entity);
@@ -6138,40 +6175,55 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 			}
 			else if (edit.kind == PrefabValueKind::LightProperties)
 			{
-				const auto* before = std::get_if<LightComponent>(&edit.before); const auto* after = std::get_if<LightComponent>(&edit.after);
+				const auto* before = std::get_if<LightComponent>(&sourcePayload); const auto* after = std::get_if<LightComponent>(&targetPayload);
 				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "light payload is malformed");
 				if (!S5EqualLight(registry.get<LightComponent>(entity), *before)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "light source differs from live state");
 			}
 			else if (edit.kind == PrefabValueKind::CameraProperties)
 			{
-				const auto* before = std::get_if<CameraComponent>(&edit.before); const auto* after = std::get_if<CameraComponent>(&edit.after);
+				const auto* before = std::get_if<CameraComponent>(&sourcePayload); const auto* after = std::get_if<CameraComponent>(&targetPayload);
 				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "camera payload is malformed");
-				if (!S5EqualCamera(registry.get<CameraComponent>(entity), *before)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "camera source differs from live state");
+				op.source = S5CanonicalCamera(*before);
+				op.target = S5CanonicalCamera(*after);
+				if (!S5EqualCamera(S5CanonicalCamera(registry.get<CameraComponent>(entity)),
+					std::get<CameraComponent>(op.source))) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "camera source differs from live state");
 			}
 			else if (edit.kind == PrefabValueKind::LocalTransform)
 			{
-				const auto* before = std::get_if<EditableTRS>(&edit.before); const auto* after = std::get_if<EditableTRS>(&edit.after);
+				const auto* before = std::get_if<EditableTRS>(&sourcePayload); const auto* after = std::get_if<EditableTRS>(&targetPayload);
 				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "transform payload is malformed");
-				const auto& tf = registry.get<Transform>(entity); EditableTRS current{tf.translation, tf.rotation, tf.scale};
-				if (!S5EqualTRS(current, *before)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "transform source differs from live state");
+				op.source = S5CanonicalTRS(*before);
+				op.target = S5CanonicalTRS(*after);
+				const auto& tf = registry.get<Transform>(entity); EditableTRS current{tf.translation, S5CanonicalRotation(tf.rotation), tf.scale};
+				if (!S5EqualTRS(current, std::get<EditableTRS>(op.source))) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "transform source differs from live state");
 			}
 			else if (edit.kind == PrefabValueKind::CameraPose)
 			{
-				const auto* before = std::get_if<PrefabCameraPoseValue>(&edit.before); const auto* after = std::get_if<PrefabCameraPoseValue>(&edit.after);
+				const auto* before = std::get_if<PrefabCameraPoseValue>(&sourcePayload); const auto* after = std::get_if<PrefabCameraPoseValue>(&targetPayload);
 				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "camera-pose payload is malformed");
-				const auto& tf = registry.get<Transform>(entity); EditableTRS current{tf.translation, tf.rotation, tf.scale};
-				if (!S5EqualTRS(current, before->local) || !S5EqualCamera(registry.get<CameraComponent>(entity), before->camera)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "camera-pose source differs from live state");
+				PrefabCameraPoseValue canonicalBefore = *before;
+				PrefabCameraPoseValue canonicalAfter = *after;
+				canonicalBefore.local = S5CanonicalTRS(canonicalBefore.local);
+				canonicalAfter.local = S5CanonicalTRS(canonicalAfter.local);
+				canonicalBefore.camera = S5CanonicalCamera(canonicalBefore.camera);
+				canonicalAfter.camera = S5CanonicalCamera(canonicalAfter.camera);
+				canonicalBefore.camera.forwardDirection = glm::normalize(canonicalBefore.local.rotation * glm::vec3(0.0f, 0.0f, -1.0f));
+				canonicalAfter.camera.forwardDirection = glm::normalize(canonicalAfter.local.rotation * glm::vec3(0.0f, 0.0f, -1.0f));
+				op.source = canonicalBefore;
+				op.target = canonicalAfter;
+				const auto& tf = registry.get<Transform>(entity); EditableTRS current{tf.translation, S5CanonicalRotation(tf.rotation), tf.scale};
+				if (!S5EqualTRS(current, canonicalBefore.local) || !S5EqualCamera(S5CanonicalCamera(registry.get<CameraComponent>(entity)), canonicalBefore.camera)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "camera-pose source differs from live state");
 			}
 			else if (edit.kind == PrefabValueKind::MotionState)
 			{
-				const auto* before = std::get_if<std::optional<MotionComponent>>(&edit.before); const auto* after = std::get_if<std::optional<MotionComponent>>(&edit.after);
+				const auto* before = std::get_if<std::optional<MotionComponent>>(&sourcePayload); const auto* after = std::get_if<std::optional<MotionComponent>>(&targetPayload);
 				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "motion payload is malformed");
 				std::optional<MotionComponent> current; if (const auto* value = registry.try_get<MotionComponent>(entity)) current = *value;
 				if (!S5EqualPayload(current, *before)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "motion source differs from live state");
 			}
 			else if (edit.kind == PrefabValueKind::ScriptState)
 			{
-				const auto* before = std::get_if<std::optional<ScriptComponent>>(&edit.before); const auto* after = std::get_if<std::optional<ScriptComponent>>(&edit.after);
+				const auto* before = std::get_if<std::optional<ScriptComponent>>(&sourcePayload); const auto* after = std::get_if<std::optional<ScriptComponent>>(&targetPayload);
 				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "script payload is malformed");
 				std::optional<ScriptComponent> current; if (const auto* value = registry.try_get<ScriptComponent>(entity)) current = *value;
 				if (!S5EqualPayload(current, *before)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "script source differs from live state");
@@ -6189,15 +6241,75 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 			}
 			else if (edit.kind == PrefabValueKind::MaterialIndex)
 			{
-				const auto* before = std::get_if<PrefabMaterialIndexValue>(&edit.before); const auto* after = std::get_if<PrefabMaterialIndexValue>(&edit.after);
+				const auto* before = std::get_if<PrefabMaterialIndexValue>(&sourcePayload); const auto* after = std::get_if<PrefabMaterialIndexValue>(&targetPayload);
 				if (!before || !after || after->materialIndex < 0 || after->materialIndex >= static_cast<int>(m_EcsScene.materials.size())) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "material-index payload is invalid");
 				const auto& ref = registry.get<MeshRef>(entity); std::optional<MaterialOverrideComponent> current; if (const auto* ov = registry.try_get<MaterialOverrideComponent>(entity)) current = *ov;
 				if (ref.materialIndex != before->materialIndex || !S5EqualOverride(current, before->override)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "material-index source differs from live state");
 			}
 		}
 
-		const std::string key = std::to_string(static_cast<int>(op.kind)) + ":" + op.entity.ToString()
-			+ (op.kind == PrefabValueKind::MaterialSlotProperties ? ":slot" : "");
+		bool writesValid = true;
+		const auto write = [&](const std::string& property,
+			const PrefabValuePayload& source, const PrefabValuePayload& target) {
+			writesValid = writesValid && registerWrite(property, source, target);
+		};
+		switch (op.kind)
+		{
+		case PrefabValueKind::EntityName: write("name:" + edit.entity.ToString(), op.source, op.target); break;
+		case PrefabValueKind::LightProperties: write("light:" + edit.entity.ToString(), op.source, op.target); break;
+		case PrefabValueKind::CameraProperties: write("camera:" + edit.entity.ToString(), op.source, op.target); break;
+		case PrefabValueKind::LocalTransform: write("transform:" + edit.entity.ToString(), op.source, op.target); break;
+		case PrefabValueKind::CameraPose:
+		{
+			const auto& source = std::get<PrefabCameraPoseValue>(op.source);
+			const auto& target = std::get<PrefabCameraPoseValue>(op.target);
+			write("camera:" + edit.entity.ToString(), source.camera, target.camera);
+			write("transform:" + edit.entity.ToString(), source.local, target.local);
+			break;
+		}
+		case PrefabValueKind::MotionState: write("motion:" + edit.entity.ToString(), op.source, op.target); break;
+		case PrefabValueKind::ScriptState: write("script:" + edit.entity.ToString(), op.source, op.target); break;
+		case PrefabValueKind::MaterialIndex:
+		{
+			const auto& source = std::get<PrefabMaterialIndexValue>(op.source);
+			const auto& target = std::get<PrefabMaterialIndexValue>(op.target);
+			write("material-index:" + edit.entity.ToString(),
+				std::to_string(source.materialIndex), std::to_string(target.materialIndex));
+			write("material-override:" + edit.entity.ToString(),
+				PrefabMaterialIndexValue{ -1, source.override },
+				PrefabMaterialIndexValue{ -1, target.override });
+			break;
+		}
+		case PrefabValueKind::MaterialSlotProperties:
+		{
+			const auto& source = std::get<PrefabMaterialSlotValue>(op.source);
+			const auto& target = std::get<PrefabMaterialSlotValue>(op.target);
+			write("material-slot:" + std::to_string(source.slotIndex),
+				PrefabMaterialSlotValue{ source.slotIndex, source.material, {} },
+				PrefabMaterialSlotValue{ target.slotIndex, target.material, {} });
+			std::unordered_map<rt2::core::UUID, std::optional<MaterialOverrideComponent>> sourceOverrides;
+			std::unordered_map<rt2::core::UUID, std::optional<MaterialOverrideComponent>> targetOverrides;
+			for (const auto& [uuid, value] : source.overrides) sourceOverrides[uuid] = value;
+			for (const auto& [uuid, value] : target.overrides) targetOverrides[uuid] = value;
+			std::unordered_set<rt2::core::UUID> uuids;
+			for (const auto& [uuid, value] : sourceOverrides) uuids.insert(uuid);
+			for (const auto& [uuid, value] : targetOverrides) uuids.insert(uuid);
+			for (const auto& uuid : uuids)
+				write("material-override:" + uuid.ToString(),
+					PrefabMaterialIndexValue{ -1, sourceOverrides[uuid] },
+					PrefabMaterialIndexValue{ -1, targetOverrides[uuid] });
+			break;
+		}
+		default:
+			return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "invalid composite PrefabValueKind");
+		}
+		if (!writesValid)
+			return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(),
+				"contradictory composite write-set entries");
+
+		std::string key = std::to_string(static_cast<int>(op.kind)) + ":" + op.entity.ToString();
+		if (op.kind == PrefabValueKind::MaterialSlotProperties)
+			key += ":slot:" + std::to_string(std::get<PrefabMaterialSlotValue>(op.source).slotIndex);
 		auto [it, inserted] = operationByKey.emplace(key, composite.values.operations.size());
 		if (!inserted)
 		{
@@ -6217,6 +6329,9 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 	}
 	else
 	{
+		if (beforeSchemaVersion != afterSchemaVersion)
+			return fail(rt2::core::Error::InvalidArgument, "",
+				"empty or value-only composite cannot transport a schema change");
 		composite.markers.direction = direction;
 		composite.markers.sourceSchemaVersion = beforeSchemaVersion;
 		composite.markers.targetSchemaVersion = afterSchemaVersion;
@@ -6246,6 +6361,15 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 	if (plan.values.direction != plan.direction || plan.markers.direction != plan.direction)
 		return fail(rt2::core::Error::InvalidArgument, "",
 			"composite value and marker directions differ");
+	const bool carriesResources = std::any_of(plan.values.operations.begin(), plan.values.operations.end(),
+		[](const PrefabValueOperation& op) {
+			return op.kind == PrefabValueKind::MaterialIndex
+				|| op.kind == PrefabValueKind::MaterialSlotProperties;
+		});
+	if (carriesResources && (plan.resourceGeneration != ResourceGeneration()
+		|| plan.values.resourceGeneration != ResourceGeneration()))
+		return fail(rt2::core::Error::InvalidArgument, "",
+			"stale composite material plan: resource generation changed");
 
 	// Re-run the typed value validation against the current document. This is
 	// validate-only: no setter is called, so a marker failure cannot leave a
@@ -6253,7 +6377,11 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 	std::vector<PrefabValueEdit> valueEdits;
 	valueEdits.reserve(plan.values.operations.size());
 	for (const auto& op : plan.values.operations)
-		valueEdits.push_back(PrefabValueEdit{ op.kind, op.entity, plan.direction, op.source, op.target });
+	{
+		const auto before = plan.direction == PrefabMarkerDirection::After ? op.source : op.target;
+		const auto after = plan.direction == PrefabMarkerDirection::After ? op.target : op.source;
+		valueEdits.push_back(PrefabValueEdit{ op.kind, op.entity, plan.direction, before, after });
+	}
 	const auto currentSchema = m_Authoring.metadata.schemaVersion;
 	if (!valueEdits.empty())
 	{
