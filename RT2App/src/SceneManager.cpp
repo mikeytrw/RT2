@@ -28,6 +28,7 @@
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
+#include <type_traits>
 #include <functional>
 #include <algorithm>
 
@@ -5487,6 +5488,104 @@ bool S5ValidateSchemaTransition(
 	}
 	return true;
 }
+
+bool S5EqualVec3(const glm::vec3& a, const glm::vec3& b)
+{
+	return a.x == b.x && a.y == b.y && a.z == b.z;
+}
+
+bool S5EqualQuat(const glm::quat& a, const glm::quat& b)
+{
+	return a.w == b.w && a.x == b.x && a.y == b.y && a.z == b.z;
+}
+
+bool S5EqualTRS(const EditableTRS& a, const EditableTRS& b)
+{
+	return S5EqualVec3(a.translation, b.translation)
+		&& S5EqualQuat(a.rotation, b.rotation)
+		&& S5EqualVec3(a.scale, b.scale);
+}
+
+bool S5EqualLight(const LightComponent& a, const LightComponent& b)
+{
+	return S5EqualVec3(a.color, b.color) && a.intensity == b.intensity
+		&& a.range == b.range && a.innerConeAngle == b.innerConeAngle
+		&& a.outerConeAngle == b.outerConeAngle && a.type == b.type;
+}
+
+bool S5EqualCamera(const CameraComponent& a, const CameraComponent& b)
+{
+	return a.verticalFOV == b.verticalFOV && a.aperture == b.aperture
+		&& a.focusDistance == b.focusDistance
+		&& S5EqualVec3(a.forwardDirection, b.forwardDirection);
+}
+
+bool S5EqualMaterial(const SceneMaterial& a, const SceneMaterial& b)
+{
+	return a.type == b.type && S5EqualVec3(a.baseColor, b.baseColor)
+		&& a.baseAlpha == b.baseAlpha && a.metallic == b.metallic
+		&& a.roughness == b.roughness && a.ior == b.ior
+		&& a.transmissionFactor == b.transmissionFactor
+		&& S5EqualVec3(a.emissiveColor, b.emissiveColor)
+		&& a.emissiveIntensity == b.emissiveIntensity
+		&& a.baseColorTextureIndex == b.baseColorTextureIndex
+		&& a.normalTextureIndex == b.normalTextureIndex
+		&& a.emissiveTextureIndex == b.emissiveTextureIndex
+		&& a.metallicRoughnessTextureIndex == b.metallicRoughnessTextureIndex
+		&& a.alphaMode == b.alphaMode && a.alphaCutoff == b.alphaCutoff
+		&& a.sourceKey == b.sourceKey;
+}
+
+bool S5EqualOverride(const std::optional<MaterialOverrideComponent>& a,
+	const std::optional<MaterialOverrideComponent>& b)
+{
+	if (a.has_value() != b.has_value()) return false;
+	if (!a) return true;
+	return S5EqualMaterial(a->material, b->material)
+		&& a->authored == b->authored
+		&& a->sourceMaterialKey == b->sourceMaterialKey
+		&& a->materialIndex == b->materialIndex;
+}
+
+bool S5EqualPayload(const PrefabValuePayload& a, const PrefabValuePayload& b)
+{
+	if (a.index() != b.index()) return false;
+	return std::visit([](const auto& lhs, const auto& rhs) -> bool {
+		using T = std::decay_t<decltype(lhs)>;
+		if constexpr (!std::is_same_v<T, std::decay_t<decltype(rhs)>>)
+			return false;
+		else if constexpr (std::is_same_v<T, std::monostate>)
+			return true;
+		else if constexpr (std::is_same_v<T, std::string>)
+			return lhs == rhs;
+		else if constexpr (std::is_same_v<T, LightComponent>)
+			return S5EqualLight(lhs, rhs);
+		else if constexpr (std::is_same_v<T, CameraComponent>)
+			return S5EqualCamera(lhs, rhs);
+		else if constexpr (std::is_same_v<T, EditableTRS>)
+			return S5EqualTRS(lhs, rhs);
+		else if constexpr (std::is_same_v<T, PrefabCameraPoseValue>)
+			return S5EqualTRS(lhs.local, rhs.local) && S5EqualCamera(lhs.camera, rhs.camera);
+		else if constexpr (std::is_same_v<T, std::optional<MotionComponent>>) {
+			if (lhs.has_value() != rhs.has_value()) return false;
+			return !lhs || S5EqualVec3(lhs->linearVelocity, rhs->linearVelocity);
+		}
+		else if constexpr (std::is_same_v<T, std::optional<ScriptComponent>>)
+			return rt2::core::ScriptComponentCanonicalEqual(lhs, rhs);
+		else if constexpr (std::is_same_v<T, PrefabMaterialSlotValue>) {
+			if (lhs.slotIndex != rhs.slotIndex || !S5EqualMaterial(lhs.material, rhs.material)
+				|| lhs.overrides.size() != rhs.overrides.size()) return false;
+			for (std::size_t i = 0; i < lhs.overrides.size(); ++i)
+				if (lhs.overrides[i].first != rhs.overrides[i].first
+					|| !S5EqualOverride(lhs.overrides[i].second, rhs.overrides[i].second)) return false;
+			return true;
+		}
+		else if constexpr (std::is_same_v<T, PrefabMaterialIndexValue>)
+			return lhs.materialIndex == rhs.materialIndex
+				&& S5EqualOverride(lhs.override, rhs.override);
+		else return false;
+	}, a, b);
+}
 } // namespace
 
 rt2::core::Result<bool> SceneManager::IsOverridden(
@@ -5890,6 +5989,363 @@ PrefabMarkerApplyResult SceneManager::CommitPrefabMarkerPlan(PrefabMarkerPlan pl
 // ============================================================================
 // Stats + misc
 // ============================================================================
+
+rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits(
+	const std::vector<PrefabValueEdit>& values,
+	const std::vector<PrefabMarkerEdit>& markers,
+	PrefabMarkerDirection direction,
+	std::uint32_t beforeSchemaVersion,
+	std::uint32_t afterSchemaVersion)
+{
+	PrefabCompositePlan composite;
+	composite.direction = direction;
+	composite.documentGeneration = DocumentGeneration();
+	composite.values.direction = direction;
+	composite.values.documentGeneration = composite.documentGeneration;
+
+	const auto fail = [](rt2::core::Error::Code code, const std::string& path,
+		const std::string& detail) {
+		return rt2::core::Result<PrefabCompositePlan>::Fail(code, path, detail);
+	};
+	const auto& registry = m_EcsScene.registry;
+	std::unordered_map<std::string, std::size_t> operationByKey;
+
+	const auto resolve = [&](const rt2::core::UUID& uuid,
+		PrefabValueKind kind) -> std::pair<entt::entity, rt2::core::Error> {
+		const auto e = m_Authoring.FindByUuid(uuid);
+		if (e == entt::null || !registry.valid(e))
+			return { entt::null, rt2::core::Error{ rt2::core::Error::InvalidEntity,
+				uuid.ToString(), "composite value entity is not present" } };
+		const auto missing = [&](const char* what) {
+			return rt2::core::Error{ rt2::core::Error::InvalidEntity, uuid.ToString(),
+				std::string("composite value entity has no ") + what };
+		};
+		switch (kind)
+		{
+		case PrefabValueKind::EntityName:
+			break;
+		case PrefabValueKind::LightProperties:
+			if (!registry.all_of<LightComponent>(e)) return { e, missing("LightComponent") };
+			break;
+		case PrefabValueKind::CameraProperties:
+			if (!registry.all_of<CameraComponent>(e)) return { e, missing("CameraComponent") };
+			break;
+		case PrefabValueKind::LocalTransform:
+			if (!registry.all_of<Transform>(e)) return { e, missing("Transform") };
+			break;
+		case PrefabValueKind::CameraPose:
+			if (!registry.all_of<Transform, CameraComponent>(e)) return { e, missing("camera components") };
+			break;
+		case PrefabValueKind::MotionState:
+		case PrefabValueKind::ScriptState:
+		case PrefabValueKind::MaterialIndex:
+			if (kind == PrefabValueKind::MaterialIndex && !registry.all_of<MeshRef>(e))
+				return { e, missing("MeshRef") };
+			break;
+		case PrefabValueKind::MaterialSlotProperties:
+			break;
+		}
+		return { e, {} };
+	};
+
+	const auto makeMaterialSlot = [&](int slot, const SceneMaterial& material,
+		const std::vector<std::pair<rt2::core::UUID,
+		std::optional<MaterialOverrideComponent>>>& supplied, bool derive)
+	{
+		PrefabMaterialSlotValue out;
+		out.slotIndex = slot;
+		out.material = material;
+		std::unordered_map<rt2::core::UUID, std::optional<MaterialOverrideComponent>> byUuid;
+		for (const auto& pair : supplied) byUuid[pair.first] = pair.second;
+		auto view = registry.view<ImportedMeshSourceComponent>();
+		for (auto e : view)
+		{
+			const auto* ref = registry.try_get<MeshRef>(e);
+			const auto* id = registry.try_get<EntityIdComponent>(e);
+			if (!ref || ref->materialIndex != slot) continue;
+			// Imported fan-out is durable state: every affected member must have
+			// an ID that can be resolved again at Commit time.  Do not silently
+			// omit an unresolvable member from the transaction.
+			if (!id || id->id.IsNull())
+				return PrefabMaterialSlotValue{};
+			std::optional<MaterialOverrideComponent> current;
+			if (const auto* ov = registry.try_get<MaterialOverrideComponent>(e)) current = *ov;
+			if (derive && supplied.empty())
+			{
+				MaterialOverrideComponent generated;
+				generated.material = material;
+				generated.authored = true;
+				generated.sourceMaterialKey = material.sourceKey;
+				generated.materialIndex = slot;
+				current = generated;
+			}
+			else if (!supplied.empty())
+			{
+				auto it = byUuid.find(id->id);
+				if (it == byUuid.end()) continue;
+				current = it->second;
+			}
+			out.overrides.emplace_back(id->id, std::move(current));
+		}
+		return out;
+	};
+
+	for (const auto& edit : values)
+	{
+		if (edit.direction != direction)
+			return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(),
+				"composite value direction differs from the transaction direction");
+		PrefabValueOperation op;
+		op.kind = edit.kind;
+		op.entity = edit.entity;
+		op.source = edit.before;
+		op.target = edit.after;
+		if (edit.kind == PrefabValueKind::MaterialSlotProperties)
+		{
+			const auto* before = std::get_if<PrefabMaterialSlotValue>(&edit.before);
+			const auto* after = std::get_if<PrefabMaterialSlotValue>(&edit.after);
+			if (!before || !after || before->slotIndex != after->slotIndex)
+				return fail(rt2::core::Error::InvalidArgument, "material-slot",
+					"material-slot payloads are malformed");
+			if (before->slotIndex < 0 || before->slotIndex >= static_cast<int>(m_EcsScene.materials.size()))
+				return fail(rt2::core::Error::InvalidArgument, std::to_string(before->slotIndex),
+					"material slot index out of range");
+			if (!S5EqualMaterial(m_EcsScene.materials[before->slotIndex], before->material))
+				return fail(rt2::core::Error::InvalidArgument, std::to_string(before->slotIndex),
+					"material slot source differs from live state");
+			auto sourceFanout = makeMaterialSlot(before->slotIndex, before->material, before->overrides, false);
+			auto targetFanout = makeMaterialSlot(after->slotIndex, after->material, after->overrides, true);
+			if (sourceFanout.slotIndex < 0 || targetFanout.slotIndex < 0)
+				return fail(rt2::core::Error::InvalidEntity, "material-slot",
+					"imported material fan-out member has no durable uniquely resolvable EntityIdComponent");
+			op.source = std::move(sourceFanout);
+			op.target = std::move(targetFanout);
+		}
+		else
+		{
+			auto [entity, error] = resolve(edit.entity, edit.kind);
+			if (error.code != rt2::core::Error::None)
+				return fail(error.code, error.path, error.detail);
+			if (edit.kind == PrefabValueKind::EntityName)
+			{
+				const auto* before = std::get_if<std::string>(&edit.before);
+				const auto* after = std::get_if<std::string>(&edit.after);
+				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "name payload is malformed");
+				op.source = *before; op.target = *after;
+				const auto* current = registry.try_get<NameComponent>(entity);
+				if ((current ? current->name : std::string{}) != *before)
+					return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "name source differs from live state");
+			}
+			else if (edit.kind == PrefabValueKind::LightProperties)
+			{
+				const auto* before = std::get_if<LightComponent>(&edit.before); const auto* after = std::get_if<LightComponent>(&edit.after);
+				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "light payload is malformed");
+				if (!S5EqualLight(registry.get<LightComponent>(entity), *before)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "light source differs from live state");
+			}
+			else if (edit.kind == PrefabValueKind::CameraProperties)
+			{
+				const auto* before = std::get_if<CameraComponent>(&edit.before); const auto* after = std::get_if<CameraComponent>(&edit.after);
+				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "camera payload is malformed");
+				if (!S5EqualCamera(registry.get<CameraComponent>(entity), *before)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "camera source differs from live state");
+			}
+			else if (edit.kind == PrefabValueKind::LocalTransform)
+			{
+				const auto* before = std::get_if<EditableTRS>(&edit.before); const auto* after = std::get_if<EditableTRS>(&edit.after);
+				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "transform payload is malformed");
+				const auto& tf = registry.get<Transform>(entity); EditableTRS current{tf.translation, tf.rotation, tf.scale};
+				if (!S5EqualTRS(current, *before)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "transform source differs from live state");
+			}
+			else if (edit.kind == PrefabValueKind::CameraPose)
+			{
+				const auto* before = std::get_if<PrefabCameraPoseValue>(&edit.before); const auto* after = std::get_if<PrefabCameraPoseValue>(&edit.after);
+				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "camera-pose payload is malformed");
+				const auto& tf = registry.get<Transform>(entity); EditableTRS current{tf.translation, tf.rotation, tf.scale};
+				if (!S5EqualTRS(current, before->local) || !S5EqualCamera(registry.get<CameraComponent>(entity), before->camera)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "camera-pose source differs from live state");
+			}
+			else if (edit.kind == PrefabValueKind::MotionState)
+			{
+				const auto* before = std::get_if<std::optional<MotionComponent>>(&edit.before); const auto* after = std::get_if<std::optional<MotionComponent>>(&edit.after);
+				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "motion payload is malformed");
+				std::optional<MotionComponent> current; if (const auto* value = registry.try_get<MotionComponent>(entity)) current = *value;
+				if (!S5EqualPayload(current, *before)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "motion source differs from live state");
+			}
+			else if (edit.kind == PrefabValueKind::ScriptState)
+			{
+				const auto* before = std::get_if<std::optional<ScriptComponent>>(&edit.before); const auto* after = std::get_if<std::optional<ScriptComponent>>(&edit.after);
+				if (!before || !after) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "script payload is malformed");
+				std::optional<ScriptComponent> current; if (const auto* value = registry.try_get<ScriptComponent>(entity)) current = *value;
+				if (!S5EqualPayload(current, *before)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "script source differs from live state");
+				if (after->has_value())
+				{
+					ScriptComponent canonical;
+					std::string detail;
+					std::string field;
+					if (!rt2::core::NormalizeAndValidateScriptComponent(**after, canonical, detail, &field))
+						return fail(rt2::core::Error::InvalidArgument,
+							field.empty() ? edit.entity.ToString() : edit.entity.ToString() + ":" + field,
+							"composite script target: " + detail);
+					op.target = std::optional<ScriptComponent>{ std::move(canonical) };
+				}
+			}
+			else if (edit.kind == PrefabValueKind::MaterialIndex)
+			{
+				const auto* before = std::get_if<PrefabMaterialIndexValue>(&edit.before); const auto* after = std::get_if<PrefabMaterialIndexValue>(&edit.after);
+				if (!before || !after || after->materialIndex < 0 || after->materialIndex >= static_cast<int>(m_EcsScene.materials.size())) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "material-index payload is invalid");
+				const auto& ref = registry.get<MeshRef>(entity); std::optional<MaterialOverrideComponent> current; if (const auto* ov = registry.try_get<MaterialOverrideComponent>(entity)) current = *ov;
+				if (ref.materialIndex != before->materialIndex || !S5EqualOverride(current, before->override)) return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "material-index source differs from live state");
+			}
+		}
+
+		const std::string key = std::to_string(static_cast<int>(op.kind)) + ":" + op.entity.ToString()
+			+ (op.kind == PrefabValueKind::MaterialSlotProperties ? ":slot" : "");
+		auto [it, inserted] = operationByKey.emplace(key, composite.values.operations.size());
+		if (!inserted)
+		{
+			const auto& prior = composite.values.operations[it->second];
+			if (!S5EqualPayload(prior.source, op.source) || !S5EqualPayload(prior.target, op.target))
+				return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(), "contradictory composite value operations");
+			continue;
+		}
+		composite.values.operations.push_back(std::move(op));
+	}
+
+	if (!markers.empty())
+	{
+		auto marker = PreparePrefabMarkerEdits(markers, direction, beforeSchemaVersion, afterSchemaVersion);
+		if (!marker.IsOk()) return fail(marker.error.code, marker.error.path, marker.error.detail);
+		composite.markers = std::move(marker.value);
+	}
+	else
+	{
+		composite.markers.direction = direction;
+		composite.markers.sourceSchemaVersion = beforeSchemaVersion;
+		composite.markers.targetSchemaVersion = afterSchemaVersion;
+		composite.markers.documentGeneration = composite.documentGeneration;
+		composite.markers.anyStateChange = false;
+	}
+	composite.markers.documentGeneration = composite.documentGeneration;
+	composite.values.anyStateChange = std::any_of(composite.values.operations.begin(), composite.values.operations.end(),
+		[](const PrefabValueOperation& op) { return !S5EqualPayload(op.source, op.target); });
+	return rt2::core::Result<PrefabCompositePlan>::Ok(std::move(composite));
+}
+
+PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabCompositePlan plan)
+{
+	PrefabCompositeApplyResult result;
+	result.beforeSchemaVersion = m_Authoring.metadata.schemaVersion;
+	result.afterSchemaVersion = result.beforeSchemaVersion;
+	const auto fail = [&](rt2::core::Error::Code code, const std::string& path,
+		const std::string& detail) {
+		result.error.code = code; result.error.path = path; result.error.detail = detail; return result;
+	};
+	if (plan.documentGeneration != DocumentGeneration()
+		|| plan.values.documentGeneration != DocumentGeneration()
+		|| plan.markers.documentGeneration != DocumentGeneration())
+		return fail(rt2::core::Error::InvalidArgument, "",
+			"stale composite plan: document generation changed");
+	if (plan.values.direction != plan.direction || plan.markers.direction != plan.direction)
+		return fail(rt2::core::Error::InvalidArgument, "",
+			"composite value and marker directions differ");
+
+	// Re-run the typed value validation against the current document. This is
+	// validate-only: no setter is called, so a marker failure cannot leave a
+	// value write behind.
+	std::vector<PrefabValueEdit> valueEdits;
+	valueEdits.reserve(plan.values.operations.size());
+	for (const auto& op : plan.values.operations)
+		valueEdits.push_back(PrefabValueEdit{ op.kind, op.entity, plan.direction, op.source, op.target });
+	const auto currentSchema = m_Authoring.metadata.schemaVersion;
+	if (!valueEdits.empty())
+	{
+		auto checked = PreparePrefabCompositeEdits(valueEdits, {}, plan.direction,
+			currentSchema, currentSchema);
+		if (!checked.IsOk()) return fail(checked.error.code, checked.error.path, checked.error.detail);
+		if (checked.value.values.operations.size() != plan.values.operations.size())
+			return fail(rt2::core::Error::InvalidArgument, "", "stale composite value plan operation set changed");
+		for (std::size_t i = 0; i < plan.values.operations.size(); ++i)
+			if (!S5EqualPayload(checked.value.values.operations[i].source, plan.values.operations[i].source)
+				|| !S5EqualPayload(checked.value.values.operations[i].target, plan.values.operations[i].target))
+				return fail(rt2::core::Error::InvalidArgument, "", "stale composite value source or fan-out changed");
+	}
+
+	struct MarkerWrite { entt::entity entity; std::vector<PrefabComponentKey> raw; std::vector<PrefabComponentKey> target; };
+	std::vector<MarkerWrite> markerWrites;
+	markerWrites.reserve(plan.markers.members.size());
+	std::unordered_set<rt2::core::UUID> seenMarkers;
+	for (const auto& transition : plan.markers.members)
+	{
+		if (!seenMarkers.insert(transition.member).second)
+			return fail(rt2::core::Error::InvalidArgument, transition.member.ToString(), "duplicate member transition in marker plan");
+		const auto e = m_Authoring.FindByUuid(transition.member);
+		if (e == entt::null || !m_EcsScene.registry.valid(e))
+			return fail(rt2::core::Error::InvalidEntity, transition.member.ToString(), "stale composite marker plan: member is absent");
+		auto* pm = m_EcsScene.registry.try_get<PrefabMemberComponent>(e);
+		if (!pm) return fail(rt2::core::Error::NotPrefabMember, transition.member.ToString(), "stale composite marker plan: member is not a prefab member");
+		std::vector<PrefabComponentKey> live;
+		rt2::core::Error vecErr;
+		if (!S5CanonicalizeVector(pm->overrides, live, vecErr)) return fail(vecErr.code, transition.member.ToString(), vecErr.detail);
+		if (live != transition.source) return fail(rt2::core::Error::InvalidArgument, transition.member.ToString(), "stale composite marker plan: source changed");
+		std::vector<PrefabComponentKey> target;
+		if (!S5CanonicalizeVector(transition.target, target, vecErr)) return fail(vecErr.code, transition.member.ToString(), vecErr.detail);
+		if (target != transition.target) return fail(rt2::core::Error::InvalidArgument, transition.member.ToString(), "forged composite marker target is not canonical");
+		markerWrites.push_back({ e, pm->overrides, std::move(target) });
+	}
+	rt2::core::Error schemaErr;
+	if (!S5ValidateSchemaTransition(m_Authoring, plan.markers.sourceSchemaVersion,
+		plan.markers.targetSchemaVersion, plan.markers.members, schemaErr))
+		return fail(schemaErr.code, "", schemaErr.detail);
+
+	bool valueChange = false;
+	for (const auto& op : plan.values.operations)
+		if (!S5EqualPayload(op.source, op.target)) { valueChange = true; break; }
+	bool markerChange = false;
+	for (const auto& write : markerWrites)
+		if (write.raw != write.target) { markerChange = true; break; }
+	const bool schemaChange = plan.markers.targetSchemaVersion != result.beforeSchemaVersion;
+	if (!valueChange && !markerChange && !schemaChange) return result;
+
+	std::vector<entt::entity> transformRoots;
+	const auto mergeImpact = [&](rt2::core::SyncImpact impact) {
+		if (static_cast<int>(impact) > static_cast<int>(result.syncImpact)) result.syncImpact = impact;
+	};
+	const auto addAffected = [&](const rt2::core::UUID& uuid) {
+		if (std::find(result.affectedEntities.begin(), result.affectedEntities.end(), uuid) == result.affectedEntities.end()) result.affectedEntities.push_back(uuid);
+	};
+	for (const auto& op : plan.values.operations)
+	{
+		const auto e = op.kind == PrefabValueKind::MaterialSlotProperties ? entt::null : m_Authoring.FindByUuid(op.entity);
+		if (op.kind != PrefabValueKind::MaterialSlotProperties && (e == entt::null || !m_EcsScene.registry.valid(e))) return fail(rt2::core::Error::InvalidEntity, op.entity.ToString(), "composite value target disappeared");
+		std::visit([&](const auto& target) {
+			using T = std::decay_t<decltype(target)>;
+			if constexpr (std::is_same_v<T, std::string>) m_EcsScene.registry.emplace_or_replace<NameComponent>(e, target);
+			else if constexpr (std::is_same_v<T, LightComponent>) { m_EcsScene.registry.get<LightComponent>(e) = target; mergeImpact(rt2::core::SyncImpact::Material); }
+			else if constexpr (std::is_same_v<T, CameraComponent>) m_EcsScene.registry.get<CameraComponent>(e) = target;
+			else if constexpr (std::is_same_v<T, EditableTRS>) { auto& tf = m_EcsScene.registry.get<Transform>(e); tf.translation = target.translation; tf.rotation = glm::normalize(target.rotation); tf.scale = target.scale; SceneGraph::MarkDirty(m_EcsScene.registry, e); transformRoots.push_back(e); mergeImpact(rt2::core::SyncImpact::Transform); }
+			else if constexpr (std::is_same_v<T, PrefabCameraPoseValue>) { auto& tf = m_EcsScene.registry.get<Transform>(e); tf.translation = target.local.translation; tf.rotation = glm::normalize(target.local.rotation); tf.scale = target.local.scale; SceneGraph::MarkDirty(m_EcsScene.registry, e); m_EcsScene.registry.get<CameraComponent>(e) = target.camera; transformRoots.push_back(e); mergeImpact(rt2::core::SyncImpact::Transform); }
+			else if constexpr (std::is_same_v<T, std::optional<MotionComponent>>) { if (target) m_EcsScene.registry.emplace_or_replace<MotionComponent>(e, *target); else if (m_EcsScene.registry.all_of<MotionComponent>(e)) m_EcsScene.registry.remove<MotionComponent>(e); }
+			else if constexpr (std::is_same_v<T, std::optional<ScriptComponent>>) { if (target) m_EcsScene.registry.emplace_or_replace<ScriptComponent>(e, *target); else if (m_EcsScene.registry.all_of<ScriptComponent>(e)) m_EcsScene.registry.remove<ScriptComponent>(e); }
+			else if constexpr (std::is_same_v<T, PrefabMaterialIndexValue>) { auto& ref = m_EcsScene.registry.get<MeshRef>(e); ref.materialIndex = target.materialIndex; if (target.override) m_EcsScene.registry.emplace_or_replace<MaterialOverrideComponent>(e, *target.override); else if (m_EcsScene.registry.all_of<MaterialOverrideComponent>(e)) m_EcsScene.registry.remove<MaterialOverrideComponent>(e); mergeImpact(rt2::core::SyncImpact::Material); }
+			else if constexpr (std::is_same_v<T, PrefabMaterialSlotValue>) { m_EcsScene.materials[target.slotIndex] = target.material; for (const auto& [uuid, ov] : target.overrides) { const auto targetEntity = m_Authoring.FindByUuid(uuid); if (targetEntity == entt::null || !m_EcsScene.registry.valid(targetEntity)) continue; if (ov) m_EcsScene.registry.emplace_or_replace<MaterialOverrideComponent>(targetEntity, *ov); else if (m_EcsScene.registry.all_of<MaterialOverrideComponent>(targetEntity)) m_EcsScene.registry.remove<MaterialOverrideComponent>(targetEntity); addAffected(uuid); } mergeImpact(rt2::core::SyncImpact::Material); }
+			else if constexpr (std::is_same_v<T, std::monostate>) {}
+		}, op.target);
+		if (op.kind != PrefabValueKind::MaterialSlotProperties) { addAffected(op.entity); ++result.appliedValueOperations; }
+		else ++result.appliedValueOperations;
+	}
+	if (!transformRoots.empty()) RefreshCameraForwardDirections(transformRoots);
+	for (const auto& write : markerWrites)
+	{
+		auto* pm = m_EcsScene.registry.try_get<PrefabMemberComponent>(write.entity);
+		pm->overrides = write.target;
+		++result.appliedMarkerMembers;
+		const auto* id = m_EcsScene.registry.try_get<EntityIdComponent>(write.entity);
+		if (id) addAffected(id->id);
+	}
+	m_Authoring.metadata.schemaVersion = plan.markers.targetSchemaVersion;
+	result.afterSchemaVersion = m_Authoring.metadata.schemaVersion;
+	result.anyStateChange = true;
+	NotifyAuthoringChanged();
+	return result;
+}
 
 void SceneManager::Clear()
 {

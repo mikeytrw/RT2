@@ -5512,3 +5512,202 @@ TEST_CASE("Phase 8 W3: Prepare and Commit reject schema bounds tampering")
     }
     std::filesystem::remove_all(dir);
 }
+
+// ---------------------------------------------------------------------------
+// C2 typed composite transaction. The value and marker halves validate before
+// either writes, share one generation, and notify once for a real change.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: typed composite value-marker transaction is atomic")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c2_composite");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto transform = S2Key("transform");
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto name0 = f.manager.GetEntityName({ rootHandle });
+    const auto revision0 = f.manager.AuthoringRevision();
+    const bool dirty0 = f.manager.IsDirty();
+
+    const auto checkInitial = [&] {
+        CHECK(f.manager.AuthoringRevision() == revision0);
+        CHECK(f.manager.IsDirty() == dirty0);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == schema0);
+        auto marker = f.manager.GetOverrides(rootUuid);
+        REQUIRE(marker.IsOk());
+        CHECK(marker.value.empty());
+        CHECK(f.manager.GetEntityName({ rootHandle }) == name0);
+    };
+
+    // Value validation failure: marker and value remain untouched.
+    PrefabValueEdit badValue{ PrefabValueKind::EntityName, rootUuid,
+        PrefabMarkerDirection::After, std::string("not-live"), std::string("new") };
+    auto markerAdd = PrefabMarkerEdit{ rootUuid, transform, false, true };
+    auto bad = f.manager.PreparePrefabCompositeEdits({ badValue }, { markerAdd },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(bad.IsOk());
+    REQUIRE(bad.error.code == rt2::core::Error::InvalidArgument);
+    checkInitial();
+
+    // Marker validation failure: the valid value is not staged into live state.
+    PrefabValueEdit goodValue{ PrefabValueKind::EntityName, rootUuid,
+        PrefabMarkerDirection::After, name0, std::string("Composite") };
+    auto badMarker = PrefabMarkerEdit{ rootUuid, S2Key("meshRef"), false, true };
+    auto badMarkerPlan = f.manager.PreparePrefabCompositeEdits({ goodValue }, { badMarker },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(badMarkerPlan.IsOk());
+    REQUIRE(badMarkerPlan.error.code == rt2::core::Error::InvalidArgument);
+    checkInitial();
+
+    // Successful value+marker: one revision and one authoritative result.
+    auto goodPlan = f.manager.PreparePrefabCompositeEdits({ goodValue }, { markerAdd },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(goodPlan.IsOk());
+    const auto committed = f.manager.CommitPrefabCompositePlan(std::move(goodPlan.value));
+    REQUIRE(committed.error.IsOk());
+    REQUIRE(committed.anyStateChange);
+    REQUIRE(committed.appliedValueOperations == 1);
+    REQUIRE(committed.appliedMarkerMembers == 1);
+    REQUIRE(committed.syncImpact == rt2::core::SyncImpact::None);
+    REQUIRE(f.manager.AuthoringRevision() == revision0 + 1);
+    REQUIRE(f.manager.GetEntityName({ rootHandle }) == "Composite");
+    auto marked = f.manager.GetOverrides(rootUuid);
+    REQUIRE(marked.IsOk());
+    REQUIRE(marked.value.size() == 1);
+    CHECK(marked.value[0] == transform);
+    CHECK(std::find(committed.affectedEntities.begin(), committed.affectedEntities.end(), rootUuid)
+        != committed.affectedEntities.end());
+
+    // Genuine combined no-op: zero revision/dirty churn.
+    PrefabValueEdit noopValue{ PrefabValueKind::EntityName, rootUuid,
+        PrefabMarkerDirection::After, std::string("Composite"), std::string("Composite") };
+    auto noopMarker = PrefabMarkerEdit{ rootUuid, transform, true, true };
+    auto noopPlan = f.manager.PreparePrefabCompositeEdits({ noopValue }, { noopMarker },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+        SceneSerializer::SchemaVersion);
+    REQUIRE(noopPlan.IsOk());
+    const auto revisionAfter = f.manager.AuthoringRevision();
+    const auto noopResult = f.manager.CommitPrefabCompositePlan(std::move(noopPlan.value));
+    REQUIRE(noopResult.error.IsOk());
+    REQUIRE_FALSE(noopResult.anyStateChange);
+    CHECK(noopResult.appliedValueOperations == 0);
+    CHECK(noopResult.appliedMarkerMembers == 0);
+    CHECK(f.manager.AuthoringRevision() == revisionAfter);
+
+    // Stale value source after preparation: no marker or value write.
+    auto stalePlan = f.manager.PreparePrefabCompositeEdits({ noopValue }, {},
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+        SceneSerializer::SchemaVersion);
+    REQUIRE(stalePlan.IsOk());
+    reg.get<NameComponent>(rootHandle).name = "changed underneath";
+    const auto staleRevision = f.manager.AuthoringRevision();
+    const auto staleResult = f.manager.CommitPrefabCompositePlan(std::move(stalePlan.value));
+    REQUIRE_FALSE(staleResult.error.IsOk());
+    CHECK(f.manager.AuthoringRevision() == staleRevision);
+    CHECK(f.manager.GetEntityName({ rootHandle }) == "changed underneath");
+
+    // A same-looking replacement document is still a different transaction
+    // source. The generation check must reject it before any write.
+    auto generationPlan = f.manager.PreparePrefabCompositeEdits(
+        { PrefabValueEdit{ PrefabValueKind::EntityName, rootUuid,
+            PrefabMarkerDirection::After, std::string("changed underneath"),
+            std::string("replacement must not apply") } }, {},
+        PrefabMarkerDirection::After, schema0, schema0);
+    REQUIRE(generationPlan.IsOk());
+    SceneDocument replacement;
+    DeterministicUuidProvider replacementIds;
+    replacement.SetUuidProvider(&replacementIds);
+    Error cloneError;
+    REQUIRE(SceneSerializer::CloneInMemory(f.manager.AuthoringDoc(), replacement, cloneError));
+    f.manager.ReplaceAuthoringDocument(std::move(replacement), f.manager.AuthoringRevision());
+    const auto replacementRevision = f.manager.AuthoringRevision();
+    const bool replacementDirty = f.manager.IsDirty();
+    const auto generationResult = f.manager.CommitPrefabCompositePlan(std::move(generationPlan.value));
+    REQUIRE_FALSE(generationResult.error.IsOk());
+    CHECK(generationResult.error.detail.find("generation changed") != std::string::npos);
+    CHECK(f.manager.AuthoringRevision() == replacementRevision);
+    CHECK(f.manager.IsDirty() == replacementDirty);
+    CHECK(f.manager.GetEntityName({ rootHandle }) == "changed underneath");
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3: typed composite material-slot fan-out is atomic")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c2_material");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID childUuid = reg.get<EntityIdComponent>(childHandle).id;
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<MeshRef>(childHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(childHandle);
+    const auto before = f.manager.GetMaterial(0);
+    auto after = before;
+    after.baseColor = { 0.2f, 0.4f, 0.6f };
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto revision0 = f.manager.AuthoringRevision();
+    PrefabValueEdit slot;
+    slot.kind = PrefabValueKind::MaterialSlotProperties;
+    slot.direction = PrefabMarkerDirection::After;
+    slot.before = PrefabMaterialSlotValue{ 0, before, {} };
+    slot.after = PrefabMaterialSlotValue{ 0, after, {} };
+    const auto marker = PrefabMarkerEdit{ rootUuid, S2Key("transform"), false, true };
+    auto plan = f.manager.PreparePrefabCompositeEdits({ slot }, { marker },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(plan.IsOk());
+    const auto result = f.manager.CommitPrefabCompositePlan(std::move(plan.value));
+    REQUIRE(result.error.IsOk());
+    REQUIRE(result.anyStateChange);
+    REQUIRE(result.syncImpact == rt2::core::SyncImpact::Material);
+    REQUIRE(f.manager.AuthoringRevision() == revision0 + 1);
+    CHECK(f.manager.GetMaterial(0).baseColor == after.baseColor);
+    auto* rootOverride = reg.try_get<MaterialOverrideComponent>(rootHandle);
+    auto* childOverride = reg.try_get<MaterialOverrideComponent>(childHandle);
+    REQUIRE(rootOverride);
+    REQUIRE(childOverride);
+    CHECK(rootOverride->material.baseColor == after.baseColor);
+    CHECK(childOverride->material.baseColor == after.baseColor);
+    CHECK(std::find(result.affectedEntities.begin(), result.affectedEntities.end(), childUuid)
+        != result.affectedEntities.end());
+
+    // Missing fan-out member after preparation: all raw state remains intact.
+    auto after2 = after;
+    after2.baseColor = { 0.7f, 0.3f, 0.1f };
+    PrefabValueEdit slot2;
+    slot2.kind = PrefabValueKind::MaterialSlotProperties;
+    slot2.direction = PrefabMarkerDirection::After;
+    slot2.before = PrefabMaterialSlotValue{ 0, after, {} };
+    slot2.after = PrefabMaterialSlotValue{ 0, after2, {} };
+    auto stale = f.manager.PreparePrefabCompositeEdits({ slot2 }, {},
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+        SceneSerializer::SchemaVersion);
+    REQUIRE(stale.IsOk());
+    const auto materialBeforeFailure = f.manager.GetMaterial(0);
+    const auto revisionBeforeFailure = f.manager.AuthoringRevision();
+
+    // A fan-out member without a durable ID cannot be represented in a
+    // public plan and must fail at Prepare, without touching any state.
+    reg.remove<EntityIdComponent>(childHandle);
+    const auto missingIdRevision = f.manager.AuthoringRevision();
+    const auto missingIdMaterial = f.manager.GetMaterial(0);
+    auto missingId = f.manager.PreparePrefabCompositeEdits({ slot2 }, {},
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+        SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(missingId.IsOk());
+    REQUIRE(missingId.error.code == rt2::core::Error::InvalidEntity);
+    CHECK(missingId.error.detail.find("durable") != std::string::npos);
+    CHECK(f.manager.AuthoringRevision() == missingIdRevision);
+    CHECK(f.manager.GetMaterial(0).baseColor == missingIdMaterial.baseColor);
+
+    reg.destroy(childHandle);
+    const auto failed = f.manager.CommitPrefabCompositePlan(std::move(stale.value));
+    REQUIRE_FALSE(failed.error.IsOk());
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeFailure);
+    CHECK(f.manager.GetMaterial(0).baseColor == materialBeforeFailure.baseColor);
+    CHECK(reg.try_get<MaterialOverrideComponent>(rootHandle) != nullptr);
+    std::filesystem::remove_all(dir);
+}

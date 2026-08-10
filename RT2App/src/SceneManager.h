@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <utility>
 #include <optional>
+#include <variant>
 
 struct EditorCameraPose;
 
@@ -108,6 +109,96 @@ struct PrefabMarkerPlan
 	// genuine no-op is false and commits with no mutation and no notification.
 	bool anyStateChange = false;
 	std::vector<MemberTransition> members;
+};
+
+enum class PrefabValueKind
+{
+	EntityName,
+	LightProperties,
+	CameraProperties,
+	LocalTransform,
+	CameraPose,
+	MotionState,
+	ScriptState,
+	MaterialIndex,
+	MaterialSlotProperties,
+};
+
+struct PrefabCameraPoseValue
+{
+	EditableTRS local;
+	CameraComponent camera;
+};
+
+struct PrefabMaterialSlotValue
+{
+	int slotIndex = -1;
+	SceneMaterial material;
+	std::vector<std::pair<rt2::core::UUID,
+		std::optional<MaterialOverrideComponent>>> overrides;
+};
+
+struct PrefabMaterialIndexValue
+{
+	int materialIndex = -1;
+	std::optional<MaterialOverrideComponent> override;
+};
+
+using PrefabValuePayload = std::variant<
+	std::monostate,
+	std::string,
+	LightComponent,
+	CameraComponent,
+	EditableTRS,
+	PrefabCameraPoseValue,
+	std::optional<MotionComponent>,
+	std::optional<ScriptComponent>,
+	PrefabMaterialIndexValue,
+	PrefabMaterialSlotValue>;
+
+struct PrefabValueEdit
+{
+	PrefabValueKind kind = PrefabValueKind::EntityName;
+	rt2::core::UUID entity;
+	PrefabMarkerDirection direction = PrefabMarkerDirection::After;
+	PrefabValuePayload before;
+	PrefabValuePayload after;
+};
+
+struct PrefabValueOperation
+{
+	PrefabValueKind kind = PrefabValueKind::EntityName;
+	rt2::core::UUID entity;
+	PrefabValuePayload source;
+	PrefabValuePayload target;
+};
+
+struct PrefabValuePlan
+{
+	PrefabMarkerDirection direction = PrefabMarkerDirection::After;
+	std::uint64_t documentGeneration = 0;
+	bool anyStateChange = false;
+	std::vector<PrefabValueOperation> operations;
+};
+
+struct PrefabCompositePlan
+{
+	PrefabMarkerDirection direction = PrefabMarkerDirection::After;
+	std::uint64_t documentGeneration = 0;
+	PrefabValuePlan values;
+	PrefabMarkerPlan markers;
+};
+
+struct PrefabCompositeApplyResult
+{
+	rt2::core::Error error;
+	rt2::core::SyncImpact syncImpact = rt2::core::SyncImpact::None;
+	std::vector<rt2::core::UUID> affectedEntities;
+	std::size_t appliedValueOperations = 0;
+	std::size_t appliedMarkerMembers = 0;
+	std::uint32_t beforeSchemaVersion = 0;
+	std::uint32_t afterSchemaVersion = 0;
+	bool anyStateChange = false;
 };
 
 // ============================================================================
@@ -742,6 +833,14 @@ struct PrefabMarkerPlan
 		std::uint32_t beforeSchemaVersion,
 		std::uint32_t afterSchemaVersion);
 	PrefabMarkerApplyResult CommitPrefabMarkerPlan(PrefabMarkerPlan plan);
+
+	rt2::core::Result<PrefabCompositePlan> PreparePrefabCompositeEdits(
+		const std::vector<PrefabValueEdit>& values,
+		const std::vector<PrefabMarkerEdit>& markers,
+		PrefabMarkerDirection direction,
+		std::uint32_t beforeSchemaVersion,
+		std::uint32_t afterSchemaVersion);
+	PrefabCompositeApplyResult CommitPrefabCompositePlan(PrefabCompositePlan plan);
 
 	// ---- Dirty tracking ----
 	bool IsDirty() const { return m_Authoring.metadata.dirty; }
