@@ -5,6 +5,8 @@
 
 #include "EditorCommand.h"
 #include "SceneManager.h"
+#include "PrefabCommandTransaction.h"
+#include "PrefabComponentKey.h"
 #include "ScriptComponentValidation.h"
 #include "TransformEditing.h"
 #include "core/UUID.h"
@@ -24,37 +26,50 @@
 // Impact assignments are authoritative from the manager — commands never
 // synthesize sync impact.
 //
+// Phase 8 W3 S6-B: every command below that can touch an overridable prefab
+// wire (name, material index, material-slot properties, motion, script,
+// camera alignment) now carries a PrefabCommandTransaction: durable
+// before/after value edits + marker membership deltas + a command-captured
+// schema pair, replayed directionally through the S5/S6-A atomic composite.
+// Execute/Redo replay the After direction (the first value write, any marker
+// insertion, and any schema promotion land in ONE composite commit with ONE
+// revision bump), Undo replays Before. Ordinary entities drop their marker
+// deltas and behave exactly as before.
+//
 // Material commands (SetMaterialIndex, SetMaterialProperties) capture and
 // restore durable MaterialOverrideComponent state atomically with the
 // index/material-value edit, so Undo of an imported-entity material
 // assignment does not leave a stale override that save/reopen would
 // resurrect. The before/after override snapshots are stored in the command
-// (std::optional<MaterialOverrideComponent>; nullopt = absent) and
-// restored via SceneManager::InstallMaterialOverride.
+// as complete UUID + optional lists (std::optional<MaterialOverrideComponent>;
+// nullopt = absent) and re-applied by the composite fan-out.
 //
-// AlignCameraCommand uses the atomic SetCameraPoseState API (composite
-// local TRS + camera props in one pass, one revision bump, one
-// authoritative Transform impact). Composing SetLocalTransformStates +
-// SetCameraPropertiesState would bump the revision twice and require a
-// synthesized combined impact — both violations.
+// AlignCameraCommand uses the atomic composite CameraPose value (local TRS +
+// camera props in one pass, one revision bump, one authoritative Transform
+// impact), staged from the editor camera pose via SceneManager::StageCameraPose.
 //
 // SetMotionCommand is a single class covering add, remove, and velocity
 // edits via std::optional<MotionComponent> before/after. Add = {nullopt,
-// some}; Remove = {some, nullopt}; velocity edit = {some, some}.
+// some}; Remove = {some, nullopt}; velocity edit = {some, some}. SetScriptCommand
+// covers add, remove, script-path replacement, and any typed field-map change
+// via std::optional<ScriptComponent> before/after the same way. Their marker
+// deltas are conditional on the after-state carrying the component.
 //
 // No-op suppression is enforced at construction: callers should use the
 // static factory functions, which return null when the command would be a
 // no-op. A null unique_ptr from the factory signals "discard, do not
 // submit".
+//
+// A recorded command whose FIRST replay is Undo (RecordApplied, the
+// out-of-scope live-preview sessions) is treated as value-only by the
+// transaction: its raw mutation wrote no markers, so the marker deltas are
+// dropped and the composite value replay validates against live state.
 // ============================================================================
 
 class SetNameCommand final : public IEditorCommand
 {
 public:
-	SetNameCommand(rt2::core::UUID target, std::string beforeName, std::string afterName)
-		: m_Target(target)
-		, m_BeforeName(std::move(beforeName))
-		, m_AfterName(std::move(afterName)) {}
+	SetNameCommand(rt2::core::UUID target, std::string beforeName, std::string afterName);
 
 	const rt2::core::UUID& Target() const { return m_Target; }
 	const std::string& BeforeName() const { return m_BeforeName; }
@@ -65,9 +80,10 @@ public:
 	std::string Description() const override { return "Rename"; }
 
 private:
-	rt2::core::UUID m_Target;
-	std::string     m_BeforeName;
-	std::string     m_AfterName;
+	rt2::core::UUID              m_Target;
+	std::string                  m_BeforeName;
+	std::string                  m_AfterName;
+	PrefabCommandTransaction     m_Transaction;
 };
 
 class SetMaterialIndexCommand final : public IEditorCommand
@@ -77,12 +93,7 @@ public:
 	                        int beforeIndex,
 	                        int afterIndex,
 	                        std::optional<MaterialOverrideComponent> beforeOverride,
-	                        std::optional<MaterialOverrideComponent> afterOverride)
-		: m_Target(target)
-		, m_BeforeIndex(beforeIndex)
-		, m_AfterIndex(afterIndex)
-		, m_BeforeOverride(std::move(beforeOverride))
-		, m_AfterOverride(std::move(afterOverride)) {}
+	                        std::optional<MaterialOverrideComponent> afterOverride);
 
 	const rt2::core::UUID& Target() const { return m_Target; }
 	int BeforeIndex() const { return m_BeforeIndex; }
@@ -100,23 +111,23 @@ private:
 	int                                          m_AfterIndex;
 	std::optional<MaterialOverrideComponent>     m_BeforeOverride;
 	std::optional<MaterialOverrideComponent>     m_AfterOverride;
+	PrefabCommandTransaction                     m_Transaction;
 };
 
 class SetMaterialPropertiesCommand final : public IEditorCommand
 {
 public:
-	using OverrideList = std::vector<std::pair<rt2::core::UUID, MaterialOverrideComponent>>;
+	// Complete per-entity snapshots: UUID -> std::optional override (nullopt
+	// = absent). Includes every imported entity referencing the slot, so the
+	// composite can restore the exact fan-out on Undo.
+	using OverrideList = std::vector<std::pair<rt2::core::UUID,
+		std::optional<MaterialOverrideComponent>>>;
 
 	SetMaterialPropertiesCommand(int slotIndex,
 	                             SceneMaterial beforeMaterial,
 	                             SceneMaterial afterMaterial,
 	                             OverrideList beforeOverrides,
-	                             OverrideList afterOverrides)
-		: m_SlotIndex(slotIndex)
-		, m_BeforeMaterial(std::move(beforeMaterial))
-		, m_AfterMaterial(std::move(afterMaterial))
-		, m_BeforeOverrides(std::move(beforeOverrides))
-		, m_AfterOverrides(std::move(afterOverrides)) {}
+	                             OverrideList afterOverrides);
 
 	int SlotIndex() const { return m_SlotIndex; }
 	const SceneMaterial& BeforeMaterial() const { return m_BeforeMaterial; }
@@ -129,11 +140,12 @@ public:
 	std::string Description() const override { return "Edit Material"; }
 
 private:
-	int            m_SlotIndex;
-	SceneMaterial  m_BeforeMaterial;
-	SceneMaterial  m_AfterMaterial;
-	OverrideList   m_BeforeOverrides;
-	OverrideList   m_AfterOverrides;
+	int                     m_SlotIndex;
+	SceneMaterial           m_BeforeMaterial;
+	SceneMaterial           m_AfterMaterial;
+	OverrideList            m_BeforeOverrides;
+	OverrideList            m_AfterOverrides;
+	PrefabCommandTransaction m_Transaction;
 };
 
 class SetLightCommand final : public IEditorCommand
@@ -189,10 +201,7 @@ class SetMotionCommand final : public IEditorCommand
 public:
 	SetMotionCommand(rt2::core::UUID target,
 	                 std::optional<MotionComponent> beforeValue,
-	                 std::optional<MotionComponent> afterValue)
-		: m_Target(target)
-		, m_BeforeValue(std::move(beforeValue))
-		, m_AfterValue(std::move(afterValue)) {}
+	                 std::optional<MotionComponent> afterValue);
 
 	const rt2::core::UUID& Target() const { return m_Target; }
 	const std::optional<MotionComponent>& BeforeValue() const { return m_BeforeValue; }
@@ -206,6 +215,7 @@ private:
 	rt2::core::UUID                     m_Target;
 	std::optional<MotionComponent>      m_BeforeValue;
 	std::optional<MotionComponent>      m_AfterValue;
+	PrefabCommandTransaction             m_Transaction;
 };
 
 // SetScriptCommand covers add, remove, script-path replacement, and any typed
@@ -219,10 +229,7 @@ class SetScriptCommand final : public IEditorCommand
 public:
 	SetScriptCommand(rt2::core::UUID target,
 	                 std::optional<ScriptComponent> beforeValue,
-	                 std::optional<ScriptComponent> afterValue)
-		: m_Target(target)
-		, m_BeforeValue(std::move(beforeValue))
-		, m_AfterValue(std::move(afterValue)) {}
+	                 std::optional<ScriptComponent> afterValue);
 
 	const rt2::core::UUID& Target() const { return m_Target; }
 	const std::optional<ScriptComponent>& BeforeValue() const { return m_BeforeValue; }
@@ -236,6 +243,7 @@ private:
 	rt2::core::UUID                        m_Target;
 	std::optional<ScriptComponent>         m_BeforeValue;
 	std::optional<ScriptComponent>         m_AfterValue;
+	PrefabCommandTransaction               m_Transaction;
 };
 
 class AlignCameraCommand final : public IEditorCommand
@@ -245,12 +253,7 @@ public:
 	                   EditableTRS beforeLocal,
 	                   EditableTRS afterLocal,
 	                   CameraComponent beforeCamera,
-	                   CameraComponent afterCamera)
-		: m_Target(target)
-		, m_BeforeLocal(beforeLocal)
-		, m_AfterLocal(afterLocal)
-		, m_BeforeCamera(beforeCamera)
-		, m_AfterCamera(afterCamera) {}
+	                   CameraComponent afterCamera);
 
 	const rt2::core::UUID& Target() const { return m_Target; }
 	const EditableTRS& BeforeLocal() const { return m_BeforeLocal; }
@@ -263,11 +266,12 @@ public:
 	std::string Description() const override { return "Align Camera to View"; }
 
 private:
-	rt2::core::UUID m_Target;
-	EditableTRS     m_BeforeLocal;
-	EditableTRS     m_AfterLocal;
-	CameraComponent m_BeforeCamera;
-	CameraComponent m_AfterCamera;
+	rt2::core::UUID         m_Target;
+	EditableTRS             m_BeforeLocal;
+	EditableTRS             m_AfterLocal;
+	CameraComponent         m_BeforeCamera;
+	CameraComponent         m_AfterCamera;
+	PrefabCommandTransaction m_Transaction;
 };
 
 // ---- Factories with no-op suppression ----
@@ -279,10 +283,11 @@ std::unique_ptr<IEditorCommand> MakeSetNameCommandIfEffective(
 	std::string afterName);
 
 // Returns null if beforeIndex == afterIndex AND beforeOverride == afterOverride.
-// The host captures both overrides from SceneManager's SetMaterialIndexState
-// capture out-params (the before captured inside the mutation before the
-// index write, the after immediately after) — see the 2026-08-03
-// material-index undo defect.
+// The host supplies the before/after override snapshots: the before read live
+// before Execute and the after staged canonically via
+// SceneManager::StageMaterialIndex (construct-then-Execute, so no captured
+// state can be inverted at the call site — the 2026-08-03 material-index undo
+// defect shape).
 std::unique_ptr<IEditorCommand> MakeSetMaterialIndexCommandIfEffective(
 	rt2::core::UUID target,
 	int beforeIndex,
@@ -291,9 +296,9 @@ std::unique_ptr<IEditorCommand> MakeSetMaterialIndexCommandIfEffective(
 	std::optional<MaterialOverrideComponent> afterOverride);
 
 // Returns null if the before/after material values are equal AND the
-// before/after override lists match. The host captures the before-overrides
-// of all imported entities referencing the slot at construction time and
-// the after-overrides by calling SetMaterialPropertiesState then re-querying.
+// before/after override lists match. The host supplies a complete
+// UUID + optional before snapshot (captured when the material session opens);
+// the after override list is generally empty and derived by the composite.
 std::unique_ptr<IEditorCommand> MakeSetMaterialPropertiesCommandIfEffective(
 	int slotIndex,
 	SceneMaterial beforeMaterial,
@@ -335,9 +340,10 @@ std::unique_ptr<IEditorCommand> MakeSetScriptCommandIfEffective(
 	std::optional<ScriptComponent> afterValue);
 
 // Returns null if before/after local TRS are equal AND before/after camera
-// props are equal. Used by AlignCameraToView — the host has ALREADY applied
-// the alignment via AlignCameraEntityToView and captured the composite
-// after-state; the factory wraps it for RecordApplied.
+// props are equal. Uses construct-then-Execute: the host stages the alignment
+// target via SceneManager::StageCameraPose and passes it as the after-state;
+// command Execute performs the composite camera-pose write + marker insertion
+// atomically.
 std::unique_ptr<IEditorCommand> MakeAlignCameraCommandIfEffective(
 	rt2::core::UUID target,
 	EditableTRS beforeLocal,

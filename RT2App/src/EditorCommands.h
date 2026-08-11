@@ -4,6 +4,8 @@
 #define RT2_EDITOR_COMMANDS_H
 
 #include "EditorCommand.h"
+#include "PrefabCommandTransaction.h"
+#include "PrefabComponentKey.h"
 #include "TransformEditing.h"
 #include "core/UUID.h"
 
@@ -28,8 +30,11 @@
 //
 // SetVisibilityCommand:
 //   - Stores {vector<UUID,bool> beforeStates, vector<UUID,bool> afterStates}.
-//     Built on SceneManager::SetVisibilityStates. Sync impact: Structural if
-//     any change, None otherwise (the manager decides).
+//     Phase 8 W3 S6-B: Execute/Undo/Redo replay a PrefabCommandTransaction
+//     of Visibility value edits plus kVisible marker deltas through the S5/S6-A
+//     composite, so the first write and first marker land in ONE commit.
+//     Sync impact is authoritative from the composite (Structural when the
+//     state changes, None otherwise).
 //
 // No-op suppression is enforced at construction: callers should use the
 // static factory functions, which compare normalized before/after and return
@@ -71,9 +76,11 @@ class SetVisibilityCommand final : public IEditorCommand
 public:
 	using PairList = std::vector<std::pair<rt2::core::UUID, bool>>;
 
-	SetVisibilityCommand(PairList beforeStates, PairList afterStates)
-		: m_BeforeStates(std::move(beforeStates))
-		, m_AfterStates(std::move(afterStates)) {}
+	// Phase 8 W3 S6-B: the command carries a PrefabCommandTransaction of one
+	// Visibility value edit and one kVisible marker delta per entity, so the
+	// first value write and any first marker insertion land in ONE composite
+	// commit inside Execute. Ordinary entities drop their marker deltas.
+	SetVisibilityCommand(PairList beforeStates, PairList afterStates);
 
 	const PairList& BeforeStates() const { return m_BeforeStates; }
 	const PairList& AfterStates() const { return m_AfterStates; }
@@ -83,8 +90,9 @@ public:
 	std::string Description() const override { return "Set Visibility"; }
 
 private:
-	PairList m_BeforeStates;
-	PairList m_AfterStates;
+	PairList                m_BeforeStates;
+	PairList                m_AfterStates;
+	PrefabCommandTransaction m_Transaction;
 };
 
 // ---- Factories with no-op suppression ----

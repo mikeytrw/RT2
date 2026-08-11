@@ -94,13 +94,16 @@ bool OverrideEqual(const MaterialOverrideComponent& a,
 }
 
 bool OverrideListEqual(
-	const std::vector<std::pair<rt2::core::UUID, MaterialOverrideComponent>>& a,
-	const std::vector<std::pair<rt2::core::UUID, MaterialOverrideComponent>>& b)
+	const std::vector<std::pair<rt2::core::UUID,
+		std::optional<MaterialOverrideComponent>>>& a,
+	const std::vector<std::pair<rt2::core::UUID,
+		std::optional<MaterialOverrideComponent>>>& b)
 {
 	if (a.size() != b.size()) return false;
-	// Order-independent comparison: build a UUID -> override map for b and
-	// look up each a entry.
-	std::unordered_map<rt2::core::UUID, const MaterialOverrideComponent*> bMap;
+	// Order-independent comparison: build a UUID -> optional override map for
+	// b and look up each a entry.
+	std::unordered_map<rt2::core::UUID,
+		const std::optional<MaterialOverrideComponent>*> bMap;
 	bMap.reserve(b.size());
 	for (const auto& p : b)
 		bMap.emplace(p.first, &p.second);
@@ -108,7 +111,9 @@ bool OverrideListEqual(
 	{
 		const auto it = bMap.find(p.first);
 		if (it == bMap.end()) return false;
-		if (!OverrideEqual(p.second, *it->second)) return false;
+		if (p.second.has_value() != it->second->has_value()) return false;
+		if (p.second.has_value() &&
+		    !OverrideEqual(*p.second, **it->second)) return false;
 	}
 	return true;
 }
@@ -117,83 +122,110 @@ bool OverrideListEqual(
 
 // ---- SetNameCommand ----
 
+SetNameCommand::SetNameCommand(rt2::core::UUID target,
+                               std::string beforeName,
+                               std::string afterName)
+	: m_Target(target)
+	, m_BeforeName(std::move(beforeName))
+	, m_AfterName(std::move(afterName))
+	, m_Transaction(
+		std::vector<PrefabValueEdit>{
+			{ PrefabValueKind::EntityName, m_Target, PrefabMarkerDirection::After,
+				std::string(m_BeforeName), std::string(m_AfterName) } },
+		std::vector<PrefabCommandTransaction::MarkerSpec>{
+			{ m_Target, PrefabComponentKeyFor<NameComponent>::value, true } })
+{
+}
+
 EditorMutationResult SetNameCommand::Execute(SceneManager& scene)
 {
-	return scene.SetEntityNameState(m_Target, m_AfterName);
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetNameCommand::Undo(SceneManager& scene)
 {
-	return scene.SetEntityNameState(m_Target, m_BeforeName);
+	return m_Transaction.Undo(scene);
 }
 
 // ---- SetMaterialIndexCommand ----
 
+SetMaterialIndexCommand::SetMaterialIndexCommand(
+	rt2::core::UUID target,
+	int beforeIndex,
+	int afterIndex,
+	std::optional<MaterialOverrideComponent> beforeOverride,
+	std::optional<MaterialOverrideComponent> afterOverride)
+	: m_Target(target)
+	, m_BeforeIndex(beforeIndex)
+	, m_AfterIndex(afterIndex)
+	, m_BeforeOverride(std::move(beforeOverride))
+	, m_AfterOverride(std::move(afterOverride))
+	, m_Transaction(
+		std::vector<PrefabValueEdit>{
+			{ PrefabValueKind::MaterialIndex, m_Target, PrefabMarkerDirection::After,
+				PrefabMaterialIndexValue{ m_BeforeIndex, m_BeforeOverride },
+				PrefabMaterialIndexValue{ m_AfterIndex, m_AfterOverride } } },
+		std::vector<PrefabCommandTransaction::MarkerSpec>{
+			{ m_Target, PrefabComponentKeyFor<MaterialOverrideComponent>::value, true } })
+{
+}
+
 EditorMutationResult SetMaterialIndexCommand::Execute(SceneManager& scene)
 {
-	auto result = scene.SetMaterialIndexState(m_Target, m_AfterIndex);
-	if (!result.success) return result;
-	// SetMaterialIndexState re-derived the override from the material at
-	// m_AfterIndex via RecordMaterialOverride. Overwrite with the exact
-	// stored after-override (or remove if absent) so Undo can restore the
-	// precise before-state.
-	scene.InstallMaterialOverride(m_Target, m_AfterOverride);
-	return result;
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetMaterialIndexCommand::Undo(SceneManager& scene)
 {
-	auto result = scene.SetMaterialIndexState(m_Target, m_BeforeIndex);
-	if (!result.success) return result;
-	scene.InstallMaterialOverride(m_Target, m_BeforeOverride);
-	return result;
+	return m_Transaction.Undo(scene);
 }
 
 // ---- SetMaterialPropertiesCommand ----
 
+SetMaterialPropertiesCommand::SetMaterialPropertiesCommand(
+	int slotIndex,
+	SceneMaterial beforeMaterial,
+	SceneMaterial afterMaterial,
+	OverrideList beforeOverrides,
+	OverrideList afterOverrides)
+	: m_SlotIndex(slotIndex)
+	, m_BeforeMaterial(std::move(beforeMaterial))
+	, m_AfterMaterial(std::move(afterMaterial))
+	, m_BeforeOverrides(std::move(beforeOverrides))
+	, m_AfterOverrides(std::move(afterOverrides))
+{
+	// One materialOverride marker delta per affected prefab member. The
+	// complete fan-out lists (StageMaterialSlot shape) carry the exact live
+	// member set; non-members are dropped at capture, so including every
+	// member here is safe.
+	std::vector<PrefabCommandTransaction::MarkerSpec> markers;
+	markers.reserve(m_BeforeOverrides.size() + m_AfterOverrides.size());
+	auto addMember = [&](const rt2::core::UUID& member) {
+		for (const auto& existing : markers)
+			if (existing.member == member) return;
+		markers.push_back({ member,
+			PrefabComponentKeyFor<MaterialOverrideComponent>::value, true });
+	};
+	for (const auto& pair : m_BeforeOverrides) addMember(pair.first);
+	for (const auto& pair : m_AfterOverrides) addMember(pair.first);
+
+	m_Transaction = PrefabCommandTransaction(
+		std::vector<PrefabValueEdit>{
+			{ PrefabValueKind::MaterialSlotProperties, rt2::core::UUID{},
+				PrefabMarkerDirection::After,
+				PrefabMaterialSlotValue{ m_SlotIndex, m_BeforeMaterial, m_BeforeOverrides },
+				PrefabMaterialSlotValue{ m_SlotIndex, m_AfterMaterial, m_AfterOverrides } } },
+		std::move(markers));
+}
+
 EditorMutationResult SetMaterialPropertiesCommand::Execute(SceneManager& scene)
 {
-	auto result = scene.SetMaterialPropertiesState(m_SlotIndex, m_AfterMaterial);
-	if (!result.success) return result;
-	// Restore the exact after-overrides for the entities tracked at capture
-	// time. SetMaterialPropertiesState re-derived overrides for every
-	// imported entity referencing the slot; the command's after-overrides
-	// list is the authoritative snapshot.
-	for (const auto& [uuid, ov] : m_AfterOverrides)
-		scene.InstallMaterialOverride(uuid, ov);
-	// Entities that had a before-override but are NOT in the after-list must
-	// have their override removed (the slot no longer references them, or
-	// the after-state deliberately dropped the override). Compute the diff.
-	std::unordered_map<rt2::core::UUID, bool> afterPresent;
-	afterPresent.reserve(m_AfterOverrides.size());
-	for (const auto& p : m_AfterOverrides)
-		afterPresent.emplace(p.first, true);
-	for (const auto& [uuid, ov] : m_BeforeOverrides)
-	{
-		if (!afterPresent.count(uuid))
-			scene.InstallMaterialOverride(uuid, std::nullopt);
-	}
-	return result;
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetMaterialPropertiesCommand::Undo(SceneManager& scene)
 {
-	auto result = scene.SetMaterialPropertiesState(m_SlotIndex, m_BeforeMaterial);
-	if (!result.success) return result;
-	for (const auto& [uuid, ov] : m_BeforeOverrides)
-		scene.InstallMaterialOverride(uuid, ov);
-	// Remove overrides for entities that gained one during Execute but were
-	// not present before.
-	std::unordered_map<rt2::core::UUID, bool> beforePresent;
-	beforePresent.reserve(m_BeforeOverrides.size());
-	for (const auto& p : m_BeforeOverrides)
-		beforePresent.emplace(p.first, true);
-	for (const auto& [uuid, ov] : m_AfterOverrides)
-	{
-		if (!beforePresent.count(uuid))
-			scene.InstallMaterialOverride(uuid, std::nullopt);
-	}
-	return result;
+	return m_Transaction.Undo(scene);
 }
 
 // ---- SetLightCommand ----
@@ -222,26 +254,58 @@ EditorMutationResult SetCameraCommand::Undo(SceneManager& scene)
 
 // ---- SetMotionCommand ----
 
+SetMotionCommand::SetMotionCommand(rt2::core::UUID target,
+                                   std::optional<MotionComponent> beforeValue,
+                                   std::optional<MotionComponent> afterValue)
+	: m_Target(target)
+	, m_BeforeValue(std::move(beforeValue))
+	, m_AfterValue(std::move(afterValue))
+	, m_Transaction(
+		std::vector<PrefabValueEdit>{
+			{ PrefabValueKind::MotionState, m_Target, PrefabMarkerDirection::After,
+				m_BeforeValue, m_AfterValue } },
+		std::vector<PrefabCommandTransaction::MarkerSpec>{
+			{ m_Target, PrefabComponentKeyFor<MotionComponent>::value,
+				m_AfterValue.has_value() } })
+{
+}
+
 EditorMutationResult SetMotionCommand::Execute(SceneManager& scene)
 {
-	return scene.SetMotionState(m_Target, m_AfterValue);
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetMotionCommand::Undo(SceneManager& scene)
 {
-	return scene.SetMotionState(m_Target, m_BeforeValue);
+	return m_Transaction.Undo(scene);
 }
 
 // ---- SetScriptCommand ----
 
+SetScriptCommand::SetScriptCommand(rt2::core::UUID target,
+                                   std::optional<ScriptComponent> beforeValue,
+                                   std::optional<ScriptComponent> afterValue)
+	: m_Target(target)
+	, m_BeforeValue(std::move(beforeValue))
+	, m_AfterValue(std::move(afterValue))
+	, m_Transaction(
+		std::vector<PrefabValueEdit>{
+			{ PrefabValueKind::ScriptState, m_Target, PrefabMarkerDirection::After,
+				m_BeforeValue, m_AfterValue } },
+		std::vector<PrefabCommandTransaction::MarkerSpec>{
+			{ m_Target, PrefabComponentKeyFor<ScriptComponent>::value,
+				m_AfterValue.has_value() } })
+{
+}
+
 EditorMutationResult SetScriptCommand::Execute(SceneManager& scene)
 {
-	return scene.SetScriptState(m_Target, m_AfterValue);
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetScriptCommand::Undo(SceneManager& scene)
 {
-	return scene.SetScriptState(m_Target, m_BeforeValue);
+	return m_Transaction.Undo(scene);
 }
 
 std::string SetScriptCommand::Description() const
@@ -257,14 +321,35 @@ std::string SetScriptCommand::Description() const
 
 // ---- AlignCameraCommand ----
 
+AlignCameraCommand::AlignCameraCommand(rt2::core::UUID target,
+                                       EditableTRS beforeLocal,
+                                       EditableTRS afterLocal,
+                                       CameraComponent beforeCamera,
+                                       CameraComponent afterCamera)
+	: m_Target(target)
+	, m_BeforeLocal(beforeLocal)
+	, m_AfterLocal(afterLocal)
+	, m_BeforeCamera(beforeCamera)
+	, m_AfterCamera(afterCamera)
+	, m_Transaction(
+		std::vector<PrefabValueEdit>{
+			{ PrefabValueKind::CameraPose, m_Target, PrefabMarkerDirection::After,
+				PrefabCameraPoseValue{ m_BeforeLocal, m_BeforeCamera },
+				PrefabCameraPoseValue{ m_AfterLocal, m_AfterCamera } } },
+		std::vector<PrefabCommandTransaction::MarkerSpec>{
+			{ m_Target, PrefabComponentKeyFor<Transform>::value, true },
+			{ m_Target, PrefabComponentKeyFor<CameraComponent>::value, true } })
+{
+}
+
 EditorMutationResult AlignCameraCommand::Execute(SceneManager& scene)
 {
-	return scene.SetCameraPoseState(m_Target, m_AfterLocal, m_AfterCamera);
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult AlignCameraCommand::Undo(SceneManager& scene)
 {
-	return scene.SetCameraPoseState(m_Target, m_BeforeLocal, m_BeforeCamera);
+	return m_Transaction.Undo(scene);
 }
 
 // ---- Factories ----

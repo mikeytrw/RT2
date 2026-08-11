@@ -193,23 +193,16 @@ private:
 	void SelectEntity(SceneManager::EntityId entity, bool toggle = false);
 	bool IsSelected(SceneManager::EntityId entity) const;
 
-	// Phase 3B2: property command helpers. Each captures the before-state,
-	// applies the per-frame mutation via the manager, records the command
-	// via RecordApplied on close. The state machine (PropertyEditSession)
-	// handles deferred-close ordering and defensive guards.
-	void RecordNameEdit(const rt2::core::UUID& target,
-	                    const std::string& before, const std::string& after);
+	// Phase 3B2: property command helpers (light/camera/motion-velocity are
+	// still per-frame-mutate-then-record sessions; the S6-B converted paths
+	// — name, material index, material properties, motion add/remove, script
+	// add/path/rebind/remove and discrete fields — use construct-then-Execute
+	// inline at their call sites. PropertyEditSession handles deferred-close
+	// ordering and defensive guards.
 	void RecordLightEdit(const rt2::core::UUID& target,
 	                     const LightComponent& before, const LightComponent& after);
 	void RecordCameraEdit(const rt2::core::UUID& target,
 	                      const CameraComponent& before, const CameraComponent& after);
-	void RecordMaterialIndexEdit(const rt2::core::UUID& target,
-	                             int beforeIndex, int afterIndex,
-	                             const std::optional<MaterialOverrideComponent>& beforeOverride,
-	                             const std::optional<MaterialOverrideComponent>& afterOverride);
-	void RecordMaterialPropertiesEdit(int slotIndex,
-	                                 const SceneMaterial& before,
-	                                 const SceneMaterial& after);
 	void RecordMotionEdit(const rt2::core::UUID& target,
 	                      const std::optional<MotionComponent>& before,
 	                      const std::optional<MotionComponent>& after);

@@ -106,18 +106,43 @@ EditorMutationResult TransformCommand::Undo(SceneManager& scene)
 	return result;
 }
 
+SetVisibilityCommand::SetVisibilityCommand(PairList beforeStates,
+                                           PairList afterStates)
+	: m_BeforeStates(std::move(beforeStates))
+	, m_AfterStates(std::move(afterStates))
+{
+	// One Visibility value edit plus one kVisible marker delta per entity.
+	// The before-state for a pair the host did not track defaults to the
+	// after-state so the composite sees a no-op value for that entity.
+	std::unordered_map<rt2::core::UUID, bool> beforeMap;
+	beforeMap.reserve(m_BeforeStates.size());
+	for (const auto& p : m_BeforeStates)
+		beforeMap.emplace(p.first, p.second);
+
+	std::vector<PrefabValueEdit> values;
+	std::vector<PrefabCommandTransaction::MarkerSpec> markers;
+	values.reserve(m_AfterStates.size());
+	markers.reserve(m_AfterStates.size());
+	for (const auto& p : m_AfterStates)
+	{
+		const auto it = beforeMap.find(p.first);
+		const bool before = it != beforeMap.end() ? it->second : p.second;
+		values.push_back({ PrefabValueKind::Visibility, p.first,
+			PrefabMarkerDirection::After, before, p.second });
+		markers.push_back({ p.first,
+			PrefabComponentKeyFor<VisibleComponent>::value, true });
+	}
+	m_Transaction = PrefabCommandTransaction(std::move(values), std::move(markers));
+}
+
 EditorMutationResult SetVisibilityCommand::Execute(SceneManager& scene)
 {
-	auto result = scene.SetVisibilityStates(m_AfterStates);
-	if (!result.success) return result;
-	return result;
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetVisibilityCommand::Undo(SceneManager& scene)
 {
-	auto result = scene.SetVisibilityStates(m_BeforeStates);
-	if (!result.success) return result;
-	return result;
+	return m_Transaction.Undo(scene);
 }
 
 std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(

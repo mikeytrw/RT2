@@ -1747,7 +1747,7 @@ TEST_CASE("Phase6B W4: complete field-map replacement round-trips independently"
 // Phase 6B W4 review fixes — phantom-entry and canonical-snapshot coverage.
 // ============================================================================
 
-TEST_CASE("Phase6B W4: factory-emitted command suppressed by manager does not record in history")
+TEST_CASE("Phase6B W4: stale-before command fails loudly and records nothing")
 {
     ScriptFixture fx;
     EditorCommandHistory history;
@@ -1759,34 +1759,31 @@ TEST_CASE("Phase6B W4: factory-emitted command suppressed by manager does not re
         MakeSetScriptCommandIfEffective(box, std::nullopt, initial), fx.manager).success);
     REQUIRE(history.CanUndo());
 
-    // Now simulate the W5 crossing case: capture a before-state from
-    // GetScriptState, then an out-of-band mutation changes the stored state
-    // before the command is submitted.
-    const auto staleBefore = fx.manager.GetScriptState(box);
-    REQUIRE(staleBefore.has_value());
+    // A real edit advances the document to 9.0, making the earlier captured
+    // 5.0 before-state stale for any later submission.
+    const auto edit = MakeScript("scripts/spin.lua", 9.0);
+    REQUIRE(history.Execute(
+        MakeSetScriptCommandIfEffective(box, initial, edit), fx.manager).success);
 
-    // Out-of-band: set the field to 9.0 directly (e.g. via a prior undo or
-    // another command). Now stored != staleBefore.
-    REQUIRE(fx.manager.SetScriptState(box, MakeScript("scripts/spin.lua", 9.0)).success);
-
-    // The user commits a staged edit whose value happens to equal the current
-    // stored state (9.0). The factory sees staleBefore(5.0) != after(9.0) and
-    // emits a command. The manager sees stored(9.0) == after(9.0) and
-    // suppresses — success=true, effective=false.
-    auto after = MakeScript("scripts/spin.lua", 9.0);
-    auto cmd = MakeSetScriptCommandIfEffective(box, *staleBefore, after);
+    // A submission built from the stale before (5.0 vs live 9.0) fails loudly
+    // with zero mutation and is not recorded: the undo stack still holds
+    // Add+Edit, and no phantom entry appears.
+    const auto revisionBefore = fx.manager.AuthoringRevision();
+    auto cmd = MakeSetScriptCommandIfEffective(box, initial, edit);
     REQUIRE(cmd);
     auto r = history.Execute(std::move(cmd), fx.manager);
-    CHECK(r.success);
+    CHECK_FALSE(r.success);
     CHECK_FALSE(r.effective);
-
-    // The phantom entry must NOT be in history. The undo stack still has
-    // only the original add, and redo is NOT cleared (because the suppressed
-    // command was not an effective submission).
+    CHECK(fx.manager.AuthoringRevision() == revisionBefore);
     REQUIRE(history.CanUndo());
-    CHECK(history.UndoDescription() == "Add Script");
+    CHECK(history.UndoDescription() == "Edit Script");
 
-    // Undo the original add — should work cleanly.
+    // Undo still walks cleanly: Edit restores the 5.0 canonical state, then
+    // Add removes the script entirely.
+    REQUIRE(history.Undo(fx.manager).success);
+    const auto undone = fx.manager.GetScriptState(box);
+    REQUIRE(undone.has_value());
+    CHECK(rt2::core::ScriptComponentCanonicalEqual(*undone, initial));
     auto r2 = history.Undo(fx.manager);
     REQUIRE(r2.success);
     CHECK_FALSE(fx.manager.HasScript(fx.EntityOf(box)));

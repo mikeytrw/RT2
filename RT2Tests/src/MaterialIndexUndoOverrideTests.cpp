@@ -149,16 +149,19 @@ TEST_CASE("Material-index undo restores the pre-edit override")
 	IndexUndoFixture f;
 	auto& reg = f.mgr.GetECS().registry;
 
-	// The capture comes from the mutation itself: before = displaced
-	// pre-edit override, after = freshly recorded post-edit override.
-	std::optional<MaterialOverrideComponent> before, after;
-	const auto r = f.mgr.SetMaterialIndexState(f.uuid, 1, &before, &after);
-	REQUIRE(r.success);
+	// Phase 8 W3 S6-B: before is read live BEFORE any mutation and the after
+	// override is the manager-staged canonical target (validate-only). The
+	// command's composite then performs the first and only write.
+	const auto before = f.mgr.GetMaterialOverride(f.uuid);
 	REQUIRE(before.has_value());
 	CHECK(MaterialEq(before->material, f.red));
+	const auto staged = f.mgr.StageMaterialIndex(f.uuid, 1);
+	REQUIRE(staged.IsOk());
+	const auto& after = staged.value.override;
 	REQUIRE(after.has_value());
 	CHECK(MaterialEq(after->material, f.green));
 	CHECK(after->authored);
+	CHECK(reg.get<MeshRef>(f.entity).materialIndex == 0);
 
 	auto cmd = MakeSetMaterialIndexCommandIfEffective(f.uuid, 0, 1, before, after);
 	REQUIRE(cmd);
@@ -189,12 +192,14 @@ TEST_CASE("Material-index undo+redo reaches the post-edit override")
 	IndexUndoFixture f;
 	auto& reg = f.mgr.GetECS().registry;
 
-	std::optional<MaterialOverrideComponent> before, after;
-	REQUIRE(f.mgr.SetMaterialIndexState(f.uuid, 1, &before, &after).success);
+	const auto before = f.mgr.GetMaterialOverride(f.uuid);
 	REQUIRE(before.has_value());
-	REQUIRE(after.has_value());
+	const auto staged = f.mgr.StageMaterialIndex(f.uuid, 1);
+	REQUIRE(staged.IsOk());
+	REQUIRE(staged.value.override.has_value());
 
-	auto cmd = MakeSetMaterialIndexCommandIfEffective(f.uuid, 0, 1, before, after);
+	auto cmd = MakeSetMaterialIndexCommandIfEffective(f.uuid, 0, 1,
+		before, staged.value.override);
 	REQUIRE(cmd);
 
 	EditorCommandHistory history;
@@ -247,13 +252,18 @@ TEST_CASE("Material-index undo: save/reopen resolves to the pre-edit material")
 	REQUIRE(reg.all_of<MaterialOverrideComponent>(e));
 	CHECK(MaterialEq(reg.get<MaterialOverrideComponent>(e).material, red));
 
-	// The edit: green. Both snapshots come from the mutation's capture.
-	std::optional<MaterialOverrideComponent> before, after;
-	REQUIRE(mgr.SetMaterialIndexState(uuid, greenSlot, &before, &after).success);
+	// Phase 8 W3 S6-B: before is read live and the after override is the
+	// manager-staged canonical target; the command's composite performs the
+	// first write.
+	const auto before = mgr.GetMaterialOverride(uuid);
 	REQUIRE(before.has_value());
 	CHECK(MaterialEq(before->material, red));
+	const auto staged = mgr.StageMaterialIndex(uuid, greenSlot);
+	REQUIRE(staged.IsOk());
+	REQUIRE(staged.value.override.has_value());
 
-	auto cmd = MakeSetMaterialIndexCommandIfEffective(uuid, redSlot, greenSlot, before, after);
+	auto cmd = MakeSetMaterialIndexCommandIfEffective(uuid, redSlot, greenSlot,
+		before, staged.value.override);
 	REQUIRE(cmd);
 	EditorCommandHistory history;
 	REQUIRE(history.Execute(std::move(cmd), mgr).success);

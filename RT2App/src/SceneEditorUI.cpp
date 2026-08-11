@@ -120,19 +120,6 @@ void SceneEditorUI::Redo()
 	ApplyMutation(result);
 }
 
-void SceneEditorUI::RecordNameEdit(const rt2::core::UUID& target,
-                                   const std::string& before, const std::string& after)
-{
-	if (!m_CommandHistory) return;
-	auto cmd = MakeSetNameCommandIfEffective(target, before, after);
-	if (!cmd) return;
-	EditorMutationResult applied;
-	applied.success = true;
-	applied.syncImpact = rt2::core::SyncImpact::None;
-	applied.affectedEntities.push_back(target);
-	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
-}
-
 void SceneEditorUI::RecordLightEdit(const rt2::core::UUID& target,
                                     const LightComponent& before,
                                     const LightComponent& after)
@@ -158,50 +145,6 @@ void SceneEditorUI::RecordCameraEdit(const rt2::core::UUID& target,
 	applied.success = true;
 	applied.syncImpact = rt2::core::SyncImpact::None;
 	applied.affectedEntities.push_back(target);
-	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
-}
-
-void SceneEditorUI::RecordMaterialIndexEdit(const rt2::core::UUID& target,
-                                            int beforeIndex, int afterIndex,
-                                            const std::optional<MaterialOverrideComponent>& beforeOverride,
-                                            const std::optional<MaterialOverrideComponent>& afterOverride)
-{
-	if (!m_CommandHistory) return;
-	// The before/after overrides come from SceneManager::SetMaterialIndexState
-	// (or SetMaterial), which captures the displaced override before the
-	// index write and the freshly recorded one after it — inside the
-	// mutation, so this call site cannot invert the ordering. This replaces
-	// the 2026-08-03 defect where both were read after the mutation, making
-	// the two snapshots identical by construction.
-	auto cmd = MakeSetMaterialIndexCommandIfEffective(target, beforeIndex,
-	                                                  afterIndex, beforeOverride, afterOverride);
-	if (!cmd) return;
-	EditorMutationResult applied;
-	applied.success = true;
-	applied.syncImpact = rt2::core::SyncImpact::Material;
-	applied.affectedEntities.push_back(target);
-	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
-}
-
-void SceneEditorUI::RecordMaterialPropertiesEdit(int slotIndex,
-                                                 const SceneMaterial& before,
-                                                 const SceneMaterial& after)
-{
-	if (!m_CommandHistory) return;
-	// Capture the after-overrides of all imported entities referencing the
-	// slot now (SetMaterialPropertiesState already re-derived them). The
-	// before-overrides were captured at activation time and stored in the
-	// session... but the session stores SceneMaterial, not the override
-	// list. We capture before-overrides at activation time and stash them
-	// in a member that's not the session. For simplicity here, capture
-	// before-overrides at activation by reading them live — we do that in
-	// RenderMaterialEditor via a separate before-override cache.
-	auto cmd = MakeSetMaterialPropertiesCommandIfEffective(slotIndex, before, after,
-		m_PendingMaterialPropertiesBeforeOverrides, CaptureMaterialOverrideListForSlot(slotIndex));
-	if (!cmd) return;
-	EditorMutationResult applied;
-	applied.success = true;
-	applied.syncImpact = rt2::core::SyncImpact::Material;
 	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
 }
 
@@ -992,8 +935,12 @@ void SceneEditorUI::RenderInspector()
 	{
 		if (std::string(nameBuf) != name)
 		{
-			m_SceneMgr->SetEntityName(entity, nameBuf);
-			RecordNameEdit(targetUuid, name, std::string(nameBuf));
+			auto cmd = MakeSetNameCommandIfEffective(targetUuid, name, std::string(nameBuf));
+			if (cmd)
+			{
+				const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+				ApplyMutation(result);
+			}
 		}
 	}
 	ImGui::EndDisabled();
@@ -1058,8 +1005,12 @@ void SceneEditorUI::RenderInspector()
 				if (ImGui::Button("Remove Motion"))
 				{
 					MotionComponent before = mc;
-					m_SceneMgr->SetMotionState(targetUuid, std::nullopt);
-					RecordMotionEdit(targetUuid, before, std::nullopt);
+					auto cmd = MakeSetMotionCommandIfEffective(targetUuid, before, std::nullopt);
+					if (cmd)
+					{
+						const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+						ApplyMutation(result);
+					}
 				}
 				ImGui::EndDisabled();
 			}
@@ -1069,8 +1020,12 @@ void SceneEditorUI::RenderInspector()
 				if (ImGui::Button("Add Motion"))
 				{
 					MotionComponent after{};
-					m_SceneMgr->SetMotionState(targetUuid, after);
-					RecordMotionEdit(targetUuid, std::nullopt, after);
+					auto cmd = MakeSetMotionCommandIfEffective(targetUuid, std::nullopt, after);
+					if (cmd)
+					{
+						const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+						ApplyMutation(result);
+					}
 				}
 				ImGui::EndDisabled();
 			}
@@ -1088,8 +1043,12 @@ void SceneEditorUI::RenderInspector()
 		{
 			ScriptComponent unbound;
 			unbound.asset.kind = AssetKind::Script;
-			const auto r = m_SceneMgr->SetScriptState(targetUuid, unbound);
-			RecordScriptEdit(targetUuid, std::nullopt, unbound, r);
+			auto cmd = MakeSetScriptCommandIfEffective(targetUuid, std::nullopt, unbound);
+			if (cmd)
+			{
+				const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+				ApplyMutation(result);
+			}
 		}
 		ImGui::EndDisabled();
 	}
@@ -1365,7 +1324,6 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 	}
 
 	ImGui::SameLine();
-	bool duplicatePressed = false;
 	if (ImGui::Button("Duplicate"))
 	{
 		// Clone current material so this entity gets its own independent copy.
@@ -1378,25 +1336,31 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 			int newIdx = m_SceneMgr->AddMaterial(copy);
 			current = newIdx;
 			indexChanged = true;
-			duplicatePressed = true;
 		}
 	}
 
 	if (indexChanged)
 	{
 		const int beforeIndex = matIdx;
-		// Capture the displaced override before the mutation and the freshly
-		// recorded one after it — both inside SetMaterial, so the ordering
-		// cannot be inverted here (2026-08-03 material-index undo defect).
-		std::optional<MaterialOverrideComponent> beforeOverride;
-		std::optional<MaterialOverrideComponent> afterOverride;
-		m_SceneMgr->SetMaterial(entity, current, &beforeOverride, &afterOverride);
-		RecordMaterialIndexEdit(targetUuid, beforeIndex, current,
-		                        beforeOverride, afterOverride);
-		if (duplicatePressed)
-			NotifySceneChanged();
-		else
-			NotifySceneChanged();
+		// Read the displaced override live (before) and stage the canonical
+		// after-override (no mutation), then let the command's composite
+		// replay do the index write + marker insertion + override swap
+		// atomically (construct-then-Execute; the 2026-08-03 material-index
+		// undo defect shape — before can no longer be inverted with after).
+		auto beforeOverride = m_SceneMgr->GetMaterialOverride(targetUuid);
+		const auto staged = m_SceneMgr->StageMaterialIndex(targetUuid, current);
+		if (!staged.IsOk())
+		{
+			ApplyMutation(ToEditorMutationResult(staged.error));
+			return;
+		}
+		auto cmd = MakeSetMaterialIndexCommandIfEffective(targetUuid, beforeIndex, current,
+			beforeOverride, staged.value.override);
+		if (cmd)
+		{
+			const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+			ApplyMutation(result);
+		}
 	}
 
 	// Inline material editor (edits the material that this entity references).
@@ -1410,11 +1374,6 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 	{
 		SceneMaterial mat = m_SceneMgr->GetMaterial(current);
 		bool matChanged = false;
-		// Applied only once the edit is committed (focus lost, Enter, or drag
-		// released), never per keystroke. Each apply runs a material sync that
-		// currently marks the acceleration structure dirty, so editing live
-		// rebuilt every BLAS on every character typed and locked the UI.
-		bool matCommitted = false;
 
 		unsigned int owningWidgetId = m_MaterialPropertiesSession.IsOpen()
 			? m_MaterialPropertiesSessionOwningWidgetId : 0;
@@ -1443,8 +1402,7 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 			{
 				// `mat` holds this widget's live value on every frame it is
 				// drawn, so on the deactivation frame it already carries the
-				// final committed value.
-				matCommitted = true;
+				// final committed value passed to CloseDeferred below.
 				if (m_MaterialPropertiesSession.IsOpen() && owningWidgetId == widgetId)
 					pendingCloseWidgetId = widgetId;
 			}
@@ -1475,30 +1433,38 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 			return ImGui::DragFloat("Emissive Intensity", &mat.emissiveIntensity, 0.1f, 0.0f, 100.0f, "%.1f");
 		});
 
-		if (matCommitted)
-		{
-			m_SceneMgr->SetMaterialProperties(current, mat);
-			NotifySceneChanged();
-		}
-
-		// Deferred close AFTER the mutation block so the recorded after-state
-		// reflects the committed value.
 		if (pendingCloseWidgetId != 0 && m_MaterialPropertiesSession.IsOpen() &&
 		    m_MaterialPropertiesSessionOwningWidgetId == pendingCloseWidgetId)
 		{
-			SceneMaterial afterMat;
-			if (current >= 0 && current < (int)m_SceneMgr->GetMaterials().size())
-				afterMat = m_SceneMgr->GetMaterial(current);
-			else
-				afterMat = mat;
-			auto rec = m_MaterialPropertiesSession.CloseDeferred(afterMat,
+			// Construct-then-Execute: no mutation has happened yet — the
+			// command's composite replay applies the material value write +
+			// imported-member override fan-out + marker insertion atomically.
+			auto rec = m_MaterialPropertiesSession.CloseDeferred(mat,
 				{ [this, targetUuid, current]() {
 					if (m_SceneMgr->FindEntityByUuid(targetUuid) == entt::null || !m_Editable)
 						return false;
 					return current >= 0 && current < (int)m_SceneMgr->GetMaterials().size();
 				} });
 			if (rec)
-				RecordMaterialPropertiesEdit(current, rec->before, rec->after);
+			{
+				const auto staged = m_SceneMgr->StageMaterialSlot(current, rec->after);
+				if (!staged.IsOk())
+				{
+					ApplyMutation(ToEditorMutationResult(staged.error));
+				}
+				else
+				{
+					auto cmd = MakeSetMaterialPropertiesCommandIfEffective(current,
+						rec->before, rec->after,
+						m_PendingMaterialPropertiesBeforeOverrides,
+						staged.value.afterOverrides);
+					if (cmd)
+					{
+						const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+						ApplyMutation(result);
+					}
+				}
+			}
 			m_PendingMaterialPropertiesBeforeOverrides.clear();
 		}
 	}
@@ -1775,9 +1741,13 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 			auto before = *scriptState;
 			auto after = *scriptState;
 			after.asset.path = newPath;
-			const auto r = m_SceneMgr->SetScriptState(targetUuid, after);
-			RecordScriptEdit(targetUuid, before, after, r);
-			scriptState = m_SceneMgr->GetScriptState(targetUuid);
+			auto cmd = MakeSetScriptCommandIfEffective(targetUuid, before, after);
+			if (cmd)
+			{
+				const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+				ApplyMutation(result);
+				scriptState = m_SceneMgr->GetScriptState(targetUuid);
+			}
 		}
 	}
 	ImGui::EndDisabled();
@@ -1835,14 +1805,15 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 					auto before = *scriptState;
 					auto after = *scriptState;
 					after.asset.path = relative.generic_u8string();
-					const auto r = m_SceneMgr->SetScriptState(
-						targetUuid, after);
-					if (!r.success)
-						m_ScriptRebindDiagnostic = r.error.Format();
-					else
+					auto cmd = MakeSetScriptCommandIfEffective(targetUuid, before, after);
+					if (cmd)
 					{
-						RecordScriptEdit(targetUuid, before, after, r);
-						scriptState = m_SceneMgr->GetScriptState(targetUuid);
+						const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+						if (!result.success)
+							m_ScriptRebindDiagnostic = result.error.Format();
+						else
+							scriptState = m_SceneMgr->GetScriptState(targetUuid);
+						ApplyMutation(result);
 					}
 				}
 			}
@@ -1858,8 +1829,12 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 	if (ImGui::Button("Remove Script"))
 	{
 		auto before = *scriptState;
-		const auto r = m_SceneMgr->SetScriptState(targetUuid, std::nullopt);
-		RecordScriptEdit(targetUuid, before, std::nullopt, r);
+		auto cmd = MakeSetScriptCommandIfEffective(targetUuid, before, std::nullopt);
+		if (cmd)
+		{
+			const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+			ApplyMutation(result);
+		}
 	}
 	ImGui::EndDisabled();
 
@@ -2056,15 +2031,38 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 
 		if (changed)
 		{
-			// Write the display entry back into the field map, then write
-			// the full component to the manager.
-			if (hasStored)
-				it->second = display;
-			else
-				fieldMap[desc.name] = display;
+			if (isContinuous)
+			{
+				// Continuous widgets (Int/Float/Vec3/Color) publish a live
+				// per-frame preview and are recorded once at session close
+				// (the S6-C live-preview path; out of S6-B scope).
+				if (hasStored)
+					it->second = display;
+				else
+					fieldMap[desc.name] = display;
 
-			applied = m_SceneMgr->SetScriptState(targetUuid, *scriptState);
-			lastApplied = applied;
+				applied = m_SceneMgr->SetScriptState(targetUuid, *scriptState);
+				lastApplied = applied;
+			}
+			else
+			{
+				// Discrete widgets (Bool/String/Uuid): construct-then-Execute.
+				// Build the after-state without mutating the live component so
+				// the command's composite replay does the value write + marker
+				// insertion + schema promotion atomically.
+				auto after = *scriptState;
+				after.fieldValues[desc.name] = display;
+				auto cmd = MakeSetScriptCommandIfEffective(targetUuid,
+					*sessionBefore, after);
+				if (cmd)
+				{
+					applied = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+					lastApplied = applied;
+					if (applied.success)
+						scriptState = m_SceneMgr->GetScriptState(targetUuid);
+					ApplyMutation(applied);
+				}
+			}
 		}
 
 		// Session management for continuous widgets.
@@ -2093,12 +2091,6 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 				m_ScriptFieldSession.OnCancelled();
 				m_ScriptFieldSessionOwningWidgetId = 0;
 			}
-		}
-		else if (changed && applied.effective)
-		{
-			// Discrete widget: commit immediately via a command, using the
-			// actual mutation result (so effective flows through).
-			RecordScriptEdit(targetUuid, *sessionBefore, *scriptState, applied);
 		}
 
 		ImGui::PopID();

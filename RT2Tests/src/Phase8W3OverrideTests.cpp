@@ -4,6 +4,8 @@
 #include "PrefabComponentKey.h"
 #include "PrefabSerializer.h"
 #include "EditorCommandHistory.h"
+#include "EditorCommands.h"
+#include "EditorPropertyCommands.h"
 #include "EditorSceneState.h"
 #include "EditorStructuralCommands.h"
 #include "SceneManager.h"
@@ -6881,8 +6883,601 @@ TEST_CASE("Phase 8 W3 S6-A: imported material index preserves exact Before")
         { rootMarker, childMarker },
         PrefabMarkerDirection::After, schemaBefore, SceneSerializer::SchemaVersion);
     REQUIRE(redo.IsOk());
-    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(redo.value)).error.IsOk());
+REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(redo.value)).error.IsOk());
     CHECK(reg.get<MaterialOverrideComponent>(rootHandle).materialIndex == 1);
     CHECK(reg.get<MaterialOverrideComponent>(childHandle).materialIndex == 1);
+    std::filesystem::remove_all(dir);
+}
+
+// ============================================================================
+// Phase 8 W3, S6-B — execute-on-commit composite commands.
+//
+// Every in-scope command (visibility, name, motion add/remove, script
+// add/remove/path/rebind + typed field edits, material index, material-slot
+// properties, camera alignment) must perform its first value write and any
+// first override-marker insertion plus schema promotion inside ONE composite
+// commit during Execute, and Undo/Redo must restore the exact value, marker
+// vector, and schema with one revision bump per effective direction. These
+// tests drive the commands through EditorCommandHistory — the same
+// construct-then-Execute path the converted UI uses.
+// ============================================================================
+
+namespace
+{
+
+// UUID of an entity handle.
+template <typename Reg>
+rt2::core::UUID H6B(const Reg& reg, entt::entity handle)
+{
+    return reg.get<EntityIdComponent>(handle).id;
+}
+
+// Canonical script bound to a path. Identity is staged by the composite at
+// Execute time when the file exists under the asset context.
+ScriptComponent S6BScript(const std::string& path)
+{
+    ScriptComponent sc;
+    sc.asset.kind = AssetKind::Script;
+    sc.asset.path = path;
+    sc.asset.sourceKey = "lua:asset=" + path;
+    return sc;
+}
+
+// Attach a sidecar-destined asset context with on-disk scripts so composite
+// Execute mints durable identities for bound adds / path changes.
+void S6BScriptAssets(S2Fixture& f, const std::filesystem::path& dir,
+                     const std::vector<std::string>& names)
+{
+    rt2::core::AssetResolutionContext context;
+    context.assetRoot = dir;
+    f.manager.SetAssetResolutionContext(context);
+    for (const auto& name : names)
+        S2WriteRaw(dir / name, "return 1\n");
+}
+
+} // namespace
+
+// RED proof (fault): reverting SetVisibilityCommand to mutate-then-RecordApplied
+// (two commits: mutate, then marker/schema) breaks the marker, schema, and
+// one-revision invariants asserted below; a REVERT of the composite adapter's
+// Structural impact likewise breaks the syncImpact CHECK.
+TEST_CASE("Phase 8 W3 S6-B: visibility Execute/Undo/Redo is one composite commit")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_visibility");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const UUID child = H6B(reg, childHandle);
+    const auto visibilityKey = PrefabComponentKeyFor<VisibleComponent>::value;
+    reg.emplace_or_replace<VisibleComponent>(rootHandle, VisibleComponent{true});
+    reg.emplace_or_replace<VisibleComponent>(childHandle, VisibleComponent{true});
+    EditorCommandHistory history;
+
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    CHECK(initialSchema == 4);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, visibilityKey).value);
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    auto hide = MakeSetVisibilityCommandIfEffective(
+        { { root, true } }, { { root, false } });
+    REQUIRE(hide);
+    const auto applied = history.Execute(std::move(hide), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::Structural);
+    REQUIRE(applied.affectedEntities.size() == 1);
+    CHECK(applied.affectedEntities.front() == root);
+    CHECK_FALSE(reg.get<VisibleComponent>(rootHandle).visible);
+    REQUIRE(f.manager.IsOverridden(root, visibilityKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    const auto afterHideRevision = f.manager.AuthoringRevision();
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    CHECK(reg.get<VisibleComponent>(rootHandle).visible);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, visibilityKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK(f.manager.AuthoringRevision() == afterHideRevision + 1);
+
+    const auto afterUndoRevision = f.manager.AuthoringRevision();
+    const auto redone = history.Redo(f.manager);
+    REQUIRE(redone.success);
+    REQUIRE(redone.effective);
+    CHECK_FALSE(reg.get<VisibleComponent>(rootHandle).visible);
+    REQUIRE(f.manager.IsOverridden(root, visibilityKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == afterUndoRevision + 1);
+
+    // Follow-up change on a second member: existing marker, no re-promotion,
+    // marker survives its own Undo independently of the root marker.
+    auto hideChild = MakeSetVisibilityCommandIfEffective(
+        { { child, true } }, { { child, false } });
+    REQUIRE(hideChild);
+    REQUIRE(history.Execute(std::move(hideChild), f.manager).effective);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    REQUIRE(f.manager.IsOverridden(child, visibilityKey).value);
+    REQUIRE(f.manager.IsOverridden(root, visibilityKey).value);
+    REQUIRE(history.Undo(f.manager).effective);
+    REQUIRE_FALSE(f.manager.IsOverridden(child, visibilityKey).value);
+    REQUIRE(f.manager.IsOverridden(root, visibilityKey).value);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): skipping the marker membership delta or the schema
+// promotion in PrefabCommandTransaction::Capture breaks the pair below.
+TEST_CASE("Phase 8 W3 S6-B: name first-marker/existing-marker/no-op and ordinary entity")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_name");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto nameKey = PrefabComponentKeyFor<NameComponent>::value;
+    EditorCommandHistory history;
+
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    REQUIRE_FALSE(f.manager.IsOverridden(root, nameKey).value);
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const std::string beforeName = reg.get<NameComponent>(rootHandle).name;
+    const std::string renamed = beforeName + "Renamed";
+
+    auto rename = MakeSetNameCommandIfEffective(root, beforeName, renamed);
+    REQUIRE(rename);
+    const auto applied = history.Execute(std::move(rename), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::None);
+    CHECK(reg.get<NameComponent>(rootHandle).name == renamed);
+    REQUIRE(f.manager.IsOverridden(root, nameKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    REQUIRE(history.Undo(f.manager).effective);
+    CHECK(reg.get<NameComponent>(rootHandle).name == beforeName);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, nameKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    REQUIRE(history.Redo(f.manager).effective);
+    CHECK(reg.get<NameComponent>(rootHandle).name == renamed);
+    REQUIRE(f.manager.IsOverridden(root, nameKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // Existing-marker edit keeps the promoted schema and exactly one revision.
+    const auto revisionBeforeSecond = f.manager.AuthoringRevision();
+    const std::string secondName = renamed + "Again";
+    auto rename2 = MakeSetNameCommandIfEffective(root, renamed, secondName);
+    REQUIRE(rename2);
+    REQUIRE(history.Execute(std::move(rename2), f.manager).effective);
+    CHECK(reg.get<NameComponent>(rootHandle).name == secondName);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeSecond + 1);
+    REQUIRE(history.Undo(f.manager).effective);
+    CHECK(reg.get<NameComponent>(rootHandle).name == renamed);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // No-op suppression.
+    CHECK(!MakeSetNameCommandIfEffective(root, beforeName, beforeName));
+
+    // Ordinary entity: value-only, no marker edits, no schema promotion.
+    const auto plain = f.CreateEmpty("Plain");
+    const auto plainSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto plainEntity = f.manager.FindEntityByUuid(plain);
+    auto renamePlain = MakeSetNameCommandIfEffective(plain, "Plain", "Box");
+    REQUIRE(renamePlain);
+    const auto plainApplied = history.Execute(std::move(renamePlain), f.manager);
+    REQUIRE(plainApplied.success);
+    REQUIRE(plainApplied.effective);
+    CHECK(reg.get<NameComponent>(plainEntity).name == "Box");
+    const auto plainMarker = f.manager.IsOverridden(plain, nameKey);
+    REQUIRE_FALSE(plainMarker.IsOk());
+    CHECK(plainMarker.error.code == rt2::core::Error::NotPrefabMember);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == plainSchema);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): setting the motion marker afterPresent unconditionally
+// (not conditioned on the after-state carrying the component) breaks the
+// remove-path marker assertions below.
+TEST_CASE("Phase 8 W3 S6-B: motion add/velocity/remove undo-redo with marker deltas")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_motion");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto motionKey = PrefabComponentKeyFor<MotionComponent>::value;
+    EditorCommandHistory history;
+
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    const auto motionA = MotionComponent{ glm::vec3(1.0f, 0.0f, 0.0f) };
+    auto add = MakeSetMotionCommandIfEffective(root, std::nullopt,
+        std::optional<MotionComponent>{ motionA });
+    REQUIRE(add);
+    const auto applied = history.Execute(std::move(add), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::None);
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    CHECK(reg.get<MotionComponent>(rootHandle).linearVelocity == glm::vec3(1.0f, 0.0f, 0.0f));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    REQUIRE(history.Undo(f.manager).effective);
+    CHECK_FALSE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    REQUIRE(history.Redo(f.manager).effective);
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // Velocity edit (existing marker, schema already promoted).
+    auto edit = MakeSetMotionCommandIfEffective(root,
+        std::optional<MotionComponent>{ reg.get<MotionComponent>(rootHandle) },
+        std::optional<MotionComponent>{ MotionComponent{ glm::vec3(0.0f, 2.0f, 0.0f) } });
+    REQUIRE(edit);
+    REQUIRE(history.Execute(std::move(edit), f.manager).effective);
+    CHECK(reg.get<MotionComponent>(rootHandle).linearVelocity == glm::vec3(0.0f, 2.0f, 0.0f));
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    REQUIRE(history.Undo(f.manager).effective);
+    CHECK(reg.get<MotionComponent>(rootHandle).linearVelocity == glm::vec3(1.0f, 0.0f, 0.0f));
+
+    // Remove: marker delta is afterPresent=false.
+    auto remove = MakeSetMotionCommandIfEffective(root,
+        std::optional<MotionComponent>{ reg.get<MotionComponent>(rootHandle) }, std::nullopt);
+    REQUIRE(remove);
+    REQUIRE(history.Execute(std::move(remove), f.manager).effective);
+    CHECK_FALSE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+    REQUIRE(history.Undo(f.manager).effective);
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // No-op suppression: both absent and both identical.
+    CHECK(!MakeSetMotionCommandIfEffective(root, std::nullopt, std::nullopt));
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (the S6-B script-identity defect): a bound script add or path
+// change mints a durable sidecar identity at Execute, and the composite
+// canonicalizes the staged target (SceneManager.cpp:6721-6737), but the
+// command stores the pre-mint payload. Undo then compares the stored after
+// (nil assetId) against the live minted id and fails with "script source
+// differs from live state". This TEST_CASE is RED before the transaction
+// absorbs the canonical staged target; bypassing the identity staging in
+// StageScriptBinding would make the REQUIRE(undo.success) below pass
+// incorrectly.
+TEST_CASE("Phase 8 W3 S6-B: bound script add/path/remove undo-redo is self-consistent")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_script_id");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto scriptKey = PrefabComponentKeyFor<ScriptComponent>::value;
+    S6BScriptAssets(f, dir, { "spin.lua", "spin2.lua" });
+    EditorCommandHistory history;
+
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    // Bound add: Execute mints the durable sidecar identity.
+    auto add = MakeSetScriptCommandIfEffective(root, std::nullopt,
+        std::optional<ScriptComponent>{ S6BScript("spin.lua") });
+    REQUIRE(add);
+    const auto applied = history.Execute(std::move(add), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::None);
+    REQUIRE(reg.all_of<ScriptComponent>(rootHandle));
+    const auto liveAdd = reg.get<ScriptComponent>(rootHandle);
+    const auto assignedId = liveAdd.asset.assetId;
+    REQUIRE_FALSE(assignedId.IsNull());
+    REQUIRE(liveAdd.asset.path == "spin.lua");
+    REQUIRE(std::filesystem::exists(rt2::core::AssetSidecarPath(dir / "spin.lua")));
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    // Undo of a bound add must restore the exact absent state.
+    const auto afterAddRevision = f.manager.AuthoringRevision();
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    CHECK_FALSE(reg.all_of<ScriptComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, scriptKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK(f.manager.AuthoringRevision() == afterAddRevision + 1);
+
+    // Redo re-applies the add with the SAME durable identity and marker.
+    const auto afterUndoRevision = f.manager.AuthoringRevision();
+    const auto redone = history.Redo(f.manager);
+    REQUIRE(redone.success);
+    REQUIRE(redone.effective);
+    REQUIRE(reg.all_of<ScriptComponent>(rootHandle));
+    CHECK(reg.get<ScriptComponent>(rootHandle).asset.assetId == assignedId);
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == afterUndoRevision + 1);
+
+    // Path change on the bound script reassigns the durable identity; Undo
+    // restores both the path and the original id.
+    auto rebind = MakeSetScriptCommandIfEffective(root,
+        std::optional<ScriptComponent>{ reg.get<ScriptComponent>(rootHandle) },
+        std::optional<ScriptComponent>{ S6BScript("spin2.lua") });
+    REQUIRE(rebind);
+    const auto rebindResult = history.Execute(std::move(rebind), f.manager);
+    REQUIRE(rebindResult.success);
+    REQUIRE(rebindResult.effective);
+    REQUIRE(reg.get<ScriptComponent>(rootHandle).asset.path == "spin2.lua");
+    const auto spin2Id = reg.get<ScriptComponent>(rootHandle).asset.assetId;
+    REQUIRE_FALSE(spin2Id.IsNull());
+    REQUIRE_FALSE(spin2Id == assignedId);
+
+    const auto undoneRebind = history.Undo(f.manager);
+    REQUIRE(undoneRebind.success);
+    REQUIRE(undoneRebind.effective);
+    REQUIRE(reg.get<ScriptComponent>(rootHandle).asset.path == "spin.lua");
+    CHECK(reg.get<ScriptComponent>(rootHandle).asset.assetId == assignedId);
+
+    // Remove the bound script; Undo restores the exact component and id.
+    auto remove = MakeSetScriptCommandIfEffective(root,
+        std::optional<ScriptComponent>{ reg.get<ScriptComponent>(rootHandle) }, std::nullopt);
+    REQUIRE(remove);
+    REQUIRE(history.Execute(std::move(remove), f.manager).effective);
+    CHECK_FALSE(reg.all_of<ScriptComponent>(rootHandle));
+    const auto undoneRemove = history.Undo(f.manager);
+    REQUIRE(undoneRemove.success);
+    REQUIRE(undoneRemove.effective);
+    REQUIRE(reg.all_of<ScriptComponent>(rootHandle));
+    CHECK(reg.get<ScriptComponent>(rootHandle).asset.path == "spin.lua");
+    CHECK(reg.get<ScriptComponent>(rootHandle).asset.assetId == assignedId);
+
+    // No-op suppression.
+    CHECK(!MakeSetScriptCommandIfEffective(root,
+        std::optional<ScriptComponent>{ reg.get<ScriptComponent>(rootHandle) },
+        std::optional<ScriptComponent>{ reg.get<ScriptComponent>(rootHandle) }));
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): reverting script field edits to a whole-component
+// replacement that drops the canonical before-snapshot validation breaks the
+// exact field-map restore assertion.
+TEST_CASE("Phase 8 W3 S6-B: script Bool/String/UUID field edits round-trip exactly")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_script_fields");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    EditorCommandHistory history;
+
+    ScriptComponent first = S6BScript("spin.lua");
+    first.fieldValues["active"] = { ScriptFieldType::Bool, true };
+    first.fieldValues["label"] = { ScriptFieldType::String, std::string("a") };
+    first.fieldValues["id"] = { ScriptFieldType::Uuid,
+        UUID::Parse("11111111-1111-4111-8111-111111111111") };
+    REQUIRE(history.Execute(MakeSetScriptCommandIfEffective(root, std::nullopt,
+        std::optional<ScriptComponent>{ first }), f.manager).effective);
+
+    ScriptComponent second = reg.get<ScriptComponent>(rootHandle);
+    second.fieldValues["active"] = { ScriptFieldType::Bool, false };
+    second.fieldValues["label"] = { ScriptFieldType::String, std::string("b") };
+    second.fieldValues["id"] = { ScriptFieldType::Uuid,
+        UUID::Parse("22222222-2222-4222-8222-222222222222") };
+    REQUIRE(history.Execute(MakeSetScriptCommandIfEffective(root,
+        std::optional<ScriptComponent>{ reg.get<ScriptComponent>(rootHandle) },
+        std::optional<ScriptComponent>{ second }), f.manager).success);
+    const auto edited = reg.get<ScriptComponent>(rootHandle);
+    CHECK(std::get<bool>(edited.fieldValues.at("active").value) == false);
+    CHECK(std::get<std::string>(edited.fieldValues.at("label").value) == "b");
+    CHECK(std::get<UUID>(edited.fieldValues.at("id").value)
+        == UUID::Parse("22222222-2222-4222-8222-222222222222"));
+
+    REQUIRE(history.Undo(f.manager).success);
+    const auto undone = reg.get<ScriptComponent>(rootHandle);
+    REQUIRE(undone.fieldValues.size() == first.fieldValues.size());
+    CHECK(ScriptComponentCanonicalEqual(undone, first));
+
+    REQUIRE(history.Redo(f.manager).success);
+    const auto redone = reg.get<ScriptComponent>(rootHandle);
+    CHECK(std::get<bool>(redone.fieldValues.at("active").value) == false);
+    CHECK(std::get<std::string>(redone.fieldValues.at("label").value) == "b");
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): feeding the factory a raw (non-staged) after override,
+// or reverting to mutate-then-RecordApplied, breaks the override-absent Undo
+// and marker/schema invariants below.
+TEST_CASE("Phase 8 W3 S6-B: material index command one-shot staging and undo")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_material_index");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto overrideKey = PrefabComponentKeyFor<MaterialOverrideComponent>::value;
+    EditorCommandHistory history;
+
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    f.manager.AddMaterial(SceneMaterial{}); // slot 1
+
+    const auto staged = f.manager.StageMaterialIndex(root, 1);
+    REQUIRE(staged.IsOk());
+    REQUIRE(staged.value.override.has_value());
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    auto assign = MakeSetMaterialIndexCommandIfEffective(root, 0, 1,
+        std::nullopt, staged.value.override);
+    REQUIRE(assign);
+    const auto applied = history.Execute(std::move(assign), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::Material);
+    REQUIRE(applied.affectedEntities.size() == 1);
+    CHECK(applied.affectedEntities.front() == root);
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 1);
+    REQUIRE(reg.try_get<MaterialOverrideComponent>(rootHandle));
+    CHECK(reg.get<MaterialOverrideComponent>(rootHandle).materialIndex == 1);
+    REQUIRE(f.manager.IsOverridden(root, overrideKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 0);
+    CHECK_FALSE(reg.all_of<MaterialOverrideComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, overrideKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 1);
+    REQUIRE(reg.try_get<MaterialOverrideComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, overrideKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // No-op suppression when index and override are both unchanged.
+    CHECK(!MakeSetMaterialIndexCommandIfEffective(root, 1, 1,
+        staged.value.override, staged.value.override));
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): dropping the complete UUID + optional fan-out snapshots
+// (the old absent-only list shape) makes the Undo override restore fail.
+TEST_CASE("Phase 8 W3 S6-B: material-slot properties command complete fan-out")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_material_slot");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto overrideKey = PrefabComponentKeyFor<MaterialOverrideComponent>::value;
+    EditorCommandHistory history;
+
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+
+    const SceneMaterial before = f.manager.GetMaterial(0);
+    SceneMaterial after = before;
+    after.metallic = 0.75f;
+
+    const auto collectLive = [&]() {
+        SetMaterialPropertiesCommand::OverrideList out;
+        auto& r = f.manager.GetECS().registry;
+        for (auto e : r.view<ImportedMeshSourceComponent>())
+        {
+            const auto* ref = r.try_get<MeshRef>(e);
+            if (!ref || ref->materialIndex != 0) continue;
+            const auto* idc = r.try_get<EntityIdComponent>(e);
+            if (!idc) continue;
+            const auto* ov = r.try_get<MaterialOverrideComponent>(e);
+            out.emplace_back(idc->id,
+                ov ? std::optional<MaterialOverrideComponent>(*ov) : std::nullopt);
+        }
+        return out;
+    };
+
+    auto beforeOverrides = collectLive();
+    REQUIRE(beforeOverrides.size() == 1);
+    const auto staged = f.manager.StageMaterialSlot(0, after);
+    REQUIRE(staged.IsOk());
+    REQUIRE(staged.value.afterOverrides.size() == 1);
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    auto edit = MakeSetMaterialPropertiesCommandIfEffective(0, before, after,
+        std::move(beforeOverrides), staged.value.afterOverrides);
+    REQUIRE(edit);
+    const auto applied = history.Execute(std::move(edit), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::Material);
+    REQUIRE(std::find(applied.affectedEntities.begin(), applied.affectedEntities.end(), root)
+        != applied.affectedEntities.end());
+    REQUIRE(reg.try_get<MaterialOverrideComponent>(rootHandle));
+    CHECK(reg.get<MaterialOverrideComponent>(rootHandle).material.metallic == doctest::Approx(0.75f));
+    REQUIRE(f.manager.IsOverridden(root, overrideKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK_FALSE(reg.all_of<MaterialOverrideComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, overrideKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(f.manager.GetMaterial(0).metallic == doctest::Approx(0.0f));
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): reverting AlignCameraCommand to a separate transform +
+// camera write (two revisions) or skipping the camera-pose marker deltas
+// breaks the one-revision / marker invariants below.
+TEST_CASE("Phase 8 W3 S6-B: camera alignment command is one composite commit")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_camera_align");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto transformKey = PrefabComponentKeyFor<Transform>::value;
+    const auto cameraKey = PrefabComponentKeyFor<CameraComponent>::value;
+    EditorCommandHistory history;
+
+    reg.emplace_or_replace<CameraComponent>(rootHandle, CameraComponent{});
+    const auto& liveTf = reg.get<Transform>(rootHandle);
+    const EditableTRS beforeLocal{ liveTf.translation, liveTf.rotation, liveTf.scale };
+    const CameraComponent beforeCamera = reg.get<CameraComponent>(rootHandle);
+
+    EditorCameraPose target;
+    target.position = { 1.0f, 2.0f, 3.0f };
+    target.forward = { 0.0f, -1.0f, 0.0f };
+    const auto staged = f.manager.StageCameraPose(root, target);
+    REQUIRE(staged.IsOk());
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    auto align = MakeAlignCameraCommandIfEffective(root,
+        beforeLocal, staged.value.local, beforeCamera, staged.value.camera);
+    REQUIRE(align);
+    const auto applied = history.Execute(std::move(align), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::Transform);
+    REQUIRE(f.manager.IsOverridden(root, transformKey).value);
+    REQUIRE(f.manager.IsOverridden(root, cameraKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+    CHECK(glm::length(reg.get<CameraComponent>(rootHandle).forwardDirection - target.forward) < 1e-5f);
+
+    const auto afterAlignRevision = f.manager.AuthoringRevision();
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    CHECK(glm::length(reg.get<CameraComponent>(rootHandle).forwardDirection
+        - beforeCamera.forwardDirection) < 1e-5f);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, transformKey).value);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, cameraKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(f.manager.AuthoringRevision() == afterAlignRevision + 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(glm::length(reg.get<CameraComponent>(rootHandle).forwardDirection - target.forward) < 1e-5f);
+    REQUIRE(f.manager.IsOverridden(root, transformKey).value);
+    REQUIRE(f.manager.IsOverridden(root, cameraKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
     std::filesystem::remove_all(dir);
 }
