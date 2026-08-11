@@ -24,17 +24,20 @@
 // write, any marker insertion, and any schema promotion land in ONE commit
 // with ONE revision bump and at most one NotifyAuthoringChanged().
 //
-// Marker capture: for each MarkerSpec the transaction reads the CURRENT
-// override-set membership via SceneManager::IsOverridden. An ordinary entity
-// (NotPrefabMember) drops the delta and the edit degrades to value-only, so
-// non-prefab behavior is unchanged. Any OTHER IsOverridden failure — an absent
-// member (InvalidEntity) or an unknown/non-overridable/malformed stored
-// override vector (InvalidArgument) — aborts the capture: the command cannot
-// commit a value-only composite while the marker/schema/history stay
-// untouched. Removing a wire that is currently INHERITED (not overridden) is
-// marked as explicitly overridden-absent so the prefab source cannot resurrect
-// the component; a locally added-then-removed member still returns to source
-// with no marker.
+// Marker capture: every public MarkerSpec key is validated/canonicalized
+// against the frozen table (FindComponentByWire) BEFORE any membership query,
+// and a key that is not a known overridable wire — unknown, or present but
+// excluded — aborts the capture with InvalidArgument regardless of the
+// target's entity class. Only then is override-set membership read via
+// SceneManager::IsOverridden. An ordinary entity (NotPrefabMember) drops the
+// delta and the edit degrades to value-only, so non-prefab behavior is
+// unchanged. ANY other IsOverridden failure — an absent member
+// (InvalidEntity) or a malformed stored override vector (InvalidArgument) —
+// aborts the capture: the command cannot commit a value-only composite while
+// the marker/schema/history stay untouched. Removing a wire that is currently
+// INHERITED (not overridden) is marked as explicitly overridden-absent so the
+// prefab source cannot resurrect the component; a locally added-then-removed
+// member still returns to source with no marker.
 //
 // Schema capture: m_BeforeSchema is the live document schema at first replay;
 // m_AfterSchema is promoted to SceneSerializer::SchemaVersion exactly when a
@@ -48,9 +51,12 @@ class SceneManager;
 class PrefabCommandTransaction
 {
 public:
-	// One marker membership delta. `key` names the overridable prefab wire;
-	// `afterPresent` is the membership the After direction produces. A delta
-	// whose member is an ordinary entity is dropped at capture.
+	// One marker membership delta. `key` must be a KNOWN OVERRIDABLE prefab
+	// wire (validated at capture regardless of the target's entity class: an
+	// unknown or excluded wire aborts the command with InvalidArgument before
+	// the NotPrefabMember skip); `afterPresent` is the membership the After
+	// direction produces. A delta whose member is an ordinary entity is
+	// dropped at capture.
 	struct MarkerSpec
 	{
 		rt2::core::UUID member;
@@ -76,8 +82,9 @@ public:
 
 private:
 	EditorMutationResult Replay(SceneManager& scene, PrefabMarkerDirection direction);
-	// Fallible: returns a Failure (and does NOT set m_Captured) when any
-	// IsOverridden error other than NotPrefabMember occurs during capture.
+	// Fallible: returns a Failure (and does NOT set m_Captured) when a marker
+	// key is unknown or excluded, or when any IsOverridden error other than
+	// NotPrefabMember occurs during capture.
 	EditorMutationResult Capture(SceneManager& scene);
 
 	std::vector<PrefabValueEdit> m_Values;

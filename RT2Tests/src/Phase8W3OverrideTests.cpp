@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -7831,5 +7832,155 @@ TEST_CASE("Phase 8 W3 S6-B fixup: null history fails with a structured diagnosti
     REQUIRE(history.CanUndo());
     REQUIRE(history.Undo(f.manager).success);
     CHECK(reg.get<NameComponent>(rootHandle).name == beforeName);
+    std::filesystem::remove_all(dir);
+}
+
+// ============================================================================
+// Phase 8 W3, S6-B re-review residual — every public MarkerSpec key is
+// validated against the frozen table before the ordinary-entity skip.
+// ============================================================================
+
+namespace
+{
+// Minimal IEditorCommand adapter that exposes a caller-injected
+// PrefabCommandTransaction. The production factories always emit canonical
+// keys, so injecting an UNKNOWN or EXCLUDED marker key requires driving the
+// transaction directly; this is the reusable seam's public boundary.
+class TestTransactionCommand final : public IEditorCommand
+{
+public:
+    TestTransactionCommand(std::vector<PrefabValueEdit> values,
+                           std::vector<PrefabCommandTransaction::MarkerSpec> markers)
+        : m_Txn(std::move(values), std::move(markers)) {}
+    EditorMutationResult Execute(SceneManager& scene) override { return m_Txn.Execute(scene); }
+    EditorMutationResult Undo(SceneManager& scene) override { return m_Txn.Undo(scene); }
+    std::string Description() const override { return "test transaction command"; }
+private:
+    PrefabCommandTransaction m_Txn;
+};
+}
+
+// RED proof (fault): Capture validated the marker key only through
+// SceneManager::IsOverridden, which returns NotPrefabMember for an ordinary
+// entity BEFORE it canonicalizes the wire or checks the overridable bit
+// (SceneManager.cpp:5858-5865). A transaction against an ordinary entity with
+// an UNKNOWN marker wire therefore had its marker silently dropped and
+// proceeded as a value-only edit — the same bad key failed loudly only for a
+// prefab member. The fix validates every MarkerSpec key against the table
+// (FindComponentByWire) and rejects unknown wires before the NotPrefabMember
+// skip, so both entity classes fail identically with zero mutation.
+TEST_CASE("Phase 8 W3 S6-B fixup: unknown marker key on an ordinary entity fails loudly with zero mutation")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_unknown_ordinary");
+    auto& reg = f.manager.GetECS().registry;
+    // Both entity classes present up front so one baseline covers both: the
+    // ordinary entity and a real prefab instance (whose root is a member).
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    const UUID root = H6B(reg, rootHandle);
+    const UUID plain = f.CreateEmpty("Plain");
+    const auto plainHandle = f.manager.FindEntityByUuid(plain);
+    REQUIRE(static_cast<uint32_t>(plainHandle) != static_cast<uint32_t>(entt::null));
+    REQUIRE_FALSE(reg.all_of<PrefabMemberComponent>(plainHandle));
+    REQUIRE(reg.all_of<PrefabMemberComponent>(rootHandle));
+    const std::string beforeName = reg.get<NameComponent>(plainHandle).name;
+    const std::string rootName = reg.get<NameComponent>(rootHandle).name;
+
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const auto beforeSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    EditorCommandHistory history;
+
+    auto bad = std::make_unique<TestTransactionCommand>(
+        std::vector<PrefabValueEdit>{
+            { PrefabValueKind::EntityName, plain, PrefabMarkerDirection::After,
+              beforeName, std::string("BadRename") } },
+        std::vector<PrefabCommandTransaction::MarkerSpec>{
+            { plain, PrefabComponentKey(std::string_view("bogus.wire"), true), true } });
+    const auto applied = history.Execute(std::move(bad), f.manager);
+    REQUIRE_FALSE(applied.success);
+    CHECK(applied.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(applied.error.detail.find("bogus.wire") != std::string::npos);
+    // Zero value/revision/schema/notification/history change — the command
+    // could NOT silently degrade to a value-only edit.
+    CHECK(reg.get<NameComponent>(plainHandle).name == beforeName);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == beforeSchema);
+    CHECK_FALSE(history.CanUndo());
+
+    // Entity-class independence: the SAME bad key on a prefab member fails
+    // identically — the membership query no longer gates key validation.
+    auto badMember = std::make_unique<TestTransactionCommand>(
+        std::vector<PrefabValueEdit>{
+            { PrefabValueKind::EntityName, root, PrefabMarkerDirection::After,
+              rootName, std::string("BadRename") } },
+        std::vector<PrefabCommandTransaction::MarkerSpec>{
+            { root, PrefabComponentKey(std::string_view("bogus.wire"), true), true } });
+    const auto memberApplied = history.Execute(std::move(badMember), f.manager);
+    REQUIRE_FALSE(memberApplied.success);
+    CHECK(memberApplied.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(reg.get<NameComponent>(rootHandle).name == rootName);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+    CHECK_FALSE(history.CanUndo());
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): same boundary hole, same silent value-only degradation,
+// for an EXCLUDED table wire (meshRef — present in the frozen table but not
+// overridable). On the pre-fix code an ordinary entity dropped the excluded
+// marker and committed the value edit; the fix rejects excluded wires with a
+// structured InvalidArgument before the ordinary-entity skip.
+TEST_CASE("Phase 8 W3 S6-B fixup: excluded marker key on an ordinary entity fails loudly with zero mutation")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_excluded_ordinary");
+    auto& reg = f.manager.GetECS().registry;
+    // Both entity classes present up front so one baseline covers both.
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    const UUID root = H6B(reg, rootHandle);
+    const UUID plain = f.CreateEmpty("Plain");
+    const auto plainHandle = f.manager.FindEntityByUuid(plain);
+    REQUIRE(static_cast<uint32_t>(plainHandle) != static_cast<uint32_t>(entt::null));
+    REQUIRE_FALSE(reg.all_of<PrefabMemberComponent>(plainHandle));
+    REQUIRE(reg.all_of<PrefabMemberComponent>(rootHandle));
+    const std::string beforeName = reg.get<NameComponent>(plainHandle).name;
+    const std::string rootName = reg.get<NameComponent>(rootHandle).name;
+    const PrefabComponentKey meshKey = PrefabComponentKeyFor<MeshRef>::value;
+    REQUIRE_FALSE(meshKey.overridable());
+
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const auto beforeSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    EditorCommandHistory history;
+
+    auto bad = std::make_unique<TestTransactionCommand>(
+        std::vector<PrefabValueEdit>{
+            { PrefabValueKind::EntityName, plain, PrefabMarkerDirection::After,
+              beforeName, std::string("BadRename") } },
+        std::vector<PrefabCommandTransaction::MarkerSpec>{
+            { plain, meshKey, true } });
+    const auto applied = history.Execute(std::move(bad), f.manager);
+    REQUIRE_FALSE(applied.success);
+    CHECK(applied.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(applied.error.detail.find("meshRef") != std::string::npos);
+    CHECK(reg.get<NameComponent>(plainHandle).name == beforeName);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == beforeSchema);
+    CHECK_FALSE(history.CanUndo());
+
+    // Entity-class independence: the SAME excluded key on a prefab member
+    // fails identically.
+    auto badMember = std::make_unique<TestTransactionCommand>(
+        std::vector<PrefabValueEdit>{
+            { PrefabValueKind::EntityName, root, PrefabMarkerDirection::After,
+              rootName, std::string("BadRename") } },
+        std::vector<PrefabCommandTransaction::MarkerSpec>{
+            { root, meshKey, true } });
+    const auto memberApplied = history.Execute(std::move(badMember), f.manager);
+    REQUIRE_FALSE(memberApplied.success);
+    CHECK(memberApplied.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(reg.get<NameComponent>(rootHandle).name == rootName);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+    CHECK_FALSE(history.CanUndo());
     std::filesystem::remove_all(dir);
 }

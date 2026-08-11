@@ -1,5 +1,6 @@
 #include "PrefabCommandTransaction.h"
 
+#include "PrefabComponentKey.h"
 #include "SceneSerializer.h"
 
 EditorMutationResult PrefabCommandTransaction::Execute(SceneManager& scene)
@@ -24,15 +25,34 @@ EditorMutationResult PrefabCommandTransaction::Capture(SceneManager& scene)
 	bool anyMarkerAdded = false;
 	for (const auto& spec : m_Markers)
 	{
-		const auto presence = scene.IsOverridden(spec.member, spec.key);
+		// Validate/canonicalize EVERY public MarkerSpec key against the frozen
+		// table BEFORE the ordinary-entity skip. SceneManager::IsOverridden
+		// returns NotPrefabMember before it ever canonicalizes the wire or
+		// checks the overridable bit, so without this an ordinary entity with
+		// an unknown or excluded key silently dropped its marker and proceeded
+		// as a value-only edit — validation was entity-class-dependent. A
+		// marker key that is not a known overridable wire aborts the capture
+		// regardless of the target's class.
+		const auto canonical = FindComponentByWire(spec.key.wire());
+		if (!canonical)
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+				spec.member.ToString(),
+				"unknown override key wire '" + std::string(spec.key.wire()) + "'");
+		if (!canonical->overridable())
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+				spec.member.ToString(),
+				"non-overridable (excluded) override key wire '"
+				+ std::string(spec.key.wire()) + "'");
+
+		const auto presence = scene.IsOverridden(spec.member, *canonical);
 		if (!presence.IsOk())
 		{
 			// An ordinary entity has no override set to join; the delta is
 			// dropped and the edit is value-only. ANY other failure — an
-			// absent member (InvalidEntity) or an unknown/non-overridable/
-			// malformed stored override vector (InvalidArgument) — aborts the
-			// capture so the command cannot silently commit a value-only
-			// composite while the marker/schema/history stay untouched.
+			// absent member (InvalidEntity) or a malformed stored override
+			// vector (InvalidArgument) — aborts the capture so the command
+			// cannot silently commit a value-only composite while the
+			// marker/schema/history stay untouched.
 			if (presence.error.code == rt2::core::Error::NotPrefabMember)
 				continue;
 			return EditorMutationResult::Failure(presence.error.code,
