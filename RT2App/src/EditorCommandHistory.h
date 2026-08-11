@@ -100,4 +100,25 @@ private:
 	uint64_t    m_DocumentGeneration = 0;
 };
 
+// S6-B fixup (nullable-history safety): route ONE command through an OPTIONAL
+// command history. A host that has not installed a history (SceneEditorUI's
+// documented default construction) must never have the command dereference a
+// missing history or mutate outside it — this returns a structured Failure
+// (InvalidRuntimeState) before the scene is touched. With a history installed
+// it forwards to EditorCommandHistory::Execute. Converted UI actions route
+// through here; callers surface the returned result like any other mutation
+// failure.
+inline EditorMutationResult ExecuteCommandThroughHistory(
+	EditorCommandHistory* history,
+	SceneManager& scene,
+	std::unique_ptr<IEditorCommand> cmd,
+	const std::string& path = {})
+{
+	if (!history)
+		return EditorMutationResult::Failure(
+			rt2::core::Error::InvalidRuntimeState, path,
+			"command history is not installed; the edit was not applied");
+	return history->Execute(std::move(cmd), scene);
+}
+
 #endif // RT2_EDITOR_COMMAND_HISTORY_H

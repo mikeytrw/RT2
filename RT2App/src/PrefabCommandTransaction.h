@@ -27,9 +27,14 @@
 // Marker capture: for each MarkerSpec the transaction reads the CURRENT
 // override-set membership via SceneManager::IsOverridden. An ordinary entity
 // (NotPrefabMember) drops the delta and the edit degrades to value-only, so
-// non-prefab behavior is unchanged. An absent member is not silently dropped:
-// the marker is omitted and the composite Prepare fails loudly on the value
-// resolve instead.
+// non-prefab behavior is unchanged. Any OTHER IsOverridden failure — an absent
+// member (InvalidEntity) or an unknown/non-overridable/malformed stored
+// override vector (InvalidArgument) — aborts the capture: the command cannot
+// commit a value-only composite while the marker/schema/history stay
+// untouched. Removing a wire that is currently INHERITED (not overridden) is
+// marked as explicitly overridden-absent so the prefab source cannot resurrect
+// the component; a locally added-then-removed member still returns to source
+// with no marker.
 //
 // Schema capture: m_BeforeSchema is the live document schema at first replay;
 // m_AfterSchema is promoted to SceneSerializer::SchemaVersion exactly when a
@@ -71,7 +76,9 @@ public:
 
 private:
 	EditorMutationResult Replay(SceneManager& scene, PrefabMarkerDirection direction);
-	void Capture(SceneManager& scene);
+	// Fallible: returns a Failure (and does NOT set m_Captured) when any
+	// IsOverridden error other than NotPrefabMember occurs during capture.
+	EditorMutationResult Capture(SceneManager& scene);
 
 	std::vector<PrefabValueEdit> m_Values;
 	std::vector<MarkerSpec> m_Markers;

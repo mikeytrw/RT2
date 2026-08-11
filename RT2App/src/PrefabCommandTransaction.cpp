@@ -17,7 +17,7 @@ EditorMutationResult PrefabCommandTransaction::Redo(SceneManager& scene)
 	return Replay(scene, PrefabMarkerDirection::After);
 }
 
-void PrefabCommandTransaction::Capture(SceneManager& scene)
+EditorMutationResult PrefabCommandTransaction::Capture(SceneManager& scene)
 {
 	m_BeforeSchema = scene.AuthoringDoc().metadata.schemaVersion;
 	m_CapturedMarkers.clear();
@@ -28,32 +28,48 @@ void PrefabCommandTransaction::Capture(SceneManager& scene)
 		if (!presence.IsOk())
 		{
 			// An ordinary entity has no override set to join; the delta is
-			// dropped and the edit is value-only. Any other failure (absent
-			// member, malformed stored vector) omits the marker too and lets
-			// the composite value resolve fail loudly during Prepare.
+			// dropped and the edit is value-only. ANY other failure — an
+			// absent member (InvalidEntity) or an unknown/non-overridable/
+			// malformed stored override vector (InvalidArgument) — aborts the
+			// capture so the command cannot silently commit a value-only
+			// composite while the marker/schema/history stay untouched.
 			if (presence.error.code == rt2::core::Error::NotPrefabMember)
 				continue;
-			continue;
+			return EditorMutationResult::Failure(presence.error.code,
+				presence.error.path, presence.error.detail);
 		}
 		CapturedMarker captured;
 		captured.member = spec.member;
 		captured.key = spec.key;
 		captured.beforePresent = presence.value;
 		captured.afterPresent = spec.afterPresent;
+		// Removing an INHERITED (currently not overridden) prefab-authored
+		// wire must mark it as explicitly overridden-absent. A local removal
+		// that merely drops the marker would let the prefab source resurrect
+		// the component on the next reconcile; adding the wire to the override
+		// set records the local "removed here" decision durably. A locally
+		// added-then-removed member (beforePresent == true) still returns to
+		// source with no marker.
+		if (!spec.afterPresent && !presence.value)
+			captured.afterPresent = true;
 		m_CapturedMarkers.push_back(std::move(captured));
-		if (!presence.value && spec.afterPresent)
+		if (!presence.value && captured.afterPresent)
 			anyMarkerAdded = true;
 	}
 	m_AfterSchema = anyMarkerAdded
 		? rt2::core::SceneSerializer::SchemaVersion : m_BeforeSchema;
 	m_Captured = true;
+	return EditorMutationResult{};
 }
 
 EditorMutationResult PrefabCommandTransaction::Replay(SceneManager& scene,
 	PrefabMarkerDirection direction)
 {
 	if (!m_Captured)
-		Capture(scene);
+	{
+		const auto capture = Capture(scene);
+		if (!capture.success) return capture;
+	}
 
 	std::vector<PrefabValueEdit> values;
 	values.reserve(m_Values.size());

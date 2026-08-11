@@ -274,6 +274,33 @@ private:
 	PrefabCommandTransaction m_Transaction;
 };
 
+// Capture the complete durable MaterialOverrideComponent fan-out for a material
+// slot: one UUID -> optional override entry for EVERY imported entity whose
+// MeshRef references the slot, with std::nullopt for an entity whose override
+// is absent (F2). The composite fan-out (SceneManager PreparePrefabCompositeEdits
+// makeMaterialSlot) requires the exact live member set — a partial before
+// snapshot that skips absent-override members fails the edit with a cardinality
+// mismatch. This is the CPU-linkable capture used both by SceneEditorUI and by
+// the S6-B fixup tests.
+inline SetMaterialPropertiesCommand::OverrideList CaptureMaterialOverrideFanOut(
+	const entt::registry& registry, int slotIndex)
+{
+	SetMaterialPropertiesCommand::OverrideList result;
+	auto view = registry.view<ImportedMeshSourceComponent>();
+	for (auto e : view)
+	{
+		const auto* ref = registry.try_get<MeshRef>(e);
+		if (!ref || ref->materialIndex != slotIndex) continue;
+		const auto* id = registry.try_get<EntityIdComponent>(e);
+		if (!id || id->id.IsNull()) continue;
+		std::optional<MaterialOverrideComponent> current;
+		if (const auto* ov = registry.try_get<MaterialOverrideComponent>(e))
+			current = *ov;
+		result.emplace_back(id->id, std::move(current));
+	}
+	return result;
+}
+
 // ---- Factories with no-op suppression ----
 
 // Returns null if beforeName == afterName.

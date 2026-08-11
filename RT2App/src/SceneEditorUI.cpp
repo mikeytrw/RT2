@@ -106,7 +106,7 @@ bool SceneEditorUI::MutationSelectionAllowed(std::string& reason) const
 
 void SceneEditorUI::Undo()
 {
-	if (!m_CommandHistory) return;
+	if (!m_CommandHistory || !m_SceneMgr) return;
 	DiscardAllPropertySessions();
 	const auto result = m_CommandHistory->Undo(*m_SceneMgr);
 	ApplyMutation(result);
@@ -114,7 +114,7 @@ void SceneEditorUI::Undo()
 
 void SceneEditorUI::Redo()
 {
-	if (!m_CommandHistory) return;
+	if (!m_CommandHistory || !m_SceneMgr) return;
 	DiscardAllPropertySessions();
 	const auto result = m_CommandHistory->Redo(*m_SceneMgr);
 	ApplyMutation(result);
@@ -124,7 +124,7 @@ void SceneEditorUI::RecordLightEdit(const rt2::core::UUID& target,
                                     const LightComponent& before,
                                     const LightComponent& after)
 {
-	if (!m_CommandHistory) return;
+	if (!m_CommandHistory || !m_SceneMgr) return;
 	auto cmd = MakeSetLightCommandIfEffective(target, before, after);
 	if (!cmd) return;
 	EditorMutationResult applied;
@@ -138,7 +138,7 @@ void SceneEditorUI::RecordCameraEdit(const rt2::core::UUID& target,
                                      const CameraComponent& before,
                                      const CameraComponent& after)
 {
-	if (!m_CommandHistory) return;
+	if (!m_CommandHistory || !m_SceneMgr) return;
 	auto cmd = MakeSetCameraCommandIfEffective(target, before, after);
 	if (!cmd) return;
 	EditorMutationResult applied;
@@ -152,7 +152,7 @@ void SceneEditorUI::RecordMotionEdit(const rt2::core::UUID& target,
                                      const std::optional<MotionComponent>& before,
                                      const std::optional<MotionComponent>& after)
 {
-	if (!m_CommandHistory) return;
+	if (!m_CommandHistory || !m_SceneMgr) return;
 	auto cmd = MakeSetMotionCommandIfEffective(target, before, after);
 	if (!cmd) return;
 	EditorMutationResult applied;
@@ -167,7 +167,7 @@ void SceneEditorUI::RecordScriptEdit(const rt2::core::UUID& target,
                                      const std::optional<ScriptComponent>& after,
                                      const EditorMutationResult& applied)
 {
-	if (!m_CommandHistory) return;
+	if (!m_CommandHistory || !m_SceneMgr) return;
 	auto cmd = MakeSetScriptCommandIfEffective(target, before, after);
 	if (!cmd) return;
 	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, applied);
@@ -188,22 +188,8 @@ void SceneEditorUI::DiscardAllPropertySessions()
 SetMaterialPropertiesCommand::OverrideList
 SceneEditorUI::CaptureMaterialOverrideListForSlot(int slotIndex) const
 {
-	SetMaterialPropertiesCommand::OverrideList result;
-	if (!m_SceneMgr) return result;
-	const auto& reg = m_SceneMgr->GetECS().registry;
-	auto view = reg.view<ImportedMeshSourceComponent>();
-	for (auto e : view)
-	{
-		if (!reg.valid(e)) continue;
-		const auto* ref = reg.try_get<MeshRef>(e);
-		if (!ref || ref->materialIndex != slotIndex) continue;
-		const auto* ov = reg.try_get<MaterialOverrideComponent>(e);
-		if (!ov) continue;
-		const auto* idc = reg.try_get<EntityIdComponent>(e);
-		if (!idc) continue;
-		result.emplace_back(idc->id, *ov);
-	}
-	return result;
+	if (!m_SceneMgr) return {};
+	return CaptureMaterialOverrideFanOut(m_SceneMgr->GetECS().registry, slotIndex);
 }
 
 void SceneEditorUI::HideShowSelectionCommand(bool hide)
@@ -232,7 +218,7 @@ void SceneEditorUI::HideShowSelectionCommand(bool hide)
 	auto cmd = MakeSetVisibilityCommandIfEffective(beforeStates, afterStates);
 	if (!cmd) return;
 	// Execute through history so it is recorded and routed.
-	auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+	auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
 	ApplyMutation(result);
 }
 
@@ -330,7 +316,7 @@ void SceneEditorUI::DeleteSelectionCommand()
 	auto snapshot = m_SceneMgr->CaptureSubtreeSnapshot(ordered);
 	auto cmd = MakeRemoveSubtreesCommand(std::move(snapshot), ordered);
 	if (!cmd) return;
-	auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+	auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
 	ApplyMutation(result);
 	m_State.Selection().Clear();
 	m_TreeDirty = true;
@@ -412,7 +398,7 @@ void SceneEditorUI::ReparentCommand(const std::vector<rt2::core::UUID>& sources,
 	// the stored before-local TRS (handled by ReparentCommand::Undo).
 	auto cmd = MakeReparentCommandIfEffective(beforeEdits, afterEdits, ReparentMode::PreserveWorld);
 	if (!cmd) return;
-	auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+	auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
 	ApplyMutation(result);
 }
 
@@ -427,7 +413,7 @@ void SceneEditorUI::SingleEntityHideShowCommand(const rt2::core::UUID& entity, b
 	std::vector<std::pair<rt2::core::UUID, bool>> afterStates = { {entity, hide} };
 	auto cmd = MakeSetVisibilityCommandIfEffective(beforeStates, afterStates);
 	if (!cmd) return;
-	auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+	auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
 	ApplyMutation(result);
 }
 
@@ -938,7 +924,7 @@ void SceneEditorUI::RenderInspector()
 			auto cmd = MakeSetNameCommandIfEffective(targetUuid, name, std::string(nameBuf));
 			if (cmd)
 			{
-				const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+				const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
 				ApplyMutation(result);
 			}
 		}
@@ -1008,7 +994,7 @@ void SceneEditorUI::RenderInspector()
 					auto cmd = MakeSetMotionCommandIfEffective(targetUuid, before, std::nullopt);
 					if (cmd)
 					{
-						const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+						const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
 						ApplyMutation(result);
 					}
 				}
@@ -1023,7 +1009,7 @@ void SceneEditorUI::RenderInspector()
 					auto cmd = MakeSetMotionCommandIfEffective(targetUuid, std::nullopt, after);
 					if (cmd)
 					{
-						const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+						const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
 						ApplyMutation(result);
 					}
 				}
@@ -1046,7 +1032,7 @@ void SceneEditorUI::RenderInspector()
 			auto cmd = MakeSetScriptCommandIfEffective(targetUuid, std::nullopt, unbound);
 			if (cmd)
 			{
-				const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+				const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
 				ApplyMutation(result);
 			}
 		}
@@ -1358,7 +1344,7 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 			beforeOverride, staged.value.override);
 		if (cmd)
 		{
-			const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+			const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
 			ApplyMutation(result);
 		}
 	}
@@ -1460,7 +1446,7 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 						staged.value.afterOverrides);
 					if (cmd)
 					{
-						const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+						const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
 						ApplyMutation(result);
 					}
 				}
@@ -1744,7 +1730,7 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 			auto cmd = MakeSetScriptCommandIfEffective(targetUuid, before, after);
 			if (cmd)
 			{
-				const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+				const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
 				ApplyMutation(result);
 				scriptState = m_SceneMgr->GetScriptState(targetUuid);
 			}
@@ -1808,7 +1794,7 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 					auto cmd = MakeSetScriptCommandIfEffective(targetUuid, before, after);
 					if (cmd)
 					{
-						const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+						const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
 						if (!result.success)
 							m_ScriptRebindDiagnostic = result.error.Format();
 						else
@@ -1832,7 +1818,7 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 		auto cmd = MakeSetScriptCommandIfEffective(targetUuid, before, std::nullopt);
 		if (cmd)
 		{
-			const auto result = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+			const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
 			ApplyMutation(result);
 		}
 	}
@@ -2056,7 +2042,7 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 					*sessionBefore, after);
 				if (cmd)
 				{
-					applied = m_CommandHistory->Execute(std::move(cmd), *m_SceneMgr);
+					applied = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
 					lastApplied = applied;
 					if (applied.success)
 						scriptState = m_SceneMgr->GetScriptState(targetUuid);

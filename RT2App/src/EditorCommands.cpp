@@ -112,8 +112,10 @@ SetVisibilityCommand::SetVisibilityCommand(PairList beforeStates,
 	, m_AfterStates(std::move(afterStates))
 {
 	// One Visibility value edit plus one kVisible marker delta per entity.
-	// The before-state for a pair the host did not track defaults to the
-	// after-state so the composite sees a no-op value for that entity.
+	// The before and after UUID sets MUST match exactly (enforced by
+	// MakeSetVisibilityCommandIfEffective); a before entry is required for
+	// every after entry and is never fabricated — a missing entry throws
+	// loudly rather than building a wrong Undo.
 	std::unordered_map<rt2::core::UUID, bool> beforeMap;
 	beforeMap.reserve(m_BeforeStates.size());
 	for (const auto& p : m_BeforeStates)
@@ -125,10 +127,8 @@ SetVisibilityCommand::SetVisibilityCommand(PairList beforeStates,
 	markers.reserve(m_AfterStates.size());
 	for (const auto& p : m_AfterStates)
 	{
-		const auto it = beforeMap.find(p.first);
-		const bool before = it != beforeMap.end() ? it->second : p.second;
 		values.push_back({ PrefabValueKind::Visibility, p.first,
-			PrefabMarkerDirection::After, before, p.second });
+			PrefabMarkerDirection::After, beforeMap.at(p.first), p.second });
 		markers.push_back({ p.first,
 			PrefabComponentKeyFor<VisibleComponent>::value, true });
 	}
@@ -170,36 +170,45 @@ std::unique_ptr<IEditorCommand> MakeSetVisibilityCommandIfEffective(
 	SetVisibilityCommand::PairList beforeStates,
 	SetVisibilityCommand::PairList afterStates)
 {
-	// Drop after-pairs whose state matches the corresponding before-state.
-	// Build a UUID -> before-state lookup; if a UUID is missing from before,
-	// keep the after-pair (the manager will validate the UUID on apply).
+	// Strict, proactive input validation: the before and after UUID sets must
+	// match exactly and neither list may contain a duplicate UUID. A mismatch
+	// means the host's before-state is incomplete or fabricated — proceeding
+	// would silently build a wrong Undo, so reject the command instead.
+	const auto hasDuplicate = [](const SetVisibilityCommand::PairList& list) {
+		std::unordered_set<rt2::core::UUID> seen;
+		for (const auto& p : list)
+			if (!seen.insert(p.first).second) return true;
+		return false;
+	};
+	if (hasDuplicate(beforeStates) || hasDuplicate(afterStates)) return nullptr;
+	if (beforeStates.size() != afterStates.size()) return nullptr;
+
 	std::unordered_map<rt2::core::UUID, bool> beforeMap;
 	beforeMap.reserve(beforeStates.size());
 	for (const auto& p : beforeStates)
 		beforeMap.emplace(p.first, p.second);
+	std::unordered_map<rt2::core::UUID, bool> afterMap;
+	afterMap.reserve(afterStates.size());
+	for (const auto& p : afterStates)
+		afterMap.emplace(p.first, p.second);
+	for (const auto& p : afterStates)
+		if (beforeMap.find(p.first) == beforeMap.end()) return nullptr;
+	for (const auto& p : beforeStates)
+		if (afterMap.find(p.first) == afterMap.end()) return nullptr;
 
+	// Drop after-pairs whose state matches the corresponding before-state.
 	SetVisibilityCommand::PairList cleanedAfter;
 	cleanedAfter.reserve(afterStates.size());
 	for (const auto& p : afterStates)
-	{
-		const auto it = beforeMap.find(p.first);
-		if (it != beforeMap.end() && it->second == p.second) continue;
-		cleanedAfter.push_back(p);
-	}
+		if (beforeMap.at(p.first) != p.second) cleanedAfter.push_back(p);
 	if (cleanedAfter.empty()) return nullptr;
 
-	// Compose a matching before list: for each cleaned-after pair, use the
-	// before-state if known, otherwise default to the after-state (so the
-	// manager sees a no-op for that entity on Undo if it wasn't tracked).
-	// In practice the Inspector always supplies a before entry for every
-	// after entry; this is just defensive.
+	// The UUID sets are equal, so every cleaned-after UUID has a before entry
+	// — no before value is ever fabricated.
 	SetVisibilityCommand::PairList cleanedBefore;
 	cleanedBefore.reserve(cleanedAfter.size());
 	for (const auto& p : cleanedAfter)
-	{
-		const auto it = beforeMap.find(p.first);
-		cleanedBefore.emplace_back(p.first, it != beforeMap.end() ? it->second : p.second);
-	}
+		cleanedBefore.emplace_back(p.first, beforeMap.at(p.first));
 
 	return std::make_unique<SetVisibilityCommand>(std::move(cleanedBefore),
 	                                              std::move(cleanedAfter));

@@ -79,6 +79,28 @@ bool CameraEqual(const CameraComponent& a, const CameraComponent& b)
 	       Vec3Equal(a.forwardDirection, b.forwardDirection);
 }
 
+// Canonical per-wire equality mirroring the composite's S5 canonicalization
+// (SceneManager.cpp S5CanonicalTRS / S5CanonicalCamera + S5EqualTRS /
+// S5EqualCamera): a wire is "changed" only when its canonical form differs
+// exactly. AlignCameraCommand must mark ONLY the wires a camera-pose edit
+// actually changes — always marking Transform diverges an inherited transform
+// with no explicit edit (F4).
+bool CanonicalTrsEqual(const EditableTRS& a, const EditableTRS& b)
+{
+	return a.translation == b.translation && a.scale == b.scale
+		&& glm::normalize(a.rotation) == glm::normalize(b.rotation);
+}
+
+bool CanonicalCameraEqual(const CameraComponent& a, const CameraComponent& b)
+{
+	glm::vec3 forwardA = a.forwardDirection;
+	glm::vec3 forwardB = b.forwardDirection;
+	if (glm::dot(forwardA, forwardA) > 1e-8f) forwardA = glm::normalize(forwardA);
+	if (glm::dot(forwardB, forwardB) > 1e-8f) forwardB = glm::normalize(forwardB);
+	return a.verticalFOV == b.verticalFOV && a.aperture == b.aperture
+		&& a.focusDistance == b.focusDistance && forwardA == forwardB;
+}
+
 bool MotionEqual(const MotionComponent& a, const MotionComponent& b)
 {
 	return Vec3Equal(a.linearVelocity, b.linearVelocity);
@@ -331,15 +353,21 @@ AlignCameraCommand::AlignCameraCommand(rt2::core::UUID target,
 	, m_AfterLocal(afterLocal)
 	, m_BeforeCamera(beforeCamera)
 	, m_AfterCamera(afterCamera)
-	, m_Transaction(
+{
+	// Mark ONLY the wires whose canonical form actually changes. A pose edit
+	// that touches only the camera (or only the transform) must not diverge
+	// the other inherited wire with a marker for an edit that never happened.
+	std::vector<PrefabCommandTransaction::MarkerSpec> markers;
+	if (!CanonicalTrsEqual(m_BeforeLocal, m_AfterLocal))
+		markers.push_back({ m_Target, PrefabComponentKeyFor<Transform>::value, true });
+	if (!CanonicalCameraEqual(m_BeforeCamera, m_AfterCamera))
+		markers.push_back({ m_Target, PrefabComponentKeyFor<CameraComponent>::value, true });
+	m_Transaction = PrefabCommandTransaction(
 		std::vector<PrefabValueEdit>{
 			{ PrefabValueKind::CameraPose, m_Target, PrefabMarkerDirection::After,
 				PrefabCameraPoseValue{ m_BeforeLocal, m_BeforeCamera },
 				PrefabCameraPoseValue{ m_AfterLocal, m_AfterCamera } } },
-		std::vector<PrefabCommandTransaction::MarkerSpec>{
-			{ m_Target, PrefabComponentKeyFor<Transform>::value, true },
-			{ m_Target, PrefabComponentKeyFor<CameraComponent>::value, true } })
-{
+		std::move(markers));
 }
 
 EditorMutationResult AlignCameraCommand::Execute(SceneManager& scene)

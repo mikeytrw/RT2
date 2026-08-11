@@ -27,6 +27,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 using namespace rt2::core;
@@ -7479,5 +7480,356 @@ TEST_CASE("Phase 8 W3 S6-B: camera alignment command is one composite commit")
     REQUIRE(f.manager.IsOverridden(root, transformKey).value);
     REQUIRE(f.manager.IsOverridden(root, cameraKey).value);
     CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    std::filesystem::remove_all(dir);
+}
+
+// ============================================================================
+// Phase 8 W3, S6-B review fixup — six independent review findings, each with a
+// named RED->GREEN discrimination proof.
+// ============================================================================
+
+// RED proof (fault): PrefabCommandTransaction::Capture treated every
+// IsOverridden error like NotPrefabMember (drop the marker and continue), so a
+// member whose stored override vector is MALFORMED (an unknown wire) could
+// commit a value-only composite while the marker/schema/history stayed
+// untouched. The fix makes Capture fallible: any non-NotPrefabMember error
+// aborts the command with zero mutation.
+TEST_CASE("Phase 8 W3 S6-B fixup: malformed override vector fails capture with zero mutation")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_malformed_capture");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    EditorCommandHistory history;
+
+    // Corrupt the stored override vector with an unknown wire (malformed).
+    auto* pm = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(pm);
+    pm->overrides.clear();
+    pm->overrides.push_back(PrefabComponentKey(std::string_view("bogus.wire"), true));
+    REQUIRE_FALSE(f.manager.IsOverridden(root,
+        PrefabComponentKeyFor<NameComponent>::value).IsOk());
+
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const std::string beforeName = reg.get<NameComponent>(rootHandle).name;
+    auto rename = MakeSetNameCommandIfEffective(root, beforeName, "Renamed");
+    REQUIRE(rename);
+    const auto applied = history.Execute(std::move(rename), f.manager);
+    REQUIRE_FALSE(applied.success);
+    CHECK(applied.error.code == rt2::core::Error::InvalidArgument);
+    CHECK_FALSE(history.CanUndo());
+    // Zero mutation: the name is unchanged and the document revision is
+    // untouched — the command could NOT silently degrade to value-only.
+    CHECK(reg.get<NameComponent>(rootHandle).name == beforeName);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+
+    // Repair the vector and a FRESH command now succeeds — capture is
+    // re-attempted (m_Captured was never set) and the malformed vector cannot
+    // be papered over silently.
+    pm->overrides.clear();
+    REQUIRE(f.manager.IsOverridden(root,
+        PrefabComponentKeyFor<NameComponent>::value).IsOk());
+    auto recoveredCmd = MakeSetNameCommandIfEffective(root, beforeName, "Renamed");
+    REQUIRE(recoveredCmd);
+    const auto recovered = history.Execute(std::move(recoveredCmd), f.manager);
+    REQUIRE(recovered.success);
+    REQUIRE(recovered.effective);
+    CHECK(reg.get<NameComponent>(rootHandle).name == "Renamed");
+    REQUIRE(f.manager.IsOverridden(root,
+        PrefabComponentKeyFor<NameComponent>::value).value);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): the material-slot BEFORE fan-out skipped imported members
+// whose override was ABSENT, so a slot whose members carried mixed override
+// presence produced a partial before list and the composite rejected the edit
+// (UUID set cardinality differs from the live set). The fix captures a
+// COMPLETE UUID + optional fan-out — {uuid, std::nullopt} for every durable
+// imported member with an absent override.
+TEST_CASE("Phase 8 W3 S6-B fixup: material-slot Before fan-out includes every member")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_material_fanout");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const UUID child = H6B(reg, childHandle);
+    const auto overrideKey = PrefabComponentKeyFor<MaterialOverrideComponent>::value;
+    EditorCommandHistory history;
+
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<MeshRef>(childHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(childHandle);
+    // Only the root carries a live override; the child's override is ABSENT.
+    MaterialOverrideComponent liveOverride;
+    liveOverride.material = f.manager.GetMaterial(0);
+    liveOverride.authored = true;
+    liveOverride.sourceMaterialKey = f.manager.GetMaterial(0).sourceKey;
+    liveOverride.materialIndex = 0;
+    reg.emplace_or_replace<MaterialOverrideComponent>(rootHandle, liveOverride);
+
+    const SceneMaterial before = f.manager.GetMaterial(0);
+    SceneMaterial after = before;
+    after.roughness = 0.4f;
+
+    // The fixed capture is complete: every durable imported member appears,
+    // with std::nullopt for the member whose override is absent.
+    const auto beforeOverrides = CaptureMaterialOverrideFanOut(reg, 0);
+    REQUIRE(beforeOverrides.size() == 2);
+    std::unordered_set<UUID> captured;
+    for (const auto& [uuid, ov] : beforeOverrides)
+    {
+        captured.insert(uuid);
+        if (uuid == root) REQUIRE(ov.has_value());
+        if (uuid == child) REQUIRE_FALSE(ov.has_value());
+    }
+    REQUIRE(captured.count(root) == 1);
+    REQUIRE(captured.count(child) == 1);
+
+    const auto staged = f.manager.StageMaterialSlot(0, after);
+    REQUIRE(staged.IsOk());
+    auto edit = MakeSetMaterialPropertiesCommandIfEffective(0, before, after,
+        beforeOverrides, staged.value.afterOverrides);
+    REQUIRE(edit);
+    const auto applied = history.Execute(std::move(edit), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    // Both members receive the derived override in ONE composite commit.
+    REQUIRE(reg.try_get<MaterialOverrideComponent>(childHandle));
+    CHECK(reg.get<MaterialOverrideComponent>(childHandle).material.roughness == doctest::Approx(0.4f));
+    REQUIRE(f.manager.IsOverridden(child, overrideKey).value);
+
+    // Undo restores the exact before fan-out: the root's live override is
+    // restored and the child's override returns to ABSENT.
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.try_get<MaterialOverrideComponent>(rootHandle));
+    CHECK_FALSE(reg.all_of<MaterialOverrideComponent>(childHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(child, overrideKey).value);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): a locally added-then-removed wire correctly returns to
+// source with no marker, but removing an INHERITED prefab-authored component
+// also dropped the marker — so the prefab source could resurrect the component
+// on the next reconcile. The fix marks an inherited (not-overridden) removal as
+// explicitly overridden-absent, durably recording the local removal.
+TEST_CASE("Phase 8 W3 S6-B fixup: inherited motion/script removal marks override-absent")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_inherited_remove");
+    // Author motion + an unbound script into the TEMPLATE root so the instance
+    // INHERITS both components with NO override markers.
+    const auto templateRoot = f.CreateEmpty("Root");
+    const auto templateChild = f.CreateChild("Child", templateRoot);
+    auto& reg = f.manager.GetECS().registry;
+    const auto templateRootHandle = f.manager.FindEntityByUuid(templateRoot);
+    REQUIRE(static_cast<uint32_t>(templateRootHandle) != static_cast<uint32_t>(entt::null));
+    reg.emplace_or_replace<MotionComponent>(templateRootHandle,
+        MotionComponent{ glm::vec3(1.0f, 0.0f, 0.0f) });
+    ScriptComponent authored;
+    authored.asset.kind = AssetKind::Script; // unbound: no path, no fields
+    reg.emplace_or_replace<ScriptComponent>(templateRootHandle, authored);
+
+    const auto prefabPath = dir / "s2.rt2prefab";
+    REQUIRE(f.manager.CreatePrefabFromSubtree({ templateRoot }, prefabPath).ok);
+
+    const auto uuids = f.manager.ReserveKnownUuids(2);
+    std::vector<AssetDiagnostic> diags;
+    const auto inst = f.manager.InstantiatePrefabWithUuids(prefabPath, uuids, diags);
+    REQUIRE(inst.mutation.success);
+    const auto rootHandle = f.manager.FindEntityByUuid(uuids[0]);
+    REQUIRE(static_cast<uint32_t>(rootHandle) != static_cast<uint32_t>(entt::null));
+    const UUID root = H6B(reg, rootHandle);
+    const auto motionKey = PrefabComponentKeyFor<MotionComponent>::value;
+    const auto scriptKey = PrefabComponentKeyFor<ScriptComponent>::value;
+
+    // The instance INHERITS both components with no override markers.
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE(reg.all_of<ScriptComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, scriptKey).value);
+    EditorCommandHistory history;
+
+    // Removing the inherited motion must ADD the wire to the override set as
+    // explicitly absent (not just drop a non-existent marker).
+    auto removeMotion = MakeSetMotionCommandIfEffective(root,
+        std::optional<MotionComponent>{ reg.get<MotionComponent>(rootHandle) },
+        std::nullopt);
+    REQUIRE(removeMotion);
+    const auto motionResult = history.Execute(std::move(removeMotion), f.manager);
+    REQUIRE(motionResult.success);
+    REQUIRE(motionResult.effective);
+    CHECK_FALSE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // Undo restores the inherited component and drops the marker; Redo removes
+    // it again and re-marks.
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK_FALSE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+
+    // Removing the inherited (unbound) script behaves the same way.
+    auto removeScript = MakeSetScriptCommandIfEffective(root,
+        std::optional<ScriptComponent>{ reg.get<ScriptComponent>(rootHandle) },
+        std::nullopt);
+    REQUIRE(removeScript);
+    const auto scriptResult = history.Execute(std::move(removeScript), f.manager);
+    REQUIRE(scriptResult.success);
+    REQUIRE(scriptResult.effective);
+    CHECK_FALSE(reg.all_of<ScriptComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value);
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE(reg.all_of<ScriptComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, scriptKey).value);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): AlignCameraCommand always emitted BOTH the Transform and
+// CameraComponent marker specs, so a camera-pose edit that changes ONLY the
+// camera wire (transform untouched) diverged an inherited transform with a
+// marker for an edit that never happened. The fix marks only the canonically
+// changed wires.
+TEST_CASE("Phase 8 W3 S6-B fixup: camera align marks only canonically changed wires")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_camera_wires");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto transformKey = PrefabComponentKeyFor<Transform>::value;
+    const auto cameraKey = PrefabComponentKeyFor<CameraComponent>::value;
+    EditorCommandHistory history;
+
+    reg.emplace_or_replace<CameraComponent>(rootHandle, CameraComponent{});
+    const auto& liveTf = reg.get<Transform>(rootHandle);
+    const EditableTRS beforeLocal{ liveTf.translation, liveTf.rotation, liveTf.scale };
+    CameraComponent beforeCamera = reg.get<CameraComponent>(rootHandle);
+    CameraComponent afterCamera = beforeCamera;
+    afterCamera.verticalFOV = beforeCamera.verticalFOV + 10.0f;
+
+    // A camera-only pose edit: the transform wire is untouched.
+    auto align = MakeAlignCameraCommandIfEffective(root, beforeLocal, beforeLocal,
+        beforeCamera, afterCamera);
+    REQUIRE(align);
+    const auto applied = history.Execute(std::move(align), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(reg.get<CameraComponent>(rootHandle).verticalFOV
+        == doctest::Approx(afterCamera.verticalFOV));
+    // The camera wire diverges; the inherited transform must NOT be marked.
+    REQUIRE(f.manager.IsOverridden(root, cameraKey).value);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, transformKey).value);
+
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, cameraKey).value);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, transformKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): MakeSetVisibilityCommandIfEffective fabricated before
+// values for after-UUIDs missing from the before set, silently building a
+// wrong Undo. The fix strictly rejects Before/After UUID-set mismatches and
+// duplicate UUIDs before any command is built.
+TEST_CASE("Phase 8 W3 S6-B fixup: visibility factory rejects set mismatch and duplicates")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_visibility_sets");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const UUID child = H6B(reg, childHandle);
+    EditorCommandHistory history;
+
+    // Clean run-2 visibility: before and after cover the SAME UUIDs and the
+    // command round-trips through the composite.
+    reg.emplace_or_replace<VisibleComponent>(rootHandle, VisibleComponent{ true });
+    reg.emplace_or_replace<VisibleComponent>(childHandle, VisibleComponent{ true });
+    auto hide = MakeSetVisibilityCommandIfEffective(
+        { { root, true }, { child, true } },
+        { { root, false }, { child, false } });
+    REQUIRE(hide);
+    const auto applied = history.Execute(std::move(hide), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK_FALSE(reg.get<VisibleComponent>(rootHandle).visible);
+    CHECK_FALSE(reg.get<VisibleComponent>(childHandle).visible);
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.get<VisibleComponent>(rootHandle).visible);
+    CHECK(reg.get<VisibleComponent>(childHandle).visible);
+
+    // An incomplete before set (a UUID in after but not in before) is REJECTED.
+    CHECK(!MakeSetVisibilityCommandIfEffective(
+        { { root, true } },
+        { { root, false }, { child, false } }));
+
+    // A stray before UUID (in before but not in after) is REJECTED.
+    CHECK(!MakeSetVisibilityCommandIfEffective(
+        { { root, true }, { child, true } },
+        { { root, false } }));
+
+    // Duplicate UUIDs in either list are REJECTED.
+    CHECK(!MakeSetVisibilityCommandIfEffective(
+        { { root, true }, { root, false } },
+        { { root, false } }));
+    CHECK(!MakeSetVisibilityCommandIfEffective(
+        { { root, true } },
+        { { root, false }, { root, true } }));
+
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): the converted UI paths called m_CommandHistory->Execute
+// directly, so a host using the documented default (no command history
+// installed) dereferenced null and crashed — or, in a mutate-then-record
+// revert, mutated outside history. The fix routes every converted action
+// through ExecuteCommandThroughHistory, which returns a structured
+// InvalidRuntimeState Failure before the scene is touched.
+TEST_CASE("Phase 8 W3 S6-B fixup: null history fails with a structured diagnostic, no mutation")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_null_history");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+
+    // No history installed (the documented default SceneEditorUI setup): the
+    // action fails with a structured diagnostic and ZERO mutation.
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const std::string beforeName = reg.get<NameComponent>(rootHandle).name;
+    auto rename = MakeSetNameCommandIfEffective(root, beforeName, "Renamed");
+    REQUIRE(rename);
+    const auto result = ExecuteCommandThroughHistory(
+        nullptr, f.manager, std::move(rename), root.ToString());
+    REQUIRE_FALSE(result.success);
+    CHECK(result.error.code == rt2::core::Error::InvalidRuntimeState);
+    CHECK(result.error.path == root.ToString());
+    CHECK(reg.get<NameComponent>(rootHandle).name == beforeName);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+
+    // With a history installed the same action executes and is recorded.
+    EditorCommandHistory history;
+    auto rename2 = MakeSetNameCommandIfEffective(root, beforeName, "Renamed");
+    REQUIRE(rename2);
+    const auto executed = ExecuteCommandThroughHistory(
+        &history, f.manager, std::move(rename2), root.ToString());
+    REQUIRE(executed.success);
+    REQUIRE(executed.effective);
+    CHECK(reg.get<NameComponent>(rootHandle).name == "Renamed");
+    REQUIRE(history.CanUndo());
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.get<NameComponent>(rootHandle).name == beforeName);
     std::filesystem::remove_all(dir);
 }
