@@ -254,24 +254,24 @@ EditorMutationResult SetMaterialPropertiesCommand::Undo(SceneManager& scene)
 
 EditorMutationResult SetLightCommand::Execute(SceneManager& scene)
 {
-	return scene.SetLightPropertiesState(m_Target, m_AfterValue);
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetLightCommand::Undo(SceneManager& scene)
 {
-	return scene.SetLightPropertiesState(m_Target, m_BeforeValue);
+	return m_Transaction.Undo(scene);
 }
 
 // ---- SetCameraCommand ----
 
 EditorMutationResult SetCameraCommand::Execute(SceneManager& scene)
 {
-	return scene.SetCameraPropertiesState(m_Target, m_AfterValue);
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetCameraCommand::Undo(SceneManager& scene)
 {
-	return scene.SetCameraPropertiesState(m_Target, m_BeforeValue);
+	return m_Transaction.Undo(scene);
 }
 
 // ---- SetMotionCommand ----
@@ -431,39 +431,52 @@ std::unique_ptr<IEditorCommand> MakeSetMaterialPropertiesCommandIfEffective(
 std::unique_ptr<IEditorCommand> MakeSetLightCommandIfEffective(
 	rt2::core::UUID target,
 	LightComponent beforeValue,
-	LightComponent afterValue)
+	LightComponent afterValue,
+	const PrefabCommandTransaction::ExplicitCapture* explicitCapture)
 {
 	if (LightEqual(beforeValue, afterValue)) return nullptr;
-	return std::make_unique<SetLightCommand>(target, beforeValue, afterValue);
+	auto cmd = std::make_unique<SetLightCommand>(target, beforeValue, afterValue);
+	if (explicitCapture)
+		cmd->SetExplicitCapture(*explicitCapture);
+	return cmd;
 }
 
 std::unique_ptr<IEditorCommand> MakeSetCameraCommandIfEffective(
 	rt2::core::UUID target,
 	CameraComponent beforeValue,
-	CameraComponent afterValue)
+	CameraComponent afterValue,
+	const PrefabCommandTransaction::ExplicitCapture* explicitCapture)
 {
 	if (CameraEqual(beforeValue, afterValue)) return nullptr;
-	return std::make_unique<SetCameraCommand>(target, beforeValue, afterValue);
+	auto cmd = std::make_unique<SetCameraCommand>(target, beforeValue, afterValue);
+	if (explicitCapture)
+		cmd->SetExplicitCapture(*explicitCapture);
+	return cmd;
 }
 
 std::unique_ptr<IEditorCommand> MakeSetMotionCommandIfEffective(
 	rt2::core::UUID target,
 	std::optional<MotionComponent> beforeValue,
-	std::optional<MotionComponent> afterValue)
+	std::optional<MotionComponent> afterValue,
+	const PrefabCommandTransaction::ExplicitCapture* explicitCapture)
 {
 	const bool beforeHas = beforeValue.has_value();
 	const bool afterHas = afterValue.has_value();
 	if (!beforeHas && !afterHas) return nullptr;
 	if (beforeHas && afterHas && MotionEqual(*beforeValue, *afterValue))
 		return nullptr;
-	return std::make_unique<SetMotionCommand>(target,
+	auto cmd = std::make_unique<SetMotionCommand>(target,
 		std::move(beforeValue), std::move(afterValue));
+	if (explicitCapture)
+		cmd->SetExplicitCapture(*explicitCapture);
+	return cmd;
 }
 
 std::unique_ptr<IEditorCommand> MakeSetScriptCommandIfEffective(
 	rt2::core::UUID target,
 	std::optional<ScriptComponent> beforeValue,
-	std::optional<ScriptComponent> afterValue)
+	std::optional<ScriptComponent> afterValue,
+	const PrefabCommandTransaction::ExplicitCapture* explicitCapture)
 {
 	const bool beforeHas = beforeValue.has_value();
 	const bool afterHas = afterValue.has_value();
@@ -512,8 +525,11 @@ std::unique_ptr<IEditorCommand> MakeSetScriptCommandIfEffective(
 	    rt2::core::ScriptComponentCanonicalEqual(beforeValue, afterValue))
 		return nullptr;
 
-	return std::make_unique<SetScriptCommand>(target,
+	auto cmd = std::make_unique<SetScriptCommand>(target,
 		std::move(beforeValue), std::move(afterValue));
+	if (explicitCapture)
+		cmd->SetExplicitCapture(*explicitCapture);
+	return cmd;
 }
 
 std::unique_ptr<IEditorCommand> MakeAlignCameraCommandIfEffective(
@@ -527,4 +543,52 @@ std::unique_ptr<IEditorCommand> MakeAlignCameraCommandIfEffective(
 		return nullptr;
 	return std::make_unique<AlignCameraCommand>(target,
 		beforeLocal, afterLocal, beforeCamera, afterCamera);
+}
+
+// ---- S6-C compensating restore factories (live-preview sessions) ----
+
+std::unique_ptr<IEditorCommand> MakeSetLightRestoreCommand(
+	rt2::core::UUID target,
+	LightComponent originValue,
+	LightComponent finalValue,
+	const PrefabCommandTransaction::ExplicitCapture& explicitCapture)
+{
+	auto cmd = std::make_unique<SetLightCommand>(target, originValue, finalValue);
+	cmd->SetExplicitCapture(explicitCapture);
+	return cmd;
+}
+
+std::unique_ptr<IEditorCommand> MakeSetCameraRestoreCommand(
+	rt2::core::UUID target,
+	CameraComponent originValue,
+	CameraComponent finalValue,
+	const PrefabCommandTransaction::ExplicitCapture& explicitCapture)
+{
+	auto cmd = std::make_unique<SetCameraCommand>(target, originValue, finalValue);
+	cmd->SetExplicitCapture(explicitCapture);
+	return cmd;
+}
+
+std::unique_ptr<IEditorCommand> MakeSetMotionRestoreCommand(
+	rt2::core::UUID target,
+	std::optional<MotionComponent> originValue,
+	std::optional<MotionComponent> finalValue,
+	const PrefabCommandTransaction::ExplicitCapture& explicitCapture)
+{
+	auto cmd = std::make_unique<SetMotionCommand>(target,
+		std::move(originValue), std::move(finalValue));
+	cmd->SetExplicitCapture(explicitCapture);
+	return cmd;
+}
+
+std::unique_ptr<IEditorCommand> MakeSetScriptRestoreCommand(
+	rt2::core::UUID target,
+	std::optional<ScriptComponent> originValue,
+	std::optional<ScriptComponent> finalValue,
+	const PrefabCommandTransaction::ExplicitCapture& explicitCapture)
+{
+	auto cmd = std::make_unique<SetScriptCommand>(target,
+		std::move(originValue), std::move(finalValue));
+	cmd->SetExplicitCapture(explicitCapture);
+	return cmd;
 }

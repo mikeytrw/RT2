@@ -44,6 +44,15 @@
 // marker transitions absent -> present. The pair is then fixed for the life
 // of the command, so Undo of a first add restores the captured prior schema
 // and Redo re-applies the promotion (D3.6/D3.10).
+//
+// Explicit capture (S6-C): a RECORDED live-preview command (RecordApplied) is
+// never Executed — its first replay is Undo, by which time the preview frames
+// already inserted the marker and promoted the schema. Live capture would
+// therefore read beforePresent=true and Undo would remove nothing. The
+// live-preview session calls SetExplicitCapture with the immutable origin
+// membership/schema pair it captured at open; Capture() then replays that
+// state verbatim (keys still canonicalized/validated) so Undo removes exactly
+// the markers the gesture introduced and restores the origin schema.
 // ============================================================================
 
 class SceneManager;
@@ -64,6 +73,31 @@ public:
 		bool afterPresent = true;
 	};
 
+	// S6-C: one immutable origin marker membership fact for a RECORDED
+	// live-preview command. `beforePresent` is the override-set membership read
+	// at gesture open (nullopt = ordinary entity; the delta is dropped exactly
+	// as live capture drops NotPrefabMember); `afterPresent` is the membership
+	// the After direction ends at. Every S6-C live-preview edit targets an
+	// existing component (light, camera, motion velocity, script field), so
+	// afterPresent is true for all of them.
+	struct ExplicitMarker
+	{
+		rt2::core::UUID member;
+		PrefabComponentKey key;
+		std::optional<bool> beforePresent; // nullopt = not a prefab member
+		bool afterPresent = true;
+	};
+
+	// The immutable origin marker/schema pair a recorded live-preview command
+	// replays on its first Undo (see SetExplicitCapture). A live-preview
+	// session captures this at open via SceneManager::IsOverridden + the live
+	// document schema and passes it through the command factories.
+	struct ExplicitCapture
+	{
+		std::vector<ExplicitMarker> markers;
+		std::uint32_t beforeSchema = 0;
+	};
+
 	PrefabCommandTransaction() = default;
 	PrefabCommandTransaction(std::vector<PrefabValueEdit> values,
 	                         std::vector<MarkerSpec> markers)
@@ -79,6 +113,21 @@ public:
 
 	// Same pure "apply the after-state" call as Execute.
 	EditorMutationResult Redo(SceneManager& scene);
+
+	// S6-C: fix the marker/schema capture to the immutable origin state in
+	// place of live read-back. A RECORDED (RecordApplied) live-preview command
+	// is never Executed; its first replay is Undo, by which time the preview
+	// frames already inserted the marker and promoted the schema, so live
+	// capture would read beforePresent=true and Undo would remove nothing.
+	// Replaying the explicit origin makes Undo remove exactly the markers the
+	// gesture introduced and restore the origin schema. Must be called before
+	// the first replay (the command built through a factory does this at
+	// construction). Capture() still canonicalizes/validates each key the same
+	// way as live capture.
+	void SetExplicitCapture(ExplicitCapture explicitCapture)
+	{
+		m_ExplicitCapture = std::move(explicitCapture);
+	}
 
 private:
 	EditorMutationResult Replay(SceneManager& scene, PrefabMarkerDirection direction);
@@ -100,6 +149,10 @@ private:
 		bool afterPresent = true;
 	};
 	std::vector<CapturedMarker> m_CapturedMarkers;
+	// S6-C: when set, Capture() replays this immutable origin state verbatim
+	// instead of reading live membership/schema (recorded live-preview
+	// commands, whose first replay is Undo).
+	std::optional<ExplicitCapture> m_ExplicitCapture;
 };
 
 #endif // RT2_PREFAB_COMMAND_TRANSACTION_H

@@ -60,10 +60,19 @@
 // no-op. A null unique_ptr from the factory signals "discard, do not
 // submit".
 //
-// A recorded command whose FIRST replay is Undo (RecordApplied, the
-// out-of-scope live-preview sessions) is treated as value-only by the
-// transaction: its raw mutation wrote no markers, so the marker deltas are
-// dropped and the composite value replay validates against live state.
+// Recorded live-preview commands (S6-C): the light/camera/motion-velocity and
+// Int/Float/Vec3/Color script-field sessions preview each frame through the
+// composite seam, then record ONE command on close via RecordApplied. That
+// command is never Executed — its first replay is Undo, by which time the
+// preview frames already inserted the marker and promoted the schema. Live
+// capture would therefore read beforePresent=true and Undo would remove
+// nothing. Callers pass the session's immutable origin through an
+// `explicitCapture` argument; the command's transaction replays that origin
+// state verbatim on its first Undo so Undo removes exactly the markers the
+// gesture introduced and restores the origin schema. The restore factories
+// build the compensating command unconditionally (no no-op suppression — a
+// return-to-start must still remove the fresh marker) for the
+// return-to-start/Escape Before restoration that records no history.
 // ============================================================================
 
 class SetNameCommand final : public IEditorCommand
@@ -156,7 +165,15 @@ public:
 	                LightComponent afterValue)
 		: m_Target(target)
 		, m_BeforeValue(beforeValue)
-		, m_AfterValue(afterValue) {}
+		, m_AfterValue(afterValue)
+		, m_Transaction(
+			std::vector<PrefabValueEdit>{
+				{ PrefabValueKind::LightProperties, m_Target, PrefabMarkerDirection::After,
+					m_BeforeValue, m_AfterValue } },
+			std::vector<PrefabCommandTransaction::MarkerSpec>{
+				{ m_Target, PrefabComponentKeyFor<LightComponent>::value, true } })
+	{
+	}
 
 	const rt2::core::UUID& Target() const { return m_Target; }
 	const LightComponent& BeforeValue() const { return m_BeforeValue; }
@@ -166,10 +183,18 @@ public:
 	EditorMutationResult Undo(SceneManager& scene) override;
 	std::string Description() const override { return "Edit Light"; }
 
+	// S6-C: fix marker/schema capture to the immutable origin state for a
+	// recorded (RecordApplied) live-preview command whose first replay is Undo.
+	void SetExplicitCapture(PrefabCommandTransaction::ExplicitCapture explicitCapture)
+	{
+		m_Transaction.SetExplicitCapture(std::move(explicitCapture));
+	}
+
 private:
-	rt2::core::UUID m_Target;
-	LightComponent m_BeforeValue;
-	LightComponent m_AfterValue;
+	rt2::core::UUID             m_Target;
+	LightComponent              m_BeforeValue;
+	LightComponent              m_AfterValue;
+	PrefabCommandTransaction    m_Transaction;
 };
 
 class SetCameraCommand final : public IEditorCommand
@@ -180,7 +205,15 @@ public:
 	                 CameraComponent afterValue)
 		: m_Target(target)
 		, m_BeforeValue(beforeValue)
-		, m_AfterValue(afterValue) {}
+		, m_AfterValue(afterValue)
+		, m_Transaction(
+			std::vector<PrefabValueEdit>{
+				{ PrefabValueKind::CameraProperties, m_Target, PrefabMarkerDirection::After,
+					m_BeforeValue, m_AfterValue } },
+			std::vector<PrefabCommandTransaction::MarkerSpec>{
+				{ m_Target, PrefabComponentKeyFor<CameraComponent>::value, true } })
+	{
+	}
 
 	const rt2::core::UUID& Target() const { return m_Target; }
 	const CameraComponent& BeforeValue() const { return m_BeforeValue; }
@@ -190,10 +223,18 @@ public:
 	EditorMutationResult Undo(SceneManager& scene) override;
 	std::string Description() const override { return "Edit Camera"; }
 
+	// S6-C: fix marker/schema capture to the immutable origin state for a
+	// recorded (RecordApplied) live-preview command whose first replay is Undo.
+	void SetExplicitCapture(PrefabCommandTransaction::ExplicitCapture explicitCapture)
+	{
+		m_Transaction.SetExplicitCapture(std::move(explicitCapture));
+	}
+
 private:
-	rt2::core::UUID m_Target;
-	CameraComponent m_BeforeValue;
-	CameraComponent m_AfterValue;
+	rt2::core::UUID             m_Target;
+	CameraComponent             m_BeforeValue;
+	CameraComponent             m_AfterValue;
+	PrefabCommandTransaction    m_Transaction;
 };
 
 class SetMotionCommand final : public IEditorCommand
@@ -210,6 +251,13 @@ public:
 	EditorMutationResult Execute(SceneManager& scene) override;
 	EditorMutationResult Undo(SceneManager& scene) override;
 	std::string Description() const override { return "Edit Motion"; }
+
+	// S6-C: fix marker/schema capture to the immutable origin state for a
+	// recorded (RecordApplied) live-preview command whose first replay is Undo.
+	void SetExplicitCapture(PrefabCommandTransaction::ExplicitCapture explicitCapture)
+	{
+		m_Transaction.SetExplicitCapture(std::move(explicitCapture));
+	}
 
 private:
 	rt2::core::UUID                     m_Target;
@@ -238,6 +286,13 @@ public:
 	EditorMutationResult Execute(SceneManager& scene) override;
 	EditorMutationResult Undo(SceneManager& scene) override;
 	std::string Description() const override;
+
+	// S6-C: fix marker/schema capture to the immutable origin state for a
+	// recorded (RecordApplied) live-preview command whose first replay is Undo.
+	void SetExplicitCapture(PrefabCommandTransaction::ExplicitCapture explicitCapture)
+	{
+		m_Transaction.SetExplicitCapture(std::move(explicitCapture));
+	}
 
 private:
 	rt2::core::UUID                        m_Target;
@@ -334,24 +389,35 @@ std::unique_ptr<IEditorCommand> MakeSetMaterialPropertiesCommandIfEffective(
 	SetMaterialPropertiesCommand::OverrideList afterOverrides);
 
 // Returns null if the before/after LightComponent values are equal.
+// `explicitCapture`, when present, fixes the transaction's marker/schema
+// capture to the immutable origin state of a recorded live-preview gesture
+// (S6-C).
 std::unique_ptr<IEditorCommand> MakeSetLightCommandIfEffective(
 	rt2::core::UUID target,
 	LightComponent beforeValue,
-	LightComponent afterValue);
+	LightComponent afterValue,
+	const PrefabCommandTransaction::ExplicitCapture* explicitCapture = nullptr);
 
 // Returns null if the before/after CameraComponent values are equal.
+// `explicitCapture`, when present, fixes the transaction's marker/schema
+// capture to the immutable origin state of a recorded live-preview gesture
+// (S6-C).
 std::unique_ptr<IEditorCommand> MakeSetCameraCommandIfEffective(
 	rt2::core::UUID target,
 	CameraComponent beforeValue,
-	CameraComponent afterValue);
+	CameraComponent afterValue,
+	const PrefabCommandTransaction::ExplicitCapture* explicitCapture = nullptr);
 
 // Returns null if beforeValue == afterValue (both present and equal) OR
 // (both nullopt). Add = {nullopt, some}; Remove = {some, nullopt};
-// velocity edit = {some, some}.
+// velocity edit = {some, some}. `explicitCapture`, when present, fixes the
+// transaction's marker/schema capture to the immutable origin state of a
+// recorded live-preview gesture (S6-C).
 std::unique_ptr<IEditorCommand> MakeSetMotionCommandIfEffective(
 	rt2::core::UUID target,
 	std::optional<MotionComponent> beforeValue,
-	std::optional<MotionComponent> afterValue);
+	std::optional<MotionComponent> afterValue,
+	const PrefabCommandTransaction::ExplicitCapture* explicitCapture = nullptr);
 
 // Returns null if both are absent OR both present and canonically equal
 // (same path, derived sourceKey, and exact typed field map). A present
@@ -360,11 +426,14 @@ std::unique_ptr<IEditorCommand> MakeSetMotionCommandIfEffective(
 // clear the entire history under the established policy). An invalid
 // after-state is NOT suppressed: the command is returned so
 // EditorCommandHistory::Execute surfaces the manager's actionable failure
-// without recording.
+// without recording. `explicitCapture`, when present, fixes the transaction's
+// marker/schema capture to the immutable origin state of a recorded
+// live-preview gesture (S6-C).
 std::unique_ptr<IEditorCommand> MakeSetScriptCommandIfEffective(
 	rt2::core::UUID target,
 	std::optional<ScriptComponent> beforeValue,
-	std::optional<ScriptComponent> afterValue);
+	std::optional<ScriptComponent> afterValue,
+	const PrefabCommandTransaction::ExplicitCapture* explicitCapture = nullptr);
 
 // Returns null if before/after local TRS are equal AND before/after camera
 // props are equal. Uses construct-then-Execute: the host stages the alignment
@@ -377,5 +446,38 @@ std::unique_ptr<IEditorCommand> MakeAlignCameraCommandIfEffective(
 	EditableTRS afterLocal,
 	CameraComponent beforeCamera,
 	CameraComponent afterCamera);
+
+// ---- S6-C compensating restore factories (live-preview sessions) ----
+//
+// These build the command UNCONDITIONALLY (no no-op suppression) with the
+// session's immutable origin capture attached, so its first replay — Undo,
+// the Before direction — removes only the markers the gesture introduced and
+// restores the origin schema even when the final value canonically equals the
+// origin (return-to-start). The host uses them for the return-to-start /
+// Escape restoration that records no history.
+
+std::unique_ptr<IEditorCommand> MakeSetLightRestoreCommand(
+	rt2::core::UUID target,
+	LightComponent originValue,
+	LightComponent finalValue,
+	const PrefabCommandTransaction::ExplicitCapture& explicitCapture);
+
+std::unique_ptr<IEditorCommand> MakeSetCameraRestoreCommand(
+	rt2::core::UUID target,
+	CameraComponent originValue,
+	CameraComponent finalValue,
+	const PrefabCommandTransaction::ExplicitCapture& explicitCapture);
+
+std::unique_ptr<IEditorCommand> MakeSetMotionRestoreCommand(
+	rt2::core::UUID target,
+	std::optional<MotionComponent> originValue,
+	std::optional<MotionComponent> finalValue,
+	const PrefabCommandTransaction::ExplicitCapture& explicitCapture);
+
+std::unique_ptr<IEditorCommand> MakeSetScriptRestoreCommand(
+	rt2::core::UUID target,
+	std::optional<ScriptComponent> originValue,
+	std::optional<ScriptComponent> finalValue,
+	const PrefabCommandTransaction::ExplicitCapture& explicitCapture);
 
 #endif // RT2_EDITOR_PROPERTY_COMMANDS_H

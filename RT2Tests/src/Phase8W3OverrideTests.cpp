@@ -6,6 +6,7 @@
 #include "EditorCommandHistory.h"
 #include "EditorCommands.h"
 #include "EditorPropertyCommands.h"
+#include "CompositePreviewSession.h"
 #include "EditorSceneState.h"
 #include "EditorStructuralCommands.h"
 #include "SceneManager.h"
@@ -7982,5 +7983,687 @@ TEST_CASE("Phase 8 W3 S6-B fixup: excluded marker key on an ordinary entity fail
     CHECK(reg.get<NameComponent>(rootHandle).name == rootName);
     CHECK(f.manager.AuthoringRevision() == beforeRevision);
     CHECK_FALSE(history.CanUndo());
+    std::filesystem::remove_all(dir);
+}
+
+// ============================================================================
+// Phase 8 W3, S6-C � non-transform live-preview composite sessions.
+//
+// The four live-preview editors (light, camera, motion velocity,
+// Int/Float/Vec3/Color script fields) no longer mutate the scene per frame
+// and fabricate a recorded command at close. Each gesture runs a
+// CompositePreviewSession: an immutable origin (value + override-set
+// membership + document schema) captured at open; a rolling source equal to
+// the last successfully committed preview; per-frame commits through the
+// atomic composite; and a two-phase close (record ONE command carrying the
+// explicit origin capture, or compensate through an unconditional restore
+// replay that records no history). RT2Tests is CPU-only, so the session and
+// the S6-C factories are the testable core; the thin ImGui glue
+// (SceneEditorUI::FinalizePreviewSession / RestorePreviewSession) that picks
+// record-vs-restore is exercised through the same factories/machine here.
+//
+// RED proofs: (1) a rolling source that re-stages the frame-zero origin on a
+// later frame fails Prepare ("source differs from live state"), so the
+// successful frame-two commits below discriminate the rolling source; (2)
+// recording the close WITHOUT the explicit capture makes the first Undo read
+// the live (already-previewed) membership, so a first-add Undo would remove
+// nothing � the marker/schema/value assertions below are RED against that.
+// ============================================================================
+
+namespace
+{
+
+bool S6CLightEqual(const LightComponent& a, const LightComponent& b)
+{
+    return a.color == b.color && a.intensity == b.intensity && a.range == b.range
+        && a.innerConeAngle == b.innerConeAngle && a.outerConeAngle == b.outerConeAngle
+        && a.type == b.type;
+}
+
+bool S6CMotionEqual(const std::optional<MotionComponent>& a,
+                    const std::optional<MotionComponent>& b)
+{
+    return a.has_value() == b.has_value()
+        && (!a.has_value() || a->linearVelocity == b->linearVelocity);
+}
+
+// Mirror of the SceneEditorUI light reader: read the committed component back
+// from the live registry, falling back to the raw committed target if the
+// entity or component vanished.
+PrefabValuePayload S6CLightReader(SceneManager& manager, const rt2::core::UUID& uuid,
+                                  const PrefabValuePayload& raw)
+{
+    const auto entity = manager.FindEntityByUuid(uuid);
+    if (entity == entt::null) return raw;
+    const auto* lc = manager.GetECS().registry.try_get<LightComponent>(entity);
+    if (!lc) return raw;
+    return PrefabValuePayload{ *lc };
+}
+
+PrefabValuePayload S6CCameraReader(SceneManager& manager, const rt2::core::UUID& uuid,
+                                   const PrefabValuePayload& raw)
+{
+    const auto entity = manager.FindEntityByUuid(uuid);
+    if (entity == entt::null) return raw;
+    const auto* cc = manager.GetECS().registry.try_get<CameraComponent>(entity);
+    if (!cc) return raw;
+    return PrefabValuePayload{ *cc };
+}
+
+PrefabValuePayload S6CMotionReader(SceneManager& manager, const rt2::core::UUID& uuid,
+                                   const PrefabValuePayload& raw)
+{
+    const auto entity = manager.FindEntityByUuid(uuid);
+    if (entity == entt::null) return raw;
+    const auto* mm = manager.GetECS().registry.try_get<MotionComponent>(entity);
+    if (!mm) return raw;
+    return PrefabValuePayload{ std::optional<MotionComponent>(*mm) };
+}
+
+PrefabValuePayload S6CScriptReader(SceneManager& manager, const rt2::core::UUID& uuid,
+                                   const PrefabValuePayload& raw)
+{
+    const auto live = manager.GetScriptState(uuid);
+    if (!live.has_value()) return raw;
+    return PrefabValuePayload{ live };
+}
+
+} // namespace
+
+TEST_CASE("Phase 8 W3 S6-C: light live preview rolling source and one-command close")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_light");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    REQUIRE(session.IsOpen());
+    REQUIRE_FALSE(session.HadEffectiveFrame());
+
+    // Frame one: origin -> a. First-override marker inserted + schema
+    // promoted, ONE revision bump, real composite result.
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto r1 = session.Preview(f.manager, PrefabValuePayload{ a });
+    REQUIRE(r1.success);
+    REQUIRE(r1.effective);
+    REQUIRE(session.HadEffectiveFrame());
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+    REQUIRE(S6CLightEqual(std::get<LightComponent>(session.RollingValue()),
+        reg.get<LightComponent>(rootHandle)));
+    CHECK(session.LastEffectiveResult().effective);
+
+// Frame two: committed-a -> b. The staged source is the COMMITTED value,
+    // not the frame-zero origin � re-staging the origin would fail Prepare
+    // with "light source differs from live state".
+    const LightComponent b{ glm::vec3(0.0f, 1.0f, 0.0f), 3.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto revisionAfterFrameOne = f.manager.AuthoringRevision();
+    const auto r2 = session.Preview(f.manager, PrefabValuePayload{ b });
+    REQUIRE(r2.success);
+    REQUIRE(r2.effective);
+    CHECK(reg.get<LightComponent>(rootHandle).intensity == 3.0f);
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revisionAfterFrameOne + 1);
+    const auto committed2 = reg.get<LightComponent>(rootHandle);
+    REQUIRE(S6CLightEqual(std::get<LightComponent>(session.RollingValue()), committed2));
+    CHECK(S6CLightEqual(committed2, b));
+
+    // Frame three: committed-b -> c. The three-frame proof exercises the
+    // rolling value/marker/schema sources on BOTH later frames (the ticket's
+    // "frames two AND three" requirement), never re-staging the frame-zero
+    // origin or an earlier committed value.
+    const LightComponent c{ glm::vec3(0.5f, 0.5f, 1.0f), 4.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto revisionAfterFrameTwo = f.manager.AuthoringRevision();
+    const auto r3 = session.Preview(f.manager, PrefabValuePayload{ c });
+    REQUIRE(r3.success);
+    REQUIRE(r3.effective);
+    CHECK(reg.get<LightComponent>(rootHandle).intensity == 4.0f);
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revisionAfterFrameTwo + 1);
+    const auto committed3 = reg.get<LightComponent>(rootHandle);
+    REQUIRE(S6CLightEqual(std::get<LightComponent>(session.RollingValue()), committed3));
+    CHECK(S6CLightEqual(committed3, c));
+
+    // Close: record ONE command (origin -> rolling) with the session's
+    // immutable origin capture and the last real effective result.
+    EditorCommandHistory history;
+    auto close = MakeSetLightCommandIfEffective(root, origin,
+        std::get<LightComponent>(session.RollingValue()), &session.Origin());
+    REQUIRE(close);
+    const auto recorded = history.RecordApplied(std::move(close), f.manager,
+        session.LastEffectiveResult());
+    REQUIRE(recorded.success);
+    REQUIRE(recorded.effective);
+    REQUIRE(history.CanUndo());
+
+    // Undo replays the captured ORIGIN facts (not the live, already-previewed
+    // membership): exact value restored, marker removed, origin schema back.
+    const auto undoRevision = f.manager.AuthoringRevision();
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK(f.manager.AuthoringRevision() == undoRevision + 1);
+    CHECK_FALSE(history.CanUndo());
+
+    // Redo re-applies the final state from the same capture.
+    const auto redoRevision = f.manager.AuthoringRevision();
+    const auto redone = history.Redo(f.manager);
+    REQUIRE(redone.success);
+    REQUIRE(redone.effective);
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), c));
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == redoRevision + 1);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: camera live preview commit and exact undo restore")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_camera");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto camKey = PrefabComponentKeyFor<CameraComponent>::value;
+    reg.emplace_or_replace<CameraComponent>(rootHandle,
+        CameraComponent{ 60.0f, 0.5f, 5.0f, { 0.0f, 0.0f, -1.0f } });
+    const CameraComponent origin = reg.get<CameraComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    REQUIRE_FALSE(f.manager.IsOverridden(root, camKey).value);
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CCameraReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::CameraProperties,
+        camKey, origin, reader));
+
+    // Two rolling preview frames.
+    const CameraComponent a{ 50.0f, 0.25f, 8.0f, { 0.0f, 0.0f, -1.0f } };
+    const auto r1 = session.Preview(f.manager, PrefabValuePayload{ a });
+    REQUIRE(r1.success);
+    REQUIRE(r1.effective);
+
+    const CameraComponent b{ 70.0f, 0.75f, 12.0f, { 0.0f, 0.0f, -1.0f } };
+    const auto r2 = session.Preview(f.manager, PrefabValuePayload{ b });
+    REQUIRE(r2.success);
+    REQUIRE(r2.effective);
+
+    const auto committed = reg.get<CameraComponent>(rootHandle);
+    REQUIRE(committed.verticalFOV == b.verticalFOV);
+    CHECK(committed.aperture == b.aperture);
+    CHECK(committed.focusDistance == b.focusDistance);
+    REQUIRE(f.manager.IsOverridden(root, camKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // Close + undo restores the exact origin camera.
+    EditorCommandHistory history;
+    auto close = MakeSetCameraCommandIfEffective(root, origin,
+        std::get<CameraComponent>(session.RollingValue()), &session.Origin());
+    REQUIRE(close);
+    REQUIRE(history.RecordApplied(std::move(close), f.manager,
+        session.LastEffectiveResult()).effective);
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    const auto restored = reg.get<CameraComponent>(rootHandle);
+    CHECK(restored.verticalFOV == origin.verticalFOV);
+    CHECK(restored.aperture == origin.aperture);
+    CHECK(restored.focusDistance == origin.focusDistance);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, camKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: motion velocity preview rolling source and close")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_motion");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto motionKey = PrefabComponentKeyFor<MotionComponent>::value;
+    reg.emplace_or_replace<MotionComponent>(rootHandle,
+        MotionComponent{ glm::vec3(1.0f, 0.0f, 0.0f) });
+    const MotionComponent originM = reg.get<MotionComponent>(rootHandle);
+    const auto originPayload = PrefabValuePayload{
+        std::optional<MotionComponent>(originM) };
+    CHECK_FALSE(f.manager.IsOverridden(root, motionKey).value);
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CMotionReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::MotionState,
+        motionKey, originPayload, reader));
+
+    const auto motionA = MotionComponent{ glm::vec3(2.0f, 0.0f, 0.0f) };
+    const auto r1 = session.Preview(f.manager,
+        PrefabValuePayload{ std::optional<MotionComponent>(motionA) });
+    REQUIRE(r1.success);
+    REQUIRE(r1.effective);
+
+    const auto motionB = MotionComponent{ glm::vec3(0.0f, 3.0f, 0.0f) };
+    const auto r2 = session.Preview(f.manager,
+        PrefabValuePayload{ std::optional<MotionComponent>(motionB) });
+    REQUIRE(r2.success);
+    REQUIRE(r2.effective);
+    CHECK(reg.get<MotionComponent>(rootHandle).linearVelocity == glm::vec3(0.0f, 3.0f, 0.0f));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+
+    // Close + undo: rolling source never re-stages the origin velocity.
+    EditorCommandHistory history;
+    auto close = MakeSetMotionCommandIfEffective(root,
+        std::get<std::optional<MotionComponent>>(session.OriginValue()),
+        std::get<std::optional<MotionComponent>>(session.RollingValue()),
+        &session.Origin());
+    REQUIRE(close);
+    REQUIRE(history.RecordApplied(std::move(close), f.manager,
+        session.LastEffectiveResult()).effective);
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    CHECK(S6CMotionEqual(
+        std::optional<MotionComponent>(reg.get<MotionComponent>(rootHandle)),
+        std::optional<MotionComponent>(originM)));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: script field live preview commits one gesture")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_script");
+    S6BScriptAssets(f, dir, { "spin.lua" });
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto scriptKey = PrefabComponentKeyFor<ScriptComponent>::value;
+
+    // Give the member an overridden script with a Float field (execute-on-add).
+    EditorCommandHistory setup;
+    ScriptComponent bound = S6BScript("spin.lua");
+    bound.fieldValues["speed"] = { ScriptFieldType::Float, 1.0 };
+    REQUIRE(setup.Execute(MakeSetScriptCommandIfEffective(root, std::nullopt,
+        std::optional<ScriptComponent>{ bound }), f.manager).effective);
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value);
+    const auto origin = reg.get<ScriptComponent>(rootHandle);
+
+    // The gesture opens on the existing override: marker already present, so
+    // the close command's Undo restores the VALUE only (marker/schema were
+    // already there before the gesture).
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CScriptReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::ScriptState,
+        scriptKey, PrefabValuePayload{ std::optional<ScriptComponent>(origin) },
+        reader));
+
+    auto fieldTarget = [&](double speed) {
+        ScriptComponent s = reg.get<ScriptComponent>(rootHandle);
+        s.fieldValues["speed"] = { ScriptFieldType::Float, speed };
+        return PrefabValuePayload{ std::optional<ScriptComponent>(s) };
+    };
+
+    const auto r1 = session.Preview(f.manager, fieldTarget(2.0));
+    REQUIRE(r1.success);
+    REQUIRE(r1.effective);
+    CHECK(std::get<double>(reg.get<ScriptComponent>(
+        rootHandle).fieldValues.at("speed").value) == 2.0);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    const auto r2 = session.Preview(f.manager, fieldTarget(3.0));
+    REQUIRE(r2.success);
+    REQUIRE(r2.effective);
+    CHECK(std::get<double>(reg.get<ScriptComponent>(
+        rootHandle).fieldValues.at("speed").value) == 3.0);
+
+    EditorCommandHistory history;
+    auto close = MakeSetScriptCommandIfEffective(root,
+        std::get<std::optional<ScriptComponent>>(session.OriginValue()),
+        std::get<std::optional<ScriptComponent>>(session.RollingValue()),
+        &session.Origin());
+    REQUIRE(close);
+    REQUIRE(history.RecordApplied(std::move(close), f.manager,
+        session.LastEffectiveResult()).effective);
+
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    const auto restored = reg.get<ScriptComponent>(rootHandle);
+    REQUIRE(ScriptComponentCanonicalEqual(restored, origin));
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: return-to-start close compensates with no history")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_restart");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    // Drag back to the exact origin value: effective frame, but the close
+    // record factory suppresses (value == origin) � the S6-C close must then
+    // compensate the transient marker/schema work.
+    const auto rBack = session.Preview(f.manager, PrefabValuePayload{ origin });
+    REQUIRE(rBack.success);
+    REQUIRE(rBack.effective);
+    REQUIRE(S6CLightEqual(std::get<LightComponent>(session.RollingValue()), origin));
+    CHECK_FALSE(MakeSetLightCommandIfEffective(root, origin,
+        std::get<LightComponent>(session.RollingValue()), &session.Origin()));
+
+    EditorCommandHistory history;
+    auto restore = MakeSetLightRestoreCommand(root, origin,
+        std::get<LightComponent>(session.RollingValue()), session.Origin());
+    const auto compensated = restore->Undo(f.manager);
+    REQUIRE(compensated.success);
+    REQUIRE(compensated.effective);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 3);
+    CHECK_FALSE(history.CanUndo());
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: stale preview failure retains recovery state")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_stale");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    const auto committed = std::get<LightComponent>(session.RollingValue());
+
+    // Out-of-band mutation decouples live from the rolling committed source.
+    reg.get<LightComponent>(rootHandle).intensity = 99.0f;
+
+    // The next preview re-stages rolling -> b, but Prepare re-validates the
+    // staged source against live and fails loudly; rolling source untouched,
+    // session stays open for recovery.
+    const LightComponent b{ glm::vec3(0.0f, 1.0f, 0.0f), 3.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto r2 = session.Preview(f.manager, PrefabValuePayload{ b });
+    REQUIRE_FALSE(r2.success);
+    REQUIRE(r2.error.detail.find("differs from live") != std::string::npos);
+    REQUIRE(session.IsOpen());
+    REQUIRE(session.HadEffectiveFrame());
+    REQUIRE(S6CLightEqual(std::get<LightComponent>(session.RollingValue()), committed));
+
+    // Recovery: reconcile live back to the committed rolling state, then the
+    // escape restore replay compensates cleanly with no history.
+    reg.get<LightComponent>(rootHandle) = committed;
+    EditorCommandHistory history;
+    auto restore = MakeSetLightRestoreCommand(root, origin, committed,
+        session.Origin());
+    const auto compensated = restore->Undo(f.manager);
+    REQUIRE(compensated.success);
+    REQUIRE(compensated.effective);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK_FALSE(history.CanUndo());
+
+std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: stale marker between last preview and escape surfaces recovery")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_stalemarker");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    const auto committed = std::get<LightComponent>(session.RollingValue());
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+
+    // Between the last preview and the escape, a separate operation removes
+    // the light override from the stored vector (out-of-band membership
+    // change). The compensating Before replay must NOT silently proceed: the
+    // marker plan validates the source membership against live state and
+    // fails loudly, leaving the session open for reconciliation/retry.
+    auto* pm = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(pm);
+    pm->overrides.erase(std::remove(pm->overrides.begin(), pm->overrides.end(),
+        lightKey), pm->overrides.end());
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+
+    EditorCommandHistory history;
+    auto restore = MakeSetLightRestoreCommand(root, origin, committed,
+        session.Origin());
+    const auto attempted = restore->Undo(f.manager);
+    REQUIRE_FALSE(attempted.success);
+    REQUIRE(attempted.error.detail.find("does not match live membership")
+        != std::string::npos);
+    REQUIRE(session.IsOpen());
+    REQUIRE(session.HadEffectiveFrame());
+
+    // Recovery: reconcile live membership back to the state the committed
+    // preview left behind, then the escape restore compensates cleanly —
+    // value restored to origin, marker removed, origin schema back, no
+    // history.
+    pm->overrides.push_back(lightKey);
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    auto recovered = MakeSetLightRestoreCommand(root, origin, committed,
+        session.Origin());
+    const auto compensated = recovered->Undo(f.manager);
+    REQUIRE(compensated.success);
+    REQUIRE(compensated.effective);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK_FALSE(history.CanUndo());
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: document replacement discards preview state")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_replaced");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const auto originGeneration = f.manager.DocumentGeneration();
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    REQUIRE(session.IsOpen());
+    REQUIRE_FALSE(session.DocumentReplaced(f.manager));
+
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    REQUIRE(session.HadEffectiveFrame());
+
+    // Replace the document (Clear() bumps DocumentGeneration AND
+    // ResourceGeneration) and drop the target entity. The session proves the
+    // preview no longer belongs to the active document and must be discarded,
+    // not recorded and not restored against a dead target.
+    const auto genBeforeClear = f.manager.DocumentGeneration();
+    f.manager.Clear();
+    REQUIRE(f.manager.DocumentGeneration() != originGeneration);
+    REQUIRE(f.manager.DocumentGeneration() == genBeforeClear + 1);
+    REQUIRE(session.DocumentReplaced(f.manager));
+
+    // The host-side FinalizePreviewSession guard mirrors this proof: the
+    // target is gone, so no record/restore is attempted and the session is
+    // discarded (no history, no document churn from the stale preview).
+    const auto gone = f.manager.FindEntityByUuid(root);
+    REQUIRE(static_cast<uint32_t>(gone) == static_cast<uint32_t>(entt::null));
+    session.Discard();
+    REQUIRE_FALSE(session.IsOpen());
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: zero-churn gesture leaves the document untouched")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_zero");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    REQUIRE(session.IsOpen());
+    REQUIRE_FALSE(session.HadEffectiveFrame());
+
+    // Never-effective gestures are zero-churn: no marker, no schema change,
+    // no revision bump. (FinalizePreviewSession discards on !HadEffectiveFrame.)
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: ordinary entity preview is value-only and undoable")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_ordinary");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const auto plain = f.CreateEmpty("Plain");
+    const auto plainHandle = f.manager.FindEntityByUuid(plain);
+    REQUIRE(static_cast<uint32_t>(plainHandle) != static_cast<uint32_t>(entt::null));
+    reg.emplace_or_replace<LightComponent>(plainHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(plainHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    // An ordinary entity is not a Begin failure: it opens a value-only
+    // session whose marker delta is dropped (nullopt origin -> replay skip).
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, plain, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto r1 = session.Preview(f.manager, PrefabValuePayload{ a });
+    REQUIRE(r1.success);
+    REQUIRE(r1.effective);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(plainHandle), a));
+    const auto plainMarker = f.manager.IsOverridden(plain, lightKey);
+    REQUIRE_FALSE(plainMarker.IsOk());
+    CHECK(plainMarker.error.code == rt2::core::Error::NotPrefabMember);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    // The recorded close carries the nullopt marker; Undo restores the value
+    // and never touches marker/schema on an ordinary entity.
+    EditorCommandHistory history;
+    auto close = MakeSetLightCommandIfEffective(plain, origin,
+        std::get<LightComponent>(session.RollingValue()), &session.Origin());
+    REQUIRE(close);
+    REQUIRE(history.RecordApplied(std::move(close), f.manager,
+        session.LastEffectiveResult()).effective);
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(plainHandle), origin));
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
     std::filesystem::remove_all(dir);
 }

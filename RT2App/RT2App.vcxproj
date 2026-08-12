@@ -261,6 +261,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\ProjectAssetScanner.h" />
     <ClInclude Include="src\ProjectContext.h" />
     <ClInclude Include="src\PropertyEditSession.h" />
+    <ClInclude Include="src\CompositePreviewSession.h" />
     <ClInclude Include="src\RTLog.h" />
     <ClInclude Include="src\RasterPass.h" />
     <ClInclude Include="src\ReSTIRGIPass.h" />
@@ -437,6 +438,10 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\PrefabCommandTransaction.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\CompositePreviewSession.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>

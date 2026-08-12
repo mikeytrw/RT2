@@ -20,49 +20,42 @@ EditorMutationResult PrefabCommandTransaction::Redo(SceneManager& scene)
 
 EditorMutationResult PrefabCommandTransaction::Capture(SceneManager& scene)
 {
-	m_BeforeSchema = scene.AuthoringDoc().metadata.schemaVersion;
+	m_BeforeSchema = m_ExplicitCapture
+		? m_ExplicitCapture->beforeSchema
+		: scene.AuthoringDoc().metadata.schemaVersion;
 	m_CapturedMarkers.clear();
 	bool anyMarkerAdded = false;
-	for (const auto& spec : m_Markers)
-	{
-		// Validate/canonicalize EVERY public MarkerSpec key against the frozen
-		// table BEFORE the ordinary-entity skip. SceneManager::IsOverridden
-		// returns NotPrefabMember before it ever canonicalizes the wire or
-		// checks the overridable bit, so without this an ordinary entity with
-		// an unknown or excluded key silently dropped its marker and proceeded
-		// as a value-only edit — validation was entity-class-dependent. A
-		// marker key that is not a known overridable wire aborts the capture
-		// regardless of the target's class.
-		const auto canonical = FindComponentByWire(spec.key.wire());
+
+	// Shared per-marker validation + capture: every public key is
+	// canonicalized/validated against the frozen table BEFORE the ordinary
+	// entity skip (SceneManager::IsOverridden returns NotPrefabMember before
+	// it ever canonicalizes the wire or checks the overridable bit, so without
+	// this an ordinary entity with an unknown or excluded key would silently
+	// drop its marker and proceed as a value-only edit). A marker key that is
+	// not a known overridable wire aborts the capture regardless of the
+	// target's class. `originPresence` is the override-set membership the
+	// Before direction restores: read live for an Executed command, or the
+	// explicit origin fact for a recorded one.
+	const auto captureOne = [&](const rt2::core::UUID& member,
+		const PrefabComponentKey& key,
+		std::optional<bool> originPresence,
+		bool afterPresent) -> EditorMutationResult {
+		const auto canonical = FindComponentByWire(key.wire());
 		if (!canonical)
 			return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
-				spec.member.ToString(),
-				"unknown override key wire '" + std::string(spec.key.wire()) + "'");
+				member.ToString(),
+				"unknown override key wire '" + std::string(key.wire()) + "'");
 		if (!canonical->overridable())
 			return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
-				spec.member.ToString(),
+				member.ToString(),
 				"non-overridable (excluded) override key wire '"
-				+ std::string(spec.key.wire()) + "'");
+				+ std::string(key.wire()) + "'");
 
-		const auto presence = scene.IsOverridden(spec.member, *canonical);
-		if (!presence.IsOk())
-		{
-			// An ordinary entity has no override set to join; the delta is
-			// dropped and the edit is value-only. ANY other failure — an
-			// absent member (InvalidEntity) or a malformed stored override
-			// vector (InvalidArgument) — aborts the capture so the command
-			// cannot silently commit a value-only composite while the
-			// marker/schema/history stay untouched.
-			if (presence.error.code == rt2::core::Error::NotPrefabMember)
-				continue;
-			return EditorMutationResult::Failure(presence.error.code,
-				presence.error.path, presence.error.detail);
-		}
 		CapturedMarker captured;
-		captured.member = spec.member;
-		captured.key = spec.key;
-		captured.beforePresent = presence.value;
-		captured.afterPresent = spec.afterPresent;
+		captured.member = member;
+		captured.key = key;
+		captured.beforePresent = originPresence;
+		captured.afterPresent = afterPresent;
 		// Removing an INHERITED (currently not overridden) prefab-authored
 		// wire must mark it as explicitly overridden-absent. A local removal
 		// that merely drops the marker would let the prefab source resurrect
@@ -70,11 +63,69 @@ EditorMutationResult PrefabCommandTransaction::Capture(SceneManager& scene)
 		// set records the local "removed here" decision durably. A locally
 		// added-then-removed member (beforePresent == true) still returns to
 		// source with no marker.
-		if (!spec.afterPresent && !presence.value)
+		if (!afterPresent && originPresence && !*originPresence)
 			captured.afterPresent = true;
 		m_CapturedMarkers.push_back(std::move(captured));
-		if (!presence.value && captured.afterPresent)
+		if (originPresence && !*originPresence && captured.afterPresent)
 			anyMarkerAdded = true;
+		return EditorMutationResult{};
+	};
+
+	if (m_ExplicitCapture)
+	{
+		// Recorded live-preview commands replay the immutable origin state
+		// captured at gesture open — NOT the live membership/schema the preview
+		// frames left behind. The explicit beforePresent came from an
+		// IsOverridden read at open; an ordinary entity carries nullopt and the
+		// delta is dropped exactly as the live path drops NotPrefabMember.
+		for (const auto& marker : m_ExplicitCapture->markers)
+		{
+			const auto result = captureOne(marker.member, marker.key,
+				marker.beforePresent, marker.afterPresent);
+			if (!result.success) return result;
+		}
+	}
+	else
+	{
+		for (const auto& spec : m_Markers)
+		{
+			// Validate/canonicalize EVERY public MarkerSpec key against the frozen
+			// table BEFORE the ordinary-entity skip. SceneManager::IsOverridden
+			// returns NotPrefabMember before it ever canonicalizes the wire or
+			// checks the overridable bit, so without this an ordinary entity with
+			// an unknown or excluded key silently dropped its marker and proceeded
+			// as a value-only edit — validation was entity-class-dependent. A
+			// marker key that is not a known overridable wire aborts the capture
+			// regardless of the target's class.
+			const auto canonical = FindComponentByWire(spec.key.wire());
+			if (!canonical)
+				return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+					spec.member.ToString(),
+					"unknown override key wire '" + std::string(spec.key.wire()) + "'");
+			if (!canonical->overridable())
+				return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+					spec.member.ToString(),
+					"non-overridable (excluded) override key wire '"
+					+ std::string(spec.key.wire()) + "'");
+
+			const auto presence = scene.IsOverridden(spec.member, *canonical);
+			if (!presence.IsOk())
+			{
+				// An ordinary entity has no override set to join; the delta is
+				// dropped and the edit is value-only. ANY other failure — an
+				// absent member (InvalidEntity) or a malformed stored override
+				// vector (InvalidArgument) — aborts the capture so the command
+				// cannot silently commit a value-only composite while the
+				// marker/schema/history stay untouched.
+				if (presence.error.code == rt2::core::Error::NotPrefabMember)
+					continue;
+				return EditorMutationResult::Failure(presence.error.code,
+					presence.error.path, presence.error.detail);
+			}
+			const auto result = captureOne(spec.member, spec.key,
+				presence.value, spec.afterPresent);
+			if (!result.success) return result;
+		}
 	}
 	m_AfterSchema = anyMarkerAdded
 		? rt2::core::SceneSerializer::SchemaVersion : m_BeforeSchema;

@@ -9,6 +9,7 @@
 #include "EditorStructuralCommands.h"
 #include "EditorPropertyCommands.h"
 #include "PropertyEditSession.h"
+#include "CompositePreviewSession.h"
 #include "TransformEditing.h"
 #include "core/UUID.h"
 #include <functional>
@@ -193,24 +194,35 @@ private:
 	void SelectEntity(SceneManager::EntityId entity, bool toggle = false);
 	bool IsSelected(SceneManager::EntityId entity) const;
 
-	// Phase 3B2: property command helpers (light/camera/motion-velocity are
-	// still per-frame-mutate-then-record sessions; the S6-B converted paths
-	// — name, material index, material properties, motion add/remove, script
+	// Phase 3B2: property command helpers. The S6-B converted paths — name,
+	// material index, material properties, motion add/remove, script
 	// add/path/rebind/remove and discrete fields — use construct-then-Execute
-	// inline at their call sites. PropertyEditSession handles deferred-close
-	// ordering and defensive guards.
-	void RecordLightEdit(const rt2::core::UUID& target,
-	                     const LightComponent& before, const LightComponent& after);
-	void RecordCameraEdit(const rt2::core::UUID& target,
-	                      const CameraComponent& before, const CameraComponent& after);
-	void RecordMotionEdit(const rt2::core::UUID& target,
-	                      const std::optional<MotionComponent>& before,
-	                      const std::optional<MotionComponent>& after);
-	void RecordScriptEdit(const rt2::core::UUID& target,
-	                      const std::optional<ScriptComponent>& before,
-	                      const std::optional<ScriptComponent>& after,
-	                      const EditorMutationResult& applied);
+	// inline at their call sites. The four S6-C live-preview sessions (light,
+	// camera, motion velocity, Int/Float/Vec3/Color script fields) preview
+	// each frame through the composite seam via CompositePreviewSession and
+	// finalize through FinalizePreviewSession; no fabricated RecordApplied
+	// outcome remains. PropertyEditSession handles deferred-close ordering and
+	// defensive guards for the construct-then-Execute paths.
 	void DiscardAllPropertySessions();
+	// S6-C: which command family a CompositePreviewSession finalizes into.
+	enum class PreviewSessionKind { Light, Camera, Motion, Script };
+	// Close a live-preview session: record ONE command (immutable origin ->
+	// rolling final, explicit capture attached, applied already by the
+	// preview frames) via RecordApplied, or discard on zero-churn.
+	void FinalizePreviewSession(PreviewSessionKind kind, CompositePreviewSession& session);
+	// Escape/return-to-start: compensate the preview frames by replaying the
+	// gesture's explicit capture in the Before direction (removes only this
+	// gesture's markers, restores the origin schema + value). Records no
+	// history. On failure the session stays open and the failure surfaces.
+	void RestorePreviewSession(PreviewSessionKind kind, CompositePreviewSession& session);
+	// Build the origin->final command for a preview session, attaching its
+	// immutable explicit capture. suppressNoOp mirrors the MakeSet*IfEffective
+	// suppression (used by the record path); when false the command is built
+	// unconditionally (used by the compensate/restore path, where even a
+	// value-equal origin->final must still roll back markers + schema).
+	std::unique_ptr<IEditorCommand> BuildPreviewSessionCommand(
+		PreviewSessionKind kind, const CompositePreviewSession& session,
+		bool suppressNoOp) const;
 	// Capture the current MaterialOverrideComponent state of every imported
 	// entity referencing `slotIndex` (UUID -> override). Used to snapshot
 	// the before-overrides when a material-properties session opens and the
@@ -294,14 +306,22 @@ private:
 	// (activation/deactivation detection + deferred close after the
 	// mutation block) lives in the Render*Editor functions. Each session
 	// is a single active slot per property kind.
+	//
+	// S6-C: the four non-transform live-preview editors (light, camera,
+	// motion velocity, Int/Float/Vec3/Color script fields) use
+	// CompositePreviewSession instead — per-frame edits go through the
+	// composite seam (immutable origin, rolling committed source, real
+	// results) and finalize through FinalizePreviewSession / escape via
+	// RestorePreviewSession. TransformSession and the discrete
+	// construct-then-Execute sessions remain PropertyEditSession.
 	using TransformSession = PropertyEditSession<EditableTRS>;
 	using NameSession = PropertyEditSession<std::string>;
-	using LightSession = PropertyEditSession<LightComponent>;
-	using CameraSession = PropertyEditSession<CameraComponent>;
+	using LightSession = CompositePreviewSession;
+	using CameraSession = CompositePreviewSession;
 	using MaterialIndexSession = PropertyEditSession<int>;
 	using MaterialPropertiesSession = PropertyEditSession<SceneMaterial>;
-	using MotionSession = PropertyEditSession<MotionComponent>;
-	using ScriptSession = PropertyEditSession<ScriptComponent>;
+	using MotionSession = CompositePreviewSession;
+	using ScriptSession = CompositePreviewSession;
 
 	EditorCommandHistory* m_CommandHistory = nullptr;
 	rt2::core::ScriptFieldRegistry* m_FieldRegistry = nullptr;
@@ -321,6 +341,7 @@ private:
 	unsigned int m_LightSessionOwningWidgetId = 0;
 	unsigned int m_CameraSessionOwningWidgetId = 0;
 	unsigned int m_MaterialPropertiesSessionOwningWidgetId = 0;
+	unsigned int m_MotionVelocitySessionOwningWidgetId = 0;
 	unsigned int m_ScriptFieldSessionOwningWidgetId = 0;
 	// Before-override snapshot captured when the material-properties session
 	// opens. The after-overrides are read live at close time. The session
