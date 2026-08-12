@@ -55,19 +55,10 @@ void SceneEditorUI::RenderPreviewRecoveryBar()
 	ImGui::TextWrapped("[Preview] The live edit on %s could not be finalized: %s",
 		session->Target().ToString().c_str(), detail.c_str());
 	ImGui::TextDisabled("The edit is still applied to the document without a history entry.");
+	ImGui::TextDisabled("Resolve the failure (or remove the target / load a new document) and retry.");
 	if (ImGui::Button(m_PreviewRecovery.finalize ? "Retry Finalize" : "Retry Restore"))
 		ClosePreviewSession(m_PreviewRecovery.kind, *session, *owningWidgetId,
 			m_PreviewRecovery.finalize);
-	ImGui::SameLine();
-	if (ImGui::Button("Discard Preview"))
-	{
-		session->Discard();
-		*owningWidgetId = 0;
-		m_PreviewRecovery.active = false;
-	}
-	ImGui::SameLine();
-	if (ImGui::Button("Ignore"))
-		m_PreviewRecovery.active = false;
 	ImGui::Separator();
 }
 
@@ -153,7 +144,17 @@ bool SceneEditorUI::MutationSelectionAllowed(std::string& reason) const
 void SceneEditorUI::Undo()
 {
 	if (!m_CommandHistory || !m_SceneMgr) return;
-	DiscardAllPropertySessions();
+	// Two-phase-close every open live-preview session (abandon) before history
+	// moves. If any stays pending, abort the Undo so an applied preview is
+	// never orphaned — the persistent recovery bar stays surfaced (S6-C
+	// re-review, P1 finding 2).
+	if (!CloseAllPreviewSessionsForGlobalAction()) return;
+	// Abandon the non-composite record-on-release sessions (uncommitted widget
+	// edits) once the previews are safe to leave.
+	m_TransformSession.Discard();
+	m_NameSession.Discard();
+	m_MaterialIndexSession.Discard();
+	m_MaterialPropertiesSession.Discard();
 	const auto result = m_CommandHistory->Undo(*m_SceneMgr);
 	ApplyMutation(result);
 }
@@ -161,9 +162,27 @@ void SceneEditorUI::Undo()
 void SceneEditorUI::Redo()
 {
 	if (!m_CommandHistory || !m_SceneMgr) return;
-	DiscardAllPropertySessions();
+	if (!CloseAllPreviewSessionsForGlobalAction()) return;
+	m_TransformSession.Discard();
+	m_NameSession.Discard();
+	m_MaterialIndexSession.Discard();
+	m_MaterialPropertiesSession.Discard();
 	const auto result = m_CommandHistory->Redo(*m_SceneMgr);
 	ApplyMutation(result);
+}
+
+bool SceneEditorUI::CloseAllPreviewSessionsForGlobalAction()
+{
+	const auto closeOne = [&](PreviewSessionKind kind, CompositePreviewSession& session,
+		unsigned int& owner) -> bool {
+		if (!session.IsOpen()) return true;
+		return ClosePreviewSession(kind, session, owner, /*finalize=*/false).result
+			== PreviewSessionCloseOutcome::Result::Closed;
+	};
+	return closeOne(PreviewSessionKind::Light, m_LightSession, m_LightSessionOwningWidgetId)
+		&& closeOne(PreviewSessionKind::Camera, m_CameraSession, m_CameraSessionOwningWidgetId)
+		&& closeOne(PreviewSessionKind::Motion, m_MotionVelocitySession, m_MotionVelocitySessionOwningWidgetId)
+		&& closeOne(PreviewSessionKind::Script, m_ScriptFieldSession, m_ScriptFieldSessionOwningWidgetId);
 }
 
 void SceneEditorUI::SetEditable(bool editable)

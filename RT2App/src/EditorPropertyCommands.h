@@ -190,6 +190,10 @@ public:
 		m_Transaction.SetExplicitCapture(std::move(explicitCapture));
 	}
 
+	// S6-C re-review: whether the attached explicit capture failed one-for-one
+	// validation (the finalize preflight consults this before RecordApplied).
+	bool ExplicitCaptureRejected() const { return m_Transaction.ExplicitCaptureRejected(); }
+
 private:
 	rt2::core::UUID             m_Target;
 	LightComponent              m_BeforeValue;
@@ -230,6 +234,10 @@ public:
 		m_Transaction.SetExplicitCapture(std::move(explicitCapture));
 	}
 
+	// S6-C re-review: whether the attached explicit capture failed one-for-one
+	// validation (the finalize preflight consults this before RecordApplied).
+	bool ExplicitCaptureRejected() const { return m_Transaction.ExplicitCaptureRejected(); }
+
 private:
 	rt2::core::UUID             m_Target;
 	CameraComponent             m_BeforeValue;
@@ -258,6 +266,10 @@ public:
 	{
 		m_Transaction.SetExplicitCapture(std::move(explicitCapture));
 	}
+
+	// S6-C re-review: whether the attached explicit capture failed one-for-one
+	// validation (the finalize preflight consults this before RecordApplied).
+	bool ExplicitCaptureRejected() const { return m_Transaction.ExplicitCaptureRejected(); }
 
 private:
 	rt2::core::UUID                     m_Target;
@@ -293,6 +305,10 @@ public:
 	{
 		m_Transaction.SetExplicitCapture(std::move(explicitCapture));
 	}
+
+	// S6-C re-review: whether the attached explicit capture failed one-for-one
+	// validation (the finalize preflight consults this before RecordApplied).
+	bool ExplicitCaptureRejected() const { return m_Transaction.ExplicitCaptureRejected(); }
 
 private:
 	rt2::core::UUID                        m_Target;

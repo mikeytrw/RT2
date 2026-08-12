@@ -8928,9 +8928,11 @@ TEST_CASE("Phase 8 W3 S6-C: finalize-before-align keeps camera history exactly u
     CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
 
     // RED discrimination: executing the align BEFORE finalizing the active
-    // preview strands the close — its recorded command's Undo fails source
-    // validation ("camera source differs from live state") and the history
-    // failure policy clears both stacks.
+    // preview strands the close. The finalize preflight now detects that the
+    // live camera diverged from the rolling final (the align changed it) and
+    // REFUSES to record — no stale entry ever poisons history (S6-C re-review,
+    // P1 finding 1). The compensate attempt also fails source validation, so
+    // the session stays open (PendingRetry) with ownership retained.
     CompositePreviewSession bad;
     REQUIRE(bad.Begin(f.manager, root, PrefabValueKind::CameraProperties,
         camKey, restored, reader));
@@ -8947,13 +8949,20 @@ TEST_CASE("Phase 8 W3 S6-C: finalize-before-align keeps camera history exactly u
     REQUIRE(badHistory.Execute(std::move(align2), f.manager).effective);
     const auto badClose = FinalizePreviewSession(badHistory, f.manager,
         PreviewSessionKind::Camera, bad);
-    REQUIRE(badClose.result == PreviewSessionCloseOutcome::Result::Closed);
-    REQUIRE(badClose.recorded);
-    const auto badUndo = badHistory.Undo(f.manager);
-    REQUIRE_FALSE(badUndo.success);
-    CHECK(badUndo.error.detail.find("camera source differs from live state")
-        != std::string::npos);
-    CHECK_FALSE(badHistory.CanUndo());
+    REQUIRE(badClose.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    REQUIRE(bad.IsOpen());
+    REQUIRE_FALSE(badClose.recorded);
+    // The align entry is the ONLY history: no stale preview command was pushed.
+    REQUIRE(badHistory.CanUndo());
+
+    // Reconcile live back to the rolling final, then the SAME close retries
+    // and records cleanly (undoable to the exact origin camera).
+    reg.get<CameraComponent>(rootHandle) = std::get<CameraComponent>(bad.RollingValue());
+    const auto badRetry = FinalizePreviewSession(badHistory, f.manager,
+        PreviewSessionKind::Camera, bad);
+    REQUIRE(badRetry.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(badRetry.recorded);
+    REQUIRE_FALSE(bad.IsOpen());
 
     std::filesystem::remove_all(dir);
 }
@@ -9200,6 +9209,233 @@ TEST_CASE("Phase 8 W3 S6-C: stale document schema between gesture and close surf
     CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
     REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
     CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == originSchema);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: finalize refutes stale value/marker/schema and rejected capture")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_preflight");
+    auto& reg = f.manager.GetECS().registry;
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    // Each sub-case uses its own fresh instance so no case's pending (unresolved)
+    // state leaks into the next.
+    const auto freshMember = [&]() -> std::pair<entt::entity, rt2::core::UUID> {
+        const auto [r, c] = f.MakeInstance(dir);
+        auto& reg2 = f.manager.GetECS().registry;
+        const UUID target = H6B(reg2, r);
+        reg2.emplace_or_replace<LightComponent>(r, LightComponent{});
+        return { r, target };
+    };
+    const auto openOn = [&](const rt2::core::UUID& target, PrefabComponentKey key) {
+        auto s = std::make_unique<CompositePreviewSession>();
+        const auto handle = f.manager.FindEntityByUuid(target);
+        const LightComponent origin = reg.get<LightComponent>(handle);
+        REQUIRE(s->Begin(f.manager, target, PrefabValueKind::LightProperties,
+            key, origin, reader));
+        REQUIRE(s->Preview(f.manager, PrefabValuePayload{ a }).effective);
+        return std::pair{ std::move(s), origin };
+    };
+
+    // (a) STALE VALUE between the last preview and Finalize: the preflight
+    // finds the live value diverged and refuses to record - no history entry,
+    // the session stays open (PendingRetry) for retry. RED against
+    // RecordApplied trusting the stale session.LastEffectiveResult.
+    {
+        const auto [rh, target] = freshMember();
+        auto [s, origin] = openOn(target, lightKey);
+        reg.get<LightComponent>(rh).intensity = 99.0f;
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, *s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s->IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("live value differs") != std::string::npos);
+        // Retry after reconciling the value records cleanly and is undoable.
+        reg.get<LightComponent>(rh) = std::get<LightComponent>(s->RollingValue());
+        const auto retry = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, *s);
+        REQUIRE(retry.result == PreviewSessionCloseOutcome::Result::Closed);
+        REQUIRE(retry.recorded);
+        REQUIRE_FALSE(s->IsOpen());
+        REQUIRE(history.CanUndo());
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(rh), origin));
+        REQUIRE_FALSE(f.manager.IsOverridden(target, lightKey).value);
+    }
+
+    // (b) STALE MARKER between the last preview and Finalize: the marker was
+    // removed out of band, so the after-membership check refuses the record.
+    {
+        const auto [rh, target] = freshMember();
+        auto [s, origin] = openOn(target, lightKey);
+        auto* pm = reg.try_get<PrefabMemberComponent>(rh);
+        REQUIRE(pm);
+        pm->overrides.erase(std::remove(pm->overrides.begin(), pm->overrides.end(),
+            lightKey), pm->overrides.end());
+        REQUIRE_FALSE(f.manager.IsOverridden(target, lightKey).value);
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, *s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s->IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("override membership differs")
+            != std::string::npos);
+    }
+
+    // (c) STALE SCHEMA between the last preview and Finalize: an out-of-band
+    // schema change is refused by the preflight (live != promoted).
+    {
+        const auto [rh, target] = freshMember();
+        auto [s, origin] = openOn(target, lightKey);
+        f.manager.AuthoringDoc().metadata.schemaVersion = SceneSerializer::MinReadVersion;
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, *s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s->IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("schema differs") != std::string::npos);
+    }
+
+    // (d) REJECTED CAPTURE at the record-boundary: a session opened with a key
+    // that does not match the value kind produces a close command whose
+    // explicit capture fails one-for-one; the preflight refuses to record it.
+    {
+        const auto cameraKey = PrefabComponentKeyFor<CameraComponent>::value;
+        auto [s, origin] = openOn(freshMember().second, cameraKey);
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, *s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s->IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("explicit capture") != std::string::npos);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C re-review, P1 finding 2: the CPU-linkable global-action reducer
+// (ClosePreviewSessionsBeforeAction) proves that Undo/Redo routing aborts on a
+// pending session instead of discarding it, and a healthy session closes first.
+TEST_CASE("Phase 8 W3 S6-C: global-action reducer aborts on pending and closes healthy sessions")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_reducer");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const UUID child = H6B(reg, childHandle);
+const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    reg.emplace_or_replace<LightComponent>(childHandle, LightComponent{});
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // Record ONE history entry (an independent root name change) so a host
+    // Undo would have something to pop without mutating either light the
+    // sessions preview on.
+    EditorCommandHistory history;
+    const std::string nameBefore = f.manager.GetEntityName(
+        SceneManager::EntityId{ rootHandle });
+    REQUIRE(history.Execute(MakeSetNameCommandIfEffective(root, nameBefore,
+        nameBefore + "X"), f.manager).effective);
+    REQUIRE(history.CanUndo());
+
+    // Session A (healthy) on root and session B (stranded) on child, so the
+    // two sessions do not share a target.
+    const LightComponent originRoot = reg.get<LightComponent>(rootHandle);
+    const LightComponent originChild = reg.get<LightComponent>(childHandle);
+    CompositePreviewSession healthy;
+    REQUIRE(healthy.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, originRoot, lightReader));
+    REQUIRE(healthy.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    CompositePreviewSession stranded;
+    REQUIRE(stranded.Begin(f.manager, child, PrefabValueKind::LightProperties,
+        lightKey, originChild, lightReader));
+    REQUIRE(stranded.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    reg.get<LightComponent>(childHandle).intensity = 77.0f;
+
+    unsigned int healthyOwner = 7;
+    unsigned int strandedOwner = 8;
+    PreviewSessionSlot slots[] = {
+        { PreviewSessionKind::Light, &healthy, &healthyOwner, false },
+        { PreviewSessionKind::Light, &stranded, &strandedOwner, false },
+    };
+
+    // The reducer returns false (the host would abort the requested Undo): the
+    // healthy session is closed (owner cleared), the stranded one is left OPEN
+    // with its owner preserved so recovery stays reachable (P1 finding 2).
+    const bool closed = ClosePreviewSessionsBeforeAction(f.manager, history,
+        slots, 2);
+    REQUIRE_FALSE(closed);
+    REQUIRE_FALSE(healthy.IsOpen());
+    CHECK(healthyOwner == 0);
+    REQUIRE(stranded.IsOpen());
+    CHECK(strandedOwner == 8);
+    // The caller aborts before touching history: no entry was popped.
+    REQUIRE(history.CanUndo());
+
+    // Reconcile the stranded session's live value, then the reducer closes it
+    // and a host-style Undo can proceed.
+    reg.get<LightComponent>(childHandle) = std::get<LightComponent>(stranded.RollingValue());
+    const bool closedAgain = ClosePreviewSessionsBeforeAction(f.manager, history,
+        slots, 2);
+    REQUIRE(closedAgain);
+    REQUIRE_FALSE(stranded.IsOpen());
+    CHECK(strandedOwner == 0);
+    REQUIRE(history.Undo(f.manager).success);
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C re-review, P1 finding 2: an applied preview is discarded only on the
+// confirmed proofs (target removal / document replacement), never via an
+// unproven recovery-bar Discard/Ignore exit. The close core guarantees those
+// proofs discard even an effective session.
+TEST_CASE("Phase 8 W3 S6-C: target removal is a valid discard of an effective preview")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_nodiscard");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    const LightComponent origin{ glm::vec3(0.0f, 1.0f, 0.0f), 3.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    reg.emplace_or_replace<LightComponent>(rootHandle, origin);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    CompositePreviewSession s;
+    REQUIRE(s.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, lightReader));
+    REQUIRE(s.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    REQUIRE(f.manager.RemoveSubtrees({ root }).success);
+    EditorCommandHistory history;
+    const auto out = FinalizePreviewSession(history, f.manager,
+        PreviewSessionKind::Light, s);
+    REQUIRE(out.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE_FALSE(s.IsOpen());
+    CHECK_FALSE(history.CanUndo());
 
     std::filesystem::remove_all(dir);
 }

@@ -8,7 +8,9 @@
 #include "EditorCommandHistory.h"
 #include "SceneManager.h"
 
+#include <cstddef>
 #include <memory>
+#include <optional>
 
 // ============================================================================
 // PreviewSessionClose — S6-C live-preview two-phase close (Phase 8 W3).
@@ -85,5 +87,62 @@ PreviewSessionCloseOutcome FinalizePreviewSession(
 // On failure against a live target the session stays OPEN (PendingRetry).
 PreviewSessionCloseOutcome RestorePreviewSession(
 	SceneManager& scene, PreviewSessionKind kind, CompositePreviewSession& session);
+
+// Already-applied preflight (S6-C re-review, P1 finding 1): prove that a
+// recorded close command is still exact before RecordApplied pushes it. Pass
+// the command FinalizePreviewSession is about to record. Returns nullopt when
+// the command is safe to record — the preview's rolling-final VALUE, its
+// after-marker MEMBERSHIP, the promoted SCHEMA, and the command's EXPLICIT
+// CAPTURE validity are all still the live state. Returns an EditorMutationResult
+// describing the failing condition otherwise; the caller must NOT record the
+// command and must enter the compensate / PendingRetry flow instead, so stale
+// or rejected state can never poison history.
+std::optional<EditorMutationResult> PreflightPreviewForRecord(
+	SceneManager& scene, PreviewSessionKind kind, const CompositePreviewSession& session,
+	const IEditorCommand& cmd);
+
+// One host preview-session slot for the global-action reducer below.
+struct PreviewSessionSlot
+{
+	PreviewSessionKind kind = PreviewSessionKind::Light;
+	CompositePreviewSession* session = nullptr;
+	// Host owning-widget ID; cleared when the session closes (may be null in
+	// host-less tests).
+	unsigned int* owningWidgetId = nullptr;
+	// Close mode: true = record (finalize); false = abandon (restore/escape).
+	bool finalize = false;
+};
+
+// CPU-linkable recovery reducer (S6-C re-review, P1 finding 2): close every
+// open preview session through the two-phase policy BEFORE a document-
+// preserving global action (Undo/Redo). Each slot's owning-widget ID is
+// cleared when that session closes and kept while a session stays open.
+// Returns true only when every open session fully closed (or was already
+// closed); returns false when any session remains pending — the caller must
+// ABORT the requested action and leave the pending session surfaced for
+// recovery. SceneEditorUI::Undo/Redo delegate here so the abort-on-pending
+// contract is testable without ImGui.
+inline bool ClosePreviewSessionsBeforeAction(SceneManager& scene,
+	EditorCommandHistory& history, PreviewSessionSlot* slots, std::size_t count)
+{
+	bool allClosed = true;
+	for (std::size_t i = 0; i < count; ++i)
+	{
+		PreviewSessionSlot& slot = slots[i];
+		if (!slot.session || !slot.session->IsOpen()) continue;
+		const PreviewSessionCloseOutcome outcome = slot.finalize
+			? FinalizePreviewSession(history, scene, slot.kind, *slot.session)
+			: RestorePreviewSession(scene, slot.kind, *slot.session);
+		if (outcome.result == PreviewSessionCloseOutcome::Result::Closed)
+		{
+			if (slot.owningWidgetId) *slot.owningWidgetId = 0;
+		}
+		else
+		{
+			allClosed = false;
+		}
+	}
+	return allClosed;
+}
 
 #endif // RT2_PREVIEW_SESSION_CLOSE_H

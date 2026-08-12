@@ -90,6 +90,19 @@ public:
 	// The last successfully committed value (== the live state absent any
 	// out-of-band change; the recorded command's After state).
 	const PrefabValuePayload& RollingValue() const { return m_RollingValue; }
+	// The component wire this gesture overrides (the recorded command's marker
+	// key).
+	const PrefabComponentKey& Key() const { return m_Key; }
+	// The durable value currently stored on the target, read back from live via
+	// the session's reader (falls back to the rolling committed value when the
+	// target or component vanished). Used by the finalize preflight to prove
+	// the rolling final is still the live applied state (S6-C re-review P1).
+	PrefabValuePayload ReadLiveValue(SceneManager& scene) const;
+	// The document schema the gesture should have left behind: promoted to the
+	// serializer's current schema when the gesture introduced an absent->present
+	// marker, else the pre-gesture (origin) schema. Used by the finalize
+	// preflight to prove the promoted schema is still live (S6-C re-review P1).
+	std::uint32_t ExpectedAfterSchema() const;
 
 	// Begin a gesture on `member`. `originValue` must be the live value read
 	// BEFORE this frame's mutation. Captures the immutable origin override-set

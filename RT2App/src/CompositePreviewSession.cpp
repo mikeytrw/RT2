@@ -1,6 +1,7 @@
 #include "CompositePreviewSession.h"
 
 #include "PrefabComponentKey.h"
+#include "SceneSerializer.h"
 
 #include <utility>
 
@@ -109,4 +110,28 @@ void CompositePreviewSession::Discard()
 	m_OriginDocumentGeneration = 0;
 	m_Reader = {};
 	m_HadEffectiveFrame = false;
+}
+
+PrefabValuePayload CompositePreviewSession::ReadLiveValue(SceneManager& scene) const
+{
+	if (m_Reader)
+		return m_Reader(m_Target, m_RollingValue);
+	return m_RollingValue;
+}
+
+std::uint32_t CompositePreviewSession::ExpectedAfterSchema() const
+{
+	std::uint32_t schema = m_Origin.beforeSchema;
+	// Mirror the transaction's anyMarkerAdded rule: an absent->present marker
+	// promotes the document to the serializer's current schema; an already
+	// present (or ordinary/absent) marker leaves the origin schema unchanged.
+	for (const auto& marker : m_Origin.markers)
+	{
+		if (marker.beforePresent && !*marker.beforePresent && marker.afterPresent)
+		{
+			schema = rt2::core::SceneSerializer::SchemaVersion;
+			break;
+		}
+	}
+	return schema;
 }

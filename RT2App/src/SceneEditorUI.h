@@ -236,6 +236,12 @@ private:
 	// Finish every currently open live-preview session when leaving
 	// editability. Editability is never discard proof (P1 finding 4).
 	void FinalizeOpenPreviewSessions();
+	// Close every open live-preview session (abandon/restore) BEFORE a
+	// document-preserving global action (Undo/Redo) through the two-phase close
+	// policy. Returns false (so the requested action is aborted) when any open
+	// session stays pending, leaving recovery surfaced and never orphaning an
+	// applied preview (S6-C re-review, P1 finding 2).
+	bool CloseAllPreviewSessionsForGlobalAction();
 	// Render the pending-recovery banner (a closed-but-failed session awaiting
 	// retry or discard).
 	void RenderPreviewRecoveryBar();
