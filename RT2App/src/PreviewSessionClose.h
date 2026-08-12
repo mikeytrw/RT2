@@ -113,36 +113,39 @@ struct PreviewSessionSlot
 	bool finalize = false;
 };
 
-// CPU-linkable recovery reducer (S6-C re-review, P1 finding 2): close every
-// open preview session through the two-phase policy BEFORE a document-
-// preserving global action (Undo/Redo). Each slot's owning-widget ID is
-// cleared when that session closes and kept while a session stays open.
-// Returns true only when every open session fully closed (or was already
-// closed); returns false when any session remains pending — the caller must
-// ABORT the requested action and leave the pending session surfaced for
-// recovery. SceneEditorUI::Undo/Redo delegate here so the abort-on-pending
-// contract is testable without ImGui.
-inline bool ClosePreviewSessionsBeforeAction(SceneManager& scene,
-	EditorCommandHistory& history, PreviewSessionSlot* slots, std::size_t count)
+// Per-slot outcome for the global-action reducer.
+struct PreviewSessionCloseSlotOutcome
 {
-	bool allClosed = true;
-	for (std::size_t i = 0; i < count; ++i)
-	{
-		PreviewSessionSlot& slot = slots[i];
-		if (!slot.session || !slot.session->IsOpen()) continue;
-		const PreviewSessionCloseOutcome outcome = slot.finalize
-			? FinalizePreviewSession(history, scene, slot.kind, *slot.session)
-			: RestorePreviewSession(scene, slot.kind, *slot.session);
-		if (outcome.result == PreviewSessionCloseOutcome::Result::Closed)
-		{
-			if (slot.owningWidgetId) *slot.owningWidgetId = 0;
-		}
-		else
-		{
-			allClosed = false;
-		}
-	}
-	return allClosed;
-}
+	// The slot held an open session this round (so the host knows to inspect
+	// `outcome`).
+	bool sessionWasOpen = false;
+	PreviewSessionCloseOutcome outcome;
+};
+
+// Result of closing every open preview session before a document-preserving
+// global action. `allClosed` is false when any session remains pending — the
+// caller must ABORT the requested action. Per-slot outcomes are rich enough
+// for the host's owner/error/sync responsibilities: the reducer clears each
+// closed slot's owning-widget ID, and the host routes scene sync from
+// outcome.needsSyncApply and surfaces recovery from outcome.lastError.
+struct PreviewSessionsBeforeActionResult
+{
+	bool allClosed = false;
+	std::size_t slotCount = 0;
+	PreviewSessionCloseSlotOutcome slots[4];
+};
+
+// CPU-linkable recovery reducer (S6-C re-review P1 finding 2 / final closure):
+// close every open preview session through the two-phase policy BEFORE a
+// document-preserving global action (Undo/Redo). This is the product decision
+// seam SceneEditorUI::Undo/Redo actually call (not a test-only duplicate), so
+// the abort-on-pending, owner-clearing, and per-slot outcome contract is
+// testable without ImGui. When a slot's session closes, its owning-widget ID is
+// cleared; when it stays pending, the ID is preserved and result.allClosed is
+// set false, and the caller must ABORT the requested action and leave the
+// pending session surfaced for recovery.
+void ClosePreviewSessionsBeforeAction(SceneManager& scene,
+	EditorCommandHistory& history, const PreviewSessionSlot* slots,
+	std::size_t count, PreviewSessionsBeforeActionResult& result);
 
 #endif // RT2_PREVIEW_SESSION_CLOSE_H

@@ -95,9 +95,20 @@ public:
 	const PrefabComponentKey& Key() const { return m_Key; }
 	// The durable value currently stored on the target, read back from live via
 	// the session's reader (falls back to the rolling committed value when the
-	// target or component vanished). Used by the finalize preflight to prove
-	// the rolling final is still the live applied state (S6-C re-review P1).
+	// target or component vanished). Used to advance the rolling source after a
+	// successful preview commit.
 	PrefabValuePayload ReadLiveValue(SceneManager& scene) const;
+	// EXACT validate-only live read (S6-C final closure, P1 finding 1): unlike
+	// ReadLiveValue, this never substitutes the rolling committed value. It
+	// reports absence explicitly so the finalize preflight can distinguish
+	// "component removed out of band" from "value equals rolling":
+	//   - Light/Camera: nullopt when the component is missing (a preflight
+	//     failure);
+	//   - Motion/Script: an exact optional{} (or present) payload — a removed
+	//     component reads as absence, never as the rolling final.
+	// nullopt is also returned when the target entity is gone or the kind is
+	// not one of the four live-preview kinds.
+	std::optional<PrefabValuePayload> ReadLiveValueExact(SceneManager& scene) const;
 	// The document schema the gesture should have left behind: promoted to the
 	// serializer's current schema when the gesture introduced an absent->present
 	// marker, else the pre-gesture (origin) schema. Used by the finalize

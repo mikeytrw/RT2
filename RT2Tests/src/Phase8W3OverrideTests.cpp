@@ -9379,12 +9379,21 @@ const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
         { PreviewSessionKind::Light, &stranded, &strandedOwner, false },
     };
 
-    // The reducer returns false (the host would abort the requested Undo): the
-    // healthy session is closed (owner cleared), the stranded one is left OPEN
-    // with its owner preserved so recovery stays reachable (P1 finding 2).
-    const bool closed = ClosePreviewSessionsBeforeAction(f.manager, history,
-        slots, 2);
-    REQUIRE_FALSE(closed);
+    // The reducer reports allClosed=false (the host would abort the requested
+    // Undo) with a rich per-slot result so the host can clear the healthy
+    // owner, route its scene sync, and surface the stranded error. The healthy
+    // session closes (owner cleared), the stranded one stays OPEN with its
+    // owner preserved so recovery stays reachable (P1 finding 2).
+    PreviewSessionsBeforeActionResult r1;
+    ClosePreviewSessionsBeforeAction(f.manager, history, slots, 2, r1);
+    REQUIRE_FALSE(r1.allClosed);
+    REQUIRE(r1.slotCount == 2);
+    REQUIRE(r1.slots[0].sessionWasOpen);
+    REQUIRE(r1.slots[0].outcome.result == PreviewSessionCloseOutcome::Result::Closed);
+    CHECK(r1.slots[0].outcome.needsSyncApply);
+    REQUIRE(r1.slots[1].sessionWasOpen);
+    REQUIRE(r1.slots[1].outcome.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    CHECK_FALSE(r1.slots[1].outcome.lastError.error.detail.empty());
     REQUIRE_FALSE(healthy.IsOpen());
     CHECK(healthyOwner == 0);
     REQUIRE(stranded.IsOpen());
@@ -9395,9 +9404,10 @@ const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
     // Reconcile the stranded session's live value, then the reducer closes it
     // and a host-style Undo can proceed.
     reg.get<LightComponent>(childHandle) = std::get<LightComponent>(stranded.RollingValue());
-    const bool closedAgain = ClosePreviewSessionsBeforeAction(f.manager, history,
-        slots, 2);
-    REQUIRE(closedAgain);
+    PreviewSessionsBeforeActionResult r2;
+    ClosePreviewSessionsBeforeAction(f.manager, history, slots, 2, r2);
+    REQUIRE(r2.allClosed);
+    REQUIRE(r2.slots[1].outcome.result == PreviewSessionCloseOutcome::Result::Closed);
     REQUIRE_FALSE(stranded.IsOpen());
     CHECK(strandedOwner == 0);
     REQUIRE(history.Undo(f.manager).success);
@@ -9436,6 +9446,150 @@ TEST_CASE("Phase 8 W3 S6-C: target removal is a valid discard of an effective pr
     REQUIRE(out.result == PreviewSessionCloseOutcome::Result::Closed);
     REQUIRE_FALSE(s.IsOpen());
     CHECK_FALSE(history.CanUndo());
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C final closure, P1 finding 1: the finalize preflight must distinguish a
+// component REMOVED out of band (entity, marker, schema retained) from a value
+// that happens to equal the rolling final. A present-state substitution would
+// let a poisoned command into history; each sub-case asserts PendingRetry, no
+// history entry, and the retained session.
+TEST_CASE("Phase 8 W3 S6-C: finalize refutes components removed out of band and script identity changes")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_removed");
+    S6BScriptAssets(f, dir, { "spin.lua" });
+    auto& reg = f.manager.GetECS().registry;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto freshMember = [&]() -> std::pair<entt::entity, rt2::core::UUID> {
+        const auto [r, c] = f.MakeInstance(dir);
+        auto& reg2 = f.manager.GetECS().registry;
+        return { r, H6B(reg2, r) };
+    };
+    const auto beginLight = [&](entt::entity h, const UUID& target) {
+        auto s = std::make_unique<CompositePreviewSession>();
+        reg.emplace_or_replace<LightComponent>(h, LightComponent{});
+        const LightComponent origin = reg.get<LightComponent>(h);
+        const auto reader = [&](const UUID& u, const PrefabValuePayload& raw) {
+            return S6CLightReader(f.manager, u, raw);
+        };
+        REQUIRE(s->Begin(f.manager, target, PrefabValueKind::LightProperties,
+            PrefabComponentKeyFor<LightComponent>::value, origin, reader));
+        REQUIRE(s->Preview(f.manager, PrefabValuePayload{ a }).effective);
+        return s;
+    };
+
+    // (a) Missing LightComponent: exact read is nullopt -> preflight failure.
+    {
+        const auto [h, target] = freshMember();
+        auto s = beginLight(h, target);
+        reg.remove<LightComponent>(h);
+        REQUIRE_FALSE(reg.all_of<LightComponent>(h));
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, *s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s->IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("component is missing")
+            != std::string::npos);
+    }
+
+    // (b) Missing MotionComponent: exact read is optional absent, never the
+    // rolling final -> stale value -> preflight failure.
+    {
+        const auto [h, target] = freshMember();
+        reg.emplace_or_replace<MotionComponent>(h, MotionComponent{ glm::vec3(1,0,0) });
+        const auto originM = reg.get<MotionComponent>(h);
+        CompositePreviewSession s;
+        const auto reader = [&](const UUID& u, const PrefabValuePayload& raw) {
+            return S6CMotionReader(f.manager, u, raw);
+        };
+        REQUIRE(s.Begin(f.manager, target, PrefabValueKind::MotionState,
+            PrefabComponentKeyFor<MotionComponent>::value,
+            PrefabValuePayload{ std::optional<MotionComponent>(originM) }, reader));
+        REQUIRE(s.Preview(f.manager, PrefabValuePayload{
+            std::optional<MotionComponent>(MotionComponent{ glm::vec3(2,0,0) }) }).effective);
+        reg.remove<MotionComponent>(h);
+        REQUIRE_FALSE(reg.all_of<MotionComponent>(h));
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Motion, s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s.IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("live value differs")
+            != std::string::npos);
+    }
+
+    // (c) Missing ScriptComponent: exact read is optional absent -> stale value.
+    {
+        const auto [h, target] = freshMember();
+        ScriptComponent bound = S6BScript("spin.lua");
+        bound.fieldValues["speed"] = { ScriptFieldType::Float, 1.0 };
+        reg.emplace_or_replace<ScriptComponent>(h, bound);
+        const auto originS = reg.get<ScriptComponent>(h);
+        CompositePreviewSession s;
+        const auto reader = [&](const UUID& u, const PrefabValuePayload& raw) {
+            return S6CScriptReader(f.manager, u, raw);
+        };
+        REQUIRE(s.Begin(f.manager, target, PrefabValueKind::ScriptState,
+            PrefabComponentKeyFor<ScriptComponent>::value,
+            PrefabValuePayload{ std::optional<ScriptComponent>(originS) }, reader));
+        ScriptComponent fieldTarget = originS;
+        fieldTarget.fieldValues["speed"] = { ScriptFieldType::Float, 2.0 };
+        REQUIRE(s.Preview(f.manager, PrefabValuePayload{
+            std::optional<ScriptComponent>(fieldTarget) }).effective);
+        reg.remove<ScriptComponent>(h);
+        REQUIRE_FALSE(reg.all_of<ScriptComponent>(h));
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Script, s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s.IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("live value differs")
+            != std::string::npos);
+    }
+
+    // (d) Present script whose durable asset IDENTITY changed out of band:
+    // canonical comparison includes assetId, so the record is refused.
+    {
+        const auto [h, target] = freshMember();
+        ScriptComponent bound = S6BScript("spin.lua");
+        bound.fieldValues["speed"] = { ScriptFieldType::Float, 1.0 };
+        reg.emplace_or_replace<ScriptComponent>(h, bound);
+        const auto originS = reg.get<ScriptComponent>(h);
+        CompositePreviewSession s;
+        const auto reader = [&](const UUID& u, const PrefabValuePayload& raw) {
+            return S6CScriptReader(f.manager, u, raw);
+        };
+        REQUIRE(s.Begin(f.manager, target, PrefabValueKind::ScriptState,
+            PrefabComponentKeyFor<ScriptComponent>::value,
+            PrefabValuePayload{ std::optional<ScriptComponent>(originS) }, reader));
+        ScriptComponent fieldTarget = originS;
+        fieldTarget.fieldValues["speed"] = { ScriptFieldType::Float, 2.0 };
+        REQUIRE(s.Preview(f.manager, PrefabValuePayload{
+            std::optional<ScriptComponent>(fieldTarget) }).effective);
+        reg.get<ScriptComponent>(h).asset.assetId = UUID::Parse(
+            "99999999-9999-4999-8999-999999999999");
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Script, s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s.IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("live value differs")
+            != std::string::npos);
+        // The identity change also blocks a compensating restore (canonical
+        // source differs), so ownership is retained for retry.
+    }
 
     std::filesystem::remove_all(dir);
 }

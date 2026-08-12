@@ -370,19 +370,28 @@ private:
 	unsigned int m_MotionVelocitySessionOwningWidgetId = 0;
 	unsigned int m_ScriptFieldSessionOwningWidgetId = 0;
 
-	// Pending-recovery surfacing (S6-C fixup, P1 finding 2): a live-preview
-	// session whose close failed against a still-live target. The owning
-	// widget ID above is NOT cleared while a session is pending, so a retry
-	// (or discard) through the recovery bar keeps target/origin/owner intact.
-	// `kind` + `finalize` remember which close to retry.
+	// Pending-recovery surfacing (S6-C fixup P1 finding 2 / final closure P1
+	// finding 2): a live-preview session whose close failed against a still-live
+	// target. The owning widget ID above is NOT cleared while a session is
+	// pending, so a retry through the persistent recovery bar keeps
+	// target/origin/owner intact. State is kept PER KIND and derived from all
+	// open pending sessions, so closing a different-kind session can never hide
+	// a still-open pending one.
 	struct PreviewRecoveryState
 	{
-		bool active = false;
+		bool pending = false;
 		PreviewSessionKind kind = PreviewSessionKind::Light;
 		bool finalize = true; // close mode to retry (true = finalize, false = restore)
 		std::string detail;
 	};
-	PreviewRecoveryState m_PreviewRecovery;
+	PreviewRecoveryState m_PreviewRecoveryByKind[4] = {};
+	PreviewRecoveryState& PendingRecoveryFor(PreviewSessionKind kind);
+	void SetPendingRecovery(PreviewSessionKind kind, bool finalize,
+		const std::string& detail);
+	void ClearPendingRecovery(PreviewSessionKind kind);
+	bool AnyPreviewRecoveryPending() const;
+	// The first kind with a pending (open, unresolved) session, or nullptr.
+	const PreviewRecoveryState* FirstPendingRecovery() const;
 	// Before-override snapshot captured when the material-properties session
 	// opens. The after-overrides are read live at close time. The session
 	// itself stores the SceneMaterial before/after; this stores the

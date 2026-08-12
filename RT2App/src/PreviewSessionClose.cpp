@@ -96,9 +96,16 @@ std::optional<EditorMutationResult> PreflightPreviewForRecord(
 			"explicit capture was rejected; the live-preview close cannot be recorded");
 
 	// 2. Live VALUE must still equal the rolling final (what the preview frames
-	// committed). An out-of-band value change since the last preview leaves the
-	// recorded command's directional source stale.
-	if (!PrefabValuePayloadEqual(session.ReadLiveValue(scene), session.RollingValue()))
+	// committed). The read is EXACT: a Light/Camera component removed out of
+	// band is a hard preflight failure (never substituted with the rolling
+	// final), and a removed Motion/Script reads as exact optional absence
+	// (never as the rolling present state) — S6-C final closure, P1 finding 1.
+	const auto liveValue = session.ReadLiveValueExact(scene);
+	if (!liveValue.has_value())
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+			session.Target().ToString(),
+			"the previewed component is missing from the live entity; the close cannot be recorded");
+	if (!PrefabValuePayloadEqual(*liveValue, session.RollingValue()))
 		return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
 			session.Target().ToString(),
 			"live value differs from the rolling preview final; the close cannot be recorded");
@@ -280,4 +287,32 @@ PreviewSessionCloseOutcome RestorePreviewSession(
 	outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
 	outcome.lastError = outcome.mutation;
 	return outcome;
+}
+
+void ClosePreviewSessionsBeforeAction(SceneManager& scene,
+	EditorCommandHistory& history, const PreviewSessionSlot* slots,
+	std::size_t count, PreviewSessionsBeforeActionResult& result)
+{
+	result.allClosed = true;
+	result.slotCount = count;
+	for (std::size_t i = 0; i < count && i < 4; ++i)
+	{
+		const PreviewSessionSlot& slot = slots[i];
+		PreviewSessionCloseSlotOutcome& slotOutcome = result.slots[i];
+		if (!slot.session || !slot.session->IsOpen()) continue;
+		slotOutcome.sessionWasOpen = true;
+		slotOutcome.outcome = slot.finalize
+			? FinalizePreviewSession(history, scene, slot.kind, *slot.session)
+			: RestorePreviewSession(scene, slot.kind, *slot.session);
+		if (slotOutcome.outcome.result == PreviewSessionCloseOutcome::Result::Closed)
+		{
+			// Owner clearing happens here; the host consumes the reopened
+			// outcomes for scene sync and recovery-error surfacing.
+			if (slot.owningWidgetId) *slot.owningWidgetId = 0;
+		}
+		else
+		{
+			result.allClosed = false;
+		}
+	}
 }

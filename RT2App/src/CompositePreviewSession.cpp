@@ -119,6 +119,33 @@ PrefabValuePayload CompositePreviewSession::ReadLiveValue(SceneManager& scene) c
 	return m_RollingValue;
 }
 
+std::optional<PrefabValuePayload> CompositePreviewSession::ReadLiveValueExact(
+	SceneManager& scene) const
+{
+	const auto entity = scene.FindEntityByUuid(m_Target);
+	if (entity == entt::null) return std::nullopt;
+	auto& reg = scene.GetECS().registry;
+	switch (m_Kind)
+	{
+	case PrefabValueKind::LightProperties:
+		if (!reg.all_of<LightComponent>(entity)) return std::nullopt;
+		return PrefabValuePayload{ reg.get<LightComponent>(entity) };
+	case PrefabValueKind::CameraProperties:
+		if (!reg.all_of<CameraComponent>(entity)) return std::nullopt;
+		return PrefabValuePayload{ reg.get<CameraComponent>(entity) };
+	case PrefabValueKind::MotionState:
+		if (reg.all_of<MotionComponent>(entity))
+			return PrefabValuePayload{
+				std::optional<MotionComponent>(reg.get<MotionComponent>(entity)) };
+		return PrefabValuePayload{ std::optional<MotionComponent>{} };
+	case PrefabValueKind::ScriptState:
+		return PrefabValuePayload{ scene.GetScriptState(m_Target) };
+	default:
+		// Not one of the four live-preview kinds: no exact read exists.
+		return std::nullopt;
+	}
+}
+
 std::uint32_t CompositePreviewSession::ExpectedAfterSchema() const
 {
 	std::uint32_t schema = m_Origin.beforeSchema;

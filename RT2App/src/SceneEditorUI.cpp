@@ -28,10 +28,14 @@ void SceneEditorUI::RenderPanels()
 
 void SceneEditorUI::RenderPreviewRecoveryBar()
 {
-	if (!m_PreviewRecovery.active) return;
+	// Recovery is DERIVED from all open pending sessions (final-closure P1
+	// finding 2): closing a different-kind session never hides a still-open
+	// pending one.
+	const PreviewRecoveryState* pending = FirstPendingRecovery();
+	if (!pending) return;
 	CompositePreviewSession* session = nullptr;
 	unsigned int* owningWidgetId = nullptr;
-	switch (m_PreviewRecovery.kind)
+	switch (pending->kind)
 	{
 	case PreviewSessionKind::Light:
 		session = &m_LightSession; owningWidgetId = &m_LightSessionOwningWidgetId; break;
@@ -45,21 +49,56 @@ void SceneEditorUI::RenderPreviewRecoveryBar()
 	if (!session || !session->IsOpen())
 	{
 		// The stranded session was closed elsewhere (document replacement,
-		// target removal, direct discard): clear the stale banner.
-		m_PreviewRecovery.active = false;
+		// target removal, successful retry): drop the stale record.
+		ClearPendingRecovery(pending->kind);
 		return;
 	}
 	ImGui::Separator();
-	const std::string detail = m_PreviewRecovery.detail.empty()
-		? "recovery required" : m_PreviewRecovery.detail;
+	const std::string detail = pending->detail.empty()
+		? "recovery required" : pending->detail;
 	ImGui::TextWrapped("[Preview] The live edit on %s could not be finalized: %s",
 		session->Target().ToString().c_str(), detail.c_str());
 	ImGui::TextDisabled("The edit is still applied to the document without a history entry.");
 	ImGui::TextDisabled("Resolve the failure (or remove the target / load a new document) and retry.");
-	if (ImGui::Button(m_PreviewRecovery.finalize ? "Retry Finalize" : "Retry Restore"))
-		ClosePreviewSession(m_PreviewRecovery.kind, *session, *owningWidgetId,
-			m_PreviewRecovery.finalize);
+	if (ImGui::Button(pending->finalize ? "Retry Finalize" : "Retry Restore"))
+		ClosePreviewSession(pending->kind, *session, *owningWidgetId, pending->finalize);
 	ImGui::Separator();
+}
+
+SceneEditorUI::PreviewRecoveryState& SceneEditorUI::PendingRecoveryFor(
+	PreviewSessionKind kind)
+{
+	return m_PreviewRecoveryByKind[static_cast<std::size_t>(kind)];
+}
+
+void SceneEditorUI::SetPendingRecovery(PreviewSessionKind kind, bool finalize,
+	const std::string& detail)
+{
+	PreviewRecoveryState& state = PendingRecoveryFor(kind);
+	state.pending = true;
+	state.kind = kind;
+	state.finalize = finalize;
+	state.detail = detail;
+}
+
+void SceneEditorUI::ClearPendingRecovery(PreviewSessionKind kind)
+{
+	PendingRecoveryFor(kind) = PreviewRecoveryState{};
+	PendingRecoveryFor(kind).kind = kind;
+}
+
+bool SceneEditorUI::AnyPreviewRecoveryPending() const
+{
+	for (const auto& state : m_PreviewRecoveryByKind)
+		if (state.pending) return true;
+	return false;
+}
+
+const SceneEditorUI::PreviewRecoveryState* SceneEditorUI::FirstPendingRecovery() const
+{
+	for (const auto& state : m_PreviewRecoveryByKind)
+		if (state.pending) return &state;
+	return nullptr;
 }
 
 void SceneEditorUI::ImportAssetPathFromDrop(const std::string& path)
@@ -173,16 +212,39 @@ void SceneEditorUI::Redo()
 
 bool SceneEditorUI::CloseAllPreviewSessionsForGlobalAction()
 {
-	const auto closeOne = [&](PreviewSessionKind kind, CompositePreviewSession& session,
-		unsigned int& owner) -> bool {
-		if (!session.IsOpen()) return true;
-		return ClosePreviewSession(kind, session, owner, /*finalize=*/false).result
-			== PreviewSessionCloseOutcome::Result::Closed;
+	// The product decision seam: the CPU-tested global-action reducer closes
+	// every open preview session (abandon/restore) and clears owner IDs for the
+	// ones that close (S6-C final closure P1 finding 2 — wired here, not
+	// duplicated). The per-slot outcomes carry the owner/error/sync facts.
+	PreviewSessionSlot slots[4] = {
+		{ PreviewSessionKind::Light, &m_LightSession, &m_LightSessionOwningWidgetId, false },
+		{ PreviewSessionKind::Camera, &m_CameraSession, &m_CameraSessionOwningWidgetId, false },
+		{ PreviewSessionKind::Motion, &m_MotionVelocitySession, &m_MotionVelocitySessionOwningWidgetId, false },
+		{ PreviewSessionKind::Script, &m_ScriptFieldSession, &m_ScriptFieldSessionOwningWidgetId, false },
 	};
-	return closeOne(PreviewSessionKind::Light, m_LightSession, m_LightSessionOwningWidgetId)
-		&& closeOne(PreviewSessionKind::Camera, m_CameraSession, m_CameraSessionOwningWidgetId)
-		&& closeOne(PreviewSessionKind::Motion, m_MotionVelocitySession, m_MotionVelocitySessionOwningWidgetId)
-		&& closeOne(PreviewSessionKind::Script, m_ScriptFieldSession, m_ScriptFieldSessionOwningWidgetId);
+	PreviewSessionsBeforeActionResult closeResult;
+	ClosePreviewSessionsBeforeAction(*m_SceneMgr, *m_CommandHistory, slots, 4, closeResult);
+
+	// Reflect per-kind recovery from the reducer outcomes, then route scene
+	// sync for every close that actually mutated the scene.
+	for (std::size_t i = 0; i < closeResult.slotCount; ++i)
+	{
+		const PreviewSessionCloseSlotOutcome& slotOutcome = closeResult.slots[i];
+		if (!slotOutcome.sessionWasOpen) continue;
+		const PreviewSessionKind kind = slots[i].kind;
+		if (slotOutcome.outcome.result == PreviewSessionCloseOutcome::Result::Closed)
+			ClearPendingRecovery(kind);
+		else
+			SetPendingRecovery(kind, slots[i].finalize,
+				slotOutcome.outcome.lastError.error.detail);
+	}
+	for (std::size_t i = 0; i < closeResult.slotCount; ++i)
+	{
+		const PreviewSessionCloseSlotOutcome& slotOutcome = closeResult.slots[i];
+		if (slotOutcome.sessionWasOpen && slotOutcome.outcome.needsSyncApply)
+			ApplyCloseOutcome(slotOutcome.outcome);
+	}
+	return closeResult.allClosed;
 }
 
 void SceneEditorUI::SetEditable(bool editable)
@@ -245,18 +307,17 @@ PreviewSessionCloseOutcome SceneEditorUI::ClosePreviewSession(
 	}
 	// Clear ownership ONLY after the session actually closed. A pending close
 	// keeps the owning widget ID so the stranded session stays retryable and
-	// finalizable (S6-C fixup, P1 finding 2) and surfaces recovery.
+	// finalizable (S6-C fixup, P1 finding 2) and surfaces recovery. Recovery is
+	// tracked per kind, so this session's state never hides another kind's
+	// pending session (final-closure P1 finding 2).
 	if (outcome.result == PreviewSessionCloseOutcome::Result::Closed)
 	{
 		owningWidgetId = 0;
-		m_PreviewRecovery.active = false;
+		ClearPendingRecovery(kind);
 	}
 	else
 	{
-		m_PreviewRecovery.active = true;
-		m_PreviewRecovery.kind = kind;
-		m_PreviewRecovery.finalize = finalize;
-		m_PreviewRecovery.detail = outcome.lastError.error.detail;
+		SetPendingRecovery(kind, finalize, outcome.lastError.error.detail);
 	}
 	ApplyCloseOutcome(outcome);
 	return outcome;
@@ -297,6 +358,10 @@ void SceneEditorUI::DiscardAllPropertySessions()
 	m_MaterialPropertiesSession.Discard();
 	m_MotionVelocitySession.Discard();
 	m_ScriptFieldSession.Discard();
+	// The previews are gone, so no recovery remains pending (ResetForDocument /
+	// confirmed document replacement is a valid discard path).
+	for (auto& state : m_PreviewRecoveryByKind)
+		state = PreviewRecoveryState{};
 }
 
 SetMaterialPropertiesCommand::OverrideList
@@ -1074,7 +1139,8 @@ void SceneEditorUI::RenderInspector()
 				bool velChanged = false;
 				if (ImGui::DragFloat3("Linear Velocity", &vel[0], 0.1f))
 					velChanged = true;
-				if (ImGui::IsItemActivated() && !m_MotionVelocitySession.IsOpen() && m_Editable)
+				if (ImGui::IsItemActivated() && !m_MotionVelocitySession.IsOpen() && m_Editable
+					&& !AnyPreviewRecoveryPending())
 				{
 					if (m_MotionVelocitySession.Begin(*m_SceneMgr, targetUuid,
 						PrefabValueKind::MotionState,
@@ -1104,8 +1170,10 @@ void SceneEditorUI::RenderInspector()
 				ImGui::EndDisabled();
 
 				// S6-C live preview through the composite — no direct mutation
-				// of `mc`; the working copy carries the edited velocity.
-				if (velChanged && m_MotionVelocitySession.IsOpen())
+				// of `mc`; the working copy carries the edited velocity. Target
+				// gate: a pending session never receives another entity's copy.
+				if (velChanged && m_MotionVelocitySession.IsOpen()
+					&& m_MotionVelocitySession.Target() == targetUuid)
 				{
 					MotionComponent target = mc;
 					target.linearVelocity = vel;
@@ -1654,7 +1722,10 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 		const unsigned int widgetId = ImGui::GetID(label);
 		if (ImGui::IsItemActivated())
 		{
-			if (!m_LightSession.IsOpen() && m_Editable)
+			// Quarantine: while any unresolved recovery is pending, no new
+			// preview may begin (final-closure P1 finding 2); the pending
+			// session must be retried/reconciled/replaced/removed first.
+			if (!m_LightSession.IsOpen() && m_Editable && !AnyPreviewRecoveryPending())
 			{
 				// Capture the immutable origin (value + override-set
 				// membership + document schema) BEFORE any preview frame of
@@ -1761,12 +1832,14 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 	ImGui::EndDisabled();
 	ImGui::PopID();
 
-	if (changed && m_LightSession.IsOpen())
+	if (changed && m_LightSession.IsOpen() && m_LightSession.Target() == targetUuid)
 	{
 		// S6-C live preview: stage the rolling committed source -> the edited
 		// working copy and commit through the atomic composite (real result,
 		// marker + schema handled there), instead of the old direct
-		// SetLightComponent + fabricated RecordLightEdit.
+		// SetLightComponent + fabricated RecordLightEdit. The target gate keeps
+		// a pending session on one entity from receiving another entity's
+		// working copy (final-closure P1 finding 2).
 		ApplyMutation(m_LightSession.Preview(*m_SceneMgr, PrefabValuePayload{ edited }));
 	}
 
@@ -1814,7 +1887,8 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 		const unsigned int widgetId = ImGui::GetID(label);
 		if (ImGui::IsItemActivated())
 		{
-			if (!m_CameraSession.IsOpen() && m_Editable)
+			// Quarantine: no new preview while any recovery is pending.
+			if (!m_CameraSession.IsOpen() && m_Editable && !AnyPreviewRecoveryPending())
 			{
 				if (m_CameraSession.Begin(*m_SceneMgr, targetUuid,
 					PrefabValueKind::CameraProperties,
@@ -1870,10 +1944,11 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 	{
 		changed = true;
 	}
-	if (changed && m_CameraSession.IsOpen())
+	if (changed && m_CameraSession.IsOpen() && m_CameraSession.Target() == targetUuid)
 	{
 		// S6-C live preview through the atomic composite (the working copy is
 		// the full live camera with the edited FOV/aperture/focusDistance).
+		// Target gate: a pending session never receives another entity's copy.
 		CameraComponent editedCamera = *cam;
 		editedCamera.verticalFOV = verticalFOV;
 		editedCamera.aperture = aperture;
@@ -2260,7 +2335,9 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 			const unsigned int widgetId = ImGui::GetID("##val");
 			if (ImGui::IsItemActivated())
 			{
-				if (!m_ScriptFieldSession.IsOpen() && m_Editable)
+				// Quarantine: no new preview while any recovery is pending.
+				if (!m_ScriptFieldSession.IsOpen() && m_Editable
+					&& !AnyPreviewRecoveryPending())
 				{
 					if (m_ScriptFieldSession.Begin(*m_SceneMgr, targetUuid,
 						PrefabValueKind::ScriptState,
@@ -2298,10 +2375,12 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 				// Continuous widgets (Int/Float/Vec3/Color) publish a live
 				// per-frame preview through the composite session (immutable
 				// origin, rolling committed source, real result) and are
-				// recorded once at session close (S6-C).
+				// recorded once at session close (S6-C). Target gate: a pending
+				// session never receives another entity's working copy.
 				auto target = *scriptState;
 				target.fieldValues[desc.name] = display;
-				if (m_ScriptFieldSession.IsOpen())
+				if (m_ScriptFieldSession.IsOpen()
+					&& m_ScriptFieldSession.Target() == targetUuid)
 				{
 					applied = m_ScriptFieldSession.Preview(*m_SceneMgr,
 						PrefabValuePayload{ std::optional<ScriptComponent>(target) });
