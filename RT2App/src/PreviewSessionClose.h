@@ -168,4 +168,21 @@ void ClosePreviewSessionsBeforeAction(SceneManager& scene,
 	EditorCommandHistory& history, const PreviewSessionSlot* slots,
 	std::size_t count, PreviewSessionsBeforeActionResult& result);
 
+// Host-edge P1 finding 1: the shared ordinary admission / Undo/Redo gate.
+// Returns false IMMEDIATELY when `anyRecoveryPending` — calling it does not run
+// the reducer, so there is no implicit close retry, no owner/error overwrite,
+// no scene sync, no UUID draw, and no mutation. Only the explicit Retry action
+// (and proven replacement/removal handling) re-runs a pending close. When not
+// pending it runs the reducer over `slots` and returns whether every session
+// closed. SceneEditorUI::CloseAllPreviewSessionsForAction delegates here so the
+// short-circuit contract is CPU-testable without ImGui.
+inline bool ClosePreviewSessionsAndAdmit(SceneManager& scene,
+	EditorCommandHistory& history, PreviewSessionSlot* slots, std::size_t count,
+	PreviewSessionsBeforeActionResult& result, bool anyRecoveryPending)
+{
+	if (anyRecoveryPending) return false; // no implicit retry
+	ClosePreviewSessionsBeforeAction(scene, history, slots, count, result);
+	return result.allClosed;
+}
+
 #endif // RT2_PREVIEW_SESSION_CLOSE_H

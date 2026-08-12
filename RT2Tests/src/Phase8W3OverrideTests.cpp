@@ -10280,3 +10280,422 @@ TEST_CASE("Phase 8 W3 S6-C: Light-then-Camera physical order undoes exactly")
 
     std::filesystem::remove_all(s.dir);
 }
+
+// S6-C host-edge, P1 finding 1: once a session is PendingRetry, ordinary
+// admission and Undo/Redo must short-circuit IMMEDIATELY without invoking the
+// close reducer (no implicit retry, no owner/error overwrite, no sync, no UUID
+// draw, no mutation). Only the explicit Retry re-runs a pending close. The host
+// shares this seam via ClosePreviewSessionsAndAdmit.
+TEST_CASE("Phase 8 W3 S6-C: admission short-circuits on already-pending recovery")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_pendedadmit");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    CompositePreviewSession s;
+    REQUIRE(s.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    REQUIRE(s.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    const auto rolling = s.RollingValue();
+    reg.get<LightComponent>(rootHandle).intensity = 99.0f; // strands finalize
+
+    EditorCommandHistory history;
+    unsigned int owner = 7;
+    PreviewSessionSlot slot[1] = {
+        { PreviewSessionKind::Light, &s, &owner, /*finalize=*/true },
+    };
+    // Establish the pending state through the reducer (the host's Retry path).
+    PreviewSessionsBeforeActionResult r1;
+    REQUIRE_FALSE(ClosePreviewSessionsAndAdmit(f.manager, history, slot, 1, r1,
+        /*anyRecoveryPending=*/false));
+    REQUIRE(r1.slots[0].outcome.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    CHECK_FALSE(r1.slots[0].outcome.lastError.error.detail.empty());
+    CHECK(owner == 7);
+    const auto entitiesBefore = f.manager.GetEntityCount();
+
+    // A draw-counting provider whose REQUIRE inside CreateV4 makes any accidental
+    // UUID draw a hard failure (empty script -> cursor can never advance).
+    ScriptedUuidProvider hostile;
+    f.manager.SetUuidProvider(&hostile);
+
+    // Ordinary admission / Undo/Redo now short-circuit: pending=true, the reducer
+    // is never invoked (slotCount stays 0), so nothing retries, draws, or mutates
+    // and the owner/rolling/error/history are untouched.
+    unsigned int owner2 = 7;
+    PreviewSessionSlot slot2[1] = {
+        { PreviewSessionKind::Light, &s, &owner2, /*finalize=*/true },
+    };
+    PreviewSessionsBeforeActionResult r2;
+    REQUIRE_FALSE(ClosePreviewSessionsAndAdmit(f.manager, history, slot2, 1, r2,
+        /*anyRecoveryPending=*/true));
+    CHECK(r2.slotCount == 0); // reducer never ran
+    REQUIRE(s.IsOpen());
+    CHECK(owner2 == 7);
+    CHECK(S6CLightEqual(std::get<LightComponent>(s.RollingValue()),
+        std::get<LightComponent>(rolling)));
+    CHECK_FALSE(history.CanUndo());
+    CHECK(f.manager.GetEntityCount() == entitiesBefore);
+    CHECK(hostile.cursor == 0); // zero UUID draws
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C host-edge, P1 finding 2: activating the same component kind on a DIFFERENT
+// target must reach shared admission (finalize the old gesture in physical order)
+// instead of being silently dropped by an own-kind-closed predicate. A PendingRetry
+// old gesture aborts the new Begin with no implicit retry.
+TEST_CASE("Phase 8 W3 S6-C: same-kind different-target Begin admits the prior gesture")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_samekind");
+    S6BScriptAssets(f, dir, { "spin.lua" });
+    const auto [ha, ca] = f.MakeInstance(dir);
+    const auto [hb, cb] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID targetA = H6B(reg, ha);
+    const UUID targetB = H6B(reg, hb);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(ha, LightComponent{});
+    reg.emplace_or_replace<LightComponent>(hb, LightComponent{});
+    const LightComponent originA = reg.get<LightComponent>(ha);
+    const LightComponent originB = reg.get<LightComponent>(hb);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const LightComponent b{ glm::vec3(0.0f, 1.0f, 0.0f), 3.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN Light: a same-kind session open on target A, then activation on
+    // target B. The shared Begin admission finalizes A (physical order), and the
+    // new gesture begins on B. History is chronological and undoes exactly.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, targetA, PrefabValueKind::LightProperties,
+            lightKey, originA, reader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        REQUIRE(light.Target() == targetA);
+
+        // CanBeginPreview(target B) => same kind open but Target() != B, so
+        // admission finalizes the old gesture first.
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slot[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slot, 1, admit,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+        REQUIRE(history.CanUndo());
+
+        REQUIRE(light.Begin(f.manager, targetB, PrefabValueKind::LightProperties,
+            lightKey, originB, reader));
+        REQUIRE(light.IsOpen());
+        CHECK(light.Target() == targetB);
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ b }).effective);
+
+        // The B gesture closes (host would on widget deactivation); history is
+        // now [light-A, light-B] in physical application order.
+        unsigned int ownerB = 0;
+        PreviewSessionSlot slotB[1] = {
+            { PreviewSessionKind::Light, &light, &ownerB, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admitB;
+        REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slotB, 1, admitB,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(admitB.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+
+        // Two-step undo: B (top) then the admitted A entry.
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(hb), originB));
+        REQUIRE_FALSE(f.manager.IsOverridden(targetB, lightKey).value);
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(ha), originA));
+        REQUIRE_FALSE(f.manager.IsOverridden(targetA, lightKey).value);
+    }
+
+    // ---- GREEN Script: same-kind/different-target transition finalizes the old
+    // script-field gesture before the new one begins.
+    {
+        const auto scriptKey = PrefabComponentKeyFor<ScriptComponent>::value;
+        ScriptComponent bound = S6BScript("spin.lua");
+        bound.fieldValues["speed"] = { ScriptFieldType::Float, 1.0 };
+        reg.emplace_or_replace<ScriptComponent>(ha, bound);
+        reg.emplace_or_replace<ScriptComponent>(hb, bound);
+        const auto originA = reg.get<ScriptComponent>(ha);
+        const auto originB = reg.get<ScriptComponent>(hb);
+        const auto scriptReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+            return S6CScriptReader(f.manager, uuid, raw);
+        };
+
+        CompositePreviewSession script;
+        REQUIRE(script.Begin(f.manager, targetA, PrefabValueKind::ScriptState,
+            scriptKey, PrefabValuePayload{ std::optional<ScriptComponent>(originA) },
+            scriptReader));
+        ScriptComponent fieldA = originA;
+        fieldA.fieldValues["speed"] = { ScriptFieldType::Float, 2.0 };
+        REQUIRE(script.Preview(f.manager,
+            PrefabValuePayload{ std::optional<ScriptComponent>(fieldA) }).effective);
+
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slot[1] = {
+            { PreviewSessionKind::Script, &script, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slot, 1, admit,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(script.IsOpen());
+
+        REQUIRE(script.Begin(f.manager, targetB, PrefabValueKind::ScriptState,
+            scriptKey, PrefabValuePayload{ std::optional<ScriptComponent>(originB) },
+            scriptReader));
+        CHECK(script.Target() == targetB);
+    }
+
+    // ---- PendingRetry abort: an old same-kind gesture that cannot finalize
+    // aborts the new Begin (admission short-circuits, no implicit retry, the
+    // pending session stays open and unchanged).
+    {
+        CompositePreviewSession pending;
+        REQUIRE(pending.Begin(f.manager, targetA, PrefabValueKind::LightProperties,
+            lightKey, originA, reader));
+        REQUIRE(pending.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        reg.get<LightComponent>(ha).intensity = 88.0f;
+        const auto rolling = pending.RollingValue();
+
+        // Establish the pending detail.
+        EditorCommandHistory history;
+        unsigned int po = 3;
+        PreviewSessionSlot pslot[1] = {
+            { PreviewSessionKind::Light, &pending, &po, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult r1;
+        REQUIRE_FALSE(ClosePreviewSessionsAndAdmit(f.manager, history, pslot, 1, r1,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(r1.slots[0].outcome.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        CHECK(po == 3);
+
+        // The new Begin on B is rejected: pending short-circuits the admission,
+        // the reducer never runs (slotCount 0) and the pending session is intact.
+        unsigned int po2 = 3;
+        PreviewSessionSlot pslot2[1] = {
+            { PreviewSessionKind::Light, &pending, &po2, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult r2;
+        REQUIRE_FALSE(ClosePreviewSessionsAndAdmit(f.manager, history, pslot2, 1, r2,
+            /*anyRecoveryPending=*/true));
+        CHECK(r2.slotCount == 0);
+        REQUIRE(pending.IsOpen());
+        CHECK(po2 == 3);
+        CHECK(S6CLightEqual(std::get<LightComponent>(pending.RollingValue()),
+            std::get<LightComponent>(rolling)));
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C host-edge, P1 finding 3: reversible editor Delete must admit before it
+// captures the subtree snapshot, so Undo can never resurrect an unrecorded
+// rolling preview value/marker without a history entry.
+TEST_CASE("Phase 8 W3 S6-C: editor Delete admits before snapshot so Undo cannot resurrect")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_delete");
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const LightComponent origin = s.origin;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN: Delete is admitted BEFORE the snapshot, so the preview is
+    // finalized (recorded) and reversible: Undo of the Delete then Undo of the
+    // preview restores the exact v5 origin.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, reader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slot[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slot, 1, admit,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+        REQUIRE(history.CanUndo());
+
+        auto snapshot = f.manager.CaptureSubtreeSnapshot({ root });
+        REQUIRE_FALSE(snapshot.entities.empty());
+        auto cmd = MakeRemoveSubtreesCommand(std::move(snapshot), { root });
+        REQUIRE(cmd);
+        // Host DeleteSelectionCommand executes through history (applies the
+        // removal, then records the structural command).
+        REQUIRE(history.Execute(std::move(cmd), f.manager).success);
+        REQUIRE(static_cast<uint32_t>(f.manager.FindEntityByUuid(root))
+            == static_cast<uint32_t>(entt::null));
+
+        // Undo Delete (no open sessions now): the entity returns with the
+        // FINALIZED preview value, which is itself undoable. The handle is
+        // re-created by the restore, so re-resolve by UUID.
+        REQUIRE(history.Undo(f.manager).success);
+        const auto restoredHandle = f.manager.FindEntityByUuid(root);
+        REQUIRE(static_cast<uint32_t>(restoredHandle)
+            != static_cast<uint32_t>(entt::null));
+        CHECK(S6CLightEqual(reg.get<LightComponent>(restoredHandle), a));
+        REQUIRE(history.CanUndo()); // the preview edit has its own history entry
+
+        // Undo the preview record entry -> origin + legal v5 schema.
+        REQUIRE(history.Undo(f.manager).success);
+        const auto restoredHandle2 = f.manager.FindEntityByUuid(root);
+        REQUIRE(static_cast<uint32_t>(restoredHandle2)
+            != static_cast<uint32_t>(entt::null));
+        CHECK(S6CLightEqual(reg.get<LightComponent>(restoredHandle2), origin));
+        REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+    }
+
+    // ---- RED: WITHOUT admission, the snapshot carries the unrecorded rolling
+    // preview; Delete Undo resurrects `a` but there is no history entry for the
+    // edit, so the user cannot undo it separately.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, reader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+        EditorCommandHistory history;
+        auto snapshot = f.manager.CaptureSubtreeSnapshot({ root });
+        auto cmd = MakeRemoveSubtreesCommand(std::move(snapshot), { root });
+        REQUIRE(cmd);
+        REQUIRE(history.Execute(std::move(cmd), f.manager).success);
+        REQUIRE(history.Undo(f.manager).success);
+        const auto restoredHandle = f.manager.FindEntityByUuid(root);
+        REQUIRE(static_cast<uint32_t>(restoredHandle)
+            != static_cast<uint32_t>(entt::null));
+        // Resurrected rolling preview value with NO history entry for the edit.
+        CHECK(S6CLightEqual(reg.get<LightComponent>(restoredHandle), a));
+        REQUIRE_FALSE(history.CanUndo());
+    }
+
+    std::filesystem::remove_all(s.dir);
+}
+
+// S6-C host-edge, P1 finding 4: Paste validates the clipboard BEFORE admission,
+// so a stale/empty/wrong-resource clipboard is rejected without closing any open
+// preview, mutating history, or drawing UUIDs.
+TEST_CASE("Phase 8 W3 S6-C: paste validates clipboard before admission on stale state")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_stalepaste");
+    auto& scene = f.manager.GetECS();
+    auto& reg = scene.registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const LightComponent origin = s.origin;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN (fixed order): clipboard is validated BEFORE admission, so a
+    // stale clipboard leaves the open healthy preview untouched (no close, no
+    // history) and draws zero UUIDs.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, reader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+        EditorSceneState state;
+        rt2::core::Error err;
+        REQUIRE(state.Copy(f.manager, { root }, err));
+
+        // Make the clipboard stale (resource generation changed).
+        scene.textures.push_back(SceneTexture{});
+        scene.textures.back().ref.path = "texture-stale-paste";
+        REQUIRE(f.manager.CompactMeshRegistry());
+
+        ScriptedUuidProvider hostile;
+        f.manager.SetUuidProvider(&hostile);
+
+        // The host calls ValidateClipboardPaste BEFORE admission: rejected.
+        const auto validation = state.ValidateClipboardPaste(f.manager);
+        REQUIRE_FALSE(validation.success);
+        CHECK(validation.error.code == rt2::core::Error::ClipboardStale);
+
+        // Because the validation runs first, admission never ran: the healthy
+        // preview was NOT finalized/recorded, no history, no UUID draws.
+        REQUIRE(light.IsOpen());
+        EditorCommandHistory history;
+        CHECK_FALSE(history.CanUndo());
+        CHECK(hostile.cursor == 0);
+        // Restore the fixture's deterministic provider before any later UUID draw
+        // (the RED block instantiates a fresh prefab member).
+        f.manager.SetUuidProvider(&f.ids);
+    }
+
+    // ---- RED (old buggy order): admission runs BEFORE stale validation, so the
+    // healthy preview is finalized and recorded even though the paste is rejected.
+    {
+        // A fresh member so the RED scenario is independent of the GREEN one.
+        const auto [h2, c2] = f.MakeInstance(s.dir);
+        auto& reg2 = f.manager.GetECS().registry;
+        reg2.emplace_or_replace<LightComponent>(h2, LightComponent{});
+        const UUID target2 = H6B(reg2, h2);
+        const LightComponent origin2 = reg2.get<LightComponent>(h2);
+
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, target2, PrefabValueKind::LightProperties,
+            lightKey, origin2, reader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+        EditorSceneState state;
+        rt2::core::Error err;
+        REQUIRE(state.Copy(f.manager, { target2 }, err));
+        scene.textures.push_back(SceneTexture{});
+        scene.textures.back().ref.path = "texture-stale-paste-2";
+        REQUIRE(f.manager.CompactMeshRegistry());
+
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slot[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        // Buggy order: admission finalizes the preview first.
+        REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slot, 1, admit,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+        // ... then the stale clipboard is rejected, but the damage is done.
+        const auto validation = state.ValidateClipboardPaste(f.manager);
+        REQUIRE_FALSE(validation.success);
+        REQUIRE(history.CanUndo()); // an entry exists despite the rejected paste
+    }
+
+    std::filesystem::remove_all(s.dir);
+}

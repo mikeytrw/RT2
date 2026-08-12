@@ -412,6 +412,14 @@ private:
 	// sessions are finalized in physical gesture order (S6-C closure-ordering
 	// P1 finding 2).
 	bool AnyPreviewSessionOpen() const;
+	// Shared Begin-admission predicate (host-edge P1 finding 2): whether a new
+	// live-preview gesture may begin on `target` for `kind`. Returns false when
+	// recovery is pending (no implicit retry), when that kind's session already
+	// owns `target` (the ongoing gesture), or when shared admission cannot
+	// finalize an other-open (different-kind or same-kind-different-target)
+	// session. On true the caller may Begin; the prior gesture is already
+	// finalized in physical order.
+	bool CanBeginPreview(PreviewSessionKind kind, const rt2::core::UUID& target);
 	// The first kind with a pending (open, unresolved) session, or nullptr.
 	const PreviewRecoveryState* FirstPendingRecovery() const;
 	// Before-override snapshot captured when the material-properties session

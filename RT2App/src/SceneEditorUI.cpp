@@ -100,6 +100,35 @@ bool SceneEditorUI::AnyPreviewSessionOpen() const
 		|| m_MotionVelocitySession.IsOpen() || m_ScriptFieldSession.IsOpen();
 }
 
+bool SceneEditorUI::CanBeginPreview(PreviewSessionKind kind,
+	const rt2::core::UUID& target)
+{
+	if (!m_Editable) return false;
+	// Quarantine + no implicit retry: while any recovery is pending no new
+	// preview may begin; only the explicit Retry re-runs a pending close.
+	if (AnyPreviewRecoveryPending()) return false;
+
+	CompositePreviewSession* session = nullptr;
+	switch (kind)
+	{
+	case PreviewSessionKind::Light: session = &m_LightSession; break;
+	case PreviewSessionKind::Camera: session = &m_CameraSession; break;
+	case PreviewSessionKind::Motion: session = &m_MotionVelocitySession; break;
+	case PreviewSessionKind::Script: session = &m_ScriptFieldSession; break;
+	}
+	if (!session) return false;
+
+	// If this kind's session already owns THIS target, it is the ongoing
+	// gesture — do not re-begin it.
+	if (session->IsOpen() && session->Target() == target) return false;
+
+	// At most one preview: finalize any other-open session (different kind, or
+	// the same kind on a DIFFERENT target left open by a selection transition)
+	// through shared admission, and only then begin.
+	if (AnyPreviewSessionOpen() && !AdmitAuthoringMutation()) return false;
+	return true;
+}
+
 const SceneEditorUI::PreviewRecoveryState* SceneEditorUI::FirstPendingRecovery() const
 {
 	for (const auto& state : m_PreviewRecoveryByKind)
@@ -233,18 +262,27 @@ bool SceneEditorUI::CloseAllPreviewSessionsForAction(bool finalize)
 	// discrete/global authoring admission) and clears owner IDs for the ones
 	// that close (S6-C final closure P1 finding 2 — wired here, not
 	// duplicated). The per-slot outcomes carry the owner/error/sync facts.
+	//
+	// Host-edge P1 finding 1: if recovery is ALREADY pending, ordinary admission
+	// and Undo/Redo short-circuit immediately WITHOUT invoking the reducer — no
+	// implicit close retry, no idle re-run, no recovery-error overwrite, no
+	// scene sync, no UUID draw, no mutation. Only the explicit Retry action (and
+	// proven replacement/removal handling) re-runs a pending close.
+	if (!m_CommandHistory) return false;
 	PreviewSessionSlot slots[4] = {
 		{ PreviewSessionKind::Light, &m_LightSession, &m_LightSessionOwningWidgetId, finalize },
 		{ PreviewSessionKind::Camera, &m_CameraSession, &m_CameraSessionOwningWidgetId, finalize },
 		{ PreviewSessionKind::Motion, &m_MotionVelocitySession, &m_MotionVelocitySessionOwningWidgetId, finalize },
 		{ PreviewSessionKind::Script, &m_ScriptFieldSession, &m_ScriptFieldSessionOwningWidgetId, finalize },
 	};
-	if (!m_CommandHistory) return false;
 	PreviewSessionsBeforeActionResult closeResult;
-	ClosePreviewSessionsBeforeAction(*m_SceneMgr, *m_CommandHistory, slots, 4, closeResult);
+	const bool admitted = ClosePreviewSessionsAndAdmit(*m_SceneMgr,
+		*m_CommandHistory, slots, 4, closeResult, AnyPreviewRecoveryPending());
 
 	// Reflect per-kind recovery from the reducer outcomes, then route scene
-	// sync for every close that actually mutated the scene.
+	// sync for every close that actually mutated the scene. In the pending
+	// short-circuit case (host-edge P1 finding 1) the reducer never ran, so
+	// closeResult is empty and these loops are no-ops.
 	for (std::size_t i = 0; i < closeResult.slotCount; ++i)
 	{
 		const PreviewSessionCloseSlotOutcome& slotOutcome = closeResult.slots[i];
@@ -262,7 +300,7 @@ bool SceneEditorUI::CloseAllPreviewSessionsForAction(bool finalize)
 		if (slotOutcome.sessionWasOpen && slotOutcome.outcome.needsSyncApply)
 			ApplyCloseOutcome(slotOutcome.outcome);
 	}
-	return closeResult.allClosed;
+	return admitted;
 }
 
 EditorMutationResult SceneEditorUI::SubmitAuthoringCommand(
@@ -527,6 +565,12 @@ void SceneEditorUI::CreateLightCommand(const char* name, LightType type,
 void SceneEditorUI::DeleteSelectionCommand()
 {
 	if (!m_SceneMgr || !m_CommandHistory) return;
+	// Reversible editor Delete must admit (finalize all open preview sessions)
+	// BEFORE capturing the subtree snapshot or removing anything, otherwise the
+	// snapshot would carry an unrecorded rolling preview value/marker that Undo
+	// would resurrect without a history entry. A PendingRetry silently aborts
+	// (no implicit retry, no snapshot, no removal).
+	if (!AdmitAuthoringMutation()) return;
 	const auto ordered = m_State.Selection().Ordered();
 	if (ordered.empty()) return;
 	auto snapshot = m_SceneMgr->CaptureSubtreeSnapshot(ordered);
@@ -568,15 +612,26 @@ void SceneEditorUI::DuplicateSelectionCommand()
 void SceneEditorUI::PasteCommand(const std::optional<rt2::core::UUID>& parent)
 {
 	if (!m_SceneMgr || !m_CommandHistory) return;
+	// Validate the clipboard FIRST (non-mutating preflight): a stale / empty /
+	// wrong-document / wrong-resource clipboard must be rejected without closing
+	// any open preview, mutating history, or drawing UUIDs (host-edge P1 finding
+	// 4). Only a valid clipboard then runs shared admission (which finalizes open
+	// previews), followed by the guarded Paste preparation.
+	const auto validation = m_State.ValidateClipboardPaste(*m_SceneMgr);
+	if (!validation.success)
+	{
+		ApplyMutation(validation);
+		return;
+	}
 	// Pasted prefab members carry override vectors that participate in schema
 	// state, so admission must close every open preview BEFORE any UUID
-	// reservation or destination mutation; on a pending slot this aborts with
-	// zero UUID draws, entity creation, history, owner, or recovery-error change
-	// (S6-C closure-ordering P1 finding 1).
+	// reservation or destination mutation; on a PendingRetry slot this aborts
+	// with zero UUID draws, entity creation, history, owner, or recovery-error
+	// change (S6-C closure-ordering P1 finding 1).
 	if (!AdmitAuthoringMutation()) return;
-	// All clipboard-generation validation lives in EditorSceneState. The UI
-	// never duplicates generation checks: a stale clipboard is surfaced as a
-	// mutation error BEFORE any snapshot, command, or history mutation.
+	// All clipboard-generation validation lives in EditorSceneState; the shared
+	// guard above already proved the clipboard is fresh, so the preparation below
+	// cannot reject on staleness. The UI never duplicates generation checks.
 	auto paste = m_State.PasteWithUuidsForCommand(*m_SceneMgr, parent);
 	if (!paste.mutation.success)
 	{
@@ -1189,9 +1244,7 @@ void SceneEditorUI::RenderInspector()
 				bool velChanged = false;
 				if (ImGui::DragFloat3("Linear Velocity", &vel[0], 0.1f))
 					velChanged = true;
-				if (ImGui::IsItemActivated() && !m_MotionVelocitySession.IsOpen() && m_Editable
-					&& !AnyPreviewRecoveryPending()
-					&& (!AnyPreviewSessionOpen() || AdmitAuthoringMutation()))
+				if (ImGui::IsItemActivated() && CanBeginPreview(PreviewSessionKind::Motion, targetUuid))
 				{
 					if (m_MotionVelocitySession.Begin(*m_SceneMgr, targetUuid,
 						PrefabValueKind::MotionState,
@@ -1780,14 +1833,10 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 		const unsigned int widgetId = ImGui::GetID(label);
 		if (ImGui::IsItemActivated())
 		{
-			// Quarantine: while any unresolved recovery is pending, no new
-			// preview may begin (final-closure P1 finding 2); the pending
-			// session must be retried/reconciled/replaced/removed first. At
-			// most one S6-C preview may be open: before beginning on a
-			// different kind/target, all existing sessions are finalized
-			// through shared admission (closure-ordering P1 finding 2).
-			if (!m_LightSession.IsOpen() && m_Editable && !AnyPreviewRecoveryPending()
-				&& (!AnyPreviewSessionOpen() || AdmitAuthoringMutation()))
+			// Shared Begin admission: quarantine while recovery is pending (no
+			// implicit retry), finalize any other-open session (different kind,
+			// or same-kind on a different target) in physical order, then begin.
+			if (CanBeginPreview(PreviewSessionKind::Light, targetUuid))
 			{
 				// Capture the immutable origin (value + override-set
 				// membership + document schema) BEFORE any preview frame of
@@ -1954,9 +2003,9 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 		if (ImGui::IsItemActivated())
 		{
 			// Quarantine: no new preview while any recovery is pending; at most one
-			// S6-C preview may be open (finalize existing sessions first).
-			if (!m_CameraSession.IsOpen() && m_Editable && !AnyPreviewRecoveryPending()
-				&& (!AnyPreviewSessionOpen() || AdmitAuthoringMutation()))
+			// S6-C preview may be open (shared Begin admission finalizes the prior
+			// gesture first).
+			if (CanBeginPreview(PreviewSessionKind::Camera, targetUuid))
 			{
 				if (m_CameraSession.Begin(*m_SceneMgr, targetUuid,
 					PrefabValueKind::CameraProperties,
@@ -2406,10 +2455,9 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 			if (ImGui::IsItemActivated())
 			{
 				// Quarantine: no new preview while any recovery is pending; at most one
-				// S6-C preview may be open (finalize existing sessions first).
-				if (!m_ScriptFieldSession.IsOpen() && m_Editable
-					&& !AnyPreviewRecoveryPending()
-					&& (!AnyPreviewSessionOpen() || AdmitAuthoringMutation()))
+				// S6-C preview may be open (shared Begin admission finalizes the prior
+				// gesture first).
+				if (CanBeginPreview(PreviewSessionKind::Script, targetUuid))
 				{
 					if (m_ScriptFieldSession.Begin(*m_SceneMgr, targetUuid,
 						PrefabValueKind::ScriptState,
