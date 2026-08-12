@@ -9593,3 +9593,215 @@ TEST_CASE("Phase 8 W3 S6-C: finalize refutes components removed out of band and 
 
     std::filesystem::remove_all(dir);
 }
+
+// S6-C final-verdict, P1 finding 1: a preview frame may be published only when
+// the changed widget owns the open session on the same target and the session
+// is not pending. While a session is PendingRetry the gesture is immutable:
+// same-widget or different-widget changes must not absorb into it (no value,
+// rolling-source, owner, or error change). The decision is CPU-linkable via
+// PreviewPublishAllowed so this contract is provable without ImGui.
+TEST_CASE("Phase 8 W3 S6-C: publish gate freezes pending and non-owning-widget frames")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_publishgate");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const UUID child = H6B(reg, childHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const LightComponent b{ glm::vec3(0.0f, 1.0f, 0.0f), 3.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    CompositePreviewSession s;
+    REQUIRE(s.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    REQUIRE(s.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    const auto rollingBefore = s.RollingValue();
+    const unsigned int owning = 100;
+    const unsigned int otherWidget = 101;
+
+    // The changed widget must own the session, on the same target.
+    REQUIRE(PreviewPublishAllowed(s, root, owning, owning, /*recoveryPending=*/false));
+    // Frozen while this session's recovery is pending.
+    CHECK_FALSE(PreviewPublishAllowed(s, root, owning, owning, /*recoveryPending=*/true));
+    // Frozen for a different widget on the same target, even when healthy.
+    CHECK_FALSE(PreviewPublishAllowed(s, root, otherWidget, owning, false));
+    // Frozen for a different target.
+    CHECK_FALSE(PreviewPublishAllowed(s, child, owning, owning, false));
+
+    // End-to-end: a host-style publish circuit with a non-owning widget or a
+    // pending session never reaches Preview, so the gesture's rolling source,
+    // effectiveness, and error are untouched.
+    if (PreviewPublishAllowed(s, root, otherWidget, owning, false))
+        s.Preview(f.manager, PrefabValuePayload{ b });
+    if (PreviewPublishAllowed(s, root, owning, owning, true))
+        s.Preview(f.manager, PrefabValuePayload{ b });
+    CHECK(S6CLightEqual(std::get<LightComponent>(s.RollingValue()),
+        std::get<LightComponent>(rollingBefore)));
+
+    // An owning-widget publish on a healthy session DOES advance the rolling
+    // source (the gate is not a blanket lock).
+    if (PreviewPublishAllowed(s, root, owning, owning, false))
+        s.Preview(f.manager, PrefabValuePayload{ b });
+    CHECK(S6CLightEqual(std::get<LightComponent>(s.RollingValue()), b));
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C final-verdict, P1 finding 2: a cross-component history write (Name /
+// Visibility) must never record ahead of an open or pending preview, or the
+// schema-aware Undo ordering breaks. This exercises the CPU-linkable admission
+// seam (the reducer in finalize mode) that SceneEditorUI::AdmitAuthoringMutation
+// calls, on a v5 document where the Light preview promotes v5 -> v6.
+TEST_CASE("Phase 8 W3 S6-C: cross-component admission orders Name after an open Light preview")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_xcomponent");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    const std::string nameBefore = f.manager.GetEntityName(SceneManager::EntityId{ rootHandle });
+    const std::string nameAfter = nameBefore + "X";
+    // A v5 document, one schema bump below the serializer's current version, so
+    // the first override marker must promote it.
+    f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+    const uint32_t v5 = 5;
+
+    // ---- GREEN: the open Light preview is finalized BEFORE the Name command
+    // (admission), giving chronological history [light, name] with exact undo.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slots[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, slots, 1, admit);
+        REQUIRE(admit.allClosed);
+        REQUIRE(admit.slots[0].outcome.result == PreviewSessionCloseOutcome::Result::Closed);
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+        REQUIRE(history.CanUndo());
+
+        // The admitted Name command now records AFTER the light.
+        REQUIRE(history.Execute(MakeSetNameCommandIfEffective(root, nameBefore, nameAfter),
+            f.manager).effective);
+
+        // Undo chronological order: Name first (light value untouched), then
+        // Light (exact origin value + marker + v5 schema downgrade).
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(f.manager.GetEntityName(SceneManager::EntityId{ rootHandle }) == nameBefore);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), a));
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+        REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == v5);
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    // ---- RED: WITHOUT admission the Name command records FIRST, and the Light
+    // preview is finalized after it. Undo then pops Light first and its attempt
+    // to restore the exact v5 origin is rejected while the Name override remains
+    // — history poisoned.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+        REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+
+        EditorCommandHistory history;
+        // Bad order: the Name command executes (records) while the Light preview
+        // is still open and unrecorded.
+        REQUIRE(history.Execute(MakeSetNameCommandIfEffective(root, nameBefore, nameAfter),
+            f.manager).effective);
+        // The Light preview is finalized only AFTERWARD -> [name, light].
+        REQUIRE(FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, light).recorded);
+
+        // Undo pops Light (the top) first; its downgrade to v5 is rejected while
+        // the Name override remains, so the replay fails and history clears.
+        const auto badUndo = history.Undo(f.manager);
+        REQUIRE_FALSE(badUndo.success);
+        const bool downgradeRejected =
+            badUndo.error.detail.find("downgrade") != std::string::npos
+            || badUndo.error.detail.find("override") != std::string::npos;
+        CHECK(downgradeRejected);
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C final-verdict, P1 finding 2 pending variant: while the Light preview is
+// PendingRetry (cannot finalize), the admission seam rejects a later Name
+// command with the pending session's owner/error unchanged and no history entry.
+TEST_CASE("Phase 8 W3 S6-C: admission rejects a Name command while a preview is PendingRetry")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_pendingadmit");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    const std::string nameBefore = f.manager.GetEntityName(SceneManager::EntityId{ rootHandle });
+
+    CompositePreviewSession light;
+    REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, lightReader));
+    REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    const auto rolling = light.RollingValue();
+    // Out-of-band value change strands the finalize.
+    reg.get<LightComponent>(rootHandle).intensity = 99.0f;
+
+    EditorCommandHistory history;
+    unsigned int owner = 7;
+    PreviewSessionSlot slots[1] = {
+        { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+    };
+    PreviewSessionsBeforeActionResult admit;
+    ClosePreviewSessionsBeforeAction(f.manager, history, slots, 1, admit);
+    REQUIRE_FALSE(admit.allClosed);
+    REQUIRE(admit.slots[0].sessionWasOpen);
+    REQUIRE(admit.slots[0].outcome.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    CHECK_FALSE(admit.slots[0].outcome.lastError.error.detail.empty());
+    // The pending session's identity is unchanged (owner preserved, open).
+    CHECK(owner == 7);
+    REQUIRE(light.IsOpen());
+    CHECK(S6CLightEqual(std::get<LightComponent>(light.RollingValue()),
+        std::get<LightComponent>(rolling)));
+
+    // Admission returned false: the host ABORTS the later Name command, so no
+    // command records ahead of the pending preview and history stays empty.
+    CHECK_FALSE(history.CanUndo());
+
+    std::filesystem::remove_all(dir);
+}

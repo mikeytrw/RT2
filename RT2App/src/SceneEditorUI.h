@@ -242,6 +242,22 @@ private:
 	// session stays pending, leaving recovery surfaced and never orphaning an
 	// applied preview (S6-C re-review, P1 finding 2).
 	bool CloseAllPreviewSessionsForGlobalAction();
+	// Shared implementation used by both Undo/Redo abandonment (finalize=false)
+	// and discrete/global authoring admission (finalize=true): close every open
+	// preview session through the reducer and return whether all closed.
+	bool CloseAllPreviewSessionsForAction(bool finalize);
+	// Shared command-admission seam (S6-C final-verdict P1 finding 2): close
+	// every open live-preview session (finalize/record) BEFORE any discrete or
+	// global authoring/history mutation so no command can record ahead of an
+	// open preview (chronological history, legal schema transitions). Returns
+	// true only when everything closed; on false the requested mutation must be
+	// ABORTED with the pending session's recovery owner/error unchanged.
+	bool AdmitAuthoringMutation();
+	// Submit a discrete/global authoring command through the shared admission
+	// seam and route its result through ApplyMutation. Returns the (possibly
+	// rejected) mutation result.
+	EditorMutationResult SubmitAuthoringCommand(
+		std::unique_ptr<IEditorCommand> cmd, bool selectAffected = false);
 	// Render the pending-recovery banner (a closed-but-failed session awaiting
 	// retry or discard).
 	void RenderPreviewRecoveryBar();

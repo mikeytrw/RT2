@@ -212,16 +212,28 @@ void SceneEditorUI::Redo()
 
 bool SceneEditorUI::CloseAllPreviewSessionsForGlobalAction()
 {
+	return CloseAllPreviewSessionsForAction(/*finalize=*/false);
+}
+
+bool SceneEditorUI::AdmitAuthoringMutation()
+{
+	return CloseAllPreviewSessionsForAction(/*finalize=*/true);
+}
+
+bool SceneEditorUI::CloseAllPreviewSessionsForAction(bool finalize)
+{
 	// The product decision seam: the CPU-tested global-action reducer closes
-	// every open preview session (abandon/restore) and clears owner IDs for the
-	// ones that close (S6-C final closure P1 finding 2 — wired here, not
+	// every open preview session (abandon/restore for Undo/Redo, record for
+	// discrete/global authoring admission) and clears owner IDs for the ones
+	// that close (S6-C final closure P1 finding 2 — wired here, not
 	// duplicated). The per-slot outcomes carry the owner/error/sync facts.
 	PreviewSessionSlot slots[4] = {
-		{ PreviewSessionKind::Light, &m_LightSession, &m_LightSessionOwningWidgetId, false },
-		{ PreviewSessionKind::Camera, &m_CameraSession, &m_CameraSessionOwningWidgetId, false },
-		{ PreviewSessionKind::Motion, &m_MotionVelocitySession, &m_MotionVelocitySessionOwningWidgetId, false },
-		{ PreviewSessionKind::Script, &m_ScriptFieldSession, &m_ScriptFieldSessionOwningWidgetId, false },
+		{ PreviewSessionKind::Light, &m_LightSession, &m_LightSessionOwningWidgetId, finalize },
+		{ PreviewSessionKind::Camera, &m_CameraSession, &m_CameraSessionOwningWidgetId, finalize },
+		{ PreviewSessionKind::Motion, &m_MotionVelocitySession, &m_MotionVelocitySessionOwningWidgetId, finalize },
+		{ PreviewSessionKind::Script, &m_ScriptFieldSession, &m_ScriptFieldSessionOwningWidgetId, finalize },
 	};
+	if (!m_CommandHistory) return false;
 	PreviewSessionsBeforeActionResult closeResult;
 	ClosePreviewSessionsBeforeAction(*m_SceneMgr, *m_CommandHistory, slots, 4, closeResult);
 
@@ -245,6 +257,23 @@ bool SceneEditorUI::CloseAllPreviewSessionsForGlobalAction()
 			ApplyCloseOutcome(slotOutcome.outcome);
 	}
 	return closeResult.allClosed;
+}
+
+EditorMutationResult SceneEditorUI::SubmitAuthoringCommand(
+	std::unique_ptr<IEditorCommand> cmd, bool selectAffected)
+{
+	// Shared command-admission seam (S6-C final-verdict P1 finding 2): close
+	// every open live-preview session (finalize) first so no discrete/global
+	// authoring command can record ahead of an applied preview. On a pending
+	// slot the command is rejected with the recovery owner/error unchanged.
+	if (!AdmitAuthoringMutation())
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidRuntimeState, "",
+			"a live-preview session is pending; resolve its recovery before editing");
+	if (!cmd) return EditorMutationResult{};
+	const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr,
+		std::move(cmd));
+	ApplyMutation(result, selectAffected);
+	return result;
 }
 
 void SceneEditorUI::SetEditable(bool editable)
@@ -326,13 +355,15 @@ PreviewSessionCloseOutcome SceneEditorUI::ClosePreviewSession(
 bool SceneEditorUI::ClosePreviewBeforeDiscrete(PreviewSessionKind kind,
 	CompositePreviewSession& session, unsigned int& owningWidgetId)
 {
-	if (!session.IsOpen()) return true;
-	const auto outcome = ClosePreviewSession(kind, session, owningWidgetId,
-		/*finalize=*/true);
-	// Abort the discrete action when the live-preview close could not be
-	// completed (S6-C fixup, P1 finding 3): a discrete command issued against
-	// a still-stranded session would make its compensation stale.
-	return outcome.result == PreviewSessionCloseOutcome::Result::Closed;
+	// Admission for a discrete command that touches this component: close ALL
+	// open live-preview sessions (finalize/record) through the shared seam so a
+	// cross-component preview can never sit ahead of this command in history
+	// (S6-C fixup P1 finding 3 + final-verdict P1 finding 2). Abort the
+	// discrete action on any PendingRetry.
+	(void)kind;
+	(void)session;
+	(void)owningWidgetId;
+	return AdmitAuthoringMutation();
 }
 
 void SceneEditorUI::FinalizeOpenPreviewSessions()
@@ -396,9 +427,9 @@ void SceneEditorUI::HideShowSelectionCommand(bool hide)
 
 	auto cmd = MakeSetVisibilityCommandIfEffective(beforeStates, afterStates);
 	if (!cmd) return;
-	// Execute through history so it is recorded and routed.
-	auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
-	ApplyMutation(result);
+	// Shared admission: no visibility command can record ahead of an open or
+	// pending preview (final-verdict P1 finding 2).
+	SubmitAuthoringCommand(std::move(cmd));
 }
 
 // ============================================================================
@@ -577,8 +608,8 @@ void SceneEditorUI::ReparentCommand(const std::vector<rt2::core::UUID>& sources,
 	// the stored before-local TRS (handled by ReparentCommand::Undo).
 	auto cmd = MakeReparentCommandIfEffective(beforeEdits, afterEdits, ReparentMode::PreserveWorld);
 	if (!cmd) return;
-	auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
-	ApplyMutation(result);
+	// Shared admission: no reparent can record ahead of an open/pending preview.
+	SubmitAuthoringCommand(std::move(cmd));
 }
 
 void SceneEditorUI::SingleEntityHideShowCommand(const rt2::core::UUID& entity, bool hide)
@@ -592,8 +623,8 @@ void SceneEditorUI::SingleEntityHideShowCommand(const rt2::core::UUID& entity, b
 	std::vector<std::pair<rt2::core::UUID, bool>> afterStates = { {entity, hide} };
 	auto cmd = MakeSetVisibilityCommandIfEffective(beforeStates, afterStates);
 	if (!cmd) return;
-	auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
-	ApplyMutation(result);
+	// Shared admission: no visibility command can record ahead of a preview.
+	SubmitAuthoringCommand(std::move(cmd));
 }
 
 bool SceneEditorUI::MatchesSearch(SceneManager::EntityId entity) const
@@ -1103,8 +1134,9 @@ void SceneEditorUI::RenderInspector()
 			auto cmd = MakeSetNameCommandIfEffective(targetUuid, name, std::string(nameBuf));
 			if (cmd)
 			{
-				const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
-				ApplyMutation(result);
+				// Shared admission: no name command can record ahead of an open
+				// or pending preview (final-verdict P1 finding 2).
+				SubmitAuthoringCommand(std::move(cmd));
 			}
 		}
 	}
@@ -1170,10 +1202,14 @@ void SceneEditorUI::RenderInspector()
 				ImGui::EndDisabled();
 
 				// S6-C live preview through the composite — no direct mutation
-				// of `mc`; the working copy carries the edited velocity. Target
-				// gate: a pending session never receives another entity's copy.
-				if (velChanged && m_MotionVelocitySession.IsOpen()
-					&& m_MotionVelocitySession.Target() == targetUuid)
+				// of `mc`; the working copy carries the edited velocity.
+				// Publish gate: the changed widget must own the session (trivial
+				// for the single motion field) and the frame is frozen while the
+				// motion session's recovery is pending.
+				if (velChanged && PreviewPublishAllowed(m_MotionVelocitySession,
+					targetUuid, ImGui::GetID("Linear Velocity"),
+					m_MotionVelocitySessionOwningWidgetId,
+					PendingRecoveryFor(PreviewSessionKind::Motion).pending))
 				{
 					MotionComponent target = mc;
 					target.linearVelocity = vel;
@@ -1574,8 +1610,9 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 			beforeOverride, staged.value.override);
 		if (cmd)
 		{
-			const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
-			ApplyMutation(result);
+			// Shared admission: no material-index command can record ahead of a
+			// preview.
+			SubmitAuthoringCommand(std::move(cmd));
 		}
 	}
 
@@ -1676,8 +1713,9 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 						staged.value.afterOverrides);
 					if (cmd)
 					{
-						const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
-						ApplyMutation(result);
+						// Shared admission: no material edit can record ahead of
+						// a preview.
+						SubmitAuthoringCommand(std::move(cmd));
 					}
 				}
 			}
@@ -1708,6 +1746,7 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 		beforeLight = *lc;
 
 	bool changed = false;
+	unsigned int changedWidgetId = 0;
 	bool cancelPending = false;
 	ImGui::PushID("Light");
 	ImGui::BeginDisabled(!m_Editable);
@@ -1718,7 +1757,7 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 
 	auto drawLightWidget = [&](const char* label, auto drawFn) -> unsigned int {
 		bool w = drawFn();
-		if (w) changed = true;
+		if (w) { changed = true; changedWidgetId = ImGui::GetID(label); }
 		const unsigned int widgetId = ImGui::GetID(label);
 		if (ImGui::IsItemActivated())
 		{
@@ -1832,14 +1871,16 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 	ImGui::EndDisabled();
 	ImGui::PopID();
 
-	if (changed && m_LightSession.IsOpen() && m_LightSession.Target() == targetUuid)
+	if (changed && PreviewPublishAllowed(m_LightSession, targetUuid, changedWidgetId,
+		m_LightSessionOwningWidgetId, PendingRecoveryFor(PreviewSessionKind::Light).pending))
 	{
 		// S6-C live preview: stage the rolling committed source -> the edited
 		// working copy and commit through the atomic composite (real result,
 		// marker + schema handled there), instead of the old direct
-		// SetLightComponent + fabricated RecordLightEdit. The target gate keeps
-		// a pending session on one entity from receiving another entity's
-		// working copy (final-closure P1 finding 2).
+		// SetLightComponent + fabricated RecordLightEdit. The publish gate
+		// requires the changed widget to own the open session and freezes the
+		// frame while this session's recovery is pending (final-verdict P1
+		// finding 1).
 		ApplyMutation(m_LightSession.Preview(*m_SceneMgr, PrefabValuePayload{ edited }));
 	}
 
@@ -1878,6 +1919,7 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 	ImGui::BeginDisabled(!m_Editable);
 
 	bool cancelPending = false;
+	unsigned int changedWidgetId = 0;
 	unsigned int owningWidgetId = m_CameraSession.IsOpen()
 		? m_CameraSessionOwningWidgetId : 0;
 	unsigned int pendingCloseWidgetId = 0;
@@ -1885,6 +1927,7 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 	auto drawCameraWidget = [&](const char* label, auto drawFn) -> unsigned int {
 		bool w = drawFn();
 		const unsigned int widgetId = ImGui::GetID(label);
+		if (w) changedWidgetId = widgetId;
 		if (ImGui::IsItemActivated())
 		{
 			// Quarantine: no new preview while any recovery is pending.
@@ -1944,11 +1987,13 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 	{
 		changed = true;
 	}
-	if (changed && m_CameraSession.IsOpen() && m_CameraSession.Target() == targetUuid)
+	if (changed && PreviewPublishAllowed(m_CameraSession, targetUuid, changedWidgetId,
+		m_CameraSessionOwningWidgetId, PendingRecoveryFor(PreviewSessionKind::Camera).pending))
 	{
 		// S6-C live preview through the atomic composite (the working copy is
 		// the full live camera with the edited FOV/aperture/focusDistance).
-		// Target gate: a pending session never receives another entity's copy.
+		// Publish gate: changed widget must own the session; frozen while the
+		// camera session's recovery is pending.
 		CameraComponent editedCamera = *cam;
 		editedCamera.verticalFOV = verticalFOV;
 		editedCamera.aperture = aperture;
@@ -2375,12 +2420,15 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 				// Continuous widgets (Int/Float/Vec3/Color) publish a live
 				// per-frame preview through the composite session (immutable
 				// origin, rolling committed source, real result) and are
-				// recorded once at session close (S6-C). Target gate: a pending
-				// session never receives another entity's working copy.
+				// recorded once at session close (S6-C). Publish gate: the
+				// changed field widget must own the session, and the frame is
+				// frozen while the script session's recovery is pending
+				// (final-verdict P1 finding 1).
 				auto target = *scriptState;
 				target.fieldValues[desc.name] = display;
-				if (m_ScriptFieldSession.IsOpen()
-					&& m_ScriptFieldSession.Target() == targetUuid)
+				if (PreviewPublishAllowed(m_ScriptFieldSession, targetUuid,
+					ImGui::GetID("##val"), m_ScriptFieldSessionOwningWidgetId,
+					PendingRecoveryFor(PreviewSessionKind::Script).pending))
 				{
 					applied = m_ScriptFieldSession.Preview(*m_SceneMgr,
 						PrefabValuePayload{ std::optional<ScriptComponent>(target) });

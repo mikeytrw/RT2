@@ -113,6 +113,26 @@ struct PreviewSessionSlot
 	bool finalize = false;
 };
 
+// CPU-linkable publish-admission decision (S6-C final-verdict P1 finding 1):
+// a live-preview FRAME may be published only when the session is open, the
+// changed widget is the widget that OPENED the session, the target matches the
+// session target, and the session's recovery is not pending. While any session
+// of this kind is PendingRetry the frame is frozen — an unresolved gesture must
+// be immutable except for Retry/Reconcile or a proven replacement/removal, and
+// a same-target different-widget change must not absorb into the pending
+// session. SceneEditorUI gates every publish block with this function so the
+// freeze contract is CPU-testable without ImGui.
+inline bool PreviewPublishAllowed(const CompositePreviewSession& session,
+	const rt2::core::UUID& target, unsigned int changedWidgetId,
+	unsigned int owningWidgetId, bool recoveryPending)
+{
+	if (!session.IsOpen()) return false;
+	if (session.Target() != target) return false;
+	if (changedWidgetId != owningWidgetId) return false;
+	if (recoveryPending) return false;
+	return true;
+}
+
 // Per-slot outcome for the global-action reducer.
 struct PreviewSessionCloseSlotOutcome
 {
