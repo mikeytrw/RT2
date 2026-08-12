@@ -406,6 +406,12 @@ private:
 		const std::string& detail);
 	void ClearPendingRecovery(PreviewSessionKind kind);
 	bool AnyPreviewRecoveryPending() const;
+	// True when at least one of the four live-preview sessions is open (any
+	// kind). Used with AdmitAuthoringMutation to enforce at most one open S6-C
+	// preview: before a new Begin on a different kind/target, all existing
+	// sessions are finalized in physical gesture order (S6-C closure-ordering
+	// P1 finding 2).
+	bool AnyPreviewSessionOpen() const;
 	// The first kind with a pending (open, unresolved) session, or nullptr.
 	const PreviewRecoveryState* FirstPendingRecovery() const;
 	// Before-override snapshot captured when the material-properties session

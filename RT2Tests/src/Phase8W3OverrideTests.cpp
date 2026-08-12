@@ -37,8 +37,8 @@
 using namespace rt2::core;
 
 // ============================================================================
-// Phase 8 W3, S1 — the prefab component classification table
-// (implementation spec, docs/game-engine-development-plan.md "Phase 8 W3 —
+// Phase 8 W3, S1 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the prefab component classification table
+// (implementation spec, docs/game-engine-development-plan.md "Phase 8 W3 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 // overrides", D3/D4 and Work step S1).
 //
 // S1 is a standalone header (RT2App/src/PrefabComponentKey.h) plus these
@@ -87,7 +87,7 @@ std::size_t ForEachTableAgreement(std::size_t& mismatches)
 
 
 // ============================================================================
-// Phase 8 W3, S2 — the override field, the scene codec at v6, and the
+// Phase 8 W3, S2 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the override field, the scene codec at v6, and the
 // metadata.schemaVersion upgrade rule (W3-D2/D6, Work step S2).
 //
 // S2 is the data model + codec half of overrides, with no marking API yet
@@ -112,7 +112,7 @@ std::size_t ForEachTableAgreement(std::size_t& mismatches)
 // key in kPrefabTable points into static constexpr storage, so keys obtained
 // from FindComponentByWire / PrefabComponentKeyFor<T> are safe to store
 // indefinitely. The override vectors are therefore ONLY ever populated with
-// table-resolved keys — never with a key constructed from a transient parser
+// table-resolved keys ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â never with a key constructed from a transient parser
 // buffer (which would dangle once the buffer dies, very likely passing every
 // test before crashing much later in an unrelated place). Tests here set the
 // vectors directly (S2 has no marking API) but always from PrefabComponentKeyFor
@@ -240,7 +240,7 @@ PrefabComponentKey S2Key(const char* wire)
 
 
 // ---------------------------------------------------------------------------
-// Spec test 1 — the override set round-trips save -> load -> save
+// Spec test 1 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the override set round-trips save -> load -> save
 // byte-identically, and the vector's CONTENTS are asserted (not merely that
 // the scene JSON round-trips).
 //
@@ -251,11 +251,11 @@ PrefabComponentKey S2Key(const char* wire)
 //
 // Discrimination faults:
 //   Sequence a) write path fault: don't emit the "overrides" member in
-//   EntityRecordToJson — the saved JSON lacks "overrides" -> RED.
+//   EntityRecordToJson ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the saved JSON lacks "overrides" -> RED.
 //   Sequence b) read path fault: parse "overrides" into r.prefabMember.overrides
 //   but never copy it into the emplaced component (drop it in
-//   BuildDocumentFromRecords) — the loaded member's vector is empty -> RED.
-//   Sequence c) read path fault: don't sort the parsed overrides. NOTE — the
+//   BuildDocumentFromRecords) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the loaded member's vector is empty -> RED.
+//   Sequence c) read path fault: don't sort the parsed overrides. NOTE ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
 //   byte-identical check below does NOT discriminate this fault (the live
 //   vectors at the top are set already-sorted, so load preserves a canonical
 //   order and rounds 1 and 2 still match). It is the `unsorted-v6` fixture
@@ -265,7 +265,7 @@ PrefabComponentKey S2Key(const char* wire)
 //   save -> load -> save idempotence; the unsorted fixture proves the sort.
 //   Sequence d) read path fault: write "overrides" only when the version is
 //   current but read it for any version, with a stray overrides set on a v5
-//   file — not part of this test (spec test 2 covers the gate).
+//   file ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â not part of this test (spec test 2 covers the gate).
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: override set round-trips and loads with the exact contents")
 {
@@ -342,8 +342,8 @@ TEST_CASE("Phase 8 W3: override set round-trips and loads with the exact content
 
     // Canonicalization: the read path sorts the parsed set, so a hand-written
     // v6 file whose overrides are stored out of wire order loads into the
-    // canonical [name, transform] order — not the file's order.
-    // Discrimination fault: delete the std::sort in JsonToEntityRecord — the
+    // canonical [name, transform] order ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â not the file's order.
+    // Discrimination fault: delete the std::sort in JsonToEntityRecord ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
     // loaded vector then keeps the file's ["transform","name"] order and the
     // CHECK below fails -> RED. Revert -> GREEN.
     const auto unsortedPath = dir / "unsorted-v6.rt2scene";
@@ -366,14 +366,14 @@ TEST_CASE("Phase 8 W3: override set round-trips and loads with the exact content
 
 
 // ---------------------------------------------------------------------------
-// Spec test 2 — a v5 scene loads with every override set empty. The fixture
+// Spec test 2 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a v5 scene loads with every override set empty. The fixture
 // is a v5 file that (hypothetically) contains an "overrides" member; the read
 // path must gate the field on the current schema and ignore it, so the loaded
-// member carries an empty set — the correct meaning of "a v5 scene loaded by a
+// member carries an empty set ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the correct meaning of "a v5 scene loaded by a
 // v6 binary", not a migration failure.
 //
 // Discrimination fault: remove the `schemaVersion >= SchemaVersion` gate in
-// JsonToEntityRecord and parse "overrides" regardless of version — the loaded
+// JsonToEntityRecord and parse "overrides" regardless of version ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the loaded
 // member's set then pops as ["transform","script"], RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: a v5 scene loads with every override set empty")
@@ -401,7 +401,7 @@ TEST_CASE("Phase 8 W3: a v5 scene loads with every override set empty")
 
 
 // ---------------------------------------------------------------------------
-// Spec test 3 — THE one that matters. Load a v5 scene, add an override, save
+// Spec test 3 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â THE one that matters. Load a v5 scene, add an override, save
 // through the recovery path (SaveTo), and assert the output is v6 AND the
 // override survives. SaveTo deliberately preserves an older schema when
 // untouched; without W3-D6's upgrade rule the recovery snapshot would be
@@ -409,11 +409,11 @@ TEST_CASE("Phase 8 W3: a v5 scene loads with every override set empty")
 //
 // Also asserts the preservation baseline: an untouched v5 doc, without calling
 // PromoteSchemaVersion, still writes v5 via SaveTo (today's recovery
-// semantics — pinned by Phase7W5Tests.cpp:98).
+// semantics ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â pinned by Phase7W5Tests.cpp:98).
 //
 // Discrimination fault: break SceneSerializer::PromoteSchemaVersion so it no
 // longer assigns (returns false for a below-current doc). doc stays v5, SaveTo
-// writes version 5, and the recovery output has no "overrides" — RED on both
+// writes version 5, and the recovery output has no "overrides" ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â RED on both
 // the schema-version check and the override-presence check. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: recovery SaveTo writes v6 and keeps an added override (upgrade rule)")
@@ -446,7 +446,7 @@ TEST_CASE("Phase 8 W3: recovery SaveTo writes v6 and keeps an added override (up
     }
 
     // Add an override directly (no marking API in S2), then apply the upgrade
-    // rule — the operation that adds the first override sets schemaVersion.
+    // rule ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the operation that adds the first override sets schemaVersion.
     const auto handle = scene.FindByUuid(UUID::Parse("11111111-1111-4111-8111-111111111111"));
     REQUIRE(static_cast<uint32_t>(handle) != static_cast<uint32_t>(entt::null));
     auto* member = scene.ecs.registry.try_get<PrefabMemberComponent>(handle);
@@ -482,7 +482,7 @@ TEST_CASE("Phase 8 W3: recovery SaveTo writes v6 and keeps an added override (up
 
 // ---------------------------------------------------------------------------
 // 1. All 13 persisted components have a wire key, and the table's order
-//    matches PersistedComponents::ForEach order — driven by an actual ForEach
+//    matches PersistedComponents::ForEach order ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â driven by an actual ForEach
 //    visitor, not a hand-written list that could drift the same way.
 //
 //    Discrimination fault: reorder two rows of kPrefabTable (e.g. swap
@@ -652,16 +652,16 @@ TEST_CASE("Phase 8 W3: unrecognised wire names are loudly unresolvable")
 
 
 // ---------------------------------------------------------------------------
-// Spec test 4 — an unknown component key in a scene file raises an observable
+// Spec test 4 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â an unknown component key in a scene file raises an observable
 // diagnostic AND leaves the destination transactional. A v6 scene lists an
 // override wire that the frozen table does not know ("noSuchComponent"); load
 // must fail loudly (an Error naming the offending wire) and must not replace
 // an already-populated destination document. Silent dropping is exactly the
-// swallowed-failure defect class this codebase guards against — it would
+// swallowed-failure defect class this codebase guards against ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â it would
 // convert "this instance diverged" into "this instance tracks the source".
 //
 // Discrimination fault: replace the unknown-key diagnostic in JsonToEntityRecord
-// with a `continue` (skip the unresolvable entry) — the load then succeeds and
+// with a `continue` (skip the unresolvable entry) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the load then succeeds and
 // the destination is replaced, so REQUIRE_FALSE(Load) fails -> RED. Revert ->
 // GREEN.
 // ---------------------------------------------------------------------------
@@ -714,7 +714,7 @@ TEST_CASE("Phase 8 W3: an unknown override component key fails loudly and leaves
 
 
 // ---------------------------------------------------------------------------
-// Spec test 6 — a prefab RECORD carrying every material and resource shape
+// Spec test 6 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a prefab RECORD carrying every material and resource shape
 // still contains no scene-side link or override data. Asserting only that a
 // prefab asset exists is vacuous; this pins the file-format boundary
 // (PrefabSerializer.h): the .rt2prefab payload must never carry
@@ -722,19 +722,19 @@ TEST_CASE("Phase 8 W3: an unknown override component key fails loudly and leaves
 //
 // Part A: serialize a record that has a MeshRef, PrimitiveComponent,
 // ImportedMeshSourceComponent, MaterialOverrideComponent (full material shape),
-// Light, Camera, Motion and Script — but no prefab link. The output payload
+// Light, Camera, Motion and Script ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â but no prefab link. The output payload
 // must contain the material/resource shapes and none of prefabInstance,
 // prefabMember, "overrides";
 // Part B: a record that DOES carry a prefab member (with an override set) is
-// REFUSED loudly by PrefabRecordToJson (Error::InvalidArgument) — the existing
+// REFUSED loudly by PrefabRecordToJson (Error::InvalidArgument) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the existing
 // W1 guard at the prefab codec boundary.
 //
 // Discrimination faults:
 //   Part A: make PrefabRecordToJson serialize the prefab member (and its
-//   override set) into the payload instead of never carrying it — the output
+//   override set) into the payload instead of never carrying it ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the output
 //   then contains "prefabMember"/"overrides" -> RED.
 //   Part B: remove the `hasPrefabInstance || hasPrefabMember` refusal in
-//   PrefabRecordToJson — the linked record serializes instead of failing ->
+//   PrefabRecordToJson ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the linked record serializes instead of failing ->
 //   RED.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: a prefab record with all shapes carries no scene-side link or override data")
@@ -820,24 +820,24 @@ TEST_CASE("Phase 8 W3: a prefab record with all shapes carries no scene-side lin
     nlohmann::json linkedOut;
     Error linkedErr;
     // Fault for red: remove the `hasPrefabInstance || hasPrefabMember` refusal
-    // in PrefabRecordToJson — this then serializes and REQUIRE_FALSE fails.
+    // in PrefabRecordToJson ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â this then serializes and REQUIRE_FALSE fails.
     REQUIRE_FALSE(PrefabRecordToJson(linked, diags, linkedErr, linkedOut));
     CHECK(linkedErr.code == Error::InvalidArgument);
 }
 
 
 // ---------------------------------------------------------------------------
-// Spec test 4b (Fix 2, S2 review finding 1) — a v6 scene whose override set
+// Spec test 4b (Fix 2, S2 review finding 1) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a v6 scene whose override set
 // names a component the table classifies as NEVER overridable ("meshRef") is
 // rejected loudly and leaves the destination transactional. The reader was
 // checking "is the name known" but not "is the name overridable", so
 // ["meshRef"] installed a forbidden key the classification table explicitly
-// excludes — the same silent-divergence class the unknown-key branch guards
+// excludes ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the same silent-divergence class the unknown-key branch guards
 // against, with the asymmetry that a name the table has never heard of fails
 // while a name the table forbids passes.
 //
 // Discrimination fault: remove the `!key->overridable()` branch in
-// JsonToEntityRecord — the load then succeeds and the destination is replaced,
+// JsonToEntityRecord ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the load then succeeds and the destination is replaced,
 // so REQUIRE_FALSE(Load) fails -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: a non-overridable override component key fails loudly and leaves the destination untouched")
@@ -887,13 +887,13 @@ TEST_CASE("Phase 8 W3: a non-overridable override component key fails loudly and
 
 
 // ---------------------------------------------------------------------------
-// Fix 8 (S2 review finding 8) — the reader de-duplicates the parsed set. A v6
+// Fix 8 (S2 review finding 8) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the reader de-duplicates the parsed set. A v6
 // file with ["transform","transform"] must load into a single canonical
 // "transform" entry, telling "this diverged on transform" once rather than
 // twice (a duplicate would corrupt the invariant that the override vector is a
 // SET).
 //
-// Discrimination fault: delete the `std::unique` in JsonToEntityRecord — the
+// Discrimination fault: delete the `std::unique` in JsonToEntityRecord ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
 // loaded set then keeps both copies and the size/contents checks fail -> RED.
 // Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -921,11 +921,11 @@ TEST_CASE("Phase 8 W3: duplicate override names are de-duplicated on read")
 
 
 // ---------------------------------------------------------------------------
-// Fix 8 (S2 review finding 8) — the malformed-input branches: an array entry
+// Fix 8 (S2 review finding 8) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the malformed-input branches: an array entry
 // that is not a string (a number). Rejected loudly with Error::Parse.
 //
 // Discrimination fault: drop the `!item.is_string()` branch in
-// JsonToEntityRecord — the load then succeeds on a numeric entry -> RED.
+// JsonToEntityRecord ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the load then succeeds on a numeric entry -> RED.
 // Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: a non-string override array entry is rejected")
@@ -961,11 +961,11 @@ TEST_CASE("Phase 8 W3: a non-string override array entry is rejected")
 
 
 // ---------------------------------------------------------------------------
-// Fix 8 (S2 review finding 8) — the malformed-input branch: "overrides" present
+// Fix 8 (S2 review finding 8) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the malformed-input branch: "overrides" present
 // but not an array (here an object whose VALUES are all valid wire strings).
 // Rejected loudly with Error::Parse.
 //
-// Discrimination fault: drop the `!ov.is_array()` branch in JsonToEntityRecord —
+// Discrimination fault: drop the `!ov.is_array()` branch in JsonToEntityRecord ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 // the load then iterates the object's string values as if they were array
 // entries and succeeds -> RED (REQUIRE_FALSE fails). Revert -> GREEN. An object
 // whose values were non-strings would fall through to the non-string branch and
@@ -1005,14 +1005,14 @@ TEST_CASE("Phase 8 W3: a non-array overrides member is rejected")
 
 
 // ---------------------------------------------------------------------------
-// Fix 8 (S2 review finding 8) — CloneInMemory preserves the override set.
+// Fix 8 (S2 review finding 8) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â CloneInMemory preserves the override set.
 // CloneInMemory never touches JSON: it goes CollectRecords ->
 // BuildDocumentFromRecords, both of which copy the whole PrefabMemberComponent,
 // so overrides survive regardless of schemaVersion. Nothing proved this; this
 // test pins it (S5 relies on the Play-mode clone carrying overrides).
 //
 // Discrimination fault: drop the override set in BuildDocumentFromRecords when
-// it copies the record's PrefabMemberComponent into the emplacement — the
+// it copies the record's PrefabMemberComponent into the emplacement ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
 // cloned member then has an empty set -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: CloneInMemory preserves the override set")
@@ -1044,13 +1044,13 @@ TEST_CASE("Phase 8 W3: CloneInMemory preserves the override set")
 
 
 // ---------------------------------------------------------------------------
-// Spec test 3b (Fix 3, S2 review finding 2) — the save choke point. A below-
+// Spec test 3b (Fix 3, S2 review finding 2) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the save choke point. A below-
 // current output (v5) that would DROP a non-empty override set must fail the
 // save loudly, not silently write v5 and lose the set. This is the invariant
 // PromoteSchemaVersion maintains; SaveInternal enforces it so the eleven W3-D5
 // mutation entry points don't each have to remember to call Promote.
 //
-// Discrimination fault: remove the new validation block in SaveInternal — the
+// Discrimination fault: remove the new validation block in SaveInternal ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
 // recovery-path SaveTo then succeeds on the below-current doc and writes v5,
 // silently dropping the override set -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -1061,7 +1061,7 @@ TEST_CASE("Phase 8 W3: a save that would drop a non-empty override set fails")
     S2WriteMemberScene(scenePath, 5, {});
 
     // Load a v5 doc (schemaVersion == 5), then add an override WITHOUT calling
-    // PromoteSchemaVersion — the state PromoteSchemaVersion is meant to
+    // PromoteSchemaVersion ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the state PromoteSchemaVersion is meant to
     // prevent. SaveTo (recovery path) preserves the below-current version, so
     // outputVersion = 5 < SchemaVersion with a non-empty set -> must fail.
     SceneDocument doc;
@@ -1089,17 +1089,17 @@ TEST_CASE("Phase 8 W3: a save that would drop a non-empty override set fails")
 
 
 // ---------------------------------------------------------------------------
-// Spec test 1b (Fix 5, S2 review finding 5) — the writer canonicalizes the
+// Spec test 1b (Fix 5, S2 review finding 5) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the writer canonicalizes the
 // override set, so memory->file matches the canonical wire order the reader
 // produces file->memory. S5 will populate vectors in edit order; without the
 // write-side sort the same logical scene writes different bytes depending on
 // who populated the vector, breaking the save -> load -> save byte-identity
 // that spec test 1 asserts. The vectors here are deliberately set UNSORTED
-// (transform before name) — the sorted-set invariant is a codec guarantee, not
+// (transform before name) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the sorted-set invariant is a codec guarantee, not
 // a caller contract.
 //
 // Discrimination fault: remove the sort in EntityRecordToJson's override
-// emission — the stored wire list then keeps the in-memory ["transform","name"]
+// emission ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the stored wire list then keeps the in-memory ["transform","name"]
 // order instead of the canonical ["name","transform"] -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: the writer stores the override set in canonical wire order")
@@ -1138,7 +1138,7 @@ TEST_CASE("Phase 8 W3: the writer stores the override set in canonical wire orde
 
 
 // ============================================================================
-// Phase 8 W3, S3 — the snapshot verifier sees the override set
+// Phase 8 W3, S3 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the snapshot verifier sees the override set
 // (implementation spec, W3-D2; Work step S3).
 //
 // EntityMatchesRecord (SceneManager.cpp:1815) is the guard that
@@ -1147,13 +1147,13 @@ TEST_CASE("Phase 8 W3: the writer stores the override set in canonical wire orde
 // Pre-S3 it compared only instanceId + templateId on the PrefabMemberComponent
 // branch, so an override-set change was invisible to it: duplicate an
 // instance, edit the duplicate's overrides, undo the duplication, and the
-// verifier still matched and destroyed the edited copy — a guard that had
+// verifier still matched and destroyed the edited copy ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a guard that had
 // stopped guarding.
 //
 // S3 extends the comparison to the override vector. Order decision: compare as
 // a SET (order-insensitive). The codec sorts and de-duplicates on read and
 // write (SceneSerializer.cpp:853-856, :1261-1270), so any vector that has
-// passed through a file round-trip is canonical — but an in-memory vector has
+// passed through a file round-trip is canonical ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â but an in-memory vector has
 // not necessarily been through the codec (the S5/S6 marking path records in
 // edit order; S2's write-sort test deliberately builds {transform, name}
 // unsorted and relies on the writer to canonicalize). An order-sensitive
@@ -1161,11 +1161,11 @@ TEST_CASE("Phase 8 W3: the writer stores the override set in canonical wire orde
 // break legitimate structural undo. Set comparison still catches every real
 // divergence, which is all the guard exists to catch. EntityMatchesRecord is
 // file-local (not in a header), so these tests drive the guard through
-// RemoveSubtreesExact — the exact proof the brief requires.
+// RemoveSubtreesExact ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the exact proof the brief requires.
 //
 // Discrimination fault (recorded in the verification report):
 //   revert EntityMatchesRecord's PrefabMember branch to compare instanceId +
-//   templateId only (drop the override comparison) — the mutate-then-remove
+//   templateId only (drop the override comparison) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the mutate-then-remove
 //   case below then reports a MATCH and DESTROYS the edited entity -> RED on
 //   "must fail and leave the entity intact". Reverting to the final form turns
 //   both cases GREEN.
@@ -1262,14 +1262,14 @@ TEST_CASE("Phase 8 W3: an unchanged override set still verifies and removes")
 // That is true set equality only when both sides are duplicate-free. Here
 // `live = {transform, transform}` against the captured `record =
 // {transform, light}`: sizes match at 2 and every live key exists in the
-// record, so the one-directional compare reports MATCH — and would destroy
+// record, so the one-directional compare reports MATCH ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â and would destroy
 // the edited entity, exactly the failure S3 exists to prevent. The S3 fix
 // compares as multisets (sorted copies, element-wise), so this must be
 // REFUSED.
 //
 // Discrimination fault (recorded in the verification report):
 //   revert to the one-directional containment form (drop the sorted
-//   element-wise compare) — this case then reports a MATCH and DESTROYS the
+//   element-wise compare) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â this case then reports a MATCH and DESTROYS the
 //   edited entity -> RED on "must fail and leave the entity intact". Reverting
 //   to the multiset compare turns it GREEN.
 // ---------------------------------------------------------------------------
@@ -1321,7 +1321,7 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 
 
 // ============================================================================
-// Phase 8 W3, S4 — duplicating an instance creates a NEW instance identity
+// Phase 8 W3, S4 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â duplicating an instance creates a NEW instance identity
 // (implementation spec, W3-D8; Work step S4).
 //
 // CopyAuthoredComponents copies all 13 persisted components verbatim, so a
@@ -1335,10 +1335,10 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 // W3-D4).
 //
 // This section covers the duplicate, paste, restore and partial sides of S4.
-// Tests 1-2 drive the duplicate paths — the ordinary non-command
+// Tests 1-2 drive the duplicate paths ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ordinary non-command
 // DuplicateSubtrees path and the UUID-aware DuplicateSubtreesWithUuids path
 // (the one the editor's undoable DuplicateSelectionCommand uses,
-// SceneEditorUI.cpp:396-415). Tests 3-5 drive the paste paths — the ordinary
+// SceneEditorUI.cpp:396-415). Tests 3-5 drive the paste paths ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ordinary
 // non-command PasteSubtreesFrom path and the UUID-aware PasteSubtreesWithUuids
 // path (the one the editor's PasteCommand uses, SceneEditorUI.cpp:417-449). A
 // test covering only one path would pass while the editor's real path stayed
@@ -1347,7 +1347,7 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 //
 // All four copy-shaped paths chain the SAME plan -> reserve -> apply pipeline:
 // PLAN (PlanCopiedPrefabLinks, SceneManager.cpp:214) classifies the copied
-// forest into complete instance groups from the ACTUAL copied instance roots —
+// forest into complete instance groups from the ACTUAL copied instance roots ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 // a complete instance nested under an ordinary container or under another
 // copied root is a first-class instance of its own and is reminted
 // independently, never merged into the enclosing group; member fragments whose
@@ -1366,8 +1366,8 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 // (PasteSubtreesWithUuids) because that is the strongest discriminator for
 // the shared helper: the source comes from a genuinely separate clipboard
 // document (SceneSerializer::CloneInMemory), so the test proves the override
-// set survives the whole chain — authoring doc -> clipboard clone -> paste
-// copy -> mint — verbatim. That is exactly the W3-D4 compiler-failure mode;
+// set survives the whole chain ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â authoring doc -> clipboard clone -> paste
+// copy -> mint ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â verbatim. That is exactly the W3-D4 compiler-failure mode;
 // any mint or copy step that drops the set goes red.
 //
 // Structural restore (test 6) is deliberately NOT a copy path: ApplySubtreeRecord
@@ -1383,54 +1383,54 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 // id; a mixed tree with a complete instance under an ordinary root plus an
 // orphan member fragment (11) preserves and remints the complete instance and
 // strips only the fragment (with an explicit 1-fragment recovery warning); two
-// distinct complete instance roots — one nested under a member of the other
-// (12) — each receive their own distinct fresh id rather than being merged.
+// distinct complete instance roots ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â one nested under a member of the other
+// (12) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â each receive their own distinct fresh id rather than being merged.
 //
 // Discrimination faults (recorded in the verification report), per test:
 //   test 1 fault: delete the ApplyCopiedPrefabLinks call inside
-//   SceneManager::DuplicateSubtrees — the copied member then keeps the
+//   SceneManager::DuplicateSubtrees ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the copied member then keeps the
 //   source's instanceId, so CHECK(dupRootId != srcInstanceId) fails -> RED.
 //   Revert -> GREEN.
 //   test 2 fault: delete the ApplyCopiedPrefabLinks call inside
-//   SceneManager::DuplicateSubtreesWithUuids — same failure on the editor's
+//   SceneManager::DuplicateSubtreesWithUuids ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â same failure on the editor's
 //   command path -> RED. Revert -> GREEN.
 //   test 3 fault: delete the ApplyCopiedPrefabLinks call inside
-//   SceneManager::PasteSubtreesFrom — the pasted member then keeps the
+//   SceneManager::PasteSubtreesFrom ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the pasted member then keeps the
 //   clipboard's instanceId, so CHECK(pastedRootId != srcInstanceId) fails ->
 //   RED. Revert -> GREEN.
 //   test 4 fault: delete the ApplyCopiedPrefabLinks call inside
-//   SceneManager::PasteSubtreesWithUuids — same failure on the editor's paste
+//   SceneManager::PasteSubtreesWithUuids ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â same failure on the editor's paste
 //   path -> RED. Revert -> GREEN.
 //   test 5 fault: in ApplyCopiedPrefabLinks, in the full-instance branch,
 //   clear each copied member's override vector when setting the fresh
-//   instanceId — the pasted diverged member then has an empty set, so
+//   instanceId ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the pasted diverged member then has an empty set, so
 //   CHECK(pastedRootMember->overrides == srcRoot->overrides) fails -> RED.
 //   Revert -> GREEN.
 //   test 6 fault: in RestoreSubtrees, right after ApplySubtreeRecord
 //   (SceneManager.cpp:2533), mint a fresh instanceId onto every restored
-//   PrefabMemberComponent — the restored members then diverge from the
+//   PrefabMemberComponent ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the restored members then diverge from the
 //   recorded id, so CHECK(restoredRootId == recordedId) fails -> RED.
 //   Revert -> GREEN.
 //   test 7 fault: delete the two component removals in ApplyCopiedPrefabLinks'
-//   orphan-fragment branch — the copied member then keeps its
+//   orphan-fragment branch ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the copied member then keeps its
 //   PrefabMemberComponent, so CHECK(copied has no PrefabMemberComponent)
 //   fails -> RED. Revert -> GREEN.
 //   test 8 fault: in the DuplicateSubtrees instance-ID reservation loop,
-//   reuse ONE reserved id for every group — the two copied subtrees then
+//   reuse ONE reserved id for every group ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the two copied subtrees then
 //   share a single instanceId, so CHECK(copiedARootId != copiedBRootId)
 //   fails -> RED. Revert -> GREEN.
 //   test 9 fault: in PlanCopiedPrefabLinks, go back to classifying from the
 //   SELECTED root copy (the old `isInstanceRoot` check): an ordinary folder
 //   copy has no PrefabInstanceComponent, so the instance below it is treated
 //   as a member fragment and BOTH prefab components are stripped from the copy
-//   — CHECK(copiedRootId != UUID::Nil()) and CHECK(copied[s] is member) fail
+//   ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â CHECK(copiedRootId != UUID::Nil()) and CHECK(copied[s] is member) fail
 //   -> RED. Revert -> GREEN.
-//   test 10 fault: same selected-root regression on the command paste path —
+//   test 10 fault: same selected-root regression on the command paste path ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 //   the pasted instance under an ordinary folder gets stripped the same way ->
 //   RED. Revert -> GREEN.
 //   test 11 fault: same selected-root regression on a MIXED forest (ordinary
 //   container holding BOTH a complete instance and an orphan member fragment)
-//   — the complete instance's copy is stripped too (not reminted), so
+//   ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the complete instance's copy is stripped too (not reminted), so
 //   CHECK(copiedCompleteRoot has PIC) fails -> RED. Revert -> GREEN.
 //   test 12 fault: in PlanCopiedPrefabLinks, fall back to ONE id for the whole
 //   selected subtree (the old full-instance branch): a nested complete
@@ -1471,12 +1471,12 @@ UUID S4MemberTemplateId(SceneManager& manager, entt::entity e)
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Test 1 — ordinary DuplicateSubtrees mints ONE fresh instanceId for the whole
+// Test 1 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ordinary DuplicateSubtrees mints ONE fresh instanceId for the whole
 // copied instance, every copied member carries it, and templateIds are
 // preserved positionally. The source instance's own identity is untouched.
 //
 // Fault for red: delete the ApplyCopiedPrefabLinks call inside
-// SceneManager::DuplicateSubtrees — the duplicated members then keep the
+// SceneManager::DuplicateSubtrees ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the duplicated members then keep the
 // source's instanceId and CHECK(dupRootId != srcInstanceId) fails -> RED.
 // Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -1493,7 +1493,7 @@ TEST_CASE("Phase 8 W3: a duplicated instance gets a fresh instanceId shared by a
     REQUIRE(srcChild);
     const UUID srcInstanceId = srcRoot->instanceId;
     REQUIRE(srcInstanceId != UUID::Nil());
-    // Sanity: one instance, one identity — both members share it.
+    // Sanity: one instance, one identity ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â both members share it.
     CHECK(srcChild->instanceId == srcInstanceId);
 
     const auto rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
@@ -1527,7 +1527,7 @@ TEST_CASE("Phase 8 W3: a duplicated instance gets a fresh instanceId shared by a
     CHECK(S4MemberTemplateId(f.manager, dupEntities[1]) == srcChild->templateId);
     CHECK(S4MemberTemplateId(f.manager, dupEntities[0]) == srcRoot->templateId);
 
-    // The source instance is untouched — still its own id.
+    // The source instance is untouched ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â still its own id.
     const auto* srcRootAfter = reg.try_get<PrefabMemberComponent>(rootHandle);
     REQUIRE(srcRootAfter);
     CHECK(srcRootAfter->instanceId == srcInstanceId);
@@ -1536,14 +1536,14 @@ TEST_CASE("Phase 8 W3: a duplicated instance gets a fresh instanceId shared by a
 }
 
 // ---------------------------------------------------------------------------
-// Test 2 — DuplicateSubtreesWithUuids (the editor's undoable command path)
+// Test 2 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â DuplicateSubtreesWithUuids (the editor's undoable command path)
 // mints ONE fresh instanceId for the whole copied instance, every copied
 // member carries it, templateIds are preserved, and the source is untouched.
 // Mirrors SceneEditorUI::DuplicateSelectionCommand: count the canonical
 // subtree, reserve exactly that many known UUIDs, pass them in.
 //
 // Fault for red: delete the ApplyCopiedPrefabLinks call inside
-// SceneManager::DuplicateSubtreesWithUuids — the duplicated members then keep
+// SceneManager::DuplicateSubtreesWithUuids ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the duplicated members then keep
 // the source's instanceId and CHECK(dupRootId != srcInstanceId) fails -> RED.
 // Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -1600,16 +1600,16 @@ TEST_CASE("Phase 8 W3: the command duplicate path mints a fresh instanceId for t
 }
 
 // ---------------------------------------------------------------------------
-// Test 3 — the ordinary non-command paste path (PasteSubtreesFrom) mints ONE
+// Test 3 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ordinary non-command paste path (PasteSubtreesFrom) mints ONE
 // fresh instanceId for the whole pasted instance. The clipboard document is a
 // whole-scene clone (SceneSerializer::CloneInMemory), exactly as
 // EditorSceneState::Copy fills the clipboard. Root UUIDs resolve AGAINST THE
-// CLIPBOARD, not the live scene — the fixture's instance lives in both, so the
+// CLIPBOARD, not the live scene ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the fixture's instance lives in both, so the
 // same UUID works. templateIds are preserved and neither the live source nor
 // the clipboard source is mutated.
 //
 // Fault for red: delete the ApplyCopiedPrefabLinks call inside
-// SceneManager::PasteSubtreesFrom — the pasted members then keep the
+// SceneManager::PasteSubtreesFrom ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the pasted members then keep the
 // clipboard's instanceId and CHECK(pastedRootId != srcInstanceId) fails ->
 // RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -1679,7 +1679,7 @@ TEST_CASE("Phase 8 W3: a pasted instance gets a fresh instanceId shared by all c
 }
 
 // ---------------------------------------------------------------------------
-// Test 4 — the UUID-aware paste path (PasteSubtreesWithUuids, the editor's
+// Test 4 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the UUID-aware paste path (PasteSubtreesWithUuids, the editor's
 // undoable PasteCommand) mints ONE fresh instanceId for the whole pasted
 // instance. Mirrors SceneEditorUI::PasteCommand: count the clipboard subtree
 // by walking the clipboard document itself (clipboard roots live in the
@@ -1687,7 +1687,7 @@ TEST_CASE("Phase 8 W3: a pasted instance gets a fresh instanceId shared by all c
 // reserve exactly that many known UUIDs, pass them in.
 //
 // Fault for red: delete the ApplyCopiedPrefabLinks call inside
-// SceneManager::PasteSubtreesWithUuids — the pasted members then keep the
+// SceneManager::PasteSubtreesWithUuids ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the pasted members then keep the
 // clipboard's instanceId and CHECK(pastedRootId != srcInstanceId) fails ->
 // RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -1759,16 +1759,16 @@ TEST_CASE("Phase 8 W3: the command paste path mints a fresh instanceId for the p
 }
 
 // ---------------------------------------------------------------------------
-// Test 5 — a copy of a diverged instance stays diverged (W3-D4). The live
+// Test 5 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a copy of a diverged instance stays diverged (W3-D4). The live
 // source member carries a non-empty override set; it survives the clipboard
 // clone (Fix 8), gets copied verbatim into the paste, and ApplyCopiedPrefabLinks
 // must leave it untouched while still stamping a fresh instanceId. Covered on
 // the editor paste path because that is the strongest discriminator for the
-// shared helper: the override set must survive the FULL chain — authoring doc
+// shared helper: the override set must survive the FULL chain ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â authoring doc
 // -> clipboard clone -> paste copy -> apply.
 //
 // Fault for red: in ApplyCopiedPrefabLinks, in the full-instance branch, clear
-// each copied member's override vector when setting the fresh instanceId —
+// each copied member's override vector when setting the fresh instanceId ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 // the pasted diverged member then has an empty set, so
 // CHECK(pastedRootMember->overrides == srcRoot->overrides) fails -> RED.
 // Revert -> GREEN.
@@ -1844,11 +1844,11 @@ TEST_CASE("Phase 8 W3: a pasted diverged instance keeps its overrides while mint
 }
 
 // ---------------------------------------------------------------------------
-// Test 6 — the structural restore path is NOT a copy path. Undo/Redo
+// Test 6 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the structural restore path is NOT a copy path. Undo/Redo
 // re-creates an instance by reinstating the snapshot's recorded
 // PrefabInstanceComponent/PrefabMemberComponent payloads VERBATIM
 // (ApplySubtreeRecord, SceneManager.cpp:1874). The restored root and every
-// member must carry the EXACT recorded instanceId — a fresh identity is
+// member must carry the EXACT recorded instanceId ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a fresh identity is
 // never minted here (the snapshot's ids are the authoritative identity).
 // templateIds and the override set must survive the round-trip too, so the
 // restored link is internally coherent: members group under the same id, the
@@ -1923,7 +1923,7 @@ TEST_CASE("Phase 8 W3: structural restore reinstates the exact recorded instance
     const auto restoredEntities = S4SubtreeEntities(f.manager, rootUuid);
     REQUIRE(restoredEntities.size() == 2);
 
-    // EXACT recorded identity — not a freshly minted one.
+    // EXACT recorded identity ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â not a freshly minted one.
     const auto restoredRootId = S4MemberInstanceId(f.manager, restoredEntities[0]);
     const auto restoredChildId = S4MemberInstanceId(f.manager, restoredEntities[1]);
     CHECK(restoredRootId == recordedId);
@@ -1947,18 +1947,18 @@ TEST_CASE("Phase 8 W3: structural restore reinstates the exact recorded instance
 }
 
 // ---------------------------------------------------------------------------
-// Test 7 — a PARTIAL copy (prefab member(s) present, NO PrefabInstanceComponent
+// Test 7 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a PARTIAL copy (prefab member(s) present, NO PrefabInstanceComponent
 // root) is converted into ordinary entities, not fabricated into an instance.
 // Driven through the editor's UUID-aware duplicate path
 // (DuplicateSubtreesWithUuids) with only the member subtree selected, exactly
 // as the user selecting a member in the Outliner and duplicating it. The
-// copied member must have BOTH prefab components stripped — no
+// copied member must have BOTH prefab components stripped ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no
 // PrefabInstanceComponent, no PrefabMemberComponent, therefore no retained
-// override payload — the mutation succeeds, and a recoveryWarning with the
+// override payload ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the mutation succeeds, and a recoveryWarning with the
 // InvalidHierarchy diagnostic is surfaced (SceneManager.cpp:3488-3496).
 //
 // Fault for red: delete the two removal calls in ApplyCopiedPrefabLinks'
-// orphan-fragment branch — the copied member then keeps its
+// orphan-fragment branch ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the copied member then keeps its
 // PrefabMemberComponent, so CHECK(copied has no PrefabMemberComponent)
 // fails -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -1985,7 +1985,7 @@ TEST_CASE("Phase 8 W3: a partial copy strips prefab links and surfaces a recover
 
     auto dup = f.manager.DuplicateSubtreesWithUuids({ childUuid }, known);
     REQUIRE(dup.mutation.success);
-    // The operation must succeed AND surface the recovery warning — never a
+    // The operation must succeed AND surface the recovery warning ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â never a
     // silent success, never a hard failure.
     REQUIRE(dup.mutation.recoveryWarning.has_value());
     CHECK(dup.mutation.recoveryWarning->code == rt2::core::Error::InvalidHierarchy);
@@ -2001,7 +2001,7 @@ TEST_CASE("Phase 8 W3: a partial copy strips prefab links and surfaces a recover
     CHECK_FALSE(reg.all_of<PrefabInstanceComponent>(copiedEntity));
     CHECK_FALSE(reg.all_of<PrefabMemberComponent>(copiedEntity));
 
-    // The source member is untouched — still a member, still diverged.
+    // The source member is untouched ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â still a member, still diverged.
     const auto* childAfter = reg.try_get<PrefabMemberComponent>(childHandle);
     REQUIRE(childAfter);
     CHECK(childAfter->overrides == childMember->overrides);
@@ -2010,7 +2010,7 @@ TEST_CASE("Phase 8 W3: a partial copy strips prefab links and surfaces a recover
 }
 
 // ---------------------------------------------------------------------------
-// Test 8 — a MULTI-ROOT duplicate mints ONE fresh instanceId PER COPIED
+// Test 8 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a MULTI-ROOT duplicate mints ONE fresh instanceId PER COPIED
 // SUBTREE (not one id, not one per member). Two complete prefab instances are
 // duplicated in one UUID-aware editor operation; each copied subtree gets its
 // own fresh non-nil instanceId, the two ids differ from each other and from
@@ -2018,7 +2018,7 @@ TEST_CASE("Phase 8 W3: a partial copy strips prefab links and surfaces a recover
 // templateIds plus override sets remain intact.
 //
 // Fault for red: in the DuplicateSubtrees instance-ID reservation loop, reuse
-// ONE reserved id for every group — the two copied subtrees then SHARE one
+// ONE reserved id for every group ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the two copied subtrees then SHARE one
 // instanceId, so CHECK(copiedARootId != copiedBRootId) fails -> RED. Revert
 // -> GREEN.
 // ---------------------------------------------------------------------------
@@ -2123,17 +2123,17 @@ TEST_CASE("Phase 8 W3: a multi-root copy mints one distinct fresh instanceId per
 }
 
 // ---------------------------------------------------------------------------
-// Test 9 — the S4 review fix 1 shape, on the editor's UUID-aware duplicate
+// Test 9 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the S4 review fix 1 shape, on the editor's UUID-aware duplicate
 // path: an ordinary container (Folder) holding a COMPLETE instance. The copied
 // forest must be classified from the ACTUAL instance root inside it, so the
 // folder copy stays ordinary and the contained instance is preserved and
-// reminted as ONE group — not stripped as if it were a member fragment.
+// reminted as ONE group ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â not stripped as if it were a member fragment.
 //
 // Fault for red (old selected-root classification): in PlanCopiedPrefabLinks,
 // gate classification on the SELECTED root copy (the old `isInstanceRoot`
 // check). The folder copy has no PrefabInstanceComponent, so the whole tree is
 // treated as a member fragment and BOTH prefab components are stripped from
-// every copy — CHECK(copiedPic->instanceId != UUID::Nil()) fails -> RED.
+// every copy ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â CHECK(copiedPic->instanceId != UUID::Nil()) fails -> RED.
 // Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: UUID-aware duplicate of an ordinary folder preserves and remints its contained instance")
@@ -2171,7 +2171,7 @@ TEST_CASE("Phase 8 W3: UUID-aware duplicate of an ordinary folder preserves and 
     const auto copied = S4SubtreeEntities(f.manager, copiedFolderUuid);
     REQUIRE(copied.size() == 3);
 
-    // The copied folder stays ORDINARY — no fabricated prefab link.
+    // The copied folder stays ORDINARY ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no fabricated prefab link.
     CHECK_FALSE(reg.all_of<PrefabInstanceComponent>(copied[0]));
     CHECK_FALSE(reg.all_of<PrefabMemberComponent>(copied[0]));
 
@@ -2194,7 +2194,7 @@ TEST_CASE("Phase 8 W3: UUID-aware duplicate of an ordinary folder preserves and 
 }
 
 // ---------------------------------------------------------------------------
-// Test 10 — the same shape on the editor's UUID-aware PASTE path
+// Test 10 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the same shape on the editor's UUID-aware PASTE path
 // (PasteSubtreesWithUuids).
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: UUID-aware paste of an ordinary folder preserves and remints its contained instance")
@@ -2258,7 +2258,7 @@ TEST_CASE("Phase 8 W3: UUID-aware paste of an ordinary folder preserves and remi
 }
 
 // ---------------------------------------------------------------------------
-// Test 11 — a MIXED copied forest: an ordinary folder holding BOTH a complete
+// Test 11 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a MIXED copied forest: an ordinary folder holding BOTH a complete
 // instance AND an orphan member fragment. The complete instance is preserved
 // and reminted as one group; only the orphan fragment (instance B's child,
 // whose root is NOT part of the copied set) is stripped of both prefab
@@ -2267,7 +2267,7 @@ TEST_CASE("Phase 8 W3: UUID-aware paste of an ordinary folder preserves and remi
 //
 // Fault for red (old selected-root classification): the folder copy has no
 // PrefabInstanceComponent, so the old code treats the WHOLE tree as a member
-// fragment and strips the complete instance copy too — CHECK(copiedAPic has
+// fragment and strips the complete instance copy too ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â CHECK(copiedAPic has
 // PIC) fails -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: a mixed forest keeps its complete instance and strips only the orphan member fragment")
@@ -2336,13 +2336,13 @@ TEST_CASE("Phase 8 W3: a mixed forest keeps its complete instance and strips onl
 }
 
 // ---------------------------------------------------------------------------
-// Test 12 — TWO distinct complete instance roots, one nested under the other
+// Test 12 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â TWO distinct complete instance roots, one nested under the other
 // (the inverse shape from the review): the outer instance-root tree contains
 // a second complete instance. Each copied instance gets its OWN distinct fresh
-// id — the nested copy is never merged into the outer's remint.
+// id ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the nested copy is never merged into the outer's remint.
 //
 // Fault for red (old full-instance branch): fall back to minting ONE id for
-// the whole selected subtree — the nested root copy then carries the OUTER's
+// the whole selected subtree ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the nested root copy then carries the OUTER's
 // fresh id, so CHECK(copiedNestedId != copiedOuterId) fails -> RED.
 // Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -2408,14 +2408,14 @@ TEST_CASE("Phase 8 W3: nested complete instances each receive their own distinct
 }
 
 // ---------------------------------------------------------------------------
-// Test 13 — malformed copied data with ambiguous group ownership: TWO copied
+// Test 13 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â malformed copied data with ambiguous group ownership: TWO copied
 // instance roots claim the SAME original instanceId. PlanCopiedPrefabLinks
-// does NOT silently guess — it diagnoses loudly (recovery warning naming the
+// does NOT silently guess ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â it diagnoses loudly (recovery warning naming the
 // ambiguous group) and remints the shared group as ONE coherent fresh id, so
 // the copies never keep the malformed source id and never split arbitrarily.
 //
 // Fault for red: skip the ambiguous-group detection (drop the ambiguousGroups
-// counter) — the operation then succeeds WITHOUT the diagnosis -> CHECK(warning
+// counter) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the operation then succeeds WITHOUT the diagnosis -> CHECK(warning
 // has_value) fails -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: duplicate roots sharing one original instanceId are diagnosed and kept as one reminted group")
@@ -2480,7 +2480,7 @@ TEST_CASE("Phase 8 W3: duplicate roots sharing one original instanceId are diagn
 }
 
 // ============================================================================
-// Phase 8 W3, S4 — review fix 2, hostile UUID providers
+// Phase 8 W3, S4 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â review fix 2, hostile UUID providers
 // (implementation spec, docs/game-engine-development-plan.md "Phase 8 W3";
 // S4 review finding 2). The copy/instantiate paths must reserve every fresh
 // instanceId BEFORE any destination mutation, retry hostile provider output
@@ -2496,25 +2496,25 @@ TEST_CASE("Phase 8 W3: duplicate roots sharing one original instanceId are diagn
 //
 // Discrimination faults (recorded in the verification report), per test:
 //   test T14 fault: in ReserveFreshInstanceId (SceneManager.cpp) delete the
-//   `if (forbidden.count(lastAttempt) != 0) continue;` line — the FIRST draw
+//   `if (forbidden.count(lastAttempt) != 0) continue;` line ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the FIRST draw
 //   (the source's own instanceId) is then accepted, so the copied group claims
 //   the SOURCE's identity and CHECK(copiedRootId == validId) fails -> RED.
 //   Revert -> GREEN.
 //   test T15 fault: in ReserveFreshInstanceId delete the
-//   `if (!operationLocal.insert(lastAttempt).second) continue;` line — the
+//   `if (!operationLocal.insert(lastAttempt).second) continue;` line ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
 //   second draw (a repeat of the first group's fresh id) is accepted for a
 //   second group, so two copied groups share one id and
 //   CHECK(cA->instanceId != cB->instanceId) fails -> RED. Revert -> GREEN.
 //   test T16 fault: set kFreshInstanceIdMaxAttempts to 2 (attempt-limit
-//   bypass) — exhaustion stops after 2 provider draws, so the "exactly 16"
+//   bypass) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â exhaustion stops after 2 provider draws, so the "exactly 16"
 //   assertion fails and the operation partially consumed the hostile queue
 //   -> RED on both the duplicate and the paste scenario. Revert -> GREEN.
 //   test T17 fault: same attempt-limit bypass (kFreshInstanceIdMaxAttempts
-//   = 2) — the success half is robbed of its 3 retries, failing the
+//   = 2) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the success half is robbed of its 3 retries, failing the
 //   successful instantiate -> RED. Revert -> GREEN.
 //   test T18 fault: in SceneManager::DuplicateSubtrees move the instance-ID
 //   reservation block ABOVE the `duplicateUuids = ReserveKnownUuids(...)`
-//   staging line (provider-order swap) — the provider then draws the instance
+//   staging line (provider-order swap) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the provider then draws the instance
 //   id FIRST, so the staged entity UUIDs land shifted and
 //   CHECK(copied[0].id == e0) fails -> RED. Revert -> GREEN.
 // ============================================================================
@@ -2524,7 +2524,7 @@ namespace
 
 // Finite scripted v4 queue + full call log. Fails loudly (doctest REQUIRE,
 // propagating an exception through the manager into the test) if the code
-// under test draws MORE ids than the script provides — that is how the exact
+// under test draws MORE ids than the script provides ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â that is how the exact
 // provider-call expectations are enforced rather than assumed.
 struct ScriptedUuidProvider final : IUuidProvider
 {
@@ -2591,7 +2591,7 @@ S4SceneSnapshot S4Snapshot(SceneManager& manager)
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Test T14 — a hostile provider yields (source instanceId, nil, another live
+// Test T14 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a hostile provider yields (source instanceId, nil, another live
 // instanceId, valid). The reservation must reject the first three draws and
 // accept only the valid one, install it coherently on the copied group, and
 // leave the source and the other live instance untouched. Provider consumption
@@ -2666,7 +2666,7 @@ TEST_CASE("Phase 8 W3: hostile collision queue on duplicate reservation retries 
 }
 
 // ---------------------------------------------------------------------------
-// Test T15 — two complete groups in one operation; the provider returns a
+// Test T15 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â two complete groups in one operation; the provider returns a
 // valid id, then the SAME id again, then a second valid id. The second draw
 // must be rejected as an operation-local duplicate and retried, so the two
 // copied groups get DISTINCT fresh ids (one each from the script).
@@ -2749,7 +2749,7 @@ TEST_CASE("Phase 8 W3: operation-local duplicate draws are retried per group")
 }
 
 // ---------------------------------------------------------------------------
-// Test T16 — an always-nil provider exhausts the reservation on BOTH
+// Test T16 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â an always-nil provider exhausts the reservation on BOTH
 // UUID-aware paths (duplicate and paste). Result: DuplicateUuid naming the
 // exhaustion, EXACTLY 16 provider attempts, zero created entities, unchanged
 // entity UUID index / hierarchy / component counts / authoring revision /
@@ -2838,10 +2838,10 @@ TEST_CASE("Phase 8 W3: instance-ID reservation exhaustion on duplicate+paste lea
 }
 
 // ---------------------------------------------------------------------------
-// Test T17 — InstantiatePrefabWithUuids. Success half: the reservation
+// Test T17 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â InstantiatePrefabWithUuids. Success half: the reservation
 // retries past a live instanceId and nil to a valid id, installed coherently.
 // Exhaustion half: an always-nil provider fails BEFORE any resource/entity
-// mutation — prefab file bytes, entity/component counts, UUID index,
+// mutation ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â prefab file bytes, entity/component counts, UUID index,
 // mesh/material/texture table sizes, diagnostics and authoring revision are
 // all unchanged.
 // ---------------------------------------------------------------------------
@@ -2928,7 +2928,7 @@ TEST_CASE("Phase 8 W3: instantiate reservation retries to a valid id and exhaust
 }
 
 // ---------------------------------------------------------------------------
-// Test T18 — the ORDINARY DuplicateSubtrees path must consume the provider in
+// Test T18 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ORDINARY DuplicateSubtrees path must consume the provider in
 // the documented exact order: N staged entity-UUID draws first, then G
 // instance-ID draws (G == number of complete instance groups in the forest).
 // A scripted provider pins the order by value: the first N ids become the
@@ -2991,12 +2991,12 @@ TEST_CASE("Phase 8 W3: ordinary duplicate provider order is entity UUIDs then in
 
 // ============================================================================
 // Tests T19-T22 close the S4 REVIEW FIX 3 gap (ordinary-paste/duplicate entity
-// UUID reservation). T14-T18 exercise ONLY the WithUuids paths — the ORDINARY
+// UUID reservation). T14-T18 exercise ONLY the WithUuids paths ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ORDINARY
 // DuplicateSubtrees / PasteSubtreesFrom paths staged their destination entity
 // UUIDs via the unvalidated `ReserveKnownUuids`, so a degraded/hostile
 // provider could hand the create loop a nil, an id already live in the
 // authoring index, a repeat, or (for a paste) the source entity's own id, and
-// the operation either died midway in the create-loop rollback or — worse —
+// the operation either died midway in the create-loop rollback or ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â worse ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 // adopted a live identity. Fix 3 routes BOTH ordinary paths through the same
 // validated, finite pre-mutation reservation the WithUuids paths already used
 // (ReserveValidEntityUuids), preserving the pinned provider order from T18:
@@ -3004,29 +3004,29 @@ TEST_CASE("Phase 8 W3: ordinary duplicate provider order is entity UUIDs then in
 //
 // Discrimination faults (recorded in the verification report), per test:
 //   test T19 fault: in SceneManager::DuplicateSubtrees replace the validated
-//   entity staging with the old raw `ReserveKnownUuids(sources.size())` — a
+//   entity staging with the old raw `ReserveKnownUuids(sources.size())` ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a
 //   staged nil then trips the create-loop rollback -> REQUIRE(success) fails
 //   -> RED. Revert -> GREEN.
-//   test T20 fault: same raw-staging bypass on the duplicate path — the
+//   test T20 fault: same raw-staging bypass on the duplicate path ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
 //   operation then consumes its full script through the instance-ID stage (2
 //   entity draws + 16 instance-ID draws) and the scripted provider's loud
 //   over-consumption REQUIRE throws before CHECK(cursor == 16) -> RED. Revert
 //   -> GREEN.
 //   test T21 fault: in SceneManager::PasteSubtreesFrom use
 //   FreshInstanceIdForbiddenSet (dropping the distinct-source entity-ids
-//   rule) for entity staging — a provider draw of the clipboard's re-stamped
+//   rule) for entity staging ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a provider draw of the clipboard's re-stamped
 //   id is then accepted, so the pasted root adopts the clipboard's identity
 //   and REQUIRE(success)/the entity-id CHECK fails -> RED. Revert -> GREEN.
-//   test T22 fault: same raw-staging bypass on the paste path — the paste
+//   test T22 fault: same raw-staging bypass on the paste path ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the paste
 //   over-consumes the hostile script through the instance-ID stage and the
 //   loud REQUIRE throws -> RED. Revert -> GREEN.
 // ============================================================================
 
 // ---------------------------------------------------------------------------
-// Test T19 — the ORDINARY DuplicateSubtrees path validates its staged entity
+// Test T19 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ORDINARY DuplicateSubtrees path validates its staged entity
 // UUIDs before mutation: a nil draw, the source root's own live id, and a
 // staged-id repeat are all rejected and retried to valid ids, then per-group
-// instance IDs follow with an operation-local repeat — in the documented
+// instance IDs follow with an operation-local repeat ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â in the documented
 // entity-UUIDs-first provider order. The copy gets EXACTLY the staged entity
 // ids and coherent per-group fresh instance ids; the source forest is
 // untouched.
@@ -3131,7 +3131,7 @@ TEST_CASE("Phase 8 W3: ordinary duplicate retries staged entity UUIDs past nil, 
 }
 
 // ---------------------------------------------------------------------------
-// Test T20 — the ORDINARY DuplicateSubtrees entity-UUID reservation exhausts
+// Test T20 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ORDINARY DuplicateSubtrees entity-UUID reservation exhausts
 // its finite budget against an always-colliding provider (every draw is the
 // source root's own live id) and fails with a stage-specific DuplicateUuid
 // BEFORE any destination mutation: EXACTLY 16 provider attempts, zero created
@@ -3179,12 +3179,12 @@ TEST_CASE("Phase 8 W3: ordinary duplicate entity-UUID reservation exhaustion lea
 }
 
 // ---------------------------------------------------------------------------
-// Test T21 — the ORDINARY PasteSubtreesFrom path validates its staged entity
+// Test T21 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ORDINARY PasteSubtreesFrom path validates its staged entity
 // UUIDs before mutation, INCLUDING the distinct-source rule: a provider draw
 // equal to a CLIPBOARD (source document) entity's id is rejected even though
 // that id is absent from the destination authoring index. Script: nil, the
 // source root's own live id, the clipboard root's re-stamped id, a staged-id
-// repeat, then the valid ids, then per-group instance ids with a repeat — all
+// repeat, then the valid ids, then per-group instance ids with a repeat ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â all
 // in the documented entity-UUIDs-first order. The pasted forest gets coherent
 // per-group fresh instance ids and the clipboard source is untouched.
 // ---------------------------------------------------------------------------
@@ -3292,7 +3292,7 @@ TEST_CASE("Phase 8 W3: ordinary paste retries staged entity UUIDs past nil, live
     CHECK(S4MemberInstanceId(f.manager, pasted[3]) == pB->instanceId);
     CHECK(S4MemberInstanceId(f.manager, pasted[4]) == pB->instanceId);
 
-    // Clipboard (source) untouched — pic/pmic counts and instance roots intact.
+    // Clipboard (source) untouched ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â pic/pmic counts and instance roots intact.
     CHECK(clipboard.ecs.registry.view<PrefabInstanceComponent>().size() == clipPicBefore);
     CHECK(clipboard.ecs.registry.view<PrefabMemberComponent>().size() == clipPmicBefore);
     CHECK(clipboard.ecs.registry.get<PrefabMemberComponent>(clipRootA).instanceId == clipARootId);
@@ -3302,9 +3302,9 @@ TEST_CASE("Phase 8 W3: ordinary paste retries staged entity UUIDs past nil, live
 }
 
 // ---------------------------------------------------------------------------
-// Test T22 — the ORDINARY PasteSubtreesFrom entity-UUID reservation exhausts
+// Test T22 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ORDINARY PasteSubtreesFrom entity-UUID reservation exhausts
 // its finite budget against an always-colliding provider (every draw is the
-// source root's own live id — double-forbidden since the clipboard root
+// source root's own live id ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â double-forbidden since the clipboard root
 // carries the same id and it is already in the destination index) and fails
 // with a stage-specific DuplicateUuid BEFORE any destination mutation: EXACTLY
 // 16 provider attempts, zero created entities, unchanged destination snapshot,
@@ -3363,7 +3363,7 @@ TEST_CASE("Phase 8 W3: ordinary paste entity-UUID reservation exhaustion leaves 
 }
 
 // ============================================================================
-// Phase 8 W3, S4 FIXUP — the shared clipboard-generation paste guard.
+// Phase 8 W3, S4 FIXUP ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the shared clipboard-generation paste guard.
 //
 // SceneEditorUI::PasteCommand used to bypass EditorSceneState's clipboard
 // guards entirely: it read the raw clipboard document + roots and called
@@ -3380,7 +3380,7 @@ TEST_CASE("Phase 8 W3: ordinary paste entity-UUID reservation exhaustion leaves 
 // ============================================================================
 
 // ---------------------------------------------------------------------------
-// Test T23 — the discriminating P1 case: materials A/B/C, copy the object on
+// Test T23 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the discriminating P1 case: materials A/B/C, copy the object on
 // B (index 1), delete it, and compaction remaps C onto index 1. Index 1 is
 // now IN RANGE but names C. The shared guard must reject via ClipboardStale
 // (resource generation changed) with zero draws and zero mutation. A direct,
@@ -3455,7 +3455,7 @@ TEST_CASE("Phase 8 W3: shared paste guard rejects an in-range stale material ind
 
     // The hole the shared guard closes: the manager's own range check cannot
     // see an in-range stale index. A direct paste of the same clipboard binds
-    // material index 1 — which now names C, not B.
+    // material index 1 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â which now names C, not B.
     manager.SetUuidProvider(&ids);
     std::size_t clipCount = 0;
     {
@@ -3483,7 +3483,7 @@ TEST_CASE("Phase 8 W3: shared paste guard rejects an in-range stale material ind
 }
 
 // ---------------------------------------------------------------------------
-// Test T24 — a texture-only resource change (meshes and materials untouched,
+// Test T24 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a texture-only resource change (meshes and materials untouched,
 // every material texture index still in range) must ALSO invalidate the
 // clipboard. The manager's range checks cannot see it: they validate material
 // INDICES, never the clipboard material's texture references. The shared
@@ -3559,7 +3559,7 @@ TEST_CASE("Phase 8 W3: texture-only resource generation change invalidates the c
 }
 
 // ---------------------------------------------------------------------------
-// Test T25 — a document generation change (the whole authoring document is
+// Test T25 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a document generation change (the whole authoring document is
 // replaced) invalidates the clipboard via the document-generation branch of
 // the shared guard.
 // ---------------------------------------------------------------------------
@@ -3609,7 +3609,7 @@ TEST_CASE("Phase 8 W3: document generation change invalidates the clipboard past
 }
 
 // ---------------------------------------------------------------------------
-// Test T26 — the valid-path control: a fresh clipboard pastes via the SAME
+// Test T26 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the valid-path control: a fresh clipboard pastes via the SAME
 // state-level method the UI calls. createdRoots and sourceToDuplicate come
 // back for undo, exactly one UUID is reserved, and the result records into an
 // EditorCommandHistory and undoes.
@@ -3686,14 +3686,14 @@ TEST_CASE("Phase 8 W3: valid clipboard paste reserves exactly, creates roots, an
 }
 
 // ============================================================================
-// Phase 8 W3, S4 FIXUP 2 (re-review 3, P1) — the overlapping-duplicate-root
+// Phase 8 W3, S4 FIXUP 2 (re-review 3, P1) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the overlapping-duplicate-root
 // reservation gap.
 //
 // PasteWithUuidsForCommand used to count each RAW clipboard root's subtree and
 // sum them (EditorSceneState.cpp:102-115), then reserve that total and hand it
-// to PasteSubtreesWithUuids. The manager canonicalizes the same roots first —
+// to PasteSubtreesWithUuids. The manager canonicalizes the same roots first ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 // duplicate roots are deduplicated and a selected descendant covered by a
-// selected ancestor is removed (SceneManager.cpp:35-71, 3965-3988) — and
+// selected ancestor is removed (SceneManager.cpp:35-71, 3965-3988) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â and
 // requires the supplied UUID count to equal that smaller canonical forest
 // (SceneManager.cpp:4009-4014). For a {parent, child} two-entity tree the old
 // counting reserved 2 + 1 = 3 UUIDs while the manager found 2 sources and
@@ -3716,7 +3716,7 @@ TEST_CASE("Phase 8 W3: valid clipboard paste reserves exactly, creates roots, an
 // ============================================================================
 
 // ---------------------------------------------------------------------------
-// Test T27 — overlapping {parent, child} and duplicate-root selections paste
+// Test T27 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â overlapping {parent, child} and duplicate-root selections paste
 // via the SAME state-level method the UI calls: the reservation uses the
 // canonical forest count (2), one canonical root is created, the full parent +
 // child source mapping comes back for undo, and the recorded command undoes.
@@ -3855,7 +3855,7 @@ TEST_CASE("Phase 8 W3: overlapping parent+child and duplicate-root clipboard sel
 }
 
 // ============================================================================
-// Phase 8 W3, S5 — the typed overrides query + marker-plan API
+// Phase 8 W3, S5 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the typed overrides query + marker-plan API
 // (implementation spec, W3 D3.10 and D6; Work step S5).
 //
 // S5 delivers the query API (IsOverridden / GetOverrides) and the prepare /
@@ -3888,7 +3888,7 @@ UUID S5NonMemberUuid(S2Fixture& f)
 
 // Adopt a GENUINE v5 .rt2scene (one prefab member, no overrides) into a bare
 // manager. The scene-registered member keeps its durable UUID and the document
-// keeps schemaVersion == 5 — the state a pre-override (W3-D6) authored file
+// keeps schemaVersion == 5 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the state a pre-override (W3-D6) authored file
 // has on disk. Returns the member's durable UUID.
 UUID S5AdoptV5MemberScene(SceneManager& mgr, const std::filesystem::path& dir,
                           const std::string& tag)
@@ -3908,7 +3908,7 @@ UUID S5AdoptV5MemberScene(SceneManager& mgr, const std::filesystem::path& dir,
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Test S5-Q — the query API answers empty/false on a fresh real instance, on
+// Test S5-Q ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the query API answers empty/false on a fresh real instance, on
 // a non-member entity, and on an absent UUID. The D3.9 contract requires that
 // no member starts marked; the query API must not treat "has a member
 // component" as "is overridden".
@@ -3956,7 +3956,7 @@ TEST_CASE("Phase 8 W3: override queries are empty until marked")
 }
 
 // ---------------------------------------------------------------------------
-// Test S5-A — marker plans add markers in canonical order, dedup re-marks,
+// Test S5-A ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â marker plans add markers in canonical order, dedup re-marks,
 // and promote the document schema on the first add (D6). The RAW
 // registry vector (what the writer emits verbatim) must be wire-sorted and
 // unique even though the batch was supplied in a different order: the writer
@@ -3968,12 +3968,12 @@ TEST_CASE("Phase 8 W3: override queries are empty until marked")
 //
 // Discrimination faults:
 //   Sequence a) insertion fault: insert via push_back instead of the sorted
-//   lower_bound insert — the raw vector is not in wire order -> is_sorted
+//   lower_bound insert ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the raw vector is not in wire order -> is_sorted
 //   CHECK below goes RED. (Inserting a duplicate while keeping sorted order
 //   is caught by the byte round-trip at the end.)
-//   Sequence b) promotion fault: remove the PromoteSchemaVersion call — the
+//   Sequence b) promotion fault: remove the PromoteSchemaVersion call ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
 //   schemaVersion stays below current -> the D6 REQUIRE goes RED.
-//   Sequence c) dedup fault: drop the alreadyPresent guard — a re-mark
+//   Sequence c) dedup fault: drop the alreadyPresent guard ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a re-mark
 //   duplicates the key, the raw size check goes RED (and the byte round-trip
 //   also fails on reload).
 // ---------------------------------------------------------------------------
@@ -4004,7 +4004,7 @@ TEST_CASE("Phase 8 W3: marker helper maintains canonical order and promotes sche
     REQUIRE(r.anyStateChange);
     REQUIRE(r.appliedMembers == 1);
 
-    // RAW vector must already be canonical — the writer emits it verbatim.
+    // RAW vector must already be canonical ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the writer emits it verbatim.
     const auto* raw = reg.try_get<PrefabMemberComponent>(rootHandle);
     REQUIRE(raw);
     REQUIRE(raw->overrides.size() == 3);
@@ -4049,7 +4049,7 @@ TEST_CASE("Phase 8 W3: marker helper maintains canonical order and promotes sche
 
     // Byte round-trip: a raw vector with a duplicate (the write path does not
     // dedup) would write the duplicate, and the reloaded doc would differ once
-    // the reader de-duplicates — so save -> load -> save must be byte-equal.
+    // the reader de-duplicates ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â so save -> load -> save must be byte-equal.
     const auto scenePath0 = dir / "s5a0.rt2scene";
     Error saveErr0;
     REQUIRE(SaveSceneForTest(f.manager.AuthoringDoc(), scenePath0, saveErr0));
@@ -4078,7 +4078,7 @@ TEST_CASE("Phase 8 W3: marker helper maintains canonical order and promotes sche
 }
 
 // ---------------------------------------------------------------------------
-// Test S5-B — removal edits (afterPresent=false) unmark, and undo semantics
+// Test S5-B ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â removal edits (afterPresent=false) unmark, and undo semantics
 // of the payload are satisfied at the helper level: applying the inverse
 // presence delta restores the prior membership. A removal of an absent key is
 // accepted but mutates nothing (no revision bump, no schema promotion).
@@ -4153,7 +4153,7 @@ TEST_CASE("Phase 8 W3: marker helper removal restores membership and respects th
 }
 
 // ---------------------------------------------------------------------------
-// Test S5-C — loud rejection, fail-atomic by construction. A batch mixing a
+// Test S5-C ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â loud rejection, fail-atomic by construction. A batch mixing a
 // valid edit with (a) an absent member UUID, (b) a member that is not a prefab
 // member, and (c) a non-overridable key fails the WHOLE prepared plan: no
 // marker lands, and membership, schema, dirty flag, and authoring revision
@@ -4197,7 +4197,7 @@ TEST_CASE("Phase 8 W3: marker helper rejects bad members and non-overridable key
 }
 
 // ---------------------------------------------------------------------------
-// Test S5-C2 — typed query key errors. An unknown wire and each of the five
+// Test S5-C2 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â typed query key errors. An unknown wire and each of the five
 // excluded canonical wires are distinguishable from a valid member query.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: override queries reject unknown and excluded keys as structured errors")
@@ -4215,7 +4215,7 @@ TEST_CASE("Phase 8 W3: override queries reject unknown and excluded keys as stru
     REQUIRE(q.error.detail.find("noSuchWire") != std::string::npos);
 
     // All five excluded wires are rejected regardless of the caller-supplied
-    // classification bit (forged true still rejected — bit not trusted).
+    // classification bit (forged true still rejected ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â bit not trusted).
     for (const char* wire : { "meshRef", "primitive", "importedSource",
                               "prefabInstance", "prefabMember" })
     {
@@ -6895,7 +6895,7 @@ REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(redo.value)).error.IsOk())
 }
 
 // ============================================================================
-// Phase 8 W3, S6-B — execute-on-commit composite commands.
+// Phase 8 W3, S6-B ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â execute-on-commit composite commands.
 //
 // Every in-scope command (visibility, name, motion add/remove, script
 // add/remove/path/rebind + typed field edits, material index, material-slot
@@ -6903,7 +6903,7 @@ REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(redo.value)).error.IsOk())
 // first override-marker insertion plus schema promotion inside ONE composite
 // commit during Execute, and Undo/Redo must restore the exact value, marker
 // vector, and schema with one revision bump per effective direction. These
-// tests drive the commands through EditorCommandHistory — the same
+// tests drive the commands through EditorCommandHistory ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the same
 // construct-then-Execute path the converted UI uses.
 // ============================================================================
 
@@ -7488,7 +7488,7 @@ TEST_CASE("Phase 8 W3 S6-B: camera alignment command is one composite commit")
 }
 
 // ============================================================================
-// Phase 8 W3, S6-B review fixup — six independent review findings, each with a
+// Phase 8 W3, S6-B review fixup ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â six independent review findings, each with a
 // named RED->GREEN discrimination proof.
 // ============================================================================
 
@@ -7525,11 +7525,11 @@ TEST_CASE("Phase 8 W3 S6-B fixup: malformed override vector fails capture with z
     CHECK(applied.error.code == rt2::core::Error::InvalidArgument);
     CHECK_FALSE(history.CanUndo());
     // Zero mutation: the name is unchanged and the document revision is
-    // untouched — the command could NOT silently degrade to value-only.
+    // untouched ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the command could NOT silently degrade to value-only.
     CHECK(reg.get<NameComponent>(rootHandle).name == beforeName);
     CHECK(f.manager.AuthoringRevision() == beforeRevision);
 
-    // Repair the vector and a FRESH command now succeeds — capture is
+    // Repair the vector and a FRESH command now succeeds ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â capture is
     // re-attempted (m_Captured was never set) and the malformed vector cannot
     // be papered over silently.
     pm->overrides.clear();
@@ -7550,7 +7550,7 @@ TEST_CASE("Phase 8 W3 S6-B fixup: malformed override vector fails capture with z
 // whose override was ABSENT, so a slot whose members carried mixed override
 // presence produced a partial before list and the composite rejected the edit
 // (UUID set cardinality differs from the live set). The fix captures a
-// COMPLETE UUID + optional fan-out — {uuid, std::nullopt} for every durable
+// COMPLETE UUID + optional fan-out ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â {uuid, std::nullopt} for every durable
 // imported member with an absent override.
 TEST_CASE("Phase 8 W3 S6-B fixup: material-slot Before fan-out includes every member")
 {
@@ -7618,7 +7618,7 @@ TEST_CASE("Phase 8 W3 S6-B fixup: material-slot Before fan-out includes every me
 
 // RED proof (fault): a locally added-then-removed wire correctly returns to
 // source with no marker, but removing an INHERITED prefab-authored component
-// also dropped the marker — so the prefab source could resurrect the component
+// also dropped the marker ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â so the prefab source could resurrect the component
 // on the next reconcile. The fix marks an inherited (not-overridden) removal as
 // explicitly overridden-absent, durably recording the local removal.
 TEST_CASE("Phase 8 W3 S6-B fixup: inherited motion/script removal marks override-absent")
@@ -7796,7 +7796,7 @@ TEST_CASE("Phase 8 W3 S6-B fixup: visibility factory rejects set mismatch and du
 
 // RED proof (fault): the converted UI paths called m_CommandHistory->Execute
 // directly, so a host using the documented default (no command history
-// installed) dereferenced null and crashed — or, in a mutate-then-record
+// installed) dereferenced null and crashed ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â or, in a mutate-then-record
 // revert, mutated outside history. The fix routes every converted action
 // through ExecuteCommandThroughHistory, which returns a structured
 // InvalidRuntimeState Failure before the scene is touched.
@@ -7839,7 +7839,7 @@ TEST_CASE("Phase 8 W3 S6-B fixup: null history fails with a structured diagnosti
 }
 
 // ============================================================================
-// Phase 8 W3, S6-B re-review residual — every public MarkerSpec key is
+// Phase 8 W3, S6-B re-review residual ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â every public MarkerSpec key is
 // validated against the frozen table before the ordinary-entity skip.
 // ============================================================================
 
@@ -7868,7 +7868,7 @@ private:
 // entity BEFORE it canonicalizes the wire or checks the overridable bit
 // (SceneManager.cpp:5858-5865). A transaction against an ordinary entity with
 // an UNKNOWN marker wire therefore had its marker silently dropped and
-// proceeded as a value-only edit — the same bad key failed loudly only for a
+// proceeded as a value-only edit ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the same bad key failed loudly only for a
 // prefab member. The fix validates every MarkerSpec key against the table
 // (FindComponentByWire) and rejects unknown wires before the NotPrefabMember
 // skip, so both entity classes fail identically with zero mutation.
@@ -7904,7 +7904,7 @@ TEST_CASE("Phase 8 W3 S6-B fixup: unknown marker key on an ordinary entity fails
     REQUIRE_FALSE(applied.success);
     CHECK(applied.error.code == rt2::core::Error::InvalidArgument);
     CHECK(applied.error.detail.find("bogus.wire") != std::string::npos);
-    // Zero value/revision/schema/notification/history change — the command
+    // Zero value/revision/schema/notification/history change ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the command
     // could NOT silently degrade to a value-only edit.
     CHECK(reg.get<NameComponent>(plainHandle).name == beforeName);
     CHECK(f.manager.AuthoringRevision() == beforeRevision);
@@ -7912,7 +7912,7 @@ TEST_CASE("Phase 8 W3 S6-B fixup: unknown marker key on an ordinary entity fails
     CHECK_FALSE(history.CanUndo());
 
     // Entity-class independence: the SAME bad key on a prefab member fails
-    // identically — the membership query no longer gates key validation.
+    // identically ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the membership query no longer gates key validation.
     auto badMember = std::make_unique<TestTransactionCommand>(
         std::vector<PrefabValueEdit>{
             { PrefabValueKind::EntityName, root, PrefabMarkerDirection::After,
@@ -7929,7 +7929,7 @@ TEST_CASE("Phase 8 W3 S6-B fixup: unknown marker key on an ordinary entity fails
 }
 
 // RED proof (fault): same boundary hole, same silent value-only degradation,
-// for an EXCLUDED table wire (meshRef — present in the frozen table but not
+// for an EXCLUDED table wire (meshRef ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â present in the frozen table but not
 // overridable). On the pre-fix code an ordinary entity dropped the excluded
 // marker and committed the value edit; the fix rejects excluded wires with a
 // structured InvalidArgument before the ordinary-entity skip.
@@ -7989,7 +7989,7 @@ TEST_CASE("Phase 8 W3 S6-B fixup: excluded marker key on an ordinary entity fail
 }
 
 // ============================================================================
-// Phase 8 W3, S6-C � non-transform live-preview composite sessions.
+// Phase 8 W3, S6-C ÃƒÂ¯Ã‚Â¿Ã‚Â½ non-transform live-preview composite sessions.
 //
 // The four live-preview editors (light, camera, motion velocity,
 // Int/Float/Vec3/Color script fields) no longer mutate the scene per frame
@@ -8127,7 +8127,7 @@ TEST_CASE("Phase 8 W3 S6-C: light live preview rolling source and one-command cl
     CHECK(session.LastEffectiveResult().effective);
 
 // Frame two: committed-a -> b. The staged source is the COMMITTED value,
-    // not the frame-zero origin � re-staging the origin would fail Prepare
+    // not the frame-zero origin ÃƒÂ¯Ã‚Â¿Ã‚Â½ re-staging the origin would fail Prepare
     // with "light source differs from live state".
     const LightComponent b{ glm::vec3(0.0f, 1.0f, 0.0f), 3.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
     const auto revisionAfterFrameOne = f.manager.AuthoringRevision();
@@ -8411,7 +8411,7 @@ TEST_CASE("Phase 8 W3 S6-C: return-to-start close compensates with no history")
     CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
 
     // Drag back to the exact origin value: effective frame, but the close
-    // record factory suppresses (value == origin) � the S6-C close must then
+    // record factory suppresses (value == origin) ÃƒÂ¯Ã‚Â¿Ã‚Â½ the S6-C close must then
     // compensate the transient marker/schema work.
     const auto rBack = session.Preview(f.manager, PrefabValuePayload{ origin });
     REQUIRE(rBack.success);
@@ -8537,7 +8537,7 @@ TEST_CASE("Phase 8 W3 S6-C: stale marker between last preview and escape surface
     REQUIRE(session.HadEffectiveFrame());
 
     // Recovery: reconcile live membership back to the state the committed
-    // preview left behind, then the escape restore compensates cleanly —
+    // preview left behind, then the escape restore compensates cleanly ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
     // value restored to origin, marker removed, origin schema back, no
     // history.
     pm->overrides.push_back(lightKey);
@@ -8688,7 +8688,7 @@ TEST_CASE("Phase 8 W3 S6-C: ordinary entity preview is value-only and undoable")
 // ---------------------------------------------------------------------------
 // S6-C independent-review fixup (b5767d0): honest product-level discrimination
 // for the lifecycle contract. These tests drive the CPU-linkable close core
-// (PreviewSessionClose) and CompositePreviewSession directly — the ImGui glue
+// (PreviewSessionClose) and CompositePreviewSession directly ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ImGui glue
 // is not compiled into RT2Tests (see the corrected preamble above).
 // ---------------------------------------------------------------------------
 
@@ -8930,7 +8930,7 @@ TEST_CASE("Phase 8 W3 S6-C: finalize-before-align keeps camera history exactly u
     // RED discrimination: executing the align BEFORE finalizing the active
     // preview strands the close. The finalize preflight now detects that the
     // live camera diverged from the rolling final (the align changed it) and
-    // REFUSES to record — no stale entry ever poisons history (S6-C re-review,
+    // REFUSES to record ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no stale entry ever poisons history (S6-C re-review,
     // P1 finding 1). The compensate attempt also fails source validation, so
     // the session stays open (PendingRetry) with ownership retained.
     CompositePreviewSession bad;
@@ -9722,7 +9722,7 @@ TEST_CASE("Phase 8 W3 S6-C: cross-component admission orders Name after an open 
     // ---- RED: WITHOUT admission the Name command records FIRST, and the Light
     // preview is finalized after it. Undo then pops Light first and its attempt
     // to restore the exact v5 origin is rejected while the Name override remains
-    // — history poisoned.
+    // ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â history poisoned.
     {
         CompositePreviewSession light;
         REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
@@ -9804,4 +9804,479 @@ TEST_CASE("Phase 8 W3 S6-C: admission rejects a Name command while a preview is 
     CHECK_FALSE(history.CanUndo());
 
     std::filesystem::remove_all(dir);
+}
+
+// S6-C closure-ordering, P1 finding 1: Duplicate and Paste copy persisted
+// PrefabMemberComponent.overrides, which participate in schema state, so they
+// must be admitted BEFORE any UUID reservation or destination mutation. A v5
+// Light preview shows that admitted chronological history undoes exactly, while
+// the un-admitted order poisons history the way the Name RED proof did.
+namespace
+{
+
+// Fresh prefab member with a Light at document schema v5 (one promotion bump
+// short of the current schema). `f` is caller-held (S2Fixture is not movable);
+// returns the member handle, UUID, light key, light origin, and the temp dir.
+struct S6CEndToEnd
+{
+    entt::entity handle;
+    rt2::core::UUID target;
+    PrefabComponentKey lightKey;
+    LightComponent origin;
+    std::filesystem::path dir;
+};
+
+S6CEndToEnd S6CEndToEndSetup(S2Fixture& f, const char* tag)
+{
+    S6CEndToEnd out;
+    out.dir = S2UniqueTempDir(tag);
+    const auto [rootHandle, childHandle] = f.MakeInstance(out.dir);
+    out.handle = rootHandle;
+    auto& reg = f.manager.GetECS().registry;
+    out.target = H6B(reg, rootHandle);
+    out.lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    out.origin = reg.get<LightComponent>(rootHandle);
+    f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("Phase 8 W3 S6-C: duplicate after an open Light preview is admitted chronologically")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_dup_admit");
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const LightComponent origin = s.origin;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN: the open Light preview is finalized (admission) BEFORE the
+    // duplicate's UUID reservation. History is chronological [light, duplicate]
+    // and undoes exactly, ending at the legal v5 origin.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slots[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, slots, 1, admit);
+        REQUIRE(admit.allClosed);
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+
+        // Host-style duplicate AFTER admission (the mutate-then-RecordApplied
+        // mechanism is preserved).
+        const auto count = f.manager.CountCanonicalSubtreeEntities({ root });
+        REQUIRE(count.IsOk());
+        auto knownUuids = f.manager.ReserveKnownUuids(count.value);
+        auto dup = f.manager.DuplicateSubtreesWithUuids({ root }, knownUuids);
+        REQUIRE(dup.mutation.success);
+        const auto dupRootUuid = dup.createdRoots.front();
+        auto snapshot = f.manager.CaptureSubtreeSnapshot(dup.createdRoots);
+        REQUIRE_FALSE(snapshot.entities.empty());
+        auto cmd = MakeDuplicateSubtreesCommand(std::move(snapshot), dup.createdRoots);
+        REQUIRE(cmd);
+        REQUIRE(history.RecordApplied(std::move(cmd), f.manager, dup.mutation).effective);
+
+        // Chronological undo: duplicate first (light untouched), then light.
+        REQUIRE(history.Undo(f.manager).success);
+        REQUIRE(static_cast<uint32_t>(f.manager.FindEntityByUuid(dupRootUuid))
+            == static_cast<uint32_t>(entt::null));
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), a));
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), origin));
+        REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    // ---- RED: WITHOUT admission the duplicate records first (its copied
+    // override rides on root's live, uncommitted lightKey) and the Light preview
+    // is finalized after; Undo pops Light first and its exact v5 restore is
+    // rejected while the duplicate's override remains ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â history poisoned.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+        EditorCommandHistory history;
+        const auto count = f.manager.CountCanonicalSubtreeEntities({ root });
+        REQUIRE(count.IsOk());
+        auto knownUuids = f.manager.ReserveKnownUuids(count.value);
+        auto dup = f.manager.DuplicateSubtreesWithUuids({ root }, knownUuids);
+        REQUIRE(dup.mutation.success);
+        auto snapshot = f.manager.CaptureSubtreeSnapshot(dup.createdRoots);
+        auto cmd = MakeDuplicateSubtreesCommand(std::move(snapshot), dup.createdRoots);
+        REQUIRE(cmd);
+        REQUIRE(history.RecordApplied(std::move(cmd), f.manager, dup.mutation).effective);
+        REQUIRE(FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, light).recorded);
+
+        const auto badUndo = history.Undo(f.manager);
+        REQUIRE_FALSE(badUndo.success);
+        const bool downgradeRejected =
+            badUndo.error.detail.find("downgrade") != std::string::npos
+            || badUndo.error.detail.find("override") != std::string::npos;
+        CHECK(downgradeRejected);
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    // ---- PendingRetry rejection: when the Light preview cannot finalize, the
+    // admission seam returns false, so the host aborts the duplicate BEFORE any
+    // UUID reservation ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no entity creation, history, owner, or recovery-error
+    // change.
+    {
+        // Fresh state (the RED left the document overridden + history cleared).
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        // Clear the light override that the RED scenario left behind.
+        auto* pm = reg.try_get<PrefabMemberComponent>(s.handle);
+        REQUIRE(pm);
+        pm->overrides.clear();
+        reg.get<LightComponent>(s.handle) = origin;
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        const auto rolling = light.RollingValue();
+        const auto entityCountBefore = f.manager.GetEntityCount();
+        reg.get<LightComponent>(s.handle).intensity = 99.0f; // strands finalize
+
+        EditorCommandHistory history;
+        unsigned int owner = 7;
+        PreviewSessionSlot slots[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, slots, 1, admit);
+        REQUIRE_FALSE(admit.allClosed);
+        REQUIRE(admit.slots[0].outcome.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        CHECK_FALSE(admit.slots[0].outcome.lastError.error.detail.empty());
+        CHECK(owner == 7);
+        REQUIRE(light.IsOpen());
+        CHECK(S6CLightEqual(std::get<LightComponent>(light.RollingValue()),
+            std::get<LightComponent>(rolling)));
+        CHECK_FALSE(history.CanUndo());
+        CHECK(f.manager.GetEntityCount() == entityCountBefore);
+    }
+
+    std::filesystem::remove_all(s.dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: paste after an open Light preview is admitted chronologically")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_paste_admit");
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const LightComponent origin = s.origin;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN: the open Light preview is finalized (admission) before the
+    // clipboard copy/paste, so the pasted override rides on a recorded overlay.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slots[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, slots, 1, admit);
+        REQUIRE(admit.allClosed);
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+
+        EditorSceneState state;
+        rt2::core::Error err;
+        REQUIRE(state.Copy(f.manager, { root }, err));
+        const auto paste = state.PasteWithUuidsForCommand(f.manager);
+        REQUIRE(paste.mutation.success);
+        REQUIRE(paste.createdRoots.size() == 1);
+        auto snapshot = f.manager.CaptureSubtreeSnapshot(paste.createdRoots);
+        REQUIRE_FALSE(snapshot.entities.empty());
+        auto cmd = MakePasteSubtreesCommand(std::move(snapshot), paste.createdRoots);
+        REQUIRE(cmd);
+        REQUIRE(history.RecordApplied(std::move(cmd), f.manager, paste.mutation).effective);
+
+        // Chronological undo: paste first, then light.
+        REQUIRE(history.Undo(f.manager).success);
+        REQUIRE(static_cast<uint32_t>(f.manager.FindEntityByUuid(paste.createdRoots.front()))
+            == static_cast<uint32_t>(entt::null));
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), a));
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), origin));
+        REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+    }
+
+    // ---- RED: WITHOUT admission, the clipboard is taken while the Light preview
+    // is live (its uncommitted lightKey rides into the pasted member), the paste
+    // records first, the Light finalizes after, and the first Undo (Light) fails
+    // the v5 downgrade while the pasted override remains.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+        EditorCommandHistory history;
+        EditorSceneState state;
+        rt2::core::Error err;
+        REQUIRE(state.Copy(f.manager, { root }, err));
+        const auto paste = state.PasteWithUuidsForCommand(f.manager);
+        REQUIRE(paste.mutation.success);
+        auto snapshot = f.manager.CaptureSubtreeSnapshot(paste.createdRoots);
+        auto cmd = MakePasteSubtreesCommand(std::move(snapshot), paste.createdRoots);
+        REQUIRE(cmd);
+        REQUIRE(history.RecordApplied(std::move(cmd), f.manager, paste.mutation).effective);
+        REQUIRE(FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, light).recorded);
+
+        const auto badUndo = history.Undo(f.manager);
+        REQUIRE_FALSE(badUndo.success);
+        const bool downgradeRejected =
+            badUndo.error.detail.find("downgrade") != std::string::npos
+            || badUndo.error.detail.find("override") != std::string::npos;
+        CHECK(downgradeRejected);
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    std::filesystem::remove_all(s.dir);
+}
+
+// S6-C closure-ordering, P1 finding 2: at most one healthy S6-C preview is
+// open, and admission finalizes existing sessions in PHYSICAL gesture order.
+// These v5 cases begin Camera then Light (and the reverse), close in physical
+// order, and prove an exact two-step Undo with a legal schema downgrade ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â while
+// the fixed enum order (or physical reversal) is proven RED.
+TEST_CASE("Phase 8 W3 S6-C: Camera-then-Light physical order undoes exactly")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_camlgt");
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const auto cameraKey = PrefabComponentKeyFor<CameraComponent>::value;
+    const LightComponent originLight = s.origin;
+    const CameraComponent originCam{ 60.0f, 0.5f, 5.0f, { 0.0f, 0.0f, -1.0f } };
+    reg.emplace_or_replace<CameraComponent>(s.handle, originCam);
+    const LightComponent lightA{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const CameraComponent camA{ 50.0f, 0.25f, 8.0f, { 0.0f, 0.0f, -1.0f } };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    const auto cameraReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CCameraReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN: Camera previews FIRST (physical), the Light session begins
+    // second (its origin is the post-Camera schema), and admission finalizes in
+    // physical order [camera, light].
+    {
+        CompositePreviewSession camera;
+        REQUIRE(camera.Begin(f.manager, root, PrefabValueKind::CameraProperties,
+            cameraKey, originCam, cameraReader));
+        REQUIRE(camera.Preview(f.manager, PrefabValuePayload{ camA }).effective);
+        // The host one-open rule finalizes the open Camera before the Light Begin.
+        EditorCommandHistory history;
+        unsigned int camOwner = 0;
+        PreviewSessionSlot camSlot[1] = {
+            { PreviewSessionKind::Camera, &camera, &camOwner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult camAdmit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, camSlot, 1, camAdmit);
+        REQUIRE(camAdmit.allClosed);
+        REQUIRE(camAdmit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(camera.IsOpen());
+
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, originLight, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ lightA }).effective);
+        unsigned int lightOwner = 0;
+        PreviewSessionSlot lightSlot[1] = {
+            { PreviewSessionKind::Light, &light, &lightOwner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult lightAdmit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, lightSlot, 1, lightAdmit);
+        REQUIRE(lightAdmit.allClosed);
+        REQUIRE(lightAdmit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+
+        // Two-step undo: Light (top) then Camera ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the legal v5 downgrade only
+        // happens after the last override is gone.
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), originLight));
+        REQUIRE(f.manager.IsOverridden(root, cameraKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+        REQUIRE(history.Undo(f.manager).success);
+        const auto camRestored = reg.get<CameraComponent>(s.handle);
+        CHECK(camRestored.verticalFOV == originCam.verticalFOV);
+        CHECK(camRestored.aperture == originCam.aperture);
+        REQUIRE_FALSE(f.manager.IsOverridden(root, cameraKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+    }
+
+    // ---- RED: with BOTH sessions open (no one-open rule) the fixed-slot-order
+    // reducer finalizes Light before Camera even though the physical gesture was
+    // Camera first; the first Undo pops Camera and fails the v5 downgrade while
+    // the Light marker remains.
+    {
+        CompositePreviewSession camera;
+        REQUIRE(camera.Begin(f.manager, root, PrefabValueKind::CameraProperties,
+            cameraKey, originCam, cameraReader));
+        REQUIRE(camera.Preview(f.manager, PrefabValuePayload{ camA }).effective);
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, originLight, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ lightA }).effective);
+
+        EditorCommandHistory history;
+        unsigned int lightOwner = 0, camOwner = 0;
+        PreviewSessionSlot slots[2] = {
+            { PreviewSessionKind::Light, &light, &lightOwner, true },
+            { PreviewSessionKind::Camera, &camera, &camOwner, true },
+        };
+        PreviewSessionsBeforeActionResult close;
+        ClosePreviewSessionsBeforeAction(f.manager, history, slots, 2, close);
+        REQUIRE(close.allClosed); // both finalizable; order is the bug
+
+        const auto badUndo = history.Undo(f.manager);
+        REQUIRE_FALSE(badUndo.success);
+        const bool downgradeRejected =
+            badUndo.error.detail.find("downgrade") != std::string::npos
+            || badUndo.error.detail.find("override") != std::string::npos;
+        CHECK(downgradeRejected);
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    std::filesystem::remove_all(s.dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: Light-then-Camera physical order undoes exactly")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_lgtcam");
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const auto cameraKey = PrefabComponentKeyFor<CameraComponent>::value;
+    const LightComponent originLight = s.origin;
+    const CameraComponent originCam{ 60.0f, 0.5f, 5.0f, { 0.0f, 0.0f, -1.0f } };
+    reg.emplace_or_replace<CameraComponent>(s.handle, originCam);
+    const LightComponent lightA{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const CameraComponent camA{ 50.0f, 0.25f, 8.0f, { 0.0f, 0.0f, -1.0f } };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    const auto cameraReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CCameraReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN: Light previews FIRST, Camera second; physical finalize order
+    // [light, camera]; two-step undo ends exactly at the v5 origin.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, originLight, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ lightA }).effective);
+        EditorCommandHistory history;
+        unsigned int lightOwner = 0;
+        PreviewSessionSlot lightSlot[1] = {
+            { PreviewSessionKind::Light, &light, &lightOwner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult lightAdmit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, lightSlot, 1, lightAdmit);
+        REQUIRE(lightAdmit.allClosed);
+        REQUIRE(lightAdmit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+
+        CompositePreviewSession camera;
+        REQUIRE(camera.Begin(f.manager, root, PrefabValueKind::CameraProperties,
+            cameraKey, originCam, cameraReader));
+        REQUIRE(camera.Preview(f.manager, PrefabValuePayload{ camA }).effective);
+        unsigned int camOwner = 0;
+        PreviewSessionSlot camSlot[1] = {
+            { PreviewSessionKind::Camera, &camera, &camOwner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult camAdmit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, camSlot, 1, camAdmit);
+        REQUIRE(camAdmit.allClosed);
+        REQUIRE(camAdmit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(camera.IsOpen());
+
+        REQUIRE(history.Undo(f.manager).success);
+        const auto camRestored = reg.get<CameraComponent>(s.handle);
+        CHECK(camRestored.verticalFOV == originCam.verticalFOV);
+        CHECK(camRestored.aperture == originCam.aperture);
+        REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), originLight));
+        REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+    }
+
+    // ---- RED: physical reversal ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â both open, Camera finalized before Light.
+    // Undo pops Light first and fails the v5 downgrade while the Camera marker
+    // remains.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, originLight, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ lightA }).effective);
+        CompositePreviewSession camera;
+        REQUIRE(camera.Begin(f.manager, root, PrefabValueKind::CameraProperties,
+            cameraKey, originCam, cameraReader));
+        REQUIRE(camera.Preview(f.manager, PrefabValuePayload{ camA }).effective);
+
+        EditorCommandHistory history;
+        unsigned int lightOwner = 0, camOwner = 0;
+        PreviewSessionSlot slots[2] = {
+            { PreviewSessionKind::Camera, &camera, &camOwner, true },
+            { PreviewSessionKind::Light, &light, &lightOwner, true },
+        };
+        PreviewSessionsBeforeActionResult close;
+        ClosePreviewSessionsBeforeAction(f.manager, history, slots, 2, close);
+        REQUIRE(close.allClosed);
+
+        const auto badUndo = history.Undo(f.manager);
+        REQUIRE_FALSE(badUndo.success);
+        const bool downgradeRejected =
+            badUndo.error.detail.find("downgrade") != std::string::npos
+            || badUndo.error.detail.find("override") != std::string::npos;
+        CHECK(downgradeRejected);
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    std::filesystem::remove_all(s.dir);
 }

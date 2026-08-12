@@ -94,6 +94,12 @@ bool SceneEditorUI::AnyPreviewRecoveryPending() const
 	return false;
 }
 
+bool SceneEditorUI::AnyPreviewSessionOpen() const
+{
+	return m_LightSession.IsOpen() || m_CameraSession.IsOpen()
+		|| m_MotionVelocitySession.IsOpen() || m_ScriptFieldSession.IsOpen();
+}
+
 const SceneEditorUI::PreviewRecoveryState* SceneEditorUI::FirstPendingRecovery() const
 {
 	for (const auto& state : m_PreviewRecoveryByKind)
@@ -535,6 +541,12 @@ void SceneEditorUI::DeleteSelectionCommand()
 void SceneEditorUI::DuplicateSelectionCommand()
 {
 	if (!m_SceneMgr || !m_CommandHistory) return;
+	// Duplicated prefab members carry override vectors that participate in
+	// schema state, so admission must close every open preview BEFORE any UUID
+	// reservation or destination mutation; on a pending slot this aborts with
+	// zero UUID draws, entity creation, history, owner, or recovery-error change
+	// (S6-C closure-ordering P1 finding 1).
+	if (!AdmitAuthoringMutation()) return;
 	const auto ordered = m_State.Selection().Ordered();
 	if (ordered.empty()) return;
 	auto countResult = m_SceneMgr->CountCanonicalSubtreeEntities(ordered);
@@ -556,6 +568,12 @@ void SceneEditorUI::DuplicateSelectionCommand()
 void SceneEditorUI::PasteCommand(const std::optional<rt2::core::UUID>& parent)
 {
 	if (!m_SceneMgr || !m_CommandHistory) return;
+	// Pasted prefab members carry override vectors that participate in schema
+	// state, so admission must close every open preview BEFORE any UUID
+	// reservation or destination mutation; on a pending slot this aborts with
+	// zero UUID draws, entity creation, history, owner, or recovery-error change
+	// (S6-C closure-ordering P1 finding 1).
+	if (!AdmitAuthoringMutation()) return;
 	// All clipboard-generation validation lives in EditorSceneState. The UI
 	// never duplicates generation checks: a stale clipboard is surfaced as a
 	// mutation error BEFORE any snapshot, command, or history mutation.
@@ -1172,7 +1190,8 @@ void SceneEditorUI::RenderInspector()
 				if (ImGui::DragFloat3("Linear Velocity", &vel[0], 0.1f))
 					velChanged = true;
 				if (ImGui::IsItemActivated() && !m_MotionVelocitySession.IsOpen() && m_Editable
-					&& !AnyPreviewRecoveryPending())
+					&& !AnyPreviewRecoveryPending()
+					&& (!AnyPreviewSessionOpen() || AdmitAuthoringMutation()))
 				{
 					if (m_MotionVelocitySession.Begin(*m_SceneMgr, targetUuid,
 						PrefabValueKind::MotionState,
@@ -1763,8 +1782,12 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 		{
 			// Quarantine: while any unresolved recovery is pending, no new
 			// preview may begin (final-closure P1 finding 2); the pending
-			// session must be retried/reconciled/replaced/removed first.
-			if (!m_LightSession.IsOpen() && m_Editable && !AnyPreviewRecoveryPending())
+			// session must be retried/reconciled/replaced/removed first. At
+			// most one S6-C preview may be open: before beginning on a
+			// different kind/target, all existing sessions are finalized
+			// through shared admission (closure-ordering P1 finding 2).
+			if (!m_LightSession.IsOpen() && m_Editable && !AnyPreviewRecoveryPending()
+				&& (!AnyPreviewSessionOpen() || AdmitAuthoringMutation()))
 			{
 				// Capture the immutable origin (value + override-set
 				// membership + document schema) BEFORE any preview frame of
@@ -1930,8 +1953,10 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 		if (w) changedWidgetId = widgetId;
 		if (ImGui::IsItemActivated())
 		{
-			// Quarantine: no new preview while any recovery is pending.
-			if (!m_CameraSession.IsOpen() && m_Editable && !AnyPreviewRecoveryPending())
+			// Quarantine: no new preview while any recovery is pending; at most one
+			// S6-C preview may be open (finalize existing sessions first).
+			if (!m_CameraSession.IsOpen() && m_Editable && !AnyPreviewRecoveryPending()
+				&& (!AnyPreviewSessionOpen() || AdmitAuthoringMutation()))
 			{
 				if (m_CameraSession.Begin(*m_SceneMgr, targetUuid,
 					PrefabValueKind::CameraProperties,
@@ -2380,9 +2405,11 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 			const unsigned int widgetId = ImGui::GetID("##val");
 			if (ImGui::IsItemActivated())
 			{
-				// Quarantine: no new preview while any recovery is pending.
+				// Quarantine: no new preview while any recovery is pending; at most one
+				// S6-C preview may be open (finalize existing sessions first).
 				if (!m_ScriptFieldSession.IsOpen() && m_Editable
-					&& !AnyPreviewRecoveryPending())
+					&& !AnyPreviewRecoveryPending()
+					&& (!AnyPreviewSessionOpen() || AdmitAuthoringMutation()))
 				{
 					if (m_ScriptFieldSession.Begin(*m_SceneMgr, targetUuid,
 						PrefabValueKind::ScriptState,
