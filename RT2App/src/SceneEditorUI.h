@@ -10,6 +10,7 @@
 #include "EditorPropertyCommands.h"
 #include "PropertyEditSession.h"
 #include "CompositePreviewSession.h"
+#include "PreviewSessionClose.h"
 #include "TransformEditing.h"
 #include "core/UUID.h"
 #include <functional>
@@ -122,8 +123,11 @@ public:
 	{ return m_CommandHistory ? m_CommandHistory->RedoDescription() : std::string{}; }
 
 	// Set whether authoring edits are allowed. During Play, the UI is
-	// read-only (bound to the runtime scene).
-	void SetEditable(bool editable) { m_Editable = editable; }
+	// read-only (bound to the runtime scene). Leaving editability finalizes or
+	// compensates any open live-preview session so no authored preview
+	// value/marker/schema is orphaned without a history entry (S6-C fixup,
+	// P1 finding 4 — editability is never discard proof).
+	void SetEditable(bool editable);
 	bool IsEditable() const { return m_Editable; }
 
 	void SelectUuid(const rt2::core::UUID& uuid) { m_State.Selection().SelectOnly(uuid); }
@@ -204,25 +208,41 @@ private:
 	// outcome remains. PropertyEditSession handles deferred-close ordering and
 	// defensive guards for the construct-then-Execute paths.
 	void DiscardAllPropertySessions();
-	// S6-C: which command family a CompositePreviewSession finalizes into.
-	enum class PreviewSessionKind { Light, Camera, Motion, Script };
-	// Close a live-preview session: record ONE command (immutable origin ->
-	// rolling final, explicit capture attached, applied already by the
-	// preview frames) via RecordApplied, or discard on zero-churn.
-	void FinalizePreviewSession(PreviewSessionKind kind, CompositePreviewSession& session);
-	// Escape/return-to-start: compensate the preview frames by replaying the
-	// gesture's explicit capture in the Before direction (removes only this
-	// gesture's markers, restores the origin schema + value). Records no
-	// history. On failure the session stays open and the failure surfaces.
-	void RestorePreviewSession(PreviewSessionKind kind, CompositePreviewSession& session);
-	// Build the origin->final command for a preview session, attaching its
-	// immutable explicit capture. suppressNoOp mirrors the MakeSet*IfEffective
-	// suppression (used by the record path); when false the command is built
-	// unconditionally (used by the compensate/restore path, where even a
-	// value-equal origin->final must still roll back markers + schema).
-	std::unique_ptr<IEditorCommand> BuildPreviewSessionCommand(
-		PreviewSessionKind kind, const CompositePreviewSession& session,
-		bool suppressNoOp) const;
+
+	// S6-C host glue. The two-phase close decision machine lives in the
+	// CPU-linkable PreviewSessionClose core (FinalizePreviewSession /
+	// RestorePreviewSession / BuildPreviewSessionCommand); the ImGui layer
+	// below is thin glue that routes outcomes through ApplyMutation and keeps
+	// owning-widget ownership alive while a session remains open:
+	//   - the owning widget ID is cleared ONLY after the session actually
+	//     closed (recorded/compensated/discarded) — a failed close keeps it,
+	//     so the stranded session stays retryable and finalizable (P1 finding 2);
+	//   - a close that failed against a live target surfaces a pending-recovery
+	//     path that retries or discards while preserving target/origin/owner.
+	// Close a live-preview session (finalize=true) or compensate it
+	// (finalize=false) via the shared core, then update owning-widget /
+	// pending-recovery state from the outcome. Clearing the owning widget ID
+	// is conditional on the session actually closing.
+	PreviewSessionCloseOutcome ClosePreviewSession(
+		PreviewSessionKind kind, CompositePreviewSession& session,
+		unsigned int& owningWidgetId, bool finalize);
+	// Finalize or restore an open live-preview session BEFORE a discrete
+	// command (camera Align, script path/rebind/remove, motion add/remove,
+	// discrete script fields) acts on the same component. Returns true when no
+	// open session remains (proceed); false when the close stayed pending and
+	// the discrete action must be aborted (P1 finding 3).
+	bool ClosePreviewBeforeDiscrete(PreviewSessionKind kind,
+		CompositePreviewSession& session, unsigned int& owningWidgetId);
+	// Finish every currently open live-preview session when leaving
+	// editability. Editability is never discard proof (P1 finding 4).
+	void FinalizeOpenPreviewSessions();
+	// Render the pending-recovery banner (a closed-but-failed session awaiting
+	// retry or discard).
+	void RenderPreviewRecoveryBar();
+	unsigned int& OwningWidgetIdFor(PreviewSessionKind kind);
+	// Route a close outcome through the host sync path when the close mutated
+	// the scene.
+	void ApplyCloseOutcome(const PreviewSessionCloseOutcome& outcome);
 	// Capture the current MaterialOverrideComponent state of every imported
 	// entity referencing `slotIndex` (UUID -> override). Used to snapshot
 	// the before-overrides when a material-properties session opens and the
@@ -343,6 +363,20 @@ private:
 	unsigned int m_MaterialPropertiesSessionOwningWidgetId = 0;
 	unsigned int m_MotionVelocitySessionOwningWidgetId = 0;
 	unsigned int m_ScriptFieldSessionOwningWidgetId = 0;
+
+	// Pending-recovery surfacing (S6-C fixup, P1 finding 2): a live-preview
+	// session whose close failed against a still-live target. The owning
+	// widget ID above is NOT cleared while a session is pending, so a retry
+	// (or discard) through the recovery bar keeps target/origin/owner intact.
+	// `kind` + `finalize` remember which close to retry.
+	struct PreviewRecoveryState
+	{
+		bool active = false;
+		PreviewSessionKind kind = PreviewSessionKind::Light;
+		bool finalize = true; // close mode to retry (true = finalize, false = restore)
+		std::string detail;
+	};
+	PreviewRecoveryState m_PreviewRecovery;
 	// Before-override snapshot captured when the material-properties session
 	// opens. The after-overrides are read live at close time. The session
 	// itself stores the SceneMaterial before/after; this stores the

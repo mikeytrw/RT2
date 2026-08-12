@@ -22,7 +22,53 @@ void SceneEditorUI::RenderPanels()
 {
 	if (m_ShowOutliner) RenderOutliner();
 	if (m_ShowInspector) RenderInspector();
+	RenderPreviewRecoveryBar();
 	DrawImportOptionsModal();
+}
+
+void SceneEditorUI::RenderPreviewRecoveryBar()
+{
+	if (!m_PreviewRecovery.active) return;
+	CompositePreviewSession* session = nullptr;
+	unsigned int* owningWidgetId = nullptr;
+	switch (m_PreviewRecovery.kind)
+	{
+	case PreviewSessionKind::Light:
+		session = &m_LightSession; owningWidgetId = &m_LightSessionOwningWidgetId; break;
+	case PreviewSessionKind::Camera:
+		session = &m_CameraSession; owningWidgetId = &m_CameraSessionOwningWidgetId; break;
+	case PreviewSessionKind::Motion:
+		session = &m_MotionVelocitySession; owningWidgetId = &m_MotionVelocitySessionOwningWidgetId; break;
+	case PreviewSessionKind::Script:
+		session = &m_ScriptFieldSession; owningWidgetId = &m_ScriptFieldSessionOwningWidgetId; break;
+	}
+	if (!session || !session->IsOpen())
+	{
+		// The stranded session was closed elsewhere (document replacement,
+		// target removal, direct discard): clear the stale banner.
+		m_PreviewRecovery.active = false;
+		return;
+	}
+	ImGui::Separator();
+	const std::string detail = m_PreviewRecovery.detail.empty()
+		? "recovery required" : m_PreviewRecovery.detail;
+	ImGui::TextWrapped("[Preview] The live edit on %s could not be finalized: %s",
+		session->Target().ToString().c_str(), detail.c_str());
+	ImGui::TextDisabled("The edit is still applied to the document without a history entry.");
+	if (ImGui::Button(m_PreviewRecovery.finalize ? "Retry Finalize" : "Retry Restore"))
+		ClosePreviewSession(m_PreviewRecovery.kind, *session, *owningWidgetId,
+			m_PreviewRecovery.finalize);
+	ImGui::SameLine();
+	if (ImGui::Button("Discard Preview"))
+	{
+		session->Discard();
+		*owningWidgetId = 0;
+		m_PreviewRecovery.active = false;
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Ignore"))
+		m_PreviewRecovery.active = false;
+	ImGui::Separator();
 }
 
 void SceneEditorUI::ImportAssetPathFromDrop(const std::string& path)
@@ -120,131 +166,106 @@ void SceneEditorUI::Redo()
 	ApplyMutation(result);
 }
 
-std::unique_ptr<IEditorCommand> SceneEditorUI::BuildPreviewSessionCommand(
-	PreviewSessionKind kind, const CompositePreviewSession& session,
-	bool suppressNoOp) const
+void SceneEditorUI::SetEditable(bool editable)
+{
+	// Leaving editability (Play entry): finalize/restore any open live-preview
+	// session BEFORE authoring is locked so no previewed value/marker/schema is
+	// orphaned in the authoring document without a history entry. Editability
+	// is never discard proof (S6-C fixup, P1 finding 4); a failure surfaces as
+	// pending recovery rather than silently discarding.
+	if (!editable && m_Editable)
+		FinalizeOpenPreviewSessions();
+	m_Editable = editable;
+}
+
+unsigned int& SceneEditorUI::OwningWidgetIdFor(PreviewSessionKind kind)
 {
 	switch (kind)
 	{
-	case PreviewSessionKind::Light:
-		return suppressNoOp
-			? MakeSetLightCommandIfEffective(session.Target(),
-				std::get<LightComponent>(session.OriginValue()),
-				std::get<LightComponent>(session.RollingValue()),
-				&session.Origin())
-			: MakeSetLightRestoreCommand(session.Target(),
-				std::get<LightComponent>(session.OriginValue()),
-				std::get<LightComponent>(session.RollingValue()),
-				session.Origin());
-	case PreviewSessionKind::Camera:
-		return suppressNoOp
-			? MakeSetCameraCommandIfEffective(session.Target(),
-				std::get<CameraComponent>(session.OriginValue()),
-				std::get<CameraComponent>(session.RollingValue()),
-				&session.Origin())
-			: MakeSetCameraRestoreCommand(session.Target(),
-				std::get<CameraComponent>(session.OriginValue()),
-				std::get<CameraComponent>(session.RollingValue()),
-				session.Origin());
-	case PreviewSessionKind::Motion:
-		return suppressNoOp
-			? MakeSetMotionCommandIfEffective(session.Target(),
-				std::get<std::optional<MotionComponent>>(session.OriginValue()),
-				std::get<std::optional<MotionComponent>>(session.RollingValue()),
-				&session.Origin())
-			: MakeSetMotionRestoreCommand(session.Target(),
-				std::get<std::optional<MotionComponent>>(session.OriginValue()),
-				std::get<std::optional<MotionComponent>>(session.RollingValue()),
-				session.Origin());
-	case PreviewSessionKind::Script:
-		return suppressNoOp
-			? MakeSetScriptCommandIfEffective(session.Target(),
-				std::get<std::optional<ScriptComponent>>(session.OriginValue()),
-				std::get<std::optional<ScriptComponent>>(session.RollingValue()),
-				&session.Origin())
-			: MakeSetScriptRestoreCommand(session.Target(),
-				std::get<std::optional<ScriptComponent>>(session.OriginValue()),
-				std::get<std::optional<ScriptComponent>>(session.RollingValue()),
-				session.Origin());
+	case PreviewSessionKind::Light: return m_LightSessionOwningWidgetId;
+	case PreviewSessionKind::Camera: return m_CameraSessionOwningWidgetId;
+	case PreviewSessionKind::Motion: return m_MotionVelocitySessionOwningWidgetId;
+	case PreviewSessionKind::Script: return m_ScriptFieldSessionOwningWidgetId;
 	}
-	return nullptr;
+	return m_LightSessionOwningWidgetId;
 }
 
-void SceneEditorUI::FinalizePreviewSession(PreviewSessionKind kind,
-	CompositePreviewSession& session)
+void SceneEditorUI::ApplyCloseOutcome(const PreviewSessionCloseOutcome& outcome)
 {
-	if (!m_CommandHistory || !m_SceneMgr || !session.IsOpen()) return;
-
-	// The target vanished or authoring is disabled: nothing further is
-	// reachable from the document; discard the preview state rather than
-	// recording against a dead target.
-	if (m_SceneMgr->FindEntityByUuid(session.Target()) == entt::null || !m_Editable)
-	{
-		session.Discard();
-		return;
-	}
-
-	// Zero-churn: no frame ever committed an effective change (value, marker
-	// or schema). Nothing to record and nothing to roll back.
-	if (!session.HadEffectiveFrame())
-	{
-		session.Discard();
-		return;
-	}
-
-	// The preview frames already applied the rolling-final state through the
-	// composite (value + marker + promoted schema). Record ONE command whose
-	// first Undo replays the immutable origin capture.
-	auto cmd = BuildPreviewSessionCommand(kind, session, /*suppressNoOp=*/true);
-	if (cmd)
-	{
-		m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr,
-			session.LastEffectiveResult());
-		session.Discard();
-		return;
-	}
-
-	// The final value returned to the origin (the no-op suppression fired):
-	// the transient frames still left marker/schema work behind, so roll that
-	// back with the unconditional compensate replay instead of recording a
-	// phantom entry.
-	RestorePreviewSession(kind, session);
+	if (!outcome.needsSyncApply) return;
+	ApplyMutation(outcome.mutation);
 }
 
-void SceneEditorUI::RestorePreviewSession(PreviewSessionKind kind,
-	CompositePreviewSession& session)
+PreviewSessionCloseOutcome SceneEditorUI::ClosePreviewSession(
+	PreviewSessionKind kind, CompositePreviewSession& session,
+	unsigned int& owningWidgetId, bool finalize)
 {
-	if (!m_SceneMgr || !session.IsOpen()) return;
-
-	// Target gone / authoring disabled: the preview state is unreachable;
-	// discard without attempting the compensation.
-	if (m_SceneMgr->FindEntityByUuid(session.Target()) == entt::null || !m_Editable)
+	PreviewSessionCloseOutcome outcome;
+	if (!m_SceneMgr || !session.IsOpen()) return outcome;
+	if (finalize)
 	{
-		session.Discard();
-		return;
+		if (!m_CommandHistory)
+		{
+			// No history installed: the gesture cannot be recorded. Keep the
+			// session open and surface recovery rather than silently
+			// discarding the applied preview state.
+			outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
+			outcome.lastError = EditorMutationResult::Failure(
+				rt2::core::Error::InvalidRuntimeState, session.Target().ToString(),
+				"command history is not installed; the preview edit cannot be recorded");
+		}
+		else
+		{
+			outcome = ::FinalizePreviewSession(*m_CommandHistory, *m_SceneMgr,
+				kind, session);
+		}
 	}
-
-	if (!session.HadEffectiveFrame())
+	else
 	{
-		session.Discard();
-		return;
+		outcome = ::RestorePreviewSession(*m_SceneMgr, kind, session);
 	}
-
-	auto cmd = BuildPreviewSessionCommand(kind, session, /*suppressNoOp=*/false);
-	if (!cmd)
+	// Clear ownership ONLY after the session actually closed. A pending close
+	// keeps the owning widget ID so the stranded session stays retryable and
+	// finalizable (S6-C fixup, P1 finding 2) and surfaces recovery.
+	if (outcome.result == PreviewSessionCloseOutcome::Result::Closed)
 	{
-		// The unconditional factories only fail for an invalid script
-		// before-state. Keep the session open so the failure stays visible
-		// and retryable rather than silently dropping the compensation.
-		return;
+		owningWidgetId = 0;
+		m_PreviewRecovery.active = false;
 	}
+	else
+	{
+		m_PreviewRecovery.active = true;
+		m_PreviewRecovery.kind = kind;
+		m_PreviewRecovery.finalize = finalize;
+		m_PreviewRecovery.detail = outcome.lastError.error.detail;
+	}
+	ApplyCloseOutcome(outcome);
+	return outcome;
+}
 
-	// Replay the Before direction directly — not through history — so the
-	// compensation records no undo entry and clears no redo.
-	const auto result = cmd->Undo(*m_SceneMgr);
-	ApplyMutation(result);
-	if (result.success)
-		session.Discard();
+bool SceneEditorUI::ClosePreviewBeforeDiscrete(PreviewSessionKind kind,
+	CompositePreviewSession& session, unsigned int& owningWidgetId)
+{
+	if (!session.IsOpen()) return true;
+	const auto outcome = ClosePreviewSession(kind, session, owningWidgetId,
+		/*finalize=*/true);
+	// Abort the discrete action when the live-preview close could not be
+	// completed (S6-C fixup, P1 finding 3): a discrete command issued against
+	// a still-stranded session would make its compensation stale.
+	return outcome.result == PreviewSessionCloseOutcome::Result::Closed;
+}
+
+void SceneEditorUI::FinalizeOpenPreviewSessions()
+{
+	if (!m_SceneMgr) return;
+	ClosePreviewSession(PreviewSessionKind::Light, m_LightSession,
+		m_LightSessionOwningWidgetId, /*finalize=*/true);
+	ClosePreviewSession(PreviewSessionKind::Camera, m_CameraSession,
+		m_CameraSessionOwningWidgetId, /*finalize=*/true);
+	ClosePreviewSession(PreviewSessionKind::Motion, m_MotionVelocitySession,
+		m_MotionVelocitySessionOwningWidgetId, /*finalize=*/true);
+	ClosePreviewSession(PreviewSessionKind::Script, m_ScriptFieldSession,
+		m_ScriptFieldSessionOwningWidgetId, /*finalize=*/true);
 }
 
 void SceneEditorUI::DiscardAllPropertySessions()
@@ -1075,30 +1096,39 @@ void SceneEditorUI::RenderInspector()
 
 				// Deferred close AFTER the mutation block: commit (record one
 				// command) or restore (Escape / returned-to-start, no history).
+				// The owning widget ID is cleared only after the session
+				// actually closed; a pending close keeps it and surfaces
+				// recovery (S6-C fixup, P1 finding 2).
 				if (motionPendingClose)
 				{
-					m_MotionVelocitySessionOwningWidgetId = 0;
-					FinalizePreviewSession(PreviewSessionKind::Motion,
-						m_MotionVelocitySession);
+					ClosePreviewSession(PreviewSessionKind::Motion,
+						m_MotionVelocitySession, m_MotionVelocitySessionOwningWidgetId,
+						/*finalize=*/true);
 				}
 				else if (motionCancelPending)
 				{
-					m_MotionVelocitySessionOwningWidgetId = 0;
-					RestorePreviewSession(PreviewSessionKind::Motion,
-						m_MotionVelocitySession);
+					ClosePreviewSession(PreviewSessionKind::Motion,
+						m_MotionVelocitySession, m_MotionVelocitySessionOwningWidgetId,
+						/*finalize=*/false);
 				}
 
 				ImGui::SameLine();
 				ImGui::BeginDisabled(!m_Editable);
 				if (ImGui::Button("Remove Motion"))
 				{
-					m_MotionVelocitySession.Discard();
-					MotionComponent before = mc;
-					auto cmd = MakeSetMotionCommandIfEffective(targetUuid, before, std::nullopt);
-					if (cmd)
+					// A discrete command on the same component must come only
+					// after the live-preview session finishes; abort otherwise
+					// (S6-C fixup, P1 finding 3).
+					if (ClosePreviewBeforeDiscrete(PreviewSessionKind::Motion,
+						m_MotionVelocitySession, m_MotionVelocitySessionOwningWidgetId))
 					{
-						const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
-						ApplyMutation(result);
+						MotionComponent before = mc;
+						auto cmd = MakeSetMotionCommandIfEffective(targetUuid, before, std::nullopt);
+						if (cmd)
+						{
+							const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
+							ApplyMutation(result);
+						}
 					}
 				}
 				ImGui::EndDisabled();
@@ -1108,13 +1138,16 @@ void SceneEditorUI::RenderInspector()
 				ImGui::BeginDisabled(!m_Editable);
 				if (ImGui::Button("Add Motion"))
 				{
-					m_MotionVelocitySession.Discard();
-					MotionComponent after{};
-					auto cmd = MakeSetMotionCommandIfEffective(targetUuid, std::nullopt, after);
-					if (cmd)
+					if (ClosePreviewBeforeDiscrete(PreviewSessionKind::Motion,
+						m_MotionVelocitySession, m_MotionVelocitySessionOwningWidgetId))
 					{
-						const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
-						ApplyMutation(result);
+						MotionComponent after{};
+						auto cmd = MakeSetMotionCommandIfEffective(targetUuid, std::nullopt, after);
+						if (cmd)
+						{
+							const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
+							ApplyMutation(result);
+						}
 					}
 				}
 				ImGui::EndDisabled();
@@ -1131,14 +1164,19 @@ void SceneEditorUI::RenderInspector()
 		ImGui::BeginDisabled(!m_Editable);
 		if (ImGui::Button("Add Script"))
 		{
-			m_ScriptFieldSession.Discard();
-			ScriptComponent unbound;
-			unbound.asset.kind = AssetKind::Script;
-			auto cmd = MakeSetScriptCommandIfEffective(targetUuid, std::nullopt, unbound);
-			if (cmd)
+			// A discrete add on the same component must come only after the
+			// live-preview session finishes (S6-C fixup, P1 finding 3).
+			if (ClosePreviewBeforeDiscrete(PreviewSessionKind::Script,
+				m_ScriptFieldSession, m_ScriptFieldSessionOwningWidgetId))
 			{
-				const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
-				ApplyMutation(result);
+				ScriptComponent unbound;
+				unbound.asset.kind = AssetKind::Script;
+				auto cmd = MakeSetScriptCommandIfEffective(targetUuid, std::nullopt, unbound);
+				if (cmd)
+				{
+					const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
+					ApplyMutation(result);
+				}
 			}
 		}
 		ImGui::EndDisabled();
@@ -1714,17 +1752,19 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 	}
 
 	// Deferred close AFTER the mutation block: commit (record one command)
-	// or restore (Escape / returned-to-start, no history).
+	// or restore (Escape / returned-to-start, no history). The owning widget
+	// ID is cleared only after the session actually closed; a pending close
+	// keeps it and surfaces recovery (S6-C fixup, P1 finding 2).
 	if (pendingCloseWidgetId != 0 && m_LightSession.IsOpen() &&
 	    m_LightSessionOwningWidgetId == pendingCloseWidgetId)
 	{
-		m_LightSessionOwningWidgetId = 0;
-		FinalizePreviewSession(PreviewSessionKind::Light, m_LightSession);
+		ClosePreviewSession(PreviewSessionKind::Light, m_LightSession,
+			m_LightSessionOwningWidgetId, /*finalize=*/true);
 	}
 	else if (cancelPending && m_LightSession.IsOpen())
 	{
-		m_LightSessionOwningWidgetId = 0;
-		RestorePreviewSession(PreviewSessionKind::Light, m_LightSession);
+		ClosePreviewSession(PreviewSessionKind::Light, m_LightSession,
+			m_LightSessionOwningWidgetId, /*finalize=*/false);
 	}
 }
 
@@ -1824,21 +1864,32 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 
 	if (viewPressed && m_OnViewThroughCamera)
 		m_OnViewThroughCamera(targetUuid);
+	// A discrete command on the same component (Align Camera to View) must
+	// come only after the live-preview session finishes; otherwise the align
+	// command is recorded first, then the already-applied preview command
+	// whose stored After no longer matches live state fails source validation
+	// on Undo (S6-C fixup, P1 finding 3). Abort the align on a pending close.
 	if (alignPressed && m_OnAlignCameraToView)
-		m_OnAlignCameraToView(targetUuid);
+	{
+		if (ClosePreviewBeforeDiscrete(PreviewSessionKind::Camera,
+			m_CameraSession, m_CameraSessionOwningWidgetId))
+			m_OnAlignCameraToView(targetUuid);
+	}
 
 	// Deferred close AFTER the mutation block: commit (record one command)
-	// or restore (Escape / returned-to-start, no history).
+	// or restore (Escape / returned-to-start, no history). The owning widget
+	// ID is cleared only after the session actually closed; a pending close
+	// keeps it and surfaces recovery (S6-C fixup, P1 finding 2).
 	if (pendingCloseWidgetId != 0 && m_CameraSession.IsOpen() &&
 	    m_CameraSessionOwningWidgetId == pendingCloseWidgetId)
 	{
-		m_CameraSessionOwningWidgetId = 0;
-		FinalizePreviewSession(PreviewSessionKind::Camera, m_CameraSession);
+		ClosePreviewSession(PreviewSessionKind::Camera, m_CameraSession,
+			m_CameraSessionOwningWidgetId, /*finalize=*/true);
 	}
 	else if (cancelPending && m_CameraSession.IsOpen())
 	{
-		m_CameraSessionOwningWidgetId = 0;
-		RestorePreviewSession(PreviewSessionKind::Camera, m_CameraSession);
+		ClosePreviewSession(PreviewSessionKind::Camera, m_CameraSession,
+			m_CameraSessionOwningWidgetId, /*finalize=*/false);
 	}
 }
 
@@ -1869,15 +1920,25 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 		const std::string newPath(pathBuf);
 		if (newPath != scriptState->asset.path)
 		{
-			auto before = *scriptState;
-			auto after = *scriptState;
-			after.asset.path = newPath;
-			auto cmd = MakeSetScriptCommandIfEffective(targetUuid, before, after);
-			if (cmd)
-			{
-				const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
-				ApplyMutation(result);
+			// A discrete path commitment must come only after the live-preview
+			// field session finishes; otherwise it runs before the
+			// continuous-widget close and its source is stale (S6-C fixup,
+			// P1 finding 3). Abort the path edit on a pending close.
+			if (!ClosePreviewBeforeDiscrete(PreviewSessionKind::Script,
+				m_ScriptFieldSession, m_ScriptFieldSessionOwningWidgetId))
 				scriptState = m_SceneMgr->GetScriptState(targetUuid);
+			else
+			{
+				auto before = *scriptState;
+				auto after = *scriptState;
+				after.asset.path = newPath;
+				auto cmd = MakeSetScriptCommandIfEffective(targetUuid, before, after);
+				if (cmd)
+				{
+					const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
+					ApplyMutation(result);
+					scriptState = m_SceneMgr->GetScriptState(targetUuid);
+				}
 			}
 		}
 	}
@@ -1933,18 +1994,29 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 
 				if (m_ScriptRebindDiagnostic.empty())
 				{
-					auto before = *scriptState;
-					auto after = *scriptState;
-					after.asset.path = relative.generic_u8string();
-					auto cmd = MakeSetScriptCommandIfEffective(targetUuid, before, after);
-					if (cmd)
+					// A discrete rebind must come only after the live-preview
+					// field session finishes (S6-C fixup, P1 finding 3). On a
+					// pending close the rebind is skipped and the session
+					// state is re-read so the diagnostic can reflect it.
+					if (!ClosePreviewBeforeDiscrete(PreviewSessionKind::Script,
+						m_ScriptFieldSession, m_ScriptFieldSessionOwningWidgetId))
+						m_ScriptRebindDiagnostic =
+							"Rebind skipped: the active live-preview field edit could not be finalized";
+					else
 					{
-						const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
-						if (!result.success)
-							m_ScriptRebindDiagnostic = result.error.Format();
-						else
-							scriptState = m_SceneMgr->GetScriptState(targetUuid);
-						ApplyMutation(result);
+						auto before = *scriptState;
+						auto after = *scriptState;
+						after.asset.path = relative.generic_u8string();
+						auto cmd = MakeSetScriptCommandIfEffective(targetUuid, before, after);
+						if (cmd)
+						{
+							const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
+							if (!result.success)
+								m_ScriptRebindDiagnostic = result.error.Format();
+							else
+								scriptState = m_SceneMgr->GetScriptState(targetUuid);
+							ApplyMutation(result);
+						}
 					}
 				}
 			}
@@ -1959,12 +2031,20 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 	ImGui::BeginDisabled(!m_Editable);
 	if (ImGui::Button("Remove Script"))
 	{
-		auto before = *scriptState;
-		auto cmd = MakeSetScriptCommandIfEffective(targetUuid, before, std::nullopt);
-		if (cmd)
+		// A discrete removal must come only after the live-preview field
+		// session finishes; a removal while a preview is active leaves a
+		// retained session with no component to restore (S6-C fixup,
+		// P1 finding 3). Abort the removal on a pending close.
+		if (ClosePreviewBeforeDiscrete(PreviewSessionKind::Script,
+			m_ScriptFieldSession, m_ScriptFieldSessionOwningWidgetId))
 		{
-			const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
-			ApplyMutation(result);
+			auto before = *scriptState;
+			auto cmd = MakeSetScriptCommandIfEffective(targetUuid, before, std::nullopt);
+			if (cmd)
+			{
+				const auto result = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
+				ApplyMutation(result);
+			}
 		}
 	}
 	ImGui::EndDisabled();
@@ -2217,16 +2297,32 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 				// Build the after-state without mutating the live component so
 				// the command's composite replay does the value write + marker
 				// insertion + schema promotion atomically.
-				auto after = *scriptState;
-				after.fieldValues[desc.name] = display;
-				auto cmd = MakeSetScriptCommandIfEffective(targetUuid,
-					*sessionBefore, after);
-				if (cmd)
+				//
+				// A discrete edit must come only after any open continuous
+				// field session finishes (S6-C fixup, P1 finding 3): issuing
+				// it mid-gesture leaves the session's rolling source stale and
+				// the close compensation out of sync. Abort the discrete edit
+				// on a pending close.
+				if (!ClosePreviewBeforeDiscrete(PreviewSessionKind::Script,
+					m_ScriptFieldSession, m_ScriptFieldSessionOwningWidgetId))
+					applied = EditorMutationResult::Failure(
+						rt2::core::Error::InvalidRuntimeState, targetUuid.ToString(),
+						"the active live-preview field edit could not be finalized");
+				else
 				{
-					applied = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
-					if (applied.success)
-						scriptState = m_SceneMgr->GetScriptState(targetUuid);
-					ApplyMutation(applied);
+					scriptState = m_SceneMgr->GetScriptState(targetUuid);
+					sessionBefore = scriptState;
+					auto after = *scriptState;
+					after.fieldValues[desc.name] = display;
+					auto cmd = MakeSetScriptCommandIfEffective(targetUuid,
+						*sessionBefore, after);
+					if (cmd)
+					{
+						applied = ExecuteCommandThroughHistory(m_CommandHistory, *m_SceneMgr, std::move(cmd));
+						if (applied.success)
+							scriptState = m_SceneMgr->GetScriptState(targetUuid);
+						ApplyMutation(applied);
+					}
 				}
 			}
 		}
@@ -2237,17 +2333,19 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 	ImGui::EndDisabled();
 
 	// Deferred close AFTER the mutation block: commit (record one command)
-	// or restore (Escape / returned-to-start, no history).
+	// or restore (Escape / returned-to-start, no history). The owning widget
+	// ID is cleared only after the session actually closed; a pending close
+	// keeps it and surfaces recovery (S6-C fixup, P1 finding 2).
 	if (pendingCloseWidgetId != 0 && m_ScriptFieldSession.IsOpen() &&
 	    m_ScriptFieldSessionOwningWidgetId == pendingCloseWidgetId)
 	{
-		m_ScriptFieldSessionOwningWidgetId = 0;
-		FinalizePreviewSession(PreviewSessionKind::Script, m_ScriptFieldSession);
+		ClosePreviewSession(PreviewSessionKind::Script, m_ScriptFieldSession,
+			m_ScriptFieldSessionOwningWidgetId, /*finalize=*/true);
 	}
 	else if (cancelPending && m_ScriptFieldSession.IsOpen())
 	{
-		m_ScriptFieldSessionOwningWidgetId = 0;
-		RestorePreviewSession(PreviewSessionKind::Script, m_ScriptFieldSession);
+		ClosePreviewSession(PreviewSessionKind::Script, m_ScriptFieldSession,
+			m_ScriptFieldSessionOwningWidgetId, /*finalize=*/false);
 	}
 }
 

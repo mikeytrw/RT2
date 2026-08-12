@@ -123,11 +123,20 @@ public:
 	// gesture introduced and restore the origin schema. Must be called before
 	// the first replay (the command built through a factory does this at
 	// construction). Capture() still canonicalizes/validates each key the same
-	// way as live capture.
-	void SetExplicitCapture(ExplicitCapture explicitCapture)
-	{
-		m_ExplicitCapture = std::move(explicitCapture);
-	}
+	// way as live capture. IMPORTANT (S6-C fixup, P2 finding 5): the supplied
+	// capture is validated ONE-FOR-ONE against the transaction's declared
+	// MarkerSpecs — same member, canonical key, and afterPresent, with no
+	// duplicates and no member that differs from the value-write entity. An
+	// invalid capture is never silently accepted: SetExplicitCapture records a
+	// rejection (see ExplicitCaptureRejected) and every later replay fails
+	// loudly instead of applying a forged ordinary/member mix.
+	void SetExplicitCapture(ExplicitCapture explicitCapture);
+
+	// True when the supplied explicit capture failed one-for-one validation
+	// against the declared marker specs / value target (P2 finding 5). A
+	// rejected capture is surfaced by Capture()/Replay() as a loud failure;
+	// it is never applied.
+	bool ExplicitCaptureRejected() const { return m_ExplicitCaptureRejected; }
 
 private:
 	EditorMutationResult Replay(SceneManager& scene, PrefabMarkerDirection direction);
@@ -153,6 +162,11 @@ private:
 	// instead of reading live membership/schema (recorded live-preview
 	// commands, whose first replay is Undo).
 	std::optional<ExplicitCapture> m_ExplicitCapture;
+	// S6-C fixup (P2 finding 5): the caller-supplied explicit capture failed
+	// one-for-one validation against the declared marker specs / value target.
+	// Capture()/Replay() surface it as a loud failure rather than applying a
+	// forged capture.
+	bool m_ExplicitCaptureRejected = false;
 };
 
 #endif // RT2_PREFAB_COMMAND_TRANSACTION_H

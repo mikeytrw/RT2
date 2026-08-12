@@ -5852,6 +5852,14 @@ CameraComponent S5CanonicalCamera(CameraComponent value)
 }
 } // namespace
 
+// Public entry point for the composite's canonical value-equality (S5). The
+// S6-C live-preview session uses it to gate marker construction on canonical
+// value effectiveness (Phase 8 W3 S6-C fixup, P1 finding 1).
+bool PrefabValuePayloadEqual(const PrefabValuePayload& a, const PrefabValuePayload& b)
+{
+	return S5EqualPayload(a, b);
+}
+
 rt2::core::Result<bool> SceneManager::IsOverridden(
 	const rt2::core::UUID& member, const PrefabComponentKey& key) const
 {

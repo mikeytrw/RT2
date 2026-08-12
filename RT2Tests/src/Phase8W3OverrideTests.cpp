@@ -7,6 +7,8 @@
 #include "EditorCommands.h"
 #include "EditorPropertyCommands.h"
 #include "CompositePreviewSession.h"
+#include "PreviewSessionClose.h"
+#include "PrefabCommandTransaction.h"
 #include "EditorSceneState.h"
 #include "EditorStructuralCommands.h"
 #include "SceneManager.h"
@@ -7997,17 +7999,32 @@ TEST_CASE("Phase 8 W3 S6-B fixup: excluded marker key on an ordinary entity fail
 // the last successfully committed preview; per-frame commits through the
 // atomic composite; and a two-phase close (record ONE command carrying the
 // explicit origin capture, or compensate through an unconditional restore
-// replay that records no history). RT2Tests is CPU-only, so the session and
-// the S6-C factories are the testable core; the thin ImGui glue
-// (SceneEditorUI::FinalizePreviewSession / RestorePreviewSession) that picks
-// record-vs-restore is exercised through the same factories/machine here.
+// replay that records no history).
+//
+// RT2Tests is CPU-only: SceneEditorUI (which pulls in ImGui/FileDialog/Walnut)
+// is NOT compiled into this target, so the ImGui glue that observes widget
+// activation cadence and clears owning-widget IDs is not driven here. What IS
+// exercised honestly at the product level is the CPU-linkable decision machine
+// those editors delegate to  PreviewSessionClose (FinalizePreviewSession /
+// RestorePreviewSession / BuildPreviewSessionCommand)  together with
+// CompositePreviewSession and the command factories. Retry ownership, the
+// finalize-before-discrete command-ordering contract, the editability-transition
+// (finalize, never discard), and the document-replacement / target-removal
+// (the only discard proofs) are therefore tested THROUGH the close core rather
+// than through ImGui. This supersedes earlier text that claimed the thin
+// SceneEditorUI glue itself was exercised here.
 //
 // RED proofs: (1) a rolling source that re-stages the frame-zero origin on a
 // later frame fails Prepare ("source differs from live state"), so the
 // successful frame-two commits below discriminate the rolling source; (2)
 // recording the close WITHOUT the explicit capture makes the first Undo read
 // the live (already-previewed) membership, so a first-add Undo would remove
-// nothing � the marker/schema/value assertions below are RED against that.
+// nothing  the marker/schema/value assertions below are RED against that; (3)
+// a canonical first-frame no-op staged with a marker inserts the marker and
+// promotes the schema (the Preview gate below is RED against that); (4) a
+// forged explicit capture for a different member/key/after is accepted and
+// changes the wrong override set (the one-for-one validation below is RED
+// against that).
 // ============================================================================
 
 namespace
@@ -8664,6 +8681,525 @@ TEST_CASE("Phase 8 W3 S6-C: ordinary entity preview is value-only and undoable")
     REQUIRE(undone.effective);
     CHECK(S6CLightEqual(reg.get<LightComponent>(plainHandle), origin));
     CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// S6-C independent-review fixup (b5767d0): honest product-level discrimination
+// for the lifecycle contract. These tests drive the CPU-linkable close core
+// (PreviewSessionClose) and CompositePreviewSession directly — the ImGui glue
+// is not compiled into RT2Tests (see the corrected preamble above).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Phase 8 W3 S6-C: canonical first-frame no-op Preview is zero-churn")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_nooppreview");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+
+    // A canonical value no-op on the FIRST frame (the marker would otherwise
+    // be absent->present): must NOT insert a marker, promote the schema,
+    // notify, dirty, or bump the revision (P1 finding 1). RED against
+    // submitting the { member, key, true } marker unconditionally.
+    const auto r0 = session.Preview(f.manager, PrefabValuePayload{ origin });
+    REQUIRE(r0.success);
+    REQUIRE_FALSE(r0.effective);
+    REQUIRE_FALSE(session.HadEffectiveFrame());
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+    CHECK(S6CLightEqual(std::get<LightComponent>(session.RollingValue()), origin));
+
+    // The no-op frame must not poison the gesture: a following effective frame
+    // still inserts the marker + promotes the schema with one revision bump.
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto r1 = session.Preview(f.manager, PrefabValuePayload{ a });
+    REQUIRE(r1.success);
+    REQUIRE(r1.effective);
+    REQUIRE(session.HadEffectiveFrame());
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: failed close stays pending and retries with identity intact")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_pendingretry");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    const auto committed = std::get<LightComponent>(session.RollingValue());
+
+    // Out-of-band mutation decouples live from the rolling committed source.
+    reg.get<LightComponent>(rootHandle).intensity = 99.0f;
+
+    // The host close core reports PendingRetry and leaves the session OPEN
+    // with target/origin/rolling identity intact, so the owning widget ID is
+    // preserved and a retry stays possible (P1 finding 2). RED against the
+    // previous glue that cleared ownership before the close attempt.
+    const auto close = RestorePreviewSession(f.manager,
+        PreviewSessionKind::Light, session);
+    REQUIRE(close.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    REQUIRE(close.needsSyncApply);
+    REQUIRE(session.IsOpen());
+    REQUIRE(session.HadEffectiveFrame());
+    CHECK(session.Target() == root);
+    REQUIRE(session.Origin().markers.size() == 1);
+    CHECK(session.Origin().markers[0].member == root);
+    CHECK(session.Origin().markers[0].key == lightKey);
+    CHECK(S6CLightEqual(std::get<LightComponent>(session.RollingValue()), committed));
+    CHECK_FALSE(close.mutation.success);
+
+    // Reconcile live back to the committed rolling state, then retry the SAME
+    // close core -> closed, origin restored, no history.
+    reg.get<LightComponent>(rootHandle) = committed;
+    EditorCommandHistory history;
+    const auto retry = RestorePreviewSession(f.manager,
+        PreviewSessionKind::Light, session);
+    REQUIRE(retry.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(retry.needsSyncApply);
+    REQUIRE_FALSE(session.IsOpen());
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK_FALSE(history.CanUndo());
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: finalize-before-discrete keeps script remove exactly undoable")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_scriptorder");
+    S6BScriptAssets(f, dir, { "spin.lua" });
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto scriptKey = PrefabComponentKeyFor<ScriptComponent>::value;
+
+    EditorCommandHistory setup;
+    ScriptComponent bound = S6BScript("spin.lua");
+    bound.fieldValues["speed"] = { ScriptFieldType::Float, 1.0 };
+    REQUIRE(setup.Execute(MakeSetScriptCommandIfEffective(root, std::nullopt,
+        std::optional<ScriptComponent>{ bound }), f.manager).effective);
+    const auto origin = reg.get<ScriptComponent>(rootHandle);
+    const auto initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    // A continuous field preview is active.
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CScriptReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::ScriptState,
+        scriptKey, PrefabValuePayload{ std::optional<ScriptComponent>(origin) },
+        reader));
+    ScriptComponent fieldTarget = reg.get<ScriptComponent>(rootHandle);
+    fieldTarget.fieldValues["speed"] = { ScriptFieldType::Float, 2.0 };
+    REQUIRE(session.Preview(f.manager,
+        PrefabValuePayload{ std::optional<ScriptComponent>(fieldTarget) }).effective);
+    const auto previewFinal = reg.get<ScriptComponent>(rootHandle);
+
+    // GREEN order: finish the preview (record) BEFORE the discrete remove.
+    EditorCommandHistory history;
+    const auto close = FinalizePreviewSession(history, f.manager,
+        PreviewSessionKind::Script, session);
+    REQUIRE(close.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(close.recorded);
+    REQUIRE_FALSE(session.IsOpen());
+    REQUIRE(history.CanUndo());
+
+    // The discrete remove now lands against the preview-final state.
+    auto removeCmd = MakeSetScriptCommandIfEffective(root,
+        std::optional<ScriptComponent>(previewFinal), std::nullopt);
+    REQUIRE(removeCmd);
+    REQUIRE(history.Execute(std::move(removeCmd), f.manager).effective);
+
+    // Undo the remove -> preview-final restored; undo the preview record ->
+    // exact origin binding (value + marker + schema), one gesture per entry.
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE(ScriptComponentCanonicalEqual(reg.get<ScriptComponent>(rootHandle),
+        previewFinal));
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE(ScriptComponentCanonicalEqual(reg.get<ScriptComponent>(rootHandle),
+        origin));
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value); // pre-existing override
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: finalize-before-align keeps camera history exactly undoable")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_alignorder");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto camKey = PrefabComponentKeyFor<CameraComponent>::value;
+    const CameraComponent originCam{ 60.0f, 0.5f, 5.0f, { 0.0f, 0.0f, -1.0f } };
+    reg.emplace_or_replace<CameraComponent>(rootHandle, originCam);
+    EditableTRS originTransform;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ rootHandle },
+        originTransform));
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CCameraReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::CameraProperties,
+        camKey, originCam, reader));
+    const CameraComponent a{ 50.0f, 0.25f, 8.0f, { 0.0f, 0.0f, -1.0f } };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+    // GREEN order: finalize the deactivated camera preview BEFORE the
+    // discrete Align command so the recorded preview's stored After matches
+    // live state (P1 finding 3).
+    EditorCommandHistory history;
+    const auto close = FinalizePreviewSession(history, f.manager,
+        PreviewSessionKind::Camera, session);
+    REQUIRE(close.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(close.recorded);
+    REQUIRE_FALSE(session.IsOpen());
+
+    // Stage + execute the discrete align through the same history.
+    EditorCameraPose pose;
+    pose.position = glm::vec3(6.0f, 2.0f, 8.0f);
+    pose.forward = glm::vec3(-1.0f, 0.0f, 0.0f);
+    const auto staged = f.manager.StageCameraPose(root, pose);
+    REQUIRE(staged.IsOk());
+    EditableTRS beforeLocal;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ rootHandle }, beforeLocal));
+    const CameraComponent beforeCam = reg.get<CameraComponent>(rootHandle);
+    auto align = MakeAlignCameraCommandIfEffective(root, beforeLocal,
+        staged.value.local, beforeCam, staged.value.camera);
+    REQUIRE(align);
+    REQUIRE(history.Execute(std::move(align), f.manager).effective);
+
+    // Undo the align, then undo the preview record: exact origin camera and
+    // transform. The preview Undo's source validation passes because the
+    // close happened BEFORE the align.
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE(history.Undo(f.manager).success);
+    const auto restored = reg.get<CameraComponent>(rootHandle);
+    CHECK(restored.verticalFOV == originCam.verticalFOV);
+    CHECK(restored.aperture == originCam.aperture);
+    CHECK(restored.focusDistance == originCam.focusDistance);
+    EditableTRS restoredTransform;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ rootHandle },
+        restoredTransform));
+    CHECK(restoredTransform.translation == originTransform.translation);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, camKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    // RED discrimination: executing the align BEFORE finalizing the active
+    // preview strands the close — its recorded command's Undo fails source
+    // validation ("camera source differs from live state") and the history
+    // failure policy clears both stacks.
+    CompositePreviewSession bad;
+    REQUIRE(bad.Begin(f.manager, root, PrefabValueKind::CameraProperties,
+        camKey, restored, reader));
+    const CameraComponent b{ 55.0f, 0.4f, 6.0f, { 0.0f, 0.0f, -1.0f } };
+    REQUIRE(bad.Preview(f.manager, PrefabValuePayload{ b }).effective);
+    const auto staged2 = f.manager.StageCameraPose(root, pose);
+    REQUIRE(staged2.IsOk());
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ rootHandle }, beforeLocal));
+    const CameraComponent beforeCam2 = reg.get<CameraComponent>(rootHandle);
+    auto align2 = MakeAlignCameraCommandIfEffective(root, beforeLocal,
+        staged2.value.local, beforeCam2, staged2.value.camera);
+    REQUIRE(align2);
+    EditorCommandHistory badHistory;
+    REQUIRE(badHistory.Execute(std::move(align2), f.manager).effective);
+    const auto badClose = FinalizePreviewSession(badHistory, f.manager,
+        PreviewSessionKind::Camera, bad);
+    REQUIRE(badClose.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(badClose.recorded);
+    const auto badUndo = badHistory.Undo(f.manager);
+    REQUIRE_FALSE(badUndo.success);
+    CHECK(badUndo.error.detail.find("camera source differs from live state")
+        != std::string::npos);
+    CHECK_FALSE(badHistory.CanUndo());
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: leaving editability finalizes, never discards")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_editable");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+    // Play entry sets the editor non-editable WITHOUT replacing the authoring
+    // document or removing the target. The close core has no editability
+    // input and must FINALIZE (record) rather than discard the previewed
+    // value/marker/schema (P1 finding 4). RED against the old glue that
+    // discarded an effective session when !m_Editable.
+    EditorCommandHistory history;
+    const auto out = FinalizePreviewSession(history, f.manager,
+        PreviewSessionKind::Light, session);
+    REQUIRE(out.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(out.recorded);
+    REQUIRE_FALSE(session.IsOpen());
+    REQUIRE(history.CanUndo());
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), a));
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // The recorded entry restores the exact origin on Undo.
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: target removal and document replacement are the only discards")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_discards");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    const LightComponent origin{ glm::vec3(0.0f, 1.0f, 0.0f), 3.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    reg.emplace_or_replace<LightComponent>(rootHandle, origin);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // (a) Target removal in the SAME document (no generation change): discard.
+    {
+        CompositePreviewSession session;
+        REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, reader));
+        REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        REQUIRE(f.manager.RemoveSubtrees({ root }).success);
+        REQUIRE(static_cast<uint32_t>(f.manager.FindEntityByUuid(root))
+            == static_cast<uint32_t>(entt::null));
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, session);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::Closed);
+        REQUIRE_FALSE(out.recorded);
+        REQUIRE_FALSE(session.IsOpen());
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    // (b) Document replacement (Clear bumps the generation and removes the
+    // target): discard, no record and no compensation against the dead doc.
+    {
+        const auto [r2, c2] = f.MakeInstance(dir);
+        auto& reg2 = f.manager.GetECS().registry;
+        const UUID root2 = H6B(reg2, r2);
+        reg2.emplace_or_replace<LightComponent>(r2, origin);
+        CompositePreviewSession session;
+        REQUIRE(session.Begin(f.manager, root2, PrefabValueKind::LightProperties,
+            lightKey, origin, reader));
+        REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        REQUIRE_FALSE(session.DocumentReplaced(f.manager));
+        f.manager.Clear();
+        REQUIRE(session.DocumentReplaced(f.manager));
+        EditorCommandHistory history;
+        const auto out = RestorePreviewSession(f.manager,
+            PreviewSessionKind::Light, session);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::Closed);
+        REQUIRE_FALSE(session.IsOpen());
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: explicit capture is validated one-for-one and mismatches are rejected")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_captureval");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const UUID other = H6B(reg, childHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    const auto cameraKey = PrefabComponentKeyFor<CameraComponent>::value;
+    const uint32_t docSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+
+    const auto makeTx = [&]() {
+        return PrefabCommandTransaction(
+            std::vector<PrefabValueEdit>{
+                { PrefabValueKind::LightProperties, root, PrefabMarkerDirection::After,
+                    origin, a } },
+            std::vector<PrefabCommandTransaction::MarkerSpec>{
+                { root, lightKey, true } });
+    };
+    const auto capture = [&](const UUID& member, PrefabComponentKey key,
+                             std::optional<bool> beforePresent, bool afterPresent) {
+        PrefabCommandTransaction::ExplicitCapture cap;
+        cap.beforeSchema = docSchema;
+        cap.markers.push_back({ member, key, beforePresent, afterPresent });
+        return cap;
+    };
+
+    // (a) Exact one-for-one capture (member == value entity, key, after): accepted.
+    {
+        PrefabCommandTransaction tx = makeTx();
+        tx.SetExplicitCapture(capture(root, lightKey, std::optional<bool>(false), true));
+        CHECK_FALSE(tx.ExplicitCaptureRejected());
+    }
+    // (b) Different member (camera marker for entity B on a light command for
+    // entity A): rejected (P2 finding 5).
+    {
+        PrefabCommandTransaction tx = makeTx();
+        tx.SetExplicitCapture(capture(other, lightKey, std::optional<bool>(false), true));
+        REQUIRE(tx.ExplicitCaptureRejected());
+    }
+    // (c) Different key (camera wire on a light command): rejected.
+    {
+        PrefabCommandTransaction tx = makeTx();
+        tx.SetExplicitCapture(capture(root, cameraKey, std::optional<bool>(false), true));
+        REQUIRE(tx.ExplicitCaptureRejected());
+    }
+    // (d) afterPresent mismatch: rejected.
+    {
+        PrefabCommandTransaction tx = makeTx();
+        tx.SetExplicitCapture(capture(root, lightKey, std::optional<bool>(false), false));
+        REQUIRE(tx.ExplicitCaptureRejected());
+    }
+    // (e) Duplicate / extra markers (cardinality mismatch): rejected.
+    {
+        PrefabCommandTransaction tx = makeTx();
+        PrefabCommandTransaction::ExplicitCapture cap;
+        cap.beforeSchema = docSchema;
+        cap.markers.push_back({ root, lightKey, std::optional<bool>(false), true });
+        cap.markers.push_back({ root, lightKey, std::optional<bool>(false), true });
+        tx.SetExplicitCapture(cap);
+        REQUIRE(tx.ExplicitCaptureRejected());
+    }
+    // (f) A rejected capture is surfaced loudly at replay, never applied.
+    {
+        PrefabCommandTransaction tx = makeTx();
+        tx.SetExplicitCapture(capture(other, lightKey, std::optional<bool>(false), true));
+        REQUIRE(tx.ExplicitCaptureRejected());
+        const auto ex = tx.Execute(f.manager);
+        REQUIRE_FALSE(ex.success);
+        CHECK(ex.error.detail.find("explicit capture") != std::string::npos);
+    }
+    // (g) Forged ordinary/member mix, structurally one-for-one but claiming an
+    // ordinary origin (nullopt) for a real prefab member: replay fails loudly
+    // instead of silently dropping the marker delta.
+    {
+        PrefabCommandTransaction tx = makeTx();
+        tx.SetExplicitCapture(capture(root, lightKey, std::nullopt, true));
+        CHECK_FALSE(tx.ExplicitCaptureRejected()); // structurally one-for-one
+        const auto ex = tx.Undo(f.manager);
+        REQUIRE_FALSE(ex.success);
+        CHECK(ex.error.detail.find("ordinary-entity origin for a prefab member")
+            != std::string::npos);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: stale document schema between gesture and close surfaces recovery")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_staleschema");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t originSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+    // Out-of-band schema change: the restore command's captured origin schema
+    // no longer matches live, so the compensating replay fails loudly and the
+    // close stays pending rather than silently mis-compensating.
+    f.manager.AuthoringDoc().metadata.schemaVersion = SceneSerializer::MinReadVersion;
+    const auto close = RestorePreviewSession(f.manager,
+        PreviewSessionKind::Light, session);
+    REQUIRE(close.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    REQUIRE(close.needsSyncApply);
+    REQUIRE(session.IsOpen());
+    REQUIRE_FALSE(close.mutation.success);
+
+    // Reconcile the schema back to the LIVE schema the preview left behind
+    // (the restore replay's directional source), then retry: closed, value +
+    // marker + schema restored to the origin capture.
+    f.manager.AuthoringDoc().metadata.schemaVersion = SceneSerializer::SchemaVersion;
+    const auto retry = RestorePreviewSession(f.manager,
+        PreviewSessionKind::Light, session);
+    REQUIRE(retry.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE_FALSE(session.IsOpen());
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == originSchema);
 
     std::filesystem::remove_all(dir);
 }

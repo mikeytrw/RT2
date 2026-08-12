@@ -158,6 +158,14 @@ using PrefabValuePayload = std::variant<
 	PrefabMaterialIndexValue,
 	PrefabMaterialSlotValue>;
 
+// Canonical payload equality — the exact comparison
+// CommitPrefabCompositePlan uses to decide value effectiveness (S5). S6-C
+// exposes it so a live-preview session can gate marker construction on
+// canonical value effectiveness: a first-frame no-op must never build a
+// marker edit or promote the schema. Defined in SceneManager.cpp next to the
+// S5 helpers.
+bool PrefabValuePayloadEqual(const PrefabValuePayload& a, const PrefabValuePayload& b);
+
 struct PrefabValueEdit
 {
 	PrefabValueKind kind = PrefabValueKind::EntityName;

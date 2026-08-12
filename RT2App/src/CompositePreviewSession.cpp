@@ -58,6 +58,23 @@ EditorMutationResult CompositePreviewSession::Preview(SceneManager& scene,
 		return EditorMutationResult::Failure(rt2::core::Error::InvalidRuntimeState,
 			m_Target.ToString(), "preview frame on a closed session");
 
+	// Gate marker construction on canonical value effectiveness (S6-C fixup,
+	// P1 finding 1). A frame whose target is canonically identical to the
+	// last committed (rolling) source is a value no-op: submitting the
+	// absent->present marker would mark the member overridden and promote the
+	// schema with no value write. Skip the frame entirely — zero marker, zero
+	// schema, zero revision, zero notify, zero history. The comparison is the
+	// composite's own canonical equality (S5EqualPayload), so a canonical
+	// no-op is caught even when the raw target differs by only a
+	// canonicalization step. An effective session (marker already present)
+	// is unaffected: a later-frame no-op already committed nothing.
+	if (PrefabValuePayloadEqual(m_RollingValue, target))
+	{
+		m_LastResult = EditorMutationResult{};
+		m_LastResult.effective = false;
+		return m_LastResult;
+	}
+
 	// A fresh transaction per frame: frame one stages origin -> target with an
 	// absent->present marker and promotes the schema; later frames stage the
 	// last committed value -> target with the marker already present and the

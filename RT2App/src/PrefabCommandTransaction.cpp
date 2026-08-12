@@ -3,6 +3,75 @@
 #include "PrefabComponentKey.h"
 #include "SceneSerializer.h"
 
+#include <unordered_set>
+
+void PrefabCommandTransaction::SetExplicitCapture(ExplicitCapture explicitCapture)
+{
+	// One-for-one validation of the caller-supplied immutable origin against
+	// this transaction's DECLARED marker specs (S6-C fixup, P2 finding 5). An
+	// arbitrary explicit list must never be accepted: a light command for
+	// entity A given a forged camera marker for entity B would make the first
+	// Undo restore A's value while changing B's membership/schema in one
+	// composite. The capture is rejected (never silently applied) unless:
+	//   - it is exactly as large as the declared marker-spec set;
+	//   - each declared spec is matched by exactly one explicit marker with
+	//     the same member, canonical key, and afterPresent (no extras, no
+	//     duplicates, no member/key substitution);
+	//   - every explicit marker targets the command's non-nil value-write
+	//     entity (a forged ordinary/member mix for another entity is rejected).
+	bool rejected = true;
+	const auto& values = m_Values;
+	auto valueEntityNilOnly = true;
+	for (const auto& edit : values)
+		if (edit.entity != rt2::core::UUID{}) { valueEntityNilOnly = false; break; }
+	if (!valueEntityNilOnly
+		&& explicitCapture.markers.size() == m_Markers.size())
+	{
+		// The value target must be exactly one non-nil entity and every
+		// explicit marker must target it.
+		const rt2::core::UUID valueEntity = m_Values.front().entity;
+		bool aligned = true;
+		for (const auto& em : explicitCapture.markers)
+			if (em.member != valueEntity) { aligned = false; break; }
+		if (aligned)
+		{
+			std::unordered_set<std::string> seen;
+			bool bijective = true;
+			for (const auto& spec : m_Markers)
+			{
+				bool found = false;
+				for (const auto& em : explicitCapture.markers)
+				{
+					if (em.member != spec.member || em.afterPresent != spec.afterPresent)
+						continue;
+					if (em.key.wire() != spec.key.wire())
+						continue;
+					found = true;
+					break;
+				}
+				if (!found) { bijective = false; break; }
+			}
+			if (bijective)
+			{
+				// Also reject duplicate (member, canonical key) pairs within the
+				// explicit list itself, beyond the cardinality check.
+				rejected = false;
+				for (const auto& em : explicitCapture.markers)
+				{
+					const auto canonical = FindComponentByWire(em.key.wire());
+					const std::string wire = canonical
+						? std::string(canonical->wire())
+						: std::string(em.key.wire());
+					const std::string combo = em.member.ToString() + "\x1f" + wire;
+					if (!seen.insert(combo).second) { rejected = true; break; }
+				}
+			}
+		}
+	}
+	m_ExplicitCapture = std::move(explicitCapture);
+	m_ExplicitCaptureRejected = rejected;
+}
+
 EditorMutationResult PrefabCommandTransaction::Execute(SceneManager& scene)
 {
 	return Replay(scene, PrefabMarkerDirection::After);
@@ -78,8 +147,41 @@ EditorMutationResult PrefabCommandTransaction::Capture(SceneManager& scene)
 		// frames left behind. The explicit beforePresent came from an
 		// IsOverridden read at open; an ordinary entity carries nullopt and the
 		// delta is dropped exactly as the live path drops NotPrefabMember.
+		//
+		// S6-C fixup (P2 finding 5): a capture that failed SetExplicitCapture's
+		// one-for-one validation is never applied — replay fails loudly instead
+		// of letting a forged ordinary/member mix through.
+		if (m_ExplicitCaptureRejected)
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+				m_Values.empty() ? rt2::core::UUID{}.ToString()
+					: m_Values.front().entity.ToString(),
+				"explicit capture does not match the command's declared marker specs "
+				"(rejected one-for-one at SetExplicitCapture)");
 		for (const auto& marker : m_ExplicitCapture->markers)
 		{
+			// A forged ordinary/member mix: the explicit origin claims an
+			// ordinary entity (nullopt beforePresent) for a member that is
+			// really a prefab member, or vice versa. The entity class is
+			// stable across the gesture, so this is checkable at replay time
+			// against live state.
+			const auto liveClass = scene.IsOverridden(marker.member, marker.key);
+			const bool liveIsMember = liveClass.IsOk();
+			if (!liveIsMember)
+			{
+				if (liveClass.error.code != rt2::core::Error::NotPrefabMember)
+					return EditorMutationResult::Failure(liveClass.error.code,
+						liveClass.error.path, liveClass.error.detail);
+				if (marker.beforePresent.has_value())
+					return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+						marker.member.ToString(),
+						"explicit capture claims a prefab-member origin for an ordinary entity");
+			}
+			else if (!marker.beforePresent.has_value())
+			{
+				return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+					marker.member.ToString(),
+					"explicit capture claims an ordinary-entity origin for a prefab member");
+			}
 			const auto result = captureOne(marker.member, marker.key,
 				marker.beforePresent, marker.afterPresent);
 			if (!result.success) return result;
