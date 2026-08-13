@@ -82,7 +82,7 @@ TransformGizmoResult EditorTransformGizmo::Draw(
 	const TransformSnapSettings& snap, bool uniformScale)
 {
 	TransformGizmoResult result;
-	if (m_Drag.active && (ImGui::IsKeyPressed(ImGuiKey_Escape) || !editable ||
+	if (m_Drag.active && (ImGui::IsKeyPressed(ImGuiKey_Escape) ||
 		imageSize.x <= 1.0f || imageSize.y <= 1.0f))
 	{
 		result.active = true;
@@ -91,7 +91,7 @@ TransformGizmoResult EditorTransformGizmo::Draw(
 		Cancel();
 		return result;
 	}
-	if (!editable || imageSize.x <= 1.0f || imageSize.y <= 1.0f)
+	if ((!editable && !m_Drag.active) || imageSize.x <= 1.0f || imageSize.y <= 1.0f)
 	{
 		return result;
 	}
@@ -248,12 +248,12 @@ TransformGizmoResult EditorTransformGizmo::Draw(
 		// objects underneath them.
 		result.pickThrough = !m_Drag.moved;
 		// Phase 3B1: report drag-end so the host can record a TransformCommand.
-		if (m_Drag.moved)
-		{
-			result.dragJustEnded = true;
-			result.draggedUuids = m_Drag.uuids;
-			result.dragStartLocal = m_Drag.startLocal;
-		}
+		// Every press/release emits an end fact, including a never-moved
+		// click. The host closes the zero-effective session without history.
+		result.dragJustEnded = true;
+		result.interactionSequence = m_Drag.interactionSequence;
+		result.draggedUuids = m_Drag.uuids;
+		result.dragStartLocal = m_Drag.startLocal;
 		Cancel();
 	}
 	if (!m_Drag.active) return result;

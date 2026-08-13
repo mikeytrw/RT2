@@ -1082,31 +1082,21 @@ public:
 				!m_EditorUI.SelectionHasDirectLock(),
 			m_EditorUI.GetTransformSpace(), m_EditorUI.GetTransformPivot(),
 			m_EditorUI.GetTransformSnapSettings(), m_EditorUI.GetUniformScale());
-		if (gizmo.changed && !gizmo.desiredWorld.empty())
+		if (gizmo.changed && !gizmo.desiredWorld.empty() &&
+			TransformGizmoEventMatches(m_GizmoInteractionSequence,
+				gizmo.interactionSequence))
 		{
-			if (m_GizmoInteractionSequence == 0 ||
-				gizmo.interactionSequence == m_GizmoInteractionSequence)
+			if (m_GizmoTransformToken)
 			{
-				if (!m_EditorUI.IsTransformGestureOpen())
-				{
-					std::vector<rt2::core::UUID> gestureUuids;
-					gestureUuids.reserve(gizmo.desiredWorld.size());
-					for (const auto& item : gizmo.desiredWorld) gestureUuids.push_back(item.first);
-					const auto token = m_EditorUI.BeginTransformGestureForGizmo(
-						static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&m_TransformGizmo)), gestureUuids);
-					if (!token) m_LastStatusMsg = "gizmo transform gesture admission failed";
-					else { m_GizmoTransformToken = *token; m_GizmoInteractionSequence = gizmo.interactionSequence; }
-				}
-				const auto preview = m_GizmoTransformToken
-					? m_EditorUI.PreviewTransformWorldIntent(*m_GizmoTransformToken, gizmo.desiredWorld)
-					: EditorMutationResult::Failure(rt2::core::Error::InvalidRuntimeState,
-						"gizmo", "gizmo has no admitted transform token");
+				const auto preview = m_EditorUI.PreviewTransformWorldIntent(
+					*m_GizmoTransformToken, gizmo.desiredWorld);
 				if (!preview.success) m_LastStatusMsg = preview.error.detail;
 			}
 		}
 		if (!gizmo.error.empty())
 			m_LastStatusMsg = gizmo.error;
-		if (gizmo.dragJustStarted && m_GizmoTransformToken == std::nullopt &&
+		if (gizmo.dragJustStarted && gizmo.interactionSequence != 0 &&
+			m_GizmoInteractionSequence == 0 &&
 			!gizmo.draggedUuids.empty())
 		{
 			const auto token = m_EditorUI.BeginTransformGestureForGizmo(
@@ -1120,21 +1110,27 @@ public:
 				m_GizmoInteractionSequence = gizmo.interactionSequence;
 			}
 		}
-		if (gizmo.dragCancelled && m_GizmoTransformToken)
+		if (gizmo.dragCancelled && TransformGizmoEventMatches(
+			m_GizmoInteractionSequence, gizmo.interactionSequence) &&
+			m_GizmoTransformToken)
 		{
 			const auto close = m_EditorUI.CloseTransformGesture(false,
 				*m_GizmoTransformToken);
+			m_TransformGizmo.Cancel();
 			m_GizmoTransformToken.reset();
 			m_GizmoInteractionSequence = 0;
 			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)
 				m_LastStatusMsg = close.lastError.error.detail;
 		}
 
-		if (gizmo.dragJustEnded && m_EditorUI.IsTransformGestureOpen())
+		if (gizmo.dragJustEnded && TransformGizmoEventMatches(
+			m_GizmoInteractionSequence, gizmo.interactionSequence) &&
+			m_EditorUI.IsTransformGestureOpen())
 		{
 			const auto close = m_GizmoTransformToken
 				? m_EditorUI.CloseTransformGesture(true, *m_GizmoTransformToken)
 				: PreviewSessionCloseOutcome{};
+			m_TransformGizmo.Cancel();
 			m_GizmoTransformToken.reset();
 			m_GizmoInteractionSequence = 0;
 			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)
@@ -1218,6 +1214,7 @@ public:
 		{
 			const auto close = m_EditorUI.CloseTransformGesture(false,
 				*m_GizmoTransformToken);
+			m_TransformGizmo.Cancel();
 			m_GizmoTransformToken.reset();
 			m_GizmoInteractionSequence = 0;
 			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)

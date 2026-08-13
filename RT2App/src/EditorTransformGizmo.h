@@ -84,3 +84,19 @@ private:
 	DragState m_Drag;
 	std::uint64_t m_NextInteractionSequence = 0;
 };
+
+// Host-side authorization seams are deliberately pure so delayed viewport
+// facts and Inspector publisher ownership can be tested without ImGui/GPU.
+inline bool TransformGizmoEventMatches(std::uint64_t activeSequence,
+	std::uint64_t eventSequence)
+{
+	return activeSequence != 0 && eventSequence != 0 &&
+		activeSequence == eventSequence;
+}
+
+inline bool InspectorTransformPublishAllowed(unsigned int ownerWidgetId,
+	unsigned int changedWidgetId, bool tokenValid)
+{
+	return tokenValid && ownerWidgetId != 0 &&
+		ownerWidgetId == changedWidgetId;
+}

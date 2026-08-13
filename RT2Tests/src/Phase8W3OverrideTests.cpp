@@ -7,6 +7,7 @@
 #include "EditorCommands.h"
 #include "EditorPropertyCommands.h"
 #include "CompositePreviewSession.h"
+#include "EditorTransformGizmo.h"
 #include "PreviewSessionClose.h"
 #include "PrefabCommandTransaction.h"
 #include "EditorSceneState.h"
@@ -4315,6 +4316,65 @@ TEST_CASE("Phase 8 W3: marker helper canonicalizes keys and rejects forged class
     REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
 }
 
+TEST_CASE("Phase 8 W3 S6-D: cleanup record failure compensates without marker resurrection")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6d_record_failure");
+    const auto [aHandle, bHandle] = f.MakeInstance(dir);
+    const UUID a = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+    const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+    EditableTRS aBefore, bBefore;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aBefore));
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+    TransformPreviewSession session;
+    const auto token = session.Begin(f.manager, 0xA11E0u, {a, b});
+    REQUIRE(token.has_value());
+    EditableTRS aAfter = aBefore;
+    EditableTRS bAfter = bBefore;
+    aAfter.translation.x += 3.0f;
+    bAfter.translation.y += 2.0f;
+    REQUIRE(session.PreviewLocals(f.manager, *token,
+        {{a, aAfter}, {b, bAfter}}).effective);
+    REQUIRE(session.PreviewLocals(f.manager, *token,
+        {{a, aAfter}, {b, bBefore}}).effective);
+    EditorCommandHistory history;
+    history.FailNextRecordAppliedForTest();
+    const auto outcome = FinalizeTransformPreviewSession(history, f.manager,
+        session, *token);
+    INFO(outcome.lastError.error.detail);
+    REQUIRE(outcome.result == PreviewSessionCloseOutcome::Result::Closed);
+    CHECK_FALSE(history.CanUndo());
+    EditableTRS aRestored, bRestored;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aRestored));
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bRestored));
+    CHECK(aRestored.translation == aBefore.translation);
+    CHECK(bRestored.translation == bBefore.translation);
+    CHECK_FALSE(f.manager.IsOverridden(b,
+        PrefabComponentKeyFor<Transform>::value).value);
+
+    const UUID ordinary = f.CreateEmpty("NoCarrier");
+    EditableTRS ordinaryBefore;
+    REQUIRE(f.manager.GetLocalTransform(
+        SceneManager::EntityId{f.manager.FindEntityByUuid(ordinary)}, ordinaryBefore));
+    TransformPreviewSession ordinarySession;
+    const auto ordinaryToken = ordinarySession.Begin(f.manager, 0xA11E1u,
+        {ordinary});
+    REQUIRE(ordinaryToken.has_value());
+    EditableTRS ordinaryAfter = ordinaryBefore;
+    ordinaryAfter.translation.z += 5.0f;
+    REQUIRE(ordinarySession.PreviewLocals(f.manager, *ordinaryToken,
+        {{ordinary, ordinaryAfter}}).effective);
+    history.FailNextRecordAppliedForTest();
+    const auto ordinaryOutcome = FinalizeTransformPreviewSession(history,
+        f.manager, ordinarySession, *ordinaryToken);
+    REQUIRE(ordinaryOutcome.result == PreviewSessionCloseOutcome::Result::Closed);
+    EditableTRS ordinaryRestored;
+    REQUIRE(f.manager.GetLocalTransform(
+        SceneManager::EntityId{f.manager.FindEntityByUuid(ordinary)}, ordinaryRestored));
+    CHECK(ordinaryRestored.translation == ordinaryBefore.translation);
+    std::filesystem::remove_all(dir);
+}
+
 // S6-D smoke discrimination: TransformCommand is a composite multi-member
 // replay object, while a live transform session uses one opaque token and a
 // UUID-keyed batch for both members.
@@ -4445,6 +4505,10 @@ TEST_CASE("Phase 8 W3 S6-D: multi-member transform composite and token session")
     REQUIRE(tokenB.has_value());
     CHECK_FALSE(tokenProbe.PreviewLocals(f.manager, *tokenB,
         {{ordinary, ordinaryLive}}).success);
+    const auto staleClose = RestoreTransformPreviewSession(f.manager,
+        tokenProbe, *tokenB);
+    CHECK(staleClose.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    CHECK(tokenProbe.IsOpen());
     const auto tokenClose = RestoreTransformPreviewSession(f.manager,
         tokenProbe, *tokenA);
     CHECK(tokenClose.result == PreviewSessionCloseOutcome::Result::Closed);
@@ -4529,6 +4593,20 @@ TEST_CASE("Phase 8 W3: marker helper fails a mixed valid+invalid batch atomicall
     REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == schemaBefore);
     REQUIRE(f.manager.IsDirty() == dirtyBefore);
     REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
+}
+
+TEST_CASE("Phase 8 W3 S6-D: sequenced host lifecycle and Inspector ownership gates")
+{
+    CHECK(TransformGizmoEventMatches(7, 7));
+    CHECK_FALSE(TransformGizmoEventMatches(0, 7));
+    CHECK_FALSE(TransformGizmoEventMatches(7, 0));
+    CHECK_FALSE(TransformGizmoEventMatches(7, 8));
+    CHECK(InspectorTransformPublishAllowed(11, 11, true));
+    CHECK_FALSE(InspectorTransformPublishAllowed(11, 12, true));
+    CHECK_FALSE(InspectorTransformPublishAllowed(11, 11, false));
+    CHECK(TransformBeginAdmissionAllowed(true, false, 1));
+    CHECK_FALSE(TransformBeginAdmissionAllowed(true, true, 1));
+    CHECK_FALSE(TransformBeginAdmissionAllowed(true, false, 0));
 }
 
 // ---------------------------------------------------------------------------

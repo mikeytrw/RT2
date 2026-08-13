@@ -7,6 +7,7 @@
 #include "EditorStructuralCommands.h"
 #include "EditorPropertyCommands.h"
 #include "SceneHierarchy.h"
+#include "EditorTransformGizmo.h"
 #include "ScriptAssetPath.h"
 #include "ScriptFieldRegistry.h"
 #include "ScriptFieldValue.h"
@@ -159,7 +160,8 @@ bool SceneEditorUI::CanBeginPreview(PreviewSessionKind kind,
 std::optional<TransformGestureToken> SceneEditorUI::BeginTransformGestureForGizmo(std::uint64_t owner,
 	const std::vector<rt2::core::UUID>& uuids)
 {
-	if (!m_SceneMgr || !m_Editable || owner == 0) return std::nullopt;
+	if (!m_SceneMgr || !TransformBeginAdmissionAllowed(m_Editable,
+		m_TransformRecoveryPending, owner)) return std::nullopt;
 	if (m_TransformPreviewSession.IsOpen())
 	{
 		if (m_TransformGestureToken) CloseTransformGesture(true, *m_TransformGestureToken);
@@ -191,6 +193,16 @@ PreviewSessionCloseOutcome SceneEditorUI::CloseTransformGesture(bool finalize,
 {
 	PreviewSessionCloseOutcome outcome;
 	if (!m_SceneMgr || !m_TransformGestureToken) return outcome;
+	// Authorization rejection is not a scene/recovery failure. Leave the
+	// current publisher, token, and recovery state completely untouched.
+	if (token != *m_TransformGestureToken)
+	{
+		outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
+		outcome.lastError = EditorMutationResult::Failure(
+			rt2::core::Error::InvalidArgument, "transform-session",
+			"transform close token is stale or foreign");
+		return outcome;
+	}
 	if (finalize && !m_CommandHistory)
 	{
 		outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
@@ -1603,6 +1615,7 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	// signals with the publisher; authorization is the opaque session token.
 	unsigned int owningWidgetId = m_TransformSessionOwningWidgetId;
 	unsigned int pendingCloseWidgetId = 0;
+	unsigned int changedWidgetId = 0;
 
 	ImGui::SetNextItemWidth(180.0f);
 	if (ImGui::DragFloat3("Position", &pos[0], 0.1f))
@@ -1611,6 +1624,7 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 		changed = true;
 	}
 	const unsigned int posWidgetId = ImGui::GetID("Position");
+	if (changed) changedWidgetId = posWidgetId;
 	if (ImGui::IsItemActivated())
 	{
 		if (!m_TransformPreviewSession.IsOpen() && m_Editable)
@@ -1638,6 +1652,7 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 		changed = true;
 	}
 	const unsigned int rotWidgetId = ImGui::GetID("Rotation");
+	if (rotChangedThis) changedWidgetId = rotWidgetId;
 	if (ImGui::IsItemActivated())
 	{
 		if (!m_TransformPreviewSession.IsOpen() && m_Editable)
@@ -1680,6 +1695,7 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 		}
 	}
 	const unsigned int scaleWidgetId = ImGui::GetID("Scale");
+	if (scaleChangedThis) changedWidgetId = scaleWidgetId;
 	if (ImGui::IsItemActivated())
 	{
 		if (!m_TransformPreviewSession.IsOpen() && m_Editable)
@@ -1706,7 +1722,6 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 		if (m_TransformRecoveryPending)
 		{
 			m_TransformEditError = "transform recovery is pending; retry explicitly";
-			ImGui::EndDisabled();
 			ImGui::PopID();
 			return;
 		}
@@ -1721,14 +1736,13 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 				m_TransformGestureToken = m_TransformPreviewSession.Begin(
 					*m_SceneMgr, owner, { targetUuid });
 		}
-		else if (owningWidgetId == 0 || owningWidgetId != posWidgetId &&
-			owningWidgetId != rotWidgetId && owningWidgetId != scaleWidgetId)
+		else if (!InspectorTransformPublishAllowed(owningWidgetId,
+			changedWidgetId, m_TransformGestureToken.has_value()))
 		{
 			// A gizmo-owned transform session (or another inspector widget) is
 			// never absorbable by this changed block. Its publisher must close or
 			// restore using its own opaque token first.
 			m_TransformEditError = "transform gesture is owned by another publisher";
-			ImGui::EndDisabled();
 			ImGui::PopID();
 			return;
 		}

@@ -542,8 +542,19 @@ PreviewSessionCloseOutcome FinalizeTransformPreviewSession(
 	}
 	if (!recordResult.success)
 	{
+		// RecordApplied failed after any fresh-marker cleanup. Compensate the
+		// still-effective partition immediately; the cleaned members remain
+		// absent from the session and are never recreated on Retry.
+		const auto restore = RestoreTransformPreviewSession(scene, session, token);
+		if (restore.result == PreviewSessionCloseOutcome::Result::Closed)
+		{
+			outcome.mutation = restore.mutation;
+			outcome.needsSyncApply = restore.needsSyncApply;
+			return outcome;
+		}
 		outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
-		outcome.lastError = recordResult;
+		outcome.lastError = restore.lastError.success ? recordResult : restore.lastError;
+		outcome.needsSyncApply = restore.needsSyncApply;
 		return outcome;
 	}
 	outcome.recorded = true;

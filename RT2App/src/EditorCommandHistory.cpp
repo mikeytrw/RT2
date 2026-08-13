@@ -43,6 +43,13 @@ EditorMutationResult EditorCommandHistory::RecordApplied(
 	empty.success = false;
 	empty.syncImpact = rt2::core::SyncImpact::None;
 	if (!cmd) return empty;
+	if (m_FailNextRecordApplied)
+	{
+		m_FailNextRecordApplied = false;
+		return EditorMutationResult::Failure(
+			rt2::core::Error::InvalidRuntimeState, "history",
+			"injected RecordApplied failure");
+	}
 
 	if (!appliedResult.success)
 	{

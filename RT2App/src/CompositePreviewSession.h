@@ -181,6 +181,12 @@ private:
 	std::uint64_t m_Sequence = 0;
 };
 
+inline bool TransformBeginAdmissionAllowed(bool editable,
+	bool recoveryPending, std::uint64_t opaqueOwner)
+{
+	return editable && !recoveryPending && opaqueOwner != 0;
+}
+
 class TransformPreviewSession
 {
 public:

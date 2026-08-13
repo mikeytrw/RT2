@@ -69,6 +69,9 @@ public:
 	EditorMutationResult RecordApplied(std::unique_ptr<IEditorCommand> cmd,
 	                                   SceneManager& scene,
 	                                   const EditorMutationResult& appliedResult);
+	// CPU-testable bounded fault seam for close/recovery discrimination. It
+	// rejects the next RecordApplied without touching either history stack.
+	void FailNextRecordAppliedForTest() { m_FailNextRecordApplied = true; }
 
 	// Apply the inverse of the topmost undo entry. On failure clears BOTH
 	// stacks and surfaces the error. Returns the EditorMutationResult of the
@@ -98,6 +101,7 @@ private:
 	std::stack<std::unique_ptr<IEditorCommand>>  m_RedoStack;
 	std::size_t m_Capacity = 64;
 	uint64_t    m_DocumentGeneration = 0;
+	bool        m_FailNextRecordApplied = false;
 };
 
 // S6-B fixup (nullable-history safety): route ONE command through an OPTIONAL
