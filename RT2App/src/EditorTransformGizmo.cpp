@@ -82,6 +82,15 @@ TransformGizmoResult EditorTransformGizmo::Draw(
 	const TransformSnapSettings& snap, bool uniformScale)
 {
 	TransformGizmoResult result;
+	if (m_Drag.active && (ImGui::IsKeyPressed(ImGuiKey_Escape) || !editable ||
+		imageSize.x <= 1.0f || imageSize.y <= 1.0f))
+	{
+		result.active = true;
+		result.interactionSequence = m_Drag.interactionSequence;
+		result.dragCancelled = true;
+		Cancel();
+		return result;
+	}
 	if (!editable || imageSize.x <= 1.0f || imageSize.y <= 1.0f)
 	{
 		return result;
@@ -174,6 +183,7 @@ TransformGizmoResult EditorTransformGizmo::Draw(
 		}
 	}
 	if (m_Drag.active) hoveredAxis = m_Drag.axis;
+	result.interactionSequence = m_Drag.interactionSequence;
 
 	ImDrawList* draw = ImGui::GetWindowDrawList();
 	const ImU32 colors[] = {
@@ -199,6 +209,9 @@ TransformGizmoResult EditorTransformGizmo::Draw(
 	if (!m_Drag.active && hoveredAxis >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
 	{
 		m_Drag = {};
+		m_Drag.interactionSequence = ++m_NextInteractionSequence;
+		result.dragJustStarted = true;
+		result.interactionSequence = m_Drag.interactionSequence;
 		m_Drag.active = true;
 		m_Drag.axis = hoveredAxis;
 		m_Drag.operation = m_Operation;
@@ -225,6 +238,7 @@ TransformGizmoResult EditorTransformGizmo::Draw(
 		m_Drag.startWorld = liveWorld;
 		m_Drag.startLocal.clear();
 		m_Drag.primaryIndex = primaryIndex;
+		result.draggedUuids = m_Drag.uuids;
 	}
 
 	if (m_Drag.active && !ImGui::IsMouseDown(ImGuiMouseButton_Left))

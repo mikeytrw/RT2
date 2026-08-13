@@ -26,11 +26,14 @@ struct TransformGizmoResult
 	bool active = false;
 	bool pickThrough = false;
 	std::string error;
+	bool dragJustStarted = false;
+	bool dragCancelled = false;
 	// Phase 3B1: drag-end reporting. When a drag that produced changes ends,
 	// `dragJustEnded` is true and `draggedUuids` + `dragStartLocal` carry
 	// the before-drag local TRS for each dragged entity. The host builds a
 	// multi-entity TransformCommand and calls RecordApplied.
 	bool dragJustEnded = false;
+	std::uint64_t interactionSequence = 0;
 	std::vector<rt2::core::UUID> draggedUuids;
 	std::vector<EditableTRS> dragStartLocal;
 	// Intent-only output: the host stages these desired world matrices in one
@@ -74,8 +77,10 @@ private:
 		std::vector<glm::mat4> startWorld;
 		std::vector<EditableTRS> startLocal;  // Phase 3B1: before-drag local TRS
 		std::size_t primaryIndex = 0;
+		std::uint64_t interactionSequence = 0;
 	};
 
 	TransformGizmoOperation m_Operation = TransformGizmoOperation::Translate;
 	DragState m_Drag;
+	std::uint64_t m_NextInteractionSequence = 0;
 };

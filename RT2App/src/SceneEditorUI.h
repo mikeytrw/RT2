@@ -147,11 +147,13 @@ public:
 	TransformPivot GetTransformPivot() const { return m_TransformPivot; }
 	const TransformSnapSettings& GetTransformSnapSettings() const { return m_TransformSnap; }
 	bool IsTransformGestureOpen() const { return m_TransformPreviewSession.IsOpen(); }
-	bool BeginTransformGestureForGizmo(std::uint64_t owner,
+	std::optional<TransformGestureToken> BeginTransformGestureForGizmo(std::uint64_t owner,
 		const std::vector<rt2::core::UUID>& uuids);
 	EditorMutationResult PreviewTransformWorldIntent(
+		const TransformGestureToken& token,
 		const std::vector<std::pair<rt2::core::UUID, glm::mat4>>& worlds);
-	PreviewSessionCloseOutcome CloseTransformGesture(bool finalize);
+	PreviewSessionCloseOutcome CloseTransformGesture(bool finalize,
+		const TransformGestureToken& token);
 	bool GetUniformScale() const { return m_UniformScale; }
 	bool CaptureCameraBookmark(size_t slot, const EditorCameraPose& pose)
 	{ return m_State.CaptureCameraBookmark(slot, pose); }
@@ -407,7 +409,7 @@ private:
 		bool finalize = true; // close mode to retry (true = finalize, false = restore)
 		std::string detail;
 	};
-	PreviewRecoveryState m_PreviewRecoveryByKind[4] = {};
+	PreviewRecoveryState m_PreviewRecoveryByKind[5] = {};
 	bool m_TransformRecoveryPending = false;
 	bool m_TransformRecoveryFinalize = true;
 	std::string m_TransformRecoveryDetail;

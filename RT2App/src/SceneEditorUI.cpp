@@ -44,8 +44,9 @@ void SceneEditorUI::RenderPreviewRecoveryBar()
 				detail.c_str());
 			ImGui::TextDisabled("The edit is still applied to the document without a history entry.");
 			ImGui::TextDisabled("Resolve the failure (or remove a target / load a new document) and retry.");
-			if (ImGui::Button(m_TransformRecoveryFinalize ? "Retry Transform Finalize" : "Retry Transform Restore"))
-				CloseTransformGesture(m_TransformRecoveryFinalize);
+			if (ImGui::Button(m_TransformRecoveryFinalize ? "Retry Transform Finalize" : "Retry Transform Restore")
+				&& m_TransformGestureToken)
+				CloseTransformGesture(m_TransformRecoveryFinalize, *m_TransformGestureToken);
 			ImGui::Separator();
 			return;
 		}
@@ -67,6 +68,8 @@ void SceneEditorUI::RenderPreviewRecoveryBar()
 		session = &m_MotionVelocitySession; owningWidgetId = &m_MotionVelocitySessionOwningWidgetId; break;
 	case PreviewSessionKind::Script:
 		session = &m_ScriptFieldSession; owningWidgetId = &m_ScriptFieldSessionOwningWidgetId; break;
+	case PreviewSessionKind::Transform:
+		return;
 	}
 	if (!session || !session->IsOpen())
 	{
@@ -138,6 +141,7 @@ bool SceneEditorUI::CanBeginPreview(PreviewSessionKind kind,
 	case PreviewSessionKind::Camera: session = &m_CameraSession; break;
 	case PreviewSessionKind::Motion: session = &m_MotionVelocitySession; break;
 	case PreviewSessionKind::Script: session = &m_ScriptFieldSession; break;
+	case PreviewSessionKind::Transform: return false;
 	}
 	if (!session) return false;
 
@@ -152,29 +156,38 @@ bool SceneEditorUI::CanBeginPreview(PreviewSessionKind kind,
 	return true;
 }
 
-bool SceneEditorUI::BeginTransformGestureForGizmo(std::uint64_t owner,
+std::optional<TransformGestureToken> SceneEditorUI::BeginTransformGestureForGizmo(std::uint64_t owner,
 	const std::vector<rt2::core::UUID>& uuids)
 {
-	if (!m_SceneMgr || !m_Editable || owner == 0) return false;
-	if (m_TransformPreviewSession.IsOpen()) return false;
-	if (!AdmitAuthoringMutation()) return false;
+	if (!m_SceneMgr || !m_Editable || owner == 0) return std::nullopt;
+	if (m_TransformPreviewSession.IsOpen())
+	{
+		if (m_TransformGestureToken) CloseTransformGesture(true, *m_TransformGestureToken);
+		if (m_TransformPreviewSession.IsOpen()) return std::nullopt;
+	}
+	if (!AdmitAuthoringMutation()) return std::nullopt;
 	m_TransformGestureToken = m_TransformPreviewSession.Begin(*m_SceneMgr, owner, uuids);
-	return m_TransformGestureToken.has_value();
+	return m_TransformGestureToken;
 }
 
 EditorMutationResult SceneEditorUI::PreviewTransformWorldIntent(
+	const TransformGestureToken& token,
 	const std::vector<std::pair<rt2::core::UUID, glm::mat4>>& worlds)
 {
+	if (m_TransformRecoveryPending)
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidRuntimeState,
+			"transform-session", "transform recovery is pending; retry explicitly");
 	if (!m_SceneMgr || !m_TransformGestureToken)
 		return EditorMutationResult::Failure(rt2::core::Error::InvalidRuntimeState,
 			"transform-session", "no active transform gesture");
 	const auto result = m_TransformPreviewSession.PreviewWorlds(*m_SceneMgr,
-		*m_TransformGestureToken, worlds);
+		token, worlds);
 	if (result.success && result.effective) NotifyTransformChanged();
 	return result;
 }
 
-PreviewSessionCloseOutcome SceneEditorUI::CloseTransformGesture(bool finalize)
+PreviewSessionCloseOutcome SceneEditorUI::CloseTransformGesture(bool finalize,
+	const TransformGestureToken& token)
 {
 	PreviewSessionCloseOutcome outcome;
 	if (!m_SceneMgr || !m_TransformGestureToken) return outcome;
@@ -191,9 +204,9 @@ PreviewSessionCloseOutcome SceneEditorUI::CloseTransformGesture(bool finalize)
 	}
 	outcome = finalize
 		? FinalizeTransformPreviewSession(*m_CommandHistory, *m_SceneMgr,
-			m_TransformPreviewSession, *m_TransformGestureToken)
+			m_TransformPreviewSession, token)
 		: RestoreTransformPreviewSession(*m_SceneMgr, m_TransformPreviewSession,
-			*m_TransformGestureToken);
+			token);
 	if (outcome.needsSyncApply) ApplyCloseOutcome(outcome);
 	if (outcome.result == PreviewSessionCloseOutcome::Result::Closed)
 	{
@@ -358,24 +371,18 @@ bool SceneEditorUI::CloseAllPreviewSessionsForAction(bool finalize)
 	// proven replacement/removal handling) re-runs a pending close.
 	if (!m_CommandHistory) return false;
 	if (m_TransformRecoveryPending) return false;
-	if (m_TransformPreviewSession.IsOpen())
-	{
-		const auto transformClose = CloseTransformGesture(finalize);
-		if (transformClose.result == PreviewSessionCloseOutcome::Result::PendingRetry)
-		{
-			m_TransformRecoveryPending = true;
-			return false;
-		}
-	}
-	PreviewSessionSlot slots[4] = {
+	PreviewSessionSlot slots[5] = {
 		{ PreviewSessionKind::Light, &m_LightSession, &m_LightSessionOwningWidgetId, finalize },
 		{ PreviewSessionKind::Camera, &m_CameraSession, &m_CameraSessionOwningWidgetId, finalize },
 		{ PreviewSessionKind::Motion, &m_MotionVelocitySession, &m_MotionVelocitySessionOwningWidgetId, finalize },
 		{ PreviewSessionKind::Script, &m_ScriptFieldSession, &m_ScriptFieldSessionOwningWidgetId, finalize },
+		{ PreviewSessionKind::Transform, nullptr, &m_TransformSessionOwningWidgetId,
+			finalize, &m_TransformPreviewSession,
+			m_TransformGestureToken ? &*m_TransformGestureToken : nullptr },
 	};
 	PreviewSessionsBeforeActionResult closeResult;
 	const bool admitted = ClosePreviewSessionsAndAdmit(*m_SceneMgr,
-		*m_CommandHistory, slots, 4, closeResult, AnyPreviewRecoveryPending());
+		*m_CommandHistory, slots, 5, closeResult, AnyPreviewRecoveryPending());
 
 	// Reflect per-kind recovery from the reducer outcomes, then route scene
 	// sync for every close that actually mutated the scene. In the pending
@@ -386,7 +393,23 @@ bool SceneEditorUI::CloseAllPreviewSessionsForAction(bool finalize)
 		const PreviewSessionCloseSlotOutcome& slotOutcome = closeResult.slots[i];
 		if (!slotOutcome.sessionWasOpen) continue;
 		const PreviewSessionKind kind = slots[i].kind;
-		if (slotOutcome.outcome.result == PreviewSessionCloseOutcome::Result::Closed)
+		if (kind == PreviewSessionKind::Transform)
+		{
+			if (slotOutcome.outcome.result == PreviewSessionCloseOutcome::Result::Closed)
+			{
+				m_TransformGestureToken.reset();
+				m_TransformRecoveryPending = false;
+				m_TransformRecoveryDetail.clear();
+				m_TransformSessionOwningWidgetId = 0;
+			}
+			else
+			{
+				m_TransformRecoveryPending = true;
+				m_TransformRecoveryFinalize = finalize;
+				m_TransformRecoveryDetail = slotOutcome.outcome.lastError.error.detail;
+			}
+		}
+		else if (slotOutcome.outcome.result == PreviewSessionCloseOutcome::Result::Closed)
 			ClearPendingRecovery(kind);
 		else
 			SetPendingRecovery(kind, slots[i].finalize,
@@ -438,6 +461,7 @@ unsigned int& SceneEditorUI::OwningWidgetIdFor(PreviewSessionKind kind)
 	case PreviewSessionKind::Camera: return m_CameraSessionOwningWidgetId;
 	case PreviewSessionKind::Motion: return m_MotionVelocitySessionOwningWidgetId;
 	case PreviewSessionKind::Script: return m_ScriptFieldSessionOwningWidgetId;
+	case PreviewSessionKind::Transform: return m_TransformSessionOwningWidgetId;
 	}
 	return m_LightSessionOwningWidgetId;
 }
@@ -513,9 +537,15 @@ void SceneEditorUI::FinalizeOpenPreviewSessions()
 	if (!m_SceneMgr) return;
 	if (m_TransformPreviewSession.IsOpen())
 	{
-		const auto outcome = CloseTransformGesture(true);
+		const auto outcome = m_TransformGestureToken
+			? CloseTransformGesture(true, *m_TransformGestureToken)
+			: PreviewSessionCloseOutcome{};
 		if (outcome.result == PreviewSessionCloseOutcome::Result::PendingRetry)
+		{
 			m_TransformRecoveryPending = true;
+			return;
+		}
+		if (m_TransformPreviewSession.IsOpen()) return;
 	}
 	ClosePreviewSession(PreviewSessionKind::Light, m_LightSession,
 		m_LightSessionOwningWidgetId, /*finalize=*/true);
@@ -529,6 +559,7 @@ void SceneEditorUI::FinalizeOpenPreviewSessions()
 
 void SceneEditorUI::DiscardAllPropertySessions()
 {
+	m_TransformPreviewSession.Discard();
 	m_NameSession.Discard();
 	m_LightSession.Discard();
 	m_CameraSession.Discard();
@@ -1672,6 +1703,13 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 
 	if (changed)
 	{
+		if (m_TransformRecoveryPending)
+		{
+			m_TransformEditError = "transform recovery is pending; retry explicitly";
+			ImGui::EndDisabled();
+			ImGui::PopID();
+			return;
+		}
 		EditableTRS edited;
 		edited.translation = pos;
 		edited.rotation = glm::quat(glm::radians(rot));
@@ -1682,6 +1720,17 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 			if (AdmitAuthoringMutation())
 				m_TransformGestureToken = m_TransformPreviewSession.Begin(
 					*m_SceneMgr, owner, { targetUuid });
+		}
+		else if (owningWidgetId == 0 || owningWidgetId != posWidgetId &&
+			owningWidgetId != rotWidgetId && owningWidgetId != scaleWidgetId)
+		{
+			// A gizmo-owned transform session (or another inspector widget) is
+			// never absorbable by this changed block. Its publisher must close or
+			// restore using its own opaque token first.
+			m_TransformEditError = "transform gesture is owned by another publisher";
+			ImGui::EndDisabled();
+			ImGui::PopID();
+			return;
 		}
 		EditorMutationResult preview;
 		if (!m_TransformGestureToken)
@@ -1704,12 +1753,13 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 		}
 	}
 
-	if (m_TransformPreviewSession.IsOpen() &&
+	if (!m_TransformRecoveryPending && m_TransformPreviewSession.IsOpen() &&
 		(m_TransformGestureToken.has_value()) &&
 		(pendingCloseWidgetId != 0 || cancelRequested))
 	{
-		const auto close = CloseTransformGesture(!cancelRequested);
-		if (close.needsSyncApply) ApplyCloseOutcome(close);
+		const auto close = m_TransformGestureToken
+			? CloseTransformGesture(!cancelRequested, *m_TransformGestureToken)
+			: PreviewSessionCloseOutcome{};
 		if (close.result == PreviewSessionCloseOutcome::Result::Closed)
 		{
 			m_TransformGestureToken.reset();

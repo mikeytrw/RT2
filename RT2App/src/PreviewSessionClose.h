@@ -40,7 +40,7 @@
 // ============================================================================
 
 // Which command family a CompositePreviewSession finalizes into.
-enum class PreviewSessionKind { Light, Camera, Motion, Script };
+enum class PreviewSessionKind { Light, Camera, Motion, Script, Transform };
 
 // Outcome of a two-phase close attempt.
 struct PreviewSessionCloseOutcome
@@ -123,6 +123,10 @@ struct PreviewSessionSlot
 	unsigned int* owningWidgetId = nullptr;
 	// Close mode: true = record (finalize); false = abandon (restore/escape).
 	bool finalize = false;
+	// Transform is the fifth reducer kind. Its token is carried in the slot so
+	// shared admission/recovery cannot close a different publisher's gesture.
+	TransformPreviewSession* transformSession = nullptr;
+	const TransformGestureToken* transformToken = nullptr;
 };
 
 // CPU-linkable publish-admission decision (S6-C final-verdict P1 finding 1):
@@ -164,7 +168,7 @@ struct PreviewSessionsBeforeActionResult
 {
 	bool allClosed = false;
 	std::size_t slotCount = 0;
-	PreviewSessionCloseSlotOutcome slots[4];
+	PreviewSessionCloseSlotOutcome slots[5];
 };
 
 // CPU-linkable recovery reducer (S6-C re-review P1 finding 2 / final closure):

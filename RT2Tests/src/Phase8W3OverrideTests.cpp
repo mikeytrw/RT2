@@ -4392,6 +4392,87 @@ TEST_CASE("Phase 8 W3 S6-D: multi-member transform composite and token session")
         PrefabComponentKeyFor<Transform>::value).value == false);
     CHECK(registry.get<Transform>(aHandle).translation == aBefore.translation);
     CHECK(registry.get<Transform>(bHandle).translation == bBefore.translation);
+
+    // Escape/restore replays the same durable origin->rolling command in the
+    // Before direction; it must close ordinary and prefab members atomically.
+    TransformPreviewSession escaped;
+    const auto escapeToken = escaped.Begin(f.manager, 0xA11D0u, {a, b});
+    REQUIRE(escapeToken.has_value());
+    auto aEscaped = aBefore;
+    auto bEscaped = bBefore;
+    aEscaped.translation.x += 6.0f;
+    bEscaped.translation.y += 7.0f;
+    REQUIRE(escaped.PreviewLocals(f.manager, *escapeToken,
+        {{a, aEscaped}, {b, bEscaped}}).effective);
+    const auto restored = RestoreTransformPreviewSession(f.manager, escaped,
+        *escapeToken);
+    INFO(restored.lastError.error.detail);
+    REQUIRE(restored.result == PreviewSessionCloseOutcome::Result::Closed);
+    CHECK(registry.get<Transform>(aHandle).translation == aBefore.translation);
+    CHECK(registry.get<Transform>(bHandle).translation == bBefore.translation);
+
+    // Reviewer probe: an ordinary TransformCommand is still composite replay,
+    // so a stale fixed source must fail atomically instead of falling back to
+    // SetLocalTransformStates and authoring over a concurrent edit.
+    const UUID ordinary = f.CreateEmpty("Ordinary");
+    EditableTRS ordinaryOrigin;
+    REQUIRE(f.manager.GetLocalTransform(
+        SceneManager::EntityId{f.manager.FindEntityByUuid(ordinary)}, ordinaryOrigin));
+    EditableTRS ordinaryAfter = ordinaryOrigin;
+    ordinaryAfter.translation.x += 2.0f;
+    auto stale = MakeTransformCommandIfEffective(ordinary, ordinaryOrigin,
+        ordinaryAfter);
+    REQUIRE(stale);
+    EditableTRS concurrent = ordinaryOrigin;
+    concurrent.translation.y += 9.0f;
+    REQUIRE(f.manager.SetLocalTransformStates({{ordinary, concurrent}}).success);
+    const auto staleRevision = f.manager.AuthoringRevision();
+    const auto staleResult = stale->Execute(f.manager);
+    CHECK_FALSE(staleResult.success);
+    CHECK(f.manager.AuthoringRevision() == staleRevision);
+    EditableTRS ordinaryLive;
+    REQUIRE(f.manager.GetLocalTransform(
+        SceneManager::EntityId{f.manager.FindEntityByUuid(ordinary)}, ordinaryLive));
+    CHECK(ordinaryLive.translation == concurrent.translation);
+
+    // Tokens are opaque, monotonic, and publisher-bound: a closed token and a
+    // token minted for another publisher cannot publish into this session.
+    TransformPreviewSession tokenProbe;
+    const auto tokenA = tokenProbe.Begin(f.manager, 0xA11D1u, {ordinary});
+    REQUIRE(tokenA.has_value());
+    TransformPreviewSession foreignSession;
+    const auto tokenB = foreignSession.Begin(f.manager, 0xA11D2u, {ordinary});
+    REQUIRE(tokenB.has_value());
+    CHECK_FALSE(tokenProbe.PreviewLocals(f.manager, *tokenB,
+        {{ordinary, ordinaryLive}}).success);
+    const auto tokenClose = RestoreTransformPreviewSession(f.manager,
+        tokenProbe, *tokenA);
+    CHECK(tokenClose.result == PreviewSessionCloseOutcome::Result::Closed);
+    CHECK_FALSE(tokenProbe.PreviewLocals(f.manager, *tokenA,
+        {{ordinary, ordinaryLive}}).success);
+
+    // Carrier table discriminator: when the sole fresh prefab carrier is
+    // removed, the surviving ordinary value must finalize with a live/live
+    // schema rebase rather than attempting an illegal schema downgrade.
+    TransformPreviewSession removedCarrier;
+    const auto removedToken = removedCarrier.Begin(f.manager, 0xA11D3u,
+        {ordinary, b});
+    REQUIRE(removedToken.has_value());
+    EditableTRS ordinaryEffective = ordinaryLive;
+    ordinaryEffective.translation.x += 3.0f;
+    EditableTRS removedPreview = bBefore;
+    removedPreview.translation.z += 2.0f;
+    REQUIRE(removedCarrier.PreviewLocals(f.manager, *removedToken,
+        {{ordinary, ordinaryEffective}, {b, removedPreview}}).effective);
+    REQUIRE(f.manager.RemoveSubtrees({b}).success);
+    const auto removedClose = FinalizeTransformPreviewSession(history,
+        f.manager, removedCarrier, *removedToken);
+    INFO(removedClose.lastError.error.detail);
+    REQUIRE(removedClose.result == PreviewSessionCloseOutcome::Result::Closed);
+    EditableTRS surviving;
+    REQUIRE(f.manager.GetLocalTransform(
+        SceneManager::EntityId{f.manager.FindEntityByUuid(ordinary)}, surviving));
+    CHECK(surviving.translation == ordinaryEffective.translation);
     std::filesystem::remove_all(dir);
 }
 // ---------------------------------------------------------------------------

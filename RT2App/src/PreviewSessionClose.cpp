@@ -24,6 +24,8 @@ bool CaptureRejectedForKind(PreviewSessionKind kind, const IEditorCommand& cmd)
 		return static_cast<const SetMotionCommand&>(cmd).ExplicitCaptureRejected();
 	case PreviewSessionKind::Script:
 		return static_cast<const SetScriptCommand&>(cmd).ExplicitCaptureRejected();
+	case PreviewSessionKind::Transform:
+		return true;
 	}
 	return true;
 }
@@ -76,6 +78,8 @@ std::unique_ptr<IEditorCommand> BuildPreviewSessionCommand(
 				std::get<std::optional<ScriptComponent>>(session.OriginValue()),
 				std::get<std::optional<ScriptComponent>>(session.RollingValue()),
 				session.Origin());
+	case PreviewSessionKind::Transform:
+		return nullptr;
 	}
 	return nullptr;
 }
@@ -297,15 +301,30 @@ void ClosePreviewSessionsBeforeAction(SceneManager& scene,
 {
 	result.allClosed = true;
 	result.slotCount = count;
-	for (std::size_t i = 0; i < count && i < 4; ++i)
+	for (std::size_t i = 0; i < count && i < 5; ++i)
 	{
 		const PreviewSessionSlot& slot = slots[i];
 		PreviewSessionCloseSlotOutcome& slotOutcome = result.slots[i];
-		if (!slot.session || !slot.session->IsOpen()) continue;
-		slotOutcome.sessionWasOpen = true;
-		slotOutcome.outcome = slot.finalize
-			? FinalizePreviewSession(history, scene, slot.kind, *slot.session)
-			: RestorePreviewSession(scene, slot.kind, *slot.session);
+		const bool transform = slot.kind == PreviewSessionKind::Transform;
+		if (transform)
+		{
+			if (!slot.transformSession || !slot.transformToken ||
+				!slot.transformSession->IsOpen()) continue;
+			slotOutcome.sessionWasOpen = true;
+			slotOutcome.outcome = slot.finalize
+				? FinalizeTransformPreviewSession(history, scene,
+					*slot.transformSession, *slot.transformToken)
+				: RestoreTransformPreviewSession(scene, *slot.transformSession,
+					*slot.transformToken);
+		}
+		else
+		{
+			if (!slot.session || !slot.session->IsOpen()) continue;
+			slotOutcome.sessionWasOpen = true;
+			slotOutcome.outcome = slot.finalize
+				? FinalizePreviewSession(history, scene, slot.kind, *slot.session)
+				: RestorePreviewSession(scene, slot.kind, *slot.session);
+		}
 		if (slotOutcome.outcome.result == PreviewSessionCloseOutcome::Result::Closed)
 		{
 			// Owner clearing happens here; the host consumes the reopened
@@ -358,8 +377,15 @@ std::unique_ptr<IEditorCommand> BuildTransformPreviewCommand(
 	for (const auto& triple : triples)
 		for (const auto& member : session.Members())
 			if (member.uuid == triple.target) selected.push_back(member);
+	bool hasCarrier = false;
+	for (const auto& member : selected)
+		if (member.originMarker.has_value() && member.rollingMarker.has_value()
+			&& *member.originMarker != *member.rollingMarker)
+			hasCarrier = true;
+	const std::uint32_t replayBeforeSchema = hasCarrier
+		? session.OriginSchema() : session.RollingSchema();
 	return MakeTransformCommandIfEffective(std::move(triples),
-		TransformCapture(session, selected, session.OriginSchema(),
+		TransformCapture(session, selected, replayBeforeSchema,
 			session.RollingSchema(), false));
 }
 
@@ -503,14 +529,21 @@ PreviewSessionCloseOutcome FinalizeTransformPreviewSession(
 			"transform finalize preflight rejected the explicit capture");
 		return outcome;
 	}
-	outcome.mutation = history.RecordApplied(std::move(command), scene,
-		session.LastEffectiveResult());
+	const EditorMutationResult recordResult = history.RecordApplied(
+		std::move(command), scene, session.LastEffectiveResult());
+	outcome.mutation = recordResult;
 	if (cleanupApplied)
+	{
+		// Recording is already-applied and therefore does not own scene sync.
+		// The only scene mutation at close is the fresh-marker cleanup; keep its
+		// result separate from the history result so exactly one sync is routed.
+		outcome.mutation = cleanupMutation;
 		outcome.needsSyncApply = true;
-	if (!outcome.mutation.success)
+	}
+	if (!recordResult.success)
 	{
 		outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
-		outcome.lastError = outcome.mutation;
+		outcome.lastError = recordResult;
 		return outcome;
 	}
 	outcome.recorded = true;
@@ -547,12 +580,12 @@ PreviewSessionCloseOutcome RestoreTransformPreviewSession(
 		const bool markerChanged = member.introducedMarker;
 		if (!valueChanged && !markerChanged) continue;
 		values.push_back({ PrefabValueKind::LocalTransform, member.uuid,
-			PrefabMarkerDirection::Before, PrefabValuePayload{member.rollingLocal},
-			PrefabValuePayload{member.originLocal} });
+			PrefabMarkerDirection::After, PrefabValuePayload{member.originLocal},
+			PrefabValuePayload{member.rollingLocal} });
 		// The Before direction uses the captured origin membership. For an
 		// ordinary entity the marker is ignored by the composite.
-		const bool afterPresent = member.originMarker.has_value() ?
-			*member.originMarker : true;
+		const bool afterPresent = member.rollingMarker.has_value() ?
+			*member.rollingMarker : true;
 		specs.push_back({ member.uuid, PrefabComponentKeyFor<Transform>::value,
 			afterPresent });
 		selected.push_back(member);
@@ -575,8 +608,11 @@ PreviewSessionCloseOutcome RestoreTransformPreviewSession(
 	}
 	const std::uint32_t restoreAfterSchema = survivingCarrier
 		? session.OriginSchema() : session.RollingSchema();
-	auto capture = TransformCapture(session, selected, session.RollingSchema(),
-		restoreAfterSchema, true);
+	// Undo reads the captured After side as its directional source.  Keep the
+	// durable command endpoints aligned with the value direction (origin ->
+	// rolling), while allowing the no-carrier case to remain live/live.
+	auto capture = TransformCapture(session, selected, restoreAfterSchema,
+		session.RollingSchema(), false);
 	for (std::size_t i = 0; i < specs.size(); ++i)
 		capture.markers[i].afterPresent = specs[i].afterPresent;
 	PrefabCommandTransaction tx(std::move(values), std::move(specs));

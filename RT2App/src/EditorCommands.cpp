@@ -104,40 +104,12 @@ TransformCommand::TransformCommand(std::vector<TransformTriple> triples,
 
 EditorMutationResult TransformCommand::Execute(SceneManager& scene)
 {
-	auto result = m_Transaction.Execute(scene);
-	if (result.success) return result;
-	// Legacy raw callers historically supplied a fixed before value for a
-	// sequence of ordinary-entity commands. Preserve that raw compatibility
-	// without weakening prefab composite replay (where a stale source is a
-	// real integrity failure).
-	bool allOrdinary = !m_Triples.empty();
-	for (const auto& triple : m_Triples)
-		if (scene.IsOverridden(triple.target,
-			PrefabComponentKeyFor<Transform>::value).IsOk()) { allOrdinary = false; break; }
-	if (allOrdinary)
-	{
-		std::vector<std::pair<rt2::core::UUID, EditableTRS>> states;
-		for (const auto& triple : m_Triples) states.emplace_back(triple.target, triple.afterLocal);
-		return scene.SetLocalTransformStates(states);
-	}
-	return result;
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult TransformCommand::Undo(SceneManager& scene)
 {
-	auto result = m_Transaction.Undo(scene);
-	if (result.success) return result;
-	bool allOrdinary = !m_Triples.empty();
-	for (const auto& triple : m_Triples)
-		if (scene.IsOverridden(triple.target,
-			PrefabComponentKeyFor<Transform>::value).IsOk()) { allOrdinary = false; break; }
-	if (allOrdinary)
-	{
-		std::vector<std::pair<rt2::core::UUID, EditableTRS>> states;
-		for (const auto& triple : m_Triples) states.emplace_back(triple.target, triple.beforeLocal);
-		return scene.SetLocalTransformStates(states);
-	}
-	return result;
+	return m_Transaction.Undo(scene);
 }
 
 SetVisibilityCommand::SetVisibilityCommand(PairList beforeStates,

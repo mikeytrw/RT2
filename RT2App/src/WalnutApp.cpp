@@ -1084,25 +1084,59 @@ public:
 			m_EditorUI.GetTransformSnapSettings(), m_EditorUI.GetUniformScale());
 		if (gizmo.changed && !gizmo.desiredWorld.empty())
 		{
-			if (!m_EditorUI.IsTransformGestureOpen())
+			if (m_GizmoInteractionSequence == 0 ||
+				gizmo.interactionSequence == m_GizmoInteractionSequence)
 			{
-				std::vector<rt2::core::UUID> gestureUuids;
-				gestureUuids.reserve(gizmo.desiredWorld.size());
-				for (const auto& item : gizmo.desiredWorld)
-					gestureUuids.push_back(item.first);
-				m_EditorUI.BeginTransformGestureForGizmo(
-					static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(
-						&m_TransformGizmo)), gestureUuids);
+				if (!m_EditorUI.IsTransformGestureOpen())
+				{
+					std::vector<rt2::core::UUID> gestureUuids;
+					gestureUuids.reserve(gizmo.desiredWorld.size());
+					for (const auto& item : gizmo.desiredWorld) gestureUuids.push_back(item.first);
+					const auto token = m_EditorUI.BeginTransformGestureForGizmo(
+						static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&m_TransformGizmo)), gestureUuids);
+					if (!token) m_LastStatusMsg = "gizmo transform gesture admission failed";
+					else { m_GizmoTransformToken = *token; m_GizmoInteractionSequence = gizmo.interactionSequence; }
+				}
+				const auto preview = m_GizmoTransformToken
+					? m_EditorUI.PreviewTransformWorldIntent(*m_GizmoTransformToken, gizmo.desiredWorld)
+					: EditorMutationResult::Failure(rt2::core::Error::InvalidRuntimeState,
+						"gizmo", "gizmo has no admitted transform token");
+				if (!preview.success) m_LastStatusMsg = preview.error.detail;
 			}
-			const auto preview = m_EditorUI.PreviewTransformWorldIntent(gizmo.desiredWorld);
-			if (!preview.success) m_LastStatusMsg = preview.error.detail;
 		}
 		if (!gizmo.error.empty())
 			m_LastStatusMsg = gizmo.error;
+		if (gizmo.dragJustStarted && m_GizmoTransformToken == std::nullopt &&
+			!gizmo.draggedUuids.empty())
+		{
+			const auto token = m_EditorUI.BeginTransformGestureForGizmo(
+				static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&m_TransformGizmo)),
+				gizmo.draggedUuids);
+			if (!token)
+				m_LastStatusMsg = "gizmo transform gesture admission failed";
+			else
+			{
+				m_GizmoTransformToken = *token;
+				m_GizmoInteractionSequence = gizmo.interactionSequence;
+			}
+		}
+		if (gizmo.dragCancelled && m_GizmoTransformToken)
+		{
+			const auto close = m_EditorUI.CloseTransformGesture(false,
+				*m_GizmoTransformToken);
+			m_GizmoTransformToken.reset();
+			m_GizmoInteractionSequence = 0;
+			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)
+				m_LastStatusMsg = close.lastError.error.detail;
+		}
 
 		if (gizmo.dragJustEnded && m_EditorUI.IsTransformGestureOpen())
 		{
-			const auto close = m_EditorUI.CloseTransformGesture(true);
+			const auto close = m_GizmoTransformToken
+				? m_EditorUI.CloseTransformGesture(true, *m_GizmoTransformToken)
+				: PreviewSessionCloseOutcome{};
+			m_GizmoTransformToken.reset();
+			m_GizmoInteractionSequence = 0;
 			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)
 				m_LastStatusMsg = close.lastError.error.detail;
 		}
@@ -1177,6 +1211,18 @@ public:
 	}
 	else
 	{
+		// Losing the renderer output is a viewport teardown, not proof that an
+		// applied transform may be abandoned. Restore through the exact gizmo
+		// token before clearing the local correlation.
+		if (m_GizmoTransformToken)
+		{
+			const auto close = m_EditorUI.CloseTransformGesture(false,
+				*m_GizmoTransformToken);
+			m_GizmoTransformToken.reset();
+			m_GizmoInteractionSequence = 0;
+			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)
+				m_LastStatusMsg = close.lastError.error.detail;
+		}
 		ImGui::TextDisabled("Renderer output unavailable");
 		if (ImGui::BeginDragDropTarget())
 		{
@@ -3353,6 +3399,8 @@ private:
 	EditorCommandHistory m_History;
 	EditorSyncRouter m_SyncRouter;
 	EditorTransformGizmo m_TransformGizmo;
+	std::optional<TransformGestureToken> m_GizmoTransformToken;
+	std::uint64_t m_GizmoInteractionSequence = 0;
 	uint64_t m_ViewportPickSerial = 0;
 	bool m_ViewportPickToggle = false;
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;

@@ -308,7 +308,21 @@ EditorMutationResult TransformPreviewSession::PreviewLocals(SceneManager& scene,
 	}
 	m_RollingSchema = scene.AuthoringDoc().metadata.schemaVersion;
 	m_HadEffectiveFrame = true;
-	m_LastEffectiveResult = m_LastResult;
+	if (!m_LastEffectiveResult.success)
+		m_LastEffectiveResult = m_LastResult;
+	else
+	{
+		m_LastEffectiveResult.success = true;
+		m_LastEffectiveResult.effective = true;
+		if (static_cast<int>(m_LastResult.syncImpact) >
+			static_cast<int>(m_LastEffectiveResult.syncImpact))
+			m_LastEffectiveResult.syncImpact = m_LastResult.syncImpact;
+		for (const auto& uuid : m_LastResult.affectedEntities)
+			if (std::find(m_LastEffectiveResult.affectedEntities.begin(),
+				m_LastEffectiveResult.affectedEntities.end(), uuid) ==
+				m_LastEffectiveResult.affectedEntities.end())
+				m_LastEffectiveResult.affectedEntities.push_back(uuid);
+	}
 	return m_LastResult;
 }
 
