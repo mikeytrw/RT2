@@ -8,7 +8,10 @@
 #include "SceneMutation.h"
 
 #include <functional>
+#include <cstdint>
 #include <optional>
+#include <atomic>
+#include <utility>
 #include <vector>
 
 // ============================================================================
@@ -156,6 +159,99 @@ private:
 	bool                                     m_HadEffectiveFrame = false;
 	EditorMutationResult                     m_LastResult;
 	EditorMutationResult                     m_LastEffectiveResult;
+};
+
+// Opaque authorization for a transform gesture.  Callers can only compare
+// or pass the token they received from Begin; owner and sequence are not
+// caller-controlled continuation fields.
+class TransformGestureToken
+{
+public:
+	bool IsValid() const { return m_Owner != 0 && m_Sequence != 0; }
+	friend bool operator==(const TransformGestureToken& a, const TransformGestureToken& b)
+	{ return a.m_Owner == b.m_Owner && a.m_Sequence == b.m_Sequence; }
+	friend bool operator!=(const TransformGestureToken& a, const TransformGestureToken& b)
+	{ return !(a == b); }
+
+private:
+	friend class TransformPreviewSession;
+	TransformGestureToken(std::uint64_t owner, std::uint64_t sequence)
+		: m_Owner(owner), m_Sequence(sequence) {}
+	std::uint64_t m_Owner = 0;
+	std::uint64_t m_Sequence = 0;
+};
+
+class TransformPreviewSession
+{
+public:
+	struct Member
+	{
+		rt2::core::UUID uuid;
+		EditableTRS originLocal;
+		EditableTRS rollingLocal;
+		std::optional<bool> originMarker;
+		std::optional<bool> rollingMarker;
+		bool everEffective = false;
+		bool introducedMarker = false;
+	};
+
+	std::optional<TransformGestureToken> Begin(SceneManager& scene,
+		std::uint64_t opaqueOwner,
+		const std::vector<rt2::core::UUID>& orderedUuids);
+	bool IsOpen() const { return m_Open; }
+	const TransformGestureToken& Token() const { return m_Token; }
+	const std::vector<Member>& Members() const { return m_Members; }
+	std::uint32_t OriginSchema() const { return m_OriginSchema; }
+	std::uint32_t RollingSchema() const { return m_RollingSchema; }
+	std::uint64_t DocumentGeneration() const { return m_DocumentGeneration; }
+	bool DocumentReplaced(const SceneManager& scene) const
+	{ return m_DocumentGeneration != scene.DocumentGeneration(); }
+	bool HadEffectiveFrame() const { return m_HadEffectiveFrame; }
+	const EditorMutationResult& LastResult() const { return m_LastResult; }
+	const EditorMutationResult& LastEffectiveResult() const { return m_LastEffectiveResult; }
+	const PrefabCommandTransaction::ExplicitCapture& Origin() const { return m_Origin; }
+	bool TokenMatches(const TransformGestureToken& token) const
+	{ return m_Open && token.IsValid() && token == m_Token; }
+
+	EditorMutationResult PreviewLocals(SceneManager& scene,
+		const TransformGestureToken& token,
+		const std::vector<std::pair<rt2::core::UUID, EditableTRS>>& targets);
+	EditorMutationResult PreviewWorlds(SceneManager& scene,
+		const TransformGestureToken& token,
+		const std::vector<std::pair<rt2::core::UUID, glm::mat4>>& targets);
+	// Remove members that were deleted out-of-band. The durable survivors keep
+	// their captured origin/rolling state and remain closeable; returning zero
+	// means the gesture has no live members and may be discarded.
+	std::size_t PruneMissingMembers(const SceneManager& scene);
+	void SetRollingSchema(std::uint32_t schema) { m_RollingSchema = schema; }
+	void MarkMarkerRemoved(const rt2::core::UUID& uuid)
+	{
+		if (auto* member = FindMember(uuid))
+		{
+			member->rollingMarker = false;
+			member->introducedMarker = false;
+		}
+	}
+
+	void Discard();
+
+private:
+	static std::uint64_t NextSequence();
+	EditorMutationResult Fail(rt2::core::Error::Code code,
+		const std::string& detail) const;
+	Member* FindMember(const rt2::core::UUID& uuid);
+	const Member* FindMember(const rt2::core::UUID& uuid) const;
+
+	std::vector<Member> m_Members;
+	PrefabCommandTransaction::ExplicitCapture m_Origin;
+	TransformGestureToken m_Token{0, 0};
+	std::uint32_t m_OriginSchema = 0;
+	std::uint32_t m_RollingSchema = 0;
+	std::uint64_t m_DocumentGeneration = 0;
+	bool m_Open = false;
+	bool m_HadEffectiveFrame = false;
+	EditorMutationResult m_LastResult;
+	EditorMutationResult m_LastEffectiveResult;
 };
 
 #endif // RT2_COMPOSITE_PREVIEW_SESSION_H

@@ -4314,6 +4314,86 @@ TEST_CASE("Phase 8 W3: marker helper canonicalizes keys and rejects forged class
     CHECK(pm->overrides[0] == S2Key("transform")); // table-derived bit (true)
     REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
 }
+
+// S6-D smoke discrimination: TransformCommand is a composite multi-member
+// replay object, while a live transform session uses one opaque token and a
+// UUID-keyed batch for both members.
+TEST_CASE("Phase 8 W3 S6-D: multi-member transform composite and token session")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6d_transform_smoke");
+    const auto [aHandle, bHandle] = f.MakeInstance(dir);
+    const UUID a = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+    const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+    auto& registry = f.manager.GetECS().registry;
+    EditableTRS aBefore, bBefore;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aBefore));
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+    EditableTRS aAfter = aBefore;
+    EditableTRS bAfter = bBefore;
+    aAfter.translation.x += 2.0f;
+    bAfter.translation.y += 3.0f;
+
+    EditorCommandHistory history;
+    auto command = MakeTransformCommandIfEffective(
+        std::vector<TransformTriple>{{a, aBefore, aAfter}, {b, bBefore, bAfter}});
+    REQUIRE(command);
+    REQUIRE(history.Execute(std::move(command), f.manager).success);
+    CHECK(registry.get<Transform>(aHandle).translation == aAfter.translation);
+    CHECK(registry.get<Transform>(bHandle).translation == bAfter.translation);
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(registry.get<Transform>(aHandle).translation == aBefore.translation);
+    CHECK(registry.get<Transform>(bHandle).translation == bBefore.translation);
+
+    TransformPreviewSession session;
+    const auto token = session.Begin(f.manager, 0xA11CEu, {a, b});
+    REQUIRE(token.has_value());
+    auto aPreview = aBefore;
+    auto bPreview = bBefore;
+    aPreview.translation.z += 1.0f;
+    bPreview.translation.z += 1.5f;
+    const auto preview = session.PreviewLocals(f.manager, *token,
+        {{a, aPreview}, {b, bPreview}});
+    REQUIRE(preview.success);
+    REQUIRE(preview.effective);
+    CHECK(session.Members().size() == 2);
+    const auto closed = FinalizeTransformPreviewSession(history, f.manager,
+        session, *token);
+    REQUIRE(closed.result == PreviewSessionCloseOutcome::Result::Closed);
+    const auto sessionUndo = history.Undo(f.manager);
+    REQUIRE(sessionUndo.success);
+    CHECK(registry.get<Transform>(aHandle).translation == aBefore.translation);
+    CHECK(registry.get<Transform>(bHandle).translation == bBefore.translation);
+
+    // A effective + B net-zero: B's fresh marker is cleaned during close,
+    // while A remains the sole recorded composite member.
+    TransformPreviewSession partitioned;
+    const auto partitionToken = partitioned.Begin(f.manager, 0xA11CFu, {a, b});
+    REQUIRE(partitionToken.has_value());
+    auto aEffective = aBefore;
+    auto bTransient = bBefore;
+    aEffective.translation.x += 4.0f;
+    bTransient.translation.y += 4.0f;
+    REQUIRE(partitioned.PreviewLocals(f.manager, *partitionToken,
+        {{a, aEffective}, {b, bTransient}}).effective);
+    REQUIRE(partitioned.PreviewLocals(f.manager, *partitionToken,
+        {{a, aEffective}, {b, bBefore}}).effective);
+    const auto partitionClosed = FinalizeTransformPreviewSession(history,
+        f.manager, partitioned, *partitionToken);
+    REQUIRE(partitionClosed.result == PreviewSessionCloseOutcome::Result::Closed);
+    CHECK(f.manager.IsOverridden(b,
+        PrefabComponentKeyFor<Transform>::value).value == false);
+    CHECK(f.manager.IsOverridden(a,
+        PrefabComponentKeyFor<Transform>::value).value == true);
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(f.manager.IsOverridden(a,
+        PrefabComponentKeyFor<Transform>::value).value == false);
+    CHECK(f.manager.IsOverridden(b,
+        PrefabComponentKeyFor<Transform>::value).value == false);
+    CHECK(registry.get<Transform>(aHandle).translation == aBefore.translation);
+    CHECK(registry.get<Transform>(bHandle).translation == bBefore.translation);
+    std::filesystem::remove_all(dir);
+}
 // ---------------------------------------------------------------------------
 // Test S5-E - a batch mixing a valid edit with a bad one fails atomically in
 // EITHER input order with an identical structured error, and the scene's

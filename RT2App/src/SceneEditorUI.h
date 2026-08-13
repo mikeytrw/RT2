@@ -14,6 +14,7 @@
 #include "TransformEditing.h"
 #include "core/UUID.h"
 #include <functional>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -145,6 +146,12 @@ public:
 	TransformSpace GetTransformSpace() const { return m_TransformSpace; }
 	TransformPivot GetTransformPivot() const { return m_TransformPivot; }
 	const TransformSnapSettings& GetTransformSnapSettings() const { return m_TransformSnap; }
+	bool IsTransformGestureOpen() const { return m_TransformPreviewSession.IsOpen(); }
+	bool BeginTransformGestureForGizmo(std::uint64_t owner,
+		const std::vector<rt2::core::UUID>& uuids);
+	EditorMutationResult PreviewTransformWorldIntent(
+		const std::vector<std::pair<rt2::core::UUID, glm::mat4>>& worlds);
+	PreviewSessionCloseOutcome CloseTransformGesture(bool finalize);
 	bool GetUniformScale() const { return m_UniformScale; }
 	bool CaptureCameraBookmark(size_t slot, const EditorCameraPose& pose)
 	{ return m_State.CaptureCameraBookmark(slot, pose); }
@@ -354,9 +361,8 @@ private:
 	// CompositePreviewSession instead — per-frame edits go through the
 	// composite seam (immutable origin, rolling committed source, real
 	// results) and finalize through FinalizePreviewSession / escape via
-	// RestorePreviewSession. TransformSession and the discrete
-	// construct-then-Execute sessions remain PropertyEditSession.
-	using TransformSession = PropertyEditSession<EditableTRS>;
+	// RestorePreviewSession. The remaining discrete construct-then-Execute
+	// sessions continue to use PropertyEditSession.
 	using NameSession = PropertyEditSession<std::string>;
 	using LightSession = CompositePreviewSession;
 	using CameraSession = CompositePreviewSession;
@@ -368,7 +374,7 @@ private:
 	EditorCommandHistory* m_CommandHistory = nullptr;
 	rt2::core::ScriptFieldRegistry* m_FieldRegistry = nullptr;
 
-	TransformSession             m_TransformSession;
+	TransformPreviewSession      m_TransformPreviewSession;
 	NameSession                  m_NameSession;
 	LightSession                 m_LightSession;
 	CameraSession                m_CameraSession;
@@ -380,6 +386,7 @@ private:
 	// deactivation close only fires for the owning widget). ImGui IDs are
 	// stored as unsigned int to avoid depending on ImGui headers here.
 	unsigned int m_TransformSessionOwningWidgetId = 0;
+	std::optional<TransformGestureToken> m_TransformGestureToken;
 	unsigned int m_LightSessionOwningWidgetId = 0;
 	unsigned int m_CameraSessionOwningWidgetId = 0;
 	unsigned int m_MaterialPropertiesSessionOwningWidgetId = 0;
@@ -401,6 +408,9 @@ private:
 		std::string detail;
 	};
 	PreviewRecoveryState m_PreviewRecoveryByKind[4] = {};
+	bool m_TransformRecoveryPending = false;
+	bool m_TransformRecoveryFinalize = true;
+	std::string m_TransformRecoveryDetail;
 	PreviewRecoveryState& PendingRecoveryFor(PreviewSessionKind kind);
 	void SetPendingRecovery(PreviewSessionKind kind, bool finalize,
 		const std::string& detail);

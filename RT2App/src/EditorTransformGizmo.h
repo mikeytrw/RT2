@@ -6,10 +6,11 @@
 #include <glm/glm.hpp>
 
 #include <string>
+#include <optional>
 #include <vector>
+#include <utility>
 
 class Camera;
-class SceneManager;
 
 enum class TransformGizmoOperation
 {
@@ -32,15 +33,19 @@ struct TransformGizmoResult
 	bool dragJustEnded = false;
 	std::vector<rt2::core::UUID> draggedUuids;
 	std::vector<EditableTRS> dragStartLocal;
+	// Intent-only output: the host stages these desired world matrices in one
+	// validate-only batch before publishing a composite preview.
+	std::vector<std::pair<rt2::core::UUID, glm::mat4>> desiredWorld;
 };
 
-// Lightweight viewport transform gizmo. It deliberately owns editor-only
-// interaction state while all authored mutations still pass through
-// SceneManager's validated transform APIs.
+// Lightweight intent-only viewport transform gizmo. It deliberately owns
+// editor-only interaction state; the host stages its UUID/world intents
+// through the transform preview session.
 class EditorTransformGizmo
 {
 public:
-	TransformGizmoResult Draw(SceneManager& scene, const EditorSelection& selection,
+	TransformGizmoResult Draw(const std::optional<EditorWorldTransformSnapshot>& snapshot,
+		const EditorSelection& selection,
 		const Camera& camera, const glm::vec2& imageMin, const glm::vec2& imageSize,
 		bool imageHovered, bool editable, TransformSpace space, TransformPivot pivot,
 		const TransformSnapSettings& snap, bool uniformScale = false);
@@ -68,6 +73,7 @@ private:
 		std::vector<rt2::core::UUID> uuids;
 		std::vector<glm::mat4> startWorld;
 		std::vector<EditableTRS> startLocal;  // Phase 3B1: before-drag local TRS
+		std::size_t primaryIndex = 0;
 	};
 
 	TransformGizmoOperation m_Operation = TransformGizmoOperation::Translate;

@@ -96,6 +96,10 @@ public:
 	{
 		std::vector<ExplicitMarker> markers;
 		std::uint32_t beforeSchema = 0;
+		// Optional live after-schema captured by a recorded session. When
+		// supplied it is authoritative for Redo; otherwise the transaction
+		// derives promotion from absent->present marker transitions.
+		std::optional<std::uint32_t> afterSchema;
 	};
 
 	PrefabCommandTransaction() = default;

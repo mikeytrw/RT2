@@ -28,6 +28,28 @@ void SceneEditorUI::RenderPanels()
 
 void SceneEditorUI::RenderPreviewRecoveryBar()
 {
+	if (m_TransformRecoveryPending)
+	{
+		if (!m_TransformPreviewSession.IsOpen())
+		{
+			m_TransformRecoveryPending = false;
+		}
+		else
+		{
+			const std::string detail = m_TransformRecoveryDetail.empty()
+				? "recovery required" : m_TransformRecoveryDetail;
+			ImGui::Separator();
+			ImGui::TextWrapped("[Preview] The transform edit could not be %s: %s",
+				m_TransformRecoveryFinalize ? "finalized" : "restored",
+				detail.c_str());
+			ImGui::TextDisabled("The edit is still applied to the document without a history entry.");
+			ImGui::TextDisabled("Resolve the failure (or remove a target / load a new document) and retry.");
+			if (ImGui::Button(m_TransformRecoveryFinalize ? "Retry Transform Finalize" : "Retry Transform Restore"))
+				CloseTransformGesture(m_TransformRecoveryFinalize);
+			ImGui::Separator();
+			return;
+		}
+	}
 	// Recovery is DERIVED from all open pending sessions (final-closure P1
 	// finding 2): closing a different-kind session never hides a still-open
 	// pending one.
@@ -91,13 +113,14 @@ bool SceneEditorUI::AnyPreviewRecoveryPending() const
 {
 	for (const auto& state : m_PreviewRecoveryByKind)
 		if (state.pending) return true;
-	return false;
+	return m_TransformRecoveryPending;
 }
 
 bool SceneEditorUI::AnyPreviewSessionOpen() const
 {
 	return m_LightSession.IsOpen() || m_CameraSession.IsOpen()
-		|| m_MotionVelocitySession.IsOpen() || m_ScriptFieldSession.IsOpen();
+		|| m_MotionVelocitySession.IsOpen() || m_ScriptFieldSession.IsOpen()
+		|| m_TransformPreviewSession.IsOpen();
 }
 
 bool SceneEditorUI::CanBeginPreview(PreviewSessionKind kind,
@@ -127,6 +150,69 @@ bool SceneEditorUI::CanBeginPreview(PreviewSessionKind kind,
 	// through shared admission, and only then begin.
 	if (AnyPreviewSessionOpen() && !AdmitAuthoringMutation()) return false;
 	return true;
+}
+
+bool SceneEditorUI::BeginTransformGestureForGizmo(std::uint64_t owner,
+	const std::vector<rt2::core::UUID>& uuids)
+{
+	if (!m_SceneMgr || !m_Editable || owner == 0) return false;
+	if (m_TransformPreviewSession.IsOpen()) return false;
+	if (!AdmitAuthoringMutation()) return false;
+	m_TransformGestureToken = m_TransformPreviewSession.Begin(*m_SceneMgr, owner, uuids);
+	return m_TransformGestureToken.has_value();
+}
+
+EditorMutationResult SceneEditorUI::PreviewTransformWorldIntent(
+	const std::vector<std::pair<rt2::core::UUID, glm::mat4>>& worlds)
+{
+	if (!m_SceneMgr || !m_TransformGestureToken)
+		return EditorMutationResult::Failure(rt2::core::Error::InvalidRuntimeState,
+			"transform-session", "no active transform gesture");
+	const auto result = m_TransformPreviewSession.PreviewWorlds(*m_SceneMgr,
+		*m_TransformGestureToken, worlds);
+	if (result.success && result.effective) NotifyTransformChanged();
+	return result;
+}
+
+PreviewSessionCloseOutcome SceneEditorUI::CloseTransformGesture(bool finalize)
+{
+	PreviewSessionCloseOutcome outcome;
+	if (!m_SceneMgr || !m_TransformGestureToken) return outcome;
+	if (finalize && !m_CommandHistory)
+	{
+		outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
+		outcome.lastError = EditorMutationResult::Failure(
+			rt2::core::Error::InvalidRuntimeState, "transform-session",
+			"command history is not installed");
+		m_TransformRecoveryPending = true;
+		m_TransformRecoveryFinalize = finalize;
+		m_TransformRecoveryDetail = outcome.lastError.error.detail;
+		return outcome;
+	}
+	outcome = finalize
+		? FinalizeTransformPreviewSession(*m_CommandHistory, *m_SceneMgr,
+			m_TransformPreviewSession, *m_TransformGestureToken)
+		: RestoreTransformPreviewSession(*m_SceneMgr, m_TransformPreviewSession,
+			*m_TransformGestureToken);
+	if (outcome.needsSyncApply) ApplyCloseOutcome(outcome);
+	if (outcome.result == PreviewSessionCloseOutcome::Result::Closed)
+	{
+		m_TransformGestureToken.reset();
+		m_TransformSessionOwningWidgetId = 0;
+		m_TransformRecoveryPending = false;
+		m_TransformRecoveryDetail.clear();
+	}
+	else
+	{
+		m_TransformRecoveryPending = true;
+		m_TransformRecoveryFinalize = finalize;
+		if (!outcome.lastError.success)
+		{
+			m_TransformRecoveryDetail = outcome.lastError.error.detail;
+			m_TransformEditError = outcome.lastError.error.detail;
+		}
+	}
+	return outcome;
 }
 
 const SceneEditorUI::PreviewRecoveryState* SceneEditorUI::FirstPendingRecovery() const
@@ -225,7 +311,8 @@ void SceneEditorUI::Undo()
 	if (!CloseAllPreviewSessionsForGlobalAction()) return;
 	// Abandon the non-composite record-on-release sessions (uncommitted widget
 	// edits) once the previews are safe to leave.
-	m_TransformSession.Discard();
+	m_TransformPreviewSession.Discard();
+	m_TransformGestureToken.reset();
 	m_NameSession.Discard();
 	m_MaterialIndexSession.Discard();
 	m_MaterialPropertiesSession.Discard();
@@ -237,7 +324,8 @@ void SceneEditorUI::Redo()
 {
 	if (!m_CommandHistory || !m_SceneMgr) return;
 	if (!CloseAllPreviewSessionsForGlobalAction()) return;
-	m_TransformSession.Discard();
+	m_TransformPreviewSession.Discard();
+	m_TransformGestureToken.reset();
 	m_NameSession.Discard();
 	m_MaterialIndexSession.Discard();
 	m_MaterialPropertiesSession.Discard();
@@ -269,6 +357,16 @@ bool SceneEditorUI::CloseAllPreviewSessionsForAction(bool finalize)
 	// scene sync, no UUID draw, no mutation. Only the explicit Retry action (and
 	// proven replacement/removal handling) re-runs a pending close.
 	if (!m_CommandHistory) return false;
+	if (m_TransformRecoveryPending) return false;
+	if (m_TransformPreviewSession.IsOpen())
+	{
+		const auto transformClose = CloseTransformGesture(finalize);
+		if (transformClose.result == PreviewSessionCloseOutcome::Result::PendingRetry)
+		{
+			m_TransformRecoveryPending = true;
+			return false;
+		}
+	}
 	PreviewSessionSlot slots[4] = {
 		{ PreviewSessionKind::Light, &m_LightSession, &m_LightSessionOwningWidgetId, finalize },
 		{ PreviewSessionKind::Camera, &m_CameraSession, &m_CameraSessionOwningWidgetId, finalize },
@@ -413,6 +511,12 @@ bool SceneEditorUI::ClosePreviewBeforeDiscrete(PreviewSessionKind kind,
 void SceneEditorUI::FinalizeOpenPreviewSessions()
 {
 	if (!m_SceneMgr) return;
+	if (m_TransformPreviewSession.IsOpen())
+	{
+		const auto outcome = CloseTransformGesture(true);
+		if (outcome.result == PreviewSessionCloseOutcome::Result::PendingRetry)
+			m_TransformRecoveryPending = true;
+	}
 	ClosePreviewSession(PreviewSessionKind::Light, m_LightSession,
 		m_LightSessionOwningWidgetId, /*finalize=*/true);
 	ClosePreviewSession(PreviewSessionKind::Camera, m_CameraSession,
@@ -425,7 +529,6 @@ void SceneEditorUI::FinalizeOpenPreviewSessions()
 
 void SceneEditorUI::DiscardAllPropertySessions()
 {
-	m_TransformSession.Discard();
 	m_NameSession.Discard();
 	m_LightSession.Discard();
 	m_CameraSession.Discard();
@@ -437,6 +540,9 @@ void SceneEditorUI::DiscardAllPropertySessions()
 	// confirmed document replacement is a valid discard path).
 	for (auto& state : m_PreviewRecoveryByKind)
 		state = PreviewRecoveryState{};
+	m_TransformRecoveryPending = false;
+	m_TransformRecoveryDetail.clear();
+	m_TransformGestureToken.reset();
 }
 
 SetMaterialPropertiesCommand::OverrideList
@@ -1430,6 +1536,7 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	glm::vec3 scale = transform.scale;
 
 	bool changed = false;
+	bool cancelRequested = false;
 	ImGui::PushID("Transform");
 	ImGui::Text("Transform");
 	int space = m_TransformSpace == TransformSpace::Local ? 0 : 1;
@@ -1460,29 +1567,10 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 			"Also affects the viewport gizmo in Scale mode.");
 	ImGui::BeginDisabled(!m_Editable);
 
-	// Phase 3B2: record-on-release via PropertyEditSession<EditableTRS>.
-	// Per-widget IsItemActivated/IsItemDeactivatedAfterEdit checks
-	// immediately after EACH of the three DragFloat3s (ImGui's last-item
-	// rule). The first activation while no session is open captures
-	// beforeLocal BEFORE any mutation that frame and opens the session,
-	// owned by that widget's ImGui ID (tracked locally). The owning
-	// widget's IsItemDeactivatedAfterEdit closes the session and records
-	// via RecordApplied. IsItemDeactivated without AfterEdit (Escape
-	// cancel — ImGui reverts the value itself) discards the session and
-	// records nothing.
-	//
-	// The close is deferred until AFTER the mutation block below: a
-	// keyboard-committed edit (Ctrl+click, type, Enter) fires both
-	// changed==true and IsItemDeactivatedAfterEdit() on the same frame,
-	// and the after-state must be read AFTER SetLocalTransform/
-	// TrySetWorldTransform has applied the committed value. Mouse-drag
-	// releases carry no value change on the release frame, so deferring
-	// is safe for them too.
-	EditableTRS beforeLocalCapture;
-	bool hasLocalForCapture = m_SceneMgr->GetLocalTransform(entity, beforeLocalCapture);
-	unsigned int owningWidgetId = 0;
-	if (m_TransformSession.IsOpen())
-		owningWidgetId = m_TransformSessionOwningWidgetId;
+	// The transform session is tokenized and begins before the first authored
+	// frame.  Widget IDs are used only to associate ImGui release/cancel
+	// signals with the publisher; authorization is the opaque session token.
+	unsigned int owningWidgetId = m_TransformSessionOwningWidgetId;
 	unsigned int pendingCloseWidgetId = 0;
 
 	ImGui::SetNextItemWidth(180.0f);
@@ -1494,24 +1582,21 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	const unsigned int posWidgetId = ImGui::GetID("Position");
 	if (ImGui::IsItemActivated())
 	{
-		if (!m_TransformSession.IsOpen() && hasLocalForCapture && m_Editable)
+		if (!m_TransformPreviewSession.IsOpen() && m_Editable)
 		{
-			m_TransformSession.OnActivated(targetUuid, beforeLocalCapture);
 			m_TransformSessionOwningWidgetId = posWidgetId;
 			owningWidgetId = posWidgetId;
 		}
 	}
-	if (changed && m_TransformSession.IsOpen())
-		m_TransformSession.OnEditCommitted();
 	if (ImGui::IsItemDeactivatedAfterEdit())
 	{
-		if (m_TransformSession.IsOpen() && owningWidgetId == posWidgetId)
+		if (m_TransformPreviewSession.IsOpen() && owningWidgetId == posWidgetId)
 			pendingCloseWidgetId = posWidgetId;
 	}
-	else if (ImGui::IsItemDeactivated() && m_TransformSession.IsOpen() &&
+	else if (ImGui::IsItemDeactivated() && m_TransformPreviewSession.IsOpen() &&
 	         owningWidgetId == posWidgetId)
 	{
-		m_TransformSession.OnCancelled();
+		cancelRequested = true;
 	}
 
 	ImGui::SetNextItemWidth(180.0f);
@@ -1524,24 +1609,21 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	const unsigned int rotWidgetId = ImGui::GetID("Rotation");
 	if (ImGui::IsItemActivated())
 	{
-		if (!m_TransformSession.IsOpen() && hasLocalForCapture && m_Editable)
+		if (!m_TransformPreviewSession.IsOpen() && m_Editable)
 		{
-			m_TransformSession.OnActivated(targetUuid, beforeLocalCapture);
 			m_TransformSessionOwningWidgetId = rotWidgetId;
 			owningWidgetId = rotWidgetId;
 		}
 	}
-	if (rotChangedThis && m_TransformSession.IsOpen())
-		m_TransformSession.OnEditCommitted();
 	if (ImGui::IsItemDeactivatedAfterEdit())
 	{
-		if (m_TransformSession.IsOpen() && owningWidgetId == rotWidgetId)
+		if (m_TransformPreviewSession.IsOpen() && owningWidgetId == rotWidgetId)
 			pendingCloseWidgetId = rotWidgetId;
 	}
-	else if (ImGui::IsItemDeactivated() && m_TransformSession.IsOpen() &&
+	else if (ImGui::IsItemDeactivated() && m_TransformPreviewSession.IsOpen() &&
 	         owningWidgetId == rotWidgetId)
 	{
-		m_TransformSession.OnCancelled();
+		cancelRequested = true;
 	}
 
 	ImGui::SetNextItemWidth(180.0f);
@@ -1569,24 +1651,21 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 	const unsigned int scaleWidgetId = ImGui::GetID("Scale");
 	if (ImGui::IsItemActivated())
 	{
-		if (!m_TransformSession.IsOpen() && hasLocalForCapture && m_Editable)
+		if (!m_TransformPreviewSession.IsOpen() && m_Editable)
 		{
-			m_TransformSession.OnActivated(targetUuid, beforeLocalCapture);
 			m_TransformSessionOwningWidgetId = scaleWidgetId;
 			owningWidgetId = scaleWidgetId;
 		}
 	}
-	if (scaleChangedThis && m_TransformSession.IsOpen())
-		m_TransformSession.OnEditCommitted();
 	if (ImGui::IsItemDeactivatedAfterEdit())
 	{
-		if (m_TransformSession.IsOpen() && owningWidgetId == scaleWidgetId)
+		if (m_TransformPreviewSession.IsOpen() && owningWidgetId == scaleWidgetId)
 			pendingCloseWidgetId = scaleWidgetId;
 	}
-	else if (ImGui::IsItemDeactivated() && m_TransformSession.IsOpen() &&
+	else if (ImGui::IsItemDeactivated() && m_TransformPreviewSession.IsOpen() &&
 	         owningWidgetId == scaleWidgetId)
 	{
-		m_TransformSession.OnCancelled();
+		cancelRequested = true;
 	}
 
 	ImGui::EndDisabled();
@@ -1597,47 +1676,49 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 		edited.translation = pos;
 		edited.rotation = glm::quat(glm::radians(rot));
 		edited.scale = scale;
-		const bool applied = m_TransformSpace == TransformSpace::Local
-			? (m_SceneMgr->SetLocalTransform(entity, edited), true)
-			: m_SceneMgr->TrySetWorldTransform(entity, edited.Matrix());
-		if (applied)
+		if (!m_TransformPreviewSession.IsOpen())
+		{
+			const std::uint64_t owner = owningWidgetId != 0 ? owningWidgetId : posWidgetId;
+			if (AdmitAuthoringMutation())
+				m_TransformGestureToken = m_TransformPreviewSession.Begin(
+					*m_SceneMgr, owner, { targetUuid });
+		}
+		EditorMutationResult preview;
+		if (!m_TransformGestureToken)
+			preview = EditorMutationResult::Failure(rt2::core::Error::InvalidRuntimeState,
+				"transform-session", "could not open transform gesture before preview");
+		else if (m_TransformSpace == TransformSpace::Local)
+			preview = m_TransformPreviewSession.PreviewLocals(*m_SceneMgr,
+				*m_TransformGestureToken, { { targetUuid, edited } });
+		else
+			preview = m_TransformPreviewSession.PreviewWorlds(*m_SceneMgr,
+				*m_TransformGestureToken, { { targetUuid, edited.Matrix() } });
+		if (preview.success)
 		{
 			m_TransformEditError.clear();
-			NotifyTransformChanged();
+			if (preview.effective) NotifyTransformChanged();
 		}
 		else
 		{
-			m_TransformEditError =
-				"World edit rejected: parent is singular or the result contains shear.";
+			m_TransformEditError = preview.error.detail;
 		}
 	}
 
-	// Close the session AFTER the mutation block so the recorded after-state
-	// reflects the committed value (keyboard-committed edits fire both
-	// changed==true and IsItemDeactivatedAfterEdit() on the same frame).
-	if (pendingCloseWidgetId != 0 && m_TransformSession.IsOpen() &&
-	    m_TransformSessionOwningWidgetId == pendingCloseWidgetId)
+	if (m_TransformPreviewSession.IsOpen() &&
+		(m_TransformGestureToken.has_value()) &&
+		(pendingCloseWidgetId != 0 || cancelRequested))
 	{
-		EditableTRS afterLocal;
-		if (m_SceneMgr->GetLocalTransform(entity, afterLocal))
+		const auto close = CloseTransformGesture(!cancelRequested);
+		if (close.needsSyncApply) ApplyCloseOutcome(close);
+		if (close.result == PreviewSessionCloseOutcome::Result::Closed)
 		{
-			auto rec = m_TransformSession.CloseDeferred(afterLocal,
-				{ [this, targetUuid]() {
-					return m_SceneMgr->FindEntityByUuid(targetUuid) != entt::null && m_Editable;
-				} });
-			if (rec && m_CommandHistory)
-			{
-				auto cmd = MakeTransformCommandIfEffective(targetUuid,
-					rec->before, rec->after);
-				if (cmd)
-				{
-					EditorMutationResult appliedResult;
-					appliedResult.success = true;
-					appliedResult.syncImpact = rt2::core::SyncImpact::Transform;
-					appliedResult.affectedEntities.push_back(targetUuid);
-					m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, appliedResult);
-				}
-			}
+			m_TransformGestureToken.reset();
+			m_TransformSessionOwningWidgetId = 0;
+		}
+		else if (!close.lastError.success)
+		{
+			m_TransformRecoveryPending = true;
+			m_TransformEditError = close.lastError.error.detail;
 		}
 	}
 	if (!m_TransformEditError.empty())

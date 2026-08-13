@@ -1,7 +1,9 @@
 #include "PreviewSessionClose.h"
 
 #include "EditorPropertyCommands.h"
+#include "EditorCommands.h"
 
+#include <algorithm>
 #include <utility>
 
 namespace
@@ -315,4 +317,278 @@ void ClosePreviewSessionsBeforeAction(SceneManager& scene,
 			result.allClosed = false;
 		}
 	}
+}
+
+namespace {
+PrefabCommandTransaction::ExplicitCapture TransformCapture(
+	const TransformPreviewSession& session,
+	const std::vector<TransformPreviewSession::Member>& members,
+	std::uint32_t beforeSchema, std::uint32_t afterSchema,
+	bool useRollingMarkers, bool markerAfterPresent = true)
+{
+	PrefabCommandTransaction::ExplicitCapture capture;
+	capture.beforeSchema = beforeSchema;
+	capture.afterSchema = afterSchema;
+	for (const auto& member : members)
+	{
+		std::optional<bool> marker;
+		if (useRollingMarkers) marker = member.rollingMarker;
+		else marker = member.originMarker;
+		capture.markers.push_back({ member.uuid,
+			PrefabComponentKeyFor<Transform>::value, marker, markerAfterPresent });
+	}
+	return capture;
+}
+}
+
+std::unique_ptr<IEditorCommand> BuildTransformPreviewCommand(
+	const TransformPreviewSession& session, bool suppressNoOp)
+{
+	if (!session.IsOpen()) return nullptr;
+	std::vector<TransformTriple> triples;
+	for (const auto& member : session.Members())
+	{
+		if (suppressNoOp &&
+			PrefabValuePayloadEqual(PrefabValuePayload{member.originLocal},
+				PrefabValuePayload{member.rollingLocal})) continue;
+		triples.push_back({ member.uuid, member.originLocal, member.rollingLocal });
+	}
+	if (triples.empty()) return nullptr;
+	std::vector<TransformPreviewSession::Member> selected;
+	for (const auto& triple : triples)
+		for (const auto& member : session.Members())
+			if (member.uuid == triple.target) selected.push_back(member);
+	return MakeTransformCommandIfEffective(std::move(triples),
+		TransformCapture(session, selected, session.OriginSchema(),
+			session.RollingSchema(), false));
+}
+
+PreviewSessionCloseOutcome FinalizeTransformPreviewSession(
+	EditorCommandHistory& history, SceneManager& scene,
+	TransformPreviewSession& session, const TransformGestureToken& token)
+{
+	PreviewSessionCloseOutcome outcome;
+	if (!session.TokenMatches(token))
+	{
+		outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
+		outcome.lastError = EditorMutationResult::Failure(
+			rt2::core::Error::InvalidArgument, "transform-session",
+			"transform finalize token is stale or foreign");
+		return outcome;
+	}
+	if (session.DocumentReplaced(scene) || session.PruneMissingMembers(scene) == 0)
+	{
+		session.Discard();
+		return outcome;
+	}
+	if (!session.HadEffectiveFrame()) { session.Discard(); return outcome; }
+
+	// A gesture can add a marker and then return that member's value to its
+	// origin while another member remains effective.  The marker is still a
+	// real live mutation, but it must not become a history entry of its own:
+	// remove only the fresh marker in the same close attempt, retaining every
+	// pre-existing marker.  This partition is deliberately based on the
+	// immutable origin marker fact plus the current rolling value, never on a
+	// guessed "last frame" classification.
+	std::vector<TransformPreviewSession::Member> cleanupMembers;
+	std::vector<PrefabValueEdit> cleanupValues;
+	std::vector<PrefabCommandTransaction::MarkerSpec> cleanupSpecs;
+	for (const auto& member : session.Members())
+	{
+		const bool netZero = PrefabValuePayloadEqual(
+			PrefabValuePayload{member.originLocal},
+			PrefabValuePayload{member.rollingLocal});
+		const bool freshMarker = member.originMarker.has_value()
+			&& !*member.originMarker && member.rollingMarker.has_value()
+			&& *member.rollingMarker && member.introducedMarker;
+		if (!netZero || !freshMarker) continue;
+		cleanupMembers.push_back(member);
+		cleanupValues.push_back({ PrefabValueKind::LocalTransform,
+			member.uuid, PrefabMarkerDirection::After,
+			PrefabValuePayload{member.rollingLocal},
+			PrefabValuePayload{member.rollingLocal} });
+		cleanupSpecs.push_back({ member.uuid,
+			PrefabComponentKeyFor<Transform>::value, false });
+	}
+	EditorMutationResult cleanupMutation;
+	bool cleanupApplied = false;
+	if (!cleanupMembers.empty())
+	{
+		bool survivingMarker = false;
+		for (const auto& member : session.Members())
+		{
+			const bool isCleaned = std::any_of(cleanupMembers.begin(),
+				cleanupMembers.end(), [&](const auto& cleaned) {
+					return cleaned.uuid == member.uuid;
+				});
+			if (!isCleaned && member.rollingMarker.has_value()
+				&& *member.rollingMarker)
+				survivingMarker = true;
+		}
+		const std::uint32_t cleanupAfterSchema = survivingMarker
+			? session.RollingSchema() : session.OriginSchema();
+		PrefabCommandTransaction::ExplicitCapture cleanupCapture =
+			TransformCapture(session, cleanupMembers, session.RollingSchema(),
+				cleanupAfterSchema, true, false);
+		PrefabCommandTransaction cleanupTx(std::move(cleanupValues),
+			std::move(cleanupSpecs));
+		cleanupTx.SetExplicitCapture(std::move(cleanupCapture));
+		cleanupMutation = cleanupTx.Execute(scene);
+		if (!cleanupMutation.success)
+		{
+			outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
+			outcome.lastError = cleanupMutation;
+			return outcome;
+		}
+		for (const auto& member : cleanupMembers)
+			session.MarkMarkerRemoved(member.uuid);
+		session.SetRollingSchema(scene.AuthoringDoc().metadata.schemaVersion);
+		cleanupApplied = cleanupMutation.effective;
+	}
+
+	// Exact preflight immediately before RecordApplied: prior frame results do
+	// not authorize a changed value, marker classification, or schema.
+	for (const auto& member : session.Members())
+	{
+		const auto entity = scene.FindEntityByUuid(member.uuid);
+		EditableTRS live;
+		if (entity == entt::null || !scene.GetLocalTransform({ entity }, live) ||
+			!PrefabValuePayloadEqual(PrefabValuePayload{live},
+				PrefabValuePayload{member.rollingLocal}))
+		{
+			outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
+			outcome.lastError = EditorMutationResult::Failure(
+				 rt2::core::Error::InvalidArgument, member.uuid.ToString(),
+				"transform finalize preflight found a stale local value");
+			return outcome;
+		}
+		const auto presence = scene.IsOverridden(member.uuid,
+			PrefabComponentKeyFor<Transform>::value);
+		if (member.rollingMarker.has_value() != presence.IsOk() ||
+			(member.rollingMarker && presence.IsOk() &&
+				*member.rollingMarker != presence.value))
+		{
+			outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
+			outcome.lastError = EditorMutationResult::Failure(
+				rt2::core::Error::InvalidArgument, member.uuid.ToString(),
+				"transform finalize preflight found a stale marker membership");
+			return outcome;
+		}
+	}
+	if (scene.AuthoringDoc().metadata.schemaVersion != session.RollingSchema())
+	{
+		outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
+		outcome.lastError = EditorMutationResult::Failure(
+			rt2::core::Error::InvalidArgument, "transform-schema",
+			"transform finalize preflight found a stale schema");
+		return outcome;
+	}
+	auto command = BuildTransformPreviewCommand(session, true);
+	if (!command)
+	{
+		session.Discard();
+		if (cleanupApplied)
+		{
+			outcome.mutation = cleanupMutation;
+			outcome.needsSyncApply = true;
+		}
+		return outcome;
+	}
+	const auto* transformCommand = dynamic_cast<const TransformCommand*>(command.get());
+	if (!transformCommand || transformCommand->ExplicitCaptureRejected())
+	{
+		outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
+		outcome.lastError = EditorMutationResult::Failure(
+			rt2::core::Error::InvalidArgument, "transform-session",
+			"transform finalize preflight rejected the explicit capture");
+		return outcome;
+	}
+	outcome.mutation = history.RecordApplied(std::move(command), scene,
+		session.LastEffectiveResult());
+	if (cleanupApplied)
+		outcome.needsSyncApply = true;
+	if (!outcome.mutation.success)
+	{
+		outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
+		outcome.lastError = outcome.mutation;
+		return outcome;
+	}
+	outcome.recorded = true;
+	session.Discard();
+	return outcome;
+}
+
+PreviewSessionCloseOutcome RestoreTransformPreviewSession(
+	SceneManager& scene, TransformPreviewSession& session,
+	const TransformGestureToken& token)
+{
+	PreviewSessionCloseOutcome outcome;
+	if (!session.TokenMatches(token))
+	{
+		outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
+		outcome.lastError = EditorMutationResult::Failure(
+			rt2::core::Error::InvalidArgument, "transform-session",
+			"transform restore token is stale or foreign");
+		return outcome;
+	}
+	if (session.DocumentReplaced(scene) || session.PruneMissingMembers(scene) == 0)
+	{
+		session.Discard();
+		return outcome;
+	}
+	if (!session.HadEffectiveFrame()) { session.Discard(); return outcome; }
+	std::vector<PrefabValueEdit> values;
+	std::vector<PrefabCommandTransaction::MarkerSpec> specs;
+	std::vector<TransformPreviewSession::Member> selected;
+	for (const auto& member : session.Members())
+	{
+		const bool valueChanged = !PrefabValuePayloadEqual(
+			PrefabValuePayload{member.originLocal}, PrefabValuePayload{member.rollingLocal});
+		const bool markerChanged = member.introducedMarker;
+		if (!valueChanged && !markerChanged) continue;
+		values.push_back({ PrefabValueKind::LocalTransform, member.uuid,
+			PrefabMarkerDirection::Before, PrefabValuePayload{member.rollingLocal},
+			PrefabValuePayload{member.originLocal} });
+		// The Before direction uses the captured origin membership. For an
+		// ordinary entity the marker is ignored by the composite.
+		const bool afterPresent = member.originMarker.has_value() ?
+			*member.originMarker : true;
+		specs.push_back({ member.uuid, PrefabComponentKeyFor<Transform>::value,
+			afterPresent });
+		selected.push_back(member);
+	}
+	if (values.empty()) { session.Discard(); return outcome; }
+	// Restoring the gesture-origin schema is legal only when this same
+	// composite still carries a real marker-vector transition.  If the sole
+	// fresh carrier was removed before Escape/recovery, a surviving ordinary
+	// value must restore against the already-live schema (normally v6/v6),
+	// never request an illegal schema-only downgrade.
+	bool survivingCarrier = false;
+	for (const auto& member : selected)
+	{
+		if (member.originMarker.has_value() && member.rollingMarker.has_value()
+			&& *member.originMarker != *member.rollingMarker)
+		{
+			survivingCarrier = true;
+			break;
+		}
+	}
+	const std::uint32_t restoreAfterSchema = survivingCarrier
+		? session.OriginSchema() : session.RollingSchema();
+	auto capture = TransformCapture(session, selected, session.RollingSchema(),
+		restoreAfterSchema, true);
+	for (std::size_t i = 0; i < specs.size(); ++i)
+		capture.markers[i].afterPresent = specs[i].afterPresent;
+	PrefabCommandTransaction tx(std::move(values), std::move(specs));
+	tx.SetExplicitCapture(std::move(capture));
+	outcome.mutation = tx.Undo(scene);
+	if (!outcome.mutation.success)
+	{
+		outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
+		outcome.lastError = outcome.mutation;
+		return outcome;
+	}
+	outcome.needsSyncApply = outcome.mutation.effective;
+	session.Discard();
+	return outcome;
 }

@@ -667,6 +667,13 @@ struct PrefabMaterialSlotStage
 	// resource, schema, or history mutation.
 	rt2::core::Result<PrefabWorldTransformStage> StageWorldTransforms(
 		const std::vector<std::pair<EntityId, glm::mat4>>& desiredWorldTransforms) const;
+	// Refresh the authored world cache once and return a durable, immutable
+	// UUID/matrix snapshot for viewport interaction. This is a capture seam,
+	// not a mutator: failures leave authoring values, revision, schema, sync,
+	// and history untouched.
+	rt2::core::Result<EditorWorldTransformSnapshot> CaptureEditorWorldTransforms(
+		const std::vector<rt2::core::UUID>& orderedUuids,
+		const rt2::core::UUID& primaryUuid) ;
 	// Validate-only camera alignment staging. Derives the canonical local TRS
 	// and camera target without invoking a mutator.
 	rt2::core::Result<PrefabCameraPoseValue> StageCameraPose(

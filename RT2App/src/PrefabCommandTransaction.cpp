@@ -27,12 +27,15 @@ void PrefabCommandTransaction::SetExplicitCapture(ExplicitCapture explicitCaptur
 	if (!valueEntityNilOnly
 		&& explicitCapture.markers.size() == m_Markers.size())
 	{
-		// The value target must be exactly one non-nil entity and every
-		// explicit marker must target it.
-		const rt2::core::UUID valueEntity = m_Values.front().entity;
+		// Every marker member must belong to the transaction's non-nil value
+		// entity set. Transform gestures are multi-member; the old single
+		// valueEntity check silently rejected a valid two-member capture.
+		std::unordered_set<rt2::core::UUID> valueEntities;
+		for (const auto& edit : m_Values)
+			if (edit.entity != rt2::core::UUID{}) valueEntities.insert(edit.entity);
 		bool aligned = true;
 		for (const auto& em : explicitCapture.markers)
-			if (em.member != valueEntity) { aligned = false; break; }
+			if (valueEntities.find(em.member) == valueEntities.end()) { aligned = false; break; }
 		if (aligned)
 		{
 			std::unordered_set<std::string> seen;
@@ -42,9 +45,11 @@ void PrefabCommandTransaction::SetExplicitCapture(ExplicitCapture explicitCaptur
 				bool found = false;
 				for (const auto& em : explicitCapture.markers)
 				{
+					const auto canonical = FindComponentByWire(em.key.wire());
+					if (!canonical || !canonical->overridable()) { bijective = false; break; }
 					if (em.member != spec.member || em.afterPresent != spec.afterPresent)
 						continue;
-					if (em.key.wire() != spec.key.wire())
+					if (canonical->wire() != spec.key.wire())
 						continue;
 					found = true;
 					break;
@@ -229,8 +234,9 @@ EditorMutationResult PrefabCommandTransaction::Capture(SceneManager& scene)
 			if (!result.success) return result;
 		}
 	}
-	m_AfterSchema = anyMarkerAdded
-		? rt2::core::SceneSerializer::SchemaVersion : m_BeforeSchema;
+	m_AfterSchema = m_ExplicitCapture && m_ExplicitCapture->afterSchema
+		? *m_ExplicitCapture->afterSchema
+		: (anyMarkerAdded ? rt2::core::SceneSerializer::SchemaVersion : m_BeforeSchema);
 	m_Captured = true;
 	return EditorMutationResult{};
 }

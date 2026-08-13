@@ -4544,6 +4544,59 @@ rt2::core::Result<PrefabWorldTransformStage> SceneManager::StageWorldTransforms(
 	return rt2::core::Result<PrefabWorldTransformStage>::Ok(std::move(stage));
 }
 
+rt2::core::Result<EditorWorldTransformSnapshot>
+SceneManager::CaptureEditorWorldTransforms(
+	const std::vector<rt2::core::UUID>& orderedUuids,
+	const rt2::core::UUID& primaryUuid)
+{
+	EditorWorldTransformSnapshot snapshot;
+	if (orderedUuids.empty())
+		return rt2::core::Result<EditorWorldTransformSnapshot>::Fail(
+			rt2::core::Error::InvalidArgument, "world-snapshot",
+			"world-transform capture requires a non-empty UUID set");
+	std::unordered_set<rt2::core::UUID> seen;
+	seen.reserve(orderedUuids.size());
+	std::size_t primary = orderedUuids.size();
+	for (std::size_t i = 0; i < orderedUuids.size(); ++i)
+	{
+		const auto& uuid = orderedUuids[i];
+		if (uuid.IsNull() || !seen.insert(uuid).second)
+			return rt2::core::Result<EditorWorldTransformSnapshot>::Fail(
+				rt2::core::Error::InvalidArgument, uuid.ToString(),
+				"world-transform capture contains a nil or duplicate UUID");
+		if (uuid == primaryUuid) primary = i;
+	}
+	if (primary == orderedUuids.size())
+		return rt2::core::Result<EditorWorldTransformSnapshot>::Fail(
+			rt2::core::Error::InvalidArgument, "world-snapshot",
+			"primary UUID is not in the captured set");
+
+	// One and only one cache refresh belongs to the host capture boundary.
+	UpdateWorldTransforms();
+	const auto& registry = m_EcsScene.registry;
+	snapshot.uuids = orderedUuids;
+	snapshot.worldMatrices.reserve(orderedUuids.size());
+	snapshot.primaryIndex = primary;
+	for (const auto& uuid : orderedUuids)
+	{
+		const auto entity = m_Authoring.FindByUuid(uuid);
+		if (entity == entt::null || !registry.valid(entity) ||
+			!registry.all_of<EntityIdComponent, Transform>(entity) ||
+			registry.get<EntityIdComponent>(entity).id != uuid)
+			return rt2::core::Result<EditorWorldTransformSnapshot>::Fail(
+				rt2::core::Error::InvalidEntity, uuid.ToString(),
+				"world-transform capture target is missing or has invalid identity");
+		const glm::mat4 matrix = registry.get<Transform>(entity).worldMatrix;
+		EditableTRS decomposed;
+		if (!TryDecomposeEditableTRS(matrix, decomposed))
+			return rt2::core::Result<EditorWorldTransformSnapshot>::Fail(
+				rt2::core::Error::InvalidTransform, uuid.ToString(),
+				"world-transform capture rejected a non-finite, singular, or sheared matrix");
+		snapshot.worldMatrices.push_back(matrix);
+	}
+	return rt2::core::Result<EditorWorldTransformSnapshot>::Ok(std::move(snapshot));
+}
+
 bool SceneManager::TrySetWorldTransforms(
 	const std::vector<std::pair<EntityId, glm::mat4>>& desiredWorldTransforms)
 {
@@ -6133,9 +6186,11 @@ rt2::core::Result<PrefabMarkerPlan> SceneManager::PreparePrefabMarkerEdits(
 	// the schema — the degenerate empty-edit case included — is a fabricated
 	// schema-only transition and fails loudly.
 	if (plan.sourceSchemaVersion != plan.targetSchemaVersion && !anyVectorChange)
+	{
 		return rt2::core::Result<PrefabMarkerPlan>::Fail(
 			rt2::core::Error::InvalidArgument, "",
 			"a schema transition cannot be fabricated without a member-state change");
+	}
 
 	// Schema transition rules (source==live, marker-version floor, downgrade
 	// without any remaining override), shared with Commit and re-validated there.

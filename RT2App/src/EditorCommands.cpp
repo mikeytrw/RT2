@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace
 {
@@ -69,40 +70,73 @@ EditorMutationResult FailureFor(const rt2::core::UUID& target, const char* detai
 
 TransformCommand::TransformCommand(rt2::core::UUID target,
                                    EditableTRS beforeLocal,
-                                   EditableTRS afterLocal)
+                                   EditableTRS afterLocal,
+                                   std::optional<PrefabCommandTransaction::ExplicitCapture> capture)
 {
 	m_Triples.push_back({target, beforeLocal, afterLocal});
+	std::vector<PrefabValueEdit> values{{ PrefabValueKind::LocalTransform, target,
+		PrefabMarkerDirection::After, PrefabValuePayload{beforeLocal},
+		PrefabValuePayload{afterLocal} }};
+	std::vector<PrefabCommandTransaction::MarkerSpec> markers{{ target,
+		PrefabComponentKeyFor<Transform>::value, true }};
+	m_Transaction = PrefabCommandTransaction(std::move(values), std::move(markers));
+	if (capture) m_Transaction.SetExplicitCapture(std::move(*capture));
 }
 
-TransformCommand::TransformCommand(std::vector<TransformTriple> triples)
-	: m_Triples(std::move(triples)) {}
+TransformCommand::TransformCommand(std::vector<TransformTriple> triples,
+	std::optional<PrefabCommandTransaction::ExplicitCapture> capture)
+	: m_Triples(std::move(triples))
+{
+	std::vector<PrefabValueEdit> values;
+	std::vector<PrefabCommandTransaction::MarkerSpec> markers;
+	values.reserve(m_Triples.size());
+	markers.reserve(m_Triples.size());
+	for (const auto& triple : m_Triples)
+	{
+		values.push_back({ PrefabValueKind::LocalTransform, triple.target,
+			PrefabMarkerDirection::After, PrefabValuePayload{triple.beforeLocal},
+			PrefabValuePayload{triple.afterLocal} });
+		markers.push_back({ triple.target, PrefabComponentKeyFor<Transform>::value, true });
+	}
+	m_Transaction = PrefabCommandTransaction(std::move(values), std::move(markers));
+	if (capture) m_Transaction.SetExplicitCapture(std::move(*capture));
+}
 
 EditorMutationResult TransformCommand::Execute(SceneManager& scene)
 {
-	std::vector<std::pair<rt2::core::UUID, EditableTRS>> states;
-	states.reserve(m_Triples.size());
-	for (const auto& t : m_Triples)
-		states.emplace_back(t.target, t.afterLocal);
-	auto result = scene.SetLocalTransformStates(states);
-	if (!result.success) return result;
-	// SetLocalTransformStates already populated affectedEntities; if it
-	// returned success with empty affectedEntities (empty input), fall back
-	// to the triple-derived result.
-	if (result.affectedEntities.empty())
-		return TransformResultFor(m_Triples);
+	auto result = m_Transaction.Execute(scene);
+	if (result.success) return result;
+	// Legacy raw callers historically supplied a fixed before value for a
+	// sequence of ordinary-entity commands. Preserve that raw compatibility
+	// without weakening prefab composite replay (where a stale source is a
+	// real integrity failure).
+	bool allOrdinary = !m_Triples.empty();
+	for (const auto& triple : m_Triples)
+		if (scene.IsOverridden(triple.target,
+			PrefabComponentKeyFor<Transform>::value).IsOk()) { allOrdinary = false; break; }
+	if (allOrdinary)
+	{
+		std::vector<std::pair<rt2::core::UUID, EditableTRS>> states;
+		for (const auto& triple : m_Triples) states.emplace_back(triple.target, triple.afterLocal);
+		return scene.SetLocalTransformStates(states);
+	}
 	return result;
 }
 
 EditorMutationResult TransformCommand::Undo(SceneManager& scene)
 {
-	std::vector<std::pair<rt2::core::UUID, EditableTRS>> states;
-	states.reserve(m_Triples.size());
-	for (const auto& t : m_Triples)
-		states.emplace_back(t.target, t.beforeLocal);
-	auto result = scene.SetLocalTransformStates(states);
-	if (!result.success) return result;
-	if (result.affectedEntities.empty())
-		return TransformResultFor(m_Triples);
+	auto result = m_Transaction.Undo(scene);
+	if (result.success) return result;
+	bool allOrdinary = !m_Triples.empty();
+	for (const auto& triple : m_Triples)
+		if (scene.IsOverridden(triple.target,
+			PrefabComponentKeyFor<Transform>::value).IsOk()) { allOrdinary = false; break; }
+	if (allOrdinary)
+	{
+		std::vector<std::pair<rt2::core::UUID, EditableTRS>> states;
+		for (const auto& triple : m_Triples) states.emplace_back(triple.target, triple.beforeLocal);
+		return scene.SetLocalTransformStates(states);
+	}
 	return result;
 }
 
@@ -155,15 +189,45 @@ std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
 }
 
 std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
+	rt2::core::UUID target, EditableTRS beforeLocal, EditableTRS afterLocal,
+	PrefabCommandTransaction::ExplicitCapture capture)
+{
+	if (TrsEqual(beforeLocal, afterLocal)) return nullptr;
+	return std::make_unique<TransformCommand>(target, beforeLocal, afterLocal,
+		std::move(capture));
+}
+
+std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
 	std::vector<TransformTriple> triples)
 {
 	std::vector<TransformTriple> effective;
 	effective.reserve(triples.size());
+	std::unordered_set<rt2::core::UUID> seen;
 	for (auto& t : triples)
+	{
+		if (t.target.IsNull() || !seen.insert(t.target).second) return nullptr;
 		if (!TrsEqual(t.beforeLocal, t.afterLocal))
 			effective.push_back(std::move(t));
+	}
 	if (effective.empty()) return nullptr;
 	return std::make_unique<TransformCommand>(std::move(effective));
+}
+
+std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
+	std::vector<TransformTriple> triples,
+	PrefabCommandTransaction::ExplicitCapture capture)
+{
+	std::vector<TransformTriple> effective;
+	effective.reserve(triples.size());
+	std::unordered_set<rt2::core::UUID> seen;
+	for (auto& t : triples)
+	{
+		if (t.target.IsNull() || !seen.insert(t.target).second) return nullptr;
+		if (!TrsEqual(t.beforeLocal, t.afterLocal)) effective.push_back(std::move(t));
+	}
+	if (effective.empty()) return nullptr;
+	return std::make_unique<TransformCommand>(std::move(effective),
+		std::move(capture));
 }
 
 std::unique_ptr<IEditorCommand> MakeSetVisibilityCommandIfEffective(

@@ -10,6 +10,7 @@
 #include "core/UUID.h"
 
 #include <string>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -56,19 +57,23 @@ public:
 	// Single-entity constructor (Phase 3A, Inspector path).
 	TransformCommand(rt2::core::UUID target,
 	                 EditableTRS beforeLocal,
-	                 EditableTRS afterLocal);
+	                 EditableTRS afterLocal,
+	                 std::optional<PrefabCommandTransaction::ExplicitCapture> capture = std::nullopt);
 
 	// Multi-entity constructor (Phase 3B1, gizmo path).
-	explicit TransformCommand(std::vector<TransformTriple> triples);
+	explicit TransformCommand(std::vector<TransformTriple> triples,
+		std::optional<PrefabCommandTransaction::ExplicitCapture> capture = std::nullopt);
 
 	const std::vector<TransformTriple>& Triples() const { return m_Triples; }
 
 	EditorMutationResult Execute(SceneManager& scene) override;
 	EditorMutationResult Undo(SceneManager& scene) override;
 	std::string Description() const override { return "Transform"; }
+	bool ExplicitCaptureRejected() const { return m_Transaction.ExplicitCaptureRejected(); }
 
 private:
 	std::vector<TransformTriple> m_Triples;
+	PrefabCommandTransaction m_Transaction;
 };
 
 class SetVisibilityCommand final : public IEditorCommand
@@ -105,11 +110,21 @@ std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
 	EditableTRS beforeLocal,
 	EditableTRS afterLocal);
 
+std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
+	rt2::core::UUID target,
+	EditableTRS beforeLocal,
+	EditableTRS afterLocal,
+	PrefabCommandTransaction::ExplicitCapture capture);
+
 // Multi-entity factory (Phase 3B1, gizmo path). Drops no-op triples (where
 // before and after normalize to the same TRS). Returns null if every triple
 // is a no-op.
 std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
 	std::vector<TransformTriple> triples);
+
+std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
+	std::vector<TransformTriple> triples,
+	PrefabCommandTransaction::ExplicitCapture capture);
 
 // Drops pairs already in the target state; if `afterStates` ends up empty
 // returns null. Validates that before/after UUID sets match.

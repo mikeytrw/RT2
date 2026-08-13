@@ -4,6 +4,9 @@
 #include "SceneSerializer.h"
 
 #include <utility>
+#include <atomic>
+#include <unordered_set>
+#include <algorithm>
 
 bool CompositePreviewSession::Begin(SceneManager& scene,
 	const rt2::core::UUID& member, PrefabValueKind kind,
@@ -161,4 +164,200 @@ std::uint32_t CompositePreviewSession::ExpectedAfterSchema() const
 		}
 	}
 	return schema;
+}
+
+namespace {
+std::atomic<std::uint64_t> g_TransformGestureSequence{0};
+}
+
+std::uint64_t TransformPreviewSession::NextSequence()
+{
+	// Never reset: a replacement document or a new publisher cannot make a
+	// delayed token valid again through ABA reuse.
+	return ++g_TransformGestureSequence;
+}
+
+EditorMutationResult TransformPreviewSession::Fail(rt2::core::Error::Code code,
+	const std::string& detail) const
+{
+	return EditorMutationResult::Failure(code, "transform-session", detail);
+}
+
+TransformPreviewSession::Member* TransformPreviewSession::FindMember(
+	const rt2::core::UUID& uuid)
+{
+	for (auto& member : m_Members) if (member.uuid == uuid) return &member;
+	return nullptr;
+}
+
+const TransformPreviewSession::Member* TransformPreviewSession::FindMember(
+	const rt2::core::UUID& uuid) const
+{
+	for (const auto& member : m_Members) if (member.uuid == uuid) return &member;
+	return nullptr;
+}
+
+std::optional<TransformGestureToken> TransformPreviewSession::Begin(
+	SceneManager& scene, std::uint64_t opaqueOwner,
+	const std::vector<rt2::core::UUID>& orderedUuids)
+{
+	if (m_Open || opaqueOwner == 0 || orderedUuids.empty()) return std::nullopt;
+	std::unordered_set<rt2::core::UUID> seen;
+	std::vector<Member> members;
+	PrefabCommandTransaction::ExplicitCapture origin;
+	members.reserve(orderedUuids.size());
+	origin.markers.reserve(orderedUuids.size());
+	for (const auto& uuid : orderedUuids)
+	{
+		if (uuid.IsNull() || !seen.insert(uuid).second) return std::nullopt;
+		const auto entity = scene.FindEntityByUuid(uuid);
+		EditableTRS local;
+		if (entity == entt::null || !scene.GetLocalTransform({ entity }, local))
+			return std::nullopt;
+		const auto markerKey = PrefabComponentKeyFor<Transform>::value;
+		const auto presence = scene.IsOverridden(uuid, markerKey);
+		std::optional<bool> marker;
+		if (presence.IsOk()) marker = presence.value;
+		else if (presence.error.code != rt2::core::Error::NotPrefabMember)
+			return std::nullopt;
+		members.push_back({ uuid, local, local, marker, marker, false, false });
+		origin.markers.push_back({ uuid, markerKey, marker, true });
+	}
+	origin.beforeSchema = scene.AuthoringDoc().metadata.schemaVersion;
+	// All fallible capture work completed before minting authority.
+	m_Members = std::move(members);
+	m_Origin = std::move(origin);
+	m_OriginSchema = m_Origin.beforeSchema;
+	m_RollingSchema = m_OriginSchema;
+	m_DocumentGeneration = scene.DocumentGeneration();
+	m_Token = TransformGestureToken(opaqueOwner, NextSequence());
+	m_Open = true;
+	m_HadEffectiveFrame = false;
+	m_LastResult = Fail(rt2::core::Error::InvalidRuntimeState,
+		"no preview frame committed yet");
+	m_LastEffectiveResult = m_LastResult;
+	return m_Token;
+}
+
+EditorMutationResult TransformPreviewSession::PreviewLocals(SceneManager& scene,
+	const TransformGestureToken& token,
+	const std::vector<std::pair<rt2::core::UUID, EditableTRS>>& targets)
+{
+	if (!TokenMatches(token)) return Fail(rt2::core::Error::InvalidArgument,
+		"transform gesture token is stale, foreign, or invalid");
+	if (scene.DocumentGeneration() != m_DocumentGeneration)
+		return Fail(rt2::core::Error::InvalidArgument,
+			"transform gesture document generation changed");
+	if (targets.size() != m_Members.size())
+		return Fail(rt2::core::Error::InvalidArgument,
+			"transform preview target set does not match Begin");
+	std::unordered_set<rt2::core::UUID> seen;
+	std::vector<PrefabValueEdit> values;
+	std::vector<PrefabCommandTransaction::MarkerSpec> specs;
+	PrefabCommandTransaction::ExplicitCapture rollingCapture;
+	values.reserve(targets.size()); specs.reserve(targets.size());
+	rollingCapture.markers.reserve(targets.size());
+	for (const auto& [uuid, target] : targets)
+	{
+		if (!seen.insert(uuid).second) return Fail(rt2::core::Error::InvalidArgument,
+			"transform preview contains a duplicate UUID");
+		Member* member = FindMember(uuid);
+		if (!member) return Fail(rt2::core::Error::InvalidEntity,
+			"transform preview UUID is outside the captured set");
+		if (PrefabValuePayloadEqual(PrefabValuePayload{member->rollingLocal},
+			PrefabValuePayload{target})) continue;
+		values.push_back({ PrefabValueKind::LocalTransform, uuid,
+			PrefabMarkerDirection::After, PrefabValuePayload{member->rollingLocal},
+			PrefabValuePayload{target} });
+		specs.push_back({ uuid, PrefabComponentKeyFor<Transform>::value, true });
+		rollingCapture.markers.push_back({ uuid, PrefabComponentKeyFor<Transform>::value,
+			member->rollingMarker, true });
+	}
+	if (seen.size() != m_Members.size())
+		return Fail(rt2::core::Error::InvalidArgument,
+			"transform preview target set is incomplete");
+	if (values.empty())
+	{
+		m_LastResult = EditorMutationResult{};
+		m_LastResult.effective = false;
+		return m_LastResult;
+	}
+	rollingCapture.beforeSchema = m_RollingSchema;
+	PrefabCommandTransaction tx(std::move(values), std::move(specs));
+	tx.SetExplicitCapture(std::move(rollingCapture));
+	m_LastResult = tx.Execute(scene);
+	if (!m_LastResult.success) return m_LastResult;
+	if (!m_LastResult.effective) return m_LastResult;
+	for (const auto& [uuid, target] : targets)
+	{
+		Member* member = FindMember(uuid);
+		if (!member || PrefabValuePayloadEqual(PrefabValuePayload{member->rollingLocal},
+			PrefabValuePayload{target})) continue;
+		EditableTRS committed;
+		const auto entity = scene.FindEntityByUuid(uuid);
+		if (entity == entt::null || !scene.GetLocalTransform({ entity }, committed))
+			return Fail(rt2::core::Error::InvalidEntity,
+				"committed transform could not be read back");
+		member->rollingLocal = committed;
+		if (member->rollingMarker.has_value())
+			member->rollingMarker = true;
+		member->introducedMarker = member->introducedMarker ||
+			(member->originMarker.has_value() && !*member->originMarker &&
+			 member->rollingMarker.has_value() && *member->rollingMarker);
+		member->everEffective = true;
+	}
+	m_RollingSchema = scene.AuthoringDoc().metadata.schemaVersion;
+	m_HadEffectiveFrame = true;
+	m_LastEffectiveResult = m_LastResult;
+	return m_LastResult;
+}
+
+EditorMutationResult TransformPreviewSession::PreviewWorlds(SceneManager& scene,
+	const TransformGestureToken& token,
+	const std::vector<std::pair<rt2::core::UUID, glm::mat4>>& targets)
+{
+	if (!TokenMatches(token)) return Fail(rt2::core::Error::InvalidArgument,
+		"transform gesture token is stale, foreign, or invalid");
+	std::vector<std::pair<SceneManager::EntityId, glm::mat4>> resolved;
+	resolved.reserve(targets.size());
+	for (const auto& [uuid, world] : targets)
+	{
+		if (!FindMember(uuid)) return Fail(rt2::core::Error::InvalidEntity,
+			"world preview UUID is outside the captured set");
+		const auto entity = scene.FindEntityByUuid(uuid);
+		if (entity == entt::null) return Fail(rt2::core::Error::InvalidEntity,
+			"world preview target was removed");
+		resolved.emplace_back(SceneManager::EntityId{ entity }, world);
+	}
+	const auto staged = scene.StageWorldTransforms(resolved);
+	if (!staged.IsOk())
+		return EditorMutationResult::Failure(staged.error.code, staged.error.path,
+			staged.error.detail);
+	return PreviewLocals(scene, token, staged.value.localStates);
+}
+
+std::size_t TransformPreviewSession::PruneMissingMembers(const SceneManager& scene)
+{
+	if (!m_Open) return 0;
+	std::unordered_set<rt2::core::UUID> live;
+	for (const auto& member : m_Members)
+		if (scene.FindEntityByUuid(member.uuid) != entt::null) live.insert(member.uuid);
+	m_Members.erase(std::remove_if(m_Members.begin(), m_Members.end(),
+		[&](const Member& member) { return live.find(member.uuid) == live.end(); }),
+		m_Members.end());
+	m_Origin.markers.erase(std::remove_if(m_Origin.markers.begin(), m_Origin.markers.end(),
+		[&](const PrefabCommandTransaction::ExplicitMarker& marker) {
+			return live.find(marker.member) == live.end();
+		}), m_Origin.markers.end());
+	return m_Members.size();
+}
+
+void TransformPreviewSession::Discard()
+{
+	m_Open = false;
+	m_Members.clear();
+	m_Origin = {};
+	m_Token = TransformGestureToken(0, 0);
+	m_DocumentGeneration = 0;
+	m_HadEffectiveFrame = false;
 }

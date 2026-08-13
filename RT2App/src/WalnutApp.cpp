@@ -1066,47 +1066,45 @@ public:
 			ImGui::EndDragDropTarget();
 		}
 		const bool imageHovered = ImGui::IsItemHovered();
+		std::optional<EditorWorldTransformSnapshot> gizmoSnapshot;
+		if (!m_EditorUI.IsTransformGestureOpen() &&
+			!m_EditorUI.Selection().Empty())
+		{
+			const auto captured = m_SceneMgr.CaptureEditorWorldTransforms(
+				m_EditorUI.Selection().Ordered(), m_EditorUI.Selection().Primary());
+			if (captured.IsOk()) gizmoSnapshot = std::move(captured.value);
+			else m_LastStatusMsg = captured.error.detail;
+		}
 		const TransformGizmoResult gizmo = m_TransformGizmo.Draw(
-			m_SceneMgr, m_EditorUI.Selection(), m_Cam,
+			gizmoSnapshot, m_EditorUI.Selection(), m_Cam,
 			{ imageMin.x, imageMin.y }, { imageSize.x, imageSize.y }, imageHovered,
 			m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
 				!m_EditorUI.SelectionHasDirectLock(),
 			m_EditorUI.GetTransformSpace(), m_EditorUI.GetTransformPivot(),
 			m_EditorUI.GetTransformSnapSettings(), m_EditorUI.GetUniformScale());
-		if (gizmo.changed)
-			SyncAuthoringTransforms();
+		if (gizmo.changed && !gizmo.desiredWorld.empty())
+		{
+			if (!m_EditorUI.IsTransformGestureOpen())
+			{
+				std::vector<rt2::core::UUID> gestureUuids;
+				gestureUuids.reserve(gizmo.desiredWorld.size());
+				for (const auto& item : gizmo.desiredWorld)
+					gestureUuids.push_back(item.first);
+				m_EditorUI.BeginTransformGestureForGizmo(
+					static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(
+						&m_TransformGizmo)), gestureUuids);
+			}
+			const auto preview = m_EditorUI.PreviewTransformWorldIntent(gizmo.desiredWorld);
+			if (!preview.success) m_LastStatusMsg = preview.error.detail;
+		}
 		if (!gizmo.error.empty())
 			m_LastStatusMsg = gizmo.error;
 
-		// Phase 3B1: on gizmo drag end, build a multi-entity TransformCommand
-		// and record it via RecordApplied. The gizmo's per-frame
-		// TrySetWorldTransforms calls already applied the mutation; we only
-		// record the command here. The before-local TRS was captured at drag
-		// start; the after-local TRS is read live now.
-		if (gizmo.dragJustEnded && !gizmo.draggedUuids.empty())
+		if (gizmo.dragJustEnded && m_EditorUI.IsTransformGestureOpen())
 		{
-			std::vector<TransformTriple> triples;
-			triples.reserve(gizmo.draggedUuids.size());
-			for (std::size_t i = 0; i < gizmo.draggedUuids.size(); ++i)
-			{
-				const auto& uuid = gizmo.draggedUuids[i];
-				const auto entity = m_SceneMgr.FindEntityByUuid(uuid);
-				if (entity == entt::null) continue;
-				EditableTRS afterLocal;
-				if (!m_SceneMgr.GetLocalTransform(SceneManager::EntityId{ entity }, afterLocal))
-					continue;
-				triples.push_back({ uuid, gizmo.dragStartLocal[i], afterLocal });
-			}
-			auto cmd = MakeTransformCommandIfEffective(std::move(triples));
-			if (cmd)
-			{
-				EditorMutationResult applied;
-				applied.success = true;
-				applied.syncImpact = rt2::core::SyncImpact::Transform;
-				for (std::size_t i = 0; i < gizmo.draggedUuids.size(); ++i)
-					applied.affectedEntities.push_back(gizmo.draggedUuids[i]);
-				m_History.RecordApplied(std::move(cmd), m_SceneMgr, applied);
-			}
+			const auto close = m_EditorUI.CloseTransformGesture(true);
+			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)
+				m_LastStatusMsg = close.lastError.error.detail;
 		}
 
 		// Editor icon overlay. Lights and cameras have no geometry, so the

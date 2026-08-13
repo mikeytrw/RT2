@@ -101,6 +101,18 @@ std::optional<EditorMutationResult> PreflightPreviewForRecord(
 	SceneManager& scene, PreviewSessionKind kind, const CompositePreviewSession& session,
 	const IEditorCommand& cmd);
 
+// Transform-session close seam. Transform sessions use durable UUID-keyed
+// batches and the opaque gesture token; they do not reuse the single-member
+// CompositePreviewSession payload.
+std::unique_ptr<IEditorCommand> BuildTransformPreviewCommand(
+	const TransformPreviewSession& session, bool suppressNoOp = true);
+PreviewSessionCloseOutcome FinalizeTransformPreviewSession(
+	EditorCommandHistory& history, SceneManager& scene,
+	TransformPreviewSession& session, const TransformGestureToken& token);
+PreviewSessionCloseOutcome RestoreTransformPreviewSession(
+	SceneManager& scene, TransformPreviewSession& session,
+	const TransformGestureToken& token);
+
 // One host preview-session slot for the global-action reducer below.
 struct PreviewSessionSlot
 {
