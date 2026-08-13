@@ -10699,3 +10699,227 @@ TEST_CASE("Phase 8 W3 S6-C: paste validates clipboard before admission on stale 
 
     std::filesystem::remove_all(s.dir);
 }
+
+// S6-C clipboard/create residual, P1 finding 1: Copy must not snapshot a
+// transient preview marker, and Paste must be schema-safe across a live preview
+// returning to v5. With the fix, a v5 preview -> Copy while live (admission
+// finalizes it first) -> return-to-v5 -> Paste promotes the destination schema,
+// so no below-current document ever holds an override; Save succeeds and
+// Undo/Redo restore/re-apply the exact schema.
+TEST_CASE("Phase 8 W3 S6-C: copy/paste is schema-safe across a live preview returning to v5")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_schemapaste");
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const LightComponent origin = s.origin;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // 1. A live v5 preview promotes the doc to v6 with the unsaved marker.
+    CompositePreviewSession light;
+    REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // 2. Host Copy-with-admit: the open preview is finalized (recorded) first,
+    // so the clipboard reflects a committed overlay, never a transient marker.
+    EditorCommandHistory history;
+    unsigned int owner = 0;
+    PreviewSessionSlot slot[1] = {
+        { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+    };
+    PreviewSessionsBeforeActionResult admit;
+    REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slot, 1, admit,
+        /*anyRecoveryPending=*/false));
+    REQUIRE(admit.slots[0].outcome.recorded);
+    REQUIRE_FALSE(light.IsOpen());
+    EditorSceneState state;
+    rt2::core::Error err;
+    REQUIRE(state.Copy(f.manager, { root }, err));
+
+    // 3. Return to v5: undo the recorded preview (no override, schema 5).
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+
+    // 4. Paste: the clipboard still carries the copied override; the schema
+    // transport promotes the destination so no v5+override state can exist.
+    const auto paste = state.PasteWithUuidsForCommand(f.manager);
+    REQUIRE(paste.mutation.success);
+    REQUIRE(paste.createdRoots.size() == 1);
+    CHECK(paste.beforeSchema == 5);
+    CHECK(paste.afterSchema == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    const auto pastedHandle = f.manager.FindEntityByUuid(paste.createdRoots.front());
+    REQUIRE(static_cast<uint32_t>(pastedHandle) != static_cast<uint32_t>(entt::null));
+    REQUIRE(reg.all_of<PrefabMemberComponent>(pastedHandle));
+    CHECK_FALSE(reg.get<PrefabMemberComponent>(pastedHandle).overrides.empty());
+    REQUIRE(f.manager.DocumentHasAnyOverrides());
+
+    // Record the paste with its schema transport.
+    auto snapshot = f.manager.CaptureSubtreeSnapshot(paste.createdRoots);
+    auto cmd = MakePasteSubtreesCommand(std::move(snapshot), paste.createdRoots,
+        paste.beforeSchema, paste.afterSchema);
+    REQUIRE(cmd);
+    REQUIRE(history.RecordApplied(std::move(cmd), f.manager, paste.mutation).effective);
+
+    // 5. Save at the promoted schema succeeds (the serializer rejects a
+    // below-current output holding overrides).
+    const auto savePath = s.dir / "saved.rt2scene";
+    Error saveErr;
+    REQUIRE(SaveSceneForTest(f.manager.AuthoringDoc(), savePath, saveErr));
+
+    // RED: forcing v5 while the override remains makes the version-preserving
+    // save path (SaveTo, which writes the doc's own schema) reject.
+    f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+    std::vector<rt2::core::AssetDiagnostic> diags;
+    Error badErr;
+    REQUIRE_FALSE(rt2::core::SceneSerializer::SaveTo(
+        f.manager.AuthoringDoc(), savePath, savePath, diags, badErr));
+    CHECK(badErr.detail.find("override") != std::string::npos);
+    f.manager.AuthoringDoc().metadata.schemaVersion = SceneSerializer::SchemaVersion;
+
+    // 6. Undo removes the pasted member; with no override left anywhere the
+    // prior schema is restored exactly.
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE(static_cast<uint32_t>(f.manager.FindEntityByUuid(paste.createdRoots.front()))
+        == static_cast<uint32_t>(entt::null));
+    REQUIRE_FALSE(f.manager.DocumentHasAnyOverrides());
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+
+    // 7. Redo re-creates the pasted member and re-applies the promotion.
+    REQUIRE(history.Redo(f.manager).success);
+    REQUIRE(static_cast<uint32_t>(f.manager.FindEntityByUuid(paste.createdRoots.front()))
+        != static_cast<uint32_t>(entt::null));
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    std::filesystem::remove_all(s.dir);
+}
+
+// S6-C clipboard/create residual, P1 finding 2: reversible Create actions run
+// shared admission after validation and before any material add / UUID draw /
+// entity creation / selection / sync / history. A healthy preview is finalized
+// first (chronological history); a PendingRetry rejection is zero-effect (no
+// draws, resources, entities, history, selection, owner, or error change).
+TEST_CASE("Phase 8 W3 S6-C: create runs shared admission before any mutation")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_create");
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const LightComponent origin = s.origin;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN: a healthy preview is finalized (admitted) BEFORE the create,
+    // giving chronological [preview, create] history.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, reader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        const auto entriesBefore = f.manager.GetEntityCount();
+
+        // Host CreateEmptyCommand: admission first, then reserve + create + record.
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slot[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slot, 1, admit,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+
+        const auto newUuid = f.manager.ReserveKnownUuid();
+        auto applied = f.manager.CreateEmptyWithUuid(newUuid, "NewEmpty");
+        REQUIRE(applied.success);
+        auto snapshot = f.manager.CaptureSubtreeSnapshot({ newUuid });
+        REQUIRE_FALSE(snapshot.entities.empty());
+        auto cmd = MakeCreateEmptyCommand(std::move(snapshot), newUuid);
+        REQUIRE(cmd);
+        REQUIRE(history.RecordApplied(std::move(cmd), f.manager, applied).effective);
+        REQUIRE(f.manager.GetEntityCount() == entriesBefore + 1);
+
+        // Undo reverse-chronological: create first, then the older preview.
+        REQUIRE(history.Undo(f.manager).success);
+        REQUIRE(static_cast<uint32_t>(f.manager.FindEntityByUuid(newUuid))
+            == static_cast<uint32_t>(entt::null));
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), a));
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), origin));
+    }
+
+    // ---- PendingRetry rejection: a stranded preview aborts the create BEFORE
+    // any material add / UUID draw / entity creation / selection / history, with
+    // the owner, recovery detail, materials, entity count and history unchanged.
+    {
+        // Fresh state for the pending half (schema back to v5, light clean).
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        auto* pm = reg.try_get<PrefabMemberComponent>(s.handle);
+        REQUIRE(pm);
+        pm->overrides.clear();
+        reg.get<LightComponent>(s.handle) = origin;
+
+        CompositePreviewSession pending;
+        REQUIRE(pending.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, reader));
+        REQUIRE(pending.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        reg.get<LightComponent>(s.handle).intensity = 77.0f;
+        const auto rolling = pending.RollingValue();
+
+        EditorCommandHistory history;
+        unsigned int po = 9;
+        PreviewSessionSlot pslot[1] = {
+            { PreviewSessionKind::Light, &pending, &po, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult r1;
+        REQUIRE_FALSE(ClosePreviewSessionsAndAdmit(f.manager, history, pslot, 1, r1,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(r1.slots[0].outcome.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        CHECK_FALSE(r1.slots[0].outcome.lastError.error.detail.empty());
+        const auto detail = r1.slots[0].outcome.lastError.error.detail;
+        CHECK(po == 9);
+
+        const auto entitiesBefore = f.manager.GetEntityCount();
+        const auto materialsBefore = f.manager.GetMaterialCount();
+
+        // A draw-counting provider makes any accidental UUID draw a hard failure.
+        ScriptedUuidProvider hostile;
+        f.manager.SetUuidProvider(&hostile);
+
+        // The create's admission short-circuits (pending): the create step is
+        // never reached, so zero draws/resources/entities/history/selection and
+        // the pending owner/error are untouched.
+        unsigned int po2 = 9;
+        PreviewSessionSlot pslot2[1] = {
+            { PreviewSessionKind::Light, &pending, &po2, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult r2;
+        REQUIRE_FALSE(ClosePreviewSessionsAndAdmit(f.manager, history, pslot2, 1, r2,
+            /*anyRecoveryPending=*/true));
+        CHECK(r2.slotCount == 0); // reducer never ran
+        REQUIRE(pending.IsOpen());
+        CHECK(po2 == 9);
+        CHECK(S6CLightEqual(std::get<LightComponent>(pending.RollingValue()),
+            std::get<LightComponent>(rolling)));
+        CHECK(r1.slots[0].outcome.lastError.error.detail == detail); // error unchanged
+        CHECK_FALSE(history.CanUndo());
+        CHECK(f.manager.GetEntityCount() == entitiesBefore);
+        CHECK(f.manager.GetMaterialCount() == materialsBefore);
+        CHECK(hostile.cursor == 0); // zero UUID draws
+    }
+
+    std::filesystem::remove_all(s.dir);
+}

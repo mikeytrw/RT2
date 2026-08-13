@@ -3996,6 +3996,7 @@ SceneManager::DuplicationResult SceneManager::PasteSubtreesWithUuids(
 	const std::vector<rt2::core::UUID>& knownPastedUuids)
 {
 	DuplicationResult out;
+	const std::uint32_t beforeSchema = m_Authoring.metadata.schemaVersion;
 	if (clipboardRoots.empty()) return out;
 	rt2::core::Error error;
 	auto roots = ResolveCanonicalRoots(clipboard, clipboardRoots, error);
@@ -4175,6 +4176,24 @@ SceneManager::DuplicationResult SceneManager::PasteSubtreesWithUuids(
 	for (const auto root : roots)
 		out.mutation.affectedEntities.push_back(GetEntityUuid({ remap.at(root) }));
 	out.sourceToDuplicate = std::move(sourceToDuplicate);
+
+	// S6-C clipboard residual: schema transport for the paste. A prefab member
+	// copied with override vectors must never land in a below-current document
+	// (the serializer rejects a below-current file that holds overrides), so if
+	// the document is below the current schema and ANY member now holds an
+	// override, the paste PROMOTES the destination schema. The host records this
+	// pair on the paste command, whose Undo restores the prior schema once no
+	// override remains anywhere and whose Redo re-applies the promotion.
+	if (beforeSchema < rt2::core::SceneSerializer::SchemaVersion && DocumentHasAnyOverrides())
+	{
+		m_Authoring.metadata.schemaVersion = rt2::core::SceneSerializer::SchemaVersion;
+		out.afterSchema = rt2::core::SceneSerializer::SchemaVersion;
+	}
+	else
+	{
+		out.afterSchema = beforeSchema;
+	}
+	out.beforeSchema = beforeSchema;
 	return out;
 }
 
@@ -6943,6 +6962,18 @@ void SceneManager::Clear()
 	m_EntityCacheDirty = true;
 	++m_DocumentGeneration;
 	++m_ResourceGeneration;
+}
+
+bool SceneManager::DocumentHasAnyOverrides() const
+{
+	// Any prefab member holding a non-empty override vector (raw stored state;
+	// the serializer writes exactly what is stored, so raw non-empty is the
+	// saveability signal).
+	const auto view = m_EcsScene.registry.view<PrefabMemberComponent>();
+	for (const auto entity : view)
+		if (!view.get<PrefabMemberComponent>(entity).overrides.empty())
+			return true;
+	return false;
 }
 
 bool SceneManager::CompactMeshRegistry()

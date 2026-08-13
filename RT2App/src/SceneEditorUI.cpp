@@ -483,6 +483,10 @@ void SceneEditorUI::HideShowSelectionCommand(bool hide)
 void SceneEditorUI::CreateEmptyCommand(const std::optional<rt2::core::UUID>& parent)
 {
 	if (!m_SceneMgr || !m_CommandHistory) return;
+	// Shared admission after non-mutating validation, BEFORE any UUID draw,
+	// entity creation, selection, sync, or history: an open preview is finalized
+	// first (chronological history) and a PendingRetry aborts with zero effect.
+	if (!AdmitAuthoringMutation()) return;
 	const auto uuid = m_SceneMgr->ReserveKnownUuid();
 	auto applied = m_SceneMgr->CreateEmptyWithUuid(uuid, "Empty", parent);
 	if (!applied.success)
@@ -507,6 +511,9 @@ void SceneEditorUI::CreatePrimitiveCommand(PrimitiveComponent::Kind kind, float 
                                           const char* name, const glm::vec3& position)
 {
 	if (!m_SceneMgr || !m_CommandHistory) return;
+	// Shared admission after non-mutating validation, BEFORE AddMaterial / UUID
+	// draws / entity creation / selection / sync / history.
+	if (!AdmitAuthoringMutation()) return;
 	SceneMaterial mat;
 	if (kind == PrimitiveComponent::Sphere && std::string(name) == "Light")
 	{
@@ -540,6 +547,9 @@ void SceneEditorUI::CreateLightCommand(const char* name, LightType type,
                                       const glm::vec3& color, float intensity)
 {
 	if (!m_SceneMgr || !m_CommandHistory) return;
+	// Shared admission after non-mutating validation, BEFORE any UUID draw,
+	// entity creation, selection, sync, or history.
+	if (!AdmitAuthoringMutation()) return;
 	const auto uuid = m_SceneMgr->ReserveKnownUuid();
 	EditableTRS trs;
 	trs.translation = position;
@@ -639,7 +649,8 @@ void SceneEditorUI::PasteCommand(const std::optional<rt2::core::UUID>& parent)
 		return;
 	}
 	auto snapshot = m_SceneMgr->CaptureSubtreeSnapshot(paste.createdRoots);
-	auto cmd = MakePasteSubtreesCommand(std::move(snapshot), paste.createdRoots);
+	auto cmd = MakePasteSubtreesCommand(std::move(snapshot), paste.createdRoots,
+		paste.beforeSchema, paste.afterSchema);
 	if (!cmd) return;
 	m_CommandHistory->RecordApplied(std::move(cmd), *m_SceneMgr, paste.mutation);
 	ApplyMutation(paste.mutation, true);
@@ -896,6 +907,10 @@ void SceneEditorUI::RenderOutliner()
 	ImGui::SameLine();
 	if (ImGui::Button("Copy"))
 	{
+		// Copy must not snapshot a transient preview marker/schema: admit
+		// (finalize) any open preview first, and abort on a PendingRetry with
+		// zero effect (clipboard/create residual P1 finding 1).
+		if (!AdmitAuthoringMutation()) return;
 		rt2::core::Error error;
 		if (!m_State.Copy(*m_SceneMgr, m_State.Selection().Ordered(), error))
 			m_MutationError = error.Format();
@@ -936,9 +951,13 @@ void SceneEditorUI::RenderOutliner()
 	{
 		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C))
 		{
-			rt2::core::Error error;
-			if (!m_State.Copy(*m_SceneMgr, m_State.Selection().Ordered(), error))
-				m_MutationError = error.Format();
+			// Copy must not snapshot a transient preview marker/schema.
+			if (AdmitAuthoringMutation())
+			{
+				rt2::core::Error error;
+				if (!m_State.Copy(*m_SceneMgr, m_State.Selection().Ordered(), error))
+					m_MutationError = error.Format();
+			}
 		}
 		if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V))
 			PasteCommand(std::nullopt);
@@ -1073,8 +1092,12 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 			ImGui::Separator();
 			if (ImGui::MenuItem("Copy"))
 			{
-				rt2::core::Error error;
-				if (!m_State.Copy(*m_SceneMgr, { uuid }, error)) m_MutationError = error.Format();
+				// Copy must not snapshot a transient preview marker/schema.
+				if (AdmitAuthoringMutation())
+				{
+					rt2::core::Error error;
+					if (!m_State.Copy(*m_SceneMgr, { uuid }, error)) m_MutationError = error.Format();
+				}
 			}
 			if (ImGui::MenuItem("Duplicate"))
 			{
@@ -1141,8 +1164,12 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 			ImGui::Separator();
 			if (ImGui::MenuItem("Copy"))
 			{
-				rt2::core::Error error;
-				if (!m_State.Copy(*m_SceneMgr, { uuid }, error)) m_MutationError = error.Format();
+				// Copy must not snapshot a transient preview marker/schema.
+				if (AdmitAuthoringMutation())
+				{
+					rt2::core::Error error;
+					if (!m_State.Copy(*m_SceneMgr, { uuid }, error)) m_MutationError = error.Format();
+				}
 			}
 			if (ImGui::MenuItem("Duplicate"))
 			{

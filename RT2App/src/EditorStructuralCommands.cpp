@@ -82,12 +82,24 @@ EditorMutationResult DuplicateSubtreesCommand::Undo(SceneManager& scene)
 
 EditorMutationResult PasteSubtreesCommand::Execute(SceneManager& scene)
 {
-	return scene.RestoreSubtrees(m_Snapshot);
+	EditorMutationResult result = scene.RestoreSubtrees(m_Snapshot);
+	// Schema transport: a paste that promoted a below-current document must
+	// re-apply the promotion on Redo (Monotonic; never downgrades).
+	if (result.success && m_AfterSchema
+		&& scene.AuthoringDoc().metadata.schemaVersion < m_AfterSchema)
+		scene.AuthoringDoc().metadata.schemaVersion = m_AfterSchema;
+	return result;
 }
 
 EditorMutationResult PasteSubtreesCommand::Undo(SceneManager& scene)
 {
-	return scene.RemoveSubtreesExact(m_Snapshot);
+	EditorMutationResult result = scene.RemoveSubtreesExact(m_Snapshot);
+	// Schema transport: once the pasted members are gone, restore the prior
+	// schema when no override remains anywhere (a safe downgrade); otherwise
+	// leave the document at the promoted schema.
+	if (result.success && m_BeforeSchema && !scene.DocumentHasAnyOverrides())
+		scene.AuthoringDoc().metadata.schemaVersion = m_BeforeSchema;
+	return result;
 }
 
 // ============================================================================
@@ -359,11 +371,14 @@ std::unique_ptr<IEditorCommand> MakeDuplicateSubtreesCommand(
 
 std::unique_ptr<IEditorCommand> MakePasteSubtreesCommand(
 	SubtreeSnapshot snapshot,
-	std::vector<rt2::core::UUID> createdRoots)
+	std::vector<rt2::core::UUID> createdRoots,
+	std::uint32_t beforeSchema,
+	std::uint32_t afterSchema)
 {
 	if (createdRoots.empty()) return nullptr;
 	return std::make_unique<PasteSubtreesCommand>(std::move(snapshot),
-	                                              std::move(createdRoots));
+	                                              std::move(createdRoots),
+	                                              beforeSchema, afterSchema);
 }
 
 std::unique_ptr<IEditorCommand> MakeCreatePrefabCommand(

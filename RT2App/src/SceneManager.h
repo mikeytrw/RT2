@@ -544,6 +544,14 @@ struct PrefabMaterialSlotStage
 		EditorMutationResult mutation;
 		std::vector<rt2::core::UUID> createdRoots;
 		std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>> sourceToDuplicate;
+		// S6-C clipboard residual: document schema immediately before and after
+		// the paste. When pasted prefab members carry override vectors and the
+		// live document is below the serializer's current schema, the paste
+		// PROMOTES the destination schema (a below-current document can never
+		// hold overrides — the serializer rejects it). 0 for non-paste paths
+		// (duplicate) and for schema-neutral pastes.
+		std::uint32_t beforeSchema = 0;
+		std::uint32_t afterSchema = 0;
 	};
 
 	// Duplicate subtrees with caller-supplied UUIDs. The manager
@@ -917,6 +925,13 @@ struct PrefabMaterialSlotStage
 	uint64_t AuthoringRevision() const { return m_AuthoringRevision; }
 	uint64_t DocumentGeneration() const { return m_DocumentGeneration; }
 	uint64_t ResourceGeneration() const { return m_ResourceGeneration; }
+
+	// S6-C clipboard residual: true when ANY prefab member in the live document
+	// currently holds a non-empty override vector. Used by the paste
+	// command's schema transport to decide whether Undo may legally restore the
+	// prior (below-current) schema: a downgrade is safe only when no override
+	// remains anywhere.
+	bool DocumentHasAnyOverrides() const;
 
 	// Centralized authoring-change notification. All editor mutations
 	// (Add/Remove/SetTransform/SetMaterial/SetMaterialProperties) call
