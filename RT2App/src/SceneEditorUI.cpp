@@ -908,13 +908,16 @@ void SceneEditorUI::RenderOutliner()
 	if (ImGui::Button("Copy"))
 	{
 		// Copy must not snapshot a transient preview marker/schema: admit
-		// (finalize) any open preview first, and abort on a PendingRetry with
-		// zero effect (clipboard/create residual P1 finding 1).
-		if (!AdmitAuthoringMutation()) return;
-		rt2::core::Error error;
-		if (!m_State.Copy(*m_SceneMgr, m_State.Selection().Ordered(), error))
-			m_MutationError = error.Format();
-		else m_MutationError.clear();
+		// (finalize) any open preview first, and on a PendingRetry do nothing
+		// and continue rendering (zero effect, and never return before the
+		// matching ImGui::End below which would corrupt the frame stack).
+		if (AdmitAuthoringMutation())
+		{
+			rt2::core::Error error;
+			if (!m_State.Copy(*m_SceneMgr, m_State.Selection().Ordered(), error))
+				m_MutationError = error.Format();
+			else m_MutationError.clear();
+		}
 	}
 	ImGui::SameLine();
 	ImGui::BeginDisabled(!m_Editable || !m_State.HasClipboard());
