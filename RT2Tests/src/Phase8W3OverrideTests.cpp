@@ -8,6 +8,7 @@
 #include "EditorPropertyCommands.h"
 #include "CompositePreviewSession.h"
 #include "EditorTransformGizmo.h"
+#include "TransformGizmoHostLifecycle.h"
 #include "PreviewSessionClose.h"
 #include "PrefabCommandTransaction.h"
 #include "EditorSceneState.h"
@@ -4373,6 +4374,844 @@ TEST_CASE("Phase 8 W3 S6-D: cleanup record failure compensates without marker re
         SceneManager::EntityId{f.manager.FindEntityByUuid(ordinary)}, ordinaryRestored));
     CHECK(ordinaryRestored.translation == ordinaryBefore.translation);
     std::filesystem::remove_all(dir);
+}
+
+// S6-D re-review P1: the viewport host must keep its local drag/token/sequence
+// correlated until the UI session has closed, been validly discarded, or has
+// transferred into pending recovery.  These are state-machine transitions,
+// not predicate probes: G1 is opened in the real TransformPreviewSession and
+// every external transition is followed by a clean G2 start (ABA proof).
+//
+// Reversible RED: make CompleteAfterUiTransition retain any one of localDrag,
+// token, or sequence; the corresponding post-transition assertion and every
+// G2 OnLocalDragStarted below fail.  Remove RejectBeginAndCancel and the
+// rejected-Begin branch retains an unbound local drag.
+TEST_CASE("Phase 8 W3 S6-D: host lifecycle tears down G1 after replacement Play and output loss then admits G2")
+{
+    S2Fixture f;
+    const UUID target = f.CreateEmpty("HostLifecycle");
+    EditorCommandHistory history;
+    TransformPreviewSession session;
+    TransformGizmoHostLifecycle host;
+
+    // Never-moved G1 still has a real UI session and a real sequenced local
+    // drag. Finalize closes it without history, then host teardown releases all
+    // correlation so G2 can start.
+    auto g1 = session.Begin(f.manager, 0xB001u, { target });
+    REQUIRE(g1);
+    REQUIRE(host.OnLocalDragStarted(101));
+    REQUIRE(host.BindToken(*g1));
+    REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *g1)
+        .result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(host.LocalDragActive()); // UI closes before local correlation.
+    host.CompleteAfterUiTransition();
+    CHECK_FALSE(host.LocalDragActive());
+    CHECK_FALSE(host.Token().has_value());
+    CHECK(host.InteractionSequence() == 0);
+    CHECK_FALSE(history.CanUndo());
+
+    auto g2 = session.Begin(f.manager, 0xB001u, { target });
+    REQUIRE(g2);
+    REQUIRE(host.OnLocalDragStarted(102));
+    REQUIRE(host.BindToken(*g2));
+    CHECK_FALSE(host.Matches(101));
+    CHECK(host.Matches(102));
+    CHECK_FALSE(session.PreviewLocals(f.manager, *g1, {}).success);
+
+    // Output loss restores through the exact G2 token before local teardown.
+    EditableTRS before;
+    REQUIRE(f.manager.GetLocalTransform(
+        SceneManager::EntityId{f.manager.FindEntityByUuid(target)}, before));
+    EditableTRS moved = before;
+    moved.translation.x += 4.0f;
+    REQUIRE(session.PreviewLocals(f.manager, *g2, {{target, moved}}).effective);
+    REQUIRE(RestoreTransformPreviewSession(f.manager, session, *g2)
+        .result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(host.LocalDragActive());
+    host.CompleteAfterUiTransition();
+    CHECK_FALSE(host.LocalDragActive());
+
+    // A document replacement is valid discard proof. Reset/discard happens
+    // first; only then may Walnut-owned local correlation be released.
+    auto g3 = session.Begin(f.manager, 0xB001u, { target });
+    REQUIRE(g3);
+    REQUIRE(host.OnLocalDragStarted(103));
+    REQUIRE(host.BindToken(*g3));
+    session.Discard();
+    REQUIRE(host.LocalDragActive());
+    host.CompleteAfterUiTransition();
+    REQUIRE(host.OnLocalDragStarted(104));
+    host.RejectBeginAndCancel();
+    CHECK_FALSE(host.LocalDragActive());
+    CHECK(host.InteractionSequence() == 0);
+
+    // Play entry finalizes an effective G4 before SetEditable(false) hands
+    // recovery ownership to the UI. Play exit can then admit G5 cleanly.
+    auto g4 = session.Begin(f.manager, 0xB001u, { target });
+    REQUIRE(g4);
+    REQUIRE(host.OnLocalDragStarted(105));
+    REQUIRE(host.BindToken(*g4));
+    moved.translation.y += 2.0f;
+    REQUIRE(session.PreviewLocals(f.manager, *g4, {{target, moved}}).effective);
+    REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *g4)
+        .result == PreviewSessionCloseOutcome::Result::Closed);
+    host.CompleteAfterUiTransition();
+    auto g5 = session.Begin(f.manager, 0xB001u, { target });
+    REQUIRE(g5);
+    REQUIRE(host.OnLocalDragStarted(106));
+    REQUIRE(host.BindToken(*g5));
+    CHECK(host.Matches(106));
+    CHECK_FALSE(host.Matches(105));
+    session.Discard();
+    host.CompleteAfterUiTransition();
+}
+
+// S6-D re-review P1: a failed RecordApplied followed by failed compensation
+// is a distinct recovery phase. Retry must replay compensation against the
+// post-cleanup carrier state; it must never record again or recreate a cleaned
+// marker. Both the surviving-carrier and genuine no-carrier cleanup cases are
+// exercised end-to-end.
+//
+// Reversible RED: route CompensationPending through RecordApplied, or omit the
+// phase assignment after injected compensation failure. Retry either remains
+// pending/records history or resurrects B, failing the exact state assertions.
+TEST_CASE("Phase 8 W3 S6-D: compensation-pending Retry preserves surviving and no-carrier cleanup state")
+{
+    for (const bool survivingCarrier : { true, false })
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir(survivingCarrier
+            ? "p8w3_s6d_comp_pending_carrier"
+            : "p8w3_s6d_comp_pending_no_carrier");
+        const auto [prefabAHandle, prefabBHandle] = f.MakeInstance(dir);
+		f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID prefabA = f.manager.GetEntityUuid(
+            SceneManager::EntityId{prefabAHandle});
+        const UUID prefabB = f.manager.GetEntityUuid(
+            SceneManager::EntityId{prefabBHandle});
+        const UUID effective = survivingCarrier ? prefabA
+            : f.CreateEmpty("OrdinaryCarrierlessSurvivor");
+        const auto effectiveHandle = f.manager.FindEntityByUuid(effective);
+        EditableTRS effectiveBefore, bBefore;
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{effectiveHandle}, effectiveBefore));
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{prefabBHandle}, bBefore));
+        EditableTRS effectiveAfter = effectiveBefore;
+        EditableTRS bTransient = bBefore;
+        effectiveAfter.translation.x += 8.0f;
+        bTransient.translation.y += 3.0f;
+
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, survivingCarrier
+            ? 0xC001u : 0xC002u, { effective, prefabB });
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{effective, effectiveAfter}, {prefabB, bTransient}}).effective);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{effective, effectiveAfter}, {prefabB, bBefore}}).effective);
+        const auto revisionBeforeClose = f.manager.AuthoringRevision();
+
+        EditorCommandHistory history;
+        history.FailNextRecordAppliedForTest();
+        session.FailNextCompensationForTest();
+        const auto failed = FinalizeTransformPreviewSession(history, f.manager,
+            session, *token);
+        REQUIRE(failed.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(session.IsOpen());
+        CHECK(session.GetClosePhase()
+            == TransformPreviewSession::ClosePhase::CompensationPending);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(f.manager.AuthoringRevision() == revisionBeforeClose + 1);
+        CHECK(failed.needsSyncApply);
+        CHECK_FALSE(f.manager.IsOverridden(prefabB,
+            PrefabComponentKeyFor<Transform>::value).value);
+        CHECK(f.manager.IsOverridden(effective,
+            PrefabComponentKeyFor<Transform>::value).IsOk()
+            == survivingCarrier);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == (survivingCarrier ? SceneSerializer::SchemaVersion : 5));
+        EditableTRS liveEffective;
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{effectiveHandle}, liveEffective));
+        CHECK(liveEffective.translation == effectiveAfter.translation);
+
+        // Explicit Retry still enters Finalize, but the stored close phase
+        // redirects it to compensation and closes without RecordApplied.
+        const auto retry = FinalizeTransformPreviewSession(history, f.manager,
+            session, *token);
+        REQUIRE(retry.result == PreviewSessionCloseOutcome::Result::Closed);
+        CHECK(retry.needsSyncApply);
+        CHECK_FALSE(session.IsOpen());
+        CHECK_FALSE(history.CanUndo());
+        CHECK(f.manager.AuthoringRevision() == revisionBeforeClose + 2);
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{effectiveHandle}, liveEffective));
+        CHECK(liveEffective.translation == effectiveBefore.translation);
+        CHECK_FALSE(f.manager.IsOverridden(prefabB,
+            PrefabComponentKeyFor<Transform>::value).value);
+        if (survivingCarrier)
+            CHECK_FALSE(f.manager.IsOverridden(effective,
+                PrefabComponentKeyFor<Transform>::value).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+        std::filesystem::remove_all(dir);
+    }
+}
+
+// Matrix group: world staging must remain a whole-session batch, including a
+// selected parent+child, and every malformed target must fail before any
+// value/marker/schema/revision/history churn.
+// Reversible RED: stage members sequentially against the already-mutated
+// parent, or bypass StageWorldTransforms in PreviewWorlds; forward/reverse
+// locals diverge or one of the fail-atomic probes mutates the scene.
+TEST_CASE("Phase 8 W3 S6-D: parent-child world session is order independent and malformed batches are fail atomic")
+{
+    struct Result
+    {
+        EditableTRS parentLocal;
+        EditableTRS childLocal;
+        EditableTRS parentWorld;
+        EditableTRS childWorld;
+    } results[2];
+
+    for (int reverse = 0; reverse < 2; ++reverse)
+    {
+        S2Fixture f;
+        const UUID parent = f.CreateEmpty("Parent");
+        const UUID child = f.CreateChild("Child", parent);
+        const auto parentHandle = f.manager.FindEntityByUuid(parent);
+        const auto childHandle = f.manager.FindEntityByUuid(child);
+        EditableTRS parentLocal, childLocal, parentWorld, childWorld;
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{parentHandle}, parentLocal));
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{childHandle}, childLocal));
+        parentLocal.translation = { 1.0f, 0.0f, 0.0f };
+        childLocal.translation = { 0.0f, 2.0f, 0.0f };
+        REQUIRE(f.manager.SetLocalTransformStates(
+            {{parent, parentLocal}, {child, childLocal}}).success);
+        REQUIRE(f.manager.GetWorldTransform(
+            SceneManager::EntityId{parentHandle}, parentWorld));
+        REQUIRE(f.manager.GetWorldTransform(
+            SceneManager::EntityId{childHandle}, childWorld));
+        EditableTRS desiredParent = parentWorld;
+        EditableTRS desiredChild = childWorld;
+        desiredParent.translation.x += 5.0f;
+        desiredChild.translation.y += 7.0f;
+
+        const std::vector<UUID> order = reverse
+            ? std::vector<UUID>{child, parent}
+            : std::vector<UUID>{parent, child};
+        const std::vector<std::pair<UUID, glm::mat4>> worlds = reverse
+            ? std::vector<std::pair<UUID, glm::mat4>>{
+                {child, desiredChild.Matrix()}, {parent, desiredParent.Matrix()} }
+            : std::vector<std::pair<UUID, glm::mat4>>{
+                {parent, desiredParent.Matrix()}, {child, desiredChild.Matrix()} };
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD100u + reverse, order);
+        REQUIRE(token);
+
+        const auto revision = f.manager.AuthoringRevision();
+        const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+        EditableTRS invalid = parentLocal;
+        invalid.translation.x = std::numeric_limits<float>::infinity();
+        CHECK_FALSE(session.PreviewLocals(f.manager, *token,
+            reverse ? std::vector<std::pair<UUID, EditableTRS>>{
+                {child, childLocal}, {parent, invalid} }
+                : std::vector<std::pair<UUID, EditableTRS>>{
+                {parent, invalid}, {child, childLocal} }).success);
+        CHECK_FALSE(session.PreviewLocals(f.manager, *token,
+            {{parent, parentLocal}, {parent, parentLocal}}).success);
+        CHECK_FALSE(session.PreviewLocals(f.manager, *token,
+            {{parent, parentLocal}, {UUID{}, childLocal}}).success);
+        glm::mat4 singular(0.0f);
+        CHECK_FALSE(session.PreviewWorlds(f.manager, *token,
+            reverse ? std::vector<std::pair<UUID, glm::mat4>>{
+                {child, singular}, {parent, desiredParent.Matrix()} }
+                : std::vector<std::pair<UUID, glm::mat4>>{
+                {parent, desiredParent.Matrix()}, {child, singular} }).success);
+        glm::mat4 sheared = desiredChild.Matrix();
+        sheared[1][0] = 0.5f;
+        CHECK_FALSE(session.PreviewWorlds(f.manager, *token,
+            reverse ? std::vector<std::pair<UUID, glm::mat4>>{
+                {child, sheared}, {parent, desiredParent.Matrix()} }
+                : std::vector<std::pair<UUID, glm::mat4>>{
+                {parent, desiredParent.Matrix()}, {child, sheared} }).success);
+        CHECK(f.manager.AuthoringRevision() == revision);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == schema);
+        CHECK_FALSE(session.HadEffectiveFrame());
+
+        const auto preview = session.PreviewWorlds(f.manager, *token, worlds);
+        REQUIRE(preview.success);
+        REQUIRE(preview.effective);
+        CHECK(preview.syncImpact == rt2::core::SyncImpact::Transform);
+        CHECK(f.manager.AuthoringRevision() == revision + 1);
+        EditorCommandHistory history;
+        const auto close = FinalizeTransformPreviewSession(history, f.manager,
+            session, *token);
+        REQUIRE(close.recorded);
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{parentHandle}, results[reverse].parentLocal));
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{childHandle}, results[reverse].childLocal));
+        REQUIRE(f.manager.GetWorldTransform(
+            SceneManager::EntityId{parentHandle}, results[reverse].parentWorld));
+        REQUIRE(f.manager.GetWorldTransform(
+            SceneManager::EntityId{childHandle}, results[reverse].childWorld));
+        REQUIRE(history.Undo(f.manager).success);
+        EditableTRS restoredParent, restoredChild;
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{parentHandle}, restoredParent));
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{childHandle}, restoredChild));
+        CHECK(restoredParent.translation == parentLocal.translation);
+        CHECK(restoredChild.translation == childLocal.translation);
+    }
+    CHECK(results[0].parentLocal.translation == results[1].parentLocal.translation);
+    CHECK(results[0].childLocal.translation == results[1].childLocal.translation);
+    CHECK(results[0].parentWorld.translation == results[1].parentWorld.translation);
+    CHECK(results[0].childWorld.translation == results[1].childWorld.translation);
+}
+
+// Matrix group: durable UUID association must survive physical input order,
+// mixed ordinary/fresh/pre-existing members, and distinct prefab instances.
+// Reversible RED: associate markers by transaction/registry position or by
+// templateId; reversing the list swaps a value/marker and breaks these exact
+// per-UUID assertions.
+TEST_CASE("Phase 8 W3 S6-D: mixed two-instance UUID aggregation survives both physical orders and replay")
+{
+    for (const bool reverse : { false, true })
+    {
+        S2Fixture f;
+        const auto dir1 = S2UniqueTempDir(reverse
+            ? "p8w3_s6d_instances_r1" : "p8w3_s6d_instances_f1");
+        const auto dir2 = S2UniqueTempDir(reverse
+            ? "p8w3_s6d_instances_r2" : "p8w3_s6d_instances_f2");
+        const auto [aHandle, aChild] = f.MakeInstance(dir1);
+        const auto [bHandle, bChild] = f.MakeInstance(dir2);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID ordinary = f.CreateEmpty("Ordinary");
+        const UUID fresh = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+        const UUID existing = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+        const auto key = PrefabComponentKeyFor<Transform>::value;
+        auto marker = f.manager.PreparePrefabMarkerEdits({
+            { existing, key, false, true },
+        }, PrefabMarkerDirection::After, 5, SceneSerializer::SchemaVersion);
+        REQUIRE(marker.IsOk());
+        REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(marker.value)).anyStateChange);
+
+        EditableTRS ordinaryBefore, freshBefore, existingBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{
+            f.manager.FindEntityByUuid(ordinary)}, ordinaryBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, freshBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, existingBefore));
+        EditableTRS ordinaryAfter = ordinaryBefore;
+        EditableTRS freshAfter = freshBefore;
+        EditableTRS existingAfter = existingBefore;
+        ordinaryAfter.translation.x += 1.0f;
+        freshAfter.translation.y += 2.0f;
+        existingAfter.translation.z += 3.0f;
+        const std::vector<UUID> order = reverse
+            ? std::vector<UUID>{existing, fresh, ordinary}
+            : std::vector<UUID>{ordinary, fresh, existing};
+        const std::vector<std::pair<UUID, EditableTRS>> targets = reverse
+            ? std::vector<std::pair<UUID, EditableTRS>>{
+                {existing, existingAfter}, {fresh, freshAfter}, {ordinary, ordinaryAfter} }
+            : std::vector<std::pair<UUID, EditableTRS>>{
+                {ordinary, ordinaryAfter}, {fresh, freshAfter}, {existing, existingAfter} };
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, reverse ? 0xD201u : 0xD200u, order);
+        REQUIRE(token);
+        const auto preview = session.PreviewLocals(f.manager, *token, targets);
+        REQUIRE(preview.effective);
+        CHECK(preview.syncImpact == rt2::core::SyncImpact::Transform);
+        CHECK(std::unordered_set<UUID>(preview.affectedEntities.begin(),
+            preview.affectedEntities.end()) ==
+            std::unordered_set<UUID>{ordinary, fresh, existing});
+        CHECK(f.manager.IsOverridden(fresh, key).value);
+        CHECK(f.manager.IsOverridden(existing, key).value);
+
+        EditorCommandHistory history;
+        REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *token)
+            .recorded);
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK_FALSE(f.manager.IsOverridden(fresh, key).value);
+        CHECK(f.manager.IsOverridden(existing, key).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        REQUIRE(history.Redo(f.manager).success);
+        EditableTRS ordinaryLive, freshLive, existingLive;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{
+            f.manager.FindEntityByUuid(ordinary)}, ordinaryLive));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, freshLive));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, existingLive));
+        CHECK(ordinaryLive.translation == ordinaryAfter.translation);
+        CHECK(freshLive.translation == freshAfter.translation);
+        CHECK(existingLive.translation == existingAfter.translation);
+        std::filesystem::remove_all(dir1);
+        std::filesystem::remove_all(dir2);
+    }
+}
+
+// Matrix group: Transform is the fifth reducer kind, not a side channel.
+// Physical slot order is history order, each effective preview accounts for
+// one sync while pure RecordApplied closes account for none, and an already
+// pending Transform quarantines every slot without an implicit retry.
+// Reversible RED: omit the Transform slot arm or ignore anyRecoveryPending;
+// order/owner/history assertions or the quarantine zero-churn assertions fail.
+TEST_CASE("Phase 8 W3 S6-D: fifth-kind Transform-Light ordering sync and pending quarantine")
+{
+    for (const bool transformFirst : { true, false })
+    {
+        S2Fixture f;
+        const UUID transformTarget = f.CreateEmpty("TransformTarget");
+        const UUID lightTarget = f.CreateEmpty("LightTarget");
+        const auto transformHandle = f.manager.FindEntityByUuid(transformTarget);
+        const auto lightHandle = f.manager.FindEntityByUuid(lightTarget);
+        auto& reg = f.manager.GetECS().registry;
+        reg.emplace_or_replace<LightComponent>(lightHandle, LightComponent{});
+        EditableTRS transformBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{transformHandle},
+            transformBefore));
+        EditableTRS transformAfter = transformBefore;
+        transformAfter.translation.x += 9.0f;
+        const LightComponent lightBefore = reg.get<LightComponent>(lightHandle);
+        LightComponent lightAfter = lightBefore;
+        lightAfter.intensity += 4.0f;
+
+        TransformPreviewSession transform;
+        const auto token = transform.Begin(f.manager,
+            transformFirst ? 0xD301u : 0xD302u, {transformTarget});
+        REQUIRE(token);
+        const auto transformPreview = transform.PreviewLocals(f.manager, *token,
+            {{transformTarget, transformAfter}});
+        REQUIRE(transformPreview.effective);
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, lightTarget,
+            PrefabValueKind::LightProperties,
+            PrefabComponentKeyFor<LightComponent>::value, lightBefore,
+            [&](const UUID& uuid, const PrefabValuePayload& raw) {
+                const auto entity = f.manager.FindEntityByUuid(uuid);
+                if (entity == entt::null || !reg.all_of<LightComponent>(entity))
+                    return raw;
+                return PrefabValuePayload{reg.get<LightComponent>(entity)};
+            }));
+        const auto lightPreview = light.Preview(f.manager,
+            PrefabValuePayload{lightAfter});
+        REQUIRE(lightPreview.effective);
+        int syncCount = 2;
+
+        EditorCommandHistory history;
+        unsigned int transformOwner = 31;
+        unsigned int lightOwner = 32;
+        PreviewSessionSlot slots[2];
+        if (transformFirst)
+        {
+            slots[0] = { PreviewSessionKind::Transform, nullptr, &transformOwner,
+                true, &transform, &*token };
+            slots[1] = { PreviewSessionKind::Light, &light, &lightOwner, true };
+        }
+        else
+        {
+            slots[0] = { PreviewSessionKind::Light, &light, &lightOwner, true };
+            slots[1] = { PreviewSessionKind::Transform, nullptr, &transformOwner,
+                true, &transform, &*token };
+        }
+        PreviewSessionsBeforeActionResult closed;
+        REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slots, 2,
+            closed, false));
+        REQUIRE(closed.slotCount == 2);
+        CHECK_FALSE(closed.slots[0].outcome.needsSyncApply);
+        CHECK_FALSE(closed.slots[1].outcome.needsSyncApply);
+        CHECK(syncCount == 2);
+        CHECK(transformOwner == 0);
+        CHECK(lightOwner == 0);
+
+        REQUIRE(history.Undo(f.manager).success);
+        EditableTRS transformLive;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{transformHandle},
+            transformLive));
+        if (transformFirst)
+        {
+            CHECK(transformLive.translation == transformAfter.translation);
+            CHECK(reg.get<LightComponent>(lightHandle).intensity
+                == doctest::Approx(lightBefore.intensity));
+        }
+        else
+        {
+            CHECK(transformLive.translation == transformBefore.translation);
+            CHECK(reg.get<LightComponent>(lightHandle).intensity
+                == doctest::Approx(lightAfter.intensity));
+        }
+        REQUIRE(history.Undo(f.manager).success);
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{transformHandle},
+            transformLive));
+        CHECK(transformLive.translation == transformBefore.translation);
+        CHECK(reg.get<LightComponent>(lightHandle).intensity
+            == doctest::Approx(lightBefore.intensity));
+    }
+
+    S2Fixture f;
+    const UUID target = f.CreateEmpty("PendingTransform");
+    EditableTRS before;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{
+        f.manager.FindEntityByUuid(target)}, before));
+    EditableTRS after = before;
+    after.translation.z += 6.0f;
+    TransformPreviewSession pending;
+    const auto token = pending.Begin(f.manager, 0xD303u, {target});
+    REQUIRE(token);
+    REQUIRE(pending.PreviewLocals(f.manager, *token, {{target, after}}).effective);
+    EditorCommandHistory history;
+    history.FailNextRecordAppliedForTest();
+    pending.FailNextCompensationForTest();
+    REQUIRE(FinalizeTransformPreviewSession(history, f.manager, pending, *token)
+        .result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    const auto revision = f.manager.AuthoringRevision();
+    unsigned int owner = 91;
+    PreviewSessionSlot slot = { PreviewSessionKind::Transform, nullptr, &owner,
+        true, &pending, &*token };
+    PreviewSessionsBeforeActionResult quarantined;
+    CHECK_FALSE(ClosePreviewSessionsAndAdmit(f.manager, history, &slot, 1,
+        quarantined, true));
+    CHECK(quarantined.slotCount == 0);
+    CHECK(owner == 91);
+    CHECK(pending.IsOpen());
+    CHECK(pending.GetClosePhase()
+        == TransformPreviewSession::ClosePhase::CompensationPending);
+    CHECK(f.manager.AuthoringRevision() == revision);
+    CHECK_FALSE(history.CanUndo());
+    REQUIRE(FinalizeTransformPreviewSession(history, f.manager, pending, *token)
+        .result == PreviewSessionCloseOutcome::Result::Closed);
+}
+
+// Matrix group: the close partition distinguishes fresh from pre-existing
+// markers, full return-to-start, and all three bounded close failures. It also
+// proves S5 rejects a downgrade while an unrelated override survives.
+// Reversible RED: clean every net-zero marker indiscriminately, request v5
+// without a surviving marker transition, or skip cleanup retry; one of the
+// marker/schema/history assertions below fails.
+TEST_CASE("Phase 8 W3 S6-D: fresh pre-existing net-zero and cleanup Retry obey the carrier matrix")
+{
+    const auto key = PrefabComponentKeyFor<Transform>::value;
+
+    // Fresh A effective + fresh B net-zero. A bounded cleanup failure leaves
+    // the live preview untouched; Retry cleans B, records A, and Undo/Redo
+    // transports value+marker+schema exactly.
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir("p8w3_s6d_cleanup_retry");
+        const auto [aHandle, bHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID a = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+        const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+        EditableTRS aBefore, bBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+        EditableTRS aAfter = aBefore;
+        EditableTRS bTransient = bBefore;
+        aAfter.translation.x += 2.0f;
+        bTransient.translation.y += 3.0f;
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD401u, {a, b});
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{a, aAfter}, {b, bTransient}}).effective);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{a, aAfter}, {b, bBefore}}).effective);
+        const auto revision = f.manager.AuthoringRevision();
+        EditorCommandHistory history;
+        session.FailNextCleanupForTest();
+        const auto failed = FinalizeTransformPreviewSession(history, f.manager,
+            session, *token);
+        REQUIRE(failed.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        CHECK(session.GetClosePhase()
+            == TransformPreviewSession::ClosePhase::LivePreview);
+        CHECK(f.manager.AuthoringRevision() == revision);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        CHECK(f.manager.IsOverridden(b, key).value);
+        CHECK_FALSE(history.CanUndo());
+
+        const auto retry = FinalizeTransformPreviewSession(history, f.manager,
+            session, *token);
+        REQUIRE(retry.recorded);
+        CHECK(retry.needsSyncApply);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        CHECK_FALSE(f.manager.IsOverridden(b, key).value);
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK_FALSE(f.manager.IsOverridden(a, key).value);
+        CHECK_FALSE(f.manager.IsOverridden(b, key).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+        REQUIRE(history.Redo(f.manager).success);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        CHECK_FALSE(f.manager.IsOverridden(b, key).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        std::filesystem::remove_all(dir);
+    }
+
+    // B's marker predates the gesture. Returning B's value to its origin must
+    // retain that marker, and A's Undo must not request a v6->v5 downgrade.
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir("p8w3_s6d_preexisting_netzero");
+        const auto [aHandle, bHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID a = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+        const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+        auto addExisting = f.manager.PreparePrefabMarkerEdits({
+            { b, key, false, true },
+        }, PrefabMarkerDirection::After, 5, SceneSerializer::SchemaVersion);
+        REQUIRE(addExisting.IsOk());
+        REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(addExisting.value))
+            .anyStateChange);
+        EditableTRS aBefore, bBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+        EditableTRS aAfter = aBefore;
+        EditableTRS bTransient = bBefore;
+        aAfter.translation.x += 4.0f;
+        bTransient.translation.y += 5.0f;
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD402u, {a, b});
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{a, aAfter}, {b, bTransient}}).effective);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{a, aAfter}, {b, bBefore}}).effective);
+        EditorCommandHistory history;
+        REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *token)
+            .recorded);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        CHECK(f.manager.IsOverridden(b, key).value);
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK_FALSE(f.manager.IsOverridden(a, key).value);
+        CHECK(f.manager.IsOverridden(b, key).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        REQUIRE(history.Redo(f.manager).success);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        CHECK(f.manager.IsOverridden(b, key).value);
+        std::filesystem::remove_all(dir);
+    }
+
+    // Full return-to-start cleans every gesture-created marker, legally
+    // restores v5 through the surviving transitions, and records no history.
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir("p8w3_s6d_full_return");
+        const auto [aHandle, bHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID a = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+        const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+        EditableTRS aBefore, bBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+        EditableTRS aTransient = aBefore;
+        EditableTRS bTransient = bBefore;
+        aTransient.translation.x += 7.0f;
+        bTransient.translation.y += 8.0f;
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD403u, {a, b});
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{a, aTransient}, {b, bTransient}}).effective);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{a, aBefore}, {b, bBefore}}).effective);
+        EditorCommandHistory history;
+        const auto close = FinalizeTransformPreviewSession(history, f.manager,
+            session, *token);
+        REQUIRE(close.result == PreviewSessionCloseOutcome::Result::Closed);
+        CHECK_FALSE(close.recorded);
+        CHECK(close.needsSyncApply);
+        CHECK_FALSE(history.CanUndo());
+        CHECK_FALSE(f.manager.IsOverridden(a, key).value);
+        CHECK_FALSE(f.manager.IsOverridden(b, key).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+        std::filesystem::remove_all(dir);
+    }
+
+    // An unrelated surviving override makes the requested v5 restore illegal.
+    // The failure is pending and zero-churn; removing that unrelated marker
+    // lets explicit Retry compensate the transform normally.
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir("p8w3_s6d_unrelated_downgrade");
+        const auto [aHandle, bHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID a = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+        const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+        EditableTRS before;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, before));
+        EditableTRS after = before;
+        after.translation.z += 2.0f;
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD404u, {a});
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token, {{a, after}}).effective);
+        const auto nameKey = PrefabComponentKeyFor<NameComponent>::value;
+        auto unrelated = f.manager.PreparePrefabMarkerEdits({
+            { b, nameKey, false, true },
+        }, PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+            SceneSerializer::SchemaVersion);
+        REQUIRE(unrelated.IsOk());
+        REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(unrelated.value))
+            .anyStateChange);
+        const auto revision = f.manager.AuthoringRevision();
+        const auto failed = RestoreTransformPreviewSession(f.manager, session, *token);
+        REQUIRE(failed.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        CHECK(session.IsOpen());
+        CHECK(f.manager.AuthoringRevision() == revision);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        CHECK(f.manager.IsOverridden(b, nameKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+
+        auto removeUnrelated = f.manager.PreparePrefabMarkerEdits({
+            { b, nameKey, true, false },
+        }, PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+            SceneSerializer::SchemaVersion);
+        REQUIRE(removeUnrelated.IsOk());
+        REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(removeUnrelated.value))
+            .anyStateChange);
+        REQUIRE(RestoreTransformPreviewSession(f.manager, session, *token)
+            .result == PreviewSessionCloseOutcome::Result::Closed);
+        CHECK_FALSE(f.manager.IsOverridden(a, key).value);
+        CHECK_FALSE(f.manager.IsOverridden(b, nameKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+        std::filesystem::remove_all(dir);
+    }
+}
+
+// Matrix group: member removal is reconciled by durable UUID. A removed sole
+// carrier rebases surviving ordinary endpoints to live/live schema for both
+// Finalize and Restore; a surviving carrier retains the legal v5/v6 replay.
+// Reversible RED: keep the removed member in the explicit capture or apply one
+// carrier rule to both branches; Finalize/Restore/Undo/Redo fails or requests
+// the wrong schema.
+TEST_CASE("Phase 8 W3 S6-D: removed and surviving carriers share Finalize Restore Undo Redo policy")
+{
+    const auto key = PrefabComponentKeyFor<Transform>::value;
+
+    // Removed sole prefab carrier + surviving ordinary value: Finalize and
+    // replay are v6/v6 value-only even though the gesture originated at v5.
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir("p8w3_s6d_removed_finalize");
+        const auto [prefabHandle, childHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID prefab = f.manager.GetEntityUuid(
+            SceneManager::EntityId{prefabHandle});
+        const UUID ordinary = f.CreateEmpty("OrdinarySurvivor");
+        const auto ordinaryHandle = f.manager.FindEntityByUuid(ordinary);
+        EditableTRS ordinaryBefore, prefabBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ordinaryHandle},
+            ordinaryBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{prefabHandle},
+            prefabBefore));
+        EditableTRS ordinaryAfter = ordinaryBefore;
+        EditableTRS prefabAfter = prefabBefore;
+        ordinaryAfter.translation.x += 3.0f;
+        prefabAfter.translation.y += 4.0f;
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD501u, {ordinary, prefab});
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{ordinary, ordinaryAfter}, {prefab, prefabAfter}}).effective);
+        REQUIRE(f.manager.RemoveSubtrees({prefab}).success);
+        EditorCommandHistory history;
+        REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *token)
+            .recorded);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        REQUIRE(history.Undo(f.manager).success);
+        EditableTRS ordinaryLive;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ordinaryHandle},
+            ordinaryLive));
+        CHECK(ordinaryLive.translation == ordinaryBefore.translation);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        REQUIRE(history.Redo(f.manager).success);
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ordinaryHandle},
+            ordinaryLive));
+        CHECK(ordinaryLive.translation == ordinaryAfter.translation);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        std::filesystem::remove_all(dir);
+    }
+
+    // The same removed-carrier decision is used by Restore/Escape.
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir("p8w3_s6d_removed_restore");
+        const auto [prefabHandle, childHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID prefab = f.manager.GetEntityUuid(
+            SceneManager::EntityId{prefabHandle});
+        const UUID ordinary = f.CreateEmpty("OrdinaryRestoreSurvivor");
+        const auto ordinaryHandle = f.manager.FindEntityByUuid(ordinary);
+        EditableTRS ordinaryBefore, prefabBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ordinaryHandle},
+            ordinaryBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{prefabHandle},
+            prefabBefore));
+        EditableTRS ordinaryAfter = ordinaryBefore;
+        EditableTRS prefabAfter = prefabBefore;
+        ordinaryAfter.translation.x += 5.0f;
+        prefabAfter.translation.z += 6.0f;
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD502u, {ordinary, prefab});
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{ordinary, ordinaryAfter}, {prefab, prefabAfter}}).effective);
+        REQUIRE(f.manager.RemoveSubtrees({prefab}).success);
+        const auto restore = RestoreTransformPreviewSession(f.manager, session, *token);
+        REQUIRE(restore.result == PreviewSessionCloseOutcome::Result::Closed);
+        CHECK(restore.needsSyncApply);
+        EditableTRS ordinaryLive;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ordinaryHandle},
+            ordinaryLive));
+        CHECK(ordinaryLive.translation == ordinaryBefore.translation);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        std::filesystem::remove_all(dir);
+    }
+
+    // A survives with its real fresh marker transition after B is removed, so
+    // its history entry legally retains v5/v6 endpoints.
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir("p8w3_s6d_surviving_carrier");
+        const auto [aHandle, bHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID a = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+        const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+        EditableTRS aBefore, bBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+        EditableTRS aAfter = aBefore;
+        EditableTRS bAfter = bBefore;
+        aAfter.translation.x += 7.0f;
+        bAfter.translation.y += 8.0f;
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD503u, {a, b});
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{a, aAfter}, {b, bAfter}}).effective);
+        REQUIRE(f.manager.RemoveSubtrees({b}).success);
+        EditorCommandHistory history;
+        REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *token)
+            .recorded);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK_FALSE(f.manager.IsOverridden(a, key).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+        REQUIRE(history.Redo(f.manager).success);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        std::filesystem::remove_all(dir);
+    }
 }
 
 // S6-D smoke discrimination: TransformCommand is a composite multi-member

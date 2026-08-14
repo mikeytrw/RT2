@@ -407,6 +407,13 @@ PreviewSessionCloseOutcome FinalizeTransformPreviewSession(
 		session.Discard();
 		return outcome;
 	}
+	// RecordApplied already failed after the cleanup partition was committed.
+	// Explicit Retry is compensation-only from this point: rebuilding the
+	// command would re-enter RecordApplied with post-cleanup state and could
+	// resurrect or misclassify a cleaned member.
+	if (session.GetClosePhase() ==
+		TransformPreviewSession::ClosePhase::CompensationPending)
+		return RestoreTransformPreviewSession(scene, session, token);
 	if (!session.HadEffectiveFrame()) { session.Discard(); return outcome; }
 
 	// A gesture can add a marker and then return that member's value to its
@@ -459,7 +466,11 @@ PreviewSessionCloseOutcome FinalizeTransformPreviewSession(
 		PrefabCommandTransaction cleanupTx(std::move(cleanupValues),
 			std::move(cleanupSpecs));
 		cleanupTx.SetExplicitCapture(std::move(cleanupCapture));
-		cleanupMutation = cleanupTx.Execute(scene);
+		cleanupMutation = session.ConsumeCleanupFailureForTest()
+			? EditorMutationResult::Failure(
+				rt2::core::Error::InvalidRuntimeState, "transform-session",
+				"injected transform cleanup failure")
+			: cleanupTx.Execute(scene);
 		if (!cleanupMutation.success)
 		{
 			outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
@@ -545,6 +556,7 @@ PreviewSessionCloseOutcome FinalizeTransformPreviewSession(
 		// RecordApplied failed after any fresh-marker cleanup. Compensate the
 		// still-effective partition immediately; the cleaned members remain
 		// absent from the session and are never recreated on Retry.
+		session.EnterCompensationPending();
 		const auto restore = RestoreTransformPreviewSession(scene, session, token);
 		if (restore.result == PreviewSessionCloseOutcome::Result::Closed)
 		{
@@ -554,7 +566,18 @@ PreviewSessionCloseOutcome FinalizeTransformPreviewSession(
 		}
 		outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
 		outcome.lastError = restore.lastError.success ? recordResult : restore.lastError;
-		outcome.needsSyncApply = restore.needsSyncApply;
+		if (cleanupApplied)
+		{
+			// Cleanup already mutated the scene even though compensation did
+			// not. Route that one real close mutation exactly once.
+			outcome.mutation = cleanupMutation;
+			outcome.needsSyncApply = true;
+		}
+		else
+		{
+			outcome.mutation = restore.mutation;
+			outcome.needsSyncApply = restore.needsSyncApply;
+		}
 		return outcome;
 	}
 	outcome.recorded = true;
@@ -628,6 +651,14 @@ PreviewSessionCloseOutcome RestoreTransformPreviewSession(
 		capture.markers[i].afterPresent = specs[i].afterPresent;
 	PrefabCommandTransaction tx(std::move(values), std::move(specs));
 	tx.SetExplicitCapture(std::move(capture));
+	if (session.ConsumeCompensationFailureForTest())
+	{
+		outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
+		outcome.lastError = EditorMutationResult::Failure(
+			rt2::core::Error::InvalidRuntimeState, "transform-session",
+			"injected transform compensation failure");
+		return outcome;
+	}
 	outcome.mutation = tx.Undo(scene);
 	if (!outcome.mutation.success)
 	{

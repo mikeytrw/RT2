@@ -190,6 +190,15 @@ inline bool TransformBeginAdmissionAllowed(bool editable,
 class TransformPreviewSession
 {
 public:
+	enum class ClosePhase
+	{
+		LivePreview,
+		// Finalize already completed any net-zero marker cleanup and
+		// RecordApplied failed.  Retry is compensation-only: it must not
+		// rebuild/record the command or recreate a cleaned marker.
+		CompensationPending,
+	};
+
 	struct Member
 	{
 		rt2::core::UUID uuid;
@@ -213,6 +222,7 @@ public:
 	bool DocumentReplaced(const SceneManager& scene) const
 	{ return m_DocumentGeneration != scene.DocumentGeneration(); }
 	bool HadEffectiveFrame() const { return m_HadEffectiveFrame; }
+	ClosePhase GetClosePhase() const { return m_ClosePhase; }
 	const EditorMutationResult& LastResult() const { return m_LastResult; }
 	const EditorMutationResult& LastEffectiveResult() const { return m_LastEffectiveResult; }
 	const PrefabCommandTransaction::ExplicitCapture& Origin() const { return m_Origin; }
@@ -238,6 +248,24 @@ public:
 			member->introducedMarker = false;
 		}
 	}
+	void EnterCompensationPending() { m_ClosePhase = ClosePhase::CompensationPending; }
+	// Bounded CPU fault seam: only the next compensation attempt is rejected.
+	// It exists beside EditorCommandHistory::FailNextRecordAppliedForTest so
+	// the cleanup-complete recovery phase is directly discriminable.
+	void FailNextCompensationForTest() { m_FailNextCompensation = true; }
+	void FailNextCleanupForTest() { m_FailNextCleanup = true; }
+	bool ConsumeCleanupFailureForTest()
+	{
+		const bool fail = m_FailNextCleanup;
+		m_FailNextCleanup = false;
+		return fail;
+	}
+	bool ConsumeCompensationFailureForTest()
+	{
+		const bool fail = m_FailNextCompensation;
+		m_FailNextCompensation = false;
+		return fail;
+	}
 
 	void Discard();
 
@@ -256,6 +284,9 @@ private:
 	std::uint64_t m_DocumentGeneration = 0;
 	bool m_Open = false;
 	bool m_HadEffectiveFrame = false;
+	ClosePhase m_ClosePhase = ClosePhase::LivePreview;
+	bool m_FailNextCompensation = false;
+	bool m_FailNextCleanup = false;
 	EditorMutationResult m_LastResult;
 	EditorMutationResult m_LastEffectiveResult;
 };

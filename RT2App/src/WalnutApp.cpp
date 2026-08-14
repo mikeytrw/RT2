@@ -35,6 +35,7 @@
 #include "UnsavedChangesCoordinator.h"
 #include "ViewportCoordinates.h"
 #include "EditorTransformGizmo.h"
+#include "TransformGizmoHostLifecycle.h"
 #include "EditorViewportIcons.h"
 #include "EditorCommandHistory.h"
 #include "EditorSyncRouter.h"
@@ -1066,6 +1067,13 @@ public:
 			ImGui::EndDragDropTarget();
 		}
 		const bool imageHovered = ImGui::IsItemHovered();
+		// A different publisher/global action may have closed the UI session
+		// between viewport frames.  The UI has already recorded, discarded, or
+		// retained pending recovery, so release Walnut's stale local drag before
+		// asking it for another event.
+		if (m_GizmoHostLifecycle.LocalDragActive() &&
+			!m_EditorUI.IsTransformGestureOpen())
+			CompleteTransformGizmoAfterUiTransition();
 		std::optional<EditorWorldTransformSnapshot> gizmoSnapshot;
 		if (!m_EditorUI.IsTransformGestureOpen() &&
 			!m_EditorUI.Selection().Empty())
@@ -1083,56 +1091,61 @@ public:
 			m_EditorUI.GetTransformSpace(), m_EditorUI.GetTransformPivot(),
 			m_EditorUI.GetTransformSnapSettings(), m_EditorUI.GetUniformScale());
 		if (gizmo.changed && !gizmo.desiredWorld.empty() &&
-			TransformGizmoEventMatches(m_GizmoInteractionSequence,
-				gizmo.interactionSequence))
+			m_GizmoHostLifecycle.Matches(gizmo.interactionSequence))
 		{
-			if (m_GizmoTransformToken)
+			if (m_GizmoHostLifecycle.Token())
 			{
 				const auto preview = m_EditorUI.PreviewTransformWorldIntent(
-					*m_GizmoTransformToken, gizmo.desiredWorld);
+					*m_GizmoHostLifecycle.Token(), gizmo.desiredWorld);
 				if (!preview.success) m_LastStatusMsg = preview.error.detail;
 			}
 		}
 		if (!gizmo.error.empty())
 			m_LastStatusMsg = gizmo.error;
 		if (gizmo.dragJustStarted && gizmo.interactionSequence != 0 &&
-			m_GizmoInteractionSequence == 0 &&
+			!m_GizmoHostLifecycle.LocalDragActive() &&
 			!gizmo.draggedUuids.empty())
 		{
+			if (!m_GizmoHostLifecycle.OnLocalDragStarted(
+				gizmo.interactionSequence))
+			{
+				m_TransformGizmo.Cancel();
+				m_LastStatusMsg = "gizmo transform lifecycle rejected the drag";
+			}
 			const auto token = m_EditorUI.BeginTransformGestureForGizmo(
 				static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&m_TransformGizmo)),
 				gizmo.draggedUuids);
 			if (!token)
-				m_LastStatusMsg = "gizmo transform gesture admission failed";
-			else
 			{
-				m_GizmoTransformToken = *token;
-				m_GizmoInteractionSequence = gizmo.interactionSequence;
+				m_LastStatusMsg = "gizmo transform gesture admission failed";
+				m_TransformGizmo.Cancel();
+				m_GizmoHostLifecycle.RejectBeginAndCancel();
+			}
+			else if (!m_GizmoHostLifecycle.BindToken(*token))
+			{
+				// Begin succeeded but local correlation could not bind. Restore the
+				// just-opened UI session before releasing the local drag.
+				const auto close = m_EditorUI.CloseTransformGesture(false, *token);
+				CompleteTransformGizmoAfterUiTransition();
+				m_LastStatusMsg = close.result ==
+					PreviewSessionCloseOutcome::Result::PendingRetry
+					? close.lastError.error.detail
+					: "gizmo transform lifecycle could not bind the session token";
 			}
 		}
-		if (gizmo.dragCancelled && TransformGizmoEventMatches(
-			m_GizmoInteractionSequence, gizmo.interactionSequence) &&
-			m_GizmoTransformToken)
+		if (gizmo.dragCancelled &&
+			m_GizmoHostLifecycle.Matches(gizmo.interactionSequence) &&
+			m_GizmoHostLifecycle.Token())
 		{
-			const auto close = m_EditorUI.CloseTransformGesture(false,
-				*m_GizmoTransformToken);
-			m_TransformGizmo.Cancel();
-			m_GizmoTransformToken.reset();
-			m_GizmoInteractionSequence = 0;
+			const auto close = CloseActiveTransformGizmo(false);
 			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)
 				m_LastStatusMsg = close.lastError.error.detail;
 		}
 
-		if (gizmo.dragJustEnded && TransformGizmoEventMatches(
-			m_GizmoInteractionSequence, gizmo.interactionSequence) &&
-			m_EditorUI.IsTransformGestureOpen())
+		if (gizmo.dragJustEnded &&
+			m_GizmoHostLifecycle.Matches(gizmo.interactionSequence))
 		{
-			const auto close = m_GizmoTransformToken
-				? m_EditorUI.CloseTransformGesture(true, *m_GizmoTransformToken)
-				: PreviewSessionCloseOutcome{};
-			m_TransformGizmo.Cancel();
-			m_GizmoTransformToken.reset();
-			m_GizmoInteractionSequence = 0;
+			const auto close = CloseActiveTransformGizmo(true);
 			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)
 				m_LastStatusMsg = close.lastError.error.detail;
 		}
@@ -1210,13 +1223,9 @@ public:
 		// Losing the renderer output is a viewport teardown, not proof that an
 		// applied transform may be abandoned. Restore through the exact gizmo
 		// token before clearing the local correlation.
-		if (m_GizmoTransformToken)
+		if (m_GizmoHostLifecycle.LocalDragActive())
 		{
-			const auto close = m_EditorUI.CloseTransformGesture(false,
-				*m_GizmoTransformToken);
-			m_TransformGizmo.Cancel();
-			m_GizmoTransformToken.reset();
-			m_GizmoInteractionSequence = 0;
+			const auto close = CloseActiveTransformGizmo(false);
 			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)
 				m_LastStatusMsg = close.lastError.error.detail;
 		}
@@ -1910,7 +1919,7 @@ public:
 				// Commit the already validated document without clearing it.
 				m_SceneMgr.ReplaceAuthoringDocument(
 					std::move(restored), std::max<uint64_t>(1, r.revision));
-			m_EditorUI.ResetForDocument();
+			ResetEditorForDocument();
 			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 			m_History.Clear();
 				CompactMeshRegistryNowAsserted();
@@ -3291,7 +3300,7 @@ private:
 				}
 			}
 
-			m_EditorUI.ResetForDocument();
+			ResetEditorForDocument();
 			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 			m_History.Clear();
 			CompactMeshRegistryNowAsserted();
@@ -3389,6 +3398,33 @@ private:
 		return m_SceneMgr.AddObject(name, {0, 0.5f, 0});
 	}
 
+	void CompleteTransformGizmoAfterUiTransition()
+	{
+		// Ordering is load-bearing: every caller has already closed/discarded
+		// the SceneEditorUI session or transferred its token into pending
+		// recovery. Only then may Walnut release the local drag/correlation.
+		m_TransformGizmo.Cancel();
+		m_GizmoHostLifecycle.CompleteAfterUiTransition();
+	}
+
+	PreviewSessionCloseOutcome CloseActiveTransformGizmo(bool finalize)
+	{
+		PreviewSessionCloseOutcome outcome;
+		if (m_GizmoHostLifecycle.Token())
+			outcome = m_EditorUI.CloseTransformGesture(finalize,
+				*m_GizmoHostLifecycle.Token());
+		CompleteTransformGizmoAfterUiTransition();
+		return outcome;
+	}
+
+	void ResetEditorForDocument()
+	{
+		// Replacement is valid discard proof. SceneEditorUI drops its durable
+		// session/token first; Walnut's drag/sequence are cleared afterward.
+		m_EditorUI.ResetForDocument();
+		CompleteTransformGizmoAfterUiTransition();
+	}
+
 	RendererGPU m_RendererGPU;
 	RenderSettings m_Settings;
 	SceneManager m_SceneMgr;
@@ -3396,8 +3432,7 @@ private:
 	EditorCommandHistory m_History;
 	EditorSyncRouter m_SyncRouter;
 	EditorTransformGizmo m_TransformGizmo;
-	std::optional<TransformGestureToken> m_GizmoTransformToken;
-	std::uint64_t m_GizmoInteractionSequence = 0;
+	TransformGizmoHostLifecycle m_GizmoHostLifecycle;
 	uint64_t m_ViewportPickSerial = 0;
 	bool m_ViewportPickToggle = false;
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
@@ -4049,6 +4084,9 @@ private:
 		}
 
 		m_EditorUI.SetEditable(false);
+		// SetEditable finalized the session or transferred complete recovery
+		// ownership into SceneEditorUI. Walnut must not carry G1 into Play.
+		CompleteTransformGizmoAfterUiTransition();
 		printf("[Play] Entered Play mode\n");
 	}
 
@@ -4183,7 +4221,7 @@ public:
 			: rt2::core::AssetResolutionContext{};
 		m_SceneMgr.SetAssetResolutionContext(assetContext);
 		m_ScriptAssetContext = assetContext;
-			m_EditorUI.ResetForDocument();
+			ResetEditorForDocument();
 			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 			m_History.Clear();
 		m_SceneMgr.CompactMeshRegistryNow();
@@ -4459,7 +4497,7 @@ public:
 			m_SceneMgr.SetAssetResolutionContext(assetContext);
 			m_ScriptAssetContext = assetContext;
 			m_SceneMgr.ReplaceAuthoringDocument(std::move(*resultDoc));
-			m_EditorUI.ResetForDocument();
+			ResetEditorForDocument();
 			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 
 			// W7 watches the project asset root, not directories inferred from

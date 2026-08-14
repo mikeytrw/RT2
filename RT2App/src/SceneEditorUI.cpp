@@ -37,15 +37,20 @@ void SceneEditorUI::RenderPreviewRecoveryBar()
 		}
 		else
 		{
+			const bool compensationPending =
+				m_TransformPreviewSession.GetClosePhase() ==
+				TransformPreviewSession::ClosePhase::CompensationPending;
 			const std::string detail = m_TransformRecoveryDetail.empty()
 				? "recovery required" : m_TransformRecoveryDetail;
 			ImGui::Separator();
 			ImGui::TextWrapped("[Preview] The transform edit could not be %s: %s",
-				m_TransformRecoveryFinalize ? "finalized" : "restored",
+				compensationPending ? "compensated" :
+					(m_TransformRecoveryFinalize ? "finalized" : "restored"),
 				detail.c_str());
 			ImGui::TextDisabled("The edit is still applied to the document without a history entry.");
 			ImGui::TextDisabled("Resolve the failure (or remove a target / load a new document) and retry.");
-			if (ImGui::Button(m_TransformRecoveryFinalize ? "Retry Transform Finalize" : "Retry Transform Restore")
+			if (ImGui::Button(compensationPending ? "Retry Transform Compensation" :
+				(m_TransformRecoveryFinalize ? "Retry Transform Finalize" : "Retry Transform Restore"))
 				&& m_TransformGestureToken)
 				CloseTransformGesture(m_TransformRecoveryFinalize, *m_TransformGestureToken);
 			ImGui::Separator();

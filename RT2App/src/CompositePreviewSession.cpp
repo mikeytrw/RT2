@@ -233,6 +233,9 @@ std::optional<TransformGestureToken> TransformPreviewSession::Begin(
 	m_Token = TransformGestureToken(opaqueOwner, NextSequence());
 	m_Open = true;
 	m_HadEffectiveFrame = false;
+	m_ClosePhase = ClosePhase::LivePreview;
+	m_FailNextCompensation = false;
+	m_FailNextCleanup = false;
 	m_LastResult = Fail(rt2::core::Error::InvalidRuntimeState,
 		"no preview frame committed yet");
 	m_LastEffectiveResult = m_LastResult;
@@ -245,6 +248,9 @@ EditorMutationResult TransformPreviewSession::PreviewLocals(SceneManager& scene,
 {
 	if (!TokenMatches(token)) return Fail(rt2::core::Error::InvalidArgument,
 		"transform gesture token is stale, foreign, or invalid");
+	if (m_ClosePhase != ClosePhase::LivePreview)
+		return Fail(rt2::core::Error::InvalidRuntimeState,
+			"transform compensation is pending; retry close explicitly");
 	if (scene.DocumentGeneration() != m_DocumentGeneration)
 		return Fail(rt2::core::Error::InvalidArgument,
 			"transform gesture document generation changed");
@@ -374,4 +380,7 @@ void TransformPreviewSession::Discard()
 	m_Token = TransformGestureToken(0, 0);
 	m_DocumentGeneration = 0;
 	m_HadEffectiveFrame = false;
+	m_ClosePhase = ClosePhase::LivePreview;
+	m_FailNextCompensation = false;
+	m_FailNextCleanup = false;
 }
