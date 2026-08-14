@@ -241,19 +241,17 @@ TransformGizmoResult EditorTransformGizmo::Draw(
 		result.draggedUuids = m_Drag.uuids;
 	}
 
-	if (m_Drag.active && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+	const auto release = ClassifyTransformGizmoRelease({
+		m_Drag.active,
+		ImGui::IsMouseDown(ImGuiMouseButton_Left),
+		m_Drag.moved,
+		m_Drag.interactionSequence,
+		m_Drag.uuids,
+		m_Drag.startLocal,
+	});
+	if (release)
 	{
-		// Treat a handle press/release without a drag as an ordinary viewport
-		// selection click. This keeps the handles from masking small or nearby
-		// objects underneath them.
-		result.pickThrough = !m_Drag.moved;
-		// Phase 3B1: report drag-end so the host can record a TransformCommand.
-		// Every press/release emits an end fact, including a never-moved
-		// click. The host closes the zero-effective session without history.
-		result.dragJustEnded = true;
-		result.interactionSequence = m_Drag.interactionSequence;
-		result.draggedUuids = m_Drag.uuids;
-		result.dragStartLocal = m_Drag.startLocal;
+		result = *release;
 		Cancel();
 	}
 	if (!m_Drag.active) return result;

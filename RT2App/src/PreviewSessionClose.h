@@ -74,6 +74,15 @@ bool RouteTransformCloseSync(const PreviewSessionCloseOutcome& outcome,
 	return true;
 }
 
+template <typename Close, typename Apply>
+PreviewSessionCloseOutcome CloseTransformAndRouteSync(
+	Close&& close, Apply&& apply)
+{
+	PreviewSessionCloseOutcome outcome = std::forward<Close>(close)();
+	RouteTransformCloseSync(outcome, std::forward<Apply>(apply));
+	return outcome;
+}
+
 template <typename Close>
 PreviewSessionCloseOutcome RouteTransformCloseRequest(
 	TransformGestureLifecycleState state, bool explicitRetry,

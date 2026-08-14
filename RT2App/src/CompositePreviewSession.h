@@ -204,6 +204,20 @@ bool RouteEffectiveTransformPreviewNotification(
 	return true;
 }
 
+// Both viewport and Inspector publishers delegate their real preview call and
+// notification cadence through this function. Tests can therefore drive an
+// actual TransformPreviewSession while observing the same callback edge used
+// by SceneEditorUI, without linking ImGui.
+template <typename Publish, typename Notify>
+EditorMutationResult PublishTransformPreviewAndNotify(
+	Publish&& publish, Notify&& notify)
+{
+	EditorMutationResult result = std::forward<Publish>(publish)();
+	RouteEffectiveTransformPreviewNotification(result,
+		std::forward<Notify>(notify));
+	return result;
+}
+
 inline bool TransformBeginAdmissionAllowed(bool editable,
 	bool recoveryPending, std::uint64_t opaqueOwner)
 {

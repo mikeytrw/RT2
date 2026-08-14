@@ -41,6 +41,32 @@ struct TransformGizmoResult
 	std::vector<std::pair<rt2::core::UUID, glm::mat4>> desiredWorld;
 };
 
+// ImGui-free input to the exact release classifier used by Draw. Keeping the
+// moved bit inside this seam makes never-moved press/release a first-class end
+// fact rather than a fabricated test output.
+struct TransformGizmoReleaseInput
+{
+	bool active = false;
+	bool leftMouseDown = false;
+	bool moved = false;
+	std::uint64_t interactionSequence = 0;
+	std::vector<rt2::core::UUID> draggedUuids;
+	std::vector<EditableTRS> dragStartLocal;
+};
+
+inline std::optional<TransformGizmoResult> ClassifyTransformGizmoRelease(
+	const TransformGizmoReleaseInput& input)
+{
+	if (!input.active || input.leftMouseDown) return std::nullopt;
+	TransformGizmoResult result;
+	result.pickThrough = !input.moved;
+	result.dragJustEnded = true;
+	result.interactionSequence = input.interactionSequence;
+	result.draggedUuids = input.draggedUuids;
+	result.dragStartLocal = input.dragStartLocal;
+	return result;
+}
+
 // Lightweight intent-only viewport transform gizmo. It deliberately owns
 // editor-only interaction state; the host stages its UUID/world intents
 // through the transform preview session.

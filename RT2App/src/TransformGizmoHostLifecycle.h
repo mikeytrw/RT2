@@ -2,8 +2,10 @@
 
 #include "CompositePreviewSession.h"
 #include "EditorTransformGizmo.h"
+#include "PreviewSessionClose.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <utility>
 
@@ -132,4 +134,139 @@ private:
 	bool m_LocalDragActive = false;
 	std::optional<TransformGestureToken> m_Token;
 	std::uint64_t m_InteractionSequence = 0;
+};
+
+struct TransformGizmoCoordinatorCallbacks
+{
+	std::function<void()> cancelLocal;
+	std::function<std::optional<TransformGestureToken>(
+		const std::vector<rt2::core::UUID>&)> begin;
+	std::function<EditorMutationResult(const TransformGestureToken&,
+		const std::vector<std::pair<rt2::core::UUID, glm::mat4>>&)> preview;
+	std::function<PreviewSessionCloseOutcome(bool,
+		const TransformGestureToken&)> close;
+};
+
+struct TransformGizmoCoordinatorResult
+{
+	bool beginRejected = false;
+	bool bindRejected = false;
+	std::optional<EditorMutationResult> preview;
+	std::optional<PreviewSessionCloseOutcome> close;
+};
+
+struct TransformGizmoCoordinatorFrameResult
+{
+	TransformGizmoResult event;
+	TransformGizmoCoordinatorResult routed;
+};
+
+// ImGui-free coordinator for Walnut's exact ownership cadence. Walnut owns one
+// instance and delegates every pre-Draw transition and every Draw result here;
+// CPU tests drive the same callback order with real TransformPreviewSession
+// close/preview operations and an observable real-cancel callback.
+class TransformGizmoCoordinator
+{
+public:
+	template <typename Adopt, typename DiscardUi, typename CancelLocal>
+	void ReplaceDocument(AuthoringDocumentReplacementKind kind,
+		Adopt&& adopt, DiscardUi&& discardUi, CancelLocal&& cancelLocal)
+	{
+		ApplyAuthoringDocumentReplacement(kind,
+			std::forward<Adopt>(adopt), std::forward<DiscardUi>(discardUi),
+			[this, cancel = std::forward<CancelLocal>(cancelLocal)]() mutable {
+				m_Host.CompleteAfterUiTransition(cancel);
+			});
+	}
+
+	bool BeforeDraw(TransformGestureLifecycleState state,
+		const std::function<void()>& cancelLocal)
+	{
+		return m_Host.ConsumeExternalLifecycle(state, cancelLocal);
+	}
+
+	template <typename Draw>
+	TransformGizmoCoordinatorFrameResult RunFrame(
+		TransformGestureLifecycleState externalState,
+		const std::function<void()>& cancelLocal, Draw&& draw,
+		const TransformGizmoCoordinatorCallbacks& callbacks)
+	{
+		BeforeDraw(externalState, cancelLocal);
+		TransformGizmoCoordinatorFrameResult result;
+		result.event = std::forward<Draw>(draw)();
+		result.routed = ProcessEvent(result.event, callbacks);
+		return result;
+	}
+
+	TransformGizmoCoordinatorResult ProcessEvent(const TransformGizmoResult& event,
+		const TransformGizmoCoordinatorCallbacks& callbacks)
+	{
+		TransformGizmoCoordinatorResult result;
+		if (event.dragJustStarted && event.interactionSequence != 0 &&
+			!m_Host.LocalDragActive() && !event.draggedUuids.empty())
+		{
+			if (!m_Host.OnLocalDragStarted(event.interactionSequence))
+			{
+				if (callbacks.cancelLocal) callbacks.cancelLocal();
+				m_Host.RejectBeginAndCancel();
+				result.beginRejected = true;
+				return result;
+			}
+			const auto token = callbacks.begin
+				? callbacks.begin(event.draggedUuids) : std::nullopt;
+			if (!token)
+			{
+				if (callbacks.cancelLocal) callbacks.cancelLocal();
+				m_Host.RejectBeginAndCancel();
+				result.beginRejected = true;
+				return result;
+			}
+			if (!m_Host.BindToken(*token))
+			{
+				if (callbacks.close) result.close = callbacks.close(false, *token);
+				CompleteAfterUiTransition(callbacks.cancelLocal);
+				result.bindRejected = true;
+				return result;
+			}
+		}
+
+		if (event.changed && !event.desiredWorld.empty() &&
+			m_Host.Matches(event.interactionSequence) && m_Host.Token() &&
+			callbacks.preview)
+			result.preview = callbacks.preview(*m_Host.Token(), event.desiredWorld);
+
+		const auto intent = m_Host.CloseIntent(event);
+		if (intent != TransformGizmoCloseIntent::None)
+		{
+			if (m_Host.Token() && callbacks.close)
+				result.close = callbacks.close(
+					intent == TransformGizmoCloseIntent::Finalize, *m_Host.Token());
+			CompleteAfterUiTransition(callbacks.cancelLocal);
+		}
+		return result;
+	}
+
+	PreviewSessionCloseOutcome RestoreActive(
+		const TransformGizmoCoordinatorCallbacks& callbacks)
+	{
+		PreviewSessionCloseOutcome outcome;
+		if (m_Host.Token() && callbacks.close)
+			outcome = callbacks.close(false, *m_Host.Token());
+		CompleteAfterUiTransition(callbacks.cancelLocal);
+		return outcome;
+	}
+
+	void CompleteAfterUiTransition(const std::function<void()>& cancelLocal)
+	{
+		if (cancelLocal) m_Host.CompleteAfterUiTransition(cancelLocal);
+		else m_Host.CompleteAfterUiTransition([]() {});
+	}
+
+	bool LocalDragActive() const { return m_Host.LocalDragActive(); }
+	std::uint64_t InteractionSequence() const { return m_Host.InteractionSequence(); }
+	const std::optional<TransformGestureToken>& Token() const { return m_Host.Token(); }
+	bool Matches(std::uint64_t sequence) const { return m_Host.Matches(sequence); }
+
+private:
+	TransformGizmoHostLifecycle m_Host;
 };

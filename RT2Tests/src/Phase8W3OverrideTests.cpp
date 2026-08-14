@@ -34,6 +34,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -176,11 +177,21 @@ struct S2Fixture
     std::pair<entt::entity, entt::entity> MakeInstance(
         const std::filesystem::path& dir)
     {
+		return InstantiatePrefab(CreatePrefabAsset(dir));
+	}
+
+	std::filesystem::path CreatePrefabAsset(const std::filesystem::path& dir)
+	{
         const auto root = CreateEmpty("Root");
         const auto child = CreateChild("Child", root);
         const auto prefabPath = dir / "s2.rt2prefab";
         REQUIRE(manager.CreatePrefabFromSubtree({ root }, prefabPath).ok);
+		return prefabPath;
+	}
 
+	std::pair<entt::entity, entt::entity> InstantiatePrefab(
+		const std::filesystem::path& prefabPath)
+	{
         std::vector<AssetDiagnostic> diags;
         const auto uuids = manager.ReserveKnownUuids(2);
         const auto inst =
@@ -4377,17 +4388,16 @@ TEST_CASE("Phase 8 W3 S6-D: cleanup record failure compensates without marker re
     std::filesystem::remove_all(dir);
 }
 
-// S6-D re-review P1: the viewport host must keep its local drag/token/sequence
-// correlated until the UI session has closed, been validly discarded, or has
-// transferred into pending recovery.  These are state-machine transitions,
-// not predicate probes: G1 is opened in the real TransformPreviewSession and
-// every external transition is followed by a clean G2 start (ABA proof).
+// Supplemental low-level correlation coverage: local drag/token/sequence stay
+// bound until the UI session closes or is discarded, then admit a clean G2.
+// The production Walnut ordering and real cancellation callback are exercised
+// through TransformGizmoCoordinator in the named cases below.
 //
 // Reversible RED: make CompleteAfterUiTransition retain any one of localDrag,
 // token, or sequence; the corresponding post-transition assertion and every
 // G2 OnLocalDragStarted below fail.  Remove RejectBeginAndCancel and the
 // rejected-Begin branch retains an unbound local drag.
-TEST_CASE("Phase 8 W3 S6-D: host lifecycle tears down G1 after replacement Play and output loss then admits G2")
+TEST_CASE("Phase 8 W3 S6-D: low-level host correlation clears after close discard and output loss")
 {
     S2Fixture f;
     const UUID target = f.CreateEmpty("HostLifecycle");
@@ -4467,10 +4477,10 @@ TEST_CASE("Phase 8 W3 S6-D: host lifecycle tears down G1 after replacement Play 
     host.CompleteAfterUiTransition();
 }
 
-// Reversible RED: treating RecoveryTransferred as HealthyOpen leaves the
-// local sequence live and the delayed release below re-enters close. Allowing
-// an ordinary close through RouteTransformCloseRequest increments retryCalls
-// before the explicit recovery action.
+// Reversible RED: move RunFrame's external consumption after its Draw callback, or
+// allow an ordinary pending close through RouteTransformCloseRequest. This
+// production coordinator then either retains G1 for the real release fact or
+// invokes the close callback before explicit Retry.
 TEST_CASE("Phase 8 W3 S6-D: external PendingRetry transfer quarantines delayed release until explicit Retry")
 {
     S2Fixture f;
@@ -4482,40 +4492,88 @@ TEST_CASE("Phase 8 W3 S6-D: external PendingRetry transfer quarantines delayed r
     after.translation.x += 6.0f;
 
     TransformPreviewSession session;
-    const auto token = session.Begin(f.manager, 0xB101u, {target});
-    REQUIRE(token);
-    REQUIRE(session.PreviewLocals(f.manager, *token, {{target, after}}).effective);
-    TransformGizmoHostLifecycle host;
-    REQUIRE(host.OnLocalDragStarted(301));
-    REQUIRE(host.BindToken(*token));
+    TransformGizmoCoordinator coordinator;
     EditorCommandHistory history;
+    int cancelCount = 0;
+    int previewNotifications = 0;
+    int closeSyncs = 0;
+    int closeCalls = 0;
+    bool localGizmoActive = true;
+    TransformGizmoCoordinatorCallbacks callbacks;
+    callbacks.cancelLocal = [&]() {
+        ++cancelCount;
+        localGizmoActive = false;
+    };
+    callbacks.begin = [&](const std::vector<UUID>& uuids) {
+        return session.Begin(f.manager, 0xB101u, uuids);
+    };
+    callbacks.preview = [&](const TransformGestureToken& token,
+        const std::vector<std::pair<UUID, glm::mat4>>& worlds) {
+        return PublishTransformPreviewAndNotify(
+            [&]() { return session.PreviewWorlds(f.manager, token, worlds); },
+            [&]() { ++previewNotifications; });
+    };
+    callbacks.close = [&](bool finalize, const TransformGestureToken& token) {
+        ++closeCalls;
+        return CloseTransformAndRouteSync([&]() {
+            return finalize
+                ? FinalizeTransformPreviewSession(history, f.manager, session, token)
+                : RestoreTransformPreviewSession(f.manager, session, token);
+        }, [&](const PreviewSessionCloseOutcome&) { ++closeSyncs; });
+    };
+    TransformGizmoResult start;
+    start.dragJustStarted = true;
+    start.interactionSequence = 301;
+    start.draggedUuids = {target};
+    const auto began = coordinator.RunFrame(
+        TransformGestureLifecycleState::HealthyOpen, callbacks.cancelLocal,
+        [&]() { return start; }, callbacks);
+    CHECK_FALSE(began.routed.beginRejected);
+    CHECK(coordinator.LocalDragActive());
+    TransformGizmoResult move;
+    move.changed = true;
+    move.interactionSequence = 301;
+    move.desiredWorld = {{target, after.Matrix()}};
+    const auto moved = coordinator.RunFrame(
+        TransformGestureLifecycleState::HealthyOpen, callbacks.cancelLocal,
+        [&]() { return move; }, callbacks);
+    REQUIRE(moved.routed.preview);
+    REQUIRE(moved.routed.preview->effective);
+    CHECK(previewNotifications == 1);
+    const auto token = session.Token();
     history.FailNextRecordAppliedForTest();
     session.FailNextCompensationForTest();
     const auto transferred = FinalizeTransformPreviewSession(history, f.manager,
-        session, *token);
+        session, token);
     REQUIRE(transferred.result == PreviewSessionCloseOutcome::Result::PendingRetry);
     REQUIRE(session.GetClosePhase()
         == TransformPreviewSession::ClosePhase::CompensationPending);
 
-    int cancelCount = 0;
-    REQUIRE(host.ConsumeExternalLifecycle(
+    bool cancelledBeforeDraw = false;
+    const auto externalFrame = coordinator.RunFrame(
         TransformGestureLifecycleState::RecoveryTransferred,
-        [&cancelCount]() { ++cancelCount; }));
+        callbacks.cancelLocal,
+        [&]() {
+            cancelledBeforeDraw = !localGizmoActive;
+            const auto release = ClassifyTransformGizmoRelease({
+                localGizmoActive, false, true, 301, {target}, {before}
+            });
+            return release ? *release : TransformGizmoResult{};
+        }, callbacks);
+    CHECK(cancelledBeforeDraw);
     CHECK(cancelCount == 1);
-    CHECK_FALSE(host.LocalDragActive());
-    CHECK_FALSE(host.Token());
-    CHECK(host.InteractionSequence() == 0);
+    CHECK_FALSE(coordinator.LocalDragActive());
+    CHECK_FALSE(coordinator.Token());
+    CHECK(coordinator.InteractionSequence() == 0);
 
-    TransformGizmoResult delayedRelease;
-    delayedRelease.dragJustEnded = true;
-    delayedRelease.interactionSequence = 301;
-    CHECK(host.CloseIntent(delayedRelease) == TransformGizmoCloseIntent::None);
+    CHECK_FALSE(externalFrame.routed.close);
+    CHECK(closeCalls == 0);
     int retryCalls = 0;
     const auto ordinary = RouteTransformCloseRequest(
         TransformGestureLifecycleState::RecoveryTransferred, false,
         transferred.lastError.error.detail, [&]() {
             ++retryCalls;
-            return FinalizeTransformPreviewSession(history, f.manager, session, *token);
+            return FinalizeTransformPreviewSession(history, f.manager, session, token);
         });
     REQUIRE(ordinary.result == PreviewSessionCloseOutcome::Result::PendingRetry);
     CHECK(retryCalls == 0);
@@ -4525,54 +4583,100 @@ TEST_CASE("Phase 8 W3 S6-D: external PendingRetry transfer quarantines delayed r
         TransformGestureLifecycleState::RecoveryTransferred, true,
         transferred.lastError.error.detail, [&]() {
             ++retryCalls;
-            return FinalizeTransformPreviewSession(history, f.manager, session, *token);
+            return FinalizeTransformPreviewSession(history, f.manager, session, token);
         });
     REQUIRE(retry.result == PreviewSessionCloseOutcome::Result::Closed);
     CHECK(retryCalls == 1);
+    CHECK(closeSyncs == 0);
     CHECK_FALSE(session.IsOpen());
     CHECK_FALSE(history.CanUndo());
 }
 
-// Reversible RED: make dragJustEnded depend on `changed`; this never-moved
-// event no longer finalizes. The same production callback routers prove one
-// notification per effective preview/close and zero for no-op routing.
+// Reversible RED: restore the moved-only guard inside
+// ClassifyTransformGizmoRelease, bypass ProcessEvent, or bypass either shared
+// publish/close router. The real release fact, callback count, or cancel/ABA
+// assertion turns RED.
 TEST_CASE("Phase 8 W3 S6-D: never-moved end intent and transform notifications use production host seams")
 {
-    TransformGizmoHostLifecycle host;
-    REQUIRE(host.OnLocalDragStarted(401));
-    TransformGizmoResult neverMoved;
-    neverMoved.dragJustEnded = true;
-    neverMoved.changed = false;
-    neverMoved.interactionSequence = 401;
-    CHECK(host.CloseIntent(neverMoved) == TransformGizmoCloseIntent::Finalize);
-
+    S2Fixture f;
+    const UUID target = f.CreateEmpty("NeverMovedCoordinator");
+    TransformPreviewSession session;
+    TransformGizmoCoordinator coordinator;
+    EditorCommandHistory history;
+    int cancelCount = 0;
     int previewNotifications = 0;
-    EditorMutationResult effective;
-    effective.success = true;
-    effective.effective = true;
-    REQUIRE(RouteEffectiveTransformPreviewNotification(effective,
-        [&]() { ++previewNotifications; }));
-    CHECK(previewNotifications == 1);
-    effective.effective = false;
-    CHECK_FALSE(RouteEffectiveTransformPreviewNotification(effective,
-        [&]() { ++previewNotifications; }));
-    CHECK(previewNotifications == 1);
-
     int closeNotifications = 0;
-    PreviewSessionCloseOutcome close;
-    close.needsSyncApply = true;
-    REQUIRE(RouteTransformCloseSync(close,
-        [&](const PreviewSessionCloseOutcome&) { ++closeNotifications; }));
+    TransformGizmoCoordinatorCallbacks callbacks;
+    callbacks.cancelLocal = [&]() { ++cancelCount; };
+    callbacks.begin = [&](const std::vector<UUID>& uuids) {
+        return session.Begin(f.manager, 0xB102u, uuids);
+    };
+    callbacks.preview = [&](const TransformGestureToken& token,
+        const std::vector<std::pair<UUID, glm::mat4>>& worlds) {
+        return PublishTransformPreviewAndNotify(
+            [&]() { return session.PreviewWorlds(f.manager, token, worlds); },
+            [&]() { ++previewNotifications; });
+    };
+    callbacks.close = [&](bool finalize, const TransformGestureToken& token) {
+        return CloseTransformAndRouteSync([&]() {
+            return finalize
+                ? FinalizeTransformPreviewSession(history, f.manager, session, token)
+                : RestoreTransformPreviewSession(f.manager, session, token);
+        }, [&](const PreviewSessionCloseOutcome&) { ++closeNotifications; });
+    };
+    TransformGizmoResult start;
+    start.dragJustStarted = true;
+    start.interactionSequence = 401;
+    start.draggedUuids = {target};
+    REQUIRE_FALSE(coordinator.RunFrame(
+        TransformGestureLifecycleState::HealthyOpen, callbacks.cancelLocal,
+        [&]() { return start; }, callbacks).routed.beginRejected);
+    const auto neverMoved = ClassifyTransformGizmoRelease({
+        true, false, false, 401, {target}, {}
+    });
+    REQUIRE(neverMoved);
+    CHECK(neverMoved->dragJustEnded);
+    CHECK(neverMoved->pickThrough);
+    const auto ended = coordinator.RunFrame(
+        TransformGestureLifecycleState::HealthyOpen, callbacks.cancelLocal,
+        [&]() { return *neverMoved; }, callbacks);
+    REQUIRE(ended.routed.close);
+    CHECK(ended.routed.close->result == PreviewSessionCloseOutcome::Result::Closed);
+    CHECK_FALSE(ended.routed.close->recorded);
+    CHECK_FALSE(session.IsOpen());
+    CHECK_FALSE(history.CanUndo());
+    CHECK(cancelCount == 1);
+    CHECK(previewNotifications == 0);
+    CHECK(closeNotifications == 0);
+
+    EditableTRS before;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{
+        f.manager.FindEntityByUuid(target)}, before));
+    EditableTRS after = before;
+    after.translation.y += 2.0f;
+    start.interactionSequence = 402;
+    REQUIRE_FALSE(coordinator.RunFrame(
+        TransformGestureLifecycleState::HealthyOpen, callbacks.cancelLocal,
+        [&]() { return start; }, callbacks).routed.beginRejected);
+    TransformGizmoResult move;
+    move.changed = true;
+    move.interactionSequence = 402;
+    move.desiredWorld = {{target, after.Matrix()}};
+    REQUIRE(coordinator.RunFrame(
+        TransformGestureLifecycleState::HealthyOpen, callbacks.cancelLocal,
+        [&]() { return move; }, callbacks).routed.preview->effective);
+    CHECK(previewNotifications == 1);
+    const auto restored = coordinator.RestoreActive(callbacks);
+    REQUIRE(restored.result == PreviewSessionCloseOutcome::Result::Closed);
     CHECK(closeNotifications == 1);
-    close.needsSyncApply = false;
-    CHECK_FALSE(RouteTransformCloseSync(close,
-        [&](const PreviewSessionCloseOutcome&) { ++closeNotifications; }));
-    CHECK(closeNotifications == 1);
+    CHECK(cancelCount == 2);
+    CHECK(coordinator.InteractionSequence() == 0);
 }
 
-// Reversible RED: swapping any callback in ApplyAuthoringDocumentReplacement
-// violates the adoption->UI discard->local cancel trace. Mapping migration
-// Save to Reset loses its required valid-selection preservation policy.
+// Reversible RED: swap TransformGizmoCoordinator::ReplaceDocument callbacks,
+// omit its completion, or map migration Save to Reset. The exact production
+// boundary used by all three Walnut callers loses its adoption/discard/cancel
+// trace, selection decision, or future-G2 sequence ABA.
 TEST_CASE("Phase 8 W3 S6-D: every authoring replacement caller shares ordered teardown and migration preserves selection")
 {
     CHECK(SelectionPolicyForReplacement(
@@ -4593,27 +4697,47 @@ TEST_CASE("Phase 8 W3 S6-D: every authoring replacement caller shares ordered te
         S2Fixture f;
         const UUID target = f.CreateEmpty("ReplacementG1");
         TransformPreviewSession session;
-        const auto token = session.Begin(f.manager, 0xB201u, {target});
-        REQUIRE(token);
+        TransformGizmoCoordinator coordinator;
+        EditorCommandHistory history;
+        int cancelCount = 0;
+        TransformGizmoCoordinatorCallbacks callbacks;
+        callbacks.cancelLocal = [&]() { ++cancelCount; };
+        callbacks.begin = [&](const std::vector<UUID>& uuids) {
+            return session.Begin(f.manager, 0xB201u, uuids);
+        };
+        callbacks.preview = [&](const TransformGestureToken& token,
+            const std::vector<std::pair<UUID, glm::mat4>>& worlds) {
+            return session.PreviewWorlds(f.manager, token, worlds);
+        };
+        callbacks.close = [&](bool finalize, const TransformGestureToken& token) {
+            return finalize
+                ? FinalizeTransformPreviewSession(history, f.manager, session, token)
+                : RestoreTransformPreviewSession(f.manager, session, token);
+        };
+        TransformGizmoResult start;
+        start.dragJustStarted = true;
+        start.interactionSequence = 501;
+        start.draggedUuids = {target};
+        REQUIRE_FALSE(coordinator.ProcessEvent(start, callbacks).beginRejected);
         EditableTRS before;
         REQUIRE(f.manager.GetLocalTransform(
             SceneManager::EntityId{f.manager.FindEntityByUuid(target)}, before));
         EditableTRS after = before;
         after.translation.z += 3.0f;
-        REQUIRE(session.PreviewLocals(f.manager, *token,
-            {{target, after}}).effective);
-        EditorCommandHistory history;
+        TransformGizmoResult move;
+        move.changed = true;
+        move.interactionSequence = 501;
+        move.desiredWorld = {{target, after.Matrix()}};
+        REQUIRE(coordinator.ProcessEvent(move, callbacks).preview->effective);
         history.FailNextRecordAppliedForTest();
         session.FailNextCompensationForTest();
-        REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *token)
+        REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session,
+            session.Token())
             .result == PreviewSessionCloseOutcome::Result::PendingRetry);
-        TransformGizmoHostLifecycle host;
-        REQUIRE(host.OnLocalDragStarted(501));
-        REQUIRE(host.BindToken(*token));
         std::vector<int> trace;
         rt2::core::SceneDocument replacement;
         const auto generation = f.manager.DocumentGeneration();
-        ApplyAuthoringDocumentReplacement(kind,
+        coordinator.ReplaceDocument(kind,
             [&]() {
                 trace.push_back(1);
                 f.manager.ReplaceAuthoringDocument(std::move(replacement));
@@ -4627,21 +4751,21 @@ TEST_CASE("Phase 8 W3 S6-D: every authoring replacement caller shares ordered te
             [&]() {
                 trace.push_back(3);
                 CHECK_FALSE(session.IsOpen());
-                host.CompleteAfterUiTransition();
+                ++cancelCount;
             });
         CHECK(trace == std::vector<int>{1, 2, 3});
-        CHECK_FALSE(host.LocalDragActive());
-        CHECK(host.InteractionSequence() == 0);
+        CHECK(cancelCount == 1);
+        CHECK_FALSE(coordinator.LocalDragActive());
+        CHECK(coordinator.InteractionSequence() == 0);
 
         const UUID g2Target = f.CreateEmpty("ReplacementG2");
-        const auto g2 = session.Begin(f.manager, 0xB201u, {g2Target});
-        REQUIRE(g2);
-        REQUIRE(host.OnLocalDragStarted(502));
-        REQUIRE(host.BindToken(*g2));
-        CHECK_FALSE(host.Matches(501));
-        CHECK(host.Matches(502));
+        start.interactionSequence = 502;
+        start.draggedUuids = {g2Target};
+        REQUIRE_FALSE(coordinator.ProcessEvent(start, callbacks).beginRejected);
+        CHECK_FALSE(coordinator.Matches(501));
+        CHECK(coordinator.Matches(502));
         session.Discard();
-        host.CompleteAfterUiTransition();
+        coordinator.CompleteAfterUiTransition(callbacks.cancelLocal);
     }
 }
 
@@ -4682,27 +4806,40 @@ TEST_CASE("Phase 8 W3 S6-D: CaptureEditorWorldTransforms preserves order and fai
 TEST_CASE("Phase 8 W3 S6-D: parent child world preview keeps second prefab instance identity in one batch")
 {
     std::vector<std::vector<glm::vec3>> results;
+    std::vector<std::vector<glm::vec3>> localResults;
     for (const bool reverse : {false, true})
     {
         S2Fixture f;
-        const auto dirA = S2UniqueTempDir(reverse
-            ? "p8w3_s6d_two_instances_ar" : "p8w3_s6d_two_instances_af");
-        const auto dirB = S2UniqueTempDir(reverse
-            ? "p8w3_s6d_two_instances_br" : "p8w3_s6d_two_instances_bf");
-        const auto [aRootHandle, aChildHandle] = f.MakeInstance(dirA);
-        const auto [bRootHandle, bChildHandle] = f.MakeInstance(dirB);
+        const auto dir = S2UniqueTempDir(reverse
+            ? "p8w3_s6d_same_prefab_r" : "p8w3_s6d_same_prefab_f");
+        const auto prefabPath = f.CreatePrefabAsset(dir);
+        const auto [aRootHandle, aChildHandle] = f.InstantiatePrefab(prefabPath);
+        const auto [bRootHandle, bChildHandle] = f.InstantiatePrefab(prefabPath);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
         const UUID aRoot = f.manager.GetEntityUuid(SceneManager::EntityId{aRootHandle});
         const UUID aChild = f.manager.GetEntityUuid(SceneManager::EntityId{aChildHandle});
-        const UUID bRoot = f.manager.GetEntityUuid(SceneManager::EntityId{bRootHandle});
         const UUID bChild = f.manager.GetEntityUuid(SceneManager::EntityId{bChildHandle});
-        const std::vector<UUID> canonical{aRoot, aChild, bRoot, bChild};
+        const auto& aRootMember = f.manager.GetECS().registry.get<PrefabMemberComponent>(aRootHandle);
+        const auto& aChildMember = f.manager.GetECS().registry.get<PrefabMemberComponent>(aChildHandle);
+        const auto& bRootMember = f.manager.GetECS().registry.get<PrefabMemberComponent>(bRootHandle);
+        const auto& bChildMember = f.manager.GetECS().registry.get<PrefabMemberComponent>(bChildHandle);
+        CHECK(aRootMember.templateId == bRootMember.templateId);
+        CHECK(aChildMember.templateId == bChildMember.templateId);
+        CHECK(aRootMember.instanceId == aChildMember.instanceId);
+        CHECK(bRootMember.instanceId == bChildMember.instanceId);
+        CHECK(aRootMember.instanceId != bRootMember.instanceId);
+        const std::vector<UUID> canonical{aRoot, aChild, bChild};
         std::set<UUID> identities(canonical.begin(), canonical.end());
-        REQUIRE(identities.size() == 4);
+        REQUIRE(identities.size() == 3);
         const std::vector<UUID> order = reverse
-            ? std::vector<UUID>{bChild, bRoot, aChild, aRoot}
+            ? std::vector<UUID>{bChild, aChild, aRoot}
             : canonical;
         auto snapshot = f.manager.CaptureEditorWorldTransforms(order, order.back());
         REQUIRE(snapshot.IsOk());
+        std::unordered_map<UUID, glm::vec3> origins;
+        std::unordered_map<UUID, glm::vec3> desiredWorlds;
+        for (std::size_t i = 0; i < snapshot.value.uuids.size(); ++i)
+            origins[snapshot.value.uuids[i]] = glm::vec3(snapshot.value.worldMatrices[i][3]);
         std::vector<std::pair<UUID, glm::mat4>> desired;
         for (std::size_t i = 0; i < snapshot.value.uuids.size(); ++i)
         {
@@ -4714,32 +4851,73 @@ TEST_CASE("Phase 8 W3 S6-D: parent child world preview keeps second prefab insta
                 std::distance(canonical.begin(), canonicalIt) + 1);
             world[3][0] += identityIndex;
             world[3][1] += identityIndex * 2.0f;
+            desiredWorlds[snapshot.value.uuids[i]] = glm::vec3(world[3]);
             desired.push_back({snapshot.value.uuids[i], world});
         }
         TransformPreviewSession session;
         const auto token = session.Begin(f.manager, reverse ? 0xB302u : 0xB301u,
             order);
         REQUIRE(token);
-        REQUIRE(session.PreviewWorlds(f.manager, *token, desired).effective);
+        const auto preview = session.PreviewWorlds(f.manager, *token, desired);
+        REQUIRE(preview.effective);
+        CHECK(preview.syncImpact == rt2::core::SyncImpact::Transform);
+        CHECK(std::unordered_set<UUID>(preview.affectedEntities.begin(),
+            preview.affectedEntities.end()) ==
+            std::unordered_set<UUID>{aRoot, aChild, bChild});
         EditorCommandHistory history;
         REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *token)
             .recorded);
+        const auto key = PrefabComponentKeyFor<Transform>::value;
+        CHECK(f.manager.IsOverridden(aRoot, key).value);
+        CHECK(f.manager.IsOverridden(aChild, key).value);
+        CHECK(f.manager.IsOverridden(bChild, key).value);
         std::vector<glm::vec3> worlds;
+        std::vector<glm::vec3> locals;
+        for (const auto& uuid : canonical)
+        {
+            EditableTRS world;
+            EditableTRS local;
+            REQUIRE(f.manager.GetWorldTransform(SceneManager::EntityId{
+                f.manager.FindEntityByUuid(uuid)}, world));
+            REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{
+                f.manager.FindEntityByUuid(uuid)}, local));
+            CHECK(world.translation == desiredWorlds[uuid]);
+            worlds.push_back(world.translation);
+            locals.push_back(local.translation);
+        }
+        results.push_back(worlds);
+        localResults.push_back(locals);
+        REQUIRE(history.Undo(f.manager).success);
         for (const auto& uuid : canonical)
         {
             EditableTRS world;
             REQUIRE(f.manager.GetWorldTransform(SceneManager::EntityId{
                 f.manager.FindEntityByUuid(uuid)}, world));
-            worlds.push_back(world.translation);
+            CHECK(world.translation == origins[uuid]);
+            CHECK_FALSE(f.manager.IsOverridden(uuid, key).value);
         }
-        results.push_back(worlds);
-        std::filesystem::remove_all(dirA);
-        std::filesystem::remove_all(dirB);
+        REQUIRE(history.Redo(f.manager).success);
+        for (std::size_t i = 0; i < canonical.size(); ++i)
+        {
+            EditableTRS world;
+            EditableTRS local;
+            REQUIRE(f.manager.GetWorldTransform(SceneManager::EntityId{
+                f.manager.FindEntityByUuid(canonical[i])}, world));
+            REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{
+                f.manager.FindEntityByUuid(canonical[i])}, local));
+            CHECK(world.translation == worlds[i]);
+            CHECK(local.translation == locals[i]);
+            CHECK(f.manager.IsOverridden(canonical[i], key).value);
+        }
+        std::filesystem::remove_all(dir);
     }
     REQUIRE(results.size() == 2);
+    REQUIRE(localResults.size() == 2);
     CHECK(results[0] == results[1]);
+    CHECK(localResults[0] == localResults[1]);
     CHECK(results[0][0] != results[0][2]);
-    CHECK(results[0][1] != results[0][3]);
+    CHECK(results[0][1] != results[0][2]);
+    CHECK(localResults[0][1] != localResults[0][2]);
 }
 
 // Reversible RED: keep removed B in CompensationPending's retry carrier set,
@@ -5017,7 +5195,7 @@ TEST_CASE("Phase 8 W3 S6-D: parent-child world session is order independent and 
 }
 
 // Matrix group: durable UUID association must survive physical input order,
-// mixed ordinary/fresh/pre-existing members, and distinct prefab instances.
+// mixed ordinary/fresh/pre-existing members, and two instances of one prefab.
 // Reversible RED: associate markers by transaction/registry position or by
 // templateId; reversing the list swaps a value/marker and breaks these exact
 // per-UUID assertions.
@@ -5026,12 +5204,15 @@ TEST_CASE("Phase 8 W3 S6-D: mixed two-instance UUID aggregation survives both ph
     for (const bool reverse : { false, true })
     {
         S2Fixture f;
-        const auto dir1 = S2UniqueTempDir(reverse
-            ? "p8w3_s6d_instances_r1" : "p8w3_s6d_instances_f1");
-        const auto dir2 = S2UniqueTempDir(reverse
-            ? "p8w3_s6d_instances_r2" : "p8w3_s6d_instances_f2");
-        const auto [aHandle, aChild] = f.MakeInstance(dir1);
-        const auto [bHandle, bChild] = f.MakeInstance(dir2);
+        const auto dir = S2UniqueTempDir(reverse
+            ? "p8w3_s6d_instances_same_r" : "p8w3_s6d_instances_same_f");
+        const auto prefabPath = f.CreatePrefabAsset(dir);
+        const auto [aHandle, aChild] = f.InstantiatePrefab(prefabPath);
+        const auto [bHandle, bChild] = f.InstantiatePrefab(prefabPath);
+        const auto& aMember = f.manager.GetECS().registry.get<PrefabMemberComponent>(aHandle);
+        const auto& bMember = f.manager.GetECS().registry.get<PrefabMemberComponent>(bHandle);
+        CHECK(aMember.templateId == bMember.templateId);
+        CHECK(aMember.instanceId != bMember.instanceId);
         f.manager.AuthoringDoc().metadata.schemaVersion = 5;
         const UUID ordinary = f.CreateEmpty("Ordinary");
         const UUID fresh = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
@@ -5091,8 +5272,7 @@ TEST_CASE("Phase 8 W3 S6-D: mixed two-instance UUID aggregation survives both ph
         CHECK(ordinaryLive.translation == ordinaryAfter.translation);
         CHECK(freshLive.translation == freshAfter.translation);
         CHECK(existingLive.translation == existingAfter.translation);
-        std::filesystem::remove_all(dir1);
-        std::filesystem::remove_all(dir2);
+        std::filesystem::remove_all(dir);
     }
 }
 
@@ -5126,8 +5306,11 @@ TEST_CASE("Phase 8 W3 S6-D: fifth-kind Transform-Light ordering sync and pending
         const auto token = transform.Begin(f.manager,
             transformFirst ? 0xD301u : 0xD302u, {transformTarget});
         REQUIRE(token);
-        const auto transformPreview = transform.PreviewLocals(f.manager, *token,
-            {{transformTarget, transformAfter}});
+        int syncCount = 0;
+        const auto transformPreview = PublishTransformPreviewAndNotify(
+            [&]() { return transform.PreviewLocals(f.manager, *token,
+                {{transformTarget, transformAfter}}); },
+            [&]() { ++syncCount; });
         REQUIRE(transformPreview.effective);
         CompositePreviewSession light;
         REQUIRE(light.Begin(f.manager, lightTarget,
@@ -5142,7 +5325,9 @@ TEST_CASE("Phase 8 W3 S6-D: fifth-kind Transform-Light ordering sync and pending
         const auto lightPreview = light.Preview(f.manager,
             PrefabValuePayload{lightAfter});
         REQUIRE(lightPreview.effective);
-        int syncCount = 2;
+        REQUIRE(RouteEffectiveTransformPreviewNotification(lightPreview,
+            [&]() { ++syncCount; }));
+        CHECK(syncCount == 2);
 
         EditorCommandHistory history;
         unsigned int transformOwner = 31;
@@ -5166,6 +5351,10 @@ TEST_CASE("Phase 8 W3 S6-D: fifth-kind Transform-Light ordering sync and pending
         REQUIRE(closed.slotCount == 2);
         CHECK_FALSE(closed.slots[0].outcome.needsSyncApply);
         CHECK_FALSE(closed.slots[1].outcome.needsSyncApply);
+		RouteTransformCloseSync(closed.slots[0].outcome,
+			[&](const PreviewSessionCloseOutcome&) { ++syncCount; });
+		RouteTransformCloseSync(closed.slots[1].outcome,
+			[&](const PreviewSessionCloseOutcome&) { ++syncCount; });
         CHECK(syncCount == 2);
         CHECK(transformOwner == 0);
         CHECK(lightOwner == 0);
@@ -5777,7 +5966,10 @@ TEST_CASE("Phase 8 W3: marker helper fails a mixed valid+invalid batch atomicall
     REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
 }
 
-TEST_CASE("Phase 8 W3 S6-D: sequenced host lifecycle and Inspector ownership gates")
+// Supplemental predicate coverage only. The production coordinator cadence,
+// real release classification, and shared Inspector/viewport publication
+// callback are discriminated by the named coordinator cases above.
+TEST_CASE("Phase 8 W3 S6-D: low-level sequence and Inspector admission predicates")
 {
     CHECK(TransformGizmoEventMatches(7, 7));
     CHECK_FALSE(TransformGizmoEventMatches(0, 7));

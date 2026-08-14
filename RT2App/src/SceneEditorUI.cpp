@@ -187,11 +187,11 @@ EditorMutationResult SceneEditorUI::PreviewTransformWorldIntent(
 	if (!m_SceneMgr || !m_TransformGestureToken)
 		return EditorMutationResult::Failure(rt2::core::Error::InvalidRuntimeState,
 			"transform-session", "no active transform gesture");
-	const auto result = m_TransformPreviewSession.PreviewWorlds(*m_SceneMgr,
-		token, worlds);
-	RouteEffectiveTransformPreviewNotification(result,
-		[this]() { NotifyTransformChanged(); });
-	return result;
+	return PublishTransformPreviewAndNotify(
+		[this, &token, &worlds]() {
+			return m_TransformPreviewSession.PreviewWorlds(*m_SceneMgr,
+				token, worlds);
+		}, [this]() { NotifyTransformChanged(); });
 }
 
 PreviewSessionCloseOutcome SceneEditorUI::CloseTransformGesture(bool finalize,
@@ -247,13 +247,16 @@ PreviewSessionCloseOutcome SceneEditorUI::CloseTransformGestureImpl(bool finaliz
 		m_TransformRecoveryDetail = outcome.lastError.error.detail;
 		return outcome;
 	}
-	outcome = finalize
-		? FinalizeTransformPreviewSession(*m_CommandHistory, *m_SceneMgr,
-			m_TransformPreviewSession, token)
-		: RestoreTransformPreviewSession(*m_SceneMgr, m_TransformPreviewSession,
-			token);
-	RouteTransformCloseSync(outcome,
-		[this](const PreviewSessionCloseOutcome& routed) { ApplyCloseOutcome(routed); });
+	outcome = CloseTransformAndRouteSync(
+		[this, finalize, &token]() {
+			return finalize
+				? FinalizeTransformPreviewSession(*m_CommandHistory, *m_SceneMgr,
+					m_TransformPreviewSession, token)
+				: RestoreTransformPreviewSession(*m_SceneMgr,
+					m_TransformPreviewSession, token);
+		}, [this](const PreviewSessionCloseOutcome& routed) {
+			ApplyCloseOutcome(routed);
+		});
 	if (outcome.result == PreviewSessionCloseOutcome::Result::Closed)
 	{
 		m_TransformGestureToken.reset();
@@ -1796,16 +1799,19 @@ void SceneEditorUI::RenderTransformEditor(SceneManager::EntityId entity)
 		if (!m_TransformGestureToken)
 			preview = EditorMutationResult::Failure(rt2::core::Error::InvalidRuntimeState,
 				"transform-session", "could not open transform gesture before preview");
-		else if (m_TransformSpace == TransformSpace::Local)
-			preview = m_TransformPreviewSession.PreviewLocals(*m_SceneMgr,
-				*m_TransformGestureToken, { { targetUuid, edited } });
 		else
-			preview = m_TransformPreviewSession.PreviewWorlds(*m_SceneMgr,
-				*m_TransformGestureToken, { { targetUuid, edited.Matrix() } });
+			preview = PublishTransformPreviewAndNotify(
+				[this, &targetUuid, &edited]() {
+					return m_TransformSpace == TransformSpace::Local
+						? m_TransformPreviewSession.PreviewLocals(*m_SceneMgr,
+							*m_TransformGestureToken, { { targetUuid, edited } })
+						: m_TransformPreviewSession.PreviewWorlds(*m_SceneMgr,
+							*m_TransformGestureToken,
+							{ { targetUuid, edited.Matrix() } });
+				}, [this]() { NotifyTransformChanged(); });
 		if (preview.success)
 		{
 			m_TransformEditError.clear();
-			if (preview.effective) NotifyTransformChanged();
 		}
 		else
 		{

@@ -1043,13 +1043,6 @@ public:
 		activeCam.OnResize(m_ViewportWidth, m_ViewportHeight);
 	}
 
-	// Global actions run before the viewport. If one transferred Transform
-	// recovery, consume that ownership change before any delayed release/cancel
-	// event can reach the ordinary close path.
-	m_GizmoHostLifecycle.ConsumeExternalLifecycle(
-		m_EditorUI.TransformGestureLifecycle(),
-		[this]() { m_TransformGizmo.Cancel(); });
-
 	if (m_RendererGPU.HasOutput())
 	{
 		const ImVec2 imageMin = ImGui::GetCursorScreenPos();
@@ -1083,64 +1076,39 @@ public:
 			if (captured.IsOk()) gizmoSnapshot = std::move(captured.value);
 			else m_LastStatusMsg = captured.error.detail;
 		}
-		const TransformGizmoResult gizmo = m_TransformGizmo.Draw(
-			gizmoSnapshot, m_EditorUI.Selection(), m_Cam,
-			{ imageMin.x, imageMin.y }, { imageSize.x, imageSize.y }, imageHovered,
-			m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
-				!m_EditorUI.SelectionHasDirectLock(),
-			m_EditorUI.GetTransformSpace(), m_EditorUI.GetTransformPivot(),
-			m_EditorUI.GetTransformSnapSettings(), m_EditorUI.GetUniformScale());
-		if (gizmo.changed && !gizmo.desiredWorld.empty() &&
-			m_GizmoHostLifecycle.Matches(gizmo.interactionSequence))
-		{
-			if (m_GizmoHostLifecycle.Token())
-			{
-				const auto preview = m_EditorUI.PreviewTransformWorldIntent(
-					*m_GizmoHostLifecycle.Token(), gizmo.desiredWorld);
-				if (!preview.success) m_LastStatusMsg = preview.error.detail;
-			}
-		}
+		// Global actions run before the viewport. The coordinator consumes any
+		// external close/recovery transfer before invoking the real Draw callback,
+		// so a delayed release cannot reach the ordinary close path.
+		const auto frame = m_GizmoCoordinator.RunFrame(
+			m_EditorUI.TransformGestureLifecycle(),
+			[this]() { m_TransformGizmo.Cancel(); },
+			[this, &gizmoSnapshot, &imageMin, &imageSize, imageHovered]() {
+				return m_TransformGizmo.Draw(
+					gizmoSnapshot, m_EditorUI.Selection(), m_Cam,
+					{ imageMin.x, imageMin.y }, { imageSize.x, imageSize.y },
+					imageHovered,
+					m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
+						!m_EditorUI.SelectionHasDirectLock(),
+					m_EditorUI.GetTransformSpace(), m_EditorUI.GetTransformPivot(),
+					m_EditorUI.GetTransformSnapSettings(),
+					m_EditorUI.GetUniformScale());
+			}, TransformGizmoCallbacks());
+		const TransformGizmoResult& gizmo = frame.event;
 		if (!gizmo.error.empty())
 			m_LastStatusMsg = gizmo.error;
-		if (gizmo.dragJustStarted && gizmo.interactionSequence != 0 &&
-			!m_GizmoHostLifecycle.LocalDragActive() &&
-			!gizmo.draggedUuids.empty())
-		{
-			if (!m_GizmoHostLifecycle.OnLocalDragStarted(
-				gizmo.interactionSequence))
-			{
-				m_TransformGizmo.Cancel();
-				m_LastStatusMsg = "gizmo transform lifecycle rejected the drag";
-			}
-			const auto token = m_EditorUI.BeginTransformGestureForGizmo(
-				static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(&m_TransformGizmo)),
-				gizmo.draggedUuids);
-			if (!token)
-			{
-				m_LastStatusMsg = "gizmo transform gesture admission failed";
-				m_TransformGizmo.Cancel();
-				m_GizmoHostLifecycle.RejectBeginAndCancel();
-			}
-			else if (!m_GizmoHostLifecycle.BindToken(*token))
-			{
-				// Begin succeeded but local correlation could not bind. Restore the
-				// just-opened UI session before releasing the local drag.
-				const auto close = m_EditorUI.CloseTransformGesture(false, *token);
-				CompleteTransformGizmoAfterUiTransition();
-				m_LastStatusMsg = close.result ==
-					PreviewSessionCloseOutcome::Result::PendingRetry
-					? close.lastError.error.detail
-					: "gizmo transform lifecycle could not bind the session token";
-			}
-		}
-		const auto closeIntent = m_GizmoHostLifecycle.CloseIntent(gizmo);
-		if (closeIntent != TransformGizmoCloseIntent::None)
-		{
-			const auto close = CloseActiveTransformGizmo(
-				closeIntent == TransformGizmoCloseIntent::Finalize);
-			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)
-				m_LastStatusMsg = close.lastError.error.detail;
-		}
+		const auto& coordinated = frame.routed;
+		if (coordinated.beginRejected)
+			m_LastStatusMsg = "gizmo transform gesture admission failed";
+		else if (coordinated.bindRejected)
+			m_LastStatusMsg = coordinated.close && coordinated.close->result ==
+				PreviewSessionCloseOutcome::Result::PendingRetry
+				? coordinated.close->lastError.error.detail
+				: "gizmo transform lifecycle could not bind the session token";
+		if (coordinated.preview && !coordinated.preview->success)
+			m_LastStatusMsg = coordinated.preview->error.detail;
+		if (coordinated.close && coordinated.close->result ==
+			PreviewSessionCloseOutcome::Result::PendingRetry)
+			m_LastStatusMsg = coordinated.close->lastError.error.detail;
 
 		// Editor icon overlay. Lights and cameras have no geometry, so the
 		// GPU picker cannot reach them; this hit test is their only route to
@@ -1215,9 +1183,10 @@ public:
 		// Losing the renderer output is a viewport teardown, not proof that an
 		// applied transform may be abandoned. Restore through the exact gizmo
 		// token before clearing the local correlation.
-		if (m_GizmoHostLifecycle.LocalDragActive())
+		if (m_GizmoCoordinator.LocalDragActive())
 		{
-			const auto close = CloseActiveTransformGizmo(false);
+			const auto close = m_GizmoCoordinator.RestoreActive(
+				TransformGizmoCallbacks());
 			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)
 				m_LastStatusMsg = close.lastError.error.detail;
 		}
@@ -3395,18 +3364,27 @@ private:
 		// Ordering is load-bearing: every caller has already closed/discarded
 		// the SceneEditorUI session or transferred its token into pending
 		// recovery. Only then may Walnut release the local drag/correlation.
-		m_GizmoHostLifecycle.CompleteAfterUiTransition(
+		m_GizmoCoordinator.CompleteAfterUiTransition(
 			[this]() { m_TransformGizmo.Cancel(); });
 	}
 
-	PreviewSessionCloseOutcome CloseActiveTransformGizmo(bool finalize)
+	TransformGizmoCoordinatorCallbacks TransformGizmoCallbacks()
 	{
-		PreviewSessionCloseOutcome outcome;
-		if (m_GizmoHostLifecycle.Token())
-			outcome = m_EditorUI.CloseTransformGesture(finalize,
-				*m_GizmoHostLifecycle.Token());
-		CompleteTransformGizmoAfterUiTransition();
-		return outcome;
+		TransformGizmoCoordinatorCallbacks callbacks;
+		callbacks.cancelLocal = [this]() { m_TransformGizmo.Cancel(); };
+		callbacks.begin = [this](const std::vector<rt2::core::UUID>& uuids) {
+			return m_EditorUI.BeginTransformGestureForGizmo(
+				static_cast<std::uint64_t>(
+					reinterpret_cast<std::uintptr_t>(&m_TransformGizmo)), uuids);
+		};
+		callbacks.preview = [this](const TransformGestureToken& token,
+			const std::vector<std::pair<rt2::core::UUID, glm::mat4>>& worlds) {
+			return m_EditorUI.PreviewTransformWorldIntent(token, worlds);
+		};
+		callbacks.close = [this](bool finalize, const TransformGestureToken& token) {
+			return m_EditorUI.CloseTransformGesture(finalize, token);
+		};
+		return callbacks;
 	}
 
 	void ResetEditorForDocument()
@@ -3420,7 +3398,7 @@ private:
 	void ReplaceEditorDocument(AuthoringDocumentReplacementKind kind,
 		rt2::core::SceneDocument&& document, uint64_t authoringRevision = 0)
 	{
-		ApplyAuthoringDocumentReplacement(kind,
+		m_GizmoCoordinator.ReplaceDocument(kind,
 			[this, &document, authoringRevision]() {
 				m_SceneMgr.ReplaceAuthoringDocument(
 					std::move(document), authoringRevision);
@@ -3431,7 +3409,7 @@ private:
 				else
 					m_EditorUI.ResetForDocument();
 			},
-			[this]() { CompleteTransformGizmoAfterUiTransition(); });
+			[this]() { m_TransformGizmo.Cancel(); });
 	}
 
 	RendererGPU m_RendererGPU;
@@ -3441,7 +3419,7 @@ private:
 	EditorCommandHistory m_History;
 	EditorSyncRouter m_SyncRouter;
 	EditorTransformGizmo m_TransformGizmo;
-	TransformGizmoHostLifecycle m_GizmoHostLifecycle;
+	TransformGizmoCoordinator m_GizmoCoordinator;
 	uint64_t m_ViewportPickSerial = 0;
 	bool m_ViewportPickToggle = false;
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;

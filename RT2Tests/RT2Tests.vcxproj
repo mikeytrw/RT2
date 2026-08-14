@@ -681,6 +681,7 @@
     </ClCompile>
     <ClCompile Include="src\Phase8W3OverrideTests.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <AdditionalOptions>/bigobj %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <ClCompile Include="src\OverrideAwareCompactionTests.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
