@@ -65,6 +65,35 @@ struct PreviewSessionCloseOutcome
 	EditorMutationResult lastError;
 };
 
+template <typename Apply>
+bool RouteTransformCloseSync(const PreviewSessionCloseOutcome& outcome,
+	Apply&& apply)
+{
+	if (!outcome.needsSyncApply) return false;
+	std::forward<Apply>(apply)(outcome);
+	return true;
+}
+
+template <typename Close>
+PreviewSessionCloseOutcome RouteTransformCloseRequest(
+	TransformGestureLifecycleState state, bool explicitRetry,
+	const std::string& recoveryDetail, Close&& close)
+{
+	if (state == TransformGestureLifecycleState::RecoveryTransferred &&
+		!explicitRetry)
+	{
+		PreviewSessionCloseOutcome quarantined;
+		quarantined.result = PreviewSessionCloseOutcome::Result::PendingRetry;
+		quarantined.lastError = EditorMutationResult::Failure(
+			rt2::core::Error::InvalidRuntimeState, "transform-session",
+			recoveryDetail.empty()
+				? "transform recovery is pending; retry explicitly"
+				: recoveryDetail);
+		return quarantined;
+	}
+	return std::forward<Close>(close)();
+}
+
 // Build the origin->final command for a preview session, attaching its
 // immutable explicit capture. suppressNoOp mirrors the MakeSet*IfEffective
 // suppression (used by the record path); when false the command is built

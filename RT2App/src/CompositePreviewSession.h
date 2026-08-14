@@ -181,6 +181,29 @@ private:
 	std::uint64_t m_Sequence = 0;
 };
 
+// Host-visible ownership state for the Transform publisher.  An open session
+// with recovery transferred is deliberately distinct from a healthy publisher:
+// the UI keeps the durable token for explicit Retry, while viewport hosts must
+// release their local drag/correlation immediately.
+enum class TransformGestureLifecycleState
+{
+	Closed,
+	HealthyOpen,
+	RecoveryTransferred,
+};
+
+// Production notification seam.  SceneEditorUI delegates through these
+// callback routers, so CPU tests can observe the exact once/zero contract
+// without linking ImGui or Walnut.
+template <typename Notify>
+bool RouteEffectiveTransformPreviewNotification(
+	const EditorMutationResult& result, Notify&& notify)
+{
+	if (!result.success || !result.effective) return false;
+	std::forward<Notify>(notify)();
+	return true;
+}
+
 inline bool TransformBeginAdmissionAllowed(bool editable,
 	bool recoveryPending, std::uint64_t opaqueOwner)
 {

@@ -139,6 +139,7 @@ public:
 		m_SearchBuffer[0] = '\0';
 		DiscardAllPropertySessions();
 	}
+	void ResetForDocumentPreservingValidSelection();
 	EditorSelection& Selection() { return m_State.Selection(); }
 	const EditorSelection& Selection() const { return m_State.Selection(); }
 	bool SelectionHasDirectLock() const
@@ -147,6 +148,14 @@ public:
 	TransformPivot GetTransformPivot() const { return m_TransformPivot; }
 	const TransformSnapSettings& GetTransformSnapSettings() const { return m_TransformSnap; }
 	bool IsTransformGestureOpen() const { return m_TransformPreviewSession.IsOpen(); }
+	TransformGestureLifecycleState TransformGestureLifecycle() const
+	{
+		if (m_TransformRecoveryPending)
+			return TransformGestureLifecycleState::RecoveryTransferred;
+		return m_TransformPreviewSession.IsOpen()
+			? TransformGestureLifecycleState::HealthyOpen
+			: TransformGestureLifecycleState::Closed;
+	}
 	std::optional<TransformGestureToken> BeginTransformGestureForGizmo(std::uint64_t owner,
 		const std::vector<rt2::core::UUID>& uuids);
 	EditorMutationResult PreviewTransformWorldIntent(
@@ -154,6 +163,7 @@ public:
 		const std::vector<std::pair<rt2::core::UUID, glm::mat4>>& worlds);
 	PreviewSessionCloseOutcome CloseTransformGesture(bool finalize,
 		const TransformGestureToken& token);
+	PreviewSessionCloseOutcome RetryTransformGestureRecovery();
 	bool GetUniformScale() const { return m_UniformScale; }
 	bool CaptureCameraBookmark(size_t slot, const EditorCameraPose& pose)
 	{ return m_State.CaptureCameraBookmark(slot, pose); }
@@ -274,6 +284,8 @@ private:
 	// Route a close outcome through the host sync path when the close mutated
 	// the scene.
 	void ApplyCloseOutcome(const PreviewSessionCloseOutcome& outcome);
+	PreviewSessionCloseOutcome CloseTransformGestureImpl(bool finalize,
+		const TransformGestureToken& token, bool explicitRetry);
 	// Capture the current MaterialOverrideComponent state of every imported
 	// entity referencing `slotIndex` (UUID -> override). Used to snapshot
 	// the before-overrides when a material-properties session opens and the

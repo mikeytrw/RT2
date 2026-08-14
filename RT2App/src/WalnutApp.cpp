@@ -1043,6 +1043,13 @@ public:
 		activeCam.OnResize(m_ViewportWidth, m_ViewportHeight);
 	}
 
+	// Global actions run before the viewport. If one transferred Transform
+	// recovery, consume that ownership change before any delayed release/cancel
+	// event can reach the ordinary close path.
+	m_GizmoHostLifecycle.ConsumeExternalLifecycle(
+		m_EditorUI.TransformGestureLifecycle(),
+		[this]() { m_TransformGizmo.Cancel(); });
+
 	if (m_RendererGPU.HasOutput())
 	{
 		const ImVec2 imageMin = ImGui::GetCursorScreenPos();
@@ -1067,13 +1074,6 @@ public:
 			ImGui::EndDragDropTarget();
 		}
 		const bool imageHovered = ImGui::IsItemHovered();
-		// A different publisher/global action may have closed the UI session
-		// between viewport frames.  The UI has already recorded, discarded, or
-		// retained pending recovery, so release Walnut's stale local drag before
-		// asking it for another event.
-		if (m_GizmoHostLifecycle.LocalDragActive() &&
-			!m_EditorUI.IsTransformGestureOpen())
-			CompleteTransformGizmoAfterUiTransition();
 		std::optional<EditorWorldTransformSnapshot> gizmoSnapshot;
 		if (!m_EditorUI.IsTransformGestureOpen() &&
 			!m_EditorUI.Selection().Empty())
@@ -1133,19 +1133,11 @@ public:
 					: "gizmo transform lifecycle could not bind the session token";
 			}
 		}
-		if (gizmo.dragCancelled &&
-			m_GizmoHostLifecycle.Matches(gizmo.interactionSequence) &&
-			m_GizmoHostLifecycle.Token())
+		const auto closeIntent = m_GizmoHostLifecycle.CloseIntent(gizmo);
+		if (closeIntent != TransformGizmoCloseIntent::None)
 		{
-			const auto close = CloseActiveTransformGizmo(false);
-			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)
-				m_LastStatusMsg = close.lastError.error.detail;
-		}
-
-		if (gizmo.dragJustEnded &&
-			m_GizmoHostLifecycle.Matches(gizmo.interactionSequence))
-		{
-			const auto close = CloseActiveTransformGizmo(true);
+			const auto close = CloseActiveTransformGizmo(
+				closeIntent == TransformGizmoCloseIntent::Finalize);
 			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)
 				m_LastStatusMsg = close.lastError.error.detail;
 		}
@@ -1917,9 +1909,9 @@ public:
 				m_ScriptAssetContext = assetContext;
 				ApplyActiveInputConfiguration();
 				// Commit the already validated document without clearing it.
-				m_SceneMgr.ReplaceAuthoringDocument(
+				ReplaceEditorDocument(
+					AuthoringDocumentReplacementKind::RecoveryRestore,
 					std::move(restored), std::max<uint64_t>(1, r.revision));
-			ResetEditorForDocument();
 			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 			m_History.Clear();
 				CompactMeshRegistryNowAsserted();
@@ -3403,8 +3395,8 @@ private:
 		// Ordering is load-bearing: every caller has already closed/discarded
 		// the SceneEditorUI session or transferred its token into pending
 		// recovery. Only then may Walnut release the local drag/correlation.
-		m_TransformGizmo.Cancel();
-		m_GizmoHostLifecycle.CompleteAfterUiTransition();
+		m_GizmoHostLifecycle.CompleteAfterUiTransition(
+			[this]() { m_TransformGizmo.Cancel(); });
 	}
 
 	PreviewSessionCloseOutcome CloseActiveTransformGizmo(bool finalize)
@@ -3423,6 +3415,23 @@ private:
 		// session/token first; Walnut's drag/sequence are cleared afterward.
 		m_EditorUI.ResetForDocument();
 		CompleteTransformGizmoAfterUiTransition();
+	}
+
+	void ReplaceEditorDocument(AuthoringDocumentReplacementKind kind,
+		rt2::core::SceneDocument&& document, uint64_t authoringRevision = 0)
+	{
+		ApplyAuthoringDocumentReplacement(kind,
+			[this, &document, authoringRevision]() {
+				m_SceneMgr.ReplaceAuthoringDocument(
+					std::move(document), authoringRevision);
+			},
+			[this](AuthoringDocumentSelectionPolicy policy) {
+				if (policy == AuthoringDocumentSelectionPolicy::PreserveValid)
+					m_EditorUI.ResetForDocumentPreservingValidSelection();
+				else
+					m_EditorUI.ResetForDocument();
+			},
+			[this]() { CompleteTransformGizmoAfterUiTransition(); });
 	}
 
 	RendererGPU m_RendererGPU;
@@ -4496,8 +4505,8 @@ public:
 			ApplyActiveInputConfiguration();
 			m_SceneMgr.SetAssetResolutionContext(assetContext);
 			m_ScriptAssetContext = assetContext;
-			m_SceneMgr.ReplaceAuthoringDocument(std::move(*resultDoc));
-			ResetEditorForDocument();
+			ReplaceEditorDocument(AuthoringDocumentReplacementKind::OpenScene,
+				std::move(*resultDoc));
 			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 
 			// W7 watches the project asset root, not directories inferred from
@@ -4675,7 +4684,8 @@ public:
 				m_SceneMgr.SetAssetResolutionContext(m_ProjectContext->Assets());
 				m_ScriptAssetContext = m_ProjectContext->Assets();
 			}
-			m_SceneMgr.ReplaceAuthoringDocument(
+			ReplaceEditorDocument(
+				AuthoringDocumentReplacementKind::AssetMigrationSave,
 				std::move(stagedDocument), m_SceneMgr.AuthoringRevision());
 			m_History.Clear();
 			m_PendingFullSync = true;

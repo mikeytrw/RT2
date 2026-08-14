@@ -52,7 +52,7 @@ void SceneEditorUI::RenderPreviewRecoveryBar()
 			if (ImGui::Button(compensationPending ? "Retry Transform Compensation" :
 				(m_TransformRecoveryFinalize ? "Retry Transform Finalize" : "Retry Transform Restore"))
 				&& m_TransformGestureToken)
-				CloseTransformGesture(m_TransformRecoveryFinalize, *m_TransformGestureToken);
+				RetryTransformGestureRecovery();
 			ImGui::Separator();
 			return;
 		}
@@ -189,12 +189,29 @@ EditorMutationResult SceneEditorUI::PreviewTransformWorldIntent(
 			"transform-session", "no active transform gesture");
 	const auto result = m_TransformPreviewSession.PreviewWorlds(*m_SceneMgr,
 		token, worlds);
-	if (result.success && result.effective) NotifyTransformChanged();
+	RouteEffectiveTransformPreviewNotification(result,
+		[this]() { NotifyTransformChanged(); });
 	return result;
 }
 
 PreviewSessionCloseOutcome SceneEditorUI::CloseTransformGesture(bool finalize,
 	const TransformGestureToken& token)
+
+{
+	return CloseTransformGestureImpl(finalize, token, false);
+}
+
+PreviewSessionCloseOutcome SceneEditorUI::RetryTransformGestureRecovery()
+{
+	PreviewSessionCloseOutcome outcome;
+	if (!m_TransformRecoveryPending || !m_TransformGestureToken)
+		return outcome;
+	return CloseTransformGestureImpl(m_TransformRecoveryFinalize,
+		*m_TransformGestureToken, true);
+}
+
+PreviewSessionCloseOutcome SceneEditorUI::CloseTransformGestureImpl(bool finalize,
+	const TransformGestureToken& token, bool explicitRetry)
 {
 	PreviewSessionCloseOutcome outcome;
 	if (!m_SceneMgr || !m_TransformGestureToken) return outcome;
@@ -208,6 +225,17 @@ PreviewSessionCloseOutcome SceneEditorUI::CloseTransformGesture(bool finalize,
 			"transform close token is stale or foreign");
 		return outcome;
 	}
+	// Once recovery authority has transferred, ordinary viewport release or
+	// cancel is quarantined. It must not retry, change close mode, replace the
+	// stored diagnostic, or touch history/revision; only the explicit recovery
+	// entry above may re-enter the close core.
+	bool closeAdmitted = false;
+	outcome = RouteTransformCloseRequest(TransformGestureLifecycle(), explicitRetry,
+		m_TransformRecoveryDetail, [&closeAdmitted]() {
+			closeAdmitted = true;
+			return PreviewSessionCloseOutcome{};
+		});
+	if (!closeAdmitted) return outcome;
 	if (finalize && !m_CommandHistory)
 	{
 		outcome.result = PreviewSessionCloseOutcome::Result::PendingRetry;
@@ -224,7 +252,8 @@ PreviewSessionCloseOutcome SceneEditorUI::CloseTransformGesture(bool finalize,
 			m_TransformPreviewSession, token)
 		: RestoreTransformPreviewSession(*m_SceneMgr, m_TransformPreviewSession,
 			token);
-	if (outcome.needsSyncApply) ApplyCloseOutcome(outcome);
+	RouteTransformCloseSync(outcome,
+		[this](const PreviewSessionCloseOutcome& routed) { ApplyCloseOutcome(routed); });
 	if (outcome.result == PreviewSessionCloseOutcome::Result::Closed)
 	{
 		m_TransformGestureToken.reset();
@@ -243,6 +272,18 @@ PreviewSessionCloseOutcome SceneEditorUI::CloseTransformGesture(bool finalize,
 		}
 	}
 	return outcome;
+}
+
+void SceneEditorUI::ResetForDocumentPreservingValidSelection()
+{
+	const auto priorSelection = m_State.Selection().Ordered();
+	m_State.ResetForDocument();
+	m_SearchBuffer[0] = '\0';
+	DiscardAllPropertySessions();
+	if (!m_SceneMgr) return;
+	for (const auto& uuid : priorSelection)
+		if (m_SceneMgr->FindEntityByUuid(uuid) != entt::null)
+			m_State.Selection().Add(uuid);
 }
 
 const SceneEditorUI::PreviewRecoveryState* SceneEditorUI::FirstPendingRecovery() const
