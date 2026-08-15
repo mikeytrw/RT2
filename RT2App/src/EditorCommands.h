@@ -26,8 +26,9 @@
 //     a new multi-entity factory handles the gizmo path and drops no-op
 //     entities. ALWAYS local space, even when the user edited in World mode
 //     (the Inspector captures beforeLocalTRS via GetLocalTransform regardless
-//     of mode). Undo/Redo restore via SetLocalTransformStates. Sync impact:
-//     Transform.
+//     of mode). Undo/Redo replay the typed PrefabCommandTransaction composite
+//     (value, marker, and schema together). Sync impact is authoritative from
+//     that composite: Transform.
 //
 // SetVisibilityCommand:
 //   - Stores {vector<UUID,bool> beforeStates, vector<UUID,bool> afterStates}.

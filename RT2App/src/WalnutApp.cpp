@@ -2653,9 +2653,9 @@ private:
 		// mutation), build the command, and Execute it through history so the
 		// composite camera-pose write + marker insertion + schema promotion
 		// are atomic. Redo re-applies the stored after-state (NOT re-align to
-		// current view). Undo restores before-localTRS + before-cameraProps
-		// via the atomic SetCameraPoseState API (one revision bump, one
-		// authoritative Transform impact). The Execute result routes through
+		// current view). Undo replays the same typed composite transaction,
+		// restoring before-localTRS + before-cameraProps with one revision bump
+		// and one authoritative Transform impact. The Execute result routes through
 		// the router so the accumulation reset fires exactly once.
 		const auto entity = m_SceneMgr.FindEntityByUuid(camera);
 		if (entity == entt::null) return;

@@ -947,14 +947,39 @@ scene-management contracts are:
   re-applies the stored after-state, not re-align to current view.
 - **Single `SetMotionCommand`** with `optional<MotionComponent>` before/after
   covers add, remove, and velocity edits. One command class, three use cases.
-- **Material "Duplicate" button** does `AddMaterial` (out-of-command, orphaned
-  slot — leak-until-clear policy, consistent with 3B1) + a
-  `SetMaterialIndexCommand` recording the index change. Undo restores the old
-  index; the orphaned slot stays until `history.Clear()` +
-  `CompactMeshRegistryNow()`.
+- **Material "Duplicate" button** is admitted before staging and executes one
+  `DuplicateMaterialAndAssignCommand` composite. The command-owned slot remains
+  orphaned until history is cleared. Append + assignment + durable
+  `materialOverride` marker/schema transport share one revision, notification,
+  material impact, and history entry. Undo restores the source assignment but
+  deliberately retains the copied orphan slot until history is cleared and
+  resource compaction runs; Redo reuses that command-owned slot only after a
+  successful first Execute.
 - **Exit criterion:** after 3B2, the only non-command authoring mutations are
   glTF import, Load Mesh File, and env-map load. The `NotifySceneChanged` →
   compaction-gated path shrinks to imports only.
+
+### Automatic prefab override marking (S6)
+
+The persisted overridable wires are `name`, `transform`, `visible`,
+`materialOverride`, `light`, `camera`, `motion`, and `script`. The first
+effective edit of an inherited wire promotes the document to the current
+schema and transports the value, canonical marker vector, and schema in one
+composite commit. Existing markers remain single and canonical; ordinary
+entities receive the value edit without marker/schema state.
+
+Discrete edits execute once on history commit. Continuous light, camera,
+motion, script-field, and transform gestures use rolling composite previews;
+close records one command from the immutable origin, while return-to-start or
+Escape restores the origin without history. Pending recovery blocks later
+authoring admission until the explicit retry/discard path completes.
+
+Undo and Redo replay the same typed composite in the opposite direction,
+restoring exact value, marker presence, schema, affected UUIDs, and impact.
+Material fan-out validates scene-global slot indices, resource generation, and
+the complete imported-member UUID set before the first write. Raw manager state
+APIs remain low-level runtime/serialization primitives; editor entry points use
+typed commands or preview sessions and never split value and marker writes.
 
 ### Runtime lifecycle — Phase 4 completion (implemented)
 

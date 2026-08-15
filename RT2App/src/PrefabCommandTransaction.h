@@ -136,6 +136,12 @@ public:
 	// loudly instead of applying a forged ordinary/member mix.
 	void SetExplicitCapture(ExplicitCapture explicitCapture);
 
+	// Invocation-only authorization for the append-and-assign material
+	// operation. The owning command sets this before every replay; capture
+	// state and equal bytes never establish it.
+	void SetAllowExistingOwnedMaterialSlot(bool allowed)
+	{ m_AllowExistingOwnedMaterialSlot = allowed; }
+
 	// True when the supplied explicit capture failed one-for-one validation
 	// against the declared marker specs / value target (P2 finding 5). A
 	// rejected capture is surfaced by Capture()/Replay() as a loud failure;
@@ -171,6 +177,7 @@ private:
 	// Capture()/Replay() surface it as a loud failure rather than applying a
 	// forged capture.
 	bool m_ExplicitCaptureRejected = false;
+	bool m_AllowExistingOwnedMaterialSlot = false;
 };
 
 #endif // RT2_PREFAB_COMMAND_TRANSACTION_H

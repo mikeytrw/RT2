@@ -218,6 +218,19 @@ EditorMutationResult PublishTransformPreviewAndNotify(
 	return result;
 }
 
+// Production seam for non-transform composite previews. The publisher is
+// invoked exactly once and the exact result (including failures and canonical
+// no-ops) is routed exactly once; the helper never fabricates or rewrites the
+// mutation outcome.
+template <typename Publish, typename Route>
+EditorMutationResult PublishCompositePreviewAndRoute(
+	Publish&& publish, Route&& route)
+{
+	EditorMutationResult result = std::forward<Publish>(publish)();
+	std::forward<Route>(route)(result);
+	return result;
+}
+
 inline bool TransformBeginAdmissionAllowed(bool editable,
 	bool recoveryPending, std::uint64_t opaqueOwner)
 {

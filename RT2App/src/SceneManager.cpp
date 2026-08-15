@@ -2581,10 +2581,9 @@ bool EntityMatchesRecord(const entt::registry& reg, entt::entity e,
 		// not. Sorting both sides and comparing position-by-position catches that
 		// (and the symmetric `{a,a,b}` vs `{a,b,b}` case, which even bidirectional
 		// containment + equal size misses because counts can differ while coverage
-		// is identical). No product code materialises a duplicate today — the
-		// codec de-duplicates on read and S5/S6 do not exist yet — but S5 starts
-		// building these vectors in memory and makes this guard load-bearing, so
-		// the compare must not trust uniqueness.
+		// is identical). The live composite marking path canonicalizes vectors,
+		// but this guard remains load-bearing for in-memory structural replay and
+		// must not trust uniqueness before exact-state removal.
 		if (live.overrides.size() != record.prefabMember.overrides.size()) return false;
 		std::vector<PrefabComponentKey> liveSorted = live.overrides;
 		std::vector<PrefabComponentKey> recSorted = record.prefabMember.overrides;
@@ -5335,6 +5334,45 @@ rt2::core::Result<PrefabMaterialSlotStage> SceneManager::StageMaterialSlot(
 	return rt2::core::Result<PrefabMaterialSlotStage>::Ok(std::move(result));
 }
 
+rt2::core::Result<PrefabMaterialDuplicateStage> SceneManager::StageMaterialDuplicateAssignment(
+	const rt2::core::UUID& entity) const
+{
+	const auto e = m_Authoring.FindByUuid(entity);
+	if (e == entt::null || !m_EcsScene.registry.valid(e))
+		return rt2::core::Result<PrefabMaterialDuplicateStage>::Fail(
+			rt2::core::Error::InvalidEntity, entity.ToString(),
+			"material-duplicate staging: entity is not present");
+	const auto* ref = m_EcsScene.registry.try_get<MeshRef>(e);
+	if (!ref)
+		return rt2::core::Result<PrefabMaterialDuplicateStage>::Fail(
+			rt2::core::Error::InvalidEntity, entity.ToString(),
+			"material-duplicate staging: entity has no MeshRef");
+	if (ref->materialIndex < 0 || ref->materialIndex >= static_cast<int>(m_EcsScene.materials.size()))
+		return rt2::core::Result<PrefabMaterialDuplicateStage>::Fail(
+			rt2::core::Error::InvalidArgument, entity.ToString(),
+			"material-duplicate staging: source material index is out of range");
+	PrefabMaterialDuplicateStage result;
+	result.entity = entity;
+	result.sourceIndex = ref->materialIndex;
+	result.proposedIndex = static_cast<int>(m_EcsScene.materials.size());
+	result.sourceMaterial = m_EcsScene.materials[ref->materialIndex];
+	result.beforeEntityIndex = ref->materialIndex;
+	if (const auto* ov = m_EcsScene.registry.try_get<MaterialOverrideComponent>(e))
+		result.beforeOverride = *ov;
+	if (m_EcsScene.registry.all_of<ImportedMeshSourceComponent>(e))
+	{
+		MaterialOverrideComponent canonical;
+		canonical.material = result.sourceMaterial;
+		canonical.authored = true;
+		canonical.sourceMaterialKey = result.sourceMaterial.sourceKey;
+		canonical.materialIndex = result.proposedIndex;
+		result.afterOverride = std::move(canonical);
+	}
+	result.documentGeneration = DocumentGeneration();
+	result.resourceGeneration = ResourceGeneration();
+	return rt2::core::Result<PrefabMaterialDuplicateStage>::Ok(std::move(result));
+}
+
 EditorMutationResult SceneManager::SetMotionState(const rt2::core::UUID& entity,
                                                   const std::optional<MotionComponent>& value)
 {
@@ -5873,6 +5911,12 @@ bool S5EqualPayload(const PrefabValuePayload& a, const PrefabValuePayload& b)
 		else if constexpr (std::is_same_v<T, PrefabMaterialIndexValue>)
 			return lhs.materialIndex == rhs.materialIndex
 				&& S5EqualOverride(lhs.override, rhs.override);
+		else if constexpr (std::is_same_v<T, PrefabMaterialDuplicateValue>)
+			return lhs.sourceIndex == rhs.sourceIndex
+				&& lhs.targetIndex == rhs.targetIndex
+				&& lhs.entityMaterialIndex == rhs.entityMaterialIndex
+				&& S5EqualMaterial(lhs.sourceMaterial, rhs.sourceMaterial)
+				&& S5EqualOverride(lhs.overrideValue, rhs.overrideValue);
 		else return false;
 	}, a, b);
 }
@@ -6341,10 +6385,12 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 	const std::vector<PrefabMarkerEdit>& markers,
 	PrefabMarkerDirection direction,
 	std::uint32_t beforeSchemaVersion,
-	std::uint32_t afterSchemaVersion)
+	std::uint32_t afterSchemaVersion,
+	bool allowExistingOwnedMaterialSlot)
 {
 	return PreparePrefabCompositeEditsInternal(values, markers, direction,
-		beforeSchemaVersion, afterSchemaVersion, true);
+		beforeSchemaVersion, afterSchemaVersion, true,
+		allowExistingOwnedMaterialSlot);
 }
 
 rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEditsInternal(
@@ -6353,7 +6399,8 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 	PrefabMarkerDirection direction,
 	std::uint32_t beforeSchemaVersion,
 	std::uint32_t afterSchemaVersion,
-	bool allowIdentityWrites)
+	bool allowIdentityWrites,
+	bool allowExistingOwnedMaterialSlot)
 {
 	PrefabCompositePlan composite;
 	composite.direction = direction;
@@ -6362,6 +6409,7 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 	composite.values.direction = direction;
 	composite.values.documentGeneration = composite.documentGeneration;
 	composite.values.resourceGeneration = composite.resourceGeneration;
+	composite.allowExistingOwnedMaterialSlot = allowExistingOwnedMaterialSlot;
 
 	const auto fail = [](rt2::core::Error::Code code, const std::string& path,
 		const std::string& detail) {
@@ -6415,6 +6463,9 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 				return { e, missing("MeshRef") };
 			break;
 		case PrefabValueKind::MaterialSlotProperties:
+			break;
+		case PrefabValueKind::MaterialDuplicateAndAssign:
+			if (!registry.all_of<MeshRef>(e)) return { e, missing("MeshRef") };
 			break;
 		default:
 			return { e, rt2::core::Error{ rt2::core::Error::InvalidArgument,
@@ -6535,6 +6586,7 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 			? edit.before : edit.after;
 		const auto& targetPayload = direction == PrefabMarkerDirection::After
 			? edit.after : edit.before;
+		const auto editEntity = m_Authoring.FindByUuid(edit.entity);
 		op.source = sourcePayload;
 		op.target = targetPayload;
 		if (edit.kind == PrefabValueKind::MaterialSlotProperties)
@@ -6567,6 +6619,57 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 					fanoutError.detail.empty() ? "material fan-out validation failed" : fanoutError.detail);
 			op.source = std::move(sourceFanout);
 			op.target = std::move(targetFanout);
+		}
+		else if (edit.kind == PrefabValueKind::MaterialDuplicateAndAssign)
+		{
+			const auto* source = std::get_if<PrefabMaterialDuplicateValue>(&sourcePayload);
+			const auto* target = std::get_if<PrefabMaterialDuplicateValue>(&targetPayload);
+			if (!source || !target || source->sourceIndex < 0
+				|| source->targetIndex < 0 || source->sourceIndex != target->sourceIndex
+				|| source->targetIndex != target->targetIndex
+				|| !S5EqualMaterial(source->sourceMaterial, target->sourceMaterial))
+				return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(),
+					"material-duplicate payload is malformed");
+			if (editEntity == entt::null || !registry.valid(editEntity))
+				return fail(rt2::core::Error::InvalidEntity, edit.entity.ToString(),
+					"material-duplicate target entity is not present");
+			const auto* ref = registry.try_get<MeshRef>(editEntity);
+			if (!ref || ref->materialIndex != source->entityMaterialIndex)
+				return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(),
+					"material-duplicate source entity index differs from live state");
+			const int expectedSourceIndex = direction == PrefabMarkerDirection::After
+				? source->sourceIndex : source->targetIndex;
+			const int expectedTargetIndex = direction == PrefabMarkerDirection::After
+				? source->targetIndex : source->sourceIndex;
+			if (source->entityMaterialIndex != expectedSourceIndex
+				|| target->entityMaterialIndex != expectedTargetIndex)
+				return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(),
+					"material-duplicate directional payload is inconsistent");
+			if (expectedSourceIndex < 0
+				|| expectedSourceIndex >= static_cast<int>(m_EcsScene.materials.size())
+				|| !S5EqualMaterial(m_EcsScene.materials[expectedSourceIndex], source->sourceMaterial))
+				return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(),
+					"material-duplicate source material differs from live state");
+			if (direction == PrefabMarkerDirection::After)
+			{
+				if (source->targetIndex == static_cast<int>(m_EcsScene.materials.size()))
+				{
+					// First Execute: the append target is exactly the current table end.
+				}
+				else if (!allowExistingOwnedMaterialSlot
+					|| source->targetIndex < 0
+					|| source->targetIndex >= static_cast<int>(m_EcsScene.materials.size())
+					|| !S5EqualMaterial(m_EcsScene.materials[source->targetIndex], source->sourceMaterial))
+					return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(),
+						"material-duplicate target slot is not a newly appended or owned slot");
+			}
+			else if (source->targetIndex < 0
+				|| source->targetIndex >= static_cast<int>(m_EcsScene.materials.size())
+				|| !S5EqualMaterial(m_EcsScene.materials[source->targetIndex], source->sourceMaterial))
+				return fail(rt2::core::Error::InvalidArgument, edit.entity.ToString(),
+					"material-duplicate undo target slot is missing or changed");
+			op.source = *source;
+			op.target = *target;
 		}
 		else
 		{
@@ -6728,6 +6831,14 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 			write("transform:" + edit.entity.ToString(), source.local, target.local);
 			break;
 		}
+		case PrefabValueKind::MaterialDuplicateAndAssign:
+		{
+			const auto& source = std::get<PrefabMaterialDuplicateValue>(op.source);
+			const auto& target = std::get<PrefabMaterialDuplicateValue>(op.target);
+			write("material-duplicate:" + edit.entity.ToString(),
+				source, target);
+			break;
+		}
 		case PrefabValueKind::MotionState: write("motion:" + edit.entity.ToString(), op.source, op.target); break;
 		case PrefabValueKind::ScriptState: write("script:" + edit.entity.ToString(), op.source, op.target); break;
 		case PrefabValueKind::MaterialIndex:
@@ -6843,7 +6954,8 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 	const bool carriesResources = std::any_of(plan.values.operations.begin(), plan.values.operations.end(),
 		[](const PrefabValueOperation& op) {
 			return op.kind == PrefabValueKind::MaterialIndex
-				|| op.kind == PrefabValueKind::MaterialSlotProperties;
+				|| op.kind == PrefabValueKind::MaterialSlotProperties
+				|| op.kind == PrefabValueKind::MaterialDuplicateAndAssign;
 		});
 	if (carriesResources && (plan.resourceGeneration != ResourceGeneration()
 		|| plan.values.resourceGeneration != ResourceGeneration()))
@@ -6867,7 +6979,8 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 	if (!valueEdits.empty())
 	{
 		auto checked = PreparePrefabCompositeEditsInternal(valueEdits, {}, plan.direction,
-			currentSchema, currentSchema, false);
+			currentSchema, currentSchema, false,
+			plan.allowExistingOwnedMaterialSlot);
 		if (!checked.IsOk()) return fail(checked.error.code, checked.error.path, checked.error.detail);
 		if (checked.value.values.operations.size() != plan.values.operations.size())
 			return fail(rt2::core::Error::InvalidArgument, "", "stale composite value plan operation set changed");
@@ -6933,6 +7046,24 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 					"material fan-out member changed or is no longer imported");
 		}
 	}
+	for (const auto& op : plan.values.operations)
+	{
+		if (op.kind != PrefabValueKind::MaterialDuplicateAndAssign) continue;
+		const auto& source = std::get<PrefabMaterialDuplicateValue>(op.source);
+		const auto& target = std::get<PrefabMaterialDuplicateValue>(op.target);
+		if (source.targetIndex == static_cast<int>(m_EcsScene.materials.size()))
+			continue; // Commit will append this exact copied slot below.
+		if (!plan.allowExistingOwnedMaterialSlot
+			|| source.targetIndex < 0
+			|| source.targetIndex >= static_cast<int>(m_EcsScene.materials.size())
+			|| !S5EqualMaterial(m_EcsScene.materials[source.targetIndex], source.sourceMaterial))
+			return fail(rt2::core::Error::InvalidArgument, op.entity.ToString(),
+				"material-duplicate target slot is not authorized for reuse");
+		if (plan.direction == PrefabMarkerDirection::After
+			&& target.entityMaterialIndex != source.targetIndex)
+			return fail(rt2::core::Error::InvalidArgument, op.entity.ToString(),
+				"material-duplicate target entity index is inconsistent");
+	}
 
 	bool valueChange = std::any_of(operationChanges.begin(), operationChanges.end(),
 		[](bool changed) { return changed; });
@@ -6953,7 +7084,8 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 	{
 		if (!operationChanges[operationIndex]) continue;
 		const auto& op = plan.values.operations[operationIndex];
-		const auto e = op.kind == PrefabValueKind::MaterialSlotProperties ? entt::null : m_Authoring.FindByUuid(op.entity);
+		const auto e = (op.kind == PrefabValueKind::MaterialSlotProperties)
+			? entt::null : m_Authoring.FindByUuid(op.entity);
 		if (op.kind != PrefabValueKind::MaterialSlotProperties && (e == entt::null || !m_EcsScene.registry.valid(e))) return fail(rt2::core::Error::InvalidEntity, op.entity.ToString(), "composite value target disappeared");
 		std::visit([&](const auto& target) {
 			using T = std::decay_t<decltype(target)>;
@@ -6967,6 +7099,7 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 			else if constexpr (std::is_same_v<T, std::optional<ScriptComponent>>) { if (target) m_EcsScene.registry.emplace_or_replace<ScriptComponent>(e, *target); else if (m_EcsScene.registry.all_of<ScriptComponent>(e)) m_EcsScene.registry.remove<ScriptComponent>(e); }
 			else if constexpr (std::is_same_v<T, PrefabMaterialIndexValue>) { auto& ref = m_EcsScene.registry.get<MeshRef>(e); ref.materialIndex = target.materialIndex; if (target.override) m_EcsScene.registry.emplace_or_replace<MaterialOverrideComponent>(e, *target.override); else if (m_EcsScene.registry.all_of<MaterialOverrideComponent>(e)) m_EcsScene.registry.remove<MaterialOverrideComponent>(e); mergeImpact(rt2::core::SyncImpact::Material); }
 			else if constexpr (std::is_same_v<T, PrefabMaterialSlotValue>) { m_EcsScene.materials[target.slotIndex] = target.material; for (const auto& [uuid, ov] : target.overrides) { const auto targetEntity = m_Authoring.FindByUuid(uuid); if (ov) m_EcsScene.registry.emplace_or_replace<MaterialOverrideComponent>(targetEntity, *ov); else if (m_EcsScene.registry.all_of<MaterialOverrideComponent>(targetEntity)) m_EcsScene.registry.remove<MaterialOverrideComponent>(targetEntity); addAffected(uuid); } mergeImpact(rt2::core::SyncImpact::Material); }
+			else if constexpr (std::is_same_v<T, PrefabMaterialDuplicateValue>) { if (target.entityMaterialIndex == target.targetIndex && target.targetIndex == static_cast<int>(m_EcsScene.materials.size())) m_EcsScene.materials.push_back(target.sourceMaterial); auto& ref = m_EcsScene.registry.get<MeshRef>(e); ref.materialIndex = target.entityMaterialIndex; if (target.overrideValue) m_EcsScene.registry.emplace_or_replace<MaterialOverrideComponent>(e, *target.overrideValue); else if (m_EcsScene.registry.all_of<MaterialOverrideComponent>(e)) m_EcsScene.registry.remove<MaterialOverrideComponent>(e); mergeImpact(rt2::core::SyncImpact::Material); }
 			else if constexpr (std::is_same_v<T, std::monostate>) {}
 		}, op.target);
 		if (op.kind != PrefabValueKind::MaterialSlotProperties) { addAffected(op.entity); ++result.appliedValueOperations; }

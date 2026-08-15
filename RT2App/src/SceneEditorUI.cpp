@@ -1513,8 +1513,10 @@ void SceneEditorUI::RenderInspector()
 				{
 					MotionComponent target = mc;
 					target.linearVelocity = vel;
-					ApplyMutation(m_MotionVelocitySession.Preview(*m_SceneMgr,
-						PrefabValuePayload{ std::optional<MotionComponent>(target) }));
+					PublishCompositePreviewAndRoute(
+						[&]() { return m_MotionVelocitySession.Preview(*m_SceneMgr,
+							PrefabValuePayload{ std::optional<MotionComponent>(target) }); },
+						[&](const EditorMutationResult& result) { ApplyMutation(result); });
 				}
 
 				// Deferred close AFTER the mutation block: commit (record one
@@ -1877,17 +1879,28 @@ void SceneEditorUI::RenderMaterialEditor(SceneManager::EntityId entity)
 	ImGui::SameLine();
 	if (ImGui::Button("Duplicate"))
 	{
-		// Clone current material so this entity gets its own independent copy.
-		// AddMaterial creates a new slot outside the command (orphaned until
-		// history-clear compaction — consistent with the 3B1 leak-until-clear
-		// policy). The SetMaterialIndexCommand records the index change.
-		if (current >= 0 && current < (int)materials.size())
+		// Admission must happen before staging so pending preview recovery cannot
+		// be bypassed by an allocation. The typed command owns append + assign
+		// atomically and leaves the copied orphan slot until history is cleared.
+		if (!AdmitAuthoringMutation()) return;
+		const auto staged = m_SceneMgr->StageMaterialDuplicateAssignment(targetUuid);
+		if (!staged.IsOk())
 		{
-			SceneMaterial copy = m_SceneMgr->GetMaterial(current);
-			int newIdx = m_SceneMgr->AddMaterial(copy);
-			current = newIdx;
-			indexChanged = true;
+			ApplyMutation(ToEditorMutationResult(staged.error));
+			return;
 		}
+		auto duplicate = MakeDuplicateMaterialAndAssignCommand(staged.value);
+		if (!duplicate)
+		{
+			ApplyMutation(EditorMutationResult::Failure(
+				rt2::core::Error::InvalidArgument, targetUuid.ToString(),
+				"material duplicate command staging was rejected"));
+			return;
+		}
+		const auto result = ExecuteCommandThroughHistory(
+			m_CommandHistory, *m_SceneMgr, std::move(duplicate));
+		ApplyMutation(result, true);
+		return; // refresh the material-table reference on the next frame
 	}
 
 	if (indexChanged)
@@ -2180,7 +2193,10 @@ void SceneEditorUI::RenderLightEditor(SceneManager::EntityId entity)
 		// requires the changed widget to own the open session and freezes the
 		// frame while this session's recovery is pending (final-verdict P1
 		// finding 1).
-		ApplyMutation(m_LightSession.Preview(*m_SceneMgr, PrefabValuePayload{ edited }));
+		PublishCompositePreviewAndRoute(
+			[&]() { return m_LightSession.Preview(*m_SceneMgr,
+				PrefabValuePayload{ edited }); },
+			[&](const EditorMutationResult& result) { ApplyMutation(result); });
 	}
 
 	// Deferred close AFTER the mutation block: commit (record one command)
@@ -2299,7 +2315,10 @@ void SceneEditorUI::RenderCameraEditor(SceneManager::EntityId entity)
 		editedCamera.verticalFOV = verticalFOV;
 		editedCamera.aperture = aperture;
 		editedCamera.focusDistance = focusDistance;
-		ApplyMutation(m_CameraSession.Preview(*m_SceneMgr, PrefabValuePayload{ editedCamera }));
+		PublishCompositePreviewAndRoute(
+			[&]() { return m_CameraSession.Preview(*m_SceneMgr,
+				PrefabValuePayload{ editedCamera }); },
+			[&](const EditorMutationResult& result) { ApplyMutation(result); });
 	}
 
 	if (viewPressed && m_OnViewThroughCamera)
@@ -2732,11 +2751,12 @@ void SceneEditorUI::RenderScriptEditor(SceneManager::EntityId entity)
 					ImGui::GetID("##val"), m_ScriptFieldSessionOwningWidgetId,
 					PendingRecoveryFor(PreviewSessionKind::Script).pending))
 				{
-					applied = m_ScriptFieldSession.Preview(*m_SceneMgr,
-						PrefabValuePayload{ std::optional<ScriptComponent>(target) });
+					applied = PublishCompositePreviewAndRoute(
+						[&]() { return m_ScriptFieldSession.Preview(*m_SceneMgr,
+							PrefabValuePayload{ std::optional<ScriptComponent>(target) }); },
+						[&](const EditorMutationResult& result) { ApplyMutation(result); });
 					if (applied.success)
 						scriptState = m_SceneMgr->GetScriptState(targetUuid);
-					ApplyMutation(applied);
 				}
 			}
 			else

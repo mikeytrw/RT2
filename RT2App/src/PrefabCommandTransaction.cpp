@@ -269,7 +269,8 @@ EditorMutationResult PrefabCommandTransaction::Replay(SceneManager& scene,
 	}
 
 	auto plan = scene.PreparePrefabCompositeEdits(values, markers, direction,
-		m_BeforeSchema, m_AfterSchema);
+		m_BeforeSchema, m_AfterSchema,
+		m_AllowExistingOwnedMaterialSlot);
 	if (!plan.IsOk())
 		return ToEditorMutationResult(plan.error);
 

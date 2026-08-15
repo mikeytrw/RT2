@@ -123,6 +123,10 @@ enum class PrefabValueKind
 	ScriptState,
 	MaterialIndex,
 	MaterialSlotProperties,
+	// Append a copied scene-global material slot and assign it to one entity.
+	// This is intentionally distinct from MaterialIndex: a valid duplicate is
+	// always effective, even when the copied bytes equal an existing slot.
+	MaterialDuplicateAndAssign,
 };
 
 struct PrefabCameraPoseValue
@@ -145,6 +149,15 @@ struct PrefabMaterialIndexValue
 	std::optional<MaterialOverrideComponent> override;
 };
 
+struct PrefabMaterialDuplicateValue
+{
+	int sourceIndex = -1;
+	int targetIndex = -1;
+	int entityMaterialIndex = -1;
+	SceneMaterial sourceMaterial;
+	std::optional<MaterialOverrideComponent> overrideValue;
+};
+
 using PrefabValuePayload = std::variant<
 	std::monostate,
 	std::string,
@@ -156,7 +169,8 @@ using PrefabValuePayload = std::variant<
 	std::optional<MotionComponent>,
 	std::optional<ScriptComponent>,
 	PrefabMaterialIndexValue,
-	PrefabMaterialSlotValue>;
+	PrefabMaterialSlotValue,
+	PrefabMaterialDuplicateValue>;
 
 // Canonical payload equality — the exact comparison
 // CommitPrefabCompositePlan uses to decide value effectiveness (S5). S6-C
@@ -199,6 +213,10 @@ struct PrefabCompositePlan
 	std::uint64_t resourceGeneration = 0;
 	PrefabValuePlan values;
 	PrefabMarkerPlan markers;
+	// Invocation-only authorization supplied by the command that owns the
+	// duplicate-slot lifecycle. It is never inferred from capture state,
+	// indices, or equal material bytes.
+	bool allowExistingOwnedMaterialSlot = false;
 };
 
 struct PrefabCompositeApplyResult
@@ -240,6 +258,22 @@ struct PrefabMaterialSlotStage
 	// Compatibility alias for callers that only need the canonical After set.
 	std::vector<std::pair<rt2::core::UUID,
 		std::optional<MaterialOverrideComponent>>> overrides;
+};
+
+// Zero-mutation staging for the editor's Duplicate action. The proposed slot
+// is the current material-table end; no append, notification, or entity write
+// occurs until DuplicateMaterialAndAssignCommand reaches composite Commit.
+struct PrefabMaterialDuplicateStage
+{
+	rt2::core::UUID entity;
+	int sourceIndex = -1;
+	int proposedIndex = -1;
+	SceneMaterial sourceMaterial;
+	int beforeEntityIndex = -1;
+	std::optional<MaterialOverrideComponent> beforeOverride;
+	std::optional<MaterialOverrideComponent> afterOverride;
+	std::uint64_t documentGeneration = 0;
+	std::uint64_t resourceGeneration = 0;
 };
 
 // ============================================================================
@@ -809,6 +843,8 @@ struct PrefabMaterialSlotStage
 	// durable UUID and includes explicit nullopt entries for absent overrides.
 	rt2::core::Result<PrefabMaterialSlotStage> StageMaterialSlot(
 		int slotIndex, const SceneMaterial& material) const;
+	rt2::core::Result<PrefabMaterialDuplicateStage> StageMaterialDuplicateAssignment(
+		const rt2::core::UUID& entity) const;
 	EditorMutationResult SetMotionState(const rt2::core::UUID& entity,
 	                                    const std::optional<MotionComponent>& value);
 	// Phase 6B/W0: add, remove, or replace an entity's ScriptComponent.
@@ -914,7 +950,8 @@ struct PrefabMaterialSlotStage
 		const std::vector<PrefabMarkerEdit>& markers,
 		PrefabMarkerDirection direction,
 		std::uint32_t beforeSchemaVersion,
-		std::uint32_t afterSchemaVersion);
+		std::uint32_t afterSchemaVersion,
+		bool allowExistingOwnedMaterialSlot = false);
 	PrefabCompositeApplyResult CommitPrefabCompositePlan(PrefabCompositePlan plan);
 
 	// ---- Dirty tracking ----
@@ -989,7 +1026,8 @@ private:
 		PrefabMarkerDirection direction,
 		std::uint32_t beforeSchemaVersion,
 		std::uint32_t afterSchemaVersion,
-		bool allowIdentityWrites);
+		bool allowIdentityWrites,
+		bool allowExistingOwnedMaterialSlot = false);
 
 	// Record a durable MaterialOverrideComponent on an imported entity for the
 	// material currently at `materialIndex`. Captures the material value

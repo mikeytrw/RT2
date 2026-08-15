@@ -157,6 +157,31 @@ private:
 	PrefabCommandTransaction m_Transaction;
 };
 
+// Atomic editor Duplicate: append one copied scene-global material slot and
+// assign it to the target entity in the same typed composite commit. The
+// command owns the only authorization that permits an existing slot on Redo;
+// capture state, index equality, and equal bytes are never sufficient.
+class DuplicateMaterialAndAssignCommand final : public IEditorCommand
+{
+public:
+	explicit DuplicateMaterialAndAssignCommand(PrefabMaterialDuplicateStage stage);
+
+	const rt2::core::UUID& Target() const { return m_Stage.entity; }
+	int SourceIndex() const { return m_Stage.sourceIndex; }
+	int TargetIndex() const { return m_Stage.proposedIndex; }
+	bool SlotCreatedBySuccessfulExecute() const
+	{ return m_SlotCreatedBySuccessfulExecute; }
+
+	EditorMutationResult Execute(SceneManager& scene) override;
+	EditorMutationResult Undo(SceneManager& scene) override;
+	std::string Description() const override { return "Duplicate Material"; }
+
+private:
+	PrefabMaterialDuplicateStage m_Stage;
+	PrefabCommandTransaction m_Transaction;
+	bool m_SlotCreatedBySuccessfulExecute = false;
+};
+
 class SetLightCommand final : public IEditorCommand
 {
 public:
@@ -403,6 +428,11 @@ std::unique_ptr<IEditorCommand> MakeSetMaterialPropertiesCommandIfEffective(
 	SceneMaterial afterMaterial,
 	SetMaterialPropertiesCommand::OverrideList beforeOverrides,
 	SetMaterialPropertiesCommand::OverrideList afterOverrides);
+
+// A valid duplicate is deliberately never a canonical no-op: it creates a
+// distinct scene-global slot even when the copied bytes equal another slot.
+std::unique_ptr<IEditorCommand> MakeDuplicateMaterialAndAssignCommand(
+	const PrefabMaterialDuplicateStage& stage);
 
 // Returns null if the before/after LightComponent values are equal.
 // `explicitCapture`, when present, fixes the transaction's marker/schema

@@ -5772,7 +5772,9 @@ TEST_CASE("Phase 8 W3 S6-D: multi-member transform composite and token session")
     REQUIRE(history.Execute(std::move(command), f.manager).success);
     CHECK(registry.get<Transform>(aHandle).translation == aAfter.translation);
     CHECK(registry.get<Transform>(bHandle).translation == bAfter.translation);
-    REQUIRE(history.Undo(f.manager).success);
+    const auto duplicateUndo = history.Undo(f.manager);
+    INFO(duplicateUndo.error.Format());
+    REQUIRE(duplicateUndo.success);
     CHECK(registry.get<Transform>(aHandle).translation == aBefore.translation);
     CHECK(registry.get<Transform>(bHandle).translation == bBefore.translation);
 
@@ -11591,6 +11593,104 @@ TEST_CASE("Phase 8 W3 S6-C: duplicate after an open Light preview is admitted ch
     }
 
     std::filesystem::remove_all(s.dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: admitted material duplicate owns append lifecycle")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6e_material_duplicate");
+    const auto prefabPath = f.CreatePrefabAsset(dir);
+    const auto first = f.InstantiatePrefab(prefabPath);
+    const auto second = f.InstantiatePrefab(prefabPath);
+    auto& reg = f.manager.GetECS().registry;
+    const auto rootUuid = reg.get<EntityIdComponent>(first.first).id;
+    const auto secondRootUuid = reg.get<EntityIdComponent>(second.first).id;
+    for (const auto e : { first.first, first.second, second.first, second.second })
+    {
+        reg.emplace_or_replace<MeshRef>(e, MeshRef{ 0, 0 });
+        reg.emplace_or_replace<ImportedMeshSourceComponent>(e);
+    }
+    const auto& firstMember = reg.get<PrefabMemberComponent>(first.first);
+    const auto& secondMember = reg.get<PrefabMemberComponent>(second.first);
+    CHECK(firstMember.templateId == secondMember.templateId);
+    CHECK(firstMember.instanceId != secondMember.instanceId);
+    const auto staged = f.manager.StageMaterialDuplicateAssignment(rootUuid);
+    REQUIRE(staged.IsOk());
+    const auto tableBefore = f.manager.GetMaterialCount();
+    EditorCommandHistory history;
+    auto command = MakeDuplicateMaterialAndAssignCommand(staged.value);
+    REQUIRE(command);
+    auto* duplicate = dynamic_cast<DuplicateMaterialAndAssignCommand*>(command.get());
+    REQUIRE(duplicate);
+    const auto executed = history.Execute(std::move(command), f.manager);
+    REQUIRE(executed.success);
+    CHECK(executed.effective);
+    CHECK(duplicate->SlotCreatedBySuccessfulExecute());
+    CHECK(f.manager.GetMaterialCount() == tableBefore + 1);
+    CHECK(reg.get<MeshRef>(first.first).materialIndex == staged.value.proposedIndex);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    const auto duplicateUndo = history.Undo(f.manager);
+    INFO(duplicateUndo.error.Format());
+    REQUIRE(duplicateUndo.success);
+    CHECK(reg.get<MeshRef>(first.first).materialIndex == 0);
+    CHECK(f.manager.GetMaterialCount() == tableBefore + 1);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(reg.get<MeshRef>(first.first).materialIndex == staged.value.proposedIndex);
+    CHECK(f.manager.GetMaterialCount() == tableBefore + 1);
+    CHECK(reg.get<MeshRef>(second.first).materialIndex == 0);
+    CHECK(rootUuid != secondRootUuid);
+
+    // A failed first Execute captures transaction state but must not authorize
+    // adoption of a foreign byte-equal slot at the proposed index.
+    auto failedStage = f.manager.StageMaterialDuplicateAssignment(secondRootUuid);
+    REQUIRE(failedStage.IsOk());
+    auto failedCommand = MakeDuplicateMaterialAndAssignCommand(failedStage.value);
+    REQUIRE(failedCommand);
+    auto* failedDuplicate = dynamic_cast<DuplicateMaterialAndAssignCommand*>(failedCommand.get());
+    REQUIRE(failedDuplicate);
+	    const auto originalMaterial = f.manager.GetMaterial(0);
+	    auto changed = originalMaterial;
+    changed.sourceKey = "s6e-stale-source";
+    REQUIRE(f.manager.SetMaterialPropertiesState(0, changed).success);
+    const auto firstFailure = failedDuplicate->Execute(f.manager);
+    CHECK_FALSE(firstFailure.success);
+    CHECK_FALSE(failedDuplicate->SlotCreatedBySuccessfulExecute());
+	    REQUIRE(f.manager.SetMaterialPropertiesState(0, originalMaterial).success);
+    const auto foreignIndex = f.manager.AddMaterial(failedStage.value.sourceMaterial);
+    CHECK(foreignIndex == failedStage.value.proposedIndex);
+    const auto materialsAtRetry = f.manager.GetMaterialCount();
+    const auto retryFailure = failedDuplicate->Execute(f.manager);
+    CHECK_FALSE(retryFailure.success);
+    CHECK_FALSE(failedDuplicate->SlotCreatedBySuccessfulExecute());
+    CHECK(f.manager.GetMaterialCount() == materialsAtRetry);
+    CHECK(reg.get<MeshRef>(second.first).materialIndex == 0);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: composite preview route preserves exact result")
+{
+    int publishes = 0;
+    int routes = 0;
+    EditorMutationResult expected;
+    expected.success = true;
+    expected.effective = false;
+    expected.syncImpact = rt2::core::SyncImpact::Material;
+    const auto result = PublishCompositePreviewAndRoute(
+        [&]() { ++publishes; return expected; },
+        [&](const EditorMutationResult& routed) {
+            ++routes;
+            CHECK(routed.success == expected.success);
+            CHECK(routed.effective == expected.effective);
+            CHECK(routed.syncImpact == expected.syncImpact);
+        });
+    CHECK(publishes == 1);
+    CHECK(routes == 1);
+    CHECK(result.success == expected.success);
+    CHECK(result.effective == expected.effective);
+    CHECK(result.syncImpact == expected.syncImpact);
 }
 
 TEST_CASE("Phase 8 W3 S6-C: paste after an open Light preview is admitted chronologically")

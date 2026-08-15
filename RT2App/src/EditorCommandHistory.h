@@ -86,6 +86,8 @@ public:
 
 	bool CanUndo() const { return !m_UndoStack.empty(); }
 	bool CanRedo() const { return !m_RedoStack.empty(); }
+	std::size_t UndoDepthForTest() const { return m_UndoStack.size(); }
+	std::size_t RedoDepthForTest() const { return m_RedoStack.size(); }
 
 	std::string UndoDescription() const;
 	std::string RedoDescription() const;

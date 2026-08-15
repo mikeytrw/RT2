@@ -250,6 +250,57 @@ EditorMutationResult SetMaterialPropertiesCommand::Undo(SceneManager& scene)
 	return m_Transaction.Undo(scene);
 }
 
+// ---- DuplicateMaterialAndAssignCommand ----
+
+DuplicateMaterialAndAssignCommand::DuplicateMaterialAndAssignCommand(
+	PrefabMaterialDuplicateStage stage)
+	: m_Stage(std::move(stage))
+	, m_Transaction(
+		std::vector<PrefabValueEdit>{
+			{ PrefabValueKind::MaterialDuplicateAndAssign, m_Stage.entity,
+				PrefabMarkerDirection::After,
+				PrefabMaterialDuplicateValue{
+					m_Stage.sourceIndex, m_Stage.proposedIndex, m_Stage.beforeEntityIndex,
+					m_Stage.sourceMaterial, m_Stage.beforeOverride },
+				PrefabMaterialDuplicateValue{
+					m_Stage.sourceIndex, m_Stage.proposedIndex, m_Stage.proposedIndex,
+					m_Stage.sourceMaterial, m_Stage.afterOverride } } },
+		std::vector<PrefabCommandTransaction::MarkerSpec>{
+			{ m_Stage.entity, PrefabComponentKeyFor<MaterialOverrideComponent>::value, true } })
+{
+}
+
+EditorMutationResult DuplicateMaterialAndAssignCommand::Execute(SceneManager& scene)
+{
+	if (m_Stage.documentGeneration != scene.DocumentGeneration()
+		|| m_Stage.resourceGeneration != scene.ResourceGeneration())
+		return EditorMutationResult::Failure(
+			rt2::core::Error::InvalidArgument, m_Stage.entity.ToString(),
+			"material duplicate staging is stale");
+	// This boolean is command-owned and monotonic. It becomes true only after
+	// the real atomic first Execute has succeeded and changed the document.
+	m_Transaction.SetAllowExistingOwnedMaterialSlot(
+		m_SlotCreatedBySuccessfulExecute);
+	const auto result = m_Transaction.Execute(scene);
+	if (result.success && result.effective)
+		m_SlotCreatedBySuccessfulExecute = true;
+	return result;
+}
+
+EditorMutationResult DuplicateMaterialAndAssignCommand::Undo(SceneManager& scene)
+{
+	if (m_Stage.documentGeneration != scene.DocumentGeneration()
+		|| m_Stage.resourceGeneration != scene.ResourceGeneration())
+		return EditorMutationResult::Failure(
+			rt2::core::Error::InvalidArgument, m_Stage.entity.ToString(),
+			"material duplicate staging is stale");
+	// Undo retains the copied slot, so the same command remains authorized for
+	// its later Redo. The transaction still validates all bytes/generations.
+	m_Transaction.SetAllowExistingOwnedMaterialSlot(
+		m_SlotCreatedBySuccessfulExecute);
+	return m_Transaction.Undo(scene);
+}
+
 // ---- SetLightCommand ----
 
 EditorMutationResult SetLightCommand::Execute(SceneManager& scene)
@@ -426,6 +477,15 @@ std::unique_ptr<IEditorCommand> MakeSetMaterialPropertiesCommandIfEffective(
 	return std::make_unique<SetMaterialPropertiesCommand>(slotIndex,
 		std::move(beforeMaterial), std::move(afterMaterial),
 		std::move(beforeOverrides), std::move(afterOverrides));
+}
+
+std::unique_ptr<IEditorCommand> MakeDuplicateMaterialAndAssignCommand(
+	const PrefabMaterialDuplicateStage& stage)
+{
+	if (stage.entity.IsNull() || stage.sourceIndex < 0
+		|| stage.proposedIndex <= stage.sourceIndex)
+		return nullptr;
+	return std::make_unique<DuplicateMaterialAndAssignCommand>(stage);
 }
 
 std::unique_ptr<IEditorCommand> MakeSetLightCommandIfEffective(
