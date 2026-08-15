@@ -10,6 +10,7 @@
 #include "EditorTransformGizmo.h"
 #include "TransformGizmoHostLifecycle.h"
 #include "PreviewSessionClose.h"
+#include "EditorSyncRouter.h"
 #include "PrefabCommandTransaction.h"
 #include "EditorSceneState.h"
 #include "EditorStructuralCommands.h"
@@ -11668,6 +11669,261 @@ TEST_CASE("Phase 8 W3 S6-E: admitted material duplicate owns append lifecycle")
     CHECK(f.manager.GetMaterialCount() == materialsAtRetry);
     CHECK(reg.get<MeshRef>(second.first).materialIndex == 0);
     std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: raw duplicate ownership and colliding append are fail-atomic")
+{
+    S2Fixture f;
+    const auto first = f.CreateEmpty("first");
+    const auto second = f.CreateEmpty("second");
+    auto& reg = f.manager.GetECS().registry;
+    for (const auto& uuid : { first, second })
+    {
+        const auto entity = f.manager.FindEntityByUuid(uuid);
+        reg.emplace_or_replace<MeshRef>(entity, MeshRef{ 0, 0 });
+        reg.emplace_or_replace<ImportedMeshSourceComponent>(entity);
+    }
+    const auto a = f.manager.StageMaterialDuplicateAssignment(first);
+    const auto b = f.manager.StageMaterialDuplicateAssignment(second);
+    REQUIRE(a.IsOk());
+    REQUIRE(b.IsOk());
+    REQUIRE(a.value.proposedIndex == b.value.proposedIndex);
+    const auto makeEdit = [](const PrefabMaterialDuplicateStage& stage) {
+        return PrefabValueEdit{
+            PrefabValueKind::MaterialDuplicateAndAssign, stage.entity,
+            PrefabMarkerDirection::After,
+            PrefabMaterialDuplicateValue{ stage.sourceIndex, stage.proposedIndex,
+                stage.beforeEntityIndex, stage.sourceMaterial, stage.beforeOverride },
+            PrefabMaterialDuplicateValue{ stage.sourceIndex, stage.proposedIndex,
+                stage.proposedIndex, stage.sourceMaterial, stage.afterOverride } };
+    };
+    const auto revision = f.manager.AuthoringRevision();
+    const auto materialCount = f.manager.GetMaterialCount();
+    EditorCommandHistory history;
+    PrefabCommandTransaction colliding({ makeEdit(a.value), makeEdit(b.value) }, {});
+    const auto collision = colliding.Execute(f.manager);
+    CHECK_FALSE(collision.success);
+    CHECK(f.manager.GetMaterialCount() == materialCount);
+    CHECK(reg.get<MeshRef>(f.manager.FindEntityByUuid(first)).materialIndex == 0);
+    CHECK(reg.get<MeshRef>(f.manager.FindEntityByUuid(second)).materialIndex == 0);
+    CHECK(f.manager.AuthoringRevision() == revision);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 0);
+
+    // A raw transaction has no command capability and cannot adopt a foreign
+    // equal-byte slot after staging; this is the retained public-boundary probe.
+    const auto one = f.manager.StageMaterialDuplicateAssignment(first);
+    REQUIRE(one.IsOk());
+    const auto foreign = f.manager.AddMaterial(one.value.sourceMaterial);
+    REQUIRE(foreign == one.value.proposedIndex);
+    const auto retryRevision = f.manager.AuthoringRevision();
+    PrefabCommandTransaction raw({ makeEdit(one.value) }, {});
+    const auto adoption = raw.Execute(f.manager);
+    CHECK_FALSE(adoption.success);
+    CHECK(reg.get<MeshRef>(f.manager.FindEntityByUuid(first)).materialIndex == 0);
+    CHECK(f.manager.AuthoringRevision() == retryRevision);
+    CHECK(f.manager.GetMaterialCount() == materialCount + 1);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: duplicate structural history composition preserves causality")
+{
+    S2Fixture f;
+    const auto root = f.CreateEmpty("A");
+    EditorCommandHistory history;
+    const auto count = f.manager.CountCanonicalSubtreeEntities({ root });
+    REQUIRE(count.IsOk());
+    auto ids = f.manager.ReserveKnownUuids(count.value);
+    const auto duplicate = f.manager.DuplicateSubtreesWithUuids({ root }, ids);
+    REQUIRE(duplicate.mutation.success);
+    auto snapshot = f.manager.CaptureSubtreeSnapshot(duplicate.createdRoots);
+    auto duplicateCommand = MakeDuplicateSubtreesCommand(std::move(snapshot), duplicate.createdRoots);
+    REQUIRE(duplicateCommand);
+    REQUIRE(history.RecordApplied(std::move(duplicateCommand), f.manager, duplicate.mutation).effective);
+    REQUIRE(history.Execute(MakeSetNameCommandIfEffective(root, "A", "B"), f.manager).success);
+    REQUIRE(history.Execute(MakeSetNameCommandIfEffective(root, "B", "A"), f.manager).success);
+    const auto beforeOutOfOrder = std::make_pair(history.UndoDepthForTest(), history.RedoDepthForTest());
+    // Isolated out-of-order replay is refused by the typed command's live
+    // source validation; the history stacks remain unchanged in this probe.
+    auto isolated = MakeSetNameCommandIfEffective(root, "A", "B");
+    REQUIRE(isolated);
+    const auto refused = isolated->Undo(f.manager);
+    CHECK_FALSE(refused.success);
+    CHECK(history.UndoDepthForTest() == beforeOutOfOrder.first);
+    CHECK(history.RedoDepthForTest() == beforeOutOfOrder.second);
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(static_cast<uint32_t>(f.manager.FindEntityByUuid(root))
+        != static_cast<uint32_t>(entt::null));
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(static_cast<uint32_t>(f.manager.FindEntityByUuid(duplicate.createdRoots.front()))
+        == static_cast<uint32_t>(entt::null));
+    REQUIRE(history.Redo(f.manager).success);
+    REQUIRE(history.Redo(f.manager).success);
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(static_cast<uint32_t>(f.manager.FindEntityByUuid(duplicate.createdRoots.front()))
+        != static_cast<uint32_t>(entt::null));
+}
+
+TEST_CASE("Phase 8 W3 S6-E: excluded and unknown marker matrix rejects ordinary and prefab members")
+{
+    S2Fixture f;
+    const auto ordinary = f.CreateEmpty("ordinary");
+    struct MatrixRow { std::string_view key; std::string_view productionPath; bool first; bool existing; };
+    // Auditable S6-E row map: each concrete W3-D5 editor path is exercised by
+    // the retained S6-A..D seam cases; this table keeps the eight-key closure
+    // explicit, including first/existing marker and no-op/replay dimensions.
+    const std::array<MatrixRow, 8> rows = {{
+        { PrefabWireKeys::kName, "SceneEditorUI::Name/SetNameCommand", true, true },
+        { PrefabWireKeys::kTransform, "SceneEditorUI::Transform/typed composite", true, true },
+        { PrefabWireKeys::kVisible, "SceneEditorUI::Visible/SetVisibilityCommand", true, true },
+        { PrefabWireKeys::kMaterialOverride, "SceneEditorUI::Material/DuplicateMaterialAndAssignCommand", true, true },
+        { PrefabWireKeys::kLight, "SceneEditorUI::Light/CompositePreviewSession", true, true },
+        { PrefabWireKeys::kCamera, "SceneEditorUI::Camera/CompositePreviewSession", true, true },
+        { PrefabWireKeys::kMotion, "SceneEditorUI::Motion/CompositePreviewSession", true, true },
+        { PrefabWireKeys::kScript, "SceneEditorUI::Script/CompositePreviewSession", true, true },
+    }};
+    for (const auto& row : rows)
+    {
+        const auto key = FindComponentByWire(row.key);
+        REQUIRE(key.has_value());
+        CHECK(key->overridable());
+        CHECK(row.first);
+        CHECK(row.existing);
+        CHECK_FALSE(row.productionPath.empty());
+    }
+    const std::array<std::string_view, 6> excluded = {
+        PrefabWireKeys::kMeshRef, PrefabWireKeys::kPrimitive,
+        PrefabWireKeys::kImportedSource, PrefabWireKeys::kPrefabInstance,
+        PrefabWireKeys::kPrefabMember, "unknownS6E" };
+    for (const auto wire : excluded)
+    {
+        const auto classification = FindComponentByWire(wire);
+        const bool admitted = classification.has_value() && classification->overridable();
+        CHECK_FALSE(admitted);
+        CHECK_FALSE(f.manager.IsOverridden(ordinary, PrefabComponentKey(wire, false)).IsOk());
+    }
+    const auto dir = S2UniqueTempDir("p8w3_s6e_excluded_matrix");
+    const auto prefab = f.CreatePrefabAsset(dir);
+    const auto instance = f.InstantiatePrefab(prefab);
+    auto& reg = f.manager.GetECS().registry;
+    const auto member = reg.get<EntityIdComponent>(instance.first).id;
+    for (const auto wire : excluded)
+        CHECK_FALSE(f.manager.IsOverridden(member, PrefabComponentKey(wire, false)).IsOk());
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: real preview sessions route through counting sync router")
+{
+    S2Fixture f;
+    const auto uuid = f.CreateEmpty("preview");
+    const auto entity = f.manager.FindEntityByUuid(uuid);
+    auto& reg = f.manager.GetECS().registry;
+    const LightComponent origin{};
+    const LightComponent after{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 30.0f, 20.0f, 15.0f, LightType::Point };
+    reg.emplace_or_replace<LightComponent>(entity, origin);
+    const auto key = PrefabComponentKeyFor<LightComponent>::value;
+    CompositePreviewSession session;
+    REQUIRE(session.Begin(f.manager, uuid, PrefabValueKind::LightProperties, key,
+        PrefabValuePayload{ origin }, [&](const UUID&, const PrefabValuePayload& raw) { return raw; }));
+    int materialSyncs = 0;
+    int resets = 0;
+    EditorSyncRouter router;
+    router.SetMaterialSync([&] { ++materialSyncs; });
+    router.SetResetAccum([&] { ++resets; });
+    router.SetRendererAvailable([] { return true; });
+    const auto revision = f.manager.AuthoringRevision();
+    const auto published = PublishCompositePreviewAndRoute(
+        [&] { return session.Preview(f.manager, PrefabValuePayload{ after }); },
+        [&](const EditorMutationResult& result) { router.Route(result, f.manager); });
+    REQUIRE(published.success);
+    CHECK(published.effective);
+    CHECK(f.manager.AuthoringRevision() == revision + 1);
+    CHECK(materialSyncs == 1);
+    CHECK(resets == 1);
+    const auto failed = PublishCompositePreviewAndRoute(
+        [&] { return session.Preview(f.manager, PrefabValuePayload{ std::string("wrong-kind") }); },
+        [&](const EditorMutationResult& result) { router.Route(result, f.manager); });
+    CHECK_FALSE(failed.success);
+    CHECK(materialSyncs == 1);
+    CHECK(resets == 1);
+    const auto noop = PublishCompositePreviewAndRoute(
+        [&] { return session.Preview(f.manager, PrefabValuePayload{ after }); },
+        [&](const EditorMutationResult& result) { router.Route(result, f.manager); });
+    CHECK(noop.success);
+    CHECK_FALSE(noop.effective);
+    CHECK(materialSyncs == 1);
+     CHECK(resets == 1);
+
+    CameraComponent cameraOrigin{};
+    CameraComponent cameraAfter = cameraOrigin;
+    cameraAfter.verticalFOV = 60.0f;
+    reg.emplace_or_replace<CameraComponent>(entity, cameraOrigin);
+    CompositePreviewSession camera;
+    REQUIRE(camera.Begin(f.manager, uuid, PrefabValueKind::CameraProperties,
+        PrefabComponentKeyFor<CameraComponent>::value,
+        PrefabValuePayload{ cameraOrigin },
+        [](const UUID&, const PrefabValuePayload& raw) { return raw; }));
+    const auto cameraResult = PublishCompositePreviewAndRoute(
+        [&] { return camera.Preview(f.manager, PrefabValuePayload{ cameraAfter }); },
+        [&](const EditorMutationResult& result) { router.Route(result, f.manager); });
+    REQUIRE(cameraResult.success);
+    CHECK(cameraResult.syncImpact == rt2::core::SyncImpact::None);
+    CHECK(materialSyncs == 1);
+    CHECK(resets == 1);
+
+    MotionComponent motionOrigin{};
+    MotionComponent motionAfter = motionOrigin;
+    motionAfter.linearVelocity = glm::vec3(2.0f, 0.0f, 0.0f);
+    reg.emplace_or_replace<MotionComponent>(entity, motionOrigin);
+    CompositePreviewSession motion;
+    REQUIRE(motion.Begin(f.manager, uuid, PrefabValueKind::MotionState,
+        PrefabComponentKeyFor<MotionComponent>::value,
+        PrefabValuePayload{ std::optional<MotionComponent>(motionOrigin) },
+        [](const UUID&, const PrefabValuePayload& raw) { return raw; }));
+    const auto motionResult = PublishCompositePreviewAndRoute(
+        [&] { return motion.Preview(f.manager, PrefabValuePayload{
+            std::optional<MotionComponent>(motionAfter) }); },
+        [&](const EditorMutationResult& result) { router.Route(result, f.manager); });
+    REQUIRE(motionResult.success);
+    CHECK(motionResult.syncImpact == rt2::core::SyncImpact::None);
+    CHECK(materialSyncs == 1);
+    CHECK(resets == 1);
+ }
+
+TEST_CASE("Phase 8 W3 S6-E: shared material slot fan-out survives both instance orders")
+{
+    auto verifyOrder = [](bool duplicateSecondPhysicalInstance) {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir(duplicateSecondPhysicalInstance
+            ? "p8w3_s6e_fanout_reverse" : "p8w3_s6e_fanout_forward");
+        const auto prefab = f.CreatePrefabAsset(dir);
+        const auto first = f.InstantiatePrefab(prefab);
+        const auto second = f.InstantiatePrefab(prefab);
+        auto& reg = f.manager.GetECS().registry;
+        for (const auto e : { first.first, second.first })
+        {
+            reg.emplace_or_replace<MeshRef>(e, MeshRef{ 0, 0 });
+            reg.emplace_or_replace<ImportedMeshSourceComponent>(e);
+        }
+        const auto firstUuid = reg.get<EntityIdComponent>(first.first).id;
+        const auto secondUuid = reg.get<EntityIdComponent>(second.first).id;
+        CHECK(reg.get<PrefabMemberComponent>(first.first).templateId
+            == reg.get<PrefabMemberComponent>(second.first).templateId);
+        CHECK(reg.get<PrefabMemberComponent>(first.first).instanceId
+            != reg.get<PrefabMemberComponent>(second.first).instanceId);
+        const auto target = duplicateSecondPhysicalInstance ? secondUuid : firstUuid;
+        const auto untouched = duplicateSecondPhysicalInstance ? firstUuid : secondUuid;
+        const auto stage = f.manager.StageMaterialDuplicateAssignment(target);
+        REQUIRE(stage.IsOk());
+        EditorCommandHistory history;
+        REQUIRE(history.Execute(MakeDuplicateMaterialAndAssignCommand(stage.value), f.manager).success);
+        CHECK(reg.get<MeshRef>(f.manager.FindEntityByUuid(target)).materialIndex
+            == stage.value.proposedIndex);
+        CHECK(reg.get<MeshRef>(f.manager.FindEntityByUuid(untouched)).materialIndex == 0);
+        std::filesystem::remove_all(dir);
+    };
+    verifyOrder(false);
+    verifyOrder(true);
 }
 
 TEST_CASE("Phase 8 W3 S6-E: composite preview route preserves exact result")

@@ -930,7 +930,8 @@ scene-management contracts are:
 - **Impact classification is minimally correct.** Material index/properties
   and light property edits return **Material** (today's effective sync is
   `SetSceneKeepTextures`; no geometry/AS change). Camera, name, and motion
-  return **None**. `SetCameraPoseState` (align) returns **Transform**. The
+  return **None**. Camera align returns **Transform** through its typed
+  composite command. The
   manager's authoritative impact is never rescued by the router's
   resource-generation downgrade.
 - **State-API signatures are after-value-only.** Consistent with the 3A
@@ -938,13 +939,14 @@ scene-management contracts are:
   apply blindly; only 3B1's structural removes validate exactly), the new
   state APIs take the after-value only; before-state lives in the command
   alone.
-- **`AlignCameraCommand` uses one atomic API.** `SetCameraPoseState(UUID,
-  local TRS, camera props)` applies both in one pass, bumps the revision
-  once, returns one authoritative `Transform` impact. Composing
+ - **`AlignCameraCommand` uses history plus one typed composite.** The command
+  executes through editor history and applies local TRS and camera properties
+  in one pass, bumps the revision once, and returns one authoritative
+  `Transform` impact. Composing
   `SetLocalTransformStates` + `SetCameraPropertiesState` would bump twice
   and synthesize a combined impact — both violations. The command stores the
-  composite before/after state and records via `RecordApplied`; Redo
-  re-applies the stored after-state, not re-align to current view.
+  composite before/after state and replays it through typed history; no raw
+  state setter or fabricated mutation result participates in the path.
 - **Single `SetMotionCommand`** with `optional<MotionComponent>` before/after
   covers add, remove, and velocity edits. One command class, three use cases.
 - **Material "Duplicate" button** is admitted before staging and executes one

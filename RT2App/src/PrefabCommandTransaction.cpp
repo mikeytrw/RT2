@@ -268,9 +268,11 @@ EditorMutationResult PrefabCommandTransaction::Replay(SceneManager& scene,
 			*captured.beforePresent, captured.afterPresent });
 	}
 
-	auto plan = scene.PreparePrefabCompositeEdits(values, markers, direction,
-		m_BeforeSchema, m_AfterSchema,
-		m_AllowExistingOwnedMaterialSlot);
+	auto plan = m_MaterialDuplicateOwnership
+		? scene.PreparePrefabCompositeEditsWithOwnership(values, markers, direction,
+			m_BeforeSchema, m_AfterSchema, *m_MaterialDuplicateOwnership)
+		: scene.PreparePrefabCompositeEdits(values, markers, direction,
+			m_BeforeSchema, m_AfterSchema);
 	if (!plan.IsOk())
 		return ToEditorMutationResult(plan.error);
 

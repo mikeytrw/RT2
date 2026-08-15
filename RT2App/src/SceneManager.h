@@ -23,6 +23,19 @@
 #include <variant>
 
 struct EditorCameraPose;
+class SceneManager;
+class PrefabCommandTransaction;
+class DuplicateMaterialAndAssignCommand;
+
+// Opaque capability for the one command that owns material-duplicate slot
+// reuse after a successful first Execute.  The type is copyable so it can
+// travel through a staged plan, but only the owning command can construct it.
+class MaterialDuplicateOwnershipToken
+{
+private:
+	explicit MaterialDuplicateOwnershipToken() = default;
+	friend class DuplicateMaterialAndAssignCommand;
+};
 
 // ============================================================================
 // Prefab override membership delta (Phase 8 W3, D3.10).
@@ -208,15 +221,18 @@ struct PrefabValuePlan
 
 struct PrefabCompositePlan
 {
+	friend class SceneManager;
 	PrefabMarkerDirection direction = PrefabMarkerDirection::After;
 	std::uint64_t documentGeneration = 0;
 	std::uint64_t resourceGeneration = 0;
 	PrefabValuePlan values;
 	PrefabMarkerPlan markers;
-	// Invocation-only authorization supplied by the command that owns the
-	// duplicate-slot lifecycle. It is never inferred from capture state,
-	// indices, or equal material bytes.
-	bool allowExistingOwnedMaterialSlot = false;
+
+private:
+	// Private capability supplied by the command that owns the duplicate-slot
+	// lifecycle. Public callers can construct plans, but cannot forge reuse.
+	// It is never inferred from capture state, indices, or equal material bytes.
+	std::optional<MaterialDuplicateOwnershipToken> materialDuplicateOwnership;
 };
 
 struct PrefabCompositeApplyResult
@@ -950,8 +966,7 @@ struct PrefabMaterialDuplicateStage
 		const std::vector<PrefabMarkerEdit>& markers,
 		PrefabMarkerDirection direction,
 		std::uint32_t beforeSchemaVersion,
-		std::uint32_t afterSchemaVersion,
-		bool allowExistingOwnedMaterialSlot = false);
+		std::uint32_t afterSchemaVersion);
 	PrefabCompositeApplyResult CommitPrefabCompositePlan(PrefabCompositePlan plan);
 
 	// ---- Dirty tracking ----
@@ -1004,6 +1019,14 @@ struct PrefabMaterialDuplicateStage
 	bool CompactMeshRegistry();
 
 private:
+	friend class PrefabCommandTransaction;
+	rt2::core::Result<PrefabCompositePlan> PreparePrefabCompositeEditsWithOwnership(
+		const std::vector<PrefabValueEdit>& values,
+		const std::vector<PrefabMarkerEdit>& markers,
+		PrefabMarkerDirection direction,
+		std::uint32_t beforeSchemaVersion,
+		std::uint32_t afterSchemaVersion,
+		const MaterialDuplicateOwnershipToken& ownership);
 	void UpdateWorldTransforms();
 	void RefreshCameraForwardDirections(const std::vector<entt::entity>& roots);
 	void ReconcileStoredCameraDirections();
@@ -1027,7 +1050,7 @@ private:
 		std::uint32_t beforeSchemaVersion,
 		std::uint32_t afterSchemaVersion,
 		bool allowIdentityWrites,
-		bool allowExistingOwnedMaterialSlot = false);
+		const MaterialDuplicateOwnershipToken* ownership = nullptr);
 
 	// Record a durable MaterialOverrideComponent on an imported entity for the
 	// material currently at `materialIndex`. Captures the material value

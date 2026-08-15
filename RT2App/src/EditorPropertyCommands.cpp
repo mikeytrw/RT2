@@ -279,8 +279,10 @@ EditorMutationResult DuplicateMaterialAndAssignCommand::Execute(SceneManager& sc
 			"material duplicate staging is stale");
 	// This boolean is command-owned and monotonic. It becomes true only after
 	// the real atomic first Execute has succeeded and changed the document.
-	m_Transaction.SetAllowExistingOwnedMaterialSlot(
-		m_SlotCreatedBySuccessfulExecute);
+	m_Transaction.SetMaterialDuplicateOwnership(
+		m_SlotCreatedBySuccessfulExecute
+			? std::optional<MaterialDuplicateOwnershipToken>{MaterialDuplicateOwnershipToken{}}
+			: std::nullopt);
 	const auto result = m_Transaction.Execute(scene);
 	if (result.success && result.effective)
 		m_SlotCreatedBySuccessfulExecute = true;
@@ -296,8 +298,10 @@ EditorMutationResult DuplicateMaterialAndAssignCommand::Undo(SceneManager& scene
 			"material duplicate staging is stale");
 	// Undo retains the copied slot, so the same command remains authorized for
 	// its later Redo. The transaction still validates all bytes/generations.
-	m_Transaction.SetAllowExistingOwnedMaterialSlot(
-		m_SlotCreatedBySuccessfulExecute);
+	m_Transaction.SetMaterialDuplicateOwnership(
+		m_SlotCreatedBySuccessfulExecute
+			? std::optional<MaterialDuplicateOwnershipToken>{MaterialDuplicateOwnershipToken{}}
+			: std::nullopt);
 	return m_Transaction.Undo(scene);
 }
 

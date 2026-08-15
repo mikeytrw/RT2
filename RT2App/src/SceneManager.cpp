@@ -6385,12 +6385,25 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 	const std::vector<PrefabMarkerEdit>& markers,
 	PrefabMarkerDirection direction,
 	std::uint32_t beforeSchemaVersion,
-	std::uint32_t afterSchemaVersion,
-	bool allowExistingOwnedMaterialSlot)
+	std::uint32_t afterSchemaVersion)
 {
 	return PreparePrefabCompositeEditsInternal(values, markers, direction,
 		beforeSchemaVersion, afterSchemaVersion, true,
-		allowExistingOwnedMaterialSlot);
+		nullptr);
+}
+
+rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEditsWithOwnership(
+	const std::vector<PrefabValueEdit>& values,
+	const std::vector<PrefabMarkerEdit>& markers,
+	PrefabMarkerDirection direction,
+	std::uint32_t beforeSchemaVersion,
+	std::uint32_t afterSchemaVersion,
+	const MaterialDuplicateOwnershipToken& ownership)
+{
+	auto result = PreparePrefabCompositeEditsInternal(values, markers, direction,
+		beforeSchemaVersion, afterSchemaVersion, true, &ownership);
+	if (result.IsOk()) result.value.materialDuplicateOwnership = ownership;
+	return result;
 }
 
 rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEditsInternal(
@@ -6400,7 +6413,7 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 	std::uint32_t beforeSchemaVersion,
 	std::uint32_t afterSchemaVersion,
 	bool allowIdentityWrites,
-	bool allowExistingOwnedMaterialSlot)
+	const MaterialDuplicateOwnershipToken* ownership)
 {
 	PrefabCompositePlan composite;
 	composite.direction = direction;
@@ -6409,7 +6422,6 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 	composite.values.direction = direction;
 	composite.values.documentGeneration = composite.documentGeneration;
 	composite.values.resourceGeneration = composite.resourceGeneration;
-	composite.allowExistingOwnedMaterialSlot = allowExistingOwnedMaterialSlot;
 
 	const auto fail = [](rt2::core::Error::Code code, const std::string& path,
 		const std::string& detail) {
@@ -6656,7 +6668,7 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 				{
 					// First Execute: the append target is exactly the current table end.
 				}
-				else if (!allowExistingOwnedMaterialSlot
+				else if (!ownership
 					|| source->targetIndex < 0
 					|| source->targetIndex >= static_cast<int>(m_EcsScene.materials.size())
 					|| !S5EqualMaterial(m_EcsScene.materials[source->targetIndex], source->sourceMaterial))
@@ -6892,6 +6904,17 @@ rt2::core::Result<PrefabCompositePlan> SceneManager::PreparePrefabCompositeEdits
 		}
 		composite.values.operations.push_back(std::move(op));
 	}
+	{
+		std::unordered_set<int> duplicateTargets;
+		for (const auto& op : composite.values.operations)
+		{
+			if (op.kind != PrefabValueKind::MaterialDuplicateAndAssign) continue;
+			const auto& target = std::get<PrefabMaterialDuplicateValue>(op.target);
+			if (!duplicateTargets.insert(target.targetIndex).second)
+				return fail(rt2::core::Error::InvalidArgument, op.entity.ToString(),
+					"material-duplicate target slot collides within composite");
+		}
+	}
 
 	if (!markers.empty())
 	{
@@ -6980,7 +7003,8 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 	{
 		auto checked = PreparePrefabCompositeEditsInternal(valueEdits, {}, plan.direction,
 			currentSchema, currentSchema, false,
-			plan.allowExistingOwnedMaterialSlot);
+			plan.materialDuplicateOwnership
+				? &*plan.materialDuplicateOwnership : nullptr);
 		if (!checked.IsOk()) return fail(checked.error.code, checked.error.path, checked.error.detail);
 		if (checked.value.values.operations.size() != plan.values.operations.size())
 			return fail(rt2::core::Error::InvalidArgument, "", "stale composite value plan operation set changed");
@@ -7053,7 +7077,7 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 		const auto& target = std::get<PrefabMaterialDuplicateValue>(op.target);
 		if (source.targetIndex == static_cast<int>(m_EcsScene.materials.size()))
 			continue; // Commit will append this exact copied slot below.
-		if (!plan.allowExistingOwnedMaterialSlot
+		if (!plan.materialDuplicateOwnership.has_value()
 			|| source.targetIndex < 0
 			|| source.targetIndex >= static_cast<int>(m_EcsScene.materials.size())
 			|| !S5EqualMaterial(m_EcsScene.materials[source.targetIndex], source.sourceMaterial))
@@ -7063,6 +7087,17 @@ PrefabCompositeApplyResult SceneManager::CommitPrefabCompositePlan(PrefabComposi
 			&& target.entityMaterialIndex != source.targetIndex)
 			return fail(rt2::core::Error::InvalidArgument, op.entity.ToString(),
 				"material-duplicate target entity index is inconsistent");
+	}
+	{
+		std::unordered_set<int> duplicateTargets;
+		for (const auto& op : plan.values.operations)
+		{
+			if (op.kind != PrefabValueKind::MaterialDuplicateAndAssign) continue;
+			const auto& target = std::get<PrefabMaterialDuplicateValue>(op.target);
+			if (!duplicateTargets.insert(target.targetIndex).second)
+				return fail(rt2::core::Error::InvalidArgument, op.entity.ToString(),
+					"material-duplicate target slot collides within composite");
+		}
 	}
 
 	bool valueChange = std::any_of(operationChanges.begin(), operationChanges.end(),
