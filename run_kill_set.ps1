@@ -12,8 +12,13 @@
 #   4. builds the CPU-only RT2Tests (the fault lives in production sources the
 #      test project compiles directly) and runs the named doctest filter,
 #      asserting it is RED (exit != 0) with at least the pinned number of
-#      failed assertions (manifest red_failed_asserts_min), and capturing EXACT
-#      case/assertion counts;
+#      failed assertions (manifest red_failed_asserts_min) AND, where the
+#      manifest pins one, a RED signature: a regex that must match the doctest
+#      ERROR lines, so the guard is pinned to WHICH assertion fails and not
+#      merely how many. A count floor equal to the default of 1 admits any RED
+#      whatsoever (a FATAL REQUIRE reports exactly one failed assertion), so
+#      guards whose lethal fault kills a REQUIRE pin the signature instead;
+#      capturing EXACT case/assertion counts;
 #   5. restores the production file byte-for-byte and asserts GREEN on the same
 #      filter after a rebuild;
 #   6. records, per guard, the commit sha actually under test (git HEAD at run
@@ -22,11 +27,17 @@
 # Usage (run from the repository root, Windows PowerShell):
 #   powershell -File .\run_kill_set.ps1                  # all guards
 #   powershell -File .\run_kill_set.ps1 -Guard route-seam
-#   powershell -File .\run_kill_set.ps1 -ProveAnchorCorruption route-seam
+#   powershell -File .\run_kill_set.ps1 -ProveContentAlignment -Guard route-seam
+# The parameter block is [CmdletBinding()], so an unknown or misspelled switch
+# is a hard binding error. That matters: without it PowerShell silently ignores
+# the unknown name and falls through to the DEFAULT path, which is the full
+# seven-guard run that patches production files — a typo would turn a read-only
+# proof into a long destructive run.
 # Exit 0 when every guard discriminates; 1 on any failure. Generated
 # artifacts (report.tsv, build logs) are written under kill_set/ and are
 # .gitignore`d; the tree is left clean of generated output.
 
+[CmdletBinding()]
 param(
     [string]$Guard = "",
     [string]$Config = "Release",
@@ -111,11 +122,17 @@ function Run-Filter {
     if (-not $casesLine) { $casesLine = $out | Where-Object { $_ -match 'test cases:' } | Select-Object -First 1 }
     $failedAsserts = 0
     if ($assertLine -match '(\d+)\s+failed') { [int]$failedAsserts = $Matches[1] }
+    # The doctest ERROR lines name the exact assertion that died. This is the
+    # signature a guard is pinned to when its failed-assertion count cannot
+    # discriminate (see red_expected_signature in kill_set/manifest.tsv).
+    $errorLines = @($out | Where-Object { $_ -match 'ERROR:' })
     return [pscustomobject]@{
         ExitCode = [int]$exit
         CasesLine = $casesLine
         AssertLine = $assertLine
         FailedAsserts = $failedAsserts
+        ErrorLines = $errorLines
+        Signature = ($errorLines -join "`n")
         Output = ($out -join "`n")
     }
 }
@@ -124,7 +141,7 @@ $guards = Import-Csv -Delimiter "`t" -Path $manifestPath
 if ($Guard) { $guards = $guards | Where-Object { $_.guard -eq $Guard } }
 
 $report = New-Object System.Collections.Generic.List[string]
-$report.Add("guard`tcommit`tred_cases`tred_asserts_failed`tgreen_cases`tgreen_asserts_failed`tresult")
+$report.Add("guard`tcommit`tred_cases`tred_asserts_failed`tred_signature_pin`tgreen_cases`tgreen_asserts_failed`tresult")
 
 foreach ($g in $guards) {
     $guardName = $g.guard
@@ -206,6 +223,7 @@ foreach ($g in $guards) {
     Write-Host "RED run: exit=$($red.ExitCode)"
     Write-Host "  $($red.CasesLine)"
     Write-Host "  $($red.AssertLine)"
+    foreach ($e in $red.ErrorLines) { Write-Host "  signature: $e" -ForegroundColor DarkYellow }
     $minExpected = 1
     if ($g.red_failed_asserts_min) { $minExpected = [int]$g.red_failed_asserts_min }
     if ($red.ExitCode -eq 0) {
@@ -215,6 +233,29 @@ foreach ($g in $guards) {
     }
     if ($red.FailedAsserts -lt $minExpected) {
         Write-Host "FAIL: RED but only $($red.FailedAsserts) failed assertions; manifest pins >= $minExpected (wrong reason)" -ForegroundColor Red
+        [System.IO.File]::WriteAllText($prodFile, $original)
+        exit 1
+    }
+    # Signature pin. Every guard must state a value: a regex, or the literal '-'
+    # meaning "count floor is the discriminator here". A missing column is a
+    # manifest error, not a silent pass — that is exactly the failure mode this
+    # check exists to remove.
+    $sigPin = $g.red_expected_signature
+    if ($null -eq $sigPin -or $sigPin -eq "") {
+        Write-Host "FAIL: manifest guard $guardName has no red_expected_signature value (use '-' to state it is unpinned)" -ForegroundColor Red
+        [System.IO.File]::WriteAllText($prodFile, $original)
+        exit 1
+    }
+    if ($sigPin -eq "-") {
+        if ($minExpected -le 1) {
+            Write-Host "FAIL: guard $guardName pins neither a signature nor a discriminating count floor (red_failed_asserts_min=$minExpected is the default and admits any RED)" -ForegroundColor Red
+            [System.IO.File]::WriteAllText($prodFile, $original)
+            exit 1
+        }
+        Write-Host "  signature: not pinned; discrimination rests on the count floor >= $minExpected"
+    }
+    elseif ($red.Signature -notmatch $sigPin) {
+        Write-Host "FAIL: RED for the wrong reason; no doctest ERROR line matched the pinned signature /$sigPin/" -ForegroundColor Red
         [System.IO.File]::WriteAllText($prodFile, $original)
         exit 1
     }
@@ -233,8 +274,8 @@ foreach ($g in $guards) {
     if ($green.ExitCode -ne 0) { Write-Host "FAIL: filter expected GREEN after restore but suite stayed RED" -ForegroundColor Red; exit 1 }
 
     $commit = git -C $root rev-parse HEAD
-    $report.Add(("{0}`t{1}`t{2}`t{3}`t{4}`t{5}`tPASS" -f $guardName, $commit,
-        $red.CasesLine, $red.FailedAsserts, $green.CasesLine, $green.FailedAsserts))
+    $report.Add(("{0}`t{1}`t{2}`t{3}`t{4}`t{5}`t{6}`tPASS" -f $guardName, $commit,
+        $red.CasesLine, $red.FailedAsserts, $sigPin, $green.CasesLine, $green.FailedAsserts))
     Write-Host ("guard {0}: PASS (lethal at {1})" -f $guardName, $commit) -ForegroundColor Green
 }
 

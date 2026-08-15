@@ -11731,10 +11731,19 @@ TEST_CASE("Phase 8 W3 S6-E: raw duplicate ownership and colliding append are fai
 // bypassed by constructing the composite plan myself) must be rejected by
 // CommitPrefabCompositePlan with zero table/index/revision change. This is the
 // scenario an earlier review reached only via an out-of-tree probe; it must now
-// stay load-bearing in the suite. The BuildWithUuidsCollision helper forges the
-// collision AFTER Prepare so the collision check exercised here is the
-// Commit-site duplicate-target rejection, not the Prepare assembly check.
-TEST_CASE("Phase 8 W3 S6-E: forged material duplicate plan collides only at Commit")
+// stay load-bearing in the suite.
+//
+// What this test proves, stated exactly (round-6 review, established by
+// injection): submitting a forged colliding plan to CommitPrefabCompositePlan
+// is rejected with zero write. It does NOT prove the Commit-site collision loop
+// at SceneManager.cpp:7091-7101 is load-bearing. Commit re-runs
+// PreparePrefabCompositeEditsInternal at SceneManager.cpp:7004 as validate-only
+// re-validation, so the Prepare-site check at SceneManager.cpp:6907-6917 is
+// what actually rejects this plan: removing the Commit-site loop alone leaves
+// this test GREEN 9/9; removing both sites turns it RED 5/9 here at
+// REQUIRE_FALSE(commit.error.IsOk()). The Commit-site loop is retained as
+// deliberate defence in depth that no test pins.
+TEST_CASE("Phase 8 W3 S6-E: forged material duplicate plan is rejected at Commit with zero write")
 {
     S2Fixture f;
     const auto first = f.CreateEmpty("first");
