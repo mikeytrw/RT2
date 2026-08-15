@@ -1,0 +1,1 @@
+		markers.push_back({ triple.target, PrefabComponentKeyFor<Transform>::value, true });

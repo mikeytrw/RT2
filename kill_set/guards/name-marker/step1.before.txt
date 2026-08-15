@@ -1,0 +1,2 @@
+		std::vector<PrefabCommandTransaction::MarkerSpec>{
+			{ m_Target, PrefabComponentKeyFor<NameComponent>::value, true } })

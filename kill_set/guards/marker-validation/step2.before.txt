@@ -1,0 +1,10 @@
+			const auto canonical = FindComponentByWire(spec.key.wire());
+			if (!canonical)
+				return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+					spec.member.ToString(),
+					"unknown override key wire '" + std::string(spec.key.wire()) + "'");
+			if (!canonical->overridable())
+				return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+					spec.member.ToString(),
+					"non-overridable (excluded) override key wire '"
+					+ std::string(spec.key.wire()) + "'");

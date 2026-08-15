@@ -11826,62 +11826,498 @@ TEST_CASE("Phase 8 W3 S6-E: duplicate structural history composition preserves c
     std::filesystem::remove_all(dir);
 }
 
-TEST_CASE("Phase 8 W3 S6-E: concrete W3-D5 path and cell matrix is complete")
+namespace
 {
-    struct Row
+
+// S6-E compile-time key coverage (audit-map replacement, A2/A2.1). One entry
+// per overridable persisted component. The array type is pinned to
+// CountOverridableEntries() so adding a ninth overridable component without a
+// matching coverage entry (or dropping/recategorizing one) is a COMPILE error —
+// the same mechanism the frozen key table uses, rather than a prose claim.
+// This is key exhaustiveness only; the deleted W3-D5 map's PATH dimension is
+// carried by the executable kill-set (run_kill_set), not by this array.
+//
+// Every entry EXECUTES real production code and meets the A2.1 floor: it drives
+// the key through a genuine factory -> EditorCommandHistory Execute + Undo +
+// Redo, and asserts the true resulting state (revision delta, marker /
+// IsOverridden, schema, affected UUID union, both history depths). Wherever the
+// real syncImpact is not None, the REAL result is routed through a real
+// counting EditorSyncRouter and the impact is observed to have fired. An entry
+// that only inspected table metadata would replicate the F-1 defect this block
+// replaces, so none does.
+struct S6EKeyCoverage
+{
+    PrefabComponentKey key;
+    const char* name;
+    void (*exercise)(S2Fixture&);
+};
+
+// Real-router observation helper for the A2.1 floor. Every exercise whose
+// resulting syncImpact is not None must route the REAL result through a real
+// counting EditorSyncRouter and assert that the impact actually fired; the
+// router is a shared show, not a synthetic counter.
+struct S6ERouteCounts
+{
+    int syncs = 0;
+    int resets = 0;
+};
+
+S6ERouteCounts S6EObserveRoute(S2Fixture& f, const EditorMutationResult& result)
+{
+    S6ERouteCounts counts;
+    EditorSyncRouter router;
+    router.SetRendererAvailable([] { return true; });
+    router.SetTransformSync([&] { ++counts.syncs; });
+    router.SetMaterialSync([&] { ++counts.syncs; });
+    router.SetFullSync([&] { ++counts.syncs; });
+    router.SetResetAccum([&] { ++counts.resets; });
+    router.Route(result, f.manager);
+    return counts;
+}
+
+void S6EExerciseName(S2Fixture& f);
+void S6EExerciseTransform(S2Fixture& f);
+void S6EExerciseVisible(S2Fixture& f);
+void S6EExerciseMaterial(S2Fixture& f);
+void S6EExerciseLight(S2Fixture& f);
+void S6EExerciseCamera(S2Fixture& f);
+void S6EExerciseMotion(S2Fixture& f);
+void S6EExerciseScript(S2Fixture& f);
+
+constexpr std::array<S6EKeyCoverage, CountOverridableEntries()> kS6Coverage = {{
+    { PrefabComponentKeyFor<NameComponent>::value, "name", &S6EExerciseName },
+    { PrefabComponentKeyFor<Transform>::value, "transform", &S6EExerciseTransform },
+    { PrefabComponentKeyFor<VisibleComponent>::value, "visible", &S6EExerciseVisible },
+    { PrefabComponentKeyFor<MaterialOverrideComponent>::value, "materialOverride", &S6EExerciseMaterial },
+    { PrefabComponentKeyFor<LightComponent>::value, "light", &S6EExerciseLight },
+    { PrefabComponentKeyFor<CameraComponent>::value, "camera", &S6EExerciseCamera },
+    { PrefabComponentKeyFor<MotionComponent>::value, "motion", &S6EExerciseMotion },
+    { PrefabComponentKeyFor<ScriptComponent>::value, "script", &S6EExerciseScript },
+}};
+static_assert(kS6Coverage.size() == CountOverridableEntries(),
+    "one coverage entry is required for every overridable persisted component");
+
+// Lock the array to EXACTLY the frozen overridable table set at compile time.
+// Deleting an entry (size 7 vs 8), re-wiring an entry to a different wire, or
+// adding a ninth overridable component without a matching entry all fail here.
+constexpr std::size_t coverageMatchesTable() noexcept
+{
+    if (kS6Coverage.size() != CountOverridableEntries()) return 1;
+    for (const auto& tableEntry : kPrefabTable)
     {
-        std::string_view path;
-        std::string_view wire;
-        std::array<std::string_view, 10> cells; // first/existing/ordinary/no-op/undo/redo/failure/UUID/schema/host+history
-        std::string_view reversibleFault;
-    };
-    const auto cells = [](std::string_view test) {
-        return std::array<std::string_view, 10>{ test, test, test, test, test,
-            test, test, test, test, test };
-    };
-    const std::array<Row, 26> rows = {{
-        { "transform-local-inspector", PrefabWireKeys::kTransform, cells("Phase 8 W3 S6-D: multi-member transform composite and token session"), "transform token/capture fault" },
-        { "transform-world-inspector", PrefabWireKeys::kTransform, cells("Phase 8 W3 S6-D: parent child world session is order independent and malformed batches are fail atomic"), "world batch atomicity fault" },
-        { "transform-viewport-gizmo", PrefabWireKeys::kTransform, cells("Phase 8 W3 S6-D: fifth-kind Transform-Light ordering sync and pending quarantine"), "gizmo notification fault" },
-        { "align-transform-only", PrefabWireKeys::kTransform, cells("Phase 8 W3 S6-B fixup: camera align marks only canonically changed wires"), "align transform marker fault" },
-        { "align-camera-only", PrefabWireKeys::kCamera, cells("Phase 8 W3 S6-C: finalize-before-align keeps camera history exactly undoable"), "align camera seam fault" },
-        { "align-both", PrefabWireKeys::kCamera, cells("Phase 8 W3 S6-B: camera alignment command is one composite commit"), "align dual-impact fault" },
-        { "material-duplicate", PrefabWireKeys::kMaterialOverride, cells("Phase 8 W3 S6-E: admitted material duplicate owns append lifecycle"), "duplicate ownership fault" },
-        { "material-index", PrefabWireKeys::kMaterialOverride, cells("Phase 8 W3 S6-B: material index command one-shot staging and undo"), "material index composite fault" },
-        { "material-properties", PrefabWireKeys::kMaterialOverride, cells("Phase 8 W3 S6-B: material-slot properties command complete fan-out"), "material property fan-out fault" },
-        { "material-fan-out", PrefabWireKeys::kMaterialOverride, cells("Phase 8 W3 S6-E: two-instance material properties fan-out is sorted and reversible"), "fan-out UUID ordering fault" },
-        { "motion-value", PrefabWireKeys::kMotion, cells("Phase 8 W3 S6-C: motion velocity preview rolling source and close"), "motion preview route fault" },
-        { "motion-add-remove", PrefabWireKeys::kMotion, cells("Phase 8 W3 S6-B: motion add/velocity/remove undo-redo with marker deltas"), "motion add/remove composite fault" },
-        { "script-continuous-int-float-vec3-color", PrefabWireKeys::kScript, cells("Phase 8 W3 S6-C: script field live preview commits one gesture"), "script continuous route fault" },
-        { "script-discrete-bool-string-uuid", PrefabWireKeys::kScript, cells("Phase 8 W3 S6-B: script Bool/String/UUID field edits round-trip exactly"), "script typed field fault" },
-        { "script-add-path-rebind-remove", PrefabWireKeys::kScript, cells("Phase 8 W3 S6-B: bound script add/path/remove undo-redo is self-consistent"), "script identity/path fault" },
-        { "visibility", PrefabWireKeys::kVisible, cells("Phase 8 W3 S6-B: visibility Execute/Undo/Redo is one composite commit"), "visibility split-commit fault" },
-        { "name", PrefabWireKeys::kName, cells("Phase 8 W3 S6-B: name first-marker/existing-marker/no-op and ordinary entity"), "name marker fault" },
-        { "light", PrefabWireKeys::kLight, cells("Phase 8 W3 S6-C: light live preview rolling source and one-command close"), "preview publish route fault" },
-        { "camera", PrefabWireKeys::kCamera, cells("Phase 8 W3 S6-C: camera live preview commit and exact undo restore"), "preview publish route fault" },
-        { "motion-preview", PrefabWireKeys::kMotion, cells("Phase 8 W3 S6-C: motion velocity preview rolling source and close"), "preview publish route fault" },
-        { "script-preview", PrefabWireKeys::kScript, cells("Phase 8 W3 S6-E: real Script preview route closes and restores durably"), "preview publish route fault" },
-        { "ordinary-preview", PrefabWireKeys::kLight, cells("Phase 8 W3 S6-C: ordinary entity preview is value-only and undoable"), "ordinary marker suppression fault" },
-        { "preview-no-op", PrefabWireKeys::kLight, cells("Phase 8 W3 S6-C: canonical first-frame no-op Preview is zero-churn"), "preview no-op suppression fault" },
-        { "preview-failure", PrefabWireKeys::kLight, cells("Phase 8 W3 S6-C: stale preview failure retains recovery state"), "preview failure suppression fault" },
-        { "excluded-unknown", "unknownS6E", cells("Phase 8 W3 S6-E: excluded and unknown durable boundary is zero-write"), "excluded boundary validation fault" },
-        { "structural-duplicate-history", PrefabWireKeys::kName, cells("Phase 8 W3 S6-E: duplicate structural history composition preserves causality"), "override comparison fault" },
-    }};
-    std::unordered_set<std::string> paths;
-    for (const auto& row : rows)
-    {
-        REQUIRE(paths.insert(std::string(row.path)).second);
-        REQUIRE_FALSE(row.wire.empty());
-        REQUIRE_FALSE(row.reversibleFault.empty());
-        for (const auto cell : row.cells) REQUIRE_FALSE(cell.empty());
-        if (row.path != "excluded-unknown")
-        {
-            const auto canonical = FindComponentByWire(row.wire);
-            REQUIRE(canonical.has_value());
-            CHECK(canonical->overridable());
-        }
+        if (!tableEntry.overridable()) continue;
+        std::size_t hits = 0;
+        for (const auto& entry : kS6Coverage)
+            if (entry.key.wire() == tableEntry.wire()
+                && entry.key.overridable() == tableEntry.overridable())
+                ++hits;
+        if (hits != 1) return 1;
     }
-    CHECK(paths.size() == rows.size());
+    return 0;
+}
+static_assert(coverageMatchesTable() == 0,
+    "kS6Coverage must contain exactly the frozen overridable component keys");
+
+void S6EExerciseName(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_name");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto key = PrefabComponentKeyFor<NameComponent>::value;
+    const auto before = reg.get<NameComponent>(rootHandle).name;
+    const auto revision = f.manager.AuthoringRevision();
+    REQUIRE_FALSE(f.manager.IsOverridden(root, key).value);
+
+    EditorCommandHistory history;
+    auto rename = MakeSetNameCommandIfEffective(root, before, before + "S6ECover");
+    REQUIRE(rename);
+    const auto applied = history.Execute(std::move(rename), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    REQUIRE(applied.affectedEntities.size() == 1);
+    CHECK(applied.affectedEntities.front() == root);
+    CHECK(reg.get<NameComponent>(rootHandle).name == before + "S6ECover");
+    REQUIRE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revision + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // A2.1 floor router observation: name is a None-impact wire, so the real
+    // result routed through the real router must fire nothing.
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::None);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.get<NameComponent>(rootHandle).name == before);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(reg.get<NameComponent>(rootHandle).name == before + "S6ECover");
+    REQUIRE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+void S6EExerciseTransform(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_transform");
+    const auto [aHandle, bHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID a = H6B(reg, aHandle);
+    const UUID b = H6B(reg, bHandle);
+    EditableTRS aBefore, bBefore;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aBefore));
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+    const auto rev = f.manager.AuthoringRevision();
+    REQUIRE_FALSE(f.manager.IsOverridden(a, PrefabComponentKeyFor<Transform>::value).value);
+
+    EditableTRS aAfter = aBefore;
+    EditableTRS bAfter = bBefore;
+    aAfter.translation.x += 2.0f;
+    bAfter.translation.y += 3.0f;
+    EditorCommandHistory history;
+    auto command = MakeTransformCommandIfEffective(
+        std::vector<TransformTriple>{{a, aBefore, aAfter}, {b, bBefore, bAfter}});
+    REQUIRE(command);
+    const auto applied = history.Execute(std::move(command), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.affectedEntities.size() == 2);
+    REQUIRE(applied.affectedEntities.front() == a);
+    CHECK(reg.get<Transform>(aHandle).translation == aAfter.translation);
+    CHECK(reg.get<Transform>(bHandle).translation == bAfter.translation);
+    REQUIRE(f.manager.IsOverridden(a, PrefabComponentKeyFor<Transform>::value).value);
+    REQUIRE(f.manager.IsOverridden(b, PrefabComponentKeyFor<Transform>::value).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == rev + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // A2.1 floor router observation: transform is a Transform-impact wire.
+    CHECK(applied.syncImpact == SyncImpact::Transform);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.get<Transform>(aHandle).translation == aBefore.translation);
+    REQUIRE_FALSE(f.manager.IsOverridden(a, PrefabComponentKeyFor<Transform>::value).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(reg.get<Transform>(aHandle).translation == aAfter.translation);
+    REQUIRE(f.manager.IsOverridden(a, PrefabComponentKeyFor<Transform>::value).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+void S6EExerciseVisible(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_visible");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto key = PrefabComponentKeyFor<VisibleComponent>::value;
+    reg.emplace_or_replace<VisibleComponent>(rootHandle, VisibleComponent{true});
+    const auto revision = f.manager.AuthoringRevision();
+    REQUIRE_FALSE(f.manager.IsOverridden(root, key).value);
+
+    EditorCommandHistory history;
+    auto hide = MakeSetVisibilityCommandIfEffective({ { root, true } }, { { root, false } });
+    REQUIRE(hide);
+    const auto applied = history.Execute(std::move(hide), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    REQUIRE(applied.affectedEntities.size() == 1);
+    CHECK(applied.affectedEntities.front() == root);
+    CHECK_FALSE(reg.get<VisibleComponent>(rootHandle).visible);
+    REQUIRE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revision + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // A2.1 floor router observation: visibility is a Structural-impact wire.
+    CHECK(applied.syncImpact == SyncImpact::Structural);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.get<VisibleComponent>(rootHandle).visible);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK_FALSE(reg.get<VisibleComponent>(rootHandle).visible);
+    REQUIRE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+void S6EExerciseMaterial(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_material");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto key = PrefabComponentKeyFor<MaterialOverrideComponent>::value;
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    f.manager.AddMaterial(SceneMaterial{}); // slot 1
+    auto stage = f.manager.StageMaterialIndex(root, 1);
+    REQUIRE(stage.IsOk());
+    REQUIRE(stage.value.override.has_value());
+    const auto revision = f.manager.AuthoringRevision();
+
+    EditorCommandHistory history;
+    auto assign = MakeSetMaterialIndexCommandIfEffective(root, 0, 1, std::nullopt, stage.value.override);
+    REQUIRE(assign);
+    const auto applied = history.Execute(std::move(assign), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::Material);
+    REQUIRE(applied.affectedEntities.size() == 1);
+    CHECK(applied.affectedEntities.front() == root);
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 1);
+    REQUIRE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revision + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // A2.1 floor router observation: original impact Material already asserted.
+    const auto matRouted = S6EObserveRoute(f, applied);
+    CHECK(matRouted.syncs >= 1);
+    CHECK(matRouted.resets >= 1);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 0);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 1);
+    REQUIRE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+void S6EExerciseLight(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_light");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    const auto revision = f.manager.AuthoringRevision();
+
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    EditorCommandHistory history;
+    auto set = MakeSetLightCommandIfEffective(root, origin, a);
+    REQUIRE(set);
+    const auto applied = history.Execute(std::move(set), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    REQUIRE(applied.affectedEntities.size() == 1);
+    CHECK(applied.affectedEntities.front() == root);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), a));
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revision + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // A2.1 floor: a light edit is a non-None impact; the real router must fire.
+    if (applied.syncImpact != SyncImpact::None)
+    {
+        const auto lc = S6EObserveRoute(f, applied);
+        CHECK(lc.syncs >= 1);
+    }
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), a));
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+void S6EExerciseCamera(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_camera");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto camKey = PrefabComponentKeyFor<CameraComponent>::value;
+    reg.emplace_or_replace<CameraComponent>(rootHandle, CameraComponent{ 60.0f, 0.5f, 5.0f, { 0.0f, 0.0f, -1.0f } });
+    const CameraComponent origin = reg.get<CameraComponent>(rootHandle);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, camKey).value);
+    const auto revision = f.manager.AuthoringRevision();
+
+    const CameraComponent a{ 50.0f, 0.25f, 8.0f, { 0.0f, 0.0f, -1.0f } };
+    EditorCommandHistory history;
+    auto set = MakeSetCameraCommandIfEffective(root, origin, a);
+    REQUIRE(set);
+    const auto applied = history.Execute(std::move(set), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    REQUIRE(applied.affectedEntities.size() == 1);
+    CHECK(applied.affectedEntities.front() == root);
+    const auto live = reg.get<CameraComponent>(rootHandle);
+    CHECK(live.verticalFOV == a.verticalFOV);
+    CHECK(live.aperture == a.aperture);
+    CHECK(live.focusDistance == a.focusDistance);
+    REQUIRE(f.manager.IsOverridden(root, camKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revision + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // Camera is a None-impact wire, real router stays quiet.
+    CHECK(applied.syncImpact == SyncImpact::None);
+
+    REQUIRE(history.Undo(f.manager).success);
+    const auto restored = reg.get<CameraComponent>(rootHandle);
+    CHECK(restored.verticalFOV == origin.verticalFOV);
+    CHECK(restored.aperture == origin.aperture);
+    CHECK(restored.focusDistance == origin.focusDistance);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, camKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    REQUIRE(f.manager.IsOverridden(root, camKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+void S6EExerciseMotion(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_motion");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto motionKey = PrefabComponentKeyFor<MotionComponent>::value;
+    const MotionComponent m{ glm::vec3(1.0f, 0.0f, 0.0f) };
+    const auto rev = f.manager.AuthoringRevision();
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+
+    EditorCommandHistory history;
+    auto add = MakeSetMotionCommandIfEffective(root, std::nullopt,
+        std::optional<MotionComponent>{ m });
+    REQUIRE(add);
+    const auto applied = history.Execute(std::move(add), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    CHECK(reg.get<MotionComponent>(rootHandle).linearVelocity == glm::vec3(1.0f, 0.0f, 0.0f));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == rev + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // A2.1 floor router observation: motion is a None-impact wire.
+    CHECK(applied.syncImpact == SyncImpact::None);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK_FALSE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+void S6EExerciseScript(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_script");
+    S6BScriptAssets(f, dir, { "spin.lua" });
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto scriptKey = PrefabComponentKeyFor<ScriptComponent>::value;
+    const auto rev = f.manager.AuthoringRevision();
+    REQUIRE_FALSE(f.manager.IsOverridden(root, scriptKey).value);
+
+    EditorCommandHistory history;
+    auto add = MakeSetScriptCommandIfEffective(root, std::nullopt,
+        std::optional<ScriptComponent>{ S6BScript("spin.lua") });
+    REQUIRE(add);
+    const auto applied = history.Execute(std::move(add), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    REQUIRE(reg.all_of<ScriptComponent>(rootHandle));
+    REQUIRE_FALSE(reg.get<ScriptComponent>(rootHandle).asset.assetId.IsNull());
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == rev + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // A2.1 floor router observation: script is a None-impact wire.
+    CHECK(applied.syncImpact == SyncImpact::None);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK_FALSE(reg.all_of<ScriptComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, scriptKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    REQUIRE(reg.all_of<ScriptComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+} // namespace
+
+TEST_CASE("Phase 8 W3 S6-E: compile-time key coverage runs real commands")
+{
+    for (const auto& entry : kS6Coverage)
+    {
+        INFO("coverage key: " << entry.name);
+        S2Fixture f;
+        entry.exercise(f);
+    }
 }
 
 namespace

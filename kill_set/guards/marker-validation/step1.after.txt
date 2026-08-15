@@ -1,0 +1,6 @@
+		const auto canonical = FindComponentByWire(key.wire());
+		if (!canonical)
+			return EditorMutationResult::Failure(rt2::core::Error::InvalidArgument,
+				member.ToString(),
+				"unknown override key wire '" + std::string(key.wire()) + "'");
+		/* kill-set: captureOne overridable rejection removed */

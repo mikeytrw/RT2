@@ -1,0 +1,8 @@
+guard	production_file	anchor	expected_red_filter	established
+route-seam	RT2App/src/CompositePreviewSession.h	CompositePreviewSession.h:225-232 (PublishCompositePreviewAndRoute)	Phase 8 W3 S6-E: four-kind preview cadence composes helper host router history	c60c06485923d6e3a93e81c4a8e5c9c1e810cf75
+override-vector	RT2App/src/SceneManager.cpp	SceneManager.cpp:2587-2597 (multiset override compare in EntityMatchesRecord)	Phase 8 W3 S6-E: duplicate structural history composition preserves causality	c60c06485923d6e3a93e81c4a8e5c9c1e810cf75
+collision	RT2App/src/SceneManager.cpp	SceneManager.cpp:6912-6916 (duplicate-target collision rejection in Prepare)	Phase 8 W3 S6-E: raw duplicate ownership and colliding append are fail-atomic	c60c06485923d6e3a93e81c4a8e5c9c1e810cf75
+ownership	RT2App/src/EditorPropertyCommands.cpp	EditorPropertyCommands.cpp:282-288 (slot-created authorization gate in Execute)	Phase 8 W3 S6-E: admitted material duplicate owns append lifecycle	c60c06485923d6e3a93e81c4a8e5c9c1e810cf75
+marker-validation	RT2App/src/PrefabCommandTransaction.cpp	PrefabCommandTransaction.cpp:117-126,207-216 (overridable rejection, captureOne + marker loop)	Phase 8 W3 S6-E: excluded and unknown durable boundary is zero-write	c60c06485923d6e3a93e81c4a8e5c9c1e810cf75
+name-marker	RT2App/src/EditorPropertyCommands.cpp	EditorPropertyCommands.cpp:157-158 (SetNameCommand marker spec)	Phase 8 W3 S6-B: name first-marker/existing-marker/no-op and ordinary entity	c60c06485923d6e3a93e81c4a8e5c9c1e810cf75
+transform-marker	RT2App/src/EditorCommands.cpp	EditorCommands.cpp:99 (multi-member TransformCommand marker push)	Phase 8 W3 S6-D: multi-member transform composite and token session	c60c06485923d6e3a93e81c4a8e5c9c1e810cf75

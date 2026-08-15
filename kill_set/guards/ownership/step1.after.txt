@@ -1,0 +1,5 @@
+	// This boolean is command-owned and monotonic. It becomes true only after
+	// the real atomic first Execute has succeeded and changed the document.
+	m_Transaction.SetMaterialDuplicateOwnership(
+	std::optional<MaterialDuplicateOwnershipToken>{MaterialDuplicateOwnershipToken{}}); // kill-set: authorization always granted
+	const auto result = m_Transaction.Execute(scene);

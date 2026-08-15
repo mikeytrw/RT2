@@ -1,0 +1,11 @@
+if (live.overrides.size() != record.prefabMember.overrides.size()) return false;
+		std::vector<PrefabComponentKey> liveSorted = live.overrides;
+		std::vector<PrefabComponentKey> recSorted = record.prefabMember.overrides;
+		std::sort(liveSorted.begin(), liveSorted.end(),
+		          [](const PrefabComponentKey& a, const PrefabComponentKey& b)
+		          { return a.wire() < b.wire(); });
+		std::sort(recSorted.begin(), recSorted.end(),
+		          [](const PrefabComponentKey& a, const PrefabComponentKey& b)
+		          { return a.wire() < b.wire(); });
+		for (std::size_t i = 0; i < liveSorted.size(); ++i)
+			if (!(liveSorted[i] == recSorted[i])) return false;
