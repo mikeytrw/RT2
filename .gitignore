@@ -24,6 +24,8 @@ test_*.png
 /benchmarking/*.png
 *.pfm
 *.exr
+# S6-E kill-set generated run output (report + build logs).
+/kill_set/output/
 # Checked-in tiny fixture environment maps are source, not captures.
 !RT2App/assets/phase1a-fixtures/*.exr
 *.log

@@ -11726,6 +11726,68 @@ TEST_CASE("Phase 8 W3 S6-E: raw duplicate ownership and colliding append are fai
     CHECK(f.manager.GetMaterialCount() == materialCount + 1);
 }
 
+// Round-2 S6-E finding, promoted to a durable test: a plan forged DIRECTLY at
+// the material-duplicate Commit boundary (the Prepare-side transaction checks
+// bypassed by constructing the composite plan myself) must be rejected by
+// CommitPrefabCompositePlan with zero table/index/revision change. This is the
+// scenario an earlier review reached only via an out-of-tree probe; it must now
+// stay load-bearing in the suite. The BuildWithUuidsCollision helper forges the
+// collision AFTER Prepare so the collision check exercised here is the
+// Commit-site duplicate-target rejection, not the Prepare assembly check.
+TEST_CASE("Phase 8 W3 S6-E: forged material duplicate plan collides only at Commit")
+{
+    S2Fixture f;
+    const auto first = f.CreateEmpty("first");
+    const auto second = f.CreateEmpty("second");
+    auto& reg = f.manager.GetECS().registry;
+    for (const auto& uuid : { first, second })
+    {
+        const auto entity = f.manager.FindEntityByUuid(uuid);
+        reg.emplace_or_replace<MeshRef>(entity, MeshRef{ 0, 0 });
+        reg.emplace_or_replace<ImportedMeshSourceComponent>(entity);
+    }
+    const auto a = f.manager.StageMaterialDuplicateAssignment(first);
+    const auto b = f.manager.StageMaterialDuplicateAssignment(second);
+    REQUIRE(a.IsOk());
+    REQUIRE(b.IsOk());
+    REQUIRE(a.value.proposedIndex == b.value.proposedIndex);
+    const auto mkEdit = [](const PrefabMaterialDuplicateStage& stage) {
+        return PrefabValueEdit{
+            PrefabValueKind::MaterialDuplicateAndAssign, stage.entity,
+            PrefabMarkerDirection::After,
+            PrefabMaterialDuplicateValue{ stage.sourceIndex, stage.proposedIndex,
+                stage.beforeEntityIndex, stage.sourceMaterial, stage.beforeOverride },
+            PrefabMaterialDuplicateValue{ stage.sourceIndex, stage.proposedIndex,
+                stage.proposedIndex, stage.sourceMaterial, stage.afterOverride } };
+    };
+    // A single-edit plan builds cleanly through the public Prepare path. Forge
+    // the collision by appending a SECOND duplicate-and-assign op targeting the
+    // SAME proposed index, then submit the plan directly to Commit.
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    auto plan = f.manager.PreparePrefabCompositeEdits({ mkEdit(a.value) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(plan.IsOk());
+    const auto& aOp = plan.value.values.operations.front();
+    PrefabValueOperation forgedSecond;
+    forgedSecond.kind = aOp.kind;
+    forgedSecond.entity = b.value.entity;
+    forgedSecond.source = aOp.source;
+    forgedSecond.target = aOp.target;
+    plan.value.values.operations.push_back(forgedSecond);
+    plan.value.values.resourceGeneration = f.manager.ResourceGeneration();
+    plan.value.resourceGeneration = f.manager.ResourceGeneration();
+
+    const auto revision = f.manager.AuthoringRevision();
+    const auto materialCount = f.manager.GetMaterialCount();
+    const auto commit = f.manager.CommitPrefabCompositePlan(std::move(plan.value));
+    INFO(commit.error.Format());
+    REQUIRE_FALSE(commit.error.IsOk());
+    CHECK(f.manager.GetMaterialCount() == materialCount);
+    CHECK(reg.get<MeshRef>(f.manager.FindEntityByUuid(first)).materialIndex == 0);
+    CHECK(reg.get<MeshRef>(f.manager.FindEntityByUuid(second)).materialIndex == 0);
+    CHECK(f.manager.AuthoringRevision() == revision);
+}
+
 TEST_CASE("Phase 8 W3 S6-E: duplicate structural history composition preserves causality")
 {
     S2Fixture f;
@@ -11854,24 +11916,58 @@ struct S6EKeyCoverage
 
 // Real-router observation helper for the A2.1 floor. Every exercise whose
 // resulting syncImpact is not None must route the REAL result through a real
-// counting EditorSyncRouter and assert that the impact actually fired; the
-// router is a shared show, not a synthetic counter.
+// counting EditorSyncRouter and assert that the impact actually fired with an
+// EXACT per-channel count (mirroring the four-kind cadence harness): a
+// Transform result fires only the transform sync plus the accumulation reset;
+// a Structural result fires only the full sync plus reset; a Material result
+// fires only the material sync plus reset; Nothing fires nothing. A missing
+// dispatch, a downgrade mix, or a double-fire all fail the exact-count check.
 struct S6ERouteCounts
 {
-    int syncs = 0;
+    int transformSync = 0;
+    int materialSync = 0;
+    int fullSync = 0;
     int resets = 0;
 };
 
 S6ERouteCounts S6EObserveRoute(S2Fixture& f, const EditorMutationResult& result)
 {
+    using rt2::core::SyncImpact;
     S6ERouteCounts counts;
     EditorSyncRouter router;
     router.SetRendererAvailable([] { return true; });
-    router.SetTransformSync([&] { ++counts.syncs; });
-    router.SetMaterialSync([&] { ++counts.syncs; });
-    router.SetFullSync([&] { ++counts.syncs; });
+    router.SetTransformSync([&] { ++counts.transformSync; });
+    router.SetMaterialSync([&] { ++counts.materialSync; });
+    router.SetFullSync([&] { ++counts.fullSync; });
     router.SetResetAccum([&] { ++counts.resets; });
     router.Route(result, f.manager);
+    switch (result.syncImpact)
+    {
+    case SyncImpact::None:
+        CHECK(counts.transformSync == 0);
+        CHECK(counts.materialSync == 0);
+        CHECK(counts.fullSync == 0);
+        CHECK(counts.resets == 0);
+        break;
+    case SyncImpact::Transform:
+        CHECK(counts.transformSync == 1);
+        CHECK(counts.materialSync == 0);
+        CHECK(counts.fullSync == 0);
+        CHECK(counts.resets == 1);
+        break;
+    case SyncImpact::Structural:
+        CHECK(counts.transformSync == 0);
+        CHECK(counts.materialSync == 0);
+        CHECK(counts.fullSync == 1);
+        CHECK(counts.resets == 1);
+        break;
+    case SyncImpact::Material:
+        CHECK(counts.transformSync == 0);
+        CHECK(counts.materialSync == 1);
+        CHECK(counts.fullSync == 0);
+        CHECK(counts.resets == 1);
+        break;
+    }
     return counts;
 }
 
@@ -11999,8 +12095,10 @@ void S6EExerciseTransform(S2Fixture& f)
     CHECK(f.manager.AuthoringRevision() == rev + 1);
     CHECK(history.UndoDepthForTest() == 1);
     CHECK(history.RedoDepthForTest() == 0);
-    // A2.1 floor router observation: transform is a Transform-impact wire.
+    // A2.1 floor router observation: transform is a Transform-impact wire, so
+    // the REAL result must be routed and the Transform sync+reset observed.
     CHECK(applied.syncImpact == SyncImpact::Transform);
+    S6EObserveRoute(f, applied);
 
     REQUIRE(history.Undo(f.manager).success);
     CHECK(reg.get<Transform>(aHandle).translation == aBefore.translation);
@@ -12044,8 +12142,10 @@ void S6EExerciseVisible(S2Fixture& f)
     CHECK(f.manager.AuthoringRevision() == revision + 1);
     CHECK(history.UndoDepthForTest() == 1);
     CHECK(history.RedoDepthForTest() == 0);
-    // A2.1 floor router observation: visibility is a Structural-impact wire.
+    // A2.1 floor router observation: visibility is a Structural-impact wire, so
+    // the REAL result must be routed and the full sync+reset observed.
     CHECK(applied.syncImpact == SyncImpact::Structural);
+    S6EObserveRoute(f, applied);
 
     REQUIRE(history.Undo(f.manager).success);
     CHECK(reg.get<VisibleComponent>(rootHandle).visible);
@@ -12094,10 +12194,8 @@ void S6EExerciseMaterial(S2Fixture& f)
     CHECK(f.manager.AuthoringRevision() == revision + 1);
     CHECK(history.UndoDepthForTest() == 1);
     CHECK(history.RedoDepthForTest() == 0);
-    // A2.1 floor router observation: original impact Material already asserted.
-    const auto matRouted = S6EObserveRoute(f, applied);
-    CHECK(matRouted.syncs >= 1);
-    CHECK(matRouted.resets >= 1);
+    // A2.1 floor router observation: material impact and its exact counts.
+    S6EObserveRoute(f, applied);
 
     REQUIRE(history.Undo(f.manager).success);
     CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 0);
@@ -12143,12 +12241,10 @@ void S6EExerciseLight(S2Fixture& f)
     CHECK(f.manager.AuthoringRevision() == revision + 1);
     CHECK(history.UndoDepthForTest() == 1);
     CHECK(history.RedoDepthForTest() == 0);
-    // A2.1 floor: a light edit is a non-None impact; the real router must fire.
-    if (applied.syncImpact != SyncImpact::None)
-    {
-        const auto lc = S6EObserveRoute(f, applied);
-        CHECK(lc.syncs >= 1);
-    }
+    // A2.1 floor router observation: light is a Material-impact wire; the REAL
+    // result must be routed unconditionally and the impact pinned.
+    CHECK(applied.syncImpact == SyncImpact::Material);
+    S6EObserveRoute(f, applied);
 
     REQUIRE(history.Undo(f.manager).success);
     CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
