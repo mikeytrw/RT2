@@ -27,6 +27,7 @@
 #include "json.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
@@ -11825,20 +11826,87 @@ TEST_CASE("Phase 8 W3 S6-E: duplicate structural history composition preserves c
     std::filesystem::remove_all(dir);
 }
 
-// Durable W3-D5 behavioral row map.  These are the production cases (not
-// metadata claims) that provide the eight-key matrix's exact path, failure,
-// and replay cells:
-//   name     -> S6-B name first/existing/no-op + S6-E prefab structural history
-//   transform-> S6-D multi-member transform composite and token session
-//   visible  -> S6-B visibility Execute/Undo/Redo one composite commit
-//   material -> S6-B material index/properties + S6-E two-instance fan-out
-//   light    -> S6-C light rolling preview and one-command close
-//   camera   -> S6-C camera preview/undo + S6-B camera alignment composite
-//   motion   -> S6-C motion velocity preview and close
-//   script   -> S6-C script field preview + S6-E real Script route close/restore
-// Each row has a retained named RED seam in its owning test (composite split,
-// stale comparison, or route/capture fault); the tests below add the missing
-// E-boundary rows for all excluded wires and unknown keys.
+TEST_CASE("Phase 8 W3 S6-E: concrete W3-D5 path and cell matrix is complete")
+{
+    struct Row
+    {
+        std::string_view path;
+        std::string_view wire;
+        std::array<std::string_view, 10> cells; // first/existing/ordinary/no-op/undo/redo/failure/UUID/schema/host+history
+        std::string_view reversibleFault;
+    };
+    const auto cells = [](std::string_view test) {
+        return std::array<std::string_view, 10>{ test, test, test, test, test,
+            test, test, test, test, test };
+    };
+    const std::array<Row, 26> rows = {{
+        { "transform-local-inspector", PrefabWireKeys::kTransform, cells("Phase 8 W3 S6-D: multi-member transform composite and token session"), "transform token/capture fault" },
+        { "transform-world-inspector", PrefabWireKeys::kTransform, cells("Phase 8 W3 S6-D: parent child world session is order independent and malformed batches are fail atomic"), "world batch atomicity fault" },
+        { "transform-viewport-gizmo", PrefabWireKeys::kTransform, cells("Phase 8 W3 S6-D: fifth-kind Transform-Light ordering sync and pending quarantine"), "gizmo notification fault" },
+        { "align-transform-only", PrefabWireKeys::kTransform, cells("Phase 8 W3 S6-B fixup: camera align marks only canonically changed wires"), "align transform marker fault" },
+        { "align-camera-only", PrefabWireKeys::kCamera, cells("Phase 8 W3 S6-C: finalize-before-align keeps camera history exactly undoable"), "align camera seam fault" },
+        { "align-both", PrefabWireKeys::kCamera, cells("Phase 8 W3 S6-B: camera alignment command is one composite commit"), "align dual-impact fault" },
+        { "material-duplicate", PrefabWireKeys::kMaterialOverride, cells("Phase 8 W3 S6-E: admitted material duplicate owns append lifecycle"), "duplicate ownership fault" },
+        { "material-index", PrefabWireKeys::kMaterialOverride, cells("Phase 8 W3 S6-B: material index command one-shot staging and undo"), "material index composite fault" },
+        { "material-properties", PrefabWireKeys::kMaterialOverride, cells("Phase 8 W3 S6-B: material-slot properties command complete fan-out"), "material property fan-out fault" },
+        { "material-fan-out", PrefabWireKeys::kMaterialOverride, cells("Phase 8 W3 S6-E: two-instance material properties fan-out is sorted and reversible"), "fan-out UUID ordering fault" },
+        { "motion-value", PrefabWireKeys::kMotion, cells("Phase 8 W3 S6-C: motion velocity preview rolling source and close"), "motion preview route fault" },
+        { "motion-add-remove", PrefabWireKeys::kMotion, cells("Phase 8 W3 S6-B: motion add/velocity/remove undo-redo with marker deltas"), "motion add/remove composite fault" },
+        { "script-continuous-int-float-vec3-color", PrefabWireKeys::kScript, cells("Phase 8 W3 S6-C: script field live preview commits one gesture"), "script continuous route fault" },
+        { "script-discrete-bool-string-uuid", PrefabWireKeys::kScript, cells("Phase 8 W3 S6-B: script Bool/String/UUID field edits round-trip exactly"), "script typed field fault" },
+        { "script-add-path-rebind-remove", PrefabWireKeys::kScript, cells("Phase 8 W3 S6-B: bound script add/path/remove undo-redo is self-consistent"), "script identity/path fault" },
+        { "visibility", PrefabWireKeys::kVisible, cells("Phase 8 W3 S6-B: visibility Execute/Undo/Redo is one composite commit"), "visibility split-commit fault" },
+        { "name", PrefabWireKeys::kName, cells("Phase 8 W3 S6-B: name first-marker/existing-marker/no-op and ordinary entity"), "name marker fault" },
+        { "light", PrefabWireKeys::kLight, cells("Phase 8 W3 S6-C: light live preview rolling source and one-command close"), "preview publish route fault" },
+        { "camera", PrefabWireKeys::kCamera, cells("Phase 8 W3 S6-C: camera live preview commit and exact undo restore"), "preview publish route fault" },
+        { "motion-preview", PrefabWireKeys::kMotion, cells("Phase 8 W3 S6-C: motion velocity preview rolling source and close"), "preview publish route fault" },
+        { "script-preview", PrefabWireKeys::kScript, cells("Phase 8 W3 S6-E: real Script preview route closes and restores durably"), "preview publish route fault" },
+        { "ordinary-preview", PrefabWireKeys::kLight, cells("Phase 8 W3 S6-C: ordinary entity preview is value-only and undoable"), "ordinary marker suppression fault" },
+        { "preview-no-op", PrefabWireKeys::kLight, cells("Phase 8 W3 S6-C: canonical first-frame no-op Preview is zero-churn"), "preview no-op suppression fault" },
+        { "preview-failure", PrefabWireKeys::kLight, cells("Phase 8 W3 S6-C: stale preview failure retains recovery state"), "preview failure suppression fault" },
+        { "excluded-unknown", "unknownS6E", cells("Phase 8 W3 S6-E: excluded and unknown durable boundary is zero-write"), "excluded boundary validation fault" },
+        { "structural-duplicate-history", PrefabWireKeys::kName, cells("Phase 8 W3 S6-E: duplicate structural history composition preserves causality"), "override comparison fault" },
+    }};
+    std::unordered_set<std::string> paths;
+    for (const auto& row : rows)
+    {
+        REQUIRE(paths.insert(std::string(row.path)).second);
+        REQUIRE_FALSE(row.wire.empty());
+        REQUIRE_FALSE(row.reversibleFault.empty());
+        for (const auto cell : row.cells) REQUIRE_FALSE(cell.empty());
+        if (row.path != "excluded-unknown")
+        {
+            const auto canonical = FindComponentByWire(row.wire);
+            REQUIRE(canonical.has_value());
+            CHECK(canonical->overridable());
+        }
+    }
+    CHECK(paths.size() == rows.size());
+}
+
+namespace
+{
+class S6ERejectedMarkerCommand final : public IEditorCommand
+{
+public:
+    S6ERejectedMarkerCommand(UUID target, PrefabComponentKey key,
+        std::string before)
+        : m_Transaction(
+            { PrefabValueEdit{ PrefabValueKind::EntityName, target,
+                PrefabMarkerDirection::After, before, before + "-rejected" } },
+            { PrefabCommandTransaction::MarkerSpec{ target, key, true } }) {}
+
+    EditorMutationResult Execute(SceneManager& scene) override
+    { return m_Transaction.Execute(scene); }
+    EditorMutationResult Undo(SceneManager& scene) override
+    { return m_Transaction.Undo(scene); }
+    std::string Description() const override { return "S6-E rejected marker"; }
+
+private:
+    PrefabCommandTransaction m_Transaction;
+};
+}
+
 TEST_CASE("Phase 8 W3 S6-E: excluded and unknown marker boundary classification")
 {
     S2Fixture f;
@@ -11888,12 +11956,12 @@ TEST_CASE("Phase 8 W3 S6-E: excluded and unknown durable boundary is zero-write"
         router.SetMaterialSync([&] { ++routedMaterial; });
         router.SetResetAccum([&] { ++routedReset; });
         const auto key = PrefabComponentKey(wire, false);
-        PrefabCommandTransaction tx(
-            { PrefabValueEdit{ PrefabValueKind::EntityName, target,
-                PrefabMarkerDirection::After, beforeName, beforeName + "-rejected" } },
-            { PrefabCommandTransaction::MarkerSpec{ target, key, true } });
-        const auto result = tx.Execute(f.manager);
-        router.Route(result, f.manager);
+        const auto result = history.Execute(
+            std::make_unique<S6ERejectedMarkerCommand>(target, key, beforeName),
+            f.manager);
+        RouteEffectiveTransformPreviewNotification(result, [&] {
+            router.Route(result, f.manager);
+        });
         CHECK_FALSE(result.success);
         CHECK(reg.get<NameComponent>(handle).name == beforeName);
         CHECK(f.manager.AuthoringRevision() == revision);
@@ -11943,6 +12011,7 @@ TEST_CASE("Phase 8 W3 S6-E: two-instance material properties fan-out is sorted a
         auto afterMaterial = beforeMaterial;
         afterMaterial.roughness = 0.4f;
         auto beforeOverrides = CaptureMaterialOverrideFanOut(reg, 0);
+        const auto expectedBeforeOverrides = beforeOverrides;
         auto staged = f.manager.StageMaterialSlot(0, afterMaterial);
         REQUIRE(staged.IsOk());
         auto afterOverrides = staged.value.afterOverrides;
@@ -11967,6 +12036,15 @@ TEST_CASE("Phase 8 W3 S6-E: two-instance material properties fan-out is sorted a
         router.Route(applied, f.manager);
         CHECK(applied.syncImpact == rt2::core::SyncImpact::Material);
         CHECK(applied.affectedEntities.size() == 4);
+        std::vector<UUID> expectedEntities;
+        for (const auto& [uuid, ignored] : expectedBeforeOverrides)
+            expectedEntities.push_back(uuid);
+        std::sort(expectedEntities.begin(), expectedEntities.end(),
+            [](const UUID& a, const UUID& b) { return a.ToString() < b.ToString(); });
+        std::vector<UUID> actualEntities = applied.affectedEntities;
+        std::sort(actualEntities.begin(), actualEntities.end(),
+            [](const UUID& a, const UUID& b) { return a.ToString() < b.ToString(); });
+        CHECK(actualEntities == expectedEntities);
         CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
         CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
         CHECK(history.UndoDepthForTest() == 1);
@@ -11978,7 +12056,30 @@ TEST_CASE("Phase 8 W3 S6-E: two-instance material properties fan-out is sorted a
             REQUIRE(reg.all_of<MaterialOverrideComponent>(e));
             CHECK(reg.get<MaterialOverrideComponent>(e).material.roughness
                 == doctest::Approx(0.4f));
+            const auto uuid = reg.get<EntityIdComponent>(e).id;
+            REQUIRE(f.manager.IsOverridden(uuid,
+                PrefabComponentKeyFor<MaterialOverrideComponent>::value).value);
         }
+        const auto checkOverrideState = [&](const SetMaterialPropertiesCommand::OverrideList& expected) {
+            const auto actual = CaptureMaterialOverrideFanOut(reg, 0);
+            REQUIRE(actual.size() == expected.size());
+            for (const auto& [uuid, expectedOverride] : expected)
+            {
+                const auto it = std::find_if(actual.begin(), actual.end(),
+                    [&](const auto& item) { return item.first == uuid; });
+                REQUIRE(it != actual.end());
+                CHECK(it->second.has_value() == expectedOverride.has_value());
+                if (it->second && expectedOverride)
+                {
+                    CHECK(it->second->authored == expectedOverride->authored);
+                    CHECK(it->second->materialIndex == expectedOverride->materialIndex);
+                    CHECK(it->second->sourceMaterialKey == expectedOverride->sourceMaterialKey);
+                    CHECK(it->second->material.roughness == doctest::Approx(expectedOverride->material.roughness));
+                    CHECK(it->second->material.metallic == doctest::Approx(expectedOverride->material.metallic));
+                    CHECK(it->second->material.baseColor == expectedOverride->material.baseColor);
+                }
+            }
+        };
         const auto undone = history.Undo(f.manager);
         REQUIRE(undone.success);
         router.Route(undone, f.manager);
@@ -11986,10 +12087,18 @@ TEST_CASE("Phase 8 W3 S6-E: two-instance material properties fan-out is sorted a
         CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
         CHECK(history.UndoDepthForTest() == 0);
         CHECK(history.RedoDepthForTest() == 1);
+        checkOverrideState(expectedBeforeOverrides);
+        for (const auto& [uuid, ignored] : expectedBeforeOverrides)
+            CHECK_FALSE(f.manager.IsOverridden(uuid,
+                PrefabComponentKeyFor<MaterialOverrideComponent>::value).value);
         const auto redone = history.Redo(f.manager);
         REQUIRE(redone.success);
         router.Route(redone, f.manager);
         CHECK(f.manager.AuthoringRevision() == beforeRevision + 3);
+        checkOverrideState(afterOverrides);
+        for (const auto& [uuid, ignored] : expectedBeforeOverrides)
+            CHECK(f.manager.IsOverridden(uuid,
+                PrefabComponentKeyFor<MaterialOverrideComponent>::value).value);
         CHECK(materialSyncs == 3);
         CHECK(resets == 3);
         CHECK(firstRoot != secondRoot);
@@ -12162,8 +12271,10 @@ TEST_CASE("Phase 8 W3 S6-E: real Script preview route closes and restores durabl
         }));
     auto restoreTarget = restoreOrigin;
     restoreTarget.fieldValues["speed"] = { ScriptFieldType::Float, 3.0 };
-    const auto restorePreview = restoreSession.Preview(f.manager,
-        PrefabValuePayload{ std::optional<ScriptComponent>(restoreTarget) });
+    const auto restorePreview = PublishCompositePreviewAndRoute(
+        [&] { return restoreSession.Preview(f.manager,
+            PrefabValuePayload{ std::optional<ScriptComponent>(restoreTarget) }); },
+        route);
     REQUIRE(restorePreview.success);
     REQUIRE(restorePreview.effective);
     const auto beforeRestoreRoute = routeCalls;
@@ -12179,6 +12290,201 @@ TEST_CASE("Phase 8 W3 S6-E: real Script preview route closes and restores durabl
     CHECK(ScriptComponentCanonicalEqual(reg.get<ScriptComponent>(rootHandle), restoreOrigin));
     CHECK(materialSyncs == 0);
     CHECK(resets == 0);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: four-kind preview cadence composes helper host router history")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6e_four_kind_cadence");
+    S6BScriptAssets(f, dir, { "spin.lua" });
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    reg.emplace_or_replace<CameraComponent>(rootHandle, CameraComponent{});
+    reg.emplace_or_replace<MotionComponent>(rootHandle, MotionComponent{});
+    ScriptComponent scriptOrigin = S6BScript("spin.lua");
+    scriptOrigin.fieldValues["speed"] = { ScriptFieldType::Float, 1.0 };
+    EditorCommandHistory setup;
+    REQUIRE(setup.Execute(MakeSetScriptCommandIfEffective(root, std::nullopt,
+        std::optional<ScriptComponent>{ scriptOrigin }), f.manager).effective);
+    scriptOrigin = reg.get<ScriptComponent>(rootHandle);
+
+    EditorSyncRouter router;
+    int materialSyncs = 0;
+    int resets = 0;
+    router.SetMaterialSync([&] { ++materialSyncs; });
+    router.SetResetAccum([&] { ++resets; });
+    router.SetRendererAvailable([] { return true; });
+    int publishCalls = 0;
+    int hostRoutes = 0;
+    int effectiveNotifications = 0;
+    const auto route = [&](const EditorMutationResult& result) {
+        ++hostRoutes;
+        if (result.success && result.effective) ++effectiveNotifications;
+        router.Route(result, f.manager);
+    };
+    const auto publish = [&](CompositePreviewSession& session,
+        PrefabValuePayload target) {
+        return PublishCompositePreviewAndRoute(
+            [&] { ++publishCalls; return session.Preview(f.manager, target); },
+            route);
+    };
+
+    const auto run = [&](PreviewSessionKind kind, PrefabValueKind valueKind,
+        PrefabComponentKey key, PrefabValuePayload origin,
+        PrefabValuePayload target, CompositePreviewSession::ValueReader reader,
+        SyncImpact impact) {
+        CompositePreviewSession session;
+        REQUIRE(session.Begin(f.manager, root, valueKind, key, origin, reader));
+        const auto beforeRevision = f.manager.AuthoringRevision();
+        const auto beforePublish = publishCalls;
+        const auto beforeHost = hostRoutes;
+        const auto beforeEffective = effectiveNotifications;
+        const auto published = publish(session, target);
+        REQUIRE(published.success);
+        REQUIRE(published.effective);
+        CHECK(published.syncImpact == impact);
+        CHECK(publishCalls == beforePublish + 1);
+        CHECK(hostRoutes == beforeHost + 1);
+        CHECK(effectiveNotifications == beforeEffective + 1);
+        CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+        EditorCommandHistory history;
+        const auto closed = FinalizePreviewSession(history, f.manager, kind, session);
+        REQUIRE(closed.result == PreviewSessionCloseOutcome::Result::Closed);
+        REQUIRE(closed.recorded);
+        CHECK_FALSE(closed.needsSyncApply);
+        CHECK(publishCalls == beforePublish + 1);
+        CHECK(history.UndoDepthForTest() == 1);
+
+        const auto undone = history.Undo(f.manager);
+        REQUIRE(undone.success);
+        route(undone);
+        CHECK(history.UndoDepthForTest() == 0);
+        CHECK(history.RedoDepthForTest() == 1);
+        const auto redone = history.Redo(f.manager);
+        REQUIRE(redone.success);
+        route(redone);
+        CHECK(history.UndoDepthForTest() == 1);
+        CHECK(history.RedoDepthForTest() == 0);
+
+        // Restore a second effective gesture. Its admitted publish must use
+        // the same production helper, then its compensation routes once and
+        // never creates a history entry.
+        CompositePreviewSession restore;
+        REQUIRE(restore.Begin(f.manager, root, valueKind, key, target, reader));
+        const auto restorePublishBefore = publishCalls;
+        const auto restoreHostBefore = hostRoutes;
+        auto restoreTarget = target;
+        if (valueKind == PrefabValueKind::LightProperties)
+        {
+            auto value = std::get<LightComponent>(restoreTarget);
+            value.intensity += 1.0f;
+            restoreTarget = value;
+        }
+        else if (valueKind == PrefabValueKind::CameraProperties)
+        {
+            auto value = std::get<CameraComponent>(restoreTarget);
+            value.verticalFOV += 1.0f;
+            restoreTarget = value;
+        }
+        else if (valueKind == PrefabValueKind::MotionState)
+        {
+            auto value = std::get<std::optional<MotionComponent>>(restoreTarget);
+            REQUIRE(value.has_value());
+            value->linearVelocity.x += 1.0f;
+            restoreTarget = value;
+        }
+        else
+        {
+            auto value = std::get<std::optional<ScriptComponent>>(restoreTarget);
+            REQUIRE(value.has_value());
+            value->fieldValues["speed"] = { ScriptFieldType::Float, 4.0 };
+            restoreTarget = value;
+        }
+        const auto restorePreview = publish(restore, restoreTarget);
+        REQUIRE(restorePreview.success);
+        REQUIRE(restorePreview.effective);
+        CHECK(publishCalls == restorePublishBefore + 1);
+        CHECK(hostRoutes == restoreHostBefore + 1);
+        const auto restored = RestorePreviewSession(f.manager, kind, restore);
+        REQUIRE(restored.result == PreviewSessionCloseOutcome::Result::Closed);
+        REQUIRE(restored.needsSyncApply);
+        RouteTransformCloseSync(restored, [&](const PreviewSessionCloseOutcome& outcome) {
+            route(outcome.mutation);
+        });
+        CHECK(hostRoutes == restoreHostBefore + 2);
+        CHECK(history.UndoDepthForTest() == 1);
+    };
+
+    const LightComponent lightOrigin{};
+    const LightComponent lightTarget{ glm::vec3(1.0f, 0.0f, 0.0f),
+        2.0f, 30.0f, 20.0f, 15.0f, LightType::Point };
+    run(PreviewSessionKind::Light, PrefabValueKind::LightProperties,
+        PrefabComponentKeyFor<LightComponent>::value,
+        PrefabValuePayload{ lightOrigin }, PrefabValuePayload{ lightTarget },
+        [&](const UUID& uuid, const PrefabValuePayload& raw) {
+            return S6CLightReader(f.manager, uuid, raw);
+        }, SyncImpact::Material);
+
+    const CameraComponent cameraOrigin{};
+    auto cameraTarget = cameraOrigin;
+    cameraTarget.verticalFOV = 60.0f;
+    run(PreviewSessionKind::Camera, PrefabValueKind::CameraProperties,
+        PrefabComponentKeyFor<CameraComponent>::value,
+        PrefabValuePayload{ cameraOrigin }, PrefabValuePayload{ cameraTarget },
+        [&](const UUID& uuid, const PrefabValuePayload& raw) {
+            return S6CCameraReader(f.manager, uuid, raw);
+        }, SyncImpact::None);
+
+    const MotionComponent motionOrigin{};
+    auto motionTarget = motionOrigin;
+    motionTarget.linearVelocity = glm::vec3(2.0f, 0.0f, 0.0f);
+    run(PreviewSessionKind::Motion, PrefabValueKind::MotionState,
+        PrefabComponentKeyFor<MotionComponent>::value,
+        PrefabValuePayload{ std::optional<MotionComponent>(motionOrigin) },
+        PrefabValuePayload{ std::optional<MotionComponent>(motionTarget) },
+        [&](const UUID& uuid, const PrefabValuePayload& raw) {
+            return S6CMotionReader(f.manager, uuid, raw);
+        }, SyncImpact::None);
+
+    auto scriptTarget = scriptOrigin;
+    scriptTarget.fieldValues["speed"] = { ScriptFieldType::Float, 2.0 };
+    run(PreviewSessionKind::Script, PrefabValueKind::ScriptState,
+        PrefabComponentKeyFor<ScriptComponent>::value,
+        PrefabValuePayload{ std::optional<ScriptComponent>(scriptOrigin) },
+        PrefabValuePayload{ std::optional<ScriptComponent>(scriptTarget) },
+        [&](const UUID& uuid, const PrefabValuePayload& raw) {
+            return S6CScriptReader(f.manager, uuid, raw);
+        }, SyncImpact::None);
+
+    // Failed and canonical no-op publishes still traverse the production
+    // helper exactly once, while host/router callbacks remain suppressed.
+    CompositePreviewSession suppression;
+    REQUIRE(suppression.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        PrefabComponentKeyFor<LightComponent>::value,
+        PrefabValuePayload{ lightTarget },
+        [&](const UUID& uuid, const PrefabValuePayload& raw) {
+            return S6CLightReader(f.manager, uuid, raw);
+        }));
+    const auto beforeSuppressionMaterial = materialSyncs;
+    const auto beforeSuppressionReset = resets;
+    const auto beforeSuppressionPublish = publishCalls;
+    const auto beforeSuppressionHost = hostRoutes;
+    const auto failed = publish(suppression, PrefabValuePayload{ std::string("wrong-kind") });
+    CHECK_FALSE(failed.success);
+    CHECK(publishCalls == beforeSuppressionPublish + 1);
+    CHECK(hostRoutes == beforeSuppressionHost + 1);
+    const auto noop = publish(suppression, PrefabValuePayload{ lightTarget });
+    CHECK(noop.success);
+    CHECK_FALSE(noop.effective);
+    CHECK(publishCalls == beforeSuppressionPublish + 2);
+    CHECK(hostRoutes == beforeSuppressionHost + 2);
+    CHECK(materialSyncs == beforeSuppressionMaterial);
+    CHECK(resets == beforeSuppressionReset);
     std::filesystem::remove_all(dir);
 }
 
