@@ -6316,6 +6316,14 @@ regression, not baseline noise. This is the change that makes the gate
 meaningful: previously a passing run had to be checked against a memorised
 failure count, which silently reverses the meaning of "the suite passed".
 
+> **Superseded 2026-08-17 — Phase 8 W3 S7 acceptance test.** The immediately
+> preceding authoritative baseline (976/976 cases and 153,157 assertions in
+> both configurations) is superseded by the measured post-A1 baseline:
+> **Release 977/977 passed, 0 failed, 0 skipped; 153,276 assertions** and
+> **Debug 977/977 passed, 0 failed, 0 skipped; 153,276 assertions**. The exact
+> delta is **+1 case and +119 assertions** in each configuration. Older rows
+> remain period records; this is the current baseline.
+
 #### The remaining 8 Debug-only failures
 
 All in `Phase1ASceneAssetTests.cpp`: 7 × `OBJ Import Wizard` and
@@ -15320,3 +15328,192 @@ accepted residual (paths sharing an already-guarded key have no dedicated
 guard) is recorded above, not silently carried.
 
 **S6 is delivered. S7 final W3-wide verification remains.**
+
+### Phase 8 W3 S7 — verification and closure report (2026-08-17)
+
+**Scope and grounding.** This is the append-only S7 closure for the W3
+overrides implementation spec above. It is grounded against A1 commit
+`1086be77f30492bf9174e28d732ed9d8635fb229`, with production frozen at
+`c416445` and the current W3 code, not against the period counts in the S4,
+S5, or S6 records. A1 adds one acceptance case and 119 assertions to
+`RT2Tests/src/Phase8W3OverrideTests.cpp`; it changes no production source.
+
+#### D3.1–D3.10 decision disposition
+
+The original spec labels these W3-D1 through W3-D10. This closure uses the
+unambiguous D3.1–D3.10 labels requested for the live decision set.
+
+| Decision | Disposition and current evidence |
+|---|---|
+| **D3.1 — value-complete instances (W3-D1)** | **Delivered as specified.** `CopyAuthoredComponents` copies the persisted component set (`RT2App/src/SceneManager.cpp:112-129`), and instantiate resolves the staging document before copying authored values into live entities (`SceneManager.cpp:3462-3468,3520-3550`). The instance remains self-contained when its prefab asset is unavailable; W4 must therefore actively rewrite non-overridden values. |
+| **D3.2 — override set on `PrefabMemberComponent` (W3-D2)** | **Delivered as specified.** The member owns a sorted, unique wire-key vector; empty means inherited (`RT2App/src/ECSComponents.h:346-365`). The codec canonicalizes on read (`SceneSerializer.cpp:1259-1268`) and the shared canonicalizer rejects unknown/excluded keys without mutating its output (`SceneManager.cpp:5654-5689`). |
+| **D3.3 — frozen 13-entry classification (W3-D3)** | **Delivered as specified.** The hand-maintained table is in persisted-component order (`RT2App/src/PrefabComponentKey.h:64-83`), with compile-time assertions for table extent and exactly eight overridable entries (`:85-102`). |
+| **D3.4 — eight overridable components (W3-D4)** | **Delivered as specified.** The table marks Name, Transform, Visible, MaterialOverride, Light, Camera, Motion, and Script overridable, while MeshRef, Primitive, ImportedMeshSource, PrefabInstance, and PrefabMember are excluded (`PrefabComponentKey.h:69-83`). Primitive runtime editing remains an explicit boundary item below. |
+| **D3.5 — automatic marking in the edit command (W3-D5)** | **Delivered with an implementation choice.** The editor's transform-session path uses `TransformCommand` marker transactions (`RT2App/src/EditorCommands.cpp:71-100,154-201`), while the low-level `SetLocalTransformStates`/`TrySetWorldTransforms` APIs remain raw staged mutation seams (`SceneManager.cpp:4199-4243,4599-4631`). Camera pose and material/index/property/script/name/motion/visibility commands carry their value and marker edits through the shared transaction layer. This settles Open Q4 without adding marker side effects to the low-level APIs. |
+| **D3.6 — schema v6 and first-override promotion (W3-D6)** | **Delivered with defense in depth.** `PromoteSchemaVersion` raises a document to the current schema (`RT2App/src/SceneSerializer.cpp:1512-1518`); the command transaction transports the before/after schema, and the single pre-save choke point rejects below-current output that carries a non-empty override set (`SceneSerializer.cpp:1836-1875`). |
+| **D3.7 — material precedence and `authored == false` (W3-D7)** | **Explicitly open.** No template-to-instance effective-value layer was added. The resolver currently applies the authored snapshot only under `if (ov->authored)` and appends/repoints it on the imported-source plan walk (`RT2App/src/SceneAssetResolver.cpp:851-905`), but this does not settle whether false means asset-source restoration or template-override restoration. A1 proves the authored-true imported materialization path only. |
+| **D3.8 — fresh instance identity on copies (W3-D8)** | **Delivered as specified.** The shared copy-link planner mints a fresh instance group identity before destination mutation (`RT2App/src/SceneManager.cpp:156-180`), and all ordinary/UUID-aware duplicate and paste paths use the copy machinery (`SceneManager.cpp:1947,2117,3924,4111`). Snapshot restore remains a restore, not a copy, and reinstates the recorded identity. |
+| **D3.9 — instantiate pre-marks nothing (W3-D9)** | **Delivered as specified.** Instantiation resolves the staging document before installing prefab link components (`RT2App/src/SceneManager.cpp:3458-3468,3594-3605`); no automatic instance-member override set is introduced. A1 observes empty sets on all three untouched siblings and on the control run. |
+| **D3.10 — explicit membership delta (W3-D10)** | **Delivered as specified.** Replay reconstructs `{member, key, beforePresent, afterPresent}` marker edits from captured state (`RT2App/src/PrefabCommandTransaction.cpp:261-268`), preserving atomic value/marker undo and redo, including the material fan-out path. |
+
+#### S1–S6 delivery and review record
+
+The work steps preceding S7 are complete within their stated scopes. The
+review record is deliberately scoped: a CLEAN review of one work step is not
+being presented as proof of a later step or of the deferred runtime boundary.
+
+- **S1 — classification table.** Landed in `b29e6cc`; the S2 cold review
+  (`phase8-w3-s2-review`, durable Traycer artifact) explicitly reviewed the
+  S1 `PrefabComponentKey.h` table. That review returned “safe to merge, with
+  two follow-ups,” with no S2 data-loss blocker.
+- **S2 — override persistence and v6 codec.** Landed in `30685da` and review
+  fixes `5caeb7a`. The same `phase8-w3-s2-review` artifact records the cold
+  verdict and the follow-ups that were carried into S3–S6; it does not claim
+  mutation coverage that did not yet exist.
+- **S3 — verifier equality.** Landed in `6239122` and multiset fix `4188d42`.
+  The S4 complete-range final independent re-review
+  (`phase8-w3-s4-final-rereview-4`) returned CLEAN after the S3 verifier and
+  S4 identity fixes were present; the S3 comparison is also pinned at
+  `RT2App/src/SceneManager.cpp:2568-2589`.
+- **S4 — copy identity.** The final independent review artifact
+  `phase8-w3-s4-final-rereview-4` reviewed the complete range through
+  `91f29da` and returned CLEAN: the earlier identity-policy findings were
+  closed, with no actionable finding remaining.
+- **S5 — query/mutation and marker transaction layer.** The final complete-
+  range artifact `phase8-w3-s5-final-independent-review-369e750` returned
+  “CODE CLEAN; append-only closure pending.” That verdict covers code only;
+  the pending closure was the documentation work this S7 report now performs.
+- **S6 — automatic marking and host/editor seams.** The component reviews
+  returned CLEAN for S6-A (`phase8-w3-s6a-foundation-final-review`), S6-B
+  (`phase8-w3-s6b-final-rereview`), S6-C
+  (`phase8-w3-s6-c-final-confirmation-cb3220c`), and S6-D
+  (`phase8-w3-s6-d-transform-sessions-code-final-review-c7eb219`). S6-E's
+  implementation-I chain returned CLEAN at `512708b` in
+  `phase8-w3-s6-e-implementation-i-final-a21-review`; its three P3 repairs
+  returned CLEAN at `f569304` in `phase8-w3-s6-e-p3-fix-review`. The prior
+  S6 closure record at `26ae1b9` is the durable baseline/anchor/delivery
+  report and Graphify refresh being superseded by this S7 entry, not a claim
+  that S7 had already run.
+
+#### Acceptance and discrimination proof
+
+The acceptance test is
+`"Phase 8 W3 S7 acceptance: one retinted instance alone diverges, by resolved
+material index and exact table extent"` in
+`RT2Tests/src/Phase8W3OverrideTests.cpp:14276-14338`.
+
+It creates a real one-material, one-texture imported GLB with
+`GenerateTinyTexturedGlb` (`:14133-14155`), makes an imported subtree prefab,
+and instantiates it three times with `InstantiatePrefabWithUuids` (`:14177-14196`).
+Exactly one middle member is retinted through `StageMaterialIndex`,
+`MakeSetMaterialIndexCommandIfEffective`, and `EditorCommandHistory::Execute`
+(`:14204-14224`). It then saves, loads, and calls
+`SceneAssetResolver::ResolveAll` (`:14227-14242`).
+
+The control run asserts three members share resolved slot **5** and the exact
+material-table extent is **6** (`:14282-14296`). The retint run asserts the
+extent is exactly **control + 1 = 7**, the appended slot is **6**, the target
+resolves to slot 6, and both siblings remain at slot 5
+(`:14302-14315`). The target's marker set is exactly
+`{materialOverride}` and both siblings' sets are empty
+(`:14317-14321`). The target's resolved row carries the tint and its durable
+authored snapshot is also checked (`:14323-14337`). These are exact extent
+and index equalities, not bounds checks.
+
+The required named fault suppressed the current authored-override
+append/repoint body at `RT2App/src/SceneAssetResolver.cpp:887-890`. Focused
+Release then went RED with **1 failed case and 6 failed assertions**: **113/119
+assertions passed**. The six failures were the exact table extent
+(`Phase8W3OverrideTests.cpp:14304-14305`), target resolved index and its
+non-shared inequality (`:14310-14311`), and target resolved base color and
+roughness (`:14328-14329`). The marker-set and authored-scalar assertions
+remained green, demonstrating why scalar-only acceptance is insufficient.
+After restoring production byte-for-byte, focused Release and Debug were each
+GREEN at **1/1 case and 119/119 assertions**.
+
+The short historical lesson is intentional: `S2Fixture` uses empty entities,
+so adding a mesh to it after prefab creation cannot exercise the resolver's
+imported-source plan walk. The S7 fixture follows the imported-subtree pattern
+and closes that acceptance gap without changing production.
+
+#### W3 boundary — explicitly not delivered
+
+The following remain outside W3 and are not hidden by “overrides complete”:
+
+1. propagation — W4;
+2. revert/apply/unpack — W5;
+3. prefab UI — W6;
+4. D3.7 material precedence and `authored == false` runtime semantics;
+5. `PrimitiveComponent` overrides;
+6. `ImportedMeshSourceComponent` rebinding;
+7. per-property override granularity;
+8. structural deltas; and
+9. nested prefabs.
+
+#### Current Open questions
+
+The live spec has five Open entries, not four. Their current disposition is:
+
+1. **Material precedence/effective materialization — OPEN (D3.7).** A1
+   establishes only the imported authored-true append/repoint contract. There
+   is still no template-to-instance precedence layer; `ResolveAll`'s imported
+   plan and authored gate are at `RT2App/src/SceneAssetResolver.cpp:688-698`
+   and `:851-905`.
+2. **`authored == false` semantics — OPEN (D3.7).** The current code skips the
+   authored append/repoint when false (`SceneAssetResolver.cpp:873-891`), but
+   no decision says whether the eventual effective value should be the asset
+   source or a template override. This is an unresolved W4 semantic choice,
+   not a production defect claimed by S7.
+3. **Primitive/author-created material override validity — OPEN.** The
+   current resolver repair is attached to imported-source plan entries
+   (`SceneAssetResolver.cpp:688-769,851-905`), while `PrimitiveComponent` is
+   classified non-overridable (`PrefabComponentKey.h:73-75`). No policy was
+   added for author-created geometry.
+4. **Direct transform mutator shape — SETTLED by implementation.** The raw
+   `SetLocalTransform` and `TrySetWorldTransform(s)` APIs remain low-level
+   mutation seams (`SceneManager.cpp:4445-4461,4599-4631`); the editor's
+   transform-session command path carries marker edits through
+   `TransformCommand` (`EditorCommands.cpp:71-100,154-201`). S6 therefore
+   chose routing through existing command transactions for editor edits,
+   without adding automatic marker side effects to the raw APIs.
+5. **Unknown-key diagnostic severity — SETTLED in S2.** Current-schema
+   unknown and non-overridable wires are hard `Error::Parse` failures in the
+   scene reader (`RT2App/src/SceneSerializer.cpp:1218-1257`), and loading is
+   transactional. This is not an open question carried into W4.
+
+#### Measured S7 gates
+
+All measurements were run from the repository root after A1, with the
+production source restored after the fault and kill-set probes.
+
+| Gate | Release | Debug |
+|---|---|---|
+| Solution build (`RT2App`, `RT2Tests`, `RT2SliceRunner`) | 0 errors | 0 errors |
+| Full `RT2Tests` | **977/977**, **153,276/153,276** | **977/977**, **153,276/153,276** |
+| `run_script_test.ps1` | PASS — 60 frames, 1 entity, no mismatches | — (script invokes the Release SliceRunner) |
+| `run_slice_test.ps1` | PASS — 60 steps, authoring intact, Cube x=0.999999702 | — (script invokes the Release SliceRunner) |
+| `run_recovery_test.ps1` | PASS | — (script invokes the Release SliceRunner) |
+| Direct SliceRunner standalone (`--scene`) | PASS — 60 steps, `authoringIntact=true` | PASS — 60 steps, `authoringIntact=true` |
+| Direct SliceRunner project (`--project` + relative `--scene`) | PASS — 60 steps, `authoringIntact=true` | PASS — 60 steps, `authoringIntact=true` |
+| `run_kill_set.ps1 -Config Release` | **7/7 PASS** | not a Debug kill-set run |
+
+The fixture `RT2App/assets/vertical-slice.rt2scene` was restored to blob
+`f47ec909`. Production stayed frozen: `git diff c416445 HEAD -- RT2App/src/`
+is empty, as is the production worktree diff.
+
+#### Completion boundary
+
+W3's delivered scope and its runtime acceptance are complete: the data model,
+codec, identity/verifier safeguards, command-side automatic marking, and the
+imported-subtree save/load/resolve acceptance are measured and green. D3.7
+and the boundary items above remain assigned to W4, W5, W6, or later work.
+This closure performs no W4/W5/W6 implementation, merge to `master`, push, or
+PR operation.
+
+After this report was authored, `graphify update .` refreshed the tracked
+`graphify-out/GRAPH_REPORT.md`; generated graph caches remain ignored. The
+authored plan passes `git diff --check` (apart from any known Graphify
+line-ending warnings reported by Git). A2 is documentation-only plus the
+expected Graphify report refresh; no production source is included.
+
+**W3 S7 is delivered.**
