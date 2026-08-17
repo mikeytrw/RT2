@@ -14111,6 +14111,8 @@ struct S7Observation
 {
     std::size_t materialExtent = 0;
     std::vector<int> resolvedIndex;
+    std::vector<UUID> instanceIds;
+    std::vector<UUID> templateIds;
     std::vector<std::vector<std::string>> overrideWires;
     std::vector<std::optional<SceneMaterial>> authoredOverride;
     std::vector<SceneMaterial> resolvedMaterial;
@@ -14119,13 +14121,58 @@ struct S7Observation
 struct S7TempDirGuard
 {
     std::filesystem::path dir;
+    bool armed = true;
 
     ~S7TempDirGuard()
     {
+        if (!armed) return;
         std::error_code ec;
         std::filesystem::remove_all(dir, ec);
     }
+
+    bool CleanupChecked(std::string& detail)
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+        if (ec)
+        {
+            detail = "remove_all failed for '" + dir.string() + "': " + ec.message();
+            return false;
+        }
+
+        if (std::filesystem::exists(dir, ec))
+        {
+            detail = "temporary directory still exists after remove_all: '"
+                + dir.string() + "'";
+            return false;
+        }
+        if (ec)
+        {
+            detail = "exists check failed for '" + dir.string() + "': " + ec.message();
+            return false;
+        }
+
+        armed = false;
+        return true;
+    }
 };
+
+void S7AssertInstanceIdentityShape(const S7Observation& observation)
+{
+    REQUIRE(observation.instanceIds.size() == 3);
+    REQUIRE(observation.templateIds.size() == 3);
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        CHECK_FALSE(observation.instanceIds[i].IsNull());
+        CHECK_FALSE(observation.templateIds[i].IsNull());
+    }
+
+    CHECK(observation.templateIds[1] == observation.templateIds[0]);
+    CHECK(observation.templateIds[2] == observation.templateIds[0]);
+    CHECK(observation.instanceIds[0] != observation.instanceIds[1]);
+    CHECK(observation.instanceIds[0] != observation.instanceIds[2]);
+    CHECK(observation.instanceIds[1] != observation.instanceIds[2]);
+}
 
 // Build the fixture hierarchy, instantiate it three times, optionally retint
 // instance `retintIndex` through the real S6-B SetMaterialIndex command path,
@@ -14140,7 +14187,7 @@ S7Observation S7RunAcceptance(const std::string& tag, int retintIndex,
     manager.SetUuidProvider(&ids);
 
     const auto dir = S2UniqueTempDir(tag);
-    const S7TempDirGuard cleanup{ dir };
+    S7TempDirGuard cleanup{ dir };
     const auto glbPath = dir / "tinted.glb";
     Error genErr;
     REQUIRE(GenerateTinyTexturedGlb(glbPath, genErr));
@@ -14251,10 +14298,14 @@ S7Observation S7RunAcceptance(const std::string& tag, int retintIndex,
         REQUIRE(ref);
         obs.resolvedIndex.push_back(ref->materialIndex);
 
+        const auto* pm = lreg.try_get<PrefabMemberComponent>(h);
+        REQUIRE(pm);
+        obs.instanceIds.push_back(pm->instanceId);
+        obs.templateIds.push_back(pm->templateId);
+
         std::vector<std::string> wires;
-        if (const auto* pm = lreg.try_get<PrefabMemberComponent>(h))
-            for (const auto& k : pm->overrides)
-                wires.emplace_back(k.wire());
+        for (const auto& k : pm->overrides)
+            wires.emplace_back(k.wire());
         obs.overrideWires.push_back(std::move(wires));
 
         if (const auto* ov = lreg.try_get<MaterialOverrideComponent>(h))
@@ -14267,6 +14318,8 @@ S7Observation S7RunAcceptance(const std::string& tag, int retintIndex,
         obs.resolvedMaterial.push_back(loaded.ecs.materials[ref->materialIndex]);
     }
 
+    std::string cleanupError;
+    REQUIRE_MESSAGE(cleanup.CleanupChecked(cleanupError), cleanupError);
     return obs;
 }
 
@@ -14284,6 +14337,7 @@ TEST_CASE("Phase 8 W3 S7 acceptance: one retinted instance alone diverges, "
 
     // All three members inherit: one shared staged slot, no override markers.
     REQUIRE(control.resolvedIndex.size() == 3);
+    S7AssertInstanceIdentityShape(control);
     const int sharedSlot = control.resolvedIndex[0];
     CHECK(control.resolvedIndex[1] == sharedSlot);
     CHECK(control.resolvedIndex[2] == sharedSlot);
@@ -14298,6 +14352,7 @@ TEST_CASE("Phase 8 W3 S7 acceptance: one retinted instance alone diverges, "
     // ---- Acceptance: identical scene, middle instance retinted. ------------
     const auto retint = S7RunAcceptance("p8w3_s7_retint", 1, tint);
     REQUIRE(retint.resolvedIndex.size() == 3);
+    S7AssertInstanceIdentityShape(retint);
 
     // The override costs the table EXACTLY one extra row, and the appended
     // slot sits exactly at the control table's old end.
