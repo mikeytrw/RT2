@@ -5691,14 +5691,14 @@ bool S5CanonicalizeVector(const std::vector<PrefabComponentKey>& raw,
 	return true;
 }
 
-// True when, AFTER applying `targets` (durable member UUID -> canonical target
-// override vector) to the document, ANY prefab member anywhere still carries a
-// non-empty override set. Members not named by `targets` keep their current
-// stored vector (canonicalized). Gates the schema-downgrade rule: a document
-// schema that predates overrides (below SchemaVersion) can only be the target
-// of an undo when no override remains anywhere. A stored vector that cannot be
-// canonicalized fills `err` and returns false — the state cannot be decided, so
-// the downgrade fails loudly rather than silently dropping a marker.
+// Compute the minimum schema after applying `targets` (durable member UUID ->
+// canonical target vector) across the whole document. Original-eight-only
+// vectors require v6; a vector containing Primitive requires v7. Members not
+// named by `targets` keep their current stored vector (canonicalized). A
+// downgrade is allowed only when no unrepresentable override remains anywhere.
+// A stored vector that cannot be canonicalized fills `err` and returns false —
+// the state cannot be decided, so the downgrade fails loudly rather than
+// silently dropping a marker.
 bool S5MinimumOverrideSchema(const rt2::core::SceneDocument& document,
                           const std::vector<PrefabMarkerPlan::MemberTransition>& targets,
                           std::uint32_t& minimum,
@@ -5748,15 +5748,12 @@ bool S5MinimumOverrideSchema(const rt2::core::SceneDocument& document,
 //  1. The live document schema must equal the plan's directional source schema
 //     (source = command-before version for After, command-after version for
 //     Before). A plan prepared against a different baseline is stale or forged.
-//  2. A non-empty override target cannot be stored below SceneSerializer::
-//     SchemaVersion — the version overrides live in. A first marker therefore
-//     cannot target a below-current schema: it must land at a version that can
-//     represent it.
-//  3. A downgrade below the live schema is valid only when no override target
-//     remains ANYWHERE in the document after the batch applies — otherwise the
-//     downgrade would silently strand (and then drop) a marker on save.
+//  2. A non-empty override target cannot be stored below its key-sensitive
+//     minimum: v6 for original-eight markers, v7 when Primitive is present.
+//  3. A downgrade below the live schema is valid only when every override that
+//     remains anywhere in the document is representable at the target schema.
 //
-// On failure fills `err` and returns false.
+// On failure fills err and returns false.
 bool S5ValidateSchemaTransition(
 	const rt2::core::SceneDocument& document,
 	std::uint32_t sourceSchemaVersion,

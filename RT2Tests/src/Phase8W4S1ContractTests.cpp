@@ -223,6 +223,27 @@ TEST_CASE("Phase 8 W4 S1: canonical payload equality is durable and NaN-explicit
     std::optional<PrimitiveComponent> absent;
     CHECK(OptionalPrimitiveComponentCanonicalEqual(absent, absent));
     CHECK_FALSE(OptionalPrimitiveComponentCanonicalEqual(absent, same));
+
+    PrefabPropagationComponentValue variantA = PrimitiveComponent{};
+    PrefabPropagationComponentValue variantB = PrimitiveComponent{};
+    std::get<PrimitiveComponent>(variantA).size =
+        std::numeric_limits<float>::quiet_NaN();
+    std::get<PrimitiveComponent>(variantB).size =
+        std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(PrefabPropagationValueEqual(variantA, variantB));
+    std::optional<PrefabPropagationComponentValue> optionalA = variantA;
+    std::optional<PrefabPropagationComponentValue> optionalB = variantB;
+    CHECK_FALSE(OptionalComponentCanonicalEqual(
+        optionalA, optionalB,
+        [](const auto& x, const auto& y) {
+            return PrefabPropagationValueEqual(x, y);
+        }));
+    optionalB.reset();
+    CHECK_FALSE(OptionalComponentCanonicalEqual(
+        optionalA, optionalB,
+        [](const auto& x, const auto& y) {
+            return PrefabPropagationValueEqual(x, y);
+        }));
 }
 
 TEST_CASE("Phase 8 W4 S1: component operations enforce key and payload correspondence")
@@ -261,18 +282,37 @@ TEST_CASE("Phase 8 W4 S1: component operations enforce key and payload correspon
 
 TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only blocks")
 {
+    MeshData mesh;
+    mesh.vertices = {0.0f, 0.0f, 0.0f,
+                     1.0f, 0.0f, 0.0f,
+                     0.0f, 1.0f, 0.0f};
+    mesh.indices = {0, 1, 2};
+    mesh.name = "owned-mesh";
+    const auto originalMesh = mesh;
     auto payloads = std::make_shared<const std::vector<PrefabPropagationResourcePayload>>(
         std::vector<PrefabPropagationResourcePayload>{
-            {"mesh:0", "digest-a"}, {"mesh:1", "digest-b"}});
+            {"mesh:0", "digest-a", PrefabPropagationResourceValue{mesh}},
+            {"mesh:1", "digest-b", PrefabPropagationResourceValue{mesh}}});
     PrefabPropagationResourceOwnership ownership;
     ownership.rebase.kind = PrefabPropagationResourceKind::Mesh;
-    ownership.rebase.sourceExtent = 4;
-    ownership.rebase.sceneExtent = 8;
+    ownership.rebase.sourceBeforeExtent = 4;
+    ownership.rebase.sceneBeforeExtent = 5;
     ownership.rebase.sceneAppendBase = 5;
+    ownership.rebase.sceneAfterExtent = 7;
     ownership.rebase.sourceSlots = {{1}, {3}};
     ownership.rebase.sceneSlots = {{5}, {6}};
     ownership.rebase.owned = {PrefabPropagationResourceKind::Mesh, payloads};
     CHECK(ownership.IsValid());
+
+    mesh.vertices[0] = 99.0f;
+    mesh.vertices.clear();
+    std::optional<MeshData> externalSource = mesh;
+    externalSource.reset();
+    CHECK(PrefabPropagationMeshEqual(
+        std::get<MeshData>((*payloads)[0].decoded), originalMesh));
+    auto changedDecoded = (*payloads)[0];
+    std::get<MeshData>(changedDecoded.decoded).vertices[0] = 42.0f;
+    CHECK_FALSE((*payloads)[0] == changedDecoded);
 
     auto duplicate = ownership;
     duplicate.rebase.sourceSlots[1].value = 1;
@@ -280,14 +320,85 @@ TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only 
     auto nonContiguous = ownership;
     nonContiguous.rebase.sceneSlots[1].value = 7;
     CHECK_FALSE(nonContiguous.IsValid());
+    auto wrongAfterExtent = ownership;
+    wrongAfterExtent.rebase.sceneAfterExtent = 8;
+    CHECK_FALSE(wrongAfterExtent.IsValid());
+    auto overflow = ownership;
+    overflow.rebase.sceneBeforeExtent =
+        std::numeric_limits<std::uint32_t>::max() - 1;
+    overflow.rebase.sceneAppendBase = overflow.rebase.sceneBeforeExtent;
+    overflow.rebase.sceneAfterExtent = std::numeric_limits<std::uint32_t>::max();
+    CHECK_FALSE(overflow.IsValid());
     auto mismatched = ownership;
     mismatched.rebase.owned.kind = PrefabPropagationResourceKind::Material;
     CHECK_FALSE(mismatched.IsValid());
 
+    SceneMaterial material;
+    auto materialEntries = std::make_shared<const std::vector<PrefabPropagationResourcePayload>>(
+        std::vector<PrefabPropagationResourcePayload>{
+            {"material:0", "digest-m", PrefabPropagationResourceValue{material}}});
+    PrefabPropagationResourceOwnership materialOwnership;
+    materialOwnership.rebase.kind = PrefabPropagationResourceKind::Material;
+    materialOwnership.rebase.sourceBeforeExtent = 1;
+    materialOwnership.rebase.sceneBeforeExtent = 2;
+    materialOwnership.rebase.sceneAppendBase = 2;
+    materialOwnership.rebase.sceneAfterExtent = 3;
+    materialOwnership.rebase.sourceSlots = {{0}};
+    materialOwnership.rebase.sceneSlots = {{2}};
+    materialOwnership.rebase.owned = {
+        PrefabPropagationResourceKind::Material, materialEntries};
+    CHECK(materialOwnership.IsValid());
+    const auto originalMaterial = material;
+    material.baseColor = {0.0f, 0.0f, 0.0f};
+    material.alphaMode.clear();
+    CHECK(PrefabCanonicalMaterialEqual(
+        std::get<SceneMaterial>((*materialEntries)[0].decoded), originalMaterial));
+
+    SceneTexture texture;
+    texture.width = 1;
+    texture.height = 1;
+    texture.channels = 4;
+    texture.pixels = {1, 2, 3, 4};
+    auto textureEntries = std::make_shared<const std::vector<PrefabPropagationResourcePayload>>(
+        std::vector<PrefabPropagationResourcePayload>{
+            {"texture:0", "digest-t", PrefabPropagationResourceValue{texture}}});
+    PrefabPropagationResourceOwnership textureOwnership = materialOwnership;
+    textureOwnership.rebase.kind = PrefabPropagationResourceKind::Texture;
+    textureOwnership.rebase.owned = {
+        PrefabPropagationResourceKind::Texture, textureEntries};
+    CHECK(textureOwnership.IsValid());
+    const auto originalTexture = texture;
+    texture.width = 0;
+    texture.pixels.clear();
+    CHECK(PrefabPropagationTextureEqual(
+        std::get<SceneTexture>((*textureEntries)[0].decoded), originalTexture));
+
     PrefabPropagationPlan resourceOnly;
     resourceOnly.resourceOwnership.push_back(ownership);
+    resourceOnly.syncImpact = SyncImpact::Structural;
+    CHECK(resourceOnly.IsValid());
     CHECK_FALSE(resourceOnly.IsNoOp());
     CHECK(resourceOnly.IsEffective());
+
+    auto invalidPlan = resourceOnly;
+    invalidPlan.resourceOwnership[0].rebase.sceneAfterExtent = 8;
+    CHECK_FALSE(invalidPlan.IsValid());
+    CHECK_FALSE(invalidPlan.IsEffective());
+
+    PrefabPropagationPlan summaryPlan;
+    summaryPlan.componentOperations.push_back({
+        kEntity, kTemplate, PrefabComponentKeyFor<NameComponent>::value,
+        PrefabPropagationComponentValue{NameComponent{"before"}},
+        PrefabPropagationComponentValue{NameComponent{"after"}}});
+    CHECK_FALSE(summaryPlan.IsValid());
+    CHECK_FALSE(summaryPlan.IsEffective());
+    summaryPlan.affectedEntities = {kEntity};
+    summaryPlan.syncImpact = SyncImpact::Material;
+    CHECK_FALSE(summaryPlan.IsValid());
+    CHECK_FALSE(summaryPlan.IsEffective());
+    summaryPlan.syncImpact = SyncImpact::None;
+    CHECK(summaryPlan.IsValid());
+    CHECK(summaryPlan.IsEffective());
 }
 
 TEST_CASE("Phase 8 W4 S1: plan and result equality cover complete durable state")
