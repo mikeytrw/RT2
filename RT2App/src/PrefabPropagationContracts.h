@@ -12,6 +12,7 @@
 #include "SceneSyncImpact.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -265,17 +266,34 @@ struct PrefabPropagationResourcePayload
              PrefabPropagationResourceValueEqual(a.decoded, b.decoded); }
 };
 
-// The shared vector is const by construction: Undo/Redo can only rebind the
-// recorded slots and cannot mutate the owned payload block underneath a plan.
+// The decoded values are copied into a private const allocation. Callers can
+// inspect the prepared block but cannot retain a mutable alias to its storage.
 struct PrefabPropagationResourceBlock
 {
     PrefabPropagationResourceKind kind = PrefabPropagationResourceKind::Mesh;
-    std::shared_ptr<const std::vector<PrefabPropagationResourcePayload>> entries;
+
+    static PrefabPropagationResourceBlock FromDecoded(
+        PrefabPropagationResourceKind kind,
+        const std::vector<PrefabPropagationResourcePayload>& values)
+    {
+        PrefabPropagationResourceBlock result;
+        result.kind = kind;
+        result.entries_ = std::make_shared<const std::vector<PrefabPropagationResourcePayload>>(
+            values);
+        return result;
+    }
+
+    const std::vector<PrefabPropagationResourcePayload>& Entries() const noexcept
+    {
+        static const std::vector<PrefabPropagationResourcePayload> empty;
+        return entries_ ? *entries_ : empty;
+    }
 
     bool IsValid() const noexcept
     {
-        if (!entries || entries->empty()) return false;
-        return std::all_of(entries->begin(), entries->end(),
+        const auto& entries = Entries();
+        if (entries.empty()) return false;
+        return std::all_of(entries.begin(), entries.end(),
                            [&](const auto& value) {
                                return value.IsValid() &&
                                    PrefabPropagationResourceKindMatches(
@@ -286,8 +304,10 @@ struct PrefabPropagationResourceBlock
     friend bool operator==(const PrefabPropagationResourceBlock& a,
                            const PrefabPropagationResourceBlock& b) noexcept
     { return a.kind == b.kind &&
-             (a.entries == b.entries ||
-              (a.entries && b.entries && *a.entries == *b.entries)); }
+             a.Entries() == b.Entries(); }
+
+private:
+    std::shared_ptr<const std::vector<PrefabPropagationResourcePayload>> entries_;
 };
 
 struct PrefabPropagationResourceRebase
@@ -305,7 +325,7 @@ struct PrefabPropagationResourceRebase
     {
         if (owned.kind != kind || !owned.IsValid() ||
             sourceSlots.size() != sceneSlots.size() ||
-            sourceSlots.size() != owned.entries->size() || sourceSlots.empty())
+            sourceSlots.size() != owned.Entries().size() || sourceSlots.empty())
             return false;
         if (sceneAppendBase != sceneBeforeExtent) return false;
         const auto count = sourceSlots.size();
@@ -352,8 +372,7 @@ struct PrefabPropagationResourceOwnership
 inline SyncImpact PrefabPropagationImpactForKey(const PrefabComponentKey& key) noexcept
 {
     const auto wire = key.wire();
-    if (wire == PrefabWireKeys::kTransform ||
-        wire == PrefabWireKeys::kCamera)
+    if (wire == PrefabWireKeys::kTransform)
         return SyncImpact::Transform;
     if (wire == PrefabWireKeys::kMaterialOverride ||
         wire == PrefabWireKeys::kLight)
@@ -368,8 +387,18 @@ inline SyncImpact PrefabPropagationImpactForKey(const PrefabComponentKey& key) n
 inline SyncImpact PrefabPropagationImpactForResource(
     PrefabPropagationResourceKind kind) noexcept
 {
-    return kind == PrefabPropagationResourceKind::Mesh
-        ? SyncImpact::Structural : SyncImpact::Material;
+    if (kind == PrefabPropagationResourceKind::Mesh ||
+        kind == PrefabPropagationResourceKind::Texture)
+        return SyncImpact::Structural;
+    return SyncImpact::Material;
+}
+
+inline bool PrefabPropagationComponentOperationIsNoOp(
+    const PrefabPropagationComponentOperation& operation) noexcept
+{
+    if (operation.before.has_value() != operation.after.has_value()) return false;
+    if (!operation.before) return true;
+    return PrefabPropagationValueEqual(*operation.before, *operation.after);
 }
 
 struct PrefabPropagationDiagnostic
@@ -440,9 +469,12 @@ struct PrefabPropagationPlan
         std::vector<UUID> derived;
         derived.reserve(componentOperations.size());
         for (const auto& operation : componentOperations)
+        {
+            if (PrefabPropagationComponentOperationIsNoOp(operation)) continue;
             if (std::find(derived.begin(), derived.end(), operation.entityUuid) ==
                 derived.end())
                 derived.push_back(operation.entityUuid);
+        }
         std::sort(derived.begin(), derived.end(),
                   [](const UUID& a, const UUID& b) {
                       return a.ToString() < b.ToString();
@@ -454,9 +486,12 @@ struct PrefabPropagationPlan
     {
         SyncImpact derived = SyncImpact::None;
         for (const auto& operation : componentOperations)
+        {
+            if (PrefabPropagationComponentOperationIsNoOp(operation)) continue;
             if (static_cast<int>(PrefabPropagationImpactForKey(operation.key)) >
                 static_cast<int>(derived))
                 derived = PrefabPropagationImpactForKey(operation.key);
+        }
         for (const auto& ownership : resourceOwnership)
             if (static_cast<int>(PrefabPropagationImpactForResource(
                     ownership.rebase.kind)) > static_cast<int>(derived))
@@ -468,8 +503,14 @@ struct PrefabPropagationPlan
     {
         for (const auto& operation : componentOperations)
             if (!operation.IsValid()) return false;
+        std::array<bool, 3> ownershipKinds{};
         for (const auto& ownership : resourceOwnership)
+        {
             if (!ownership.IsValid()) return false;
+            const auto kind = static_cast<std::size_t>(ownership.rebase.kind);
+            if (kind >= ownershipKinds.size() || ownershipKinds[kind]) return false;
+            ownershipKinds[kind] = true;
+        }
         if (affectedEntities != DerivedAffectedEntities()) return false;
         if (syncImpact != DerivedSyncImpact()) return false;
         return true;
@@ -479,13 +520,7 @@ struct PrefabPropagationPlan
     {
         if (!IsValid()) return false;
         for (const auto& op : componentOperations)
-        {
-            if (op.before.has_value() != op.after.has_value())
-                return false;
-            if (op.before && op.after &&
-                !PrefabPropagationValueEqual(*op.before, *op.after))
-                return false;
-        }
+            if (!PrefabPropagationComponentOperationIsNoOp(op)) return false;
         if (!resourceOwnership.empty()) return false;
         return true;
     }
