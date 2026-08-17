@@ -6324,6 +6324,15 @@ failure count, which silently reverses the meaning of "the suite passed".
 > delta is **+1 case and +119 assertions** in each configuration. Older rows
 > remain period records; this is the current baseline.
 
+> **Superseded 2026-08-17 — Phase 8 W3 S7 F1 review-fix measurement.** The
+> immediately preceding 977/977, 153,276/153,276 post-A1 baseline remains a
+> period record and is superseded by the measured F1 test-only fix: **Release
+> 977/977 passed, 0 failed, 0 skipped; 153,310 assertions** and **Debug
+> 977/977 passed, 0 failed, 0 skipped; 153,310 assertions**. The exact delta
+> from 977/153,276 is **+0 cases and +34 assertions** in each configuration.
+> The A1 153,276 entry is preserved above as the immediately superseded
+> period record.
+
 #### The remaining 8 Debug-only failures
 
 All in `Phase1ASceneAssetTests.cpp`: 7 × `OBJ Import Wizard` and
@@ -15517,3 +15526,89 @@ line-ending warnings reported by Git). A2 is documentation-only plus the
 expected Graphify report refresh; no production source is included.
 
 **W3 S7 is delivered.**
+
+### Phase 8 W3 S7 — post-review correction/addendum (2026-08-17)
+
+This append-only correction supersedes the inaccurate or incomplete A2
+mechanism and acceptance statements in the S7 report immediately above. It is grounded
+against F1 commit `a605ef08df0bdcb7bbdadda42624db84b23f4f64`, with production
+still frozen at `c416445`. No production source, W4/W5/W6 implementation, merge,
+push, or PR was performed.
+
+#### Review finding P1 — membership and identity are now mandatory
+
+The acceptance helper now requires a `PrefabMemberComponent` on every reloaded
+meshed member (`RT2Tests/src/Phase8W3OverrideTests.cpp:14290-14308`); absence
+is a fatal test failure rather than an empty inherited-wire observation. It
+records each member's `instanceId` and `templateId` in `S7Observation`
+(`:14110-14118`) and checks, for both the control and retint observations,
+that all three identities are non-null, the three template IDs are shared, and
+the three instance IDs are pairwise distinct (`:14160-14175`). Those checks
+remain in addition to the exact material-table extents, resolved indices, and
+target-only `{materialOverride}` marker assertions (`:14335-14392`).
+
+The named discrimination fault suppressed the scene-loader installation at
+`RT2App/src/SceneSerializer.cpp:1436-1437`. Focused Release went RED with
+**1 failed case, 31 total assertions, 30 passed and 1 failed**; the exact
+failure was `REQUIRE(pm)` at
+`RT2Tests/src/Phase8W3OverrideTests.cpp:14302`. This proves the strengthened
+test fails specifically when prefab membership is absent. Production was
+restored byte-for-byte immediately; focused Release and Debug then each went
+GREEN at **1/1 case and 153/153 assertions**.
+
+#### Review finding P3 — successful cleanup is checked
+
+`S7TempDirGuard::CleanupChecked` now surfaces `remove_all` and existence-check
+errors, proves the temporary directory is absent, and disarms the guard only
+after that proof (`RT2Tests/src/Phase8W3OverrideTests.cpp:14121-14157`). The
+successful path requires that check before returning (`:14321-14323`). Until
+success, the RAII fallback remains armed for exceptional or `REQUIRE` exits.
+Focused, full-suite, and kill-set runs left no `rt2_p8w3_s7_*` directories in
+the temporary directory.
+
+#### Review finding P2 — D3.2 canonicalizer wording correction
+
+The prior statement that `S5CanonicalizeVector` rejects without mutating its
+output was too broad. The exact behavior is narrower: the helper clears and
+reserves `out`, appends each valid canonical prefix, and then returns false on
+an unknown or excluded suffix (`RT2App/src/SceneManager.cpp:5659-5688`). Thus
+valid-prefix/invalid-suffix input can leave a partially filled output. Current
+callers stage into fresh locals and reject before destination mutation: the
+complete current call-site set is the local `canonical` verifier value
+(`:5731-5732`), query locals `set` (`:6004-6006,6028-6030`), marker-plan local
+`live` (`:6133-6136,6313-6316`), marker-plan local `targetCheck`
+(`:6327-6335`), and composite-plan locals `live`/`target`
+(`:7034-7039`). No destination-mutation defect was demonstrated. Therefore
+the delivered D3.2 claim is transactional destination/load/mutation rejection,
+not atomicity of the scratch output parameter. The pre-existing helper comment
+still overstates output atomicity and is intentionally unchanged because S7
+production remains frozen; S7 does not claim helper-level output atomicity.
+
+#### Review finding P2 — D3.8 ID-reservation mechanism correction
+
+`PlanCopiedPrefabLinks` classifies the source forest, groups roots and members,
+and records orphan/ambiguous groups; its current body does not mint IDs
+(`RT2App/src/SceneManager.cpp:246-285`). Fresh IDs are reserved in the four
+call-local pre-mutation paths instead: ordinary duplicate
+(`:1920-1933`), ordinary paste (`:2095-2103`), UUID-aware duplicate
+(`:3900-3910`), and UUID-aware paste (`:4085-4096`). The behavior remains
+delivered as specified; only the preceding report's mechanism and citations
+were wrong.
+
+#### F1 remeasurement and boundary
+
+Both Release and Debug solution builds completed with 0 errors. Full
+`RT2Tests.exe` measured **977/977 cases and 153,310/153,310 assertions** in
+both configurations, superseding the A2 153,276 figures. The remaining gates
+were unchanged and passed: `run_script_test.ps1` (60 frames, 1 entity, no
+mismatches), `run_slice_test.ps1` (60 steps, authoring intact, Cube
+`x=0.999999702`), and `run_recovery_test.ps1` (PASS). Direct SliceRunner
+Release and Debug standalone `--scene` and project `--project` modes all
+passed at 60 steps with `authoringIntact=true`; Release kill-set was **7/7
+PASS**. The fixture was restored to tracked blob `f47ec909`, and
+`git diff c416445 HEAD -- RT2App/src/` remained empty.
+
+The honest completion boundary is unchanged: no canonicalizer/comment
+production fix was made, and no W4 propagation, W5 revert/apply/unpack, W6 UI,
+or later boundary work was performed. The branch now requires an independent
+non-Claude re-review of `c7af60f..a605ef0` before final CLEAN closure.
