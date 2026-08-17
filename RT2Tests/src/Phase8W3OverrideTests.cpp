@@ -16,6 +16,8 @@
 #include "EditorStructuralCommands.h"
 #include "SceneManager.h"
 #include "EditorCameraWorkflow.h"
+#include "SceneAssetResolver.h"
+#include "Phase1AFixtureGenerator.h"
 #include "SceneHierarchy.h"
 #include "SceneGraph.h"
 #include "SceneSerializer.h"
@@ -14030,4 +14032,307 @@ TEST_CASE("Phase 8 W3 S6-C: create runs shared admission before any mutation")
     }
 
     std::filesystem::remove_all(s.dir);
+}
+
+
+// ============================================================================
+// Phase 8 W3, S7 — the phase ACCEPTANCE criterion.
+// (docs/game-engine-development-plan.md, W3 spec "Acceptance", :14298-14306.)
+//
+// The criterion: instantiate the fixture hierarchy several times, retint one
+// instance's material, save, reload, and confirm that instance alone carries a
+// materialOverride override while the others remain inherited — and, per the
+// grounding's warning that "a test comparing only component scalars can pass
+// while texture and material indices are wrong", assert the RESOLVED
+// MeshRef::materialIndex and the material-table extent, not just the authored
+// snapshot.
+//
+// WHY THIS NEEDS ITS OWN FIXTURE, and why the gap survived to S7.
+// Every other W3 test builds on S2Fixture, whose prefab is created from two
+// EMPTY entities (:185-192) — no MeshRef, no ImportedMeshSourceComponent, no
+// material. Tests that need a mesh bolt one on afterwards with
+// emplace_or_replace (:8443-8447, :12535-12539). That is valid live-registry
+// state, and it is why S6-A/S6-B/S6-E are legitimately clean — but such an
+// entity can never exercise the resolver, because SceneAssetResolver applies a
+// MaterialOverrideComponent only inside its imported-source plan walk. The
+// measurable consequence, found while writing this test:
+// SceneAssetResolver::ResolveAll had ZERO call sites in this 14k-line file, so
+// no W3 test asserted a resolved material index at all. This test is therefore
+// built on a real imported glTF subtree, following the W1 C5 pattern
+// (Phase8W1PrefabTests.cpp:2080-2108) rather than S2Fixture.
+//
+// WHAT IS BEING PINNED is the resolver's own contract
+// (SceneAssetResolver.cpp:873-891): for an override with authored == true it
+// appends the override material at the current end of the table and repoints
+// MeshRef::materialIndex at that appended slot —
+//
+//     int overrideIdx = (int)doc.ecs.materials.size();
+//     doc.ecs.materials.push_back(ov->material);
+//     ov->materialIndex = overrideIdx;
+//
+// so with three instances of one imported prefab and exactly one retinted, the
+// correct post-reload state is exact rather than approximate. The two passes
+// below are identical in every respect INCLUDING the extra tinted material row
+// — only the retint differs — so the difference in table extent isolates the
+// resolver's append and nothing else.
+//
+// Measured contract at this commit (both configurations):
+//   control: extent 6, all three members resolve to the shared staged slot 5;
+//   retint:  extent 7, the retinted member resolves to the appended slot 6,
+//            the other two still resolve to 5.
+// The extent assertions are EXACT equalities. Every other reload assertion in
+// the tree is a bounds check (materialIndex < materials.size() —
+// MaterialIndexUndoOverrideTests.cpp:301,
+// Phase8Prework2MaterialKeyTests.cpp:392, Phase1ASceneAssetTests.cpp:535), and
+// a bounds check is exactly what cannot refute this class of defect.
+//
+// DISCRIMINATION FAULT: suppress the authored-override append/repoint at
+// SceneAssetResolver.cpp:873-891 (drop the body of the `if (ov->authored)`
+// branch). The retint pass then reports extent 6 instead of 7 and the retinted
+// member resolves to 5 instead of 6 -> RED. Restore -> GREEN. Exact RED counts
+// are recorded in the S7 verification report.
+//
+// Note, deliberately, that the authored-snapshot assertions below (the override
+// component's own scalars) stay GREEN under that fault: the component is read
+// straight from the file and its scalars are correct whether or not the
+// resolver ever appended the row. That is the grounding's warning made
+// concrete — the scalar comparison alone does not discriminate, and only the
+// resolved index and the table extent do.
+// ============================================================================
+
+namespace
+{
+
+// One fully round-tripped observation: the material-table extent after
+// ResolveAll, plus, per instance, the meshed member's resolved
+// MeshRef::materialIndex, its override set, its authored override scalars, and
+// the material row its resolved index actually points at.
+struct S7Observation
+{
+    std::size_t materialExtent = 0;
+    std::vector<int> resolvedIndex;
+    std::vector<std::vector<std::string>> overrideWires;
+    std::vector<std::optional<SceneMaterial>> authoredOverride;
+    std::vector<SceneMaterial> resolvedMaterial;
+};
+
+struct S7TempDirGuard
+{
+    std::filesystem::path dir;
+
+    ~S7TempDirGuard()
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+};
+
+// Build the fixture hierarchy, instantiate it three times, optionally retint
+// instance `retintIndex` through the real S6-B SetMaterialIndex command path,
+// then save -> Load -> ResolveAll and observe. retintIndex < 0 is the control.
+S7Observation S7RunAcceptance(const std::string& tag, int retintIndex,
+                              const SceneMaterial& tint)
+{
+    constexpr int kInstanceCount = 3;
+
+    DeterministicUuidProvider ids;
+    SceneManager manager;
+    manager.SetUuidProvider(&ids);
+
+    const auto dir = S2UniqueTempDir(tag);
+    const S7TempDirGuard cleanup{ dir };
+    const auto glbPath = dir / "tinted.glb";
+    Error genErr;
+    REQUIRE(GenerateTinyTexturedGlb(glbPath, genErr));
+    REQUIRE(genErr.IsOk());
+
+    // A real imported subtree: MeshRef + ImportedMeshSourceComponent + genuine
+    // material and texture rows — the state the resolver's plan walk requires.
+    REQUIRE(manager.LoadScene(glbPath.string()));
+    auto& reg = manager.GetECS().registry;
+    UUID importedUuid;
+    {
+        auto view = reg.view<ImportedMeshSourceComponent>();
+        REQUIRE(view.size() > 0);
+        importedUuid = reg.get<EntityIdComponent>(*view.begin()).id;
+    }
+    REQUIRE(!importedUuid.IsNull());
+
+    // The fixture HIERARCHY: a folder root over the imported mesh member, so
+    // the prefab is root + meshed child (S2Fixture's shape, real geometry).
+    const auto fixtureRoot = manager.CreateEmpty("Fixture").affectedEntities.front();
+    REQUIRE(manager.Reparent({ importedUuid }, fixtureRoot).success);
+
+    const auto prefabPath = dir / "fixture.rt2prefab";
+    REQUIRE(manager.CreatePrefabFromSubtree({ fixtureRoot }, prefabPath).ok);
+
+    const auto canonical = manager.CountCanonicalPrefabEntities(prefabPath);
+    REQUIRE(canonical.IsOk());
+    const std::size_t perInstance = canonical.value;
+    REQUIRE(perInstance == 2);
+
+    // The tinted row is added in BOTH passes so the two documents' material
+    // tables are identical; only the retint differs.
+    const int tintSlot = manager.AddMaterial(tint);
+
+    // Instantiate the hierarchy several times. The meshed member is located by
+    // component, not by assuming the canonical UUID order.
+    std::vector<UUID> meshMembers;
+    for (int i = 0; i < kInstanceCount; ++i)
+    {
+        std::vector<AssetDiagnostic> diags;
+        const auto uuids = manager.ReserveKnownUuids(perInstance);
+        const auto inst = manager.InstantiatePrefabWithUuids(prefabPath, uuids, diags);
+        REQUIRE(inst.mutation.success);
+        UUID meshMember;
+        for (const auto& u : uuids)
+        {
+            const auto h = manager.FindEntityByUuid(u);
+            REQUIRE(static_cast<uint32_t>(h) != static_cast<uint32_t>(entt::null));
+            if (reg.all_of<MeshRef>(h) && reg.all_of<ImportedMeshSourceComponent>(h))
+                meshMember = u;
+        }
+        REQUIRE(!meshMember.IsNull());
+        meshMembers.push_back(meshMember);
+    }
+    REQUIRE(meshMembers.size() == static_cast<std::size_t>(kInstanceCount));
+
+    // Retint exactly one instance, through the production command path, so the
+    // materialOverride marker is authored by production code and not by the
+    // test. This is the S6-B one-shot staging shape (:8940-8952).
+    if (retintIndex >= 0)
+    {
+        const auto target = meshMembers[static_cast<std::size_t>(retintIndex)];
+        const auto handle = manager.FindEntityByUuid(target);
+        const int beforeIndex = reg.get<MeshRef>(handle).materialIndex;
+        REQUIRE(beforeIndex != tintSlot);
+        const auto before = manager.GetMaterialOverride(target);
+        const auto staged = manager.StageMaterialIndex(target, tintSlot);
+        REQUIRE(staged.IsOk());
+        REQUIRE(staged.value.override.has_value());
+        auto cmd = MakeSetMaterialIndexCommandIfEffective(target, beforeIndex,
+            tintSlot, before, staged.value.override);
+        REQUIRE(cmd);
+        EditorCommandHistory history;
+        const auto applied = history.Execute(std::move(cmd), manager);
+        REQUIRE(applied.success);
+        REQUIRE(applied.effective);
+        REQUIRE(manager.IsOverridden(target,
+            PrefabComponentKeyFor<MaterialOverrideComponent>::value).value);
+    }
+
+    // Save -> reload -> resolve: the path the user actually walks.
+    const auto scenePath = dir / "acceptance.rt2scene";
+    Error saveErr;
+    REQUIRE(SaveSceneForTest(manager.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(saveErr.IsOk());
+
+    DeterministicUuidProvider loadIds;
+    SceneDocument loaded;
+    loaded.SetUuidProvider(&loadIds);
+    Error loadErr;
+    REQUIRE(SceneSerializer::Load(loaded, scenePath, loadErr));
+    REQUIRE(loadErr.IsOk());
+
+    std::vector<AssetDiagnostic> resolveDiags;
+    Error resolveErr;
+    REQUIRE(SceneAssetResolver::ResolveAll(loaded,
+        AssetResolutionContext{ dir, nullptr }, resolveDiags, resolveErr));
+    REQUIRE(resolveErr.IsOk());
+
+    S7Observation obs;
+    obs.materialExtent = loaded.ecs.materials.size();
+    for (const auto& u : meshMembers)
+    {
+        const auto h = loaded.FindByUuid(u);
+        REQUIRE(static_cast<uint32_t>(h) != static_cast<uint32_t>(entt::null));
+        const auto& lreg = loaded.ecs.registry;
+        const auto* ref = lreg.try_get<MeshRef>(h);
+        REQUIRE(ref);
+        obs.resolvedIndex.push_back(ref->materialIndex);
+
+        std::vector<std::string> wires;
+        if (const auto* pm = lreg.try_get<PrefabMemberComponent>(h))
+            for (const auto& k : pm->overrides)
+                wires.emplace_back(k.wire());
+        obs.overrideWires.push_back(std::move(wires));
+
+        if (const auto* ov = lreg.try_get<MaterialOverrideComponent>(h))
+            obs.authoredOverride.push_back(ov->material);
+        else
+            obs.authoredOverride.push_back(std::nullopt);
+
+        REQUIRE(ref->materialIndex >= 0);
+        REQUIRE(static_cast<std::size_t>(ref->materialIndex) < obs.materialExtent);
+        obs.resolvedMaterial.push_back(loaded.ecs.materials[ref->materialIndex]);
+    }
+
+    return obs;
+}
+
+} // namespace
+
+TEST_CASE("Phase 8 W3 S7 acceptance: one retinted instance alone diverges, "
+          "by resolved material index and exact table extent")
+{
+    SceneMaterial tint;
+    tint.baseColor = { 0.05f, 0.85f, 0.15f };
+    tint.roughness = 0.31f;
+
+    // ---- Control: three instances, none overridden. ------------------------
+    const auto control = S7RunAcceptance("p8w3_s7_control", -1, tint);
+
+    // All three members inherit: one shared staged slot, no override markers.
+    REQUIRE(control.resolvedIndex.size() == 3);
+    const int sharedSlot = control.resolvedIndex[0];
+    CHECK(control.resolvedIndex[1] == sharedSlot);
+    CHECK(control.resolvedIndex[2] == sharedSlot);
+    CHECK(sharedSlot == 5);                       // measured fixture shape
+    CHECK(control.materialExtent == 6);           // EXACT, not a bounds check
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        CHECK(control.overrideWires[i].empty());
+        CHECK_FALSE(control.authoredOverride[i].has_value());
+    }
+
+    // ---- Acceptance: identical scene, middle instance retinted. ------------
+    const auto retint = S7RunAcceptance("p8w3_s7_retint", 1, tint);
+    REQUIRE(retint.resolvedIndex.size() == 3);
+
+    // The override costs the table EXACTLY one extra row, and the appended
+    // slot sits exactly at the control table's old end.
+    CHECK(retint.materialExtent == control.materialExtent + 1);
+    CHECK(retint.materialExtent == 7);
+    const int appendedSlot = static_cast<int>(control.materialExtent);
+    CHECK(appendedSlot == 6);
+
+    // That instance alone carries the override, by RESOLVED index.
+    CHECK(retint.resolvedIndex[1] == appendedSlot);
+    CHECK(retint.resolvedIndex[1] != sharedSlot);
+
+    // The others remain inherited — still the shared staged slot.
+    CHECK(retint.resolvedIndex[0] == sharedSlot);
+    CHECK(retint.resolvedIndex[2] == sharedSlot);
+
+    // That instance alone carries the marker, and it is exactly materialOverride.
+    REQUIRE(retint.overrideWires[1].size() == 1);
+    CHECK(retint.overrideWires[1][0] == "materialOverride");
+    CHECK(retint.overrideWires[0].empty());
+    CHECK(retint.overrideWires[2].empty());
+
+    // The retinted instance alone has a durable override component, and the
+    // row its resolved index points at actually carries the tint.
+    REQUIRE(retint.authoredOverride[1].has_value());
+    CHECK_FALSE(retint.authoredOverride[0].has_value());
+    CHECK_FALSE(retint.authoredOverride[2].has_value());
+    CHECK(retint.resolvedMaterial[1].baseColor == tint.baseColor);
+    CHECK(retint.resolvedMaterial[1].roughness == doctest::Approx(tint.roughness));
+    CHECK_FALSE(retint.resolvedMaterial[0].baseColor == tint.baseColor);
+    CHECK_FALSE(retint.resolvedMaterial[2].baseColor == tint.baseColor);
+
+    // The authored snapshot is correct too — but see the header note: this
+    // pair stays GREEN under the discrimination fault, which is exactly why
+    // the criterion demands the resolved index and the extent above.
+    CHECK(retint.authoredOverride[1]->baseColor == tint.baseColor);
+    CHECK(retint.authoredOverride[1]->roughness == doctest::Approx(tint.roughness));
 }
