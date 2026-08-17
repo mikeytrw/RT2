@@ -15612,3 +15612,9 @@ The honest completion boundary is unchanged: no canonicalizer/comment
 production fix was made, and no W4 propagation, W5 revert/apply/unpack, W6 UI,
 or later boundary work was performed. The branch now requires an independent
 non-Claude re-review of `c7af60f..a605ef0` before final CLEAN closure.
+
+> **Superseded 2026-08-17 — review-range correction.** The preceding review
+> range is incomplete because it omits the F2 documentation correction and this
+> F3 range note. The required independent non-Claude review is of
+> `c7af60f..HEAD` at closure and must include F1, F2, and F3, not only the range
+> ending at `a605ef0`.
