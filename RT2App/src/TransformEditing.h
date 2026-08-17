@@ -4,6 +4,21 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <vector>
+#include <cstddef>
+#include "core/UUID.h"
+
+// Immutable authoring-world capture handed from SceneManager to the viewport
+// gizmo.  UUIDs and matrices are kept in caller order; no EnTT handles or
+// SceneManager authority crosses this boundary.
+struct EditorWorldTransformSnapshot
+{
+	std::vector<rt2::core::UUID> uuids;
+	std::vector<glm::mat4> worldMatrices;
+	std::size_t primaryIndex = 0;
+
+	bool Empty() const { return uuids.empty(); }
+	std::size_t Size() const { return uuids.size(); }
+};
 
 enum class TransformSpace
 {

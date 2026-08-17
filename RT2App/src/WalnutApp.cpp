@@ -35,6 +35,7 @@
 #include "UnsavedChangesCoordinator.h"
 #include "ViewportCoordinates.h"
 #include "EditorTransformGizmo.h"
+#include "TransformGizmoHostLifecycle.h"
 #include "EditorViewportIcons.h"
 #include "EditorCommandHistory.h"
 #include "EditorSyncRouter.h"
@@ -1066,48 +1067,48 @@ public:
 			ImGui::EndDragDropTarget();
 		}
 		const bool imageHovered = ImGui::IsItemHovered();
-		const TransformGizmoResult gizmo = m_TransformGizmo.Draw(
-			m_SceneMgr, m_EditorUI.Selection(), m_Cam,
-			{ imageMin.x, imageMin.y }, { imageSize.x, imageSize.y }, imageHovered,
-			m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
-				!m_EditorUI.SelectionHasDirectLock(),
-			m_EditorUI.GetTransformSpace(), m_EditorUI.GetTransformPivot(),
-			m_EditorUI.GetTransformSnapSettings(), m_EditorUI.GetUniformScale());
-		if (gizmo.changed)
-			SyncAuthoringTransforms();
+		std::optional<EditorWorldTransformSnapshot> gizmoSnapshot;
+		if (!m_EditorUI.IsTransformGestureOpen() &&
+			!m_EditorUI.Selection().Empty())
+		{
+			const auto captured = m_SceneMgr.CaptureEditorWorldTransforms(
+				m_EditorUI.Selection().Ordered(), m_EditorUI.Selection().Primary());
+			if (captured.IsOk()) gizmoSnapshot = std::move(captured.value);
+			else m_LastStatusMsg = captured.error.detail;
+		}
+		// Global actions run before the viewport. The coordinator consumes any
+		// external close/recovery transfer before invoking the real Draw callback,
+		// so a delayed release cannot reach the ordinary close path.
+		const auto frame = m_GizmoCoordinator.RunFrame(
+			m_EditorUI.TransformGestureLifecycle(),
+			[this]() { m_TransformGizmo.Cancel(); },
+			[this, &gizmoSnapshot, &imageMin, &imageSize, imageHovered]() {
+				return m_TransformGizmo.Draw(
+					gizmoSnapshot, m_EditorUI.Selection(), m_Cam,
+					{ imageMin.x, imageMin.y }, { imageSize.x, imageSize.y },
+					imageHovered,
+					m_Runtime.GetState() == rt2::core::SceneRunState::Edit &&
+						!m_EditorUI.SelectionHasDirectLock(),
+					m_EditorUI.GetTransformSpace(), m_EditorUI.GetTransformPivot(),
+					m_EditorUI.GetTransformSnapSettings(),
+					m_EditorUI.GetUniformScale());
+			}, TransformGizmoCallbacks());
+		const TransformGizmoResult& gizmo = frame.event;
 		if (!gizmo.error.empty())
 			m_LastStatusMsg = gizmo.error;
-
-		// Phase 3B1: on gizmo drag end, build a multi-entity TransformCommand
-		// and record it via RecordApplied. The gizmo's per-frame
-		// TrySetWorldTransforms calls already applied the mutation; we only
-		// record the command here. The before-local TRS was captured at drag
-		// start; the after-local TRS is read live now.
-		if (gizmo.dragJustEnded && !gizmo.draggedUuids.empty())
-		{
-			std::vector<TransformTriple> triples;
-			triples.reserve(gizmo.draggedUuids.size());
-			for (std::size_t i = 0; i < gizmo.draggedUuids.size(); ++i)
-			{
-				const auto& uuid = gizmo.draggedUuids[i];
-				const auto entity = m_SceneMgr.FindEntityByUuid(uuid);
-				if (entity == entt::null) continue;
-				EditableTRS afterLocal;
-				if (!m_SceneMgr.GetLocalTransform(SceneManager::EntityId{ entity }, afterLocal))
-					continue;
-				triples.push_back({ uuid, gizmo.dragStartLocal[i], afterLocal });
-			}
-			auto cmd = MakeTransformCommandIfEffective(std::move(triples));
-			if (cmd)
-			{
-				EditorMutationResult applied;
-				applied.success = true;
-				applied.syncImpact = rt2::core::SyncImpact::Transform;
-				for (std::size_t i = 0; i < gizmo.draggedUuids.size(); ++i)
-					applied.affectedEntities.push_back(gizmo.draggedUuids[i]);
-				m_History.RecordApplied(std::move(cmd), m_SceneMgr, applied);
-			}
-		}
+		const auto& coordinated = frame.routed;
+		if (coordinated.beginRejected)
+			m_LastStatusMsg = "gizmo transform gesture admission failed";
+		else if (coordinated.bindRejected)
+			m_LastStatusMsg = coordinated.close && coordinated.close->result ==
+				PreviewSessionCloseOutcome::Result::PendingRetry
+				? coordinated.close->lastError.error.detail
+				: "gizmo transform lifecycle could not bind the session token";
+		if (coordinated.preview && !coordinated.preview->success)
+			m_LastStatusMsg = coordinated.preview->error.detail;
+		if (coordinated.close && coordinated.close->result ==
+			PreviewSessionCloseOutcome::Result::PendingRetry)
+			m_LastStatusMsg = coordinated.close->lastError.error.detail;
 
 		// Editor icon overlay. Lights and cameras have no geometry, so the
 		// GPU picker cannot reach them; this hit test is their only route to
@@ -1179,6 +1180,16 @@ public:
 	}
 	else
 	{
+		// Losing the renderer output is a viewport teardown, not proof that an
+		// applied transform may be abandoned. Restore through the exact gizmo
+		// token before clearing the local correlation.
+		if (m_GizmoCoordinator.LocalDragActive())
+		{
+			const auto close = m_GizmoCoordinator.RestoreActive(
+				TransformGizmoCallbacks());
+			if (close.result == PreviewSessionCloseOutcome::Result::PendingRetry)
+				m_LastStatusMsg = close.lastError.error.detail;
+		}
 		ImGui::TextDisabled("Renderer output unavailable");
 		if (ImGui::BeginDragDropTarget())
 		{
@@ -1867,9 +1878,9 @@ public:
 				m_ScriptAssetContext = assetContext;
 				ApplyActiveInputConfiguration();
 				// Commit the already validated document without clearing it.
-				m_SceneMgr.ReplaceAuthoringDocument(
+				ReplaceEditorDocument(
+					AuthoringDocumentReplacementKind::RecoveryRestore,
 					std::move(restored), std::max<uint64_t>(1, r.revision));
-			m_EditorUI.ResetForDocument();
 			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 			m_History.Clear();
 				CompactMeshRegistryNowAsserted();
@@ -2637,13 +2648,15 @@ private:
 
 	void AlignCameraToView(const rt2::core::UUID& camera)
 	{
-		// Phase 3B2: capture the before-state, apply the alignment, capture
-		// the after-state, and record via RecordApplied. Redo re-applies the
-		// stored after-state (NOT re-align to current view). Undo restores
-		// the before-localTRS + before-cameraProps via the atomic
-		// SetCameraPoseState API (one revision bump, one authoritative
-		// Transform impact). Routing goes through ApplyMutation/router so
-		// the accumulation reset fires exactly once.
+		// Phase 8 W3 S6-B: construct-then-Execute. Capture the before-state,
+		// stage the canonical alignment target via StageCameraPose (no
+		// mutation), build the command, and Execute it through history so the
+		// composite camera-pose write + marker insertion + schema promotion
+		// are atomic. Redo re-applies the stored after-state (NOT re-align to
+		// current view). Undo replays the same typed composite transaction,
+		// restoring before-localTRS + before-cameraProps with one revision bump
+		// and one authoritative Transform impact. The Execute result routes through
+		// the router so the accumulation reset fires exactly once.
 		const auto entity = m_SceneMgr.FindEntityByUuid(camera);
 		if (entity == entt::null) return;
 		EditableTRS beforeLocal;
@@ -2661,35 +2674,26 @@ private:
 		}
 		const CameraComponent beforeCamera = *beforeCam;
 
-		const auto result = m_SceneMgr.AlignCameraEntityToView(camera,
-			m_Cam.GetEditorPose());
-		if (!result.success)
+		const auto staged = m_SceneMgr.StageCameraPose(camera, m_Cam.GetEditorPose());
+		if (!staged.IsOk())
 		{
-			m_LastStatusMsg = result.error.Format();
+			m_LastStatusMsg = staged.error.Format();
 			return;
 		}
 
-		// Capture the composite after-state.
-		EditableTRS afterLocal;
-		if (!m_SceneMgr.GetLocalTransform(SceneManager::EntityId{ entity }, afterLocal))
-		{
-			m_LastStatusMsg = "Camera alignment produced an unreadable transform";
-			return;
-		}
-		const CameraComponent afterCamera = *reg.try_get<CameraComponent>(entity);
-
-		auto cmd = MakeAlignCameraCommandIfEffective(camera, beforeLocal, afterLocal,
-			beforeCamera, afterCamera);
+		auto cmd = MakeAlignCameraCommandIfEffective(camera, beforeLocal,
+			staged.value.local, beforeCamera, staged.value.camera);
 		if (cmd)
 		{
-			EditorMutationResult applied;
-			applied.success = true;
-			applied.syncImpact = rt2::core::SyncImpact::Transform;
-			applied.affectedEntities.push_back(camera);
-			m_History.RecordApplied(std::move(cmd), m_SceneMgr, applied);
+			const auto result = m_History.Execute(std::move(cmd), m_SceneMgr);
+			if (!result.success)
+			{
+				m_LastStatusMsg = result.error.Format();
+				return;
+			}
+			// Route through the router so accumulation reset fires once.
+			m_SyncRouter.Route(result, m_SceneMgr);
 		}
-		// Route through the router so accumulation reset fires once.
-		m_SyncRouter.Route(result, m_SceneMgr);
 		m_LastStatusMsg = "Camera entity aligned to editor view";
 	}
 
@@ -3257,7 +3261,7 @@ private:
 				}
 			}
 
-			m_EditorUI.ResetForDocument();
+			ResetEditorForDocument();
 			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 			m_History.Clear();
 			CompactMeshRegistryNowAsserted();
@@ -3355,6 +3359,59 @@ private:
 		return m_SceneMgr.AddObject(name, {0, 0.5f, 0});
 	}
 
+	void CompleteTransformGizmoAfterUiTransition()
+	{
+		// Ordering is load-bearing: every caller has already closed/discarded
+		// the SceneEditorUI session or transferred its token into pending
+		// recovery. Only then may Walnut release the local drag/correlation.
+		m_GizmoCoordinator.CompleteAfterUiTransition(
+			[this]() { m_TransformGizmo.Cancel(); });
+	}
+
+	TransformGizmoCoordinatorCallbacks TransformGizmoCallbacks()
+	{
+		TransformGizmoCoordinatorCallbacks callbacks;
+		callbacks.cancelLocal = [this]() { m_TransformGizmo.Cancel(); };
+		callbacks.begin = [this](const std::vector<rt2::core::UUID>& uuids) {
+			return m_EditorUI.BeginTransformGestureForGizmo(
+				static_cast<std::uint64_t>(
+					reinterpret_cast<std::uintptr_t>(&m_TransformGizmo)), uuids);
+		};
+		callbacks.preview = [this](const TransformGestureToken& token,
+			const std::vector<std::pair<rt2::core::UUID, glm::mat4>>& worlds) {
+			return m_EditorUI.PreviewTransformWorldIntent(token, worlds);
+		};
+		callbacks.close = [this](bool finalize, const TransformGestureToken& token) {
+			return m_EditorUI.CloseTransformGesture(finalize, token);
+		};
+		return callbacks;
+	}
+
+	void ResetEditorForDocument()
+	{
+		// Replacement is valid discard proof. SceneEditorUI drops its durable
+		// session/token first; Walnut's drag/sequence are cleared afterward.
+		m_EditorUI.ResetForDocument();
+		CompleteTransformGizmoAfterUiTransition();
+	}
+
+	void ReplaceEditorDocument(AuthoringDocumentReplacementKind kind,
+		rt2::core::SceneDocument&& document, uint64_t authoringRevision = 0)
+	{
+		m_GizmoCoordinator.ReplaceDocument(kind,
+			[this, &document, authoringRevision]() {
+				m_SceneMgr.ReplaceAuthoringDocument(
+					std::move(document), authoringRevision);
+			},
+			[this](AuthoringDocumentSelectionPolicy policy) {
+				if (policy == AuthoringDocumentSelectionPolicy::PreserveValid)
+					m_EditorUI.ResetForDocumentPreservingValidSelection();
+				else
+					m_EditorUI.ResetForDocument();
+			},
+			[this]() { m_TransformGizmo.Cancel(); });
+	}
+
 	RendererGPU m_RendererGPU;
 	RenderSettings m_Settings;
 	SceneManager m_SceneMgr;
@@ -3362,6 +3419,7 @@ private:
 	EditorCommandHistory m_History;
 	EditorSyncRouter m_SyncRouter;
 	EditorTransformGizmo m_TransformGizmo;
+	TransformGizmoCoordinator m_GizmoCoordinator;
 	uint64_t m_ViewportPickSerial = 0;
 	bool m_ViewportPickToggle = false;
 	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
@@ -4013,6 +4071,9 @@ private:
 		}
 
 		m_EditorUI.SetEditable(false);
+		// SetEditable finalized the session or transferred complete recovery
+		// ownership into SceneEditorUI. Walnut must not carry G1 into Play.
+		CompleteTransformGizmoAfterUiTransition();
 		printf("[Play] Entered Play mode\n");
 	}
 
@@ -4147,7 +4208,7 @@ public:
 			: rt2::core::AssetResolutionContext{};
 		m_SceneMgr.SetAssetResolutionContext(assetContext);
 		m_ScriptAssetContext = assetContext;
-			m_EditorUI.ResetForDocument();
+			ResetEditorForDocument();
 			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 			m_History.Clear();
 		m_SceneMgr.CompactMeshRegistryNow();
@@ -4422,8 +4483,8 @@ public:
 			ApplyActiveInputConfiguration();
 			m_SceneMgr.SetAssetResolutionContext(assetContext);
 			m_ScriptAssetContext = assetContext;
-			m_SceneMgr.ReplaceAuthoringDocument(std::move(*resultDoc));
-			m_EditorUI.ResetForDocument();
+			ReplaceEditorDocument(AuthoringDocumentReplacementKind::OpenScene,
+				std::move(*resultDoc));
 			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 
 			// W7 watches the project asset root, not directories inferred from
@@ -4601,7 +4662,8 @@ public:
 				m_SceneMgr.SetAssetResolutionContext(m_ProjectContext->Assets());
 				m_ScriptAssetContext = m_ProjectContext->Assets();
 			}
-			m_SceneMgr.ReplaceAuthoringDocument(
+			ReplaceEditorDocument(
+				AuthoringDocumentReplacementKind::AssetMigrationSave,
 				std::move(stagedDocument), m_SceneMgr.AuthoringRevision());
 			m_History.Clear();
 			m_PendingFullSync = true;

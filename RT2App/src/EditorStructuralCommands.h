@@ -164,10 +164,19 @@ public:
 	// snapshot is the pasted subtree's captured state. Redo restores the
 	// same entities with the same UUIDs. The source mapping is not retained
 	// after the initial operation.
+	// `beforeSchema`/`afterSchema` are the paste's schema transport (S6-C
+	// clipboard residual): a paste whose members carry override vectors promotes
+	// a below-current document to the current schema, Undo restores the prior
+	// schema once no override remains anywhere, and Redo re-applies the
+	// promotion. Both 0 means schema-neutral (legacy callers).
 	PasteSubtreesCommand(SubtreeSnapshot snapshot,
-	                     std::vector<rt2::core::UUID> createdRoots)
+	                     std::vector<rt2::core::UUID> createdRoots,
+	                     std::uint32_t beforeSchema = 0,
+	                     std::uint32_t afterSchema = 0)
 		: m_Snapshot(std::move(snapshot))
-		, m_CreatedRoots(std::move(createdRoots)) {}
+		, m_CreatedRoots(std::move(createdRoots))
+		, m_BeforeSchema(beforeSchema)
+		, m_AfterSchema(afterSchema) {}
 
 	const SubtreeSnapshot& Snapshot() const { return m_Snapshot; }
 	const std::vector<rt2::core::UUID>& CreatedRoots() const { return m_CreatedRoots; }
@@ -179,6 +188,8 @@ public:
 private:
 	SubtreeSnapshot                  m_Snapshot;
 	std::vector<rt2::core::UUID>    m_CreatedRoots;
+	std::uint32_t                    m_BeforeSchema = 0;
+	std::uint32_t                    m_AfterSchema = 0;
 };
 
 // ---- Phase 8 W1 prefab commands ----
@@ -338,7 +349,9 @@ std::unique_ptr<IEditorCommand> MakeDuplicateSubtreesCommand(
 	std::vector<rt2::core::UUID> createdRoots);
 std::unique_ptr<IEditorCommand> MakePasteSubtreesCommand(
 	SubtreeSnapshot snapshot,
-	std::vector<rt2::core::UUID> createdRoots);
+	std::vector<rt2::core::UUID> createdRoots,
+	std::uint32_t beforeSchema = 0,
+	std::uint32_t afterSchema = 0);
 
 // Phase 8 W1 prefab command factories.
 //

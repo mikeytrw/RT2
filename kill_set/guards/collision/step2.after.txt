@@ -1,0 +1,6 @@
+		std::unordered_set<int> duplicateTargets;
+		for (const auto& op : plan.values.operations)
+		{
+			if (op.kind != PrefabValueKind::MaterialDuplicateAndAssign) continue;
+			const auto& target = std::get<PrefabMaterialDuplicateValue>(op.target);
+			duplicateTargets.insert(target.targetIndex); // collision rejection removed (commit site)

@@ -4,31 +4,49 @@
 #include "PrefabComponentKey.h"
 #include "PrefabSerializer.h"
 #include "EditorCommandHistory.h"
+#include "EditorCommands.h"
+#include "EditorPropertyCommands.h"
+#include "CompositePreviewSession.h"
+#include "EditorTransformGizmo.h"
+#include "TransformGizmoHostLifecycle.h"
+#include "PreviewSessionClose.h"
+#include "EditorSyncRouter.h"
+#include "PrefabCommandTransaction.h"
 #include "EditorSceneState.h"
 #include "EditorStructuralCommands.h"
 #include "SceneManager.h"
+#include "EditorCameraWorkflow.h"
+#include "SceneAssetResolver.h"
+#include "Phase1AFixtureGenerator.h"
 #include "SceneHierarchy.h"
+#include "SceneGraph.h"
 #include "SceneSerializer.h"
 #include "SceneSerializerTestSupport.h"
 #include "SubtreeSnapshot.h"
+#include "AssetIdentity.h"
 #include "core/Error.h"
 #include "core/UUID.h"
 #include "json.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 using namespace rt2::core;
 
 // ============================================================================
-// Phase 8 W3, S1 — the prefab component classification table
-// (implementation spec, docs/game-engine-development-plan.md "Phase 8 W3 —
+// Phase 8 W3, S1 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the prefab component classification table
+// (implementation spec, docs/game-engine-development-plan.md "Phase 8 W3 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 // overrides", D3/D4 and Work step S1).
 //
 // S1 is a standalone header (RT2App/src/PrefabComponentKey.h) plus these
@@ -77,7 +95,7 @@ std::size_t ForEachTableAgreement(std::size_t& mismatches)
 
 
 // ============================================================================
-// Phase 8 W3, S2 — the override field, the scene codec at v6, and the
+// Phase 8 W3, S2 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the override field, the scene codec at v6, and the
 // metadata.schemaVersion upgrade rule (W3-D2/D6, Work step S2).
 //
 // S2 is the data model + codec half of overrides, with no marking API yet
@@ -102,7 +120,7 @@ std::size_t ForEachTableAgreement(std::size_t& mismatches)
 // key in kPrefabTable points into static constexpr storage, so keys obtained
 // from FindComponentByWire / PrefabComponentKeyFor<T> are safe to store
 // indefinitely. The override vectors are therefore ONLY ever populated with
-// table-resolved keys — never with a key constructed from a transient parser
+// table-resolved keys ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â never with a key constructed from a transient parser
 // buffer (which would dangle once the buffer dies, very likely passing every
 // test before crashing much later in an unrelated place). Tests here set the
 // vectors directly (S2 has no marking API) but always from PrefabComponentKeyFor
@@ -163,11 +181,21 @@ struct S2Fixture
     std::pair<entt::entity, entt::entity> MakeInstance(
         const std::filesystem::path& dir)
     {
+		return InstantiatePrefab(CreatePrefabAsset(dir));
+	}
+
+	std::filesystem::path CreatePrefabAsset(const std::filesystem::path& dir)
+	{
         const auto root = CreateEmpty("Root");
         const auto child = CreateChild("Child", root);
         const auto prefabPath = dir / "s2.rt2prefab";
         REQUIRE(manager.CreatePrefabFromSubtree({ root }, prefabPath).ok);
+		return prefabPath;
+	}
 
+	std::pair<entt::entity, entt::entity> InstantiatePrefab(
+		const std::filesystem::path& prefabPath)
+	{
         std::vector<AssetDiagnostic> diags;
         const auto uuids = manager.ReserveKnownUuids(2);
         const auto inst =
@@ -230,7 +258,7 @@ PrefabComponentKey S2Key(const char* wire)
 
 
 // ---------------------------------------------------------------------------
-// Spec test 1 — the override set round-trips save -> load -> save
+// Spec test 1 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the override set round-trips save -> load -> save
 // byte-identically, and the vector's CONTENTS are asserted (not merely that
 // the scene JSON round-trips).
 //
@@ -241,11 +269,11 @@ PrefabComponentKey S2Key(const char* wire)
 //
 // Discrimination faults:
 //   Sequence a) write path fault: don't emit the "overrides" member in
-//   EntityRecordToJson — the saved JSON lacks "overrides" -> RED.
+//   EntityRecordToJson ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the saved JSON lacks "overrides" -> RED.
 //   Sequence b) read path fault: parse "overrides" into r.prefabMember.overrides
 //   but never copy it into the emplaced component (drop it in
-//   BuildDocumentFromRecords) — the loaded member's vector is empty -> RED.
-//   Sequence c) read path fault: don't sort the parsed overrides. NOTE — the
+//   BuildDocumentFromRecords) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the loaded member's vector is empty -> RED.
+//   Sequence c) read path fault: don't sort the parsed overrides. NOTE ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
 //   byte-identical check below does NOT discriminate this fault (the live
 //   vectors at the top are set already-sorted, so load preserves a canonical
 //   order and rounds 1 and 2 still match). It is the `unsorted-v6` fixture
@@ -255,7 +283,7 @@ PrefabComponentKey S2Key(const char* wire)
 //   save -> load -> save idempotence; the unsorted fixture proves the sort.
 //   Sequence d) read path fault: write "overrides" only when the version is
 //   current but read it for any version, with a stray overrides set on a v5
-//   file — not part of this test (spec test 2 covers the gate).
+//   file ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â not part of this test (spec test 2 covers the gate).
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: override set round-trips and loads with the exact contents")
 {
@@ -332,8 +360,8 @@ TEST_CASE("Phase 8 W3: override set round-trips and loads with the exact content
 
     // Canonicalization: the read path sorts the parsed set, so a hand-written
     // v6 file whose overrides are stored out of wire order loads into the
-    // canonical [name, transform] order — not the file's order.
-    // Discrimination fault: delete the std::sort in JsonToEntityRecord — the
+    // canonical [name, transform] order ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â not the file's order.
+    // Discrimination fault: delete the std::sort in JsonToEntityRecord ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
     // loaded vector then keeps the file's ["transform","name"] order and the
     // CHECK below fails -> RED. Revert -> GREEN.
     const auto unsortedPath = dir / "unsorted-v6.rt2scene";
@@ -356,14 +384,14 @@ TEST_CASE("Phase 8 W3: override set round-trips and loads with the exact content
 
 
 // ---------------------------------------------------------------------------
-// Spec test 2 — a v5 scene loads with every override set empty. The fixture
+// Spec test 2 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a v5 scene loads with every override set empty. The fixture
 // is a v5 file that (hypothetically) contains an "overrides" member; the read
 // path must gate the field on the current schema and ignore it, so the loaded
-// member carries an empty set — the correct meaning of "a v5 scene loaded by a
+// member carries an empty set ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the correct meaning of "a v5 scene loaded by a
 // v6 binary", not a migration failure.
 //
 // Discrimination fault: remove the `schemaVersion >= SchemaVersion` gate in
-// JsonToEntityRecord and parse "overrides" regardless of version — the loaded
+// JsonToEntityRecord and parse "overrides" regardless of version ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the loaded
 // member's set then pops as ["transform","script"], RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: a v5 scene loads with every override set empty")
@@ -391,7 +419,7 @@ TEST_CASE("Phase 8 W3: a v5 scene loads with every override set empty")
 
 
 // ---------------------------------------------------------------------------
-// Spec test 3 — THE one that matters. Load a v5 scene, add an override, save
+// Spec test 3 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â THE one that matters. Load a v5 scene, add an override, save
 // through the recovery path (SaveTo), and assert the output is v6 AND the
 // override survives. SaveTo deliberately preserves an older schema when
 // untouched; without W3-D6's upgrade rule the recovery snapshot would be
@@ -399,11 +427,11 @@ TEST_CASE("Phase 8 W3: a v5 scene loads with every override set empty")
 //
 // Also asserts the preservation baseline: an untouched v5 doc, without calling
 // PromoteSchemaVersion, still writes v5 via SaveTo (today's recovery
-// semantics — pinned by Phase7W5Tests.cpp:98).
+// semantics ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â pinned by Phase7W5Tests.cpp:98).
 //
 // Discrimination fault: break SceneSerializer::PromoteSchemaVersion so it no
 // longer assigns (returns false for a below-current doc). doc stays v5, SaveTo
-// writes version 5, and the recovery output has no "overrides" — RED on both
+// writes version 5, and the recovery output has no "overrides" ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â RED on both
 // the schema-version check and the override-presence check. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: recovery SaveTo writes v6 and keeps an added override (upgrade rule)")
@@ -436,7 +464,7 @@ TEST_CASE("Phase 8 W3: recovery SaveTo writes v6 and keeps an added override (up
     }
 
     // Add an override directly (no marking API in S2), then apply the upgrade
-    // rule — the operation that adds the first override sets schemaVersion.
+    // rule ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the operation that adds the first override sets schemaVersion.
     const auto handle = scene.FindByUuid(UUID::Parse("11111111-1111-4111-8111-111111111111"));
     REQUIRE(static_cast<uint32_t>(handle) != static_cast<uint32_t>(entt::null));
     auto* member = scene.ecs.registry.try_get<PrefabMemberComponent>(handle);
@@ -472,7 +500,7 @@ TEST_CASE("Phase 8 W3: recovery SaveTo writes v6 and keeps an added override (up
 
 // ---------------------------------------------------------------------------
 // 1. All 13 persisted components have a wire key, and the table's order
-//    matches PersistedComponents::ForEach order — driven by an actual ForEach
+//    matches PersistedComponents::ForEach order ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â driven by an actual ForEach
 //    visitor, not a hand-written list that could drift the same way.
 //
 //    Discrimination fault: reorder two rows of kPrefabTable (e.g. swap
@@ -642,16 +670,16 @@ TEST_CASE("Phase 8 W3: unrecognised wire names are loudly unresolvable")
 
 
 // ---------------------------------------------------------------------------
-// Spec test 4 — an unknown component key in a scene file raises an observable
+// Spec test 4 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â an unknown component key in a scene file raises an observable
 // diagnostic AND leaves the destination transactional. A v6 scene lists an
 // override wire that the frozen table does not know ("noSuchComponent"); load
 // must fail loudly (an Error naming the offending wire) and must not replace
 // an already-populated destination document. Silent dropping is exactly the
-// swallowed-failure defect class this codebase guards against — it would
+// swallowed-failure defect class this codebase guards against ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â it would
 // convert "this instance diverged" into "this instance tracks the source".
 //
 // Discrimination fault: replace the unknown-key diagnostic in JsonToEntityRecord
-// with a `continue` (skip the unresolvable entry) — the load then succeeds and
+// with a `continue` (skip the unresolvable entry) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the load then succeeds and
 // the destination is replaced, so REQUIRE_FALSE(Load) fails -> RED. Revert ->
 // GREEN.
 // ---------------------------------------------------------------------------
@@ -704,7 +732,7 @@ TEST_CASE("Phase 8 W3: an unknown override component key fails loudly and leaves
 
 
 // ---------------------------------------------------------------------------
-// Spec test 6 — a prefab RECORD carrying every material and resource shape
+// Spec test 6 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a prefab RECORD carrying every material and resource shape
 // still contains no scene-side link or override data. Asserting only that a
 // prefab asset exists is vacuous; this pins the file-format boundary
 // (PrefabSerializer.h): the .rt2prefab payload must never carry
@@ -712,19 +740,19 @@ TEST_CASE("Phase 8 W3: an unknown override component key fails loudly and leaves
 //
 // Part A: serialize a record that has a MeshRef, PrimitiveComponent,
 // ImportedMeshSourceComponent, MaterialOverrideComponent (full material shape),
-// Light, Camera, Motion and Script — but no prefab link. The output payload
+// Light, Camera, Motion and Script ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â but no prefab link. The output payload
 // must contain the material/resource shapes and none of prefabInstance,
 // prefabMember, "overrides";
 // Part B: a record that DOES carry a prefab member (with an override set) is
-// REFUSED loudly by PrefabRecordToJson (Error::InvalidArgument) — the existing
+// REFUSED loudly by PrefabRecordToJson (Error::InvalidArgument) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the existing
 // W1 guard at the prefab codec boundary.
 //
 // Discrimination faults:
 //   Part A: make PrefabRecordToJson serialize the prefab member (and its
-//   override set) into the payload instead of never carrying it — the output
+//   override set) into the payload instead of never carrying it ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the output
 //   then contains "prefabMember"/"overrides" -> RED.
 //   Part B: remove the `hasPrefabInstance || hasPrefabMember` refusal in
-//   PrefabRecordToJson — the linked record serializes instead of failing ->
+//   PrefabRecordToJson ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the linked record serializes instead of failing ->
 //   RED.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: a prefab record with all shapes carries no scene-side link or override data")
@@ -810,24 +838,24 @@ TEST_CASE("Phase 8 W3: a prefab record with all shapes carries no scene-side lin
     nlohmann::json linkedOut;
     Error linkedErr;
     // Fault for red: remove the `hasPrefabInstance || hasPrefabMember` refusal
-    // in PrefabRecordToJson — this then serializes and REQUIRE_FALSE fails.
+    // in PrefabRecordToJson ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â this then serializes and REQUIRE_FALSE fails.
     REQUIRE_FALSE(PrefabRecordToJson(linked, diags, linkedErr, linkedOut));
     CHECK(linkedErr.code == Error::InvalidArgument);
 }
 
 
 // ---------------------------------------------------------------------------
-// Spec test 4b (Fix 2, S2 review finding 1) — a v6 scene whose override set
+// Spec test 4b (Fix 2, S2 review finding 1) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a v6 scene whose override set
 // names a component the table classifies as NEVER overridable ("meshRef") is
 // rejected loudly and leaves the destination transactional. The reader was
 // checking "is the name known" but not "is the name overridable", so
 // ["meshRef"] installed a forbidden key the classification table explicitly
-// excludes — the same silent-divergence class the unknown-key branch guards
+// excludes ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the same silent-divergence class the unknown-key branch guards
 // against, with the asymmetry that a name the table has never heard of fails
 // while a name the table forbids passes.
 //
 // Discrimination fault: remove the `!key->overridable()` branch in
-// JsonToEntityRecord — the load then succeeds and the destination is replaced,
+// JsonToEntityRecord ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the load then succeeds and the destination is replaced,
 // so REQUIRE_FALSE(Load) fails -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: a non-overridable override component key fails loudly and leaves the destination untouched")
@@ -877,13 +905,13 @@ TEST_CASE("Phase 8 W3: a non-overridable override component key fails loudly and
 
 
 // ---------------------------------------------------------------------------
-// Fix 8 (S2 review finding 8) — the reader de-duplicates the parsed set. A v6
+// Fix 8 (S2 review finding 8) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the reader de-duplicates the parsed set. A v6
 // file with ["transform","transform"] must load into a single canonical
 // "transform" entry, telling "this diverged on transform" once rather than
 // twice (a duplicate would corrupt the invariant that the override vector is a
 // SET).
 //
-// Discrimination fault: delete the `std::unique` in JsonToEntityRecord — the
+// Discrimination fault: delete the `std::unique` in JsonToEntityRecord ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
 // loaded set then keeps both copies and the size/contents checks fail -> RED.
 // Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -911,11 +939,11 @@ TEST_CASE("Phase 8 W3: duplicate override names are de-duplicated on read")
 
 
 // ---------------------------------------------------------------------------
-// Fix 8 (S2 review finding 8) — the malformed-input branches: an array entry
+// Fix 8 (S2 review finding 8) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the malformed-input branches: an array entry
 // that is not a string (a number). Rejected loudly with Error::Parse.
 //
 // Discrimination fault: drop the `!item.is_string()` branch in
-// JsonToEntityRecord — the load then succeeds on a numeric entry -> RED.
+// JsonToEntityRecord ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the load then succeeds on a numeric entry -> RED.
 // Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: a non-string override array entry is rejected")
@@ -951,11 +979,11 @@ TEST_CASE("Phase 8 W3: a non-string override array entry is rejected")
 
 
 // ---------------------------------------------------------------------------
-// Fix 8 (S2 review finding 8) — the malformed-input branch: "overrides" present
+// Fix 8 (S2 review finding 8) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the malformed-input branch: "overrides" present
 // but not an array (here an object whose VALUES are all valid wire strings).
 // Rejected loudly with Error::Parse.
 //
-// Discrimination fault: drop the `!ov.is_array()` branch in JsonToEntityRecord —
+// Discrimination fault: drop the `!ov.is_array()` branch in JsonToEntityRecord ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 // the load then iterates the object's string values as if they were array
 // entries and succeeds -> RED (REQUIRE_FALSE fails). Revert -> GREEN. An object
 // whose values were non-strings would fall through to the non-string branch and
@@ -995,14 +1023,14 @@ TEST_CASE("Phase 8 W3: a non-array overrides member is rejected")
 
 
 // ---------------------------------------------------------------------------
-// Fix 8 (S2 review finding 8) — CloneInMemory preserves the override set.
+// Fix 8 (S2 review finding 8) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â CloneInMemory preserves the override set.
 // CloneInMemory never touches JSON: it goes CollectRecords ->
 // BuildDocumentFromRecords, both of which copy the whole PrefabMemberComponent,
 // so overrides survive regardless of schemaVersion. Nothing proved this; this
 // test pins it (S5 relies on the Play-mode clone carrying overrides).
 //
 // Discrimination fault: drop the override set in BuildDocumentFromRecords when
-// it copies the record's PrefabMemberComponent into the emplacement — the
+// it copies the record's PrefabMemberComponent into the emplacement ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
 // cloned member then has an empty set -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: CloneInMemory preserves the override set")
@@ -1034,13 +1062,13 @@ TEST_CASE("Phase 8 W3: CloneInMemory preserves the override set")
 
 
 // ---------------------------------------------------------------------------
-// Spec test 3b (Fix 3, S2 review finding 2) — the save choke point. A below-
+// Spec test 3b (Fix 3, S2 review finding 2) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the save choke point. A below-
 // current output (v5) that would DROP a non-empty override set must fail the
 // save loudly, not silently write v5 and lose the set. This is the invariant
 // PromoteSchemaVersion maintains; SaveInternal enforces it so the eleven W3-D5
 // mutation entry points don't each have to remember to call Promote.
 //
-// Discrimination fault: remove the new validation block in SaveInternal — the
+// Discrimination fault: remove the new validation block in SaveInternal ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
 // recovery-path SaveTo then succeeds on the below-current doc and writes v5,
 // silently dropping the override set -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -1051,7 +1079,7 @@ TEST_CASE("Phase 8 W3: a save that would drop a non-empty override set fails")
     S2WriteMemberScene(scenePath, 5, {});
 
     // Load a v5 doc (schemaVersion == 5), then add an override WITHOUT calling
-    // PromoteSchemaVersion — the state PromoteSchemaVersion is meant to
+    // PromoteSchemaVersion ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the state PromoteSchemaVersion is meant to
     // prevent. SaveTo (recovery path) preserves the below-current version, so
     // outputVersion = 5 < SchemaVersion with a non-empty set -> must fail.
     SceneDocument doc;
@@ -1079,17 +1107,17 @@ TEST_CASE("Phase 8 W3: a save that would drop a non-empty override set fails")
 
 
 // ---------------------------------------------------------------------------
-// Spec test 1b (Fix 5, S2 review finding 5) — the writer canonicalizes the
+// Spec test 1b (Fix 5, S2 review finding 5) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the writer canonicalizes the
 // override set, so memory->file matches the canonical wire order the reader
 // produces file->memory. S5 will populate vectors in edit order; without the
 // write-side sort the same logical scene writes different bytes depending on
 // who populated the vector, breaking the save -> load -> save byte-identity
 // that spec test 1 asserts. The vectors here are deliberately set UNSORTED
-// (transform before name) — the sorted-set invariant is a codec guarantee, not
+// (transform before name) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the sorted-set invariant is a codec guarantee, not
 // a caller contract.
 //
 // Discrimination fault: remove the sort in EntityRecordToJson's override
-// emission — the stored wire list then keeps the in-memory ["transform","name"]
+// emission ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the stored wire list then keeps the in-memory ["transform","name"]
 // order instead of the canonical ["name","transform"] -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: the writer stores the override set in canonical wire order")
@@ -1128,7 +1156,7 @@ TEST_CASE("Phase 8 W3: the writer stores the override set in canonical wire orde
 
 
 // ============================================================================
-// Phase 8 W3, S3 — the snapshot verifier sees the override set
+// Phase 8 W3, S3 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the snapshot verifier sees the override set
 // (implementation spec, W3-D2; Work step S3).
 //
 // EntityMatchesRecord (SceneManager.cpp:1815) is the guard that
@@ -1137,13 +1165,13 @@ TEST_CASE("Phase 8 W3: the writer stores the override set in canonical wire orde
 // Pre-S3 it compared only instanceId + templateId on the PrefabMemberComponent
 // branch, so an override-set change was invisible to it: duplicate an
 // instance, edit the duplicate's overrides, undo the duplication, and the
-// verifier still matched and destroyed the edited copy — a guard that had
+// verifier still matched and destroyed the edited copy ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a guard that had
 // stopped guarding.
 //
 // S3 extends the comparison to the override vector. Order decision: compare as
 // a SET (order-insensitive). The codec sorts and de-duplicates on read and
 // write (SceneSerializer.cpp:853-856, :1261-1270), so any vector that has
-// passed through a file round-trip is canonical — but an in-memory vector has
+// passed through a file round-trip is canonical ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â but an in-memory vector has
 // not necessarily been through the codec (the S5/S6 marking path records in
 // edit order; S2's write-sort test deliberately builds {transform, name}
 // unsorted and relies on the writer to canonicalize). An order-sensitive
@@ -1151,11 +1179,11 @@ TEST_CASE("Phase 8 W3: the writer stores the override set in canonical wire orde
 // break legitimate structural undo. Set comparison still catches every real
 // divergence, which is all the guard exists to catch. EntityMatchesRecord is
 // file-local (not in a header), so these tests drive the guard through
-// RemoveSubtreesExact — the exact proof the brief requires.
+// RemoveSubtreesExact ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the exact proof the brief requires.
 //
 // Discrimination fault (recorded in the verification report):
 //   revert EntityMatchesRecord's PrefabMember branch to compare instanceId +
-//   templateId only (drop the override comparison) — the mutate-then-remove
+//   templateId only (drop the override comparison) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the mutate-then-remove
 //   case below then reports a MATCH and DESTROYS the edited entity -> RED on
 //   "must fail and leave the entity intact". Reverting to the final form turns
 //   both cases GREEN.
@@ -1252,14 +1280,14 @@ TEST_CASE("Phase 8 W3: an unchanged override set still verifies and removes")
 // That is true set equality only when both sides are duplicate-free. Here
 // `live = {transform, transform}` against the captured `record =
 // {transform, light}`: sizes match at 2 and every live key exists in the
-// record, so the one-directional compare reports MATCH — and would destroy
+// record, so the one-directional compare reports MATCH ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â and would destroy
 // the edited entity, exactly the failure S3 exists to prevent. The S3 fix
 // compares as multisets (sorted copies, element-wise), so this must be
 // REFUSED.
 //
 // Discrimination fault (recorded in the verification report):
 //   revert to the one-directional containment form (drop the sorted
-//   element-wise compare) — this case then reports a MATCH and DESTROYS the
+//   element-wise compare) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â this case then reports a MATCH and DESTROYS the
 //   edited entity -> RED on "must fail and leave the entity intact". Reverting
 //   to the multiset compare turns it GREEN.
 // ---------------------------------------------------------------------------
@@ -1311,7 +1339,7 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 
 
 // ============================================================================
-// Phase 8 W3, S4 — duplicating an instance creates a NEW instance identity
+// Phase 8 W3, S4 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â duplicating an instance creates a NEW instance identity
 // (implementation spec, W3-D8; Work step S4).
 //
 // CopyAuthoredComponents copies all 13 persisted components verbatim, so a
@@ -1325,10 +1353,10 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 // W3-D4).
 //
 // This section covers the duplicate, paste, restore and partial sides of S4.
-// Tests 1-2 drive the duplicate paths — the ordinary non-command
+// Tests 1-2 drive the duplicate paths ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ordinary non-command
 // DuplicateSubtrees path and the UUID-aware DuplicateSubtreesWithUuids path
 // (the one the editor's undoable DuplicateSelectionCommand uses,
-// SceneEditorUI.cpp:396-415). Tests 3-5 drive the paste paths — the ordinary
+// SceneEditorUI.cpp:396-415). Tests 3-5 drive the paste paths ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ordinary
 // non-command PasteSubtreesFrom path and the UUID-aware PasteSubtreesWithUuids
 // path (the one the editor's PasteCommand uses, SceneEditorUI.cpp:417-449). A
 // test covering only one path would pass while the editor's real path stayed
@@ -1337,7 +1365,7 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 //
 // All four copy-shaped paths chain the SAME plan -> reserve -> apply pipeline:
 // PLAN (PlanCopiedPrefabLinks, SceneManager.cpp:214) classifies the copied
-// forest into complete instance groups from the ACTUAL copied instance roots —
+// forest into complete instance groups from the ACTUAL copied instance roots ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 // a complete instance nested under an ordinary container or under another
 // copied root is a first-class instance of its own and is reminted
 // independently, never merged into the enclosing group; member fragments whose
@@ -1356,8 +1384,8 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 // (PasteSubtreesWithUuids) because that is the strongest discriminator for
 // the shared helper: the source comes from a genuinely separate clipboard
 // document (SceneSerializer::CloneInMemory), so the test proves the override
-// set survives the whole chain — authoring doc -> clipboard clone -> paste
-// copy -> mint — verbatim. That is exactly the W3-D4 compiler-failure mode;
+// set survives the whole chain ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â authoring doc -> clipboard clone -> paste
+// copy -> mint ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â verbatim. That is exactly the W3-D4 compiler-failure mode;
 // any mint or copy step that drops the set goes red.
 //
 // Structural restore (test 6) is deliberately NOT a copy path: ApplySubtreeRecord
@@ -1373,54 +1401,54 @@ TEST_CASE("Phase 8 W3: a duplicate cannot make the verifier miss a divergence")
 // id; a mixed tree with a complete instance under an ordinary root plus an
 // orphan member fragment (11) preserves and remints the complete instance and
 // strips only the fragment (with an explicit 1-fragment recovery warning); two
-// distinct complete instance roots — one nested under a member of the other
-// (12) — each receive their own distinct fresh id rather than being merged.
+// distinct complete instance roots ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â one nested under a member of the other
+// (12) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â each receive their own distinct fresh id rather than being merged.
 //
 // Discrimination faults (recorded in the verification report), per test:
 //   test 1 fault: delete the ApplyCopiedPrefabLinks call inside
-//   SceneManager::DuplicateSubtrees — the copied member then keeps the
+//   SceneManager::DuplicateSubtrees ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the copied member then keeps the
 //   source's instanceId, so CHECK(dupRootId != srcInstanceId) fails -> RED.
 //   Revert -> GREEN.
 //   test 2 fault: delete the ApplyCopiedPrefabLinks call inside
-//   SceneManager::DuplicateSubtreesWithUuids — same failure on the editor's
+//   SceneManager::DuplicateSubtreesWithUuids ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â same failure on the editor's
 //   command path -> RED. Revert -> GREEN.
 //   test 3 fault: delete the ApplyCopiedPrefabLinks call inside
-//   SceneManager::PasteSubtreesFrom — the pasted member then keeps the
+//   SceneManager::PasteSubtreesFrom ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the pasted member then keeps the
 //   clipboard's instanceId, so CHECK(pastedRootId != srcInstanceId) fails ->
 //   RED. Revert -> GREEN.
 //   test 4 fault: delete the ApplyCopiedPrefabLinks call inside
-//   SceneManager::PasteSubtreesWithUuids — same failure on the editor's paste
+//   SceneManager::PasteSubtreesWithUuids ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â same failure on the editor's paste
 //   path -> RED. Revert -> GREEN.
 //   test 5 fault: in ApplyCopiedPrefabLinks, in the full-instance branch,
 //   clear each copied member's override vector when setting the fresh
-//   instanceId — the pasted diverged member then has an empty set, so
+//   instanceId ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the pasted diverged member then has an empty set, so
 //   CHECK(pastedRootMember->overrides == srcRoot->overrides) fails -> RED.
 //   Revert -> GREEN.
 //   test 6 fault: in RestoreSubtrees, right after ApplySubtreeRecord
 //   (SceneManager.cpp:2533), mint a fresh instanceId onto every restored
-//   PrefabMemberComponent — the restored members then diverge from the
+//   PrefabMemberComponent ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the restored members then diverge from the
 //   recorded id, so CHECK(restoredRootId == recordedId) fails -> RED.
 //   Revert -> GREEN.
 //   test 7 fault: delete the two component removals in ApplyCopiedPrefabLinks'
-//   orphan-fragment branch — the copied member then keeps its
+//   orphan-fragment branch ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the copied member then keeps its
 //   PrefabMemberComponent, so CHECK(copied has no PrefabMemberComponent)
 //   fails -> RED. Revert -> GREEN.
 //   test 8 fault: in the DuplicateSubtrees instance-ID reservation loop,
-//   reuse ONE reserved id for every group — the two copied subtrees then
+//   reuse ONE reserved id for every group ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the two copied subtrees then
 //   share a single instanceId, so CHECK(copiedARootId != copiedBRootId)
 //   fails -> RED. Revert -> GREEN.
 //   test 9 fault: in PlanCopiedPrefabLinks, go back to classifying from the
 //   SELECTED root copy (the old `isInstanceRoot` check): an ordinary folder
 //   copy has no PrefabInstanceComponent, so the instance below it is treated
 //   as a member fragment and BOTH prefab components are stripped from the copy
-//   — CHECK(copiedRootId != UUID::Nil()) and CHECK(copied[s] is member) fail
+//   ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â CHECK(copiedRootId != UUID::Nil()) and CHECK(copied[s] is member) fail
 //   -> RED. Revert -> GREEN.
-//   test 10 fault: same selected-root regression on the command paste path —
+//   test 10 fault: same selected-root regression on the command paste path ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 //   the pasted instance under an ordinary folder gets stripped the same way ->
 //   RED. Revert -> GREEN.
 //   test 11 fault: same selected-root regression on a MIXED forest (ordinary
 //   container holding BOTH a complete instance and an orphan member fragment)
-//   — the complete instance's copy is stripped too (not reminted), so
+//   ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the complete instance's copy is stripped too (not reminted), so
 //   CHECK(copiedCompleteRoot has PIC) fails -> RED. Revert -> GREEN.
 //   test 12 fault: in PlanCopiedPrefabLinks, fall back to ONE id for the whole
 //   selected subtree (the old full-instance branch): a nested complete
@@ -1461,12 +1489,12 @@ UUID S4MemberTemplateId(SceneManager& manager, entt::entity e)
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Test 1 — ordinary DuplicateSubtrees mints ONE fresh instanceId for the whole
+// Test 1 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â ordinary DuplicateSubtrees mints ONE fresh instanceId for the whole
 // copied instance, every copied member carries it, and templateIds are
 // preserved positionally. The source instance's own identity is untouched.
 //
 // Fault for red: delete the ApplyCopiedPrefabLinks call inside
-// SceneManager::DuplicateSubtrees — the duplicated members then keep the
+// SceneManager::DuplicateSubtrees ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the duplicated members then keep the
 // source's instanceId and CHECK(dupRootId != srcInstanceId) fails -> RED.
 // Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -1483,7 +1511,7 @@ TEST_CASE("Phase 8 W3: a duplicated instance gets a fresh instanceId shared by a
     REQUIRE(srcChild);
     const UUID srcInstanceId = srcRoot->instanceId;
     REQUIRE(srcInstanceId != UUID::Nil());
-    // Sanity: one instance, one identity — both members share it.
+    // Sanity: one instance, one identity ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â both members share it.
     CHECK(srcChild->instanceId == srcInstanceId);
 
     const auto rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
@@ -1517,7 +1545,7 @@ TEST_CASE("Phase 8 W3: a duplicated instance gets a fresh instanceId shared by a
     CHECK(S4MemberTemplateId(f.manager, dupEntities[1]) == srcChild->templateId);
     CHECK(S4MemberTemplateId(f.manager, dupEntities[0]) == srcRoot->templateId);
 
-    // The source instance is untouched — still its own id.
+    // The source instance is untouched ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â still its own id.
     const auto* srcRootAfter = reg.try_get<PrefabMemberComponent>(rootHandle);
     REQUIRE(srcRootAfter);
     CHECK(srcRootAfter->instanceId == srcInstanceId);
@@ -1526,14 +1554,14 @@ TEST_CASE("Phase 8 W3: a duplicated instance gets a fresh instanceId shared by a
 }
 
 // ---------------------------------------------------------------------------
-// Test 2 — DuplicateSubtreesWithUuids (the editor's undoable command path)
+// Test 2 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â DuplicateSubtreesWithUuids (the editor's undoable command path)
 // mints ONE fresh instanceId for the whole copied instance, every copied
 // member carries it, templateIds are preserved, and the source is untouched.
 // Mirrors SceneEditorUI::DuplicateSelectionCommand: count the canonical
 // subtree, reserve exactly that many known UUIDs, pass them in.
 //
 // Fault for red: delete the ApplyCopiedPrefabLinks call inside
-// SceneManager::DuplicateSubtreesWithUuids — the duplicated members then keep
+// SceneManager::DuplicateSubtreesWithUuids ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the duplicated members then keep
 // the source's instanceId and CHECK(dupRootId != srcInstanceId) fails -> RED.
 // Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -1590,16 +1618,16 @@ TEST_CASE("Phase 8 W3: the command duplicate path mints a fresh instanceId for t
 }
 
 // ---------------------------------------------------------------------------
-// Test 3 — the ordinary non-command paste path (PasteSubtreesFrom) mints ONE
+// Test 3 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ordinary non-command paste path (PasteSubtreesFrom) mints ONE
 // fresh instanceId for the whole pasted instance. The clipboard document is a
 // whole-scene clone (SceneSerializer::CloneInMemory), exactly as
 // EditorSceneState::Copy fills the clipboard. Root UUIDs resolve AGAINST THE
-// CLIPBOARD, not the live scene — the fixture's instance lives in both, so the
+// CLIPBOARD, not the live scene ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the fixture's instance lives in both, so the
 // same UUID works. templateIds are preserved and neither the live source nor
 // the clipboard source is mutated.
 //
 // Fault for red: delete the ApplyCopiedPrefabLinks call inside
-// SceneManager::PasteSubtreesFrom — the pasted members then keep the
+// SceneManager::PasteSubtreesFrom ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the pasted members then keep the
 // clipboard's instanceId and CHECK(pastedRootId != srcInstanceId) fails ->
 // RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -1669,7 +1697,7 @@ TEST_CASE("Phase 8 W3: a pasted instance gets a fresh instanceId shared by all c
 }
 
 // ---------------------------------------------------------------------------
-// Test 4 — the UUID-aware paste path (PasteSubtreesWithUuids, the editor's
+// Test 4 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the UUID-aware paste path (PasteSubtreesWithUuids, the editor's
 // undoable PasteCommand) mints ONE fresh instanceId for the whole pasted
 // instance. Mirrors SceneEditorUI::PasteCommand: count the clipboard subtree
 // by walking the clipboard document itself (clipboard roots live in the
@@ -1677,7 +1705,7 @@ TEST_CASE("Phase 8 W3: a pasted instance gets a fresh instanceId shared by all c
 // reserve exactly that many known UUIDs, pass them in.
 //
 // Fault for red: delete the ApplyCopiedPrefabLinks call inside
-// SceneManager::PasteSubtreesWithUuids — the pasted members then keep the
+// SceneManager::PasteSubtreesWithUuids ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the pasted members then keep the
 // clipboard's instanceId and CHECK(pastedRootId != srcInstanceId) fails ->
 // RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -1749,16 +1777,16 @@ TEST_CASE("Phase 8 W3: the command paste path mints a fresh instanceId for the p
 }
 
 // ---------------------------------------------------------------------------
-// Test 5 — a copy of a diverged instance stays diverged (W3-D4). The live
+// Test 5 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a copy of a diverged instance stays diverged (W3-D4). The live
 // source member carries a non-empty override set; it survives the clipboard
 // clone (Fix 8), gets copied verbatim into the paste, and ApplyCopiedPrefabLinks
 // must leave it untouched while still stamping a fresh instanceId. Covered on
 // the editor paste path because that is the strongest discriminator for the
-// shared helper: the override set must survive the FULL chain — authoring doc
+// shared helper: the override set must survive the FULL chain ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â authoring doc
 // -> clipboard clone -> paste copy -> apply.
 //
 // Fault for red: in ApplyCopiedPrefabLinks, in the full-instance branch, clear
-// each copied member's override vector when setting the fresh instanceId —
+// each copied member's override vector when setting the fresh instanceId ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 // the pasted diverged member then has an empty set, so
 // CHECK(pastedRootMember->overrides == srcRoot->overrides) fails -> RED.
 // Revert -> GREEN.
@@ -1834,11 +1862,11 @@ TEST_CASE("Phase 8 W3: a pasted diverged instance keeps its overrides while mint
 }
 
 // ---------------------------------------------------------------------------
-// Test 6 — the structural restore path is NOT a copy path. Undo/Redo
+// Test 6 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the structural restore path is NOT a copy path. Undo/Redo
 // re-creates an instance by reinstating the snapshot's recorded
 // PrefabInstanceComponent/PrefabMemberComponent payloads VERBATIM
 // (ApplySubtreeRecord, SceneManager.cpp:1874). The restored root and every
-// member must carry the EXACT recorded instanceId — a fresh identity is
+// member must carry the EXACT recorded instanceId ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a fresh identity is
 // never minted here (the snapshot's ids are the authoritative identity).
 // templateIds and the override set must survive the round-trip too, so the
 // restored link is internally coherent: members group under the same id, the
@@ -1913,7 +1941,7 @@ TEST_CASE("Phase 8 W3: structural restore reinstates the exact recorded instance
     const auto restoredEntities = S4SubtreeEntities(f.manager, rootUuid);
     REQUIRE(restoredEntities.size() == 2);
 
-    // EXACT recorded identity — not a freshly minted one.
+    // EXACT recorded identity ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â not a freshly minted one.
     const auto restoredRootId = S4MemberInstanceId(f.manager, restoredEntities[0]);
     const auto restoredChildId = S4MemberInstanceId(f.manager, restoredEntities[1]);
     CHECK(restoredRootId == recordedId);
@@ -1937,18 +1965,18 @@ TEST_CASE("Phase 8 W3: structural restore reinstates the exact recorded instance
 }
 
 // ---------------------------------------------------------------------------
-// Test 7 — a PARTIAL copy (prefab member(s) present, NO PrefabInstanceComponent
+// Test 7 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a PARTIAL copy (prefab member(s) present, NO PrefabInstanceComponent
 // root) is converted into ordinary entities, not fabricated into an instance.
 // Driven through the editor's UUID-aware duplicate path
 // (DuplicateSubtreesWithUuids) with only the member subtree selected, exactly
 // as the user selecting a member in the Outliner and duplicating it. The
-// copied member must have BOTH prefab components stripped — no
+// copied member must have BOTH prefab components stripped ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no
 // PrefabInstanceComponent, no PrefabMemberComponent, therefore no retained
-// override payload — the mutation succeeds, and a recoveryWarning with the
+// override payload ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the mutation succeeds, and a recoveryWarning with the
 // InvalidHierarchy diagnostic is surfaced (SceneManager.cpp:3488-3496).
 //
 // Fault for red: delete the two removal calls in ApplyCopiedPrefabLinks'
-// orphan-fragment branch — the copied member then keeps its
+// orphan-fragment branch ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the copied member then keeps its
 // PrefabMemberComponent, so CHECK(copied has no PrefabMemberComponent)
 // fails -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -1975,7 +2003,7 @@ TEST_CASE("Phase 8 W3: a partial copy strips prefab links and surfaces a recover
 
     auto dup = f.manager.DuplicateSubtreesWithUuids({ childUuid }, known);
     REQUIRE(dup.mutation.success);
-    // The operation must succeed AND surface the recovery warning — never a
+    // The operation must succeed AND surface the recovery warning ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â never a
     // silent success, never a hard failure.
     REQUIRE(dup.mutation.recoveryWarning.has_value());
     CHECK(dup.mutation.recoveryWarning->code == rt2::core::Error::InvalidHierarchy);
@@ -1991,7 +2019,7 @@ TEST_CASE("Phase 8 W3: a partial copy strips prefab links and surfaces a recover
     CHECK_FALSE(reg.all_of<PrefabInstanceComponent>(copiedEntity));
     CHECK_FALSE(reg.all_of<PrefabMemberComponent>(copiedEntity));
 
-    // The source member is untouched — still a member, still diverged.
+    // The source member is untouched ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â still a member, still diverged.
     const auto* childAfter = reg.try_get<PrefabMemberComponent>(childHandle);
     REQUIRE(childAfter);
     CHECK(childAfter->overrides == childMember->overrides);
@@ -2000,7 +2028,7 @@ TEST_CASE("Phase 8 W3: a partial copy strips prefab links and surfaces a recover
 }
 
 // ---------------------------------------------------------------------------
-// Test 8 — a MULTI-ROOT duplicate mints ONE fresh instanceId PER COPIED
+// Test 8 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a MULTI-ROOT duplicate mints ONE fresh instanceId PER COPIED
 // SUBTREE (not one id, not one per member). Two complete prefab instances are
 // duplicated in one UUID-aware editor operation; each copied subtree gets its
 // own fresh non-nil instanceId, the two ids differ from each other and from
@@ -2008,7 +2036,7 @@ TEST_CASE("Phase 8 W3: a partial copy strips prefab links and surfaces a recover
 // templateIds plus override sets remain intact.
 //
 // Fault for red: in the DuplicateSubtrees instance-ID reservation loop, reuse
-// ONE reserved id for every group — the two copied subtrees then SHARE one
+// ONE reserved id for every group ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the two copied subtrees then SHARE one
 // instanceId, so CHECK(copiedARootId != copiedBRootId) fails -> RED. Revert
 // -> GREEN.
 // ---------------------------------------------------------------------------
@@ -2113,17 +2141,17 @@ TEST_CASE("Phase 8 W3: a multi-root copy mints one distinct fresh instanceId per
 }
 
 // ---------------------------------------------------------------------------
-// Test 9 — the S4 review fix 1 shape, on the editor's UUID-aware duplicate
+// Test 9 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the S4 review fix 1 shape, on the editor's UUID-aware duplicate
 // path: an ordinary container (Folder) holding a COMPLETE instance. The copied
 // forest must be classified from the ACTUAL instance root inside it, so the
 // folder copy stays ordinary and the contained instance is preserved and
-// reminted as ONE group — not stripped as if it were a member fragment.
+// reminted as ONE group ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â not stripped as if it were a member fragment.
 //
 // Fault for red (old selected-root classification): in PlanCopiedPrefabLinks,
 // gate classification on the SELECTED root copy (the old `isInstanceRoot`
 // check). The folder copy has no PrefabInstanceComponent, so the whole tree is
 // treated as a member fragment and BOTH prefab components are stripped from
-// every copy — CHECK(copiedPic->instanceId != UUID::Nil()) fails -> RED.
+// every copy ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â CHECK(copiedPic->instanceId != UUID::Nil()) fails -> RED.
 // Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: UUID-aware duplicate of an ordinary folder preserves and remints its contained instance")
@@ -2161,7 +2189,7 @@ TEST_CASE("Phase 8 W3: UUID-aware duplicate of an ordinary folder preserves and 
     const auto copied = S4SubtreeEntities(f.manager, copiedFolderUuid);
     REQUIRE(copied.size() == 3);
 
-    // The copied folder stays ORDINARY — no fabricated prefab link.
+    // The copied folder stays ORDINARY ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no fabricated prefab link.
     CHECK_FALSE(reg.all_of<PrefabInstanceComponent>(copied[0]));
     CHECK_FALSE(reg.all_of<PrefabMemberComponent>(copied[0]));
 
@@ -2184,7 +2212,7 @@ TEST_CASE("Phase 8 W3: UUID-aware duplicate of an ordinary folder preserves and 
 }
 
 // ---------------------------------------------------------------------------
-// Test 10 — the same shape on the editor's UUID-aware PASTE path
+// Test 10 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the same shape on the editor's UUID-aware PASTE path
 // (PasteSubtreesWithUuids).
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: UUID-aware paste of an ordinary folder preserves and remints its contained instance")
@@ -2248,7 +2276,7 @@ TEST_CASE("Phase 8 W3: UUID-aware paste of an ordinary folder preserves and remi
 }
 
 // ---------------------------------------------------------------------------
-// Test 11 — a MIXED copied forest: an ordinary folder holding BOTH a complete
+// Test 11 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a MIXED copied forest: an ordinary folder holding BOTH a complete
 // instance AND an orphan member fragment. The complete instance is preserved
 // and reminted as one group; only the orphan fragment (instance B's child,
 // whose root is NOT part of the copied set) is stripped of both prefab
@@ -2257,7 +2285,7 @@ TEST_CASE("Phase 8 W3: UUID-aware paste of an ordinary folder preserves and remi
 //
 // Fault for red (old selected-root classification): the folder copy has no
 // PrefabInstanceComponent, so the old code treats the WHOLE tree as a member
-// fragment and strips the complete instance copy too — CHECK(copiedAPic has
+// fragment and strips the complete instance copy too ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â CHECK(copiedAPic has
 // PIC) fails -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: a mixed forest keeps its complete instance and strips only the orphan member fragment")
@@ -2326,13 +2354,13 @@ TEST_CASE("Phase 8 W3: a mixed forest keeps its complete instance and strips onl
 }
 
 // ---------------------------------------------------------------------------
-// Test 12 — TWO distinct complete instance roots, one nested under the other
+// Test 12 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â TWO distinct complete instance roots, one nested under the other
 // (the inverse shape from the review): the outer instance-root tree contains
 // a second complete instance. Each copied instance gets its OWN distinct fresh
-// id — the nested copy is never merged into the outer's remint.
+// id ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the nested copy is never merged into the outer's remint.
 //
 // Fault for red (old full-instance branch): fall back to minting ONE id for
-// the whole selected subtree — the nested root copy then carries the OUTER's
+// the whole selected subtree ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the nested root copy then carries the OUTER's
 // fresh id, so CHECK(copiedNestedId != copiedOuterId) fails -> RED.
 // Revert -> GREEN.
 // ---------------------------------------------------------------------------
@@ -2398,14 +2426,14 @@ TEST_CASE("Phase 8 W3: nested complete instances each receive their own distinct
 }
 
 // ---------------------------------------------------------------------------
-// Test 13 — malformed copied data with ambiguous group ownership: TWO copied
+// Test 13 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â malformed copied data with ambiguous group ownership: TWO copied
 // instance roots claim the SAME original instanceId. PlanCopiedPrefabLinks
-// does NOT silently guess — it diagnoses loudly (recovery warning naming the
+// does NOT silently guess ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â it diagnoses loudly (recovery warning naming the
 // ambiguous group) and remints the shared group as ONE coherent fresh id, so
 // the copies never keep the malformed source id and never split arbitrarily.
 //
 // Fault for red: skip the ambiguous-group detection (drop the ambiguousGroups
-// counter) — the operation then succeeds WITHOUT the diagnosis -> CHECK(warning
+// counter) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the operation then succeeds WITHOUT the diagnosis -> CHECK(warning
 // has_value) fails -> RED. Revert -> GREEN.
 // ---------------------------------------------------------------------------
 TEST_CASE("Phase 8 W3: duplicate roots sharing one original instanceId are diagnosed and kept as one reminted group")
@@ -2470,7 +2498,7 @@ TEST_CASE("Phase 8 W3: duplicate roots sharing one original instanceId are diagn
 }
 
 // ============================================================================
-// Phase 8 W3, S4 — review fix 2, hostile UUID providers
+// Phase 8 W3, S4 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â review fix 2, hostile UUID providers
 // (implementation spec, docs/game-engine-development-plan.md "Phase 8 W3";
 // S4 review finding 2). The copy/instantiate paths must reserve every fresh
 // instanceId BEFORE any destination mutation, retry hostile provider output
@@ -2486,25 +2514,25 @@ TEST_CASE("Phase 8 W3: duplicate roots sharing one original instanceId are diagn
 //
 // Discrimination faults (recorded in the verification report), per test:
 //   test T14 fault: in ReserveFreshInstanceId (SceneManager.cpp) delete the
-//   `if (forbidden.count(lastAttempt) != 0) continue;` line — the FIRST draw
+//   `if (forbidden.count(lastAttempt) != 0) continue;` line ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the FIRST draw
 //   (the source's own instanceId) is then accepted, so the copied group claims
 //   the SOURCE's identity and CHECK(copiedRootId == validId) fails -> RED.
 //   Revert -> GREEN.
 //   test T15 fault: in ReserveFreshInstanceId delete the
-//   `if (!operationLocal.insert(lastAttempt).second) continue;` line — the
+//   `if (!operationLocal.insert(lastAttempt).second) continue;` line ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
 //   second draw (a repeat of the first group's fresh id) is accepted for a
 //   second group, so two copied groups share one id and
 //   CHECK(cA->instanceId != cB->instanceId) fails -> RED. Revert -> GREEN.
 //   test T16 fault: set kFreshInstanceIdMaxAttempts to 2 (attempt-limit
-//   bypass) — exhaustion stops after 2 provider draws, so the "exactly 16"
+//   bypass) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â exhaustion stops after 2 provider draws, so the "exactly 16"
 //   assertion fails and the operation partially consumed the hostile queue
 //   -> RED on both the duplicate and the paste scenario. Revert -> GREEN.
 //   test T17 fault: same attempt-limit bypass (kFreshInstanceIdMaxAttempts
-//   = 2) — the success half is robbed of its 3 retries, failing the
+//   = 2) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the success half is robbed of its 3 retries, failing the
 //   successful instantiate -> RED. Revert -> GREEN.
 //   test T18 fault: in SceneManager::DuplicateSubtrees move the instance-ID
 //   reservation block ABOVE the `duplicateUuids = ReserveKnownUuids(...)`
-//   staging line (provider-order swap) — the provider then draws the instance
+//   staging line (provider-order swap) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the provider then draws the instance
 //   id FIRST, so the staged entity UUIDs land shifted and
 //   CHECK(copied[0].id == e0) fails -> RED. Revert -> GREEN.
 // ============================================================================
@@ -2514,7 +2542,7 @@ namespace
 
 // Finite scripted v4 queue + full call log. Fails loudly (doctest REQUIRE,
 // propagating an exception through the manager into the test) if the code
-// under test draws MORE ids than the script provides — that is how the exact
+// under test draws MORE ids than the script provides ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â that is how the exact
 // provider-call expectations are enforced rather than assumed.
 struct ScriptedUuidProvider final : IUuidProvider
 {
@@ -2581,7 +2609,7 @@ S4SceneSnapshot S4Snapshot(SceneManager& manager)
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Test T14 — a hostile provider yields (source instanceId, nil, another live
+// Test T14 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a hostile provider yields (source instanceId, nil, another live
 // instanceId, valid). The reservation must reject the first three draws and
 // accept only the valid one, install it coherently on the copied group, and
 // leave the source and the other live instance untouched. Provider consumption
@@ -2656,7 +2684,7 @@ TEST_CASE("Phase 8 W3: hostile collision queue on duplicate reservation retries 
 }
 
 // ---------------------------------------------------------------------------
-// Test T15 — two complete groups in one operation; the provider returns a
+// Test T15 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â two complete groups in one operation; the provider returns a
 // valid id, then the SAME id again, then a second valid id. The second draw
 // must be rejected as an operation-local duplicate and retried, so the two
 // copied groups get DISTINCT fresh ids (one each from the script).
@@ -2739,7 +2767,7 @@ TEST_CASE("Phase 8 W3: operation-local duplicate draws are retried per group")
 }
 
 // ---------------------------------------------------------------------------
-// Test T16 — an always-nil provider exhausts the reservation on BOTH
+// Test T16 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â an always-nil provider exhausts the reservation on BOTH
 // UUID-aware paths (duplicate and paste). Result: DuplicateUuid naming the
 // exhaustion, EXACTLY 16 provider attempts, zero created entities, unchanged
 // entity UUID index / hierarchy / component counts / authoring revision /
@@ -2828,10 +2856,10 @@ TEST_CASE("Phase 8 W3: instance-ID reservation exhaustion on duplicate+paste lea
 }
 
 // ---------------------------------------------------------------------------
-// Test T17 — InstantiatePrefabWithUuids. Success half: the reservation
+// Test T17 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â InstantiatePrefabWithUuids. Success half: the reservation
 // retries past a live instanceId and nil to a valid id, installed coherently.
 // Exhaustion half: an always-nil provider fails BEFORE any resource/entity
-// mutation — prefab file bytes, entity/component counts, UUID index,
+// mutation ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â prefab file bytes, entity/component counts, UUID index,
 // mesh/material/texture table sizes, diagnostics and authoring revision are
 // all unchanged.
 // ---------------------------------------------------------------------------
@@ -2918,7 +2946,7 @@ TEST_CASE("Phase 8 W3: instantiate reservation retries to a valid id and exhaust
 }
 
 // ---------------------------------------------------------------------------
-// Test T18 — the ORDINARY DuplicateSubtrees path must consume the provider in
+// Test T18 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ORDINARY DuplicateSubtrees path must consume the provider in
 // the documented exact order: N staged entity-UUID draws first, then G
 // instance-ID draws (G == number of complete instance groups in the forest).
 // A scripted provider pins the order by value: the first N ids become the
@@ -2981,12 +3009,12 @@ TEST_CASE("Phase 8 W3: ordinary duplicate provider order is entity UUIDs then in
 
 // ============================================================================
 // Tests T19-T22 close the S4 REVIEW FIX 3 gap (ordinary-paste/duplicate entity
-// UUID reservation). T14-T18 exercise ONLY the WithUuids paths — the ORDINARY
+// UUID reservation). T14-T18 exercise ONLY the WithUuids paths ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ORDINARY
 // DuplicateSubtrees / PasteSubtreesFrom paths staged their destination entity
 // UUIDs via the unvalidated `ReserveKnownUuids`, so a degraded/hostile
 // provider could hand the create loop a nil, an id already live in the
 // authoring index, a repeat, or (for a paste) the source entity's own id, and
-// the operation either died midway in the create-loop rollback or — worse —
+// the operation either died midway in the create-loop rollback or ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â worse ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 // adopted a live identity. Fix 3 routes BOTH ordinary paths through the same
 // validated, finite pre-mutation reservation the WithUuids paths already used
 // (ReserveValidEntityUuids), preserving the pinned provider order from T18:
@@ -2994,29 +3022,29 @@ TEST_CASE("Phase 8 W3: ordinary duplicate provider order is entity UUIDs then in
 //
 // Discrimination faults (recorded in the verification report), per test:
 //   test T19 fault: in SceneManager::DuplicateSubtrees replace the validated
-//   entity staging with the old raw `ReserveKnownUuids(sources.size())` — a
+//   entity staging with the old raw `ReserveKnownUuids(sources.size())` ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a
 //   staged nil then trips the create-loop rollback -> REQUIRE(success) fails
 //   -> RED. Revert -> GREEN.
-//   test T20 fault: same raw-staging bypass on the duplicate path — the
+//   test T20 fault: same raw-staging bypass on the duplicate path ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
 //   operation then consumes its full script through the instance-ID stage (2
 //   entity draws + 16 instance-ID draws) and the scripted provider's loud
 //   over-consumption REQUIRE throws before CHECK(cursor == 16) -> RED. Revert
 //   -> GREEN.
 //   test T21 fault: in SceneManager::PasteSubtreesFrom use
 //   FreshInstanceIdForbiddenSet (dropping the distinct-source entity-ids
-//   rule) for entity staging — a provider draw of the clipboard's re-stamped
+//   rule) for entity staging ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a provider draw of the clipboard's re-stamped
 //   id is then accepted, so the pasted root adopts the clipboard's identity
 //   and REQUIRE(success)/the entity-id CHECK fails -> RED. Revert -> GREEN.
-//   test T22 fault: same raw-staging bypass on the paste path — the paste
+//   test T22 fault: same raw-staging bypass on the paste path ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the paste
 //   over-consumes the hostile script through the instance-ID stage and the
 //   loud REQUIRE throws -> RED. Revert -> GREEN.
 // ============================================================================
 
 // ---------------------------------------------------------------------------
-// Test T19 — the ORDINARY DuplicateSubtrees path validates its staged entity
+// Test T19 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ORDINARY DuplicateSubtrees path validates its staged entity
 // UUIDs before mutation: a nil draw, the source root's own live id, and a
 // staged-id repeat are all rejected and retried to valid ids, then per-group
-// instance IDs follow with an operation-local repeat — in the documented
+// instance IDs follow with an operation-local repeat ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â in the documented
 // entity-UUIDs-first provider order. The copy gets EXACTLY the staged entity
 // ids and coherent per-group fresh instance ids; the source forest is
 // untouched.
@@ -3121,7 +3149,7 @@ TEST_CASE("Phase 8 W3: ordinary duplicate retries staged entity UUIDs past nil, 
 }
 
 // ---------------------------------------------------------------------------
-// Test T20 — the ORDINARY DuplicateSubtrees entity-UUID reservation exhausts
+// Test T20 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ORDINARY DuplicateSubtrees entity-UUID reservation exhausts
 // its finite budget against an always-colliding provider (every draw is the
 // source root's own live id) and fails with a stage-specific DuplicateUuid
 // BEFORE any destination mutation: EXACTLY 16 provider attempts, zero created
@@ -3169,12 +3197,12 @@ TEST_CASE("Phase 8 W3: ordinary duplicate entity-UUID reservation exhaustion lea
 }
 
 // ---------------------------------------------------------------------------
-// Test T21 — the ORDINARY PasteSubtreesFrom path validates its staged entity
+// Test T21 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ORDINARY PasteSubtreesFrom path validates its staged entity
 // UUIDs before mutation, INCLUDING the distinct-source rule: a provider draw
 // equal to a CLIPBOARD (source document) entity's id is rejected even though
 // that id is absent from the destination authoring index. Script: nil, the
 // source root's own live id, the clipboard root's re-stamped id, a staged-id
-// repeat, then the valid ids, then per-group instance ids with a repeat — all
+// repeat, then the valid ids, then per-group instance ids with a repeat ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â all
 // in the documented entity-UUIDs-first order. The pasted forest gets coherent
 // per-group fresh instance ids and the clipboard source is untouched.
 // ---------------------------------------------------------------------------
@@ -3282,7 +3310,7 @@ TEST_CASE("Phase 8 W3: ordinary paste retries staged entity UUIDs past nil, live
     CHECK(S4MemberInstanceId(f.manager, pasted[3]) == pB->instanceId);
     CHECK(S4MemberInstanceId(f.manager, pasted[4]) == pB->instanceId);
 
-    // Clipboard (source) untouched — pic/pmic counts and instance roots intact.
+    // Clipboard (source) untouched ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â pic/pmic counts and instance roots intact.
     CHECK(clipboard.ecs.registry.view<PrefabInstanceComponent>().size() == clipPicBefore);
     CHECK(clipboard.ecs.registry.view<PrefabMemberComponent>().size() == clipPmicBefore);
     CHECK(clipboard.ecs.registry.get<PrefabMemberComponent>(clipRootA).instanceId == clipARootId);
@@ -3292,9 +3320,9 @@ TEST_CASE("Phase 8 W3: ordinary paste retries staged entity UUIDs past nil, live
 }
 
 // ---------------------------------------------------------------------------
-// Test T22 — the ORDINARY PasteSubtreesFrom entity-UUID reservation exhausts
+// Test T22 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ORDINARY PasteSubtreesFrom entity-UUID reservation exhausts
 // its finite budget against an always-colliding provider (every draw is the
-// source root's own live id — double-forbidden since the clipboard root
+// source root's own live id ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â double-forbidden since the clipboard root
 // carries the same id and it is already in the destination index) and fails
 // with a stage-specific DuplicateUuid BEFORE any destination mutation: EXACTLY
 // 16 provider attempts, zero created entities, unchanged destination snapshot,
@@ -3353,7 +3381,7 @@ TEST_CASE("Phase 8 W3: ordinary paste entity-UUID reservation exhaustion leaves 
 }
 
 // ============================================================================
-// Phase 8 W3, S4 FIXUP — the shared clipboard-generation paste guard.
+// Phase 8 W3, S4 FIXUP ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the shared clipboard-generation paste guard.
 //
 // SceneEditorUI::PasteCommand used to bypass EditorSceneState's clipboard
 // guards entirely: it read the raw clipboard document + roots and called
@@ -3370,7 +3398,7 @@ TEST_CASE("Phase 8 W3: ordinary paste entity-UUID reservation exhaustion leaves 
 // ============================================================================
 
 // ---------------------------------------------------------------------------
-// Test T23 — the discriminating P1 case: materials A/B/C, copy the object on
+// Test T23 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the discriminating P1 case: materials A/B/C, copy the object on
 // B (index 1), delete it, and compaction remaps C onto index 1. Index 1 is
 // now IN RANGE but names C. The shared guard must reject via ClipboardStale
 // (resource generation changed) with zero draws and zero mutation. A direct,
@@ -3445,7 +3473,7 @@ TEST_CASE("Phase 8 W3: shared paste guard rejects an in-range stale material ind
 
     // The hole the shared guard closes: the manager's own range check cannot
     // see an in-range stale index. A direct paste of the same clipboard binds
-    // material index 1 — which now names C, not B.
+    // material index 1 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â which now names C, not B.
     manager.SetUuidProvider(&ids);
     std::size_t clipCount = 0;
     {
@@ -3473,7 +3501,7 @@ TEST_CASE("Phase 8 W3: shared paste guard rejects an in-range stale material ind
 }
 
 // ---------------------------------------------------------------------------
-// Test T24 — a texture-only resource change (meshes and materials untouched,
+// Test T24 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a texture-only resource change (meshes and materials untouched,
 // every material texture index still in range) must ALSO invalidate the
 // clipboard. The manager's range checks cannot see it: they validate material
 // INDICES, never the clipboard material's texture references. The shared
@@ -3549,7 +3577,7 @@ TEST_CASE("Phase 8 W3: texture-only resource generation change invalidates the c
 }
 
 // ---------------------------------------------------------------------------
-// Test T25 — a document generation change (the whole authoring document is
+// Test T25 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a document generation change (the whole authoring document is
 // replaced) invalidates the clipboard via the document-generation branch of
 // the shared guard.
 // ---------------------------------------------------------------------------
@@ -3599,7 +3627,7 @@ TEST_CASE("Phase 8 W3: document generation change invalidates the clipboard past
 }
 
 // ---------------------------------------------------------------------------
-// Test T26 — the valid-path control: a fresh clipboard pastes via the SAME
+// Test T26 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the valid-path control: a fresh clipboard pastes via the SAME
 // state-level method the UI calls. createdRoots and sourceToDuplicate come
 // back for undo, exactly one UUID is reserved, and the result records into an
 // EditorCommandHistory and undoes.
@@ -3676,14 +3704,14 @@ TEST_CASE("Phase 8 W3: valid clipboard paste reserves exactly, creates roots, an
 }
 
 // ============================================================================
-// Phase 8 W3, S4 FIXUP 2 (re-review 3, P1) — the overlapping-duplicate-root
+// Phase 8 W3, S4 FIXUP 2 (re-review 3, P1) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the overlapping-duplicate-root
 // reservation gap.
 //
 // PasteWithUuidsForCommand used to count each RAW clipboard root's subtree and
 // sum them (EditorSceneState.cpp:102-115), then reserve that total and hand it
-// to PasteSubtreesWithUuids. The manager canonicalizes the same roots first —
+// to PasteSubtreesWithUuids. The manager canonicalizes the same roots first ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
 // duplicate roots are deduplicated and a selected descendant covered by a
-// selected ancestor is removed (SceneManager.cpp:35-71, 3965-3988) — and
+// selected ancestor is removed (SceneManager.cpp:35-71, 3965-3988) ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â and
 // requires the supplied UUID count to equal that smaller canonical forest
 // (SceneManager.cpp:4009-4014). For a {parent, child} two-entity tree the old
 // counting reserved 2 + 1 = 3 UUIDs while the manager found 2 sources and
@@ -3706,7 +3734,7 @@ TEST_CASE("Phase 8 W3: valid clipboard paste reserves exactly, creates roots, an
 // ============================================================================
 
 // ---------------------------------------------------------------------------
-// Test T27 — overlapping {parent, child} and duplicate-root selections paste
+// Test T27 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â overlapping {parent, child} and duplicate-root selections paste
 // via the SAME state-level method the UI calls: the reservation uses the
 // canonical forest count (2), one canonical root is created, the full parent +
 // child source mapping comes back for undo, and the recorded command undoes.
@@ -3842,4 +3870,10524 @@ TEST_CASE("Phase 8 W3: overlapping parent+child and duplicate-root clipboard sel
     REQUIRE(S4Snapshot(manager).entities == pre.entities + 2);
 
     (void)reg;
+}
+
+// ============================================================================
+// Phase 8 W3, S5 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the typed overrides query + marker-plan API
+// (implementation spec, W3 D3.10 and D6; Work step S5).
+//
+// S5 delivers the query API (IsOverridden / GetOverrides) and the prepare /
+// commit marker-plan contract that later S6 command factories will use,
+// WITHOUT wiring any editor entry point yet. Its tests therefore assert the
+// three contracts the wiring depends on:
+//
+//   1. Query correctness on a real instance: empty set until marked, and
+//      never falsely marked by existence of the member component alone.
+//   2. The helper maintains the canonical (wire-sorted, de-duplicated) order
+//      the codec writes and the reader normalizes, and promotes the document
+//      schema version (D6) the first time a marker actually appears.
+//   3. Loud, fail-atomic rejection: an edit whose member is not a prefab
+//      member, does not exist, or carries a non-overridable key rejects the
+//      whole prepared plan before any marker/schema mutation.
+//
+// The no-op/undo/redo breadth for concrete setters and the SetCameraPoseState
+// two-marker case belongs to S6, where editor entry points are wired and
+// command construction computes the edits; S5 proves the public plan contract.
+// ============================================================================
+
+namespace
+{
+
+UUID S5NonMemberUuid(S2Fixture& f)
+{
+    // A plain entity with no PrefabMemberComponent.
+    return f.CreateEmpty("Folk");
+}
+
+// Adopt a GENUINE v5 .rt2scene (one prefab member, no overrides) into a bare
+// manager. The scene-registered member keeps its durable UUID and the document
+// keeps schemaVersion == 5 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the state a pre-override (W3-D6) authored file
+// has on disk. Returns the member's durable UUID.
+UUID S5AdoptV5MemberScene(SceneManager& mgr, const std::filesystem::path& dir,
+                          const std::string& tag)
+{
+    const auto p = dir / "v5.rt2scene";
+    S2WriteMemberScene(p, 5, {});
+    SceneDocument doc;
+    DeterministicUuidProvider ids;
+    doc.SetUuidProvider(&ids);
+    Error err;
+    REQUIRE(SceneSerializer::Load(doc, p, err));
+    REQUIRE(doc.metadata.schemaVersion == 5);
+    mgr.ReplaceAuthoringDocument(std::move(doc), 0);
+    return UUID::Parse("11111111-1111-4111-8111-111111111111");
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Test S5-Q ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the query API answers empty/false on a fresh real instance, on
+// a non-member entity, and on an absent UUID. The D3.9 contract requires that
+// no member starts marked; the query API must not treat "has a member
+// component" as "is overridden".
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: override queries are empty until marked")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_query");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID childUuid = reg.get<EntityIdComponent>(childHandle).id;
+    REQUIRE(rootUuid != UUID::Nil());
+    REQUIRE(childUuid != UUID::Nil());
+
+    auto q = f.manager.IsOverridden(rootUuid, S2Key("transform"));
+    REQUIRE(q.IsOk());
+    REQUIRE_FALSE(q.value);
+    auto g = f.manager.GetOverrides(rootUuid);
+    REQUIRE(g.IsOk());
+    REQUIRE(g.value.empty());
+    q = f.manager.IsOverridden(childUuid, S2Key("name"));
+    REQUIRE(q.IsOk());
+    REQUIRE_FALSE(q.value);
+    g = f.manager.GetOverrides(childUuid);
+    REQUIRE(g.IsOk());
+    REQUIRE(g.value.empty());
+
+    // Typed query distinction: a valid empty member is Ok(false/empty); an
+    // ordinary entity is NotPrefabMember; an absent UUID is InvalidEntity.
+    const UUID folkUuid = S5NonMemberUuid(f);
+    g = f.manager.GetOverrides(folkUuid);
+    REQUIRE_FALSE(g.IsOk());
+    REQUIRE(g.error.code == rt2::core::Error::NotPrefabMember);
+    q = f.manager.IsOverridden(folkUuid, S2Key("transform"));
+    REQUIRE_FALSE(q.IsOk());
+    REQUIRE(q.error.code == rt2::core::Error::NotPrefabMember);
+
+    g = f.manager.GetOverrides(UUID::Nil());
+    REQUIRE_FALSE(g.IsOk());
+    REQUIRE(g.error.code == rt2::core::Error::InvalidEntity);
+    q = f.manager.IsOverridden(UUID::Nil(), S2Key("transform"));
+    REQUIRE_FALSE(q.IsOk());
+    REQUIRE(q.error.code == rt2::core::Error::InvalidEntity);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-A ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â marker plans add markers in canonical order, dedup re-marks,
+// and promote the document schema on the first add (D6). The RAW
+// registry vector (what the writer emits verbatim) must be wire-sorted and
+// unique even though the batch was supplied in a different order: the writer
+// only sorts at SceneSerializer.cpp:853-856, it does NOT de-duplicate, so a
+// duplicate in the raw vector would survive into the saved file and break the
+// save -> load -> save byte round-trip below. Reading through GetOverrides
+// would NOT discriminate (it normalises on read), so the assertions here read
+// the component directly.
+//
+// Discrimination faults:
+//   Sequence a) insertion fault: insert via push_back instead of the sorted
+//   lower_bound insert ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the raw vector is not in wire order -> is_sorted
+//   CHECK below goes RED. (Inserting a duplicate while keeping sorted order
+//   is caught by the byte round-trip at the end.)
+//   Sequence b) promotion fault: remove the PromoteSchemaVersion call ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
+//   schemaVersion stays below current -> the D6 REQUIRE goes RED.
+//   Sequence c) dedup fault: drop the alreadyPresent guard ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â a re-mark
+//   duplicates the key, the raw size check goes RED (and the byte round-trip
+//   also fails on reload).
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper maintains canonical order and promotes schema on first add")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_apply");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto beforeVersion = f.manager.AuthoringDoc().metadata.schemaVersion;
+    REQUIRE(beforeVersion < SceneSerializer::SchemaVersion);
+
+    // Deliberately supplied NOT in wire order (transform > name > motion).
+    const auto transform = S2Key("transform");
+    const auto name = S2Key("name");
+    const auto motion = S2Key("motion");
+    auto planRes = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, false, true },
+        { rootUuid, name,     false, true },
+        { rootUuid, motion,   false, true },
+    }, PrefabMarkerDirection::After, beforeVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(planRes.IsOk());
+    REQUIRE(planRes.value.anyStateChange);
+    REQUIRE(planRes.value.members.size() == 1);
+    REQUIRE(planRes.value.members[0].member == rootUuid);
+    PrefabMarkerApplyResult r = f.manager.CommitPrefabMarkerPlan(std::move(planRes.value));
+    REQUIRE(r.anyStateChange);
+    REQUIRE(r.appliedMembers == 1);
+
+    // RAW vector must already be canonical ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the writer emits it verbatim.
+    const auto* raw = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(raw);
+    REQUIRE(raw->overrides.size() == 3);
+    CHECK(std::is_sorted(raw->overrides.begin(), raw->overrides.end(),
+          [](const PrefabComponentKey& a, const PrefabComponentKey& b)
+          { return a.wire() < b.wire(); }));
+    CHECK(raw->overrides[0] == motion);
+    CHECK(raw->overrides[1] == name);
+    CHECK(raw->overrides[2] == transform);
+    auto q1 = f.manager.IsOverridden(rootUuid, transform);
+    REQUIRE(q1.IsOk());
+    CHECK(q1.value);
+    q1 = f.manager.IsOverridden(rootUuid, name);
+    REQUIRE(q1.IsOk());
+    CHECK(q1.value);
+    q1 = f.manager.IsOverridden(rootUuid, motion);
+    REQUIRE(q1.IsOk());
+    CHECK(q1.value);
+
+    // The same order is what the query API reports.
+    const auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides.IsOk());
+    REQUIRE(overrides.value == raw->overrides);
+
+    // D6: the document was promoted the moment a marker first appeared.
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // Re-marking an already-present key stages a genuine no-op: the plan
+    // carries no state change, commit writes nothing and notifies zero times,
+    // the vector does not duplicate, and the schema is not re-promoted.
+    const auto revisionBefore = f.manager.AuthoringRevision();
+    auto noopRes = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, true },
+    }, PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(noopRes.IsOk());
+    REQUIRE_FALSE(noopRes.value.anyStateChange);
+    const auto noopCommit = f.manager.CommitPrefabMarkerPlan(std::move(noopRes.value));
+    REQUIRE_FALSE(noopCommit.anyStateChange);
+    REQUIRE(reg.try_get<PrefabMemberComponent>(rootHandle)->overrides.size() == 3);
+    REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // Byte round-trip: a raw vector with a duplicate (the write path does not
+    // dedup) would write the duplicate, and the reloaded doc would differ once
+    // the reader de-duplicates ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â so save -> load -> save must be byte-equal.
+    const auto scenePath0 = dir / "s5a0.rt2scene";
+    Error saveErr0;
+    REQUIRE(SaveSceneForTest(f.manager.AuthoringDoc(), scenePath0, saveErr0));
+    DeterministicUuidProvider p2;
+    SceneDocument loaded;
+    loaded.SetUuidProvider(&p2);
+    Error loadErr;
+    REQUIRE(SceneSerializer::Load(loaded, scenePath0, loadErr));
+    const auto scenePath1 = dir / "s5a1.rt2scene";
+    Error saveErr1;
+    std::vector<AssetDiagnostic> diag1;
+    REQUIRE(SceneSerializer::Save(loaded, scenePath1, diag1, saveErr1));
+    REQUIRE(S2ReadFile(scenePath0) == S2ReadFile(scenePath1));
+
+    // Marking a second member independently is a second genuine add.
+    const UUID childUuid = reg.get<EntityIdComponent>(childHandle).id;
+    auto childPlan = f.manager.PreparePrefabMarkerEdits({
+        { childUuid, S2Key("script"), false, true },
+    }, PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(childPlan.IsOk());
+    f.manager.CommitPrefabMarkerPlan(std::move(childPlan.value));
+    auto childOverrides = f.manager.GetOverrides(childUuid);
+    REQUIRE(childOverrides.IsOk());
+    REQUIRE(childOverrides.value.size() == 1);
+    CHECK(childOverrides.value[0] == S2Key("script"));
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-B ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â removal edits (afterPresent=false) unmark, and undo semantics
+// of the payload are satisfied at the helper level: applying the inverse
+// presence delta restores the prior membership. A removal of an absent key is
+// accepted but mutates nothing (no revision bump, no schema promotion).
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper removal restores membership and respects the presence delta")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_remove");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    const auto transform = S2Key("transform");
+    const auto name = S2Key("name");
+    const auto schemaAfter = SceneSerializer::SchemaVersion;
+    const auto schemaBefore = f.manager.AuthoringDoc().metadata.schemaVersion;
+    {
+        auto plan = f.manager.PreparePrefabMarkerEdits({
+            { rootUuid, transform, false, true },
+            { rootUuid, name,     false, true },
+        }, PrefabMarkerDirection::After, schemaBefore, schemaAfter);
+        REQUIRE(plan.IsOk());
+        REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(plan.value)).anyStateChange);
+    }
+
+    // Remove only `transform`: name survives, transform gone. The removal
+    // payload carries a present source (beforePresent=true), which the After
+    // direction validates against the live (present) member.
+    auto removePlan = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, false },
+    }, PrefabMarkerDirection::After, schemaAfter, schemaAfter);
+    REQUIRE(removePlan.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(removePlan.value)).anyStateChange);
+    auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides.IsOk());
+    REQUIRE(overrides.value.size() == 1);
+    CHECK(overrides.value[0] == name);
+    auto q1 = f.manager.IsOverridden(rootUuid, transform);
+    REQUIRE(q1.IsOk());
+    CHECK_FALSE(q1.value);
+    auto q2 = f.manager.IsOverridden(rootUuid, name);
+    REQUIRE(q2.IsOk());
+    CHECK(q2.value);
+
+    // Undo of that removal (the S6 layer's restore-beforePresent step): the
+    // SAME payload now targets the before side. Before validates
+    // afterPresent=false against the live (absent) member, and the key
+    // reappears exactly once.
+    auto undoPlan = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, false },
+    }, PrefabMarkerDirection::Before, schemaAfter, schemaAfter);
+    REQUIRE(undoPlan.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(undoPlan.value)).anyStateChange);
+    auto afterUndo = f.manager.GetOverrides(rootUuid);
+    REQUIRE(afterUndo.IsOk());
+    REQUIRE(afterUndo.value.size() == 2);
+
+    // Removal of an absent key is a genuine no-op: no revision bump, no
+    // further schema churn, no notification.
+    const auto revisionBefore = f.manager.AuthoringRevision();
+    auto noopPlan = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, S2Key("motion"), false, false },
+    }, PrefabMarkerDirection::After, schemaAfter, schemaAfter);
+    REQUIRE(noopPlan.IsOk());
+    REQUIRE_FALSE(noopPlan.value.anyStateChange);
+    const auto noopCommit = f.manager.CommitPrefabMarkerPlan(std::move(noopPlan.value));
+    REQUIRE_FALSE(noopCommit.anyStateChange);
+    REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
+    auto afterNoop = f.manager.GetOverrides(rootUuid);
+    REQUIRE(afterNoop.IsOk());
+    REQUIRE(afterNoop.value.size() == 2);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-C ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â loud rejection, fail-atomic by construction. A batch mixing a
+// valid edit with (a) an absent member UUID, (b) a member that is not a prefab
+// member, and (c) a non-overridable key fails the WHOLE prepared plan: no
+// marker lands, and membership, schema, dirty flag, and authoring revision
+// stay unchanged.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper rejects bad members and non-overridable keys loudly, atomically")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_reject");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID folkUuid = S5NonMemberUuid(f);
+
+    const auto schemaBefore = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const bool dirtyBefore = f.manager.IsDirty();
+    const auto revisionBefore = f.manager.AuthoringRevision();
+
+    const auto transform = S2Key("transform");
+    const auto script = S2Key("script");
+    const auto meshRef = S2Key("meshRef"); // overridable bit is false
+    auto plan = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, false, true },   // otherwise valid
+        { UUID::Nil(), script, false, true },   // absent member entity
+        { folkUuid, script, false, true },      // not a prefab member
+        { rootUuid, meshRef, false, true },     // excluded key
+    }, PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+    REQUIRE_FALSE(plan.IsOk());
+    REQUIRE(plan.error.code == rt2::core::Error::InvalidEntity); // first bad edit
+
+    // The valid edit did NOT land: zero partial mutation.
+    auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides.IsOk());
+    REQUIRE(overrides.value.empty());
+    auto scriptQ = f.manager.IsOverridden(rootUuid, script);
+    REQUIRE(scriptQ.IsOk());
+    REQUIRE_FALSE(scriptQ.value);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == schemaBefore);
+    REQUIRE(f.manager.IsDirty() == dirtyBefore);
+    REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-C2 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â typed query key errors. An unknown wire and each of the five
+// excluded canonical wires are distinguishable from a valid member query.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: override queries reject unknown and excluded keys as structured errors")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_query_keys");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    // Unknown wire: not in the frozen table.
+    auto q = f.manager.IsOverridden(rootUuid, PrefabComponentKey(std::string_view("noSuchWire"), true));
+    REQUIRE_FALSE(q.IsOk());
+    REQUIRE(q.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(q.error.detail.find("noSuchWire") != std::string::npos);
+
+    // All five excluded wires are rejected regardless of the caller-supplied
+    // classification bit (forged true still rejected ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â bit not trusted).
+    for (const char* wire : { "meshRef", "primitive", "importedSource",
+                              "prefabInstance", "prefabMember" })
+    {
+        q = f.manager.IsOverridden(rootUuid, PrefabComponentKey(std::string_view(wire), true));
+        REQUIRE_FALSE(q.IsOk());
+        REQUIRE(q.error.code == rt2::core::Error::InvalidArgument);
+        REQUIRE(q.error.detail.find(wire) != std::string::npos);
+    }
+}
+
+// ===========================================================================
+// Checkpoint A - canonical keys and atomic batch discrimination
+// ===========================================================================
+// The helper guarantees every decision is made against the frozen table and
+// as a WHOLE batch. The cases below pin each guarantee's discriminating
+// assertion. Rule: every canonical wire keeps its table-derived overridable
+// bit regardless of what the caller supplied; a batch fails on the first bad
+// edit and neither its valid edit nor any silent worsening of live state
+// survives; duplicate edits never produce a duplicated raw vector; and a
+// stored vector that is malformed but canonicalizable is normalized into the
+// committed raw registry vector rather than silently left malformed.
+
+// ---------------------------------------------------------------------------
+// Test S5-D - key canonicalization in the mutation API. An edit whose wire is
+// not in the frozen table, or whose wire canonicalizes to one of the five
+// excluded components, fails the WHOLE batch with a structured InvalidArgument
+// whose detail names the wire - regardless of the caller's classification bit.
+// A valid wire whose bit was forged false must canonicalize (NOT be rejected):
+// the committed raw vector carries the table-derived entry.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) rejection fault: drop the !canonical->overridable() guard in
+//   PreparePrefabMarkerEdits (SceneManager.cpp:5478-5482) - the five excluded
+//   wires stage silently and REQUIRE_FALSE(plan.IsOk()) below goes RED.
+//   b) structured-code fault: change the key-rejection Error to InvalidEntity
+//   (SceneManager.cpp:5473-5482) - REQUIRE(plan.error.code == InvalidArgument)
+//   below goes RED (excluded and unknown wires collapse into the member code).
+//   c) canonicalization fault: store edit.key instead of *canonical
+//   (SceneManager.cpp:5537-5538) - the forged-transform CHECK below goes RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper canonicalizes keys and rejects forged classification loudly")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_keys");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    const auto schemaBefore = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const bool dirtyBefore = f.manager.IsDirty();
+    const auto revisionBefore = f.manager.AuthoringRevision();
+
+    // Every excluded wire is rejected even with the overridable bit forged to
+    // true: the bit is never trusted.
+    for (const char* wire : { "meshRef", "primitive", "importedSource",
+                              "prefabInstance", "prefabMember" })
+    {
+        auto plan = f.manager.PreparePrefabMarkerEdits({
+            { rootUuid, PrefabComponentKey(std::string_view(wire), true), false, true },
+        }, PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+        REQUIRE_FALSE(plan.IsOk());
+        REQUIRE(plan.error.code == rt2::core::Error::InvalidArgument);
+        REQUIRE(plan.error.detail.find(wire) != std::string::npos);
+    }
+
+    // Unknown wire (not in the frozen table) is rejected identically.
+    auto unknown = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, PrefabComponentKey(std::string_view("noSuchWire"), true), false, true },
+    }, PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+    REQUIRE_FALSE(unknown.IsOk());
+    REQUIRE(unknown.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(unknown.error.detail.find("noSuchWire") != std::string::npos);
+
+    // All six rejections above are zero-mutation.
+    auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides.IsOk());
+    REQUIRE(overrides.value.empty());
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == schemaBefore);
+    REQUIRE(f.manager.IsDirty() == dirtyBefore);
+    REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
+
+// A valid wire with a forged-false bit canonicalizes: the committed raw
+    // vector holds the table-derived transform entry, not a falsely
+    // non-overridable copy of the caller's key. The FIRST marker must land at
+    // the schema version that can represent overrides (SchemaVersion), so the
+    // add rides the v5->v6 transition even though the caller forged the bit.
+    auto forged = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, PrefabComponentKey(std::string_view("transform"), false), false, true },
+    }, PrefabMarkerDirection::After, schemaBefore, SceneSerializer::SchemaVersion);
+    REQUIRE(forged.IsOk());
+    REQUIRE(forged.value.anyStateChange);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(forged.value)).anyStateChange);
+    const auto* pm = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(pm);
+    REQUIRE(pm->overrides.size() == 1);
+    CHECK(pm->overrides[0] == S2Key("transform")); // table-derived bit (true)
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+}
+
+TEST_CASE("Phase 8 W3 S6-D: cleanup record failure compensates without marker resurrection")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6d_record_failure");
+    const auto [aHandle, bHandle] = f.MakeInstance(dir);
+    const UUID a = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+    const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+    EditableTRS aBefore, bBefore;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aBefore));
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+    TransformPreviewSession session;
+    const auto token = session.Begin(f.manager, 0xA11E0u, {a, b});
+    REQUIRE(token.has_value());
+    EditableTRS aAfter = aBefore;
+    EditableTRS bAfter = bBefore;
+    aAfter.translation.x += 3.0f;
+    bAfter.translation.y += 2.0f;
+    REQUIRE(session.PreviewLocals(f.manager, *token,
+        {{a, aAfter}, {b, bAfter}}).effective);
+    REQUIRE(session.PreviewLocals(f.manager, *token,
+        {{a, aAfter}, {b, bBefore}}).effective);
+    EditorCommandHistory history;
+    history.FailNextRecordAppliedForTest();
+    const auto outcome = FinalizeTransformPreviewSession(history, f.manager,
+        session, *token);
+    INFO(outcome.lastError.error.detail);
+    REQUIRE(outcome.result == PreviewSessionCloseOutcome::Result::Closed);
+    CHECK_FALSE(history.CanUndo());
+    EditableTRS aRestored, bRestored;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aRestored));
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bRestored));
+    CHECK(aRestored.translation == aBefore.translation);
+    CHECK(bRestored.translation == bBefore.translation);
+    CHECK_FALSE(f.manager.IsOverridden(b,
+        PrefabComponentKeyFor<Transform>::value).value);
+
+    const UUID ordinary = f.CreateEmpty("NoCarrier");
+    EditableTRS ordinaryBefore;
+    REQUIRE(f.manager.GetLocalTransform(
+        SceneManager::EntityId{f.manager.FindEntityByUuid(ordinary)}, ordinaryBefore));
+    TransformPreviewSession ordinarySession;
+    const auto ordinaryToken = ordinarySession.Begin(f.manager, 0xA11E1u,
+        {ordinary});
+    REQUIRE(ordinaryToken.has_value());
+    EditableTRS ordinaryAfter = ordinaryBefore;
+    ordinaryAfter.translation.z += 5.0f;
+    REQUIRE(ordinarySession.PreviewLocals(f.manager, *ordinaryToken,
+        {{ordinary, ordinaryAfter}}).effective);
+    history.FailNextRecordAppliedForTest();
+    const auto ordinaryOutcome = FinalizeTransformPreviewSession(history,
+        f.manager, ordinarySession, *ordinaryToken);
+    REQUIRE(ordinaryOutcome.result == PreviewSessionCloseOutcome::Result::Closed);
+    EditableTRS ordinaryRestored;
+    REQUIRE(f.manager.GetLocalTransform(
+        SceneManager::EntityId{f.manager.FindEntityByUuid(ordinary)}, ordinaryRestored));
+    CHECK(ordinaryRestored.translation == ordinaryBefore.translation);
+    std::filesystem::remove_all(dir);
+}
+
+// Supplemental low-level correlation coverage: local drag/token/sequence stay
+// bound until the UI session closes or is discarded, then admit a clean G2.
+// The production Walnut ordering and real cancellation callback are exercised
+// through TransformGizmoCoordinator in the named cases below.
+//
+// Reversible RED: make CompleteAfterUiTransition retain any one of localDrag,
+// token, or sequence; the corresponding post-transition assertion and every
+// G2 OnLocalDragStarted below fail.  Remove RejectBeginAndCancel and the
+// rejected-Begin branch retains an unbound local drag.
+TEST_CASE("Phase 8 W3 S6-D: low-level host correlation clears after close discard and output loss")
+{
+    S2Fixture f;
+    const UUID target = f.CreateEmpty("HostLifecycle");
+    EditorCommandHistory history;
+    TransformPreviewSession session;
+    TransformGizmoHostLifecycle host;
+
+    // Never-moved G1 still has a real UI session and a real sequenced local
+    // drag. Finalize closes it without history, then host teardown releases all
+    // correlation so G2 can start.
+    auto g1 = session.Begin(f.manager, 0xB001u, { target });
+    REQUIRE(g1);
+    REQUIRE(host.OnLocalDragStarted(101));
+    REQUIRE(host.BindToken(*g1));
+    REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *g1)
+        .result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(host.LocalDragActive()); // UI closes before local correlation.
+    host.CompleteAfterUiTransition();
+    CHECK_FALSE(host.LocalDragActive());
+    CHECK_FALSE(host.Token().has_value());
+    CHECK(host.InteractionSequence() == 0);
+    CHECK_FALSE(history.CanUndo());
+
+    auto g2 = session.Begin(f.manager, 0xB001u, { target });
+    REQUIRE(g2);
+    REQUIRE(host.OnLocalDragStarted(102));
+    REQUIRE(host.BindToken(*g2));
+    CHECK_FALSE(host.Matches(101));
+    CHECK(host.Matches(102));
+    CHECK_FALSE(session.PreviewLocals(f.manager, *g1, {}).success);
+
+    // Output loss restores through the exact G2 token before local teardown.
+    EditableTRS before;
+    REQUIRE(f.manager.GetLocalTransform(
+        SceneManager::EntityId{f.manager.FindEntityByUuid(target)}, before));
+    EditableTRS moved = before;
+    moved.translation.x += 4.0f;
+    REQUIRE(session.PreviewLocals(f.manager, *g2, {{target, moved}}).effective);
+    REQUIRE(RestoreTransformPreviewSession(f.manager, session, *g2)
+        .result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(host.LocalDragActive());
+    host.CompleteAfterUiTransition();
+    CHECK_FALSE(host.LocalDragActive());
+
+    // A document replacement is valid discard proof. Reset/discard happens
+    // first; only then may Walnut-owned local correlation be released.
+    auto g3 = session.Begin(f.manager, 0xB001u, { target });
+    REQUIRE(g3);
+    REQUIRE(host.OnLocalDragStarted(103));
+    REQUIRE(host.BindToken(*g3));
+    session.Discard();
+    REQUIRE(host.LocalDragActive());
+    host.CompleteAfterUiTransition();
+    REQUIRE(host.OnLocalDragStarted(104));
+    host.RejectBeginAndCancel();
+    CHECK_FALSE(host.LocalDragActive());
+    CHECK(host.InteractionSequence() == 0);
+
+    // Play entry finalizes an effective G4 before SetEditable(false) hands
+    // recovery ownership to the UI. Play exit can then admit G5 cleanly.
+    auto g4 = session.Begin(f.manager, 0xB001u, { target });
+    REQUIRE(g4);
+    REQUIRE(host.OnLocalDragStarted(105));
+    REQUIRE(host.BindToken(*g4));
+    moved.translation.y += 2.0f;
+    REQUIRE(session.PreviewLocals(f.manager, *g4, {{target, moved}}).effective);
+    REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *g4)
+        .result == PreviewSessionCloseOutcome::Result::Closed);
+    host.CompleteAfterUiTransition();
+    auto g5 = session.Begin(f.manager, 0xB001u, { target });
+    REQUIRE(g5);
+    REQUIRE(host.OnLocalDragStarted(106));
+    REQUIRE(host.BindToken(*g5));
+    CHECK(host.Matches(106));
+    CHECK_FALSE(host.Matches(105));
+    session.Discard();
+    host.CompleteAfterUiTransition();
+}
+
+// Reversible RED: move RunFrame's external consumption after its Draw callback, or
+// allow an ordinary pending close through RouteTransformCloseRequest. This
+// production coordinator then either retains G1 for the real release fact or
+// invokes the close callback before explicit Retry.
+TEST_CASE("Phase 8 W3 S6-D: external PendingRetry transfer quarantines delayed release until explicit Retry")
+{
+    S2Fixture f;
+    const UUID target = f.CreateEmpty("ExternalPendingTransfer");
+    const auto handle = f.manager.FindEntityByUuid(target);
+    EditableTRS before;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{handle}, before));
+    EditableTRS after = before;
+    after.translation.x += 6.0f;
+
+    TransformPreviewSession session;
+    TransformGizmoCoordinator coordinator;
+    EditorCommandHistory history;
+    int cancelCount = 0;
+    int previewNotifications = 0;
+    int closeSyncs = 0;
+    int closeCalls = 0;
+    bool localGizmoActive = true;
+    TransformGizmoCoordinatorCallbacks callbacks;
+    callbacks.cancelLocal = [&]() {
+        ++cancelCount;
+        localGizmoActive = false;
+    };
+    callbacks.begin = [&](const std::vector<UUID>& uuids) {
+        return session.Begin(f.manager, 0xB101u, uuids);
+    };
+    callbacks.preview = [&](const TransformGestureToken& token,
+        const std::vector<std::pair<UUID, glm::mat4>>& worlds) {
+        return PublishTransformPreviewAndNotify(
+            [&]() { return session.PreviewWorlds(f.manager, token, worlds); },
+            [&]() { ++previewNotifications; });
+    };
+    callbacks.close = [&](bool finalize, const TransformGestureToken& token) {
+        ++closeCalls;
+        return CloseTransformAndRouteSync([&]() {
+            return finalize
+                ? FinalizeTransformPreviewSession(history, f.manager, session, token)
+                : RestoreTransformPreviewSession(f.manager, session, token);
+        }, [&](const PreviewSessionCloseOutcome&) { ++closeSyncs; });
+    };
+    TransformGizmoResult start;
+    start.dragJustStarted = true;
+    start.interactionSequence = 301;
+    start.draggedUuids = {target};
+    const auto began = coordinator.RunFrame(
+        TransformGestureLifecycleState::HealthyOpen, callbacks.cancelLocal,
+        [&]() { return start; }, callbacks);
+    CHECK_FALSE(began.routed.beginRejected);
+    CHECK(coordinator.LocalDragActive());
+    TransformGizmoResult move;
+    move.changed = true;
+    move.interactionSequence = 301;
+    move.desiredWorld = {{target, after.Matrix()}};
+    const auto moved = coordinator.RunFrame(
+        TransformGestureLifecycleState::HealthyOpen, callbacks.cancelLocal,
+        [&]() { return move; }, callbacks);
+    REQUIRE(moved.routed.preview);
+    REQUIRE(moved.routed.preview->effective);
+    CHECK(previewNotifications == 1);
+    const auto token = session.Token();
+    history.FailNextRecordAppliedForTest();
+    session.FailNextCompensationForTest();
+    const auto transferred = FinalizeTransformPreviewSession(history, f.manager,
+        session, token);
+    REQUIRE(transferred.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    REQUIRE(session.GetClosePhase()
+        == TransformPreviewSession::ClosePhase::CompensationPending);
+
+    bool cancelledBeforeDraw = false;
+    const auto externalFrame = coordinator.RunFrame(
+        TransformGestureLifecycleState::RecoveryTransferred,
+        callbacks.cancelLocal,
+        [&]() {
+            cancelledBeforeDraw = !localGizmoActive;
+            const auto release = ClassifyTransformGizmoRelease({
+                localGizmoActive, false, true, 301, {target}, {before}
+            });
+            return release ? *release : TransformGizmoResult{};
+        }, callbacks);
+    CHECK(cancelledBeforeDraw);
+    CHECK(cancelCount == 1);
+    CHECK_FALSE(coordinator.LocalDragActive());
+    CHECK_FALSE(coordinator.Token());
+    CHECK(coordinator.InteractionSequence() == 0);
+
+    CHECK_FALSE(externalFrame.routed.close);
+    CHECK(closeCalls == 0);
+    int retryCalls = 0;
+    const auto ordinary = RouteTransformCloseRequest(
+        TransformGestureLifecycleState::RecoveryTransferred, false,
+        transferred.lastError.error.detail, [&]() {
+            ++retryCalls;
+            return FinalizeTransformPreviewSession(history, f.manager, session, token);
+        });
+    REQUIRE(ordinary.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    CHECK(retryCalls == 0);
+    CHECK(session.IsOpen());
+
+    const auto retry = RouteTransformCloseRequest(
+        TransformGestureLifecycleState::RecoveryTransferred, true,
+        transferred.lastError.error.detail, [&]() {
+            ++retryCalls;
+            return FinalizeTransformPreviewSession(history, f.manager, session, token);
+        });
+    REQUIRE(retry.result == PreviewSessionCloseOutcome::Result::Closed);
+    CHECK(retryCalls == 1);
+    CHECK(closeSyncs == 0);
+    CHECK_FALSE(session.IsOpen());
+    CHECK_FALSE(history.CanUndo());
+}
+
+// Reversible RED: restore the moved-only guard inside
+// ClassifyTransformGizmoRelease, bypass ProcessEvent, or bypass either shared
+// publish/close router. The real release fact, callback count, or cancel/ABA
+// assertion turns RED.
+TEST_CASE("Phase 8 W3 S6-D: never-moved end intent and transform notifications use production host seams")
+{
+    S2Fixture f;
+    const UUID target = f.CreateEmpty("NeverMovedCoordinator");
+    TransformPreviewSession session;
+    TransformGizmoCoordinator coordinator;
+    EditorCommandHistory history;
+    int cancelCount = 0;
+    int previewNotifications = 0;
+    int closeNotifications = 0;
+    TransformGizmoCoordinatorCallbacks callbacks;
+    callbacks.cancelLocal = [&]() { ++cancelCount; };
+    callbacks.begin = [&](const std::vector<UUID>& uuids) {
+        return session.Begin(f.manager, 0xB102u, uuids);
+    };
+    callbacks.preview = [&](const TransformGestureToken& token,
+        const std::vector<std::pair<UUID, glm::mat4>>& worlds) {
+        return PublishTransformPreviewAndNotify(
+            [&]() { return session.PreviewWorlds(f.manager, token, worlds); },
+            [&]() { ++previewNotifications; });
+    };
+    callbacks.close = [&](bool finalize, const TransformGestureToken& token) {
+        return CloseTransformAndRouteSync([&]() {
+            return finalize
+                ? FinalizeTransformPreviewSession(history, f.manager, session, token)
+                : RestoreTransformPreviewSession(f.manager, session, token);
+        }, [&](const PreviewSessionCloseOutcome&) { ++closeNotifications; });
+    };
+    TransformGizmoResult start;
+    start.dragJustStarted = true;
+    start.interactionSequence = 401;
+    start.draggedUuids = {target};
+    REQUIRE_FALSE(coordinator.RunFrame(
+        TransformGestureLifecycleState::HealthyOpen, callbacks.cancelLocal,
+        [&]() { return start; }, callbacks).routed.beginRejected);
+    const auto neverMoved = ClassifyTransformGizmoRelease({
+        true, false, false, 401, {target}, {}
+    });
+    REQUIRE(neverMoved);
+    CHECK(neverMoved->dragJustEnded);
+    CHECK(neverMoved->pickThrough);
+    const auto ended = coordinator.RunFrame(
+        TransformGestureLifecycleState::HealthyOpen, callbacks.cancelLocal,
+        [&]() { return *neverMoved; }, callbacks);
+    REQUIRE(ended.routed.close);
+    CHECK(ended.routed.close->result == PreviewSessionCloseOutcome::Result::Closed);
+    CHECK_FALSE(ended.routed.close->recorded);
+    CHECK_FALSE(session.IsOpen());
+    CHECK_FALSE(history.CanUndo());
+    CHECK(cancelCount == 1);
+    CHECK(previewNotifications == 0);
+    CHECK(closeNotifications == 0);
+
+    EditableTRS before;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{
+        f.manager.FindEntityByUuid(target)}, before));
+    EditableTRS after = before;
+    after.translation.y += 2.0f;
+    start.interactionSequence = 402;
+    REQUIRE_FALSE(coordinator.RunFrame(
+        TransformGestureLifecycleState::HealthyOpen, callbacks.cancelLocal,
+        [&]() { return start; }, callbacks).routed.beginRejected);
+    TransformGizmoResult move;
+    move.changed = true;
+    move.interactionSequence = 402;
+    move.desiredWorld = {{target, after.Matrix()}};
+    REQUIRE(coordinator.RunFrame(
+        TransformGestureLifecycleState::HealthyOpen, callbacks.cancelLocal,
+        [&]() { return move; }, callbacks).routed.preview->effective);
+    CHECK(previewNotifications == 1);
+    const auto restored = coordinator.RestoreActive(callbacks);
+    REQUIRE(restored.result == PreviewSessionCloseOutcome::Result::Closed);
+    CHECK(closeNotifications == 1);
+    CHECK(cancelCount == 2);
+    CHECK(coordinator.InteractionSequence() == 0);
+}
+
+// Reversible RED: swap TransformGizmoCoordinator::ReplaceDocument callbacks,
+// omit its completion, or map migration Save to Reset. The exact production
+// boundary used by all three Walnut callers loses its adoption/discard/cancel
+// trace, selection decision, or future-G2 sequence ABA.
+TEST_CASE("Phase 8 W3 S6-D: every authoring replacement caller shares ordered teardown and migration preserves selection")
+{
+    CHECK(SelectionPolicyForReplacement(
+        AuthoringDocumentReplacementKind::RecoveryRestore)
+        == AuthoringDocumentSelectionPolicy::Reset);
+    CHECK(SelectionPolicyForReplacement(
+        AuthoringDocumentReplacementKind::OpenScene)
+        == AuthoringDocumentSelectionPolicy::Reset);
+    CHECK(SelectionPolicyForReplacement(
+        AuthoringDocumentReplacementKind::AssetMigrationSave)
+        == AuthoringDocumentSelectionPolicy::PreserveValid);
+
+    for (const auto kind : {
+        AuthoringDocumentReplacementKind::RecoveryRestore,
+        AuthoringDocumentReplacementKind::OpenScene,
+        AuthoringDocumentReplacementKind::AssetMigrationSave })
+    {
+        S2Fixture f;
+        const UUID target = f.CreateEmpty("ReplacementG1");
+        TransformPreviewSession session;
+        TransformGizmoCoordinator coordinator;
+        EditorCommandHistory history;
+        int cancelCount = 0;
+        TransformGizmoCoordinatorCallbacks callbacks;
+        callbacks.cancelLocal = [&]() { ++cancelCount; };
+        callbacks.begin = [&](const std::vector<UUID>& uuids) {
+            return session.Begin(f.manager, 0xB201u, uuids);
+        };
+        callbacks.preview = [&](const TransformGestureToken& token,
+            const std::vector<std::pair<UUID, glm::mat4>>& worlds) {
+            return session.PreviewWorlds(f.manager, token, worlds);
+        };
+        callbacks.close = [&](bool finalize, const TransformGestureToken& token) {
+            return finalize
+                ? FinalizeTransformPreviewSession(history, f.manager, session, token)
+                : RestoreTransformPreviewSession(f.manager, session, token);
+        };
+        TransformGizmoResult start;
+        start.dragJustStarted = true;
+        start.interactionSequence = 501;
+        start.draggedUuids = {target};
+        REQUIRE_FALSE(coordinator.ProcessEvent(start, callbacks).beginRejected);
+        EditableTRS before;
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{f.manager.FindEntityByUuid(target)}, before));
+        EditableTRS after = before;
+        after.translation.z += 3.0f;
+        TransformGizmoResult move;
+        move.changed = true;
+        move.interactionSequence = 501;
+        move.desiredWorld = {{target, after.Matrix()}};
+        REQUIRE(coordinator.ProcessEvent(move, callbacks).preview->effective);
+        history.FailNextRecordAppliedForTest();
+        session.FailNextCompensationForTest();
+        REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session,
+            session.Token())
+            .result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        std::vector<int> trace;
+        rt2::core::SceneDocument replacement;
+        const auto generation = f.manager.DocumentGeneration();
+        coordinator.ReplaceDocument(kind,
+            [&]() {
+                trace.push_back(1);
+                f.manager.ReplaceAuthoringDocument(std::move(replacement));
+            },
+            [&](AuthoringDocumentSelectionPolicy policy) {
+                trace.push_back(2);
+                CHECK(f.manager.DocumentGeneration() == generation + 1);
+                CHECK(policy == SelectionPolicyForReplacement(kind));
+                session.Discard();
+            },
+            [&]() {
+                trace.push_back(3);
+                CHECK_FALSE(session.IsOpen());
+                ++cancelCount;
+            });
+        CHECK(trace == std::vector<int>{1, 2, 3});
+        CHECK(cancelCount == 1);
+        CHECK_FALSE(coordinator.LocalDragActive());
+        CHECK(coordinator.InteractionSequence() == 0);
+
+        const UUID g2Target = f.CreateEmpty("ReplacementG2");
+        start.interactionSequence = 502;
+        start.draggedUuids = {g2Target};
+        REQUIRE_FALSE(coordinator.ProcessEvent(start, callbacks).beginRejected);
+        CHECK_FALSE(coordinator.Matches(501));
+        CHECK(coordinator.Matches(502));
+        session.Discard();
+        coordinator.CompleteAfterUiTransition(callbacks.cancelLocal);
+    }
+}
+
+// Reversible RED: reorder Capture output, skip identity validation, or accept
+// a non-finite world and one of these exact fail-atomic checks turns red.
+TEST_CASE("Phase 8 W3 S6-D: CaptureEditorWorldTransforms preserves order and fails atomically")
+{
+    S2Fixture f;
+    const UUID parent = f.CreateEmpty("CaptureParent");
+    const UUID child = f.CreateChild("CaptureChild", parent);
+    auto captured = f.manager.CaptureEditorWorldTransforms({child, parent}, parent);
+    REQUIRE(captured.IsOk());
+    REQUIRE(captured.value.uuids == std::vector<UUID>{child, parent});
+    CHECK(captured.value.primaryIndex == 1);
+    REQUIRE(captured.value.worldMatrices.size() == 2);
+    const auto revision = f.manager.AuthoringRevision();
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    CHECK_FALSE(f.manager.CaptureEditorWorldTransforms({parent, parent}, parent).IsOk());
+    CHECK_FALSE(f.manager.CaptureEditorWorldTransforms({parent}, child).IsOk());
+    const UUID missing = UUID::Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    CHECK_FALSE(f.manager.CaptureEditorWorldTransforms({parent, missing}, parent).IsOk());
+    CHECK(f.manager.AuthoringRevision() == revision);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == schema);
+
+    auto& transform = f.manager.GetECS().registry.get<Transform>(
+        f.manager.FindEntityByUuid(parent));
+    transform.translation.x = std::numeric_limits<float>::infinity();
+    SceneGraph::MarkDirty(f.manager.GetECS().registry,
+        f.manager.FindEntityByUuid(parent));
+    CHECK_FALSE(f.manager.CaptureEditorWorldTransforms({parent}, parent).IsOk());
+    CHECK(f.manager.AuthoringRevision() == revision);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == schema);
+}
+
+// Reversible RED: keying the batch by prefab-local identity instead of stable
+// scene UUID aliases the corresponding members of the two instances. Applying
+// selected parent/child worlds sequentially also makes the two orders diverge.
+TEST_CASE("Phase 8 W3 S6-D: parent child world preview keeps second prefab instance identity in one batch")
+{
+    std::vector<std::vector<glm::vec3>> results;
+    std::vector<std::vector<glm::vec3>> localResults;
+    for (const bool reverse : {false, true})
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir(reverse
+            ? "p8w3_s6d_same_prefab_r" : "p8w3_s6d_same_prefab_f");
+        const auto prefabPath = f.CreatePrefabAsset(dir);
+        const auto [aRootHandle, aChildHandle] = f.InstantiatePrefab(prefabPath);
+        const auto [bRootHandle, bChildHandle] = f.InstantiatePrefab(prefabPath);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID aRoot = f.manager.GetEntityUuid(SceneManager::EntityId{aRootHandle});
+        const UUID aChild = f.manager.GetEntityUuid(SceneManager::EntityId{aChildHandle});
+        const UUID bChild = f.manager.GetEntityUuid(SceneManager::EntityId{bChildHandle});
+        const auto& aRootMember = f.manager.GetECS().registry.get<PrefabMemberComponent>(aRootHandle);
+        const auto& aChildMember = f.manager.GetECS().registry.get<PrefabMemberComponent>(aChildHandle);
+        const auto& bRootMember = f.manager.GetECS().registry.get<PrefabMemberComponent>(bRootHandle);
+        const auto& bChildMember = f.manager.GetECS().registry.get<PrefabMemberComponent>(bChildHandle);
+        CHECK(aRootMember.templateId == bRootMember.templateId);
+        CHECK(aChildMember.templateId == bChildMember.templateId);
+        CHECK(aRootMember.instanceId == aChildMember.instanceId);
+        CHECK(bRootMember.instanceId == bChildMember.instanceId);
+        CHECK(aRootMember.instanceId != bRootMember.instanceId);
+        const std::vector<UUID> canonical{aRoot, aChild, bChild};
+        std::set<UUID> identities(canonical.begin(), canonical.end());
+        REQUIRE(identities.size() == 3);
+        const std::vector<UUID> order = reverse
+            ? std::vector<UUID>{bChild, aChild, aRoot}
+            : canonical;
+        auto snapshot = f.manager.CaptureEditorWorldTransforms(order, order.back());
+        REQUIRE(snapshot.IsOk());
+        std::unordered_map<UUID, glm::vec3> origins;
+        std::unordered_map<UUID, glm::vec3> desiredWorlds;
+        for (std::size_t i = 0; i < snapshot.value.uuids.size(); ++i)
+            origins[snapshot.value.uuids[i]] = glm::vec3(snapshot.value.worldMatrices[i][3]);
+        std::vector<std::pair<UUID, glm::mat4>> desired;
+        for (std::size_t i = 0; i < snapshot.value.uuids.size(); ++i)
+        {
+            auto world = snapshot.value.worldMatrices[i];
+            const auto canonicalIt = std::find(canonical.begin(), canonical.end(),
+                snapshot.value.uuids[i]);
+            REQUIRE(canonicalIt != canonical.end());
+            const auto identityIndex = static_cast<float>(
+                std::distance(canonical.begin(), canonicalIt) + 1);
+            world[3][0] += identityIndex;
+            world[3][1] += identityIndex * 2.0f;
+            desiredWorlds[snapshot.value.uuids[i]] = glm::vec3(world[3]);
+            desired.push_back({snapshot.value.uuids[i], world});
+        }
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, reverse ? 0xB302u : 0xB301u,
+            order);
+        REQUIRE(token);
+        const auto preview = session.PreviewWorlds(f.manager, *token, desired);
+        REQUIRE(preview.effective);
+        CHECK(preview.syncImpact == rt2::core::SyncImpact::Transform);
+        CHECK(std::unordered_set<UUID>(preview.affectedEntities.begin(),
+            preview.affectedEntities.end()) ==
+            std::unordered_set<UUID>{aRoot, aChild, bChild});
+        EditorCommandHistory history;
+        REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *token)
+            .recorded);
+        const auto key = PrefabComponentKeyFor<Transform>::value;
+        CHECK(f.manager.IsOverridden(aRoot, key).value);
+        CHECK(f.manager.IsOverridden(aChild, key).value);
+        CHECK(f.manager.IsOverridden(bChild, key).value);
+        std::vector<glm::vec3> worlds;
+        std::vector<glm::vec3> locals;
+        for (const auto& uuid : canonical)
+        {
+            EditableTRS world;
+            EditableTRS local;
+            REQUIRE(f.manager.GetWorldTransform(SceneManager::EntityId{
+                f.manager.FindEntityByUuid(uuid)}, world));
+            REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{
+                f.manager.FindEntityByUuid(uuid)}, local));
+            CHECK(world.translation == desiredWorlds[uuid]);
+            worlds.push_back(world.translation);
+            locals.push_back(local.translation);
+        }
+        results.push_back(worlds);
+        localResults.push_back(locals);
+        REQUIRE(history.Undo(f.manager).success);
+        for (const auto& uuid : canonical)
+        {
+            EditableTRS world;
+            REQUIRE(f.manager.GetWorldTransform(SceneManager::EntityId{
+                f.manager.FindEntityByUuid(uuid)}, world));
+            CHECK(world.translation == origins[uuid]);
+            CHECK_FALSE(f.manager.IsOverridden(uuid, key).value);
+        }
+        REQUIRE(history.Redo(f.manager).success);
+        for (std::size_t i = 0; i < canonical.size(); ++i)
+        {
+            EditableTRS world;
+            EditableTRS local;
+            REQUIRE(f.manager.GetWorldTransform(SceneManager::EntityId{
+                f.manager.FindEntityByUuid(canonical[i])}, world));
+            REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{
+                f.manager.FindEntityByUuid(canonical[i])}, local));
+            CHECK(world.translation == worlds[i]);
+            CHECK(local.translation == locals[i]);
+            CHECK(f.manager.IsOverridden(canonical[i], key).value);
+        }
+        std::filesystem::remove_all(dir);
+    }
+    REQUIRE(results.size() == 2);
+    REQUIRE(localResults.size() == 2);
+    CHECK(results[0] == results[1]);
+    CHECK(localResults[0] == localResults[1]);
+    CHECK(results[0][0] != results[0][2]);
+    CHECK(results[0][1] != results[0][2]);
+    CHECK(localResults[0][1] != localResults[0][2]);
+}
+
+// Reversible RED: keep removed B in CompensationPending's retry carrier set,
+// or collapse the surviving/no-carrier decisions, and one physical order
+// fails to restore exact values/markers/schema.
+TEST_CASE("Phase 8 W3 S6-D: removed and surviving carrier Retry reconcile in both physical orders")
+{
+    const auto key = PrefabComponentKeyFor<Transform>::value;
+    for (const bool survivingPrefabCarrier : {false, true})
+    for (const bool reverse : {false, true})
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir(survivingPrefabCarrier
+            ? (reverse ? "p8w3_s6d_retry_survive_r" : "p8w3_s6d_retry_survive_f")
+            : (reverse ? "p8w3_s6d_retry_removed_r" : "p8w3_s6d_retry_removed_f"));
+        const auto [aHandle, bHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID aPrefab = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+        const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+        const UUID a = survivingPrefabCarrier ? aPrefab : f.CreateEmpty("OrdinaryRetry");
+        const auto aLiveHandle = f.manager.FindEntityByUuid(a);
+        EditableTRS aBefore, bBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aLiveHandle}, aBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+        EditableTRS aAfter = aBefore;
+        EditableTRS bAfter = bBefore;
+        aAfter.translation.x += 4.0f;
+        bAfter.translation.y += 5.0f;
+        const std::vector<UUID> order = reverse
+            ? std::vector<UUID>{b, a} : std::vector<UUID>{a, b};
+        const std::vector<std::pair<UUID, EditableTRS>> values = reverse
+            ? std::vector<std::pair<UUID, EditableTRS>>{{b, bAfter}, {a, aAfter}}
+            : std::vector<std::pair<UUID, EditableTRS>>{{a, aAfter}, {b, bAfter}};
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, reverse ? 0xB402u : 0xB401u,
+            order);
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token, values).effective);
+        EditorCommandHistory history;
+        history.FailNextRecordAppliedForTest();
+        session.FailNextCompensationForTest();
+        REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *token)
+            .result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(f.manager.RemoveSubtrees({b}).success);
+        const auto retry = FinalizeTransformPreviewSession(history, f.manager,
+            session, *token);
+        INFO(retry.lastError.error.detail);
+        REQUIRE(retry.result == PreviewSessionCloseOutcome::Result::Closed);
+        EditableTRS restored;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aLiveHandle}, restored));
+        CHECK(restored.translation == aBefore.translation);
+        if (survivingPrefabCarrier)
+            CHECK_FALSE(f.manager.IsOverridden(a, key).value);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == (survivingPrefabCarrier ? 5 : SceneSerializer::SchemaVersion));
+        std::filesystem::remove_all(dir);
+    }
+}
+
+// S6-D re-review P1: a failed RecordApplied followed by failed compensation
+// is a distinct recovery phase. Retry must replay compensation against the
+// post-cleanup carrier state; it must never record again or recreate a cleaned
+// marker. Both the surviving-carrier and genuine no-carrier cleanup cases are
+// exercised end-to-end.
+//
+// Reversible RED: route CompensationPending through RecordApplied, or omit the
+// phase assignment after injected compensation failure. Retry either remains
+// pending/records history or resurrects B, failing the exact state assertions.
+TEST_CASE("Phase 8 W3 S6-D: compensation-pending Retry preserves surviving and no-carrier cleanup state")
+{
+    for (const bool survivingCarrier : { true, false })
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir(survivingCarrier
+            ? "p8w3_s6d_comp_pending_carrier"
+            : "p8w3_s6d_comp_pending_no_carrier");
+        const auto [prefabAHandle, prefabBHandle] = f.MakeInstance(dir);
+		f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID prefabA = f.manager.GetEntityUuid(
+            SceneManager::EntityId{prefabAHandle});
+        const UUID prefabB = f.manager.GetEntityUuid(
+            SceneManager::EntityId{prefabBHandle});
+        const UUID effective = survivingCarrier ? prefabA
+            : f.CreateEmpty("OrdinaryCarrierlessSurvivor");
+        const auto effectiveHandle = f.manager.FindEntityByUuid(effective);
+        EditableTRS effectiveBefore, bBefore;
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{effectiveHandle}, effectiveBefore));
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{prefabBHandle}, bBefore));
+        EditableTRS effectiveAfter = effectiveBefore;
+        EditableTRS bTransient = bBefore;
+        effectiveAfter.translation.x += 8.0f;
+        bTransient.translation.y += 3.0f;
+
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, survivingCarrier
+            ? 0xC001u : 0xC002u, { effective, prefabB });
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{effective, effectiveAfter}, {prefabB, bTransient}}).effective);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{effective, effectiveAfter}, {prefabB, bBefore}}).effective);
+        const auto revisionBeforeClose = f.manager.AuthoringRevision();
+
+        EditorCommandHistory history;
+        history.FailNextRecordAppliedForTest();
+        session.FailNextCompensationForTest();
+        const auto failed = FinalizeTransformPreviewSession(history, f.manager,
+            session, *token);
+        REQUIRE(failed.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(session.IsOpen());
+        CHECK(session.GetClosePhase()
+            == TransformPreviewSession::ClosePhase::CompensationPending);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(f.manager.AuthoringRevision() == revisionBeforeClose + 1);
+        CHECK(failed.needsSyncApply);
+        CHECK_FALSE(f.manager.IsOverridden(prefabB,
+            PrefabComponentKeyFor<Transform>::value).value);
+        CHECK(f.manager.IsOverridden(effective,
+            PrefabComponentKeyFor<Transform>::value).IsOk()
+            == survivingCarrier);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == (survivingCarrier ? SceneSerializer::SchemaVersion : 5));
+        EditableTRS liveEffective;
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{effectiveHandle}, liveEffective));
+        CHECK(liveEffective.translation == effectiveAfter.translation);
+
+        // Explicit Retry still enters Finalize, but the stored close phase
+        // redirects it to compensation and closes without RecordApplied.
+        const auto retry = FinalizeTransformPreviewSession(history, f.manager,
+            session, *token);
+        REQUIRE(retry.result == PreviewSessionCloseOutcome::Result::Closed);
+        CHECK(retry.needsSyncApply);
+        CHECK_FALSE(session.IsOpen());
+        CHECK_FALSE(history.CanUndo());
+        CHECK(f.manager.AuthoringRevision() == revisionBeforeClose + 2);
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{effectiveHandle}, liveEffective));
+        CHECK(liveEffective.translation == effectiveBefore.translation);
+        CHECK_FALSE(f.manager.IsOverridden(prefabB,
+            PrefabComponentKeyFor<Transform>::value).value);
+        if (survivingCarrier)
+            CHECK_FALSE(f.manager.IsOverridden(effective,
+                PrefabComponentKeyFor<Transform>::value).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+        std::filesystem::remove_all(dir);
+    }
+}
+
+// Matrix group: world staging must remain a whole-session batch, including a
+// selected parent+child, and every malformed target must fail before any
+// value/marker/schema/revision/history churn.
+// Reversible RED: stage members sequentially against the already-mutated
+// parent, or bypass StageWorldTransforms in PreviewWorlds; forward/reverse
+// locals diverge or one of the fail-atomic probes mutates the scene.
+TEST_CASE("Phase 8 W3 S6-D: parent-child world session is order independent and malformed batches are fail atomic")
+{
+    struct Result
+    {
+        EditableTRS parentLocal;
+        EditableTRS childLocal;
+        EditableTRS parentWorld;
+        EditableTRS childWorld;
+    } results[2];
+
+    for (int reverse = 0; reverse < 2; ++reverse)
+    {
+        S2Fixture f;
+        const UUID parent = f.CreateEmpty("Parent");
+        const UUID child = f.CreateChild("Child", parent);
+        const auto parentHandle = f.manager.FindEntityByUuid(parent);
+        const auto childHandle = f.manager.FindEntityByUuid(child);
+        EditableTRS parentLocal, childLocal, parentWorld, childWorld;
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{parentHandle}, parentLocal));
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{childHandle}, childLocal));
+        parentLocal.translation = { 1.0f, 0.0f, 0.0f };
+        childLocal.translation = { 0.0f, 2.0f, 0.0f };
+        REQUIRE(f.manager.SetLocalTransformStates(
+            {{parent, parentLocal}, {child, childLocal}}).success);
+        REQUIRE(f.manager.GetWorldTransform(
+            SceneManager::EntityId{parentHandle}, parentWorld));
+        REQUIRE(f.manager.GetWorldTransform(
+            SceneManager::EntityId{childHandle}, childWorld));
+        EditableTRS desiredParent = parentWorld;
+        EditableTRS desiredChild = childWorld;
+        desiredParent.translation.x += 5.0f;
+        desiredChild.translation.y += 7.0f;
+
+        const std::vector<UUID> order = reverse
+            ? std::vector<UUID>{child, parent}
+            : std::vector<UUID>{parent, child};
+        const std::vector<std::pair<UUID, glm::mat4>> worlds = reverse
+            ? std::vector<std::pair<UUID, glm::mat4>>{
+                {child, desiredChild.Matrix()}, {parent, desiredParent.Matrix()} }
+            : std::vector<std::pair<UUID, glm::mat4>>{
+                {parent, desiredParent.Matrix()}, {child, desiredChild.Matrix()} };
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD100u + reverse, order);
+        REQUIRE(token);
+
+        const auto revision = f.manager.AuthoringRevision();
+        const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+        EditableTRS invalid = parentLocal;
+        invalid.translation.x = std::numeric_limits<float>::infinity();
+        CHECK_FALSE(session.PreviewLocals(f.manager, *token,
+            reverse ? std::vector<std::pair<UUID, EditableTRS>>{
+                {child, childLocal}, {parent, invalid} }
+                : std::vector<std::pair<UUID, EditableTRS>>{
+                {parent, invalid}, {child, childLocal} }).success);
+        CHECK_FALSE(session.PreviewLocals(f.manager, *token,
+            {{parent, parentLocal}, {parent, parentLocal}}).success);
+        CHECK_FALSE(session.PreviewLocals(f.manager, *token,
+            {{parent, parentLocal}, {UUID{}, childLocal}}).success);
+        glm::mat4 singular(0.0f);
+        CHECK_FALSE(session.PreviewWorlds(f.manager, *token,
+            reverse ? std::vector<std::pair<UUID, glm::mat4>>{
+                {child, singular}, {parent, desiredParent.Matrix()} }
+                : std::vector<std::pair<UUID, glm::mat4>>{
+                {parent, desiredParent.Matrix()}, {child, singular} }).success);
+        glm::mat4 nonFinite = desiredParent.Matrix();
+        nonFinite[3][0] = std::numeric_limits<float>::infinity();
+        CHECK_FALSE(session.PreviewWorlds(f.manager, *token,
+            {{parent, nonFinite}, {child, desiredChild.Matrix()}}).success);
+        const UUID missingWorld = UUID::Parse(
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+        CHECK_FALSE(session.PreviewWorlds(f.manager, *token,
+            {{parent, desiredParent.Matrix()}, {missingWorld, desiredChild.Matrix()}})
+            .success);
+        glm::mat4 sheared = desiredChild.Matrix();
+        sheared[1][0] = 0.5f;
+        CHECK_FALSE(session.PreviewWorlds(f.manager, *token,
+            reverse ? std::vector<std::pair<UUID, glm::mat4>>{
+                {child, sheared}, {parent, desiredParent.Matrix()} }
+                : std::vector<std::pair<UUID, glm::mat4>>{
+                {parent, desiredParent.Matrix()}, {child, sheared} }).success);
+        CHECK(f.manager.AuthoringRevision() == revision);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == schema);
+        CHECK_FALSE(session.HadEffectiveFrame());
+
+        const auto preview = session.PreviewWorlds(f.manager, *token, worlds);
+        REQUIRE(preview.success);
+        REQUIRE(preview.effective);
+        CHECK(preview.syncImpact == rt2::core::SyncImpact::Transform);
+        CHECK(f.manager.AuthoringRevision() == revision + 1);
+        EditorCommandHistory history;
+        const auto close = FinalizeTransformPreviewSession(history, f.manager,
+            session, *token);
+        REQUIRE(close.recorded);
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{parentHandle}, results[reverse].parentLocal));
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{childHandle}, results[reverse].childLocal));
+        REQUIRE(f.manager.GetWorldTransform(
+            SceneManager::EntityId{parentHandle}, results[reverse].parentWorld));
+        REQUIRE(f.manager.GetWorldTransform(
+            SceneManager::EntityId{childHandle}, results[reverse].childWorld));
+        REQUIRE(history.Undo(f.manager).success);
+        EditableTRS restoredParent, restoredChild;
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{parentHandle}, restoredParent));
+        REQUIRE(f.manager.GetLocalTransform(
+            SceneManager::EntityId{childHandle}, restoredChild));
+        CHECK(restoredParent.translation == parentLocal.translation);
+        CHECK(restoredChild.translation == childLocal.translation);
+    }
+    CHECK(results[0].parentLocal.translation == results[1].parentLocal.translation);
+    CHECK(results[0].childLocal.translation == results[1].childLocal.translation);
+    CHECK(results[0].parentWorld.translation == results[1].parentWorld.translation);
+    CHECK(results[0].childWorld.translation == results[1].childWorld.translation);
+}
+
+// Matrix group: durable UUID association must survive physical input order,
+// mixed ordinary/fresh/pre-existing members, and two instances of one prefab.
+// Reversible RED: associate markers by transaction/registry position or by
+// templateId; reversing the list swaps a value/marker and breaks these exact
+// per-UUID assertions.
+TEST_CASE("Phase 8 W3 S6-D: mixed two-instance UUID aggregation survives both physical orders and replay")
+{
+    for (const bool reverse : { false, true })
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir(reverse
+            ? "p8w3_s6d_instances_same_r" : "p8w3_s6d_instances_same_f");
+        const auto prefabPath = f.CreatePrefabAsset(dir);
+        const auto [aHandle, aChild] = f.InstantiatePrefab(prefabPath);
+        const auto [bHandle, bChild] = f.InstantiatePrefab(prefabPath);
+        const auto& aMember = f.manager.GetECS().registry.get<PrefabMemberComponent>(aHandle);
+        const auto& bMember = f.manager.GetECS().registry.get<PrefabMemberComponent>(bHandle);
+        CHECK(aMember.templateId == bMember.templateId);
+        CHECK(aMember.instanceId != bMember.instanceId);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID ordinary = f.CreateEmpty("Ordinary");
+        const UUID fresh = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+        const UUID existing = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+        const auto key = PrefabComponentKeyFor<Transform>::value;
+        auto marker = f.manager.PreparePrefabMarkerEdits({
+            { existing, key, false, true },
+        }, PrefabMarkerDirection::After, 5, SceneSerializer::SchemaVersion);
+        REQUIRE(marker.IsOk());
+        REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(marker.value)).anyStateChange);
+
+        EditableTRS ordinaryBefore, freshBefore, existingBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{
+            f.manager.FindEntityByUuid(ordinary)}, ordinaryBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, freshBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, existingBefore));
+        EditableTRS ordinaryAfter = ordinaryBefore;
+        EditableTRS freshAfter = freshBefore;
+        EditableTRS existingAfter = existingBefore;
+        ordinaryAfter.translation.x += 1.0f;
+        freshAfter.translation.y += 2.0f;
+        existingAfter.translation.z += 3.0f;
+        const std::vector<UUID> order = reverse
+            ? std::vector<UUID>{existing, fresh, ordinary}
+            : std::vector<UUID>{ordinary, fresh, existing};
+        const std::vector<std::pair<UUID, EditableTRS>> targets = reverse
+            ? std::vector<std::pair<UUID, EditableTRS>>{
+                {existing, existingAfter}, {fresh, freshAfter}, {ordinary, ordinaryAfter} }
+            : std::vector<std::pair<UUID, EditableTRS>>{
+                {ordinary, ordinaryAfter}, {fresh, freshAfter}, {existing, existingAfter} };
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, reverse ? 0xD201u : 0xD200u, order);
+        REQUIRE(token);
+        const auto preview = session.PreviewLocals(f.manager, *token, targets);
+        REQUIRE(preview.effective);
+        CHECK(preview.syncImpact == rt2::core::SyncImpact::Transform);
+        CHECK(std::unordered_set<UUID>(preview.affectedEntities.begin(),
+            preview.affectedEntities.end()) ==
+            std::unordered_set<UUID>{ordinary, fresh, existing});
+        CHECK(f.manager.IsOverridden(fresh, key).value);
+        CHECK(f.manager.IsOverridden(existing, key).value);
+
+        EditorCommandHistory history;
+        REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *token)
+            .recorded);
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK_FALSE(f.manager.IsOverridden(fresh, key).value);
+        CHECK(f.manager.IsOverridden(existing, key).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        REQUIRE(history.Redo(f.manager).success);
+        EditableTRS ordinaryLive, freshLive, existingLive;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{
+            f.manager.FindEntityByUuid(ordinary)}, ordinaryLive));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, freshLive));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, existingLive));
+        CHECK(ordinaryLive.translation == ordinaryAfter.translation);
+        CHECK(freshLive.translation == freshAfter.translation);
+        CHECK(existingLive.translation == existingAfter.translation);
+        std::filesystem::remove_all(dir);
+    }
+}
+
+// Matrix group: Transform is the fifth reducer kind, not a side channel.
+// Physical slot order is history order, each effective preview accounts for
+// one sync while pure RecordApplied closes account for none, and an already
+// pending Transform quarantines every slot without an implicit retry.
+// Reversible RED: omit the Transform slot arm or ignore anyRecoveryPending;
+// order/owner/history assertions or the quarantine zero-churn assertions fail.
+TEST_CASE("Phase 8 W3 S6-D: fifth-kind Transform-Light ordering sync and pending quarantine")
+{
+    for (const bool transformFirst : { true, false })
+    {
+        S2Fixture f;
+        const UUID transformTarget = f.CreateEmpty("TransformTarget");
+        const UUID lightTarget = f.CreateEmpty("LightTarget");
+        const auto transformHandle = f.manager.FindEntityByUuid(transformTarget);
+        const auto lightHandle = f.manager.FindEntityByUuid(lightTarget);
+        auto& reg = f.manager.GetECS().registry;
+        reg.emplace_or_replace<LightComponent>(lightHandle, LightComponent{});
+        EditableTRS transformBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{transformHandle},
+            transformBefore));
+        EditableTRS transformAfter = transformBefore;
+        transformAfter.translation.x += 9.0f;
+        const LightComponent lightBefore = reg.get<LightComponent>(lightHandle);
+        LightComponent lightAfter = lightBefore;
+        lightAfter.intensity += 4.0f;
+
+        TransformPreviewSession transform;
+        const auto token = transform.Begin(f.manager,
+            transformFirst ? 0xD301u : 0xD302u, {transformTarget});
+        REQUIRE(token);
+        int syncCount = 0;
+        const auto transformPreview = PublishTransformPreviewAndNotify(
+            [&]() { return transform.PreviewLocals(f.manager, *token,
+                {{transformTarget, transformAfter}}); },
+            [&]() { ++syncCount; });
+        REQUIRE(transformPreview.effective);
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, lightTarget,
+            PrefabValueKind::LightProperties,
+            PrefabComponentKeyFor<LightComponent>::value, lightBefore,
+            [&](const UUID& uuid, const PrefabValuePayload& raw) {
+                const auto entity = f.manager.FindEntityByUuid(uuid);
+                if (entity == entt::null || !reg.all_of<LightComponent>(entity))
+                    return raw;
+                return PrefabValuePayload{reg.get<LightComponent>(entity)};
+            }));
+        const auto lightPreview = light.Preview(f.manager,
+            PrefabValuePayload{lightAfter});
+        REQUIRE(lightPreview.effective);
+        REQUIRE(RouteEffectiveTransformPreviewNotification(lightPreview,
+            [&]() { ++syncCount; }));
+        CHECK(syncCount == 2);
+
+        EditorCommandHistory history;
+        unsigned int transformOwner = 31;
+        unsigned int lightOwner = 32;
+        PreviewSessionSlot slots[2];
+        if (transformFirst)
+        {
+            slots[0] = { PreviewSessionKind::Transform, nullptr, &transformOwner,
+                true, &transform, &*token };
+            slots[1] = { PreviewSessionKind::Light, &light, &lightOwner, true };
+        }
+        else
+        {
+            slots[0] = { PreviewSessionKind::Light, &light, &lightOwner, true };
+            slots[1] = { PreviewSessionKind::Transform, nullptr, &transformOwner,
+                true, &transform, &*token };
+        }
+        PreviewSessionsBeforeActionResult closed;
+        REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slots, 2,
+            closed, false));
+        REQUIRE(closed.slotCount == 2);
+        CHECK_FALSE(closed.slots[0].outcome.needsSyncApply);
+        CHECK_FALSE(closed.slots[1].outcome.needsSyncApply);
+		RouteTransformCloseSync(closed.slots[0].outcome,
+			[&](const PreviewSessionCloseOutcome&) { ++syncCount; });
+		RouteTransformCloseSync(closed.slots[1].outcome,
+			[&](const PreviewSessionCloseOutcome&) { ++syncCount; });
+        CHECK(syncCount == 2);
+        CHECK(transformOwner == 0);
+        CHECK(lightOwner == 0);
+
+        REQUIRE(history.Undo(f.manager).success);
+        EditableTRS transformLive;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{transformHandle},
+            transformLive));
+        if (transformFirst)
+        {
+            CHECK(transformLive.translation == transformAfter.translation);
+            CHECK(reg.get<LightComponent>(lightHandle).intensity
+                == doctest::Approx(lightBefore.intensity));
+        }
+        else
+        {
+            CHECK(transformLive.translation == transformBefore.translation);
+            CHECK(reg.get<LightComponent>(lightHandle).intensity
+                == doctest::Approx(lightAfter.intensity));
+        }
+        REQUIRE(history.Undo(f.manager).success);
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{transformHandle},
+            transformLive));
+        CHECK(transformLive.translation == transformBefore.translation);
+        CHECK(reg.get<LightComponent>(lightHandle).intensity
+            == doctest::Approx(lightBefore.intensity));
+    }
+
+    S2Fixture f;
+    const UUID target = f.CreateEmpty("PendingTransform");
+    EditableTRS before;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{
+        f.manager.FindEntityByUuid(target)}, before));
+    EditableTRS after = before;
+    after.translation.z += 6.0f;
+    TransformPreviewSession pending;
+    const auto token = pending.Begin(f.manager, 0xD303u, {target});
+    REQUIRE(token);
+    REQUIRE(pending.PreviewLocals(f.manager, *token, {{target, after}}).effective);
+    EditorCommandHistory history;
+    history.FailNextRecordAppliedForTest();
+    pending.FailNextCompensationForTest();
+    REQUIRE(FinalizeTransformPreviewSession(history, f.manager, pending, *token)
+        .result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    const auto revision = f.manager.AuthoringRevision();
+    unsigned int owner = 91;
+    PreviewSessionSlot slot = { PreviewSessionKind::Transform, nullptr, &owner,
+        true, &pending, &*token };
+    PreviewSessionsBeforeActionResult quarantined;
+    CHECK_FALSE(ClosePreviewSessionsAndAdmit(f.manager, history, &slot, 1,
+        quarantined, true));
+    CHECK(quarantined.slotCount == 0);
+    CHECK(owner == 91);
+    CHECK(pending.IsOpen());
+    CHECK(pending.GetClosePhase()
+        == TransformPreviewSession::ClosePhase::CompensationPending);
+    CHECK(f.manager.AuthoringRevision() == revision);
+    CHECK_FALSE(history.CanUndo());
+    REQUIRE(FinalizeTransformPreviewSession(history, f.manager, pending, *token)
+        .result == PreviewSessionCloseOutcome::Result::Closed);
+}
+
+// Matrix group: the close partition distinguishes fresh from pre-existing
+// markers, full return-to-start, and all three bounded close failures. It also
+// proves S5 rejects a downgrade while an unrelated override survives.
+// Reversible RED: clean every net-zero marker indiscriminately, request v5
+// without a surviving marker transition, or skip cleanup retry; one of the
+// marker/schema/history assertions below fails.
+TEST_CASE("Phase 8 W3 S6-D: fresh pre-existing net-zero and cleanup Retry obey the carrier matrix")
+{
+    const auto key = PrefabComponentKeyFor<Transform>::value;
+
+    // Fresh A effective + fresh B net-zero. A bounded cleanup failure leaves
+    // the live preview untouched; Retry cleans B, records A, and Undo/Redo
+    // transports value+marker+schema exactly.
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir("p8w3_s6d_cleanup_retry");
+        const auto [aHandle, bHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID a = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+        const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+        EditableTRS aBefore, bBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+        EditableTRS aAfter = aBefore;
+        EditableTRS bTransient = bBefore;
+        aAfter.translation.x += 2.0f;
+        bTransient.translation.y += 3.0f;
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD401u, {a, b});
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{a, aAfter}, {b, bTransient}}).effective);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{a, aAfter}, {b, bBefore}}).effective);
+        const auto revision = f.manager.AuthoringRevision();
+        EditorCommandHistory history;
+        session.FailNextCleanupForTest();
+        const auto failed = FinalizeTransformPreviewSession(history, f.manager,
+            session, *token);
+        REQUIRE(failed.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        CHECK(session.GetClosePhase()
+            == TransformPreviewSession::ClosePhase::LivePreview);
+        CHECK(f.manager.AuthoringRevision() == revision);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        CHECK(f.manager.IsOverridden(b, key).value);
+        CHECK_FALSE(history.CanUndo());
+
+        const auto retry = FinalizeTransformPreviewSession(history, f.manager,
+            session, *token);
+        REQUIRE(retry.recorded);
+        CHECK(retry.needsSyncApply);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        CHECK_FALSE(f.manager.IsOverridden(b, key).value);
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK_FALSE(f.manager.IsOverridden(a, key).value);
+        CHECK_FALSE(f.manager.IsOverridden(b, key).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+        REQUIRE(history.Redo(f.manager).success);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        CHECK_FALSE(f.manager.IsOverridden(b, key).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        std::filesystem::remove_all(dir);
+    }
+
+    // B's marker predates the gesture. Returning B's value to its origin must
+    // retain that marker, and A's Undo must not request a v6->v5 downgrade.
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir("p8w3_s6d_preexisting_netzero");
+        const auto [aHandle, bHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID a = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+        const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+        auto addExisting = f.manager.PreparePrefabMarkerEdits({
+            { b, key, false, true },
+        }, PrefabMarkerDirection::After, 5, SceneSerializer::SchemaVersion);
+        REQUIRE(addExisting.IsOk());
+        REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(addExisting.value))
+            .anyStateChange);
+        EditableTRS aBefore, bBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+        EditableTRS aAfter = aBefore;
+        EditableTRS bTransient = bBefore;
+        aAfter.translation.x += 4.0f;
+        bTransient.translation.y += 5.0f;
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD402u, {a, b});
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{a, aAfter}, {b, bTransient}}).effective);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{a, aAfter}, {b, bBefore}}).effective);
+        EditorCommandHistory history;
+        REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *token)
+            .recorded);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        CHECK(f.manager.IsOverridden(b, key).value);
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK_FALSE(f.manager.IsOverridden(a, key).value);
+        CHECK(f.manager.IsOverridden(b, key).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        REQUIRE(history.Redo(f.manager).success);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        CHECK(f.manager.IsOverridden(b, key).value);
+        std::filesystem::remove_all(dir);
+    }
+
+    // Full return-to-start cleans every gesture-created marker, legally
+    // restores v5 through the surviving transitions, and records no history.
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir("p8w3_s6d_full_return");
+        const auto [aHandle, bHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID a = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+        const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+        EditableTRS aBefore, bBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+        EditableTRS aTransient = aBefore;
+        EditableTRS bTransient = bBefore;
+        aTransient.translation.x += 7.0f;
+        bTransient.translation.y += 8.0f;
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD403u, {a, b});
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{a, aTransient}, {b, bTransient}}).effective);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{a, aBefore}, {b, bBefore}}).effective);
+        EditorCommandHistory history;
+        const auto close = FinalizeTransformPreviewSession(history, f.manager,
+            session, *token);
+        REQUIRE(close.result == PreviewSessionCloseOutcome::Result::Closed);
+        CHECK_FALSE(close.recorded);
+        CHECK(close.needsSyncApply);
+        CHECK_FALSE(history.CanUndo());
+        CHECK_FALSE(f.manager.IsOverridden(a, key).value);
+        CHECK_FALSE(f.manager.IsOverridden(b, key).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+        std::filesystem::remove_all(dir);
+    }
+
+    // An unrelated surviving override makes the requested v5 restore illegal.
+    // The failure is pending and zero-churn; removing that unrelated marker
+    // lets explicit Retry compensate the transform normally.
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir("p8w3_s6d_unrelated_downgrade");
+        const auto [aHandle, bHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID a = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+        const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+        EditableTRS before;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, before));
+        EditableTRS after = before;
+        after.translation.z += 2.0f;
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD404u, {a});
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token, {{a, after}}).effective);
+        const auto nameKey = PrefabComponentKeyFor<NameComponent>::value;
+        auto unrelated = f.manager.PreparePrefabMarkerEdits({
+            { b, nameKey, false, true },
+        }, PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+            SceneSerializer::SchemaVersion);
+        REQUIRE(unrelated.IsOk());
+        REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(unrelated.value))
+            .anyStateChange);
+        const auto revision = f.manager.AuthoringRevision();
+        const auto failed = RestoreTransformPreviewSession(f.manager, session, *token);
+        REQUIRE(failed.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        CHECK(session.IsOpen());
+        CHECK(f.manager.AuthoringRevision() == revision);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        CHECK(f.manager.IsOverridden(b, nameKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+
+        auto removeUnrelated = f.manager.PreparePrefabMarkerEdits({
+            { b, nameKey, true, false },
+        }, PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+            SceneSerializer::SchemaVersion);
+        REQUIRE(removeUnrelated.IsOk());
+        REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(removeUnrelated.value))
+            .anyStateChange);
+        REQUIRE(RestoreTransformPreviewSession(f.manager, session, *token)
+            .result == PreviewSessionCloseOutcome::Result::Closed);
+        CHECK_FALSE(f.manager.IsOverridden(a, key).value);
+        CHECK_FALSE(f.manager.IsOverridden(b, nameKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+        std::filesystem::remove_all(dir);
+    }
+}
+
+// Matrix group: member removal is reconciled by durable UUID. A removed sole
+// carrier rebases surviving ordinary endpoints to live/live schema for both
+// Finalize and Restore; a surviving carrier retains the legal v5/v6 replay.
+// Reversible RED: keep the removed member in the explicit capture or apply one
+// carrier rule to both branches; Finalize/Restore/Undo/Redo fails or requests
+// the wrong schema.
+TEST_CASE("Phase 8 W3 S6-D: removed and surviving carriers share Finalize Restore Undo Redo policy")
+{
+    const auto key = PrefabComponentKeyFor<Transform>::value;
+
+    // Removed sole prefab carrier + surviving ordinary value: Finalize and
+    // replay are v6/v6 value-only even though the gesture originated at v5.
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir("p8w3_s6d_removed_finalize");
+        const auto [prefabHandle, childHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID prefab = f.manager.GetEntityUuid(
+            SceneManager::EntityId{prefabHandle});
+        const UUID ordinary = f.CreateEmpty("OrdinarySurvivor");
+        const auto ordinaryHandle = f.manager.FindEntityByUuid(ordinary);
+        EditableTRS ordinaryBefore, prefabBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ordinaryHandle},
+            ordinaryBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{prefabHandle},
+            prefabBefore));
+        EditableTRS ordinaryAfter = ordinaryBefore;
+        EditableTRS prefabAfter = prefabBefore;
+        ordinaryAfter.translation.x += 3.0f;
+        prefabAfter.translation.y += 4.0f;
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD501u, {ordinary, prefab});
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{ordinary, ordinaryAfter}, {prefab, prefabAfter}}).effective);
+        REQUIRE(f.manager.RemoveSubtrees({prefab}).success);
+        EditorCommandHistory history;
+        REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *token)
+            .recorded);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        REQUIRE(history.Undo(f.manager).success);
+        EditableTRS ordinaryLive;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ordinaryHandle},
+            ordinaryLive));
+        CHECK(ordinaryLive.translation == ordinaryBefore.translation);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        REQUIRE(history.Redo(f.manager).success);
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ordinaryHandle},
+            ordinaryLive));
+        CHECK(ordinaryLive.translation == ordinaryAfter.translation);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        std::filesystem::remove_all(dir);
+    }
+
+    // The same removed-carrier decision is used by Restore/Escape.
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir("p8w3_s6d_removed_restore");
+        const auto [prefabHandle, childHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID prefab = f.manager.GetEntityUuid(
+            SceneManager::EntityId{prefabHandle});
+        const UUID ordinary = f.CreateEmpty("OrdinaryRestoreSurvivor");
+        const auto ordinaryHandle = f.manager.FindEntityByUuid(ordinary);
+        EditableTRS ordinaryBefore, prefabBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ordinaryHandle},
+            ordinaryBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{prefabHandle},
+            prefabBefore));
+        EditableTRS ordinaryAfter = ordinaryBefore;
+        EditableTRS prefabAfter = prefabBefore;
+        ordinaryAfter.translation.x += 5.0f;
+        prefabAfter.translation.z += 6.0f;
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD502u, {ordinary, prefab});
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{ordinary, ordinaryAfter}, {prefab, prefabAfter}}).effective);
+        REQUIRE(f.manager.RemoveSubtrees({prefab}).success);
+        const auto restore = RestoreTransformPreviewSession(f.manager, session, *token);
+        REQUIRE(restore.result == PreviewSessionCloseOutcome::Result::Closed);
+        CHECK(restore.needsSyncApply);
+        EditableTRS ordinaryLive;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ordinaryHandle},
+            ordinaryLive));
+        CHECK(ordinaryLive.translation == ordinaryBefore.translation);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        std::filesystem::remove_all(dir);
+    }
+
+    // A survives with its real fresh marker transition after B is removed, so
+    // its history entry legally retains v5/v6 endpoints.
+    {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir("p8w3_s6d_surviving_carrier");
+        const auto [aHandle, bHandle] = f.MakeInstance(dir);
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        const UUID a = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+        const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+        EditableTRS aBefore, bBefore;
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aBefore));
+        REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+        EditableTRS aAfter = aBefore;
+        EditableTRS bAfter = bBefore;
+        aAfter.translation.x += 7.0f;
+        bAfter.translation.y += 8.0f;
+        TransformPreviewSession session;
+        const auto token = session.Begin(f.manager, 0xD503u, {a, b});
+        REQUIRE(token);
+        REQUIRE(session.PreviewLocals(f.manager, *token,
+            {{a, aAfter}, {b, bAfter}}).effective);
+        REQUIRE(f.manager.RemoveSubtrees({b}).success);
+        EditorCommandHistory history;
+        REQUIRE(FinalizeTransformPreviewSession(history, f.manager, session, *token)
+            .recorded);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK_FALSE(f.manager.IsOverridden(a, key).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+        REQUIRE(history.Redo(f.manager).success);
+        CHECK(f.manager.IsOverridden(a, key).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+        std::filesystem::remove_all(dir);
+    }
+}
+
+// S6-D smoke discrimination: TransformCommand is a composite multi-member
+// replay object, while a live transform session uses one opaque token and a
+// UUID-keyed batch for both members.
+TEST_CASE("Phase 8 W3 S6-D: multi-member transform composite and token session")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6d_transform_smoke");
+    const auto [aHandle, bHandle] = f.MakeInstance(dir);
+    const UUID a = f.manager.GetEntityUuid(SceneManager::EntityId{aHandle});
+    const UUID b = f.manager.GetEntityUuid(SceneManager::EntityId{bHandle});
+    auto& registry = f.manager.GetECS().registry;
+    EditableTRS aBefore, bBefore;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aBefore));
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+    EditableTRS aAfter = aBefore;
+    EditableTRS bAfter = bBefore;
+    aAfter.translation.x += 2.0f;
+    bAfter.translation.y += 3.0f;
+
+    EditorCommandHistory history;
+    auto command = MakeTransformCommandIfEffective(
+        std::vector<TransformTriple>{{a, aBefore, aAfter}, {b, bBefore, bAfter}});
+    REQUIRE(command);
+    REQUIRE(history.Execute(std::move(command), f.manager).success);
+    CHECK(registry.get<Transform>(aHandle).translation == aAfter.translation);
+    CHECK(registry.get<Transform>(bHandle).translation == bAfter.translation);
+    const auto duplicateUndo = history.Undo(f.manager);
+    INFO(duplicateUndo.error.Format());
+    REQUIRE(duplicateUndo.success);
+    CHECK(registry.get<Transform>(aHandle).translation == aBefore.translation);
+    CHECK(registry.get<Transform>(bHandle).translation == bBefore.translation);
+
+    TransformPreviewSession session;
+    const auto token = session.Begin(f.manager, 0xA11CEu, {a, b});
+    REQUIRE(token.has_value());
+    auto aPreview = aBefore;
+    auto bPreview = bBefore;
+    aPreview.translation.z += 1.0f;
+    bPreview.translation.z += 1.5f;
+    const auto preview = session.PreviewLocals(f.manager, *token,
+        {{a, aPreview}, {b, bPreview}});
+    REQUIRE(preview.success);
+    REQUIRE(preview.effective);
+    CHECK(session.Members().size() == 2);
+    const auto closed = FinalizeTransformPreviewSession(history, f.manager,
+        session, *token);
+    REQUIRE(closed.result == PreviewSessionCloseOutcome::Result::Closed);
+    const auto sessionUndo = history.Undo(f.manager);
+    REQUIRE(sessionUndo.success);
+    CHECK(registry.get<Transform>(aHandle).translation == aBefore.translation);
+    CHECK(registry.get<Transform>(bHandle).translation == bBefore.translation);
+
+    // A effective + B net-zero: B's fresh marker is cleaned during close,
+    // while A remains the sole recorded composite member.
+    TransformPreviewSession partitioned;
+    const auto partitionToken = partitioned.Begin(f.manager, 0xA11CFu, {a, b});
+    REQUIRE(partitionToken.has_value());
+    auto aEffective = aBefore;
+    auto bTransient = bBefore;
+    aEffective.translation.x += 4.0f;
+    bTransient.translation.y += 4.0f;
+    REQUIRE(partitioned.PreviewLocals(f.manager, *partitionToken,
+        {{a, aEffective}, {b, bTransient}}).effective);
+    REQUIRE(partitioned.PreviewLocals(f.manager, *partitionToken,
+        {{a, aEffective}, {b, bBefore}}).effective);
+    const auto partitionClosed = FinalizeTransformPreviewSession(history,
+        f.manager, partitioned, *partitionToken);
+    REQUIRE(partitionClosed.result == PreviewSessionCloseOutcome::Result::Closed);
+    CHECK(f.manager.IsOverridden(b,
+        PrefabComponentKeyFor<Transform>::value).value == false);
+    CHECK(f.manager.IsOverridden(a,
+        PrefabComponentKeyFor<Transform>::value).value == true);
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(f.manager.IsOverridden(a,
+        PrefabComponentKeyFor<Transform>::value).value == false);
+    CHECK(f.manager.IsOverridden(b,
+        PrefabComponentKeyFor<Transform>::value).value == false);
+    CHECK(registry.get<Transform>(aHandle).translation == aBefore.translation);
+    CHECK(registry.get<Transform>(bHandle).translation == bBefore.translation);
+
+    // Escape/restore replays the same durable origin->rolling command in the
+    // Before direction; it must close ordinary and prefab members atomically.
+    TransformPreviewSession escaped;
+    const auto escapeToken = escaped.Begin(f.manager, 0xA11D0u, {a, b});
+    REQUIRE(escapeToken.has_value());
+    auto aEscaped = aBefore;
+    auto bEscaped = bBefore;
+    aEscaped.translation.x += 6.0f;
+    bEscaped.translation.y += 7.0f;
+    REQUIRE(escaped.PreviewLocals(f.manager, *escapeToken,
+        {{a, aEscaped}, {b, bEscaped}}).effective);
+    const auto restored = RestoreTransformPreviewSession(f.manager, escaped,
+        *escapeToken);
+    INFO(restored.lastError.error.detail);
+    REQUIRE(restored.result == PreviewSessionCloseOutcome::Result::Closed);
+    CHECK(registry.get<Transform>(aHandle).translation == aBefore.translation);
+    CHECK(registry.get<Transform>(bHandle).translation == bBefore.translation);
+
+    // Reviewer probe: an ordinary TransformCommand is still composite replay,
+    // so a stale fixed source must fail atomically instead of falling back to
+    // SetLocalTransformStates and authoring over a concurrent edit.
+    const UUID ordinary = f.CreateEmpty("Ordinary");
+    EditableTRS ordinaryOrigin;
+    REQUIRE(f.manager.GetLocalTransform(
+        SceneManager::EntityId{f.manager.FindEntityByUuid(ordinary)}, ordinaryOrigin));
+    EditableTRS ordinaryAfter = ordinaryOrigin;
+    ordinaryAfter.translation.x += 2.0f;
+    auto stale = MakeTransformCommandIfEffective(ordinary, ordinaryOrigin,
+        ordinaryAfter);
+    REQUIRE(stale);
+    EditableTRS concurrent = ordinaryOrigin;
+    concurrent.translation.y += 9.0f;
+    REQUIRE(f.manager.SetLocalTransformStates({{ordinary, concurrent}}).success);
+    const auto staleRevision = f.manager.AuthoringRevision();
+    const auto staleResult = stale->Execute(f.manager);
+    CHECK_FALSE(staleResult.success);
+    CHECK(f.manager.AuthoringRevision() == staleRevision);
+    EditableTRS ordinaryLive;
+    REQUIRE(f.manager.GetLocalTransform(
+        SceneManager::EntityId{f.manager.FindEntityByUuid(ordinary)}, ordinaryLive));
+    CHECK(ordinaryLive.translation == concurrent.translation);
+
+    // Tokens are opaque, monotonic, and publisher-bound: a closed token and a
+    // token minted for another publisher cannot publish into this session.
+    TransformPreviewSession tokenProbe;
+    const auto tokenA = tokenProbe.Begin(f.manager, 0xA11D1u, {ordinary});
+    REQUIRE(tokenA.has_value());
+    TransformPreviewSession foreignSession;
+    const auto tokenB = foreignSession.Begin(f.manager, 0xA11D2u, {ordinary});
+    REQUIRE(tokenB.has_value());
+    CHECK_FALSE(tokenProbe.PreviewLocals(f.manager, *tokenB,
+        {{ordinary, ordinaryLive}}).success);
+    const auto staleClose = RestoreTransformPreviewSession(f.manager,
+        tokenProbe, *tokenB);
+    CHECK(staleClose.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    CHECK(tokenProbe.IsOpen());
+    const auto tokenClose = RestoreTransformPreviewSession(f.manager,
+        tokenProbe, *tokenA);
+    CHECK(tokenClose.result == PreviewSessionCloseOutcome::Result::Closed);
+    CHECK_FALSE(tokenProbe.PreviewLocals(f.manager, *tokenA,
+        {{ordinary, ordinaryLive}}).success);
+
+    // Carrier table discriminator: when the sole fresh prefab carrier is
+    // removed, the surviving ordinary value must finalize with a live/live
+    // schema rebase rather than attempting an illegal schema downgrade.
+    TransformPreviewSession removedCarrier;
+    const auto removedToken = removedCarrier.Begin(f.manager, 0xA11D3u,
+        {ordinary, b});
+    REQUIRE(removedToken.has_value());
+    EditableTRS ordinaryEffective = ordinaryLive;
+    ordinaryEffective.translation.x += 3.0f;
+    EditableTRS removedPreview = bBefore;
+    removedPreview.translation.z += 2.0f;
+    REQUIRE(removedCarrier.PreviewLocals(f.manager, *removedToken,
+        {{ordinary, ordinaryEffective}, {b, removedPreview}}).effective);
+    REQUIRE(f.manager.RemoveSubtrees({b}).success);
+    const auto removedClose = FinalizeTransformPreviewSession(history,
+        f.manager, removedCarrier, *removedToken);
+    INFO(removedClose.lastError.error.detail);
+    REQUIRE(removedClose.result == PreviewSessionCloseOutcome::Result::Closed);
+    EditableTRS surviving;
+    REQUIRE(f.manager.GetLocalTransform(
+        SceneManager::EntityId{f.manager.FindEntityByUuid(ordinary)}, surviving));
+    CHECK(surviving.translation == ordinaryEffective.translation);
+    std::filesystem::remove_all(dir);
+}
+// ---------------------------------------------------------------------------
+// Test S5-E - a batch mixing a valid edit with a bad one fails atomically in
+// EITHER input order with an identical structured error, and the scene's
+// markers, schema, dirty flag, and authoring revision stay byte-identical to
+// the pre-batch snapshot: the valid edit never lands.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) partial-land fault: remove the Prepare-fail return for the bad edit so
+//   the staged valid edit is committed - the overrides/revision asserts
+//   below go RED (transform would have landed, schema would have bumped).
+//   b) order-dependence fault: keep the bad-key rejection only when the key
+//   appears before a member is staged (reject at SceneManager.cpp:5473 but
+//   tolerate a bad key reaching an already-staged member) - REQUIRE_FALSE
+//   (planA.IsOk()) for the valid-first order goes RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper fails a mixed valid+invalid batch atomically in either order")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_atomic");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    const auto schemaBefore = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const bool dirtyBefore = f.manager.IsDirty();
+    const auto revisionBefore = f.manager.AuthoringRevision();
+
+    const PrefabMarkerEdit valid = { rootUuid, S2Key("transform"), false, true };
+    const PrefabMarkerEdit invalid = { rootUuid, S2Key("meshRef"), false, true }; // excluded
+
+    auto planA = f.manager.PreparePrefabMarkerEdits({ valid, invalid },
+        PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+    REQUIRE_FALSE(planA.IsOk());
+    REQUIRE(planA.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(planA.error.detail.find("meshRef") != std::string::npos);
+
+    auto planB = f.manager.PreparePrefabMarkerEdits({ invalid, valid },
+        PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+    REQUIRE_FALSE(planB.IsOk());
+    REQUIRE(planB.error.code == planA.error.code);
+    REQUIRE(planB.error.path == planA.error.path);
+    REQUIRE(planB.error.detail == planA.error.detail);
+
+    // Byte-identical zero change after both attempts: no marker landed, the
+    // schema was not promoted, dirty/revision are untouched.
+    auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides.IsOk());
+    REQUIRE(overrides.value.empty());
+    auto q1 = f.manager.IsOverridden(rootUuid, S2Key("transform"));
+    REQUIRE(q1.IsOk());
+    REQUIRE_FALSE(q1.value);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == schemaBefore);
+    REQUIRE(f.manager.IsDirty() == dirtyBefore);
+    REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
+}
+
+// Supplemental predicate coverage only. The production coordinator cadence,
+// real release classification, and shared Inspector/viewport publication
+// callback are discriminated by the named coordinator cases above.
+TEST_CASE("Phase 8 W3 S6-D: low-level sequence and Inspector admission predicates")
+{
+    CHECK(TransformGizmoEventMatches(7, 7));
+    CHECK_FALSE(TransformGizmoEventMatches(0, 7));
+    CHECK_FALSE(TransformGizmoEventMatches(7, 0));
+    CHECK_FALSE(TransformGizmoEventMatches(7, 8));
+    CHECK(InspectorTransformPublishAllowed(11, 11, true));
+    CHECK_FALSE(InspectorTransformPublishAllowed(11, 12, true));
+    CHECK_FALSE(InspectorTransformPublishAllowed(11, 11, false));
+    CHECK(TransformBeginAdmissionAllowed(true, false, 1));
+    CHECK_FALSE(TransformBeginAdmissionAllowed(true, true, 1));
+    CHECK_FALSE(TransformBeginAdmissionAllowed(true, false, 0));
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-F - the directional source presence is validated against the live
+// pre-batch snapshot. For the After direction the SOURCE side is
+// beforePresent; for the Before direction it is afterPresent. A payload whose
+// source side contradicts live membership (claiming present when absent, or
+// absent when present) fails loudly with zero change - a stale or hand-forged
+// boolean is never silently ignored.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) direction fault: use edit.afterPresent (the target side) as the source
+//   for After at SceneManager.cpp:5510 - the After-absent rejection below goes
+//   RED (the stale add is treated as a valid add).
+//   b) silent-ignore fault: remove the expectedSource mismatch return
+//   (SceneManager.cpp:5511-5518) and feed targetPresent straight through -
+//   both the absent-claim and the present-claim rejections below go RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper validates the directional source presence with zero change")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_dir");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    const auto schemaBefore = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const bool dirtyBefore = f.manager.IsDirty();
+    const auto revisionBefore = f.manager.AuthoringRevision();
+    const auto transform = S2Key("transform");
+    const auto name = S2Key("name");
+
+    // ABSENT live set: an After edit claiming beforePresent=true is stale on
+    // the source side.
+    auto afterAbsent = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, true },
+    }, PrefabMarkerDirection::After, schemaBefore, schemaBefore);
+    REQUIRE_FALSE(afterAbsent.IsOk());
+    REQUIRE(afterAbsent.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(afterAbsent.error.detail.find("beforePresent") != std::string::npos);
+
+    // ABSENT live set: a Before edit claiming afterPresent=true is stale.
+    auto beforeAbsent = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, false, true },
+    }, PrefabMarkerDirection::Before, schemaBefore, schemaBefore);
+    REQUIRE_FALSE(beforeAbsent.IsOk());
+    REQUIRE(beforeAbsent.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(beforeAbsent.error.detail.find("afterPresent") != std::string::npos);
+
+    // Zero change from the two failures.
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == schemaBefore);
+    REQUIRE(f.manager.IsDirty() == dirtyBefore);
+    REQUIRE(f.manager.AuthoringRevision() == revisionBefore);
+
+// Bring the member up to {name, transform} legitimately (After, source
+    // verified absent, riding the fresh-doc -> SchemaVersion promotion).
+    auto addPlan = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, name, false, true },
+        { rootUuid, transform, false, true },
+    }, PrefabMarkerDirection::After, schemaBefore, SceneSerializer::SchemaVersion);
+    REQUIRE(addPlan.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(addPlan.value)).anyStateChange);
+    const auto schemaMid = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const bool dirtyMid = f.manager.IsDirty();
+    const auto revisionMid = f.manager.AuthoringRevision();
+
+    // PRESENT live set: After edit claiming beforePresent=false is stale.
+    auto afterPresentNow = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, false, true },
+    }, PrefabMarkerDirection::After, schemaMid, schemaMid);
+    REQUIRE_FALSE(afterPresentNow.IsOk());
+    REQUIRE(afterPresentNow.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(afterPresentNow.error.detail.find("beforePresent") != std::string::npos);
+
+    // PRESENT live set: Before edit claiming afterPresent=false is stale.
+    auto beforePresentNow = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, false },
+    }, PrefabMarkerDirection::Before, schemaMid, schemaMid);
+    REQUIRE_FALSE(beforePresentNow.IsOk());
+    REQUIRE(beforePresentNow.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(beforePresentNow.error.detail.find("afterPresent") != std::string::npos);
+
+    // Zero change from the two post-add failures, and neither touched the set.
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == schemaMid);
+    REQUIRE(f.manager.IsDirty() == dirtyMid);
+    REQUIRE(f.manager.AuthoringRevision() == revisionMid);
+    auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides.IsOk());
+    REQUIRE(overrides.value.size() == 2);
+}
+// ---------------------------------------------------------------------------
+// Test S5-G - duplicate policy, input-order-independent. Byte-identical
+// duplicate edits for the same (member, canonical wire) coalesce into one
+// pending entry; a contradictory duplicate (same wire, different target
+// presence) fails the WHOLE batch with an identical structured error in either
+// input order, leaving zero change.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) contradiction fault: drop the member.pendingPresent[idx] != targetPresent
+//   check at SceneManager.cpp:5530 (coalesce everything) - REQUIRE_FALSE
+//   (planA.IsOk()) for the contradictory order goes RED.
+//   b) duplicate-land fault: drop the already-present guard so a re-mark
+//   appends a second pending entry - the members[0].target.size() REQUIRE
+//   below goes RED (the raw writer would emit the duplicate).
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper coalesces exact duplicates and rejects contradictory ones order-independently")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_dup");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+const auto schemaBefore = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto schemaAfter = SceneSerializer::SchemaVersion;
+    const auto transform = S2Key("transform");
+    const auto name = S2Key("name");
+
+    // Byte-identical duplicates coalesce: one transition, unique committed set.
+    // The first marker rides the fresh-doc -> SchemaVersion promotion.
+    auto dup = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, false, true },
+        { rootUuid, transform, false, true },
+    }, PrefabMarkerDirection::After, schemaBefore, schemaAfter);
+    REQUIRE(dup.IsOk());
+    REQUIRE(dup.value.members.size() == 1);
+    REQUIRE(dup.value.members[0].target.size() == 1);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(dup.value)).anyStateChange);
+    auto afterStart = f.manager.GetOverrides(rootUuid);
+    REQUIRE(afterStart.IsOk());
+    REQUIRE(afterStart.value.size() == 1);
+    const auto revisionAfterAdd = f.manager.AuthoringRevision();
+    const bool dirtyAfterAdd = f.manager.IsDirty();
+
+    // Contradictory duplicates fail in BOTH orders with the identical
+    // structured error (same code, path, and detail). The source side of both
+    // edits matches live state (absent, beforePresent=false); only the target
+    // presence differs, so the contradiction check -- not the directional
+    // source check -- is what rejects the batch.
+    auto planA = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, name, false, true },
+        { rootUuid, name, false, false },
+    }, PrefabMarkerDirection::After, schemaAfter, schemaAfter);
+    REQUIRE_FALSE(planA.IsOk());
+    REQUIRE(planA.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(planA.error.path == rootUuid.ToString());
+    REQUIRE(planA.error.detail.find("contradictory") != std::string::npos);
+
+    auto planB = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, name, false, false },
+        { rootUuid, name, false, true },
+    }, PrefabMarkerDirection::After, schemaAfter, schemaAfter);
+    REQUIRE_FALSE(planB.IsOk());
+    REQUIRE(planB.error.code == planA.error.code);
+    REQUIRE(planB.error.path == planA.error.path);
+    REQUIRE(planB.error.detail == planA.error.detail);
+
+    // Zero change: neither contradictory attempt mutated or bumped anything.
+    auto overrides = f.manager.GetOverrides(rootUuid);
+    REQUIRE(overrides.IsOk());
+    REQUIRE(overrides.value.size() == 1); // only the coalesced transform
+    REQUIRE(f.manager.AuthoringRevision() == revisionAfterAdd);
+    REQUIRE(f.manager.IsDirty() == dirtyAfterAdd);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == schemaAfter);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-H - stored raw-vector policy. A stored vector containing an unknown
+// or excluded wire fails Prepare LOUDLY (the malformed state is never silently
+// read through). A stored vector that is malformed but CANONICALIZABLE -
+// unsorted, duplicated, or carrying a forged classification bit - normalizes
+// into the committed raw registry vector even when the requested membership
+// edit is otherwise a no-op: anyStateChange is true, commit writes the
+// canonical target, and no malformed raw state is left unchanged.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) loud-fail fault: remove the S5CanonicalizeVector failure propagation in
+//   Prepare (SceneManager.cpp:5492-5495) - the unknown and excluded raw-wire
+//   REQUIRE_FALSE(plan.IsOk()) blocks below go RED.
+//   b) silent-normalize fault: delete the member.raw != member.live
+//   anyStateChange line (SceneManager.cpp:5576-5577) - every no-op edit below
+//   reports anyStateChange=false and the committed raw vector stays malformed:
+//   the REQUIRE(plan.value.anyStateChange) and the raw-size/order CHECKs go RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper normalizes canonicalizable stored vectors even on a membership no-op")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_raw");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto transform = S2Key("transform");
+    const auto name = S2Key("name");
+    // The membership edit below is a no-op everywhere: transform is present in
+    // each seeded vector after canonicalization, so anyStateChange can only be
+    // true when the raw stored vector itself needs normalization.
+
+    // (a) Unknown raw wire: loud failure, zero change.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides =
+        { PrefabComponentKey(std::string_view("noSuchWire"), true) };
+    auto unknownRaw = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, true },
+    }, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(unknownRaw.IsOk());
+    REQUIRE(unknownRaw.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(unknownRaw.error.detail.find("noSuchWire") != std::string::npos);
+
+    // (b) Excluded raw wire: loud failure, zero change.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides = { S2Key("meshRef") };
+    auto excludedRaw = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, true },
+    }, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(excludedRaw.IsOk());
+    REQUIRE(excludedRaw.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(excludedRaw.error.detail.find("meshRef") != std::string::npos);
+
+// (c) Unsorted raw vector + membership no-op: normalization is a real state
+    // change and the committed RAW registry vector becomes canonical. The no-op
+    // rides the fresh-doc -> SchemaVersion promotion because the (non-empty)
+    // stored set cannot live at the below-current schema.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides = { transform, name }; // reverse wire order
+    auto sortNoop = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, true },
+    }, PrefabMarkerDirection::After, schema, SceneSerializer::SchemaVersion);
+    REQUIRE(sortNoop.IsOk());
+    REQUIRE(sortNoop.value.anyStateChange); // raw != canonical: detected
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(sortNoop.value)).anyStateChange);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    auto sortedRaw = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(sortedRaw);
+    REQUIRE(sortedRaw->overrides.size() == 2);
+    CHECK(sortedRaw->overrides[0] == name);       // canonical sort restored
+    CHECK(sortedRaw->overrides[1] == transform);
+
+    // (d) Duplicated raw vector collapses to a unique set.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides = { transform, transform };
+    auto dupNoop = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, true },
+    }, PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(dupNoop.IsOk());
+    REQUIRE(dupNoop.value.anyStateChange);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(dupNoop.value)).anyStateChange);
+    auto dedupRaw = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(dedupRaw);
+    REQUIRE(dedupRaw->overrides.size() == 1);
+    CHECK(dedupRaw->overrides[0] == transform);
+
+    // (e) Forged classification bit re-derives from the frozen table.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides =
+        { PrefabComponentKey(std::string_view("transform"), false) };
+    auto forgedRawNoop = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, true, true },
+    }, PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(forgedRawNoop.IsOk());
+    REQUIRE(forgedRawNoop.value.anyStateChange);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(forgedRawNoop.value)).anyStateChange);
+    auto canonicalRaw = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(canonicalRaw);
+    REQUIRE(canonicalRaw->overrides.size() == 1);
+    CHECK(canonicalRaw->overrides[0] == transform); // table-derived bit (true)
+}
+
+// ===========================================================================
+// Checkpoint B - reversible schema and stale/forged-plan integrity
+// ===========================================================================
+// The plan/commit split carries the command-captured before/after schema pair
+// through the SAME staged operation (W3 D3.6/D3.10): the After direction
+// targets the command-after schema (execute) and the Before direction targets
+// the command-before schema (undo/restore), so undoing a first add restores
+// the captured prior version. The cases below pin the schema-transition rules
+// (source==live, marker-version floor, downgrade only when no override
+// remains anywhere) and that Commit re-validates the WHOLE plan against live
+// state before any write, because every PrefabMarkerPlan field is public and
+// a hand-forged or stale plan must fail loudly with zero mutation.
+
+// ---------------------------------------------------------------------------
+// Test S5-I - the reversible first-marker cycle on a GENUINE v5 document.
+// After applies the first marker and promotes v5 -> v6 in one atomic commit;
+// Before then applies the inverse presence side of the SAME payload and
+// restores the captured v5. The raw registry vector, schema version, dirty
+// flag, and authoring revision are asserted across both commits.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) directional fault: swap the source/target schema transport in Prepare
+//   (SceneManager.cpp:5540-5543) so Before targets the command-after schema -
+//   the undo leaves the document at v6 and REQUIRE(undo.afterSchemaVersion
+//   == 5) / the schema CHECK below goes RED.
+//   b) inverse-side fault: apply afterPresent instead of beforePresent for the
+//   Before direction (SceneManager.cpp:5642) - the undone key stays present
+//   and REQUIRE(afterUndo->overrides.empty()) goes RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper undo of a first add restores the captured v5")
+{
+    SceneManager mgr;
+    const auto dir = S2UniqueTempDir("p8w3_s5_v5cycle");
+    const UUID memberUuid = S5AdoptV5MemberScene(mgr, dir, "p8w3_s5_v5cycle");
+    auto& reg = mgr.GetECS().registry;
+    const auto handle = mgr.FindEntityByUuid(memberUuid);
+    REQUIRE(static_cast<uint32_t>(handle) != static_cast<uint32_t>(entt::null));
+    REQUIRE(reg.all_of<PrefabMemberComponent>(handle));
+
+    const auto transform = S2Key("transform");
+    const auto revision0 = mgr.AuthoringRevision();
+    const bool dirty0 = mgr.IsDirty();
+
+    // Execute: After direction applies afterPresent=true; the first marker
+    // must land at the schema version that can represent overrides (v6).
+    auto execPlan = mgr.PreparePrefabMarkerEdits({
+        { memberUuid, transform, false, true },
+    }, PrefabMarkerDirection::After, /*before*/ 5,
+      /*after*/ SceneSerializer::SchemaVersion);
+    REQUIRE(execPlan.IsOk());
+    PrefabMarkerApplyResult exec = mgr.CommitPrefabMarkerPlan(std::move(execPlan.value));
+    REQUIRE(exec.anyStateChange);
+    REQUIRE(exec.appliedMembers == 1);
+    REQUIRE(exec.beforeSchemaVersion == 5);
+    REQUIRE(exec.afterSchemaVersion == SceneSerializer::SchemaVersion);
+
+    const auto* raw = reg.try_get<PrefabMemberComponent>(handle);
+    REQUIRE(raw);
+    REQUIRE(raw->overrides.size() == 1);
+    CHECK(raw->overrides[0] == transform);
+    CHECK(mgr.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(mgr.IsDirty());
+    CHECK(mgr.AuthoringRevision() == revision0 + 1); // exactly one revision bump
+    auto q = mgr.IsOverridden(memberUuid, transform);
+    REQUIRE(q.IsOk());
+    CHECK(q.value);
+
+    // Undo: the SAME payload with Before direction applies beforePresent=false
+    // (removes the key) and targets the captured command-before schema (v5).
+    auto undoPlan = mgr.PreparePrefabMarkerEdits({
+        { memberUuid, transform, false, true },
+    }, PrefabMarkerDirection::Before, /*before*/ 5,
+      /*after*/ SceneSerializer::SchemaVersion);
+    REQUIRE(undoPlan.IsOk());
+    REQUIRE(undoPlan.value.targetSchemaVersion == 5);
+    PrefabMarkerApplyResult undo = mgr.CommitPrefabMarkerPlan(std::move(undoPlan.value));
+    REQUIRE(undo.anyStateChange);
+    REQUIRE(undo.beforeSchemaVersion == SceneSerializer::SchemaVersion);
+    REQUIRE(undo.afterSchemaVersion == 5);
+
+    auto afterUndo = reg.try_get<PrefabMemberComponent>(handle);
+    REQUIRE(afterUndo);
+    REQUIRE(afterUndo->overrides.empty());
+    REQUIRE(mgr.AuthoringDoc().metadata.schemaVersion == 5); // captured v5 restored
+    CHECK(mgr.AuthoringRevision() == revision0 + 2);         // exactly one more bump
+    CHECK(mgr.IsDirty());
+    q = mgr.IsOverridden(memberUuid, transform);
+    REQUIRE(q.IsOk());
+    CHECK_FALSE(q.value);
+    auto g = mgr.GetOverrides(memberUuid);
+    REQUIRE(g.IsOk());
+    REQUIRE(g.value.empty());
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-J - Prepare rejects every schema-transition violation it is asked to
+// police, all with zero change: (a) a caller-supplied directional source
+// schema that differs from the live document (stale or hand-forged schema
+// pair); (b) an empty edit list cannot drive a schema-only transition;
+// (c) a non-empty override target cannot be stored below SceneSerializer::
+// SchemaVersion, so a first marker cannot target a below-current schema; and
+// (d) a downgrade below the live schema is valid only when NO override remains
+// anywhere in the document after the batch applies.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) drop the Prepare source-schema equality return (SceneManager.cpp:
+//   5550-5555) - the mismatch case below returns Ok and REQUIRE_FALSE goes RED.
+//   b) drop the empty-edit guard (SceneManager.cpp:5561-5564) - an empty list
+//   with a non-constant schema pair stages silently; REQUIRE_FALSE goes RED.
+//   c) drop the marker-version floor check (SceneManager.cpp:5445-5452) - the
+//   below-floor add stages; the schema/override zero-change CHECKs go RED.
+//   d) drop the S5RemainingOverrides gate (SceneManager.cpp:5454-5466) - the
+//   outside-override downgrade stages; the schema CHECK below goes RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: Prepare rejects schema-transition violations with zero change")
+{
+    SceneManager mgr;
+    const auto dir = S2UniqueTempDir("p8w3_s5_schema");
+    const UUID memberUuid = S5AdoptV5MemberScene(mgr, dir, "p8w3_s5_schema");
+    auto& reg = mgr.GetECS().registry;
+    const auto handle = mgr.FindEntityByUuid(memberUuid);
+    REQUIRE(static_cast<uint32_t>(handle) != static_cast<uint32_t>(entt::null));
+    REQUIRE(reg.all_of<PrefabMemberComponent>(handle));
+
+    const auto transform = S2Key("transform");
+    const auto schema0 = mgr.AuthoringDoc().metadata.schemaVersion; // 5
+    REQUIRE(schema0 == 5);
+    const bool dirty0 = mgr.IsDirty();
+    const auto revision0 = mgr.AuthoringRevision();
+    const auto checkZeroChange = [&] {
+        CHECK(mgr.AuthoringDoc().metadata.schemaVersion == schema0);
+        CHECK(mgr.IsDirty() == dirty0);
+        CHECK(mgr.AuthoringRevision() == revision0);
+        auto g = mgr.GetOverrides(memberUuid);
+        REQUIRE(g.IsOk());
+        REQUIRE(g.value.empty());
+    };
+
+    // (a) live/source schema mismatch: claimed source (v6) != live (v5).
+    auto mismatch = mgr.PreparePrefabMarkerEdits({
+        { memberUuid, transform, false, true },
+    }, PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+      SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(mismatch.IsOk());
+    REQUIRE(mismatch.error.code == rt2::core::Error::SchemaVersion);
+    checkZeroChange();
+
+    // (b) an empty edit list cannot drive a schema-only transition.
+    auto emptyOnly = mgr.PreparePrefabMarkerEdits({}, PrefabMarkerDirection::After,
+        5, SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(emptyOnly.IsOk());
+    REQUIRE(emptyOnly.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(emptyOnly.error.detail.find("empty edit list") != std::string::npos);
+    checkZeroChange();
+
+    // (c) first marker below the marker schema: a non-empty target at v5.
+    auto belowFloor = mgr.PreparePrefabMarkerEdits({
+        { memberUuid, transform, false, true },
+    }, PrefabMarkerDirection::After, /*before*/ 5, /*after*/ 5);
+    REQUIRE_FALSE(belowFloor.IsOk());
+    REQUIRE(belowFloor.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(belowFloor.error.detail.find("at least") != std::string::npos);
+    checkZeroChange();
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-J(2) - the downgrade gate: a Before undo that targets the captured
+// before schema is rejected while ANY override remains elsewhere in the
+// document, and the SAME undo succeeds once the outside member is reverted
+// too - proving the gate is "no override remains anywhere", not "downgrades
+// are always illegal".
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: Prepare rejects a downgrade while an override remains elsewhere")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_downgrade");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID childUuid = reg.get<EntityIdComponent>(childHandle).id;
+    const auto name = S2Key("name");
+    const auto script = S2Key("script");
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    // Build genuine v6 state: root = {name}, child = {script}.
+    auto a = f.manager.PreparePrefabMarkerEdits({ { rootUuid, name, false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(a.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(a.value)).anyStateChange);
+    auto b = f.manager.PreparePrefabMarkerEdits({ { childUuid, script, false, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(b.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(b.value)).anyStateChange);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    const bool dirty6 = f.manager.IsDirty();
+    const auto revision6 = f.manager.AuthoringRevision();
+
+    // Undo root at the captured before schema (v5): the child still holds
+    // {script}, so the downgrade would strand-and-drop that marker.
+    auto blocked = f.manager.PreparePrefabMarkerEdits({ { rootUuid, name, false, true } },
+        PrefabMarkerDirection::Before, /*before*/ 5, /*after*/ SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(blocked.IsOk());
+    REQUIRE(blocked.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(blocked.error.detail.find("remains elsewhere") != std::string::npos);
+
+    // Zero change: schema, revision, dirty, and BOTH override sets untouched.
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revision6);
+    CHECK(f.manager.IsDirty() == dirty6);
+    auto rootG = f.manager.GetOverrides(rootUuid);
+    REQUIRE(rootG.IsOk());
+    REQUIRE(rootG.value.size() == 1);
+    auto childG = f.manager.GetOverrides(childUuid);
+    REQUIRE(childG.IsOk());
+    REQUIRE(childG.value.size() == 1);
+
+    // Control: revert the outside member first (constant-schema removal), then
+    // the same undo succeeds and restores v5.
+    auto childUndo = f.manager.PreparePrefabMarkerEdits({ { childUuid, script, false, true } },
+        PrefabMarkerDirection::Before, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(childUndo.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(childUndo.value)).anyStateChange);
+    auto rootUndo = f.manager.PreparePrefabMarkerEdits({ { rootUuid, name, false, true } },
+        PrefabMarkerDirection::Before, /*before*/ 5, /*after*/ SceneSerializer::SchemaVersion);
+    REQUIRE(rootUndo.IsOk());
+    REQUIRE(rootUndo.value.targetSchemaVersion == 5);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(rootUndo.value)).anyStateChange);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+    auto rootG2 = f.manager.GetOverrides(rootUuid);
+    REQUIRE(rootG2.IsOk());
+    REQUIRE(rootG2.value.empty());
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-K - Commit is infallible only against the SAME document the plan was
+// prepared against. A plan made stale by an INDEPENDENT change - a member
+// override vector moved by another commit, or the document schema rewritten
+// underneath - fails loudly with zero mutation, before any write.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) drop the Commit source==live re-derivation (SceneManager.cpp:5780-5789)
+//   - the independently-moved member writes the stale target; overrides stays
+//   {name} below goes RED.
+//   b) drop the Commit schema re-validation (SceneManager.cpp:5816-5819) - the
+//   schema-rewritten commit writes the child marker; REQUIRE(r2.error.code ==
+//   SchemaVersion) below goes RED (and the schema/override CHECKs go RED).
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: Commit rejects a stale plan with zero mutation")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_stale");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID childUuid = reg.get<EntityIdComponent>(childHandle).id;
+    const auto name = S2Key("name");
+    const auto script = S2Key("script");
+    const auto transform = S2Key("transform");
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    // (a) member vector moved independently between staging and commit.
+    auto p1 = f.manager.PreparePrefabMarkerEdits({ { rootUuid, transform, false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(p1.IsOk());
+    auto pInd = f.manager.PreparePrefabMarkerEdits({ { rootUuid, name, false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(pInd.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(pInd.value)).anyStateChange);
+    const auto revisionA = f.manager.AuthoringRevision();
+    const bool dirtyA = f.manager.IsDirty();
+
+    PrefabMarkerApplyResult r = f.manager.CommitPrefabMarkerPlan(std::move(p1.value));
+    REQUIRE_FALSE(r.error.IsOk());
+    REQUIRE(r.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(r.error.detail.find("changed since the plan was prepared") != std::string::npos);
+    // Zero mutation: the independent {name} survives, schema not moved, no bump.
+    const auto* rawA = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(rawA);
+    REQUIRE(rawA->overrides.size() == 1);
+    CHECK(rawA->overrides[0] == name);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revisionA);
+    CHECK(f.manager.IsDirty() == dirtyA);
+
+    // (b) document schema rewritten independently between staging and commit.
+    auto p2 = f.manager.PreparePrefabMarkerEdits({ { childUuid, script, false, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(p2.IsOk());
+    f.manager.AuthoringDoc().metadata.schemaVersion = 4; // external rewrite underneath
+    const auto revisionB = f.manager.AuthoringRevision();
+    const bool dirtyB = f.manager.IsDirty();
+    PrefabMarkerApplyResult r2 = f.manager.CommitPrefabMarkerPlan(std::move(p2.value));
+    REQUIRE_FALSE(r2.error.IsOk());
+    REQUIRE(r2.error.code == rt2::core::Error::SchemaVersion);
+    // Zero mutation: the child marker was never written, revision untouched.
+    auto childRaw = reg.try_get<PrefabMemberComponent>(childHandle);
+    REQUIRE(childRaw);
+    REQUIRE(childRaw->overrides.empty());
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(f.manager.AuthoringRevision() == revisionB);
+    CHECK(f.manager.IsDirty() == dirtyB);
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-L - PrefabMarkerPlan fields are PUBLIC, so Commit must treat every
+// plan as untrusted and re-validate the WHOLE thing against live state: a
+// forged target holding an excluded or unknown wire, a non-canonical target, a
+// forged source, and an arbitrary (fabricated) schema pair all fail loudly
+// with zero mutation. Commit also re-derives anyStateChange: a forged
+// anyStateChange=true on a genuine no-op still commits nothing and notifies
+// zero times.
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) accept forged targets: drop the Commit target re-canonicalization /
+//   identity check (SceneManager.cpp:5795-5804) - the meshRef and noSuchWire
+//   targets below commit and REQUIRE_FALSE(r.error.IsOk()) goes RED.
+//   b) trust forged source: drop the Commit source check
+//   (SceneManager.cpp:5780-5789) - the forged-source plan writes {transform};
+//   REQUIRE(rawForge->overrides.empty()) goes RED.
+//   c) trust fabricated schema: drop the Commit schema-only re-check
+//   (SceneManager.cpp:5828-5830) - the fabricated 4->6 promotion with no
+//   member change bumps schema; the schema CHECK goes RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: Commit rejects forged plan fields with zero mutation")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_forge");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const bool dirty0 = f.manager.IsDirty();
+    const auto revision0 = f.manager.AuthoringRevision();
+
+    const auto forge = [&](std::vector<PrefabComponentKey> source,
+                           std::vector<PrefabComponentKey> target,
+                           std::uint32_t sourceSchema,
+                           std::uint32_t targetSchema)
+    {
+        PrefabMarkerPlan plan;
+        plan.direction = PrefabMarkerDirection::After;
+        plan.sourceSchemaVersion = sourceSchema;
+        plan.targetSchemaVersion = targetSchema;
+        plan.documentGeneration = f.manager.DocumentGeneration();
+        plan.anyStateChange = target != source || sourceSchema != targetSchema;
+        PrefabMarkerPlan::MemberTransition t;
+        t.member = rootUuid;
+        t.source = std::move(source);
+        t.target = std::move(target);
+        plan.members.push_back(std::move(t));
+        return f.manager.CommitPrefabMarkerPlan(std::move(plan));
+    };
+    const auto checkZero = [&] {
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == schema0);
+        CHECK(f.manager.IsDirty() == dirty0);
+        CHECK(f.manager.AuthoringRevision() == revision0);
+        auto g = f.manager.GetOverrides(rootUuid);
+        REQUIRE(g.IsOk());
+        REQUIRE(g.value.empty());
+    };
+
+    // (a) forged excluded target wire.
+    auto r1 = forge({}, { S2Key("meshRef") }, schema0, schema0);
+    REQUIRE_FALSE(r1.error.IsOk());
+    REQUIRE(r1.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(r1.error.detail.find("meshRef") != std::string::npos);
+    checkZero();
+
+    // (b) forged unknown target wire.
+    auto r2 = forge({}, { PrefabComponentKey(std::string_view("noSuchWire"), true) },
+        schema0, schema0);
+    REQUIRE_FALSE(r2.error.IsOk());
+    REQUIRE(r2.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(r2.error.detail.find("noSuchWire") != std::string::npos);
+    checkZero();
+
+    // (c) non-canonical target (both wires real, so it canonicalizes, but the
+    // staged order is not the canonical one).
+    auto r3 = forge({}, { S2Key("transform"), S2Key("name") }, schema0, schema0);
+    REQUIRE_FALSE(r3.error.IsOk());
+    REQUIRE(r3.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(r3.error.detail.find("not canonical") != std::string::npos);
+    checkZero();
+
+    // (d) forged source: claims {name} was the pre-batch set; live is empty,
+    // and the forged target {transform} WOULD have written a marker.
+    auto r4 = forge({ S2Key("name") }, { S2Key("transform") }, schema0, schema0);
+    REQUIRE_FALSE(r4.error.IsOk());
+    REQUIRE(r4.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(r4.error.detail.find("changed since the plan was prepared") != std::string::npos);
+    checkZero();
+
+    // (e) fabricated schema pair with no member change: a 4->6 promotion whose
+    // target is byte-identical to every live vector.
+    auto r5 = forge({}, {}, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(r5.error.IsOk());
+    REQUIRE(r5.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(r5.error.detail.find("schema-only transition") != std::string::npos);
+    checkZero();
+
+    // (f) source-schema pair that does not match the live document.
+    auto r6 = forge({}, { S2Key("transform") }, SceneSerializer::SchemaVersion,
+        SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(r6.error.IsOk());
+    REQUIRE(r6.error.code == rt2::core::Error::SchemaVersion);
+    checkZero();
+
+    // (g) a forged anyStateChange=true on a genuine no-op: Commit re-derives
+    // the decision and commits nothing, notifies zero times.
+    auto p = f.manager.PreparePrefabMarkerEdits({ { rootUuid, S2Key("motion"), false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(p.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(p.value)).anyStateChange);
+    const auto revisionAfter = f.manager.AuthoringRevision();
+    auto noop = f.manager.PreparePrefabMarkerEdits({ { rootUuid, S2Key("motion"), true, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(noop.IsOk());
+    REQUIRE_FALSE(noop.value.anyStateChange);
+    noop.value.anyStateChange = true; // forged
+    PrefabMarkerApplyResult r7 = f.manager.CommitPrefabMarkerPlan(std::move(noop.value));
+    REQUIRE_FALSE(r7.anyStateChange); // decision re-derived, not trusted
+    REQUIRE(f.manager.AuthoringRevision() == revisionAfter);
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-M - notification/revision accounting. A genuine no-op commits zero
+// revision, dirty, schema, and notification changes. A successful two-member
+// plan changes BOTH members with EXACTLY ONE revision bump (NotifyAuthoring
+// Changed fires once). A stale/failed plan bumps zero times (covered per-case
+// in S5-K/S5-L too; re-pinned here end-to-end).
+//
+// Discrimination faults (RED observed, then restored GREEN):
+//   a) notify-per-member: call NotifyAuthoringChanged() inside the commit write
+//   loop (SceneManager.cpp:5835-5840) - the two-member plan below bumps twice
+//   and REQUIRE(... == revBefore + 1) goes RED.
+//   b) notify-noop: remove the Commit no-op early return (SceneManager.cpp:
+//   5831-5832) - the genuine no-op below notifies and CHECK(revision unchanged)
+//   goes RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper two-member plan bumps the revision exactly once; no-op bumps zero")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_rev");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID childUuid = reg.get<EntityIdComponent>(childHandle).id;
+    const auto name = S2Key("name");
+    const auto script = S2Key("script");
+    const auto transform = S2Key("transform");
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    // Bring the doc to v6 with {name} on the root.
+    auto first = f.manager.PreparePrefabMarkerEdits({ { rootUuid, name, false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(first.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(first.value)).anyStateChange);
+    const auto revisionAfterAdd = f.manager.AuthoringRevision();
+    const bool dirtyAfterAdd = f.manager.IsDirty();
+
+    // (a) genuine no-op: re-mark name at the current schema.
+    auto noop = f.manager.PreparePrefabMarkerEdits({ { rootUuid, name, true, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(noop.IsOk());
+    REQUIRE_FALSE(noop.value.anyStateChange);
+    PrefabMarkerApplyResult rn = f.manager.CommitPrefabMarkerPlan(std::move(noop.value));
+    REQUIRE_FALSE(rn.anyStateChange);
+    REQUIRE(rn.appliedMembers == 0);
+    REQUIRE(rn.beforeSchemaVersion == SceneSerializer::SchemaVersion);
+    REQUIRE(rn.afterSchemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revisionAfterAdd);
+    CHECK(f.manager.IsDirty() == dirtyAfterAdd);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    auto noopG = f.manager.GetOverrides(rootUuid);
+    REQUIRE(noopG.IsOk());
+    REQUIRE(noopG.value.size() == 1);
+
+    // (b) one plan, two members, exactly one revision bump and one notification.
+    const auto revisionBeforeTwo = f.manager.AuthoringRevision();
+    auto two = f.manager.PreparePrefabMarkerEdits({
+        { rootUuid, transform, false, true },
+        { childUuid, script, false, true },
+    }, PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(two.IsOk());
+    REQUIRE(two.value.members.size() == 2);
+    PrefabMarkerApplyResult rt = f.manager.CommitPrefabMarkerPlan(std::move(two.value));
+    REQUIRE(rt.anyStateChange);
+    REQUIRE(rt.appliedMembers == 2);
+    REQUIRE(f.manager.AuthoringRevision() == revisionBeforeTwo + 1);
+    REQUIRE(f.manager.IsDirty());
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    auto rootT = f.manager.GetOverrides(rootUuid);
+    REQUIRE(rootT.IsOk());
+    REQUIRE(rootT.value.size() == 2);
+    CHECK(rootT.value[0] == name);
+    CHECK(rootT.value[1] == transform);
+    auto childT = f.manager.GetOverrides(childUuid);
+    REQUIRE(childT.IsOk());
+    REQUIRE(childT.value.size() == 1);
+    CHECK(childT.value[0] == script);
+
+    // (c) a failed (stale) commit bumps zero times: stage a plan, move the
+    // member underneath with an unrelated commit, then commit the stale plan -
+    // it fails and the revision is unchanged from the unrelated commit.
+    const auto motion = S2Key("motion");
+    auto stale = f.manager.PreparePrefabMarkerEdits({ { rootUuid, motion, false, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(stale.IsOk());
+    auto mover = f.manager.PreparePrefabMarkerEdits({ { rootUuid, S2Key("light"), false, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(mover.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(mover.value)).anyStateChange);
+    const auto revisionAfterMover = f.manager.AuthoringRevision();
+    PrefabMarkerApplyResult rs = f.manager.CommitPrefabMarkerPlan(std::move(stale.value));
+    REQUIRE_FALSE(rs.error.IsOk());
+    REQUIRE(rs.error.code == rt2::core::Error::InvalidArgument);
+    REQUIRE(f.manager.AuthoringRevision() == revisionAfterMover); // zero bump
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test S5-N - raw source/target normalization re-confirmed through the Commit
+// revalidation seam. A stored vector that is malformed but canonicalizable
+// (unsorted, duplicated, or carrying a forged classification bit) makes a
+// membership no-op a REAL state change: the raw registry vector is normalized
+// to the canonical wire-sorted, de-duplicated form on commit, because the
+// writer emits the raw vector verbatim. The staged plan's source is the
+// CANONICAL pre-batch set and the committed target is canonical, so the
+// revalidation still accepts the normalization-only plan and rewrites only the
+// stored bytes.
+//
+// Discrimination fault (RED observed, then restored GREEN): drop the Commit
+// per-member rawLive != target detection (SceneManager.cpp:5824-5826) and the
+// normalization-only plans below report no state change; REQUIRE(commit
+// .anyStateChange) and the raw-order CHECKs go RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: Commit normalizes raw originals through plan revalidation")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_norm");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto motion = S2Key("motion");
+    const auto name = S2Key("name");
+    const auto transform = S2Key("transform");
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    // Promote the document to the marker schema first.
+    auto first = f.manager.PreparePrefabMarkerEdits({ { rootUuid, motion, false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(first.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(first.value)).anyStateChange);
+    const auto revisionAfter = f.manager.AuthoringRevision();
+
+    // (a) unsorted raw vector + membership no-op: rewrites in canonical order.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides = { transform, motion };
+    auto sortNoop = f.manager.PreparePrefabMarkerEdits({ { rootUuid, motion, true, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(sortNoop.IsOk());
+    REQUIRE(sortNoop.value.anyStateChange);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(sortNoop.value)).anyStateChange);
+    auto sortedRaw = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(sortedRaw);
+    REQUIRE(sortedRaw->overrides.size() == 2);
+    CHECK(sortedRaw->overrides[0] == motion);
+    CHECK(sortedRaw->overrides[1] == transform);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // (b) duplicated raw vector collapses to a unique set.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides = { motion, transform, motion };
+    auto dupNoop = f.manager.PreparePrefabMarkerEdits({ { rootUuid, motion, true, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(dupNoop.IsOk());
+    REQUIRE(dupNoop.value.anyStateChange);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(dupNoop.value)).anyStateChange);
+    auto dedupRaw = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(dedupRaw);
+    REQUIRE(dedupRaw->overrides.size() == 2);
+    CHECK(dedupRaw->overrides[0] == motion);
+    CHECK(dedupRaw->overrides[1] == transform);
+
+    // (c) forged classification bit re-derives the frozen-table entry.
+    reg.try_get<PrefabMemberComponent>(rootHandle)->overrides =
+        { PrefabComponentKey(std::string_view("transform"), false), motion };
+    auto forgedNoop = f.manager.PreparePrefabMarkerEdits({ { rootUuid, motion, true, true } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion, SceneSerializer::SchemaVersion);
+    REQUIRE(forgedNoop.IsOk());
+    REQUIRE(forgedNoop.value.anyStateChange);
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(forgedNoop.value)).anyStateChange);
+    auto canonicalRaw = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(canonicalRaw);
+    REQUIRE(canonicalRaw->overrides.size() == 2);
+    CHECK(canonicalRaw->overrides[0] == motion);
+    CHECK(canonicalRaw->overrides[1] == transform); // table-derived bit (true)
+
+    // Every normalization above is one real change with one revision bump.
+    CHECK(f.manager.AuthoringRevision() == revisionAfter + 3);
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test C1-1 - Commit treats the public plan member list as a set of durable
+// identities. Duplicate transitions are rejected before the downgrade scan or
+// any write, in either order. This includes a forged 6 -> 5 plan whose first
+// transition would otherwise make the document appear marker-free.
+//
+// Discrimination fault (RED observed, then restored GREEN): remove the
+// Commit `seenMembers` duplicate guard (SceneManager.cpp:5793-5799). The first
+// order downgrades with the marker left by the second write; the zero-change
+// schema/marker assertions below go RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper rejects duplicate public member transitions")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c1_duplicates");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto transform = S2Key("transform");
+
+    auto add = f.manager.PreparePrefabMarkerEdits({ { rootUuid, transform, false, true } },
+        PrefabMarkerDirection::After, f.manager.AuthoringDoc().metadata.schemaVersion,
+        SceneSerializer::SchemaVersion);
+    REQUIRE(add.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(add.value)).anyStateChange);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    const auto revision0 = f.manager.AuthoringRevision();
+    const bool dirty0 = f.manager.IsDirty();
+    const auto generation = f.manager.DocumentGeneration();
+    const auto checkZero = [&] {
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+        CHECK(f.manager.AuthoringRevision() == revision0);
+        CHECK(f.manager.IsDirty() == dirty0);
+        auto current = f.manager.GetOverrides(rootUuid);
+        REQUIRE(current.IsOk());
+        REQUIRE(current.value.size() == 1);
+        CHECK(current.value[0] == transform);
+    };
+    const auto attempt = [&](bool emptyFirst) {
+        PrefabMarkerPlan plan;
+        plan.direction = PrefabMarkerDirection::Before;
+        plan.sourceSchemaVersion = SceneSerializer::SchemaVersion;
+        plan.targetSchemaVersion = 5;
+        plan.documentGeneration = generation;
+        plan.anyStateChange = true;
+        PrefabMarkerPlan::MemberTransition empty;
+        empty.member = rootUuid;
+        empty.source = { transform };
+        empty.target = {};
+        PrefabMarkerPlan::MemberTransition keep;
+        keep.member = rootUuid;
+        keep.source = { transform };
+        keep.target = { transform };
+        if (emptyFirst)
+            plan.members = { empty, keep };
+        else
+            plan.members = { keep, empty };
+        const auto result = f.manager.CommitPrefabMarkerPlan(std::move(plan));
+        REQUIRE_FALSE(result.error.IsOk());
+        REQUIRE(result.error.code == rt2::core::Error::InvalidArgument);
+        CHECK(result.error.detail.find("duplicate member") != std::string::npos);
+        checkZero();
+    };
+
+    attempt(true);
+    attempt(false);
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test C1-2 - a downgrade cannot prove that no marker remains when a prefab
+// member is not durably addressable. Both Prepare's shared scan and Commit's
+// revalidation fail loudly with zero marker/schema/dirty/revision change.
+//
+// Discrimination fault (RED observed, then restored GREEN): restore the old
+// `if (!id) continue` in S5RemainingOverrides (SceneManager.cpp:5392-5397).
+// The downgrade succeeds despite the malformed member and the schema check
+// below goes RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: marker helper downgrade rejects an unaddressable prefab member")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c1_unaddressable");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto transform = S2Key("transform");
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    auto add = f.manager.PreparePrefabMarkerEdits({ { rootUuid, transform, false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(add.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(add.value)).anyStateChange);
+
+    // This prefab member has a non-empty marker set but no durable entity UUID.
+    const auto malformed = reg.create();
+    auto& malformedMember = reg.emplace<PrefabMemberComponent>(malformed);
+    malformedMember.overrides = { transform };
+
+    const auto revision0 = f.manager.AuthoringRevision();
+    const bool dirty0 = f.manager.IsDirty();
+    const auto checkZero = [&] {
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+        CHECK(f.manager.AuthoringRevision() == revision0);
+        CHECK(f.manager.IsDirty() == dirty0);
+        auto current = f.manager.GetOverrides(rootUuid);
+        REQUIRE(current.IsOk());
+        REQUIRE(current.value.size() == 1);
+        CHECK(current.value[0] == transform);
+    };
+
+    auto prepare = f.manager.PreparePrefabMarkerEdits(
+        { { rootUuid, transform, false, true } }, PrefabMarkerDirection::Before,
+        5, SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(prepare.IsOk());
+    REQUIRE(prepare.error.code == rt2::core::Error::InvalidEntity);
+    CHECK(prepare.error.detail.find("uniquely resolvable") != std::string::npos);
+    checkZero();
+
+    PrefabMarkerPlan forged;
+    forged.direction = PrefabMarkerDirection::Before;
+    forged.sourceSchemaVersion = SceneSerializer::SchemaVersion;
+    forged.targetSchemaVersion = 5;
+    forged.documentGeneration = f.manager.DocumentGeneration();
+    forged.anyStateChange = true;
+    PrefabMarkerPlan::MemberTransition transition;
+    transition.member = rootUuid;
+    transition.source = { transform };
+    transition.target = {};
+    forged.members.push_back(std::move(transition));
+    const auto committed = f.manager.CommitPrefabMarkerPlan(std::move(forged));
+    REQUIRE_FALSE(committed.error.IsOk());
+    REQUIRE(committed.error.code == rt2::core::Error::InvalidEntity);
+    CHECK(committed.error.detail.find("uniquely resolvable") != std::string::npos);
+    checkZero();
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test C1-3 - a plan prepared against document A cannot be applied to a
+// same-looking replacement document B. UUIDs, schema, and markers match, but
+// ReplaceAuthoringDocument advances the generation token.
+//
+// Discrimination fault (RED observed, then restored GREEN): remove the Commit
+// document-generation equality check (SceneManager.cpp:5789-5791). The plan
+// removes the marker from replacement B and the zero-change checks go RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: Commit rejects a plan from a replaced document")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c1_generation");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto transform = S2Key("transform");
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    auto add = f.manager.PreparePrefabMarkerEdits({ { rootUuid, transform, false, true } },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(add.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(add.value)).anyStateChange);
+
+    auto removal = f.manager.PreparePrefabMarkerEdits({ { rootUuid, transform, true, false } },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+        SceneSerializer::SchemaVersion);
+    REQUIRE(removal.IsOk());
+
+    SceneDocument replacement;
+    DeterministicUuidProvider replacementIds;
+    replacement.SetUuidProvider(&replacementIds);
+    Error cloneError;
+    REQUIRE(SceneSerializer::CloneInMemory(f.manager.AuthoringDoc(), replacement, cloneError));
+    f.manager.ReplaceAuthoringDocument(std::move(replacement), f.manager.AuthoringRevision());
+    const auto generationB = f.manager.DocumentGeneration();
+    const auto revisionB = f.manager.AuthoringRevision();
+    const bool dirtyB = f.manager.IsDirty();
+
+    const auto committed = f.manager.CommitPrefabMarkerPlan(std::move(removal.value));
+    REQUIRE_FALSE(committed.error.IsOk());
+    REQUIRE(committed.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(committed.error.detail.find("generation changed") != std::string::npos);
+    CHECK(f.manager.DocumentGeneration() == generationB);
+    CHECK(f.manager.AuthoringRevision() == revisionB);
+    CHECK(f.manager.IsDirty() == dirtyB);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    auto current = f.manager.GetOverrides(rootUuid);
+    REQUIRE(current.IsOk());
+    REQUIRE(current.value.size() == 1);
+    CHECK(current.value[0] == transform);
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// Test C1-4 - both directional schema fields are bounded at the public seam.
+// Prepare rejects ordinary unsupported command-captured versions; Commit
+// rejects forged source/target values before any member, schema, dirty, or
+// revision write.
+//
+// Discrimination fault (RED observed, then restored GREEN): remove the
+// inSupportedRange guard in S5ValidateSchemaTransition (SceneManager.cpp:
+// 5438-5452). The above-current and below-readable cases stage or commit and
+// the SchemaVersion assertions below go RED.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: Prepare and Commit reject schema bounds tampering")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c1_schema_bounds");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto transform = S2Key("transform");
+    const auto liveSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto above = SceneSerializer::SchemaVersion + 1;
+    const auto below = SceneSerializer::MinReadVersion - 1;
+    const auto revision0 = f.manager.AuthoringRevision();
+    const bool dirty0 = f.manager.IsDirty();
+    const auto generation0 = f.manager.DocumentGeneration();
+    const auto checkZero = [&] {
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == liveSchema);
+        CHECK(f.manager.AuthoringRevision() == revision0);
+        CHECK(f.manager.IsDirty() == dirty0);
+        CHECK(f.manager.DocumentGeneration() == generation0);
+        auto current = f.manager.GetOverrides(rootUuid);
+        REQUIRE(current.IsOk());
+        CHECK(current.value.empty());
+    };
+
+    auto prepareAbove = f.manager.PreparePrefabMarkerEdits(
+        { { rootUuid, transform, false, true } }, PrefabMarkerDirection::After,
+        liveSchema, above);
+    REQUIRE_FALSE(prepareAbove.IsOk());
+    REQUIRE(prepareAbove.error.code == rt2::core::Error::SchemaVersion);
+    checkZero();
+
+    auto prepareBelow = f.manager.PreparePrefabMarkerEdits(
+        { { rootUuid, transform, false, true } }, PrefabMarkerDirection::After,
+        liveSchema, below);
+    REQUIRE_FALSE(prepareBelow.IsOk());
+    REQUIRE(prepareBelow.error.code == rt2::core::Error::SchemaVersion);
+    checkZero();
+
+    auto emptyAbove = f.manager.PreparePrefabMarkerEdits(
+        {}, PrefabMarkerDirection::After, liveSchema, above);
+    REQUIRE_FALSE(emptyAbove.IsOk());
+    REQUIRE(emptyAbove.error.code == rt2::core::Error::SchemaVersion);
+    auto emptyBelow = f.manager.PreparePrefabMarkerEdits(
+        {}, PrefabMarkerDirection::After, liveSchema, below);
+    REQUIRE_FALSE(emptyBelow.IsOk());
+    REQUIRE(emptyBelow.error.code == rt2::core::Error::SchemaVersion);
+    checkZero();
+
+    const auto forge = [&](std::uint32_t source, std::uint32_t target) {
+        PrefabMarkerPlan plan;
+        plan.direction = PrefabMarkerDirection::After;
+        plan.sourceSchemaVersion = source;
+        plan.targetSchemaVersion = target;
+        plan.documentGeneration = generation0;
+        plan.anyStateChange = true;
+        PrefabMarkerPlan::MemberTransition t;
+        t.member = rootUuid;
+        t.source = {};
+        t.target = { transform };
+        plan.members.push_back(std::move(t));
+        return f.manager.CommitPrefabMarkerPlan(std::move(plan));
+    };
+    for (const auto [source, target] : {
+             std::pair<std::uint32_t, std::uint32_t>{ liveSchema, above },
+             { liveSchema, below },
+             { above, liveSchema },
+             { below, liveSchema },
+         })
+    {
+        const auto committed = forge(source, target);
+        REQUIRE_FALSE(committed.error.IsOk());
+        REQUIRE(committed.error.code == rt2::core::Error::SchemaVersion);
+        checkZero();
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// C2 typed composite transaction. The value and marker halves validate before
+// either writes, share one generation, and notify once for a real change.
+// ---------------------------------------------------------------------------
+TEST_CASE("Phase 8 W3: typed composite value-marker transaction is atomic")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c2_composite");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto transform = S2Key("transform");
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto name0 = f.manager.GetEntityName({ rootHandle });
+    const auto revision0 = f.manager.AuthoringRevision();
+    const bool dirty0 = f.manager.IsDirty();
+
+    const auto checkInitial = [&] {
+        CHECK(f.manager.AuthoringRevision() == revision0);
+        CHECK(f.manager.IsDirty() == dirty0);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == schema0);
+        auto marker = f.manager.GetOverrides(rootUuid);
+        REQUIRE(marker.IsOk());
+        CHECK(marker.value.empty());
+        CHECK(f.manager.GetEntityName({ rootHandle }) == name0);
+    };
+
+    // Value validation failure: marker and value remain untouched.
+    PrefabValueEdit badValue{ PrefabValueKind::EntityName, rootUuid,
+        PrefabMarkerDirection::After, std::string("not-live"), std::string("new") };
+    auto markerAdd = PrefabMarkerEdit{ rootUuid, transform, false, true };
+    auto bad = f.manager.PreparePrefabCompositeEdits({ badValue }, { markerAdd },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(bad.IsOk());
+    REQUIRE(bad.error.code == rt2::core::Error::InvalidArgument);
+    checkInitial();
+
+    // Marker validation failure: the valid value is not staged into live state.
+    PrefabValueEdit goodValue{ PrefabValueKind::EntityName, rootUuid,
+        PrefabMarkerDirection::After, name0, std::string("Composite") };
+    auto badMarker = PrefabMarkerEdit{ rootUuid, S2Key("meshRef"), false, true };
+    auto badMarkerPlan = f.manager.PreparePrefabCompositeEdits({ goodValue }, { badMarker },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(badMarkerPlan.IsOk());
+    REQUIRE(badMarkerPlan.error.code == rt2::core::Error::InvalidArgument);
+    checkInitial();
+
+    // Successful value+marker: one revision and one authoritative result.
+    auto goodPlan = f.manager.PreparePrefabCompositeEdits({ goodValue }, { markerAdd },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(goodPlan.IsOk());
+    const auto committed = f.manager.CommitPrefabCompositePlan(std::move(goodPlan.value));
+    REQUIRE(committed.error.IsOk());
+    REQUIRE(committed.anyStateChange);
+    REQUIRE(committed.appliedValueOperations == 1);
+    REQUIRE(committed.appliedMarkerMembers == 1);
+    REQUIRE(committed.syncImpact == rt2::core::SyncImpact::None);
+    REQUIRE(f.manager.AuthoringRevision() == revision0 + 1);
+    REQUIRE(f.manager.GetEntityName({ rootHandle }) == "Composite");
+    auto marked = f.manager.GetOverrides(rootUuid);
+    REQUIRE(marked.IsOk());
+    REQUIRE(marked.value.size() == 1);
+    CHECK(marked.value[0] == transform);
+    CHECK(std::find(committed.affectedEntities.begin(), committed.affectedEntities.end(), rootUuid)
+        != committed.affectedEntities.end());
+
+    // Genuine combined no-op: zero revision/dirty churn.
+    PrefabValueEdit noopValue{ PrefabValueKind::EntityName, rootUuid,
+        PrefabMarkerDirection::After, std::string("Composite"), std::string("Composite") };
+    auto noopMarker = PrefabMarkerEdit{ rootUuid, transform, true, true };
+    auto noopPlan = f.manager.PreparePrefabCompositeEdits({ noopValue }, { noopMarker },
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+        SceneSerializer::SchemaVersion);
+    REQUIRE(noopPlan.IsOk());
+    const auto revisionAfter = f.manager.AuthoringRevision();
+    const auto noopResult = f.manager.CommitPrefabCompositePlan(std::move(noopPlan.value));
+    REQUIRE(noopResult.error.IsOk());
+    REQUIRE_FALSE(noopResult.anyStateChange);
+    CHECK(noopResult.appliedValueOperations == 0);
+    CHECK(noopResult.appliedMarkerMembers == 0);
+    CHECK(f.manager.AuthoringRevision() == revisionAfter);
+
+    // Stale value source after preparation: no marker or value write.
+    auto stalePlan = f.manager.PreparePrefabCompositeEdits({ noopValue }, {},
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+        SceneSerializer::SchemaVersion);
+    REQUIRE(stalePlan.IsOk());
+    reg.get<NameComponent>(rootHandle).name = "changed underneath";
+    const auto staleRevision = f.manager.AuthoringRevision();
+    const auto staleResult = f.manager.CommitPrefabCompositePlan(std::move(stalePlan.value));
+    REQUIRE_FALSE(staleResult.error.IsOk());
+    CHECK(f.manager.AuthoringRevision() == staleRevision);
+    CHECK(f.manager.GetEntityName({ rootHandle }) == "changed underneath");
+
+    // A same-looking replacement document is still a different transaction
+    // source. The generation check must reject it before any write.
+    auto generationPlan = f.manager.PreparePrefabCompositeEdits(
+        { PrefabValueEdit{ PrefabValueKind::EntityName, rootUuid,
+            PrefabMarkerDirection::After, std::string("changed underneath"),
+            std::string("replacement must not apply") } }, {},
+        PrefabMarkerDirection::After, schema0, schema0);
+    REQUIRE(generationPlan.IsOk());
+    SceneDocument replacement;
+    DeterministicUuidProvider replacementIds;
+    replacement.SetUuidProvider(&replacementIds);
+    Error cloneError;
+    REQUIRE(SceneSerializer::CloneInMemory(f.manager.AuthoringDoc(), replacement, cloneError));
+    f.manager.ReplaceAuthoringDocument(std::move(replacement), f.manager.AuthoringRevision());
+    const auto replacementRevision = f.manager.AuthoringRevision();
+    const bool replacementDirty = f.manager.IsDirty();
+    const auto generationResult = f.manager.CommitPrefabCompositePlan(std::move(generationPlan.value));
+    REQUIRE_FALSE(generationResult.error.IsOk());
+    CHECK(generationResult.error.detail.find("generation changed") != std::string::npos);
+    CHECK(f.manager.AuthoringRevision() == replacementRevision);
+    CHECK(f.manager.IsDirty() == replacementDirty);
+    CHECK(f.manager.GetEntityName({ rootHandle }) == "changed underneath");
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3: typed composite material-slot fan-out is atomic")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c2_material");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID rootUuid = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID childUuid = reg.get<EntityIdComponent>(childHandle).id;
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<MeshRef>(childHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(childHandle);
+    const auto before = f.manager.GetMaterial(0);
+    auto after = before;
+    after.baseColor = { 0.2f, 0.4f, 0.6f };
+    const auto schema0 = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto revision0 = f.manager.AuthoringRevision();
+    PrefabValueEdit slot;
+    slot.kind = PrefabValueKind::MaterialSlotProperties;
+    slot.direction = PrefabMarkerDirection::After;
+    slot.before = PrefabMaterialSlotValue{ 0, before, {} };
+    slot.after = PrefabMaterialSlotValue{ 0, after, {} };
+    const auto marker = PrefabMarkerEdit{ rootUuid, S2Key("transform"), false, true };
+    auto plan = f.manager.PreparePrefabCompositeEdits({ slot }, { marker },
+        PrefabMarkerDirection::After, schema0, SceneSerializer::SchemaVersion);
+    REQUIRE(plan.IsOk());
+    const auto result = f.manager.CommitPrefabCompositePlan(std::move(plan.value));
+    REQUIRE(result.error.IsOk());
+    REQUIRE(result.anyStateChange);
+    REQUIRE(result.syncImpact == rt2::core::SyncImpact::Material);
+    REQUIRE(f.manager.AuthoringRevision() == revision0 + 1);
+    CHECK(f.manager.GetMaterial(0).baseColor == after.baseColor);
+    auto* rootOverride = reg.try_get<MaterialOverrideComponent>(rootHandle);
+    auto* childOverride = reg.try_get<MaterialOverrideComponent>(childHandle);
+    REQUIRE(rootOverride);
+    REQUIRE(childOverride);
+    CHECK(rootOverride->material.baseColor == after.baseColor);
+    CHECK(childOverride->material.baseColor == after.baseColor);
+    CHECK(std::find(result.affectedEntities.begin(), result.affectedEntities.end(), childUuid)
+        != result.affectedEntities.end());
+
+    // Missing fan-out member after preparation: all raw state remains intact.
+    auto after2 = after;
+    after2.baseColor = { 0.7f, 0.3f, 0.1f };
+    PrefabValueEdit slot2;
+    slot2.kind = PrefabValueKind::MaterialSlotProperties;
+    slot2.direction = PrefabMarkerDirection::After;
+    slot2.before = PrefabMaterialSlotValue{ 0, after, {} };
+    slot2.after = PrefabMaterialSlotValue{ 0, after2, {} };
+    auto stale = f.manager.PreparePrefabCompositeEdits({ slot2 }, {},
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+        SceneSerializer::SchemaVersion);
+    REQUIRE(stale.IsOk());
+    const auto materialBeforeFailure = f.manager.GetMaterial(0);
+    const auto revisionBeforeFailure = f.manager.AuthoringRevision();
+
+    // A fan-out member without a durable ID cannot be represented in a
+    // public plan and must fail at Prepare, without touching any state.
+    reg.remove<EntityIdComponent>(childHandle);
+    const auto missingIdRevision = f.manager.AuthoringRevision();
+    const auto missingIdMaterial = f.manager.GetMaterial(0);
+    auto missingId = f.manager.PreparePrefabCompositeEdits({ slot2 }, {},
+        PrefabMarkerDirection::After, SceneSerializer::SchemaVersion,
+        SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(missingId.IsOk());
+    REQUIRE(missingId.error.code == rt2::core::Error::InvalidEntity);
+    CHECK(missingId.error.detail.find("durable") != std::string::npos);
+    CHECK(f.manager.AuthoringRevision() == missingIdRevision);
+    CHECK(f.manager.GetMaterial(0).baseColor == missingIdMaterial.baseColor);
+
+    reg.destroy(childHandle);
+    const auto failed = f.manager.CommitPrefabCompositePlan(std::move(stale.value));
+    REQUIRE_FALSE(failed.error.IsOk());
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeFailure);
+    CHECK(f.manager.GetMaterial(0).baseColor == materialBeforeFailure.baseColor);
+    CHECK(reg.try_get<MaterialOverrideComponent>(rootHandle) != nullptr);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: bypassing the duplicate-UUID insertion guard makes the first
+// duplicate-order REQUIRE_FALSE below fail; restore the guard before GREEN.
+TEST_CASE("Phase 8 W3: material fan-out plans require an exact live UUID set and bytes")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c3b_material_exact");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID child = reg.get<EntityIdComponent>(childHandle).id;
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<MeshRef>(childHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(childHandle);
+
+    const auto before = f.manager.GetMaterial(0);
+    auto after = before;
+    after.baseColor = { 0.15f, 0.35f, 0.85f };
+    auto makeOverride = [&](const SceneMaterial& material) {
+        MaterialOverrideComponent value;
+        value.material = material;
+        value.authored = true;
+        value.materialIndex = 0;
+        return std::optional<MaterialOverrideComponent>{ value };
+    };
+    const auto sourceMembers = std::vector<std::pair<UUID,
+        std::optional<MaterialOverrideComponent>>>{ { root, std::nullopt },
+        { child, std::nullopt } };
+    const auto targetMembers = std::vector<std::pair<UUID,
+        std::optional<MaterialOverrideComponent>>>{ { root, makeOverride(after) },
+        { child, makeOverride(after) } };
+    const auto makeEdit = [&](const auto& source, const auto& target) {
+        return PrefabValueEdit{ PrefabValueKind::MaterialSlotProperties, {},
+            PrefabMarkerDirection::After,
+            PrefabMaterialSlotValue{ 0, before, source },
+            PrefabMaterialSlotValue{ 0, after, target } };
+    };
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    // RED proof: bypassing canonical authored/source-key target validation
+    // makes this forged-target REQUIRE_FALSE fail; restore it before GREEN.
+    auto forgedTarget = targetMembers;
+    for (auto& member : forgedTarget)
+    {
+        member.second->authored = false;
+        member.second->sourceMaterialKey = "forged-source";
+    }
+    auto forgedTargetPlan = f.manager.PreparePrefabCompositeEdits(
+        { makeEdit(sourceMembers, forgedTarget) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(forgedTargetPlan.IsOk());
+
+    auto duplicate = sourceMembers;
+    duplicate.push_back({ root, std::nullopt });
+    auto duplicateFirst = f.manager.PreparePrefabCompositeEdits(
+        { makeEdit(duplicate, targetMembers) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(duplicateFirst.IsOk());
+    auto duplicateLast = sourceMembers;
+    duplicateLast.insert(duplicateLast.begin(), { root, std::nullopt });
+    auto duplicateSecond = f.manager.PreparePrefabCompositeEdits(
+        { makeEdit(duplicateLast, targetMembers) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(duplicateSecond.IsOk());
+
+    auto missing = std::vector<std::pair<UUID,
+        std::optional<MaterialOverrideComponent>>>{ { root, std::nullopt } };
+    auto missingResult = f.manager.PreparePrefabCompositeEdits(
+        { makeEdit(missing, targetMembers) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(missingResult.IsOk());
+    auto extra = sourceMembers;
+    extra.push_back({ UUID::Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"), std::nullopt });
+    auto extraResult = f.manager.PreparePrefabCompositeEdits(
+        { makeEdit(extra, targetMembers) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(extraResult.IsOk());
+
+    // RED proof: bypassing source-byte comparison makes the stale commit
+    // REQUIRE_FALSE below fail; restore the comparison before GREEN.
+    auto valid = f.manager.PreparePrefabCompositeEdits(
+        { makeEdit(sourceMembers, targetMembers) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(valid.IsOk());
+    auto* childOverride = reg.try_get<MaterialOverrideComponent>(childHandle);
+    REQUIRE(childOverride == nullptr);
+    auto staleOverride = makeOverride(before);
+    reg.emplace_or_replace<MaterialOverrideComponent>(childHandle, *staleOverride);
+    const auto materialBefore = f.manager.GetMaterial(0);
+    const auto revisionBefore = f.manager.AuthoringRevision();
+    const auto stale = f.manager.CommitPrefabCompositePlan(std::move(valid.value));
+    REQUIRE_FALSE(stale.error.IsOk());
+    CHECK(f.manager.GetMaterial(0).baseColor == materialBefore.baseColor);
+    CHECK(f.manager.AuthoringRevision() == revisionBefore);
+    reg.remove<MaterialOverrideComponent>(childHandle);
+
+    auto changed = f.manager.PreparePrefabCompositeEdits(
+        { makeEdit(sourceMembers, targetMembers) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(changed.IsOk());
+    reg.get<MeshRef>(childHandle).materialIndex = 1;
+    const auto revisionBeforeMeshChange = f.manager.AuthoringRevision();
+    const auto changedResult = f.manager.CommitPrefabCompositePlan(std::move(changed.value));
+    REQUIRE_FALSE(changedResult.error.IsOk());
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeMeshChange);
+    CHECK(f.manager.GetMaterial(0).baseColor == materialBefore.baseColor);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: bypassing the resolver's sidecar-conflict diagnostic makes the
+// conflict REQUIRE_FALSE below fail; restore it before the focused GREEN run.
+TEST_CASE("Phase 8 W3: composite script binding stages durable identity before commit")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c3b_script_binding");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    const UUID root = f.manager.GetECS().registry.get<EntityIdComponent>(rootHandle).id;
+    rt2::core::AssetResolutionContext context;
+    context.assetRoot = dir;
+    f.manager.SetAssetResolutionContext(context);
+    const auto scriptAPath = dir / "first.lua";
+    const auto scriptBPath = dir / "second.lua";
+    const auto scriptCPath = dir / "conflict.lua";
+    S2WriteRaw(scriptAPath, "return 1\n");
+    S2WriteRaw(scriptBPath, "return 2\n");
+    S2WriteRaw(scriptCPath, "return 3\n");
+    ScriptComponent scriptA;
+    scriptA.asset.kind = AssetKind::Script;
+    scriptA.asset.path = "first.lua";
+    scriptA.asset.sourceKey = "lua:asset=first.lua";
+    ScriptComponent scriptB = scriptA;
+    scriptB.asset.path = "second.lua";
+    scriptB.asset.sourceKey = "lua:asset=second.lua";
+    ScriptComponent scriptC = scriptA;
+    scriptC.asset.path = "conflict.lua";
+    scriptC.asset.sourceKey = "lua:asset=conflict.lua";
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto absent = std::optional<ScriptComponent>{};
+    const auto revisionBeforeAdd = f.manager.AuthoringRevision();
+    const auto sidecarA = rt2::core::AssetSidecarPath(scriptAPath);
+    auto invalidMarker = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            absent, std::optional<ScriptComponent>{ scriptA } } },
+        { PrefabMarkerEdit{ root, S2Key("meshRef"), false, true } },
+        PrefabMarkerDirection::After, schema, SceneSerializer::SchemaVersion);
+    REQUIRE_FALSE(invalidMarker.IsOk());
+    CHECK_FALSE(std::filesystem::exists(sidecarA));
+    auto add = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            absent, std::optional<ScriptComponent>{ scriptA } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(add.IsOk());
+    REQUIRE(std::filesystem::exists(sidecarA));
+    Error sidecarError;
+    const auto assignedA = rt2::core::ReadSidecarId(sidecarA, sidecarError);
+    REQUIRE(sidecarError.IsOk());
+    REQUIRE_FALSE(assignedA.IsNull());
+    const auto sidecarBytesBeforeCommit = S2ReadFile(sidecarA);
+    const auto addResult = f.manager.CommitPrefabCompositePlan(std::move(add.value));
+    REQUIRE(addResult.error.IsOk());
+    REQUIRE(f.manager.AuthoringRevision() == revisionBeforeAdd + 1);
+    REQUIRE(f.manager.GetECS().registry.get<ScriptComponent>(rootHandle).asset.assetId == assignedA);
+    CHECK(S2ReadFile(sidecarA) == sidecarBytesBeforeCommit);
+    scriptA.asset.assetId = assignedA;
+
+    const auto revisionAfterAdd = f.manager.AuthoringRevision();
+    auto noop = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            std::optional<ScriptComponent>{ f.manager.GetECS().registry.get<ScriptComponent>(rootHandle) },
+            std::optional<ScriptComponent>{ scriptA } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(noop.IsOk());
+    const auto noopResult = f.manager.CommitPrefabCompositePlan(std::move(noop.value));
+    REQUIRE(noopResult.error.IsOk());
+    CHECK_FALSE(noopResult.anyStateChange);
+    CHECK(f.manager.AuthoringRevision() == revisionAfterAdd);
+
+    auto remove = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            std::optional<ScriptComponent>{ f.manager.GetECS().registry.get<ScriptComponent>(rootHandle) },
+            absent } }, {}, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(remove.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(remove.value)).error.IsOk());
+
+    auto rebind = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            absent, std::optional<ScriptComponent>{ scriptB } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(rebind.IsOk());
+    const auto sidecarB = rt2::core::AssetSidecarPath(scriptBPath);
+    REQUIRE(std::filesystem::exists(sidecarB));
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(rebind.value)).error.IsOk());
+    const auto assignedB = f.manager.GetECS().registry.get<ScriptComponent>(rootHandle).asset.assetId;
+    REQUIRE_FALSE(assignedB.IsNull());
+
+    auto samePath = scriptB;
+    samePath.asset.assetId = UUID::Nil();
+    auto reuse = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            std::optional<ScriptComponent>{ f.manager.GetECS().registry.get<ScriptComponent>(rootHandle) },
+            std::optional<ScriptComponent>{ samePath } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(reuse.IsOk());
+    CHECK(std::get<std::optional<ScriptComponent>>(
+        reuse.value.values.operations.front().target).value().asset.assetId == assignedB);
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(reuse.value)).error.IsOk());
+    CHECK(f.manager.GetECS().registry.get<ScriptComponent>(rootHandle).asset.assetId == assignedB);
+
+    UUID conflictingId = f.manager.ReserveKnownUuid();
+    Error writeError;
+    REQUIRE(rt2::core::WriteSidecarId(rt2::core::AssetSidecarPath(scriptCPath), conflictingId, writeError));
+    scriptC.asset.assetId = assignedA;
+    const auto revisionBeforeConflict = f.manager.AuthoringRevision();
+    auto conflict = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            std::optional<ScriptComponent>{ f.manager.GetECS().registry.get<ScriptComponent>(rootHandle) },
+            std::optional<ScriptComponent>{ scriptC } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(conflict.IsOk());
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeConflict);
+
+    auto removeB = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            std::optional<ScriptComponent>{ f.manager.GetECS().registry.get<ScriptComponent>(rootHandle) },
+            absent } }, {}, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(removeB.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(removeB.value)).error.IsOk());
+    auto beforeUndo = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            absent, std::optional<ScriptComponent>{ scriptA } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(beforeUndo.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(beforeUndo.value)).error.IsOk());
+    auto before = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::Before,
+            absent, std::optional<ScriptComponent>{ scriptA } } }, {},
+        PrefabMarkerDirection::Before, schema, schema);
+    REQUIRE(before.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(before.value)).error.IsOk());
+    CHECK_FALSE(f.manager.GetECS().registry.all_of<ScriptComponent>(rootHandle));
+
+    ScriptComponent missingScript = scriptA;
+    missingScript.asset.path = "missing.lua";
+    missingScript.asset.sourceKey = "lua:asset=missing.lua";
+    missingScript.asset.assetId = UUID::Nil();
+    const auto missingSidecar = rt2::core::AssetSidecarPath(dir / "missing.lua");
+    auto missingPlan = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            absent, std::optional<ScriptComponent>{ missingScript } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(missingPlan.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(missingPlan.value)).error.IsOk());
+    CHECK_FALSE(std::filesystem::exists(missingSidecar));
+    CHECK(f.manager.GetECS().registry.get<ScriptComponent>(rootHandle).asset.assetId.IsNull());
+    REQUIRE(f.manager.SetScriptState(root, absent).error.IsOk());
+
+    // A malformed sidecar is a resolver failure, not a missing source file:
+    // ordinary and composite paths must reject it before authoring mutation.
+    const auto malformedAsset = dir / "malformed.lua";
+    S2WriteRaw(malformedAsset, "return 6\n");
+    const auto malformedSidecar = rt2::core::AssetSidecarPath(malformedAsset);
+    S2WriteRaw(malformedSidecar, "not-a-uuid\n");
+    ScriptComponent malformedScript = scriptA;
+    malformedScript.asset.path = "malformed.lua";
+    malformedScript.asset.sourceKey = "lua:asset=malformed.lua";
+    malformedScript.asset.assetId = UUID::Nil();
+    const auto malformedRevision = f.manager.AuthoringRevision();
+    const auto ordinaryMalformed = f.manager.SetScriptState(root,
+        std::optional<ScriptComponent>{ malformedScript });
+    REQUIRE_FALSE(ordinaryMalformed.error.IsOk());
+    CHECK(ordinaryMalformed.error.detail.find("resolution failed") != std::string::npos);
+    CHECK_FALSE(f.manager.GetECS().registry.all_of<ScriptComponent>(rootHandle));
+    CHECK(f.manager.AuthoringRevision() == malformedRevision);
+    auto compositeMalformed = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            absent, std::optional<ScriptComponent>{ malformedScript } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(compositeMalformed.IsOk());
+    CHECK(compositeMalformed.error.detail.find("resolution failed") != std::string::npos);
+    CHECK_FALSE(f.manager.GetECS().registry.all_of<ScriptComponent>(rootHandle));
+    CHECK(f.manager.AuthoringRevision() == malformedRevision);
+
+    // A genuinely different explicit destination ID is durable even when the
+    // destination has no sidecar; Commit must then be read-only for identity.
+    const auto explicitAsset = dir / "explicit.lua";
+    S2WriteRaw(explicitAsset, "return 7\n");
+    ScriptComponent explicitScript = scriptA;
+    explicitScript.asset.path = "explicit.lua";
+    explicitScript.asset.sourceKey = "lua:asset=explicit.lua";
+    const UUID explicitId = f.manager.ReserveKnownUuid();
+    explicitScript.asset.assetId = explicitId;
+    const auto explicitSidecar = rt2::core::AssetSidecarPath(explicitAsset);
+    auto explicitPlan = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            absent, std::optional<ScriptComponent>{ explicitScript } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(explicitPlan.IsOk());
+    Error explicitReadError;
+    CHECK(rt2::core::ReadSidecarId(explicitSidecar, explicitReadError) == explicitId);
+    REQUIRE(explicitReadError.IsOk());
+    const auto explicitSidecarBytes = S2ReadFile(explicitSidecar);
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(explicitPlan.value)).error.IsOk());
+    CHECK(f.manager.GetECS().registry.get<ScriptComponent>(rootHandle).asset.assetId == explicitId);
+    CHECK(S2ReadFile(explicitSidecar) == explicitSidecarBytes);
+
+    const auto writeFailAsset = dir / "write-fail.lua";
+    S2WriteRaw(writeFailAsset, "return 5\n");
+    const auto writeFailSidecar = rt2::core::AssetSidecarPath(writeFailAsset);
+    std::error_code sidecarDirectoryError;
+    std::filesystem::create_directory(writeFailSidecar, sidecarDirectoryError);
+    REQUIRE_FALSE(sidecarDirectoryError);
+    bool mintedOnWriteFailure = false;
+    Error writeFailure;
+    const auto failureId = rt2::core::ResolveOrAssign(writeFailAsset,
+        f.ids, mintedOnWriteFailure, writeFailure);
+    CHECK_FALSE(writeFailure.IsOk());
+    CHECK(mintedOnWriteFailure);
+    CHECK_FALSE(failureId.IsNull());
+    std::filesystem::remove_all(writeFailSidecar);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3: composite direction reverses typed value source and target")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c3a_direction");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    auto cycle = [&](PrefabValueEdit edit) {
+        edit.direction = PrefabMarkerDirection::After;
+        auto execute = f.manager.PreparePrefabCompositeEdits({ edit }, {},
+            PrefabMarkerDirection::After, schema, schema);
+        REQUIRE(execute.IsOk());
+        REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(execute.value)).error.IsOk());
+        edit.direction = PrefabMarkerDirection::Before;
+        auto undo = f.manager.PreparePrefabCompositeEdits({ edit }, {},
+            PrefabMarkerDirection::Before, schema, schema);
+        REQUIRE(undo.IsOk());
+        REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(undo.value)).error.IsOk());
+    };
+
+    const auto name = f.manager.GetEntityName({ rootHandle });
+    cycle({ PrefabValueKind::EntityName, root, PrefabMarkerDirection::After,
+        name, std::string("direction-name") });
+    CHECK(f.manager.GetEntityName({ rootHandle }) == name);
+
+    LightComponent lightBefore;
+    reg.emplace_or_replace<LightComponent>(rootHandle, lightBefore);
+    auto lightAfter = lightBefore; lightAfter.intensity = 3.0f;
+    cycle({ PrefabValueKind::LightProperties, root, PrefabMarkerDirection::After,
+        lightBefore, lightAfter });
+    CHECK(reg.get<LightComponent>(rootHandle).intensity == lightBefore.intensity);
+
+    CameraComponent cameraBefore;
+    reg.emplace_or_replace<CameraComponent>(rootHandle, cameraBefore);
+    auto cameraAfter = cameraBefore; cameraAfter.verticalFOV = 63.0f;
+    cycle({ PrefabValueKind::CameraProperties, root, PrefabMarkerDirection::After,
+        cameraBefore, cameraAfter });
+    CHECK(reg.get<CameraComponent>(rootHandle).verticalFOV == cameraBefore.verticalFOV);
+
+    const auto& tf = reg.get<Transform>(rootHandle);
+    EditableTRS localBefore{ tf.translation, tf.rotation, tf.scale };
+    auto localAfter = localBefore; localAfter.translation.x = 2.0f;
+    cycle({ PrefabValueKind::LocalTransform, root, PrefabMarkerDirection::After,
+        localBefore, localAfter });
+    CHECK(reg.get<Transform>(rootHandle).translation == localBefore.translation);
+
+    PrefabCameraPoseValue poseBefore{ localBefore, cameraBefore };
+    auto poseAfter = poseBefore; poseAfter.local.translation.y = 4.0f;
+    cycle({ PrefabValueKind::CameraPose, root, PrefabMarkerDirection::After,
+        poseBefore, poseAfter });
+    CHECK(reg.get<Transform>(rootHandle).translation == localBefore.translation);
+
+    std::optional<MotionComponent> motionBefore;
+    auto motionAfter = MotionComponent{}; motionAfter.linearVelocity = { 1.0f, 2.0f, 3.0f };
+    cycle({ PrefabValueKind::MotionState, root, PrefabMarkerDirection::After,
+        motionBefore, std::optional<MotionComponent>{ motionAfter } });
+    CHECK_FALSE(reg.all_of<MotionComponent>(rootHandle));
+
+    // Script add/remove is a genuine directional cycle, including durable
+    // identity revalidation on the Before half.
+    S2WriteRaw(dir / "direction.lua", "return 4\n");
+    rt2::core::AssetResolutionContext scriptContext;
+    scriptContext.assetRoot = dir;
+    f.manager.SetAssetResolutionContext(scriptContext);
+    ScriptComponent scriptAfter;
+    scriptAfter.asset.kind = AssetKind::Script;
+    scriptAfter.asset.path = "direction.lua";
+    scriptAfter.asset.sourceKey = "lua:asset=direction.lua";
+    auto scriptAdd = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::After,
+            std::optional<ScriptComponent>{}, std::optional<ScriptComponent>{ scriptAfter } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(scriptAdd.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(scriptAdd.value)).error.IsOk());
+    const auto storedScript = reg.get<ScriptComponent>(rootHandle);
+    auto scriptUndo = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::ScriptState, root, PrefabMarkerDirection::Before,
+            std::optional<ScriptComponent>{}, std::optional<ScriptComponent>{ storedScript } } }, {},
+        PrefabMarkerDirection::Before, schema, schema);
+    REQUIRE(scriptUndo.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(scriptUndo.value)).error.IsOk());
+    CHECK_FALSE(reg.all_of<ScriptComponent>(rootHandle));
+
+    f.manager.AddMaterial(SceneMaterial{});
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    MaterialOverrideComponent indexBeforeOverride;
+    indexBeforeOverride.material = f.manager.GetMaterial(0);
+    indexBeforeOverride.authored = true;
+    indexBeforeOverride.sourceMaterialKey = indexBeforeOverride.material.sourceKey;
+    indexBeforeOverride.materialIndex = 0;
+    MaterialOverrideComponent indexAfterOverride = indexBeforeOverride;
+    indexAfterOverride.material = f.manager.GetMaterial(1);
+    indexAfterOverride.sourceMaterialKey = indexAfterOverride.material.sourceKey;
+    indexAfterOverride.materialIndex = 1;
+    reg.emplace_or_replace<MaterialOverrideComponent>(rootHandle, indexBeforeOverride);
+    PrefabMaterialIndexValue indexBefore{ 0, indexBeforeOverride };
+    PrefabMaterialIndexValue indexAfter{ 1, indexAfterOverride };
+    cycle({ PrefabValueKind::MaterialIndex, root, PrefabMarkerDirection::After,
+        indexBefore, indexAfter });
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 0);
+    CHECK(reg.get<MaterialOverrideComponent>(rootHandle).materialIndex == 0);
+    CHECK(reg.get<MaterialOverrideComponent>(rootHandle).material.baseAlpha == indexBeforeOverride.material.baseAlpha);
+
+    const auto slotBefore = f.manager.GetMaterial(0);
+    auto slotAfter = slotBefore; slotAfter.baseAlpha = 0.8f;
+    reg.emplace_or_replace<MeshRef>(childHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(childHandle);
+    MaterialOverrideComponent slotBeforeOverride;
+    slotBeforeOverride.material = slotBefore;
+    slotBeforeOverride.authored = true;
+    slotBeforeOverride.sourceMaterialKey = slotBefore.sourceKey;
+    slotBeforeOverride.materialIndex = 0;
+    MaterialOverrideComponent slotAfterOverride = slotBeforeOverride;
+    slotAfterOverride.material = slotAfter;
+    slotAfterOverride.sourceMaterialKey = slotAfter.sourceKey;
+    const std::vector<std::pair<UUID, std::optional<MaterialOverrideComponent>>> slotSource{
+        { root, slotBeforeOverride }, { reg.get<EntityIdComponent>(childHandle).id, slotBeforeOverride } };
+    const std::vector<std::pair<UUID, std::optional<MaterialOverrideComponent>>> slotTarget{
+        { root, slotAfterOverride },
+        { reg.get<EntityIdComponent>(childHandle).id, slotAfterOverride } };
+    const std::vector<std::pair<UUID, std::optional<MaterialOverrideComponent>>> slotBeforeTarget{
+        { root, slotBeforeOverride },
+        { reg.get<EntityIdComponent>(childHandle).id, slotBeforeOverride } };
+    reg.emplace_or_replace<MaterialOverrideComponent>(rootHandle, slotBeforeOverride);
+    reg.emplace_or_replace<MaterialOverrideComponent>(childHandle, slotBeforeOverride);
+    cycle({ PrefabValueKind::MaterialSlotProperties, {}, PrefabMarkerDirection::After,
+        PrefabMaterialSlotValue{ 0, slotBefore, slotBeforeTarget },
+        PrefabMaterialSlotValue{ 0, slotAfter, slotTarget } });
+    CHECK(f.manager.GetMaterial(0).baseAlpha == slotBefore.baseAlpha);
+    CHECK(reg.get<MaterialOverrideComponent>(rootHandle).material.baseAlpha == slotBefore.baseAlpha);
+    CHECK(reg.get<MaterialOverrideComponent>(childHandle).material.baseAlpha == slotBefore.baseAlpha);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: forcing the MaterialSlot Before target through canonical After
+// derivation makes the undo REQUIRE_FALSE below fail; restore direction-aware
+// target staging before the GREEN run.  The captured snapshot deliberately
+// includes an absent override and an authored=false historical override.
+TEST_CASE("Phase 8 W3: material-slot Before restores exact captured fan-out snapshots")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s5_material_before_exact");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID child = reg.get<EntityIdComponent>(childHandle).id;
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<MeshRef>(childHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(childHandle);
+
+    const auto beforeMaterial = f.manager.GetMaterial(0);
+    auto afterMaterial = beforeMaterial;
+    afterMaterial.sourceKey = "canonical-after";
+    afterMaterial.baseColor = { 0.31f, 0.42f, 0.53f };
+    MaterialOverrideComponent historical;
+    historical.material = beforeMaterial;
+    historical.authored = false;
+    historical.sourceMaterialKey = "historical-source";
+    historical.materialIndex = 0;
+    MaterialOverrideComponent canonical;
+    canonical.material = afterMaterial;
+    canonical.authored = true;
+    canonical.sourceMaterialKey = afterMaterial.sourceKey;
+    canonical.materialIndex = 0;
+    const std::vector<std::pair<UUID, std::optional<MaterialOverrideComponent>>> capturedBefore{
+        { root, std::nullopt }, { child, historical } };
+    const std::vector<std::pair<UUID, std::optional<MaterialOverrideComponent>>> capturedAfter{
+        { root, canonical }, { child, canonical } };
+    reg.emplace_or_replace<MaterialOverrideComponent>(childHandle, historical);
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const PrefabValueEdit edit{ PrefabValueKind::MaterialSlotProperties, {},
+        PrefabMarkerDirection::After,
+        PrefabMaterialSlotValue{ 0, beforeMaterial, capturedBefore },
+        PrefabMaterialSlotValue{ 0, afterMaterial, capturedAfter } };
+
+    auto execute = f.manager.PreparePrefabCompositeEdits({ edit }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(execute.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(execute.value)).error.IsOk());
+    REQUIRE(reg.get<MaterialOverrideComponent>(rootHandle).authored);
+    REQUIRE(reg.get<MaterialOverrideComponent>(childHandle).authored);
+
+    auto undoEdit = edit;
+    undoEdit.direction = PrefabMarkerDirection::Before;
+    auto undo = f.manager.PreparePrefabCompositeEdits({ undoEdit }, {},
+        PrefabMarkerDirection::Before, schema, schema);
+    REQUIRE(undo.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(undo.value)).error.IsOk());
+    CHECK_FALSE(reg.all_of<MaterialOverrideComponent>(rootHandle));
+    const auto* restored = reg.try_get<MaterialOverrideComponent>(childHandle);
+    REQUIRE(restored);
+    CHECK_FALSE(restored->authored);
+    CHECK(restored->sourceMaterialKey == historical.sourceMaterialKey);
+    CHECK(restored->material.baseColor == historical.material.baseColor);
+    CHECK(restored->materialIndex == historical.materialIndex);
+
+    auto redo = f.manager.PreparePrefabCompositeEdits({ edit }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(redo.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(redo.value)).error.IsOk());
+    CHECK(reg.get<MaterialOverrideComponent>(rootHandle).authored);
+    CHECK(reg.get<MaterialOverrideComponent>(childHandle).authored);
+    CHECK(reg.get<MaterialOverrideComponent>(childHandle).sourceMaterialKey
+        == afterMaterial.sourceKey);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3: composite schema and canonical write-set invariants")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c3a_writes");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto name = f.manager.GetEntityName({ rootHandle });
+    const auto noChange = EditableTRS{ reg.get<Transform>(rootHandle).translation,
+        reg.get<Transform>(rootHandle).rotation, reg.get<Transform>(rootHandle).scale };
+	reg.emplace_or_replace<CameraComponent>(rootHandle, CameraComponent{});
+
+    auto valueSchema = f.manager.PreparePrefabCompositeEdits(
+        { PrefabValueEdit{ PrefabValueKind::EntityName, root,
+            PrefabMarkerDirection::After, name, std::string("value") } }, {},
+        PrefabMarkerDirection::After, schema, schema + 1);
+    REQUIRE_FALSE(valueSchema.IsOk());
+    REQUIRE(valueSchema.error.code == rt2::core::Error::InvalidArgument);
+
+    auto emptySchemaPlan = f.manager.PreparePrefabCompositeEdits({}, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(emptySchemaPlan.IsOk());
+    emptySchemaPlan.value.markers.targetSchemaVersion = schema - 1;
+    const auto emptySchemaRevision = f.manager.AuthoringRevision();
+    const bool emptySchemaDirty = f.manager.IsDirty();
+    const auto forgedSchemaResult = f.manager.CommitPrefabCompositePlan(
+        std::move(emptySchemaPlan.value));
+    REQUIRE_FALSE(forgedSchemaResult.error.IsOk());
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == schema);
+    CHECK(f.manager.AuthoringRevision() == emptySchemaRevision);
+    CHECK(f.manager.IsDirty() == emptySchemaDirty);
+
+    const auto poseBefore = PrefabCameraPoseValue{ noChange, CameraComponent{} };
+    auto poseAfter = poseBefore; poseAfter.local.translation.x = 1.0f;
+    auto cameraAfter = poseAfter.camera; cameraAfter.verticalFOV = 50.0f;
+    const auto camera = PrefabValueEdit{ PrefabValueKind::CameraProperties, root,
+        PrefabMarkerDirection::After, poseBefore.camera, cameraAfter };
+    const auto pose = PrefabValueEdit{ PrefabValueKind::CameraPose, root,
+        PrefabMarkerDirection::After, poseBefore, poseAfter };
+    auto conflict = f.manager.PreparePrefabCompositeEdits({ camera, pose }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(conflict.IsOk());
+    REQUIRE(conflict.error.code == rt2::core::Error::InvalidArgument);
+    auto reverseConflict = f.manager.PreparePrefabCompositeEdits({ pose, camera }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(reverseConflict.IsOk());
+
+    f.manager.AddMaterial(SceneMaterial{});
+    const auto material0 = f.manager.GetMaterial(0);
+    const auto material1 = f.manager.GetMaterial(1);
+    auto material0After = material0; material0After.baseAlpha = 0.5f;
+    auto material1After = material1; material1After.baseAlpha = 0.25f;
+    const auto slot0 = PrefabValueEdit{ PrefabValueKind::MaterialSlotProperties,
+        {}, PrefabMarkerDirection::After, PrefabMaterialSlotValue{ 0, material0, {} },
+        PrefabMaterialSlotValue{ 0, material0After, {} } };
+    const auto slot1 = PrefabValueEdit{ PrefabValueKind::MaterialSlotProperties,
+        {}, PrefabMarkerDirection::After, PrefabMaterialSlotValue{ 1, material1, {} },
+        PrefabMaterialSlotValue{ 1, material1After, {} } };
+    auto disjoint = f.manager.PreparePrefabCompositeEdits({ slot0, slot1 }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(disjoint.IsOk());
+    const auto disjointResult = f.manager.CommitPrefabCompositePlan(std::move(disjoint.value));
+    REQUIRE(disjointResult.error.IsOk());
+    CHECK(f.manager.GetMaterial(0).baseAlpha == material0After.baseAlpha);
+    CHECK(f.manager.GetMaterial(1).baseAlpha == material1After.baseAlpha);
+
+    PrefabValueEdit forged{ PrefabValueKind::EntityName, root,
+        PrefabMarkerDirection::After, name, std::string("forged") };
+    auto valid = f.manager.PreparePrefabCompositeEdits({ forged }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(valid.IsOk());
+    valid.value.values.operations[0].kind = static_cast<PrefabValueKind>(255);
+    const auto forgedResult = f.manager.CommitPrefabCompositePlan(std::move(valid.value));
+    REQUIRE_FALSE(forgedResult.error.IsOk());
+    REQUIRE(forgedResult.error.code == rt2::core::Error::InvalidArgument);
+
+    // Material-bearing plans pin the resource generation independently of
+    // document bytes. Compaction of an unreferenced mesh invalidates it.
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    f.manager.GetECS().meshRegistry.AddMesh(MeshData{});
+    f.manager.GetECS().meshRegistry.AddMesh(MeshData{});
+    MaterialOverrideComponent overrideValue;
+    overrideValue.material = f.manager.GetMaterial(0);
+    auto materialPlan = f.manager.PreparePrefabCompositeEdits(
+        { PrefabValueEdit{ PrefabValueKind::MaterialIndex, root,
+            PrefabMarkerDirection::After,
+            PrefabMaterialIndexValue{ 0, std::nullopt },
+            PrefabMaterialIndexValue{ 0, overrideValue } } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(materialPlan.IsOk());
+    const auto resourceBefore = f.manager.ResourceGeneration();
+    REQUIRE(f.manager.CompactMeshRegistry());
+    REQUIRE(f.manager.ResourceGeneration() != resourceBefore);
+    const auto resourceRevision = f.manager.AuthoringRevision();
+    const auto resourceResult = f.manager.CommitPrefabCompositePlan(std::move(materialPlan.value));
+    REQUIRE_FALSE(resourceResult.error.IsOk());
+    CHECK(f.manager.AuthoringRevision() == resourceRevision);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3: composite canonical no-op does not dirty transform during marker change")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c3a_canonical");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    auto& tf = reg.get<Transform>(rootHandle);
+    tf.dirty = false;
+    CameraComponent camera;
+    camera.forwardDirection = { 1.0f, 0.0f, 0.0f };
+    reg.emplace_or_replace<CameraComponent>(rootHandle, camera);
+    const EditableTRS nonCanonical{ tf.translation, glm::quat(2.0f, 0.0f, 0.0f, 0.0f), tf.scale };
+    PrefabValueEdit noop{ PrefabValueKind::LocalTransform, root,
+        PrefabMarkerDirection::After, nonCanonical, nonCanonical };
+    auto plan = f.manager.PreparePrefabCompositeEdits({ noop },
+        { PrefabMarkerEdit{ root, S2Key("transform"), false, true } },
+        PrefabMarkerDirection::After, schema, SceneSerializer::SchemaVersion);
+    REQUIRE(plan.IsOk());
+    const auto result = f.manager.CommitPrefabCompositePlan(std::move(plan.value));
+    REQUIRE(result.error.IsOk());
+    REQUIRE(result.anyStateChange);
+    CHECK(result.appliedValueOperations == 0);
+    CHECK(result.syncImpact == rt2::core::SyncImpact::None);
+    REQUIRE(result.affectedEntities.size() == 1);
+    CHECK(result.affectedEntities.front() == root);
+    CHECK_FALSE(reg.get<Transform>(rootHandle).dirty);
+    CHECK(reg.get<Transform>(rootHandle).rotation == glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
+    CHECK(reg.get<CameraComponent>(rootHandle).forwardDirection == camera.forwardDirection);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: removing the finite/degenerate payload guard makes the zero
+// quaternion and non-finite camera-pose REQUIRE_FALSE checks fail.
+TEST_CASE("Phase 8 W3: composite transform payloads reject non-finite values")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_c3b_finite");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto& live = reg.get<Transform>(rootHandle);
+    const EditableTRS before{ live.translation, live.rotation, live.scale };
+
+    auto zeroQuaternion = before;
+    zeroQuaternion.rotation = glm::quat(0.0f, 0.0f, 0.0f, 0.0f);
+    auto zeroPlan = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::LocalTransform, root, PrefabMarkerDirection::After,
+            before, zeroQuaternion } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(zeroPlan.IsOk());
+
+    auto nonFiniteTranslation = before;
+    nonFiniteTranslation.translation.x = std::numeric_limits<float>::quiet_NaN();
+    auto nonFinitePlan = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::LocalTransform, root, PrefabMarkerDirection::After,
+            before, nonFiniteTranslation } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(nonFinitePlan.IsOk());
+
+    reg.emplace_or_replace<CameraComponent>(rootHandle, CameraComponent{});
+    REQUIRE(reg.all_of<CameraComponent>(rootHandle));
+    PrefabCameraPoseValue poseBefore{ before, reg.get<CameraComponent>(rootHandle) };
+    auto poseAfter = poseBefore;
+    poseAfter.camera.forwardDirection.y = std::numeric_limits<float>::infinity();
+    auto posePlan = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::CameraPose, root, PrefabMarkerDirection::After,
+            poseBefore, poseAfter } }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(posePlan.IsOk());
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: before S6-A there was no typed visibility payload or manager
+// staging seam; this test exercises the reversible After/Before transaction,
+// canonical no-op, and zero-churn calculator contracts.
+TEST_CASE("Phase 8 W3 S6-A: visibility and validate-only staging are reversible")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6a_foundation");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    reg.emplace_or_replace<VisibleComponent>(rootHandle, VisibleComponent{true});
+
+    const auto revisionBefore = f.manager.AuthoringRevision();
+    const auto visibility = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            true, false } }, {}, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(visibility.IsOk());
+    const auto applied = f.manager.CommitPrefabCompositePlan(std::move(visibility.value));
+    REQUIRE(applied.error.IsOk());
+    CHECK(applied.anyStateChange);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::Structural);
+    CHECK(applied.affectedEntities == std::vector<UUID>{root});
+    CHECK(reg.get<VisibleComponent>(rootHandle).visible == false);
+    CHECK(f.manager.AuthoringRevision() == revisionBefore + 1);
+    CHECK(ToEditorMutationResult(applied).effective);
+
+    auto noOp = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            false, false } }, {}, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(noOp.IsOk());
+    const auto noOpResult = f.manager.CommitPrefabCompositePlan(std::move(noOp.value));
+    REQUIRE(noOpResult.error.IsOk());
+    CHECK_FALSE(noOpResult.anyStateChange);
+    CHECK_FALSE(ToEditorMutationResult(noOpResult).effective);
+    CHECK(f.manager.AuthoringRevision() == revisionBefore + 1);
+
+    auto before = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::Before,
+            true, false } }, {}, PrefabMarkerDirection::Before, schema, schema);
+    REQUIRE(before.IsOk());
+    const auto restored = f.manager.CommitPrefabCompositePlan(std::move(before.value));
+    REQUIRE(restored.error.IsOk());
+    CHECK(reg.get<VisibleComponent>(rootHandle).visible);
+
+    const auto localBefore = reg.get<Transform>(rootHandle).translation;
+    const auto revisionBeforeStage = f.manager.AuthoringRevision();
+    const auto worldStage = f.manager.StageWorldTransforms({
+        { SceneManager::EntityId{rootHandle},
+            reg.get<Transform>(rootHandle).localMatrix() * glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 0.0f, 0.0f)) } });
+    REQUIRE(worldStage.IsOk());
+    REQUIRE(worldStage.value.localStates.size() == 1);
+    CHECK(worldStage.value.localStates.front().second.translation.x != localBefore.x);
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeStage);
+    CHECK(reg.get<Transform>(rootHandle).translation == localBefore);
+
+    reg.emplace_or_replace<CameraComponent>(rootHandle, CameraComponent{});
+    EditorCameraPose cameraPose;
+    cameraPose.position = { 2.0f, 3.0f, 4.0f };
+    cameraPose.forward = { 0.0f, 0.0f, -1.0f };
+    const auto cameraStage = f.manager.StageCameraPose(root, cameraPose);
+    REQUIRE(cameraStage.IsOk());
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeStage);
+
+    const int materialIndex = f.manager.AddMaterial(SceneMaterial{});
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, materialIndex });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    const auto revisionBeforeMaterialStage = f.manager.AuthoringRevision();
+    const auto materialStage = f.manager.StageMaterialIndex(root, materialIndex);
+    REQUIRE(materialStage.IsOk());
+    REQUIRE(materialStage.value.override.has_value());
+    CHECK(materialStage.value.override->materialIndex == materialIndex);
+    const auto slotStage = f.manager.StageMaterialSlot(materialIndex,
+        f.manager.GetMaterial(materialIndex));
+    REQUIRE(slotStage.IsOk());
+    REQUIRE(slotStage.value.overrides.size() == 1);
+    CHECK(slotStage.value.overrides.front().first == root);
+    CHECK(slotStage.value.overrides.front().second.has_value());
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeMaterialStage);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: removing any one of the typed visibility checks below makes the
+// corresponding malformed/contradictory or stale-plan assertion go green.
+TEST_CASE("Phase 8 W3 S6-A: visibility discrimination and adapter failures")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6a_visibility_matrix");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    reg.remove<VisibleComponent>(rootHandle); // absent is canonical true
+
+    auto absent = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            true, false } }, {}, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(absent.IsOk());
+    const auto applied = f.manager.CommitPrefabCompositePlan(std::move(absent.value));
+    REQUIRE(applied.error.IsOk());
+    CHECK_FALSE(reg.get<VisibleComponent>(rootHandle).visible);
+
+    auto malformed = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            std::string("true"), false } }, {}, PrefabMarkerDirection::After,
+        schema, schema);
+    REQUIRE_FALSE(malformed.IsOk());
+    CHECK(ToEditorMutationResult(malformed.error).error.code == malformed.error.code);
+
+    auto duplicate = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            false, true },
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            false, true } }, {}, PrefabMarkerDirection::After, schema, schema);
+    CHECK(duplicate.IsOk());
+    auto contradictory = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            false, true },
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            false, false } }, {}, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE_FALSE(contradictory.IsOk());
+
+    auto stale = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            false, true } }, {}, PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(stale.IsOk());
+    reg.get<VisibleComponent>(rootHandle).visible = true;
+    const auto staleResult = f.manager.CommitPrefabCompositePlan(std::move(stale.value));
+    REQUIRE_FALSE(staleResult.error.IsOk());
+    CHECK_FALSE(ToEditorMutationResult(staleResult).success);
+    CHECK(reg.get<VisibleComponent>(rootHandle).visible == true);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-A: adapter contract and visibility marker UUID union")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6a_adapter_union");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID child = reg.get<EntityIdComponent>(childHandle).id;
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    const auto plan = f.manager.PreparePrefabCompositeEdits({
+        { PrefabValueKind::Visibility, root, PrefabMarkerDirection::After,
+            true, false } },
+        { PrefabMarkerEdit{ child, S2Key("transform"), false, true } },
+        PrefabMarkerDirection::After, schema, SceneSerializer::SchemaVersion);
+    REQUIRE(plan.IsOk());
+    const auto committed = f.manager.CommitPrefabCompositePlan(std::move(plan.value));
+    REQUIRE(committed.error.IsOk());
+    const auto adapted = ToEditorMutationResult(committed);
+    CHECK(adapted.success);
+    CHECK(adapted.effective);
+    CHECK(adapted.syncImpact == rt2::core::SyncImpact::Structural);
+    REQUIRE(adapted.affectedEntities.size() == 2);
+    CHECK(std::find(adapted.affectedEntities.begin(), adapted.affectedEntities.end(), root)
+        != adapted.affectedEntities.end());
+    CHECK(std::find(adapted.affectedEntities.begin(), adapted.affectedEntities.end(), child)
+        != adapted.affectedEntities.end());
+
+    PrefabCompositeApplyResult noOp;
+    noOp.syncImpact = rt2::core::SyncImpact::Material;
+    noOp.affectedEntities = { root };
+    const auto adaptedNoOp = ToEditorMutationResult(noOp);
+    CHECK(adaptedNoOp.success);
+    CHECK_FALSE(adaptedNoOp.effective);
+    CHECK(adaptedNoOp.syncImpact == rt2::core::SyncImpact::None);
+    CHECK(adaptedNoOp.affectedEntities.empty());
+
+    PrefabCompositeApplyResult failure;
+    failure.error = rt2::core::Error{ rt2::core::Error::InvalidArgument,
+        "adapter/path", "adapter detail must survive" };
+    const auto adaptedFailure = ToEditorMutationResult(failure);
+    CHECK_FALSE(adaptedFailure.success);
+    CHECK_FALSE(adaptedFailure.effective);
+    CHECK(adaptedFailure.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(adaptedFailure.error.path == "adapter/path");
+    CHECK(adaptedFailure.error.detail == "adapter detail must survive");
+    CHECK(adaptedFailure.syncImpact == rt2::core::SyncImpact::None);
+    CHECK(adaptedFailure.affectedEntities.empty());
+
+    const rt2::core::Error prepareError{ rt2::core::Error::InvalidEntity,
+        "prepare/path", "prepare detail must survive" };
+    const auto adaptedPrepareFailure = ToEditorMutationResult(prepareError);
+    CHECK_FALSE(adaptedPrepareFailure.success);
+    CHECK(adaptedPrepareFailure.error.path == "prepare/path");
+    CHECK(adaptedPrepareFailure.error.detail == "prepare detail must survive");
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: deleting the early return or replacing predicted parent-world
+// resolution with the live parent matrix makes the empty/no-parent-child
+// invariants fail.
+TEST_CASE("Phase 8 W3 S6-A: world staging predicts parent and preserves empty raw no-op")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6a_world_matrix");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID child = reg.get<EntityIdComponent>(childHandle).id;
+    const auto rootWorld = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 0.0f, 0.0f))
+        * glm::rotate(glm::mat4(1.0f), glm::radians(45.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    const auto childWorld = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 0.0f, 2.0f));
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const auto stage = f.manager.StageWorldTransforms({
+        { SceneManager::EntityId{rootHandle}, rootWorld },
+        { SceneManager::EntityId{childHandle}, childWorld } });
+    REQUIRE(stage.IsOk());
+    REQUIRE(stage.value.localStates.size() == 2);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+    CHECK(reg.get<Transform>(rootHandle).translation == glm::vec3(0.0f));
+
+    EditableTRS expectedChild;
+    REQUIRE(TryDecomposeEditableTRS(glm::inverse(rootWorld) * childWorld,
+        expectedChild));
+    const auto stagedChild = std::find_if(stage.value.localStates.begin(),
+        stage.value.localStates.end(), [&](const auto& item) { return item.first == child; });
+    REQUIRE(stagedChild != stage.value.localStates.end());
+    CHECK(glm::length(stagedChild->second.translation - expectedChild.translation) < 1e-5f);
+    CHECK(std::abs(glm::dot(glm::normalize(stagedChild->second.rotation),
+        glm::normalize(expectedChild.rotation))) > 1.0f - 1e-5f);
+    CHECK(glm::length(stagedChild->second.scale - expectedChild.scale) < 1e-5f);
+    const auto predictedChildWorld = rootWorld * stagedChild->second.Matrix();
+    for (int column = 0; column < 4; ++column)
+        for (int row = 0; row < 4; ++row)
+            CHECK(std::abs(predictedChildWorld[column][row] - childWorld[column][row]) < 1e-4f);
+
+    const auto duplicate = f.manager.StageWorldTransforms({
+        { SceneManager::EntityId{rootHandle}, rootWorld },
+        { SceneManager::EntityId{rootHandle}, rootWorld } });
+    REQUIRE_FALSE(duplicate.IsOk());
+    const auto missing = f.manager.StageWorldTransforms({
+        { SceneManager::EntityId{entt::null}, rootWorld } });
+    REQUIRE_FALSE(missing.IsOk());
+    const auto missingIdentityTransform = reg.get<Transform>(childHandle);
+    const auto missingIdentityRevision = f.manager.AuthoringRevision();
+    const auto missingIdentityDirty = f.manager.AuthoringDoc().metadata.dirty;
+    reg.remove<EntityIdComponent>(childHandle);
+    const auto missingIdentity = f.manager.StageWorldTransforms({
+        { SceneManager::EntityId{childHandle}, childWorld } });
+    REQUIRE_FALSE(missingIdentity.IsOk());
+    CHECK(f.manager.AuthoringRevision() == missingIdentityRevision);
+    CHECK(f.manager.AuthoringDoc().metadata.dirty == missingIdentityDirty);
+    CHECK(reg.get<Transform>(childHandle).translation == missingIdentityTransform.translation);
+    CHECK_FALSE(f.manager.TrySetWorldTransforms({
+        { SceneManager::EntityId{childHandle}, childWorld } }));
+    CHECK(f.manager.AuthoringRevision() == missingIdentityRevision);
+    CHECK(reg.get<Transform>(childHandle).translation == missingIdentityTransform.translation);
+    reg.emplace<EntityIdComponent>(childHandle, child);
+    REQUIRE(f.manager.TrySetWorldTransforms({}));
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+
+    REQUIRE(f.manager.TrySetWorldTransforms({
+        { SceneManager::EntityId{rootHandle}, rootWorld },
+        { SceneManager::EntityId{childHandle}, childWorld } }));
+    for (const auto& [uuid, expected] : stage.value.localStates)
+    {
+        const auto e = f.manager.FindEntityByUuid(uuid);
+        const auto& tf = reg.get<Transform>(e);
+        CHECK(tf.translation == expected.translation);
+        CHECK(tf.scale == expected.scale);
+    }
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: deriving camera forward from local rotation rather than the
+// requested world forward makes this rotated-parent parity check fail.
+TEST_CASE("Phase 8 W3 S6-A: camera staging uses world forward under rotated parent")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6a_camera_world");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID child = reg.get<EntityIdComponent>(childHandle).id;
+    auto& parentTransform = reg.get<Transform>(rootHandle);
+    parentTransform.rotation = glm::angleAxis(glm::radians(180.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    reg.emplace_or_replace<CameraComponent>(childHandle, CameraComponent{});
+    EditableTRS initialWorld;
+    REQUIRE(TryDecomposeEditableTRS(parentTransform.localMatrix()
+        * reg.get<Transform>(childHandle).localMatrix(), initialWorld));
+    reg.get<CameraComponent>(childHandle).forwardDirection =
+        glm::normalize(initialWorld.rotation * glm::vec3(0.0f, 0.0f, -1.0f));
+    EditorCameraPose requested;
+    requested.position = { 4.0f, 2.0f, 1.0f };
+    requested.forward = { 1.0f, 0.0f, 0.0f };
+    const auto stage = f.manager.StageCameraPose(child, requested);
+    REQUIRE(stage.IsOk());
+    CHECK(glm::length(stage.value.camera.forwardDirection - requested.forward) < 1e-5f);
+
+    const auto& liveTransform = reg.get<Transform>(childHandle);
+    const PrefabCameraPoseValue beforePose{
+        EditableTRS{ liveTransform.translation, liveTransform.rotation, liveTransform.scale },
+        reg.get<CameraComponent>(childHandle) };
+    const PrefabValueEdit poseEdit{ PrefabValueKind::CameraPose, child,
+        PrefabMarkerDirection::After, beforePose, stage.value };
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    auto compositeAfter = f.manager.PreparePrefabCompositeEdits({ poseEdit }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(compositeAfter.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(compositeAfter.value)).error.IsOk());
+    CHECK(glm::length(reg.get<CameraComponent>(childHandle).forwardDirection
+        - requested.forward) < 1e-5f);
+    auto poseUndoEdit = poseEdit;
+    poseUndoEdit.direction = PrefabMarkerDirection::Before;
+    auto compositeBefore = f.manager.PreparePrefabCompositeEdits({ poseUndoEdit }, {},
+        PrefabMarkerDirection::Before, schema, schema);
+    REQUIRE(compositeBefore.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(compositeBefore.value)).error.IsOk());
+    CHECK(glm::length(reg.get<CameraComponent>(childHandle).forwardDirection
+        - beforePose.camera.forwardDirection) < 1e-5f);
+    auto compositeRedo = f.manager.PreparePrefabCompositeEdits({ poseEdit }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(compositeRedo.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(compositeRedo.value)).error.IsOk());
+    CHECK(glm::length(reg.get<CameraComponent>(childHandle).forwardDirection
+        - requested.forward) < 1e-5f);
+
+    const auto revisionBeforeAlign = f.manager.AuthoringRevision();
+    REQUIRE(f.manager.AlignCameraEntityToView(child, requested).success);
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeAlign + 1);
+    CHECK(glm::length(reg.get<CameraComponent>(childHandle).forwardDirection
+        - requested.forward) < 1e-5f);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: dropping either live-before capture or UUID sorting makes the
+// exact optional fan-out assertions fail.
+TEST_CASE("Phase 8 W3 S6-A: material stages capture exact ordered optionals")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6a_material_matrix");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID child = reg.get<EntityIdComponent>(childHandle).id;
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<MeshRef>(childHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(childHandle);
+    MaterialOverrideComponent historical;
+    historical.material = f.manager.GetMaterial(0);
+    historical.authored = false;
+    historical.sourceMaterialKey = "historical";
+    historical.materialIndex = 0;
+    reg.emplace_or_replace<MaterialOverrideComponent>(childHandle, historical);
+    auto afterMaterial = f.manager.GetMaterial(0);
+    afterMaterial.sourceKey = "after";
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const auto stage = f.manager.StageMaterialSlot(0, afterMaterial);
+    REQUIRE(stage.IsOk());
+    REQUIRE(stage.value.beforeOverrides.size() == 2);
+    REQUIRE(stage.value.afterOverrides.size() == 2);
+    REQUIRE(stage.value.beforeOverrides[0].first.ToString()
+        < stage.value.beforeOverrides[1].first.ToString());
+    const auto findBefore = [&](const UUID& uuid) -> const auto& {
+        return *std::find_if(stage.value.beforeOverrides.begin(),
+            stage.value.beforeOverrides.end(), [&](const auto& item) {
+                return item.first == uuid;
+            });
+    };
+    CHECK_FALSE(findBefore(root).second.has_value());
+    REQUIRE(findBefore(child).second.has_value());
+    CHECK(findBefore(child).second->sourceMaterialKey == "historical");
+    CHECK(stage.value.afterOverrides[0].second.has_value());
+    CHECK(stage.value.afterOverrides[1].second.has_value());
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+
+    reg.remove<EntityIdComponent>(rootHandle);
+    const auto missingIdentity = f.manager.StageMaterialSlot(0, afterMaterial);
+    REQUIRE_FALSE(missingIdentity.IsOk());
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+
+    reg.remove<ImportedMeshSourceComponent>(childHandle);
+    const auto ordinary = f.manager.StageMaterialIndex(child, 0);
+    REQUIRE(ordinary.IsOk());
+    CHECK_FALSE(ordinary.value.override.has_value());
+    reg.emplace<ImportedMeshSourceComponent>(childHandle);
+    const auto outOfRange = f.manager.StageMaterialIndex(child, 99);
+    REQUIRE_FALSE(outOfRange.IsOk());
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof: applying canonical After validation to the Before target makes
+// the first imported assignment's exact absent snapshot fail on Undo.
+TEST_CASE("Phase 8 W3 S6-A: imported material index preserves exact Before")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6a_index_before");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = reg.get<EntityIdComponent>(rootHandle).id;
+    const UUID child = reg.get<EntityIdComponent>(childHandle).id;
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<MeshRef>(childHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(childHandle);
+    MaterialOverrideComponent historical;
+    historical.material = f.manager.GetMaterial(0);
+    historical.authored = false;
+    historical.sourceMaterialKey = "historical-before";
+    historical.materialIndex = 0;
+    reg.emplace_or_replace<MaterialOverrideComponent>(childHandle, historical);
+    f.manager.AddMaterial(SceneMaterial{});
+    const auto rootCanonical = f.manager.StageMaterialIndex(root, 1);
+    const auto childCanonical = f.manager.StageMaterialIndex(child, 1);
+    REQUIRE(rootCanonical.IsOk());
+    REQUIRE(childCanonical.IsOk());
+    REQUIRE(rootCanonical.value.override.has_value());
+    REQUIRE(childCanonical.value.override.has_value());
+    const auto schemaBefore = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const PrefabValueEdit rootEdit{ PrefabValueKind::MaterialIndex, root,
+        PrefabMarkerDirection::After,
+        PrefabMaterialIndexValue{ 0, std::nullopt }, rootCanonical.value };
+    const PrefabValueEdit childEdit{ PrefabValueKind::MaterialIndex, child,
+        PrefabMarkerDirection::After,
+        PrefabMaterialIndexValue{ 0, historical }, childCanonical.value };
+    const PrefabMarkerEdit rootMarker{ root, S2Key("materialOverride"), false, true };
+    const PrefabMarkerEdit childMarker{ child, S2Key("materialOverride"), false, true };
+    auto execute = f.manager.PreparePrefabCompositeEdits({ rootEdit, childEdit },
+        { rootMarker, childMarker },
+        PrefabMarkerDirection::After, schemaBefore, SceneSerializer::SchemaVersion);
+    REQUIRE(execute.IsOk());
+    REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(execute.value)).error.IsOk());
+    REQUIRE(reg.get<MaterialOverrideComponent>(rootHandle).materialIndex == 1);
+    REQUIRE(reg.get<MaterialOverrideComponent>(childHandle).materialIndex == 1);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    auto undoRootEdit = rootEdit;
+    undoRootEdit.direction = PrefabMarkerDirection::Before;
+    auto undoChildEdit = childEdit;
+    undoChildEdit.direction = PrefabMarkerDirection::Before;
+    auto undo = f.manager.PreparePrefabCompositeEdits({ undoRootEdit, undoChildEdit },
+        { rootMarker, childMarker },
+        PrefabMarkerDirection::Before, schemaBefore, SceneSerializer::SchemaVersion);
+    REQUIRE(undo.IsOk());
+    const auto undoResult = f.manager.CommitPrefabCompositePlan(std::move(undo.value));
+    REQUIRE(undoResult.error.IsOk());
+    CHECK_FALSE(reg.all_of<MaterialOverrideComponent>(rootHandle));
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 0);
+    const auto* restoredHistorical = reg.try_get<MaterialOverrideComponent>(childHandle);
+    REQUIRE(restoredHistorical);
+    CHECK_FALSE(restoredHistorical->authored);
+    CHECK(restoredHistorical->sourceMaterialKey == historical.sourceMaterialKey);
+    CHECK(restoredHistorical->material.baseColor == historical.material.baseColor);
+    CHECK(restoredHistorical->materialIndex == historical.materialIndex);
+    CHECK(reg.get<MeshRef>(childHandle).materialIndex == 0);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == schemaBefore);
+
+    auto redoRootEdit = rootEdit;
+    redoRootEdit.direction = PrefabMarkerDirection::After;
+    auto redoChildEdit = childEdit;
+    redoChildEdit.direction = PrefabMarkerDirection::After;
+    auto redo = f.manager.PreparePrefabCompositeEdits({ redoRootEdit, redoChildEdit },
+        { rootMarker, childMarker },
+        PrefabMarkerDirection::After, schemaBefore, SceneSerializer::SchemaVersion);
+    REQUIRE(redo.IsOk());
+REQUIRE(f.manager.CommitPrefabCompositePlan(std::move(redo.value)).error.IsOk());
+    CHECK(reg.get<MaterialOverrideComponent>(rootHandle).materialIndex == 1);
+    CHECK(reg.get<MaterialOverrideComponent>(childHandle).materialIndex == 1);
+    std::filesystem::remove_all(dir);
+}
+
+// ============================================================================
+// Phase 8 W3, S6-B ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â execute-on-commit composite commands.
+//
+// Every in-scope command (visibility, name, motion add/remove, script
+// add/remove/path/rebind + typed field edits, material index, material-slot
+// properties, camera alignment) must perform its first value write and any
+// first override-marker insertion plus schema promotion inside ONE composite
+// commit during Execute, and Undo/Redo must restore the exact value, marker
+// vector, and schema with one revision bump per effective direction. These
+// tests drive the commands through EditorCommandHistory ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the same
+// construct-then-Execute path the converted UI uses.
+// ============================================================================
+
+namespace
+{
+
+// UUID of an entity handle.
+template <typename Reg>
+rt2::core::UUID H6B(const Reg& reg, entt::entity handle)
+{
+    return reg.get<EntityIdComponent>(handle).id;
+}
+
+// Canonical script bound to a path. Identity is staged by the composite at
+// Execute time when the file exists under the asset context.
+ScriptComponent S6BScript(const std::string& path)
+{
+    ScriptComponent sc;
+    sc.asset.kind = AssetKind::Script;
+    sc.asset.path = path;
+    sc.asset.sourceKey = "lua:asset=" + path;
+    return sc;
+}
+
+// Attach a sidecar-destined asset context with on-disk scripts so composite
+// Execute mints durable identities for bound adds / path changes.
+void S6BScriptAssets(S2Fixture& f, const std::filesystem::path& dir,
+                     const std::vector<std::string>& names)
+{
+    rt2::core::AssetResolutionContext context;
+    context.assetRoot = dir;
+    f.manager.SetAssetResolutionContext(context);
+    for (const auto& name : names)
+        S2WriteRaw(dir / name, "return 1\n");
+}
+
+} // namespace
+
+// RED proof (fault): reverting SetVisibilityCommand to mutate-then-RecordApplied
+// (two commits: mutate, then marker/schema) breaks the marker, schema, and
+// one-revision invariants asserted below; a REVERT of the composite adapter's
+// Structural impact likewise breaks the syncImpact CHECK.
+TEST_CASE("Phase 8 W3 S6-B: visibility Execute/Undo/Redo is one composite commit")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_visibility");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const UUID child = H6B(reg, childHandle);
+    const auto visibilityKey = PrefabComponentKeyFor<VisibleComponent>::value;
+    reg.emplace_or_replace<VisibleComponent>(rootHandle, VisibleComponent{true});
+    reg.emplace_or_replace<VisibleComponent>(childHandle, VisibleComponent{true});
+    EditorCommandHistory history;
+
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    CHECK(initialSchema == 4);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, visibilityKey).value);
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    auto hide = MakeSetVisibilityCommandIfEffective(
+        { { root, true } }, { { root, false } });
+    REQUIRE(hide);
+    const auto applied = history.Execute(std::move(hide), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::Structural);
+    REQUIRE(applied.affectedEntities.size() == 1);
+    CHECK(applied.affectedEntities.front() == root);
+    CHECK_FALSE(reg.get<VisibleComponent>(rootHandle).visible);
+    REQUIRE(f.manager.IsOverridden(root, visibilityKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    const auto afterHideRevision = f.manager.AuthoringRevision();
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    CHECK(reg.get<VisibleComponent>(rootHandle).visible);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, visibilityKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK(f.manager.AuthoringRevision() == afterHideRevision + 1);
+
+    const auto afterUndoRevision = f.manager.AuthoringRevision();
+    const auto redone = history.Redo(f.manager);
+    REQUIRE(redone.success);
+    REQUIRE(redone.effective);
+    CHECK_FALSE(reg.get<VisibleComponent>(rootHandle).visible);
+    REQUIRE(f.manager.IsOverridden(root, visibilityKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == afterUndoRevision + 1);
+
+    // Follow-up change on a second member: existing marker, no re-promotion,
+    // marker survives its own Undo independently of the root marker.
+    auto hideChild = MakeSetVisibilityCommandIfEffective(
+        { { child, true } }, { { child, false } });
+    REQUIRE(hideChild);
+    REQUIRE(history.Execute(std::move(hideChild), f.manager).effective);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    REQUIRE(f.manager.IsOverridden(child, visibilityKey).value);
+    REQUIRE(f.manager.IsOverridden(root, visibilityKey).value);
+    REQUIRE(history.Undo(f.manager).effective);
+    REQUIRE_FALSE(f.manager.IsOverridden(child, visibilityKey).value);
+    REQUIRE(f.manager.IsOverridden(root, visibilityKey).value);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): skipping the marker membership delta or the schema
+// promotion in PrefabCommandTransaction::Capture breaks the pair below.
+TEST_CASE("Phase 8 W3 S6-B: name first-marker/existing-marker/no-op and ordinary entity")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_name");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto nameKey = PrefabComponentKeyFor<NameComponent>::value;
+    EditorCommandHistory history;
+
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    REQUIRE_FALSE(f.manager.IsOverridden(root, nameKey).value);
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const std::string beforeName = reg.get<NameComponent>(rootHandle).name;
+    const std::string renamed = beforeName + "Renamed";
+
+    auto rename = MakeSetNameCommandIfEffective(root, beforeName, renamed);
+    REQUIRE(rename);
+    const auto applied = history.Execute(std::move(rename), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::None);
+    CHECK(reg.get<NameComponent>(rootHandle).name == renamed);
+    REQUIRE(f.manager.IsOverridden(root, nameKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    REQUIRE(history.Undo(f.manager).effective);
+    CHECK(reg.get<NameComponent>(rootHandle).name == beforeName);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, nameKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    REQUIRE(history.Redo(f.manager).effective);
+    CHECK(reg.get<NameComponent>(rootHandle).name == renamed);
+    REQUIRE(f.manager.IsOverridden(root, nameKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // Existing-marker edit keeps the promoted schema and exactly one revision.
+    const auto revisionBeforeSecond = f.manager.AuthoringRevision();
+    const std::string secondName = renamed + "Again";
+    auto rename2 = MakeSetNameCommandIfEffective(root, renamed, secondName);
+    REQUIRE(rename2);
+    REQUIRE(history.Execute(std::move(rename2), f.manager).effective);
+    CHECK(reg.get<NameComponent>(rootHandle).name == secondName);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revisionBeforeSecond + 1);
+    REQUIRE(history.Undo(f.manager).effective);
+    CHECK(reg.get<NameComponent>(rootHandle).name == renamed);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // No-op suppression.
+    CHECK(!MakeSetNameCommandIfEffective(root, beforeName, beforeName));
+
+    // Ordinary entity: value-only, no marker edits, no schema promotion.
+    const auto plain = f.CreateEmpty("Plain");
+    const auto plainSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto plainEntity = f.manager.FindEntityByUuid(plain);
+    auto renamePlain = MakeSetNameCommandIfEffective(plain, "Plain", "Box");
+    REQUIRE(renamePlain);
+    const auto plainApplied = history.Execute(std::move(renamePlain), f.manager);
+    REQUIRE(plainApplied.success);
+    REQUIRE(plainApplied.effective);
+    CHECK(reg.get<NameComponent>(plainEntity).name == "Box");
+    const auto plainMarker = f.manager.IsOverridden(plain, nameKey);
+    REQUIRE_FALSE(plainMarker.IsOk());
+    CHECK(plainMarker.error.code == rt2::core::Error::NotPrefabMember);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == plainSchema);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): setting the motion marker afterPresent unconditionally
+// (not conditioned on the after-state carrying the component) breaks the
+// remove-path marker assertions below.
+TEST_CASE("Phase 8 W3 S6-B: motion add/velocity/remove undo-redo with marker deltas")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_motion");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto motionKey = PrefabComponentKeyFor<MotionComponent>::value;
+    EditorCommandHistory history;
+
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    const auto motionA = MotionComponent{ glm::vec3(1.0f, 0.0f, 0.0f) };
+    auto add = MakeSetMotionCommandIfEffective(root, std::nullopt,
+        std::optional<MotionComponent>{ motionA });
+    REQUIRE(add);
+    const auto applied = history.Execute(std::move(add), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::None);
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    CHECK(reg.get<MotionComponent>(rootHandle).linearVelocity == glm::vec3(1.0f, 0.0f, 0.0f));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    REQUIRE(history.Undo(f.manager).effective);
+    CHECK_FALSE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    REQUIRE(history.Redo(f.manager).effective);
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // Velocity edit (existing marker, schema already promoted).
+    auto edit = MakeSetMotionCommandIfEffective(root,
+        std::optional<MotionComponent>{ reg.get<MotionComponent>(rootHandle) },
+        std::optional<MotionComponent>{ MotionComponent{ glm::vec3(0.0f, 2.0f, 0.0f) } });
+    REQUIRE(edit);
+    REQUIRE(history.Execute(std::move(edit), f.manager).effective);
+    CHECK(reg.get<MotionComponent>(rootHandle).linearVelocity == glm::vec3(0.0f, 2.0f, 0.0f));
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    REQUIRE(history.Undo(f.manager).effective);
+    CHECK(reg.get<MotionComponent>(rootHandle).linearVelocity == glm::vec3(1.0f, 0.0f, 0.0f));
+
+    // Remove: marker delta is afterPresent=false.
+    auto remove = MakeSetMotionCommandIfEffective(root,
+        std::optional<MotionComponent>{ reg.get<MotionComponent>(rootHandle) }, std::nullopt);
+    REQUIRE(remove);
+    REQUIRE(history.Execute(std::move(remove), f.manager).effective);
+    CHECK_FALSE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+    REQUIRE(history.Undo(f.manager).effective);
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // No-op suppression: both absent and both identical.
+    CHECK(!MakeSetMotionCommandIfEffective(root, std::nullopt, std::nullopt));
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (the S6-B script-identity defect): a bound script add or path
+// change mints a durable sidecar identity at Execute, and the composite
+// canonicalizes the staged target (SceneManager.cpp:6721-6737), but the
+// command stores the pre-mint payload. Undo then compares the stored after
+// (nil assetId) against the live minted id and fails with "script source
+// differs from live state". This TEST_CASE is RED before the transaction
+// absorbs the canonical staged target; bypassing the identity staging in
+// StageScriptBinding would make the REQUIRE(undo.success) below pass
+// incorrectly.
+TEST_CASE("Phase 8 W3 S6-B: bound script add/path/remove undo-redo is self-consistent")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_script_id");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto scriptKey = PrefabComponentKeyFor<ScriptComponent>::value;
+    S6BScriptAssets(f, dir, { "spin.lua", "spin2.lua" });
+    EditorCommandHistory history;
+
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    // Bound add: Execute mints the durable sidecar identity.
+    auto add = MakeSetScriptCommandIfEffective(root, std::nullopt,
+        std::optional<ScriptComponent>{ S6BScript("spin.lua") });
+    REQUIRE(add);
+    const auto applied = history.Execute(std::move(add), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::None);
+    REQUIRE(reg.all_of<ScriptComponent>(rootHandle));
+    const auto liveAdd = reg.get<ScriptComponent>(rootHandle);
+    const auto assignedId = liveAdd.asset.assetId;
+    REQUIRE_FALSE(assignedId.IsNull());
+    REQUIRE(liveAdd.asset.path == "spin.lua");
+    REQUIRE(std::filesystem::exists(rt2::core::AssetSidecarPath(dir / "spin.lua")));
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    // Undo of a bound add must restore the exact absent state.
+    const auto afterAddRevision = f.manager.AuthoringRevision();
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    CHECK_FALSE(reg.all_of<ScriptComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, scriptKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK(f.manager.AuthoringRevision() == afterAddRevision + 1);
+
+    // Redo re-applies the add with the SAME durable identity and marker.
+    const auto afterUndoRevision = f.manager.AuthoringRevision();
+    const auto redone = history.Redo(f.manager);
+    REQUIRE(redone.success);
+    REQUIRE(redone.effective);
+    REQUIRE(reg.all_of<ScriptComponent>(rootHandle));
+    CHECK(reg.get<ScriptComponent>(rootHandle).asset.assetId == assignedId);
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == afterUndoRevision + 1);
+
+    // Path change on the bound script reassigns the durable identity; Undo
+    // restores both the path and the original id.
+    auto rebind = MakeSetScriptCommandIfEffective(root,
+        std::optional<ScriptComponent>{ reg.get<ScriptComponent>(rootHandle) },
+        std::optional<ScriptComponent>{ S6BScript("spin2.lua") });
+    REQUIRE(rebind);
+    const auto rebindResult = history.Execute(std::move(rebind), f.manager);
+    REQUIRE(rebindResult.success);
+    REQUIRE(rebindResult.effective);
+    REQUIRE(reg.get<ScriptComponent>(rootHandle).asset.path == "spin2.lua");
+    const auto spin2Id = reg.get<ScriptComponent>(rootHandle).asset.assetId;
+    REQUIRE_FALSE(spin2Id.IsNull());
+    REQUIRE_FALSE(spin2Id == assignedId);
+
+    const auto undoneRebind = history.Undo(f.manager);
+    REQUIRE(undoneRebind.success);
+    REQUIRE(undoneRebind.effective);
+    REQUIRE(reg.get<ScriptComponent>(rootHandle).asset.path == "spin.lua");
+    CHECK(reg.get<ScriptComponent>(rootHandle).asset.assetId == assignedId);
+
+    // Remove the bound script; Undo restores the exact component and id.
+    auto remove = MakeSetScriptCommandIfEffective(root,
+        std::optional<ScriptComponent>{ reg.get<ScriptComponent>(rootHandle) }, std::nullopt);
+    REQUIRE(remove);
+    REQUIRE(history.Execute(std::move(remove), f.manager).effective);
+    CHECK_FALSE(reg.all_of<ScriptComponent>(rootHandle));
+    const auto undoneRemove = history.Undo(f.manager);
+    REQUIRE(undoneRemove.success);
+    REQUIRE(undoneRemove.effective);
+    REQUIRE(reg.all_of<ScriptComponent>(rootHandle));
+    CHECK(reg.get<ScriptComponent>(rootHandle).asset.path == "spin.lua");
+    CHECK(reg.get<ScriptComponent>(rootHandle).asset.assetId == assignedId);
+
+    // No-op suppression.
+    CHECK(!MakeSetScriptCommandIfEffective(root,
+        std::optional<ScriptComponent>{ reg.get<ScriptComponent>(rootHandle) },
+        std::optional<ScriptComponent>{ reg.get<ScriptComponent>(rootHandle) }));
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): reverting script field edits to a whole-component
+// replacement that drops the canonical before-snapshot validation breaks the
+// exact field-map restore assertion.
+TEST_CASE("Phase 8 W3 S6-B: script Bool/String/UUID field edits round-trip exactly")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_script_fields");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    EditorCommandHistory history;
+
+    ScriptComponent first = S6BScript("spin.lua");
+    first.fieldValues["active"] = { ScriptFieldType::Bool, true };
+    first.fieldValues["label"] = { ScriptFieldType::String, std::string("a") };
+    first.fieldValues["id"] = { ScriptFieldType::Uuid,
+        UUID::Parse("11111111-1111-4111-8111-111111111111") };
+    REQUIRE(history.Execute(MakeSetScriptCommandIfEffective(root, std::nullopt,
+        std::optional<ScriptComponent>{ first }), f.manager).effective);
+
+    ScriptComponent second = reg.get<ScriptComponent>(rootHandle);
+    second.fieldValues["active"] = { ScriptFieldType::Bool, false };
+    second.fieldValues["label"] = { ScriptFieldType::String, std::string("b") };
+    second.fieldValues["id"] = { ScriptFieldType::Uuid,
+        UUID::Parse("22222222-2222-4222-8222-222222222222") };
+    REQUIRE(history.Execute(MakeSetScriptCommandIfEffective(root,
+        std::optional<ScriptComponent>{ reg.get<ScriptComponent>(rootHandle) },
+        std::optional<ScriptComponent>{ second }), f.manager).success);
+    const auto edited = reg.get<ScriptComponent>(rootHandle);
+    CHECK(std::get<bool>(edited.fieldValues.at("active").value) == false);
+    CHECK(std::get<std::string>(edited.fieldValues.at("label").value) == "b");
+    CHECK(std::get<UUID>(edited.fieldValues.at("id").value)
+        == UUID::Parse("22222222-2222-4222-8222-222222222222"));
+
+    REQUIRE(history.Undo(f.manager).success);
+    const auto undone = reg.get<ScriptComponent>(rootHandle);
+    REQUIRE(undone.fieldValues.size() == first.fieldValues.size());
+    CHECK(ScriptComponentCanonicalEqual(undone, first));
+
+    REQUIRE(history.Redo(f.manager).success);
+    const auto redone = reg.get<ScriptComponent>(rootHandle);
+    CHECK(std::get<bool>(redone.fieldValues.at("active").value) == false);
+    CHECK(std::get<std::string>(redone.fieldValues.at("label").value) == "b");
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): feeding the factory a raw (non-staged) after override,
+// or reverting to mutate-then-RecordApplied, breaks the override-absent Undo
+// and marker/schema invariants below.
+TEST_CASE("Phase 8 W3 S6-B: material index command one-shot staging and undo")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_material_index");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto overrideKey = PrefabComponentKeyFor<MaterialOverrideComponent>::value;
+    EditorCommandHistory history;
+
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    f.manager.AddMaterial(SceneMaterial{}); // slot 1
+
+    const auto staged = f.manager.StageMaterialIndex(root, 1);
+    REQUIRE(staged.IsOk());
+    REQUIRE(staged.value.override.has_value());
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    auto assign = MakeSetMaterialIndexCommandIfEffective(root, 0, 1,
+        std::nullopt, staged.value.override);
+    REQUIRE(assign);
+    const auto applied = history.Execute(std::move(assign), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::Material);
+    REQUIRE(applied.affectedEntities.size() == 1);
+    CHECK(applied.affectedEntities.front() == root);
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 1);
+    REQUIRE(reg.try_get<MaterialOverrideComponent>(rootHandle));
+    CHECK(reg.get<MaterialOverrideComponent>(rootHandle).materialIndex == 1);
+    REQUIRE(f.manager.IsOverridden(root, overrideKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 0);
+    CHECK_FALSE(reg.all_of<MaterialOverrideComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, overrideKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 1);
+    REQUIRE(reg.try_get<MaterialOverrideComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, overrideKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // No-op suppression when index and override are both unchanged.
+    CHECK(!MakeSetMaterialIndexCommandIfEffective(root, 1, 1,
+        staged.value.override, staged.value.override));
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): dropping the complete UUID + optional fan-out snapshots
+// (the old absent-only list shape) makes the Undo override restore fail.
+TEST_CASE("Phase 8 W3 S6-B: material-slot properties command complete fan-out")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_material_slot");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto overrideKey = PrefabComponentKeyFor<MaterialOverrideComponent>::value;
+    EditorCommandHistory history;
+
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+
+    const SceneMaterial before = f.manager.GetMaterial(0);
+    SceneMaterial after = before;
+    after.metallic = 0.75f;
+
+    const auto collectLive = [&]() {
+        SetMaterialPropertiesCommand::OverrideList out;
+        auto& r = f.manager.GetECS().registry;
+        for (auto e : r.view<ImportedMeshSourceComponent>())
+        {
+            const auto* ref = r.try_get<MeshRef>(e);
+            if (!ref || ref->materialIndex != 0) continue;
+            const auto* idc = r.try_get<EntityIdComponent>(e);
+            if (!idc) continue;
+            const auto* ov = r.try_get<MaterialOverrideComponent>(e);
+            out.emplace_back(idc->id,
+                ov ? std::optional<MaterialOverrideComponent>(*ov) : std::nullopt);
+        }
+        return out;
+    };
+
+    auto beforeOverrides = collectLive();
+    REQUIRE(beforeOverrides.size() == 1);
+    const auto staged = f.manager.StageMaterialSlot(0, after);
+    REQUIRE(staged.IsOk());
+    REQUIRE(staged.value.afterOverrides.size() == 1);
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    auto edit = MakeSetMaterialPropertiesCommandIfEffective(0, before, after,
+        std::move(beforeOverrides), staged.value.afterOverrides);
+    REQUIRE(edit);
+    const auto applied = history.Execute(std::move(edit), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::Material);
+    REQUIRE(std::find(applied.affectedEntities.begin(), applied.affectedEntities.end(), root)
+        != applied.affectedEntities.end());
+    REQUIRE(reg.try_get<MaterialOverrideComponent>(rootHandle));
+    CHECK(reg.get<MaterialOverrideComponent>(rootHandle).material.metallic == doctest::Approx(0.75f));
+    REQUIRE(f.manager.IsOverridden(root, overrideKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK_FALSE(reg.all_of<MaterialOverrideComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, overrideKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(f.manager.GetMaterial(0).metallic == doctest::Approx(0.0f));
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): reverting AlignCameraCommand to a separate transform +
+// camera write (two revisions) or skipping the camera-pose marker deltas
+// breaks the one-revision / marker invariants below.
+TEST_CASE("Phase 8 W3 S6-B: camera alignment command is one composite commit")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_camera_align");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto transformKey = PrefabComponentKeyFor<Transform>::value;
+    const auto cameraKey = PrefabComponentKeyFor<CameraComponent>::value;
+    EditorCommandHistory history;
+
+    reg.emplace_or_replace<CameraComponent>(rootHandle, CameraComponent{});
+    const auto& liveTf = reg.get<Transform>(rootHandle);
+    const EditableTRS beforeLocal{ liveTf.translation, liveTf.rotation, liveTf.scale };
+    const CameraComponent beforeCamera = reg.get<CameraComponent>(rootHandle);
+
+    EditorCameraPose target;
+    target.position = { 1.0f, 2.0f, 3.0f };
+    target.forward = { 0.0f, -1.0f, 0.0f };
+    const auto staged = f.manager.StageCameraPose(root, target);
+    REQUIRE(staged.IsOk());
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    auto align = MakeAlignCameraCommandIfEffective(root,
+        beforeLocal, staged.value.local, beforeCamera, staged.value.camera);
+    REQUIRE(align);
+    const auto applied = history.Execute(std::move(align), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::Transform);
+    REQUIRE(f.manager.IsOverridden(root, transformKey).value);
+    REQUIRE(f.manager.IsOverridden(root, cameraKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+    CHECK(glm::length(reg.get<CameraComponent>(rootHandle).forwardDirection - target.forward) < 1e-5f);
+
+    const auto afterAlignRevision = f.manager.AuthoringRevision();
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    CHECK(glm::length(reg.get<CameraComponent>(rootHandle).forwardDirection
+        - beforeCamera.forwardDirection) < 1e-5f);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, transformKey).value);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, cameraKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(f.manager.AuthoringRevision() == afterAlignRevision + 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(glm::length(reg.get<CameraComponent>(rootHandle).forwardDirection - target.forward) < 1e-5f);
+    REQUIRE(f.manager.IsOverridden(root, transformKey).value);
+    REQUIRE(f.manager.IsOverridden(root, cameraKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    std::filesystem::remove_all(dir);
+}
+
+// ============================================================================
+// Phase 8 W3, S6-B review fixup ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â six independent review findings, each with a
+// named RED->GREEN discrimination proof.
+// ============================================================================
+
+// RED proof (fault): PrefabCommandTransaction::Capture treated every
+// IsOverridden error like NotPrefabMember (drop the marker and continue), so a
+// member whose stored override vector is MALFORMED (an unknown wire) could
+// commit a value-only composite while the marker/schema/history stayed
+// untouched. The fix makes Capture fallible: any non-NotPrefabMember error
+// aborts the command with zero mutation.
+TEST_CASE("Phase 8 W3 S6-B fixup: malformed override vector fails capture with zero mutation")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_malformed_capture");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    EditorCommandHistory history;
+
+    // Corrupt the stored override vector with an unknown wire (malformed).
+    auto* pm = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(pm);
+    pm->overrides.clear();
+    pm->overrides.push_back(PrefabComponentKey(std::string_view("bogus.wire"), true));
+    REQUIRE_FALSE(f.manager.IsOverridden(root,
+        PrefabComponentKeyFor<NameComponent>::value).IsOk());
+
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const std::string beforeName = reg.get<NameComponent>(rootHandle).name;
+    auto rename = MakeSetNameCommandIfEffective(root, beforeName, "Renamed");
+    REQUIRE(rename);
+    const auto applied = history.Execute(std::move(rename), f.manager);
+    REQUIRE_FALSE(applied.success);
+    CHECK(applied.error.code == rt2::core::Error::InvalidArgument);
+    CHECK_FALSE(history.CanUndo());
+    // Zero mutation: the name is unchanged and the document revision is
+    // untouched ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the command could NOT silently degrade to value-only.
+    CHECK(reg.get<NameComponent>(rootHandle).name == beforeName);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+
+    // Repair the vector and a FRESH command now succeeds ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â capture is
+    // re-attempted (m_Captured was never set) and the malformed vector cannot
+    // be papered over silently.
+    pm->overrides.clear();
+    REQUIRE(f.manager.IsOverridden(root,
+        PrefabComponentKeyFor<NameComponent>::value).IsOk());
+    auto recoveredCmd = MakeSetNameCommandIfEffective(root, beforeName, "Renamed");
+    REQUIRE(recoveredCmd);
+    const auto recovered = history.Execute(std::move(recoveredCmd), f.manager);
+    REQUIRE(recovered.success);
+    REQUIRE(recovered.effective);
+    CHECK(reg.get<NameComponent>(rootHandle).name == "Renamed");
+    REQUIRE(f.manager.IsOverridden(root,
+        PrefabComponentKeyFor<NameComponent>::value).value);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): the material-slot BEFORE fan-out skipped imported members
+// whose override was ABSENT, so a slot whose members carried mixed override
+// presence produced a partial before list and the composite rejected the edit
+// (UUID set cardinality differs from the live set). The fix captures a
+// COMPLETE UUID + optional fan-out ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â {uuid, std::nullopt} for every durable
+// imported member with an absent override.
+TEST_CASE("Phase 8 W3 S6-B fixup: material-slot Before fan-out includes every member")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_material_fanout");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const UUID child = H6B(reg, childHandle);
+    const auto overrideKey = PrefabComponentKeyFor<MaterialOverrideComponent>::value;
+    EditorCommandHistory history;
+
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<MeshRef>(childHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(childHandle);
+    // Only the root carries a live override; the child's override is ABSENT.
+    MaterialOverrideComponent liveOverride;
+    liveOverride.material = f.manager.GetMaterial(0);
+    liveOverride.authored = true;
+    liveOverride.sourceMaterialKey = f.manager.GetMaterial(0).sourceKey;
+    liveOverride.materialIndex = 0;
+    reg.emplace_or_replace<MaterialOverrideComponent>(rootHandle, liveOverride);
+
+    const SceneMaterial before = f.manager.GetMaterial(0);
+    SceneMaterial after = before;
+    after.roughness = 0.4f;
+
+    // The fixed capture is complete: every durable imported member appears,
+    // with std::nullopt for the member whose override is absent.
+    const auto beforeOverrides = CaptureMaterialOverrideFanOut(reg, 0);
+    REQUIRE(beforeOverrides.size() == 2);
+    std::unordered_set<UUID> captured;
+    for (const auto& [uuid, ov] : beforeOverrides)
+    {
+        captured.insert(uuid);
+        if (uuid == root) REQUIRE(ov.has_value());
+        if (uuid == child) REQUIRE_FALSE(ov.has_value());
+    }
+    REQUIRE(captured.count(root) == 1);
+    REQUIRE(captured.count(child) == 1);
+
+    const auto staged = f.manager.StageMaterialSlot(0, after);
+    REQUIRE(staged.IsOk());
+    auto edit = MakeSetMaterialPropertiesCommandIfEffective(0, before, after,
+        beforeOverrides, staged.value.afterOverrides);
+    REQUIRE(edit);
+    const auto applied = history.Execute(std::move(edit), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    // Both members receive the derived override in ONE composite commit.
+    REQUIRE(reg.try_get<MaterialOverrideComponent>(childHandle));
+    CHECK(reg.get<MaterialOverrideComponent>(childHandle).material.roughness == doctest::Approx(0.4f));
+    REQUIRE(f.manager.IsOverridden(child, overrideKey).value);
+
+    // Undo restores the exact before fan-out: the root's live override is
+    // restored and the child's override returns to ABSENT.
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.try_get<MaterialOverrideComponent>(rootHandle));
+    CHECK_FALSE(reg.all_of<MaterialOverrideComponent>(childHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(child, overrideKey).value);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): a locally added-then-removed wire correctly returns to
+// source with no marker, but removing an INHERITED prefab-authored component
+// also dropped the marker ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â so the prefab source could resurrect the component
+// on the next reconcile. The fix marks an inherited (not-overridden) removal as
+// explicitly overridden-absent, durably recording the local removal.
+TEST_CASE("Phase 8 W3 S6-B fixup: inherited motion/script removal marks override-absent")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_inherited_remove");
+    // Author motion + an unbound script into the TEMPLATE root so the instance
+    // INHERITS both components with NO override markers.
+    const auto templateRoot = f.CreateEmpty("Root");
+    const auto templateChild = f.CreateChild("Child", templateRoot);
+    auto& reg = f.manager.GetECS().registry;
+    const auto templateRootHandle = f.manager.FindEntityByUuid(templateRoot);
+    REQUIRE(static_cast<uint32_t>(templateRootHandle) != static_cast<uint32_t>(entt::null));
+    reg.emplace_or_replace<MotionComponent>(templateRootHandle,
+        MotionComponent{ glm::vec3(1.0f, 0.0f, 0.0f) });
+    ScriptComponent authored;
+    authored.asset.kind = AssetKind::Script; // unbound: no path, no fields
+    reg.emplace_or_replace<ScriptComponent>(templateRootHandle, authored);
+
+    const auto prefabPath = dir / "s2.rt2prefab";
+    REQUIRE(f.manager.CreatePrefabFromSubtree({ templateRoot }, prefabPath).ok);
+
+    const auto uuids = f.manager.ReserveKnownUuids(2);
+    std::vector<AssetDiagnostic> diags;
+    const auto inst = f.manager.InstantiatePrefabWithUuids(prefabPath, uuids, diags);
+    REQUIRE(inst.mutation.success);
+    const auto rootHandle = f.manager.FindEntityByUuid(uuids[0]);
+    REQUIRE(static_cast<uint32_t>(rootHandle) != static_cast<uint32_t>(entt::null));
+    const UUID root = H6B(reg, rootHandle);
+    const auto motionKey = PrefabComponentKeyFor<MotionComponent>::value;
+    const auto scriptKey = PrefabComponentKeyFor<ScriptComponent>::value;
+
+    // The instance INHERITS both components with no override markers.
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE(reg.all_of<ScriptComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, scriptKey).value);
+    EditorCommandHistory history;
+
+    // Removing the inherited motion must ADD the wire to the override set as
+    // explicitly absent (not just drop a non-existent marker).
+    auto removeMotion = MakeSetMotionCommandIfEffective(root,
+        std::optional<MotionComponent>{ reg.get<MotionComponent>(rootHandle) },
+        std::nullopt);
+    REQUIRE(removeMotion);
+    const auto motionResult = history.Execute(std::move(removeMotion), f.manager);
+    REQUIRE(motionResult.success);
+    REQUIRE(motionResult.effective);
+    CHECK_FALSE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // Undo restores the inherited component and drops the marker; Redo removes
+    // it again and re-marks.
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK_FALSE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+
+    // Removing the inherited (unbound) script behaves the same way.
+    auto removeScript = MakeSetScriptCommandIfEffective(root,
+        std::optional<ScriptComponent>{ reg.get<ScriptComponent>(rootHandle) },
+        std::nullopt);
+    REQUIRE(removeScript);
+    const auto scriptResult = history.Execute(std::move(removeScript), f.manager);
+    REQUIRE(scriptResult.success);
+    REQUIRE(scriptResult.effective);
+    CHECK_FALSE(reg.all_of<ScriptComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value);
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE(reg.all_of<ScriptComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, scriptKey).value);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): AlignCameraCommand always emitted BOTH the Transform and
+// CameraComponent marker specs, so a camera-pose edit that changes ONLY the
+// camera wire (transform untouched) diverged an inherited transform with a
+// marker for an edit that never happened. The fix marks only the canonically
+// changed wires.
+TEST_CASE("Phase 8 W3 S6-B fixup: camera align marks only canonically changed wires")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_camera_wires");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto transformKey = PrefabComponentKeyFor<Transform>::value;
+    const auto cameraKey = PrefabComponentKeyFor<CameraComponent>::value;
+    EditorCommandHistory history;
+
+    reg.emplace_or_replace<CameraComponent>(rootHandle, CameraComponent{});
+    const auto& liveTf = reg.get<Transform>(rootHandle);
+    const EditableTRS beforeLocal{ liveTf.translation, liveTf.rotation, liveTf.scale };
+    CameraComponent beforeCamera = reg.get<CameraComponent>(rootHandle);
+    CameraComponent afterCamera = beforeCamera;
+    afterCamera.verticalFOV = beforeCamera.verticalFOV + 10.0f;
+
+    // A camera-only pose edit: the transform wire is untouched.
+    auto align = MakeAlignCameraCommandIfEffective(root, beforeLocal, beforeLocal,
+        beforeCamera, afterCamera);
+    REQUIRE(align);
+    const auto applied = history.Execute(std::move(align), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(reg.get<CameraComponent>(rootHandle).verticalFOV
+        == doctest::Approx(afterCamera.verticalFOV));
+    // The camera wire diverges; the inherited transform must NOT be marked.
+    REQUIRE(f.manager.IsOverridden(root, cameraKey).value);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, transformKey).value);
+
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, cameraKey).value);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, transformKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): MakeSetVisibilityCommandIfEffective fabricated before
+// values for after-UUIDs missing from the before set, silently building a
+// wrong Undo. The fix strictly rejects Before/After UUID-set mismatches and
+// duplicate UUIDs before any command is built.
+TEST_CASE("Phase 8 W3 S6-B fixup: visibility factory rejects set mismatch and duplicates")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_visibility_sets");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const UUID child = H6B(reg, childHandle);
+    EditorCommandHistory history;
+
+    // Clean run-2 visibility: before and after cover the SAME UUIDs and the
+    // command round-trips through the composite.
+    reg.emplace_or_replace<VisibleComponent>(rootHandle, VisibleComponent{ true });
+    reg.emplace_or_replace<VisibleComponent>(childHandle, VisibleComponent{ true });
+    auto hide = MakeSetVisibilityCommandIfEffective(
+        { { root, true }, { child, true } },
+        { { root, false }, { child, false } });
+    REQUIRE(hide);
+    const auto applied = history.Execute(std::move(hide), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK_FALSE(reg.get<VisibleComponent>(rootHandle).visible);
+    CHECK_FALSE(reg.get<VisibleComponent>(childHandle).visible);
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.get<VisibleComponent>(rootHandle).visible);
+    CHECK(reg.get<VisibleComponent>(childHandle).visible);
+
+    // An incomplete before set (a UUID in after but not in before) is REJECTED.
+    CHECK(!MakeSetVisibilityCommandIfEffective(
+        { { root, true } },
+        { { root, false }, { child, false } }));
+
+    // A stray before UUID (in before but not in after) is REJECTED.
+    CHECK(!MakeSetVisibilityCommandIfEffective(
+        { { root, true }, { child, true } },
+        { { root, false } }));
+
+    // Duplicate UUIDs in either list are REJECTED.
+    CHECK(!MakeSetVisibilityCommandIfEffective(
+        { { root, true }, { root, false } },
+        { { root, false } }));
+    CHECK(!MakeSetVisibilityCommandIfEffective(
+        { { root, true } },
+        { { root, false }, { root, true } }));
+
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): the converted UI paths called m_CommandHistory->Execute
+// directly, so a host using the documented default (no command history
+// installed) dereferenced null and crashed ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â or, in a mutate-then-record
+// revert, mutated outside history. The fix routes every converted action
+// through ExecuteCommandThroughHistory, which returns a structured
+// InvalidRuntimeState Failure before the scene is touched.
+TEST_CASE("Phase 8 W3 S6-B fixup: null history fails with a structured diagnostic, no mutation")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_null_history");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+
+    // No history installed (the documented default SceneEditorUI setup): the
+    // action fails with a structured diagnostic and ZERO mutation.
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const std::string beforeName = reg.get<NameComponent>(rootHandle).name;
+    auto rename = MakeSetNameCommandIfEffective(root, beforeName, "Renamed");
+    REQUIRE(rename);
+    const auto result = ExecuteCommandThroughHistory(
+        nullptr, f.manager, std::move(rename), root.ToString());
+    REQUIRE_FALSE(result.success);
+    CHECK(result.error.code == rt2::core::Error::InvalidRuntimeState);
+    CHECK(result.error.path == root.ToString());
+    CHECK(reg.get<NameComponent>(rootHandle).name == beforeName);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+
+    // With a history installed the same action executes and is recorded.
+    EditorCommandHistory history;
+    auto rename2 = MakeSetNameCommandIfEffective(root, beforeName, "Renamed");
+    REQUIRE(rename2);
+    const auto executed = ExecuteCommandThroughHistory(
+        &history, f.manager, std::move(rename2), root.ToString());
+    REQUIRE(executed.success);
+    REQUIRE(executed.effective);
+    CHECK(reg.get<NameComponent>(rootHandle).name == "Renamed");
+    REQUIRE(history.CanUndo());
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.get<NameComponent>(rootHandle).name == beforeName);
+    std::filesystem::remove_all(dir);
+}
+
+// ============================================================================
+// Phase 8 W3, S6-B re-review residual ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â every public MarkerSpec key is
+// validated against the frozen table before the ordinary-entity skip.
+// ============================================================================
+
+namespace
+{
+// Minimal IEditorCommand adapter that exposes a caller-injected
+// PrefabCommandTransaction. The production factories always emit canonical
+// keys, so injecting an UNKNOWN or EXCLUDED marker key requires driving the
+// transaction directly; this is the reusable seam's public boundary.
+class TestTransactionCommand final : public IEditorCommand
+{
+public:
+    TestTransactionCommand(std::vector<PrefabValueEdit> values,
+                           std::vector<PrefabCommandTransaction::MarkerSpec> markers)
+        : m_Txn(std::move(values), std::move(markers)) {}
+    EditorMutationResult Execute(SceneManager& scene) override { return m_Txn.Execute(scene); }
+    EditorMutationResult Undo(SceneManager& scene) override { return m_Txn.Undo(scene); }
+    std::string Description() const override { return "test transaction command"; }
+private:
+    PrefabCommandTransaction m_Txn;
+};
+}
+
+// RED proof (fault): Capture validated the marker key only through
+// SceneManager::IsOverridden, which returns NotPrefabMember for an ordinary
+// entity BEFORE it canonicalizes the wire or checks the overridable bit
+// (SceneManager.cpp:5858-5865). A transaction against an ordinary entity with
+// an UNKNOWN marker wire therefore had its marker silently dropped and
+// proceeded as a value-only edit ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the same bad key failed loudly only for a
+// prefab member. The fix validates every MarkerSpec key against the table
+// (FindComponentByWire) and rejects unknown wires before the NotPrefabMember
+// skip, so both entity classes fail identically with zero mutation.
+TEST_CASE("Phase 8 W3 S6-B fixup: unknown marker key on an ordinary entity fails loudly with zero mutation")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_unknown_ordinary");
+    auto& reg = f.manager.GetECS().registry;
+    // Both entity classes present up front so one baseline covers both: the
+    // ordinary entity and a real prefab instance (whose root is a member).
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    const UUID root = H6B(reg, rootHandle);
+    const UUID plain = f.CreateEmpty("Plain");
+    const auto plainHandle = f.manager.FindEntityByUuid(plain);
+    REQUIRE(static_cast<uint32_t>(plainHandle) != static_cast<uint32_t>(entt::null));
+    REQUIRE_FALSE(reg.all_of<PrefabMemberComponent>(plainHandle));
+    REQUIRE(reg.all_of<PrefabMemberComponent>(rootHandle));
+    const std::string beforeName = reg.get<NameComponent>(plainHandle).name;
+    const std::string rootName = reg.get<NameComponent>(rootHandle).name;
+
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const auto beforeSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    EditorCommandHistory history;
+
+    auto bad = std::make_unique<TestTransactionCommand>(
+        std::vector<PrefabValueEdit>{
+            { PrefabValueKind::EntityName, plain, PrefabMarkerDirection::After,
+              beforeName, std::string("BadRename") } },
+        std::vector<PrefabCommandTransaction::MarkerSpec>{
+            { plain, PrefabComponentKey(std::string_view("bogus.wire"), true), true } });
+    const auto applied = history.Execute(std::move(bad), f.manager);
+    REQUIRE_FALSE(applied.success);
+    CHECK(applied.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(applied.error.detail.find("bogus.wire") != std::string::npos);
+    // Zero value/revision/schema/notification/history change ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the command
+    // could NOT silently degrade to a value-only edit.
+    CHECK(reg.get<NameComponent>(plainHandle).name == beforeName);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == beforeSchema);
+    CHECK_FALSE(history.CanUndo());
+
+    // Entity-class independence: the SAME bad key on a prefab member fails
+    // identically ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the membership query no longer gates key validation.
+    auto badMember = std::make_unique<TestTransactionCommand>(
+        std::vector<PrefabValueEdit>{
+            { PrefabValueKind::EntityName, root, PrefabMarkerDirection::After,
+              rootName, std::string("BadRename") } },
+        std::vector<PrefabCommandTransaction::MarkerSpec>{
+            { root, PrefabComponentKey(std::string_view("bogus.wire"), true), true } });
+    const auto memberApplied = history.Execute(std::move(badMember), f.manager);
+    REQUIRE_FALSE(memberApplied.success);
+    CHECK(memberApplied.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(reg.get<NameComponent>(rootHandle).name == rootName);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+    CHECK_FALSE(history.CanUndo());
+    std::filesystem::remove_all(dir);
+}
+
+// RED proof (fault): same boundary hole, same silent value-only degradation,
+// for an EXCLUDED table wire (meshRef ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â present in the frozen table but not
+// overridable). On the pre-fix code an ordinary entity dropped the excluded
+// marker and committed the value edit; the fix rejects excluded wires with a
+// structured InvalidArgument before the ordinary-entity skip.
+TEST_CASE("Phase 8 W3 S6-B fixup: excluded marker key on an ordinary entity fails loudly with zero mutation")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6b_fixup_excluded_ordinary");
+    auto& reg = f.manager.GetECS().registry;
+    // Both entity classes present up front so one baseline covers both.
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    const UUID root = H6B(reg, rootHandle);
+    const UUID plain = f.CreateEmpty("Plain");
+    const auto plainHandle = f.manager.FindEntityByUuid(plain);
+    REQUIRE(static_cast<uint32_t>(plainHandle) != static_cast<uint32_t>(entt::null));
+    REQUIRE_FALSE(reg.all_of<PrefabMemberComponent>(plainHandle));
+    REQUIRE(reg.all_of<PrefabMemberComponent>(rootHandle));
+    const std::string beforeName = reg.get<NameComponent>(plainHandle).name;
+    const std::string rootName = reg.get<NameComponent>(rootHandle).name;
+    const PrefabComponentKey meshKey = PrefabComponentKeyFor<MeshRef>::value;
+    REQUIRE_FALSE(meshKey.overridable());
+
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const auto beforeSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    EditorCommandHistory history;
+
+    auto bad = std::make_unique<TestTransactionCommand>(
+        std::vector<PrefabValueEdit>{
+            { PrefabValueKind::EntityName, plain, PrefabMarkerDirection::After,
+              beforeName, std::string("BadRename") } },
+        std::vector<PrefabCommandTransaction::MarkerSpec>{
+            { plain, meshKey, true } });
+    const auto applied = history.Execute(std::move(bad), f.manager);
+    REQUIRE_FALSE(applied.success);
+    CHECK(applied.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(applied.error.detail.find("meshRef") != std::string::npos);
+    CHECK(reg.get<NameComponent>(plainHandle).name == beforeName);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == beforeSchema);
+    CHECK_FALSE(history.CanUndo());
+
+    // Entity-class independence: the SAME excluded key on a prefab member
+    // fails identically.
+    auto badMember = std::make_unique<TestTransactionCommand>(
+        std::vector<PrefabValueEdit>{
+            { PrefabValueKind::EntityName, root, PrefabMarkerDirection::After,
+              rootName, std::string("BadRename") } },
+        std::vector<PrefabCommandTransaction::MarkerSpec>{
+            { root, meshKey, true } });
+    const auto memberApplied = history.Execute(std::move(badMember), f.manager);
+    REQUIRE_FALSE(memberApplied.success);
+    CHECK(memberApplied.error.code == rt2::core::Error::InvalidArgument);
+    CHECK(reg.get<NameComponent>(rootHandle).name == rootName);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+    CHECK_FALSE(history.CanUndo());
+    std::filesystem::remove_all(dir);
+}
+
+// ============================================================================
+// Phase 8 W3, S6-C ÃƒÂ¯Ã‚Â¿Ã‚Â½ non-transform live-preview composite sessions.
+//
+// The four live-preview editors (light, camera, motion velocity,
+// Int/Float/Vec3/Color script fields) no longer mutate the scene per frame
+// and fabricate a recorded command at close. Each gesture runs a
+// CompositePreviewSession: an immutable origin (value + override-set
+// membership + document schema) captured at open; a rolling source equal to
+// the last successfully committed preview; per-frame commits through the
+// atomic composite; and a two-phase close (record ONE command carrying the
+// explicit origin capture, or compensate through an unconditional restore
+// replay that records no history).
+//
+// RT2Tests is CPU-only: SceneEditorUI (which pulls in ImGui/FileDialog/Walnut)
+// is NOT compiled into this target, so the ImGui glue that observes widget
+// activation cadence and clears owning-widget IDs is not driven here. What IS
+// exercised honestly at the product level is the CPU-linkable decision machine
+// those editors delegate to  PreviewSessionClose (FinalizePreviewSession /
+// RestorePreviewSession / BuildPreviewSessionCommand)  together with
+// CompositePreviewSession and the command factories. Retry ownership, the
+// finalize-before-discrete command-ordering contract, the editability-transition
+// (finalize, never discard), and the document-replacement / target-removal
+// (the only discard proofs) are therefore tested THROUGH the close core rather
+// than through ImGui. This supersedes earlier text that claimed the thin
+// SceneEditorUI glue itself was exercised here.
+//
+// RED proofs: (1) a rolling source that re-stages the frame-zero origin on a
+// later frame fails Prepare ("source differs from live state"), so the
+// successful frame-two commits below discriminate the rolling source; (2)
+// recording the close WITHOUT the explicit capture makes the first Undo read
+// the live (already-previewed) membership, so a first-add Undo would remove
+// nothing  the marker/schema/value assertions below are RED against that; (3)
+// a canonical first-frame no-op staged with a marker inserts the marker and
+// promotes the schema (the Preview gate below is RED against that); (4) a
+// forged explicit capture for a different member/key/after is accepted and
+// changes the wrong override set (the one-for-one validation below is RED
+// against that).
+// ============================================================================
+
+namespace
+{
+
+bool S6CLightEqual(const LightComponent& a, const LightComponent& b)
+{
+    return a.color == b.color && a.intensity == b.intensity && a.range == b.range
+        && a.innerConeAngle == b.innerConeAngle && a.outerConeAngle == b.outerConeAngle
+        && a.type == b.type;
+}
+
+bool S6CMotionEqual(const std::optional<MotionComponent>& a,
+                    const std::optional<MotionComponent>& b)
+{
+    return a.has_value() == b.has_value()
+        && (!a.has_value() || a->linearVelocity == b->linearVelocity);
+}
+
+// Mirror of the SceneEditorUI light reader: read the committed component back
+// from the live registry, falling back to the raw committed target if the
+// entity or component vanished.
+PrefabValuePayload S6CLightReader(SceneManager& manager, const rt2::core::UUID& uuid,
+                                  const PrefabValuePayload& raw)
+{
+    const auto entity = manager.FindEntityByUuid(uuid);
+    if (entity == entt::null) return raw;
+    const auto* lc = manager.GetECS().registry.try_get<LightComponent>(entity);
+    if (!lc) return raw;
+    return PrefabValuePayload{ *lc };
+}
+
+PrefabValuePayload S6CCameraReader(SceneManager& manager, const rt2::core::UUID& uuid,
+                                   const PrefabValuePayload& raw)
+{
+    const auto entity = manager.FindEntityByUuid(uuid);
+    if (entity == entt::null) return raw;
+    const auto* cc = manager.GetECS().registry.try_get<CameraComponent>(entity);
+    if (!cc) return raw;
+    return PrefabValuePayload{ *cc };
+}
+
+PrefabValuePayload S6CMotionReader(SceneManager& manager, const rt2::core::UUID& uuid,
+                                   const PrefabValuePayload& raw)
+{
+    const auto entity = manager.FindEntityByUuid(uuid);
+    if (entity == entt::null) return raw;
+    const auto* mm = manager.GetECS().registry.try_get<MotionComponent>(entity);
+    if (!mm) return raw;
+    return PrefabValuePayload{ std::optional<MotionComponent>(*mm) };
+}
+
+PrefabValuePayload S6CScriptReader(SceneManager& manager, const rt2::core::UUID& uuid,
+                                   const PrefabValuePayload& raw)
+{
+    const auto live = manager.GetScriptState(uuid);
+    if (!live.has_value()) return raw;
+    return PrefabValuePayload{ live };
+}
+
+} // namespace
+
+TEST_CASE("Phase 8 W3 S6-C: light live preview rolling source and one-command close")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_light");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    REQUIRE(session.IsOpen());
+    REQUIRE_FALSE(session.HadEffectiveFrame());
+
+    // Frame one: origin -> a. First-override marker inserted + schema
+    // promoted, ONE revision bump, real composite result.
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto r1 = session.Preview(f.manager, PrefabValuePayload{ a });
+    REQUIRE(r1.success);
+    REQUIRE(r1.effective);
+    REQUIRE(session.HadEffectiveFrame());
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+    REQUIRE(S6CLightEqual(std::get<LightComponent>(session.RollingValue()),
+        reg.get<LightComponent>(rootHandle)));
+    CHECK(session.LastEffectiveResult().effective);
+
+// Frame two: committed-a -> b. The staged source is the COMMITTED value,
+    // not the frame-zero origin ÃƒÂ¯Ã‚Â¿Ã‚Â½ re-staging the origin would fail Prepare
+    // with "light source differs from live state".
+    const LightComponent b{ glm::vec3(0.0f, 1.0f, 0.0f), 3.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto revisionAfterFrameOne = f.manager.AuthoringRevision();
+    const auto r2 = session.Preview(f.manager, PrefabValuePayload{ b });
+    REQUIRE(r2.success);
+    REQUIRE(r2.effective);
+    CHECK(reg.get<LightComponent>(rootHandle).intensity == 3.0f);
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revisionAfterFrameOne + 1);
+    const auto committed2 = reg.get<LightComponent>(rootHandle);
+    REQUIRE(S6CLightEqual(std::get<LightComponent>(session.RollingValue()), committed2));
+    CHECK(S6CLightEqual(committed2, b));
+
+    // Frame three: committed-b -> c. The three-frame proof exercises the
+    // rolling value/marker/schema sources on BOTH later frames (the ticket's
+    // "frames two AND three" requirement), never re-staging the frame-zero
+    // origin or an earlier committed value.
+    const LightComponent c{ glm::vec3(0.5f, 0.5f, 1.0f), 4.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto revisionAfterFrameTwo = f.manager.AuthoringRevision();
+    const auto r3 = session.Preview(f.manager, PrefabValuePayload{ c });
+    REQUIRE(r3.success);
+    REQUIRE(r3.effective);
+    CHECK(reg.get<LightComponent>(rootHandle).intensity == 4.0f);
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revisionAfterFrameTwo + 1);
+    const auto committed3 = reg.get<LightComponent>(rootHandle);
+    REQUIRE(S6CLightEqual(std::get<LightComponent>(session.RollingValue()), committed3));
+    CHECK(S6CLightEqual(committed3, c));
+
+    // Close: record ONE command (origin -> rolling) with the session's
+    // immutable origin capture and the last real effective result.
+    EditorCommandHistory history;
+    auto close = MakeSetLightCommandIfEffective(root, origin,
+        std::get<LightComponent>(session.RollingValue()), &session.Origin());
+    REQUIRE(close);
+    const auto recorded = history.RecordApplied(std::move(close), f.manager,
+        session.LastEffectiveResult());
+    REQUIRE(recorded.success);
+    REQUIRE(recorded.effective);
+    REQUIRE(history.CanUndo());
+
+    // Undo replays the captured ORIGIN facts (not the live, already-previewed
+    // membership): exact value restored, marker removed, origin schema back.
+    const auto undoRevision = f.manager.AuthoringRevision();
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK(f.manager.AuthoringRevision() == undoRevision + 1);
+    CHECK_FALSE(history.CanUndo());
+
+    // Redo re-applies the final state from the same capture.
+    const auto redoRevision = f.manager.AuthoringRevision();
+    const auto redone = history.Redo(f.manager);
+    REQUIRE(redone.success);
+    REQUIRE(redone.effective);
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), c));
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == redoRevision + 1);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: camera live preview commit and exact undo restore")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_camera");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto camKey = PrefabComponentKeyFor<CameraComponent>::value;
+    reg.emplace_or_replace<CameraComponent>(rootHandle,
+        CameraComponent{ 60.0f, 0.5f, 5.0f, { 0.0f, 0.0f, -1.0f } });
+    const CameraComponent origin = reg.get<CameraComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    REQUIRE_FALSE(f.manager.IsOverridden(root, camKey).value);
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CCameraReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::CameraProperties,
+        camKey, origin, reader));
+
+    // Two rolling preview frames.
+    const CameraComponent a{ 50.0f, 0.25f, 8.0f, { 0.0f, 0.0f, -1.0f } };
+    const auto r1 = session.Preview(f.manager, PrefabValuePayload{ a });
+    REQUIRE(r1.success);
+    REQUIRE(r1.effective);
+
+    const CameraComponent b{ 70.0f, 0.75f, 12.0f, { 0.0f, 0.0f, -1.0f } };
+    const auto r2 = session.Preview(f.manager, PrefabValuePayload{ b });
+    REQUIRE(r2.success);
+    REQUIRE(r2.effective);
+
+    const auto committed = reg.get<CameraComponent>(rootHandle);
+    REQUIRE(committed.verticalFOV == b.verticalFOV);
+    CHECK(committed.aperture == b.aperture);
+    CHECK(committed.focusDistance == b.focusDistance);
+    REQUIRE(f.manager.IsOverridden(root, camKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // Close + undo restores the exact origin camera.
+    EditorCommandHistory history;
+    auto close = MakeSetCameraCommandIfEffective(root, origin,
+        std::get<CameraComponent>(session.RollingValue()), &session.Origin());
+    REQUIRE(close);
+    REQUIRE(history.RecordApplied(std::move(close), f.manager,
+        session.LastEffectiveResult()).effective);
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    const auto restored = reg.get<CameraComponent>(rootHandle);
+    CHECK(restored.verticalFOV == origin.verticalFOV);
+    CHECK(restored.aperture == origin.aperture);
+    CHECK(restored.focusDistance == origin.focusDistance);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, camKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: motion velocity preview rolling source and close")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_motion");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto motionKey = PrefabComponentKeyFor<MotionComponent>::value;
+    reg.emplace_or_replace<MotionComponent>(rootHandle,
+        MotionComponent{ glm::vec3(1.0f, 0.0f, 0.0f) });
+    const MotionComponent originM = reg.get<MotionComponent>(rootHandle);
+    const auto originPayload = PrefabValuePayload{
+        std::optional<MotionComponent>(originM) };
+    CHECK_FALSE(f.manager.IsOverridden(root, motionKey).value);
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CMotionReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::MotionState,
+        motionKey, originPayload, reader));
+
+    const auto motionA = MotionComponent{ glm::vec3(2.0f, 0.0f, 0.0f) };
+    const auto r1 = session.Preview(f.manager,
+        PrefabValuePayload{ std::optional<MotionComponent>(motionA) });
+    REQUIRE(r1.success);
+    REQUIRE(r1.effective);
+
+    const auto motionB = MotionComponent{ glm::vec3(0.0f, 3.0f, 0.0f) };
+    const auto r2 = session.Preview(f.manager,
+        PrefabValuePayload{ std::optional<MotionComponent>(motionB) });
+    REQUIRE(r2.success);
+    REQUIRE(r2.effective);
+    CHECK(reg.get<MotionComponent>(rootHandle).linearVelocity == glm::vec3(0.0f, 3.0f, 0.0f));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+
+    // Close + undo: rolling source never re-stages the origin velocity.
+    EditorCommandHistory history;
+    auto close = MakeSetMotionCommandIfEffective(root,
+        std::get<std::optional<MotionComponent>>(session.OriginValue()),
+        std::get<std::optional<MotionComponent>>(session.RollingValue()),
+        &session.Origin());
+    REQUIRE(close);
+    REQUIRE(history.RecordApplied(std::move(close), f.manager,
+        session.LastEffectiveResult()).effective);
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    CHECK(S6CMotionEqual(
+        std::optional<MotionComponent>(reg.get<MotionComponent>(rootHandle)),
+        std::optional<MotionComponent>(originM)));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: script field live preview commits one gesture")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_script");
+    S6BScriptAssets(f, dir, { "spin.lua" });
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto scriptKey = PrefabComponentKeyFor<ScriptComponent>::value;
+
+    // Give the member an overridden script with a Float field (execute-on-add).
+    EditorCommandHistory setup;
+    ScriptComponent bound = S6BScript("spin.lua");
+    bound.fieldValues["speed"] = { ScriptFieldType::Float, 1.0 };
+    REQUIRE(setup.Execute(MakeSetScriptCommandIfEffective(root, std::nullopt,
+        std::optional<ScriptComponent>{ bound }), f.manager).effective);
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value);
+    const auto origin = reg.get<ScriptComponent>(rootHandle);
+
+    // The gesture opens on the existing override: marker already present, so
+    // the close command's Undo restores the VALUE only (marker/schema were
+    // already there before the gesture).
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CScriptReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::ScriptState,
+        scriptKey, PrefabValuePayload{ std::optional<ScriptComponent>(origin) },
+        reader));
+
+    auto fieldTarget = [&](double speed) {
+        ScriptComponent s = reg.get<ScriptComponent>(rootHandle);
+        s.fieldValues["speed"] = { ScriptFieldType::Float, speed };
+        return PrefabValuePayload{ std::optional<ScriptComponent>(s) };
+    };
+
+    const auto r1 = session.Preview(f.manager, fieldTarget(2.0));
+    REQUIRE(r1.success);
+    REQUIRE(r1.effective);
+    CHECK(std::get<double>(reg.get<ScriptComponent>(
+        rootHandle).fieldValues.at("speed").value) == 2.0);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    const auto r2 = session.Preview(f.manager, fieldTarget(3.0));
+    REQUIRE(r2.success);
+    REQUIRE(r2.effective);
+    CHECK(std::get<double>(reg.get<ScriptComponent>(
+        rootHandle).fieldValues.at("speed").value) == 3.0);
+
+    EditorCommandHistory history;
+    auto close = MakeSetScriptCommandIfEffective(root,
+        std::get<std::optional<ScriptComponent>>(session.OriginValue()),
+        std::get<std::optional<ScriptComponent>>(session.RollingValue()),
+        &session.Origin());
+    REQUIRE(close);
+    REQUIRE(history.RecordApplied(std::move(close), f.manager,
+        session.LastEffectiveResult()).effective);
+
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    const auto restored = reg.get<ScriptComponent>(rootHandle);
+    REQUIRE(ScriptComponentCanonicalEqual(restored, origin));
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: return-to-start close compensates with no history")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_restart");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    // Drag back to the exact origin value: effective frame, but the close
+    // record factory suppresses (value == origin) ÃƒÂ¯Ã‚Â¿Ã‚Â½ the S6-C close must then
+    // compensate the transient marker/schema work.
+    const auto rBack = session.Preview(f.manager, PrefabValuePayload{ origin });
+    REQUIRE(rBack.success);
+    REQUIRE(rBack.effective);
+    REQUIRE(S6CLightEqual(std::get<LightComponent>(session.RollingValue()), origin));
+    CHECK_FALSE(MakeSetLightCommandIfEffective(root, origin,
+        std::get<LightComponent>(session.RollingValue()), &session.Origin()));
+
+    EditorCommandHistory history;
+    auto restore = MakeSetLightRestoreCommand(root, origin,
+        std::get<LightComponent>(session.RollingValue()), session.Origin());
+    const auto compensated = restore->Undo(f.manager);
+    REQUIRE(compensated.success);
+    REQUIRE(compensated.effective);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 3);
+    CHECK_FALSE(history.CanUndo());
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: stale preview failure retains recovery state")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_stale");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    const auto committed = std::get<LightComponent>(session.RollingValue());
+
+    // Out-of-band mutation decouples live from the rolling committed source.
+    reg.get<LightComponent>(rootHandle).intensity = 99.0f;
+
+    // The next preview re-stages rolling -> b, but Prepare re-validates the
+    // staged source against live and fails loudly; rolling source untouched,
+    // session stays open for recovery.
+    const LightComponent b{ glm::vec3(0.0f, 1.0f, 0.0f), 3.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto r2 = session.Preview(f.manager, PrefabValuePayload{ b });
+    REQUIRE_FALSE(r2.success);
+    REQUIRE(r2.error.detail.find("differs from live") != std::string::npos);
+    REQUIRE(session.IsOpen());
+    REQUIRE(session.HadEffectiveFrame());
+    REQUIRE(S6CLightEqual(std::get<LightComponent>(session.RollingValue()), committed));
+
+    // Recovery: reconcile live back to the committed rolling state, then the
+    // escape restore replay compensates cleanly with no history.
+    reg.get<LightComponent>(rootHandle) = committed;
+    EditorCommandHistory history;
+    auto restore = MakeSetLightRestoreCommand(root, origin, committed,
+        session.Origin());
+    const auto compensated = restore->Undo(f.manager);
+    REQUIRE(compensated.success);
+    REQUIRE(compensated.effective);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK_FALSE(history.CanUndo());
+
+std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: stale marker between last preview and escape surfaces recovery")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_stalemarker");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    const auto committed = std::get<LightComponent>(session.RollingValue());
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+
+    // Between the last preview and the escape, a separate operation removes
+    // the light override from the stored vector (out-of-band membership
+    // change). The compensating Before replay must NOT silently proceed: the
+    // marker plan validates the source membership against live state and
+    // fails loudly, leaving the session open for reconciliation/retry.
+    auto* pm = reg.try_get<PrefabMemberComponent>(rootHandle);
+    REQUIRE(pm);
+    pm->overrides.erase(std::remove(pm->overrides.begin(), pm->overrides.end(),
+        lightKey), pm->overrides.end());
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+
+    EditorCommandHistory history;
+    auto restore = MakeSetLightRestoreCommand(root, origin, committed,
+        session.Origin());
+    const auto attempted = restore->Undo(f.manager);
+    REQUIRE_FALSE(attempted.success);
+    REQUIRE(attempted.error.detail.find("does not match live membership")
+        != std::string::npos);
+    REQUIRE(session.IsOpen());
+    REQUIRE(session.HadEffectiveFrame());
+
+    // Recovery: reconcile live membership back to the state the committed
+    // preview left behind, then the escape restore compensates cleanly ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
+    // value restored to origin, marker removed, origin schema back, no
+    // history.
+    pm->overrides.push_back(lightKey);
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    auto recovered = MakeSetLightRestoreCommand(root, origin, committed,
+        session.Origin());
+    const auto compensated = recovered->Undo(f.manager);
+    REQUIRE(compensated.success);
+    REQUIRE(compensated.effective);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK_FALSE(history.CanUndo());
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: document replacement discards preview state")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_replaced");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const auto originGeneration = f.manager.DocumentGeneration();
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    REQUIRE(session.IsOpen());
+    REQUIRE_FALSE(session.DocumentReplaced(f.manager));
+
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    REQUIRE(session.HadEffectiveFrame());
+
+    // Replace the document (Clear() bumps DocumentGeneration AND
+    // ResourceGeneration) and drop the target entity. The session proves the
+    // preview no longer belongs to the active document and must be discarded,
+    // not recorded and not restored against a dead target.
+    const auto genBeforeClear = f.manager.DocumentGeneration();
+    f.manager.Clear();
+    REQUIRE(f.manager.DocumentGeneration() != originGeneration);
+    REQUIRE(f.manager.DocumentGeneration() == genBeforeClear + 1);
+    REQUIRE(session.DocumentReplaced(f.manager));
+
+    // The host-side FinalizePreviewSession guard mirrors this proof: the
+    // target is gone, so no record/restore is attempted and the session is
+    // discarded (no history, no document churn from the stale preview).
+    const auto gone = f.manager.FindEntityByUuid(root);
+    REQUIRE(static_cast<uint32_t>(gone) == static_cast<uint32_t>(entt::null));
+    session.Discard();
+    REQUIRE_FALSE(session.IsOpen());
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: zero-churn gesture leaves the document untouched")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_zero");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    REQUIRE(session.IsOpen());
+    REQUIRE_FALSE(session.HadEffectiveFrame());
+
+    // Never-effective gestures are zero-churn: no marker, no schema change,
+    // no revision bump. (FinalizePreviewSession discards on !HadEffectiveFrame.)
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: ordinary entity preview is value-only and undoable")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_ordinary");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const auto plain = f.CreateEmpty("Plain");
+    const auto plainHandle = f.manager.FindEntityByUuid(plain);
+    REQUIRE(static_cast<uint32_t>(plainHandle) != static_cast<uint32_t>(entt::null));
+    reg.emplace_or_replace<LightComponent>(plainHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(plainHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    // An ordinary entity is not a Begin failure: it opens a value-only
+    // session whose marker delta is dropped (nullopt origin -> replay skip).
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, plain, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto r1 = session.Preview(f.manager, PrefabValuePayload{ a });
+    REQUIRE(r1.success);
+    REQUIRE(r1.effective);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(plainHandle), a));
+    const auto plainMarker = f.manager.IsOverridden(plain, lightKey);
+    REQUIRE_FALSE(plainMarker.IsOk());
+    CHECK(plainMarker.error.code == rt2::core::Error::NotPrefabMember);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    // The recorded close carries the nullopt marker; Undo restores the value
+    // and never touches marker/schema on an ordinary entity.
+    EditorCommandHistory history;
+    auto close = MakeSetLightCommandIfEffective(plain, origin,
+        std::get<LightComponent>(session.RollingValue()), &session.Origin());
+    REQUIRE(close);
+    REQUIRE(history.RecordApplied(std::move(close), f.manager,
+        session.LastEffectiveResult()).effective);
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    REQUIRE(undone.effective);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(plainHandle), origin));
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    std::filesystem::remove_all(dir);
+}
+
+// ---------------------------------------------------------------------------
+// S6-C independent-review fixup (b5767d0): honest product-level discrimination
+// for the lifecycle contract. These tests drive the CPU-linkable close core
+// (PreviewSessionClose) and CompositePreviewSession directly ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the ImGui glue
+// is not compiled into RT2Tests (see the corrected preamble above).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("Phase 8 W3 S6-C: canonical first-frame no-op Preview is zero-churn")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_nooppreview");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    const auto beforeRevision = f.manager.AuthoringRevision();
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+
+    // A canonical value no-op on the FIRST frame (the marker would otherwise
+    // be absent->present): must NOT insert a marker, promote the schema,
+    // notify, dirty, or bump the revision (P1 finding 1). RED against
+    // submitting the { member, key, true } marker unconditionally.
+    const auto r0 = session.Preview(f.manager, PrefabValuePayload{ origin });
+    REQUIRE(r0.success);
+    REQUIRE_FALSE(r0.effective);
+    REQUIRE_FALSE(session.HadEffectiveFrame());
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision);
+    CHECK(S6CLightEqual(std::get<LightComponent>(session.RollingValue()), origin));
+
+    // The no-op frame must not poison the gesture: a following effective frame
+    // still inserts the marker + promotes the schema with one revision bump.
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto r1 = session.Preview(f.manager, PrefabValuePayload{ a });
+    REQUIRE(r1.success);
+    REQUIRE(r1.effective);
+    REQUIRE(session.HadEffectiveFrame());
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: failed close stays pending and retries with identity intact")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_pendingretry");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    const auto committed = std::get<LightComponent>(session.RollingValue());
+
+    // Out-of-band mutation decouples live from the rolling committed source.
+    reg.get<LightComponent>(rootHandle).intensity = 99.0f;
+
+    // The host close core reports PendingRetry and leaves the session OPEN
+    // with target/origin/rolling identity intact, so the owning widget ID is
+    // preserved and a retry stays possible (P1 finding 2). RED against the
+    // previous glue that cleared ownership before the close attempt.
+    const auto close = RestorePreviewSession(f.manager,
+        PreviewSessionKind::Light, session);
+    REQUIRE(close.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    REQUIRE(close.needsSyncApply);
+    REQUIRE(session.IsOpen());
+    REQUIRE(session.HadEffectiveFrame());
+    CHECK(session.Target() == root);
+    REQUIRE(session.Origin().markers.size() == 1);
+    CHECK(session.Origin().markers[0].member == root);
+    CHECK(session.Origin().markers[0].key == lightKey);
+    CHECK(S6CLightEqual(std::get<LightComponent>(session.RollingValue()), committed));
+    CHECK_FALSE(close.mutation.success);
+
+    // Reconcile live back to the committed rolling state, then retry the SAME
+    // close core -> closed, origin restored, no history.
+    reg.get<LightComponent>(rootHandle) = committed;
+    EditorCommandHistory history;
+    const auto retry = RestorePreviewSession(f.manager,
+        PreviewSessionKind::Light, session);
+    REQUIRE(retry.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(retry.needsSyncApply);
+    REQUIRE_FALSE(session.IsOpen());
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+    CHECK_FALSE(history.CanUndo());
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: finalize-before-discrete keeps script remove exactly undoable")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_scriptorder");
+    S6BScriptAssets(f, dir, { "spin.lua" });
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto scriptKey = PrefabComponentKeyFor<ScriptComponent>::value;
+
+    EditorCommandHistory setup;
+    ScriptComponent bound = S6BScript("spin.lua");
+    bound.fieldValues["speed"] = { ScriptFieldType::Float, 1.0 };
+    REQUIRE(setup.Execute(MakeSetScriptCommandIfEffective(root, std::nullopt,
+        std::optional<ScriptComponent>{ bound }), f.manager).effective);
+    const auto origin = reg.get<ScriptComponent>(rootHandle);
+    const auto initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    // A continuous field preview is active.
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CScriptReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::ScriptState,
+        scriptKey, PrefabValuePayload{ std::optional<ScriptComponent>(origin) },
+        reader));
+    ScriptComponent fieldTarget = reg.get<ScriptComponent>(rootHandle);
+    fieldTarget.fieldValues["speed"] = { ScriptFieldType::Float, 2.0 };
+    REQUIRE(session.Preview(f.manager,
+        PrefabValuePayload{ std::optional<ScriptComponent>(fieldTarget) }).effective);
+    const auto previewFinal = reg.get<ScriptComponent>(rootHandle);
+
+    // GREEN order: finish the preview (record) BEFORE the discrete remove.
+    EditorCommandHistory history;
+    const auto close = FinalizePreviewSession(history, f.manager,
+        PreviewSessionKind::Script, session);
+    REQUIRE(close.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(close.recorded);
+    REQUIRE_FALSE(session.IsOpen());
+    REQUIRE(history.CanUndo());
+
+    // The discrete remove now lands against the preview-final state.
+    auto removeCmd = MakeSetScriptCommandIfEffective(root,
+        std::optional<ScriptComponent>(previewFinal), std::nullopt);
+    REQUIRE(removeCmd);
+    REQUIRE(history.Execute(std::move(removeCmd), f.manager).effective);
+
+    // Undo the remove -> preview-final restored; undo the preview record ->
+    // exact origin binding (value + marker + schema), one gesture per entry.
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE(ScriptComponentCanonicalEqual(reg.get<ScriptComponent>(rootHandle),
+        previewFinal));
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE(ScriptComponentCanonicalEqual(reg.get<ScriptComponent>(rootHandle),
+        origin));
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value); // pre-existing override
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: finalize-before-align keeps camera history exactly undoable")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_alignorder");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto camKey = PrefabComponentKeyFor<CameraComponent>::value;
+    const CameraComponent originCam{ 60.0f, 0.5f, 5.0f, { 0.0f, 0.0f, -1.0f } };
+    reg.emplace_or_replace<CameraComponent>(rootHandle, originCam);
+    EditableTRS originTransform;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ rootHandle },
+        originTransform));
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CCameraReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::CameraProperties,
+        camKey, originCam, reader));
+    const CameraComponent a{ 50.0f, 0.25f, 8.0f, { 0.0f, 0.0f, -1.0f } };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+    // GREEN order: finalize the deactivated camera preview BEFORE the
+    // discrete Align command so the recorded preview's stored After matches
+    // live state (P1 finding 3).
+    EditorCommandHistory history;
+    const auto close = FinalizePreviewSession(history, f.manager,
+        PreviewSessionKind::Camera, session);
+    REQUIRE(close.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(close.recorded);
+    REQUIRE_FALSE(session.IsOpen());
+
+    // Stage + execute the discrete align through the same history.
+    EditorCameraPose pose;
+    pose.position = glm::vec3(6.0f, 2.0f, 8.0f);
+    pose.forward = glm::vec3(-1.0f, 0.0f, 0.0f);
+    const auto staged = f.manager.StageCameraPose(root, pose);
+    REQUIRE(staged.IsOk());
+    EditableTRS beforeLocal;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ rootHandle }, beforeLocal));
+    const CameraComponent beforeCam = reg.get<CameraComponent>(rootHandle);
+    auto align = MakeAlignCameraCommandIfEffective(root, beforeLocal,
+        staged.value.local, beforeCam, staged.value.camera);
+    REQUIRE(align);
+    REQUIRE(history.Execute(std::move(align), f.manager).effective);
+
+    // Undo the align, then undo the preview record: exact origin camera and
+    // transform. The preview Undo's source validation passes because the
+    // close happened BEFORE the align.
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE(history.Undo(f.manager).success);
+    const auto restored = reg.get<CameraComponent>(rootHandle);
+    CHECK(restored.verticalFOV == originCam.verticalFOV);
+    CHECK(restored.aperture == originCam.aperture);
+    CHECK(restored.focusDistance == originCam.focusDistance);
+    EditableTRS restoredTransform;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ rootHandle },
+        restoredTransform));
+    CHECK(restoredTransform.translation == originTransform.translation);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, camKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    // RED discrimination: executing the align BEFORE finalizing the active
+    // preview strands the close. The finalize preflight now detects that the
+    // live camera diverged from the rolling final (the align changed it) and
+    // REFUSES to record ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no stale entry ever poisons history (S6-C re-review,
+    // P1 finding 1). The compensate attempt also fails source validation, so
+    // the session stays open (PendingRetry) with ownership retained.
+    CompositePreviewSession bad;
+    REQUIRE(bad.Begin(f.manager, root, PrefabValueKind::CameraProperties,
+        camKey, restored, reader));
+    const CameraComponent b{ 55.0f, 0.4f, 6.0f, { 0.0f, 0.0f, -1.0f } };
+    REQUIRE(bad.Preview(f.manager, PrefabValuePayload{ b }).effective);
+    const auto staged2 = f.manager.StageCameraPose(root, pose);
+    REQUIRE(staged2.IsOk());
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{ rootHandle }, beforeLocal));
+    const CameraComponent beforeCam2 = reg.get<CameraComponent>(rootHandle);
+    auto align2 = MakeAlignCameraCommandIfEffective(root, beforeLocal,
+        staged2.value.local, beforeCam2, staged2.value.camera);
+    REQUIRE(align2);
+    EditorCommandHistory badHistory;
+    REQUIRE(badHistory.Execute(std::move(align2), f.manager).effective);
+    const auto badClose = FinalizePreviewSession(badHistory, f.manager,
+        PreviewSessionKind::Camera, bad);
+    REQUIRE(badClose.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    REQUIRE(bad.IsOpen());
+    REQUIRE_FALSE(badClose.recorded);
+    // The align entry is the ONLY history: no stale preview command was pushed.
+    REQUIRE(badHistory.CanUndo());
+
+    // Reconcile live back to the rolling final, then the SAME close retries
+    // and records cleanly (undoable to the exact origin camera).
+    reg.get<CameraComponent>(rootHandle) = std::get<CameraComponent>(bad.RollingValue());
+    const auto badRetry = FinalizePreviewSession(badHistory, f.manager,
+        PreviewSessionKind::Camera, bad);
+    REQUIRE(badRetry.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(badRetry.recorded);
+    REQUIRE_FALSE(bad.IsOpen());
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: leaving editability finalizes, never discards")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_editable");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t initialSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+    // Play entry sets the editor non-editable WITHOUT replacing the authoring
+    // document or removing the target. The close core has no editability
+    // input and must FINALIZE (record) rather than discard the previewed
+    // value/marker/schema (P1 finding 4). RED against the old glue that
+    // discarded an effective session when !m_Editable.
+    EditorCommandHistory history;
+    const auto out = FinalizePreviewSession(history, f.manager,
+        PreviewSessionKind::Light, session);
+    REQUIRE(out.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(out.recorded);
+    REQUIRE_FALSE(session.IsOpen());
+    REQUIRE(history.CanUndo());
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), a));
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // The recorded entry restores the exact origin on Undo.
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == initialSchema);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: target removal and document replacement are the only discards")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_discards");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    const LightComponent origin{ glm::vec3(0.0f, 1.0f, 0.0f), 3.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    reg.emplace_or_replace<LightComponent>(rootHandle, origin);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // (a) Target removal in the SAME document (no generation change): discard.
+    {
+        CompositePreviewSession session;
+        REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, reader));
+        REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        REQUIRE(f.manager.RemoveSubtrees({ root }).success);
+        REQUIRE(static_cast<uint32_t>(f.manager.FindEntityByUuid(root))
+            == static_cast<uint32_t>(entt::null));
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, session);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::Closed);
+        REQUIRE_FALSE(out.recorded);
+        REQUIRE_FALSE(session.IsOpen());
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    // (b) Document replacement (Clear bumps the generation and removes the
+    // target): discard, no record and no compensation against the dead doc.
+    {
+        const auto [r2, c2] = f.MakeInstance(dir);
+        auto& reg2 = f.manager.GetECS().registry;
+        const UUID root2 = H6B(reg2, r2);
+        reg2.emplace_or_replace<LightComponent>(r2, origin);
+        CompositePreviewSession session;
+        REQUIRE(session.Begin(f.manager, root2, PrefabValueKind::LightProperties,
+            lightKey, origin, reader));
+        REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        REQUIRE_FALSE(session.DocumentReplaced(f.manager));
+        f.manager.Clear();
+        REQUIRE(session.DocumentReplaced(f.manager));
+        EditorCommandHistory history;
+        const auto out = RestorePreviewSession(f.manager,
+            PreviewSessionKind::Light, session);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::Closed);
+        REQUIRE_FALSE(session.IsOpen());
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: explicit capture is validated one-for-one and mismatches are rejected")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_captureval");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const UUID other = H6B(reg, childHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    const auto cameraKey = PrefabComponentKeyFor<CameraComponent>::value;
+    const uint32_t docSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+
+    const auto makeTx = [&]() {
+        return PrefabCommandTransaction(
+            std::vector<PrefabValueEdit>{
+                { PrefabValueKind::LightProperties, root, PrefabMarkerDirection::After,
+                    origin, a } },
+            std::vector<PrefabCommandTransaction::MarkerSpec>{
+                { root, lightKey, true } });
+    };
+    const auto capture = [&](const UUID& member, PrefabComponentKey key,
+                             std::optional<bool> beforePresent, bool afterPresent) {
+        PrefabCommandTransaction::ExplicitCapture cap;
+        cap.beforeSchema = docSchema;
+        cap.markers.push_back({ member, key, beforePresent, afterPresent });
+        return cap;
+    };
+
+    // (a) Exact one-for-one capture (member == value entity, key, after): accepted.
+    {
+        PrefabCommandTransaction tx = makeTx();
+        tx.SetExplicitCapture(capture(root, lightKey, std::optional<bool>(false), true));
+        CHECK_FALSE(tx.ExplicitCaptureRejected());
+    }
+    // (b) Different member (camera marker for entity B on a light command for
+    // entity A): rejected (P2 finding 5).
+    {
+        PrefabCommandTransaction tx = makeTx();
+        tx.SetExplicitCapture(capture(other, lightKey, std::optional<bool>(false), true));
+        REQUIRE(tx.ExplicitCaptureRejected());
+    }
+    // (c) Different key (camera wire on a light command): rejected.
+    {
+        PrefabCommandTransaction tx = makeTx();
+        tx.SetExplicitCapture(capture(root, cameraKey, std::optional<bool>(false), true));
+        REQUIRE(tx.ExplicitCaptureRejected());
+    }
+    // (d) afterPresent mismatch: rejected.
+    {
+        PrefabCommandTransaction tx = makeTx();
+        tx.SetExplicitCapture(capture(root, lightKey, std::optional<bool>(false), false));
+        REQUIRE(tx.ExplicitCaptureRejected());
+    }
+    // (e) Duplicate / extra markers (cardinality mismatch): rejected.
+    {
+        PrefabCommandTransaction tx = makeTx();
+        PrefabCommandTransaction::ExplicitCapture cap;
+        cap.beforeSchema = docSchema;
+        cap.markers.push_back({ root, lightKey, std::optional<bool>(false), true });
+        cap.markers.push_back({ root, lightKey, std::optional<bool>(false), true });
+        tx.SetExplicitCapture(cap);
+        REQUIRE(tx.ExplicitCaptureRejected());
+    }
+    // (f) A rejected capture is surfaced loudly at replay, never applied.
+    {
+        PrefabCommandTransaction tx = makeTx();
+        tx.SetExplicitCapture(capture(other, lightKey, std::optional<bool>(false), true));
+        REQUIRE(tx.ExplicitCaptureRejected());
+        const auto ex = tx.Execute(f.manager);
+        REQUIRE_FALSE(ex.success);
+        CHECK(ex.error.detail.find("explicit capture") != std::string::npos);
+    }
+    // (g) Forged ordinary/member mix, structurally one-for-one but claiming an
+    // ordinary origin (nullopt) for a real prefab member: replay fails loudly
+    // instead of silently dropping the marker delta.
+    {
+        PrefabCommandTransaction tx = makeTx();
+        tx.SetExplicitCapture(capture(root, lightKey, std::nullopt, true));
+        CHECK_FALSE(tx.ExplicitCaptureRejected()); // structurally one-for-one
+        const auto ex = tx.Undo(f.manager);
+        REQUIRE_FALSE(ex.success);
+        CHECK(ex.error.detail.find("ordinary-entity origin for a prefab member")
+            != std::string::npos);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: stale document schema between gesture and close surfaces recovery")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_staleschema");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const uint32_t originSchema = f.manager.AuthoringDoc().metadata.schemaVersion;
+
+    CompositePreviewSession session;
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    REQUIRE(session.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+    // Out-of-band schema change: the restore command's captured origin schema
+    // no longer matches live, so the compensating replay fails loudly and the
+    // close stays pending rather than silently mis-compensating.
+    f.manager.AuthoringDoc().metadata.schemaVersion = SceneSerializer::MinReadVersion;
+    const auto close = RestorePreviewSession(f.manager,
+        PreviewSessionKind::Light, session);
+    REQUIRE(close.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    REQUIRE(close.needsSyncApply);
+    REQUIRE(session.IsOpen());
+    REQUIRE_FALSE(close.mutation.success);
+
+    // Reconcile the schema back to the LIVE schema the preview left behind
+    // (the restore replay's directional source), then retry: closed, value +
+    // marker + schema restored to the origin capture.
+    f.manager.AuthoringDoc().metadata.schemaVersion = SceneSerializer::SchemaVersion;
+    const auto retry = RestorePreviewSession(f.manager,
+        PreviewSessionKind::Light, session);
+    REQUIRE(retry.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE_FALSE(session.IsOpen());
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == originSchema);
+
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: finalize refutes stale value/marker/schema and rejected capture")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_preflight");
+    auto& reg = f.manager.GetECS().registry;
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    // Each sub-case uses its own fresh instance so no case's pending (unresolved)
+    // state leaks into the next.
+    const auto freshMember = [&]() -> std::pair<entt::entity, rt2::core::UUID> {
+        const auto [r, c] = f.MakeInstance(dir);
+        auto& reg2 = f.manager.GetECS().registry;
+        const UUID target = H6B(reg2, r);
+        reg2.emplace_or_replace<LightComponent>(r, LightComponent{});
+        return { r, target };
+    };
+    const auto openOn = [&](const rt2::core::UUID& target, PrefabComponentKey key) {
+        auto s = std::make_unique<CompositePreviewSession>();
+        const auto handle = f.manager.FindEntityByUuid(target);
+        const LightComponent origin = reg.get<LightComponent>(handle);
+        REQUIRE(s->Begin(f.manager, target, PrefabValueKind::LightProperties,
+            key, origin, reader));
+        REQUIRE(s->Preview(f.manager, PrefabValuePayload{ a }).effective);
+        return std::pair{ std::move(s), origin };
+    };
+
+    // (a) STALE VALUE between the last preview and Finalize: the preflight
+    // finds the live value diverged and refuses to record - no history entry,
+    // the session stays open (PendingRetry) for retry. RED against
+    // RecordApplied trusting the stale session.LastEffectiveResult.
+    {
+        const auto [rh, target] = freshMember();
+        auto [s, origin] = openOn(target, lightKey);
+        reg.get<LightComponent>(rh).intensity = 99.0f;
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, *s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s->IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("live value differs") != std::string::npos);
+        // Retry after reconciling the value records cleanly and is undoable.
+        reg.get<LightComponent>(rh) = std::get<LightComponent>(s->RollingValue());
+        const auto retry = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, *s);
+        REQUIRE(retry.result == PreviewSessionCloseOutcome::Result::Closed);
+        REQUIRE(retry.recorded);
+        REQUIRE_FALSE(s->IsOpen());
+        REQUIRE(history.CanUndo());
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(rh), origin));
+        REQUIRE_FALSE(f.manager.IsOverridden(target, lightKey).value);
+    }
+
+    // (b) STALE MARKER between the last preview and Finalize: the marker was
+    // removed out of band, so the after-membership check refuses the record.
+    {
+        const auto [rh, target] = freshMember();
+        auto [s, origin] = openOn(target, lightKey);
+        auto* pm = reg.try_get<PrefabMemberComponent>(rh);
+        REQUIRE(pm);
+        pm->overrides.erase(std::remove(pm->overrides.begin(), pm->overrides.end(),
+            lightKey), pm->overrides.end());
+        REQUIRE_FALSE(f.manager.IsOverridden(target, lightKey).value);
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, *s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s->IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("override membership differs")
+            != std::string::npos);
+    }
+
+    // (c) STALE SCHEMA between the last preview and Finalize: an out-of-band
+    // schema change is refused by the preflight (live != promoted).
+    {
+        const auto [rh, target] = freshMember();
+        auto [s, origin] = openOn(target, lightKey);
+        f.manager.AuthoringDoc().metadata.schemaVersion = SceneSerializer::MinReadVersion;
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, *s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s->IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("schema differs") != std::string::npos);
+    }
+
+    // (d) REJECTED CAPTURE at the record-boundary: a session opened with a key
+    // that does not match the value kind produces a close command whose
+    // explicit capture fails one-for-one; the preflight refuses to record it.
+    {
+        const auto cameraKey = PrefabComponentKeyFor<CameraComponent>::value;
+        auto [s, origin] = openOn(freshMember().second, cameraKey);
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, *s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s->IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("explicit capture") != std::string::npos);
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C re-review, P1 finding 2: the CPU-linkable global-action reducer
+// (ClosePreviewSessionsBeforeAction) proves that Undo/Redo routing aborts on a
+// pending session instead of discarding it, and a healthy session closes first.
+TEST_CASE("Phase 8 W3 S6-C: global-action reducer aborts on pending and closes healthy sessions")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_reducer");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const UUID child = H6B(reg, childHandle);
+const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    reg.emplace_or_replace<LightComponent>(childHandle, LightComponent{});
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // Record ONE history entry (an independent root name change) so a host
+    // Undo would have something to pop without mutating either light the
+    // sessions preview on.
+    EditorCommandHistory history;
+    const std::string nameBefore = f.manager.GetEntityName(
+        SceneManager::EntityId{ rootHandle });
+    REQUIRE(history.Execute(MakeSetNameCommandIfEffective(root, nameBefore,
+        nameBefore + "X"), f.manager).effective);
+    REQUIRE(history.CanUndo());
+
+    // Session A (healthy) on root and session B (stranded) on child, so the
+    // two sessions do not share a target.
+    const LightComponent originRoot = reg.get<LightComponent>(rootHandle);
+    const LightComponent originChild = reg.get<LightComponent>(childHandle);
+    CompositePreviewSession healthy;
+    REQUIRE(healthy.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, originRoot, lightReader));
+    REQUIRE(healthy.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    CompositePreviewSession stranded;
+    REQUIRE(stranded.Begin(f.manager, child, PrefabValueKind::LightProperties,
+        lightKey, originChild, lightReader));
+    REQUIRE(stranded.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    reg.get<LightComponent>(childHandle).intensity = 77.0f;
+
+    unsigned int healthyOwner = 7;
+    unsigned int strandedOwner = 8;
+    PreviewSessionSlot slots[] = {
+        { PreviewSessionKind::Light, &healthy, &healthyOwner, false },
+        { PreviewSessionKind::Light, &stranded, &strandedOwner, false },
+    };
+
+    // The reducer reports allClosed=false (the host would abort the requested
+    // Undo) with a rich per-slot result so the host can clear the healthy
+    // owner, route its scene sync, and surface the stranded error. The healthy
+    // session closes (owner cleared), the stranded one stays OPEN with its
+    // owner preserved so recovery stays reachable (P1 finding 2).
+    PreviewSessionsBeforeActionResult r1;
+    ClosePreviewSessionsBeforeAction(f.manager, history, slots, 2, r1);
+    REQUIRE_FALSE(r1.allClosed);
+    REQUIRE(r1.slotCount == 2);
+    REQUIRE(r1.slots[0].sessionWasOpen);
+    REQUIRE(r1.slots[0].outcome.result == PreviewSessionCloseOutcome::Result::Closed);
+    CHECK(r1.slots[0].outcome.needsSyncApply);
+    REQUIRE(r1.slots[1].sessionWasOpen);
+    REQUIRE(r1.slots[1].outcome.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    CHECK_FALSE(r1.slots[1].outcome.lastError.error.detail.empty());
+    REQUIRE_FALSE(healthy.IsOpen());
+    CHECK(healthyOwner == 0);
+    REQUIRE(stranded.IsOpen());
+    CHECK(strandedOwner == 8);
+    // The caller aborts before touching history: no entry was popped.
+    REQUIRE(history.CanUndo());
+
+    // Reconcile the stranded session's live value, then the reducer closes it
+    // and a host-style Undo can proceed.
+    reg.get<LightComponent>(childHandle) = std::get<LightComponent>(stranded.RollingValue());
+    PreviewSessionsBeforeActionResult r2;
+    ClosePreviewSessionsBeforeAction(f.manager, history, slots, 2, r2);
+    REQUIRE(r2.allClosed);
+    REQUIRE(r2.slots[1].outcome.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE_FALSE(stranded.IsOpen());
+    CHECK(strandedOwner == 0);
+    REQUIRE(history.Undo(f.manager).success);
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C re-review, P1 finding 2: an applied preview is discarded only on the
+// confirmed proofs (target removal / document replacement), never via an
+// unproven recovery-bar Discard/Ignore exit. The close core guarantees those
+// proofs discard even an effective session.
+TEST_CASE("Phase 8 W3 S6-C: target removal is a valid discard of an effective preview")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_nodiscard");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    const LightComponent origin{ glm::vec3(0.0f, 1.0f, 0.0f), 3.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    reg.emplace_or_replace<LightComponent>(rootHandle, origin);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    CompositePreviewSession s;
+    REQUIRE(s.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, lightReader));
+    REQUIRE(s.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    REQUIRE(f.manager.RemoveSubtrees({ root }).success);
+    EditorCommandHistory history;
+    const auto out = FinalizePreviewSession(history, f.manager,
+        PreviewSessionKind::Light, s);
+    REQUIRE(out.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE_FALSE(s.IsOpen());
+    CHECK_FALSE(history.CanUndo());
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C final closure, P1 finding 1: the finalize preflight must distinguish a
+// component REMOVED out of band (entity, marker, schema retained) from a value
+// that happens to equal the rolling final. A present-state substitution would
+// let a poisoned command into history; each sub-case asserts PendingRetry, no
+// history entry, and the retained session.
+TEST_CASE("Phase 8 W3 S6-C: finalize refutes components removed out of band and script identity changes")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_removed");
+    S6BScriptAssets(f, dir, { "spin.lua" });
+    auto& reg = f.manager.GetECS().registry;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto freshMember = [&]() -> std::pair<entt::entity, rt2::core::UUID> {
+        const auto [r, c] = f.MakeInstance(dir);
+        auto& reg2 = f.manager.GetECS().registry;
+        return { r, H6B(reg2, r) };
+    };
+    const auto beginLight = [&](entt::entity h, const UUID& target) {
+        auto s = std::make_unique<CompositePreviewSession>();
+        reg.emplace_or_replace<LightComponent>(h, LightComponent{});
+        const LightComponent origin = reg.get<LightComponent>(h);
+        const auto reader = [&](const UUID& u, const PrefabValuePayload& raw) {
+            return S6CLightReader(f.manager, u, raw);
+        };
+        REQUIRE(s->Begin(f.manager, target, PrefabValueKind::LightProperties,
+            PrefabComponentKeyFor<LightComponent>::value, origin, reader));
+        REQUIRE(s->Preview(f.manager, PrefabValuePayload{ a }).effective);
+        return s;
+    };
+
+    // (a) Missing LightComponent: exact read is nullopt -> preflight failure.
+    {
+        const auto [h, target] = freshMember();
+        auto s = beginLight(h, target);
+        reg.remove<LightComponent>(h);
+        REQUIRE_FALSE(reg.all_of<LightComponent>(h));
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, *s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s->IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("component is missing")
+            != std::string::npos);
+    }
+
+    // (b) Missing MotionComponent: exact read is optional absent, never the
+    // rolling final -> stale value -> preflight failure.
+    {
+        const auto [h, target] = freshMember();
+        reg.emplace_or_replace<MotionComponent>(h, MotionComponent{ glm::vec3(1,0,0) });
+        const auto originM = reg.get<MotionComponent>(h);
+        CompositePreviewSession s;
+        const auto reader = [&](const UUID& u, const PrefabValuePayload& raw) {
+            return S6CMotionReader(f.manager, u, raw);
+        };
+        REQUIRE(s.Begin(f.manager, target, PrefabValueKind::MotionState,
+            PrefabComponentKeyFor<MotionComponent>::value,
+            PrefabValuePayload{ std::optional<MotionComponent>(originM) }, reader));
+        REQUIRE(s.Preview(f.manager, PrefabValuePayload{
+            std::optional<MotionComponent>(MotionComponent{ glm::vec3(2,0,0) }) }).effective);
+        reg.remove<MotionComponent>(h);
+        REQUIRE_FALSE(reg.all_of<MotionComponent>(h));
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Motion, s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s.IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("live value differs")
+            != std::string::npos);
+    }
+
+    // (c) Missing ScriptComponent: exact read is optional absent -> stale value.
+    {
+        const auto [h, target] = freshMember();
+        ScriptComponent bound = S6BScript("spin.lua");
+        bound.fieldValues["speed"] = { ScriptFieldType::Float, 1.0 };
+        reg.emplace_or_replace<ScriptComponent>(h, bound);
+        const auto originS = reg.get<ScriptComponent>(h);
+        CompositePreviewSession s;
+        const auto reader = [&](const UUID& u, const PrefabValuePayload& raw) {
+            return S6CScriptReader(f.manager, u, raw);
+        };
+        REQUIRE(s.Begin(f.manager, target, PrefabValueKind::ScriptState,
+            PrefabComponentKeyFor<ScriptComponent>::value,
+            PrefabValuePayload{ std::optional<ScriptComponent>(originS) }, reader));
+        ScriptComponent fieldTarget = originS;
+        fieldTarget.fieldValues["speed"] = { ScriptFieldType::Float, 2.0 };
+        REQUIRE(s.Preview(f.manager, PrefabValuePayload{
+            std::optional<ScriptComponent>(fieldTarget) }).effective);
+        reg.remove<ScriptComponent>(h);
+        REQUIRE_FALSE(reg.all_of<ScriptComponent>(h));
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Script, s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s.IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("live value differs")
+            != std::string::npos);
+    }
+
+    // (d) Present script whose durable asset IDENTITY changed out of band:
+    // canonical comparison includes assetId, so the record is refused.
+    {
+        const auto [h, target] = freshMember();
+        ScriptComponent bound = S6BScript("spin.lua");
+        bound.fieldValues["speed"] = { ScriptFieldType::Float, 1.0 };
+        reg.emplace_or_replace<ScriptComponent>(h, bound);
+        const auto originS = reg.get<ScriptComponent>(h);
+        CompositePreviewSession s;
+        const auto reader = [&](const UUID& u, const PrefabValuePayload& raw) {
+            return S6CScriptReader(f.manager, u, raw);
+        };
+        REQUIRE(s.Begin(f.manager, target, PrefabValueKind::ScriptState,
+            PrefabComponentKeyFor<ScriptComponent>::value,
+            PrefabValuePayload{ std::optional<ScriptComponent>(originS) }, reader));
+        ScriptComponent fieldTarget = originS;
+        fieldTarget.fieldValues["speed"] = { ScriptFieldType::Float, 2.0 };
+        REQUIRE(s.Preview(f.manager, PrefabValuePayload{
+            std::optional<ScriptComponent>(fieldTarget) }).effective);
+        reg.get<ScriptComponent>(h).asset.assetId = UUID::Parse(
+            "99999999-9999-4999-8999-999999999999");
+        EditorCommandHistory history;
+        const auto out = FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Script, s);
+        REQUIRE(out.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        REQUIRE(s.IsOpen());
+        REQUIRE_FALSE(out.recorded);
+        CHECK_FALSE(history.CanUndo());
+        CHECK(out.lastError.error.detail.find("live value differs")
+            != std::string::npos);
+        // The identity change also blocks a compensating restore (canonical
+        // source differs), so ownership is retained for retry.
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C final-verdict, P1 finding 1: a preview frame may be published only when
+// the changed widget owns the open session on the same target and the session
+// is not pending. While a session is PendingRetry the gesture is immutable:
+// same-widget or different-widget changes must not absorb into it (no value,
+// rolling-source, owner, or error change). The decision is CPU-linkable via
+// PreviewPublishAllowed so this contract is provable without ImGui.
+TEST_CASE("Phase 8 W3 S6-C: publish gate freezes pending and non-owning-widget frames")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_publishgate");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const UUID child = H6B(reg, childHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const LightComponent b{ glm::vec3(0.0f, 1.0f, 0.0f), 3.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    CompositePreviewSession s;
+    REQUIRE(s.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    REQUIRE(s.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    const auto rollingBefore = s.RollingValue();
+    const unsigned int owning = 100;
+    const unsigned int otherWidget = 101;
+
+    // The changed widget must own the session, on the same target.
+    REQUIRE(PreviewPublishAllowed(s, root, owning, owning, /*recoveryPending=*/false));
+    // Frozen while this session's recovery is pending.
+    CHECK_FALSE(PreviewPublishAllowed(s, root, owning, owning, /*recoveryPending=*/true));
+    // Frozen for a different widget on the same target, even when healthy.
+    CHECK_FALSE(PreviewPublishAllowed(s, root, otherWidget, owning, false));
+    // Frozen for a different target.
+    CHECK_FALSE(PreviewPublishAllowed(s, child, owning, owning, false));
+
+    // End-to-end: a host-style publish circuit with a non-owning widget or a
+    // pending session never reaches Preview, so the gesture's rolling source,
+    // effectiveness, and error are untouched.
+    if (PreviewPublishAllowed(s, root, otherWidget, owning, false))
+        s.Preview(f.manager, PrefabValuePayload{ b });
+    if (PreviewPublishAllowed(s, root, owning, owning, true))
+        s.Preview(f.manager, PrefabValuePayload{ b });
+    CHECK(S6CLightEqual(std::get<LightComponent>(s.RollingValue()),
+        std::get<LightComponent>(rollingBefore)));
+
+    // An owning-widget publish on a healthy session DOES advance the rolling
+    // source (the gate is not a blanket lock).
+    if (PreviewPublishAllowed(s, root, owning, owning, false))
+        s.Preview(f.manager, PrefabValuePayload{ b });
+    CHECK(S6CLightEqual(std::get<LightComponent>(s.RollingValue()), b));
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C final-verdict, P1 finding 2: a cross-component history write (Name /
+// Visibility) must never record ahead of an open or pending preview, or the
+// schema-aware Undo ordering breaks. This exercises the CPU-linkable admission
+// seam (the reducer in finalize mode) that SceneEditorUI::AdmitAuthoringMutation
+// calls, on a v5 document where the Light preview promotes v5 -> v6.
+TEST_CASE("Phase 8 W3 S6-C: cross-component admission orders Name after an open Light preview")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_xcomponent");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    const std::string nameBefore = f.manager.GetEntityName(SceneManager::EntityId{ rootHandle });
+    const std::string nameAfter = nameBefore + "X";
+    // A v5 document, one schema bump below the serializer's current version, so
+    // the first override marker must promote it.
+    f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+    const uint32_t v5 = 5;
+
+    // ---- GREEN: the open Light preview is finalized BEFORE the Name command
+    // (admission), giving chronological history [light, name] with exact undo.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slots[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, slots, 1, admit);
+        REQUIRE(admit.allClosed);
+        REQUIRE(admit.slots[0].outcome.result == PreviewSessionCloseOutcome::Result::Closed);
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+        REQUIRE(history.CanUndo());
+
+        // The admitted Name command now records AFTER the light.
+        REQUIRE(history.Execute(MakeSetNameCommandIfEffective(root, nameBefore, nameAfter),
+            f.manager).effective);
+
+        // Undo chronological order: Name first (light value untouched), then
+        // Light (exact origin value + marker + v5 schema downgrade).
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(f.manager.GetEntityName(SceneManager::EntityId{ rootHandle }) == nameBefore);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), a));
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+        REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == v5);
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    // ---- RED: WITHOUT admission the Name command records FIRST, and the Light
+    // preview is finalized after it. Undo then pops Light first and its attempt
+    // to restore the exact v5 origin is rejected while the Name override remains
+    // ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â history poisoned.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+        REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+
+        EditorCommandHistory history;
+        // Bad order: the Name command executes (records) while the Light preview
+        // is still open and unrecorded.
+        REQUIRE(history.Execute(MakeSetNameCommandIfEffective(root, nameBefore, nameAfter),
+            f.manager).effective);
+        // The Light preview is finalized only AFTERWARD -> [name, light].
+        REQUIRE(FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, light).recorded);
+
+        // Undo pops Light (the top) first; its downgrade to v5 is rejected while
+        // the Name override remains, so the replay fails and history clears.
+        const auto badUndo = history.Undo(f.manager);
+        REQUIRE_FALSE(badUndo.success);
+        const bool downgradeRejected =
+            badUndo.error.detail.find("downgrade") != std::string::npos
+            || badUndo.error.detail.find("override") != std::string::npos;
+        CHECK(downgradeRejected);
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C final-verdict, P1 finding 2 pending variant: while the Light preview is
+// PendingRetry (cannot finalize), the admission seam rejects a later Name
+// command with the pending session's owner/error unchanged and no history entry.
+TEST_CASE("Phase 8 W3 S6-C: admission rejects a Name command while a preview is PendingRetry")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_pendingadmit");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    const std::string nameBefore = f.manager.GetEntityName(SceneManager::EntityId{ rootHandle });
+
+    CompositePreviewSession light;
+    REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, lightReader));
+    REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    const auto rolling = light.RollingValue();
+    // Out-of-band value change strands the finalize.
+    reg.get<LightComponent>(rootHandle).intensity = 99.0f;
+
+    EditorCommandHistory history;
+    unsigned int owner = 7;
+    PreviewSessionSlot slots[1] = {
+        { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+    };
+    PreviewSessionsBeforeActionResult admit;
+    ClosePreviewSessionsBeforeAction(f.manager, history, slots, 1, admit);
+    REQUIRE_FALSE(admit.allClosed);
+    REQUIRE(admit.slots[0].sessionWasOpen);
+    REQUIRE(admit.slots[0].outcome.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    CHECK_FALSE(admit.slots[0].outcome.lastError.error.detail.empty());
+    // The pending session's identity is unchanged (owner preserved, open).
+    CHECK(owner == 7);
+    REQUIRE(light.IsOpen());
+    CHECK(S6CLightEqual(std::get<LightComponent>(light.RollingValue()),
+        std::get<LightComponent>(rolling)));
+
+    // Admission returned false: the host ABORTS the later Name command, so no
+    // command records ahead of the pending preview and history stays empty.
+    CHECK_FALSE(history.CanUndo());
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C closure-ordering, P1 finding 1: Duplicate and Paste copy persisted
+// PrefabMemberComponent.overrides, which participate in schema state, so they
+// must be admitted BEFORE any UUID reservation or destination mutation. A v5
+// Light preview shows that admitted chronological history undoes exactly, while
+// the un-admitted order poisons history the way the Name RED proof did.
+namespace
+{
+
+// Fresh prefab member with a Light at document schema v5 (one promotion bump
+// short of the current schema). `f` is caller-held (S2Fixture is not movable);
+// returns the member handle, UUID, light key, light origin, and the temp dir.
+struct S6CEndToEnd
+{
+    entt::entity handle;
+    rt2::core::UUID target;
+    PrefabComponentKey lightKey;
+    LightComponent origin;
+    std::filesystem::path dir;
+};
+
+S6CEndToEnd S6CEndToEndSetup(S2Fixture& f, const char* tag)
+{
+    S6CEndToEnd out;
+    out.dir = S2UniqueTempDir(tag);
+    const auto [rootHandle, childHandle] = f.MakeInstance(out.dir);
+    out.handle = rootHandle;
+    auto& reg = f.manager.GetECS().registry;
+    out.target = H6B(reg, rootHandle);
+    out.lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    out.origin = reg.get<LightComponent>(rootHandle);
+    f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("Phase 8 W3 S6-C: duplicate after an open Light preview is admitted chronologically")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_dup_admit");
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const LightComponent origin = s.origin;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN: the open Light preview is finalized (admission) BEFORE the
+    // duplicate's UUID reservation. History is chronological [light, duplicate]
+    // and undoes exactly, ending at the legal v5 origin.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion
+            == SceneSerializer::SchemaVersion);
+
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slots[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, slots, 1, admit);
+        REQUIRE(admit.allClosed);
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+
+        // Host-style duplicate AFTER admission (the mutate-then-RecordApplied
+        // mechanism is preserved).
+        const auto count = f.manager.CountCanonicalSubtreeEntities({ root });
+        REQUIRE(count.IsOk());
+        auto knownUuids = f.manager.ReserveKnownUuids(count.value);
+        auto dup = f.manager.DuplicateSubtreesWithUuids({ root }, knownUuids);
+        REQUIRE(dup.mutation.success);
+        const auto dupRootUuid = dup.createdRoots.front();
+        auto snapshot = f.manager.CaptureSubtreeSnapshot(dup.createdRoots);
+        REQUIRE_FALSE(snapshot.entities.empty());
+        auto cmd = MakeDuplicateSubtreesCommand(std::move(snapshot), dup.createdRoots);
+        REQUIRE(cmd);
+        REQUIRE(history.RecordApplied(std::move(cmd), f.manager, dup.mutation).effective);
+
+        // Chronological undo: duplicate first (light untouched), then light.
+        REQUIRE(history.Undo(f.manager).success);
+        REQUIRE(static_cast<uint32_t>(f.manager.FindEntityByUuid(dupRootUuid))
+            == static_cast<uint32_t>(entt::null));
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), a));
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), origin));
+        REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    // ---- RED: WITHOUT admission the duplicate records first (its copied
+    // override rides on root's live, uncommitted lightKey) and the Light preview
+    // is finalized after; Undo pops Light first and its exact v5 restore is
+    // rejected while the duplicate's override remains ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â history poisoned.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+        EditorCommandHistory history;
+        const auto count = f.manager.CountCanonicalSubtreeEntities({ root });
+        REQUIRE(count.IsOk());
+        auto knownUuids = f.manager.ReserveKnownUuids(count.value);
+        auto dup = f.manager.DuplicateSubtreesWithUuids({ root }, knownUuids);
+        REQUIRE(dup.mutation.success);
+        auto snapshot = f.manager.CaptureSubtreeSnapshot(dup.createdRoots);
+        auto cmd = MakeDuplicateSubtreesCommand(std::move(snapshot), dup.createdRoots);
+        REQUIRE(cmd);
+        REQUIRE(history.RecordApplied(std::move(cmd), f.manager, dup.mutation).effective);
+        REQUIRE(FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, light).recorded);
+
+        const auto badUndo = history.Undo(f.manager);
+        REQUIRE_FALSE(badUndo.success);
+        const bool downgradeRejected =
+            badUndo.error.detail.find("downgrade") != std::string::npos
+            || badUndo.error.detail.find("override") != std::string::npos;
+        CHECK(downgradeRejected);
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    // ---- PendingRetry rejection: when the Light preview cannot finalize, the
+    // admission seam returns false, so the host aborts the duplicate BEFORE any
+    // UUID reservation ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â no entity creation, history, owner, or recovery-error
+    // change.
+    {
+        // Fresh state (the RED left the document overridden + history cleared).
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        // Clear the light override that the RED scenario left behind.
+        auto* pm = reg.try_get<PrefabMemberComponent>(s.handle);
+        REQUIRE(pm);
+        pm->overrides.clear();
+        reg.get<LightComponent>(s.handle) = origin;
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        const auto rolling = light.RollingValue();
+        const auto entityCountBefore = f.manager.GetEntityCount();
+        reg.get<LightComponent>(s.handle).intensity = 99.0f; // strands finalize
+
+        EditorCommandHistory history;
+        unsigned int owner = 7;
+        PreviewSessionSlot slots[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, slots, 1, admit);
+        REQUIRE_FALSE(admit.allClosed);
+        REQUIRE(admit.slots[0].outcome.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        CHECK_FALSE(admit.slots[0].outcome.lastError.error.detail.empty());
+        CHECK(owner == 7);
+        REQUIRE(light.IsOpen());
+        CHECK(S6CLightEqual(std::get<LightComponent>(light.RollingValue()),
+            std::get<LightComponent>(rolling)));
+        CHECK_FALSE(history.CanUndo());
+        CHECK(f.manager.GetEntityCount() == entityCountBefore);
+    }
+
+    std::filesystem::remove_all(s.dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: admitted material duplicate owns append lifecycle")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6e_material_duplicate");
+    const auto prefabPath = f.CreatePrefabAsset(dir);
+    const auto first = f.InstantiatePrefab(prefabPath);
+    const auto second = f.InstantiatePrefab(prefabPath);
+    auto& reg = f.manager.GetECS().registry;
+    const auto rootUuid = reg.get<EntityIdComponent>(first.first).id;
+    const auto secondRootUuid = reg.get<EntityIdComponent>(second.first).id;
+    for (const auto e : { first.first, first.second, second.first, second.second })
+    {
+        reg.emplace_or_replace<MeshRef>(e, MeshRef{ 0, 0 });
+        reg.emplace_or_replace<ImportedMeshSourceComponent>(e);
+    }
+    const auto& firstMember = reg.get<PrefabMemberComponent>(first.first);
+    const auto& secondMember = reg.get<PrefabMemberComponent>(second.first);
+    CHECK(firstMember.templateId == secondMember.templateId);
+    CHECK(firstMember.instanceId != secondMember.instanceId);
+    const auto staged = f.manager.StageMaterialDuplicateAssignment(rootUuid);
+    REQUIRE(staged.IsOk());
+    const auto tableBefore = f.manager.GetMaterialCount();
+    EditorCommandHistory history;
+    auto command = MakeDuplicateMaterialAndAssignCommand(staged.value);
+    REQUIRE(command);
+    auto* duplicate = dynamic_cast<DuplicateMaterialAndAssignCommand*>(command.get());
+    REQUIRE(duplicate);
+    const auto executed = history.Execute(std::move(command), f.manager);
+    REQUIRE(executed.success);
+    CHECK(executed.effective);
+    CHECK(duplicate->SlotCreatedBySuccessfulExecute());
+    CHECK(f.manager.GetMaterialCount() == tableBefore + 1);
+    CHECK(reg.get<MeshRef>(first.first).materialIndex == staged.value.proposedIndex);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    const auto duplicateUndo = history.Undo(f.manager);
+    INFO(duplicateUndo.error.Format());
+    REQUIRE(duplicateUndo.success);
+    CHECK(reg.get<MeshRef>(first.first).materialIndex == 0);
+    CHECK(f.manager.GetMaterialCount() == tableBefore + 1);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(reg.get<MeshRef>(first.first).materialIndex == staged.value.proposedIndex);
+    CHECK(f.manager.GetMaterialCount() == tableBefore + 1);
+    CHECK(reg.get<MeshRef>(second.first).materialIndex == 0);
+    CHECK(rootUuid != secondRootUuid);
+
+    // A failed first Execute captures transaction state but must not authorize
+    // adoption of a foreign byte-equal slot at the proposed index.
+    auto failedStage = f.manager.StageMaterialDuplicateAssignment(secondRootUuid);
+    REQUIRE(failedStage.IsOk());
+    auto failedCommand = MakeDuplicateMaterialAndAssignCommand(failedStage.value);
+    REQUIRE(failedCommand);
+    auto* failedDuplicate = dynamic_cast<DuplicateMaterialAndAssignCommand*>(failedCommand.get());
+    REQUIRE(failedDuplicate);
+	    const auto originalMaterial = f.manager.GetMaterial(0);
+	    auto changed = originalMaterial;
+    changed.sourceKey = "s6e-stale-source";
+    REQUIRE(f.manager.SetMaterialPropertiesState(0, changed).success);
+    const auto firstFailure = failedDuplicate->Execute(f.manager);
+    CHECK_FALSE(firstFailure.success);
+    CHECK_FALSE(failedDuplicate->SlotCreatedBySuccessfulExecute());
+	    REQUIRE(f.manager.SetMaterialPropertiesState(0, originalMaterial).success);
+    const auto foreignIndex = f.manager.AddMaterial(failedStage.value.sourceMaterial);
+    CHECK(foreignIndex == failedStage.value.proposedIndex);
+    const auto materialsAtRetry = f.manager.GetMaterialCount();
+    const auto retryFailure = failedDuplicate->Execute(f.manager);
+    CHECK_FALSE(retryFailure.success);
+    CHECK_FALSE(failedDuplicate->SlotCreatedBySuccessfulExecute());
+    CHECK(f.manager.GetMaterialCount() == materialsAtRetry);
+    CHECK(reg.get<MeshRef>(second.first).materialIndex == 0);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: raw duplicate ownership and colliding append are fail-atomic")
+{
+    S2Fixture f;
+    const auto first = f.CreateEmpty("first");
+    const auto second = f.CreateEmpty("second");
+    auto& reg = f.manager.GetECS().registry;
+    for (const auto& uuid : { first, second })
+    {
+        const auto entity = f.manager.FindEntityByUuid(uuid);
+        reg.emplace_or_replace<MeshRef>(entity, MeshRef{ 0, 0 });
+        reg.emplace_or_replace<ImportedMeshSourceComponent>(entity);
+    }
+    const auto a = f.manager.StageMaterialDuplicateAssignment(first);
+    const auto b = f.manager.StageMaterialDuplicateAssignment(second);
+    REQUIRE(a.IsOk());
+    REQUIRE(b.IsOk());
+    REQUIRE(a.value.proposedIndex == b.value.proposedIndex);
+    const auto makeEdit = [](const PrefabMaterialDuplicateStage& stage) {
+        return PrefabValueEdit{
+            PrefabValueKind::MaterialDuplicateAndAssign, stage.entity,
+            PrefabMarkerDirection::After,
+            PrefabMaterialDuplicateValue{ stage.sourceIndex, stage.proposedIndex,
+                stage.beforeEntityIndex, stage.sourceMaterial, stage.beforeOverride },
+            PrefabMaterialDuplicateValue{ stage.sourceIndex, stage.proposedIndex,
+                stage.proposedIndex, stage.sourceMaterial, stage.afterOverride } };
+    };
+    const auto revision = f.manager.AuthoringRevision();
+    const auto materialCount = f.manager.GetMaterialCount();
+    EditorCommandHistory history;
+    PrefabCommandTransaction colliding({ makeEdit(a.value), makeEdit(b.value) }, {});
+    const auto collision = colliding.Execute(f.manager);
+    CHECK_FALSE(collision.success);
+    CHECK(f.manager.GetMaterialCount() == materialCount);
+    CHECK(reg.get<MeshRef>(f.manager.FindEntityByUuid(first)).materialIndex == 0);
+    CHECK(reg.get<MeshRef>(f.manager.FindEntityByUuid(second)).materialIndex == 0);
+    CHECK(f.manager.AuthoringRevision() == revision);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 0);
+
+    // A raw transaction has no command capability and cannot adopt a foreign
+    // equal-byte slot after staging; this is the retained public-boundary probe.
+    const auto one = f.manager.StageMaterialDuplicateAssignment(first);
+    REQUIRE(one.IsOk());
+    const auto foreign = f.manager.AddMaterial(one.value.sourceMaterial);
+    REQUIRE(foreign == one.value.proposedIndex);
+    const auto retryRevision = f.manager.AuthoringRevision();
+    PrefabCommandTransaction raw({ makeEdit(one.value) }, {});
+    const auto adoption = raw.Execute(f.manager);
+    CHECK_FALSE(adoption.success);
+    CHECK(reg.get<MeshRef>(f.manager.FindEntityByUuid(first)).materialIndex == 0);
+    CHECK(f.manager.AuthoringRevision() == retryRevision);
+    CHECK(f.manager.GetMaterialCount() == materialCount + 1);
+}
+
+// Round-2 S6-E finding, promoted to a durable test: a plan forged DIRECTLY at
+// the material-duplicate Commit boundary (the Prepare-side transaction checks
+// bypassed by constructing the composite plan myself) must be rejected by
+// CommitPrefabCompositePlan with zero table/index/revision change. This is the
+// scenario an earlier review reached only via an out-of-tree probe; it must now
+// stay load-bearing in the suite.
+//
+// What this test proves, stated exactly (round-6 review, established by
+// injection): submitting a forged colliding plan to CommitPrefabCompositePlan
+// is rejected with zero write. It does NOT prove the Commit-site collision loop
+// at SceneManager.cpp:7091-7101 is load-bearing. Commit re-runs
+// PreparePrefabCompositeEditsInternal at SceneManager.cpp:7004 as validate-only
+// re-validation, so the Prepare-site check at SceneManager.cpp:6907-6917 is
+// what actually rejects this plan: removing the Commit-site loop alone leaves
+// this test GREEN 9/9; removing both sites turns it RED 5/9 here at
+// REQUIRE_FALSE(commit.error.IsOk()). The Commit-site loop is retained as
+// deliberate defence in depth that no test pins.
+TEST_CASE("Phase 8 W3 S6-E: forged material duplicate plan is rejected at Commit with zero write")
+{
+    S2Fixture f;
+    const auto first = f.CreateEmpty("first");
+    const auto second = f.CreateEmpty("second");
+    auto& reg = f.manager.GetECS().registry;
+    for (const auto& uuid : { first, second })
+    {
+        const auto entity = f.manager.FindEntityByUuid(uuid);
+        reg.emplace_or_replace<MeshRef>(entity, MeshRef{ 0, 0 });
+        reg.emplace_or_replace<ImportedMeshSourceComponent>(entity);
+    }
+    const auto a = f.manager.StageMaterialDuplicateAssignment(first);
+    const auto b = f.manager.StageMaterialDuplicateAssignment(second);
+    REQUIRE(a.IsOk());
+    REQUIRE(b.IsOk());
+    REQUIRE(a.value.proposedIndex == b.value.proposedIndex);
+    const auto mkEdit = [](const PrefabMaterialDuplicateStage& stage) {
+        return PrefabValueEdit{
+            PrefabValueKind::MaterialDuplicateAndAssign, stage.entity,
+            PrefabMarkerDirection::After,
+            PrefabMaterialDuplicateValue{ stage.sourceIndex, stage.proposedIndex,
+                stage.beforeEntityIndex, stage.sourceMaterial, stage.beforeOverride },
+            PrefabMaterialDuplicateValue{ stage.sourceIndex, stage.proposedIndex,
+                stage.proposedIndex, stage.sourceMaterial, stage.afterOverride } };
+    };
+    // A single-edit plan builds cleanly through the public Prepare path. Forge
+    // the collision by appending a SECOND duplicate-and-assign op targeting the
+    // SAME proposed index, then submit the plan directly to Commit.
+    const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+    auto plan = f.manager.PreparePrefabCompositeEdits({ mkEdit(a.value) }, {},
+        PrefabMarkerDirection::After, schema, schema);
+    REQUIRE(plan.IsOk());
+    const auto& aOp = plan.value.values.operations.front();
+    PrefabValueOperation forgedSecond;
+    forgedSecond.kind = aOp.kind;
+    forgedSecond.entity = b.value.entity;
+    forgedSecond.source = aOp.source;
+    forgedSecond.target = aOp.target;
+    plan.value.values.operations.push_back(forgedSecond);
+    plan.value.values.resourceGeneration = f.manager.ResourceGeneration();
+    plan.value.resourceGeneration = f.manager.ResourceGeneration();
+
+    const auto revision = f.manager.AuthoringRevision();
+    const auto materialCount = f.manager.GetMaterialCount();
+    const auto commit = f.manager.CommitPrefabCompositePlan(std::move(plan.value));
+    INFO(commit.error.Format());
+    REQUIRE_FALSE(commit.error.IsOk());
+    CHECK(f.manager.GetMaterialCount() == materialCount);
+    CHECK(reg.get<MeshRef>(f.manager.FindEntityByUuid(first)).materialIndex == 0);
+    CHECK(reg.get<MeshRef>(f.manager.FindEntityByUuid(second)).materialIndex == 0);
+    CHECK(f.manager.AuthoringRevision() == revision);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: duplicate structural history composition preserves causality")
+{
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6e_structural_prefab");
+    const auto prefabRoot = f.CreateEmpty("A");
+    const auto prefabChild = f.CreateChild("A", prefabRoot);
+    const auto prefabPath = dir / "structural.rt2prefab";
+    REQUIRE(f.manager.CreatePrefabFromSubtree({ prefabRoot }, prefabPath).ok);
+    const auto [sourceRootHandle, sourceChildHandle] = f.InstantiatePrefab(prefabPath);
+    auto& reg = f.manager.GetECS().registry;
+    const auto sourceRoot = reg.get<EntityIdComponent>(sourceRootHandle).id;
+    const auto sourceChild = reg.get<EntityIdComponent>(sourceChildHandle).id;
+    const auto sourceInstance = reg.get<PrefabMemberComponent>(sourceRootHandle).instanceId;
+    const auto sourceTemplate = reg.get<PrefabMemberComponent>(sourceRootHandle).templateId;
+    // Align both live and authoring snapshots before duplication so the
+    // copied root/child values start at A without an authored marker.
+    reg.get<NameComponent>(sourceRootHandle).name = "A";
+    reg.get<NameComponent>(sourceChildHandle).name = "A";
+    CHECK(reg.get<NameComponent>(sourceRootHandle).name == "A");
+    auto& docReg = f.manager.AuthoringDoc().ecs.registry;
+    docReg.get<NameComponent>(f.manager.AuthoringDoc().FindByUuid(sourceRoot)).name = "A";
+    docReg.get<NameComponent>(f.manager.AuthoringDoc().FindByUuid(sourceChild)).name = "A";
+    const auto count = f.manager.CountCanonicalSubtreeEntities({ sourceRoot });
+    REQUIRE(count.IsOk());
+    auto ids = f.manager.ReserveKnownUuids(count.value);
+    const auto duplicate = f.manager.DuplicateSubtreesWithUuids({ sourceRoot }, ids);
+    REQUIRE(duplicate.mutation.success);
+    REQUIRE(duplicate.createdRoots.size() == 1);
+    const auto copiedRoot = duplicate.createdRoots.front();
+    auto snapshot = f.manager.CaptureSubtreeSnapshot(duplicate.createdRoots);
+    REQUIRE(snapshot.entities.size() == 2);
+    // DuplicateSubtreesCommand intentionally suffixes copied names.  Normalize
+    // that production copy result to the retained A-valued snapshot so the
+    // later A->B->A property history leaves only the automatic marker delta.
+    reg.get<NameComponent>(f.manager.FindEntityByUuid(snapshot.entities[0].uuid)).name = "A";
+    reg.get<NameComponent>(f.manager.FindEntityByUuid(snapshot.entities[1].uuid)).name = "A";
+    auto& copiedDocReg = f.manager.AuthoringDoc().ecs.registry;
+    copiedDocReg.get<NameComponent>(f.manager.AuthoringDoc().FindByUuid(snapshot.entities[0].uuid)).name = "A";
+    copiedDocReg.get<NameComponent>(f.manager.AuthoringDoc().FindByUuid(snapshot.entities[1].uuid)).name = "A";
+    snapshot.entities[0].name = "A";
+    snapshot.entities[1].name = "A";
+    const auto copiedChild = snapshot.entities[1].uuid;
+    const auto isolated = MakeDuplicateSubtreesCommand(snapshot, duplicate.createdRoots);
+    REQUIRE(isolated);
+    EditorCommandHistory history;
+    auto duplicateCommand = MakeDuplicateSubtreesCommand(snapshot, duplicate.createdRoots);
+    REQUIRE(duplicateCommand);
+    REQUIRE(history.RecordApplied(std::move(duplicateCommand), f.manager, duplicate.mutation).effective);
+    const auto copiedRootHandle = f.manager.FindEntityByUuid(copiedRoot);
+    const auto copiedChildHandle = f.manager.FindEntityByUuid(copiedChild);
+    CHECK(reg.get<NameComponent>(copiedRootHandle).name == "A");
+    CHECK(reg.get<NameComponent>(copiedChildHandle).name == "A");
+    REQUIRE(reg.all_of<PrefabMemberComponent>(copiedRootHandle));
+    REQUIRE(reg.all_of<PrefabMemberComponent>(copiedChildHandle));
+    CHECK(reg.get<PrefabMemberComponent>(copiedRootHandle).templateId == sourceTemplate);
+    CHECK(reg.get<PrefabMemberComponent>(copiedRootHandle).instanceId != sourceInstance);
+    CHECK(reg.get<PrefabMemberComponent>(copiedChildHandle).templateId
+        == reg.get<PrefabMemberComponent>(sourceChildHandle).templateId);
+    const auto editCopied = [&](const UUID& uuid) {
+        REQUIRE(history.Execute(MakeSetNameCommandIfEffective(uuid, "A", "B"), f.manager).success);
+        REQUIRE(history.Execute(MakeSetNameCommandIfEffective(uuid, "B", "A"), f.manager).success);
+    };
+    editCopied(copiedRoot);
+    editCopied(copiedChild);
+    const auto beforeOutOfOrder = std::make_pair(history.UndoDepthForTest(), history.RedoDepthForTest());
+    // The retained real DuplicateSubtreesCommand must refuse an isolated Undo
+    // after the copied prefab members gained automatic name markers.
+    const auto refused = isolated->Undo(f.manager);
+    CHECK_FALSE(refused.success);
+    CHECK(history.UndoDepthForTest() == beforeOutOfOrder.first);
+    CHECK(history.RedoDepthForTest() == beforeOutOfOrder.second);
+    CHECK(static_cast<uint32_t>(f.manager.FindEntityByUuid(copiedRoot))
+        != static_cast<uint32_t>(entt::null));
+    CHECK(static_cast<uint32_t>(f.manager.FindEntityByUuid(copiedChild))
+        != static_cast<uint32_t>(entt::null));
+    for (int i = 0; i < 2; ++i) REQUIRE(history.Undo(f.manager).success);
+    for (int i = 0; i < 2; ++i) REQUIRE(history.Undo(f.manager).success);
+    REQUIRE_FALSE(f.manager.IsOverridden(copiedRoot,
+        PrefabComponentKeyFor<NameComponent>::value).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(static_cast<uint32_t>(f.manager.FindEntityByUuid(duplicate.createdRoots.front()))
+        == static_cast<uint32_t>(entt::null));
+    REQUIRE(history.Redo(f.manager).success);
+    for (int i = 0; i < 4; ++i) REQUIRE(history.Redo(f.manager).success);
+    const auto replayedRoot = f.manager.FindEntityByUuid(copiedRoot);
+    const auto replayedChild = f.manager.FindEntityByUuid(copiedChild);
+    REQUIRE(reg.get<NameComponent>(replayedRoot).name == "A");
+    REQUIRE(reg.get<NameComponent>(replayedChild).name == "A");
+    REQUIRE(f.manager.IsOverridden(copiedRoot,
+        PrefabComponentKeyFor<NameComponent>::value).value);
+    REQUIRE(f.manager.IsOverridden(copiedChild,
+        PrefabComponentKeyFor<NameComponent>::value).value);
+    CHECK(reg.get<PrefabMemberComponent>(replayedRoot).templateId == sourceTemplate);
+    CHECK(reg.get<PrefabMemberComponent>(replayedRoot).instanceId != sourceInstance);
+    CHECK(reg.get<PrefabMemberComponent>(replayedChild).templateId
+        == reg.get<PrefabMemberComponent>(sourceChildHandle).templateId);
+    std::filesystem::remove_all(dir);
+}
+
+namespace
+{
+
+// S6-E compile-time key coverage (audit-map replacement, A2/A2.1). One entry
+// per overridable persisted component. The array type is pinned to
+// CountOverridableEntries() so adding a ninth overridable component without a
+// matching coverage entry (or dropping/recategorizing one) is a COMPILE error —
+// the same mechanism the frozen key table uses, rather than a prose claim.
+// This is key exhaustiveness only; the deleted W3-D5 map's PATH dimension is
+// carried by the executable kill-set (run_kill_set), not by this array.
+//
+// Every entry EXECUTES real production code and meets the A2.1 floor: it drives
+// the key through a genuine factory -> EditorCommandHistory Execute + Undo +
+// Redo, and asserts the true resulting state (revision delta, marker /
+// IsOverridden, schema, affected UUID union, both history depths). Wherever the
+// real syncImpact is not None, the REAL result is routed through a real
+// counting EditorSyncRouter and the impact is observed to have fired. An entry
+// that only inspected table metadata would replicate the F-1 defect this block
+// replaces, so none does.
+struct S6EKeyCoverage
+{
+    PrefabComponentKey key;
+    const char* name;
+    void (*exercise)(S2Fixture&);
+};
+
+// Real-router observation helper for the A2.1 floor. Every exercise whose
+// resulting syncImpact is not None must route the REAL result through a real
+// counting EditorSyncRouter and assert that the impact actually fired with an
+// EXACT per-channel count (mirroring the four-kind cadence harness): a
+// Transform result fires only the transform sync plus the accumulation reset;
+// a Structural result fires only the full sync plus reset; a Material result
+// fires only the material sync plus reset; Nothing fires nothing. A missing
+// dispatch, a downgrade mix, or a double-fire all fail the exact-count check.
+struct S6ERouteCounts
+{
+    int transformSync = 0;
+    int materialSync = 0;
+    int fullSync = 0;
+    int resets = 0;
+};
+
+S6ERouteCounts S6EObserveRoute(S2Fixture& f, const EditorMutationResult& result)
+{
+    using rt2::core::SyncImpact;
+    S6ERouteCounts counts;
+    EditorSyncRouter router;
+    router.SetRendererAvailable([] { return true; });
+    router.SetTransformSync([&] { ++counts.transformSync; });
+    router.SetMaterialSync([&] { ++counts.materialSync; });
+    router.SetFullSync([&] { ++counts.fullSync; });
+    router.SetResetAccum([&] { ++counts.resets; });
+    router.Route(result, f.manager);
+    switch (result.syncImpact)
+    {
+    case SyncImpact::None:
+        CHECK(counts.transformSync == 0);
+        CHECK(counts.materialSync == 0);
+        CHECK(counts.fullSync == 0);
+        CHECK(counts.resets == 0);
+        break;
+    case SyncImpact::Transform:
+        CHECK(counts.transformSync == 1);
+        CHECK(counts.materialSync == 0);
+        CHECK(counts.fullSync == 0);
+        CHECK(counts.resets == 1);
+        break;
+    case SyncImpact::Structural:
+        CHECK(counts.transformSync == 0);
+        CHECK(counts.materialSync == 0);
+        CHECK(counts.fullSync == 1);
+        CHECK(counts.resets == 1);
+        break;
+    case SyncImpact::Material:
+        CHECK(counts.transformSync == 0);
+        CHECK(counts.materialSync == 1);
+        CHECK(counts.fullSync == 0);
+        CHECK(counts.resets == 1);
+        break;
+    }
+    return counts;
+}
+
+void S6EExerciseName(S2Fixture& f);
+void S6EExerciseTransform(S2Fixture& f);
+void S6EExerciseVisible(S2Fixture& f);
+void S6EExerciseMaterial(S2Fixture& f);
+void S6EExerciseLight(S2Fixture& f);
+void S6EExerciseCamera(S2Fixture& f);
+void S6EExerciseMotion(S2Fixture& f);
+void S6EExerciseScript(S2Fixture& f);
+
+constexpr std::array<S6EKeyCoverage, CountOverridableEntries()> kS6Coverage = {{
+    { PrefabComponentKeyFor<NameComponent>::value, "name", &S6EExerciseName },
+    { PrefabComponentKeyFor<Transform>::value, "transform", &S6EExerciseTransform },
+    { PrefabComponentKeyFor<VisibleComponent>::value, "visible", &S6EExerciseVisible },
+    { PrefabComponentKeyFor<MaterialOverrideComponent>::value, "materialOverride", &S6EExerciseMaterial },
+    { PrefabComponentKeyFor<LightComponent>::value, "light", &S6EExerciseLight },
+    { PrefabComponentKeyFor<CameraComponent>::value, "camera", &S6EExerciseCamera },
+    { PrefabComponentKeyFor<MotionComponent>::value, "motion", &S6EExerciseMotion },
+    { PrefabComponentKeyFor<ScriptComponent>::value, "script", &S6EExerciseScript },
+}};
+static_assert(kS6Coverage.size() == CountOverridableEntries(),
+    "one coverage entry is required for every overridable persisted component");
+
+// Lock the array to EXACTLY the frozen overridable table set at compile time.
+// Deleting an entry (size 7 vs 8), re-wiring an entry to a different wire, or
+// adding a ninth overridable component without a matching entry all fail here.
+constexpr std::size_t coverageMatchesTable() noexcept
+{
+    if (kS6Coverage.size() != CountOverridableEntries()) return 1;
+    for (const auto& tableEntry : kPrefabTable)
+    {
+        if (!tableEntry.overridable()) continue;
+        std::size_t hits = 0;
+        for (const auto& entry : kS6Coverage)
+            if (entry.key.wire() == tableEntry.wire()
+                && entry.key.overridable() == tableEntry.overridable())
+                ++hits;
+        if (hits != 1) return 1;
+    }
+    return 0;
+}
+static_assert(coverageMatchesTable() == 0,
+    "kS6Coverage must contain exactly the frozen overridable component keys");
+
+void S6EExerciseName(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_name");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto key = PrefabComponentKeyFor<NameComponent>::value;
+    const auto before = reg.get<NameComponent>(rootHandle).name;
+    const auto revision = f.manager.AuthoringRevision();
+    REQUIRE_FALSE(f.manager.IsOverridden(root, key).value);
+
+    EditorCommandHistory history;
+    auto rename = MakeSetNameCommandIfEffective(root, before, before + "S6ECover");
+    REQUIRE(rename);
+    const auto applied = history.Execute(std::move(rename), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    REQUIRE(applied.affectedEntities.size() == 1);
+    CHECK(applied.affectedEntities.front() == root);
+    CHECK(reg.get<NameComponent>(rootHandle).name == before + "S6ECover");
+    REQUIRE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revision + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // A2.1 floor router observation: name is a None-impact wire, so the real
+    // result routed through the real router must fire nothing.
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::None);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.get<NameComponent>(rootHandle).name == before);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(reg.get<NameComponent>(rootHandle).name == before + "S6ECover");
+    REQUIRE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+void S6EExerciseTransform(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_transform");
+    const auto [aHandle, bHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID a = H6B(reg, aHandle);
+    const UUID b = H6B(reg, bHandle);
+    EditableTRS aBefore, bBefore;
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{aHandle}, aBefore));
+    REQUIRE(f.manager.GetLocalTransform(SceneManager::EntityId{bHandle}, bBefore));
+    const auto rev = f.manager.AuthoringRevision();
+    REQUIRE_FALSE(f.manager.IsOverridden(a, PrefabComponentKeyFor<Transform>::value).value);
+
+    EditableTRS aAfter = aBefore;
+    EditableTRS bAfter = bBefore;
+    aAfter.translation.x += 2.0f;
+    bAfter.translation.y += 3.0f;
+    EditorCommandHistory history;
+    auto command = MakeTransformCommandIfEffective(
+        std::vector<TransformTriple>{{a, aBefore, aAfter}, {b, bBefore, bAfter}});
+    REQUIRE(command);
+    const auto applied = history.Execute(std::move(command), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.affectedEntities.size() == 2);
+    REQUIRE(applied.affectedEntities.front() == a);
+    CHECK(reg.get<Transform>(aHandle).translation == aAfter.translation);
+    CHECK(reg.get<Transform>(bHandle).translation == bAfter.translation);
+    REQUIRE(f.manager.IsOverridden(a, PrefabComponentKeyFor<Transform>::value).value);
+    REQUIRE(f.manager.IsOverridden(b, PrefabComponentKeyFor<Transform>::value).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == rev + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // A2.1 floor router observation: transform is a Transform-impact wire, so
+    // the REAL result must be routed and the Transform sync+reset observed.
+    CHECK(applied.syncImpact == SyncImpact::Transform);
+    S6EObserveRoute(f, applied);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.get<Transform>(aHandle).translation == aBefore.translation);
+    REQUIRE_FALSE(f.manager.IsOverridden(a, PrefabComponentKeyFor<Transform>::value).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(reg.get<Transform>(aHandle).translation == aAfter.translation);
+    REQUIRE(f.manager.IsOverridden(a, PrefabComponentKeyFor<Transform>::value).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+void S6EExerciseVisible(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_visible");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto key = PrefabComponentKeyFor<VisibleComponent>::value;
+    reg.emplace_or_replace<VisibleComponent>(rootHandle, VisibleComponent{true});
+    const auto revision = f.manager.AuthoringRevision();
+    REQUIRE_FALSE(f.manager.IsOverridden(root, key).value);
+
+    EditorCommandHistory history;
+    auto hide = MakeSetVisibilityCommandIfEffective({ { root, true } }, { { root, false } });
+    REQUIRE(hide);
+    const auto applied = history.Execute(std::move(hide), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    REQUIRE(applied.affectedEntities.size() == 1);
+    CHECK(applied.affectedEntities.front() == root);
+    CHECK_FALSE(reg.get<VisibleComponent>(rootHandle).visible);
+    REQUIRE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revision + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // A2.1 floor router observation: visibility is a Structural-impact wire, so
+    // the REAL result must be routed and the full sync+reset observed.
+    CHECK(applied.syncImpact == SyncImpact::Structural);
+    S6EObserveRoute(f, applied);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.get<VisibleComponent>(rootHandle).visible);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK_FALSE(reg.get<VisibleComponent>(rootHandle).visible);
+    REQUIRE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+void S6EExerciseMaterial(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_material");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto key = PrefabComponentKeyFor<MaterialOverrideComponent>::value;
+    reg.emplace_or_replace<MeshRef>(rootHandle, MeshRef{ 0, 0 });
+    reg.emplace_or_replace<ImportedMeshSourceComponent>(rootHandle);
+    f.manager.AddMaterial(SceneMaterial{}); // slot 1
+    auto stage = f.manager.StageMaterialIndex(root, 1);
+    REQUIRE(stage.IsOk());
+    REQUIRE(stage.value.override.has_value());
+    const auto revision = f.manager.AuthoringRevision();
+
+    EditorCommandHistory history;
+    auto assign = MakeSetMaterialIndexCommandIfEffective(root, 0, 1, std::nullopt, stage.value.override);
+    REQUIRE(assign);
+    const auto applied = history.Execute(std::move(assign), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    CHECK(applied.syncImpact == rt2::core::SyncImpact::Material);
+    REQUIRE(applied.affectedEntities.size() == 1);
+    CHECK(applied.affectedEntities.front() == root);
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 1);
+    REQUIRE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revision + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // A2.1 floor router observation: material impact and its exact counts.
+    S6EObserveRoute(f, applied);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 0);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(reg.get<MeshRef>(rootHandle).materialIndex == 1);
+    REQUIRE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+void S6EExerciseLight(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_light");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    const auto revision = f.manager.AuthoringRevision();
+
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    EditorCommandHistory history;
+    auto set = MakeSetLightCommandIfEffective(root, origin, a);
+    REQUIRE(set);
+    const auto applied = history.Execute(std::move(set), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    REQUIRE(applied.affectedEntities.size() == 1);
+    CHECK(applied.affectedEntities.front() == root);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), a));
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revision + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // A2.1 floor router observation: light is a Material-impact wire; the REAL
+    // result must be routed unconditionally and the impact pinned.
+    CHECK(applied.syncImpact == SyncImpact::Material);
+    S6EObserveRoute(f, applied);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), origin));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    CHECK(S6CLightEqual(reg.get<LightComponent>(rootHandle), a));
+    REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+void S6EExerciseCamera(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_camera");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto camKey = PrefabComponentKeyFor<CameraComponent>::value;
+    reg.emplace_or_replace<CameraComponent>(rootHandle, CameraComponent{ 60.0f, 0.5f, 5.0f, { 0.0f, 0.0f, -1.0f } });
+    const CameraComponent origin = reg.get<CameraComponent>(rootHandle);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, camKey).value);
+    const auto revision = f.manager.AuthoringRevision();
+
+    const CameraComponent a{ 50.0f, 0.25f, 8.0f, { 0.0f, 0.0f, -1.0f } };
+    EditorCommandHistory history;
+    auto set = MakeSetCameraCommandIfEffective(root, origin, a);
+    REQUIRE(set);
+    const auto applied = history.Execute(std::move(set), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    REQUIRE(applied.affectedEntities.size() == 1);
+    CHECK(applied.affectedEntities.front() == root);
+    const auto live = reg.get<CameraComponent>(rootHandle);
+    CHECK(live.verticalFOV == a.verticalFOV);
+    CHECK(live.aperture == a.aperture);
+    CHECK(live.focusDistance == a.focusDistance);
+    REQUIRE(f.manager.IsOverridden(root, camKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == revision + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // Camera is a None-impact wire, real router stays quiet.
+    CHECK(applied.syncImpact == SyncImpact::None);
+
+    REQUIRE(history.Undo(f.manager).success);
+    const auto restored = reg.get<CameraComponent>(rootHandle);
+    CHECK(restored.verticalFOV == origin.verticalFOV);
+    CHECK(restored.aperture == origin.aperture);
+    CHECK(restored.focusDistance == origin.focusDistance);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, camKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    REQUIRE(f.manager.IsOverridden(root, camKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+void S6EExerciseMotion(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_motion");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto motionKey = PrefabComponentKeyFor<MotionComponent>::value;
+    const MotionComponent m{ glm::vec3(1.0f, 0.0f, 0.0f) };
+    const auto rev = f.manager.AuthoringRevision();
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+
+    EditorCommandHistory history;
+    auto add = MakeSetMotionCommandIfEffective(root, std::nullopt,
+        std::optional<MotionComponent>{ m });
+    REQUIRE(add);
+    const auto applied = history.Execute(std::move(add), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    CHECK(reg.get<MotionComponent>(rootHandle).linearVelocity == glm::vec3(1.0f, 0.0f, 0.0f));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == rev + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // A2.1 floor router observation: motion is a None-impact wire.
+    CHECK(applied.syncImpact == SyncImpact::None);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK_FALSE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    REQUIRE(reg.all_of<MotionComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, motionKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+void S6EExerciseScript(S2Fixture& f)
+{
+    using namespace rt2::core;
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_script");
+    S6BScriptAssets(f, dir, { "spin.lua" });
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto scriptKey = PrefabComponentKeyFor<ScriptComponent>::value;
+    const auto rev = f.manager.AuthoringRevision();
+    REQUIRE_FALSE(f.manager.IsOverridden(root, scriptKey).value);
+
+    EditorCommandHistory history;
+    auto add = MakeSetScriptCommandIfEffective(root, std::nullopt,
+        std::optional<ScriptComponent>{ S6BScript("spin.lua") });
+    REQUIRE(add);
+    const auto applied = history.Execute(std::move(add), f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    REQUIRE(reg.all_of<ScriptComponent>(rootHandle));
+    REQUIRE_FALSE(reg.get<ScriptComponent>(rootHandle).asset.assetId.IsNull());
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringRevision() == rev + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    // A2.1 floor router observation: script is a None-impact wire.
+    CHECK(applied.syncImpact == SyncImpact::None);
+
+    REQUIRE(history.Undo(f.manager).success);
+    CHECK_FALSE(reg.all_of<ScriptComponent>(rootHandle));
+    REQUIRE_FALSE(f.manager.IsOverridden(root, scriptKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+
+    REQUIRE(history.Redo(f.manager).success);
+    REQUIRE(reg.all_of<ScriptComponent>(rootHandle));
+    REQUIRE(f.manager.IsOverridden(root, scriptKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(history.RedoDepthForTest() == 0);
+    std::filesystem::remove_all(dir);
+}
+
+} // namespace
+
+TEST_CASE("Phase 8 W3 S6-E: compile-time key coverage runs real commands")
+{
+    for (const auto& entry : kS6Coverage)
+    {
+        INFO("coverage key: " << entry.name);
+        S2Fixture f;
+        entry.exercise(f);
+    }
+}
+
+namespace
+{
+class S6ERejectedMarkerCommand final : public IEditorCommand
+{
+public:
+    S6ERejectedMarkerCommand(UUID target, PrefabComponentKey key,
+        std::string before)
+        : m_Transaction(
+            { PrefabValueEdit{ PrefabValueKind::EntityName, target,
+                PrefabMarkerDirection::After, before, before + "-rejected" } },
+            { PrefabCommandTransaction::MarkerSpec{ target, key, true } }) {}
+
+    EditorMutationResult Execute(SceneManager& scene) override
+    { return m_Transaction.Execute(scene); }
+    EditorMutationResult Undo(SceneManager& scene) override
+    { return m_Transaction.Undo(scene); }
+    std::string Description() const override { return "S6-E rejected marker"; }
+
+private:
+    PrefabCommandTransaction m_Transaction;
+};
+}
+
+TEST_CASE("Phase 8 W3 S6-E: excluded and unknown marker boundary classification")
+{
+    S2Fixture f;
+    const auto ordinary = f.CreateEmpty("ordinary");
+    const std::array<std::string_view, 6> excluded = {
+        PrefabWireKeys::kMeshRef, PrefabWireKeys::kPrimitive,
+        PrefabWireKeys::kImportedSource, PrefabWireKeys::kPrefabInstance,
+        PrefabWireKeys::kPrefabMember, "unknownS6E" };
+    for (const auto wire : excluded)
+    {
+        const auto classification = FindComponentByWire(wire);
+        const bool admitted = classification.has_value() && classification->overridable();
+        CHECK_FALSE(admitted);
+        CHECK_FALSE(f.manager.IsOverridden(ordinary, PrefabComponentKey(wire, false)).IsOk());
+    }
+    const auto dir = S2UniqueTempDir("p8w3_s6e_excluded_matrix");
+    const auto prefab = f.CreatePrefabAsset(dir);
+    const auto instance = f.InstantiatePrefab(prefab);
+    auto& reg = f.manager.GetECS().registry;
+    const auto member = reg.get<EntityIdComponent>(instance.first).id;
+    for (const auto wire : excluded)
+        CHECK_FALSE(f.manager.IsOverridden(member, PrefabComponentKey(wire, false)).IsOk());
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: excluded and unknown durable boundary is zero-write")
+{
+    S2Fixture f;
+    const auto ordinary = f.CreateEmpty("ordinary");
+    const auto dir = S2UniqueTempDir("p8w3_s6e_excluded_boundary");
+    const auto instance = f.InstantiatePrefab(f.CreatePrefabAsset(dir));
+    const auto prefab = f.manager.GetEntityUuid(SceneManager::EntityId{ instance.first });
+    const std::array<std::string_view, 6> wires = {
+        PrefabWireKeys::kMeshRef, PrefabWireKeys::kPrimitive,
+        PrefabWireKeys::kImportedSource, PrefabWireKeys::kPrefabInstance,
+        PrefabWireKeys::kPrefabMember, "unknownS6E" };
+    const auto exercise = [&](const UUID& target, std::string_view wire) {
+        auto& reg = f.manager.GetECS().registry;
+        const auto handle = f.manager.FindEntityByUuid(target);
+        const auto beforeName = reg.get<NameComponent>(handle).name;
+        const auto revision = f.manager.AuthoringRevision();
+        const auto schema = f.manager.AuthoringDoc().metadata.schemaVersion;
+        EditorCommandHistory history;
+        EditorSyncRouter router;
+        int routedMaterial = 0;
+        int routedReset = 0;
+        router.SetMaterialSync([&] { ++routedMaterial; });
+        router.SetResetAccum([&] { ++routedReset; });
+        const auto key = PrefabComponentKey(wire, false);
+        const auto result = history.Execute(
+            std::make_unique<S6ERejectedMarkerCommand>(target, key, beforeName),
+            f.manager);
+        RouteEffectiveTransformPreviewNotification(result, [&] {
+            router.Route(result, f.manager);
+        });
+        CHECK_FALSE(result.success);
+        CHECK(reg.get<NameComponent>(handle).name == beforeName);
+        CHECK(f.manager.AuthoringRevision() == revision);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == schema);
+        CHECK(history.UndoDepthForTest() == 0);
+        CHECK(history.RedoDepthForTest() == 0);
+        CHECK(routedMaterial == 0);
+        CHECK(routedReset == 0);
+    };
+    for (const auto wire : wires)
+    {
+        exercise(ordinary, wire);
+        exercise(prefab, wire);
+    }
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: two-instance material properties fan-out is sorted and reversible")
+{
+    auto run = [](bool reverseInputOrder) {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir(reverseInputOrder
+            ? "p8w3_s6e_slot_fanout_reverse" : "p8w3_s6e_slot_fanout_forward");
+        const auto prefab = f.CreatePrefabAsset(dir);
+        const auto first = f.InstantiatePrefab(prefab);
+        const auto second = f.InstantiatePrefab(prefab);
+        auto& reg = f.manager.GetECS().registry;
+        const std::array<entt::entity, 4> handles = {
+            first.first, first.second, second.first, second.second };
+        for (const auto e : handles)
+        {
+            reg.emplace_or_replace<MeshRef>(e, MeshRef{ 0, 0 });
+            reg.emplace_or_replace<ImportedMeshSourceComponent>(e);
+        }
+        const auto firstRoot = reg.get<EntityIdComponent>(first.first).id;
+        const auto secondRoot = reg.get<EntityIdComponent>(second.first).id;
+        CHECK(reg.get<PrefabMemberComponent>(first.first).templateId
+            == reg.get<PrefabMemberComponent>(second.first).templateId);
+        CHECK(reg.get<PrefabMemberComponent>(first.first).instanceId
+            != reg.get<PrefabMemberComponent>(second.first).instanceId);
+        MaterialOverrideComponent existing;
+        existing.material = f.manager.GetMaterial(0);
+        existing.materialIndex = 0;
+        existing.authored = true;
+        reg.emplace_or_replace<MaterialOverrideComponent>(first.first, existing);
+        const auto beforeMaterial = f.manager.GetMaterial(0);
+        auto afterMaterial = beforeMaterial;
+        afterMaterial.roughness = 0.4f;
+        auto beforeOverrides = CaptureMaterialOverrideFanOut(reg, 0);
+        const auto expectedBeforeOverrides = beforeOverrides;
+        auto staged = f.manager.StageMaterialSlot(0, afterMaterial);
+        REQUIRE(staged.IsOk());
+        auto afterOverrides = staged.value.afterOverrides;
+        if (reverseInputOrder)
+        {
+            std::reverse(beforeOverrides.begin(), beforeOverrides.end());
+            std::reverse(afterOverrides.begin(), afterOverrides.end());
+        }
+        EditorCommandHistory history;
+        EditorSyncRouter router;
+        int materialSyncs = 0;
+        int resets = 0;
+        router.SetMaterialSync([&] { ++materialSyncs; });
+        router.SetResetAccum([&] { ++resets; });
+        const auto beforeRevision = f.manager.AuthoringRevision();
+        auto command = MakeSetMaterialPropertiesCommandIfEffective(0,
+            beforeMaterial, afterMaterial, beforeOverrides, afterOverrides);
+        REQUIRE(command);
+        const auto applied = history.Execute(std::move(command), f.manager);
+        REQUIRE(applied.success);
+        REQUIRE(applied.effective);
+        router.Route(applied, f.manager);
+        CHECK(applied.syncImpact == rt2::core::SyncImpact::Material);
+        CHECK(applied.affectedEntities.size() == 4);
+        std::vector<UUID> expectedEntities;
+        for (const auto& [uuid, ignored] : expectedBeforeOverrides)
+            expectedEntities.push_back(uuid);
+        std::sort(expectedEntities.begin(), expectedEntities.end(),
+            [](const UUID& a, const UUID& b) { return a.ToString() < b.ToString(); });
+        std::vector<UUID> actualEntities = applied.affectedEntities;
+        std::sort(actualEntities.begin(), actualEntities.end(),
+            [](const UUID& a, const UUID& b) { return a.ToString() < b.ToString(); });
+        CHECK(actualEntities == expectedEntities);
+        CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+        CHECK(history.UndoDepthForTest() == 1);
+        CHECK(materialSyncs == 1);
+        CHECK(resets == 1);
+        for (const auto e : handles)
+        {
+            CHECK(reg.get<MeshRef>(e).materialIndex == 0);
+            REQUIRE(reg.all_of<MaterialOverrideComponent>(e));
+            CHECK(reg.get<MaterialOverrideComponent>(e).material.roughness
+                == doctest::Approx(0.4f));
+            const auto uuid = reg.get<EntityIdComponent>(e).id;
+            REQUIRE(f.manager.IsOverridden(uuid,
+                PrefabComponentKeyFor<MaterialOverrideComponent>::value).value);
+        }
+        const auto checkOverrideState = [&](const SetMaterialPropertiesCommand::OverrideList& expected) {
+            const auto actual = CaptureMaterialOverrideFanOut(reg, 0);
+            REQUIRE(actual.size() == expected.size());
+            for (const auto& [uuid, expectedOverride] : expected)
+            {
+                const auto it = std::find_if(actual.begin(), actual.end(),
+                    [&](const auto& item) { return item.first == uuid; });
+                REQUIRE(it != actual.end());
+                CHECK(it->second.has_value() == expectedOverride.has_value());
+                if (it->second && expectedOverride)
+                {
+                    CHECK(it->second->authored == expectedOverride->authored);
+                    CHECK(it->second->materialIndex == expectedOverride->materialIndex);
+                    CHECK(it->second->sourceMaterialKey == expectedOverride->sourceMaterialKey);
+                    CHECK(it->second->material.roughness == doctest::Approx(expectedOverride->material.roughness));
+                    CHECK(it->second->material.metallic == doctest::Approx(expectedOverride->material.metallic));
+                    CHECK(it->second->material.baseColor == expectedOverride->material.baseColor);
+                }
+            }
+        };
+        const auto undone = history.Undo(f.manager);
+        REQUIRE(undone.success);
+        router.Route(undone, f.manager);
+        CHECK(f.manager.AuthoringRevision() == beforeRevision + 2);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 4);
+        CHECK(history.UndoDepthForTest() == 0);
+        CHECK(history.RedoDepthForTest() == 1);
+        checkOverrideState(expectedBeforeOverrides);
+        for (const auto& [uuid, ignored] : expectedBeforeOverrides)
+            CHECK_FALSE(f.manager.IsOverridden(uuid,
+                PrefabComponentKeyFor<MaterialOverrideComponent>::value).value);
+        const auto redone = history.Redo(f.manager);
+        REQUIRE(redone.success);
+        router.Route(redone, f.manager);
+        CHECK(f.manager.AuthoringRevision() == beforeRevision + 3);
+        checkOverrideState(afterOverrides);
+        for (const auto& [uuid, ignored] : expectedBeforeOverrides)
+            CHECK(f.manager.IsOverridden(uuid,
+                PrefabComponentKeyFor<MaterialOverrideComponent>::value).value);
+        CHECK(materialSyncs == 3);
+        CHECK(resets == 3);
+        CHECK(firstRoot != secondRoot);
+        std::filesystem::remove_all(dir);
+    };
+    run(false);
+    run(true);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: real preview sessions route through counting sync router")
+{
+    S2Fixture f;
+    const auto uuid = f.CreateEmpty("preview");
+    const auto entity = f.manager.FindEntityByUuid(uuid);
+    auto& reg = f.manager.GetECS().registry;
+    const LightComponent origin{};
+    const LightComponent after{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 30.0f, 20.0f, 15.0f, LightType::Point };
+    reg.emplace_or_replace<LightComponent>(entity, origin);
+    const auto key = PrefabComponentKeyFor<LightComponent>::value;
+    CompositePreviewSession session;
+    REQUIRE(session.Begin(f.manager, uuid, PrefabValueKind::LightProperties, key,
+        PrefabValuePayload{ origin }, [&](const UUID&, const PrefabValuePayload& raw) { return raw; }));
+    int materialSyncs = 0;
+    int resets = 0;
+    EditorSyncRouter router;
+    router.SetMaterialSync([&] { ++materialSyncs; });
+    router.SetResetAccum([&] { ++resets; });
+    router.SetRendererAvailable([] { return true; });
+    const auto revision = f.manager.AuthoringRevision();
+    const auto published = PublishCompositePreviewAndRoute(
+        [&] { return session.Preview(f.manager, PrefabValuePayload{ after }); },
+        [&](const EditorMutationResult& result) { router.Route(result, f.manager); });
+    REQUIRE(published.success);
+    CHECK(published.effective);
+    CHECK(f.manager.AuthoringRevision() == revision + 1);
+    CHECK(materialSyncs == 1);
+    CHECK(resets == 1);
+    const auto failed = PublishCompositePreviewAndRoute(
+        [&] { return session.Preview(f.manager, PrefabValuePayload{ std::string("wrong-kind") }); },
+        [&](const EditorMutationResult& result) { router.Route(result, f.manager); });
+    CHECK_FALSE(failed.success);
+    CHECK(materialSyncs == 1);
+    CHECK(resets == 1);
+    const auto noop = PublishCompositePreviewAndRoute(
+        [&] { return session.Preview(f.manager, PrefabValuePayload{ after }); },
+        [&](const EditorMutationResult& result) { router.Route(result, f.manager); });
+    CHECK(noop.success);
+    CHECK_FALSE(noop.effective);
+    CHECK(materialSyncs == 1);
+     CHECK(resets == 1);
+
+    CameraComponent cameraOrigin{};
+    CameraComponent cameraAfter = cameraOrigin;
+    cameraAfter.verticalFOV = 60.0f;
+    reg.emplace_or_replace<CameraComponent>(entity, cameraOrigin);
+    CompositePreviewSession camera;
+    REQUIRE(camera.Begin(f.manager, uuid, PrefabValueKind::CameraProperties,
+        PrefabComponentKeyFor<CameraComponent>::value,
+        PrefabValuePayload{ cameraOrigin },
+        [](const UUID&, const PrefabValuePayload& raw) { return raw; }));
+    const auto cameraResult = PublishCompositePreviewAndRoute(
+        [&] { return camera.Preview(f.manager, PrefabValuePayload{ cameraAfter }); },
+        [&](const EditorMutationResult& result) { router.Route(result, f.manager); });
+    REQUIRE(cameraResult.success);
+    CHECK(cameraResult.syncImpact == rt2::core::SyncImpact::None);
+    CHECK(materialSyncs == 1);
+    CHECK(resets == 1);
+
+    MotionComponent motionOrigin{};
+    MotionComponent motionAfter = motionOrigin;
+    motionAfter.linearVelocity = glm::vec3(2.0f, 0.0f, 0.0f);
+    reg.emplace_or_replace<MotionComponent>(entity, motionOrigin);
+    CompositePreviewSession motion;
+    REQUIRE(motion.Begin(f.manager, uuid, PrefabValueKind::MotionState,
+        PrefabComponentKeyFor<MotionComponent>::value,
+        PrefabValuePayload{ std::optional<MotionComponent>(motionOrigin) },
+        [](const UUID&, const PrefabValuePayload& raw) { return raw; }));
+    const auto motionResult = PublishCompositePreviewAndRoute(
+        [&] { return motion.Preview(f.manager, PrefabValuePayload{
+            std::optional<MotionComponent>(motionAfter) }); },
+        [&](const EditorMutationResult& result) { router.Route(result, f.manager); });
+    REQUIRE(motionResult.success);
+    CHECK(motionResult.syncImpact == rt2::core::SyncImpact::None);
+    CHECK(materialSyncs == 1);
+    CHECK(resets == 1);
+ }
+
+TEST_CASE("Phase 8 W3 S6-E: real Script preview route closes and restores durably")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6e_script_preview_route");
+    S6BScriptAssets(f, dir, { "spin.lua" });
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto scriptKey = PrefabComponentKeyFor<ScriptComponent>::value;
+
+    ScriptComponent origin = S6BScript("spin.lua");
+    origin.fieldValues["speed"] = { ScriptFieldType::Float, 1.0 };
+    EditorCommandHistory setup;
+    REQUIRE(setup.Execute(MakeSetScriptCommandIfEffective(root, std::nullopt,
+        std::optional<ScriptComponent>{ origin }), f.manager).effective);
+    origin = reg.get<ScriptComponent>(rootHandle);
+
+    EditorSyncRouter router;
+    int materialSyncs = 0;
+    int resets = 0;
+    router.SetMaterialSync([&] { ++materialSyncs; });
+    router.SetResetAccum([&] { ++resets; });
+    router.SetRendererAvailable([] { return true; });
+    int routeCalls = 0;
+    auto route = [&](const EditorMutationResult& result) {
+        ++routeCalls;
+        router.Route(result, f.manager);
+    };
+
+    CompositePreviewSession session;
+    REQUIRE(session.Begin(f.manager, root, PrefabValueKind::ScriptState,
+        scriptKey, PrefabValuePayload{ std::optional<ScriptComponent>(origin) },
+        [&](const UUID& uuid, const PrefabValuePayload& raw) {
+            return S6CScriptReader(f.manager, uuid, raw);
+        }));
+    ScriptComponent target = origin;
+    target.fieldValues["speed"] = { ScriptFieldType::Float, 2.0 };
+    const auto beforeRevision = f.manager.AuthoringRevision();
+    const auto published = PublishCompositePreviewAndRoute(
+        [&] { return session.Preview(f.manager,
+            PrefabValuePayload{ std::optional<ScriptComponent>(target) }); }, route);
+    REQUIRE(published.success);
+    REQUIRE(published.effective);
+    CHECK(published.syncImpact == SyncImpact::None);
+    CHECK(routeCalls == 1);
+    CHECK(materialSyncs == 0);
+    CHECK(resets == 0);
+    CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+    EditorCommandHistory history;
+    const auto closed = FinalizePreviewSession(history, f.manager,
+        PreviewSessionKind::Script, session);
+    REQUIRE(closed.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(closed.recorded);
+    CHECK_FALSE(closed.needsSyncApply);
+    CHECK(routeCalls == 1); // healthy finalize does not route a second time
+    CHECK(history.UndoDepthForTest() == 1);
+
+    const auto undone = history.Undo(f.manager);
+    REQUIRE(undone.success);
+    CHECK(undone.syncImpact == SyncImpact::None);
+    route(undone);
+    CHECK(routeCalls == 2);
+    CHECK(history.UndoDepthForTest() == 0);
+    CHECK(history.RedoDepthForTest() == 1);
+    const auto redone = history.Redo(f.manager);
+    REQUIRE(redone.success);
+    CHECK(redone.syncImpact == SyncImpact::None);
+    route(redone);
+    CHECK(routeCalls == 3);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(ScriptComponentCanonicalEqual(reg.get<ScriptComponent>(rootHandle), target));
+
+    // A second live script gesture exercises the compensation route. Restore
+    // is scene-mutating, never history-recording, and must route exactly once.
+    CompositePreviewSession restoreSession;
+    const auto restoreOrigin = reg.get<ScriptComponent>(rootHandle);
+    REQUIRE(restoreSession.Begin(f.manager, root, PrefabValueKind::ScriptState,
+        scriptKey, PrefabValuePayload{ std::optional<ScriptComponent>(restoreOrigin) },
+        [&](const UUID& uuid, const PrefabValuePayload& raw) {
+            return S6CScriptReader(f.manager, uuid, raw);
+        }));
+    auto restoreTarget = restoreOrigin;
+    restoreTarget.fieldValues["speed"] = { ScriptFieldType::Float, 3.0 };
+    const auto restorePreview = PublishCompositePreviewAndRoute(
+        [&] { return restoreSession.Preview(f.manager,
+            PrefabValuePayload{ std::optional<ScriptComponent>(restoreTarget) }); },
+        route);
+    REQUIRE(restorePreview.success);
+    REQUIRE(restorePreview.effective);
+    const auto beforeRestoreRoute = routeCalls;
+    const auto restored = RestorePreviewSession(f.manager,
+        PreviewSessionKind::Script, restoreSession);
+    REQUIRE(restored.result == PreviewSessionCloseOutcome::Result::Closed);
+    REQUIRE(restored.needsSyncApply);
+    RouteTransformCloseSync(restored, [&](const PreviewSessionCloseOutcome& outcome) {
+        route(outcome.mutation);
+    });
+    CHECK(routeCalls == beforeRestoreRoute + 1);
+    CHECK(history.UndoDepthForTest() == 1);
+    CHECK(ScriptComponentCanonicalEqual(reg.get<ScriptComponent>(rootHandle), restoreOrigin));
+    CHECK(materialSyncs == 0);
+    CHECK(resets == 0);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: four-kind preview cadence composes helper host router history")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6e_four_kind_cadence");
+    S6BScriptAssets(f, dir, { "spin.lua" });
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    reg.emplace_or_replace<CameraComponent>(rootHandle, CameraComponent{});
+    reg.emplace_or_replace<MotionComponent>(rootHandle, MotionComponent{});
+    ScriptComponent scriptOrigin = S6BScript("spin.lua");
+    scriptOrigin.fieldValues["speed"] = { ScriptFieldType::Float, 1.0 };
+    EditorCommandHistory setup;
+    REQUIRE(setup.Execute(MakeSetScriptCommandIfEffective(root, std::nullopt,
+        std::optional<ScriptComponent>{ scriptOrigin }), f.manager).effective);
+    scriptOrigin = reg.get<ScriptComponent>(rootHandle);
+
+    EditorSyncRouter router;
+    int materialSyncs = 0;
+    int resets = 0;
+    router.SetMaterialSync([&] { ++materialSyncs; });
+    router.SetResetAccum([&] { ++resets; });
+    router.SetRendererAvailable([] { return true; });
+    int publishCalls = 0;
+    int hostRoutes = 0;
+    int effectiveNotifications = 0;
+    const auto route = [&](const EditorMutationResult& result) {
+        ++hostRoutes;
+        if (result.success && result.effective) ++effectiveNotifications;
+        router.Route(result, f.manager);
+    };
+    const auto publish = [&](CompositePreviewSession& session,
+        PrefabValuePayload target) {
+        return PublishCompositePreviewAndRoute(
+            [&] { ++publishCalls; return session.Preview(f.manager, target); },
+            route);
+    };
+
+    const auto run = [&](PreviewSessionKind kind, PrefabValueKind valueKind,
+        PrefabComponentKey key, PrefabValuePayload origin,
+        PrefabValuePayload target, CompositePreviewSession::ValueReader reader,
+        SyncImpact impact) {
+        CompositePreviewSession session;
+        REQUIRE(session.Begin(f.manager, root, valueKind, key, origin, reader));
+        const auto beforeRevision = f.manager.AuthoringRevision();
+        const auto beforePublish = publishCalls;
+        const auto beforeHost = hostRoutes;
+        const auto beforeEffective = effectiveNotifications;
+        const auto published = publish(session, target);
+        REQUIRE(published.success);
+        REQUIRE(published.effective);
+        CHECK(published.syncImpact == impact);
+        CHECK(publishCalls == beforePublish + 1);
+        CHECK(hostRoutes == beforeHost + 1);
+        CHECK(effectiveNotifications == beforeEffective + 1);
+        CHECK(f.manager.AuthoringRevision() == beforeRevision + 1);
+
+        EditorCommandHistory history;
+        const auto closed = FinalizePreviewSession(history, f.manager, kind, session);
+        REQUIRE(closed.result == PreviewSessionCloseOutcome::Result::Closed);
+        REQUIRE(closed.recorded);
+        CHECK_FALSE(closed.needsSyncApply);
+        CHECK(publishCalls == beforePublish + 1);
+        CHECK(history.UndoDepthForTest() == 1);
+
+        const auto undone = history.Undo(f.manager);
+        REQUIRE(undone.success);
+        route(undone);
+        CHECK(history.UndoDepthForTest() == 0);
+        CHECK(history.RedoDepthForTest() == 1);
+        const auto redone = history.Redo(f.manager);
+        REQUIRE(redone.success);
+        route(redone);
+        CHECK(history.UndoDepthForTest() == 1);
+        CHECK(history.RedoDepthForTest() == 0);
+
+        // Restore a second effective gesture. Its admitted publish must use
+        // the same production helper, then its compensation routes once and
+        // never creates a history entry.
+        CompositePreviewSession restore;
+        REQUIRE(restore.Begin(f.manager, root, valueKind, key, target, reader));
+        const auto restorePublishBefore = publishCalls;
+        const auto restoreHostBefore = hostRoutes;
+        auto restoreTarget = target;
+        if (valueKind == PrefabValueKind::LightProperties)
+        {
+            auto value = std::get<LightComponent>(restoreTarget);
+            value.intensity += 1.0f;
+            restoreTarget = value;
+        }
+        else if (valueKind == PrefabValueKind::CameraProperties)
+        {
+            auto value = std::get<CameraComponent>(restoreTarget);
+            value.verticalFOV += 1.0f;
+            restoreTarget = value;
+        }
+        else if (valueKind == PrefabValueKind::MotionState)
+        {
+            auto value = std::get<std::optional<MotionComponent>>(restoreTarget);
+            REQUIRE(value.has_value());
+            value->linearVelocity.x += 1.0f;
+            restoreTarget = value;
+        }
+        else
+        {
+            auto value = std::get<std::optional<ScriptComponent>>(restoreTarget);
+            REQUIRE(value.has_value());
+            value->fieldValues["speed"] = { ScriptFieldType::Float, 4.0 };
+            restoreTarget = value;
+        }
+        const auto restorePreview = publish(restore, restoreTarget);
+        REQUIRE(restorePreview.success);
+        REQUIRE(restorePreview.effective);
+        CHECK(publishCalls == restorePublishBefore + 1);
+        CHECK(hostRoutes == restoreHostBefore + 1);
+        const auto restored = RestorePreviewSession(f.manager, kind, restore);
+        REQUIRE(restored.result == PreviewSessionCloseOutcome::Result::Closed);
+        REQUIRE(restored.needsSyncApply);
+        RouteTransformCloseSync(restored, [&](const PreviewSessionCloseOutcome& outcome) {
+            route(outcome.mutation);
+        });
+        CHECK(hostRoutes == restoreHostBefore + 2);
+        CHECK(history.UndoDepthForTest() == 1);
+    };
+
+    const LightComponent lightOrigin{};
+    const LightComponent lightTarget{ glm::vec3(1.0f, 0.0f, 0.0f),
+        2.0f, 30.0f, 20.0f, 15.0f, LightType::Point };
+    run(PreviewSessionKind::Light, PrefabValueKind::LightProperties,
+        PrefabComponentKeyFor<LightComponent>::value,
+        PrefabValuePayload{ lightOrigin }, PrefabValuePayload{ lightTarget },
+        [&](const UUID& uuid, const PrefabValuePayload& raw) {
+            return S6CLightReader(f.manager, uuid, raw);
+        }, SyncImpact::Material);
+
+    const CameraComponent cameraOrigin{};
+    auto cameraTarget = cameraOrigin;
+    cameraTarget.verticalFOV = 60.0f;
+    run(PreviewSessionKind::Camera, PrefabValueKind::CameraProperties,
+        PrefabComponentKeyFor<CameraComponent>::value,
+        PrefabValuePayload{ cameraOrigin }, PrefabValuePayload{ cameraTarget },
+        [&](const UUID& uuid, const PrefabValuePayload& raw) {
+            return S6CCameraReader(f.manager, uuid, raw);
+        }, SyncImpact::None);
+
+    const MotionComponent motionOrigin{};
+    auto motionTarget = motionOrigin;
+    motionTarget.linearVelocity = glm::vec3(2.0f, 0.0f, 0.0f);
+    run(PreviewSessionKind::Motion, PrefabValueKind::MotionState,
+        PrefabComponentKeyFor<MotionComponent>::value,
+        PrefabValuePayload{ std::optional<MotionComponent>(motionOrigin) },
+        PrefabValuePayload{ std::optional<MotionComponent>(motionTarget) },
+        [&](const UUID& uuid, const PrefabValuePayload& raw) {
+            return S6CMotionReader(f.manager, uuid, raw);
+        }, SyncImpact::None);
+
+    auto scriptTarget = scriptOrigin;
+    scriptTarget.fieldValues["speed"] = { ScriptFieldType::Float, 2.0 };
+    run(PreviewSessionKind::Script, PrefabValueKind::ScriptState,
+        PrefabComponentKeyFor<ScriptComponent>::value,
+        PrefabValuePayload{ std::optional<ScriptComponent>(scriptOrigin) },
+        PrefabValuePayload{ std::optional<ScriptComponent>(scriptTarget) },
+        [&](const UUID& uuid, const PrefabValuePayload& raw) {
+            return S6CScriptReader(f.manager, uuid, raw);
+        }, SyncImpact::None);
+
+    // Failed and canonical no-op publishes still traverse the production
+    // helper exactly once, while host/router callbacks remain suppressed.
+    CompositePreviewSession suppression;
+    REQUIRE(suppression.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        PrefabComponentKeyFor<LightComponent>::value,
+        PrefabValuePayload{ lightTarget },
+        [&](const UUID& uuid, const PrefabValuePayload& raw) {
+            return S6CLightReader(f.manager, uuid, raw);
+        }));
+    const auto beforeSuppressionMaterial = materialSyncs;
+    const auto beforeSuppressionReset = resets;
+    const auto beforeSuppressionPublish = publishCalls;
+    const auto beforeSuppressionHost = hostRoutes;
+    const auto failed = publish(suppression, PrefabValuePayload{ std::string("wrong-kind") });
+    CHECK_FALSE(failed.success);
+    CHECK(publishCalls == beforeSuppressionPublish + 1);
+    CHECK(hostRoutes == beforeSuppressionHost + 1);
+    const auto noop = publish(suppression, PrefabValuePayload{ lightTarget });
+    CHECK(noop.success);
+    CHECK_FALSE(noop.effective);
+    CHECK(publishCalls == beforeSuppressionPublish + 2);
+    CHECK(hostRoutes == beforeSuppressionHost + 2);
+    CHECK(materialSyncs == beforeSuppressionMaterial);
+    CHECK(resets == beforeSuppressionReset);
+    std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: shared material slot fan-out survives both instance orders")
+{
+    auto verifyOrder = [](bool duplicateSecondPhysicalInstance) {
+        S2Fixture f;
+        const auto dir = S2UniqueTempDir(duplicateSecondPhysicalInstance
+            ? "p8w3_s6e_fanout_reverse" : "p8w3_s6e_fanout_forward");
+        const auto prefab = f.CreatePrefabAsset(dir);
+        const auto first = f.InstantiatePrefab(prefab);
+        const auto second = f.InstantiatePrefab(prefab);
+        auto& reg = f.manager.GetECS().registry;
+        for (const auto e : { first.first, second.first })
+        {
+            reg.emplace_or_replace<MeshRef>(e, MeshRef{ 0, 0 });
+            reg.emplace_or_replace<ImportedMeshSourceComponent>(e);
+        }
+        const auto firstUuid = reg.get<EntityIdComponent>(first.first).id;
+        const auto secondUuid = reg.get<EntityIdComponent>(second.first).id;
+        CHECK(reg.get<PrefabMemberComponent>(first.first).templateId
+            == reg.get<PrefabMemberComponent>(second.first).templateId);
+        CHECK(reg.get<PrefabMemberComponent>(first.first).instanceId
+            != reg.get<PrefabMemberComponent>(second.first).instanceId);
+        const auto target = duplicateSecondPhysicalInstance ? secondUuid : firstUuid;
+        const auto untouched = duplicateSecondPhysicalInstance ? firstUuid : secondUuid;
+        const auto stage = f.manager.StageMaterialDuplicateAssignment(target);
+        REQUIRE(stage.IsOk());
+        EditorCommandHistory history;
+        REQUIRE(history.Execute(MakeDuplicateMaterialAndAssignCommand(stage.value), f.manager).success);
+        CHECK(reg.get<MeshRef>(f.manager.FindEntityByUuid(target)).materialIndex
+            == stage.value.proposedIndex);
+        CHECK(reg.get<MeshRef>(f.manager.FindEntityByUuid(untouched)).materialIndex == 0);
+        std::filesystem::remove_all(dir);
+    };
+    verifyOrder(false);
+    verifyOrder(true);
+}
+
+TEST_CASE("Phase 8 W3 S6-E: composite preview route preserves exact result")
+{
+    int publishes = 0;
+    int routes = 0;
+    EditorMutationResult expected;
+    expected.success = true;
+    expected.effective = false;
+    expected.syncImpact = rt2::core::SyncImpact::Material;
+    const auto result = PublishCompositePreviewAndRoute(
+        [&]() { ++publishes; return expected; },
+        [&](const EditorMutationResult& routed) {
+            ++routes;
+            CHECK(routed.success == expected.success);
+            CHECK(routed.effective == expected.effective);
+            CHECK(routed.syncImpact == expected.syncImpact);
+        });
+    CHECK(publishes == 1);
+    CHECK(routes == 1);
+    CHECK(result.success == expected.success);
+    CHECK(result.effective == expected.effective);
+    CHECK(result.syncImpact == expected.syncImpact);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: paste after an open Light preview is admitted chronologically")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_paste_admit");
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const LightComponent origin = s.origin;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN: the open Light preview is finalized (admission) before the
+    // clipboard copy/paste, so the pasted override rides on a recorded overlay.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slots[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, slots, 1, admit);
+        REQUIRE(admit.allClosed);
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+
+        EditorSceneState state;
+        rt2::core::Error err;
+        REQUIRE(state.Copy(f.manager, { root }, err));
+        const auto paste = state.PasteWithUuidsForCommand(f.manager);
+        REQUIRE(paste.mutation.success);
+        REQUIRE(paste.createdRoots.size() == 1);
+        auto snapshot = f.manager.CaptureSubtreeSnapshot(paste.createdRoots);
+        REQUIRE_FALSE(snapshot.entities.empty());
+        auto cmd = MakePasteSubtreesCommand(std::move(snapshot), paste.createdRoots);
+        REQUIRE(cmd);
+        REQUIRE(history.RecordApplied(std::move(cmd), f.manager, paste.mutation).effective);
+
+        // Chronological undo: paste first, then light.
+        REQUIRE(history.Undo(f.manager).success);
+        REQUIRE(static_cast<uint32_t>(f.manager.FindEntityByUuid(paste.createdRoots.front()))
+            == static_cast<uint32_t>(entt::null));
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), a));
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), origin));
+        REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+    }
+
+    // ---- RED: WITHOUT admission, the clipboard is taken while the Light preview
+    // is live (its uncommitted lightKey rides into the pasted member), the paste
+    // records first, the Light finalizes after, and the first Undo (Light) fails
+    // the v5 downgrade while the pasted override remains.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+        EditorCommandHistory history;
+        EditorSceneState state;
+        rt2::core::Error err;
+        REQUIRE(state.Copy(f.manager, { root }, err));
+        const auto paste = state.PasteWithUuidsForCommand(f.manager);
+        REQUIRE(paste.mutation.success);
+        auto snapshot = f.manager.CaptureSubtreeSnapshot(paste.createdRoots);
+        auto cmd = MakePasteSubtreesCommand(std::move(snapshot), paste.createdRoots);
+        REQUIRE(cmd);
+        REQUIRE(history.RecordApplied(std::move(cmd), f.manager, paste.mutation).effective);
+        REQUIRE(FinalizePreviewSession(history, f.manager,
+            PreviewSessionKind::Light, light).recorded);
+
+        const auto badUndo = history.Undo(f.manager);
+        REQUIRE_FALSE(badUndo.success);
+        const bool downgradeRejected =
+            badUndo.error.detail.find("downgrade") != std::string::npos
+            || badUndo.error.detail.find("override") != std::string::npos;
+        CHECK(downgradeRejected);
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    std::filesystem::remove_all(s.dir);
+}
+
+// S6-C closure-ordering, P1 finding 2: at most one healthy S6-C preview is
+// open, and admission finalizes existing sessions in PHYSICAL gesture order.
+// These v5 cases begin Camera then Light (and the reverse), close in physical
+// order, and prove an exact two-step Undo with a legal schema downgrade ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â while
+// the fixed enum order (or physical reversal) is proven RED.
+TEST_CASE("Phase 8 W3 S6-C: Camera-then-Light physical order undoes exactly")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_camlgt");
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const auto cameraKey = PrefabComponentKeyFor<CameraComponent>::value;
+    const LightComponent originLight = s.origin;
+    const CameraComponent originCam{ 60.0f, 0.5f, 5.0f, { 0.0f, 0.0f, -1.0f } };
+    reg.emplace_or_replace<CameraComponent>(s.handle, originCam);
+    const LightComponent lightA{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const CameraComponent camA{ 50.0f, 0.25f, 8.0f, { 0.0f, 0.0f, -1.0f } };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    const auto cameraReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CCameraReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN: Camera previews FIRST (physical), the Light session begins
+    // second (its origin is the post-Camera schema), and admission finalizes in
+    // physical order [camera, light].
+    {
+        CompositePreviewSession camera;
+        REQUIRE(camera.Begin(f.manager, root, PrefabValueKind::CameraProperties,
+            cameraKey, originCam, cameraReader));
+        REQUIRE(camera.Preview(f.manager, PrefabValuePayload{ camA }).effective);
+        // The host one-open rule finalizes the open Camera before the Light Begin.
+        EditorCommandHistory history;
+        unsigned int camOwner = 0;
+        PreviewSessionSlot camSlot[1] = {
+            { PreviewSessionKind::Camera, &camera, &camOwner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult camAdmit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, camSlot, 1, camAdmit);
+        REQUIRE(camAdmit.allClosed);
+        REQUIRE(camAdmit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(camera.IsOpen());
+
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, originLight, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ lightA }).effective);
+        unsigned int lightOwner = 0;
+        PreviewSessionSlot lightSlot[1] = {
+            { PreviewSessionKind::Light, &light, &lightOwner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult lightAdmit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, lightSlot, 1, lightAdmit);
+        REQUIRE(lightAdmit.allClosed);
+        REQUIRE(lightAdmit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+
+        // Two-step undo: Light (top) then Camera ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the legal v5 downgrade only
+        // happens after the last override is gone.
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), originLight));
+        REQUIRE(f.manager.IsOverridden(root, cameraKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+        REQUIRE(history.Undo(f.manager).success);
+        const auto camRestored = reg.get<CameraComponent>(s.handle);
+        CHECK(camRestored.verticalFOV == originCam.verticalFOV);
+        CHECK(camRestored.aperture == originCam.aperture);
+        REQUIRE_FALSE(f.manager.IsOverridden(root, cameraKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+    }
+
+    // ---- RED: with BOTH sessions open (no one-open rule) the fixed-slot-order
+    // reducer finalizes Light before Camera even though the physical gesture was
+    // Camera first; the first Undo pops Camera and fails the v5 downgrade while
+    // the Light marker remains.
+    {
+        CompositePreviewSession camera;
+        REQUIRE(camera.Begin(f.manager, root, PrefabValueKind::CameraProperties,
+            cameraKey, originCam, cameraReader));
+        REQUIRE(camera.Preview(f.manager, PrefabValuePayload{ camA }).effective);
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, originLight, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ lightA }).effective);
+
+        EditorCommandHistory history;
+        unsigned int lightOwner = 0, camOwner = 0;
+        PreviewSessionSlot slots[2] = {
+            { PreviewSessionKind::Light, &light, &lightOwner, true },
+            { PreviewSessionKind::Camera, &camera, &camOwner, true },
+        };
+        PreviewSessionsBeforeActionResult close;
+        ClosePreviewSessionsBeforeAction(f.manager, history, slots, 2, close);
+        REQUIRE(close.allClosed); // both finalizable; order is the bug
+
+        const auto badUndo = history.Undo(f.manager);
+        REQUIRE_FALSE(badUndo.success);
+        const bool downgradeRejected =
+            badUndo.error.detail.find("downgrade") != std::string::npos
+            || badUndo.error.detail.find("override") != std::string::npos;
+        CHECK(downgradeRejected);
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    std::filesystem::remove_all(s.dir);
+}
+
+TEST_CASE("Phase 8 W3 S6-C: Light-then-Camera physical order undoes exactly")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_lgtcam");
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const auto cameraKey = PrefabComponentKeyFor<CameraComponent>::value;
+    const LightComponent originLight = s.origin;
+    const CameraComponent originCam{ 60.0f, 0.5f, 5.0f, { 0.0f, 0.0f, -1.0f } };
+    reg.emplace_or_replace<CameraComponent>(s.handle, originCam);
+    const LightComponent lightA{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const CameraComponent camA{ 50.0f, 0.25f, 8.0f, { 0.0f, 0.0f, -1.0f } };
+    const auto lightReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+    const auto cameraReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CCameraReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN: Light previews FIRST, Camera second; physical finalize order
+    // [light, camera]; two-step undo ends exactly at the v5 origin.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, originLight, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ lightA }).effective);
+        EditorCommandHistory history;
+        unsigned int lightOwner = 0;
+        PreviewSessionSlot lightSlot[1] = {
+            { PreviewSessionKind::Light, &light, &lightOwner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult lightAdmit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, lightSlot, 1, lightAdmit);
+        REQUIRE(lightAdmit.allClosed);
+        REQUIRE(lightAdmit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+
+        CompositePreviewSession camera;
+        REQUIRE(camera.Begin(f.manager, root, PrefabValueKind::CameraProperties,
+            cameraKey, originCam, cameraReader));
+        REQUIRE(camera.Preview(f.manager, PrefabValuePayload{ camA }).effective);
+        unsigned int camOwner = 0;
+        PreviewSessionSlot camSlot[1] = {
+            { PreviewSessionKind::Camera, &camera, &camOwner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult camAdmit;
+        ClosePreviewSessionsBeforeAction(f.manager, history, camSlot, 1, camAdmit);
+        REQUIRE(camAdmit.allClosed);
+        REQUIRE(camAdmit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(camera.IsOpen());
+
+        REQUIRE(history.Undo(f.manager).success);
+        const auto camRestored = reg.get<CameraComponent>(s.handle);
+        CHECK(camRestored.verticalFOV == originCam.verticalFOV);
+        CHECK(camRestored.aperture == originCam.aperture);
+        REQUIRE(f.manager.IsOverridden(root, lightKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), originLight));
+        REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+    }
+
+    // ---- RED: physical reversal ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â both open, Camera finalized before Light.
+    // Undo pops Light first and fails the v5 downgrade while the Camera marker
+    // remains.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, originLight, lightReader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ lightA }).effective);
+        CompositePreviewSession camera;
+        REQUIRE(camera.Begin(f.manager, root, PrefabValueKind::CameraProperties,
+            cameraKey, originCam, cameraReader));
+        REQUIRE(camera.Preview(f.manager, PrefabValuePayload{ camA }).effective);
+
+        EditorCommandHistory history;
+        unsigned int lightOwner = 0, camOwner = 0;
+        PreviewSessionSlot slots[2] = {
+            { PreviewSessionKind::Camera, &camera, &camOwner, true },
+            { PreviewSessionKind::Light, &light, &lightOwner, true },
+        };
+        PreviewSessionsBeforeActionResult close;
+        ClosePreviewSessionsBeforeAction(f.manager, history, slots, 2, close);
+        REQUIRE(close.allClosed);
+
+        const auto badUndo = history.Undo(f.manager);
+        REQUIRE_FALSE(badUndo.success);
+        const bool downgradeRejected =
+            badUndo.error.detail.find("downgrade") != std::string::npos
+            || badUndo.error.detail.find("override") != std::string::npos;
+        CHECK(downgradeRejected);
+        CHECK_FALSE(history.CanUndo());
+    }
+
+    std::filesystem::remove_all(s.dir);
+}
+
+// S6-C host-edge, P1 finding 1: once a session is PendingRetry, ordinary
+// admission and Undo/Redo must short-circuit IMMEDIATELY without invoking the
+// close reducer (no implicit retry, no owner/error overwrite, no sync, no UUID
+// draw, no mutation). Only the explicit Retry re-runs a pending close. The host
+// shares this seam via ClosePreviewSessionsAndAdmit.
+TEST_CASE("Phase 8 W3 S6-C: admission short-circuits on already-pending recovery")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_pendedadmit");
+    const auto [rootHandle, childHandle] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = H6B(reg, rootHandle);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(rootHandle, LightComponent{});
+    const LightComponent origin = reg.get<LightComponent>(rootHandle);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    CompositePreviewSession s;
+    REQUIRE(s.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    REQUIRE(s.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    const auto rolling = s.RollingValue();
+    reg.get<LightComponent>(rootHandle).intensity = 99.0f; // strands finalize
+
+    EditorCommandHistory history;
+    unsigned int owner = 7;
+    PreviewSessionSlot slot[1] = {
+        { PreviewSessionKind::Light, &s, &owner, /*finalize=*/true },
+    };
+    // Establish the pending state through the reducer (the host's Retry path).
+    PreviewSessionsBeforeActionResult r1;
+    REQUIRE_FALSE(ClosePreviewSessionsAndAdmit(f.manager, history, slot, 1, r1,
+        /*anyRecoveryPending=*/false));
+    REQUIRE(r1.slots[0].outcome.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+    CHECK_FALSE(r1.slots[0].outcome.lastError.error.detail.empty());
+    CHECK(owner == 7);
+    const auto entitiesBefore = f.manager.GetEntityCount();
+
+    // A draw-counting provider whose REQUIRE inside CreateV4 makes any accidental
+    // UUID draw a hard failure (empty script -> cursor can never advance).
+    ScriptedUuidProvider hostile;
+    f.manager.SetUuidProvider(&hostile);
+
+    // Ordinary admission / Undo/Redo now short-circuit: pending=true, the reducer
+    // is never invoked (slotCount stays 0), so nothing retries, draws, or mutates
+    // and the owner/rolling/error/history are untouched.
+    unsigned int owner2 = 7;
+    PreviewSessionSlot slot2[1] = {
+        { PreviewSessionKind::Light, &s, &owner2, /*finalize=*/true },
+    };
+    PreviewSessionsBeforeActionResult r2;
+    REQUIRE_FALSE(ClosePreviewSessionsAndAdmit(f.manager, history, slot2, 1, r2,
+        /*anyRecoveryPending=*/true));
+    CHECK(r2.slotCount == 0); // reducer never ran
+    REQUIRE(s.IsOpen());
+    CHECK(owner2 == 7);
+    CHECK(S6CLightEqual(std::get<LightComponent>(s.RollingValue()),
+        std::get<LightComponent>(rolling)));
+    CHECK_FALSE(history.CanUndo());
+    CHECK(f.manager.GetEntityCount() == entitiesBefore);
+    CHECK(hostile.cursor == 0); // zero UUID draws
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C host-edge, P1 finding 2: activating the same component kind on a DIFFERENT
+// target must reach shared admission (finalize the old gesture in physical order)
+// instead of being silently dropped by an own-kind-closed predicate. A PendingRetry
+// old gesture aborts the new Begin with no implicit retry.
+TEST_CASE("Phase 8 W3 S6-C: same-kind different-target Begin admits the prior gesture")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    const auto dir = S2UniqueTempDir("p8w3_s6c_samekind");
+    S6BScriptAssets(f, dir, { "spin.lua" });
+    const auto [ha, ca] = f.MakeInstance(dir);
+    const auto [hb, cb] = f.MakeInstance(dir);
+    auto& reg = f.manager.GetECS().registry;
+    const UUID targetA = H6B(reg, ha);
+    const UUID targetB = H6B(reg, hb);
+    const auto lightKey = PrefabComponentKeyFor<LightComponent>::value;
+    reg.emplace_or_replace<LightComponent>(ha, LightComponent{});
+    reg.emplace_or_replace<LightComponent>(hb, LightComponent{});
+    const LightComponent originA = reg.get<LightComponent>(ha);
+    const LightComponent originB = reg.get<LightComponent>(hb);
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const LightComponent b{ glm::vec3(0.0f, 1.0f, 0.0f), 3.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN Light: a same-kind session open on target A, then activation on
+    // target B. The shared Begin admission finalizes A (physical order), and the
+    // new gesture begins on B. History is chronological and undoes exactly.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, targetA, PrefabValueKind::LightProperties,
+            lightKey, originA, reader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        REQUIRE(light.Target() == targetA);
+
+        // CanBeginPreview(target B) => same kind open but Target() != B, so
+        // admission finalizes the old gesture first.
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slot[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slot, 1, admit,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+        REQUIRE(history.CanUndo());
+
+        REQUIRE(light.Begin(f.manager, targetB, PrefabValueKind::LightProperties,
+            lightKey, originB, reader));
+        REQUIRE(light.IsOpen());
+        CHECK(light.Target() == targetB);
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ b }).effective);
+
+        // The B gesture closes (host would on widget deactivation); history is
+        // now [light-A, light-B] in physical application order.
+        unsigned int ownerB = 0;
+        PreviewSessionSlot slotB[1] = {
+            { PreviewSessionKind::Light, &light, &ownerB, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admitB;
+        REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slotB, 1, admitB,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(admitB.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+
+        // Two-step undo: B (top) then the admitted A entry.
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(hb), originB));
+        REQUIRE_FALSE(f.manager.IsOverridden(targetB, lightKey).value);
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(ha), originA));
+        REQUIRE_FALSE(f.manager.IsOverridden(targetA, lightKey).value);
+    }
+
+    // ---- GREEN Script: same-kind/different-target transition finalizes the old
+    // script-field gesture before the new one begins.
+    {
+        const auto scriptKey = PrefabComponentKeyFor<ScriptComponent>::value;
+        ScriptComponent bound = S6BScript("spin.lua");
+        bound.fieldValues["speed"] = { ScriptFieldType::Float, 1.0 };
+        reg.emplace_or_replace<ScriptComponent>(ha, bound);
+        reg.emplace_or_replace<ScriptComponent>(hb, bound);
+        const auto originA = reg.get<ScriptComponent>(ha);
+        const auto originB = reg.get<ScriptComponent>(hb);
+        const auto scriptReader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+            return S6CScriptReader(f.manager, uuid, raw);
+        };
+
+        CompositePreviewSession script;
+        REQUIRE(script.Begin(f.manager, targetA, PrefabValueKind::ScriptState,
+            scriptKey, PrefabValuePayload{ std::optional<ScriptComponent>(originA) },
+            scriptReader));
+        ScriptComponent fieldA = originA;
+        fieldA.fieldValues["speed"] = { ScriptFieldType::Float, 2.0 };
+        REQUIRE(script.Preview(f.manager,
+            PrefabValuePayload{ std::optional<ScriptComponent>(fieldA) }).effective);
+
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slot[1] = {
+            { PreviewSessionKind::Script, &script, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slot, 1, admit,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(script.IsOpen());
+
+        REQUIRE(script.Begin(f.manager, targetB, PrefabValueKind::ScriptState,
+            scriptKey, PrefabValuePayload{ std::optional<ScriptComponent>(originB) },
+            scriptReader));
+        CHECK(script.Target() == targetB);
+    }
+
+    // ---- PendingRetry abort: an old same-kind gesture that cannot finalize
+    // aborts the new Begin (admission short-circuits, no implicit retry, the
+    // pending session stays open and unchanged).
+    {
+        CompositePreviewSession pending;
+        REQUIRE(pending.Begin(f.manager, targetA, PrefabValueKind::LightProperties,
+            lightKey, originA, reader));
+        REQUIRE(pending.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        reg.get<LightComponent>(ha).intensity = 88.0f;
+        const auto rolling = pending.RollingValue();
+
+        // Establish the pending detail.
+        EditorCommandHistory history;
+        unsigned int po = 3;
+        PreviewSessionSlot pslot[1] = {
+            { PreviewSessionKind::Light, &pending, &po, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult r1;
+        REQUIRE_FALSE(ClosePreviewSessionsAndAdmit(f.manager, history, pslot, 1, r1,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(r1.slots[0].outcome.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        CHECK(po == 3);
+
+        // The new Begin on B is rejected: pending short-circuits the admission,
+        // the reducer never runs (slotCount 0) and the pending session is intact.
+        unsigned int po2 = 3;
+        PreviewSessionSlot pslot2[1] = {
+            { PreviewSessionKind::Light, &pending, &po2, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult r2;
+        REQUIRE_FALSE(ClosePreviewSessionsAndAdmit(f.manager, history, pslot2, 1, r2,
+            /*anyRecoveryPending=*/true));
+        CHECK(r2.slotCount == 0);
+        REQUIRE(pending.IsOpen());
+        CHECK(po2 == 3);
+        CHECK(S6CLightEqual(std::get<LightComponent>(pending.RollingValue()),
+            std::get<LightComponent>(rolling)));
+    }
+
+    std::filesystem::remove_all(dir);
+}
+
+// S6-C host-edge, P1 finding 3: reversible editor Delete must admit before it
+// captures the subtree snapshot, so Undo can never resurrect an unrecorded
+// rolling preview value/marker without a history entry.
+TEST_CASE("Phase 8 W3 S6-C: editor Delete admits before snapshot so Undo cannot resurrect")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_delete");
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const LightComponent origin = s.origin;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN: Delete is admitted BEFORE the snapshot, so the preview is
+    // finalized (recorded) and reversible: Undo of the Delete then Undo of the
+    // preview restores the exact v5 origin.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, reader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slot[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slot, 1, admit,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+        REQUIRE(history.CanUndo());
+
+        auto snapshot = f.manager.CaptureSubtreeSnapshot({ root });
+        REQUIRE_FALSE(snapshot.entities.empty());
+        auto cmd = MakeRemoveSubtreesCommand(std::move(snapshot), { root });
+        REQUIRE(cmd);
+        // Host DeleteSelectionCommand executes through history (applies the
+        // removal, then records the structural command).
+        REQUIRE(history.Execute(std::move(cmd), f.manager).success);
+        REQUIRE(static_cast<uint32_t>(f.manager.FindEntityByUuid(root))
+            == static_cast<uint32_t>(entt::null));
+
+        // Undo Delete (no open sessions now): the entity returns with the
+        // FINALIZED preview value, which is itself undoable. The handle is
+        // re-created by the restore, so re-resolve by UUID.
+        REQUIRE(history.Undo(f.manager).success);
+        const auto restoredHandle = f.manager.FindEntityByUuid(root);
+        REQUIRE(static_cast<uint32_t>(restoredHandle)
+            != static_cast<uint32_t>(entt::null));
+        CHECK(S6CLightEqual(reg.get<LightComponent>(restoredHandle), a));
+        REQUIRE(history.CanUndo()); // the preview edit has its own history entry
+
+        // Undo the preview record entry -> origin + legal v5 schema.
+        REQUIRE(history.Undo(f.manager).success);
+        const auto restoredHandle2 = f.manager.FindEntityByUuid(root);
+        REQUIRE(static_cast<uint32_t>(restoredHandle2)
+            != static_cast<uint32_t>(entt::null));
+        CHECK(S6CLightEqual(reg.get<LightComponent>(restoredHandle2), origin));
+        REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+        CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+    }
+
+    // ---- RED: WITHOUT admission, the snapshot carries the unrecorded rolling
+    // preview; Delete Undo resurrects `a` but there is no history entry for the
+    // edit, so the user cannot undo it separately.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, reader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+        EditorCommandHistory history;
+        auto snapshot = f.manager.CaptureSubtreeSnapshot({ root });
+        auto cmd = MakeRemoveSubtreesCommand(std::move(snapshot), { root });
+        REQUIRE(cmd);
+        REQUIRE(history.Execute(std::move(cmd), f.manager).success);
+        REQUIRE(history.Undo(f.manager).success);
+        const auto restoredHandle = f.manager.FindEntityByUuid(root);
+        REQUIRE(static_cast<uint32_t>(restoredHandle)
+            != static_cast<uint32_t>(entt::null));
+        // Resurrected rolling preview value with NO history entry for the edit.
+        CHECK(S6CLightEqual(reg.get<LightComponent>(restoredHandle), a));
+        REQUIRE_FALSE(history.CanUndo());
+    }
+
+    std::filesystem::remove_all(s.dir);
+}
+
+// S6-C host-edge, P1 finding 4: Paste validates the clipboard BEFORE admission,
+// so a stale/empty/wrong-resource clipboard is rejected without closing any open
+// preview, mutating history, or drawing UUIDs.
+TEST_CASE("Phase 8 W3 S6-C: paste validates clipboard before admission on stale state")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_stalepaste");
+    auto& scene = f.manager.GetECS();
+    auto& reg = scene.registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const LightComponent origin = s.origin;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN (fixed order): clipboard is validated BEFORE admission, so a
+    // stale clipboard leaves the open healthy preview untouched (no close, no
+    // history) and draws zero UUIDs.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, reader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+        EditorSceneState state;
+        rt2::core::Error err;
+        REQUIRE(state.Copy(f.manager, { root }, err));
+
+        // Make the clipboard stale (resource generation changed).
+        scene.textures.push_back(SceneTexture{});
+        scene.textures.back().ref.path = "texture-stale-paste";
+        REQUIRE(f.manager.CompactMeshRegistry());
+
+        ScriptedUuidProvider hostile;
+        f.manager.SetUuidProvider(&hostile);
+
+        // The host calls ValidateClipboardPaste BEFORE admission: rejected.
+        const auto validation = state.ValidateClipboardPaste(f.manager);
+        REQUIRE_FALSE(validation.success);
+        CHECK(validation.error.code == rt2::core::Error::ClipboardStale);
+
+        // Because the validation runs first, admission never ran: the healthy
+        // preview was NOT finalized/recorded, no history, no UUID draws.
+        REQUIRE(light.IsOpen());
+        EditorCommandHistory history;
+        CHECK_FALSE(history.CanUndo());
+        CHECK(hostile.cursor == 0);
+        // Restore the fixture's deterministic provider before any later UUID draw
+        // (the RED block instantiates a fresh prefab member).
+        f.manager.SetUuidProvider(&f.ids);
+    }
+
+    // ---- RED (old buggy order): admission runs BEFORE stale validation, so the
+    // healthy preview is finalized and recorded even though the paste is rejected.
+    {
+        // A fresh member so the RED scenario is independent of the GREEN one.
+        const auto [h2, c2] = f.MakeInstance(s.dir);
+        auto& reg2 = f.manager.GetECS().registry;
+        reg2.emplace_or_replace<LightComponent>(h2, LightComponent{});
+        const UUID target2 = H6B(reg2, h2);
+        const LightComponent origin2 = reg2.get<LightComponent>(h2);
+
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, target2, PrefabValueKind::LightProperties,
+            lightKey, origin2, reader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+
+        EditorSceneState state;
+        rt2::core::Error err;
+        REQUIRE(state.Copy(f.manager, { target2 }, err));
+        scene.textures.push_back(SceneTexture{});
+        scene.textures.back().ref.path = "texture-stale-paste-2";
+        REQUIRE(f.manager.CompactMeshRegistry());
+
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slot[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        // Buggy order: admission finalizes the preview first.
+        REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slot, 1, admit,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+        // ... then the stale clipboard is rejected, but the damage is done.
+        const auto validation = state.ValidateClipboardPaste(f.manager);
+        REQUIRE_FALSE(validation.success);
+        REQUIRE(history.CanUndo()); // an entry exists despite the rejected paste
+    }
+
+    std::filesystem::remove_all(s.dir);
+}
+
+// S6-C clipboard/create residual, P1 finding 1: Copy must not snapshot a
+// transient preview marker, and Paste must be schema-safe across a live preview
+// returning to v5. With the fix, a v5 preview -> Copy while live (admission
+// finalizes it first) -> return-to-v5 -> Paste promotes the destination schema,
+// so no below-current document ever holds an override; Save succeeds and
+// Undo/Redo restore/re-apply the exact schema.
+TEST_CASE("Phase 8 W3 S6-C: copy/paste is schema-safe across a live preview returning to v5")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_schemapaste");
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const LightComponent origin = s.origin;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // 1. A live v5 preview promotes the doc to v6 with the unsaved marker.
+    CompositePreviewSession light;
+    REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+        lightKey, origin, reader));
+    REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+    REQUIRE(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    // 2. Host Copy-with-admit: the open preview is finalized (recorded) first,
+    // so the clipboard reflects a committed overlay, never a transient marker.
+    EditorCommandHistory history;
+    unsigned int owner = 0;
+    PreviewSessionSlot slot[1] = {
+        { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+    };
+    PreviewSessionsBeforeActionResult admit;
+    REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slot, 1, admit,
+        /*anyRecoveryPending=*/false));
+    REQUIRE(admit.slots[0].outcome.recorded);
+    REQUIRE_FALSE(light.IsOpen());
+    EditorSceneState state;
+    rt2::core::Error err;
+    REQUIRE(state.Copy(f.manager, { root }, err));
+
+    // 3. Return to v5: undo the recorded preview (no override, schema 5).
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE_FALSE(f.manager.IsOverridden(root, lightKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+
+    // 4. Paste: the clipboard still carries the copied override; the schema
+    // transport promotes the destination so no v5+override state can exist.
+    const auto paste = state.PasteWithUuidsForCommand(f.manager);
+    REQUIRE(paste.mutation.success);
+    REQUIRE(paste.createdRoots.size() == 1);
+    CHECK(paste.beforeSchema == 5);
+    CHECK(paste.afterSchema == SceneSerializer::SchemaVersion);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    const auto pastedHandle = f.manager.FindEntityByUuid(paste.createdRoots.front());
+    REQUIRE(static_cast<uint32_t>(pastedHandle) != static_cast<uint32_t>(entt::null));
+    REQUIRE(reg.all_of<PrefabMemberComponent>(pastedHandle));
+    CHECK_FALSE(reg.get<PrefabMemberComponent>(pastedHandle).overrides.empty());
+    REQUIRE(f.manager.DocumentHasAnyOverrides());
+
+    // Record the paste with its schema transport.
+    auto snapshot = f.manager.CaptureSubtreeSnapshot(paste.createdRoots);
+    auto cmd = MakePasteSubtreesCommand(std::move(snapshot), paste.createdRoots,
+        paste.beforeSchema, paste.afterSchema);
+    REQUIRE(cmd);
+    REQUIRE(history.RecordApplied(std::move(cmd), f.manager, paste.mutation).effective);
+
+    // 5. Save at the promoted schema succeeds (the serializer rejects a
+    // below-current output holding overrides).
+    const auto savePath = s.dir / "saved.rt2scene";
+    Error saveErr;
+    REQUIRE(SaveSceneForTest(f.manager.AuthoringDoc(), savePath, saveErr));
+
+    // RED: forcing v5 while the override remains makes the version-preserving
+    // save path (SaveTo, which writes the doc's own schema) reject.
+    f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+    std::vector<rt2::core::AssetDiagnostic> diags;
+    Error badErr;
+    REQUIRE_FALSE(rt2::core::SceneSerializer::SaveTo(
+        f.manager.AuthoringDoc(), savePath, savePath, diags, badErr));
+    CHECK(badErr.detail.find("override") != std::string::npos);
+    f.manager.AuthoringDoc().metadata.schemaVersion = SceneSerializer::SchemaVersion;
+
+    // 6. Undo removes the pasted member; with no override left anywhere the
+    // prior schema is restored exactly.
+    REQUIRE(history.Undo(f.manager).success);
+    REQUIRE(static_cast<uint32_t>(f.manager.FindEntityByUuid(paste.createdRoots.front()))
+        == static_cast<uint32_t>(entt::null));
+    REQUIRE_FALSE(f.manager.DocumentHasAnyOverrides());
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == 5);
+
+    // 7. Redo re-creates the pasted member and re-applies the promotion.
+    REQUIRE(history.Redo(f.manager).success);
+    REQUIRE(static_cast<uint32_t>(f.manager.FindEntityByUuid(paste.createdRoots.front()))
+        != static_cast<uint32_t>(entt::null));
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+
+    std::filesystem::remove_all(s.dir);
+}
+
+// S6-C clipboard/create residual, P1 finding 2: reversible Create actions run
+// shared admission after validation and before any material add / UUID draw /
+// entity creation / selection / sync / history. A healthy preview is finalized
+// first (chronological history); a PendingRetry rejection is zero-effect (no
+// draws, resources, entities, history, selection, owner, or error change).
+TEST_CASE("Phase 8 W3 S6-C: create runs shared admission before any mutation")
+{
+    using namespace rt2::core;
+    S2Fixture f;
+    auto s = S6CEndToEndSetup(f, "p8w3_s6c_create");
+    auto& reg = f.manager.GetECS().registry;
+    const UUID root = s.target;
+    const auto lightKey = s.lightKey;
+    const LightComponent origin = s.origin;
+    const LightComponent a{ glm::vec3(1.0f, 0.0f, 0.0f), 2.0f, 50.0f, 30.0f, 45.0f, LightType::Point };
+    const auto reader = [&](const UUID& uuid, const PrefabValuePayload& raw) {
+        return S6CLightReader(f.manager, uuid, raw);
+    };
+
+    // ---- GREEN: a healthy preview is finalized (admitted) BEFORE the create,
+    // giving chronological [preview, create] history.
+    {
+        CompositePreviewSession light;
+        REQUIRE(light.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, reader));
+        REQUIRE(light.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        const auto entriesBefore = f.manager.GetEntityCount();
+
+        // Host CreateEmptyCommand: admission first, then reserve + create + record.
+        EditorCommandHistory history;
+        unsigned int owner = 0;
+        PreviewSessionSlot slot[1] = {
+            { PreviewSessionKind::Light, &light, &owner, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult admit;
+        REQUIRE(ClosePreviewSessionsAndAdmit(f.manager, history, slot, 1, admit,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(admit.slots[0].outcome.recorded);
+        REQUIRE_FALSE(light.IsOpen());
+
+        const auto newUuid = f.manager.ReserveKnownUuid();
+        auto applied = f.manager.CreateEmptyWithUuid(newUuid, "NewEmpty");
+        REQUIRE(applied.success);
+        auto snapshot = f.manager.CaptureSubtreeSnapshot({ newUuid });
+        REQUIRE_FALSE(snapshot.entities.empty());
+        auto cmd = MakeCreateEmptyCommand(std::move(snapshot), newUuid);
+        REQUIRE(cmd);
+        REQUIRE(history.RecordApplied(std::move(cmd), f.manager, applied).effective);
+        REQUIRE(f.manager.GetEntityCount() == entriesBefore + 1);
+
+        // Undo reverse-chronological: create first, then the older preview.
+        REQUIRE(history.Undo(f.manager).success);
+        REQUIRE(static_cast<uint32_t>(f.manager.FindEntityByUuid(newUuid))
+            == static_cast<uint32_t>(entt::null));
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), a));
+        REQUIRE(history.Undo(f.manager).success);
+        CHECK(S6CLightEqual(reg.get<LightComponent>(s.handle), origin));
+    }
+
+    // ---- PendingRetry rejection: a stranded preview aborts the create BEFORE
+    // any material add / UUID draw / entity creation / selection / history, with
+    // the owner, recovery detail, materials, entity count and history unchanged.
+    {
+        // Fresh state for the pending half (schema back to v5, light clean).
+        f.manager.AuthoringDoc().metadata.schemaVersion = 5;
+        auto* pm = reg.try_get<PrefabMemberComponent>(s.handle);
+        REQUIRE(pm);
+        pm->overrides.clear();
+        reg.get<LightComponent>(s.handle) = origin;
+
+        CompositePreviewSession pending;
+        REQUIRE(pending.Begin(f.manager, root, PrefabValueKind::LightProperties,
+            lightKey, origin, reader));
+        REQUIRE(pending.Preview(f.manager, PrefabValuePayload{ a }).effective);
+        reg.get<LightComponent>(s.handle).intensity = 77.0f;
+        const auto rolling = pending.RollingValue();
+
+        EditorCommandHistory history;
+        unsigned int po = 9;
+        PreviewSessionSlot pslot[1] = {
+            { PreviewSessionKind::Light, &pending, &po, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult r1;
+        REQUIRE_FALSE(ClosePreviewSessionsAndAdmit(f.manager, history, pslot, 1, r1,
+            /*anyRecoveryPending=*/false));
+        REQUIRE(r1.slots[0].outcome.result == PreviewSessionCloseOutcome::Result::PendingRetry);
+        CHECK_FALSE(r1.slots[0].outcome.lastError.error.detail.empty());
+        const auto detail = r1.slots[0].outcome.lastError.error.detail;
+        CHECK(po == 9);
+
+        const auto entitiesBefore = f.manager.GetEntityCount();
+        const auto materialsBefore = f.manager.GetMaterialCount();
+
+        // A draw-counting provider makes any accidental UUID draw a hard failure.
+        ScriptedUuidProvider hostile;
+        f.manager.SetUuidProvider(&hostile);
+
+        // The create's admission short-circuits (pending): the create step is
+        // never reached, so zero draws/resources/entities/history/selection and
+        // the pending owner/error are untouched.
+        unsigned int po2 = 9;
+        PreviewSessionSlot pslot2[1] = {
+            { PreviewSessionKind::Light, &pending, &po2, /*finalize=*/true },
+        };
+        PreviewSessionsBeforeActionResult r2;
+        REQUIRE_FALSE(ClosePreviewSessionsAndAdmit(f.manager, history, pslot2, 1, r2,
+            /*anyRecoveryPending=*/true));
+        CHECK(r2.slotCount == 0); // reducer never ran
+        REQUIRE(pending.IsOpen());
+        CHECK(po2 == 9);
+        CHECK(S6CLightEqual(std::get<LightComponent>(pending.RollingValue()),
+            std::get<LightComponent>(rolling)));
+        CHECK(r1.slots[0].outcome.lastError.error.detail == detail); // error unchanged
+        CHECK_FALSE(history.CanUndo());
+        CHECK(f.manager.GetEntityCount() == entitiesBefore);
+        CHECK(f.manager.GetMaterialCount() == materialsBefore);
+        CHECK(hostile.cursor == 0); // zero UUID draws
+    }
+
+    std::filesystem::remove_all(s.dir);
+}
+
+
+// ============================================================================
+// Phase 8 W3, S7 — the phase ACCEPTANCE criterion.
+// (docs/game-engine-development-plan.md, W3 spec "Acceptance", :14298-14306.)
+//
+// The criterion: instantiate the fixture hierarchy several times, retint one
+// instance's material, save, reload, and confirm that instance alone carries a
+// materialOverride override while the others remain inherited — and, per the
+// grounding's warning that "a test comparing only component scalars can pass
+// while texture and material indices are wrong", assert the RESOLVED
+// MeshRef::materialIndex and the material-table extent, not just the authored
+// snapshot.
+//
+// WHY THIS NEEDS ITS OWN FIXTURE, and why the gap survived to S7.
+// Every other W3 test builds on S2Fixture, whose prefab is created from two
+// EMPTY entities (:185-192) — no MeshRef, no ImportedMeshSourceComponent, no
+// material. Tests that need a mesh bolt one on afterwards with
+// emplace_or_replace (:8443-8447, :12535-12539). That is valid live-registry
+// state, and it is why S6-A/S6-B/S6-E are legitimately clean — but such an
+// entity can never exercise the resolver, because SceneAssetResolver applies a
+// MaterialOverrideComponent only inside its imported-source plan walk. The
+// measurable consequence, found while writing this test:
+// SceneAssetResolver::ResolveAll had ZERO call sites in this 14k-line file, so
+// no W3 test asserted a resolved material index at all. This test is therefore
+// built on a real imported glTF subtree, following the W1 C5 pattern
+// (Phase8W1PrefabTests.cpp:2080-2108) rather than S2Fixture.
+//
+// WHAT IS BEING PINNED is the resolver's own contract
+// (SceneAssetResolver.cpp:873-891): for an override with authored == true it
+// appends the override material at the current end of the table and repoints
+// MeshRef::materialIndex at that appended slot —
+//
+//     int overrideIdx = (int)doc.ecs.materials.size();
+//     doc.ecs.materials.push_back(ov->material);
+//     ov->materialIndex = overrideIdx;
+//
+// so with three instances of one imported prefab and exactly one retinted, the
+// correct post-reload state is exact rather than approximate. The two passes
+// below are identical in every respect INCLUDING the extra tinted material row
+// — only the retint differs — so the difference in table extent isolates the
+// resolver's append and nothing else.
+//
+// Measured contract at this commit (both configurations):
+//   control: extent 6, all three members resolve to the shared staged slot 5;
+//   retint:  extent 7, the retinted member resolves to the appended slot 6,
+//            the other two still resolve to 5.
+// The extent assertions are EXACT equalities. Every other reload assertion in
+// the tree is a bounds check (materialIndex < materials.size() —
+// MaterialIndexUndoOverrideTests.cpp:301,
+// Phase8Prework2MaterialKeyTests.cpp:392, Phase1ASceneAssetTests.cpp:535), and
+// a bounds check is exactly what cannot refute this class of defect.
+//
+// DISCRIMINATION FAULT: suppress the authored-override append/repoint at
+// SceneAssetResolver.cpp:873-891 (drop the body of the `if (ov->authored)`
+// branch). The retint pass then reports extent 6 instead of 7 and the retinted
+// member resolves to 5 instead of 6 -> RED. Restore -> GREEN. Exact RED counts
+// are recorded in the S7 verification report.
+//
+// Note, deliberately, that the authored-snapshot assertions below (the override
+// component's own scalars) stay GREEN under that fault: the component is read
+// straight from the file and its scalars are correct whether or not the
+// resolver ever appended the row. That is the grounding's warning made
+// concrete — the scalar comparison alone does not discriminate, and only the
+// resolved index and the table extent do.
+// ============================================================================
+
+namespace
+{
+
+// One fully round-tripped observation: the material-table extent after
+// ResolveAll, plus, per instance, the meshed member's resolved
+// MeshRef::materialIndex, its override set, its authored override scalars, and
+// the material row its resolved index actually points at.
+struct S7Observation
+{
+    std::size_t materialExtent = 0;
+    std::vector<int> resolvedIndex;
+    std::vector<UUID> instanceIds;
+    std::vector<UUID> templateIds;
+    std::vector<std::vector<std::string>> overrideWires;
+    std::vector<std::optional<SceneMaterial>> authoredOverride;
+    std::vector<SceneMaterial> resolvedMaterial;
+};
+
+struct S7TempDirGuard
+{
+    std::filesystem::path dir;
+    bool armed = true;
+
+    ~S7TempDirGuard()
+    {
+        if (!armed) return;
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+
+    bool CleanupChecked(std::string& detail)
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+        if (ec)
+        {
+            detail = "remove_all failed for '" + dir.string() + "': " + ec.message();
+            return false;
+        }
+
+        if (std::filesystem::exists(dir, ec))
+        {
+            detail = "temporary directory still exists after remove_all: '"
+                + dir.string() + "'";
+            return false;
+        }
+        if (ec)
+        {
+            detail = "exists check failed for '" + dir.string() + "': " + ec.message();
+            return false;
+        }
+
+        armed = false;
+        return true;
+    }
+};
+
+void S7AssertInstanceIdentityShape(const S7Observation& observation)
+{
+    REQUIRE(observation.instanceIds.size() == 3);
+    REQUIRE(observation.templateIds.size() == 3);
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        CHECK_FALSE(observation.instanceIds[i].IsNull());
+        CHECK_FALSE(observation.templateIds[i].IsNull());
+    }
+
+    CHECK(observation.templateIds[1] == observation.templateIds[0]);
+    CHECK(observation.templateIds[2] == observation.templateIds[0]);
+    CHECK(observation.instanceIds[0] != observation.instanceIds[1]);
+    CHECK(observation.instanceIds[0] != observation.instanceIds[2]);
+    CHECK(observation.instanceIds[1] != observation.instanceIds[2]);
+}
+
+// Build the fixture hierarchy, instantiate it three times, optionally retint
+// instance `retintIndex` through the real S6-B SetMaterialIndex command path,
+// then save -> Load -> ResolveAll and observe. retintIndex < 0 is the control.
+S7Observation S7RunAcceptance(const std::string& tag, int retintIndex,
+                              const SceneMaterial& tint)
+{
+    constexpr int kInstanceCount = 3;
+
+    DeterministicUuidProvider ids;
+    SceneManager manager;
+    manager.SetUuidProvider(&ids);
+
+    const auto dir = S2UniqueTempDir(tag);
+    S7TempDirGuard cleanup{ dir };
+    const auto glbPath = dir / "tinted.glb";
+    Error genErr;
+    REQUIRE(GenerateTinyTexturedGlb(glbPath, genErr));
+    REQUIRE(genErr.IsOk());
+
+    // A real imported subtree: MeshRef + ImportedMeshSourceComponent + genuine
+    // material and texture rows — the state the resolver's plan walk requires.
+    REQUIRE(manager.LoadScene(glbPath.string()));
+    auto& reg = manager.GetECS().registry;
+    UUID importedUuid;
+    {
+        auto view = reg.view<ImportedMeshSourceComponent>();
+        REQUIRE(view.size() > 0);
+        importedUuid = reg.get<EntityIdComponent>(*view.begin()).id;
+    }
+    REQUIRE(!importedUuid.IsNull());
+
+    // The fixture HIERARCHY: a folder root over the imported mesh member, so
+    // the prefab is root + meshed child (S2Fixture's shape, real geometry).
+    const auto fixtureRoot = manager.CreateEmpty("Fixture").affectedEntities.front();
+    REQUIRE(manager.Reparent({ importedUuid }, fixtureRoot).success);
+
+    const auto prefabPath = dir / "fixture.rt2prefab";
+    REQUIRE(manager.CreatePrefabFromSubtree({ fixtureRoot }, prefabPath).ok);
+
+    const auto canonical = manager.CountCanonicalPrefabEntities(prefabPath);
+    REQUIRE(canonical.IsOk());
+    const std::size_t perInstance = canonical.value;
+    REQUIRE(perInstance == 2);
+
+    // The tinted row is added in BOTH passes so the two documents' material
+    // tables are identical; only the retint differs.
+    const int tintSlot = manager.AddMaterial(tint);
+
+    // Instantiate the hierarchy several times. The meshed member is located by
+    // component, not by assuming the canonical UUID order.
+    std::vector<UUID> meshMembers;
+    for (int i = 0; i < kInstanceCount; ++i)
+    {
+        std::vector<AssetDiagnostic> diags;
+        const auto uuids = manager.ReserveKnownUuids(perInstance);
+        const auto inst = manager.InstantiatePrefabWithUuids(prefabPath, uuids, diags);
+        REQUIRE(inst.mutation.success);
+        UUID meshMember;
+        for (const auto& u : uuids)
+        {
+            const auto h = manager.FindEntityByUuid(u);
+            REQUIRE(static_cast<uint32_t>(h) != static_cast<uint32_t>(entt::null));
+            if (reg.all_of<MeshRef>(h) && reg.all_of<ImportedMeshSourceComponent>(h))
+                meshMember = u;
+        }
+        REQUIRE(!meshMember.IsNull());
+        meshMembers.push_back(meshMember);
+    }
+    REQUIRE(meshMembers.size() == static_cast<std::size_t>(kInstanceCount));
+
+    // Retint exactly one instance, through the production command path, so the
+    // materialOverride marker is authored by production code and not by the
+    // test. This is the S6-B one-shot staging shape (:8940-8952).
+    if (retintIndex >= 0)
+    {
+        const auto target = meshMembers[static_cast<std::size_t>(retintIndex)];
+        const auto handle = manager.FindEntityByUuid(target);
+        const int beforeIndex = reg.get<MeshRef>(handle).materialIndex;
+        REQUIRE(beforeIndex != tintSlot);
+        const auto before = manager.GetMaterialOverride(target);
+        const auto staged = manager.StageMaterialIndex(target, tintSlot);
+        REQUIRE(staged.IsOk());
+        REQUIRE(staged.value.override.has_value());
+        auto cmd = MakeSetMaterialIndexCommandIfEffective(target, beforeIndex,
+            tintSlot, before, staged.value.override);
+        REQUIRE(cmd);
+        EditorCommandHistory history;
+        const auto applied = history.Execute(std::move(cmd), manager);
+        REQUIRE(applied.success);
+        REQUIRE(applied.effective);
+        REQUIRE(manager.IsOverridden(target,
+            PrefabComponentKeyFor<MaterialOverrideComponent>::value).value);
+    }
+
+    // Save -> reload -> resolve: the path the user actually walks.
+    const auto scenePath = dir / "acceptance.rt2scene";
+    Error saveErr;
+    REQUIRE(SaveSceneForTest(manager.AuthoringDoc(), scenePath, saveErr));
+    REQUIRE(saveErr.IsOk());
+
+    DeterministicUuidProvider loadIds;
+    SceneDocument loaded;
+    loaded.SetUuidProvider(&loadIds);
+    Error loadErr;
+    REQUIRE(SceneSerializer::Load(loaded, scenePath, loadErr));
+    REQUIRE(loadErr.IsOk());
+
+    std::vector<AssetDiagnostic> resolveDiags;
+    Error resolveErr;
+    REQUIRE(SceneAssetResolver::ResolveAll(loaded,
+        AssetResolutionContext{ dir, nullptr }, resolveDiags, resolveErr));
+    REQUIRE(resolveErr.IsOk());
+
+    S7Observation obs;
+    obs.materialExtent = loaded.ecs.materials.size();
+    for (const auto& u : meshMembers)
+    {
+        const auto h = loaded.FindByUuid(u);
+        REQUIRE(static_cast<uint32_t>(h) != static_cast<uint32_t>(entt::null));
+        const auto& lreg = loaded.ecs.registry;
+        const auto* ref = lreg.try_get<MeshRef>(h);
+        REQUIRE(ref);
+        obs.resolvedIndex.push_back(ref->materialIndex);
+
+        const auto* pm = lreg.try_get<PrefabMemberComponent>(h);
+        REQUIRE(pm);
+        obs.instanceIds.push_back(pm->instanceId);
+        obs.templateIds.push_back(pm->templateId);
+
+        std::vector<std::string> wires;
+        for (const auto& k : pm->overrides)
+            wires.emplace_back(k.wire());
+        obs.overrideWires.push_back(std::move(wires));
+
+        if (const auto* ov = lreg.try_get<MaterialOverrideComponent>(h))
+            obs.authoredOverride.push_back(ov->material);
+        else
+            obs.authoredOverride.push_back(std::nullopt);
+
+        REQUIRE(ref->materialIndex >= 0);
+        REQUIRE(static_cast<std::size_t>(ref->materialIndex) < obs.materialExtent);
+        obs.resolvedMaterial.push_back(loaded.ecs.materials[ref->materialIndex]);
+    }
+
+    std::string cleanupError;
+    REQUIRE_MESSAGE(cleanup.CleanupChecked(cleanupError), cleanupError);
+    return obs;
+}
+
+} // namespace
+
+TEST_CASE("Phase 8 W3 S7 acceptance: one retinted instance alone diverges, "
+          "by resolved material index and exact table extent")
+{
+    SceneMaterial tint;
+    tint.baseColor = { 0.05f, 0.85f, 0.15f };
+    tint.roughness = 0.31f;
+
+    // ---- Control: three instances, none overridden. ------------------------
+    const auto control = S7RunAcceptance("p8w3_s7_control", -1, tint);
+
+    // All three members inherit: one shared staged slot, no override markers.
+    REQUIRE(control.resolvedIndex.size() == 3);
+    S7AssertInstanceIdentityShape(control);
+    const int sharedSlot = control.resolvedIndex[0];
+    CHECK(control.resolvedIndex[1] == sharedSlot);
+    CHECK(control.resolvedIndex[2] == sharedSlot);
+    CHECK(sharedSlot == 5);                       // measured fixture shape
+    CHECK(control.materialExtent == 6);           // EXACT, not a bounds check
+    for (std::size_t i = 0; i < 3; ++i)
+    {
+        CHECK(control.overrideWires[i].empty());
+        CHECK_FALSE(control.authoredOverride[i].has_value());
+    }
+
+    // ---- Acceptance: identical scene, middle instance retinted. ------------
+    const auto retint = S7RunAcceptance("p8w3_s7_retint", 1, tint);
+    REQUIRE(retint.resolvedIndex.size() == 3);
+    S7AssertInstanceIdentityShape(retint);
+
+    // The override costs the table EXACTLY one extra row, and the appended
+    // slot sits exactly at the control table's old end.
+    CHECK(retint.materialExtent == control.materialExtent + 1);
+    CHECK(retint.materialExtent == 7);
+    const int appendedSlot = static_cast<int>(control.materialExtent);
+    CHECK(appendedSlot == 6);
+
+    // That instance alone carries the override, by RESOLVED index.
+    CHECK(retint.resolvedIndex[1] == appendedSlot);
+    CHECK(retint.resolvedIndex[1] != sharedSlot);
+
+    // The others remain inherited — still the shared staged slot.
+    CHECK(retint.resolvedIndex[0] == sharedSlot);
+    CHECK(retint.resolvedIndex[2] == sharedSlot);
+
+    // That instance alone carries the marker, and it is exactly materialOverride.
+    REQUIRE(retint.overrideWires[1].size() == 1);
+    CHECK(retint.overrideWires[1][0] == "materialOverride");
+    CHECK(retint.overrideWires[0].empty());
+    CHECK(retint.overrideWires[2].empty());
+
+    // The retinted instance alone has a durable override component, and the
+    // row its resolved index points at actually carries the tint.
+    REQUIRE(retint.authoredOverride[1].has_value());
+    CHECK_FALSE(retint.authoredOverride[0].has_value());
+    CHECK_FALSE(retint.authoredOverride[2].has_value());
+    CHECK(retint.resolvedMaterial[1].baseColor == tint.baseColor);
+    CHECK(retint.resolvedMaterial[1].roughness == doctest::Approx(tint.roughness));
+    CHECK_FALSE(retint.resolvedMaterial[0].baseColor == tint.baseColor);
+    CHECK_FALSE(retint.resolvedMaterial[2].baseColor == tint.baseColor);
+
+    // The authored snapshot is correct too — but see the header note: this
+    // pair stays GREEN under the discrimination fault, which is exactly why
+    // the criterion demands the resolved index and the extent above.
+    CHECK(retint.authoredOverride[1]->baseColor == tint.baseColor);
+    CHECK(retint.authoredOverride[1]->roughness == doctest::Approx(tint.roughness));
 }

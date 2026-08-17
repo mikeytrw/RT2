@@ -1,7 +1,6 @@
 #include "EditorTransformGizmo.h"
 
 #include "Camera.h"
-#include "SceneManager.h"
 
 #include <imgui.h>
 #include <glm/gtc/matrix_transform.hpp>
@@ -75,18 +74,28 @@ void EditorTransformGizmo::Cancel()
 	m_Drag = {};
 }
 
-TransformGizmoResult EditorTransformGizmo::Draw(SceneManager& scene,
+TransformGizmoResult EditorTransformGizmo::Draw(
+	const std::optional<EditorWorldTransformSnapshot>& snapshot,
 	const EditorSelection& selection, const Camera& camera,
 	const glm::vec2& imageMin, const glm::vec2& imageSize, bool imageHovered,
 	bool editable, TransformSpace space, TransformPivot pivot,
 	const TransformSnapSettings& snap, bool uniformScale)
 {
 	TransformGizmoResult result;
-	if (!editable || selection.Empty() || imageSize.x <= 1.0f || imageSize.y <= 1.0f)
+	if (m_Drag.active && (ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+		imageSize.x <= 1.0f || imageSize.y <= 1.0f))
 	{
+		result.active = true;
+		result.interactionSequence = m_Drag.interactionSequence;
+		result.dragCancelled = true;
 		Cancel();
 		return result;
 	}
+	if ((!editable && !m_Drag.active) || imageSize.x <= 1.0f || imageSize.y <= 1.0f)
+	{
+		return result;
+	}
+	if (!m_Drag.active && selection.Empty()) return result;
 
 	// Operation toolbar. W/E/R also switch modes while the viewport is hovered.
 	const ImVec2 savedCursor = ImGui::GetCursorScreenPos();
@@ -114,24 +123,22 @@ TransformGizmoResult EditorTransformGizmo::Draw(SceneManager& scene,
 
 	std::vector<rt2::core::UUID> liveUuids;
 	std::vector<glm::mat4> liveWorld;
-	liveUuids.reserve(selection.Size());
-	liveWorld.reserve(selection.Size());
 	std::size_t primaryIndex = 0;
-	for (const auto& uuid : selection.Ordered())
+	if (m_Drag.active)
 	{
-		const entt::entity raw = scene.FindEntityByUuid(uuid);
-		if (raw == entt::null) continue;
-		EditableTRS world;
-		if (!scene.GetWorldTransform({ raw }, world)) continue;
-		if (uuid == selection.Primary()) primaryIndex = liveWorld.size();
-		liveUuids.push_back(uuid);
-		liveWorld.push_back(world.Matrix());
+		liveUuids = m_Drag.uuids;
+		liveWorld = m_Drag.startWorld;
+		primaryIndex = std::min(m_Drag.primaryIndex,
+			liveWorld.empty() ? std::size_t(0) : liveWorld.size() - 1);
 	}
-	if (liveWorld.empty())
+	else if (snapshot && !snapshot->Empty())
 	{
-		Cancel();
-		return result;
+		liveUuids = snapshot->uuids;
+		liveWorld = snapshot->worldMatrices;
+		primaryIndex = snapshot->primaryIndex;
 	}
+	else return result;
+	if (liveWorld.empty() || liveWorld.size() != liveUuids.size()) return result;
 
 	const glm::vec3 pivotPosition = ComputeTransformPivot(liveWorld, pivot, primaryIndex);
 	EditableTRS primaryWorld;
@@ -176,6 +183,7 @@ TransformGizmoResult EditorTransformGizmo::Draw(SceneManager& scene,
 		}
 	}
 	if (m_Drag.active) hoveredAxis = m_Drag.axis;
+	result.interactionSequence = m_Drag.interactionSequence;
 
 	ImDrawList* draw = ImGui::GetWindowDrawList();
 	const ImU32 colors[] = {
@@ -201,6 +209,9 @@ TransformGizmoResult EditorTransformGizmo::Draw(SceneManager& scene,
 	if (!m_Drag.active && hoveredAxis >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
 	{
 		m_Drag = {};
+		m_Drag.interactionSequence = ++m_NextInteractionSequence;
+		result.dragJustStarted = true;
+		result.interactionSequence = m_Drag.interactionSequence;
 		m_Drag.active = true;
 		m_Drag.axis = hoveredAxis;
 		m_Drag.operation = m_Operation;
@@ -223,39 +234,24 @@ TransformGizmoResult EditorTransformGizmo::Draw(SceneManager& scene,
 		// the host can build a multi-entity TransformCommand on drag end.
 		// Exclude entities that fail GetLocalTransform — recording identity
 		// as their "before" would cause Undo to slam them to identity.
-		m_Drag.uuids.clear();
-		m_Drag.startWorld.clear();
+		m_Drag.uuids = liveUuids;
+		m_Drag.startWorld = liveWorld;
 		m_Drag.startLocal.clear();
-		m_Drag.uuids.reserve(liveUuids.size());
-		m_Drag.startWorld.reserve(liveUuids.size());
-		m_Drag.startLocal.reserve(liveUuids.size());
-		for (std::size_t i = 0; i < liveUuids.size(); ++i)
-		{
-			const entt::entity raw = scene.FindEntityByUuid(liveUuids[i]);
-			EditableTRS local;
-			if (raw != entt::null &&
-			    scene.GetLocalTransform(SceneManager::EntityId{ raw }, local))
-			{
-				m_Drag.uuids.push_back(liveUuids[i]);
-				m_Drag.startWorld.push_back(liveWorld[i]);
-				m_Drag.startLocal.push_back(local);
-			}
-		}
+		m_Drag.primaryIndex = primaryIndex;
+		result.draggedUuids = m_Drag.uuids;
 	}
 
-	if (m_Drag.active && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+	const auto release = ClassifyTransformGizmoRelease({
+		m_Drag.active,
+		ImGui::IsMouseDown(ImGuiMouseButton_Left),
+		m_Drag.moved,
+		m_Drag.interactionSequence,
+		m_Drag.uuids,
+		m_Drag.startLocal,
+	});
+	if (release)
 	{
-		// Treat a handle press/release without a drag as an ordinary viewport
-		// selection click. This keeps the handles from masking small or nearby
-		// objects underneath them.
-		result.pickThrough = !m_Drag.moved;
-		// Phase 3B1: report drag-end so the host can record a TransformCommand.
-		if (m_Drag.moved)
-		{
-			result.dragJustEnded = true;
-			result.draggedUuids = m_Drag.uuids;
-			result.dragStartLocal = m_Drag.startLocal;
-		}
+		result = *release;
 		Cancel();
 	}
 	if (!m_Drag.active) return result;
@@ -330,38 +326,9 @@ TransformGizmoResult EditorTransformGizmo::Draw(SceneManager& scene,
 		result.error = "Gizmo edit rejected: the pivot transform is singular.";
 		return result;
 	}
-	std::vector<std::pair<SceneManager::EntityId, glm::mat4>> edits;
-	edits.reserve(editedWorld.size());
+	result.desiredWorld.reserve(editedWorld.size());
 	for (std::size_t i = 0; i < editedWorld.size(); ++i)
-	{
-		const entt::entity raw = scene.FindEntityByUuid(m_Drag.uuids[i]);
-		if (raw == entt::null)
-		{
-			// Phase 3B1: if the drag had already moved, per-frame edits were
-			// applied but the host has not yet recorded a command. Fire
-			// dragJustEnded so the host records what was applied before the
-			// selection changed; only the still-resolvable entities are
-			// included.
-			if (m_Drag.moved)
-			{
-				result.dragJustEnded = true;
-				for (std::size_t j = 0; j < i; ++j)
-				{
-					result.draggedUuids.push_back(m_Drag.uuids[j]);
-					result.dragStartLocal.push_back(m_Drag.startLocal[j]);
-				}
-			}
-			Cancel();
-			result.error = "Gizmo edit cancelled because the selection changed.";
-			return result;
-		}
-		edits.push_back({ { raw }, editedWorld[i] });
-	}
-	if (!scene.TrySetWorldTransforms(edits))
-	{
-		result.error = "Gizmo edit rejected: a parent is singular or the result contains shear.";
-		return result;
-	}
+		result.desiredWorld.emplace_back(m_Drag.uuids[i], editedWorld[i]);
 	result.changed = true;
 	return result;
 }

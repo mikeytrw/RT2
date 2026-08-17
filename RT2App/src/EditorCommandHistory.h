@@ -69,6 +69,9 @@ public:
 	EditorMutationResult RecordApplied(std::unique_ptr<IEditorCommand> cmd,
 	                                   SceneManager& scene,
 	                                   const EditorMutationResult& appliedResult);
+	// CPU-testable bounded fault seam for close/recovery discrimination. It
+	// rejects the next RecordApplied without touching either history stack.
+	void FailNextRecordAppliedForTest() { m_FailNextRecordApplied = true; }
 
 	// Apply the inverse of the topmost undo entry. On failure clears BOTH
 	// stacks and surfaces the error. Returns the EditorMutationResult of the
@@ -83,6 +86,8 @@ public:
 
 	bool CanUndo() const { return !m_UndoStack.empty(); }
 	bool CanRedo() const { return !m_RedoStack.empty(); }
+	std::size_t UndoDepthForTest() const { return m_UndoStack.size(); }
+	std::size_t RedoDepthForTest() const { return m_RedoStack.size(); }
 
 	std::string UndoDescription() const;
 	std::string RedoDescription() const;
@@ -98,6 +103,28 @@ private:
 	std::stack<std::unique_ptr<IEditorCommand>>  m_RedoStack;
 	std::size_t m_Capacity = 64;
 	uint64_t    m_DocumentGeneration = 0;
+	bool        m_FailNextRecordApplied = false;
 };
+
+// S6-B fixup (nullable-history safety): route ONE command through an OPTIONAL
+// command history. A host that has not installed a history (SceneEditorUI's
+// documented default construction) must never have the command dereference a
+// missing history or mutate outside it — this returns a structured Failure
+// (InvalidRuntimeState) before the scene is touched. With a history installed
+// it forwards to EditorCommandHistory::Execute. Converted UI actions route
+// through here; callers surface the returned result like any other mutation
+// failure.
+inline EditorMutationResult ExecuteCommandThroughHistory(
+	EditorCommandHistory* history,
+	SceneManager& scene,
+	std::unique_ptr<IEditorCommand> cmd,
+	const std::string& path = {})
+{
+	if (!history)
+		return EditorMutationResult::Failure(
+			rt2::core::Error::InvalidRuntimeState, path,
+			"command history is not installed; the edit was not applied");
+	return history->Execute(std::move(cmd), scene);
+}
 
 #endif // RT2_EDITOR_COMMAND_HISTORY_H

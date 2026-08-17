@@ -20,8 +20,277 @@
 #include <cstdint>
 #include <utility>
 #include <optional>
+#include <variant>
 
 struct EditorCameraPose;
+class SceneManager;
+class PrefabCommandTransaction;
+class DuplicateMaterialAndAssignCommand;
+
+// Opaque capability for the one command that owns material-duplicate slot
+// reuse after a successful first Execute.  The type is copyable so it can
+// travel through a staged plan, but only the owning command can construct it.
+class MaterialDuplicateOwnershipToken
+{
+private:
+	explicit MaterialDuplicateOwnershipToken() = default;
+	friend class DuplicateMaterialAndAssignCommand;
+};
+
+// ============================================================================
+// Prefab override membership delta (Phase 8 W3, D3.10).
+//
+// A material edit can change a value on a member whose marker already exists,
+// so a keyAdded-only list cannot undo correctly. The payload is an explicit
+// membership delta: execute applies `afterPresent` and undo restores
+// `beforePresent` for each entry. Commands that can mutate an overridable
+// component carry a vector of these, captured before mutation and applied
+// atomically with the component values.
+// ============================================================================
+struct PrefabMarkerEdit
+{
+	rt2::core::UUID    member;
+	PrefabComponentKey key;
+	bool               beforePresent;
+	bool               afterPresent;
+};
+
+// Which side of the membership delta is the target state. Execute applies
+// After (encode `afterPresent`); undo/restore applies Before (encode
+// `beforePresent`). The other side is validated against the pre-batch
+// snapshot, so a stale or forged payload fails loudly instead of silently
+// ignoring one boolean.
+enum class PrefabMarkerDirection
+{
+	Before,
+	After,
+};
+
+// Result of committing a validated PrefabMarkerPlan. CommitPrefabMarkerPlan is
+// infallible after a successful PreparePrefabMarkerEdits AGAINST THE SAME
+// DOCUMENT the plan was prepared for: every staged member is written and the
+// schema transition is applied in one step, then NotifyAuthoringChanged() is
+// called at most once (only when anyStateChange). A stale plan (a member
+// removed or un-made in between) fails loudly with zero mutation and `error`
+// filled rather than partially writing.
+struct PrefabMarkerApplyResult
+{
+	rt2::core::Error error;                 // stale-plan failure only (ok => IsOk())
+	std::size_t    appliedMembers = 0;      // members whose set was written
+	std::uint32_t  beforeSchemaVersion = 0; // document schema before the batch
+	std::uint32_t  afterSchemaVersion = 0;  // schema the document was left at
+	bool           anyStateChange = false;  // false => genuine no-op (no notify)
+};
+
+// A fully validated, staged marker batch. PreparePrefabMarkerEdits resolves
+// every member UUID and every key wire through the frozen table, validates the
+// directionally selected presence against one pre-batch snapshot, coalesces
+// byte-identical duplicate edits per (member, canonical wire) while rejecting
+// contradictory duplicates, and rejects malformed raw vectors — all WITHOUT
+// touching live state. CommitPrefabMarkerPlan then applies the staged member
+// source->target transitions and the schema transition atomically.
+//
+// The plan holds only durable member UUIDs and canonical override vectors (no
+// entt handles or pointers), so a command can store it between staging and
+// commit, and S6 composes it atomically with component-value mutations.
+struct PrefabMarkerPlan
+{
+	// Canonical source (pre-batch) and target (post-commit) override set for
+	// one member. Each vector is in wire-sorted, de-duplicated order (the
+	// shape the scene codec writes).
+	struct MemberTransition
+	{
+		rt2::core::UUID member;
+		std::vector<PrefabComponentKey> source;
+		std::vector<PrefabComponentKey> target;
+	};
+
+	PrefabMarkerDirection direction = PrefabMarkerDirection::After;
+	// Directional schema transport of the command-captured schema pair
+	// (D3.6/D3.10). The After direction targets the command-after schema
+	// (execute); the Before direction targets the command-before schema
+	// (undo/restore). Commit always writes targetSchemaVersion, so undoing a
+	// first add restores the captured prior version and nothing ever
+	// downgrades below what the command captured.
+	std::uint32_t sourceSchemaVersion = 0;
+	std::uint32_t targetSchemaVersion = 0;
+	// Identity of the authoring document observed while preparing this plan.
+	// ReplaceAuthoringDocument increments this generation, so a plan cannot be
+	// replayed against a same-looking replacement document.
+	std::uint64_t documentGeneration = 0;
+	// True when any member source/target vector or the schema differs; a
+	// genuine no-op is false and commits with no mutation and no notification.
+	bool anyStateChange = false;
+	std::vector<MemberTransition> members;
+};
+
+enum class PrefabValueKind
+{
+	EntityName,
+	Visibility,
+	LightProperties,
+	CameraProperties,
+	LocalTransform,
+	CameraPose,
+	MotionState,
+	ScriptState,
+	MaterialIndex,
+	MaterialSlotProperties,
+	// Append a copied scene-global material slot and assign it to one entity.
+	// This is intentionally distinct from MaterialIndex: a valid duplicate is
+	// always effective, even when the copied bytes equal an existing slot.
+	MaterialDuplicateAndAssign,
+};
+
+struct PrefabCameraPoseValue
+{
+	EditableTRS local;
+	CameraComponent camera;
+};
+
+struct PrefabMaterialSlotValue
+{
+	int slotIndex = -1;
+	SceneMaterial material;
+	std::vector<std::pair<rt2::core::UUID,
+		std::optional<MaterialOverrideComponent>>> overrides;
+};
+
+struct PrefabMaterialIndexValue
+{
+	int materialIndex = -1;
+	std::optional<MaterialOverrideComponent> override;
+};
+
+struct PrefabMaterialDuplicateValue
+{
+	int sourceIndex = -1;
+	int targetIndex = -1;
+	int entityMaterialIndex = -1;
+	SceneMaterial sourceMaterial;
+	std::optional<MaterialOverrideComponent> overrideValue;
+};
+
+using PrefabValuePayload = std::variant<
+	std::monostate,
+	std::string,
+	bool,
+	LightComponent,
+	CameraComponent,
+	EditableTRS,
+	PrefabCameraPoseValue,
+	std::optional<MotionComponent>,
+	std::optional<ScriptComponent>,
+	PrefabMaterialIndexValue,
+	PrefabMaterialSlotValue,
+	PrefabMaterialDuplicateValue>;
+
+// Canonical payload equality — the exact comparison
+// CommitPrefabCompositePlan uses to decide value effectiveness (S5). S6-C
+// exposes it so a live-preview session can gate marker construction on
+// canonical value effectiveness: a first-frame no-op must never build a
+// marker edit or promote the schema. Defined in SceneManager.cpp next to the
+// S5 helpers.
+bool PrefabValuePayloadEqual(const PrefabValuePayload& a, const PrefabValuePayload& b);
+
+struct PrefabValueEdit
+{
+	PrefabValueKind kind = PrefabValueKind::EntityName;
+	rt2::core::UUID entity;
+	PrefabMarkerDirection direction = PrefabMarkerDirection::After;
+	PrefabValuePayload before;
+	PrefabValuePayload after;
+};
+
+struct PrefabValueOperation
+{
+	PrefabValueKind kind = PrefabValueKind::EntityName;
+	rt2::core::UUID entity;
+	PrefabValuePayload source;
+	PrefabValuePayload target;
+};
+
+struct PrefabValuePlan
+{
+	PrefabMarkerDirection direction = PrefabMarkerDirection::After;
+	std::uint64_t documentGeneration = 0;
+	std::uint64_t resourceGeneration = 0;
+	bool anyStateChange = false;
+	std::vector<PrefabValueOperation> operations;
+};
+
+struct PrefabCompositePlan
+{
+	friend class SceneManager;
+	PrefabMarkerDirection direction = PrefabMarkerDirection::After;
+	std::uint64_t documentGeneration = 0;
+	std::uint64_t resourceGeneration = 0;
+	PrefabValuePlan values;
+	PrefabMarkerPlan markers;
+
+private:
+	// Private capability supplied by the command that owns the duplicate-slot
+	// lifecycle. Public callers can construct plans, but cannot forge reuse.
+	// It is never inferred from capture state, indices, or equal material bytes.
+	std::optional<MaterialDuplicateOwnershipToken> materialDuplicateOwnership;
+};
+
+struct PrefabCompositeApplyResult
+{
+	rt2::core::Error error;
+	rt2::core::SyncImpact syncImpact = rt2::core::SyncImpact::None;
+	std::vector<rt2::core::UUID> affectedEntities;
+	std::size_t appliedValueOperations = 0;
+	std::size_t appliedMarkerMembers = 0;
+	std::uint32_t beforeSchemaVersion = 0;
+	std::uint32_t afterSchemaVersion = 0;
+	bool anyStateChange = false;
+};
+
+// Convert one composite commit outcome to the editor-facing structured
+// mutation contract. This is deliberately the only adapter used by editor
+// command/session code: prepare/commit diagnostics are preserved verbatim,
+// successful no-ops remain success=true/effective=false, and a changed
+// composite reports its authoritative impact and affected UUID union.
+EditorMutationResult ToEditorMutationResult(
+	const PrefabCompositeApplyResult& result);
+EditorMutationResult ToEditorMutationResult(const rt2::core::Error& error);
+
+struct PrefabWorldTransformStage
+{
+	std::vector<std::pair<rt2::core::UUID, EditableTRS>> localStates;
+};
+
+struct PrefabMaterialSlotStage
+{
+	int slotIndex = -1;
+	SceneMaterial material;
+	// Exact live snapshots captured before the edit and canonical targets
+	// derived from `material`, in deterministic durable-UUID order.
+	std::vector<std::pair<rt2::core::UUID,
+		std::optional<MaterialOverrideComponent>>> beforeOverrides;
+	std::vector<std::pair<rt2::core::UUID,
+		std::optional<MaterialOverrideComponent>>> afterOverrides;
+	// Compatibility alias for callers that only need the canonical After set.
+	std::vector<std::pair<rt2::core::UUID,
+		std::optional<MaterialOverrideComponent>>> overrides;
+};
+
+// Zero-mutation staging for the editor's Duplicate action. The proposed slot
+// is the current material-table end; no append, notification, or entity write
+// occurs until DuplicateMaterialAndAssignCommand reaches composite Commit.
+struct PrefabMaterialDuplicateStage
+{
+	rt2::core::UUID entity;
+	int sourceIndex = -1;
+	int proposedIndex = -1;
+	SceneMaterial sourceMaterial;
+	int beforeEntityIndex = -1;
+	std::optional<MaterialOverrideComponent> beforeOverride;
+	std::optional<MaterialOverrideComponent> afterOverride;
+	std::uint64_t documentGeneration = 0;
+	std::uint64_t resourceGeneration = 0;
+};
 
 // ============================================================================
 // SceneManager — owns all scene state + provides entity manipulation APIs.
@@ -325,6 +594,14 @@ struct EditorCameraPose;
 		EditorMutationResult mutation;
 		std::vector<rt2::core::UUID> createdRoots;
 		std::vector<std::pair<rt2::core::UUID, rt2::core::UUID>> sourceToDuplicate;
+		// S6-C clipboard residual: document schema immediately before and after
+		// the paste. When pasted prefab members carry override vectors and the
+		// live document is below the serializer's current schema, the paste
+		// PROMOTES the destination schema (a below-current document can never
+		// hold overrides — the serializer rejects it). 0 for non-paste paths
+		// (duplicate) and for schema-neutral pastes.
+		std::uint32_t beforeSchema = 0;
+		std::uint32_t afterSchema = 0;
 	};
 
 	// Duplicate subtrees with caller-supplied UUIDs. The manager
@@ -434,6 +711,23 @@ struct EditorCameraPose;
 	bool TrySetWorldTransform(EntityId entity, const glm::mat4& desiredWorld);
 	bool TrySetWorldTransforms(
 		const std::vector<std::pair<EntityId, glm::mat4>>& desiredWorldTransforms);
+	// Validate-only world-space staging. The returned UUID-keyed local TRS
+	// batch uses the same predicted parent+child algorithm as
+	// TrySetWorldTransforms, but performs no scene, revision, notification,
+	// resource, schema, or history mutation.
+	rt2::core::Result<PrefabWorldTransformStage> StageWorldTransforms(
+		const std::vector<std::pair<EntityId, glm::mat4>>& desiredWorldTransforms) const;
+	// Refresh the authored world cache once and return a durable, immutable
+	// UUID/matrix snapshot for viewport interaction. This is a capture seam,
+	// not a mutator: failures leave authoring values, revision, schema, sync,
+	// and history untouched.
+	rt2::core::Result<EditorWorldTransformSnapshot> CaptureEditorWorldTransforms(
+		const std::vector<rt2::core::UUID>& orderedUuids,
+		const rt2::core::UUID& primaryUuid) ;
+	// Validate-only camera alignment staging. Derives the canonical local TRS
+	// and camera target without invoking a mutator.
+	rt2::core::Result<PrefabCameraPoseValue> StageCameraPose(
+		const rt2::core::UUID& cameraEntity, const EditorCameraPose& requested) const;
 	EditorMutationResult AlignCameraEntityToView(
 		const rt2::core::UUID& cameraEntity, const EditorCameraPose& pose);
 
@@ -556,6 +850,17 @@ struct EditorCameraPose;
 	                                           int afterIndex,
 	                                           std::optional<MaterialOverrideComponent>* outBeforeOverride = nullptr,
 	                                           std::optional<MaterialOverrideComponent>* outAfterOverride = nullptr);
+	// Validate-only canonical material-index staging. For imported members the
+	// optional override is fully derived from the selected durable material;
+	// ordinary entities return explicit absence. No ECS/resource mutation occurs.
+	rt2::core::Result<PrefabMaterialIndexValue> StageMaterialIndex(
+		const rt2::core::UUID& entity, int afterIndex) const;
+	// Validate-only complete imported-member fan-out. The result is ordered by
+	// durable UUID and includes explicit nullopt entries for absent overrides.
+	rt2::core::Result<PrefabMaterialSlotStage> StageMaterialSlot(
+		int slotIndex, const SceneMaterial& material) const;
+	rt2::core::Result<PrefabMaterialDuplicateStage> StageMaterialDuplicateAssignment(
+		const rt2::core::UUID& entity) const;
 	EditorMutationResult SetMotionState(const rt2::core::UUID& entity,
 	                                    const std::optional<MotionComponent>& value);
 	// Phase 6B/W0: add, remove, or replace an entity's ScriptComponent.
@@ -592,6 +897,78 @@ struct EditorCameraPose;
 		const rt2::core::UUID& entity,
 		const std::optional<MaterialOverrideComponent>& override);
 
+	// ---- Phase 8 W3 S5: prefab override query + staged marker helper ----
+	//
+	// IsOverridden reports whether `key` is currently present in the prefab
+	// member `uuid`'s override set. GetOverrides returns the full set in
+	// canonical (wire-sorted, de-duplicated) order. Both return
+	// rt2::core::Result so the failure classes are distinguishable instead of
+	// collapsing into false/empty:
+	//   - a valid member with an empty set is a successful false / empty value;
+	//   - a missing or absent UUID fails with Error::InvalidEntity;
+	//   - an ordinary entity fails with Error::NotPrefabMember;
+	//   - a key that does not resolve through the frozen table, or resolves to
+	//     one of the five excluded wires, fails with a structured key error
+	//     (InvalidArgument whose detail names the wire).
+	// Queries canonicalize stored vectors by wire identity and fail loudly
+	// when a stored wire is unknown or non-overridable — never silently
+	// surfacing a forged classification.
+	//
+	// PreparePrefabMarkerEdits validates an entire batch against one pre-batch
+	// snapshot and returns a staged PrefabMarkerPlan; it performs zero
+	// mutation. Validation: the caller-supplied directional source schema must
+	// equal the live document schema (a stale or hand-forged schema pair fails
+	// with Error::SchemaVersion); keys are canonicalized by resolving
+	// key.wire() through the frozen table (the caller's overridable bit is
+	// never trusted; the canonical table entry is what gets stored);
+	// byte-identical duplicate edits for the same (member, canonical wire)
+	// coalesce; contradictory duplicates fail; malformed stored vectors
+	// (unknown/excluded wire) fail; and the presence on the non-target side
+	// must match the pre-batch snapshot. A schema transition must ride on a
+	// real member-state change (empty edits cannot fabricate a schema-only
+	// transition); a non-empty override target must land at a schema version
+	// that can hold overrides; and a downgrade below the live schema is valid
+	// only when no override remains anywhere in the document. The caller
+	// supplies the command-captured before/after schema versions (D3.6/D3.10);
+	// the After direction targets the after version (execute) and the Before
+	// direction targets the before version (undo/restore), so undoing a first
+	// add restores the captured value.
+	//
+	// CommitPrefabMarkerPlan re-validates the entire plan against live state
+	// before any write — the staged source must equal each member's current
+	// canonical override set and each staged target must already be canonical —
+	// then applies it atomically: it writes every member's canonical target
+	// vector, always sets the document schema to the plan's targetSchemaVersion,
+	// and calls NotifyAuthoringChanged() at most once. A stale or hand-forged
+	// plan (a member removed or un-made, an override vector or schema changed
+	// since staging, or a target with excluded/unknown/non-canonical keys) fails
+	// loudly with zero mutation. A genuine no-op (targets identical to the stored
+	// vectors, schema unchanged) commits nothing and notifies zero times.
+	// anyStateChange is also true when a staged member's stored vector is
+	// malformed-but-canonicalizable (unsorted, duplicated, or carrying a forged
+	// classification bit): commit writes the canonical target into the raw
+	// registry vector even when the membership edit alone would be a no-op,
+	// normalizing the stored state rather than silently leaving it malformed.
+	rt2::core::Result<bool> IsOverridden(
+		const rt2::core::UUID& member,
+		const PrefabComponentKey& key) const;
+	rt2::core::Result<std::vector<PrefabComponentKey>> GetOverrides(
+		const rt2::core::UUID& member) const;
+	rt2::core::Result<PrefabMarkerPlan> PreparePrefabMarkerEdits(
+		const std::vector<PrefabMarkerEdit>& edits,
+		PrefabMarkerDirection direction,
+		std::uint32_t beforeSchemaVersion,
+		std::uint32_t afterSchemaVersion);
+	PrefabMarkerApplyResult CommitPrefabMarkerPlan(PrefabMarkerPlan plan);
+
+	rt2::core::Result<PrefabCompositePlan> PreparePrefabCompositeEdits(
+		const std::vector<PrefabValueEdit>& values,
+		const std::vector<PrefabMarkerEdit>& markers,
+		PrefabMarkerDirection direction,
+		std::uint32_t beforeSchemaVersion,
+		std::uint32_t afterSchemaVersion);
+	PrefabCompositeApplyResult CommitPrefabCompositePlan(PrefabCompositePlan plan);
+
 	// ---- Dirty tracking ----
 	bool IsDirty() const { return m_Authoring.metadata.dirty; }
 	void MarkDirty()
@@ -607,6 +984,13 @@ struct EditorCameraPose;
 	uint64_t AuthoringRevision() const { return m_AuthoringRevision; }
 	uint64_t DocumentGeneration() const { return m_DocumentGeneration; }
 	uint64_t ResourceGeneration() const { return m_ResourceGeneration; }
+
+	// S6-C clipboard residual: true when ANY prefab member in the live document
+	// currently holds a non-empty override vector. Used by the paste
+	// command's schema transport to decide whether Undo may legally restore the
+	// prior (below-current) schema: a downgrade is safe only when no override
+	// remains anywhere.
+	bool DocumentHasAnyOverrides() const;
 
 	// Centralized authoring-change notification. All editor mutations
 	// (Add/Remove/SetTransform/SetMaterial/SetMaterialProperties) call
@@ -635,9 +1019,38 @@ struct EditorCameraPose;
 	bool CompactMeshRegistry();
 
 private:
+	friend class PrefabCommandTransaction;
+	rt2::core::Result<PrefabCompositePlan> PreparePrefabCompositeEditsWithOwnership(
+		const std::vector<PrefabValueEdit>& values,
+		const std::vector<PrefabMarkerEdit>& markers,
+		PrefabMarkerDirection direction,
+		std::uint32_t beforeSchemaVersion,
+		std::uint32_t afterSchemaVersion,
+		const MaterialDuplicateOwnershipToken& ownership);
 	void UpdateWorldTransforms();
 	void RefreshCameraForwardDirections(const std::vector<entt::entity>& roots);
 	void ReconcileStoredCameraDirections();
+
+	struct ScriptBindingStage
+	{
+		bool success = false;
+		ScriptComponent canonical;
+		rt2::core::Error error;
+	};
+	ScriptBindingStage StageScriptBinding(
+		const rt2::core::UUID& entity,
+		const std::optional<ScriptComponent>& value,
+		const std::optional<ScriptComponent>& current,
+		bool allowIdentityWrites,
+		bool deferIdentityWrites);
+	rt2::core::Result<PrefabCompositePlan> PreparePrefabCompositeEditsInternal(
+		const std::vector<PrefabValueEdit>& values,
+		const std::vector<PrefabMarkerEdit>& markers,
+		PrefabMarkerDirection direction,
+		std::uint32_t beforeSchemaVersion,
+		std::uint32_t afterSchemaVersion,
+		bool allowIdentityWrites,
+		const MaterialDuplicateOwnershipToken* ownership = nullptr);
 
 	// Record a durable MaterialOverrideComponent on an imported entity for the
 	// material currently at `materialIndex`. Captures the material value

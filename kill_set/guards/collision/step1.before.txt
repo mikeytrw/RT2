@@ -1,0 +1,8 @@
+		std::unordered_set<int> duplicateTargets;
+		for (const auto& op : composite.values.operations)
+		{
+			if (op.kind != PrefabValueKind::MaterialDuplicateAndAssign) continue;
+			const auto& target = std::get<PrefabMaterialDuplicateValue>(op.target);
+			if (!duplicateTargets.insert(target.targetIndex).second)
+				return fail(rt2::core::Error::InvalidArgument, op.entity.ToString(),
+					"material-duplicate target slot collides within composite");

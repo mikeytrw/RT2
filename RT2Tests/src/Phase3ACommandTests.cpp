@@ -167,9 +167,10 @@ TEST_CASE("Phase 3A bounded history evicts oldest and retained entries undo")
     EditorCommandHistory small(3);
     for (int i = 0; i < 5; ++i)
     {
+		const EditableTRS before = f.LocalOf(uuid);
         EditableTRS after = b0;
         after.translation = {(float)i, 0, 0};
-        small.Execute(MakeTransformCommandIfEffective(uuid, b0, after), f.manager);
+		small.Execute(MakeTransformCommandIfEffective(uuid, before, after), f.manager);
     }
     // Only the last 3 should be retained; 2 undos bring us to the state of
     // submission #3, and a 3rd undo would attempt submission #2 which has

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace
 {
@@ -69,55 +70,85 @@ EditorMutationResult FailureFor(const rt2::core::UUID& target, const char* detai
 
 TransformCommand::TransformCommand(rt2::core::UUID target,
                                    EditableTRS beforeLocal,
-                                   EditableTRS afterLocal)
+                                   EditableTRS afterLocal,
+                                   std::optional<PrefabCommandTransaction::ExplicitCapture> capture)
 {
 	m_Triples.push_back({target, beforeLocal, afterLocal});
+	std::vector<PrefabValueEdit> values{{ PrefabValueKind::LocalTransform, target,
+		PrefabMarkerDirection::After, PrefabValuePayload{beforeLocal},
+		PrefabValuePayload{afterLocal} }};
+	std::vector<PrefabCommandTransaction::MarkerSpec> markers{{ target,
+		PrefabComponentKeyFor<Transform>::value, true }};
+	m_Transaction = PrefabCommandTransaction(std::move(values), std::move(markers));
+	if (capture) m_Transaction.SetExplicitCapture(std::move(*capture));
 }
 
-TransformCommand::TransformCommand(std::vector<TransformTriple> triples)
-	: m_Triples(std::move(triples)) {}
+TransformCommand::TransformCommand(std::vector<TransformTriple> triples,
+	std::optional<PrefabCommandTransaction::ExplicitCapture> capture)
+	: m_Triples(std::move(triples))
+{
+	std::vector<PrefabValueEdit> values;
+	std::vector<PrefabCommandTransaction::MarkerSpec> markers;
+	values.reserve(m_Triples.size());
+	markers.reserve(m_Triples.size());
+	for (const auto& triple : m_Triples)
+	{
+		values.push_back({ PrefabValueKind::LocalTransform, triple.target,
+			PrefabMarkerDirection::After, PrefabValuePayload{triple.beforeLocal},
+			PrefabValuePayload{triple.afterLocal} });
+		markers.push_back({ triple.target, PrefabComponentKeyFor<Transform>::value, true });
+	}
+	m_Transaction = PrefabCommandTransaction(std::move(values), std::move(markers));
+	if (capture) m_Transaction.SetExplicitCapture(std::move(*capture));
+}
 
 EditorMutationResult TransformCommand::Execute(SceneManager& scene)
 {
-	std::vector<std::pair<rt2::core::UUID, EditableTRS>> states;
-	states.reserve(m_Triples.size());
-	for (const auto& t : m_Triples)
-		states.emplace_back(t.target, t.afterLocal);
-	auto result = scene.SetLocalTransformStates(states);
-	if (!result.success) return result;
-	// SetLocalTransformStates already populated affectedEntities; if it
-	// returned success with empty affectedEntities (empty input), fall back
-	// to the triple-derived result.
-	if (result.affectedEntities.empty())
-		return TransformResultFor(m_Triples);
-	return result;
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult TransformCommand::Undo(SceneManager& scene)
 {
-	std::vector<std::pair<rt2::core::UUID, EditableTRS>> states;
-	states.reserve(m_Triples.size());
-	for (const auto& t : m_Triples)
-		states.emplace_back(t.target, t.beforeLocal);
-	auto result = scene.SetLocalTransformStates(states);
-	if (!result.success) return result;
-	if (result.affectedEntities.empty())
-		return TransformResultFor(m_Triples);
-	return result;
+	return m_Transaction.Undo(scene);
+}
+
+SetVisibilityCommand::SetVisibilityCommand(PairList beforeStates,
+                                           PairList afterStates)
+	: m_BeforeStates(std::move(beforeStates))
+	, m_AfterStates(std::move(afterStates))
+{
+	// One Visibility value edit plus one kVisible marker delta per entity.
+	// The before and after UUID sets MUST match exactly (enforced by
+	// MakeSetVisibilityCommandIfEffective); a before entry is required for
+	// every after entry and is never fabricated — a missing entry throws
+	// loudly rather than building a wrong Undo.
+	std::unordered_map<rt2::core::UUID, bool> beforeMap;
+	beforeMap.reserve(m_BeforeStates.size());
+	for (const auto& p : m_BeforeStates)
+		beforeMap.emplace(p.first, p.second);
+
+	std::vector<PrefabValueEdit> values;
+	std::vector<PrefabCommandTransaction::MarkerSpec> markers;
+	values.reserve(m_AfterStates.size());
+	markers.reserve(m_AfterStates.size());
+	for (const auto& p : m_AfterStates)
+	{
+		values.push_back({ PrefabValueKind::Visibility, p.first,
+			PrefabMarkerDirection::After, beforeMap.at(p.first), p.second });
+		markers.push_back({ p.first,
+			PrefabComponentKeyFor<VisibleComponent>::value, true });
+	}
+	m_Transaction = PrefabCommandTransaction(std::move(values), std::move(markers));
 }
 
 EditorMutationResult SetVisibilityCommand::Execute(SceneManager& scene)
 {
-	auto result = scene.SetVisibilityStates(m_AfterStates);
-	if (!result.success) return result;
-	return result;
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetVisibilityCommand::Undo(SceneManager& scene)
 {
-	auto result = scene.SetVisibilityStates(m_BeforeStates);
-	if (!result.success) return result;
-	return result;
+	return m_Transaction.Undo(scene);
 }
 
 std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
@@ -130,51 +161,90 @@ std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
 }
 
 std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
+	rt2::core::UUID target, EditableTRS beforeLocal, EditableTRS afterLocal,
+	PrefabCommandTransaction::ExplicitCapture capture)
+{
+	if (TrsEqual(beforeLocal, afterLocal)) return nullptr;
+	return std::make_unique<TransformCommand>(target, beforeLocal, afterLocal,
+		std::move(capture));
+}
+
+std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
 	std::vector<TransformTriple> triples)
 {
 	std::vector<TransformTriple> effective;
 	effective.reserve(triples.size());
+	std::unordered_set<rt2::core::UUID> seen;
 	for (auto& t : triples)
+	{
+		if (t.target.IsNull() || !seen.insert(t.target).second) return nullptr;
 		if (!TrsEqual(t.beforeLocal, t.afterLocal))
 			effective.push_back(std::move(t));
+	}
 	if (effective.empty()) return nullptr;
 	return std::make_unique<TransformCommand>(std::move(effective));
+}
+
+std::unique_ptr<IEditorCommand> MakeTransformCommandIfEffective(
+	std::vector<TransformTriple> triples,
+	PrefabCommandTransaction::ExplicitCapture capture)
+{
+	std::vector<TransformTriple> effective;
+	effective.reserve(triples.size());
+	std::unordered_set<rt2::core::UUID> seen;
+	for (auto& t : triples)
+	{
+		if (t.target.IsNull() || !seen.insert(t.target).second) return nullptr;
+		if (!TrsEqual(t.beforeLocal, t.afterLocal)) effective.push_back(std::move(t));
+	}
+	if (effective.empty()) return nullptr;
+	return std::make_unique<TransformCommand>(std::move(effective),
+		std::move(capture));
 }
 
 std::unique_ptr<IEditorCommand> MakeSetVisibilityCommandIfEffective(
 	SetVisibilityCommand::PairList beforeStates,
 	SetVisibilityCommand::PairList afterStates)
 {
-	// Drop after-pairs whose state matches the corresponding before-state.
-	// Build a UUID -> before-state lookup; if a UUID is missing from before,
-	// keep the after-pair (the manager will validate the UUID on apply).
+	// Strict, proactive input validation: the before and after UUID sets must
+	// match exactly and neither list may contain a duplicate UUID. A mismatch
+	// means the host's before-state is incomplete or fabricated — proceeding
+	// would silently build a wrong Undo, so reject the command instead.
+	const auto hasDuplicate = [](const SetVisibilityCommand::PairList& list) {
+		std::unordered_set<rt2::core::UUID> seen;
+		for (const auto& p : list)
+			if (!seen.insert(p.first).second) return true;
+		return false;
+	};
+	if (hasDuplicate(beforeStates) || hasDuplicate(afterStates)) return nullptr;
+	if (beforeStates.size() != afterStates.size()) return nullptr;
+
 	std::unordered_map<rt2::core::UUID, bool> beforeMap;
 	beforeMap.reserve(beforeStates.size());
 	for (const auto& p : beforeStates)
 		beforeMap.emplace(p.first, p.second);
+	std::unordered_map<rt2::core::UUID, bool> afterMap;
+	afterMap.reserve(afterStates.size());
+	for (const auto& p : afterStates)
+		afterMap.emplace(p.first, p.second);
+	for (const auto& p : afterStates)
+		if (beforeMap.find(p.first) == beforeMap.end()) return nullptr;
+	for (const auto& p : beforeStates)
+		if (afterMap.find(p.first) == afterMap.end()) return nullptr;
 
+	// Drop after-pairs whose state matches the corresponding before-state.
 	SetVisibilityCommand::PairList cleanedAfter;
 	cleanedAfter.reserve(afterStates.size());
 	for (const auto& p : afterStates)
-	{
-		const auto it = beforeMap.find(p.first);
-		if (it != beforeMap.end() && it->second == p.second) continue;
-		cleanedAfter.push_back(p);
-	}
+		if (beforeMap.at(p.first) != p.second) cleanedAfter.push_back(p);
 	if (cleanedAfter.empty()) return nullptr;
 
-	// Compose a matching before list: for each cleaned-after pair, use the
-	// before-state if known, otherwise default to the after-state (so the
-	// manager sees a no-op for that entity on Undo if it wasn't tracked).
-	// In practice the Inspector always supplies a before entry for every
-	// after entry; this is just defensive.
+	// The UUID sets are equal, so every cleaned-after UUID has a before entry
+	// — no before value is ever fabricated.
 	SetVisibilityCommand::PairList cleanedBefore;
 	cleanedBefore.reserve(cleanedAfter.size());
 	for (const auto& p : cleanedAfter)
-	{
-		const auto it = beforeMap.find(p.first);
-		cleanedBefore.emplace_back(p.first, it != beforeMap.end() ? it->second : p.second);
-	}
+		cleanedBefore.emplace_back(p.first, beforeMap.at(p.first));
 
 	return std::make_unique<SetVisibilityCommand>(std::move(cleanedBefore),
 	                                              std::move(cleanedAfter));

@@ -1,0 +1,7 @@
+	// This boolean is command-owned and monotonic. It becomes true only after
+	// the real atomic first Execute has succeeded and changed the document.
+	m_Transaction.SetMaterialDuplicateOwnership(
+		m_SlotCreatedBySuccessfulExecute
+			? std::optional<MaterialDuplicateOwnershipToken>{MaterialDuplicateOwnershipToken{}}
+			: std::nullopt);
+	const auto result = m_Transaction.Execute(scene);

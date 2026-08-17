@@ -9,9 +9,12 @@
 #include "EditorStructuralCommands.h"
 #include "EditorPropertyCommands.h"
 #include "PropertyEditSession.h"
+#include "CompositePreviewSession.h"
+#include "PreviewSessionClose.h"
 #include "TransformEditing.h"
 #include "core/UUID.h"
 #include <functional>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -121,8 +124,11 @@ public:
 	{ return m_CommandHistory ? m_CommandHistory->RedoDescription() : std::string{}; }
 
 	// Set whether authoring edits are allowed. During Play, the UI is
-	// read-only (bound to the runtime scene).
-	void SetEditable(bool editable) { m_Editable = editable; }
+	// read-only (bound to the runtime scene). Leaving editability finalizes or
+	// compensates any open live-preview session so no authored preview
+	// value/marker/schema is orphaned without a history entry (S6-C fixup,
+	// P1 finding 4 — editability is never discard proof).
+	void SetEditable(bool editable);
 	bool IsEditable() const { return m_Editable; }
 
 	void SelectUuid(const rt2::core::UUID& uuid) { m_State.Selection().SelectOnly(uuid); }
@@ -133,6 +139,7 @@ public:
 		m_SearchBuffer[0] = '\0';
 		DiscardAllPropertySessions();
 	}
+	void ResetForDocumentPreservingValidSelection();
 	EditorSelection& Selection() { return m_State.Selection(); }
 	const EditorSelection& Selection() const { return m_State.Selection(); }
 	bool SelectionHasDirectLock() const
@@ -140,6 +147,23 @@ public:
 	TransformSpace GetTransformSpace() const { return m_TransformSpace; }
 	TransformPivot GetTransformPivot() const { return m_TransformPivot; }
 	const TransformSnapSettings& GetTransformSnapSettings() const { return m_TransformSnap; }
+	bool IsTransformGestureOpen() const { return m_TransformPreviewSession.IsOpen(); }
+	TransformGestureLifecycleState TransformGestureLifecycle() const
+	{
+		if (m_TransformRecoveryPending)
+			return TransformGestureLifecycleState::RecoveryTransferred;
+		return m_TransformPreviewSession.IsOpen()
+			? TransformGestureLifecycleState::HealthyOpen
+			: TransformGestureLifecycleState::Closed;
+	}
+	std::optional<TransformGestureToken> BeginTransformGestureForGizmo(std::uint64_t owner,
+		const std::vector<rt2::core::UUID>& uuids);
+	EditorMutationResult PreviewTransformWorldIntent(
+		const TransformGestureToken& token,
+		const std::vector<std::pair<rt2::core::UUID, glm::mat4>>& worlds);
+	PreviewSessionCloseOutcome CloseTransformGesture(bool finalize,
+		const TransformGestureToken& token);
+	PreviewSessionCloseOutcome RetryTransformGestureRecovery();
 	bool GetUniformScale() const { return m_UniformScale; }
 	bool CaptureCameraBookmark(size_t slot, const EditorCameraPose& pose)
 	{ return m_State.CaptureCameraBookmark(slot, pose); }
@@ -193,31 +217,75 @@ private:
 	void SelectEntity(SceneManager::EntityId entity, bool toggle = false);
 	bool IsSelected(SceneManager::EntityId entity) const;
 
-	// Phase 3B2: property command helpers. Each captures the before-state,
-	// applies the per-frame mutation via the manager, records the command
-	// via RecordApplied on close. The state machine (PropertyEditSession)
-	// handles deferred-close ordering and defensive guards.
-	void RecordNameEdit(const rt2::core::UUID& target,
-	                    const std::string& before, const std::string& after);
-	void RecordLightEdit(const rt2::core::UUID& target,
-	                     const LightComponent& before, const LightComponent& after);
-	void RecordCameraEdit(const rt2::core::UUID& target,
-	                      const CameraComponent& before, const CameraComponent& after);
-	void RecordMaterialIndexEdit(const rt2::core::UUID& target,
-	                             int beforeIndex, int afterIndex,
-	                             const std::optional<MaterialOverrideComponent>& beforeOverride,
-	                             const std::optional<MaterialOverrideComponent>& afterOverride);
-	void RecordMaterialPropertiesEdit(int slotIndex,
-	                                 const SceneMaterial& before,
-	                                 const SceneMaterial& after);
-	void RecordMotionEdit(const rt2::core::UUID& target,
-	                      const std::optional<MotionComponent>& before,
-	                      const std::optional<MotionComponent>& after);
-	void RecordScriptEdit(const rt2::core::UUID& target,
-	                      const std::optional<ScriptComponent>& before,
-	                      const std::optional<ScriptComponent>& after,
-	                      const EditorMutationResult& applied);
+	// Phase 3B2: property command helpers. The S6-B converted paths — name,
+	// material index, material properties, motion add/remove, script
+	// add/path/rebind/remove and discrete fields — use construct-then-Execute
+	// inline at their call sites. The four S6-C live-preview sessions (light,
+	// camera, motion velocity, Int/Float/Vec3/Color script fields) preview
+	// each frame through the composite seam via CompositePreviewSession and
+	// finalize through FinalizePreviewSession; no fabricated RecordApplied
+	// outcome remains. PropertyEditSession handles deferred-close ordering and
+	// defensive guards for the construct-then-Execute paths.
 	void DiscardAllPropertySessions();
+
+	// S6-C host glue. The two-phase close decision machine lives in the
+	// CPU-linkable PreviewSessionClose core (FinalizePreviewSession /
+	// RestorePreviewSession / BuildPreviewSessionCommand); the ImGui layer
+	// below is thin glue that routes outcomes through ApplyMutation and keeps
+	// owning-widget ownership alive while a session remains open:
+	//   - the owning widget ID is cleared ONLY after the session actually
+	//     closed (recorded/compensated/discarded) — a failed close keeps it,
+	//     so the stranded session stays retryable and finalizable (P1 finding 2);
+	//   - a close that failed against a live target surfaces a pending-recovery
+	//     path that retries or discards while preserving target/origin/owner.
+	// Close a live-preview session (finalize=true) or compensate it
+	// (finalize=false) via the shared core, then update owning-widget /
+	// pending-recovery state from the outcome. Clearing the owning widget ID
+	// is conditional on the session actually closing.
+	PreviewSessionCloseOutcome ClosePreviewSession(
+		PreviewSessionKind kind, CompositePreviewSession& session,
+		unsigned int& owningWidgetId, bool finalize);
+	// Finalize or restore an open live-preview session BEFORE a discrete
+	// command (camera Align, script path/rebind/remove, motion add/remove,
+	// discrete script fields) acts on the same component. Returns true when no
+	// open session remains (proceed); false when the close stayed pending and
+	// the discrete action must be aborted (P1 finding 3).
+	bool ClosePreviewBeforeDiscrete(PreviewSessionKind kind,
+		CompositePreviewSession& session, unsigned int& owningWidgetId);
+	// Finish every currently open live-preview session when leaving
+	// editability. Editability is never discard proof (P1 finding 4).
+	void FinalizeOpenPreviewSessions();
+	// Close every open live-preview session (abandon/restore) BEFORE a
+	// document-preserving global action (Undo/Redo) through the two-phase close
+	// policy. Returns false (so the requested action is aborted) when any open
+	// session stays pending, leaving recovery surfaced and never orphaning an
+	// applied preview (S6-C re-review, P1 finding 2).
+	bool CloseAllPreviewSessionsForGlobalAction();
+	// Shared implementation used by both Undo/Redo abandonment (finalize=false)
+	// and discrete/global authoring admission (finalize=true): close every open
+	// preview session through the reducer and return whether all closed.
+	bool CloseAllPreviewSessionsForAction(bool finalize);
+	// Shared command-admission seam (S6-C final-verdict P1 finding 2): close
+	// every open live-preview session (finalize/record) BEFORE any discrete or
+	// global authoring/history mutation so no command can record ahead of an
+	// open preview (chronological history, legal schema transitions). Returns
+	// true only when everything closed; on false the requested mutation must be
+	// ABORTED with the pending session's recovery owner/error unchanged.
+	bool AdmitAuthoringMutation();
+	// Submit a discrete/global authoring command through the shared admission
+	// seam and route its result through ApplyMutation. Returns the (possibly
+	// rejected) mutation result.
+	EditorMutationResult SubmitAuthoringCommand(
+		std::unique_ptr<IEditorCommand> cmd, bool selectAffected = false);
+	// Render the pending-recovery banner (a closed-but-failed session awaiting
+	// retry or discard).
+	void RenderPreviewRecoveryBar();
+	unsigned int& OwningWidgetIdFor(PreviewSessionKind kind);
+	// Route a close outcome through the host sync path when the close mutated
+	// the scene.
+	void ApplyCloseOutcome(const PreviewSessionCloseOutcome& outcome);
+	PreviewSessionCloseOutcome CloseTransformGestureImpl(bool finalize,
+		const TransformGestureToken& token, bool explicitRetry);
 	// Capture the current MaterialOverrideComponent state of every imported
 	// entity referencing `slotIndex` (UUID -> override). Used to snapshot
 	// the before-overrides when a material-properties session opens and the
@@ -301,19 +369,26 @@ private:
 	// (activation/deactivation detection + deferred close after the
 	// mutation block) lives in the Render*Editor functions. Each session
 	// is a single active slot per property kind.
-	using TransformSession = PropertyEditSession<EditableTRS>;
+	//
+	// S6-C: the four non-transform live-preview editors (light, camera,
+	// motion velocity, Int/Float/Vec3/Color script fields) use
+	// CompositePreviewSession instead — per-frame edits go through the
+	// composite seam (immutable origin, rolling committed source, real
+	// results) and finalize through FinalizePreviewSession / escape via
+	// RestorePreviewSession. The remaining discrete construct-then-Execute
+	// sessions continue to use PropertyEditSession.
 	using NameSession = PropertyEditSession<std::string>;
-	using LightSession = PropertyEditSession<LightComponent>;
-	using CameraSession = PropertyEditSession<CameraComponent>;
+	using LightSession = CompositePreviewSession;
+	using CameraSession = CompositePreviewSession;
 	using MaterialIndexSession = PropertyEditSession<int>;
 	using MaterialPropertiesSession = PropertyEditSession<SceneMaterial>;
-	using MotionSession = PropertyEditSession<MotionComponent>;
-	using ScriptSession = PropertyEditSession<ScriptComponent>;
+	using MotionSession = CompositePreviewSession;
+	using ScriptSession = CompositePreviewSession;
 
 	EditorCommandHistory* m_CommandHistory = nullptr;
 	rt2::core::ScriptFieldRegistry* m_FieldRegistry = nullptr;
 
-	TransformSession             m_TransformSession;
+	TransformPreviewSession      m_TransformPreviewSession;
 	NameSession                  m_NameSession;
 	LightSession                 m_LightSession;
 	CameraSession                m_CameraSession;
@@ -325,10 +400,52 @@ private:
 	// deactivation close only fires for the owning widget). ImGui IDs are
 	// stored as unsigned int to avoid depending on ImGui headers here.
 	unsigned int m_TransformSessionOwningWidgetId = 0;
+	std::optional<TransformGestureToken> m_TransformGestureToken;
 	unsigned int m_LightSessionOwningWidgetId = 0;
 	unsigned int m_CameraSessionOwningWidgetId = 0;
 	unsigned int m_MaterialPropertiesSessionOwningWidgetId = 0;
+	unsigned int m_MotionVelocitySessionOwningWidgetId = 0;
 	unsigned int m_ScriptFieldSessionOwningWidgetId = 0;
+
+	// Pending-recovery surfacing (S6-C fixup P1 finding 2 / final closure P1
+	// finding 2): a live-preview session whose close failed against a still-live
+	// target. The owning widget ID above is NOT cleared while a session is
+	// pending, so a retry through the persistent recovery bar keeps
+	// target/origin/owner intact. State is kept PER KIND and derived from all
+	// open pending sessions, so closing a different-kind session can never hide
+	// a still-open pending one.
+	struct PreviewRecoveryState
+	{
+		bool pending = false;
+		PreviewSessionKind kind = PreviewSessionKind::Light;
+		bool finalize = true; // close mode to retry (true = finalize, false = restore)
+		std::string detail;
+	};
+	PreviewRecoveryState m_PreviewRecoveryByKind[5] = {};
+	bool m_TransformRecoveryPending = false;
+	bool m_TransformRecoveryFinalize = true;
+	std::string m_TransformRecoveryDetail;
+	PreviewRecoveryState& PendingRecoveryFor(PreviewSessionKind kind);
+	void SetPendingRecovery(PreviewSessionKind kind, bool finalize,
+		const std::string& detail);
+	void ClearPendingRecovery(PreviewSessionKind kind);
+	bool AnyPreviewRecoveryPending() const;
+	// True when at least one of the four live-preview sessions is open (any
+	// kind). Used with AdmitAuthoringMutation to enforce at most one open S6-C
+	// preview: before a new Begin on a different kind/target, all existing
+	// sessions are finalized in physical gesture order (S6-C closure-ordering
+	// P1 finding 2).
+	bool AnyPreviewSessionOpen() const;
+	// Shared Begin-admission predicate (host-edge P1 finding 2): whether a new
+	// live-preview gesture may begin on `target` for `kind`. Returns false when
+	// recovery is pending (no implicit retry), when that kind's session already
+	// owns `target` (the ongoing gesture), or when shared admission cannot
+	// finalize an other-open (different-kind or same-kind-different-target)
+	// session. On true the caller may Begin; the prior gesture is already
+	// finalized in physical order.
+	bool CanBeginPreview(PreviewSessionKind kind, const rt2::core::UUID& target);
+	// The first kind with a pending (open, unresolved) session, or nullptr.
+	const PreviewRecoveryState* FirstPendingRecovery() const;
 	// Before-override snapshot captured when the material-properties session
 	// opens. The after-overrides are read live at close time. The session
 	// itself stores the SceneMaterial before/after; this stores the

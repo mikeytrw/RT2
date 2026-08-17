@@ -390,30 +390,33 @@ TEST_CASE("Phase 3B2 SetMaterialPropertiesCommand override restore on imported e
     SceneMaterial after = before;
     after.metallic = 0.5f;
 
-    // Capture before-overrides (none yet) and simulate after-overrides by
-    // running the state API once.
-    f.manager.SetMaterialPropertiesState(0, after);
-    // After the state API call, both imported entities should have overrides.
-    SetMaterialPropertiesCommand::OverrideList afterOvs;
-    auto& reg = f.manager.GetECS().registry;
-    auto view = reg.view<ImportedMeshSourceComponent>();
-    for (auto e : view)
-    {
-        const auto* ov = reg.try_get<MaterialOverrideComponent>(e);
-        if (!ov) continue;
-        const auto* idc = reg.try_get<EntityIdComponent>(e);
-        afterOvs.emplace_back(idc->id, *ov);
-    }
-    // Restore the before-material so the command starts clean.
-    f.manager.SetMaterialPropertiesState(0, before);
-    // Remove the overrides the state API just created so before-state is clean.
-    for (auto e : view)
-    {
-        if (reg.all_of<MaterialOverrideComponent>(e))
-            reg.remove<MaterialOverrideComponent>(e);
-    }
+    // Phase 8 W3 S6-B: complete durable UUID + optional fan-out snapshots
+    // (S5 shape, explicit nullopt = absent). Before is captured live; the
+    // canonical after fan-out comes from the validate-only StageMaterialSlot
+    // seam, so the command performs the first write inside Execute.
+    const auto collectLive = [&]() {
+        SetMaterialPropertiesCommand::OverrideList out;
+        auto& reg = f.manager.GetECS().registry;
+        for (auto e : reg.view<ImportedMeshSourceComponent>())
+        {
+            const auto* ref = reg.try_get<MeshRef>(e);
+            if (!ref || ref->materialIndex != 0) continue;
+            const auto* idc = reg.try_get<EntityIdComponent>(e);
+            if (!idc) continue;
+            const auto* ov = reg.try_get<MaterialOverrideComponent>(e);
+            out.emplace_back(idc->id,
+                ov ? std::optional<MaterialOverrideComponent>(*ov) : std::nullopt);
+        }
+        return out;
+    };
 
-    auto cmd = MakeSetMaterialPropertiesCommandIfEffective(0, before, after, {}, afterOvs);
+    auto beforeOvs = collectLive();
+    const auto staged = f.manager.StageMaterialSlot(0, after);
+    REQUIRE(staged.IsOk());
+    REQUIRE(staged.value.afterOverrides.size() == beforeOvs.size());
+
+    auto cmd = MakeSetMaterialPropertiesCommandIfEffective(0, before, after,
+        std::move(beforeOvs), staged.value.afterOverrides);
     REQUIRE(cmd);
     auto r = f.history.Execute(std::move(cmd), f.manager);
     REQUIRE(r.success);

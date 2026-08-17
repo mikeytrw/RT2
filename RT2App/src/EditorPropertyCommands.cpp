@@ -79,6 +79,28 @@ bool CameraEqual(const CameraComponent& a, const CameraComponent& b)
 	       Vec3Equal(a.forwardDirection, b.forwardDirection);
 }
 
+// Canonical per-wire equality mirroring the composite's S5 canonicalization
+// (SceneManager.cpp S5CanonicalTRS / S5CanonicalCamera + S5EqualTRS /
+// S5EqualCamera): a wire is "changed" only when its canonical form differs
+// exactly. AlignCameraCommand must mark ONLY the wires a camera-pose edit
+// actually changes — always marking Transform diverges an inherited transform
+// with no explicit edit (F4).
+bool CanonicalTrsEqual(const EditableTRS& a, const EditableTRS& b)
+{
+	return a.translation == b.translation && a.scale == b.scale
+		&& glm::normalize(a.rotation) == glm::normalize(b.rotation);
+}
+
+bool CanonicalCameraEqual(const CameraComponent& a, const CameraComponent& b)
+{
+	glm::vec3 forwardA = a.forwardDirection;
+	glm::vec3 forwardB = b.forwardDirection;
+	if (glm::dot(forwardA, forwardA) > 1e-8f) forwardA = glm::normalize(forwardA);
+	if (glm::dot(forwardB, forwardB) > 1e-8f) forwardB = glm::normalize(forwardB);
+	return a.verticalFOV == b.verticalFOV && a.aperture == b.aperture
+		&& a.focusDistance == b.focusDistance && forwardA == forwardB;
+}
+
 bool MotionEqual(const MotionComponent& a, const MotionComponent& b)
 {
 	return Vec3Equal(a.linearVelocity, b.linearVelocity);
@@ -94,13 +116,16 @@ bool OverrideEqual(const MaterialOverrideComponent& a,
 }
 
 bool OverrideListEqual(
-	const std::vector<std::pair<rt2::core::UUID, MaterialOverrideComponent>>& a,
-	const std::vector<std::pair<rt2::core::UUID, MaterialOverrideComponent>>& b)
+	const std::vector<std::pair<rt2::core::UUID,
+		std::optional<MaterialOverrideComponent>>>& a,
+	const std::vector<std::pair<rt2::core::UUID,
+		std::optional<MaterialOverrideComponent>>>& b)
 {
 	if (a.size() != b.size()) return false;
-	// Order-independent comparison: build a UUID -> override map for b and
-	// look up each a entry.
-	std::unordered_map<rt2::core::UUID, const MaterialOverrideComponent*> bMap;
+	// Order-independent comparison: build a UUID -> optional override map for
+	// b and look up each a entry.
+	std::unordered_map<rt2::core::UUID,
+		const std::optional<MaterialOverrideComponent>*> bMap;
 	bMap.reserve(b.size());
 	for (const auto& p : b)
 		bMap.emplace(p.first, &p.second);
@@ -108,7 +133,9 @@ bool OverrideListEqual(
 	{
 		const auto it = bMap.find(p.first);
 		if (it == bMap.end()) return false;
-		if (!OverrideEqual(p.second, *it->second)) return false;
+		if (p.second.has_value() != it->second->has_value()) return false;
+		if (p.second.has_value() &&
+		    !OverrideEqual(*p.second, **it->second)) return false;
 	}
 	return true;
 }
@@ -117,131 +144,245 @@ bool OverrideListEqual(
 
 // ---- SetNameCommand ----
 
+SetNameCommand::SetNameCommand(rt2::core::UUID target,
+                               std::string beforeName,
+                               std::string afterName)
+	: m_Target(target)
+	, m_BeforeName(std::move(beforeName))
+	, m_AfterName(std::move(afterName))
+	, m_Transaction(
+		std::vector<PrefabValueEdit>{
+			{ PrefabValueKind::EntityName, m_Target, PrefabMarkerDirection::After,
+				std::string(m_BeforeName), std::string(m_AfterName) } },
+		std::vector<PrefabCommandTransaction::MarkerSpec>{
+			{ m_Target, PrefabComponentKeyFor<NameComponent>::value, true } })
+{
+}
+
 EditorMutationResult SetNameCommand::Execute(SceneManager& scene)
 {
-	return scene.SetEntityNameState(m_Target, m_AfterName);
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetNameCommand::Undo(SceneManager& scene)
 {
-	return scene.SetEntityNameState(m_Target, m_BeforeName);
+	return m_Transaction.Undo(scene);
 }
 
 // ---- SetMaterialIndexCommand ----
 
+SetMaterialIndexCommand::SetMaterialIndexCommand(
+	rt2::core::UUID target,
+	int beforeIndex,
+	int afterIndex,
+	std::optional<MaterialOverrideComponent> beforeOverride,
+	std::optional<MaterialOverrideComponent> afterOverride)
+	: m_Target(target)
+	, m_BeforeIndex(beforeIndex)
+	, m_AfterIndex(afterIndex)
+	, m_BeforeOverride(std::move(beforeOverride))
+	, m_AfterOverride(std::move(afterOverride))
+	, m_Transaction(
+		std::vector<PrefabValueEdit>{
+			{ PrefabValueKind::MaterialIndex, m_Target, PrefabMarkerDirection::After,
+				PrefabMaterialIndexValue{ m_BeforeIndex, m_BeforeOverride },
+				PrefabMaterialIndexValue{ m_AfterIndex, m_AfterOverride } } },
+		std::vector<PrefabCommandTransaction::MarkerSpec>{
+			{ m_Target, PrefabComponentKeyFor<MaterialOverrideComponent>::value, true } })
+{
+}
+
 EditorMutationResult SetMaterialIndexCommand::Execute(SceneManager& scene)
 {
-	auto result = scene.SetMaterialIndexState(m_Target, m_AfterIndex);
-	if (!result.success) return result;
-	// SetMaterialIndexState re-derived the override from the material at
-	// m_AfterIndex via RecordMaterialOverride. Overwrite with the exact
-	// stored after-override (or remove if absent) so Undo can restore the
-	// precise before-state.
-	scene.InstallMaterialOverride(m_Target, m_AfterOverride);
-	return result;
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetMaterialIndexCommand::Undo(SceneManager& scene)
 {
-	auto result = scene.SetMaterialIndexState(m_Target, m_BeforeIndex);
-	if (!result.success) return result;
-	scene.InstallMaterialOverride(m_Target, m_BeforeOverride);
-	return result;
+	return m_Transaction.Undo(scene);
 }
 
 // ---- SetMaterialPropertiesCommand ----
 
+SetMaterialPropertiesCommand::SetMaterialPropertiesCommand(
+	int slotIndex,
+	SceneMaterial beforeMaterial,
+	SceneMaterial afterMaterial,
+	OverrideList beforeOverrides,
+	OverrideList afterOverrides)
+	: m_SlotIndex(slotIndex)
+	, m_BeforeMaterial(std::move(beforeMaterial))
+	, m_AfterMaterial(std::move(afterMaterial))
+	, m_BeforeOverrides(std::move(beforeOverrides))
+	, m_AfterOverrides(std::move(afterOverrides))
+{
+	// One materialOverride marker delta per affected prefab member. The
+	// complete fan-out lists (StageMaterialSlot shape) carry the exact live
+	// member set; non-members are dropped at capture, so including every
+	// member here is safe.
+	std::vector<PrefabCommandTransaction::MarkerSpec> markers;
+	markers.reserve(m_BeforeOverrides.size() + m_AfterOverrides.size());
+	auto addMember = [&](const rt2::core::UUID& member) {
+		for (const auto& existing : markers)
+			if (existing.member == member) return;
+		markers.push_back({ member,
+			PrefabComponentKeyFor<MaterialOverrideComponent>::value, true });
+	};
+	for (const auto& pair : m_BeforeOverrides) addMember(pair.first);
+	for (const auto& pair : m_AfterOverrides) addMember(pair.first);
+
+	m_Transaction = PrefabCommandTransaction(
+		std::vector<PrefabValueEdit>{
+			{ PrefabValueKind::MaterialSlotProperties, rt2::core::UUID{},
+				PrefabMarkerDirection::After,
+				PrefabMaterialSlotValue{ m_SlotIndex, m_BeforeMaterial, m_BeforeOverrides },
+				PrefabMaterialSlotValue{ m_SlotIndex, m_AfterMaterial, m_AfterOverrides } } },
+		std::move(markers));
+}
+
 EditorMutationResult SetMaterialPropertiesCommand::Execute(SceneManager& scene)
 {
-	auto result = scene.SetMaterialPropertiesState(m_SlotIndex, m_AfterMaterial);
-	if (!result.success) return result;
-	// Restore the exact after-overrides for the entities tracked at capture
-	// time. SetMaterialPropertiesState re-derived overrides for every
-	// imported entity referencing the slot; the command's after-overrides
-	// list is the authoritative snapshot.
-	for (const auto& [uuid, ov] : m_AfterOverrides)
-		scene.InstallMaterialOverride(uuid, ov);
-	// Entities that had a before-override but are NOT in the after-list must
-	// have their override removed (the slot no longer references them, or
-	// the after-state deliberately dropped the override). Compute the diff.
-	std::unordered_map<rt2::core::UUID, bool> afterPresent;
-	afterPresent.reserve(m_AfterOverrides.size());
-	for (const auto& p : m_AfterOverrides)
-		afterPresent.emplace(p.first, true);
-	for (const auto& [uuid, ov] : m_BeforeOverrides)
-	{
-		if (!afterPresent.count(uuid))
-			scene.InstallMaterialOverride(uuid, std::nullopt);
-	}
-	return result;
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetMaterialPropertiesCommand::Undo(SceneManager& scene)
 {
-	auto result = scene.SetMaterialPropertiesState(m_SlotIndex, m_BeforeMaterial);
-	if (!result.success) return result;
-	for (const auto& [uuid, ov] : m_BeforeOverrides)
-		scene.InstallMaterialOverride(uuid, ov);
-	// Remove overrides for entities that gained one during Execute but were
-	// not present before.
-	std::unordered_map<rt2::core::UUID, bool> beforePresent;
-	beforePresent.reserve(m_BeforeOverrides.size());
-	for (const auto& p : m_BeforeOverrides)
-		beforePresent.emplace(p.first, true);
-	for (const auto& [uuid, ov] : m_AfterOverrides)
-	{
-		if (!beforePresent.count(uuid))
-			scene.InstallMaterialOverride(uuid, std::nullopt);
-	}
+	return m_Transaction.Undo(scene);
+}
+
+// ---- DuplicateMaterialAndAssignCommand ----
+
+DuplicateMaterialAndAssignCommand::DuplicateMaterialAndAssignCommand(
+	PrefabMaterialDuplicateStage stage)
+	: m_Stage(std::move(stage))
+	, m_Transaction(
+		std::vector<PrefabValueEdit>{
+			{ PrefabValueKind::MaterialDuplicateAndAssign, m_Stage.entity,
+				PrefabMarkerDirection::After,
+				PrefabMaterialDuplicateValue{
+					m_Stage.sourceIndex, m_Stage.proposedIndex, m_Stage.beforeEntityIndex,
+					m_Stage.sourceMaterial, m_Stage.beforeOverride },
+				PrefabMaterialDuplicateValue{
+					m_Stage.sourceIndex, m_Stage.proposedIndex, m_Stage.proposedIndex,
+					m_Stage.sourceMaterial, m_Stage.afterOverride } } },
+		std::vector<PrefabCommandTransaction::MarkerSpec>{
+			{ m_Stage.entity, PrefabComponentKeyFor<MaterialOverrideComponent>::value, true } })
+{
+}
+
+EditorMutationResult DuplicateMaterialAndAssignCommand::Execute(SceneManager& scene)
+{
+	if (m_Stage.documentGeneration != scene.DocumentGeneration()
+		|| m_Stage.resourceGeneration != scene.ResourceGeneration())
+		return EditorMutationResult::Failure(
+			rt2::core::Error::InvalidArgument, m_Stage.entity.ToString(),
+			"material duplicate staging is stale");
+	// This boolean is command-owned and monotonic. It becomes true only after
+	// the real atomic first Execute has succeeded and changed the document.
+	m_Transaction.SetMaterialDuplicateOwnership(
+		m_SlotCreatedBySuccessfulExecute
+			? std::optional<MaterialDuplicateOwnershipToken>{MaterialDuplicateOwnershipToken{}}
+			: std::nullopt);
+	const auto result = m_Transaction.Execute(scene);
+	if (result.success && result.effective)
+		m_SlotCreatedBySuccessfulExecute = true;
 	return result;
+}
+
+EditorMutationResult DuplicateMaterialAndAssignCommand::Undo(SceneManager& scene)
+{
+	if (m_Stage.documentGeneration != scene.DocumentGeneration()
+		|| m_Stage.resourceGeneration != scene.ResourceGeneration())
+		return EditorMutationResult::Failure(
+			rt2::core::Error::InvalidArgument, m_Stage.entity.ToString(),
+			"material duplicate staging is stale");
+	// Undo retains the copied slot, so the same command remains authorized for
+	// its later Redo. The transaction still validates all bytes/generations.
+	m_Transaction.SetMaterialDuplicateOwnership(
+		m_SlotCreatedBySuccessfulExecute
+			? std::optional<MaterialDuplicateOwnershipToken>{MaterialDuplicateOwnershipToken{}}
+			: std::nullopt);
+	return m_Transaction.Undo(scene);
 }
 
 // ---- SetLightCommand ----
 
 EditorMutationResult SetLightCommand::Execute(SceneManager& scene)
 {
-	return scene.SetLightPropertiesState(m_Target, m_AfterValue);
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetLightCommand::Undo(SceneManager& scene)
 {
-	return scene.SetLightPropertiesState(m_Target, m_BeforeValue);
+	return m_Transaction.Undo(scene);
 }
 
 // ---- SetCameraCommand ----
 
 EditorMutationResult SetCameraCommand::Execute(SceneManager& scene)
 {
-	return scene.SetCameraPropertiesState(m_Target, m_AfterValue);
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetCameraCommand::Undo(SceneManager& scene)
 {
-	return scene.SetCameraPropertiesState(m_Target, m_BeforeValue);
+	return m_Transaction.Undo(scene);
 }
 
 // ---- SetMotionCommand ----
 
+SetMotionCommand::SetMotionCommand(rt2::core::UUID target,
+                                   std::optional<MotionComponent> beforeValue,
+                                   std::optional<MotionComponent> afterValue)
+	: m_Target(target)
+	, m_BeforeValue(std::move(beforeValue))
+	, m_AfterValue(std::move(afterValue))
+	, m_Transaction(
+		std::vector<PrefabValueEdit>{
+			{ PrefabValueKind::MotionState, m_Target, PrefabMarkerDirection::After,
+				m_BeforeValue, m_AfterValue } },
+		std::vector<PrefabCommandTransaction::MarkerSpec>{
+			{ m_Target, PrefabComponentKeyFor<MotionComponent>::value,
+				m_AfterValue.has_value() } })
+{
+}
+
 EditorMutationResult SetMotionCommand::Execute(SceneManager& scene)
 {
-	return scene.SetMotionState(m_Target, m_AfterValue);
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetMotionCommand::Undo(SceneManager& scene)
 {
-	return scene.SetMotionState(m_Target, m_BeforeValue);
+	return m_Transaction.Undo(scene);
 }
 
 // ---- SetScriptCommand ----
 
+SetScriptCommand::SetScriptCommand(rt2::core::UUID target,
+                                   std::optional<ScriptComponent> beforeValue,
+                                   std::optional<ScriptComponent> afterValue)
+	: m_Target(target)
+	, m_BeforeValue(std::move(beforeValue))
+	, m_AfterValue(std::move(afterValue))
+	, m_Transaction(
+		std::vector<PrefabValueEdit>{
+			{ PrefabValueKind::ScriptState, m_Target, PrefabMarkerDirection::After,
+				m_BeforeValue, m_AfterValue } },
+		std::vector<PrefabCommandTransaction::MarkerSpec>{
+			{ m_Target, PrefabComponentKeyFor<ScriptComponent>::value,
+				m_AfterValue.has_value() } })
+{
+}
+
 EditorMutationResult SetScriptCommand::Execute(SceneManager& scene)
 {
-	return scene.SetScriptState(m_Target, m_AfterValue);
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult SetScriptCommand::Undo(SceneManager& scene)
 {
-	return scene.SetScriptState(m_Target, m_BeforeValue);
+	return m_Transaction.Undo(scene);
 }
 
 std::string SetScriptCommand::Description() const
@@ -257,14 +398,41 @@ std::string SetScriptCommand::Description() const
 
 // ---- AlignCameraCommand ----
 
+AlignCameraCommand::AlignCameraCommand(rt2::core::UUID target,
+                                       EditableTRS beforeLocal,
+                                       EditableTRS afterLocal,
+                                       CameraComponent beforeCamera,
+                                       CameraComponent afterCamera)
+	: m_Target(target)
+	, m_BeforeLocal(beforeLocal)
+	, m_AfterLocal(afterLocal)
+	, m_BeforeCamera(beforeCamera)
+	, m_AfterCamera(afterCamera)
+{
+	// Mark ONLY the wires whose canonical form actually changes. A pose edit
+	// that touches only the camera (or only the transform) must not diverge
+	// the other inherited wire with a marker for an edit that never happened.
+	std::vector<PrefabCommandTransaction::MarkerSpec> markers;
+	if (!CanonicalTrsEqual(m_BeforeLocal, m_AfterLocal))
+		markers.push_back({ m_Target, PrefabComponentKeyFor<Transform>::value, true });
+	if (!CanonicalCameraEqual(m_BeforeCamera, m_AfterCamera))
+		markers.push_back({ m_Target, PrefabComponentKeyFor<CameraComponent>::value, true });
+	m_Transaction = PrefabCommandTransaction(
+		std::vector<PrefabValueEdit>{
+			{ PrefabValueKind::CameraPose, m_Target, PrefabMarkerDirection::After,
+				PrefabCameraPoseValue{ m_BeforeLocal, m_BeforeCamera },
+				PrefabCameraPoseValue{ m_AfterLocal, m_AfterCamera } } },
+		std::move(markers));
+}
+
 EditorMutationResult AlignCameraCommand::Execute(SceneManager& scene)
 {
-	return scene.SetCameraPoseState(m_Target, m_AfterLocal, m_AfterCamera);
+	return m_Transaction.Execute(scene);
 }
 
 EditorMutationResult AlignCameraCommand::Undo(SceneManager& scene)
 {
-	return scene.SetCameraPoseState(m_Target, m_BeforeLocal, m_BeforeCamera);
+	return m_Transaction.Undo(scene);
 }
 
 // ---- Factories ----
@@ -315,42 +483,64 @@ std::unique_ptr<IEditorCommand> MakeSetMaterialPropertiesCommandIfEffective(
 		std::move(beforeOverrides), std::move(afterOverrides));
 }
 
+std::unique_ptr<IEditorCommand> MakeDuplicateMaterialAndAssignCommand(
+	const PrefabMaterialDuplicateStage& stage)
+{
+	if (stage.entity.IsNull() || stage.sourceIndex < 0
+		|| stage.proposedIndex <= stage.sourceIndex)
+		return nullptr;
+	return std::make_unique<DuplicateMaterialAndAssignCommand>(stage);
+}
+
 std::unique_ptr<IEditorCommand> MakeSetLightCommandIfEffective(
 	rt2::core::UUID target,
 	LightComponent beforeValue,
-	LightComponent afterValue)
+	LightComponent afterValue,
+	const PrefabCommandTransaction::ExplicitCapture* explicitCapture)
 {
 	if (LightEqual(beforeValue, afterValue)) return nullptr;
-	return std::make_unique<SetLightCommand>(target, beforeValue, afterValue);
+	auto cmd = std::make_unique<SetLightCommand>(target, beforeValue, afterValue);
+	if (explicitCapture)
+		cmd->SetExplicitCapture(*explicitCapture);
+	return cmd;
 }
 
 std::unique_ptr<IEditorCommand> MakeSetCameraCommandIfEffective(
 	rt2::core::UUID target,
 	CameraComponent beforeValue,
-	CameraComponent afterValue)
+	CameraComponent afterValue,
+	const PrefabCommandTransaction::ExplicitCapture* explicitCapture)
 {
 	if (CameraEqual(beforeValue, afterValue)) return nullptr;
-	return std::make_unique<SetCameraCommand>(target, beforeValue, afterValue);
+	auto cmd = std::make_unique<SetCameraCommand>(target, beforeValue, afterValue);
+	if (explicitCapture)
+		cmd->SetExplicitCapture(*explicitCapture);
+	return cmd;
 }
 
 std::unique_ptr<IEditorCommand> MakeSetMotionCommandIfEffective(
 	rt2::core::UUID target,
 	std::optional<MotionComponent> beforeValue,
-	std::optional<MotionComponent> afterValue)
+	std::optional<MotionComponent> afterValue,
+	const PrefabCommandTransaction::ExplicitCapture* explicitCapture)
 {
 	const bool beforeHas = beforeValue.has_value();
 	const bool afterHas = afterValue.has_value();
 	if (!beforeHas && !afterHas) return nullptr;
 	if (beforeHas && afterHas && MotionEqual(*beforeValue, *afterValue))
 		return nullptr;
-	return std::make_unique<SetMotionCommand>(target,
+	auto cmd = std::make_unique<SetMotionCommand>(target,
 		std::move(beforeValue), std::move(afterValue));
+	if (explicitCapture)
+		cmd->SetExplicitCapture(*explicitCapture);
+	return cmd;
 }
 
 std::unique_ptr<IEditorCommand> MakeSetScriptCommandIfEffective(
 	rt2::core::UUID target,
 	std::optional<ScriptComponent> beforeValue,
-	std::optional<ScriptComponent> afterValue)
+	std::optional<ScriptComponent> afterValue,
+	const PrefabCommandTransaction::ExplicitCapture* explicitCapture)
 {
 	const bool beforeHas = beforeValue.has_value();
 	const bool afterHas = afterValue.has_value();
@@ -399,8 +589,11 @@ std::unique_ptr<IEditorCommand> MakeSetScriptCommandIfEffective(
 	    rt2::core::ScriptComponentCanonicalEqual(beforeValue, afterValue))
 		return nullptr;
 
-	return std::make_unique<SetScriptCommand>(target,
+	auto cmd = std::make_unique<SetScriptCommand>(target,
 		std::move(beforeValue), std::move(afterValue));
+	if (explicitCapture)
+		cmd->SetExplicitCapture(*explicitCapture);
+	return cmd;
 }
 
 std::unique_ptr<IEditorCommand> MakeAlignCameraCommandIfEffective(
@@ -414,4 +607,52 @@ std::unique_ptr<IEditorCommand> MakeAlignCameraCommandIfEffective(
 		return nullptr;
 	return std::make_unique<AlignCameraCommand>(target,
 		beforeLocal, afterLocal, beforeCamera, afterCamera);
+}
+
+// ---- S6-C compensating restore factories (live-preview sessions) ----
+
+std::unique_ptr<IEditorCommand> MakeSetLightRestoreCommand(
+	rt2::core::UUID target,
+	LightComponent originValue,
+	LightComponent finalValue,
+	const PrefabCommandTransaction::ExplicitCapture& explicitCapture)
+{
+	auto cmd = std::make_unique<SetLightCommand>(target, originValue, finalValue);
+	cmd->SetExplicitCapture(explicitCapture);
+	return cmd;
+}
+
+std::unique_ptr<IEditorCommand> MakeSetCameraRestoreCommand(
+	rt2::core::UUID target,
+	CameraComponent originValue,
+	CameraComponent finalValue,
+	const PrefabCommandTransaction::ExplicitCapture& explicitCapture)
+{
+	auto cmd = std::make_unique<SetCameraCommand>(target, originValue, finalValue);
+	cmd->SetExplicitCapture(explicitCapture);
+	return cmd;
+}
+
+std::unique_ptr<IEditorCommand> MakeSetMotionRestoreCommand(
+	rt2::core::UUID target,
+	std::optional<MotionComponent> originValue,
+	std::optional<MotionComponent> finalValue,
+	const PrefabCommandTransaction::ExplicitCapture& explicitCapture)
+{
+	auto cmd = std::make_unique<SetMotionCommand>(target,
+		std::move(originValue), std::move(finalValue));
+	cmd->SetExplicitCapture(explicitCapture);
+	return cmd;
+}
+
+std::unique_ptr<IEditorCommand> MakeSetScriptRestoreCommand(
+	rt2::core::UUID target,
+	std::optional<ScriptComponent> originValue,
+	std::optional<ScriptComponent> finalValue,
+	const PrefabCommandTransaction::ExplicitCapture& explicitCapture)
+{
+	auto cmd = std::make_unique<SetScriptCommand>(target,
+		std::move(originValue), std::move(finalValue));
+	cmd->SetExplicitCapture(explicitCapture);
+	return cmd;
 }
