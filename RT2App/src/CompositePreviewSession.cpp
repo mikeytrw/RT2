@@ -152,9 +152,9 @@ std::optional<PrefabValuePayload> CompositePreviewSession::ReadLiveValueExact(
 std::uint32_t CompositePreviewSession::ExpectedAfterSchema() const
 {
 	std::uint32_t schema = m_Origin.beforeSchema;
-	// Mirror the transaction's anyMarkerAdded rule: an absent->present marker
-	// promotes the document to the serializer's current schema; an already
-	// present (or ordinary/absent) marker leaves the origin schema unchanged.
+	// Mirror the transaction's promotion rule: an absent->present marker edit
+	// promotes an older document to the current schema; an already present (or
+	// ordinary/absent) marker leaves the origin schema unchanged.
 	for (const auto& marker : m_Origin.markers)
 	{
 		if (marker.beforePresent && !*marker.beforePresent && marker.afterPresent)

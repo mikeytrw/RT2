@@ -12385,7 +12385,23 @@ void S6EExercisePrimitive(S2Fixture& f)
     (void)childHandle;
     const UUID root = H6B(registry, rootHandle);
     const auto key = PrefabComponentKeyFor<PrimitiveComponent>::value;
+    const auto nameKey = PrefabComponentKeyFor<NameComponent>::value;
     REQUIRE_FALSE(f.manager.IsOverridden(root, key).value);
+    // Seed a genuine v6 original-key marker through the explicit schema
+    // transport.  The subsequent primitive edit must promote to v7, while
+    // Undo restores this surviving v6 state exactly.
+    f.manager.AuthoringDoc().metadata.schemaVersion =
+        SceneSerializer::PrefabOverrideSchemaVersion;
+    auto namePlan = f.manager.PreparePrefabMarkerEdits(
+        {{ root, nameKey, false, true }}, PrefabMarkerDirection::After,
+        SceneSerializer::PrefabOverrideSchemaVersion,
+        SceneSerializer::PrefabOverrideSchemaVersion);
+    REQUIRE(namePlan.IsOk());
+    REQUIRE(f.manager.CommitPrefabMarkerPlan(std::move(namePlan.value))
+        .anyStateChange);
+    REQUIRE(f.manager.IsOverridden(root, nameKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion ==
+          SceneSerializer::PrefabOverrideSchemaVersion);
 
     PrefabCommandTransaction transaction(
         {}, { PrefabCommandTransaction::MarkerSpec{ root, key, true } });
@@ -12396,6 +12412,12 @@ void S6EExercisePrimitive(S2Fixture& f)
     CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
     REQUIRE(transaction.Undo(f.manager).success);
     CHECK_FALSE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.IsOverridden(root, nameKey).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion ==
+          SceneSerializer::PrefabOverrideSchemaVersion);
+    REQUIRE(transaction.Redo(f.manager).success);
+    CHECK(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
     std::filesystem::remove_all(dir);
 }
 

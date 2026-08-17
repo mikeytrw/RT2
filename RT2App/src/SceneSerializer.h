@@ -135,6 +135,8 @@ public:
     static constexpr uint32_t PrefabOverrideSchemaVersion = 6;
     static constexpr uint32_t PrimitiveOverrideSchemaVersion = 7;
     static constexpr uint32_t ProjectBindingSchemaVersion = 6;
+    static constexpr bool UsesProjectBinding(uint32_t version) noexcept
+    { return version >= ProjectBindingSchemaVersion; }
     // Lowest readable schema version; v3 remains readable for migration.
     static constexpr uint32_t MinReadVersion = 3;
 

@@ -5,43 +5,40 @@
 
 #include "AssetResolver.h"
 #include "ECSComponents.h"
-#include "ISceneRenderBridge.h"
 #include "PrefabComponentKey.h"
 #include "PrefabComponentValueEquality.h"
+#include "SceneSyncImpact.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
+#include <tuple>
+#include <type_traits>
 #include <variant>
 #include <vector>
 
-// CPU-only vocabulary shared by the future W4 discovery/planning and command
-// layers.  This header intentionally contains no scene host, renderer,
-// watcher, or filesystem mutation API; it is a durable plan/apply boundary.
+// CPU-only vocabulary shared by future W4 discovery/planning and command
+// layers. No scene host, renderer, watcher, or filesystem mutation API enters
+// this boundary; all resource data is immutable once placed in a plan.
 namespace rt2::core {
 
 struct PrefabSourceFingerprint
 {
     std::filesystem::path normalizedPath;
     UUID assetId;
-    // Canonical content digest supplied by the asset loader.  A timestamp is
-    // deliberately not part of identity: unchanged bytes must coalesce.
     std::string contentDigest;
 
     bool IsValid() const noexcept
-    {
-        return !normalizedPath.empty() && !assetId.IsNull() &&
-               !contentDigest.empty();
-    }
+    { return !normalizedPath.empty() && !assetId.IsNull() && !contentDigest.empty(); }
 
     friend bool operator==(const PrefabSourceFingerprint& a,
                            const PrefabSourceFingerprint& b) noexcept
-    {
-        return a.normalizedPath == b.normalizedPath &&
-               a.assetId == b.assetId && a.contentDigest == b.contentDigest;
-    }
+    { return std::tie(a.normalizedPath, a.assetId, a.contentDigest) ==
+             std::tie(b.normalizedPath, b.assetId, b.contentDigest); }
     friend bool operator!=(const PrefabSourceFingerprint& a,
                            const PrefabSourceFingerprint& b) noexcept
     { return !(a == b); }
@@ -54,9 +51,6 @@ enum class PrefabPropagationInstanceDisposition : std::uint8_t
     Quarantined,
 };
 
-// A complete durable component payload.  std::nullopt means explicit
-// component absence; link metadata and derived MeshRef are intentionally not
-// legal values in this operation variant.
 using PrefabPropagationComponentValue = std::variant<
     NameComponent,
     Transform,
@@ -69,6 +63,52 @@ using PrefabPropagationComponentValue = std::variant<
     MotionComponent,
     ScriptComponent>;
 
+inline bool PrefabPropagationValueEqual(const PrefabPropagationComponentValue& a,
+                                        const PrefabPropagationComponentValue& b) noexcept
+{
+    return std::visit([](const auto& x, const auto& y) -> bool {
+        using X = std::decay_t<decltype(x)>;
+        using Y = std::decay_t<decltype(y)>;
+        if constexpr (!std::is_same_v<X, Y>) return false;
+        else return PrefabCanonicalComponentEqual(x, y);
+    }, a, b);
+}
+
+inline bool PrefabPropagationKeyAllowsValue(const PrefabComponentKey& key,
+                                             const PrefabPropagationComponentValue& value) noexcept
+{
+    const auto canonical = FindComponentByWire(key.wire());
+    if (!canonical || *canonical != key) return false;
+    // importedSource is source-authoritative rather than user-overridable,
+    // but it is a legal propagation operation. Links and derived MeshRef are
+    // absent from the payload variant and therefore cannot enter this path.
+    const bool sourceAuthoritative = key.wire() == PrefabWireKeys::kImportedSource;
+    if (!key.overridable() && !sourceAuthoritative) return false;
+    return std::visit([&](const auto& payload) -> bool {
+        using T = std::decay_t<decltype(payload)>;
+        if constexpr (std::is_same_v<T, NameComponent>)
+            return key.wire() == PrefabWireKeys::kName;
+        else if constexpr (std::is_same_v<T, Transform>)
+            return key.wire() == PrefabWireKeys::kTransform;
+        else if constexpr (std::is_same_v<T, VisibleComponent>)
+            return key.wire() == PrefabWireKeys::kVisible;
+        else if constexpr (std::is_same_v<T, PrimitiveComponent>)
+            return key.wire() == PrefabWireKeys::kPrimitive;
+        else if constexpr (std::is_same_v<T, ImportedMeshSourceComponent>)
+            return key.wire() == PrefabWireKeys::kImportedSource;
+        else if constexpr (std::is_same_v<T, MaterialOverrideComponent>)
+            return key.wire() == PrefabWireKeys::kMaterialOverride;
+        else if constexpr (std::is_same_v<T, LightComponent>)
+            return key.wire() == PrefabWireKeys::kLight;
+        else if constexpr (std::is_same_v<T, CameraComponent>)
+            return key.wire() == PrefabWireKeys::kCamera;
+        else if constexpr (std::is_same_v<T, MotionComponent>)
+            return key.wire() == PrefabWireKeys::kMotion;
+        else
+            return key.wire() == PrefabWireKeys::kScript;
+    }, value);
+}
+
 struct PrefabPropagationComponentOperation
 {
     UUID entityUuid;
@@ -79,8 +119,22 @@ struct PrefabPropagationComponentOperation
 
     bool IsValid() const noexcept
     {
-        return !entityUuid.IsNull() && !templateId.IsNull() && key.valid() &&
-               key.overridable();
+        if (entityUuid.IsNull() || templateId.IsNull() || !key.valid()) return false;
+        if (!before && !after) return false;
+        if (before && !PrefabPropagationKeyAllowsValue(key, *before)) return false;
+        if (after && !PrefabPropagationKeyAllowsValue(key, *after)) return false;
+        return true;
+    }
+
+    friend bool operator==(const PrefabPropagationComponentOperation& a,
+                           const PrefabPropagationComponentOperation& b) noexcept
+    {
+        return a.entityUuid == b.entityUuid && a.templateId == b.templateId &&
+               a.key == b.key &&
+               (!a.before && !b.before || a.before && b.before &&
+                   PrefabPropagationValueEqual(*a.before, *b.before)) &&
+               (!a.after && !b.after || a.after && b.after &&
+                   PrefabPropagationValueEqual(*a.after, *b.after));
     }
 };
 
@@ -91,18 +145,103 @@ enum class PrefabPropagationResourceKind : std::uint8_t
     Texture,
 };
 
-struct PrefabPropagationResourceOwnership
+struct PrefabPropagationSourceSlot
+{
+    std::uint32_t value = 0;
+    friend bool operator==(const PrefabPropagationSourceSlot& a,
+                           const PrefabPropagationSourceSlot& b) noexcept
+    { return a.value == b.value; }
+};
+
+struct PrefabPropagationSceneSlot
+{
+    std::uint32_t value = 0;
+    friend bool operator==(const PrefabPropagationSceneSlot& a,
+                           const PrefabPropagationSceneSlot& b) noexcept
+    { return a.value == b.value; }
+};
+
+struct PrefabPropagationResourcePayload
+{
+    std::string sourceIdentity;
+    std::string contentDigest;
+
+    bool IsValid() const noexcept
+    { return !sourceIdentity.empty() && !contentDigest.empty(); }
+
+    friend bool operator==(const PrefabPropagationResourcePayload& a,
+                           const PrefabPropagationResourcePayload& b) noexcept
+    { return a.sourceIdentity == b.sourceIdentity &&
+             a.contentDigest == b.contentDigest; }
+};
+
+// The shared vector is const by construction: Undo/Redo can only rebind the
+// recorded slots and cannot mutate the owned payload block underneath a plan.
+struct PrefabPropagationResourceBlock
 {
     PrefabPropagationResourceKind kind = PrefabPropagationResourceKind::Mesh;
-    // Append-only slots owned by this plan.  Redo reuses these exact slots;
-    // undo only restores references and never compacts the tables.
-    std::vector<std::uint32_t> ownedSlots;
-    std::vector<std::uint32_t> sourceSlots;
+    std::shared_ptr<const std::vector<PrefabPropagationResourcePayload>> entries;
 
     bool IsValid() const noexcept
     {
-        return ownedSlots.size() == sourceSlots.size();
+        if (!entries || entries->empty()) return false;
+        return std::all_of(entries->begin(), entries->end(),
+                           [](const auto& value) { return value.IsValid(); });
     }
+
+    friend bool operator==(const PrefabPropagationResourceBlock& a,
+                           const PrefabPropagationResourceBlock& b) noexcept
+    { return a.kind == b.kind &&
+             (a.entries == b.entries ||
+              (a.entries && b.entries && *a.entries == *b.entries)); }
+};
+
+struct PrefabPropagationResourceRebase
+{
+    PrefabPropagationResourceKind kind = PrefabPropagationResourceKind::Mesh;
+    std::uint32_t sourceExtent = 0;
+    std::uint32_t sceneExtent = 0;
+    std::uint32_t sceneAppendBase = 0;
+    std::vector<PrefabPropagationSourceSlot> sourceSlots;
+    std::vector<PrefabPropagationSceneSlot> sceneSlots;
+    PrefabPropagationResourceBlock owned;
+
+    bool IsValid() const noexcept
+    {
+        if (owned.kind != kind || !owned.IsValid() ||
+            sourceSlots.size() != sceneSlots.size() ||
+            sourceSlots.size() != owned.entries->size() || sourceSlots.empty())
+            return false;
+        std::vector<std::uint32_t> sources;
+        sources.reserve(sourceSlots.size());
+        for (std::size_t i = 0; i < sourceSlots.size(); ++i)
+        {
+            if (sourceSlots[i].value >= sourceExtent ||
+                sceneSlots[i].value != sceneAppendBase + i ||
+                sceneSlots[i].value >= sceneExtent)
+                return false;
+            sources.push_back(sourceSlots[i].value);
+        }
+        std::sort(sources.begin(), sources.end());
+        return std::adjacent_find(sources.begin(), sources.end()) == sources.end();
+    }
+
+    friend bool operator==(const PrefabPropagationResourceRebase& a,
+                           const PrefabPropagationResourceRebase& b) noexcept
+    { return a.kind == b.kind && a.sourceExtent == b.sourceExtent &&
+             a.sceneExtent == b.sceneExtent && a.sceneAppendBase == b.sceneAppendBase &&
+             a.sourceSlots == b.sourceSlots && a.sceneSlots == b.sceneSlots &&
+             a.owned == b.owned; }
+};
+
+struct PrefabPropagationResourceOwnership
+{
+    PrefabPropagationResourceRebase rebase;
+
+    bool IsValid() const noexcept { return rebase.IsValid(); }
+    friend bool operator==(const PrefabPropagationResourceOwnership& a,
+                           const PrefabPropagationResourceOwnership& b) noexcept
+    { return a.rebase == b.rebase; }
 };
 
 struct PrefabPropagationDiagnostic
@@ -115,14 +254,27 @@ struct PrefabPropagationDiagnostic
     UUID templateId;
     std::string reason;
 
-    // Stable ordering independent of EnTT traversal or unordered containers.
+    friend bool operator==(const PrefabPropagationDiagnostic& a,
+                           const PrefabPropagationDiagnostic& b) noexcept
+    { return std::tie(a.severity, a.prefabPath, a.prefabAssetId, a.instanceId,
+                      a.rootUuid, a.templateId, a.reason) ==
+             std::tie(b.severity, b.prefabPath, b.prefabAssetId, b.instanceId,
+                      b.rootUuid, b.templateId, b.reason); }
+
+    friend bool operator<(const PrefabPropagationDiagnostic& a,
+                          const PrefabPropagationDiagnostic& b) noexcept
+    { return std::tie(a.severity, a.prefabPath, a.prefabAssetId, a.instanceId,
+                      a.rootUuid, a.templateId, a.reason) <
+             std::tie(b.severity, b.prefabPath, b.prefabAssetId, b.instanceId,
+                      b.rootUuid, b.templateId, b.reason); }
+
+    // Kept as a human-readable diagnostic key; structured operator< above is
+    // the ordering authority and cannot collide on delimiter characters.
     std::string SortKey() const
-    {
-        return prefabPath.generic_string() + "|" + prefabAssetId.ToString() +
-               "|" + instanceId.ToString() + "|" + rootUuid.ToString() +
-               "|" + templateId.ToString() + "|" +
-               std::to_string(static_cast<unsigned>(severity)) + "|" + reason;
-    }
+    { return prefabPath.generic_string() + "|" + prefabAssetId.ToString() +
+             "|" + instanceId.ToString() + "|" + rootUuid.ToString() +
+             "|" + templateId.ToString() + "|" +
+             std::to_string(static_cast<unsigned>(severity)) + "|" + reason; }
 };
 
 struct PrefabPropagationInstancePlan
@@ -133,6 +285,13 @@ struct PrefabPropagationInstancePlan
         PrefabPropagationInstanceDisposition::NoOp;
     std::vector<UUID> affectedEntities;
     std::vector<PrefabPropagationDiagnostic> diagnostics;
+
+    friend bool operator==(const PrefabPropagationInstancePlan& a,
+                           const PrefabPropagationInstancePlan& b) noexcept
+    { return a.instanceId == b.instanceId && a.rootUuid == b.rootUuid &&
+             a.disposition == b.disposition &&
+             a.affectedEntities == b.affectedEntities &&
+             a.diagnostics == b.diagnostics; }
 };
 
 struct PrefabPropagationPlan
@@ -147,10 +306,40 @@ struct PrefabPropagationPlan
     std::vector<PrefabPropagationDiagnostic> diagnostics;
     std::vector<UUID> affectedEntities;
     SyncImpact syncImpact = SyncImpact::None;
-    bool anyStateChange = false;
+
+    bool IsValid() const noexcept
+    {
+        for (const auto& operation : componentOperations)
+            if (!operation.IsValid()) return false;
+        for (const auto& ownership : resourceOwnership)
+            if (!ownership.IsValid()) return false;
+        return true;
+    }
 
     bool IsNoOp() const noexcept
-    { return !anyStateChange && componentOperations.empty(); }
+    {
+        if (!IsValid()) return false;
+        for (const auto& op : componentOperations)
+        {
+            if (op.before.has_value() != op.after.has_value())
+                return false;
+            if (op.before && op.after &&
+                !PrefabPropagationValueEqual(*op.before, *op.after))
+                return false;
+        }
+        if (!resourceOwnership.empty()) return false;
+        return true;
+    }
+    bool IsEffective() const noexcept { return !IsNoOp(); }
+
+    friend bool operator==(const PrefabPropagationPlan& a,
+                           const PrefabPropagationPlan& b) noexcept
+    { return a.source == b.source && a.documentGeneration == b.documentGeneration &&
+             a.resourceGeneration == b.resourceGeneration &&
+             a.sourceSchemaVersion == b.sourceSchemaVersion &&
+             a.instances == b.instances && a.componentOperations == b.componentOperations &&
+             a.resourceOwnership == b.resourceOwnership && a.diagnostics == b.diagnostics &&
+             a.affectedEntities == b.affectedEntities && a.syncImpact == b.syncImpact; }
 };
 
 struct PrefabPropagationResult
@@ -167,6 +356,18 @@ struct PrefabPropagationResult
     SyncImpact syncImpact = SyncImpact::None;
     std::vector<UUID> affectedEntities;
     std::vector<PrefabPropagationDiagnostic> diagnostics;
+
+    friend bool operator==(const PrefabPropagationResult& a,
+                           const PrefabPropagationResult& b) noexcept
+    { return a.success == b.success && a.effective == b.effective &&
+             a.disposition == b.disposition &&
+             a.propagatedInstances == b.propagatedInstances &&
+             a.noOpInstances == b.noOpInstances &&
+             a.quarantinedInstances == b.quarantinedInstances &&
+             a.documentGeneration == b.documentGeneration &&
+             a.resourceGeneration == b.resourceGeneration &&
+             a.syncImpact == b.syncImpact && a.affectedEntities == b.affectedEntities &&
+             a.diagnostics == b.diagnostics; }
 };
 
 } // namespace rt2::core

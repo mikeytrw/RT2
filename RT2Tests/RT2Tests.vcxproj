@@ -324,6 +324,9 @@
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="..\RT2App\src\PrefabPropagationContracts.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="..\RT2App\src\SceneAssetReferenceVisitor.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>

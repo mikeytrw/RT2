@@ -160,6 +160,37 @@ TEST_CASE("Phase7 W5 migration assigns once per physical source and writes v4")
     CHECK(provider.calls == 3);
 }
 
+TEST_CASE("Phase 8 W4 S1 v6 migration uses the project asset root")
+{
+    TempTree tree;
+    CountingUuidProvider provider;
+    SceneDocument source;
+    source.SetUuidProvider(&provider);
+    source.metadata.schemaVersion = SceneSerializer::PrefabOverrideSchemaVersion;
+    source.metadata.sourcePath = tree.root / "Assets" / "Scenes" / "legacy.rt2scene";
+    source.metadata.assetRoot = tree.root / "Assets";
+    const auto entity = source.ecs.registry.create();
+    const UUID entityId = UUID::Parse("550e8400-e29b-41d4-a716-446655440021");
+    REQUIRE(source.AssignKnownUuid(entity, entityId));
+    ImportedMeshSourceComponent imported;
+    imported.model.kind = AssetKind::Model;
+    imported.model.path = "model.glb";
+    imported.model.sourceKey = "gltf:scene=0";
+    source.ecs.registry.emplace<ImportedMeshSourceComponent>(entity, imported);
+
+    SceneDocument staged;
+    SceneAssetMigrationReport report;
+    Error err;
+    const SceneAssetMigrationOptions options{
+        tree.root / "Assets",
+        UUID::Parse("550e8400-e29b-41d4-a716-446655440022"),
+        &provider, nullptr};
+    REQUIRE(MigrateSceneAssetReferences(source, staged, options, report, err));
+    CHECK_FALSE(report.incomplete);
+    CHECK(report.unresolvedReferenceCount == 0);
+    CHECK(report.assignedReferenceCount == 1);
+}
+
 TEST_CASE("Phase7 W5 current schema rejects malformed asset identity")
 {
     const auto path = std::filesystem::temp_directory_path() /

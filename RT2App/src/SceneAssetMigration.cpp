@@ -215,7 +215,7 @@ bool MigrateSceneAssetReferences(
 
     const auto assetRoot = CanonicalRoot(options.assetRoot);
     const auto legacyBase =
-        source.metadata.schemaVersion >= SceneSerializer::SchemaVersion &&
+        SceneSerializer::UsesProjectBinding(source.metadata.schemaVersion) &&
         !source.metadata.assetRoot.empty()
             ? CanonicalRoot(source.metadata.assetRoot)
             : (source.metadata.sourcePath.empty()

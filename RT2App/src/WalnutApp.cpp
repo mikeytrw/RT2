@@ -4379,7 +4379,7 @@ public:
 
 			if (projectSnapshot)
 			{
-				if (loadReport->sourceVersion >= rt2::core::SceneSerializer::SchemaVersion &&
+				if (rt2::core::SceneSerializer::UsesProjectBinding(loadReport->sourceVersion) &&
 					(resultDoc->metadata.projectId.IsNull() ||
 					 resultDoc->metadata.projectId !=
 						 projectSnapshot->project.projectId))

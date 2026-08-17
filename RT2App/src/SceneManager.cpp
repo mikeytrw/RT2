@@ -5699,12 +5699,12 @@ bool S5CanonicalizeVector(const std::vector<PrefabComponentKey>& raw,
 // of an undo when no override remains anywhere. A stored vector that cannot be
 // canonicalized fills `err` and returns false — the state cannot be decided, so
 // the downgrade fails loudly rather than silently dropping a marker.
-bool S5RemainingOverrides(const rt2::core::SceneDocument& document,
+bool S5MinimumOverrideSchema(const rt2::core::SceneDocument& document,
                           const std::vector<PrefabMarkerPlan::MemberTransition>& targets,
-                          bool& remaining,
+                          std::uint32_t& minimum,
                           rt2::core::Error& err)
 {
-	remaining = false;
+	minimum = rt2::core::SceneSerializer::MinReadVersion;
 	std::unordered_map<rt2::core::UUID, const std::vector<PrefabComponentKey>*> planned;
 	planned.reserve(targets.size());
 	for (const auto& t : targets)
@@ -5725,15 +5725,17 @@ bool S5RemainingOverrides(const rt2::core::SceneDocument& document,
 		}
 		const auto it = planned.find(id->id);
 		const auto& effective = (it != planned.end()) ? *it->second : pm.overrides;
-		if (effective.empty())
-			continue;
 		std::vector<PrefabComponentKey> canonical;
 		if (!S5CanonicalizeVector(effective, canonical, err))
 			return false; // undecidable stored state: fail loudly
 		if (!canonical.empty())
 		{
-			remaining = true;
-			return true;
+			minimum = std::max(minimum,
+				rt2::core::SceneSerializer::PrefabOverrideSchemaVersion);
+			for (const auto& key : canonical)
+				if (key.wire() == PrefabWireKeys::kPrimitive)
+					minimum = std::max(minimum,
+						rt2::core::SceneSerializer::PrimitiveOverrideSchemaVersion);
 		}
 	}
 	return true;
@@ -5787,24 +5789,23 @@ bool S5ValidateSchemaTransition(
 		return false;
 	}
 
-	bool anyNonEmptyTarget = false;
-	for (const auto& t : transitions)
-		if (!t.target.empty()) { anyNonEmptyTarget = true; break; }
-	if (anyNonEmptyTarget && targetSchemaVersion < rt2::core::SceneSerializer::SchemaVersion)
+	std::uint32_t minimumSchema = rt2::core::SceneSerializer::MinReadVersion;
+	if (!S5MinimumOverrideSchema(document, transitions, minimumSchema, err))
+		return false;
+	if (targetSchemaVersion < minimumSchema)
 	{
 		err.code = rt2::core::Error::InvalidArgument;
 		err.detail = "override targets require a document schema of at least "
-			+ std::to_string(rt2::core::SceneSerializer::SchemaVersion)
-			+ " (cannot be stored at " + std::to_string(targetSchemaVersion) + ")";
+			+ std::to_string(minimumSchema)
+			+ " (cannot be stored at " + std::to_string(targetSchemaVersion) + ")"
+			+ (targetSchemaVersion < document.metadata.schemaVersion
+				? "; an override remains elsewhere in the document" : "");
 		return false;
 	}
 
 	if (targetSchemaVersion < document.metadata.schemaVersion)
 	{
-		bool remaining = false;
-		if (!S5RemainingOverrides(document, transitions, remaining, err))
-			return false; // malformed stored state elsewhere: fail loudly
-		if (remaining)
+		if (minimumSchema > targetSchemaVersion)
 		{
 			err.code = rt2::core::Error::InvalidArgument;
 			err.detail = "cannot downgrade the document schema below the live schema"

@@ -7,6 +7,8 @@
 
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <memory>
 #include <string>
 
 using namespace rt2::core;
@@ -179,7 +181,12 @@ TEST_CASE("Phase 8 W4 S1: contracts carry deterministic identity and disposition
     diagnostic.rootUuid = kEntity;
     diagnostic.templateId = kTemplate;
     diagnostic.reason = "test";
-    CHECK(diagnostic.SortKey() < (diagnostic.SortKey() + "x"));
+    auto colliding = diagnostic;
+    colliding.reason = "test|other";
+    auto reordered = diagnostic;
+    reordered.prefabPath = "assets/fixture|rt2prefab";
+    CHECK(diagnostic == diagnostic);
+    CHECK((colliding < reordered) != (reordered < colliding));
 
     PrefabPropagationPlan plan;
     plan.source = a;
@@ -190,4 +197,121 @@ TEST_CASE("Phase 8 W4 S1: contracts carry deterministic identity and disposition
     CHECK(plan.IsNoOp());
     CHECK(plan.instances.front().disposition ==
           PrefabPropagationInstanceDisposition::Quarantined);
+}
+
+TEST_CASE("Phase 8 W4 S1: project binding boundary is v6, not current v7")
+{
+    CHECK_FALSE(SceneSerializer::UsesProjectBinding(5));
+    CHECK(SceneSerializer::UsesProjectBinding(6));
+    CHECK(SceneSerializer::UsesProjectBinding(SceneSerializer::SchemaVersion));
+}
+
+TEST_CASE("Phase 8 W4 S1: canonical payload equality is durable and NaN-explicit")
+{
+    PrimitiveComponent primitive;
+    auto same = primitive;
+    CHECK(PrefabCanonicalComponentEqual(primitive, same));
+    primitive.size = std::numeric_limits<float>::quiet_NaN();
+    CHECK_FALSE(PrefabCanonicalComponentEqual(primitive, primitive));
+
+    Transform transform;
+    auto runtimeDifferent = transform;
+    runtimeDifferent.worldMatrix[0][0] = 9.0f;
+    runtimeDifferent.dirty = false;
+    CHECK(PrefabCanonicalComponentEqual(transform, runtimeDifferent));
+
+    std::optional<PrimitiveComponent> absent;
+    CHECK(OptionalPrimitiveComponentCanonicalEqual(absent, absent));
+    CHECK_FALSE(OptionalPrimitiveComponentCanonicalEqual(absent, same));
+}
+
+TEST_CASE("Phase 8 W4 S1: component operations enforce key and payload correspondence")
+{
+    const auto entity = kEntity;
+    const auto templ = kTemplate;
+    const auto nameKey = PrefabComponentKeyFor<NameComponent>::value;
+    const auto importedKey = PrefabComponentKeyFor<ImportedMeshSourceComponent>::value;
+    const auto transformKey = PrefabComponentKeyFor<Transform>::value;
+    PrefabPropagationComponentOperation name{
+        entity, templ, nameKey,
+        PrefabPropagationComponentValue{NameComponent{"before"}},
+        PrefabPropagationComponentValue{NameComponent{"after"}}};
+    CHECK(name.IsValid());
+
+    ImportedMeshSourceComponent source;
+    source.model.kind = AssetKind::Model;
+    source.model.path = "mesh.glb";
+    source.model.sourceKey = "gltf:scene=0";
+    PrefabPropagationComponentOperation imported{
+        entity, templ, importedKey,
+        PrefabPropagationComponentValue{source}, std::nullopt};
+    CHECK(imported.IsValid());
+
+    PrefabPropagationComponentOperation mismatch = name;
+    mismatch.key = transformKey;
+    CHECK_FALSE(mismatch.IsValid());
+    mismatch = name;
+    mismatch.after = PrefabPropagationComponentValue{Transform{}};
+    CHECK_FALSE(mismatch.IsValid());
+
+    mismatch = name;
+    mismatch.key = PrefabComponentKey(std::string_view{"meshRef"}, false);
+    CHECK_FALSE(mismatch.IsValid());
+}
+
+TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only blocks")
+{
+    auto payloads = std::make_shared<const std::vector<PrefabPropagationResourcePayload>>(
+        std::vector<PrefabPropagationResourcePayload>{
+            {"mesh:0", "digest-a"}, {"mesh:1", "digest-b"}});
+    PrefabPropagationResourceOwnership ownership;
+    ownership.rebase.kind = PrefabPropagationResourceKind::Mesh;
+    ownership.rebase.sourceExtent = 4;
+    ownership.rebase.sceneExtent = 8;
+    ownership.rebase.sceneAppendBase = 5;
+    ownership.rebase.sourceSlots = {{1}, {3}};
+    ownership.rebase.sceneSlots = {{5}, {6}};
+    ownership.rebase.owned = {PrefabPropagationResourceKind::Mesh, payloads};
+    CHECK(ownership.IsValid());
+
+    auto duplicate = ownership;
+    duplicate.rebase.sourceSlots[1].value = 1;
+    CHECK_FALSE(duplicate.IsValid());
+    auto nonContiguous = ownership;
+    nonContiguous.rebase.sceneSlots[1].value = 7;
+    CHECK_FALSE(nonContiguous.IsValid());
+    auto mismatched = ownership;
+    mismatched.rebase.owned.kind = PrefabPropagationResourceKind::Material;
+    CHECK_FALSE(mismatched.IsValid());
+
+    PrefabPropagationPlan resourceOnly;
+    resourceOnly.resourceOwnership.push_back(ownership);
+    CHECK_FALSE(resourceOnly.IsNoOp());
+    CHECK(resourceOnly.IsEffective());
+}
+
+TEST_CASE("Phase 8 W4 S1: plan and result equality cover complete durable state")
+{
+    PrefabPropagationPlan a;
+    a.source.normalizedPath = "assets/a.rt2prefab";
+    a.source.assetId = kInstance;
+    a.source.contentDigest = "digest";
+    a.syncImpact = SyncImpact::Structural;
+    a.affectedEntities.push_back(kEntity);
+    a.instances.push_back({kInstance, kEntity,
+        PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
+    auto b = a;
+    CHECK(a == b);
+    b.syncImpact = SyncImpact::Material;
+    CHECK_FALSE(a == b);
+
+    PrefabPropagationResult result;
+    result.success = true;
+    result.effective = true;
+    result.disposition = PrefabPropagationInstanceDisposition::Propagate;
+    result.syncImpact = SyncImpact::Structural;
+    auto resultCopy = result;
+    CHECK(result == resultCopy);
+    resultCopy.resourceGeneration = 1;
+    CHECK_FALSE(result == resultCopy);
 }

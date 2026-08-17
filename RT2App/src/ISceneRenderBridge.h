@@ -4,6 +4,7 @@
 #define RT2_CORE_I_SCENE_RENDER_BRIDGE_H
 
 #include "GPUSceneData.h"
+#include "SceneSyncImpact.h"
 
 // ============================================================================
 // ISceneRenderBridge — narrow, Vulkan-free interface between CPU scene code
@@ -23,14 +24,6 @@
 // ============================================================================
 
 namespace rt2::core {
-
-enum class SyncImpact
-{
-    None,
-    Transform,
-    Material,
-    Structural,
-};
 
 class ISceneRenderBridge
 {
