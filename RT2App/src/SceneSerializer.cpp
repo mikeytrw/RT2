@@ -285,7 +285,7 @@ AssetReference JsonToAssetReference(const json& j,
         {
             const std::string detail =
                 "assetId must be a valid UUID when present";
-            if (schemaVersion >= SceneSerializer::SchemaVersion)
+            if (schemaVersion >= SceneSerializer::ProjectBindingSchemaVersion)
             {
                 err.code = Error::Parse;
                 err.detail = detail;
@@ -838,10 +838,11 @@ std::optional<json> EntityRecordToJson(
         // Each entry is a wire NAME string (the component identity), never an
         // index or bit position (W3-D2). Written only at the current schema:
         // v6 is where overrides exist, and a v5 output is by construction an
-        // untouched document with an empty set. This mirrors the projectId
+        // untouched document with an empty set. Primitive markers additionally
+        // require v7; this mirrors the projectId
         // precedent (:1750) — a below-current emitter never carries a field
         // its reader cannot understand.
-        if (outputVersion >= SceneSerializer::SchemaVersion &&
+        if (outputVersion >= SceneSerializer::PrefabOverrideSchemaVersion &&
             !r.prefabMember.overrides.empty())
         {
             // The read path sorts and de-duplicates, so file->memory is
@@ -1203,7 +1204,7 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
         // not a migration failure. The member is only parsed at v6+, so a
         // stray "overrides" block inside an older scene file is ignored
         // structurally rather than by luck.
-        if (schemaVersion >= SceneSerializer::SchemaVersion &&
+        if (schemaVersion >= SceneSerializer::PrefabOverrideSchemaVersion &&
             pm.contains("overrides"))
         {
             const auto& ov = pm["overrides"];
@@ -1254,6 +1255,18 @@ EntityRecord JsonToEntityRecord(const json& j, uint32_t schemaVersion,
                     err.path = r.uuid.ToString();
                     err.detail = "prefabMember override refers to a "
                                  "non-overridable component: " + item.get<std::string>();
+                    return r;
+                }
+                // Primitive is the only new overridable key in v7. A v6
+                // document carrying it is malformed, not a legacy scene to
+                // migrate, so reject it transactionally.
+                if (key->wire() == PrefabWireKeys::kPrimitive &&
+                    schemaVersion < SceneSerializer::PrimitiveOverrideSchemaVersion)
+                {
+                    err.code = Error::SchemaVersion;
+                    err.path = r.uuid.ToString();
+                    err.detail = "primitive prefab override requires schema v" +
+                                 std::to_string(SceneSerializer::PrimitiveOverrideSchemaVersion);
                     return r;
                 }
                 r.prefabMember.overrides.push_back(*key);
@@ -1833,15 +1846,11 @@ static bool SaveInternal(const SceneDocument& doc,
         }
     }
 
-    // Prefab override sets exist only at the current schema (v6): the reader
-    // gates them on schemaVersion, so anything written at a below-current
-    // output would be silently dropped on reload. W3-D6's upgrade rule
-    // (PromoteSchemaVersion) keeps a doc that gained overrides at v6, but
-    // nothing but that convention enforces it — write here, at the single
-    // pre-save choke point, the same invariant: an output below current
-    // carrying a non-empty override set is a scene that cannot be loaded back,
-    // so fail loudly rather than drop the set.
-    if (outputVersion < SceneSerializer::SchemaVersion)
+    // Override vectors were introduced in v6 and primitive overrides in v7.
+    // Keep both checks at this single pre-save choke point so a recovery save
+    // can never silently drop a value that its selected output schema cannot
+    // represent.
+    if (outputVersion < SceneSerializer::PrefabOverrideSchemaVersion)
     {
         auto& reg = doc.ecs.registry;
         std::string offenders;
@@ -1868,8 +1877,42 @@ static bool SaveInternal(const SceneDocument& doc,
                          "output (" + std::to_string(outputVersion) + ") could not "
                          "write: " + offenders +
                          ". The scene must be saved at schema v" +
-                         std::to_string(SceneSerializer::SchemaVersion) +
+                         std::to_string(SceneSerializer::PrefabOverrideSchemaVersion) +
                          " (PromoteSchemaVersion) to preserve overrides.";
+            return false;
+        }
+    }
+
+    if (outputVersion < SceneSerializer::PrimitiveOverrideSchemaVersion)
+    {
+        auto& reg = doc.ecs.registry;
+        std::string offenders;
+        int count = 0;
+        auto members = reg.view<PrefabMemberComponent>();
+        for (auto e : members)
+        {
+            const auto& overrides = members.get<PrefabMemberComponent>(e).overrides;
+            const bool hasPrimitive = std::any_of(
+                overrides.begin(), overrides.end(), [](const PrefabComponentKey& key) {
+                    return key.wire() == PrefabWireKeys::kPrimitive;
+                });
+            if (!hasPrimitive) continue;
+            ++count;
+            if (auto* idc = reg.try_get<EntityIdComponent>(e))
+            {
+                if (!offenders.empty()) offenders += ", ";
+                offenders += idc->id.ToString();
+            }
+        }
+        if (count > 0)
+        {
+            err.code = Error::SchemaVersion;
+            err.path = outPath.string();
+            err.detail = std::to_string(count) +
+                         " prefab member entit" + (count == 1 ? "y" : "ies") +
+                         " carry a primitive override, which requires schema v" +
+                         std::to_string(SceneSerializer::PrimitiveOverrideSchemaVersion) +
+                         ": " + offenders;
             return false;
         }
     }
@@ -1879,11 +1922,11 @@ static bool SaveInternal(const SceneDocument& doc,
             ? std::filesystem::path{}
             : doc.metadata.sourcePath.parent_path();
     const std::filesystem::path currentReferenceRoot =
-        doc.metadata.schemaVersion >= SceneSerializer::SchemaVersion &&
+        doc.metadata.schemaVersion >= SceneSerializer::ProjectBindingSchemaVersion &&
         !doc.metadata.assetRoot.empty()
             ? doc.metadata.assetRoot : currentSceneDir;
     const std::filesystem::path outputReferenceRoot =
-        outputVersion >= SceneSerializer::SchemaVersion &&
+        outputVersion >= SceneSerializer::ProjectBindingSchemaVersion &&
         !doc.metadata.projectId.IsNull() &&
         !doc.metadata.assetRoot.empty()
             ? doc.metadata.assetRoot : outputSceneDir;
@@ -1896,7 +1939,7 @@ static bool SaveInternal(const SceneDocument& doc,
     {
         json meta;
         meta["name"]       = doc.metadata.name;
-        if (outputVersion >= SceneSerializer::SchemaVersion &&
+        if (outputVersion >= SceneSerializer::ProjectBindingSchemaVersion &&
             !doc.metadata.projectId.IsNull())
             meta["projectId"] = doc.metadata.projectId.ToString();
         root["metadata"]   = meta;
@@ -2233,7 +2276,7 @@ bool SceneSerializer::Load(SceneDocument& doc, const std::filesystem::path& path
         {
             const bool valid = mj["projectId"].is_string() &&
                 !UUID::Parse(mj["projectId"].get<std::string>()).IsNull();
-            if (!valid && version >= SchemaVersion)
+            if (!valid && version >= ProjectBindingSchemaVersion)
             {
                 err.code = Error::Parse;
                 err.path = path.string();

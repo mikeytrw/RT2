@@ -71,7 +71,7 @@ inline constexpr std::array<PrefabComponentKey, PersistedComponents::Count> kPre
     PrefabComponentKey(PrefabWireKeys::kTransform,        true),  // Transform
     PrefabComponentKey(PrefabWireKeys::kVisible,          true),  // VisibleComponent
     PrefabComponentKey(PrefabWireKeys::kMeshRef,          false), // MeshRef
-    PrefabComponentKey(PrefabWireKeys::kPrimitive,        false), // PrimitiveComponent
+    PrefabComponentKey(PrefabWireKeys::kPrimitive,        true),  // PrimitiveComponent
     PrefabComponentKey(PrefabWireKeys::kImportedSource,   false), // ImportedMeshSourceComponent
     PrefabComponentKey(PrefabWireKeys::kMaterialOverride, true),  // MaterialOverrideComponent
     PrefabComponentKey(PrefabWireKeys::kLight,            true),  // LightComponent
@@ -88,7 +88,7 @@ inline constexpr std::array<PrefabComponentKey, PersistedComponents::Count> kPre
 static_assert(kPrefabTable.size() == PersistedComponents::Count,
     "PrefabComponentKey table is out of sync with PersistedComponents::Count");
 
-// Required compile-time assertion 2: exactly 8 components are overridable.
+// Required compile-time assertion 2: exactly 9 components are overridable.
 // Fires when any component's overridable bit is changed without that being
 // considered, or when a new component is added with an unconsidered bit.
 constexpr std::size_t CountOverridableEntries() noexcept
@@ -97,8 +97,8 @@ constexpr std::size_t CountOverridableEntries() noexcept
     for (const auto& key : kPrefabTable) if (key.overridable()) ++n;
     return n;
 }
-static_assert(CountOverridableEntries() == 8,
-    "Expected exactly 8 overridable persisted components; "
+static_assert(CountOverridableEntries() == 9,
+    "Expected exactly 9 overridable persisted components; "
     "re-examine each entry's overridable bit");
 
 // Type -> key mapping, used by the override-vector mark/apply logic and by the
@@ -114,7 +114,7 @@ template<> struct PrefabComponentKeyFor<VisibleComponent>
 template<> struct PrefabComponentKeyFor<MeshRef>
     { static constexpr PrefabComponentKey value = PrefabComponentKey(PrefabWireKeys::kMeshRef, false); };
 template<> struct PrefabComponentKeyFor<PrimitiveComponent>
-    { static constexpr PrefabComponentKey value = PrefabComponentKey(PrefabWireKeys::kPrimitive, false); };
+    { static constexpr PrefabComponentKey value = PrefabComponentKey(PrefabWireKeys::kPrimitive, true); };
 template<> struct PrefabComponentKeyFor<ImportedMeshSourceComponent>
     { static constexpr PrefabComponentKey value = PrefabComponentKey(PrefabWireKeys::kImportedSource, false); };
 template<> struct PrefabComponentKeyFor<MaterialOverrideComponent>

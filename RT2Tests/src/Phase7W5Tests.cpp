@@ -184,7 +184,7 @@ TEST_CASE("Phase7 W5 current schema rejects malformed asset identity")
     Error err;
     CHECK_FALSE(SceneSerializer::Load(document, path, report, err));
     CHECK(err.code == Error::Parse);
-    CHECK(report.sourceVersion == SceneSerializer::SchemaVersion);
+    CHECK(report.sourceVersion == SceneSerializer::ProjectBindingSchemaVersion);
     std::error_code ec;
     std::filesystem::remove(path, ec);
 }

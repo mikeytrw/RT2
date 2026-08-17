@@ -45,6 +45,7 @@ project "RT2SliceRunner"
         "../RT2App/src/AssetIdentity.cpp",
         "../RT2App/src/AssetDatabase.cpp",
         "../RT2App/src/PrefabSerializer.cpp",
+        "../RT2App/src/PrefabPropagationContracts.cpp",
         -- Phase 6C/W7: scripting sources for --script-scenario mode.
         "../RT2App/src/ScriptSystem.cpp",
         "../RT2App/src/ScriptAssetPath.cpp",

@@ -524,17 +524,15 @@ TEST_CASE("Phase 8 W3: prefab key table matches PersistedComponents::ForEach")
 }
 
 // ---------------------------------------------------------------------------
-// 2. Exactly 8 are overridable, and each of the 5 excluded components is
+// 2. Exactly 9 are overridable, and each of the 4 excluded components is
 //    rejected by name.
 //
 //    Discrimination faults:
 //      a) flip NameComponent's bit to false in kPrefabTable -> count drops to
-//         7 and the "name" by-name check fails -> RED.
-//      b) flip PrimitiveComponent's bit to true in kPrefabTable -> count rises
-//         to 9 and the "primitive" by-name rejection fails -> RED.
-//    Revert both -> GREEN.
+//         8 and the "name" by-name check fails -> RED.
+//    Revert the fault -> GREEN.
 // ---------------------------------------------------------------------------
-TEST_CASE("Phase 8 W3: exactly 8 components overridable; 5 excluded by name")
+TEST_CASE("Phase 8 W4 S1: exactly 9 components overridable; 4 excluded by name")
 {
     std::size_t overridable = 0;
     for (const auto& key : kPrefabTable)
@@ -542,12 +540,13 @@ TEST_CASE("Phase 8 W3: exactly 8 components overridable; 5 excluded by name")
         if (IsOverridable(key)) ++overridable;
         CHECK(key.valid());
     }
-    REQUIRE(overridable == 8);
+    REQUIRE(overridable == 9);
 
     // Type form of the predicate agrees with the table-derived count.
     REQUIRE(IsOverridable<NameComponent>());
     REQUIRE(IsOverridable<Transform>());
     REQUIRE(IsOverridable<VisibleComponent>());
+    REQUIRE(IsOverridable<PrimitiveComponent>());
     REQUIRE(IsOverridable<MaterialOverrideComponent>());
     REQUIRE(IsOverridable<LightComponent>());
     REQUIRE(IsOverridable<CameraComponent>());
@@ -555,7 +554,6 @@ TEST_CASE("Phase 8 W3: exactly 8 components overridable; 5 excluded by name")
     REQUIRE(IsOverridable<ScriptComponent>());
 
     REQUIRE_FALSE(IsOverridable<MeshRef>());
-    REQUIRE_FALSE(IsOverridable<PrimitiveComponent>());
     REQUIRE_FALSE(IsOverridable<ImportedMeshSourceComponent>());
     REQUIRE_FALSE(IsOverridable<PrefabInstanceComponent>());
     REQUIRE_FALSE(IsOverridable<PrefabMemberComponent>());
@@ -563,7 +561,7 @@ TEST_CASE("Phase 8 W3: exactly 8 components overridable; 5 excluded by name")
     // Rejection by name (boundary): a wire name of an excluded component must
     // resolve to a non-overridable classification, not fall through to a
     // permissive default.
-    const char* excluded[] = { "meshRef", "primitive", "importedSource",
+    const char* excluded[] = { "meshRef", "importedSource",
                                "prefabInstance", "prefabMember" };
     for (const char* wire : excluded)
     {
@@ -572,7 +570,7 @@ TEST_CASE("Phase 8 W3: exactly 8 components overridable; 5 excluded by name")
         CHECK_FALSE(key->overridable());
     }
 
-    const char* overridableWires[] = { "name", "transform", "visible",
+    const char* overridableWires[] = { "name", "transform", "visible", "primitive",
                                        "materialOverride", "light", "camera",
                                        "motion", "script" };
     for (const char* wire : overridableWires)
@@ -4232,9 +4230,9 @@ TEST_CASE("Phase 8 W3: override queries reject unknown and excluded keys as stru
     REQUIRE(q.error.code == rt2::core::Error::InvalidArgument);
     REQUIRE(q.error.detail.find("noSuchWire") != std::string::npos);
 
-    // All five excluded wires are rejected regardless of the caller-supplied
+    // All four excluded wires are rejected regardless of the caller-supplied
     // classification bit (forged true still rejected ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â bit not trusted).
-    for (const char* wire : { "meshRef", "primitive", "importedSource",
+    for (const char* wire : { "meshRef", "importedSource",
                               "prefabInstance", "prefabMember" })
     {
         q = f.manager.IsOverridden(rootUuid, PrefabComponentKey(std::string_view(wire), true));
@@ -4288,7 +4286,7 @@ TEST_CASE("Phase 8 W3: marker helper canonicalizes keys and rejects forged class
 
     // Every excluded wire is rejected even with the overridable bit forged to
     // true: the bit is never trusted.
-    for (const char* wire : { "meshRef", "primitive", "importedSource",
+    for (const char* wire : { "meshRef", "importedSource",
                               "prefabInstance", "prefabMember" })
     {
         auto plan = f.manager.PreparePrefabMarkerEdits({
@@ -11990,11 +11988,13 @@ void S6EExerciseLight(S2Fixture& f);
 void S6EExerciseCamera(S2Fixture& f);
 void S6EExerciseMotion(S2Fixture& f);
 void S6EExerciseScript(S2Fixture& f);
+void S6EExercisePrimitive(S2Fixture& f);
 
 constexpr std::array<S6EKeyCoverage, CountOverridableEntries()> kS6Coverage = {{
     { PrefabComponentKeyFor<NameComponent>::value, "name", &S6EExerciseName },
     { PrefabComponentKeyFor<Transform>::value, "transform", &S6EExerciseTransform },
     { PrefabComponentKeyFor<VisibleComponent>::value, "visible", &S6EExerciseVisible },
+    { PrefabComponentKeyFor<PrimitiveComponent>::value, "primitive", &S6EExercisePrimitive },
     { PrefabComponentKeyFor<MaterialOverrideComponent>::value, "materialOverride", &S6EExerciseMaterial },
     { PrefabComponentKeyFor<LightComponent>::value, "light", &S6EExerciseLight },
     { PrefabComponentKeyFor<CameraComponent>::value, "camera", &S6EExerciseCamera },
@@ -12370,6 +12370,35 @@ void S6EExerciseMotion(S2Fixture& f)
     std::filesystem::remove_all(dir);
 }
 
+void S6EExercisePrimitive(S2Fixture& f)
+{
+    const auto dir = S2UniqueTempDir("p8w3_s6ecover_primitive");
+    const auto source = f.CreateEmpty("Primitive");
+    f.CreateChild("Child", source);
+    auto& registry = f.manager.GetECS().registry;
+    const auto sourceHandle = f.manager.FindEntityByUuid(source);
+    registry.emplace<PrimitiveComponent>(
+        sourceHandle, PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16});
+    const auto prefabPath = dir / "primitive.rt2prefab";
+    REQUIRE(f.manager.CreatePrefabFromSubtree({ source }, prefabPath).ok);
+    const auto [rootHandle, childHandle] = f.InstantiatePrefab(prefabPath);
+    (void)childHandle;
+    const UUID root = H6B(registry, rootHandle);
+    const auto key = PrefabComponentKeyFor<PrimitiveComponent>::value;
+    REQUIRE_FALSE(f.manager.IsOverridden(root, key).value);
+
+    PrefabCommandTransaction transaction(
+        {}, { PrefabCommandTransaction::MarkerSpec{ root, key, true } });
+    const auto applied = transaction.Execute(f.manager);
+    REQUIRE(applied.success);
+    REQUIRE(applied.effective);
+    REQUIRE(f.manager.IsOverridden(root, key).value);
+    CHECK(f.manager.AuthoringDoc().metadata.schemaVersion == SceneSerializer::SchemaVersion);
+    REQUIRE(transaction.Undo(f.manager).success);
+    CHECK_FALSE(f.manager.IsOverridden(root, key).value);
+    std::filesystem::remove_all(dir);
+}
+
 void S6EExerciseScript(S2Fixture& f)
 {
     using namespace rt2::core;
@@ -12454,8 +12483,8 @@ TEST_CASE("Phase 8 W3 S6-E: excluded and unknown marker boundary classification"
 {
     S2Fixture f;
     const auto ordinary = f.CreateEmpty("ordinary");
-    const std::array<std::string_view, 6> excluded = {
-        PrefabWireKeys::kMeshRef, PrefabWireKeys::kPrimitive,
+    const std::array<std::string_view, 5> excluded = {
+        PrefabWireKeys::kMeshRef,
         PrefabWireKeys::kImportedSource, PrefabWireKeys::kPrefabInstance,
         PrefabWireKeys::kPrefabMember, "unknownS6E" };
     for (const auto wire : excluded)
@@ -12482,8 +12511,8 @@ TEST_CASE("Phase 8 W3 S6-E: excluded and unknown durable boundary is zero-write"
     const auto dir = S2UniqueTempDir("p8w3_s6e_excluded_boundary");
     const auto instance = f.InstantiatePrefab(f.CreatePrefabAsset(dir));
     const auto prefab = f.manager.GetEntityUuid(SceneManager::EntityId{ instance.first });
-    const std::array<std::string_view, 6> wires = {
-        PrefabWireKeys::kMeshRef, PrefabWireKeys::kPrimitive,
+    const std::array<std::string_view, 5> wires = {
+        PrefabWireKeys::kMeshRef,
         PrefabWireKeys::kImportedSource, PrefabWireKeys::kPrefabInstance,
         PrefabWireKeys::kPrefabMember, "unknownS6E" };
     const auto exercise = [&](const UUID& target, std::string_view wire) {
