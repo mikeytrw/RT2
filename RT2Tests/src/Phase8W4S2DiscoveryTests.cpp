@@ -4,6 +4,11 @@
 #include "PrefabPropagationDiscovery.h"
 
 #include <filesystem>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
+#include <stdexcept>
 #include <string_view>
 
 using namespace rt2::core;
@@ -25,13 +30,59 @@ const UUID kInstanceB = UUID::Parse("55555555-5555-4555-8555-555555555555");
 const UUID kInstanceBad = UUID::Parse("66666666-6666-4666-8666-666666666666");
 const UUID kWrongAsset = UUID::Parse("99999999-9999-4999-8999-999999999999");
 
-std::filesystem::path TempPrefab()
+struct TempPrefabGuard
 {
-    const auto dir = std::filesystem::temp_directory_path() / "rt2_w4_s2_discovery";
+    std::filesystem::path directory;
+
+    TempPrefabGuard() = default;
+    TempPrefabGuard(const TempPrefabGuard&) = delete;
+    TempPrefabGuard& operator=(const TempPrefabGuard&) = delete;
+    TempPrefabGuard(TempPrefabGuard&& other) noexcept
+        : directory(std::move(other.directory))
+    {
+        other.directory.clear();
+    }
+    TempPrefabGuard& operator=(TempPrefabGuard&& other) noexcept
+    {
+        if (this == &other) return *this;
+        std::error_code ec;
+        std::filesystem::remove_all(directory, ec);
+        directory = std::move(other.directory);
+        other.directory.clear();
+        return *this;
+    }
+
+    std::filesystem::path source() const { return directory / "source.rt2prefab"; }
+
+    ~TempPrefabGuard()
+    {
+        if (directory.empty()) return;
+        std::error_code ec;
+        std::filesystem::remove_all(directory, ec);
+        if (ec || std::filesystem::exists(directory, ec)) std::abort();
+    }
+};
+
+TempPrefabGuard TempPrefab()
+{
+    static std::atomic<std::uint64_t> sequence{0};
+    const auto ticks = std::chrono::steady_clock::now().time_since_epoch().count();
+    TempPrefabGuard guard;
+    guard.directory = std::filesystem::temp_directory_path() /
+        ("rt2_w4_s2_discovery_" + std::to_string(ticks) + "_" +
+         std::to_string(sequence.fetch_add(1)));
     std::error_code ec;
-    std::filesystem::remove_all(dir, ec);
-    std::filesystem::create_directories(dir, ec);
-    return dir / "source.rt2prefab";
+    if (!std::filesystem::create_directories(guard.directory, ec) || ec)
+        throw std::runtime_error("could not create unique S2 test directory: " +
+                                 guard.directory.string());
+    return guard;
+}
+
+std::string ReadTestBytes(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input) throw std::runtime_error("test snapshot file could not be opened");
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
 void AddEntity(SceneDocument& document, const UUID& uuid, const UUID& instance,
@@ -63,7 +114,8 @@ PrefabPropagationDiscoveryRequest Request(SceneDocument& document,
 
 TEST_CASE("Phase 8 W4 S2: identity discovery quarantines one sibling and loads once")
 {
-    const auto source = TempPrefab();
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
     PrefabDocument prefab;
     prefab.entities = {
         // Deliberately serialized child-first: discovery keys by durable IDs,
@@ -76,6 +128,7 @@ TEST_CASE("Phase 8 W4 S2: identity discovery quarantines one sibling and loads o
     REQUIRE(WriteSidecarId(AssetSidecarPath(source), kAsset, error));
 
     SceneDocument document;
+    document.metadata.schemaVersion = SceneSerializer::PrefabOverrideSchemaVersion;
     const auto rootA = document.ecs.registry.create();
     REQUIRE(document.AssignKnownUuid(rootA, kRootA));
     document.ecs.registry.emplace<Hierarchy>(rootA);
@@ -109,6 +162,16 @@ TEST_CASE("Phase 8 W4 S2: identity discovery quarantines one sibling and loads o
     const auto beforeSchema = document.metadata.schemaVersion;
     const auto beforeDirty = document.metadata.dirty;
     const auto beforeSize = document.ecs.registry.storage<EntityIdComponent>().size();
+    const auto beforeMaterials = document.ecs.materials.size();
+    const auto beforeTextures = document.ecs.textures.size();
+    const auto beforeMeshes = document.ecs.meshRegistry.GetCount();
+    std::vector<AssetDiagnostic> snapshotDiagnostics;
+    Error snapshotError;
+    const auto snapshotPath = temp.directory / "before.rt2scene";
+    REQUIRE(SceneSerializer::Save(document, snapshotPath, snapshotDiagnostics, snapshotError));
+    const auto beforeSceneBytes = ReadTestBytes(snapshotPath);
+    const auto beforeSourceBytes = ReadTestBytes(source);
+    const auto beforeSidecarBytes = ReadTestBytes(AssetSidecarPath(source));
     auto request = Request(document, source);
     std::size_t loadCount = 0;
     std::size_t fingerprintCount = 0;
@@ -154,11 +217,18 @@ TEST_CASE("Phase 8 W4 S2: identity discovery quarantines one sibling and loads o
     CHECK(document.metadata.schemaVersion == beforeSchema);
     CHECK(document.metadata.dirty == beforeDirty);
     CHECK(document.ecs.registry.storage<EntityIdComponent>().size() == beforeSize);
+    CHECK(document.ecs.materials.size() == beforeMaterials);
+    CHECK(document.ecs.textures.size() == beforeTextures);
+    CHECK(document.ecs.meshRegistry.GetCount() == beforeMeshes);
+    CHECK(ReadTestBytes(snapshotPath) == beforeSceneBytes);
+    CHECK(ReadTestBytes(source) == beforeSourceBytes);
+    CHECK(ReadTestBytes(AssetSidecarPath(source)) == beforeSidecarBytes);
 }
 
 TEST_CASE("Phase 8 W4 S2: deterministic maps use template IDs and one fingerprint")
 {
-    const auto source = TempPrefab();
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
     PrefabDocument prefab;
     prefab.entities = {
         {kTemplateChild, SubtreeEntityRecord{kRecordChild, "Child", kRecordRoot}},
@@ -232,7 +302,8 @@ TEST_CASE("Phase 8 W4 S2: deterministic maps use template IDs and one fingerprin
 
 TEST_CASE("Phase 8 W4 S2: shuffled registry and source order produce identical plans")
 {
-    const auto source = TempPrefab();
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
     Error error;
     PrefabDocument prefab;
     prefab.entities = {
@@ -282,7 +353,8 @@ TEST_CASE("Phase 8 W4 S2: shuffled registry and source order produce identical p
 
 TEST_CASE("Phase 8 W4 S2: topology and excluded override keys quarantine an instance")
 {
-    const auto source = TempPrefab();
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
     PrefabDocument prefab;
     prefab.entities = {
         {kTemplateRoot, SubtreeEntityRecord{kTemplateRoot, "Root"}},
@@ -293,6 +365,7 @@ TEST_CASE("Phase 8 W4 S2: topology and excluded override keys quarantine an inst
     REQUIRE(WriteSidecarId(AssetSidecarPath(source), kAsset, error));
 
     SceneDocument document;
+    document.metadata.schemaVersion = SceneSerializer::PrefabOverrideSchemaVersion;
     const auto root = document.ecs.registry.create();
     REQUIRE(document.AssignKnownUuid(root, kRootA));
     document.ecs.registry.emplace<Hierarchy>(root);
@@ -317,7 +390,8 @@ TEST_CASE("Phase 8 W4 S2: topology and excluded override keys quarantine an inst
 
 TEST_CASE("Phase 8 W4 S2: durable identity rejects a stale database claim")
 {
-    const auto source = TempPrefab();
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
     PrefabDocument prefab;
     prefab.entities = {{kTemplateRoot, SubtreeEntityRecord{kTemplateRoot, "Root"}}};
     Error error;
@@ -350,9 +424,48 @@ TEST_CASE("Phase 8 W4 S2: durable identity rejects a stale database claim")
     CHECK(result.value.instances.empty());
 }
 
+TEST_CASE("Phase 8 W4 S2: override admission follows scene schema representability")
+{
+    auto run = [&](std::uint32_t schema, PrefabComponentKey key) {
+        const auto temp = TempPrefab();
+        const auto source = temp.source();
+        PrefabDocument prefab;
+        prefab.entities = {{kTemplateRoot, SubtreeEntityRecord{kTemplateRoot, "Root"}}};
+        Error error;
+        REQUIRE(PrefabSerializer::Save(prefab, source, error));
+        REQUIRE(WriteSidecarId(AssetSidecarPath(source), kAsset, error));
+        SceneDocument document;
+        document.metadata.schemaVersion = schema;
+        const auto root = document.ecs.registry.create();
+        REQUIRE(document.AssignKnownUuid(root, kRootA));
+        document.ecs.registry.emplace<Hierarchy>(root);
+        PrefabInstanceComponent link;
+        link.prefab = AssetReference{AssetKind::Prefab, source.string(), {}, {}, kAsset};
+        link.instanceId = kInstanceA;
+        document.ecs.registry.emplace<PrefabInstanceComponent>(root, link);
+        document.ecs.registry.emplace<PrefabMemberComponent>(
+            root, PrefabMemberComponent{kInstanceA, kTemplateRoot, {key}});
+        const auto result = PreparePrefabPropagation(Request(document, source));
+        REQUIRE(result.IsOk());
+        REQUIRE(result.value.instances.size() == 1);
+        return result.value.instances.front().disposition;
+    };
+
+    CHECK(run(SceneSerializer::PrefabOverrideSchemaVersion,
+              PrefabComponentKeyFor<VisibleComponent>::value) ==
+          PrefabPropagationInstanceDisposition::Propagate);
+    CHECK(run(SceneSerializer::PrefabOverrideSchemaVersion,
+              PrefabComponentKeyFor<PrimitiveComponent>::value) ==
+          PrefabPropagationInstanceDisposition::Quarantined);
+    CHECK(run(SceneSerializer::PrefabOverrideSchemaVersion - 1,
+              PrefabComponentKeyFor<VisibleComponent>::value) ==
+          PrefabPropagationInstanceDisposition::Quarantined);
+}
+
 TEST_CASE("Phase 8 W4 S2: hierarchy mismatch quarantines the whole instance")
 {
-    const auto source = TempPrefab();
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
     PrefabDocument prefab;
     prefab.entities = {
         {kTemplateRoot, SubtreeEntityRecord{kTemplateRoot, "Root"}},
@@ -383,9 +496,68 @@ TEST_CASE("Phase 8 W4 S2: hierarchy mismatch quarantines the whole instance")
     CHECK(result.value.diagnostics.front().reason.find("hierarchy") != std::string::npos);
 }
 
+TEST_CASE("Phase 8 W4 S2: root and member durable UUID corruption quarantines")
+{
+    enum class Fault { RootMissing, RootNil, RootMisindexed,
+                       MemberMissing, MemberNil, MemberMisindexed, MemberDuplicate };
+    const Fault faults[] = {Fault::RootMissing, Fault::RootNil, Fault::RootMisindexed,
+                            Fault::MemberMissing, Fault::MemberNil,
+                            Fault::MemberMisindexed, Fault::MemberDuplicate};
+    for (const Fault fault : faults)
+    {
+        const auto temp = TempPrefab();
+        const auto source = temp.source();
+        PrefabDocument prefab;
+        prefab.entities = {{kTemplateRoot, SubtreeEntityRecord{kTemplateRoot, "Root"}}};
+        Error error;
+        REQUIRE(PrefabSerializer::Save(prefab, source, error));
+        REQUIRE(WriteSidecarId(AssetSidecarPath(source), kAsset, error));
+        SceneDocument document;
+        const auto root = document.ecs.registry.create();
+        if (fault != Fault::RootMissing)
+            REQUIRE(document.AssignKnownUuid(root, kRootA));
+        document.ecs.registry.emplace<Hierarchy>(root);
+        PrefabInstanceComponent link;
+        link.prefab = AssetReference{AssetKind::Prefab, source.string(), {}, {}, kAsset};
+        link.instanceId = kInstanceA;
+        document.ecs.registry.emplace<PrefabInstanceComponent>(root, link);
+        document.ecs.registry.emplace<PrefabMemberComponent>(
+            root, PrefabMemberComponent{kInstanceA, kTemplateRoot, {}});
+        if (fault == Fault::RootNil)
+            document.ecs.registry.get<EntityIdComponent>(root).id = UUID::Nil();
+        if (fault == Fault::RootMisindexed)
+            document.ecs.registry.get<EntityIdComponent>(root).id = kRootB;
+        if (fault == Fault::MemberMissing || fault == Fault::MemberNil ||
+            fault == Fault::MemberMisindexed || fault == Fault::MemberDuplicate)
+        {
+            const auto member = document.ecs.registry.create();
+            if (fault != Fault::MemberMissing)
+                REQUIRE(document.AssignKnownUuid(member, kChildA));
+            document.ecs.registry.emplace<PrefabMemberComponent>(
+                member, PrefabMemberComponent{kInstanceA, kTemplateChild, {}});
+            if (fault == Fault::MemberNil)
+                document.ecs.registry.get<EntityIdComponent>(member).id = UUID::Nil();
+            if (fault == Fault::MemberMisindexed)
+                document.ecs.registry.get<EntityIdComponent>(member).id = kRootB;
+            if (fault == Fault::MemberDuplicate)
+            {
+                document.ecs.registry.get<EntityIdComponent>(member).id = kRootA;
+            }
+        }
+        const auto result = PreparePrefabPropagation(Request(document, source));
+        CAPTURE(static_cast<int>(fault));
+        REQUIRE(result.IsOk());
+        REQUIRE(result.value.instances.size() == 1);
+        CHECK(result.value.instances.front().disposition ==
+              PrefabPropagationInstanceDisposition::Quarantined);
+        CHECK(result.value.diagnostics.size() == 1);
+    }
+}
+
 TEST_CASE("Phase 8 W4 S2: duplicate roots and unidentifiable members quarantine")
 {
-    const auto source = TempPrefab();
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
     PrefabDocument prefab;
     prefab.entities = {{kTemplateRoot, SubtreeEntityRecord{kTemplateRoot, "Root"}}};
     Error error;
@@ -430,7 +602,8 @@ TEST_CASE("Phase 8 W4 S2: structural validation rejects each malformed member sh
         Fault::UnknownKey, Fault::ExcludedKey, Fault::NonCanonicalKey };
     for (const Fault fault : faults)
     {
-        const auto source = TempPrefab();
+        const auto temp = TempPrefab();
+        const auto source = temp.source();
         PrefabDocument prefab;
         prefab.entities = {
             {kTemplateRoot, SubtreeEntityRecord{kTemplateRoot, "Root"}},
@@ -440,6 +613,7 @@ TEST_CASE("Phase 8 W4 S2: structural validation rejects each malformed member sh
         REQUIRE(PrefabSerializer::Save(prefab, source, error));
         REQUIRE(WriteSidecarId(AssetSidecarPath(source), kAsset, error));
         SceneDocument document;
+        document.metadata.schemaVersion = SceneSerializer::PrefabOverrideSchemaVersion;
         const auto root = document.ecs.registry.create();
         REQUIRE(document.AssignKnownUuid(root, kRootA));
         document.ecs.registry.emplace<Hierarchy>(root);
@@ -459,7 +633,7 @@ TEST_CASE("Phase 8 W4 S2: structural validation rejects each malformed member sh
         const UUID rootMemberInstance = fault == Fault::MismatchedInstance
             ? kInstanceB : kInstanceA;
         document.ecs.registry.emplace<PrefabMemberComponent>(
-            root, PrefabMemberComponent{rootMemberInstance, 
+            root, PrefabMemberComponent{rootMemberInstance,
                                         fault == Fault::NilTemplate ? UUID::Nil() : rootTemplate,
                                         overrides});
         if (fault != Fault::MissingTemplate)
@@ -498,7 +672,8 @@ TEST_CASE("Phase 8 W4 S2: structural validation rejects each malformed member sh
 
 TEST_CASE("Phase 8 W4 S2: global source and sidecar failures are loud and transactional")
 {
-    const auto source = TempPrefab();
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
     PrefabDocument prefab;
     prefab.entities = {{kTemplateRoot, SubtreeEntityRecord{kTemplateRoot, "Root"}}};
     Error error;
@@ -538,7 +713,7 @@ TEST_CASE("Phase 8 W4 S2: global source and sidecar failures are loud and transa
         return true;
     };
         CHECK_FALSE(PreparePrefabPropagation(duplicateRequest).IsOk());
-    
+
     auto duplicateRecordRequest = Request(document, source);
     duplicateRecordRequest.load = [](PrefabDocument& out, const std::filesystem::path&,
                                      Error&) {
@@ -552,4 +727,77 @@ TEST_CASE("Phase 8 W4 S2: global source and sidecar failures are loud and transa
 
     REQUIRE(WriteSidecarId(AssetSidecarPath(source), kWrongAsset, error));
     CHECK_FALSE(PreparePrefabPropagation(Request(document, source)).IsOk());
+}
+
+TEST_CASE("Phase 8 W4 S2: malformed changed source fails with zero dependents")
+{
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
+    Error error;
+    REQUIRE(PrefabSerializer::WriteBytesAtomic(source, "{ malformed", error));
+    REQUIRE(WriteSidecarId(AssetSidecarPath(source), kAsset, error));
+    SceneDocument document;
+    auto request = Request(document, source);
+    const auto result = PreparePrefabPropagation(request);
+    CHECK_FALSE(result.IsOk());
+    CHECK(result.error.code == Error::Parse);
+}
+
+TEST_CASE("Phase 8 W4 S2: parser consumes the fingerprinted immutable snapshot")
+{
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
+    PrefabDocument prefab;
+    prefab.entities = {{kTemplateRoot, SubtreeEntityRecord{kTemplateRoot, "Root"}}};
+    Error error;
+    REQUIRE(PrefabSerializer::Save(prefab, source, error));
+    REQUIRE(WriteSidecarId(AssetSidecarPath(source), kAsset, error));
+    SceneDocument document;
+    const auto root = document.ecs.registry.create();
+    REQUIRE(document.AssignKnownUuid(root, kRootA));
+    document.ecs.registry.emplace<Hierarchy>(root);
+    PrefabInstanceComponent link;
+    link.prefab = AssetReference{AssetKind::Prefab, source.string(), {}, {}, kAsset};
+    link.instanceId = kInstanceA;
+    document.ecs.registry.emplace<PrefabInstanceComponent>(root, link);
+    document.ecs.registry.emplace<PrefabMemberComponent>(
+        root, PrefabMemberComponent{kInstanceA, kTemplateRoot, {}});
+    std::string capturedDigest;
+    std::size_t readCount = 0;
+    auto request = Request(document, source);
+    request.readBytes = [&](const std::filesystem::path& path,
+                            std::string& bytes, Error& readError) {
+        ++readCount;
+        std::ifstream input(path, std::ios::binary);
+        if (!input)
+        {
+            readError = {Error::Io, path.string(), "test snapshot read failed"};
+            return false;
+        }
+        bytes.assign(std::istreambuf_iterator<char>(input),
+                     std::istreambuf_iterator<char>());
+        if (input.bad())
+        {
+            readError = {Error::Io, path.string(), "test snapshot read failed"};
+            return false;
+        }
+        return true;
+    };
+    request.fingerprint = [&](const std::string& bytes, const UUID& sidecar) {
+        capturedDigest = std::to_string(bytes.size()) + sidecar.ToString();
+        PrefabDocument replacement;
+        replacement.entities = {{kTemplateRoot, SubtreeEntityRecord{kTemplateRoot, "Changed"}},
+                                {kTemplateChild, SubtreeEntityRecord{kTemplateChild, "Extra"}}};
+        Error writeError;
+        REQUIRE(PrefabSerializer::Save(replacement, source, writeError));
+        return capturedDigest;
+    };
+    const auto result = PreparePrefabPropagation(request);
+    REQUIRE(result.IsOk());
+    REQUIRE(result.value.instances.size() == 1);
+    CHECK(result.value.instances.front().disposition ==
+          PrefabPropagationInstanceDisposition::Propagate);
+    CHECK(result.value.source.contentDigest == capturedDigest);
+    CHECK(result.value.instances.front().affectedEntities.size() == 1);
+    CHECK(readCount == 1);
 }

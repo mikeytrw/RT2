@@ -9,6 +9,7 @@
 #include "json.hpp"
 
 #include <filesystem>
+#include <string>
 #include <vector>
 
 // ============================================================================
@@ -107,6 +108,13 @@ public:
     static bool Load(PrefabDocument& doc,
                      const std::filesystem::path& path,
                      Error& err);
+
+    // Parse a checked immutable byte snapshot. `sourcePath` is diagnostic
+    // context only; this function never reopens it.
+    static bool LoadBytes(PrefabDocument& doc,
+                          const std::string& content,
+                          const std::filesystem::path& sourcePath,
+                          Error& err);
 };
 
 // ---- Record codec (defined in SceneSerializer.cpp) ----

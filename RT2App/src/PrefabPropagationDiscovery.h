@@ -5,6 +5,7 @@
 
 #include "PrefabPropagationContracts.h"
 #include "PrefabSerializer.h"
+#include "SceneSerializer.h"
 #include "SceneDocument.h"
 
 #include <functional>
@@ -24,6 +25,15 @@ struct PrefabPropagationDiscoveryRequest
     // Tests and recovery hosts may inject a checked, transactional loader.
     // The default is PrefabSerializer::Load.
     std::function<bool(PrefabDocument&, const std::filesystem::path&, Error&)> load;
+
+    // Preferred seam: parse the exact immutable bytes already fingerprinted.
+    // The path is diagnostic context only and must not be reopened.
+    std::function<bool(PrefabDocument&, const std::string&,
+                       const std::filesystem::path&, Error&)> parseBytes;
+
+    // Checked source-byte seam used by hosts/tests to prove one read per
+    // preparation batch. The default is the transactional filesystem read.
+    std::function<bool(const std::filesystem::path&, std::string&, Error&)> readBytes;
 
     // The source fingerprint is computed exactly once after the source bytes
     // and sidecar identity have been read.  Hosts normally leave this empty;

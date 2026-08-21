@@ -154,14 +154,42 @@ std::string StructuralReason(const std::string& reason)
     return "structural validation: " + reason;
 }
 
-bool HasEntity(const SceneDocument& document, entt::entity entity)
+bool HasEntity(const SceneDocument& document, entt::entity entity,
+               const std::unordered_map<UUID, std::size_t>& idCounts,
+               std::string& reason)
 {
-    return entity != entt::null && document.ecs.registry.valid(entity) &&
-           document.ecs.registry.all_of<EntityIdComponent>(entity);
+    if (entity == entt::null || !document.ecs.registry.valid(entity) ||
+        !document.ecs.registry.all_of<EntityIdComponent>(entity))
+    {
+        reason = "instance member has no durable entity UUID";
+        return false;
+    }
+    const UUID id = document.ecs.registry.get<EntityIdComponent>(entity).id;
+    if (id.IsNull())
+    {
+        reason = "instance member has a nil durable entity UUID";
+        return false;
+    }
+    const auto count = idCounts.find(id);
+    if (count == idCounts.end() || count->second != 1 ||
+        document.FindByUuid(id) != entity)
+    {
+        reason = "instance member has a duplicate or misindexed durable entity UUID";
+        return false;
+    }
+    return true;
 }
 
-bool ValidateOverrides(const PrefabMemberComponent& member, std::string& reason)
+bool ValidateOverrides(const PrefabMemberComponent& member,
+                       std::uint32_t sceneSchemaVersion,
+                       std::string& reason)
 {
+    if (!member.overrides.empty() &&
+        sceneSchemaVersion < SceneSerializer::PrefabOverrideSchemaVersion)
+    {
+        reason = "override vector is not representable by the scene schema";
+        return false;
+    }
     std::vector<PrefabComponentKey> canonical;
     canonical.reserve(member.overrides.size());
     for (const auto& key : member.overrides)
@@ -170,6 +198,12 @@ bool ValidateOverrides(const PrefabMemberComponent& member, std::string& reason)
         if (!resolved || *resolved != key || !IsOverridable(*resolved))
         {
             reason = "override vector contains an unknown, excluded, or forged key";
+            return false;
+        }
+        if (key.wire() == PrefabWireKeys::kPrimitive &&
+            sceneSchemaVersion < SceneSerializer::PrimitiveOverrideSchemaVersion)
+        {
+            reason = "override vector contains a key not representable by the scene schema";
             return false;
         }
         canonical.push_back(*resolved);
@@ -200,7 +234,8 @@ struct InstanceValidation
 InstanceValidation ValidateInstance(const SceneDocument& document,
                                     entt::entity root,
                                     const PrefabInstanceComponent& link,
-                                    const SourceModel& source)
+                                    const SourceModel& source,
+                                    const std::unordered_map<UUID, std::size_t>& idCounts)
 {
     InstanceValidation result;
     const auto& registry = document.ecs.registry;
@@ -228,9 +263,8 @@ InstanceValidation ValidateInstance(const SceneDocument& document,
             result.reason = "instance hierarchy contains a cycle or duplicate child";
             return result;
         }
-        if (!HasEntity(document, entity))
+        if (!HasEntity(document, entity, idCounts, result.reason))
         {
-            result.reason = "instance member has no durable entity UUID";
             return result;
         }
         const UUID entityUuid = registry.get<EntityIdComponent>(entity).id;
@@ -262,7 +296,7 @@ InstanceValidation ValidateInstance(const SceneDocument& document,
             return result;
         }
         std::string overrideReason;
-        if (!ValidateOverrides(member, overrideReason))
+        if (!ValidateOverrides(member, document.metadata.schemaVersion, overrideReason))
         {
             result.reason = overrideReason;
             result.templateId = member.templateId;
@@ -304,7 +338,15 @@ InstanceValidation ValidateInstance(const SceneDocument& document,
     {
         const auto& member = memberView.get<PrefabMemberComponent>(entity);
         if (member.instanceId == link.instanceId)
+        {
+            std::string identityReason;
+            if (!HasEntity(document, entity, idCounts, identityReason))
+            {
+                result.reason = identityReason;
+                return result;
+            }
             allMembers[member.instanceId].push_back(entity);
+        }
     }
     if (allMembers[link.instanceId].size() != visited.size())
     {
@@ -412,7 +454,12 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
 
     std::string sourceBytes;
     Error sourceError;
-    if (!ReadBytes(targetPath, sourceBytes, sourceError))
+    const auto readBytes = request.readBytes
+        ? request.readBytes
+        : [](const std::filesystem::path& path, std::string& bytes, Error& error) {
+              return ReadBytes(path, bytes, error);
+          };
+    if (!readBytes(targetPath, sourceBytes, sourceError))
         return Result<PrefabPropagationPlan>::Fail(
             sourceError.code, sourceError.path, sourceError.detail);
     Error sidecarError;
@@ -431,15 +478,25 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
             "prefab source fingerprint computation returned an empty digest");
     PrefabSourceFingerprint fingerprint{ targetPath, sidecarId,
                                          fingerprintDigest };
+
+    std::unordered_map<UUID, std::size_t> idCounts;
+    const auto idView = request.document->ecs.registry.view<EntityIdComponent>();
+    for (const entt::entity entity : idView)
+    {
+        const UUID id = idView.get<EntityIdComponent>(entity).id;
+        if (!id.IsNull()) ++idCounts[id];
+    }
+
     std::vector<entt::entity> roots;
-    auto rootView = request.document->ecs.registry.view<PrefabInstanceComponent,
-                                                        EntityIdComponent>();
+    auto rootView = request.document->ecs.registry.view<PrefabInstanceComponent>();
     for (const entt::entity root : rootView)
     {
         const auto& link = rootView.get<PrefabInstanceComponent>(root);
+        const auto* idComponent = request.document->ecs.registry.try_get<EntityIdComponent>(root);
+        const UUID rootUuid = idComponent ? idComponent->id : UUID::Nil();
         std::vector<AssetDiagnostic> rootDiagnostics;
         const auto resolved = Resolve(link.prefab, request.assets,
-                                      rootView.get<EntityIdComponent>(root).id,
+                                      rootUuid,
                                       {}, rootDiagnostics);
         if (!resolved.success || resolved.effectiveId.IsNull() ||
             resolved.effectiveId != fingerprint.assetId ||
@@ -458,7 +515,12 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
         const auto& am = rootView.get<PrefabInstanceComponent>(a);
         const auto& bm = rootView.get<PrefabInstanceComponent>(b);
         if (am.instanceId != bm.instanceId) return am.instanceId < bm.instanceId;
-        return rootView.get<EntityIdComponent>(a).id < rootView.get<EntityIdComponent>(b).id;
+        const auto* aid = request.document->ecs.registry.try_get<EntityIdComponent>(a);
+        const auto* bid = request.document->ecs.registry.try_get<EntityIdComponent>(b);
+        const UUID auid = aid ? aid->id : UUID::Nil();
+        const UUID buid = bid ? bid->id : UUID::Nil();
+        if (auid != buid) return auid < buid;
+        return a < b;
     });
 
     std::unordered_set<UUID> duplicateInstanceIds;
@@ -470,35 +532,40 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
             duplicateInstanceIds.insert(current.instanceId);
     }
 
-    const auto loader = request.load
-        ? request.load
-        : [](PrefabDocument& value, const std::filesystem::path& path, Error& error) {
-              return PrefabSerializer::Load(value, path, error);
-          };
-    std::vector<LoadedSource> loaded;
-    if (!roots.empty())
-    {
-        PrefabDocument document;
-        if (!loader(document, targetPath, sourceError))
-            return Result<PrefabPropagationPlan>::Fail(
-                sourceError.code, sourceError.path, sourceError.detail);
-        SourceModel model;
-        if (!BuildSourceModel(std::move(document), model, sourceError))
-            return Result<PrefabPropagationPlan>::Fail(
-                sourceError.code, targetPath.string(), sourceError.detail);
-        loaded.push_back({ fingerprint, std::move(model) });
-    }
+    // Parse the exact immutable bytes already fingerprinted. The legacy path
+    // seam remains available to hosts that explicitly inject it, but the
+    // production default never reopens the source after the snapshot read.
+    PrefabDocument document;
+    bool parsed = false;
+    if (request.parseBytes)
+        parsed = request.parseBytes(document, sourceBytes, targetPath, sourceError);
+    else if (request.load)
+        parsed = request.load(document, targetPath, sourceError);
+    else
+        parsed = PrefabSerializer::LoadBytes(document, sourceBytes, targetPath, sourceError);
+    if (!parsed)
+        return Result<PrefabPropagationPlan>::Fail(
+            sourceError.code, sourceError.path, sourceError.detail);
+    SourceModel model;
+    if (!BuildSourceModel(std::move(document), model, sourceError))
+        return Result<PrefabPropagationPlan>::Fail(
+            sourceError.code, targetPath.string(), sourceError.detail);
+    const LoadedSource loaded{ fingerprint, std::move(model) };
 
     for (const entt::entity root : roots)
     {
         const auto& link = rootView.get<PrefabInstanceComponent>(root);
-        const UUID rootUuid = rootView.get<EntityIdComponent>(root).id;
+        const auto* idComponent = request.document->ecs.registry.try_get<EntityIdComponent>(root);
+        const UUID rootUuid = idComponent ? idComponent->id : UUID::Nil();
         InstanceValidation validation;
-        if (duplicateInstanceIds.count(link.instanceId) != 0)
+        std::string rootIdentityReason;
+        if (!HasEntity(*request.document, root, idCounts, rootIdentityReason))
+            validation.reason = "root " + rootIdentityReason;
+        else if (duplicateInstanceIds.count(link.instanceId) != 0)
             validation.reason = "instance has multiple PrefabInstanceComponent roots";
         else
             validation = ValidateInstance(*request.document, root, link,
-                                          loaded.front().model);
+                                          loaded.model, idCounts);
         PrefabPropagationInstancePlan instance;
         instance.instanceId = link.instanceId;
         instance.rootUuid = rootUuid;

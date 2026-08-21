@@ -151,10 +151,28 @@ bool PrefabSerializer::Load(PrefabDocument& doc,
         err.detail = "failed to open prefab file";
         return false;
     }
+    std::string content((std::istreambuf_iterator<char>(in)),
+                        std::istreambuf_iterator<char>());
+    if (in.bad())
+    {
+        err.code = Error::Io;
+        err.path = path.string();
+        err.detail = "failed to read prefab file";
+        return false;
+    }
+    return LoadBytes(doc, content, path, err);
+}
+
+bool PrefabSerializer::LoadBytes(PrefabDocument& doc,
+                                 const std::string& content,
+                                 const std::filesystem::path& path,
+                                 Error& err)
+{
+    err = Error{};
     json root;
     try
     {
-        in >> root;
+        root = json::parse(content);
     }
     catch (const std::exception& e)
     {
