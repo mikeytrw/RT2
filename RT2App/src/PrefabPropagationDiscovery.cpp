@@ -516,34 +516,6 @@ bool BuildReconciliation(const SceneDocument& document,
             *member, PrefabComponentKeyFor<PrimitiveComponent>::value);
         const bool markerMaterial = HasOverride(
             *member, PrefabComponentKeyFor<MaterialOverrideComponent>::value);
-        const bool sourcePrimitive = sourceRecord.hasPrimitive;
-        const bool sourceImported = sourceRecord.hasImportedSource;
-        const bool localPrimitive = registry.all_of<PrimitiveComponent>(entity);
-        const bool localImported = registry.all_of<ImportedMeshSourceComponent>(entity);
-        if (sourcePrimitive && sourceImported)
-        {
-            reason = "source carries both Primitive and ImportedMeshSource provenance";
-            reasonTemplate = templateId;
-            return false;
-        }
-        if (localPrimitive && localImported)
-        {
-            reason = "live member carries both Primitive and ImportedMeshSource provenance";
-            reasonTemplate = templateId;
-            return false;
-        }
-        if (markerPrimitive && sourceImported && localPrimitive)
-        {
-            reason = "preserved Primitive override conflicts with imported source provenance";
-            reasonTemplate = templateId;
-            return false;
-        }
-        if (sourcePrimitive && markerMaterial && localImported)
-        {
-            reason = "preserved imported material override conflicts with primitive provenance";
-            reasonTemplate = templateId;
-            return false;
-        }
         const auto beforeName = CopyComponent<NameComponent>(registry, entity);
         const auto beforeTransform = CopyComponent<Transform>(registry, entity);
         const auto beforeVisible = CopyComponent<VisibleComponent>(registry, entity);
@@ -555,6 +527,22 @@ bool BuildReconciliation(const SceneDocument& document,
         const auto beforeMotion = CopyComponent<MotionComponent>(registry, entity);
         const auto beforeScript = CopyComponent<ScriptComponent>(registry, entity);
 
+        const std::optional<PrimitiveComponent> sourcePrimitiveValue =
+            sourceRecord.hasPrimitive
+                ? std::optional<PrimitiveComponent>(sourceRecord.primitive)
+                : std::nullopt;
+        const std::optional<ImportedMeshSourceComponent> sourceImportedValue =
+            sourceRecord.hasImportedSource
+                ? std::optional<ImportedMeshSourceComponent>(sourceRecord.importedSource)
+                : std::nullopt;
+        const std::optional<MaterialOverrideComponent> sourceMaterialValue =
+            sourceRecord.hasMaterialOverride
+                ? std::optional<MaterialOverrideComponent>(sourceRecord.materialOverride)
+                : std::nullopt;
+        const auto afterPrimitive = markerPrimitive ? beforePrimitive : sourcePrimitiveValue;
+        const auto afterImported = sourceImportedValue;
+        const auto afterMaterial = markerMaterial ? beforeMaterial : sourceMaterialValue;
+
         std::optional<NameComponent> afterName;
         if (HasOverride(*member, PrefabComponentKeyFor<NameComponent>::value))
             afterName = beforeName;
@@ -562,9 +550,10 @@ bool BuildReconciliation(const SceneDocument& document,
             afterName = NameComponent{templateId == source.rootTemplate
                                           ? InheritedRootName(sourceRecord.name)
                                           : sourceRecord.name};
-        AddOperation(staged, id->id, templateId,
-                     PrefabComponentKeyFor<NameComponent>::value,
-                     beforeName, afterName);
+        if (!HasOverride(*member, PrefabComponentKeyFor<NameComponent>::value))
+            AddOperation(staged, id->id, templateId,
+                         PrefabComponentKeyFor<NameComponent>::value,
+                         beforeName, afterName);
 
         std::optional<Transform> afterTransform;
         if (HasOverride(*member, PrefabComponentKeyFor<Transform>::value))
@@ -573,47 +562,45 @@ bool BuildReconciliation(const SceneDocument& document,
             afterTransform = Transform{sourceRecord.translation,
                                        sourceRecord.rotation,
                                        sourceRecord.scale};
-        AddOperation(staged, id->id, templateId,
-                     PrefabComponentKeyFor<Transform>::value,
-                     beforeTransform, afterTransform);
+        if (!HasOverride(*member, PrefabComponentKeyFor<Transform>::value))
+            AddOperation(staged, id->id, templateId,
+                         PrefabComponentKeyFor<Transform>::value,
+                         beforeTransform, afterTransform);
 
         std::optional<VisibleComponent> afterVisible;
         if (HasOverride(*member, PrefabComponentKeyFor<VisibleComponent>::value))
             afterVisible = beforeVisible;
         else
             afterVisible = VisibleComponent{sourceRecord.visible};
-        AddOperation(staged, id->id, templateId,
-                     PrefabComponentKeyFor<VisibleComponent>::value,
-                     beforeVisible, afterVisible);
+        if (!HasOverride(*member, PrefabComponentKeyFor<VisibleComponent>::value))
+            AddOperation(staged, id->id, templateId,
+                         PrefabComponentKeyFor<VisibleComponent>::value,
+                         beforeVisible, afterVisible);
 
-        std::optional<PrimitiveComponent> sourcePrimitiveValue =
-            sourceRecord.hasPrimitive ? std::optional<PrimitiveComponent>(sourceRecord.primitive)
-                                      : std::nullopt;
-        std::optional<PrimitiveComponent> afterPrimitive =
-            HasOverride(*member, PrefabComponentKeyFor<PrimitiveComponent>::value)
-                ? beforePrimitive : sourcePrimitiveValue;
-        AddOperation(staged, id->id, templateId,
-                     PrefabComponentKeyFor<PrimitiveComponent>::value,
-                     beforePrimitive, afterPrimitive);
-
-        std::optional<ImportedMeshSourceComponent> sourceImportedValue =
-            sourceRecord.hasImportedSource
-                ? std::optional<ImportedMeshSourceComponent>(sourceRecord.importedSource)
-                : std::nullopt;
+        if (!markerPrimitive)
+            AddOperation(staged, id->id, templateId,
+                         PrefabComponentKeyFor<PrimitiveComponent>::value,
+                         beforePrimitive, afterPrimitive);
         AddOperation(staged, id->id, templateId,
                      PrefabComponentKeyFor<ImportedMeshSourceComponent>::value,
-                     beforeImported, sourceImportedValue);
+                     beforeImported, afterImported);
+        if (!markerMaterial)
+            AddOperation(staged, id->id, templateId,
+                         PrefabComponentKeyFor<MaterialOverrideComponent>::value,
+                         beforeMaterial, afterMaterial);
 
-        std::optional<MaterialOverrideComponent> sourceMaterialValue =
-            sourceRecord.hasMaterialOverride
-                ? std::optional<MaterialOverrideComponent>(sourceRecord.materialOverride)
-                : std::nullopt;
-        std::optional<MaterialOverrideComponent> afterMaterial =
-            HasOverride(*member, PrefabComponentKeyFor<MaterialOverrideComponent>::value)
-                ? beforeMaterial : sourceMaterialValue;
-        AddOperation(staged, id->id, templateId,
-                     PrefabComponentKeyFor<MaterialOverrideComponent>::value,
-                     beforeMaterial, afterMaterial);
+        if (afterPrimitive && afterImported)
+        {
+            reason = "planned member carries both Primitive and ImportedMeshSource provenance";
+            reasonTemplate = templateId;
+            return false;
+        }
+        if (afterMaterial && !afterImported)
+        {
+            reason = "planned material override has no imported source provenance";
+            reasonTemplate = templateId;
+            return false;
+        }
 
         std::optional<LightComponent> sourceLight =
             sourceRecord.hasLight ? std::optional<LightComponent>(sourceRecord.light)
@@ -621,9 +608,10 @@ bool BuildReconciliation(const SceneDocument& document,
         std::optional<LightComponent> afterLight =
             HasOverride(*member, PrefabComponentKeyFor<LightComponent>::value)
                 ? beforeLight : sourceLight;
-        AddOperation(staged, id->id, templateId,
-                     PrefabComponentKeyFor<LightComponent>::value,
-                     beforeLight, afterLight);
+        if (!HasOverride(*member, PrefabComponentKeyFor<LightComponent>::value))
+            AddOperation(staged, id->id, templateId,
+                         PrefabComponentKeyFor<LightComponent>::value,
+                         beforeLight, afterLight);
 
         std::optional<CameraComponent> sourceCamera =
             sourceRecord.hasCamera ? std::optional<CameraComponent>(sourceRecord.camera)
@@ -631,9 +619,10 @@ bool BuildReconciliation(const SceneDocument& document,
         std::optional<CameraComponent> afterCamera =
             HasOverride(*member, PrefabComponentKeyFor<CameraComponent>::value)
                 ? beforeCamera : sourceCamera;
-        AddOperation(staged, id->id, templateId,
-                     PrefabComponentKeyFor<CameraComponent>::value,
-                     beforeCamera, afterCamera);
+        if (!HasOverride(*member, PrefabComponentKeyFor<CameraComponent>::value))
+            AddOperation(staged, id->id, templateId,
+                         PrefabComponentKeyFor<CameraComponent>::value,
+                         beforeCamera, afterCamera);
 
         std::optional<MotionComponent> sourceMotion =
             sourceRecord.hasMotion ? std::optional<MotionComponent>(sourceRecord.motion)
@@ -641,9 +630,10 @@ bool BuildReconciliation(const SceneDocument& document,
         std::optional<MotionComponent> afterMotion =
             HasOverride(*member, PrefabComponentKeyFor<MotionComponent>::value)
                 ? beforeMotion : sourceMotion;
-        AddOperation(staged, id->id, templateId,
-                     PrefabComponentKeyFor<MotionComponent>::value,
-                     beforeMotion, afterMotion);
+        if (!HasOverride(*member, PrefabComponentKeyFor<MotionComponent>::value))
+            AddOperation(staged, id->id, templateId,
+                         PrefabComponentKeyFor<MotionComponent>::value,
+                         beforeMotion, afterMotion);
 
         std::optional<ScriptComponent> sourceScript;
         if (sourceRecord.hasScript)
@@ -655,9 +645,10 @@ bool BuildReconciliation(const SceneDocument& document,
         std::optional<ScriptComponent> afterScript =
             HasOverride(*member, PrefabComponentKeyFor<ScriptComponent>::value)
                 ? beforeScript : sourceScript;
-        AddOperation(staged, id->id, templateId,
-                     PrefabComponentKeyFor<ScriptComponent>::value,
-                     beforeScript, afterScript);
+        if (!HasOverride(*member, PrefabComponentKeyFor<ScriptComponent>::value))
+            AddOperation(staged, id->id, templateId,
+                         PrefabComponentKeyFor<ScriptComponent>::value,
+                         beforeScript, afterScript);
     }
     output.insert(output.end(), std::make_move_iterator(staged.begin()),
                   std::make_move_iterator(staged.end()));

@@ -8,8 +8,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -136,6 +138,16 @@ SceneDocument MakeDocument(const std::filesystem::path& source,
     return document;
 }
 
+void SetInheritedBaseline(SceneDocument& document, entt::entity root, entt::entity child)
+{
+    document.ecs.registry.emplace<NameComponent>(root, NameComponent{"Template Copy"});
+    document.ecs.registry.emplace<NameComponent>(child, NameComponent{"Child"});
+    document.ecs.registry.emplace<Transform>(root);
+    document.ecs.registry.emplace<Transform>(child);
+    document.ecs.registry.emplace<VisibleComponent>(root);
+    document.ecs.registry.emplace<VisibleComponent>(child);
+}
+
 enum class OptionalKind { Primitive, Material, Light, Camera, Motion, Script };
 
 PrefabComponentKey Key(OptionalKind kind)
@@ -223,6 +235,44 @@ void SetLiveOptional(SceneDocument& document, entt::entity entity,
     }
 }
 
+std::optional<PrefabPropagationComponentValue> ExpectedOptional(OptionalKind kind,
+                                                                 bool source)
+{
+    if (source)
+    {
+        auto record = Record(2, 102, U(101));
+        SetSourceOptional(record, kind, true);
+        if (kind == OptionalKind::Script)
+        {
+            record.record.script.asset.sourceKey = "lua:asset=logic.lua";
+            record.record.script.fieldValues["target"] =
+                ScriptFieldEntry{ScriptFieldType::Uuid, U(200)};
+        }
+        switch (kind)
+        {
+        case OptionalKind::Primitive: return record.record.primitive;
+        case OptionalKind::Material: return record.record.materialOverride;
+        case OptionalKind::Light: return record.record.light;
+        case OptionalKind::Camera: return record.record.camera;
+        case OptionalKind::Motion: return record.record.motion;
+        case OptionalKind::Script: return record.record.script;
+        }
+    }
+    SceneDocument document;
+    const auto entity = document.ecs.registry.create();
+    SetLiveOptional(document, entity, kind, true);
+    switch (kind)
+    {
+    case OptionalKind::Primitive: return *document.ecs.registry.try_get<PrimitiveComponent>(entity);
+    case OptionalKind::Material: return *document.ecs.registry.try_get<MaterialOverrideComponent>(entity);
+    case OptionalKind::Light: return *document.ecs.registry.try_get<LightComponent>(entity);
+    case OptionalKind::Camera: return *document.ecs.registry.try_get<CameraComponent>(entity);
+    case OptionalKind::Motion: return *document.ecs.registry.try_get<MotionComponent>(entity);
+    case OptionalKind::Script: return *document.ecs.registry.try_get<ScriptComponent>(entity);
+    }
+    return std::nullopt;
+}
+
 const PrefabPropagationComponentOperation* FindOperation(
     const PrefabPropagationPlan& plan, const UUID& entity,
     const PrefabComponentKey& key)
@@ -251,7 +301,20 @@ TEST_CASE("Phase 8 W4 S3: all optional marker presence states reconcile")
         entt::entity root, child;
         const auto marker = Key(kind);
         auto document = MakeDocument(source, root, child, U(300), marked ? &marker : nullptr);
+        SetInheritedBaseline(document, root, child);
         SetLiveOptional(document, child, kind, livePresent);
+        if (kind == OptionalKind::Material && sourcePresent)
+        {
+            records[1].record.hasImportedSource = true;
+            records[1].record.importedSource.model =
+                AssetReference{AssetKind::Model, "matrix.glb", {}, "gltf:mesh=1", U(703)};
+            const auto importedSource = WritePrefab(temp, records);
+            document.ecs.registry.get<PrefabInstanceComponent>(root).prefab.path =
+                importedSource.filename().string();
+            document.ecs.registry.emplace<ImportedMeshSourceComponent>(child);
+            document.ecs.registry.get<ImportedMeshSourceComponent>(child).model =
+                records[1].record.importedSource.model;
+        }
         const auto beforeMarkers = document.ecs.registry.get<PrefabMemberComponent>(child).overrides;
         const auto result = PreparePrefabPropagation(Request(document, source));
         REQUIRE(result.IsOk());
@@ -263,9 +326,172 @@ TEST_CASE("Phase 8 W4 S3: all optional marker presence states reconcile")
         {
             CHECK(operation->before.has_value() == livePresent);
             CHECK(operation->after.has_value() == sourcePresent);
+            if (livePresent)
+            {
+                const auto expected = ExpectedOptional(kind, false);
+                REQUIRE(expected.has_value());
+                CHECK(PrefabPropagationValueEqual(*operation->before, *expected));
+            }
+            if (sourcePresent)
+            {
+                const auto expected = ExpectedOptional(kind, true);
+                REQUIRE(expected.has_value());
+                if (kind == OptionalKind::Script)
+                {
+                    const auto& actualScript = std::get<ScriptComponent>(*operation->after);
+                    const auto& expectedScript = std::get<ScriptComponent>(*expected);
+                    const auto& actualField = actualScript.fieldValues.at("target");
+                    const auto& expectedField = expectedScript.fieldValues.at("target");
+                    CHECK(PrefabCanonicalAssetReferenceEqual(actualScript.asset,
+                                                              expectedScript.asset));
+                    CHECK(actualScript.fieldValues.size() == expectedScript.fieldValues.size());
+                    CHECK(actualField.type == expectedField.type);
+                    CHECK(actualField.value.index() == expectedField.value.index());
+                    CHECK(std::get<UUID>(actualField.value) == std::get<UUID>(expectedField.value));
+                }
+                else
+                    CHECK(PrefabPropagationValueEqual(*operation->after, *expected));
+            }
+        }
+        const bool shouldQuarantine = kind == OptionalKind::Material &&
+                                      marked && livePresent && !sourcePresent;
+        if (shouldQuarantine)
+        {
+            CHECK(result.value.instances.front().disposition ==
+                  PrefabPropagationInstanceDisposition::Quarantined);
+            CHECK(result.value.instances.front().affectedEntities.empty());
+            CHECK(result.value.affectedEntities.empty());
+            CHECK(result.value.syncImpact == SyncImpact::None);
+        }
+        else if (shouldChange)
+        {
+            CHECK(result.value.instances.front().disposition ==
+                  PrefabPropagationInstanceDisposition::Propagate);
+            REQUIRE(result.value.affectedEntities.size() == 1);
+            CHECK(result.value.affectedEntities.front() == U(201));
+            CHECK(result.value.syncImpact == PrefabPropagationImpactForKey(Key(kind)));
+        }
+        else
+        {
+            CHECK(result.value.instances.front().disposition ==
+                  PrefabPropagationInstanceDisposition::NoOp);
+            CHECK(result.value.affectedEntities.empty());
+            CHECK(result.value.syncImpact == SyncImpact::None);
+            CHECK(result.value.resourceOwnership.empty());
         }
         CHECK(document.ecs.registry.get<PrefabMemberComponent>(child).overrides == beforeMarkers);
     }
+}
+
+TEST_CASE("Phase 8 W4 S3: protected NaN payloads and overridden absence are true no-ops")
+{
+    const OptionalKind kinds[] = {OptionalKind::Primitive, OptionalKind::Material,
+                                  OptionalKind::Light, OptionalKind::Camera,
+                                  OptionalKind::Motion, OptionalKind::Script};
+    for (const auto kind : kinds)
+    {
+        const auto temp = Temp();
+        auto records = std::vector<PrefabEntityRecord>{Record(1, 101), Record(2, 102, U(101))};
+        SetSourceOptional(records[1], kind, true);
+        if (kind == OptionalKind::Script)
+            records[1].record.script.fieldValues["gain"] =
+                ScriptFieldEntry{ScriptFieldType::Float, 3.0};
+        if (kind == OptionalKind::Material)
+        {
+            records[1].record.hasImportedSource = true;
+            records[1].record.importedSource.model =
+                AssetReference{AssetKind::Model, "nan.glb", {}, "gltf:mesh=1", U(704)};
+        }
+        const auto source = WritePrefab(temp, records);
+        const auto marker = Key(kind);
+        entt::entity root, child;
+        auto document = MakeDocument(source, root, child, U(300), &marker);
+        SetInheritedBaseline(document, root, child);
+        SetLiveOptional(document, child, kind, true);
+        switch (kind)
+        {
+        case OptionalKind::Primitive:
+            document.ecs.registry.get<PrimitiveComponent>(child).size =
+                std::numeric_limits<float>::quiet_NaN();
+            break;
+        case OptionalKind::Material:
+            document.ecs.registry.emplace<ImportedMeshSourceComponent>(child);
+            document.ecs.registry.get<ImportedMeshSourceComponent>(child).model =
+                records[1].record.importedSource.model;
+            document.ecs.registry.get<MaterialOverrideComponent>(child).material.baseColor.x =
+                std::numeric_limits<float>::quiet_NaN();
+            break;
+        case OptionalKind::Light:
+            document.ecs.registry.get<LightComponent>(child).intensity =
+                std::numeric_limits<float>::quiet_NaN();
+            break;
+        case OptionalKind::Camera:
+            document.ecs.registry.get<CameraComponent>(child).verticalFOV =
+                std::numeric_limits<float>::quiet_NaN();
+            break;
+        case OptionalKind::Motion:
+            document.ecs.registry.get<MotionComponent>(child).linearVelocity.x =
+                std::numeric_limits<float>::quiet_NaN();
+            break;
+        case OptionalKind::Script:
+            document.ecs.registry.get<ScriptComponent>(child).fieldValues["gain"] =
+                ScriptFieldEntry{ScriptFieldType::Float,
+                                 std::numeric_limits<double>::quiet_NaN()};
+            break;
+        }
+        const auto beforeMarkers = document.ecs.registry.get<PrefabMemberComponent>(child).overrides;
+        const auto result = PreparePrefabPropagation(Request(document, source));
+        REQUIRE(result.IsOk());
+        REQUIRE(result.value.IsValid());
+        CHECK(result.value.componentOperations.empty());
+        CHECK(result.value.instances.front().disposition == PrefabPropagationInstanceDisposition::NoOp);
+        CHECK(result.value.affectedEntities.empty());
+        CHECK(result.value.syncImpact == SyncImpact::None);
+        CHECK(result.value.resourceOwnership.empty());
+        CHECK(document.ecs.registry.get<PrefabMemberComponent>(child).overrides == beforeMarkers);
+    }
+
+    const auto transformTemp = Temp();
+    const auto transformSource = WritePrefab(transformTemp,
+        {Record(1, 101), Record(2, 102, U(101))});
+    entt::entity transformRoot, transformChild;
+    auto transformDocument = MakeDocument(transformSource, transformRoot, transformChild,
+                                          U(302), &PrefabComponentKeyFor<Transform>::value);
+    SetInheritedBaseline(transformDocument, transformRoot, transformChild);
+    transformDocument.ecs.registry.get<Transform>(transformChild).translation.x =
+        std::numeric_limits<float>::quiet_NaN();
+    const auto transformResult = PreparePrefabPropagation(
+        Request(transformDocument, transformSource));
+    REQUIRE(transformResult.IsOk());
+    REQUIRE(transformResult.value.IsValid());
+    CHECK(transformResult.value.componentOperations.empty());
+    CHECK(transformResult.value.instances.front().disposition ==
+          PrefabPropagationInstanceDisposition::NoOp);
+    CHECK(transformResult.value.affectedEntities.empty());
+    CHECK(transformResult.value.syncImpact == SyncImpact::None);
+
+    const auto temp = Temp();
+    auto records = std::vector<PrefabEntityRecord>{Record(1, 101), Record(2, 102, U(101))};
+    records[1].record.hasPrimitive = true;
+    records[1].record.primitive = PrimitiveComponent{PrimitiveComponent::Cube, 2.0f, 4, 3};
+    const auto source = WritePrefab(temp, records);
+    entt::entity root, child;
+    auto document = MakeDocument(source, root, child, U(301),
+                                 &PrefabComponentKeyFor<MaterialOverrideComponent>::value);
+    SetInheritedBaseline(document, root, child);
+    document.ecs.registry.emplace<ImportedMeshSourceComponent>(child);
+    document.ecs.registry.get<ImportedMeshSourceComponent>(child).model =
+        AssetReference{AssetKind::Model, "old.glb", {}, "gltf:mesh=1", U(705)};
+    const auto result = PreparePrefabPropagation(Request(document, source));
+    REQUIRE(result.IsOk());
+    REQUIRE(result.value.IsValid());
+    CHECK(result.value.instances.front().disposition == PrefabPropagationInstanceDisposition::Propagate);
+    CHECK(FindOperation(result.value, U(201),
+                        PrefabComponentKeyFor<MaterialOverrideComponent>::value) == nullptr);
+    CHECK(FindOperation(result.value, U(201),
+                        PrefabComponentKeyFor<PrimitiveComponent>::value) != nullptr);
+    CHECK(FindOperation(result.value, U(201),
+                        PrefabComponentKeyFor<ImportedMeshSourceComponent>::value) != nullptr);
 }
 
 TEST_CASE("Phase 8 W4 S3: naming, markers, and script UUID remap are deterministic")
@@ -484,19 +710,36 @@ TEST_CASE("Phase 8 W4 S3: imported source is authoritative and MeshRef is derive
     const auto source = WritePrefab(temp, records);
     entt::entity root, child;
     auto document = MakeDocument(source, root, child, U(300));
+    const auto beforeInstance = document.ecs.registry.get<PrefabInstanceComponent>(root);
+    const auto beforeMember = document.ecs.registry.get<PrefabMemberComponent>(child);
     document.ecs.registry.emplace<ImportedMeshSourceComponent>(child);
     document.ecs.registry.emplace<MeshRef>(child, MeshRef{77, 5});
+    const auto beforeImported = document.ecs.registry.get<ImportedMeshSourceComponent>(child);
+    const auto beforeMeshRef = document.ecs.registry.get<MeshRef>(child);
     const auto result = PreparePrefabPropagation(Request(document, source));
     REQUIRE(result.IsOk());
     REQUIRE(result.value.IsValid());
     const auto* operation = FindOperation(
         result.value, U(201), PrefabComponentKeyFor<ImportedMeshSourceComponent>::value);
     REQUIRE(operation != nullptr);
+    CHECK(operation->before.has_value());
+    CHECK(PrefabPropagationValueEqual(*operation->before,
+        PrefabPropagationComponentValue{beforeImported}));
+    CHECK(PrefabPropagationValueEqual(*operation->after,
+        PrefabPropagationComponentValue{records[1].record.importedSource}));
     CHECK(std::get<ImportedMeshSourceComponent>(*operation->after).model.sourceKey ==
           "gltf:mesh=2");
     CHECK(FindOperation(result.value, U(201), PrefabComponentKeyFor<MeshRef>::value) == nullptr);
-    CHECK(document.ecs.registry.get<MeshRef>(child).meshIndex == 77);
-    CHECK(document.ecs.registry.get<PrefabInstanceComponent>(root).instanceId == U(300));
+    const auto& afterMeshRef = document.ecs.registry.get<MeshRef>(child);
+    CHECK(afterMeshRef.meshIndex == beforeMeshRef.meshIndex);
+    CHECK(afterMeshRef.materialIndex == beforeMeshRef.materialIndex);
+    const auto& afterInstance = document.ecs.registry.get<PrefabInstanceComponent>(root);
+    const auto& afterMember = document.ecs.registry.get<PrefabMemberComponent>(child);
+    CHECK(PrefabCanonicalAssetReferenceEqual(afterInstance.prefab, beforeInstance.prefab));
+    CHECK(afterInstance.instanceId == beforeInstance.instanceId);
+    CHECK(afterMember.instanceId == beforeMember.instanceId);
+    CHECK(afterMember.templateId == beforeMember.templateId);
+    CHECK(afterMember.overrides == beforeMember.overrides);
 }
 
 TEST_CASE("Phase 8 W4 S3: clean geometry provenance transitions are planned without resources")
@@ -593,6 +836,9 @@ TEST_CASE("Phase 8 W4 S3: imported-only material conflict quarantines only its i
     auto records = std::vector<PrefabEntityRecord>{Record(1, 101), Record(2, 102, U(101))};
     records[1].record.hasPrimitive = true;
     records[1].record.primitive = PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 3, 3};
+    records[1].record.hasMaterialOverride = true;
+    records[1].record.materialOverride.authored = true;
+    records[1].record.materialOverride.material.roughness = 0.21f;
     const auto source = WritePrefab(temp, records);
     SceneDocument document;
     document.metadata.schemaVersion = SceneSerializer::SchemaVersion;
@@ -608,8 +854,7 @@ TEST_CASE("Phase 8 W4 S3: imported-only material conflict quarantines only its i
                 source.filename().string(), {}, {}, kAsset}, U(300 + instance)});
         document.ecs.registry.emplace<PrefabMemberComponent>(root,
             PrefabMemberComponent{U(300 + instance), U(1), {}});
-        const auto marker = instance == 0
-            ? &PrefabComponentKeyFor<MaterialOverrideComponent>::value : nullptr;
+        const auto marker = &PrefabComponentKeyFor<MaterialOverrideComponent>::value;
         const auto child = AddMember(document, childUuid, U(300 + instance), U(2), root, marker);
         if (instance == 0)
         {
