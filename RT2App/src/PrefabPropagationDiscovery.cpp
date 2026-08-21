@@ -1,10 +1,12 @@
 #include "PrefabPropagationDiscovery.h"
 
 #include "AssetIdentity.h"
+#include "EntityReferenceRemapper.h"
 
 #include <algorithm>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <set>
 #include <sstream>
@@ -229,6 +231,7 @@ struct InstanceValidation
     std::string reason;
     UUID templateId;
     std::vector<UUID> entities;
+    std::unordered_map<UUID, entt::entity> byTemplate;
 };
 
 InstanceValidation ValidateInstance(const SceneDocument& document,
@@ -411,7 +414,254 @@ InstanceValidation ValidateInstance(const SceneDocument& document,
     }
     result.valid = true;
     result.entities.assign(liveEntityIds.begin(), liveEntityIds.end());
+    result.byTemplate = std::move(byTemplate);
     return result;
+}
+
+template<typename T>
+std::optional<T> CopyComponent(const entt::registry& registry, entt::entity entity)
+{
+    const auto* value = registry.try_get<T>(entity);
+    return value ? std::optional<T>(*value) : std::nullopt;
+}
+
+bool HasOverride(const PrefabMemberComponent& member, const PrefabComponentKey& key)
+{
+    return std::find(member.overrides.begin(), member.overrides.end(), key) !=
+           member.overrides.end();
+}
+
+template<typename T>
+void AddOperation(std::vector<PrefabPropagationComponentOperation>& operations,
+                  const UUID& entityUuid, const UUID& templateId,
+                  const PrefabComponentKey& key,
+                  const std::optional<T>& before,
+                  const std::optional<T>& after)
+{
+    PrefabPropagationComponentOperation operation;
+    operation.entityUuid = entityUuid;
+    operation.templateId = templateId;
+    operation.key = key;
+    if (before) operation.before = PrefabPropagationComponentValue{*before};
+    if (after) operation.after = PrefabPropagationComponentValue{*after};
+    if (!PrefabPropagationComponentOperationIsNoOp(operation))
+        operations.push_back(std::move(operation));
+}
+
+std::string InheritedRootName(const std::string& name)
+{
+    constexpr std::string_view suffix = " Copy";
+    if (name.size() >= suffix.size() &&
+        name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)
+        return name;
+    return name + std::string(suffix);
+}
+
+bool BuildReconciliation(const SceneDocument& document,
+                         entt::entity root,
+                         const SourceModel& source,
+                         const InstanceValidation& validation,
+                         std::vector<PrefabPropagationComponentOperation>& output,
+                         std::string& reason,
+                         UUID& reasonTemplate)
+{
+    (void)root;
+    const auto& registry = document.ecs.registry;
+    std::vector<UUID> templates;
+    templates.reserve(source.byTemplate.size());
+    for (const auto& [templateId, record] : source.byTemplate)
+    {
+        (void)record;
+        templates.push_back(templateId);
+    }
+    std::sort(templates.begin(), templates.end(),
+              [](const UUID& a, const UUID& b) { return a < b; });
+
+    EntityUuidRemap remap;
+    for (const UUID& templateId : templates)
+    {
+        const auto sourceIt = source.byTemplate.find(templateId);
+        const auto liveIt = validation.byTemplate.find(templateId);
+        if (sourceIt == source.byTemplate.end() || liveIt == validation.byTemplate.end())
+        {
+            reason = "reconciliation template mapping is incomplete";
+            reasonTemplate = templateId;
+            return false;
+        }
+        const auto* id = registry.try_get<EntityIdComponent>(liveIt->second);
+        if (!id || id->id.IsNull())
+        {
+            reason = "reconciliation member has no durable UUID";
+            reasonTemplate = templateId;
+            return false;
+        }
+        remap[sourceIt->second->record.uuid] = id->id;
+    }
+
+    std::vector<PrefabPropagationComponentOperation> staged;
+    for (const UUID& templateId : templates)
+    {
+        const auto& sourceRecord = source.byTemplate.at(templateId)->record;
+        const entt::entity entity = validation.byTemplate.at(templateId);
+        const auto* member = registry.try_get<PrefabMemberComponent>(entity);
+        const auto* id = registry.try_get<EntityIdComponent>(entity);
+        if (!member || !id)
+        {
+            reason = "reconciliation member metadata is missing";
+            reasonTemplate = templateId;
+            return false;
+        }
+
+        const bool markerPrimitive = HasOverride(
+            *member, PrefabComponentKeyFor<PrimitiveComponent>::value);
+        const bool markerMaterial = HasOverride(
+            *member, PrefabComponentKeyFor<MaterialOverrideComponent>::value);
+        const bool sourcePrimitive = sourceRecord.hasPrimitive;
+        const bool sourceImported = sourceRecord.hasImportedSource;
+        const bool localPrimitive = registry.all_of<PrimitiveComponent>(entity);
+        const bool localImported = registry.all_of<ImportedMeshSourceComponent>(entity);
+        if (sourcePrimitive && sourceImported)
+        {
+            reason = "source carries both Primitive and ImportedMeshSource provenance";
+            reasonTemplate = templateId;
+            return false;
+        }
+        if (localPrimitive && localImported)
+        {
+            reason = "live member carries both Primitive and ImportedMeshSource provenance";
+            reasonTemplate = templateId;
+            return false;
+        }
+        if (markerPrimitive && sourceImported && localPrimitive)
+        {
+            reason = "preserved Primitive override conflicts with imported source provenance";
+            reasonTemplate = templateId;
+            return false;
+        }
+        if (sourcePrimitive && markerMaterial && localImported)
+        {
+            reason = "preserved imported material override conflicts with primitive provenance";
+            reasonTemplate = templateId;
+            return false;
+        }
+        const auto beforeName = CopyComponent<NameComponent>(registry, entity);
+        const auto beforeTransform = CopyComponent<Transform>(registry, entity);
+        const auto beforeVisible = CopyComponent<VisibleComponent>(registry, entity);
+        const auto beforePrimitive = CopyComponent<PrimitiveComponent>(registry, entity);
+        const auto beforeImported = CopyComponent<ImportedMeshSourceComponent>(registry, entity);
+        const auto beforeMaterial = CopyComponent<MaterialOverrideComponent>(registry, entity);
+        const auto beforeLight = CopyComponent<LightComponent>(registry, entity);
+        const auto beforeCamera = CopyComponent<CameraComponent>(registry, entity);
+        const auto beforeMotion = CopyComponent<MotionComponent>(registry, entity);
+        const auto beforeScript = CopyComponent<ScriptComponent>(registry, entity);
+
+        std::optional<NameComponent> afterName;
+        if (HasOverride(*member, PrefabComponentKeyFor<NameComponent>::value))
+            afterName = beforeName;
+        else
+            afterName = NameComponent{templateId == source.rootTemplate
+                                          ? InheritedRootName(sourceRecord.name)
+                                          : sourceRecord.name};
+        AddOperation(staged, id->id, templateId,
+                     PrefabComponentKeyFor<NameComponent>::value,
+                     beforeName, afterName);
+
+        std::optional<Transform> afterTransform;
+        if (HasOverride(*member, PrefabComponentKeyFor<Transform>::value))
+            afterTransform = beforeTransform;
+        else
+            afterTransform = Transform{sourceRecord.translation,
+                                       sourceRecord.rotation,
+                                       sourceRecord.scale};
+        AddOperation(staged, id->id, templateId,
+                     PrefabComponentKeyFor<Transform>::value,
+                     beforeTransform, afterTransform);
+
+        std::optional<VisibleComponent> afterVisible;
+        if (HasOverride(*member, PrefabComponentKeyFor<VisibleComponent>::value))
+            afterVisible = beforeVisible;
+        else
+            afterVisible = VisibleComponent{sourceRecord.visible};
+        AddOperation(staged, id->id, templateId,
+                     PrefabComponentKeyFor<VisibleComponent>::value,
+                     beforeVisible, afterVisible);
+
+        std::optional<PrimitiveComponent> sourcePrimitiveValue =
+            sourceRecord.hasPrimitive ? std::optional<PrimitiveComponent>(sourceRecord.primitive)
+                                      : std::nullopt;
+        std::optional<PrimitiveComponent> afterPrimitive =
+            HasOverride(*member, PrefabComponentKeyFor<PrimitiveComponent>::value)
+                ? beforePrimitive : sourcePrimitiveValue;
+        AddOperation(staged, id->id, templateId,
+                     PrefabComponentKeyFor<PrimitiveComponent>::value,
+                     beforePrimitive, afterPrimitive);
+
+        std::optional<ImportedMeshSourceComponent> sourceImportedValue =
+            sourceRecord.hasImportedSource
+                ? std::optional<ImportedMeshSourceComponent>(sourceRecord.importedSource)
+                : std::nullopt;
+        AddOperation(staged, id->id, templateId,
+                     PrefabComponentKeyFor<ImportedMeshSourceComponent>::value,
+                     beforeImported, sourceImportedValue);
+
+        std::optional<MaterialOverrideComponent> sourceMaterialValue =
+            sourceRecord.hasMaterialOverride
+                ? std::optional<MaterialOverrideComponent>(sourceRecord.materialOverride)
+                : std::nullopt;
+        std::optional<MaterialOverrideComponent> afterMaterial =
+            HasOverride(*member, PrefabComponentKeyFor<MaterialOverrideComponent>::value)
+                ? beforeMaterial : sourceMaterialValue;
+        AddOperation(staged, id->id, templateId,
+                     PrefabComponentKeyFor<MaterialOverrideComponent>::value,
+                     beforeMaterial, afterMaterial);
+
+        std::optional<LightComponent> sourceLight =
+            sourceRecord.hasLight ? std::optional<LightComponent>(sourceRecord.light)
+                                  : std::nullopt;
+        std::optional<LightComponent> afterLight =
+            HasOverride(*member, PrefabComponentKeyFor<LightComponent>::value)
+                ? beforeLight : sourceLight;
+        AddOperation(staged, id->id, templateId,
+                     PrefabComponentKeyFor<LightComponent>::value,
+                     beforeLight, afterLight);
+
+        std::optional<CameraComponent> sourceCamera =
+            sourceRecord.hasCamera ? std::optional<CameraComponent>(sourceRecord.camera)
+                                   : std::nullopt;
+        std::optional<CameraComponent> afterCamera =
+            HasOverride(*member, PrefabComponentKeyFor<CameraComponent>::value)
+                ? beforeCamera : sourceCamera;
+        AddOperation(staged, id->id, templateId,
+                     PrefabComponentKeyFor<CameraComponent>::value,
+                     beforeCamera, afterCamera);
+
+        std::optional<MotionComponent> sourceMotion =
+            sourceRecord.hasMotion ? std::optional<MotionComponent>(sourceRecord.motion)
+                                   : std::nullopt;
+        std::optional<MotionComponent> afterMotion =
+            HasOverride(*member, PrefabComponentKeyFor<MotionComponent>::value)
+                ? beforeMotion : sourceMotion;
+        AddOperation(staged, id->id, templateId,
+                     PrefabComponentKeyFor<MotionComponent>::value,
+                     beforeMotion, afterMotion);
+
+        std::optional<ScriptComponent> sourceScript;
+        if (sourceRecord.hasScript)
+        {
+            sourceScript = sourceRecord.script;
+            std::vector<ScriptComponent*> remapped{&*sourceScript};
+            RemapEntityReferences(remap, remapped);
+        }
+        std::optional<ScriptComponent> afterScript =
+            HasOverride(*member, PrefabComponentKeyFor<ScriptComponent>::value)
+                ? beforeScript : sourceScript;
+        AddOperation(staged, id->id, templateId,
+                     PrefabComponentKeyFor<ScriptComponent>::value,
+                     beforeScript, afterScript);
+    }
+    output.insert(output.end(), std::make_move_iterator(staged.begin()),
+                  std::make_move_iterator(staged.end()));
+    return true;
 }
 
 PrefabPropagationDiagnostic MakeDiagnostic(const PrefabSourceFingerprint& source,
@@ -571,18 +821,53 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
         instance.rootUuid = rootUuid;
         if (validation.valid)
         {
-            instance.disposition = PrefabPropagationInstanceDisposition::Propagate;
-            instance.affectedEntities = validation.entities;
+            std::vector<PrefabPropagationComponentOperation> reconciled;
+            std::string reconciliationReason;
+            UUID reconciliationTemplate;
+            if (!BuildReconciliation(*request.document, root, loaded.model,
+                                     validation, reconciled,
+                                     reconciliationReason,
+                                     reconciliationTemplate))
+            {
+                validation.valid = false;
+                validation.reason = reconciliationReason;
+                validation.templateId = reconciliationTemplate;
+            }
+            else
+            {
+                for (const auto& operation : reconciled)
+                    if (std::find(instance.affectedEntities.begin(),
+                                  instance.affectedEntities.end(),
+                                  operation.entityUuid) == instance.affectedEntities.end())
+                        instance.affectedEntities.push_back(operation.entityUuid);
+                instance.disposition = reconciled.empty()
+                    ? PrefabPropagationInstanceDisposition::NoOp
+                    : PrefabPropagationInstanceDisposition::Propagate;
+                plan.componentOperations.insert(
+                    plan.componentOperations.end(),
+                    std::make_move_iterator(reconciled.begin()),
+                    std::make_move_iterator(reconciled.end()));
+            }
         }
-        else
+        if (!validation.valid)
         {
             instance.disposition = PrefabPropagationInstanceDisposition::Quarantined;
             instance.diagnostics.push_back(MakeDiagnostic(
                 fingerprint, link, rootUuid, validation));
             plan.diagnostics.push_back(instance.diagnostics.front());
         }
+        std::sort(instance.affectedEntities.begin(), instance.affectedEntities.end(),
+                  [](const UUID& a, const UUID& b) { return a < b; });
         plan.instances.push_back(std::move(instance));
     }
+    std::sort(plan.componentOperations.begin(), plan.componentOperations.end(),
+              [](const auto& a, const auto& b) {
+                  if (a.entityUuid != b.entityUuid) return a.entityUuid < b.entityUuid;
+                  if (a.templateId != b.templateId) return a.templateId < b.templateId;
+                  return a.key.wire() < b.key.wire();
+              });
+    plan.affectedEntities = plan.DerivedAffectedEntities();
+    plan.syncImpact = plan.DerivedSyncImpact();
     std::sort(plan.diagnostics.begin(), plan.diagnostics.end());
     return Result<PrefabPropagationPlan>::Ok(std::move(plan));
 }

@@ -692,6 +692,9 @@
     <ClCompile Include="src\Phase8W4S2DiscoveryTests.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\Phase8W4S3ReconciliationTests.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\Phase8W4S1ContractTests.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>

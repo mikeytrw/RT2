@@ -28,6 +28,9 @@
     -- Phase 8 W3 S1: prefab component classification table tests (same rationale).
     files { "src/Phase8W3OverrideTests.cpp" }
 
+    -- Phase 8 W4 S3: inherited component reconciliation tests (same rationale).
+    files { "src/Phase8W4S3ReconciliationTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 
