@@ -22,8 +22,9 @@ struct PrefabPropagationDiscoveryRequest
     std::uint64_t documentGeneration = 0;
     std::uint64_t resourceGeneration = 0;
 
-    // Tests and recovery hosts may inject a checked, transactional loader.
-    // The default is PrefabSerializer::Load.
+    // Legacy/test seam only: callers may explicitly inject a checked,
+    // path-based loader. Production parses the already-fingerprinted buffer
+    // through PrefabSerializer::LoadBytes; this seam is never the default.
     std::function<bool(PrefabDocument&, const std::filesystem::path&, Error&)> load;
 
     // Preferred seam: parse the exact immutable bytes already fingerprinted.

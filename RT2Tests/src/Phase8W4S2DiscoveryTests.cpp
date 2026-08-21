@@ -85,6 +85,61 @@ std::string ReadTestBytes(const std::filesystem::path& path)
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
 
+bool SameAssetReference(const AssetReference& a, const AssetReference& b)
+{
+    return a.kind == b.kind && a.path == b.path &&
+           a.importSettings == b.importSettings && a.sourceKey == b.sourceKey &&
+           a.assetId == b.assetId;
+}
+
+bool SameMaterial(const SceneMaterial& a, const SceneMaterial& b)
+{
+    return a.type == b.type && a.baseColor == b.baseColor &&
+           a.baseAlpha == b.baseAlpha && a.metallic == b.metallic &&
+           a.roughness == b.roughness && a.ior == b.ior &&
+           a.transmissionFactor == b.transmissionFactor &&
+           a.emissiveColor == b.emissiveColor &&
+           a.emissiveIntensity == b.emissiveIntensity &&
+           a.baseColorTextureIndex == b.baseColorTextureIndex &&
+           a.normalTextureIndex == b.normalTextureIndex &&
+           a.emissiveTextureIndex == b.emissiveTextureIndex &&
+           a.metallicRoughnessTextureIndex == b.metallicRoughnessTextureIndex &&
+           a.alphaMode == b.alphaMode && a.alphaCutoff == b.alphaCutoff &&
+           a.sourceKey == b.sourceKey;
+}
+
+bool SameTexture(const SceneTexture& a, const SceneTexture& b)
+{
+    return SameAssetReference(a.ref, b.ref) && a.width == b.width &&
+           a.height == b.height && a.channels == b.channels &&
+           a.pixels == b.pixels && a.isHDR == b.isHDR &&
+           a.floatPixels == b.floatPixels && a.isSRGB == b.isSRGB;
+}
+
+bool SameMesh(const MeshData& a, const MeshData& b)
+{
+    return a.vertices == b.vertices && a.indices == b.indices &&
+           a.normals == b.normals && a.uvs == b.uvs &&
+           a.tangents == b.tangents &&
+           a.materialIndices == b.materialIndices && a.name == b.name &&
+           a.boundsMin == b.boundsMin && a.boundsMax == b.boundsMax &&
+           a.boundsValid == b.boundsValid;
+}
+
+bool SameEnvironment(const EnvironmentSettings& a, const EnvironmentSettings& b)
+{
+    return SameAssetReference(a.ref, b.ref) && a.width == b.width &&
+           a.height == b.height && a.floatPixels == b.floatPixels;
+}
+
+bool SameCamera(const SceneCamera& a, const SceneCamera& b)
+{
+    return a.position == b.position &&
+           a.forwardDirection == b.forwardDirection &&
+           a.verticalFOV == b.verticalFOV && a.aperture == b.aperture &&
+           a.focusDistance == b.focusDistance;
+}
+
 void AddEntity(SceneDocument& document, const UUID& uuid, const UUID& instance,
                const UUID& templ, entt::entity parent = entt::null)
 {
@@ -159,17 +214,55 @@ TEST_CASE("Phase 8 W4 S2: identity discovery quarantines one sibling and loads o
     document.ecs.registry.emplace<PrefabMemberComponent>(
         rootBad, PrefabMemberComponent{kInstanceBad, kTemplateRoot, {}});
 
+    SceneMaterial material;
+    material.baseColor = {0.17f, 0.29f, 0.41f};
+    material.emissiveColor = {0.03f, 0.05f, 0.07f};
+    material.emissiveIntensity = 2.5f;
+    material.sourceKey = "s2:material";
+    document.ecs.materials.push_back(material);
+    SceneTexture texture;
+    texture.ref = AssetReference{AssetKind::Texture, "s2-texture.png", {},
+                                 "s2:texture", kAsset};
+    texture.width = 2;
+    texture.height = 1;
+    texture.channels = 4;
+    texture.pixels = {1, 2, 3, 4, 5, 6, 7, 8};
+    texture.isSRGB = true;
+    document.ecs.textures.push_back(texture);
+    MeshData mesh;
+    mesh.name = "s2-mesh";
+    mesh.vertices = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    mesh.indices = {0, 1, 2};
+    mesh.normals = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    mesh.uvs = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f};
+    mesh.materialIndices = {0};
+    document.ecs.meshRegistry.AddMesh(mesh);
+    document.environment.ref = AssetReference{AssetKind::Environment,
+                                                "s2-environment.exr", {},
+                                                "s2:environment", kAsset};
+    document.environment.width = 1;
+    document.environment.height = 1;
+    document.environment.floatPixels = {0.11f, 0.22f, 0.33f, 1.0f};
+    document.ecs.camera.position = {3.0f, 4.0f, 5.0f};
+    document.ecs.camera.verticalFOV = 37.0f;
+
     const auto beforeSchema = document.metadata.schemaVersion;
     const auto beforeDirty = document.metadata.dirty;
-    const auto beforeSize = document.ecs.registry.storage<EntityIdComponent>().size();
-    const auto beforeMaterials = document.ecs.materials.size();
-    const auto beforeTextures = document.ecs.textures.size();
-    const auto beforeMeshes = document.ecs.meshRegistry.GetCount();
+    const auto beforeEntityId = document.ecs.registry.storage<EntityIdComponent>().size();
+    const auto beforeUuidIndex = document.uuidIndex.All();
+    const auto beforeMaterials = document.ecs.materials;
+    const auto beforeTextures = document.ecs.textures;
+    const auto beforeMeshes = document.ecs.meshRegistry.GetMeshes();
+    const auto beforeEnvironment = document.environment;
+    const auto beforeCamera = document.ecs.camera;
+    const auto beforeDocumentGeneration = std::uint64_t{71};
+    const auto beforeResourceGeneration = std::uint64_t{19};
     std::vector<AssetDiagnostic> snapshotDiagnostics;
     Error snapshotError;
-    const auto snapshotPath = temp.directory / "before.rt2scene";
-    REQUIRE(SceneSerializer::Save(document, snapshotPath, snapshotDiagnostics, snapshotError));
-    const auto beforeSceneBytes = ReadTestBytes(snapshotPath);
+    const auto beforePath = temp.directory / "before.rt2scene";
+    const auto afterPath = temp.directory / "after.rt2scene";
+    REQUIRE(SceneSerializer::Save(document, beforePath, snapshotDiagnostics, snapshotError));
+    const auto beforeSceneBytes = ReadTestBytes(beforePath);
     const auto beforeSourceBytes = ReadTestBytes(source);
     const auto beforeSidecarBytes = ReadTestBytes(AssetSidecarPath(source));
     auto request = Request(document, source);
@@ -214,13 +307,31 @@ TEST_CASE("Phase 8 W4 S2: identity discovery quarantines one sibling and loads o
     }
     CHECK(valid == 2);
     CHECK(quarantined == 1);
+    snapshotDiagnostics.clear();
+    snapshotError = Error{};
+    REQUIRE(SceneSerializer::Save(document, afterPath, snapshotDiagnostics, snapshotError));
     CHECK(document.metadata.schemaVersion == beforeSchema);
     CHECK(document.metadata.dirty == beforeDirty);
-    CHECK(document.ecs.registry.storage<EntityIdComponent>().size() == beforeSize);
-    CHECK(document.ecs.materials.size() == beforeMaterials);
-    CHECK(document.ecs.textures.size() == beforeTextures);
-    CHECK(document.ecs.meshRegistry.GetCount() == beforeMeshes);
-    CHECK(ReadTestBytes(snapshotPath) == beforeSceneBytes);
+    CHECK(document.ecs.registry.storage<EntityIdComponent>().size() == beforeEntityId);
+    CHECK(document.uuidIndex.All() == beforeUuidIndex);
+    CHECK(document.ecs.materials.size() == beforeMaterials.size());
+    for (std::size_t i = 0; i < beforeMaterials.size() &&
+                            i < document.ecs.materials.size(); ++i)
+        CHECK(SameMaterial(document.ecs.materials[i], beforeMaterials[i]));
+    CHECK(document.ecs.textures.size() == beforeTextures.size());
+    for (std::size_t i = 0; i < beforeTextures.size() &&
+                            i < document.ecs.textures.size(); ++i)
+        CHECK(SameTexture(document.ecs.textures[i], beforeTextures[i]));
+    CHECK(document.ecs.meshRegistry.GetCount() == beforeMeshes.size());
+    for (std::size_t i = 0; i < beforeMeshes.size() &&
+                            i < document.ecs.meshRegistry.GetMeshes().size(); ++i)
+        CHECK(SameMesh(document.ecs.meshRegistry.GetMesh(static_cast<uint32_t>(i)),
+                       beforeMeshes[i]));
+    CHECK(SameEnvironment(document.environment, beforeEnvironment));
+    CHECK(SameCamera(document.ecs.camera, beforeCamera));
+    CHECK(prepared.value.documentGeneration == beforeDocumentGeneration);
+    CHECK(prepared.value.resourceGeneration == beforeResourceGeneration);
+    CHECK(ReadTestBytes(afterPath) == beforeSceneBytes);
     CHECK(ReadTestBytes(source) == beforeSourceBytes);
     CHECK(ReadTestBytes(AssetSidecarPath(source)) == beforeSidecarBytes);
 }
