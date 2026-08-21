@@ -21,6 +21,7 @@
 #include "InputTypes.h"
 #include "ProjectContext.h"
 #include "SceneAssetResolver.h"
+#include "PrefabPropagationService.h"
 
 #include <cstdio>
 #include <cstring>
@@ -903,6 +904,14 @@ int main(int argc, char** argv)
         return 2;
     }
     std::vector<AssetDiagnostic> assetDiagnostics;
+    const auto prefabReport = ReconcilePrefabPropagationForLoad(authoring, assetContext);
+    if (!prefabReport.IsOk())
+    {
+        fprintf(stderr, "[SliceRunner] Prefab propagation failed: %s\n",
+                prefabReport.error.Format().c_str());
+        return 2;
+    }
+    AppendPrefabPropagationDiagnostics(prefabReport.value, assetDiagnostics);
     if (!SceneAssetResolver::ResolveAll(
             authoring, assetContext, assetDiagnostics, err))
     {

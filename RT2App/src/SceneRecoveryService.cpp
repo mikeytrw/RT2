@@ -1,6 +1,7 @@
 #include "SceneRecoveryService.h"
 
 #include "SceneSerializer.h"
+#include "PrefabPropagationService.h"
 #include "json.hpp"
 
 #include <algorithm>
@@ -538,6 +539,14 @@ bool SceneRecoveryService::Restore(const RecoveryRecord& record,
         : record.originalSourcePath;
     temp.metadata.projectId = record.projectId;
     temp.metadata.assetRoot = context.assetRoot;
+
+    const auto prefabReport = ReconcilePrefabPropagationForLoad(temp, context);
+    if (!prefabReport.IsOk())
+    {
+        err = prefabReport.error;
+        return false;
+    }
+    AppendPrefabPropagationDiagnostics(prefabReport.value, diagnostics);
     if (!SceneAssetResolver::ResolveAll(temp, context, diagnostics, err))
         return false;
 

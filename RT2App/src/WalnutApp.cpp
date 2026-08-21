@@ -19,6 +19,7 @@
 #include "SceneSerializer.h"
 #include "SceneDocument.h"
 #include "SceneAssetResolver.h"
+#include "PrefabPropagationService.h"
 #include "RuntimeSceneController.h"
 #include "ScriptSystem.h"
 #include "ScriptFieldRegistry.h"
@@ -4358,12 +4359,14 @@ public:
 			std::make_shared<rt2::core::ScriptFieldResolutionResult>();
 		auto fieldChanges =
 			std::make_shared<rt2::core::ScriptFieldChangeClassification>();
+		auto prefabPropagationChanged = std::make_shared<bool>(false);
 		const std::string filepathCopy = filepath;
 		auto uuidProvider = m_SceneMgr.AuthoringDoc().GetUuidProvider();
 
 		StartBackgroundWork("Loading scene...",
 			[resultDoc, errorStr, diagStr, loadReport, fieldDiagnostics,
-			 fieldResolution, fieldChanges, filepathCopy, uuidProvider,
+			 fieldResolution, fieldChanges, prefabPropagationChanged,
+			 filepathCopy, uuidProvider,
 			 assetContext, projectSnapshot](BackgroundWork& self) -> bool
 		{
 			self.SetStatus("Parsing scene file...");
@@ -4418,6 +4421,26 @@ public:
 					diagnostic.detail + "\n";
 			}
 
+			// Reconcile durable prefab component state on the temporary parsed
+			// document before the one normal asset-resolution pass. A global
+			// source failure aborts adoption; structural quarantine remains local.
+			const auto prefabReport =
+				rt2::core::ReconcilePrefabPropagationForLoad(*resultDoc, assetContext);
+			if (!prefabReport.IsOk())
+			{
+				*errorStr = "Prefab propagation failed, keeping current scene: " +
+					prefabReport.error.Format();
+				return false;
+			}
+			*prefabPropagationChanged = prefabReport.value.changed;
+			for (const auto& diagnostic : prefabReport.value.diagnostics)
+			{
+				*diagStr += "[Scene] Prefab quarantine: path='" +
+					diagnostic.prefabPath.string() + "' root=" +
+					diagnostic.rootUuid.ToString() + " reason=" +
+					diagnostic.reason + "\n";
+			}
+
 			self.SetStatus("Resolving assets (models, textures, env)...");
 			std::vector<rt2::core::AssetDiagnostic> diagnostics;
 			rt2::core::Error resolveErr;
@@ -4460,6 +4483,7 @@ public:
 			return true;
 		},
 			[this, resultDoc, errorStr, diagStr, loadReport, fieldChanges,
+			 prefabPropagationChanged,
 				 filepathCopy, assetContext, projectSnapshot](bool success)
 		{
 			// Main thread: log diagnostics.
@@ -4496,7 +4520,7 @@ public:
 			m_History.Clear();
 			CompactMeshRegistryNowAsserted();
 			m_SceneMgr.ClearDirty();
-			if (fieldChanges->requiresSave)
+			if (*prefabPropagationChanged || fieldChanges->requiresSave)
 				m_SceneMgr.MarkDirty();
 			m_ScriptRepairGate.Adopt(fieldChanges->destructive);
 			m_AssetMigrationGate.Adopt(loadReport->requiresAssetMigration);

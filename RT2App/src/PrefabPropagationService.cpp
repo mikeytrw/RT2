@@ -164,6 +164,66 @@ PrefabPropagationDiagnostic MakeResolverDiagnostic(
     return converted;
 }
 
+std::optional<PrefabPropagationComponentValue> CurrentComponentValue(
+    const entt::registry& registry, entt::entity entity,
+    const PrefabComponentKey& key)
+{
+    auto read = [&](auto tag) -> std::optional<PrefabPropagationComponentValue> {
+        using T = decltype(tag);
+        if (const auto* value = registry.try_get<T>(entity))
+            return PrefabPropagationComponentValue{*value};
+        return std::nullopt;
+    };
+    if (key.wire() == PrefabWireKeys::kName) return read(NameComponent{});
+    if (key.wire() == PrefabWireKeys::kTransform) return read(Transform{});
+    if (key.wire() == PrefabWireKeys::kVisible) return read(VisibleComponent{});
+    if (key.wire() == PrefabWireKeys::kPrimitive) return read(PrimitiveComponent{});
+    if (key.wire() == PrefabWireKeys::kImportedSource)
+        return read(ImportedMeshSourceComponent{});
+    if (key.wire() == PrefabWireKeys::kMaterialOverride)
+        return read(MaterialOverrideComponent{});
+    if (key.wire() == PrefabWireKeys::kLight) return read(LightComponent{});
+    if (key.wire() == PrefabWireKeys::kCamera) return read(CameraComponent{});
+    if (key.wire() == PrefabWireKeys::kMotion) return read(MotionComponent{});
+    if (key.wire() == PrefabWireKeys::kScript) return read(ScriptComponent{});
+    return std::nullopt;
+}
+
+bool ApplyComponentOperation(entt::registry& registry, entt::entity entity,
+                             const PrefabPropagationComponentOperation& operation)
+{
+    auto remove = [&]() {
+        if (operation.key.wire() == PrefabWireKeys::kName)
+            WriteOptional<NameComponent>(registry, entity, std::nullopt);
+        else if (operation.key.wire() == PrefabWireKeys::kTransform)
+            WriteOptional<Transform>(registry, entity, std::nullopt);
+        else if (operation.key.wire() == PrefabWireKeys::kVisible)
+            WriteOptional<VisibleComponent>(registry, entity, std::nullopt);
+        else if (operation.key.wire() == PrefabWireKeys::kPrimitive)
+            WriteOptional<PrimitiveComponent>(registry, entity, std::nullopt);
+        else if (operation.key.wire() == PrefabWireKeys::kImportedSource)
+            WriteOptional<ImportedMeshSourceComponent>(registry, entity, std::nullopt);
+        else if (operation.key.wire() == PrefabWireKeys::kMaterialOverride)
+            WriteOptional<MaterialOverrideComponent>(registry, entity, std::nullopt);
+        else if (operation.key.wire() == PrefabWireKeys::kLight)
+            WriteOptional<LightComponent>(registry, entity, std::nullopt);
+        else if (operation.key.wire() == PrefabWireKeys::kCamera)
+            WriteOptional<CameraComponent>(registry, entity, std::nullopt);
+        else if (operation.key.wire() == PrefabWireKeys::kMotion)
+            WriteOptional<MotionComponent>(registry, entity, std::nullopt);
+        else if (operation.key.wire() == PrefabWireKeys::kScript)
+            WriteOptional<ScriptComponent>(registry, entity, std::nullopt);
+        else return false;
+        return true;
+    };
+    if (!operation.after) return remove();
+    std::visit([&](const auto& value) {
+        using T = std::decay_t<decltype(value)>;
+        WriteOptional<T>(registry, entity, std::optional<T>{value});
+    }, *operation.after);
+    return true;
+}
+
 } // namespace
 
 Result<PrefabPropagationPlan> StagePrefabPropagationResources(
@@ -504,6 +564,150 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
         return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
             "prefab-propagation", "staged resource plan failed validation");
     return Result<PrefabPropagationPlan>::Ok(std::move(result));
+}
+
+Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
+    SceneDocument& document, const AssetResolutionContext& assets)
+{
+    struct Candidate
+    {
+        AssetReference reference;
+        std::string identity;
+        UUID rootUuid;
+    };
+
+    std::vector<Candidate> candidates;
+    const auto roots = document.ecs.registry.view<PrefabInstanceComponent>();
+    for (const entt::entity root : roots)
+    {
+        const auto& link = roots.get<PrefabInstanceComponent>(root);
+        const auto* id = document.ecs.registry.try_get<EntityIdComponent>(root);
+        const UUID rootUuid = id ? id->id : UUID::Nil();
+        std::vector<AssetDiagnostic> resolutionDiagnostics;
+        const auto resolved = Resolve(link.prefab, assets, rootUuid, {},
+                                      resolutionDiagnostics);
+        if (!resolved.success || resolved.effectiveId.IsNull())
+        {
+            const auto detail = resolutionDiagnostics.empty()
+                ? "prefab source could not be resolved"
+                : resolutionDiagnostics.front().detail;
+            return Result<PrefabPropagationLoadReport>::Fail(
+                Error::MissingAsset, link.prefab.path, detail);
+        }
+        const auto normalized = resolved.resolvedPath.lexically_normal();
+        candidates.push_back({link.prefab,
+            normalized.generic_string() + "|" + resolved.effectiveId.ToString(),
+            rootUuid});
+    }
+    std::sort(candidates.begin(), candidates.end(),
+        [](const Candidate& a, const Candidate& b) {
+            if (a.identity != b.identity) return a.identity < b.identity;
+            return a.rootUuid < b.rootUuid;
+        });
+    candidates.erase(std::unique(candidates.begin(), candidates.end(),
+        [](const Candidate& a, const Candidate& b) {
+            return a.identity == b.identity;
+        }), candidates.end());
+
+    // Prepare every source before applying any operation. This is the
+    // transaction boundary for load/recovery: a malformed later source cannot
+    // leave an earlier sibling partially reconciled.
+    std::vector<PrefabPropagationPlan> plans;
+    plans.reserve(candidates.size());
+    for (const auto& candidate : candidates)
+    {
+        PrefabPropagationDiscoveryRequest request;
+        request.document = &document;
+        request.assets = assets;
+        request.changedSource = candidate.reference;
+        request.documentGeneration = 1;
+        request.resourceGeneration = 1;
+        request.authoringRevision = 0;
+        const auto prepared = PreparePrefabPropagation(request);
+        if (!prepared.IsOk())
+            return Result<PrefabPropagationLoadReport>::Fail(
+                prepared.error.code, prepared.error.path, prepared.error.detail);
+        plans.push_back(prepared.value);
+    }
+
+    // Validate all preconditions before writing the temporary document.
+    for (const auto& plan : plans)
+    {
+        if (!plan.IsValid())
+            return Result<PrefabPropagationLoadReport>::Fail(
+                Error::InvalidArgument, plan.source.normalizedPath.string(),
+                "prefab propagation plan is invalid during load");
+        for (const auto& operation : plan.componentOperations)
+        {
+            const auto entity = document.FindByUuid(operation.entityUuid);
+            if (entity == entt::null || !document.ecs.registry.valid(entity))
+                return Result<PrefabPropagationLoadReport>::Fail(
+                    Error::InvalidEntity, plan.source.normalizedPath.string(),
+                    "prefab propagation target entity disappeared during load");
+            const auto* member = document.ecs.registry.try_get<PrefabMemberComponent>(entity);
+            if (!member || member->instanceId.IsNull() ||
+                member->templateId != operation.templateId)
+                return Result<PrefabPropagationLoadReport>::Fail(
+                    Error::InvalidEntity, plan.source.normalizedPath.string(),
+                    "prefab propagation target membership changed during load");
+            const auto current = CurrentComponentValue(
+                document.ecs.registry, entity, operation.key);
+            if (current.has_value() != operation.before.has_value() ||
+                (current && operation.before &&
+                 !PrefabPropagationValueEqual(*current, *operation.before)))
+                return Result<PrefabPropagationLoadReport>::Fail(
+                    Error::InvalidEntity, plan.source.normalizedPath.string(),
+                    "prefab propagation before value changed during load");
+        }
+    }
+
+    PrefabPropagationLoadReport report;
+    for (const auto& plan : plans)
+    {
+        report.diagnostics.insert(report.diagnostics.end(),
+            plan.diagnostics.begin(), plan.diagnostics.end());
+        for (const auto& instance : plan.instances)
+        {
+            if (instance.disposition == PrefabPropagationInstanceDisposition::Propagate)
+                ++report.propagatedInstances;
+            else if (instance.disposition == PrefabPropagationInstanceDisposition::NoOp)
+                ++report.noOpInstances;
+            else
+            {
+                ++report.quarantinedInstances;
+            }
+        }
+        for (const auto& operation : plan.componentOperations)
+        {
+            if (PrefabPropagationComponentOperationIsNoOp(operation)) continue;
+            const auto entity = document.FindByUuid(operation.entityUuid);
+            if (!ApplyComponentOperation(document.ecs.registry, entity, operation))
+                return Result<PrefabPropagationLoadReport>::Fail(
+                    Error::InvalidArgument, plan.source.normalizedPath.string(),
+                    "unsupported prefab propagation component operation");
+            report.changed = true;
+        }
+    }
+    std::sort(report.diagnostics.begin(), report.diagnostics.end());
+    if (report.changed) document.metadata.dirty = true;
+    return Result<PrefabPropagationLoadReport>::Ok(std::move(report));
+}
+
+void AppendPrefabPropagationDiagnostics(
+    const PrefabPropagationLoadReport& report,
+    std::vector<AssetDiagnostic>& diagnostics)
+{
+    for (const auto& source : report.diagnostics)
+    {
+        AssetDiagnostic diagnostic;
+        diagnostic.severity = source.severity;
+        diagnostic.kind = AssetKind::Prefab;
+        diagnostic.refPath = source.prefabPath.string();
+        diagnostic.entityUuid = source.rootUuid;
+        diagnostic.sourceKey = source.templateId.ToString();
+        diagnostic.detail = source.reason;
+        diagnostics.push_back(std::move(diagnostic));
+    }
 }
 
 } // namespace rt2::core

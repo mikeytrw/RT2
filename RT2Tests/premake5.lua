@@ -34,6 +34,9 @@
     -- Phase 8 W4 S4: resource ownership and atomic command tests (same rationale).
     files { "src/Phase8W4S4ResourceCommandTests.cpp" }
 
+    -- Phase 8 W4 S5: scene-open/recovery reconciliation integration tests.
+    files { "src/Phase8W4S5LoadIntegrationTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 
