@@ -146,7 +146,7 @@ bool HasResourceMutation(const PrefabPropagationPlan& plan) noexcept
 bool ValidateCommitEvidence(const PrefabPropagationPlan& plan)
 {
     if (!plan.source.IsValid() || plan.documentGeneration == 0 ||
-        plan.resourceGeneration == 0 || plan.authoringRevision == 0 ||
+        plan.resourceGeneration == 0 || !plan.authoringRevisionCaptured ||
         plan.rootSnapshots.empty())
         return false;
     for (const auto& operation : plan.componentOperations)
@@ -165,6 +165,8 @@ bool ValidateCommitEvidence(const PrefabPropagationPlan& plan)
     }
     for (const auto& instance : plan.instances)
     {
+        if (instance.disposition == PrefabPropagationInstanceDisposition::Quarantined)
+            continue;
         const auto root = std::find_if(plan.rootSnapshots.begin(), plan.rootSnapshots.end(),
             [&](const auto& snapshot) { return snapshot.rootUuid == instance.rootUuid; });
         if (root == plan.rootSnapshots.end() || root->instanceId != instance.instanceId)

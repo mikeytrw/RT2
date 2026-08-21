@@ -11,6 +11,8 @@
 #include <filesystem>
 #include <chrono>
 #include <algorithm>
+#include <cstdlib>
+#include <limits>
 
 using namespace rt2::core;
 
@@ -32,14 +34,17 @@ MeshData Triangle(const char* name)
 struct CheckedTempDir
 {
     std::filesystem::path path;
+    bool armed = true;
     ~CheckedTempDir()
     {
+        if (!armed) return;
         std::error_code error;
         std::filesystem::remove_all(path, error);
+        if (error) std::abort();
     }
 };
 
-void PopulateScene(SceneManager& scene)
+void PopulateScene(SceneManager& scene, bool notify = true)
 {
     auto& doc = scene.AuthoringDoc();
     const auto entity = doc.ecs.registry.create();
@@ -56,19 +61,22 @@ void PopulateScene(SceneManager& scene)
             "assets/source.rt2prefab", {}, {}, kInstance}, kInstance});
     const auto mesh = doc.ecs.meshRegistry.AddMesh(Triangle("before"));
     doc.ecs.registry.emplace<MeshRef>(entity, MeshRef{mesh, -1});
-    scene.NotifyAuthoringChanged();
+    if (notify) scene.NotifyAuthoringChanged();
 }
 
 void FinalizePlan(SceneManager& scene, PrefabPropagationPlan& plan)
 {
     plan.authoringRevision = scene.AuthoringRevision();
+    plan.authoringRevisionCaptured = true;
     plan.meshTableExtent = static_cast<std::uint32_t>(scene.GetMeshRegistryCount());
     plan.materialTableExtent = static_cast<std::uint32_t>(scene.GetMaterialCount());
     plan.textureTableExtent = static_cast<std::uint32_t>(scene.GetECS().textures.size());
     const auto root = scene.FindEntityByUuid(kEntity);
     const auto& registry = scene.AuthoringDoc().ecs.registry;
     if (const auto* link = registry.try_get<PrefabInstanceComponent>(root))
-        plan.rootSnapshots.push_back({kEntity, link->instanceId, link->prefab});
+        if (std::none_of(plan.rootSnapshots.begin(), plan.rootSnapshots.end(),
+                [](const auto& snapshot) { return snapshot.rootUuid == kEntity; }))
+            plan.rootSnapshots.push_back({kEntity, link->instanceId, link->prefab});
 }
 }
 
@@ -441,7 +449,19 @@ TEST_CASE("Phase 8 W4 S4: imported staging resolves source material then one aut
         });
     REQUIRE(repaired != staged.value.componentOperations.end());
     REQUIRE(repaired->after.has_value());
-    CHECK(std::get<MaterialOverrideComponent>(*repaired->after).material.baseColor.x == doctest::Approx(0.9f));
+    const auto& repairedValue = std::get<MaterialOverrideComponent>(*repaired->after);
+    CHECK(repairedValue.material.baseColor.x == doctest::Approx(0.9f));
+    REQUIRE(staged.value.meshRefOperations.front().after.has_value());
+    CHECK(repairedValue.materialIndex ==
+          staged.value.meshRefOperations.front().after->materialIndex);
+    bool repairedMaterialMatchesOwned = false;
+    for (const auto& ownership : staged.value.resourceOwnership)
+        if (ownership.rebase.kind == PrefabPropagationResourceKind::Material)
+            for (const auto& payload : ownership.rebase.owned.Entries())
+                if (const auto* material = std::get_if<SceneMaterial>(&payload.decoded))
+                    repairedMaterialMatchesOwned |=
+                        PrefabCanonicalMaterialEqual(*material, repairedValue.material);
+    CHECK(repairedMaterialMatchesOwned);
 }
 
 TEST_CASE("Phase 8 W4 S4: candidate isolation omits unrelated imports")
@@ -553,6 +573,13 @@ TEST_CASE("Phase 8 W4 S4: resolver failure quarantines the whole instance")
           PrefabPropagationInstanceDisposition::Quarantined);
     CHECK(staged.value.instances.back().disposition ==
           PrefabPropagationInstanceDisposition::Propagate);
+    const auto badInstance = std::find_if(staged.value.instances.begin(),
+        staged.value.instances.end(), [&](const auto& value) {
+            return value.instanceId == kInstance;
+        });
+    REQUIRE(badInstance != staged.value.instances.end());
+    REQUIRE_FALSE(badInstance->diagnostics.empty());
+    CHECK(badInstance->diagnostics.front().instanceId == kInstance);
     REQUIRE(staged.value.componentOperations.size() == 1);
     CHECK(staged.value.componentOperations.front().entityUuid == validRootUuid);
     CHECK_FALSE(staged.value.resourceOwnership.empty());
@@ -648,4 +675,223 @@ TEST_CASE("Phase 8 W4 S4: forged owned and pre-existing MeshRef indices are reje
     plan.syncImpact = SyncImpact::Structural;
     FinalizePlan(scene, plan);
     CHECK_FALSE(plan.IsValid());
+}
+
+TEST_CASE("Phase 8 W4 S4: revision zero is captured and stale zero-to-one is rejected")
+{
+    SceneManager scene;
+    PopulateScene(scene, false);
+    REQUIRE(scene.AuthoringRevision() == 0);
+    const auto source = PrefabSourceFingerprint{
+        "assets/source.rt2prefab", kInstance, "revision-zero"};
+    PrefabPropagationPlan plan;
+    plan.source = source;
+    plan.documentGeneration = scene.DocumentGeneration();
+    plan.resourceGeneration = scene.ResourceGeneration();
+    plan.componentOperations.push_back({kEntity, kTemplate,
+        PrefabComponentKeyFor<NameComponent>::value,
+        PrefabPropagationComponentValue{NameComponent{"old"}},
+        PrefabPropagationComponentValue{NameComponent{"zero"}}});
+    plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
+    plan.instances.push_back({kInstance, kEntity,
+        PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
+    plan.affectedEntities = {kEntity};
+    plan.syncImpact = SyncImpact::None;
+    FinalizePlan(scene, plan);
+    REQUIRE(plan.authoringRevision == 0);
+    REQUIRE(plan.authoringRevisionCaptured);
+    REQUIRE(plan.IsEffective());
+    REQUIRE(PrefabPropagationCommand(plan, [source] { return source; }).Execute(scene).success);
+    CHECK(scene.AuthoringDoc().ecs.registry.get<NameComponent>(
+        scene.FindEntityByUuid(kEntity)).name == "zero");
+
+    SceneManager stale;
+    PopulateScene(stale, false);
+    auto stalePlan = plan;
+    stalePlan.documentGeneration = stale.DocumentGeneration();
+    stalePlan.resourceGeneration = stale.ResourceGeneration();
+    stalePlan.rootSnapshots.clear();
+    FinalizePlan(stale, stalePlan);
+    stale.NotifyAuthoringChanged();
+    const auto before = stale.AuthoringDoc().ecs.registry.get<NameComponent>(
+        stale.FindEntityByUuid(kEntity)).name;
+    const auto result = PrefabPropagationCommand(stalePlan, [source] { return source; }).Execute(stale);
+    CHECK_FALSE(result.success);
+    CHECK(stale.AuthoringDoc().ecs.registry.get<NameComponent>(
+        stale.FindEntityByUuid(kEntity)).name == before);
+}
+
+TEST_CASE("Phase 8 W4 S4: value-only propagation skips unchanged imported sibling in same instance")
+{
+    namespace fs = std::filesystem;
+    SceneManager scene;
+    PopulateScene(scene);
+    auto& doc = scene.AuthoringDoc();
+    const UUID siblingUuid = UUID::Parse("abababab-abab-4bab-8bab-abababababab");
+    const auto sibling = doc.ecs.registry.create();
+    REQUIRE(doc.AssignKnownUuid(sibling, siblingUuid));
+    doc.ecs.registry.emplace<PrefabMemberComponent>(sibling,
+        PrefabMemberComponent{kInstance,
+            UUID::Parse("cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd"), {}});
+    AssetReference missing{AssetKind::Model, "same-instance-missing.obj", {},
+                           "obj:whole-model", kInstance};
+    doc.ecs.registry.emplace<ImportedMeshSourceComponent>(sibling,
+        ImportedMeshSourceComponent{missing});
+    scene.NotifyAuthoringChanged();
+
+    PrefabPropagationPlan plan;
+    plan.source = {"assets/source.rt2prefab", kInstance, "same-instance-value-only"};
+    plan.documentGeneration = scene.DocumentGeneration();
+    plan.resourceGeneration = scene.ResourceGeneration();
+    plan.componentOperations.push_back({kEntity, kTemplate,
+        PrefabComponentKeyFor<NameComponent>::value,
+        PrefabPropagationComponentValue{NameComponent{"old"}},
+        PrefabPropagationComponentValue{NameComponent{"value-only"}}});
+    plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
+    plan.memberSnapshots.push_back({siblingUuid, kInstance,
+        UUID::Parse("cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd"), {}});
+    plan.instances.push_back({kInstance, kEntity,
+        PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
+    plan.affectedEntities = {kEntity};
+    plan.syncImpact = SyncImpact::None;
+    FinalizePlan(scene, plan);
+    REQUIRE(plan.IsEffective());
+    const auto staged = StagePrefabPropagationResources(plan, doc, AssetResolutionContext{});
+    REQUIRE(staged.IsOk());
+    CHECK(staged.value.resourceOwnership.empty());
+    CHECK(staged.value.meshRefOperations.empty());
+    CHECK(staged.value.syncImpact == SyncImpact::None);
+    REQUIRE(staged.value.componentOperations.size() == 1);
+    CHECK(staged.value.componentOperations.front().entityUuid == kEntity);
+}
+
+TEST_CASE("Phase 8 W4 S4: malformed quarantined root does not poison valid sibling")
+{
+    SceneManager scene;
+    PopulateScene(scene);
+    const UUID malformedInstance = UUID::Parse("dededede-dede-4ede-8ede-dededededede");
+    const UUID validInstance = UUID::Parse("efefefef-efef-4fef-8fef-efefefefefef");
+    const UUID validRoot = UUID::Parse("f0f0f0f0-f0f0-40f0-80f0-f0f0f0f0f0f0");
+    auto& doc = scene.AuthoringDoc();
+    const auto root = doc.ecs.registry.create();
+    REQUIRE(doc.AssignKnownUuid(root, validRoot));
+    doc.ecs.registry.emplace<PrefabMemberComponent>(root,
+        PrefabMemberComponent{validInstance, kTemplate, {}});
+    doc.ecs.registry.emplace<PrefabInstanceComponent>(root,
+        PrefabInstanceComponent{AssetReference{AssetKind::Prefab,
+            "valid.rt2prefab", {}, {}, validInstance}, validInstance});
+    scene.NotifyAuthoringChanged();
+
+    PrefabPropagationPlan plan;
+    plan.source = {"assets/source.rt2prefab", kInstance, "malformed-root"};
+    plan.documentGeneration = scene.DocumentGeneration();
+    plan.resourceGeneration = scene.ResourceGeneration();
+    plan.componentOperations.push_back({validRoot, kTemplate,
+        PrefabComponentKeyFor<NameComponent>::value, std::nullopt,
+        PrefabPropagationComponentValue{NameComponent{"valid"}}});
+    plan.memberSnapshots.push_back({validRoot, validInstance, kTemplate, {}});
+    plan.instances.push_back({malformedInstance, UUID::Nil(),
+        PrefabPropagationInstanceDisposition::Quarantined, {},
+        {PrefabPropagationDiagnostic{AssetDiagnostic::Malformed,
+            plan.source.normalizedPath, plan.source.assetId, malformedInstance,
+            UUID::Nil(), UUID::Nil(), "malformed root"}}});
+    plan.instances.push_back({validInstance, validRoot,
+        PrefabPropagationInstanceDisposition::Propagate, {validRoot}, {}});
+    plan.rootSnapshots.push_back({validRoot, validInstance,
+        AssetReference{AssetKind::Prefab, "valid.rt2prefab", {}, {}, validInstance}});
+    plan.affectedEntities = {validRoot};
+    plan.syncImpact = SyncImpact::None;
+    FinalizePlan(scene, plan);
+    REQUIRE(plan.IsEffective());
+    const auto staged = StagePrefabPropagationResources(plan, doc, AssetResolutionContext{});
+    REQUIRE(staged.IsOk());
+    REQUIRE(staged.value.instances.size() == 2);
+    CHECK(staged.value.instances.front().disposition ==
+          PrefabPropagationInstanceDisposition::Quarantined);
+    CHECK(staged.value.instances.back().disposition ==
+          PrefabPropagationInstanceDisposition::Propagate);
+    REQUIRE(staged.value.componentOperations.size() == 1);
+    CHECK(staged.value.componentOperations.front().entityUuid == validRoot);
+}
+
+TEST_CASE("Phase 8 W4 S4: nested owned resource references and overflow are rejected")
+{
+    SceneManager scene;
+    PopulateScene(scene);
+    PrefabPropagationPlan materialPlan;
+    materialPlan.source = {"assets/source.rt2prefab", kInstance, "nested-material"};
+    materialPlan.documentGeneration = scene.DocumentGeneration();
+    materialPlan.resourceGeneration = scene.ResourceGeneration();
+    materialPlan.componentOperations.push_back({kEntity, kTemplate,
+        PrefabComponentKeyFor<NameComponent>::value,
+        PrefabPropagationComponentValue{NameComponent{"old"}},
+        PrefabPropagationComponentValue{NameComponent{"nested"}}});
+    materialPlan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
+    materialPlan.instances.push_back({kInstance, kEntity,
+        PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
+    materialPlan.affectedEntities = {kEntity};
+    materialPlan.syncImpact = SyncImpact::Material;
+    SceneMaterial invalidMaterial;
+    invalidMaterial.baseColorTextureIndex = 99;
+    PrefabPropagationResourceOwnership ownership;
+    ownership.rebase.kind = PrefabPropagationResourceKind::Material;
+    ownership.rebase.sourceBeforeExtent = 0;
+    ownership.rebase.sceneBeforeExtent = 0;
+    ownership.rebase.sceneAppendBase = 0;
+    ownership.rebase.sceneAfterExtent = 1;
+    ownership.rebase.sourceSlots = {{0}};
+    ownership.rebase.sceneSlots = {{0}};
+    ownership.rebase.owned = PrefabPropagationResourceBlock::FromDecoded(
+        PrefabPropagationResourceKind::Material,
+        {PrefabPropagationResourcePayload{"material:nested", "digest", invalidMaterial}});
+    materialPlan.resourceOwnership.push_back(ownership);
+    FinalizePlan(scene, materialPlan);
+    CHECK_FALSE(materialPlan.IsValid());
+
+    PrefabPropagationPlan invalidMesh = materialPlan;
+    invalidMesh.resourceOwnership.clear();
+    invalidMesh.syncImpact = SyncImpact::Structural;
+    MeshData mesh = Triangle("overflow");
+    mesh.materialIndices = {std::numeric_limits<std::uint32_t>::max()};
+    PrefabPropagationResourceOwnership meshOwnership;
+    meshOwnership.rebase.kind = PrefabPropagationResourceKind::Mesh;
+    meshOwnership.rebase.sourceBeforeExtent = 1;
+    meshOwnership.rebase.sceneBeforeExtent = 1;
+    meshOwnership.rebase.sceneAppendBase = 1;
+    meshOwnership.rebase.sceneAfterExtent = 2;
+    meshOwnership.rebase.sourceSlots = {{0}};
+    meshOwnership.rebase.sceneSlots = {{1}};
+    meshOwnership.rebase.owned = PrefabPropagationResourceBlock::FromDecoded(
+        PrefabPropagationResourceKind::Mesh,
+        {PrefabPropagationResourcePayload{"mesh:overflow", "digest", mesh}});
+    invalidMesh.resourceOwnership.push_back(meshOwnership);
+    CHECK_FALSE(invalidMesh.IsValid());
+}
+
+TEST_CASE("Phase 8 W4 S4: staging rejects checked extent overflow before mutation")
+{
+    SceneManager scene;
+    PopulateScene(scene);
+    auto& doc = scene.AuthoringDoc();
+    PrefabPropagationPlan plan;
+    plan.source = {"assets/source.rt2prefab", kInstance, "extent-overflow"};
+    plan.documentGeneration = scene.DocumentGeneration();
+    plan.resourceGeneration = scene.ResourceGeneration();
+    plan.componentOperations.push_back({kEntity, kTemplate,
+        PrefabComponentKeyFor<PrimitiveComponent>::value,
+        PrefabPropagationComponentValue{PrimitiveComponent{PrimitiveComponent::Cube,
+            1.0f, 24, 16}},
+        PrefabPropagationComponentValue{PrimitiveComponent{PrimitiveComponent::Sphere,
+            2.0f, 16, 8}}});
+    plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
+    plan.instances.push_back({kInstance, kEntity,
+        PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
+    plan.affectedEntities = {kEntity};
+    plan.syncImpact = SyncImpact::Structural;
+    FinalizePlan(scene, plan);
+    plan.meshTableExtent = std::numeric_limits<std::uint32_t>::max();
+    REQUIRE(plan.IsEffective());
+    const auto staged = StagePrefabPropagationResources(plan, doc, AssetResolutionContext{});
+    CHECK_FALSE(staged.IsOk());
+    CHECK(doc.ecs.registry.get<NameComponent>(doc.FindByUuid(kEntity)).name == "old");
 }

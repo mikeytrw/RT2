@@ -751,6 +751,7 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
     plan.documentGeneration = request.documentGeneration;
     plan.resourceGeneration = request.resourceGeneration;
     plan.authoringRevision = request.authoringRevision;
+    plan.authoringRevisionCaptured = true;
     plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
     plan.meshTableExtent = request.document->ecs.meshRegistry.GetCount();
     plan.materialTableExtent = static_cast<std::uint32_t>(request.document->ecs.materials.size());
@@ -814,7 +815,7 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
         PrefabPropagationInstancePlan instance;
         instance.instanceId = link.instanceId;
         instance.rootUuid = rootUuid;
-        if (!rootUuid.IsNull())
+        if (!rootUuid.IsNull() && !link.instanceId.IsNull() && link.prefab.IsValid())
             plan.rootSnapshots.push_back({rootUuid, link.instanceId, link.prefab});
         if (validation.valid)
         {

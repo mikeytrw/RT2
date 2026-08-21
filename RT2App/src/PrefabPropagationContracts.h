@@ -539,6 +539,9 @@ struct PrefabPropagationPlan
     std::uint64_t documentGeneration = 0;
     std::uint64_t resourceGeneration = 0;
     std::uint64_t authoringRevision = 0;
+    // Presence is separate from the value: revision zero is valid on the
+    // first clean loaded document.
+    bool authoringRevisionCaptured = false;
     std::uint32_t sourceSchemaVersion = 0;
     std::uint32_t meshTableExtent = 0;
     std::uint32_t materialTableExtent = 0;
@@ -632,7 +635,8 @@ struct PrefabPropagationPlan
         {
             const auto root = std::find_if(rootSnapshots.begin(), rootSnapshots.end(),
                 [&](const auto& snapshot) { return snapshot.rootUuid == instance.rootUuid; });
-            if (rootSnapshots.size() != 0 &&
+            if (instance.disposition != PrefabPropagationInstanceDisposition::Quarantined &&
+                rootSnapshots.size() != 0 &&
                 (root == rootSnapshots.end() || root->instanceId != instance.instanceId))
                 return false;
         }
@@ -662,10 +666,45 @@ struct PrefabPropagationPlan
                            slot < ownership.rebase.sceneAfterExtent;
             return false;
         };
+        const bool extentsCaptured = meshTableExtent != 0 || materialTableExtent != 0 ||
+                                     textureTableExtent != 0 || !rootSnapshots.empty();
+        auto validTableIndex = [&](PrefabPropagationResourceKind kind,
+                                   std::uint32_t index) {
+            if (!extentsCaptured) return true;
+            const auto extent = kind == PrefabPropagationResourceKind::Mesh
+                ? meshTableExtent
+                : kind == PrefabPropagationResourceKind::Material
+                    ? materialTableExtent : textureTableExtent;
+            return index < extent || ownsSlot(kind, index);
+        };
+        for (const auto& ownership : resourceOwnership)
+        {
+            const auto kind = ownership.rebase.kind;
+            for (const auto& payload : ownership.rebase.owned.Entries())
+            {
+                if (kind == PrefabPropagationResourceKind::Mesh)
+                {
+                    const auto& mesh = std::get<MeshData>(payload.decoded);
+                    for (const auto index : mesh.materialIndices)
+                        if (!validTableIndex(PrefabPropagationResourceKind::Material, index))
+                            return false;
+                }
+                else if (kind == PrefabPropagationResourceKind::Material)
+                {
+                    const auto& material = std::get<SceneMaterial>(payload.decoded);
+                    const int indices[] = { material.baseColorTextureIndex,
+                        material.normalTextureIndex, material.emissiveTextureIndex,
+                        material.metallicRoughnessTextureIndex };
+                    for (const int index : indices)
+                        if (index < -1 || (index >= 0 &&
+                            !validTableIndex(PrefabPropagationResourceKind::Texture,
+                                             static_cast<std::uint32_t>(index))))
+                            return false;
+                }
+            }
+        }
         auto validMeshRef = [&](const std::optional<MeshRef>& ref) {
             if (!ref) return true;
-            const bool extentsCaptured = meshTableExtent != 0 || materialTableExtent != 0 ||
-                                         textureTableExtent != 0 || !rootSnapshots.empty();
             if (extentsCaptured && !ownsSlot(PrefabPropagationResourceKind::Mesh, ref->meshIndex) &&
                 ref->meshIndex >= meshTableExtent)
                 return false;
@@ -706,6 +745,7 @@ struct PrefabPropagationPlan
     { return a.source == b.source && a.documentGeneration == b.documentGeneration &&
              a.resourceGeneration == b.resourceGeneration &&
              a.authoringRevision == b.authoringRevision &&
+             a.authoringRevisionCaptured == b.authoringRevisionCaptured &&
              a.sourceSchemaVersion == b.sourceSchemaVersion &&
              a.meshTableExtent == b.meshTableExtent &&
              a.materialTableExtent == b.materialTableExtent &&

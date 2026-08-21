@@ -11,6 +11,13 @@
 namespace rt2::core {
 namespace {
 
+bool CheckedAdd(std::uint32_t a, std::uint32_t b, std::uint32_t& result)
+{
+    if (a > std::numeric_limits<std::uint32_t>::max() - b) return false;
+    result = a + b;
+    return true;
+}
+
 template<typename T>
 std::optional<T> ReadComponent(const entt::registry& registry, entt::entity entity)
 {
@@ -98,22 +105,31 @@ bool AddOwnership(PrefabPropagationPlan& plan, PrefabPropagationResourceKind kin
     return true;
 }
 
-void RebaseMaterial(SceneMaterial& material, std::uint32_t textureBase)
+bool RebaseMaterial(SceneMaterial& material, std::uint32_t textureBase)
 {
     auto rebase = [textureBase](int& index) {
-        if (index >= 0)
-            index += static_cast<int>(textureBase);
+        if (index < 0) return index == -1;
+        if (textureBase > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+            index > std::numeric_limits<int>::max() - static_cast<int>(textureBase))
+            return false;
+        index += static_cast<int>(textureBase);
+        return true;
     };
-    rebase(material.baseColorTextureIndex);
-    rebase(material.normalTextureIndex);
-    rebase(material.emissiveTextureIndex);
-    rebase(material.metallicRoughnessTextureIndex);
+    return rebase(material.baseColorTextureIndex) &&
+           rebase(material.normalTextureIndex) &&
+           rebase(material.emissiveTextureIndex) &&
+           rebase(material.metallicRoughnessTextureIndex);
 }
 
-void RebaseMesh(MeshData& mesh, std::uint32_t materialBase)
+bool RebaseMesh(MeshData& mesh, std::uint32_t materialBase)
 {
     for (auto& index : mesh.materialIndices)
+    {
+        if (index > std::numeric_limits<std::uint32_t>::max() - materialBase)
+            return false;
         index += materialBase;
+    }
+    return true;
 }
 
 std::optional<PrefabPropagationRootSnapshot> FindRootSnapshot(
@@ -125,10 +141,11 @@ std::optional<PrefabPropagationRootSnapshot> FindRootSnapshot(
     return *it;
 }
 
-void AddResolverDiagnostic(PrefabPropagationPlan& result,
-                           const PrefabPropagationInstancePlan& instance,
-                           const AssetDiagnostic& diagnostic,
-                           const UUID& fallbackTemplate)
+PrefabPropagationDiagnostic MakeResolverDiagnostic(
+    const PrefabPropagationPlan& result,
+    const PrefabPropagationInstancePlan& instance,
+    const AssetDiagnostic& diagnostic,
+    const UUID& fallbackTemplate)
 {
     PrefabPropagationDiagnostic converted;
     converted.severity = static_cast<AssetDiagnostic::Severity>(diagnostic.severity);
@@ -142,9 +159,9 @@ void AddResolverDiagnostic(PrefabPropagationPlan& result,
         {
             converted.templateId = snapshot.templateId;
             break;
-        }
+    }
     converted.reason = diagnostic.detail.empty() ? diagnostic.refPath : diagnostic.detail;
-    result.diagnostics.push_back(std::move(converted));
+    return converted;
 }
 
 } // namespace
@@ -179,6 +196,9 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
         entityToInstance[snapshot.entityUuid] = snapshot.instanceId;
         entityToTemplate[snapshot.entityUuid] = snapshot.templateId;
     }
+    for (const auto& instance : result.instances)
+        if (instance.disposition == PrefabPropagationInstanceDisposition::Quarantined)
+            quarantinedInstances.insert(instance.instanceId);
 
     for (auto& instance : result.instances)
     {
@@ -202,30 +222,35 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
             const auto* id = live.ecs.registry.try_get<EntityIdComponent>(liveEntity);
             if (!id) continue;
 
-            bool hasImported = false;
-            bool hasPrimitive = false;
-            for (const auto& operation : durablePlan.componentOperations)
-                if (operation.entityUuid == uuid)
-                {
-                    hasImported |= operation.key.wire() == PrefabWireKeys::kImportedSource &&
-                                   operation.after.has_value();
-                    hasPrimitive |= operation.key.wire() == PrefabWireKeys::kPrimitive &&
-                                    operation.after.has_value();
-                }
-            if (!hasImported)
-                hasImported = live.ecs.registry.all_of<ImportedMeshSourceComponent>(liveEntity) &&
-                    FindOperation(durablePlan, uuid,
-                        PrefabComponentKeyFor<ImportedMeshSourceComponent>::value) == nullptr;
-            const auto imported = OperationAfter<ImportedMeshSourceComponent>(
-                durablePlan, uuid, PrefabComponentKeyFor<ImportedMeshSourceComponent>::value,
-                live.ecs.registry, liveEntity);
+            const auto* importedOperation = FindOperation(durablePlan, uuid,
+                PrefabComponentKeyFor<ImportedMeshSourceComponent>::value);
+            const auto* primitiveOperation = FindOperation(durablePlan, uuid,
+                PrefabComponentKeyFor<PrimitiveComponent>::value);
+            const auto* materialOperation = FindOperation(durablePlan, uuid,
+                PrefabComponentKeyFor<MaterialOverrideComponent>::value);
+            // Resource staging is driven by an effective resource/provenance
+            // operation.  A value-only operation must not re-resolve an
+            // unchanged imported sibling in the same prefab instance.
+            bool hasImported = importedOperation &&
+                !PrefabPropagationComponentOperationIsNoOp(*importedOperation) &&
+                importedOperation->after.has_value();
+            if (!hasImported && materialOperation &&
+                !PrefabPropagationComponentOperationIsNoOp(*materialOperation) &&
+                materialOperation->after.has_value())
+                hasImported = live.ecs.registry.all_of<ImportedMeshSourceComponent>(liveEntity);
+            const auto imported = hasImported
+                ? OperationAfter<ImportedMeshSourceComponent>(
+                    durablePlan, uuid, PrefabComponentKeyFor<ImportedMeshSourceComponent>::value,
+                    live.ecs.registry, liveEntity)
+                : std::optional<ImportedMeshSourceComponent>{};
             hasImported = imported.has_value();
+            bool hasPrimitive = primitiveOperation &&
+                !PrefabPropagationComponentOperationIsNoOp(*primitiveOperation) &&
+                primitiveOperation->after.has_value();
             const auto primitive = OperationAfter<PrimitiveComponent>(
                 durablePlan, uuid, PrefabComponentKeyFor<PrimitiveComponent>::value,
                 live.ecs.registry, liveEntity);
-            hasPrimitive = hasPrimitive || primitive.has_value() &&
-                FindOperation(durablePlan, uuid,
-                    PrefabComponentKeyFor<PrimitiveComponent>::value) != nullptr;
+            hasPrimitive = hasPrimitive && primitive.has_value();
             if (!hasImported && !hasPrimitive) continue;
 
             const auto fragmentEntity = fragment.ecs.registry.create();
@@ -258,9 +283,11 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
         bool hardFailure = !resolved && diagnostics.empty();
         for (const auto& diagnostic : diagnostics)
         {
-            AddResolverDiagnostic(result, instance, diagnostic,
-                                  resourceEntities.empty() ? UUID::Nil() :
-                                      entityToTemplate[resourceEntities.front()]);
+            const auto converted = MakeResolverDiagnostic(result, instance, diagnostic,
+                resourceEntities.empty() ? UUID::Nil() :
+                    entityToTemplate[resourceEntities.front()]);
+            instance.diagnostics.push_back(converted);
+            result.diagnostics.push_back(converted);
             hardFailure |= diagnostic.severity >= AssetDiagnostic::Missing;
         }
         if (hardFailure)
@@ -279,34 +306,62 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                 diagnostic.templateId = resourceEntities.empty() ? UUID::Nil() :
                     entityToTemplate[resourceEntities.front()];
                 diagnostic.reason = error.detail.empty() ? "candidate resource resolution failed" : error.detail;
+                instance.diagnostics.push_back(diagnostic);
                 result.diagnostics.push_back(std::move(diagnostic));
             }
             continue;
         }
 
+        if (meshPayloads.size() > std::numeric_limits<std::uint32_t>::max() ||
+            materialPayloads.size() > std::numeric_limits<std::uint32_t>::max() ||
+            texturePayloads.size() > std::numeric_limits<std::uint32_t>::max())
+            return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                "prefab-propagation", "resource payload count overflow while staging");
         const auto meshBase = static_cast<std::uint32_t>(meshPayloads.size());
         const auto materialBase = static_cast<std::uint32_t>(materialPayloads.size());
         const auto textureBase = static_cast<std::uint32_t>(texturePayloads.size());
         for (std::uint32_t i = 0; i < fragment.ecs.meshRegistry.GetCount(); ++i)
         {
             auto mesh = fragment.ecs.meshRegistry.GetMesh(i);
-            RebaseMesh(mesh, durablePlan.materialTableExtent + materialBase);
-            meshPayloads.push_back({"mesh:" + std::to_string(durablePlan.meshTableExtent + meshBase + i),
+            std::uint32_t materialRebase = 0;
+            std::uint32_t sceneMeshBase = 0;
+            std::uint32_t sceneMeshIndex = 0;
+            if (!CheckedAdd(durablePlan.materialTableExtent, materialBase, materialRebase) ||
+                !CheckedAdd(durablePlan.meshTableExtent, meshBase, sceneMeshBase) ||
+                !CheckedAdd(sceneMeshBase, i, sceneMeshIndex) ||
+                !RebaseMesh(mesh, materialRebase))
+                return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                    "prefab-propagation", "mesh material index overflow while staging");
+            meshPayloads.push_back({"mesh:" + std::to_string(sceneMeshIndex),
                                     result.source.contentDigest, std::move(mesh)});
         }
         for (std::size_t i = 0; i < fragment.ecs.materials.size(); ++i)
         {
             auto material = fragment.ecs.materials[i];
-            RebaseMaterial(material, durablePlan.textureTableExtent + textureBase);
-            materialPayloads.push_back({"material:" + std::to_string(
-                durablePlan.materialTableExtent + materialBase + i),
+            std::uint32_t textureRebase = 0;
+            std::uint32_t sceneMaterialBase = 0;
+            std::uint32_t sceneMaterialIndex = 0;
+            if (i > std::numeric_limits<std::uint32_t>::max() ||
+                !CheckedAdd(durablePlan.textureTableExtent, textureBase, textureRebase) ||
+                !CheckedAdd(durablePlan.materialTableExtent, materialBase, sceneMaterialBase) ||
+                !CheckedAdd(sceneMaterialBase, static_cast<std::uint32_t>(i), sceneMaterialIndex) ||
+                !RebaseMaterial(material, textureRebase))
+                return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                    "prefab-propagation", "material texture index overflow while staging");
+            materialPayloads.push_back({"material:" + std::to_string(sceneMaterialIndex),
                 result.source.contentDigest, std::move(material)});
         }
         for (std::size_t i = 0; i < fragment.ecs.textures.size(); ++i)
         {
             const auto& texture = fragment.ecs.textures[i];
-            texturePayloads.push_back({"texture:" + std::to_string(
-                durablePlan.textureTableExtent + textureBase + i),
+            std::uint32_t sceneTextureBase = 0;
+            std::uint32_t sceneTextureIndex = 0;
+            if (i > std::numeric_limits<std::uint32_t>::max() ||
+                !CheckedAdd(durablePlan.textureTableExtent, textureBase, sceneTextureBase) ||
+                !CheckedAdd(sceneTextureBase, static_cast<std::uint32_t>(i), sceneTextureIndex))
+                return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                    "prefab-propagation", "texture extent overflow while staging");
+            texturePayloads.push_back({"texture:" + std::to_string(sceneTextureIndex),
                 result.source.contentDigest, texture});
         }
 
@@ -321,9 +376,23 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
             if (after)
             {
                 afterRef = *after;
-                afterRef->meshIndex += durablePlan.meshTableExtent + meshBase;
+                std::uint32_t meshRebase = 0;
+                std::uint32_t materialRebase = 0;
+                if (!CheckedAdd(durablePlan.meshTableExtent, meshBase, meshRebase) ||
+                    !CheckedAdd(durablePlan.materialTableExtent, materialBase, materialRebase) ||
+                    afterRef->meshIndex > std::numeric_limits<std::uint32_t>::max() - meshRebase)
+                    return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                        "prefab-propagation", "MeshRef mesh index overflow while staging");
+                afterRef->meshIndex += meshRebase;
                 if (afterRef->materialIndex >= 0)
-                    afterRef->materialIndex += static_cast<int>(durablePlan.materialTableExtent + materialBase);
+                {
+                    if (materialRebase > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+                        afterRef->materialIndex > std::numeric_limits<int>::max() -
+                            static_cast<int>(materialRebase))
+                        return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                            "prefab-propagation", "MeshRef material index overflow while staging");
+                    afterRef->materialIndex += static_cast<int>(materialRebase);
+                }
             }
             if ((before == nullptr) != (afterRef == std::nullopt) ||
                 (before && afterRef && (before->meshIndex != afterRef->meshIndex ||
@@ -334,8 +403,30 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
             if (auto* material = fragment.ecs.registry.try_get<MaterialOverrideComponent>(stagedEntity))
             {
                 auto repaired = *material;
-                RebaseMaterial(repaired.material,
-                                durablePlan.textureTableExtent + textureBase);
+                if (durablePlan.textureTableExtent >
+                        std::numeric_limits<std::uint32_t>::max() - textureBase ||
+                    !RebaseMaterial(repaired.material,
+                        durablePlan.textureTableExtent + textureBase))
+                    return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                        "prefab-propagation", "override texture index overflow while staging");
+                if (repaired.materialIndex >= 0)
+                {
+                    std::uint32_t materialRebase = 0;
+                    if (static_cast<std::size_t>(repaired.materialIndex) >=
+                            fragment.ecs.materials.size() ||
+                        !CheckedAdd(durablePlan.materialTableExtent, materialBase, materialRebase) ||
+                        static_cast<std::uint32_t>(repaired.materialIndex) >
+                            std::numeric_limits<std::uint32_t>::max() -
+                                materialRebase)
+                        return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                            "prefab-propagation", "override material index invalid while staging");
+                    if (materialRebase > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+                        repaired.materialIndex > std::numeric_limits<int>::max() -
+                            static_cast<int>(materialRebase))
+                        return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                            "prefab-propagation", "override material index overflow while staging");
+                    repaired.materialIndex += static_cast<int>(materialRebase);
+                }
                 if (auto* operation = FindOperation(result, uuid,
                         PrefabComponentKeyFor<MaterialOverrideComponent>::value))
                     operation->after = PrefabPropagationComponentValue{repaired};
