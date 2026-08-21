@@ -163,6 +163,7 @@ PrefabPropagationDiscoveryRequest Request(SceneDocument& document,
                                            {}, {}, kAsset};
     request.documentGeneration = 71;
     request.resourceGeneration = 19;
+    request.authoringRevision = 23;
     return request;
 }
 }

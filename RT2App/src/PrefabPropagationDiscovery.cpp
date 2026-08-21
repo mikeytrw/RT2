@@ -750,7 +750,11 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
     plan.source = fingerprint;
     plan.documentGeneration = request.documentGeneration;
     plan.resourceGeneration = request.resourceGeneration;
+    plan.authoringRevision = request.authoringRevision;
     plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
+    plan.meshTableExtent = request.document->ecs.meshRegistry.GetCount();
+    plan.materialTableExtent = static_cast<std::uint32_t>(request.document->ecs.materials.size());
+    plan.textureTableExtent = static_cast<std::uint32_t>(request.document->ecs.textures.size());
 
     std::sort(roots.begin(), roots.end(), [&](entt::entity a, entt::entity b) {
         const auto& am = rootView.get<PrefabInstanceComponent>(a);
@@ -810,6 +814,8 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
         PrefabPropagationInstancePlan instance;
         instance.instanceId = link.instanceId;
         instance.rootUuid = rootUuid;
+        if (!rootUuid.IsNull())
+            plan.rootSnapshots.push_back({rootUuid, link.instanceId, link.prefab});
         if (validation.valid)
         {
             std::vector<PrefabPropagationComponentOperation> reconciled;
@@ -825,6 +831,23 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
                 validation.templateId = reconciliationTemplate;
             }
             else
+            {
+                for (const UUID& entityUuid : validation.entities)
+                {
+                    const auto entity = request.document->FindByUuid(entityUuid);
+                    const auto* member = entity == entt::null ? nullptr
+                        : request.document->ecs.registry.try_get<PrefabMemberComponent>(entity);
+                    if (!member)
+                    {
+                        validation.valid = false;
+                        validation.reason = "member snapshot target disappeared";
+                        break;
+                    }
+                    plan.memberSnapshots.push_back({entityUuid, member->instanceId,
+                                                    member->templateId, member->overrides});
+                }
+            }
+            if (validation.valid)
             {
                 for (const auto& operation : reconciled)
                     if (std::find(instance.affectedEntities.begin(),
@@ -859,6 +882,10 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
               });
     plan.affectedEntities = plan.DerivedAffectedEntities();
     plan.syncImpact = plan.DerivedSyncImpact();
+    std::sort(plan.memberSnapshots.begin(), plan.memberSnapshots.end(),
+              [](const auto& a, const auto& b) { return a.entityUuid < b.entityUuid; });
+    std::sort(plan.rootSnapshots.begin(), plan.rootSnapshots.end(),
+              [](const auto& a, const auto& b) { return a.rootUuid < b.rootUuid; });
     std::sort(plan.diagnostics.begin(), plan.diagnostics.end());
     return Result<PrefabPropagationPlan>::Ok(std::move(plan));
 }

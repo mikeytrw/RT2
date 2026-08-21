@@ -124,6 +124,54 @@ bool ResourceAtEquals(const ECSScene& ecs, const PrefabPropagationResourceRebase
 EditorMutationResult Failure(Error::Code code, const std::string& path,
                              const std::string& detail)
 { return EditorMutationResult::Failure(code, path, detail); }
+
+bool ValidateRootSnapshots(const PrefabPropagationPlan& plan,
+                           const SceneDocument& doc, const ECSScene& ecs)
+{
+    for (const auto& snapshot : plan.rootSnapshots)
+    {
+        const auto entity = doc.FindByUuid(snapshot.rootUuid);
+        if (entity == entt::null || !ecs.registry.valid(entity)) return false;
+        const auto* root = ecs.registry.try_get<PrefabInstanceComponent>(entity);
+        if (!root || root->instanceId != snapshot.instanceId ||
+            !PrefabPropagationAssetReferenceEqual(root->prefab, snapshot.prefab))
+            return false;
+    }
+    return true;
+}
+
+bool HasResourceMutation(const PrefabPropagationPlan& plan) noexcept
+{ return !plan.resourceOwnership.empty() || !plan.meshRefOperations.empty(); }
+
+bool ValidateCommitEvidence(const PrefabPropagationPlan& plan)
+{
+    if (!plan.source.IsValid() || plan.documentGeneration == 0 ||
+        plan.resourceGeneration == 0 || plan.authoringRevision == 0 ||
+        plan.rootSnapshots.empty())
+        return false;
+    for (const auto& operation : plan.componentOperations)
+    {
+        const auto it = std::find_if(plan.memberSnapshots.begin(), plan.memberSnapshots.end(),
+            [&](const auto& snapshot) { return snapshot.entityUuid == operation.entityUuid; });
+        if (it == plan.memberSnapshots.end() || it->templateId != operation.templateId)
+            return false;
+    }
+    for (const auto& operation : plan.meshRefOperations)
+    {
+        const auto it = std::find_if(plan.memberSnapshots.begin(), plan.memberSnapshots.end(),
+            [&](const auto& snapshot) { return snapshot.entityUuid == operation.entityUuid; });
+        if (it == plan.memberSnapshots.end() || it->templateId != operation.templateId)
+            return false;
+    }
+    for (const auto& instance : plan.instances)
+    {
+        const auto root = std::find_if(plan.rootSnapshots.begin(), plan.rootSnapshots.end(),
+            [&](const auto& snapshot) { return snapshot.rootUuid == instance.rootUuid; });
+        if (root == plan.rootSnapshots.end() || root->instanceId != instance.instanceId)
+            return false;
+    }
+    return true;
+}
 }
 
 PrefabPropagationCommand::PrefabPropagationCommand(
@@ -140,19 +188,28 @@ EditorMutationResult PrefabPropagationCommand::Execute(SceneManager& scene)
     auto& ecs = scene.m_EcsScene;
     if (!m_Plan.IsValid())
         return Failure(Error::InvalidArgument, "prefab-propagation", "prepared plan is invalid");
+    if (!ValidateCommitEvidence(m_Plan))
+        return Failure(Error::InvalidArgument, "prefab-propagation", "prepared plan lacks complete stale-state evidence");
     if (m_Plan.documentGeneration != scene.m_DocumentGeneration)
         return Failure(Error::InvalidArgument, "prefab-propagation", "stale document generation");
     if (m_ExpectedResourceGeneration != scene.m_ResourceGeneration)
         return Failure(Error::InvalidArgument, "prefab-propagation", "stale resource generation");
-    if (m_ExpectedRevision != 0 && m_ExpectedRevision != scene.m_AuthoringRevision)
+    if (m_ExpectedRevision != scene.m_AuthoringRevision)
         return Failure(Error::InvalidArgument, "prefab-propagation", "stale authoring revision");
-    if (m_SourceReader)
+    if (!m_SourceReader)
+        return Failure(Error::InvalidArgument, "prefab-propagation", "source fingerprint reader is required");
+    if (!m_HasExecuted || !m_IsApplied)
     {
-        const auto current = m_SourceReader();
-        if (current != m_Plan.source)
-            return Failure(Error::InvalidArgument, m_Plan.source.normalizedPath.string(),
-                           "stale prefab source fingerprint");
+        if (!m_HasExecuted)
+        {
+            const auto current = m_SourceReader();
+            if (current != m_Plan.source)
+                return Failure(Error::InvalidArgument, m_Plan.source.normalizedPath.string(),
+                               "stale prefab source fingerprint");
+        }
     }
+    if (!ValidateRootSnapshots(m_Plan, doc, ecs))
+        return Failure(Error::InvalidArgument, "prefab-propagation", "stale prefab root link");
 
     for (const auto& snapshot : m_Plan.memberSnapshots)
     {
@@ -191,11 +248,14 @@ EditorMutationResult PrefabPropagationCommand::Execute(SceneManager& scene)
     for (const auto& ownership : m_Plan.resourceOwnership)
     {
         const auto& rebase = ownership.rebase;
-        if (ResourceExtent(ecs, rebase.kind) != rebase.sceneBeforeExtent)
+        const auto expectedExtent = m_HasExecuted
+            ? rebase.sceneAfterExtent : rebase.sceneBeforeExtent;
+        if (ResourceExtent(ecs, rebase.kind) != expectedExtent)
             return Failure(Error::InvalidArgument, "prefab-propagation", "stale resource table extent");
-        if (rebase.sceneAfterExtent < rebase.sceneBeforeExtent ||
-            rebase.sceneAfterExtent - rebase.sceneBeforeExtent != rebase.owned.Entries().size())
-            return Failure(Error::InvalidArgument, "prefab-propagation", "invalid resource append extent");
+        if (m_HasExecuted)
+            for (std::size_t i = 0; i < rebase.sceneSlots.size(); ++i)
+                if (!ResourceAtEquals(ecs, rebase, i))
+                    return Failure(Error::InvalidArgument, "prefab-propagation", "owned resource changed before redo");
     }
 
     // Every possible failure has been checked above.  Appends and component
@@ -204,19 +264,20 @@ EditorMutationResult PrefabPropagationCommand::Execute(SceneManager& scene)
     if (!m_Plan.IsEffective())
         return EditorMutationResult{true, false, {}, std::nullopt,
                                     SyncImpact::None, {}};
-    for (const auto& ownership : m_Plan.resourceOwnership)
-    {
-        const auto& rebase = ownership.rebase;
-        for (const auto& payload : rebase.owned.Entries())
+    if (!m_HasExecuted)
+        for (const auto& ownership : m_Plan.resourceOwnership)
         {
-            std::visit([&](const auto& decoded) {
-                using T = std::decay_t<decltype(decoded)>;
-                if constexpr (std::is_same_v<T, MeshData>) ecs.meshRegistry.AddMesh(decoded);
-                else if constexpr (std::is_same_v<T, SceneMaterial>) ecs.materials.push_back(decoded);
-                else ecs.textures.push_back(decoded);
-            }, payload.decoded);
+            const auto& rebase = ownership.rebase;
+            for (const auto& payload : rebase.owned.Entries())
+            {
+                std::visit([&](const auto& decoded) {
+                    using T = std::decay_t<decltype(decoded)>;
+                    if constexpr (std::is_same_v<T, MeshData>) ecs.meshRegistry.AddMesh(decoded);
+                    else if constexpr (std::is_same_v<T, SceneMaterial>) ecs.materials.push_back(decoded);
+                    else ecs.textures.push_back(decoded);
+                }, payload.decoded);
+            }
         }
-    }
     for (const auto& operation : m_Plan.componentOperations)
     {
         const auto entity = doc.FindByUuid(operation.entityUuid);
@@ -230,11 +291,12 @@ EditorMutationResult PrefabPropagationCommand::Execute(SceneManager& scene)
         if (operation.after) ecs.registry.emplace_or_replace<MeshRef>(entity, *operation.after);
         else if (ecs.registry.all_of<MeshRef>(entity)) ecs.registry.remove<MeshRef>(entity);
     }
-    if (!m_Plan.resourceOwnership.empty()) ++scene.m_ResourceGeneration;
+    if (HasResourceMutation(m_Plan)) ++scene.m_ResourceGeneration;
     scene.NotifyAuthoringChanged();
     m_ExpectedRevision = scene.m_AuthoringRevision;
     m_ExpectedResourceGeneration = scene.m_ResourceGeneration;
-    m_HasApplied = true;
+    m_HasExecuted = true;
+    m_IsApplied = true;
     return EditorMutationResult{true, m_Plan.IsEffective(), {}, std::nullopt,
                                 m_Plan.syncImpact, m_Plan.affectedEntities};
 }
@@ -245,12 +307,18 @@ EditorMutationResult PrefabPropagationCommand::Undo(SceneManager& scene)
     auto& ecs = scene.m_EcsScene;
     if (!m_Plan.IsValid())
         return Failure(Error::InvalidArgument, "prefab-propagation", "prepared plan is invalid");
+    if (!ValidateCommitEvidence(m_Plan))
+        return Failure(Error::InvalidArgument, "prefab-propagation", "prepared plan lacks complete stale-state evidence");
     if (m_Plan.documentGeneration != scene.m_DocumentGeneration)
         return Failure(Error::InvalidArgument, "prefab-propagation", "stale document generation");
+    if (!m_HasExecuted || !m_IsApplied)
+        return Failure(Error::InvalidArgument, "prefab-propagation", "command is not applied");
     if (m_ExpectedResourceGeneration != scene.m_ResourceGeneration)
         return Failure(Error::InvalidArgument, "prefab-propagation", "stale resource generation for undo");
-    if (m_ExpectedRevision != 0 && m_ExpectedRevision != scene.m_AuthoringRevision)
+    if (m_ExpectedRevision != scene.m_AuthoringRevision)
         return Failure(Error::InvalidArgument, "prefab-propagation", "stale authoring revision for undo");
+    if (!ValidateRootSnapshots(m_Plan, doc, ecs))
+        return Failure(Error::InvalidArgument, "prefab-propagation", "stale prefab root link for undo");
     for (const auto& snapshot : m_Plan.memberSnapshots)
     {
         const auto entity = doc.FindByUuid(snapshot.entityUuid);
@@ -303,21 +371,14 @@ EditorMutationResult PrefabPropagationCommand::Undo(SceneManager& scene)
         if (operation.before) ecs.registry.emplace_or_replace<MeshRef>(entity, *operation.before);
         else if (ecs.registry.all_of<MeshRef>(entity)) ecs.registry.remove<MeshRef>(entity);
     }
-    for (const auto& ownership : m_Plan.resourceOwnership)
-    {
-        const auto& rebase = ownership.rebase;
-        switch (rebase.kind)
-        {
-        case PrefabPropagationResourceKind::Mesh: ecs.meshRegistry.Truncate(rebase.sceneBeforeExtent); break;
-        case PrefabPropagationResourceKind::Material: ecs.materials.resize(rebase.sceneBeforeExtent); break;
-        case PrefabPropagationResourceKind::Texture: ecs.textures.resize(rebase.sceneBeforeExtent); break;
-        }
-    }
-    if (!m_Plan.resourceOwnership.empty()) --scene.m_ResourceGeneration;
+    // Owned resources remain resident while the command is retained by
+    // history. Undo only restores durable references; it never compacts or
+    // truncates an append-only table.
+    if (HasResourceMutation(m_Plan)) ++scene.m_ResourceGeneration;
     scene.NotifyAuthoringChanged();
     m_ExpectedRevision = scene.m_AuthoringRevision;
     m_ExpectedResourceGeneration = scene.m_ResourceGeneration;
-    m_HasApplied = false;
+    m_IsApplied = false;
     return EditorMutationResult{true, m_Plan.IsEffective(), {}, std::nullopt,
                                 m_Plan.syncImpact, m_Plan.affectedEntities};
 }
@@ -361,6 +422,7 @@ PrefabPrimitiveRecipeCommand::Prepare(SceneManager& scene,
     const auto index = scene.m_EcsScene.meshRegistry.GetCount();
     command->m_AfterRef = command->m_BeforeRef;
     command->m_AfterRef.meshIndex = index;
+    command->m_OwnedMeshSlot = index;
     return Result<std::unique_ptr<PrefabPrimitiveRecipeCommand>>::Ok(std::move(command));
 }
 
@@ -370,7 +432,7 @@ EditorMutationResult PrefabPrimitiveRecipeCommand::Execute(SceneManager& scene)
     if (e == entt::null || !scene.m_EcsScene.registry.valid(e) ||
         scene.m_DocumentGeneration != m_DocumentGeneration ||
         scene.m_ResourceGeneration != m_ExpectedResourceGeneration ||
-        (m_ExpectedRevision != 0 && scene.m_AuthoringRevision != m_ExpectedRevision))
+        m_ExpectedRevision != scene.m_AuthoringRevision)
         return Failure(rt2::core::Error::InvalidArgument, m_Entity.ToString(), "stale primitive command");
     auto& reg = scene.m_EcsScene.registry;
     if (!reg.all_of<PrimitiveComponent, MeshRef>(e) ||
@@ -385,9 +447,22 @@ EditorMutationResult PrefabPrimitiveRecipeCommand::Execute(SceneManager& scene)
         if (liveMarker != m_BeforeMarker || scene.m_Authoring.metadata.schemaVersion != m_BeforeSchema)
             return Failure(rt2::core::Error::InvalidArgument, m_Entity.ToString(), "primitive marker/schema changed");
     }
-    if (m_AfterRef.meshIndex != scene.m_EcsScene.meshRegistry.GetCount())
-        return Failure(rt2::core::Error::InvalidArgument, m_Entity.ToString(), "primitive mesh append slot changed");
-    scene.m_EcsScene.meshRegistry.AddMesh(m_OwnedMesh);
+    if (!m_HasExecuted)
+    {
+        if (m_AfterRef.meshIndex != scene.m_EcsScene.meshRegistry.GetCount())
+            return Failure(rt2::core::Error::InvalidArgument, m_Entity.ToString(), "primitive mesh append slot changed");
+        scene.m_EcsScene.meshRegistry.AddMesh(m_OwnedMesh);
+    }
+    else
+    {
+        if (m_OwnedMeshSlot >= scene.m_EcsScene.meshRegistry.GetCount())
+            return Failure(rt2::core::Error::InvalidArgument, m_Entity.ToString(), "primitive owned mesh slot disappeared");
+        MeshRegistry normalized;
+        normalized.AddMesh(m_OwnedMesh);
+        if (!PrefabPropagationMeshEqual(scene.m_EcsScene.meshRegistry.GetMesh(m_OwnedMeshSlot),
+                                         normalized.GetMesh(0)))
+            return Failure(rt2::core::Error::InvalidArgument, m_Entity.ToString(), "primitive owned mesh changed");
+    }
     reg.replace<PrimitiveComponent>(e, m_After);
     reg.replace<MeshRef>(e, m_AfterRef);
     if (auto* member = reg.try_get<PrefabMemberComponent>(e))
@@ -402,6 +477,8 @@ EditorMutationResult PrefabPrimitiveRecipeCommand::Execute(SceneManager& scene)
     scene.NotifyAuthoringChanged();
     m_ExpectedRevision = scene.m_AuthoringRevision;
     m_ExpectedResourceGeneration = scene.m_ResourceGeneration;
+    m_HasExecuted = true;
+    m_IsApplied = true;
     return EditorMutationResult{true, true, {}, std::nullopt, SyncImpact::Structural, {m_Entity}};
 }
 
@@ -411,8 +488,10 @@ EditorMutationResult PrefabPrimitiveRecipeCommand::Undo(SceneManager& scene)
     if (e == entt::null || !scene.m_EcsScene.registry.valid(e) ||
         scene.m_DocumentGeneration != m_DocumentGeneration ||
         scene.m_ResourceGeneration != m_ExpectedResourceGeneration ||
-        (m_ExpectedRevision != 0 && scene.m_AuthoringRevision != m_ExpectedRevision))
+        m_ExpectedRevision != scene.m_AuthoringRevision)
         return Failure(rt2::core::Error::InvalidArgument, m_Entity.ToString(), "stale primitive undo");
+    if (!m_HasExecuted || !m_IsApplied)
+        return Failure(rt2::core::Error::InvalidArgument, m_Entity.ToString(), "primitive command is not applied");
     auto& reg = scene.m_EcsScene.registry;
     if (!reg.all_of<PrimitiveComponent, MeshRef>(e) ||
         !PrefabCanonicalComponentEqual(reg.get<PrimitiveComponent>(e), m_After) ||
@@ -426,7 +505,8 @@ EditorMutationResult PrefabPrimitiveRecipeCommand::Undo(SceneManager& scene)
         if (liveMarker != m_AfterMarker || scene.m_Authoring.metadata.schemaVersion != m_AfterSchema)
             return Failure(rt2::core::Error::InvalidArgument, m_Entity.ToString(), "primitive marker/schema changed for undo");
     }
-    scene.m_EcsScene.meshRegistry.Truncate(m_AfterRef.meshIndex);
+    if (m_AfterRef.meshIndex >= scene.m_EcsScene.meshRegistry.GetCount())
+        return Failure(rt2::core::Error::InvalidArgument, m_Entity.ToString(), "primitive owned mesh slot disappeared");
     reg.replace<PrimitiveComponent>(e, m_Before);
     reg.replace<MeshRef>(e, m_BeforeRef);
     if (auto* member = reg.try_get<PrefabMemberComponent>(e))
@@ -437,9 +517,10 @@ EditorMutationResult PrefabPrimitiveRecipeCommand::Undo(SceneManager& scene)
         std::sort(member->overrides.begin(), member->overrides.end(), [](const auto& a, const auto& b) { return a.wire() < b.wire(); });
         scene.m_Authoring.metadata.schemaVersion = m_BeforeSchema;
     }
-    --scene.m_ResourceGeneration;
+    ++scene.m_ResourceGeneration;
     scene.NotifyAuthoringChanged();
     m_ExpectedRevision = scene.m_AuthoringRevision;
     m_ExpectedResourceGeneration = scene.m_ResourceGeneration;
+    m_IsApplied = false;
     return EditorMutationResult{true, true, {}, std::nullopt, SyncImpact::Structural, {m_Entity}};
 }

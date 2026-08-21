@@ -4,65 +4,147 @@
 
 #include <algorithm>
 #include <limits>
-#include <type_traits>
+#include <set>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace rt2::core {
 namespace {
 
 template<typename T>
+std::optional<T> ReadComponent(const entt::registry& registry, entt::entity entity)
+{
+    if (const auto* value = registry.try_get<T>(entity)) return *value;
+    return std::nullopt;
+}
+
+template<typename T>
 void WriteOptional(entt::registry& registry, entt::entity entity,
-                   const std::optional<PrefabPropagationComponentValue>& value)
+                   const std::optional<T>& value)
 {
     if (!value)
     {
         if (registry.all_of<T>(entity)) registry.remove<T>(entity);
         return;
     }
-    if (const auto* typed = std::get_if<T>(&*value))
-        registry.emplace_or_replace<T>(entity, *typed);
+    registry.emplace_or_replace<T>(entity, *value);
 }
 
-void WriteValue(SceneDocument& document, const PrefabPropagationComponentOperation& op)
+template<typename T>
+std::optional<T> OperationAfter(const PrefabPropagationPlan& plan,
+                                const UUID& entity, const PrefabComponentKey& key,
+                                const entt::registry& live, entt::entity liveEntity)
 {
-    const auto entity = document.FindByUuid(op.entityUuid);
-    if (entity == entt::null || !document.ecs.registry.valid(entity)) return;
-    const auto wire = op.key.wire();
-    if (wire == PrefabWireKeys::kName) WriteOptional<NameComponent>(document.ecs.registry, entity, op.after);
-    else if (wire == PrefabWireKeys::kTransform) WriteOptional<Transform>(document.ecs.registry, entity, op.after);
-    else if (wire == PrefabWireKeys::kVisible) WriteOptional<VisibleComponent>(document.ecs.registry, entity, op.after);
-    else if (wire == PrefabWireKeys::kPrimitive) WriteOptional<PrimitiveComponent>(document.ecs.registry, entity, op.after);
-    else if (wire == PrefabWireKeys::kImportedSource) WriteOptional<ImportedMeshSourceComponent>(document.ecs.registry, entity, op.after);
-    else if (wire == PrefabWireKeys::kMaterialOverride) WriteOptional<MaterialOverrideComponent>(document.ecs.registry, entity, op.after);
-    else if (wire == PrefabWireKeys::kLight) WriteOptional<LightComponent>(document.ecs.registry, entity, op.after);
-    else if (wire == PrefabWireKeys::kCamera) WriteOptional<CameraComponent>(document.ecs.registry, entity, op.after);
-    else if (wire == PrefabWireKeys::kMotion) WriteOptional<MotionComponent>(document.ecs.registry, entity, op.after);
-    else if (wire == PrefabWireKeys::kScript) WriteOptional<ScriptComponent>(document.ecs.registry, entity, op.after);
+    const auto it = std::find_if(plan.componentOperations.begin(),
+        plan.componentOperations.end(), [&](const auto& operation) {
+            return operation.entityUuid == entity && operation.key == key;
+        });
+    if (it != plan.componentOperations.end())
+    {
+        if (!it->after) return std::nullopt;
+        if (const auto* value = std::get_if<T>(&*it->after)) return *value;
+        return std::nullopt;
+    }
+    return ReadComponent<T>(live, liveEntity);
+}
+
+const PrefabPropagationComponentOperation* FindOperation(
+    const PrefabPropagationPlan& plan, const UUID& entity,
+    const PrefabComponentKey& key)
+{
+    const auto it = std::find_if(plan.componentOperations.begin(),
+        plan.componentOperations.end(), [&](const auto& operation) {
+            return operation.entityUuid == entity && operation.key == key;
+        });
+    return it == plan.componentOperations.end() ? nullptr : &*it;
+}
+
+PrefabPropagationComponentOperation* FindOperation(
+    PrefabPropagationPlan& plan, const UUID& entity,
+    const PrefabComponentKey& key)
+{
+    const auto it = std::find_if(plan.componentOperations.begin(),
+        plan.componentOperations.end(), [&](const auto& operation) {
+            return operation.entityUuid == entity && operation.key == key;
+        });
+    return it == plan.componentOperations.end() ? nullptr : &*it;
 }
 
 bool AddOwnership(PrefabPropagationPlan& plan, PrefabPropagationResourceKind kind,
-                  std::uint32_t beforeExtent, const std::vector<PrefabPropagationResourcePayload>& payloads)
+                  std::uint32_t sceneBeforeExtent,
+                  std::uint32_t sourceBeforeExtent,
+                  const std::vector<PrefabPropagationResourcePayload>& payloads)
 {
     if (payloads.empty()) return true;
     if (payloads.size() > std::numeric_limits<std::uint32_t>::max() ||
-        beforeExtent > std::numeric_limits<std::uint32_t>::max() -
+        sceneBeforeExtent > std::numeric_limits<std::uint32_t>::max() -
             static_cast<std::uint32_t>(payloads.size()))
         return false;
     PrefabPropagationResourceOwnership ownership;
     auto& rebase = ownership.rebase;
     rebase.kind = kind;
-    rebase.sourceBeforeExtent = std::max<std::uint32_t>(1, static_cast<std::uint32_t>(payloads.size()));
-    rebase.sceneBeforeExtent = beforeExtent;
-    rebase.sceneAppendBase = beforeExtent;
-    rebase.sceneAfterExtent = beforeExtent + static_cast<std::uint32_t>(payloads.size());
+    rebase.sourceBeforeExtent = sourceBeforeExtent;
+    rebase.sceneBeforeExtent = sceneBeforeExtent;
+    rebase.sceneAppendBase = sceneBeforeExtent;
+    rebase.sceneAfterExtent = sceneBeforeExtent + static_cast<std::uint32_t>(payloads.size());
     rebase.owned = PrefabPropagationResourceBlock::FromDecoded(kind, payloads);
     for (std::size_t i = 0; i < payloads.size(); ++i)
     {
+        if (i > std::numeric_limits<std::uint32_t>::max()) return false;
         rebase.sourceSlots.push_back({static_cast<std::uint32_t>(i)});
-        rebase.sceneSlots.push_back({beforeExtent + static_cast<std::uint32_t>(i)});
+        rebase.sceneSlots.push_back({sceneBeforeExtent + static_cast<std::uint32_t>(i)});
     }
     plan.resourceOwnership.push_back(std::move(ownership));
     return true;
+}
+
+void RebaseMaterial(SceneMaterial& material, std::uint32_t textureBase)
+{
+    auto rebase = [textureBase](int& index) {
+        if (index >= 0)
+            index += static_cast<int>(textureBase);
+    };
+    rebase(material.baseColorTextureIndex);
+    rebase(material.normalTextureIndex);
+    rebase(material.emissiveTextureIndex);
+    rebase(material.metallicRoughnessTextureIndex);
+}
+
+void RebaseMesh(MeshData& mesh, std::uint32_t materialBase)
+{
+    for (auto& index : mesh.materialIndices)
+        index += materialBase;
+}
+
+std::optional<PrefabPropagationRootSnapshot> FindRootSnapshot(
+    const PrefabPropagationPlan& plan, const PrefabPropagationInstancePlan& instance)
+{
+    const auto it = std::find_if(plan.rootSnapshots.begin(), plan.rootSnapshots.end(),
+        [&](const auto& snapshot) { return snapshot.rootUuid == instance.rootUuid; });
+    if (it == plan.rootSnapshots.end()) return std::nullopt;
+    return *it;
+}
+
+void AddResolverDiagnostic(PrefabPropagationPlan& result,
+                           const PrefabPropagationInstancePlan& instance,
+                           const AssetDiagnostic& diagnostic,
+                           const UUID& fallbackTemplate)
+{
+    PrefabPropagationDiagnostic converted;
+    converted.severity = static_cast<AssetDiagnostic::Severity>(diagnostic.severity);
+    converted.prefabPath = result.source.normalizedPath;
+    converted.prefabAssetId = result.source.assetId;
+    converted.instanceId = instance.instanceId;
+    converted.rootUuid = instance.rootUuid;
+    converted.templateId = fallbackTemplate;
+    for (const auto& snapshot : result.memberSnapshots)
+        if (snapshot.entityUuid == diagnostic.entityUuid)
+        {
+            converted.templateId = snapshot.templateId;
+            break;
+        }
+    converted.reason = diagnostic.detail.empty() ? diagnostic.refPath : diagnostic.detail;
+    result.diagnostics.push_back(std::move(converted));
 }
 
 } // namespace
@@ -76,120 +158,257 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
         return Result<PrefabPropagationPlan>::Fail(
             Error::InvalidArgument, "prefab-propagation", "durable plan is invalid");
 
-    SceneDocument staged;
-    Error error;
-    if (!SceneSerializer::CloneInMemory(live, staged, error))
-        return Result<PrefabPropagationPlan>::Fail(error.code, error.path,
-                                                   "could not clone staging document: " + error.detail);
-
-    for (const auto& operation : durablePlan.componentOperations)
-    {
-        WriteValue(staged, operation);
-    }
-
-    for (const auto& operation : durablePlan.componentOperations)
-    {
-        if (operation.key.wire() != PrefabWireKeys::kPrimitive) continue;
-        const auto entity = staged.FindByUuid(operation.entityUuid);
-        if (entity == entt::null || !staged.ecs.registry.valid(entity))
-            return Result<PrefabPropagationPlan>::Fail(Error::InvalidEntity,
-                operation.entityUuid.ToString(), "primitive staging target disappeared");
-        const auto* primitive = staged.ecs.registry.try_get<PrimitiveComponent>(entity);
-        if (!primitive) continue;
-        const auto index = RegisterPrimitiveMesh(staged.ecs.meshRegistry, *primitive);
-        staged.ecs.registry.emplace_or_replace<MeshRef>(entity, MeshRef{index, -1});
-    }
-
-    std::vector<AssetDiagnostic> diagnostics;
-    const bool resolved = SceneAssetResolver::ResolveAll(staged, assets, diagnostics, error);
-    if (!resolved && diagnostics.empty())
-        return Result<PrefabPropagationPlan>::Fail(error.code, error.path,
-                                                   "staged resource resolution failed: " + error.detail);
+    // A canonical no-op is returned before creating a clone or asking the
+    // resolver to inspect any asset. This is the isolation boundary that keeps
+    // unrelated imported entities from turning a no-op into history.
+    if (durablePlan.IsNoOp())
+        return Result<PrefabPropagationPlan>::Ok(durablePlan);
 
     PrefabPropagationPlan result = durablePlan;
-    std::unordered_set<UUID> failedEntities;
-    for (const auto& diagnostic : diagnostics)
-    {
-        if (!diagnostic.entityUuid.IsNull() &&
-            diagnostic.severity >= AssetDiagnostic::Missing)
-            failedEntities.insert(diagnostic.entityUuid);
-        PrefabPropagationDiagnostic converted;
-        converted.severity = static_cast<AssetDiagnostic::Severity>(diagnostic.severity);
-        converted.prefabPath = result.source.normalizedPath;
-        converted.prefabAssetId = result.source.assetId;
-        converted.rootUuid = diagnostic.entityUuid;
-        converted.reason = diagnostic.detail.empty() ? diagnostic.refPath : diagnostic.detail;
-        result.diagnostics.push_back(std::move(converted));
-    }
-    if (!failedEntities.empty())
-    {
-        result.componentOperations.erase(std::remove_if(result.componentOperations.begin(),
-            result.componentOperations.end(), [&](const auto& operation) {
-                return failedEntities.count(operation.entityUuid) != 0;
-            }), result.componentOperations.end());
-        result.meshRefOperations.erase(std::remove_if(result.meshRefOperations.begin(),
-            result.meshRefOperations.end(), [&](const auto& operation) {
-                return failedEntities.count(operation.entityUuid) != 0;
-            }), result.meshRefOperations.end());
-        for (auto& instance : result.instances)
-        {
-            if (std::any_of(instance.affectedEntities.begin(), instance.affectedEntities.end(),
-                [&](const auto& uuid) { return failedEntities.count(uuid) != 0; }))
-                instance.disposition = PrefabPropagationInstanceDisposition::Quarantined;
-        }
-        result.memberSnapshots.erase(std::remove_if(result.memberSnapshots.begin(),
-            result.memberSnapshots.end(), [&](const auto& snapshot) {
-                return failedEntities.count(snapshot.entityUuid) != 0;
-            }), result.memberSnapshots.end());
-    }
     result.resourceOwnership.clear();
     result.meshRefOperations.clear();
-    const auto meshBefore = live.ecs.meshRegistry.GetCount();
-    const auto materialBefore = static_cast<std::uint32_t>(live.ecs.materials.size());
-    const auto textureBefore = static_cast<std::uint32_t>(live.ecs.textures.size());
 
-    std::vector<PrefabPropagationResourcePayload> meshes;
-    for (std::uint32_t i = meshBefore; i < staged.ecs.meshRegistry.GetCount(); ++i)
-        meshes.push_back({"mesh:" + std::to_string(i), result.source.contentDigest,
-                          staged.ecs.meshRegistry.GetMesh(i)});
-    std::vector<PrefabPropagationResourcePayload> materials;
-    for (std::uint32_t i = materialBefore; i < staged.ecs.materials.size(); ++i)
-        materials.push_back({"material:" + std::to_string(i), result.source.contentDigest,
-                             staged.ecs.materials[i]});
-    std::vector<PrefabPropagationResourcePayload> textures;
-    for (std::uint32_t i = textureBefore; i < staged.ecs.textures.size(); ++i)
-        textures.push_back({"texture:" + std::to_string(i), result.source.contentDigest,
-                           staged.ecs.textures[i]});
-    if (!AddOwnership(result, PrefabPropagationResourceKind::Mesh, meshBefore, meshes) ||
-        !AddOwnership(result, PrefabPropagationResourceKind::Material, materialBefore, materials) ||
-        !AddOwnership(result, PrefabPropagationResourceKind::Texture, textureBefore, textures))
+    std::vector<PrefabPropagationResourcePayload> meshPayloads;
+    std::vector<PrefabPropagationResourcePayload> materialPayloads;
+    std::vector<PrefabPropagationResourcePayload> texturePayloads;
+    std::unordered_set<UUID> quarantinedInstances;
+    std::unordered_map<UUID, UUID> entityToInstance;
+    std::unordered_map<UUID, UUID> entityToTemplate;
+    for (const auto& snapshot : durablePlan.memberSnapshots)
+    {
+        entityToInstance[snapshot.entityUuid] = snapshot.instanceId;
+        entityToTemplate[snapshot.entityUuid] = snapshot.templateId;
+    }
+
+    for (auto& instance : result.instances)
+    {
+        if (instance.disposition != PrefabPropagationInstanceDisposition::Propagate)
+            continue;
+
+        std::vector<UUID> entities;
+        for (const auto& snapshot : durablePlan.memberSnapshots)
+            if (snapshot.instanceId == instance.instanceId)
+                entities.push_back(snapshot.entityUuid);
+        std::sort(entities.begin(), entities.end());
+
+        SceneDocument fragment;
+        fragment.metadata.schemaVersion = live.metadata.schemaVersion;
+        std::vector<UUID> resourceEntities;
+        for (const UUID& uuid : entities)
+        {
+            const auto liveEntity = live.FindByUuid(uuid);
+            if (liveEntity == entt::null || !live.ecs.registry.valid(liveEntity))
+                continue;
+            const auto* id = live.ecs.registry.try_get<EntityIdComponent>(liveEntity);
+            if (!id) continue;
+
+            bool hasImported = false;
+            bool hasPrimitive = false;
+            for (const auto& operation : durablePlan.componentOperations)
+                if (operation.entityUuid == uuid)
+                {
+                    hasImported |= operation.key.wire() == PrefabWireKeys::kImportedSource &&
+                                   operation.after.has_value();
+                    hasPrimitive |= operation.key.wire() == PrefabWireKeys::kPrimitive &&
+                                    operation.after.has_value();
+                }
+            if (!hasImported)
+                hasImported = live.ecs.registry.all_of<ImportedMeshSourceComponent>(liveEntity) &&
+                    FindOperation(durablePlan, uuid,
+                        PrefabComponentKeyFor<ImportedMeshSourceComponent>::value) == nullptr;
+            const auto imported = OperationAfter<ImportedMeshSourceComponent>(
+                durablePlan, uuid, PrefabComponentKeyFor<ImportedMeshSourceComponent>::value,
+                live.ecs.registry, liveEntity);
+            hasImported = imported.has_value();
+            const auto primitive = OperationAfter<PrimitiveComponent>(
+                durablePlan, uuid, PrefabComponentKeyFor<PrimitiveComponent>::value,
+                live.ecs.registry, liveEntity);
+            hasPrimitive = hasPrimitive || primitive.has_value() &&
+                FindOperation(durablePlan, uuid,
+                    PrefabComponentKeyFor<PrimitiveComponent>::value) != nullptr;
+            if (!hasImported && !hasPrimitive) continue;
+
+            const auto fragmentEntity = fragment.ecs.registry.create();
+            fragment.AssignKnownUuid(fragmentEntity, uuid);
+            if (const auto* name = live.ecs.registry.try_get<NameComponent>(liveEntity))
+                fragment.ecs.registry.emplace<NameComponent>(fragmentEntity, *name);
+            if (const auto* member = live.ecs.registry.try_get<PrefabMemberComponent>(liveEntity))
+                fragment.ecs.registry.emplace<PrefabMemberComponent>(fragmentEntity, *member);
+            if (imported)
+                fragment.ecs.registry.emplace<ImportedMeshSourceComponent>(fragmentEntity, *imported);
+            if (const auto material = OperationAfter<MaterialOverrideComponent>(
+                    durablePlan, uuid, PrefabComponentKeyFor<MaterialOverrideComponent>::value,
+                    live.ecs.registry, liveEntity))
+                fragment.ecs.registry.emplace<MaterialOverrideComponent>(fragmentEntity, *material);
+            if (hasPrimitive && primitive)
+            {
+                fragment.ecs.registry.emplace<PrimitiveComponent>(fragmentEntity, *primitive);
+                const auto mesh = RegisterPrimitiveMesh(fragment.ecs.meshRegistry, *primitive);
+                fragment.ecs.registry.emplace<MeshRef>(fragmentEntity, MeshRef{mesh, -1});
+            }
+            if (imported) resourceEntities.push_back(uuid);
+        }
+
+        std::vector<AssetDiagnostic> diagnostics;
+        Error error;
+        bool resolved = true;
+        if (!resourceEntities.empty())
+            resolved = SceneAssetResolver::ResolveAll(fragment, assets, diagnostics, error);
+
+        bool hardFailure = !resolved && diagnostics.empty();
+        for (const auto& diagnostic : diagnostics)
+        {
+            AddResolverDiagnostic(result, instance, diagnostic,
+                                  resourceEntities.empty() ? UUID::Nil() :
+                                      entityToTemplate[resourceEntities.front()]);
+            hardFailure |= diagnostic.severity >= AssetDiagnostic::Missing;
+        }
+        if (hardFailure)
+        {
+            quarantinedInstances.insert(instance.instanceId);
+            instance.disposition = PrefabPropagationInstanceDisposition::Quarantined;
+            instance.affectedEntities.clear();
+            if (diagnostics.empty())
+            {
+                PrefabPropagationDiagnostic diagnostic;
+                diagnostic.severity = AssetDiagnostic::Malformed;
+                diagnostic.prefabPath = result.source.normalizedPath;
+                diagnostic.prefabAssetId = result.source.assetId;
+                diagnostic.instanceId = instance.instanceId;
+                diagnostic.rootUuid = instance.rootUuid;
+                diagnostic.templateId = resourceEntities.empty() ? UUID::Nil() :
+                    entityToTemplate[resourceEntities.front()];
+                diagnostic.reason = error.detail.empty() ? "candidate resource resolution failed" : error.detail;
+                result.diagnostics.push_back(std::move(diagnostic));
+            }
+            continue;
+        }
+
+        const auto meshBase = static_cast<std::uint32_t>(meshPayloads.size());
+        const auto materialBase = static_cast<std::uint32_t>(materialPayloads.size());
+        const auto textureBase = static_cast<std::uint32_t>(texturePayloads.size());
+        for (std::uint32_t i = 0; i < fragment.ecs.meshRegistry.GetCount(); ++i)
+        {
+            auto mesh = fragment.ecs.meshRegistry.GetMesh(i);
+            RebaseMesh(mesh, durablePlan.materialTableExtent + materialBase);
+            meshPayloads.push_back({"mesh:" + std::to_string(durablePlan.meshTableExtent + meshBase + i),
+                                    result.source.contentDigest, std::move(mesh)});
+        }
+        for (std::size_t i = 0; i < fragment.ecs.materials.size(); ++i)
+        {
+            auto material = fragment.ecs.materials[i];
+            RebaseMaterial(material, durablePlan.textureTableExtent + textureBase);
+            materialPayloads.push_back({"material:" + std::to_string(
+                durablePlan.materialTableExtent + materialBase + i),
+                result.source.contentDigest, std::move(material)});
+        }
+        for (std::size_t i = 0; i < fragment.ecs.textures.size(); ++i)
+        {
+            const auto& texture = fragment.ecs.textures[i];
+            texturePayloads.push_back({"texture:" + std::to_string(
+                durablePlan.textureTableExtent + textureBase + i),
+                result.source.contentDigest, texture});
+        }
+
+        for (const UUID& uuid : entities)
+        {
+            const auto liveEntity = live.FindByUuid(uuid);
+            const auto stagedEntity = fragment.FindByUuid(uuid);
+            if (liveEntity == entt::null || stagedEntity == entt::null) continue;
+            const auto* before = live.ecs.registry.try_get<MeshRef>(liveEntity);
+            const auto* after = fragment.ecs.registry.try_get<MeshRef>(stagedEntity);
+            std::optional<MeshRef> afterRef;
+            if (after)
+            {
+                afterRef = *after;
+                afterRef->meshIndex += durablePlan.meshTableExtent + meshBase;
+                if (afterRef->materialIndex >= 0)
+                    afterRef->materialIndex += static_cast<int>(durablePlan.materialTableExtent + materialBase);
+            }
+            if ((before == nullptr) != (afterRef == std::nullopt) ||
+                (before && afterRef && (before->meshIndex != afterRef->meshIndex ||
+                    before->materialIndex != afterRef->materialIndex)))
+                result.meshRefOperations.push_back({uuid, entityToTemplate[uuid],
+                    before ? std::optional<MeshRef>(*before) : std::nullopt, afterRef});
+
+            if (auto* material = fragment.ecs.registry.try_get<MaterialOverrideComponent>(stagedEntity))
+            {
+                auto repaired = *material;
+                RebaseMaterial(repaired.material,
+                                durablePlan.textureTableExtent + textureBase);
+                if (auto* operation = FindOperation(result, uuid,
+                        PrefabComponentKeyFor<MaterialOverrideComponent>::value))
+                    operation->after = PrefabPropagationComponentValue{repaired};
+                else
+                {
+                    const auto* liveMaterial = live.ecs.registry.try_get<MaterialOverrideComponent>(liveEntity);
+                    if (!liveMaterial || !PrefabCanonicalComponentEqual(*liveMaterial, repaired))
+                        result.componentOperations.push_back({uuid, entityToTemplate[uuid],
+                            PrefabComponentKeyFor<MaterialOverrideComponent>::value,
+                            liveMaterial ? std::optional<PrefabPropagationComponentValue>(
+                                PrefabPropagationComponentValue{*liveMaterial}) : std::nullopt,
+                            PrefabPropagationComponentValue{repaired}});
+                }
+            }
+        }
+    }
+
+    // A hard resolver error quarantines the complete instance: no sibling
+    // value, MeshRef, snapshot, or resource intent may survive.
+    result.componentOperations.erase(std::remove_if(result.componentOperations.begin(),
+        result.componentOperations.end(), [&](const auto& operation) {
+            const auto it = entityToInstance.find(operation.entityUuid);
+            return it != entityToInstance.end() && quarantinedInstances.count(it->second) != 0;
+        }), result.componentOperations.end());
+    result.memberSnapshots.erase(std::remove_if(result.memberSnapshots.begin(),
+        result.memberSnapshots.end(), [&](const auto& snapshot) {
+            return quarantinedInstances.count(snapshot.instanceId) != 0;
+        }), result.memberSnapshots.end());
+    result.meshRefOperations.erase(std::remove_if(result.meshRefOperations.begin(),
+        result.meshRefOperations.end(), [&](const auto& operation) {
+            const auto it = entityToInstance.find(operation.entityUuid);
+            return it != entityToInstance.end() && quarantinedInstances.count(it->second) != 0;
+        }), result.meshRefOperations.end());
+
+    if (!AddOwnership(result, PrefabPropagationResourceKind::Mesh,
+                      durablePlan.meshTableExtent,
+                      static_cast<std::uint32_t>(meshPayloads.size()), meshPayloads) ||
+        !AddOwnership(result, PrefabPropagationResourceKind::Material,
+                      durablePlan.materialTableExtent,
+                      static_cast<std::uint32_t>(materialPayloads.size()), materialPayloads) ||
+        !AddOwnership(result, PrefabPropagationResourceKind::Texture,
+                      durablePlan.textureTableExtent,
+                      static_cast<std::uint32_t>(texturePayloads.size()), texturePayloads))
         return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
             "prefab-propagation", "resource extent overflow while staging");
 
-    for (const auto& operation : durablePlan.componentOperations)
+    for (auto& instance : result.instances)
     {
-        const auto entity = staged.FindByUuid(operation.entityUuid);
-        if (entity == entt::null || !staged.ecs.registry.valid(entity)) continue;
-        const auto before = live.ecs.registry.try_get<MeshRef>(live.FindByUuid(operation.entityUuid));
-        const auto after = staged.ecs.registry.try_get<MeshRef>(entity);
-        if ((before == nullptr) != (after == nullptr) ||
-            (before && after && (before->meshIndex != after->meshIndex ||
-                                 before->materialIndex != after->materialIndex)))
-        {
-            const auto existing = std::find_if(result.meshRefOperations.begin(),
-                result.meshRefOperations.end(), [&](const auto& prior) {
-                    return prior.entityUuid == operation.entityUuid;
-                });
-            if (existing == result.meshRefOperations.end())
-                result.meshRefOperations.push_back({operation.entityUuid, operation.templateId,
-                    before ? std::optional<MeshRef>(*before) : std::nullopt,
-                    after ? std::optional<MeshRef>(*after) : std::nullopt});
-            else
-                existing->after = after ? std::optional<MeshRef>(*after) : std::nullopt;
-        }
+        if (instance.disposition == PrefabPropagationInstanceDisposition::Quarantined)
+            continue;
+        instance.affectedEntities.clear();
+        for (const auto& operation : result.componentOperations)
+            if (entityToInstance[operation.entityUuid] == instance.instanceId &&
+                !PrefabPropagationComponentOperationIsNoOp(operation))
+                instance.affectedEntities.push_back(operation.entityUuid);
+        for (const auto& operation : result.meshRefOperations)
+            if (entityToInstance[operation.entityUuid] == instance.instanceId)
+                instance.affectedEntities.push_back(operation.entityUuid);
+        std::sort(instance.affectedEntities.begin(), instance.affectedEntities.end());
+        instance.affectedEntities.erase(std::unique(instance.affectedEntities.begin(),
+            instance.affectedEntities.end()), instance.affectedEntities.end());
+        if (instance.affectedEntities.empty())
+            instance.disposition = PrefabPropagationInstanceDisposition::NoOp;
     }
+    std::sort(result.componentOperations.begin(), result.componentOperations.end(),
+        [](const auto& a, const auto& b) {
+            if (a.entityUuid != b.entityUuid) return a.entityUuid < b.entityUuid;
+            if (a.templateId != b.templateId) return a.templateId < b.templateId;
+            return a.key.wire() < b.key.wire();
+        });
     result.affectedEntities = result.DerivedAffectedEntities();
     result.syncImpact = result.DerivedSyncImpact();
+    std::sort(result.diagnostics.begin(), result.diagnostics.end());
     if (!result.IsValid())
         return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
             "prefab-propagation", "staged resource plan failed validation");

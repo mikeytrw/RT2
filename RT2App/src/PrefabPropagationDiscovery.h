@@ -21,6 +21,7 @@ struct PrefabPropagationDiscoveryRequest
     AssetReference changedSource;
     std::uint64_t documentGeneration = 0;
     std::uint64_t resourceGeneration = 0;
+    std::uint64_t authoringRevision = 0;
 
     // Legacy/test seam only: callers may explicitly inject a checked,
     // path-based loader. Production parses the already-fingerprinted buffer

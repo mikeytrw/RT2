@@ -34,7 +34,8 @@ private:
     SourceFingerprintReader m_SourceReader;
     std::uint64_t m_ExpectedRevision = 0;
     std::uint64_t m_ExpectedResourceGeneration = 0;
-    bool m_HasApplied = false;
+    bool m_HasExecuted = false;
+    bool m_IsApplied = false;
 };
 
 // Local primitive editing deliberately shares the same append-only mesh
@@ -69,6 +70,9 @@ private:
     std::uint64_t m_AuthoringRevision = 0;
     std::uint64_t m_ExpectedRevision = 0;
     std::uint64_t m_ExpectedResourceGeneration = 0;
+    std::uint32_t m_OwnedMeshSlot = 0;
+    bool m_HasExecuted = false;
+    bool m_IsApplied = false;
 };
 
 #endif // RT2_PREFAB_PROPAGATION_COMMAND_H

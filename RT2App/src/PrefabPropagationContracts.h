@@ -19,6 +19,7 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <tuple>
 #include <type_traits>
@@ -411,6 +412,45 @@ struct PrefabPropagationMemberSnapshot
              a.templateId == b.templateId && a.overrides == b.overrides; }
 };
 
+inline bool PrefabPropagationAssetReferenceEqual(const AssetReference& a,
+                                                 const AssetReference& b) noexcept
+{
+    return a.kind == b.kind && a.path == b.path &&
+           a.importSettings == b.importSettings && a.sourceKey == b.sourceKey &&
+           a.assetId == b.assetId;
+}
+
+// The root link is a separate stale precondition from member links.  A root
+// can be relinked while all member markers and values remain byte-identical,
+// so the command must carry the exact durable prefab reference and instance id
+// observed during discovery.
+struct PrefabPropagationRootSnapshot
+{
+    UUID rootUuid;
+    UUID instanceId;
+    AssetReference prefab;
+
+    bool IsValid() const noexcept
+    { return !rootUuid.IsNull() && !instanceId.IsNull() && prefab.IsValid(); }
+
+    friend bool operator==(const PrefabPropagationRootSnapshot& a,
+                           const PrefabPropagationRootSnapshot& b) noexcept
+    {
+        // Plan equality is used for deterministic discovery comparison. Path
+        // spelling is normalized for that comparison, while the command's
+        // stale check above deliberately uses exact durable bytes.
+        auto normalize = [](const std::filesystem::path& path) {
+            return path.lexically_normal().generic_string();
+        };
+        return a.rootUuid == b.rootUuid && a.instanceId == b.instanceId &&
+               a.prefab.kind == b.prefab.kind &&
+               normalize(a.prefab.path) == normalize(b.prefab.path) &&
+               a.prefab.importSettings == b.prefab.importSettings &&
+               a.prefab.sourceKey == b.prefab.sourceKey &&
+               a.prefab.assetId == b.prefab.assetId;
+    }
+};
+
 inline SyncImpact PrefabPropagationImpactForKey(const PrefabComponentKey& key) noexcept
 {
     const auto wire = key.wire();
@@ -500,10 +540,14 @@ struct PrefabPropagationPlan
     std::uint64_t resourceGeneration = 0;
     std::uint64_t authoringRevision = 0;
     std::uint32_t sourceSchemaVersion = 0;
+    std::uint32_t meshTableExtent = 0;
+    std::uint32_t materialTableExtent = 0;
+    std::uint32_t textureTableExtent = 0;
     std::vector<PrefabPropagationInstancePlan> instances;
     std::vector<PrefabPropagationComponentOperation> componentOperations;
     std::vector<PrefabPropagationMeshRefOperation> meshRefOperations;
     std::vector<PrefabPropagationMemberSnapshot> memberSnapshots;
+    std::vector<PrefabPropagationRootSnapshot> rootSnapshots;
     std::vector<PrefabPropagationResourceOwnership> resourceOwnership;
     std::vector<PrefabPropagationDiagnostic> diagnostics;
     std::vector<UUID> affectedEntities;
@@ -565,18 +609,77 @@ struct PrefabPropagationPlan
 
     bool IsValid() const noexcept
     {
+        std::set<std::pair<UUID, std::string>> componentKeys;
+        std::set<UUID> meshEntities;
+        std::set<UUID> snapshotEntities;
+        std::set<UUID> roots;
         for (const auto& operation : componentOperations)
-            if (!operation.IsValid()) return false;
+            if (!operation.IsValid() ||
+                !componentKeys.emplace(operation.entityUuid, operation.key.wire()).second)
+                return false;
         for (const auto& operation : meshRefOperations)
-            if (!operation.IsValid()) return false;
+            if (!operation.IsValid() || !meshEntities.emplace(operation.entityUuid).second)
+                return false;
+        for (const auto& snapshot : memberSnapshots)
+            if (snapshot.entityUuid.IsNull() || snapshot.instanceId.IsNull() ||
+                snapshot.templateId.IsNull() ||
+                !snapshotEntities.emplace(snapshot.entityUuid).second)
+                return false;
+        for (const auto& snapshot : rootSnapshots)
+            if (!snapshot.IsValid() || !roots.emplace(snapshot.rootUuid).second)
+                return false;
+        for (const auto& instance : instances)
+        {
+            const auto root = std::find_if(rootSnapshots.begin(), rootSnapshots.end(),
+                [&](const auto& snapshot) { return snapshot.rootUuid == instance.rootUuid; });
+            if (rootSnapshots.size() != 0 &&
+                (root == rootSnapshots.end() || root->instanceId != instance.instanceId))
+                return false;
+        }
         std::array<bool, 3> ownershipKinds{};
+        std::array<std::uint32_t, 3> ownedBefore{};
         for (const auto& ownership : resourceOwnership)
         {
             if (!ownership.IsValid()) return false;
             const auto kind = static_cast<std::size_t>(ownership.rebase.kind);
             if (kind >= ownershipKinds.size() || ownershipKinds[kind]) return false;
             ownershipKinds[kind] = true;
+            ownedBefore[kind] = ownership.rebase.sceneBeforeExtent;
+            const auto expectedExtent = kind == static_cast<std::size_t>(PrefabPropagationResourceKind::Mesh)
+                ? meshTableExtent
+                : kind == static_cast<std::size_t>(PrefabPropagationResourceKind::Material)
+                    ? materialTableExtent : textureTableExtent;
+            const bool extentsCaptured = meshTableExtent != 0 || materialTableExtent != 0 ||
+                                         textureTableExtent != 0 || !rootSnapshots.empty();
+            if (extentsCaptured && ownership.rebase.sceneBeforeExtent != expectedExtent)
+                return false;
         }
+        auto ownsSlot = [&](PrefabPropagationResourceKind kind, std::uint32_t slot) {
+            const auto index = static_cast<std::size_t>(kind);
+            for (const auto& ownership : resourceOwnership)
+                if (static_cast<std::size_t>(ownership.rebase.kind) == index)
+                    return slot >= ownership.rebase.sceneBeforeExtent &&
+                           slot < ownership.rebase.sceneAfterExtent;
+            return false;
+        };
+        auto validMeshRef = [&](const std::optional<MeshRef>& ref) {
+            if (!ref) return true;
+            const bool extentsCaptured = meshTableExtent != 0 || materialTableExtent != 0 ||
+                                         textureTableExtent != 0 || !rootSnapshots.empty();
+            if (extentsCaptured && !ownsSlot(PrefabPropagationResourceKind::Mesh, ref->meshIndex) &&
+                ref->meshIndex >= meshTableExtent)
+                return false;
+            if (ref->materialIndex < -1) return false;
+            if (extentsCaptured && ref->materialIndex >= 0 &&
+                !ownsSlot(PrefabPropagationResourceKind::Material,
+                          static_cast<std::uint32_t>(ref->materialIndex)) &&
+                static_cast<std::uint32_t>(ref->materialIndex) >= materialTableExtent)
+                return false;
+            return true;
+        };
+        for (const auto& operation : meshRefOperations)
+            if (!validMeshRef(operation.before) || !validMeshRef(operation.after))
+                return false;
         if (affectedEntities != DerivedAffectedEntities()) return false;
         if (syncImpact != DerivedSyncImpact()) return false;
         return true;
@@ -604,9 +707,13 @@ struct PrefabPropagationPlan
              a.resourceGeneration == b.resourceGeneration &&
              a.authoringRevision == b.authoringRevision &&
              a.sourceSchemaVersion == b.sourceSchemaVersion &&
+             a.meshTableExtent == b.meshTableExtent &&
+             a.materialTableExtent == b.materialTableExtent &&
+             a.textureTableExtent == b.textureTableExtent &&
              a.instances == b.instances && a.componentOperations == b.componentOperations &&
              a.meshRefOperations == b.meshRefOperations &&
              a.memberSnapshots == b.memberSnapshots &&
+             a.rootSnapshots == b.rootSnapshots &&
              a.resourceOwnership == b.resourceOwnership && a.diagnostics == b.diagnostics &&
              a.affectedEntities == b.affectedEntities && a.syncImpact == b.syncImpact; }
 };
