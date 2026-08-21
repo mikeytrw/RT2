@@ -26,6 +26,8 @@ struct EditorCameraPose;
 class SceneManager;
 class PrefabCommandTransaction;
 class DuplicateMaterialAndAssignCommand;
+class PrefabPropagationCommand;
+class PrefabPrimitiveRecipeCommand;
 
 // Opaque capability for the one command that owns material-duplicate slot
 // reuse after a successful first Execute.  The type is copyable so it can
@@ -1020,6 +1022,8 @@ struct PrefabMaterialDuplicateStage
 
 private:
 	friend class PrefabCommandTransaction;
+	friend class PrefabPropagationCommand;
+	friend class PrefabPrimitiveRecipeCommand;
 	rt2::core::Result<PrefabCompositePlan> PreparePrefabCompositeEditsWithOwnership(
 		const std::vector<PrefabValueEdit>& values,
 		const std::vector<PrefabMarkerEdit>& markers,

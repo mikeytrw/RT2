@@ -369,6 +369,48 @@ struct PrefabPropagationResourceOwnership
     { return a.rebase == b.rebase; }
 };
 
+// Derived geometry is deliberately separate from the durable component
+// operation.  MeshRef is a scene-global index and may never be copied from a
+// prefab source record; the command installs the rebased value only after the
+// owned mesh block has been appended.
+struct PrefabPropagationMeshRefOperation
+{
+    UUID entityUuid;
+    UUID templateId;
+    std::optional<MeshRef> before;
+    std::optional<MeshRef> after;
+
+    bool IsValid() const noexcept
+    { return !entityUuid.IsNull() && !templateId.IsNull() &&
+             (before.has_value() || after.has_value()); }
+
+    friend bool operator==(const PrefabPropagationMeshRefOperation& a,
+                           const PrefabPropagationMeshRefOperation& b) noexcept
+    { return a.entityUuid == b.entityUuid && a.templateId == b.templateId &&
+             a.before.has_value() == b.before.has_value() &&
+             a.after.has_value() == b.after.has_value() &&
+             (!a.before || a.before->meshIndex == b.before->meshIndex &&
+                a.before->materialIndex == b.before->materialIndex) &&
+             (!a.after || a.after->meshIndex == b.after->meshIndex &&
+                a.after->materialIndex == b.after->materialIndex); }
+};
+
+// The links and marker vector are part of the commit precondition.  Keeping
+// them in the prepared plan prevents an entity that was re-linked between
+// prepare and commit from receiving a valid-looking value delta.
+struct PrefabPropagationMemberSnapshot
+{
+    UUID entityUuid;
+    UUID instanceId;
+    UUID templateId;
+    std::vector<PrefabComponentKey> overrides;
+
+    friend bool operator==(const PrefabPropagationMemberSnapshot& a,
+                           const PrefabPropagationMemberSnapshot& b) noexcept
+    { return a.entityUuid == b.entityUuid && a.instanceId == b.instanceId &&
+             a.templateId == b.templateId && a.overrides == b.overrides; }
+};
+
 inline SyncImpact PrefabPropagationImpactForKey(const PrefabComponentKey& key) noexcept
 {
     const auto wire = key.wire();
@@ -456,9 +498,12 @@ struct PrefabPropagationPlan
     PrefabSourceFingerprint source;
     std::uint64_t documentGeneration = 0;
     std::uint64_t resourceGeneration = 0;
+    std::uint64_t authoringRevision = 0;
     std::uint32_t sourceSchemaVersion = 0;
     std::vector<PrefabPropagationInstancePlan> instances;
     std::vector<PrefabPropagationComponentOperation> componentOperations;
+    std::vector<PrefabPropagationMeshRefOperation> meshRefOperations;
+    std::vector<PrefabPropagationMemberSnapshot> memberSnapshots;
     std::vector<PrefabPropagationResourceOwnership> resourceOwnership;
     std::vector<PrefabPropagationDiagnostic> diagnostics;
     std::vector<UUID> affectedEntities;
@@ -471,6 +516,16 @@ struct PrefabPropagationPlan
         for (const auto& operation : componentOperations)
         {
             if (PrefabPropagationComponentOperationIsNoOp(operation)) continue;
+            if (std::find(derived.begin(), derived.end(), operation.entityUuid) ==
+                derived.end())
+                derived.push_back(operation.entityUuid);
+        }
+        for (const auto& operation : meshRefOperations)
+        {
+            if (operation.before.has_value() == operation.after.has_value() &&
+                operation.before && operation.before->meshIndex == operation.after->meshIndex &&
+                operation.before->materialIndex == operation.after->materialIndex)
+                continue;
             if (std::find(derived.begin(), derived.end(), operation.entityUuid) ==
                 derived.end())
                 derived.push_back(operation.entityUuid);
@@ -492,6 +547,15 @@ struct PrefabPropagationPlan
                 static_cast<int>(derived))
                 derived = PrefabPropagationImpactForKey(operation.key);
         }
+        for (const auto& operation : meshRefOperations)
+        {
+            const bool changed = operation.before.has_value() != operation.after.has_value() ||
+                (operation.before && operation.after &&
+                 (operation.before->meshIndex != operation.after->meshIndex ||
+                  operation.before->materialIndex != operation.after->materialIndex));
+            if (changed && static_cast<int>(SyncImpact::Structural) > static_cast<int>(derived))
+                derived = SyncImpact::Structural;
+        }
         for (const auto& ownership : resourceOwnership)
             if (static_cast<int>(PrefabPropagationImpactForResource(
                     ownership.rebase.kind)) > static_cast<int>(derived))
@@ -502,6 +566,8 @@ struct PrefabPropagationPlan
     bool IsValid() const noexcept
     {
         for (const auto& operation : componentOperations)
+            if (!operation.IsValid()) return false;
+        for (const auto& operation : meshRefOperations)
             if (!operation.IsValid()) return false;
         std::array<bool, 3> ownershipKinds{};
         for (const auto& ownership : resourceOwnership)
@@ -522,6 +588,12 @@ struct PrefabPropagationPlan
         for (const auto& op : componentOperations)
             if (!PrefabPropagationComponentOperationIsNoOp(op)) return false;
         if (!resourceOwnership.empty()) return false;
+        for (const auto& operation : meshRefOperations)
+            if (operation.before.has_value() != operation.after.has_value() ||
+                operation.before && operation.after &&
+                (operation.before->meshIndex != operation.after->meshIndex ||
+                 operation.before->materialIndex != operation.after->materialIndex))
+                return false;
         return true;
     }
     bool IsEffective() const noexcept { return IsValid() && !IsNoOp(); }
@@ -530,8 +602,11 @@ struct PrefabPropagationPlan
                            const PrefabPropagationPlan& b) noexcept
     { return a.source == b.source && a.documentGeneration == b.documentGeneration &&
              a.resourceGeneration == b.resourceGeneration &&
+             a.authoringRevision == b.authoringRevision &&
              a.sourceSchemaVersion == b.sourceSchemaVersion &&
              a.instances == b.instances && a.componentOperations == b.componentOperations &&
+             a.meshRefOperations == b.meshRefOperations &&
+             a.memberSnapshots == b.memberSnapshots &&
              a.resourceOwnership == b.resourceOwnership && a.diagnostics == b.diagnostics &&
              a.affectedEntities == b.affectedEntities && a.syncImpact == b.syncImpact; }
 };
