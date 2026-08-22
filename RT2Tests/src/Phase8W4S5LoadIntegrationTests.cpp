@@ -93,6 +93,13 @@ DirectoryAliasGuard MakeDirectoryAlias(const std::filesystem::path& target,
     return result;
 }
 
+std::filesystem::path ForcedCanonicalFailure(
+    const std::filesystem::path&, std::error_code& ec)
+{
+    ec = std::make_error_code(std::errc::permission_denied);
+    return {};
+}
+
 TempGuard Temp()
 {
     static std::atomic<unsigned> sequence{0};
@@ -633,6 +640,29 @@ TEST_CASE("Phase 8 W4 S5: missing canonical fallback is lexical and checked")
     expected = std::filesystem::u8path(folded);
 #endif
     CHECK(CanonicalAssetPath(missing) == expected);
+}
+
+TEST_CASE("Phase 8 W4 S5: injected canonical failure preserves stable fallback identity")
+{
+    const auto temp = Temp();
+    const auto spellingA = temp.directory / "Alias" / ".." /
+        "missing" / "Prefab.rt2prefab";
+    const auto spellingB = temp.directory / "missing" / "Prefab.rt2prefab";
+    auto expected = spellingB.lexically_normal();
+#ifdef _WIN32
+    auto folded = expected.generic_string();
+    std::transform(folded.begin(), folded.end(), folded.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    expected = std::filesystem::u8path(folded);
+#endif
+    const auto normalizedA = CanonicalAssetPathWithProbe(
+        spellingA, &ForcedCanonicalFailure);
+    const auto normalizedB = CanonicalAssetPathWithProbe(
+        spellingB, &ForcedCanonicalFailure);
+    CHECK(normalizedA == expected);
+    CHECK(normalizedB == expected);
+    CHECK(normalizedA.generic_string() + "|" + kAsset.ToString() ==
+          normalizedB.generic_string() + "|" + kAsset.ToString());
 }
 
 TEST_CASE("Phase 8 W4 S5: valid-first malformed-later failure is deeply atomic")

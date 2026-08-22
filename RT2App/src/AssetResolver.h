@@ -121,6 +121,14 @@ struct AssetResolutionContext
 // a missing path while resolving junctions/symlinks when the source exists.
 std::filesystem::path CanonicalAssetPath(const std::filesystem::path& path);
 
+// Narrow CPU seam for the canonical-path policy. Production callers use
+// CanonicalAssetPath(); tests may inject the standard-library probe to force
+// and discriminate its error-code fallback without changing normal semantics.
+using CanonicalAssetPathProbe = std::filesystem::path (*) (
+    const std::filesystem::path&, std::error_code&);
+std::filesystem::path CanonicalAssetPathWithProbe(
+    const std::filesystem::path& path, CanonicalAssetPathProbe probe);
+
 // Where the successful path came from. Id = ID-first lookup located a file;
 // PathFallback = ID did not locate a file (or was nil) and the path resolved.
 enum class AssetResolutionSource : uint8_t

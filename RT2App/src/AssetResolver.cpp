@@ -6,10 +6,22 @@
 
 namespace rt2::core {
 
-std::filesystem::path CanonicalAssetPath(const std::filesystem::path& path)
+namespace {
+
+std::filesystem::path DefaultCanonicalAssetPathProbe(
+    const std::filesystem::path& path, std::error_code& ec)
 {
+    return std::filesystem::weakly_canonical(path, ec);
+}
+
+} // namespace
+
+std::filesystem::path CanonicalAssetPathWithProbe(
+    const std::filesystem::path& path, CanonicalAssetPathProbe probe)
+{
+    if (!probe) probe = &DefaultCanonicalAssetPathProbe;
     std::error_code ec;
-    const auto canonical = std::filesystem::weakly_canonical(path, ec);
+    const auto canonical = probe(path, ec);
     auto normalized = ec ? path.lexically_normal() : canonical.lexically_normal();
 #ifdef _WIN32
     auto folded = normalized.generic_string();
@@ -18,6 +30,11 @@ std::filesystem::path CanonicalAssetPath(const std::filesystem::path& path)
     normalized = std::filesystem::u8path(folded);
 #endif
     return normalized;
+}
+
+std::filesystem::path CanonicalAssetPath(const std::filesystem::path& path)
+{
+    return CanonicalAssetPathWithProbe(path, &DefaultCanonicalAssetPathProbe);
 }
 
 namespace {
