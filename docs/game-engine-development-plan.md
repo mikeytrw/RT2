@@ -15814,3 +15814,51 @@ current at `RT2Tests/src/Phase8W4S6LiveReimportTests.cpp:733`.
 
 W4 remains bounded here: no W5/W6 implementation, nested-prefab topology,
 merge/push/PR, or S8+ behavior is delivered or inferred.
+
+#### S7 decisive-proof correction (2026-08-22)
+
+Sol's re-review of `edbde5d` found two remaining evidence gaps; this
+append-only correction supersedes the preceding S7 acceptance table without
+rewriting that period record. Commit `0663038` remains the test/comment change
+boundary; this correction adds no production behavior or comment changes.
+
+The A13 literal chain is now `RT2Tests/src/Phase8W4S7AcceptanceTests.cpp:691-1103`
+and measures **169/169 assertions**. For each direction it captures the
+complete before Primitive/ImportedMeshSource/MeshRef state and all resource
+table payloads, runs Prepare→Stage→`EditorCommandHistory::Execute`, and checks
+the complete after state. Primitive→imported compares AssetReference kind,
+path, import settings, source key and asset ID; imported→primitive compares
+the full primitive recipe and requires the staged/live MeshRef. It validates
+each owned slot's deep payload, then Undo compares exact before components and
+MeshRef while retaining identical append-only tables, and Redo compares exact
+after components, MeshRef and tables. The quarantine/valid-sibling chain is
+unchanged. A compiling named primitive-transition MeshRef omission mutant
+failed **1 assertion** at the required MeshRef assertion and was restored.
+The prior imported-branch omission mutant remains separate evidence; no mutant
+remains in production.
+
+The final S7 focused result is **4/4 cases and 376/376 assertions** in both
+Release and Debug. The corresponding full baseline is **1,054/1,054 cases and
+155,501/155,501 assertions** in both configurations; the W4 focused result is
+**67/67 cases and 2,067/2,067 assertions**. These counts supersede the prior
+341/341, 155,466/155,466 and 2,032/2,032 figures.
+
+A11's evidence attribution is deliberately narrow. The default source-byte
+→ Prepare→Stage load/recovery pipeline is exercised by S5's
+`RT2Tests/src/Phase8W4S5LoadIntegrationTests.cpp:490-568`. S6's live queue and
+host tests at `RT2Tests/src/Phase8W4S6LiveReimportTests.cpp:169-189,274-283`
+inject fingerprint/prepare/stage dependencies; they prove executable Walnut
+host/queue ordering, refresh gating, coalescing and Edit/Play behavior only.
+The S7 A11 test at `:1104-1235` therefore claims host-orchestration evidence,
+not default S6 source-pipeline equivalence. S7 A1 at `:253-566` independently
+exercises the default source-byte Prepare→Stage→command path against a real
+source edit.
+
+After the final test edit, Graphify was refreshed again at test commit
+`cc84e2f`; it detected no code-graph topology change and therefore left the
+tracked report's existing `Built from commit: edbde5df` extraction boundary
+unchanged. The later docs-only correction does not change the code graph. Authored source,
+tests and docs pass `git diff --check`; generated Graphify report whitespace
+is emitted by the generator and remains separately identified. The fixture
+`RT2App/assets/vertical-slice.rt2scene`, temporary directories and processes
+were restored/cleaned before this record.
