@@ -12,6 +12,14 @@
 
 namespace rt2::core {
 
+// Read and fingerprint one durable prefab source without touching a scene.
+// This is the shared identity seam for explicit and watcher-triggered live
+// propagation; callers may inject the byte reader to prove one immutable read.
+Result<PrefabSourceFingerprint> ReadPrefabSourceFingerprint(
+    const AssetReference& source, const AssetResolutionContext& assets,
+    const std::function<bool(const std::filesystem::path&, std::string&, Error&)>&
+        readBytes = {});
+
 // All inputs are borrowed. PreparePrefabPropagation performs no writes to the
 // document, asset database, source file, history, or resource tables.
 struct PrefabPropagationDiscoveryRequest

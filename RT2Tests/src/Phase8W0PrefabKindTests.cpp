@@ -212,7 +212,7 @@ TEST_CASE("Phase 8 W0: prefab version mismatch is rejected with a clear diagnost
 // generic model-only message. Fault for red: drop the .rt2prefab branch in
 // ContentBrowserOperations.cpp — the generic message does not mention prefab.
 // ---------------------------------------------------------------------------
-TEST_CASE("Phase 8 W0: reimport rejects .rt2prefab with a prefab-specific diagnostic")
+TEST_CASE("Phase 8 W0: reimport admits .rt2prefab to the shared callback")
 {
 	auto dir = UniqueTempDir("p8w0_reimport");
 	// UniqueTempDir returns an absolute path; ValidateAssetPair requires that.
@@ -234,9 +234,9 @@ TEST_CASE("Phase 8 W0: reimport rejects .rt2prefab with a prefab-specific diagno
 		   std::vector<AssetDiagnostic>&, Error&) -> bool { return true; };
 	ContentBrowserOperationReport report;
 	Error error;
-	CHECK_FALSE(ReimportContentBrowserAsset(dir, record, callback, report, error));
-	CHECK(error.code == Error::InvalidArgument);
-	CHECK(error.detail.find("prefab") != std::string::npos);
+	CHECK(ReimportContentBrowserAsset(dir, record, callback, report, error));
+	CHECK(error.IsOk());
+	CHECK(report.changed);
 
 	std::filesystem::remove_all(dir);
 }

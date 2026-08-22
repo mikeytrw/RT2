@@ -666,6 +666,45 @@ PrefabPropagationDiagnostic MakeDiagnostic(const PrefabSourceFingerprint& source
 
 } // namespace
 
+Result<PrefabSourceFingerprint> ReadPrefabSourceFingerprint(
+    const AssetReference& source, const AssetResolutionContext& assets,
+    const std::function<bool(const std::filesystem::path&, std::string&, Error&)>&
+        injectedRead)
+{
+    if (source.kind != AssetKind::Prefab ||
+        (source.path.empty() && source.assetId.IsNull()))
+        return Result<PrefabSourceFingerprint>::Fail(
+            Error::InvalidArgument, {}, "prefab fingerprint requires a prefab identity");
+    std::vector<AssetDiagnostic> diagnostics;
+    const auto resolved = Resolve(source, assets, UUID::Nil(), {}, diagnostics);
+    if (!resolved.success || resolved.effectiveId.IsNull())
+        return Result<PrefabSourceFingerprint>::Fail(
+            Error::MissingAsset, source.path,
+            "prefab source has no verified durable identity");
+    const auto path = CanonicalAssetPath(resolved.resolvedPath);
+    std::string bytes;
+    Error error;
+    const auto reader = injectedRead ? injectedRead :
+        std::function<bool(const std::filesystem::path&, std::string&, Error&)>(
+            [](const std::filesystem::path& p, std::string& b, Error& e) {
+                return ReadBytes(p, b, e);
+            });
+    if (!reader(path, bytes, error))
+        return Result<PrefabSourceFingerprint>::Fail(error.code, error.path, error.detail);
+    Error sidecarError;
+    const UUID sidecar = ReadSidecarId(AssetSidecarPath(path), sidecarError);
+    if (!sidecarError.IsOk() || sidecar.IsNull() || sidecar != resolved.effectiveId)
+        return Result<PrefabSourceFingerprint>::Fail(
+            sidecarError.IsOk() ? Error::MissingAsset : sidecarError.code,
+            path.string(), "prefab source sidecar identity is missing or mismatched");
+    const auto digest = DigestBytes(bytes, sidecar);
+    if (digest.empty())
+        return Result<PrefabSourceFingerprint>::Fail(
+            Error::Parse, path.string(), "prefab source fingerprint is empty");
+    return Result<PrefabSourceFingerprint>::Ok(
+        PrefabSourceFingerprint{path, sidecar, digest});
+}
+
 Result<PrefabPropagationPlan> PreparePrefabPropagation(
     const PrefabPropagationDiscoveryRequest& request)
 {

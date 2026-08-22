@@ -1,0 +1,236 @@
+#include "PrefabPropagationLive.h"
+
+#include "EditorCommandHistory.h"
+#include "PrefabPropagationCommand.h"
+#include "SceneManager.h"
+
+#include <algorithm>
+
+namespace rt2::core {
+namespace {
+
+PrefabPropagationLiveHooks Defaults(const PrefabPropagationLiveHooks& hooks)
+{
+    PrefabPropagationLiveHooks result = hooks;
+    if (!result.fingerprint)
+        result.fingerprint = [](const AssetReference& source,
+                                const AssetResolutionContext& assets) {
+            return ReadPrefabSourceFingerprint(source, assets);
+        };
+    if (!result.prepare)
+        result.prepare = [](const PrefabPropagationDiscoveryRequest& request) {
+            return PreparePrefabPropagation(request);
+        };
+    if (!result.stage)
+        result.stage = [](const PrefabPropagationPlan& plan,
+                          const SceneDocument& document,
+                          const AssetResolutionContext& assets) {
+            return StagePrefabPropagationResources(plan, document, assets);
+        };
+    return result;
+}
+
+void CountPlan(const PrefabPropagationPlan& plan,
+               PrefabPropagationLiveReport& report)
+{
+    for (const auto& instance : plan.instances)
+    {
+        if (instance.disposition == PrefabPropagationInstanceDisposition::Propagate)
+            ++report.propagatedInstances;
+        else if (instance.disposition == PrefabPropagationInstanceDisposition::NoOp)
+            ++report.noOpInstances;
+        else
+            ++report.quarantinedInstances;
+    }
+    report.diagnostics = plan.diagnostics;
+}
+
+} // namespace
+
+std::string PrefabPropagationLiveQueue::Key(
+    const PrefabSourceFingerprint& fingerprint)
+{
+    return fingerprint.normalizedPath.generic_string() + "|" +
+           fingerprint.assetId.ToString();
+}
+
+PrefabPropagationLiveReport PrefabPropagationLiveQueue::Apply(
+    SceneManager& scene, EditorCommandHistory& history,
+    const AssetReference& source, const AssetResolutionContext& assets,
+    const PrefabSourceFingerprint& fingerprint,
+    const PrefabPropagationLiveHooks& inputHooks)
+{
+    const auto hooks = Defaults(inputHooks);
+    PrefabPropagationDiscoveryRequest request;
+    request.document = &scene.AuthoringDoc();
+    request.assets = assets;
+    request.changedSource = source;
+    request.documentGeneration = scene.DocumentGeneration();
+    request.resourceGeneration = scene.ResourceGeneration();
+    request.authoringRevision = scene.AuthoringRevision();
+    const auto prepared = hooks.prepare(request);
+    if (!prepared.IsOk())
+    {
+        PrefabPropagationLiveReport report;
+        report.error = prepared.error;
+        return report;
+    }
+    const auto staged = hooks.stage(prepared.value, scene.AuthoringDoc(), assets);
+    if (!staged.IsOk())
+    {
+        PrefabPropagationLiveReport report;
+        report.error = staged.error;
+        return report;
+    }
+
+    PrefabPropagationLiveReport report;
+    CountPlan(staged.value, report);
+    if (staged.value.IsNoOp())
+    {
+        report.accepted = true;
+        report.noOp = true;
+        m_LastApplied[Key(fingerprint)] = fingerprint;
+        return report;
+    }
+
+    const auto sourceReader = [hooks, source, assets]() {
+        const auto current = hooks.fingerprint(source, assets);
+        return current.IsOk() ? current.value : PrefabSourceFingerprint{};
+    };
+    auto mutation = history.Execute(
+        std::make_unique<PrefabPropagationCommand>(staged.value, sourceReader),
+        scene);
+    if (!mutation.success)
+    {
+        report.error = mutation.error;
+        return report;
+    }
+    report.accepted = true;
+    report.applied = mutation.effective;
+    if (!mutation.effective)
+        report.noOp = true;
+    else
+        m_LastApplied[Key(fingerprint)] = fingerprint;
+    return report;
+}
+
+PrefabPropagationLiveReport PrefabPropagationLiveQueue::Submit(
+    SceneManager& scene, EditorCommandHistory& history,
+    const AssetReference& source, const AssetResolutionContext& assets,
+    SceneRunState state, bool backgroundBusy, bool refreshedContext,
+    PrefabPropagationLiveTrigger, const PrefabPropagationLiveHooks& inputHooks)
+{
+    const auto hooks = Defaults(inputHooks);
+    const auto fingerprint = hooks.fingerprint(source, assets);
+    if (!fingerprint.IsOk())
+    {
+        PrefabPropagationLiveReport report;
+        report.error = fingerprint.error;
+        return report;
+    }
+    const auto key = Key(fingerprint.value);
+    const auto pending = m_Pending.find(key);
+    if (pending != m_Pending.end() && pending->second.fingerprint == fingerprint.value)
+    {
+        PrefabPropagationLiveReport report;
+        report.accepted = true;
+        report.queued = true;
+        report.noOp = true;
+        return report;
+    }
+    const auto applied = m_LastApplied.find(key);
+    if (applied != m_LastApplied.end() && applied->second == fingerprint.value)
+    {
+        PrefabPropagationLiveReport report;
+        report.accepted = true;
+        report.noOp = true;
+        return report;
+    }
+    if (state != SceneRunState::Edit || backgroundBusy || !refreshedContext)
+    {
+        m_Pending[key] = Pending{source, fingerprint.value};
+        PrefabPropagationLiveReport report;
+        report.accepted = true;
+        report.queued = true;
+        return report;
+    }
+    return Apply(scene, history, source, assets, fingerprint.value, hooks);
+}
+
+PrefabPropagationLiveReport PrefabPropagationLiveQueue::Drain(
+    SceneManager& scene, EditorCommandHistory& history,
+    const AssetResolutionContext& assets, SceneRunState state,
+    bool backgroundBusy, bool refreshedContext,
+    const PrefabPropagationLiveHooks& inputHooks)
+{
+    PrefabPropagationLiveReport aggregate;
+    if (state != SceneRunState::Edit || backgroundBusy || !refreshedContext)
+    {
+        aggregate.queued = !m_Pending.empty();
+        aggregate.accepted = aggregate.queued;
+        return aggregate;
+    }
+    const auto hooks = Defaults(inputHooks);
+    while (!m_Pending.empty())
+    {
+        auto it = m_Pending.begin();
+        const Pending pending = it->second;
+        m_Pending.erase(it);
+        auto report = Apply(scene, history, pending.source, assets,
+                            pending.fingerprint, hooks);
+        aggregate.accepted = aggregate.accepted || report.accepted;
+        aggregate.applied = aggregate.applied || report.applied;
+        aggregate.noOp = aggregate.noOp || report.noOp;
+        aggregate.propagatedInstances += report.propagatedInstances;
+        aggregate.quarantinedInstances += report.quarantinedInstances;
+        aggregate.noOpInstances += report.noOpInstances;
+        aggregate.diagnostics.insert(aggregate.diagnostics.end(),
+                                     report.diagnostics.begin(),
+                                     report.diagnostics.end());
+        if (!report.error.IsOk() && aggregate.error.IsOk())
+            aggregate.error = report.error;
+    }
+    return aggregate;
+}
+
+std::vector<AssetReference> CollectReferencedPrefabSources(
+    const SceneDocument& document, const AssetResolutionContext& assets,
+    const std::vector<std::filesystem::path>& changedPaths, bool fullScan,
+    std::vector<AssetDiagnostic>& diagnostics)
+{
+    std::vector<std::filesystem::path> normalized;
+    normalized.reserve(changedPaths.size());
+    for (const auto& path : changedPaths)
+    {
+        if (path.extension() != ".rt2prefab") continue;
+        normalized.push_back(CanonicalAssetPath(path));
+    }
+    std::sort(normalized.begin(), normalized.end());
+    normalized.erase(std::unique(normalized.begin(), normalized.end()), normalized.end());
+
+    std::map<std::string, AssetReference> selected;
+    const auto view = document.ecs.registry.view<PrefabInstanceComponent>();
+    for (const auto entity : view)
+    {
+        const auto& link = view.get<PrefabInstanceComponent>(entity);
+        std::vector<AssetDiagnostic> local;
+        const auto resolved = Resolve(link.prefab, assets, UUID::Nil(), {}, local);
+        diagnostics.insert(diagnostics.end(), local.begin(), local.end());
+        if (!resolved.success || resolved.effectiveId.IsNull()) continue;
+        const auto canonical = CanonicalAssetPath(resolved.resolvedPath);
+        if (!fullScan && std::find(normalized.begin(), normalized.end(), canonical) == normalized.end())
+            continue;
+        AssetReference source = link.prefab;
+        source.kind = AssetKind::Prefab;
+        source.assetId = resolved.effectiveId;
+        source.path = canonical.generic_string();
+        const auto key = canonical.generic_string() + "|" + resolved.effectiveId.ToString();
+        selected.emplace(key, std::move(source));
+    }
+    std::vector<AssetReference> result;
+    result.reserve(selected.size());
+    for (auto& item : selected) result.push_back(std::move(item.second));
+    return result;
+}
+
+} // namespace rt2::core

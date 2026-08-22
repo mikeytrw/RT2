@@ -21,6 +21,7 @@ project "RT2SliceRunner"
         "../RT2App/src/RuntimeSceneController.cpp",
         "../RT2App/src/RuntimeSceneMutator.cpp",
         "../RT2App/src/SceneManager.cpp",
+        "../RT2App/src/EditorCommandHistory.cpp",
         "../RT2App/src/EntityReferenceRemapper.cpp",
         "../RT2App/src/EditorCameraWorkflow.cpp",
         "../RT2App/src/SceneGraph.cpp",
@@ -47,6 +48,7 @@ project "RT2SliceRunner"
         "../RT2App/src/PrefabSerializer.cpp",
         "../RT2App/src/PrefabPropagationContracts.cpp",
         "../RT2App/src/PrefabPropagationDiscovery.cpp",
+        "../RT2App/src/PrefabPropagationLive.cpp",
         "../RT2App/src/PrefabPropagationCommand.cpp",
         "../RT2App/src/PrefabPropagationService.cpp",
         -- Phase 6C/W7: scripting sources for --script-scenario mode.

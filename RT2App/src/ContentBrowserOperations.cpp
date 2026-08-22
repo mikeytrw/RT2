@@ -548,19 +548,6 @@ bool ReimportContentBrowserAsset(
     std::filesystem::path sidecar;
     if (!ValidateAssetPair(assetRoot, record, source, sidecar, report, error))
         return false;
-    const std::string extension = Fold(source.extension().u8string());
-    // Phase 8 W0: prefabs are recognized but not yet reimportable. Reimport
-    // for a prefab means re-reading the subtree and propagating to instances,
-    // which lands in a later Phase 8 workstream (W4). Fail loudly and
-    // specifically rather than funneling through the generic model message.
-    if (extension == ".rt2prefab")
-        return Fail(report, error, Error::InvalidArgument, source,
-                    "prefab reimport is not implemented (Phase 8 W0 delivers "
-                    "the format; re-import/propagation is a later workstream)");
-    if (extension != ".glb" && extension != ".gltf" && extension != ".obj")
-        return Fail(report, error, Error::InvalidArgument, source,
-                    "content-browser reimport supports only .glb, .gltf and .obj");
-
     Error readError;
     const UUID originalId = ReadSidecarId(sidecar, readError);
     if (!readError.IsOk() || originalId.IsNull())
@@ -573,6 +560,13 @@ bool ReimportContentBrowserAsset(
             error.detail = "reimport requires a valid non-nil sidecar ID";
         }
         return false;
+    }
+    const std::string extension = Fold(source.extension().u8string());
+    if (extension != ".glb" && extension != ".gltf" && extension != ".obj")
+    {
+        if (extension != ".rt2prefab")
+        return Fail(report, error, Error::InvalidArgument, source,
+                    "content-browser reimport supports only .glb, .gltf and .obj");
     }
 
     if (!reimport(record, source, report.diagnostics, error))
