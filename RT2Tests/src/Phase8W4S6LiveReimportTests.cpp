@@ -5,6 +5,7 @@
 #include "SceneManager.h"
 
 #include <algorithm>
+#include <memory>
 
 using namespace rt2::core;
 
@@ -90,7 +91,12 @@ struct EffectiveLiveFixture
 struct HostProbe
 {
     int refreshes = 0;
+    int acquires = 0;
     bool refreshResult = true;
+    PrefabPropagationLiveContext context{
+        std::filesystem::path("C:/assets"),
+        std::make_shared<AssetDatabase>()};
+    PrefabPropagationLiveContext refreshedContext = context;
     std::vector<EditorMutationResult> routed;
     std::vector<PrefabPropagationLiveReport> published;
     std::vector<std::string> statuses;
@@ -98,9 +104,18 @@ struct HostProbe
     PrefabPropagationLiveHostCallbacks Callbacks()
     {
         PrefabPropagationLiveHostCallbacks callbacks;
+        callbacks.acquireContext = [&] {
+            ++acquires;
+            return Result<PrefabPropagationLiveContext>::Ok(context);
+        };
         callbacks.refreshContext = [&] {
             ++refreshes;
-            return refreshResult;
+            if (!refreshResult)
+                return Result<PrefabPropagationLiveContext>::Fail(
+                    Error::Io, "project-assets",
+                    "project asset database refresh failed before queued prefab drain");
+            context = refreshedContext;
+            return Result<PrefabPropagationLiveContext>::Ok(context);
         };
         callbacks.publish = [&](const auto& report, const char*) {
             published.push_back(report);
@@ -269,11 +284,12 @@ TEST_CASE("S6 executable host applies effective explicit and watcher work")
     const auto revision = fixture.scene.AuthoringRevision();
     const auto resourceGeneration = fixture.scene.ResourceGeneration();
     const auto applied = host.Submit(
-        fixture.scene, fixture.history, fixture.source, {}, SceneRunState::Edit,
+        fixture.scene, fixture.history, fixture.source, SceneRunState::Edit,
         false, false, PrefabPropagationLiveTrigger::Explicit, true,
         probe.Callbacks(), hooks);
     REQUIRE(applied.applied);
     CHECK(probe.refreshes == 1);
+    CHECK(probe.acquires == 0);
     CHECK(prepareCalls == 1);
     CHECK(fixture.history.UndoDepthForTest() == 1);
     CHECK(fixture.scene.AuthoringRevision() == revision + 1);
@@ -289,14 +305,14 @@ TEST_CASE("S6 executable host applies effective explicit and watcher work")
         std::string::npos);
 
     const auto noOp = host.Submit(
-        fixture.scene, fixture.history, fixture.source, {}, SceneRunState::Edit,
+        fixture.scene, fixture.history, fixture.source, SceneRunState::Edit,
         false, true, PrefabPropagationLiveTrigger::Watcher, false,
         probe.Callbacks(), hooks);
     CHECK(noOp.noOp);
     CHECK(probe.routed.size() == 1);
     const auto statusAfterNoOp = probe.statuses.back();
     const auto emptyDrain = host.Drain(
-        fixture.scene, fixture.history, {}, SceneRunState::Edit, false,
+        fixture.scene, fixture.history, SceneRunState::Edit, false,
         probe.Callbacks(), hooks);
     CHECK_FALSE(emptyDrain.accepted);
     CHECK(probe.statuses.back() == statusAfterNoOp);
@@ -313,7 +329,7 @@ TEST_CASE("S6 executable host applies effective explicit and watcher work")
     const auto watcherHooks = EffectiveHooks(
         watcherFixture, watcherDigest, watcherPrepare, watcherFingerprint);
     const auto watcherApplied = watcherHost.Submit(
-        watcherFixture.scene, watcherFixture.history, watcherFixture.source, {},
+        watcherFixture.scene, watcherFixture.history, watcherFixture.source,
         SceneRunState::Edit, false, true,
         PrefabPropagationLiveTrigger::Watcher, false,
         watcherProbe.Callbacks(), watcherHooks);
@@ -335,7 +351,7 @@ TEST_CASE("S6 host refresh failure retains queued work and formats diagnostics")
     const auto hooks = EffectiveHooks(fixture, digest, prepareCalls, fingerprintCalls);
 
     const auto queued = host.Submit(
-        fixture.scene, fixture.history, fixture.source, {}, SceneRunState::Edit,
+        fixture.scene, fixture.history, fixture.source, SceneRunState::Edit,
         true, false, PrefabPropagationLiveTrigger::Explicit, true,
         probe.Callbacks(), hooks);
     CHECK(queued.queued);
@@ -344,7 +360,7 @@ TEST_CASE("S6 host refresh failure retains queued work and formats diagnostics")
 
     probe.refreshResult = false;
     const auto failedDrain = host.Drain(
-        fixture.scene, fixture.history, {}, SceneRunState::Edit, false,
+        fixture.scene, fixture.history, SceneRunState::Edit, false,
         probe.Callbacks(), hooks);
     CHECK(failedDrain.queued);
     CHECK_FALSE(failedDrain.error.IsOk());
@@ -355,7 +371,7 @@ TEST_CASE("S6 host refresh failure retains queued work and formats diagnostics")
 
     probe.refreshResult = true;
     const auto applied = host.Drain(
-        fixture.scene, fixture.history, {}, SceneRunState::Edit, false,
+        fixture.scene, fixture.history, SceneRunState::Edit, false,
         probe.Callbacks(), hooks);
     CHECK(applied.applied);
     CHECK(queue.PendingCount() == 0);
@@ -375,13 +391,13 @@ TEST_CASE("S6 host coalesces newest, quarantines siblings, and resets identity")
     auto hooks = EffectiveHooks(fixture, digest, prepareCalls, fingerprintCalls);
 
     const auto first = host.Submit(
-        fixture.scene, fixture.history, fixture.source, {}, SceneRunState::Playing,
+        fixture.scene, fixture.history, fixture.source, SceneRunState::Playing,
         false, true, PrefabPropagationLiveTrigger::Watcher, false,
         probe.Callbacks(), hooks);
     CHECK(first.queued);
     digest = "two";
     const auto newest = host.Submit(
-        fixture.scene, fixture.history, fixture.source, {}, SceneRunState::Paused,
+        fixture.scene, fixture.history, fixture.source, SceneRunState::Paused,
         false, true, PrefabPropagationLiveTrigger::Watcher, false,
         probe.Callbacks(), hooks);
     CHECK(newest.queued);
@@ -390,7 +406,7 @@ TEST_CASE("S6 host coalesces newest, quarantines siblings, and resets identity")
     CHECK(fixture.history.UndoDepthForTest() == 0);
 
     const auto drained = host.Drain(
-        fixture.scene, fixture.history, {}, SceneRunState::Edit, false,
+        fixture.scene, fixture.history, SceneRunState::Edit, false,
         probe.Callbacks(), hooks);
     CHECK(drained.applied);
     CHECK(prepareCalls == 1);
@@ -399,7 +415,7 @@ TEST_CASE("S6 host coalesces newest, quarantines siblings, and resets identity")
     // Context reset clears both pending work and the last-applied suppression.
     host.ResetContext();
     const auto again = host.Submit(
-        fixture.scene, fixture.history, fixture.source, {}, SceneRunState::Edit,
+        fixture.scene, fixture.history, fixture.source, SceneRunState::Edit,
         false, true, PrefabPropagationLiveTrigger::Watcher, false,
         probe.Callbacks(), hooks);
     CHECK(again.applied);
@@ -423,7 +439,7 @@ TEST_CASE("S6 host coalesces newest, quarantines siblings, and resets identity")
     };
     const auto quarantined = quarantineHost.Submit(
         quarantineFixture.scene, quarantineFixture.history,
-        quarantineFixture.source, {}, SceneRunState::Edit, false, true,
+        quarantineFixture.source, SceneRunState::Edit, false, true,
         PrefabPropagationLiveTrigger::Watcher, false,
         quarantineProbe.Callbacks(), quarantineHooks);
     CHECK(quarantined.applied);
@@ -432,6 +448,188 @@ TEST_CASE("S6 host coalesces newest, quarantines siblings, and resets identity")
     REQUIRE(quarantineProbe.published.size() == 1);
     REQUIRE(quarantineProbe.published.front().diagnostics.size() == 1);
     CHECK(quarantineProbe.statuses.back().find("1 quarantined") != std::string::npos);
+}
+
+TEST_CASE("S6 host refresh uses only the post-refresh owning context")
+{
+    EffectiveLiveFixture fixture;
+    PrefabPropagationLiveQueue queue;
+    PrefabPropagationLiveHost host(queue);
+    HostProbe probe;
+    auto databaseA = std::make_shared<AssetDatabase>();
+    auto databaseB = std::make_shared<AssetDatabase>();
+    const auto databaseBAddress = databaseB.get();
+    probe.context = {std::filesystem::path("C:/project-A/assets"), databaseA};
+    probe.refreshedContext = {
+        std::filesystem::path("C:/project-B/assets"), databaseB};
+    const auto weakDatabaseA = std::weak_ptr<const AssetDatabase>(databaseA);
+    auto callbacks = probe.Callbacks();
+    callbacks.refreshContext = [&] {
+        ++probe.refreshes;
+        databaseA.reset();
+        probe.context = probe.refreshedContext;
+        CHECK(weakDatabaseA.expired());
+        return Result<PrefabPropagationLiveContext>::Ok(probe.context);
+    };
+
+    std::string digest = "context-refresh";
+    int prepareCalls = 0;
+    int fingerprintCalls = 0;
+    int stageCalls = 0;
+    int readsA = 0;
+    auto hooks = EffectiveHooks(fixture, digest, prepareCalls, fingerprintCalls);
+    hooks.fingerprint = [&](const AssetReference&, const AssetResolutionContext& assets) {
+        ++fingerprintCalls;
+        if (assets.database != databaseBAddress ||
+            assets.assetRoot != std::filesystem::path("C:/project-B/assets"))
+            ++readsA;
+        return Result<PrefabSourceFingerprint>::Ok(Fingerprint(digest.c_str()));
+    };
+    hooks.prepare = [&](const PrefabPropagationDiscoveryRequest& request) {
+        ++prepareCalls;
+        if (request.assets.database != databaseBAddress ||
+            request.assets.assetRoot != std::filesystem::path("C:/project-B/assets"))
+            ++readsA;
+        return Result<PrefabPropagationPlan>::Ok(fixture.Plan(digest.c_str()));
+    };
+    hooks.stage = [&](const PrefabPropagationPlan& plan,
+                      const SceneDocument&, const AssetResolutionContext& assets) {
+        ++stageCalls;
+        if (assets.database != databaseBAddress ||
+            assets.assetRoot != std::filesystem::path("C:/project-B/assets"))
+            ++readsA;
+        return Result<PrefabPropagationPlan>::Ok(plan);
+    };
+
+    const auto applied = host.Submit(
+        fixture.scene, fixture.history, fixture.source, SceneRunState::Edit,
+        false, false, PrefabPropagationLiveTrigger::Explicit, true,
+        callbacks, hooks);
+    REQUIRE(applied.applied);
+    CHECK(probe.refreshes == 1);
+    CHECK(readsA == 0);
+    CHECK(fingerprintCalls == 2); // initial source check and command recheck
+    CHECK(prepareCalls == 1);
+    CHECK(stageCalls == 1);
+
+    EffectiveLiveFixture queuedFixture;
+    PrefabPropagationLiveQueue queuedQueue;
+    PrefabPropagationLiveHost queuedHost(queuedQueue);
+    HostProbe queuedProbe;
+    auto queuedDatabaseA = std::make_shared<AssetDatabase>();
+    queuedProbe.context = {
+        std::filesystem::path("C:/project-A/assets"), queuedDatabaseA};
+    queuedProbe.refreshedContext = {
+        std::filesystem::path("C:/project-B/assets"), databaseB};
+    const auto weakQueuedDatabaseA =
+        std::weak_ptr<const AssetDatabase>(queuedDatabaseA);
+    auto queuedCallbacks = queuedProbe.Callbacks();
+    queuedCallbacks.refreshContext = [&] {
+        ++queuedProbe.refreshes;
+        queuedDatabaseA.reset();
+        queuedProbe.context = queuedProbe.refreshedContext;
+        CHECK(weakQueuedDatabaseA.expired());
+        return Result<PrefabPropagationLiveContext>::Ok(queuedProbe.context);
+    };
+    std::string queuedDigest = "queued-context-refresh";
+    int queuedReadsA = 0;
+    int queuedPrepare = 0;
+    int queuedStage = 0;
+    int queuedFingerprint = 0;
+    auto queuedHooks = EffectiveHooks(
+        queuedFixture, queuedDigest, queuedPrepare, queuedFingerprint);
+    queuedHooks.fingerprint = [&](const AssetReference&,
+                                  const AssetResolutionContext& assets) {
+        ++queuedFingerprint;
+        if (assets.database != databaseBAddress ||
+            assets.assetRoot != std::filesystem::path("C:/project-B/assets"))
+            ++queuedReadsA;
+        return Result<PrefabSourceFingerprint>::Ok(
+            Fingerprint(queuedDigest.c_str()));
+    };
+    queuedHooks.prepare = [&](const PrefabPropagationDiscoveryRequest& request) {
+        ++queuedPrepare;
+        if (request.assets.database != databaseBAddress ||
+            request.assets.assetRoot != std::filesystem::path("C:/project-B/assets"))
+            ++queuedReadsA;
+        return Result<PrefabPropagationPlan>::Ok(
+            queuedFixture.Plan(queuedDigest.c_str()));
+    };
+    queuedHooks.stage = [&](const PrefabPropagationPlan& plan,
+                            const SceneDocument&,
+                            const AssetResolutionContext& assets) {
+        ++queuedStage;
+        if (assets.database != databaseBAddress ||
+            assets.assetRoot != std::filesystem::path("C:/project-B/assets"))
+            ++queuedReadsA;
+        return Result<PrefabPropagationPlan>::Ok(plan);
+    };
+    const auto pending = queuedHost.Submit(
+        queuedFixture.scene, queuedFixture.history, queuedFixture.source,
+        SceneRunState::Edit, true, false,
+        PrefabPropagationLiveTrigger::Explicit, true,
+        queuedCallbacks, queuedHooks);
+    CHECK(pending.queued);
+    CHECK(queuedProbe.acquires == 0);
+    CHECK(queuedFingerprint == 0);
+    const auto drained = queuedHost.Drain(
+        queuedFixture.scene, queuedFixture.history, SceneRunState::Edit, false,
+        queuedCallbacks, queuedHooks);
+    REQUIRE(drained.applied);
+    CHECK(queuedProbe.refreshes == 1);
+    CHECK(queuedReadsA == 0);
+    CHECK(queuedPrepare == 1);
+    CHECK(queuedStage == 1);
+}
+
+TEST_CASE("S6 same fingerprint re-evaluates after Undo for explicit and watcher")
+{
+    EffectiveLiveFixture fixture;
+    PrefabPropagationLiveQueue queue;
+    PrefabPropagationLiveHost host(queue);
+    HostProbe probe;
+    std::string digest = "undo-recheck";
+    int prepareCalls = 0;
+    int fingerprintCalls = 0;
+    const auto hooks = EffectiveHooks(fixture, digest, prepareCalls, fingerprintCalls);
+
+    const auto first = host.Submit(
+        fixture.scene, fixture.history, fixture.source, SceneRunState::Edit,
+        false, true, PrefabPropagationLiveTrigger::Explicit, false,
+        probe.Callbacks(), hooks);
+    REQUIRE(first.applied);
+    CHECK(fixture.history.UndoDepthForTest() == 1);
+    CHECK(fixture.scene.AuthoringDoc().ecs.registry
+        .get<Transform>(fixture.scene.FindEntityByUuid(fixture.entity))
+        .translation.x == doctest::Approx(1.0f));
+
+    const auto duplicate = host.Submit(
+        fixture.scene, fixture.history, fixture.source, SceneRunState::Edit,
+        false, true, PrefabPropagationLiveTrigger::Watcher, false,
+        probe.Callbacks(), hooks);
+    CHECK(duplicate.noOp);
+    CHECK_FALSE(duplicate.applied);
+    CHECK(prepareCalls == 1);
+    CHECK(probe.routed.size() == 1);
+
+    const auto undone = fixture.history.Undo(fixture.scene);
+    REQUIRE(undone.success);
+    CHECK(fixture.history.UndoDepthForTest() == 0);
+    CHECK(fixture.scene.AuthoringDoc().ecs.registry
+        .get<Transform>(fixture.scene.FindEntityByUuid(fixture.entity))
+        .translation.x == doctest::Approx(0.0f));
+
+    const auto reapplied = host.Submit(
+        fixture.scene, fixture.history, fixture.source, SceneRunState::Edit,
+        false, true, PrefabPropagationLiveTrigger::Watcher, false,
+        probe.Callbacks(), hooks);
+    REQUIRE(reapplied.applied);
+    CHECK(prepareCalls == 2);
+    CHECK(fixture.history.UndoDepthForTest() == 1);
+    CHECK(probe.routed.size() == 2);
+    CHECK(fixture.scene.AuthoringDoc().ecs.registry
+        .get<Transform>(fixture.scene.FindEntityByUuid(fixture.entity))
+        .translation.x == doctest::Approx(1.0f));
 }
 
 TEST_CASE("S6 host debounce truncation covers empty prefab and mixed buffers")
@@ -483,7 +681,7 @@ TEST_CASE("S6 host rejects sidecar drift without routing or history")
     };
 
     const auto failed = host.Submit(
-        fixture.scene, fixture.history, fixture.source, {}, SceneRunState::Edit,
+        fixture.scene, fixture.history, fixture.source, SceneRunState::Edit,
         false, true, PrefabPropagationLiveTrigger::Watcher, false,
         probe.Callbacks(), hooks);
     CHECK_FALSE(failed.applied);

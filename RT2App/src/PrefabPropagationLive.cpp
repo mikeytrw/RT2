@@ -54,6 +54,12 @@ std::string PrefabPropagationLiveQueue::Key(
            fingerprint.assetId.ToString();
 }
 
+std::string PrefabPropagationLiveQueue::SourceKey(
+    const AssetReference& source)
+{
+    return source.path + "|" + source.assetId.ToString();
+}
+
 PrefabPropagationLiveReport PrefabPropagationLiveQueue::Apply(
     SceneManager& scene, EditorCommandHistory& history,
     const AssetReference& source, const AssetResolutionContext& assets,
@@ -89,7 +95,8 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Apply(
     {
         report.accepted = true;
         report.noOp = true;
-        m_LastApplied[Key(fingerprint)] = fingerprint;
+        m_LastApplied[Key(fingerprint)] = LastApplied{
+            fingerprint, scene.AuthoringRevision()};
         return report;
     }
 
@@ -112,7 +119,8 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Apply(
     else
     {
         report.mutations.push_back(mutation);
-        m_LastApplied[Key(fingerprint)] = fingerprint;
+        m_LastApplied[Key(fingerprint)] = LastApplied{
+            fingerprint, scene.AuthoringRevision()};
     }
     return report;
 }
@@ -123,6 +131,17 @@ bool PrefabPropagationLiveQueue::PendingNeedsRefresh() const noexcept
         if (item.second.requiresRefresh)
             return true;
     return false;
+}
+
+PrefabPropagationLiveReport PrefabPropagationLiveQueue::Enqueue(
+    const AssetReference& source, bool requiresRefresh)
+{
+    m_Pending[SourceKey(source)] = Pending{
+        source, PrefabSourceFingerprint{}, false, requiresRefresh};
+    PrefabPropagationLiveReport report;
+    report.accepted = true;
+    report.queued = true;
+    return report;
 }
 
 void PrefabPropagationLiveHost::Publish(
@@ -143,29 +162,48 @@ void PrefabPropagationLiveHost::Publish(
 
 PrefabPropagationLiveReport PrefabPropagationLiveHost::Submit(
     SceneManager& scene, EditorCommandHistory& history,
-    const AssetReference& source, const AssetResolutionContext& assets,
-    SceneRunState state, bool backgroundBusy, bool refreshedContext,
+    const AssetReference& source, SceneRunState state,
+    bool backgroundBusy, bool refreshedContext,
     PrefabPropagationLiveTrigger trigger, bool refreshBeforeSubmit,
     const PrefabPropagationLiveHostCallbacks& callbacks,
     const PrefabPropagationLiveHooks& hooks)
 {
-    bool contextReady = refreshedContext;
-    if (refreshBeforeSubmit && !backgroundBusy && !contextReady)
+    if (refreshBeforeSubmit && backgroundBusy && !refreshedContext)
     {
-        if (!callbacks.refreshContext || !callbacks.refreshContext())
-        {
-            PrefabPropagationLiveReport report;
-            report.error = {Error::Io, source.path,
-                "project asset database refresh failed before prefab propagation"};
-            Publish(report, trigger == PrefabPropagationLiveTrigger::Explicit
-                ? "ExplicitReimport" : "WatcherSubmit", callbacks);
-            return report;
-        }
-        contextReady = true;
+        const auto report = m_Queue.Enqueue(source, true);
+        Publish(report, trigger == PrefabPropagationLiveTrigger::Explicit
+            ? "ExplicitReimport" : "WatcherSubmit", callbacks);
+        return report;
+    }
+
+    Result<PrefabPropagationLiveContext> context;
+    if (refreshBeforeSubmit && !backgroundBusy && !refreshedContext)
+    {
+        context = callbacks.refreshContext
+            ? callbacks.refreshContext()
+            : Result<PrefabPropagationLiveContext>::Fail(
+                Error::Io, source.path,
+                "project asset database refresh unavailable before prefab propagation");
+    }
+    else
+    {
+        context = callbacks.acquireContext
+            ? callbacks.acquireContext()
+            : Result<PrefabPropagationLiveContext>::Fail(
+                Error::Io, source.path,
+                "project asset context unavailable for prefab propagation");
+    }
+    if (!context.IsOk())
+    {
+        PrefabPropagationLiveReport report;
+        report.error = context.error;
+        Publish(report, trigger == PrefabPropagationLiveTrigger::Explicit
+            ? "ExplicitReimport" : "WatcherSubmit", callbacks);
+        return report;
     }
     const auto report = m_Queue.Submit(
-        scene, history, source, assets, state, backgroundBusy,
-        contextReady, trigger, hooks);
+        scene, history, source, context.value.View(), state, backgroundBusy,
+        true, trigger, hooks);
     Publish(report, trigger == PrefabPropagationLiveTrigger::Explicit
         ? "ExplicitReimport" : "WatcherSubmit", callbacks);
     return report;
@@ -173,29 +211,50 @@ PrefabPropagationLiveReport PrefabPropagationLiveHost::Submit(
 
 PrefabPropagationLiveReport PrefabPropagationLiveHost::Drain(
     SceneManager& scene, EditorCommandHistory& history,
-    const AssetResolutionContext& assets, SceneRunState state,
-    bool backgroundBusy,
+    SceneRunState state, bool backgroundBusy,
     const PrefabPropagationLiveHostCallbacks& callbacks,
     const PrefabPropagationLiveHooks& hooks)
 {
     // A busy explicit submit is deliberately retained with requiresRefresh.
     // Refresh is therefore part of this production drain seam, immediately
     // before the queue can dequeue or prepare anything.
+    if (m_Queue.PendingCount() == 0)
+    {
+        const auto report = m_Queue.Drain(
+            scene, history, AssetResolutionContext{}, state,
+            backgroundBusy, true, hooks);
+        Publish(report, "WatcherDrain", callbacks);
+        return report;
+    }
+
+    Result<PrefabPropagationLiveContext> context;
     if (m_Queue.PendingNeedsRefresh())
     {
-        if (!callbacks.refreshContext || !callbacks.refreshContext())
-        {
-            PrefabPropagationLiveReport report;
-            report.accepted = true;
-            report.queued = true;
-            report.error = {Error::Io, "project-assets",
-                "project asset database refresh failed before queued prefab drain"};
-            Publish(report, "WatcherDrain", callbacks);
-            return report;
-        }
+        context = callbacks.refreshContext
+            ? callbacks.refreshContext()
+            : Result<PrefabPropagationLiveContext>::Fail(
+                Error::Io, "project-assets",
+                "project asset database refresh unavailable before queued prefab drain");
+    }
+    else
+    {
+        context = callbacks.acquireContext
+            ? callbacks.acquireContext()
+            : Result<PrefabPropagationLiveContext>::Fail(
+                Error::Io, "project-assets",
+                "project asset context unavailable for queued prefab drain");
+    }
+    if (!context.IsOk())
+    {
+        PrefabPropagationLiveReport report;
+        report.accepted = true;
+        report.queued = true;
+        report.error = context.error;
+        Publish(report, "WatcherDrain", callbacks);
+        return report;
     }
     const auto report = m_Queue.Drain(
-        scene, history, assets, state, backgroundBusy, true, hooks);
+        scene, history, context.value.View(), state, backgroundBusy, true, hooks);
     Publish(report, "WatcherDrain", callbacks);
     return report;
 }
@@ -260,8 +319,11 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Submit(
         return report;
     }
     const auto key = Key(fingerprint.value);
-    const auto pending = m_Pending.find(key);
-    if (pending != m_Pending.end() && pending->second.fingerprint == fingerprint.value)
+    const auto pendingKey = SourceKey(source);
+    const auto pending = m_Pending.find(pendingKey);
+    if (pending != m_Pending.end() &&
+        pending->second.hasFingerprint &&
+        pending->second.fingerprint == fingerprint.value)
     {
         PrefabPropagationLiveReport report;
         report.accepted = true;
@@ -270,7 +332,9 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Submit(
         return report;
     }
     const auto applied = m_LastApplied.find(key);
-    if (applied != m_LastApplied.end() && applied->second == fingerprint.value)
+    if (applied != m_LastApplied.end() &&
+        applied->second.fingerprint == fingerprint.value &&
+        applied->second.authoringRevision == scene.AuthoringRevision())
     {
         PrefabPropagationLiveReport report;
         report.accepted = true;
@@ -279,7 +343,8 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Submit(
     }
     if (state != SceneRunState::Edit || backgroundBusy || !refreshedContext)
     {
-        m_Pending[key] = Pending{source, fingerprint.value, !refreshedContext};
+        m_Pending[pendingKey] = Pending{
+            source, fingerprint.value, true, !refreshedContext};
         PrefabPropagationLiveReport report;
         report.accepted = true;
         report.queued = true;
@@ -307,8 +372,13 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Drain(
         auto it = m_Pending.begin();
         const Pending pending = it->second;
         m_Pending.erase(it);
-        auto report = Apply(scene, history, pending.source, assets,
-                            pending.fingerprint, hooks);
+        const auto fingerprint = hooks.fingerprint(pending.source, assets);
+        PrefabPropagationLiveReport report;
+        if (!fingerprint.IsOk())
+            report.error = fingerprint.error;
+        else
+            report = Apply(scene, history, pending.source, assets,
+                           fingerprint.value, hooks);
         aggregate.accepted = aggregate.accepted || report.accepted;
         aggregate.applied = aggregate.applied || report.applied;
         aggregate.noOp = aggregate.noOp || report.noOp;

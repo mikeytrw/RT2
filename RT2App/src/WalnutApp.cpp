@@ -1620,10 +1620,10 @@ public:
 											prefab.kind = AssetKind::Prefab;
 											prefab.path = sourceRecord.sourcePath;
 											prefab.assetId = sourceRecord.assetId;
-											const bool backgroundBusy = IsBackgroundBusy();
-											const auto live = m_PrefabPropagationLiveHost.Submit(
-												m_SceneMgr, m_History, prefab, m_ProjectContext->Assets(),
-												m_Runtime.GetState(), backgroundBusy, false,
+							const bool backgroundBusy = IsBackgroundBusy();
+							const auto live = m_PrefabPropagationLiveHost.Submit(
+								m_SceneMgr, m_History, prefab,
+								m_Runtime.GetState(), backgroundBusy, false,
 												rt2::core::PrefabPropagationLiveTrigger::Explicit, true,
 												MakePrefabLiveHostCallbacks());
 										if (!live.error.IsOk())
@@ -2522,7 +2522,23 @@ private:
 	MakePrefabLiveHostCallbacks()
 	{
 		rt2::core::PrefabPropagationLiveHostCallbacks callbacks;
-		callbacks.refreshContext = [this]() { return RefreshProjectAssets(); };
+		auto acquire = [this]() -> rt2::core::Result<
+			rt2::core::PrefabPropagationLiveContext> {
+			if (!m_ProjectContext || !m_ProjectContext->database)
+				return rt2::core::Result<rt2::core::PrefabPropagationLiveContext>::Fail(
+					rt2::core::Error::Io, "project-assets",
+					"project asset context unavailable for prefab propagation");
+			return rt2::core::Result<rt2::core::PrefabPropagationLiveContext>::Ok({
+				m_ProjectContext->project.assetRoot, m_ProjectContext->database});
+		};
+		callbacks.acquireContext = acquire;
+		callbacks.refreshContext = [this, acquire]() mutable {
+			if (!RefreshProjectAssets())
+				return rt2::core::Result<rt2::core::PrefabPropagationLiveContext>::Fail(
+					rt2::core::Error::Io, "project-assets",
+					"project asset database refresh failed before prefab propagation");
+			return acquire();
+		};
 		callbacks.publish = [this](const auto& report, const char* context) {
 			CapturePrefabLiveReport(report, context);
 		};
@@ -3887,7 +3903,7 @@ private:
 			if (m_ProjectContext && m_Runtime.GetState() == rt2::core::SceneRunState::Edit)
 			{
 				m_PrefabPropagationLiveHost.Drain(
-					m_SceneMgr, m_History, m_ProjectContext->Assets(),
+					m_SceneMgr, m_History,
 					m_Runtime.GetState(), IsBackgroundBusy(),
 					MakePrefabLiveHostCallbacks());
 			}
@@ -3944,7 +3960,7 @@ private:
 				for (const auto& source : sources)
 				{
 					const auto live = m_PrefabPropagationLiveHost.Submit(
-						m_SceneMgr, m_History, source, m_ProjectContext->Assets(),
+						m_SceneMgr, m_History, source,
 						m_Runtime.GetState(), IsBackgroundBusy(), true,
 						rt2::core::PrefabPropagationLiveTrigger::Watcher, false,
 						MakePrefabLiveHostCallbacks());
@@ -3954,7 +3970,7 @@ private:
 		if (m_ProjectContext && m_Runtime.GetState() == rt2::core::SceneRunState::Edit)
 		{
 			const auto drained = m_PrefabPropagationLiveHost.Drain(
-				m_SceneMgr, m_History, m_ProjectContext->Assets(),
+				m_SceneMgr, m_History,
 				m_Runtime.GetState(), IsBackgroundBusy(),
 				MakePrefabLiveHostCallbacks());
 			prefabActivity = prefabActivity || drained.accepted || !drained.error.IsOk();

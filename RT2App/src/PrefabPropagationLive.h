@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -52,6 +53,20 @@ struct PrefabPropagationLiveHooks
         const AssetResolutionContext&)> stage;
 };
 
+// Owning context snapshot used by the live host. AssetResolutionContext holds
+// a non-owning database pointer, so the host must keep the owning database
+// snapshot alive across fingerprint, prepare, stage, and command execution.
+struct PrefabPropagationLiveContext
+{
+    std::filesystem::path assetRoot;
+    std::shared_ptr<const AssetDatabase> database;
+
+    AssetResolutionContext View() const
+    {
+        return AssetResolutionContext{assetRoot, database.get()};
+    }
+};
+
 // CPU-only queue shared by the explicit content-browser route and the file
 // watcher route. It owns no scene state: all mutation is delegated to the
 // existing immutable-plan command and EditorCommandHistory.
@@ -73,6 +88,8 @@ public:
 
     std::size_t PendingCount() const noexcept { return m_Pending.size(); }
     bool PendingNeedsRefresh() const noexcept;
+    PrefabPropagationLiveReport Enqueue(
+        const AssetReference& source, bool requiresRefresh);
     void Clear() { m_Pending.clear(); m_LastApplied.clear(); }
 
 private:
@@ -80,10 +97,12 @@ private:
     {
         AssetReference source;
         PrefabSourceFingerprint fingerprint;
+        bool hasFingerprint = false;
         bool requiresRefresh = false;
     };
 
     static std::string Key(const PrefabSourceFingerprint& fingerprint);
+    static std::string SourceKey(const AssetReference& source);
     PrefabPropagationLiveReport Apply(
         SceneManager& scene, EditorCommandHistory& history,
         const AssetReference& source, const AssetResolutionContext& assets,
@@ -91,7 +110,12 @@ private:
         const PrefabPropagationLiveHooks& hooks);
 
     std::map<std::string, Pending> m_Pending;
-    std::map<std::string, PrefabSourceFingerprint> m_LastApplied;
+    struct LastApplied
+    {
+        PrefabSourceFingerprint fingerprint;
+        std::uint64_t authoringRevision = 0;
+    };
+    std::map<std::string, LastApplied> m_LastApplied;
 };
 
 // CPU-only host orchestration shared by Walnut's explicit content-browser
@@ -102,7 +126,8 @@ private:
 // exercise this production control flow rather than a parallel test harness.
 struct PrefabPropagationLiveHostCallbacks
 {
-    std::function<bool()> refreshContext;
+    std::function<Result<PrefabPropagationLiveContext>()> acquireContext;
+    std::function<Result<PrefabPropagationLiveContext>()> refreshContext;
     std::function<void(const PrefabPropagationLiveReport&, const char*)> publish;
     std::function<void(const EditorMutationResult&)> route;
     std::function<void(const std::string&)> status;
@@ -116,16 +141,15 @@ public:
 
     PrefabPropagationLiveReport Submit(
         SceneManager& scene, EditorCommandHistory& history,
-        const AssetReference& source, const AssetResolutionContext& assets,
-        SceneRunState state, bool backgroundBusy, bool refreshedContext,
+        const AssetReference& source, SceneRunState state,
+        bool backgroundBusy, bool refreshedContext,
         PrefabPropagationLiveTrigger trigger, bool refreshBeforeSubmit,
         const PrefabPropagationLiveHostCallbacks& callbacks = {},
         const PrefabPropagationLiveHooks& hooks = {});
 
     PrefabPropagationLiveReport Drain(
         SceneManager& scene, EditorCommandHistory& history,
-        const AssetResolutionContext& assets, SceneRunState state,
-        bool backgroundBusy,
+        SceneRunState state, bool backgroundBusy,
         const PrefabPropagationLiveHostCallbacks& callbacks = {},
         const PrefabPropagationLiveHooks& hooks = {});
 
