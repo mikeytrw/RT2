@@ -150,8 +150,11 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Enqueue(
             "prefab propagation requires a validated non-nil durable asset ID before queueing"};
         return report;
     }
+    const auto existing = m_Pending.find(key);
+    const bool strongestRefresh = requiresRefresh ||
+        (existing != m_Pending.end() && existing->second.requiresRefresh);
     m_Pending[key] = Pending{
-        source, PrefabSourceFingerprint{}, false, requiresRefresh};
+        source, PrefabSourceFingerprint{}, false, strongestRefresh};
     report.accepted = true;
     report.queued = true;
     return report;

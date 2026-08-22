@@ -510,11 +510,14 @@ TEST_CASE("S6 queued aliases share durable identity in either trigger order")
                 probe.Callbacks(), hooks).queued);
         }
         CHECK(queue.PendingCount() == 1);
+        CHECK(queue.PendingNeedsRefresh());
         CHECK(fingerprintCalls == 0);
         const auto drained = host.Drain(
             fixture.scene, fixture.history, SceneRunState::Edit, false,
             probe.Callbacks(), hooks);
         REQUIRE(drained.applied);
+        CHECK(probe.refreshes == 1);
+        CHECK(probe.acquires == 0);
         CHECK(queue.PendingCount() == 0);
         CHECK(fingerprintCalls == 2); // drain read + command revalidation
         CHECK(prepareCalls == 1);
