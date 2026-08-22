@@ -102,6 +102,7 @@ private:
     };
 
     static std::string Key(const PrefabSourceFingerprint& fingerprint);
+    static std::string IdentityKey(const UUID& assetId);
     static std::string SourceKey(const AssetReference& source);
     PrefabPropagationLiveReport Apply(
         SceneManager& scene, EditorCommandHistory& history,

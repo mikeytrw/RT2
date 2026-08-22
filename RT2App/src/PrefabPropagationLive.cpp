@@ -57,7 +57,13 @@ std::string PrefabPropagationLiveQueue::Key(
 std::string PrefabPropagationLiveQueue::SourceKey(
     const AssetReference& source)
 {
-    return source.path + "|" + source.assetId.ToString();
+    return IdentityKey(source.assetId);
+}
+
+std::string PrefabPropagationLiveQueue::IdentityKey(const UUID& assetId)
+{
+    if (assetId.IsNull()) return {};
+    return "id|" + assetId.ToString();
 }
 
 PrefabPropagationLiveReport PrefabPropagationLiveQueue::Apply(
@@ -136,9 +142,16 @@ bool PrefabPropagationLiveQueue::PendingNeedsRefresh() const noexcept
 PrefabPropagationLiveReport PrefabPropagationLiveQueue::Enqueue(
     const AssetReference& source, bool requiresRefresh)
 {
-    m_Pending[SourceKey(source)] = Pending{
-        source, PrefabSourceFingerprint{}, false, requiresRefresh};
     PrefabPropagationLiveReport report;
+    const auto key = SourceKey(source);
+    if (key.empty())
+    {
+        report.error = {Error::InvalidArgument, source.path,
+            "prefab propagation requires a validated non-nil durable asset ID before queueing"};
+        return report;
+    }
+    m_Pending[key] = Pending{
+        source, PrefabSourceFingerprint{}, false, requiresRefresh};
     report.accepted = true;
     report.queued = true;
     return report;
@@ -168,9 +181,10 @@ PrefabPropagationLiveReport PrefabPropagationLiveHost::Submit(
     const PrefabPropagationLiveHostCallbacks& callbacks,
     const PrefabPropagationLiveHooks& hooks)
 {
-    if (refreshBeforeSubmit && backgroundBusy && !refreshedContext)
+    if (state != SceneRunState::Edit || backgroundBusy)
     {
-        const auto report = m_Queue.Enqueue(source, true);
+        const auto report = m_Queue.Enqueue(
+            source, refreshBeforeSubmit && !refreshedContext);
         Publish(report, trigger == PrefabPropagationLiveTrigger::Explicit
             ? "ExplicitReimport" : "WatcherSubmit", callbacks);
         return report;
@@ -319,7 +333,14 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Submit(
         return report;
     }
     const auto key = Key(fingerprint.value);
-    const auto pendingKey = SourceKey(source);
+    if (fingerprint.value.assetId.IsNull())
+    {
+        PrefabPropagationLiveReport report;
+        report.error = {Error::InvalidArgument, source.path,
+            "prefab propagation fingerprint has no validated durable asset ID"};
+        return report;
+    }
+    const auto pendingKey = IdentityKey(fingerprint.value.assetId);
     const auto pending = m_Pending.find(pendingKey);
     if (pending != m_Pending.end() &&
         pending->second.hasFingerprint &&
@@ -343,8 +364,10 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Submit(
     }
     if (state != SceneRunState::Edit || backgroundBusy || !refreshedContext)
     {
+        const bool requiresRefresh = !refreshedContext ||
+            (pending != m_Pending.end() && pending->second.requiresRefresh);
         m_Pending[pendingKey] = Pending{
-            source, fingerprint.value, true, !refreshedContext};
+            source, fingerprint.value, true, requiresRefresh};
         PrefabPropagationLiveReport report;
         report.accepted = true;
         report.queued = true;

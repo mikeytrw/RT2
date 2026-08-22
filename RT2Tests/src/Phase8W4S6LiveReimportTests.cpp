@@ -450,6 +450,100 @@ TEST_CASE("S6 host coalesces newest, quarantines siblings, and resets identity")
     CHECK(quarantineProbe.statuses.back().find("1 quarantined") != std::string::npos);
 }
 
+TEST_CASE("S6 queued aliases share durable identity in either trigger order")
+{
+    for (const bool explicitFirst : {true, false})
+    {
+        EffectiveLiveFixture fixture;
+        PrefabPropagationLiveQueue queue;
+        PrefabPropagationLiveHost host(queue);
+        HostProbe probe;
+        const AssetReference relative{
+            AssetKind::Prefab, "vehicle.rt2prefab", {}, {}, fixture.instance};
+        const AssetReference absolute{
+            AssetKind::Prefab, "C:/assets/vehicle.rt2prefab", {}, {}, fixture.instance};
+        std::string observedDigest;
+        int fingerprintCalls = 0;
+        int prepareCalls = 0;
+        int stageCalls = 0;
+        PrefabPropagationLiveHooks hooks;
+        hooks.fingerprint = [&](const AssetReference& source,
+                                const AssetResolutionContext&) {
+            ++fingerprintCalls;
+            observedDigest = source.path.find("C:/") == 0
+                ? "watcher-newest" : "explicit-newest";
+            return Result<PrefabSourceFingerprint>::Ok(
+                Fingerprint(observedDigest.c_str()));
+        };
+        hooks.prepare = [&](const PrefabPropagationDiscoveryRequest&) {
+            ++prepareCalls;
+            return Result<PrefabPropagationPlan>::Ok(
+                fixture.Plan(observedDigest.c_str()));
+        };
+        hooks.stage = [&](const PrefabPropagationPlan& plan,
+                          const SceneDocument&,
+                          const AssetResolutionContext&) {
+            ++stageCalls;
+            return Result<PrefabPropagationPlan>::Ok(plan);
+        };
+
+        if (explicitFirst)
+        {
+            CHECK(host.Submit(
+                fixture.scene, fixture.history, relative, SceneRunState::Playing,
+                false, false, PrefabPropagationLiveTrigger::Explicit, true,
+                probe.Callbacks(), hooks).queued);
+            CHECK(host.Submit(
+                fixture.scene, fixture.history, absolute, SceneRunState::Paused,
+                false, true, PrefabPropagationLiveTrigger::Watcher, false,
+                probe.Callbacks(), hooks).queued);
+        }
+        else
+        {
+            CHECK(host.Submit(
+                fixture.scene, fixture.history, absolute, SceneRunState::Paused,
+                false, true, PrefabPropagationLiveTrigger::Watcher, false,
+                probe.Callbacks(), hooks).queued);
+            CHECK(host.Submit(
+                fixture.scene, fixture.history, relative, SceneRunState::Edit,
+                true, false, PrefabPropagationLiveTrigger::Explicit, true,
+                probe.Callbacks(), hooks).queued);
+        }
+        CHECK(queue.PendingCount() == 1);
+        CHECK(fingerprintCalls == 0);
+        const auto drained = host.Drain(
+            fixture.scene, fixture.history, SceneRunState::Edit, false,
+            probe.Callbacks(), hooks);
+        REQUIRE(drained.applied);
+        CHECK(queue.PendingCount() == 0);
+        CHECK(fingerprintCalls == 2); // drain read + command revalidation
+        CHECK(prepareCalls == 1);
+        CHECK(stageCalls == 1);
+        CHECK(observedDigest == (explicitFirst
+            ? "watcher-newest" : "explicit-newest"));
+        CHECK(fixture.history.UndoDepthForTest() == 1);
+        REQUIRE(probe.routed.size() == 1);
+        REQUIRE(probe.published.size() >= 3);
+        CHECK(probe.published.back().applied);
+        CHECK(probe.published.back().quarantinedInstances == 0);
+    }
+
+    EffectiveLiveFixture nilFixture;
+    PrefabPropagationLiveQueue nilQueue;
+    PrefabPropagationLiveHost nilHost(nilQueue);
+    HostProbe nilProbe;
+    AssetReference nilSource{
+        AssetKind::Prefab, "vehicle.rt2prefab", {}, {}, UUID::Nil()};
+    const auto rejected = nilHost.Submit(
+        nilFixture.scene, nilFixture.history, nilSource,
+        SceneRunState::Playing, false, false,
+        PrefabPropagationLiveTrigger::Explicit, true,
+        nilProbe.Callbacks());
+    CHECK_FALSE(rejected.accepted);
+    CHECK(rejected.error.code == Error::InvalidArgument);
+    CHECK(nilQueue.PendingCount() == 0);
+}
+
 TEST_CASE("S6 host refresh uses only the post-refresh owning context")
 {
     EffectiveLiveFixture fixture;
