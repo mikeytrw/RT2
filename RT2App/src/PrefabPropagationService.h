@@ -49,6 +49,25 @@ struct PrefabPropagationLoadHooks
                        std::vector<AssetDiagnostic>&, Error&)> resolveAll;
 };
 
+// CPU host context shared by Walnut scene-open and the standalone runner.
+// Project scenes resolve from the project asset root; standalone scenes
+// resolve from the scene's parent directory. Keeping this derivation here
+// makes the host boundary directly testable without GUI or renderer code.
+struct PrefabPropagationSceneOpenContext
+{
+    std::filesystem::path scenePath;
+    std::filesystem::path projectAssetRoot;
+    const AssetDatabase* database = nullptr;
+
+    bool IsProjectBound() const { return !projectAssetRoot.empty(); }
+    AssetResolutionContext Assets() const
+    {
+        return AssetResolutionContext{
+            IsProjectBound() ? projectAssetRoot : scenePath.parent_path(),
+            database};
+    }
+};
+
 Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
     SceneDocument& document, const AssetResolutionContext& assets,
     const PrefabPropagationLoadHooks& hooks = {});
@@ -57,6 +76,11 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
 // quarantine diagnostics, then invoke exactly one normal asset resolver.
 Result<PrefabPropagationLoadReport> RunPrefabPropagationLoadIntegration(
     SceneDocument& document, const AssetResolutionContext& assets,
+    std::vector<AssetDiagnostic>& diagnostics, Error& err,
+    const PrefabPropagationLoadHooks& hooks = {});
+
+Result<PrefabPropagationLoadReport> RunPrefabPropagationSceneOpen(
+    SceneDocument& document, const PrefabPropagationSceneOpenContext& context,
     std::vector<AssetDiagnostic>& diagnostics, Error& err,
     const PrefabPropagationLoadHooks& hooks = {});
 

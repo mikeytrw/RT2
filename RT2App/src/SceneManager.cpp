@@ -801,6 +801,16 @@ void SceneManager::ReplaceAuthoringDocument(rt2::core::SceneDocument&& document,
 	++m_ResourceGeneration;
 }
 
+void SceneManager::AdoptLoadedDocument(rt2::core::SceneDocument&& document,
+	                                     bool preserveDirty,
+	                                     uint64_t authoringRevision)
+{
+	ReplaceAuthoringDocument(std::move(document), authoringRevision);
+	ClearDirty();
+	if (preserveDirty)
+		MarkDirty();
+}
+
 bool SceneManager::LoadScene(
 	const std::string& filepath,
 	std::vector<rt2::core::AssetDiagnostic>* diagnostics)

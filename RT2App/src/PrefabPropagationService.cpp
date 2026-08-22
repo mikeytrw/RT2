@@ -722,6 +722,15 @@ Result<PrefabPropagationLoadReport> RunPrefabPropagationLoadIntegration(
     return reconciled;
 }
 
+Result<PrefabPropagationLoadReport> RunPrefabPropagationSceneOpen(
+    SceneDocument& document, const PrefabPropagationSceneOpenContext& context,
+    std::vector<AssetDiagnostic>& diagnostics, Error& err,
+    const PrefabPropagationLoadHooks& hooks)
+{
+    return RunPrefabPropagationLoadIntegration(
+        document, context.Assets(), diagnostics, err, hooks);
+}
+
 void AppendPrefabPropagationDiagnostics(
     const PrefabPropagationLoadReport& report,
     std::vector<AssetDiagnostic>& diagnostics)

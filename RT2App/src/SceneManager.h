@@ -348,6 +348,13 @@ struct PrefabMaterialDuplicateStage
 	void ReplaceAuthoringDocument(rt2::core::SceneDocument&& document,
 	                              uint64_t authoringRevision = 0);
 
+	// Shared CPU host adoption seam used by scene-open callers. A successful
+	// temporary load is adopted once, then its load-time dirty decision is
+	// applied without creating command history or an extra notification.
+	void AdoptLoadedDocument(rt2::core::SceneDocument&& document,
+	                         bool preserveDirty,
+	                         uint64_t authoringRevision = 0);
+
 	// Set callback for full re-upload (SetScene path: textures + AS rebuild).
 	void SetSyncCallback(SyncCallback cb) { m_SyncCallback = std::move(cb); }
 

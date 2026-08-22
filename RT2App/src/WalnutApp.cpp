@@ -3397,12 +3397,17 @@ private:
 	}
 
 	void ReplaceEditorDocument(AuthoringDocumentReplacementKind kind,
-		rt2::core::SceneDocument&& document, uint64_t authoringRevision = 0)
+		rt2::core::SceneDocument&& document, uint64_t authoringRevision = 0,
+		bool preserveDirty = false)
 	{
 		m_GizmoCoordinator.ReplaceDocument(kind,
-			[this, &document, authoringRevision]() {
-				m_SceneMgr.ReplaceAuthoringDocument(
-					std::move(document), authoringRevision);
+			[this, &document, authoringRevision, preserveDirty]() {
+				if (preserveDirty)
+					m_SceneMgr.AdoptLoadedDocument(
+						std::move(document), true, authoringRevision);
+				else
+					m_SceneMgr.ReplaceAuthoringDocument(
+						std::move(document), authoringRevision);
 			},
 			[this](AuthoringDocumentSelectionPolicy policy) {
 				if (policy == AuthoringDocumentSelectionPolicy::PreserveValid)
@@ -4344,6 +4349,11 @@ public:
 			? projectSnapshot->Assets()
 			: rt2::core::AssetResolutionContext{
 				scenePath.parent_path(), nullptr };
+		const rt2::core::PrefabPropagationSceneOpenContext prefabContext{
+			scenePath,
+			projectSnapshot ? projectSnapshot->project.assetRoot
+							: std::filesystem::path{},
+			assetContext.database};
 
 		// The CPU-heavy work (JSON parse + asset re-import + texture decode)
 		// runs on a worker thread. The result SceneDocument is captured in
@@ -4367,7 +4377,7 @@ public:
 			[resultDoc, errorStr, diagStr, loadReport, fieldDiagnostics,
 			 fieldResolution, fieldChanges, prefabPropagationChanged,
 			 filepathCopy, uuidProvider,
-			 assetContext, projectSnapshot](BackgroundWork& self) -> bool
+				 assetContext, prefabContext, projectSnapshot](BackgroundWork& self) -> bool
 		{
 			self.SetStatus("Parsing scene file...");
 			resultDoc->SetUuidProvider(uuidProvider);
@@ -4425,8 +4435,8 @@ public:
 			std::vector<rt2::core::AssetDiagnostic> diagnostics;
 			rt2::core::Error resolveErr;
 			const auto prefabReport =
-				rt2::core::RunPrefabPropagationLoadIntegration(
-					*resultDoc, assetContext, diagnostics, resolveErr);
+				 rt2::core::RunPrefabPropagationSceneOpen(
+					*resultDoc, prefabContext, diagnostics, resolveErr);
 			const bool resolveOk = prefabReport.IsOk();
 			if (resolveOk)
 				*prefabPropagationChanged = prefabReport.value.changed;
@@ -4467,8 +4477,8 @@ public:
 			return true;
 		},
 			[this, resultDoc, errorStr, diagStr, loadReport, fieldChanges,
-			 prefabPropagationChanged,
-				 filepathCopy, assetContext, projectSnapshot](bool success)
+				 prefabPropagationChanged,
+				 filepathCopy, assetContext, prefabContext, projectSnapshot](bool success)
 		{
 			// Main thread: log diagnostics.
 			if (!diagStr->empty())
@@ -4489,10 +4499,11 @@ public:
 			printf("[OpenRt2Scene] adopting document...\n"); fflush(stdout);
 			m_ProjectContext = projectSnapshot;
 			ApplyActiveInputConfiguration();
-			m_SceneMgr.SetAssetResolutionContext(assetContext);
+			m_SceneMgr.SetAssetResolutionContext(prefabContext.Assets());
 			m_ScriptAssetContext = assetContext;
 			ReplaceEditorDocument(AuthoringDocumentReplacementKind::OpenScene,
-				std::move(*resultDoc));
+				std::move(*resultDoc), 0,
+				*prefabPropagationChanged || fieldChanges->requiresSave);
 			if (m_InspectorFieldRegistry) m_InspectorFieldRegistry->Clear();
 
 			// W7 watches the project asset root, not directories inferred from
@@ -4503,9 +4514,6 @@ public:
 
 			m_History.Clear();
 			CompactMeshRegistryNowAsserted();
-			m_SceneMgr.ClearDirty();
-			if (*prefabPropagationChanged || fieldChanges->requiresSave)
-				m_SceneMgr.MarkDirty();
 			m_ScriptRepairGate.Adopt(fieldChanges->destructive);
 			m_AssetMigrationGate.Adopt(loadReport->requiresAssetMigration);
 			m_Recovery->ResetSchedule();

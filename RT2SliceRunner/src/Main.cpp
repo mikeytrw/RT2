@@ -891,6 +891,11 @@ int main(int argc, char** argv)
             absoluteScene.parent_path(), nullptr};
     }
 
+    const PrefabPropagationSceneOpenContext prefabContext{
+        std::filesystem::u8path(scenePath),
+        projectPath.empty() ? std::filesystem::path{} : assetContext.assetRoot,
+        assetContext.database};
+
     // --- Load the scene ---
     DeterministicUuidProvider provider;
     SceneDocument authoring;
@@ -904,8 +909,8 @@ int main(int argc, char** argv)
         return 2;
     }
     std::vector<AssetDiagnostic> assetDiagnostics;
-    if (!RunPrefabPropagationLoadIntegration(
-            authoring, assetContext, assetDiagnostics, err).IsOk())
+    if (!RunPrefabPropagationSceneOpen(
+            authoring, prefabContext, assetDiagnostics, err).IsOk())
     {
         fprintf(stderr, "[SliceRunner] Prefab/asset resolution failed: %s\n",
                 err.Format().c_str());
