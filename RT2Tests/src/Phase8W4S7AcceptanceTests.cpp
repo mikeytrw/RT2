@@ -365,10 +365,40 @@ TEST_CASE("Phase 8 W4 S7 A1: source edit propagates through prepare stage comman
     CHECK(HasKey(prepared.value, PrefabWireKeys::kMaterialOverride));
     CHECK(prepared.value.source.assetId == sourceReference.assetId);
 
+    const auto beforeMeshExtent = manager.GetMeshRegistryCount();
+    const auto beforeMaterialExtent = manager.GetMaterialCount();
+    const auto beforeTextureExtent = manager.GetECS().textures.size();
     const auto staged = StagePrefabPropagationResources(
         prepared.value, manager.AuthoringDoc(), AssetResolutionContext{temp.path, nullptr});
     REQUIRE(staged.IsOk());
     REQUIRE_FALSE(staged.value.resourceOwnership.empty());
+    std::size_t ownedMeshes = 0;
+    std::size_t ownedMaterials = 0;
+    std::size_t ownedTextures = 0;
+    for (const auto& ownership : staged.value.resourceOwnership)
+    {
+        const auto count = ownership.rebase.owned.Entries().size();
+        if (ownership.rebase.kind == PrefabPropagationResourceKind::Mesh)
+            ownedMeshes += count;
+        else if (ownership.rebase.kind == PrefabPropagationResourceKind::Material)
+            ownedMaterials += count;
+        else
+            ownedTextures += count;
+        CHECK(ownership.rebase.sceneBeforeExtent ==
+              (ownership.rebase.kind == PrefabPropagationResourceKind::Mesh
+                   ? beforeMeshExtent
+               : ownership.rebase.kind == PrefabPropagationResourceKind::Material
+                   ? beforeMaterialExtent : beforeTextureExtent));
+        CHECK(ownership.rebase.sceneAfterExtent ==
+              ownership.rebase.sceneBeforeExtent + count);
+        REQUIRE(ownership.rebase.sceneSlots.size() == count);
+        for (std::size_t i = 0; i < count; ++i)
+            CHECK(ownership.rebase.sceneSlots[i].value ==
+                  ownership.rebase.sceneBeforeExtent + i);
+    }
+    CHECK(staged.value.meshTableExtent == beforeMeshExtent);
+    CHECK(staged.value.materialTableExtent == beforeMaterialExtent);
+    CHECK(staged.value.textureTableExtent == beforeTextureExtent);
     const auto fingerprint = staged.value.source;
     auto propagation = std::make_unique<PrefabPropagationCommand>(
         staged.value, [fingerprint] {
@@ -381,6 +411,9 @@ TEST_CASE("Phase 8 W4 S7 A1: source edit propagates through prepare stage comman
     REQUIRE(applied.effective);
     CHECK(manager.AuthoringRevision() > beforeRevision);
     CHECK(manager.ResourceGeneration() > beforeResources);
+    CHECK(manager.GetMeshRegistryCount() == beforeMeshExtent + ownedMeshes);
+    CHECK(manager.GetMaterialCount() == beforeMaterialExtent + ownedMaterials);
+    CHECK(manager.GetECS().textures.size() == beforeTextureExtent + ownedTextures);
 
     const auto scenePath = temp.path / "after.rt2scene";
     std::vector<AssetDiagnostic> saveDiagnostics;
@@ -393,6 +426,9 @@ TEST_CASE("Phase 8 W4 S7 A1: source edit propagates through prepare stage comman
     std::vector<AssetDiagnostic> resolveDiagnostics;
     REQUIRE(SceneAssetResolver::ResolveAll(
         loaded, AssetResolutionContext{temp.path, nullptr}, resolveDiagnostics, error));
+    CHECK(loaded.ecs.meshRegistry.GetCount() == 1);
+    CHECK(loaded.ecs.materials.size() == 13);
+    CHECK(loaded.ecs.textures.size() == 1);
 
     for (std::size_t i = 0; i < meshMembers.size(); ++i)
     {
@@ -405,6 +441,8 @@ TEST_CASE("Phase 8 W4 S7 A1: source edit propagates through prepare stage comman
         CHECK_FALSE(loaded.ecs.registry.get<VisibleComponent>(entity).visible);
         REQUIRE(loaded.ecs.registry.all_of<MeshRef>(entity));
         const auto& ref = loaded.ecs.registry.get<MeshRef>(entity);
+        CHECK(ref.meshIndex == 0);
+        CHECK(ref.materialIndex == 12 - static_cast<int>(i));
         REQUIRE(ref.materialIndex >= 0);
         REQUIRE(static_cast<std::size_t>(ref.materialIndex) < loaded.ecs.materials.size());
         REQUIRE(loaded.ecs.registry.all_of<PrefabMemberComponent>(entity));
@@ -652,6 +690,167 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
 
 TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quarantine are literal")
 {
+    // Exercise both provenance directions through the complete production
+    // chain: discovery Prepare, resource staging, history Execute, then
+    // append-only Undo/Redo.  The seam-only checks below retain the focused
+    // quarantine assertions, while this block proves durable component and
+    // MeshRef state at the command boundary.
+    const auto runTransition = [](bool sourceImported, bool sceneImported,
+                                  unsigned instance) {
+        const auto temp = Temp();
+        std::filesystem::path modelPath;
+        if (sourceImported)
+        {
+            modelPath = temp.path / "new.glb";
+            Error modelError;
+            REQUIRE(GenerateTinyTexturedGlb(modelPath, modelError));
+            REQUIRE(modelError.IsOk());
+            REQUIRE(WriteSidecarId(AssetSidecarPath(modelPath), A13Uuid(1702),
+                                   modelError));
+        }
+        auto records = std::vector<PrefabEntityRecord>{
+            A13Record(1, 101), A13Record(2, 102, A13Uuid(101))};
+        if (sourceImported)
+        {
+            records[1].record.hasImportedSource = true;
+            records[1].record.importedSource.model =
+                AssetReference{AssetKind::Model, "new.glb", {},
+                               "gltf:scene=0:node=0:mesh=0:primitive=0",
+                               A13Uuid(1702)};
+        }
+        else
+        {
+            records[1].record.hasPrimitive = true;
+            records[1].record.primitive =
+                PrimitiveComponent{PrimitiveComponent::Sphere, 3.0f, 8, 6};
+        }
+        const auto source = WriteA13Prefab(temp, std::move(records));
+        SceneManager scene;
+        scene.ReplaceAuthoringDocument(A13Document(source, sceneImported, instance));
+        auto& document = scene.AuthoringDoc();
+        auto request = A13Request(document, source);
+        request.documentGeneration = scene.DocumentGeneration();
+        request.resourceGeneration = scene.ResourceGeneration();
+        request.authoringRevision = scene.AuthoringRevision();
+        const auto prepared = PreparePrefabPropagation(request);
+        if (!prepared.IsOk()) INFO(prepared.error.Format());
+        REQUIRE(prepared.IsOk());
+        REQUIRE(prepared.value.instances.size() == 1);
+        CHECK(prepared.value.instances.front().disposition ==
+              PrefabPropagationInstanceDisposition::Propagate);
+        CHECK(prepared.value.instances.front().affectedEntities.size() == 2);
+        const auto staged = StagePrefabPropagationResources(
+            prepared.value, document, AssetResolutionContext{temp.path, nullptr});
+        if (!staged.IsOk()) INFO(staged.error.Format());
+        REQUIRE(staged.IsOk());
+        REQUIRE(staged.value.instances.size() == 1);
+        CHECK(staged.value.instances.front().disposition ==
+              PrefabPropagationInstanceDisposition::Propagate);
+        REQUIRE(prepared.value.IsEffective());
+        const auto childUuid = A13Uuid(1401 + instance * 10);
+        const auto child = document.FindByUuid(childUuid);
+        REQUIRE(static_cast<std::uint32_t>(child) !=
+                static_cast<std::uint32_t>(entt::null));
+        const auto beforeMeshes = scene.GetMeshRegistryCount();
+        const auto beforeMaterials = scene.GetMaterialCount();
+        const auto beforeTextures = scene.GetECS().textures.size();
+        std::size_t ownedMeshes = 0;
+        std::size_t ownedMaterials = 0;
+        std::size_t ownedTextures = 0;
+        for (const auto& ownership : staged.value.resourceOwnership)
+        {
+            const auto count = ownership.rebase.owned.Entries().size();
+            if (ownership.rebase.kind == PrefabPropagationResourceKind::Mesh)
+                ownedMeshes += count;
+            else if (ownership.rebase.kind == PrefabPropagationResourceKind::Material)
+                ownedMaterials += count;
+            else
+                ownedTextures += count;
+            CHECK(ownership.rebase.sceneAfterExtent ==
+                  ownership.rebase.sceneBeforeExtent + count);
+            REQUIRE(ownership.rebase.sceneSlots.size() == count);
+            for (std::size_t i = 0; i < count; ++i)
+                CHECK(ownership.rebase.sceneSlots[i].value ==
+                      ownership.rebase.sceneBeforeExtent + i);
+        }
+        const auto fingerprint = staged.value.source;
+        EditorCommandHistory history;
+        auto command = std::make_unique<PrefabPropagationCommand>(
+            staged.value, [fingerprint] {
+                return Result<PrefabSourceFingerprint>::Ok(fingerprint);
+            });
+        const auto applied = history.Execute(std::move(command), scene);
+        REQUIRE(applied.success);
+        REQUIRE(applied.effective);
+        const auto afterMeshes = scene.GetMeshRegistryCount();
+        const auto afterMaterials = scene.GetMaterialCount();
+        const auto afterTextures = scene.GetECS().textures.size();
+        CHECK(afterMeshes >= beforeMeshes);
+        CHECK(afterMaterials >= beforeMaterials);
+        CHECK(afterTextures >= beforeTextures);
+        CHECK(afterMeshes == beforeMeshes + ownedMeshes);
+        CHECK(afterMaterials == beforeMaterials + ownedMaterials);
+        CHECK(afterTextures == beforeTextures + ownedTextures);
+        const auto afterEntity = scene.FindEntityByUuid(childUuid);
+        REQUIRE(static_cast<std::uint32_t>(afterEntity) !=
+                static_cast<std::uint32_t>(entt::null));
+        const bool hasPrimitive = document.ecs.registry.all_of<PrimitiveComponent>(afterEntity);
+        const bool hasImported =
+            document.ecs.registry.all_of<ImportedMeshSourceComponent>(afterEntity);
+        CHECK(hasPrimitive != hasImported);
+        if (sourceImported)
+        {
+            REQUIRE(hasImported);
+            CHECK(document.ecs.registry.get<ImportedMeshSourceComponent>(afterEntity)
+                      .model.path == "new.glb");
+            REQUIRE(document.ecs.registry.all_of<MeshRef>(afterEntity));
+            const auto& ref = document.ecs.registry.get<MeshRef>(afterEntity);
+            REQUIRE(ref.meshIndex >= 0);
+            REQUIRE(ref.materialIndex >= 0);
+            CHECK(static_cast<std::size_t>(ref.meshIndex) < scene.GetMeshRegistryCount());
+            CHECK(static_cast<std::size_t>(ref.materialIndex) < scene.GetMaterialCount());
+            const auto stagedRef = std::find_if(staged.value.meshRefOperations.begin(),
+                staged.value.meshRefOperations.end(), [&](const auto& operation) {
+                    return operation.entityUuid == childUuid;
+                });
+            REQUIRE(stagedRef != staged.value.meshRefOperations.end());
+            REQUIRE(stagedRef->after.has_value());
+            CHECK(ref.meshIndex == stagedRef->after->meshIndex);
+            CHECK(ref.materialIndex == stagedRef->after->materialIndex);
+        }
+        else
+        {
+            REQUIRE(hasPrimitive);
+            const auto& primitive =
+                document.ecs.registry.get<PrimitiveComponent>(afterEntity);
+            CHECK(primitive.kind == PrimitiveComponent::Sphere);
+            CHECK(primitive.size == doctest::Approx(3.0f));
+            CHECK(primitive.segments == 8);
+            CHECK(primitive.rings == 6);
+            CHECK_FALSE(hasImported);
+        }
+        REQUIRE(history.Undo(scene).success);
+        const auto undone = scene.FindEntityByUuid(childUuid);
+        REQUIRE(static_cast<std::uint32_t>(undone) !=
+                static_cast<std::uint32_t>(entt::null));
+        CHECK(scene.GetMeshRegistryCount() == afterMeshes);
+        CHECK(scene.GetMaterialCount() == afterMaterials);
+        CHECK(scene.GetECS().textures.size() == afterTextures);
+        CHECK(document.ecs.registry.all_of<PrimitiveComponent>(undone) == sourceImported);
+        CHECK(document.ecs.registry.all_of<ImportedMeshSourceComponent>(undone) == !sourceImported);
+        REQUIRE(history.Redo(scene).success);
+        const auto redone = scene.FindEntityByUuid(childUuid);
+        REQUIRE(static_cast<std::uint32_t>(redone) !=
+                static_cast<std::uint32_t>(entt::null));
+        CHECK(scene.GetMeshRegistryCount() == afterMeshes);
+        CHECK(scene.GetMaterialCount() == afterMaterials);
+        CHECK(scene.GetECS().textures.size() == afterTextures);
+        CHECK(document.ecs.registry.all_of<PrimitiveComponent>(redone) == !sourceImported);
+        CHECK(document.ecs.registry.all_of<ImportedMeshSourceComponent>(redone) == sourceImported);
+    };
+    runTransition(true, false, 0);
+    runTransition(false, true, 1);
+
     // Primitive -> imported and imported -> primitive are both planned from
     // the same discovery seam, not inferred from separate classification tests.
     {
@@ -752,8 +951,12 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
     }
 }
 
-TEST_CASE("Phase 8 W4 S7 A11: load recovery explicit watcher and Play routes converge")
+TEST_CASE("Phase 8 W4 S7 A11: host orchestration routes converge")
 {
+    // This test proves production host sequencing and context boundaries.
+    // Literal default source-byte -> Prepare -> Stage coverage is provided by
+    // S5 load integration and S6 live reimport tests; this control-flow case
+    // intentionally does not claim handcrafted cross-route equivalence.
     const auto temp = Temp();
     const auto sourcePath = temp.path / "source.rt2prefab";
     PrefabDocument sourceDocument;

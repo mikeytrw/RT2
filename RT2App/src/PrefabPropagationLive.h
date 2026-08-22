@@ -121,8 +121,9 @@ private:
 
 // CPU-only host orchestration shared by Walnut's explicit content-browser
 // route and its watcher route.  The host owns the control-flow decisions
-// around refresh, queueing, status publication, sync routing, bounded debounce
-// storage, and context transitions; the queue remains the immutable-plan
+// around refresh, queueing, status publication, sync routing, and context
+// transitions; generic asset-watch debounce policy remains in AssetWatchPolicy;
+// the queue remains the immutable-plan
 // execution boundary.  Injected callbacks are deliberately narrow so tests
 // exercise this production control flow rather than a parallel test harness.
 struct PrefabPropagationLiveHostCallbacks

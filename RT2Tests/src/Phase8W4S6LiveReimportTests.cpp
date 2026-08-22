@@ -730,7 +730,7 @@ TEST_CASE("S6 same fingerprint re-evaluates after Undo for explicit and watcher"
         .translation.x == doctest::Approx(1.0f));
 }
 
-TEST_CASE("S6 host debounce truncation covers empty prefab and mixed buffers")
+TEST_CASE("S6 asset-watch policy debounce truncation covers empty prefab and mixed buffers")
 {
     std::vector<std::string> scripts;
     std::vector<std::string> refresh;
