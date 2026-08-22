@@ -1,9 +1,24 @@
 #include "AssetResolver.h"
 
 #include <algorithm>
+#include <cctype>
 #include <system_error>
 
 namespace rt2::core {
+
+std::filesystem::path CanonicalAssetPath(const std::filesystem::path& path)
+{
+    std::error_code ec;
+    const auto canonical = std::filesystem::weakly_canonical(path, ec);
+    auto normalized = ec ? path.lexically_normal() : canonical.lexically_normal();
+#ifdef _WIN32
+    auto folded = normalized.generic_string();
+    std::transform(folded.begin(), folded.end(), folded.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    normalized = std::filesystem::u8path(folded);
+#endif
+    return normalized;
+}
 
 namespace {
 

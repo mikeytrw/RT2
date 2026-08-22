@@ -116,6 +116,11 @@ struct AssetResolutionContext
     const AssetDatabase* database = nullptr;
 };
 
+// Canonical durable filesystem identity used by all asset consumers. The
+// weakly-canonical fallback preserves deterministic lexical normalization for
+// a missing path while resolving junctions/symlinks when the source exists.
+std::filesystem::path CanonicalAssetPath(const std::filesystem::path& path);
+
 // Where the successful path came from. Id = ID-first lookup located a file;
 // PathFallback = ID did not locate a file (or was nil) and the path resolved.
 enum class AssetResolutionSource : uint8_t

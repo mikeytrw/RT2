@@ -8,6 +8,7 @@
 #include "SceneAssetResolver.h"
 
 #include <cstddef>
+#include <functional>
 #include <vector>
 
 namespace rt2::core {
@@ -40,8 +41,24 @@ struct PrefabPropagationLoadReport
     std::vector<PrefabPropagationDiagnostic> diagnostics;
 };
 
+struct PrefabPropagationLoadHooks
+{
+    std::function<Result<PrefabPropagationPlan>(
+        const PrefabPropagationDiscoveryRequest&)> prepare;
+    std::function<bool(SceneDocument&, const AssetResolutionContext&,
+                       std::vector<AssetDiagnostic>&, Error&)> resolveAll;
+};
+
 Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
-    SceneDocument& document, const AssetResolutionContext& assets);
+    SceneDocument& document, const AssetResolutionContext& assets,
+    const PrefabPropagationLoadHooks& hooks = {});
+
+// Host-load orchestration seam: reconcile the temporary document, append
+// quarantine diagnostics, then invoke exactly one normal asset resolver.
+Result<PrefabPropagationLoadReport> RunPrefabPropagationLoadIntegration(
+    SceneDocument& document, const AssetResolutionContext& assets,
+    std::vector<AssetDiagnostic>& diagnostics, Error& err,
+    const PrefabPropagationLoadHooks& hooks = {});
 
 void AppendPrefabPropagationDiagnostics(
     const PrefabPropagationLoadReport& report,

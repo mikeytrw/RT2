@@ -3,6 +3,7 @@
 #include "AssetIdentity.h"
 #include "PrefabPropagationService.h"
 #include "SceneRecoveryService.h"
+#include "SceneManager.h"
 #include "SceneSerializer.h"
 
 #include <atomic>
@@ -150,6 +151,34 @@ std::string Bytes(const std::filesystem::path& path)
     std::ifstream input(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
+
+void AddInstance(SceneDocument& document, const std::filesystem::path& source,
+                 const UUID& instance, const UUID& rootUuid,
+                 const UUID& childUuid, const std::string& pathOverride = {})
+{
+    const auto root = document.ecs.registry.create();
+    REQUIRE(document.AssignKnownUuid(root, rootUuid));
+    document.ecs.registry.emplace<Hierarchy>(root);
+    document.ecs.registry.emplace<PrefabInstanceComponent>(root,
+        PrefabInstanceComponent{AssetReference{AssetKind::Prefab,
+            pathOverride.empty() ? source.filename().string() : pathOverride,
+            {}, {}, kAsset}, instance});
+    document.ecs.registry.emplace<PrefabMemberComponent>(root,
+        PrefabMemberComponent{instance, U(1), {}});
+    document.ecs.registry.emplace<NameComponent>(root, NameComponent{"OldRoot"});
+    document.ecs.registry.emplace<Transform>(root);
+    document.ecs.registry.emplace<VisibleComponent>(root);
+    AddMember(document, childUuid, instance, U(2), root);
+}
+
+std::string SerializedSnapshot(const SceneDocument& document,
+                               const std::filesystem::path& path)
+{
+    std::vector<AssetDiagnostic> diagnostics;
+    Error error;
+    REQUIRE(SceneSerializer::Save(document, path, diagnostics, error));
+    return Bytes(path);
+}
 }
 
 TEST_CASE("Phase 8 W4 S5: load reconciliation is deterministic, dirty, and sibling-safe")
@@ -230,4 +259,110 @@ TEST_CASE("Phase 8 W4 S5: recovery restores and reconciles before asset resoluti
     CHECK(restored.metadata.dirty);
     CHECK(restored.ecs.registry.get<NameComponent>(restored.FindByUuid(U(201))).name ==
           "SourceChild");
+}
+
+TEST_CASE("Phase 8 W4 S5: canonical aliases prepare one source once")
+{
+    const auto temp = Temp();
+    const auto source = WritePrefab(temp);
+    SceneDocument document = MakeDocument(source);
+#ifdef _WIN32
+    const std::string aliasPath = "SOURCE.RT2PREFAB";
+#else
+    const std::string aliasPath = source.filename().string();
+#endif
+    AddInstance(document, source, kInstanceB, U(300), U(301),
+                aliasPath);
+    std::size_t prepareCalls = 0;
+    PrefabPropagationLoadHooks hooks;
+    hooks.prepare = [&](const PrefabPropagationDiscoveryRequest& request) {
+        ++prepareCalls;
+        return PreparePrefabPropagation(request);
+    };
+    const auto report = ReconcilePrefabPropagationForLoad(
+        document, AssetResolutionContext{temp.directory, nullptr}, hooks);
+    REQUIRE(report.IsOk());
+    CHECK(prepareCalls == 1);
+    CHECK(report.value.propagatedInstances == 2);
+    CHECK(report.value.quarantinedInstances == 0);
+    CHECK(report.value.diagnostics.empty());
+}
+
+TEST_CASE("Phase 8 W4 S5: valid-first malformed-later failure is deeply atomic")
+{
+    const auto temp = Temp();
+    const auto valid = WritePrefab(temp);
+    const auto malformed = temp.directory / "z-malformed.rt2prefab";
+    Error error;
+    {
+        std::ofstream output(malformed, std::ios::binary);
+        output << "not a prefab";
+    }
+    REQUIRE(WriteSidecarId(AssetSidecarPath(malformed), kAsset, error));
+    auto document = MakeDocument(valid);
+    AddInstance(document, malformed, kInstanceB, U(300), U(301));
+    const auto beforePath = temp.directory / "before.rt2scene";
+    const auto afterPath = temp.directory / "after.rt2scene";
+    const std::string before = SerializedSnapshot(document, beforePath);
+    const bool dirtyBefore = document.metadata.dirty;
+    const auto entityCountBefore = document.ecs.registry.view<EntityIdComponent>().size();
+    const auto meshCountBefore = document.ecs.meshRegistry.GetCount();
+    const auto materialCountBefore = document.ecs.materials.size();
+    const auto textureCountBefore = document.ecs.textures.size();
+
+    const auto result = ReconcilePrefabPropagationForLoad(
+        document, AssetResolutionContext{temp.directory, nullptr});
+    CHECK_FALSE(result.IsOk());
+    const std::string after = SerializedSnapshot(document, afterPath);
+    CHECK(after == before);
+    CHECK(document.metadata.dirty == dirtyBefore);
+    CHECK(document.ecs.registry.view<EntityIdComponent>().size() == entityCountBefore);
+    CHECK(document.ecs.meshRegistry.GetCount() == meshCountBefore);
+    CHECK(document.ecs.materials.size() == materialCountBefore);
+    CHECK(document.ecs.textures.size() == textureCountBefore);
+    CHECK(document.FindByUuid(U(201)) != static_cast<entt::entity>(entt::null));
+    CHECK(document.FindByUuid(U(301)) != static_cast<entt::entity>(entt::null));
+}
+
+TEST_CASE("Phase 8 W4 S5: host orchestration proves context, one resolve, and adoption semantics")
+{
+    const auto temp = Temp();
+    const auto source = WritePrefab(temp);
+    for (const bool projectBound : {false, true})
+    {
+        auto document = MakeDocument(source);
+        if (projectBound) document.metadata.projectId = U(9900);
+        const AssetResolutionContext context{temp.directory, nullptr};
+        std::size_t resolveCalls = 0;
+        std::filesystem::path seenRoot;
+        PrefabPropagationLoadHooks hooks;
+        hooks.resolveAll = [&](SceneDocument&, const AssetResolutionContext& seen,
+                               std::vector<AssetDiagnostic>&, Error&) {
+            ++resolveCalls;
+            seenRoot = seen.assetRoot;
+            return true;
+        };
+        std::vector<AssetDiagnostic> diagnostics;
+        Error error;
+        const auto report = RunPrefabPropagationLoadIntegration(
+            document, context, diagnostics, error, hooks);
+        REQUIRE(report.IsOk());
+        CHECK(report.value.changed);
+        CHECK(resolveCalls == 1);
+        CHECK(seenRoot == temp.directory);
+        CHECK(document.metadata.dirty);
+
+        SceneManager manager;
+        const auto revisionBefore = manager.AuthoringRevision();
+        const auto documentGenerationBefore = manager.DocumentGeneration();
+        const auto resourceGenerationBefore = manager.ResourceGeneration();
+        manager.ReplaceAuthoringDocument(std::move(document), revisionBefore);
+        CHECK(manager.AuthoringRevision() == revisionBefore);
+        CHECK(manager.DocumentGeneration() == documentGenerationBefore + 1);
+        CHECK(manager.ResourceGeneration() == resourceGenerationBefore + 1);
+        manager.ClearDirty();
+        manager.MarkDirty();
+        CHECK(manager.AuthoringDoc().metadata.dirty);
+        CHECK(manager.AuthoringRevision() == revisionBefore + 1);
+    }
 }

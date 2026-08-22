@@ -540,14 +540,7 @@ bool SceneRecoveryService::Restore(const RecoveryRecord& record,
     temp.metadata.projectId = record.projectId;
     temp.metadata.assetRoot = context.assetRoot;
 
-    const auto prefabReport = ReconcilePrefabPropagationForLoad(temp, context);
-    if (!prefabReport.IsOk())
-    {
-        err = prefabReport.error;
-        return false;
-    }
-    AppendPrefabPropagationDiagnostics(prefabReport.value, diagnostics);
-    if (!SceneAssetResolver::ResolveAll(temp, context, diagnostics, err))
+    if (!RunPrefabPropagationLoadIntegration(temp, context, diagnostics, err).IsOk())
         return false;
 
     temp.metadata.dirty = true;

@@ -567,7 +567,8 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
 }
 
 Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
-    SceneDocument& document, const AssetResolutionContext& assets)
+    SceneDocument& document, const AssetResolutionContext& assets,
+    const PrefabPropagationLoadHooks& hooks)
 {
     struct Candidate
     {
@@ -594,7 +595,7 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
             return Result<PrefabPropagationLoadReport>::Fail(
                 Error::MissingAsset, link.prefab.path, detail);
         }
-        const auto normalized = resolved.resolvedPath.lexically_normal();
+        const auto normalized = CanonicalAssetPath(resolved.resolvedPath);
         candidates.push_back({link.prefab,
             normalized.generic_string() + "|" + resolved.effectiveId.ToString(),
             rootUuid});
@@ -623,7 +624,8 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
         request.documentGeneration = 1;
         request.resourceGeneration = 1;
         request.authoringRevision = 0;
-        const auto prepared = PreparePrefabPropagation(request);
+        const auto prepared = hooks.prepare ? hooks.prepare(request)
+                                            : PreparePrefabPropagation(request);
         if (!prepared.IsOk())
             return Result<PrefabPropagationLoadReport>::Fail(
                 prepared.error.code, prepared.error.path, prepared.error.detail);
@@ -691,6 +693,33 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
     std::sort(report.diagnostics.begin(), report.diagnostics.end());
     if (report.changed) document.metadata.dirty = true;
     return Result<PrefabPropagationLoadReport>::Ok(std::move(report));
+}
+
+Result<PrefabPropagationLoadReport> RunPrefabPropagationLoadIntegration(
+    SceneDocument& document, const AssetResolutionContext& assets,
+    std::vector<AssetDiagnostic>& diagnostics, Error& err,
+    const PrefabPropagationLoadHooks& hooks)
+{
+    err = Error{};
+    const auto reconciled = ReconcilePrefabPropagationForLoad(
+        document, assets, hooks);
+    if (!reconciled.IsOk())
+    {
+        err = reconciled.error;
+        return Result<PrefabPropagationLoadReport>::Fail(
+            err.code, err.path, err.detail);
+    }
+    AppendPrefabPropagationDiagnostics(reconciled.value, diagnostics);
+    const auto resolveAll = hooks.resolveAll
+        ? hooks.resolveAll
+        : [](SceneDocument& scene, const AssetResolutionContext& context,
+             std::vector<AssetDiagnostic>& output, Error& error) {
+              return SceneAssetResolver::ResolveAll(scene, context, output, error);
+          };
+    if (!resolveAll(document, assets, diagnostics, err))
+        return Result<PrefabPropagationLoadReport>::Fail(
+            err.code, err.path, err.detail);
+    return reconciled;
 }
 
 void AppendPrefabPropagationDiagnostics(

@@ -31,13 +31,6 @@ struct LoadedSource
     SourceModel model;
 };
 
-std::filesystem::path CanonicalPath(const std::filesystem::path& path)
-{
-    std::error_code ec;
-    const auto canonical = std::filesystem::weakly_canonical(path, ec);
-    return ec ? path.lexically_normal() : canonical.lexically_normal();
-}
-
 std::string DigestBytes(const std::string& bytes, const UUID& sidecar)
 {
     // A deterministic content digest is sufficient at this contract boundary;
@@ -691,7 +684,7 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
         return Result<PrefabPropagationPlan>::Fail(
             Error::MissingAsset, request.changedSource.path,
             "changed prefab source has no verified durable identity");
-    const auto targetPath = CanonicalPath(changed.resolvedPath);
+    const auto targetPath = CanonicalAssetPath(changed.resolvedPath);
 
     std::string sourceBytes;
     Error sourceError;
@@ -741,7 +734,7 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
                                       {}, rootDiagnostics);
         if (!resolved.success || resolved.effectiveId.IsNull() ||
             resolved.effectiveId != fingerprint.assetId ||
-            CanonicalPath(resolved.resolvedPath) != fingerprint.normalizedPath)
+            CanonicalAssetPath(resolved.resolvedPath) != fingerprint.normalizedPath)
             continue;
         roots.push_back(root);
     }

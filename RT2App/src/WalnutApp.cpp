@@ -4421,31 +4421,15 @@ public:
 					diagnostic.detail + "\n";
 			}
 
-			// Reconcile durable prefab component state on the temporary parsed
-			// document before the one normal asset-resolution pass. A global
-			// source failure aborts adoption; structural quarantine remains local.
-			const auto prefabReport =
-				rt2::core::ReconcilePrefabPropagationForLoad(*resultDoc, assetContext);
-			if (!prefabReport.IsOk())
-			{
-				*errorStr = "Prefab propagation failed, keeping current scene: " +
-					prefabReport.error.Format();
-				return false;
-			}
-			*prefabPropagationChanged = prefabReport.value.changed;
-			for (const auto& diagnostic : prefabReport.value.diagnostics)
-			{
-				*diagStr += "[Scene] Prefab quarantine: path='" +
-					diagnostic.prefabPath.string() + "' root=" +
-					diagnostic.rootUuid.ToString() + " reason=" +
-					diagnostic.reason + "\n";
-			}
-
 			self.SetStatus("Resolving assets (models, textures, env)...");
 			std::vector<rt2::core::AssetDiagnostic> diagnostics;
 			rt2::core::Error resolveErr;
-			bool resolveOk = rt2::core::SceneAssetResolver::ResolveAll(
-			        *resultDoc, assetContext, diagnostics, resolveErr);
+			const auto prefabReport =
+				rt2::core::RunPrefabPropagationLoadIntegration(
+					*resultDoc, assetContext, diagnostics, resolveErr);
+			const bool resolveOk = prefabReport.IsOk();
+			if (resolveOk)
+				*prefabPropagationChanged = prefabReport.value.changed;
 
 			auto formatAssetDiagnostics = [&]() {
 				for (const auto& d : diagnostics)
@@ -4462,7 +4446,7 @@ public:
 			if (!resolveOk)
 			{
 				formatAssetDiagnostics();
-				*errorStr = "Asset resolution failed, keeping current scene: " + resolveErr.Format();
+				*errorStr = "Prefab/asset resolution failed, keeping current scene: " + resolveErr.Format();
 				return false;
 			}
 
