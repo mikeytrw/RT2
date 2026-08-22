@@ -1616,25 +1616,16 @@ public:
 									});
 										if (normalizedExtension == ".rt2prefab")
 										{
-						const bool refreshedContext = IsBackgroundBusy()
-							? false : RefreshProjectAssets();
-						if (!IsBackgroundBusy() && !refreshedContext)
-						{
-							importError = { rt2::core::Error::Io, path,
-								"project asset database refresh failed before prefab propagation" };
-											return false;
-										}
-										AssetReference prefab;
-										prefab.kind = AssetKind::Prefab;
-										prefab.path = sourceRecord.sourcePath;
-										prefab.assetId = sourceRecord.assetId;
-										const auto live = m_PrefabPropagationLive.Submit(
-							m_SceneMgr, m_History, prefab, m_ProjectContext->Assets(),
-							m_Runtime.GetState(), IsBackgroundBusy(), refreshedContext,
-																		rt2::core::PrefabPropagationLiveTrigger::Explicit);
-										CapturePrefabLiveReport(live, "ExplicitReimport");
-										for (const auto& mutation : live.mutations)
-											m_SyncRouter.Route(mutation, m_SceneMgr);
+											AssetReference prefab;
+											prefab.kind = AssetKind::Prefab;
+											prefab.path = sourceRecord.sourcePath;
+											prefab.assetId = sourceRecord.assetId;
+											const bool backgroundBusy = IsBackgroundBusy();
+											const auto live = m_PrefabPropagationLiveHost.Submit(
+												m_SceneMgr, m_History, prefab, m_ProjectContext->Assets(),
+												m_Runtime.GetState(), backgroundBusy, false,
+												rt2::core::PrefabPropagationLiveTrigger::Explicit, true,
+												MakePrefabLiveHostCallbacks());
 										if (!live.error.IsOk())
 										{
 											importError = live.error;
@@ -2527,25 +2518,27 @@ private:
 				context, report.error.Format().c_str());
 	}
 
+	rt2::core::PrefabPropagationLiveHostCallbacks
+	MakePrefabLiveHostCallbacks()
+	{
+		rt2::core::PrefabPropagationLiveHostCallbacks callbacks;
+		callbacks.refreshContext = [this]() { return RefreshProjectAssets(); };
+		callbacks.publish = [this](const auto& report, const char* context) {
+			CapturePrefabLiveReport(report, context);
+		};
+		callbacks.route = [this](const auto& mutation) {
+			m_SyncRouter.Route(mutation, m_SceneMgr);
+		};
+		callbacks.status = [this](const std::string& status) {
+			m_LastStatusMsg = status;
+		};
+		return callbacks;
+	}
+
 	std::string PrefabLiveStatus(
 		const rt2::core::PrefabPropagationLiveReport& report) const
 	{
-		std::string status = "Prefab propagation ";
-		if (report.queued)
-			status += "queued";
-		else if (!report.error.IsOk())
-			status += "failed";
-		else if (report.applied)
-			status += "applied";
-		else
-			status += "no-op";
-		status += " (" + std::to_string(report.propagatedInstances) +
-			" applied, " + std::to_string(report.quarantinedInstances) +
-			" quarantined, " + std::to_string(report.noOpInstances) +
-			" no-op)";
-		if (report.applied)
-			status += "; Undo replays local scene state; a subsequent source event is independently re-evaluated";
-		return status;
+		return rt2::core::PrefabPropagationLiveHost::FormatStatus(report);
 	}
 
 	void LogScriptAssetDiagnostics(size_t base, const char* context) const
@@ -3623,6 +3616,8 @@ private:
 	std::vector<std::string>                    m_DebouncedRefreshPaths;
 	std::vector<std::string>                    m_DebouncedPrefabPaths;
 	rt2::core::PrefabPropagationLiveQueue       m_PrefabPropagationLive;
+	rt2::core::PrefabPropagationLiveHost        m_PrefabPropagationLiveHost{
+		m_PrefabPropagationLive};
 	std::vector<rt2::core::PrefabPropagationDiagnostic>
 																	m_LastPrefabPropagationDiagnostics;
 	std::chrono::steady_clock::time_point       m_LastFileChangeTime;
@@ -3866,18 +3861,10 @@ private:
 
 		// Keep the main-thread debounce buffers bounded as well as the listener
 		// queue. Losing an event promotes the cycle to a full scan.
-		while (m_DebouncedChanges.size() + m_DebouncedRefreshPaths.size() +
-			m_DebouncedPrefabPaths.size() >
-			rt2::core::kAssetWatchQueueLimit)
-		{
-			if (!m_DebouncedRefreshPaths.empty())
-				m_DebouncedRefreshPaths.erase(m_DebouncedRefreshPaths.begin());
-			else if (!m_DebouncedPrefabPaths.empty())
-				m_DebouncedPrefabPaths.erase(m_DebouncedPrefabPaths.begin());
-			else
-				m_DebouncedChanges.erase(m_DebouncedChanges.begin());
+		if (rt2::core::PrefabPropagationLiveHost::TruncateDebounce(
+			m_DebouncedChanges, m_DebouncedRefreshPaths,
+			m_DebouncedPrefabPaths, rt2::core::kAssetWatchQueueLimit))
 			m_AssetWatchMissedEvents = true;
-		}
 
 		const size_t pendingCount = m_DebouncedChanges.size() +
 			m_DebouncedRefreshPaths.size() + m_DebouncedPrefabPaths.size();
@@ -3899,26 +3886,10 @@ private:
 		{
 			if (m_ProjectContext && m_Runtime.GetState() == rt2::core::SceneRunState::Edit)
 			{
-				// Explicit reimports accepted while a worker was busy carry a
-				// refresh requirement. A suppressed watcher event must not be
-				// mistaken for a successful database refresh.
-				if (m_PrefabPropagationLive.PendingNeedsRefresh())
-				{
-					if (!RefreshProjectAssets())
-					{
-						m_LastStatusMsg =
-							"Prefab propagation queued: project asset refresh failed";
-						return;
-					}
-				}
-				const auto drained = m_PrefabPropagationLive.Drain(
+				m_PrefabPropagationLiveHost.Drain(
 					m_SceneMgr, m_History, m_ProjectContext->Assets(),
-					m_Runtime.GetState(), IsBackgroundBusy(), true);
-				CapturePrefabLiveReport(drained, "WatcherDrain");
-				for (const auto& mutation : drained.mutations)
-					m_SyncRouter.Route(mutation, m_SceneMgr);
-				if (drained.accepted || !drained.error.IsOk())
-					m_LastStatusMsg = PrefabLiveStatus(drained);
+					m_Runtime.GetState(), IsBackgroundBusy(),
+					MakePrefabLiveHostCallbacks());
 			}
 			return;
 		}
@@ -3972,28 +3943,20 @@ private:
 				prefabActivity = prefabActivity || !sources.empty();
 				for (const auto& source : sources)
 				{
-					const auto live = m_PrefabPropagationLive.Submit(
+					const auto live = m_PrefabPropagationLiveHost.Submit(
 						m_SceneMgr, m_History, source, m_ProjectContext->Assets(),
 						m_Runtime.GetState(), IsBackgroundBusy(), true,
-						rt2::core::PrefabPropagationLiveTrigger::Watcher);
-					CapturePrefabLiveReport(live, "WatcherSubmit");
-					for (const auto& mutation : live.mutations)
-						m_SyncRouter.Route(mutation, m_SceneMgr);
-					if (!live.error.IsOk())
-						m_LastStatusMsg = "Prefab propagation quarantined: " + live.error.Format();
+						rt2::core::PrefabPropagationLiveTrigger::Watcher, false,
+						MakePrefabLiveHostCallbacks());
 				}
 			}
 		}
 		if (m_ProjectContext && m_Runtime.GetState() == rt2::core::SceneRunState::Edit)
 		{
-			const auto drained = m_PrefabPropagationLive.Drain(
+			const auto drained = m_PrefabPropagationLiveHost.Drain(
 				m_SceneMgr, m_History, m_ProjectContext->Assets(),
-				m_Runtime.GetState(), IsBackgroundBusy(), true);
-			CapturePrefabLiveReport(drained, "WatcherDrain");
-			for (const auto& mutation : drained.mutations)
-				m_SyncRouter.Route(mutation, m_SceneMgr);
-			if (drained.accepted || !drained.error.IsOk())
-				m_LastStatusMsg = PrefabLiveStatus(drained);
+				m_Runtime.GetState(), IsBackgroundBusy(),
+				MakePrefabLiveHostCallbacks());
 			prefabActivity = prefabActivity || drained.accepted || !drained.error.IsOk();
 		}
 		if (!scriptChanges.empty() && refreshPaths.empty() && !prefabActivity &&
@@ -4021,7 +3984,7 @@ private:
 		// A project/asset-root transition invalidates both pending source work
 		// and last-applied suppression. Clear before touching watcher handles so
 		// close/recovery paths cannot carry identity state across contexts.
-		m_PrefabPropagationLive.Clear();
+		m_PrefabPropagationLiveHost.ResetContext();
 		m_LastPrefabPropagationDiagnostics.clear();
 		if (!m_FileWatchListener || !m_FileWatcher)
 			return;

@@ -125,6 +125,126 @@ bool PrefabPropagationLiveQueue::PendingNeedsRefresh() const noexcept
     return false;
 }
 
+void PrefabPropagationLiveHost::Publish(
+    const PrefabPropagationLiveReport& report, const char* context,
+    const PrefabPropagationLiveHostCallbacks& callbacks) const
+{
+    if (callbacks.publish)
+        callbacks.publish(report, context);
+    for (const auto& mutation : report.mutations)
+        if (callbacks.route)
+            callbacks.route(mutation);
+    // An empty drain must not erase a meaningful immediate Submit status.
+    // Every accepted Submit (including queued/no-op) and every failure has
+    // meaningful status; an empty successful drain does not.
+    if ((report.accepted || !report.error.IsOk()) && callbacks.status)
+        callbacks.status(FormatStatus(report));
+}
+
+PrefabPropagationLiveReport PrefabPropagationLiveHost::Submit(
+    SceneManager& scene, EditorCommandHistory& history,
+    const AssetReference& source, const AssetResolutionContext& assets,
+    SceneRunState state, bool backgroundBusy, bool refreshedContext,
+    PrefabPropagationLiveTrigger trigger, bool refreshBeforeSubmit,
+    const PrefabPropagationLiveHostCallbacks& callbacks,
+    const PrefabPropagationLiveHooks& hooks)
+{
+    bool contextReady = refreshedContext;
+    if (refreshBeforeSubmit && !backgroundBusy && !contextReady)
+    {
+        if (!callbacks.refreshContext || !callbacks.refreshContext())
+        {
+            PrefabPropagationLiveReport report;
+            report.error = {Error::Io, source.path,
+                "project asset database refresh failed before prefab propagation"};
+            Publish(report, trigger == PrefabPropagationLiveTrigger::Explicit
+                ? "ExplicitReimport" : "WatcherSubmit", callbacks);
+            return report;
+        }
+        contextReady = true;
+    }
+    const auto report = m_Queue.Submit(
+        scene, history, source, assets, state, backgroundBusy,
+        contextReady, trigger, hooks);
+    Publish(report, trigger == PrefabPropagationLiveTrigger::Explicit
+        ? "ExplicitReimport" : "WatcherSubmit", callbacks);
+    return report;
+}
+
+PrefabPropagationLiveReport PrefabPropagationLiveHost::Drain(
+    SceneManager& scene, EditorCommandHistory& history,
+    const AssetResolutionContext& assets, SceneRunState state,
+    bool backgroundBusy,
+    const PrefabPropagationLiveHostCallbacks& callbacks,
+    const PrefabPropagationLiveHooks& hooks)
+{
+    // A busy explicit submit is deliberately retained with requiresRefresh.
+    // Refresh is therefore part of this production drain seam, immediately
+    // before the queue can dequeue or prepare anything.
+    if (m_Queue.PendingNeedsRefresh())
+    {
+        if (!callbacks.refreshContext || !callbacks.refreshContext())
+        {
+            PrefabPropagationLiveReport report;
+            report.accepted = true;
+            report.queued = true;
+            report.error = {Error::Io, "project-assets",
+                "project asset database refresh failed before queued prefab drain"};
+            Publish(report, "WatcherDrain", callbacks);
+            return report;
+        }
+    }
+    const auto report = m_Queue.Drain(
+        scene, history, assets, state, backgroundBusy, true, hooks);
+    Publish(report, "WatcherDrain", callbacks);
+    return report;
+}
+
+bool PrefabPropagationLiveHost::TruncateDebounce(
+    std::vector<std::string>& scriptPaths,
+    std::vector<std::string>& refreshPaths,
+    std::vector<std::string>& prefabPaths,
+    std::size_t limit)
+{
+    bool discarded = false;
+    while (scriptPaths.size() + refreshPaths.size() + prefabPaths.size() > limit)
+    {
+        if (!refreshPaths.empty())
+            refreshPaths.erase(refreshPaths.begin());
+        else if (!prefabPaths.empty())
+            prefabPaths.erase(prefabPaths.begin());
+        else if (!scriptPaths.empty())
+            scriptPaths.erase(scriptPaths.begin());
+        else
+            break;
+        discarded = true;
+    }
+    return discarded;
+}
+
+std::string PrefabPropagationLiveHost::FormatStatus(
+    const PrefabPropagationLiveReport& report)
+{
+    std::string status = "Prefab propagation ";
+    if (report.queued)
+        status += "queued";
+    else if (!report.error.IsOk())
+        status += "failed";
+    else if (report.applied)
+        status += "applied";
+    else
+        status += "no-op";
+    status += " (" + std::to_string(report.propagatedInstances) +
+        " applied, " + std::to_string(report.quarantinedInstances) +
+        " quarantined, " + std::to_string(report.noOpInstances) +
+        " no-op)";
+    if (!report.error.IsOk())
+        status += "; error: " + report.error.Format();
+    if (report.applied)
+        status += "; Undo replays local scene state; a subsequent source event is independently re-evaluated";
+    return status;
+}
+
 PrefabPropagationLiveReport PrefabPropagationLiveQueue::Submit(
     SceneManager& scene, EditorCommandHistory& history,
     const AssetReference& source, const AssetResolutionContext& assets,

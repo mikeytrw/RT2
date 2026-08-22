@@ -11,6 +11,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <vector>
 
 class EditorCommandHistory;
 class SceneManager;
@@ -91,6 +92,61 @@ private:
 
     std::map<std::string, Pending> m_Pending;
     std::map<std::string, PrefabSourceFingerprint> m_LastApplied;
+};
+
+// CPU-only host orchestration shared by Walnut's explicit content-browser
+// route and its watcher route.  The host owns the control-flow decisions
+// around refresh, queueing, status publication, sync routing, bounded debounce
+// storage, and context transitions; the queue remains the immutable-plan
+// execution boundary.  Injected callbacks are deliberately narrow so tests
+// exercise this production control flow rather than a parallel test harness.
+struct PrefabPropagationLiveHostCallbacks
+{
+    std::function<bool()> refreshContext;
+    std::function<void(const PrefabPropagationLiveReport&, const char*)> publish;
+    std::function<void(const EditorMutationResult&)> route;
+    std::function<void(const std::string&)> status;
+};
+
+class PrefabPropagationLiveHost
+{
+public:
+    explicit PrefabPropagationLiveHost(PrefabPropagationLiveQueue& queue)
+        : m_Queue(queue) {}
+
+    PrefabPropagationLiveReport Submit(
+        SceneManager& scene, EditorCommandHistory& history,
+        const AssetReference& source, const AssetResolutionContext& assets,
+        SceneRunState state, bool backgroundBusy, bool refreshedContext,
+        PrefabPropagationLiveTrigger trigger, bool refreshBeforeSubmit,
+        const PrefabPropagationLiveHostCallbacks& callbacks = {},
+        const PrefabPropagationLiveHooks& hooks = {});
+
+    PrefabPropagationLiveReport Drain(
+        SceneManager& scene, EditorCommandHistory& history,
+        const AssetResolutionContext& assets, SceneRunState state,
+        bool backgroundBusy,
+        const PrefabPropagationLiveHostCallbacks& callbacks = {},
+        const PrefabPropagationLiveHooks& hooks = {});
+
+    // Truncate all three main-thread debounce buffers without ever erasing
+    // from an empty vector. Returns true when an event was discarded.
+    static bool TruncateDebounce(
+        std::vector<std::string>& scriptPaths,
+        std::vector<std::string>& refreshPaths,
+        std::vector<std::string>& prefabPaths,
+        std::size_t limit);
+
+    void ResetContext() { m_Queue.Clear(); }
+
+    static std::string FormatStatus(const PrefabPropagationLiveReport& report);
+
+private:
+    void Publish(const PrefabPropagationLiveReport& report,
+                 const char* context,
+                 const PrefabPropagationLiveHostCallbacks& callbacks) const;
+
+    PrefabPropagationLiveQueue& m_Queue;
 };
 
 // Returns only referenced prefab roots whose canonical durable source matches

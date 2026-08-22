@@ -4,28 +4,132 @@
 #include "EditorCommandHistory.h"
 #include "SceneManager.h"
 
-#include <fstream>
-#include <sstream>
+#include <algorithm>
 
 using namespace rt2::core;
 
 namespace {
 
-std::string SourceSlice(const std::string& source,
-                        const std::string& begin,
-                        const std::string& end)
-{
-    const auto beginAt = source.find(begin);
-    REQUIRE(beginAt != std::string::npos);
-    const auto endAt = source.find(end, beginAt + begin.size());
-    REQUIRE(endAt != std::string::npos);
-    return source.substr(beginAt, endAt - beginAt);
-}
-
 PrefabSourceFingerprint Fingerprint(const char* digest)
 {
     return { std::filesystem::path("C:/assets/vehicle.rt2prefab"),
              UUID::Parse("00000000-0000-4000-8000-000000000601"), digest };
+}
+
+struct EffectiveLiveFixture
+{
+    SceneManager scene;
+    EditorCommandHistory history;
+    const UUID entity = UUID::Parse(
+        "00000000-0000-4000-8000-000000000601");
+    const UUID instance = UUID::Parse(
+        "00000000-0000-4000-8000-000000000602");
+    const UUID templateId = UUID::Parse(
+        "00000000-0000-4000-8000-000000000603");
+    AssetReference source{AssetKind::Prefab, "vehicle.rt2prefab", {}, {}, instance};
+
+    EffectiveLiveFixture()
+    {
+        auto& doc = scene.AuthoringDoc();
+        const auto handle = doc.ecs.registry.create();
+        REQUIRE(doc.AssignKnownUuid(handle, entity));
+        doc.ecs.registry.emplace<NameComponent>(handle, NameComponent{"vehicle"});
+        doc.ecs.registry.emplace<Transform>(handle, Transform{});
+        doc.ecs.registry.emplace<PrefabMemberComponent>(handle,
+            PrefabMemberComponent{instance, templateId, {}});
+        doc.ecs.registry.emplace<PrefabInstanceComponent>(handle,
+            PrefabInstanceComponent{source, instance});
+        scene.NotifyAuthoringChanged();
+    }
+
+    PrefabPropagationPlan Plan(const char* digest,
+                               bool includeQuarantined = false) const
+    {
+        const auto handle = scene.FindEntityByUuid(entity);
+        const auto before = scene.AuthoringDoc().ecs.registry.get<Transform>(handle);
+        auto after = before;
+        after.translation.x += 1.0f;
+        PrefabPropagationPlan plan;
+        plan.source = Fingerprint(digest);
+        plan.documentGeneration = scene.DocumentGeneration();
+        plan.resourceGeneration = scene.ResourceGeneration();
+        plan.authoringRevision = scene.AuthoringRevision();
+        plan.authoringRevisionCaptured = true;
+        plan.meshTableExtent = scene.AuthoringDoc().ecs.meshRegistry.GetCount();
+        plan.materialTableExtent = static_cast<std::uint32_t>(
+            scene.AuthoringDoc().ecs.materials.size());
+        plan.textureTableExtent = static_cast<std::uint32_t>(
+            scene.AuthoringDoc().ecs.textures.size());
+        plan.componentOperations.push_back({
+            entity, templateId, PrefabComponentKeyFor<Transform>::value,
+            PrefabPropagationComponentValue{before},
+            PrefabPropagationComponentValue{after}});
+        plan.memberSnapshots.push_back({entity, instance, templateId, {}});
+        plan.rootSnapshots.push_back({entity, instance, source});
+        plan.instances.push_back({instance, entity,
+            PrefabPropagationInstanceDisposition::Propagate, {entity}, {}});
+        if (includeQuarantined)
+        {
+            const auto bad = UUID::Parse(
+                "00000000-0000-4000-8000-000000000604");
+            plan.instances.push_back({bad, UUID::Nil(),
+                PrefabPropagationInstanceDisposition::Quarantined, {},
+                {PrefabPropagationDiagnostic{
+                    AssetDiagnostic::Malformed, plan.source.normalizedPath,
+                    plan.source.assetId, bad, UUID::Nil(), UUID::Nil(),
+                    "synthetic quarantined sibling"}}});
+        }
+        plan.affectedEntities = {entity};
+        plan.syncImpact = SyncImpact::Transform;
+        plan.diagnostics = plan.instances.back().diagnostics;
+        REQUIRE(plan.IsEffective());
+        return plan;
+    }
+};
+
+struct HostProbe
+{
+    int refreshes = 0;
+    bool refreshResult = true;
+    std::vector<EditorMutationResult> routed;
+    std::vector<PrefabPropagationLiveReport> published;
+    std::vector<std::string> statuses;
+
+    PrefabPropagationLiveHostCallbacks Callbacks()
+    {
+        PrefabPropagationLiveHostCallbacks callbacks;
+        callbacks.refreshContext = [&] {
+            ++refreshes;
+            return refreshResult;
+        };
+        callbacks.publish = [&](const auto& report, const char*) {
+            published.push_back(report);
+        };
+        callbacks.route = [&](const auto& mutation) { routed.push_back(mutation); };
+        callbacks.status = [&](const auto& status) { statuses.push_back(status); };
+        return callbacks;
+    }
+};
+
+PrefabPropagationLiveHooks EffectiveHooks(EffectiveLiveFixture& fixture,
+                                           std::string& digest,
+                                           int& prepareCalls,
+                                           int& fingerprintCalls)
+{
+    PrefabPropagationLiveHooks hooks;
+    hooks.fingerprint = [&](const AssetReference&, const AssetResolutionContext&) {
+        ++fingerprintCalls;
+        return Result<PrefabSourceFingerprint>::Ok(Fingerprint(digest.c_str()));
+    };
+    hooks.prepare = [&](const PrefabPropagationDiscoveryRequest&) {
+        ++prepareCalls;
+        return Result<PrefabPropagationPlan>::Ok(fixture.Plan(digest.c_str()));
+    };
+    hooks.stage = [](const PrefabPropagationPlan& plan, const SceneDocument&,
+                     const AssetResolutionContext&) {
+        return Result<PrefabPropagationPlan>::Ok(plan);
+    };
+    return hooks;
 }
 
 PrefabPropagationPlan EmptyPlan(SceneManager& scene,
@@ -151,28 +255,241 @@ TEST_CASE("S6 deferred explicit work carries refresh evidence and context clear"
     CHECK_FALSE(queue.PendingNeedsRefresh());
 }
 
-TEST_CASE("S6 host path permanently names refresh, sync, diagnostics and overflow seams")
+TEST_CASE("S6 executable host applies effective explicit and watcher work")
 {
-    std::ifstream input("RT2App/src/WalnutApp.cpp");
-    REQUIRE(input.good());
-    std::ostringstream contents;
-    contents << input.rdbuf();
-    const auto source = contents.str();
-    const auto drain = SourceSlice(
-        source, "void DrainAssetWatchChanges", "bool IsNetworkWatchRoot");
-    const auto explicitRoute = SourceSlice(
-        source, "if (normalizedExtension == \".rt2prefab\")",
-        "SceneManager::EntityId imported");
-    CHECK(drain.find("PendingNeedsRefresh()") != std::string::npos);
-    CHECK(drain.find("if (!RefreshProjectAssets())") != std::string::npos);
-    CHECK(drain.find("m_SyncRouter.Route(mutation, m_SceneMgr)") !=
+    EffectiveLiveFixture fixture;
+    PrefabPropagationLiveQueue queue;
+    PrefabPropagationLiveHost host(queue);
+    HostProbe probe;
+    std::string digest = "effective";
+    int prepareCalls = 0;
+    int fingerprintCalls = 0;
+    const auto hooks = EffectiveHooks(fixture, digest, prepareCalls, fingerprintCalls);
+
+    const auto revision = fixture.scene.AuthoringRevision();
+    const auto resourceGeneration = fixture.scene.ResourceGeneration();
+    const auto applied = host.Submit(
+        fixture.scene, fixture.history, fixture.source, {}, SceneRunState::Edit,
+        false, false, PrefabPropagationLiveTrigger::Explicit, true,
+        probe.Callbacks(), hooks);
+    REQUIRE(applied.applied);
+    CHECK(probe.refreshes == 1);
+    CHECK(prepareCalls == 1);
+    CHECK(fixture.history.UndoDepthForTest() == 1);
+    CHECK(fixture.scene.AuthoringRevision() == revision + 1);
+    CHECK(fixture.scene.ResourceGeneration() == resourceGeneration);
+    REQUIRE(probe.routed.size() == 1);
+    CHECK(probe.routed.front().syncImpact == SyncImpact::Transform);
+    REQUIRE(probe.routed.front().affectedEntities.size() == 1);
+    CHECK(probe.routed.front().affectedEntities.front() == fixture.entity);
+    REQUIRE(!probe.statuses.empty());
+    CHECK(probe.statuses.back().find("1 applied") != std::string::npos);
+    CHECK(probe.statuses.back().find(
+        "Undo replays local scene state; a subsequent source event is independently re-evaluated") !=
+        std::string::npos);
+
+    const auto noOp = host.Submit(
+        fixture.scene, fixture.history, fixture.source, {}, SceneRunState::Edit,
+        false, true, PrefabPropagationLiveTrigger::Watcher, false,
+        probe.Callbacks(), hooks);
+    CHECK(noOp.noOp);
+    CHECK(probe.routed.size() == 1);
+    const auto statusAfterNoOp = probe.statuses.back();
+    const auto emptyDrain = host.Drain(
+        fixture.scene, fixture.history, {}, SceneRunState::Edit, false,
+        probe.Callbacks(), hooks);
+    CHECK_FALSE(emptyDrain.accepted);
+    CHECK(probe.statuses.back() == statusAfterNoOp);
+
+    // A genuine immediate watcher Submit uses the same host route and status
+    // publication, rather than relying on a later empty drain.
+    EffectiveLiveFixture watcherFixture;
+    PrefabPropagationLiveQueue watcherQueue;
+    PrefabPropagationLiveHost watcherHost(watcherQueue);
+    HostProbe watcherProbe;
+    std::string watcherDigest = "watcher";
+    int watcherPrepare = 0;
+    int watcherFingerprint = 0;
+    const auto watcherHooks = EffectiveHooks(
+        watcherFixture, watcherDigest, watcherPrepare, watcherFingerprint);
+    const auto watcherApplied = watcherHost.Submit(
+        watcherFixture.scene, watcherFixture.history, watcherFixture.source, {},
+        SceneRunState::Edit, false, true,
+        PrefabPropagationLiveTrigger::Watcher, false,
+        watcherProbe.Callbacks(), watcherHooks);
+    CHECK(watcherApplied.applied);
+    CHECK(watcherPrepare == 1);
+    REQUIRE(watcherProbe.routed.size() == 1);
+    CHECK(watcherProbe.statuses.back().find("applied") != std::string::npos);
+}
+
+TEST_CASE("S6 host refresh failure retains queued work and formats diagnostics")
+{
+    EffectiveLiveFixture fixture;
+    PrefabPropagationLiveQueue queue;
+    PrefabPropagationLiveHost host(queue);
+    HostProbe probe;
+    std::string digest = "deferred";
+    int prepareCalls = 0;
+    int fingerprintCalls = 0;
+    const auto hooks = EffectiveHooks(fixture, digest, prepareCalls, fingerprintCalls);
+
+    const auto queued = host.Submit(
+        fixture.scene, fixture.history, fixture.source, {}, SceneRunState::Edit,
+        true, false, PrefabPropagationLiveTrigger::Explicit, true,
+        probe.Callbacks(), hooks);
+    CHECK(queued.queued);
+    CHECK(queue.PendingCount() == 1);
+    CHECK(prepareCalls == 0);
+
+    probe.refreshResult = false;
+    const auto failedDrain = host.Drain(
+        fixture.scene, fixture.history, {}, SceneRunState::Edit, false,
+        probe.Callbacks(), hooks);
+    CHECK(failedDrain.queued);
+    CHECK_FALSE(failedDrain.error.IsOk());
+    CHECK(queue.PendingCount() == 1);
+    CHECK(probe.statuses.back().find("code=io") != std::string::npos);
+    CHECK(probe.statuses.back().find("failed before queued prefab drain") !=
           std::string::npos);
-    CHECK(explicitRoute.find("m_SyncRouter.Route(mutation, m_SceneMgr)") !=
-          std::string::npos);
-    CHECK(drain.find("m_DebouncedPrefabPaths.erase") != std::string::npos);
-    CHECK(drain.find("CapturePrefabLiveReport(drained, \"WatcherDrain\")") !=
-          std::string::npos);
-    CHECK(source.find("Undo replays local scene state; a subsequent source event is independently re-evaluated") !=
-          std::string::npos);
-    CHECK(source.find("m_PrefabPropagationLive.Clear()") != std::string::npos);
+
+    probe.refreshResult = true;
+    const auto applied = host.Drain(
+        fixture.scene, fixture.history, {}, SceneRunState::Edit, false,
+        probe.Callbacks(), hooks);
+    CHECK(applied.applied);
+    CHECK(queue.PendingCount() == 0);
+    CHECK(probe.refreshes == 2); // Failed drain, then successful drain.
+    CHECK(probe.routed.size() == 1);
+}
+
+TEST_CASE("S6 host coalesces newest, quarantines siblings, and resets identity")
+{
+    EffectiveLiveFixture fixture;
+    PrefabPropagationLiveQueue queue;
+    PrefabPropagationLiveHost host(queue);
+    HostProbe probe;
+    std::string digest = "one";
+    int prepareCalls = 0;
+    int fingerprintCalls = 0;
+    auto hooks = EffectiveHooks(fixture, digest, prepareCalls, fingerprintCalls);
+
+    const auto first = host.Submit(
+        fixture.scene, fixture.history, fixture.source, {}, SceneRunState::Playing,
+        false, true, PrefabPropagationLiveTrigger::Watcher, false,
+        probe.Callbacks(), hooks);
+    CHECK(first.queued);
+    digest = "two";
+    const auto newest = host.Submit(
+        fixture.scene, fixture.history, fixture.source, {}, SceneRunState::Paused,
+        false, true, PrefabPropagationLiveTrigger::Watcher, false,
+        probe.Callbacks(), hooks);
+    CHECK(newest.queued);
+    CHECK(queue.PendingCount() == 1);
+    CHECK(prepareCalls == 0);
+    CHECK(fixture.history.UndoDepthForTest() == 0);
+
+    const auto drained = host.Drain(
+        fixture.scene, fixture.history, {}, SceneRunState::Edit, false,
+        probe.Callbacks(), hooks);
+    CHECK(drained.applied);
+    CHECK(prepareCalls == 1);
+    CHECK(probe.routed.size() == 1);
+
+    // Context reset clears both pending work and the last-applied suppression.
+    host.ResetContext();
+    const auto again = host.Submit(
+        fixture.scene, fixture.history, fixture.source, {}, SceneRunState::Edit,
+        false, true, PrefabPropagationLiveTrigger::Watcher, false,
+        probe.Callbacks(), hooks);
+    CHECK(again.applied);
+    CHECK(probe.routed.size() == 2);
+
+    // A valid effective sibling may commit while a quarantined sibling keeps
+    // its diagnostic and count; the whole batch is not discarded.
+    EffectiveLiveFixture quarantineFixture;
+    PrefabPropagationLiveQueue quarantineQueue;
+    PrefabPropagationLiveHost quarantineHost(quarantineQueue);
+    HostProbe quarantineProbe;
+    std::string quarantineDigest = "quarantine";
+    int quarantinePrepare = 0;
+    int quarantineFingerprint = 0;
+    auto quarantineHooks = EffectiveHooks(
+        quarantineFixture, quarantineDigest, quarantinePrepare, quarantineFingerprint);
+    quarantineHooks.prepare = [&](const PrefabPropagationDiscoveryRequest&) {
+        ++quarantinePrepare;
+        return Result<PrefabPropagationPlan>::Ok(
+            quarantineFixture.Plan(quarantineDigest.c_str(), true));
+    };
+    const auto quarantined = quarantineHost.Submit(
+        quarantineFixture.scene, quarantineFixture.history,
+        quarantineFixture.source, {}, SceneRunState::Edit, false, true,
+        PrefabPropagationLiveTrigger::Watcher, false,
+        quarantineProbe.Callbacks(), quarantineHooks);
+    CHECK(quarantined.applied);
+    CHECK(quarantined.propagatedInstances == 1);
+    CHECK(quarantined.quarantinedInstances == 1);
+    REQUIRE(quarantineProbe.published.size() == 1);
+    REQUIRE(quarantineProbe.published.front().diagnostics.size() == 1);
+    CHECK(quarantineProbe.statuses.back().find("1 quarantined") != std::string::npos);
+}
+
+TEST_CASE("S6 host debounce truncation covers empty prefab and mixed buffers")
+{
+    std::vector<std::string> scripts;
+    std::vector<std::string> refresh;
+    std::vector<std::string> prefabs{"a", "b", "c"};
+    CHECK(PrefabPropagationLiveHost::TruncateDebounce(
+        scripts, refresh, prefabs, 2));
+    CHECK(prefabs.size() == 2);
+
+    scripts = {"script"};
+    refresh.clear();
+    prefabs = {"a", "b"};
+    CHECK(PrefabPropagationLiveHost::TruncateDebounce(
+        scripts, refresh, prefabs, 2));
+    CHECK(scripts.size() + prefabs.size() == 2);
+
+    scripts.clear();
+    refresh = {"refresh"};
+    prefabs.clear();
+    CHECK_FALSE(PrefabPropagationLiveHost::TruncateDebounce(
+        scripts, refresh, prefabs, 2));
+    CHECK(refresh.size() == 1);
+}
+
+TEST_CASE("S6 host rejects sidecar drift without routing or history")
+{
+    EffectiveLiveFixture fixture;
+    PrefabPropagationLiveQueue queue;
+    PrefabPropagationLiveHost host(queue);
+    HostProbe probe;
+    int fingerprintCalls = 0;
+    int prepareCalls = 0;
+    PrefabPropagationLiveHooks hooks;
+    hooks.fingerprint = [&](const AssetReference&, const AssetResolutionContext&) {
+        ++fingerprintCalls;
+        return Result<PrefabSourceFingerprint>::Ok(
+            Fingerprint(fingerprintCalls == 1 ? "before" : "drifted"));
+    };
+    hooks.prepare = [&](const PrefabPropagationDiscoveryRequest&) {
+        ++prepareCalls;
+        return Result<PrefabPropagationPlan>::Ok(
+            fixture.Plan("before"));
+    };
+    hooks.stage = [](const PrefabPropagationPlan& plan, const SceneDocument&,
+                     const AssetResolutionContext&) {
+        return Result<PrefabPropagationPlan>::Ok(plan);
+    };
+
+    const auto failed = host.Submit(
+        fixture.scene, fixture.history, fixture.source, {}, SceneRunState::Edit,
+        false, true, PrefabPropagationLiveTrigger::Watcher, false,
+        probe.Callbacks(), hooks);
+    CHECK_FALSE(failed.applied);
+    CHECK_FALSE(failed.error.IsOk());
+    CHECK(fingerprintCalls == 2);
+    CHECK(probe.routed.empty());
+    CHECK(fixture.history.UndoDepthForTest() == 0);
+    CHECK(probe.statuses.back().find("code=invalid_argument") != std::string::npos);
 }
