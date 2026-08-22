@@ -40,6 +40,9 @@
     -- Phase 8 W4 S6: live explicit/watcher queue and Edit-only drain.
     files { "src/Phase8W4S6LiveReimportTests.cpp" }
 
+    -- Phase 8 W4 S7: literal acceptance chains over the reviewed seams.
+    files { "src/Phase8W4S7AcceptanceTests.cpp" }
+
     -- Phase1A fixture generator header (header-only, included by tests).
     files { "../RT2App/src/Phase1AFixtureGenerator.h" }
 
