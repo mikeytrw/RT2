@@ -1614,21 +1614,23 @@ public:
 										normalizedExtension.begin(), [](unsigned char c) {
 										return static_cast<char>(std::tolower(c));
 									});
-									if (normalizedExtension == ".rt2prefab")
-									{
-										if (!RefreshProjectAssets())
-										{
-											importError = { rt2::core::Error::Io, path,
-												"project asset database refresh failed before prefab propagation" };
+					if (normalizedExtension == ".rt2prefab")
+					{
+						const bool refreshedContext = IsBackgroundBusy()
+							? false : RefreshProjectAssets();
+						if (!IsBackgroundBusy() && !refreshedContext)
+						{
+							importError = { rt2::core::Error::Io, path,
+								"project asset database refresh failed before prefab propagation" };
 											return false;
 										}
 										AssetReference prefab;
 										prefab.kind = AssetKind::Prefab;
 										prefab.path = sourceRecord.sourcePath;
 										prefab.assetId = sourceRecord.assetId;
-										const auto live = m_PrefabPropagationLive.Submit(
-											m_SceneMgr, m_History, prefab, m_ProjectContext->Assets(),
-											m_Runtime.GetState(), IsBackgroundBusy(), true,
+						const auto live = m_PrefabPropagationLive.Submit(
+							m_SceneMgr, m_History, prefab, m_ProjectContext->Assets(),
+							m_Runtime.GetState(), IsBackgroundBusy(), refreshedContext,
 											rt2::core::PrefabPropagationLiveTrigger::Explicit);
 										if (!live.error.IsOk())
 										{
