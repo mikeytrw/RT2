@@ -11,6 +11,17 @@ using namespace rt2::core;
 
 namespace {
 
+std::string SourceSlice(const std::string& source,
+                        const std::string& begin,
+                        const std::string& end)
+{
+    const auto beginAt = source.find(begin);
+    REQUIRE(beginAt != std::string::npos);
+    const auto endAt = source.find(end, beginAt + begin.size());
+    REQUIRE(endAt != std::string::npos);
+    return source.substr(beginAt, endAt - beginAt);
+}
+
 PrefabSourceFingerprint Fingerprint(const char* digest)
 {
     return { std::filesystem::path("C:/assets/vehicle.rt2prefab"),
@@ -147,12 +158,20 @@ TEST_CASE("S6 host path permanently names refresh, sync, diagnostics and overflo
     std::ostringstream contents;
     contents << input.rdbuf();
     const auto source = contents.str();
-    CHECK(source.find("PendingNeedsRefresh()") != std::string::npos);
-    CHECK(source.find("if (!RefreshProjectAssets())") != std::string::npos);
-    CHECK(source.find("m_SyncRouter.Route(mutation, m_SceneMgr)") !=
+    const auto drain = SourceSlice(
+        source, "void DrainAssetWatchChanges", "bool IsNetworkWatchRoot");
+    const auto explicitRoute = SourceSlice(
+        source, "if (normalizedExtension == \".rt2prefab\")",
+        "SceneManager::EntityId imported");
+    CHECK(drain.find("PendingNeedsRefresh()") != std::string::npos);
+    CHECK(drain.find("if (!RefreshProjectAssets())") != std::string::npos);
+    CHECK(drain.find("m_SyncRouter.Route(mutation, m_SceneMgr)") !=
           std::string::npos);
-    CHECK(source.find("m_DebouncedPrefabPaths.erase") != std::string::npos);
-    CHECK(source.find("CapturePrefabLiveReport") != std::string::npos);
+    CHECK(explicitRoute.find("m_SyncRouter.Route(mutation, m_SceneMgr)") !=
+          std::string::npos);
+    CHECK(drain.find("m_DebouncedPrefabPaths.erase") != std::string::npos);
+    CHECK(drain.find("CapturePrefabLiveReport(drained, \"WatcherDrain\")") !=
+          std::string::npos);
     CHECK(source.find("Undo replays local scene state; a subsequent source event is independently re-evaluated") !=
           std::string::npos);
     CHECK(source.find("m_PrefabPropagationLive.Clear()") != std::string::npos);
