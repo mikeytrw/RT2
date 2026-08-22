@@ -751,6 +751,65 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
         const auto child = document.FindByUuid(childUuid);
         REQUIRE(static_cast<std::uint32_t>(child) !=
                 static_cast<std::uint32_t>(entt::null));
+        struct ResourceTables
+        {
+            std::vector<MeshData> meshes;
+            std::vector<SceneMaterial> materials;
+            std::vector<SceneTexture> textures;
+        };
+        const auto captureTables = [&]() {
+            ResourceTables tables;
+            for (std::uint32_t i = 0; i < scene.GetECS().meshRegistry.GetCount(); ++i)
+                tables.meshes.push_back(scene.GetECS().meshRegistry.GetMesh(i));
+            tables.materials = scene.GetECS().materials;
+            tables.textures = scene.GetECS().textures;
+            return tables;
+        };
+        const auto sameTables = [](const ResourceTables& a, const ResourceTables& b) {
+            if (a.meshes.size() != b.meshes.size() ||
+                a.materials.size() != b.materials.size() ||
+                a.textures.size() != b.textures.size())
+                return false;
+            for (std::size_t i = 0; i < a.meshes.size(); ++i)
+                if (!PrefabPropagationMeshEqual(a.meshes[i], b.meshes[i])) return false;
+            for (std::size_t i = 0; i < a.materials.size(); ++i)
+                if (!PrefabCanonicalMaterialEqual(a.materials[i], b.materials[i])) return false;
+            for (std::size_t i = 0; i < a.textures.size(); ++i)
+                if (!PrefabPropagationTextureEqual(a.textures[i], b.textures[i])) return false;
+            return true;
+        };
+        const auto sameMeshRef = [](const std::optional<MeshRef>& a,
+                                    const std::optional<MeshRef>& b) {
+            return a.has_value() == b.has_value() &&
+                (!a || (a->meshIndex == b->meshIndex &&
+                        a->materialIndex == b->materialIndex));
+        };
+        const auto samePrimitive = [](const PrimitiveComponent& a,
+                                      const PrimitiveComponent& b) {
+            return a.kind == b.kind && a.size == b.size &&
+                a.segments == b.segments && a.rings == b.rings;
+        };
+        const auto sameImported = [](const ImportedMeshSourceComponent& a,
+                                     const ImportedMeshSourceComponent& b) {
+            return a.model.kind == b.model.kind && a.model.path == b.model.path &&
+                a.model.importSettings == b.model.importSettings &&
+                a.model.sourceKey == b.model.sourceKey &&
+                a.model.assetId == b.model.assetId;
+        };
+        const auto beforeTables = captureTables();
+        const std::optional<PrimitiveComponent> beforePrimitive =
+            document.ecs.registry.all_of<PrimitiveComponent>(child)
+                ? std::optional<PrimitiveComponent>(document.ecs.registry.get<PrimitiveComponent>(child))
+                : std::nullopt;
+        const std::optional<ImportedMeshSourceComponent> beforeImported =
+            document.ecs.registry.all_of<ImportedMeshSourceComponent>(child)
+                ? std::optional<ImportedMeshSourceComponent>(
+                    document.ecs.registry.get<ImportedMeshSourceComponent>(child))
+                : std::nullopt;
+        const std::optional<MeshRef> beforeMeshRef =
+            document.ecs.registry.all_of<MeshRef>(child)
+                ? std::optional<MeshRef>(document.ecs.registry.get<MeshRef>(child))
+                : std::nullopt;
         const auto beforeMeshes = scene.GetMeshRegistryCount();
         const auto beforeMaterials = scene.GetMaterialCount();
         const auto beforeTextures = scene.GetECS().textures.size();
@@ -772,6 +831,38 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
             for (std::size_t i = 0; i < count; ++i)
                 CHECK(ownership.rebase.sceneSlots[i].value ==
                       ownership.rebase.sceneBeforeExtent + i);
+        }
+        const auto stagedRef = std::find_if(staged.value.meshRefOperations.begin(),
+            staged.value.meshRefOperations.end(), [&](const auto& operation) {
+                return operation.entityUuid == childUuid;
+            });
+        REQUIRE(stagedRef != staged.value.meshRefOperations.end());
+        REQUIRE(stagedRef->after.has_value());
+        const auto importedOperation = std::find_if(
+            staged.value.componentOperations.begin(), staged.value.componentOperations.end(),
+            [&](const auto& operation) {
+                return operation.entityUuid == childUuid &&
+                    operation.key.wire() == PrefabWireKeys::kImportedSource;
+            });
+        const auto primitiveOperation = std::find_if(
+            staged.value.componentOperations.begin(), staged.value.componentOperations.end(),
+            [&](const auto& operation) {
+                return operation.entityUuid == childUuid &&
+                    operation.key.wire() == PrefabWireKeys::kPrimitive;
+            });
+        std::optional<ImportedMeshSourceComponent> expectedImported;
+        std::optional<PrimitiveComponent> expectedPrimitive;
+        if (sourceImported)
+        {
+            REQUIRE(importedOperation != staged.value.componentOperations.end());
+            REQUIRE(importedOperation->after.has_value());
+            expectedImported = std::get<ImportedMeshSourceComponent>(*importedOperation->after);
+        }
+        else
+        {
+            REQUIRE(primitiveOperation != staged.value.componentOperations.end());
+            REQUIRE(primitiveOperation->after.has_value());
+            expectedPrimitive = std::get<PrimitiveComponent>(*primitiveOperation->after);
         }
         const auto fingerprint = staged.value.source;
         EditorCommandHistory history;
@@ -807,28 +898,53 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
             const auto& ref = document.ecs.registry.get<MeshRef>(afterEntity);
             REQUIRE(ref.meshIndex >= 0);
             REQUIRE(ref.materialIndex >= 0);
-            CHECK(static_cast<std::size_t>(ref.meshIndex) < scene.GetMeshRegistryCount());
+        CHECK(static_cast<std::size_t>(ref.meshIndex) < scene.GetMeshRegistryCount());
             CHECK(static_cast<std::size_t>(ref.materialIndex) < scene.GetMaterialCount());
-            const auto stagedRef = std::find_if(staged.value.meshRefOperations.begin(),
-                staged.value.meshRefOperations.end(), [&](const auto& operation) {
-                    return operation.entityUuid == childUuid;
-                });
-            REQUIRE(stagedRef != staged.value.meshRefOperations.end());
-            REQUIRE(stagedRef->after.has_value());
             CHECK(ref.meshIndex == stagedRef->after->meshIndex);
             CHECK(ref.materialIndex == stagedRef->after->materialIndex);
+            const auto& importedValue =
+                document.ecs.registry.get<ImportedMeshSourceComponent>(afterEntity);
+            REQUIRE(expectedImported.has_value());
+            CHECK(sameImported(importedValue, *expectedImported));
         }
         else
         {
             REQUIRE(hasPrimitive);
             const auto& primitive =
                 document.ecs.registry.get<PrimitiveComponent>(afterEntity);
-            CHECK(primitive.kind == PrimitiveComponent::Sphere);
-            CHECK(primitive.size == doctest::Approx(3.0f));
-            CHECK(primitive.segments == 8);
-            CHECK(primitive.rings == 6);
+            REQUIRE(expectedPrimitive.has_value());
+            CHECK(samePrimitive(primitive, *expectedPrimitive));
+            REQUIRE(document.ecs.registry.all_of<MeshRef>(afterEntity));
+            const auto& ref = document.ecs.registry.get<MeshRef>(afterEntity);
+            CHECK(ref.meshIndex == stagedRef->after->meshIndex);
+            CHECK(ref.materialIndex == stagedRef->after->materialIndex);
             CHECK_FALSE(hasImported);
         }
+        const auto afterTables = captureTables();
+        CHECK(afterTables.meshes.size() == beforeTables.meshes.size() + ownedMeshes);
+        CHECK(afterTables.materials.size() == beforeTables.materials.size() + ownedMaterials);
+        CHECK(afterTables.textures.size() == beforeTables.textures.size() + ownedTextures);
+        for (std::size_t i = 0; i < beforeTables.meshes.size(); ++i)
+            CHECK(PrefabPropagationMeshEqual(afterTables.meshes[i], beforeTables.meshes[i]));
+        for (std::size_t i = 0; i < beforeTables.materials.size(); ++i)
+            CHECK(PrefabCanonicalMaterialEqual(afterTables.materials[i], beforeTables.materials[i]));
+        for (std::size_t i = 0; i < beforeTables.textures.size(); ++i)
+            CHECK(PrefabPropagationTextureEqual(afterTables.textures[i], beforeTables.textures[i]));
+        for (const auto& ownership : staged.value.resourceOwnership)
+            for (std::size_t i = 0; i < ownership.rebase.sceneSlots.size(); ++i)
+            {
+                const auto slot = ownership.rebase.sceneSlots[i].value;
+                const auto& payload = ownership.rebase.owned.Entries()[i].decoded;
+                if (ownership.rebase.kind == PrefabPropagationResourceKind::Mesh)
+                    CHECK(PrefabPropagationMeshEqual(afterTables.meshes[slot],
+                        std::get<MeshData>(payload)));
+                else if (ownership.rebase.kind == PrefabPropagationResourceKind::Material)
+                    CHECK(PrefabCanonicalMaterialEqual(afterTables.materials[slot],
+                        std::get<SceneMaterial>(payload)));
+                else
+                    CHECK(PrefabPropagationTextureEqual(afterTables.textures[slot],
+                        std::get<SceneTexture>(payload)));
+            }
         REQUIRE(history.Undo(scene).success);
         const auto undone = scene.FindEntityByUuid(childUuid);
         REQUIRE(static_cast<std::uint32_t>(undone) !=
@@ -836,8 +952,25 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
         CHECK(scene.GetMeshRegistryCount() == afterMeshes);
         CHECK(scene.GetMaterialCount() == afterMaterials);
         CHECK(scene.GetECS().textures.size() == afterTextures);
-        CHECK(document.ecs.registry.all_of<PrimitiveComponent>(undone) == sourceImported);
-        CHECK(document.ecs.registry.all_of<ImportedMeshSourceComponent>(undone) == !sourceImported);
+        const std::optional<PrimitiveComponent> undonePrimitive =
+            document.ecs.registry.all_of<PrimitiveComponent>(undone)
+                ? std::optional<PrimitiveComponent>(document.ecs.registry.get<PrimitiveComponent>(undone))
+                : std::nullopt;
+        const std::optional<ImportedMeshSourceComponent> undoneImported =
+            document.ecs.registry.all_of<ImportedMeshSourceComponent>(undone)
+                ? std::optional<ImportedMeshSourceComponent>(
+                    document.ecs.registry.get<ImportedMeshSourceComponent>(undone))
+                : std::nullopt;
+        const std::optional<MeshRef> undoneMeshRef =
+            document.ecs.registry.all_of<MeshRef>(undone)
+                ? std::optional<MeshRef>(document.ecs.registry.get<MeshRef>(undone))
+                : std::nullopt;
+        CHECK(undonePrimitive.has_value() == beforePrimitive.has_value());
+        CHECK(undoneImported.has_value() == beforeImported.has_value());
+        if (undonePrimitive) { REQUIRE(beforePrimitive); CHECK(samePrimitive(*undonePrimitive, *beforePrimitive)); }
+        if (undoneImported) { REQUIRE(beforeImported); CHECK(sameImported(*undoneImported, *beforeImported)); }
+        CHECK(sameMeshRef(undoneMeshRef, beforeMeshRef));
+        CHECK(sameTables(captureTables(), afterTables));
         REQUIRE(history.Redo(scene).success);
         const auto redone = scene.FindEntityByUuid(childUuid);
         REQUIRE(static_cast<std::uint32_t>(redone) !=
@@ -845,8 +978,25 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
         CHECK(scene.GetMeshRegistryCount() == afterMeshes);
         CHECK(scene.GetMaterialCount() == afterMaterials);
         CHECK(scene.GetECS().textures.size() == afterTextures);
-        CHECK(document.ecs.registry.all_of<PrimitiveComponent>(redone) == !sourceImported);
-        CHECK(document.ecs.registry.all_of<ImportedMeshSourceComponent>(redone) == sourceImported);
+        const std::optional<PrimitiveComponent> redonePrimitive =
+            document.ecs.registry.all_of<PrimitiveComponent>(redone)
+                ? std::optional<PrimitiveComponent>(document.ecs.registry.get<PrimitiveComponent>(redone))
+                : std::nullopt;
+        const std::optional<ImportedMeshSourceComponent> redoneImported =
+            document.ecs.registry.all_of<ImportedMeshSourceComponent>(redone)
+                ? std::optional<ImportedMeshSourceComponent>(
+                    document.ecs.registry.get<ImportedMeshSourceComponent>(redone))
+                : std::nullopt;
+        const std::optional<MeshRef> redoneMeshRef =
+            document.ecs.registry.all_of<MeshRef>(redone)
+                ? std::optional<MeshRef>(document.ecs.registry.get<MeshRef>(redone))
+                : std::nullopt;
+        CHECK(redonePrimitive.has_value() == expectedPrimitive.has_value());
+        CHECK(redoneImported.has_value() == expectedImported.has_value());
+        if (redonePrimitive) { REQUIRE(expectedPrimitive); CHECK(samePrimitive(*redonePrimitive, *expectedPrimitive)); }
+        if (redoneImported) { REQUIRE(expectedImported); CHECK(sameImported(*redoneImported, *expectedImported)); }
+        CHECK(sameMeshRef(redoneMeshRef, stagedRef->after));
+        CHECK(sameTables(captureTables(), afterTables));
     };
     runTransition(true, false, 0);
     runTransition(false, true, 1);
