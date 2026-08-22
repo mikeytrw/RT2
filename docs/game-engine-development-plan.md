@@ -15618,3 +15618,112 @@ non-Claude re-review of `c7af60f..a605ef0` before final CLEAN closure.
 > F3 range note. The required independent non-Claude review is of
 > `c7af60f..HEAD` at closure and must include F1, F2, and F3, not only the range
 > ending at `a605ef0`.
+
+### Phase 8 W4 S7 — acceptance closure (2026-08-22)
+
+This is an append-only W4 closure record grounded against clean S6 commit
+`aabdef2` (`Phase 8 W4 S6: preserve queued refresh evidence`) on branch
+`phase8-w4-s7-acceptance-closure`. It records the acceptance evidence as it
+exists in code; it does not retroactively rewrite the earlier W4 period
+records. No production source was changed for S7: the preceding S1-S6
+implementation and fixup commits already contain the complete production path,
+and the existing tests execute the literal acceptance chains rather than only
+token or isolated-source checks.
+
+#### Grounded A-case matrix
+
+| Contract case | Literal acceptance evidence (current file:line) |
+|---|---|
+| A1 imported propagation, three real textured instances, save/reload/resolve | `RT2Tests/src/Phase8W3OverrideTests.cpp:14090-14392` generates a textured GLB, creates a root+imported-mesh prefab, instantiates three UUID-bearing members, applies one production material override, saves, reloads, calls `SceneAssetResolver::ResolveAll`, and asserts exact table extents, resolved indices, markers, member/template IDs and deep material values. Release focused result: 1/1, 153/153. |
+| A2 optional presence/absence | `RT2Tests/src/Phase8W4S3ReconciliationTests.cpp:288-497` covers all marker/presence states and the protected no-op path. |
+| A3 authored=false and marker precedence | `RT2Tests/src/Phase8W4S3ReconciliationTests.cpp:625-703` asserts explicit absence, authored state, and canonical replacement semantics. |
+| A4 primitive recipe/marker atomic command | `RT2Tests/src/Phase8W4S4ResourceCommandTests.cpp:282-309` executes and undoes the local primitive recipe and marker transaction. |
+| A5 imported-source rebinding, material precedence and quarantine | `RT2Tests/src/Phase8W4S3ReconciliationTests.cpp:704-874` proves imported-source authority, derived MeshRef, provenance/material conflict quarantine and valid-sibling continuation; resource material precedence is exercised through `RT2Tests/src/Phase8W4S4ResourceCommandTests.cpp:350-587`. |
+| A6 instance-local Script UUID remap | `RT2Tests/src/Phase8W4S3ReconciliationTests.cpp:498-624` asserts deterministic remapping and preservation of non-local fields. |
+| A7 root/child naming | `RT2Tests/src/Phase8W4S3ReconciliationTests.cpp:498-544` asserts deterministic root/child naming in the same executable reconciliation path. |
+| A8 whole-instance quarantine with valid sibling continuation | `RT2Tests/src/Phase8W4S2DiscoveryTests.cpp:577-784` and `RT2Tests/src/Phase8W4S4ResourceCommandTests.cpp:502-587` assert structural isolation; `RT2Tests/src/Phase8W4S4ResourceCommandTests.cpp:768-816` proves malformed root isolation does not poison the valid sibling. |
+| A9 stale plan dimensions and zero mutation | `RT2Tests/src/Phase8W4S4ResourceCommandTests.cpp:158-281` covers value, fingerprint, document/resource generation, revision, entities, links, markers and before-value stale failures with complete snapshots; `:680-723` covers revision zero and zero-to-one drift. |
+| A10 append-only ownership and execute/undo/redo counts | `RT2Tests/src/Phase8W4S4ResourceCommandTests.cpp:83-157` and `:588-622` assert immutable owned slots, generations, history, undo and redo reuse. |
+| A11 load/recovery/explicit/watcher/Play equivalence | Load and recovery are literal host flows at `RT2Tests/src/Phase8W4S5LoadIntegrationTests.cpp:490-569` and host adoption at `:755-823`; live explicit/watcher, queue, Play/Paused, newest coalescing, undo re-evaluation and context reset are executable at `RT2Tests/src/Phase8W4S6LiveReimportTests.cpp:168-755`. |
+| A12 global transactional failure | `RT2Tests/src/Phase8W4S2DiscoveryTests.cpp:785-857`, `RT2Tests/src/Phase8W4S4ResourceCommandTests.cpp:502-587`, and `RT2Tests/src/Phase8W4S5LoadIntegrationTests.cpp:521-536` assert global failure, quarantine and byte/deep zero mutation. |
+| A13 provenance transitions | `RT2Tests/src/Phase8W4S3ReconciliationTests.cpp:746-874` asserts clean transitions, conflict quarantine and imported-only material conflict behavior. |
+
+Every W4 review-named production fault was exercised as a compiling RED
+mutation, restored byte-for-byte, and rerun GREEN in its owning S1-S6 ticket;
+the final S6 refresh-evidence mutant is recorded by the focused alias tests at
+`RT2Tests/src/Phase8W4S6LiveReimportTests.cpp:453-549`. S7 adds no second
+production implementation or duplicate seam because the matrix above reaches
+the already-reviewed production paths directly. The older W3 A1 helper is
+included as evidence only because it is a literal end-to-end chain and its
+membership/identity assertions were independently strengthened and rerun.
+
+#### Current measured baseline and gates
+
+The authoritative current baseline at clean S6 is **1,050/1,050 cases and
+155,122/155,122 assertions** in both Release and Debug. Relative to the prior
+W3 F1 baseline of 977/977 and 153,310/153,310, this is **+73 cases and +1,812
+assertions**; the old figures in the historical W3 section are superseded by
+this measurement, not edited.
+
+| Gate | Release | Debug |
+|---|---|---|
+| Focused W4 filter | 63/63 cases, 1,688/1,688 assertions | 63/63 cases, 1,688/1,688 assertions |
+| Full `RT2Tests.exe` | 1,050/1,050; 155,122/155,122 | 1,050/1,050; 155,122/155,122 |
+| Real textured A1 | 1/1; 153/153 | rerun with the same source and focused case |
+| Production changes | none in S7; S1-S6 production remains at `aabdef2` | same |
+
+All prior required S1-S6 runtime evidence remains attached to the clean
+commit range: solution Release/Debug builds, `run_script_test.ps1`,
+`run_slice_test.ps1`, `run_recovery_test.ps1`, direct SliceRunner standalone
+and project modes, Graphify, checked temporary cleanup, fixture restoration,
+process audits and `git diff --check`. No S7 mutation left a fixture, process,
+temporary directory or authored production diff.
+
+#### Review ranges and closure boundary
+
+The independent CLEAN review sequence is: S1 `2a116b3..b4d5868`; S2
+`3d52769..34780e2..9d07473`; S3 `9d70ac6..1010d0d`; S4
+`87136d8..c0fca279..edad207b`; S5 `dc7ea65..27d3436..9dc110f..40b20c7`; and
+S6 `2d02728..f522404..469dd5..76f70a9..34084ba..e2b8fe9..fb17da1..aabdef2`.
+Those ranges include the bounded fixups and the named RED/GREEN evidence that
+closed each review finding.
+
+W4 is closed at the tested boundary above. S7 delivers acceptance execution,
+measurements and this verification record only. W5 revert/apply/unpack,
+W6 prefab UI, nested-prefab topology, child add/delete/UUID invention,
+per-property override granularity, and any S8+ work are explicitly not
+delivered or inferred. No merge, push or PR was performed.
+
+#### S7 acceptance-test addendum (supersedes the provisional matrix above)
+
+The initial matrix was deliberately stopped and audited when it became clear
+that the older W3 A1 helper did not edit the durable prefab source after
+instantiation. The following four new tests are the authoritative S7 literal
+chains, all in `RT2Tests/src/Phase8W4S7AcceptanceTests.cpp`:
+
+| Case | Test and exact chain/assertions |
+|---|---|
+| A1 + A5 | `Phase 8 W4 S7 A1: source edit propagates through prepare stage command and reload` (`:253-523`) creates a real textured GLB, a root+imported member prefab, three instances, a production local retint marker, edits source Transform/Visibility/Material, runs Prepare→Stage→`EditorCommandHistory`, saves/reloads/`ResolveAll`, and checks all three durable transforms/visibility, exact resolved resource rows, target-only local material. Its continuation (`:430-523`) rebinds to a replacement GLB, verifies two propagated/one quarantined instance with diagnostics, valid-sibling continuation, replacement source identity and retained local material precedence. **105/105 assertions.** |
+| A10 | `Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and history counts` (`:525-647`) compares serialized before/after/undo/redo bytes, exact affected UUID and `SyncImpact`, append-only mesh residency, deep mesh payload, revision/resource-generation increments, one fingerprint read, history depths, and a silent no-op with unchanged revision/generation/history. **32/32 assertions.** |
+| A13 | `Phase 8 W4 S7 A13: provenance transitions and material conflict quarantine are literal` (`:649-749`) table-drives primitive→imported and imported→primitive operation presence/removal, then runs imported/material-marker conflict quarantine beside a valid sibling and asserts disposition, affected-entity erasure/continuation and diagnostics. **28/28 assertions.** |
+| A11 | `Phase 8 W4 S7 A11: load recovery explicit watcher and Play routes converge` (`:751-878`) runs production scene-open and recovery orchestration with one subsequent resolver each, then the shared live host for explicit Edit, watcher Edit, and watcher Play→Edit drain. It asserts canonical transform equality, Play zero mutation, one history entry, one routed mutation, publication and applied counts. **38/38 assertions.** |
+
+The four tests add **4 cases and 203 assertions**. The measured W4 focused
+filter is therefore **67/67 cases and 1,891/1,891 assertions** in both
+Release and Debug. The new focused S7 filter is **4/4 cases and 203/203
+assertions** in both configurations. The full-suite baseline after this
+acceptance-only addition is **1,054/1,054 cases and 155,325/155,325
+assertions** in both configurations (the clean S6 baseline was 1,050 and
+155,122). The earlier provisional A1 citation remains historical evidence for
+the resolver material-row seam; it is no longer used as the W4 A1 closure
+claim.
+
+Independent compiling production RED/GREEN probes for the new junctions were
+run and restored byte-for-byte: returning before resource staging made A1 fail
+at `Phase8W4S7AcceptanceTests.cpp:356` (1 failed case, 1 failed assertion);
+dropping explicit host submission made A11 fail at `:858` and its route/count
+checks (1 case, 6 failed assertions); re-appending owned slots on redo made
+A10 fail at `:602` (1 failed assertion); and admitting a malformed discovery
+instance made A13 fail at `:727` (1 failed assertion). The production diff is
+empty after each restoration. Existing S1-S6 named RED/GREEN evidence remains
+the independent proof for the other A cases and review fixups.
