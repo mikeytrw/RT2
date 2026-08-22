@@ -15727,3 +15727,47 @@ A10 fail at `:602` (1 failed assertion); and admitting a malformed discovery
 instance made A13 fail at `:727` (1 failed assertion). The production diff is
 empty after each restoration. Existing S1-S6 named RED/GREEN evidence remains
 the independent proof for the other A cases and review fixups.
+
+#### S7 pre-merge architectural quality addendum (2026-08-22)
+
+The bounded pre-merge recommendations from the architectural review at
+`aabdef2` were applied after the S7 acceptance commits. This addendum
+supersedes the earlier S7 statement that production remained frozen; no
+accepted propagation behavior or W5/W6 boundary was broadened.
+
+The command source reader is now a `Result<PrefabSourceFingerprint>` at
+`RT2App/src/PrefabPropagationCommand.h:18-23`. `Execute` forwards the
+original structured I/O/resolve/sidecar error at
+`RT2App/src/PrefabPropagationCommand.cpp:201-212`, while a successful digest
+mismatch still reports the distinct stale-fingerprint error. The permanent
+S4 stale-state case asserts exact `Error::Io`, path and detail at
+`RT2Tests/src/Phase8W4S4ResourceCommandTests.cpp:215-231`; a compiling
+replacement-to-generic-stale mutant produced **1 failed case and 3 failed
+assertions**, then was restored and the case returned GREEN.
+
+The deeply nested Walnut prefab reimport branch now delegates to the named
+`ReimportPrefabFromContentBrowser` method at
+`RT2App/src/WalnutApp.cpp:1617-1619,2500-2530`; its explicit live-host,
+status, error and report behavior is unchanged. Generic script/refresh/prefab
+debounce truncation now belongs to the asset-watch policy boundary as
+`TruncateAssetWatchBuffers` at `RT2App/src/AssetWatchPolicy.h:75-80` and
+`:290-312`, with Walnut calling that policy at `RT2App/src/WalnutApp.cpp:3887`.
+The permanent S6 buffer case remains at
+`RT2Tests/src/Phase8W4S6LiveReimportTests.cpp:733-752`; a compiling omission
+mutant produced **1 failed case and 2 failed assertions**, then was restored
+and GREEN.
+
+Unused compatibility aliases `DiscoverPrefabDependents` and
+`ResolvePrefabPropagationResources` were removed from their headers, and the
+test-only `PrefabPropagationResult` plus its S1-only equality assertions were
+removed. The stale `future W4` contract wording is corrected at
+`RT2App/src/PrefabPropagationContracts.h:29-31`. No lifecycle-plan,
+component-adapter, queue-ownership, outcome-model, diagnostic-retention,
+performance, W5, W6, topology, nested-prefab or S8+ refactor was performed.
+
+The post-recommendation focused W4 result is **67/67 cases and 1,894/1,894
+assertions** in both Release and Debug. Full `RT2Tests.exe` is **1,054/1,054
+cases and 155,328/155,328 assertions** in both configurations. Both solution
+builds completed with 0 errors; scripts, recovery, and all four direct
+SliceRunner Release/Debug scene/project modes passed. Production source and
+the tracked fixture were restored/verified before this record was appended.
