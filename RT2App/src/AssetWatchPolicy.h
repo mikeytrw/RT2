@@ -70,6 +70,14 @@ private:
 constexpr size_t kAssetWatchQueueLimit = 100;
 constexpr int kAssetWatchDebounceMilliseconds = 100;
 
+// Apply the generic main-thread debounce retention policy across script,
+// refresh, and prefab buffers. Returns true when older events were discarded.
+bool TruncateAssetWatchBuffers(
+    std::vector<std::string>& scriptPaths,
+    std::vector<std::string>& refreshPaths,
+    std::vector<std::string>& prefabPaths,
+    std::size_t limit);
+
 enum class AssetWatchDriveKind
 {
     Local,

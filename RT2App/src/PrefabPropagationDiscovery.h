@@ -60,12 +60,6 @@ struct PrefabPropagationDiscoveryRequest
 Result<PrefabPropagationPlan> PreparePrefabPropagation(
     const PrefabPropagationDiscoveryRequest& request);
 
-inline Result<PrefabPropagationPlan> DiscoverPrefabDependents(
-    const PrefabPropagationDiscoveryRequest& request)
-{
-    return PreparePrefabPropagation(request);
-}
-
 } // namespace rt2::core
 
 #endif // RT2_PREFAB_PROPAGATION_DISCOVERY_H

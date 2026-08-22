@@ -22,12 +22,6 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
     const SceneDocument& live,
     const AssetResolutionContext& assets);
 
-inline Result<PrefabPropagationPlan> ResolvePrefabPropagationResources(
-    const PrefabPropagationPlan& durablePlan,
-    const SceneDocument& live,
-    const AssetResolutionContext& assets)
-{ return StagePrefabPropagationResources(durablePlan, live, assets); }
-
 // Applies only durable component operations to a temporary parsed document.
 // The caller invokes this before the single normal ResolveAll pass.  All
 // source preparation is completed before any write, so a global source failure

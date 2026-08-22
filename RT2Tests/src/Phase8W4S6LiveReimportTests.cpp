@@ -1,6 +1,7 @@
 #include <doctest/doctest.h>
 
 #include "PrefabPropagationLive.h"
+#include "AssetWatchPolicy.h"
 #include "EditorCommandHistory.h"
 #include "SceneManager.h"
 
@@ -734,21 +735,21 @@ TEST_CASE("S6 host debounce truncation covers empty prefab and mixed buffers")
     std::vector<std::string> scripts;
     std::vector<std::string> refresh;
     std::vector<std::string> prefabs{"a", "b", "c"};
-    CHECK(PrefabPropagationLiveHost::TruncateDebounce(
+    CHECK(TruncateAssetWatchBuffers(
         scripts, refresh, prefabs, 2));
     CHECK(prefabs.size() == 2);
 
     scripts = {"script"};
     refresh.clear();
     prefabs = {"a", "b"};
-    CHECK(PrefabPropagationLiveHost::TruncateDebounce(
+    CHECK(TruncateAssetWatchBuffers(
         scripts, refresh, prefabs, 2));
     CHECK(scripts.size() + prefabs.size() == 2);
 
     scripts.clear();
     refresh = {"refresh"};
     prefabs.clear();
-    CHECK_FALSE(PrefabPropagationLiveHost::TruncateDebounce(
+    CHECK_FALSE(TruncateAssetWatchBuffers(
         scripts, refresh, prefabs, 2));
     CHECK(refresh.size() == 1);
 }

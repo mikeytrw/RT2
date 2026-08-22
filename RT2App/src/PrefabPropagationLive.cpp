@@ -107,8 +107,7 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Apply(
     }
 
     const auto sourceReader = [hooks, source, assets]() {
-        const auto current = hooks.fingerprint(source, assets);
-        return current.IsOk() ? current.value : PrefabSourceFingerprint{};
+        return hooks.fingerprint(source, assets);
     };
     auto mutation = history.Execute(
         std::make_unique<PrefabPropagationCommand>(staged.value, sourceReader),
@@ -274,28 +273,6 @@ PrefabPropagationLiveReport PrefabPropagationLiveHost::Drain(
         scene, history, context.value.View(), state, backgroundBusy, true, hooks);
     Publish(report, "WatcherDrain", callbacks);
     return report;
-}
-
-bool PrefabPropagationLiveHost::TruncateDebounce(
-    std::vector<std::string>& scriptPaths,
-    std::vector<std::string>& refreshPaths,
-    std::vector<std::string>& prefabPaths,
-    std::size_t limit)
-{
-    bool discarded = false;
-    while (scriptPaths.size() + refreshPaths.size() + prefabPaths.size() > limit)
-    {
-        if (!refreshPaths.empty())
-            refreshPaths.erase(refreshPaths.begin());
-        else if (!prefabPaths.empty())
-            prefabPaths.erase(prefabPaths.begin());
-        else if (!scriptPaths.empty())
-            scriptPaths.erase(scriptPaths.begin());
-        else
-            break;
-        discarded = true;
-    }
-    return discarded;
 }
 
 std::string PrefabPropagationLiveHost::FormatStatus(

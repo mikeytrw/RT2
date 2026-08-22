@@ -16,7 +16,7 @@ class PrefabPropagationCommand final : public IEditorCommand
 {
 public:
     using SourceFingerprintReader =
-        std::function<rt2::core::PrefabSourceFingerprint()>;
+        std::function<rt2::core::Result<rt2::core::PrefabSourceFingerprint>()>;
 
     explicit PrefabPropagationCommand(
         rt2::core::PrefabPropagationPlan plan,

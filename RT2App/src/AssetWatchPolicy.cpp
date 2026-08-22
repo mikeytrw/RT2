@@ -287,4 +287,26 @@ AssetWatchRefreshAction DecideWatchRefreshAction(
     return AssetWatchRefreshAction::NoOp;
 }
 
+bool TruncateAssetWatchBuffers(
+    std::vector<std::string>& scriptPaths,
+    std::vector<std::string>& refreshPaths,
+    std::vector<std::string>& prefabPaths,
+    std::size_t limit)
+{
+    bool discarded = false;
+    while (scriptPaths.size() + refreshPaths.size() + prefabPaths.size() > limit)
+    {
+        if (!refreshPaths.empty())
+            refreshPaths.erase(refreshPaths.begin());
+        else if (!prefabPaths.empty())
+            prefabPaths.erase(prefabPaths.begin());
+        else if (!scriptPaths.empty())
+            scriptPaths.erase(scriptPaths.begin());
+        else
+            break;
+        discarded = true;
+    }
+    return discarded;
+}
+
 } // namespace rt2::core

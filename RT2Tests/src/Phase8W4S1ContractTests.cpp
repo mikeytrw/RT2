@@ -464,13 +464,4 @@ TEST_CASE("Phase 8 W4 S1: plan and result equality cover complete durable state"
     b.syncImpact = SyncImpact::Material;
     CHECK_FALSE(a == b);
 
-    PrefabPropagationResult result;
-    result.success = true;
-    result.effective = true;
-    result.disposition = PrefabPropagationInstanceDisposition::Propagate;
-    result.syncImpact = SyncImpact::Structural;
-    auto resultCopy = result;
-    CHECK(result == resultCopy);
-    resultCopy.resourceGeneration = 1;
-    CHECK_FALSE(result == resultCopy);
 }

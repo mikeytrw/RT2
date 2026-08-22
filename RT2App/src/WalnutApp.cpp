@@ -1615,29 +1615,8 @@ public:
 										return static_cast<char>(std::tolower(c));
 									});
 										if (normalizedExtension == ".rt2prefab")
-										{
-											AssetReference prefab;
-											prefab.kind = AssetKind::Prefab;
-											prefab.path = sourceRecord.sourcePath;
-											prefab.assetId = sourceRecord.assetId;
-							const bool backgroundBusy = IsBackgroundBusy();
-							const auto live = m_PrefabPropagationLiveHost.Submit(
-								m_SceneMgr, m_History, prefab,
-								m_Runtime.GetState(), backgroundBusy, false,
-												rt2::core::PrefabPropagationLiveTrigger::Explicit, true,
-												MakePrefabLiveHostCallbacks());
-										if (!live.error.IsOk())
-										{
-											importError = live.error;
-											m_LastStatusMsg = PrefabLiveStatus(live);
-											return false;
-										}
-											report.changed = live.applied;
-										report.noOp = live.queued || (live.noOp && !live.applied);
-											report.partialFailure = live.quarantinedInstances != 0;
-											m_LastStatusMsg = PrefabLiveStatus(live);
-										return true;
-									}
+											return ReimportPrefabFromContentBrowser(
+												sourceRecord, report, importError);
 									SceneManager::EntityId imported;
 									std::string extension = source.extension().u8string();
 									std::transform(extension.begin(), extension.end(), extension.begin(),
@@ -2516,6 +2495,34 @@ private:
 		if (!report.error.IsOk())
 			printf("[%s] Prefab propagation error: %s\n",
 				context, report.error.Format().c_str());
+	}
+
+	bool ReimportPrefabFromContentBrowser(
+		const rt2::core::AssetRecord& sourceRecord,
+		rt2::core::ContentBrowserOperationReport& report,
+		rt2::core::Error& importError)
+	{
+		AssetReference prefab;
+		prefab.kind = AssetKind::Prefab;
+		prefab.path = sourceRecord.sourcePath;
+		prefab.assetId = sourceRecord.assetId;
+		const bool backgroundBusy = IsBackgroundBusy();
+		const auto live = m_PrefabPropagationLiveHost.Submit(
+			m_SceneMgr, m_History, prefab, m_Runtime.GetState(),
+			backgroundBusy, false,
+			rt2::core::PrefabPropagationLiveTrigger::Explicit, true,
+			MakePrefabLiveHostCallbacks());
+		if (!live.error.IsOk())
+		{
+			importError = live.error;
+			m_LastStatusMsg = PrefabLiveStatus(live);
+			return false;
+		}
+		report.changed = live.applied;
+		report.noOp = live.queued || (live.noOp && !live.applied);
+		report.partialFailure = live.quarantinedInstances != 0;
+		m_LastStatusMsg = PrefabLiveStatus(live);
+		return true;
 	}
 
 	rt2::core::PrefabPropagationLiveHostCallbacks
@@ -3877,7 +3884,7 @@ private:
 
 		// Keep the main-thread debounce buffers bounded as well as the listener
 		// queue. Losing an event promotes the cycle to a full scan.
-		if (rt2::core::PrefabPropagationLiveHost::TruncateDebounce(
+		if (rt2::core::TruncateAssetWatchBuffers(
 			m_DebouncedChanges, m_DebouncedRefreshPaths,
 			m_DebouncedPrefabPaths, rt2::core::kAssetWatchQueueLimit))
 			m_AssetWatchMissedEvents = true;

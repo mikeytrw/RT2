@@ -371,7 +371,9 @@ TEST_CASE("Phase 8 W4 S7 A1: source edit propagates through prepare stage comman
     REQUIRE_FALSE(staged.value.resourceOwnership.empty());
     const auto fingerprint = staged.value.source;
     auto propagation = std::make_unique<PrefabPropagationCommand>(
-        staged.value, [fingerprint] { return fingerprint; });
+        staged.value, [fingerprint] {
+            return Result<PrefabSourceFingerprint>::Ok(fingerprint);
+        });
     const auto beforeRevision = manager.AuthoringRevision();
     const auto beforeResources = manager.ResourceGeneration();
     const auto applied = history.Execute(std::move(propagation), manager);
@@ -477,7 +479,9 @@ TEST_CASE("Phase 8 W4 S7 A1: source edit propagates through prepare stage comman
     REQUIRE(reboundStaged.IsOk());
     const auto reboundFingerprint = reboundStaged.value.source;
     auto reboundCommand = std::make_unique<PrefabPropagationCommand>(
-        reboundStaged.value, [reboundFingerprint] { return reboundFingerprint; });
+        reboundStaged.value, [reboundFingerprint] {
+            return Result<PrefabSourceFingerprint>::Ok(reboundFingerprint);
+        });
     REQUIRE(history.Execute(std::move(reboundCommand), manager).success);
 
     // The quarantined sibling is intentionally not authored with malformed
@@ -584,7 +588,7 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
     auto command = std::make_unique<PrefabPropagationCommand>(plan,
         [&] {
             ++fingerprintReads;
-            return source;
+            return Result<PrefabSourceFingerprint>::Ok(source);
         });
     const auto executed = history.Execute(std::move(command), scene);
     INFO(executed.error.Format());
@@ -637,7 +641,7 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
     const auto noopResourceGeneration = scene.ResourceGeneration();
     const auto noopHistory = history.UndoDepthForTest();
     auto noopCommand = std::make_unique<PrefabPropagationCommand>(noop,
-        [source] { return source; });
+        [source] { return Result<PrefabSourceFingerprint>::Ok(source); });
     const auto noOp = history.Execute(std::move(noopCommand), scene);
     REQUIRE(noOp.success);
     CHECK_FALSE(noOp.effective);

@@ -26,7 +26,7 @@
 #include <variant>
 #include <vector>
 
-// CPU-only vocabulary shared by future W4 discovery/planning and command
+// CPU-only vocabulary shared by W4 discovery/planning and command
 // layers. No scene host, renderer, watcher, or filesystem mutation API enters
 // this boundary; all resource data is immutable once placed in a plan.
 namespace rt2::core {
@@ -756,34 +756,6 @@ struct PrefabPropagationPlan
              a.rootSnapshots == b.rootSnapshots &&
              a.resourceOwnership == b.resourceOwnership && a.diagnostics == b.diagnostics &&
              a.affectedEntities == b.affectedEntities && a.syncImpact == b.syncImpact; }
-};
-
-struct PrefabPropagationResult
-{
-    bool success = false;
-    bool effective = false;
-    PrefabPropagationInstanceDisposition disposition =
-        PrefabPropagationInstanceDisposition::NoOp;
-    std::size_t propagatedInstances = 0;
-    std::size_t noOpInstances = 0;
-    std::size_t quarantinedInstances = 0;
-    std::uint64_t documentGeneration = 0;
-    std::uint64_t resourceGeneration = 0;
-    SyncImpact syncImpact = SyncImpact::None;
-    std::vector<UUID> affectedEntities;
-    std::vector<PrefabPropagationDiagnostic> diagnostics;
-
-    friend bool operator==(const PrefabPropagationResult& a,
-                           const PrefabPropagationResult& b) noexcept
-    { return a.success == b.success && a.effective == b.effective &&
-             a.disposition == b.disposition &&
-             a.propagatedInstances == b.propagatedInstances &&
-             a.noOpInstances == b.noOpInstances &&
-             a.quarantinedInstances == b.quarantinedInstances &&
-             a.documentGeneration == b.documentGeneration &&
-             a.resourceGeneration == b.resourceGeneration &&
-             a.syncImpact == b.syncImpact && a.affectedEntities == b.affectedEntities &&
-             a.diagnostics == b.diagnostics; }
 };
 
 } // namespace rt2::core

@@ -124,8 +124,9 @@ TEST_CASE("Phase 8 W4 S4: propagation command owns append-only resources and reu
     std::size_t fingerprintReads = 0;
     PrefabPropagationCommand command(plan, [&] {
         ++fingerprintReads;
-        return fingerprintReads == 1 ? source :
-            PrefabSourceFingerprint{"assets/source.rt2prefab", kInstance, "changed-after-undo"};
+        return Result<PrefabSourceFingerprint>::Ok(
+            fingerprintReads == 1 ? source :
+            PrefabSourceFingerprint{"assets/source.rt2prefab", kInstance, "changed-after-undo"});
     });
     const auto result = command.Execute(scene);
     REQUIRE(result.success);
@@ -178,7 +179,9 @@ TEST_CASE("Phase 8 W4 S4: stale value and fingerprint reject with zero mutation"
     REQUIRE(plan.IsEffective());
     doc.ecs.registry.get<NameComponent>(doc.FindByUuid(kEntity)).name = "changed";
     const auto beforeRevision = scene.AuthoringRevision();
-    PrefabPropagationCommand command(plan, [source] { return source; });
+    PrefabPropagationCommand command(plan, [source] {
+        return Result<PrefabSourceFingerprint>::Ok(source);
+    });
     const auto result = command.Execute(scene);
     CHECK_FALSE(result.success);
     CHECK(scene.AuthoringRevision() == beforeRevision);
@@ -202,11 +205,28 @@ TEST_CASE("Phase 8 W4 S4: stale value and fingerprint reject with zero mutation"
     FinalizePlan(fingerprintScene, fingerprintPlan);
     REQUIRE(fingerprintPlan.IsEffective());
     const auto fingerprintResult = PrefabPropagationCommand(fingerprintPlan, [] {
-        return PrefabSourceFingerprint{"assets/source.rt2prefab", kInstance, "digest-b"};
+        return Result<PrefabSourceFingerprint>::Ok(
+            PrefabSourceFingerprint{"assets/source.rt2prefab", kInstance, "digest-b"});
     }).Execute(fingerprintScene);
     CHECK_FALSE(fingerprintResult.success);
     CHECK(fingerprintScene.AuthoringDoc().ecs.registry.get<NameComponent>(
         fingerprintScene.FindEntityByUuid(kEntity)).name == "old");
+
+    SceneManager ioScene;
+    PopulateScene(ioScene);
+    auto ioPlan = fingerprintPlan;
+    ioPlan.documentGeneration = ioScene.DocumentGeneration();
+    ioPlan.resourceGeneration = ioScene.ResourceGeneration();
+    ioPlan.authoringRevision = ioScene.AuthoringRevision();
+    FinalizePlan(ioScene, ioPlan);
+    const auto ioResult = PrefabPropagationCommand(ioPlan, [] {
+        return Result<PrefabSourceFingerprint>::Fail(
+            Error::Io, "locked.rt2prefab", "source bytes unavailable");
+    }).Execute(ioScene);
+    CHECK_FALSE(ioResult.success);
+    CHECK(ioResult.error.code == Error::Io);
+    CHECK(ioResult.error.path == "locked.rt2prefab");
+    CHECK(ioResult.error.detail == "source bytes unavailable");
 }
 
 TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutation")
@@ -239,7 +259,9 @@ TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutatio
         REQUIRE(SceneSerializer::CloneInMemory(scene.AuthoringDoc(), clone, error));
         scene.ReplaceAuthoringDocument(std::move(clone));
         plan.resourceGeneration = scene.ResourceGeneration();
-        const auto result = PrefabPropagationCommand(plan, [source] { return source; }).Execute(scene);
+        const auto result = PrefabPropagationCommand(plan, [source] {
+            return Result<PrefabSourceFingerprint>::Ok(source);
+        }).Execute(scene);
         CHECK_FALSE(result.success);
     }
     {
@@ -247,7 +269,9 @@ TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutatio
         auto plan = makePlan(scene);
         scene.AuthoringDoc().ecs.meshRegistry.AddMesh(Triangle("orphan"));
         REQUIRE(scene.CompactMeshRegistry());
-        const auto result = PrefabPropagationCommand(plan, [source] { return source; }).Execute(scene);
+        const auto result = PrefabPropagationCommand(plan, [source] {
+            return Result<PrefabSourceFingerprint>::Ok(source);
+        }).Execute(scene);
         CHECK_FALSE(result.success);
     }
     {
@@ -256,7 +280,9 @@ TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutatio
         scene.AuthoringDoc().ecs.registry.get<PrefabMemberComponent>(
             scene.FindEntityByUuid(kEntity)).instanceId = UUID::Parse(
                 "44444444-4444-4444-8444-444444444444");
-        CHECK_FALSE(PrefabPropagationCommand(plan, [source] { return source; }).Execute(scene).success);
+        CHECK_FALSE(PrefabPropagationCommand(plan, [source] {
+            return Result<PrefabSourceFingerprint>::Ok(source);
+        }).Execute(scene).success);
     }
     {
         SceneManager scene; PopulateScene(scene);
@@ -264,7 +290,9 @@ TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutatio
         scene.AuthoringDoc().ecs.registry.get<PrefabMemberComponent>(
             scene.FindEntityByUuid(kEntity)).overrides.push_back(
                 PrefabComponentKeyFor<NameComponent>::value);
-        CHECK_FALSE(PrefabPropagationCommand(plan, [source] { return source; }).Execute(scene).success);
+        CHECK_FALSE(PrefabPropagationCommand(plan, [source] {
+            return Result<PrefabSourceFingerprint>::Ok(source);
+        }).Execute(scene).success);
     }
     {
         SceneManager scene; PopulateScene(scene);
@@ -275,7 +303,9 @@ TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutatio
             MeshRef{0, -1}, MeshRef{0, -1}});
         plan.affectedEntities = {kEntity};
         plan.syncImpact = SyncImpact::None;
-        CHECK_FALSE(PrefabPropagationCommand(plan, [source] { return source; }).Execute(scene).success);
+        CHECK_FALSE(PrefabPropagationCommand(plan, [source] {
+            return Result<PrefabSourceFingerprint>::Ok(source);
+        }).Execute(scene).success);
     }
 }
 
@@ -609,7 +639,7 @@ TEST_CASE("Phase 8 W4 S4: history keeps immutable command ownership across undo 
     REQUIRE(plan.IsEffective());
     EditorCommandHistory history;
     auto command = std::make_unique<PrefabPropagationCommand>(plan,
-        [source] { return source; });
+        [source] { return Result<PrefabSourceFingerprint>::Ok(source); });
     REQUIRE(history.Execute(std::move(command), scene).success);
     CHECK(history.UndoDepthForTest() == 1);
     REQUIRE(history.Undo(scene).success);
@@ -643,7 +673,7 @@ TEST_CASE("Phase 8 W4 S4: commit rejects a plan without complete production evid
     plan.rootSnapshots.clear();
     CHECK(plan.IsValid());
     const auto result = PrefabPropagationCommand(plan,
-        [source] { return source; }).Execute(scene);
+        [source] { return Result<PrefabSourceFingerprint>::Ok(source); }).Execute(scene);
     CHECK_FALSE(result.success);
     CHECK(scene.AuthoringDoc().ecs.registry.get<NameComponent>(
         scene.FindEntityByUuid(kEntity)).name == "old");
@@ -701,7 +731,9 @@ TEST_CASE("Phase 8 W4 S4: revision zero is captured and stale zero-to-one is rej
     REQUIRE(plan.authoringRevision == 0);
     REQUIRE(plan.authoringRevisionCaptured);
     REQUIRE(plan.IsEffective());
-    REQUIRE(PrefabPropagationCommand(plan, [source] { return source; }).Execute(scene).success);
+    REQUIRE(PrefabPropagationCommand(plan, [source] {
+        return Result<PrefabSourceFingerprint>::Ok(source);
+    }).Execute(scene).success);
     CHECK(scene.AuthoringDoc().ecs.registry.get<NameComponent>(
         scene.FindEntityByUuid(kEntity)).name == "zero");
 
@@ -715,7 +747,9 @@ TEST_CASE("Phase 8 W4 S4: revision zero is captured and stale zero-to-one is rej
     stale.NotifyAuthoringChanged();
     const auto before = stale.AuthoringDoc().ecs.registry.get<NameComponent>(
         stale.FindEntityByUuid(kEntity)).name;
-    const auto result = PrefabPropagationCommand(stalePlan, [source] { return source; }).Execute(stale);
+    const auto result = PrefabPropagationCommand(stalePlan, [source] {
+        return Result<PrefabSourceFingerprint>::Ok(source);
+    }).Execute(stale);
     CHECK_FALSE(result.success);
     CHECK(stale.AuthoringDoc().ecs.registry.get<NameComponent>(
         stale.FindEntityByUuid(kEntity)).name == before);

@@ -205,7 +205,10 @@ EditorMutationResult PrefabPropagationCommand::Execute(SceneManager& scene)
         if (!m_HasExecuted)
         {
             const auto current = m_SourceReader();
-            if (current != m_Plan.source)
+            if (!current.IsOk())
+                return Failure(current.error.code, current.error.path,
+                               current.error.detail);
+            if (current.value != m_Plan.source)
                 return Failure(Error::InvalidArgument, m_Plan.source.normalizedPath.string(),
                                "stale prefab source fingerprint");
         }

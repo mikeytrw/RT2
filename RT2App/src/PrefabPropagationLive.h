@@ -154,14 +154,6 @@ public:
         const PrefabPropagationLiveHostCallbacks& callbacks = {},
         const PrefabPropagationLiveHooks& hooks = {});
 
-    // Truncate all three main-thread debounce buffers without ever erasing
-    // from an empty vector. Returns true when an event was discarded.
-    static bool TruncateDebounce(
-        std::vector<std::string>& scriptPaths,
-        std::vector<std::string>& refreshPaths,
-        std::vector<std::string>& prefabPaths,
-        std::size_t limit);
-
     void ResetContext() { m_Queue.Clear(); }
 
     static std::string FormatStatus(const PrefabPropagationLiveReport& report);
