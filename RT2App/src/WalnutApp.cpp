@@ -1614,8 +1614,8 @@ public:
 										normalizedExtension.begin(), [](unsigned char c) {
 										return static_cast<char>(std::tolower(c));
 									});
-					if (normalizedExtension == ".rt2prefab")
-					{
+										if (normalizedExtension == ".rt2prefab")
+										{
 						const bool refreshedContext = IsBackgroundBusy()
 							? false : RefreshProjectAssets();
 						if (!IsBackgroundBusy() && !refreshedContext)
@@ -1628,28 +1628,23 @@ public:
 										prefab.kind = AssetKind::Prefab;
 										prefab.path = sourceRecord.sourcePath;
 										prefab.assetId = sourceRecord.assetId;
-						const auto live = m_PrefabPropagationLive.Submit(
+										const auto live = m_PrefabPropagationLive.Submit(
 							m_SceneMgr, m_History, prefab, m_ProjectContext->Assets(),
 							m_Runtime.GetState(), IsBackgroundBusy(), refreshedContext,
-											rt2::core::PrefabPropagationLiveTrigger::Explicit);
+																		rt2::core::PrefabPropagationLiveTrigger::Explicit);
+										CapturePrefabLiveReport(live, "ExplicitReimport");
+										for (const auto& mutation : live.mutations)
+											m_SyncRouter.Route(mutation, m_SceneMgr);
 										if (!live.error.IsOk())
 										{
 											importError = live.error;
+											m_LastStatusMsg = PrefabLiveStatus(live);
 											return false;
 										}
-										report.changed = live.applied;
-										report.partialFailure = live.quarantinedInstances != 0;
-										if (live.queued)
-											m_LastStatusMsg = "Prefab propagation queued (Edit mode required)";
-										else if (live.noOp)
-											m_LastStatusMsg = "Prefab propagation no-op (" +
-												std::to_string(live.noOpInstances) + " no-op, " +
-												std::to_string(live.quarantinedInstances) + " quarantined)";
-										else if (live.applied)
-											m_LastStatusMsg = "Prefab propagation applied (" +
-												std::to_string(live.propagatedInstances) + " applied, " +
-												std::to_string(live.quarantinedInstances) + " quarantined, " +
-												std::to_string(live.noOpInstances) + " no-op); Undo re-evaluates captured state";
+											report.changed = live.applied;
+										report.noOp = live.queued || (live.noOp && !live.applied);
+											report.partialFailure = live.quarantinedInstances != 0;
+											m_LastStatusMsg = PrefabLiveStatus(live);
 										return true;
 									}
 									SceneManager::EntityId imported;
@@ -1688,9 +1683,9 @@ public:
 					}();
 					const bool refreshed = ok && (isPrefab || RefreshProjectAssets());
 					ScheduleAssetWatchSuppressionClear();
-					if (refreshed)
+					if (refreshed && !isPrefab)
 						m_LastStatusMsg = "Asset reimported";
-					else if (!ok)
+					else if (!ok && !isPrefab)
 						m_LastStatusMsg = "Asset reimport failed: " + error.Format();
 				}
 				if (ImGui::MenuItem("Delete..."))
@@ -2514,6 +2509,43 @@ private:
 			       diagnostic.sourceKey.c_str(),
 			       diagnostic.detail.c_str());
 		}
+	}
+
+	void CapturePrefabLiveReport(
+		const rt2::core::PrefabPropagationLiveReport& report,
+		const char* context)
+	{
+		m_LastPrefabPropagationDiagnostics.insert(
+			m_LastPrefabPropagationDiagnostics.end(),
+			report.diagnostics.begin(), report.diagnostics.end());
+		for (const auto& diagnostic : report.diagnostics)
+			printf("[%s] Prefab propagation diagnostic: path=\"%s\" instance=%s reason=%s\n",
+				context, diagnostic.prefabPath.u8string().c_str(),
+				diagnostic.instanceId.ToString().c_str(), diagnostic.reason.c_str());
+		if (!report.error.IsOk())
+			printf("[%s] Prefab propagation error: %s\n",
+				context, report.error.Format().c_str());
+	}
+
+	std::string PrefabLiveStatus(
+		const rt2::core::PrefabPropagationLiveReport& report) const
+	{
+		std::string status = "Prefab propagation ";
+		if (report.queued)
+			status += "queued";
+		else if (!report.error.IsOk())
+			status += "failed";
+		else if (report.applied)
+			status += "applied";
+		else
+			status += "no-op";
+		status += " (" + std::to_string(report.propagatedInstances) +
+			" applied, " + std::to_string(report.quarantinedInstances) +
+			" quarantined, " + std::to_string(report.noOpInstances) +
+			" no-op)";
+		if (report.applied)
+			status += "; Undo replays local scene state; a subsequent source event is independently re-evaluated";
+		return status;
 	}
 
 	void LogScriptAssetDiagnostics(size_t base, const char* context) const
@@ -3591,6 +3623,8 @@ private:
 	std::vector<std::string>                    m_DebouncedRefreshPaths;
 	std::vector<std::string>                    m_DebouncedPrefabPaths;
 	rt2::core::PrefabPropagationLiveQueue       m_PrefabPropagationLive;
+	std::vector<rt2::core::PrefabPropagationDiagnostic>
+																	m_LastPrefabPropagationDiagnostics;
 	std::chrono::steady_clock::time_point       m_LastFileChangeTime;
 	bool                                        m_AssetWatchMissedEvents = false;
 	std::string                                 m_AssetWatchMissedDirectory;
@@ -3838,6 +3872,8 @@ private:
 		{
 			if (!m_DebouncedRefreshPaths.empty())
 				m_DebouncedRefreshPaths.erase(m_DebouncedRefreshPaths.begin());
+			else if (!m_DebouncedPrefabPaths.empty())
+				m_DebouncedPrefabPaths.erase(m_DebouncedPrefabPaths.begin());
 			else
 				m_DebouncedChanges.erase(m_DebouncedChanges.begin());
 			m_AssetWatchMissedEvents = true;
@@ -3862,9 +3898,28 @@ private:
 		if (decision == rt2::core::AssetWatchRefreshAction::NoOp)
 		{
 			if (m_ProjectContext && m_Runtime.GetState() == rt2::core::SceneRunState::Edit)
-				m_PrefabPropagationLive.Drain(
+			{
+				// Explicit reimports accepted while a worker was busy carry a
+				// refresh requirement. A suppressed watcher event must not be
+				// mistaken for a successful database refresh.
+				if (m_PrefabPropagationLive.PendingNeedsRefresh())
+				{
+					if (!RefreshProjectAssets())
+					{
+						m_LastStatusMsg =
+							"Prefab propagation queued: project asset refresh failed";
+						return;
+					}
+				}
+				const auto drained = m_PrefabPropagationLive.Drain(
 					m_SceneMgr, m_History, m_ProjectContext->Assets(),
 					m_Runtime.GetState(), IsBackgroundBusy(), true);
+				CapturePrefabLiveReport(drained, "WatcherDrain");
+				for (const auto& mutation : drained.mutations)
+					m_SyncRouter.Route(mutation, m_SceneMgr);
+				if (drained.accepted || !drained.error.IsOk())
+					m_LastStatusMsg = PrefabLiveStatus(drained);
+			}
 			return;
 		}
 
@@ -3881,6 +3936,7 @@ private:
 		m_DebouncedRefreshPaths.clear();
 		auto prefabPaths = std::move(m_DebouncedPrefabPaths);
 		m_DebouncedPrefabPaths.clear();
+		bool prefabActivity = !prefabPaths.empty();
 		const auto scriptAction = rt2::core::DecideScriptFileChange(
 			m_Runtime.GetState(), m_ScriptSystem != nullptr,
 			m_InspectorFieldRegistry != nullptr);
@@ -3912,12 +3968,17 @@ private:
 				const auto sources = rt2::core::CollectReferencedPrefabSources(
 					m_SceneMgr.AuthoringDoc(), m_ProjectContext->Assets(),
 					prefabSourcePaths, m_AssetWatchMissedEvents, selectionDiagnostics);
+				LogAssetDiagnostics(selectionDiagnostics, 0, "WatcherSelection");
+				prefabActivity = prefabActivity || !sources.empty();
 				for (const auto& source : sources)
 				{
 					const auto live = m_PrefabPropagationLive.Submit(
 						m_SceneMgr, m_History, source, m_ProjectContext->Assets(),
 						m_Runtime.GetState(), IsBackgroundBusy(), true,
 						rt2::core::PrefabPropagationLiveTrigger::Watcher);
+					CapturePrefabLiveReport(live, "WatcherSubmit");
+					for (const auto& mutation : live.mutations)
+						m_SyncRouter.Route(mutation, m_SceneMgr);
 					if (!live.error.IsOk())
 						m_LastStatusMsg = "Prefab propagation quarantined: " + live.error.Format();
 				}
@@ -3928,13 +3989,14 @@ private:
 			const auto drained = m_PrefabPropagationLive.Drain(
 				m_SceneMgr, m_History, m_ProjectContext->Assets(),
 				m_Runtime.GetState(), IsBackgroundBusy(), true);
-			if (drained.applied)
-				m_LastStatusMsg = "Prefab propagation applied (" +
-					std::to_string(drained.propagatedInstances) + " applied, " +
-					std::to_string(drained.quarantinedInstances) + " quarantined, " +
-					std::to_string(drained.noOpInstances) + " no-op); Undo re-evaluates captured state";
+			CapturePrefabLiveReport(drained, "WatcherDrain");
+			for (const auto& mutation : drained.mutations)
+				m_SyncRouter.Route(mutation, m_SceneMgr);
+			if (drained.accepted || !drained.error.IsOk())
+				m_LastStatusMsg = PrefabLiveStatus(drained);
+			prefabActivity = prefabActivity || drained.accepted || !drained.error.IsOk();
 		}
-		if (!scriptChanges.empty() && refreshPaths.empty() &&
+		if (!scriptChanges.empty() && refreshPaths.empty() && !prefabActivity &&
 			!m_AssetWatchMissedEvents)
 			m_LastStatusMsg = "Scripts reloaded";
 		m_AssetWatchMissedEvents = false;
@@ -3956,6 +4018,11 @@ private:
 
 	void ConfigureAssetRootWatch(const std::filesystem::path& assetRoot)
 	{
+		// A project/asset-root transition invalidates both pending source work
+		// and last-applied suppression. Clear before touching watcher handles so
+		// close/recovery paths cannot carry identity state across contexts.
+		m_PrefabPropagationLive.Clear();
+		m_LastPrefabPropagationDiagnostics.clear();
 		if (!m_FileWatchListener || !m_FileWatcher)
 			return;
 		if (m_ActiveWatchId)

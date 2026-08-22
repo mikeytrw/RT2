@@ -24,6 +24,10 @@ class SceneDocument;
 struct ContentBrowserOperationReport
 {
     bool changed = false;
+    // A successful callback may be a durable no-op (for example a prefab
+    // source revision already applied). Keep that distinction through the
+    // browser dispatcher so no phantom "changed" report is emitted.
+    bool noOp = false;
     bool partialFailure = false;
     std::vector<AssetDiagnostic> diagnostics;
 };

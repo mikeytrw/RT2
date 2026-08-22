@@ -4,6 +4,9 @@
 #include "EditorCommandHistory.h"
 #include "SceneManager.h"
 
+#include <fstream>
+#include <sstream>
+
 using namespace rt2::core;
 
 namespace {
@@ -100,4 +103,57 @@ TEST_CASE("S6 watcher selection ignores unrelated asset kinds")
         scene.AuthoringDoc(), {},
         { std::filesystem::path("C:/assets/mesh.glb") }, false, diagnostics);
     CHECK(selected.empty());
+}
+
+TEST_CASE("S6 deferred explicit work carries refresh evidence and context clear")
+{
+    SceneManager scene;
+    EditorCommandHistory history;
+    PrefabPropagationLiveQueue queue;
+    AssetReference source;
+    source.kind = AssetKind::Prefab;
+    source.path = "vehicle.rt2prefab";
+    source.assetId = UUID::Parse("00000000-0000-4000-8000-000000000601");
+
+    PrefabPropagationLiveHooks hooks;
+    hooks.fingerprint = [](const AssetReference&, const AssetResolutionContext&) {
+        return Result<PrefabSourceFingerprint>::Ok(Fingerprint("deferred"));
+    };
+    hooks.prepare = [&](const PrefabPropagationDiscoveryRequest&) {
+        CHECK(false); // named RED mutant: dequeue before the refresh evidence
+        return Result<PrefabPropagationPlan>::Fail(
+            Error::InvalidRuntimeState, "s6", "prepared before refresh");
+    };
+
+    const auto queued = queue.Submit(
+        scene, history, source, {}, SceneRunState::Edit, true, false,
+        PrefabPropagationLiveTrigger::Explicit, hooks);
+    CHECK(queued.accepted);
+    CHECK(queued.queued);
+    CHECK(queue.PendingNeedsRefresh());
+    const auto stillQueued = queue.Drain(
+        scene, history, {}, SceneRunState::Edit, false, false, hooks);
+    CHECK(stillQueued.queued);
+    CHECK(queue.PendingCount() == 1);
+    queue.Clear();
+    CHECK(queue.PendingCount() == 0);
+    CHECK_FALSE(queue.PendingNeedsRefresh());
+}
+
+TEST_CASE("S6 host path permanently names refresh, sync, diagnostics and overflow seams")
+{
+    std::ifstream input("RT2App/src/WalnutApp.cpp");
+    REQUIRE(input.good());
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    const auto source = contents.str();
+    CHECK(source.find("PendingNeedsRefresh()") != std::string::npos);
+    CHECK(source.find("if (!RefreshProjectAssets())") != std::string::npos);
+    CHECK(source.find("m_SyncRouter.Route(mutation, m_SceneMgr)") !=
+          std::string::npos);
+    CHECK(source.find("m_DebouncedPrefabPaths.erase") != std::string::npos);
+    CHECK(source.find("CapturePrefabLiveReport") != std::string::npos);
+    CHECK(source.find("Undo replays local scene state; a subsequent source event is independently re-evaluated") !=
+          std::string::npos);
+    CHECK(source.find("m_PrefabPropagationLive.Clear()") != std::string::npos);
 }

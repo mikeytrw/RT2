@@ -590,7 +590,8 @@ bool ReimportContentBrowserAsset(
         return false;
     }
 
-    report.changed = true;
+    if (!report.noOp)
+        report.changed = true;
     return true;
 }
 

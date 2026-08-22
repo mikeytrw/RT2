@@ -4,6 +4,7 @@
 #define RT2_PREFAB_PROPAGATION_LIVE_H
 
 #include "PrefabPropagationService.h"
+#include "SceneMutation.h"
 #include "SceneRunState.h"
 
 #include <cstddef>
@@ -32,6 +33,10 @@ struct PrefabPropagationLiveReport
     std::size_t quarantinedInstances = 0;
     std::size_t noOpInstances = 0;
     std::vector<PrefabPropagationDiagnostic> diagnostics;
+    // Effective commands are returned intact so the host can route the
+    // authoritative impact exactly once. Queued/no-op/error reports leave
+    // this empty and therefore never reach the renderer sync path.
+    std::vector<EditorMutationResult> mutations;
     Error error;
 };
 
@@ -66,6 +71,7 @@ public:
         const PrefabPropagationLiveHooks& hooks = {});
 
     std::size_t PendingCount() const noexcept { return m_Pending.size(); }
+    bool PendingNeedsRefresh() const noexcept;
     void Clear() { m_Pending.clear(); m_LastApplied.clear(); }
 
 private:
@@ -73,6 +79,7 @@ private:
     {
         AssetReference source;
         PrefabSourceFingerprint fingerprint;
+        bool requiresRefresh = false;
     };
 
     static std::string Key(const PrefabSourceFingerprint& fingerprint);

@@ -110,8 +110,19 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Apply(
     if (!mutation.effective)
         report.noOp = true;
     else
+    {
+        report.mutations.push_back(mutation);
         m_LastApplied[Key(fingerprint)] = fingerprint;
+    }
     return report;
+}
+
+bool PrefabPropagationLiveQueue::PendingNeedsRefresh() const noexcept
+{
+    for (const auto& item : m_Pending)
+        if (item.second.requiresRefresh)
+            return true;
+    return false;
 }
 
 PrefabPropagationLiveReport PrefabPropagationLiveQueue::Submit(
@@ -148,7 +159,7 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Submit(
     }
     if (state != SceneRunState::Edit || backgroundBusy || !refreshedContext)
     {
-        m_Pending[key] = Pending{source, fingerprint.value};
+        m_Pending[key] = Pending{source, fingerprint.value, !refreshedContext};
         PrefabPropagationLiveReport report;
         report.accepted = true;
         report.queued = true;
@@ -184,6 +195,9 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Drain(
         aggregate.propagatedInstances += report.propagatedInstances;
         aggregate.quarantinedInstances += report.quarantinedInstances;
         aggregate.noOpInstances += report.noOpInstances;
+        aggregate.mutations.insert(aggregate.mutations.end(),
+                                   report.mutations.begin(),
+                                   report.mutations.end());
         aggregate.diagnostics.insert(aggregate.diagnostics.end(),
                                      report.diagnostics.begin(),
                                      report.diagnostics.end());
