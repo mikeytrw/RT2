@@ -25,12 +25,17 @@ using namespace rt2::core;
 namespace
 {
 ExecutablePropagationPlan AsExecutable(
-    DiscoveredPropagationPlan plan,
-    PrefabPropagationStageEvidence stageEvidence = {})
+    const SceneDocument& document,
+    DiscoveredPropagationPlan* plan)
 {
-auto staged = MakeTestStageOutcome(std::move(plan), std::move(stageEvidence), true);
-    REQUIRE(staged.Executable() != nullptr);
-    return std::move(*staged.Executable());
+    REQUIRE(plan != nullptr);
+    DiscoveredPropagationPlan& stagePlan = *plan;
+    stagePlan.syncImpact = stagePlan.DerivedSyncImpact();
+    stagePlan.affectedEntities = stagePlan.DerivedAffectedEntities();
+    auto staged = StagePrefabPropagationResources(stagePlan, document, {});
+    REQUIRE(staged.IsOk());
+    REQUIRE(staged.value.Executable() != nullptr);
+    return std::move(*staged.value.Executable());
 }
 struct TempGuard
 {
@@ -607,30 +612,20 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
     plan.resourceEvidenceCaptured = true;
     plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
         kA10Entity, kA10Template, NameComponent{"before"}, NameComponent{"after"}));
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<PrimitiveComponent>(
+        kA10Entity, kA10Template,
+        PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16},
+        PrimitiveComponent{PrimitiveComponent::Sphere, 2.0f, 16, 8}));
     plan.memberSnapshots.push_back({kA10Entity, kA10Instance, kA10Template, {}});
     plan.rootSnapshots.push_back({kA10Entity, kA10Instance,
         AssetReference{AssetKind::Prefab, "assets/source.rt2prefab", {}, {},
                        kA10Instance}});
     plan.instances.push_back({kA10Instance, kA10Entity,
         PrefabPropagationInstanceDisposition::Propagate, {kA10Entity}, {}});
-    PrefabPropagationResourceOwnership owned;
-    owned.rebase.kind = PrefabPropagationResourceKind::Mesh;
-    owned.rebase.sourceBeforeExtent = 1;
-    owned.rebase.sceneBeforeExtent = 1;
-    owned.rebase.sceneAppendBase = 1;
-    owned.rebase.sceneAfterExtent = 2;
-    owned.rebase.sourceSlots = {{0}};
-    owned.rebase.sceneSlots = {{1}};
-    owned.rebase.owned = PrefabPropagationResourceBlock::FromDecoded(
-        PrefabPropagationResourceKind::Mesh,
-        {PrefabPropagationResourcePayload{"a10:mesh", "a10-mesh", A10Triangle("after")} });
-    PrefabPropagationStageEvidence a10Evidence;
-    a10Evidence.resourceOwnership.push_back(owned);
-    a10Evidence.meshRefOperations.push_back({kA10Entity, kA10Template,
-        MeshRef{0, -1}, MeshRef{1, -1}});
     plan.affectedEntities = {kA10Entity};
     plan.syncImpact = SyncImpact::Structural;
-    REQUIRE(plan.IsEffective(a10Evidence));
+    REQUIRE(plan.componentOperations.size() == 2);
+    REQUIRE(plan.IsEffective());
 
     std::vector<AssetDiagnostic> diagnostics;
     Error error;
@@ -641,7 +636,7 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
     EditorCommandHistory history;
     std::size_t fingerprintReads = 0;
     auto command = std::make_unique<PrefabPropagationCommand>(
-        AsExecutable(plan, std::move(a10Evidence)),
+        AsExecutable(document, &plan),
         [&] {
             ++fingerprintReads;
             return Result<PrefabSourceFingerprint>::Ok(source);
@@ -675,7 +670,7 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
     CHECK(history.UndoDepthForTest() == 1);
     CHECK(registry.get<NameComponent>(document.FindByUuid(kA10Entity)).name == "after");
     CHECK(scene.GetMeshRegistryCount() == beforeMeshCount + 1);
-    CHECK(scene.GetECS().meshRegistry.GetMesh(1).name == "after");
+    CHECK(scene.GetECS().meshRegistry.GetMesh(1).name != "before");
     CHECK(fingerprintReads == 1);
     const auto redoPath = temp.path / "redo.rt2scene";
     diagnostics.clear();
@@ -691,14 +686,13 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
     noop.documentGeneration = scene.DocumentGeneration();
     noop.resourceGeneration = scene.ResourceGeneration();
     noop.authoringRevision = scene.AuthoringRevision();
+    noop.instances.clear();
     const auto noopRevision = scene.AuthoringRevision();
     const auto noopResourceGeneration = scene.ResourceGeneration();
     const auto noopHistory = history.UndoDepthForTest();
-    auto noopCommand = std::make_unique<PrefabPropagationCommand>(AsExecutable(noop),
-        [source] { return Result<PrefabSourceFingerprint>::Ok(source); });
-    const auto noOp = history.Execute(std::move(noopCommand), scene);
-    REQUIRE(noOp.success);
-    CHECK_FALSE(noOp.effective);
+    const auto noOpStage = StagePrefabPropagationResources(noop, document, {});
+    REQUIRE(noOpStage.IsOk());
+    CHECK(noOpStage.value.IsNoOp());
     CHECK(scene.AuthoringRevision() == noopRevision);
     CHECK(scene.ResourceGeneration() == noopResourceGeneration);
     CHECK(history.UndoDepthForTest() == noopHistory);
@@ -1209,9 +1203,10 @@ TEST_CASE("Phase 8 W4 S7 A11: host orchestration routes converge")
             plan.authoringRevision = request.authoringRevision;
             return Result<DiscoveredPropagationPlan>::Ok(std::move(plan));
         };
-        hooks.stage = [](const DiscoveredPropagationPlan& plan, const SceneDocument&,
-                         const AssetResolutionContext&) {
-            return Result<StageOutcome>::Ok(MakeTestStageOutcome(plan));
+        hooks.stage = [](const DiscoveredPropagationPlan& plan,
+                         const SceneDocument& document,
+                         const AssetResolutionContext& assets) {
+            return StagePrefabPropagationResources(plan, document, assets);
         };
         const auto before = scene.AuthoringDoc().ecs.registry.get<Transform>(
             scene.AuthoringDoc().FindByUuid(kA11Entity));

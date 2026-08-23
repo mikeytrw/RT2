@@ -4,6 +4,7 @@
 #include "PrefabComponentValueEquality.h"
 #include "PrefabPropagationCommand.h"
 #include "PrefabPropagationContracts.h"
+#include "PrefabPropagationService.h"
 #include "SceneSerializer.h"
 
 #include <filesystem>
@@ -23,6 +24,12 @@ static_assert(!std::is_constructible_v<
 static_assert(!std::is_constructible_v<ExecutablePropagationPlan,
     DiscoveredPropagationPlan&&>,
     "executable plans are constructible only by Stage");
+static_assert(!std::is_base_of_v<DiscoveredPropagationPlan,
+    ExecutablePropagationPlan>,
+    "executable plans must not inherit discovery snapshots");
+static_assert(!std::is_convertible_v<ExecutablePropagationPlan,
+    DiscoveredPropagationPlan>,
+    "executable plans must not expose discovery storage");
 static_assert(!std::is_constructible_v<StageOutcome,
     DiscoveredPropagationPlan&&>,
     "StageOutcome cannot be publicly manufactured from discovery");
@@ -562,7 +569,11 @@ TEST_CASE("Phase 8 W4 S2: StageOutcome has explicit no-op classes and drops raw 
         PrefabPropagationComponentDelta::Make<Transform>(
             kEntity, kTemplate, Transform{}, Transform{}));
     CHECK(canonical.IsNoOp());
-    const auto noOp = MakeTestStageOutcome(canonical);
+    SceneDocument stageDocument;
+    const auto noOpResult = StagePrefabPropagationResources(
+        canonical, stageDocument, AssetResolutionContext{});
+    REQUIRE(noOpResult.IsOk());
+    const auto& noOp = noOpResult.value;
     CHECK(noOp.IsNoOp());
     CHECK(noOp.Executable() == nullptr);
 
@@ -571,7 +582,10 @@ TEST_CASE("Phase 8 W4 S2: StageOutcome has explicit no-op classes and drops raw 
     allQuarantined.instances.push_back({
         kInstance, kEntity, PrefabPropagationInstanceDisposition::Quarantined,
         {}, {PrefabPropagationDiagnostic{}}});
-    const auto quarantined = MakeTestStageOutcome(allQuarantined);
+    const auto quarantinedResult = StagePrefabPropagationResources(
+        allQuarantined, stageDocument, AssetResolutionContext{});
+    REQUIRE(quarantinedResult.IsOk());
+    const auto& quarantined = quarantinedResult.value;
     CHECK(quarantined.IsNoOp());
     CHECK(quarantined.Executable() == nullptr);
 
@@ -585,7 +599,10 @@ TEST_CASE("Phase 8 W4 S2: StageOutcome has explicit no-op classes and drops raw 
     effective.capturedSource = CapturedPrefabSource{
         canonical.source, "raw-prefab-bytes", "raw-sidecar-bytes"};
     CHECK(effective.IsEffective());
-    auto staged = MakeTestStageOutcome(std::move(effective));
+    const auto stagedResult = StagePrefabPropagationResources(
+        effective, stageDocument, AssetResolutionContext{});
+    REQUIRE(stagedResult.IsOk());
+    const auto& staged = stagedResult.value;
     REQUIRE(staged.IsEffective());
     REQUIRE(staged.Executable() != nullptr);
     CHECK_FALSE(staged.Summary().capturedSource.IsValid());

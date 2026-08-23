@@ -635,7 +635,6 @@ struct DiscoveredPropagationPlan
             const auto root = std::find_if(rootSnapshots.begin(), rootSnapshots.end(),
                 [&](const auto& snapshot) { return snapshot.rootUuid == instance.rootUuid; });
             if (instance.disposition == PrefabPropagationInstanceDisposition::Propagate &&
-                rootSnapshots.size() != 0 &&
                 (root == rootSnapshots.end() || root->instanceId != instance.instanceId))
                 return false;
         }
@@ -793,37 +792,78 @@ class ExecutablePropagationPlan final
 {
     friend struct StageOutcome;
 
-    DiscoveredPropagationPlan data_;
+    // Only command-ready evidence is retained here.  Discovered snapshots
+    // and captured source buffers are intentionally not history state.
+    PrefabSourceFingerprint source_;
+    std::uint64_t documentGeneration_ = 0;
+    std::uint64_t resourceGeneration_ = 0;
+    std::uint64_t authoringRevision_ = 0;
+    bool authoringRevisionCaptured_ = false;
+    std::uint32_t sourceSchemaVersion_ = 0;
+    std::uint32_t meshTableExtent_ = 0;
+    std::uint32_t materialTableExtent_ = 0;
+    std::uint32_t textureTableExtent_ = 0;
+    bool resourceEvidenceCaptured_ = false;
+    std::vector<PrefabPropagationInstancePlan> instances_;
+    std::vector<PrefabPropagationComponentDelta> componentOperations_;
+    std::vector<PrefabPropagationMemberSnapshot> memberSnapshots_;
+    std::vector<PrefabPropagationRootSnapshot> rootSnapshots_;
     PrefabPropagationStageEvidence stageEvidence_;
+    std::vector<UUID> affectedEntities_;
+    SyncImpact syncImpact_ = SyncImpact::None;
+    bool valid_ = false;
 
-    explicit ExecutablePropagationPlan(DiscoveredPropagationPlan&& discovered,
+    explicit ExecutablePropagationPlan(const DiscoveredPropagationPlan& discovered,
                                        PrefabPropagationStageEvidence&& evidence)
-        : data_(std::move(discovered)), stageEvidence_(std::move(evidence))
-    { data_.capturedSource = {}; }
+        : source_(discovered.source),
+          documentGeneration_(discovered.documentGeneration),
+          resourceGeneration_(discovered.resourceGeneration),
+          authoringRevision_(discovered.authoringRevision),
+          authoringRevisionCaptured_(discovered.authoringRevisionCaptured),
+          sourceSchemaVersion_(discovered.sourceSchemaVersion),
+          meshTableExtent_(discovered.meshTableExtent),
+          materialTableExtent_(discovered.materialTableExtent),
+          textureTableExtent_(discovered.textureTableExtent),
+          resourceEvidenceCaptured_(discovered.resourceEvidenceCaptured),
+          instances_(discovered.instances),
+          componentOperations_(discovered.componentOperations),
+          memberSnapshots_(discovered.memberSnapshots),
+          rootSnapshots_(discovered.rootSnapshots),
+          stageEvidence_(std::move(evidence)),
+          affectedEntities_(discovered.affectedEntities),
+          syncImpact_(discovered.syncImpact),
+          valid_(discovered.IsValid(stageEvidence_)) {}
 
-    static ExecutablePropagationPlan Make(DiscoveredPropagationPlan&& discovered,
+    static ExecutablePropagationPlan Make(const DiscoveredPropagationPlan& discovered,
                                           PrefabPropagationStageEvidence&& evidence)
-    { return ExecutablePropagationPlan(std::move(discovered), std::move(evidence)); }
+    { return ExecutablePropagationPlan(discovered, std::move(evidence)); }
 
 public:
     ExecutablePropagationPlan() = delete;
-    const PrefabSourceFingerprint& source() const noexcept { return data_.source; }
-    std::uint64_t documentGeneration() const noexcept { return data_.documentGeneration; }
-    std::uint64_t resourceGeneration() const noexcept { return data_.resourceGeneration; }
-    std::uint64_t authoringRevision() const noexcept { return data_.authoringRevision; }
-    bool authoringRevisionCaptured() const noexcept { return data_.authoringRevisionCaptured; }
-    const auto& instances() const noexcept { return data_.instances; }
-    const auto& componentOperations() const noexcept { return data_.componentOperations; }
+    const PrefabSourceFingerprint& source() const noexcept { return source_; }
+    std::uint64_t documentGeneration() const noexcept { return documentGeneration_; }
+    std::uint64_t resourceGeneration() const noexcept { return resourceGeneration_; }
+    std::uint64_t authoringRevision() const noexcept { return authoringRevision_; }
+    bool authoringRevisionCaptured() const noexcept { return authoringRevisionCaptured_; }
+    const auto& instances() const noexcept { return instances_; }
+    const auto& componentOperations() const noexcept { return componentOperations_; }
     const auto& meshRefOperations() const noexcept
     { return stageEvidence_.meshRefOperations; }
-    const auto& memberSnapshots() const noexcept { return data_.memberSnapshots; }
-    const auto& rootSnapshots() const noexcept { return data_.rootSnapshots; }
+    const auto& memberSnapshots() const noexcept { return memberSnapshots_; }
+    const auto& rootSnapshots() const noexcept { return rootSnapshots_; }
     const auto& resourceOwnership() const noexcept
     { return stageEvidence_.resourceOwnership; }
-    const auto& affectedEntities() const noexcept { return data_.affectedEntities; }
-    SyncImpact syncImpact() const noexcept { return data_.syncImpact; }
-    bool IsValid() const noexcept { return data_.IsValid(stageEvidence_); }
-    bool IsEffective() const noexcept { return data_.IsEffective(stageEvidence_); }
+    const auto& affectedEntities() const noexcept { return affectedEntities_; }
+    SyncImpact syncImpact() const noexcept { return syncImpact_; }
+    std::uint32_t meshTableExtent() const noexcept { return meshTableExtent_; }
+    std::uint32_t materialTableExtent() const noexcept { return materialTableExtent_; }
+    std::uint32_t textureTableExtent() const noexcept { return textureTableExtent_; }
+    bool resourceEvidenceCaptured() const noexcept { return resourceEvidenceCaptured_; }
+    bool IsValid() const noexcept { return valid_; }
+    bool IsEffective() const noexcept
+    { return valid_ && (!componentOperations_.empty() ||
+        !stageEvidence_.meshRefOperations.empty() ||
+        !stageEvidence_.resourceOwnership.empty()); }
 };
 
 // StageOutcome intentionally retains the discovered summary as its base so
@@ -840,11 +880,6 @@ private:
     friend Result<StageOutcome> StagePrefabPropagationResources(
         const DiscoveredPropagationPlan&, const SceneDocument&,
         const AssetResolutionContext&, const PrefabPropagationResourceHooks&);
-    friend StageOutcome MakeTestStageOutcome(
-        DiscoveredPropagationPlan,
-        PrefabPropagationStageEvidence = {},
-        bool forceEffective = false);
-
     explicit StageOutcome(DiscoveredPropagationPlan&& discovered,
                           StageOutcomeKind kind)
         : summary_(std::move(discovered)), kind_(kind) {}
@@ -857,7 +892,7 @@ private:
             ? StageOutcomeKind::Executable : StageOutcomeKind::NoOp);
         if (effective)
             result.executable_ = ExecutablePropagationPlan::Make(
-                DiscoveredPropagationPlan(result.summary_),
+                result.summary_,
                 std::move(stageEvidence));
         result.summary_.capturedSource = {};
         return result;

@@ -16,18 +16,9 @@
 
 using namespace rt2::core;
 
-namespace rt2::core {
-StageOutcome MakeTestStageOutcome(DiscoveredPropagationPlan plan,
-                                  PrefabPropagationStageEvidence stageEvidence,
-                                  bool forceEffective)
-{
-    const bool effective = forceEffective || !plan.IsNoOp(stageEvidence);
-    return StageOutcome::Build(std::move(plan), std::move(stageEvidence), effective);
-}
-}
-
 namespace
 {
+const SceneDocument* gStageDocument = nullptr;
 const UUID kEntity = UUID::Parse("11111111-1111-4111-8111-111111111111");
 const UUID kInstance = UUID::Parse("22222222-2222-4222-8222-222222222222");
 const UUID kTemplate = UUID::Parse("33333333-3333-4333-8333-333333333333");
@@ -76,14 +67,18 @@ void PopulateScene(SceneManager& scene, bool notify = true)
 
 void FinalizePlan(SceneManager& scene, DiscoveredPropagationPlan& plan)
 {
+    gStageDocument = &scene.AuthoringDoc();
     plan.authoringRevision = scene.AuthoringRevision();
     plan.authoringRevisionCaptured = true;
     plan.meshTableExtent = static_cast<std::uint32_t>(scene.GetMeshRegistryCount());
     plan.materialTableExtent = static_cast<std::uint32_t>(scene.GetMaterialCount());
     plan.textureTableExtent = static_cast<std::uint32_t>(scene.GetECS().textures.size());
     plan.resourceEvidenceCaptured = true;
-    const auto root = scene.FindEntityByUuid(kEntity);
+    const auto root = scene.AuthoringDoc().FindByUuid(kEntity);
     const auto& registry = scene.AuthoringDoc().ecs.registry;
+    if (plan.instances.empty())
+        plan.instances.push_back({kInstance, kEntity,
+            PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
     if (const auto* link = registry.try_get<PrefabInstanceComponent>(root))
         if (std::none_of(plan.rootSnapshots.begin(), plan.rootSnapshots.end(),
                 [](const auto& snapshot) { return snapshot.rootUuid == kEntity; }))
@@ -102,11 +97,19 @@ std::string DurableSceneBytes(const SceneDocument& document,
 }
 
 ExecutablePropagationPlan AsExecutable(
-    DiscoveredPropagationPlan plan,
+    DiscoveredPropagationPlan& plan,
     PrefabPropagationStageEvidence stageEvidence = {})
 {
-    auto staged = MakeTestStageOutcome(std::move(plan), std::move(stageEvidence));
-    return std::move(*staged.Executable());
+    (void)stageEvidence;
+    REQUIRE(gStageDocument != nullptr);
+    DiscoveredPropagationPlan& stagePlan = plan;
+    stagePlan.syncImpact = stagePlan.DerivedSyncImpact();
+    stagePlan.affectedEntities = stagePlan.DerivedAffectedEntities();
+    auto staged = StagePrefabPropagationResources(
+        stagePlan, *gStageDocument, AssetResolutionContext{});
+    REQUIRE(staged.IsOk());
+    REQUIRE(staged.value.Executable() != nullptr);
+    return std::move(*staged.value.Executable());
 }
 }
 
@@ -128,30 +131,19 @@ TEST_CASE("Phase 8 W4 S4: propagation command owns append-only resources and reu
     plan.authoringRevision = beforeRevision;
     plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
         kEntity, kTemplate, NameComponent{"old"}, NameComponent{"new"}));
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<PrimitiveComponent>(
+        kEntity, kTemplate,
+        PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16},
+        PrimitiveComponent{PrimitiveComponent::Sphere, 2.0f, 16, 8}));
     plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     const auto beforeRef = ecs.registry.get<MeshRef>(doc.FindByUuid(kEntity));
-    const auto mesh = Triangle("after");
-    PrefabPropagationStageEvidence stageEvidence;
-    PrefabPropagationResourceOwnership owned;
-    owned.rebase.kind = PrefabPropagationResourceKind::Mesh;
-    owned.rebase.sourceBeforeExtent = 1;
-    owned.rebase.sceneBeforeExtent = 1;
-    owned.rebase.sceneAppendBase = 1;
-    owned.rebase.sceneAfterExtent = 2;
-    owned.rebase.sourceSlots = {{0}};
-    owned.rebase.sceneSlots = {{1}};
-    owned.rebase.owned = PrefabPropagationResourceBlock::FromDecoded(
-        PrefabPropagationResourceKind::Mesh,
-        {PrefabPropagationResourcePayload{"mesh:after", "digest-m", mesh}});
-    stageEvidence.resourceOwnership.push_back(owned);
-    stageEvidence.meshRefOperations.push_back({kEntity, kTemplate, beforeRef, MeshRef{1, -1}});
     plan.affectedEntities = {kEntity};
     plan.syncImpact = SyncImpact::Structural;
     FinalizePlan(scene, plan);
-    REQUIRE(plan.IsEffective(stageEvidence));
+    REQUIRE(plan.IsEffective());
 
     std::size_t fingerprintReads = 0;
-    PrefabPropagationCommand command(AsExecutable(plan, std::move(stageEvidence)), [&] {
+    PrefabPropagationCommand command(AsExecutable(plan), [&] {
         ++fingerprintReads;
         return Result<PrefabSourceFingerprint>::Ok(
             fingerprintReads == 1 ? source :
@@ -180,7 +172,7 @@ TEST_CASE("Phase 8 W4 S4: propagation command owns append-only resources and reu
     REQUIRE(redo.success);
     CHECK(scene.AuthoringDoc().ecs.registry.get<MeshRef>(
         scene.FindEntityByUuid(kEntity)).meshIndex == 1);
-    CHECK(ecs.meshRegistry.GetMesh(1).name == "after");
+    CHECK(ecs.meshRegistry.GetMesh(1).name == "sphere");
     CHECK(ecs.meshRegistry.GetCount() == 2);
     CHECK(fingerprintReads == 1);
 }
@@ -225,6 +217,8 @@ TEST_CASE("Phase 8 W4 S4: stale value and fingerprint reject with zero mutation"
     fingerprintPlan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
         kEntity, kTemplate, NameComponent{"old"}, NameComponent{"new"}));
     fingerprintPlan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
+    fingerprintPlan.instances.push_back({kInstance, kEntity,
+        PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
     fingerprintPlan.affectedEntities = {kEntity};
     fingerprintPlan.syncImpact = SyncImpact::None;
     FinalizePlan(fingerprintScene, fingerprintPlan);
@@ -277,6 +271,8 @@ TEST_CASE("Phase 8 typed foundation: command preflights every operation before w
         PrefabPropagationComponentDelta::Make<Transform>(
             kEntity, kTemplate, staleBefore, Transform{}));
     plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
+    plan.instances.push_back({kInstance, kEntity,
+        PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
     plan.affectedEntities = {kEntity};
     plan.syncImpact = SyncImpact::Transform;
     FinalizePlan(scene, plan);
@@ -369,14 +365,14 @@ TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutatio
     {
         SceneManager scene; PopulateScene(scene);
         auto plan = makePlan(scene);
+        plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<PrimitiveComponent>(
+            kEntity, kTemplate,
+            PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16},
+            PrimitiveComponent{PrimitiveComponent::Sphere, 2.0f, 16, 8}));
+        auto executable = AsExecutable(plan);
         scene.AuthoringDoc().ecs.registry.get<MeshRef>(
             scene.FindEntityByUuid(kEntity)).materialIndex = 4;
-        PrefabPropagationStageEvidence stageEvidence;
-        stageEvidence.meshRefOperations.push_back({kEntity, kTemplate,
-            MeshRef{0, -1}, MeshRef{0, -1}});
-        plan.affectedEntities = {kEntity};
-        plan.syncImpact = SyncImpact::None;
-        CHECK_FALSE(PrefabPropagationCommand(AsExecutable(plan, std::move(stageEvidence)), [source] {
+        CHECK_FALSE(PrefabPropagationCommand(std::move(executable), [source] {
             return Result<PrefabSourceFingerprint>::Ok(source);
         }).Execute(scene).success);
     }
@@ -738,10 +734,10 @@ TEST_CASE("Phase 8 W4 S4: commit rejects a plan without complete production evid
     plan.syncImpact = SyncImpact::None;
     FinalizePlan(scene, plan);
     plan.rootSnapshots.clear();
-    CHECK(plan.IsValid());
-    const auto result = PrefabPropagationCommand(AsExecutable(plan),
-        [source] { return Result<PrefabSourceFingerprint>::Ok(source); }).Execute(scene);
-    CHECK_FALSE(result.success);
+    CHECK_FALSE(plan.IsValid());
+    const auto staged = StagePrefabPropagationResources(
+        plan, scene.AuthoringDoc(), AssetResolutionContext{});
+    CHECK_FALSE(staged.IsOk());
     CHECK(scene.AuthoringDoc().ecs.registry.get<NameComponent>(
         scene.FindEntityByUuid(kEntity)).name == "old");
 }

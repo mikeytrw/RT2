@@ -342,44 +342,35 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Submit(
         return Enqueue(source, !refreshedContext);
     }
     std::optional<CapturedPrefabSource> captured;
-    Result<PrefabSourceFingerprint> fingerprint;
-    if (hooks.capture)
-    {
-        const auto checked = hooks.capture(source, assets);
-        if (!checked.IsOk())
-        {
-            PrefabPropagationLiveReport report;
-            report.error = checked.error;
-            return report;
-        }
-        captured = checked.value;
-        fingerprint = inputHooks.fingerprint
-            ? hooks.fingerprint(source, assets)
-            : Result<PrefabSourceFingerprint>::Ok(checked.value.fingerprint);
-    }
-    else
-    {
-        fingerprint = hooks.fingerprint(source, assets);
-    }
-    if (!fingerprint.IsOk())
-    {
-        PrefabPropagationLiveReport report;
-        report.error = fingerprint.error;
-        return report;
-    }
-    const auto key = Key(fingerprint.value);
-    if (fingerprint.value.assetId.IsNull())
+    if (!hooks.capture)
     {
         PrefabPropagationLiveReport report;
         report.error = {Error::InvalidArgument, source.path,
-            "prefab propagation fingerprint has no validated durable asset ID"};
+            "prefab propagation capture is required before Prepare"};
         return report;
     }
-    const auto pendingKey = IdentityKey(fingerprint.value.assetId);
+    const auto checked = hooks.capture(source, assets);
+    if (!checked.IsOk())
+    {
+        PrefabPropagationLiveReport report;
+        report.error = checked.error;
+        return report;
+    }
+    captured = checked.value;
+    const auto fingerprint = captured->fingerprint;
+    const auto key = Key(fingerprint);
+    if (fingerprint.assetId.IsNull())
+    {
+        PrefabPropagationLiveReport report;
+        report.error = {Error::InvalidArgument, source.path,
+            "prefab propagation capture has no validated durable asset ID"};
+        return report;
+    }
+    const auto pendingKey = IdentityKey(fingerprint.assetId);
     const auto pending = m_Pending.find(pendingKey);
     if (pending != m_Pending.end() &&
         pending->second.hasFingerprint &&
-        pending->second.fingerprint == fingerprint.value)
+        pending->second.fingerprint == fingerprint)
     {
         PrefabPropagationLiveReport report;
         report.accepted = true;
@@ -389,7 +380,7 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Submit(
     }
     const auto applied = m_LastApplied.find(key);
     if (applied != m_LastApplied.end() &&
-        applied->second.fingerprint == fingerprint.value &&
+        applied->second.fingerprint == fingerprint &&
         applied->second.authoringRevision == scene.AuthoringRevision())
     {
         PrefabPropagationLiveReport report;
@@ -402,13 +393,13 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Submit(
         const bool requiresRefresh = !refreshedContext ||
             (pending != m_Pending.end() && pending->second.requiresRefresh);
         m_Pending[pendingKey] = Pending{
-            source, fingerprint.value, true, requiresRefresh};
+            source, fingerprint, true, requiresRefresh};
         PrefabPropagationLiveReport report;
         report.accepted = true;
         report.queued = true;
         return report;
     }
-    return Apply(scene, history, source, assets, fingerprint.value, hooks,
+    return Apply(scene, history, source, assets, fingerprint, hooks,
                  *captured);
 }
 
@@ -432,24 +423,24 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Drain(
         const Pending pending = it->second;
         m_Pending.erase(it);
         std::optional<CapturedPrefabSource> captured;
-        Result<PrefabSourceFingerprint> fingerprint;
+        Result<PrefabSourceFingerprint> fingerprint =
+            Result<PrefabSourceFingerprint>::Fail(
+                Error::InvalidArgument, pending.source.path,
+                "prefab propagation capture is required before Prepare");
         if (hooks.capture)
         {
             const auto checked = hooks.capture(pending.source, assets);
             if (checked.IsOk())
             {
                 captured = checked.value;
-                fingerprint = inputHooks.fingerprint
-                    ? hooks.fingerprint(pending.source, assets)
-                    : Result<PrefabSourceFingerprint>::Ok(checked.value.fingerprint);
+                fingerprint = Result<PrefabSourceFingerprint>::Ok(
+                    captured->fingerprint);
             }
             else
                 fingerprint = Result<PrefabSourceFingerprint>::Fail(
                     checked.error.code, checked.error.path,
                     checked.error.detail);
         }
-        else
-            fingerprint = hooks.fingerprint(pending.source, assets);
         PrefabPropagationLiveReport report;
         if (!fingerprint.IsOk())
             report.error = fingerprint.error;
@@ -479,6 +470,7 @@ std::vector<AssetReference> CollectReferencedPrefabSources(
     const std::vector<std::filesystem::path>& changedPaths, bool fullScan,
     std::vector<AssetDiagnostic>& diagnostics)
 {
+    (void)diagnostics;
     std::vector<std::filesystem::path> normalized;
     normalized.reserve(changedPaths.size());
     for (const auto& path : changedPaths)
@@ -494,18 +486,27 @@ std::vector<AssetReference> CollectReferencedPrefabSources(
     for (const auto entity : view)
     {
         const auto& link = view.get<PrefabInstanceComponent>(entity);
-        std::vector<AssetDiagnostic> local;
-        const auto resolved = Resolve(link.prefab, assets, UUID::Nil(), {}, local);
-        diagnostics.insert(diagnostics.end(), local.begin(), local.end());
-        if (!resolved.success || resolved.effectiveId.IsNull()) continue;
-        const auto canonical = CanonicalAssetPath(resolved.resolvedPath);
+        std::filesystem::path sourcePath;
+        UUID durableId = link.prefab.assetId;
+        if (!durableId.IsNull() && assets.database != nullptr)
+        {
+            const auto lookup = assets.database->LookupById(durableId);
+            if (lookup.status == AssetIdLookupResult::Status::Unique && lookup.record)
+                sourcePath = lookup.record->sourcePath;
+        }
+        if (sourcePath.empty()) sourcePath = link.prefab.path;
+        if (sourcePath.empty() ||
+            (sourcePath.is_relative() && assets.assetRoot.empty()))
+            continue;
+        if (sourcePath.is_relative()) sourcePath = assets.assetRoot / sourcePath;
+        const auto canonical = CanonicalAssetPath(sourcePath);
         if (!fullScan && std::find(normalized.begin(), normalized.end(), canonical) == normalized.end())
             continue;
         AssetReference source = link.prefab;
         source.kind = AssetKind::Prefab;
-        source.assetId = resolved.effectiveId;
+        source.assetId = durableId;
         source.path = canonical.generic_string();
-        const auto key = canonical.generic_string() + "|" + resolved.effectiveId.ToString();
+        const auto key = canonical.generic_string() + "|" + durableId.ToString();
         selected.emplace(key, std::move(source));
     }
     std::vector<AssetReference> result;

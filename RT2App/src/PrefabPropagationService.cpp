@@ -547,20 +547,23 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
         const auto& link = roots.get<PrefabInstanceComponent>(root);
         const auto* id = document.ecs.registry.try_get<EntityIdComponent>(root);
         const UUID rootUuid = id ? id->id : UUID::Nil();
-        std::vector<AssetDiagnostic> resolutionDiagnostics;
-        const auto resolved = Resolve(link.prefab, assets, rootUuid, {},
-                                      resolutionDiagnostics);
-        if (!resolved.success || resolved.effectiveId.IsNull())
+        std::filesystem::path sourcePath;
+        if (!link.prefab.assetId.IsNull() && assets.database != nullptr)
         {
-            const auto detail = resolutionDiagnostics.empty()
-                ? "prefab source could not be resolved"
-                : resolutionDiagnostics.front().detail;
-            return Result<PrefabPropagationLoadReport>::Fail(
-                Error::MissingAsset, link.prefab.path, detail);
+            const auto lookup = assets.database->LookupById(link.prefab.assetId);
+            if (lookup.status == AssetIdLookupResult::Status::Unique && lookup.record)
+                sourcePath = lookup.record->sourcePath;
         }
-        const auto normalized = CanonicalAssetPath(resolved.resolvedPath);
+        if (sourcePath.empty()) sourcePath = link.prefab.path;
+        if (sourcePath.empty() ||
+            (sourcePath.is_relative() && assets.assetRoot.empty()))
+            return Result<PrefabPropagationLoadReport>::Fail(
+                Error::MissingAsset, link.prefab.path,
+                "prefab source path cannot be resolved without sidecar I/O");
+        if (sourcePath.is_relative()) sourcePath = assets.assetRoot / sourcePath;
+        const auto normalized = CanonicalAssetPath(sourcePath);
         candidates.push_back({link.prefab,
-            normalized.generic_string() + "|" + resolved.effectiveId.ToString(),
+            normalized.generic_string(),
             rootUuid});
     }
     std::sort(candidates.begin(), candidates.end(),

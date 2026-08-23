@@ -645,6 +645,42 @@ PrefabPropagationDiagnostic MakeDiagnostic(const PrefabSourceFingerprint& source
     return diagnostic;
 }
 
+// Identity lookup for the capture boundary is deliberately sidecar-free.  A
+// database record supplies a durable path; otherwise the authored path is
+// normalized against the explicit asset root.  The only filesystem reads in
+// this lifecycle are the two byte reads performed by CapturePrefabSource.
+std::filesystem::path CapturePath(const AssetReference& source,
+                                   const AssetResolutionContext& assets)
+{
+    std::filesystem::path path;
+    if (!source.assetId.IsNull() && assets.database != nullptr)
+    {
+        const auto lookup = assets.database->LookupById(source.assetId);
+        if (lookup.status == AssetIdLookupResult::Status::Unique && lookup.record)
+            path = lookup.record->sourcePath;
+    }
+    if (path.empty()) path = source.path;
+    if (path.empty()) return {};
+    if (path.is_relative())
+    {
+        if (assets.assetRoot.empty()) return {};
+        path = assets.assetRoot / path;
+    }
+    return CanonicalAssetPath(path);
+}
+
+bool MatchesCapturedIdentity(const AssetReference& reference,
+                             const PrefabSourceFingerprint& captured,
+                             const AssetResolutionContext& assets)
+{
+    if (reference.kind != AssetKind::Prefab) return false;
+    if (!reference.assetId.IsNull() && reference.assetId != captured.assetId)
+        return false;
+    if (reference.path.empty()) return !reference.assetId.IsNull();
+    const auto candidate = CapturePath(reference, assets);
+    return !candidate.empty() && candidate == captured.normalizedPath;
+}
+
 } // namespace
 
 Result<CapturedPrefabSource> CapturePrefabSource(
@@ -656,13 +692,11 @@ Result<CapturedPrefabSource> CapturePrefabSource(
         (source.path.empty() && source.assetId.IsNull()))
         return Result<CapturedPrefabSource>::Fail(
             Error::InvalidArgument, {}, "prefab fingerprint requires a prefab identity");
-    std::vector<AssetDiagnostic> diagnostics;
-    const auto resolved = Resolve(source, assets, UUID::Nil(), {}, diagnostics);
-    if (!resolved.success || resolved.effectiveId.IsNull())
+    const auto path = CapturePath(source, assets);
+    if (path.empty())
         return Result<CapturedPrefabSource>::Fail(
             Error::MissingAsset, source.path,
-            "prefab source has no verified durable identity");
-    const auto path = CanonicalAssetPath(resolved.resolvedPath);
+            "prefab source path cannot be resolved without sidecar I/O");
     std::string bytes;
     Error error;
     const auto reader = injectedRead ? injectedRead :
@@ -677,7 +711,8 @@ Result<CapturedPrefabSource> CapturePrefabSource(
         return Result<CapturedPrefabSource>::Fail(error.code, error.path, error.detail);
     Error sidecarError;
     const UUID sidecar = ParseCapturedSidecar(sidecarBytes, sidecarError);
-    if (!sidecarError.IsOk() || sidecar.IsNull() || sidecar != resolved.effectiveId)
+    if (!sidecarError.IsOk() || sidecar.IsNull() ||
+        (!source.assetId.IsNull() && sidecar != source.assetId))
         return Result<CapturedPrefabSource>::Fail(
             sidecarError.IsOk() ? Error::MissingAsset : sidecarError.code,
             path.string(), "captured prefab sidecar identity is missing or mismatched");
@@ -713,31 +748,24 @@ Result<DiscoveredPropagationPlan> PreparePrefabPropagation(
         return Result<DiscoveredPropagationPlan>::Fail(
             Error::InvalidArgument, {}, "changed source is not a prefab identity");
 
-    std::vector<AssetDiagnostic> resolutionDiagnostics;
-    const auto changed = Resolve(request.changedSource, request.assets,
-                                 UUID::Nil(), {}, resolutionDiagnostics);
-    if (!changed.success || changed.effectiveId.IsNull())
-        return Result<DiscoveredPropagationPlan>::Fail(
-            Error::MissingAsset, request.changedSource.path,
-            "changed prefab source has no verified durable identity");
-    const auto targetPath = CanonicalAssetPath(changed.resolvedPath);
-
     const auto& captured = request.capturedSource;
-    if (!captured.IsValid() || captured.fingerprint.normalizedPath != targetPath ||
-        captured.fingerprint.assetId != changed.effectiveId)
+    if (!captured.IsValid() ||
+        !MatchesCapturedIdentity(request.changedSource, captured.fingerprint,
+                                 request.assets))
         return Result<DiscoveredPropagationPlan>::Fail(
-            Error::InvalidArgument, targetPath.string(),
+            Error::InvalidArgument, captured.fingerprint.normalizedPath.string(),
             "Prepare requires one coherent captured prefab source and sidecar");
     Error sidecarError;
     const UUID sidecarId = ParseCapturedSidecar(captured.sidecarBytes, sidecarError);
     const auto fingerprintDigest = DigestBytes(captured.prefabBytes,
                                                captured.sidecarBytes);
-    if (!sidecarError.IsOk() || sidecarId.IsNull() || sidecarId != changed.effectiveId ||
+    if (!sidecarError.IsOk() || sidecarId.IsNull() ||
+        sidecarId != captured.fingerprint.assetId ||
         fingerprintDigest.empty() || fingerprintDigest != captured.fingerprint.contentDigest)
         return Result<DiscoveredPropagationPlan>::Fail(
-            Error::Parse, targetPath.string(),
+            Error::Parse, captured.fingerprint.normalizedPath.string(),
             "prefab source fingerprint or sidecar identity is invalid");
-    PrefabSourceFingerprint fingerprint{ targetPath, sidecarId,
+    PrefabSourceFingerprint fingerprint{ captured.fingerprint.normalizedPath, sidecarId,
                                          fingerprintDigest };
     const std::string& sourceBytes = captured.prefabBytes;
     const std::string& sidecarBytes = captured.sidecarBytes;
@@ -759,12 +787,7 @@ Result<DiscoveredPropagationPlan> PreparePrefabPropagation(
         const auto* idComponent = request.document->ecs.registry.try_get<EntityIdComponent>(root);
         const UUID rootUuid = idComponent ? idComponent->id : UUID::Nil();
         std::vector<AssetDiagnostic> rootDiagnostics;
-        const auto resolved = Resolve(link.prefab, request.assets,
-                                      rootUuid,
-                                      {}, rootDiagnostics);
-        if (!resolved.success || resolved.effectiveId.IsNull() ||
-            resolved.effectiveId != fingerprint.assetId ||
-            CanonicalAssetPath(resolved.resolvedPath) != fingerprint.normalizedPath)
+        if (!MatchesCapturedIdentity(link.prefab, fingerprint, request.assets))
             continue;
         roots.push_back(root);
     }
@@ -803,22 +826,24 @@ Result<DiscoveredPropagationPlan> PreparePrefabPropagation(
             duplicateInstanceIds.insert(current.instanceId);
     }
 
-    // Parse the exact immutable bytes already fingerprinted. The legacy path
-    // seam remains available to hosts that explicitly inject it, but the
-    // production default never reopens the source after the snapshot read.
+    // Parse the exact immutable bytes already fingerprinted. The optional
+    // parser is a CPU test seam; neither path performs source I/O here.
     PrefabDocument document;
     bool parsed = false;
     if (request.parseBytes)
-        parsed = request.parseBytes(document, sourceBytes, targetPath, sourceError);
+        parsed = request.parseBytes(document, sourceBytes,
+                                    captured.fingerprint.normalizedPath, sourceError);
     else
-        parsed = PrefabSerializer::LoadBytes(document, sourceBytes, targetPath, sourceError);
+        parsed = PrefabSerializer::LoadBytes(document, sourceBytes,
+                                             captured.fingerprint.normalizedPath,
+                                             sourceError);
     if (!parsed)
         return Result<DiscoveredPropagationPlan>::Fail(
             sourceError.code, sourceError.path, sourceError.detail);
     SourceModel model;
     if (!BuildSourceModel(std::move(document), model, sourceError))
         return Result<DiscoveredPropagationPlan>::Fail(
-            sourceError.code, targetPath.string(), sourceError.detail);
+            sourceError.code, captured.fingerprint.normalizedPath.string(), sourceError.detail);
     const LoadedSource loaded{ fingerprint, std::move(model) };
 
     for (const entt::entity root : roots)
