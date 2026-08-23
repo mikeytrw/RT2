@@ -62,6 +62,7 @@ struct EffectiveLiveFixture
             scene.AuthoringDoc().ecs.materials.size());
         plan.textureTableExtent = static_cast<std::uint32_t>(
             scene.AuthoringDoc().ecs.textures.size());
+        plan.resourceEvidenceCaptured = true;
         plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<Transform>(
             entity, templateId, before, after));
         plan.memberSnapshots.push_back({entity, instance, templateId, {}});
@@ -131,6 +132,10 @@ PrefabPropagationLiveHooks EffectiveHooks(EffectiveLiveFixture& fixture,
                                            int& fingerprintCalls)
 {
     PrefabPropagationLiveHooks hooks;
+    hooks.capture = [&](const AssetReference&, const AssetResolutionContext&) {
+        return Result<CapturedPrefabSource>::Ok(CapturedPrefabSource{
+            Fingerprint(digest.c_str()), "synthetic-prefab-bytes", "synthetic-sidecar-bytes"});
+    };
     hooks.fingerprint = [&](const AssetReference&, const AssetResolutionContext&) {
         ++fingerprintCalls;
         return Result<PrefabSourceFingerprint>::Ok(Fingerprint(digest.c_str()));
@@ -141,7 +146,7 @@ PrefabPropagationLiveHooks EffectiveHooks(EffectiveLiveFixture& fixture,
     };
     hooks.stage = [](const DiscoveredPropagationPlan& plan, const SceneDocument&,
                      const AssetResolutionContext&) {
-        return Result<StageOutcome>::Ok(StageOutcome::FromDiscovered(plan));
+        return Result<StageOutcome>::Ok(MakeTestStageOutcome(plan));
     };
     return hooks;
 }
@@ -158,6 +163,7 @@ DiscoveredPropagationPlan EmptyPlan(SceneManager& scene,
     plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
     plan.meshTableExtent = scene.AuthoringDoc().ecs.meshRegistry.GetCount();
     plan.materialTableExtent = static_cast<std::uint32_t>(scene.AuthoringDoc().ecs.materials.size());
+    plan.resourceEvidenceCaptured = true;
     plan.textureTableExtent = static_cast<std::uint32_t>(scene.AuthoringDoc().ecs.textures.size());
     return plan;
 }
@@ -177,6 +183,10 @@ TEST_CASE("S6 live queue coalesces newest fingerprint and drains only in Edit")
     std::string digest = "one";
     int prepareCalls = 0;
     PrefabPropagationLiveHooks hooks;
+    hooks.capture = [&](const AssetReference&, const AssetResolutionContext&) {
+        return Result<CapturedPrefabSource>::Ok(CapturedPrefabSource{
+            Fingerprint(digest.c_str()), "synthetic-prefab-bytes", "synthetic-sidecar-bytes"});
+    };
     hooks.fingerprint = [&](const AssetReference&, const AssetResolutionContext&) {
         return Result<PrefabSourceFingerprint>::Ok(Fingerprint(digest.c_str()));
     };
@@ -245,6 +255,10 @@ TEST_CASE("S6 deferred explicit work carries refresh evidence and context clear"
     source.assetId = UUID::Parse("00000000-0000-4000-8000-000000000601");
 
     PrefabPropagationLiveHooks hooks;
+    hooks.capture = [&](const AssetReference&, const AssetResolutionContext&) {
+        return Result<CapturedPrefabSource>::Ok(CapturedPrefabSource{
+            Fingerprint("deferred"), "synthetic-prefab-bytes", "synthetic-sidecar-bytes"});
+    };
     hooks.fingerprint = [](const AssetReference&, const AssetResolutionContext&) {
         return Result<PrefabSourceFingerprint>::Ok(Fingerprint("deferred"));
     };
@@ -466,6 +480,13 @@ TEST_CASE("S6 queued aliases share durable identity in either trigger order")
         int prepareCalls = 0;
         int stageCalls = 0;
         PrefabPropagationLiveHooks hooks;
+        hooks.capture = [&](const AssetReference& source,
+                            const AssetResolutionContext&) {
+            const auto digest = source.path.find("C:/") == 0
+                ? "watcher-newest" : "explicit-newest";
+            return Result<CapturedPrefabSource>::Ok(CapturedPrefabSource{
+                Fingerprint(digest), "synthetic-prefab-bytes", "synthetic-sidecar-bytes"});
+        };
         hooks.fingerprint = [&](const AssetReference& source,
                                 const AssetResolutionContext&) {
             ++fingerprintCalls;
@@ -483,7 +504,7 @@ TEST_CASE("S6 queued aliases share durable identity in either trigger order")
                           const SceneDocument&,
                           const AssetResolutionContext&) {
             ++stageCalls;
-            return Result<StageOutcome>::Ok(StageOutcome::FromDiscovered(plan));
+            return Result<StageOutcome>::Ok(MakeTestStageOutcome(plan));
         };
 
         if (explicitFirst)
@@ -594,7 +615,7 @@ TEST_CASE("S6 host refresh uses only the post-refresh owning context")
         if (assets.database != databaseBAddress ||
             assets.assetRoot != std::filesystem::path("C:/project-B/assets"))
             ++readsA;
-        return Result<StageOutcome>::Ok(StageOutcome::FromDiscovered(plan));
+        return Result<StageOutcome>::Ok(MakeTestStageOutcome(plan));
     };
 
     const auto applied = host.Submit(
@@ -658,7 +679,7 @@ TEST_CASE("S6 host refresh uses only the post-refresh owning context")
         if (assets.database != databaseBAddress ||
             assets.assetRoot != std::filesystem::path("C:/project-B/assets"))
             ++queuedReadsA;
-        return Result<StageOutcome>::Ok(StageOutcome::FromDiscovered(plan));
+        return Result<StageOutcome>::Ok(MakeTestStageOutcome(plan));
     };
     const auto pending = queuedHost.Submit(
         queuedFixture.scene, queuedFixture.history, queuedFixture.source,
@@ -761,6 +782,10 @@ TEST_CASE("S6 host rejects sidecar drift without routing or history")
     int fingerprintCalls = 0;
     int prepareCalls = 0;
     PrefabPropagationLiveHooks hooks;
+    hooks.capture = [&](const AssetReference&, const AssetResolutionContext&) {
+        return Result<CapturedPrefabSource>::Ok(CapturedPrefabSource{
+            Fingerprint("before"), "synthetic-prefab-bytes", "synthetic-sidecar-bytes"});
+    };
     hooks.fingerprint = [&](const AssetReference&, const AssetResolutionContext&) {
         ++fingerprintCalls;
         return Result<PrefabSourceFingerprint>::Ok(
@@ -773,7 +798,7 @@ TEST_CASE("S6 host rejects sidecar drift without routing or history")
     };
     hooks.stage = [](const DiscoveredPropagationPlan& plan, const SceneDocument&,
                      const AssetResolutionContext&) {
-        return Result<StageOutcome>::Ok(StageOutcome::FromDiscovered(plan));
+        return Result<StageOutcome>::Ok(MakeTestStageOutcome(plan));
     };
 
     const auto failed = host.Submit(
@@ -786,4 +811,57 @@ TEST_CASE("S6 host rejects sidecar drift without routing or history")
     CHECK(probe.routed.empty());
     CHECK(fixture.history.UndoDepthForTest() == 0);
     CHECK(probe.statuses.back().find("code=invalid_argument") != std::string::npos);
+}
+
+TEST_CASE("S6 live immediate and queued routes capture one coherent source")
+{
+    EffectiveLiveFixture immediate;
+    PrefabPropagationLiveQueue immediateQueue;
+    int immediateCaptures = 0;
+    PrefabPropagationLiveHooks immediateHooks;
+    immediateHooks.capture = [&](const AssetReference&, const AssetResolutionContext&) {
+        ++immediateCaptures;
+        return Result<CapturedPrefabSource>::Ok(CapturedPrefabSource{
+            Fingerprint("capture-once"), "synthetic-prefab-bytes", "synthetic-sidecar-bytes"});
+    };
+    immediateHooks.fingerprint = [&](const AssetReference&, const AssetResolutionContext&) {
+        return Result<PrefabSourceFingerprint>::Ok(Fingerprint("capture-once"));
+    };
+    immediateHooks.prepare = [&](const PrefabPropagationDiscoveryRequest&) {
+        return Result<DiscoveredPropagationPlan>::Ok(immediate.Plan("capture-once"));
+    };
+    immediateHooks.stage = [](const DiscoveredPropagationPlan& plan,
+                              const SceneDocument&, const AssetResolutionContext&) {
+        return Result<StageOutcome>::Ok(MakeTestStageOutcome(plan));
+    };
+    const auto immediateReport = immediateQueue.Submit(
+        immediate.scene, immediate.history, immediate.source, {}, SceneRunState::Edit,
+        false, true, PrefabPropagationLiveTrigger::Explicit, immediateHooks);
+    REQUIRE(immediateReport.applied);
+    CHECK(immediateCaptures == 1);
+
+    EffectiveLiveFixture queued;
+    PrefabPropagationLiveQueue queuedQueue;
+    int queuedCaptures = 0;
+    auto queuedHooks = immediateHooks;
+    queuedHooks.capture = [&](const AssetReference&, const AssetResolutionContext&) {
+        ++queuedCaptures;
+        return Result<CapturedPrefabSource>::Ok(CapturedPrefabSource{
+            Fingerprint("queued-capture"), "synthetic-prefab-bytes", "synthetic-sidecar-bytes"});
+    };
+    queuedHooks.fingerprint = [&](const AssetReference&, const AssetResolutionContext&) {
+        return Result<PrefabSourceFingerprint>::Ok(Fingerprint("queued-capture"));
+    };
+    queuedHooks.prepare = [&](const PrefabPropagationDiscoveryRequest&) {
+        return Result<DiscoveredPropagationPlan>::Ok(queued.Plan("queued-capture"));
+    };
+    const auto pending = queuedQueue.Submit(
+        queued.scene, queued.history, queued.source, {}, SceneRunState::Playing,
+        false, true, PrefabPropagationLiveTrigger::Watcher, queuedHooks);
+    REQUIRE(pending.queued);
+    CHECK(queuedCaptures == 0);
+    const auto drained = queuedQueue.Drain(
+        queued.scene, queued.history, {}, SceneRunState::Edit, false, true, queuedHooks);
+    REQUIRE(drained.applied);
+    CHECK(queuedCaptures == 1);
 }

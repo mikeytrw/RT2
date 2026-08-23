@@ -77,6 +77,9 @@ PrefabPropagationDiscoveryRequest Request(SceneDocument& document,
     request.documentGeneration = 101;
     request.resourceGeneration = 202;
     request.authoringRevision = 303;
+    const auto captured = CapturePrefabSource(request.changedSource,
+                                              request.assets);
+    if (captured.IsOk()) request.capturedSource = captured.value;
     return request;
 }
 
@@ -380,7 +383,7 @@ TEST_CASE("Phase 8 W4 S3: all optional marker presence states reconcile")
                   PrefabPropagationInstanceDisposition::NoOp);
             CHECK(result.value.affectedEntities.empty());
             CHECK(result.value.syncImpact == SyncImpact::None);
-            CHECK(result.value.resourceOwnership.empty());
+            CHECK(result.value.resourceEvidenceCaptured);
         }
         CHECK(document.ecs.registry.get<PrefabMemberComponent>(child).overrides == beforeMarkers);
     }
@@ -450,7 +453,7 @@ TEST_CASE("Phase 8 W4 S3: protected NaN payloads and overridden absence are true
         CHECK(result.value.instances.front().disposition == PrefabPropagationInstanceDisposition::NoOp);
         CHECK(result.value.affectedEntities.empty());
         CHECK(result.value.syncImpact == SyncImpact::None);
-        CHECK(result.value.resourceOwnership.empty());
+        CHECK(result.value.resourceEvidenceCaptured);
         CHECK(document.ecs.registry.get<PrefabMemberComponent>(child).overrides == beforeMarkers);
     }
 

@@ -20,6 +20,16 @@ static_assert(!std::is_constructible_v<
     PrefabPropagationCommand, DiscoveredPropagationPlan,
     PrefabPropagationCommand::SourceFingerprintReader>,
     "discovered plans must not be accepted by the command boundary");
+static_assert(!std::is_constructible_v<ExecutablePropagationPlan,
+    DiscoveredPropagationPlan&&>,
+    "executable plans are constructible only by Stage");
+static_assert(!std::is_constructible_v<StageOutcome,
+    DiscoveredPropagationPlan&&>,
+    "StageOutcome cannot be publicly manufactured from discovery");
+static_assert(!std::is_assignable_v<
+    decltype(std::declval<ExecutablePropagationPlan&>().source()),
+    PrefabSourceFingerprint>,
+    "executable fingerprint evidence is immutable");
 
 namespace
 {
@@ -458,19 +468,20 @@ TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only 
         originalTexture));
 
     DiscoveredPropagationPlan resourceOnly;
-    resourceOnly.resourceOwnership.push_back(ownership);
+    PrefabPropagationStageEvidence resourceEvidence;
+    resourceEvidence.resourceOwnership.push_back(ownership);
     resourceOnly.syncImpact = SyncImpact::Structural;
     // Ticket 2 rejects owned blocks that have no transitive durable consumer;
     // resource-only intent must never reach staging or command history.
-    CHECK_FALSE(resourceOnly.IsValid());
-    CHECK_FALSE(resourceOnly.IsNoOp());
-    CHECK_FALSE(resourceOnly.IsEffective());
+    CHECK_FALSE(resourceOnly.IsValid(resourceEvidence));
+    CHECK_FALSE(resourceOnly.IsNoOp(resourceEvidence));
+    CHECK_FALSE(resourceOnly.IsEffective(resourceEvidence));
 
     auto duplicatePlan = resourceOnly;
-    duplicatePlan.resourceOwnership.push_back(ownership);
-    CHECK(duplicatePlan.resourceOwnership[0].IsValid());
-    CHECK(duplicatePlan.resourceOwnership[1].IsValid());
-    CHECK_FALSE(duplicatePlan.IsValid());
+    resourceEvidence.resourceOwnership.push_back(ownership);
+    CHECK(resourceEvidence.resourceOwnership[0].IsValid());
+    CHECK(resourceEvidence.resourceOwnership[1].IsValid());
+    CHECK_FALSE(duplicatePlan.IsValid(resourceEvidence));
 
     CHECK(PropagationComponentImpact<Transform> == SyncImpact::Transform);
     CHECK(PropagationComponentImpact<CameraComponent> == SyncImpact::None);
@@ -484,9 +495,9 @@ TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only 
           SyncImpact::Material);
 
     auto invalidPlan = resourceOnly;
-    invalidPlan.resourceOwnership[0].rebase.sceneAfterExtent = 8;
-    CHECK_FALSE(invalidPlan.IsValid());
-    CHECK_FALSE(invalidPlan.IsEffective());
+    resourceEvidence.resourceOwnership[0].rebase.sceneAfterExtent = 8;
+    CHECK_FALSE(invalidPlan.IsValid(resourceEvidence));
+    CHECK_FALSE(invalidPlan.IsEffective(resourceEvidence));
 
     DiscoveredPropagationPlan summaryPlan;
     summaryPlan.componentOperations.push_back(
@@ -551,18 +562,18 @@ TEST_CASE("Phase 8 W4 S2: StageOutcome has explicit no-op classes and drops raw 
         PrefabPropagationComponentDelta::Make<Transform>(
             kEntity, kTemplate, Transform{}, Transform{}));
     CHECK(canonical.IsNoOp());
-    const auto noOp = StageOutcome::FromDiscovered(canonical);
+    const auto noOp = MakeTestStageOutcome(canonical);
     CHECK(noOp.IsNoOp());
-    CHECK_FALSE(noOp.executable.has_value());
+    CHECK(noOp.Executable() == nullptr);
 
     DiscoveredPropagationPlan allQuarantined = canonical;
     allQuarantined.componentOperations.clear();
     allQuarantined.instances.push_back({
         kInstance, kEntity, PrefabPropagationInstanceDisposition::Quarantined,
         {}, {PrefabPropagationDiagnostic{}}});
-    const auto quarantined = StageOutcome::FromDiscovered(allQuarantined);
+    const auto quarantined = MakeTestStageOutcome(allQuarantined);
     CHECK(quarantined.IsNoOp());
-    CHECK_FALSE(quarantined.executable.has_value());
+    CHECK(quarantined.Executable() == nullptr);
 
     DiscoveredPropagationPlan effective;
     effective.source = canonical.source;
@@ -574,10 +585,9 @@ TEST_CASE("Phase 8 W4 S2: StageOutcome has explicit no-op classes and drops raw 
     effective.capturedSource = CapturedPrefabSource{
         canonical.source, "raw-prefab-bytes", "raw-sidecar-bytes"};
     CHECK(effective.IsEffective());
-    auto staged = StageOutcome::Effective(std::move(effective));
+    auto staged = MakeTestStageOutcome(std::move(effective));
     REQUIRE(staged.IsEffective());
-    REQUIRE(staged.executable.has_value());
-    CHECK_FALSE(staged.capturedSource.IsValid());
-    CHECK_FALSE(staged.executable->capturedSource.IsValid());
-    CHECK(staged.executable->source == canonical.source);
+    REQUIRE(staged.Executable() != nullptr);
+    CHECK_FALSE(staged.Summary().capturedSource.IsValid());
+    CHECK(staged.Executable()->source() == canonical.source);
 }

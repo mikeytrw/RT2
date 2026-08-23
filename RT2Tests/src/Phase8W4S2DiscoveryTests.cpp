@@ -164,6 +164,9 @@ PrefabPropagationDiscoveryRequest Request(SceneDocument& document,
     request.documentGeneration = 71;
     request.resourceGeneration = 19;
     request.authoringRevision = 23;
+    const auto captured = CapturePrefabSource(request.changedSource,
+                                              request.assets);
+    if (captured.IsOk()) request.capturedSource = captured.value;
     return request;
 }
 }
@@ -268,22 +271,18 @@ TEST_CASE("Phase 8 W4 S2: identity discovery quarantines one sibling and loads o
     const auto beforeSidecarBytes = ReadTestBytes(AssetSidecarPath(source));
     auto request = Request(document, source);
     std::size_t loadCount = 0;
-    std::size_t fingerprintCount = 0;
-    request.load = [&](PrefabDocument& out, const std::filesystem::path& path,
-                       Error& loadError) {
+    request.parseBytes = [&](PrefabDocument& out, const std::string& bytes,
+                             const std::filesystem::path& path,
+                             Error& loadError) {
         ++loadCount;
-         return PrefabSerializer::Load(out, path, loadError);
-     };
-    request.fingerprint = [&](const std::string& bytes, const UUID& sidecar) {
-        ++fingerprintCount;
-        return std::string("batch-fingerprint-") +
-               std::to_string(bytes.size()) + "-" + sidecar.ToString();
+        return PrefabSerializer::LoadBytes(out, bytes, path, loadError);
     };
     const auto prepared = PreparePrefabPropagation(request);
     if (!prepared.IsOk()) MESSAGE(prepared.error.Format());
     REQUIRE(prepared.IsOk());
     CHECK(loadCount == 1);
-    CHECK(fingerprintCount == 1);
+    CHECK(prepared.value.source.contentDigest ==
+          prepared.value.capturedSource.fingerprint.contentDigest);
     CHECK(prepared.value.documentGeneration == 71);
     CHECK(prepared.value.resourceGeneration == 19);
     REQUIRE(prepared.value.instances.size() == 3);
@@ -372,36 +371,10 @@ TEST_CASE("Phase 8 W4 S2: deterministic maps use template IDs and one fingerprin
     populate(second, true);
     auto firstRequest = Request(first, source);
     auto secondRequest = Request(second, source);
-    std::size_t firstLoads = 0;
-    std::size_t secondLoads = 0;
-    std::size_t firstFingerprints = 0;
-    std::size_t secondFingerprints = 0;
-    firstRequest.load = [&](PrefabDocument& out, const std::filesystem::path& path,
-                            Error& loadError) {
-        ++firstLoads;
-        return PrefabSerializer::Load(out, path, loadError);
-    };
-    secondRequest.load = [&](PrefabDocument& out, const std::filesystem::path& path,
-                             Error& loadError) {
-        ++secondLoads;
-        return PrefabSerializer::Load(out, path, loadError);
-    };
-    firstRequest.fingerprint = [&](const std::string& bytes, const UUID& sidecar) {
-        ++firstFingerprints;
-        return std::to_string(bytes.size()) + sidecar.ToString();
-    };
-    secondRequest.fingerprint = [&](const std::string& bytes, const UUID& sidecar) {
-        ++secondFingerprints;
-        return std::to_string(bytes.size()) + sidecar.ToString();
-    };
     const auto firstResult = PreparePrefabPropagation(firstRequest);
     const auto secondResult = PreparePrefabPropagation(secondRequest);
     REQUIRE(firstResult.IsOk());
     REQUIRE(secondResult.IsOk());
-    CHECK(firstLoads == 1);
-    CHECK(secondLoads == 1);
-    CHECK(firstFingerprints == 1);
-    CHECK(secondFingerprints == 1);
     REQUIRE(firstResult.value.instances.size() == 1);
     REQUIRE(secondResult.value.instances.size() == 1);
     CHECK(firstResult.value.instances.front().disposition ==
@@ -808,16 +781,18 @@ TEST_CASE("Phase 8 W4 S2: global source and sidecar failures are loud and transa
 
     REQUIRE(WriteSidecarId(AssetSidecarPath(source), kAsset, error));
     auto parseRequest = Request(document, source);
-    parseRequest.load = [](PrefabDocument&, const std::filesystem::path& path,
-                           Error& loadError) {
+    parseRequest.parseBytes = [](PrefabDocument&, const std::string&,
+                                 const std::filesystem::path& path,
+                                 Error& loadError) {
         loadError = {Error::Parse, path.string(), "named checked source parse failure"};
         return false;
     };
     CHECK_FALSE(PreparePrefabPropagation(parseRequest).IsOk());
 
     auto duplicateRequest = Request(document, source);
-    duplicateRequest.load = [](PrefabDocument& out, const std::filesystem::path&,
-                               Error&) {
+    duplicateRequest.parseBytes = [](PrefabDocument& out, const std::string&,
+                                     const std::filesystem::path&,
+                                     Error&) {
         out.entities = {
             {kTemplateRoot, SubtreeEntityRecord{kTemplateRoot, "A"}},
             {kTemplateRoot, SubtreeEntityRecord{kTemplateChild, "B"}}
@@ -827,8 +802,9 @@ TEST_CASE("Phase 8 W4 S2: global source and sidecar failures are loud and transa
         CHECK_FALSE(PreparePrefabPropagation(duplicateRequest).IsOk());
 
     auto duplicateRecordRequest = Request(document, source);
-    duplicateRecordRequest.load = [](PrefabDocument& out, const std::filesystem::path&,
-                                     Error&) {
+    duplicateRecordRequest.parseBytes = [](PrefabDocument& out, const std::string&,
+                                           const std::filesystem::path&,
+                                           Error&) {
         out.entities = {
             {kTemplateRoot, SubtreeEntityRecord{kRecordRoot, "A"}},
             {kTemplateChild, SubtreeEntityRecord{kRecordRoot, "B"}}
@@ -874,44 +850,21 @@ TEST_CASE("Phase 8 W4 S2: parser consumes the fingerprinted immutable snapshot")
     document.ecs.registry.emplace<PrefabInstanceComponent>(root, link);
     document.ecs.registry.emplace<PrefabMemberComponent>(
         root, PrefabMemberComponent{kInstanceA, kTemplateRoot, {}});
-    std::string capturedDigest;
-    std::size_t readCount = 0;
     auto request = Request(document, source);
-    request.readBytes = [&](const std::filesystem::path& path,
-                            std::string& bytes, Error& readError) {
-        ++readCount;
-        std::ifstream input(path, std::ios::binary);
-        if (!input)
-        {
-            readError = {Error::Io, path.string(), "test snapshot read failed"};
-            return false;
-        }
-        bytes.assign(std::istreambuf_iterator<char>(input),
-                     std::istreambuf_iterator<char>());
-        if (input.bad())
-        {
-            readError = {Error::Io, path.string(), "test snapshot read failed"};
-            return false;
-        }
-        return true;
-    };
-    request.fingerprint = [&](const std::string& bytes, const UUID& sidecar) {
-        capturedDigest = std::to_string(bytes.size()) + sidecar.ToString();
-        PrefabDocument replacement;
-        replacement.entities = {{kTemplateRoot, SubtreeEntityRecord{kTemplateRoot, "Changed"}},
-                                {kTemplateChild, SubtreeEntityRecord{kTemplateChild, "Extra"}}};
-        Error writeError;
-        REQUIRE(PrefabSerializer::Save(replacement, source, writeError));
-        return capturedDigest;
-    };
+    const auto captured = CapturePrefabSource(request.changedSource, request.assets);
+    REQUIRE(captured.IsOk());
+    request.capturedSource = captured.value;
+    PrefabDocument replacement;
+    replacement.entities = {{kTemplateRoot, SubtreeEntityRecord{kTemplateRoot, "Changed"}},
+                            {kTemplateChild, SubtreeEntityRecord{kTemplateChild, "Extra"}}};
+    REQUIRE(PrefabSerializer::Save(replacement, source, error));
     const auto result = PreparePrefabPropagation(request);
     REQUIRE(result.IsOk());
     REQUIRE(result.value.instances.size() == 1);
     CHECK(result.value.instances.front().disposition ==
           PrefabPropagationInstanceDisposition::Propagate);
-    CHECK(result.value.source.contentDigest == capturedDigest);
+    CHECK(result.value.source.contentDigest == captured.value.fingerprint.contentDigest);
     CHECK(result.value.instances.front().affectedEntities.size() == 1);
-    CHECK(readCount == 1);
 }
 
 TEST_CASE("Phase 8 W4 S2: captured source is read once and Prepare consumes it")
@@ -953,15 +906,10 @@ TEST_CASE("Phase 8 W4 S2: captured source is read once and Prepare consumes it")
             return true;
         });
     REQUIRE(captured.IsOk());
-    REQUIRE(captureReads == 1);
+    REQUIRE(captureReads == 2);
 
     auto request = Request(document, source);
     request.capturedSource = captured.value;
-    request.readBytes = [&](const std::filesystem::path&, std::string&, Error& readError) {
-        readError = {Error::Io, source.string(),
-            "Prepare attempted a second source read"};
-        return false;
-    };
     const auto prepared = PreparePrefabPropagation(request);
     REQUIRE(prepared.IsOk());
     CHECK(prepared.value.source == captured.value.fingerprint);

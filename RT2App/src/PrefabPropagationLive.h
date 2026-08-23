@@ -112,7 +112,7 @@ private:
         const AssetReference& source, const AssetResolutionContext& assets,
         const PrefabSourceFingerprint& fingerprint,
         const PrefabPropagationLiveHooks& hooks,
-        const std::optional<CapturedPrefabSource>& captured = {});
+        const CapturedPrefabSource& captured);
 
     std::map<std::string, Pending> m_Pending;
     struct LastApplied

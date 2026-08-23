@@ -32,6 +32,8 @@
 // this boundary; all resource data is immutable once placed in a plan.
 namespace rt2::core {
 
+class SceneDocument;
+
 struct PrefabSourceFingerprint
 {
     std::filesystem::path normalizedPath;
@@ -436,6 +438,20 @@ struct CapturedPrefabSource
     { return fingerprint.IsValid() && !prefabBytes.empty() && !sidecarBytes.empty(); }
 };
 
+// Resource-derived evidence is created by Stage after resolver/preflight.
+// It is intentionally not part of discovery: quarantined and no-op instances
+// must never acquire executable resource ownership.
+struct PrefabPropagationStageEvidence
+{
+    std::vector<PrefabPropagationMeshRefOperation> meshRefOperations;
+    std::vector<PrefabPropagationResourceOwnership> resourceOwnership;
+
+    friend bool operator==(const PrefabPropagationStageEvidence& a,
+                           const PrefabPropagationStageEvidence& b) noexcept
+    { return a.meshRefOperations == b.meshRefOperations &&
+             a.resourceOwnership == b.resourceOwnership; }
+};
+
 struct DiscoveredPropagationPlan
 {
     PrefabSourceFingerprint source;
@@ -450,17 +466,17 @@ struct DiscoveredPropagationPlan
     std::uint32_t meshTableExtent = 0;
     std::uint32_t materialTableExtent = 0;
     std::uint32_t textureTableExtent = 0;
+    bool resourceEvidenceCaptured = false;
     std::vector<PrefabPropagationInstancePlan> instances;
     std::vector<PrefabPropagationComponentDelta> componentOperations;
-    std::vector<PrefabPropagationMeshRefOperation> meshRefOperations;
     std::vector<PrefabPropagationMemberSnapshot> memberSnapshots;
     std::vector<PrefabPropagationRootSnapshot> rootSnapshots;
-    std::vector<PrefabPropagationResourceOwnership> resourceOwnership;
     std::vector<PrefabPropagationDiagnostic> diagnostics;
     std::vector<UUID> affectedEntities;
     SyncImpact syncImpact = SyncImpact::None;
 
-    std::vector<UUID> DerivedAffectedEntities() const
+    std::vector<UUID> DerivedAffectedEntities(
+        const PrefabPropagationStageEvidence& stageEvidence) const
     {
         std::vector<UUID> derived;
         derived.reserve(componentOperations.size());
@@ -471,7 +487,7 @@ struct DiscoveredPropagationPlan
                 derived.end())
                 derived.push_back(operation.EntityUuid());
         }
-        for (const auto& operation : meshRefOperations)
+        for (const auto& operation : stageEvidence.meshRefOperations)
         {
             if (operation.before.has_value() == operation.after.has_value() &&
                 operation.before && operation.before->meshIndex == operation.after->meshIndex &&
@@ -488,7 +504,8 @@ struct DiscoveredPropagationPlan
         return derived;
     }
 
-    SyncImpact DerivedSyncImpact() const noexcept
+    SyncImpact DerivedSyncImpact(
+        const PrefabPropagationStageEvidence& stageEvidence) const noexcept
     {
         SyncImpact derived = SyncImpact::None;
         for (const auto& operation : componentOperations)
@@ -498,7 +515,7 @@ struct DiscoveredPropagationPlan
                 static_cast<int>(derived))
                 derived = operation.Impact();
         }
-        for (const auto& operation : meshRefOperations)
+        for (const auto& operation : stageEvidence.meshRefOperations)
         {
             const bool changed = operation.before.has_value() != operation.after.has_value() ||
                 (operation.before && operation.after &&
@@ -507,29 +524,35 @@ struct DiscoveredPropagationPlan
             if (changed && static_cast<int>(SyncImpact::Structural) > static_cast<int>(derived))
                 derived = SyncImpact::Structural;
         }
-        for (const auto& ownership : resourceOwnership)
+        for (const auto& ownership : stageEvidence.resourceOwnership)
             if (static_cast<int>(PrefabPropagationImpactForResource(
                     ownership.rebase.kind)) > static_cast<int>(derived))
                 derived = PrefabPropagationImpactForResource(ownership.rebase.kind);
         return derived;
     }
 
-    bool ResourceOwnershipConsumed() const noexcept
+    bool ResourceOwnershipConsumed(
+        const PrefabPropagationStageEvidence& stageEvidence) const noexcept
     {
         auto owns = [&](PrefabPropagationResourceKind kind, std::uint32_t slot) {
-            for (const auto& ownership : resourceOwnership)
+            for (const auto& ownership : stageEvidence.resourceOwnership)
                 if (ownership.rebase.kind == kind &&
                     slot >= ownership.rebase.sceneBeforeExtent &&
                     slot < ownership.rebase.sceneAfterExtent)
                     return true;
             return false;
         };
-        for (const auto& ownership : resourceOwnership)
+        for (const auto& ownership : stageEvidence.resourceOwnership)
         {
             bool consumed = false;
             const auto kind = ownership.rebase.kind;
-            for (const auto& operation : meshRefOperations)
+            for (const auto& operation : stageEvidence.meshRefOperations)
             {
+                const bool changed = operation.before.has_value() != operation.after.has_value() ||
+                    (operation.before && operation.after &&
+                     (operation.before->meshIndex != operation.after->meshIndex ||
+                      operation.before->materialIndex != operation.after->materialIndex));
+                if (!changed) continue;
                 if (operation.after)
                 {
                     if (kind == PrefabPropagationResourceKind::Mesh &&
@@ -542,6 +565,7 @@ struct DiscoveredPropagationPlan
             }
             for (const auto& operation : componentOperations)
             {
+                if (operation.IsNoOp()) continue;
                 const auto after = operation.AfterValue();
                 if (!after) continue;
                 const auto* material = std::get_if<MaterialOverrideComponent>(after.operator->());
@@ -562,13 +586,13 @@ struct DiscoveredPropagationPlan
                 }
             }
             if (!consumed && kind == PrefabPropagationResourceKind::Material)
-                for (const auto& meshOwnership : resourceOwnership)
+                for (const auto& meshOwnership : stageEvidence.resourceOwnership)
                     if (meshOwnership.rebase.kind == PrefabPropagationResourceKind::Mesh)
                         for (const auto& payload : meshOwnership.rebase.owned.Entries())
                             for (const auto index : std::get<MeshData>(payload.decoded).materialIndices)
                                 if (owns(kind, index)) consumed = true;
             if (!consumed && kind == PrefabPropagationResourceKind::Texture)
-                for (const auto& materialOwnership : resourceOwnership)
+                for (const auto& materialOwnership : stageEvidence.resourceOwnership)
                     if (materialOwnership.rebase.kind == PrefabPropagationResourceKind::Material)
                         for (const auto& payload : materialOwnership.rebase.owned.Entries())
                         {
@@ -585,7 +609,7 @@ struct DiscoveredPropagationPlan
         return true;
     }
 
-    bool IsValid() const noexcept
+    bool IsValid(const PrefabPropagationStageEvidence& stageEvidence) const noexcept
     {
         std::set<std::pair<UUID, std::string>> componentKeys;
         std::set<UUID> meshEntities;
@@ -595,7 +619,7 @@ struct DiscoveredPropagationPlan
             if (!operation.IsValid() ||
                 !componentKeys.emplace(operation.EntityUuid(), operation.Key().wire()).second)
                 return false;
-        for (const auto& operation : meshRefOperations)
+        for (const auto& operation : stageEvidence.meshRefOperations)
             if (!operation.IsValid() || !meshEntities.emplace(operation.entityUuid).second)
                 return false;
         for (const auto& snapshot : memberSnapshots)
@@ -610,14 +634,14 @@ struct DiscoveredPropagationPlan
         {
             const auto root = std::find_if(rootSnapshots.begin(), rootSnapshots.end(),
                 [&](const auto& snapshot) { return snapshot.rootUuid == instance.rootUuid; });
-            if (instance.disposition != PrefabPropagationInstanceDisposition::Quarantined &&
+            if (instance.disposition == PrefabPropagationInstanceDisposition::Propagate &&
                 rootSnapshots.size() != 0 &&
                 (root == rootSnapshots.end() || root->instanceId != instance.instanceId))
                 return false;
         }
         std::array<bool, 3> ownershipKinds{};
         std::array<std::uint32_t, 3> ownedBefore{};
-        for (const auto& ownership : resourceOwnership)
+        for (const auto& ownership : stageEvidence.resourceOwnership)
         {
             if (!ownership.IsValid()) return false;
             const auto kind = static_cast<std::size_t>(ownership.rebase.kind);
@@ -628,21 +652,23 @@ struct DiscoveredPropagationPlan
                 ? meshTableExtent
                 : kind == static_cast<std::size_t>(PrefabPropagationResourceKind::Material)
                     ? materialTableExtent : textureTableExtent;
-            const bool extentsCaptured = meshTableExtent != 0 || materialTableExtent != 0 ||
-                                         textureTableExtent != 0 || !rootSnapshots.empty();
+            const bool extentsCaptured = resourceEvidenceCaptured;
             if (extentsCaptured && ownership.rebase.sceneBeforeExtent != expectedExtent)
                 return false;
         }
         auto ownsSlot = [&](PrefabPropagationResourceKind kind, std::uint32_t slot) {
             const auto index = static_cast<std::size_t>(kind);
-            for (const auto& ownership : resourceOwnership)
+            for (const auto& ownership : stageEvidence.resourceOwnership)
                 if (static_cast<std::size_t>(ownership.rebase.kind) == index)
                     return slot >= ownership.rebase.sceneBeforeExtent &&
                            slot < ownership.rebase.sceneAfterExtent;
             return false;
         };
-        const bool extentsCaptured = meshTableExtent != 0 || materialTableExtent != 0 ||
-                                     textureTableExtent != 0 || !rootSnapshots.empty();
+        if (!resourceEvidenceCaptured &&
+            (!stageEvidence.resourceOwnership.empty() ||
+             !stageEvidence.meshRefOperations.empty()))
+            return false;
+        const bool extentsCaptured = resourceEvidenceCaptured;
         auto validTableIndex = [&](PrefabPropagationResourceKind kind,
                                    std::uint32_t index) {
             if (!extentsCaptured) return true;
@@ -652,7 +678,7 @@ struct DiscoveredPropagationPlan
                     ? materialTableExtent : textureTableExtent;
             return index < extent || ownsSlot(kind, index);
         };
-        for (const auto& ownership : resourceOwnership)
+        for (const auto& ownership : stageEvidence.resourceOwnership)
         {
             const auto kind = ownership.rebase.kind;
             for (const auto& payload : ownership.rebase.owned.Entries())
@@ -691,22 +717,22 @@ struct DiscoveredPropagationPlan
                 return false;
             return true;
         };
-        for (const auto& operation : meshRefOperations)
+        for (const auto& operation : stageEvidence.meshRefOperations)
             if (!validMeshRef(operation.before) || !validMeshRef(operation.after))
                 return false;
-        if (!ResourceOwnershipConsumed()) return false;
-        if (affectedEntities != DerivedAffectedEntities()) return false;
-        if (syncImpact != DerivedSyncImpact()) return false;
+        if (!ResourceOwnershipConsumed(stageEvidence)) return false;
+        if (affectedEntities != DerivedAffectedEntities(stageEvidence)) return false;
+        if (syncImpact != DerivedSyncImpact(stageEvidence)) return false;
         return true;
     }
 
-    bool IsNoOp() const noexcept
+    bool IsNoOp(const PrefabPropagationStageEvidence& stageEvidence) const noexcept
     {
-        if (!IsValid()) return false;
+        if (!IsValid(stageEvidence)) return false;
         for (const auto& op : componentOperations)
             if (!op.IsNoOp()) return false;
-        if (!resourceOwnership.empty()) return false;
-        for (const auto& operation : meshRefOperations)
+        if (!stageEvidence.resourceOwnership.empty()) return false;
+        for (const auto& operation : stageEvidence.meshRefOperations)
             if (operation.before.has_value() != operation.after.has_value() ||
                 operation.before && operation.after &&
                 (operation.before->meshIndex != operation.after->meshIndex ||
@@ -714,7 +740,21 @@ struct DiscoveredPropagationPlan
                 return false;
         return true;
     }
-    bool IsEffective() const noexcept { return IsValid() && !IsNoOp(); }
+    bool IsEffective(const PrefabPropagationStageEvidence& stageEvidence) const noexcept
+    { return IsValid(stageEvidence) && !IsNoOp(stageEvidence); }
+
+    bool IsValid() const noexcept
+    { return IsValid(PrefabPropagationStageEvidence{}); }
+    bool IsNoOp() const noexcept
+    { return IsNoOp(PrefabPropagationStageEvidence{}); }
+    bool IsEffective() const noexcept
+    { return IsEffective(PrefabPropagationStageEvidence{}); }
+    std::vector<UUID> DerivedAffectedEntities() const
+    { return DerivedAffectedEntities(PrefabPropagationStageEvidence{}); }
+    SyncImpact DerivedSyncImpact() const noexcept
+    { return DerivedSyncImpact(PrefabPropagationStageEvidence{}); }
+    bool ResourceOwnershipConsumed() const noexcept
+    { return ResourceOwnershipConsumed(PrefabPropagationStageEvidence{}); }
 
     friend bool operator==(const DiscoveredPropagationPlan& a,
                            const DiscoveredPropagationPlan& b) noexcept
@@ -726,11 +766,11 @@ struct DiscoveredPropagationPlan
              a.meshTableExtent == b.meshTableExtent &&
              a.materialTableExtent == b.materialTableExtent &&
              a.textureTableExtent == b.textureTableExtent &&
+             a.resourceEvidenceCaptured == b.resourceEvidenceCaptured &&
              a.instances == b.instances && a.componentOperations == b.componentOperations &&
-             a.meshRefOperations == b.meshRefOperations &&
              a.memberSnapshots == b.memberSnapshots &&
              a.rootSnapshots == b.rootSnapshots &&
-             a.resourceOwnership == b.resourceOwnership && a.diagnostics == b.diagnostics &&
+             a.diagnostics == b.diagnostics &&
              a.affectedEntities == b.affectedEntities && a.syncImpact == b.syncImpact; }
 };
 
@@ -741,61 +781,97 @@ enum class StageOutcomeKind : std::uint8_t
 };
 
 struct StageOutcome;
+struct PrefabPropagationResourceHooks;
+
+Result<StageOutcome> StagePrefabPropagationResources(
+    const DiscoveredPropagationPlan&, const SceneDocument&,
+    const AssetResolutionContext&, const PrefabPropagationResourceHooks&);
 
 // Stage is the sole production constructor.  The data is exposed read-only
 // through the command's const Plan() accessor; no raw source bytes live here.
-class ExecutablePropagationPlan final : public DiscoveredPropagationPlan
+class ExecutablePropagationPlan final
 {
     friend struct StageOutcome;
 
-    explicit ExecutablePropagationPlan(DiscoveredPropagationPlan&& discovered)
-        : DiscoveredPropagationPlan(std::move(discovered))
-    { capturedSource = {}; }
+    DiscoveredPropagationPlan data_;
+    PrefabPropagationStageEvidence stageEvidence_;
 
-    static ExecutablePropagationPlan Make(DiscoveredPropagationPlan&& discovered)
-    { return ExecutablePropagationPlan(std::move(discovered)); }
+    explicit ExecutablePropagationPlan(DiscoveredPropagationPlan&& discovered,
+                                       PrefabPropagationStageEvidence&& evidence)
+        : data_(std::move(discovered)), stageEvidence_(std::move(evidence))
+    { data_.capturedSource = {}; }
+
+    static ExecutablePropagationPlan Make(DiscoveredPropagationPlan&& discovered,
+                                          PrefabPropagationStageEvidence&& evidence)
+    { return ExecutablePropagationPlan(std::move(discovered), std::move(evidence)); }
 
 public:
     ExecutablePropagationPlan() = delete;
+    const PrefabSourceFingerprint& source() const noexcept { return data_.source; }
+    std::uint64_t documentGeneration() const noexcept { return data_.documentGeneration; }
+    std::uint64_t resourceGeneration() const noexcept { return data_.resourceGeneration; }
+    std::uint64_t authoringRevision() const noexcept { return data_.authoringRevision; }
+    bool authoringRevisionCaptured() const noexcept { return data_.authoringRevisionCaptured; }
+    const auto& instances() const noexcept { return data_.instances; }
+    const auto& componentOperations() const noexcept { return data_.componentOperations; }
+    const auto& meshRefOperations() const noexcept
+    { return stageEvidence_.meshRefOperations; }
+    const auto& memberSnapshots() const noexcept { return data_.memberSnapshots; }
+    const auto& rootSnapshots() const noexcept { return data_.rootSnapshots; }
+    const auto& resourceOwnership() const noexcept
+    { return stageEvidence_.resourceOwnership; }
+    const auto& affectedEntities() const noexcept { return data_.affectedEntities; }
+    SyncImpact syncImpact() const noexcept { return data_.syncImpact; }
+    bool IsValid() const noexcept { return data_.IsValid(stageEvidence_); }
+    bool IsEffective() const noexcept { return data_.IsEffective(stageEvidence_); }
 };
 
 // StageOutcome intentionally retains the discovered summary as its base so
 // existing discovery/load diagnostics can be inspected without manufacturing
 // a command-ready plan.  Only the Executable alternative contains command
 // evidence and it is built privately by Stage.
-struct StageOutcome final : public DiscoveredPropagationPlan
+struct StageOutcome final
 {
-    StageOutcomeKind kind = StageOutcomeKind::NoOp;
-    std::optional<ExecutablePropagationPlan> executable;
+private:
+    DiscoveredPropagationPlan summary_;
+    StageOutcomeKind kind_ = StageOutcomeKind::NoOp;
+    std::optional<ExecutablePropagationPlan> executable_;
 
-    static StageOutcome NoOp(DiscoveredPropagationPlan&& discovered)
+    friend Result<StageOutcome> StagePrefabPropagationResources(
+        const DiscoveredPropagationPlan&, const SceneDocument&,
+        const AssetResolutionContext&, const PrefabPropagationResourceHooks&);
+    friend StageOutcome MakeTestStageOutcome(
+        DiscoveredPropagationPlan,
+        PrefabPropagationStageEvidence = {},
+        bool forceEffective = false);
+
+    explicit StageOutcome(DiscoveredPropagationPlan&& discovered,
+                          StageOutcomeKind kind)
+        : summary_(std::move(discovered)), kind_(kind) {}
+
+    static StageOutcome Build(DiscoveredPropagationPlan&& discovered,
+                              PrefabPropagationStageEvidence&& stageEvidence,
+                              bool effective)
     {
-        StageOutcome result;
-        static_cast<DiscoveredPropagationPlan&>(result) = std::move(discovered);
-        result.capturedSource = {};
-        result.kind = StageOutcomeKind::NoOp;
+        StageOutcome result(std::move(discovered), effective
+            ? StageOutcomeKind::Executable : StageOutcomeKind::NoOp);
+        if (effective)
+            result.executable_ = ExecutablePropagationPlan::Make(
+                DiscoveredPropagationPlan(result.summary_),
+                std::move(stageEvidence));
+        result.summary_.capturedSource = {};
         return result;
     }
 
-    static StageOutcome Effective(DiscoveredPropagationPlan&& discovered)
-    {
-        StageOutcome result;
-        static_cast<DiscoveredPropagationPlan&>(result) = discovered;
-        result.kind = StageOutcomeKind::Executable;
-        result.executable = ExecutablePropagationPlan::Make(std::move(discovered));
-        result.capturedSource = {};
-        return result;
-    }
-
-    static StageOutcome FromDiscovered(DiscoveredPropagationPlan discovered)
-    {
-        return discovered.IsNoOp() ? NoOp(std::move(discovered))
-                                   : Effective(std::move(discovered));
-    }
-
-    bool IsNoOp() const noexcept { return kind == StageOutcomeKind::NoOp; }
+public:
+    StageOutcome() = default;
+    const DiscoveredPropagationPlan& Summary() const noexcept { return summary_; }
+    const ExecutablePropagationPlan* Executable() const noexcept
+    { return executable_ ? &*executable_ : nullptr; }
+    StageOutcomeKind kind() const noexcept { return kind_; }
+    bool IsNoOp() const noexcept { return kind_ == StageOutcomeKind::NoOp; }
     bool IsEffective() const noexcept
-    { return kind == StageOutcomeKind::Executable && executable.has_value(); }
+    { return kind_ == StageOutcomeKind::Executable && executable_.has_value(); }
 };
 
 } // namespace rt2::core

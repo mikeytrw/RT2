@@ -24,10 +24,13 @@ using namespace rt2::core;
 
 namespace
 {
-ExecutablePropagationPlan AsExecutable(DiscoveredPropagationPlan plan)
+ExecutablePropagationPlan AsExecutable(
+    DiscoveredPropagationPlan plan,
+    PrefabPropagationStageEvidence stageEvidence = {})
 {
-    auto staged = StageOutcome::Effective(std::move(plan));
-    return std::move(*staged.executable);
+auto staged = MakeTestStageOutcome(std::move(plan), std::move(stageEvidence), true);
+    REQUIRE(staged.Executable() != nullptr);
+    return std::move(*staged.Executable());
 }
 struct TempGuard
 {
@@ -157,6 +160,9 @@ PrefabPropagationDiscoveryRequest A13Request(SceneDocument& document,
     request.documentGeneration = 11;
     request.resourceGeneration = 22;
     request.authoringRevision = 33;
+    const auto captured = CapturePrefabSource(request.changedSource,
+                                              request.assets);
+    if (captured.IsOk()) request.capturedSource = captured.value;
     return request;
 }
 
@@ -359,6 +365,9 @@ TEST_CASE("Phase 8 W4 S7 A1: source edit propagates through prepare stage comman
     request.documentGeneration = manager.DocumentGeneration();
     request.resourceGeneration = manager.ResourceGeneration();
     request.authoringRevision = manager.AuthoringRevision();
+    const auto captured = CapturePrefabSource(request.changedSource, request.assets);
+    REQUIRE(captured.IsOk());
+    request.capturedSource = captured.value;
     const auto prepared = PreparePrefabPropagation(request);
     REQUIRE(prepared.IsOk());
     REQUIRE(prepared.value.instances.size() == 3);
@@ -374,11 +383,12 @@ TEST_CASE("Phase 8 W4 S7 A1: source edit propagates through prepare stage comman
     const auto staged = StagePrefabPropagationResources(
         prepared.value, manager.AuthoringDoc(), AssetResolutionContext{temp.path, nullptr});
     REQUIRE(staged.IsOk());
-    REQUIRE_FALSE(staged.value.resourceOwnership.empty());
+    REQUIRE(staged.value.Executable() != nullptr);
+    REQUIRE_FALSE(staged.value.Executable()->resourceOwnership().empty());
     std::size_t ownedMeshes = 0;
     std::size_t ownedMaterials = 0;
     std::size_t ownedTextures = 0;
-    for (const auto& ownership : staged.value.resourceOwnership)
+    for (const auto& ownership : staged.value.Executable()->resourceOwnership())
     {
         const auto count = ownership.rebase.owned.Entries().size();
         if (ownership.rebase.kind == PrefabPropagationResourceKind::Mesh)
@@ -399,12 +409,12 @@ TEST_CASE("Phase 8 W4 S7 A1: source edit propagates through prepare stage comman
             CHECK(ownership.rebase.sceneSlots[i].value ==
                   ownership.rebase.sceneBeforeExtent + i);
     }
-    CHECK(staged.value.meshTableExtent == beforeMeshExtent);
-    CHECK(staged.value.materialTableExtent == beforeMaterialExtent);
-    CHECK(staged.value.textureTableExtent == beforeTextureExtent);
-    const auto fingerprint = staged.value.source;
+    CHECK(staged.value.Summary().meshTableExtent == beforeMeshExtent);
+    CHECK(staged.value.Summary().materialTableExtent == beforeMaterialExtent);
+    CHECK(staged.value.Summary().textureTableExtent == beforeTextureExtent);
+    const auto fingerprint = staged.value.Summary().source;
     auto propagation = std::make_unique<PrefabPropagationCommand>(
-        *staged.value.executable, [fingerprint] {
+        *staged.value.Executable(), [fingerprint] {
             return Result<PrefabSourceFingerprint>::Ok(fingerprint);
         });
     const auto beforeRevision = manager.AuthoringRevision();
@@ -497,6 +507,10 @@ TEST_CASE("Phase 8 W4 S7 A1: source edit propagates through prepare stage comman
     reboundRequest.documentGeneration = manager.DocumentGeneration();
     reboundRequest.resourceGeneration = manager.ResourceGeneration();
     reboundRequest.authoringRevision = manager.AuthoringRevision();
+    const auto reboundCaptured = CapturePrefabSource(
+        reboundRequest.changedSource, reboundRequest.assets);
+    REQUIRE(reboundCaptured.IsOk());
+    reboundRequest.capturedSource = reboundCaptured.value;
     const auto reboundPlan = PreparePrefabPropagation(reboundRequest);
     REQUIRE(reboundPlan.IsOk());
     REQUIRE(reboundPlan.value.instances.size() == 3);
@@ -518,9 +532,9 @@ TEST_CASE("Phase 8 W4 S7 A1: source edit propagates through prepare stage comman
         reboundPlan.value, manager.AuthoringDoc(),
         AssetResolutionContext{temp.path, nullptr});
     REQUIRE(reboundStaged.IsOk());
-    const auto reboundFingerprint = reboundStaged.value.source;
+    const auto reboundFingerprint = reboundStaged.value.Summary().source;
     auto reboundCommand = std::make_unique<PrefabPropagationCommand>(
-        *reboundStaged.value.executable, [reboundFingerprint] {
+        *reboundStaged.value.Executable(), [reboundFingerprint] {
             return Result<PrefabSourceFingerprint>::Ok(reboundFingerprint);
         });
     REQUIRE(history.Execute(std::move(reboundCommand), manager).success);
@@ -590,6 +604,7 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
     plan.meshTableExtent = static_cast<std::uint32_t>(beforeMeshCount);
     plan.materialTableExtent = static_cast<std::uint32_t>(scene.GetMaterialCount());
     plan.textureTableExtent = static_cast<std::uint32_t>(document.ecs.textures.size());
+    plan.resourceEvidenceCaptured = true;
     plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
         kA10Entity, kA10Template, NameComponent{"before"}, NameComponent{"after"}));
     plan.memberSnapshots.push_back({kA10Entity, kA10Instance, kA10Template, {}});
@@ -609,12 +624,13 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
     owned.rebase.owned = PrefabPropagationResourceBlock::FromDecoded(
         PrefabPropagationResourceKind::Mesh,
         {PrefabPropagationResourcePayload{"a10:mesh", "a10-mesh", A10Triangle("after")} });
-    plan.resourceOwnership.push_back(owned);
-    plan.meshRefOperations.push_back({kA10Entity, kA10Template,
+    PrefabPropagationStageEvidence a10Evidence;
+    a10Evidence.resourceOwnership.push_back(owned);
+    a10Evidence.meshRefOperations.push_back({kA10Entity, kA10Template,
         MeshRef{0, -1}, MeshRef{1, -1}});
     plan.affectedEntities = {kA10Entity};
     plan.syncImpact = SyncImpact::Structural;
-    REQUIRE(plan.IsEffective());
+    REQUIRE(plan.IsEffective(a10Evidence));
 
     std::vector<AssetDiagnostic> diagnostics;
     Error error;
@@ -624,7 +640,8 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
     const auto beforeBytes = FileBytes(beforePath);
     EditorCommandHistory history;
     std::size_t fingerprintReads = 0;
-    auto command = std::make_unique<PrefabPropagationCommand>(AsExecutable(plan),
+    auto command = std::make_unique<PrefabPropagationCommand>(
+        AsExecutable(plan, std::move(a10Evidence)),
         [&] {
             ++fingerprintReads;
             return Result<PrefabSourceFingerprint>::Ok(source);
@@ -669,8 +686,6 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
     // revision, resource generation, or serialized change.
     DiscoveredPropagationPlan noop = plan;
     noop.componentOperations.clear();
-    noop.meshRefOperations.clear();
-    noop.resourceOwnership.clear();
     noop.affectedEntities.clear();
     noop.syncImpact = SyncImpact::None;
     noop.documentGeneration = scene.DocumentGeneration();
@@ -744,8 +759,8 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
             prepared.value, document, AssetResolutionContext{temp.path, nullptr});
         if (!staged.IsOk()) INFO(staged.error.Format());
         REQUIRE(staged.IsOk());
-        REQUIRE(staged.value.instances.size() == 1);
-        CHECK(staged.value.instances.front().disposition ==
+        REQUIRE(staged.value.Summary().instances.size() == 1);
+        CHECK(staged.value.Summary().instances.front().disposition ==
               PrefabPropagationInstanceDisposition::Propagate);
         REQUIRE(prepared.value.IsEffective());
         const auto childUuid = A13Uuid(1401 + instance * 10);
@@ -817,7 +832,7 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
         std::size_t ownedMeshes = 0;
         std::size_t ownedMaterials = 0;
         std::size_t ownedTextures = 0;
-        for (const auto& ownership : staged.value.resourceOwnership)
+        for (const auto& ownership : staged.value.Executable()->resourceOwnership())
         {
             const auto count = ownership.rebase.owned.Entries().size();
             if (ownership.rebase.kind == PrefabPropagationResourceKind::Mesh)
@@ -833,20 +848,20 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
                 CHECK(ownership.rebase.sceneSlots[i].value ==
                       ownership.rebase.sceneBeforeExtent + i);
         }
-        const auto stagedRef = std::find_if(staged.value.meshRefOperations.begin(),
-            staged.value.meshRefOperations.end(), [&](const auto& operation) {
+        const auto stagedRef = std::find_if(staged.value.Executable()->meshRefOperations().begin(),
+            staged.value.Executable()->meshRefOperations().end(), [&](const auto& operation) {
             return operation.entityUuid == childUuid;
             });
-        REQUIRE(stagedRef != staged.value.meshRefOperations.end());
+        REQUIRE(stagedRef != staged.value.Executable()->meshRefOperations().end());
         REQUIRE(stagedRef->after.has_value());
         const auto importedOperation = std::find_if(
-            staged.value.componentOperations.begin(), staged.value.componentOperations.end(),
+            staged.value.Summary().componentOperations.begin(), staged.value.Summary().componentOperations.end(),
             [&](const auto& operation) {
                 return operation.EntityUuid() == childUuid &&
                     operation.Key().wire() == PrefabWireKeys::kImportedSource;
             });
         const auto primitiveOperation = std::find_if(
-            staged.value.componentOperations.begin(), staged.value.componentOperations.end(),
+            staged.value.Summary().componentOperations.begin(), staged.value.Summary().componentOperations.end(),
             [&](const auto& operation) {
                 return operation.EntityUuid() == childUuid &&
                     operation.Key().wire() == PrefabWireKeys::kPrimitive;
@@ -855,20 +870,20 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
         std::optional<PrimitiveComponent> expectedPrimitive;
         if (sourceImported)
         {
-            REQUIRE(importedOperation != staged.value.componentOperations.end());
+            REQUIRE(importedOperation != staged.value.Summary().componentOperations.end());
             REQUIRE(importedOperation->AfterValue().has_value());
             expectedImported = std::get<ImportedMeshSourceComponent>(*importedOperation->AfterValue());
         }
         else
         {
-            REQUIRE(primitiveOperation != staged.value.componentOperations.end());
+            REQUIRE(primitiveOperation != staged.value.Summary().componentOperations.end());
             REQUIRE(primitiveOperation->AfterValue().has_value());
             expectedPrimitive = std::get<PrimitiveComponent>(*primitiveOperation->AfterValue());
         }
-        const auto fingerprint = staged.value.source;
+        const auto fingerprint = staged.value.Summary().source;
         EditorCommandHistory history;
         auto command = std::make_unique<PrefabPropagationCommand>(
-            *staged.value.executable, [fingerprint] {
+            *staged.value.Executable(), [fingerprint] {
                 return Result<PrefabSourceFingerprint>::Ok(fingerprint);
             });
         const auto applied = history.Execute(std::move(command), scene);
@@ -931,7 +946,7 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
             CHECK(PrefabCanonicalMaterialEqual(afterTables.materials[i], beforeTables.materials[i]));
         for (std::size_t i = 0; i < beforeTables.textures.size(); ++i)
             CHECK(PrefabPropagationTextureEqual(afterTables.textures[i], beforeTables.textures[i]));
-        for (const auto& ownership : staged.value.resourceOwnership)
+        for (const auto& ownership : staged.value.Executable()->resourceOwnership())
             for (std::size_t i = 0; i < ownership.rebase.sceneSlots.size(); ++i)
             {
                 const auto slot = ownership.rebase.sceneSlots[i].value;
@@ -1196,7 +1211,7 @@ TEST_CASE("Phase 8 W4 S7 A11: host orchestration routes converge")
         };
         hooks.stage = [](const DiscoveredPropagationPlan& plan, const SceneDocument&,
                          const AssetResolutionContext&) {
-            return Result<StageOutcome>::Ok(StageOutcome::FromDiscovered(plan));
+            return Result<StageOutcome>::Ok(MakeTestStageOutcome(plan));
         };
         const auto before = scene.AuthoringDoc().ecs.registry.get<Transform>(
             scene.AuthoringDoc().FindByUuid(kA11Entity));

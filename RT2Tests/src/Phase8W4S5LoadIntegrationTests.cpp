@@ -635,7 +635,13 @@ TEST_CASE("Phase 8 W4 S5: filesystem aliases prepare once in either order")
         else
             AddInstance(document, source, kInstanceB, U(300), U(301), aliasPath);
         std::size_t prepareCalls = 0;
+        std::size_t captureCalls = 0;
         PrefabPropagationLoadHooks hooks;
+        hooks.capture = [&](const AssetReference& reference,
+                            const AssetResolutionContext& assets) {
+            ++captureCalls;
+            return CapturePrefabSource(reference, assets);
+        };
         hooks.prepare = [&](const PrefabPropagationDiscoveryRequest& request) {
             ++prepareCalls;
             return PreparePrefabPropagation(request);
@@ -643,6 +649,7 @@ TEST_CASE("Phase 8 W4 S5: filesystem aliases prepare once in either order")
         const auto report = ReconcilePrefabPropagationForLoad(
             document, AssetResolutionContext{temp.directory, nullptr}, hooks);
         REQUIRE(report.IsOk());
+        CHECK(captureCalls == 1);
         CHECK(prepareCalls == 1);
         CHECK(report.value.propagatedInstances == 2);
         CHECK(report.value.quarantinedInstances == 0);

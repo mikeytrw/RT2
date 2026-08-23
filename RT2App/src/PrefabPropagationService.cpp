@@ -1,6 +1,7 @@
 #include "PrefabPropagationService.h"
 
 #include "SceneSerializer.h"
+#include "SceneDocument.h"
 
 #include <algorithm>
 #include <limits>
@@ -62,7 +63,8 @@ PrefabPropagationComponentDelta* FindOperation(
     return it == plan.componentOperations.end() ? nullptr : &*it;
 }
 
-bool AddOwnership(DiscoveredPropagationPlan& plan, PrefabPropagationResourceKind kind,
+bool AddOwnership(PrefabPropagationStageEvidence& stageEvidence,
+                  PrefabPropagationResourceKind kind,
                   std::uint32_t sceneBeforeExtent,
                   std::uint32_t sourceBeforeExtent,
                   const std::vector<PrefabPropagationResourcePayload>& payloads)
@@ -86,7 +88,7 @@ bool AddOwnership(DiscoveredPropagationPlan& plan, PrefabPropagationResourceKind
         rebase.sourceSlots.push_back({static_cast<std::uint32_t>(i)});
         rebase.sceneSlots.push_back({sceneBeforeExtent + static_cast<std::uint32_t>(i)});
     }
-    plan.resourceOwnership.push_back(std::move(ownership));
+    stageEvidence.resourceOwnership.push_back(std::move(ownership));
     return true;
 }
 
@@ -172,12 +174,12 @@ Result<StageOutcome> StagePrefabPropagationResources(
     // resolver to inspect any asset. This is the isolation boundary that keeps
     // unrelated imported entities from turning a no-op into history.
     if (durablePlan.IsNoOp())
-        return Result<StageOutcome>::Ok(StageOutcome::NoOp(
-            DiscoveredPropagationPlan(durablePlan)));
+        return Result<StageOutcome>::Ok(StageOutcome::Build(
+            DiscoveredPropagationPlan(durablePlan),
+            PrefabPropagationStageEvidence{}, false));
 
     DiscoveredPropagationPlan result = durablePlan;
-    result.resourceOwnership.clear();
-    result.meshRefOperations.clear();
+    PrefabPropagationStageEvidence stageEvidence;
 
     std::vector<PrefabPropagationResourcePayload> meshPayloads;
     std::vector<PrefabPropagationResourcePayload> materialPayloads;
@@ -395,7 +397,7 @@ Result<StageOutcome> StagePrefabPropagationResources(
             if ((before == nullptr) != (afterRef == std::nullopt) ||
                 (before && afterRef && (before->meshIndex != afterRef->meshIndex ||
                     before->materialIndex != afterRef->materialIndex)))
-                result.meshRefOperations.push_back({uuid, entityToTemplate[uuid],
+                stageEvidence.meshRefOperations.push_back({uuid, entityToTemplate[uuid],
                     before ? std::optional<MeshRef>(*before) : std::nullopt, afterRef});
 
             if (auto* material = fragment.ecs.registry.try_get<MaterialOverrideComponent>(stagedEntity))
@@ -461,19 +463,19 @@ Result<StageOutcome> StagePrefabPropagationResources(
         result.memberSnapshots.end(), [&](const auto& snapshot) {
             return quarantinedInstances.count(snapshot.instanceId) != 0;
         }), result.memberSnapshots.end());
-    result.meshRefOperations.erase(std::remove_if(result.meshRefOperations.begin(),
-        result.meshRefOperations.end(), [&](const auto& operation) {
+    stageEvidence.meshRefOperations.erase(std::remove_if(stageEvidence.meshRefOperations.begin(),
+        stageEvidence.meshRefOperations.end(), [&](const auto& operation) {
             const auto it = entityToInstance.find(operation.entityUuid);
             return it != entityToInstance.end() && quarantinedInstances.count(it->second) != 0;
-        }), result.meshRefOperations.end());
+        }), stageEvidence.meshRefOperations.end());
 
-    if (!AddOwnership(result, PrefabPropagationResourceKind::Mesh,
+    if (!AddOwnership(stageEvidence, PrefabPropagationResourceKind::Mesh,
                       durablePlan.meshTableExtent,
                       static_cast<std::uint32_t>(meshPayloads.size()), meshPayloads) ||
-        !AddOwnership(result, PrefabPropagationResourceKind::Material,
+        !AddOwnership(stageEvidence, PrefabPropagationResourceKind::Material,
                       durablePlan.materialTableExtent,
                       static_cast<std::uint32_t>(materialPayloads.size()), materialPayloads) ||
-        !AddOwnership(result, PrefabPropagationResourceKind::Texture,
+        !AddOwnership(stageEvidence, PrefabPropagationResourceKind::Texture,
                       durablePlan.textureTableExtent,
                       static_cast<std::uint32_t>(texturePayloads.size()), texturePayloads))
         return Result<StageOutcome>::Fail(Error::InvalidArgument,
@@ -488,7 +490,7 @@ Result<StageOutcome> StagePrefabPropagationResources(
             if (entityToInstance[operation.EntityUuid()] == instance.instanceId &&
                 !operation.IsNoOp())
                 instance.affectedEntities.push_back(operation.EntityUuid());
-        for (const auto& operation : result.meshRefOperations)
+        for (const auto& operation : stageEvidence.meshRefOperations)
             if (entityToInstance[operation.entityUuid] == instance.instanceId)
                 instance.affectedEntities.push_back(operation.entityUuid);
         std::sort(instance.affectedEntities.begin(), instance.affectedEntities.end());
@@ -497,21 +499,34 @@ Result<StageOutcome> StagePrefabPropagationResources(
         if (instance.affectedEntities.empty())
             instance.disposition = PrefabPropagationInstanceDisposition::NoOp;
     }
+    // Root evidence is command precondition data only for actionable
+    // instances. Quarantine/no-op roots remain in the summary disposition and
+    // diagnostics, never in executable evidence.
+    std::unordered_set<UUID> actionableInstances;
+    for (const auto& instance : result.instances)
+        if (instance.disposition == PrefabPropagationInstanceDisposition::Propagate)
+            actionableInstances.insert(instance.instanceId);
+    result.rootSnapshots.erase(std::remove_if(result.rootSnapshots.begin(),
+        result.rootSnapshots.end(), [&](const auto& snapshot) {
+            return actionableInstances.count(snapshot.instanceId) == 0;
+        }), result.rootSnapshots.end());
     std::sort(result.componentOperations.begin(), result.componentOperations.end(),
         [](const auto& a, const auto& b) {
             if (a.EntityUuid() != b.EntityUuid()) return a.EntityUuid() < b.EntityUuid();
             if (a.TemplateId() != b.TemplateId()) return a.TemplateId() < b.TemplateId();
             return a.Key().wire() < b.Key().wire();
         });
-    result.affectedEntities = result.DerivedAffectedEntities();
-    result.syncImpact = result.DerivedSyncImpact();
+    result.affectedEntities = result.DerivedAffectedEntities(stageEvidence);
+    result.syncImpact = result.DerivedSyncImpact(stageEvidence);
     std::sort(result.diagnostics.begin(), result.diagnostics.end());
-    if (!result.IsValid())
+    if (!result.IsValid(stageEvidence))
         return Result<StageOutcome>::Fail(Error::InvalidArgument,
             "prefab-propagation", "staged resource plan failed validation");
-    if (result.IsNoOp())
-        return Result<StageOutcome>::Ok(StageOutcome::NoOp(std::move(result)));
-    return Result<StageOutcome>::Ok(StageOutcome::Effective(std::move(result)));
+    if (result.IsNoOp(stageEvidence))
+        return Result<StageOutcome>::Ok(StageOutcome::Build(
+            std::move(result), std::move(stageEvidence), false));
+    return Result<StageOutcome>::Ok(StageOutcome::Build(
+        std::move(result), std::move(stageEvidence), true));
 }
 
 Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
@@ -572,17 +587,14 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
         request.documentGeneration = 1;
         request.resourceGeneration = 1;
         request.authoringRevision = 0;
-        if (!hooks.prepare)
-        {
-            const auto captured = hooks.capture
-                ? hooks.capture(candidate.reference, assets)
-                : CapturePrefabSource(candidate.reference, assets);
-            if (!captured.IsOk())
-                return Result<PrefabPropagationLoadReport>::Fail(
-                    captured.error.code, captured.error.path,
-                    captured.error.detail);
-            request.capturedSource = captured.value;
-        }
+        const auto captured = hooks.capture
+            ? hooks.capture(candidate.reference, assets)
+            : CapturePrefabSource(candidate.reference, assets);
+        if (!captured.IsOk())
+            return Result<PrefabPropagationLoadReport>::Fail(
+                captured.error.code, captured.error.path,
+                captured.error.detail);
+        request.capturedSource = captured.value;
         const auto prepared = hooks.prepare ? hooks.prepare(request)
                                             : PreparePrefabPropagation(request);
         if (!prepared.IsOk())

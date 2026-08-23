@@ -38,27 +38,14 @@ struct PrefabPropagationDiscoveryRequest
 
     // Preferred lifecycle input: one checked source/sidecar snapshot captured
     // after the owning context is refreshed. Prepare never rereads it.
-    std::optional<CapturedPrefabSource> capturedSource;
+    CapturedPrefabSource capturedSource;
 
-    // Legacy/test seam only: callers may explicitly inject a checked,
-    // path-based loader. Production parses the already-fingerprinted buffer
-    // through PrefabSerializer::LoadBytes; this seam is never the default.
-    std::function<bool(PrefabDocument&, const std::filesystem::path&, Error&)> load;
-
-    // Preferred seam: parse the exact immutable bytes already fingerprinted.
-    // The path is diagnostic context only and must not be reopened.
+    // Narrow byte-parser seam for tests and alternate CPU hosts. The path is
+    // diagnostic context only; production parses the captured buffer and
+    // never reopens it.
     std::function<bool(PrefabDocument&, const std::string&,
                        const std::filesystem::path&, Error&)> parseBytes;
 
-    // Checked source-byte seam used by hosts/tests to prove one read per
-    // preparation batch. The default is the transactional filesystem read.
-    std::function<bool(const std::filesystem::path&, std::string&, Error&)> readBytes;
-
-    // The source fingerprint is computed exactly once after the source bytes
-    // and sidecar identity have been read.  Hosts normally leave this empty;
-    // the seam is injectable so tests can prove the batch never recomputes a
-    // fingerprint for each dependent root.
-    std::function<std::string(const std::string&, const UUID&)> fingerprint;
 };
 
 // Discovers all live roots for changedSource and validates each complete

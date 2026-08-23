@@ -12,10 +12,9 @@ namespace {
 PrefabPropagationLiveHooks Defaults(const PrefabPropagationLiveHooks& hooks)
 {
     PrefabPropagationLiveHooks result = hooks;
-    // A fully default production route captures source and sidecar bytes once
-    // at the live boundary. Custom fingerprint seams intentionally retain the
-    // older synthetic contract used by CPU tests.
-    if (!result.capture && !hooks.fingerprint)
+    // Every live route captures one coherent source/sidecar pair. Fingerprint
+    // remains a separate stale reread seam used only by Execute.
+    if (!result.capture)
         result.capture = [](const AssetReference& source,
                             const AssetResolutionContext& assets) {
             return CapturePrefabSource(source, assets);
@@ -79,7 +78,7 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Apply(
     const AssetReference& source, const AssetResolutionContext& assets,
     const PrefabSourceFingerprint& fingerprint,
     const PrefabPropagationLiveHooks& inputHooks,
-    const std::optional<CapturedPrefabSource>& captured)
+    const CapturedPrefabSource& captured)
 {
     const auto hooks = Defaults(inputHooks);
     PrefabPropagationDiscoveryRequest request;
@@ -106,8 +105,8 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Apply(
     }
 
     PrefabPropagationLiveReport report;
-    CountPlan(staged.value, report);
-    if (!staged.value.IsEffective() || !staged.value.executable)
+    CountPlan(staged.value.Summary(), report);
+    if (!staged.value.IsEffective() || !staged.value.Executable())
     {
         report.accepted = true;
         report.noOp = true;
@@ -120,7 +119,7 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Apply(
         return hooks.fingerprint(source, assets);
     };
     auto mutation = history.Execute(
-        std::make_unique<PrefabPropagationCommand>(*staged.value.executable, sourceReader),
+        std::make_unique<PrefabPropagationCommand>(*staged.value.Executable(), sourceReader),
         scene);
     if (!mutation.success)
     {
@@ -162,6 +161,19 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Enqueue(
     const auto existing = m_Pending.find(key);
     const bool strongestRefresh = requiresRefresh ||
         (existing != m_Pending.end() && existing->second.requiresRefresh);
+    const bool sameSource = existing != m_Pending.end() &&
+        existing->second.source.kind == source.kind &&
+        existing->second.source.path == source.path &&
+        existing->second.source.sourceKey == source.sourceKey &&
+        existing->second.source.assetId == source.assetId;
+    if (sameSource &&
+        existing->second.requiresRefresh == strongestRefresh)
+    {
+        report.accepted = true;
+        report.queued = true;
+        report.noOp = true;
+        return report;
+    }
     m_Pending[key] = Pending{
         source, PrefabSourceFingerprint{}, false, strongestRefresh};
     report.accepted = true;
@@ -341,8 +353,9 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Submit(
             return report;
         }
         captured = checked.value;
-        fingerprint = Result<PrefabSourceFingerprint>::Ok(
-            checked.value.fingerprint);
+        fingerprint = inputHooks.fingerprint
+            ? hooks.fingerprint(source, assets)
+            : Result<PrefabSourceFingerprint>::Ok(checked.value.fingerprint);
     }
     else
     {
@@ -396,7 +409,7 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Submit(
         return report;
     }
     return Apply(scene, history, source, assets, fingerprint.value, hooks,
-                 captured);
+                 *captured);
 }
 
 PrefabPropagationLiveReport PrefabPropagationLiveQueue::Drain(
@@ -426,8 +439,9 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Drain(
             if (checked.IsOk())
             {
                 captured = checked.value;
-                fingerprint = Result<PrefabSourceFingerprint>::Ok(
-                    checked.value.fingerprint);
+                fingerprint = inputHooks.fingerprint
+                    ? hooks.fingerprint(pending.source, assets)
+                    : Result<PrefabSourceFingerprint>::Ok(checked.value.fingerprint);
             }
             else
                 fingerprint = Result<PrefabSourceFingerprint>::Fail(
@@ -441,7 +455,7 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Drain(
             report.error = fingerprint.error;
         else
             report = Apply(scene, history, pending.source, assets,
-                           fingerprint.value, hooks, captured);
+                           fingerprint.value, hooks, *captured);
         aggregate.accepted = aggregate.accepted || report.accepted;
         aggregate.applied = aggregate.applied || report.applied;
         aggregate.noOp = aggregate.noOp || report.noOp;

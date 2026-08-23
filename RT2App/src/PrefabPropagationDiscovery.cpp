@@ -31,7 +31,7 @@ struct LoadedSource
     SourceModel model;
 };
 
-std::string DigestBytes(const std::string& bytes, const UUID& sidecar)
+std::string DigestBytes(const std::string& bytes, const std::string& sidecar)
 {
     // A deterministic content digest is sufficient at this contract boundary;
     // the digest covers bytes and the durable sidecar identity, never mtime.
@@ -41,7 +41,7 @@ std::string DigestBytes(const std::string& bytes, const UUID& sidecar)
         hash *= 1099511628211ull;
     };
     for (const unsigned char c : bytes) add(c);
-    for (const unsigned char c : sidecar.bytes) add(c);
+    for (const unsigned char c : sidecar) add(c);
     std::ostringstream out;
     out << std::hex << std::setfill('0') << std::setw(16) << hash;
     return out.str();
@@ -430,6 +430,24 @@ void AddOperation(std::vector<PrefabPropagationComponentDelta>& operations,
         operations.push_back(std::move(operation));
 }
 
+UUID ParseCapturedSidecar(const std::string& bytes, Error& error)
+{
+    error = Error{};
+    std::string line;
+    const auto end = bytes.find_first_of("\r\n");
+    line = bytes.substr(0, end == std::string::npos ? bytes.size() : end);
+    while (!line.empty() && (line.back() == ' ' || line.back() == '\t'))
+        line.pop_back();
+    const UUID id = UUID::Parse(line);
+    if (id.IsNull())
+    {
+        error = {Error::Parse, {},
+            "captured sidecar does not contain a valid UUID"};
+        return UUID::Nil();
+    }
+    return id;
+}
+
 std::string InheritedRootName(const std::string& name)
 {
     constexpr std::string_view suffix = " Copy";
@@ -654,16 +672,16 @@ Result<CapturedPrefabSource> CapturePrefabSource(
             });
     if (!reader(path, bytes, error))
         return Result<CapturedPrefabSource>::Fail(error.code, error.path, error.detail);
+    std::string sidecarBytes;
+    if (!reader(AssetSidecarPath(path), sidecarBytes, error))
+        return Result<CapturedPrefabSource>::Fail(error.code, error.path, error.detail);
     Error sidecarError;
-    const UUID sidecar = ReadSidecarId(AssetSidecarPath(path), sidecarError);
+    const UUID sidecar = ParseCapturedSidecar(sidecarBytes, sidecarError);
     if (!sidecarError.IsOk() || sidecar.IsNull() || sidecar != resolved.effectiveId)
         return Result<CapturedPrefabSource>::Fail(
             sidecarError.IsOk() ? Error::MissingAsset : sidecarError.code,
-            path.string(), "prefab source sidecar identity is missing or mismatched");
-    std::string sidecarBytes;
-    if (!ReadBytes(AssetSidecarPath(path), sidecarBytes, error))
-        return Result<CapturedPrefabSource>::Fail(error.code, error.path, error.detail);
-    const auto digest = DigestBytes(bytes, sidecar);
+            path.string(), "captured prefab sidecar identity is missing or mismatched");
+    const auto digest = DigestBytes(bytes, sidecarBytes);
     if (digest.empty())
         return Result<CapturedPrefabSource>::Fail(
             Error::Parse, path.string(), "prefab source fingerprint is empty");
@@ -704,54 +722,26 @@ Result<DiscoveredPropagationPlan> PreparePrefabPropagation(
             "changed prefab source has no verified durable identity");
     const auto targetPath = CanonicalAssetPath(changed.resolvedPath);
 
-    std::string sourceBytes;
-    std::string sidecarBytes;
-    Error sourceError;
-    UUID sidecarId = UUID::Nil();
-    std::string fingerprintDigest;
-    if (request.capturedSource && request.capturedSource->IsValid())
-    {
-        const auto& captured = *request.capturedSource;
-        if (captured.fingerprint.normalizedPath != targetPath ||
-            captured.fingerprint.assetId != changed.effectiveId)
-            return Result<DiscoveredPropagationPlan>::Fail(
-                Error::InvalidArgument, targetPath.string(),
-                "captured prefab source identity does not match changed source");
-        sourceBytes = captured.prefabBytes;
-        sidecarBytes = captured.sidecarBytes;
-        sidecarId = captured.fingerprint.assetId;
-        fingerprintDigest = captured.fingerprint.contentDigest;
-    }
-    else
-    {
-        const auto readBytes = request.readBytes
-            ? request.readBytes
-            : [](const std::filesystem::path& path, std::string& bytes, Error& error) {
-                  return ReadBytes(path, bytes, error);
-              };
-        if (!readBytes(targetPath, sourceBytes, sourceError))
-            return Result<DiscoveredPropagationPlan>::Fail(
-                sourceError.code, sourceError.path, sourceError.detail);
-        Error sidecarError;
-        sidecarId = ReadSidecarId(AssetSidecarPath(targetPath), sidecarError);
-        if (!sidecarError.IsOk() || sidecarId.IsNull() || sidecarId != changed.effectiveId)
-            return Result<DiscoveredPropagationPlan>::Fail(
-                sidecarError.IsOk() ? Error::MissingAsset : sidecarError.code,
-                targetPath.string(), "prefab source sidecar identity is missing or mismatched");
-        if (!ReadBytes(AssetSidecarPath(targetPath), sidecarBytes, sourceError))
-            return Result<DiscoveredPropagationPlan>::Fail(
-                sourceError.code, sourceError.path, sourceError.detail);
-        fingerprintDigest = request.fingerprint
-            ? request.fingerprint(sourceBytes, sidecarId)
-            : DigestBytes(sourceBytes, sidecarId);
-    }
-    if (sidecarId.IsNull() || sidecarId != changed.effectiveId ||
-        fingerprintDigest.empty())
+    const auto& captured = request.capturedSource;
+    if (!captured.IsValid() || captured.fingerprint.normalizedPath != targetPath ||
+        captured.fingerprint.assetId != changed.effectiveId)
+        return Result<DiscoveredPropagationPlan>::Fail(
+            Error::InvalidArgument, targetPath.string(),
+            "Prepare requires one coherent captured prefab source and sidecar");
+    Error sidecarError;
+    const UUID sidecarId = ParseCapturedSidecar(captured.sidecarBytes, sidecarError);
+    const auto fingerprintDigest = DigestBytes(captured.prefabBytes,
+                                               captured.sidecarBytes);
+    if (!sidecarError.IsOk() || sidecarId.IsNull() || sidecarId != changed.effectiveId ||
+        fingerprintDigest.empty() || fingerprintDigest != captured.fingerprint.contentDigest)
         return Result<DiscoveredPropagationPlan>::Fail(
             Error::Parse, targetPath.string(),
             "prefab source fingerprint or sidecar identity is invalid");
     PrefabSourceFingerprint fingerprint{ targetPath, sidecarId,
                                          fingerprintDigest };
+    const std::string& sourceBytes = captured.prefabBytes;
+    const std::string& sidecarBytes = captured.sidecarBytes;
+    Error sourceError;
 
     std::unordered_map<UUID, std::size_t> idCounts;
     const auto idView = request.document->ecs.registry.view<EntityIdComponent>();
@@ -790,6 +780,7 @@ Result<DiscoveredPropagationPlan> PreparePrefabPropagation(
     plan.meshTableExtent = request.document->ecs.meshRegistry.GetCount();
     plan.materialTableExtent = static_cast<std::uint32_t>(request.document->ecs.materials.size());
     plan.textureTableExtent = static_cast<std::uint32_t>(request.document->ecs.textures.size());
+    plan.resourceEvidenceCaptured = true;
 
     std::sort(roots.begin(), roots.end(), [&](entt::entity a, entt::entity b) {
         const auto& am = rootView.get<PrefabInstanceComponent>(a);
@@ -819,8 +810,6 @@ Result<DiscoveredPropagationPlan> PreparePrefabPropagation(
     bool parsed = false;
     if (request.parseBytes)
         parsed = request.parseBytes(document, sourceBytes, targetPath, sourceError);
-    else if (request.load)
-        parsed = request.load(document, targetPath, sourceError);
     else
         parsed = PrefabSerializer::LoadBytes(document, sourceBytes, targetPath, sourceError);
     if (!parsed)
