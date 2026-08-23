@@ -19,7 +19,7 @@ bool CheckedAdd(std::uint32_t a, std::uint32_t b, std::uint32_t& result)
 }
 
 template<typename T>
-std::optional<T> OperationAfter(const PrefabPropagationPlan& plan,
+std::optional<T> OperationAfter(const DiscoveredPropagationPlan& plan,
                                 const UUID& entity, const PrefabComponentKey& key,
                                 const entt::registry& live, entt::entity liveEntity)
 {
@@ -41,7 +41,7 @@ std::optional<T> OperationAfter(const PrefabPropagationPlan& plan,
 }
 
 const PrefabPropagationComponentDelta* FindOperation(
-    const PrefabPropagationPlan& plan, const UUID& entity,
+    const DiscoveredPropagationPlan& plan, const UUID& entity,
     const PrefabComponentKey& key)
 {
     const auto it = std::find_if(plan.componentOperations.begin(),
@@ -52,7 +52,7 @@ const PrefabPropagationComponentDelta* FindOperation(
 }
 
 PrefabPropagationComponentDelta* FindOperation(
-    PrefabPropagationPlan& plan, const UUID& entity,
+    DiscoveredPropagationPlan& plan, const UUID& entity,
     const PrefabComponentKey& key)
 {
     const auto it = std::find_if(plan.componentOperations.begin(),
@@ -62,7 +62,7 @@ PrefabPropagationComponentDelta* FindOperation(
     return it == plan.componentOperations.end() ? nullptr : &*it;
 }
 
-bool AddOwnership(PrefabPropagationPlan& plan, PrefabPropagationResourceKind kind,
+bool AddOwnership(DiscoveredPropagationPlan& plan, PrefabPropagationResourceKind kind,
                   std::uint32_t sceneBeforeExtent,
                   std::uint32_t sourceBeforeExtent,
                   const std::vector<PrefabPropagationResourcePayload>& payloads)
@@ -118,7 +118,7 @@ bool RebaseMesh(MeshData& mesh, std::uint32_t materialBase)
 }
 
 std::optional<PrefabPropagationRootSnapshot> FindRootSnapshot(
-    const PrefabPropagationPlan& plan, const PrefabPropagationInstancePlan& instance)
+    const DiscoveredPropagationPlan& plan, const PrefabPropagationInstancePlan& instance)
 {
     const auto it = std::find_if(plan.rootSnapshots.begin(), plan.rootSnapshots.end(),
         [&](const auto& snapshot) { return snapshot.rootUuid == instance.rootUuid; });
@@ -127,7 +127,7 @@ std::optional<PrefabPropagationRootSnapshot> FindRootSnapshot(
 }
 
 PrefabPropagationDiagnostic MakeResolverDiagnostic(
-    const PrefabPropagationPlan& result,
+    const DiscoveredPropagationPlan& result,
     const PrefabPropagationInstancePlan& instance,
     const AssetDiagnostic& diagnostic,
     const UUID& fallbackTemplate)
@@ -158,23 +158,24 @@ bool ApplyComponentOperation(entt::registry& registry, entt::entity entity,
 
 } // namespace
 
-Result<PrefabPropagationPlan> StagePrefabPropagationResources(
-    const PrefabPropagationPlan& durablePlan,
+Result<StageOutcome> StagePrefabPropagationResources(
+    const DiscoveredPropagationPlan& durablePlan,
     const SceneDocument& live,
     const AssetResolutionContext& assets,
     const PrefabPropagationResourceHooks& hooks)
 {
     if (!durablePlan.IsValid())
-        return Result<PrefabPropagationPlan>::Fail(
+        return Result<StageOutcome>::Fail(
             Error::InvalidArgument, "prefab-propagation", "durable plan is invalid");
 
     // A canonical no-op is returned before creating a clone or asking the
     // resolver to inspect any asset. This is the isolation boundary that keeps
     // unrelated imported entities from turning a no-op into history.
     if (durablePlan.IsNoOp())
-        return Result<PrefabPropagationPlan>::Ok(durablePlan);
+        return Result<StageOutcome>::Ok(StageOutcome::NoOp(
+            DiscoveredPropagationPlan(durablePlan)));
 
-    PrefabPropagationPlan result = durablePlan;
+    DiscoveredPropagationPlan result = durablePlan;
     result.resourceOwnership.clear();
     result.meshRefOperations.clear();
 
@@ -312,7 +313,7 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
         if (meshPayloads.size() > std::numeric_limits<std::uint32_t>::max() ||
             materialPayloads.size() > std::numeric_limits<std::uint32_t>::max() ||
             texturePayloads.size() > std::numeric_limits<std::uint32_t>::max())
-            return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+            return Result<StageOutcome>::Fail(Error::InvalidArgument,
                 "prefab-propagation", "resource payload count overflow while staging");
         const auto meshBase = static_cast<std::uint32_t>(meshPayloads.size());
         const auto materialBase = static_cast<std::uint32_t>(materialPayloads.size());
@@ -327,7 +328,7 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                 !CheckedAdd(durablePlan.meshTableExtent, meshBase, sceneMeshBase) ||
                 !CheckedAdd(sceneMeshBase, i, sceneMeshIndex) ||
                 !RebaseMesh(mesh, materialRebase))
-                return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                return Result<StageOutcome>::Fail(Error::InvalidArgument,
                     "prefab-propagation", "mesh material index overflow while staging");
             meshPayloads.push_back({"mesh:" + std::to_string(sceneMeshIndex),
                                     result.source.contentDigest, std::move(mesh)});
@@ -343,7 +344,7 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                 !CheckedAdd(durablePlan.materialTableExtent, materialBase, sceneMaterialBase) ||
                 !CheckedAdd(sceneMaterialBase, static_cast<std::uint32_t>(i), sceneMaterialIndex) ||
                 !RebaseMaterial(material, textureRebase))
-                return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                return Result<StageOutcome>::Fail(Error::InvalidArgument,
                     "prefab-propagation", "material texture index overflow while staging");
             materialPayloads.push_back({"material:" + std::to_string(sceneMaterialIndex),
                 result.source.contentDigest, std::move(material)});
@@ -356,7 +357,7 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
             if (i > std::numeric_limits<std::uint32_t>::max() ||
                 !CheckedAdd(durablePlan.textureTableExtent, textureBase, sceneTextureBase) ||
                 !CheckedAdd(sceneTextureBase, static_cast<std::uint32_t>(i), sceneTextureIndex))
-                return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                return Result<StageOutcome>::Fail(Error::InvalidArgument,
                     "prefab-propagation", "texture extent overflow while staging");
             texturePayloads.push_back({"texture:" + std::to_string(sceneTextureIndex),
                 result.source.contentDigest, texture});
@@ -378,7 +379,7 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                 if (!CheckedAdd(durablePlan.meshTableExtent, meshBase, meshRebase) ||
                     !CheckedAdd(durablePlan.materialTableExtent, materialBase, materialRebase) ||
                     afterRef->meshIndex > std::numeric_limits<std::uint32_t>::max() - meshRebase)
-                    return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                    return Result<StageOutcome>::Fail(Error::InvalidArgument,
                         "prefab-propagation", "MeshRef mesh index overflow while staging");
                 afterRef->meshIndex += meshRebase;
                 if (afterRef->materialIndex >= 0)
@@ -386,7 +387,7 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                     if (materialRebase > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
                         afterRef->materialIndex > std::numeric_limits<int>::max() -
                             static_cast<int>(materialRebase))
-                        return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                        return Result<StageOutcome>::Fail(Error::InvalidArgument,
                             "prefab-propagation", "MeshRef material index overflow while staging");
                     afterRef->materialIndex += static_cast<int>(materialRebase);
                 }
@@ -404,7 +405,7 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                         std::numeric_limits<std::uint32_t>::max() - textureBase ||
                     !RebaseMaterial(repaired.material,
                         durablePlan.textureTableExtent + textureBase))
-                    return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                    return Result<StageOutcome>::Fail(Error::InvalidArgument,
                         "prefab-propagation", "override texture index overflow while staging");
                 if (repaired.materialIndex >= 0)
                 {
@@ -415,12 +416,12 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                         static_cast<std::uint32_t>(repaired.materialIndex) >
                             std::numeric_limits<std::uint32_t>::max() -
                                 materialRebase)
-                        return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                        return Result<StageOutcome>::Fail(Error::InvalidArgument,
                             "prefab-propagation", "override material index invalid while staging");
                     if (materialRebase > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
                         repaired.materialIndex > std::numeric_limits<int>::max() -
                             static_cast<int>(materialRebase))
-                        return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+                        return Result<StageOutcome>::Fail(Error::InvalidArgument,
                             "prefab-propagation", "override material index overflow while staging");
                     repaired.materialIndex += static_cast<int>(materialRebase);
                 }
@@ -428,7 +429,7 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                         PropagationComponentKey<MaterialOverrideComponent>()))
                 {
                     if (!operation->TryWithAfter<MaterialOverrideComponent>(repaired))
-                        return Result<PrefabPropagationPlan>::Fail(
+                        return Result<StageOutcome>::Fail(
                             Error::InvalidArgument, "prefab-propagation",
                             "material repair targeted a mismatched typed delta");
                 }
@@ -475,7 +476,7 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
         !AddOwnership(result, PrefabPropagationResourceKind::Texture,
                       durablePlan.textureTableExtent,
                       static_cast<std::uint32_t>(texturePayloads.size()), texturePayloads))
-        return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+        return Result<StageOutcome>::Fail(Error::InvalidArgument,
             "prefab-propagation", "resource extent overflow while staging");
 
     for (auto& instance : result.instances)
@@ -506,9 +507,11 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
     result.syncImpact = result.DerivedSyncImpact();
     std::sort(result.diagnostics.begin(), result.diagnostics.end());
     if (!result.IsValid())
-        return Result<PrefabPropagationPlan>::Fail(Error::InvalidArgument,
+        return Result<StageOutcome>::Fail(Error::InvalidArgument,
             "prefab-propagation", "staged resource plan failed validation");
-    return Result<PrefabPropagationPlan>::Ok(std::move(result));
+    if (result.IsNoOp())
+        return Result<StageOutcome>::Ok(StageOutcome::NoOp(std::move(result)));
+    return Result<StageOutcome>::Ok(StageOutcome::Effective(std::move(result)));
 }
 
 Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
@@ -558,7 +561,7 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
     // Prepare every source before applying any operation. This is the
     // transaction boundary for load/recovery: a malformed later source cannot
     // leave an earlier sibling partially reconciled.
-    std::vector<PrefabPropagationPlan> plans;
+    std::vector<DiscoveredPropagationPlan> plans;
     plans.reserve(candidates.size());
     for (const auto& candidate : candidates)
     {
@@ -569,6 +572,17 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
         request.documentGeneration = 1;
         request.resourceGeneration = 1;
         request.authoringRevision = 0;
+        if (!hooks.prepare)
+        {
+            const auto captured = hooks.capture
+                ? hooks.capture(candidate.reference, assets)
+                : CapturePrefabSource(candidate.reference, assets);
+            if (!captured.IsOk())
+                return Result<PrefabPropagationLoadReport>::Fail(
+                    captured.error.code, captured.error.path,
+                    captured.error.detail);
+            request.capturedSource = captured.value;
+        }
         const auto prepared = hooks.prepare ? hooks.prepare(request)
                                             : PreparePrefabPropagation(request);
         if (!prepared.IsOk())

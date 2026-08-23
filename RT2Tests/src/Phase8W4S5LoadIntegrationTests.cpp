@@ -547,7 +547,7 @@ TEST_CASE("Phase 8 typed foundation: load batch preflights every operation befor
     auto staleBefore = beforeTransform;
     staleBefore.translation.x += 100.0f;
 
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = PrefabSourceFingerprint{source, kAsset, "digest-a"};
     plan.documentGeneration = 1;
     plan.resourceGeneration = 1;
@@ -570,7 +570,7 @@ TEST_CASE("Phase 8 typed foundation: load batch preflights every operation befor
 
     PrefabPropagationLoadHooks hooks;
     hooks.prepare = [plan](const PrefabPropagationDiscoveryRequest&) {
-        return Result<PrefabPropagationPlan>::Ok(plan);
+        return Result<DiscoveredPropagationPlan>::Ok(plan);
     };
     const auto result = ReconcilePrefabPropagationForLoad(
         document, AssetResolutionContext{temp.directory, nullptr}, hooks);

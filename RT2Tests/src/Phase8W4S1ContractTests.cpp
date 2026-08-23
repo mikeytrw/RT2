@@ -2,6 +2,7 @@
 
 #include "PrefabComponentKey.h"
 #include "PrefabComponentValueEquality.h"
+#include "PrefabPropagationCommand.h"
 #include "PrefabPropagationContracts.h"
 #include "SceneSerializer.h"
 
@@ -14,6 +15,11 @@
 #include <variant>
 
 using namespace rt2::core;
+
+static_assert(!std::is_constructible_v<
+    PrefabPropagationCommand, DiscoveredPropagationPlan,
+    PrefabPropagationCommand::SourceFingerprintReader>,
+    "discovered plans must not be accepted by the command boundary");
 
 namespace
 {
@@ -273,7 +279,7 @@ TEST_CASE("Phase 8 W4 S1: contracts carry deterministic identity and disposition
     CHECK(diagnostic == diagnostic);
     CHECK((colliding < reordered) != (reordered < colliding));
 
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = a;
     plan.instances.push_back({kInstance, kEntity,
                               PrefabPropagationInstanceDisposition::Quarantined,
@@ -451,12 +457,14 @@ TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only 
         std::get<SceneTexture>(textureOwnership.rebase.owned.Entries()[0].decoded),
         originalTexture));
 
-    PrefabPropagationPlan resourceOnly;
+    DiscoveredPropagationPlan resourceOnly;
     resourceOnly.resourceOwnership.push_back(ownership);
     resourceOnly.syncImpact = SyncImpact::Structural;
-    CHECK(resourceOnly.IsValid());
+    // Ticket 2 rejects owned blocks that have no transitive durable consumer;
+    // resource-only intent must never reach staging or command history.
+    CHECK_FALSE(resourceOnly.IsValid());
     CHECK_FALSE(resourceOnly.IsNoOp());
-    CHECK(resourceOnly.IsEffective());
+    CHECK_FALSE(resourceOnly.IsEffective());
 
     auto duplicatePlan = resourceOnly;
     duplicatePlan.resourceOwnership.push_back(ownership);
@@ -480,7 +488,7 @@ TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only 
     CHECK_FALSE(invalidPlan.IsValid());
     CHECK_FALSE(invalidPlan.IsEffective());
 
-    PrefabPropagationPlan summaryPlan;
+    DiscoveredPropagationPlan summaryPlan;
     summaryPlan.componentOperations.push_back(
         PrefabPropagationComponentDelta::Make<NameComponent>(
             kEntity, kTemplate, NameComponent{"before"}, NameComponent{"after"}));
@@ -494,7 +502,7 @@ TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only 
     CHECK(summaryPlan.IsValid());
     CHECK(summaryPlan.IsEffective());
 
-    PrefabPropagationPlan noOpOnly;
+    DiscoveredPropagationPlan noOpOnly;
     noOpOnly.componentOperations.push_back(
         PrefabPropagationComponentDelta::Make<Transform>(
             kEntity, kTemplate, Transform{}, Transform{}));
@@ -504,7 +512,7 @@ TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only 
     CHECK(noOpOnly.IsNoOp());
     CHECK_FALSE(noOpOnly.IsEffective());
 
-    PrefabPropagationPlan mixed;
+    DiscoveredPropagationPlan mixed;
     mixed.componentOperations = noOpOnly.componentOperations;
     mixed.componentOperations.push_back(
         PrefabPropagationComponentDelta::Make<NameComponent>(
@@ -518,7 +526,7 @@ TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only 
 
 TEST_CASE("Phase 8 W4 S1: plan and result equality cover complete durable state")
 {
-    PrefabPropagationPlan a;
+    DiscoveredPropagationPlan a;
     a.source.normalizedPath = "assets/a.rt2prefab";
     a.source.assetId = kInstance;
     a.source.contentDigest = "digest";
@@ -531,4 +539,45 @@ TEST_CASE("Phase 8 W4 S1: plan and result equality cover complete durable state"
     b.syncImpact = SyncImpact::Material;
     CHECK_FALSE(a == b);
 
+}
+
+TEST_CASE("Phase 8 W4 S2: StageOutcome has explicit no-op classes and drops raw snapshots")
+{
+    DiscoveredPropagationPlan canonical;
+    canonical.source.normalizedPath = "assets/a.rt2prefab";
+    canonical.source.assetId = kInstance;
+    canonical.source.contentDigest = "digest";
+    canonical.componentOperations.push_back(
+        PrefabPropagationComponentDelta::Make<Transform>(
+            kEntity, kTemplate, Transform{}, Transform{}));
+    CHECK(canonical.IsNoOp());
+    const auto noOp = StageOutcome::FromDiscovered(canonical);
+    CHECK(noOp.IsNoOp());
+    CHECK_FALSE(noOp.executable.has_value());
+
+    DiscoveredPropagationPlan allQuarantined = canonical;
+    allQuarantined.componentOperations.clear();
+    allQuarantined.instances.push_back({
+        kInstance, kEntity, PrefabPropagationInstanceDisposition::Quarantined,
+        {}, {PrefabPropagationDiagnostic{}}});
+    const auto quarantined = StageOutcome::FromDiscovered(allQuarantined);
+    CHECK(quarantined.IsNoOp());
+    CHECK_FALSE(quarantined.executable.has_value());
+
+    DiscoveredPropagationPlan effective;
+    effective.source = canonical.source;
+    effective.componentOperations.push_back(
+        PrefabPropagationComponentDelta::Make<NameComponent>(
+            kEntity, kTemplate, NameComponent{"before"},
+            NameComponent{"after"}));
+    effective.affectedEntities = {kEntity};
+    effective.capturedSource = CapturedPrefabSource{
+        canonical.source, "raw-prefab-bytes", "raw-sidecar-bytes"};
+    CHECK(effective.IsEffective());
+    auto staged = StageOutcome::Effective(std::move(effective));
+    REQUIRE(staged.IsEffective());
+    REQUIRE(staged.executable.has_value());
+    CHECK_FALSE(staged.capturedSource.IsValid());
+    CHECK_FALSE(staged.executable->capturedSource.IsValid());
+    CHECK(staged.executable->source == canonical.source);
 }

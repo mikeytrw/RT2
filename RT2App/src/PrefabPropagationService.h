@@ -26,8 +26,8 @@ struct PrefabPropagationResourceHooks
         const entt::registry&, entt::entity)> readLiveMaterialOverride;
 };
 
-Result<PrefabPropagationPlan> StagePrefabPropagationResources(
-    const PrefabPropagationPlan& durablePlan,
+Result<StageOutcome> StagePrefabPropagationResources(
+    const DiscoveredPropagationPlan& durablePlan,
     const SceneDocument& live,
     const AssetResolutionContext& assets,
     const PrefabPropagationResourceHooks& hooks = {});
@@ -47,7 +47,9 @@ struct PrefabPropagationLoadReport
 
 struct PrefabPropagationLoadHooks
 {
-    std::function<Result<PrefabPropagationPlan>(
+    std::function<Result<CapturedPrefabSource>(
+        const AssetReference&, const AssetResolutionContext&)> capture;
+    std::function<Result<DiscoveredPropagationPlan>(
         const PrefabPropagationDiscoveryRequest&)> prepare;
     std::function<bool(SceneDocument&, const AssetResolutionContext&,
                        std::vector<AssetDiagnostic>&, Error&)> resolveAll;

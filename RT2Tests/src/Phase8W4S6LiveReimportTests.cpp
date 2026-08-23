@@ -44,14 +44,14 @@ struct EffectiveLiveFixture
         scene.NotifyAuthoringChanged();
     }
 
-    PrefabPropagationPlan Plan(const char* digest,
+    DiscoveredPropagationPlan Plan(const char* digest,
                                bool includeQuarantined = false) const
     {
         const auto handle = scene.FindEntityByUuid(entity);
         const auto before = scene.AuthoringDoc().ecs.registry.get<Transform>(handle);
         auto after = before;
         after.translation.x += 1.0f;
-        PrefabPropagationPlan plan;
+        DiscoveredPropagationPlan plan;
         plan.source = Fingerprint(digest);
         plan.documentGeneration = scene.DocumentGeneration();
         plan.resourceGeneration = scene.ResourceGeneration();
@@ -137,19 +137,19 @@ PrefabPropagationLiveHooks EffectiveHooks(EffectiveLiveFixture& fixture,
     };
     hooks.prepare = [&](const PrefabPropagationDiscoveryRequest&) {
         ++prepareCalls;
-        return Result<PrefabPropagationPlan>::Ok(fixture.Plan(digest.c_str()));
+        return Result<DiscoveredPropagationPlan>::Ok(fixture.Plan(digest.c_str()));
     };
-    hooks.stage = [](const PrefabPropagationPlan& plan, const SceneDocument&,
+    hooks.stage = [](const DiscoveredPropagationPlan& plan, const SceneDocument&,
                      const AssetResolutionContext&) {
-        return Result<PrefabPropagationPlan>::Ok(plan);
+        return Result<StageOutcome>::Ok(StageOutcome::FromDiscovered(plan));
     };
     return hooks;
 }
 
-PrefabPropagationPlan EmptyPlan(SceneManager& scene,
+DiscoveredPropagationPlan EmptyPlan(SceneManager& scene,
                                 const PrefabSourceFingerprint& source)
 {
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
@@ -182,7 +182,7 @@ TEST_CASE("S6 live queue coalesces newest fingerprint and drains only in Edit")
     };
     hooks.prepare = [&](const PrefabPropagationDiscoveryRequest& request) {
         ++prepareCalls;
-        return Result<PrefabPropagationPlan>::Ok(
+        return Result<DiscoveredPropagationPlan>::Ok(
             EmptyPlan(scene, Fingerprint(digest.c_str())));
     };
 
@@ -250,7 +250,7 @@ TEST_CASE("S6 deferred explicit work carries refresh evidence and context clear"
     };
     hooks.prepare = [&](const PrefabPropagationDiscoveryRequest&) {
         CHECK(false); // named RED mutant: dequeue before the refresh evidence
-        return Result<PrefabPropagationPlan>::Fail(
+        return Result<DiscoveredPropagationPlan>::Fail(
             Error::InvalidRuntimeState, "s6", "prepared before refresh");
     };
 
@@ -433,7 +433,7 @@ TEST_CASE("S6 host coalesces newest, quarantines siblings, and resets identity")
         quarantineFixture, quarantineDigest, quarantinePrepare, quarantineFingerprint);
     quarantineHooks.prepare = [&](const PrefabPropagationDiscoveryRequest&) {
         ++quarantinePrepare;
-        return Result<PrefabPropagationPlan>::Ok(
+        return Result<DiscoveredPropagationPlan>::Ok(
             quarantineFixture.Plan(quarantineDigest.c_str(), true));
     };
     const auto quarantined = quarantineHost.Submit(
@@ -476,14 +476,14 @@ TEST_CASE("S6 queued aliases share durable identity in either trigger order")
         };
         hooks.prepare = [&](const PrefabPropagationDiscoveryRequest&) {
             ++prepareCalls;
-            return Result<PrefabPropagationPlan>::Ok(
+            return Result<DiscoveredPropagationPlan>::Ok(
                 fixture.Plan(observedDigest.c_str()));
         };
-        hooks.stage = [&](const PrefabPropagationPlan& plan,
+        hooks.stage = [&](const DiscoveredPropagationPlan& plan,
                           const SceneDocument&,
                           const AssetResolutionContext&) {
             ++stageCalls;
-            return Result<PrefabPropagationPlan>::Ok(plan);
+            return Result<StageOutcome>::Ok(StageOutcome::FromDiscovered(plan));
         };
 
         if (explicitFirst)
@@ -586,15 +586,15 @@ TEST_CASE("S6 host refresh uses only the post-refresh owning context")
         if (request.assets.database != databaseBAddress ||
             request.assets.assetRoot != std::filesystem::path("C:/project-B/assets"))
             ++readsA;
-        return Result<PrefabPropagationPlan>::Ok(fixture.Plan(digest.c_str()));
+        return Result<DiscoveredPropagationPlan>::Ok(fixture.Plan(digest.c_str()));
     };
-    hooks.stage = [&](const PrefabPropagationPlan& plan,
+    hooks.stage = [&](const DiscoveredPropagationPlan& plan,
                       const SceneDocument&, const AssetResolutionContext& assets) {
         ++stageCalls;
         if (assets.database != databaseBAddress ||
             assets.assetRoot != std::filesystem::path("C:/project-B/assets"))
             ++readsA;
-        return Result<PrefabPropagationPlan>::Ok(plan);
+        return Result<StageOutcome>::Ok(StageOutcome::FromDiscovered(plan));
     };
 
     const auto applied = host.Submit(
@@ -648,17 +648,17 @@ TEST_CASE("S6 host refresh uses only the post-refresh owning context")
         if (request.assets.database != databaseBAddress ||
             request.assets.assetRoot != std::filesystem::path("C:/project-B/assets"))
             ++queuedReadsA;
-        return Result<PrefabPropagationPlan>::Ok(
+        return Result<DiscoveredPropagationPlan>::Ok(
             queuedFixture.Plan(queuedDigest.c_str()));
     };
-    queuedHooks.stage = [&](const PrefabPropagationPlan& plan,
+    queuedHooks.stage = [&](const DiscoveredPropagationPlan& plan,
                             const SceneDocument&,
                             const AssetResolutionContext& assets) {
         ++queuedStage;
         if (assets.database != databaseBAddress ||
             assets.assetRoot != std::filesystem::path("C:/project-B/assets"))
             ++queuedReadsA;
-        return Result<PrefabPropagationPlan>::Ok(plan);
+        return Result<StageOutcome>::Ok(StageOutcome::FromDiscovered(plan));
     };
     const auto pending = queuedHost.Submit(
         queuedFixture.scene, queuedFixture.history, queuedFixture.source,
@@ -768,12 +768,12 @@ TEST_CASE("S6 host rejects sidecar drift without routing or history")
     };
     hooks.prepare = [&](const PrefabPropagationDiscoveryRequest&) {
         ++prepareCalls;
-        return Result<PrefabPropagationPlan>::Ok(
+        return Result<DiscoveredPropagationPlan>::Ok(
             fixture.Plan("before"));
     };
-    hooks.stage = [](const PrefabPropagationPlan& plan, const SceneDocument&,
+    hooks.stage = [](const DiscoveredPropagationPlan& plan, const SceneDocument&,
                      const AssetResolutionContext&) {
-        return Result<PrefabPropagationPlan>::Ok(plan);
+        return Result<StageOutcome>::Ok(StageOutcome::FromDiscovered(plan));
     };
 
     const auto failed = host.Submit(

@@ -53,7 +53,7 @@ EditorMutationResult Failure(Error::Code code, const std::string& path,
                              const std::string& detail)
 { return EditorMutationResult::Failure(code, path, detail); }
 
-bool ValidateRootSnapshots(const PrefabPropagationPlan& plan,
+bool ValidateRootSnapshots(const ExecutablePropagationPlan& plan,
                            const SceneDocument& doc, const ECSScene& ecs)
 {
     for (const auto& snapshot : plan.rootSnapshots)
@@ -68,10 +68,10 @@ bool ValidateRootSnapshots(const PrefabPropagationPlan& plan,
     return true;
 }
 
-bool HasResourceMutation(const PrefabPropagationPlan& plan) noexcept
+bool HasResourceMutation(const ExecutablePropagationPlan& plan) noexcept
 { return !plan.resourceOwnership.empty() || !plan.meshRefOperations.empty(); }
 
-bool ValidateCommitEvidence(const PrefabPropagationPlan& plan)
+bool ValidateCommitEvidence(const ExecutablePropagationPlan& plan)
 {
     if (!plan.source.IsValid() || plan.documentGeneration == 0 ||
         plan.resourceGeneration == 0 || !plan.authoringRevisionCaptured ||
@@ -105,7 +105,7 @@ bool ValidateCommitEvidence(const PrefabPropagationPlan& plan)
 }
 
 PrefabPropagationCommand::PrefabPropagationCommand(
-    PrefabPropagationPlan plan, SourceFingerprintReader sourceReader)
+    ExecutablePropagationPlan plan, SourceFingerprintReader sourceReader)
     : m_Plan(std::move(plan)), m_SourceReader(std::move(sourceReader))
 {
     m_ExpectedRevision = m_Plan.authoringRevision;

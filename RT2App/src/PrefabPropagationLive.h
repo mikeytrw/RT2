@@ -11,6 +11,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -44,12 +45,14 @@ struct PrefabPropagationLiveReport
 
 struct PrefabPropagationLiveHooks
 {
+    std::function<Result<CapturedPrefabSource>(
+        const AssetReference&, const AssetResolutionContext&)> capture;
     std::function<Result<PrefabSourceFingerprint>(
         const AssetReference&, const AssetResolutionContext&)> fingerprint;
-    std::function<Result<PrefabPropagationPlan>(
+    std::function<Result<DiscoveredPropagationPlan>(
         const PrefabPropagationDiscoveryRequest&)> prepare;
-    std::function<Result<PrefabPropagationPlan>(
-        const PrefabPropagationPlan&, const SceneDocument&,
+    std::function<Result<StageOutcome>(
+        const DiscoveredPropagationPlan&, const SceneDocument&,
         const AssetResolutionContext&)> stage;
 };
 
@@ -108,7 +111,8 @@ private:
         SceneManager& scene, EditorCommandHistory& history,
         const AssetReference& source, const AssetResolutionContext& assets,
         const PrefabSourceFingerprint& fingerprint,
-        const PrefabPropagationLiveHooks& hooks);
+        const PrefabPropagationLiveHooks& hooks,
+        const std::optional<CapturedPrefabSource>& captured = {});
 
     std::map<std::string, Pending> m_Pending;
     struct LastApplied

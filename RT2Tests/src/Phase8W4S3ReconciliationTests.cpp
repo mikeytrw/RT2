@@ -275,7 +275,7 @@ std::optional<PropagationComponentSet> ExpectedOptional(OptionalKind kind,
 }
 
 const PrefabPropagationComponentDelta* FindOperation(
-    const PrefabPropagationPlan& plan, const UUID& entity,
+    const DiscoveredPropagationPlan& plan, const UUID& entity,
     const PrefabComponentKey& key)
 {
     for (const auto& operation : plan.componentOperations)

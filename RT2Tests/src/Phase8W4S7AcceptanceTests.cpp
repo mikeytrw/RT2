@@ -24,6 +24,11 @@ using namespace rt2::core;
 
 namespace
 {
+ExecutablePropagationPlan AsExecutable(DiscoveredPropagationPlan plan)
+{
+    auto staged = StageOutcome::Effective(std::move(plan));
+    return std::move(*staged.executable);
+}
 struct TempGuard
 {
     std::filesystem::path path;
@@ -64,7 +69,7 @@ TempGuard Temp()
     return result;
 }
 
-bool HasKey(const PrefabPropagationPlan& plan, std::string_view wire)
+bool HasKey(const DiscoveredPropagationPlan& plan, std::string_view wire)
 {
     for (const auto& operation : plan.componentOperations)
         if (operation.Key().wire() == wire) return true;
@@ -214,7 +219,7 @@ void PopulateA11Document(SceneDocument& document)
         PrefabInstanceComponent{A11Source(), kA11Instance});
 }
 
-PrefabPropagationPlan A11Plan(const SceneDocument& document,
+DiscoveredPropagationPlan A11Plan(const SceneDocument& document,
                               const std::filesystem::path& path,
                               const std::string& digest)
 {
@@ -222,7 +227,7 @@ PrefabPropagationPlan A11Plan(const SceneDocument& document,
     const auto before = document.ecs.registry.get<Transform>(entity);
     auto after = before;
     after.translation.x += 4.0f;
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = PrefabSourceFingerprint{path, kA11Instance, digest};
     plan.documentGeneration = 1;
     plan.resourceGeneration = 2;
@@ -399,7 +404,7 @@ TEST_CASE("Phase 8 W4 S7 A1: source edit propagates through prepare stage comman
     CHECK(staged.value.textureTableExtent == beforeTextureExtent);
     const auto fingerprint = staged.value.source;
     auto propagation = std::make_unique<PrefabPropagationCommand>(
-        staged.value, [fingerprint] {
+        *staged.value.executable, [fingerprint] {
             return Result<PrefabSourceFingerprint>::Ok(fingerprint);
         });
     const auto beforeRevision = manager.AuthoringRevision();
@@ -515,7 +520,7 @@ TEST_CASE("Phase 8 W4 S7 A1: source edit propagates through prepare stage comman
     REQUIRE(reboundStaged.IsOk());
     const auto reboundFingerprint = reboundStaged.value.source;
     auto reboundCommand = std::make_unique<PrefabPropagationCommand>(
-        reboundStaged.value, [reboundFingerprint] {
+        *reboundStaged.value.executable, [reboundFingerprint] {
             return Result<PrefabSourceFingerprint>::Ok(reboundFingerprint);
         });
     REQUIRE(history.Execute(std::move(reboundCommand), manager).success);
@@ -575,7 +580,7 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
 
     PrefabSourceFingerprint source{
         "assets/source.rt2prefab", kA10Instance, "a10-digest"};
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = beforeResourceGeneration;
@@ -619,7 +624,7 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
     const auto beforeBytes = FileBytes(beforePath);
     EditorCommandHistory history;
     std::size_t fingerprintReads = 0;
-    auto command = std::make_unique<PrefabPropagationCommand>(plan,
+    auto command = std::make_unique<PrefabPropagationCommand>(AsExecutable(plan),
         [&] {
             ++fingerprintReads;
             return Result<PrefabSourceFingerprint>::Ok(source);
@@ -662,7 +667,7 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
 
     // A plan with no effective operations is silent: no history entry,
     // revision, resource generation, or serialized change.
-    PrefabPropagationPlan noop = plan;
+    DiscoveredPropagationPlan noop = plan;
     noop.componentOperations.clear();
     noop.meshRefOperations.clear();
     noop.resourceOwnership.clear();
@@ -674,7 +679,7 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
     const auto noopRevision = scene.AuthoringRevision();
     const auto noopResourceGeneration = scene.ResourceGeneration();
     const auto noopHistory = history.UndoDepthForTest();
-    auto noopCommand = std::make_unique<PrefabPropagationCommand>(noop,
+    auto noopCommand = std::make_unique<PrefabPropagationCommand>(AsExecutable(noop),
         [source] { return Result<PrefabSourceFingerprint>::Ok(source); });
     const auto noOp = history.Execute(std::move(noopCommand), scene);
     REQUIRE(noOp.success);
@@ -863,7 +868,7 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
         const auto fingerprint = staged.value.source;
         EditorCommandHistory history;
         auto command = std::make_unique<PrefabPropagationCommand>(
-            staged.value, [fingerprint] {
+            *staged.value.executable, [fingerprint] {
                 return Result<PrefabSourceFingerprint>::Ok(fingerprint);
             });
         const auto applied = history.Execute(std::move(command), scene);
@@ -1117,7 +1122,7 @@ TEST_CASE("Phase 8 W4 S7 A11: host orchestration routes converge")
         plan.documentGeneration = request.documentGeneration;
         plan.resourceGeneration = request.resourceGeneration;
         plan.authoringRevision = request.authoringRevision;
-        return Result<PrefabPropagationPlan>::Ok(std::move(plan));
+        return Result<DiscoveredPropagationPlan>::Ok(std::move(plan));
     };
     loadHooks.resolveAll = [&](SceneDocument&, const AssetResolutionContext&,
                                std::vector<AssetDiagnostic>&, Error&) {
@@ -1187,11 +1192,11 @@ TEST_CASE("Phase 8 W4 S7 A11: host orchestration routes converge")
             plan.documentGeneration = request.documentGeneration;
             plan.resourceGeneration = request.resourceGeneration;
             plan.authoringRevision = request.authoringRevision;
-            return Result<PrefabPropagationPlan>::Ok(std::move(plan));
+            return Result<DiscoveredPropagationPlan>::Ok(std::move(plan));
         };
-        hooks.stage = [](const PrefabPropagationPlan& plan, const SceneDocument&,
+        hooks.stage = [](const DiscoveredPropagationPlan& plan, const SceneDocument&,
                          const AssetResolutionContext&) {
-            return Result<PrefabPropagationPlan>::Ok(plan);
+            return Result<StageOutcome>::Ok(StageOutcome::FromDiscovered(plan));
         };
         const auto before = scene.AuthoringDoc().ecs.registry.get<Transform>(
             scene.AuthoringDoc().FindByUuid(kA11Entity));

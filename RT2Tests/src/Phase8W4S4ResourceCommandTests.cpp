@@ -64,7 +64,7 @@ void PopulateScene(SceneManager& scene, bool notify = true)
     if (notify) scene.NotifyAuthoringChanged();
 }
 
-void FinalizePlan(SceneManager& scene, PrefabPropagationPlan& plan)
+void FinalizePlan(SceneManager& scene, DiscoveredPropagationPlan& plan)
 {
     plan.authoringRevision = scene.AuthoringRevision();
     plan.authoringRevisionCaptured = true;
@@ -89,6 +89,12 @@ std::string DurableSceneBytes(const SceneDocument& document,
     REQUIRE(input.good());
     return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
 }
+
+ExecutablePropagationPlan AsExecutable(DiscoveredPropagationPlan plan)
+{
+    auto staged = StageOutcome::Effective(std::move(plan));
+    return std::move(*staged.executable);
+}
 }
 
 TEST_CASE("Phase 8 W4 S4: propagation command owns append-only resources and reuses slots")
@@ -102,7 +108,7 @@ TEST_CASE("Phase 8 W4 S4: propagation command owns append-only resources and reu
     const auto beforeRevision = scene.AuthoringRevision();
     const auto beforeResourceGeneration = scene.ResourceGeneration();
 
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = beforeResourceGeneration;
@@ -131,7 +137,7 @@ TEST_CASE("Phase 8 W4 S4: propagation command owns append-only resources and reu
     REQUIRE(plan.IsEffective());
 
     std::size_t fingerprintReads = 0;
-    PrefabPropagationCommand command(plan, [&] {
+    PrefabPropagationCommand command(AsExecutable(plan), [&] {
         ++fingerprintReads;
         return Result<PrefabSourceFingerprint>::Ok(
             fingerprintReads == 1 ? source :
@@ -172,7 +178,7 @@ TEST_CASE("Phase 8 W4 S4: stale value and fingerprint reject with zero mutation"
     auto& doc = scene.AuthoringDoc();
     const auto source = PrefabSourceFingerprint{
         "assets/source.rt2prefab", kInstance, "digest-a"};
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
@@ -186,7 +192,7 @@ TEST_CASE("Phase 8 W4 S4: stale value and fingerprint reject with zero mutation"
     REQUIRE(plan.IsEffective());
     doc.ecs.registry.get<NameComponent>(doc.FindByUuid(kEntity)).name = "changed";
     const auto beforeRevision = scene.AuthoringRevision();
-    PrefabPropagationCommand command(plan, [source] {
+    PrefabPropagationCommand command(AsExecutable(plan), [source] {
         return Result<PrefabSourceFingerprint>::Ok(source);
     });
     const auto result = command.Execute(scene);
@@ -197,7 +203,7 @@ TEST_CASE("Phase 8 W4 S4: stale value and fingerprint reject with zero mutation"
 
     SceneManager fingerprintScene;
     PopulateScene(fingerprintScene);
-    PrefabPropagationPlan fingerprintPlan;
+    DiscoveredPropagationPlan fingerprintPlan;
     fingerprintPlan.source = source;
     fingerprintPlan.documentGeneration = fingerprintScene.DocumentGeneration();
     fingerprintPlan.resourceGeneration = fingerprintScene.ResourceGeneration();
@@ -209,7 +215,7 @@ TEST_CASE("Phase 8 W4 S4: stale value and fingerprint reject with zero mutation"
     fingerprintPlan.syncImpact = SyncImpact::None;
     FinalizePlan(fingerprintScene, fingerprintPlan);
     REQUIRE(fingerprintPlan.IsEffective());
-    const auto fingerprintResult = PrefabPropagationCommand(fingerprintPlan, [] {
+    const auto fingerprintResult = PrefabPropagationCommand(AsExecutable(fingerprintPlan), [] {
         return Result<PrefabSourceFingerprint>::Ok(
             PrefabSourceFingerprint{"assets/source.rt2prefab", kInstance, "digest-b"});
     }).Execute(fingerprintScene);
@@ -224,7 +230,7 @@ TEST_CASE("Phase 8 W4 S4: stale value and fingerprint reject with zero mutation"
     ioPlan.resourceGeneration = ioScene.ResourceGeneration();
     ioPlan.authoringRevision = ioScene.AuthoringRevision();
     FinalizePlan(ioScene, ioPlan);
-    const auto ioResult = PrefabPropagationCommand(ioPlan, [] {
+    const auto ioResult = PrefabPropagationCommand(AsExecutable(ioPlan), [] {
         return Result<PrefabSourceFingerprint>::Fail(
             Error::Io, "locked.rt2prefab", "source bytes unavailable");
     }).Execute(ioScene);
@@ -245,7 +251,7 @@ TEST_CASE("Phase 8 typed foundation: command preflights every operation before w
     auto staleBefore = beforeTransform;
     staleBefore.translation.x += 100.0f;
 
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = PrefabSourceFingerprint{
         "assets/source.rt2prefab", kInstance, "digest-a"};
     plan.documentGeneration = scene.DocumentGeneration();
@@ -267,7 +273,7 @@ TEST_CASE("Phase 8 typed foundation: command preflights every operation before w
     const auto path = std::filesystem::temp_directory_path() /
         "rt2_w4_typed_batch_command_before.rt2scene";
     const auto beforeBytes = DurableSceneBytes(document, path);
-    PrefabPropagationCommand command(plan, [=] {
+    PrefabPropagationCommand command(AsExecutable(plan), [=] {
         return Result<PrefabSourceFingerprint>::Ok(plan.source);
     });
     const auto result = command.Execute(scene);
@@ -288,7 +294,7 @@ TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutatio
     const auto source = PrefabSourceFingerprint{
         "assets/source.rt2prefab", kInstance, "digest-a"};
     auto makePlan = [&](SceneManager& scene) {
-        PrefabPropagationPlan plan;
+        DiscoveredPropagationPlan plan;
         plan.source = source;
         plan.documentGeneration = scene.DocumentGeneration();
         plan.resourceGeneration = scene.ResourceGeneration();
@@ -311,7 +317,7 @@ TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutatio
         REQUIRE(SceneSerializer::CloneInMemory(scene.AuthoringDoc(), clone, error));
         scene.ReplaceAuthoringDocument(std::move(clone));
         plan.resourceGeneration = scene.ResourceGeneration();
-        const auto result = PrefabPropagationCommand(plan, [source] {
+        const auto result = PrefabPropagationCommand(AsExecutable(plan), [source] {
             return Result<PrefabSourceFingerprint>::Ok(source);
         }).Execute(scene);
         CHECK_FALSE(result.success);
@@ -321,7 +327,7 @@ TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutatio
         auto plan = makePlan(scene);
         scene.AuthoringDoc().ecs.meshRegistry.AddMesh(Triangle("orphan"));
         REQUIRE(scene.CompactMeshRegistry());
-        const auto result = PrefabPropagationCommand(plan, [source] {
+        const auto result = PrefabPropagationCommand(AsExecutable(plan), [source] {
             return Result<PrefabSourceFingerprint>::Ok(source);
         }).Execute(scene);
         CHECK_FALSE(result.success);
@@ -332,7 +338,7 @@ TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutatio
         scene.AuthoringDoc().ecs.registry.get<PrefabMemberComponent>(
             scene.FindEntityByUuid(kEntity)).instanceId = UUID::Parse(
                 "44444444-4444-4444-8444-444444444444");
-        CHECK_FALSE(PrefabPropagationCommand(plan, [source] {
+        CHECK_FALSE(PrefabPropagationCommand(AsExecutable(plan), [source] {
             return Result<PrefabSourceFingerprint>::Ok(source);
         }).Execute(scene).success);
     }
@@ -342,7 +348,7 @@ TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutatio
         scene.AuthoringDoc().ecs.registry.get<PrefabMemberComponent>(
             scene.FindEntityByUuid(kEntity)).overrides.push_back(
                 PrefabComponentKeyFor<NameComponent>::value);
-        CHECK_FALSE(PrefabPropagationCommand(plan, [source] {
+        CHECK_FALSE(PrefabPropagationCommand(AsExecutable(plan), [source] {
             return Result<PrefabSourceFingerprint>::Ok(source);
         }).Execute(scene).success);
     }
@@ -355,7 +361,7 @@ TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutatio
             MeshRef{0, -1}, MeshRef{0, -1}});
         plan.affectedEntities = {kEntity};
         plan.syncImpact = SyncImpact::None;
-        CHECK_FALSE(PrefabPropagationCommand(plan, [source] {
+        CHECK_FALSE(PrefabPropagationCommand(AsExecutable(plan), [source] {
             return Result<PrefabSourceFingerprint>::Ok(source);
         }).Execute(scene).success);
     }
@@ -401,7 +407,7 @@ TEST_CASE("Phase 8 W4 S4: resource staging is clone-only and derives MeshRef reb
     const auto beforeRevision = scene.AuthoringRevision();
     const auto source = PrefabSourceFingerprint{
         "assets/source.rt2prefab", kInstance, "digest-stage"};
-    PrefabPropagationPlan durable;
+    DiscoveredPropagationPlan durable;
     durable.source = source;
     durable.documentGeneration = scene.DocumentGeneration();
     durable.resourceGeneration = scene.ResourceGeneration();
@@ -488,7 +494,7 @@ TEST_CASE("Phase 8 W4 S4: imported staging resolves source material then one aut
     scene.NotifyAuthoringChanged();
     const auto beforeSource = ImportedMeshSourceComponent{oldSource};
     const auto afterSource = ImportedMeshSourceComponent{newSource};
-    PrefabPropagationPlan durable;
+    DiscoveredPropagationPlan durable;
     durable.source = {dir / "model.rt2prefab", kInstance, "digest-import"};
     durable.documentGeneration = scene.DocumentGeneration();
     durable.resourceGeneration = scene.ResourceGeneration();
@@ -556,7 +562,7 @@ TEST_CASE("Phase 8 W4 S4: candidate isolation omits unrelated imports")
         ImportedMeshSourceComponent{missing});
     scene.NotifyAuthoringChanged();
 
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = {"assets/source.rt2prefab", kInstance, "digest-isolation"};
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
@@ -594,7 +600,7 @@ TEST_CASE("Phase 8 W4 S4: resolver failure quarantines the whole instance")
     scene.NotifyAuthoringChanged();
 
     AssetReference missing{AssetKind::Model, "missing.obj", {}, "obj:whole-model", kInstance};
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = {"assets/source.rt2prefab", kInstance, "digest-quarantine"};
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
@@ -668,7 +674,7 @@ TEST_CASE("Phase 8 W4 S4: history keeps immutable command ownership across undo 
     auto& registry = scene.AuthoringDoc().ecs.registry;
     const auto source = PrefabSourceFingerprint{
         "assets/source.rt2prefab", kInstance, "history-digest"};
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
@@ -682,7 +688,7 @@ TEST_CASE("Phase 8 W4 S4: history keeps immutable command ownership across undo 
     FinalizePlan(scene, plan);
     REQUIRE(plan.IsEffective());
     EditorCommandHistory history;
-    auto command = std::make_unique<PrefabPropagationCommand>(plan,
+    auto command = std::make_unique<PrefabPropagationCommand>(AsExecutable(plan),
         [source] { return Result<PrefabSourceFingerprint>::Ok(source); });
     REQUIRE(history.Execute(std::move(command), scene).success);
     CHECK(history.UndoDepthForTest() == 1);
@@ -700,7 +706,7 @@ TEST_CASE("Phase 8 W4 S4: commit rejects a plan without complete production evid
     PopulateScene(scene);
     const auto source = PrefabSourceFingerprint{
         "assets/source.rt2prefab", kInstance, "evidence-digest"};
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
@@ -714,7 +720,7 @@ TEST_CASE("Phase 8 W4 S4: commit rejects a plan without complete production evid
     FinalizePlan(scene, plan);
     plan.rootSnapshots.clear();
     CHECK(plan.IsValid());
-    const auto result = PrefabPropagationCommand(plan,
+    const auto result = PrefabPropagationCommand(AsExecutable(plan),
         [source] { return Result<PrefabSourceFingerprint>::Ok(source); }).Execute(scene);
     CHECK_FALSE(result.success);
     CHECK(scene.AuthoringDoc().ecs.registry.get<NameComponent>(
@@ -727,7 +733,7 @@ TEST_CASE("Phase 8 W4 S4: forged owned and pre-existing MeshRef indices are reje
     PopulateScene(scene);
     const auto source = PrefabSourceFingerprint{
         "assets/source.rt2prefab", kInstance, "ownership-digest"};
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
@@ -754,7 +760,7 @@ TEST_CASE("Phase 8 W4 S4: revision zero is captured and stale zero-to-one is rej
     REQUIRE(scene.AuthoringRevision() == 0);
     const auto source = PrefabSourceFingerprint{
         "assets/source.rt2prefab", kInstance, "revision-zero"};
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
@@ -769,7 +775,7 @@ TEST_CASE("Phase 8 W4 S4: revision zero is captured and stale zero-to-one is rej
     REQUIRE(plan.authoringRevision == 0);
     REQUIRE(plan.authoringRevisionCaptured);
     REQUIRE(plan.IsEffective());
-    REQUIRE(PrefabPropagationCommand(plan, [source] {
+    REQUIRE(PrefabPropagationCommand(AsExecutable(plan), [source] {
         return Result<PrefabSourceFingerprint>::Ok(source);
     }).Execute(scene).success);
     CHECK(scene.AuthoringDoc().ecs.registry.get<NameComponent>(
@@ -785,7 +791,7 @@ TEST_CASE("Phase 8 W4 S4: revision zero is captured and stale zero-to-one is rej
     stale.NotifyAuthoringChanged();
     const auto before = stale.AuthoringDoc().ecs.registry.get<NameComponent>(
         stale.FindEntityByUuid(kEntity)).name;
-    const auto result = PrefabPropagationCommand(stalePlan, [source] {
+    const auto result = PrefabPropagationCommand(AsExecutable(stalePlan), [source] {
         return Result<PrefabSourceFingerprint>::Ok(source);
     }).Execute(stale);
     CHECK_FALSE(result.success);
@@ -811,7 +817,7 @@ TEST_CASE("Phase 8 W4 S4: value-only propagation skips unchanged imported siblin
         ImportedMeshSourceComponent{missing});
     scene.NotifyAuthoringChanged();
 
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = {"assets/source.rt2prefab", kInstance, "same-instance-value-only"};
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
@@ -852,7 +858,7 @@ TEST_CASE("Phase 8 W4 S4: malformed quarantined root does not poison valid sibli
             "valid.rt2prefab", {}, {}, validInstance}, validInstance});
     scene.NotifyAuthoringChanged();
 
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = {"assets/source.rt2prefab", kInstance, "malformed-root"};
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
@@ -898,7 +904,7 @@ TEST_CASE("Phase 8 typed foundation: staging material candidate uses checked ada
     const auto beforePrimitive = registry.get<PrimitiveComponent>(entity);
     auto afterPrimitive = beforePrimitive;
     afterPrimitive.size = 2.0f;
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = {"assets/source.rt2prefab", kInstance, "typed-material-no-op"};
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
@@ -955,7 +961,7 @@ TEST_CASE("Phase 8 W4 S4: nested owned resource references and overflow are reje
 {
     SceneManager scene;
     PopulateScene(scene);
-    PrefabPropagationPlan materialPlan;
+    DiscoveredPropagationPlan materialPlan;
     materialPlan.source = {"assets/source.rt2prefab", kInstance, "nested-material"};
     materialPlan.documentGeneration = scene.DocumentGeneration();
     materialPlan.resourceGeneration = scene.ResourceGeneration();
@@ -983,7 +989,7 @@ TEST_CASE("Phase 8 W4 S4: nested owned resource references and overflow are reje
     FinalizePlan(scene, materialPlan);
     CHECK_FALSE(materialPlan.IsValid());
 
-    PrefabPropagationPlan invalidMesh = materialPlan;
+    DiscoveredPropagationPlan invalidMesh = materialPlan;
     invalidMesh.resourceOwnership.clear();
     invalidMesh.syncImpact = SyncImpact::Structural;
     MeshData mesh = Triangle("overflow");
@@ -1008,7 +1014,7 @@ TEST_CASE("Phase 8 W4 S4: staging rejects checked extent overflow before mutatio
     SceneManager scene;
     PopulateScene(scene);
     auto& doc = scene.AuthoringDoc();
-    PrefabPropagationPlan plan;
+    DiscoveredPropagationPlan plan;
     plan.source = {"assets/source.rt2prefab", kInstance, "extent-overflow"};
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();

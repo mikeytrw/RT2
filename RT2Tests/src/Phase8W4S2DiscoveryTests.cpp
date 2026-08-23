@@ -913,3 +913,58 @@ TEST_CASE("Phase 8 W4 S2: parser consumes the fingerprinted immutable snapshot")
     CHECK(result.value.instances.front().affectedEntities.size() == 1);
     CHECK(readCount == 1);
 }
+
+TEST_CASE("Phase 8 W4 S2: captured source is read once and Prepare consumes it")
+{
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
+    PrefabDocument prefab;
+    prefab.entities = {{kTemplateRoot, SubtreeEntityRecord{kTemplateRoot, "Root"}}};
+    Error error;
+    REQUIRE(PrefabSerializer::Save(prefab, source, error));
+    REQUIRE(WriteSidecarId(AssetSidecarPath(source), kAsset, error));
+
+    SceneDocument document;
+    const auto root = document.ecs.registry.create();
+    REQUIRE(document.AssignKnownUuid(root, kRootA));
+    document.ecs.registry.emplace<Hierarchy>(root);
+    document.ecs.registry.emplace<PrefabInstanceComponent>(root,
+        PrefabInstanceComponent{
+            AssetReference{AssetKind::Prefab, source.string(), {}, {}, kAsset},
+            kInstanceA});
+    document.ecs.registry.emplace<PrefabMemberComponent>(root,
+        PrefabMemberComponent{kInstanceA, kTemplateRoot, {}});
+
+    std::size_t captureReads = 0;
+    const auto captured = CapturePrefabSource(
+        AssetReference{AssetKind::Prefab, source.string(), {}, {}, kAsset},
+        AssetResolutionContext{source.parent_path(), nullptr},
+        [&](const std::filesystem::path& path, std::string& bytes,
+            Error& readError) {
+            ++captureReads;
+            std::ifstream input(path, std::ios::binary);
+            if (!input)
+            {
+                readError = {Error::Io, path.string(), "capture read failed"};
+                return false;
+            }
+            bytes.assign(std::istreambuf_iterator<char>(input),
+                         std::istreambuf_iterator<char>());
+            return true;
+        });
+    REQUIRE(captured.IsOk());
+    REQUIRE(captureReads == 1);
+
+    auto request = Request(document, source);
+    request.capturedSource = captured.value;
+    request.readBytes = [&](const std::filesystem::path&, std::string&, Error& readError) {
+        readError = {Error::Io, source.string(),
+            "Prepare attempted a second source read"};
+        return false;
+    };
+    const auto prepared = PreparePrefabPropagation(request);
+    REQUIRE(prepared.IsOk());
+    CHECK(prepared.value.source == captured.value.fingerprint);
+    CHECK(prepared.value.capturedSource.prefabBytes == captured.value.prefabBytes);
+    CHECK(prepared.value.capturedSource.sidecarBytes == captured.value.sidecarBytes);
+}

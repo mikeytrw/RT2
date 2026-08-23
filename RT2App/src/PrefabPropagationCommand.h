@@ -19,18 +19,18 @@ public:
         std::function<rt2::core::Result<rt2::core::PrefabSourceFingerprint>()>;
 
     explicit PrefabPropagationCommand(
-        rt2::core::PrefabPropagationPlan plan,
+        rt2::core::ExecutablePropagationPlan plan,
         SourceFingerprintReader sourceReader = {});
 
     EditorMutationResult Execute(SceneManager& scene) override;
     EditorMutationResult Undo(SceneManager& scene) override;
     std::string Description() const override { return "Propagate Prefab"; }
 
-    const rt2::core::PrefabPropagationPlan& Plan() const noexcept
+    const rt2::core::ExecutablePropagationPlan& Plan() const noexcept
     { return m_Plan; }
 
 private:
-    rt2::core::PrefabPropagationPlan m_Plan;
+    rt2::core::ExecutablePropagationPlan m_Plan;
     SourceFingerprintReader m_SourceReader;
     std::uint64_t m_ExpectedRevision = 0;
     std::uint64_t m_ExpectedResourceGeneration = 0;

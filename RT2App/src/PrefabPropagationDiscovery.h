@@ -15,6 +15,11 @@ namespace rt2::core {
 // Read and fingerprint one durable prefab source without touching a scene.
 // This is the shared identity seam for explicit and watcher-triggered live
 // propagation; callers may inject the byte reader to prove one immutable read.
+Result<CapturedPrefabSource> CapturePrefabSource(
+    const AssetReference& source, const AssetResolutionContext& assets,
+    const std::function<bool(const std::filesystem::path&, std::string&, Error&)>&
+        readBytes = {});
+
 Result<PrefabSourceFingerprint> ReadPrefabSourceFingerprint(
     const AssetReference& source, const AssetResolutionContext& assets,
     const std::function<bool(const std::filesystem::path&, std::string&, Error&)>&
@@ -30,6 +35,10 @@ struct PrefabPropagationDiscoveryRequest
     std::uint64_t documentGeneration = 0;
     std::uint64_t resourceGeneration = 0;
     std::uint64_t authoringRevision = 0;
+
+    // Preferred lifecycle input: one checked source/sidecar snapshot captured
+    // after the owning context is refreshed. Prepare never rereads it.
+    std::optional<CapturedPrefabSource> capturedSource;
 
     // Legacy/test seam only: callers may explicitly inject a checked,
     // path-based loader. Production parses the already-fingerprinted buffer
@@ -57,7 +66,7 @@ struct PrefabPropagationDiscoveryRequest
 // returns an Error; structural instance defects are represented as one
 // deterministic quarantine diagnostic per instance, allowing valid siblings
 // to remain eligible.
-Result<PrefabPropagationPlan> PreparePrefabPropagation(
+Result<DiscoveredPropagationPlan> PreparePrefabPropagation(
     const PrefabPropagationDiscoveryRequest& request);
 
 } // namespace rt2::core
