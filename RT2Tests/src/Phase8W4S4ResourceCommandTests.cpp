@@ -883,7 +883,7 @@ TEST_CASE("Phase 8 W4 S4: malformed quarantined root does not poison valid sibli
     CHECK(staged.value.componentOperations.front().EntityUuid() == validRoot);
 }
 
-TEST_CASE("Phase 8 typed foundation: staging uses typed material candidate no-op")
+TEST_CASE("Phase 8 typed foundation: staging material candidate uses checked adapter route")
 {
     SceneManager scene;
     PopulateScene(scene);
@@ -913,17 +913,42 @@ TEST_CASE("Phase 8 typed foundation: staging uses typed material candidate no-op
     FinalizePlan(scene, plan);
     REQUIRE(plan.IsEffective());
 
+    MaterialOverrideComponent injectedMaterial = liveMaterial;
+    injectedMaterial.material.baseColor = {0.1f, 0.9f, 0.3f};
+    PrefabPropagationResourceHooks hooks;
+    hooks.readLiveMaterialOverride = [&](const entt::registry&, entt::entity) {
+        return std::optional<MaterialOverrideComponent>(injectedMaterial);
+    };
     const auto staged = StagePrefabPropagationResources(plan, document,
-        AssetResolutionContext{});
+        AssetResolutionContext{}, hooks);
     REQUIRE(staged.IsOk());
     const auto materialKey = PropagationComponentKey<MaterialOverrideComponent>();
     const auto materialOperation = std::find_if(
         staged.value.componentOperations.begin(), staged.value.componentOperations.end(),
         [&](const auto& operation) { return operation.Key() == materialKey; });
-    CHECK(materialOperation == staged.value.componentOperations.end());
-    CHECK(staged.value.componentOperations.size() == 1);
-    // Named RED/GREEN fault: making the typed live-material read empty (or
-    // retaining direct equality admission) creates a spurious material delta.
+    REQUIRE(materialOperation != staged.value.componentOperations.end());
+    REQUIRE(materialOperation->IsValid());
+    REQUIRE(materialOperation->BeforeValue().has_value());
+    REQUIRE(materialOperation->AfterValue().has_value());
+    CHECK(std::visit([](const auto& value) {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, MaterialOverrideComponent>)
+            return value.material.baseColor == glm::vec3{0.1f, 0.9f, 0.3f};
+        else
+            return false;
+    }, *materialOperation->BeforeValue()));
+    CHECK(std::visit([](const auto& value) {
+        using T = std::decay_t<decltype(value)>;
+        if constexpr (std::is_same_v<T, MaterialOverrideComponent>)
+            return value.material.baseColor == glm::vec3{0.8f, 0.2f, 0.1f};
+        else
+            return false;
+    }, *materialOperation->AfterValue()));
+    CHECK_FALSE(materialOperation->IsNoOp());
+    CHECK(staged.value.componentOperations.size() == 2);
+    // The injected before value changes the exact typed candidate. Restoring
+    // the former direct try_get + canonical-equality block must ignore this
+    // seam and makes the assertions above RED.
 }
 
 TEST_CASE("Phase 8 W4 S4: nested owned resource references and overflow are rejected")

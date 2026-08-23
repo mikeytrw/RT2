@@ -17,10 +17,20 @@ namespace rt2::core {
 // resource tables, and every generation counter remain untouched.  The
 // returned plan owns every appended block and records all scene-global
 // rebases needed by PrefabPropagationCommand.
+// The hook is a narrow test seam for the live material value used only when
+// staging must synthesize a typed MaterialOverride delta.  Production callers
+// leave it empty, which always routes through ReadPropagationComponent<T>.
+struct PrefabPropagationResourceHooks
+{
+    std::function<std::optional<MaterialOverrideComponent>(
+        const entt::registry&, entt::entity)> readLiveMaterialOverride;
+};
+
 Result<PrefabPropagationPlan> StagePrefabPropagationResources(
     const PrefabPropagationPlan& durablePlan,
     const SceneDocument& live,
-    const AssetResolutionContext& assets);
+    const AssetResolutionContext& assets,
+    const PrefabPropagationResourceHooks& hooks = {});
 
 // Applies only durable component operations to a temporary parsed document.
 // The caller invokes this before the single normal ResolveAll pass.  All

@@ -161,7 +161,8 @@ bool ApplyComponentOperation(entt::registry& registry, entt::entity entity,
 Result<PrefabPropagationPlan> StagePrefabPropagationResources(
     const PrefabPropagationPlan& durablePlan,
     const SceneDocument& live,
-    const AssetResolutionContext& assets)
+    const AssetResolutionContext& assets,
+    const PrefabPropagationResourceHooks& hooks)
 {
     if (!durablePlan.IsValid())
         return Result<PrefabPropagationPlan>::Fail(
@@ -433,8 +434,10 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                 }
                 else
                 {
-                    const auto liveMaterial = ReadPropagationComponent<MaterialOverrideComponent>(
-                        live.ecs.registry, liveEntity);
+                    const auto liveMaterial = hooks.readLiveMaterialOverride
+                        ? hooks.readLiveMaterialOverride(live.ecs.registry, liveEntity)
+                        : ReadPropagationComponent<MaterialOverrideComponent>(
+                            live.ecs.registry, liveEntity);
                     const auto candidate =
                         PrefabPropagationComponentDelta::Make<MaterialOverrideComponent>(
                             uuid, entityToTemplate[uuid], liveMaterial, repaired);
