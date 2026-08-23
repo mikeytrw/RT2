@@ -220,6 +220,8 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                 PropagationComponentKey<PrimitiveComponent>());
             const auto* materialOperation = FindOperation(durablePlan, uuid,
                 PropagationComponentKey<MaterialOverrideComponent>());
+            const auto liveImported = ReadPropagationComponent<ImportedMeshSourceComponent>(
+                live.ecs.registry, liveEntity);
             // Resource staging is driven by an effective resource/provenance
             // operation.  A value-only operation must not re-resolve an
             // unchanged imported sibling in the same prefab instance.
@@ -229,7 +231,7 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
             if (!hasImported && materialOperation &&
             !materialOperation->IsNoOp() &&
                 materialOperation->AfterValue().has_value())
-                hasImported = live.ecs.registry.all_of<ImportedMeshSourceComponent>(liveEntity);
+                hasImported = liveImported.has_value();
             const auto imported = hasImported
                 ? OperationAfter<ImportedMeshSourceComponent>(
                     durablePlan, uuid, PropagationComponentKey<ImportedMeshSourceComponent>(),
@@ -247,8 +249,10 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
 
             const auto fragmentEntity = fragment.ecs.registry.create();
             fragment.AssignKnownUuid(fragmentEntity, uuid);
-            if (const auto* name = live.ecs.registry.try_get<NameComponent>(liveEntity))
-                fragment.ecs.registry.emplace<NameComponent>(fragmentEntity, *name);
+            const auto liveName = ReadPropagationComponent<NameComponent>(
+                live.ecs.registry, liveEntity);
+            if (liveName)
+                fragment.ecs.registry.emplace<NameComponent>(fragmentEntity, *liveName);
             if (const auto* member = live.ecs.registry.try_get<PrefabMemberComponent>(liveEntity))
                 fragment.ecs.registry.emplace<PrefabMemberComponent>(fragmentEntity, *member);
             if (imported)
@@ -429,14 +433,14 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                 }
                 else
                 {
-                    const auto* liveMaterial = live.ecs.registry.try_get<MaterialOverrideComponent>(liveEntity);
-                    if (!liveMaterial || !PrefabCanonicalComponentEqual(*liveMaterial, repaired))
-                    result.componentOperations.push_back(
+                    const auto liveMaterial = ReadPropagationComponent<MaterialOverrideComponent>(
+                        live.ecs.registry, liveEntity);
+                    const auto candidate =
                         PrefabPropagationComponentDelta::Make<MaterialOverrideComponent>(
-                            uuid, entityToTemplate[uuid],
-                            liveMaterial ? std::optional<MaterialOverrideComponent>(*liveMaterial)
-                                          : std::nullopt,
-                            repaired));
+                            uuid, entityToTemplate[uuid], liveMaterial, repaired);
+                    if (!candidate.IsNoOp())
+                        result.componentOperations.push_back(
+                            candidate);
                 }
             }
         }

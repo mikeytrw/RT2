@@ -883,6 +883,49 @@ TEST_CASE("Phase 8 W4 S4: malformed quarantined root does not poison valid sibli
     CHECK(staged.value.componentOperations.front().EntityUuid() == validRoot);
 }
 
+TEST_CASE("Phase 8 typed foundation: staging uses typed material candidate no-op")
+{
+    SceneManager scene;
+    PopulateScene(scene);
+    auto& document = scene.AuthoringDoc();
+    auto& registry = document.ecs.registry;
+    const auto entity = scene.FindEntityByUuid(kEntity);
+    MaterialOverrideComponent liveMaterial;
+    liveMaterial.authored = true;
+    liveMaterial.material.baseColor = {0.8f, 0.2f, 0.1f};
+    registry.emplace<MaterialOverrideComponent>(entity, liveMaterial);
+
+    const auto beforePrimitive = registry.get<PrimitiveComponent>(entity);
+    auto afterPrimitive = beforePrimitive;
+    afterPrimitive.size = 2.0f;
+    PrefabPropagationPlan plan;
+    plan.source = {"assets/source.rt2prefab", kInstance, "typed-material-no-op"};
+    plan.documentGeneration = scene.DocumentGeneration();
+    plan.resourceGeneration = scene.ResourceGeneration();
+    plan.componentOperations.push_back(
+        PrefabPropagationComponentDelta::Make<PrimitiveComponent>(
+            kEntity, kTemplate, beforePrimitive, afterPrimitive));
+    plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
+    plan.instances.push_back({kInstance, kEntity,
+        PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
+    plan.affectedEntities = {kEntity};
+    plan.syncImpact = SyncImpact::Structural;
+    FinalizePlan(scene, plan);
+    REQUIRE(plan.IsEffective());
+
+    const auto staged = StagePrefabPropagationResources(plan, document,
+        AssetResolutionContext{});
+    REQUIRE(staged.IsOk());
+    const auto materialKey = PropagationComponentKey<MaterialOverrideComponent>();
+    const auto materialOperation = std::find_if(
+        staged.value.componentOperations.begin(), staged.value.componentOperations.end(),
+        [&](const auto& operation) { return operation.Key() == materialKey; });
+    CHECK(materialOperation == staged.value.componentOperations.end());
+    CHECK(staged.value.componentOperations.size() == 1);
+    // Named RED/GREEN fault: making the typed live-material read empty (or
+    // retaining direct equality admission) creates a spurious material delta.
+}
+
 TEST_CASE("Phase 8 W4 S4: nested owned resource references and overflow are rejected")
 {
     SceneManager scene;
