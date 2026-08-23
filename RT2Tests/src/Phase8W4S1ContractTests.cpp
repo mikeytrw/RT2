@@ -10,6 +10,8 @@
 #include <limits>
 #include <memory>
 #include <string>
+#include <type_traits>
+#include <variant>
 
 using namespace rt2::core;
 
@@ -48,6 +50,73 @@ void WriteMarkerScene(const std::filesystem::path& path, std::uint32_t version,
            "}\n";
 }
 } // namespace
+
+static_assert(std::variant_size_v<PropagationComponentSet> == 10);
+static_assert(std::is_same_v<std::variant_alternative_t<0, PropagationComponentSet>, NameComponent>);
+static_assert(std::is_same_v<std::variant_alternative_t<1, PropagationComponentSet>, Transform>);
+static_assert(std::is_same_v<std::variant_alternative_t<2, PropagationComponentSet>, VisibleComponent>);
+static_assert(std::is_same_v<std::variant_alternative_t<3, PropagationComponentSet>, PrimitiveComponent>);
+static_assert(std::is_same_v<std::variant_alternative_t<4, PropagationComponentSet>, ImportedMeshSourceComponent>);
+static_assert(std::is_same_v<std::variant_alternative_t<5, PropagationComponentSet>, MaterialOverrideComponent>);
+static_assert(std::is_same_v<std::variant_alternative_t<6, PropagationComponentSet>, LightComponent>);
+static_assert(std::is_same_v<std::variant_alternative_t<7, PropagationComponentSet>, CameraComponent>);
+static_assert(std::is_same_v<std::variant_alternative_t<8, PropagationComponentSet>, MotionComponent>);
+static_assert(std::is_same_v<std::variant_alternative_t<9, PropagationComponentSet>, ScriptComponent>);
+
+template<typename T>
+void ExerciseTypedPropagationAdapter(entt::registry& registry, entt::entity entity,
+                                     const UUID& templateId)
+{
+    const T value{};
+    const auto delta = PrefabPropagationComponentDelta::Make<T>(
+        kEntity, templateId, std::nullopt, value);
+    CHECK(delta.IsValid());
+    CHECK(delta.Key() == PrefabComponentKeyFor<T>::value);
+    CHECK(delta.Impact() == PropagationComponentImpact<T>);
+    CHECK(delta.IsOverrideable() == PrefabComponentKeyFor<T>::value.overridable());
+    CHECK(PreflightPropagationComponent(delta, registry, entity));
+
+    WritePropagationComponent(delta, registry, entity, true);
+    const auto current = ReadPropagationComponent(delta, registry, entity);
+    REQUIRE(current.has_value());
+    CHECK(PropagationComponentEqual(*current, *delta.AfterValue()));
+
+    WritePropagationComponent(delta, registry, entity, false);
+    CHECK_FALSE(registry.all_of<T>(entity));
+}
+
+TEST_CASE("Phase 8 typed foundation: ten typed adapters are exhaustive and total")
+{
+    entt::registry registry;
+    const auto entity = registry.create();
+    ExerciseTypedPropagationAdapter<NameComponent>(registry, entity, kTemplate);
+    ExerciseTypedPropagationAdapter<Transform>(registry, entity, kTemplate);
+    ExerciseTypedPropagationAdapter<VisibleComponent>(registry, entity, kTemplate);
+    ExerciseTypedPropagationAdapter<PrimitiveComponent>(registry, entity, kTemplate);
+    ExerciseTypedPropagationAdapter<ImportedMeshSourceComponent>(registry, entity, kTemplate);
+    ExerciseTypedPropagationAdapter<MaterialOverrideComponent>(registry, entity, kTemplate);
+    ExerciseTypedPropagationAdapter<LightComponent>(registry, entity, kTemplate);
+    ExerciseTypedPropagationAdapter<CameraComponent>(registry, entity, kTemplate);
+    ExerciseTypedPropagationAdapter<MotionComponent>(registry, entity, kTemplate);
+    ExerciseTypedPropagationAdapter<ScriptComponent>(registry, entity, kTemplate);
+}
+
+TEST_CASE("Phase 8 typed foundation: later adapter preflight is zero mutation")
+{
+    entt::registry registry;
+    const auto entity = registry.create();
+    const auto first = PrefabPropagationComponentDelta::Make<NameComponent>(
+        kEntity, kTemplate, std::nullopt, NameComponent{"first"});
+    WritePropagationComponent(first, registry, entity, true);
+    const auto stale = PrefabPropagationComponentDelta::Make<NameComponent>(
+        kEntity, kTemplate, NameComponent{"not-current"}, NameComponent{"later"});
+    CHECK_FALSE(PreflightPropagationComponent(stale, registry, entity));
+    const auto current = ReadPropagationComponent<NameComponent>(registry, entity);
+    REQUIRE(current.has_value());
+    CHECK(current->name == "first");
+    // Named RED/GREEN fault: replacing preflight with unconditional success
+    // makes this test fail before any later operation can mutate the entity.
+}
 
 TEST_CASE("Phase 8 W4 S1: primitive is the ninth overridable key")
 {
@@ -224,25 +293,25 @@ TEST_CASE("Phase 8 W4 S1: canonical payload equality is durable and NaN-explicit
     CHECK(OptionalPrimitiveComponentCanonicalEqual(absent, absent));
     CHECK_FALSE(OptionalPrimitiveComponentCanonicalEqual(absent, same));
 
-    PrefabPropagationComponentValue variantA = PrimitiveComponent{};
-    PrefabPropagationComponentValue variantB = PrimitiveComponent{};
+    PropagationComponentSet variantA = PrimitiveComponent{};
+    PropagationComponentSet variantB = PrimitiveComponent{};
     std::get<PrimitiveComponent>(variantA).size =
         std::numeric_limits<float>::quiet_NaN();
     std::get<PrimitiveComponent>(variantB).size =
         std::numeric_limits<float>::quiet_NaN();
-    CHECK_FALSE(PrefabPropagationValueEqual(variantA, variantB));
-    std::optional<PrefabPropagationComponentValue> optionalA = variantA;
-    std::optional<PrefabPropagationComponentValue> optionalB = variantB;
+    CHECK_FALSE(PropagationComponentEqual(variantA, variantB));
+    std::optional<PropagationComponentSet> optionalA = variantA;
+    std::optional<PropagationComponentSet> optionalB = variantB;
     CHECK_FALSE(OptionalComponentCanonicalEqual(
         optionalA, optionalB,
         [](const auto& x, const auto& y) {
-            return PrefabPropagationValueEqual(x, y);
+            return PropagationComponentEqual(x, y);
         }));
     optionalB.reset();
     CHECK_FALSE(OptionalComponentCanonicalEqual(
         optionalA, optionalB,
         [](const auto& x, const auto& y) {
-            return PrefabPropagationValueEqual(x, y);
+            return PropagationComponentEqual(x, y);
         }));
 }
 
@@ -250,34 +319,23 @@ TEST_CASE("Phase 8 W4 S1: component operations enforce key and payload correspon
 {
     const auto entity = kEntity;
     const auto templ = kTemplate;
-    const auto nameKey = PrefabComponentKeyFor<NameComponent>::value;
-    const auto importedKey = PrefabComponentKeyFor<ImportedMeshSourceComponent>::value;
-    const auto transformKey = PrefabComponentKeyFor<Transform>::value;
-    PrefabPropagationComponentOperation name{
-        entity, templ, nameKey,
-        PrefabPropagationComponentValue{NameComponent{"before"}},
-        PrefabPropagationComponentValue{NameComponent{"after"}}};
+    auto name = PrefabPropagationComponentDelta::Make<NameComponent>(
+        entity, templ, NameComponent{"before"}, NameComponent{"after"});
     CHECK(name.IsValid());
 
     ImportedMeshSourceComponent source;
     source.model.kind = AssetKind::Model;
     source.model.path = "mesh.glb";
     source.model.sourceKey = "gltf:scene=0";
-    PrefabPropagationComponentOperation imported{
-        entity, templ, importedKey,
-        PrefabPropagationComponentValue{source}, std::nullopt};
+    auto imported = PrefabPropagationComponentDelta::Make<ImportedMeshSourceComponent>(
+        entity, templ, source, std::nullopt);
     CHECK(imported.IsValid());
-
-    PrefabPropagationComponentOperation mismatch = name;
-    mismatch.key = transformKey;
-    CHECK_FALSE(mismatch.IsValid());
-    mismatch = name;
-    mismatch.after = PrefabPropagationComponentValue{Transform{}};
-    CHECK_FALSE(mismatch.IsValid());
-
-    mismatch = name;
-    mismatch.key = PrefabComponentKey(std::string_view{"meshRef"}, false);
-    CHECK_FALSE(mismatch.IsValid());
+    CHECK(name.Key() == PrefabComponentKeyFor<NameComponent>::value);
+    CHECK(imported.Key() == PrefabComponentKeyFor<ImportedMeshSourceComponent>::value);
+    CHECK_FALSE(std::is_constructible_v<PrefabPropagationComponentDelta,
+                                        PrefabComponentKey>);
+    CHECK_FALSE(std::is_constructible_v<PrefabPropagationComponentDelta,
+                                        PropagationComponentSet>);
 }
 
 TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only blocks")
@@ -390,14 +448,10 @@ TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only 
     CHECK(duplicatePlan.resourceOwnership[1].IsValid());
     CHECK_FALSE(duplicatePlan.IsValid());
 
-    CHECK(PrefabPropagationImpactForKey(
-        PrefabComponentKeyFor<Transform>::value) == SyncImpact::Transform);
-    CHECK(PrefabPropagationImpactForKey(
-        PrefabComponentKeyFor<CameraComponent>::value) == SyncImpact::None);
-    CHECK(PrefabPropagationImpactForKey(
-        PrefabComponentKeyFor<VisibleComponent>::value) == SyncImpact::Structural);
-    CHECK(PrefabPropagationImpactForKey(
-        PrefabComponentKeyFor<MotionComponent>::value) == SyncImpact::None);
+    CHECK(PropagationComponentImpact<Transform> == SyncImpact::Transform);
+    CHECK(PropagationComponentImpact<CameraComponent> == SyncImpact::None);
+    CHECK(PropagationComponentImpact<VisibleComponent> == SyncImpact::Structural);
+    CHECK(PropagationComponentImpact<MotionComponent> == SyncImpact::None);
     CHECK(PrefabPropagationImpactForResource(PrefabPropagationResourceKind::Mesh) ==
           SyncImpact::Structural);
     CHECK(PrefabPropagationImpactForResource(PrefabPropagationResourceKind::Texture) ==
@@ -411,10 +465,9 @@ TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only 
     CHECK_FALSE(invalidPlan.IsEffective());
 
     PrefabPropagationPlan summaryPlan;
-    summaryPlan.componentOperations.push_back({
-        kEntity, kTemplate, PrefabComponentKeyFor<NameComponent>::value,
-        PrefabPropagationComponentValue{NameComponent{"before"}},
-        PrefabPropagationComponentValue{NameComponent{"after"}}});
+    summaryPlan.componentOperations.push_back(
+        PrefabPropagationComponentDelta::Make<NameComponent>(
+            kEntity, kTemplate, NameComponent{"before"}, NameComponent{"after"}));
     CHECK_FALSE(summaryPlan.IsValid());
     CHECK_FALSE(summaryPlan.IsEffective());
     summaryPlan.affectedEntities = {kEntity};
@@ -426,10 +479,9 @@ TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only 
     CHECK(summaryPlan.IsEffective());
 
     PrefabPropagationPlan noOpOnly;
-    noOpOnly.componentOperations.push_back({
-        kEntity, kTemplate, PrefabComponentKeyFor<Transform>::value,
-        PrefabPropagationComponentValue{Transform{}},
-        PrefabPropagationComponentValue{Transform{}}});
+    noOpOnly.componentOperations.push_back(
+        PrefabPropagationComponentDelta::Make<Transform>(
+            kEntity, kTemplate, Transform{}, Transform{}));
     CHECK(noOpOnly.affectedEntities.empty());
     CHECK(noOpOnly.syncImpact == SyncImpact::None);
     CHECK(noOpOnly.IsValid());
@@ -438,10 +490,9 @@ TEST_CASE("Phase 8 W4 S1: typed resource rebases validate immutable append-only 
 
     PrefabPropagationPlan mixed;
     mixed.componentOperations = noOpOnly.componentOperations;
-    mixed.componentOperations.push_back({
-        kEntity, kTemplate, PrefabComponentKeyFor<NameComponent>::value,
-        PrefabPropagationComponentValue{NameComponent{"before"}},
-        PrefabPropagationComponentValue{NameComponent{"after"}}});
+    mixed.componentOperations.push_back(
+        PrefabPropagationComponentDelta::Make<NameComponent>(
+            kEntity, kTemplate, NameComponent{"before"}, NameComponent{"after"}));
     mixed.affectedEntities = {kEntity};
     mixed.syncImpact = SyncImpact::None;
     CHECK(mixed.IsValid());

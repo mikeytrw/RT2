@@ -11,78 +11,6 @@ namespace
 {
 using namespace rt2::core;
 
-template<typename T>
-std::optional<T> ReadComponent(const entt::registry& registry, entt::entity entity)
-{
-    if (const auto* value = registry.try_get<T>(entity)) return *value;
-    return std::nullopt;
-}
-
-std::optional<PrefabPropagationComponentValue> ReadValue(
-    const entt::registry& registry, entt::entity entity,
-    const PrefabComponentKey& key)
-{
-    const auto wire = key.wire();
-    if (wire == PrefabWireKeys::kName)
-        if (auto value = ReadComponent<NameComponent>(registry, entity)) return *value;
-    if (wire == PrefabWireKeys::kTransform)
-        if (auto value = ReadComponent<Transform>(registry, entity)) return *value;
-    if (wire == PrefabWireKeys::kVisible)
-        if (auto value = ReadComponent<VisibleComponent>(registry, entity)) return *value;
-    if (wire == PrefabWireKeys::kPrimitive)
-        if (auto value = ReadComponent<PrimitiveComponent>(registry, entity)) return *value;
-    if (wire == PrefabWireKeys::kImportedSource)
-        if (auto value = ReadComponent<ImportedMeshSourceComponent>(registry, entity)) return *value;
-    if (wire == PrefabWireKeys::kMaterialOverride)
-        if (auto value = ReadComponent<MaterialOverrideComponent>(registry, entity)) return *value;
-    if (wire == PrefabWireKeys::kLight)
-        if (auto value = ReadComponent<LightComponent>(registry, entity)) return *value;
-    if (wire == PrefabWireKeys::kCamera)
-        if (auto value = ReadComponent<CameraComponent>(registry, entity)) return *value;
-    if (wire == PrefabWireKeys::kMotion)
-        if (auto value = ReadComponent<MotionComponent>(registry, entity)) return *value;
-    if (wire == PrefabWireKeys::kScript)
-        if (auto value = ReadComponent<ScriptComponent>(registry, entity)) return *value;
-    return std::nullopt;
-}
-
-bool EqualValue(const std::optional<PrefabPropagationComponentValue>& a,
-                const std::optional<PrefabPropagationComponentValue>& b)
-{
-    if (a.has_value() != b.has_value()) return false;
-    return !a || PrefabPropagationValueEqual(*a, *b);
-}
-
-template<typename T>
-void WriteOptional(entt::registry& registry, entt::entity entity,
-                   const std::optional<PrefabPropagationComponentValue>& value)
-{
-    if (!value)
-    {
-        if (registry.all_of<T>(entity)) registry.remove<T>(entity);
-        return;
-    }
-    const auto* typed = std::get_if<T>(&*value);
-    if (typed) registry.emplace_or_replace<T>(entity, *typed);
-}
-
-void WriteValue(entt::registry& registry, entt::entity entity,
-                const PrefabComponentKey& key,
-                const std::optional<PrefabPropagationComponentValue>& value)
-{
-    const auto wire = key.wire();
-    if (wire == PrefabWireKeys::kName) WriteOptional<NameComponent>(registry, entity, value);
-    else if (wire == PrefabWireKeys::kTransform) WriteOptional<Transform>(registry, entity, value);
-    else if (wire == PrefabWireKeys::kVisible) WriteOptional<VisibleComponent>(registry, entity, value);
-    else if (wire == PrefabWireKeys::kPrimitive) WriteOptional<PrimitiveComponent>(registry, entity, value);
-    else if (wire == PrefabWireKeys::kImportedSource) WriteOptional<ImportedMeshSourceComponent>(registry, entity, value);
-    else if (wire == PrefabWireKeys::kMaterialOverride) WriteOptional<MaterialOverrideComponent>(registry, entity, value);
-    else if (wire == PrefabWireKeys::kLight) WriteOptional<LightComponent>(registry, entity, value);
-    else if (wire == PrefabWireKeys::kCamera) WriteOptional<CameraComponent>(registry, entity, value);
-    else if (wire == PrefabWireKeys::kMotion) WriteOptional<MotionComponent>(registry, entity, value);
-    else if (wire == PrefabWireKeys::kScript) WriteOptional<ScriptComponent>(registry, entity, value);
-}
-
 std::uint32_t ResourceExtent(const ECSScene& ecs, PrefabPropagationResourceKind kind)
 {
     switch (kind)
@@ -152,8 +80,8 @@ bool ValidateCommitEvidence(const PrefabPropagationPlan& plan)
     for (const auto& operation : plan.componentOperations)
     {
         const auto it = std::find_if(plan.memberSnapshots.begin(), plan.memberSnapshots.end(),
-            [&](const auto& snapshot) { return snapshot.entityUuid == operation.entityUuid; });
-        if (it == plan.memberSnapshots.end() || it->templateId != operation.templateId)
+            [&](const auto& snapshot) { return snapshot.entityUuid == operation.EntityUuid(); });
+        if (it == plan.memberSnapshots.end() || it->templateId != operation.TemplateId())
             return false;
     }
     for (const auto& operation : plan.meshRefOperations)
@@ -230,12 +158,14 @@ EditorMutationResult PrefabPropagationCommand::Execute(SceneManager& scene)
 
     for (const auto& operation : m_Plan.componentOperations)
     {
-        const auto entity = doc.FindByUuid(operation.entityUuid);
+        const auto entity = doc.FindByUuid(operation.EntityUuid());
         if (entity == entt::null || !ecs.registry.valid(entity))
-            return Failure(Error::InvalidEntity, operation.entityUuid.ToString(), "stale component target");
-        const auto expected = operation.before;
-        if (!EqualValue(ReadValue(ecs.registry, entity, operation.key), expected))
-            return Failure(Error::InvalidArgument, operation.entityUuid.ToString(),
+            return Failure(Error::InvalidEntity, operation.EntityUuid().ToString(), "stale component target");
+        const auto expected = operation.BeforeValue();
+        const auto current = ReadPropagationComponent(operation, ecs.registry, entity);
+        if (current.has_value() != expected.has_value() ||
+            (current && expected && !PropagationComponentEqual(*current, *expected)))
+            return Failure(Error::InvalidArgument, operation.EntityUuid().ToString(),
                            "stale component before value");
     }
     for (const auto& operation : m_Plan.meshRefOperations)
@@ -243,7 +173,7 @@ EditorMutationResult PrefabPropagationCommand::Execute(SceneManager& scene)
         const auto entity = doc.FindByUuid(operation.entityUuid);
         if (entity == entt::null || !ecs.registry.valid(entity))
             return Failure(Error::InvalidEntity, operation.entityUuid.ToString(), "stale MeshRef target");
-        const auto current = ReadComponent<MeshRef>(ecs.registry, entity);
+        const auto current = ReadPropagationComponent<MeshRef>(ecs.registry, entity);
         if (current.has_value() != operation.before.has_value() ||
             (current && (current->meshIndex != operation.before->meshIndex ||
                          current->materialIndex != operation.before->materialIndex)))
@@ -285,9 +215,9 @@ EditorMutationResult PrefabPropagationCommand::Execute(SceneManager& scene)
         }
     for (const auto& operation : m_Plan.componentOperations)
     {
-        const auto entity = doc.FindByUuid(operation.entityUuid);
-        WriteValue(ecs.registry, entity, operation.key, operation.after);
-        if (operation.key.wire() == PrefabWireKeys::kTransform)
+        const auto entity = doc.FindByUuid(operation.EntityUuid());
+        WritePropagationComponent(operation, ecs.registry, entity, true);
+        if (operation.Key().wire() == PrefabWireKeys::kTransform)
             SceneGraph::MarkDirty(ecs.registry, entity);
     }
     for (const auto& operation : m_Plan.meshRefOperations)
@@ -337,16 +267,21 @@ EditorMutationResult PrefabPropagationCommand::Undo(SceneManager& scene)
     }
     for (const auto& operation : m_Plan.componentOperations)
     {
-        const auto entity = doc.FindByUuid(operation.entityUuid);
+        const auto entity = doc.FindByUuid(operation.EntityUuid());
         if (entity == entt::null || !ecs.registry.valid(entity) ||
-            !EqualValue(ReadValue(ecs.registry, entity, operation.key), operation.after))
-            return Failure(Error::InvalidArgument, operation.entityUuid.ToString(), "stale after value for undo");
+            [&] {
+                const auto current = ReadPropagationComponent(operation, ecs.registry, entity);
+                const auto after = operation.AfterValue();
+                return current.has_value() == after.has_value() &&
+                    (!current || (after && PropagationComponentEqual(*current, *after)));
+            }() == false)
+            return Failure(Error::InvalidArgument, operation.EntityUuid().ToString(), "stale after value for undo");
     }
     for (const auto& operation : m_Plan.meshRefOperations)
     {
         const auto entity = doc.FindByUuid(operation.entityUuid);
         const auto current = entity == entt::null ? std::optional<MeshRef>{}
-                                                   : ReadComponent<MeshRef>(ecs.registry, entity);
+                                                   : ReadPropagationComponent<MeshRef>(ecs.registry, entity);
         if (entity == entt::null || !ecs.registry.valid(entity) ||
             current.has_value() != operation.after.has_value() ||
             (current && (current->meshIndex != operation.after->meshIndex ||
@@ -365,9 +300,9 @@ EditorMutationResult PrefabPropagationCommand::Undo(SceneManager& scene)
 
     for (const auto& operation : m_Plan.componentOperations)
     {
-        const auto entity = doc.FindByUuid(operation.entityUuid);
-        WriteValue(ecs.registry, entity, operation.key, operation.before);
-        if (operation.key.wire() == PrefabWireKeys::kTransform)
+        const auto entity = doc.FindByUuid(operation.EntityUuid());
+        WritePropagationComponent(operation, ecs.registry, entity, false);
+        if (operation.Key().wire() == PrefabWireKeys::kTransform)
             SceneGraph::MarkDirty(ecs.registry, entity);
     }
     for (const auto& operation : m_Plan.meshRefOperations)

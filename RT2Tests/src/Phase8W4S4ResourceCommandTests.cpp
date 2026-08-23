@@ -96,10 +96,8 @@ TEST_CASE("Phase 8 W4 S4: propagation command owns append-only resources and reu
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = beforeResourceGeneration;
     plan.authoringRevision = beforeRevision;
-    plan.componentOperations.push_back({
-        kEntity, kTemplate, PrefabComponentKeyFor<NameComponent>::value,
-        PrefabPropagationComponentValue{NameComponent{"old"}},
-        PrefabPropagationComponentValue{NameComponent{"new"}}});
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
+        kEntity, kTemplate, NameComponent{"old"}, NameComponent{"new"}));
     plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     const auto beforeRef = ecs.registry.get<MeshRef>(doc.FindByUuid(kEntity));
     const auto mesh = Triangle("after");
@@ -168,10 +166,8 @@ TEST_CASE("Phase 8 W4 S4: stale value and fingerprint reject with zero mutation"
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
     plan.authoringRevision = scene.AuthoringRevision();
-    plan.componentOperations.push_back({
-        kEntity, kTemplate, PrefabComponentKeyFor<NameComponent>::value,
-        PrefabPropagationComponentValue{NameComponent{"old"}},
-        PrefabPropagationComponentValue{NameComponent{"new"}}});
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
+        kEntity, kTemplate, NameComponent{"old"}, NameComponent{"new"}));
     plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     plan.affectedEntities = {kEntity};
     plan.syncImpact = SyncImpact::None;
@@ -195,10 +191,8 @@ TEST_CASE("Phase 8 W4 S4: stale value and fingerprint reject with zero mutation"
     fingerprintPlan.documentGeneration = fingerprintScene.DocumentGeneration();
     fingerprintPlan.resourceGeneration = fingerprintScene.ResourceGeneration();
     fingerprintPlan.authoringRevision = fingerprintScene.AuthoringRevision();
-    fingerprintPlan.componentOperations.push_back({
-        kEntity, kTemplate, PrefabComponentKeyFor<NameComponent>::value,
-        PrefabPropagationComponentValue{NameComponent{"old"}},
-        PrefabPropagationComponentValue{NameComponent{"new"}}});
+    fingerprintPlan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
+        kEntity, kTemplate, NameComponent{"old"}, NameComponent{"new"}));
     fingerprintPlan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     fingerprintPlan.affectedEntities = {kEntity};
     fingerprintPlan.syncImpact = SyncImpact::None;
@@ -239,10 +233,8 @@ TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutatio
         plan.documentGeneration = scene.DocumentGeneration();
         plan.resourceGeneration = scene.ResourceGeneration();
         plan.authoringRevision = scene.AuthoringRevision();
-        plan.componentOperations.push_back({kEntity, kTemplate,
-            PrefabComponentKeyFor<NameComponent>::value,
-            PrefabPropagationComponentValue{NameComponent{"old"}},
-            PrefabPropagationComponentValue{NameComponent{"new"}}});
+        plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
+            kEntity, kTemplate, NameComponent{"old"}, NameComponent{"new"}));
         plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
         plan.affectedEntities = {kEntity};
         plan.syncImpact = SyncImpact::None;
@@ -354,10 +346,10 @@ TEST_CASE("Phase 8 W4 S4: resource staging is clone-only and derives MeshRef reb
     durable.documentGeneration = scene.DocumentGeneration();
     durable.resourceGeneration = scene.ResourceGeneration();
     durable.authoringRevision = beforeRevision;
-    durable.componentOperations.push_back({
-        kEntity, kTemplate, PrefabComponentKeyFor<PrimitiveComponent>::value,
-        PrefabPropagationComponentValue{PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16}},
-        PrefabPropagationComponentValue{PrimitiveComponent{PrimitiveComponent::Sphere, 2.0f, 16, 8}}});
+    durable.componentOperations.push_back(PrefabPropagationComponentDelta::Make<PrimitiveComponent>(
+        kEntity, kTemplate,
+        PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16},
+        PrimitiveComponent{PrimitiveComponent::Sphere, 2.0f, 16, 8}));
     durable.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     durable.instances.push_back({kInstance, kEntity,
         PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
@@ -434,21 +426,17 @@ TEST_CASE("Phase 8 W4 S4: imported staging resolves source material then one aut
     authored.authored = true;
     authored.material.baseColor = {0.9f, 0.1f, 0.2f};
     scene.NotifyAuthoringChanged();
-    const auto beforeSource = PrefabPropagationComponentValue{
-        ImportedMeshSourceComponent{oldSource}};
-    const auto afterSource = PrefabPropagationComponentValue{
-        ImportedMeshSourceComponent{newSource}};
+    const auto beforeSource = ImportedMeshSourceComponent{oldSource};
+    const auto afterSource = ImportedMeshSourceComponent{newSource};
     PrefabPropagationPlan durable;
     durable.source = {dir / "model.rt2prefab", kInstance, "digest-import"};
     durable.documentGeneration = scene.DocumentGeneration();
     durable.resourceGeneration = scene.ResourceGeneration();
     durable.authoringRevision = scene.AuthoringRevision();
-    durable.componentOperations.push_back({kEntity, kTemplate,
-        PrefabComponentKeyFor<ImportedMeshSourceComponent>::value,
-        beforeSource, afterSource});
-    durable.componentOperations.push_back({kEntity, kTemplate,
-        PrefabComponentKeyFor<MaterialOverrideComponent>::value, std::nullopt,
-        PrefabPropagationComponentValue{authored}});
+    durable.componentOperations.push_back(PrefabPropagationComponentDelta::Make<ImportedMeshSourceComponent>(
+        kEntity, kTemplate, beforeSource, afterSource));
+    durable.componentOperations.push_back(PrefabPropagationComponentDelta::Make<MaterialOverrideComponent>(
+        kEntity, kTemplate, std::nullopt, authored));
     durable.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     durable.instances.push_back({kInstance, kEntity,
         PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
@@ -475,11 +463,12 @@ TEST_CASE("Phase 8 W4 S4: imported staging resolves source material then one aut
     CHECK(authoredMaterialStaged);
     const auto repaired = std::find_if(staged.value.componentOperations.begin(),
         staged.value.componentOperations.end(), [](const auto& operation) {
-            return operation.key.wire() == PrefabWireKeys::kMaterialOverride;
+            return operation.Key().wire() == PrefabWireKeys::kMaterialOverride;
         });
     REQUIRE(repaired != staged.value.componentOperations.end());
-    REQUIRE(repaired->after.has_value());
-    const auto& repairedValue = std::get<MaterialOverrideComponent>(*repaired->after);
+    REQUIRE(repaired->AfterValue().has_value());
+    const auto repairedValueOptional = repaired->AfterValue();
+    const auto& repairedValue = std::get<MaterialOverrideComponent>(*repairedValueOptional);
     CHECK(repairedValue.material.baseColor.x == doctest::Approx(0.9f));
     REQUIRE(staged.value.meshRefOperations.front().after.has_value());
     CHECK(repairedValue.materialIndex ==
@@ -511,10 +500,8 @@ TEST_CASE("Phase 8 W4 S4: candidate isolation omits unrelated imports")
     plan.source = {"assets/source.rt2prefab", kInstance, "digest-isolation"};
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
-    plan.componentOperations.push_back({kEntity, kTemplate,
-        PrefabComponentKeyFor<NameComponent>::value,
-        PrefabPropagationComponentValue{NameComponent{"old"}},
-        PrefabPropagationComponentValue{NameComponent{"new"}}});
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
+        kEntity, kTemplate, NameComponent{"old"}, NameComponent{"new"}));
     plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     plan.instances.push_back({kInstance, kEntity,
         PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
@@ -551,13 +538,12 @@ TEST_CASE("Phase 8 W4 S4: resolver failure quarantines the whole instance")
     plan.source = {"assets/source.rt2prefab", kInstance, "digest-quarantine"};
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
-    plan.componentOperations.push_back({kEntity, kTemplate,
-        PrefabComponentKeyFor<ImportedMeshSourceComponent>::value, std::nullopt,
-        PrefabPropagationComponentValue{ImportedMeshSourceComponent{missing}}});
-    plan.componentOperations.push_back({childUuid, UUID::Parse("77777777-7777-4777-8777-777777777777"),
-        PrefabComponentKeyFor<PrimitiveComponent>::value,
-        PrefabPropagationComponentValue{PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16}},
-        PrefabPropagationComponentValue{PrimitiveComponent{PrimitiveComponent::Sphere, 2.0f, 16, 8}}});
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<ImportedMeshSourceComponent>(
+        kEntity, kTemplate, std::nullopt, ImportedMeshSourceComponent{missing}));
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<PrimitiveComponent>(
+        childUuid, UUID::Parse("77777777-7777-4777-8777-777777777777"),
+        PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16},
+        PrimitiveComponent{PrimitiveComponent::Sphere, 2.0f, 16, 8}));
     plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     plan.memberSnapshots.push_back({childUuid, kInstance,
         UUID::Parse("77777777-7777-4777-8777-777777777777"), {}});
@@ -580,10 +566,10 @@ TEST_CASE("Phase 8 W4 S4: resolver failure quarantines the whole instance")
     doc.ecs.registry.emplace<PrefabInstanceComponent>(validRoot,
         PrefabInstanceComponent{AssetReference{AssetKind::Prefab,
             "valid.rt2prefab", {}, {}, kInstance}, validInstanceId});
-    plan.componentOperations.push_back({validRootUuid, validTemplateId,
-        PrefabComponentKeyFor<PrimitiveComponent>::value,
-        PrefabPropagationComponentValue{PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16}},
-        PrefabPropagationComponentValue{PrimitiveComponent{PrimitiveComponent::Sphere, 2.0f, 16, 8}}});
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<PrimitiveComponent>(
+        validRootUuid, validTemplateId,
+        PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16},
+        PrimitiveComponent{PrimitiveComponent::Sphere, 2.0f, 16, 8}));
     plan.memberSnapshots.push_back({validRootUuid, validInstanceId, validTemplateId, {}});
     plan.instances.push_back({validInstanceId, validRootUuid,
         PrefabPropagationInstanceDisposition::Propagate, {validRootUuid}, {}});
@@ -611,7 +597,7 @@ TEST_CASE("Phase 8 W4 S4: resolver failure quarantines the whole instance")
     REQUIRE_FALSE(badInstance->diagnostics.empty());
     CHECK(badInstance->diagnostics.front().instanceId == kInstance);
     REQUIRE(staged.value.componentOperations.size() == 1);
-    CHECK(staged.value.componentOperations.front().entityUuid == validRootUuid);
+    CHECK(staged.value.componentOperations.front().EntityUuid() == validRootUuid);
     CHECK_FALSE(staged.value.resourceOwnership.empty());
 }
 
@@ -626,10 +612,8 @@ TEST_CASE("Phase 8 W4 S4: history keeps immutable command ownership across undo 
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
-    plan.componentOperations.push_back({kEntity, kTemplate,
-        PrefabComponentKeyFor<NameComponent>::value,
-        PrefabPropagationComponentValue{NameComponent{"old"}},
-        PrefabPropagationComponentValue{NameComponent{"history"}}});
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
+        kEntity, kTemplate, NameComponent{"old"}, NameComponent{"history"}));
     plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     plan.instances.push_back({kInstance, kEntity,
         PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
@@ -660,10 +644,8 @@ TEST_CASE("Phase 8 W4 S4: commit rejects a plan without complete production evid
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
-    plan.componentOperations.push_back({kEntity, kTemplate,
-        PrefabComponentKeyFor<NameComponent>::value,
-        PrefabPropagationComponentValue{NameComponent{"old"}},
-        PrefabPropagationComponentValue{NameComponent{"new"}}});
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
+        kEntity, kTemplate, NameComponent{"old"}, NameComponent{"new"}));
     plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     plan.instances.push_back({kInstance, kEntity,
         PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
@@ -689,10 +671,8 @@ TEST_CASE("Phase 8 W4 S4: forged owned and pre-existing MeshRef indices are reje
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
-    plan.componentOperations.push_back({kEntity, kTemplate,
-        PrefabComponentKeyFor<NameComponent>::value,
-        PrefabPropagationComponentValue{NameComponent{"old"}},
-        PrefabPropagationComponentValue{NameComponent{"new"}}});
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
+        kEntity, kTemplate, NameComponent{"old"}, NameComponent{"new"}));
     plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     plan.instances.push_back({kInstance, kEntity,
         PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
@@ -718,10 +698,8 @@ TEST_CASE("Phase 8 W4 S4: revision zero is captured and stale zero-to-one is rej
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
-    plan.componentOperations.push_back({kEntity, kTemplate,
-        PrefabComponentKeyFor<NameComponent>::value,
-        PrefabPropagationComponentValue{NameComponent{"old"}},
-        PrefabPropagationComponentValue{NameComponent{"zero"}}});
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
+        kEntity, kTemplate, NameComponent{"old"}, NameComponent{"zero"}));
     plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     plan.instances.push_back({kInstance, kEntity,
         PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
@@ -777,10 +755,8 @@ TEST_CASE("Phase 8 W4 S4: value-only propagation skips unchanged imported siblin
     plan.source = {"assets/source.rt2prefab", kInstance, "same-instance-value-only"};
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
-    plan.componentOperations.push_back({kEntity, kTemplate,
-        PrefabComponentKeyFor<NameComponent>::value,
-        PrefabPropagationComponentValue{NameComponent{"old"}},
-        PrefabPropagationComponentValue{NameComponent{"value-only"}}});
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
+        kEntity, kTemplate, NameComponent{"old"}, NameComponent{"value-only"}));
     plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     plan.memberSnapshots.push_back({siblingUuid, kInstance,
         UUID::Parse("cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd"), {}});
@@ -796,7 +772,7 @@ TEST_CASE("Phase 8 W4 S4: value-only propagation skips unchanged imported siblin
     CHECK(staged.value.meshRefOperations.empty());
     CHECK(staged.value.syncImpact == SyncImpact::None);
     REQUIRE(staged.value.componentOperations.size() == 1);
-    CHECK(staged.value.componentOperations.front().entityUuid == kEntity);
+    CHECK(staged.value.componentOperations.front().EntityUuid() == kEntity);
 }
 
 TEST_CASE("Phase 8 W4 S4: malformed quarantined root does not poison valid sibling")
@@ -820,9 +796,8 @@ TEST_CASE("Phase 8 W4 S4: malformed quarantined root does not poison valid sibli
     plan.source = {"assets/source.rt2prefab", kInstance, "malformed-root"};
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
-    plan.componentOperations.push_back({validRoot, kTemplate,
-        PrefabComponentKeyFor<NameComponent>::value, std::nullopt,
-        PrefabPropagationComponentValue{NameComponent{"valid"}}});
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
+        validRoot, kTemplate, std::nullopt, NameComponent{"valid"}));
     plan.memberSnapshots.push_back({validRoot, validInstance, kTemplate, {}});
     plan.instances.push_back({malformedInstance, UUID::Nil(),
         PrefabPropagationInstanceDisposition::Quarantined, {},
@@ -845,7 +820,7 @@ TEST_CASE("Phase 8 W4 S4: malformed quarantined root does not poison valid sibli
     CHECK(staged.value.instances.back().disposition ==
           PrefabPropagationInstanceDisposition::Propagate);
     REQUIRE(staged.value.componentOperations.size() == 1);
-    CHECK(staged.value.componentOperations.front().entityUuid == validRoot);
+    CHECK(staged.value.componentOperations.front().EntityUuid() == validRoot);
 }
 
 TEST_CASE("Phase 8 W4 S4: nested owned resource references and overflow are rejected")
@@ -856,10 +831,8 @@ TEST_CASE("Phase 8 W4 S4: nested owned resource references and overflow are reje
     materialPlan.source = {"assets/source.rt2prefab", kInstance, "nested-material"};
     materialPlan.documentGeneration = scene.DocumentGeneration();
     materialPlan.resourceGeneration = scene.ResourceGeneration();
-    materialPlan.componentOperations.push_back({kEntity, kTemplate,
-        PrefabComponentKeyFor<NameComponent>::value,
-        PrefabPropagationComponentValue{NameComponent{"old"}},
-        PrefabPropagationComponentValue{NameComponent{"nested"}}});
+    materialPlan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
+        kEntity, kTemplate, NameComponent{"old"}, NameComponent{"nested"}));
     materialPlan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     materialPlan.instances.push_back({kInstance, kEntity,
         PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
@@ -911,12 +884,10 @@ TEST_CASE("Phase 8 W4 S4: staging rejects checked extent overflow before mutatio
     plan.source = {"assets/source.rt2prefab", kInstance, "extent-overflow"};
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
-    plan.componentOperations.push_back({kEntity, kTemplate,
-        PrefabComponentKeyFor<PrimitiveComponent>::value,
-        PrefabPropagationComponentValue{PrimitiveComponent{PrimitiveComponent::Cube,
-            1.0f, 24, 16}},
-        PrefabPropagationComponentValue{PrimitiveComponent{PrimitiveComponent::Sphere,
-            2.0f, 16, 8}}});
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<PrimitiveComponent>(
+        kEntity, kTemplate,
+        PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16},
+        PrimitiveComponent{PrimitiveComponent::Sphere, 2.0f, 16, 8}));
     plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     plan.instances.push_back({kInstance, kEntity,
         PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});

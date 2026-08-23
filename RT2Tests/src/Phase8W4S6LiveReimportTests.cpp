@@ -62,10 +62,8 @@ struct EffectiveLiveFixture
             scene.AuthoringDoc().ecs.materials.size());
         plan.textureTableExtent = static_cast<std::uint32_t>(
             scene.AuthoringDoc().ecs.textures.size());
-        plan.componentOperations.push_back({
-            entity, templateId, PrefabComponentKeyFor<Transform>::value,
-            PrefabPropagationComponentValue{before},
-            PrefabPropagationComponentValue{after}});
+        plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<Transform>(
+            entity, templateId, before, after));
         plan.memberSnapshots.push_back({entity, instance, templateId, {}});
         plan.rootSnapshots.push_back({entity, instance, source});
         plan.instances.push_back({instance, entity,

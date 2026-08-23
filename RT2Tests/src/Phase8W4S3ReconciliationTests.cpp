@@ -236,7 +236,7 @@ void SetLiveOptional(SceneDocument& document, entt::entity entity,
     }
 }
 
-std::optional<PrefabPropagationComponentValue> ExpectedOptional(OptionalKind kind,
+std::optional<PropagationComponentSet> ExpectedOptional(OptionalKind kind,
                                                                  bool source)
 {
     if (source)
@@ -274,12 +274,12 @@ std::optional<PrefabPropagationComponentValue> ExpectedOptional(OptionalKind kin
     return std::nullopt;
 }
 
-const PrefabPropagationComponentOperation* FindOperation(
+const PrefabPropagationComponentDelta* FindOperation(
     const PrefabPropagationPlan& plan, const UUID& entity,
     const PrefabComponentKey& key)
 {
     for (const auto& operation : plan.componentOperations)
-        if (operation.entityUuid == entity && operation.key == key)
+        if (operation.EntityUuid() == entity && operation.Key() == key)
             return &operation;
     return nullptr;
 }
@@ -325,13 +325,15 @@ TEST_CASE("Phase 8 W4 S3: all optional marker presence states reconcile")
         CHECK((operation != nullptr) == shouldChange);
         if (operation)
         {
-            CHECK(operation->before.has_value() == livePresent);
-            CHECK(operation->after.has_value() == sourcePresent);
+            const auto before = operation->BeforeValue();
+            const auto after = operation->AfterValue();
+            CHECK(before.has_value() == livePresent);
+            CHECK(after.has_value() == sourcePresent);
             if (livePresent)
             {
                 const auto expected = ExpectedOptional(kind, false);
                 REQUIRE(expected.has_value());
-                CHECK(PrefabPropagationValueEqual(*operation->before, *expected));
+                CHECK(PropagationComponentEqual(*before, *expected));
             }
             if (sourcePresent)
             {
@@ -339,7 +341,7 @@ TEST_CASE("Phase 8 W4 S3: all optional marker presence states reconcile")
                 REQUIRE(expected.has_value());
                 if (kind == OptionalKind::Script)
                 {
-                    const auto& actualScript = std::get<ScriptComponent>(*operation->after);
+                    const auto& actualScript = std::get<ScriptComponent>(*after);
                     const auto& expectedScript = std::get<ScriptComponent>(*expected);
                     const auto& actualField = actualScript.fieldValues.at("target");
                     const auto& expectedField = expectedScript.fieldValues.at("target");
@@ -351,7 +353,7 @@ TEST_CASE("Phase 8 W4 S3: all optional marker presence states reconcile")
                     CHECK(std::get<UUID>(actualField.value) == std::get<UUID>(expectedField.value));
                 }
                 else
-                    CHECK(PrefabPropagationValueEqual(*operation->after, *expected));
+                    CHECK(PropagationComponentEqual(*after, *expected));
             }
         }
         const bool shouldQuarantine = kind == OptionalKind::Material &&
@@ -370,7 +372,7 @@ TEST_CASE("Phase 8 W4 S3: all optional marker presence states reconcile")
                   PrefabPropagationInstanceDisposition::Propagate);
             REQUIRE(result.value.affectedEntities.size() == 1);
             CHECK(result.value.affectedEntities.front() == U(201));
-            CHECK(result.value.syncImpact == PrefabPropagationImpactForKey(Key(kind)));
+            CHECK(result.value.syncImpact == operation->Impact());
         }
         else
         {
@@ -530,15 +532,17 @@ TEST_CASE("Phase 8 W4 S3: naming, markers, and script UUID remap are determinist
     const auto* rootName = FindOperation(result.value, U(200),
                                          PrefabComponentKeyFor<NameComponent>::value);
     REQUIRE(rootName != nullptr);
-    CHECK(std::get<NameComponent>(*rootName->after).name == "New Copy");
+    CHECK(std::get<NameComponent>(*rootName->AfterValue()).name == "New Copy");
     const auto* childName = FindOperation(result.value, U(201),
                                           PrefabComponentKeyFor<NameComponent>::value);
     REQUIRE(childName != nullptr);
-    CHECK(std::get<NameComponent>(*childName->after).name == "Child New");
+    CHECK(std::get<NameComponent>(*childName->AfterValue()).name == "Child New");
     const auto* childScript = FindOperation(result.value, U(201),
                                             PrefabComponentKeyFor<ScriptComponent>::value);
     REQUIRE(childScript != nullptr);
-    const auto& remapped = std::get<ScriptComponent>(*childScript->after);
+    REQUIRE(childScript->AfterValue().has_value());
+    const auto remappedValue = childScript->AfterValue();
+    const auto& remapped = std::get<ScriptComponent>(*remappedValue);
     CHECK(std::get<UUID>(remapped.fieldValues.at("root").value) == U(200));
 }
 
@@ -606,7 +610,8 @@ TEST_CASE("Phase 8 W4 S3: script remap is instance-local and preserves non-local
     const auto* firstScript = FindOperation(result.value, U(200),
                                             PrefabComponentKeyFor<ScriptComponent>::value);
     REQUIRE(firstScript != nullptr);
-    const auto& first = std::get<ScriptComponent>(*firstScript->after);
+    const auto firstValue = firstScript->AfterValue();
+    const auto& first = std::get<ScriptComponent>(*firstValue);
     CHECK(std::get<UUID>(first.fieldValues.at("child").value) == U(201));
     CHECK(std::get<UUID>(first.fieldValues.at("root").value) == U(200));
     CHECK(std::get<UUID>(first.fieldValues.at("external").value) == U(999));
@@ -696,9 +701,9 @@ TEST_CASE("Phase 8 W4 S3: mandatory values obey marker presence and canonical re
     REQUIRE(name != nullptr);
     REQUIRE(transform != nullptr);
     REQUIRE(visible != nullptr);
-    CHECK(std::get<NameComponent>(*name->after).name == "Child");
-    CHECK(std::get<Transform>(*transform->after).translation == glm::vec3{1.0f, 2.0f, 3.0f});
-    CHECK(std::get<VisibleComponent>(*visible->after).visible);
+    CHECK(std::get<NameComponent>(*name->AfterValue()).name == "Child");
+    CHECK(std::get<Transform>(*transform->AfterValue()).translation == glm::vec3{1.0f, 2.0f, 3.0f});
+    CHECK(std::get<VisibleComponent>(*visible->AfterValue()).visible);
 }
 
 TEST_CASE("Phase 8 W4 S3: imported source is authoritative and MeshRef is derived")
@@ -723,12 +728,12 @@ TEST_CASE("Phase 8 W4 S3: imported source is authoritative and MeshRef is derive
     const auto* operation = FindOperation(
         result.value, U(201), PrefabComponentKeyFor<ImportedMeshSourceComponent>::value);
     REQUIRE(operation != nullptr);
-    CHECK(operation->before.has_value());
-    CHECK(PrefabPropagationValueEqual(*operation->before,
-        PrefabPropagationComponentValue{beforeImported}));
-    CHECK(PrefabPropagationValueEqual(*operation->after,
-        PrefabPropagationComponentValue{records[1].record.importedSource}));
-    CHECK(std::get<ImportedMeshSourceComponent>(*operation->after).model.sourceKey ==
+    CHECK(operation->BeforeValue().has_value());
+    CHECK(PropagationComponentEqual(*operation->BeforeValue(),
+        PropagationComponentSet{beforeImported}));
+    CHECK(PropagationComponentEqual(*operation->AfterValue(),
+        PropagationComponentSet{records[1].record.importedSource}));
+    CHECK(std::get<ImportedMeshSourceComponent>(*operation->AfterValue()).model.sourceKey ==
           "gltf:mesh=2");
     CHECK(FindOperation(result.value, U(201), PrefabComponentKeyFor<MeshRef>::value) == nullptr);
     const auto& afterMeshRef = document.ecs.registry.get<MeshRef>(child);
@@ -764,10 +769,10 @@ TEST_CASE("Phase 8 W4 S3: clean geometry provenance transitions are planned with
                                                 PrefabComponentKeyFor<ImportedMeshSourceComponent>::value);
     REQUIRE(primitive != nullptr);
     REQUIRE(removedImported != nullptr);
-    CHECK(primitive->before.has_value() == false);
-    CHECK(primitive->after.has_value());
-    CHECK(removedImported->before.has_value());
-    CHECK(removedImported->after.has_value() == false);
+    CHECK(primitive->BeforeValue().has_value() == false);
+    CHECK(primitive->AfterValue().has_value());
+    CHECK(removedImported->BeforeValue().has_value());
+    CHECK(removedImported->AfterValue().has_value() == false);
 
     const auto importedTemp = Temp();
     auto importedRecords = std::vector<PrefabEntityRecord>{Record(1, 101), Record(2, 102, U(101))};
@@ -788,10 +793,10 @@ TEST_CASE("Phase 8 W4 S3: clean geometry provenance transitions are planned with
                                          PrefabComponentKeyFor<ImportedMeshSourceComponent>::value);
     REQUIRE(removedPrimitive != nullptr);
     REQUIRE(imported != nullptr);
-    CHECK(removedPrimitive->before.has_value());
-    CHECK(removedPrimitive->after.has_value() == false);
-    CHECK(imported->before.has_value() == false);
-    CHECK(imported->after.has_value());
+    CHECK(removedPrimitive->BeforeValue().has_value());
+    CHECK(removedPrimitive->AfterValue().has_value() == false);
+    CHECK(imported->BeforeValue().has_value() == false);
+    CHECK(imported->AfterValue().has_value());
 }
 
 TEST_CASE("Phase 8 W4 S3: provenance conflicts quarantine only the bad sibling")

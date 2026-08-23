@@ -425,19 +425,14 @@ bool HasOverride(const PrefabMemberComponent& member, const PrefabComponentKey& 
 }
 
 template<typename T>
-void AddOperation(std::vector<PrefabPropagationComponentOperation>& operations,
+void AddOperation(std::vector<PrefabPropagationComponentDelta>& operations,
                   const UUID& entityUuid, const UUID& templateId,
-                  const PrefabComponentKey& key,
                   const std::optional<T>& before,
                   const std::optional<T>& after)
 {
-    PrefabPropagationComponentOperation operation;
-    operation.entityUuid = entityUuid;
-    operation.templateId = templateId;
-    operation.key = key;
-    if (before) operation.before = PrefabPropagationComponentValue{*before};
-    if (after) operation.after = PrefabPropagationComponentValue{*after};
-    if (!PrefabPropagationComponentOperationIsNoOp(operation))
+    auto operation = PrefabPropagationComponentDelta::Make<T>(
+        entityUuid, templateId, before, after);
+    if (!operation.IsNoOp())
         operations.push_back(std::move(operation));
 }
 
@@ -454,7 +449,7 @@ bool BuildReconciliation(const SceneDocument& document,
                          entt::entity root,
                          const SourceModel& source,
                          const InstanceValidation& validation,
-                         std::vector<PrefabPropagationComponentOperation>& output,
+                         std::vector<PrefabPropagationComponentDelta>& output,
                          std::string& reason,
                          UUID& reasonTemplate)
 {
@@ -491,10 +486,9 @@ bool BuildReconciliation(const SceneDocument& document,
         remap[sourceIt->second->record.uuid] = id->id;
     }
 
-    std::vector<PrefabPropagationComponentOperation> staged;
+    std::vector<PrefabPropagationComponentDelta> staged;
     for (const UUID& templateId : templates)
     {
-        const auto& sourceRecord = source.byTemplate.at(templateId)->record;
         const entt::entity entity = validation.byTemplate.at(templateId);
         const auto* member = registry.try_get<PrefabMemberComponent>(entity);
         const auto* id = registry.try_get<EntityIdComponent>(entity);
@@ -520,18 +514,26 @@ bool BuildReconciliation(const SceneDocument& document,
         const auto beforeMotion = CopyComponent<MotionComponent>(registry, entity);
         const auto beforeScript = CopyComponent<ScriptComponent>(registry, entity);
 
-        const std::optional<PrimitiveComponent> sourcePrimitiveValue =
-            sourceRecord.hasPrimitive
-                ? std::optional<PrimitiveComponent>(sourceRecord.primitive)
-                : std::nullopt;
-        const std::optional<ImportedMeshSourceComponent> sourceImportedValue =
-            sourceRecord.hasImportedSource
-                ? std::optional<ImportedMeshSourceComponent>(sourceRecord.importedSource)
-                : std::nullopt;
-        const std::optional<MaterialOverrideComponent> sourceMaterialValue =
-            sourceRecord.hasMaterialOverride
-                ? std::optional<MaterialOverrideComponent>(sourceRecord.materialOverride)
-                : std::nullopt;
+        const auto sourcePrimitiveValue = ReadPropagationSource<PrimitiveComponent>(
+            *source.byTemplate.at(templateId));
+        const auto sourceImportedValue = ReadPropagationSource<ImportedMeshSourceComponent>(
+            *source.byTemplate.at(templateId));
+        const auto sourceMaterialValue = ReadPropagationSource<MaterialOverrideComponent>(
+            *source.byTemplate.at(templateId));
+        const auto sourceNameValue = ReadPropagationSource<NameComponent>(
+            *source.byTemplate.at(templateId));
+        const auto sourceTransformValue = ReadPropagationSource<Transform>(
+            *source.byTemplate.at(templateId));
+        const auto sourceVisibleValue = ReadPropagationSource<VisibleComponent>(
+            *source.byTemplate.at(templateId));
+        const auto sourceLightValue = ReadPropagationSource<LightComponent>(
+            *source.byTemplate.at(templateId));
+        const auto sourceCameraValue = ReadPropagationSource<CameraComponent>(
+            *source.byTemplate.at(templateId));
+        const auto sourceMotionValue = ReadPropagationSource<MotionComponent>(
+            *source.byTemplate.at(templateId));
+        auto sourceScriptValue = ReadPropagationSource<ScriptComponent>(
+            *source.byTemplate.at(templateId));
         const auto afterPrimitive = markerPrimitive ? beforePrimitive : sourcePrimitiveValue;
         const auto afterImported = sourceImportedValue;
         const auto afterMaterial = markerMaterial ? beforeMaterial : sourceMaterialValue;
@@ -540,47 +542,33 @@ bool BuildReconciliation(const SceneDocument& document,
         if (HasOverride(*member, PrefabComponentKeyFor<NameComponent>::value))
             afterName = beforeName;
         else
-            afterName = NameComponent{templateId == source.rootTemplate
-                                          ? InheritedRootName(sourceRecord.name)
-                                          : sourceRecord.name};
+            afterName = sourceNameValue;
+            if (afterName && templateId == source.rootTemplate)
+                afterName->name = InheritedRootName(afterName->name);
         if (!HasOverride(*member, PrefabComponentKeyFor<NameComponent>::value))
-            AddOperation(staged, id->id, templateId,
-                         PrefabComponentKeyFor<NameComponent>::value,
-                         beforeName, afterName);
+            AddOperation(staged, id->id, templateId, beforeName, afterName);
 
         std::optional<Transform> afterTransform;
         if (HasOverride(*member, PrefabComponentKeyFor<Transform>::value))
             afterTransform = beforeTransform;
         else
-            afterTransform = Transform{sourceRecord.translation,
-                                       sourceRecord.rotation,
-                                       sourceRecord.scale};
+            afterTransform = sourceTransformValue;
         if (!HasOverride(*member, PrefabComponentKeyFor<Transform>::value))
-            AddOperation(staged, id->id, templateId,
-                         PrefabComponentKeyFor<Transform>::value,
-                         beforeTransform, afterTransform);
+            AddOperation(staged, id->id, templateId, beforeTransform, afterTransform);
 
         std::optional<VisibleComponent> afterVisible;
         if (HasOverride(*member, PrefabComponentKeyFor<VisibleComponent>::value))
             afterVisible = beforeVisible;
         else
-            afterVisible = VisibleComponent{sourceRecord.visible};
+            afterVisible = sourceVisibleValue;
         if (!HasOverride(*member, PrefabComponentKeyFor<VisibleComponent>::value))
-            AddOperation(staged, id->id, templateId,
-                         PrefabComponentKeyFor<VisibleComponent>::value,
-                         beforeVisible, afterVisible);
+            AddOperation(staged, id->id, templateId, beforeVisible, afterVisible);
 
         if (!markerPrimitive)
-            AddOperation(staged, id->id, templateId,
-                         PrefabComponentKeyFor<PrimitiveComponent>::value,
-                         beforePrimitive, afterPrimitive);
-        AddOperation(staged, id->id, templateId,
-                     PrefabComponentKeyFor<ImportedMeshSourceComponent>::value,
-                     beforeImported, afterImported);
+            AddOperation(staged, id->id, templateId, beforePrimitive, afterPrimitive);
+        AddOperation(staged, id->id, templateId, beforeImported, afterImported);
         if (!markerMaterial)
-            AddOperation(staged, id->id, templateId,
-                         PrefabComponentKeyFor<MaterialOverrideComponent>::value,
-                         beforeMaterial, afterMaterial);
+            AddOperation(staged, id->id, templateId, beforeMaterial, afterMaterial);
 
         if (afterPrimitive && afterImported)
         {
@@ -595,53 +583,34 @@ bool BuildReconciliation(const SceneDocument& document,
             return false;
         }
 
-        std::optional<LightComponent> sourceLight =
-            sourceRecord.hasLight ? std::optional<LightComponent>(sourceRecord.light)
-                                  : std::nullopt;
         std::optional<LightComponent> afterLight =
             HasOverride(*member, PrefabComponentKeyFor<LightComponent>::value)
-                ? beforeLight : sourceLight;
+                ? beforeLight : sourceLightValue;
         if (!HasOverride(*member, PrefabComponentKeyFor<LightComponent>::value))
-            AddOperation(staged, id->id, templateId,
-                         PrefabComponentKeyFor<LightComponent>::value,
-                         beforeLight, afterLight);
+            AddOperation(staged, id->id, templateId, beforeLight, afterLight);
 
-        std::optional<CameraComponent> sourceCamera =
-            sourceRecord.hasCamera ? std::optional<CameraComponent>(sourceRecord.camera)
-                                   : std::nullopt;
         std::optional<CameraComponent> afterCamera =
             HasOverride(*member, PrefabComponentKeyFor<CameraComponent>::value)
-                ? beforeCamera : sourceCamera;
+                ? beforeCamera : sourceCameraValue;
         if (!HasOverride(*member, PrefabComponentKeyFor<CameraComponent>::value))
-            AddOperation(staged, id->id, templateId,
-                         PrefabComponentKeyFor<CameraComponent>::value,
-                         beforeCamera, afterCamera);
+            AddOperation(staged, id->id, templateId, beforeCamera, afterCamera);
 
-        std::optional<MotionComponent> sourceMotion =
-            sourceRecord.hasMotion ? std::optional<MotionComponent>(sourceRecord.motion)
-                                   : std::nullopt;
         std::optional<MotionComponent> afterMotion =
             HasOverride(*member, PrefabComponentKeyFor<MotionComponent>::value)
-                ? beforeMotion : sourceMotion;
+                ? beforeMotion : sourceMotionValue;
         if (!HasOverride(*member, PrefabComponentKeyFor<MotionComponent>::value))
-            AddOperation(staged, id->id, templateId,
-                         PrefabComponentKeyFor<MotionComponent>::value,
-                         beforeMotion, afterMotion);
+            AddOperation(staged, id->id, templateId, beforeMotion, afterMotion);
 
-        std::optional<ScriptComponent> sourceScript;
-        if (sourceRecord.hasScript)
+        if (sourceScriptValue)
         {
-            sourceScript = sourceRecord.script;
-            std::vector<ScriptComponent*> remapped{&*sourceScript};
+            std::vector<ScriptComponent*> remapped{&*sourceScriptValue};
             RemapEntityReferences(remap, remapped);
         }
         std::optional<ScriptComponent> afterScript =
             HasOverride(*member, PrefabComponentKeyFor<ScriptComponent>::value)
-                ? beforeScript : sourceScript;
+                ? beforeScript : sourceScriptValue;
         if (!HasOverride(*member, PrefabComponentKeyFor<ScriptComponent>::value))
-            AddOperation(staged, id->id, templateId,
-                         PrefabComponentKeyFor<ScriptComponent>::value,
-                         beforeScript, afterScript);
+            AddOperation(staged, id->id, templateId, beforeScript, afterScript);
     }
     output.insert(output.end(), std::make_move_iterator(staged.begin()),
                   std::make_move_iterator(staged.end()));
@@ -851,7 +820,7 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
             plan.rootSnapshots.push_back({rootUuid, link.instanceId, link.prefab});
         if (validation.valid)
         {
-            std::vector<PrefabPropagationComponentOperation> reconciled;
+            std::vector<PrefabPropagationComponentDelta> reconciled;
             std::string reconciliationReason;
             UUID reconciliationTemplate;
             if (!BuildReconciliation(*request.document, root, loaded.model,
@@ -885,8 +854,8 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
                 for (const auto& operation : reconciled)
                     if (std::find(instance.affectedEntities.begin(),
                                   instance.affectedEntities.end(),
-                                  operation.entityUuid) == instance.affectedEntities.end())
-                        instance.affectedEntities.push_back(operation.entityUuid);
+                                  operation.EntityUuid()) == instance.affectedEntities.end())
+                        instance.affectedEntities.push_back(operation.EntityUuid());
                 instance.disposition = reconciled.empty()
                     ? PrefabPropagationInstanceDisposition::NoOp
                     : PrefabPropagationInstanceDisposition::Propagate;
@@ -909,9 +878,9 @@ Result<PrefabPropagationPlan> PreparePrefabPropagation(
     }
     std::sort(plan.componentOperations.begin(), plan.componentOperations.end(),
               [](const auto& a, const auto& b) {
-                  if (a.entityUuid != b.entityUuid) return a.entityUuid < b.entityUuid;
-                  if (a.templateId != b.templateId) return a.templateId < b.templateId;
-                  return a.key.wire() < b.key.wire();
+                  if (a.EntityUuid() != b.EntityUuid()) return a.EntityUuid() < b.EntityUuid();
+                  if (a.TemplateId() != b.TemplateId()) return a.TemplateId() < b.TemplateId();
+                  return a.Key().wire() < b.Key().wire();
               });
     plan.affectedEntities = plan.DerivedAffectedEntities();
     plan.syncImpact = plan.DerivedSyncImpact();

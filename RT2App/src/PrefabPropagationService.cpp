@@ -19,60 +19,42 @@ bool CheckedAdd(std::uint32_t a, std::uint32_t b, std::uint32_t& result)
 }
 
 template<typename T>
-std::optional<T> ReadComponent(const entt::registry& registry, entt::entity entity)
-{
-    if (const auto* value = registry.try_get<T>(entity)) return *value;
-    return std::nullopt;
-}
-
-template<typename T>
-void WriteOptional(entt::registry& registry, entt::entity entity,
-                   const std::optional<T>& value)
-{
-    if (!value)
-    {
-        if (registry.all_of<T>(entity)) registry.remove<T>(entity);
-        return;
-    }
-    registry.emplace_or_replace<T>(entity, *value);
-}
-
-template<typename T>
 std::optional<T> OperationAfter(const PrefabPropagationPlan& plan,
                                 const UUID& entity, const PrefabComponentKey& key,
                                 const entt::registry& live, entt::entity liveEntity)
 {
     const auto it = std::find_if(plan.componentOperations.begin(),
         plan.componentOperations.end(), [&](const auto& operation) {
-            return operation.entityUuid == entity && operation.key == key;
+            return operation.EntityUuid() == entity && operation.Key() == key;
         });
     if (it != plan.componentOperations.end())
     {
-        if (!it->after) return std::nullopt;
-        if (const auto* value = std::get_if<T>(&*it->after)) return *value;
+        const auto after = it->AfterValue();
+        if (!after) return std::nullopt;
+        if (const auto* value = std::get_if<T>(&*after)) return *value;
         return std::nullopt;
     }
-    return ReadComponent<T>(live, liveEntity);
+    return ReadPropagationComponent<T>(live, liveEntity);
 }
 
-const PrefabPropagationComponentOperation* FindOperation(
+const PrefabPropagationComponentDelta* FindOperation(
     const PrefabPropagationPlan& plan, const UUID& entity,
     const PrefabComponentKey& key)
 {
     const auto it = std::find_if(plan.componentOperations.begin(),
         plan.componentOperations.end(), [&](const auto& operation) {
-            return operation.entityUuid == entity && operation.key == key;
+            return operation.EntityUuid() == entity && operation.Key() == key;
         });
     return it == plan.componentOperations.end() ? nullptr : &*it;
 }
 
-PrefabPropagationComponentOperation* FindOperation(
+PrefabPropagationComponentDelta* FindOperation(
     PrefabPropagationPlan& plan, const UUID& entity,
     const PrefabComponentKey& key)
 {
     const auto it = std::find_if(plan.componentOperations.begin(),
         plan.componentOperations.end(), [&](const auto& operation) {
-            return operation.entityUuid == entity && operation.key == key;
+            return operation.EntityUuid() == entity && operation.Key() == key;
         });
     return it == plan.componentOperations.end() ? nullptr : &*it;
 }
@@ -164,63 +146,10 @@ PrefabPropagationDiagnostic MakeResolverDiagnostic(
     return converted;
 }
 
-std::optional<PrefabPropagationComponentValue> CurrentComponentValue(
-    const entt::registry& registry, entt::entity entity,
-    const PrefabComponentKey& key)
-{
-    auto read = [&](auto tag) -> std::optional<PrefabPropagationComponentValue> {
-        using T = decltype(tag);
-        if (const auto* value = registry.try_get<T>(entity))
-            return PrefabPropagationComponentValue{*value};
-        return std::nullopt;
-    };
-    if (key.wire() == PrefabWireKeys::kName) return read(NameComponent{});
-    if (key.wire() == PrefabWireKeys::kTransform) return read(Transform{});
-    if (key.wire() == PrefabWireKeys::kVisible) return read(VisibleComponent{});
-    if (key.wire() == PrefabWireKeys::kPrimitive) return read(PrimitiveComponent{});
-    if (key.wire() == PrefabWireKeys::kImportedSource)
-        return read(ImportedMeshSourceComponent{});
-    if (key.wire() == PrefabWireKeys::kMaterialOverride)
-        return read(MaterialOverrideComponent{});
-    if (key.wire() == PrefabWireKeys::kLight) return read(LightComponent{});
-    if (key.wire() == PrefabWireKeys::kCamera) return read(CameraComponent{});
-    if (key.wire() == PrefabWireKeys::kMotion) return read(MotionComponent{});
-    if (key.wire() == PrefabWireKeys::kScript) return read(ScriptComponent{});
-    return std::nullopt;
-}
-
 bool ApplyComponentOperation(entt::registry& registry, entt::entity entity,
-                             const PrefabPropagationComponentOperation& operation)
+                             const PrefabPropagationComponentDelta& operation)
 {
-    auto remove = [&]() {
-        if (operation.key.wire() == PrefabWireKeys::kName)
-            WriteOptional<NameComponent>(registry, entity, std::nullopt);
-        else if (operation.key.wire() == PrefabWireKeys::kTransform)
-            WriteOptional<Transform>(registry, entity, std::nullopt);
-        else if (operation.key.wire() == PrefabWireKeys::kVisible)
-            WriteOptional<VisibleComponent>(registry, entity, std::nullopt);
-        else if (operation.key.wire() == PrefabWireKeys::kPrimitive)
-            WriteOptional<PrimitiveComponent>(registry, entity, std::nullopt);
-        else if (operation.key.wire() == PrefabWireKeys::kImportedSource)
-            WriteOptional<ImportedMeshSourceComponent>(registry, entity, std::nullopt);
-        else if (operation.key.wire() == PrefabWireKeys::kMaterialOverride)
-            WriteOptional<MaterialOverrideComponent>(registry, entity, std::nullopt);
-        else if (operation.key.wire() == PrefabWireKeys::kLight)
-            WriteOptional<LightComponent>(registry, entity, std::nullopt);
-        else if (operation.key.wire() == PrefabWireKeys::kCamera)
-            WriteOptional<CameraComponent>(registry, entity, std::nullopt);
-        else if (operation.key.wire() == PrefabWireKeys::kMotion)
-            WriteOptional<MotionComponent>(registry, entity, std::nullopt);
-        else if (operation.key.wire() == PrefabWireKeys::kScript)
-            WriteOptional<ScriptComponent>(registry, entity, std::nullopt);
-        else return false;
-        return true;
-    };
-    if (!operation.after) return remove();
-    std::visit([&](const auto& value) {
-        using T = std::decay_t<decltype(value)>;
-        WriteOptional<T>(registry, entity, std::optional<T>{value});
-    }, *operation.after);
+    WritePropagationComponent(operation, registry, entity, true);
     return true;
 }
 
@@ -292,11 +221,11 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
             // operation.  A value-only operation must not re-resolve an
             // unchanged imported sibling in the same prefab instance.
             bool hasImported = importedOperation &&
-                !PrefabPropagationComponentOperationIsNoOp(*importedOperation) &&
-                importedOperation->after.has_value();
+            !importedOperation->IsNoOp() &&
+                importedOperation->AfterValue().has_value();
             if (!hasImported && materialOperation &&
-                !PrefabPropagationComponentOperationIsNoOp(*materialOperation) &&
-                materialOperation->after.has_value())
+            !materialOperation->IsNoOp() &&
+                materialOperation->AfterValue().has_value())
                 hasImported = live.ecs.registry.all_of<ImportedMeshSourceComponent>(liveEntity);
             const auto imported = hasImported
                 ? OperationAfter<ImportedMeshSourceComponent>(
@@ -305,8 +234,8 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                 : std::optional<ImportedMeshSourceComponent>{};
             hasImported = imported.has_value();
             bool hasPrimitive = primitiveOperation &&
-                !PrefabPropagationComponentOperationIsNoOp(*primitiveOperation) &&
-                primitiveOperation->after.has_value();
+            !primitiveOperation->IsNoOp() &&
+                primitiveOperation->AfterValue().has_value();
             const auto primitive = OperationAfter<PrimitiveComponent>(
                 durablePlan, uuid, PrefabComponentKeyFor<PrimitiveComponent>::value,
                 live.ecs.registry, liveEntity);
@@ -489,16 +418,17 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                 }
                 if (auto* operation = FindOperation(result, uuid,
                         PrefabComponentKeyFor<MaterialOverrideComponent>::value))
-                    operation->after = PrefabPropagationComponentValue{repaired};
+                    *operation = operation->WithAfter<MaterialOverrideComponent>(repaired);
                 else
                 {
                     const auto* liveMaterial = live.ecs.registry.try_get<MaterialOverrideComponent>(liveEntity);
                     if (!liveMaterial || !PrefabCanonicalComponentEqual(*liveMaterial, repaired))
-                        result.componentOperations.push_back({uuid, entityToTemplate[uuid],
-                            PrefabComponentKeyFor<MaterialOverrideComponent>::value,
-                            liveMaterial ? std::optional<PrefabPropagationComponentValue>(
-                                PrefabPropagationComponentValue{*liveMaterial}) : std::nullopt,
-                            PrefabPropagationComponentValue{repaired}});
+                    result.componentOperations.push_back(
+                        PrefabPropagationComponentDelta::Make<MaterialOverrideComponent>(
+                            uuid, entityToTemplate[uuid],
+                            liveMaterial ? std::optional<MaterialOverrideComponent>(*liveMaterial)
+                                          : std::nullopt,
+                            repaired));
                 }
             }
         }
@@ -508,7 +438,7 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
     // value, MeshRef, snapshot, or resource intent may survive.
     result.componentOperations.erase(std::remove_if(result.componentOperations.begin(),
         result.componentOperations.end(), [&](const auto& operation) {
-            const auto it = entityToInstance.find(operation.entityUuid);
+            const auto it = entityToInstance.find(operation.EntityUuid());
             return it != entityToInstance.end() && quarantinedInstances.count(it->second) != 0;
         }), result.componentOperations.end());
     result.memberSnapshots.erase(std::remove_if(result.memberSnapshots.begin(),
@@ -539,9 +469,9 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
             continue;
         instance.affectedEntities.clear();
         for (const auto& operation : result.componentOperations)
-            if (entityToInstance[operation.entityUuid] == instance.instanceId &&
-                !PrefabPropagationComponentOperationIsNoOp(operation))
-                instance.affectedEntities.push_back(operation.entityUuid);
+            if (entityToInstance[operation.EntityUuid()] == instance.instanceId &&
+                !operation.IsNoOp())
+                instance.affectedEntities.push_back(operation.EntityUuid());
         for (const auto& operation : result.meshRefOperations)
             if (entityToInstance[operation.entityUuid] == instance.instanceId)
                 instance.affectedEntities.push_back(operation.entityUuid);
@@ -553,9 +483,9 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
     }
     std::sort(result.componentOperations.begin(), result.componentOperations.end(),
         [](const auto& a, const auto& b) {
-            if (a.entityUuid != b.entityUuid) return a.entityUuid < b.entityUuid;
-            if (a.templateId != b.templateId) return a.templateId < b.templateId;
-            return a.key.wire() < b.key.wire();
+            if (a.EntityUuid() != b.EntityUuid()) return a.EntityUuid() < b.EntityUuid();
+            if (a.TemplateId() != b.TemplateId()) return a.TemplateId() < b.TemplateId();
+            return a.Key().wire() < b.Key().wire();
         });
     result.affectedEntities = result.DerivedAffectedEntities();
     result.syncImpact = result.DerivedSyncImpact();
@@ -641,22 +571,23 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
                 "prefab propagation plan is invalid during load");
         for (const auto& operation : plan.componentOperations)
         {
-            const auto entity = document.FindByUuid(operation.entityUuid);
+            const auto entity = document.FindByUuid(operation.EntityUuid());
             if (entity == entt::null || !document.ecs.registry.valid(entity))
                 return Result<PrefabPropagationLoadReport>::Fail(
                     Error::InvalidEntity, plan.source.normalizedPath.string(),
                     "prefab propagation target entity disappeared during load");
             const auto* member = document.ecs.registry.try_get<PrefabMemberComponent>(entity);
             if (!member || member->instanceId.IsNull() ||
-                member->templateId != operation.templateId)
+                member->templateId != operation.TemplateId())
                 return Result<PrefabPropagationLoadReport>::Fail(
                     Error::InvalidEntity, plan.source.normalizedPath.string(),
                     "prefab propagation target membership changed during load");
-            const auto current = CurrentComponentValue(
-                document.ecs.registry, entity, operation.key);
-            if (current.has_value() != operation.before.has_value() ||
-                (current && operation.before &&
-                 !PrefabPropagationValueEqual(*current, *operation.before)))
+            const auto current = ReadPropagationComponent(
+                operation, document.ecs.registry, entity);
+            const auto before = operation.BeforeValue();
+            if (current.has_value() != before.has_value() ||
+                (current && before &&
+                 !PropagationComponentEqual(*current, *before)))
                 return Result<PrefabPropagationLoadReport>::Fail(
                     Error::InvalidEntity, plan.source.normalizedPath.string(),
                     "prefab propagation before value changed during load");
@@ -681,8 +612,8 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
         }
         for (const auto& operation : plan.componentOperations)
         {
-            if (PrefabPropagationComponentOperationIsNoOp(operation)) continue;
-            const auto entity = document.FindByUuid(operation.entityUuid);
+            if (operation.IsNoOp()) continue;
+            const auto entity = document.FindByUuid(operation.EntityUuid());
             if (!ApplyComponentOperation(document.ecs.registry, entity, operation))
                 return Result<PrefabPropagationLoadReport>::Fail(
                     Error::InvalidArgument, plan.source.normalizedPath.string(),

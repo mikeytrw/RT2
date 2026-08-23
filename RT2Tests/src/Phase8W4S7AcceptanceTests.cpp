@@ -67,7 +67,7 @@ TempGuard Temp()
 bool HasKey(const PrefabPropagationPlan& plan, std::string_view wire)
 {
     for (const auto& operation : plan.componentOperations)
-        if (operation.key.wire() == wire) return true;
+        if (operation.Key().wire() == wire) return true;
     return false;
 }
 
@@ -229,10 +229,8 @@ PrefabPropagationPlan A11Plan(const SceneDocument& document,
     plan.authoringRevision = 3;
     plan.authoringRevisionCaptured = true;
     plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
-    plan.componentOperations.push_back({kA11Entity, kA11Template,
-        PrefabComponentKeyFor<Transform>::value,
-        PrefabPropagationComponentValue{before},
-        PrefabPropagationComponentValue{after}});
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<Transform>(
+        kA11Entity, kA11Template, before, after));
     plan.memberSnapshots.push_back({kA11Entity, kA11Instance, kA11Template, {}});
     plan.rootSnapshots.push_back({kA11Entity, kA11Instance, A11Source()});
     plan.instances.push_back({kA11Instance, kA11Entity,
@@ -587,10 +585,8 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
     plan.meshTableExtent = static_cast<std::uint32_t>(beforeMeshCount);
     plan.materialTableExtent = static_cast<std::uint32_t>(scene.GetMaterialCount());
     plan.textureTableExtent = static_cast<std::uint32_t>(document.ecs.textures.size());
-    plan.componentOperations.push_back({
-        kA10Entity, kA10Template, PrefabComponentKeyFor<NameComponent>::value,
-        PrefabPropagationComponentValue{NameComponent{"before"}},
-        PrefabPropagationComponentValue{NameComponent{"after"}}});
+    plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
+        kA10Entity, kA10Template, NameComponent{"before"}, NameComponent{"after"}));
     plan.memberSnapshots.push_back({kA10Entity, kA10Instance, kA10Template, {}});
     plan.rootSnapshots.push_back({kA10Entity, kA10Instance,
         AssetReference{AssetKind::Prefab, "assets/source.rt2prefab", {}, {},
@@ -834,35 +830,35 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
         }
         const auto stagedRef = std::find_if(staged.value.meshRefOperations.begin(),
             staged.value.meshRefOperations.end(), [&](const auto& operation) {
-                return operation.entityUuid == childUuid;
+            return operation.entityUuid == childUuid;
             });
         REQUIRE(stagedRef != staged.value.meshRefOperations.end());
         REQUIRE(stagedRef->after.has_value());
         const auto importedOperation = std::find_if(
             staged.value.componentOperations.begin(), staged.value.componentOperations.end(),
             [&](const auto& operation) {
-                return operation.entityUuid == childUuid &&
-                    operation.key.wire() == PrefabWireKeys::kImportedSource;
+                return operation.EntityUuid() == childUuid &&
+                    operation.Key().wire() == PrefabWireKeys::kImportedSource;
             });
         const auto primitiveOperation = std::find_if(
             staged.value.componentOperations.begin(), staged.value.componentOperations.end(),
             [&](const auto& operation) {
-                return operation.entityUuid == childUuid &&
-                    operation.key.wire() == PrefabWireKeys::kPrimitive;
+                return operation.EntityUuid() == childUuid &&
+                    operation.Key().wire() == PrefabWireKeys::kPrimitive;
             });
         std::optional<ImportedMeshSourceComponent> expectedImported;
         std::optional<PrimitiveComponent> expectedPrimitive;
         if (sourceImported)
         {
             REQUIRE(importedOperation != staged.value.componentOperations.end());
-            REQUIRE(importedOperation->after.has_value());
-            expectedImported = std::get<ImportedMeshSourceComponent>(*importedOperation->after);
+            REQUIRE(importedOperation->AfterValue().has_value());
+            expectedImported = std::get<ImportedMeshSourceComponent>(*importedOperation->AfterValue());
         }
         else
         {
             REQUIRE(primitiveOperation != staged.value.componentOperations.end());
-            REQUIRE(primitiveOperation->after.has_value());
-            expectedPrimitive = std::get<PrimitiveComponent>(*primitiveOperation->after);
+            REQUIRE(primitiveOperation->AfterValue().has_value());
+            expectedPrimitive = std::get<PrimitiveComponent>(*primitiveOperation->AfterValue());
         }
         const auto fingerprint = staged.value.source;
         EditorCommandHistory history;
@@ -1018,10 +1014,10 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
         bool removedPrimitive = false;
         for (const auto& operation : result.value.componentOperations)
         {
-            if (operation.key.wire() == PrefabWireKeys::kImportedSource)
-                addedImported = !operation.before.has_value() && operation.after.has_value();
-            if (operation.key.wire() == PrefabWireKeys::kPrimitive)
-                removedPrimitive = operation.after.has_value() == false;
+            if (operation.Key().wire() == PrefabWireKeys::kImportedSource)
+                addedImported = !operation.BeforeValue().has_value() && operation.AfterValue().has_value();
+            if (operation.Key().wire() == PrefabWireKeys::kPrimitive)
+                removedPrimitive = operation.AfterValue().has_value() == false;
         }
         CHECK(addedImported);
         CHECK(removedPrimitive);
@@ -1040,10 +1036,10 @@ TEST_CASE("Phase 8 W4 S7 A13: provenance transitions and material conflict quara
         bool removedImported = false;
         for (const auto& operation : result.value.componentOperations)
         {
-            if (operation.key.wire() == PrefabWireKeys::kPrimitive)
-                addedPrimitive = !operation.before.has_value() && operation.after.has_value();
-            if (operation.key.wire() == PrefabWireKeys::kImportedSource)
-                removedImported = operation.after.has_value() == false;
+            if (operation.Key().wire() == PrefabWireKeys::kPrimitive)
+                addedPrimitive = !operation.BeforeValue().has_value() && operation.AfterValue().has_value();
+            if (operation.Key().wire() == PrefabWireKeys::kImportedSource)
+                removedImported = operation.AfterValue().has_value() == false;
         }
         CHECK(addedPrimitive);
         CHECK(removedImported);

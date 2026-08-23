@@ -8,6 +8,7 @@
 #include "MeshRegistry.h"
 #include "PrefabComponentKey.h"
 #include "PrefabComponentValueEquality.h"
+#include "PrefabPropagationComponentAdapter.h"
 #include "SceneTypes.h"
 #include "SceneSyncImpact.h"
 
@@ -54,93 +55,6 @@ enum class PrefabPropagationInstanceDisposition : std::uint8_t
     Propagate,
     NoOp,
     Quarantined,
-};
-
-using PrefabPropagationComponentValue = std::variant<
-    NameComponent,
-    Transform,
-    VisibleComponent,
-    PrimitiveComponent,
-    ImportedMeshSourceComponent,
-    MaterialOverrideComponent,
-    LightComponent,
-    CameraComponent,
-    MotionComponent,
-    ScriptComponent>;
-
-inline bool PrefabPropagationValueEqual(const PrefabPropagationComponentValue& a,
-                                        const PrefabPropagationComponentValue& b) noexcept
-{
-    return std::visit([](const auto& x, const auto& y) -> bool {
-        using X = std::decay_t<decltype(x)>;
-        using Y = std::decay_t<decltype(y)>;
-        if constexpr (!std::is_same_v<X, Y>) return false;
-        else return PrefabCanonicalComponentEqual(x, y);
-    }, a, b);
-}
-
-inline bool PrefabPropagationKeyAllowsValue(const PrefabComponentKey& key,
-                                             const PrefabPropagationComponentValue& value) noexcept
-{
-    const auto canonical = FindComponentByWire(key.wire());
-    if (!canonical || *canonical != key) return false;
-    // importedSource is source-authoritative rather than user-overridable,
-    // but it is a legal propagation operation. Links and derived MeshRef are
-    // absent from the payload variant and therefore cannot enter this path.
-    const bool sourceAuthoritative = key.wire() == PrefabWireKeys::kImportedSource;
-    if (!key.overridable() && !sourceAuthoritative) return false;
-    return std::visit([&](const auto& payload) -> bool {
-        using T = std::decay_t<decltype(payload)>;
-        if constexpr (std::is_same_v<T, NameComponent>)
-            return key.wire() == PrefabWireKeys::kName;
-        else if constexpr (std::is_same_v<T, Transform>)
-            return key.wire() == PrefabWireKeys::kTransform;
-        else if constexpr (std::is_same_v<T, VisibleComponent>)
-            return key.wire() == PrefabWireKeys::kVisible;
-        else if constexpr (std::is_same_v<T, PrimitiveComponent>)
-            return key.wire() == PrefabWireKeys::kPrimitive;
-        else if constexpr (std::is_same_v<T, ImportedMeshSourceComponent>)
-            return key.wire() == PrefabWireKeys::kImportedSource;
-        else if constexpr (std::is_same_v<T, MaterialOverrideComponent>)
-            return key.wire() == PrefabWireKeys::kMaterialOverride;
-        else if constexpr (std::is_same_v<T, LightComponent>)
-            return key.wire() == PrefabWireKeys::kLight;
-        else if constexpr (std::is_same_v<T, CameraComponent>)
-            return key.wire() == PrefabWireKeys::kCamera;
-        else if constexpr (std::is_same_v<T, MotionComponent>)
-            return key.wire() == PrefabWireKeys::kMotion;
-        else
-            return key.wire() == PrefabWireKeys::kScript;
-    }, value);
-}
-
-struct PrefabPropagationComponentOperation
-{
-    UUID entityUuid;
-    UUID templateId;
-    PrefabComponentKey key;
-    std::optional<PrefabPropagationComponentValue> before;
-    std::optional<PrefabPropagationComponentValue> after;
-
-    bool IsValid() const noexcept
-    {
-        if (entityUuid.IsNull() || templateId.IsNull() || !key.valid()) return false;
-        if (!before && !after) return false;
-        if (before && !PrefabPropagationKeyAllowsValue(key, *before)) return false;
-        if (after && !PrefabPropagationKeyAllowsValue(key, *after)) return false;
-        return true;
-    }
-
-    friend bool operator==(const PrefabPropagationComponentOperation& a,
-                           const PrefabPropagationComponentOperation& b) noexcept
-    {
-        return a.entityUuid == b.entityUuid && a.templateId == b.templateId &&
-               a.key == b.key &&
-               (!a.before && !b.before || a.before && b.before &&
-                   PrefabPropagationValueEqual(*a.before, *b.before)) &&
-               (!a.after && !b.after || a.after && b.after &&
-                   PrefabPropagationValueEqual(*a.after, *b.after));
-    }
 };
 
 enum class PrefabPropagationResourceKind : std::uint8_t
@@ -451,21 +365,6 @@ struct PrefabPropagationRootSnapshot
     }
 };
 
-inline SyncImpact PrefabPropagationImpactForKey(const PrefabComponentKey& key) noexcept
-{
-    const auto wire = key.wire();
-    if (wire == PrefabWireKeys::kTransform)
-        return SyncImpact::Transform;
-    if (wire == PrefabWireKeys::kMaterialOverride ||
-        wire == PrefabWireKeys::kLight)
-        return SyncImpact::Material;
-    if (wire == PrefabWireKeys::kVisible ||
-        wire == PrefabWireKeys::kPrimitive ||
-        wire == PrefabWireKeys::kImportedSource)
-        return SyncImpact::Structural;
-    return SyncImpact::None;
-}
-
 inline SyncImpact PrefabPropagationImpactForResource(
     PrefabPropagationResourceKind kind) noexcept
 {
@@ -473,14 +372,6 @@ inline SyncImpact PrefabPropagationImpactForResource(
         kind == PrefabPropagationResourceKind::Texture)
         return SyncImpact::Structural;
     return SyncImpact::Material;
-}
-
-inline bool PrefabPropagationComponentOperationIsNoOp(
-    const PrefabPropagationComponentOperation& operation) noexcept
-{
-    if (operation.before.has_value() != operation.after.has_value()) return false;
-    if (!operation.before) return true;
-    return PrefabPropagationValueEqual(*operation.before, *operation.after);
 }
 
 struct PrefabPropagationDiagnostic
@@ -547,7 +438,7 @@ struct PrefabPropagationPlan
     std::uint32_t materialTableExtent = 0;
     std::uint32_t textureTableExtent = 0;
     std::vector<PrefabPropagationInstancePlan> instances;
-    std::vector<PrefabPropagationComponentOperation> componentOperations;
+    std::vector<PrefabPropagationComponentDelta> componentOperations;
     std::vector<PrefabPropagationMeshRefOperation> meshRefOperations;
     std::vector<PrefabPropagationMemberSnapshot> memberSnapshots;
     std::vector<PrefabPropagationRootSnapshot> rootSnapshots;
@@ -562,10 +453,10 @@ struct PrefabPropagationPlan
         derived.reserve(componentOperations.size());
         for (const auto& operation : componentOperations)
         {
-            if (PrefabPropagationComponentOperationIsNoOp(operation)) continue;
-            if (std::find(derived.begin(), derived.end(), operation.entityUuid) ==
+            if (operation.IsNoOp()) continue;
+            if (std::find(derived.begin(), derived.end(), operation.EntityUuid()) ==
                 derived.end())
-                derived.push_back(operation.entityUuid);
+                derived.push_back(operation.EntityUuid());
         }
         for (const auto& operation : meshRefOperations)
         {
@@ -589,10 +480,10 @@ struct PrefabPropagationPlan
         SyncImpact derived = SyncImpact::None;
         for (const auto& operation : componentOperations)
         {
-            if (PrefabPropagationComponentOperationIsNoOp(operation)) continue;
-            if (static_cast<int>(PrefabPropagationImpactForKey(operation.key)) >
+            if (operation.IsNoOp()) continue;
+            if (static_cast<int>(operation.Impact()) >
                 static_cast<int>(derived))
-                derived = PrefabPropagationImpactForKey(operation.key);
+                derived = operation.Impact();
         }
         for (const auto& operation : meshRefOperations)
         {
@@ -618,7 +509,7 @@ struct PrefabPropagationPlan
         std::set<UUID> roots;
         for (const auto& operation : componentOperations)
             if (!operation.IsValid() ||
-                !componentKeys.emplace(operation.entityUuid, operation.key.wire()).second)
+                !componentKeys.emplace(operation.EntityUuid(), operation.Key().wire()).second)
                 return false;
         for (const auto& operation : meshRefOperations)
             if (!operation.IsValid() || !meshEntities.emplace(operation.entityUuid).second)
@@ -728,7 +619,7 @@ struct PrefabPropagationPlan
     {
         if (!IsValid()) return false;
         for (const auto& op : componentOperations)
-            if (!PrefabPropagationComponentOperationIsNoOp(op)) return false;
+            if (!op.IsNoOp()) return false;
         if (!resourceOwnership.empty()) return false;
         for (const auto& operation : meshRefOperations)
             if (operation.before.has_value() != operation.after.has_value() ||
