@@ -29,10 +29,13 @@ std::optional<T> OperationAfter(const PrefabPropagationPlan& plan,
         });
     if (it != plan.componentOperations.end())
     {
-        const auto after = it->AfterValue();
-        if (!after) return std::nullopt;
-        if (const auto* value = std::get_if<T>(&*after)) return *value;
-        return std::nullopt;
+        return it->Visit([](const auto& typed) -> std::optional<T> {
+            using U = typename std::decay_t<decltype(typed)>::Type;
+            if constexpr (std::is_same_v<T, U>)
+                return typed.After();
+            else
+                return std::nullopt;
+        });
     }
     return ReadPropagationComponent<T>(live, liveEntity);
 }
@@ -212,11 +215,11 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
             if (!id) continue;
 
             const auto* importedOperation = FindOperation(durablePlan, uuid,
-                PrefabComponentKeyFor<ImportedMeshSourceComponent>::value);
+                PropagationComponentKey<ImportedMeshSourceComponent>());
             const auto* primitiveOperation = FindOperation(durablePlan, uuid,
-                PrefabComponentKeyFor<PrimitiveComponent>::value);
+                PropagationComponentKey<PrimitiveComponent>());
             const auto* materialOperation = FindOperation(durablePlan, uuid,
-                PrefabComponentKeyFor<MaterialOverrideComponent>::value);
+                PropagationComponentKey<MaterialOverrideComponent>());
             // Resource staging is driven by an effective resource/provenance
             // operation.  A value-only operation must not re-resolve an
             // unchanged imported sibling in the same prefab instance.
@@ -229,7 +232,7 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                 hasImported = live.ecs.registry.all_of<ImportedMeshSourceComponent>(liveEntity);
             const auto imported = hasImported
                 ? OperationAfter<ImportedMeshSourceComponent>(
-                    durablePlan, uuid, PrefabComponentKeyFor<ImportedMeshSourceComponent>::value,
+                    durablePlan, uuid, PropagationComponentKey<ImportedMeshSourceComponent>(),
                     live.ecs.registry, liveEntity)
                 : std::optional<ImportedMeshSourceComponent>{};
             hasImported = imported.has_value();
@@ -237,7 +240,7 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
             !primitiveOperation->IsNoOp() &&
                 primitiveOperation->AfterValue().has_value();
             const auto primitive = OperationAfter<PrimitiveComponent>(
-                durablePlan, uuid, PrefabComponentKeyFor<PrimitiveComponent>::value,
+                durablePlan, uuid, PropagationComponentKey<PrimitiveComponent>(),
                 live.ecs.registry, liveEntity);
             hasPrimitive = hasPrimitive && primitive.has_value();
             if (!hasImported && !hasPrimitive) continue;
@@ -251,7 +254,7 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
             if (imported)
                 fragment.ecs.registry.emplace<ImportedMeshSourceComponent>(fragmentEntity, *imported);
             if (const auto material = OperationAfter<MaterialOverrideComponent>(
-                    durablePlan, uuid, PrefabComponentKeyFor<MaterialOverrideComponent>::value,
+                    durablePlan, uuid, PropagationComponentKey<MaterialOverrideComponent>(),
                     live.ecs.registry, liveEntity))
                 fragment.ecs.registry.emplace<MaterialOverrideComponent>(fragmentEntity, *material);
             if (hasPrimitive && primitive)
@@ -417,8 +420,13 @@ Result<PrefabPropagationPlan> StagePrefabPropagationResources(
                     repaired.materialIndex += static_cast<int>(materialRebase);
                 }
                 if (auto* operation = FindOperation(result, uuid,
-                        PrefabComponentKeyFor<MaterialOverrideComponent>::value))
-                    *operation = operation->WithAfter<MaterialOverrideComponent>(repaired);
+                        PropagationComponentKey<MaterialOverrideComponent>()))
+                {
+                    if (!operation->TryWithAfter<MaterialOverrideComponent>(repaired))
+                        return Result<PrefabPropagationPlan>::Fail(
+                            Error::InvalidArgument, "prefab-propagation",
+                            "material repair targeted a mismatched typed delta");
+                }
                 else
                 {
                     const auto* liveMaterial = live.ecs.registry.try_get<MaterialOverrideComponent>(liveEntity);

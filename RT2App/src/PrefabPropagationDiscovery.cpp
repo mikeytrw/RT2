@@ -190,7 +190,8 @@ bool ValidateOverrides(const PrefabMemberComponent& member,
     for (const auto& key : member.overrides)
     {
         const auto resolved = FindComponentByWire(key.wire());
-        if (!resolved || *resolved != key || !IsOverridable(*resolved))
+        if (!resolved || *resolved != key ||
+            !IsPropagationComponentOverrideableKey(*resolved))
         {
             reason = "override vector contains an unknown, excluded, or forged key";
             return false;
@@ -411,13 +412,6 @@ InstanceValidation ValidateInstance(const SceneDocument& document,
     return result;
 }
 
-template<typename T>
-std::optional<T> CopyComponent(const entt::registry& registry, entt::entity entity)
-{
-    const auto* value = registry.try_get<T>(entity);
-    return value ? std::optional<T>(*value) : std::nullopt;
-}
-
 bool HasOverride(const PrefabMemberComponent& member, const PrefabComponentKey& key)
 {
     return std::find(member.overrides.begin(), member.overrides.end(), key) !=
@@ -500,19 +494,19 @@ bool BuildReconciliation(const SceneDocument& document,
         }
 
         const bool markerPrimitive = HasOverride(
-            *member, PrefabComponentKeyFor<PrimitiveComponent>::value);
+            *member, PropagationComponentKey<PrimitiveComponent>());
         const bool markerMaterial = HasOverride(
-            *member, PrefabComponentKeyFor<MaterialOverrideComponent>::value);
-        const auto beforeName = CopyComponent<NameComponent>(registry, entity);
-        const auto beforeTransform = CopyComponent<Transform>(registry, entity);
-        const auto beforeVisible = CopyComponent<VisibleComponent>(registry, entity);
-        const auto beforePrimitive = CopyComponent<PrimitiveComponent>(registry, entity);
-        const auto beforeImported = CopyComponent<ImportedMeshSourceComponent>(registry, entity);
-        const auto beforeMaterial = CopyComponent<MaterialOverrideComponent>(registry, entity);
-        const auto beforeLight = CopyComponent<LightComponent>(registry, entity);
-        const auto beforeCamera = CopyComponent<CameraComponent>(registry, entity);
-        const auto beforeMotion = CopyComponent<MotionComponent>(registry, entity);
-        const auto beforeScript = CopyComponent<ScriptComponent>(registry, entity);
+            *member, PropagationComponentKey<MaterialOverrideComponent>());
+        const auto beforeName = ReadPropagationComponent<NameComponent>(registry, entity);
+        const auto beforeTransform = ReadPropagationComponent<Transform>(registry, entity);
+        const auto beforeVisible = ReadPropagationComponent<VisibleComponent>(registry, entity);
+        const auto beforePrimitive = ReadPropagationComponent<PrimitiveComponent>(registry, entity);
+        const auto beforeImported = ReadPropagationComponent<ImportedMeshSourceComponent>(registry, entity);
+        const auto beforeMaterial = ReadPropagationComponent<MaterialOverrideComponent>(registry, entity);
+        const auto beforeLight = ReadPropagationComponent<LightComponent>(registry, entity);
+        const auto beforeCamera = ReadPropagationComponent<CameraComponent>(registry, entity);
+        const auto beforeMotion = ReadPropagationComponent<MotionComponent>(registry, entity);
+        const auto beforeScript = ReadPropagationComponent<ScriptComponent>(registry, entity);
 
         const auto sourcePrimitiveValue = ReadPropagationSource<PrimitiveComponent>(
             *source.byTemplate.at(templateId));
@@ -539,29 +533,29 @@ bool BuildReconciliation(const SceneDocument& document,
         const auto afterMaterial = markerMaterial ? beforeMaterial : sourceMaterialValue;
 
         std::optional<NameComponent> afterName;
-        if (HasOverride(*member, PrefabComponentKeyFor<NameComponent>::value))
+        if (HasOverride(*member, PropagationComponentKey<NameComponent>()))
             afterName = beforeName;
         else
             afterName = sourceNameValue;
             if (afterName && templateId == source.rootTemplate)
                 afterName->name = InheritedRootName(afterName->name);
-        if (!HasOverride(*member, PrefabComponentKeyFor<NameComponent>::value))
+        if (!HasOverride(*member, PropagationComponentKey<NameComponent>()))
             AddOperation(staged, id->id, templateId, beforeName, afterName);
 
         std::optional<Transform> afterTransform;
-        if (HasOverride(*member, PrefabComponentKeyFor<Transform>::value))
+        if (HasOverride(*member, PropagationComponentKey<Transform>()))
             afterTransform = beforeTransform;
         else
             afterTransform = sourceTransformValue;
-        if (!HasOverride(*member, PrefabComponentKeyFor<Transform>::value))
+        if (!HasOverride(*member, PropagationComponentKey<Transform>()))
             AddOperation(staged, id->id, templateId, beforeTransform, afterTransform);
 
         std::optional<VisibleComponent> afterVisible;
-        if (HasOverride(*member, PrefabComponentKeyFor<VisibleComponent>::value))
+        if (HasOverride(*member, PropagationComponentKey<VisibleComponent>()))
             afterVisible = beforeVisible;
         else
             afterVisible = sourceVisibleValue;
-        if (!HasOverride(*member, PrefabComponentKeyFor<VisibleComponent>::value))
+        if (!HasOverride(*member, PropagationComponentKey<VisibleComponent>()))
             AddOperation(staged, id->id, templateId, beforeVisible, afterVisible);
 
         if (!markerPrimitive)
@@ -584,21 +578,21 @@ bool BuildReconciliation(const SceneDocument& document,
         }
 
         std::optional<LightComponent> afterLight =
-            HasOverride(*member, PrefabComponentKeyFor<LightComponent>::value)
+            HasOverride(*member, PropagationComponentKey<LightComponent>())
                 ? beforeLight : sourceLightValue;
-        if (!HasOverride(*member, PrefabComponentKeyFor<LightComponent>::value))
+        if (!HasOverride(*member, PropagationComponentKey<LightComponent>()))
             AddOperation(staged, id->id, templateId, beforeLight, afterLight);
 
         std::optional<CameraComponent> afterCamera =
-            HasOverride(*member, PrefabComponentKeyFor<CameraComponent>::value)
+            HasOverride(*member, PropagationComponentKey<CameraComponent>())
                 ? beforeCamera : sourceCameraValue;
-        if (!HasOverride(*member, PrefabComponentKeyFor<CameraComponent>::value))
+        if (!HasOverride(*member, PropagationComponentKey<CameraComponent>()))
             AddOperation(staged, id->id, templateId, beforeCamera, afterCamera);
 
         std::optional<MotionComponent> afterMotion =
-            HasOverride(*member, PrefabComponentKeyFor<MotionComponent>::value)
+            HasOverride(*member, PropagationComponentKey<MotionComponent>())
                 ? beforeMotion : sourceMotionValue;
-        if (!HasOverride(*member, PrefabComponentKeyFor<MotionComponent>::value))
+        if (!HasOverride(*member, PropagationComponentKey<MotionComponent>()))
             AddOperation(staged, id->id, templateId, beforeMotion, afterMotion);
 
         if (sourceScriptValue)
@@ -607,9 +601,9 @@ bool BuildReconciliation(const SceneDocument& document,
             RemapEntityReferences(remap, remapped);
         }
         std::optional<ScriptComponent> afterScript =
-            HasOverride(*member, PrefabComponentKeyFor<ScriptComponent>::value)
+            HasOverride(*member, PropagationComponentKey<ScriptComponent>())
                 ? beforeScript : sourceScriptValue;
-        if (!HasOverride(*member, PrefabComponentKeyFor<ScriptComponent>::value))
+        if (!HasOverride(*member, PropagationComponentKey<ScriptComponent>()))
             AddOperation(staged, id->id, templateId, beforeScript, afterScript);
     }
     output.insert(output.end(), std::make_move_iterator(staged.begin()),

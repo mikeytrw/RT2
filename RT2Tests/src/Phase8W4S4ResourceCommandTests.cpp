@@ -78,6 +78,17 @@ void FinalizePlan(SceneManager& scene, PrefabPropagationPlan& plan)
                 [](const auto& snapshot) { return snapshot.rootUuid == kEntity; }))
             plan.rootSnapshots.push_back({kEntity, link->instanceId, link->prefab});
 }
+
+std::string DurableSceneBytes(const SceneDocument& document,
+                              const std::filesystem::path& path)
+{
+    std::vector<AssetDiagnostic> diagnostics;
+    Error error;
+    REQUIRE(SceneSerializer::Save(document, path, diagnostics, error));
+    std::ifstream input(path, std::ios::binary);
+    REQUIRE(input.good());
+    return {std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+}
 }
 
 TEST_CASE("Phase 8 W4 S4: propagation command owns append-only resources and reuses slots")
@@ -221,6 +232,55 @@ TEST_CASE("Phase 8 W4 S4: stale value and fingerprint reject with zero mutation"
     CHECK(ioResult.error.code == Error::Io);
     CHECK(ioResult.error.path == "locked.rt2prefab");
     CHECK(ioResult.error.detail == "source bytes unavailable");
+}
+
+TEST_CASE("Phase 8 typed foundation: command preflights every operation before writing")
+{
+    SceneManager scene;
+    PopulateScene(scene);
+    auto& document = scene.AuthoringDoc();
+    auto& registry = document.ecs.registry;
+    const auto entity = scene.FindEntityByUuid(kEntity);
+    const auto beforeTransform = registry.get<Transform>(entity);
+    auto staleBefore = beforeTransform;
+    staleBefore.translation.x += 100.0f;
+
+    PrefabPropagationPlan plan;
+    plan.source = PrefabSourceFingerprint{
+        "assets/source.rt2prefab", kInstance, "digest-a"};
+    plan.documentGeneration = scene.DocumentGeneration();
+    plan.resourceGeneration = scene.ResourceGeneration();
+    plan.componentOperations.push_back(
+        PrefabPropagationComponentDelta::Make<NameComponent>(
+            kEntity, kTemplate, NameComponent{"old"}, NameComponent{"written-first"}));
+    plan.componentOperations.push_back(
+        PrefabPropagationComponentDelta::Make<Transform>(
+            kEntity, kTemplate, staleBefore, Transform{}));
+    plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
+    plan.affectedEntities = {kEntity};
+    plan.syncImpact = SyncImpact::Transform;
+    FinalizePlan(scene, plan);
+    REQUIRE(plan.IsEffective());
+
+    const auto beforeRevision = scene.AuthoringRevision();
+    const auto beforeResourceGeneration = scene.ResourceGeneration();
+    const auto path = std::filesystem::temp_directory_path() /
+        "rt2_w4_typed_batch_command_before.rt2scene";
+    const auto beforeBytes = DurableSceneBytes(document, path);
+    PrefabPropagationCommand command(plan, [=] {
+        return Result<PrefabSourceFingerprint>::Ok(plan.source);
+    });
+    const auto result = command.Execute(scene);
+    CHECK_FALSE(result.success);
+    CHECK(scene.AuthoringRevision() == beforeRevision);
+    CHECK(scene.ResourceGeneration() == beforeResourceGeneration);
+    CHECK(registry.get<NameComponent>(entity).name == "old");
+    CHECK(PrefabCanonicalComponentEqual(registry.get<Transform>(entity), beforeTransform));
+    CHECK(DurableSceneBytes(document, path) == beforeBytes);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    // Named RED/GREEN fault: moving the first WritePropagationComponent call
+    // into the preflight loop makes the serialized and live-state checks fail.
 }
 
 TEST_CASE("Phase 8 W4 S4: each commit precondition rejects its own stale mutation")

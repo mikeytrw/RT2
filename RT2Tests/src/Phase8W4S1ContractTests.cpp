@@ -62,6 +62,10 @@ static_assert(std::is_same_v<std::variant_alternative_t<6, PropagationComponentS
 static_assert(std::is_same_v<std::variant_alternative_t<7, PropagationComponentSet>, CameraComponent>);
 static_assert(std::is_same_v<std::variant_alternative_t<8, PropagationComponentSet>, MotionComponent>);
 static_assert(std::is_same_v<std::variant_alternative_t<9, PropagationComponentSet>, ScriptComponent>);
+static_assert(PropagationComponentKeysAreUnique());
+static_assert(!IsPropagationComponentV<MeshRef>);
+static_assert(!IsPropagationComponentV<PrefabInstanceComponent>);
+static_assert(!IsPropagationComponentV<PrefabMemberComponent>);
 
 template<typename T>
 void ExerciseTypedPropagationAdapter(entt::registry& registry, entt::entity entity,
@@ -116,6 +120,18 @@ TEST_CASE("Phase 8 typed foundation: later adapter preflight is zero mutation")
     CHECK(current->name == "first");
     // Named RED/GREEN fault: replacing preflight with unconditional success
     // makes this test fail before any later operation can mutate the entity.
+}
+
+TEST_CASE("Phase 8 typed foundation: mismatched typed replacement is loud")
+{
+    auto delta = PrefabPropagationComponentDelta::Make<NameComponent>(
+        kEntity, kTemplate, NameComponent{"before"}, NameComponent{"after"});
+    CHECK_FALSE(delta.TryWithAfter<Transform>(Transform{}));
+    const auto after = delta.AfterValue();
+    REQUIRE(after.has_value());
+    const auto* name = std::get_if<NameComponent>(&*after);
+    REQUIRE(name);
+    CHECK(name->name == "after");
 }
 
 TEST_CASE("Phase 8 W4 S1: primitive is the ninth overridable key")

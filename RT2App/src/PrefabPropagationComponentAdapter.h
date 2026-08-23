@@ -8,6 +8,7 @@
 #include "PrefabSerializer.h"
 #include "SceneSyncImpact.h"
 
+#include <array>
 #include <optional>
 #include <type_traits>
 #include <utility>
@@ -34,10 +35,18 @@ template<typename T>
 struct PropagationComponentDescriptor;
 
 template<typename T>
+struct IsPropagationComponent : std::false_type {};
+
+template<typename T>
+inline constexpr bool IsPropagationComponentV =
+    IsPropagationComponent<T>::value;
+
+template<typename T>
 inline constexpr SyncImpact PropagationComponentImpact =
     PropagationComponentDescriptor<T>::Impact;
 
 #define RT2_PROPAGATION_DESCRIPTOR(T, IMPACT)                                  \
+template<> struct IsPropagationComponent<T> : std::true_type {};                \
 template<> struct PropagationComponentDescriptor<T>                             \
 {                                                                                \
     using Type = T;                                                              \
@@ -61,8 +70,71 @@ RT2_PROPAGATION_DESCRIPTOR(ScriptComponent, SyncImpact::None)
 #undef RT2_PROPAGATION_DESCRIPTOR
 
 template<typename T>
+constexpr PrefabComponentKey PropagationComponentKey() noexcept
+{
+    static_assert(IsPropagationComponentV<T>,
+                  "T is not one of the ten propagation component types");
+    return PropagationComponentDescriptor<T>::KeyValue;
+}
+
+template<typename T>
+constexpr bool PropagationComponentOverrideable() noexcept
+{
+    static_assert(IsPropagationComponentV<T>,
+                  "T is not one of the ten propagation component types");
+    return PropagationComponentDescriptor<T>::Overrideable;
+}
+
+constexpr std::array<std::string_view, 10> kPropagationComponentWires = {
+    PropagationComponentDescriptor<NameComponent>::KeyValue.wire(),
+    PropagationComponentDescriptor<Transform>::KeyValue.wire(),
+    PropagationComponentDescriptor<VisibleComponent>::KeyValue.wire(),
+    PropagationComponentDescriptor<PrimitiveComponent>::KeyValue.wire(),
+    PropagationComponentDescriptor<ImportedMeshSourceComponent>::KeyValue.wire(),
+    PropagationComponentDescriptor<MaterialOverrideComponent>::KeyValue.wire(),
+    PropagationComponentDescriptor<LightComponent>::KeyValue.wire(),
+    PropagationComponentDescriptor<CameraComponent>::KeyValue.wire(),
+    PropagationComponentDescriptor<MotionComponent>::KeyValue.wire(),
+    PropagationComponentDescriptor<ScriptComponent>::KeyValue.wire()};
+
+constexpr bool PropagationComponentKeysAreUnique() noexcept
+{
+    for (std::size_t i = 0; i < kPropagationComponentWires.size(); ++i)
+        for (std::size_t j = i + 1; j < kPropagationComponentWires.size(); ++j)
+            if (kPropagationComponentWires[i] == kPropagationComponentWires[j])
+                return false;
+    return true;
+}
+
+static_assert(PropagationComponentKeysAreUnique(),
+              "propagation descriptor keys must be unique");
+
+inline bool IsPropagationComponentKey(const PrefabComponentKey& key) noexcept
+{
+    for (const auto wire : kPropagationComponentWires)
+        if (key.wire() == wire) return true;
+    return false;
+}
+
+inline bool IsPropagationComponentOverrideableKey(
+    const PrefabComponentKey& key) noexcept
+{
+    return (key == PropagationComponentDescriptor<NameComponent>::KeyValue) ||
+           (key == PropagationComponentDescriptor<Transform>::KeyValue) ||
+           (key == PropagationComponentDescriptor<VisibleComponent>::KeyValue) ||
+           (key == PropagationComponentDescriptor<PrimitiveComponent>::KeyValue) ||
+           (key == PropagationComponentDescriptor<MaterialOverrideComponent>::KeyValue) ||
+           (key == PropagationComponentDescriptor<LightComponent>::KeyValue) ||
+           (key == PropagationComponentDescriptor<CameraComponent>::KeyValue) ||
+           (key == PropagationComponentDescriptor<MotionComponent>::KeyValue) ||
+           (key == PropagationComponentDescriptor<ScriptComponent>::KeyValue);
+}
+
+template<typename T>
 struct TypedComponentDelta
 {
+    static_assert(IsPropagationComponentV<T>,
+                  "typed deltas are closed to the ten propagation component types");
     using Type = T;
     static TypedComponentDelta Make(const UUID& entity, const UUID& templ,
                                     std::optional<T> beforeValue,
@@ -116,7 +188,8 @@ public:
         const UUID& entity, const UUID& templ,
         std::optional<T> before, std::optional<T> after)
     {
-        static_assert(std::is_same_v<T, typename PropagationComponentDescriptor<T>::Type>);
+        static_assert(IsPropagationComponentV<T>,
+                      "typed deltas are closed to the ten propagation component types");
         return PrefabPropagationComponentDelta(
             TypedComponentDelta<T>::Make(entity, templ,
                                           std::move(before), std::move(after)));
@@ -181,15 +254,20 @@ public:
     }); }
 
     template<typename T>
-    PrefabPropagationComponentDelta WithAfter(std::optional<T> after) const
+    bool TryWithAfter(std::optional<T> after)
     {
+        static_assert(IsPropagationComponentV<T>,
+                      "typed deltas are closed to the ten propagation component types");
         return Visit([&](const auto& delta) {
             using U = typename std::decay_t<decltype(delta)>::Type;
             if constexpr (std::is_same_v<T, U>)
-                return Make<T>(delta.EntityUuid(), delta.TemplateId(),
-                               delta.Before(), std::move(after));
+            {
+                *this = Make<T>(delta.EntityUuid(), delta.TemplateId(),
+                                delta.Before(), std::move(after));
+                return true;
+            }
             else
-                return *this;
+                return false;
         });
     }
 
@@ -237,6 +315,8 @@ template<typename T>
 std::optional<T> ReadPropagationComponent(const entt::registry& registry,
                                           entt::entity entity)
 {
+    static_assert(IsPropagationComponentV<T>,
+                  "live propagation reads are closed to the ten propagation component types");
     if (const auto* value = registry.try_get<T>(entity)) return *value;
     return std::nullopt;
 }
@@ -244,6 +324,8 @@ std::optional<T> ReadPropagationComponent(const entt::registry& registry,
 template<typename T>
 std::optional<T> ReadPropagationSource(const PrefabEntityRecord& record)
 {
+    static_assert(IsPropagationComponentV<T>,
+                  "source propagation reads are closed to the ten propagation component types");
     if constexpr (std::is_same_v<T, NameComponent>)
         return NameComponent{record.record.name};
     else if constexpr (std::is_same_v<T, Transform>)
@@ -265,14 +347,29 @@ std::optional<T> ReadPropagationSource(const PrefabEntityRecord& record)
         return record.record.hasMotion ? std::optional<T>(record.record.motion) : std::nullopt;
     else if constexpr (std::is_same_v<T, ScriptComponent>)
         return record.record.hasScript ? std::optional<T>(record.record.script) : std::nullopt;
+    else
+        static_assert(IsPropagationComponentV<T>,
+                      "unsupported source component has no propagation representation");
 }
 
 template<typename T>
 void WritePropagationComponent(entt::registry& registry, entt::entity entity,
                                const std::optional<T>& value)
 {
+    static_assert(IsPropagationComponentV<T>,
+                  "propagation writes are closed to the ten propagation component types");
     if (value) registry.emplace_or_replace<T>(entity, *value);
     else registry.remove<T>(entity);
+}
+
+// MeshRef is derived scene evidence, not a propagation payload. Keep its
+// command precondition read explicitly named so it cannot become an accidental
+// eleventh generic adapter alternative.
+inline std::optional<MeshRef> ReadMeshRefEvidence(const entt::registry& registry,
+                                                  entt::entity entity)
+{
+    if (const auto* value = registry.try_get<MeshRef>(entity)) return *value;
+    return std::nullopt;
 }
 
 inline std::optional<PropagationComponentSet> ReadPropagationComponent(
@@ -315,6 +412,10 @@ static_assert(std::variant_size_v<PropagationComponentDeltaSet> == 10,
 static_assert(!std::is_constructible_v<PrefabPropagationComponentDelta,
                                       PrefabComponentKey>,
               "typed deltas cannot be constructed from an independent key");
+static_assert(!IsPropagationComponentV<MeshRef> &&
+              !IsPropagationComponentV<PrefabInstanceComponent> &&
+              !IsPropagationComponentV<PrefabMemberComponent>,
+              "derived MeshRef and prefab link components are excluded");
 
 } // namespace rt2::core
 

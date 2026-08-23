@@ -534,6 +534,57 @@ TEST_CASE("Phase 8 W4 S5: global source failure is transactional")
           before);
 }
 
+TEST_CASE("Phase 8 typed foundation: load batch preflights every operation before writing")
+{
+    const auto temp = Temp();
+    const auto source = WritePrefab(temp);
+    auto document = MakeDocument(source);
+    document.metadata.dirty = false;
+    const auto entity = document.FindByUuid(U(201));
+    REQUIRE(static_cast<std::uint32_t>(entity) !=
+            static_cast<std::uint32_t>(entt::null));
+    const auto beforeTransform = document.ecs.registry.get<Transform>(entity);
+    auto staleBefore = beforeTransform;
+    staleBefore.translation.x += 100.0f;
+
+    PrefabPropagationPlan plan;
+    plan.source = PrefabSourceFingerprint{source, kAsset, "digest-a"};
+    plan.documentGeneration = 1;
+    plan.resourceGeneration = 1;
+    plan.authoringRevision = 0;
+    plan.componentOperations.push_back(
+        PrefabPropagationComponentDelta::Make<NameComponent>(
+            U(201), U(2), NameComponent{"Old"}, NameComponent{"written-first"}));
+    plan.componentOperations.push_back(
+        PrefabPropagationComponentDelta::Make<Transform>(
+            U(201), U(2), staleBefore, Transform{}));
+    plan.memberSnapshots.push_back({U(201), kInstanceA, U(2), {}});
+    plan.affectedEntities = {U(201)};
+    plan.syncImpact = SyncImpact::Transform;
+    REQUIRE(plan.IsEffective());
+
+    const auto beforeDeep = DeepDocumentSnapshot(document);
+    const auto beforePath = temp.directory / "typed-load-before.rt2scene";
+    const auto afterPath = temp.directory / "typed-load-after.rt2scene";
+    const auto beforeBytes = SerializedSnapshot(document, beforePath);
+
+    PrefabPropagationLoadHooks hooks;
+    hooks.prepare = [plan](const PrefabPropagationDiscoveryRequest&) {
+        return Result<PrefabPropagationPlan>::Ok(plan);
+    };
+    const auto result = ReconcilePrefabPropagationForLoad(
+        document, AssetResolutionContext{temp.directory, nullptr}, hooks);
+    CHECK_FALSE(result.IsOk());
+    CHECK(DeepDocumentSnapshot(document) == beforeDeep);
+    CHECK(SerializedSnapshot(document, afterPath) == beforeBytes);
+    CHECK(document.ecs.registry.get<NameComponent>(entity).name == "Old");
+    CHECK(PrefabCanonicalComponentEqual(
+        document.ecs.registry.get<Transform>(entity), beforeTransform));
+    CHECK_FALSE(document.metadata.dirty);
+    // Named RED/GREEN fault: applying the first load operation before the
+    // later stale preflight changes both snapshots and the durable name.
+}
+
 TEST_CASE("Phase 8 W4 S5: recovery restores and reconciles before asset resolution")
 {
     const auto temp = Temp();

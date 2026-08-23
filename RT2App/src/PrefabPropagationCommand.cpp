@@ -173,7 +173,7 @@ EditorMutationResult PrefabPropagationCommand::Execute(SceneManager& scene)
         const auto entity = doc.FindByUuid(operation.entityUuid);
         if (entity == entt::null || !ecs.registry.valid(entity))
             return Failure(Error::InvalidEntity, operation.entityUuid.ToString(), "stale MeshRef target");
-        const auto current = ReadPropagationComponent<MeshRef>(ecs.registry, entity);
+        const auto current = ReadMeshRefEvidence(ecs.registry, entity);
         if (current.has_value() != operation.before.has_value() ||
             (current && (current->meshIndex != operation.before->meshIndex ||
                          current->materialIndex != operation.before->materialIndex)))
@@ -217,7 +217,7 @@ EditorMutationResult PrefabPropagationCommand::Execute(SceneManager& scene)
     {
         const auto entity = doc.FindByUuid(operation.EntityUuid());
         WritePropagationComponent(operation, ecs.registry, entity, true);
-        if (operation.Key().wire() == PrefabWireKeys::kTransform)
+        if (operation.Impact() == SyncImpact::Transform)
             SceneGraph::MarkDirty(ecs.registry, entity);
     }
     for (const auto& operation : m_Plan.meshRefOperations)
@@ -281,7 +281,7 @@ EditorMutationResult PrefabPropagationCommand::Undo(SceneManager& scene)
     {
         const auto entity = doc.FindByUuid(operation.entityUuid);
         const auto current = entity == entt::null ? std::optional<MeshRef>{}
-                                                   : ReadPropagationComponent<MeshRef>(ecs.registry, entity);
+                                                   : ReadMeshRefEvidence(ecs.registry, entity);
         if (entity == entt::null || !ecs.registry.valid(entity) ||
             current.has_value() != operation.after.has_value() ||
             (current && (current->meshIndex != operation.after->meshIndex ||
@@ -302,7 +302,7 @@ EditorMutationResult PrefabPropagationCommand::Undo(SceneManager& scene)
     {
         const auto entity = doc.FindByUuid(operation.EntityUuid());
         WritePropagationComponent(operation, ecs.registry, entity, false);
-        if (operation.Key().wire() == PrefabWireKeys::kTransform)
+        if (operation.Impact() == SyncImpact::Transform)
             SceneGraph::MarkDirty(ecs.registry, entity);
     }
     for (const auto& operation : m_Plan.meshRefOperations)
