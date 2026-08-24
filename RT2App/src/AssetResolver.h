@@ -157,6 +157,25 @@ struct AssetResolutionResult
     bool                   identityRepairRequired = false;
 };
 
+// The lifecycle capture boundary needs the same durable identity policy as
+// Resolve(), but it must not reopen a source or sidecar while matching a
+// captured snapshot.  This resolver therefore performs only database/path
+// identity work; callers provide the already-captured canonical path and
+// sidecar ID when validating a snapshot.
+struct CapturedAssetIdentity
+{
+    std::filesystem::path normalizedPath;
+    UUID effectiveId;
+
+    bool IsValid() const noexcept
+    { return !normalizedPath.empty() && !effectiveId.IsNull(); }
+};
+
+Result<CapturedAssetIdentity> ResolveCapturedAssetIdentity(
+    const AssetReference& ref, const AssetResolutionContext& ctx,
+    const std::filesystem::path& capturedPath = {},
+    const UUID& capturedSidecarId = UUID::Nil());
+
 // Resolve a single AssetReference against an explicit context. Pure: no
 // filesystem mutation, no sidecar write, no database mutation. A failure
 // appends one terminal diagnostic. A success may append an advisory, but

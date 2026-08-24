@@ -725,6 +725,97 @@ struct DiscoveredPropagationPlan
         return true;
     }
 
+    // Stage's private finalizer uses this stronger gate before it can mint
+    // an ExecutablePropagationPlan.  Discovery may carry quarantined or
+    // canonical-no-op summaries, but executable evidence must be complete:
+    // every changed delta, MeshRef, and owned block must be anchored to an
+    // actionable instance with its root/link/marker and durable before
+    // snapshots present.  This is deliberately separate from IsValid(),
+    // which also validates summary-only plans.
+    bool IsCommandReady(const PrefabPropagationStageEvidence& stageEvidence) const noexcept
+    {
+        if (!IsValid(stageEvidence) || !source.IsValid() ||
+            documentGeneration == 0 || resourceGeneration == 0 ||
+            !authoringRevisionCaptured || sourceSchemaVersion == 0 ||
+            !resourceEvidenceCaptured)
+            return false;
+
+        std::set<UUID> actionable;
+        for (const auto& instance : instances)
+            if (instance.disposition == PrefabPropagationInstanceDisposition::Propagate)
+                actionable.insert(instance.instanceId);
+        if (actionable.empty()) return false;
+
+        std::set<UUID> roots;
+        for (const auto& root : rootSnapshots)
+        {
+            if (!actionable.count(root.instanceId) || !root.IsValid()) return false;
+            if (!roots.insert(root.instanceId).second) return false;
+        }
+        if (roots != actionable) return false;
+
+        std::set<UUID> members;
+        for (const auto& member : memberSnapshots)
+        {
+            if (!actionable.count(member.instanceId) ||
+                member.entityUuid.IsNull() || member.templateId.IsNull())
+                return false;
+            if (!members.insert(member.entityUuid).second) return false;
+        }
+        auto memberFor = [&](const UUID& entity, const UUID& instance,
+                             const UUID& templateId) {
+            return std::find_if(memberSnapshots.begin(), memberSnapshots.end(),
+                [&](const auto& member) {
+                    return member.entityUuid == entity &&
+                           member.instanceId == instance &&
+                           member.templateId == templateId;
+                }) != memberSnapshots.end();
+        };
+        for (const auto& instance : instances)
+        {
+            if (!actionable.count(instance.instanceId)) continue;
+            for (const auto& entity : instance.affectedEntities)
+            {
+                const auto member = std::find_if(memberSnapshots.begin(),
+                    memberSnapshots.end(), [&](const auto& candidate) {
+                        return candidate.entityUuid == entity &&
+                               candidate.instanceId == instance.instanceId;
+                    });
+                if (member == memberSnapshots.end()) return false;
+            }
+        }
+        for (const auto& operation : componentOperations)
+        {
+            if (operation.IsNoOp()) return false;
+            const auto instanceIt = std::find_if(instances.begin(), instances.end(),
+                [&](const auto& instance) {
+                    return std::find(instance.affectedEntities.begin(),
+                                     instance.affectedEntities.end(),
+                                     operation.EntityUuid()) != instance.affectedEntities.end();
+                });
+            if (instanceIt == instances.end() ||
+                !actionable.count(instanceIt->instanceId) ||
+                !memberFor(operation.EntityUuid(), instanceIt->instanceId,
+                           operation.TemplateId()))
+                return false;
+        }
+        for (const auto& operation : stageEvidence.meshRefOperations)
+        {
+            const auto instanceIt = std::find_if(instances.begin(), instances.end(),
+                [&](const auto& instance) {
+                    return std::find(instance.affectedEntities.begin(),
+                                     instance.affectedEntities.end(),
+                                     operation.entityUuid) != instance.affectedEntities.end();
+                });
+            if (instanceIt == instances.end() ||
+                !actionable.count(instanceIt->instanceId) ||
+                !memberFor(operation.entityUuid, instanceIt->instanceId,
+                           operation.templateId))
+                return false;
+        }
+        return ResourceOwnershipConsumed(stageEvidence);
+    }
+
     bool IsNoOp(const PrefabPropagationStageEvidence& stageEvidence) const noexcept
     {
         if (!IsValid(stageEvidence)) return false;

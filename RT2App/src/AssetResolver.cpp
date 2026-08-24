@@ -37,6 +37,97 @@ std::filesystem::path CanonicalAssetPath(const std::filesystem::path& path)
     return CanonicalAssetPathWithProbe(path, &DefaultCanonicalAssetPathProbe);
 }
 
+Result<CapturedAssetIdentity> ResolveCapturedAssetIdentity(
+    const AssetReference& ref, const AssetResolutionContext& ctx,
+    const std::filesystem::path& capturedPath, const UUID& capturedSidecarId)
+{
+    if (ref.kind != AssetKind::Prefab ||
+        (ref.path.empty() && ref.assetId.IsNull() && capturedPath.empty()))
+        return Result<CapturedAssetIdentity>::Fail(
+            Error::InvalidArgument, ref.path,
+            "captured identity requires a prefab path or durable asset ID");
+
+    const bool hasReferenceId = !ref.assetId.IsNull();
+    const bool hasCapturedId = !capturedSidecarId.IsNull();
+    if (hasReferenceId && hasCapturedId && ref.assetId != capturedSidecarId)
+        return Result<CapturedAssetIdentity>::Fail(
+            Error::InvalidArgument, ref.path,
+            "Conflict: captured sidecar ID disagrees with the asset reference");
+
+    if (hasReferenceId && ctx.database != nullptr)
+    {
+        const auto lookup = ctx.database->LookupById(ref.assetId);
+        if (lookup.status == AssetIdLookupResult::Status::Ambiguous)
+            return Result<CapturedAssetIdentity>::Fail(
+                Error::InvalidArgument, ref.path,
+                "Conflict: asset ID is claimed by multiple database records");
+    }
+    if (hasCapturedId && ctx.database != nullptr)
+    {
+        const auto lookup = ctx.database->LookupById(capturedSidecarId);
+        if (lookup.status == AssetIdLookupResult::Status::Ambiguous)
+            return Result<CapturedAssetIdentity>::Fail(
+                Error::InvalidArgument, ref.path,
+                "Conflict: captured asset ID is claimed by multiple database records");
+    }
+
+    std::filesystem::path path = capturedPath;
+    if (path.empty() && hasReferenceId && ctx.database != nullptr)
+    {
+        const auto lookup = ctx.database->LookupById(ref.assetId);
+        if (lookup.status == AssetIdLookupResult::Status::Unique && lookup.record)
+            path = lookup.record->sourcePath;
+    }
+    if (path.empty()) path = ref.path;
+    if (path.empty())
+        return Result<CapturedAssetIdentity>::Fail(
+            Error::MissingAsset, ref.path,
+            "captured identity has no authored or database source path");
+    if (path.is_relative())
+    {
+        if (ctx.assetRoot.empty() || !ctx.assetRoot.is_absolute())
+            return Result<CapturedAssetIdentity>::Fail(
+                Error::InvalidArgument, ref.path,
+                "relative prefab identity requires an absolute asset root");
+        path = ctx.assetRoot / path;
+    }
+    path = CanonicalAssetPath(path);
+
+    const UUID effectiveId = hasCapturedId ? capturedSidecarId : ref.assetId;
+    // Before Capture reads the sidecar, a nil reference ID is a valid
+    // path-only candidate.  The post-capture call supplies capturedSidecarId
+    // and therefore enforces the durable-ID requirement below.
+    if (effectiveId.IsNull())
+        return Result<CapturedAssetIdentity>::Ok({path, UUID::Nil()});
+
+    if (ctx.database != nullptr)
+    {
+        const auto lookup = ctx.database->LookupById(effectiveId);
+        if (lookup.status == AssetIdLookupResult::Status::Ambiguous)
+            return Result<CapturedAssetIdentity>::Fail(
+                Error::InvalidArgument, path.string(),
+                "Conflict: effective asset ID is claimed by multiple database records");
+        if (lookup.status == AssetIdLookupResult::Status::Unique && lookup.record)
+        {
+            const auto dbPath = CanonicalAssetPath(
+                std::filesystem::path(lookup.record->sourcePath).is_relative()
+                    ? ctx.assetRoot / std::filesystem::path(lookup.record->sourcePath)
+                    : std::filesystem::path(lookup.record->sourcePath));
+            const std::filesystem::path authoredPath(ref.path);
+            const auto authoredCanonical = authoredPath.empty()
+                ? std::filesystem::path{}
+                : CanonicalAssetPath(authoredPath.is_relative()
+                    ? ctx.assetRoot / authoredPath : authoredPath);
+            if (!dbPath.empty() && dbPath != path &&
+                (authoredCanonical.empty() || authoredCanonical != path))
+                return Result<CapturedAssetIdentity>::Fail(
+                    Error::InvalidArgument, path.string(),
+                    "Conflict: effective asset ID and captured path disagree");
+        }
+    }
+    return Result<CapturedAssetIdentity>::Ok({path, effectiveId});
+}
+
 namespace {
 
 struct PathCandidate

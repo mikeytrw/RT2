@@ -57,6 +57,7 @@ struct EffectiveLiveFixture
         plan.resourceGeneration = scene.ResourceGeneration();
         plan.authoringRevision = scene.AuthoringRevision();
         plan.authoringRevisionCaptured = true;
+        plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
         plan.meshTableExtent = scene.AuthoringDoc().ecs.meshRegistry.GetCount();
         plan.materialTableExtent = static_cast<std::uint32_t>(
             scene.AuthoringDoc().ecs.materials.size());

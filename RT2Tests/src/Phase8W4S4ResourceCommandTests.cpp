@@ -74,11 +74,14 @@ void FinalizePlan(SceneManager& scene, DiscoveredPropagationPlan& plan)
     plan.materialTableExtent = static_cast<std::uint32_t>(scene.GetMaterialCount());
     plan.textureTableExtent = static_cast<std::uint32_t>(scene.GetECS().textures.size());
     plan.resourceEvidenceCaptured = true;
+    plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
     const auto root = scene.AuthoringDoc().FindByUuid(kEntity);
     const auto& registry = scene.AuthoringDoc().ecs.registry;
     if (plan.instances.empty())
         plan.instances.push_back({kInstance, kEntity,
             PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
+    if (plan.memberSnapshots.empty())
+        plan.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
     if (const auto* link = registry.try_get<PrefabInstanceComponent>(root))
         if (std::none_of(plan.rootSnapshots.begin(), plan.rootSnapshots.end(),
                 [](const auto& snapshot) { return snapshot.rootUuid == kEntity; }))

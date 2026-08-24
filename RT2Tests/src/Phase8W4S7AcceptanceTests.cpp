@@ -245,6 +245,7 @@ DiscoveredPropagationPlan A11Plan(const SceneDocument& document,
     plan.authoringRevision = 3;
     plan.authoringRevisionCaptured = true;
     plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
+    plan.resourceEvidenceCaptured = true;
     plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<Transform>(
         kA11Entity, kA11Template, before, after));
     plan.memberSnapshots.push_back({kA11Entity, kA11Instance, kA11Template, {}});

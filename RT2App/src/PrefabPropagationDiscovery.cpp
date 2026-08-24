@@ -645,40 +645,14 @@ PrefabPropagationDiagnostic MakeDiagnostic(const PrefabSourceFingerprint& source
     return diagnostic;
 }
 
-// Identity lookup for the capture boundary is deliberately sidecar-free.  A
-// database record supplies a durable path; otherwise the authored path is
-// normalized against the explicit asset root.  The only filesystem reads in
-// this lifecycle are the two byte reads performed by CapturePrefabSource.
-std::filesystem::path CapturePath(const AssetReference& source,
-                                   const AssetResolutionContext& assets)
-{
-    std::filesystem::path path;
-    if (!source.assetId.IsNull() && assets.database != nullptr)
-    {
-        const auto lookup = assets.database->LookupById(source.assetId);
-        if (lookup.status == AssetIdLookupResult::Status::Unique && lookup.record)
-            path = lookup.record->sourcePath;
-    }
-    if (path.empty()) path = source.path;
-    if (path.empty()) return {};
-    if (path.is_relative())
-    {
-        if (assets.assetRoot.empty()) return {};
-        path = assets.assetRoot / path;
-    }
-    return CanonicalAssetPath(path);
-}
-
 bool MatchesCapturedIdentity(const AssetReference& reference,
                              const PrefabSourceFingerprint& captured,
                              const AssetResolutionContext& assets)
 {
-    if (reference.kind != AssetKind::Prefab) return false;
-    if (!reference.assetId.IsNull() && reference.assetId != captured.assetId)
-        return false;
-    if (reference.path.empty()) return !reference.assetId.IsNull();
-    const auto candidate = CapturePath(reference, assets);
-    return !candidate.empty() && candidate == captured.normalizedPath;
+    const auto resolved = ResolveCapturedAssetIdentity(
+        reference, assets, captured.normalizedPath, captured.assetId);
+    return resolved.IsOk() && resolved.value.normalizedPath == captured.normalizedPath &&
+           resolved.value.effectiveId == captured.assetId;
 }
 
 } // namespace
@@ -692,11 +666,25 @@ Result<CapturedPrefabSource> CapturePrefabSource(
         (source.path.empty() && source.assetId.IsNull()))
         return Result<CapturedPrefabSource>::Fail(
             Error::InvalidArgument, {}, "prefab fingerprint requires a prefab identity");
-    const auto path = CapturePath(source, assets);
-    if (path.empty())
+    const auto preliminary = ResolveCapturedAssetIdentity(source, assets);
+    if (!preliminary.IsOk())
         return Result<CapturedPrefabSource>::Fail(
-            Error::MissingAsset, source.path,
-            "prefab source path cannot be resolved without sidecar I/O");
+            preliminary.error.code, preliminary.error.path,
+            preliminary.error.detail);
+    auto path = preliminary.value.normalizedPath;
+    // AssetResolver's ID-first rule still permits an authored-path fallback
+    // when the unique database record is stale.  Existence probes choose that
+    // fallback without opening either source or sidecar; the injected reader
+    // below still performs exactly one source read and one sidecar read.
+    if (!source.path.empty() && assets.database != nullptr &&
+        !std::filesystem::is_regular_file(path))
+    {
+        const std::filesystem::path authored(source.path);
+        const auto authoredPath = CanonicalAssetPath(authored.is_relative()
+            ? assets.assetRoot / authored : authored);
+        if (std::filesystem::is_regular_file(authoredPath))
+            path = authoredPath;
+    }
     std::string bytes;
     Error error;
     const auto reader = injectedRead ? injectedRead :
@@ -711,16 +699,19 @@ Result<CapturedPrefabSource> CapturePrefabSource(
         return Result<CapturedPrefabSource>::Fail(error.code, error.path, error.detail);
     Error sidecarError;
     const UUID sidecar = ParseCapturedSidecar(sidecarBytes, sidecarError);
-    if (!sidecarError.IsOk() || sidecar.IsNull() ||
-        (!source.assetId.IsNull() && sidecar != source.assetId))
+    const auto identity = ResolveCapturedAssetIdentity(
+        source, assets, path, sidecar);
+    if (!sidecarError.IsOk() || !identity.IsOk())
         return Result<CapturedPrefabSource>::Fail(
-            sidecarError.IsOk() ? Error::MissingAsset : sidecarError.code,
-            path.string(), "captured prefab sidecar identity is missing or mismatched");
+            sidecarError.IsOk() ? identity.error.code : sidecarError.code,
+            path.string(), sidecarError.IsOk() ? identity.error.detail
+                                                : "captured prefab sidecar identity is invalid");
     const auto digest = DigestBytes(bytes, sidecarBytes);
     if (digest.empty())
         return Result<CapturedPrefabSource>::Fail(
             Error::Parse, path.string(), "prefab source fingerprint is empty");
-    const PrefabSourceFingerprint fingerprint{path, sidecar, digest};
+    const PrefabSourceFingerprint fingerprint{identity.value.normalizedPath,
+                                              identity.value.effectiveId, digest};
     return Result<CapturedPrefabSource>::Ok(
         CapturedPrefabSource{fingerprint, std::move(bytes), std::move(sidecarBytes)});
 }

@@ -525,6 +525,9 @@ Result<StageOutcome> StagePrefabPropagationResources(
     if (result.IsNoOp(stageEvidence))
         return Result<StageOutcome>::Ok(StageOutcome::Build(
             std::move(result), std::move(stageEvidence), false));
+    if (!result.IsCommandReady(stageEvidence))
+        return Result<StageOutcome>::Fail(Error::InvalidArgument,
+            "prefab-propagation", "staged plan lacks complete command-readiness evidence");
     return Result<StageOutcome>::Ok(StageOutcome::Build(
         std::move(result), std::move(stageEvidence), true));
 }
@@ -536,45 +539,46 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
     struct Candidate
     {
         AssetReference reference;
-        std::string identity;
-        UUID rootUuid;
+        std::string canonicalPath;
+        UUID effectiveId;
     };
 
-    std::vector<Candidate> candidates;
+    std::map<std::string, Candidate> candidatesByPath;
     const auto roots = document.ecs.registry.view<PrefabInstanceComponent>();
     for (const entt::entity root : roots)
     {
         const auto& link = roots.get<PrefabInstanceComponent>(root);
-        const auto* id = document.ecs.registry.try_get<EntityIdComponent>(root);
-        const UUID rootUuid = id ? id->id : UUID::Nil();
-        std::filesystem::path sourcePath;
-        if (!link.prefab.assetId.IsNull() && assets.database != nullptr)
-        {
-            const auto lookup = assets.database->LookupById(link.prefab.assetId);
-            if (lookup.status == AssetIdLookupResult::Status::Unique && lookup.record)
-                sourcePath = lookup.record->sourcePath;
-        }
-        if (sourcePath.empty()) sourcePath = link.prefab.path;
-        if (sourcePath.empty() ||
-            (sourcePath.is_relative() && assets.assetRoot.empty()))
+        const auto identity = ResolveCapturedAssetIdentity(link.prefab, assets);
+        if (!identity.IsOk())
             return Result<PrefabPropagationLoadReport>::Fail(
-                Error::MissingAsset, link.prefab.path,
-                "prefab source path cannot be resolved without sidecar I/O");
-        if (sourcePath.is_relative()) sourcePath = assets.assetRoot / sourcePath;
-        const auto normalized = CanonicalAssetPath(sourcePath);
-        candidates.push_back({link.prefab,
-            normalized.generic_string(),
-            rootUuid});
+                identity.error.code, identity.error.path, identity.error.detail);
+        const auto canonicalPath = identity.value.normalizedPath.generic_string();
+        const UUID effectiveId = link.prefab.assetId;
+        const auto existing = candidatesByPath.find(canonicalPath);
+        if (existing != candidatesByPath.end())
+        {
+            const UUID oldId = existing->second.effectiveId;
+            if (!oldId.IsNull() && !effectiveId.IsNull() && oldId != effectiveId)
+                return Result<PrefabPropagationLoadReport>::Fail(
+                    Error::InvalidArgument, canonicalPath,
+                    "Conflict: same prefab path has conflicting durable asset IDs");
+            if (oldId.IsNull() && !effectiveId.IsNull())
+                existing->second = {link.prefab, canonicalPath, effectiveId};
+            continue;
+        }
+        candidatesByPath.emplace(canonicalPath,
+            Candidate{link.prefab, canonicalPath, effectiveId});
     }
+    std::vector<Candidate> candidates;
+    candidates.reserve(candidatesByPath.size());
+    for (auto& item : candidatesByPath)
+        candidates.push_back(std::move(item.second));
     std::sort(candidates.begin(), candidates.end(),
         [](const Candidate& a, const Candidate& b) {
-            if (a.identity != b.identity) return a.identity < b.identity;
-            return a.rootUuid < b.rootUuid;
+            if (a.canonicalPath != b.canonicalPath)
+                return a.canonicalPath < b.canonicalPath;
+            return a.effectiveId < b.effectiveId;
         });
-    candidates.erase(std::unique(candidates.begin(), candidates.end(),
-        [](const Candidate& a, const Candidate& b) {
-            return a.identity == b.identity;
-        }), candidates.end());
 
     // Prepare every source before applying any operation. This is the
     // transaction boundary for load/recovery: a malformed later source cannot

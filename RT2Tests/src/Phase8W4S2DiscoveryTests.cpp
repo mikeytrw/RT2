@@ -2,6 +2,7 @@
 
 #include "AssetIdentity.h"
 #include "PrefabPropagationDiscovery.h"
+#include "PrefabPropagationService.h"
 
 #include <filesystem>
 #include <atomic>
@@ -168,6 +169,91 @@ PrefabPropagationDiscoveryRequest Request(SceneDocument& document,
                                               request.assets);
     if (captured.IsOk()) request.capturedSource = captured.value;
     return request;
+}
+
+TEST_CASE("Phase 8 W4 Ticket 2: captured identity preserves ambiguity, stale fallback, and one read pair")
+{
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
+    Error error;
+    REQUIRE(PrefabSerializer::WriteBytesAtomic(source, "ticket2-source", error));
+    REQUIRE(WriteSidecarId(AssetSidecarPath(source), kAsset, error));
+
+    AssetDatabase staleDatabase;
+    std::vector<AssetDatabaseDiagnostic> databaseDiagnostics;
+    staleDatabase.AddOrUpdate(
+        AssetRecord{kAsset, (temp.directory / "stale.rt2prefab").string(), {},
+                    AssetIdentityAuthority::Reference, {}, {}, {}},
+        databaseDiagnostics);
+    AssetReference reference{AssetKind::Prefab, source.string(), {}, {}, kAsset};
+    std::size_t reads = 0;
+    const auto captured = CapturePrefabSource(
+        reference, AssetResolutionContext{temp.directory, &staleDatabase},
+        [&](const std::filesystem::path& path, std::string& bytes, Error& readError) {
+            ++reads;
+            std::ifstream input(path, std::ios::binary);
+            if (!input)
+            {
+                readError = {Error::Io, path.string(), "ticket2 capture read failed"};
+                return false;
+            }
+            bytes.assign(std::istreambuf_iterator<char>(input),
+                         std::istreambuf_iterator<char>());
+            return true;
+        });
+    REQUIRE(captured.IsOk());
+    CHECK(captured.value.fingerprint.normalizedPath ==
+          CanonicalAssetPath(source));
+    CHECK(captured.value.fingerprint.assetId == kAsset);
+    CHECK(reads == 2);
+
+    AssetDatabase ambiguous;
+    ambiguous.AddOrUpdate(
+        AssetRecord{kAsset, (temp.directory / "a.rt2prefab").string(), {},
+                    AssetIdentityAuthority::Reference, {}, {}, {}},
+        databaseDiagnostics);
+    ambiguous.AddOrUpdate(
+        AssetRecord{kAsset, (temp.directory / "b.rt2prefab").string(), {},
+                    AssetIdentityAuthority::Reference, {}, {}, {}},
+        databaseDiagnostics);
+    const auto rejected = ResolveCapturedAssetIdentity(
+        reference, AssetResolutionContext{temp.directory, &ambiguous});
+    CHECK_FALSE(rejected.IsOk());
+    CHECK(rejected.error.detail.find("Conflict:") == 0);
+
+    const auto conflictingSidecar = ResolveCapturedAssetIdentity(
+        reference, AssetResolutionContext{temp.directory, nullptr},
+        CanonicalAssetPath(source), kWrongAsset);
+    CHECK_FALSE(conflictingSidecar.IsOk());
+    CHECK(conflictingSidecar.error.detail.find("Conflict:") == 0);
+    // Named RED/GREEN faults: path-only dedupe or ambiguous-ID fallback would
+    // either accept the database conflict or read a second source/sidecar pair.
+}
+
+TEST_CASE("Phase 8 W4 Ticket 2: load rejects same-path conflicting IDs before path-only dedupe")
+{
+    const auto temp = TempPrefab();
+    SceneDocument document;
+    const auto addRoot = [&](const UUID& entityId, const UUID& assetId,
+                             const UUID& instanceId) {
+        const auto root = document.ecs.registry.create();
+        REQUIRE(document.AssignKnownUuid(root, entityId));
+        document.ecs.registry.emplace<Hierarchy>(root);
+        document.ecs.registry.emplace<PrefabInstanceComponent>(root,
+            PrefabInstanceComponent{AssetReference{
+                AssetKind::Prefab, "same.rt2prefab", {}, {}, assetId},
+                instanceId});
+        document.ecs.registry.emplace<PrefabMemberComponent>(root,
+            PrefabMemberComponent{instanceId, kTemplateRoot, {}});
+    };
+    addRoot(kRootA, kAsset, kInstanceA);
+    addRoot(kRootB, kWrongAsset, kInstanceB);
+    const auto result = ReconcilePrefabPropagationForLoad(
+        document, AssetResolutionContext{temp.directory, nullptr});
+    CHECK_FALSE(result.IsOk());
+    CHECK(result.error.detail.find("Conflict:") == 0);
+    // Named RED/GREEN fault: replacing the durable (path, ID) key with path
+    // alone would silently discard one root and make the result order-dependent.
 }
 }
 

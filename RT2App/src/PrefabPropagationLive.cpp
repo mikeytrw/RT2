@@ -5,6 +5,7 @@
 #include "SceneManager.h"
 
 #include <algorithm>
+#include <set>
 
 namespace rt2::core {
 namespace {
@@ -470,7 +471,6 @@ std::vector<AssetReference> CollectReferencedPrefabSources(
     const std::vector<std::filesystem::path>& changedPaths, bool fullScan,
     std::vector<AssetDiagnostic>& diagnostics)
 {
-    (void)diagnostics;
     std::vector<std::filesystem::path> normalized;
     normalized.reserve(changedPaths.size());
     for (const auto& path : changedPaths)
@@ -482,32 +482,58 @@ std::vector<AssetReference> CollectReferencedPrefabSources(
     normalized.erase(std::unique(normalized.begin(), normalized.end()), normalized.end());
 
     std::map<std::string, AssetReference> selected;
+    std::map<std::string, UUID> idsByPath;
+    std::set<std::string> conflictedPaths;
     const auto view = document.ecs.registry.view<PrefabInstanceComponent>();
     for (const auto entity : view)
     {
         const auto& link = view.get<PrefabInstanceComponent>(entity);
-        std::filesystem::path sourcePath;
-        UUID durableId = link.prefab.assetId;
-        if (!durableId.IsNull() && assets.database != nullptr)
+        const auto identity = ResolveCapturedAssetIdentity(link.prefab, assets);
+        if (!identity.IsOk())
         {
-            const auto lookup = assets.database->LookupById(durableId);
-            if (lookup.status == AssetIdLookupResult::Status::Unique && lookup.record)
-                sourcePath = lookup.record->sourcePath;
-        }
-        if (sourcePath.empty()) sourcePath = link.prefab.path;
-        if (sourcePath.empty() ||
-            (sourcePath.is_relative() && assets.assetRoot.empty()))
+            diagnostics.push_back({
+                identity.error.detail.find("Conflict:") == 0
+                    ? AssetDiagnostic::Conflict : AssetDiagnostic::Missing,
+                AssetKind::Prefab, link.prefab.path, identity.error.path,
+                UUID::Nil(), {}, link.prefab.sourceKey, identity.error.detail});
             continue;
-        if (sourcePath.is_relative()) sourcePath = assets.assetRoot / sourcePath;
-        const auto canonical = CanonicalAssetPath(sourcePath);
+        }
+        const auto canonical = identity.value.normalizedPath;
+        const UUID durableId = link.prefab.assetId.IsNull()
+            ? identity.value.effectiveId : link.prefab.assetId;
+        const auto pathKey = canonical.generic_string();
+        const auto idIt = idsByPath.find(pathKey);
+        if (idIt != idsByPath.end() && !idIt->second.IsNull() &&
+            !durableId.IsNull() && idIt->second != durableId)
+        {
+            conflictedPaths.insert(pathKey);
+            diagnostics.push_back({AssetDiagnostic::Conflict,
+                AssetKind::Prefab, link.prefab.path, pathKey, UUID::Nil(), {},
+                link.prefab.sourceKey,
+                "Conflict: same prefab path has conflicting durable asset IDs"});
+            continue;
+        }
+        if (idIt == idsByPath.end() ||
+            (idIt->second.IsNull() && !durableId.IsNull()))
+            idsByPath[pathKey] = durableId;
+        if (conflictedPaths.count(pathKey)) continue;
         if (!fullScan && std::find(normalized.begin(), normalized.end(), canonical) == normalized.end())
             continue;
         AssetReference source = link.prefab;
         source.kind = AssetKind::Prefab;
         source.assetId = durableId;
         source.path = canonical.generic_string();
-        const auto key = canonical.generic_string() + "|" + durableId.ToString();
+        const auto key = pathKey + "|" + durableId.ToString();
         selected.emplace(key, std::move(source));
+    }
+    for (auto it = selected.begin(); it != selected.end();)
+    {
+        const auto separator = it->first.find('|');
+        const auto path = it->first.substr(0, separator);
+        if (conflictedPaths.count(path) != 0)
+            it = selected.erase(it);
+        else
+            ++it;
     }
     std::vector<AssetReference> result;
     result.reserve(selected.size());

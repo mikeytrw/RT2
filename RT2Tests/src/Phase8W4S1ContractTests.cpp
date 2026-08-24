@@ -595,7 +595,17 @@ TEST_CASE("Phase 8 W4 S2: StageOutcome has explicit no-op classes and drops raw 
         PrefabPropagationComponentDelta::Make<NameComponent>(
             kEntity, kTemplate, NameComponent{"before"},
             NameComponent{"after"}));
+    effective.documentGeneration = 1;
+    effective.resourceGeneration = 1;
+    effective.authoringRevisionCaptured = true;
+    effective.sourceSchemaVersion = PrefabSerializer::FormatVersion;
+    effective.resourceEvidenceCaptured = true;
     effective.affectedEntities = {kEntity};
+    effective.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
+    effective.rootSnapshots.push_back({kEntity, kInstance,
+        AssetReference{AssetKind::Prefab, "assets/a.rt2prefab", {}, {}, kInstance}});
+    effective.instances.push_back({kInstance, kEntity,
+        PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
     effective.capturedSource = CapturedPrefabSource{
         canonical.source, "raw-prefab-bytes", "raw-sidecar-bytes"};
     CHECK(effective.IsEffective());
@@ -607,4 +617,33 @@ TEST_CASE("Phase 8 W4 S2: StageOutcome has explicit no-op classes and drops raw 
     REQUIRE(staged.Executable() != nullptr);
     CHECK_FALSE(staged.Summary().capturedSource.IsValid());
     CHECK(staged.Executable()->source() == canonical.source);
+}
+
+TEST_CASE("Phase 8 W4 Ticket 2: Stage rejects a naked changed delta without member evidence")
+{
+    DiscoveredPropagationPlan plan;
+    plan.source = PrefabSourceFingerprint{
+        "assets/naked.rt2prefab", kInstance, "naked-digest"};
+    plan.documentGeneration = 1;
+    plan.resourceGeneration = 1;
+    plan.authoringRevisionCaptured = true;
+    plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
+    plan.resourceEvidenceCaptured = true;
+    plan.componentOperations.push_back(
+        PrefabPropagationComponentDelta::Make<NameComponent>(
+            kEntity, kTemplate, NameComponent{"before"}, NameComponent{"after"}));
+    plan.affectedEntities = {kEntity};
+    plan.rootSnapshots.push_back({kEntity, kInstance,
+        AssetReference{AssetKind::Prefab, "assets/naked.rt2prefab", {}, {}, kInstance}});
+    plan.instances.push_back({kInstance, kEntity,
+        PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
+    plan.syncImpact = plan.DerivedSyncImpact();
+
+    const auto staged = StagePrefabPropagationResources(
+        plan, SceneDocument{}, AssetResolutionContext{});
+    CHECK_FALSE(staged.IsOk());
+    CHECK(staged.error.detail.find("command-readiness") != std::string::npos);
+    // Named RED/GREEN fault: accepting the changed Name delta without its
+    // durable member snapshot would mint an executable with no marker/before
+    // evidence and must fail before command mutation.
 }
