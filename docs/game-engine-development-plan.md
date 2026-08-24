@@ -15949,3 +15949,33 @@ authored source. The scene fixture was restored to its HEAD blob
 `f47ec909bf320941c3e8d62475f23d189df3142e`; temporary directories and build/
 test processes were removed, and the final authored diff/status audit was
 clean.
+
+### Citation and target-label correction (2026-08-24)
+
+This dated note supersedes only the inaccurate citation and target terminology
+in the preceding closure record; it leaves that record's measured counts,
+conclusions, fault audit, and deferred boundaries unchanged. At current HEAD,
+the complete evidence ranges are:
+
+- Discovery capture is `RT2App/src/PrefabPropagationDiscovery.cpp:660-703`,
+  and the complete `PreparePrefabPropagation` body is `:718-920` (not merely
+  its declaration at `:718`).
+- Load reconciliation is
+  `RT2App/src/PrefabPropagationService.cpp:535-681`, including prepare-all,
+  preflight, and writes; the subsequent single `ResolveAll` is `:684-708`.
+- Live default hooks remain `RT2App/src/PrefabPropagationLive.cpp:21-36`;
+  explicit host orchestration is `:203-301`, queued orchestration is
+  `:326-469`, immediate queue application is `:77-143`, and source selection
+  is `:471-563`. Together these ranges cover explicit, watcher, queued,
+  Edit, and Play behavior claimed by the closure record.
+- Command's initial evidence validation is
+  `RT2App/src/PrefabPropagationCommand.cpp:75-122`; the separate current-source
+  fingerprint reread is `:130-143`; complete preflight-before-mutation is
+  `:145-237`; and Undo/Redo state handling is `:240-324`.
+
+The earlier phrase “all three CPU targets” is also superseded by this precise
+wording: both Release and Debug built all three solution targets,
+`RT2App`, `RT2Tests`, and `RT2SliceRunner`, through `RT2App.sln`; only
+`RT2Tests` and `RT2SliceRunner` are CPU-only by design. `RT2App` links its
+Walnut/ImGui/GLFW application target. No counts or test conclusions are
+changed by this terminology correction.
