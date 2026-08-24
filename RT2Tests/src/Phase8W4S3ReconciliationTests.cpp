@@ -76,6 +76,8 @@ PrefabPropagationDiscoveryRequest Request(SceneDocument& document,
     request.changedSource = AssetReference{AssetKind::Prefab, source.string(), {}, {}, kAsset};
     request.documentGeneration = 101;
     request.resourceGeneration = 202;
+    request.documentGenerationCaptured = true;
+    request.resourceGenerationCaptured = true;
     request.authoringRevision = 303;
     const auto captured = CapturePrefabSource(request.changedSource,
                                               request.assets);

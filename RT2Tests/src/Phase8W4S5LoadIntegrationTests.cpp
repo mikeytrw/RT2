@@ -551,6 +551,8 @@ TEST_CASE("Phase 8 typed foundation: load batch preflights every operation befor
     plan.source = PrefabSourceFingerprint{source, kAsset, "digest-a"};
     plan.documentGeneration = 1;
     plan.resourceGeneration = 1;
+    plan.documentGenerationCaptured = true;
+    plan.resourceGenerationCaptured = true;
     plan.authoringRevision = 0;
     plan.componentOperations.push_back(
         PrefabPropagationComponentDelta::Make<NameComponent>(

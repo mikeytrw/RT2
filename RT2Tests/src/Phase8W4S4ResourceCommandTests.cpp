@@ -20,7 +20,9 @@ namespace
 {
 const SceneDocument* gStageDocument = nullptr;
 const UUID kEntity = UUID::Parse("11111111-1111-4111-8111-111111111111");
+const UUID kNoOpEntity = UUID::Parse("11111111-1111-4111-8111-111111111112");
 const UUID kInstance = UUID::Parse("22222222-2222-4222-8222-222222222222");
+const UUID kNoOpInstance = UUID::Parse("22222222-2222-4222-8222-222222222223");
 const UUID kTemplate = UUID::Parse("33333333-3333-4333-8333-333333333333");
 
 MeshData Triangle(const char* name)
@@ -70,6 +72,8 @@ void FinalizePlan(SceneManager& scene, DiscoveredPropagationPlan& plan)
     gStageDocument = &scene.AuthoringDoc();
     plan.authoringRevision = scene.AuthoringRevision();
     plan.authoringRevisionCaptured = true;
+    plan.documentGenerationCaptured = true;
+    plan.resourceGenerationCaptured = true;
     plan.meshTableExtent = static_cast<std::uint32_t>(scene.GetMeshRegistryCount());
     plan.materialTableExtent = static_cast<std::uint32_t>(scene.GetMaterialCount());
     plan.textureTableExtent = static_cast<std::uint32_t>(scene.GetECS().textures.size());
@@ -131,6 +135,8 @@ TEST_CASE("Phase 8 W4 S4: propagation command owns append-only resources and reu
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = beforeResourceGeneration;
+    plan.documentGenerationCaptured = true;
+    plan.resourceGenerationCaptured = true;
     plan.authoringRevision = beforeRevision;
     plan.componentOperations.push_back(PrefabPropagationComponentDelta::Make<NameComponent>(
         kEntity, kTemplate, NameComponent{"old"}, NameComponent{"new"}));
@@ -249,6 +255,154 @@ TEST_CASE("Phase 8 W4 S4: stale value and fingerprint reject with zero mutation"
     CHECK(ioResult.error.code == Error::Io);
     CHECK(ioResult.error.path == "locked.rt2prefab");
     CHECK(ioResult.error.detail == "source bytes unavailable");
+}
+
+TEST_CASE("Phase 8 W4 Ticket 2: Prepare Stage History projects one effective sibling and one canonical no-op")
+{
+    CheckedTempDir temp;
+    temp.path = std::filesystem::temp_directory_path() /
+        ("rt2_w4_ticket2_mixed_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::error_code createError;
+    REQUIRE(std::filesystem::create_directories(temp.path, createError));
+
+    const auto sourcePath = temp.path / "mixed.rt2prefab";
+    Error error;
+    PrefabDocument prefab;
+    SubtreeEntityRecord record;
+    record.uuid = UUID::Parse("44444444-4444-4444-8444-444444444444");
+    record.name = "Source";
+    record.hasPrimitive = true;
+    record.primitive = PrimitiveComponent{
+        PrimitiveComponent::Sphere, 2.0f, 16, 8};
+    prefab.entities.push_back({kTemplate, record});
+    REQUIRE(PrefabSerializer::Save(prefab, sourcePath, error));
+    PrefabDocument loadedPrefab;
+    REQUIRE(PrefabSerializer::Load(loadedPrefab, sourcePath, error));
+    CHECK(loadedPrefab.entities.front().record.hasPrimitive);
+    CHECK(loadedPrefab.entities.front().record.primitive.kind == PrimitiveComponent::Sphere);
+    const UUID sourceId = UUID::Parse("55555555-5555-4555-8555-555555555555");
+    REQUIRE(WriteSidecarId(AssetSidecarPath(sourcePath), sourceId, error));
+
+    SceneManager scene;
+    auto& document = scene.AuthoringDoc();
+    document.metadata.schemaVersion = SceneSerializer::PrefabOverrideSchemaVersion;
+    const auto addInstance = [&](const UUID& entityId, const UUID& instanceId,
+                                 const PrimitiveComponent& primitive) {
+        const auto entity = document.ecs.registry.create();
+        REQUIRE(document.AssignKnownUuid(entity, entityId));
+        document.ecs.registry.emplace<Hierarchy>(entity);
+        document.ecs.registry.emplace<PrefabInstanceComponent>(entity,
+            PrefabInstanceComponent{AssetReference{
+                AssetKind::Prefab, sourcePath.string(), {}, {}, sourceId},
+                instanceId});
+        PrefabMemberComponent member{instanceId, kTemplate, {
+            PropagationComponentKey<CameraComponent>(),
+            PropagationComponentKey<LightComponent>(),
+            PropagationComponentKey<MotionComponent>()}};
+        std::sort(member.overrides.begin(), member.overrides.end(),
+                  [](const auto& left, const auto& right) {
+                      return left.wire() < right.wire();
+                  });
+        document.ecs.registry.emplace<PrefabMemberComponent>(entity, member);
+        // Prepare's source adapter represents the persisted default values
+        // as present optionals.  Seed those defaults so the second sibling
+        // is a true canonical no-op and only the primitive differs.
+        document.ecs.registry.emplace<NameComponent>(entity, NameComponent{"Source Copy"});
+        document.ecs.registry.emplace<Transform>(entity, Transform{});
+        document.ecs.registry.emplace<VisibleComponent>(entity, VisibleComponent{true});
+        document.ecs.registry.emplace<LightComponent>(entity, LightComponent{});
+        document.ecs.registry.emplace<CameraComponent>(entity, CameraComponent{});
+        document.ecs.registry.emplace<MotionComponent>(entity, MotionComponent{});
+        document.ecs.registry.emplace<PrimitiveComponent>(entity, primitive);
+        const auto mesh = document.ecs.meshRegistry.AddMesh(Triangle(
+            primitive.kind == PrimitiveComponent::Cube ? "cube-before" : "sphere-before"));
+        document.ecs.registry.emplace<MeshRef>(entity, MeshRef{mesh, -1});
+    };
+    addInstance(kEntity, kInstance,
+        PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16});
+    addInstance(kNoOpEntity, kNoOpInstance,
+        PrimitiveComponent{PrimitiveComponent::Sphere, 2.0f, 16, 8});
+    scene.NotifyAuthoringChanged();
+
+    PrefabPropagationDiscoveryRequest request;
+    request.document = &document;
+    request.assets.assetRoot = temp.path;
+    request.changedSource = AssetReference{
+        AssetKind::Prefab, sourcePath.string(), {}, {}, sourceId};
+    request.documentGeneration = scene.DocumentGeneration();
+    request.resourceGeneration = scene.ResourceGeneration();
+    request.documentGenerationCaptured = true;
+    request.resourceGenerationCaptured = true;
+    request.authoringRevision = scene.AuthoringRevision();
+    const auto captured = CapturePrefabSource(request.changedSource, request.assets);
+    REQUIRE(captured.IsOk());
+    request.capturedSource = captured.value;
+    CHECK(document.ecs.registry.get<PrimitiveComponent>(document.FindByUuid(kEntity)).kind ==
+          PrimitiveComponent::Cube);
+    CHECK(document.ecs.registry.get<PrimitiveComponent>(document.FindByUuid(kNoOpEntity)).kind ==
+          PrimitiveComponent::Sphere);
+
+    const auto prepared = PreparePrefabPropagation(request);
+    REQUIRE(prepared.IsOk());
+    REQUIRE(prepared.value.instances.size() == 2);
+    REQUIRE(std::count_if(prepared.value.instances.begin(), prepared.value.instances.end(),
+        [](const auto& instance) {
+            return instance.disposition == PrefabPropagationInstanceDisposition::Propagate;
+        }) == 1);
+    REQUIRE(std::count_if(prepared.value.instances.begin(), prepared.value.instances.end(),
+        [](const auto& instance) {
+            return instance.disposition == PrefabPropagationInstanceDisposition::NoOp;
+        }) == 1);
+
+    const auto staged = StagePrefabPropagationResources(
+        prepared.value, document, request.assets);
+    REQUIRE(staged.IsOk());
+    REQUIRE(staged.value.Executable() != nullptr);
+    const auto& executable = *staged.value.Executable();
+    REQUIRE(executable.instances().size() == 1);
+    CHECK(executable.instances().front().instanceId == kInstance);
+    REQUIRE(executable.componentOperations().size() == 1);
+    CHECK(executable.componentOperations().front().EntityUuid() == kEntity);
+    CHECK(std::all_of(executable.meshRefOperations().begin(),
+                      executable.meshRefOperations().end(),
+                      [](const auto& operation) {
+                          return operation.entityUuid == kEntity;
+                      }));
+    CHECK(std::none_of(executable.componentOperations().begin(),
+                       executable.componentOperations().end(),
+                       [](const auto& operation) {
+                           return operation.EntityUuid() == kNoOpEntity;
+                       }));
+
+    const auto beforeResources = scene.GetMeshRegistryCount();
+    const auto beforeNoOpRef = document.ecs.registry.get<MeshRef>(
+        document.FindByUuid(kNoOpEntity));
+    EditorCommandHistory history;
+    auto command = std::make_unique<PrefabPropagationCommand>(
+        std::move(*staged.value.Executable()),
+        [fingerprint = prepared.value.source] {
+            return Result<PrefabSourceFingerprint>::Ok(fingerprint);
+        });
+    const auto executed = history.Execute(std::move(command), scene);
+    REQUIRE(executed.success);
+    CHECK(executed.effective);
+    CHECK(scene.GetMeshRegistryCount() == beforeResources + 1);
+    const auto live = document.FindByUuid(kEntity);
+    const auto noOp = document.FindByUuid(kNoOpEntity);
+    REQUIRE(document.ecs.registry.valid(live));
+    REQUIRE(document.ecs.registry.valid(noOp));
+    CHECK(document.ecs.registry.get<PrimitiveComponent>(live).kind ==
+          PrimitiveComponent::Sphere);
+    CHECK(document.ecs.registry.get<PrimitiveComponent>(noOp).kind ==
+          PrimitiveComponent::Sphere);
+    CHECK(document.ecs.registry.get<MeshRef>(noOp).meshIndex ==
+          beforeNoOpRef.meshIndex);
+    CHECK(history.UndoDepthForTest() == 1);
+    // Named RED/GREEN faults: retaining canonical NoOp instances in the
+    // Executable projection, or bypassing Prepare/Stage and constructing a
+    // command from the discovered aggregate, makes the exact one-operation,
+    // one-resource, untouched-sibling assertions fail.
 }
 
 TEST_CASE("Phase 8 typed foundation: command preflights every operation before writing")

@@ -460,8 +460,8 @@ struct DiscoveredPropagationPlan
     std::uint64_t resourceGeneration = 0;
     // Presence is explicit and independent of the captured value.  A zero
     // generation is valid evidence; false means the token was not captured.
-    bool documentGenerationCaptured = true;
-    bool resourceGenerationCaptured = true;
+    bool documentGenerationCaptured = false;
+    bool resourceGenerationCaptured = false;
     std::uint64_t authoringRevision = 0;
     // Presence is separate from the value: revision zero is valid on the
     // first clean loaded document.

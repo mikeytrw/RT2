@@ -599,6 +599,8 @@ TEST_CASE("Phase 8 W4 S2: StageOutcome has explicit no-op classes and drops raw 
             NameComponent{"after"}));
     effective.documentGeneration = 1;
     effective.resourceGeneration = 1;
+    effective.documentGenerationCaptured = true;
+    effective.resourceGenerationCaptured = true;
     effective.authoringRevisionCaptured = true;
     effective.sourceSchemaVersion = PrefabSerializer::FormatVersion;
     effective.resourceEvidenceCaptured = true;
@@ -628,6 +630,7 @@ TEST_CASE("Phase 8 W4 Ticket 2: Stage rejects a naked changed delta without memb
         "assets/naked.rt2prefab", kInstance, "naked-digest"};
     plan.documentGeneration = 1;
     plan.resourceGeneration = 1;
+    // Intentionally absent: this is the omitted-token rejection case.
     plan.authoringRevisionCaptured = true;
     plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
     plan.resourceEvidenceCaptured = true;
@@ -690,6 +693,26 @@ TEST_CASE("Phase 8 W4 Ticket 2: generation presence is explicit and zero is vali
     CHECK(staged.value.Executable()->resourceGeneration() == 0);
     CHECK(staged.value.Executable()->documentGenerationCaptured());
     CHECK(staged.value.Executable()->resourceGenerationCaptured());
+
+    // Build a complete plan without assigning either presence token.  This
+    // exercises the declaration defaults themselves: omitted evidence must
+    // reject even though every numeric generation is valid zero.
+    DiscoveredPropagationPlan defaultOmitted;
+    defaultOmitted.source = zero.source;
+    defaultOmitted.documentGeneration = 0;
+    defaultOmitted.resourceGeneration = 0;
+    defaultOmitted.authoringRevisionCaptured = true;
+    defaultOmitted.sourceSchemaVersion = PrefabSerializer::FormatVersion;
+    defaultOmitted.resourceEvidenceCaptured = true;
+    defaultOmitted.componentOperations = zero.componentOperations;
+    defaultOmitted.memberSnapshots = zero.memberSnapshots;
+    defaultOmitted.rootSnapshots = zero.rootSnapshots;
+    defaultOmitted.instances = zero.instances;
+    defaultOmitted.affectedEntities = zero.affectedEntities;
+    const auto defaultOmittedStage = StagePrefabPropagationResources(
+        defaultOmitted, document, AssetResolutionContext{});
+    CHECK_FALSE(defaultOmittedStage.IsOk());
+
     auto executablePlan = zero;
     executablePlan.documentGeneration = scene.DocumentGeneration();
     executablePlan.resourceGeneration = scene.ResourceGeneration();
@@ -751,6 +774,8 @@ TEST_CASE("Phase 8 W4 Ticket 2: executable projection drops no-op siblings")
         "assets/effective.rt2prefab", kInstance, "effective-digest"};
     plan.documentGeneration = 1;
     plan.resourceGeneration = 1;
+    plan.documentGenerationCaptured = true;
+    plan.resourceGenerationCaptured = true;
     plan.authoringRevisionCaptured = true;
     plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
     plan.resourceEvidenceCaptured = true;

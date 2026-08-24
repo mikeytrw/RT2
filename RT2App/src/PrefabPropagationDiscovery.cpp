@@ -680,10 +680,18 @@ Result<CapturedPrefabSource> CapturePrefabSource(
         !std::filesystem::is_regular_file(path))
     {
         const std::filesystem::path authored(source.path);
-        const auto authoredPath = CanonicalAssetPath(authored.is_relative()
-            ? assets.assetRoot / authored : authored);
-        if (std::filesystem::is_regular_file(authoredPath))
-            path = authoredPath;
+        // A stale unique DB claimant may fall back to the authored path, but
+        // only after that path has been resolved against an explicit absolute
+        // asset root.  Never turn a rootless relative watcher reference into
+        // a process-CWD probe.
+        if (authored.is_absolute() ||
+            (!assets.assetRoot.empty() && assets.assetRoot.is_absolute()))
+        {
+            const auto authoredPath = CanonicalAssetPath(authored.is_relative()
+                ? assets.assetRoot / authored : authored);
+            if (std::filesystem::is_regular_file(authoredPath))
+                path = authoredPath;
+        }
     }
     std::string bytes;
     Error error;

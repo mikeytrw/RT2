@@ -164,6 +164,8 @@ PrefabPropagationDiscoveryRequest A13Request(SceneDocument& document,
                                            {}, {}, A13Uuid(1300)};
     request.documentGeneration = 11;
     request.resourceGeneration = 22;
+    request.documentGenerationCaptured = true;
+    request.resourceGenerationCaptured = true;
     request.authoringRevision = 33;
     const auto captured = CapturePrefabSource(request.changedSource,
                                               request.assets);
@@ -242,6 +244,8 @@ DiscoveredPropagationPlan A11Plan(const SceneDocument& document,
     plan.source = PrefabSourceFingerprint{path, kA11Instance, digest};
     plan.documentGeneration = 1;
     plan.resourceGeneration = 2;
+    plan.documentGenerationCaptured = true;
+    plan.resourceGenerationCaptured = true;
     plan.authoringRevision = 3;
     plan.authoringRevisionCaptured = true;
     plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
@@ -370,6 +374,8 @@ TEST_CASE("Phase 8 W4 S7 A1: source edit propagates through prepare stage comman
                                            {}, {}, sourceReference.assetId};
     request.documentGeneration = manager.DocumentGeneration();
     request.resourceGeneration = manager.ResourceGeneration();
+    request.documentGenerationCaptured = true;
+    request.resourceGenerationCaptured = true;
     request.authoringRevision = manager.AuthoringRevision();
     const auto captured = CapturePrefabSource(request.changedSource, request.assets);
     REQUIRE(captured.IsOk());
@@ -604,6 +610,8 @@ TEST_CASE("Phase 8 W4 S7 A10: execute undo redo preserves serialized slots and h
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = beforeResourceGeneration;
+    plan.documentGenerationCaptured = true;
+    plan.resourceGenerationCaptured = true;
     plan.authoringRevision = beforeRevision;
     plan.authoringRevisionCaptured = true;
     plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;

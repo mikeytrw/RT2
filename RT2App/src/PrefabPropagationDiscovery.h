@@ -34,8 +34,8 @@ struct PrefabPropagationDiscoveryRequest
     AssetReference changedSource;
     std::uint64_t documentGeneration = 0;
     std::uint64_t resourceGeneration = 0;
-    bool documentGenerationCaptured = true;
-    bool resourceGenerationCaptured = true;
+    bool documentGenerationCaptured = false;
+    bool resourceGenerationCaptured = false;
     std::uint64_t authoringRevision = 0;
 
     // Preferred lifecycle input: one checked source/sidecar snapshot captured

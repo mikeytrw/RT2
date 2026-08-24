@@ -576,6 +576,9 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
                     "Conflict: same prefab path has conflicting durable asset IDs");
             if (oldId.IsNull() && !effectiveId.IsNull())
                 existing->second = {link.prefab, canonicalPath, effectiveId};
+            else if (oldId == effectiveId &&
+                     link.prefab.path < existing->second.reference.path)
+                existing->second.reference = link.prefab;
             continue;
         }
         candidatesByPath.emplace(canonicalPath,

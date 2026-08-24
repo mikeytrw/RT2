@@ -165,6 +165,8 @@ PrefabPropagationDiscoveryRequest Request(SceneDocument& document,
                                            {}, {}, kAsset};
     request.documentGeneration = 71;
     request.resourceGeneration = 19;
+    request.documentGenerationCaptured = true;
+    request.resourceGenerationCaptured = true;
     request.authoringRevision = 23;
     const auto captured = CapturePrefabSource(request.changedSource,
                                               request.assets);
@@ -229,6 +231,153 @@ TEST_CASE("Phase 8 W4 Ticket 2: captured identity preserves ambiguity, stale fal
     CHECK(conflictingSidecar.error.detail.find("Conflict:") == 0);
     // Named RED/GREEN faults: path-only dedupe or ambiguous-ID fallback would
     // either accept the database conflict or read a second source/sidecar pair.
+}
+
+TEST_CASE("Phase 8 W4 Ticket 2: healthy DB authority precedes rootless authored validation")
+{
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
+    Error error;
+    REQUIRE(PrefabSerializer::WriteBytesAtomic(source, "ticket2-healthy-db", error));
+    REQUIRE(WriteSidecarId(AssetSidecarPath(source), kAsset, error));
+
+    AssetDatabase database;
+    std::vector<AssetDatabaseDiagnostic> databaseDiagnostics;
+    database.AddOrUpdate(
+        AssetRecord{kAsset, source.string(), {},
+                    AssetIdentityAuthority::Sidecar, {}, {}, {}},
+        databaseDiagnostics);
+
+    // The authored spelling is relative and there is deliberately no asset
+    // root.  The unique absolute DB claimant is still a valid authority and
+    // must be selected before the no-CWD relative-path guard.
+    const AssetReference relative{AssetKind::Prefab, "source.rt2prefab", {}, {}, kAsset};
+    const auto resolved = ResolveCapturedAssetIdentity(
+        relative, AssetResolutionContext{{}, &database});
+    REQUIRE(resolved.IsOk());
+    CHECK(resolved.value.normalizedPath == CanonicalAssetPath(source));
+    CHECK(resolved.value.effectiveId == kAsset);
+
+    std::size_t reads = 0;
+    const auto captured = CapturePrefabSource(
+        relative, AssetResolutionContext{{}, &database},
+        [&](const std::filesystem::path& path, std::string& bytes, Error& readError) {
+            ++reads;
+            std::ifstream input(path, std::ios::binary);
+            if (!input)
+            {
+                readError = {Error::Io, path.string(), "healthy DB capture read failed"};
+                return false;
+            }
+            bytes.assign(std::istreambuf_iterator<char>(input),
+                         std::istreambuf_iterator<char>());
+            return true;
+        });
+    REQUIRE(captured.IsOk());
+    CHECK(captured.value.fingerprint.normalizedPath == CanonicalAssetPath(source));
+    CHECK(captured.value.fingerprint.assetId == kAsset);
+    CHECK(reads == 2);
+
+    SceneDocument document;
+    const auto root = document.ecs.registry.create();
+    REQUIRE(document.AssignKnownUuid(root, kRootA));
+    document.ecs.registry.emplace<PrefabInstanceComponent>(root,
+        PrefabInstanceComponent{relative, kInstanceA});
+    document.ecs.registry.emplace<PrefabMemberComponent>(root,
+        PrefabMemberComponent{kInstanceA, kTemplateRoot, {}});
+    std::vector<AssetDiagnostic> diagnostics;
+    const auto watcher = CollectReferencedPrefabSources(
+        document, AssetResolutionContext{temp.directory, &database},
+        {std::filesystem::path{"source.rt2prefab"}}, false, diagnostics);
+    REQUIRE(watcher.size() == 1);
+    CHECK(watcher.front().path == "source.rt2prefab");
+    // Named RED/GREEN faults: restoring the early relative-root rejection,
+    // canonicalizing the relative watcher path against CWD, or overwriting
+    // the authored spelling with the DB record makes one of these assertions
+    // fail.  A healthy alias must remain one validated (canonical path, ID).
+}
+
+TEST_CASE("Phase 8 W4 Ticket 2: healthy aliases dedupe in either watcher and load order")
+{
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
+    Error error;
+    REQUIRE(PrefabSerializer::WriteBytesAtomic(source, "ticket2-alias", error));
+    REQUIRE(WriteSidecarId(AssetSidecarPath(source), kAsset, error));
+    const std::string canonicalSpelling = source.string();
+    const std::string aliasSpelling =
+        (temp.directory / "." / source.filename()).string();
+
+    const auto makeDocument = [&](bool reverse) {
+        SceneDocument document;
+        const std::string spellings[] = {canonicalSpelling, aliasSpelling};
+        const UUID roots[] = {kRootA, kRootB};
+        const UUID instances[] = {kInstanceA, kInstanceB};
+        for (int n = 0; n != 2; ++n)
+        {
+            const int index = reverse ? 1 - n : n;
+            const auto root = document.ecs.registry.create();
+            REQUIRE(document.AssignKnownUuid(root, roots[index]));
+            document.ecs.registry.emplace<PrefabInstanceComponent>(root,
+                PrefabInstanceComponent{AssetReference{
+                    AssetKind::Prefab, spellings[index], {}, {}, kAsset},
+                    instances[index]});
+            document.ecs.registry.emplace<PrefabMemberComponent>(root,
+                PrefabMemberComponent{instances[index], kTemplateRoot, {}});
+        }
+        return document;
+    };
+
+    SceneDocument watcherFirst = makeDocument(false);
+    SceneDocument watcherSecond = makeDocument(true);
+    std::vector<AssetDiagnostic> firstDiagnostics;
+    std::vector<AssetDiagnostic> secondDiagnostics;
+    const auto firstWatcher = CollectReferencedPrefabSources(
+        watcherFirst, AssetResolutionContext{temp.directory, nullptr},
+        {source}, false, firstDiagnostics);
+    const auto secondWatcher = CollectReferencedPrefabSources(
+        watcherSecond, AssetResolutionContext{temp.directory, nullptr},
+        {source}, false, secondDiagnostics);
+    REQUIRE(firstWatcher.size() == 1);
+    REQUIRE(secondWatcher.size() == 1);
+    CHECK(firstWatcher.front().path == secondWatcher.front().path);
+    CHECK(CanonicalAssetPath(firstWatcher.front().path) == CanonicalAssetPath(source));
+
+    const auto runLoad = [&](SceneDocument& document, std::string& capturedPath) {
+        std::size_t captures = 0;
+        PrefabPropagationLoadHooks hooks;
+        hooks.capture = [&](const AssetReference& reference,
+                            const AssetResolutionContext&) {
+            ++captures;
+            capturedPath = reference.path;
+            CapturedPrefabSource captured;
+            captured.fingerprint = {CanonicalAssetPath(source), kAsset, "alias-digest"};
+            captured.prefabBytes = "captured";
+            captured.sidecarBytes = "sidecar";
+            return Result<CapturedPrefabSource>::Ok(std::move(captured));
+        };
+        hooks.prepare = [](const PrefabPropagationDiscoveryRequest& request) {
+            DiscoveredPropagationPlan plan;
+            plan.source = request.capturedSource.fingerprint;
+            plan.capturedSource = request.capturedSource;
+            plan.documentGeneration = request.documentGeneration;
+            plan.resourceGeneration = request.resourceGeneration;
+            plan.documentGenerationCaptured = request.documentGenerationCaptured;
+            plan.resourceGenerationCaptured = request.resourceGenerationCaptured;
+            return Result<DiscoveredPropagationPlan>::Ok(std::move(plan));
+        };
+        const auto result = ReconcilePrefabPropagationForLoad(
+            document, AssetResolutionContext{temp.directory, nullptr}, hooks);
+        REQUIRE(result.IsOk());
+        CHECK(captures == 1);
+    };
+    std::string firstLoadPath;
+    std::string secondLoadPath;
+    runLoad(watcherFirst, firstLoadPath);
+    runLoad(watcherSecond, secondLoadPath);
+    CHECK(firstLoadPath == secondLoadPath);
+    // Named RED/GREEN fault: path-only/raw-order dedupe retains two reads or
+    // lets the first registry spelling choose a different source result.
 }
 
 TEST_CASE("Phase 8 W4 Ticket 2: load rejects same-path conflicting IDs before path-only dedupe")

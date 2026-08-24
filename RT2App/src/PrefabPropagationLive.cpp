@@ -487,7 +487,10 @@ std::vector<AssetReference> CollectReferencedPrefabSources(
                 "relative watcher path requires an absolute asset root"});
             continue;
         }
-        normalized.push_back(CanonicalAssetPath(path));
+        const auto resolved = path.is_relative()
+            ? (assets.assetRoot / path).lexically_normal()
+            : path;
+        normalized.push_back(CanonicalAssetPath(resolved));
     }
     std::sort(normalized.begin(), normalized.end());
     normalized.erase(std::unique(normalized.begin(), normalized.end()), normalized.end());
@@ -550,7 +553,9 @@ std::vector<AssetReference> CollectReferencedPrefabSources(
         // stale DB path would bypass authored-path fallback.
         if (source.path.empty()) source.path = canonical.generic_string();
         const auto key = pathKey + "|" + durableId.ToString();
-        selected.emplace(key, std::move(source));
+        const auto existing = selected.find(key);
+        if (existing == selected.end() || source.path < existing->second.path)
+            selected[key] = std::move(source);
     }
     for (auto it = selected.begin(); it != selected.end();)
     {

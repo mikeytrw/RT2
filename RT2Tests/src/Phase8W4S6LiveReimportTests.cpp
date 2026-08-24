@@ -55,6 +55,8 @@ struct EffectiveLiveFixture
         plan.source = Fingerprint(digest);
         plan.documentGeneration = scene.DocumentGeneration();
         plan.resourceGeneration = scene.ResourceGeneration();
+        plan.documentGenerationCaptured = true;
+        plan.resourceGenerationCaptured = true;
         plan.authoringRevision = scene.AuthoringRevision();
         plan.authoringRevisionCaptured = true;
         plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
@@ -160,6 +162,8 @@ DiscoveredPropagationPlan EmptyPlan(SceneManager& scene,
     plan.source = source;
     plan.documentGeneration = scene.DocumentGeneration();
     plan.resourceGeneration = scene.ResourceGeneration();
+    plan.documentGenerationCaptured = true;
+    plan.resourceGenerationCaptured = true;
     plan.authoringRevision = scene.AuthoringRevision();
     plan.authoringRevisionCaptured = true;
     plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
