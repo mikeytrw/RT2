@@ -82,9 +82,41 @@ Result<CapturedAssetIdentity> ResolveCapturedAssetIdentity(
             databasePath = CanonicalAssetPath(ctx.assetRoot / recorded);
     }
 
+    const bool hasCapturedPath = !capturedPath.empty();
+    std::filesystem::path authoredPath;
+    if (!ref.path.empty())
+    {
+        authoredPath = std::filesystem::path(ref.path);
+        if (authoredPath.is_relative())
+        {
+            if (ctx.assetRoot.empty() || !ctx.assetRoot.is_absolute())
+                authoredPath.clear();
+            else
+                authoredPath = CanonicalAssetPath(ctx.assetRoot / authoredPath);
+        }
+        else
+        {
+            authoredPath = CanonicalAssetPath(authoredPath);
+        }
+    }
+
+    // Before Capture, the same authority used by load and watcher selection
+    // chooses a healthy unique database claimant.  Only an unusable claimant
+    // falls back to the authored reference; no authored spelling is promoted
+    // to captured evidence.  The regular-file probe is metadata-only: source
+    // and sidecar bytes are still observed exclusively by Capture.
+    std::error_code databaseProbeError;
+    const bool healthyDatabasePath = !databasePath.empty() &&
+        std::filesystem::is_regular_file(databasePath, databaseProbeError);
+    if (!hasCapturedPath && !healthyDatabasePath && !ref.path.empty() &&
+        authoredPath.empty() && std::filesystem::path(ref.path).is_relative())
+        return Result<CapturedAssetIdentity>::Fail(
+            Error::InvalidArgument, ref.path,
+            "relative prefab identity requires an absolute asset root");
     std::filesystem::path path = capturedPath;
+    if (path.empty() && healthyDatabasePath) path = databasePath;
+    if (path.empty() && !authoredPath.empty()) path = authoredPath;
     if (path.empty() && !databasePath.empty()) path = databasePath;
-    if (path.empty()) path = ref.path;
     if (path.empty())
         return Result<CapturedAssetIdentity>::Fail(
             Error::MissingAsset, ref.path,
@@ -109,16 +141,8 @@ Result<CapturedAssetIdentity> ResolveCapturedAssetIdentity(
     {
         if (!databasePath.empty())
         {
-            const std::filesystem::path authoredPath(ref.path);
-            const auto authoredCanonical = authoredPath.empty()
-                ? std::filesystem::path{}
-                : (authoredPath.is_relative()
-                    ? ((ctx.assetRoot.empty() || !ctx.assetRoot.is_absolute())
-                        ? std::filesystem::path{}
-                        : CanonicalAssetPath(ctx.assetRoot / authoredPath))
-                    : CanonicalAssetPath(authoredPath));
             if (databasePath != path &&
-                (authoredCanonical.empty() || authoredCanonical != path))
+                (authoredPath.empty() || authoredPath != path))
                 return Result<CapturedAssetIdentity>::Fail(
                     Error::InvalidArgument, path.string(),
                     "Conflict: effective asset ID and captured path disagree");

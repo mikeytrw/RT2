@@ -502,19 +502,9 @@ std::vector<AssetReference> CollectReferencedPrefabSources(
     for (const auto entity : view)
     {
         const auto& link = view.get<PrefabInstanceComponent>(entity);
-        std::filesystem::path authoredPath;
-        if (!link.prefab.path.empty())
-        {
-            authoredPath = std::filesystem::path(link.prefab.path);
-            if (authoredPath.is_relative() && !assets.assetRoot.empty() &&
-                assets.assetRoot.is_absolute())
-                authoredPath = assets.assetRoot / authoredPath;
-            else if (authoredPath.is_relative())
-                authoredPath.clear();
-            if (!authoredPath.empty()) authoredPath = CanonicalAssetPath(authoredPath);
-        }
-        const auto identity = ResolveCapturedAssetIdentity(
-            link.prefab, assets, authoredPath, link.prefab.assetId);
+        // Selection is pre-capture: never forge authored path/ID as snapshot
+        // evidence. Capture applies this same database-first authority again.
+        const auto identity = ResolveCapturedAssetIdentity(link.prefab, assets);
         if (!identity.IsOk())
         {
             diagnostics.push_back({

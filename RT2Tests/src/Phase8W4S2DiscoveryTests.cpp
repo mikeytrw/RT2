@@ -380,6 +380,170 @@ TEST_CASE("Phase 8 W4 Ticket 2: healthy aliases dedupe in either watcher and loa
     // lets the first registry spelling choose a different source result.
 }
 
+TEST_CASE("Phase 8 W4 Ticket 2: load and watcher share healthy DB identity before capture")
+{
+    const auto temp = TempPrefab();
+    const auto authored = temp.directory / "authored.rt2prefab";
+    const auto databaseSourceA = temp.directory / "database-a.rt2prefab";
+    const auto databaseSourceB = temp.directory / "database-b.rt2prefab";
+    Error error;
+    REQUIRE(PrefabSerializer::WriteBytesAtomic(authored, "authored-spelling", error));
+    REQUIRE(WriteSidecarId(AssetSidecarPath(authored), kAsset, error));
+    REQUIRE(PrefabSerializer::WriteBytesAtomic(
+        databaseSourceA, "healthy-database-a", error));
+    REQUIRE(WriteSidecarId(AssetSidecarPath(databaseSourceA), kAsset, error));
+    REQUIRE(PrefabSerializer::WriteBytesAtomic(
+        databaseSourceB, "healthy-database-b", error));
+    REQUIRE(WriteSidecarId(AssetSidecarPath(databaseSourceB), kWrongAsset, error));
+
+    AssetDatabase database;
+    std::vector<AssetDatabaseDiagnostic> databaseDiagnostics;
+    database.AddOrUpdate(
+        AssetRecord{kAsset, databaseSourceA.string(), {},
+                    AssetIdentityAuthority::Sidecar, {}, {}, {}},
+        databaseDiagnostics);
+    database.AddOrUpdate(
+        AssetRecord{kWrongAsset, databaseSourceB.string(), {},
+                    AssetIdentityAuthority::Sidecar, {}, {}, {}},
+        databaseDiagnostics);
+    const AssetResolutionContext assets{temp.directory, &database};
+
+    // The scene retains an existing authored spelling that differs from the
+    // healthy DB claimant.  Selection must match the DB path event while
+    // leaving the authored spelling untouched for Capture to resolve.
+    SceneDocument watcherDocument;
+    const auto watcherRoot = watcherDocument.ecs.registry.create();
+    REQUIRE(watcherDocument.AssignKnownUuid(watcherRoot, kRootA));
+    watcherDocument.ecs.registry.emplace<PrefabInstanceComponent>(watcherRoot,
+        PrefabInstanceComponent{AssetReference{
+            AssetKind::Prefab, authored.string(), {}, {}, kAsset}, kInstanceA});
+    watcherDocument.ecs.registry.emplace<PrefabMemberComponent>(watcherRoot,
+        PrefabMemberComponent{kInstanceA, kTemplateRoot, {}});
+    std::vector<AssetDiagnostic> watcherDiagnostics;
+    const auto watcher = CollectReferencedPrefabSources(
+        watcherDocument, assets, {databaseSourceA}, false, watcherDiagnostics);
+    REQUIRE(watcher.size() == 1);
+    CHECK(watcher.front().path == authored.string());
+    CHECK(watcher.front().assetId == kAsset);
+
+    std::vector<std::filesystem::path> capturedReads;
+    const auto reader = [&](const std::filesystem::path& path,
+                            std::string& bytes, Error& readError) {
+        capturedReads.push_back(CanonicalAssetPath(path));
+        std::ifstream input(path, std::ios::binary);
+        if (!input)
+        {
+            readError = {Error::Io, path.string(), "identity authority test read failed"};
+            return false;
+        }
+        bytes.assign(std::istreambuf_iterator<char>(input),
+                     std::istreambuf_iterator<char>());
+        return true;
+    };
+    const auto captured = CapturePrefabSource(watcher.front(), assets, reader);
+    REQUIRE(captured.IsOk());
+    REQUIRE(capturedReads.size() == 2);
+    CHECK(capturedReads[0] == CanonicalAssetPath(databaseSourceA));
+    CHECK(capturedReads[1] == CanonicalAssetPath(AssetSidecarPath(databaseSourceA)));
+    CHECK(captured.value.fingerprint.normalizedPath ==
+          CanonicalAssetPath(databaseSourceA));
+    CHECK(captured.value.fingerprint.assetId == kAsset);
+
+    const auto makeDocument = [&](const std::vector<AssetReference>& references) {
+        SceneDocument document;
+        const UUID roots[] = {kRootA, kRootB};
+        const UUID instances[] = {kInstanceA, kInstanceB};
+        for (std::size_t index = 0; index != references.size(); ++index)
+        {
+            const auto root = document.ecs.registry.create();
+            REQUIRE(document.AssignKnownUuid(root, roots[index]));
+            document.ecs.registry.emplace<PrefabInstanceComponent>(root,
+                PrefabInstanceComponent{references[index], instances[index]});
+            document.ecs.registry.emplace<PrefabMemberComponent>(root,
+                PrefabMemberComponent{instances[index], kTemplateRoot, {}});
+        }
+        return document;
+    };
+
+    const auto runLoad = [&](SceneDocument& document,
+                             std::vector<std::filesystem::path>& reads,
+                             std::size_t expectedCaptures) {
+        std::size_t captures = 0;
+        PrefabPropagationLoadHooks hooks;
+        hooks.capture = [&](const AssetReference& reference,
+                            const AssetResolutionContext& context) {
+            ++captures;
+            return CapturePrefabSource(reference, context,
+                [&](const std::filesystem::path& path, std::string& bytes,
+                    Error& readError) {
+                    reads.push_back(CanonicalAssetPath(path));
+                    std::ifstream input(path, std::ios::binary);
+                    if (!input)
+                    {
+                        readError = {Error::Io, path.string(),
+                                     "identity load read failed"};
+                        return false;
+                    }
+                    bytes.assign(std::istreambuf_iterator<char>(input),
+                                 std::istreambuf_iterator<char>());
+                    return true;
+                });
+        };
+        hooks.prepare = [](const PrefabPropagationDiscoveryRequest& request) {
+            DiscoveredPropagationPlan plan;
+            plan.source = request.capturedSource.fingerprint;
+            plan.capturedSource = request.capturedSource;
+            plan.documentGeneration = request.documentGeneration;
+            plan.resourceGeneration = request.resourceGeneration;
+            plan.documentGenerationCaptured = request.documentGenerationCaptured;
+            plan.resourceGenerationCaptured = request.resourceGenerationCaptured;
+            return Result<DiscoveredPropagationPlan>::Ok(std::move(plan));
+        };
+        const auto report = ReconcilePrefabPropagationForLoad(document, assets, hooks);
+        REQUIRE(report.IsOk());
+        CHECK(captures == expectedCaptures);
+    };
+
+    const AssetReference aliasA{AssetKind::Prefab,
+        (temp.directory / "alias-z.rt2prefab").string(), {}, {}, kAsset};
+    const AssetReference aliasB{AssetKind::Prefab,
+        (temp.directory / "alias-a.rt2prefab").string(), {}, {}, kAsset};
+    auto aliasFirst = makeDocument({aliasA, aliasB});
+    auto aliasSecond = makeDocument({aliasB, aliasA});
+    std::vector<std::filesystem::path> aliasReadsFirst;
+    std::vector<std::filesystem::path> aliasReadsSecond;
+    runLoad(aliasFirst, aliasReadsFirst, 1);
+    runLoad(aliasSecond, aliasReadsSecond, 1);
+    REQUIRE(aliasReadsFirst.size() == 2);
+    REQUIRE(aliasReadsSecond.size() == 2);
+    CHECK(aliasReadsFirst == aliasReadsSecond);
+    CHECK(aliasReadsFirst[0] == CanonicalAssetPath(databaseSourceA));
+
+    // Two distinct durable IDs may retain the same authored spelling when
+    // their healthy DB claimants are different.  Dedupe is by the validated
+    // (canonical path, durable ID), so both sources are captured exactly once
+    // in either registry order rather than falsely conflicting by spelling.
+    const AssetReference sharedA{AssetKind::Prefab, "shared.rt2prefab",
+                                {}, {}, kAsset};
+    const AssetReference sharedB{AssetKind::Prefab, "shared.rt2prefab",
+                                {}, {}, kWrongAsset};
+    auto distinctFirst = makeDocument({sharedA, sharedB});
+    auto distinctSecond = makeDocument({sharedB, sharedA});
+    std::vector<std::filesystem::path> distinctReadsFirst;
+    std::vector<std::filesystem::path> distinctReadsSecond;
+    runLoad(distinctFirst, distinctReadsFirst, 2);
+    runLoad(distinctSecond, distinctReadsSecond, 2);
+    REQUIRE(distinctReadsFirst.size() == 4);
+    REQUIRE(distinctReadsSecond.size() == 4);
+    CHECK(distinctReadsFirst == distinctReadsSecond);
+    CHECK(distinctReadsFirst[0] == CanonicalAssetPath(databaseSourceA));
+    CHECK(distinctReadsFirst[2] == CanonicalAssetPath(databaseSourceB));
+    // Named compiling RED/GREEN fault: restoring the former authored-path /
+    // reference-ID arguments makes the DB-path watcher event select nothing,
+    // aliases capture twice or choose by registry order, and shared spelling
+    // falsely conflicts instead of selecting both healthy claimants.
+}
+
 TEST_CASE("Phase 8 W4 Ticket 2: load rejects same-path conflicting IDs before path-only dedupe")
 {
     const auto temp = TempPrefab();

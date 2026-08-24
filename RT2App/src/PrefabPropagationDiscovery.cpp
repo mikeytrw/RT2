@@ -671,28 +671,7 @@ Result<CapturedPrefabSource> CapturePrefabSource(
         return Result<CapturedPrefabSource>::Fail(
             preliminary.error.code, preliminary.error.path,
             preliminary.error.detail);
-    auto path = preliminary.value.normalizedPath;
-    // AssetResolver's ID-first rule still permits an authored-path fallback
-    // when the unique database record is stale.  Existence probes choose that
-    // fallback without opening either source or sidecar; the injected reader
-    // below still performs exactly one source read and one sidecar read.
-    if (!source.path.empty() && assets.database != nullptr &&
-        !std::filesystem::is_regular_file(path))
-    {
-        const std::filesystem::path authored(source.path);
-        // A stale unique DB claimant may fall back to the authored path, but
-        // only after that path has been resolved against an explicit absolute
-        // asset root.  Never turn a rootless relative watcher reference into
-        // a process-CWD probe.
-        if (authored.is_absolute() ||
-            (!assets.assetRoot.empty() && assets.assetRoot.is_absolute()))
-        {
-            const auto authoredPath = CanonicalAssetPath(authored.is_relative()
-                ? assets.assetRoot / authored : authored);
-            if (std::filesystem::is_regular_file(authoredPath))
-                path = authoredPath;
-        }
-    }
+    const auto path = preliminary.value.normalizedPath;
     std::string bytes;
     Error error;
     const auto reader = injectedRead ? injectedRead :

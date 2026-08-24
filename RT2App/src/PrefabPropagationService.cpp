@@ -548,19 +548,9 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
     for (const entt::entity root : roots)
     {
         const auto& link = roots.get<PrefabInstanceComponent>(root);
-        std::filesystem::path authoredPath;
-        if (!link.prefab.path.empty())
-        {
-            authoredPath = std::filesystem::path(link.prefab.path);
-            if (authoredPath.is_relative() && !assets.assetRoot.empty() &&
-                assets.assetRoot.is_absolute())
-                authoredPath = assets.assetRoot / authoredPath;
-            else if (authoredPath.is_relative())
-                authoredPath.clear();
-            if (!authoredPath.empty()) authoredPath = CanonicalAssetPath(authoredPath);
-        }
-        const auto identity = ResolveCapturedAssetIdentity(
-            link.prefab, assets, authoredPath, link.prefab.assetId);
+        // Pre-capture selection must use the shared database-first authority;
+        // authored spelling and reference ID are not captured evidence.
+        const auto identity = ResolveCapturedAssetIdentity(link.prefab, assets);
         if (!identity.IsOk())
             return Result<PrefabPropagationLoadReport>::Fail(
                 identity.error.code, identity.error.path, identity.error.detail);
