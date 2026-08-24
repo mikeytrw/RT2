@@ -15862,3 +15862,90 @@ tests and docs pass `git diff --check`; generated Graphify report whitespace
 is emitted by the generator and remains separately identified. The fixture
 `RT2App/assets/vertical-slice.rt2scene`, temporary directories and processes
 were restored/cleaned before this record.
+
+## Typed prefab propagation foundation — verification closure (2026-08-24)
+
+This is an append-only supersession record. It does not rewrite the historical
+Ticket 1, Ticket 2, or W4/S7 records above. The verification code was grounded
+on clean `master@8a788b6` and completed at
+`phase8-prefab-propagation-typed-foundation` code HEAD
+`664d494be7879d92be7de824d00013395af3975d`; this record is the subsequent
+documentation commit. No production semantic change was made for Ticket 3
+and no new test was required: the permanent matrix already executes the
+accepted typed-adapter and lifecycle-cut mechanisms.
+
+### Delivered boundary and current evidence
+
+| Boundary | Current implementation and evidence |
+| --- | --- |
+| Typed component authority | `RT2App/src/PrefabPropagationComponentAdapter.h:22-98` defines the exact ten `PropagationComponentSet` descriptors; `:408-409` proves unique keys at compile time. MeshRef, link, marker, naming, provenance, and script-remap policy remain explicit exclusions from the generic adapter. |
+| Discovery and capture | `RT2App/src/PrefabPropagationDiscovery.cpp:660-718` captures source/sidecar bytes and prepares the discovered snapshot; source identity and fingerprint are derived from the captured pair. |
+| Lifecycle boundary | `RT2App/src/PrefabPropagationContracts.h:455,888-894,1043` keeps discovered storage separate from the private Stage-finalized executable plan; Command receives executable evidence and retains dynamic stale validation. |
+| Load/recovery | `RT2App/src/PrefabPropagationService.cpp:535-613` captures before Prepare and performs one subsequent ResolveAll only after actionable reconciliation. |
+| Live host/queue | `RT2App/src/PrefabPropagationLive.cpp:21-36,471-509` shares capture/prepare/stage orchestration across explicit, watcher, queued, Edit, and Play paths. |
+| Command validation | `RT2App/src/PrefabPropagationCommand.cpp:75-122,246` validates complete commit evidence before mutation and revalidates current source separately at execution. |
+
+The focused Release and Debug typed-foundation runs each passed **6/6 cases
+and 127/127 assertions**. The focused W4 source matrix passed **96/96 cases
+and 2,571/2,571 assertions** in each configuration. Full `RT2Tests` passed
+**1,074/1,074 cases and 155,883/155,883 assertions** in both Release and
+Debug. Both configurations built all three CPU targets (`RT2App`, `RT2Tests`,
+`RT2SliceRunner`) through `RT2App.sln`. `run_script_test.ps1`,
+`run_slice_test.ps1` (60 steps), and `run_recovery_test.ps1` passed. Direct
+Release and Debug SliceRunner standalone, project, and report-output modes
+also passed.
+
+These numbers supersede the historical baseline at the earlier plan record
+(S7 4/376, full 1,054/155,501, W4 67/2,067); they are a measured delta, not a
+retroactive correction: **+20 full cases/+382 assertions and +29 W4 cases/+504
+assertions**. The typed-foundation result is separately **6/127**; its prior
+Ticket 1 review baseline was 6/124.
+
+### Fault and invariant audit
+
+The permanent tests and independent compiling RED/GREEN evidence from the
+CLEAN review ranges `e2be371..4d7104c` (Ticket 1) and `9d90a44..664d494`
+(Ticket 2) were re-audited against the current tree. The adapter audit covers
+the exact-ten/excluded-type matrix, key uniqueness, typed read/source-record
+extraction, write/remove, equality, overrideability, SyncImpact, loud typed
+mismatch, later-operation preflight zero mutation, and the injected material
+route (`RT2Tests/src/Phase8W4S1ContractTests.cpp:79-170` and
+`RT2Tests/src/Phase8W4S4ResourceCommandTests.cpp:408-480`).
+
+The lifecycle audit covers private Stage-only executable construction, no raw
+bytes in Command history, mandatory captured identity/fingerprint and
+presence tokens, missing root/member/link/generation/revision evidence,
+single capture/no reopen, canonical no-op and all-quarantined silence,
+rootless quarantine isolation, transitive resource ownership, consumer
+removal, stale zero-mutation dimensions, load atomicity, live refresh/context
+ordering, alias coalescing, Play isolation, Undo re-evaluation, and the final
+forged-captured-argument identity fault
+(`RT2Tests/src/Phase8W4S2DiscoveryTests.cpp:383-545`,
+`RT2Tests/src/Phase8W4S5LoadIntegrationTests.cpp:490-815`, and
+`RT2Tests/src/Phase8W4S6LiveReimportTests.cpp:179-821`). The accepted literal
+end-to-end acceptance coverage remains in
+`RT2Tests/src/Phase8W4S7AcceptanceTests.cpp:272-1235`, including A1, A10,
+A11, and A13.
+
+The review evidence includes restoration of every named production mutant
+byte-for-byte. In particular, the final Ticket 2 forged captured-path/ID
+mutant compiled and failed the real-file watcher assertion at
+`Phase8W4S2DiscoveryTests.cpp:425` before restoration. No new production
+fault was introduced by this verification-only ticket.
+
+### Deferred boundary before W5/W6
+
+The clean deliverable ends at the exact-ten typed adapter and the clean
+CapturedSource → Discovered → StageOutcome/private Executable → Command
+lifecycle. It does not claim nested/topology/children propagation, schema or
+render/GPU redesign, W5 behavior, W6 UI/presentation, queue ownership or
+performance redesign, or any other W5/W6 work. Those remain explicitly
+deferred; Ticket 3 added no product behavior and no compatibility authority.
+
+Graphify was refreshed after the verification pass. It detected no code-graph
+topology change; the tracked report therefore retains its existing extraction
+boundary. Any generated report whitespace is generator output and is not
+authored source. The scene fixture was restored to its HEAD blob
+`f47ec909bf320941c3e8d62475f23d189df3142e`; temporary directories and build/
+test processes were removed, and the final authored diff/status audit was
+clean.
