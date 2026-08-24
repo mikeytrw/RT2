@@ -548,12 +548,24 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
     for (const entt::entity root : roots)
     {
         const auto& link = roots.get<PrefabInstanceComponent>(root);
-        const auto identity = ResolveCapturedAssetIdentity(link.prefab, assets);
+        std::filesystem::path authoredPath;
+        if (!link.prefab.path.empty())
+        {
+            authoredPath = std::filesystem::path(link.prefab.path);
+            if (authoredPath.is_relative() && !assets.assetRoot.empty() &&
+                assets.assetRoot.is_absolute())
+                authoredPath = assets.assetRoot / authoredPath;
+            else if (authoredPath.is_relative())
+                authoredPath.clear();
+            if (!authoredPath.empty()) authoredPath = CanonicalAssetPath(authoredPath);
+        }
+        const auto identity = ResolveCapturedAssetIdentity(
+            link.prefab, assets, authoredPath, link.prefab.assetId);
         if (!identity.IsOk())
             return Result<PrefabPropagationLoadReport>::Fail(
                 identity.error.code, identity.error.path, identity.error.detail);
         const auto canonicalPath = identity.value.normalizedPath.generic_string();
-        const UUID effectiveId = link.prefab.assetId;
+        const UUID effectiveId = identity.value.effectiveId;
         const auto existing = candidatesByPath.find(canonicalPath);
         if (existing != candidatesByPath.end())
         {
@@ -593,6 +605,8 @@ Result<PrefabPropagationLoadReport> ReconcilePrefabPropagationForLoad(
         request.changedSource = candidate.reference;
         request.documentGeneration = 1;
         request.resourceGeneration = 1;
+        request.documentGenerationCaptured = true;
+        request.resourceGenerationCaptured = true;
         request.authoringRevision = 0;
         const auto captured = hooks.capture
             ? hooks.capture(candidate.reference, assets)

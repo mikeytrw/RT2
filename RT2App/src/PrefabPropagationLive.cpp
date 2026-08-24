@@ -88,6 +88,8 @@ PrefabPropagationLiveReport PrefabPropagationLiveQueue::Apply(
     request.changedSource = source;
     request.documentGeneration = scene.DocumentGeneration();
     request.resourceGeneration = scene.ResourceGeneration();
+    request.documentGenerationCaptured = true;
+    request.resourceGenerationCaptured = true;
     request.authoringRevision = scene.AuthoringRevision();
     request.capturedSource = captured;
     const auto prepared = hooks.prepare(request);
@@ -476,6 +478,15 @@ std::vector<AssetReference> CollectReferencedPrefabSources(
     for (const auto& path : changedPaths)
     {
         if (path.extension() != ".rt2prefab") continue;
+        if (path.is_relative() &&
+            (assets.assetRoot.empty() || !assets.assetRoot.is_absolute()))
+        {
+            diagnostics.push_back({AssetDiagnostic::Malformed,
+                AssetKind::Prefab, path.generic_string(), path.generic_string(),
+                UUID::Nil(), {}, {},
+                "relative watcher path requires an absolute asset root"});
+            continue;
+        }
         normalized.push_back(CanonicalAssetPath(path));
     }
     std::sort(normalized.begin(), normalized.end());
@@ -488,7 +499,19 @@ std::vector<AssetReference> CollectReferencedPrefabSources(
     for (const auto entity : view)
     {
         const auto& link = view.get<PrefabInstanceComponent>(entity);
-        const auto identity = ResolveCapturedAssetIdentity(link.prefab, assets);
+        std::filesystem::path authoredPath;
+        if (!link.prefab.path.empty())
+        {
+            authoredPath = std::filesystem::path(link.prefab.path);
+            if (authoredPath.is_relative() && !assets.assetRoot.empty() &&
+                assets.assetRoot.is_absolute())
+                authoredPath = assets.assetRoot / authoredPath;
+            else if (authoredPath.is_relative())
+                authoredPath.clear();
+            if (!authoredPath.empty()) authoredPath = CanonicalAssetPath(authoredPath);
+        }
+        const auto identity = ResolveCapturedAssetIdentity(
+            link.prefab, assets, authoredPath, link.prefab.assetId);
         if (!identity.IsOk())
         {
             diagnostics.push_back({
@@ -522,7 +545,10 @@ std::vector<AssetReference> CollectReferencedPrefabSources(
         AssetReference source = link.prefab;
         source.kind = AssetKind::Prefab;
         source.assetId = durableId;
-        source.path = canonical.generic_string();
+        // Keep the authored spelling for later capture.  The validated
+        // canonical path is only the dedupe key; replacing this field with a
+        // stale DB path would bypass authored-path fallback.
+        if (source.path.empty()) source.path = canonical.generic_string();
         const auto key = pathKey + "|" + durableId.ToString();
         selected.emplace(key, std::move(source));
     }

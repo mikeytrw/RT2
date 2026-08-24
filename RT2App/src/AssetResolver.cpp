@@ -46,6 +46,11 @@ Result<CapturedAssetIdentity> ResolveCapturedAssetIdentity(
         return Result<CapturedAssetIdentity>::Fail(
             Error::InvalidArgument, ref.path,
             "captured identity requires a prefab path or durable asset ID");
+    if (!ref.path.empty() && std::filesystem::path(ref.path).is_relative() &&
+        (ctx.assetRoot.empty() || !ctx.assetRoot.is_absolute()))
+        return Result<CapturedAssetIdentity>::Fail(
+            Error::InvalidArgument, ref.path,
+            "relative prefab identity requires an absolute asset root");
 
     const bool hasReferenceId = !ref.assetId.IsNull();
     const bool hasCapturedId = !capturedSidecarId.IsNull();

@@ -5,6 +5,7 @@
 #include "PrefabPropagationCommand.h"
 #include "PrefabPropagationContracts.h"
 #include "PrefabPropagationService.h"
+#include "SceneManager.h"
 #include "SceneSerializer.h"
 
 #include <filesystem>
@@ -42,6 +43,7 @@ namespace
 {
 const UUID kEntity = UUID::Parse("11111111-1111-4111-8111-111111111111");
 const UUID kInstance = UUID::Parse("22222222-2222-4222-8222-222222222222");
+const UUID kInstanceB = UUID::Parse("22222222-2222-4222-8222-222222222223");
 const UUID kTemplate = UUID::Parse("33333333-3333-4333-8333-333333333333");
 
 std::filesystem::path S1Temp(const char* name)
@@ -646,4 +648,143 @@ TEST_CASE("Phase 8 W4 Ticket 2: Stage rejects a naked changed delta without memb
     // Named RED/GREEN fault: accepting the changed Name delta without its
     // durable member snapshot would mint an executable with no marker/before
     // evidence and must fail before command mutation.
+}
+
+TEST_CASE("Phase 8 W4 Ticket 2: generation presence is explicit and zero is valid")
+{
+    SceneManager scene;
+    auto& document = scene.AuthoringDoc();
+    const auto entity = document.ecs.registry.create();
+    REQUIRE(document.AssignKnownUuid(entity, kEntity));
+    document.ecs.registry.emplace<NameComponent>(entity, NameComponent{"before"});
+    document.ecs.registry.emplace<PrefabMemberComponent>(entity,
+        PrefabMemberComponent{kInstance, kTemplate, {}});
+    document.ecs.registry.emplace<PrefabInstanceComponent>(entity,
+        PrefabInstanceComponent{AssetReference{
+            AssetKind::Prefab, "assets/zero.rt2prefab", {}, {}, kInstance}, kInstance});
+
+    DiscoveredPropagationPlan zero;
+    zero.source = PrefabSourceFingerprint{
+        "assets/zero.rt2prefab", kInstance, "zero-digest"};
+    zero.documentGeneration = 0;
+    zero.resourceGeneration = 0;
+    zero.documentGenerationCaptured = true;
+    zero.resourceGenerationCaptured = true;
+    zero.authoringRevisionCaptured = true;
+    zero.sourceSchemaVersion = PrefabSerializer::FormatVersion;
+    zero.resourceEvidenceCaptured = true;
+    zero.componentOperations.push_back(
+        PrefabPropagationComponentDelta::Make<NameComponent>(
+            kEntity, kTemplate, NameComponent{"before"}, NameComponent{"after"}));
+    zero.memberSnapshots.push_back({kEntity, kInstance, kTemplate, {}});
+    zero.rootSnapshots.push_back({kEntity, kInstance,
+        AssetReference{AssetKind::Prefab, "assets/zero.rt2prefab", {}, {}, kInstance}});
+    zero.instances.push_back({kInstance, kEntity,
+        PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}});
+    zero.affectedEntities = {kEntity};
+    const auto staged = StagePrefabPropagationResources(
+        zero, document, AssetResolutionContext{});
+    REQUIRE(staged.IsOk());
+    REQUIRE(staged.value.Executable() != nullptr);
+    CHECK(staged.value.Executable()->documentGeneration() == 0);
+    CHECK(staged.value.Executable()->resourceGeneration() == 0);
+    CHECK(staged.value.Executable()->documentGenerationCaptured());
+    CHECK(staged.value.Executable()->resourceGenerationCaptured());
+    auto executablePlan = zero;
+    executablePlan.documentGeneration = scene.DocumentGeneration();
+    executablePlan.resourceGeneration = scene.ResourceGeneration();
+    const auto executableStage = StagePrefabPropagationResources(
+        executablePlan, document, AssetResolutionContext{});
+    REQUIRE(executableStage.IsOk());
+    REQUIRE(executableStage.value.Executable() != nullptr);
+    PrefabPropagationCommand command(*executableStage.value.Executable(), [source = zero.source] {
+        return Result<PrefabSourceFingerprint>::Ok(source);
+    });
+    const auto applied = command.Execute(scene);
+    REQUIRE_MESSAGE(applied.success, applied.error.detail);
+    CHECK(document.ecs.registry.get<NameComponent>(entity).name == "after");
+
+    auto absent = zero;
+    absent.documentGenerationCaptured = false;
+    const auto absentStage = StagePrefabPropagationResources(
+        absent, document, AssetResolutionContext{});
+    CHECK_FALSE(absentStage.IsOk());
+
+    auto stale = zero;
+    const auto staleStage = StagePrefabPropagationResources(
+        stale, document, AssetResolutionContext{});
+    REQUIRE(staleStage.IsOk());
+    REQUIRE(staleStage.value.Executable() != nullptr);
+    PrefabPropagationCommand staleCommand(*staleStage.value.Executable(),
+        [source = stale.source] { return Result<PrefabSourceFingerprint>::Ok(source); });
+    const auto staleResult = staleCommand.Execute(scene);
+    CHECK_FALSE(staleResult.success);
+    // Named RED/GREEN fault: using generation != 0 as presence rejects the
+    // valid zero evidence; omitting presence makes the absent case executable.
+}
+
+TEST_CASE("Phase 8 W4 Ticket 2: executable projection drops no-op siblings")
+{
+    SceneDocument document;
+    const auto effectiveEntity = document.ecs.registry.create();
+    const auto noopEntity = document.ecs.registry.create();
+    REQUIRE(document.AssignKnownUuid(effectiveEntity, kEntity));
+    const UUID noopUuid = UUID::Parse("44444444-4444-4444-8444-444444444445");
+    REQUIRE(document.AssignKnownUuid(noopEntity, noopUuid));
+    document.ecs.registry.emplace<PrefabMemberComponent>(effectiveEntity,
+        PrefabMemberComponent{kInstance, kTemplate, {}});
+    document.ecs.registry.emplace<PrefabMemberComponent>(noopEntity,
+        PrefabMemberComponent{kInstanceB, kTemplate, {}});
+    document.ecs.registry.emplace<PrefabInstanceComponent>(effectiveEntity,
+        PrefabInstanceComponent{AssetReference{
+            AssetKind::Prefab, "assets/effective.rt2prefab", {}, {}, kInstance}, kInstance});
+    document.ecs.registry.emplace<PrefabInstanceComponent>(noopEntity,
+        PrefabInstanceComponent{AssetReference{
+            AssetKind::Prefab, "assets/noop.rt2prefab", {}, {}, kInstanceB}, kInstanceB});
+    document.ecs.registry.emplace<PrimitiveComponent>(effectiveEntity,
+        PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16});
+    const auto mesh = document.ecs.meshRegistry.AddMesh(MeshData{});
+    document.ecs.registry.emplace<MeshRef>(effectiveEntity, MeshRef{mesh, -1});
+
+    DiscoveredPropagationPlan plan;
+    plan.source = PrefabSourceFingerprint{
+        "assets/effective.rt2prefab", kInstance, "effective-digest"};
+    plan.documentGeneration = 1;
+    plan.resourceGeneration = 1;
+    plan.authoringRevisionCaptured = true;
+    plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
+    plan.resourceEvidenceCaptured = true;
+    plan.meshTableExtent = document.ecs.meshRegistry.GetCount();
+    plan.memberSnapshots = {
+        {kEntity, kInstance, kTemplate, {}},
+        {noopUuid, kInstanceB, kTemplate, {}}};
+    plan.rootSnapshots = {
+        {kEntity, kInstance, document.ecs.registry.get<PrefabInstanceComponent>(effectiveEntity).prefab},
+        {noopUuid, kInstanceB, document.ecs.registry.get<PrefabInstanceComponent>(noopEntity).prefab}};
+    plan.instances = {
+        {kInstance, kEntity, PrefabPropagationInstanceDisposition::Propagate, {kEntity}, {}},
+        {kInstanceB, noopUuid, PrefabPropagationInstanceDisposition::NoOp, {noopUuid}, {}}};
+    plan.componentOperations = {
+        PrefabPropagationComponentDelta::Make<PrimitiveComponent>(
+            kEntity, kTemplate,
+            PrimitiveComponent{PrimitiveComponent::Cube, 1.0f, 24, 16},
+            PrimitiveComponent{PrimitiveComponent::Sphere, 2.0f, 16, 8}),
+        PrefabPropagationComponentDelta::Make<NameComponent>(
+            noopUuid, kTemplate, NameComponent{}, NameComponent{})};
+    plan.affectedEntities = {kEntity};
+    plan.syncImpact = plan.DerivedSyncImpact();
+    const auto staged = StagePrefabPropagationResources(
+        plan, document, AssetResolutionContext{});
+    REQUIRE_MESSAGE(staged.IsOk(), staged.error.detail);
+    REQUIRE(staged.value.Executable() != nullptr);
+    const auto& executable = *staged.value.Executable();
+    CHECK(executable.instances().size() == 1);
+    CHECK(executable.instances().front().instanceId == kInstance);
+    CHECK(executable.memberSnapshots().size() == 1);
+    CHECK(executable.componentOperations().size() == 1);
+    CHECK(executable.componentOperations().front().EntityUuid() == kEntity);
+    CHECK_FALSE(executable.meshRefOperations().empty());
+    CHECK_FALSE(executable.resourceOwnership().empty());
+    // Named RED/GREEN fault: retaining the NoOp instance/member or its
+    // no-op delta in Executable would make summary-only evidence executable.
 }

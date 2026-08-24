@@ -2,6 +2,7 @@
 
 #include "AssetIdentity.h"
 #include "PrefabPropagationDiscovery.h"
+#include "PrefabPropagationLive.h"
 #include "PrefabPropagationService.h"
 
 #include <filesystem>
@@ -254,6 +255,108 @@ TEST_CASE("Phase 8 W4 Ticket 2: load rejects same-path conflicting IDs before pa
     CHECK(result.error.detail.find("Conflict:") == 0);
     // Named RED/GREEN fault: replacing the durable (path, ID) key with path
     // alone would silently discard one root and make the result order-dependent.
+}
+
+TEST_CASE("Phase 8 W4 Ticket 2: authored fallback survives watcher and load identity dedupe")
+{
+    const auto temp = TempPrefab();
+    const auto source = temp.source();
+    const std::string authoredReference = "source.rt2prefab";
+    Error error;
+    REQUIRE(PrefabSerializer::WriteBytesAtomic(source, "ticket2-authored", error));
+    REQUIRE(WriteSidecarId(AssetSidecarPath(source), kAsset, error));
+
+    AssetDatabase staleDatabase;
+    std::vector<AssetDatabaseDiagnostic> databaseDiagnostics;
+    staleDatabase.AddOrUpdate(
+        AssetRecord{kAsset, (temp.directory / "stale-a.rt2prefab").string(), {},
+                    AssetIdentityAuthority::Reference, {}, {}, {}},
+        databaseDiagnostics);
+
+    SceneDocument document;
+    const auto root = document.ecs.registry.create();
+    REQUIRE(document.AssignKnownUuid(root, kRootA));
+    document.ecs.registry.emplace<PrefabInstanceComponent>(root,
+        PrefabInstanceComponent{AssetReference{
+            AssetKind::Prefab, authoredReference, {}, {}, kAsset}, kInstanceA});
+    document.ecs.registry.emplace<PrefabMemberComponent>(root,
+        PrefabMemberComponent{kInstanceA, kTemplateRoot, {}});
+
+    AssetResolutionContext assets{temp.directory, &staleDatabase};
+    std::vector<AssetDiagnostic> watcherDiagnostics;
+    const auto incremental = CollectReferencedPrefabSources(
+        document, assets, {source}, false, watcherDiagnostics);
+    REQUIRE(incremental.size() == 1);
+    CHECK(incremental.front().path == authoredReference);
+    const auto full = CollectReferencedPrefabSources(
+        document, assets, {}, true, watcherDiagnostics);
+    REQUIRE(full.size() == 1);
+    CHECK(full.front().path == authoredReference);
+
+    std::filesystem::path capturedLoadPath;
+    PrefabPropagationLoadHooks hooks;
+    hooks.capture = [&](const AssetReference& reference,
+                        const AssetResolutionContext&) {
+        capturedLoadPath = reference.path;
+        CapturedPrefabSource captured;
+        captured.fingerprint = {CanonicalAssetPath(source), kAsset, "load-digest"};
+        captured.prefabBytes = "captured";
+        captured.sidecarBytes = "sidecar";
+        return Result<CapturedPrefabSource>::Ok(std::move(captured));
+    };
+    hooks.prepare = [](const PrefabPropagationDiscoveryRequest& request) {
+        DiscoveredPropagationPlan plan;
+        plan.source = request.capturedSource.fingerprint;
+        plan.capturedSource = request.capturedSource;
+        plan.documentGeneration = request.documentGeneration;
+        plan.resourceGeneration = request.resourceGeneration;
+        plan.documentGenerationCaptured = request.documentGenerationCaptured;
+        plan.resourceGenerationCaptured = request.resourceGenerationCaptured;
+        return Result<DiscoveredPropagationPlan>::Ok(std::move(plan));
+    };
+    const auto loaded = ReconcilePrefabPropagationForLoad(
+        document, assets, hooks);
+    REQUIRE(loaded.IsOk());
+    CHECK(capturedLoadPath == authoredReference);
+
+    staleDatabase.AddOrUpdate(
+        AssetRecord{kWrongAsset, (temp.directory / "stale-b.rt2prefab").string(), {},
+                    AssetIdentityAuthority::Reference, {}, {}, {}},
+        databaseDiagnostics);
+    const auto conflictingRoot = document.ecs.registry.create();
+    REQUIRE(document.AssignKnownUuid(conflictingRoot, kRootB));
+    document.ecs.registry.emplace<PrefabInstanceComponent>(conflictingRoot,
+        PrefabInstanceComponent{AssetReference{
+            AssetKind::Prefab, authoredReference, {}, {}, kWrongAsset}, kInstanceB});
+    document.ecs.registry.emplace<PrefabMemberComponent>(conflictingRoot,
+        PrefabMemberComponent{kInstanceB, kTemplateRoot, {}});
+    const auto conflictingLoad = ReconcilePrefabPropagationForLoad(
+        document, assets, hooks);
+    CHECK_FALSE(conflictingLoad.IsOk());
+    CHECK(conflictingLoad.error.detail.find("Conflict:") == 0);
+
+    SceneDocument relative;
+    const auto relativeRoot = relative.ecs.registry.create();
+    REQUIRE(relative.AssignKnownUuid(relativeRoot, kRootB));
+    relative.ecs.registry.emplace<PrefabInstanceComponent>(relativeRoot,
+        PrefabInstanceComponent{AssetReference{
+            AssetKind::Prefab, "relative.rt2prefab", {}, {}, kAsset}, kInstanceB});
+    relative.ecs.registry.emplace<PrefabMemberComponent>(relativeRoot,
+        PrefabMemberComponent{kInstanceB, kTemplateRoot, {}});
+    std::vector<AssetDiagnostic> relativeDiagnostics;
+    const auto relativeSources = CollectReferencedPrefabSources(
+        relative, AssetResolutionContext{}, {"relative.rt2prefab"}, false,
+        relativeDiagnostics);
+    CHECK(relativeSources.empty());
+    CHECK_FALSE(relativeDiagnostics.empty());
+    const auto relativeLoad = ReconcilePrefabPropagationForLoad(
+        relative, AssetResolutionContext{}, hooks);
+    CHECK_FALSE(relativeLoad.IsOk());
+    CHECK(relativeLoad.error.code == Error::InvalidArgument);
+    // Named RED/GREEN faults: overwriting source.path with the stale DB path
+    // breaks both watcher capture and load; path-only dedupe misses validated
+    // authored identity conflicts; CanonicalAssetPath on a relative path with
+    // no explicit root would incorrectly probe the process CWD.
 }
 }
 

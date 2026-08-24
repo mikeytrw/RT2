@@ -458,6 +458,10 @@ struct DiscoveredPropagationPlan
     CapturedPrefabSource capturedSource;
     std::uint64_t documentGeneration = 0;
     std::uint64_t resourceGeneration = 0;
+    // Presence is explicit and independent of the captured value.  A zero
+    // generation is valid evidence; false means the token was not captured.
+    bool documentGenerationCaptured = true;
+    bool resourceGenerationCaptured = true;
     std::uint64_t authoringRevision = 0;
     // Presence is separate from the value: revision zero is valid on the
     // first clean loaded document.
@@ -735,7 +739,7 @@ struct DiscoveredPropagationPlan
     bool IsCommandReady(const PrefabPropagationStageEvidence& stageEvidence) const noexcept
     {
         if (!IsValid(stageEvidence) || !source.IsValid() ||
-            documentGeneration == 0 || resourceGeneration == 0 ||
+            !documentGenerationCaptured || !resourceGenerationCaptured ||
             !authoringRevisionCaptured || sourceSchemaVersion == 0 ||
             !resourceEvidenceCaptured)
             return false;
@@ -749,7 +753,8 @@ struct DiscoveredPropagationPlan
         std::set<UUID> roots;
         for (const auto& root : rootSnapshots)
         {
-            if (!actionable.count(root.instanceId) || !root.IsValid()) return false;
+            if (!actionable.count(root.instanceId)) continue;
+            if (!root.IsValid()) return false;
             if (!roots.insert(root.instanceId).second) return false;
         }
         if (roots != actionable) return false;
@@ -757,8 +762,8 @@ struct DiscoveredPropagationPlan
         std::set<UUID> members;
         for (const auto& member : memberSnapshots)
         {
-            if (!actionable.count(member.instanceId) ||
-                member.entityUuid.IsNull() || member.templateId.IsNull())
+            if (!actionable.count(member.instanceId)) continue;
+            if (member.entityUuid.IsNull() || member.templateId.IsNull())
                 return false;
             if (!members.insert(member.entityUuid).second) return false;
         }
@@ -786,7 +791,7 @@ struct DiscoveredPropagationPlan
         }
         for (const auto& operation : componentOperations)
         {
-            if (operation.IsNoOp()) return false;
+            if (operation.IsNoOp()) continue;
             const auto instanceIt = std::find_if(instances.begin(), instances.end(),
                 [&](const auto& instance) {
                     return std::find(instance.affectedEntities.begin(),
@@ -801,6 +806,11 @@ struct DiscoveredPropagationPlan
         }
         for (const auto& operation : stageEvidence.meshRefOperations)
         {
+            if (operation.before.has_value() == operation.after.has_value() &&
+                operation.before && operation.after &&
+                operation.before->meshIndex == operation.after->meshIndex &&
+                operation.before->materialIndex == operation.after->materialIndex)
+                continue;
             const auto instanceIt = std::find_if(instances.begin(), instances.end(),
                 [&](const auto& instance) {
                     return std::find(instance.affectedEntities.begin(),
@@ -850,6 +860,8 @@ struct DiscoveredPropagationPlan
                            const DiscoveredPropagationPlan& b) noexcept
     { return a.source == b.source && a.documentGeneration == b.documentGeneration &&
              a.resourceGeneration == b.resourceGeneration &&
+             a.documentGenerationCaptured == b.documentGenerationCaptured &&
+             a.resourceGenerationCaptured == b.resourceGenerationCaptured &&
              a.authoringRevision == b.authoringRevision &&
              a.authoringRevisionCaptured == b.authoringRevisionCaptured &&
              a.sourceSchemaVersion == b.sourceSchemaVersion &&
@@ -888,6 +900,8 @@ class ExecutablePropagationPlan final
     PrefabSourceFingerprint source_;
     std::uint64_t documentGeneration_ = 0;
     std::uint64_t resourceGeneration_ = 0;
+    bool documentGenerationCaptured_ = false;
+    bool resourceGenerationCaptured_ = false;
     std::uint64_t authoringRevision_ = 0;
     bool authoringRevisionCaptured_ = false;
     std::uint32_t sourceSchemaVersion_ = 0;
@@ -904,11 +918,49 @@ class ExecutablePropagationPlan final
     SyncImpact syncImpact_ = SyncImpact::None;
     bool valid_ = false;
 
+    static DiscoveredPropagationPlan ProjectActionable(
+        const DiscoveredPropagationPlan& discovered,
+        const PrefabPropagationStageEvidence& evidence)
+    {
+        DiscoveredPropagationPlan projected = discovered;
+        std::set<UUID> actionable;
+        std::set<UUID> entities;
+        projected.instances.erase(std::remove_if(projected.instances.begin(),
+            projected.instances.end(), [&](const auto& instance) {
+                if (instance.disposition != PrefabPropagationInstanceDisposition::Propagate)
+                    return true;
+                actionable.insert(instance.instanceId);
+                entities.insert(instance.affectedEntities.begin(),
+                                instance.affectedEntities.end());
+                return false;
+            }), projected.instances.end());
+        projected.rootSnapshots.erase(std::remove_if(projected.rootSnapshots.begin(),
+            projected.rootSnapshots.end(), [&](const auto& root) {
+                return actionable.count(root.instanceId) == 0;
+            }), projected.rootSnapshots.end());
+        projected.memberSnapshots.erase(std::remove_if(projected.memberSnapshots.begin(),
+            projected.memberSnapshots.end(), [&](const auto& member) {
+                return actionable.count(member.instanceId) == 0 ||
+                       entities.count(member.entityUuid) == 0;
+            }), projected.memberSnapshots.end());
+        projected.componentOperations.erase(
+            std::remove_if(projected.componentOperations.begin(),
+                projected.componentOperations.end(), [&](const auto& operation) {
+                    return operation.IsNoOp() ||
+                           entities.count(operation.EntityUuid()) == 0;
+                }), projected.componentOperations.end());
+        projected.affectedEntities = projected.DerivedAffectedEntities(evidence);
+        projected.syncImpact = projected.DerivedSyncImpact(evidence);
+        return projected;
+    }
+
     explicit ExecutablePropagationPlan(const DiscoveredPropagationPlan& discovered,
                                        PrefabPropagationStageEvidence&& evidence)
         : source_(discovered.source),
           documentGeneration_(discovered.documentGeneration),
           resourceGeneration_(discovered.resourceGeneration),
+          documentGenerationCaptured_(discovered.documentGenerationCaptured),
+          resourceGenerationCaptured_(discovered.resourceGenerationCaptured),
           authoringRevision_(discovered.authoringRevision),
           authoringRevisionCaptured_(discovered.authoringRevisionCaptured),
           sourceSchemaVersion_(discovered.sourceSchemaVersion),
@@ -927,13 +979,33 @@ class ExecutablePropagationPlan final
 
     static ExecutablePropagationPlan Make(const DiscoveredPropagationPlan& discovered,
                                           PrefabPropagationStageEvidence&& evidence)
-    { return ExecutablePropagationPlan(discovered, std::move(evidence)); }
+    {
+        auto executableEvidence = std::move(evidence);
+        const auto projected = ProjectActionable(discovered, executableEvidence);
+        std::set<UUID> actionableEntities;
+        for (const auto& member : projected.memberSnapshots)
+            actionableEntities.insert(member.entityUuid);
+        executableEvidence.meshRefOperations.erase(
+            std::remove_if(executableEvidence.meshRefOperations.begin(),
+                executableEvidence.meshRefOperations.end(),
+                [&](const auto& operation) {
+                    const bool changed = operation.before.has_value() !=
+                        operation.after.has_value() ||
+                        (operation.before && operation.after &&
+                         (operation.before->meshIndex != operation.after->meshIndex ||
+                          operation.before->materialIndex != operation.after->materialIndex));
+                    return !changed || actionableEntities.count(operation.entityUuid) == 0;
+                }), executableEvidence.meshRefOperations.end());
+        return ExecutablePropagationPlan(projected, std::move(executableEvidence));
+    }
 
 public:
     ExecutablePropagationPlan() = delete;
     const PrefabSourceFingerprint& source() const noexcept { return source_; }
     std::uint64_t documentGeneration() const noexcept { return documentGeneration_; }
     std::uint64_t resourceGeneration() const noexcept { return resourceGeneration_; }
+    bool documentGenerationCaptured() const noexcept { return documentGenerationCaptured_; }
+    bool resourceGenerationCaptured() const noexcept { return resourceGenerationCaptured_; }
     std::uint64_t authoringRevision() const noexcept { return authoringRevision_; }
     bool authoringRevisionCaptured() const noexcept { return authoringRevisionCaptured_; }
     const auto& instances() const noexcept { return instances_; }

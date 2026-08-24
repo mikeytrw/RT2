@@ -74,8 +74,8 @@ bool HasResourceMutation(const ExecutablePropagationPlan& plan) noexcept
 
 bool ValidateCommitEvidence(const ExecutablePropagationPlan& plan)
 {
-    if (!plan.source().IsValid() || plan.documentGeneration() == 0 ||
-        plan.resourceGeneration() == 0 || !plan.authoringRevisionCaptured() ||
+    if (!plan.source().IsValid() || !plan.documentGenerationCaptured() ||
+        !plan.resourceGenerationCaptured() || !plan.authoringRevisionCaptured() ||
         plan.rootSnapshots().empty())
         return false;
     for (const auto& operation : plan.componentOperations())

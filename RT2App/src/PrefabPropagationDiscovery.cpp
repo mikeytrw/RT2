@@ -788,6 +788,8 @@ Result<DiscoveredPropagationPlan> PreparePrefabPropagation(
     plan.capturedSource = CapturedPrefabSource{fingerprint, sourceBytes, sidecarBytes};
     plan.documentGeneration = request.documentGeneration;
     plan.resourceGeneration = request.resourceGeneration;
+    plan.documentGenerationCaptured = request.documentGenerationCaptured;
+    plan.resourceGenerationCaptured = request.resourceGenerationCaptured;
     plan.authoringRevision = request.authoringRevision;
     plan.authoringRevisionCaptured = true;
     plan.sourceSchemaVersion = PrefabSerializer::FormatVersion;
