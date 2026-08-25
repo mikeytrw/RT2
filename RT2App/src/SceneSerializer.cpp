@@ -1626,10 +1626,27 @@ void StripTransientIndices(json& recordJson)
     auto& mat = recordJson["materialOverride"]["material"];
     if (!mat.is_object())
         return;
+    // MaterialToJson writes the compact keys. Prefab files have no material
+    // or texture tables, so neither those keys nor the older long-form names
+    // may escape into the durable template record. JsonToMaterial continues
+    // to accept compact keys for legacy input; a new save canonicalizes them
+    // away here.
+    mat.erase("baseColorTex");
+    mat.erase("normalTex");
+    mat.erase("emissiveTex");
+    mat.erase("metallicRoughTex");
     mat.erase("baseColorTextureIndex");
     mat.erase("normalTextureIndex");
     mat.erase("emissiveTextureIndex");
     mat.erase("metallicRoughnessTextureIndex");
+}
+
+bool HasTransientTextureIndex(const SceneMaterial& material)
+{
+    return material.baseColorTextureIndex >= 0 ||
+           material.normalTextureIndex >= 0 ||
+           material.emissiveTextureIndex >= 0 ||
+           material.metallicRoughnessTextureIndex >= 0;
 }
 
 } // namespace
@@ -1656,6 +1673,21 @@ bool PrefabRecordToJson(const PrefabEntityRecord& record,
         err.path = record.templateId.ToString();
         err.detail = "prefab entity record must not carry scene-side prefab "
                      "instance components";
+        return false;
+    }
+
+    // A textured imported override can discard its scene-local slots because
+    // SceneAssetResolver rebuilds them from ImportedMeshSource provenance.
+    // Without that provenance there is no durable texture identity in prefab
+    // v1, so stripping the slots would silently change the material.
+    if (record.record.hasMaterialOverride &&
+        HasTransientTextureIndex(record.record.materialOverride.material) &&
+        !record.record.hasImportedSource)
+    {
+        err.code = Error::InvalidArgument;
+        err.path = record.templateId.ToString();
+        err.detail = "textured prefab material override requires durable "
+                     "imported-source provenance";
         return false;
     }
 

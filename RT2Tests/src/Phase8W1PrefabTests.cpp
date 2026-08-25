@@ -645,6 +645,144 @@ TEST_CASE("Phase 8 W1: prefab file never contains a resource-table index")
 	std::filesystem::remove_all(dir);
 }
 
+TEST_CASE("Phase 8 closure: imported textured prefab strips and rehydrates transient slots")
+{
+	PrefabFixture source;
+	const auto dir = UniqueTempDir("p8_codec_textured");
+	const auto glbPath = dir / "tiny_textured.glb";
+	Error genErr;
+	REQUIRE(GenerateTinyTexturedGlb(glbPath, genErr));
+	REQUIRE(source.manager.LoadScene(glbPath.string()));
+
+	auto& sourceEcs = source.manager.GetECS();
+	auto imported = sourceEcs.registry.view<ImportedMeshSourceComponent, MeshRef>();
+	auto importedIt = imported.begin();
+	REQUIRE(importedIt != imported.end());
+	const auto importedEntity = *importedIt;
+	CHECK(++importedIt == imported.end());
+	const auto& sourceRef = imported.get<MeshRef>(importedEntity);
+	REQUIRE(sourceRef.materialIndex >= 0);
+	REQUIRE(sourceRef.materialIndex < static_cast<int>(sourceEcs.materials.size()));
+
+	MaterialOverrideComponent authored;
+	authored.authored = true;
+	authored.material = sourceEcs.materials[sourceRef.materialIndex];
+	authored.sourceMaterialKey = authored.material.sourceKey;
+	// Every emitted compact key must be discriminated, not only the legacy
+	// long-form names that the old stripping pass attempted to remove.
+	authored.material.baseColorTextureIndex = 7;
+	authored.material.normalTextureIndex = 8;
+	authored.material.emissiveTextureIndex = 9;
+	authored.material.metallicRoughnessTextureIndex = 10;
+	sourceEcs.registry.emplace_or_replace<MaterialOverrideComponent>(
+		importedEntity, authored);
+
+	const auto importedUuid = source.manager.GetEntityUuid(
+		SceneManager::EntityId{ importedEntity });
+	REQUIRE_FALSE(importedUuid.IsNull());
+	const auto prefabPath = dir / "textured.rt2prefab";
+	const auto created = source.manager.CreatePrefabFromSubtree(
+		{ importedUuid }, prefabPath);
+	REQUIRE(created.ok);
+
+	const std::string raw = ReadFileBinary(prefabPath);
+	for (const char* forbidden : {
+		"\"baseColorTex\"", "\"normalTex\"", "\"emissiveTex\"",
+		"\"metallicRoughTex\"", "baseColorTextureIndex",
+		"normalTextureIndex", "emissiveTextureIndex",
+		"metallicRoughnessTextureIndex" })
+	{
+		CHECK(raw.find(forbidden) == std::string::npos);
+	}
+
+	PrefabDocument stored;
+	Error loadErr;
+	REQUIRE(PrefabSerializer::Load(stored, prefabPath, loadErr));
+	REQUIRE(stored.entities.size() == 1);
+	const auto& storedRecord = stored.entities.front().record;
+	REQUIRE(storedRecord.hasImportedSource);
+	REQUIRE(storedRecord.hasMaterialOverride);
+	CHECK(storedRecord.materialOverride.material.baseColorTextureIndex == -1);
+	CHECK(storedRecord.materialOverride.material.normalTextureIndex == -1);
+	CHECK(storedRecord.materialOverride.material.emissiveTextureIndex == -1);
+	CHECK(storedRecord.materialOverride.material.metallicRoughnessTextureIndex == -1);
+
+	PrefabFixture target;
+	std::vector<AssetDiagnostic> diagnostics;
+	const auto instanceUuid = target.manager.ReserveKnownUuid();
+	const auto instance = target.manager.InstantiatePrefabWithUuids(
+		prefabPath, { instanceUuid }, diagnostics);
+	REQUIRE(instance.mutation.success);
+	const auto instanceEntity = target.manager.FindEntityByUuid(instanceUuid);
+	REQUIRE(static_cast<uint32_t>(instanceEntity) !=
+		static_cast<uint32_t>(entt::null));
+	const auto& targetEcs = target.manager.GetECS();
+	const auto* resolvedRef = targetEcs.registry.try_get<MeshRef>(instanceEntity);
+	const auto* resolvedOverride =
+		targetEcs.registry.try_get<MaterialOverrideComponent>(instanceEntity);
+	REQUIRE(resolvedRef);
+	REQUIRE(resolvedOverride);
+	REQUIRE(resolvedOverride->materialIndex >= 0);
+	CHECK(resolvedRef->materialIndex == resolvedOverride->materialIndex);
+	CHECK(resolvedOverride->material.baseColorTextureIndex >= 0);
+	CHECK(resolvedOverride->material.baseColorTextureIndex != 7);
+	CHECK(resolvedOverride->material.normalTextureIndex != 8);
+	CHECK(resolvedOverride->material.emissiveTextureIndex != 9);
+	CHECK(resolvedOverride->material.metallicRoughnessTextureIndex != 10);
+
+	std::filesystem::remove_all(dir);
+}
+
+TEST_CASE("Phase 8 closure: textured prefab material without imported provenance is rejected")
+{
+	PrefabFixture f;
+	const auto cube = f.CreateCube();
+	const auto cubeEntity = f.manager.FindEntityByUuid(cube);
+	REQUIRE(static_cast<uint32_t>(cubeEntity) !=
+		static_cast<uint32_t>(entt::null));
+
+	MaterialOverrideComponent authored;
+	authored.authored = true;
+	authored.material = f.manager.GetMaterial(0);
+	authored.material.baseColorTextureIndex = 0;
+	f.manager.GetECS().registry.emplace_or_replace<MaterialOverrideComponent>(
+		cubeEntity, authored);
+
+	const auto entitiesBefore = f.manager.GetEntityCount();
+	const auto meshesBefore = f.manager.GetECS().meshRegistry.GetCount();
+	const auto materialsBefore = f.manager.GetECS().materials.size();
+	const auto texturesBefore = f.manager.GetECS().textures.size();
+	const auto documentBefore = f.manager.DocumentGeneration();
+	const auto resourceBefore = f.manager.ResourceGeneration();
+	const auto revisionBefore = f.manager.AuthoringRevision();
+	const auto dirtyBefore = f.manager.IsDirty();
+
+	const auto dir = UniqueTempDir("p8_codec_unrepresentable");
+	const auto prefabPath = dir / "unrepresentable.rt2prefab";
+	const auto created = f.manager.CreatePrefabFromSubtree({ cube }, prefabPath);
+	REQUIRE_FALSE(created.ok);
+	CHECK(created.error.code == Error::InvalidArgument);
+	CHECK(created.error.detail.find("imported-source provenance") !=
+		std::string::npos);
+	CHECK_FALSE(std::filesystem::exists(prefabPath));
+	CHECK_FALSE(std::filesystem::exists(AssetSidecarPath(prefabPath)));
+
+	CHECK(f.manager.GetEntityCount() == entitiesBefore);
+	CHECK(f.manager.GetECS().meshRegistry.GetCount() == meshesBefore);
+	CHECK(f.manager.GetECS().materials.size() == materialsBefore);
+	CHECK(f.manager.GetECS().textures.size() == texturesBefore);
+	CHECK(f.manager.DocumentGeneration() == documentBefore);
+	CHECK(f.manager.ResourceGeneration() == resourceBefore);
+	CHECK(f.manager.AuthoringRevision() == revisionBefore);
+	CHECK(f.manager.IsDirty() == dirtyBefore);
+	const auto* after = f.manager.GetECS().registry.try_get<MaterialOverrideComponent>(
+		cubeEntity);
+	REQUIRE(after);
+	CHECK(after->material.baseColorTextureIndex == 0);
+
+	std::filesystem::remove_all(dir);
+}
+
 // ---------------------------------------------------------------------------
 // W1-C: CreatePrefabFromSubtree writes a valid, loadable .rt2prefab; templateId
 // is stable identity, not derived from scene UUIDs (amendment A1). The scene
