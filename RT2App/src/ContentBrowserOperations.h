@@ -66,6 +66,7 @@ struct ContentBrowserDropCallbacks
 {
     std::function<void(const std::string&)> importGltf;
     std::function<void(const std::string&, const ImportSettings&)> importObj;
+    std::function<void(const std::string&)> instantiatePrefab;
 };
 
 bool DispatchContentBrowserAssetDrop(

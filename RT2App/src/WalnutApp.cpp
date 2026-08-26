@@ -296,6 +296,11 @@ public:
 				return m_Settings2->GetLastBrowseDirectory();
 			return DialogInitialDirectory();
 		});
+		m_EditorUI.SetPrefabAssetRootProvider([this]() {
+			return m_ProjectContext
+				? m_ProjectContext->project.assetRoot
+				: std::filesystem::path{};
+		});
 		m_EditorUI.SetOnSceneChanged([this]() {
 			if (m_RendererGPU.IsAvailable())
 			{
@@ -462,6 +467,57 @@ public:
 		m_EditorUI.SetOnAlignCameraToView([this](const rt2::core::UUID& camera) {
 			AlignCameraToView(camera);
 		});
+		m_EditorUI.SetOnPrefabAssetCreated(
+			[this](const std::filesystem::path& prefabPath) {
+				m_ShowContentBrowserWindow = true;
+				if (!RefreshProjectAssets())
+				{
+					m_LastStatusMsg = "Prefab created, but the Content Browser refresh failed";
+					return;
+				}
+				const std::string filename = prefabPath.filename().u8string();
+				std::snprintf(m_ContentBrowserSearch,
+					sizeof(m_ContentBrowserSearch), "%s", filename.c_str());
+				m_ContentBrowserPendingRecord.reset();
+				if (m_ProjectContext && m_ProjectContext->database)
+				{
+					std::error_code ec;
+					const auto relative = std::filesystem::relative(prefabPath,
+						m_ProjectContext->project.assetRoot, ec);
+					const auto* record = m_ProjectContext->database->FindByPath(
+						ec ? prefabPath.u8string() : relative.generic_string());
+					if (!record)
+						record = m_ProjectContext->database->FindByPath(prefabPath.u8string());
+					if (record) m_ContentBrowserPendingRecord = *record;
+				}
+				m_LastStatusMsg = "Prefab asset created";
+			});
+		m_EditorUI.SetOnPrefabAssetWriteStarted(
+			[this](const std::filesystem::path& prefabPath) {
+				if (m_FileWatchListener)
+					m_FileWatchListener->suppressionRegistry.RegisterMany(
+						{prefabPath, rt2::core::AssetSidecarPath(prefabPath)});
+			});
+		m_EditorUI.SetOnPrefabAssetWriteFinished([this]() {
+			if (m_FileWatchListener) ScheduleAssetWatchSuppressionClear();
+		});
+		m_EditorUI.SetOnFindPrefabSource(
+			[this](const AssetReference& prefab) {
+				m_ShowContentBrowserWindow = true;
+				m_ContentBrowserPendingRecord.reset();
+				const rt2::core::AssetRecord* record = nullptr;
+				if (m_ProjectContext && m_ProjectContext->database)
+				{
+					const auto byId = m_ProjectContext->database->LookupById(prefab.assetId);
+					if (byId.status == rt2::core::AssetIdLookupResult::Status::Unique)
+						record = byId.record;
+					if (!record) record = m_ProjectContext->database->FindByPath(prefab.path);
+				}
+				const std::string query = record ? record->sourcePath : prefab.path;
+				std::snprintf(m_ContentBrowserSearch,
+					sizeof(m_ContentBrowserSearch), "%s", query.c_str());
+				if (record) m_ContentBrowserPendingRecord = *record;
+			});
 	}
 
 	virtual void OnUIRender() override
@@ -1532,6 +1588,7 @@ public:
 				recordExtension.begin(), [](unsigned char c) {
 					return static_cast<char>(std::tolower(c));
 				});
+			const bool isPrefab = recordExtension == ".rt2prefab";
 			if (recordExtension == ".lua" && m_InspectorFieldRegistry)
 			{
 				const auto absolute = m_ProjectContext->project.assetRoot /
@@ -1561,7 +1618,9 @@ public:
 			}
 			const bool selected = m_ContentBrowserPendingRecord &&
 				m_ContentBrowserPendingRecord->sourcePath == record.sourcePath;
-			ImGui::Selectable(record.sourcePath.c_str(), selected,
+			const std::string displayPath = isPrefab
+				? "[Prefab] " + record.sourcePath : record.sourcePath;
+			ImGui::Selectable(displayPath.c_str(), selected,
 				ImGuiSelectableFlags_AllowDoubleClick);
 			if (ImGui::BeginDragDropSource())
 			{
@@ -1570,7 +1629,7 @@ public:
 				const std::string payload = absolute.u8string();
 				ImGui::SetDragDropPayload("RT2_ASSET_PATH", payload.c_str(),
 					payload.size() + 1);
-				ImGui::TextUnformatted(record.sourcePath.c_str());
+				ImGui::TextUnformatted(displayPath.c_str());
 				ImGui::EndDragDropSource();
 			}
 			if (ImGui::BeginPopupContextItem("AssetContext"))
@@ -1589,7 +1648,8 @@ public:
 					m_ContentBrowserMoveBuffer[0] = '\0';
 					openMove = true;
 				}
-				if (ImGui::MenuItem("Reimport"))
+				if (ImGui::MenuItem(isPrefab
+					? "Update Prefab Instances" : "Reimport"))
 				{
 					rt2::core::ContentBrowserOperationReport report;
 					rt2::core::Error error;
@@ -1642,15 +1702,6 @@ public:
 									return true;
 								}, report, error);
 						});
-					const bool isPrefab = [&]() {
-						std::string ext = record.sourcePath;
-						const auto dot = ext.find_last_of('.');
-						if (dot == std::string::npos) return false;
-						ext = ext.substr(dot);
-						std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
-							return static_cast<char>(std::tolower(c)); });
-						return ext == ".rt2prefab";
-					}();
 					const bool refreshed = ok && (isPrefab || RefreshProjectAssets());
 					ScheduleAssetWatchSuppressionClear();
 					if (refreshed && !isPrefab)
@@ -2485,9 +2536,12 @@ private:
 		const rt2::core::PrefabPropagationLiveReport& report,
 		const char* context)
 	{
-		m_LastPrefabPropagationDiagnostics.insert(
-			m_LastPrefabPropagationDiagnostics.end(),
-			report.diagnostics.begin(), report.diagnostics.end());
+		// Latest-result semantics: a clean report clears the previous warning,
+		// and a new warning replaces (rather than indefinitely accumulates)
+		// the old one in both the CPU state and Outliner presentation.
+		m_LastPrefabPropagationDiagnostics = report.diagnostics;
+		m_EditorUI.SetPrefabPropagationPresentation(
+			rt2::core::DescribePrefabPropagation(report));
 		for (const auto& diagnostic : report.diagnostics)
 			printf("[%s] Prefab propagation diagnostic: path=\"%s\" instance=%s reason=%s\n",
 				context, diagnostic.prefabPath.u8string().c_str(),
@@ -4009,6 +4063,7 @@ private:
 		// close/recovery paths cannot carry identity state across contexts.
 		m_PrefabPropagationLiveHost.ResetContext();
 		m_LastPrefabPropagationDiagnostics.clear();
+		m_EditorUI.ClearPrefabPropagationPresentation();
 		if (!m_FileWatchListener || !m_FileWatcher)
 			return;
 		if (m_ActiveWatchId)

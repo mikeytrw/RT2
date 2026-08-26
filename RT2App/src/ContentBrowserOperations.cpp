@@ -373,6 +373,18 @@ bool DispatchContentBrowserAssetDrop(
         callbacks.importGltf(pathString);
         return true;
     }
+    if (extension == ".rt2prefab")
+    {
+        if (!callbacks.instantiatePrefab)
+        {
+            error.code = Error::InvalidArgument;
+            error.path = pathString;
+            error.detail = "prefab drop has no instantiation callback";
+            return false;
+        }
+        callbacks.instantiatePrefab(pathString);
+        return true;
+    }
 
     error.code = Error::InvalidArgument;
     error.path = pathString;

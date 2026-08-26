@@ -12,6 +12,7 @@
 #include "CompositePreviewSession.h"
 #include "PreviewSessionClose.h"
 #include "TransformEditing.h"
+#include "PrefabEditorPresentation.h"
 #include "core/UUID.h"
 #include <functional>
 #include <cstdint>
@@ -85,6 +86,9 @@ public:
 	void SetScriptDialogInitialDirectoryProvider(
 		std::function<std::filesystem::path()> provider)
 	{ m_ScriptDialogInitialDirectory = std::move(provider); }
+	void SetPrefabAssetRootProvider(
+		std::function<std::filesystem::path()> provider)
+	{ m_PrefabAssetRoot = std::move(provider); }
 
 	// Called when user clicks "Dump GPU Transforms" — host should call
 	// RendererGPU::DumpInstanceTransforms().
@@ -99,6 +103,22 @@ public:
 	void SetOnAlignCameraToView(
 		std::function<void(const rt2::core::UUID&)> cb)
 	{ m_OnAlignCameraToView = std::move(cb); }
+	void SetOnPrefabAssetCreated(
+		std::function<void(const std::filesystem::path&)> cb)
+	{ m_OnPrefabAssetCreated = std::move(cb); }
+	void SetOnPrefabAssetWriteStarted(
+		std::function<void(const std::filesystem::path&)> cb)
+	{ m_OnPrefabAssetWriteStarted = std::move(cb); }
+	void SetOnPrefabAssetWriteFinished(std::function<void()> cb)
+	{ m_OnPrefabAssetWriteFinished = std::move(cb); }
+	void SetOnFindPrefabSource(
+		std::function<void(const AssetReference&)> cb)
+	{ m_OnFindPrefabSource = std::move(cb); }
+	void SetPrefabPropagationPresentation(
+		rt2::core::PrefabPropagationPresentation presentation)
+	{ m_PrefabPropagation.Replace(std::move(presentation)); }
+	void ClearPrefabPropagationPresentation()
+	{ m_PrefabPropagation.Clear(); }
 
 	// Phase 3A: non-owning command history injection. WalnutApp owns the
 	// history and injects a pointer so editor UI commands and the public
@@ -137,6 +157,8 @@ public:
 	{
 		m_State.ResetForDocument();
 		m_SearchBuffer[0] = '\0';
+		m_PrefabActionStatus.clear();
+		m_PrefabPropagation.Clear();
 		DiscardAllPropertySessions();
 	}
 	void ResetForDocumentPreservingValidSelection();
@@ -201,6 +223,9 @@ private:
 	void RenderAssetDropTarget();
 
 	void RenderEntityTree(SceneManager::EntityId entity, int depth);
+	void CreatePrefabAssetCommand(const rt2::core::UUID& rootUuid);
+	void InstantiatePrefabAssetCommand(const std::string& path);
+	void RenderPrefabInspector(const rt2::core::UUID& entityUuid);
 	void RenderTransformEditor(SceneManager::EntityId entity);
 	void RenderMaterialEditor(SceneManager::EntityId entity);
 	void RenderLightEditor(SceneManager::EntityId entity);
@@ -333,11 +358,18 @@ private:
 	std::function<SceneManager::EntityId(const std::string&, const ImportSettings&)> m_OnImportWithOptions;
 	std::function<std::filesystem::path()> m_DialogInitialDirectory;
 	std::function<std::filesystem::path()> m_ScriptDialogInitialDirectory;
+	std::function<std::filesystem::path()> m_PrefabAssetRoot;
 	std::function<void()> m_OnDumpGPUTransforms;
 	std::function<void()> m_OnDumpNEEBuffers;
 	std::function<void(const rt2::core::UUID&)> m_OnViewThroughCamera;
 	std::function<void(const rt2::core::UUID&)> m_OnAlignCameraToView;
+	std::function<void(const std::filesystem::path&)> m_OnPrefabAssetCreated;
+	std::function<void(const std::filesystem::path&)> m_OnPrefabAssetWriteStarted;
+	std::function<void()> m_OnPrefabAssetWriteFinished;
+	std::function<void(const AssetReference&)> m_OnFindPrefabSource;
 	std::string m_ScriptRebindDiagnostic;
+	rt2::core::PrefabPropagationPresentationState m_PrefabPropagation;
+	std::string m_PrefabActionStatus;
 
 	// UI state for the "Add" popup
 	bool m_ShowAddPopup = false;

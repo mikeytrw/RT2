@@ -702,6 +702,12 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClCompile Include="src\PrefabPropagationLive.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\PrefabEditorActions.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PrefabEditorPresentation.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\PrefabPropagationCommand.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>

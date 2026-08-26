@@ -3653,6 +3653,47 @@ SceneManager::InstantiationResult SceneManager::InstantiatePrefabWithUuids(
 	return out;
 }
 
+SceneManager::PrefabInstantiationCheckpoint
+SceneManager::CapturePrefabInstantiationCheckpoint() const
+{
+	PrefabInstantiationCheckpoint checkpoint;
+	checkpoint.meshCount = m_EcsScene.meshRegistry.GetCount();
+	checkpoint.materialCount = m_EcsScene.materials.size();
+	checkpoint.textureCount = m_EcsScene.textures.size();
+	checkpoint.authoringRevision = m_AuthoringRevision;
+	checkpoint.resourceGeneration = m_ResourceGeneration;
+	checkpoint.dirty = m_Authoring.metadata.dirty;
+	return checkpoint;
+}
+
+EditorMutationResult SceneManager::RollbackPrefabInstantiation(
+	const SubtreeSnapshot& snapshot,
+	const PrefabInstantiationCheckpoint& checkpoint)
+{
+	if (checkpoint.meshCount > m_EcsScene.meshRegistry.GetCount() ||
+		checkpoint.materialCount > m_EcsScene.materials.size() ||
+		checkpoint.textureCount > m_EcsScene.textures.size())
+	{
+		return EditorMutationResult::Failure(
+			rt2::core::Error::InvalidRuntimeState, "prefab-instantiation",
+			"prefab instantiation rollback checkpoint exceeds current resource tables");
+	}
+
+	auto removed = RemoveSubtreesExact(snapshot);
+	if (!removed.success) return removed;
+
+	// The action is synchronous and the instantiated resources are an owned
+	// append-only suffix. No history entry exists, so retaining those slots
+	// would be an observable leak rather than the normal undo residency rule.
+	m_EcsScene.meshRegistry.Truncate(checkpoint.meshCount);
+	m_EcsScene.materials.resize(checkpoint.materialCount);
+	m_EcsScene.textures.resize(checkpoint.textureCount);
+	m_Authoring.metadata.dirty = checkpoint.dirty;
+	m_AuthoringRevision = checkpoint.authoringRevision;
+	m_ResourceGeneration = checkpoint.resourceGeneration;
+	return removed;
+}
+
 EditorMutationResult SceneManager::CreateEmptyWithUuid(
 	const rt2::core::UUID& uuid,
 	const std::string& name,

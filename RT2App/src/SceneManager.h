@@ -682,6 +682,25 @@ struct PrefabMaterialDuplicateStage
 		const std::vector<rt2::core::UUID>& knownInstanceUuids,
 		std::vector<rt2::core::AssetDiagnostic>& diagnostics);
 
+	// Exact compensation checkpoint for the editor's already-applied prefab
+	// instantiation flow. RecordApplied is intentionally last; if that final
+	// history handoff fails, the host must remove the new instance and restore
+	// the pre-action resource suffix, dirty bit, and revision counters rather
+	// than leave an unrecorded mutation behind.
+	struct PrefabInstantiationCheckpoint
+	{
+		uint32_t meshCount = 0;
+		size_t materialCount = 0;
+		size_t textureCount = 0;
+		uint64_t authoringRevision = 0;
+		uint64_t resourceGeneration = 0;
+		bool dirty = false;
+	};
+	PrefabInstantiationCheckpoint CapturePrefabInstantiationCheckpoint() const;
+	EditorMutationResult RollbackPrefabInstantiation(
+		const SubtreeSnapshot& snapshot,
+		const PrefabInstantiationCheckpoint& checkpoint);
+
 	// The exact entity count a prefab will instantiate, used by the host to
 	// reserve UUIDs. Fails with an Error result when the file is invalid.
 	rt2::core::Result<size_t> CountCanonicalPrefabEntities(

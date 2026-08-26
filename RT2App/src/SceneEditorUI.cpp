@@ -12,6 +12,8 @@
 #include "ScriptFieldRegistry.h"
 #include "ScriptFieldValue.h"
 #include "ContentBrowserOperations.h"
+#include "PrefabEditorActions.h"
+#include "PrefabEditorPresentation.h"
 #include "RTLog.h"
 #include "imgui.h"
 #include <cstdio>
@@ -282,6 +284,8 @@ void SceneEditorUI::ResetForDocumentPreservingValidSelection()
 	const auto priorSelection = m_State.Selection().Ordered();
 	m_State.ResetForDocument();
 	m_SearchBuffer[0] = '\0';
+	m_PrefabActionStatus.clear();
+	m_PrefabPropagation.Clear();
 	DiscardAllPropertySessions();
 	if (!m_SceneMgr) return;
 	for (const auto& uuid : priorSelection)
@@ -312,10 +316,87 @@ void SceneEditorUI::ImportAssetPathFromDrop(const std::string& path)
             (void)m_OnImportGltf(droppedPath);
         };
     }
+    callbacks.instantiatePrefab = [this](const std::string& droppedPath) {
+        InstantiatePrefabAssetCommand(droppedPath);
+    };
 
     rt2::core::Error error;
     if (!rt2::core::DispatchContentBrowserAssetDrop(path, callbacks, error))
         RT_LOG("Content Browser asset drop rejected: %s", error.Format().c_str());
+}
+
+void SceneEditorUI::CreatePrefabAssetCommand(const rt2::core::UUID& rootUuid)
+{
+	if (!m_SceneMgr || !m_CommandHistory)
+	{
+		m_MutationError = "Prefab creation requires an active scene and command history.";
+		return;
+	}
+	const auto& selectedEntities = m_State.Selection().Ordered();
+	if (selectedEntities.size() != 1 || selectedEntities.front() != rootUuid)
+	{
+		m_MutationError = "Create Prefab requires exactly one selected scene root.";
+		return;
+	}
+	if (!AdmitAuthoringMutation()) return;
+	const auto assetRoot = m_PrefabAssetRoot
+		? m_PrefabAssetRoot() : std::filesystem::path{};
+	if (assetRoot.empty())
+	{
+		m_MutationError = "Create Prefab requires an open project asset root.";
+		return;
+	}
+	const auto initialDirectory = assetRoot;
+	std::string selected = FileDialog::SaveFile(
+		L"RT2 Prefab (*.rt2prefab)\0*.rt2prefab\0All Files (*.*)\0*.*\0",
+		initialDirectory);
+	if (selected.empty()) return;
+	auto prefabPath = std::filesystem::u8path(selected);
+	if (prefabPath.extension().empty()) prefabPath += ".rt2prefab";
+	if (m_OnPrefabAssetWriteStarted) m_OnPrefabAssetWriteStarted(prefabPath);
+	const auto result = rt2::core::CreatePrefabAssetFromRoot(
+		*m_SceneMgr, *m_CommandHistory, rootUuid, prefabPath, assetRoot);
+	if (m_OnPrefabAssetWriteFinished) m_OnPrefabAssetWriteFinished();
+	if (!result.IsOk())
+	{
+		m_MutationError = result.mutation.error.Format();
+		m_PrefabActionStatus.clear();
+		return;
+	}
+	m_MutationError.clear();
+	m_PrefabActionStatus = result.message;
+	if (result.mutation.recoveryWarning)
+		m_MutationError = "Warning: " + result.mutation.recoveryWarning->Format();
+	if (m_OnPrefabAssetCreated) m_OnPrefabAssetCreated(prefabPath);
+}
+
+void SceneEditorUI::InstantiatePrefabAssetCommand(const std::string& path)
+{
+	if (!m_Editable)
+	{
+		m_MutationError = "Prefab instances can only be added in Edit mode.";
+		return;
+	}
+	if (!m_SceneMgr || !m_CommandHistory)
+	{
+		m_MutationError = "Prefab instantiation requires an active scene and command history.";
+		return;
+	}
+	if (!AdmitAuthoringMutation()) return;
+	const auto result = rt2::core::InstantiatePrefabAsset(
+		*m_SceneMgr, *m_CommandHistory, std::filesystem::u8path(path));
+	if (!result.IsOk())
+	{
+		m_MutationError = result.mutation.error.Format();
+		m_PrefabActionStatus.clear();
+		return;
+	}
+	ApplyMutation(result.mutation, false);
+	if (!result.selectedRoot.IsNull()) m_State.Selection().SelectOnly(result.selectedRoot);
+	m_PrefabActionStatus = result.message;
+	if (!result.diagnostics.empty())
+		m_MutationError = "Prefab instantiated with " +
+			std::to_string(result.diagnostics.size()) + " asset diagnostic(s).";
 }
 
 void SceneEditorUI::NotifySceneChanged()
@@ -338,6 +419,7 @@ void SceneEditorUI::ApplyMutation(const EditorMutationResult& result, bool selec
 		return;
 	}
 	m_MutationError.clear();
+	m_PrefabActionStatus.clear();
 	if (result.recoveryWarning)
 		m_MutationError = "Warning: " + result.recoveryWarning->Format();
 	if (selectAffected && !result.affectedEntities.empty())
@@ -1063,6 +1145,29 @@ void SceneEditorUI::RenderOutliner()
 	ImGui::EndDisabled();
 
 	ImGui::Separator();
+	if (!m_PrefabActionStatus.empty())
+		ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.55f, 1.0f), "%s",
+			m_PrefabActionStatus.c_str());
+	const auto& prefabPropagation = m_PrefabPropagation.Current();
+	if (prefabPropagation.visible)
+	{
+		const ImVec4 color = prefabPropagation.warning
+			? ImVec4(1.0f, 0.65f, 0.25f, 1.0f)
+			: ImVec4(0.45f, 0.9f, 0.55f, 1.0f);
+		ImGui::TextColored(color, "%s", prefabPropagation.summary.c_str());
+		if (!prefabPropagation.diagnostics.empty() &&
+			ImGui::TreeNode("Prefab diagnostics"))
+		{
+			for (const auto& diagnostic : prefabPropagation.diagnostics)
+			{
+				ImGui::BulletText("%s: %s",
+					diagnostic.prefabPath.u8string().c_str(),
+					diagnostic.reason.c_str());
+			}
+			ImGui::TreePop();
+		}
+		ImGui::Separator();
+	}
 	if (ImGui::InputTextWithHint("##OutlinerSearch", "Search entities...",
 		m_SearchBuffer, sizeof(m_SearchBuffer)))
 		m_State.SearchText() = m_SearchBuffer;
@@ -1179,7 +1284,8 @@ void SceneEditorUI::RenderOutliner()
 void SceneEditorUI::RenderAssetDropTarget()
 {
 	ImGui::Separator();
-	ImGui::TextDisabled("Drop a .glb, .gltf or .obj from Content Browser to import");
+	ImGui::TextDisabled(
+		"Drop .rt2prefab to instantiate; .glb, .gltf or .obj to import");
 	if (!ImGui::BeginDragDropTarget())
 		return;
 	if (const ImGuiPayload* payload =
@@ -1215,6 +1321,17 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 		label = "[Mesh] " + name;
 	else
 		label = "[Entity] " + name;
+	const auto prefabPresentation = rt2::core::DescribePrefabEntity(
+		m_SceneMgr->AuthoringDoc(), uuid);
+	const auto& prefabSelection = m_State.Selection().Ordered();
+	const bool canCreatePrefab = !directlyLocked &&
+		prefabSelection.size() == 1 && prefabSelection.front() == uuid &&
+		!m_SceneMgr->GetParent(entity).IsValid() &&
+		!prefabPresentation.IsLinked();
+	if (prefabPresentation.IsLinked())
+		label = prefabPresentation.hierarchyTag + " " + label;
+	if (m_PrefabPropagation.Current().Warns(prefabPresentation.instanceId))
+		label = "[Warning] " + label;
 	if (!directlyVisible) label = "[Hidden] " + label;
 	if (directlyLocked) label = "[Locked] " + label;
 
@@ -1305,6 +1422,10 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 				m_State.Selection().SelectOnly(uuid);
 				DuplicateSelectionCommand();
 			}
+			ImGui::BeginDisabled(!canCreatePrefab);
+			if (ImGui::MenuItem("Create Prefab Asset..."))
+				CreatePrefabAssetCommand(uuid);
+			ImGui::EndDisabled();
 			ImGui::BeginDisabled(directlyLocked);
 			if (ImGui::MenuItem("Delete"))
 			{
@@ -1377,6 +1498,10 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 				m_State.Selection().SelectOnly(uuid);
 				DuplicateSelectionCommand();
 			}
+			ImGui::BeginDisabled(!canCreatePrefab);
+			if (ImGui::MenuItem("Create Prefab Asset..."))
+				CreatePrefabAssetCommand(uuid);
+			ImGui::EndDisabled();
 			ImGui::BeginDisabled(directlyLocked);
 			if (ImGui::MenuItem("Delete"))
 			{
@@ -1396,6 +1521,47 @@ void SceneEditorUI::RenderEntityTree(SceneManager::EntityId entity, int depth)
 // Inspector
 // ============================================================================
 
+void SceneEditorUI::RenderPrefabInspector(const rt2::core::UUID& entityUuid)
+{
+	const auto presentation = rt2::core::DescribePrefabEntity(
+		m_SceneMgr->AuthoringDoc(), entityUuid);
+	if (!presentation.IsLinked()) return;
+
+	ImGui::Separator();
+	ImGui::TextUnformatted("Prefab");
+	ImGui::Text("Link: %s", presentation.hierarchyTag.c_str());
+	if (presentation.hasSource)
+	{
+		ImGui::TextWrapped("Source: %s", presentation.source.path.c_str());
+		ImGui::BeginDisabled(!m_OnFindPrefabSource);
+		if (ImGui::SmallButton("Find in Content Browser") && m_OnFindPrefabSource)
+			m_OnFindPrefabSource(presentation.source);
+		ImGui::EndDisabled();
+	}
+	ImGui::Text("Overrides: %d",
+		static_cast<int>(presentation.overrideLabels.size()));
+	if (presentation.overrideLabels.empty())
+		ImGui::TextDisabled("Fully inherited");
+	else
+	{
+		for (std::size_t i = 0; i < presentation.overrideLabels.size(); ++i)
+		{
+			if (i != 0) ImGui::SameLine();
+			ImGui::TextColored(ImVec4(0.95f, 0.72f, 0.25f, 1.0f),
+				"[Local override: %s]", presentation.overrideLabels[i].c_str());
+			if (ImGui::IsItemHovered())
+			{
+				const auto tooltip = rt2::core::PrefabOverrideTooltip(
+					presentation.overrideLabels[i]);
+				ImGui::SetTooltip("%s", tooltip.c_str());
+			}
+		}
+	}
+	if (!presentation.warning.empty())
+		ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.3f, 1.0f), "%s",
+			presentation.warning.c_str());
+}
+
 void SceneEditorUI::RenderInspector()
 {
 	ImGui::Begin("Inspector");
@@ -1414,6 +1580,7 @@ void SceneEditorUI::RenderInspector()
 	std::string name = m_SceneMgr->GetEntityName(entity);
 	const auto targetUuid = m_SceneMgr->GetEntityUuid(entity);
 	const bool directlyLocked = m_State.IsLocked(m_SceneMgr->GetEntityUuid(entity));
+	RenderPrefabInspector(targetUuid);
 	if (directlyLocked)
 		ImGui::TextDisabled("Directly locked in the editor");
 	ImGui::BeginDisabled(directlyLocked);
