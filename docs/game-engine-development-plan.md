@@ -15979,3 +15979,57 @@ wording: both Release and Debug built all three solution targets,
 `RT2Tests` and `RT2SliceRunner` are CPU-only by design. `RT2App` links its
 Walnut/ImGui/GLFW application target. No counts or test conclusions are
 changed by this terminology correction.
+
+## Phase 8 prefab codec and minimal editor UI verification (2026-08-26)
+
+This append-only record supersedes the earlier statement that prefab UI was
+deferred wholesale to W6. It records the deliberately small UI closure agreed
+after the typed propagation foundation; it does not add Revert, Apply, Unpack,
+nested prefabs, topology merging, per-property overrides, source editing, or a
+general notification framework.
+
+Prefab-v1 material serialization was made context-safe in `f76ddc1`: newly
+written prefab records no longer persist scene-global material or texture slot
+indices, while legacy prefab reads remain compatible. Scalar material state,
+authored state, durable imported provenance, and `sourceMaterialKey` survive;
+the existing resolver remains the sole authority for rebuilding transient
+slots. Focused codec tests passed 2/2 cases and 52/52 assertions.
+
+The minimal prefab editor shell landed in `6daa46e`. The CPU action seam in
+`RT2App/src/PrefabEditorActions.{h,cpp}` composes the existing create,
+instantiate, command, history, file-pair transaction, and resource machinery.
+Create Prefab Asset is restricted to one ordinary selected scene root and an
+active project asset root; it leaves the selected subtree ordinary and
+unchanged, records one asset command, and compensates both prefab and sidecar
+on a late history failure. Prefab instantiation uses the existing checked
+temporary build, creates a linked scene-root instance, records one history
+entry, and restores entities, resource suffixes, dirty state, and revision if
+the final history handoff fails.
+
+The editor now routes `.rt2prefab` drops exclusively to linked instantiation;
+model import cannot receive them. Content Browser labels prefab assets and can
+select a newly created asset or reveal a linked entity's source. Outliner and
+Inspector presentation is derived from durable link/marker components:
+`[Prefab]`, `[Linked]`, loud `[Prefab?]`, sorted whole-component override
+badges, and transient `[Warning]` association. The latest propagation report
+replaces the prior banner/diagnostics and clears on a clean report or
+scene/project reset; it is not serialized.
+
+Permanent C-UI coverage passed **7/7 cases and 128/128 assertions** in Release
+and Debug. It proves asset-only creation and undo/redo, two independently
+identified drops at the authored transform, project-root/link rejection,
+durable save/reload presentation, exact tooltip wording, invalid-prefab
+zero-mutation, asset-pair and resource/revision compensation, exact drop
+dispatch, and latest-report replacement/reset. Existing W1 and W4 focused
+matrices remained green at **41/41, 441/441** and **80/80, 2,312/2,312** in
+both configurations. Full Release and Debug `RT2Tests` each passed
+**1,083/1,083 cases and 156,063/156,063 assertions**. Both configurations built
+all three solution targets with zero errors.
+
+`run_script_test.ps1`, `run_slice_test.ps1` (60 steps, authoring intact), and
+`run_recovery_test.ps1` passed. Release and Debug SliceRunner standalone and
+project-root scene modes passed 60 steps; Debug recovery and script scenarios
+also passed. Graphify was refreshed after the final code at 36,457 nodes,
+77,344 edges, and 1,451 communities. The tracked vertical-slice fixture was
+restored byte-for-byte and the authored diff, temporary-state, and process
+audits were clean before commit.
