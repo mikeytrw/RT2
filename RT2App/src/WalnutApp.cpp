@@ -15,6 +15,7 @@
 #include "SceneEditorUI.h"
 #include "PrimitiveGeometry.h"
 #include "CLIArgs.h"
+#include "HeadlessImageOutput.h"
 #include "RTLog.h"
 #include "SceneSerializer.h"
 #include "SceneDocument.h"
@@ -3026,15 +3027,14 @@ private:
 				return false;
 			}
 
-			std::vector<uint8_t> flipped(pixels.size());
-			for (uint32_t y = 0; y < h; y++)
+			std::vector<uint8_t> topDown;
+			if (!HeadlessImageOutput::PackRGBA8TopDown(pixels, w, h, topDown))
 			{
-				memcpy(&flipped[(size_t)(h - 1 - y) * w * 4],
-				       &pixels[(size_t)y * w * 4],
-				       (size_t)w * 4);
+				RT_LOG("[Headless] invalid RGBA8 readback extent for %s", path.c_str());
+				return false;
 			}
 
-			if (!stbi_write_png(path.c_str(), w, h, 4, flipped.data(), w * 4))
+			if (!stbi_write_png(path.c_str(), w, h, 4, topDown.data(), w * 4))
 			{
 				RT_LOG("[Headless] stbi_write_png failed for %s", path.c_str());
 				return false;
@@ -3062,20 +3062,11 @@ private:
 				return false;
 			}
 
-			// Vulkan readback is bottom-up for the application's presentation convention.
-			// Store conventional top-down scanlines while dropping the unused alpha channel.
-			std::vector<float> rgb((size_t)w * h * 3);
-			for (uint32_t y = 0; y < h; y++)
+			std::vector<float> rgb;
+			if (!HeadlessImageOutput::PackRGB32FTopDown(pixels, w, h, rgb))
 			{
-				const uint32_t sourceY = h - 1 - y;
-				for (uint32_t x = 0; x < w; x++)
-				{
-					const size_t src = ((size_t)sourceY * w + x) * 4;
-					const size_t dst = ((size_t)y * w + x) * 3;
-					rgb[dst + 0] = pixels[src + 0];
-					rgb[dst + 1] = pixels[src + 1];
-					rgb[dst + 2] = pixels[src + 2];
-				}
+				RT_LOG("[Headless] invalid RGBA32F readback extent for %s", path.c_str());
+				return false;
 			}
 
 			std::string extension;

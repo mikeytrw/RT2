@@ -214,6 +214,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\CLIArgs.h" />
     <ClInclude Include="src\Camera.h" />
     <ClInclude Include="src\ColorTransfer.h" />
+    <ClInclude Include="src\HeadlessImageOutput.h" />
     <ClInclude Include="src\CommandUtils.h" />
     <ClInclude Include="src\ComposePass.h" />
     <ClInclude Include="src\DesktopInputBackend.h" />
