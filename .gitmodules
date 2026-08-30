@@ -14,3 +14,6 @@
 [submodule "RT2App/vendor/efsw"]
 	path = RT2App/vendor/efsw
 	url = https://github.com/SpartanJ/efsw.git
+[submodule "RT2App/vendor/DLSS"]
+	path = RT2App/vendor/DLSS
+	url = https://github.com/NVIDIA/DLSS.git
