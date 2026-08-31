@@ -1,6 +1,6 @@
 # W2 typed extent call-site ledger
 
-Grounded against commit `44650d2` on 31 August 2026. This is the checked
+Grounded against commit `fcc1865` on 31 August 2026. This is the checked
 closure ledger for the typed render/output boundary. `RenderExtent` is used
 for internal raster, ray, ReSTIR, G-buffer and NRD work; `OutputExtent` is used
 for camera aspect, display, viewport and readback.
