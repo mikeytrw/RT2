@@ -15,6 +15,7 @@
 #include "SceneEditorUI.h"
 #include "PrimitiveGeometry.h"
 #include "CLIArgs.h"
+#include "NgxRuntime.h"
 #include "HeadlessImageOutput.h"
 #include "RTLog.h"
 #include "SceneSerializer.h"
@@ -184,7 +185,8 @@ class RT2Layer : public Walnut::Layer
 {
 public:
 
-	RT2Layer()
+	RT2Layer(std::shared_ptr<NgxRuntime> ngxRuntime)
+		: m_Ngx(std::move(ngxRuntime))
 	{
 		m_Cam = Camera(45.0f, 0.1f, 10000.0f, 0.005f, 2.5f);
 		m_Cam.m_Aperture = 0.0f;
@@ -519,6 +521,21 @@ public:
 					sizeof(m_ContentBrowserSearch), "%s", query.c_str());
 				if (record) m_ContentBrowserPendingRecord = *record;
 			});
+
+		// NGX is an optional RT2App capability. Walnut has completed Vulkan
+		// creation before the layer is constructed, so this is the first point
+		// at which initialization is legal. No RR feature is created here.
+		if (m_Ngx)
+		{
+			m_Ngx->InitializeAfterVulkan(
+				Walnut::Application::Get().IsOptionalVulkanFeatureEnabled(),
+				Walnut::Application::Get().GetOptionalVulkanDiagnostics());
+			const std::string report = m_Ngx->Snapshot().Format();
+			printf("[NGX] %s\n", report.c_str());
+			if (g_CLI.ngxReport)
+				printf("[NGX REPORT] %s\n", report.c_str());
+			RT_LOG("[NGX] %s", report.c_str());
+		}
 	}
 
 	virtual void OnUIRender() override
@@ -952,6 +969,18 @@ public:
 	{
 		m_Settings.gbufferDebugMode = debugCombo - 1;
 		m_RendererGPU.ApplySettings(m_Settings);
+	}
+
+	ImGui::Separator();
+	if (m_Ngx)
+	{
+		ImGui::Text("NGX / Ray Reconstruction support (read-only)");
+		const NgxSupportSnapshot& ngx = m_Ngx->Snapshot();
+		ImGui::Text("State: %s", NgxSupportStateName(ngx.state));
+		ImGui::TextWrapped("Reason: %s", ngx.reason.c_str());
+		ImGui::Text("SDK %s  Runtime %s", ngx.sdkVersion.c_str(), ngx.runtimeVersion.c_str());
+		ImGui::TextWrapped("GPU: %s", ngx.gpuName.c_str());
+		ImGui::TextDisabled("RR feature creation/evaluation is not part of W1.");
 	}
 
 	ImGui::Separator();
@@ -2500,6 +2529,16 @@ public:
 			return true; // submit failed — let Render()'s blocking path recover
 
 		return false; // submitted; poll it from the next frame
+	}
+
+	void OnDetach() override
+	{
+		// ApplicationSpecification retains the provider lambda until the
+		// Application itself is destroyed. Tear NGX down explicitly while the
+		// Walnut Vulkan device is still alive; the shared owner destructor may
+		// otherwise run after Walnut has destroyed that device.
+		if (m_Ngx)
+			m_Ngx->Shutdown();
 	}
 
 private:
@@ -5025,6 +5064,9 @@ public:
 	}
 
 private:
+	// NGX must be destroyed before any other layer member that may own Vulkan
+	// resources, while Walnut's device is still alive.
+	std::shared_ptr<NgxRuntime> m_Ngx;
 };
 
 Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
@@ -5035,9 +5077,16 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 	spec.Name = "RT2";
 	spec.EnableValidation = g_CLI.validate;
 	spec.EnableSyncValidation = g_CLI.syncValidate;
+	std::filesystem::path ngxFeaturePath;
+	if (!g_CLI.ngxFeaturePath.empty())
+		ngxFeaturePath = std::filesystem::path(g_CLI.ngxFeaturePath);
+	auto ngxRuntime = std::make_shared<NgxRuntime>(g_CLI.ngxProjectId, ngxFeaturePath);
+	spec.optionalVulkanFeatureProvider = [ngxRuntime]() {
+		return ngxRuntime->DiscoverInstanceRequirements();
+	};
 
 	Walnut::Application* app = new Walnut::Application(spec);
-	auto layer = std::make_shared<RT2Layer>();
+	auto layer = std::make_shared<RT2Layer>(ngxRuntime);
 	app->PushLayer(layer);
 	// Keep a raw pointer for the menubar callback. The Application owns the
 	// layer (shared_ptr in the layer stack), so this pointer is valid for

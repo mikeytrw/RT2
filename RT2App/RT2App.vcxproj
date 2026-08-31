@@ -79,7 +79,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>EditAndContinue</DebugInformationFormat>
       <Optimization>Disabled</Optimization>
       <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
@@ -89,8 +89,8 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;vendor\DLSS\lib\Windows_x86_64\khr\x64\nvsdk_ngx_khr_d.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;vendor\DLSS\lib\Windows_x86_64\khr\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>copy /Y "$(ProjectDir)shaders\raygen.spv" "../bin/Debug-windows-x86_64/RT2App"
@@ -109,7 +109,9 @@ copy /Y "$(ProjectDir)shaders\restir_gi_history.spv" "../bin/Debug-windows-x86_6
 copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Debug-windows-x86_64/RT2App"
-copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Debug-windows-x86_64/RT2App"</Command>
+copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\dev\nvngx_dlss.dll" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\dev\nvngx_dlssd.dll" "../bin/Debug-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -117,7 +119,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Debug-windows-x86_64/RT2App"<
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_RELEASE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -133,8 +135,8 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Debug-windows-x86_64/RT2App"<
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;vendor\DLSS\lib\Windows_x86_64\khr\x64\nvsdk_ngx_khr_d.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;vendor\DLSS\lib\Windows_x86_64\khr\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>copy /Y "$(ProjectDir)shaders\raygen.spv" "../bin/Release-windows-x86_64/RT2App"
@@ -153,7 +155,9 @@ copy /Y "$(ProjectDir)shaders\restir_gi_history.spv" "../bin/Release-windows-x86
 copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Release-windows-x86_64/RT2App"
-copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Release-windows-x86_64/RT2App"</Command>
+copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\rel\nvngx_dlss.dll" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\rel\nvngx_dlssd.dll" "../bin/Release-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Dist|x64'">
@@ -161,7 +165,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Release-windows-x86_64/RT2App
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <WarningLevel>Level3</WarningLevel>
       <PreprocessorDefinitions>WL_PLATFORM_WINDOWS;GLM_FORCE_DEPTH_ZERO_TO_ONE;WL_DIST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>vendor;vendor\tinygltf;vendor\stb;vendor\entt\src;vendor\sol2\include;vendor\lua;vendor\efsw\include;vendor\efsw\src;vendor\NRD\Include;vendor\NRD\Integration;vendor\NRI\Include;vendor\DLSS\include;shaders;..\Walnut\vendor\imgui;..\Walnut\vendor\glfw\include;..\Walnut\vendor\glm;..\Walnut\vendor\stb_image;..\Walnut\Walnut\src;C:\VulkanSDK\1.4.350.0\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <DebugInformationFormat>None</DebugInformationFormat>
       <Optimization>Full</Optimization>
       <FunctionLevelLinking>true</FunctionLevelLinking>
@@ -177,8 +181,8 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Release-windows-x86_64/RT2App
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;%(AdditionalDependencies)</AdditionalDependencies>
-      <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;vendor\DLSS\lib\Windows_x86_64\khr\x64\nvsdk_ngx_khr_d.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;vendor\DLSS\lib\Windows_x86_64\khr\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
       <Command>copy /Y "$(ProjectDir)shaders\raygen.spv" "../bin/Dist-windows-x86_64/RT2App"
@@ -204,19 +208,20 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="shaders\shader_interface.h" />
     <ClInclude Include="src\AccelerationStructure.h" />
     <ClInclude Include="src\AssetDatabase.h" />
-    <ClInclude Include="src\ContentBrowserOperations.h" />
-    <ClInclude Include="src\ContentBrowserDispatch.h" />
     <ClInclude Include="src\AssetIdentity.h" />
     <ClInclude Include="src\AssetReference.h" />
     <ClInclude Include="src\AssetResolver.h" />
+    <ClInclude Include="src\AssetWatchPolicy.h" />
     <ClInclude Include="src\AsyncTextureLoader.h" />
     <ClInclude Include="src\BackgroundWork.h" />
     <ClInclude Include="src\CLIArgs.h" />
     <ClInclude Include="src\Camera.h" />
     <ClInclude Include="src\ColorTransfer.h" />
-    <ClInclude Include="src\HeadlessImageOutput.h" />
     <ClInclude Include="src\CommandUtils.h" />
     <ClInclude Include="src\ComposePass.h" />
+    <ClInclude Include="src\CompositePreviewSession.h" />
+    <ClInclude Include="src\ContentBrowserDispatch.h" />
+    <ClInclude Include="src\ContentBrowserOperations.h" />
     <ClInclude Include="src\DesktopInputBackend.h" />
     <ClInclude Include="src\ECSComponents.h" />
     <ClInclude Include="src\ECSScene.h" />
@@ -231,7 +236,6 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\EditorStructuralCommands.h" />
     <ClInclude Include="src\EditorSyncRouter.h" />
     <ClInclude Include="src\EditorTransformGizmo.h" />
-    <ClInclude Include="src\TransformGizmoHostLifecycle.h" />
     <ClInclude Include="src\EditorViewportIcons.h" />
     <ClInclude Include="src\EntityReferenceRemapper.h" />
     <ClInclude Include="src\FileDialog.h" />
@@ -246,28 +250,46 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\GpuPickingPass.h" />
     <ClInclude Include="src\GpuResources.h" />
     <ClInclude Include="src\GpuTimestampProfiler.h" />
+    <ClInclude Include="src\HeadlessImageOutput.h" />
     <ClInclude Include="src\IRuntimeCommandSink.h" />
     <ClInclude Include="src\IRuntimeScriptDispatch.h" />
     <ClInclude Include="src\ISceneRenderBridge.h" />
+    <ClInclude Include="src\InputBindingEditor.h" />
     <ClInclude Include="src\InputConfig.h" />
     <ClInclude Include="src\InputService.h" />
     <ClInclude Include="src\InputStateMachine.h" />
     <ClInclude Include="src\InputTypes.h" />
     <ClInclude Include="src\MeshRegistry.h" />
     <ClInclude Include="src\NRDIntegration.h" />
+    <ClInclude Include="src\NgxRuntime.h" />
+    <ClInclude Include="src\NgxSupport.h" />
     <ClInclude Include="src\PathTracePass.h" />
     <ClInclude Include="src\PersistedComponents.h" />
     <ClInclude Include="src\Phase1AFixtureGenerator.h" />
+    <ClInclude Include="src\PrefabCommandTransaction.h" />
+    <ClInclude Include="src\PrefabComponentKey.h" />
+    <ClInclude Include="src\PrefabComponentKeyBase.h" />
+    <ClInclude Include="src\PrefabComponentValueEquality.h" />
+    <ClInclude Include="src\PrefabEditorActions.h" />
+    <ClInclude Include="src\PrefabEditorPresentation.h" />
+    <ClInclude Include="src\PrefabPropagationCommand.h" />
+    <ClInclude Include="src\PrefabPropagationComponentAdapter.h" />
+    <ClInclude Include="src\PrefabPropagationContracts.h" />
+    <ClInclude Include="src\PrefabPropagationDiscovery.h" />
+    <ClInclude Include="src\PrefabPropagationLive.h" />
+    <ClInclude Include="src\PrefabPropagationService.h" />
+    <ClInclude Include="src\PrefabSerializer.h" />
+    <ClInclude Include="src\PreviewSessionClose.h" />
     <ClInclude Include="src\PrimitiveGeometry.h" />
     <ClInclude Include="src\Project.h" />
     <ClInclude Include="src\ProjectAssetScanner.h" />
     <ClInclude Include="src\ProjectContext.h" />
     <ClInclude Include="src\PropertyEditSession.h" />
-    <ClInclude Include="src\CompositePreviewSession.h" />
     <ClInclude Include="src\RTLog.h" />
     <ClInclude Include="src\RasterPass.h" />
     <ClInclude Include="src\ReSTIRGIPass.h" />
     <ClInclude Include="src\ReSTIRPass.h" />
+    <ClInclude Include="src\RenderExtents.h" />
     <ClInclude Include="src\RenderInstanceMap.h" />
     <ClInclude Include="src\RenderSettings.h" />
     <ClInclude Include="src\RendererGPU.h" />
@@ -276,6 +298,8 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\RuntimeLifecycleObserver.h" />
     <ClInclude Include="src\RuntimeSceneController.h" />
     <ClInclude Include="src\RuntimeSceneMutator.h" />
+    <ClInclude Include="src\SceneAssetMigration.h" />
+    <ClInclude Include="src\SceneAssetReferenceVisitor.h" />
     <ClInclude Include="src\SceneAssetResolver.h" />
     <ClInclude Include="src\SceneDocument.h" />
     <ClInclude Include="src\SceneEditorUI.h" />
@@ -289,7 +313,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\SceneResources.h" />
     <ClInclude Include="src\SceneRunState.h" />
     <ClInclude Include="src\SceneSerializer.h" />
-    <ClInclude Include="src\PrefabSerializer.h" />
+    <ClInclude Include="src\SceneSyncImpact.h" />
     <ClInclude Include="src\SceneTypes.h" />
     <ClInclude Include="src\SceneVisibility.h" />
     <ClInclude Include="src\ScriptAssetPath.h" />
@@ -299,7 +323,6 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\ScriptFieldRegistry.h" />
     <ClInclude Include="src\ScriptFieldResolver.h" />
     <ClInclude Include="src\ScriptFieldValue.h" />
-    <ClInclude Include="src\AssetWatchPolicy.h" />
     <ClInclude Include="src\ScriptFileWatchPolicy.h" />
     <ClInclude Include="src\ScriptSandbox.h" />
     <ClInclude Include="src\ScriptScenarioCompare.h" />
@@ -310,12 +333,29 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\TextureAssetPipeline.h" />
     <ClInclude Include="src\TonemapPass.h" />
     <ClInclude Include="src\TransformEditing.h" />
+    <ClInclude Include="src\TransformGizmoHostLifecycle.h" />
     <ClInclude Include="src\UnsavedChangesCoordinator.h" />
     <ClInclude Include="src\ViewportCoordinates.h" />
     <ClInclude Include="src\VulkanUtils.h" />
     <ClInclude Include="src\core\Error.h" />
     <ClInclude Include="src\core\PathTransaction.h" />
     <ClInclude Include="src\core\UUID.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_defs.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_defs_dlssd.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_defs_dlssg.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_defs_vk.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_helpers.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_helpers_dlssd.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_helpers_dlssd_cuda.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_helpers_dlssd_vk.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_helpers_dlssg.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_helpers_dlssg_vk.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_helpers_vk.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_params.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_params_dlssd.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_params_dlssg.h" />
+    <ClInclude Include="vendor\DLSS\include\nvsdk_ngx_vk.h" />
     <ClInclude Include="vendor\NRD\Include\NRD.h" />
     <ClInclude Include="vendor\NRD\Include\NRDDescs.h" />
     <ClInclude Include="vendor\NRD\Include\NRDSettings.h" />
@@ -394,6 +434,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\AssetWatchPolicy.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\AsyncTextureLoader.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -410,6 +455,21 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\ComposePass.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\CompositePreviewSession.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\ContentBrowserDispatch.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\ContentBrowserOperations.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -437,17 +497,6 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClCompile Include="src\EditorPropertyCommands.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\PrefabCommandTransaction.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\CompositePreviewSession.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\PreviewSessionClose.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\EditorSceneState.cpp">
@@ -485,12 +534,12 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
-    <ClCompile Include="src\EntityReferenceRemapper.cpp">
+    <ClCompile Include="src\EditorViewportIconsDraw.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
-    <ClCompile Include="src\EditorViewportIconsDraw.cpp">
+    <ClCompile Include="src\EntityReferenceRemapper.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -550,12 +599,14 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
-    <ClCompile Include="src\InputConfig.cpp">
+    <ClCompile Include="src\InputBindingEditor.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
-    <ClCompile Include="src\InputBindingEditor.cpp">
+    <ClCompile Include="src\InputConfig.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\InputService.cpp">
@@ -573,7 +624,67 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\NgxRuntime.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\NgxSupport.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\PathTracePass.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PrefabCommandTransaction.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PrefabEditorActions.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PrefabEditorPresentation.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PrefabPropagationCommand.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PrefabPropagationContracts.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PrefabPropagationDiscovery.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PrefabPropagationLive.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PrefabPropagationService.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PrefabSerializer.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\PreviewSessionClose.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -638,6 +749,16 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\SceneAssetMigration.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\SceneAssetReferenceVisitor.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
     <ClCompile Include="src\SceneAssetResolver.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -689,50 +810,9 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
-    <ClCompile Include="src\PrefabSerializer.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\PrefabPropagationContracts.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\PrefabPropagationDiscovery.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\PrefabPropagationLive.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\PrefabEditorActions.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\PrefabEditorPresentation.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\PrefabPropagationCommand.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\PrefabPropagationService.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
     <ClCompile Include="src\SceneSerializer.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\SceneAssetReferenceVisitor.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\SceneAssetMigration.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\ContentBrowserOperations.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\ContentBrowserDispatch.cpp">
-      <ExternalWarningLevel>Level3</ExternalWarningLevel>
-    </ClCompile>
-    <ClCompile Include="src\AssetWatchPolicy.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\SceneVisibility.cpp">

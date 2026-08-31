@@ -28,6 +28,9 @@ struct CLIArgs
 	bool verbose = false;
 	bool validate = false;        // enable Vulkan validation layers
 	bool syncValidate = false;    // enable synchronization validation
+	bool ngxReport = false;       // print the read-only NGX support snapshot
+	std::string ngxProjectId;     // optional override; empty is a deliberate invalid-ID test
+	std::string ngxFeaturePath;   // optional isolated NGX runtime search path
 	bool benchmarkTimings = false; // emit one JSON timing record per completed GPU frame
 	bool rasterFirst = false;      // raster-first hybrid path
 	bool ris = false;              // enable ReSTIR DI (backward compat alias)
@@ -58,6 +61,7 @@ struct CLIArgs
 	static CLIArgs Parse(int argc, char** argv)
 	{
 		CLIArgs args;
+		args.ngxProjectId = "41f7cbd8-e97e-49f0-b41d-14a4f5b547f8";
 		for (int i = 1; i < argc; i++)
 		{
 			const char* a = argv[i];
@@ -223,6 +227,18 @@ struct CLIArgs
 				args.validate = true;
 				args.syncValidate = true;
 			}
+			else if (strcmp(a, "--ngx-report") == 0)
+			{
+				args.ngxReport = true;
+			}
+			else if (strcmp(a, "--ngx-project-id") == 0)
+			{
+				if (const char* v = next()) args.ngxProjectId = v;
+			}
+			else if (strcmp(a, "--ngx-feature-path") == 0)
+			{
+				if (const char* v = next()) args.ngxFeaturePath = v;
+			}
 			else if (strcmp(a, "--list") == 0 || strcmp(a, "--dry-run") == 0)
 			{
 				args.listScenes = true;
@@ -269,6 +285,9 @@ struct CLIArgs
 			printf("  --benchmark-timings  Emit per-frame GPU timing records as JSON lines\n");
 			printf("  --validate           Enable Vulkan validation layers\n");
 			printf("  --sync-validate     Enable synchronization validation (implies --validate)\n");
+			printf("  --ngx-report         Print the read-only NGX support snapshot\n");
+			printf("  --ngx-project-id <id>  Override NGX Project/Application ID\n");
+			printf("  --ngx-feature-path <path>  Override NGX runtime search path\n");
 			printf("  --help               Show this help\n");
 				exit(0);
 			}

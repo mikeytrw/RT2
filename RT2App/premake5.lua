@@ -5,6 +5,22 @@ project "RT2App"
    targetdir "bin/%{cfg.buildcfg}"
    staticruntime "off"
 
+    -- RT2App is the only target allowed to consume NGX. Fail loudly at
+    -- generation time if the pinned SDK/import/runtime package is incomplete.
+    local ngxPackageFiles = {
+        "vendor/DLSS/include/nvsdk_ngx_vk.h",
+        "vendor/DLSS/lib/Windows_x86_64/khr/x64/nvsdk_ngx_khr_d.lib",
+        "vendor/DLSS/lib/Windows_x86_64/dev/nvngx_dlss.dll",
+        "vendor/DLSS/lib/Windows_x86_64/dev/nvngx_dlssd.dll",
+        "vendor/DLSS/lib/Windows_x86_64/rel/nvngx_dlss.dll",
+        "vendor/DLSS/lib/Windows_x86_64/rel/nvngx_dlssd.dll",
+    }
+    for _, path in ipairs(ngxPackageFiles) do
+        if not os.isfile(path) then
+            error("RT2App NGX SDK package is incomplete: missing " .. path)
+        end
+    end
+
     files { "src/**.h", "src/**.cpp", "vendor/**.h", "vendor/**.cpp", "vendor/**.c" }
 
     -- Exclude entt entirely from the file glob — it's header-only and
@@ -210,6 +226,7 @@ project "RT2App"
        "vendor/NRD/Include",
        "vendor/NRD/Integration",
        "vendor/NRI/Include",
+       "vendor/DLSS/include",
        "shaders",
        "../Walnut/vendor/imgui",
        "../Walnut/vendor/glfw/include",
@@ -225,6 +242,7 @@ project "RT2App"
    {
        "vendor/NRD/Lib",
        "vendor/NRI/Lib",
+       "vendor/DLSS/lib/Windows_x86_64/khr/x64",
    }
 
    links
@@ -236,6 +254,7 @@ project "RT2App"
        "vendor/NRI/Lib/NRI_VK.lib",
        "vendor/NRI/Lib/NRI_Shared.lib",
        "vendor/NRI/Lib/NRI_Validation.lib",
+       "vendor/DLSS/lib/Windows_x86_64/khr/x64/nvsdk_ngx_khr_d.lib",
    }
 
    targetdir ("../bin/" .. outputdir .. "/%{prj.name}")
@@ -276,6 +295,10 @@ project "RT2App"
       -- NRD). assert() is unaffected: it keys off NDEBUG, not _DEBUG.
       runtime "Release"
       symbols "On"
+      postbuildcommands {
+          "copy /Y \"$(ProjectDir)vendor\\DLSS\\lib\\Windows_x86_64\\dev\\nvngx_dlss.dll\" \"%{cfg.targetdir}\"",
+          "copy /Y \"$(ProjectDir)vendor\\DLSS\\lib\\Windows_x86_64\\dev\\nvngx_dlssd.dll\" \"%{cfg.targetdir}\""
+      }
 
    -- SceneLoader.cpp exceeds the COFF section limit in Debug since the
    -- Phase 7 texture pipeline landed. RT2Tests and RT2SliceRunner already
@@ -288,6 +311,10 @@ project "RT2App"
       runtime "Release"
       optimize "On"
       symbols "On"
+      postbuildcommands {
+          "copy /Y \"$(ProjectDir)vendor\\DLSS\\lib\\Windows_x86_64\\rel\\nvngx_dlss.dll\" \"%{cfg.targetdir}\"",
+          "copy /Y \"$(ProjectDir)vendor\\DLSS\\lib\\Windows_x86_64\\rel\\nvngx_dlssd.dll\" \"%{cfg.targetdir}\""
+      }
 
    filter "configurations:Dist"
       kind "WindowedApp"
