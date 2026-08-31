@@ -690,7 +690,7 @@ vec3 F_Schlick(float cosTheta, vec3 F0)
 // Compute F0 (Fresnel reflectance at normal incidence) from base color + metallic
 vec3 computeF0(vec3 baseColor, float metallic)
 {
-    return mix(vec3(0.04), baseColor, metallic);
+    return RRComputeF0(baseColor, metallic);
 }
 
 // GGX/Trowbridge-Reitz normal distribution function
@@ -803,7 +803,7 @@ vec3 evalBRDF(vec3 wo, vec3 wi, vec3 n,
     // Diffuse: Lambertian, reduced by Fresnel reflection and metallic factor.
     // Metals have no diffuse; non-metals lose energy to specular (1 - F).
     float specWeight = mix(luminance(F), 1.0, metallic);
-    vec3 diffuseAlbedo = baseColor * (1.0 - metallic);
+    vec3 diffuseAlbedo = RRDiffuseReflectance(baseColor, metallic);
     vec3 diffuse = (1.0 - specWeight) * diffuseAlbedo / PI;
 
     return diffuse + specular;
@@ -825,7 +825,7 @@ vec3 evalDiffuseBRDF(vec3 wo, vec3 wi, vec3 n,
     float VdotH = max(dot(wo, normalize(wo + wi)), 0.0);
     vec3 F = F_Schlick(VdotH, F0);
     float specWeight = mix(luminance(F), 1.0, metallic);
-    vec3 diffuseAlbedo = baseColor * (1.0 - metallic);
+    vec3 diffuseAlbedo = RRDiffuseReflectance(baseColor, metallic);
     return (1.0 - specWeight) * diffuseAlbedo / PI;
 }
 
@@ -958,9 +958,12 @@ void writeNRDSkyDefaults(ivec2 pixel, vec3 skyRadiance, vec3 skyDirection)
     imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
     imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
     vec2 currUv = (vec2(pixel) + vec2(0.5)) / camera.viewportSPP.xy;
-    vec4 previousClip = camera.viewToClipPrev * camera.worldToViewPrev * vec4(skyDirection, 0.0);
+    // Project a finite point along the sky ray so clip.w is valid. Motion is
+    // current->previous in render pixels; camera jitter is intentionally absent.
+    vec3 skyPoint = camera.position.xyz + normalize(skyDirection) * 1000.0;
+    vec4 previousClip = camera.viewToClipPrev * camera.worldToViewPrev * vec4(skyPoint, 1.0);
     vec2 previousUv = (previousClip.xy / previousClip.w) * 0.5 + 0.5;
-    imageStore(gMotion, pixel, vec4(previousUv - currUv, 0.0, 0.0));
+    imageStore(gMotion, pixel, vec4((previousUv - currUv) * camera.viewportSPP.xy, 0.0, 0.0));
     imageStore(rrNoisyHdr, pixel, vec4(skyRadiance, 1.0));
     imageStore(rrHitDistance, pixel, vec4(0.0));
     imageStore(outputImage, pixel, vec4(skyRadiance, 1.0));

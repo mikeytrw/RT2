@@ -63,15 +63,10 @@ void main()
 
         vec3 skyRadiance = payload.b.xyz;
 
-        if (nrdMode)
-        {
-            writeNRDSkyDefaults(pixel, skyRadiance, dir);
-        }
-        else
-        {
-            vec3 color = temporalAccumulate(pixel, skyRadiance, camera.position.w);
-            imageStore(outputImage, pixel, vec4(color, 1.0));
-        }
+        writeNRDSkyDefaults(pixel, skyRadiance, dir);
+        if (!nrdMode)
+            imageStore(outputImage, pixel,
+                vec4(temporalAccumulate(pixel, skyRadiance, camera.position.w), 1.0));
         return;
     }
 
@@ -122,14 +117,16 @@ void main()
     // ---- Emissive: terminate (parity with closesthit early-return) ----
     if (isEmissive)
     {
+        // RR ownership is independent of NRD. Emissive surfaces are terminal:
+        // the noisy colour is resolved emission and specular hit distance is 0.
+        imageStore(rrNoisyHdr, pixel, vec4(directEmission, 1.0));
+        imageStore(rrHitDistance, pixel, vec4(0.0));
         if (nrdMode)
         {
             // G-buffer already written by raster pass (emissive overrides).
             // Just write beauty output.
             imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
             imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
-            imageStore(rrNoisyHdr, pixel, vec4(directEmission, 1.0));
-            imageStore(rrHitDistance, pixel, vec4(0.0));
             imageStore(outputImage, pixel, vec4(directEmission, 1.0));
         }
         else
@@ -175,12 +172,14 @@ void main()
     if (!scatter.doScatter)
     {
         // Invalid scatter direction — absorb
+        // Absorbed/terminal paths are complete RR pixels and cannot claim a
+        // specular continuation hit.
+        imageStore(rrNoisyHdr, pixel, vec4(0.0, 0.0, 0.0, 1.0));
+        imageStore(rrHitDistance, pixel, vec4(0.0));
         if (nrdMode)
         {
             imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
             imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
-            imageStore(rrNoisyHdr, pixel, vec4(0.0, 0.0, 0.0, 1.0));
-            imageStore(rrHitDistance, pixel, vec4(0.0));
             imageStore(outputImage, pixel, vec4(0.0, 0.0, 0.0, 1.0));
         }
         else
@@ -400,14 +399,19 @@ void main()
 
         vec3 beautyRad = diffRad + specIndirect;
         imageStore(rrNoisyHdr, pixel, vec4(beautyRad, 1.0));
-        imageStore(rrHitDistance, pixel, vec4((specHitT >= 1e4) ? 0.0 : max(specHitT, 0.0)));
+        float rrSpecHitT = (jointLobeEstimator || scatter.lobeType >= 0.5)
+            ? specHitT : 1e4;
+        imageStore(rrHitDistance, pixel,
+            vec4((rrSpecHitT >= 1e4) ? 0.0 : max(rrSpecHitT, 0.0)));
         imageStore(gDirectEmission, pixel, vec4(0.0));
         imageStore(outputImage, pixel, vec4(beautyRad, 1.0));
     }
     else
     {
         imageStore(rrNoisyHdr, pixel, vec4(totalRad, 1.0));
-        imageStore(rrHitDistance, pixel, vec4((secondaryHitT >= 1e4) ? 0.0 : max(secondaryHitT, 0.0)));
+        float rrSpecHitT = scatter.lobeType >= 0.5 ? secondaryHitT : 1e4;
+        imageStore(rrHitDistance, pixel,
+            vec4((rrSpecHitT >= 1e4) ? 0.0 : max(rrSpecHitT, 0.0)));
         vec3 color = temporalAccumulate(pixel, totalRad, camera.position.w);
         imageStore(outputImage, pixel, vec4(color, 1.0));
     }

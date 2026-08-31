@@ -33,10 +33,12 @@ void main()
     vec4 nr = decodeNR(imageLoad(gNormalRoughness, p).xyz);
     vec4 hit = imageLoad(gPrimHit, p);
     bool miss = hit.w < 0.5;
-    vec3 diffuse = miss ? vec3(0.0) : clamp(albedoF0.rgb, 0.0, 1.0);
-    vec3 specular = miss ? vec3(0.5) : EnvBRDFApprox2(
-        mix(vec3(0.04), clamp(albedoF0.rgb, 0.0, 1.0), clamp(albedoF0.a, 0.0, 1.0)),
-        nr.w, 1.0);
+    vec3 view = miss ? vec3(0.0, 0.0, 1.0) :
+        normalize(camera.position.xyz - hit.xyz);
+    float NoV = miss ? 1.0 : abs(dot(nr.xyz, view));
+    vec3 diffuse = miss ? vec3(0.0) : RRDiffuseReflectance(albedoF0.rgb, albedoF0.a);
+    vec3 specular = miss ? vec3(0.5) : RRSpecularAlbedo(
+        albedoF0.rgb, albedoF0.a, nr.w, NoV);
     vec3 normal = miss ? vec3(0.0, 1.0, 0.0) : normalize(nr.xyz);
     float roughness = miss ? 1.0 : nr.w;
     imageStore(rrDiffuseAlbedo, p, vec4(diffuse, 1.0));

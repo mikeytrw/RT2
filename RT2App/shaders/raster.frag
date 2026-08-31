@@ -202,8 +202,10 @@ void main()
         vec3 octE = nrdEncodeNormalRoughness(geoN, 1.0);
         outNormalRoughness = vec4(octE, 1.0);  // oct-packed geo normal, roughness=1.0
         outViewZ = vec4(viewZ, 0.0, 0.0, 0.0);
-        outMotion = vec4(prevUv - currUv, 0.0, 0.0);       // emissive geometry remains motion-dense
-        outAlbedoF0 = vec4(1.0, 1.0, 1.0, 1.0);            // white albedo, metallic=1 (no demod)
+        outMotion = vec4((prevUv - currUv) * camera.viewportSPP.xy, 0.0, 0.0);
+        // Preserve resolved material semantics for RR guides.  Direct emission
+        // is carried separately; do not replace this with the NRD sentinel.
+        outAlbedoF0 = vec4(diffAlbedo, metallic);
         outDirectEmission = vec4(emissive, 0.0);
         return;
     }
@@ -212,7 +214,7 @@ void main()
     vec3 octNR = nrdEncodeNormalRoughness(shadingN, roughness);
     outNormalRoughness = vec4(octNR, 0.0);
     outViewZ = vec4(viewZ, 0.0, 0.0, 0.0);
-    outMotion = vec4(prevUv - currUv, 0.0, 0.0);
+    outMotion = vec4((prevUv - currUv) * camera.viewportSPP.xy, 0.0, 0.0);
     outAlbedoF0 = vec4(diffAlbedo, metallic);
     outDirectEmission = vec4(0.0);  // non-emissive: no direct emission
 }
