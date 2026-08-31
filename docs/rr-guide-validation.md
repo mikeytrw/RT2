@@ -63,6 +63,9 @@ msbuild RT2App.sln -p:Configuration=Debug -p:Platform=x64 -m
 bin\Release-windows-x86_64\RT2Tests\RT2Tests.exe                 # 1106/1106, 156346/156346
 bin\Release-windows-x86_64\RT2Tests\RT2Tests.exe --test-case="RR guides*"
 bin\Debug-windows-x86_64\RT2Tests\RT2Tests.exe --test-case="RR guides*" # 9/9, 90/90
+bin\Release-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 4096 --height 2160 --frames 1 --spp 1 --bounces 2 --raster-first --rr-guide-report docs\rr-guide-report-4k-rtx3090.json # 0
+bin\Release-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 256 --height 256 --frames 1 --spp 1 --bounces 2 --raster-first --rr-guide-report docs\rr-guide-report-256x256-nonnrd.json # 0
+bin\Release-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 256 --height 256 --frames 2 --spp 1 --bounces 2 --raster-first --camera-sweep 0.1 0 4 --rr-guide-report docs\rr-guide-report-256x256-motion.json # 0
 bin\Debug-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 128 --height 128 --frames 1 --spp 1 --bounces 1 --raster-first --validate --sync-validate --rr-guide-report artifacts\rr-validation.json
 RT2_RR_GUIDE_INJECT_CLOSE_FAILURE=1 bin\Release-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 64 --height 64 --frames 1 --spp 1 --bounces 1 --raster-first --rr-guide-report artifacts\rr-close-fault.json # 1
 graphify update .

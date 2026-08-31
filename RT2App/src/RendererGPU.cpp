@@ -870,7 +870,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 
 void RendererGPU::Render(const Camera& camera)
 {
-	if (!m_Initialized || m_OutputImage.image == VK_NULL_HANDLE) return;
+	if (!IsAvailable() || m_OutputImage.image == VK_NULL_HANDLE) return;
 
 	// Check dirty flag — auto reset accumulation on settings change
 	if (m_Settings.dirty)
