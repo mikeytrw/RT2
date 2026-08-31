@@ -5,6 +5,7 @@
 
 #include "vulkan/vulkan.h"
 #include "GpuDevice.h"
+#include "RenderExtents.h"
 
 // GBufferDebugPass — compute shader that copies a G-buffer image to the
 // output image for visual inspection. Uses the same set 0 (output image)
@@ -19,7 +20,7 @@ public:
 	          VkDescriptorSetLayout gbufferSetLayout);
 	void Destroy();
 
-	void Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+	void Record(VkCommandBuffer cmd, const RenderExtent& extent,
 	            VkDescriptorSet outputSet, VkDescriptorSet gbufferSet,
 	            uint32_t mode) const;
 

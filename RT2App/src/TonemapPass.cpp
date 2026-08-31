@@ -105,9 +105,11 @@ void TonemapPass::UpdateDescriptorSet(const GpuDevice& dev, VkImageView inputVie
     vkUpdateDescriptorSets(dev.device, 2, writes, 0, nullptr);
 }
 
-void TonemapPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height) const
+void TonemapPass::Record(VkCommandBuffer cmd, const OutputExtent& extent) const
 {
     if (!m_Pipeline || !m_DescriptorSet) return;
+    const uint32_t width = extent.Width();
+    const uint32_t height = extent.Height();
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_PipelineLayout,
                             0, 1, &m_DescriptorSet, 0, nullptr);

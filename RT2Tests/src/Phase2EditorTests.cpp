@@ -2,6 +2,7 @@
 
 #include "EditorSelection.h"
 #include "ViewportCoordinates.h"
+#include <type_traits>
 #include "SceneDocument.h"
 #include "ECSComponents.h"
 #include "SceneManager.h"
@@ -68,7 +69,8 @@ TEST_CASE("Phase 2 viewport coordinates account for displayed and render extents
 {
 	const ViewportImageRect viewport{
 		glm::vec2(100.0f, 50.0f), glm::vec2(800.0f, 450.0f),
-		glm::uvec2(1600u, 900u)
+		*OutputExtent::TryCreate(1600u, 900u),
+		*RenderExtent::TryCreate(1600u, 900u)
 	};
 
 	CHECK(ScreenToRenderPixel({100.0f, 50.0f}, viewport).value() == glm::uvec2(0u, 0u));
@@ -76,6 +78,30 @@ TEST_CASE("Phase 2 viewport coordinates account for displayed and render extents
 	CHECK(ScreenToRenderPixel({899.9f, 499.9f}, viewport).value() == glm::uvec2(1599u, 899u));
 	CHECK_FALSE(ScreenToRenderPixel({900.0f, 500.0f}, viewport).has_value());
 	CHECK_FALSE(ScreenToRenderPixel({99.9f, 50.0f}, viewport).has_value());
+}
+
+TEST_CASE("Typed extents reject zero dimensions and native planning keeps equality")
+{
+	static_assert(!std::is_convertible_v<RenderExtent, OutputExtent>);
+	static_assert(!std::is_convertible_v<OutputExtent, RenderExtent>);
+	CHECK_FALSE(RenderExtent::TryCreate(0u, 1u).has_value());
+	CHECK_FALSE(OutputExtent::TryCreate(1u, 0u).has_value());
+	const auto plan = PlanNativeExtents(1920u, 1080u);
+	REQUIRE(plan.has_value());
+	CHECK(plan->output.Width() == 1920u);
+	CHECK(plan->output.Height() == 1080u);
+	CHECK(plan->render == plan->output.ToRenderNative());
+}
+
+TEST_CASE("Picking maps output coordinates to render pixels explicitly")
+{
+	const ViewportImageRect viewport{
+		glm::vec2(0.0f), glm::vec2(1000.0f, 500.0f),
+		*OutputExtent::TryCreate(1000u, 500u),
+		*RenderExtent::TryCreate(500u, 250u)
+	};
+	CHECK(ScreenToOutputPixel({999.0f, 499.0f}, viewport).value() == glm::uvec2(999u, 499u));
+	CHECK(ScreenToRenderPixel({999.0f, 499.0f}, viewport).value() == glm::uvec2(499u, 249u));
 }
 
 TEST_CASE("Phase 2 picking ray is deterministic and centered on camera forward")

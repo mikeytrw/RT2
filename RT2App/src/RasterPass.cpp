@@ -415,10 +415,12 @@ void RasterPass::DestroyDrawData()
 	m_MaskedDrawCount = 0;
 }
 
-void RasterPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
-                        VkDescriptorSet sceneSet, VkDescriptorSet gbufferSet,
-                        VkImageView depthView, const VkImageView gbufferViews[8]) const
+void RasterPass::Record(VkCommandBuffer cmd, const RenderExtent& extent,
+	VkDescriptorSet sceneSet, VkDescriptorSet gbufferSet,
+	VkImageView depthView, const VkImageView gbufferViews[8]) const
 {
+	const uint32_t width = extent.Width();
+	const uint32_t height = extent.Height();
 	if (!m_Pipeline) return;
 
 	// Even with 0 draw calls, we must clear the G-buffer so stale data

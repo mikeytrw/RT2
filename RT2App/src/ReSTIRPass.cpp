@@ -82,10 +82,11 @@ void ReSTIRPass::Destroy()
 	if (m_SpatialShader)     { vkDestroyShaderModule(m_Device, m_SpatialShader, nullptr);  m_SpatialShader = VK_NULL_HANDLE; }
 }
 
-void ReSTIRPass::RecordTemporal(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+void ReSTIRPass::RecordTemporal(VkCommandBuffer cmd, const RenderExtent& extent,
                                 VkDescriptorSet set0, VkDescriptorSet set1,
                                 const SIReSTIRPushConstants& pc) const
 {
+	const uint32_t width = extent.Width(); const uint32_t height = extent.Height();
 	if (!m_TemporalPipeline)
 		return;
 
@@ -101,10 +102,11 @@ void ReSTIRPass::RecordTemporal(VkCommandBuffer cmd, uint32_t width, uint32_t he
 	vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
 }
 
-void ReSTIRPass::RecordSpatial(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+void ReSTIRPass::RecordSpatial(VkCommandBuffer cmd, const RenderExtent& extent,
                                VkDescriptorSet set0, VkDescriptorSet set1,
                                const SIReSTIRPushConstants& pc) const
 {
+	const uint32_t width = extent.Width(); const uint32_t height = extent.Height();
 	if (!m_SpatialPipeline)
 		return;
 
@@ -120,7 +122,7 @@ void ReSTIRPass::RecordSpatial(VkCommandBuffer cmd, uint32_t width, uint32_t hei
 	vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
 }
 
-void ReSTIRPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+void ReSTIRPass::Record(VkCommandBuffer cmd, const RenderExtent& extent,
                         VkDescriptorSet set0, VkDescriptorSet set1,
                         const SIReSTIRPushConstants& pc) const
 {
@@ -144,7 +146,7 @@ void ReSTIRPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 	// doesn't have access to ReservoirResources, the caller must handle barriers.
 	// For now, we just dispatch both passes and let the caller manage barriers.
 
-	RecordTemporal(cmd, width, height, set0, set1, pc);
+	RecordTemporal(cmd, extent, set0, set1, pc);
 
 	// 2. Barrier: scratch (temporal write) → spatial read
 	// + history (temporal read) → spatial write
@@ -160,5 +162,5 @@ void ReSTIRPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
 	// Same issue — caller must handle barriers. This method is not used directly.
 	// See FrameRenderer::RecordReSTIRPass for the full barrier-managed dispatch.
 
-	RecordSpatial(cmd, width, height, set0, set1, pc);
+	RecordSpatial(cmd, extent, set0, set1, pc);
 }

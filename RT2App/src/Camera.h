@@ -15,7 +15,11 @@ public:
 	Camera(float verticalFOV, float nearClip, float farClip, float apeture, float focalDistance);
 
 	bool OnUpdate(float ts, rt2::core::IInputService& input);
-	void OnResize(uint32_t width, uint32_t height);
+	void OnResize(const OutputExtent& outputExtent);
+	void OnResize(uint32_t width, uint32_t height)
+	{
+		if (const auto extent = OutputExtent::TryCreate(width, height)) OnResize(*extent);
+	}
 
 	const glm::mat4& GetProjection() const { return m_Projection; }
 	const glm::mat4& GetInverseProjection() const { return m_InverseProjection; }
@@ -27,7 +31,7 @@ public:
 	float GetVerticalFOV() const { return m_VerticalFOV; }
 	float GetNearClip() const { return m_NearClip; }
 	float GetViewportAspect() const
-	{ return m_ViewportHeight > 0 ? float(m_ViewportWidth) / float(m_ViewportHeight) : 1.0f; }
+	{ return m_OutputExtent.IsValid() ? float(m_OutputExtent.Width()) / float(m_OutputExtent.Height()) : 1.0f; }
 	EditorCameraPose GetEditorPose() const;
 	bool SetEditorPose(const EditorCameraPose& pose);
 
@@ -72,7 +76,7 @@ private:
 
 	glm::vec2 m_LastMousePosition{ 0.0f, 0.0f };
 
-	uint32_t m_ViewportWidth = 0, m_ViewportHeight = 0;
+	OutputExtent m_OutputExtent;
 
 	bool mHasMoved = false;
 

@@ -2,6 +2,7 @@
 
 #include "vulkan/vulkan.h"
 #include <cstdint>
+#include "RenderExtents.h"
 
 struct GpuDevice;
 
@@ -16,7 +17,7 @@ public:
     bool Init(const GpuDevice& dev);
     void Destroy();
     void UpdateDescriptorSet(const GpuDevice& dev, VkImageView inputView, VkImageView outputView);
-    void Record(VkCommandBuffer cmd, uint32_t width, uint32_t height) const;
+    void Record(VkCommandBuffer cmd, const OutputExtent& extent) const;
 
     bool IsAvailable() const { return m_Pipeline != VK_NULL_HANDLE; }
 

@@ -2,6 +2,7 @@
 
 #include "vulkan/vulkan.h"
 #include "shader_interface.h"
+#include "RenderExtents.h"
 #include <cstdint>
 
 struct GpuDevice;
@@ -32,15 +33,13 @@ public:
 	ReservoirResources(const ReservoirResources&) = delete;
 	ReservoirResources& operator=(const ReservoirResources&) = delete;
 
-	void Create(const GpuDevice& dev, uint32_t width, uint32_t height);
+	void Create(const GpuDevice& dev, const RenderExtent& extent);
 	void Destroy();
 
 	bool IsValid() const { return m_HistoryBuffer != VK_NULL_HANDLE; }
-	bool MatchesSize(uint32_t width, uint32_t height) const
-		{ return m_Width == width && m_Height == height; }
+	bool MatchesSize(const RenderExtent& extent) const { return m_Extent == extent; }
 
-	uint32_t GetWidth()  const { return m_Width; }
-	uint32_t GetHeight() const { return m_Height; }
+	RenderExtent GetExtent() const { return m_Extent; }
 	VkDeviceSize GetBufferSize() const { return m_BufferSize; }
 	VkDeviceSize GetSurfaceHistorySize() const { return m_SurfaceHistorySize; }
 
@@ -62,8 +61,7 @@ private:
 	VkBuffer m_SurfaceHistoryBuffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_SurfaceHistoryBufferMemory = VK_NULL_HANDLE;
 
-	uint32_t m_Width = 0;
-	uint32_t m_Height = 0;
+	RenderExtent m_Extent;
 	VkDeviceSize m_BufferSize = 0;
 	VkDeviceSize m_SurfaceHistorySize = 0;
 };

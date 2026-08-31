@@ -734,7 +734,8 @@ public:
 	if (m_PerfDetailLevel >= kPerfLevelEverything && m_RendererGPU.HasOutput())
 	{
 		ImGui::Separator();
-		ImGui::Text("Render Res: %d x %d", m_RendererGPU.GetWidth(), m_RendererGPU.GetHeight());
+		const auto extent = m_RendererGPU.GetRenderExtent();
+		ImGui::Text("Render Res: %u x %u", extent.Width(), extent.Height());
 	}
 	if (m_PerfDetailLevel >= kPerfLevelEverything && m_RendererGPU.IsAvailable())
 	{
@@ -1097,16 +1098,18 @@ public:
 
 	if (m_RendererGPU.IsAvailable())
 	{
-		m_RendererGPU.OnResize(m_ViewportWidth, m_ViewportHeight);
+		const auto outputExtent = OutputExtent::TryCreate(m_ViewportWidth, m_ViewportHeight);
+		if (outputExtent) m_RendererGPU.OnResize(*outputExtent);
 		Camera& activeCam = m_RuntimeCamActive ? m_RuntimeCam : m_Cam;
-		activeCam.OnResize(m_ViewportWidth, m_ViewportHeight);
+		if (outputExtent) activeCam.OnResize(*outputExtent);
 	}
 
 	if (m_RendererGPU.HasOutput())
 	{
 		const ImVec2 imageMin = ImGui::GetCursorScreenPos();
-		const ImVec2 imageSize((float)m_RendererGPU.GetWidth(),
-		                       (float)m_RendererGPU.GetHeight());
+		const auto outputExtent = m_RendererGPU.GetOutputExtent();
+		const ImVec2 imageSize((float)outputExtent.Width(),
+		                       (float)outputExtent.Height());
 		ImGui::Image((ImTextureID)m_RendererGPU.GetOutputDescriptorSet(),
 		             imageSize);
 		if (ImGui::BeginDragDropTarget())
@@ -1215,11 +1218,12 @@ public:
 			ViewportImageRect rect;
 			rect.screenMin = { imageMin.x, imageMin.y };
 			rect.displaySize = { imageSize.x, imageSize.y };
-			rect.renderExtent = { m_RendererGPU.GetWidth(), m_RendererGPU.GetHeight() };
+			rect.outputExtent = m_RendererGPU.GetOutputExtent();
+			rect.renderExtent = m_RendererGPU.GetRenderExtent();
 			if (const auto pixel = ScreenToRenderPixel({ mouse.x, mouse.y }, rect))
 			{
 				const glm::vec2 uv = (glm::vec2(*pixel) + 0.5f) /
-					glm::vec2(rect.renderExtent);
+					glm::vec2(rect.renderExtent.Width(), rect.renderExtent.Height());
 				const uint64_t serial = m_RendererGPU.RequestPick(
 					m_Cam.GetPickingRay(uv.x, uv.y), m_Cam.m_FarClip);
 				m_ViewportPickSerial = serial;
@@ -2989,8 +2993,11 @@ private:
 		{
 			printf("[Headless] OnResize %dx%d...\n", m_ViewportWidth, m_ViewportHeight);
 			fflush(stdout);
-			m_RendererGPU.OnResize(m_ViewportWidth, m_ViewportHeight);
-			m_Cam.OnResize(m_ViewportWidth, m_ViewportHeight);
+			if (const auto outputExtent = OutputExtent::TryCreate(m_ViewportWidth, m_ViewportHeight))
+			{
+				m_RendererGPU.OnResize(*outputExtent);
+				m_Cam.OnResize(*outputExtent);
+			}
 		}
 
 		if (m_RendererGPU.IsAvailable())

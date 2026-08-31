@@ -35,8 +35,10 @@ void NRDWrapper::Destroy()
 }
 
 bool NRDWrapper::Init(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device,
-                      VkQueue queue, uint32_t queueFamily, uint32_t width, uint32_t height)
+                      VkQueue queue, uint32_t queueFamily, const RenderExtent& extent)
 {
+	const uint32_t width = extent.Width();
+	const uint32_t height = extent.Height();
 	RT_LOG("[NRD] Init: w=%u h=%u queueFamily=%u", width, height, queueFamily);
 
 	// Cache device handles for OnResize
@@ -141,22 +143,21 @@ bool NRDWrapper::Init(VkInstance instance, VkPhysicalDevice physicalDevice, VkDe
 		return false;
 	}
 
-	m_Width = width;
-	m_Height = height;
+	m_Extent = extent;
 	m_Initialized = true;
 
 	RT_LOG("[NRD] Init successful (REBLUR_DIFFUSE_SPECULAR, %ux%u)", width, height);
 	return true;
 }
 
-void NRDWrapper::OnResize(uint32_t width, uint32_t height)
+void NRDWrapper::OnResize(const RenderExtent& extent)
 {
-	if (!m_Initialized || (width == m_Width && height == m_Height))
+	if (!m_Initialized || extent == m_Extent)
 		return;
 
 	// NRD doesn't support resize — must destroy and recreate using cached handles
 	Destroy();
-	Init(m_Instance, m_PhysicalDevice, m_Device, m_Queue, m_QueueFamily, width, height);
+	Init(m_Instance, m_PhysicalDevice, m_Device, m_Queue, m_QueueFamily, extent);
 }
 
 void NRDWrapper::NewFrame()
@@ -195,14 +196,14 @@ void NRDWrapper::SetCommonSettings(const float* viewToClip, const float* viewToC
 	common.cameraJitter[1] = jitterY;
 	common.cameraJitterPrev[0] = jitterXPrev;
 	common.cameraJitterPrev[1] = jitterYPrev;
-	common.resourceSize[0] = (uint16_t)m_Width;
-	common.resourceSize[1] = (uint16_t)m_Height;
-	common.resourceSizePrev[0] = (uint16_t)m_Width;
-	common.resourceSizePrev[1] = (uint16_t)m_Height;
-	common.rectSize[0] = (uint16_t)m_Width;
-	common.rectSize[1] = (uint16_t)m_Height;
-	common.rectSizePrev[0] = (uint16_t)m_Width;
-	common.rectSizePrev[1] = (uint16_t)m_Height;
+	common.resourceSize[0] = (uint16_t)m_Extent.Width();
+	common.resourceSize[1] = (uint16_t)m_Extent.Height();
+	common.resourceSizePrev[0] = (uint16_t)m_Extent.Width();
+	common.resourceSizePrev[1] = (uint16_t)m_Extent.Height();
+	common.rectSize[0] = (uint16_t)m_Extent.Width();
+	common.rectSize[1] = (uint16_t)m_Extent.Height();
+	common.rectSizePrev[0] = (uint16_t)m_Extent.Width();
+	common.rectSizePrev[1] = (uint16_t)m_Extent.Height();
 	common.viewZScale = 1.0f;
 	common.denoisingRange = 500000.0f;
 	common.disocclusionThreshold = 0.01f;

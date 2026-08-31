@@ -2,6 +2,7 @@
 
 #include "vulkan/vulkan.h"
 #include "shader_interface.h"
+#include "RenderExtents.h"
 #include <cstdint>
 
 struct GpuDevice;
@@ -39,7 +40,7 @@ public:
 	ReservoirGIResources& operator=(const ReservoirGIResources&) = delete;
 
 	// Full-size allocation for the given viewport.
-	void Create(const GpuDevice& dev, uint32_t width, uint32_t height);
+	void Create(const GpuDevice& dev, const RenderExtent& extent);
 
 	// Dummy 16-byte allocation — used while GI is disabled so binding 11
 	// points at a legal (but never read) buffer.
@@ -49,11 +50,9 @@ public:
 
 	bool IsValid() const { return m_Buffer != VK_NULL_HANDLE; }
 	bool IsDummy() const { return m_IsDummy; }
-	bool MatchesSize(uint32_t width, uint32_t height) const
-		{ return !m_IsDummy && m_Width == width && m_Height == height; }
+	bool MatchesSize(const RenderExtent& extent) const { return !m_IsDummy && m_Extent == extent; }
 
-	uint32_t GetWidth()  const { return m_Width; }
-	uint32_t GetHeight() const { return m_Height; }
+	RenderExtent GetExtent() const { return m_Extent; }
 	VkDeviceSize GetTotalSize() const { return m_TotalSize; }
 
 	VkBuffer GetBuffer() const { return m_Buffer; }
@@ -74,8 +73,7 @@ private:
 	VkBuffer       m_Buffer = VK_NULL_HANDLE;
 	VkDeviceMemory m_BufferMemory = VK_NULL_HANDLE;
 
-	uint32_t m_Width = 0;
-	uint32_t m_Height = 0;
+	RenderExtent m_Extent;
 	bool     m_IsDummy = false;
 
 	VkDeviceSize m_ReservoirRegionSize = 0;        // one reservoir region (pixelCount * 48)

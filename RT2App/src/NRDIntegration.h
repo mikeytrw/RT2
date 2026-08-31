@@ -2,6 +2,7 @@
 
 #include "vulkan/vulkan.h"
 #include <cstdint>
+#include "RenderExtents.h"
 
 // NRD needs NRD.h for Identifier typedef
 #include "NRD.h"
@@ -17,8 +18,8 @@ public:
 	void Destroy();
 
 	bool Init(VkInstance instance, VkPhysicalDevice physicalDevice, VkDevice device,
-	          VkQueue queue, uint32_t queueFamily, uint32_t width, uint32_t height);
-	void OnResize(uint32_t width, uint32_t height);
+	          VkQueue queue, uint32_t queueFamily, const RenderExtent& extent);
+	void OnResize(const RenderExtent& extent);
 
 	void NewFrame();
 	void ResetHistory();
@@ -44,13 +45,11 @@ public:
 	             VkImage outSpecRadianceHitDist);
 
 	bool IsAvailable() const { return m_Initialized; }
-	uint32_t GetWidth() const { return m_Width; }
-	uint32_t GetHeight() const { return m_Height; }
+	RenderExtent GetExtent() const { return m_Extent; }
 
 private:
 	bool m_Initialized = false;
-	uint32_t m_Width = 0;
-	uint32_t m_Height = 0;
+	RenderExtent m_Extent;
 
 	// Cached device handles for OnResize
 	VkInstance      m_Instance       = VK_NULL_HANDLE;

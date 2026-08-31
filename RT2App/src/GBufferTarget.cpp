@@ -7,13 +7,15 @@ GBufferTarget::~GBufferTarget()
 	Destroy();
 }
 
-void GBufferTarget::Create(const GpuDevice& dev, uint32_t width, uint32_t height)
+void GBufferTarget::Create(const GpuDevice& dev, const RenderExtent& extent)
 {
+	if (!extent.IsValid()) return;
+	const uint32_t width = extent.Width();
+	const uint32_t height = extent.Height();
 	Destroy();
 
 	m_Device = &dev;
-	m_Width = width;
-	m_Height = height;
+	m_Extent = extent;
 
 	VkImageUsageFlags colorUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
 	                               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
@@ -97,8 +99,7 @@ void GBufferTarget::Destroy()
 
 	GpuResources::DestroyImage(*m_Device, m_DepthImage);
 
-	m_Width = 0;
-	m_Height = 0;
+	m_Extent = {};
 	m_Device = nullptr;
 }
 

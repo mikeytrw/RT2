@@ -8,7 +8,7 @@ std::optional<glm::uvec2> ScreenToRenderPixel(
 	const ViewportImageRect& viewport)
 {
 	if (viewport.displaySize.x <= 0.0f || viewport.displaySize.y <= 0.0f ||
-		viewport.renderExtent.x == 0u || viewport.renderExtent.y == 0u)
+		!viewport.outputExtent.IsValid() || !viewport.renderExtent.IsValid())
 		return std::nullopt;
 
 	const glm::vec2 local = screenPosition - viewport.screenMin;
@@ -18,12 +18,28 @@ std::optional<glm::uvec2> ScreenToRenderPixel(
 
 	const glm::vec2 normalized = local / viewport.displaySize;
 	const uint32_t x = std::min(
-		static_cast<uint32_t>(normalized.x * viewport.renderExtent.x),
-		viewport.renderExtent.x - 1u);
+		static_cast<uint32_t>(normalized.x * viewport.renderExtent.Width()),
+		viewport.renderExtent.Width() - 1u);
 	const uint32_t y = std::min(
-		static_cast<uint32_t>(normalized.y * viewport.renderExtent.y),
-		viewport.renderExtent.y - 1u);
+		static_cast<uint32_t>(normalized.y * viewport.renderExtent.Height()),
+		viewport.renderExtent.Height() - 1u);
 	return glm::uvec2(x, y);
+}
+
+std::optional<glm::uvec2> ScreenToOutputPixel(
+	const glm::vec2& screenPosition,
+	const ViewportImageRect& viewport)
+{
+	if (viewport.displaySize.x <= 0.0f || viewport.displaySize.y <= 0.0f ||
+		!viewport.outputExtent.IsValid()) return std::nullopt;
+	const glm::vec2 local = screenPosition - viewport.screenMin;
+	if (local.x < 0.0f || local.y < 0.0f ||
+		local.x >= viewport.displaySize.x || local.y >= viewport.displaySize.y)
+		return std::nullopt;
+	const glm::vec2 normalized = local / viewport.displaySize;
+	return glm::uvec2(
+		std::min(static_cast<uint32_t>(normalized.x * viewport.outputExtent.Width()), viewport.outputExtent.Width() - 1u),
+		std::min(static_cast<uint32_t>(normalized.y * viewport.outputExtent.Height()), viewport.outputExtent.Height() - 1u));
 }
 
 CameraRay BuildPickingRay(

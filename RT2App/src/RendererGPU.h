@@ -27,6 +27,7 @@
 #include "GpuTimestampProfiler.h"
 #include "RenderInstanceMap.h"
 #include "GpuPickingPass.h"
+#include "RenderExtents.h"
 #include <array>
 #include <memory>
 #include <optional>
@@ -42,7 +43,11 @@ public:
 
 	bool IsAvailable() const { return m_Initialized; }
 
-	void OnResize(uint32_t width, uint32_t height);
+	void OnResize(const OutputExtent& outputExtent);
+	void OnResize(uint32_t width, uint32_t height)
+	{
+		if (const auto extent = OutputExtent::TryCreate(width, height)) OnResize(*extent);
+	}
 	void Render(const Camera& camera);
 	void SetScene(GPUSceneData& sceneData, const RenderInstanceMap& instanceMap = {});
 	// Diagnostic: dump every material's metallic/roughness factors and texture
@@ -85,8 +90,8 @@ public:
 
 	VkDescriptorSet GetOutputDescriptorSet() const { return m_ImGuiDescriptorSet; }
 	bool HasOutput() const { return m_OutputImage.IsValid() && m_DisplayImage.IsValid(); }
-	uint32_t GetWidth() const { return m_Width; }
-	uint32_t GetHeight() const { return m_Height; }
+	OutputExtent GetOutputExtent() const { return m_OutputExtent; }
+	RenderExtent GetRenderExtent() const { return m_RenderExtent; }
 
 	struct PickResult
 	{
@@ -181,8 +186,8 @@ private:
 
 	GpuDevice m_Device;
 
-	uint32_t m_Width = 0;
-	uint32_t m_Height = 0;
+	OutputExtent m_OutputExtent;
+	RenderExtent m_RenderExtent;
 
 	GpuImage m_OutputImage;  // RGBA32F linear beauty + accumulation history
 	GpuImage m_DisplayImage; // RGBA8 Reinhard-tonemapped viewport image

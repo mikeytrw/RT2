@@ -2,6 +2,7 @@
 
 #include "vulkan/vulkan.h"
 #include "GpuResources.h"
+#include "RenderExtents.h"
 #include <cstdint>
 #include <vector>
 
@@ -67,7 +68,7 @@ public:
 	// Record trace into command buffer. Caller handles pre/post barriers.
 	// rasterFirst=true: use secondary_raygen (reads G-buffer, traces secondary rays only)
 	// rasterFirst=false: use raygen (traces primary ray — RT-primary path, accumulation-only)
-	void Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+	void Record(VkCommandBuffer cmd, const RenderExtent& extent,
 	            VkDescriptorSet gbufferSet, bool rasterFirst = false) const;
 
 	bool IsAvailable() const { return m_Pipeline != VK_NULL_HANDLE; }

@@ -43,7 +43,7 @@ bool Camera::SetEditorPose(const EditorCameraPose& requested)
 	m_FocusDistance = pose.focusDistance;
 	m_FarClip = pose.farClip;
 	RecalculateView();
-	if (m_ViewportWidth > 0 && m_ViewportHeight > 0)
+	if (m_OutputExtent.IsValid())
 		RecalculateProjection();
 	return true;
 }
@@ -112,13 +112,12 @@ bool Camera::OnUpdate(float ts, rt2::core::IInputService& input)
 	return moved;
 }
 
-void Camera::OnResize(uint32_t width, uint32_t height)
+void Camera::OnResize(const OutputExtent& outputExtent)
 {
-	if (width == m_ViewportWidth && height == m_ViewportHeight)
+	if (!outputExtent.IsValid() || outputExtent == m_OutputExtent)
 		return;
 
-	m_ViewportWidth = width;
-	m_ViewportHeight = height;
+	m_OutputExtent = outputExtent;
 
 	RecalculateProjection();
 }
@@ -159,7 +158,7 @@ std::pair<glm::vec3, glm::vec3> Camera::GetRayOriginAndDirection(float u, float 
 
 void Camera::RecalculateProjection()
 {
-	m_Projection = glm::perspectiveFov(glm::radians(m_VerticalFOV), (float)m_ViewportWidth, (float)m_ViewportHeight, m_NearClip, m_FarClip);
+	m_Projection = glm::perspectiveFov(glm::radians(m_VerticalFOV), (float)m_OutputExtent.Width(), (float)m_OutputExtent.Height(), m_NearClip, m_FarClip);
 	m_Projection[1][1] *= -1.0f;
 	m_InverseProjection = glm::inverse(m_Projection);
 }

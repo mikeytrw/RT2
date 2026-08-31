@@ -82,10 +82,11 @@ void ReSTIRGIPass::Destroy()
 	if (m_HistoryShader)    { vkDestroyShaderModule(m_Device, m_HistoryShader,  nullptr); m_HistoryShader  = VK_NULL_HANDLE; }
 }
 
-void ReSTIRGIPass::RecordTemporal(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+void ReSTIRGIPass::RecordTemporal(VkCommandBuffer cmd, const RenderExtent& extent,
                                   VkDescriptorSet set0, VkDescriptorSet set1,
                                   const SIGIPushConstants& pc) const
 {
+	const uint32_t width = extent.Width(); const uint32_t height = extent.Height();
 	if (!m_TemporalPipeline)
 		return;
 
@@ -101,10 +102,11 @@ void ReSTIRGIPass::RecordTemporal(VkCommandBuffer cmd, uint32_t width, uint32_t 
 	vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);
 }
 
-void ReSTIRGIPass::RecordHistoryWrite(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+void ReSTIRGIPass::RecordHistoryWrite(VkCommandBuffer cmd, const RenderExtent& extent,
                                        VkDescriptorSet set0, VkDescriptorSet set1,
                                        const SIGIPushConstants& pc) const
 {
+	const uint32_t width = extent.Width(); const uint32_t height = extent.Height();
 	if (!m_HistoryPipeline)
 		return;
 

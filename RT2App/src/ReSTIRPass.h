@@ -2,6 +2,7 @@
 
 #include "vulkan/vulkan.h"
 #include "shader_interface.h"
+#include "RenderExtents.h"
 #include <cstdint>
 
 struct GpuDevice;
@@ -36,17 +37,17 @@ public:
 
 	// Record the temporal dispatch (history → scratch).
 	// G-buffer images must be in GENERAL layout with SHADER_READ access.
-	void RecordTemporal(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+	void RecordTemporal(VkCommandBuffer cmd, const RenderExtent& extent,
 	                    VkDescriptorSet set0, VkDescriptorSet set1,
 	                    const SIReSTIRPushConstants& pc) const;
 
 	// Record the spatial dispatch (scratch → history).
-	void RecordSpatial(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+	void RecordSpatial(VkCommandBuffer cmd, const RenderExtent& extent,
 	                   VkDescriptorSet set0, VkDescriptorSet set1,
 	                   const SIReSTIRPushConstants& pc) const;
 
 	// Record both temporal + spatial with proper barriers.
-	void Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+	void Record(VkCommandBuffer cmd, const RenderExtent& extent,
 	            VkDescriptorSet set0, VkDescriptorSet set1,
 	            const SIReSTIRPushConstants& pc) const;
 

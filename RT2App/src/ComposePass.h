@@ -2,6 +2,7 @@
 
 #include "vulkan/vulkan.h"
 #include <cstdint>
+#include "RenderExtents.h"
 
 struct GpuDevice;
 
@@ -19,7 +20,7 @@ public:
 	bool Init(const GpuDevice& dev);
 	void Destroy();
 
-	void OnResize(const GpuDevice& dev, uint32_t width, uint32_t height);
+	void OnResize(const GpuDevice& dev, const RenderExtent& extent);
 	void UpdateDescriptorSet(const GpuDevice& dev,
 	                         VkImageView outputView,
 	                         VkImageView nrdDiffOutView,
@@ -32,7 +33,7 @@ public:
 
 	// Record the compose dispatch into the given command buffer.
 	// Caller is responsible for barriers before/after.
-	void Record(VkCommandBuffer cmd, uint32_t width, uint32_t height) const;
+	void Record(VkCommandBuffer cmd, const RenderExtent& extent) const;
 
 	bool IsAvailable() const { return m_Pipeline != VK_NULL_HANDLE; }
 	VkDescriptorSet GetDescriptorSet() const { return m_DescriptorSet; }

@@ -2,6 +2,7 @@
 
 #include "vulkan/vulkan.h"
 #include "GpuResources.h"
+#include "RenderExtents.h"
 #include <cstdint>
 
 struct GpuDevice;
@@ -85,14 +86,13 @@ public:
 	// Color images get STORAGE | SAMPLED | TRANSFER_DST | COLOR_ATTACHMENT usage.
 	// Depth image gets DEPTH_STENCIL_ATTACHMENT usage.
 	// All color images are transitioned to GENERAL layout.
-	void Create(const GpuDevice& dev, uint32_t width, uint32_t height);
+	void Create(const GpuDevice& dev, const RenderExtent& extent);
 
 	// Destroy all images (color + depth). Safe to call on uncreated state.
 	void Destroy();
 
 	bool IsValid() const { return m_ColorImages[0].IsValid(); }
-	uint32_t GetWidth() const { return m_Width; }
-	uint32_t GetHeight() const { return m_Height; }
+	RenderExtent GetExtent() const { return m_Extent; }
 
 	// Access color image by ColorIndex.
 	const GpuImage& GetColor(uint32_t index) const { return m_ColorImages[index]; }
@@ -114,7 +114,6 @@ public:
 private:
 	GpuImage m_ColorImages[COLOR_COUNT];
 	GpuImage m_DepthImage;
-	uint32_t m_Width = 0;
-	uint32_t m_Height = 0;
+	RenderExtent m_Extent;
 	GpuDevice const* m_Device = nullptr;
 };

@@ -8,8 +8,11 @@ ReservoirGIResources::~ReservoirGIResources()
 	Destroy();
 }
 
-void ReservoirGIResources::Create(const GpuDevice& dev, uint32_t width, uint32_t height)
+void ReservoirGIResources::Create(const GpuDevice& dev, const RenderExtent& extent)
 {
+	if (!extent.IsValid()) return;
+	const uint32_t width = extent.Width();
+	const uint32_t height = extent.Height();
 	Destroy();
 
 	m_Device = &dev;
@@ -17,8 +20,7 @@ void ReservoirGIResources::Create(const GpuDevice& dev, uint32_t width, uint32_t
 	if (width == 0 || height == 0)
 		return;
 
-	m_Width = width;
-	m_Height = height;
+	m_Extent = extent;
 	m_IsDummy = false;
 
 	VkDeviceSize pixelCount = VkDeviceSize(width) * VkDeviceSize(height);
@@ -64,8 +66,7 @@ void ReservoirGIResources::CreateDummy(const GpuDevice& dev)
 	m_TotalSize = 16;
 	m_ReservoirRegionSize = 0;
 	m_ReceiverHistoryRegionSize = 0;
-	m_Width = 0;
-	m_Height = 0;
+	m_Extent = {};
 
 	VkBufferUsageFlags usage =
 		VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
@@ -95,8 +96,7 @@ void ReservoirGIResources::Destroy()
 	}
 	m_Buffer = VK_NULL_HANDLE;
 	m_BufferMemory = VK_NULL_HANDLE;
-	m_Width = 0;
-	m_Height = 0;
+	m_Extent = {};
 	m_IsDummy = false;
 	m_ReservoirRegionSize = 0;
 	m_ReceiverHistoryRegionSize = 0;

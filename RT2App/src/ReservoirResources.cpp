@@ -8,8 +8,11 @@ ReservoirResources::~ReservoirResources()
 	Destroy();
 }
 
-void ReservoirResources::Create(const GpuDevice& dev, uint32_t width, uint32_t height)
+void ReservoirResources::Create(const GpuDevice& dev, const RenderExtent& extent)
 {
+	if (!extent.IsValid()) return;
+	const uint32_t width = extent.Width();
+	const uint32_t height = extent.Height();
 	Destroy();
 
 	m_Device = &dev;
@@ -17,8 +20,7 @@ void ReservoirResources::Create(const GpuDevice& dev, uint32_t width, uint32_t h
 	if (width == 0 || height == 0)
 		return;
 
-	m_Width = width;
-	m_Height = height;
+	m_Extent = extent;
 
 	VkDeviceSize entryCount = VkDeviceSize(width) * VkDeviceSize(height);
 	m_BufferSize = entryCount * sizeof(SIReservoir);
@@ -74,8 +76,7 @@ void ReservoirResources::Destroy()
 	m_ScratchBufferMemory = VK_NULL_HANDLE;
 	m_SurfaceHistoryBuffer = VK_NULL_HANDLE;
 	m_SurfaceHistoryBufferMemory = VK_NULL_HANDLE;
-	m_Width = 0;
-	m_Height = 0;
+	m_Extent = {};
 	m_BufferSize = 0;
 	m_SurfaceHistorySize = 0;
 }

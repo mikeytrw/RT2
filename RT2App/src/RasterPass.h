@@ -6,6 +6,7 @@
 #include "vulkan/vulkan.h"
 #include "GpuDevice.h"
 #include "GpuResources.h"
+#include "RenderExtents.h"
 #include <cstdint>
 #include <vector>
 
@@ -46,7 +47,7 @@ public:
 	// Depth image must be in DEPTH_STENCIL_ATTACHMENT_OPTIMAL layout.
 	// gbufferViews: 8 image views in MRT order (gNormalRoughness, gViewZ, gMotion,
 	//               gAlbedoF0, gDirectEmission, gPrimHit, gPrimGeoNormal, gPrimUV)
-	void Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+	void Record(VkCommandBuffer cmd, const RenderExtent& extent,
 	            VkDescriptorSet sceneSet, VkDescriptorSet gbufferSet,
 	            VkImageView depthView, const VkImageView gbufferViews[8]) const;
 

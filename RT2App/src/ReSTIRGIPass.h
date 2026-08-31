@@ -2,6 +2,7 @@
 
 #include "vulkan/vulkan.h"
 #include "shader_interface.h"
+#include "RenderExtents.h"
 #include <cstdint>
 
 struct GpuDevice;
@@ -37,13 +38,13 @@ public:
 
 	// Record the temporal dispatch (prev reservoir + prev history → current reservoir).
 	// G-buffer images must be in GENERAL layout with SHADER_READ access.
-	void RecordTemporal(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+	void RecordTemporal(VkCommandBuffer cmd, const RenderExtent& extent,
 	                    VkDescriptorSet set0, VkDescriptorSet set1,
 	                    const SIGIPushConstants& pc) const;
 
 	// Record the history-write dispatch (G-buffer → current receiver history).
 	// Must run AFTER RecordTemporal finishes (caller inserts barrier).
-	void RecordHistoryWrite(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+	void RecordHistoryWrite(VkCommandBuffer cmd, const RenderExtent& extent,
 	                         VkDescriptorSet set0, VkDescriptorSet set1,
 	                         const SIGIPushConstants& pc) const;
 

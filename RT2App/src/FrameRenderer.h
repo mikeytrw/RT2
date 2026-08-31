@@ -16,6 +16,7 @@
 #include "NRDIntegration.h"
 #include "FrameContext.h"
 #include "GpuTimestampProfiler.h"
+#include "RenderExtents.h"
 #include "shader_interface.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -54,8 +55,8 @@ public:
 		VkBuffer nrdUBO;
 		const SICameraData& cameraUBOData;
 
-		uint32_t width;
-		uint32_t height;
+		RenderExtent renderExtent;
+		OutputExtent outputExtent;
 
 		// Render mode flags
 		bool rasterFirst;

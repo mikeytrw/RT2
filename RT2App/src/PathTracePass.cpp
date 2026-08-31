@@ -495,9 +495,11 @@ void PathTracePass::UpdateDescriptorSet(const GpuDevice& dev,
 	RT_LOG("[UpdateDS] vkUpdateDescriptorSets done"); fflush(stdout);
 }
 
-void PathTracePass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
-                            VkDescriptorSet gbufferSet, bool rasterFirst) const
+void PathTracePass::Record(VkCommandBuffer cmd, const RenderExtent& extent,
+	VkDescriptorSet gbufferSet, bool rasterFirst) const
 {
+	const uint32_t width = extent.Width();
+	const uint32_t height = extent.Height();
 	if (!m_Pipeline || !m_DescriptorSet) return;
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, m_Pipeline);

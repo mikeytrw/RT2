@@ -50,8 +50,8 @@ bool RendererGPU::Init()
 
 	m_ReSTIRGIPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout);
 	// Allocate GI buffer (dummy while disabled, full when enabled).
-	if (m_Settings.restirGIEnabled && m_Width > 0 && m_Height > 0)
-		m_GIReservoirs.Create(m_Device, m_Width, m_Height);
+	if (m_Settings.restirGIEnabled && m_RenderExtent.IsValid())
+		m_GIReservoirs.Create(m_Device, m_RenderExtent);
 	else
 		m_GIReservoirs.CreateDummy(m_Device);
 
@@ -128,7 +128,7 @@ void RendererGPU::CreateOutputImage()
 
 	// Create output image via GpuResources (image + memory + view)
 	GpuImage outputImg;
-	GpuResources::CreateImage(m_Device, m_Width, m_Height,
+	GpuResources::CreateImage(m_Device, m_OutputExtent.Width(), m_OutputExtent.Height(),
 		VK_FORMAT_R32G32B32A32_SFLOAT,
 		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
 		VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -137,7 +137,7 @@ void RendererGPU::CreateOutputImage()
 	m_OutputImage.memory   = outputImg.memory;
 	m_OutputImage.view = outputImg.view;
 
-	GpuResources::CreateImage(m_Device, m_Width, m_Height,
+	GpuResources::CreateImage(m_Device, m_OutputExtent.Width(), m_OutputExtent.Height(),
 		VK_FORMAT_R8G8B8A8_UNORM,
 		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
 		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_DisplayImage);
@@ -258,12 +258,14 @@ void RendererGPU::CreateFallbackTexture()
 	GpuResources::DestroyBuffer(m_Device, stagingBuf, stagingMem);
 }
 
-void RendererGPU::OnResize(uint32_t width, uint32_t height)
+void RendererGPU::OnResize(const OutputExtent& outputExtent)
 {
-	if (width == 0 || height == 0)
+	if (!outputExtent.IsValid())
 		return;
+	const uint32_t width = outputExtent.Width();
+	const uint32_t height = outputExtent.Height();
 
-	if (m_Width == width && m_Height == height && m_OutputImage.image != VK_NULL_HANDLE)
+	if (m_OutputExtent == outputExtent && m_OutputImage.image != VK_NULL_HANDLE)
 		return;
 
 	VkDevice device = m_Device.device;
@@ -274,16 +276,16 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 
 	DestroyOutputImage();
 
-	m_Width = width;
-	m_Height = height;
+	m_OutputExtent = outputExtent;
+	m_RenderExtent = outputExtent.ToRenderNative();
 
 	CreateOutputImage();
 	m_TonemapPass.UpdateDescriptorSet(m_Device, m_OutputImage.view, m_DisplayImage.view);
 	CreateGBufferImages();
-	m_Reservoirs.Create(m_Device, m_Width, m_Height);
+	m_Reservoirs.Create(m_Device, m_RenderExtent);
 	// Reallocate GI buffer: full size if GI enabled, dummy otherwise.
 	if (m_Settings.restirGIEnabled)
-		m_GIReservoirs.Create(m_Device, m_Width, m_Height);
+		m_GIReservoirs.Create(m_Device, m_RenderExtent);
 	else
 		m_GIReservoirs.CreateDummy(m_Device);
 	// Allocate descriptor set with current texture count (0 if no scene yet)
@@ -299,11 +301,11 @@ void RendererGPU::OnResize(uint32_t width, uint32_t height)
 		           m_Device.device,
 		           m_Device.queue,
 		           m_Device.queueFamily,
-		           m_Width, m_Height);
+		           m_RenderExtent);
 	}
 	else if (m_Settings.nrdEnabled && m_NRD.IsAvailable())
 	{
-		m_NRD.OnResize(m_Width, m_Height);
+		m_NRD.OnResize(m_RenderExtent);
 	}
 	UpdatePathTraceDescriptorSet();
 
@@ -369,11 +371,11 @@ void RendererGPU::UpdatePathTraceDescriptorSet()
 	}
 	if (!m_Scene.GetMaterialBuffer()) { RT_LOG("[UpdateDS] skip: no material buffer"); return; }
 
-	RT_LOG("[UpdateDS] checking reservoirs (valid=%d w=%d h=%d)", (int)m_Reservoirs.IsValid(), m_Width, m_Height); fflush(stdout);
-	if (!m_Reservoirs.IsValid() || !m_Reservoirs.MatchesSize(m_Width, m_Height))
+	RT_LOG("[UpdateDS] checking reservoirs (valid=%d w=%d h=%d)", (int)m_Reservoirs.IsValid(), m_RenderExtent.Width(), m_RenderExtent.Height()); fflush(stdout);
+	if (!m_Reservoirs.IsValid() || !m_Reservoirs.MatchesSize(m_RenderExtent))
 	{
-		if (m_Width > 0 && m_Height > 0)
-			m_Reservoirs.Create(m_Device, m_Width, m_Height);
+		if (m_RenderExtent.IsValid())
+			m_Reservoirs.Create(m_Device, m_RenderExtent);
 	}
 
 	RT_LOG("[UpdateDS] building texture infos"); fflush(stdout);
@@ -752,8 +754,8 @@ void RendererGPU::ApplySettings(const RenderSettings& newSettings)
 	if (m_Settings.restirGIEnabled != wasGIEnabled)
 	{
 		vkDeviceWaitIdle(m_Device.device);
-		if (m_Settings.restirGIEnabled && m_Width > 0 && m_Height > 0)
-			m_GIReservoirs.Create(m_Device, m_Width, m_Height);
+		if (m_Settings.restirGIEnabled && m_RenderExtent.IsValid())
+			m_GIReservoirs.Create(m_Device, m_RenderExtent);
 		else
 			m_GIReservoirs.CreateDummy(m_Device);
 		UpdatePathTraceDescriptorSet();
@@ -831,7 +833,7 @@ void RendererGPU::UpdateCameraUBO(const Camera& camera)
 	int maxBouncesClamped = m_Settings.maxBounces;
 	const int bounceLimit = (int)m_PathTracePass.GetMaxRecursionDepth() - 1;
 	if (maxBouncesClamped > bounceLimit) maxBouncesClamped = bounceLimit;
-	ubo.viewportSPP = glm::vec4((float)m_Width, (float)m_Height, (float)m_Settings.spp, (float)maxBouncesClamped);
+	ubo.viewportSPP = glm::vec4((float)m_RenderExtent.Width(), (float)m_RenderExtent.Height(), (float)m_Settings.spp, (float)maxBouncesClamped);
 	const bool backgroundVisible = IsBackgroundVisible(m_Settings, m_EditorPresentation);
 	ubo.apertureFocal = glm::vec4(camera.m_Aperture, camera.m_FocusDistance, backgroundVisible ? 1.0f : 0.0f, m_Settings.emissiveBoost);
 	ubo.envMap = glm::vec4((float)m_Scene.GetEnvMapIndex(), m_Settings.envIntensity, (float)m_Scene.GetMarginalCDFIndex(), (float)m_Scene.GetConditionalCDFIndex());
@@ -914,15 +916,15 @@ void RendererGPU::Render(const Camera& camera)
 	}
 
 	// Lazy-init NRD when toggled on
-	if (m_Settings.nrdEnabled && !m_NRD.IsAvailable() && m_Width > 0 && m_Height > 0)
+	if (m_Settings.nrdEnabled && !m_NRD.IsAvailable() && m_RenderExtent.IsValid())
 	{
-		RT_LOG("[Render] initializing NRD (%ux%u)", m_Width, m_Height);
+		RT_LOG("[Render] initializing NRD (%ux%u)", m_RenderExtent.Width(), m_RenderExtent.Height());
 		m_NRD.Init(m_Device.instance,
 		           m_Device.physicalDevice,
 		           m_Device.device,
 		           m_Device.queue,
 		           m_Device.queueFamily,
-		           m_Width, m_Height);
+		           m_RenderExtent);
 	}
 
 	UpdateCameraUBO(camera);
@@ -1028,8 +1030,8 @@ void RendererGPU::Render(const Camera& camera)
 		m_CameraUBO,
 		m_NRDUBO,
 		m_CameraUBOData,
-		m_Width,
-		m_Height,
+		m_RenderExtent,
+		m_OutputExtent,
 		m_Settings.rasterFirst,
 		m_Settings.nrdEnabled,
 		m_Settings.nrdLobeDither,
@@ -1091,7 +1093,7 @@ void RendererGPU::Render(const Camera& camera)
 
 bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t& outWidth, uint32_t& outHeight)
 {
-	if (!m_Initialized || m_OutputImage.image == VK_NULL_HANDLE || m_Width == 0 || m_Height == 0)
+	if (!m_Initialized || m_OutputImage.image == VK_NULL_HANDLE || !m_OutputExtent.IsValid())
 		return false;
 
 	VkDevice device = m_Device.device;
@@ -1099,7 +1101,7 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 	// Create a host-visible staging buffer
 	VkBuffer stagingBuffer;
 	VkDeviceMemory stagingMemory;
-	VkDeviceSize imageSize = (VkDeviceSize)m_Width * m_Height * 16; // R32G32B32A32_SFLOAT = 16 bytes/pixel
+	VkDeviceSize imageSize = (VkDeviceSize)m_OutputExtent.Width() * m_OutputExtent.Height() * 16; // R32G32B32A32_SFLOAT = 16 bytes/pixel
 
 	GpuResources::CreateBuffer(m_Device, imageSize,
 	             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -1134,7 +1136,7 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 		region.imageSubresource.baseArrayLayer = 0;
 		region.imageSubresource.layerCount = 1;
 		region.imageOffset = { 0, 0, 0 };
-		region.imageExtent = { m_Width, m_Height, 1 };
+		region.imageExtent = { m_OutputExtent.Width(), m_OutputExtent.Height(), 1 };
 		vkCmdCopyImageToBuffer(cmd, m_OutputImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer, 1, &region);
 
 		// Transition back to GENERAL
@@ -1158,8 +1160,8 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 	}
 
 	const float* floatData = static_cast<const float*>(mapped);
-	outPixelsRGBA8.resize((size_t)m_Width * m_Height * 4);
-	for (size_t i = 0; i < (size_t)m_Width * m_Height; i++)
+	outPixelsRGBA8.resize((size_t)m_OutputExtent.Width() * m_OutputExtent.Height() * 4);
+	for (size_t i = 0; i < (size_t)m_OutputExtent.Width() * m_OutputExtent.Height(); i++)
 	{
 		float r = floatData[i * 4 + 0];
 		float g = floatData[i * 4 + 1];
@@ -1182,22 +1184,22 @@ bool RendererGPU::ReadbackOutput(std::vector<uint8_t>& outPixelsRGBA8, uint32_t&
 	vkUnmapMemory(device, stagingMemory);
 	GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
 
-	outWidth = m_Width;
-	outHeight = m_Height;
-	RT_LOG("[Readback] captured %ux%u → %zu bytes", m_Width, m_Height, outPixelsRGBA8.size());
+	outWidth = m_OutputExtent.Width();
+	outHeight = m_OutputExtent.Height();
+	RT_LOG("[Readback] captured %ux%u → %zu bytes", m_OutputExtent.Width(), m_OutputExtent.Height(), outPixelsRGBA8.size());
 	return true;
 }
 
 bool RendererGPU::ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uint32_t& outWidth, uint32_t& outHeight)
 {
-	if (!m_Initialized || m_OutputImage.image == VK_NULL_HANDLE || m_Width == 0 || m_Height == 0)
+	if (!m_Initialized || m_OutputImage.image == VK_NULL_HANDLE || !m_OutputExtent.IsValid())
 		return false;
 
 	VkDevice device = m_Device.device;
 
 	VkBuffer stagingBuffer;
 	VkDeviceMemory stagingMemory;
-	VkDeviceSize imageSize = (VkDeviceSize)m_Width * m_Height * 16; // R32G32B32A32_SFLOAT = 16 bytes/pixel
+	VkDeviceSize imageSize = (VkDeviceSize)m_OutputExtent.Width() * m_OutputExtent.Height() * 16; // R32G32B32A32_SFLOAT = 16 bytes/pixel
 
 	GpuResources::CreateBuffer(m_Device, imageSize,
 	             VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -1231,7 +1233,7 @@ bool RendererGPU::ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uin
 		region.imageSubresource.baseArrayLayer = 0;
 		region.imageSubresource.layerCount = 1;
 		region.imageOffset = { 0, 0, 0 };
-		region.imageExtent = { m_Width, m_Height, 1 };
+		region.imageExtent = { m_OutputExtent.Width(), m_OutputExtent.Height(), 1 };
 		vkCmdCopyImageToBuffer(cmd, m_OutputImage.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuffer, 1, &region);
 
 		VkImageMemoryBarrier toGeneral = toTransfer;
@@ -1253,16 +1255,16 @@ bool RendererGPU::ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uin
 	}
 
 	const float* floatData = static_cast<const float*>(mapped);
-	size_t pixelCount = (size_t)m_Width * m_Height * 4;
+	size_t pixelCount = (size_t)m_OutputExtent.Width() * m_OutputExtent.Height() * 4;
 	outPixelsRGBA32F.resize(pixelCount);
 	std::memcpy(outPixelsRGBA32F.data(), floatData, pixelCount * sizeof(float));
 
 	vkUnmapMemory(device, stagingMemory);
 	GpuResources::DestroyBuffer(m_Device, stagingBuffer, stagingMemory);
 
-	outWidth = m_Width;
-	outHeight = m_Height;
-	RT_LOG("[ReadbackLinear] captured %ux%u → %zu floats", m_Width, m_Height, outPixelsRGBA32F.size());
+	outWidth = m_OutputExtent.Width();
+	outHeight = m_OutputExtent.Height();
+	RT_LOG("[ReadbackLinear] captured %ux%u → %zu floats", m_OutputExtent.Width(), m_OutputExtent.Height(), outPixelsRGBA32F.size());
 	return true;
 }
 
@@ -1270,7 +1272,7 @@ bool RendererGPU::ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uin
 
 void RendererGPU::CreateGBufferImages()
 {
-	m_GBuffer.Create(m_Device, m_Width, m_Height);
+	m_GBuffer.Create(m_Device, m_RenderExtent);
 }
 
 void RendererGPU::DestroyGBufferImages()

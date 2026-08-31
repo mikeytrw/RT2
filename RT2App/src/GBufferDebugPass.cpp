@@ -61,10 +61,11 @@ void GBufferDebugPass::Destroy()
 	if (m_PipelineLayout) { vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr); m_PipelineLayout = VK_NULL_HANDLE; }
 }
 
-void GBufferDebugPass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height,
+void GBufferDebugPass::Record(VkCommandBuffer cmd, const RenderExtent& extent,
                               VkDescriptorSet outputSet, VkDescriptorSet gbufferSet,
                               uint32_t mode) const
 {
+	const uint32_t width = extent.Width(); const uint32_t height = extent.Height();
 	if (!m_Pipeline) return;
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Pipeline);

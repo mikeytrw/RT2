@@ -93,11 +93,10 @@ void ComposePass::Destroy()
 	m_DescriptorSet = VK_NULL_HANDLE;
 }
 
-void ComposePass::OnResize(const GpuDevice& dev, uint32_t width, uint32_t height)
+void ComposePass::OnResize(const GpuDevice& dev, const RenderExtent& extent)
 {
 	(void)dev;
-	(void)width;
-	(void)height;
+	(void)extent;
 	// Compose pass doesn't own images, no resize needed
 }
 
@@ -144,9 +143,11 @@ void ComposePass::UpdateDescriptorSet(const GpuDevice& dev,
 	vkUpdateDescriptorSets(dev.device, 8, writes, 0, nullptr);
 }
 
-void ComposePass::Record(VkCommandBuffer cmd, uint32_t width, uint32_t height) const
+void ComposePass::Record(VkCommandBuffer cmd, const RenderExtent& extent) const
 {
 	if (!m_Pipeline || !m_DescriptorSet) return;
+	const uint32_t width = extent.Width();
+	const uint32_t height = extent.Height();
 
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Pipeline);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_PipelineLayout, 0, 1, &m_DescriptorSet, 0, nullptr);
