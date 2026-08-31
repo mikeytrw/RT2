@@ -18,6 +18,7 @@ TEST_CASE("NGX support state names and gating are explicit")
 		NgxSupportState::InitializationFailure,
 		NgxSupportState::ParameterFailure,
 		NgxSupportState::ShutdownFailure,
+		NgxSupportState::ApplicationDataPathFailure,
 	};
 	for (const NgxSupportState state : states)
 		CHECK(std::string(NgxSupportStateName(state)) != "Unknown");
@@ -27,6 +28,11 @@ TEST_CASE("NGX support state names and gating are explicit")
 	snapshot.state = NgxSupportState::Supported;
 	CHECK_FALSE(snapshot.IsSupported()); // init is a separate gate
 	snapshot.initialized = true;
+	CHECK_FALSE(snapshot.IsSupported()); // params, availability and driver are separate gates
+	snapshot.capabilityParametersOwned = true;
+	snapshot.availabilityKnown = true;
+	snapshot.available = true;
+	snapshot.driverQuerySucceeded = true;
 	CHECK(snapshot.IsSupported());
 	snapshot.rrFeatureCreated = true;
 	CHECK_FALSE(snapshot.IsSupported()); // W1 must never claim a created RR feature
@@ -54,7 +60,7 @@ TEST_CASE("NGX support formatting is stable and retains exact results")
 	snapshot.supportMask = 16;
 	snapshot.gpuName = "NVIDIA GeForce RTX 3090";
 	const std::string expected =
-		"state=RuntimeMissing reason=\"instance discovery failed: missing runtime\" sdk=v310.7.0 runtime=310.7.0 gpu=\"NVIDIA GeForce RTX 3090\" ngx_result=0xBAD00012 vk_result=-7 support_mask=16 initialized=0 parameters_owned=0 rr_feature_created=0";
+		"state=RuntimeMissing reason=\"instance discovery failed: missing runtime\" sdk=v310.7.0 runtime=unavailable gpu=\"NVIDIA GeForce RTX 3090\" ngx_result=0xBAD00012 vk_result=-7 support_mask=16 initialized=0 parameters_owned=0 availability_known=0 available=0 driver_query_succeeded=0 rr_feature_created=0";
 	CHECK(snapshot.Format() == expected);
 	CHECK(snapshot.Format() == snapshot.Format());
 }

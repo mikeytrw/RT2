@@ -3,9 +3,6 @@
    language "C++"
    cppdialect "C++17"
     staticruntime "off"
-    -- The cumulative CPU test translation units exceed COFF's default
-    -- section limit in both configurations on current MSVC.
-    buildoptions { "/bigobj" }
 
     files { "src/**.h", "src/**.cpp", "vendor/**.h", "vendor/**.cpp" }
 
@@ -60,8 +57,13 @@
         "../RT2App/src/PrefabCommandTransaction.cpp",
         "../RT2App/src/CompositePreviewSession.cpp",
         "../RT2App/src/PreviewSessionClose.cpp",
-        "../RT2App/src/NgxSupport.cpp"
+        "../RT2App/src/NgxSupport.cpp",
+        "../RT2App/src/NgxLifecycle.cpp"
     }
+
+    filter { "files:src/Phase8W3OverrideTests.cpp" }
+       buildoptions { "/bigobj" }
+    filter {}
 
     -- Phase 6: Lua 5.4 C sources compiled into the test target so the
     -- CPU-only ScriptSystem tests can execute Lua without an external

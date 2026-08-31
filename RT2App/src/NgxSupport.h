@@ -22,6 +22,7 @@ enum class NgxSupportState
 	InitializationFailure,
 	ParameterFailure,
 	ShutdownFailure,
+	ApplicationDataPathFailure,
 };
 
 const char* NgxSupportStateName(NgxSupportState state);
@@ -37,15 +38,20 @@ struct NgxSupportSnapshot
 	uint32_t supportMask = 0;
 	bool initialized = false;
 	bool capabilityParametersOwned = false;
+	bool availabilityKnown = false;
+	bool available = false;
+	bool driverQuerySucceeded = false;
 	bool rrFeatureCreated = false;
 	std::string reason = "not probed";
 	std::string sdkVersion = "v310.7.0";
-	std::string runtimeVersion = "310.7.0";
+	std::string runtimeVersion = "unavailable";
 	std::string gpuName = "(none)";
 
 	bool IsSupported() const
 	{
-		return state == NgxSupportState::Supported && initialized && !rrFeatureCreated;
+		return state == NgxSupportState::Supported && initialized &&
+			capabilityParametersOwned && availabilityKnown && available &&
+			driverQuerySucceeded && !rrFeatureCreated;
 	}
 
 	std::string Format() const;
@@ -56,4 +62,3 @@ struct NgxSupportSnapshot
 // all other non-zero masks remain explicit unsupported hardware.
 NgxSupportState NgxSupportStateFromMask(uint32_t supportMask);
 const char* NgxSupportReasonFromMask(uint32_t supportMask);
-

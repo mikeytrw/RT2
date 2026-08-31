@@ -15,9 +15,11 @@
 
 #include <filesystem>
 #include <cstdlib>
+#include <fstream>
 #include <sstream>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace
 {
@@ -50,13 +52,6 @@ std::string NgxResultText(NVSDK_NGX_Result result)
 	return Narrow(GetNGXResultAsString(result));
 }
 
-bool IsRuntimeFailure(NVSDK_NGX_Result result)
-{
-	return result == NVSDK_NGX_Result_FAIL_NotImplemented ||
-	       result == NVSDK_NGX_Result_FAIL_UnableToInitializeFeature ||
-	       result == NVSDK_NGX_Result_FAIL_PlatformError;
-}
-
 NVSDK_NGX_FeatureCommonInfo MakeCommonInfo(
 	const std::vector<const wchar_t*>& featurePathPointers)
 {
@@ -65,13 +60,64 @@ NVSDK_NGX_FeatureCommonInfo MakeCommonInfo(
 	common.PathListInfo.Length = static_cast<unsigned int>(featurePathPointers.size());
 	return common;
 }
+
+}
+
+void NgxRuntime::ObserveRuntimeVersion()
+{
+#ifdef _WIN32
+	HMODULE module = GetModuleHandleW(L"nvngx_dlssd.dll");
+	if (!module)
+		module = GetModuleHandleW(L"nvngx_dlss.dll");
+	if (!module)
+	{
+		m_Lifecycle.SetRuntimeVersion("unavailable");
+		return;
+	}
+	wchar_t modulePath[MAX_PATH] = {};
+	const DWORD pathLength = GetModuleFileNameW(module, modulePath, MAX_PATH);
+	if (pathLength == 0 || pathLength >= MAX_PATH)
+	{
+		m_Lifecycle.SetRuntimeVersion("unavailable");
+		return;
+	}
+	DWORD ignored = 0;
+	const DWORD versionSize = GetFileVersionInfoSizeW(modulePath, &ignored);
+	if (versionSize == 0)
+	{
+		m_Lifecycle.SetRuntimeVersion("unavailable");
+		return;
+	}
+	std::vector<unsigned char> versionData(versionSize);
+	if (!GetFileVersionInfoW(modulePath, 0, versionSize, versionData.data()))
+	{
+		m_Lifecycle.SetRuntimeVersion("unavailable");
+		return;
+	}
+	VS_FIXEDFILEINFO* info = nullptr;
+	UINT infoSize = 0;
+	if (!VerQueryValueW(versionData.data(), L"\\", reinterpret_cast<void**>(&info), &infoSize) ||
+		!info || infoSize < sizeof(VS_FIXEDFILEINFO))
+	{
+		m_Lifecycle.SetRuntimeVersion("unavailable");
+		return;
+	}
+	m_Lifecycle.SetRuntimeVersion(std::to_string(HIWORD(info->dwFileVersionMS)) + "." +
+		std::to_string(LOWORD(info->dwFileVersionMS)) + "." +
+		std::to_string(HIWORD(info->dwFileVersionLS)) + "." +
+		std::to_string(LOWORD(info->dwFileVersionLS)));
+#else
+	m_Lifecycle.SetRuntimeVersion("unavailable");
+#endif
 }
 
 NgxRuntime::NgxRuntime(std::string projectId, std::filesystem::path featurePath)
-	: m_ProjectId(std::move(projectId)), m_FeaturePath(std::move(featurePath))
+	: m_ProjectId(std::move(projectId)), m_FeaturePath(std::move(featurePath)),
+	  m_Lifecycle(m_Snapshot)
 {
 	if (m_ProjectId.empty())
-		m_Snapshot.reason = "NGX project/application ID is missing";
+		m_Lifecycle.ExternalFailure(NgxSupportState::NeedsApplicationId,
+			"NGX project/application ID is missing");
 	if (!m_FeaturePath.empty())
 	{
 		m_FeaturePathNative = m_FeaturePath.wstring();
@@ -81,7 +127,7 @@ NgxRuntime::NgxRuntime(std::string projectId, std::filesystem::path featurePath)
 
 NgxRuntime::~NgxRuntime()
 {
-	Shutdown();
+	(void)Shutdown();
 }
 
 void NgxRuntime::SetGpuName(VkPhysicalDevice physicalDevice)
@@ -90,31 +136,7 @@ void NgxRuntime::SetGpuName(VkPhysicalDevice physicalDevice)
 		return;
 	VkPhysicalDeviceProperties properties{};
 	vkGetPhysicalDeviceProperties(physicalDevice, &properties);
-	m_Snapshot.gpuName = properties.deviceName;
-}
-
-void NgxRuntime::SetFailure(NgxSupportState state, std::string reason,
-	int32_t ngxResult, int32_t vulkanResult)
-{
-	m_Snapshot.state = state;
-	m_Snapshot.reason = std::move(reason);
-	m_Snapshot.ngxResult = ngxResult;
-	m_Snapshot.vulkanResult = vulkanResult;
-	m_Snapshot.initialized = m_Initialized;
-	m_Snapshot.capabilityParametersOwned = m_Parameters != nullptr;
-}
-
-void NgxRuntime::SetFailureFromNgx(int32_t result, const char* operation)
-{
-	const NVSDK_NGX_Result ngxResult = static_cast<NVSDK_NGX_Result>(result);
-	NgxSupportState state = NgxSupportState::RequirementQueryFailure;
-	if (result == static_cast<int32_t>(NVSDK_NGX_Result_FAIL_InvalidParameter))
-		state = NgxSupportState::NeedsApplicationId;
-	else if (result == static_cast<int32_t>(NVSDK_NGX_Result_FAIL_OutOfDate))
-		state = NgxSupportState::DriverUpdateRequired;
-	else if (IsRuntimeFailure(ngxResult))
-		state = NgxSupportState::RuntimeMissing;
-	SetFailure(state, std::string(operation) + " failed: " + NgxResultText(ngxResult), result);
+	m_Lifecycle.SetGpuName(properties.deviceName);
 }
 
 bool NgxRuntime::PrepareApplicationDataPath()
@@ -131,14 +153,35 @@ bool NgxRuntime::PrepareApplicationDataPath()
 			m_ApplicationDataPath = std::filesystem::path(localAppData) / "RT2" / "NGX";
 #endif
 		if (m_ApplicationDataPath.empty())
-			m_ApplicationDataPath = std::filesystem::current_path() / "RT2" / "NGX";
+		{
+			m_Lifecycle.ExternalFailure(NgxSupportState::ApplicationDataPathFailure,
+				"LOCALAPPDATA is missing or empty");
+			return false;
+		}
 	}
 	std::error_code error;
 	std::filesystem::create_directories(m_ApplicationDataPath, error);
 	if (error)
 	{
-		SetFailure(NgxSupportState::InitializationFailure,
+		m_Lifecycle.ExternalFailure(NgxSupportState::ApplicationDataPathFailure,
 			"cannot create NGX application-data path '" + m_ApplicationDataPath.u8string() + "': " + error.message());
+		return false;
+	}
+	const auto marker = m_ApplicationDataPath / ".rt2-ngx-write-test";
+	{
+		std::ofstream writable(marker, std::ios::binary | std::ios::trunc);
+		if (!writable)
+		{
+			m_Lifecycle.ExternalFailure(NgxSupportState::ApplicationDataPathFailure,
+				"NGX application-data path is not writable: '" + m_ApplicationDataPath.u8string() + "'");
+			return false;
+		}
+	}
+	std::filesystem::remove(marker, error);
+	if (error)
+	{
+		m_Lifecycle.ExternalFailure(NgxSupportState::ApplicationDataPathFailure,
+			"cannot remove NGX application-data write probe: " + error.message());
 		return false;
 	}
 	m_ApplicationDataPathNative = m_ApplicationDataPath.wstring();
@@ -149,7 +192,7 @@ Walnut::Result<Walnut::OptionalVulkanFeatureRequirements> NgxRuntime::DiscoverIn
 {
 	if (m_ProjectId.empty())
 	{
-		SetFailure(NgxSupportState::NeedsApplicationId, "NGX project/application ID is missing");
+		m_Lifecycle.ExternalFailure(NgxSupportState::NeedsApplicationId, "NGX project/application ID is missing");
 		return Walnut::Result<Walnut::OptionalVulkanFeatureRequirements>::Failure(m_Snapshot.reason);
 	}
 	if (!PrepareApplicationDataPath())
@@ -172,7 +215,8 @@ Walnut::Result<Walnut::OptionalVulkanFeatureRequirements> NgxRuntime::DiscoverIn
 		&discovery, &count, &properties);
 	if (NVSDK_NGX_FAILED(result))
 	{
-		SetFailureFromNgx(static_cast<int32_t>(result), "NGX instance-extension discovery");
+		m_Lifecycle.OperationFailure(NgxLifecycleOperation::RequirementQuery,
+			{ static_cast<int32_t>(result) }, NgxResultText(result).c_str());
 		return Walnut::Result<Walnut::OptionalVulkanFeatureRequirements>::Failure(m_Snapshot.reason);
 	}
 
@@ -192,7 +236,7 @@ Walnut::Result<std::vector<std::string>> NgxRuntime::DiscoverDeviceRequirements(
 {
 	if (m_ProjectId.empty())
 	{
-		SetFailure(NgxSupportState::NeedsApplicationId, "NGX project/application ID is missing");
+		m_Lifecycle.ExternalFailure(NgxSupportState::NeedsApplicationId, "NGX project/application ID is missing");
 		return Walnut::Result<std::vector<std::string>>::Failure(m_Snapshot.reason);
 	}
 	const NVSDK_NGX_FeatureCommonInfo common = MakeCommonInfo(m_FeaturePathPointers);
@@ -212,7 +256,8 @@ Walnut::Result<std::vector<std::string>> NgxRuntime::DiscoverDeviceRequirements(
 		instance, physicalDevice, &discovery, &count, &properties);
 	if (NVSDK_NGX_FAILED(result))
 	{
-		SetFailureFromNgx(static_cast<int32_t>(result), "NGX device-extension discovery");
+		m_Lifecycle.OperationFailure(NgxLifecycleOperation::RequirementQuery,
+			{ static_cast<int32_t>(result) }, NgxResultText(result).c_str());
 		return Walnut::Result<std::vector<std::string>>::Failure(m_Snapshot.reason);
 	}
 	std::vector<std::string> extensions;
@@ -236,7 +281,7 @@ void NgxRuntime::InitializeAfterVulkan(bool optionalFeatureEnabled,
 		{
 			if (diagnostic.reason == Walnut::OptionalVulkanFeatureDisableReason::MissingExtension)
 			{
-				SetFailure(NgxSupportState::MissingVulkanRequirement,
+				m_Lifecycle.ExternalFailure(NgxSupportState::MissingVulkanRequirement,
 					diagnostic.message.empty() ? "one or more NGX Vulkan requirements are unavailable" : diagnostic.message,
 					0, static_cast<int32_t>(diagnostic.vkResult));
 				return;
@@ -245,18 +290,18 @@ void NgxRuntime::InitializeAfterVulkan(bool optionalFeatureEnabled,
 		if (m_Snapshot.state != NgxSupportState::NotProbed &&
 			m_Snapshot.state != NgxSupportState::Supported)
 			return;
-		SetFailure(NgxSupportState::RequirementQueryFailure,
+		m_Lifecycle.ExternalFailure(NgxSupportState::RequirementQueryFailure,
 			"Walnut disabled NGX optional Vulkan requirements");
 		return;
 	}
 	if (m_ProjectId.empty())
 	{
-		SetFailure(NgxSupportState::NeedsApplicationId, "NGX project/application ID is missing");
+		m_Lifecycle.ExternalFailure(NgxSupportState::NeedsApplicationId, "NGX project/application ID is missing");
 		return;
 	}
 	if (m_Instance == VK_NULL_HANDLE || m_PhysicalDevice == VK_NULL_HANDLE || m_Device == VK_NULL_HANDLE)
 	{
-		SetFailure(NgxSupportState::InitializationFailure, "Walnut did not provide a complete Vulkan device");
+		m_Lifecycle.ExternalFailure(NgxSupportState::InitializationFailure, "Walnut did not provide a complete Vulkan device");
 		return;
 	}
 	if (!PrepareApplicationDataPath())
@@ -273,129 +318,119 @@ void NgxRuntime::InitializeAfterVulkan(bool optionalFeatureEnabled,
 	discovery.ApplicationDataPath = m_ApplicationDataPathNative.c_str();
 	discovery.FeatureInfo = &common;
 	NVSDK_NGX_FeatureRequirement requirement{};
-	const NVSDK_NGX_Result requirementResult = NVSDK_NGX_VULKAN_GetFeatureRequirements(
-		m_Instance, m_PhysicalDevice, &discovery, &requirement);
-	if (NVSDK_NGX_FAILED(requirementResult))
-	{
-		SetFailureFromNgx(static_cast<int32_t>(requirementResult), "NGX Ray Reconstruction support query");
-		return;
-	}
-	m_Snapshot.supportMask = static_cast<uint32_t>(requirement.FeatureSupported);
-	if (m_Snapshot.supportMask != 0)
-	{
-		SetFailure(NgxSupportStateFromMask(m_Snapshot.supportMask),
-			NgxSupportReasonFromMask(m_Snapshot.supportMask), static_cast<int32_t>(requirementResult));
-		return;
-	}
-
-	const NVSDK_NGX_Result initResult = NVSDK_NGX_VULKAN_Init_with_ProjectID(
-		m_ProjectId.c_str(), NVSDK_NGX_ENGINE_TYPE_CUSTOM, m_EngineVersion.c_str(),
-		m_ApplicationDataPathNative.c_str(), m_Instance, m_PhysicalDevice, m_Device,
-		vkGetInstanceProcAddr, vkGetDeviceProcAddr, &common, NVSDK_NGX_Version_API);
-	if (NVSDK_NGX_FAILED(initResult))
-	{
-		SetFailureFromNgx(static_cast<int32_t>(initResult), "NVSDK_NGX_VULKAN_Init_with_ProjectID");
-		return;
-	}
-	m_Initialized = true;
-	m_Snapshot.initialized = true;
-
-	const NVSDK_NGX_Result parametersResult = NVSDK_NGX_VULKAN_GetCapabilityParameters(&m_Parameters);
-	if (NVSDK_NGX_FAILED(parametersResult) || !m_Parameters)
-	{
-		SetFailure(NgxSupportState::ParameterFailure,
-			"NVSDK_NGX_VULKAN_GetCapabilityParameters failed: " + NgxResultText(parametersResult),
-			static_cast<int32_t>(parametersResult));
-		return;
-	}
-	m_Snapshot.capabilityParametersOwned = true;
-
-	unsigned int available = 0;
-	unsigned int needsUpdatedDriver = 0;
-	const NVSDK_NGX_Result availableResult = m_Parameters->Get(
-		NVSDK_NGX_Parameter_SuperSamplingDenoising_Available, &available);
-	const NVSDK_NGX_Result driverResult = m_Parameters->Get(
-		NVSDK_NGX_Parameter_SuperSamplingDenoising_NeedsUpdatedDriver, &needsUpdatedDriver);
-	if (NVSDK_NGX_FAILED(availableResult))
-	{
-		SetFailure(NgxSupportState::ParameterFailure,
-			"capability parameter SuperSamplingDenoising.Available failed: " + NgxResultText(availableResult),
-			static_cast<int32_t>(availableResult));
-		return;
-	}
-	if (NVSDK_NGX_FAILED(driverResult))
-	{
-		SetFailure(NgxSupportState::ParameterFailure,
-			"capability parameter SuperSamplingDenoising.NeedsUpdatedDriver failed: " + NgxResultText(driverResult),
-			static_cast<int32_t>(driverResult));
-		return;
-	}
-	if (needsUpdatedDriver != 0)
-	{
-		SetFailure(NgxSupportState::DriverUpdateRequired,
-			"driver update required (SuperSamplingDenoising.NeedsUpdatedDriver=" + std::to_string(needsUpdatedDriver) + ")");
-		return;
-	}
-	if (available == 0)
-	{
-		SetFailure(NgxSupportState::UnsupportedGpuVendor,
-			"Ray Reconstruction unavailable (SuperSamplingDenoising.Available=0)");
-		return;
-	}
-	m_Snapshot.state = NgxSupportState::Supported;
-	m_Snapshot.reason = "supported";
-	m_Snapshot.ngxResult = static_cast<int32_t>(NVSDK_NGX_Result_Success);
-	m_Snapshot.initialized = true;
-	m_Snapshot.capabilityParametersOwned = true;
+	NgxLifecycleHooks hooks;
+	hooks.invoke = [this, &discovery, &common, &requirement](NgxLifecycleOperation operation) {
+		NgxLifecycleCall call;
+		switch (operation)
+		{
+		case NgxLifecycleOperation::RequirementQuery:
+			{
+				const NVSDK_NGX_Result result = NVSDK_NGX_VULKAN_GetFeatureRequirements(
+					m_Instance, m_PhysicalDevice, &discovery, &requirement);
+				call.result = static_cast<int32_t>(result);
+				call.detail = NgxResultText(result);
+			}
+			call.supportMask = static_cast<uint32_t>(requirement.FeatureSupported);
+			break;
+		case NgxLifecycleOperation::Initialize:
+			{
+				const NVSDK_NGX_Result result = NVSDK_NGX_VULKAN_Init_with_ProjectID(
+				m_ProjectId.c_str(), NVSDK_NGX_ENGINE_TYPE_CUSTOM, m_EngineVersion.c_str(),
+				m_ApplicationDataPathNative.c_str(), m_Instance, m_PhysicalDevice, m_Device,
+				vkGetInstanceProcAddr, vkGetDeviceProcAddr, &common, NVSDK_NGX_Version_API);
+				call.result = static_cast<int32_t>(result);
+				call.detail = NgxResultText(result);
+			}
+			m_Initialized = static_cast<uint32_t>(call.result) == 0x1u;
+			break;
+		case NgxLifecycleOperation::CapabilityParameters:
+			{
+				const NVSDK_NGX_Result result = NVSDK_NGX_VULKAN_GetCapabilityParameters(&m_Parameters);
+				call.result = static_cast<int32_t>(result);
+				call.detail = NgxResultText(result);
+			}
+			call.parametersOwned = m_Parameters != nullptr;
+			break;
+		case NgxLifecycleOperation::Availability:
+		{
+			unsigned int available = 0;
+			const NVSDK_NGX_Result result = m_Parameters->Get(
+				NVSDK_NGX_Parameter_SuperSamplingDenoising_Available, &available);
+			call.result = static_cast<int32_t>(result);
+			call.detail = NgxResultText(result);
+			call.available = available != 0;
+			VkPhysicalDeviceProperties properties{};
+			vkGetPhysicalDeviceProperties(m_PhysicalDevice, &properties);
+			call.unsupportedVendor = properties.vendorID != 0x10DE;
+			break;
+		}
+		case NgxLifecycleOperation::Driver:
+		{
+			unsigned int needsUpdatedDriver = 0;
+			const NVSDK_NGX_Result result = m_Parameters->Get(
+				NVSDK_NGX_Parameter_SuperSamplingDenoising_NeedsUpdatedDriver,
+				&needsUpdatedDriver);
+			call.result = static_cast<int32_t>(result);
+			call.detail = NgxResultText(result);
+			call.needsUpdatedDriver = needsUpdatedDriver != 0;
+			break;
+		}
+		default:
+			break;
+		}
+		return call;
+	};
+	if (m_Lifecycle.Probe(hooks))
+		ObserveRuntimeVersion();
 }
 
-void NgxRuntime::Shutdown()
+bool NgxRuntime::Shutdown()
 {
-	if (!m_Initialized && !m_Parameters)
-		return;
-	if (m_Device != VK_NULL_HANDLE)
-	{
-		const VkResult idleResult = vkDeviceWaitIdle(m_Device);
-		if (idleResult != VK_SUCCESS)
+	if ((!m_Initialized && !m_Parameters) || m_Lifecycle.CleanupAttempted())
+		return m_Snapshot.state != NgxSupportState::ShutdownFailure;
+	NgxLifecycleHooks hooks;
+	hooks.invoke = [this](NgxLifecycleOperation operation) {
+		NgxLifecycleCall call;
+		switch (operation)
 		{
-			SetFailure(NgxSupportState::ShutdownFailure,
-				"vkDeviceWaitIdle before NGX shutdown failed", m_Snapshot.ngxResult,
-				static_cast<int32_t>(idleResult));
-			return;
+		case NgxLifecycleOperation::WaitIdle:
+			if (m_Device == VK_NULL_HANDLE)
+			{
+				call.result = 1;
+				call.vulkanResult = 0;
+			}
+			else
+			{
+				const VkResult result = vkDeviceWaitIdle(m_Device);
+				call.result = result == VK_SUCCESS ? 1 : 0;
+				call.vulkanResult = static_cast<int32_t>(result);
+			}
+			call.detail = "Vulkan result";
+			break;
+		case NgxLifecycleOperation::DestroyParameters:
+			{
+				const NVSDK_NGX_Result result = NVSDK_NGX_VULKAN_DestroyParameters(m_Parameters);
+				call.result = static_cast<int32_t>(result);
+				call.detail = NgxResultText(result);
+			}
+			if (static_cast<uint32_t>(call.result) == 0x1u) m_Parameters = nullptr;
+			break;
+		case NgxLifecycleOperation::Shutdown:
+			{
+				const NVSDK_NGX_Result result = NVSDK_NGX_VULKAN_Shutdown1(m_Device);
+				call.result = static_cast<int32_t>(result);
+				call.detail = NgxResultText(result);
+			}
+			if (static_cast<uint32_t>(call.result) == 0x1u) m_Initialized = false;
+			break;
+		default:
+			break;
 		}
-	}
-	bool parameterFailure = false;
-	if (m_Parameters)
-	{
-		const NVSDK_NGX_Result result = NVSDK_NGX_VULKAN_DestroyParameters(m_Parameters);
-		if (NVSDK_NGX_FAILED(result))
-		{
-			parameterFailure = true;
-			SetFailure(NgxSupportState::ShutdownFailure,
-				"NVSDK_NGX_VULKAN_DestroyParameters failed: " + NgxResultText(result),
-				static_cast<int32_t>(result));
-		}
-		else
-		{
-			m_Parameters = nullptr;
-			m_Snapshot.capabilityParametersOwned = false;
-		}
-	}
-	if (m_Initialized)
-	{
-		const NVSDK_NGX_Result result = NVSDK_NGX_VULKAN_Shutdown1(m_Device);
-		if (NVSDK_NGX_FAILED(result))
-		{
-			SetFailure(NgxSupportState::ShutdownFailure,
-				"NVSDK_NGX_VULKAN_Shutdown1 failed: " + NgxResultText(result),
-				static_cast<int32_t>(result));
-		}
-		else
-		{
-			m_Initialized = false;
-			m_Snapshot.initialized = false;
-			if (!parameterFailure)
-				m_Snapshot.reason = "shutdown complete";
-		}
-	}
+		return call;
+	};
+	const bool shutdownOk = m_Lifecycle.Shutdown(hooks);
+	const std::string report = m_Snapshot.Format();
+	printf("[NGX] %s\n", report.c_str());
+	RT_LOG("[NGX] %s", report.c_str());
+	return shutdownOk;
 }

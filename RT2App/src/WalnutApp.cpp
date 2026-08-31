@@ -2538,7 +2538,13 @@ public:
 		// Walnut Vulkan device is still alive; the shared owner destructor may
 		// otherwise run after Walnut has destroyed that device.
 		if (m_Ngx)
-			m_Ngx->Shutdown();
+		{
+			const bool shutdownOk = m_Ngx->Shutdown();
+			(void)shutdownOk;
+			const std::string report = m_Ngx->Snapshot().Format();
+			printf("[NGX] %s\n", report.c_str());
+			RT_LOG("[NGX] %s", report.c_str());
+		}
 	}
 
 private:
@@ -5081,8 +5087,12 @@ Walnut::Application* Walnut::CreateApplication(int argc, char** argv)
 	if (!g_CLI.ngxFeaturePath.empty())
 		ngxFeaturePath = std::filesystem::path(g_CLI.ngxFeaturePath);
 	auto ngxRuntime = std::make_shared<NgxRuntime>(g_CLI.ngxProjectId, ngxFeaturePath);
-	spec.optionalVulkanFeatureProvider = [ngxRuntime]() {
-		return ngxRuntime->DiscoverInstanceRequirements();
+	std::weak_ptr<NgxRuntime> ngxProvider = ngxRuntime;
+	spec.optionalVulkanFeatureProvider = [ngxProvider]() {
+		if (auto runtime = ngxProvider.lock())
+			return runtime->DiscoverInstanceRequirements();
+		return Walnut::Result<Walnut::OptionalVulkanFeatureRequirements>::Failure(
+			"NGX provider owner is no longer available");
 	};
 
 	Walnut::Application* app = new Walnut::Application(spec);

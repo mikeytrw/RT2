@@ -255,6 +255,7 @@ project "RT2App"
        "vendor/NRI/Lib/NRI_Shared.lib",
        "vendor/NRI/Lib/NRI_Validation.lib",
        "vendor/DLSS/lib/Windows_x86_64/khr/x64/nvsdk_ngx_khr_d.lib",
+       "Version",
    }
 
    targetdir ("../bin/" .. outputdir .. "/%{prj.name}")

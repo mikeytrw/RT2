@@ -89,7 +89,7 @@
     <Link>
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;vendor\DLSS\lib\Windows_x86_64\khr\x64\nvsdk_ngx_khr_d.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;vendor\DLSS\lib\Windows_x86_64\khr\x64\nvsdk_ngx_khr_d.lib;Version.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;vendor\DLSS\lib\Windows_x86_64\khr\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
@@ -135,7 +135,7 @@ copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\dev\nvngx_dlssd.dll" "../bi
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;vendor\DLSS\lib\Windows_x86_64\khr\x64\nvsdk_ngx_khr_d.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;vendor\DLSS\lib\Windows_x86_64\khr\x64\nvsdk_ngx_khr_d.lib;Version.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;vendor\DLSS\lib\Windows_x86_64\khr\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
@@ -181,7 +181,7 @@ copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\rel\nvngx_dlssd.dll" "../bi
       <GenerateDebugInformation>false</GenerateDebugInformation>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;vendor\DLSS\lib\Windows_x86_64\khr\x64\nvsdk_ngx_khr_d.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>vendor\NRD\Lib\NRD.lib;vendor\NRD\Lib\ShaderMakeBlob.lib;vendor\NRI\Lib\NRI.lib;vendor\NRI\Lib\NRI_VK.lib;vendor\NRI\Lib\NRI_Shared.lib;vendor\NRI\Lib\NRI_Validation.lib;vendor\DLSS\lib\Windows_x86_64\khr\x64\nvsdk_ngx_khr_d.lib;Version.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>vendor\NRD\Lib;vendor\NRI\Lib;vendor\DLSS\lib\Windows_x86_64\khr\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
     <PostBuildEvent>
@@ -261,6 +261,7 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\InputTypes.h" />
     <ClInclude Include="src\MeshRegistry.h" />
     <ClInclude Include="src\NRDIntegration.h" />
+    <ClInclude Include="src\NgxLifecycle.h" />
     <ClInclude Include="src\NgxRuntime.h" />
     <ClInclude Include="src\NgxSupport.h" />
     <ClInclude Include="src\PathTracePass.h" />
@@ -620,6 +621,11 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
     <ClCompile Include="src\NRDIntegration.cpp">
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+      <ExternalWarningLevel>Level3</ExternalWarningLevel>
+    </ClCompile>
+    <ClCompile Include="src\NgxLifecycle.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>

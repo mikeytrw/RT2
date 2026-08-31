@@ -18,6 +18,7 @@ const char* NgxSupportStateName(NgxSupportState state)
 	case NgxSupportState::InitializationFailure: return "InitializationFailure";
 	case NgxSupportState::ParameterFailure: return "ParameterFailure";
 	case NgxSupportState::ShutdownFailure: return "ShutdownFailure";
+	case NgxSupportState::ApplicationDataPathFailure: return "ApplicationDataPathFailure";
 	}
 	return "Unknown";
 }
@@ -64,6 +65,9 @@ std::string NgxSupportSnapshot::Format() const
 		   << " support_mask=" << supportMask
 		   << " initialized=" << (initialized ? 1 : 0)
 		   << " parameters_owned=" << (capabilityParametersOwned ? 1 : 0)
+		   << " availability_known=" << (availabilityKnown ? 1 : 0)
+		   << " available=" << (available ? 1 : 0)
+		   << " driver_query_succeeded=" << (driverQuerySucceeded ? 1 : 0)
 		   << " rr_feature_created=" << (rrFeatureCreated ? 1 : 0);
 	return stream.str();
 }

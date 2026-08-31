@@ -1,6 +1,7 @@
 #pragma once
 
 #include "NgxSupport.h"
+#include "NgxLifecycle.h"
 
 #include "Walnut/Application.h"
 #include "vulkan/vulkan.h"
@@ -29,17 +30,15 @@ public:
 	// evaluated by this owner.
 	void InitializeAfterVulkan(bool optionalFeatureEnabled,
 		const std::vector<Walnut::OptionalVulkanFeatureDiagnostic>& walnutDiagnostics);
-	void Shutdown();
+	bool Shutdown();
 
 	const NgxSupportSnapshot& Snapshot() const { return m_Snapshot; }
 	const std::string& ProjectId() const { return m_ProjectId; }
 
 private:
 	void SetGpuName(VkPhysicalDevice physicalDevice);
-	void SetFailure(NgxSupportState state, std::string reason,
-		int32_t ngxResult = 0, int32_t vulkanResult = 0);
-	void SetFailureFromNgx(int32_t result, const char* operation);
 	bool PrepareApplicationDataPath();
+	void ObserveRuntimeVersion();
 
 	std::string m_ProjectId;
 	std::filesystem::path m_ApplicationDataPath;
@@ -49,6 +48,7 @@ private:
 	std::vector<const wchar_t*> m_FeaturePathPointers;
 	std::string m_EngineVersion = "RT2-W1";
 	NgxSupportSnapshot m_Snapshot;
+	NgxLifecycleAuthority m_Lifecycle;
 	VkInstance m_Instance = VK_NULL_HANDLE;
 	VkPhysicalDevice m_PhysicalDevice = VK_NULL_HANDLE;
 	VkDevice m_Device = VK_NULL_HANDLE;
