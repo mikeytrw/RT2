@@ -10,6 +10,8 @@
 #include <limits>
 #include <sstream>
 #include <cstdlib>
+#include <vector>
+#include <glm/glm.hpp>
 
 namespace
 {
@@ -38,14 +40,17 @@ bool RRGuideResources::Create(const GpuDevice& device, const RenderExtent& exten
 	// The pinned contract requires storage-image production and checked transfer
 	// readback. Reject the selected device/format before allocating anything.
 	const VkFormatFeatureFlags required = VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+		VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
 		VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
-	for (VkFormat format : kFormats)
+	for (size_t formatIndex = 0; formatIndex < RR_GUIDE_DEDICATED_COUNT; ++formatIndex)
 	{
+		VkFormat format = kFormats[formatIndex];
 		VkFormatProperties formatProperties{};
 		vkGetPhysicalDeviceFormatProperties(device.physicalDevice, format, &formatProperties);
+		m_FormatFeatures[formatIndex] = formatProperties.optimalTilingFeatures;
 		if ((formatProperties.optimalTilingFeatures & required) != required)
 		{
-			RT_LOG("[RRGuides] selected device lacks required storage/transfer format support: %d", (int)format);
+			RT_LOG("[RRGuides] selected device lacks required storage/sampled/transfer format support: %d", (int)format);
 			return false;
 		}
 	}
@@ -95,6 +100,7 @@ void RRGuideResources::Destroy()
 	m_Extent = {};
 	m_AllocationCount = 0;
 	m_AllocationBytes = 0;
+	for (auto& features : m_FormatFeatures) features = 0;
 }
 
 bool RRGuideResources::IsValid() const
@@ -153,10 +159,29 @@ void Add(Stats& s, float v)
 	else ++s.nonfinite;
 	if (v == 0.0f) ++s.zero; else ++s.nonzero;
 }
+
+std::string JsonString(const std::string& value)
+{
+	std::ostringstream escaped;
+	for (const char c : value)
+	{
+		switch (c)
+		{
+		case '\\': escaped << "\\\\"; break;
+		case '"': escaped << "\\\""; break;
+		case '\n': escaped << "\\n"; break;
+		case '\r': escaped << "\\r"; break;
+		case '\t': escaped << "\\t"; break;
+		default: escaped << c; break;
+		}
+	}
+	return escaped.str();
+}
 }
 
 bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& sharedDepth,
-	const GpuImage& sharedMotion, const GpuImage& canonicalOutput) const
+	const GpuImage& sharedMotion, const GpuImage& canonicalOutput,
+	const RRGuideReportMetadata& metadata) const
 {
 	if (!m_Device || !IsValid() || !WithinBudget() || !sharedDepth.IsValid() ||
 		!sharedMotion.IsValid() || !canonicalOutput.IsValid())
@@ -176,6 +201,8 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 	std::ostringstream json;
 	Stats statsByGuide[7]{};
 	uint64_t componentCountByGuide[7]{};
+	uint64_t sentinelRemainingByGuide[7]{};
+	std::vector<float> decodedByGuide[7];
 	json << "{\"schema\":\"rt2.rr-guide-report.v1\",\"gpu\":{\"name\":\"" << properties.deviceName
 		<< "\",\"vendor_id\":" << properties.vendorID << ",\"device_id\":" << properties.deviceID
 		<< ",\"api_version\":" << properties.apiVersion << ",\"driver_version\":" << properties.driverVersion
@@ -215,6 +242,7 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 			  (image.format == VK_FORMAT_R32_SFLOAT ? 1u : 4u)));
 		const uint64_t componentCount = pixelCount * componentsPerPixel;
 		componentCountByGuide[e] = componentCount;
+		decodedByGuide[e].resize(componentCount);
 		for (uint64_t i = 0; i < componentCount; ++i)
 		{
 			float value = 0.0f;
@@ -229,6 +257,11 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 			else if (image.format == VK_FORMAT_R16G16B16A16_SFLOAT || image.format == VK_FORMAT_R16G16_SFLOAT) value = HalfToFloat(ReadU16(bytes + i * 2));
 			else if (image.format == VK_FORMAT_R8G8B8A8_UNORM) value = float(bytes[i]) / 255.0f;
 			else std::memcpy(&value, bytes + i * 4, sizeof(value));
+			decodedByGuide[e][i] = value;
+			const bool sentinel = (e == 0 && value >= 60000.0f) ||
+				((e == 1 || e == 2) && (i % 4u) == 3u && value == 0.0f) ||
+				(e == 3 && !std::isfinite(value)) || (e == 6 && value < 0.0f);
+			if (sentinel) ++sentinelRemainingByGuide[e];
 			Add(stats, value);
 		}
 		statsByGuide[e] = stats;
@@ -253,9 +286,48 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 	const bool depthRange = statsByGuide[4].min >= 0.0f;
 	const bool motionFinite = statsByGuide[5].nonfinite == 0;
 	const bool hitRange = statsByGuide[6].min >= 0.0f;
+	uint64_t sentinelRemaining = 0;
+	for (uint64_t count : sentinelRemainingByGuide) sentinelRemaining += count;
+	const bool allPixelsOverwritten = sentinelRemaining == 0;
+	float maxNormalLengthError = 0.0f;
+	for (uint64_t p = 0; p < pixelCount; ++p)
+	{
+		const glm::vec3 normal(decodedByGuide[3][p * 4u + 0u], decodedByGuide[3][p * 4u + 1u], decodedByGuide[3][p * 4u + 2u]);
+		if (std::isfinite(normal.x) && std::isfinite(normal.y) && std::isfinite(normal.z))
+			maxNormalLengthError = std::max(maxNormalLengthError, std::abs(glm::length(normal) - 1.0f));
+	}
+	uint64_t depthMissCount = 0;
+	uint64_t missWithNonzeroHitCount = 0;
+	for (uint64_t p = 0; p < pixelCount; ++p)
+	{
+		const bool depthMiss = decodedByGuide[4][p] >= 999999.0f;
+		if (depthMiss)
+		{
+			++depthMissCount;
+			if (decodedByGuide[6][p] > 0.000001f) ++missWithNonzeroHitCount;
+		}
+	}
+	uint64_t motionNonzeroPixelCount = 0;
+	float maxMotionMagnitude = 0.0f;
+	for (uint64_t p = 0; p < pixelCount; ++p)
+	{
+		const float mx = decodedByGuide[5][p * 2u + 0u];
+		const float my = decodedByGuide[5][p * 2u + 1u];
+		const float magnitude = std::sqrt(mx * mx + my * my);
+		maxMotionMagnitude = std::max(maxMotionMagnitude, magnitude);
+		if (magnitude > 0.25f) ++motionNonzeroPixelCount;
+	}
+	const bool movingCase = std::abs(metadata.cameraSweepAmplitude) > 0.000001f;
+	const float expectedMotionMinimum = movingCase ? 0.25f : 0.0f;
+	const float motionExpectedObservedError = movingCase
+		? std::max(0.0f, expectedMotionMinimum - maxMotionMagnitude) : maxMotionMagnitude;
+	const bool motionToleranceValid = motionExpectedObservedError <= 0.25f;
+	const bool normalToleranceValid = maxNormalLengthError <= 0.001f;
+	const bool hitDepthCorrelationValid = missWithNonzeroHitCount == 0;
 	const bool semanticValid = finiteValid && diffuseRange && specRange && normalRange &&
-		depthRange && motionFinite && hitRange;
-	const bool valid = budgetValid && semanticValid;
+		depthRange && motionFinite && hitRange && allPixelsOverwritten &&
+		normalToleranceValid && hitDepthCorrelationValid && motionToleranceValid;
+	bool valid = budgetValid && semanticValid;
 	uint64_t checksum = 1469598103934665603ull;
 	{
 		const VkDeviceSize size = VkDeviceSize(canonicalOutput.width) * canonicalOutput.height * 16u;
@@ -288,24 +360,53 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		vkUnmapMemory(m_Device->device, staging.memory);
 		GpuResources::DestroyBuffer(*m_Device, staging);
 	}
+	const bool canonicalUnchanged = !metadata.canonicalBaselineValid || metadata.canonicalBaselineChecksum == checksum;
+	const bool runtimeExitValid = metadata.expectedExitCode == 0;
+	valid = valid && canonicalUnchanged && runtimeExitValid;
 	json << "],\"rt2_owned_allocation_bytes\":" << m_AllocationBytes << ",\"rt2_owned_allocation_count\":" << m_AllocationCount
 		<< ",\"budget_valid\":" << (budgetValid ? "true" : "false")
-		<< ",\"case\":\"raster-first-production\",\"valid\":" << (valid ? "true" : "false")
+		<< ",\"case\":\"" << JsonString(metadata.caseName) << "\",\"valid\":" << (valid ? "true" : "false")
 		<< ",\"failures\":[";
 	bool firstFailure = true;
 	auto failure = [&](const char* name, bool ok) { if (!ok) { if (!firstFailure) json << ','; firstFailure = false; json << '\"' << name << '\"'; } };
 	failure("budget", budgetValid); failure("all_pixels_finite", finiteValid);
+	failure("all_pixels_overwritten", allPixelsOverwritten);
 	failure("diffuse_range", diffuseRange); failure("specular_range", specRange);
 	failure("normal_range", normalRange); failure("depth_nonnegative", depthRange);
 	failure("motion_finite", motionFinite); failure("hit_distance_nonnegative", hitRange);
+	failure("normal_tolerance", normalToleranceValid); failure("hit_depth_correlation", hitDepthCorrelationValid);
+	failure("motion_expected_observed_tolerance", motionToleranceValid);
+	failure("canonical_output_changed", canonicalUnchanged);
+	failure("runtime_exit_code", runtimeExitValid);
 	json << "],\"semantic\":{\"pixel_count\":" << pixelCount
-		<< ",\"all_pixels_overwritten\":" << (finiteValid ? "true" : "false")
+		<< ",\"all_pixels_overwritten\":" << (allPixelsOverwritten ? "true" : "false")
+		<< ",\"sentinel_remaining_count\":" << sentinelRemaining
 		<< ",\"motion_nonzero_component_count\":" << statsByGuide[5].nonzero
+		<< ",\"motion_nonzero_pixel_count\":" << motionNonzeroPixelCount
+		<< ",\"motion_max_magnitude_px\":" << maxMotionMagnitude
+		<< ",\"motion_expected_minimum_px\":" << expectedMotionMinimum
+		<< ",\"motion_expected_observed_error_px\":" << motionExpectedObservedError
 		<< ",\"hit_distance_zero_default_count\":" << statsByGuide[6].zero
+		<< ",\"depth_miss_count\":" << depthMissCount
+		<< ",\"miss_with_nonzero_hit_count\":" << missWithNonzeroHitCount
 		<< ",\"motion_tolerance_px\":0.25,\"normal_tolerance\":0.001"
-		<< "},\"format_feature_check\":{\"format\":\"R11G11B10F\",\"storage_image\":true,\"transfer_src\":true,\"transfer_dst\":true,\"pinned_sdk\":\"v310.7.0\"}"
+		<< ",\"normal_max_length_error\":" << maxNormalLengthError
+		<< "},\"format_feature_check\":{\"format\":\"R11G11B10F\",\"storage_image\":"
+		<< ((m_FormatFeatures[0] & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0 ? "true" : "false")
+		<< ",\"sampled_image\":" << ((m_FormatFeatures[0] & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0 ? "true" : "false")
+		<< ",\"transfer_src\":" << ((m_FormatFeatures[0] & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT) != 0 ? "true" : "false")
+		<< ",\"transfer_dst\":" << ((m_FormatFeatures[0] & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) != 0 ? "true" : "false")
+		<< ",\"pinned_sdk\":\"v310.7.0\"}"
 		<< ",\"canonical_output_checksum_fnv1a64\":\"" << std::hex << checksum << std::dec
-		<< "\",\"provenance\":{\"source\":\"actual GPU vkCmdCopyImageToBuffer after vkDeviceWaitIdle\",\"extent\":\"RenderExtent\",\"motion_space\":\"render_pixels\"}}";
+		<< "\",\"canonical_output_baseline_checksum_fnv1a64\":\"" << std::hex << metadata.canonicalBaselineChecksum << std::dec
+		<< "\",\"canonical_output_unchanged\":" << (canonicalUnchanged ? "true" : "false")
+		<< ",\"runtime\":{\"nrd_enabled\":" << (metadata.nrdEnabled ? "true" : "false")
+		<< ",\"frames\":" << metadata.frameCount << ",\"camera_mode\":\"" << JsonString(metadata.cameraMode)
+		<< "\",\"camera_sweep_amplitude\":" << metadata.cameraSweepAmplitude
+		<< ",\"camera_sweep_warmup\":" << metadata.cameraSweepWarmup
+		<< ",\"camera_sweep_period\":" << metadata.cameraSweepPeriod
+		<< "},\"command\":\"" << JsonString(metadata.commandLine) << "\",\"exit_code\":" << metadata.expectedExitCode
+		<< ",\"provenance\":{\"source\":\"actual GPU vkCmdCopyImageToBuffer after vkDeviceWaitIdle\",\"extent\":\"RenderExtent\",\"motion_space\":\"render_pixels\",\"scene\":\"" << JsonString(metadata.scenePath) << "\"}}";
 	std::ofstream out(path, std::ios::binary | std::ios::trunc);
 	if (!out.is_open()) { RT_LOG("[RRGuides] report open failed: %s", path.c_str()); return false; }
 	out << json.str();

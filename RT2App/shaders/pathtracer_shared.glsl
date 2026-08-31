@@ -945,9 +945,12 @@ vec3 temporalAccumulate(ivec2 pixel, vec3 color, float frameIndex)
     return color;
 }
 
-// Write sky-pixel NRD defaults: oct-packed up normal, roughness=1, viewZ=1e6,
-// white albedo/F0, zero diff/spec radiance, camera-derived sky motion, sky radiance as
-// direct emission + beauty output.
+// camera-derived sky motion is part of the neutral guide contract. Write
+// sky-pixel guide/G-buffer defaults: oct-packed up normal, roughness=1,
+// viewZ=1e6, white albedo/F0, zero diff/spec radiance, and camera-derived sky
+// motion.  This helper deliberately does not touch outputImage: non-NRD
+// temporalAccumulate must read the previous canonical history before the
+// current sky sample is stored.
 void writeNRDSkyDefaults(ivec2 pixel, vec3 skyRadiance, vec3 skyDirection)
 {
     vec3 skyOct = nrdEncodeNormalRoughness(vec3(0.0, 0.0, 1.0), 1.0);
@@ -966,7 +969,6 @@ void writeNRDSkyDefaults(ivec2 pixel, vec3 skyRadiance, vec3 skyDirection)
     imageStore(gMotion, pixel, vec4((previousUv - currUv) * camera.viewportSPP.xy, 0.0, 0.0));
     imageStore(rrNoisyHdr, pixel, vec4(skyRadiance, 1.0));
     imageStore(rrHitDistance, pixel, vec4(0.0));
-    imageStore(outputImage, pixel, vec4(skyRadiance, 1.0));
 }
 
 // NRD hit distance params (REBLUR defaults: A=3, B=0.1, C=20).

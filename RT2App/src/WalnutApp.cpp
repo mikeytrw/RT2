@@ -89,6 +89,14 @@ using namespace Walnut;
 
 namespace {
 
+uint64_t Fnv1a64(const void* data, size_t size)
+{
+	uint64_t hash = 1469598103934665603ull;
+	const auto* bytes = static_cast<const uint8_t*>(data);
+	for (size_t i = 0; i < size; ++i) { hash ^= bytes[i]; hash *= 1099511628211ull; }
+	return hash;
+}
+
 std::filesystem::path ExecutableDirectory()
 {
 #ifdef _WIN32
@@ -3338,13 +3346,41 @@ private:
 				RT_LOG("[RRGuide] unable to create report directory '%s': %s", reportPath.parent_path().string().c_str(), reportDirectoryError.message().c_str());
 				rrGuideReportFailure = true;
 			}
-			else if (!m_RendererGPU.WriteRRGuideReport(reportPath.string()))
-			{
-				RT_LOG("[RRGuide] report write failed: %s", reportPath.string().c_str());
-				rrGuideReportFailure = true;
-			}
 			else
-				printf("[RRGuide] report=%s\n", reportPath.string().c_str());
+			{
+				RRGuideReportMetadata metadata;
+				metadata.caseName = g_CLI.cameraSweepAmplitude != 0.0f
+					? "raster-first-camera-sweep" : "raster-first-production-nonnrd";
+				metadata.scenePath = g_CLI.scenePath;
+				metadata.cameraMode = g_CLI.cameraSweepAmplitude == 0.0f ? "static" :
+					(g_CLI.cameraSweepMode == 2 ? "yaw" : (g_CLI.cameraSweepMode == 1 ? "forward" : "lateral"));
+				metadata.commandLine = g_CLI.commandLine;
+				metadata.nrdEnabled = g_CLI.nrd;
+				metadata.frameCount = g_CLI.frames;
+				metadata.cameraSweepAmplitude = g_CLI.cameraSweepAmplitude;
+				metadata.cameraSweepWarmup = g_CLI.cameraSweepWarmup;
+				metadata.cameraSweepPeriod = g_CLI.cameraSweepPeriod;
+				metadata.expectedExitCode = 0;
+				std::vector<float> baseline;
+				uint32_t baselineWidth = 0, baselineHeight = 0;
+				if (!m_RendererGPU.ReadbackOutputLinear(baseline, baselineWidth, baselineHeight))
+				{
+					RT_LOG("[RRGuide] canonical output baseline readback failed");
+					rrGuideReportFailure = true;
+				}
+				else
+				{
+					metadata.canonicalBaselineChecksum = Fnv1a64(baseline.data(), baseline.size() * sizeof(float));
+					metadata.canonicalBaselineValid = true;
+					if (!m_RendererGPU.WriteRRGuideReport(reportPath.string(), metadata))
+					{
+						RT_LOG("[RRGuide] report write failed: %s", reportPath.string().c_str());
+						rrGuideReportFailure = true;
+					}
+					else
+						printf("[RRGuide] report=%s\n", reportPath.string().c_str());
+				}
+			}
 			}
 		}
 

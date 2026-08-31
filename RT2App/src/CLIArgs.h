@@ -14,6 +14,7 @@ struct CLIArgs
 	std::string outputPath;       // screenshot PNG path
 	std::string outputHDRPath;    // linear HDR output (.exr or .pfm)
 	std::string rrGuideReport;    // checked native RR-neutral guide readback JSON
+	std::string commandLine;      // exact argv captured for checked reports
 	int frames = 0;               // number of frames to render before screenshot (0 = no auto-screenshot)
 	int width = 1280;             // viewport width for headless mode
 	int height = 720;             // viewport height for headless mode
@@ -314,6 +315,15 @@ struct CLIArgs
 			args.outputPath = "screenshot.png";
 		if (args.headless && args.frames == 0)
 			args.frames = 1;
+		// Preserve the exact runtime invocation in machine-readable reports.
+		args.commandLine.clear();
+		for (int a = 0; a < argc; ++a)
+		{
+			if (a) args.commandLine += ' ';
+			args.commandLine += '"';
+			args.commandLine += argv[a];
+			args.commandLine += '"';
+		}
 
 		return args;
 	}

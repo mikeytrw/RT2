@@ -129,7 +129,8 @@ public:
 
 	// Read back the output image to CPU as RGBA32F linear HDR. Returns false on failure.
 	bool ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uint32_t& outWidth, uint32_t& outHeight);
-	bool WriteRRGuideReport(const std::string& path) const;
+	bool WriteRRGuideReport(const std::string& path,
+		const RRGuideReportMetadata& metadata) const;
 
 	// Render settings — the only writable configuration surface.
 	// Mutate a copy, then call ApplySettings() to detect changes and

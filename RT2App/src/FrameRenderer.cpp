@@ -1,6 +1,7 @@
 #include "FrameRenderer.h"
 #include "Camera.h"
 #include "RTLog.h"
+#include <cmath>
 
 void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 {
@@ -199,10 +200,56 @@ void FrameRenderer::RecordRRGuidePass(VkCommandBuffer cmd, Context& ctx)
 	if (!ctx.rasterFirst || ctx.camera.m_Aperture > 0.0f ||
 	    !ctx.rrGuidePass.IsAvailable() || !ctx.rrGuides.IsValid())
 		return;
+	// Establish an explicit per-pixel producer sentinel before either the
+	// material guide compute pass or raygen writes.  The reporter rejects any
+	// sentinel left behind, so finite stale contents cannot masquerade as
+	// complete production.  All images remain GENERAL; the barriers describe
+	// the transfer clear and subsequent shader ownership exactly.
+	const RRGuideKind kinds[] = { RRGuideKind::NoisyHdr, RRGuideKind::DiffuseAlbedo,
+		RRGuideKind::SpecularAlbedo, RRGuideKind::NormalRoughness,
+		RRGuideKind::SpecularHitDistance };
+	const VkClearColorValue sentinels[] = {
+		{{65504.0f, 65504.0f, 65504.0f, 0.0f}},
+		{{0.0f, 0.0f, 0.0f, 0.0f}},
+		{{0.0f, 0.0f, 0.0f, 0.0f}},
+		{{NAN, NAN, NAN, NAN}},
+		{{-1.0f, -1.0f, -1.0f, -1.0f}}
+	};
+	VkImageMemoryBarrier clearToTransfer[5] = {};
+	for (uint32_t i = 0; i < 5; ++i)
+	{
+		clearToTransfer[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		clearToTransfer[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		clearToTransfer[i].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		clearToTransfer[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		clearToTransfer[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		clearToTransfer[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		clearToTransfer[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		clearToTransfer[i].image = ctx.rrGuides.Get(kinds[i]).image;
+		clearToTransfer[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		clearToTransfer[i].subresourceRange.levelCount = 1;
+		clearToTransfer[i].subresourceRange.layerCount = 1;
+	}
+	vkCmdPipelineBarrier(cmd,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+		VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 5, clearToTransfer);
+	for (uint32_t i = 0; i < 5; ++i)
+		vkCmdClearColorImage(cmd, ctx.rrGuides.Get(kinds[i]).image,
+			VK_IMAGE_LAYOUT_GENERAL, &sentinels[i], 1, &clearToTransfer[i].subresourceRange);
+	VkImageMemoryBarrier clearToShader[5] = {};
+	for (uint32_t i = 0; i < 5; ++i)
+	{
+		clearToShader[i] = clearToTransfer[i];
+		clearToShader[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		clearToShader[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+	}
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+		0, 0, nullptr, 0, nullptr, 5, clearToShader);
 	ctx.rrGuidePass.Record(cmd, ctx.renderExtent,
 		ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet);
 	VkImageMemoryBarrier barriers[3] = {};
-	const RRGuideKind kinds[] = { RRGuideKind::DiffuseAlbedo, RRGuideKind::SpecularAlbedo,
+	const RRGuideKind materialKinds[] = { RRGuideKind::DiffuseAlbedo, RRGuideKind::SpecularAlbedo,
 		RRGuideKind::NormalRoughness };
 	for (uint32_t i = 0; i < 3; ++i)
 	{
@@ -213,7 +260,7 @@ void FrameRenderer::RecordRRGuidePass(VkCommandBuffer cmd, Context& ctx)
 		barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
 		barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 		barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-		barriers[i].image = ctx.rrGuides.Get(kinds[i]).image;
+		barriers[i].image = ctx.rrGuides.Get(materialKinds[i]).image;
 		barriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		barriers[i].subresourceRange.levelCount = 1;
 		barriers[i].subresourceRange.layerCount = 1;

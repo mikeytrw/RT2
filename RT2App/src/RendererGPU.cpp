@@ -656,9 +656,10 @@ void RendererGPU::ResetAccumulation()
 	m_FrameIndex = 1;
 	m_NRDFrameIndex = 1;
 	m_NRDNeedsReset = true;
-	m_HasPrevMatrices = false;
-	m_PrevViewToClipForFrame = glm::mat4(1.0f);
-	m_PrevWorldToViewForFrame = glm::mat4(1.0f);
+	// Keep the previous camera matrices across accumulation resets.  A camera
+	// cut resets beauty history, but motion remains a current->previous render
+	// pixel signal for the frame that follows; clearing these here would make
+	// every sweep frame look static and would invite a second jitter correction.
 }
 
 void RendererGPU::InvalidateReSTIRHistory()
@@ -1298,13 +1299,14 @@ void RendererGPU::CreateGBufferImages()
 		m_RRGuideInitFailed = false;
 }
 
-bool RendererGPU::WriteRRGuideReport(const std::string& path) const
+bool RendererGPU::WriteRRGuideReport(const std::string& path,
+	const RRGuideReportMetadata& metadata) const
 {
 	if (m_RRGuideInitFailed || !m_RRGuidePass.IsAvailable())
 		return false;
 	return m_RRGuides.WriteReport(path,
 		m_GBuffer.GetColor(GBufferTarget::VIEWZ),
-		m_GBuffer.GetColor(GBufferTarget::MOTION), m_OutputImage);
+		m_GBuffer.GetColor(GBufferTarget::MOTION), m_OutputImage, metadata);
 }
 
 void RendererGPU::DestroyGBufferImages()

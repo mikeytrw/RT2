@@ -29,6 +29,18 @@ void CheckMotion(const glm::vec2& observed, const glm::vec2& expected)
 {
 	CHECK(glm::length(observed - expected) <= 0.25f);
 }
+
+glm::vec2 ExpectedYawPixels(const glm::vec3& point, float yawRadians,
+	float focalLength, const glm::vec2& extent)
+{
+	const float c = std::cos(yawRadians);
+	const float s = std::sin(yawRadians);
+	const float yawedX = c * point.x + s * point.z;
+	const float yawedZ = -s * point.x + c * point.z;
+	const float currentNdcX = focalLength * point.x / -point.z;
+	const float previousNdcX = focalLength * yawedX / -yawedZ;
+	return glm::vec2((previousNdcX - currentNdcX) * extent.x * 0.5f, 0.0f);
+}
 }
 
 TEST_CASE("RR guides: checked seven-row contract is internally consistent")
@@ -116,6 +128,13 @@ TEST_CASE("RR guides RED-GREEN: bindings and shared BRDF remain production-visib
 	CHECK(raster.find("nrdJitter") == std::string::npos);
 	CHECK(ReadShader("RT2App/shaders/pathtracer_shared.glsl").find("camera-derived sky motion") != std::string::npos);
 	CHECK(secondary.find("writeNRDSkyDefaults(pixel, skyRadiance, dir)") != std::string::npos);
+	const std::string skyHelper = ReadShader("RT2App/shaders/pathtracer_shared.glsl");
+	const size_t skyStart = skyHelper.find("void writeNRDSkyDefaults");
+	const size_t skyEnd = skyHelper.find("// NRD hit distance", skyStart);
+	REQUIRE(skyStart != std::string::npos);
+	REQUIRE(skyEnd != std::string::npos);
+	CHECK(skyHelper.substr(skyStart, skyEnd - skyStart).find("imageStore(outputImage") == std::string::npos);
+	CHECK(secondary.find("writeNRDSkyDefaults(pixel, skyRadiance, dir);\n        if (nrdMode)\n            imageStore(outputImage") != std::string::npos);
 }
 
 TEST_CASE("RR guides: CPU motion projection contract covers static translation yaw rigid emissive sky")
@@ -137,13 +156,12 @@ TEST_CASE("RR guides: CPU motion projection contract covers static translation y
 	const glm::mat4 yaw = glm::rotate(glm::mat4(1.0f), glm::radians(1.0f), glm::vec3(0, 1, 0));
 	CheckMotion(ProjectPixels(projection, yaw, point, extent) -
 		ProjectPixels(projection, identity, point, extent),
-		ProjectPixels(projection, yaw, point, extent) -
-		ProjectPixels(projection, identity, point, extent));
+		ExpectedYawPixels(point, glm::radians(1.0f), projection[0][0], extent));
 	// Rigid geometry, emissive geometry and sky all use the same once-only
 	// current->previous projection; none adds a jitter delta.
 	for (const glm::vec3& p : { glm::vec3(0.2f, 0.1f, -4.0f), glm::vec3(-0.4f, 0.3f, -8.0f), glm::vec3(0.0f, 0.0f, -1000.0f) })
 		CheckMotion(ProjectPixels(projection, yaw, p, extent) - ProjectPixels(projection, identity, p, extent),
-			ProjectPixels(projection, yaw, p, extent) - ProjectPixels(projection, identity, p, extent));
+			ExpectedYawPixels(p, glm::radians(1.0f), projection[0][0], extent));
 }
 
 TEST_CASE("RR guides: numeric shared material semantics cover dielectric metallic angle and emissive")
@@ -164,6 +182,17 @@ TEST_CASE("RR guides: numeric shared material semantics cover dielectric metalli
 	CHECK(diffuse(glm::vec3(0.3f, 0.5f, 0.7f), 0.25f).x == doctest::Approx(0.225f));
 }
 
+TEST_CASE("RR guides: production motion reset preserves previous camera history")
+{
+	const std::string renderer = ReadShader("RT2App/src/RendererGPU.cpp");
+	const size_t reset = renderer.find("void RendererGPU::ResetAccumulation");
+	const size_t next = renderer.find("void RendererGPU::", reset + 1);
+	REQUIRE(reset != std::string::npos);
+	const std::string resetBody = renderer.substr(reset, next == std::string::npos ? std::string::npos : next - reset);
+	CHECK(resetBody.find("m_HasPrevMatrices = false") == std::string::npos);
+	CHECK(resetBody.find("previous camera matrices") != std::string::npos);
+}
+
 TEST_CASE("RR guides RED-GREEN: canonical output path has no guide debug dependency")
 {
 	const std::string frame = ReadShader("RT2App/shaders/secondary_raygen.rgen");
@@ -180,9 +209,16 @@ TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are p
 	const std::string renderer = ReadShader("RT2App/src/RendererGPU.cpp");
 	const std::string host = ReadShader("RT2App/src/WalnutApp.cpp");
 	CHECK(secondary.find("imageStore(rrNoisyHdr, pixel") != std::string::npos);
-	CHECK(secondary.find("if (!nrdMode)") != std::string::npos);
+	CHECK(secondary.find("if (nrdMode)") != std::string::npos);
+	CHECK(secondary.find("temporalAccumulate(pixel") != std::string::npos);
 	CHECK(secondary.find("scatter.lobeType >= 0.5") != std::string::npos);
 	CHECK(resources.find("vkGetPhysicalDeviceFormatProperties") != std::string::npos);
+	CHECK(resources.find("VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT") != std::string::npos);
+	CHECK(resources.find("sentinel_remaining_count") != std::string::npos);
+	CHECK(resources.find("hit_depth_correlation") != std::string::npos);
+	CHECK(resources.find("motion_expected_observed_tolerance") != std::string::npos);
+	CHECK(resources.find("canonical_output_unchanged") != std::string::npos);
+	CHECK(resources.find("metadata.commandLine") != std::string::npos);
 	CHECK(resources.find("canonical_output_checksum_fnv1a64") != std::string::npos);
 	CHECK(resources.find("RT2_RR_GUIDE_INJECT_CLOSE_FAILURE") != std::string::npos);
 	CHECK(renderer.find("m_RRGuideInitFailed") != std::string::npos);
