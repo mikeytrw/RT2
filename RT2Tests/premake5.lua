@@ -58,7 +58,8 @@
         "../RT2App/src/CompositePreviewSession.cpp",
         "../RT2App/src/PreviewSessionClose.cpp",
         "../RT2App/src/NgxSupport.cpp",
-        "../RT2App/src/NgxLifecycle.cpp"
+        "../RT2App/src/NgxLifecycle.cpp",
+        "../RT2App/src/RRGuideContract.cpp"
     }
 
     filter { "files:src/Phase8W3OverrideTests.cpp" }

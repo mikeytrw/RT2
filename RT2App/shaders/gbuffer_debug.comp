@@ -19,6 +19,11 @@ layout(set = 1, binding = 9, rgba8)  uniform readonly image2D gPrimGeoNormal;
 layout(set = 1, binding = 10, rg16f) uniform readonly image2D gPrimUV;
 layout(set = 1, binding = SI_BINDING_G_DIFF_RADIANCE, rgba16f) uniform readonly image2D gDiffRadianceHitDist;
 layout(set = 1, binding = SI_BINDING_G_SPEC_RADIANCE, rgba16f) uniform readonly image2D gSpecRadianceHitDist;
+layout(set = 1, binding = SI_BINDING_RR_NOISY_HDR, rgba16f) uniform readonly image2D rrNoisyHdr;
+layout(set = 1, binding = SI_BINDING_RR_DIFFUSE_ALBEDO, rgba8) uniform readonly image2D rrDiffuseAlbedo;
+layout(set = 1, binding = SI_BINDING_RR_SPECULAR_ALBEDO, rgba8) uniform readonly image2D rrSpecularAlbedo;
+layout(set = 1, binding = SI_BINDING_RR_NORMAL_ROUGHNESS, rgba16f) uniform readonly image2D rrNormalRoughness;
+layout(set = 1, binding = SI_BINDING_RR_HIT_DISTANCE, r32f) uniform readonly image2D rrHitDistance;
 
 // Reservoir buffer (set 0, binding 14) — shared with PathTracePass set 0 layout
 // restir_shared.glsl needs bindings + helpers that gbuffer_debug doesn't have.
@@ -317,6 +322,24 @@ void main()
             Reservoir res = sanitizeReservoir(reservoirs[pixel.y * w + pixel.x]);
             if (reservoirValid(res))
                 color = vec3(clamp(log2(1.0 + reservoirW(res)) / 16.0, 0.0, 1.0));
+            break;
+        }
+        case 22: { // RR noisy HDR (pre-NRD, compressed for display)
+            vec3 hdr = max(imageLoad(rrNoisyHdr, pixel).rgb, vec3(0.0));
+            color = hdr / (vec3(1.0) + hdr);
+            break;
+        }
+        case 23: { color = imageLoad(rrDiffuseAlbedo, pixel).rgb; break; }
+        case 24: { color = imageLoad(rrSpecularAlbedo, pixel).rgb; break; }
+        case 25: {
+            vec4 nr = imageLoad(rrNormalRoughness, pixel);
+            color = nr.xyz * 0.5 + 0.5;
+            color = mix(color, vec3(nr.w), 0.25);
+            break;
+        }
+        case 26: {
+            float hit = imageLoad(rrHitDistance, pixel).x;
+            color = vec3(clamp(hit * 0.02, 0.0, 1.0));
             break;
         }
     }

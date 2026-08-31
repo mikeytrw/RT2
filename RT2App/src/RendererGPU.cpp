@@ -61,6 +61,7 @@ bool RendererGPU::Init()
 	}
 
 	m_GBufferDebugPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout);
+	m_RRGuidePass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout);
 
 	// Create frames-in-flight ring
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -88,6 +89,7 @@ void RendererGPU::Destroy()
 	m_TonemapPass.Destroy();
 	m_RasterPass.Destroy();
 	m_GBufferDebugPass.Destroy();
+	m_RRGuidePass.Destroy();
 	DestroyOutputImage();
 	DestroyGBufferImages();
 	m_Scene.Destroy();
@@ -1019,6 +1021,8 @@ void RendererGPU::Render(const Camera& camera)
 		m_PathTracePass,
 		m_RasterPass,
 		m_GBufferDebugPass,
+		m_RRGuidePass,
+		m_RRGuides,
 		m_ComposePass,
 		m_TonemapPass,
 		m_ReSTIRPass,
@@ -1273,19 +1277,33 @@ bool RendererGPU::ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uin
 void RendererGPU::CreateGBufferImages()
 {
 	m_GBuffer.Create(m_Device, m_RenderExtent);
+	if (!m_RRGuides.Create(m_Device, m_RenderExtent) || !m_RRGuides.WithinBudget())
+	{
+		RT_LOG("[RRGuides] measured allocation budget exceeded: bytes=%llu allocations=%u",
+			(unsigned long long)m_RRGuides.GetAllocationBytes(), m_RRGuides.GetAllocationCount());
+		m_RRGuides.Destroy();
+	}
+}
+
+bool RendererGPU::WriteRRGuideReport(const std::string& path) const
+{
+	return m_RRGuides.WriteReport(path,
+		m_GBuffer.GetColor(GBufferTarget::VIEWZ),
+		m_GBuffer.GetColor(GBufferTarget::MOTION));
 }
 
 void RendererGPU::DestroyGBufferImages()
 {
 	m_GBuffer.Destroy();
+	m_RRGuides.Destroy();
 }
 
 void RendererGPU::CreateGBufferDescriptorSet()
 {
 	VkDevice device = m_Device.device;
 
-	// Set 1 layout: 10 storage images (0-5, 7-10) + 1 UBO (6)
-	VkDescriptorSetLayoutBinding bindings[11] = {};
+	// Set 1 layout: existing NRD images plus five named, RT2-owned RR guides.
+	VkDescriptorSetLayoutBinding bindings[16] = {};
 	// Bindings 0-5: storage images (gNormalRoughness, gViewZ, gMotion, gDiff, gSpec, gAlbedoF0)
 	for (int i = 0; i < 6; i++)
 	{
@@ -1322,10 +1340,18 @@ void RendererGPU::CreateGBufferDescriptorSet()
 	bindings[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	bindings[10].descriptorCount = 1;
 	bindings[10].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
+	for (uint32_t binding = SI_BINDING_RR_NOISY_HDR; binding <= SI_BINDING_RR_HIT_DISTANCE; ++binding)
+	{
+		const uint32_t entry = binding - SI_BINDING_RR_NOISY_HDR + 11u;
+		bindings[entry].binding = binding;
+		bindings[entry].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+		bindings[entry].descriptorCount = 1;
+		bindings[entry].stageFlags = VK_SHADER_STAGE_RAYGEN_BIT_KHR | VK_SHADER_STAGE_COMPUTE_BIT;
+	}
 
 	VkDescriptorSetLayoutCreateInfo layoutInfo = {};
 	layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-	layoutInfo.bindingCount = 11;
+	layoutInfo.bindingCount = 16;
 	layoutInfo.pBindings = bindings;
 
 	vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &m_GBufferSetLayout);
@@ -1333,7 +1359,7 @@ void RendererGPU::CreateGBufferDescriptorSet()
 	// Create dedicated pool
 	VkDescriptorPoolSize poolSizes[2] = {};
 	poolSizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-	poolSizes[0].descriptorCount = 10;
+	poolSizes[0].descriptorCount = 15;
 	poolSizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
 	poolSizes[1].descriptorCount = 1;
 
@@ -1367,7 +1393,7 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 {
 	VkDevice device = m_Device.device;
 
-	VkDescriptorImageInfo imageInfos[10] = {};
+	VkDescriptorImageInfo imageInfos[15] = {};
 	VkImageView views[] = {
 		m_GBuffer.GetColor(GBufferTarget::NORMAL_ROUGHNESS).view, m_GBuffer.GetColor(GBufferTarget::VIEWZ).view, m_GBuffer.GetColor(GBufferTarget::MOTION).view,
 		m_GBuffer.GetColor(GBufferTarget::DIFF_RADIANCE).view, m_GBuffer.GetColor(GBufferTarget::SPEC_RADIANCE).view, m_GBuffer.GetColor(GBufferTarget::ALBEDO_F0).view,
@@ -1384,7 +1410,7 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 	uboInfo.buffer = m_NRDUBO;
 	uboInfo.range = VK_WHOLE_SIZE;
 
-	VkWriteDescriptorSet writes[11] = {};
+	VkWriteDescriptorSet writes[16] = {};
 	// Storage images: bindings 0-5 and 7-10
 	for (int i = 0; i < 6; i++)
 	{
@@ -1430,6 +1456,26 @@ void RendererGPU::UpdateGBufferDescriptorSet()
 	writes[10].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 	writes[10].descriptorCount = 1;
 	writes[10].pImageInfo = &imageInfos[9];
+	uint32_t writeCount = 11;
+	if (m_RRGuides.IsValid())
+	{
+		VkDescriptorImageInfo guideInfos[5] = {};
+		const RRGuideKind guideKinds[5] = { RRGuideKind::NoisyHdr, RRGuideKind::DiffuseAlbedo,
+			RRGuideKind::SpecularAlbedo, RRGuideKind::NormalRoughness, RRGuideKind::SpecularHitDistance };
+		for (uint32_t i = 0; i < 5; ++i)
+		{
+			guideInfos[i].imageView = m_RRGuides.Get(guideKinds[i]).view;
+			guideInfos[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+			writes[11 + i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+			writes[11 + i].dstSet = m_GBufferSet;
+			writes[11 + i].dstBinding = SI_BINDING_RR_NOISY_HDR + i;
+			writes[11 + i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+			writes[11 + i].descriptorCount = 1;
+			writes[11 + i].pImageInfo = &guideInfos[i];
+		}
+		// The update executes before guideInfos goes out of scope.
+		writeCount = 16;
+	}
 
-	vkUpdateDescriptorSets(device, 11, writes, 0, nullptr);
+	vkUpdateDescriptorSets(device, writeCount, writes, 0, nullptr);
 }

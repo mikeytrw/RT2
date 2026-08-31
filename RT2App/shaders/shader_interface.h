@@ -80,6 +80,11 @@
 #define SI_BINDING_G_PRIM_HIT          8   // rgba32f: xyz = world pos, w = material index (floatBitsToInt)
 #define SI_BINDING_G_PRIM_GEO_NORMAL   9   // rgba8: xyz = geo normal (0.5+0.5 encode)
 #define SI_BINDING_G_PRIM_UV           10  // rg16f: xy = UV at primary hit
+#define SI_BINDING_RR_NOISY_HDR        12  // dedicated RR guide, RGBA16F
+#define SI_BINDING_RR_DIFFUSE_ALBEDO   13  // dedicated RR guide, RGBA8
+#define SI_BINDING_RR_SPECULAR_ALBEDO  14  // dedicated RR guide, RGBA8
+#define SI_BINDING_RR_NORMAL_ROUGHNESS 15  // dedicated RR guide, RGBA16F
+#define SI_BINDING_RR_HIT_DISTANCE     16  // dedicated RR guide, R32F
 
 // ============================================================================
 // Binding indices — set 1 (diagnostics)

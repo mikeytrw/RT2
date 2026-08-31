@@ -75,6 +75,7 @@ project "RT2App"
         "shaders/raster.vert",
         "shaders/raster.frag",
         "shaders/gbuffer_debug.comp",
+		"shaders/rr_guides.comp",
 		"shaders/picking.comp",
         "shaders/pathtracer_shared.glsl",
         "shaders/scatter_shared.glsl",
@@ -104,7 +105,7 @@ project "RT2App"
     -- Shared dependencies (relative paths for MSBuild buildinputs — premake
     -- tokens like %{wks.location} don't expand in buildinputs, so use
     -- paths relative to the .vcxproj which lives in the RT2App project dir).
-    local depShared  = { "shaders/pathtracer_shared.glsl", "shaders/scatter_shared.glsl", "shaders/restir_shared.glsl", "shaders/restir_bindings.glsl", "shaders/shader_interface.h" }
+    local depShared  = { "shaders/pathtracer_shared.glsl", "shaders/scatter_shared.glsl", "shaders/restir_shared.glsl", "shaders/restir_bindings.glsl", "shaders/shader_interface.h", "shaders/rr_guide_shared.glsl" }
     local depReSTIR  = { "shaders/restir_shared.glsl", "shaders/restir_bindings.glsl", "shaders/shader_interface.h" }
     local depGI      = { "shaders/restir_gi_shared.glsl", "shaders/restir_gi_bindings.glsl", "shaders/surface_history_shared.glsl", "shaders/material_resolve.glsl", "shaders/ray_query_scene.glsl", "shaders/shader_interface.h" }
     local depBasic   = { "shaders/shader_interface.h" }
@@ -205,6 +206,12 @@ project "RT2App"
         buildoutputs { shaderDir .. "/gbufferdebug.spv" }
         buildinputs { depBasic }
 
+    filter {"files:shaders/rr_guides.comp"}
+        buildmessage "Compiling rr_guides.comp"
+        buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/rr_guides.comp -o " .. shaderDir .. "/rr_guides.spv" }
+        buildoutputs { shaderDir .. "/rr_guides.spv" }
+        buildinputs { "shaders/shader_interface.h", "shaders/rr_guide_shared.glsl" }
+
 	filter {"files:shaders/picking.comp"}
 		buildmessage "Compiling picking.comp"
 		buildcommands { glslc .. " " .. shaderTarget .. " " .. shaderOpt .. " -fshader-stage=comp " .. shaderInclude .. " " .. shaderDir .. "/picking.comp -o " .. shaderDir .. "/picking.spv" }
@@ -280,7 +287,8 @@ project "RT2App"
             "copy /Y \"$(ProjectDir)shaders\\restir_gi_history.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\raster.spv\" \"%{cfg.targetdir}\"",
             "copy /Y \"$(ProjectDir)shaders\\rasterfrag.spv\" \"%{cfg.targetdir}\"",
-			"copy /Y \"$(ProjectDir)shaders\\gbufferdebug.spv\" \"%{cfg.targetdir}\"",
+            "copy /Y \"$(ProjectDir)shaders\\gbufferdebug.spv\" \"%{cfg.targetdir}\"",
+			"copy /Y \"$(ProjectDir)shaders\\rr_guides.spv\" \"%{cfg.targetdir}\"",
 			"copy /Y \"$(ProjectDir)shaders\\picking.spv\" \"%{cfg.targetdir}\""
         }
 

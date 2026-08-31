@@ -68,3 +68,18 @@ is disabled and must never feed NRD, compose, tone-map, or the canonical
 output. Every Vulkan create, allocation, bind, view, barrier, map, write,
 readback, and close result is checked and routed to the existing diagnostic
 contract.
+
+## 2026-08-31 measured correction
+
+The pre-shader table above multiplied the 4K width by 2048 rather than the
+required native height 2160; its 28-byte payload is therefore
+`4096*2160*28 = 247,726,080` bytes and cannot satisfy the 224 MiB ceiling.
+The production implementation corrects `RRGuideNoisyHdr` to
+`VK_FORMAT_B10G11R11_UFLOAT_PACK32` (three-channel linear HDR, 4 bytes/pixel),
+keeping all seven row semantics and ownership unchanged. The corrected five
+guide payload is 24 bytes/pixel (`212,336,640` bytes at 4096x2160, 202.5 MiB)
+before Vulkan alignment; the W3 report remains authoritative for measured
+`vkGetImageMemoryRequirements().size` and rejects an over-budget allocation.
+The measured raster shader also now writes positive view distance (`-viewPos.z`)
+for the shared `LinearDepth` row, matching the A0 contract; this is a semantic
+correction to the former negative-Z implementation, not a new RR slot.

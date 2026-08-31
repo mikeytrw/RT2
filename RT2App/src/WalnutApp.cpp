@@ -962,7 +962,9 @@ public:
 		"ReSTIR Reservoir",
 		"GI Direction", "GI Lo", "GI HitT", "GI M/Age",
 		"GI Fresh vs History", "GI Rejection Reason", "GI Fallback",
-		"NRD Diffuse Input", "NRD Specular Input", "ReSTIR DI Weight"
+		"NRD Diffuse Input", "NRD Specular Input", "ReSTIR DI Weight",
+		"RR Noisy HDR", "RR Diffuse Albedo", "RR Specular Albedo",
+		"RR Normal + Roughness", "RR Specular Hit Distance"
 	};
 	int debugCombo = m_Settings.gbufferDebugMode + 1;
 	if (ImGui::Combo("G-buffer View", &debugCombo, gbufferModes, IM_ARRAYSIZE(gbufferModes)))
@@ -3317,6 +3319,19 @@ private:
 			saveOutput(g_CLI.outputPath);
 		if (!g_CLI.outputHDRPath.empty() && m_RendererGPU.IsAvailable())
 			saveHDROutput(g_CLI.outputHDRPath);
+		if (!g_CLI.rrGuideReport.empty() && m_RendererGPU.IsAvailable())
+		{
+			const std::filesystem::path reportPath(g_CLI.rrGuideReport);
+			std::error_code reportDirectoryError;
+			if (reportPath.has_parent_path())
+				std::filesystem::create_directories(reportPath.parent_path(), reportDirectoryError);
+			if (reportDirectoryError)
+				RT_LOG("[RRGuide] unable to create report directory '%s': %s", reportPath.parent_path().string().c_str(), reportDirectoryError.message().c_str());
+			else if (!m_RendererGPU.WriteRRGuideReport(reportPath.string()))
+				RT_LOG("[RRGuide] report write failed: %s", reportPath.string().c_str());
+			else
+				printf("[RRGuide] report=%s\n", reportPath.string().c_str());
+		}
 
 		printf("[Headless] done, exiting\n");
 		Walnut::Application::Get().Close();

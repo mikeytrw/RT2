@@ -18,7 +18,8 @@ void GBufferTarget::Create(const GpuDevice& dev, const RenderExtent& extent)
 	m_Extent = extent;
 
 	VkImageUsageFlags colorUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-	                               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	                               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+	                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
 	for (uint32_t i = 0; i < COLOR_COUNT; i++)
 	{

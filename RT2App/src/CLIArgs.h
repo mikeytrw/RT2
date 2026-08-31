@@ -13,6 +13,7 @@ struct CLIArgs
 	std::string envMapPath;
 	std::string outputPath;       // screenshot PNG path
 	std::string outputHDRPath;    // linear HDR output (.exr or .pfm)
+	std::string rrGuideReport;    // checked native RR-neutral guide readback JSON
 	int frames = 0;               // number of frames to render before screenshot (0 = no auto-screenshot)
 	int width = 1280;             // viewport width for headless mode
 	int height = 720;             // viewport height for headless mode
@@ -89,6 +90,10 @@ struct CLIArgs
 			else if (strcmp(a, "--output-hdr") == 0)
 			{
 				if (const char* v = next()) args.outputHDRPath = v;
+			}
+			else if (strcmp(a, "--rr-guide-report") == 0)
+			{
+				if (const char* v = next()) args.rrGuideReport = v;
 			}
 			else if (strcmp(a, "--frames") == 0 || strcmp(a, "-f") == 0)
 			{
@@ -253,6 +258,7 @@ struct CLIArgs
 				printf("  --env <path>         Load HDR env map (.hdr/.exr) on startup\n");
 			printf("  --output <path>      Save tonemapped PNG after rendering\n");
 			printf("  --output-hdr <path>  Save linear HDR output (.exr or .pfm)\n");
+			printf("  --rr-guide-report <path>  Save checked RR-neutral guide readback JSON\n");
 			printf("  --frames <N>         Render N frames before screenshot (default 1)\n");
 			printf("  --width <W>          Viewport width (default 1280)\n");
 				printf("  --height <H>         Viewport height (default 720)\n");
@@ -297,6 +303,12 @@ struct CLIArgs
 			}
 		}
 
+		if (!args.rrGuideReport.empty())
+		{
+			args.headless = true;
+			args.rasterFirst = true;
+			args.nrd = true;
+		}
 		if (args.headless && !args.hasOutput())
 			args.outputPath = "screenshot.png";
 		if (args.headless && args.frames == 0)
@@ -312,6 +324,7 @@ struct CLIArgs
 		printf("[CLI] env       = %s\n", envMapPath.empty() ? "(none)" : envMapPath.c_str());
 		printf("[CLI] output    = %s\n", outputPath.empty() ? "(none)" : outputPath.c_str());
 		printf("[CLI] outputHDR = %s\n", outputHDRPath.empty() ? "(none)" : outputHDRPath.c_str());
+		printf("[CLI] rrGuideReport = %s\n", rrGuideReport.empty() ? "(none)" : rrGuideReport.c_str());
 		printf("[CLI] seed      = %u\n", sceneSeed);
 		printf("[CLI] frames    = %d\n", frames);
 		printf("[CLI] %dx%d  spp=%d  bounces=%d  nrd=%d  headless=%d\n",

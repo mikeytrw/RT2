@@ -15,6 +15,8 @@
 #include "PathTracePass.h"
 #include "RasterPass.h"
 #include "GBufferDebugPass.h"
+#include "RRGuideResources.h"
+#include "RRGuidePass.h"
 #include "NRDIntegration.h"
 #include "RenderSettings.h"
 #include "SceneResources.h"
@@ -31,6 +33,7 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <string>
 
 class RendererGPU
 {
@@ -126,6 +129,7 @@ public:
 
 	// Read back the output image to CPU as RGBA32F linear HDR. Returns false on failure.
 	bool ReadbackOutputLinear(std::vector<float>& outPixelsRGBA32F, uint32_t& outWidth, uint32_t& outHeight);
+	bool WriteRRGuideReport(const std::string& path) const;
 
 	// Render settings — the only writable configuration surface.
 	// Mutate a copy, then call ApplySettings() to detect changes and
@@ -260,6 +264,8 @@ private:
 	// Raster pass (primary visibility G-buffer)
 	RasterPass m_RasterPass;
 	GBufferDebugPass m_GBufferDebugPass;
+	RRGuideResources m_RRGuides;
+	RRGuidePass m_RRGuidePass;
 
 	// NRD integration wrapper
 	NRDWrapper m_NRD;

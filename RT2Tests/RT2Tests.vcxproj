@@ -138,6 +138,8 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="src\RRGuideContractTests.cpp" />
+    <ClCompile Include="..\RT2App\src\RRGuideContract.cpp" />
     <ClInclude Include="..\RT2App\src\Phase1AFixtureGenerator.h" />
     <ClInclude Include="..\RT2App\vendor\lua\ljumptab.h" />
     <ClInclude Include="src\GltfBuilder.h" />

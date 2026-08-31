@@ -109,6 +109,7 @@ copy /Y "$(ProjectDir)shaders\restir_gi_history.spv" "../bin/Debug-windows-x86_6
 copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Debug-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\rr_guides.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\dev\nvngx_dlss.dll" "../bin/Debug-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\dev\nvngx_dlssd.dll" "../bin/Debug-windows-x86_64/RT2App"</Command>
@@ -155,6 +156,7 @@ copy /Y "$(ProjectDir)shaders\restir_gi_history.spv" "../bin/Release-windows-x86
 copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Release-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\rr_guides.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\rel\nvngx_dlss.dll" "../bin/Release-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)vendor\DLSS\lib\Windows_x86_64\rel\nvngx_dlssd.dll" "../bin/Release-windows-x86_64/RT2App"</Command>
@@ -201,6 +203,7 @@ copy /Y "$(ProjectDir)shaders\restir_gi_history.spv" "../bin/Dist-windows-x86_64
 copy /Y "$(ProjectDir)shaders\raster.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\rasterfrag.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\gbufferdebug.spv" "../bin/Dist-windows-x86_64/RT2App"
+copy /Y "$(ProjectDir)shaders\rr_guides.spv" "../bin/Dist-windows-x86_64/RT2App"
 copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</Command>
     </PostBuildEvent>
   </ItemDefinitionGroup>
@@ -244,6 +247,9 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
     <ClInclude Include="src\FrameRenderer.h" />
     <ClInclude Include="src\GBufferDebugPass.h" />
     <ClInclude Include="src\GBufferTarget.h" />
+    <ClInclude Include="src\RRGuideContract.h" />
+    <ClInclude Include="src\RRGuidePass.h" />
+    <ClInclude Include="src\RRGuideResources.h" />
     <ClInclude Include="src\GPUSceneData.h" />
     <ClInclude Include="src\GpuDevice.h" />
     <ClInclude Include="src\GpuDiagnostics.h" />
@@ -570,6 +576,9 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
     </ClCompile>
+    <ClCompile Include="src\RRGuideContract.cpp" />
+    <ClCompile Include="src\RRGuidePass.cpp" />
+    <ClCompile Include="src\RRGuideResources.cpp" />
     <ClCompile Include="src\GPUSceneData.cpp">
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
       <ExternalWarningLevel>Level3</ExternalWarningLevel>
@@ -1204,6 +1213,13 @@ copy /Y "$(ProjectDir)shaders\picking.spv" "../bin/Dist-windows-x86_64/RT2App"</
       <Outputs>$(ProjectDir)shaders/gbufferdebug.spv</Outputs>
       <Message>Compiling gbuffer_debug.comp</Message>
       <AdditionalInputs>shaders/shader_interface.h</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="shaders\rr_guides.comp">
+      <FileType>Document</FileType>
+      <Command>C:\VulkanSDK\1.4.350.0/Bin/glslc.exe --target-env=vulkan1.2 -fshader-stage=comp -I $(ProjectDir)shaders $(ProjectDir)shaders/rr_guides.comp -o $(ProjectDir)shaders/rr_guides.spv</Command>
+      <Outputs>$(ProjectDir)shaders/rr_guides.spv</Outputs>
+      <Message>Compiling rr_guides.comp</Message>
+      <AdditionalInputs>shaders/shader_interface.h;shaders/rr_guide_shared.glsl</AdditionalInputs>
     </CustomBuild>
     <CustomBuild Include="shaders\miss.rmiss">
       <FileType>Document</FileType>

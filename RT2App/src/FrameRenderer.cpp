@@ -22,6 +22,8 @@ void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 
 	RecordRasterPass(cmd, ctx);
 	RT_LOG("[Frame] raster done");
+	RecordRRGuidePass(cmd, ctx);
+	RT_LOG("[Frame] RR guides done");
 	RecordReSTIRPass(cmd, ctx);
 	RT_LOG("[Frame] ReSTIR done");
 	RecordReSTIRGIPass(cmd, ctx);
@@ -188,6 +190,37 @@ void FrameRenderer::RecordRasterPass(VkCommandBuffer cmd, Context& ctx)
 	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 	                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
 	                     0, nullptr, 0, nullptr, 8, postRasterBarriers);
+}
+
+void FrameRenderer::RecordRRGuidePass(VkCommandBuffer cmd, Context& ctx)
+{
+	// W3 guides are produced only on the raster-first path. They are separate
+	// RT2-owned images and never enter NRD/compose/tone-map.
+	if (!ctx.rasterFirst || ctx.camera.m_Aperture > 0.0f ||
+	    !ctx.rrGuidePass.IsAvailable() || !ctx.rrGuides.IsValid())
+		return;
+	ctx.rrGuidePass.Record(cmd, ctx.renderExtent,
+		ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet);
+	VkImageMemoryBarrier barriers[3] = {};
+	const RRGuideKind kinds[] = { RRGuideKind::DiffuseAlbedo, RRGuideKind::SpecularAlbedo,
+		RRGuideKind::NormalRoughness };
+	for (uint32_t i = 0; i < 3; ++i)
+	{
+		barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		barriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+		barriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		barriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barriers[i].image = ctx.rrGuides.Get(kinds[i]).image;
+		barriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barriers[i].subresourceRange.levelCount = 1;
+		barriers[i].subresourceRange.layerCount = 1;
+	}
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+		0, 0, nullptr, 0, nullptr, 3, barriers);
 }
 
 void FrameRenderer::RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx)
@@ -438,10 +471,33 @@ void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 	ctx.pathTracePass.Record(cmd, ctx.renderExtent, ctx.gbufferSet, useRasterFirst);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::RTShading, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
+	if (useRasterFirst && ctx.rrGuides.IsValid())
+	{
+		VkImageMemoryBarrier guideBarriers[2] = {};
+		const RRGuideKind kinds[2] = { RRGuideKind::NoisyHdr, RRGuideKind::SpecularHitDistance };
+		for (uint32_t i = 0; i < 2; ++i)
+		{
+			guideBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			guideBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+			guideBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+			guideBarriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			guideBarriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			guideBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			guideBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			guideBarriers[i].image = ctx.rrGuides.Get(kinds[i]).image;
+			guideBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			guideBarriers[i].subresourceRange.levelCount = 1;
+			guideBarriers[i].subresourceRange.layerCount = 1;
+		}
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+			0, 0, nullptr, 0, nullptr, 2, guideBarriers);
+	}
 
 	// Modes 19-20 inspect the packed NRD inputs produced by raster-first RT
 	// shading. Run them after the RT dispatch and before NRD consumes the images.
-	if (ctx.gbufferDebugMode >= 19 && ctx.gbufferDebugMode <= 21 &&
+	if (ctx.gbufferDebugMode >= 19 && ctx.gbufferDebugMode <= 26 &&
+	    (ctx.gbufferDebugMode < 22 || ctx.rrGuides.IsValid()) &&
 	    ctx.gbufferDebugPass.IsAvailable())
 	{
 		VkImage debugImages[] = {

@@ -57,6 +57,7 @@ namespace GpuResources
 		outImage.format = format;
 		outImage.width = width;
 		outImage.height = height;
+		outImage.allocationSize = memReqs.size;
 		return true;
 	}
 
@@ -114,6 +115,7 @@ namespace GpuResources
 		outImage.format = format;
 		outImage.width = width;
 		outImage.height = height;
+		outImage.allocationSize = memReqs.size;
 		return true;
 	}
 
@@ -180,6 +182,7 @@ namespace GpuResources
 		if (img.view)   { vkDestroyImageView(dev.device, img.view, nullptr);   img.view = VK_NULL_HANDLE; }
 		if (img.image)  { vkDestroyImage(dev.device, img.image, nullptr);      img.image = VK_NULL_HANDLE; }
 		if (img.memory) { vkFreeMemory(dev.device, img.memory, nullptr);       img.memory = VK_NULL_HANDLE; }
+		img.allocationSize = 0;
 	}
 
 	void DestroyBuffer(const GpuDevice& dev, GpuBuffer& buf)

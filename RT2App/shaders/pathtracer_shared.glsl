@@ -7,6 +7,7 @@
 
 // Include shared C++/GLSL interface header for binding #defines
 #include "shader_interface.h"
+#include "rr_guide_shared.glsl"
 
 // ---- Bindings (set 0) -------------------------------------------------------
 
@@ -250,6 +251,8 @@ layout(set = 1, binding = SI_BINDING_G_ALBEDO_F0, rgba16f) uniform image2D gAlbe
 
 // Direct emission (emissive surfaces + sky) — bypasses NRD, added in compose
 layout(set = 1, binding = SI_BINDING_G_DIRECT_EMISSION, rgba16f) uniform image2D gDirectEmission;
+layout(set = 1, binding = SI_BINDING_RR_NOISY_HDR, r11f_g11f_b10f) uniform image2D rrNoisyHdr;
+layout(set = 1, binding = SI_BINDING_RR_HIT_DISTANCE, r32f) uniform image2D rrHitDistance;
 
 // NRD enable flag (1 = NRD mode, 0 = normal temporal accumulation)
 layout(set = 1, binding = SI_BINDING_NRD_UBO) uniform NRDUniform
@@ -943,9 +946,9 @@ vec3 temporalAccumulate(ivec2 pixel, vec3 color, float frameIndex)
 }
 
 // Write sky-pixel NRD defaults: oct-packed up normal, roughness=1, viewZ=1e6,
-// white albedo/F0, zero diff/spec radiance, zero motion, sky radiance as
+// white albedo/F0, zero diff/spec radiance, camera-derived sky motion, sky radiance as
 // direct emission + beauty output.
-void writeNRDSkyDefaults(ivec2 pixel, vec3 skyRadiance)
+void writeNRDSkyDefaults(ivec2 pixel, vec3 skyRadiance, vec3 skyDirection)
 {
     vec3 skyOct = nrdEncodeNormalRoughness(vec3(0.0, 0.0, 1.0), 1.0);
     imageStore(gNormalRoughness, pixel, vec4(skyOct, 0.0));
@@ -954,7 +957,12 @@ void writeNRDSkyDefaults(ivec2 pixel, vec3 skyRadiance)
     imageStore(gDirectEmission, pixel, vec4(skyRadiance, 0.0));
     imageStore(gDiffRadianceHitDist, pixel, vec4(0.0));
     imageStore(gSpecRadianceHitDist, pixel, vec4(0.0));
-    imageStore(gMotion, pixel, vec4(0.0, 0.0, 0.0, 0.0));
+    vec2 currUv = (vec2(pixel) + vec2(0.5)) / camera.viewportSPP.xy;
+    vec4 previousClip = camera.viewToClipPrev * camera.worldToViewPrev * vec4(skyDirection, 0.0);
+    vec2 previousUv = (previousClip.xy / previousClip.w) * 0.5 + 0.5;
+    imageStore(gMotion, pixel, vec4(previousUv - currUv, 0.0, 0.0));
+    imageStore(rrNoisyHdr, pixel, vec4(skyRadiance, 1.0));
+    imageStore(rrHitDistance, pixel, vec4(0.0));
     imageStore(outputImage, pixel, vec4(skyRadiance, 1.0));
 }
 

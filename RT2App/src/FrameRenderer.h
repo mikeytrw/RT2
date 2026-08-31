@@ -7,6 +7,8 @@
 #include "PathTracePass.h"
 #include "RasterPass.h"
 #include "GBufferDebugPass.h"
+#include "RRGuidePass.h"
+#include "RRGuideResources.h"
 #include "ComposePass.h"
 #include "TonemapPass.h"
 #include "ReSTIRPass.h"
@@ -42,6 +44,8 @@ public:
 		PathTracePass& pathTracePass;
 		RasterPass& rasterPass;
 		GBufferDebugPass& gbufferDebugPass;
+		RRGuidePass& rrGuidePass;
+		RRGuideResources& rrGuides;
 		ComposePass& composePass;
 		TonemapPass& tonemapPass;
 		ReSTIRPass& restirPass;
@@ -110,6 +114,7 @@ private:
 	static void RecordASBarrier(VkCommandBuffer cmd, Context& ctx);
 	static void RecordUBOUpdates(VkCommandBuffer cmd, Context& ctx);
 	static void RecordRasterPass(VkCommandBuffer cmd, Context& ctx);
+	static void RecordRRGuidePass(VkCommandBuffer cmd, Context& ctx);
 	static void RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx);
 	static void RecordReSTIRGIPass(VkCommandBuffer cmd, Context& ctx);
 	static void RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx);

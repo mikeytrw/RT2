@@ -177,7 +177,7 @@ void main()
 
     // View-space Z
     vec4 viewPos = camera.worldToView * vec4(inWorldPos, 1.0);
-    float viewZ = viewPos.z;
+    float viewZ = -viewPos.z; // positive view-space distance for NRD/RR contract
 
     // Motion vector: reproject world position into previous and current screen space
     vec4 currClip = camera.viewToClip * viewPos;
@@ -202,7 +202,7 @@ void main()
         vec3 octE = nrdEncodeNormalRoughness(geoN, 1.0);
         outNormalRoughness = vec4(octE, 1.0);  // oct-packed geo normal, roughness=1.0
         outViewZ = vec4(viewZ, 0.0, 0.0, 0.0);
-        outMotion = vec4(0.0, 0.0, 0.0, 0.0);              // zero motion (emissive bypasses NRD)
+        outMotion = vec4(prevUv - currUv, 0.0, 0.0);       // emissive geometry remains motion-dense
         outAlbedoF0 = vec4(1.0, 1.0, 1.0, 1.0);            // white albedo, metallic=1 (no demod)
         outDirectEmission = vec4(emissive, 0.0);
         return;
