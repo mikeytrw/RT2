@@ -1,15 +1,15 @@
 # W2 typed extent call-site ledger
 
-Grounded against commit `a6ba62e` on 31 August 2026. This is the checked
+Grounded against commit `44650d2` on 31 August 2026. This is the checked
 closure ledger for the typed render/output boundary. `RenderExtent` is used
 for internal raster, ray, ReSTIR, G-buffer and NRD work; `OutputExtent` is used
 for camera aspect, display, viewport and readback.
 
 | Boundary | Source citation | Type / evidence |
 | --- | --- | --- |
-| Value types and native translation | `RT2App/src/RenderExtents.h:8-77` | Checked nonzero constructors; no implicit conversion; explicit native plan |
+| Value types and native translation | `RT2App/src/RenderExtents.h:1-67` | Checked nonzero constructors; no implicit conversion; explicit native plan |
 | Camera aspect/projection | `RT2App/src/Camera.h:18-36`, `RT2App/src/Camera.cpp:115-123` | `OutputExtent` |
-| Viewport normalization and picking map | `RT2App/src/ViewportCoordinates.h:9-36`, `RT2App/src/ViewportCoordinates.cpp:8-47` | Output pixel normalization and explicit Render pixel mapping |
+| Viewport normalization and picking map | `RT2App/src/ViewportCoordinates.h:9-49`, `RT2App/src/ViewportCoordinates.cpp:8-71` | Output pixel normalization; output-space ray; explicit Render mapping only for render-image sampling |
 | Renderer resize and ownership | `RT2App/src/RendererGPU.h:45-94`, `RT2App/src/RendererGPU.cpp:261-315` | Output input; native Render plan; output image/display vs internal resources |
 | Camera UBO dispatch dimensions | `RT2App/src/RendererGPU.cpp:838` | Render extent |
 | Raster / ray / ReSTIR dispatch | `RT2App/src/FrameRenderer.h:55-60`, `RT2App/src/FrameRenderer.cpp:167,235,273,362,402,429,438,470` | Render extent |

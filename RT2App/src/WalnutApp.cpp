@@ -1220,16 +1220,19 @@ public:
 			rect.displaySize = { imageSize.x, imageSize.y };
 			rect.outputExtent = m_RendererGPU.GetOutputExtent();
 			rect.renderExtent = m_RendererGPU.GetRenderExtent();
-			if (const auto pixel = ScreenToRenderPixel({ mouse.x, mouse.y }, rect))
+			if (const auto ray = BuildOutputPickingRay(
+				m_Cam.GetInverseProjection(), m_Cam.GetInverseView(), m_Cam.GetPosition(),
+				{ mouse.x, mouse.y }, rect))
 			{
-				const glm::vec2 uv = (glm::vec2(*pixel) + 0.5f) /
-					glm::vec2(rect.renderExtent.Width(), rect.renderExtent.Height());
 				const uint64_t serial = m_RendererGPU.RequestPick(
-					m_Cam.GetPickingRay(uv.x, uv.y), m_Cam.m_FarClip);
+					*ray, m_Cam.m_FarClip);
 				m_ViewportPickSerial = serial;
 				m_ViewportPickToggle = ImGui::GetIO().KeyCtrl;
+				const auto pixel = ScreenToOutputPixel({ mouse.x, mouse.y }, rect);
 				RT_LOG("[ViewportPick] requested serial=%llu pixel=(%u,%u) uv=(%.6f,%.6f)",
-					static_cast<unsigned long long>(serial), pixel->x, pixel->y, uv.x, uv.y);
+					static_cast<unsigned long long>(serial), pixel->x, pixel->y,
+					(float(pixel->x) + 0.5f) / rect.outputExtent.Width(),
+					(float(pixel->y) + 0.5f) / rect.outputExtent.Height());
 			}
 		}
 

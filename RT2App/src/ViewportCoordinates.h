@@ -37,3 +37,13 @@ CameraRay BuildPickingRay(
 	const glm::mat4& inverseView,
 	const glm::vec3& cameraPosition,
 	const glm::vec2& normalizedViewportPosition);
+
+// Build an editor picking ray from the output/display coordinate space. The
+// render extent is intentionally not consulted: GPU picking consumes only the
+// resulting ray and does not sample a render-resolution image.
+std::optional<CameraRay> BuildOutputPickingRay(
+	const glm::mat4& inverseProjection,
+	const glm::mat4& inverseView,
+	const glm::vec3& cameraPosition,
+	const glm::vec2& screenPosition,
+	const ViewportImageRect& viewport);

@@ -104,6 +104,29 @@ TEST_CASE("Picking maps output coordinates to render pixels explicitly")
 	CHECK(ScreenToRenderPixel({999.0f, 499.0f}, viewport).value() == glm::uvec2(499u, 249u));
 }
 
+TEST_CASE("Picking ray stays in output space when render extent changes")
+{
+	const auto output = *OutputExtent::TryCreate(1000u, 500u);
+	const ViewportImageRect lowRes{
+		glm::vec2(0.0f), glm::vec2(1000.0f, 500.0f), output,
+		*RenderExtent::TryCreate(100u, 50u)
+	};
+	const ViewportImageRect highRes{
+		glm::vec2(0.0f), glm::vec2(1000.0f, 500.0f), output,
+		*RenderExtent::TryCreate(400u, 200u)
+	};
+	const glm::vec2 screenPosition(731.4f, 211.8f);
+	const glm::mat4 identity(1.0f);
+	const glm::vec3 cameraPosition(1.0f, 2.0f, 3.0f);
+	const auto lowRay = BuildOutputPickingRay(identity, identity, cameraPosition, screenPosition, lowRes);
+	const auto highRay = BuildOutputPickingRay(identity, identity, cameraPosition, screenPosition, highRes);
+	REQUIRE(lowRay.has_value());
+	REQUIRE(highRay.has_value());
+	CHECK(lowRay->direction == highRay->direction);
+	const glm::vec2 expectedUV = (glm::vec2(731.0f, 211.0f) + 0.5f) / glm::vec2(1000.0f, 500.0f);
+	CHECK(lowRay->direction == BuildPickingRay(identity, identity, cameraPosition, expectedUV).direction);
+}
+
 TEST_CASE("Phase 2 picking ray is deterministic and centered on camera forward")
 {
 	glm::mat4 projection = glm::perspectiveFov(

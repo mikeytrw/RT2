@@ -55,3 +55,17 @@ CameraRay BuildPickingRay(
 		glm::vec3(inverseView * glm::vec4(viewDirection, 0.0f)));
 	return { cameraPosition, worldDirection };
 }
+
+std::optional<CameraRay> BuildOutputPickingRay(
+	const glm::mat4& inverseProjection,
+	const glm::mat4& inverseView,
+	const glm::vec3& cameraPosition,
+	const glm::vec2& screenPosition,
+	const ViewportImageRect& viewport)
+{
+	const auto outputPixel = ScreenToOutputPixel(screenPosition, viewport);
+	if (!outputPixel) return std::nullopt;
+	const glm::vec2 outputUV = (glm::vec2(*outputPixel) + 0.5f) /
+		glm::vec2(viewport.outputExtent.Width(), viewport.outputExtent.Height());
+	return BuildPickingRay(inverseProjection, inverseView, cameraPosition, outputUV);
+}
