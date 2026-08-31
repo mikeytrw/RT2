@@ -12,21 +12,24 @@ machine-readable results are [4K](rr-guide-report-4k-rtx3090.json),
 
 Reports were produced on 2026-08-31 with an RTX 3090 and
 `sofa_and_lamp.glb` at native RenderExtent, raster-first, and NRD disabled.
-The exact command and exit code are retained in each report. Readback is
-synchronous after `vkDeviceWaitIdle` and `vkCmdCopyImageToBuffer`, not a CPU
-prediction; the report also hashes the canonical output readback.
+The exact command, runtime case/NRD/camera/frame inputs, and exit code are
+captured by the checked-in writer in the same seven-guide JSON object. Readback
+is synchronous after `vkDeviceWaitIdle` and `vkCmdCopyImageToBuffer`, not a CPU
+prediction; the report also hashes the canonical output readback before and
+after report generation.
 
 Measured result: five dedicated images/five allocations, actual RT2-owned
 device-local allocation `213,909,504` bytes (204 MiB), under the `224 MiB`
-ceiling. Every guide had zero nonfinite samples; noisy HDR had 3,618 nonzero
-channels, diffuse albedo 9,069,303, specular albedo 35,389,440, and hit
-distance 12,376 nonzero pixels. The report records the exact per-resource
-allocation sizes and numeric ranges.
+ceiling. The fresh 4K report had zero nonfinite samples and zero remaining
+producer sentinels; it records exact per-resource allocation sizes and numeric
+ranges, plus `miss_with_nonzero_hit_count=0` and normal max-length error
+`0.000775516`.
 
-A second two-frame run with `--camera-sweep 0.1 0 4` retained a separate report
-with 125,607 nonzero motion components. Motion is written once in render
-pixels, with no jitter delta; CPU projection tests cover static, translation,
-yaw, rigid, emissive, and sky cases at <=0.25 px.
+A second six-frame yaw run with `--camera-sweep 0.25 1 4` retained a separate
+report with actual GPU motion magnitude up to `105.028` render pixels and
+expected-observed error `0`. Motion is written once in render pixels, with no
+jitter delta; CPU projection tests cover static, translation, yaw, rigid,
+emissive, and sky cases at <=0.25 px.
 
 CPU contract tests include named compiling RED/GREEN checks for unique
 bindings, RenderExtent-only rows, the 24-byte corrected budget arithmetic,
@@ -45,14 +48,36 @@ report open/write/flush/close, and semantic faults are loud; the injectable
 marker. No NGX feature was created or evaluated (`rr_feature_created=0`), and
 Walnut/NVIDIA submodules were not modified.
 
-The report's `valid`/`failures` fields validate finite full-pixel coverage,
-albedo/normal/depth/hit ranges, allocation budget, motion tolerance metadata,
-and preserve device/API/driver provenance. The `R11G11B10F` amendment is
+The report's `valid`/`failures` fields validate finite ranges, explicit
+preclear-sentinel coverage, per-pixel normal-length error, miss-to-zero-hit
+correlation, and expected-versus-observed motion tolerance, alongside the
+allocation budget and canonical checksum. The `R11G11B10F` amendment is
 grounded by the checked-in pinned guide
 `RT2App/vendor/DLSS/doc/DLSS-RR Integration Guide.pdf`, §3.4.5 (PDF page 13),
 which specifies the noisy input as any standard 3-channel format. Startup
-still checks selected-device STORAGE_IMAGE plus TRANSFER_SRC/DST support and
-fails before production if any bit is absent.
+still checks selected-device STORAGE_IMAGE, SAMPLED_IMAGE, and TRANSFER_SRC/DST
+support and fails before production if any bit is absent.
+
+## 2026-08-31 decisive-review fixup
+
+The sky guide helper now writes only guide/G-buffer resources. In non-NRD mode
+the current sky sample is passed to `temporalAccumulate` before `outputImage`
+is written; NRD mode stores the beauty sample explicitly after guide
+production. Every frame preclears all five dedicated images to
+format-representable sentinels and the report rejects any remaining sentinel.
+Normal length, depth-miss/zero-hit correlation, motion density/magnitude, and
+static-or-camera-sweep expected-versus-observed error are computed from actual
+GPU readback bytes.
+
+The retained non-NRD and camera-sweep JSON files are direct outputs of the
+checked-in CLI/reporter, with no post-processing or hand-shaped summary. They
+retain all seven guide rows, GPU/device provenance, runtime inputs,
+canonical before/after checksum equality, complete format feature bits, exact
+command, and exit code. Re-running each exact command with the same seed is
+the byte-reproducibility check. The static case reports
+`sentinel_remaining_count=0`, `miss_with_nonzero_hit_count=0`, and
+`canonical_output_unchanged=true`; the camera-yaw case records actual motion
+up to `105.028` render pixels with expected-observed error `0`.
 
 ## Reproducible gates
 
@@ -62,12 +87,12 @@ The bounded fixup gates were run with these commands (all returned exit code
 ```text
 msbuild RT2App.sln -p:Configuration=Release -p:Platform=x64 -m
 msbuild RT2App.sln -p:Configuration=Debug -p:Platform=x64 -m
-bin\Release-windows-x86_64\RT2Tests\RT2Tests.exe                 # 1106/1106, 156346/156346
+bin\Release-windows-x86_64\RT2Tests\RT2Tests.exe                 # full suite
 bin\Release-windows-x86_64\RT2Tests\RT2Tests.exe --test-case="RR guides*"
-bin\Debug-windows-x86_64\RT2Tests\RT2Tests.exe --test-case="RR guides*" # 9/9, 90/90
+bin\Debug-windows-x86_64\RT2Tests\RT2Tests.exe --test-case="RR guides*"
 bin\Release-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 4096 --height 2160 --frames 1 --spp 1 --bounces 2 --raster-first --rr-guide-report docs\rr-guide-report-4k-rtx3090.json # 0
 bin\Release-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 256 --height 256 --frames 1 --spp 1 --bounces 2 --raster-first --rr-guide-report docs\rr-guide-report-256x256-nonnrd.json # 0
-bin\Release-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 256 --height 256 --frames 2 --spp 1 --bounces 2 --raster-first --camera-sweep 0.1 0 4 --rr-guide-report docs\rr-guide-report-256x256-motion.json # 0
+bin\Release-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 256 --height 256 --frames 6 --spp 1 --bounces 2 --raster-first --camera-sweep 0.25 1 4 --camera-sweep-mode yaw --rr-guide-report docs\rr-guide-report-256x256-motion.json # 0
 bin\Debug-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 128 --height 128 --frames 1 --spp 1 --bounces 1 --raster-first --validate --sync-validate --rr-guide-report artifacts\rr-validation.json
 RT2_RR_GUIDE_INJECT_CLOSE_FAILURE=1 bin\Release-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 64 --height 64 --frames 1 --spp 1 --bounces 1 --raster-first --rr-guide-report artifacts\rr-close-fault.json # 1
 graphify update .

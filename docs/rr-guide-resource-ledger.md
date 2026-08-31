@@ -110,4 +110,8 @@ input and is specified as any standard 3-channel format at input resolution.
 The same section specifies standard 3-channel diffuse/specular albedo guides,
 and §3.4.6 specifies RG16_FLOAT motion. The selected R11G11B10F noisy colour
 therefore satisfies the pinned channel/format contract; the runtime feature
-check remains required for Vulkan storage and transfer use on the device.
+check remains required for Vulkan storage, sampled-image, and transfer use on
+the device. Guide images retain SAMPLED usage for the diagnostic/debug
+descriptor contract, so startup requires and reports
+`VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT` along with STORAGE_IMAGE and
+TRANSFER_SRC/DST.
