@@ -9,6 +9,7 @@ namespace
 {
 constexpr int32_t kSuccess = 1;
 constexpr int32_t kInvalidParameter = static_cast<int32_t>(0xBAD00005u);
+constexpr int32_t kOutOfDate = static_cast<int32_t>(0xBAD0000Cu);
 constexpr int32_t kNotImplemented = static_cast<int32_t>(0xBAD00012u);
 
 struct FakeNgx
@@ -121,7 +122,7 @@ TEST_CASE("NGX lifecycle RED/GREEN operation-sensitive failures retain exact res
 	};
 	const FailureCase cases[] = {
 		{ NgxLifecycleOperation::RequirementQuery, kInvalidParameter,
-			NgxSupportState::NeedsApplicationId, "requirement query" },
+			NgxSupportState::RequirementQueryFailure, "requirement query" },
 		{ NgxLifecycleOperation::RequirementQuery, kNotImplemented,
 			NgxSupportState::RuntimeMissing, "requirement query" },
 		{ NgxLifecycleOperation::Initialize, 77,
@@ -156,20 +157,120 @@ TEST_CASE("NGX lifecycle RED/GREEN operation-sensitive failures retain exact res
 	}
 }
 
-TEST_CASE("NGX lifecycle RED/GREEN support masks preserve every bit with stable precedence")
+TEST_CASE("NGX lifecycle RED/GREEN maps named results by every operation domain")
+{
+	struct MappingCase
+	{
+		NgxLifecycleOperation operation;
+		int32_t result;
+		NgxSupportState expectedState;
+		const char* operationName;
+	};
+	const MappingCase cases[] = {
+		{ NgxLifecycleOperation::RequirementQuery, kInvalidParameter,
+			NgxSupportState::RequirementQueryFailure, "requirement query" },
+		{ NgxLifecycleOperation::RequirementQuery, kNotImplemented,
+			NgxSupportState::RuntimeMissing, "requirement query" },
+		{ NgxLifecycleOperation::Initialize, kInvalidParameter,
+			NgxSupportState::NeedsApplicationId, "initialization" },
+		{ NgxLifecycleOperation::Initialize, kNotImplemented,
+			NgxSupportState::RuntimeMissing, "initialization" },
+		{ NgxLifecycleOperation::CapabilityParameters, kInvalidParameter,
+			NgxSupportState::ParameterFailure, "capability parameters" },
+		{ NgxLifecycleOperation::CapabilityParameters, kOutOfDate,
+			NgxSupportState::ParameterFailure, "capability parameters" },
+		{ NgxLifecycleOperation::Availability, kInvalidParameter,
+			NgxSupportState::ParameterFailure, "availability query" },
+		{ NgxLifecycleOperation::Availability, kNotImplemented,
+			NgxSupportState::ParameterFailure, "availability query" },
+		{ NgxLifecycleOperation::Driver, kInvalidParameter,
+			NgxSupportState::ParameterFailure, "driver query" },
+		{ NgxLifecycleOperation::Driver, kOutOfDate,
+			NgxSupportState::ParameterFailure, "driver query" },
+		{ NgxLifecycleOperation::WaitIdle, kInvalidParameter,
+			NgxSupportState::ShutdownFailure, "Vulkan idle wait" },
+		{ NgxLifecycleOperation::WaitIdle, kNotImplemented,
+			NgxSupportState::ShutdownFailure, "Vulkan idle wait" },
+		{ NgxLifecycleOperation::DestroyParameters, kInvalidParameter,
+			NgxSupportState::ShutdownFailure, "capability-parameter destruction" },
+		{ NgxLifecycleOperation::DestroyParameters, kOutOfDate,
+			NgxSupportState::ShutdownFailure, "capability-parameter destruction" },
+		{ NgxLifecycleOperation::Shutdown, kInvalidParameter,
+			NgxSupportState::ShutdownFailure, "NGX shutdown" },
+		{ NgxLifecycleOperation::Shutdown, kNotImplemented,
+			NgxSupportState::ShutdownFailure, "NGX shutdown" },
+	};
+
+	for (const MappingCase& mapping : cases)
+	{
+		NgxSupportSnapshot snapshot;
+		NgxLifecycleAuthority authority(snapshot);
+		NgxLifecycleCall call;
+		call.result = mapping.result;
+		call.detail = "named result";
+		authority.OperationFailure(mapping.operation, call, "fallback detail");
+		CHECK(snapshot.state == mapping.expectedState);
+		CHECK(snapshot.ngxResult == mapping.result);
+		CHECK(snapshot.reason.find(mapping.operationName) != std::string::npos);
+		CHECK(snapshot.reason.find("named result") != std::string::npos);
+	}
+}
+
+TEST_CASE("NGX lifecycle RED/GREEN successful null capability parameters preserve SDK success")
 {
 	FakeNgx fake;
 	fake.ConfigureSupported();
-	fake.requirement.supportMask = 2u | 4u | 8u | 16u;
+	// Match the production binding: it supplies a non-empty result string even
+	// when the API violates the pointer-ownership postcondition.
+	fake.parameters.detail = "NVSDK_NGX_Result_Success";
+	fake.parameters.parametersOwned = false;
 	NgxSupportSnapshot snapshot;
 	NgxLifecycleAuthority authority(snapshot);
 
 	CHECK_FALSE(authority.Probe(fake.Hooks()));
-	CHECK(snapshot.supportMask == (2u | 4u | 8u | 16u));
-	CHECK(snapshot.state == NgxSupportState::DriverUpdateRequired);
+	CHECK(snapshot.state == NgxSupportState::ParameterFailure);
+	CHECK(snapshot.ngxResult == kSuccess);
+	CHECK_FALSE(snapshot.capabilityParametersOwned);
+	CHECK(snapshot.reason.find("null pointer") != std::string::npos);
+	CHECK(snapshot.reason.find("NVSDK_NGX_Result_Success") == std::string::npos);
+}
+
+TEST_CASE("NGX lifecycle RED/GREEN support masks preserve every bit with stable precedence")
+{
+	FakeNgx fake;
+	fake.ConfigureSupported();
+	fake.requirement.supportMask = 1u | 2u;
+	NgxSupportSnapshot snapshot;
+	NgxLifecycleAuthority authority(snapshot);
+
+	CHECK_FALSE(authority.Probe(fake.Hooks()));
+	CHECK(snapshot.supportMask == (1u | 2u));
+	CHECK(snapshot.state == NgxSupportState::UnsupportedHardware);
 	CHECK(std::string(NgxSupportReasonFromMask(snapshot.supportMask)) ==
-		"driver version unsupported");
+		"required check not present");
 	CHECK(fake.calls[static_cast<size_t>(NgxLifecycleOperation::Initialize)] == 0);
+
+	FakeNgx allKnown;
+	allKnown.ConfigureSupported();
+	allKnown.requirement.supportMask = 2u | 4u | 8u | 16u;
+	NgxSupportSnapshot allKnownSnapshot;
+	NgxLifecycleAuthority allKnownAuthority(allKnownSnapshot);
+	CHECK_FALSE(allKnownAuthority.Probe(allKnown.Hooks()));
+	CHECK(allKnownSnapshot.supportMask == (2u | 4u | 8u | 16u));
+	CHECK(allKnownSnapshot.state == NgxSupportState::DriverUpdateRequired);
+	CHECK(std::string(NgxSupportReasonFromMask(allKnownSnapshot.supportMask)) ==
+		"driver version unsupported");
+
+	FakeNgx unknown;
+	unknown.ConfigureSupported();
+	unknown.requirement.supportMask = 32u;
+	NgxSupportSnapshot unknownSnapshot;
+	NgxLifecycleAuthority unknownAuthority(unknownSnapshot);
+	CHECK_FALSE(unknownAuthority.Probe(unknown.Hooks()));
+	CHECK(unknownSnapshot.supportMask == 32u);
+	CHECK(unknownSnapshot.state == NgxSupportState::UnsupportedHardware);
+	CHECK(std::string(NgxSupportReasonFromMask(unknownSnapshot.supportMask)) ==
+		"unknown NGX support mask");
 }
 
 TEST_CASE("NGX lifecycle RED/GREEN shutdown is terminal and publishes teardown failures")
@@ -214,5 +315,5 @@ TEST_CASE("NGX lifecycle RED/GREEN shutdown is terminal and publishes teardown f
 	NgxLifecycleAuthority missingOwnershipAuthority(missingOwnershipSnapshot);
 	CHECK_FALSE(missingOwnershipAuthority.Probe(missingOwnership.Hooks()));
 	CHECK(missingOwnershipSnapshot.state == NgxSupportState::ParameterFailure);
-	CHECK(missingOwnershipSnapshot.reason.find("ownership was not returned") != std::string::npos);
+	CHECK(missingOwnershipSnapshot.reason.find("null pointer") != std::string::npos);
 }

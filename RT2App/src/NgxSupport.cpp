@@ -2,6 +2,36 @@
 
 #include <algorithm>
 
+namespace
+{
+struct MaskDiagnostic
+{
+	NgxSupportState state;
+	const char* reason;
+};
+
+MaskDiagnostic DecodeMask(uint32_t supportMask)
+{
+	// This is one ordered decision for both public decoders.  Check-not-present
+	// is the primary platform/support failure, followed by driver, adapter,
+	// OS, and implementation constraints. Unknown bits remain explicit
+	// unsupported hardware rather than being treated as support.
+	if (supportMask == 0)
+		return { NgxSupportState::Supported, "supported" };
+	if ((supportMask & 1u) != 0)
+		return { NgxSupportState::UnsupportedHardware, "required check not present" };
+	if ((supportMask & 2u) != 0)
+		return { NgxSupportState::DriverUpdateRequired, "driver version unsupported" };
+	if ((supportMask & 4u) != 0)
+		return { NgxSupportState::UnsupportedGpuVendor, "adapter unsupported" };
+	if ((supportMask & 8u) != 0)
+		return { NgxSupportState::UnsupportedHardware, "OS version below minimum" };
+	if ((supportMask & 16u) != 0)
+		return { NgxSupportState::UnsupportedHardware, "feature not implemented" };
+	return { NgxSupportState::UnsupportedHardware, "unknown NGX support mask" };
+}
+}
+
 const char* NgxSupportStateName(NgxSupportState state)
 {
 	switch (state)
@@ -25,30 +55,12 @@ const char* NgxSupportStateName(NgxSupportState state)
 
 NgxSupportState NgxSupportStateFromMask(uint32_t supportMask)
 {
-	if (supportMask == 0)
-		return NgxSupportState::Supported;
-	if ((supportMask & 2u) != 0)
-		return NgxSupportState::DriverUpdateRequired;
-	if ((supportMask & 4u) != 0)
-		return NgxSupportState::UnsupportedGpuVendor;
-	return NgxSupportState::UnsupportedHardware;
+	return DecodeMask(supportMask).state;
 }
 
 const char* NgxSupportReasonFromMask(uint32_t supportMask)
 {
-	if (supportMask == 0)
-		return "supported";
-	if ((supportMask & 1u) != 0)
-		return "required check not present";
-	if ((supportMask & 2u) != 0)
-		return "driver version unsupported";
-	if ((supportMask & 4u) != 0)
-		return "adapter unsupported";
-	if ((supportMask & 8u) != 0)
-		return "OS version below minimum";
-	if ((supportMask & 16u) != 0)
-		return "feature not implemented";
-	return "unknown NGX support mask";
+	return DecodeMask(supportMask).reason;
 }
 
 std::string NgxSupportSnapshot::Format() const

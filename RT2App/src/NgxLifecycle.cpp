@@ -80,23 +80,40 @@ void NgxLifecycleAuthority::Failure(NgxLifecycleOperation operation,
 {
 	const uint32_t result = static_cast<uint32_t>(call.result);
 	NgxSupportState state = NgxSupportState::RequirementQueryFailure;
-	if (Is(result, kInvalidParameter))
-		state = NgxSupportState::NeedsApplicationId;
-	else if (Is(result, kOutOfDate))
-		state = NgxSupportState::DriverUpdateRequired;
-	else if (Is(result, kNotImplemented) ||
-		(operation == NgxLifecycleOperation::RequirementQuery && Is(result, kPlatformError)))
-		state = NgxSupportState::RuntimeMissing;
-	else if (operation == NgxLifecycleOperation::Initialize)
-		state = NgxSupportState::InitializationFailure;
+	// Cleanup and parameter calls are their own diagnostic domains.  A known
+	// startup result must never be allowed to relabel a teardown failure.
+	if (operation == NgxLifecycleOperation::WaitIdle ||
+		operation == NgxLifecycleOperation::DestroyParameters ||
+		operation == NgxLifecycleOperation::Shutdown)
+		state = NgxSupportState::ShutdownFailure;
 	else if (operation == NgxLifecycleOperation::CapabilityParameters ||
 		operation == NgxLifecycleOperation::Availability ||
 		operation == NgxLifecycleOperation::Driver)
 		state = NgxSupportState::ParameterFailure;
-	else if (operation == NgxLifecycleOperation::WaitIdle ||
-		operation == NgxLifecycleOperation::DestroyParameters ||
-		operation == NgxLifecycleOperation::Shutdown)
-		state = NgxSupportState::ShutdownFailure;
+	else if (operation == NgxLifecycleOperation::Initialize)
+	{
+		// Only this project-ID boundary gives InvalidParameter its application
+		// identity meaning.  Other known initialization failures retain their
+		// runtime/driver meaning where the SDK documents one.
+		if (Is(result, kInvalidParameter))
+			state = NgxSupportState::NeedsApplicationId;
+		else if (Is(result, kOutOfDate))
+			state = NgxSupportState::DriverUpdateRequired;
+		else if (Is(result, kNotImplemented) || Is(result, kUnableToInitialize) ||
+			Is(result, kPlatformError))
+			state = NgxSupportState::RuntimeMissing;
+		else
+			state = NgxSupportState::InitializationFailure;
+	}
+	else if (operation == NgxLifecycleOperation::RequirementQuery)
+	{
+		if (Is(result, kOutOfDate))
+			state = NgxSupportState::DriverUpdateRequired;
+		else if (Is(result, kNotImplemented) || Is(result, kPlatformError))
+			state = NgxSupportState::RuntimeMissing;
+		else
+			state = NgxSupportState::RequirementQueryFailure;
+	}
 
 	std::ostringstream reason;
 	reason << OperationName(operation) << " failed: "
@@ -143,9 +160,17 @@ bool NgxLifecycleAuthority::Probe(const NgxLifecycleHooks& hooks)
 	if (Failed(parameters.result) || !parameters.parametersOwned)
 	{
 		NgxLifecycleCall failed = parameters;
-		if (!Failed(failed.result)) failed.result = 0;
-		Failure(NgxLifecycleOperation::CapabilityParameters, failed,
-			parameters.parametersOwned ? "SDK result" : "ownership was not returned");
+		if (!parameters.parametersOwned && !Failed(failed.result))
+		{
+			// Keep the SDK success code intact: the failure is the violated
+			// ownership postcondition, not an SDK result failure.
+			failed.detail.clear();
+			Failure(NgxLifecycleOperation::CapabilityParameters, failed,
+				"capability parameters returned null pointer");
+		}
+		else
+			Failure(NgxLifecycleOperation::CapabilityParameters, failed,
+				parameters.parametersOwned ? "SDK result" : "ownership was not returned");
 		return false;
 	}
 	m_Snapshot.capabilityParametersOwned = true;
