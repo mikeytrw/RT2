@@ -102,3 +102,12 @@ checks selected-device STORAGE_IMAGE and TRANSFER_SRC/DST support for the
 corrected R11G11B10F noisy format. If the pinned v310.7.0 RR input whitelist
 does not accept that format, W4 must reopen this ledger and budget; no feature
 creation/evaluation is permitted as a discovery mechanism.
+
+The pinned SDK evidence is grounded in the checked-in
+`RT2App/vendor/DLSS/doc/DLSS-RR Integration Guide.pdf`, revision
+`SWE-DLSS-001-PGRF`, §3.4.5 (PDF page 13): `pInColor` is the noisy ray-traced
+input and is specified as any standard 3-channel format at input resolution.
+The same section specifies standard 3-channel diffuse/specular albedo guides,
+and §3.4.6 specifies RG16_FLOAT motion. The selected R11G11B10F noisy colour
+therefore satisfies the pinned channel/format contract; the runtime feature
+check remains required for Vulkan storage and transfer use on the device.

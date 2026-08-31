@@ -47,10 +47,12 @@ Walnut/NVIDIA submodules were not modified.
 
 The report's `valid`/`failures` fields validate finite full-pixel coverage,
 albedo/normal/depth/hit ranges, allocation budget, motion tolerance metadata,
-and preserve device/API/driver provenance. The `R11G11B10F` amendment remains
-explicitly gated by the pinned v310.7.0 RR input-format confirmation; startup
-checks selected-device STORAGE_IMAGE plus TRANSFER_SRC/DST support and fails
-before production if any bit is absent.
+and preserve device/API/driver provenance. The `R11G11B10F` amendment is
+grounded by the checked-in pinned guide
+`RT2App/vendor/DLSS/doc/DLSS-RR Integration Guide.pdf`, §3.4.5 (PDF page 13),
+which specifies the noisy input as any standard 3-channel format. Startup
+still checks selected-device STORAGE_IMAGE plus TRANSFER_SRC/DST support and
+fails before production if any bit is absent.
 
 ## Reproducible gates
 
