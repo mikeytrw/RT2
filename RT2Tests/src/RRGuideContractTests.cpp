@@ -202,6 +202,26 @@ TEST_CASE("RR guides RED-GREEN: canonical output path has no guide debug depende
 	CHECK(frame.find("outputImage") != std::string::npos);
 }
 
+TEST_CASE("RR guides: retained GPU reports are writer-shaped and self-validating")
+{
+	for (const char* path : { "docs/rr-guide-report-4k-rtx3090.json",
+		"docs/rr-guide-report-256x256-nonnrd.json",
+		"docs/rr-guide-report-256x256-motion.json" })
+	{
+		const std::string report = ReadShader(path);
+		REQUIRE_FALSE(report.empty());
+		CHECK(report.find("\"schema\":\"rt2.rr-guide-report.v1\"") != std::string::npos);
+		CHECK(report.find("\"guides\":[") != std::string::npos);
+		CHECK(report.find("RRGuideNoisyHdr") != std::string::npos);
+		CHECK(report.find("RRGuideSpecularHitDistance") != std::string::npos);
+		CHECK(report.find("\"runtime\":") != std::string::npos);
+		CHECK(report.find("\"command\":") != std::string::npos);
+		CHECK(report.find("\"exit_code\":0") != std::string::npos);
+		CHECK(report.find("\"canonical_output_unchanged\":true") != std::string::npos);
+		CHECK(report.find("\"sentinel_remaining_count\":0") != std::string::npos);
+	}
+}
+
 TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are permanent")
 {
 	const std::string secondary = ReadShader("RT2App/shaders/secondary_raygen.rgen");
@@ -219,6 +239,9 @@ TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are p
 	CHECK(resources.find("motion_expected_observed_tolerance") != std::string::npos);
 	CHECK(resources.find("canonical_output_unchanged") != std::string::npos);
 	CHECK(resources.find("metadata.commandLine") != std::string::npos);
+	const std::string frameRenderer = ReadShader("RT2App/src/FrameRenderer.cpp");
+	CHECK(frameRenderer.find("vkCmdClearColorImage") != std::string::npos);
+	CHECK(frameRenderer.find("clearToTransfer") != std::string::npos);
 	CHECK(resources.find("canonical_output_checksum_fnv1a64") != std::string::npos);
 	CHECK(resources.find("RT2_RR_GUIDE_INJECT_CLOSE_FAILURE") != std::string::npos);
 	CHECK(renderer.find("m_RRGuideInitFailed") != std::string::npos);
