@@ -28,7 +28,7 @@ public:
 	// Synchronously reads all five dedicated guides plus shared depth/motion and
 	// emits a checked machine-readable report. This path is diagnostic-only.
 	bool WriteReport(const std::string& path, const GpuImage& sharedDepth,
-		const GpuImage& sharedMotion) const;
+		const GpuImage& sharedMotion, const GpuImage& canonicalOutput) const;
 
 private:
 	static size_t DedicatedIndex(RRGuideKind kind);

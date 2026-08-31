@@ -83,3 +83,22 @@ before Vulkan alignment; the W3 report remains authoritative for measured
 The measured raster shader also now writes positive view distance (`-viewPos.z`)
 for the shared `LinearDepth` row, matching the A0 contract; this is a semantic
 correction to the former negative-Z implementation, not a new RR slot.
+
+## 2026-08-31 review-fixup correction
+
+The initial guide producer gated RR-owned noisy colour and hit-distance stores
+behind `nrdMode`. That was not a valid neutral contract: report mode now runs
+without NRD and every supported raster-first pixel writes RR guides regardless
+of the denoiser branch. Sky/emissive/absorbed pixels write finite terminal
+values and zero specular hit distance; a diffuse continuation cannot claim a
+specular hit. Raster and sky motion are encoded once as current-to-previous
+render pixels (`(previousUv-currentUv)*RenderExtent`) with no jitter delta.
+
+Material semantics are also corrected append-only: `RRComputeF0`, metallic-
+removed `RRDiffuseReflectance`, and view-dependent `EnvBRDFApprox2` are shared
+by path shading and `rr_guides.comp`; emissive G-buffer pixels retain resolved
+material factors rather than the NRD-only white/metallic sentinel. Startup
+checks selected-device STORAGE_IMAGE and TRANSFER_SRC/DST support for the
+corrected R11G11B10F noisy format. If the pinned v310.7.0 RR input whitelist
+does not accept that format, W4 must reopen this ledger and budget; no feature
+creation/evaluation is permitted as a discovery mechanism.

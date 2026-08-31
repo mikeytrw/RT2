@@ -44,7 +44,7 @@ public:
 
 	void Destroy();
 
-	bool IsAvailable() const { return m_Initialized; }
+	bool IsAvailable() const { return m_Initialized && !m_RRGuideInitFailed; }
 
 	void OnResize(const OutputExtent& outputExtent);
 	void OnResize(uint32_t width, uint32_t height)
@@ -266,6 +266,7 @@ private:
 	GBufferDebugPass m_GBufferDebugPass;
 	RRGuideResources m_RRGuides;
 	RRGuidePass m_RRGuidePass;
+	bool m_RRGuideInitFailed = false;
 
 	// NRD integration wrapper
 	NRDWrapper m_NRD;

@@ -3319,20 +3319,45 @@ private:
 			saveOutput(g_CLI.outputPath);
 		if (!g_CLI.outputHDRPath.empty() && m_RendererGPU.IsAvailable())
 			saveHDROutput(g_CLI.outputHDRPath);
-		if (!g_CLI.rrGuideReport.empty() && m_RendererGPU.IsAvailable())
+		bool rrGuideReportFailure = false;
+		if (!g_CLI.rrGuideReport.empty())
 		{
+			if (!m_RendererGPU.IsAvailable())
+			{
+				RT_LOG("[RRGuide] renderer/producer unavailable; report not produced");
+				rrGuideReportFailure = true;
+			}
+			else
+			{
 			const std::filesystem::path reportPath(g_CLI.rrGuideReport);
 			std::error_code reportDirectoryError;
 			if (reportPath.has_parent_path())
 				std::filesystem::create_directories(reportPath.parent_path(), reportDirectoryError);
 			if (reportDirectoryError)
+			{
 				RT_LOG("[RRGuide] unable to create report directory '%s': %s", reportPath.parent_path().string().c_str(), reportDirectoryError.message().c_str());
+				rrGuideReportFailure = true;
+			}
 			else if (!m_RendererGPU.WriteRRGuideReport(reportPath.string()))
+			{
 				RT_LOG("[RRGuide] report write failed: %s", reportPath.string().c_str());
+				rrGuideReportFailure = true;
+			}
 			else
 				printf("[RRGuide] report=%s\n", reportPath.string().c_str());
+			}
 		}
 
+		if (rrGuideReportFailure)
+		{
+			// A requested report is a checked artifact, not best-effort logging.
+			// Do not print the success marker when any semantic or durable-write
+			// check failed; automation must receive a nonzero status.
+			printf("[Headless] RR guide report FAILED\n");
+			fflush(stdout);
+			Walnut::Application::Get().Close();
+			std::exit(EXIT_FAILURE);
+		}
 		printf("[Headless] done, exiting\n");
 		Walnut::Application::Get().Close();
 	}

@@ -61,7 +61,12 @@ bool RendererGPU::Init()
 	}
 
 	m_GBufferDebugPass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout);
-	m_RRGuidePass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout);
+	if (!m_RRGuidePass.Init(m_Device, m_PathTracePass.GetDescriptorSetLayout(), m_GBufferSetLayout))
+	{
+		RT_LOG("[RT2] GPU renderer initialization failed: RR guide producer unavailable");
+		Destroy();
+		return false;
+	}
 
 	// Create frames-in-flight ring
 	for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
@@ -113,6 +118,7 @@ void RendererGPU::Destroy()
 		m_Frames[i].Destroy(device);
 
 	m_Initialized = false;
+	m_RRGuideInitFailed = false;
 }
 
 void RendererGPU::FlushGpuTimings()
@@ -138,6 +144,10 @@ void RendererGPU::CreateOutputImage()
 	m_OutputImage.image    = outputImg.image;
 	m_OutputImage.memory   = outputImg.memory;
 	m_OutputImage.view = outputImg.view;
+	m_OutputImage.format = outputImg.format;
+	m_OutputImage.width = outputImg.width;
+	m_OutputImage.height = outputImg.height;
+	m_OutputImage.allocationSize = outputImg.allocationSize;
 
 	GpuResources::CreateImage(m_Device, m_OutputExtent.Width(), m_OutputExtent.Height(),
 		VK_FORMAT_R8G8B8A8_UNORM,
@@ -1282,14 +1292,19 @@ void RendererGPU::CreateGBufferImages()
 		RT_LOG("[RRGuides] measured allocation budget exceeded: bytes=%llu allocations=%u",
 			(unsigned long long)m_RRGuides.GetAllocationBytes(), m_RRGuides.GetAllocationCount());
 		m_RRGuides.Destroy();
+		m_RRGuideInitFailed = true;
 	}
+	else
+		m_RRGuideInitFailed = false;
 }
 
 bool RendererGPU::WriteRRGuideReport(const std::string& path) const
 {
+	if (m_RRGuideInitFailed || !m_RRGuidePass.IsAvailable())
+		return false;
 	return m_RRGuides.WriteReport(path,
 		m_GBuffer.GetColor(GBufferTarget::VIEWZ),
-		m_GBuffer.GetColor(GBufferTarget::MOTION));
+		m_GBuffer.GetColor(GBufferTarget::MOTION), m_OutputImage);
 }
 
 void RendererGPU::DestroyGBufferImages()

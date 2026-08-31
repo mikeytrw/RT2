@@ -307,7 +307,8 @@ struct CLIArgs
 		{
 			args.headless = true;
 			args.rasterFirst = true;
-			args.nrd = true;
+			// RR-neutral validation must exercise the producer without relying on
+			// NRD's branch to populate any guide pixel.
 		}
 		if (args.headless && !args.hasOutput())
 			args.outputPath = "screenshot.png";
