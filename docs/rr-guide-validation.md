@@ -9,9 +9,9 @@ review-fixup commits on `rendering-dlss-rr-neutral-guides`. The tracked
 machine-readable results are [4K](rr-guide-report-4k-rtx3090.json),
 [non-NRD](rr-guide-report-256x256-nonnrd.json), and
 [camera sweep](rr-guide-report-256x256-motion.json).
-The controlled GPU-material fixture is [ChronographWatch](rr-guide-report-128x128-material.json).
+The deterministic controlled GPU-material/motion fixture is [rr-guide-controlled.rt2scene](../RT2App/assets/rr-guide-controlled.rt2scene), with its writer-generated [report](rr-guide-report-controlled.json). It is 3,091 bytes, SHA-256 `2F4E8129E6DC1113B6501C5B390D2518F251A3D088F05726A0762FBA74957C57`, and report FNV-1a-64 `bd392a5fd506765e`.
 
-Reports were produced on 2026-08-31 with an RTX 3090 and
+Reports were produced on 2026-09-01 with an RTX 3090 and
 `sofa_and_lamp.glb` at native RenderExtent, raster-first, and NRD disabled.
 The exact command, runtime case/NRD/camera/frame inputs, and exit code are
 captured by the checked-in writer in the same seven-guide JSON object. Readback
@@ -30,16 +30,20 @@ ranges, plus `miss_with_nonzero_hit_count=0` and normal max-length error
 
 A second six-frame yaw run with `--camera-sweep 0.25 1 4` retained a separate
 report with actual GPU motion magnitude up to `105.028` render pixels and
-expected-observed error `0`. Motion is written once in render pixels, with no
-jitter delta; CPU projection tests cover static, translation, yaw, rigid,
-emissive, and sky cases at <=0.25 px.
+expected-observed mean error `0.0334244` (maximum `0.0639842`). The controlled six-frame yaw fixture independently
+projects every GPU world hit and reconstructed sky miss from captured current /
+previous camera transforms: expected mean `(33.1931, 0)`, observed mean
+`(33.1811, 0)`, mean error `0.0119553`, max error `0.0304536` pixels, and sky /
+geometry class maxima `0.0304536` / `0.0300811`. Motion is written once in
+render pixels, with no jitter delta; CPU projection tests cover static,
+translation, yaw, rigid, emissive, and sky cases at <=0.25 px.
 
 CPU contract tests include named compiling RED/GREEN checks for unique
 bindings, RenderExtent-only rows, the 24-byte corrected budget arithmetic,
 shared material/F0/diffuse semantics, motion projection, and
 canonical-output/debug independence. Release targeted guide tests passed
-`12/12` cases and `179/179` assertions; earlier `66/69`, `147/147`,
-`162/162`, and `166/166` counts
+`12/12` cases and `200/200` assertions; earlier `66/69`, `147/147`,
+`162/162`, `179/179`, and `166/166` counts
 are superseded.
 The complete Release test run retains the repository baseline; Debug retains
 the documented OBJ fixture-generation baseline.
@@ -68,7 +72,7 @@ which specifies the noisy input as any standard 3-channel format. Startup
 still checks selected-device STORAGE_IMAGE, SAMPLED_IMAGE, and TRANSFER_SRC/DST
 support and fails before production if any bit is absent.
 
-## 2026-08-31 decisive-review fixup
+## 2026-09-01 decisive-review fixup
 
 The sky guide helper now writes only guide/G-buffer resources. In non-NRD mode
 the current sky sample is passed to `temporalAccumulate` before `outputImage`
@@ -93,8 +97,15 @@ direct-emission provenance alpha and guide readbacks and retain per-class
 motion counters. An emissive-required run sets
 `RT2_RR_GUIDE_REQUIRE_EMISSIVE=1`; environment-lit non-emissive controls then
 fail with zero emissive provenance instead of guessing from noisy radiance.
-The retained ChronographWatch material report contains actual GPU dielectric,
-metallic, and grazing-angle samples and the cross-resource numeric errors.
+The controlled fixture is intrinsically emissive-required from its checked-in
+case identity, so `ZERO_EMISSIVE` cannot toggle the expectation: the identical
+producer fault returned exit 1 with `valid:false`, material/provenance/motion
+emissive counts all zero. The retained controlled report contains actual GPU
+dielectric `1390`, metallic `650`, grazing `140`, and emissive `695` samples,
+with `emissive_provenance_pixel_count=695` and
+`emissive_motion_pixel_count=695`. The signed dense bad-scale producer mutant
+(`RT2_RR_GUIDE_INJECT_BAD_MOTION_SCALE`) also returned exit 1 with max
+expected-vector error `39.5944` pixels; its expectation was unchanged.
 
 ## Reproducible gates
 
@@ -112,6 +123,7 @@ bin\Debug-windows-x86_64\RT2Tests\RT2Tests.exe --test-case="RR guides*"
 scripts\rr-guide-pair.ps1 ... -Report docs\rr-guide-report-4k-rtx3090.json # 0
 scripts\rr-guide-pair.ps1 ... -Report docs\rr-guide-report-256x256-nonnrd.json # 0
 scripts\rr-guide-pair.ps1 ... -Frames 6 -CameraSweepAmplitude 0.25 -CameraSweepWarmup 1 -CameraSweepPeriod 4 -CameraSweepMode yaw -Report docs\rr-guide-report-256x256-motion.json # 0
+powershell -File scripts\rr-guide-pair.ps1 ... -Scene RT2App\assets\rr-guide-controlled.rt2scene -Width 128 -Height 128 -Frames 6 -Seed 11 -CameraSweepAmplitude 0.2 -CameraSweepWarmup 1 -CameraSweepPeriod 4 -CameraSweepMode yaw -Report docs\rr-guide-report-controlled.json # 0
 bin\Debug-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 128 --height 128 --frames 1 --spp 1 --bounces 1 --raster-first --validate --sync-validate --rr-guide-report artifacts\rr-validation.json
 RT2_RR_GUIDE_INJECT_CLOSE_FAILURE=1 bin\Release-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 64 --height 64 --frames 1 --spp 1 --bounces 1 --raster-first --rr-guide-report artifacts\rr-close-fault.json # 1
 graphify update .
