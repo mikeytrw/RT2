@@ -49,7 +49,8 @@ public:
 	//               gAlbedoF0, gDirectEmission, gPrimHit, gPrimGeoNormal, gPrimUV)
 	void Record(VkCommandBuffer cmd, const RenderExtent& extent,
 	            VkDescriptorSet sceneSet, VkDescriptorSet gbufferSet,
-	            VkImageView depthView, const VkImageView gbufferViews[8]) const;
+	            VkImageView depthView, const VkImageView gbufferViews[8],
+	            bool reportMode = false) const;
 
 	bool IsAvailable() const { return m_Pipeline != VK_NULL_HANDLE; }
 

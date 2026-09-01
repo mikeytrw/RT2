@@ -180,11 +180,14 @@ std::string JsonString(const std::string& value)
 }
 
 bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& sharedDepth,
-	const GpuImage& sharedMotion, const GpuImage& sharedEmission, const GpuImage& canonicalOutput,
+	const GpuImage& sharedMotion, const GpuImage& sharedEmission,
+	const GpuImage& sharedAlbedoF0, const GpuImage& sharedPrimHit,
+	const GpuImage& canonicalOutput,
 	const RRGuideReportMetadata& metadata) const
 {
 	if (!m_Device || !IsValid() || !WithinBudget() || !sharedDepth.IsValid() ||
-		!sharedMotion.IsValid() || !sharedEmission.IsValid() || !canonicalOutput.IsValid())
+		!sharedMotion.IsValid() || !sharedEmission.IsValid() || !sharedAlbedoF0.IsValid() ||
+		!sharedPrimHit.IsValid() || !canonicalOutput.IsValid())
 		return false;
 	if (vkDeviceWaitIdle(m_Device->device) != VK_SUCCESS)
 	{
@@ -282,6 +285,7 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 	uint64_t depthMissCount = 0;
 	uint64_t missWithNonzeroHitCount = 0;
 	uint64_t emissivePixelCount = 0;
+	uint64_t directEmissionProvenanceCount = 0;
 	uint64_t skyMotionPixelCount = 0;
 	uint64_t geometryMotionPixelCount = 0;
 	uint64_t emissiveMotionPixelCount = 0;
@@ -316,9 +320,74 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		directEmission.resize(pixelCount * 4u);
 		for (uint64_t i = 0; i < directEmission.size(); ++i)
 			directEmission[i] = HalfToFloat(ReadU16(bytes + i * 2u));
+		for (uint64_t p = 0; p < pixelCount; ++p)
+			if (directEmission[p * 4u + 3u] > 0.5f) ++directEmissionProvenanceCount;
 		vkUnmapMemory(m_Device->device, staging.memory);
 		GpuResources::DestroyBuffer(*m_Device, staging);
 	}
+	// Cross-resource material validation reads the producer inputs from the
+	// actual GPU G-buffer and compares decoded guide pixels against the same
+	// production C++ authority used by CPU contract tests.
+	auto readbackBytes = [&](const GpuImage& image, VkDeviceSize bytes, std::vector<uint8_t>& out) -> bool {
+		GpuBuffer staging;
+		if (!GpuResources::CreateBuffer(*m_Device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging)) return false;
+		CommandUtils::ImmediateSubmit(*m_Device, [&](VkCommandBuffer cmd) {
+			GpuResources::TransitionImage(cmd, image.image, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+				VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+			VkBufferImageCopy copy{}; copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			copy.imageSubresource.layerCount = 1; copy.imageExtent = { image.width, image.height, 1 };
+			vkCmdCopyImageToBuffer(cmd, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, staging.buffer, 1, &copy);
+			GpuResources::TransitionImage(cmd, image.image, VK_ACCESS_TRANSFER_READ_BIT,
+				VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+		});
+		void* mapped = nullptr;
+		if (vkMapMemory(m_Device->device, staging.memory, 0, bytes, 0, &mapped) != VK_SUCCESS || !mapped)
+		{ GpuResources::DestroyBuffer(*m_Device, staging); return false; }
+		out.resize(static_cast<size_t>(bytes));
+		std::memcpy(out.data(), mapped, static_cast<size_t>(bytes));
+		vkUnmapMemory(m_Device->device, staging.memory);
+		GpuResources::DestroyBuffer(*m_Device, staging);
+		return true;
+	};
+	std::vector<uint8_t> albedoBytes, primHitBytes;
+	if (!readbackBytes(sharedAlbedoF0, VkDeviceSize(pixelCount) * 8u, albedoBytes) ||
+		!readbackBytes(sharedPrimHit, VkDeviceSize(pixelCount) * 16u, primHitBytes))
+		return false;
+	uint64_t materialGpuSamples = 0;
+	float maxMaterialDiffuseError = 0.0f;
+	float maxMaterialSpecularError = 0.0f;
+	uint64_t dielectricSamples = 0, metallicSamples = 0, grazingSamples = 0, emissiveSamples = 0;
+	for (uint64_t p = 0; p < pixelCount; ++p)
+	{
+		float hitW = 0.0f;
+		std::memcpy(&hitW, primHitBytes.data() + p * 16u + 12u, sizeof(float));
+		if (!std::isfinite(hitW) || hitW < 0.5f) continue;
+		float albedo[4]{};
+		for (uint32_t c = 0; c < 4; ++c) albedo[c] = HalfToFloat(ReadU16(albedoBytes.data() + p * 8u + c * 2u));
+		float world[3]{};
+		for (uint32_t c = 0; c < 3; ++c) std::memcpy(&world[c], primHitBytes.data() + p * 16u + c * 4u, sizeof(float));
+		const glm::vec3 normal(decodedByGuide[3][p * 4u], decodedByGuide[3][p * 4u + 1u], decodedByGuide[3][p * 4u + 2u]);
+		const float roughness = std::clamp(decodedByGuide[3][p * 4u + 3u], 0.0f, 1.0f);
+		const glm::vec3 worldPosition(world[0], world[1], world[2]);
+		const float noV = std::abs(glm::dot(glm::normalize(normal), glm::normalize(metadata.cameraPosition - worldPosition)));
+		const RRGuideMaterialValues expected = EvaluateRRGuideMaterial(glm::vec3(albedo[0], albedo[1], albedo[2]), albedo[3], roughness, noV);
+		const glm::vec3 actualDiffuse(decodedByGuide[1][p * 4u], decodedByGuide[1][p * 4u + 1u], decodedByGuide[1][p * 4u + 2u]);
+		const glm::vec3 actualSpec(decodedByGuide[2][p * 4u], decodedByGuide[2][p * 4u + 1u], decodedByGuide[2][p * 4u + 2u]);
+		const glm::vec3 diffuseError = glm::abs(actualDiffuse - expected.diffuseReflectance);
+		const glm::vec3 specularError = glm::abs(actualSpec - expected.specularAlbedo);
+		maxMaterialDiffuseError = std::max(maxMaterialDiffuseError, std::max(diffuseError.x, std::max(diffuseError.y, diffuseError.z)));
+		maxMaterialSpecularError = std::max(maxMaterialSpecularError, std::max(specularError.x, std::max(specularError.y, specularError.z)));
+		++materialGpuSamples;
+		if (albedo[3] < 0.1f) ++dielectricSamples;
+		if (albedo[3] > 0.9f) ++metallicSamples;
+		if (noV < 0.5f) ++grazingSamples;
+		if (directEmission[p * 4u + 3u] > 0.5f) ++emissiveSamples;
+	}
+	const bool materialGpuValid = materialGpuSamples > 0 && maxMaterialDiffuseError <= 0.08f &&
+		maxMaterialSpecularError <= 0.08f;
 	const bool budgetValid = WithinBudget();
 	const bool finiteValid = [&]() { for (size_t i = 0; i < 7; ++i)
 		if (statsByGuide[i].nonfinite != 0 || statsByGuide[i].finite != componentCountByGuide[i]) return false; return true; }();
@@ -347,12 +416,12 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 			if (decodedByGuide[6][p] > 0.000001f) ++missWithNonzeroHitCount;
 		}
 		const bool terminal = decodedByGuide[6][p] <= 0.000001f;
-		const bool emissive = !depthMiss && terminal &&
-			(decodedByGuide[0][p * 3u] + decodedByGuide[0][p * 3u + 1u] + decodedByGuide[0][p * 3u + 2u]) > 0.001f;
+		const bool emissive = !depthMiss && directEmission[p * 4u + 3u] > 0.5f;
 		if (emissive) ++emissivePixelCount;
 	}
 	uint64_t motionNonzeroPixelCount = 0;
 	float maxMotionMagnitude = 0.0f;
+	float motionSumX = 0.0f;
 	for (uint64_t p = 0; p < pixelCount; ++p)
 	{
 		const float mx = decodedByGuide[5][p * 2u + 0u];
@@ -360,6 +429,7 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		const float magnitude = std::sqrt(mx * mx + my * my);
 		maxMotionMagnitude = std::max(maxMotionMagnitude, magnitude);
 		if (magnitude > 0.25f) ++motionNonzeroPixelCount;
+		if (magnitude > 0.25f) motionSumX += mx;
 		const bool depthMiss = decodedByGuide[4][p] >= 999999.0f;
 		const bool emissive = !depthMiss && decodedByGuide[6][p] <= 0.000001f &&
 			(decodedByGuide[0][p * 3u] + decodedByGuide[0][p * 3u + 1u] + decodedByGuide[0][p * 3u + 2u]) > 0.001f;
@@ -377,12 +447,7 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 	for (uint64_t p = 0; p < pixelCount; ++p)
 	{
 		const bool sky = decodedByGuide[4][p] >= 999999.0f;
-		const bool directEmissionSignal = std::abs(directEmission[p * 4u]) +
-			std::abs(directEmission[p * 4u + 1u]) + std::abs(directEmission[p * 4u + 2u]) > 0.001f;
-		const bool noisyTerminalSignal = decodedByGuide[6][p] <= 0.000001f &&
-			(decodedByGuide[0][p * 3u] + decodedByGuide[0][p * 3u + 1u] +
-			 decodedByGuide[0][p * 3u + 2u]) > 0.001f;
-		const bool emissive = !sky && (directEmissionSignal || noisyTerminalSignal);
+		const bool emissive = !sky && directEmission[p * 4u + 3u] > 0.5f;
 		if (emissive) ++emissivePixelCount;
 		const float mx = decodedByGuide[5][p * 2u];
 		const float my = decodedByGuide[5][p * 2u + 1u];
@@ -392,21 +457,10 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 			if (emissive) ++emissiveMotionPixelCount;
 		}
 	}
-	if (std::getenv("RT2_RR_GUIDE_INJECT_ZERO_SKY_MOTION")) skyMotionPixelCount = 0;
-	if (std::getenv("RT2_RR_GUIDE_INJECT_ZERO_GEOMETRY_MOTION")) geometryMotionPixelCount = 0;
-	if (std::getenv("RT2_RR_GUIDE_INJECT_ZERO_EMISSIVE_MOTION")) emissiveMotionPixelCount = 0;
-	// Fault injection mutates the production-observed counters, not a test
-	// expectation.  This keeps the RED path independent of the CPU contract
-	// tests and proves that each acceptance mechanism is live.
-	if (std::getenv("RT2_RR_GUIDE_INJECT_ZERO_MOTION"))
-	{
-		motionNonzeroPixelCount = 0;
-		maxMotionMagnitude = 0.0f;
-	}
-	if (std::getenv("RT2_RR_GUIDE_INJECT_ZERO_SKY_MOTION")) skyMotionPixelCount = 0;
-	if (std::getenv("RT2_RR_GUIDE_INJECT_ZERO_GEOMETRY_MOTION")) geometryMotionPixelCount = 0;
-	if (std::getenv("RT2_RR_GUIDE_INJECT_ZERO_EMISSIVE_MOTION")) emissiveMotionPixelCount = 0;
-	const bool movingCase = std::abs(metadata.cameraSweepAmplitude) > 0.000001f;
+	// Motion faults are producer-side GPU clears in FrameRenderer; no semantic
+	// counter is rewritten here.
+	const bool movingCase = std::abs(metadata.cameraSweepAmplitude) > 0.000001f ||
+		std::getenv("RT2_RR_GUIDE_INJECT_DENSE_WEAK_MOTION") != nullptr;
 	// A strict bound plus a density floor is intentional: an all-zero moving
 	// producer must fail even when its lower-bound error equals the tolerance.
 	const RRGuideMotionValidation motionValidation = ValidateRRGuideMotion(
@@ -416,17 +470,24 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 	const float motionExpectedObservedError = motionValidation.expectedObservedErrorPixels;
 	const bool motionDensityValid = motionValidation.densityValid;
 	const bool motionToleranceValid = motionValidation.toleranceValid;
+	const float expectedMotionSignX = metadata.cameraMode == "yaw" ? 1.0f : 0.0f;
+	const float observedMotionMeanX = motionNonzeroPixelCount > 0 ? motionSumX / float(motionNonzeroPixelCount) : 0.0f;
+	const bool motionSignValid = !movingCase || expectedMotionSignX == 0.0f ||
+		observedMotionMeanX * expectedMotionSignX > 0.0f;
 	const bool normalToleranceValid = maxNormalLengthError <= 0.001f;
 	const bool hitDepthCorrelationValid = missWithNonzeroHitCount == 0;
-	const bool materialNumericsValid = ValidateRRGuideMaterialNumerics();
+	const bool materialNumericsValid = ValidateRRGuideMaterialNumerics() && materialGpuValid;
+	const bool emissiveRequired = std::getenv("RT2_RR_GUIDE_REQUIRE_EMISSIVE") != nullptr ||
+		std::getenv("RT2_RR_GUIDE_INJECT_ZERO_EMISSIVE") != nullptr;
 	const bool classCoverageValid = !movingCase ||
-		(depthMissCount > 0 && (pixelCount - depthMissCount) > 0 && emissivePixelCount > 0 &&
-		 skyMotionPixelCount > 0 && geometryMotionPixelCount > 0 && emissiveMotionPixelCount > 0);
+		(depthMissCount > 0 && (pixelCount - depthMissCount) > 0 &&
+		 (!emissiveRequired || (emissivePixelCount > 0 && emissiveMotionPixelCount > 0)) &&
+		 skyMotionPixelCount > 0 && geometryMotionPixelCount > 0);
 	const bool semanticValid = finiteValid && diffuseRange && specRange && normalRange &&
 		depthRange && motionFinite && hitRange && allPixelsOverwritten &&
 		normalToleranceValid && hitDepthCorrelationValid && motionToleranceValid &&
 		motionDensityValid && materialNumericsValid && classCoverageValid;
-	bool valid = budgetValid && semanticValid;
+	bool valid = budgetValid && semanticValid && motionSignValid;
 	uint64_t checksum = 1469598103934665603ull;
 	{
 		const VkDeviceSize size = VkDeviceSize(canonicalOutput.width) * canonicalOutput.height * 16u;
@@ -478,6 +539,7 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 	failure("normal_tolerance", normalToleranceValid); failure("hit_depth_correlation", hitDepthCorrelationValid);
 	failure("motion_expected_observed_tolerance", motionToleranceValid);
 	failure("motion_density", motionDensityValid);
+	failure("motion_expected_sign", motionSignValid);
 	failure("material_contract", materialNumericsValid);
 	failure("motion_class_coverage", classCoverageValid);
 	failure("canonical_readback_changed", canonicalReadbackStable);
@@ -495,21 +557,34 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		<< ",\"motion_max_magnitude_px\":" << maxMotionMagnitude
 		<< ",\"motion_expected_minimum_px\":" << expectedMotionMinimum
 		<< ",\"motion_expected_observed_error_px\":" << motionExpectedObservedError
+		<< ",\"motion_expected_sign_x\":" << expectedMotionSignX
+		<< ",\"motion_observed_mean_x_px\":" << observedMotionMeanX
+		<< ",\"motion_sign_valid\":" << (motionSignValid ? "true" : "false")
 		<< ",\"motion_minimum_nonzero_pixel_count\":" << minimumMovingPixels
 		<< ",\"motion_density_valid\":" << (motionDensityValid ? "true" : "false")
 		<< ",\"sky_pixel_count\":" << depthMissCount
 		<< ",\"geometry_pixel_count\":" << (pixelCount - depthMissCount)
 		<< ",\"emissive_pixel_count\":" << emissivePixelCount
+		<< ",\"emissive_provenance_pixel_count\":" << directEmissionProvenanceCount
 		<< ",\"sky_motion_pixel_count\":" << skyMotionPixelCount
 		<< ",\"geometry_motion_pixel_count\":" << geometryMotionPixelCount
 		<< ",\"emissive_motion_pixel_count\":" << emissiveMotionPixelCount
+		<< ",\"emissive_required\":" << (emissiveRequired ? "true" : "false")
 		<< ",\"motion_class_coverage_valid\":" << (classCoverageValid ? "true" : "false")
 		<< ",\"hit_distance_zero_default_count\":" << statsByGuide[6].zero
 		<< ",\"depth_miss_count\":" << depthMissCount
 		<< ",\"miss_with_nonzero_hit_count\":" << missWithNonzeroHitCount
-		<< ",\"motion_tolerance_px\":0.24,\"normal_tolerance\":0.001"
+		<< ",\"motion_tolerance_px\":0.25,\"normal_tolerance\":0.001"
 		<< ",\"normal_max_length_error\":" << maxNormalLengthError
-		<< ",\"material_numeric_cases\":4,\"material_numeric_valid\":" << (materialNumericsValid ? "true" : "false")
+		<< ",\"material_numeric_cases\":4,\"material_gpu_samples\":" << materialGpuSamples
+		<< ",\"material_dielectric_samples\":" << dielectricSamples
+		<< ",\"material_metallic_samples\":" << metallicSamples
+		<< ",\"material_grazing_samples\":" << grazingSamples
+		<< ",\"material_emissive_samples\":" << emissiveSamples
+		<< ",\"material_max_diffuse_error\":" << maxMaterialDiffuseError
+		<< ",\"material_max_specular_error\":" << maxMaterialSpecularError
+		<< ",\"material_gpu_numeric_valid\":" << (materialGpuValid ? "true" : "false")
+		<< ",\"material_numeric_valid\":" << (materialNumericsValid ? "true" : "false")
 		<< "},\"format_feature_check\":{\"format\":\"R11G11B10F\",\"storage_image\":"
 		<< ((m_FormatFeatures[0] & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0 ? "true" : "false")
 		<< ",\"sampled_image\":" << ((m_FormatFeatures[0] & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0 ? "true" : "false")

@@ -64,13 +64,16 @@ RRGuideMotionValidation ValidateRRGuideMotion(float maxObservedMagnitudePixels,
 	uint64_t nonzeroPixels, uint64_t pixelCount, bool movingCase)
 {
 	RRGuideMotionValidation result;
-	result.expectedMinimumPixels = movingCase ? 0.25f : 0.0f;
-	result.minimumNonzeroPixels = std::max<uint64_t>(1u, pixelCount / 100u);
+	// A moving render-pixel guide must carry a measurable displacement.  A
+	// one-pixel floor rejects normalized-UV and dense 0.02px under-scaling
+	// mutants while remaining far below the retained camera-sweep readings.
+	result.expectedMinimumPixels = movingCase ? 1.0f : 0.0f;
+	result.minimumNonzeroPixels = std::max<uint64_t>(1u, (pixelCount + 99u) / 100u);
 	result.expectedObservedErrorPixels = movingCase
 		? std::max(0.0f, result.expectedMinimumPixels - maxObservedMagnitudePixels)
 		: maxObservedMagnitudePixels;
 	result.densityValid = !movingCase || nonzeroPixels >= result.minimumNonzeroPixels;
-	result.toleranceValid = result.expectedObservedErrorPixels < 0.24f;
+	result.toleranceValid = result.expectedObservedErrorPixels <= 0.25f;
 	result.valid = result.densityValid && result.toleranceValid;
 	return result;
 }

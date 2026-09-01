@@ -2,6 +2,7 @@
 #include "Camera.h"
 #include "RTLog.h"
 #include <cmath>
+#include <cstdlib>
 
 void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 {
@@ -124,46 +125,6 @@ void FrameRenderer::RecordRasterPass(VkCommandBuffer cmd, Context& ctx)
 {
 	if (!ctx.rasterPass.IsAvailable() || !ctx.gbuffer.GetDepth().view)
 		return;
-	if (ctx.rrGuideReportMode)
-	{
-		// Shared depth and motion are part of the seven-resource contract.  In
-		// report mode only, poison them with representable sentinels before the
-		// raster producer; the raygen sky producer overwrites the miss pixels.
-		VkImage sharedImages[2] = {
-			ctx.gbuffer.GetColor(GBufferTarget::VIEWZ).image,
-			ctx.gbuffer.GetColor(GBufferTarget::MOTION).image };
-		VkImageMemoryBarrier clearBarriers[2] = {};
-		for (uint32_t i = 0; i < 2; ++i)
-		{
-			clearBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-			clearBarriers[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-			clearBarriers[i].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			clearBarriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-			clearBarriers[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
-			clearBarriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			clearBarriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-			clearBarriers[i].image = sharedImages[i];
-			clearBarriers[i].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-			clearBarriers[i].subresourceRange.levelCount = 1;
-			clearBarriers[i].subresourceRange.layerCount = 1;
-		}
-		vkCmdPipelineBarrier(cmd,
-			VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-			VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2, clearBarriers);
-		const VkClearColorValue sentinel = {{NAN, NAN, NAN, NAN}};
-		for (VkImage image : sharedImages)
-			vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, &sentinel, 1,
-				&clearBarriers[0].subresourceRange);
-		for (auto& barrier : clearBarriers)
-		{
-			barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-			barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-		}
-		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-			VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
-			0, 0, nullptr, 0, nullptr, 2, clearBarriers);
-	}
-
 	VkImage gbufferImgs[8];
 	ctx.gbuffer.GetMRTImages(gbufferImgs);
 
@@ -171,8 +132,7 @@ void FrameRenderer::RecordRasterPass(VkCommandBuffer cmd, Context& ctx)
 	for (int i = 0; i < 8; i++)
 	{
 		gbufferBarriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-		gbufferBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT |
-			(ctx.rrGuideReportMode ? VK_ACCESS_TRANSFER_WRITE_BIT : 0);
+		gbufferBarriers[i].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
 		gbufferBarriers[i].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
 		gbufferBarriers[i].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
 		gbufferBarriers[i].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -183,8 +143,7 @@ void FrameRenderer::RecordRasterPass(VkCommandBuffer cmd, Context& ctx)
 		gbufferBarriers[i].subresourceRange.levelCount = 1;
 		gbufferBarriers[i].subresourceRange.layerCount = 1;
 	}
-	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
-		(ctx.rrGuideReportMode ? VK_PIPELINE_STAGE_TRANSFER_BIT : 0),
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 	                     VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0,
 	                     0, nullptr, 0, nullptr, 8, gbufferBarriers);
 
@@ -210,7 +169,7 @@ void FrameRenderer::RecordRasterPass(VkCommandBuffer cmd, Context& ctx)
 		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::Raster, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
 	ctx.rasterPass.Record(cmd, ctx.renderExtent,
 	                    ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet,
-	                    ctx.gbuffer.GetDepth().view, gbufferViews);
+	                    ctx.gbuffer.GetDepth().view, gbufferViews, ctx.rrGuideReportMode);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::Raster, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
 
@@ -232,6 +191,55 @@ void FrameRenderer::RecordRasterPass(VkCommandBuffer cmd, Context& ctx)
 	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
 	                     VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
 	                     0, nullptr, 0, nullptr, 8, postRasterBarriers);
+
+	// These named faults mutate the actual GPU producer stream, rather than
+	// post-readback counters.  They are report-only and intentionally leave the
+	// attachment sentinels in place for the reporter to catch missing stores.
+	if (ctx.rrGuideReportMode && (std::getenv("RT2_RR_GUIDE_INJECT_MISSING_VIEWZ") ||
+		std::getenv("RT2_RR_GUIDE_INJECT_MISSING_MOTION") ||
+		std::getenv("RT2_RR_GUIDE_INJECT_ZERO_EMISSIVE")))
+	{
+		VkImage faultImages[3] = {
+			ctx.gbuffer.GetColor(GBufferTarget::VIEWZ).image,
+			ctx.gbuffer.GetColor(GBufferTarget::MOTION).image,
+			ctx.gbuffer.GetColor(GBufferTarget::DIRECT_EMISSION).image };
+		VkImageMemoryBarrier faultBarriers[3] = {};
+		uint32_t count = 0;
+		for (uint32_t i = 0; i < 3; ++i)
+		{
+			const bool selected = (i == 0 && std::getenv("RT2_RR_GUIDE_INJECT_MISSING_VIEWZ")) ||
+				(i == 1 && std::getenv("RT2_RR_GUIDE_INJECT_MISSING_MOTION")) ||
+				(i == 2 && std::getenv("RT2_RR_GUIDE_INJECT_ZERO_EMISSIVE"));
+			if (!selected) continue;
+			faultBarriers[count].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			faultBarriers[count].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+			faultBarriers[count].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			faultBarriers[count].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+			faultBarriers[count].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+			faultBarriers[count].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			faultBarriers[count].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			faultBarriers[count].image = faultImages[i];
+			faultBarriers[count].subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			faultBarriers[count].subresourceRange.levelCount = 1;
+			faultBarriers[count].subresourceRange.layerCount = 1;
+			++count;
+		}
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, count, faultBarriers);
+		for (uint32_t i = 0; i < count; ++i)
+		{
+			VkClearColorValue clear = {{0.0f, 0.0f, 0.0f, 0.0f}};
+			if (faultBarriers[i].image == faultImages[0] || faultBarriers[i].image == faultImages[1])
+				clear = {{NAN, NAN, NAN, NAN}};
+			vkCmdClearColorImage(cmd, faultBarriers[i].image, VK_IMAGE_LAYOUT_GENERAL, &clear, 1,
+				&faultBarriers[i].subresourceRange);
+			faultBarriers[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+			faultBarriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		}
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			0, 0, nullptr, 0, nullptr, count, faultBarriers);
+	}
 }
 
 void FrameRenderer::RecordRRGuidePass(VkCommandBuffer cmd, Context& ctx)
@@ -289,6 +297,32 @@ void FrameRenderer::RecordRRGuidePass(VkCommandBuffer cmd, Context& ctx)
 		0, 0, nullptr, 0, nullptr, 5, clearToShader);
 	ctx.rrGuidePass.Record(cmd, ctx.renderExtent,
 		ctx.pathTracePass.GetDescriptorSet(), ctx.gbufferSet);
+	if (ctx.rrGuideReportMode && std::getenv("RT2_RR_GUIDE_INJECT_MATERIAL"))
+	{
+		// Production material mutant: corrupt the GPU guide after its real
+		// compute producer, so cross-resource readback must reject it.
+		VkImage image = ctx.rrGuides.Get(RRGuideKind::DiffuseAlbedo).image;
+		VkImageMemoryBarrier barrier{};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			0, 0, nullptr, 0, nullptr, 1, &barrier);
+		const VkClearColorValue fault = {{0.0f, 0.0f, 0.0f, 0.0f}};
+		vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, &fault, 1, &barrier.subresourceRange);
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+			VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	}
 	VkImageMemoryBarrier barriers[3] = {};
 	const RRGuideKind materialKinds[] = { RRGuideKind::DiffuseAlbedo, RRGuideKind::SpecularAlbedo,
 		RRGuideKind::NormalRoughness };
@@ -559,6 +593,39 @@ void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 	ctx.pathTracePass.Record(cmd, ctx.renderExtent, ctx.gbufferSet, useRasterFirst);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::RTShading, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
+	if (ctx.rrGuideReportMode && (std::getenv("RT2_RR_GUIDE_INJECT_DENSE_WEAK_MOTION") ||
+		std::getenv("RT2_RR_GUIDE_INJECT_ZERO_MOTION") ||
+		std::getenv("RT2_RR_GUIDE_INJECT_ZERO_SKY_MOTION") ||
+		std::getenv("RT2_RR_GUIDE_INJECT_ZERO_GEOMETRY_MOTION") ||
+		std::getenv("RT2_RR_GUIDE_INJECT_ZERO_EMISSIVE_MOTION")))
+	{
+		// A dense 0.02px producer is a deliberate under-scaled-motion mutant.
+		// It is written into the actual shared image so the report's numeric
+		// expected-vs-observed check, rather than a counter hook, goes RED.
+		VkImage image = ctx.gbuffer.GetColor(GBufferTarget::MOTION).image;
+		VkImageMemoryBarrier barrier{};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+		barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+		const float value = std::getenv("RT2_RR_GUIDE_INJECT_DENSE_WEAK_MOTION") ? 0.02f : 0.0f;
+		const VkClearColorValue fault = {{value, 0.0f, 0.0f, 0.0f}};
+		vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, &fault, 1, &barrier.subresourceRange);
+		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR,
+			0, 0, nullptr, 0, nullptr, 1, &barrier);
+	}
 	if (useRasterFirst && ctx.rrGuides.IsValid())
 	{
 		VkImageMemoryBarrier guideBarriers[2] = {};

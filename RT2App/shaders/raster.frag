@@ -206,7 +206,10 @@ void main()
         // Preserve resolved material semantics for RR guides.  Direct emission
         // is carried separately; do not replace this with the NRD sentinel.
         outAlbedoF0 = vec4(diffAlbedo, metallic);
-        outDirectEmission = vec4(emissive, 0.0);
+		// Alpha is an RT2-owned provenance bit: it is shader-written from the
+		// resolved material emissive value before lighting.  RGB remains the
+		// existing direct-emission signal used by NRD/compose.
+		outDirectEmission = vec4(emissive, 1.0);
         return;
     }
 

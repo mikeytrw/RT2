@@ -5,6 +5,7 @@
 #include "RRGuideContract.h"
 #include <cstdint>
 #include <string>
+#include <glm/glm.hpp>
 
 struct RRGuideReportMetadata
 {
@@ -28,6 +29,7 @@ struct RRGuideReportMetadata
 	std::string pairedBaselineCommand;
 	int pairedBaselineExitCode = -1;
 	int expectedExitCode = 0;
+	glm::vec3 cameraPosition{0.0f};
 };
 
 struct GpuDevice;
@@ -54,6 +56,7 @@ public:
 	// emits a checked machine-readable report. This path is diagnostic-only.
 	bool WriteReport(const std::string& path, const GpuImage& sharedDepth,
 		const GpuImage& sharedMotion, const GpuImage& sharedEmission,
+		const GpuImage& sharedAlbedoF0, const GpuImage& sharedPrimHit,
 		const GpuImage& canonicalOutput,
 		const RRGuideReportMetadata& metadata) const;
 

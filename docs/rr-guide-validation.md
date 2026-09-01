@@ -37,7 +37,9 @@ CPU contract tests include named compiling RED/GREEN checks for unique
 bindings, RenderExtent-only rows, the 24-byte corrected budget arithmetic,
 shared material/F0/diffuse semantics, motion projection, and
 canonical-output/debug independence. Release targeted guide tests passed
-`12/12` cases and `147/147` assertions; earlier `66/69` counts are superseded.
+`12/12` cases and `166/166` assertions; earlier `66/69`, `147/147`, and
+`162/162` counts
+are superseded.
 The complete Release test run retains the repository baseline; Debug retains
 the documented OBJ fixture-generation baseline.
 
@@ -51,9 +53,14 @@ marker. No NGX feature was created or evaluated (`rr_feature_created=0`), and
 Walnut/NVIDIA submodules were not modified.
 
 The report's `valid`/`failures` fields validate finite ranges, explicit
-preclear-sentinel coverage, per-pixel normal-length error, miss-to-zero-hit
-correlation, and expected-versus-observed motion tolerance, alongside the
-allocation budget and canonical checksum. The `R11G11B10F` amendment is
+preclear-sentinel coverage (including the actual dynamic-rendering shared
+VIEWZ/MOTION attachment clear), per-pixel normal-length error, miss-to-zero-hit
+correlation, GPU cross-resource material numeric error, and expected-versus-
+observed motion tolerance, alongside the allocation budget and canonical
+checksum. Emissive classification is only the shader-written alpha provenance
+bit on the resolved direct-emission G-buffer; set
+`RT2_RR_GUIDE_REQUIRE_EMISSIVE=1` for an emissive-required case. The
+`R11G11B10F` amendment is
 grounded by the checked-in pinned guide
 `RT2App/vendor/DLSS/doc/DLSS-RR Integration Guide.pdf`, §3.4.5 (PDF page 13),
 which specifies the noisy input as any standard 3-channel format. Startup
@@ -65,8 +72,8 @@ support and fails before production if any bit is absent.
 The sky guide helper now writes only guide/G-buffer resources. In non-NRD mode
 the current sky sample is passed to `temporalAccumulate` before `outputImage`
 is written; NRD mode stores the beauty sample explicitly after guide
-production. Every report-mode frame preclears all five dedicated images plus
-shared depth and motion to format-representable sentinels; the report rejects
+production. Every report-mode frame preclears all five dedicated images and
+uses NaN as the dynamic-rendering clear for shared depth and motion; the report rejects
 any remaining sentinel across all seven rows.
 Normal length, depth-miss/zero-hit correlation, motion density/magnitude, and
 static-or-camera-sweep expected-versus-observed error are computed from actual
@@ -81,7 +88,10 @@ yaw case records actual motion up to `105.028` render pixels with a nonzero
 class-density check. The paired harness is the canonical-output acceptance;
 adjacent readbacks in a report are not overclaimed as that proof.
 Moving reports classify sky/geometry/emissive coverage from actual shared
-direct-emission and guide readbacks and retain per-class motion counters.
+direct-emission provenance alpha and guide readbacks and retain per-class
+motion counters. An emissive-required run sets
+`RT2_RR_GUIDE_REQUIRE_EMISSIVE=1`; environment-lit non-emissive controls then
+fail with zero emissive provenance instead of guessing from noisy radiance.
 
 ## Reproducible gates
 

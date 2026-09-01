@@ -1308,7 +1308,9 @@ bool RendererGPU::WriteRRGuideReport(const std::string& path,
 	return m_RRGuides.WriteReport(path,
 		m_GBuffer.GetColor(GBufferTarget::VIEWZ),
 		m_GBuffer.GetColor(GBufferTarget::MOTION),
-		m_GBuffer.GetColor(GBufferTarget::DIRECT_EMISSION), m_OutputImage, metadata);
+		m_GBuffer.GetColor(GBufferTarget::DIRECT_EMISSION),
+		m_GBuffer.GetColor(GBufferTarget::ALBEDO_F0),
+		m_GBuffer.GetColor(GBufferTarget::PRIM_HIT), m_OutputImage, metadata);
 }
 
 void RendererGPU::DestroyGBufferImages()

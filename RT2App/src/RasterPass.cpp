@@ -1,5 +1,6 @@
 #include "RasterPass.h"
 #include "RTLog.h"
+#include <cmath>
 #include "VulkanUtils.h"
 #include "GPUSceneData.h"
 #include "GpuResources.h"
@@ -417,7 +418,7 @@ void RasterPass::DestroyDrawData()
 
 void RasterPass::Record(VkCommandBuffer cmd, const RenderExtent& extent,
 	VkDescriptorSet sceneSet, VkDescriptorSet gbufferSet,
-	VkImageView depthView, const VkImageView gbufferViews[8]) const
+	VkImageView depthView, const VkImageView gbufferViews[8], bool reportMode) const
 {
 	const uint32_t width = extent.Width();
 	const uint32_t height = extent.Height();
@@ -430,6 +431,17 @@ void RasterPass::Record(VkCommandBuffer cmd, const RenderExtent& extent,
 	// Color attachments cleared to zero
 	for (int i = 0; i < 8; i++)
 		clearValues[i].color = VkClearColorValue{};
+	// Report mode uses the actual dynamic-rendering clear as the shared guide
+	// sentinel.  This survives the attachment setup itself, unlike a transfer
+	// clear issued before this pass.  Normal rendering retains zero clears.
+	if (reportMode)
+	{
+		clearValues[1].color.float32[0] = NAN;
+		clearValues[1].color.float32[1] = NAN;
+		clearValues[1].color.float32[2] = NAN;
+		clearValues[1].color.float32[3] = NAN;
+		clearValues[2] = clearValues[1];
+	}
 	// Depth
 	clearValues[8].depthStencil.depth = 1.0f;
 

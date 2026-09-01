@@ -168,6 +168,8 @@ TEST_CASE("RR guides RED-GREEN: production motion acceptance rejects zero and lo
 {
 	const auto zero = ValidateRRGuideMotion(0.0f, 0, 10000, true);
 	CHECK_FALSE(zero.valid);
+	const auto weak = ValidateRRGuideMotion(0.02f, 100, 10000, true);
+	CHECK_FALSE(weak.valid);
 	CHECK_FALSE(zero.densityValid);
 	const auto sparse = ValidateRRGuideMotion(4.0f, 99, 10000, true);
 	CHECK_FALSE(sparse.valid);
@@ -245,6 +247,7 @@ TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are p
 	const std::string resources = ReadShader("RT2App/src/RRGuideResources.cpp");
 	const std::string renderer = ReadShader("RT2App/src/RendererGPU.cpp");
 	const std::string host = ReadShader("RT2App/src/WalnutApp.cpp");
+	const std::string frameRenderer = ReadShader("RT2App/src/FrameRenderer.cpp");
 	CHECK(secondary.find("imageStore(rrNoisyHdr, pixel") != std::string::npos);
 	CHECK(secondary.find("if (nrdMode)") != std::string::npos);
 	CHECK(secondary.find("temporalAccumulate(pixel") != std::string::npos);
@@ -257,16 +260,18 @@ TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are p
 	CHECK(resources.find("motion_density") != std::string::npos);
 	CHECK(resources.find("canonical_pair_match") != std::string::npos);
 	CHECK(resources.find("material_numeric_valid") != std::string::npos);
-	CHECK(resources.find("RT2_RR_GUIDE_INJECT_ZERO_MOTION") != std::string::npos);
-	CHECK(resources.find("RT2_RR_GUIDE_INJECT_ZERO_SKY_MOTION") != std::string::npos);
-	CHECK(resources.find("RT2_RR_GUIDE_INJECT_ZERO_GEOMETRY_MOTION") != std::string::npos);
-	CHECK(resources.find("RT2_RR_GUIDE_INJECT_ZERO_EMISSIVE_MOTION") != std::string::npos);
+	CHECK(frameRenderer.find("RT2_RR_GUIDE_INJECT_ZERO_MOTION") != std::string::npos);
+	CHECK(frameRenderer.find("RT2_RR_GUIDE_INJECT_ZERO_SKY_MOTION") != std::string::npos);
+	CHECK(frameRenderer.find("RT2_RR_GUIDE_INJECT_ZERO_GEOMETRY_MOTION") != std::string::npos);
+	CHECK(frameRenderer.find("RT2_RR_GUIDE_INJECT_ZERO_EMISSIVE_MOTION") != std::string::npos);
 	CHECK(resources.find("canonical_readback_stable") != std::string::npos);
 	CHECK(resources.find("metadata.commandLine") != std::string::npos);
-	const std::string frameRenderer = ReadShader("RT2App/src/FrameRenderer.cpp");
 	CHECK(frameRenderer.find("vkCmdClearColorImage") != std::string::npos);
-	CHECK(frameRenderer.find("clearToTransfer") != std::string::npos);
-	CHECK(frameRenderer.find("sharedImages") != std::string::npos);
+	CHECK(frameRenderer.find("RT2_RR_GUIDE_INJECT_MISSING_VIEWZ") != std::string::npos);
+	CHECK(frameRenderer.find("RT2_RR_GUIDE_INJECT_MISSING_MOTION") != std::string::npos);
+	CHECK(frameRenderer.find("RT2_RR_GUIDE_INJECT_MATERIAL") != std::string::npos);
+	CHECK(frameRenderer.find("RT2_RR_GUIDE_INJECT_DENSE_WEAK_MOTION") != std::string::npos);
+	CHECK(frameRenderer.find("clearValues[1]") == std::string::npos); // production clear lives in RasterPass
 	CHECK(frameRenderer.find("rrGuideReportMode") != std::string::npos);
 	CHECK(resources.find("canonical_pair_checksum_fnv1a64") != std::string::npos);
 	CHECK(resources.find("RT2_RR_GUIDE_INJECT_CLOSE_FAILURE") != std::string::npos);

@@ -3436,6 +3436,7 @@ private:
 				metadata.cameraSweepWarmup = g_CLI.cameraSweepWarmup;
 				metadata.cameraSweepPeriod = g_CLI.cameraSweepPeriod;
 				metadata.expectedExitCode = 0;
+				metadata.cameraPosition = m_Cam.GetPosition();
 				metadata.pairedBaselinePath = g_CLI.rrGuidePair;
 				metadata.pairedBaselineChecksum = pairedBaselineChecksum;
 				metadata.pairedBaselineValid = !g_CLI.rrGuidePair.empty() && !rrGuidePairFailure;
