@@ -1,6 +1,8 @@
 #include "RRGuideContract.h"
 
 #include <array>
+#include <algorithm>
+#include <cmath>
 
 namespace
 {
@@ -20,6 +22,57 @@ constexpr std::array<RRGuideContract, static_cast<size_t>(RRGuideKind::Count)> k
 	{ RRGuideKind::SpecularHitDistance, "RRGuideSpecularHitDistance", RRGuideFormat::R32F, RRGuideExtent::Render,
 	  RRGuideSpace::World, 16u, 0.0f, 0.0f, true, false },
 }};
+
+glm::vec3 EnvBRDFApprox2CPU(const glm::vec3& specularColor, float roughness, float noV)
+{
+	const glm::vec4 c0(-1.0f, -0.0275f, -0.572f, 0.022f);
+	const glm::vec4 c1(1.0f, 0.0425f, 1.04f, -0.04f);
+	const glm::vec4 r = roughness * c0 + c1;
+	const float a004 = std::min(r.x * r.x, std::exp2(-9.28f * noV)) * r.x + r.y;
+	const glm::vec2 ab = glm::vec2(-1.04f, 1.04f) * a004 + glm::vec2(r.z, r.w);
+	return glm::max(specularColor * ab.x + glm::vec3(ab.y), glm::vec3(0.0f));
+}
+}
+
+RRGuideMaterialValues EvaluateRRGuideMaterial(const glm::vec3& baseColor,
+	float metallic, float roughness, float noV)
+{
+	const float m = std::clamp(metallic, 0.0f, 1.0f);
+	const glm::vec3 clampedBase = glm::max(baseColor, glm::vec3(0.0f));
+	RRGuideMaterialValues values;
+	values.diffuseReflectance = clampedBase * (1.0f - m);
+	values.f0 = glm::mix(glm::vec3(0.04f), clampedBase, m);
+	values.specularAlbedo = EnvBRDFApprox2CPU(values.f0,
+		std::clamp(roughness, 0.0f, 1.0f), std::clamp(std::abs(noV), 0.0f, 1.0f));
+	return values;
+}
+
+bool ValidateRRGuideMaterialNumerics()
+{
+	const auto dielectric = EvaluateRRGuideMaterial(glm::vec3(0.8f), 0.0f, 0.5f, 1.0f);
+	const auto metal = EvaluateRRGuideMaterial(glm::vec3(0.8f, 0.2f, 0.1f), 1.0f, 0.5f, 1.0f);
+	const auto grazing = EvaluateRRGuideMaterial(glm::vec3(0.8f), 0.0f, 0.5f, 0.25f);
+	const auto emissive = EvaluateRRGuideMaterial(glm::vec3(0.3f, 0.5f, 0.7f), 0.25f, 0.8f, 0.7f);
+	return std::abs(dielectric.f0.x - 0.04f) < 1e-6f &&
+		std::abs(metal.diffuseReflectance.x) < 1e-6f &&
+		metal.f0.x > dielectric.f0.x &&
+		glm::length(grazing.specularAlbedo - dielectric.specularAlbedo) > 1e-5f &&
+		emissive.diffuseReflectance.x > 0.0f && emissive.f0.x > 0.0f;
+}
+
+RRGuideMotionValidation ValidateRRGuideMotion(float maxObservedMagnitudePixels,
+	uint64_t nonzeroPixels, uint64_t pixelCount, bool movingCase)
+{
+	RRGuideMotionValidation result;
+	result.expectedMinimumPixels = movingCase ? 0.25f : 0.0f;
+	result.minimumNonzeroPixels = std::max<uint64_t>(1u, pixelCount / 100u);
+	result.expectedObservedErrorPixels = movingCase
+		? std::max(0.0f, result.expectedMinimumPixels - maxObservedMagnitudePixels)
+		: maxObservedMagnitudePixels;
+	result.densityValid = !movingCase || nonzeroPixels >= result.minimumNonzeroPixels;
+	result.toleranceValid = result.expectedObservedErrorPixels < 0.24f;
+	result.valid = result.densityValid && result.toleranceValid;
+	return result;
 }
 
 const RRGuideContract& GetRRGuideContract(RRGuideKind kind)

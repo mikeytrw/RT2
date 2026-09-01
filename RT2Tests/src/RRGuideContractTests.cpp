@@ -164,22 +164,36 @@ TEST_CASE("RR guides: CPU motion projection contract covers static translation y
 			ExpectedYawPixels(p, glm::radians(1.0f), projection[0][0], extent));
 }
 
+TEST_CASE("RR guides RED-GREEN: production motion acceptance rejects zero and low-density mutants")
+{
+	const auto zero = ValidateRRGuideMotion(0.0f, 0, 10000, true);
+	CHECK_FALSE(zero.valid);
+	CHECK_FALSE(zero.densityValid);
+	const auto sparse = ValidateRRGuideMotion(4.0f, 99, 10000, true);
+	CHECK_FALSE(sparse.valid);
+	CHECK_FALSE(sparse.densityValid);
+	const auto moving = ValidateRRGuideMotion(4.0f, 100, 10000, true);
+	CHECK(moving.valid);
+	const auto staticCase = ValidateRRGuideMotion(0.0f, 0, 10000, false);
+	CHECK(staticCase.valid);
+}
+
 TEST_CASE("RR guides: numeric shared material semantics cover dielectric metallic angle and emissive")
 {
-	const auto f0 = [](const glm::vec3& base, float metallic) {
-		return glm::mix(glm::vec3(0.04f), base, metallic);
-	};
-	const auto diffuse = [](const glm::vec3& base, float metallic) {
-		return base * (1.0f - metallic);
-	};
-	CHECK(f0(glm::vec3(0.8f), 0.0f).x == doctest::Approx(0.04f));
-	CHECK(diffuse(glm::vec3(0.8f), 1.0f).x == doctest::Approx(0.0f));
-	CHECK(f0(glm::vec3(0.8f, 0.2f, 0.1f), 1.0f).x == doctest::Approx(0.8f));
+	const auto dielectric = EvaluateRRGuideMaterial(glm::vec3(0.8f), 0.0f, 0.5f, 1.0f);
+	const auto metal = EvaluateRRGuideMaterial(glm::vec3(0.8f, 0.2f, 0.1f), 1.0f, 0.5f, 1.0f);
+	const auto grazing = EvaluateRRGuideMaterial(glm::vec3(0.8f), 0.0f, 0.5f, 0.25f);
+	const auto emissive = EvaluateRRGuideMaterial(glm::vec3(0.3f, 0.5f, 0.7f), 0.25f, 0.8f, 0.7f);
+	CHECK(dielectric.f0.x == doctest::Approx(0.04f));
+	CHECK(metal.diffuseReflectance.x == doctest::Approx(0.0f));
+	CHECK(metal.f0.x == doctest::Approx(0.8f));
+	CHECK(glm::length(grazing.specularAlbedo - dielectric.specularAlbedo) > 0.00001f);
 	CHECK(glm::dot(glm::normalize(glm::vec3(0, 0, 1)), glm::vec3(0, 0, 1)) == doctest::Approx(1.0f));
 	CHECK(glm::dot(glm::normalize(glm::vec3(1, 0, 1)), glm::vec3(0, 0, 1)) == doctest::Approx(0.707106f).epsilon(0.001));
 	// Emissive guide values are the resolved material, never an NRD white/metal
 	// sentinel; the emission channel is intentionally tested independently.
-	CHECK(diffuse(glm::vec3(0.3f, 0.5f, 0.7f), 0.25f).x == doctest::Approx(0.225f));
+	CHECK(emissive.diffuseReflectance.x == doctest::Approx(0.225f));
+	CHECK(ValidateRRGuideMaterialNumerics());
 }
 
 TEST_CASE("RR guides: production motion reset preserves previous camera history")
@@ -217,8 +231,11 @@ TEST_CASE("RR guides: retained GPU reports are writer-shaped and self-validating
 		CHECK(report.find("\"runtime\":") != std::string::npos);
 		CHECK(report.find("\"command\":") != std::string::npos);
 		CHECK(report.find("\"exit_code\":0") != std::string::npos);
-		CHECK(report.find("\"canonical_output_unchanged\":true") != std::string::npos);
+		CHECK(report.find("\"canonical_readback_stable\":true") != std::string::npos);
+		CHECK(report.find("\"canonical_pair_match\":true") != std::string::npos);
 		CHECK(report.find("\"sentinel_remaining_count\":0") != std::string::npos);
+		CHECK(report.find("\"sentinel_remaining_by_guide\":[0,0,0,0,0,0,0]") != std::string::npos);
+		CHECK(report.find("\"motion_class_coverage_valid\":true") != std::string::npos);
 	}
 }
 
@@ -237,12 +254,21 @@ TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are p
 	CHECK(resources.find("sentinel_remaining_count") != std::string::npos);
 	CHECK(resources.find("hit_depth_correlation") != std::string::npos);
 	CHECK(resources.find("motion_expected_observed_tolerance") != std::string::npos);
-	CHECK(resources.find("canonical_output_unchanged") != std::string::npos);
+	CHECK(resources.find("motion_density") != std::string::npos);
+	CHECK(resources.find("canonical_pair_match") != std::string::npos);
+	CHECK(resources.find("material_numeric_valid") != std::string::npos);
+	CHECK(resources.find("RT2_RR_GUIDE_INJECT_ZERO_MOTION") != std::string::npos);
+	CHECK(resources.find("RT2_RR_GUIDE_INJECT_ZERO_SKY_MOTION") != std::string::npos);
+	CHECK(resources.find("RT2_RR_GUIDE_INJECT_ZERO_GEOMETRY_MOTION") != std::string::npos);
+	CHECK(resources.find("RT2_RR_GUIDE_INJECT_ZERO_EMISSIVE_MOTION") != std::string::npos);
+	CHECK(resources.find("canonical_readback_stable") != std::string::npos);
 	CHECK(resources.find("metadata.commandLine") != std::string::npos);
 	const std::string frameRenderer = ReadShader("RT2App/src/FrameRenderer.cpp");
 	CHECK(frameRenderer.find("vkCmdClearColorImage") != std::string::npos);
 	CHECK(frameRenderer.find("clearToTransfer") != std::string::npos);
-	CHECK(resources.find("canonical_output_checksum_fnv1a64") != std::string::npos);
+	CHECK(frameRenderer.find("sharedImages") != std::string::npos);
+	CHECK(frameRenderer.find("rrGuideReportMode") != std::string::npos);
+	CHECK(resources.find("canonical_pair_checksum_fnv1a64") != std::string::npos);
 	CHECK(resources.find("RT2_RR_GUIDE_INJECT_CLOSE_FAILURE") != std::string::npos);
 	CHECK(renderer.find("m_RRGuideInitFailed") != std::string::npos);
 	CHECK(host.find("std::exit(EXIT_FAILURE)") != std::string::npos);

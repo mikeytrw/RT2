@@ -14,6 +14,7 @@ struct CLIArgs
 	std::string outputPath;       // screenshot PNG path
 	std::string outputHDRPath;    // linear HDR output (.exr or .pfm)
 	std::string rrGuideReport;    // checked native RR-neutral guide readback JSON
+	std::string rrGuidePair;      // independent no-report checksum manifest
 	std::string commandLine;      // exact argv captured for checked reports
 	int frames = 0;               // number of frames to render before screenshot (0 = no auto-screenshot)
 	int width = 1280;             // viewport width for headless mode
@@ -95,6 +96,10 @@ struct CLIArgs
 			else if (strcmp(a, "--rr-guide-report") == 0)
 			{
 				if (const char* v = next()) args.rrGuideReport = v;
+			}
+			else if (strcmp(a, "--rr-guide-pair") == 0)
+			{
+				if (const char* v = next()) args.rrGuidePair = v;
 			}
 			else if (strcmp(a, "--frames") == 0 || strcmp(a, "-f") == 0)
 			{
@@ -260,6 +265,7 @@ struct CLIArgs
 			printf("  --output <path>      Save tonemapped PNG after rendering\n");
 			printf("  --output-hdr <path>  Save linear HDR output (.exr or .pfm)\n");
 			printf("  --rr-guide-report <path>  Save checked RR-neutral guide readback JSON\n");
+			printf("  --rr-guide-pair <path>    Write/read independent canonical checksum manifest\n");
 			printf("  --frames <N>         Render N frames before screenshot (default 1)\n");
 			printf("  --width <W>          Viewport width (default 1280)\n");
 				printf("  --height <H>         Viewport height (default 720)\n");
@@ -336,6 +342,7 @@ struct CLIArgs
 		printf("[CLI] output    = %s\n", outputPath.empty() ? "(none)" : outputPath.c_str());
 		printf("[CLI] outputHDR = %s\n", outputHDRPath.empty() ? "(none)" : outputHDRPath.c_str());
 		printf("[CLI] rrGuideReport = %s\n", rrGuideReport.empty() ? "(none)" : rrGuideReport.c_str());
+		printf("[CLI] rrGuidePair = %s\n", rrGuidePair.empty() ? "(none)" : rrGuidePair.c_str());
 		printf("[CLI] seed      = %u\n", sceneSeed);
 		printf("[CLI] frames    = %d\n", frames);
 		printf("[CLI] %dx%d  spp=%d  bounces=%d  nrd=%d  headless=%d\n",

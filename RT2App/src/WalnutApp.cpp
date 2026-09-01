@@ -97,6 +97,53 @@ uint64_t Fnv1a64(const void* data, size_t size)
 	return hash;
 }
 
+bool WriteRRGuidePairManifest(const std::string& path, uint64_t checksum,
+	const std::string& commandLine)
+{
+	std::ofstream out(path, std::ios::binary | std::ios::trunc);
+	if (!out.is_open()) { RT_LOG("[RRGuides] pair manifest open failed: %s", path.c_str()); return false; }
+	out << "schema=rt2.rr-guide-pair.v1\n"
+		<< "fnv1a64=" << std::hex << checksum << std::dec << "\n"
+		<< "exit_code=0\n"
+		<< "command=" << commandLine << "\n";
+	if (!out.good()) { RT_LOG("[RRGuides] pair manifest write failed: %s", path.c_str()); return false; }
+	out.flush();
+	if (!out.good()) { RT_LOG("[RRGuides] pair manifest flush failed: %s", path.c_str()); return false; }
+	out.close();
+	if (out.fail()) { RT_LOG("[RRGuides] pair manifest close failed: %s", path.c_str()); return false; }
+	return true;
+}
+
+bool ReadRRGuidePairManifest(const std::string& path, uint64_t& checksum,
+	std::string& commandLine, int& exitCode)
+{
+	std::ifstream in(path, std::ios::binary);
+	if (!in.is_open()) { RT_LOG("[RRGuides] pair manifest open failed: %s", path.c_str()); return false; }
+	std::string line;
+	bool schema = false, hash = false, exit = false;
+	while (std::getline(in, line))
+	{
+		if (line == "schema=rt2.rr-guide-pair.v1") schema = true;
+		else if (line.rfind("fnv1a64=", 0) == 0)
+		{
+			try { checksum = std::stoull(line.substr(8), nullptr, 16); hash = true; }
+			catch (...) { return false; }
+		}
+		else if (line.rfind("exit_code=", 0) == 0)
+		{
+			try { exitCode = std::stoi(line.substr(10)); exit = true; }
+			catch (...) { return false; }
+		}
+		else if (line.rfind("command=", 0) == 0) commandLine = line.substr(8);
+	}
+	if (!in.eof() || !schema || !hash || !exit || commandLine.empty())
+	{
+		RT_LOG("[RRGuides] pair manifest is incomplete: %s", path.c_str());
+		return false;
+	}
+	return true;
+}
+
 std::filesystem::path ExecutableDirectory()
 {
 #ifdef _WIN32
@@ -3049,6 +3096,7 @@ private:
 		m_ViewportHeight = (uint32_t)g_CLI.height;
 		if (m_RendererGPU.IsAvailable())
 		{
+			m_RendererGPU.SetRRGuideReportMode(!g_CLI.rrGuideReport.empty());
 			printf("[Headless] OnResize %dx%d...\n", m_ViewportWidth, m_ViewportHeight);
 			fflush(stdout);
 			if (const auto outputExtent = OutputExtent::TryCreate(m_ViewportWidth, m_ViewportHeight))
@@ -3183,6 +3231,20 @@ private:
 			printf("[Headless] saved linear HDR: %s (%ux%u)\n", path.c_str(), w, h);
 			return true;
 		};
+
+		// Pair validation deliberately spans two process invocations.  A
+		// no-report run writes this manifest; the report run consumes it and
+		// compares its independently rendered canonical bytes.
+		bool rrGuidePairFailure = false;
+		uint64_t pairedBaselineChecksum = 0;
+		std::string pairedBaselineCommand;
+		int pairedBaselineExitCode = -1;
+		if (!g_CLI.rrGuidePair.empty() && !g_CLI.rrGuideReport.empty())
+		{
+			if (!ReadRRGuidePairManifest(g_CLI.rrGuidePair, pairedBaselineChecksum,
+				pairedBaselineCommand, pairedBaselineExitCode) || pairedBaselineExitCode != 0)
+				rrGuidePairFailure = true;
+		}
 
 		const glm::vec3 sweepBasePosition = m_Cam.GetPosition();
 		const glm::vec3 sweepBaseForward = m_Cam.GetDirection();
@@ -3327,6 +3389,19 @@ private:
 			saveOutput(g_CLI.outputPath);
 		if (!g_CLI.outputHDRPath.empty() && m_RendererGPU.IsAvailable())
 			saveHDROutput(g_CLI.outputHDRPath);
+		if (!g_CLI.rrGuidePair.empty() && g_CLI.rrGuideReport.empty())
+		{
+			std::vector<float> pairPixels;
+			uint32_t pairWidth = 0, pairHeight = 0;
+			if (!m_RendererGPU.IsAvailable() ||
+				!m_RendererGPU.ReadbackOutputLinear(pairPixels, pairWidth, pairHeight) ||
+				!WriteRRGuidePairManifest(g_CLI.rrGuidePair,
+					Fnv1a64(pairPixels.data(), pairPixels.size() * sizeof(float)), g_CLI.commandLine))
+			{
+				RT_LOG("[RRGuides] independent pair baseline failed");
+				rrGuidePairFailure = true;
+			}
+		}
 		bool rrGuideReportFailure = false;
 		if (!g_CLI.rrGuideReport.empty())
 		{
@@ -3361,6 +3436,11 @@ private:
 				metadata.cameraSweepWarmup = g_CLI.cameraSweepWarmup;
 				metadata.cameraSweepPeriod = g_CLI.cameraSweepPeriod;
 				metadata.expectedExitCode = 0;
+				metadata.pairedBaselinePath = g_CLI.rrGuidePair;
+				metadata.pairedBaselineChecksum = pairedBaselineChecksum;
+				metadata.pairedBaselineValid = !g_CLI.rrGuidePair.empty() && !rrGuidePairFailure;
+				metadata.pairedBaselineCommand = pairedBaselineCommand;
+				metadata.pairedBaselineExitCode = pairedBaselineExitCode;
 				std::vector<float> baseline;
 				uint32_t baselineWidth = 0, baselineHeight = 0;
 				if (!m_RendererGPU.ReadbackOutputLinear(baseline, baselineWidth, baselineHeight))
@@ -3383,6 +3463,7 @@ private:
 			}
 			}
 		}
+		rrGuideReportFailure = rrGuideReportFailure || rrGuidePairFailure;
 
 		if (rrGuideReportFailure)
 		{

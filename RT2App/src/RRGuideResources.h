@@ -19,6 +19,14 @@ struct RRGuideReportMetadata
 	int cameraSweepPeriod = 0;
 	uint64_t canonicalBaselineChecksum = 0;
 	bool canonicalBaselineValid = false;
+	// A pair manifest is produced by an independent no-report process.  The
+	// reporter only accepts canonical equivalence when this external checksum
+	// is present and matches; adjacent readbacks are never called a pair.
+	std::string pairedBaselinePath;
+	uint64_t pairedBaselineChecksum = 0;
+	bool pairedBaselineValid = false;
+	std::string pairedBaselineCommand;
+	int pairedBaselineExitCode = -1;
 	int expectedExitCode = 0;
 };
 
@@ -45,7 +53,8 @@ public:
 	// Synchronously reads all five dedicated guides plus shared depth/motion and
 	// emits a checked machine-readable report. This path is diagnostic-only.
 	bool WriteReport(const std::string& path, const GpuImage& sharedDepth,
-		const GpuImage& sharedMotion, const GpuImage& canonicalOutput,
+		const GpuImage& sharedMotion, const GpuImage& sharedEmission,
+		const GpuImage& canonicalOutput,
 		const RRGuideReportMetadata& metadata) const;
 
 private:

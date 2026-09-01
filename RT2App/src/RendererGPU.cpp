@@ -1048,6 +1048,7 @@ void RendererGPU::Render(const Camera& camera)
 		m_RenderExtent,
 		m_OutputExtent,
 		m_Settings.rasterFirst,
+		m_RRGuideReportMode,
 		m_Settings.nrdEnabled,
 		m_Settings.nrdLobeDither,
 		m_Settings.restirEnabled,
@@ -1306,7 +1307,8 @@ bool RendererGPU::WriteRRGuideReport(const std::string& path,
 		return false;
 	return m_RRGuides.WriteReport(path,
 		m_GBuffer.GetColor(GBufferTarget::VIEWZ),
-		m_GBuffer.GetColor(GBufferTarget::MOTION), m_OutputImage, metadata);
+		m_GBuffer.GetColor(GBufferTarget::MOTION),
+		m_GBuffer.GetColor(GBufferTarget::DIRECT_EMISSION), m_OutputImage, metadata);
 }
 
 void RendererGPU::DestroyGBufferImages()

@@ -64,6 +64,7 @@ public:
 
 		// Render mode flags
 		bool rasterFirst;
+		bool rrGuideReportMode;
 		bool nrdEnabled;
 		int  lobeDither;  // 0=off, 1=Bayer, 2=IGN
 		bool restirEnabled;

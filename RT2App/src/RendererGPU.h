@@ -52,6 +52,7 @@ public:
 		if (const auto extent = OutputExtent::TryCreate(width, height)) OnResize(*extent);
 	}
 	void Render(const Camera& camera);
+	void SetRRGuideReportMode(bool enabled) { m_RRGuideReportMode = enabled; }
 	void SetScene(GPUSceneData& sceneData, const RenderInstanceMap& instanceMap = {});
 	// Diagnostic: dump every material's metallic/roughness factors and texture
 	// indices to the log, flagging fully-metallic materials that have no
@@ -268,6 +269,7 @@ private:
 	RRGuideResources m_RRGuides;
 	RRGuidePass m_RRGuidePass;
 	bool m_RRGuideInitFailed = false;
+	bool m_RRGuideReportMode = false;
 
 	// NRD integration wrapper
 	NRDWrapper m_NRD;

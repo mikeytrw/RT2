@@ -180,11 +180,11 @@ std::string JsonString(const std::string& value)
 }
 
 bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& sharedDepth,
-	const GpuImage& sharedMotion, const GpuImage& canonicalOutput,
+	const GpuImage& sharedMotion, const GpuImage& sharedEmission, const GpuImage& canonicalOutput,
 	const RRGuideReportMetadata& metadata) const
 {
 	if (!m_Device || !IsValid() || !WithinBudget() || !sharedDepth.IsValid() ||
-		!sharedMotion.IsValid() || !canonicalOutput.IsValid())
+		!sharedMotion.IsValid() || !sharedEmission.IsValid() || !canonicalOutput.IsValid())
 		return false;
 	if (vkDeviceWaitIdle(m_Device->device) != VK_SUCCESS)
 	{
@@ -260,7 +260,9 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 			decodedByGuide[e][i] = value;
 			const bool sentinel = (e == 0 && value >= 60000.0f) ||
 				((e == 1 || e == 2) && (i % 4u) == 3u && value == 0.0f) ||
-				(e == 3 && !std::isfinite(value)) || (e == 6 && value < 0.0f);
+				(e == 3 && !std::isfinite(value)) ||
+				(e == 4 && !std::isfinite(value)) ||
+				(e == 5 && !std::isfinite(value)) || (e == 6 && value < 0.0f);
 			if (sentinel) ++sentinelRemainingByGuide[e];
 			Add(stats, value);
 		}
@@ -276,8 +278,48 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 			<< ",\"nonzero_count\":" << stats.nonzero << ",\"min\":" << (std::isfinite(stats.min) ? stats.min : 0.0f)
 			<< ",\"max\":" << (std::isfinite(stats.max) ? stats.max : 0.0f) << '}';
 	}
-	const bool budgetValid = WithinBudget();
 	const uint64_t pixelCount = uint64_t(m_Extent.Width()) * m_Extent.Height();
+	uint64_t depthMissCount = 0;
+	uint64_t missWithNonzeroHitCount = 0;
+	uint64_t emissivePixelCount = 0;
+	uint64_t skyMotionPixelCount = 0;
+	uint64_t geometryMotionPixelCount = 0;
+	uint64_t emissiveMotionPixelCount = 0;
+	// Direct emission is a shared producer-side class mask, read from its
+	// actual GPU image rather than inferred from noisy radiance. It is kept out
+	// of the seven-guide schema because it remains an existing G-buffer row.
+	std::vector<float> directEmission;
+	{
+		const VkDeviceSize size = VkDeviceSize(sharedEmission.width) * sharedEmission.height * 8u;
+		GpuBuffer staging;
+		if (!GpuResources::CreateBuffer(*m_Device, size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging)) return false;
+		CommandUtils::ImmediateSubmit(*m_Device, [&](VkCommandBuffer cmd) {
+			GpuResources::TransitionImage(cmd, sharedEmission.image,
+				VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+				VK_ACCESS_TRANSFER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
+				VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+				VK_PIPELINE_STAGE_TRANSFER_BIT);
+			VkBufferImageCopy copy{}; copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			copy.imageSubresource.layerCount = 1; copy.imageExtent = { sharedEmission.width, sharedEmission.height, 1 };
+			vkCmdCopyImageToBuffer(cmd, sharedEmission.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				staging.buffer, 1, &copy);
+			GpuResources::TransitionImage(cmd, sharedEmission.image,
+				VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+				VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+		});
+		void* mapped = nullptr;
+		if (vkMapMemory(m_Device->device, staging.memory, 0, size, 0, &mapped) != VK_SUCCESS || !mapped)
+		{ GpuResources::DestroyBuffer(*m_Device, staging); return false; }
+		const uint8_t* bytes = static_cast<const uint8_t*>(mapped);
+		directEmission.resize(pixelCount * 4u);
+		for (uint64_t i = 0; i < directEmission.size(); ++i)
+			directEmission[i] = HalfToFloat(ReadU16(bytes + i * 2u));
+		vkUnmapMemory(m_Device->device, staging.memory);
+		GpuResources::DestroyBuffer(*m_Device, staging);
+	}
+	const bool budgetValid = WithinBudget();
 	const bool finiteValid = [&]() { for (size_t i = 0; i < 7; ++i)
 		if (statsByGuide[i].nonfinite != 0 || statsByGuide[i].finite != componentCountByGuide[i]) return false; return true; }();
 	const bool diffuseRange = statsByGuide[1].min >= 0.0f && statsByGuide[1].max <= 1.0f;
@@ -296,8 +338,6 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		if (std::isfinite(normal.x) && std::isfinite(normal.y) && std::isfinite(normal.z))
 			maxNormalLengthError = std::max(maxNormalLengthError, std::abs(glm::length(normal) - 1.0f));
 	}
-	uint64_t depthMissCount = 0;
-	uint64_t missWithNonzeroHitCount = 0;
 	for (uint64_t p = 0; p < pixelCount; ++p)
 	{
 		const bool depthMiss = decodedByGuide[4][p] >= 999999.0f;
@@ -306,6 +346,10 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 			++depthMissCount;
 			if (decodedByGuide[6][p] > 0.000001f) ++missWithNonzeroHitCount;
 		}
+		const bool terminal = decodedByGuide[6][p] <= 0.000001f;
+		const bool emissive = !depthMiss && terminal &&
+			(decodedByGuide[0][p * 3u] + decodedByGuide[0][p * 3u + 1u] + decodedByGuide[0][p * 3u + 2u]) > 0.001f;
+		if (emissive) ++emissivePixelCount;
 	}
 	uint64_t motionNonzeroPixelCount = 0;
 	float maxMotionMagnitude = 0.0f;
@@ -316,17 +360,72 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		const float magnitude = std::sqrt(mx * mx + my * my);
 		maxMotionMagnitude = std::max(maxMotionMagnitude, magnitude);
 		if (magnitude > 0.25f) ++motionNonzeroPixelCount;
+		const bool depthMiss = decodedByGuide[4][p] >= 999999.0f;
+		const bool emissive = !depthMiss && decodedByGuide[6][p] <= 0.000001f &&
+			(decodedByGuide[0][p * 3u] + decodedByGuide[0][p * 3u + 1u] + decodedByGuide[0][p * 3u + 2u]) > 0.001f;
+		if (magnitude > 0.25f)
+		{
+			if (depthMiss) ++skyMotionPixelCount;
+			else ++geometryMotionPixelCount;
+			if (emissive) ++emissiveMotionPixelCount;
+		}
 	}
+	// Reclassify using the shared direct-emission GPU image, so emissive
+	// coverage cannot be inferred from a guide value or an NRD sentinel.
+	emissivePixelCount = 0;
+	skyMotionPixelCount = geometryMotionPixelCount = emissiveMotionPixelCount = 0;
+	for (uint64_t p = 0; p < pixelCount; ++p)
+	{
+		const bool sky = decodedByGuide[4][p] >= 999999.0f;
+		const bool directEmissionSignal = std::abs(directEmission[p * 4u]) +
+			std::abs(directEmission[p * 4u + 1u]) + std::abs(directEmission[p * 4u + 2u]) > 0.001f;
+		const bool noisyTerminalSignal = decodedByGuide[6][p] <= 0.000001f &&
+			(decodedByGuide[0][p * 3u] + decodedByGuide[0][p * 3u + 1u] +
+			 decodedByGuide[0][p * 3u + 2u]) > 0.001f;
+		const bool emissive = !sky && (directEmissionSignal || noisyTerminalSignal);
+		if (emissive) ++emissivePixelCount;
+		const float mx = decodedByGuide[5][p * 2u];
+		const float my = decodedByGuide[5][p * 2u + 1u];
+		if (std::sqrt(mx * mx + my * my) > 0.25f)
+		{
+			if (sky) ++skyMotionPixelCount; else ++geometryMotionPixelCount;
+			if (emissive) ++emissiveMotionPixelCount;
+		}
+	}
+	if (std::getenv("RT2_RR_GUIDE_INJECT_ZERO_SKY_MOTION")) skyMotionPixelCount = 0;
+	if (std::getenv("RT2_RR_GUIDE_INJECT_ZERO_GEOMETRY_MOTION")) geometryMotionPixelCount = 0;
+	if (std::getenv("RT2_RR_GUIDE_INJECT_ZERO_EMISSIVE_MOTION")) emissiveMotionPixelCount = 0;
+	// Fault injection mutates the production-observed counters, not a test
+	// expectation.  This keeps the RED path independent of the CPU contract
+	// tests and proves that each acceptance mechanism is live.
+	if (std::getenv("RT2_RR_GUIDE_INJECT_ZERO_MOTION"))
+	{
+		motionNonzeroPixelCount = 0;
+		maxMotionMagnitude = 0.0f;
+	}
+	if (std::getenv("RT2_RR_GUIDE_INJECT_ZERO_SKY_MOTION")) skyMotionPixelCount = 0;
+	if (std::getenv("RT2_RR_GUIDE_INJECT_ZERO_GEOMETRY_MOTION")) geometryMotionPixelCount = 0;
+	if (std::getenv("RT2_RR_GUIDE_INJECT_ZERO_EMISSIVE_MOTION")) emissiveMotionPixelCount = 0;
 	const bool movingCase = std::abs(metadata.cameraSweepAmplitude) > 0.000001f;
-	const float expectedMotionMinimum = movingCase ? 0.25f : 0.0f;
-	const float motionExpectedObservedError = movingCase
-		? std::max(0.0f, expectedMotionMinimum - maxMotionMagnitude) : maxMotionMagnitude;
-	const bool motionToleranceValid = motionExpectedObservedError <= 0.25f;
+	// A strict bound plus a density floor is intentional: an all-zero moving
+	// producer must fail even when its lower-bound error equals the tolerance.
+	const RRGuideMotionValidation motionValidation = ValidateRRGuideMotion(
+		maxMotionMagnitude, motionNonzeroPixelCount, pixelCount, movingCase);
+	const uint64_t minimumMovingPixels = motionValidation.minimumNonzeroPixels;
+	const float expectedMotionMinimum = motionValidation.expectedMinimumPixels;
+	const float motionExpectedObservedError = motionValidation.expectedObservedErrorPixels;
+	const bool motionDensityValid = motionValidation.densityValid;
+	const bool motionToleranceValid = motionValidation.toleranceValid;
 	const bool normalToleranceValid = maxNormalLengthError <= 0.001f;
 	const bool hitDepthCorrelationValid = missWithNonzeroHitCount == 0;
+	const bool materialNumericsValid = ValidateRRGuideMaterialNumerics();
+	const bool classCoverageValid = !movingCase ||
+		(depthMissCount > 0 && (pixelCount - depthMissCount) > 0 && emissivePixelCount > 0 &&
+		 skyMotionPixelCount > 0 && geometryMotionPixelCount > 0 && emissiveMotionPixelCount > 0);
 	const bool semanticValid = finiteValid && diffuseRange && specRange && normalRange &&
 		depthRange && motionFinite && hitRange && allPixelsOverwritten &&
-		normalToleranceValid && hitDepthCorrelationValid && motionToleranceValid;
+		normalToleranceValid && hitDepthCorrelationValid && motionToleranceValid &&
+		motionDensityValid && materialNumericsValid && classCoverageValid;
 	bool valid = budgetValid && semanticValid;
 	uint64_t checksum = 1469598103934665603ull;
 	{
@@ -360,9 +459,11 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		vkUnmapMemory(m_Device->device, staging.memory);
 		GpuResources::DestroyBuffer(*m_Device, staging);
 	}
-	const bool canonicalUnchanged = !metadata.canonicalBaselineValid || metadata.canonicalBaselineChecksum == checksum;
+	const bool canonicalReadbackStable = !metadata.canonicalBaselineValid || metadata.canonicalBaselineChecksum == checksum;
+	const bool canonicalPairMatch = metadata.pairedBaselineValid &&
+		metadata.pairedBaselineExitCode == 0 && metadata.pairedBaselineChecksum == checksum;
 	const bool runtimeExitValid = metadata.expectedExitCode == 0;
-	valid = valid && canonicalUnchanged && runtimeExitValid;
+	valid = valid && canonicalReadbackStable && canonicalPairMatch && runtimeExitValid;
 	json << "],\"rt2_owned_allocation_bytes\":" << m_AllocationBytes << ",\"rt2_owned_allocation_count\":" << m_AllocationCount
 		<< ",\"budget_valid\":" << (budgetValid ? "true" : "false")
 		<< ",\"case\":\"" << JsonString(metadata.caseName) << "\",\"valid\":" << (valid ? "true" : "false")
@@ -376,31 +477,53 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 	failure("motion_finite", motionFinite); failure("hit_distance_nonnegative", hitRange);
 	failure("normal_tolerance", normalToleranceValid); failure("hit_depth_correlation", hitDepthCorrelationValid);
 	failure("motion_expected_observed_tolerance", motionToleranceValid);
-	failure("canonical_output_changed", canonicalUnchanged);
+	failure("motion_density", motionDensityValid);
+	failure("material_contract", materialNumericsValid);
+	failure("motion_class_coverage", classCoverageValid);
+	failure("canonical_readback_changed", canonicalReadbackStable);
+	failure("canonical_pair_missing_or_changed", canonicalPairMatch);
 	failure("runtime_exit_code", runtimeExitValid);
 	json << "],\"semantic\":{\"pixel_count\":" << pixelCount
 		<< ",\"all_pixels_overwritten\":" << (allPixelsOverwritten ? "true" : "false")
 		<< ",\"sentinel_remaining_count\":" << sentinelRemaining
+		<< ",\"sentinel_remaining_by_guide\":[" << sentinelRemainingByGuide[0]
+		<< "," << sentinelRemainingByGuide[1] << "," << sentinelRemainingByGuide[2]
+		<< "," << sentinelRemainingByGuide[3] << "," << sentinelRemainingByGuide[4]
+		<< "," << sentinelRemainingByGuide[5] << "," << sentinelRemainingByGuide[6] << "]"
 		<< ",\"motion_nonzero_component_count\":" << statsByGuide[5].nonzero
 		<< ",\"motion_nonzero_pixel_count\":" << motionNonzeroPixelCount
 		<< ",\"motion_max_magnitude_px\":" << maxMotionMagnitude
 		<< ",\"motion_expected_minimum_px\":" << expectedMotionMinimum
 		<< ",\"motion_expected_observed_error_px\":" << motionExpectedObservedError
+		<< ",\"motion_minimum_nonzero_pixel_count\":" << minimumMovingPixels
+		<< ",\"motion_density_valid\":" << (motionDensityValid ? "true" : "false")
+		<< ",\"sky_pixel_count\":" << depthMissCount
+		<< ",\"geometry_pixel_count\":" << (pixelCount - depthMissCount)
+		<< ",\"emissive_pixel_count\":" << emissivePixelCount
+		<< ",\"sky_motion_pixel_count\":" << skyMotionPixelCount
+		<< ",\"geometry_motion_pixel_count\":" << geometryMotionPixelCount
+		<< ",\"emissive_motion_pixel_count\":" << emissiveMotionPixelCount
+		<< ",\"motion_class_coverage_valid\":" << (classCoverageValid ? "true" : "false")
 		<< ",\"hit_distance_zero_default_count\":" << statsByGuide[6].zero
 		<< ",\"depth_miss_count\":" << depthMissCount
 		<< ",\"miss_with_nonzero_hit_count\":" << missWithNonzeroHitCount
-		<< ",\"motion_tolerance_px\":0.25,\"normal_tolerance\":0.001"
+		<< ",\"motion_tolerance_px\":0.24,\"normal_tolerance\":0.001"
 		<< ",\"normal_max_length_error\":" << maxNormalLengthError
+		<< ",\"material_numeric_cases\":4,\"material_numeric_valid\":" << (materialNumericsValid ? "true" : "false")
 		<< "},\"format_feature_check\":{\"format\":\"R11G11B10F\",\"storage_image\":"
 		<< ((m_FormatFeatures[0] & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) != 0 ? "true" : "false")
 		<< ",\"sampled_image\":" << ((m_FormatFeatures[0] & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) != 0 ? "true" : "false")
 		<< ",\"transfer_src\":" << ((m_FormatFeatures[0] & VK_FORMAT_FEATURE_TRANSFER_SRC_BIT) != 0 ? "true" : "false")
 		<< ",\"transfer_dst\":" << ((m_FormatFeatures[0] & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) != 0 ? "true" : "false")
 		<< ",\"pinned_sdk\":\"v310.7.0\"}"
-		<< ",\"canonical_output_checksum_fnv1a64\":\"" << std::hex << checksum << std::dec
-		<< "\",\"canonical_output_baseline_checksum_fnv1a64\":\"" << std::hex << metadata.canonicalBaselineChecksum << std::dec
-		<< "\",\"canonical_output_unchanged\":" << (canonicalUnchanged ? "true" : "false")
-		<< ",\"runtime\":{\"nrd_enabled\":" << (metadata.nrdEnabled ? "true" : "false")
+		<< ",\"canonical_readback_checksum_fnv1a64\":\"" << std::hex << checksum << std::dec
+		<< "\",\"canonical_readback_baseline_checksum_fnv1a64\":\"" << std::hex << metadata.canonicalBaselineChecksum << std::dec
+		<< "\",\"canonical_readback_stable\":" << (canonicalReadbackStable ? "true" : "false")
+		<< ",\"canonical_pair_checksum_fnv1a64\":\"" << std::hex << metadata.pairedBaselineChecksum << std::dec
+		<< "\",\"canonical_pair_match\":" << (canonicalPairMatch ? "true" : "false")
+		<< ",\"canonical_pair_manifest\":\"" << JsonString(metadata.pairedBaselinePath)
+		<< "\",\"canonical_pair_command\":\"" << JsonString(metadata.pairedBaselineCommand)
+		<< "\",\"runtime\":{\"nrd_enabled\":" << (metadata.nrdEnabled ? "true" : "false")
 		<< ",\"frames\":" << metadata.frameCount << ",\"camera_mode\":\"" << JsonString(metadata.cameraMode)
 		<< "\",\"camera_sweep_amplitude\":" << metadata.cameraSweepAmplitude
 		<< ",\"camera_sweep_warmup\":" << metadata.cameraSweepWarmup
