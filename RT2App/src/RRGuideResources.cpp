@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <vector>
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_inverse.hpp>
 
 namespace
 {
@@ -386,8 +387,10 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		if (noV < 0.5f) ++grazingSamples;
 		if (directEmission[p * 4u + 3u] > 0.5f) ++emissiveSamples;
 	}
+	const bool controlledMaterialCase = metadata.scenePath.find("rr-guide-controlled") != std::string::npos;
 	const bool materialGpuValid = materialGpuSamples > 0 && maxMaterialDiffuseError <= 0.08f &&
-		maxMaterialSpecularError <= 0.08f;
+		maxMaterialSpecularError <= 0.08f && (!controlledMaterialCase ||
+		(dielectricSamples > 0 && metallicSamples > 0 && grazingSamples > 0 && emissiveSamples > 0));
 	const bool budgetValid = WithinBudget();
 	const bool finiteValid = [&]() { for (size_t i = 0; i < 7; ++i)
 		if (statsByGuide[i].nonfinite != 0 || statsByGuide[i].finite != componentCountByGuide[i]) return false; return true; }();
@@ -457,10 +460,88 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 			if (emissive) ++emissiveMotionPixelCount;
 		}
 	}
+	const bool movingCase = std::abs(metadata.cameraSweepAmplitude) > 0.000001f ||
+		std::getenv("RT2_RR_GUIDE_INJECT_DENSE_WEAK_MOTION") != nullptr ||
+		std::getenv("RT2_RR_GUIDE_INJECT_BAD_MOTION_SCALE") != nullptr;
+	// Independently derive current->previous render-pixel vectors from the
+	// captured camera transforms and the actual GPU world-hit/depth mask. Sky
+	// misses use a finite point along the reconstructed current camera ray.
+	glm::vec2 expectedMotionMean(0.0f), observedMotionMean(0.0f);
+	uint64_t expectedMotionSamples = 0;
+	float expectedMotionMaxError = 0.0f;
+	float expectedSkyMaxError = 0.0f, expectedGeometryMaxError = 0.0f;
+	const glm::mat4 currentViewToClip = metadata.expectedCurrentViewToClip;
+	const glm::mat4 currentWorldToView = metadata.expectedCurrentWorldToView;
+	const glm::mat4 previousViewToClip = metadata.expectedPreviousViewToClip;
+	const glm::mat4 previousWorldToView = metadata.expectedPreviousWorldToView;
+	const glm::mat4 inverseCurrentProjection = glm::inverse(currentViewToClip);
+	const glm::mat4 inverseCurrentView = glm::inverse(currentWorldToView);
+	const glm::vec3 currentCameraPosition = glm::vec3(inverseCurrentView[3]);
+	const glm::vec2 renderExtent(float(m_Extent.Width()), float(m_Extent.Height()));
+	auto projectPixels = [&](const glm::mat4& projection, const glm::mat4& view,
+		const glm::vec3& world, glm::vec2& result) -> bool {
+		const glm::vec4 clip = projection * view * glm::vec4(world, 1.0f);
+		if (!std::isfinite(clip.w) || std::abs(clip.w) < 1e-6f) return false;
+		result = (glm::vec2(clip) / clip.w * 0.5f + 0.5f) * renderExtent;
+		return std::isfinite(result.x) && std::isfinite(result.y);
+	};
+	for (uint64_t p = 0; p < pixelCount && metadata.expectedMotionTransformsValid; ++p)
+	{
+		const uint32_t x = uint32_t(p % m_Extent.Width());
+		const uint32_t y = uint32_t(p / m_Extent.Width());
+		const glm::vec2 currentPixel(float(x) + 0.5f, float(y) + 0.5f);
+		const bool sky = decodedByGuide[4][p] >= 999999.0f;
+		glm::vec2 expectedCurrent = currentPixel, expectedPrevious{};
+		bool projected = false;
+		if (!sky)
+		{
+			float hitW = 0.0f;
+			std::memcpy(&hitW, primHitBytes.data() + p * 16u + 12u, sizeof(float));
+			if (std::isfinite(hitW) && hitW >= 0.5f)
+			{
+				glm::vec3 world{};
+				for (uint32_t c = 0; c < 3; ++c)
+					std::memcpy(&world[c], primHitBytes.data() + p * 16u + c * 4u, sizeof(float));
+				projected = projectPixels(currentViewToClip, currentWorldToView, world, expectedCurrent) &&
+					projectPixels(previousViewToClip, previousWorldToView, world, expectedPrevious);
+			}
+		}
+		else
+		{
+			const glm::vec2 uv = currentPixel / renderExtent;
+			const glm::vec4 viewTarget = inverseCurrentProjection *
+				glm::vec4(uv * 2.0f - 1.0f, 1.0f, 1.0f);
+			if (std::isfinite(viewTarget.w) && std::abs(viewTarget.w) > 1e-6f)
+			{
+				const glm::vec3 viewDirection = glm::normalize(glm::vec3(viewTarget) / viewTarget.w);
+				const glm::vec3 skyDirection = glm::normalize(glm::vec3(inverseCurrentView * glm::vec4(viewDirection, 0.0f)));
+				projected = projectPixels(previousViewToClip, previousWorldToView,
+					currentCameraPosition + skyDirection * 1000.0f, expectedPrevious);
+			}
+		}
+		if (!projected) continue;
+		const glm::vec2 expected = expectedPrevious - expectedCurrent;
+		const glm::vec2 observed(decodedByGuide[5][p * 2u], decodedByGuide[5][p * 2u + 1u]);
+		const float error = glm::length(observed - expected);
+		expectedMotionMean += expected;
+		observedMotionMean += observed;
+		++expectedMotionSamples;
+		expectedMotionMaxError = std::max(expectedMotionMaxError, error);
+		if (sky) expectedSkyMaxError = std::max(expectedSkyMaxError, error);
+		else expectedGeometryMaxError = std::max(expectedGeometryMaxError, error);
+	}
+	if (expectedMotionSamples > 0)
+	{
+		expectedMotionMean /= float(expectedMotionSamples);
+		observedMotionMean /= float(expectedMotionSamples);
+	}
+	const float expectedMotionMeanError = glm::length(observedMotionMean - expectedMotionMean);
+	const bool motionExpectedVectorValid = !movingCase && !metadata.expectedMotionTransformsValid
+		? true : (metadata.expectedMotionTransformsValid && expectedMotionSamples > 0 &&
+			expectedMotionMaxError <= 0.25f && expectedMotionMeanError <= 0.25f &&
+			expectedSkyMaxError <= 0.25f && expectedGeometryMaxError <= 0.25f);
 	// Motion faults are producer-side GPU clears in FrameRenderer; no semantic
 	// counter is rewritten here.
-	const bool movingCase = std::abs(metadata.cameraSweepAmplitude) > 0.000001f ||
-		std::getenv("RT2_RR_GUIDE_INJECT_DENSE_WEAK_MOTION") != nullptr;
 	// A strict bound plus a density floor is intentional: an all-zero moving
 	// producer must fail even when its lower-bound error equals the tolerance.
 	const RRGuideMotionValidation motionValidation = ValidateRRGuideMotion(
@@ -477,17 +558,19 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 	const bool normalToleranceValid = maxNormalLengthError <= 0.001f;
 	const bool hitDepthCorrelationValid = missWithNonzeroHitCount == 0;
 	const bool materialNumericsValid = ValidateRRGuideMaterialNumerics() && materialGpuValid;
-	const bool emissiveRequired = std::getenv("RT2_RR_GUIDE_REQUIRE_EMISSIVE") != nullptr ||
-		std::getenv("RT2_RR_GUIDE_INJECT_ZERO_EMISSIVE") != nullptr;
+	const bool emissiveRequired = controlledMaterialCase ||
+		std::getenv("RT2_RR_GUIDE_REQUIRE_EMISSIVE") != nullptr;
 	const bool classCoverageValid = !movingCase ||
 		(depthMissCount > 0 && (pixelCount - depthMissCount) > 0 &&
 		 (!emissiveRequired || (emissivePixelCount > 0 && emissiveMotionPixelCount > 0)) &&
 		 skyMotionPixelCount > 0 && geometryMotionPixelCount > 0);
-	const bool semanticValid = finiteValid && diffuseRange && specRange && normalRange &&
+	bool semanticValid = finiteValid && diffuseRange && specRange && normalRange &&
 		depthRange && motionFinite && hitRange && allPixelsOverwritten &&
 		normalToleranceValid && hitDepthCorrelationValid && motionToleranceValid &&
 		motionDensityValid && materialNumericsValid && classCoverageValid;
-	bool valid = budgetValid && semanticValid && motionSignValid;
+	semanticValid = semanticValid && motionExpectedVectorValid;
+	const bool fixtureValid = metadata.fixtureHashValid && metadata.fixtureBytes > 0;
+	bool valid = budgetValid && semanticValid && motionSignValid && fixtureValid;
 	uint64_t checksum = 1469598103934665603ull;
 	{
 		const VkDeviceSize size = VkDeviceSize(canonicalOutput.width) * canonicalOutput.height * 16u;
@@ -540,6 +623,8 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 	failure("motion_expected_observed_tolerance", motionToleranceValid);
 	failure("motion_density", motionDensityValid);
 	failure("motion_expected_sign", motionSignValid);
+	failure("motion_expected_vector", motionExpectedVectorValid);
+	failure("fixture_hash", fixtureValid);
 	failure("material_contract", materialNumericsValid);
 	failure("motion_class_coverage", classCoverageValid);
 	failure("canonical_readback_changed", canonicalReadbackStable);
@@ -559,6 +644,14 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		<< ",\"motion_expected_observed_error_px\":" << motionExpectedObservedError
 		<< ",\"motion_expected_sign_x\":" << expectedMotionSignX
 		<< ",\"motion_observed_mean_x_px\":" << observedMotionMeanX
+		<< ",\"motion_expected_mean_x_px\":" << expectedMotionMean.x
+		<< ",\"motion_expected_mean_y_px\":" << expectedMotionMean.y
+		<< ",\"motion_observed_mean_y_px\":" << observedMotionMean.y
+		<< ",\"motion_expected_mean_error_px\":" << expectedMotionMeanError
+		<< ",\"motion_expected_max_error_px\":" << expectedMotionMaxError
+		<< ",\"motion_sky_max_error_px\":" << expectedSkyMaxError
+		<< ",\"motion_geometry_max_error_px\":" << expectedGeometryMaxError
+		<< ",\"motion_expected_vector_valid\":" << (motionExpectedVectorValid ? "true" : "false")
 		<< ",\"motion_sign_valid\":" << (motionSignValid ? "true" : "false")
 		<< ",\"motion_minimum_nonzero_pixel_count\":" << minimumMovingPixels
 		<< ",\"motion_density_valid\":" << (motionDensityValid ? "true" : "false")
@@ -581,6 +674,7 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		<< ",\"material_metallic_samples\":" << metallicSamples
 		<< ",\"material_grazing_samples\":" << grazingSamples
 		<< ",\"material_emissive_samples\":" << emissiveSamples
+		<< ",\"material_required_classes\":" << (controlledMaterialCase ? "true" : "false")
 		<< ",\"material_max_diffuse_error\":" << maxMaterialDiffuseError
 		<< ",\"material_max_specular_error\":" << maxMaterialSpecularError
 		<< ",\"material_gpu_numeric_valid\":" << (materialGpuValid ? "true" : "false")
@@ -598,7 +692,9 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		<< "\",\"canonical_pair_match\":" << (canonicalPairMatch ? "true" : "false")
 		<< ",\"canonical_pair_manifest\":\"" << JsonString(metadata.pairedBaselinePath)
 		<< "\",\"canonical_pair_command\":\"" << JsonString(metadata.pairedBaselineCommand)
-		<< "\",\"runtime\":{\"nrd_enabled\":" << (metadata.nrdEnabled ? "true" : "false")
+		<< "\",\"fixture\":{\"path\":\"" << JsonString(metadata.fixturePath)
+		<< "\",\"fnv1a64\":\"" << std::hex << metadata.fixtureFNV1a64 << std::dec
+		<< "\",\"bytes\":" << metadata.fixtureBytes << "},\"runtime\":{\"nrd_enabled\":" << (metadata.nrdEnabled ? "true" : "false")
 		<< ",\"frames\":" << metadata.frameCount << ",\"camera_mode\":\"" << JsonString(metadata.cameraMode)
 		<< "\",\"camera_sweep_amplitude\":" << metadata.cameraSweepAmplitude
 		<< ",\"camera_sweep_warmup\":" << metadata.cameraSweepWarmup

@@ -594,6 +594,7 @@ void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::RTShading, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR);
 	if (ctx.rrGuideReportMode && (std::getenv("RT2_RR_GUIDE_INJECT_DENSE_WEAK_MOTION") ||
+		std::getenv("RT2_RR_GUIDE_INJECT_BAD_MOTION_SCALE") ||
 		std::getenv("RT2_RR_GUIDE_INJECT_ZERO_MOTION") ||
 		std::getenv("RT2_RR_GUIDE_INJECT_ZERO_SKY_MOTION") ||
 		std::getenv("RT2_RR_GUIDE_INJECT_ZERO_GEOMETRY_MOTION") ||
@@ -617,7 +618,8 @@ void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 		barrier.subresourceRange.layerCount = 1;
 		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 			VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-		const float value = std::getenv("RT2_RR_GUIDE_INJECT_DENSE_WEAK_MOTION") ? 0.02f : 0.0f;
+		const float value = std::getenv("RT2_RR_GUIDE_INJECT_BAD_MOTION_SCALE") ? 1.0f :
+			(std::getenv("RT2_RR_GUIDE_INJECT_DENSE_WEAK_MOTION") ? 0.02f : 0.0f);
 		const VkClearColorValue fault = {{value, 0.0f, 0.0f, 0.0f}};
 		vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_GENERAL, &fault, 1, &barrier.subresourceRange);
 		barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;

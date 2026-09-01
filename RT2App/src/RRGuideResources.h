@@ -30,6 +30,15 @@ struct RRGuideReportMetadata
 	int pairedBaselineExitCode = -1;
 	int expectedExitCode = 0;
 	glm::vec3 cameraPosition{0.0f};
+	glm::mat4 expectedCurrentViewToClip{1.0f};
+	glm::mat4 expectedCurrentWorldToView{1.0f};
+	glm::mat4 expectedPreviousViewToClip{1.0f};
+	glm::mat4 expectedPreviousWorldToView{1.0f};
+	bool expectedMotionTransformsValid = false;
+	std::string fixturePath;
+	uint64_t fixtureFNV1a64 = 0;
+	uint64_t fixtureBytes = 0;
+	bool fixtureHashValid = false;
 };
 
 struct GpuDevice;

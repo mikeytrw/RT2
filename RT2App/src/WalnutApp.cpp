@@ -77,6 +77,7 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -95,6 +96,20 @@ uint64_t Fnv1a64(const void* data, size_t size)
 	const auto* bytes = static_cast<const uint8_t*>(data);
 	for (size_t i = 0; i < size; ++i) { hash ^= bytes[i]; hash *= 1099511628211ull; }
 	return hash;
+}
+
+bool HashFixtureFile(const std::string& path, uint64_t& hash, uint64_t& bytes)
+{
+	std::ifstream in(path, std::ios::binary | std::ios::ate);
+	if (!in.is_open()) return false;
+	const std::streamsize size = in.tellg();
+	if (size < 0) return false;
+	in.seekg(0, std::ios::beg);
+	std::vector<uint8_t> data(static_cast<size_t>(size));
+	if (size > 0 && !in.read(reinterpret_cast<char*>(data.data()), size)) return false;
+	hash = Fnv1a64(data.data(), data.size());
+	bytes = static_cast<uint64_t>(data.size());
+	return true;
 }
 
 bool WriteRRGuidePairManifest(const std::string& path, uint64_t checksum,
@@ -3269,6 +3284,9 @@ private:
 		};
 
 		std::vector<GpuTimestampProfiler::Timings> benchmarkTimings;
+		glm::mat4 expectedCurrentViewToClip(1.0f), expectedCurrentWorldToView(1.0f);
+		glm::mat4 expectedPreviousViewToClip(1.0f), expectedPreviousWorldToView(1.0f);
+		bool haveExpectedCameraSample = false;
 		uint64_t lastBenchmarkTimingFrame = UINT64_MAX;
 		auto collectBenchmarkTiming = [&]() {
 			if (!g_CLI.benchmarkTimings || !m_RendererGPU.IsAvailable() || !m_RendererGPU.HasGpuTimings())
@@ -3315,6 +3333,21 @@ private:
 				}
 				}
 			}
+			const glm::mat4 frameViewToClip = m_Cam.GetProjection();
+			const glm::mat4 frameWorldToView = m_Cam.GetView();
+			if (haveExpectedCameraSample)
+			{
+				expectedPreviousViewToClip = expectedCurrentViewToClip;
+				expectedPreviousWorldToView = expectedCurrentWorldToView;
+			}
+			else
+			{
+				expectedPreviousViewToClip = frameViewToClip;
+				expectedPreviousWorldToView = frameWorldToView;
+			}
+			expectedCurrentViewToClip = frameViewToClip;
+			expectedCurrentWorldToView = frameWorldToView;
+			haveExpectedCameraSample = true;
 			Timer timer;
 			if (m_RendererGPU.IsAvailable())
 				m_RendererGPU.Render(m_Cam);
@@ -3437,6 +3470,16 @@ private:
 				metadata.cameraSweepPeriod = g_CLI.cameraSweepPeriod;
 				metadata.expectedExitCode = 0;
 				metadata.cameraPosition = m_Cam.GetPosition();
+				metadata.expectedCurrentViewToClip = expectedCurrentViewToClip;
+				metadata.expectedCurrentWorldToView = expectedCurrentWorldToView;
+				metadata.expectedPreviousViewToClip = expectedPreviousViewToClip;
+				metadata.expectedPreviousWorldToView = expectedPreviousWorldToView;
+				metadata.expectedMotionTransformsValid = haveExpectedCameraSample;
+				metadata.fixturePath = g_CLI.scenePath;
+				metadata.fixtureHashValid = HashFixtureFile(g_CLI.scenePath,
+					metadata.fixtureFNV1a64, metadata.fixtureBytes);
+				if (!metadata.fixtureHashValid)
+					RT_LOG("[RRGuide] fixture hash failed: %s", g_CLI.scenePath.c_str());
 				metadata.pairedBaselinePath = g_CLI.rrGuidePair;
 				metadata.pairedBaselineChecksum = pairedBaselineChecksum;
 				metadata.pairedBaselineValid = !g_CLI.rrGuidePair.empty() && !rrGuidePairFailure;

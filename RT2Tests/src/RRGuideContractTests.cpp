@@ -223,7 +223,7 @@ TEST_CASE("RR guides: retained GPU reports are writer-shaped and self-validating
 	for (const char* path : { "docs/rr-guide-report-4k-rtx3090.json",
 		"docs/rr-guide-report-256x256-nonnrd.json",
 		"docs/rr-guide-report-256x256-motion.json",
-		"docs/rr-guide-report-128x128-material.json" })
+		"docs/rr-guide-report-controlled.json" })
 	{
 		const std::string report = ReadShader(path);
 		REQUIRE_FALSE(report.empty());
@@ -240,6 +240,23 @@ TEST_CASE("RR guides: retained GPU reports are writer-shaped and self-validating
 		CHECK(report.find("\"sentinel_remaining_by_guide\":[0,0,0,0,0,0,0]") != std::string::npos);
 		CHECK(report.find("\"motion_class_coverage_valid\":true") != std::string::npos);
 	}
+	const std::string controlled = ReadShader("docs/rr-guide-report-controlled.json");
+	CHECK(controlled.find("\"material_required_classes\":true") != std::string::npos);
+	CHECK(controlled.find("\"material_dielectric_samples\":1390") != std::string::npos);
+	CHECK(controlled.find("\"material_metallic_samples\":650") != std::string::npos);
+	CHECK(controlled.find("\"material_grazing_samples\":140") != std::string::npos);
+	CHECK(controlled.find("\"material_emissive_samples\":695") != std::string::npos);
+	CHECK(controlled.find("\"emissive_provenance_pixel_count\":695") != std::string::npos);
+	CHECK(controlled.find("\"emissive_motion_pixel_count\":695") != std::string::npos);
+	CHECK(controlled.find("\"motion_expected_vector_valid\":true") != std::string::npos);
+	CHECK(controlled.find("\"motion_expected_max_error_px\":") != std::string::npos);
+	CHECK(controlled.find("\"fixture\":{\"path\":") != std::string::npos);
+	CHECK(controlled.find("\"fnv1a64\":\"bd392a5fd506765e\"") != std::string::npos);
+	CHECK(controlled.find("\"bytes\":3091") != std::string::npos);
+	const std::string fixture = ReadShader("RT2App/assets/rr-guide-controlled.rt2scene");
+	CHECK(fixture.find("EmissiveCube") != std::string::npos);
+	CHECK(fixture.find("emissiveColor") != std::string::npos);
+	CHECK(fixture.find("MetallicCube") != std::string::npos);
 }
 
 TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are permanent")
@@ -272,6 +289,12 @@ TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are p
 	CHECK(frameRenderer.find("RT2_RR_GUIDE_INJECT_MISSING_MOTION") != std::string::npos);
 	CHECK(frameRenderer.find("RT2_RR_GUIDE_INJECT_MATERIAL") != std::string::npos);
 	CHECK(frameRenderer.find("RT2_RR_GUIDE_INJECT_DENSE_WEAK_MOTION") != std::string::npos);
+	CHECK(frameRenderer.find("RT2_RR_GUIDE_INJECT_BAD_MOTION_SCALE") != std::string::npos);
+	CHECK(resources.find("motion_expected_mean_error_px") != std::string::npos);
+	CHECK(resources.find("motion_expected_vector_valid") != std::string::npos);
+	CHECK(resources.find("fixture_hash") != std::string::npos);
+	CHECK(resources.find("controlledMaterialCase ||") != std::string::npos);
+	CHECK(resources.find("RT2_RR_GUIDE_INJECT_ZERO_EMISSIVE") == std::string::npos);
 	CHECK(frameRenderer.find("clearValues[1]") == std::string::npos); // production clear lives in RasterPass
 	CHECK(frameRenderer.find("rrGuideReportMode") != std::string::npos);
 	CHECK(resources.find("canonical_pair_checksum_fnv1a64") != std::string::npos);
