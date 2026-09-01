@@ -9,6 +9,7 @@ review-fixup commits on `rendering-dlss-rr-neutral-guides`. The tracked
 machine-readable results are [4K](rr-guide-report-4k-rtx3090.json),
 [non-NRD](rr-guide-report-256x256-nonnrd.json), and
 [camera sweep](rr-guide-report-256x256-motion.json).
+The controlled GPU-material fixture is [ChronographWatch](rr-guide-report-128x128-material.json).
 
 Reports were produced on 2026-08-31 with an RTX 3090 and
 `sofa_and_lamp.glb` at native RenderExtent, raster-first, and NRD disabled.
@@ -37,8 +38,8 @@ CPU contract tests include named compiling RED/GREEN checks for unique
 bindings, RenderExtent-only rows, the 24-byte corrected budget arithmetic,
 shared material/F0/diffuse semantics, motion projection, and
 canonical-output/debug independence. Release targeted guide tests passed
-`12/12` cases and `166/166` assertions; earlier `66/69`, `147/147`, and
-`162/162` counts
+`12/12` cases and `179/179` assertions; earlier `66/69`, `147/147`,
+`162/162`, and `166/166` counts
 are superseded.
 The complete Release test run retains the repository baseline; Debug retains
 the documented OBJ fixture-generation baseline.
@@ -92,10 +93,12 @@ direct-emission provenance alpha and guide readbacks and retain per-class
 motion counters. An emissive-required run sets
 `RT2_RR_GUIDE_REQUIRE_EMISSIVE=1`; environment-lit non-emissive controls then
 fail with zero emissive provenance instead of guessing from noisy radiance.
+The retained ChronographWatch material report contains actual GPU dielectric,
+metallic, and grazing-angle samples and the cross-resource numeric errors.
 
 ## Reproducible gates
 
-The bounded fixup gates were run with these commands (the three report files
+The bounded fixup gates were run with these commands (the four report files
 were produced by the paired harness, so each report process consumed the
 manifest from its separate no-report process; all returned exit code
 0 except the intentional close-fault mutant, which returned 1):

@@ -222,7 +222,8 @@ TEST_CASE("RR guides: retained GPU reports are writer-shaped and self-validating
 {
 	for (const char* path : { "docs/rr-guide-report-4k-rtx3090.json",
 		"docs/rr-guide-report-256x256-nonnrd.json",
-		"docs/rr-guide-report-256x256-motion.json" })
+		"docs/rr-guide-report-256x256-motion.json",
+		"docs/rr-guide-report-128x128-material.json" })
 	{
 		const std::string report = ReadShader(path);
 		REQUIRE_FALSE(report.empty());
