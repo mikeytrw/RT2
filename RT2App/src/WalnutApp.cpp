@@ -98,20 +98,6 @@ uint64_t Fnv1a64(const void* data, size_t size)
 	return hash;
 }
 
-bool HashFixtureFile(const std::string& path, uint64_t& hash, uint64_t& bytes)
-{
-	std::ifstream in(path, std::ios::binary | std::ios::ate);
-	if (!in.is_open()) return false;
-	const std::streamsize size = in.tellg();
-	if (size < 0) return false;
-	in.seekg(0, std::ios::beg);
-	std::vector<uint8_t> data(static_cast<size_t>(size));
-	if (size > 0 && !in.read(reinterpret_cast<char*>(data.data()), size)) return false;
-	hash = Fnv1a64(data.data(), data.size());
-	bytes = static_cast<uint64_t>(data.size());
-	return true;
-}
-
 bool WriteRRGuidePairManifest(const std::string& path, uint64_t checksum,
 	const std::string& commandLine)
 {
@@ -3457,8 +3443,11 @@ private:
 			else
 			{
 				RRGuideReportMetadata metadata;
-				metadata.caseName = g_CLI.cameraSweepAmplitude != 0.0f
-					? "raster-first-camera-sweep" : "raster-first-production-nonnrd";
+				metadata.scenario = g_CLI.rrGuideScenario;
+				metadata.scenarioDeclarationValid = !g_CLI.rrGuideScenarioInvalid;
+				metadata.caseName = g_CLI.rrGuideScenario == RRGuideScenario::ControlledMaterialMotion
+					? "controlled-material-motion" : (g_CLI.cameraSweepAmplitude != 0.0f
+					? "raster-first-camera-sweep" : "raster-first-production-nonnrd");
 				metadata.scenePath = g_CLI.scenePath;
 				metadata.cameraMode = g_CLI.cameraSweepAmplitude == 0.0f ? "static" :
 					(g_CLI.cameraSweepMode == 2 ? "yaw" : (g_CLI.cameraSweepMode == 1 ? "forward" : "lateral"));
@@ -3476,8 +3465,12 @@ private:
 				metadata.expectedPreviousWorldToView = expectedPreviousWorldToView;
 				metadata.expectedMotionTransformsValid = haveExpectedCameraSample;
 				metadata.fixturePath = g_CLI.scenePath;
-				metadata.fixtureHashValid = HashFixtureFile(g_CLI.scenePath,
-					metadata.fixtureFNV1a64, metadata.fixtureBytes);
+				const RRGuideFixtureIdentity fixtureIdentity = ComputeRRGuideFixtureIdentity(g_CLI.scenePath);
+				metadata.fixtureHashValid = fixtureIdentity.readable;
+				metadata.fixtureFNV1a64 = fixtureIdentity.fnv1a64;
+				metadata.fixtureBytes = fixtureIdentity.bytes;
+				metadata.fixtureIdentityValid = g_CLI.rrGuideScenario != RRGuideScenario::ControlledMaterialMotion ||
+					IsRRGuideControlledFixture(fixtureIdentity);
 				if (!metadata.fixtureHashValid)
 					RT_LOG("[RRGuide] fixture hash failed: %s", g_CLI.scenePath.c_str());
 				metadata.pairedBaselinePath = g_CLI.rrGuidePair;

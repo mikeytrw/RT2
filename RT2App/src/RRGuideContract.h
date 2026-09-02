@@ -23,6 +23,23 @@ enum class RRGuideKind : uint8_t
 enum class RRGuideFormat : uint8_t { RGBA16F, RGBA8_UNORM, R32F, RG16F, R11G11B10F };
 enum class RRGuideExtent : uint8_t { Render, Output };
 enum class RRGuideSpace : uint8_t { LinearHdr, LinearRgb, World, ViewDistance, RenderPixels };
+enum class RRGuideScenario : uint8_t { Unspecified = 0, ControlledMaterialMotion };
+
+struct RRGuideFixtureIdentity
+{
+	bool readable = false;
+	uint64_t fnv1a64 = 0;
+	uint64_t bytes = 0;
+	std::string normalizedPath;
+};
+
+constexpr uint64_t RR_GUIDE_CONTROLLED_FIXTURE_FNV1A64 = 0xbd392a5fd506765eull;
+constexpr uint64_t RR_GUIDE_CONTROLLED_FIXTURE_BYTES = 3091ull;
+constexpr std::string_view RR_GUIDE_CONTROLLED_FIXTURE_PATH = "RT2App/assets/rr-guide-controlled.rt2scene";
+
+const char* RRGuideScenarioName(RRGuideScenario scenario);
+RRGuideFixtureIdentity ComputeRRGuideFixtureIdentity(const std::string& path);
+bool IsRRGuideControlledFixture(const RRGuideFixtureIdentity& identity);
 
 struct RRGuideContract
 {

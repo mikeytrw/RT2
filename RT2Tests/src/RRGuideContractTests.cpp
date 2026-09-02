@@ -242,6 +242,8 @@ TEST_CASE("RR guides: retained GPU reports are writer-shaped and self-validating
 	}
 	const std::string controlled = ReadShader("docs/rr-guide-report-controlled.json");
 	CHECK(controlled.find("\"material_required_classes\":true") != std::string::npos);
+	CHECK(controlled.find("\"scenario\":\"controlled-material-motion\"") != std::string::npos);
+	CHECK(controlled.find("\"identity_valid\":true") != std::string::npos);
 	CHECK(controlled.find("\"material_dielectric_samples\":1390") != std::string::npos);
 	CHECK(controlled.find("\"material_metallic_samples\":650") != std::string::npos);
 	CHECK(controlled.find("\"material_grazing_samples\":140") != std::string::npos);
@@ -257,6 +259,18 @@ TEST_CASE("RR guides: retained GPU reports are writer-shaped and self-validating
 	CHECK(fixture.find("EmissiveCube") != std::string::npos);
 	CHECK(fixture.find("emissiveColor") != std::string::npos);
 	CHECK(fixture.find("MetallicCube") != std::string::npos);
+	const RRGuideFixtureIdentity identity = ComputeRRGuideFixtureIdentity("RT2App/assets/rr-guide-controlled.rt2scene");
+	CHECK(identity.readable);
+	CHECK(identity.bytes == RR_GUIDE_CONTROLLED_FIXTURE_BYTES);
+	CHECK(identity.fnv1a64 == RR_GUIDE_CONTROLLED_FIXTURE_FNV1A64);
+	CHECK(IsRRGuideControlledFixture(identity));
+	RRGuideFixtureIdentity changed = identity;
+	++changed.fnv1a64;
+	CHECK_FALSE(IsRRGuideControlledFixture(changed));
+	RRGuideFixtureIdentity renamed = identity;
+	renamed.normalizedPath = "renamed-fixture.rt2scene";
+	CHECK_FALSE(IsRRGuideControlledFixture(renamed));
+	CHECK_FALSE(ComputeRRGuideFixtureIdentity("RT2App/assets/missing-rr-guide.rt2scene").readable);
 }
 
 TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are permanent")
@@ -265,6 +279,7 @@ TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are p
 	const std::string resources = ReadShader("RT2App/src/RRGuideResources.cpp");
 	const std::string renderer = ReadShader("RT2App/src/RendererGPU.cpp");
 	const std::string host = ReadShader("RT2App/src/WalnutApp.cpp");
+	const std::string cli = ReadShader("RT2App/src/CLIArgs.h");
 	const std::string frameRenderer = ReadShader("RT2App/src/FrameRenderer.cpp");
 	CHECK(secondary.find("imageStore(rrNoisyHdr, pixel") != std::string::npos);
 	CHECK(secondary.find("if (nrdMode)") != std::string::npos);
@@ -301,4 +316,7 @@ TEST_CASE("RR guides RED-GREEN: non-NRD producer and checked report faults are p
 	CHECK(resources.find("RT2_RR_GUIDE_INJECT_CLOSE_FAILURE") != std::string::npos);
 	CHECK(renderer.find("m_RRGuideInitFailed") != std::string::npos);
 	CHECK(host.find("std::exit(EXIT_FAILURE)") != std::string::npos);
+	CHECK(cli.find("--rr-guide-scenario") != std::string::npos);
+	CHECK(host.find("ComputeRRGuideFixtureIdentity") != std::string::npos);
+	CHECK(host.find("IsRRGuideControlledFixture") != std::string::npos);
 }

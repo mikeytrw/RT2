@@ -3,6 +3,10 @@
 #include <array>
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <filesystem>
+#include <cctype>
+#include <vector>
 
 namespace
 {
@@ -32,6 +36,52 @@ glm::vec3 EnvBRDFApprox2CPU(const glm::vec3& specularColor, float roughness, flo
 	const glm::vec2 ab = glm::vec2(-1.04f, 1.04f) * a004 + glm::vec2(r.z, r.w);
 	return glm::max(specularColor * ab.x + glm::vec3(ab.y), glm::vec3(0.0f));
 }
+
+uint64_t Fnv1a64(const uint8_t* bytes, size_t size)
+{
+	uint64_t hash = 1469598103934665603ull;
+	for (size_t i = 0; i < size; ++i) { hash ^= bytes[i]; hash *= 1099511628211ull; }
+	return hash;
+}
+
+std::string NormalizedFixturePath(const std::string& path)
+{
+	std::string normalized = std::filesystem::path(path).lexically_normal().generic_string();
+	for (char& c : normalized) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	const std::string suffix = "rt2app/assets/rr-guide-controlled.rt2scene";
+	if (normalized.size() >= suffix.size() && normalized.compare(normalized.size() - suffix.size(), suffix.size(), suffix) == 0)
+		return std::string(RR_GUIDE_CONTROLLED_FIXTURE_PATH);
+	return normalized;
+}
+}
+
+const char* RRGuideScenarioName(RRGuideScenario scenario)
+{
+	return scenario == RRGuideScenario::ControlledMaterialMotion ? "controlled-material-motion" : "unspecified";
+}
+
+RRGuideFixtureIdentity ComputeRRGuideFixtureIdentity(const std::string& path)
+{
+	RRGuideFixtureIdentity identity;
+	identity.normalizedPath = NormalizedFixturePath(path);
+	std::ifstream in(path, std::ios::binary | std::ios::ate);
+	if (!in.is_open()) return identity;
+	const std::streamsize size = in.tellg();
+	if (size < 0) return identity;
+	in.seekg(0, std::ios::beg);
+	std::vector<uint8_t> data(static_cast<size_t>(size));
+	if (size > 0 && !in.read(reinterpret_cast<char*>(data.data()), size)) return identity;
+	identity.readable = true;
+	identity.bytes = static_cast<uint64_t>(data.size());
+	identity.fnv1a64 = Fnv1a64(data.data(), data.size());
+	return identity;
+}
+
+bool IsRRGuideControlledFixture(const RRGuideFixtureIdentity& identity)
+{
+	return identity.readable && identity.bytes == RR_GUIDE_CONTROLLED_FIXTURE_BYTES &&
+		identity.fnv1a64 == RR_GUIDE_CONTROLLED_FIXTURE_FNV1A64 &&
+		identity.normalizedPath == RR_GUIDE_CONTROLLED_FIXTURE_PATH;
 }
 
 RRGuideMaterialValues EvaluateRRGuideMaterial(const glm::vec3& baseColor,

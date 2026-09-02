@@ -10,6 +10,8 @@
 struct RRGuideReportMetadata
 {
 	std::string caseName = "raster-first-production";
+	RRGuideScenario scenario = RRGuideScenario::Unspecified;
+	bool scenarioDeclarationValid = true;
 	std::string scenePath;
 	std::string cameraMode = "static";
 	std::string commandLine;
@@ -39,6 +41,7 @@ struct RRGuideReportMetadata
 	uint64_t fixtureFNV1a64 = 0;
 	uint64_t fixtureBytes = 0;
 	bool fixtureHashValid = false;
+	bool fixtureIdentityValid = false;
 };
 
 struct GpuDevice;

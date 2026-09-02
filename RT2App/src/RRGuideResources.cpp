@@ -387,7 +387,7 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		if (noV < 0.5f) ++grazingSamples;
 		if (directEmission[p * 4u + 3u] > 0.5f) ++emissiveSamples;
 	}
-	const bool controlledMaterialCase = metadata.scenePath.find("rr-guide-controlled") != std::string::npos;
+	const bool controlledMaterialCase = metadata.scenario == RRGuideScenario::ControlledMaterialMotion;
 	const bool materialGpuValid = materialGpuSamples > 0 && maxMaterialDiffuseError <= 0.08f &&
 		maxMaterialSpecularError <= 0.08f && (!controlledMaterialCase ||
 		(dielectricSamples > 0 && metallicSamples > 0 && grazingSamples > 0 && emissiveSamples > 0));
@@ -570,7 +570,9 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		motionDensityValid && materialNumericsValid && classCoverageValid;
 	semanticValid = semanticValid && motionExpectedVectorValid;
 	const bool fixtureValid = metadata.fixtureHashValid && metadata.fixtureBytes > 0;
-	bool valid = budgetValid && semanticValid && motionSignValid && fixtureValid;
+	const bool scenarioValid = metadata.scenarioDeclarationValid;
+	const bool identityValid = !controlledMaterialCase || metadata.fixtureIdentityValid;
+	bool valid = budgetValid && semanticValid && motionSignValid && fixtureValid && scenarioValid && identityValid;
 	uint64_t checksum = 1469598103934665603ull;
 	{
 		const VkDeviceSize size = VkDeviceSize(canonicalOutput.width) * canonicalOutput.height * 16u;
@@ -625,6 +627,8 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 	failure("motion_expected_sign", motionSignValid);
 	failure("motion_expected_vector", motionExpectedVectorValid);
 	failure("fixture_hash", fixtureValid);
+	failure("scenario_declaration", scenarioValid);
+	failure("fixture_identity", identityValid);
 	failure("material_contract", materialNumericsValid);
 	failure("motion_class_coverage", classCoverageValid);
 	failure("canonical_readback_changed", canonicalReadbackStable);
@@ -694,7 +698,11 @@ bool RRGuideResources::WriteReport(const std::string& path, const GpuImage& shar
 		<< "\",\"canonical_pair_command\":\"" << JsonString(metadata.pairedBaselineCommand)
 		<< "\",\"fixture\":{\"path\":\"" << JsonString(metadata.fixturePath)
 		<< "\",\"fnv1a64\":\"" << std::hex << metadata.fixtureFNV1a64 << std::dec
-		<< "\",\"bytes\":" << metadata.fixtureBytes << "},\"runtime\":{\"nrd_enabled\":" << (metadata.nrdEnabled ? "true" : "false")
+		<< "\",\"bytes\":" << metadata.fixtureBytes
+		<< ",\"identity_valid\":" << (metadata.fixtureIdentityValid ? "true" : "false")
+		<< "},\"runtime\":{\"scenario\":\"" << RRGuideScenarioName(metadata.scenario)
+		<< "\",\"scenario_declaration_valid\":" << (metadata.scenarioDeclarationValid ? "true" : "false")
+		<< ",\"nrd_enabled\":" << (metadata.nrdEnabled ? "true" : "false")
 		<< ",\"frames\":" << metadata.frameCount << ",\"camera_mode\":\"" << JsonString(metadata.cameraMode)
 		<< "\",\"camera_sweep_amplitude\":" << metadata.cameraSweepAmplitude
 		<< ",\"camera_sweep_warmup\":" << metadata.cameraSweepWarmup
