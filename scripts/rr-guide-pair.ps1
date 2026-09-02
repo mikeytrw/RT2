@@ -28,7 +28,10 @@ if ($CameraSweepAmplitude -ne 0) {
 $evidenceFull = [IO.Path]::GetFullPath($Evidence)
 $evidenceParent = Split-Path -Parent $evidenceFull
 if ([string]::IsNullOrWhiteSpace($evidenceParent)) { $evidenceParent = (Get-Location).Path }
-$transientRoot = Join-Path $evidenceParent ("rr-guide-pair-output-" + [Guid]::NewGuid().ToString("N"))
+## Keep the command line deterministic for byte-reproducible reports while
+## isolating incidental PNGs from the repository root.
+$transientRoot = Join-Path $evidenceParent ".rr-guide-pair-output"
+if (Test-Path -LiteralPath $transientRoot) { Remove-Item -LiteralPath $transientRoot -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $transientRoot | Out-Null
 if ($Scenario) { $common += @("--rr-guide-scenario", $Scenario) }
 $baselineOutput = Join-Path $transientRoot "baseline.png"

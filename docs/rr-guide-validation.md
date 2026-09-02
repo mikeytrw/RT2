@@ -9,7 +9,7 @@ review-fixup commits on `rendering-dlss-rr-neutral-guides`. The tracked
 machine-readable results are [4K](rr-guide-report-4k-rtx3090.json),
 [non-NRD](rr-guide-report-256x256-nonnrd.json), and
 [camera sweep](rr-guide-report-256x256-motion.json).
-The deterministic controlled GPU-material/motion fixture is [rr-guide-controlled.rt2scene](../RT2App/assets/rr-guide-controlled.rt2scene), with its writer-generated [report](rr-guide-report-controlled.json). It is 3,091 bytes, SHA-256 `2F4E8129E6DC1113B6501C5B390D2518F251A3D088F05726A0762FBA74957C57`, and report FNV-1a-64 `bd392a5fd506765e`.
+The deterministic controlled GPU-material/motion fixture is [rr-guide-controlled.rt2scene](../RT2App/assets/rr-guide-controlled.rt2scene), with its writer-generated [report](rr-guide-report-controlled.json). It is 3,091 bytes, SHA-256 `2F4E8129E6DC1113B6501C5B390D2518F251A3D088F05726A0762FBA74957C57`, and report FNV-1a-64 `bd392a5fd506765e`. The report is invoked with the typed `controlled-material-motion` scenario; class/emissive admission requires this exact normalized repo-relative path, size, and computed hash.
 
 Reports were produced on 2026-09-01 with an RTX 3090 and
 `sofa_and_lamp.glb` at native RenderExtent, raster-first, and NRD disabled.
@@ -42,7 +42,8 @@ CPU contract tests include named compiling RED/GREEN checks for unique
 bindings, RenderExtent-only rows, the 24-byte corrected budget arithmetic,
 shared material/F0/diffuse semantics, motion projection, and
 canonical-output/debug independence. Release targeted guide tests passed
-`12/12` cases and `200/200` assertions; earlier `66/69`, `147/147`,
+`12/12` cases and `212/212` assertions; the full Release suite passed
+`1109/1109` cases and `156456/156456` assertions. Earlier `66/69`, `147/147`,
 `162/162`, `179/179`, and `166/166` counts
 are superseded.
 The complete Release test run retains the repository baseline; Debug retains
@@ -97,8 +98,8 @@ direct-emission provenance alpha and guide readbacks and retain per-class
 motion counters. An emissive-required run sets
 `RT2_RR_GUIDE_REQUIRE_EMISSIVE=1`; environment-lit non-emissive controls then
 fail with zero emissive provenance instead of guessing from noisy radiance.
-The controlled fixture is intrinsically emissive-required from its checked-in
-case identity, so `ZERO_EMISSIVE` cannot toggle the expectation: the identical
+The controlled fixture is intrinsically emissive-required from its typed,
+hash-verified case identity, so `ZERO_EMISSIVE` cannot toggle the expectation: the identical
 producer fault returned exit 1 with `valid:false`, material/provenance/motion
 emissive counts all zero. The retained controlled report contains actual GPU
 dielectric `1390`, metallic `650`, grazing `140`, and emissive `695` samples,
@@ -123,7 +124,7 @@ bin\Debug-windows-x86_64\RT2Tests\RT2Tests.exe --test-case="RR guides*"
 scripts\rr-guide-pair.ps1 ... -Report docs\rr-guide-report-4k-rtx3090.json # 0
 scripts\rr-guide-pair.ps1 ... -Report docs\rr-guide-report-256x256-nonnrd.json # 0
 scripts\rr-guide-pair.ps1 ... -Frames 6 -CameraSweepAmplitude 0.25 -CameraSweepWarmup 1 -CameraSweepPeriod 4 -CameraSweepMode yaw -Report docs\rr-guide-report-256x256-motion.json # 0
-powershell -File scripts\rr-guide-pair.ps1 ... -Scene RT2App\assets\rr-guide-controlled.rt2scene -Width 128 -Height 128 -Frames 6 -Seed 11 -CameraSweepAmplitude 0.2 -CameraSweepWarmup 1 -CameraSweepPeriod 4 -CameraSweepMode yaw -Report docs\rr-guide-report-controlled.json # 0
+powershell -File scripts\rr-guide-pair.ps1 ... -Scene RT2App\assets\rr-guide-controlled.rt2scene -Scenario controlled-material-motion -Width 128 -Height 128 -Frames 6 -Seed 11 -CameraSweepAmplitude 0.2 -CameraSweepWarmup 1 -CameraSweepPeriod 4 -CameraSweepMode yaw -Report docs\rr-guide-report-controlled.json # 0; transient PNGs are under evidence and removed
 bin\Debug-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 128 --height 128 --frames 1 --spp 1 --bounces 1 --raster-first --validate --sync-validate --rr-guide-report artifacts\rr-validation.json
 RT2_RR_GUIDE_INJECT_CLOSE_FAILURE=1 bin\Release-windows-x86_64\RT2App\RT2App.exe --headless --scene C:\Users\mikey\Downloads\sofa_and_lamp.glb --width 64 --height 64 --frames 1 --spp 1 --bounces 1 --raster-first --rr-guide-report artifacts\rr-close-fault.json # 1
 graphify update .
