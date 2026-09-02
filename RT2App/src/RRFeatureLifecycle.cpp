@@ -225,6 +225,7 @@ RRFrameDecision RRFeatureLifecycle::CompleteEvaluation(bool success, std::string
 	m_State.evaluationBegun = false;
 	if (success)
 	{
+		m_State.lastResult = result;
 		m_State.rrOutputValid = true;
 		decision.recorded = true;
 		decision.useRR = true;

@@ -1228,10 +1228,13 @@ void RendererGPU::Render(const Camera& camera)
 		return;
 	}
 	RT_LOG("[RR] frame backend=%s requested=%d feature_owned=%d generation=%llu "
-		"output=%ux%u render=%ux%u hdr_source=%s evaluate=%d fallback=%d reason=%s",
+		"history_reset=%llu result=%d output=%ux%u render=%ux%u hdr_source=%s "
+		"evaluate=%d fallback=%d reason=%s",
 		RRBackendName(m_RR.State().backend), m_RR.State().requested ? 1 : 0,
 		m_RR.State().featureOwned ? 1 : 0,
 		static_cast<unsigned long long>(m_RR.State().featureGeneration),
+		static_cast<unsigned long long>(m_RR.State().historyResetGeneration),
+		m_RR.State().lastResult,
 		m_OutputExtent.Width(), m_OutputExtent.Height(), m_RenderExtent.Width(),
 		m_RenderExtent.Height(), recorded.rrEvaluated ? "rr-output" : "native-output",
 		recorded.rrEvaluated ? 1 : 0, m_RR.State().failureLatched ? 1 : 0,

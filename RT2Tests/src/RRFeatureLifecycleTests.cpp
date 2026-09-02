@@ -58,6 +58,9 @@ TEST_CASE("W4 RR lifecycle queries fixed Quality and creates one tuple")
 	CHECK(releases == 0);
 	CHECK(queries == 2); // every reconcile verifies the pinned tuple
 	CHECK(resets == 1);
+	REQUIRE(lifecycle.BeginEvaluation().useRR);
+	CHECK(lifecycle.CompleteEvaluation(true, {}, 19, hooks).useRR);
+	CHECK(lifecycle.State().lastResult == 19);
 }
 
 TEST_CASE("W4 RR lifecycle evaluates atomically and latches one fallback")
@@ -128,4 +131,3 @@ TEST_CASE("W4 RR lifecycle rejects malformed optimal dimensions loudly")
 	CHECK(lifecycle.FallbackReason().find("zero extent") != std::string::npos);
 	CHECK_FALSE(lifecycle.State().featureOwned);
 }
-
