@@ -19,6 +19,7 @@
 #include "FrameContext.h"
 #include "GpuTimestampProfiler.h"
 #include "RenderExtents.h"
+#include "NgxRuntime.h"
 #include "shader_interface.h"
 #include <glm/glm.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -34,6 +35,14 @@ class Camera;
 class FrameRenderer
 {
 public:
+	struct RecordedFrameOutcome
+	{
+		bool recorded = true;
+		bool rrEvaluated = false;
+		bool preserveDisplay = false;
+		VkImageView hdrSource = VK_NULL_HANDLE;
+		std::string failureReason;
+	};
 	// Context struct — passed to RecordFrame each frame.
 	struct Context
 	{
@@ -54,6 +63,9 @@ public:
 
 		GpuImage& outputImage;
 		GpuImage& displayImage;
+		GpuImage* rrOutputImage;
+		NgxRuntime* ngxRuntime;
+		RRFeatureLifecycle* rrLifecycle;
 		VkDescriptorSet gbufferSet;
 		VkBuffer cameraUBO;
 		VkBuffer nrdUBO;
@@ -108,7 +120,7 @@ public:
 	// Handles: top-of-frame barrier, UBO updates, raster G-buffer pass,
 	// RT dispatch (or G-buffer debug), NRD denoise, compose pass,
 	// output image transition.
-	static void RecordFrame(VkCommandBuffer cmd, Context& ctx);
+	static RecordedFrameOutcome RecordFrame(VkCommandBuffer cmd, Context& ctx);
 
 private:
 	static void RecordTopBarrier(VkCommandBuffer cmd, Context& ctx);
@@ -119,6 +131,7 @@ private:
 	static void RecordReSTIRPass(VkCommandBuffer cmd, Context& ctx);
 	static void RecordReSTIRGIPass(VkCommandBuffer cmd, Context& ctx);
 	static void RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx);
+	static RecordedFrameOutcome RecordRR(VkCommandBuffer cmd, Context& ctx);
 	static void RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx);
 	static void RecordTonemapPass(VkCommandBuffer cmd, Context& ctx);
 	static void RecordOutputTransition(VkCommandBuffer cmd, Context& ctx);

@@ -35,6 +35,7 @@ struct CLIArgs
 	bool validate = false;        // enable Vulkan validation layers
 	bool syncValidate = false;    // enable synchronization validation
 	bool ngxReport = false;       // print the read-only NGX support snapshot
+	bool devRRStatic = false;     // hidden developer-only fixed Quality RR path
 	std::string ngxProjectId;     // optional override; empty is a deliberate invalid-ID test
 	std::string ngxFeaturePath;   // optional isolated NGX runtime search path
 	bool benchmarkTimings = false; // emit one JSON timing record per completed GPU frame
@@ -263,6 +264,10 @@ struct CLIArgs
 			else if (strcmp(a, "--ngx-feature-path") == 0)
 			{
 				if (const char* v = next()) args.ngxFeaturePath = v;
+			}
+			else if (strcmp(a, "--dev-rr-static") == 0)
+			{
+				args.devRRStatic = true;
 			}
 			else if (strcmp(a, "--list") == 0 || strcmp(a, "--dry-run") == 0)
 			{

@@ -16,6 +16,22 @@
 #include <iostream>
 #include <cstring>
 
+namespace
+{
+const char* RRBackendName(RRBackend backend)
+{
+	switch (backend)
+	{
+	case RRBackend::NativeNRD: return "native-nrd";
+	case RRBackend::RequestedRR: return "requested-rr";
+	case RRBackend::ActiveRR: return "active-rr";
+	case RRBackend::FallbackPending: return "fallback-pending";
+	case RRBackend::ActiveNativeNRD: return "active-native-nrd";
+	}
+	return "unknown";
+}
+}
+
 bool RendererGPU::Init()
 {
 	if (m_Initialized) return true;
@@ -77,10 +93,49 @@ bool RendererGPU::Init()
 	return true;
 }
 
+void RendererGPU::SetNgxRuntime(NgxRuntime* runtime, bool devStaticRR)
+{
+	m_NgxRuntime = runtime;
+	m_DevStaticRR = devStaticRR;
+	m_RR.SetRequested(devStaticRR);
+	if (!devStaticRR && m_RROutputImage.IsValid())
+	{
+		DestroyRROutputImage();
+		m_RR.SetRequested(false);
+	}
+}
+
+void RendererGPU::ReleaseRRFeature()
+{
+	if (!m_NgxRuntime) return;
+	if (m_RR.State().featureOwned)
+	{
+		RRFeatureHooks hooks;
+		hooks.waitIdle = [runtime = m_NgxRuntime](std::string& reason) {
+			return runtime->ReleaseRRFeature(reason);
+		};
+		hooks.release = [](std::string&) { return true; };
+		if (!m_RR.InvalidateResources(hooks))
+		{
+			RT_LOG("[RR] feature release failed: %s", m_RR.FallbackReason().c_str());
+			return;
+		}
+		return;
+	}
+	std::string reason;
+	if (!m_NgxRuntime->ReleaseRRFeature(reason) && !reason.empty())
+		RT_LOG("[RR] feature release failed: %s", reason.c_str());
+}
+
 void RendererGPU::Destroy()
 {
 	VkDevice device = m_Device.device;
 	vkDeviceWaitIdle(device);
+	if (m_NgxRuntime && m_NgxRuntime->HasRRFeature())
+	{
+		std::string reason;
+		(void)m_NgxRuntime->ReleaseRRFeature(reason);
+	}
 	m_GpuProfiler.Destroy(device);
 	m_PickingPass.Destroy();
 
@@ -191,6 +246,7 @@ void RendererGPU::CreateOutputImage()
 void RendererGPU::DestroyOutputImage()
 {
 	VkDevice device = m_Device.device;
+	DestroyRROutputImage();
 
 	// Free the ImGui descriptor set before destroying the image view/sampler
 	// it references â€” otherwise the GPU may sample a destroyed resource.
@@ -211,6 +267,44 @@ void RendererGPU::DestroyOutputImage()
 	m_OutputImage.image = VK_NULL_HANDLE;
 	m_OutputImage.memory = VK_NULL_HANDLE;
 	m_OutputImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
+void RendererGPU::CreateRROutputImage()
+{
+	if (!m_DevStaticRR || !m_RenderExtent.IsValid() || !m_NgxRuntime ||
+		!m_NgxRuntime->Snapshot().IsSupported())
+		return;
+	GpuResources::CreateImage(m_Device, m_OutputExtent.Width(), m_OutputExtent.Height(),
+		VK_FORMAT_R16G16B16A16_SFLOAT,
+		VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+		VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, m_RROutputImage);
+	if (!m_RROutputImage.IsValid())
+	{
+		RT_LOG("[RR] failed to allocate dedicated output image; native NRD remains active");
+		return;
+	}
+	CommandUtils::ImmediateSubmit(m_Device, [&](VkCommandBuffer cmd) {
+		VkImageMemoryBarrier barrier{};
+		barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+		barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+		barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+		barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+		barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+		barrier.image = m_RROutputImage.image;
+		barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		barrier.subresourceRange.levelCount = 1;
+		barrier.subresourceRange.layerCount = 1;
+		vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+			VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+	});
+}
+
+void RendererGPU::DestroyRROutputImage()
+{
+	if (m_RROutputImage.IsValid())
+		GpuResources::DestroyImage(m_Device, m_RROutputImage);
 }
 
 void RendererGPU::CreateFallbackTexture()
@@ -277,11 +371,25 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 	const uint32_t width = outputExtent.Width();
 	const uint32_t height = outputExtent.Height();
 
-	if (m_OutputExtent == outputExtent && m_OutputImage.image != VK_NULL_HANDLE)
+	if (!m_ForceNativeRebuild && m_OutputExtent == outputExtent && m_OutputImage.image != VK_NULL_HANDLE)
 		return;
 
 	VkDevice device = m_Device.device;
 	vkDeviceWaitIdle(device);
+	RRFeatureHooks releaseHooks;
+	if (m_NgxRuntime && m_RR.State().featureOwned)
+	{
+		releaseHooks.waitIdle = [runtime = m_NgxRuntime](std::string& reason) {
+			return runtime->ReleaseRRFeature(reason);
+		};
+		releaseHooks.release = [](std::string&) { return true; };
+		if (!m_RR.InvalidateResources(releaseHooks))
+		{
+			RT_LOG("[RR] resize blocked: feature release failed: %s",
+				m_RR.FallbackReason().c_str());
+			return;
+		}
+	}
 
 	// Free old descriptor set before allocating a new one
 	m_PathTracePass.FreeDescriptorSet();
@@ -290,8 +398,21 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 
 	m_OutputExtent = outputExtent;
 	m_RenderExtent = outputExtent.ToRenderNative();
+	if (m_DevStaticRR && m_NgxRuntime && !m_RR.State().failureLatched &&
+		m_NgxRuntime->Snapshot().IsSupported())
+	{
+		RROptimalSettings optimal;
+		std::string reason;
+		if (m_NgxRuntime->QueryRROptimalSettings(outputExtent, optimal, reason) &&
+			optimal.render.IsValid() && optimal.render.Width() <= outputExtent.Width() &&
+			optimal.render.Height() <= outputExtent.Height())
+			m_RenderExtent = optimal.render;
+		else
+			RT_LOG("[RR] Quality extent unavailable (%s); native resolution is retained", reason.c_str());
+	}
 
 	CreateOutputImage();
+	CreateRROutputImage();
 	m_TonemapPass.UpdateDescriptorSet(m_Device, m_OutputImage.view, m_DisplayImage.view);
 	CreateGBufferImages();
 	m_Reservoirs.Create(m_Device, m_RenderExtent);
@@ -328,6 +449,7 @@ void RendererGPU::OnResize(const OutputExtent& outputExtent)
 	InvalidateReSTIRHistory();
 	InvalidateGIHistory();
 	CancelPicks();
+	m_ForceNativeRebuild = false;
 }
 
 void RendererGPU::CancelPicks()
@@ -954,6 +1076,12 @@ void RendererGPU::Render(const Camera& camera)
 	// ---- Frames-in-flight ring: wait for this frame slot to be free ----
 	FrameContext& frame = m_Frames[m_CurrentFrame];
 	frame.WaitForFence(device);
+	if (m_ForceNativeRebuild && m_OutputExtent.IsValid())
+	{
+		OnResize(m_OutputExtent);
+		if (m_OutputImage.image == VK_NULL_HANDLE)
+			return;
+	}
 	m_GpuProfiler.ReadCompletedSlot(device, m_CurrentFrame);
 	if (auto completed = m_PickingPass.ReadCompletedSlot(m_CurrentFrame))
 	{
@@ -994,6 +1122,11 @@ void RendererGPU::Render(const Camera& camera)
 
 	// Build ReSTIR push constants from settings
 	SIReSTIRPushConstants restirPC = {};
+	// W4's static RR path owns temporal history while it is requested.  Keep
+	// spatial reuse available, but suppress DI/GI temporal reuse until the
+	// native fallback latch is reached.
+	const bool rrTemporalReuseDisabled = m_DevStaticRR && m_RR.IsRequested() &&
+		!m_RR.State().failureLatched;
 	restirPC.freshCandidateCount = m_Settings.restirFreshCandidates;
 	restirPC.temporalMCap = m_Settings.restirTemporalMCap;
 	restirPC.spatialMCap = m_Settings.restirSpatialMCap;
@@ -1004,7 +1137,7 @@ void RendererGPU::Render(const Camera& camera)
 	restirPC.worldPosThreshold = m_Settings.restirWorldPosThreshold;
 	restirPC.maxTemporalAge = m_Settings.restirMaxTemporalAge;
 	restirPC.flags = 0;
-	if (m_Settings.restirTemporalReuse) restirPC.flags |= 1u;
+	if (m_Settings.restirTemporalReuse && !rrTemporalReuseDisabled) restirPC.flags |= 1u;
 	if (m_Settings.restirSpatialReuse)  restirPC.flags |= 2u;
 	restirPC.frameIndex = m_ReSTIRFrameIndex;
 	restirPC.jitter = glm::vec4(m_NRDJitter, m_NRDJitterPrev);
@@ -1015,7 +1148,7 @@ void RendererGPU::Render(const Camera& camera)
 	giPC.temporalMCap = m_Settings.restirGITemporalMCap;
 	giPC.maxTemporalAge = m_Settings.restirGIMaxTemporalAge;
 	giPC.flags = 0;
-	if (m_Settings.restirGITemporalEnabled) giPC.flags |= 1u;
+	if (m_Settings.restirGITemporalEnabled && !rrTemporalReuseDisabled) giPC.flags |= 1u;
 	giPC.flags |= (uint32_t)(m_Settings.nrdLobeDither & 3u) << 1;  // bits 1-2: dither mode
 	giPC.depthThreshold = m_Settings.restirGIDepthThreshold;
 	giPC.normalThreshold = m_Settings.restirGINormalThreshold;
@@ -1041,6 +1174,9 @@ void RendererGPU::Render(const Camera& camera)
 		m_NRD,
 		m_OutputImage,
 		m_DisplayImage,
+		m_RROutputImage.IsValid() ? &m_RROutputImage : nullptr,
+		m_NgxRuntime,
+		m_DevStaticRR ? &m_RR : nullptr,
 		m_GBufferSet,
 		m_CameraUBO,
 		m_NRDUBO,
@@ -1077,7 +1213,29 @@ void RendererGPU::Render(const Camera& camera)
 		m_GIFrameIndex & 1u
 	};
 
-	FrameRenderer::RecordFrame(cmd, ctx);
+	const FrameRenderer::RecordedFrameOutcome recorded = FrameRenderer::RecordFrame(cmd, ctx);
+	if (!recorded.recorded && recorded.preserveDisplay)
+	{
+		RT_LOG("[RR] evaluation failed; discarding partial command buffer: %s",
+			recorded.failureReason.c_str());
+		m_ForceNativeRebuild = true;
+		frame.AbortAndSubmitEmpty(device, m_Device.queue);
+		m_CurrentFrame = (m_CurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+		m_FrameIndex++;
+		m_NRDFrameIndex++;
+		m_ReSTIRFrameIndex++;
+		m_GIFrameIndex++;
+		return;
+	}
+	RT_LOG("[RR] frame backend=%s requested=%d feature_owned=%d generation=%llu "
+		"output=%ux%u render=%ux%u hdr_source=%s evaluate=%d fallback=%d reason=%s",
+		RRBackendName(m_RR.State().backend), m_RR.State().requested ? 1 : 0,
+		m_RR.State().featureOwned ? 1 : 0,
+		static_cast<unsigned long long>(m_RR.State().featureGeneration),
+		m_OutputExtent.Width(), m_OutputExtent.Height(), m_RenderExtent.Width(),
+		m_RenderExtent.Height(), recorded.rrEvaluated ? "rr-output" : "native-output",
+		recorded.rrEvaluated ? 1 : 0, m_RR.State().failureLatched ? 1 : 0,
+		m_RR.State().fallbackReason.empty() ? "none" : m_RR.State().fallbackReason.c_str());
 	if (m_PendingPick && m_PickingPass.IsAvailable())
 	{
 		RT_LOG("[GpuPick] record serial=%llu frameSlot=%u map=%zu",

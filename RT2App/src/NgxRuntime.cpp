@@ -5,6 +5,9 @@
 #include <nvsdk_ngx_vk.h>
 #include <nvsdk_ngx_defs_dlssd.h>
 #include <nvsdk_ngx_helpers.h>
+#include <nvsdk_ngx_helpers_vk.h>
+#include <nvsdk_ngx_helpers_dlssd.h>
+#include <nvsdk_ngx_helpers_dlssd_vk.h>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -47,6 +50,173 @@ std::string Narrow(const wchar_t* value)
 #endif
 }
 
+std::string NgxResultText(NVSDK_NGX_Result result);
+
+}
+
+bool NgxRuntime::QueryRROptimalSettings(const OutputExtent& output,
+	RROptimalSettings& settings, std::string& reason) const
+{
+	if (!m_Snapshot.IsSupported() || !m_Parameters)
+	{
+		reason = "NGX runtime is not initialized and supported";
+		return false;
+	}
+	unsigned int renderWidth = 0, renderHeight = 0;
+	unsigned int maxWidth = 0, maxHeight = 0;
+	unsigned int minWidth = 0, minHeight = 0;
+	float sharpness = 0.0f;
+	const NVSDK_NGX_Result result = NGX_DLSSD_GET_OPTIMAL_SETTINGS(
+		m_Parameters, output.Width(), output.Height(),
+		NVSDK_NGX_PerfQuality_Value_MaxQuality, &renderWidth, &renderHeight,
+		&maxWidth, &maxHeight, &minWidth, &minHeight, &sharpness);
+	if (NVSDK_NGX_FAILED(result))
+	{
+		reason = "NGX optimal-settings query returned " + NgxResultText(result);
+		return false;
+	}
+	const auto render = RenderExtent::TryCreate(renderWidth, renderHeight);
+	const auto minimum = RenderExtent::TryCreate(minWidth, minHeight);
+	const auto maximum = RenderExtent::TryCreate(maxWidth, maxHeight);
+	if (!render || !minimum || !maximum)
+	{
+		reason = "NGX optimal-settings query returned zero dimensions";
+		return false;
+	}
+	settings.render = *render;
+	settings.minimum = *minimum;
+	settings.maximum = *maximum;
+	settings.sharpness = sharpness;
+	return true;
+}
+
+bool NgxRuntime::CreateRRFeature(VkCommandBuffer command,
+	const RRQualityTuple& tuple, std::string& reason)
+{
+	if (!m_Snapshot.IsSupported() || !m_Parameters || command == VK_NULL_HANDLE)
+	{
+		reason = "NGX feature creation requires supported initialized runtime and recording command buffer";
+		return false;
+	}
+	if (m_RRFeature)
+	{
+		reason = "an RR feature is already owned";
+		return false;
+	}
+	NVSDK_NGX_DLSSD_Create_Params create{};
+	create.InWidth = tuple.render.Width();
+	create.InHeight = tuple.render.Height();
+	create.InTargetWidth = tuple.output.Width();
+	create.InTargetHeight = tuple.output.Height();
+	create.InPerfQualityValue = NVSDK_NGX_PerfQuality_Value_MaxQuality;
+	create.InFeatureCreateFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR |
+		NVSDK_NGX_DLSS_Feature_Flags_MVLowRes;
+	create.InEnableOutputSubrects = false;
+	create.InRoughnessMode = NVSDK_NGX_DLSS_Roughness_Mode_Packed;
+	create.InUseHWDepth = NVSDK_NGX_DLSS_Depth_Type_Linear;
+	NVSDK_NGX_Result result = NGX_VULKAN_CREATE_DLSSD_EXT1(
+		m_Device, command, 1, 1, &m_RRFeature, m_Parameters, &create);
+	if (NVSDK_NGX_FAILED(result) || !m_RRFeature)
+	{
+		m_RRFeature = nullptr;
+		reason = "NGX feature creation returned " + NgxResultText(result);
+		return false;
+	}
+	return true;
+}
+
+bool NgxRuntime::EvaluateRRFeature(VkCommandBuffer command,
+	const RRFeatureEvaluation& evaluation, std::string& reason, int32_t* resultCode)
+{
+	if (!m_RRFeature || !m_Parameters || command == VK_NULL_HANDLE)
+	{
+		reason = "NGX feature evaluation requested without an owned feature";
+		if (resultCode) *resultCode = -1;
+		return false;
+	}
+	const RRFeatureImage* images[] = {
+		&evaluation.noisyColor, &evaluation.diffuseAlbedo, &evaluation.specularAlbedo,
+		&evaluation.normalRoughness, &evaluation.depth, &evaluation.motion,
+		&evaluation.specularHitDistance, &evaluation.output };
+	for (const RRFeatureImage* image : images)
+	{
+		if (!image->image || !image->view || image->format == VK_FORMAT_UNDEFINED ||
+			image->width == 0 || image->height == 0)
+		{
+			reason = "NGX feature evaluation received an invalid Vulkan resource";
+			if (resultCode) *resultCode = -1;
+			return false;
+		}
+	}
+	auto resource = [](const RRFeatureImage& image, bool readWrite) {
+		VkImageSubresourceRange range{};
+		range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		range.levelCount = 1;
+		range.layerCount = 1;
+		return NVSDK_NGX_Create_ImageView_Resource_VK(image.view, image.image,
+			range, image.format, image.width, image.height, readWrite);
+	};
+	NVSDK_NGX_VK_DLSSD_Eval_Params eval{};
+	NVSDK_NGX_Resource_VK color = resource(evaluation.noisyColor, false);
+	NVSDK_NGX_Resource_VK diffuse = resource(evaluation.diffuseAlbedo, false);
+	NVSDK_NGX_Resource_VK specular = resource(evaluation.specularAlbedo, false);
+	NVSDK_NGX_Resource_VK normals = resource(evaluation.normalRoughness, false);
+	NVSDK_NGX_Resource_VK roughness = resource(evaluation.normalRoughness, false);
+	NVSDK_NGX_Resource_VK depth = resource(evaluation.depth, false);
+	NVSDK_NGX_Resource_VK motion = resource(evaluation.motion, false);
+	NVSDK_NGX_Resource_VK hitDistance = resource(evaluation.specularHitDistance, false);
+	NVSDK_NGX_Resource_VK output = resource(evaluation.output, true);
+	eval.pInColor = &color;
+	eval.pInDiffuseAlbedo = &diffuse;
+	eval.pInSpecularAlbedo = &specular;
+	eval.pInNormals = &normals;
+	eval.pInRoughness = &roughness;
+	eval.pInDepth = &depth;
+	eval.pInMotionVectors = &motion;
+	eval.pInSpecularHitDistance = &hitDistance;
+	eval.pInOutput = &output;
+	eval.InJitterOffsetX = evaluation.jitterX;
+	eval.InJitterOffsetY = evaluation.jitterY;
+	eval.InPreExposure = evaluation.preExposure;
+	eval.InExposureScale = evaluation.exposureScale;
+	eval.InRenderSubrectDimensions = { evaluation.noisyColor.width, evaluation.noisyColor.height };
+	eval.InReset = evaluation.reset;
+	eval.InMVScaleX = evaluation.mvScaleX;
+	eval.InMVScaleY = evaluation.mvScaleY;
+	eval.InOutputSubrectBase = { 0, 0 };
+	eval.pInWorldToViewMatrix = evaluation.worldToView;
+	eval.pInViewToClipMatrix = evaluation.viewToClip;
+	const NVSDK_NGX_Result result = NGX_VULKAN_EVALUATE_DLSSD_EXT(
+		command, m_RRFeature, m_Parameters, &eval);
+	if (resultCode) *resultCode = static_cast<int32_t>(result);
+	if (NVSDK_NGX_FAILED(result))
+	{
+		reason = "NGX feature evaluation returned " + NgxResultText(result);
+		return false;
+	}
+	return true;
+}
+
+bool NgxRuntime::ReleaseRRFeature(std::string& reason)
+{
+	if (!m_RRFeature) return true;
+	if (m_Device == VK_NULL_HANDLE || vkDeviceWaitIdle(m_Device) != VK_SUCCESS)
+	{
+		reason = "device idle wait failed before NGX feature release";
+		return false;
+	}
+	const NVSDK_NGX_Result result = NVSDK_NGX_VULKAN_ReleaseFeature(m_RRFeature);
+	if (NVSDK_NGX_FAILED(result))
+	{
+		reason = "NGX feature release returned " + NgxResultText(result);
+		return false;
+	}
+	m_RRFeature = nullptr;
+	return true;
+}
+
+namespace
+{
 std::string NgxResultText(NVSDK_NGX_Result result)
 {
 	return Narrow(GetNGXResultAsString(result));
@@ -386,6 +556,16 @@ void NgxRuntime::InitializeAfterVulkan(bool optionalFeatureEnabled,
 
 bool NgxRuntime::Shutdown()
 {
+	if (m_RRFeature)
+	{
+		std::string reason;
+		if (!ReleaseRRFeature(reason))
+		{
+			m_Lifecycle.ExternalFailure(NgxSupportState::ShutdownFailure,
+				"cannot shut down NGX while RR feature is still owned: " + reason);
+			return false;
+		}
+	}
 	if ((!m_Initialized && !m_Parameters) || m_Lifecycle.CleanupAttempted())
 		return m_Snapshot.state != NgxSupportState::ShutdownFailure;
 	NgxLifecycleHooks hooks;

@@ -24,4 +24,10 @@ struct FrameContext
 
 	// End recording + submit to queue with renderFence (no wait — async).
 	void Submit(VkQueue queue);
+
+	// Discard an already-recording frame after a failure-atomic pass (for
+	// example NGX Evaluate).  The command pool is reset only after the command
+	// buffer has been ended, then an empty submission preserves fence cadence
+	// without presenting partial work.
+	void AbortAndSubmitEmpty(VkDevice device, VkQueue queue);
 };

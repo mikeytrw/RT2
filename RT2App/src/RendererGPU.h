@@ -29,6 +29,7 @@
 #include "GpuTimestampProfiler.h"
 #include "RenderInstanceMap.h"
 #include "GpuPickingPass.h"
+#include "NgxRuntime.h"
 #include "RenderExtents.h"
 #include <array>
 #include <memory>
@@ -53,6 +54,9 @@ public:
 	}
 	void Render(const Camera& camera);
 	void SetRRGuideReportMode(bool enabled) { m_RRGuideReportMode = enabled; }
+	void SetNgxRuntime(NgxRuntime* runtime, bool devStaticRR);
+	void ReleaseRRFeature();
+	const RRFeatureState& GetRRState() const { return m_RR.State(); }
 	void SetScene(GPUSceneData& sceneData, const RenderInstanceMap& instanceMap = {});
 	// Diagnostic: dump every material's metallic/roughness factors and texture
 	// indices to the log, flagging fully-metallic materials that have no
@@ -177,6 +181,8 @@ public:
 private:
 	void CreateOutputImage();
 	void DestroyOutputImage();
+	void CreateRROutputImage();
+	void DestroyRROutputImage();
 	void UpdateCameraUBO(const Camera& camera);
 	void UpdatePathTraceDescriptorSet();
 
@@ -196,6 +202,7 @@ private:
 	RenderExtent m_RenderExtent;
 
 	GpuImage m_OutputImage;  // RGBA32F linear beauty + accumulation history
+	GpuImage m_RROutputImage; // RGBA16F full-resolution DLSS-RR output
 	GpuImage m_DisplayImage; // RGBA8 Reinhard-tonemapped viewport image
 	GpuImage m_FallbackTexture; // 1x1 white, used for missing texture views
 	VkSampler m_Sampler = VK_NULL_HANDLE;
@@ -270,6 +277,10 @@ private:
 	RRGuidePass m_RRGuidePass;
 	bool m_RRGuideInitFailed = false;
 	bool m_RRGuideReportMode = false;
+	NgxRuntime* m_NgxRuntime = nullptr; // non-owning; NgxRuntime owns SDK state
+	bool m_DevStaticRR = false;
+	bool m_ForceNativeRebuild = false;
+	RRFeatureLifecycle m_RR;
 
 	// NRD integration wrapper
 	NRDWrapper m_NRD;

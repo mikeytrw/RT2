@@ -112,6 +112,10 @@ public:
 	// feature exactly once for the current tuple.  Disabled/default mode never
 	// calls an NGX hook.
 	bool Reconcile(const OutputExtent& output, const RRFeatureHooks& hooks);
+	// Called by the renderer immediately before application-owned images are
+	// destroyed.  It is the only legal way to forget a feature outside
+	// Reconcile, and enforces idle -> release ordering.
+	bool InvalidateResources(const RRFeatureHooks& hooks);
 
 	// Begin/complete are intentionally separate: Begin marks that NGX work has
 	// entered the command buffer, while Complete controls whether the output
@@ -137,4 +141,3 @@ private:
 };
 
 using RRFeatureLifecycleAuthority = RRFeatureLifecycle;
-

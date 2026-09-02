@@ -186,6 +186,18 @@ bool RRFeatureLifecycle::Reconcile(const OutputExtent& output, const RRFeatureHo
 	return true;
 }
 
+bool RRFeatureLifecycle::InvalidateResources(const RRFeatureHooks& hooks)
+{
+	if (!ReleaseFeature(hooks, m_State.fallbackReason))
+	{
+		LatchFallback(m_State.fallbackReason, 0, hooks);
+		return false;
+	}
+	m_HasTuple = false;
+	ResetHistory(hooks);
+	return true;
+}
+
 RRFrameDecision RRFeatureLifecycle::BeginEvaluation()
 {
 	RRFrameDecision decision;
@@ -225,4 +237,3 @@ RRFrameDecision RRFeatureLifecycle::CompleteEvaluation(bool success, std::string
 	decision.reason = m_State.fallbackReason;
 	return decision;
 }
-

@@ -690,6 +690,7 @@ public:
 		{
 			if (m_RendererGPU.Init())
 			{
+				m_RendererGPU.SetNgxRuntime(m_Ngx.get(), g_CLI.devRRStatic);
 				m_Settings = m_RendererGPU.GetSettings();
 				m_RendererGPU.ApplySettings(m_Settings);
 			}
@@ -2597,6 +2598,7 @@ public:
 		// otherwise run after Walnut has destroyed that device.
 		if (m_Ngx)
 		{
+			m_RendererGPU.ReleaseRRFeature();
 			const bool shutdownOk = m_Ngx->Shutdown();
 			(void)shutdownOk;
 			const std::string report = m_Ngx->Snapshot().Format();
@@ -3030,6 +3032,7 @@ private:
 		{
 			if (m_RendererGPU.Init())
 			{
+				m_RendererGPU.SetNgxRuntime(m_Ngx.get(), g_CLI.devRRStatic);
 				m_Settings = m_RendererGPU.GetSettings();
 				if (g_CLI.spp > 0) m_Settings.spp = g_CLI.spp;
 				if (g_CLI.bounces > 0) m_Settings.maxBounces = g_CLI.bounces;

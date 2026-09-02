@@ -4,14 +4,39 @@
 #include <cmath>
 #include <cstdlib>
 
-void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
+FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 {
+	RecordedFrameOutcome outcome;
 	RT_LOG("[Frame] RecordFrame begin");
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::Frame, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
 	RecordTopBarrier(cmd, ctx);
 	RecordASBarrier(cmd, ctx);
 	RecordUBOUpdates(cmd, ctx);
+	if (ctx.rrLifecycle && ctx.ngxRuntime)
+	{
+		RRFeatureHooks hooks;
+		hooks.queryOptimalSettings = [runtime = ctx.ngxRuntime](OutputExtent output,
+			RRQualityMode, RROptimalSettings& settings, std::string& reason) {
+			return runtime->QueryRROptimalSettings(output, settings, reason);
+		};
+		hooks.create = [runtime = ctx.ngxRuntime, cmd](const RRQualityTuple& tuple, std::string& reason) {
+			return runtime->CreateRRFeature(cmd, tuple, reason);
+		};
+		hooks.waitIdle = [runtime = ctx.ngxRuntime](std::string& reason) {
+			return runtime->ReleaseRRFeature(reason);
+		};
+		hooks.release = [](std::string&) { return true; };
+		hooks.resetHistory = [&ctx] { ctx.nrdNeedsReset = true; };
+		if (!ctx.rrLifecycle->Reconcile(ctx.outputExtent, hooks) &&
+			ctx.rrLifecycle->Backend() != RRBackend::ActiveNativeNRD)
+		{
+			outcome.recorded = false;
+			outcome.preserveDisplay = true;
+			outcome.failureReason = ctx.rrLifecycle->FallbackReason();
+			return outcome;
+		}
+	}
 
 	// Advance prev transform buffers to current after a scene edit so
 	// motion vectors go to zero on subsequent frames (NRD finding #3).
@@ -32,11 +57,17 @@ void FrameRenderer::RecordFrame(VkCommandBuffer cmd, Context& ctx)
 	RT_LOG("[Frame] ReSTIR GI done");
 	RecordPathTraceOrDebug(cmd, ctx);
 	RT_LOG("[Frame] pathtrace/debug done");
+	outcome = RecordRR(cmd, ctx);
+	if (!outcome.recorded)
+		return outcome;
 	RecordTonemapPass(cmd, ctx);
 	RecordOutputTransition(cmd, ctx);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::Frame, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
 	RT_LOG("[Frame] RecordFrame end");
+	outcome.hdrSource = ctx.rrOutputImage && outcome.rrEvaluated ?
+		ctx.rrOutputImage->view : ctx.outputImage.view;
+	return outcome;
 }
 
 void FrameRenderer::RecordTopBarrier(VkCommandBuffer cmd, Context& ctx)
@@ -686,8 +717,83 @@ void FrameRenderer::RecordPathTraceOrDebug(VkCommandBuffer cmd, Context& ctx)
 		return;
 	}
 
-	if (ctx.nrdEnabled && ctx.nrd.IsAvailable() && useRasterFirst)
+    const bool rrActive = ctx.rrLifecycle && ctx.rrLifecycle->Backend() == RRBackend::ActiveRR;
+	if (!rrActive && ctx.nrdEnabled && ctx.nrd.IsAvailable() && useRasterFirst)
 		RecordNRDAndCompose(cmd, ctx);
+}
+
+FrameRenderer::RecordedFrameOutcome FrameRenderer::RecordRR(VkCommandBuffer cmd, Context& ctx)
+{
+	RecordedFrameOutcome outcome;
+	if (!ctx.rrLifecycle || ctx.rrLifecycle->Backend() != RRBackend::ActiveRR ||
+		!ctx.ngxRuntime || !ctx.rrOutputImage || !ctx.rrOutputImage->IsValid() ||
+		!ctx.rasterFirst || ctx.camera.m_Aperture > 0.0f ||
+		!ctx.rrGuidePass.IsAvailable() || !ctx.rrGuides.IsValid())
+	{
+		return outcome;
+	}
+	const RRFrameDecision began = ctx.rrLifecycle->BeginEvaluation();
+	if (!began.useRR)
+	{
+		outcome.failureReason = began.reason;
+		return outcome;
+	}
+	const auto image = [](const GpuImage& source) {
+		RRFeatureImage result;
+		result.view = source.view;
+		result.image = source.image;
+		result.format = source.format;
+		result.width = source.width;
+		result.height = source.height;
+		return result;
+	};
+	RRFeatureEvaluation evaluation;
+	evaluation.noisyColor = image(ctx.rrGuides.Get(RRGuideKind::NoisyHdr));
+	evaluation.diffuseAlbedo = image(ctx.rrGuides.Get(RRGuideKind::DiffuseAlbedo));
+	evaluation.specularAlbedo = image(ctx.rrGuides.Get(RRGuideKind::SpecularAlbedo));
+	evaluation.normalRoughness = image(ctx.rrGuides.Get(RRGuideKind::NormalRoughness));
+	evaluation.depth = image(ctx.gbuffer.GetColor(GBufferTarget::VIEWZ));
+	evaluation.motion = image(ctx.gbuffer.GetColor(GBufferTarget::MOTION));
+	evaluation.specularHitDistance = image(ctx.rrGuides.Get(RRGuideKind::SpecularHitDistance));
+	evaluation.output = image(*ctx.rrOutputImage);
+	evaluation.jitterX = 0.0f;
+	evaluation.jitterY = 0.0f;
+	evaluation.reset = ctx.nrdNeedsReset ? 1 : 0;
+	evaluation.mvScaleX = 1.0f;
+	evaluation.mvScaleY = 1.0f;
+	glm::mat4 currentView = ctx.camera.GetView();
+	glm::mat4 currentProjection = ctx.camera.GetProjection();
+	evaluation.worldToView = glm::value_ptr(currentView);
+	evaluation.viewToClip = glm::value_ptr(currentProjection);
+	std::string reason;
+	int32_t resultCode = 0;
+	const bool success = ctx.ngxRuntime->EvaluateRRFeature(cmd, evaluation, reason, &resultCode);
+	const RRFrameDecision completed = ctx.rrLifecycle->CompleteEvaluation(success, reason, resultCode,
+		RRFeatureHooks{ {}, {}, {}, {}, {}, [&ctx] { ctx.nrdNeedsReset = true; } });
+	if (!success)
+	{
+		outcome.recorded = false;
+		outcome.preserveDisplay = completed.preserveDisplay;
+		outcome.failureReason = completed.reason;
+		return outcome;
+	}
+	VkImageMemoryBarrier outputBarrier{};
+	outputBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	outputBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+	outputBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+	outputBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+	outputBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+	outputBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	outputBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	outputBarrier.image = ctx.rrOutputImage->image;
+	outputBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	outputBarrier.subresourceRange.levelCount = 1;
+	outputBarrier.subresourceRange.layerCount = 1;
+	vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+		VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &outputBarrier);
+	outcome.rrEvaluated = true;
+	outcome.hdrSource = ctx.rrOutputImage->view;
+	return outcome;
 }
 
 void FrameRenderer::RecordNRDAndCompose(VkCommandBuffer cmd, Context& ctx)
@@ -836,7 +942,9 @@ void FrameRenderer::RecordTonemapPass(VkCommandBuffer cmd, Context& ctx)
 	linearReady.newLayout = VK_IMAGE_LAYOUT_GENERAL;
 	linearReady.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 	linearReady.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-	linearReady.image = ctx.outputImage.image;
+	const bool useRR = ctx.rrLifecycle && ctx.rrLifecycle->State().rrOutputValid &&
+		ctx.rrOutputImage && ctx.rrOutputImage->IsValid();
+	linearReady.image = useRR ? ctx.rrOutputImage->image : ctx.outputImage.image;
 	linearReady.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	linearReady.subresourceRange.levelCount = 1;
 	linearReady.subresourceRange.layerCount = 1;
@@ -847,6 +955,8 @@ void FrameRenderer::RecordTonemapPass(VkCommandBuffer cmd, Context& ctx)
 		0, nullptr, 0, nullptr, 1, &linearReady);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::Tonemap, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+	ctx.tonemapPass.UpdateDescriptorSet(ctx.device,
+		useRR ? ctx.rrOutputImage->view : ctx.outputImage.view, ctx.displayImage.view);
 	ctx.tonemapPass.Record(cmd, ctx.outputExtent);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::Tonemap, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
