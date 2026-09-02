@@ -3469,8 +3469,14 @@ private:
 				metadata.fixtureHashValid = fixtureIdentity.readable;
 				metadata.fixtureFNV1a64 = fixtureIdentity.fnv1a64;
 				metadata.fixtureBytes = fixtureIdentity.bytes;
+				const bool isControlledFixture = IsRRGuideControlledFixture(fixtureIdentity);
 				metadata.fixtureIdentityValid = g_CLI.rrGuideScenario != RRGuideScenario::ControlledMaterialMotion ||
-					IsRRGuideControlledFixture(fixtureIdentity);
+					isControlledFixture;
+				// A checked-in controlled fixture must opt into its typed case. This
+				// prevents the same bytes, or a renamed copy, from silently running
+				// with the stronger class/emissive admission disabled.
+				if (isControlledFixture && g_CLI.rrGuideScenario == RRGuideScenario::Unspecified)
+					metadata.scenarioDeclarationValid = false;
 				if (!metadata.fixtureHashValid)
 					RT_LOG("[RRGuide] fixture hash failed: %s", g_CLI.scenePath.c_str());
 				metadata.pairedBaselinePath = g_CLI.rrGuidePair;
