@@ -103,6 +103,11 @@ bool NgxRuntime::CreateRRFeature(VkCommandBuffer command,
 		reason = "an RR feature is already owned";
 		return false;
 	}
+	if (std::getenv("RT2_RR_INJECT_CREATE_FAILURE"))
+	{
+		reason = "forced feature-create failure (RT2_RR_INJECT_CREATE_FAILURE)";
+		return false;
+	}
 	NVSDK_NGX_DLSSD_Create_Params create{};
 	create.InWidth = tuple.render.Width();
 	create.InHeight = tuple.render.Height();
@@ -189,6 +194,13 @@ bool NgxRuntime::EvaluateRRFeature(VkCommandBuffer command,
 	const NVSDK_NGX_Result result = NGX_VULKAN_EVALUATE_DLSSD_EXT(
 		command, m_RRFeature, m_Parameters, &eval);
 	if (resultCode) *resultCode = static_cast<int32_t>(result);
+	if (std::getenv("RT2_RR_INJECT_EVALUATE_FAILURE"))
+	{
+		if (resultCode) *resultCode = -7004;
+		reason = "forced evaluation failure after NGX work "
+			"(RT2_RR_INJECT_EVALUATE_FAILURE)";
+		return false;
+	}
 	if (NVSDK_NGX_FAILED(result))
 	{
 		reason = "NGX feature evaluation returned " + NgxResultText(result);
