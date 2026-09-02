@@ -48,6 +48,20 @@ bool TonemapPass::Init(const GpuDevice& dev)
     pipelineInfo.layout = m_PipelineLayout;
     VK_CHECK(vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &m_Pipeline));
 
+    m_RRShader = ShaderManager::LoadShader("tonemap_rr.spv");
+    if (!m_RRShader)
+        m_RRShader = ShaderManager::LoadShader("RT2App/shaders/tonemap_rr.spv");
+    if (m_RRShader)
+    {
+        pipelineInfo.stage.module = m_RRShader;
+        VK_CHECK(vkCreateComputePipelines(dev.device, VK_NULL_HANDLE, 1, &pipelineInfo,
+                                          nullptr, &m_RRPipeline));
+    }
+    else
+    {
+        RT_LOG("[TonemapPass] RR format variant is unavailable; RR output selection is disabled");
+    }
+
     VkDescriptorPoolSize poolSize = {};
     poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     poolSize.descriptorCount = 2;
@@ -71,21 +85,29 @@ void TonemapPass::Destroy()
 {
     if (!m_Device) return;
     if (m_Pipeline) vkDestroyPipeline(m_Device, m_Pipeline, nullptr);
+    if (m_RRPipeline) vkDestroyPipeline(m_Device, m_RRPipeline, nullptr);
     if (m_PipelineLayout) vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr);
     if (m_SetLayout) vkDestroyDescriptorSetLayout(m_Device, m_SetLayout, nullptr);
     if (m_Pool) vkDestroyDescriptorPool(m_Device, m_Pool, nullptr);
     if (m_Shader) vkDestroyShaderModule(m_Device, m_Shader, nullptr);
+    if (m_RRShader) vkDestroyShaderModule(m_Device, m_RRShader, nullptr);
     m_Pipeline = VK_NULL_HANDLE;
+    m_RRPipeline = VK_NULL_HANDLE;
     m_PipelineLayout = VK_NULL_HANDLE;
     m_SetLayout = VK_NULL_HANDLE;
     m_DescriptorSet = VK_NULL_HANDLE;
     m_Pool = VK_NULL_HANDLE;
     m_Shader = VK_NULL_HANDLE;
+    m_RRShader = VK_NULL_HANDLE;
+    m_BoundInputView = VK_NULL_HANDLE;
+    m_BoundOutputView = VK_NULL_HANDLE;
     m_Device = VK_NULL_HANDLE;
 }
 
 void TonemapPass::UpdateDescriptorSet(const GpuDevice& dev, VkImageView inputView, VkImageView outputView)
 {
+    if (inputView == m_BoundInputView && outputView == m_BoundOutputView)
+        return;
     VkDescriptorImageInfo infos[2] = {};
     infos[0].imageView = inputView;
     infos[1].imageView = outputView;
@@ -103,14 +125,17 @@ void TonemapPass::UpdateDescriptorSet(const GpuDevice& dev, VkImageView inputVie
         writes[i].pImageInfo = &infos[i];
     }
     vkUpdateDescriptorSets(dev.device, 2, writes, 0, nullptr);
+    m_BoundInputView = inputView;
+    m_BoundOutputView = outputView;
 }
 
-void TonemapPass::Record(VkCommandBuffer cmd, const OutputExtent& extent) const
+void TonemapPass::Record(VkCommandBuffer cmd, const OutputExtent& extent, bool useRR) const
 {
-    if (!m_Pipeline || !m_DescriptorSet) return;
+    const VkPipeline pipeline = useRR ? m_RRPipeline : m_Pipeline;
+    if (!pipeline || !m_DescriptorSet) return;
     const uint32_t width = extent.Width();
     const uint32_t height = extent.Height();
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_Pipeline);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_PipelineLayout,
                             0, 1, &m_DescriptorSet, 0, nullptr);
     vkCmdDispatch(cmd, (width + 15) / 16, (height + 15) / 16, 1);

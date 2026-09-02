@@ -957,7 +957,7 @@ void FrameRenderer::RecordTonemapPass(VkCommandBuffer cmd, Context& ctx)
 		ctx.gpuProfiler->BeginRegion(cmd, GpuTimestampProfiler::Region::Tonemap, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 	ctx.tonemapPass.UpdateDescriptorSet(ctx.device,
 		useRR ? ctx.rrOutputImage->view : ctx.outputImage.view, ctx.displayImage.view);
-	ctx.tonemapPass.Record(cmd, ctx.outputExtent);
+	ctx.tonemapPass.Record(cmd, ctx.outputExtent, useRR);
 	if (ctx.gpuProfiler)
 		ctx.gpuProfiler->EndRegion(cmd, GpuTimestampProfiler::Region::Tonemap, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 }

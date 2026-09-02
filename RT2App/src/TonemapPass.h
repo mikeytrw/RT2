@@ -17,7 +17,7 @@ public:
     bool Init(const GpuDevice& dev);
     void Destroy();
     void UpdateDescriptorSet(const GpuDevice& dev, VkImageView inputView, VkImageView outputView);
-    void Record(VkCommandBuffer cmd, const OutputExtent& extent) const;
+    void Record(VkCommandBuffer cmd, const OutputExtent& extent, bool useRR = false) const;
 
     bool IsAvailable() const { return m_Pipeline != VK_NULL_HANDLE; }
 
@@ -28,5 +28,9 @@ private:
     VkDescriptorSet m_DescriptorSet = VK_NULL_HANDLE;
     VkDescriptorPool m_Pool = VK_NULL_HANDLE;
     VkShaderModule m_Shader = VK_NULL_HANDLE;
+    VkShaderModule m_RRShader = VK_NULL_HANDLE;
+    VkPipeline m_RRPipeline = VK_NULL_HANDLE;
+    VkImageView m_BoundInputView = VK_NULL_HANDLE;
+    VkImageView m_BoundOutputView = VK_NULL_HANDLE;
     VkDevice m_Device = VK_NULL_HANDLE;
 };
