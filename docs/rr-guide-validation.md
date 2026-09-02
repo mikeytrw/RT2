@@ -43,7 +43,7 @@ bindings, RenderExtent-only rows, the 24-byte corrected budget arithmetic,
 shared material/F0/diffuse semantics, motion projection, and
 canonical-output/debug independence. Release targeted guide tests passed
 `12/12` cases and `212/212` assertions; the full Release suite passed
-`1109/1109` cases and `156456/156456` assertions. Earlier `66/69`, `147/147`,
+`1109/1109` cases and `156468/156468` assertions. Earlier `66/69`, `147/147`,
 `162/162`, `179/179`, and `166/166` counts
 are superseded.
 The complete Release test run retains the repository baseline; Debug retains
