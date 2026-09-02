@@ -60,6 +60,7 @@
         "../RT2App/src/NgxSupport.cpp",
         "../RT2App/src/NgxLifecycle.cpp",
         "../RT2App/src/RRGuideContract.cpp"
+        ,"../RT2App/src/RRFeatureLifecycle.cpp"
     }
 
     filter { "files:src/Phase8W3OverrideTests.cpp" }
